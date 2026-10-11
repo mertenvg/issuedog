@@ -1,0 +1,35 @@
+# issuedog configuration for this repo (SPEC section 13). Read from main only.
+types: labels
+scopes: [daemon, github, sandbox, agents, verify, tooling, docs]
+notify: [mertenvg]
+plan:
+  max_tasks: 10
+  review: true
+verify:
+  commands:
+    - go vet ./...
+    - golangci-lint run
+    - go test ./...
+  command_timeout: 20m
+  max_diff_lines: 400
+  skip_markers: ["t.Skip(", ".skip(", "xit(", "#[ignore]"]
+  test_globs: ["**/*_test.go"]
+  source_globs: ["**/*.go"]
+  config_paths: [".golangci.yml", ".golangci.yaml"]
+  tooling_scope: tooling
+  binary_allow: []
+  protected_paths: []
+escalate:
+  paths: ["go.mod", "Dockerfile", "**/firewall/**"]
+stages:
+  timeouts: { interviewer: 10m, planner: 20m, implementer: 60m, verifier: 30m }
+  max_turns: { interviewer: 30, planner: 60, implementer: 200, verifier: 80 }
+  max_budget_usd: {}
+loop:
+  idle_sleep: 60s
+  max_attempts: 3
+  max_questions_per_round: 7
+network:
+  allow: [api.anthropic.com, proxy.golang.org, sum.golang.org]
+usage_limit:
+  pattern: "(?i)(usage|session) limit"
