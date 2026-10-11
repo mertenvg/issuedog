@@ -43,6 +43,8 @@ as() {
 # Users
 expect "issuedog uid" 10001 id -u issuedog
 expect "agent uid" 10002 id -u agent
+expect "issuedog gid" 10001 id -g issuedog
+expect "agent gid" 10002 id -g agent
 expect "agent groups" agent id -nG agent
 
 # Directories: owner, group and mode

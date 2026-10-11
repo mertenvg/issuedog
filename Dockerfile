@@ -22,9 +22,12 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates git iptables libcap2-bin \
  && rm -rf /var/lib/apt/lists/*
 
-# Fixed uids, so files on mounted volumes keep their owners across rebuilds.
-RUN useradd --system --uid 10001 --user-group --home-dir /work --no-create-home --shell /usr/sbin/nologin issuedog \
- && useradd --system --uid 10002 --user-group --home-dir /home/agent --create-home --shell /usr/sbin/nologin agent \
+# Fixed uids and gids, so files on mounted volumes keep their owners across
+# rebuilds.
+RUN groupadd --system --gid 10001 issuedog \
+ && groupadd --system --gid 10002 agent \
+ && useradd --system --uid 10001 --gid issuedog --home-dir /work --no-create-home --shell /usr/sbin/nologin issuedog \
+ && useradd --system --uid 10002 --gid agent --home-dir /home/agent --create-home --shell /usr/sbin/nologin agent \
  && chmod 0700 /home/agent \
  && install -d -o issuedog -g issuedog -m 0755 /work \
  && install -d -o agent -g agent -m 0755 /work/runs \

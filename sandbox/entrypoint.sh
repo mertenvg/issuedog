@@ -6,5 +6,7 @@
 # don't run the container with --security-opt no-new-privileges.
 set -eu
 
+# setpriv keeps root's environment, and issuedog can't use /root.
+export HOME=/work
 exec setpriv --reuid=issuedog --regid=issuedog --init-groups --inh-caps=-all -- \
 	/usr/local/bin/issuedog "$@"
