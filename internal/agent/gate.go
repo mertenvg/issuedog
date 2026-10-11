@@ -19,6 +19,9 @@ const (
 	// maxReset bounds how far ahead a parsed reset time may be. Anything
 	// further is treated as unreadable.
 	maxReset = 8 * 24 * time.Hour
+	// resetGrace is how long after a clock-only reset time it still counts
+	// as today's.
+	resetGrace = 5 * time.Minute
 )
 
 var (
@@ -156,7 +159,15 @@ func nextClock(now time.Time, c clock) (time.Time, bool) {
 		if t, ok := at(now, loc, local.Year(), local.Month(), local.Day(), h, m); ok {
 			return t, true
 		}
-		return at(now, loc, local.Year(), local.Month(), local.Day()+1, h, m)
+		// A reset that passed moments ago (the run ended just before it) is
+		// returned as is, so parseReset falls back to the backoff rather
+		// than waiting until tomorrow.
+		today := time.Date(local.Year(), local.Month(), local.Day(), h, m, 0, 0, loc)
+		if now.Sub(today) <= resetGrace {
+			return today, true
+		}
+		next := local.AddDate(0, 0, 1)
+		return at(now, loc, next.Year(), next.Month(), next.Day(), h, m)
 	}
 
 	month := time.Month(slices.Index(months, strings.ToLower(c.month)[:3]) + 1)

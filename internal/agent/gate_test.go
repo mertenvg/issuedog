@@ -44,7 +44,7 @@ func TestGateDetectsUsageLimits(t *testing.T) {
 
 func TestGateInvalidPattern(t *testing.T) {
 	if _, err := NewGate("(unclosed"); err == nil {
-		t.Fatal("compiled an invalid gatePattern, want an error")
+		t.Fatal("compiled an invalid pattern, want an error")
 	}
 }
 
@@ -53,30 +53,34 @@ func TestGateResetTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	utc := func(mo time.Month, d, h, m, s int) time.Time { return time.Date(2026, mo, d, h, m, s, 0, time.UTC) }
 	for _, tt := range []struct {
+		now  time.Time // zero means gateStart
 		text string
 		want time.Time
 	}{
-		{"Claude AI usage limit reached|1760184000", time.Unix(1760184000, 0)},
-		{"Usage limit reached ∙ resets 3pm", time.Date(2026, 10, 11, 15, 0, 0, 0, time.UTC)},
-		{"usage limit reached, resets at 3:30 PM", time.Date(2026, 10, 11, 15, 30, 0, 0, time.UTC)},
-		{"usage limit · resets 15:00", time.Date(2026, 10, 11, 15, 0, 0, 0, time.UTC)},
-		// 9am has already passed today, so it means tomorrow.
-		{"usage limit · resets 9am", time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)},
-		{"usage limit · resets 12am", time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)},
-		{"usage limit · resets 3pm (Europe/Amsterdam)", time.Date(2026, 10, 11, 15, 0, 0, 0, ams)},
-		// The CLI's form for resets more than a day away.
-		{"usage limit · resets Oct 14, 3pm (Europe/Amsterdam)", time.Date(2026, 10, 14, 15, 0, 0, 0, ams)},
-		{"usage limit · resets October 14 at 3:30pm (UTC)", time.Date(2026, 10, 14, 15, 30, 0, 0, time.UTC)},
-		{"usage limit · resets Oct 13, 2026, 9am", time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)},
-		// Without a year, a date that has passed means next year: too far
-		// ahead here, so it's tested in the fallback cases instead.
+		{time.Unix(1760180400, 0), "Claude AI usage limit reached|1760184000", time.Unix(1760184000, 0)},
+		{time.Time{}, "Usage limit reached ∙ resets 3pm", utc(10, 11, 15, 0, 0)},
+		{time.Time{}, "usage limit reached, resets at 3:30 PM", utc(10, 11, 15, 30, 0)},
+		{time.Time{}, "usage limit · resets 15:00", utc(10, 11, 15, 0, 0)},
+		{time.Time{}, "usage limit · resets 9am", utc(10, 12, 9, 0, 0)}, // passed today
+		{time.Time{}, "usage limit · resets 12am", utc(10, 12, 0, 0, 0)},
+		{time.Time{}, "usage limit · resets 3pm (Europe/Amsterdam)", time.Date(2026, 10, 11, 15, 0, 0, 0, ams)},
+		{time.Time{}, "usage limit · resets Oct 14, 3pm (Europe/Amsterdam)", time.Date(2026, 10, 14, 15, 0, 0, 0, ams)},
+		{time.Time{}, "usage limit · resets October 14 at 3:30pm (UTC)", utc(10, 14, 15, 30, 0)},
+		{time.Time{}, "usage limit · resets Oct 13, 2026, 9am", utc(10, 13, 9, 0, 0)},
+		// Tomorrow across a month end.
+		{utc(10, 31, 22, 0, 0), "session limit · resets 1am (UTC)", utc(11, 1, 1, 0, 0)},
+		// DST fall-back: at 1:40 EDT, 1:30am means the second 1:30, in EST.
+		{utc(11, 1, 5, 40, 0), "session limit · resets 1:30am (America/New_York)", utc(11, 1, 6, 30, 0)},
+		// A reset that passed seconds ago means the backoff, not tomorrow.
+		{utc(10, 11, 15, 0, 5), "session limit · resets 3pm (UTC)", utc(10, 11, 15, 15, 5)},
 	} {
-		g := newGate(t)
-		now := gateStart
-		if tt.text == "Claude AI usage limit reached|1760184000" {
-			now = time.Unix(1760184000, 0).Add(-time.Hour)
+		now := tt.now
+		if now.IsZero() {
+			now = gateStart
 		}
+		g := newGate(t)
 		if !g.Observe(now, true, tt.text) {
 			t.Errorf("%q: not detected", tt.text)
 			continue
@@ -87,22 +91,6 @@ func TestGateResetTime(t *testing.T) {
 		if g.Open(tt.want.Add(-time.Second)) || !g.Open(tt.want) {
 			t.Errorf("%q: gate doesn't open exactly at the reset time", tt.text)
 		}
-	}
-}
-
-// On a DST fall-back day 1:30am happens twice. At 1:40 EDT the reset at
-// 1:30 means the second one, 1:30 EST, 50 minutes away.
-func TestGateResetTimeDuringDSTFallBack(t *testing.T) {
-	ny, err := time.LoadLocation("America/New_York")
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Date(2026, 11, 1, 5, 40, 0, 0, time.UTC) // 1:40 EDT
-	g := newGate(t)
-	g.Observe(now, true, "session limit · resets 1:30am (America/New_York)")
-	want := time.Date(2026, 11, 1, 6, 30, 0, 0, time.UTC) // 1:30 EST
-	if !g.OpenAt().Equal(want) {
-		t.Errorf("opens at %v, want %v", g.OpenAt().In(ny), want.In(ny))
 	}
 }
 
