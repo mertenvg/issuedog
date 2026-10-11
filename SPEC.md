@@ -121,7 +121,7 @@ GitHub is the single source of truth. The daemon keeps only an in-memory cache, 
 | Transition history | Bot comments carrying a hidden marker, e.g. `<!-- issuedog:transition from=clarifying to=spec-review rev=3 body=9f2a61c0 run=8f2c cmd=2214587 -->` |
 | Attempt count | Hidden marker on the latest bot verifier comment |
 | Processed commands | The bot's 👍 reaction on the command comment, plus `cmd=<comment id>` in the transition marker. A reaction command (section 9.2) is recorded as `cmd=r<reaction id>` |
-| Spec and plan revisions | One revision comment per revision, carrying `rev` and the hash (section 7.4) |
+| Spec and plan revisions | One revision comment per revision, naming `rev`. The hash is in the transition marker (section 7.4); for plans, see section 16 |
 | Origin of bot-created issues | Hidden `origin` marker in the issue body (section 6.2) |
 
 The only local files are the lease (section 8.2) and the run results in `/state/runs/`. Both are scratch: losing the container loses nothing except the current run.
@@ -164,7 +164,7 @@ An issue enters the pipeline when any of these holds:
 - A trusted user added the `approved` label (checked on the timeline).
 - The App created it with an `origin` marker that points to an approved plan revision, or to a story-verifier run. Issues the App creates in another repo (section 14) carry no such marker, so they need `approved`.
 
-Only comments by trusted users count as answers, approvals or commands. Agents receive other comments in a separate, clearly labeled "untrusted input" section of their context files, and only for epics and stories.
+Only comments and reactions by trusted users count as answers, approvals or commands. Agents receive other comments in a separate, clearly labeled "untrusted input" section of their context files, and only for epics and stories.
 
 A command counts once. If its comment is edited after the daemon reacted to it, the edit is ignored and the bot replies asking for a new comment. If it is edited before the daemon processes it, the daemon reads the latest text.
 
@@ -204,7 +204,7 @@ The lifecycle of each type:
 
 - **Epic.** intake → clarifying → spec-review → planning → plan-review → planned → closed.
 - **Story.** Created at `stage:planning` from an approved epic plan, which already carries its acceptance criteria. Then planning → plan-review (or straight to planned, see `plan.review`) → planned → closed.
-- **Task.** Created at `stage:ready`, or at `stage:needs-human` for a human task from the planner (section 11.3). Then ready → in-progress → verifying → pr-open → closed, with loops back through clarifying, in-progress or needs-human.
+- **Task.** Created at `stage:ready`, or at `stage:needs-human` for a human task from the planner (section 11.3). Then ready → in-progress → verifying → pr-open → closed, with loops back through clarifying, in-progress or needs-human. A human task from the planner goes needs-human → closed.
 - **Bug.** intake → clarifying → ready, then as a task.
 
 ### 7.2 Transitions
@@ -238,8 +238,8 @@ The lifecycle of each type:
 | pr-open | pr-open | task | `main` moved; daemon re-runs section 10.1 on the merge result and updates the check |
 | pr-open | closed | task | PR merged (`Closes #N`) |
 | pr-open | needs-human | task | PR closed without merging; daemon asks the owner to reopen it, `/done` to start over, or close the issue |
-| needs-human | ready | task | Owner `/done`, or 👍 on the issue, for a task that was waiting on the owner; attempt count resets to 0 |
-| needs-human | closed | task | Owner `/done`, or 👍 on the issue, for a human task from the planner, and its **Done when** check passes (9.3) |
+| needs-human | ready | task | Owner `/done` on a task that was waiting on the owner; attempt count resets to 0 |
+| needs-human | closed | task | Owner `/done`, or 👍 on the issue, for a human task from the planner, and its **Done when** check passes when it can be checked automatically (9.3) |
 | any open | held | all | Owner `/hold` on the issue or an ancestor |
 | held | previous | all | Owner `/resume` on the issue or an ancestor |
 | any open | closed | all | A person closed the issue; daemon stops any run for it |
@@ -262,7 +262,7 @@ Any transition missing from this table is an error, except a trusted user's manu
 - **Approving.** A trusted 👍 on the latest revision comment, or a trusted `/approve` posted after it, approves that revision, and only while the current body or plan still matches the recorded hash.
   - 👍s on earlier revision comments, and 👍s from untrusted users or from the App, are ignored.
   - Removing a 👍 after the daemon applied the approval changes nothing.
-- **Revising.** In `spec-review` or `plan-review`, a trusted comment that isn't a command, posted after the latest revision comment, is a revision request with the comment as the notes, the same as `/revise`.
+- **Revising.** In `spec-review` or `plan-review`, any other trusted comment posted after the latest revision comment is a revision request with the comment as the notes. It is handled, acknowledged and recorded exactly like `/revise` (5.2, 9.2).
   - A comment beats a pending 👍.
   - A question counts as a revision request: the agent answers it and posts the next revision, even if nothing else changed.
   - A comment posted after the approval was applied goes to the next stage as owner input.
@@ -276,7 +276,7 @@ Any transition missing from this table is an error, except a trusted user's manu
 Each loop iteration:
 
 1. Process new trusted comments, reactions and label changes on open issues: answers, `/approve`, `/revise`, `/done`, `/hold`, `/resume`, `/priority`, 👍 on revision comments and human-task issues, and other comments in review stages (7.4). Revert untrusted label changes (5.1).
-2. Reconcile PRs: merges, closes, reviews requesting changes, new head SHAs, and `main` moving under open PRs.
+2. Reconcile PRs: merges, closes, reviews with comments (7.2), new head SHAs, and `main` moving under open PRs.
 3. Run any pending non-task stage work for the highest-priority issue that has it: clarifying, spec, planning, story verification.
 4. Otherwise pick the next task:
    - It is `stage:ready`.
@@ -296,7 +296,7 @@ Each loop iteration:
 
 ### 8.3 Retries
 
-- The verify loop allows `max_attempts` (default 3) implementer runs per round. A round starts when a task becomes `ready`, or when a review requests changes.
+- The verify loop allows `max_attempts` (default 3) implementer runs per round. A round starts when a task becomes `ready`, or when a review with comments sends it back (7.2).
 - Each retry prompt includes the previous verifier findings verbatim.
 - After the last failed attempt, the task moves to `stage:needs-human` with the findings attached.
 
@@ -339,7 +339,8 @@ Rules:
 | `/approve` | Issue | Approves the current spec or plan revision |
 | Any other comment | Issue in `spec-review` or `plan-review` | Sends the spec or plan back, with the comment as the notes (7.4) |
 | `/revise <text>` | Issue | Sends the spec or plan back with the owner's notes |
-| 👍 on the issue, or `/done` | `needs-human` issue | Owner finished the human task (9.3), or wants a closed PR's task started over |
+| 👍 on the issue | Human task from the planner | Owner finished it (9.3) |
+| `/done` | `needs-human` issue | Owner finished the human task (9.3), or wants a closed PR's task started over |
 | `/hold`, `/resume` | Any issue | Pauses or resumes the issue and its descendants |
 | `/priority p1` | Any issue | Sets priority |
 
@@ -352,9 +353,7 @@ PR reviews use GitHub's own review flow.
 Human tasks come from two places:
 
 - **Blocked work.** An implementer or verifier reports that a task needs an owner action. On `/done` the task returns to `stage:ready`.
-- **Planned work.** The planner emits a task marked `human`, such as creating an App or a ruleset (section 11.3). It is created at `stage:needs-human`, and on `/done` it closes.
-
-The owner signals done with `/done` or a 👍 on the issue. When **Done when** can be checked automatically, the daemon runs the check first. If it fails, the daemon replies with the output and leaves the issue open.
+- **Planned work.** The planner emits a task marked `human`, such as creating an App or a ruleset (section 11.3). It is created at `stage:needs-human`. The owner signals done with `/done` or a 👍 on the issue. When **Done when** can be checked automatically, the daemon runs the check first; if it fails, the daemon replies with the output and leaves the issue open. Otherwise it closes the issue.
 
 A `stage:needs-human` issue uses this template. The agent must fill every field; an empty field is a validation failure, and the agent asks a question instead.
 
@@ -493,10 +492,15 @@ One comment, which is also the revision comment (section 7.4):
 
 One line on why this plan has stories or tasks.
 
-**S1. Title** · (tasks: human, scope:<name>, blocked by T1)
-Outcome: one sentence (stories only)
+**S1. Title**
+Outcome: one sentence
 - [ ] acceptance criterion
-Depends on: S2, or nothing
+Depends on: nothing
+
+**T1. Title** · scope:<name> · human (only for a human task)
+- Change: what to build, and the existing files it touches
+- Acceptance: observable, testable statements
+Depends on: S1, or nothing
 
 **Order:** S1 → S2 and S3 in parallel → S4
 
@@ -505,7 +509,7 @@ Validation (11.3): item count, structure, scopes, no cycles.
 **To approve this plan, react 👍 to this comment.** Any other comment sends it back for revision.
 ```
 
-Item IDs (`S1`, `T1`) are the stable IDs used in `origin` markers (section 5.2).
+A plan contains either stories or tasks (11.3); the template shows both forms. Item IDs (`S1`, `T1`) are the stable IDs used in `origin` markers (section 5.2).
 
 ### 11.5 Pull request
 
@@ -542,7 +546,7 @@ scopes: [booking, payments, drivers, notifications, infra, tooling]
 notify: [mertenvg]
 plan:
   max_tasks: 10
-  review: true            # false: story task plans skip /approve; epic plans are always reviewed
+  review: true            # false: story task plans skip plan review; epic plans are always reviewed
 verify:
   commands:
     - go vet ./...
@@ -601,7 +605,9 @@ Changes to this file go through a human-authored PR (section 6.3).
    - require the `issuedog/verify` check with the issuedog App as the pinned source; leave "require branches to be up to date" off (section 10.4)
    - block force pushes
    - bypass list: Repository admin, "for pull requests only", so the owner can merge their own protected-path PRs; never the write role and never the App
-   - while the pipeline is run by hand with the owner's token, the owner authors every PR and cannot approve it, so the ruleset requires only a pull request and blocks force pushes; code-owner review and the check are added once the App runs
+
+   **Interim.** While the pipeline is run by hand with the owner's token, the owner authors every PR and cannot approve it. Until the App runs, the ruleset requires only a pull request and blocks force pushes; code-owner review and the check are added then.
+
 4. **CODEOWNERS** including `/.github/CODEOWNERS`. The App is never a code owner.
 5. **Labels.** `stage:*`, `priority:*`, `scope:*`, `approved`, `review:high-risk`, and `type:*` for personal-account repos. The daemon creates any that are missing on startup.
 6. **Org repos.** An org owner creates the `Epic` and `Story` issue types.
@@ -613,6 +619,8 @@ Changes to this file go through a human-authored PR (section 6.3).
 - **Pinning the digest.** The permission `pinIssue` needs from an App is not documented. Test it with Issues write.
 - **`--json-schema` in long runs.** It must work together with `--dangerously-skip-permissions` and long tool loops. Also confirm how many structured-output retries are allowed.
 - **Where a plan's hash lives.** A plan comment is also its revision comment (section 7.4), so its hash can't be written inside it without changing it. Decide whether it goes in a separate transition comment or is derived from the comment's edit history.
+- **Running a Done-when check.** The **Done when** text of a human task is written by an agent. Decide how the daemon runs an automatable check (which uid, which credential) without breaking sections 3.1 and 3.2.
+- **Approving PR reviews with comments.** Section 7.2 covers reviews with comments and approving reviews with none. An approving review that has comments is not yet covered.
 - **Usage-limit text.** The text `-p` prints when a subscription limit is hit is undocumented, so `usage_limit.pattern` must be checked against a real occurrence.
 - **`--bare` becoming the default.** Anthropic plans to make `--bare` the default for `-p`. `--bare` ignores `CLAUDE_CODE_OAUTH_TOKEN` and skips project agents and skills. Pin the Claude Code version, and re-test before upgrading.
 - **Egress firewall on macOS.** The owner-matched firewall rule (section 3.1) needs `NET_ADMIN` at container start. Confirm it works on Docker Desktop for Mac.
