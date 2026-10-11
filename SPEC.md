@@ -98,7 +98,7 @@ The task verifier runs in a fresh checkout of the head SHA, but only after rule 
 |---|---|---|
 | `epic` | A rough idea or large feature | Owner |
 | `story` | One user-visible outcome with acceptance criteria | Planner (epic plan) |
-| `task` | One PR, one scope | Planner (epic or story plan) |
+| `task` | One PR, one scope; a human task has no PR (section 9.3) | Planner (epic or story plan) |
 | `bug` | Something broken | Owner, or story verifier |
 
 - Repos owned by an organization use GitHub issue types. The org's defaults are Task, Bug and Feature, so an org owner must create `Epic` and `Story` first. Repos owned by a personal account have no issue types and use `type:epic`, `type:story`, `type:task`, `type:bug` labels instead. Config selects which.
@@ -262,11 +262,11 @@ Any transition missing from this table is an error, except a trusted user's manu
 - **Approving.** A trusted 👍 on the latest revision comment, or a trusted `/approve` posted after it, approves that revision, and only while the current body or plan still matches the recorded hash.
   - 👍s on earlier revision comments, and 👍s from untrusted users or from the App, are ignored.
   - Removing a 👍 after the daemon applied the approval changes nothing.
-- **Revising.** In `spec-review` or `plan-review`, any other trusted comment posted after the latest revision comment is a revision request with the comment as the notes. It is handled, acknowledged and recorded exactly like `/revise` (5.2, 9.2).
+- **Revising.** In `spec-review` or `plan-review`, any trusted comment that is not a command (9.2), posted after the latest revision comment, is a revision request with the comment as the notes. It is handled, acknowledged and recorded exactly like `/revise` (5.2, 9.2).
   - A comment beats a pending 👍.
   - A question counts as a revision request: the agent answers it and posts the next revision, even if nothing else changed.
   - A comment posted after the approval was applied goes to the next stage as owner input.
-- **Owner edits the body.** The hash no longer matches. The daemon increments `rev`, records the new hash, posts a new revision comment, and voids any pending approval.
+- **Owner edits the body.** The hash no longer matches. The daemon increments `rev`, records the new hash, posts a new revision comment (for plans, see section 16), and voids any pending approval.
 - **PR approval.** This relies on GitHub. The ruleset dismisses stale approvals when new commits are pushed, and `issuedog/verify` is posted for an exact head SHA.
 
 ## 8. Scheduling
@@ -337,7 +337,7 @@ Rules:
 | `1a 2c 3: text` | Issue | Answers the latest question round |
 | 👍 on a revision comment | Issue | Approves that revision (7.4) |
 | `/approve` | Issue | Approves the current spec or plan revision |
-| Any other comment | Issue in `spec-review` or `plan-review` | Sends the spec or plan back, with the comment as the notes (7.4) |
+| Any comment that is not a command | Issue in `spec-review` or `plan-review` | Sends the spec or plan back, with the comment as the notes (7.4) |
 | `/revise <text>` | Issue | Sends the spec or plan back with the owner's notes |
 | 👍 on the issue | Human task from the planner | Owner finished it (9.3) |
 | `/done` | `needs-human` issue | Owner finished the human task (9.3), or wants a closed PR's task started over |
@@ -350,9 +350,9 @@ PR reviews use GitHub's own review flow.
 
 ### 9.3 Human tasks
 
-Human tasks come from two places:
+A task reaches `stage:needs-human` in one of two ways:
 
-- **Blocked work.** An implementer or verifier reports that a task needs an owner action. On `/done` the task returns to `stage:ready`.
+- **Blocked work.** A task needs an owner action: the implementer or verifier reports it, the retry cap is reached (8.3), or its PR was closed without merging. On `/done` the task returns to `stage:ready`.
 - **Planned work.** The planner emits a task marked `human`, such as creating an App or a ruleset (section 11.3). It is created at `stage:needs-human`. The owner signals done with `/done` or a 👍 on the issue. When **Done when** can be checked automatically, the daemon runs the check first; if it fails, the daemon replies with the output and leaves the issue open. Otherwise it closes the issue.
 
 A `stage:needs-human` issue uses this template. The agent must fill every field; an empty field is a validation failure, and the agent asks a question instead.
@@ -469,7 +469,7 @@ Which tests prove each criterion.
 
 - An epic plan contains either stories, with acceptance criteria and no tasks, or tasks, when the epic has a single user-facing outcome. A story plan contains tasks.
 - At most `plan.max_tasks` (default 10) tasks per plan. Larger work becomes more stories.
-- Each task maps to one PR and one scope label from the allowed list.
+- Each task maps to one scope label from the allowed list, and each task other than a human task maps to one PR.
 - Each task should fit within `verify.max_diff_lines`.
 - Prefer extending existing code over adding new modules; the plan names the existing files each task touches.
 - A scope outside the allowed list becomes a question to the owner.
