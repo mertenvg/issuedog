@@ -44,3 +44,28 @@ func TestRunNoArgsLogsError(t *testing.T) {
 		t.Errorf("stdout = %q, want empty", stdout.String())
 	}
 }
+
+func TestSetupLoggingRoutesByLevel(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	stop := setupLogging(&stdout, &stderr)
+	defer stop()
+
+	logr.Info("info message")
+	logr.Warn("warn message")
+	logr.Error("error message")
+	logr.Wait()
+
+	for _, msg := range []string{"info message", "warn message", "error message"} {
+		if !strings.Contains(stdout.String(), msg) {
+			t.Errorf("stdout is missing %q; got %q", msg, stdout.String())
+		}
+	}
+	if !strings.Contains(stderr.String(), "error message") {
+		t.Errorf("stderr is missing the error; got %q", stderr.String())
+	}
+	for _, msg := range []string{"info message", "warn message"} {
+		if strings.Contains(stderr.String(), msg) {
+			t.Errorf("stderr contains %q; want errors and worse only", msg)
+		}
+	}
+}

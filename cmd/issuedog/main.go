@@ -14,10 +14,22 @@ import (
 var version = "dev"
 
 func main() {
-	logr.AddWriter(os.Stderr)
+	stop := setupLogging(os.Stdout, os.Stderr)
 	code := run(os.Args[1:], os.Stdout, os.Stderr)
 	logr.Wait()
+	stop()
 	os.Exit(code)
+}
+
+// setupLogging sends every log message to stdout, and errors and panics to
+// stderr as well. The returned func removes both writers.
+func setupLogging(stdout, stderr io.Writer) (stop func()) {
+	stopOut := logr.AddWriter(stdout, logr.WithFilter(logr.All))
+	stopErr := logr.AddWriter(stderr, logr.WithFilter(logr.Critical))
+	return func() {
+		stopErr()
+		stopOut()
+	}
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
