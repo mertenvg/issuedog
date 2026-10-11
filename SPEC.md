@@ -395,6 +395,8 @@ The daemon decides these itself, outside Claude, from exit codes and its own git
    - They get no GitHub credentials, the `network.allow` egress list and `verify.command_timeout`.
 2. The diff touches no protected path (section 6.3).
 3. No file matching `verify.test_globs` is deleted, and no new `verify.skip_markers` are added.
+   - Markers are checked only on added lines, and only in files matching `verify.test_globs`.
+   - Markers are plain strings. A marker that starts with a letter matches only where it is not preceded by a letter, digit or `_`. So `xit(` matches `xit("works", …)` but not `os.Exit(`, and `.skip(` still matches `describe.skip(`.
 4. Files in `verify.config_paths` are unchanged, unless the task's scope is `verify.tooling_scope`.
 5. When the diff modifies files matching `verify.source_globs` that are not tests, it also adds or modifies files matching `verify.test_globs`. Changes to other files, such as docs, are exempt.
 6. The diff is at most `verify.max_diff_lines`, counted by the daemon. Binary files are allowed only if they match `verify.binary_allow`.
@@ -556,7 +558,7 @@ verify:
     - make e2e
   command_timeout: 20m
   max_diff_lines: 400
-  skip_markers: ["t.Skip(", ".skip(", "xit(", "#[ignore]"]
+  skip_markers: ["t.Skip(", ".skip(", "xit(", "#[ignore]"]   # plain strings, word-start match; added lines in test_globs files only (10.1 rule 3)
   test_globs: ["**/*_test.go", "**/*.test.ts", "e2e/**"]
   source_globs: ["**/*.go", "**/*.ts"]
   config_paths: [".golangci.yml", ".golangci.yaml"]
