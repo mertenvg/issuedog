@@ -6,13 +6,18 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/mertenvg/logr/v2"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	logr.AddWriter(os.Stderr)
+	code := run(os.Args[1:], os.Stdout, os.Stderr)
+	logr.Wait()
+	os.Exit(code)
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -26,6 +31,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "issuedog %s\n", version)
 		return 0
 	}
-	fmt.Fprintln(stderr, "issuedog: the daemon is not implemented yet")
+	logr.Error("the daemon is not implemented yet")
 	return 1
 }
