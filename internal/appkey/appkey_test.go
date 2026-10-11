@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 var key = []byte("-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----\n")
@@ -82,5 +84,25 @@ func TestLoadRefusesDirectory(t *testing.T) {
 	}
 	if _, err := Load(dir); err == nil {
 		t.Fatal("loaded a directory, want refused")
+	}
+}
+
+func TestLoadRefusesFIFO(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "app-key.pem")
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := Load(path)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("loaded a FIFO, want refused")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Load blocked on a FIFO")
 	}
 }

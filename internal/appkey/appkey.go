@@ -17,7 +17,9 @@ func Load(path string) ([]byte, error) {
 }
 
 func load(path string, uid int) ([]byte, error) {
-	f, err := os.Open(path)
+	// O_NONBLOCK keeps a FIFO from blocking the open, so it reaches the
+	// regular-file check below. It has no effect on reading a regular file.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, fmt.Errorf("app key: %w", err)
 	}
