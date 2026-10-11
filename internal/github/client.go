@@ -78,8 +78,9 @@ func (t closeMintErrors) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := t.next.RoundTrip(req)
 	if err != nil {
 		closeMintResponse(err)
+		return nil, fmt.Errorf("github installation transport: %w", err)
 	}
-	return resp, err
+	return resp, nil
 }
 
 // closeMintResponse closes the body held by a ghinstallation.HTTPError.

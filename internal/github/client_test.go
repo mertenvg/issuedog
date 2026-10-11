@@ -125,8 +125,8 @@ func TestTokenRefreshedNearExpiry(t *testing.T) {
 func TestMintFailureSurfaces(t *testing.T) {
 	f := &fakeGitHub{ttl: time.Hour, failMint: true}
 	c := newClient(t, f)
-	if err := getRepo(t, c); err == nil {
-		t.Fatal("API call succeeded, want the minting error")
+	if err := getRepo(t, c); err == nil || !strings.Contains(err.Error(), "github installation transport") {
+		t.Fatalf("API call err = %v, want an annotated minting error", err)
 	}
 	if len(f.auth) != 0 {
 		t.Errorf("repo endpoint was called %d times without a token", len(f.auth))
