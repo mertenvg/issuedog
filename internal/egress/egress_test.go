@@ -132,7 +132,7 @@ func TestPlainRequestsDenied(t *testing.T) {
 	client := &http.Client{Transport: &http.Transport{
 		Proxy: http.ProxyURL(mustURL(t, "http://"+proxy)),
 	}}
-	for _, url := range []string{"http://example.com/", "http://" + allowedHost + "/"} {
+	for _, url := range []string{"http://example.com/", "http://" + allowedHost + ":80/", "http://" + allowedHost + ":443/"} {
 		resp, err := client.Get(url)
 		if err != nil {
 			t.Fatalf("%s: %v", url, err)
