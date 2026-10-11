@@ -53,8 +53,8 @@ func Env(cred Cred, proxyURL, home string) []string {
 	}
 }
 
-// lookup returns the value of the last entry for name in environ, matching
-// os.Getenv when an entry is repeated.
+// lookup returns the value of the last entry for name in environ, as os/exec
+// does when Cmd.Env repeats a name.
 func lookup(environ []string, name string) string {
 	value := ""
 	for _, kv := range environ {
