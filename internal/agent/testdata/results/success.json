@@ -1,0 +1,1 @@
+{"type":"result","subtype":"success","is_error":false,"duration_ms":1200,"num_turns":4,"result":"Done.","session_id":"s1","total_cost_usd":0.12,"structured_output":{"summary":"Added the proxy.","commits":2}}
