@@ -238,7 +238,7 @@ The lifecycle of each type:
 | pr-open | pr-open | task | `main` moved; daemon re-runs section 10.1 on the merge result and updates the check |
 | pr-open | closed | task | PR merged (`Closes #N`) |
 | pr-open | needs-human | task | PR closed without merging; daemon asks the owner to reopen it, `/done` to start over, or close the issue |
-| needs-human | ready | task | Owner `/done` on a task that was waiting on the owner; attempt count resets to 0 |
+| needs-human | ready | task | Owner `/done`, or a 👍 on the latest hand-off comment (9.3), on a task that was waiting on the owner; attempt count resets to 0 |
 | needs-human | closed | task | Owner `/done`, or 👍 on the issue, for a human task from the planner, and its **Done when** check passes when it can be checked automatically (9.3) |
 | any open | held | all | Owner `/hold` on the issue or an ancestor |
 | held | previous | all | Owner `/resume` on the issue or an ancestor |
@@ -275,7 +275,7 @@ Any transition missing from this table is an error, except a trusted user's manu
 
 Each loop iteration:
 
-1. Process new trusted comments, reactions and label changes on open issues: answers, `/approve`, `/revise`, `/done`, `/hold`, `/resume`, `/priority`, 👍 on revision comments and human-task issues, and other comments in review stages (7.4). Revert untrusted label changes (5.1).
+1. Process new trusted comments, reactions and label changes on open issues: answers, `/approve`, `/revise`, `/done`, `/hold`, `/resume`, `/priority`, 👍 on revision comments, hand-off comments and human-task issues, and other comments in review stages (7.4). Revert untrusted label changes (5.1).
 2. Reconcile PRs: merges, closes, reviews with comments (7.2), new head SHAs, and `main` moving under open PRs.
 3. Run any pending non-task stage work for the highest-priority issue that has it: clarifying, spec, planning, story verification.
 4. Otherwise pick the next task:
@@ -340,6 +340,7 @@ Rules:
 | Any comment that is not a command | Issue in `spec-review` or `plan-review` | Sends the spec or plan back, with the comment as the notes (7.4) |
 | `/revise <text>` | Issue | Sends the spec or plan back with the owner's notes |
 | 👍 on the issue | Human task from the planner | Owner finished it (9.3) |
+| 👍 on the latest hand-off comment | Blocked task at `needs-human` | Same as `/done` (9.3) |
 | `/done` | `needs-human` issue | Owner finished the human task (9.3), or wants a closed PR's task started over |
 | `/hold`, `/resume` | Any issue | Pauses or resumes the issue and its descendants |
 | `/priority p1` | Any issue | Sets priority |
@@ -352,7 +353,7 @@ PR reviews use GitHub's own review flow.
 
 A task reaches `stage:needs-human` in one of two ways:
 
-- **Blocked work.** A task needs an owner action: the implementer reports it, the retry cap is reached (8.3), or its PR was closed without merging. On `/done` the task returns to `stage:ready`.
+- **Blocked work.** A task needs an owner action: the implementer reports it, the retry cap is reached (8.3), or its PR was closed without merging. The daemon posts a hand-off comment using the template below. On `/done`, or a trusted 👍 on the latest hand-off comment, the task returns to `stage:ready`. A 👍 on an earlier hand-off comment, or on the issue itself, doesn't resume blocked work.
 - **Planned work.** The planner emits a task marked `human`, such as creating an App or a ruleset (section 11.3). It is created at `stage:needs-human`. The owner signals done with `/done` or a 👍 on the issue. When **Done when** can be checked automatically, the daemon runs the check first; if it fails, the daemon replies with the output and leaves the issue open. Otherwise it closes the issue.
 
 A `stage:needs-human` issue uses this template. The agent must fill every field; an empty field is a validation failure, and the agent asks a question instead.
