@@ -3,6 +3,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -41,7 +42,7 @@ func New(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("github app %d installation %d: %w", cfg.AppID, cfg.InstallationID, err)
 	}
-	opts := []gogithub.ClientOptionsFunc{gogithub.WithTransport(itr)}
+	opts := []gogithub.ClientOptionsFunc{gogithub.WithTransport(closeMintErrors{itr})}
 	if cfg.BaseURL != "" {
 		root := strings.TrimRight(cfg.BaseURL, "/")
 		itr.BaseURL = root
@@ -60,7 +61,31 @@ func New(cfg Config) (*Client, error) {
 func (c *Client) Token(ctx context.Context) (string, error) {
 	tok, err := c.installation.Token(ctx)
 	if err != nil {
+		closeMintResponse(err)
 		return "", fmt.Errorf("github installation token: %w", err)
 	}
 	return tok, nil
+}
+
+// closeMintErrors closes the response a failed token mint leaves open.
+// ghinstallation returns it inside an *ghinstallation.HTTPError without
+// closing its body, which would leak a connection per failure.
+type closeMintErrors struct {
+	next http.RoundTripper
+}
+
+func (t closeMintErrors) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.next.RoundTrip(req)
+	if err != nil {
+		closeMintResponse(err)
+	}
+	return resp, err
+}
+
+// closeMintResponse closes the body held by a ghinstallation.HTTPError.
+func closeMintResponse(err error) {
+	var herr *ghinstallation.HTTPError
+	if errors.As(err, &herr) && herr.Response != nil && herr.Response.Body != nil {
+		_ = herr.Response.Body.Close()
+	}
 }
