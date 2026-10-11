@@ -61,8 +61,8 @@ func TestRunRefusesBadCredentials(t *testing.T) {
 			if code != 1 {
 				t.Errorf("exit code = %d, want 1", code)
 			}
-			if !strings.Contains(logs.String(), "CLAUDE_CODE_OAUTH_TOKEN") {
-				t.Errorf("logs = %q, want the credential error", logs.String())
+			if !strings.Contains(logs.String(), "checking the Claude credential: ") || !strings.Contains(logs.String(), "CLAUDE_CODE_OAUTH_TOKEN") {
+				t.Errorf("logs = %q, want the annotated credential error", logs.String())
 			}
 			if strings.Contains(logs.String(), "not implemented") {
 				t.Errorf("logs = %q, want startup to stop at the credential check", logs.String())
