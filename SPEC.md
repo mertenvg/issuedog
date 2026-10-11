@@ -352,7 +352,7 @@ PR reviews use GitHub's own review flow.
 
 A task reaches `stage:needs-human` in one of two ways:
 
-- **Blocked work.** A task needs an owner action: the implementer or verifier reports it, the retry cap is reached (8.3), or its PR was closed without merging. On `/done` the task returns to `stage:ready`.
+- **Blocked work.** A task needs an owner action: the implementer reports it, the retry cap is reached (8.3), or its PR was closed without merging. On `/done` the task returns to `stage:ready`.
 - **Planned work.** The planner emits a task marked `human`, such as creating an App or a ruleset (section 11.3). It is created at `stage:needs-human`. The owner signals done with `/done` or a 👍 on the issue. When **Done when** can be checked automatically, the daemon runs the check first; if it fails, the daemon replies with the output and leaves the issue open. Otherwise it closes the issue.
 
 A `stage:needs-human` issue uses this template. The agent must fill every field; an empty field is a validation failure, and the agent asks a question instead.
