@@ -512,7 +512,7 @@ verify:
     - make e2e
   command_timeout: 20m
   max_diff_lines: 400
-  skip_markers: ["t.Skip(", ".skip(", "xit(", "#[ignore]"]   # plain strings; added lines in test_globs files only (10.1 rule 3)
+  skip_markers: ["t.Skip(", ".skip(", "xit(", "#[ignore]"]   # plain strings, word-start match; added lines in test_globs files only (10.1 rule 3)
   test_globs: ["**/*_test.go", "**/*.test.ts", "e2e/**"]
   source_globs: ["**/*.go", "**/*.ts"]
   config_paths: [".golangci.yml", ".golangci.yaml"]
