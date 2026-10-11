@@ -1,6 +1,6 @@
 # issuedog specification
 
-Status: draft 2, 2026-10-10
+Status: draft 3, 2026-10-11
 
 `issuedog` turns rough GitHub issues into reviewed pull requests. It asks the questions needed to write a spec, breaks the spec into ordered tasks, implements each task with headless Claude Code inside a Docker sandbox, verifies the result with real test runs and an independent reviewer, and opens a PR against a protected `main`. A human merges.
 
@@ -32,7 +32,7 @@ Mac host (kept awake while issuedog runs)
 ```
 
 - One container per repo, so a failure in one repo leaves the others running.
-- The daemon acts on GitHub as a GitHub App (section 15) and calls the API through `gh` v2.94.0 or later. That release added `--parent`, `--add-sub-issue`, `--add-blocked-by`, `--blocked-by` and `--type` to `gh issue`.
+- The daemon acts on GitHub as a GitHub App (section 15) through a Go client: `go-github` with an App installation-token transport, plus raw REST calls for endpoints the client lacks, such as sub-issues and issue dependencies. There is no `gh` dependency. This gives native ETags for polling (section 8.1), typed responses, and tests against `httptest` fakes.
 - The daemon starts a fresh `claude -p` process for every stage run, including every retry. Sessions are never resumed, so each run starts from the issue and the code, and the verifier never shares context with the implementer.
 - The base image follows the existing sandbox setup: `~/.claude/CLAUDE.md` bind-mounted read-only, `--dangerously-skip-permissions` as the non-root `agent` uid, feature branch per task.
 - The host must not sleep while issuedog runs (for example `caffeinate -s`, or the equivalent Docker Desktop setting).
@@ -41,7 +41,7 @@ Mac host (kept awake while issuedog runs)
 
 Only the daemon writes to GitHub. Agents return structured output and the daemon validates and applies it.
 
-- The GitHub App private key lives in a file readable only by the `issuedog` uid. The daemon mints short-lived installation tokens and passes them to `gh` per call. Nothing running as `agent` ever receives a GitHub credential.
+- The GitHub App private key lives in a file readable only by the `issuedog` uid. The daemon mints short-lived installation tokens and uses them for its own API calls. Nothing running as `agent` ever receives a GitHub credential. That includes GitHub connectors and GitHub MCP servers, which are never configured for an agent.
 - Claude and every repo command (tests, lint, build) run as the `agent` uid. A different uid cannot read the key file or the daemon's memory.
 - Claude's own credential (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`) is necessarily in the agent's environment. Outbound traffic from the `agent` uid is limited to `network.allow` (section 13), enforced inside the container with an owner-matched firewall rule, so a prompt-injected agent cannot send it, or the code, elsewhere.
 - Agents read issue context from files the daemon writes to `/run/issuedog/<run-id>/`, outside the clone, so the daemon controls which comments an agent sees (section 6) and nothing it writes appears in the diff.
@@ -76,6 +76,7 @@ claude -p "$(cat /run/issuedog/<run-id>/prompt.md)" \
 - The daemon writes the full JSON result to `/state/runs/<run-id>.json` before acting on it, for restart recovery (section 8.2).
 - Each stage has a timeout from config. On timeout the daemon kills the whole process group, and the run counts as failed.
 - `--max-budget-usd` is a client-side estimate and is optional.
+- **Credential.** The agent gets exactly one Claude credential: `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`, whichever is set in the daemon's environment. If both are set, the daemon refuses to start.
 - **Usage limits.** `-p` mode does not report the reset time in a machine-readable form. The daemon matches the result text against `usage_limit.pattern`. If the text includes a reset time it waits until then. Otherwise it backs off, starting at 15 minutes and doubling to a 2-hour cap. While it waits, steps 1 and 2 of the loop (section 8.1) keep running, so commands such as `/hold` still apply. Usage-limit waits do not count toward the retry cap.
 
 ### 3.4 Trusted inputs come from `main`
@@ -119,7 +120,8 @@ GitHub is the single source of truth. The daemon keeps only an in-memory cache, 
 | Scope | `scope:<name>` from the repo's allowed list |
 | Transition history | Bot comments carrying a hidden marker, e.g. `<!-- issuedog:transition from=clarifying to=spec-review rev=3 body=9f2a61c0 run=8f2c cmd=2214587 -->` |
 | Attempt count | Hidden marker on the latest bot verifier comment |
-| Processed commands | The bot's ✅ reaction on the command comment, plus `cmd=<comment id>` in the transition marker |
+| Processed commands | The bot's 👍 reaction on the command comment, plus `cmd=<comment id>` in the transition marker. A reaction command (section 9.2) is recorded as `cmd=r<reaction id>` |
+| Spec and plan revisions | One revision comment per revision, carrying `rev` and the hash (section 7.4) |
 | Origin of bot-created issues | Hidden `origin` marker in the issue body (section 6.2) |
 
 The only local files are the lease (section 8.2) and the run results in `/state/runs/`. Both are scratch: losing the container loses nothing except the current run.
@@ -137,7 +139,7 @@ The only local files are the lease (section 8.2) and the run results in `/state/
 Every transition goes through one table in code (section 7). Each write is checked first, so a crashed run can be replayed safely:
 
 - **Transitions.** Applying a transition whose marker already exists is a no-op.
-- **Commands.** For a command, the daemon writes the transition marker with `cmd=<comment id>`, then adds its ✅ reaction. On replay, a marker carrying that `cmd` means only the reaction is missing.
+- **Commands.** For a command comment, the daemon writes the transition marker with `cmd=<comment id>`, then adds its 👍 reaction. GitHub has no ✅ reaction. On replay, a marker carrying that `cmd` means only the reaction is missing. For a reaction command, the marker carries `cmd=r<reaction id>`. A reaction can't be reacted to, so the transition comment is the acknowledgment.
 - **Created issues.** Every issue the daemon creates has an `origin` marker with a stable item ID, such as `plan=#12 rev=3 item=T4`. Before creating an issue, the daemon searches for that marker and reuses any match. The same applies to sub-issue links and dependency links: the daemon reads the current links before adding any.
 
 ## 6. Trust model
@@ -202,7 +204,7 @@ The lifecycle of each type:
 
 - **Epic.** intake → clarifying → spec-review → planning → plan-review → planned → closed.
 - **Story.** Created at `stage:planning` from an approved epic plan, which already carries its acceptance criteria. Then planning → plan-review (or straight to planned, see `plan.review`) → planned → closed.
-- **Task.** Created at `stage:ready`. Then ready → in-progress → verifying → pr-open → closed, with loops back through clarifying, in-progress or needs-human.
+- **Task.** Created at `stage:ready`, or at `stage:needs-human` for a human task from the planner (section 11.3). Then ready → in-progress → verifying → pr-open → closed, with loops back through clarifying, in-progress or needs-human.
 - **Bug.** intake → clarifying → ready, then as a task.
 
 ### 7.2 Transitions
@@ -214,12 +216,12 @@ The lifecycle of each type:
 | clarifying | spec-review | epic | No open questions; spec written into the body |
 | clarifying | ready | bug | No open questions; daemon rewrites the body as a task (11.2) |
 | clarifying | ready | task | Owner answered the implementer's or verifier's question |
-| spec-review | clarifying | epic | Owner `/revise <text>` |
-| spec-review | planning | epic | Owner `/approve` on the current revision (7.4) |
+| spec-review | clarifying | epic | Owner `/revise <text>`, or any other trusted comment (7.4) |
+| spec-review | planning | epic | Owner approves the current revision with 👍 or `/approve` (7.4) |
 | planning | plan-review | epic, story | Planner output passes validation (11.3) |
 | planning | planned | story | Output passes validation and `plan.review` is false; daemon creates tasks |
-| plan-review | planning | epic, story | Owner `/revise <text>` |
-| plan-review | planned | epic, story | Owner `/approve` on the current revision; daemon creates sub-issues and dependencies |
+| plan-review | planning | epic, story | Owner `/revise <text>`, or any other trusted comment (7.4) |
+| plan-review | planned | epic, story | Owner approves the current revision with 👍 or `/approve` (7.4); daemon creates sub-issues, human tasks and dependencies |
 | planned | closed | story, or epic planned into tasks | Every child closed and story verification passes (7.3) |
 | planned | closed | epic planned into stories | Every child closed |
 | ready | in-progress | task | Scheduler picks the task (8.1) |
@@ -231,12 +233,13 @@ The lifecycle of each type:
 | verifying | clarifying | task | Verifier reports an acceptance criterion is ambiguous |
 | verifying | pr-open | task | Pass; daemon pushes, opens or updates the PR, posts the `issuedog/verify` check |
 | verifying | pr-open | task | The verified head was pushed by a person: daemon posts the check (success or failure) and any findings as a comment |
-| pr-open | in-progress | task | Trusted reviewer requests changes, or `main` no longer merges cleanly with the branch |
+| pr-open | in-progress | task | A trusted reviewer submits a review with comments, whether its state is "request changes" or "comment"; or `main` no longer merges cleanly with the branch. An approving review with no comments does not count |
 | pr-open | verifying | task | A new head SHA that the daemon did not push |
 | pr-open | pr-open | task | `main` moved; daemon re-runs section 10.1 on the merge result and updates the check |
 | pr-open | closed | task | PR merged (`Closes #N`) |
 | pr-open | needs-human | task | PR closed without merging; daemon asks the owner to reopen it, `/done` to start over, or close the issue |
-| needs-human | ready | task | Owner `/done`; attempt count resets to 0 |
+| needs-human | ready | task | Owner `/done`, or 👍 on the issue, for a task that was waiting on the owner; attempt count resets to 0 |
+| needs-human | closed | task | Owner `/done`, or 👍 on the issue, for a human task from the planner, and its **Done when** check passes (9.3) |
 | any open | held | all | Owner `/hold` on the issue or an ancestor |
 | held | previous | all | Owner `/resume` on the issue or an ancestor |
 | any open | closed | all | A person closed the issue; daemon stops any run for it |
@@ -255,9 +258,15 @@ Any transition missing from this table is an error, except a trusted user's manu
 
 ### 7.4 Approvals bind to a revision
 
-- **Revision numbers.** Each time the daemon writes a spec or plan, it increments `rev` and records a short hash of the body (or of the plan comment) in the transition marker.
-- **When `/approve` counts.** It applies only if it was posted after the latest marker and the current body still matches the recorded hash.
-- **Owner edits the body.** The hash no longer matches. The daemon increments `rev`, records the new hash and asks the owner to `/approve` the edited version.
+- **Revision numbers.** Each time the daemon writes a spec or plan, it increments `rev`, records a short hash of the body (or of the plan comment) in the transition marker, and posts a revision comment naming the revision. For a plan, the plan comment is the revision comment.
+- **Approving.** A trusted 👍 on the latest revision comment, or a trusted `/approve` posted after it, approves that revision, and only while the current body or plan still matches the recorded hash.
+  - 👍s on earlier revision comments, and 👍s from untrusted users or from the App, are ignored.
+  - Removing a 👍 after the daemon applied the approval changes nothing.
+- **Revising.** In `spec-review` or `plan-review`, a trusted comment that isn't a command, posted after the latest revision comment, is a revision request with the comment as the notes, the same as `/revise`.
+  - A comment beats a pending 👍.
+  - A question counts as a revision request: the agent answers it and posts the next revision, even if nothing else changed.
+  - A comment posted after the approval was applied goes to the next stage as owner input.
+- **Owner edits the body.** The hash no longer matches. The daemon increments `rev`, records the new hash, posts a new revision comment, and voids any pending approval.
 - **PR approval.** This relies on GitHub. The ruleset dismisses stale approvals when new commits are pushed, and `issuedog/verify` is posted for an exact head SHA.
 
 ## 8. Scheduling
@@ -266,12 +275,12 @@ Any transition missing from this table is an error, except a trusted user's manu
 
 Each loop iteration:
 
-1. Process new trusted comments and label changes on open issues: answers, `/approve`, `/revise`, `/done`, `/hold`, `/resume`, `/priority`. Revert untrusted label changes (5.1).
+1. Process new trusted comments, reactions and label changes on open issues: answers, `/approve`, `/revise`, `/done`, `/hold`, `/resume`, `/priority`, 👍 on revision comments and human-task issues, and other comments in review stages (7.4). Revert untrusted label changes (5.1).
 2. Reconcile PRs: merges, closes, reviews requesting changes, new head SHAs, and `main` moving under open PRs.
 3. Run any pending non-task stage work for the highest-priority issue that has it: clarifying, spec, planning, story verification.
 4. Otherwise pick the next task:
    - It is `stage:ready`.
-   - It is not blocked, judged by advanced search `is:blocked` (which `gh` uses by default on github.com) plus any open `depends-on` markers.
+   - It is not blocked, judged by advanced search `is:blocked` plus any open `depends-on` markers. Search results lag behind dependency writes, so the daemon confirms a candidate through the issue dependencies API before picking it.
    - Ties are ordered by priority, then the parent's priority, then issue number.
 5. If nothing is available, sleep `idle_sleep` (default 60s).
 
@@ -326,17 +335,26 @@ Rules:
 | Command | Where | Effect |
 |---|---|---|
 | `1a 2c 3: text` | Issue | Answers the latest question round |
+| 👍 on a revision comment | Issue | Approves that revision (7.4) |
 | `/approve` | Issue | Approves the current spec or plan revision |
+| Any other comment | Issue in `spec-review` or `plan-review` | Sends the spec or plan back, with the comment as the notes (7.4) |
 | `/revise <text>` | Issue | Sends the spec or plan back with the owner's notes |
-| `/done` | `needs-human` issue | Owner finished the human task, or wants a closed PR's task started over |
+| 👍 on the issue, or `/done` | `needs-human` issue | Owner finished the human task (9.3), or wants a closed PR's task started over |
 | `/hold`, `/resume` | Any issue | Pauses or resumes the issue and its descendants |
 | `/priority p1` | Any issue | Sets priority |
 
-The daemon reacts ✅ to each command it has applied, and replies with the reason to each one it rejects.
+The daemon reacts 👍 to each command comment it has applied, and replies with the reason to each one it rejects. GitHub has no ✅ reaction. A reaction command is acknowledged by the transition comment (5.2).
 
 PR reviews use GitHub's own review flow.
 
 ### 9.3 Human tasks
+
+Human tasks come from two places:
+
+- **Blocked work.** An implementer or verifier reports that a task needs an owner action. On `/done` the task returns to `stage:ready`.
+- **Planned work.** The planner emits a task marked `human`, such as creating an App or a ruleset (section 11.3). It is created at `stage:needs-human`, and on `/done` it closes.
+
+The owner signals done with `/done` or a 👍 on the issue. When **Done when** can be checked automatically, the daemon runs the check first. If it fails, the daemon replies with the output and leaves the issue open.
 
 A `stage:needs-human` issue uses this template. The agent must fill every field; an empty field is a validation failure, and the agent asks a question instead.
 
@@ -456,6 +474,7 @@ Which tests prove each criterion.
 - Each task should fit within `verify.max_diff_lines`.
 - Prefer extending existing code over adding new modules; the plan names the existing files each task touches.
 - A scope outside the allowed list becomes a question to the owner.
+- Work only the owner can do is a task marked `human`, written in the template from section 9.3 rather than 11.2.
 
 The daemon validates the plan before it moves to plan-review:
 
@@ -465,7 +484,30 @@ The daemon validates the plan before it moves to plan-review:
 - the dependency graph has no cycles, including `depends-on` links to other repos
 - no parent would exceed 100 sub-issues, and no issue would exceed 50 links of one dependency type
 
-### 11.4 Pull request
+### 11.4 Plan
+
+One comment, which is also the revision comment (section 7.4):
+
+```
+### Plan for #N (rev 1)
+
+One line on why this plan has stories or tasks.
+
+**S1. Title** · (tasks: human, scope:<name>, blocked by T1)
+Outcome: one sentence (stories only)
+- [ ] acceptance criterion
+Depends on: S2, or nothing
+
+**Order:** S1 → S2 and S3 in parallel → S4
+
+Validation (11.3): item count, structure, scopes, no cycles.
+
+**To approve this plan, react 👍 to this comment.** Any other comment sends it back for revision.
+```
+
+Item IDs (`S1`, `T1`) are the stable IDs used in `origin` markers (section 5.2).
+
+### 11.5 Pull request
 
 ```
 Closes #N
@@ -541,7 +583,7 @@ Changes to this file go through a human-authored PR (section 6.3).
 
 - **Proposing.** A planner may propose an issue in another repo listed in `cross_repo.allowed`.
 - **Creating.** The daemon creates it with a link back to the source issue and labels it `stage:intake`. It carries no `origin` marker, so the target repo's daemon waits for a trusted person there to add `approved`.
-- **Same owner.** The daemon links the dependency with `gh issue edit <N> --add-blocked-by <url>`.
+- **Same owner.** The daemon links the dependency through the issue dependencies API (blocked-by).
 - **Different owners** (for example `mertenvg/dmcn` and `dmcnp/open-dmcn`). Sub-issues are not allowed across owners, and native dependencies across owners are unconfirmed (section 16). The daemon instead adds a `<!-- issuedog:depends-on url=... -->` marker to the blocked issue and treats the issue as blocked until the target is closed.
 - **Access.** The issuedog App must be installed on every owner in the allowed list.
 
@@ -559,6 +601,7 @@ Changes to this file go through a human-authored PR (section 6.3).
    - require the `issuedog/verify` check with the issuedog App as the pinned source; leave "require branches to be up to date" off (section 10.4)
    - block force pushes
    - bypass list: Repository admin, "for pull requests only", so the owner can merge their own protected-path PRs; never the write role and never the App
+   - while the pipeline is run by hand with the owner's token, the owner authors every PR and cannot approve it, so the ruleset requires only a pull request and blocks force pushes; code-owner review and the check are added once the App runs
 4. **CODEOWNERS** including `/.github/CODEOWNERS`. The App is never a code owner.
 5. **Labels.** `stage:*`, `priority:*`, `scope:*`, `approved`, `review:high-risk`, and `type:*` for personal-account repos. The daemon creates any that are missing on startup.
 6. **Org repos.** An org owner creates the `Epic` and `Story` issue types.
@@ -569,6 +612,7 @@ Changes to this file go through a human-authored PR (section 6.3).
 - **Pinning the check source.** The ruleset can only pin the App as the source of `issuedog/verify` once the App "has recently submitted a check run". Setup must post one bootstrap check run before adding the rule.
 - **Pinning the digest.** The permission `pinIssue` needs from an App is not documented. Test it with Issues write.
 - **`--json-schema` in long runs.** It must work together with `--dangerously-skip-permissions` and long tool loops. Also confirm how many structured-output retries are allowed.
+- **Where a plan's hash lives.** A plan comment is also its revision comment (section 7.4), so its hash can't be written inside it without changing it. Decide whether it goes in a separate transition comment or is derived from the comment's edit history.
 - **Usage-limit text.** The text `-p` prints when a subscription limit is hit is undocumented, so `usage_limit.pattern` must be checked against a real occurrence.
 - **`--bare` becoming the default.** Anthropic plans to make `--bare` the default for `-p`. `--bare` ignores `CLAUDE_CODE_OAUTH_TOKEN` and skips project agents and skills. Pin the Claude Code version, and re-test before upgrading.
 - **Egress firewall on macOS.** The owner-matched firewall rule (section 3.1) needs `NET_ADMIN` at container start. Confirm it works on Docker Desktop for Mac.
@@ -583,8 +627,8 @@ Changes to this file go through a human-authored PR (section 6.3).
 
 Rumi Black first; DMCN after phase 3.
 
-1. GitHub App setup, daemon skeleton, sandbox uids and egress rule, trust checks, label and marker reading rules, transition table, leases, intake → clarifying → spec-review, digest.
-2. Planning, plan review, idempotent sub-issue creation, dependencies, scopes, priority.
+1. GitHub App setup, daemon skeleton, Go GitHub client, sandbox uids and egress rule, trust checks, label and marker reading rules, transition table, leases, intake → clarifying → spec-review, digest. GitHub interactions are tested against `httptest` fakes only, and passing them is the acceptance bar.
+2. Planning, plan review, human tasks from the planner, idempotent sub-issue creation, dependencies, scopes, priority.
 3. Implement, bundle-based git handoff, deterministic checks, LLM verifier, retries, PR, `issuedog/verify` check, PR reconciliation.
 4. Story verification, escalation rules, cross-repo issues, DMCN onboarding, domain agents.
 
