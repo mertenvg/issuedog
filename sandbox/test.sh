@@ -63,9 +63,10 @@ check "the entrypoint runs the daemon" /usr/local/lib/issuedog/entrypoint.sh --v
 check_not "agent can't run the daemon" as agent "$bin" --version
 check_not "agent can't read the daemon" as agent cat "$bin"
 
-# App key: a key file where the daemon keeps it, mode 0600, is readable by
-# issuedog and not by agent.
-key=/state/sandbox-test-app-key.pem
+# App key: a 0600 key file owned by issuedog is readable by issuedog and not
+# by agent. It goes in a directory agent can enter, so the file's own mode is
+# what's checked.
+key=/run/issuedog/sandbox-test-app-key.pem
 install -o issuedog -g issuedog -m 0600 /dev/null "$key"
 check "issuedog can read the key file" as issuedog cat "$key"
 check_not "agent can't read the key file" as agent cat "$key"
