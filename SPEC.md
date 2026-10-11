@@ -1,6 +1,6 @@
 # issuedog specification
 
-Status: draft 1, 2026-10-10
+Status: draft 2, 2026-10-10
 
 `issuedog` turns rough GitHub issues into reviewed pull requests. It asks the questions needed to write a spec, breaks the spec into ordered tasks, implements each task with headless Claude Code inside a Docker sandbox, verifies the result with real test runs and an independent reviewer, and opens a PR against a protected `main`. A human merges.
 
@@ -9,7 +9,7 @@ Status: draft 1, 2026-10-10
 - Keep work moving on a repo while the owner is away, one task at a time.
 - Make the owner's part fast: every question, decision and human task is self-contained and answerable from the GitHub mobile app.
 - Treat automated testing and change verification as the first priority of every change.
-- Use GitHub as the only control channel and the only durable state.
+- Use GitHub as the only control channel and the single source of truth. The daemon keeps no database.
 
 ## 2. Non-goals (for now)
 
@@ -21,75 +21,124 @@ Status: draft 1, 2026-10-10
 ## 3. Architecture
 
 ```
-Mac host
+Mac host (kept awake while issuedog runs)
 ├── container: issuedog-rumi-black   (one per repo)
-│   ├── issuedog daemon (Go, uid issuedog)   holds the GitHub bot token
+│   ├── issuedog daemon (Go, uid issuedog)   holds the GitHub App key, owns /work/<repo>.git
 │   ├── claude -p (uid agent)                one process per stage run
-│   └── /work/<repo> checkout + per-task worktree
+│   ├── verify commands (uid agent)          no GitHub credentials
+│   ├── /work/runs/<run-id>                  agent-owned clone for one run
+│   └── /run/issuedog/<run-id>               context files, read-only to agent
 └── container: issuedog-dmcn
 ```
 
 - One container per repo, so a failure in one repo leaves the others running.
-- The daemon polls GitHub with `gh` (v2.94.0 or later, for sub-issue and dependency flags).
+- The daemon acts on GitHub as a GitHub App (section 15) and calls the API through `gh` v2.94.0 or later. That release added `--parent`, `--add-sub-issue`, `--add-blocked-by`, `--blocked-by` and `--type` to `gh issue`.
 - The daemon starts a fresh `claude -p` process for every stage run, including every retry. Sessions are never resumed, so each run starts from the issue and the code, and the verifier never shares context with the implementer.
-- The base image follows the existing sandbox setup: `~/.claude/CLAUDE.md` bind-mounted read-only, `--dangerously-skip-permissions` inside the container, feature branch per task.
+- The base image follows the existing sandbox setup: `~/.claude/CLAUDE.md` bind-mounted read-only, `--dangerously-skip-permissions` as the non-root `agent` uid, feature branch per task.
+- The host must not sleep while issuedog runs (for example `caffeinate -s`, or the equivalent Docker Desktop setting).
 
 ### 3.1 Who writes to GitHub
 
 Only the daemon writes to GitHub. Agents return structured output and the daemon validates and applies it.
 
-- The bot token lives in a file readable only by the `issuedog` uid. Claude runs as the `agent` uid with `GH_TOKEN` and `GITHUB_TOKEN` removed from its environment, so it cannot read the token through `/proc`.
-- Agents commit to the task worktree. The daemon pushes the branch and opens the PR.
-- Agents read issue context from files the daemon writes into the worktree (`.issuedog/context/`), so the daemon controls which comments an agent sees (see section 6).
+- The GitHub App private key lives in a file readable only by the `issuedog` uid. The daemon mints short-lived installation tokens and passes them to `gh` per call. Nothing running as `agent` ever receives a GitHub credential.
+- Claude and every repo command (tests, lint, build) run as the `agent` uid. A different uid cannot read the key file or the daemon's memory.
+- Claude's own credential (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`) is necessarily in the agent's environment. Outbound traffic from the `agent` uid is limited to `network.allow` (section 13), enforced inside the container with an owner-matched firewall rule, so a prompt-injected agent cannot send it, or the code, elsewhere.
+- Agents read issue context from files the daemon writes to `/run/issuedog/<run-id>/`, outside the clone, so the daemon controls which comments an agent sees (section 6) and nothing it writes appears in the diff.
 
 This keeps prompt-injected text from reaching GitHub directly and makes every write retry-safe.
 
-### 3.2 Claude invocation
+### 3.2 Git handling
+
+The daemon never runs git, or any other repo command, as `issuedog` inside a directory the agent can write. Hooks and config in an agent-writable repo (`pre-push`, `core.sshCommand`, `core.fsmonitor` and so on) would otherwise run with the daemon's privileges.
+
+- The daemon owns a bare clone, `/work/<repo>.git`. It is the only repo the daemon pushes from, and the only place it reads trusted files from (section 3.4).
+- For each run the daemon creates `/work/runs/<run-id>` by cloning the bare repo as `agent`. Implementer runs start from the task branch head, or from `main` on the first attempt.
+- After an implementer run, the daemon runs `git bundle create` as `agent` for `base..HEAD`, then fetches the bundle as `issuedog` into `refs/issuedog/runs/<run-id>` in the bare repo. A bundle is plain data, so nothing from the agent's repo config or hooks executes.
+- All diff inspection (section 10.1, rules 2 to 7) happens in the bare repo. The daemon's own git config defines no diff or filter drivers, so `.gitattributes` in the branch cannot trigger commands.
+- Verify commands and the LLM verifier run in fresh `agent`-owned checkouts of the exact head SHA, never in the implementer's clone. Untracked files the implementer left behind (for example `.claude/settings.local.json`) never reach them.
+- Task branches are named `issuedog/<issue>-<slug>` and always branch from `main`. A task is blocked until its dependencies merge, so stacked branches are never needed.
+
+### 3.3 Claude invocation
 
 ```
-claude -p "$(cat stage-prompt)" \
+claude -p "$(cat /run/issuedog/<run-id>/prompt.md)" \
   --output-format json \
+  --json-schema "$(cat schemas/<stage>.json)" \
+  --append-system-prompt-file /run/issuedog/<run-id>/system.md \
   --dangerously-skip-permissions \
-  --append-system-prompt "$(cat .issuedog/prompts/<stage>.md)"
+  --no-session-persistence \
+  --max-turns <stages.max_turns.<stage>> \
+  [--max-budget-usd <stages.max_budget_usd.<stage>>]
 ```
 
-- The daemon parses the final `result` from the JSON output.
-- Each stage writes its machine-readable output to `.issuedog/out/<stage>.json`. The daemon validates it against the stage schema. Missing or invalid output counts as a failed run (fail closed).
-- Each stage has a timeout from config. A timeout counts as a failed run.
-- When Claude reports a usage limit, the daemon sleeps until the reported reset time and retries the same run. Usage-limit sleeps do not count toward the retry cap.
+- The daemon validates the stage's output from the `structured_output` field of the JSON result. The run fails (fail closed) if `subtype` is anything other than `success`, including `error_max_structured_output_retries`, or if `structured_output` is missing or fails the daemon's own validation.
+- The daemon writes the full JSON result to `/state/runs/<run-id>.json` before acting on it, for restart recovery (section 8.2).
+- Each stage has a timeout from config. On timeout the daemon kills the whole process group, and the run counts as failed.
+- `--max-budget-usd` is a client-side estimate and is optional.
+- **Usage limits.** `-p` mode does not report the reset time in a machine-readable form. The daemon matches the result text against `usage_limit.pattern`. If the text includes a reset time it waits until then. Otherwise it backs off, starting at 15 minutes and doubling to a 2-hour cap. While it waits, steps 1 and 2 of the loop (section 8.1) keep running, so commands such as `/hold` still apply. Usage-limit waits do not count toward the retry cap.
+
+### 3.4 Trusted inputs come from `main`
+
+The daemon reads these from `main` in its bare clone, never from a task branch:
+
+- `CODEOWNERS`
+- `.issuedog/config.yaml`, including `verify.commands`
+- `.issuedog/prompts/*.md`; a missing file falls back to the default that ships with issuedog
+- JSON schemas, which ship with issuedog and are not overridable
+
+The interviewer, planner and story verifier run in a fresh checkout of `main`.
+
+The task verifier runs in a fresh checkout of the head SHA, but only after rule 2 of section 10.1 has passed. Every agent-config path (section 6.3) in that checkout therefore matches `main`.
 
 ## 4. Work item types
 
 | Type | Meaning | Created by |
 |---|---|---|
 | `epic` | A rough idea or large feature | Owner |
-| `story` | One user-visible outcome with acceptance criteria | Planner |
-| `task` | One PR, one scope | Planner |
-| `bug` | Something broken | Owner, or verifier (story checks) |
+| `story` | One user-visible outcome with acceptance criteria | Planner (epic plan) |
+| `task` | One PR, one scope | Planner (epic or story plan) |
+| `bug` | Something broken | Owner, or story verifier |
 
-- Repos in an organization use GitHub issue types. Repos under a personal account use `type:epic`, `type:story`, `type:task`, `type:bug` labels. Config selects which.
-- Hierarchy uses native sub-issues: epic → story → task, or epic → task.
-- The planner skips the story level when an epic has a single user-facing outcome.
+- Repos owned by an organization use GitHub issue types. The org's defaults are Task, Bug and Feature, so an org owner must create `Epic` and `Story` first. Repos owned by a personal account have no issue types and use `type:epic`, `type:story`, `type:task`, `type:bug` labels instead. Config selects which.
+- Hierarchy uses native sub-issues: epic → story → task, or epic → task. Sub-issues must share the parent's owner. GitHub allows 100 sub-issues per parent.
+- An epic with a single user-facing outcome is planned directly into tasks and acts as its own story, including story verification (section 7.3).
 - A `bug` goes through clarifying and then becomes a single task. It skips spec review and planning. A bug filed against earlier work starts its body with `Follow-up to #N` and includes the acceptance criterion "the original behavior of #N is unaffected."
 
 ## 5. State
 
-GitHub holds all durable state:
+GitHub is the single source of truth. The daemon keeps only an in-memory cache, rebuilt from GitHub on startup and corrected on every poll.
 
 | Concern | Where it lives |
 |---|---|
-| Stage | `stage:*` label (exactly one per open issue) |
+| Stage | `stage:*` label, exactly one per open issue, valid only as described in 5.1 |
 | Type | Issue type, or `type:*` label |
 | Hierarchy | Native sub-issues |
-| Dependencies | Native blocked-by / blocking |
+| Dependencies | Native blocked-by / blocking within one owner, `depends-on` marker across owners (section 14) |
 | Priority | `priority:p0` to `priority:p3` (default `p2`) |
 | Scope | `scope:<name>` from the repo's allowed list |
-| Transition history | Comments carrying a hidden marker, e.g. `<!-- issuedog:transition from=clarifying to=spec-review rev=3 run=8f2c -->` |
-| Attempt count | Hidden marker on the latest verifier comment |
+| Transition history | Bot comments carrying a hidden marker, e.g. `<!-- issuedog:transition from=clarifying to=spec-review rev=3 body=9f2a61c0 run=8f2c cmd=2214587 -->` |
+| Attempt count | Hidden marker on the latest bot verifier comment |
+| Processed commands | The bot's ✅ reaction on the command comment, plus `cmd=<comment id>` in the transition marker |
+| Origin of bot-created issues | Hidden `origin` marker in the issue body (section 6.2) |
 
-The only local state is the lease file (section 8.2). Losing the container loses nothing except the current run.
+The only local files are the lease (section 8.2) and the run results in `/state/runs/`. Both are scratch: losing the container loses nothing except the current run.
 
-Every transition goes through one table in code (section 7). Applying a transition whose marker already exists is a no-op, so a crashed run can be replayed safely.
+### 5.1 Reading rules
+
+- **Markers.** The daemon only reads markers in comments and issue bodies written by the issuedog App. A marker anywhere else is ignored.
+- **Labels.** A `stage:*`, `priority:*`, `scope:*` or `approved` label counts only if the issue timeline shows that its most recent `labeled` event came from the App or a trusted user (section 6.1).
+  - When an untrusted actor adds or removes one of these labels, the daemon reverts the change and posts a short comment.
+  - When a trusted user changes a stage label by hand, the daemon treats it as an owner override and records a transition marker with `by=<login>`. It does this even if the change is not in the transition table.
+- **Disagreement.** If the stage label and the latest transition marker disagree and 5.1 does not explain the difference, the daemon puts the label back to match the marker and lists the issue in the digest.
+
+### 5.2 Idempotency
+
+Every transition goes through one table in code (section 7). Each write is checked first, so a crashed run can be replayed safely:
+
+- **Transitions.** Applying a transition whose marker already exists is a no-op.
+- **Commands.** For a command, the daemon writes the transition marker with `cmd=<comment id>`, then adds its ✅ reaction. On replay, a marker carrying that `cmd` means only the reaction is missing.
+- **Created issues.** Every issue the daemon creates has an `origin` marker with a stable item ID, such as `plan=#12 rev=3 item=T4`. Before creating an issue, the daemon searches for that marker and reuses any match. The same applies to sub-issue links and dependency links: the daemon reads the current links before adding any.
 
 ## 6. Trust model
 
@@ -97,22 +146,38 @@ Every transition goes through one table in code (section 7). Applying a transiti
 
 A GitHub user is trusted when either holds:
 
-1. They are listed in `CODEOWNERS` as read from `main`. The daemon never reads `CODEOWNERS` from a working branch.
-2. No `CODEOWNERS` file exists on `main`, and the user has `write`, `maintain` or `admin` permission on the repo (`gh api repos/{owner}/{repo}/collaborators/{user}/permission`).
+1. They are an owner of the CODEOWNERS file itself, under the CODEOWNERS rules as read from `main` (section 3.4). These are the people who already control trust.
+   - GitHub reads the first file it finds, in this order: `.github/CODEOWNERS`, `CODEOWNERS`, `docs/CODEOWNERS`. The daemon uses the same order.
+   - Team entries (`@org/team`) are resolved through the API. Email entries are ignored and logged.
+   - GitHub ignores code owners without write access, and so does the daemon.
+2. No CODEOWNERS file exists on `main`, and the user's `role_name` is `write`, `maintain` or `admin` (`GET /repos/{owner}/{repo}/collaborators/{user}/permission`).
 
-Team entries (`@org/team`) are resolved through the API. The bot account is never trusted, even if listed.
+The issuedog App, and any other bot account, is never trusted.
 
 ### 6.2 What the daemon acts on
 
-- An issue enters the pipeline when a trusted user opened it, or when a trusted user adds the `approved` label.
-- Only comments by trusted users count as answers, approvals or commands. Agents receive other comments in a separate, clearly labeled "untrusted input" section of their context files, and only for epics and stories.
-- A comment edited after the daemon read it is re-read. A command counts once, keyed by comment ID.
+An issue enters the pipeline when any of these holds:
+
+- A trusted user opened it.
+- A trusted user added the `approved` label (checked on the timeline).
+- The App created it with an `origin` marker that points to an approved plan revision, or to a story-verifier run. Issues the App creates in another repo (section 14) carry no such marker, so they need `approved`.
+
+Only comments by trusted users count as answers, approvals or commands. Agents receive other comments in a separate, clearly labeled "untrusted input" section of their context files, and only for epics and stories.
+
+A command counts once. If its comment is edited after the daemon reacted to it, the edit is ignored and the bot replies asking for a new comment. If it is edited before the daemon processes it, the daemon reads the latest text.
 
 ### 6.3 Protecting the trust inputs
 
-- `CODEOWNERS` lists itself (`/.github/CODEOWNERS @owner`).
-- A ruleset requires code-owner review on `main`.
-- Any diff that touches `CODEOWNERS`, `.github/**`, `.issuedog/**` or `.claude/**` fails deterministic verification (section 10.1) and needs a human-authored change instead.
+- CODEOWNERS lists itself (`/.github/CODEOWNERS @owner`).
+- A ruleset requires code-owner review on `main` (section 15).
+- Protected paths are:
+  - CODEOWNERS in any of its three locations
+  - `.github/**`
+  - `.issuedog/**`
+  - the agent-config paths: `.claude/**`, `**/CLAUDE.md`, `**/CLAUDE.local.md` and `.mcp.json`
+  - anything in `verify.protected_paths`
+
+  Any diff that touches one fails deterministic verification (section 10.1) and needs a human-authored change instead. The owner merges those through the admin bypass in section 15.
 
 ## 7. Pipeline
 
@@ -123,54 +188,77 @@ Team entries (`@org/team`) are resolved through the API. The bot account is neve
 | `stage:intake` | none | Owner's rough idea |
 | `stage:clarifying` | interviewer | Numbered questions (section 9.1) |
 | `stage:spec-review` | interviewer | Spec written into the issue body (section 11.1) |
-| `stage:planning` | planner | Proposed stories and tasks in one comment |
+| `stage:planning` | planner | Proposed stories or tasks in one comment |
 | `stage:plan-review` | none | Waiting for owner approval of the plan |
-| `stage:planned` | none | Parent of created sub-issues |
+| `stage:planned` | story verifier when children close | Parent of created sub-issues |
 | `stage:ready` | none | Task waiting for the scheduler |
-| `stage:in-progress` | implementer | Commits in the task worktree |
+| `stage:in-progress` | implementer | Commits in the run clone |
 | `stage:verifying` | verifier | Pass, or findings |
 | `stage:pr-open` | none | PR waiting for human review |
 | `stage:needs-human` | none | Task only the owner can do (section 9.3) |
 | `stage:held` | none | Paused by the owner |
 
+The lifecycle of each type:
+
+- **Epic.** intake → clarifying → spec-review → planning → plan-review → planned → closed.
+- **Story.** Created at `stage:planning` from an approved epic plan, which already carries its acceptance criteria. Then planning → plan-review (or straight to planned, see `plan.review`) → planned → closed.
+- **Task.** Created at `stage:ready`. Then ready → in-progress → verifying → pr-open → closed, with loops back through clarifying, in-progress or needs-human.
+- **Bug.** intake → clarifying → ready, then as a task.
+
 ### 7.2 Transitions
 
-| From | To | Trigger |
-|---|---|---|
-| intake | clarifying | Issue is trusted (6.2) |
-| clarifying | clarifying | Owner answered; interviewer has more questions |
-| clarifying | spec-review | Interviewer has no open questions; spec written |
-| spec-review | clarifying | Owner `/revise <text>` |
-| spec-review | planning | Owner `/approve` on the current spec revision |
-| planning | plan-review | Planner output passes validation (11.3) |
-| plan-review | planning | Owner `/revise <text>` |
-| plan-review | planned | Owner `/approve`; daemon creates sub-issues and dependencies |
-| ready | in-progress | Scheduler picks the task (8.1) |
-| in-progress | clarifying | Implementer needs an answer; worker is released |
-| in-progress | verifying | Implementer exits with commits and valid output |
-| in-progress | needs-human | Implementer reports the work needs an owner action |
-| verifying | in-progress | Findings, attempt < cap |
-| verifying | needs-human | Findings, attempt = cap |
-| verifying | pr-open | Pass; daemon pushes, opens PR, posts `issuedog/verify` success |
-| pr-open | in-progress | Trusted reviewer requests changes on the PR |
-| pr-open | closed | PR merged (`Closes #N`) |
-| needs-human | ready | Owner `/done` |
-| any open | held | Owner `/hold` |
-| held | previous | Owner `/resume` |
+| From | To | Applies to | Trigger |
+|---|---|---|---|
+| intake | clarifying | all | Issue is trusted (6.2) |
+| clarifying | clarifying | all | Owner answered; interviewer has more questions |
+| clarifying | spec-review | epic | No open questions; spec written into the body |
+| clarifying | ready | bug | No open questions; daemon rewrites the body as a task (11.2) |
+| clarifying | ready | task | Owner answered the implementer's or verifier's question |
+| spec-review | clarifying | epic | Owner `/revise <text>` |
+| spec-review | planning | epic | Owner `/approve` on the current revision (7.4) |
+| planning | plan-review | epic, story | Planner output passes validation (11.3) |
+| planning | planned | story | Output passes validation and `plan.review` is false; daemon creates tasks |
+| plan-review | planning | epic, story | Owner `/revise <text>` |
+| plan-review | planned | epic, story | Owner `/approve` on the current revision; daemon creates sub-issues and dependencies |
+| planned | closed | story, or epic planned into tasks | Every child closed and story verification passes (7.3) |
+| planned | closed | epic planned into stories | Every child closed |
+| ready | in-progress | task | Scheduler picks the task (8.1) |
+| in-progress | clarifying | task | Implementer needs an answer; worker is released |
+| in-progress | verifying | task | Implementer exits with commits and valid output |
+| in-progress | needs-human | task | Implementer reports the work needs an owner action |
+| verifying | in-progress | task | Findings, attempt < cap |
+| verifying | needs-human | task | Findings, attempt = cap |
+| verifying | clarifying | task | Verifier reports an acceptance criterion is ambiguous |
+| verifying | pr-open | task | Pass; daemon pushes, opens or updates the PR, posts the `issuedog/verify` check |
+| verifying | pr-open | task | The verified head was pushed by a person: daemon posts the check (success or failure) and any findings as a comment |
+| pr-open | in-progress | task | Trusted reviewer requests changes, or `main` no longer merges cleanly with the branch |
+| pr-open | verifying | task | A new head SHA that the daemon did not push |
+| pr-open | pr-open | task | `main` moved; daemon re-runs section 10.1 on the merge result and updates the check |
+| pr-open | closed | task | PR merged (`Closes #N`) |
+| pr-open | needs-human | task | PR closed without merging; daemon asks the owner to reopen it, `/done` to start over, or close the issue |
+| needs-human | ready | task | Owner `/done`; attempt count resets to 0 |
+| any open | held | all | Owner `/hold` on the issue or an ancestor |
+| held | previous | all | Owner `/resume` on the issue or an ancestor |
+| any open | closed | all | A person closed the issue; daemon stops any run for it |
+| closed | held | all | A person reopened the issue |
 
-Any transition missing from this table is an error. The daemon logs it, leaves the issue unchanged and lists it in the digest.
+Any transition missing from this table is an error, except a trusted user's manual label change (5.1). The daemon logs the error, leaves the issue unchanged and lists it in the digest.
 
-Bug issues use intake → clarifying → ready. When the interviewer finishes clarifying a bug, the daemon converts the bug into a task-shaped body (section 11.2) and labels it `stage:ready`.
+`/hold` applies `stage:held` to the issue and to every open descendant, each with its own transition marker. `/resume` restores each one to the stage named in its marker.
 
 ### 7.3 Story and epic completion
 
-- When every child of a story is closed, the daemon runs the story verifier on `main` (section 10.3). Failures create `bug` sub-issues under the story. Passing closes the story.
-- An epic closes when every child is closed.
+- When every child of a story, or of an epic planned directly into tasks, is closed, the daemon runs story verification on `main` (section 10.3). The verifier sees each child's close reason, so tasks closed as not planned are not mistaken for delivered work.
+  - Failures create `bug` sub-issues under the story.
+  - Passing closes the story.
+- An epic planned into stories closes when every child is closed.
 
 ### 7.4 Approvals bind to a revision
 
-- `/approve` on a spec or plan applies to the revision shown in the latest transition marker (`rev=N`). If the body changed after the owner read it, the daemon asks again.
-- PR approval relies on GitHub: the ruleset dismisses stale approvals when new commits are pushed, and `issuedog/verify` is posted for an exact head SHA. A new push triggers a new verify run.
+- **Revision numbers.** Each time the daemon writes a spec or plan, it increments `rev` and records a short hash of the body (or of the plan comment) in the transition marker.
+- **When `/approve` counts.** It applies only if it was posted after the latest marker and the current body still matches the recorded hash.
+- **Owner edits the body.** The hash no longer matches. The daemon increments `rev`, records the new hash and asks the owner to `/approve` the edited version.
+- **PR approval.** This relies on GitHub. The ruleset dismisses stale approvals when new commits are pushed, and `issuedog/verify` is posted for an exact head SHA.
 
 ## 8. Scheduling
 
@@ -178,27 +266,36 @@ Bug issues use intake → clarifying → ready. When the interviewer finishes cl
 
 Each loop iteration:
 
-1. Process new trusted comments and labels on open issues (answers, `/approve`, `/revise`, `/done`, `/hold`, `/resume`, PR reviews).
-2. Run any pending non-task stage work (clarifying, spec, planning) for the highest-priority issue that has it.
-3. Otherwise pick the next task: `stage:ready`, not `is:blocked`, ordered by priority, then by parent's priority, then by issue number.
-4. If nothing is available, sleep `idle_sleep` (default 60s).
+1. Process new trusted comments and label changes on open issues: answers, `/approve`, `/revise`, `/done`, `/hold`, `/resume`, `/priority`. Revert untrusted label changes (5.1).
+2. Reconcile PRs: merges, closes, reviews requesting changes, new head SHAs, and `main` moving under open PRs.
+3. Run any pending non-task stage work for the highest-priority issue that has it: clarifying, spec, planning, story verification.
+4. Otherwise pick the next task:
+   - It is `stage:ready`.
+   - It is not blocked, judged by advanced search `is:blocked` (which `gh` uses by default on github.com) plus any open `depends-on` markers.
+   - Ties are ordered by priority, then the parent's priority, then issue number.
+5. If nothing is available, sleep `idle_sleep` (default 60s).
 
-Only one task is `stage:in-progress` at a time. A task waiting on the owner releases the worker, and the scheduler moves to the next independent task.
+- **One task at a time.** Only one task is `stage:in-progress` at a time. A task waiting on the owner releases the worker, and the scheduler moves on to the next independent task.
+- **Polling cost.** Polling uses conditional requests (ETags) and `since=` filters, so unchanged resources don't count against the rate limit.
 
 ### 8.2 Leases and restart
 
-- On pickup the daemon assigns the issue to the bot and writes `/state/lease.json` (write to a temp file, then rename) with the issue number, stage, run ID, worktree path and start time.
-- On startup the daemon reads the lease. If the run's output file exists and validates, it applies the transition. Otherwise it discards the worktree changes, resets the issue to its pre-run stage and starts the run again.
+- **On pickup.** The daemon writes `/state/lease.json` (write to a temp file, then rename) with the issue number, stage, run ID, clone path and start time. The `stage:in-progress` label and the transition marker show the lease on GitHub.
+- **On startup.** The daemon reads the lease.
+  - If `/state/runs/<run-id>.json` exists and validates, and for an implementer run the clone also has commits ahead of its base, the daemon applies the transition.
+  - Otherwise it deletes the clone, resets the issue to its pre-run stage and starts the run again.
 
 ### 8.3 Retries
 
-- The verify loop allows `max_attempts` (default 3) implementer runs per task.
+- The verify loop allows `max_attempts` (default 3) implementer runs per round. A round starts when a task becomes `ready`, or when a review requests changes.
 - Each retry prompt includes the previous verifier findings verbatim.
-- After the last failed attempt the task moves to `stage:needs-human` with the findings attached.
+- After the last failed attempt, the task moves to `stage:needs-human` with the findings attached.
 
 ## 9. Owner interaction
 
 The owner should never have to go and work out what is being asked.
+
+Bot-created issues do not subscribe the owner to notifications. So every question round, spec, plan, human task and new digest item @mentions the users in `notify` (section 13).
 
 ### 9.1 Questions
 
@@ -231,9 +328,11 @@ Rules:
 | `1a 2c 3: text` | Issue | Answers the latest question round |
 | `/approve` | Issue | Approves the current spec or plan revision |
 | `/revise <text>` | Issue | Sends the spec or plan back with the owner's notes |
-| `/done` | `needs-human` issue | Owner finished the human task |
-| `/hold`, `/resume` | Any issue | Pauses or resumes the issue and its children |
+| `/done` | `needs-human` issue | Owner finished the human task, or wants a closed PR's task started over |
+| `/hold`, `/resume` | Any issue | Pauses or resumes the issue and its descendants |
 | `/priority p1` | Any issue | Sets priority |
+
+The daemon reacts ✅ to each command it has applied, and replies with the reason to each one it rejects.
 
 PR reviews use GitHub's own review flow.
 
@@ -254,11 +353,11 @@ A `stage:needs-human` issue uses this template. The agent must fill every field;
 
 ### 9.4 Digest
 
-One pinned issue per repo, `issuedog digest`.
+One pinned issue per repo, `issuedog digest`. It uses one of the repo's three pin slots.
 
-- The body is the current list: open questions, pending approvals, human tasks and PRs waiting for review, ordered by how many tasks each one unblocks.
+- The body is the current list: open questions, pending approvals, human tasks, PRs waiting for review, and state errors (5.1, 7.2). Items are ordered by how many tasks each one unblocks.
 - Each item states what is being decided, the options, the recommendation, and links to the issue.
-- The daemon rewrites the body when the list changes, and posts a short comment only when a new item appears, so GitHub sends one notification per new item.
+- The daemon rewrites the body when the list changes. It posts a short comment that @mentions `notify` only when a new item appears, so GitHub sends one notification per new item.
 
 ### 9.5 Escalation
 
@@ -272,37 +371,46 @@ Verification is the gate between implementation and a PR.
 
 ### 10.1 Deterministic checks (run first)
 
-The daemon runs these itself, outside Claude, and uses exit codes only:
+The daemon decides these itself, outside Claude, from exit codes and its own git inspection of the bare repo.
 
 1. Every command in `verify.commands` (tests, lint, vet, build) passes.
+   - The commands run as `agent` in a fresh checkout of the head SHA.
+   - They get no GitHub credentials, the `network.allow` egress list and `verify.command_timeout`.
 2. The diff touches no protected path (section 6.3).
-3. No test file is deleted, and no new skip markers (`t.Skip`, `.skip(`, `xit(`, `#[ignore]`, configurable) are added.
-4. Lint and test configuration is unchanged unless the task's scope is `scope:tooling`.
-5. When the change modifies non-test source files, it also adds or modifies test files.
+3. No file matching `verify.test_globs` is deleted, and no new `verify.skip_markers` are added.
+4. Files in `verify.config_paths` are unchanged, unless the task's scope is `verify.tooling_scope`.
+5. When the diff modifies files matching `verify.source_globs` that are not tests, it also adds or modifies files matching `verify.test_globs`. Changes to other files, such as docs, are exempt.
+6. The diff is at most `verify.max_diff_lines`, counted by the daemon. Binary files are allowed only if they match `verify.binary_allow`.
+7. The branch is based on current `main` and merges cleanly.
 
-Any failure is a verify failure, with the command output attached as findings. The LLM verifier cannot override a deterministic failure.
+Rule 2 is checked before rule 1, so no command ever runs on a diff that changes agent config.
+
+Any failure is a verify failure, with the output attached as findings. A diff over the size limit gets the finding "task too large, split it". The LLM verifier cannot override a deterministic failure.
 
 ### 10.2 LLM verifier (task level)
 
-Runs only after the deterministic checks pass, in a fresh process, with:
+It runs only after the deterministic checks pass. It runs in a fresh process and a fresh checkout of the head SHA (section 3.4), with:
 
 - the task's acceptance criteria and definition of done
-- the full diff against the base branch
+- the full diff against the base, which the daemon writes to the context directory (rule 6 guarantees it fits)
 - the deterministic check output
 
-It returns `pass` or `request_changes` with findings tied to acceptance criteria. Fail-closed rules:
+It returns `pass`, `request_changes` with findings tied to acceptance criteria, or `question` when a criterion is ambiguous.
 
-- Unparseable or missing verdict → `request_changes`.
-- A diff larger than `verify.max_diff_lines` → `request_changes` with the finding "task too large, split it."
-- The verifier cannot see the full diff for any reason → `request_changes`.
+The run fails closed: an unparseable or missing verdict counts as `request_changes`.
 
 ### 10.3 Story verification
 
-When every task under a story has merged, the daemon runs `verify.story_commands` (e2e suites) on `main` and the LLM verifier checks the story's acceptance criteria against the e2e results. Failures become `bug` sub-issues.
+- **When it runs.** The trigger is in section 7.3.
+- **What it runs.** The daemon runs `verify.story_commands` (e2e suites) on `main`, under the same rules as 10.1 rule 1.
+- **What the LLM checks.** The LLM verifier checks the story's acceptance criteria against the e2e results.
+- **On failure.** Failures become `bug` sub-issues with an `origin` marker.
 
-### 10.4 Commit status
+### 10.4 The `issuedog/verify` check
 
-On pass the daemon posts `issuedog/verify` = `success` for the branch head SHA, with a short summary and a link to the verifier comment. The `main` ruleset requires this status. Whether a ruleset accepts a status posted by an external app with no Actions run needs confirming (section 16).
+- **On pass.** The daemon posts a check run named `issuedog/verify` with conclusion `success` for the head SHA. It includes a short summary and a link to the verifier comment.
+- **Ruleset.** The `main` ruleset requires this check, with the issuedog App pinned as its source. Nobody else, including anyone with write access, can satisfy it.
+- **When `main` moves.** The daemon re-runs section 10.1 on the merge result of `main` and the PR head. If that fails, it updates the check to `failure`. The ruleset does not require branches to be up to date, so a merge to `main` doesn't force every open PR to update and be re-approved. The daemon's merge-result check stands in for that.
 
 ## 11. Templates
 
@@ -342,12 +450,20 @@ Which tests prove each criterion.
 
 ### 11.3 Planning rules
 
+- An epic plan contains either stories, with acceptance criteria and no tasks, or tasks, when the epic has a single user-facing outcome. A story plan contains tasks.
 - At most `plan.max_tasks` (default 10) tasks per plan. Larger work becomes more stories.
 - Each task maps to one PR and one scope label from the allowed list.
 - Each task should fit within `verify.max_diff_lines`.
 - Prefer extending existing code over adding new modules; the plan names the existing files each task touches.
-- The planner checks the dependency graph for cycles, including cross-repo links, before output is accepted.
 - A scope outside the allowed list becomes a question to the owner.
+
+The daemon validates the plan before it moves to plan-review:
+
+- schema
+- the scope list
+- task counts
+- the dependency graph has no cycles, including `depends-on` links to other repos
+- no parent would exceed 100 sub-issues, and no issue would exceed 50 links of one dependency type
 
 ### 11.4 Pull request
 
@@ -369,20 +485,22 @@ Closes #N
 
 ## 12. Agents and skills
 
-- Stage prompts: `.issuedog/prompts/{interviewer,planner,implementer,verifier}.md`. issuedog ships defaults; a repo file overrides the default.
-- Domain subagents: `.claude/agents/*.md`, available to the implementer and verifier during a run. Add one only when a domain has rules the model keeps getting wrong.
-- Skills: `.claude/skills/*`, for repeatable procedures such as adding a migration.
+- **Stage prompts.** These live in `.issuedog/prompts/{interviewer,planner,implementer,verifier}.md`. issuedog ships defaults, and a file on `main` overrides the default (section 3.4).
+- **Domain subagents.** These live in `.claude/agents/*.md` and are available to the implementer and verifier during a run. Add one only when a domain has rules the model keeps getting wrong.
+- **Skills.** These live in `.claude/skills/*`, for repeatable procedures such as adding a migration.
+- **Changing them.** Agents cannot change any of these. They are protected paths, and the verifier only ever loads the versions on `main`.
 
 ## 13. Repo configuration
 
-`.issuedog/config.yaml`:
+`.issuedog/config.yaml`, read from `main`:
 
 ```yaml
 types: issue-types        # or: labels
 scopes: [booking, payments, drivers, notifications, infra, tooling]
+notify: [mertenvg]
 plan:
   max_tasks: 10
-  review: true
+  review: true            # false: story task plans skip /approve; epic plans are always reviewed
 verify:
   commands:
     - go vet ./...
@@ -390,16 +508,29 @@ verify:
     - go test ./...
   story_commands:
     - make e2e
+  command_timeout: 20m
   max_diff_lines: 400
   skip_markers: ["t.Skip(", ".skip(", "xit(", "#[ignore]"]
+  test_globs: ["**/*_test.go", "**/*.test.ts", "e2e/**"]
+  source_globs: ["**/*.go", "**/*.ts"]
+  config_paths: [".golangci.yml", ".golangci.yaml"]
+  tooling_scope: tooling
+  binary_allow: []
+  protected_paths: []     # added to the built-in list (section 6.3)
 escalate:
   paths: ["go.mod", "**/migrations/**", "deploy/**", "**/payments/**"]
 stages:
   timeouts: { interviewer: 10m, planner: 20m, implementer: 60m, verifier: 30m }
+  max_turns: { interviewer: 30, planner: 60, implementer: 200, verifier: 80 }
+  max_budget_usd: {}      # optional, per stage
 loop:
   idle_sleep: 60s
   max_attempts: 3
   max_questions_per_round: 7
+network:
+  allow: [api.anthropic.com, proxy.golang.org, sum.golang.org]
+usage_limit:
+  pattern: "(?i)(usage|session) limit"
 cross_repo:
   allowed: [mertenvg/dmcn, dmcnp/open-dmcn]
 ```
@@ -408,33 +539,53 @@ Changes to this file go through a human-authored PR (section 6.3).
 
 ## 14. Cross-repo work
 
-- A planner may propose an issue in another repo listed in `cross_repo.allowed`.
-- The daemon creates it with a link back to the source issue and labels it `stage:intake`. It carries no `approved` label, so the target repo's daemon waits for a trusted person there to approve it.
-- The daemon links the dependency with `gh issue edit <N> --add-blocked-by <url>`.
-- The bot token needs issue write access on every repo in the allowed list.
+- **Proposing.** A planner may propose an issue in another repo listed in `cross_repo.allowed`.
+- **Creating.** The daemon creates it with a link back to the source issue and labels it `stage:intake`. It carries no `origin` marker, so the target repo's daemon waits for a trusted person there to add `approved`.
+- **Same owner.** The daemon links the dependency with `gh issue edit <N> --add-blocked-by <url>`.
+- **Different owners** (for example `mertenvg/dmcn` and `dmcnp/open-dmcn`). Sub-issues are not allowed across owners, and native dependencies across owners are unconfirmed (section 16). The daemon instead adds a `<!-- issuedog:depends-on url=... -->` marker to the blocked issue and treats the issue as blocked until the target is closed.
+- **Access.** The issuedog App must be installed on every owner in the allowed list.
 
 ## 15. GitHub setup per repo
 
-1. Machine-user account for the bot with a fine-grained token: contents write, issues write, pull requests write, commit statuses write. No admin.
-2. Ruleset on `main`: require PR, require `issuedog/verify`, require code-owner review, dismiss stale approvals on new commits, block force pushes, no bypass for the bot.
-3. `CODEOWNERS` including `/.github/CODEOWNERS`.
-4. Labels: `stage:*`, `priority:*`, `scope:*`, `approved`, `review:high-risk`, and `type:*` for personal-account repos. The daemon creates any that are missing on startup.
+1. **GitHub App.**
+   - Repository permissions: Contents read/write, Issues read/write, Pull requests read/write, Checks read/write, Commit statuses read/write, Metadata read.
+   - Organization permissions: Members read (for CODEOWNERS teams) and Issue Types read.
+   - Install it on each owner: the personal account and each org. Each installation has its own hourly token, and the daemon refreshes them.
+   - No admin permissions.
+2. **Plan.** Rulesets work on public repos on GitHub Free, and on private repos only with Pro, Team or Enterprise. Code owners on private repos also need Pro.
+3. **Ruleset on `main`:**
+   - require a pull request
+   - require code-owner review, and dismiss stale approvals on new commits
+   - require the `issuedog/verify` check with the issuedog App as the pinned source; leave "require branches to be up to date" off (section 10.4)
+   - block force pushes
+   - bypass list: Repository admin, "for pull requests only", so the owner can merge their own protected-path PRs; never the write role and never the App
+4. **CODEOWNERS** including `/.github/CODEOWNERS`. The App is never a code owner.
+5. **Labels.** `stage:*`, `priority:*`, `scope:*`, `approved`, `review:high-risk`, and `type:*` for personal-account repos. The daemon creates any that are missing on startup.
+6. **Org repos.** An org owner creates the `Epic` and `Story` issue types.
 
 ## 16. Open items to confirm
 
-- Cross-repo blocked-by: `gh` accepts issue URLs for `--blocked-by`; confirm it links across repos and owners.
-- A ruleset requiring `issuedog/verify` accepts a status posted through the API with no Actions run.
-- Structured output: whether `claude -p` supports a JSON-schema flag, which would replace the output-file contract in 3.2.
-- Public release: Anthropic's branding rules and whether a public tool may run on users' Claude subscriptions. The README should say users bring their own Claude Code login or API key.
-- Max plan limits for sustained unattended use.
+- **Cross-owner dependencies.** Do native blocked-by links work across owners? One report says GitHub returns 422. If they do work, they could replace the `depends-on` marker.
+- **Pinning the check source.** The ruleset can only pin the App as the source of `issuedog/verify` once the App "has recently submitted a check run". Setup must post one bootstrap check run before adding the rule.
+- **Pinning the digest.** The permission `pinIssue` needs from an App is not documented. Test it with Issues write.
+- **`--json-schema` in long runs.** It must work together with `--dangerously-skip-permissions` and long tool loops. Also confirm how many structured-output retries are allowed.
+- **Usage-limit text.** The text `-p` prints when a subscription limit is hit is undocumented, so `usage_limit.pattern` must be checked against a real occurrence.
+- **`--bare` becoming the default.** Anthropic plans to make `--bare` the default for `-p`. `--bare` ignores `CLAUDE_CODE_OAUTH_TOKEN` and skips project agents and skills. Pin the Claude Code version, and re-test before upgrading.
+- **Egress firewall on macOS.** The owner-matched firewall rule (section 3.1) needs `NET_ADMIN` at container start. Confirm it works on Docker Desktop for Mac.
+- **Rumi Black's plan.** Confirm its visibility and plan meet the ruleset requirement in section 15.
+- **Public release.**
+  - Anthropic does not allow third-party tools to offer claude.ai login or route requests through users' subscriptions without prior approval. The README should therefore require users to bring their own `ANTHROPIC_API_KEY`.
+  - Ask Anthropic before supporting subscription tokens in a distributed build.
+  - The product name must not include "Claude Code". Plain-text "runs Claude Code" is fine.
+- **Max plan limits.** Limits for sustained unattended use on the owner's own Max plan are undocumented. Anthropic's usage policy assumes "ordinary, individual usage".
 
 ## 17. Build phases
 
 Rumi Black first; DMCN after phase 3.
 
-1. Daemon skeleton, trust checks, transition table, leases, intake → clarifying → spec-review, digest.
-2. Planning, plan review, sub-issues, dependencies, scopes, priority.
-3. Implement, deterministic checks, LLM verifier, retries, PR, `issuedog/verify` status.
+1. GitHub App setup, daemon skeleton, sandbox uids and egress rule, trust checks, label and marker reading rules, transition table, leases, intake → clarifying → spec-review, digest.
+2. Planning, plan review, idempotent sub-issue creation, dependencies, scopes, priority.
+3. Implement, bundle-based git handoff, deterministic checks, LLM verifier, retries, PR, `issuedog/verify` check, PR reconciliation.
 4. Story verification, escalation rules, cross-repo issues, DMCN onboarding, domain agents.
 
 ## 18. Prior art
