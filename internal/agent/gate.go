@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -23,8 +24,13 @@ const (
 var (
 	// "...usage limit reached|1760000000": a Unix time in seconds.
 	resetUnixRE = regexp.MustCompile(`\|(\d{9,11})\b`)
-	// "...resets 3pm", "resets at 3:30 pm (Europe/Amsterdam)", "resets 15:00".
-	resetClockRE = regexp.MustCompile(`(?i)\bresets\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?(?:\s*\(([^)]+)\))?`)
+	// "...resets 3pm", "resets at 3:30 pm (Europe/Amsterdam)", "resets 15:00",
+	// and for resets more than a day away "resets Oct 14, 3pm (UTC)".
+	resetClockRE = regexp.MustCompile(`(?i)\bresets\s+(?:at\s+)?` +
+		`(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:,?\s+(\d{4}))?,?\s+(?:at\s+)?)?` +
+		`(\d{1,2})(?::(\d{2}))?\s*(am|pm)?(?:\s*\(([^)]+)\))?`)
+
+	months = []string{"jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"}
 )
 
 // Gate holds stage work back after a run hits a Claude usage limit. It never
@@ -93,7 +99,7 @@ func parseReset(now time.Time, text string) (time.Time, bool) {
 		}
 		reset = time.Unix(secs, 0)
 	} else if m := resetClockRE.FindStringSubmatch(text); m != nil {
-		t, ok := nextClock(now, m[1], m[2], m[3], m[4])
+		t, ok := nextClock(now, clock{month: m[1], day: m[2], year: m[3], hour: m[4], minute: m[5], ampm: m[6], zone: m[7]})
 		if !ok {
 			return time.Time{}, false
 		}
@@ -107,21 +113,29 @@ func parseReset(now time.Time, text string) (time.Time, bool) {
 	return reset, true
 }
 
-// nextClock returns the next time after now that the clock reads hour:minute
-// (with an optional am/pm) in zone, or in now's location when zone is empty.
-func nextClock(now time.Time, hour, minute, ampm, zone string) (time.Time, bool) {
-	h, _ := strconv.Atoi(hour)
+// clock is a reset time as printed, split into its parts. Every part but
+// hour may be empty.
+type clock struct {
+	month, day, year   string
+	hour, minute, ampm string
+	zone               string
+}
+
+// nextClock returns the next time after now that c names, in c's zone or else
+// in now's location. Without a date that's today or tomorrow. With a month
+// and day but no year, it's the next such date.
+func nextClock(now time.Time, c clock) (time.Time, bool) {
+	h, _ := strconv.Atoi(c.hour)
 	m := 0
-	if minute != "" {
-		m, _ = strconv.Atoi(minute)
+	if c.minute != "" {
+		m, _ = strconv.Atoi(c.minute)
 	}
-	switch strings.ToLower(ampm) {
-	case "am", "pm":
+	if c.ampm != "" {
 		if h < 1 || h > 12 {
 			return time.Time{}, false
 		}
 		h %= 12
-		if strings.EqualFold(ampm, "pm") {
+		if strings.EqualFold(c.ampm, "pm") {
 			h += 12
 		}
 	}
@@ -129,17 +143,55 @@ func nextClock(now time.Time, hour, minute, ampm, zone string) (time.Time, bool)
 		return time.Time{}, false
 	}
 	loc := now.Location()
-	if zone != "" {
-		l, err := time.LoadLocation(strings.TrimSpace(zone))
+	if c.zone != "" {
+		l, err := time.LoadLocation(strings.TrimSpace(c.zone))
 		if err != nil {
 			return time.Time{}, false
 		}
 		loc = l
 	}
 	local := now.In(loc)
-	t := time.Date(local.Year(), local.Month(), local.Day(), h, m, 0, 0, loc)
-	if !t.After(now) {
-		t = time.Date(local.Year(), local.Month(), local.Day()+1, h, m, 0, 0, loc)
+
+	if c.month == "" {
+		if t, ok := at(now, loc, local.Year(), local.Month(), local.Day(), h, m); ok {
+			return t, true
+		}
+		return at(now, loc, local.Year(), local.Month(), local.Day()+1, h, m)
 	}
-	return t, true
+
+	month := time.Month(slices.Index(months, strings.ToLower(c.month)[:3]) + 1)
+	day, _ := strconv.Atoi(c.day)
+	if day < 1 || day > 31 {
+		return time.Time{}, false
+	}
+	if c.year != "" {
+		year, _ := strconv.Atoi(c.year)
+		return at(now, loc, year, month, day, h, m)
+	}
+	if t, ok := at(now, loc, local.Year(), month, day, h, m); ok {
+		return t, true
+	}
+	return at(now, loc, local.Year()+1, month, day, h, m)
+}
+
+// at returns the first instant after now whose wall clock in loc reads the
+// given date and time. On a DST fall-back day that time occurs twice, and
+// time.Date may return the earlier one even when only the later one is still
+// ahead, so later instants with the same wall clock are tried too. It returns
+// false when the date doesn't exist (such as Feb 30) or no match is after now.
+func at(now time.Time, loc *time.Location, year int, month time.Month, day, hour, minute int) (time.Time, bool) {
+	t := time.Date(year, month, day, hour, minute, 0, 0, loc)
+	if t.Day() != day {
+		return time.Time{}, false
+	}
+	for _, shift := range []time.Duration{0, 30 * time.Minute, time.Hour, 2 * time.Hour} {
+		c := t.Add(shift).In(loc)
+		if !c.After(now) {
+			continue
+		}
+		if c.Year() == year && c.Month() == month && c.Day() == day && c.Hour() == hour && c.Minute() == minute {
+			return c, true
+		}
+	}
+	return time.Time{}, false
 }

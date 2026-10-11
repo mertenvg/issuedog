@@ -5,18 +5,18 @@ import (
 	"time"
 )
 
-const pattern = "(?i)(usage|session) limit"
+const gatePattern = "(?i)(usage|session) limit"
 
 func newGate(t *testing.T) *Gate {
 	t.Helper()
-	g, err := NewGate(pattern)
+	g, err := NewGate(gatePattern)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return g
 }
 
-var start = time.Date(2026, 10, 11, 10, 0, 0, 0, time.UTC)
+var gateStart = time.Date(2026, 10, 11, 10, 0, 0, 0, time.UTC)
 
 func TestGateDetectsUsageLimits(t *testing.T) {
 	for _, tt := range []struct {
@@ -33,18 +33,18 @@ func TestGateDetectsUsageLimits(t *testing.T) {
 		{false, "Implemented the usage limit gate.", false},
 	} {
 		g := newGate(t)
-		if got := g.Observe(start, tt.failed, tt.text); got != tt.want {
+		if got := g.Observe(gateStart, tt.failed, tt.text); got != tt.want {
 			t.Errorf("Observe(failed=%v, %q) = %v, want %v", tt.failed, tt.text, got, tt.want)
 		}
-		if g.Open(start) == tt.want {
-			t.Errorf("%q: Open = %v right after, want %v", tt.text, g.Open(start), !tt.want)
+		if g.Open(gateStart) == tt.want {
+			t.Errorf("%q: Open = %v right after, want %v", tt.text, g.Open(gateStart), !tt.want)
 		}
 	}
 }
 
 func TestGateInvalidPattern(t *testing.T) {
 	if _, err := NewGate("(unclosed"); err == nil {
-		t.Fatal("compiled an invalid pattern, want an error")
+		t.Fatal("compiled an invalid gatePattern, want an error")
 	}
 }
 
@@ -65,9 +65,15 @@ func TestGateResetTime(t *testing.T) {
 		{"usage limit · resets 9am", time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)},
 		{"usage limit · resets 12am", time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)},
 		{"usage limit · resets 3pm (Europe/Amsterdam)", time.Date(2026, 10, 11, 15, 0, 0, 0, ams)},
+		// The CLI's form for resets more than a day away.
+		{"usage limit · resets Oct 14, 3pm (Europe/Amsterdam)", time.Date(2026, 10, 14, 15, 0, 0, 0, ams)},
+		{"usage limit · resets October 14 at 3:30pm (UTC)", time.Date(2026, 10, 14, 15, 30, 0, 0, time.UTC)},
+		{"usage limit · resets Oct 13, 2026, 9am", time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)},
+		// Without a year, a date that has passed means next year: too far
+		// ahead here, so it's tested in the fallback cases instead.
 	} {
 		g := newGate(t)
-		now := start
+		now := gateStart
 		if tt.text == "Claude AI usage limit reached|1760184000" {
 			now = time.Unix(1760184000, 0).Add(-time.Hour)
 		}
@@ -84,17 +90,35 @@ func TestGateResetTime(t *testing.T) {
 	}
 }
 
+// On a DST fall-back day 1:30am happens twice. At 1:40 EDT the reset at
+// 1:30 means the second one, 1:30 EST, 50 minutes away.
+func TestGateResetTimeDuringDSTFallBack(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 1, 5, 40, 0, 0, time.UTC) // 1:40 EDT
+	g := newGate(t)
+	g.Observe(now, true, "session limit · resets 1:30am (America/New_York)")
+	want := time.Date(2026, 11, 1, 6, 30, 0, 0, time.UTC) // 1:30 EST
+	if !g.OpenAt().Equal(want) {
+		t.Errorf("opens at %v, want %v", g.OpenAt().In(ny), want.In(ny))
+	}
+}
+
 func TestGateUnreadableResetFallsBackToBackoff(t *testing.T) {
 	for _, text := range []string{
-		"usage limit reached|1000000000",          // in the past
-		"usage limit reached|9999999999",          // too far ahead
-		"usage limit · resets 13pm",               // not a clock time
-		"usage limit · resets 3pm (Not/AZone)",    // unknown zone
-		"usage limit · resets Oct 14 at 3pm here", // date formats aren't read
+		"usage limit reached|1000000000",        // in the past
+		"usage limit reached|9999999999",        // too far ahead
+		"usage limit · resets 13pm",             // not a clock time
+		"usage limit · resets Oct 1, 3pm",       // next year: too far ahead
+		"usage limit · resets 3pm (Not/AZone)",  // unknown zone
+		"usage limit · resets Feb 30, 3pm",      // no such date
+		"usage limit · resets Oct 9, 2026, 3pm", // a date that has passed
 	} {
 		g := newGate(t)
-		g.Observe(start, true, text)
-		if want := start.Add(15 * time.Minute); !g.OpenAt().Equal(want) {
+		g.Observe(gateStart, true, text)
+		if want := gateStart.Add(15 * time.Minute); !g.OpenAt().Equal(want) {
 			t.Errorf("%q: opens at %v, want the 15m backoff %v", text, g.OpenAt(), want)
 		}
 	}
@@ -102,7 +126,7 @@ func TestGateUnreadableResetFallsBackToBackoff(t *testing.T) {
 
 func TestGateBackoffSequence(t *testing.T) {
 	g := newGate(t)
-	now := start
+	now := gateStart
 	var got []time.Duration
 	for range 5 {
 		g.Observe(now, true, "usage limit reached")
@@ -129,7 +153,7 @@ func TestGateBackoffSequence(t *testing.T) {
 // Usage-limit failures don't count as attempts.
 func TestGateStubLoop(t *testing.T) {
 	g := newGate(t)
-	now := start
+	now := gateStart
 	step1, step2, stageRuns, attempts, closedPasses := 0, 0, 0, 0, 0
 	outcomes := []struct {
 		failed bool
