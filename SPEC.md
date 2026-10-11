@@ -77,7 +77,7 @@ claude -p "$(cat /run/issuedog/<run-id>/prompt.md)" \
 - Each stage has a timeout from config. On timeout the daemon kills the whole process group, and the run counts as failed.
 - `--max-budget-usd` is a client-side estimate and is optional.
 - **Credential.** The agent gets exactly one Claude credential: `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`, whichever is set in the daemon's environment. If both are set, the daemon refuses to start.
-- **Usage limits.** `-p` mode does not report the reset time in a machine-readable form. The daemon matches the result text against `usage_limit.pattern`. If the text includes a reset time it waits until then. Otherwise it backs off, starting at 15 minutes and doubling to a 2-hour cap. While it waits, steps 1 and 2 of the loop (section 8.1) keep running, so commands such as `/hold` still apply. Usage-limit waits do not count toward the retry cap.
+- **Usage limits.** `-p` mode does not report the reset time in a machine-readable form. The daemon matches the result text of a failed run (a non-`success` subtype or `is_error`) against `usage_limit.pattern`, so model text that mentions a limit in a successful run doesn't count. If the text includes a reset time it waits until then. Otherwise it backs off, starting at 15 minutes and doubling to a 2-hour cap. While it waits, steps 1 and 2 of the loop (section 8.1) keep running, so commands such as `/hold` still apply. Usage-limit waits do not count toward the retry cap.
 
 ### 3.4 Trusted inputs come from `main`
 
@@ -579,7 +579,7 @@ loop:
 network:
   allow: [api.anthropic.com, proxy.golang.org, sum.golang.org]
 usage_limit:
-  pattern: "(?i)(usage|session) limit"
+  pattern: "(?i)((usage|session|weekly|opus|sonnet|fable) limit|you('|’)?ve (hit|reached) your [a-z ]*limit|you have (hit|reached) your [a-z ]*limit)"
 cross_repo:
   allowed: [mertenvg/dmcn, dmcnp/open-dmcn]
 ```
