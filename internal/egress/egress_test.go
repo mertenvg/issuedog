@@ -44,9 +44,13 @@ func echoServer(t *testing.T) string {
 func startProxy(t *testing.T, upstream string) (addr string, dials *atomic.Int32) {
 	t.Helper()
 	var n atomic.Int32
-	p := New([]string{allowedHost})
-	p.dial = func(ctx context.Context, network, _ string) (net.Conn, error) {
+	p := New([]string{allowedHost, "pkg.example"})
+	p.dial = func(ctx context.Context, network, target string) (net.Conn, error) {
 		n.Add(1)
+		host, _, _ := net.SplitHostPort(target)
+		if host != allowedHost && host != "pkg.example" {
+			t.Errorf("dialed %q, want a canonical listed host", target)
+		}
 		var d net.Dialer
 		return d.DialContext(ctx, network, upstream)
 	}
@@ -176,4 +180,55 @@ func mustURL(t *testing.T, s string) *url.URL {
 		t.Fatal(err)
 	}
 	return u
+}
+
+// A client may send tunnel bytes in the same write as the CONNECT. The proxy
+// must forward the bytes the server read ahead before the hijack.
+func TestConnectForwardsBytesSentWithRequest(t *testing.T) {
+	proxy, _ := startProxy(t, echoServer(t))
+	c, err := net.Dial("tcp", proxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	authority := allowedHost + ":443"
+	req := "CONNECT " + authority + " HTTP/1.1\r\nHost: " + authority + "\r\n\r\nping\n"
+	if _, err := io.WriteString(c, req); err != nil {
+		t.Fatal(err)
+	}
+	br := bufio.NewReader(c)
+	resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, want 200", resp.StatusCode)
+	}
+	line, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("reading echo: %v", err)
+	}
+	if line != "ping\n" {
+		t.Errorf("echo %q, want %q", line, "ping\n")
+	}
+}
+
+// net/http refuses non-ASCII Host headers, but not every request reaches
+// allowed through one, so the check is tested directly.
+func TestAllowed(t *testing.T) {
+	p := New([]string{allowedHost, "pkg.example"})
+	for authority, want := range map[string]string{
+		"api.anthropic.com:443":      "api.anthropic.com:443",
+		"API.Anthropic.COM:80":       "api.anthropic.com:80",
+		"pkg.example:443":            "pkg.example:443",
+		"p\u212Ag.example:443":       "", // Kelvin sign lowers to "k"
+		"api.anthrop\u0130c.com:443": "", // dotted capital I
+		"example.com:443":            "",
+	} {
+		got, ok := p.allowed(authority)
+		if ok != (want != "") || got != want {
+			t.Errorf("allowed(%q) = %q, %v; want %q", authority, got, ok, want)
+		}
+	}
 }

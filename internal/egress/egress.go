@@ -26,7 +26,8 @@ type Proxy struct {
 }
 
 // New returns a proxy that allows exactly the given host names. Matching
-// ignores case, but nothing else: no wildcards, subdomains or IP addresses.
+// ignores ASCII case, but nothing else: no wildcards, subdomains, IP
+// addresses or non-ASCII names.
 func New(hosts []string) *Proxy {
 	allow := make(map[string]bool, len(hosts))
 	for _, h := range hosts {
@@ -42,29 +43,43 @@ func Listen(port int) (net.Listener, error) {
 	return net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 }
 
-// allowed reports whether a CONNECT to authority (host:port) may go through.
-func (p *Proxy) allowed(authority string) bool {
+// allowed reports whether a CONNECT to authority (host:port) may go through,
+// and returns the canonical authority to dial, so the name dialed is exactly
+// the name checked.
+func (p *Proxy) allowed(authority string) (string, bool) {
 	host, port, err := net.SplitHostPort(authority)
 	if err != nil {
-		return false
+		return "", false
 	}
 	if port != "443" && port != "80" {
-		return false
+		return "", false
 	}
 	if net.ParseIP(host) != nil {
-		return false
+		return "", false
 	}
-	return p.allow[strings.ToLower(host)]
+	// Host names are ASCII. Refusing other bytes keeps Unicode case folding
+	// (such as the Kelvin sign lowering to "k") from matching a listed name.
+	for i := 0; i < len(host); i++ {
+		if host[i] >= 0x80 {
+			return "", false
+		}
+	}
+	host = strings.ToLower(host)
+	if !p.allow[host] {
+		return "", false
+	}
+	return net.JoinHostPort(host, port), true
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodConnect || !p.allowed(r.Host) {
+	target, ok := p.allowed(r.Host)
+	if r.Method != http.MethodConnect || !ok {
 		logr.With(logr.M("method", r.Method).With("host", r.Host)).Warn("egress denied")
 		http.Error(w, "egress not allowed", http.StatusForbidden)
 		return
 	}
 
-	upstream, err := p.dial(r.Context(), "tcp", r.Host)
+	upstream, err := p.dial(r.Context(), "tcp", target)
 	if err != nil {
 		logr.With(logr.M("host", r.Host).With("error", err.Error())).Warn("egress dial failed")
 		http.Error(w, "upstream unreachable", http.StatusBadGateway)
