@@ -204,8 +204,8 @@ The lifecycle of each type:
 
 - **Epic.** intake → clarifying → spec-review → planning → plan-review → planned → closed.
 - **Story.** Created at `stage:planning` from an approved epic plan, which already carries its acceptance criteria. Then planning → plan-review (or straight to planned, see `plan.review`) → planned → closed.
-- **Task.** Created at `stage:ready`, or at `stage:needs-human` for a human task from the planner (section 11.3). Then ready → in-progress → verifying → pr-open → closed, with loops back through clarifying, in-progress or needs-human. A human task from the planner goes needs-human → closed.
-- **Bug.** intake → clarifying → ready, then as a task.
+- **Task.** A task from the planner is created at `stage:ready`, or at `stage:needs-human` for a human task (section 11.3). Then ready → in-progress → verifying → pr-open → closed, with loops back through clarifying, in-progress or needs-human. A human task from the planner goes needs-human → closed.
+- **Bug, or task filed by the owner.** intake → clarifying → ready, then as a task.
 
 ### 7.2 Transitions
 
@@ -516,7 +516,7 @@ A plan contains either stories or tasks (11.3); the template shows both forms. I
 
 ### 11.5 Pull request
 
-The title is `<type>: <short sentence>`, where `<type>` is one of `pr.title_types` (section 13). The implementer names the type in its structured output, and output naming a type outside the list fails validation (3.3). With squash merging (section 15) the title becomes the commit subject on `main`.
+The title is `<type>: <short sentence>`, where `<type>` is one of `pr.title_types` (section 13; default `feat`, `fix`, `chore`). The implementer names the type in its structured output, and output naming a type outside the list fails validation (3.3). With squash merging (section 15) the title becomes the commit subject on `main`.
 
 ```
 Closes #N
