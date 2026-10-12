@@ -201,17 +201,17 @@ Closes and reopens are separate. Any close by someone who isn't trusted, the App
 Comments from people without write access hold nothing. They reach agents only as untrusted input (6.2).
 
 **While held.**
-- The daemon sets `stage:held` with a transition marker carrying `reason=discussion` and the stage before the hold. If the issue is in the `clarifying` that follows a hold, the stage before is the one that hold carried, so back-and-forth discussion never loses the original stage. For anything other than a comment it also posts a notice naming it, since there is nothing else to react to.
+- The daemon sets `stage:held` with a transition marker carrying `reason=discussion` and the stage before the hold. Every marker written in the `clarifying` that follows a hold, including question rounds and any later hold of either kind, carries the stage from before that first hold, so back-and-forth discussion never loses it. For anything other than a comment it also posts a notice naming it, since there is nothing else to react to.
 - Holds stack. Any hold on an issue that is already held, whether by `/hold` or for discussion, keeps the stage recorded by the first hold. The issue leaves `held` only when every hold on it has ended. A discussion hold ends when resolved, or by `/resume` on the issue itself. An owner hold ends by `/resume` on the issue or an ancestor. If a discussion hold ended while an owner hold stayed, the final `/resume` sends the issue to `clarifying` as below.
 - A comment edited by an untrusted write collaborator never counts as a command or an answer, even after the edit is accepted. In loop step 1 (8.1) the daemon looks for triggers before it processes commands.
 - Before applying any run result, the daemon checks the issue for triggers since the last poll before the run was picked up. If it finds one, it holds the issue and drops the result.
-- Reviews, comments and pushes made while the issue is held are handled once it leaves `held`, in the stage it lands in.
+- Comments and pushes made while the issue is held are handled once it leaves `held`, in the stage it lands in. A PR review made while held is handled when the task next reaches `pr-open`, through the usual `pr-open` rows (7.2).
 - Any run for the issue is stopped and its result dropped. Nothing is pushed, no PR is opened or updated, and the issue makes no other transition until the hold ends. Other issues, including its parent and children, carry on.
 - The digest lists the issue (9.4).
 
 **Resolving.** Every trigger needs a trusted user's response:
 - A 👍 on an untrusted comment approves it. From then on it counts as that user's input (6.2).
-- A trusted comment counters every untrusted comment posted before it, and is itself owner input. Commands in it apply as usual.
+- A trusted comment counters every untrusted comment posted before it, and is itself owner input. Commands in it apply as usual, except that any that would move the issue, such as `/approve`, wait until the hold ends.
 - A 👍 on a notice accepts the change. Markers in edited or deleted content are never read again (5.1). When that content was an App-written body, the daemon reposts its `origin` marker from the App's own last version in the edit history, so the issue stays in the pipeline (6.2) and de-duplication still finds it (5.2).
 
 **Leaving the hold.**
@@ -219,10 +219,10 @@ Comments from people without write access hold nothing. They reach agents only a
   - Nothing in the discussion changes the issue: the stage before the hold. A task whose run was dropped goes to `ready`.
   - The spec changes: the interviewer rewrites it, and the issue goes to `spec-review` for a new 👍 (7.4).
   - The plan changes: `planning`, then `plan-review` for a new 👍.
-  - A task's body changes: the interviewer rewrites it as a task (11.2), and the task goes to `ready`.
+  - A task's body changes: the interviewer rewrites it as a task (11.2), and the task goes to `ready`, or back to `needs-human` for a human task.
   - More answers are needed: a question round, staying at `clarifying`.
 - Each of these writes a fresh transition marker, so an edited or deleted marker can't roll state back.
-- A trusted `/resume` on the issue itself ends the discussion hold at once. It accepts every open trigger, including notices for deleted content, and restores the stage before the hold, except that a task whose run was dropped goes to `ready`. A `/resume` on an ancestor doesn't end a discussion hold.
+- A trusted `/resume` on the issue itself ends the discussion hold at once. It accepts every open trigger, including triggers whose notice was deleted, and restores the stage before the hold, except that a task whose run was dropped goes to `ready`. A `/resume` on an ancestor doesn't end a discussion hold.
 - A restart changes nothing, because the hold marker and its triggers are all on GitHub, and the lease of a held issue is dropped (8.2).
 
 ## 7. Pipeline
@@ -292,7 +292,8 @@ The lifecycle of each type:
 | clarifying | spec-review | epic, or story with no parent | The interviewer rewrote the spec after a discussion hold (6.4) |
 | clarifying | planning | epic, story | The plan changes after a discussion hold (6.4) |
 | clarifying | ready | task, bug | The interviewer rewrote the task body after a discussion hold (6.4) |
-| held | previous | all | Owner `/resume` on the issue or an ancestor, when no other hold remains and no discussion hold ended meanwhile (6.4) |
+| clarifying | needs-human | task | The interviewer rewrote a human task's body after a discussion hold (6.4) |
+| held | previous | all | Owner `/resume` on the issue or an ancestor, when no other hold remains and no discussion hold ended meanwhile (6.4); a task whose run a discussion hold dropped goes to ready instead |
 | held | clarifying | all | Owner `/resume` that ends the last hold, after a discussion hold ended while the owner hold stayed (6.4) |
 | any open | closed | all | A trusted user, the App or a merged PR closed the issue; daemon stops any run for it. An untrusted close is reverted (6.4) |
 | closed | held | all | A trusted user reopened the issue. An untrusted reopen is reverted (6.4) |
