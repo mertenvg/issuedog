@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,13 +14,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"github.com/mertenvg/logr/v2"
 )
 
-// waitDelay bounds how long Run waits for claude's output pipes to close
-// after the process exits or is killed, in case something outside its
-// process group still holds them.
+// waitDelay bounds the wait for claude's output pipes to close after it exits.
 const waitDelay = 5 * time.Second
 
 // Stage is one stage run of claude -p (SPEC §3.3).
@@ -36,40 +33,37 @@ type Stage struct {
 
 // Runner starts stage runs.
 type Runner struct {
-	Claude   string // path to the claude binary
-	StateDir string // /state; results go to StateDir/runs/<run-id>.json
-	// Credential is the uid and gid claude runs as, normally agent's from
-	// UserCredential. Nil runs it as the daemon's own user, which only tests
-	// do.
-	Credential *syscall.Credential
-	Stderr     io.Writer // claude's stderr; nil discards it
+	Claude     string              // path to the claude binary
+	StateDir   string              // /state; results go to StateDir/runs/<run-id>.json
+	Credential *syscall.Credential // agent's, from UserCredential; nil (tests only) runs as the daemon
+	Stderr     io.Writer           // claude's stderr; nil discards it
 }
 
-// UserCredential looks up a user's uid and gid. It has no supplementary
-// groups, so a process started with it doesn't keep the daemon's groups.
+// UserCredential looks up a user's uid and gid, with no supplementary groups.
 func UserCredential(name string) (*syscall.Credential, error) {
 	u, err := user.Lookup(name)
 	if err != nil {
 		return nil, fmt.Errorf("looking up user %s: %w", name, err)
 	}
-	uid, err := strconv.ParseUint(u.Uid, 10, 32)
-	if err != nil {
-		return nil, fmt.Errorf("user %s uid: %w", name, err)
-	}
-	gid, err := strconv.ParseUint(u.Gid, 10, 32)
-	if err != nil {
-		return nil, fmt.Errorf("user %s gid: %w", name, err)
+	uid, uidErr := strconv.ParseUint(u.Uid, 10, 32)
+	gid, gidErr := strconv.ParseUint(u.Gid, 10, 32)
+	if err := errors.Join(uidErr, gidErr); err != nil {
+		return nil, fmt.Errorf("user %s ids: %w", name, err)
 	}
 	return &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: []uint32{}}, nil
 }
 
-// Run executes claude -p for one stage and returns its raw JSON result, after
-// writing it to StateDir/runs/<run-id>.json. A run that times out or exits
-// non-zero fails. Its output isn't written, but it's returned with the error
-// so the caller can still match usage limits (SPEC §3.3).
+// Run executes claude -p for one stage and saves its raw JSON result to
+// StateDir/runs/<run-id>.json before returning it. A run that times out or
+// exits non-zero fails; its output is returned with the error, unsaved, so the
+// caller can still match usage limits (SPEC §3.3).
 func (r *Runner) Run(ctx context.Context, s Stage) ([]byte, error) {
 	if filepath.Base(s.RunID) != s.RunID || strings.HasPrefix(s.RunID, ".") {
 		return nil, fmt.Errorf("invalid run ID %q", s.RunID)
+	}
+	if len(s.Env) == 0 {
+		// An empty Env would make exec pass the daemon's environment on.
+		return nil, fmt.Errorf("run %s has no agent environment", s.RunID)
 	}
 	prompt, err := os.ReadFile(filepath.Join(s.ContextDir, "prompt.md"))
 	if err != nil {
@@ -85,18 +79,16 @@ func (r *Runner) Run(ctx context.Context, s Stage) ([]byte, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = r.Stderr
 	cmd.SysProcAttr = r.sysProcAttr()
-	cmd.Cancel = func() error {
-		err := r.killGroup(cmd.Process.Pid)
-		if err != nil {
-			logr.Errorf("stopping claude for run %s: %v", s.RunID, err)
-		}
-		return err
-	}
+	cmd.Cancel = func() error { return r.killGroup(cmd.Process.Pid) }
 	cmd.WaitDelay = waitDelay
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			err = ctx.Err() // the timeout, rather than "signal: killed"
-		}
+	err = cmd.Run()
+	if err != nil && ctx.Err() != nil {
+		err = ctx.Err() // the timeout, rather than "signal: killed"
+	}
+	if cmd.Process != nil {
+		err = errors.Join(err, r.cleanup(cmd.Process.Pid))
+	}
+	if err != nil {
 		return stdout.Bytes(), fmt.Errorf("running claude: %w", err)
 	}
 	if err := r.saveResult(s.RunID, stdout.Bytes()); err != nil {
@@ -122,36 +114,54 @@ func args(prompt string, s Stage) []string {
 	return a
 }
 
-// sysProcAttr starts claude in its own process group, as r.Credential. It
-// sets no AmbientCaps: the daemon's file capabilities aren't inheritable, so
-// without ambient ones claude starts with none (plan rev 2 on #3).
+// sysProcAttr starts claude in its own process group as r.Credential, with no
+// AmbientCaps, so it starts with no capabilities (plan rev 2 on #3).
 func (r *Runner) sysProcAttr() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{Setpgid: true, Credential: r.Credential}
 }
 
-// killGroup kills a run's whole process group. The daemon has no CAP_KILL,
-// so it can't signal another uid's processes. With a Credential, the kill
-// runs as that uid instead, through the shell's kill builtin.
-func (r *Runner) killGroup(pgid int) error {
-	if r.Credential == nil {
-		if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil {
-			return fmt.Errorf("killing process group %d: %w", pgid, err)
-		}
-		return nil
+// cleanup kills every process of the agent uid, even setsid ones, as only one
+// run is active (SPEC §8.2). The daemon's own uid (tests) gets just the group.
+func (r *Runner) cleanup(pgid int) error {
+	if r.Credential == nil || r.Credential.Uid == uint32(os.Getuid()) {
+		return r.killGroup(pgid)
 	}
-	kill := exec.Command("/bin/sh", "-c", `kill -KILL -"$1"`, "sh", strconv.Itoa(pgid))
-	kill.Dir = "/"
-	kill.Env = []string{}
-	kill.SysProcAttr = &syscall.SysProcAttr{Credential: r.Credential}
-	if out, err := kill.CombinedOutput(); err != nil {
-		return fmt.Errorf("killing process group %d: %w: %s", pgid, err, bytes.TrimSpace(out))
+	// kill(-1) skips the calling shell, and fails only if nothing was left.
+	if err := r.asAgent(`kill -KILL -1 2>/dev/null || true`); err != nil {
+		return fmt.Errorf("killing the agent's processes: %w", err)
 	}
 	return nil
 }
 
-// saveResult writes a run's raw result to StateDir/runs/<run-id>.json
-// through a temp file and a rename, so a crash never leaves half a result
-// for restart recovery (SPEC §8.2) to read.
+// killGroup kills a run's process group, if it still exists. Without CAP_KILL
+// the daemon can't signal another uid, so with a Credential it runs as that uid.
+func (r *Runner) killGroup(pgid int) error {
+	if r.Credential == nil {
+		if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			return fmt.Errorf("killing process group %d: %w", pgid, err)
+		}
+		return nil
+	}
+	if err := r.asAgent(`kill -KILL -"$1" 2>/dev/null || ! kill -0 -"$1" 2>/dev/null`, strconv.Itoa(pgid)); err != nil {
+		return fmt.Errorf("killing process group %d: %w", pgid, err)
+	}
+	return nil
+}
+
+// asAgent runs a /bin/sh script as r.Credential, with an empty environment.
+func (r *Runner) asAgent(script string, args ...string) error {
+	cmd := exec.Command("/bin/sh", append([]string{"-c", script, "sh"}, args...)...)
+	cmd.Dir = "/"
+	cmd.Env = []string{}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: r.Credential}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%w: %s", err, bytes.TrimSpace(out))
+	}
+	return nil
+}
+
+// saveResult writes runs/<run-id>.json via a temp file and a rename, so restart
+// recovery (SPEC §8.2) never reads half a result.
 func (r *Runner) saveResult(runID string, raw []byte) error {
 	dir := filepath.Join(r.StateDir, "runs")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -162,19 +172,18 @@ func (r *Runner) saveResult(runID string, raw []byte) error {
 		return fmt.Errorf("creating a temp result file: %w", err)
 	}
 	defer os.Remove(f.Name()) // fails harmlessly once renamed
-	if _, err := f.Write(raw); err != nil {
-		f.Close()
-		return fmt.Errorf("writing the result: %w", err)
+	_, err = f.Write(raw)
+	if err == nil {
+		err = f.Sync()
 	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return fmt.Errorf("syncing the result: %w", err)
+	if cerr := f.Close(); err == nil {
+		err = cerr
 	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("closing the result: %w", err)
+	if err == nil {
+		err = os.Rename(f.Name(), filepath.Join(dir, runID+".json"))
 	}
-	if err := os.Rename(f.Name(), filepath.Join(dir, runID+".json")); err != nil {
-		return fmt.Errorf("renaming the result: %w", err)
+	if err != nil {
+		return fmt.Errorf("writing %s: %w", f.Name(), err)
 	}
 	return nil
 }
