@@ -1,0 +1,19 @@
+#!/bin/sh
+# A fake claude for run_test.go. It records its arguments, NUL-separated, in
+# ./args, then does what FAKE_MODE says.
+printf '%s\0' "$@" > args
+case "$FAKE_MODE" in
+success)
+	echo '{"type":"result","subtype":"success","is_error":false,"result":"Done."}'
+	;;
+fail)
+	echo '{"type":"result","subtype":"error_max_turns","is_error":true}'
+	exit 1
+	;;
+hang)
+	# A child in the same process group, which the timeout must kill too.
+	sleep 300 &
+	echo $! > child.pid
+	wait
+	;;
+esac
