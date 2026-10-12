@@ -15,7 +15,7 @@ import (
 
 func TestRunVersion(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"--version"}, nil, &stdout, &stderr)
+	code := run([]string{"--version"}, nil, nil, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -26,7 +26,7 @@ func TestRunVersion(t *testing.T) {
 
 func TestRunUnknownFlag(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"--nope"}, nil, &stdout, &stderr); code != 2 {
+	if code := run([]string{"--nope"}, nil, nil, &stdout, &stderr); code != 2 {
 		t.Errorf("exit code = %d, want 2", code)
 	}
 }
@@ -36,7 +36,7 @@ func TestRunNoArgsLogsError(t *testing.T) {
 	stop := logr.AddWriter(&logs)
 	defer stop()
 
-	code := run(nil, nil, &stdout, &stderr)
+	code := run(nil, []string{"ANTHROPIC_API_KEY=key"}, nil, &stdout, &stderr)
 	logr.Wait()
 
 	if code != 1 {
@@ -47,6 +47,32 @@ func TestRunNoArgsLogsError(t *testing.T) {
 	}
 	if stdout.Len() != 0 {
 		t.Errorf("stdout = %q, want empty", stdout.String())
+	}
+}
+
+func TestRunRefusesBadCredentials(t *testing.T) {
+	for name, environ := range map[string][]string{
+		"both set":    {"CLAUDE_CODE_OAUTH_TOKEN=oauth", "ANTHROPIC_API_KEY=key"},
+		"neither set": {"GH_TOKEN=gh"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var logs, stdout, stderr bytes.Buffer
+			stop := logr.AddWriter(&logs)
+			defer stop()
+
+			code := run(nil, environ, nil, &stdout, &stderr)
+			logr.Wait()
+
+			if code != 1 {
+				t.Errorf("exit code = %d, want 1", code)
+			}
+			if !strings.Contains(logs.String(), "checking the Claude credential: ") || !strings.Contains(logs.String(), "CLAUDE_CODE_OAUTH_TOKEN") {
+				t.Errorf("logs = %q, want the annotated credential error", logs.String())
+			}
+			if strings.Contains(logs.String(), "not implemented") {
+				t.Errorf("logs = %q, want startup to stop at the credential check", logs.String())
+			}
+		})
 	}
 }
 
@@ -100,7 +126,7 @@ func TestRunKeyCommands(t *testing.T) {
 		{[]string{"key", "check", "-nope"}, "", 2},
 	} {
 		var stdout, stderr bytes.Buffer
-		if code := run(tt.args, strings.NewReader(tt.stdin), &stdout, &stderr); code != tt.want {
+		if code := run(tt.args, nil, strings.NewReader(tt.stdin), &stdout, &stderr); code != tt.want {
 			t.Errorf("%q: exit code = %d, want %d; stderr: %s", tt.args, code, tt.want, stderr.String())
 		}
 	}

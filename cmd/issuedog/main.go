@@ -9,6 +9,7 @@ import (
 
 	"github.com/mertenvg/logr/v2"
 
+	"github.com/mertenvg/issuedog/internal/agent"
 	"github.com/mertenvg/issuedog/internal/appkey"
 )
 
@@ -17,7 +18,7 @@ var version = "dev"
 
 func main() {
 	stop := setupLogging(os.Stdout, os.Stderr)
-	code := run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
+	code := run(os.Args[1:], os.Environ(), os.Stdin, os.Stdout, os.Stderr)
 	logr.Wait()
 	stop()
 	os.Exit(code)
@@ -34,7 +35,7 @@ func setupLogging(stdout, stderr io.Writer) (stop func()) {
 	}
 }
 
-func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+func run(args, environ []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("issuedog", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	showVersion := fs.Bool("version", false, "print the version and exit")
@@ -45,8 +46,14 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "issuedog %s\n", version)
 		return 0
 	}
+	// Key commands run before the credential check: importing the App key
+	// doesn't need a Claude credential.
 	if fs.NArg() > 0 {
 		return command(fs.Args(), stdin, stdout, stderr)
+	}
+	if _, err := agent.Credential(environ); err != nil {
+		logr.Errorf("checking the Claude credential: %v", err)
+		return 1
 	}
 	logr.Error("the daemon is not implemented yet")
 	return 1
