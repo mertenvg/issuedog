@@ -31,6 +31,13 @@ func TestRunVersion(t *testing.T) {
 	}
 }
 
+func TestRunHelp(t *testing.T) {
+	code, logs := runLogged(t, []string{"-h"}, nil)
+	if code != 0 || !strings.Contains(logs, "usage:") || strings.Contains(logs, "help requested") {
+		t.Errorf("exit code %d, logs %q; want 0 and just the usage", code, logs)
+	}
+}
+
 func TestRunUnknownFlag(t *testing.T) {
 	code, logs := runLogged(t, []string{"--nope"}, nil)
 	if code != 2 || !strings.Contains(logs, "flag provided but not defined: -nope") || !strings.Contains(logs, "usage:") {

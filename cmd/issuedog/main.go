@@ -2,6 +2,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -41,7 +42,10 @@ func run(args, environ []string, stdin io.Reader) int {
 	fs := flag.NewFlagSet("issuedog", flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // usage goes through logr
 	showVersion := fs.Bool("version", false, "print the version and exit")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(args); errors.Is(err, flag.ErrHelp) {
+		logr.Info(usage)
+		return 0
+	} else if err != nil {
 		logr.Errorf("issuedog: %v\n%s", err, usage)
 		return 2
 	}
