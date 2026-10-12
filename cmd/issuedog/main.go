@@ -48,7 +48,7 @@ func run(args, environ []string, stdin io.Reader, stdout, stderr io.Writer) int 
 	}
 	// Key commands don't need a Claude credential, so they run before its check.
 	if fs.NArg() > 0 {
-		return command(fs.Args(), stdin, stdout, stderr)
+		return command(fs.Args(), stdin)
 	}
 	if _, err := agent.Credential(environ); err != nil {
 		logr.Errorf("checking the Claude credential: %v", err)
@@ -59,23 +59,24 @@ func run(args, environ []string, stdin io.Reader, stdout, stderr io.Writer) int 
 }
 
 const usage = `usage:
-  issuedog [-version]
   issuedog key import [-path file] < app-key.pem
-  issuedog key check [-path file]
-`
+  issuedog key check [-path file]`
 
-// command runs a subcommand: "key import" stores the App private key from
-// stdin on the state volume, and "key check" loads it as the daemon would.
-func command(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+// command runs "key import" (store the App key from stdin) or "key check".
+func command(args []string, stdin io.Reader) int {
 	if len(args) < 2 || args[0] != "key" || (args[1] != "import" && args[1] != "check") {
-		fmt.Fprint(stderr, usage)
+		logr.Error(usage)
 		return 2
 	}
 	fs := flag.NewFlagSet("issuedog key "+args[1], flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs.SetOutput(io.Discard) // usage goes through logr
 	path := fs.String("path", appkey.DefaultPath, "the key file")
-	if err := fs.Parse(args[2:]); err != nil || fs.NArg() > 0 {
-		fmt.Fprint(stderr, usage)
+	err := fs.Parse(args[2:])
+	if err == nil && fs.NArg() > 0 {
+		err = fmt.Errorf("unexpected arguments %q", fs.Args())
+	}
+	if err != nil {
+		logr.Errorf("issuedog key %s: %v\n%s", args[1], err, usage)
 		return 2
 	}
 	if args[1] == "import" {
@@ -83,13 +84,13 @@ func command(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			logr.Errorf("importing the App key: %v", err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "imported the App key to %s\n", *path)
+		logr.Infof("imported the App key to %s", *path)
 		return 0
 	}
 	if _, err := appkey.Load(*path); err != nil {
 		logr.Errorf("checking the App key: %v", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "the App key at %s is usable\n", *path)
+	logr.Infof("the App key at %s is usable", *path)
 	return 0
 }

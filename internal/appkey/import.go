@@ -17,9 +17,8 @@ const DefaultPath = "/state/app-key.pem"
 // maxKeySize bounds the input. A 4096-bit RSA key in PEM is about 3.3 KB.
 const maxKeySize = 64 << 10
 
-// Import reads an RSA private key in PEM form from r and writes it to path
-// with mode 0600, through a temporary file renamed over path. Input that isn't
-// an RSA key, or a failed write, leaves any old key in place.
+// Import writes the RSA private key (PEM) read from r to path with mode 0600,
+// through a temp file renamed over path, so bad input leaves any old key.
 func Import(path string, r io.Reader) error {
 	data, err := io.ReadAll(io.LimitReader(r, maxKeySize+1))
 	if err != nil {

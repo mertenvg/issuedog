@@ -1,5 +1,4 @@
-// Package appkey loads the GitHub App private key, refusing a key file that
-// anyone other than the daemon's own uid could read or change.
+// Package appkey imports and loads the GitHub App private key (SPEC §3.1).
 package appkey
 
 import (

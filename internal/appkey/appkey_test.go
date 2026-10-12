@@ -12,8 +12,7 @@ import (
 
 var key = []byte("-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----\n")
 
-// writeKey writes key to a new file with the given mode, set after creation
-// so the umask doesn't change it.
+// writeKey writes key with mode, set after creation so the umask can't change it.
 func writeKey(t *testing.T, mode os.FileMode) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "app-key.pem")
