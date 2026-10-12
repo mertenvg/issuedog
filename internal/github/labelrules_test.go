@@ -1,0 +1,121 @@
+package github
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/mertenvg/issuedog/internal/trust"
+)
+
+var _ Trust = (*trust.Set)(nil)
+
+type fakeTrust map[string]bool
+
+func (f fakeTrust) Trusted(_ context.Context, login string) (bool, error) { return f[login], nil }
+
+// ev is one timeline event: text is the label of a label change, or a comment body.
+type ev struct {
+	id               int64
+	event, who, text string
+}
+
+func (e ev) json() map[string]any {
+	user := map[string]any{"login": e.who, "type": "User"}
+	if strings.HasSuffix(e.who, "[bot]") {
+		user["type"] = "Bot"
+	}
+	m := map[string]any{"id": e.id, "event": e.event, "created_at": fmt.Sprintf("2026-10-01T00:00:%02dZ", e.id)}
+	if e.event == "commented" {
+		m["user"], m["body"] = user, e.text
+	} else {
+		m["actor"], m["label"] = user, map[string]any{"name": e.text}
+	}
+	return m
+}
+
+const appBot = "issuedog[bot]"
+
+func added(id int64, who, label string) ev   { return ev{id, "labeled", who, label} }
+func removed(id int64, who, label string) ev { return ev{id, "unlabeled", who, label} }
+func said(id int64, who, body string) ev     { return ev{id, "commented", who, body} }
+
+func TestCheckLabels(t *testing.T) {
+	marker := func(to string) string { return "<!-- issuedog:transition from=x to=" + to + " -->" }
+	tests := []struct {
+		name       string
+		timeline   []ev
+		wantWrites []string
+		wantEvents []LabelEvent
+	}{
+		{"untrusted add is reverted with a comment",
+			[]ev{added(1, "mallory", "approved")},
+			[]string{"POST /issues/7/comments revert key=1", "DELETE /issues/7/labels/approved"}, nil},
+		{"replayed revert does not comment twice",
+			[]ev{added(1, "mallory", "approved"), said(2, appBot, "<!-- issuedog:revert key=1 -->")},
+			[]string{"DELETE /issues/7/labels/approved"}, nil},
+		{"untrusted remove is restored",
+			[]ev{added(1, appBot, "type:task"), removed(2, "mallory", "type:task")},
+			[]string{"POST /issues/7/comments revert key=2", `POST /issues/7/labels ["type:task"]`}, nil},
+		{"trusted manual stage change is an override",
+			[]ev{added(1, appBot, "stage:ready"), said(2, appBot, marker("ready")),
+				removed(3, "owner", "stage:ready"), added(4, "owner", "stage:held")},
+			nil, []LabelEvent{{Kind: LabelOverride, Stages: []string{"stage:held"}, Marker: "ready", By: "owner", Key: 4}}},
+		{"recorded override is not reported again",
+			[]ev{added(1, "owner", "stage:held"), said(2, appBot, marker("held"))}, nil, nil},
+		{"change by the App is accepted",
+			[]ev{added(1, appBot, "stage:ready"), added(2, appBot, "priority:p1"), said(3, appBot, marker("ready"))},
+			nil, nil},
+		{"stage that disagrees with the marker",
+			[]ev{added(1, appBot, "stage:ready"), said(2, appBot, marker("ready")), said(3, "owner", marker("held")),
+				removed(4, appBot, "stage:ready"), added(5, appBot, "stage:verifying")},
+			nil, []LabelEvent{{Kind: LabelDisagreement, Stages: []string{"stage:verifying"}, Marker: "ready", Key: 5}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var writes []string
+			c := newClientWith(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				path := strings.TrimPrefix(r.URL.Path, "/repos/o/r")
+				if r.Method == http.MethodGet && path == "/issues/7/timeline" {
+					var out []map[string]any
+					for _, e := range tt.timeline {
+						out = append(out, e.json())
+					}
+					_ = json.NewEncoder(w).Encode(out)
+					return
+				}
+				desc, body := r.Method+" "+path, readAll(r.Body)
+				var comment struct{ Body string }
+				if json.Unmarshal(body, &comment) == nil && comment.Body != "" {
+					for _, m := range ParseMarkers(comment.Body) {
+						desc += " " + m.Kind + " key=" + m.Fields["key"]
+					}
+				} else if len(body) > 0 {
+					desc += " " + strings.TrimSpace(string(body))
+				}
+				writes = append(writes, desc)
+				_, _ = io.WriteString(w, map[bool]string{true: "[]", false: "{}"}[strings.HasSuffix(path, "/labels")])
+			}))
+			got, err := c.CheckLabels(context.Background(), "o", "r", 7, "issuedog", fakeTrust{"owner": true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(writes, tt.wantWrites) {
+				t.Errorf("writes = %q, want %q", writes, tt.wantWrites)
+			}
+			if !reflect.DeepEqual(got, tt.wantEvents) {
+				t.Errorf("events = %+v, want %+v", got, tt.wantEvents)
+			}
+		})
+	}
+}
+
+func readAll(r io.Reader) []byte {
+	b, _ := io.ReadAll(r)
+	return b
+}
