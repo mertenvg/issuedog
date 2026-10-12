@@ -375,7 +375,7 @@ A `stage:needs-human` issue uses this template. The agent must fill every field;
 
 One pinned issue per repo, `issuedog digest`. It uses one of the repo's three pin slots.
 
-- The body is the current list: open questions, pending approvals, hand-offs and unblocked human tasks, PRs waiting for review, and state errors (5.1, 7.2). These are exactly the items the daemon assigns (9.6). Items are ordered by how many tasks each one unblocks.
+- The body is the current list: open questions, pending approvals, hand-offs and unblocked human tasks, PRs waiting for review, and state errors (5.1, 7.2). These are exactly the items the daemon assigns (9.6). Each state error is also posted on its issue as an App comment carrying an `issuedog:error` marker, so it survives a restart. Items are ordered by how many tasks each one unblocks.
 - Each item states what is being decided, the options, the recommendation, and links to the issue.
 - The daemon rewrites the body when the list changes. It posts a short comment that @mentions `notify` only when a new item appears, so GitHub sends one notification per new item.
 
@@ -396,7 +396,7 @@ The owner finds everything waiting on them in GitHub's own "assigned to me" view
 | Hand-off | The task is at `needs-human` after a hand-off comment (9.3) |
 | Human task | The task is at `needs-human` and every issue blocking it is closed |
 | Pull request | The PR is open and its task is at `pr-open`. It is unassigned when the PR merges or closes, or when the task leaves `pr-open` |
-| State error | The issue has a state error (5.1, 7.2) |
+| State error | From the daemon's state-error comment until the issue's next valid transition, or until the owner reacts 👍 or replies `/done` to that comment |
 
 - These are the same items the digest lists (9.4).
 - Each PR carries the `priority:*` label of the task it closes. The task's label is the priority: the daemon copies it to the PR and reverts any other change to the PR's label.
