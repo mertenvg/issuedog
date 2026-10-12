@@ -88,14 +88,14 @@ func (r *Repo) git(ctx context.Context, token string, args ...string) ([]byte, e
 }
 
 // gitEnv builds git's environment from environ (os.Environ format). It drops
-// every inherited GIT_* variable, so nothing redirects git to another repo or
-// config, ignores the system and global config, so no diff, filter or
+// every inherited GIT_* variable and SSH_ASKPASS, so nothing redirects git to
+// another repo or config or runs a password program, ignores the system and global config, so no diff, filter or
 // credential settings apply, and passes config through GIT_CONFIG_* so none
 // of it lands in the repo's config file.
 func gitEnv(environ []string, token string) []string {
 	env := make([]string, 0, len(environ)+10)
 	for _, kv := range environ {
-		if !strings.HasPrefix(kv, "GIT_") {
+		if !strings.HasPrefix(kv, "GIT_") && !strings.HasPrefix(kv, "SSH_ASKPASS=") {
 			env = append(env, kv)
 		}
 	}
@@ -103,7 +103,8 @@ func gitEnv(environ []string, token string) []string {
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_TERMINAL_PROMPT=0",
-		"LC_ALL=C", // ReadFile matches git's English error text.
+		"GIT_ASKPASS=", // empty, so git doesn't fall back to core.askPass or SSH_ASKPASS
+		"LC_ALL=C",     // ReadFile matches git's English error text.
 	)
 	config := [][2]string{{"core.hooksPath", "/dev/null"}}
 	if token != "" {

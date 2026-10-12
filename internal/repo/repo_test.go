@@ -205,11 +205,11 @@ func TestGitEnv(t *testing.T) {
 			name:  "with token",
 			token: fakeToken,
 			want: []string{
-				"PATH=/bin", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_COUNT=2",
+				"PATH=/bin", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_ASKPASS=", "GIT_CONFIG_COUNT=2",
 				"GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=/dev/null",
 				"GIT_CONFIG_KEY_1=http.extraHeader", "GIT_CONFIG_VALUE_1=" + header,
 			},
-			notWant: []string{"GIT_DIR=/agent/.git", "GIT_SSH_COMMAND=evil"},
+			notWant: []string{"GIT_DIR=/agent/.git", "GIT_SSH_COMMAND=evil", "SSH_ASKPASS=/evil"},
 		},
 		{
 			name:    "no token, no header",
@@ -219,7 +219,7 @@ func TestGitEnv(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			env := gitEnv([]string{"PATH=/bin", "GIT_DIR=/agent/.git", "GIT_SSH_COMMAND=evil"}, tt.token)
+			env := gitEnv([]string{"PATH=/bin", "GIT_DIR=/agent/.git", "GIT_SSH_COMMAND=evil", "SSH_ASKPASS=/evil"}, tt.token)
 			for _, w := range tt.want {
 				if !slices.Contains(env, w) {
 					t.Errorf("env lacks %q: %v", w, env)
