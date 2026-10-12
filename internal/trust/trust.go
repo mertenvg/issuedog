@@ -2,11 +2,11 @@
 package trust
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	gogithub "github.com/google/go-github/v92/github"
@@ -42,16 +42,12 @@ func Load(ctx context.Context, files FileReader, api *gogithub.Client, owner, na
 	s := &Set{api: api, owner: owner, repo: name}
 	path, data, err := find(ctx, files)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load trust for %s/%s: %w", owner, name, err)
 	}
 	if path == "" {
 		return s, nil
 	}
-	rules, err := codeowners.ParseFile(bytes.NewReader(data))
-	if err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
-	}
-	rule, err := rules.Match(path)
+	rule, err := parse(path, data).Match(path)
 	if err != nil {
 		return nil, fmt.Errorf("match %s against itself: %w", path, err)
 	}
@@ -66,13 +62,31 @@ func Load(ctx context.Context, files FileReader, api *gogithub.Client, owner, na
 			s.owners[strings.ToLower(o.Value)] = true
 		case codeowners.TeamOwner:
 			if err := s.addTeam(ctx, o.Value); err != nil {
-				return nil, err
+				return nil, fmt.Errorf("load trust for %s/%s: %w", owner, name, err)
 			}
 		default:
-			logr.Warnf("%s: ignoring owner %s, since email owners can't be trusted", path, o)
+			logr.Warnf("%s: ignoring owner %s, since only users and teams can be trusted", path, o)
 		}
 	}
 	return s, nil
+}
+
+// parse reads CODEOWNERS line by line and skips, with a warning, any line that
+// doesn't parse, as GitHub does. An owner that isn't a user, team or email,
+// such as an email the library's pattern rejects, is kept untyped and ignored.
+func parse(path string, data []byte) codeowners.Ruleset {
+	matchers := append(slices.Clone(codeowners.DefaultOwnerMatchers), codeowners.OwnerMatchFunc(
+		func(s string) (codeowners.Owner, error) { return codeowners.Owner{Value: s}, nil }))
+	var rules codeowners.Ruleset
+	for i, line := range strings.Split(string(data), "\n") {
+		r, err := codeowners.ParseFile(strings.NewReader(line), codeowners.WithOwnerMatchers(matchers))
+		if err != nil {
+			logr.Warnf("%s: skipping line %d, as GitHub does: %v", path, i+1, err)
+			continue
+		}
+		rules = append(rules, r...)
+	}
+	return rules
 }
 
 // find returns the first CODEOWNERS file on main, or an empty path if there's
@@ -91,9 +105,18 @@ func find(ctx context.Context, files FileReader) (string, []byte, error) {
 	return "", nil, nil
 }
 
-// addTeam adds the members of org/team to the owners.
+// addTeam adds the members of org/team to the owners. GitHub ignores a team
+// that has no write access itself, even if its members have it another way.
 func (s *Set) addTeam(ctx context.Context, team string) error {
 	org, slug, _ := strings.Cut(team, "/")
+	r, resp, err := s.api.Teams.IsTeamRepoBySlug(ctx, org, slug, s.owner, s.repo)
+	if notFound(resp) || err == nil && !r.GetPermissions().GetPush() && !r.GetPermissions().GetAdmin() {
+		logr.Warnf("ignoring CODEOWNERS team @%s, which has no write access to %s/%s", team, s.owner, s.repo)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("access of @%s to %s/%s: %w", team, s.owner, s.repo, err)
+	}
 	opts := &gogithub.TeamListTeamMembersOptions{ListOptions: gogithub.ListOptions{PerPage: 100}}
 	for {
 		users, resp, err := s.api.Teams.ListTeamMembersBySlug(ctx, org, slug, opts)

@@ -34,7 +34,8 @@ type access struct{ perm, role, typ string }
 
 var writer = access{perm: "write", role: "write", typ: "User"}
 
-// fakeAPI serves collaborator permissions on acme/app and acme's team members.
+// fakeAPI serves collaborator permissions on acme/app, and acme's team members
+// and team access to acme/app: write, except for teams named readers-*.
 // Unknown users and teams are 404s.
 func fakeAPI(t *testing.T, users map[string]access, teams map[string][]string) *gogithub.Client {
 	t.Helper()
@@ -62,6 +63,14 @@ func fakeAPI(t *testing.T, users map[string]access, teams map[string][]string) *
 			out = append(out, map[string]any{"login": m, "type": "User"})
 		}
 		_ = json.NewEncoder(w).Encode(out)
+	})
+	mux.HandleFunc("GET /orgs/acme/teams/{slug}/repos/acme/app", func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := teams[r.PathValue("slug")]; !ok {
+			http.NotFound(w, r)
+			return
+		}
+		push := !strings.HasPrefix(r.PathValue("slug"), "readers-")
+		_ = json.NewEncoder(w).Encode(map[string]any{"permissions": map[string]bool{"push": push}})
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -107,8 +116,8 @@ func TestLookupOrder(t *testing.T) {
 
 func TestTeamOwnerMembersTrusted(t *testing.T) {
 	api := fakeAPI(t, map[string]access{"dave": writer, "erin": writer, "frank": writer},
-		map[string][]string{"core": {"Dave", "erin"}})
-	files := fakeFiles{"CODEOWNERS": "CODEOWNERS @acme/core @acme/gone\n"}
+		map[string][]string{"core": {"Dave", "erin"}, "readers-all": {"frank"}})
+	files := fakeFiles{"CODEOWNERS": "CODEOWNERS @acme/core @acme/gone @acme/readers-all\n"}
 	check(t, files, api, map[string]bool{"dave": true, "erin": true, "frank": false})
 }
 
@@ -118,12 +127,15 @@ func TestEmailOwnerIgnoredAndLogged(t *testing.T) {
 	defer stop()
 
 	api := fakeAPI(t, map[string]access{"alice": writer}, nil)
-	files := fakeFiles{"CODEOWNERS": "/CODEOWNERS alice@example.com @alice\n"}
+	// An invalid line elsewhere is skipped, not fatal, as GitHub skips it.
+	files := fakeFiles{"CODEOWNERS": "[ab] @bob\n/CODEOWNERS alice@example.com dev@corp.technology @alice\n"}
 	check(t, files, api, map[string]bool{"alice": true, "alice@example.com": false})
 
 	logr.Wait()
-	if !strings.Contains(logs.String(), "alice@example.com") {
-		t.Errorf("logs = %q, want the ignored email owner", logs.String())
+	for _, want := range []string{"alice@example.com", "dev@corp.technology", "skipping line 1"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("logs = %q, want %q", logs.String(), want)
+		}
 	}
 }
 
