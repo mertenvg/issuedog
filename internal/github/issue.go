@@ -16,7 +16,8 @@ type Snapshot struct {
 	Number    int
 	Title     string
 	Body      string
-	BodyEdit  Edit // the body's last edit
+	BodyEdit  Edit   // the body's last edit
+	BodyNode  string // the issue's GraphQL node ID, for History
 	Author    Author
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -33,6 +34,7 @@ type Snapshot struct {
 // Comment is one issue comment.
 type Comment struct {
 	ID        int64
+	Node      string // the GraphQL node ID, for History
 	Author    Author
 	Body      string
 	CreatedAt time.Time

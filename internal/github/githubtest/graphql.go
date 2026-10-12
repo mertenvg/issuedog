@@ -30,24 +30,38 @@ func (f *Fake) serveGraphQL(w http.ResponseWriter, r *http.Request) {
 	f.serve(w, r, false, f.graphql)
 }
 
-// answered is every field graphql answers, which a query must name.
-const answered = `query { repository { issue { body lastEditedAt editor { login __typename }
-	comments { pageInfo { hasNextPage endCursor } nodes { fullDatabaseId body createdAt updatedAt
+// answered is every field graphql answers for the comments query, which a
+// query must name. answeredHistory is the same for the history query.
+const (
+	answered = `query { repository { issue { id body lastEditedAt editor { login __typename }
+	comments { pageInfo { hasNextPage endCursor } nodes { id fullDatabaseId body createdAt updatedAt
 	lastEditedAt author { login __typename } editor { login __typename } } } } } }`
+	answeredHistory = `query { nodes { id ... on Comment { userContentEdits {
+	pageInfo { hasNextPage endCursor } nodes { editedAt editor { login __typename } } } } } }`
+)
 
-var answeredFields = fields(answered)
+var answeredFields, historyFields = fields(answered), fields(answeredHistory)
+
+// HistoryQueries counts the edit history queries answered.
+func (f *Fake) HistoryQueries() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.histories
+}
 
 // graphql answers internal/github's comments query for the fake's repo,
-// paging comments by 100, and refuses a query that doesn't name every field
-// in answered. As on GitHub, a Bot's login has no "[bot]", IDs are BigInt
-// strings, a missing issue or a pull request is a NOT_FOUND error, and
-// errors come with data.
+// paging comments by 100, and its history query (see history). It refuses
+// a query that doesn't name every field in answered, or answeredHistory
+// for a query of nodes. As on GitHub, a Bot's login has no "[bot]", IDs are
+// BigInt strings, a missing issue or a pull request is a NOT_FOUND error,
+// and errors come with data.
 func (f *Fake) graphql(c *call) (int, any) {
 	var req struct {
 		Query     string
 		Variables struct {
 			Number int
 			Cursor *string
+			IDs    []string
 		}
 	}
 	if status, msg := c.decode(&req); msg != nil {
@@ -67,15 +81,18 @@ func (f *Fake) graphql(c *call) (int, any) {
 		return http.StatusOK, out
 	}
 	var missing []string
-	named := fields(req.Query)
-	for p := range answeredFields {
+	named, want := fields(req.Query), answeredFields
+	if named["query.nodes"] {
+		want = historyFields
+	}
+	for p := range want {
 		if !named[p] {
 			missing = append(missing, p)
 		}
 	}
 	var extra []string // unknown fields and aliases, which GitHub would answer differently
 	for p := range named {
-		if !answeredFields[p] {
+		if !want[p] {
 			extra = append(extra, p)
 		}
 	}
@@ -91,6 +108,16 @@ func (f *Fake) graphql(c *call) (int, any) {
 		}
 		errs = append(errs, map[string]any{"message": "githubtest: the query " + strings.Join(msg, " and ")})
 		return reply(nil)
+	}
+	if named["query.nodes"] {
+		f.histories++
+		nodes, notFound, err := f.history(v.IDs, v.Cursor)
+		if err != "" {
+			errs = append(errs, map[string]any{"message": err})
+			return reply(nil)
+		}
+		errs = append(errs, notFound...)
+		return reply(map[string]any{"nodes": nodes})
 	}
 	if v.Number < 1 || v.Number > len(f.issues) || f.issues[v.Number-1].IsPullRequest() {
 		errs = append(errs, map[string]any{"type": "NOT_FOUND", "message": fmt.Sprintf("Could not resolve to an Issue with the number of %d.", v.Number)})
@@ -118,7 +145,7 @@ func (f *Fake) graphql(c *call) (int, any) {
 	nodes := []map[string]any{}
 	for _, cm := range list[from:to] {
 		n := cm.lastEdit.graphql(cm.GetBody())
-		n["fullDatabaseId"] = strconv.FormatInt(cm.GetID(), 10)
+		n["id"], n["fullDatabaseId"] = commentNode(cm.GetID()), strconv.FormatInt(cm.GetID(), 10)
 		n["author"], n["createdAt"], n["updatedAt"] = actor(cm.GetUser().GetLogin()), cm.GetCreatedAt(), cm.GetUpdatedAt()
 		nodes = append(nodes, n)
 	}
@@ -128,8 +155,68 @@ func (f *Fake) graphql(c *call) (int, any) {
 	}
 	is := f.issues[v.Number-1]
 	issue := is.lastEdit.graphql(is.GetBody())
+	issue["id"] = issueNode(is.GetNumber())
 	issue["comments"] = map[string]any{"pageInfo": map[string]any{"hasNextPage": to < len(list), "endCursor": end}, "nodes": nodes}
 	return reply(map[string]any{"repository": map[string]any{"issue": issue}})
+}
+
+// issueNode and commentNode are an issue's and a comment's node IDs.
+func issueNode(number int) string { return fmt.Sprintf("I_%d", number) }
+func commentNode(id int64) string { return fmt.Sprintf("IC_%d", id) }
+
+// HistoryCap sets how many entries a history lists: the original post and
+// the n-1 newest edits. It is 100 from New, as on GitHub, and n < 1 lists
+// every edit, so paging past 100 can be tested.
+func (f *Fake) HistoryCap(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.historyCap = n
+}
+
+// history answers the history query: each node's edits, newest first, 100
+// per page, capped as HistoryCap says. A cursor is the number of older
+// entries. As on GitHub, an unknown ID's node is null, with a NOT_FOUND
+// error whose path names it. A bad cursor is the only other error.
+func (f *Fake) history(ids []string, cursor *string) ([]any, []map[string]any, string) {
+	histories := map[string][]lastEdit{}
+	for _, is := range f.issues {
+		histories[issueNode(is.GetNumber())] = is.history
+	}
+	for _, c := range f.comments {
+		histories[commentNode(c.GetID())] = c.history
+	}
+	nodes, errs := []any{}, []map[string]any{}
+	for i, id := range ids {
+		h, ok := histories[id]
+		if !ok {
+			nodes = append(nodes, nil)
+			errs = append(errs, map[string]any{"type": "NOT_FOUND", "path": []any{"nodes", i},
+				"message": fmt.Sprintf("Could not resolve to a node with the global id of '%s'", id)})
+			continue
+		}
+		if f.historyCap > 0 && len(h) > f.historyCap {
+			h = append(h[:1:1], h[len(h)-f.historyCap+1:]...)
+		}
+		older := len(h)
+		if cursor != nil {
+			n, err := strconv.Atoi(*cursor)
+			if err != nil || n < 0 || n > len(h) {
+				return nil, nil, fmt.Sprintf("`%s` does not appear to be a valid cursor.", *cursor)
+			}
+			older = n
+		}
+		end, page := max(older-100, 0), []any{}
+		for i := older - 1; i >= end; i-- {
+			page = append(page, map[string]any{"editedAt": h[i].at, "editor": actor(h[i].by)})
+		}
+		var endCursor any
+		if len(page) > 0 {
+			endCursor = strconv.Itoa(end)
+		}
+		nodes = append(nodes, map[string]any{"id": id, "userContentEdits": map[string]any{
+			"pageInfo": map[string]any{"hasNextPage": end > 0, "endCursor": endCursor}, "nodes": page}})
+	}
+	return nodes, errs, ""
 }
 
 // graphql returns the body, lastEditedAt and editor fields of a body last edited as e.
@@ -153,11 +240,12 @@ func actor(login string) any {
 
 var (
 	queryArgs   = regexp.MustCompile(`\([^)]*\)`)
-	queryTokens = regexp.MustCompile(`[{}]|[A-Za-z_]\w*`)
+	queryTokens = regexp.MustCompile(`\.\.\.\s*on\s+\w+|[{}]|[A-Za-z_]\w*`)
 )
 
 // fields returns the paths of the fields a query names, such as
-// "query.repository.issue.body". It skips arguments and variables.
+// "query.repository.issue.body". It skips arguments and variables. An
+// inline fragment is a step of the path, such as "query.nodes.... on Comment".
 func fields(query string) map[string]bool {
 	paths := map[string]bool{}
 	var outer []string // the enclosing fields' paths
@@ -169,9 +257,9 @@ func fields(query string) map[string]bool {
 		case "}":
 			outer = outer[:max(len(outer)-1, 0)]
 		default:
-			last = tok
+			last = strings.Join(strings.Fields(tok), " ")
 			if len(outer) > 0 {
-				last = outer[len(outer)-1] + "." + tok
+				last = outer[len(outer)-1] + "." + last
 			}
 			paths[last] = true
 		}

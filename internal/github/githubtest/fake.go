@@ -29,8 +29,8 @@ import (
 // Start is the fake clock's first reading. Every change moves it on a second.
 var Start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-// Fake serves one repo's issues, comments, labels, timelines, reactions and parents, and
-// the GraphQL query for their last edits. Its API writes, comment edits
+// Fake serves one repo's issues, comments, labels, timelines, reactions and
+// parents, and the GraphQL queries for their edits. Its API writes, comment edits
 // included, are made by the App, "<slug>[bot]" of type Bot. A GET whose
 // answer hasn't changed gets a 304. Every write (any method but GET) is
 // logged, and FailWrite can fail one.
@@ -54,6 +54,8 @@ type Fake struct {
 	notModified int
 	gqlErrors   []string // for the next GraphQL answer
 	beforeGQL   func()   // runs before the next GraphQL answer
+	histories   int      // edit history queries answered
+	historyCap  int      // see HistoryCap
 }
 
 // discard swallows a reply, for a write that takes effect but answers 500.
@@ -68,6 +70,7 @@ type issue struct {
 	gogithub.Issue // labels sorted by name
 	parent         int
 	lastEdit       lastEdit
+	history        []lastEdit
 	labelEvents    []*gogithub.Timeline // labeled and unlabeled, oldest first
 }
 
@@ -76,12 +79,23 @@ type comment struct {
 	issue     int
 	reactions []*gogithub.Reaction
 	lastEdit  lastEdit
+	history   []lastEdit
 }
 
 // lastEdit is who last edited a body, and when. The zero lastEdit means never.
+// In a history, it is one edit.
 type lastEdit struct {
 	by string
 	at time.Time
+}
+
+// record makes e the last edit and adds it to history, oldest first. As on
+// GitHub, the first edit also adds the original post, by its author.
+func record(history *[]lastEdit, last *lastEdit, author string, created time.Time, e lastEdit) {
+	if len(*history) == 0 {
+		*history = append(*history, lastEdit{author, created})
+	}
+	*history, *last = append(*history, e), e
 }
 
 // Write is one write request: its method, its path below the repo (such as
@@ -106,13 +120,14 @@ type handler func(c *call) (int, any)
 // New starts a fake of repo ("owner/name") for the App with this slug.
 func New(t testing.TB, repo, slug string) *Fake {
 	t.Helper()
-	f := &Fake{repo: repo, slug: slug, mux: http.NewServeMux(), now: Start, lastID: 1000}
+	f := &Fake{repo: repo, slug: slug, mux: http.NewServeMux(), now: Start, lastID: 1000, historyCap: 100}
 	f.mux.HandleFunc("POST /app/installations/{id}/access_tokens", mintToken)
 	f.handle("GET /issues/{n}", f.getIssue)
 	f.handle("GET /issues/{n}/parent", f.getParent)
 	f.handle("GET /issues/{n}/comments", f.listComments)
 	f.handle("GET /issues/comments", f.listComments)
 	f.handle("POST /issues/{n}/comments", f.addComment)
+	f.handle("PATCH /issues/{n}", f.editIssue)
 	f.handle("PATCH /issues/comments/{id}", f.editComment)
 	f.handle("GET /issues/comments/{id}/reactions", f.listReactions)
 	f.handle("POST /issues/comments/{id}/reactions", f.addReaction)
@@ -193,10 +208,7 @@ func (f *Fake) AddComment(number int, author, body string) int64 {
 
 // EditBody edits an issue's body as login. An empty login means GitHub names no editor.
 func (f *Fake) EditBody(number int, login, body string) {
-	f.edit(number, func(is *issue) {
-		now := f.tick()
-		is.Body, is.UpdatedAt, is.lastEdit = &body, now, lastEdit{login, now.Time}
-	})
+	f.edit(number, func(is *issue) { is.editBy(login, body, f.tick()) })
 }
 
 // EditComment edits a comment as login. An empty login means GitHub names no editor.
@@ -465,6 +477,24 @@ func (f *Fake) addComment(c *call) (int, any) {
 	return http.StatusCreated, f.addCommentBy(c.issue, f.slug+"[bot]", req.Body).IssueComment
 }
 
+// editIssue edits an issue's body. Nothing else of an issue is edited yet.
+func (f *Fake) editIssue(c *call) (int, any) {
+	var req struct{ Body *string }
+	if status, msg := c.decode(&req); msg != nil {
+		return status, msg
+	}
+	if req.Body == nil {
+		return http.StatusUnprocessableEntity, message("githubtest: only the body can be edited")
+	}
+	c.issue.editBy(f.slug+"[bot]", *req.Body, f.tick())
+	return http.StatusOK, c.issue.Issue
+}
+
+func (is *issue) editBy(login, body string, now *gogithub.Timestamp) {
+	is.Body, is.UpdatedAt = &body, now
+	record(&is.history, &is.lastEdit, is.GetUser().GetLogin(), is.GetCreatedAt().Time, lastEdit{login, now.Time})
+}
+
 func (f *Fake) editComment(c *call) (int, any) {
 	var req struct{ Body string }
 	if status, msg := c.decode(&req); msg != nil {
@@ -475,7 +505,8 @@ func (f *Fake) editComment(c *call) (int, any) {
 }
 
 func (c *comment) editBy(login, body string, now *gogithub.Timestamp) {
-	c.Body, c.UpdatedAt, c.lastEdit = &body, now, lastEdit{login, now.Time}
+	c.Body, c.UpdatedAt = &body, now
+	record(&c.history, &c.lastEdit, c.GetUser().GetLogin(), c.GetCreatedAt().Time, lastEdit{login, now.Time})
 }
 
 func (f *Fake) listReactions(c *call) (int, any) {

@@ -3,6 +3,7 @@ package githubtest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"reflect"
 	"slices"
@@ -208,8 +209,8 @@ func TestGraphQLAnswers(t *testing.T) {
 		{"no fullDatabaseId", gqlQuery(t, f, strings.Replace(answered, "fullDatabaseId", "databaseId", 1), n, nil),
 			" githubtest: the query doesn't name query.repository.issue.comments.nodes.fullDatabaseId" +
 				" and names unknown query.repository.issue.comments.nodes.databaseId"},
-		{"alias", gqlQuery(t, f, strings.Replace(answered, "nodes { fullDatabaseId body", "nodes { fullDatabaseId body: id", 1), n, nil),
-			" githubtest: the query names unknown query.repository.issue.comments.nodes.id"},
+		{"alias", gqlQuery(t, f, strings.Replace(answered, "nodes { id fullDatabaseId body", "nodes { id fullDatabaseId body: url", 1), n, nil),
+			" githubtest: the query names unknown query.repository.issue.comments.nodes.url"},
 		{"no comment editor", gqlQuery(t, f, strings.Replace(answered, "} editor { login __typename } }", "} }", 1), n, nil),
 			" githubtest: the query doesn't name query.repository.issue.comments.nodes.editor, " +
 				"query.repository.issue.comments.nodes.editor.__typename, query.repository.issue.comments.nodes.editor.login"},
@@ -227,6 +228,49 @@ func TestGraphQLAnswers(t *testing.T) {
 	nodes := gqlQuery(t, f, answered, n, end).Data.Repository.Issue.Comments.Nodes
 	if want := strconv.FormatInt(ids[100], 10); len(nodes) != 1 || nodes[0].FullDatabaseID != want {
 		t.Errorf("page 2 after a delete = %+v, want only %s", nodes, want)
+	}
+}
+
+// An inline fragment is part of the path, so one on the wrong type is refused.
+func TestGraphQLHistoryFragment(t *testing.T) {
+	f := New(t, "o/r", "issuedog")
+	q := strings.Replace(answeredHistory, "on Comment", "on IssueComment", 1)
+	errs := gqlQuery(t, f, q, 1, nil).Errors
+	if want := "names unknown query.nodes.... on IssueComment,"; len(errs) != 1 || !strings.Contains(errs[0].Message, want) {
+		t.Errorf("errors = %+v, want one that %s", errs, want)
+	}
+	if n := f.HistoryQueries(); n != 0 {
+		t.Errorf("history queries = %d, want a refused one not counted", n)
+	}
+}
+
+// An unknown ID's node is null, with a NOT_FOUND error naming its path, as
+// on GitHub. The known node is still answered.
+func TestGraphQLHistoryUnknownNode(t *testing.T) {
+	f := New(t, "o/r", "issuedog")
+	f.AddIssue("owner", "Title", "body")
+	c := f.Client(t)
+	req, err := c.NewRequest(context.Background(), "POST", "graphql", map[string]any{"query": answeredHistory,
+		"variables": map[string]any{"ids": []string{"I_1", "IC_9"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Data   struct{ Nodes []*struct{ ID string } }
+		Errors []struct {
+			Type, Message string
+			Path          []any
+		}
+	}
+	if _, err := c.Do(req, &out); err != nil {
+		t.Fatal(err)
+	}
+	if n := out.Data.Nodes; len(n) != 2 || n[0] == nil || n[0].ID != "I_1" || n[1] != nil {
+		t.Errorf("nodes = %+v, want I_1 then null", n)
+	}
+	want := "NOT_FOUND [nodes 1] Could not resolve to a node with the global id of 'IC_9'"
+	if e := out.Errors; len(e) != 1 || fmt.Sprintf("%s %v %s", e[0].Type, e[0].Path, e[0].Message) != want {
+		t.Errorf("errors = %+v, want %q", e, want)
 	}
 }
 

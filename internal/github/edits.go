@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 
 // Edit is who last edited a body, and when. The zero Edit means never edited.
 // By is empty if GitHub names no editor; a deleted account shows as ghost.
+// In a History, an Edit is one edit.
 type Edit struct {
 	By Author
 	At time.Time
@@ -21,13 +23,14 @@ type Edit struct {
 const commentsQuery = `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     issue(number: $number) {
+      id
       body
       lastEditedAt
       editor { login __typename }
       comments(first: 100, after: $cursor) {
         pageInfo { hasNextPage endCursor }
         nodes {
-          fullDatabaseId body createdAt updatedAt lastEditedAt
+          id fullDatabaseId body createdAt updatedAt lastEditedAt
           author { login __typename }
           editor { login __typename }
         }
@@ -57,11 +60,29 @@ type commentsResponse struct {
 			}
 		}
 	}
+	gqlErrors
+}
+
+// gqlErrors is the errors list of a GraphQL answer.
+type gqlErrors struct {
 	Errors []struct{ Message string }
+}
+
+// err returns the errors as one wrapping ErrGraphQL, or nil if there are none.
+func (e gqlErrors) err() error {
+	if len(e.Errors) == 0 {
+		return nil
+	}
+	msgs := make([]string, 0, len(e.Errors))
+	for _, m := range e.Errors {
+		msgs = append(msgs, m.Message)
+	}
+	return fmt.Errorf("%w: %s", ErrGraphQL, strings.Join(msgs, "; "))
 }
 
 // editNode is the body and edit fields of an issue or comment.
 type editNode struct {
+	ID           string // the node ID, for History
 	Body         string
 	LastEditedAt *time.Time
 	Editor       *actor
@@ -109,26 +130,22 @@ func (c *Client) readComments(ctx context.Context, owner, repo string, s *Snapsh
 		if _, err := c.Do(req, &out); err != nil {
 			return wrap(err)
 		}
-		if len(out.Errors) > 0 {
-			msgs := make([]string, 0, len(out.Errors))
-			for _, e := range out.Errors {
-				msgs = append(msgs, e.Message)
-			}
-			return wrap(fmt.Errorf("%w: %s", ErrGraphQL, strings.Join(msgs, "; ")))
+		if err := out.err(); err != nil {
+			return wrap(err)
 		}
 		if out.Data.Repository == nil || out.Data.Repository.Issue == nil {
 			return wrap(errNoIssue)
 		}
 		is := out.Data.Repository.Issue
 		if page == 0 {
-			s.Body, s.BodyEdit = is.Body, is.edit()
+			s.Body, s.BodyEdit, s.BodyNode = is.Body, is.edit(), is.ID
 		}
 		for _, n := range is.Comments.Nodes {
 			id, err := strconv.ParseInt(n.FullDatabaseID, 10, 64)
 			if err != nil {
 				return wrap(fmt.Errorf("comment ID: %w", err))
 			}
-			s.Comments = append(s.Comments, Comment{ID: id, Author: n.Author.author(), Body: n.Body,
+			s.Comments = append(s.Comments, Comment{ID: id, Node: n.ID, Author: n.Author.author(), Body: n.Body,
 				CreatedAt: n.CreatedAt, UpdatedAt: n.UpdatedAt, Edit: n.edit()})
 		}
 		cursor := is.Comments.PageInfo.EndCursor
@@ -149,4 +166,106 @@ var ErrGraphQL = errors.New("graphql errors")
 var (
 	errNoIssue = errors.New("graphql: no such repository or issue")
 	errCursor  = errors.New("graphql: a next page with no new cursor")
+	errNoNode  = errors.New("graphql: no such node")
 )
+
+// historyQuery reads a page of each node's userContentEdits, newest first.
+// Live (2026-10-12), GitHub lists the original post last, by its author,
+// and keeps only the 99 newest edits after it. A revision someone deleted
+// from the history keeps its entry, editor and time; only its text goes.
+const historyQuery = `query($ids: [ID!]!, $cursor: String) {
+  nodes(ids: $ids) {
+    id
+    ... on Comment {
+      userContentEdits(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes { editedAt editor { login __typename } }
+      }
+    }
+  }
+}`
+
+// historyResponse is historyQuery's answer.
+type historyResponse struct {
+	Data struct {
+		Nodes []*struct {
+			ID               string
+			UserContentEdits struct {
+				PageInfo struct {
+					HasNextPage bool
+					EndCursor   string
+				}
+				Nodes []struct {
+					EditedAt time.Time
+					Editor   *actor
+				}
+			}
+		}
+	}
+	gqlErrors
+}
+
+// History reads the edit history of each issue body or comment, by node ID
+// (Snapshot.BodyNode, Comment.Node), oldest first. Once there is an edit,
+// the first entry is the original post. It asks for up to 100 nodes per
+// query, then pages on its own each node with more than 100 entries.
+func (c *Client) History(ctx context.Context, nodes []string) (map[string][]Edit, error) {
+	all := map[string][]Edit{}
+	for ids := range slices.Chunk(nodes, 100) {
+		more, err := c.historyPage(ctx, ids, nil, all)
+		if err != nil {
+			return nil, fmt.Errorf("edit history: %w", err)
+		}
+		for _, id := range ids {
+			read := map[string]bool{}
+			for cursor, ok := more[id]; ok; {
+				if cursor == "" || read[cursor] {
+					return nil, fmt.Errorf("edit history of %s: %w: %q", id, errCursor, cursor)
+				}
+				read[cursor] = true
+				next, err := c.historyPage(ctx, []string{id}, &cursor, all)
+				if err != nil {
+					return nil, fmt.Errorf("edit history of %s: %w", id, err)
+				}
+				cursor, ok = next[id]
+			}
+		}
+	}
+	for _, h := range all {
+		slices.Reverse(h)
+	}
+	return all, nil
+}
+
+// historyPage adds a page of each node's edits to all, newest first, and
+// returns the cursor of each node with another page.
+func (c *Client) historyPage(ctx context.Context, ids []string, cursor *string, all map[string][]Edit) (map[string]string, error) {
+	req, err := c.NewRequest(ctx, "POST", "graphql", map[string]any{"query": historyQuery,
+		"variables": map[string]any{"ids": ids, "cursor": cursor}})
+	if err != nil {
+		return nil, fmt.Errorf("history request: %w", err)
+	}
+	var out historyResponse
+	if _, err := c.Do(req, &out); err != nil {
+		return nil, fmt.Errorf("history query: %w", err)
+	}
+	if err := out.err(); err != nil {
+		return nil, fmt.Errorf("history query: %w", err)
+	}
+	if len(out.Data.Nodes) != len(ids) {
+		return nil, fmt.Errorf("%w: %d nodes for %d IDs", errNoNode, len(out.Data.Nodes), len(ids))
+	}
+	more := map[string]string{}
+	for i, n := range out.Data.Nodes {
+		if n == nil || n.ID != ids[i] {
+			return nil, fmt.Errorf("%w: %s", errNoNode, ids[i])
+		}
+		for _, e := range n.UserContentEdits.Nodes {
+			all[n.ID] = append(all[n.ID], Edit{By: e.Editor.author(), At: e.EditedAt})
+		}
+		if n.UserContentEdits.PageInfo.HasNextPage {
+			more[n.ID] = n.UserContentEdits.PageInfo.EndCursor
+		}
+	}
+	return more, nil
+}

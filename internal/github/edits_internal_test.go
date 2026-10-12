@@ -85,3 +85,33 @@ func TestReadCommentsBadAnswers(t *testing.T) {
 		})
 	}
 }
+
+func TestHistoryBadAnswers(t *testing.T) {
+	page := func(id string, next bool, cursor string) string {
+		return `{"data":{"nodes":[{"id":"` + id + `","userContentEdits":{"pageInfo":{"hasNextPage":` + strconv.FormatBool(next) +
+			`,"endCursor":` + cursor + `},"nodes":[{"editedAt":"2026-10-12T01:00:00Z","editor":{"login":"issuedog-dev","__typename":"Bot"}}]}}]}}`
+	}
+	for _, tc := range []struct {
+		name    string
+		answers []string
+		want    error
+	}{
+		{"no cursor", []string{page("A", true, "null")}, errCursor},
+		{"a cursor seen before", []string{page("A", true, `"c1"`), page("A", true, `"c2"`), page("A", true, `"c1"`)}, errCursor},
+		{"other node", []string{page("B", false, "null")}, errNoNode},
+		{"null node", []string{`{"data":{"nodes":[null]}}`}, errNoNode},
+		{"no nodes", []string{`{"data":{"nodes":[]}}`}, errNoNode},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := graphQLAnswers(t, tc.answers...).History(context.Background(), []string{"A"})
+			if !errors.Is(err, tc.want) || !strings.Contains(err.Error(), "edit history") {
+				t.Errorf("err = %v, want one wrapping %v", err, tc.want)
+			}
+		})
+	}
+	// A null history is no entries, not an error: the daemon fails closed on it.
+	h, err := graphQLAnswers(t, `{"data":{"nodes":[{"id":"A","userContentEdits":null}]}}`).History(context.Background(), []string{"A"})
+	if err != nil || len(h["A"]) != 0 {
+		t.Errorf("history = %+v, %v, want none and no error", h, err)
+	}
+}
