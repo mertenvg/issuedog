@@ -29,8 +29,8 @@ import (
 // Start is the fake clock's first reading. Every change moves it on a second.
 var Start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-// Fake serves one repo's issues, comments, labels, reactions and parents, and
-// the GraphQL queries for their edits. Its API writes, comment edits
+// Fake serves one repo's issues, comments, labels, timelines, reactions and
+// parents, and the GraphQL queries for their edits. Its API writes, comment edits
 // included, are made by the App, "<slug>[bot]" of type Bot. A GET whose
 // answer hasn't changed gets a 304. Every write (any method but GET) is
 // logged, and FailWrite can fail one.
@@ -45,6 +45,7 @@ type Fake struct {
 	mu          sync.Mutex
 	now         time.Time
 	lastID      int64
+	lastEvent   int64      // timeline events have IDs of their own
 	issues      []*issue   // by number, from 1
 	comments    []*comment // oldest first
 	writes      []Write
@@ -70,6 +71,7 @@ type issue struct {
 	parent         int
 	lastEdit       lastEdit
 	history        []lastEdit
+	labelEvents    []*gogithub.Timeline // labeled and unlabeled, oldest first
 }
 
 type comment struct {
@@ -131,6 +133,7 @@ func New(t testing.TB, repo, slug string) *Fake {
 	f.handle("POST /issues/comments/{id}/reactions", f.addReaction)
 	f.handle("POST /issues/{n}/labels", f.addLabels)
 	f.handle("DELETE /issues/{n}/labels/{name}", f.removeLabel)
+	f.handle("GET /issues/{n}/timeline", f.timeline)
 	f.mux.HandleFunc("POST /graphql", f.serveGraphQL)
 	f.srv = httptest.NewServer(f.mux)
 	t.Cleanup(f.srv.Close)
@@ -167,7 +170,9 @@ func (f *Fake) AddIssue(author, title, body string, labels ...string) int {
 	is := &issue{Issue: gogithub.Issue{Number: new(len(f.issues) + 1), Title: &title, Body: &body, State: new("open"),
 		User: user(author), CreatedAt: now, UpdatedAt: now}}
 	for _, l := range labels {
-		is.addLabel(l)
+		if is.addLabel(l) {
+			f.labelEvent(is, "labeled", author, l, now)
+		}
 	}
 	f.issues = append(f.issues, is)
 	return is.GetNumber()
@@ -397,11 +402,14 @@ func (f *Fake) findComment(id int64) *comment {
 	return f.comments[i]
 }
 
-func (is *issue) addLabel(name string) {
-	if !slices.ContainsFunc(is.Labels, func(l *gogithub.Label) bool { return strings.EqualFold(l.GetName(), name) }) {
-		is.Labels = append(is.Labels, &gogithub.Label{Name: name})
-		slices.SortFunc(is.Labels, func(a, b *gogithub.Label) int { return strings.Compare(a.GetName(), b.GetName()) })
+// addLabel adds a label unless the issue has it already, and reports whether it did.
+func (is *issue) addLabel(name string) bool {
+	if slices.ContainsFunc(is.Labels, func(l *gogithub.Label) bool { return strings.EqualFold(l.GetName(), name) }) {
+		return false
 	}
+	is.Labels = append(is.Labels, &gogithub.Label{Name: name})
+	slices.SortFunc(is.Labels, func(a, b *gogithub.Label) int { return strings.Compare(a.GetName(), b.GetName()) })
+	return true
 }
 
 func user(login string) *gogithub.User {
@@ -523,10 +531,13 @@ func (f *Fake) addLabels(c *call) (int, any) {
 	if status, msg := c.decode(&names); msg != nil {
 		return status, msg
 	}
+	now := f.tick()
 	for _, n := range names {
-		c.issue.addLabel(n)
+		if c.issue.addLabel(n) {
+			f.labelEvent(c.issue, "labeled", f.slug+"[bot]", n, now)
+		}
 	}
-	c.issue.UpdatedAt = f.tick()
+	c.issue.UpdatedAt = now
 	return http.StatusOK, c.issue.Labels
 }
 
@@ -535,6 +546,8 @@ func (f *Fake) removeLabel(c *call) (int, any) {
 	if i < 0 {
 		return http.StatusNotFound, message("Label does not exist")
 	}
+	name := c.issue.Labels[i].GetName()
 	c.issue.Labels, c.issue.UpdatedAt = slices.Delete(c.issue.Labels, i, i+1), f.tick()
+	f.labelEvent(c.issue, "unlabeled", f.slug+"[bot]", name, c.issue.UpdatedAt)
 	return http.StatusOK, c.issue.Labels
 }
