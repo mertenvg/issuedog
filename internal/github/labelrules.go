@@ -46,7 +46,7 @@ type LabelEvent struct {
 type labelState struct {
 	name   string
 	events []*gogithub.Timeline // labeled and unlabeled, oldest first
-	at     int                  // timeline position of the latest event
+	ats    []int                // each event's timeline position
 }
 
 // latest returns the newest change to l, or nil if l is nil.
@@ -97,7 +97,7 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 				order = append(order, labels[key])
 			}
 			labels[key].events = append(labels[key].events, e)
-			labels[key].at = i
+			labels[key].ats = append(labels[key].ats, i)
 		case "commented":
 			author := Author{Login: e.GetUser().GetLogin(), Type: e.GetUser().GetType()}
 			for _, m := range TrustedMarkers(author, e.GetBody(), appSlug) {
@@ -113,18 +113,15 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 
 	r := labelRules{c: c, owner: owner, repo: repo, number: number, appSlug: appSlug, trust: trust, verdicts: map[string]bool{}}
 	var stages []string
-	var override, lastStage *labelState
+	var override, last *gogithub.Timeline
+	overrideAt, lastAt := -1, -1
 	for _, l := range order {
-		latest := l.latest()
-		ok, err := r.accepted(ctx, latest)
+		// acc is the last change that stands: the latest if accepted, or
+		// else the one a revert goes back to. An untrusted change after a
+		// trusted override must not hide that override.
+		on, acc, accAt, err := r.settle(ctx, l, reverted)
 		if err != nil {
-			return nil, err
-		}
-		on := latest.GetEvent() == "labeled"
-		if !ok {
-			if on, err = r.revert(ctx, l, reverted); err != nil {
-				return nil, err
-			}
+			return nil, fmt.Errorf("check labels of %s/%s#%d: %w", owner, repo, number, err)
 		}
 		if !strings.HasPrefix(strings.ToLower(l.name), "stage:") {
 			continue
@@ -132,19 +129,18 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 		if on {
 			stages = append(stages, l.name)
 		}
-		if ok && latest.GetEvent() == "labeled" && l.at > markerAt && !r.isApp(latest) && (override == nil || l.at > override.at) {
-			override = l
+		if acc != nil && acc.GetEvent() == "labeled" && accAt > markerAt && !r.isApp(acc) && accAt > overrideAt {
+			override, overrideAt = acc, accAt
 		}
-		if lastStage == nil || l.at > lastStage.at {
-			lastStage = l
+		if at := l.ats[len(l.ats)-1]; at > lastAt {
+			last, lastAt = l.latest(), at
 		}
 	}
 	if override != nil {
-		e := override.latest()
-		return []LabelEvent{{Kind: LabelOverride, Stages: stages, Marker: marker, By: e.GetActor().GetLogin(), Key: e.GetID()}}, nil
+		return []LabelEvent{{Kind: LabelOverride, Stages: stages, Marker: marker, By: override.GetActor().GetLogin(), Key: override.GetID()}}, nil
 	}
 	if marker != "" && (len(stages) != 1 || !strings.EqualFold(stages[0], "stage:"+marker)) {
-		return []LabelEvent{{Kind: LabelDisagreement, Stages: stages, Marker: marker, Key: lastStage.latest().GetID()}}, nil
+		return []LabelEvent{{Kind: LabelDisagreement, Stages: stages, Marker: marker, Key: last.GetID()}}, nil
 	}
 	return nil, nil
 }
@@ -181,32 +177,38 @@ func (r *labelRules) accepted(ctx context.Context, e *gogithub.Timeline) (bool, 
 	return v, nil
 }
 
-// revert puts l back as the last accepted change left it, or off if none did,
-// and reports whether it is on. The comment, keyed by the latest event, goes
-// first and only once, so a crash between the two writes replays cleanly.
-func (r *labelRules) revert(ctx context.Context, l *labelState, reverted map[string]bool) (bool, error) {
+// settle finds the last accepted change to l, from the App or a trusted user,
+// and its timeline position (nil and -1 if none), and reverts l to how that
+// change left it, or off. It reports whether l is on. The comment, keyed by
+// the latest event, goes first and only once, so a crash between the two
+// writes replays cleanly.
+func (r *labelRules) settle(ctx context.Context, l *labelState, reverted map[string]bool) (bool, *gogithub.Timeline, int, error) {
 	latest := l.latest()
-	want := false
-	for i := len(l.events) - 2; i >= 0; i-- {
+	var acc *gogithub.Timeline
+	accAt := -1
+	for i := len(l.events) - 1; i >= 0; i-- {
 		ok, err := r.accepted(ctx, l.events[i])
 		if err != nil {
-			return false, err
+			return false, nil, -1, fmt.Errorf("settle %s: %w", l.name, err)
 		}
 		if ok {
-			want = l.events[i].GetEvent() == "labeled"
+			acc, accAt = l.events[i], l.ats[i]
 			break
 		}
 	}
-	if want == (latest.GetEvent() == "labeled") {
-		return want, nil
+	want := acc != nil && acc.GetEvent() == "labeled"
+	if acc == latest || want == (latest.GetEvent() == "labeled") {
+		return want, acc, accAt, nil
 	}
 	key := strconv.FormatInt(latest.GetID(), 10)
 	who := latest.GetActor().GetLogin()
 	if !reverted[key] {
 		verb := map[bool]string{true: "restored", false: "removed"}[want]
-		body := fmt.Sprintf("I %s `%s`: only trusted users can change pipeline labels, and %s isn't one.\n\n<!-- issuedog:revert key=%s -->", verb, l.name, who, key)
+		// The label name is someone else's text, so a marker in it is escaped (§5.1).
+		name := strings.ReplaceAll(l.name, "<!--", "&lt;!--")
+		body := fmt.Sprintf("I %s `%s`: only trusted users can change pipeline labels, and %s isn't one.\n\n<!-- issuedog:revert key=%s -->", verb, name, who, key)
 		if _, _, err := r.c.Issues.CreateComment(ctx, r.owner, r.repo, r.number, gogithub.IssueCommentRequest{Body: body}); err != nil {
-			return false, fmt.Errorf("comment on revert of %s on %s/%s#%d: %w", l.name, r.owner, r.repo, r.number, err)
+			return false, nil, -1, fmt.Errorf("comment on revert of %s on %s/%s#%d: %w", l.name, r.owner, r.repo, r.number, err)
 		}
 	}
 	var err error
@@ -220,8 +222,8 @@ func (r *labelRules) revert(ctx context.Context, l *labelState, reverted map[str
 		}
 	}
 	if err != nil {
-		return false, fmt.Errorf("revert %s on %s/%s#%d: %w", l.name, r.owner, r.repo, r.number, err)
+		return false, nil, -1, fmt.Errorf("revert %s on %s/%s#%d: %w", l.name, r.owner, r.repo, r.number, err)
 	}
 	logr.Infof("reverted %s's change to %s on %s/%s#%d", who, l.name, r.owner, r.repo, r.number)
-	return want, nil
+	return want, acc, accAt, nil
 }
