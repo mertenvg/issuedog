@@ -8,6 +8,7 @@ require (
 	github.com/hmarr/codeowners v1.2.1
 	github.com/mertenvg/logr/v2 v2.0.3
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
