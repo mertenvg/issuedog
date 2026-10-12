@@ -130,3 +130,47 @@ func TestEditsGraphQLErrors(t *testing.T) {
 		t.Errorf("snapshot after the failed one: %v", err)
 	}
 }
+
+// A collaborator edits in a marker, then deletes the comment between the
+// reads. The comment must be left out, not shown unedited with the marker.
+func TestEditsCommentDeletedBetweenReads(t *testing.T) {
+	f := githubtest.New(t, "o/r", "issuedog")
+	n := f.AddIssue("owner", "Title", "body")
+	kept := f.AddComment(n, "owner", "kept")
+	app := f.AddComment(n, "issuedog[bot]", "status")
+	f.EditComment(app, "mallory", "status <!-- issuedog:transition to=planning -->")
+	f.BeforeGraphQL(func() { f.DeleteComment(app) })
+	s := snapshot(t, f, n)
+	if len(s.Comments) != 1 || s.Comments[0].ID != kept {
+		t.Errorf("comments = %+v, want only %d", s.Comments, kept)
+	}
+}
+
+// An edit between the reads must not pair the old body with the new editor.
+func TestEditsEditedBetweenReads(t *testing.T) {
+	f := githubtest.New(t, "o/r", "issuedog")
+	n := f.AddIssue("owner", "Title", "body")        // 1
+	id := f.AddComment(n, "issuedog[bot]", "status") // 2
+	f.BeforeGraphQL(func() {
+		f.EditBody(n, "mallory", "new body")       // 3
+		f.EditComment(id, "mallory", "new status") // 4
+	})
+	s := snapshot(t, f, n)
+	mallory := github.Author{Login: "mallory", Type: "User"}
+	if s.Body != "new body" || s.BodyEdit != (github.Edit{By: mallory, At: at(3)}) {
+		t.Errorf("body %q edited %+v, want the new body by mallory at %v", s.Body, s.BodyEdit, at(3))
+	}
+	if c := s.Comments[0]; c.Body != "new status" || c.Edit != (github.Edit{By: mallory, At: at(4)}) {
+		t.Errorf("comment %q edited %+v, want the new status by mallory at %v", c.Body, c.Edit, at(4))
+	}
+}
+
+func TestSnapshotRefusesPullRequest(t *testing.T) {
+	f := githubtest.New(t, "o/r", "issuedog")
+	n := f.AddIssue("owner", "Title", "body")
+	f.SetPullRequest(n)
+	_, err := f.Client(t).Snapshot(context.Background(), "o", "r", n)
+	if !errors.Is(err, github.ErrPullRequest) || !strings.Contains(err.Error(), "o/r#1") {
+		t.Errorf("err = %v, want one wrapping ErrPullRequest with the issue", err)
+	}
+}

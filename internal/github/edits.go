@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -15,16 +16,23 @@ type Edit struct {
 	At time.Time
 }
 
-// editsQuery reads the last edit of an issue's body and of a page of its
-// comments. REST says when, but not who.
+// edited is a body and its last edit, read together so they match.
+type edited struct {
+	Body string
+	Edit Edit
+}
+
+// editsQuery reads the body and last edit of an issue and of a page of its
+// comments. REST says when a body was edited, but not who.
 const editsQuery = `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     issue(number: $number) {
+      body
       lastEditedAt
       editor { login __typename }
       comments(first: 100, after: $cursor) {
         pageInfo { hasNextPage endCursor }
-        nodes { databaseId lastEditedAt editor { login __typename } }
+        nodes { fullDatabaseId body lastEditedAt editor { login __typename } }
       }
     }
   }
@@ -42,7 +50,7 @@ type editsResponse struct {
 						EndCursor   string
 					}
 					Nodes []struct {
-						DatabaseID int64 `json:"databaseId"`
+						FullDatabaseID string `json:"fullDatabaseId"` // a BigInt
 						editNode
 					}
 				}
@@ -52,8 +60,9 @@ type editsResponse struct {
 	Errors []struct{ Message string }
 }
 
-// editNode is the edit fields of an issue or comment.
+// editNode is the body and edit fields of an issue or comment.
 type editNode struct {
+	Body         string
 	LastEditedAt *time.Time
 	Editor       *struct {
 		Login    string
@@ -77,45 +86,55 @@ func (n editNode) edit() Edit {
 	return e
 }
 
-// edits reads the last edit of an issue's body, and of each comment by ID,
+// edits reads the body and last edit of an issue, and of each comment by ID,
 // with one GraphQL query per 100 comments.
-func (c *Client) edits(ctx context.Context, owner, repo string, number int) (Edit, map[int64]Edit, error) {
-	var body Edit
-	comments := map[int64]Edit{}
+func (c *Client) edits(ctx context.Context, owner, repo string, number int) (edited, map[int64]edited, error) {
+	wrap := func(err error) error { return fmt.Errorf("edits of %s/%s#%d: %w", owner, repo, number, err) }
+	var body edited
+	comments := map[int64]edited{}
+	read := map[string]bool{}
 	vars := map[string]any{"owner": owner, "name": repo, "number": number, "cursor": nil}
 	for page := 0; ; page++ {
 		req, err := c.NewRequest(ctx, "POST", "graphql", map[string]any{"query": editsQuery, "variables": vars})
 		if err != nil {
-			return Edit{}, nil, fmt.Errorf("edits of %s/%s#%d: %w", owner, repo, number, err)
+			return edited{}, nil, wrap(err)
 		}
 		var out editsResponse
 		if _, err := c.Do(req, &out); err != nil {
-			return Edit{}, nil, fmt.Errorf("edits of %s/%s#%d: %w", owner, repo, number, err)
+			return edited{}, nil, wrap(err)
 		}
 		if len(out.Errors) > 0 {
 			msgs := make([]string, 0, len(out.Errors))
 			for _, e := range out.Errors {
 				msgs = append(msgs, e.Message)
 			}
-			return Edit{}, nil, fmt.Errorf("edits of %s/%s#%d: %w: %s", owner, repo, number, ErrGraphQL, strings.Join(msgs, "; "))
+			return edited{}, nil, wrap(fmt.Errorf("%w: %s", ErrGraphQL, strings.Join(msgs, "; ")))
 		}
 		if out.Data.Repository == nil || out.Data.Repository.Issue == nil {
-			return Edit{}, nil, fmt.Errorf("edits of %s/%s#%d: %w", owner, repo, number, errNoIssue)
+			return edited{}, nil, wrap(errNoIssue)
 		}
 		is := out.Data.Repository.Issue
 		if page == 0 {
-			body = is.edit()
+			body = edited{is.Body, is.edit()}
 		}
 		for _, n := range is.Comments.Nodes {
-			comments[n.DatabaseID] = n.edit()
+			id, err := strconv.ParseInt(n.FullDatabaseID, 10, 64)
+			if err != nil {
+				return edited{}, nil, wrap(fmt.Errorf("comment ID: %w", err))
+			}
+			comments[id] = edited{n.Body, n.edit()}
 		}
-		if !is.Comments.PageInfo.HasNextPage {
+		cursor := is.Comments.PageInfo.EndCursor
+		switch {
+		case !is.Comments.PageInfo.HasNextPage:
 			return body, comments, nil
+		case cursor == "":
+			return edited{}, nil, wrap(errNoCursor)
+		case read[cursor]:
+			return edited{}, nil, wrap(fmt.Errorf("%w: %q", errStuckCursor, cursor))
 		}
-		if is.Comments.PageInfo.EndCursor == "" {
-			return Edit{}, nil, fmt.Errorf("edits of %s/%s#%d: %w", owner, repo, number, errNoCursor)
-		}
-		vars["cursor"] = is.Comments.PageInfo.EndCursor
+		read[cursor] = true
+		vars["cursor"] = cursor
 	}
 }
 
@@ -123,6 +142,7 @@ func (c *Client) edits(ctx context.Context, owner, repo string, number int) (Edi
 var ErrGraphQL = errors.New("graphql errors")
 
 var (
-	errNoIssue  = errors.New("graphql: no such repository or issue")
-	errNoCursor = errors.New("graphql: a next page with no cursor")
+	errNoIssue     = errors.New("graphql: no such repository or issue")
+	errNoCursor    = errors.New("graphql: a next page with no cursor")
+	errStuckCursor = errors.New("graphql: a next page at a cursor already read")
 )

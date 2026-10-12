@@ -3,6 +3,7 @@ package github
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -53,15 +54,23 @@ type Reaction struct {
 	CreatedAt time.Time
 }
 
-// Snapshot reads one issue: the issue, its labels, type and parent, every
-// comment, and who last edited the body and each comment.
+// ErrPullRequest is wrapped by Snapshot's error for a pull request.
+var ErrPullRequest = errors.New("a pull request, not an issue")
+
+// Snapshot reads one issue, not a pull request: the issue, its labels, type
+// and parent, every comment, and who last edited the body and each comment.
+// Bodies come from the same read as their edits, so they match, and a comment
+// deleted between the reads is left out.
 func (c *Client) Snapshot(ctx context.Context, owner, repo string, number int) (*Snapshot, error) {
 	issue, _, err := c.Issues.Get(ctx, owner, repo, number)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot of %s/%s#%d: %w", owner, repo, number, err)
 	}
+	if issue.IsPullRequest() {
+		return nil, fmt.Errorf("snapshot of %s/%s#%d: %w", owner, repo, number, ErrPullRequest)
+	}
 	s := &Snapshot{
-		Number: issue.GetNumber(), Title: issue.GetTitle(), Body: issue.GetBody(),
+		Number: issue.GetNumber(), Title: issue.GetTitle(),
 		Author:    authorOf(issue.GetUser()),
 		CreatedAt: issue.GetCreatedAt().Time, UpdatedAt: issue.GetUpdatedAt().Time,
 		Type: strings.ToLower(issue.GetType().GetName()),
@@ -89,11 +98,15 @@ func (c *Client) Snapshot(ctx context.Context, owner, repo string, number int) (
 	if err != nil {
 		return nil, fmt.Errorf("snapshot of %s/%s#%d: %w", owner, repo, number, err)
 	}
-	s.BodyEdit = body
+	s.Body, s.BodyEdit = body.Body, body.Edit
 	for _, cm := range comments {
+		e, ok := edits[cm.GetID()]
+		if !ok {
+			continue // deleted since
+		}
 		s.Comments = append(s.Comments, Comment{
-			ID: cm.GetID(), Author: authorOf(cm.GetUser()), Body: cm.GetBody(),
-			CreatedAt: cm.GetCreatedAt().Time, UpdatedAt: cm.GetUpdatedAt().Time, Edit: edits[cm.GetID()],
+			ID: cm.GetID(), Author: authorOf(cm.GetUser()), Body: e.Body,
+			CreatedAt: cm.GetCreatedAt().Time, UpdatedAt: cm.GetUpdatedAt().Time, Edit: e.Edit,
 		})
 	}
 	// IDs grow with time, and CommentsSince sorts by update.

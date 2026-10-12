@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -153,5 +154,68 @@ func TestReplay(t *testing.T) {
 	}
 	if problems := replay(t, setup, react); len(problems) != 0 {
 		t.Errorf("problems = %q, want none for reactions redone in another order", problems)
+	}
+}
+
+// gqlAnswer is the part of a GraphQL answer the fake's tests look at.
+type gqlAnswer struct {
+	Data struct {
+		Repository *struct {
+			Issue *struct {
+				Comments struct {
+					PageInfo struct{ EndCursor string }
+					Nodes    []struct{ FullDatabaseID string }
+				}
+			}
+		}
+	}
+	Errors []struct{ Type, Message string }
+}
+
+func TestGraphQLAnswers(t *testing.T) {
+	f := New(t, "o/r", "issuedog")
+	n := f.AddIssue("owner", "Title", "body")
+	var ids []int64
+	for range 101 {
+		ids = append(ids, f.AddComment(n, "owner", "hi"))
+	}
+	f.SetPullRequest(f.AddIssue("owner", "PR", "body"))
+	c := f.Client(t)
+	query := func(owner string, number int, cursor any) gqlAnswer {
+		t.Helper()
+		vars := map[string]any{"owner": owner, "name": "r", "number": number, "cursor": cursor}
+		req, err := c.NewRequest(context.Background(), "POST", "graphql", map[string]any{"variables": vars})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out gqlAnswer
+		if _, err := c.Do(req, &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name   string
+		answer gqlAnswer
+		want   string
+	}{
+		{"other repo", query("x", n, nil), "NOT_FOUND Could not resolve to a Repository with the name 'x/r'."},
+		{"missing issue", query("o", 9, nil), "NOT_FOUND Could not resolve to an Issue with the number of 9."},
+		{"pull request", query("o", 2, nil), "NOT_FOUND Could not resolve to an Issue with the number of 2."},
+		{"bad cursor", query("o", n, "nope"), " `nope` does not appear to be a valid cursor."},
+	} {
+		if len(tc.answer.Errors) != 1 || tc.answer.Errors[0].Type+" "+tc.answer.Errors[0].Message != tc.want {
+			t.Errorf("%s: errors = %+v, want %q", tc.name, tc.answer.Errors, tc.want)
+		}
+		if r := tc.answer.Data.Repository; r != nil && r.Issue != nil {
+			t.Errorf("%s: got an issue", tc.name)
+		}
+	}
+	// A cursor survives the deletion of the comment it points at.
+	end := query("o", n, nil).Data.Repository.Issue.Comments.PageInfo.EndCursor
+	f.DeleteComment(ids[99])
+	nodes := query("o", n, end).Data.Repository.Issue.Comments.Nodes
+	if want := strconv.FormatInt(ids[100], 10); len(nodes) != 1 || nodes[0].FullDatabaseID != want {
+		t.Errorf("page 2 after a delete = %+v, want only %s", nodes, want)
 	}
 }

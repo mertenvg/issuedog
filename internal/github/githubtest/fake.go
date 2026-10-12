@@ -52,6 +52,7 @@ type Fake struct {
 	failAfter   bool // FailWriteAfter rather than FailWrite
 	notModified int
 	gqlErrors   []string // for the next GraphQL answer
+	beforeGQL   func()   // runs before the next GraphQL answer
 }
 
 // discard swallows a reply, for a write that takes effect but answers 500.
@@ -115,7 +116,7 @@ func New(t testing.TB, repo, slug string) *Fake {
 	f.handle("POST /issues/comments/{id}/reactions", f.addReaction)
 	f.handle("POST /issues/{n}/labels", f.addLabels)
 	f.handle("DELETE /issues/{n}/labels/{name}", f.removeLabel)
-	f.mux.HandleFunc("POST /graphql", func(w http.ResponseWriter, r *http.Request) { f.serve(w, r, false, f.graphql) })
+	f.mux.HandleFunc("POST /graphql", f.serveGraphQL)
 	f.srv = httptest.NewServer(f.mux)
 	t.Cleanup(f.srv.Close)
 	return f
@@ -162,6 +163,13 @@ func (f *Fake) SetType(number int, name string) {
 	f.edit(number, func(is *issue) { is.Type = &gogithub.IssueType{Name: &name} })
 }
 
+// SetPullRequest makes number a pull request, which REST lists with the issues.
+func (f *Fake) SetPullRequest(number int) {
+	f.edit(number, func(is *issue) {
+		is.PullRequestLinks = &gogithub.PullRequestLinks{URL: new(fmt.Sprintf("%s/repos/%s/pulls/%d", f.srv.URL, f.repo, number))}
+	})
+}
+
 // SetParent makes number a sub-issue of parent.
 func (f *Fake) SetParent(number, parent int) { f.edit(number, func(is *issue) { is.parent = parent }) }
 
@@ -191,6 +199,13 @@ func (f *Fake) EditComment(id int64, login, body string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.findComment(id).editBy(login, body, f.tick())
+}
+
+// DeleteComment deletes a comment, as its author or a maintainer can.
+func (f *Fake) DeleteComment(id int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.comments = slices.DeleteFunc(f.comments, func(c *comment) bool { return c.GetID() == id })
 }
 
 // AddReaction reacts to a comment as author and returns the reaction's ID.
