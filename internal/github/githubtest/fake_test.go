@@ -113,7 +113,27 @@ func TestReplay(t *testing.T) {
 	if len(problems) == 0 {
 		t.Fatal("Replay passed a pass that posts its marker twice")
 	}
-	if !strings.HasPrefix(problems[0], "crash before write 2: the state") {
-		t.Errorf("first problem = %q, want a duplicate marker after a crash before write 2", problems[0])
+	if !strings.HasPrefix(problems[0], "crash after write 1 applied: the state") {
+		t.Errorf("first problem = %q, want a duplicate marker after write 1 applied", problems[0])
+	}
+
+	// A pass that retries a failed write duplicates it when GitHub had
+	// already applied it. Only a crash after the write applied shows that.
+	retry := func(f *Fake) error {
+		ctx, c := context.Background(), f.Client(t)
+		s, err := c.Snapshot(ctx, "o", "r", 1)
+		if err != nil || len(s.Comments) > 1 {
+			return err
+		}
+		req := gogithub.IssueCommentRequest{Body: "<!-- issuedog:transition to=clarifying -->"}
+		if _, _, err := c.Issues.CreateComment(ctx, "o", "r", 1, req); err != nil {
+			_, _, err = c.Issues.CreateComment(ctx, "o", "r", 1, req)
+			return err
+		}
+		return nil
+	}
+	problems = replay(t, setup, retry)
+	if len(problems) != 1 || !strings.HasPrefix(problems[0], "crash after write 1 applied") {
+		t.Errorf("problems = %q, want only the crash after write 1 applied", problems)
 	}
 }

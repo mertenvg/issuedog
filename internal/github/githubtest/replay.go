@@ -61,15 +61,18 @@ func (f *Fake) State() State {
 //     must build the same fake every time. It may call t.Fatal.
 //  2. Clean run: pass runs once on a fresh fake and must return nil. Its
 //     final State is the reference, and its W writes are the crash points.
-//  3. For each n from 1 to W+1, on a fresh fake from setup: FailWrite(n),
-//     then pass, whose error is only logged, then FailWrite(0) and pass again,
-//     which must return nil. Write n fails with a 500 before it changes
-//     anything, which is a crash just before it. The first pass must have
-//     reached write n; n = W+1 fails nothing, so it runs a pass over the
-//     clean result: a crash after the last write.
+//  3. For each n from 1 to W, twice, on a fresh fake from setup: once with
+//     FailWrite(n), where write n fails with a 500 before it changes anything
+//     (a crash just before it), and once with FailWriteAfter(n), where write n
+//     takes effect but answers 500 (a crash after GitHub applied it). Each
+//     time pass runs, its error only logged, then the failure is cleared and
+//     pass runs again and must return nil. The first pass must have reached
+//     write n. Then once more with nothing failed: a second pass over the
+//     clean result, a crash after the last write.
 //  4. Each run's final State must equal the clean run's. State leaves out IDs
-//     and times, so a replay may redo writes in another order. It may not
-//     leave an extra comment, reaction or label, or miss one.
+//     and times. Labels and reactions are sets, so those may be redone in
+//     another order; comments are compared in order, with their bodies. A
+//     run may not leave an extra comment, reaction or label, or miss one.
 //
 // pass must build its own client and in-memory state from the fake it gets,
 // as the daemon does on restart, and must decide its writes only from what
@@ -89,13 +92,21 @@ func replay(t testing.TB, setup func(testing.TB) *Fake, pass func(*Fake) error) 
 	}
 	want, w := clean.State(), len(clean.Writes())
 	var problems []string
-	for n := 1; n <= w+1; n++ {
+	for i := 0; i <= 2*w; i++ {
+		n, after := i/2+1, i%2 == 1
 		at := fmt.Sprintf("crash before write %d", n)
-		if n > w {
-			at = "crash after the last write"
+		if after {
+			at = fmt.Sprintf("crash after write %d applied", n)
+		}
+		if i == 2*w {
+			n, at = w+1, "crash after the last write"
 		}
 		f := setup(t)
-		f.FailWrite(n)
+		if after {
+			f.FailWriteAfter(n)
+		} else {
+			f.FailWrite(n)
+		}
 		if err := pass(f); err != nil {
 			t.Logf("%s: first pass: %v", at, err)
 		}

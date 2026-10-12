@@ -4,7 +4,6 @@ package githubtest
 
 import (
 	"bytes"
-	"cmp"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -49,8 +48,16 @@ type Fake struct {
 	comments    []*comment // oldest first
 	writes      []Write
 	failAt      int
+	failAfter   bool // FailWriteAfter rather than FailWrite
 	notModified int
 }
+
+// discard swallows a reply, for a write that takes effect but answers 500.
+type discard struct{ http.ResponseWriter }
+
+func (discard) Header() http.Header         { return http.Header{} }
+func (discard) WriteHeader(int)             {}
+func (discard) Write(b []byte) (int, error) { return len(b), nil }
 
 // issue and comment keep the API's own types, which are also their replies.
 type issue struct {
@@ -89,7 +96,6 @@ func New(t testing.TB, repo, slug string) *Fake {
 	f := &Fake{repo: repo, slug: slug, mux: http.NewServeMux(), now: Start, lastID: 1000}
 	f.mux.HandleFunc("POST /app/installations/{id}/access_tokens", mintToken)
 	f.handle("GET /issues/{n}", f.getIssue)
-	f.handle("PATCH /issues/{n}", f.editIssue)
 	f.handle("GET /issues/{n}/parent", f.getParent)
 	f.handle("GET /issues/{n}/comments", f.listComments)
 	f.handle("GET /issues/comments", f.listComments)
@@ -174,7 +180,16 @@ func (f *Fake) AddReaction(commentID int64, author, content string) int64 {
 func (f *Fake) FailWrite(n int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.failAt = n
+	f.failAt, f.failAfter = n, false
+}
+
+// FailWriteAfter makes the nth write since New (1-based) take effect but
+// answer with a 500, as when GitHub applies a write and the response is lost.
+// 0 fails none.
+func (f *Fake) FailWriteAfter(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failAt, f.failAfter = n, true
 }
 
 // Writes returns every write so far, failed ones included, in order.
@@ -214,9 +229,14 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request, write bool, h handl
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		failed := len(f.writes)+1 == f.failAt
 		f.writes = append(f.writes, Write{r.Method, strings.TrimPrefix(r.URL.Path, "/repos/"+f.repo), string(body), failed})
-		if failed {
+		if failed && !f.failAfter {
 			send(w, http.StatusInternalServerError, message("FailWrite"))
 			return
+		}
+		if failed {
+			// The write takes effect, but the client only sees a 500.
+			w = discard{w}
+			defer send(w.(discard).ResponseWriter, http.StatusInternalServerError, message("FailWriteAfter"))
 		}
 	}
 	c := &call{w: w, r: r}
@@ -350,16 +370,6 @@ func page[T any](c *call, items []T) (int, any) {
 }
 
 func (f *Fake) getIssue(c *call) (int, any) { return http.StatusOK, c.issue.Issue }
-
-func (f *Fake) editIssue(c *call) (int, any) {
-	var req struct{ Title, Body *string }
-	if status, msg := c.decode(&req); msg != nil {
-		return status, msg
-	}
-	c.issue.Title, c.issue.Body = cmp.Or(req.Title, c.issue.Title), cmp.Or(req.Body, c.issue.Body)
-	c.issue.UpdatedAt = f.tick()
-	return http.StatusOK, c.issue.Issue
-}
 
 func (f *Fake) getParent(c *call) (int, any) {
 	if c.issue.parent == 0 {
