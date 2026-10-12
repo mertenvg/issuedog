@@ -124,7 +124,7 @@ GitHub is the single source of truth. The daemon keeps only an in-memory cache, 
 | Spec and plan revisions | One revision comment per revision, naming `rev`. The hash is in the transition marker (section 7.4); for plans, see section 16 |
 | Origin of bot-created issues | Hidden `origin` marker in the issue body (section 6.2) |
 
-Assignees are not state either: the daemon derives them from the stage and the PRs (section 9.6), and corrects them on every poll.
+Assignees, and the priority labels on PRs, are not state either: the daemon derives them (section 9.6) and corrects them on every poll.
 
 The only local files are the lease (section 8.2) and the run results in `/state/runs/`. Both are scratch: losing the container loses nothing except the current run.
 
@@ -395,11 +395,11 @@ The owner finds everything waiting on them in GitHub's own "assigned to me" view
 | Spec or plan | The issue is at `spec-review` or `plan-review` |
 | Hand-off | The task is at `needs-human` after a hand-off comment (9.3) |
 | Human task | The task is at `needs-human` and every issue blocking it is closed |
-| Pull request | The PR is open and its task is at `pr-open`. It is unassigned on merge, on close, or when the task goes back to `in-progress` |
-| State error | The issue is listed in the digest as a state error (5.1, 7.2) |
+| Pull request | The PR is open and its task is at `pr-open`. It is unassigned when the PR merges or closes, or when the task leaves `pr-open` |
+| State error | The issue has a state error (5.1, 7.2) |
 
 - These are the same items the digest lists (9.4).
-- Each PR carries the `priority:*` label of the task it closes, and the daemon keeps them in sync.
+- Each PR carries the `priority:*` label of the task it closes. The task's label is the priority: the daemon copies it to the PR and reverts any other change to the PR's label.
 - The owner sees what's waiting with `is:open assignee:@me sort:created-asc`, and the most urgent items by adding `label:priority:p0` or `label:priority:p1`. The digest orders the same items by how many tasks each one unblocks.
 - Only the App changes assignees on pipeline issues and PRs. Assignees are never read as state (section 5): a manual change is reverted on the next poll and changes nothing else.
 
