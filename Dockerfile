@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM golang:1.26.8-trixie AS build
+FROM golang:1.27.2-trixie AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -36,14 +36,20 @@ RUN groupadd --system --gid 10001 issuedog \
 
 COPY --from=claude /out/claude /usr/local/bin/claude
 
-# Only root and the issuedog group can run the daemon, so agent can't borrow
-# its capabilities. setcap comes last because chown clears file capabilities.
+# The daemon gets the only capabilities in the image: switching to agent for
+# stage runs, and applying the agent firewall (#25). Only root and the
+# issuedog group can run it, so agent can't borrow them. setcap comes last
+# because chown clears file capabilities.
+#
+# The kernel refuses to start the binary unless the container grants every
+# one of these, so run the image with --cap-add NET_ADMIN, and without
+# --security-opt no-new-privileges, which ignores file capabilities.
 COPY --from=build /out/issuedog /usr/local/bin/issuedog
 RUN chown root:issuedog /usr/local/bin/issuedog \
  && chmod 0750 /usr/local/bin/issuedog \
- && setcap cap_setuid,cap_setgid+ep /usr/local/bin/issuedog
+ && setcap cap_setuid,cap_setgid,cap_net_admin+ep /usr/local/bin/issuedog
 
-COPY --chmod=0755 sandbox/entrypoint.sh /usr/local/lib/issuedog/entrypoint.sh
-
-# The container starts as root so the entrypoint can apply the firewall.
-ENTRYPOINT ["/usr/local/lib/issuedog/entrypoint.sh"]
+# Nothing in the container runs as root.
+USER issuedog
+ENV HOME=/work
+ENTRYPOINT ["/usr/local/bin/issuedog"]

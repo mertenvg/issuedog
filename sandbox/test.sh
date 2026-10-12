@@ -1,6 +1,7 @@
 #!/bin/sh
 # Checks the sandbox from inside the image. `make sandbox-test` builds the
-# image and runs this script in it as root. Each check prints PASS or FAIL,
+# image and runs this script in it as root, only so it can act as each user.
+# The image itself runs as issuedog. Each check prints PASS or FAIL,
 # and the script exits non-zero if any check failed.
 set -u
 
@@ -57,9 +58,10 @@ expect "/home/agent" "agent:agent 700" stat -c '%U:%G %a' /home/agent
 # Daemon binary
 bin=/usr/local/bin/issuedog
 expect "daemon binary owner and mode" "root:issuedog 750" stat -c '%U:%G %a' "$bin"
-expect "daemon binary capabilities" "$bin cap_setgid,cap_setuid=ep" getcap "$bin"
+caps="$bin cap_setgid,cap_setuid,cap_net_admin=ep"
+expect "daemon binary capabilities" "$caps" getcap "$bin"
+expect "only the daemon has capabilities" "$caps" sh -c 'find / -xdev -type f -exec getcap {} + 2>/dev/null'
 check "issuedog can run the daemon" as issuedog "$bin" --version
-check "the entrypoint runs the daemon" /usr/local/lib/issuedog/entrypoint.sh --version
 check_not "agent can't run the daemon" as agent "$bin" --version
 check_not "agent can't read the daemon" as agent cat "$bin"
 
