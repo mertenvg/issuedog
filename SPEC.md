@@ -146,14 +146,14 @@ Apart from the App key (section 3.1), the only local files are the lease (sectio
 Every transition goes through one table in code (section 7). Each write is checked first, so a crashed run can be replayed safely:
 
 - **Transitions.** Applying a transition whose marker already exists is a no-op.
-- **Commands.** For a command comment, the daemon writes the transition marker with `cmd=<comment id>`, then adds its 👍 reaction. GitHub has no ✅ reaction. On replay, a marker carrying that `cmd` means only the reaction is missing. For a reaction command, the marker carries `cmd=r<reaction id>`. A reaction can't be reacted to, so the transition comment is the acknowledgment.
+- **Commands.** For a command comment, the daemon writes the transition marker with `cmd=<comment id>`, then adds its 👍 reaction. GitHub has no ✅ reaction. On replay, a marker carrying that `cmd` means only the reaction is missing. For a reaction command, the marker carries `cmd=r<reaction id>`. A reaction can't be reacted to, so the transition comment is the acknowledgment, or for a 👍 on a state-error comment, the ack reply (5.3).
 - **Created issues.** Every issue the daemon creates has an `origin` marker with a stable item ID, such as `plan=#12 rev=3 item=T4`. Before creating an issue, the daemon searches for that marker and reuses any match. The same applies to sub-issue links and dependency links: the daemon reads the current links before adding any.
 
 ### 5.3 State errors
 
 A state error is something the daemon reports to the owner instead of acting on: a transition missing from the table (7.2) other than a rejected command, a stage label that disagreed with its marker (5.1, after the daemon puts the label back), or a type that doesn't fit the issue's stage (4).
 
-- The daemon posts one comment per error, carrying `<!-- issuedog:error key=<key> -->`. The key is the ID of what triggered it: the comment, reaction or timeline event (such as a `labeled` or issue-type event), or the run whose outcome had no row. Before posting, the daemon looks for a comment with that key and reuses it, so the same cause is posted once across polls and restarts, and a new occurrence gets a new key.
+- The daemon posts one comment per error, carrying `<!-- issuedog:error kind=<transition|disagreement|type> key=<key> -->`. The key is the ID of what triggered it: the comment, reaction or timeline event (such as a `labeled` or issue-type event), or the run whose outcome had no row. Before posting, the daemon looks for a comment with that key and reuses it, so the same cause is posted once across polls and restarts, and a new occurrence gets a new key.
 - A trusted 👍 on the comment acknowledges the error. The daemon records it by replying with `<!-- issuedog:error key=<key> ack=r<reaction id> -->`, never posts that key again, and the error stops counting toward assignment (9.6). Removing the 👍 later changes nothing.
 - Otherwise the error ends when its cause is gone. A type mismatch ends when the type fits the stage again. A missing transition or a disagreement ends at the issue's next valid transition, including a trusted user's manual stage change (5.1).
 - A command that doesn't apply at the issue's stage isn't a state error. The rejection reply (9.2) is enough, and nobody is assigned for it.
@@ -264,7 +264,7 @@ The lifecycle of each type:
 
 From `ready` on, a `bug` follows the rows for `task`.
 
-Any transition missing from this table is an error, except a trusted user's manual label change (5.1). The daemon logs the error, leaves the issue unchanged and reports a state error (5.3).
+Any transition missing from this table is an error, except a trusted user's manual label change (5.1) or a rejected command (9.2). The daemon logs the error, leaves the issue unchanged and reports a state error (5.3).
 
 `/hold` applies `stage:held` to the issue and to every open descendant, each with its own transition marker. `/resume` restores each one to the stage named in its marker.
 
@@ -415,7 +415,7 @@ The owner finds everything waiting on them in GitHub's own "assigned to me" view
 | Hand-off | The task is at `needs-human` after a hand-off comment (9.3) |
 | Human task | The task is at `needs-human` and every issue blocking it is closed |
 | Pull request | The PR is open and its task is at `pr-open`. It is unassigned when the PR merges or closes, or when the task leaves `pr-open` |
-| State error | From the daemon's state-error comment until the owner reacts 👍 to it, or its cause is gone (5.3) |
+| State error | From the daemon's state-error comment until a trusted user reacts 👍 to it, or its cause is gone (5.3) |
 
 - These are the same items the digest lists (9.4).
 - Each PR carries the `priority:*` label of the task it closes. The task's label is the priority: the daemon copies it to the PR and reverts any other change to the PR's label.
