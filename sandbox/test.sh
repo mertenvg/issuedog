@@ -133,6 +133,7 @@ check "agent reaches api.anthropic.com through the proxy" tls agent api.anthropi
 check "issuedog keeps direct egress" tls issuedog github.com
 check_not "agent can't reach example.com through the proxy" tls agent example.com -proxy 127.0.0.1:3128
 check_not "agent can't connect directly" tls agent api.anthropic.com
+check "issuedog can connect to an address directly" as issuedog openssl s_client -connect 1.1.1.1:443 </dev/null
 check_not "agent can't connect to an address directly" as agent openssl s_client -connect 1.1.1.1:443 </dev/null
 check_not "agent can't resolve names" as agent getent hosts api.anthropic.com
 

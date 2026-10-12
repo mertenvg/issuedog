@@ -9,9 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/mertenvg/logr/v2"
 
@@ -75,6 +78,33 @@ func TestRunStartsEgress(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "egress proxy listening on http://127.0.0.1:") {
 		t.Errorf("logs = %q, want the proxy on 127.0.0.1", logs.String())
+	}
+}
+
+// TestEgressCommandStopsOnSignal runs the unlisted egress command, which
+// sandbox/test.sh relies on, and stops it the way the container does.
+func TestEgressCommandStopsOnSignal(t *testing.T) {
+	listening := make(chan struct{})
+	oldApply, oldListen := applyFirewall, listenProxy
+	t.Cleanup(func() { applyFirewall, listenProxy = oldApply, oldListen })
+	applyFirewall = func(string) error { return nil }
+	listenProxy = func(int) (net.Listener, error) {
+		defer close(listening)
+		return egress.Listen(0)
+	}
+	done := make(chan int, 1)
+	go func() { done <- command([]string{"egress"}, nil) }()
+	<-listening
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Errorf("exit code = %d, want 0", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("egress didn't stop on SIGTERM")
 	}
 }
 

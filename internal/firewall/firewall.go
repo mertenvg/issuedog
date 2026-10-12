@@ -53,9 +53,12 @@ func filter(user, accept string) string {
 // ip6tables-restore.
 func Apply(user string) error {
 	if err := restore("iptables-restore", Rules(user)); err != nil {
-		return err
+		return fmt.Errorf("applying the IPv4 rules for %s: %w", user, err)
 	}
-	return restore("ip6tables-restore", Rules6(user))
+	if err := restore("ip6tables-restore", Rules6(user)); err != nil {
+		return fmt.Errorf("applying the IPv6 rules for %s: %w", user, err)
+	}
+	return nil
 }
 
 // restore runs tool with rules on stdin. The tool gets CAP_NET_ADMIN as an
