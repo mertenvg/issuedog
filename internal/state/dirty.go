@@ -9,11 +9,12 @@ import "github.com/mertenvg/issuedog/internal/github"
 // editor GitHub doesn't name. Logins are compared as github normalises
 // them, so the App is the Bot "<appSlug>[bot]".
 func Sanctioned(author, editor github.Author, appSlug string) bool {
-	if editor.Login == "" {
-		return false
-	}
-	app := appSlug != "" && editor.Type == "Bot" && editor.Login == appSlug+"[bot]"
-	return app || editor.Login == author.Login
+	return IsApp(editor, appSlug) || (editor.Login != "" && editor.Login == author.Login)
+}
+
+// IsApp reports whether a is the App: the Bot "<appSlug>[bot]".
+func IsApp(a github.Author, appSlug string) bool {
+	return appSlug != "" && a.Type == "Bot" && a.Login == appSlug+"[bot]"
 }
 
 // Dirty reports whether history has an edit that isn't Sanctioned, and

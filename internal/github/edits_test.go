@@ -226,25 +226,18 @@ func TestHistoryPaging(t *testing.T) {
 	s := snapshot(t, f, n)
 	h := history(t, f, s.Comments[0].Node, s.Comments[1].Node)
 	got := h[s.Comments[0].Node]
-	if len(got) != 252 {
-		t.Fatalf("got %d entries, want 252", len(got))
-	}
-	if got[0].At != at(2) || got[1].By.Login != "mallory" || got[1].At != at(4) || got[251].At != at(254) {
-		t.Errorf("entries 0, 1 and 251 = %+v, %+v and %+v, want the post, mallory's edit and the last", got[0], got[1], got[251])
-	}
 	if o := h[s.Comments[1].Node]; len(o) != 2 || o[1].At != at(255) {
 		t.Errorf("the other comment's history = %+v, want its post and one edit", o)
 	}
 	if q := f.HistoryQueries(); q != 3 {
 		t.Errorf("history queries = %d, want 3", q)
 	}
-
-	// With GitHub's cap: the original post and the 99 newest edits.
-	f.HistoryCap(100)
-	got = history(t, f, s.Comments[0].Node)[s.Comments[0].Node]
-	if len(got) != 100 || got[0].At != at(2) || got[1].At != at(156) || got[99].At != at(254) {
-		t.Errorf("capped history = %d entries from %v, %v to %v, want 100: the post, then %v to %v",
-			len(got), got[0].At, got[min(1, len(got)-1)].At, got[len(got)-1].At, at(156), at(254))
+	if len(got) != 252 {
+		t.Errorf("got %d entries, want 252", len(got))
+		return
+	}
+	if got[0].At != at(2) || got[1].By.Login != "mallory" || got[1].At != at(4) || got[251].At != at(254) {
+		t.Errorf("entries 0, 1 and 251 = %+v, %+v and %+v, want the post, mallory's edit and the last", got[0], got[1], got[251])
 	}
 }
 

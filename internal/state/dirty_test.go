@@ -34,6 +34,8 @@ func TestDirty(t *testing.T) {
 		{"a trusted user's comment, rewritten by the App", owner, edits(owner, app, app), github.Author{}, false},
 		{"the App's edit is skipped for the oldest", owner, edits(owner, app, mallory, owner), mallory, true},
 		{"untrusted, then the App, on a trusted user's body", owner, edits(owner, mallory, app), mallory, true},
+		{"a User with the App's full login", owner, edits(owner, github.Author{Login: "issuedog[bot]", Type: "User"}),
+			github.Author{Login: "issuedog[bot]", Type: "User"}, true},
 		{"another App's bot", owner, edits(owner, github.Author{Login: "other[bot]", Type: "Bot"}),
 			github.Author{Login: "other[bot]", Type: "Bot"}, true},
 		{"an editor GitHub doesn't name", owner, edits(owner, github.Author{}), github.Author{}, true},

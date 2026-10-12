@@ -32,48 +32,55 @@ type content struct {
 	author github.Author
 	body   string
 	edit   github.Edit
+	note   string // the login a note at the top of body names, if any
+	rest   string // body below the note, or all of it
 }
 
 // contents lists s's body, then its comments, oldest first.
 func contents(s *github.Snapshot) []content {
-	all := []content{{state.BodyID, s.BodyNode, s.Author, s.Body, s.BodyEdit}}
+	all := []content{{id: state.BodyID, node: s.BodyNode, author: s.Author, body: s.Body, edit: s.BodyEdit}}
 	for _, c := range s.Comments {
-		all = append(all, content{c.ID, c.Node, c.Author, c.Body, c.Edit})
+		all = append(all, content{id: c.ID, node: c.Node, author: c.Author, body: c.Body, edit: c.Edit})
+	}
+	for i := range all {
+		all[i].note, all[i].rest = noted(all[i].body)
 	}
 	return all
 }
 
 // Dirty finds the dirty content of s (state.Dirty), whoever wrote it. It
 // reads histories only where the snapshot can't decide, all in one query:
-//   - Unedited content is clean. Content with the App's note is dirty, by
-//     whoever the note names.
 //   - Content last edited by anyone but its author or the App (see
-//     state.Sanctioned) is dirty, by its last editor: its history isn't
-//     read to find an older one.
+//     state.Sanctioned) is dirty, by its last editor, whatever note it
+//     carries: its history isn't read to find an older editor.
+//   - Content with a note is dirty, by whoever the note names, if the App
+//     made the last edit (the App wrote the note) or nobody edited it (its
+//     author typed it, which only makes their own content ignored).
+//   - Other unedited content is clean.
 //   - Content last edited by its author or the App needs its history,
 //     since someone else may have edited it before them. It is dirty by
-//     the oldest editor whose edit isn't sanctioned. So the App's own note
-//     never makes content look clean: the history keeps the earlier edit.
+//     the oldest editor whose edit isn't sanctioned, else by whoever its
+//     note names, else it is clean. So the App's own note never makes
+//     content look clean: the history keeps the earlier edit, and the note
+//     keeps it dirty after GitHub drops that edit, as it keeps only the 99
+//     newest edits (github.History).
 //
 // A history that can't show the last edit, with fewer than two entries (the
 // original post and an edit) or a newest entry older than the snapshot's
 // edit, fails closed: the content is dirty by its last editor, with a
-// warning. The note's marker keeps content dirty even after GitHub drops
-// the edit that made it so, as it keeps only the 99 newest edits
-// (github.History). Anyone can type the marker, but that only makes
-// content ignored.
+// warning.
 func (a *Applier) Dirty(ctx context.Context, s *github.Snapshot) (Dirt, error) {
 	d := Dirt{}
 	var need []content
 	var nodes []string
 	for _, c := range contents(s) {
-		by, ok := noted(c.body)
+		edited := !c.edit.At.IsZero()
 		switch {
-		case ok:
-			d[c.id] = by
-		case c.edit.At.IsZero():
-		case !state.Sanctioned(c.author, c.edit.By, a.AppSlug):
+		case edited && !state.Sanctioned(c.author, c.edit.By, a.AppSlug):
 			d[c.id] = login(c.edit.By)
+		case c.note != "" && (!edited || state.IsApp(c.edit.By, a.AppSlug)):
+			d[c.id] = c.note
+		case !edited:
 		default:
 			need, nodes = append(need, c), append(nodes, c.node)
 		}
@@ -93,25 +100,28 @@ func (a *Applier) Dirty(ctx context.Context, s *github.Snapshot) (Dirt, error) {
 			d[c.id] = login(c.edit.By)
 		} else if by, ok := state.Dirty(c.author, h, a.AppSlug); ok {
 			d[c.id] = login(by)
+		} else if c.note != "" {
+			d[c.id] = c.note
 		}
 	}
 	return d, nil
 }
 
 // MarkDirty puts a visible note at the top of each dirty body or comment in
-// s that lacks one, and keeps the rest of the text, escaped (SPEC §5.1). A
-// note that someone removed is put back. Each write is added to s. It
-// writes from s, so an edit made since s was read is lost, but that content
-// is dirty already. The App's edit can't make the content clean: the
-// history keeps the edit that made it dirty, and the note marks it.
+// s, naming who d says made it dirty, and keeps the rest of the text,
+// escaped (SPEC §5.1). A note that someone removed is put back, and one
+// that names anyone else, such as a forged one, is replaced, with the text
+// below it escaped again. Each write is added to s. It writes from s, so an
+// edit made since s was read is lost, but that content is dirty already.
+// The App's edit can't make the content clean (see Dirty).
 func (a *Applier) MarkDirty(ctx context.Context, s *github.Snapshot, d Dirt) error {
 	app := github.Author{Login: a.AppSlug + "[bot]", Type: "Bot"}
 	for i, c := range contents(s) {
 		by, ok := d[c.id]
-		if _, done := noted(c.body); !ok || done {
+		if !ok || c.note == by {
 			continue
 		}
-		body, err := note(c.id, by, c.body)
+		body, err := note(c.id, by, c.rest)
 		if err != nil {
 			return fmt.Errorf("mark %s/%s#%d dirty: %w", a.Owner, a.Repo, s.Number, err)
 		}
@@ -154,16 +164,21 @@ func what(id int64) string {
 	return "comment"
 }
 
-// noted returns the editor a note names, if text starts with one. A web
-// edit may turn its line endings into CRLF.
-func noted(text string) (string, bool) {
-	line, rest, _ := strings.Cut(text, "\n")
+// noted returns the login a note names and the text below the note, if
+// text starts with one, else "" and all of text. A web edit may turn its
+// line endings into CRLF.
+func noted(text string) (by, rest string) {
+	line, below, _ := strings.Cut(text, "\n")
 	m := github.ParseMarkers(line)
-	if len(m) != 1 || m[0].Kind != "dirty" || !strings.HasPrefix(rest, notePrefix) {
-		return "", false
+	if len(m) != 1 || m[0].Kind != "dirty" || !strings.HasPrefix(below, notePrefix) {
+		return "", text
 	}
-	by := m[0].Fields["by"]
-	return by, by != "" && strings.TrimSuffix(line, "\r") == "<!-- issuedog:dirty by="+by+" -->"
+	by = m[0].Fields["by"]
+	if by == "" || strings.TrimSuffix(line, "\r") != "<!-- issuedog:dirty by="+by+" -->" {
+		return "", text
+	}
+	_, below, _ = strings.Cut(below, "\n")
+	return by, strings.TrimLeft(below, "\r\n")
 }
 
 // login is who an editor is, as a note names them.

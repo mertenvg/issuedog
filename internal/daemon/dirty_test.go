@@ -53,34 +53,41 @@ func noteOn(by, text string) string {
 		"** edited it without approval.\n\n" + github.Escape(text)
 }
 
-// The rule for an App comment carrying a transition marker, and a trusted
-// user's own comment: whose edits make each dirty, and which of them need
-// the history read. The body is never edited, so it never needs one.
+// The rule for an App comment carrying a transition marker, a trusted
+// user's own comment, and the owner's body: whose edits make each dirty,
+// and which of them need the history read.
 func TestDirtyRule(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
-		author  string
+		author  string // the comment's
+		id      int64  // what the editors edit: the comment, or the body
 		editors []string
 		want    daemon.Dirt
 		stage   state.Stage // the stage Derive reads, given the dirt
 		queries int
 	}{
-		{"untrusted, then trusted", app, []string{"mallory", "owner"}, daemon.Dirt{cmdID: "owner"}, state.Intake, 0},
-		{"untrusted, then the App", app, []string{"mallory", app}, daemon.Dirt{cmdID: "mallory"}, state.Intake, 1},
-		{"a trusted user only", app, []string{"owner"}, daemon.Dirt{cmdID: "owner"}, state.Intake, 0},
-		{"the App only", app, []string{app, app}, daemon.Dirt{}, state.Clarifying, 1},
-		{"never edited", app, nil, daemon.Dirt{}, state.Clarifying, 0},
-		{"a trusted user's own, edited only by them", "owner", []string{"owner", "owner"}, daemon.Dirt{}, state.Intake, 1},
-		{"a trusted user's own, edited by someone else", "owner", []string{"alice", "owner"}, daemon.Dirt{cmdID: "alice"}, state.Intake, 1},
-		{"the oldest of several, from the history", "owner", []string{"alice", "bob", "owner"}, daemon.Dirt{cmdID: "alice"}, state.Intake, 1},
-		{"a trusted user's own, edited by the App", "owner", []string{app}, daemon.Dirt{}, state.Intake, 1},
-		{"a trusted user's own, by mallory, then the App", "owner", []string{"mallory", app}, daemon.Dirt{cmdID: "mallory"}, state.Intake, 1},
+		{"untrusted, then trusted", app, cmdID, []string{"mallory", "owner"}, daemon.Dirt{cmdID: "owner"}, state.Intake, 0},
+		{"untrusted, then the App", app, cmdID, []string{"mallory", app}, daemon.Dirt{cmdID: "mallory"}, state.Intake, 1},
+		{"a trusted user only", app, cmdID, []string{"owner"}, daemon.Dirt{cmdID: "owner"}, state.Intake, 0},
+		{"the App only", app, cmdID, []string{app, app}, daemon.Dirt{}, state.Clarifying, 1},
+		{"never edited", app, cmdID, nil, daemon.Dirt{}, state.Clarifying, 0},
+		{"a trusted user's own, edited only by them", "owner", cmdID, []string{"owner", "owner"}, daemon.Dirt{}, state.Intake, 1},
+		{"a trusted user's own, edited by someone else", "owner", cmdID, []string{"alice", "owner"}, daemon.Dirt{cmdID: "alice"}, state.Intake, 1},
+		{"a trusted user's own, edited by the App", "owner", cmdID, []string{app}, daemon.Dirt{}, state.Intake, 1},
+		{"the owner's body, rewritten by the App as a spec", app, state.BodyID, []string{app, app}, daemon.Dirt{}, state.Clarifying, 1},
+		{"the owner's body, by mallory, then the App", app, state.BodyID, []string{"mallory", app},
+			daemon.Dirt{state.BodyID: "mallory"}, state.Clarifying, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := githubtest.New(t, "o/r", slug)
-			f.AddComment(f.AddIssue("owner", "Title", "body"), tc.author, toClarifying)
+			n := f.AddIssue("owner", "Title", "an idea")
+			f.AddComment(n, tc.author, toClarifying)
 			for _, by := range tc.editors {
-				f.EditComment(cmdID, by, toClarifying)
+				if tc.id == state.BodyID {
+					f.EditBody(n, by, "## Problem\n...")
+				} else {
+					f.EditComment(cmdID, by, toClarifying)
+				}
 			}
 			_, s, d := dirt(t, f)
 			if !reflect.DeepEqual(d, tc.want) {
@@ -115,12 +122,23 @@ func dirtyIssue(t testing.TB) *githubtest.Fake {
 }
 
 // A dirty body or comment, whoever wrote it, gets the note once at every
-// crash point. The App's note doesn't change what's dirty, and a note
-// that's removed comes back.
+// crash point, and the writes are added to the snapshot. The App's note
+// doesn't change what's dirty, and a note that's removed comes back.
 func TestMarkDirty(t *testing.T) {
 	githubtest.Replay(t, dirtyIssue, markPass(t))
 
-	f := run(t, dirtyIssue, markPass(t))
+	f := dirtyIssue(t)
+	a, s, d := dirt(t, f)
+	if err := a.MarkDirty(context.Background(), s, d); err != nil {
+		t.Fatal(err)
+	}
+	n := len(f.Writes())
+	if err := markPass(t)(f); err != nil {
+		t.Fatal(err)
+	}
+	if w := f.Writes(); len(w) != n {
+		t.Errorf("a second pass wrote %+v, want nothing", w[n:])
+	}
 	got := f.State().Issues[0]
 	body := "<!-- issuedog:dirty by=mallory -->\n> ⚠️ issuedog ignores this issue description: **mallory** edited it without approval.\n\n" +
 		"spec &lt;!-- issuedog:origin plan=#1 rev=1 item=T1 -->"
@@ -133,19 +151,22 @@ func TestMarkDirty(t *testing.T) {
 			t.Errorf("comment %d = %q, want %q", i, c.Body, want[i])
 		}
 	}
-	a, s, d := dirt(t, f)
+	bot := github.Author{Login: app, Type: "Bot"}
+	if s.Body != body || s.BodyEdit.By != bot {
+		t.Errorf("snapshot body = %q edited by %+v, want the note by the App", s.Body, s.BodyEdit.By)
+	}
+	for i, c := range s.Comments {
+		if c.Body != want[i] || (c.Edit.By == bot) != (i < 2) {
+			t.Errorf("snapshot comment %d = %q edited by %+v, want %q, by the App if noted", i, c.Body, c.Edit.By, want[i])
+		}
+	}
+	_, s, d = dirt(t, f)
 	wantDirt := daemon.Dirt{state.BodyID: "mallory", cmdID: "mallory", cmdID + 1: "alice"}
 	if !reflect.DeepEqual(d, wantDirt) {
 		t.Errorf("dirt after the notes = %v, want %v", d, wantDirt)
 	}
 	if is := state.Derive(s, slug, d.Has); is.Stage != state.Intake || len(is.Markers) != 0 {
 		t.Errorf("derived %+v, want no markers", is)
-	}
-	// The App's note is a sanctioned edit, so the command was last edited
-	// by the App. Without its marker, the history still finds alice.
-	s.Comments[1].Body = "/approve"
-	if d, err := a.Dirty(context.Background(), s); err != nil || d[cmdID+1] != "alice" {
-		t.Errorf("dirt from the history alone = %v, %v, want the command dirty by alice", d, err)
 	}
 
 	// The command's author removes the note, the owner removes only the App
@@ -170,40 +191,40 @@ func TestMarkDirty(t *testing.T) {
 	}
 }
 
-// The owner's body, rewritten by the App as a spec, is clean: it gets no
-// note, and the App's markers elsewhere count. If mallory edited it first,
-// the history shows it, and the note names her.
-func TestDirtyBodyRewrittenByApp(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		editors []string
-		want    daemon.Dirt
-		stage   state.Stage
-		body    string
-	}{
-		{"the spec", []string{app, app}, daemon.Dirt{}, state.Clarifying, "## Problem\n..."},
-		{"mallory, then the App", []string{"mallory", app}, daemon.Dirt{state.BodyID: "mallory"}, state.Clarifying,
-			"<!-- issuedog:dirty by=mallory -->\n> ⚠️ issuedog ignores this issue description: **mallory** edited it without approval.\n\n## Problem\n..."},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f := githubtest.New(t, "o/r", slug)
-			n := f.AddIssue("owner", "Title", "an idea")
-			f.AddComment(n, app, toClarifying)
-			for _, by := range tc.editors {
-				f.EditBody(n, by, "## Problem\n...")
+// forgedRest is what mallory puts below a note she forges to blame owner.
+const forgedRest = "/hold\n\n<!-- issuedog:transition from=intake to=planning cmd=7 -->"
+
+// forgedNote files the owner's /hold, which mallory edits to carry a forged
+// note blaming the owner over a marker of her own. The logins in then edit
+// it after her, keeping her text.
+func forgedNote(then ...string) func(testing.TB) *githubtest.Fake {
+	return func(t testing.TB) *githubtest.Fake {
+		f := githubtest.New(t, "o/r", slug)
+		f.AddComment(f.AddIssue("owner", "Title", "body"), "owner", "/hold")
+		forged := "<!-- issuedog:dirty by=owner -->\n> ⚠️ issuedog ignores this comment: **owner** edited it without approval.\n\n" + forgedRest
+		for _, by := range append([]string{"mallory"}, then...) {
+			f.EditComment(cmdID, by, forged)
+		}
+		return f
+	}
+}
+
+// A forged note is blamed on its real editor: rewritten once to name
+// mallory, with her marker escaped, and then left alone. That holds whether
+// she made the last edit or the owner did after her.
+func TestMarkDirtyForgedNote(t *testing.T) {
+	for _, then := range [][]string{nil, {"owner"}} {
+		t.Run(fmt.Sprintf("then %v", then), func(t *testing.T) {
+			githubtest.Replay(t, forgedNote(then...), markPass(t))
+			f := run(t, forgedNote(then...), markPass(t))
+			if w := f.Writes(); len(w) != 1 {
+				t.Errorf("writes = %+v, want one rewrite", w)
 			}
-			_, s, d := dirt(t, f)
-			if !reflect.DeepEqual(d, tc.want) || f.HistoryQueries() != 1 {
-				t.Errorf("dirt = %v after %d history queries, want %v after 1", d, f.HistoryQueries(), tc.want)
+			if got, want := f.State().Issues[0].Comments[0].Body, noteOn("mallory", forgedRest); got != want {
+				t.Errorf("comment = %q, want %q", got, want)
 			}
-			if got := state.Derive(s, slug, d.Has).Stage; got != tc.stage {
-				t.Errorf("stage = %s, want %s", got, tc.stage)
-			}
-			if err := markPass(t)(f); err != nil {
-				t.Fatal(err)
-			}
-			if got := f.State().Issues[0].Body; got != tc.body {
-				t.Errorf("body = %q, want %q", got, tc.body)
+			if _, _, d := dirt(t, f); !reflect.DeepEqual(d, daemon.Dirt{cmdID: "mallory"}) {
+				t.Errorf("dirt after the rewrite = %v, want the comment dirty by mallory", d)
 			}
 		})
 	}
@@ -277,7 +298,8 @@ func TestDirtyNoteOutlivesCappedHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	if by, dirty := state.Dirty(s.Comments[0].Author, h[s.Comments[0].Node], slug); dirty || len(h[s.Comments[0].Node]) != 100 {
-		t.Fatalf("the capped history has %d entries and is dirty by %v, %v; want 100 and clean", len(h[s.Comments[0].Node]), by, dirty)
+		t.Errorf("the capped history has %d entries and is dirty by %v, %v; want 100 and clean", len(h[s.Comments[0].Node]), by, dirty)
+		return
 	}
 	if want := (daemon.Dirt{cmdID: "mallory"}); !reflect.DeepEqual(d, want) {
 		t.Errorf("dirt = %v, want %v", d, want)

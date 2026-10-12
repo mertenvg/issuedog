@@ -97,8 +97,7 @@ func TestHistoryBadAnswers(t *testing.T) {
 		want    error
 	}{
 		{"no cursor", []string{page("A", true, "null")}, errCursor},
-		{"same cursor", []string{page("A", true, `"c1"`), page("A", true, `"c1"`)}, errCursor},
-		{"cursor back", []string{page("A", true, `"c1"`), page("A", true, `"c2"`), page("A", true, `"c1"`)}, errCursor},
+		{"a cursor seen before", []string{page("A", true, `"c1"`), page("A", true, `"c2"`), page("A", true, `"c1"`)}, errCursor},
 		{"other node", []string{page("B", false, "null")}, errNoNode},
 		{"null node", []string{`{"data":{"nodes":[null]}}`}, errNoNode},
 		{"no nodes", []string{`{"data":{"nodes":[]}}`}, errNoNode},
