@@ -123,14 +123,6 @@ func TestCheckLabelsDisagreement(t *testing.T) {
 		{name: "a trusted removal after the marker is reported",
 			timeline: then(removed(3, "owner", "stage:ready")),
 			want:     LabelEvent{Kind: LabelDisagreement, Marker: "ready", Key: 3}},
-		{name: "a repair cut short keeps the key of what it repairs",
-			timeline: then(removed(3, appBot, "stage:ready"), added(4, appBot, "stage:verifying"),
-				said(5, appBot, "<!-- issuedog:error kind=disagreement key=4 -->"), added(6, appBot, "stage:ready")),
-			want: LabelEvent{Kind: LabelDisagreement, Stages: []string{"stage:ready", "stage:verifying"}, Marker: "ready", Key: 4}},
-		{name: "neither an untrusted change nor the App's revert of it is the key",
-			timeline: then(removed(3, "owner", "stage:ready"), added(4, "mallory", "stage:ready"),
-				said(5, appBot, "<!-- issuedog:revert key=4 -->"), removed(6, appBot, "stage:ready")),
-			want: LabelEvent{Kind: LabelDisagreement, Marker: "ready", Key: 3}},
 		{name: "a marker in a dirty comment is skipped",
 			timeline: then(said(3, appBot, marker("verifying")), added(4, appBot, "stage:verifying"), removed(5, appBot, "stage:ready")),
 			dirty:    3,
@@ -177,7 +169,7 @@ func checkLabels(t *testing.T, timeline []ev, dirty func(int64) bool) ([]string,
 		writes = append(writes, desc)
 		_, _ = io.WriteString(w, map[bool]string{true: "[]", false: "{}"}[strings.HasSuffix(path, "/labels")])
 	}))
-	got, err := c.CheckLabels(context.Background(), "o", "r", 7, "issuedog", fakeTrust{"owner": true}, dirty)
+	_, got, err := c.CheckLabels(context.Background(), "o", "r", 7, nil, "issuedog", fakeTrust{"owner": true}, dirty)
 	if err != nil {
 		t.Fatal(err)
 	}

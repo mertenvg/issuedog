@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -16,8 +15,9 @@ import (
 // what github.CheckLabels finds. It must run before any Transition on s.
 //
 //   - An override, a trusted user's change of the stage label by hand, gets a
-//     transition marker with by=<login> and event=<id>. It isn't looked up in
-//     the table. A move to held is an owner hold (SPEC §6.4), so it also gets
+//     transition marker with by=<login> and event=<id>. That includes a change
+//     made while a transition was in flight, so the owner's intent wins. It
+//     isn't looked up in the table. A move to held is an owner hold (SPEC §6.4), so it also gets
 //     at=<previous> and reason=owner. An override to the issue's current
 //     stage, held included, since holds stack, gets no marker. An issue whose
 //     labels were set by hand, with no marker of the App's, is adopted this
@@ -35,13 +35,13 @@ import (
 // an Unfinished disagreement; an error comment is posted once per key. The
 // writes are added to s. dirty is as for state.Derive.
 func (a *Applier) CheckLabels(ctx context.Context, s *github.Snapshot, trust github.Trust, dirty func(int64) bool) error {
-	events, err := a.Client.CheckLabels(ctx, a.Owner, a.Repo, s.Number, a.AppSlug, trust, dirty)
+	labels, events, err := a.Client.CheckLabels(ctx, a.Owner, a.Repo, s.Number, s.Labels, a.AppSlug, trust, dirty)
 	if err != nil {
 		return fmt.Errorf("labels of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
 	}
+	// CheckLabels may have reverted labels since s was read.
+	s.Labels = labels
 	for _, ev := range events {
-		// CheckLabels may have reverted labels since s was read.
-		s.Labels = append(slices.DeleteFunc(s.Labels, isStageLabel), ev.Stages...)
 		to, ok := state.ParseLabel(ev.Label)
 		if ev.Kind == github.LabelOverride && ok {
 			err = a.override(ctx, s, dirty, ev, to)
