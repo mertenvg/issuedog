@@ -18,7 +18,7 @@ var version = "dev"
 
 func main() {
 	stop := setupLogging(os.Stdout, os.Stderr)
-	code := run(os.Args[1:], os.Environ(), os.Stdin, os.Stdout, os.Stderr)
+	code := run(os.Args[1:], os.Environ(), os.Stdin)
 	logr.Wait()
 	stop()
 	os.Exit(code)
@@ -35,15 +35,18 @@ func setupLogging(stdout, stderr io.Writer) (stop func()) {
 	}
 }
 
-func run(args, environ []string, stdin io.Reader, stdout, stderr io.Writer) int {
+// run is the whole program. Like everything else, it writes only through
+// logr, which main's setupLogging sends to stdout and stderr.
+func run(args, environ []string, stdin io.Reader) int {
 	fs := flag.NewFlagSet("issuedog", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs.SetOutput(io.Discard) // usage goes through logr
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
+		logr.Errorf("issuedog: %v\n%s", err, usage)
 		return 2
 	}
 	if *showVersion {
-		fmt.Fprintf(stdout, "issuedog %s\n", version)
+		logr.Infof("issuedog %s", version)
 		return 0
 	}
 	// Key commands don't need a Claude credential, so they run before its check.
@@ -59,6 +62,7 @@ func run(args, environ []string, stdin io.Reader, stdout, stderr io.Writer) int 
 }
 
 const usage = `usage:
+  issuedog [-version]
   issuedog key import [-path file] < app-key.pem
   issuedog key check [-path file]     the file defaults to ` + appkey.DefaultPath
 
