@@ -54,8 +54,7 @@ func Import(path string, r io.Reader) error {
 	return nil
 }
 
-// checkRSA reports whether data holds an RSA private key in PEM form, either
-// PKCS #1 (what GitHub issues) or PKCS #8.
+// checkRSA accepts an RSA private key in PEM, PKCS #1 (GitHub's) or PKCS #8.
 func checkRSA(data []byte) error {
 	block, _ := pem.Decode(data)
 	if block == nil {
