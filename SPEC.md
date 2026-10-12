@@ -35,13 +35,14 @@ Mac host (kept awake while issuedog runs)
 - The daemon acts on GitHub as a GitHub App (section 15) through a Go client: `go-github` with an App installation-token transport, plus raw REST calls for endpoints the client lacks, such as sub-issues and issue dependencies. There is no `gh` dependency. This gives native ETags for polling (section 8.1), typed responses, and tests against `httptest` fakes.
 - The daemon starts a fresh `claude -p` process for every stage run, including every retry. Sessions are never resumed, so each run starts from the issue and the code, and the verifier never shares context with the implementer.
 - The base image follows the existing sandbox setup: `~/.claude/CLAUDE.md` bind-mounted read-only, `--dangerously-skip-permissions` as the non-root `agent` uid, feature branch per task.
+- Nothing in the container runs as root. The image starts the daemon as `issuedog`. The daemon binary is the only file with capabilities: `cap_setuid` and `cap_setgid` to start stage runs as `agent`, and `cap_net_admin` to apply the agent firewall at startup. It is `root:issuedog 0750`, so `agent` can't run it, and processes started as `agent` get no capabilities. Every `docker run` of the image needs `--cap-add NET_ADMIN`, without which the kernel refuses to start the binary, and must not use `--security-opt no-new-privileges`, which ignores file capabilities.
 - The host must not sleep while issuedog runs (for example `caffeinate -s`, or the equivalent Docker Desktop setting).
 
 ### 3.1 Who writes to GitHub
 
 Only the daemon writes to GitHub. Agents return structured output and the daemon validates and applies it.
 
-- The GitHub App private key lives in a file readable only by the `issuedog` uid. The daemon mints short-lived installation tokens and uses them for its own API calls. Nothing running as `agent` ever receives a GitHub credential. That includes GitHub connectors and GitHub MCP servers, which are never configured for an agent.
+- The GitHub App private key lives in `/state/app-key.pem`, on the state volume, readable only by the `issuedog` uid. It is imported once with `issuedog key import` (section 15), so it is never bind-mounted from the host or built into an image. The daemon mints short-lived installation tokens and uses them for its own API calls. Nothing running as `agent` ever receives a GitHub credential. That includes GitHub connectors and GitHub MCP servers, which are never configured for an agent.
 - Claude and every repo command (tests, lint, build) run as the `agent` uid. A different uid cannot read the key file or the daemon's memory.
 - Claude's own credential (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`) is necessarily in the agent's environment. Outbound traffic from the `agent` uid is limited to `network.allow` (section 13), enforced inside the container with an owner-matched firewall rule, so a prompt-injected agent cannot send it, or the code, elsewhere.
 - Agents read issue context from files the daemon writes to `/run/issuedog/<run-id>/`, outside the clone, so the daemon controls which comments an agent sees (section 6) and nothing it writes appears in the diff.
@@ -97,13 +98,16 @@ The task verifier runs in a fresh checkout of the head SHA, but only after rule 
 | Type | Meaning | Created by |
 |---|---|---|
 | `epic` | A rough idea or large feature | Owner |
-| `story` | One user-visible outcome with acceptance criteria | Planner (epic plan) |
+| `story` | One user-visible outcome with acceptance criteria | Planner (epic plan), or owner |
 | `task` | One PR, one scope; a human task has no PR (section 9.3) | Planner (epic or story plan), or owner for a small change |
 | `bug` | Something broken | Owner, or story verifier |
 
 - Repos owned by an organization use GitHub issue types. The org's defaults are Task, Bug and Feature, so an org owner must create `Epic` and `Story` first. Repos owned by a personal account have no issue types and use `type:epic`, `type:story`, `type:task`, `type:bug` labels instead. Config selects which.
 - Hierarchy uses native sub-issues: epic → story → task, or epic → task. Sub-issues must share the parent's owner. GitHub allows 100 sub-issues per parent.
 - An epic with a single user-facing outcome is planned directly into tasks and acts as its own story, including story verification (section 7.3).
+- **Untyped issues.** The owner may file an issue with no type. At the start of clarifying the interviewer picks one of the four types and sets it: the `type:*` label, or the issue type on org repos. Its first comment names the type with a one-line reason. If it can't tell yet, it asks questions first and sets the type once the issue is clear. An issue with no type doesn't leave `clarifying`.
+- **Changing the type.** The interviewer may set or change only a type it set itself, on an issue that arrived with no type, and only while the issue is at `intake` or `clarifying`. Every other type change is the owner's. The owner can change it at any time, and the daemon follows the owner's type from then on. If the issue's current stage doesn't apply to the new type (section 7.2), the daemon leaves it where it is and lists it in the digest as a state error until the owner sets a stage (5.1).
+- A story filed by the owner has no parent epic. It goes through clarifying, spec review and planning like an epic, then story verification (section 7.3).
 - A `bug`, or a `task` filed by the owner, goes through clarifying and then becomes a single task. It skips spec review and planning. A bug filed against earlier work starts its body with `Follow-up to #N` and includes the acceptance criterion "the original behavior of #N is unaffected."
 
 ## 5. State
@@ -120,18 +124,19 @@ GitHub is the single source of truth. The daemon keeps only an in-memory cache, 
 | Scope | `scope:<name>` from the repo's allowed list |
 | Transition history | Bot comments carrying a hidden marker, e.g. `<!-- issuedog:transition from=clarifying to=spec-review rev=3 body=9f2a61c0 run=8f2c cmd=2214587 -->` |
 | Attempt count | Hidden marker on the latest bot verifier comment |
+| State errors | Bot comments carrying an `error` marker with a stable key (5.3) |
 | Processed commands | The bot's 👍 reaction on the command comment, plus `cmd=<comment id>` in the transition marker. A reaction command (section 9.2) is recorded as `cmd=r<reaction id>` |
 | Spec and plan revisions | One revision comment per revision, naming `rev`. The hash is in the transition marker (section 7.4); for plans, see section 16 |
 | Origin of bot-created issues | Hidden `origin` marker in the issue body (section 6.2) |
 
 Assignees, and the priority labels on PRs, are not state either: the daemon derives them (section 9.6) and corrects them on every poll.
 
-The only local files are the lease (section 8.2) and the run results in `/state/runs/`. Both are scratch: losing the container loses nothing except the current run.
+Apart from the App key (section 3.1), the only local files are the lease (section 8.2) and the run results in `/state/runs/`. Both are scratch: losing the container loses nothing except the current run.
 
 ### 5.1 Reading rules
 
 - **Markers.** The daemon only reads markers in comments and issue bodies written by the issuedog App. A marker anywhere else is ignored.
-- **Labels.** A `stage:*`, `priority:*`, `scope:*` or `approved` label counts only if the issue timeline shows that its most recent `labeled` event came from the App or a trusted user (section 6.1).
+- **Labels.** A `stage:*`, `priority:*`, `scope:*`, `type:*` or `approved` label counts only if the issue timeline shows that its most recent `labeled` event came from the App or a trusted user (section 6.1). On org repos the same applies to the issue type and its most recent type event.
   - When an untrusted actor adds or removes one of these labels, the daemon reverts the change and posts a short comment.
   - When a trusted user changes a stage label by hand, the daemon treats it as an owner override and records a transition marker with `by=<login>`. It does this even if the change is not in the transition table.
 - **Disagreement.** If the stage label and the latest transition marker disagree and 5.1 does not explain the difference, the daemon puts the label back to match the marker and lists the issue in the digest.
@@ -143,6 +148,14 @@ Every transition goes through one table in code (section 7). Each write is check
 - **Transitions.** Applying a transition whose marker already exists is a no-op.
 - **Commands.** For a command comment, the daemon writes the transition marker with `cmd=<comment id>`, then adds its 👍 reaction. GitHub has no ✅ reaction. On replay, a marker carrying that `cmd` means only the reaction is missing. For a reaction command, the marker carries `cmd=r<reaction id>`. A reaction can't be reacted to, so the transition comment is the acknowledgment.
 - **Created issues.** Every issue the daemon creates has an `origin` marker with a stable item ID, such as `plan=#12 rev=3 item=T4`. Before creating an issue, the daemon searches for that marker and reuses any match. The same applies to sub-issue links and dependency links: the daemon reads the current links before adding any.
+
+### 5.3 State errors
+
+A state error is something the daemon reports to the owner instead of acting on: a transition missing from the table (7.2), a stage label that disagreed with its marker (5.1, after the daemon puts the label back), or a type that doesn't fit the issue's stage (4).
+
+- The daemon posts one comment per error, carrying `<!-- issuedog:error key=<key> -->`. The key is stable for the cause: the triggering event's ID for a missing transition, `label=<label> marker=<comment id>` for a disagreement, or `type=<type> stage=<stage>` for a type that doesn't fit. Before posting, the daemon looks for a comment with that key and reuses it, so a cause that persists across polls or restarts is posted once.
+- A trusted 👍 on the comment acknowledges the error. The daemon never posts that key again, and the owner is unassigned (9.6).
+- The error also ends when the issue makes its next valid transition.
 
 ## 6. Trust model
 
@@ -166,7 +179,7 @@ An issue enters the pipeline when any of these holds:
 - A trusted user added the `approved` label (checked on the timeline).
 - The App created it with an `origin` marker that points to an approved plan revision, or to a story-verifier run. Issues the App creates in another repo (section 14) carry no such marker, so they need `approved`.
 
-Only comments and reactions by trusted users count as answers, approvals or commands. Agents receive other comments in a separate, clearly labeled "untrusted input" section of their context files, and only for epics and stories.
+Only comments and reactions by trusted users count as answers, approvals or commands. Agents receive other comments in a separate, clearly labeled "untrusted input" section of their context files, and only for epics and stories. An issue with no type gets no untrusted input until its type is set.
 
 A command counts once. If its comment is edited after the daemon reacted to it, the edit is ignored and the bot replies asking for a new comment. If it is edited before the daemon processes it, the daemon reads the latest text.
 
@@ -206,6 +219,7 @@ The lifecycle of each type:
 
 - **Epic.** intake → clarifying → spec-review → planning → plan-review → planned → closed.
 - **Story.** Created at `stage:planning` from an approved epic plan, which already carries its acceptance criteria. Then planning → plan-review (or straight to planned, see `plan.review`) → planned → closed.
+- **Story filed by the owner.** intake → clarifying → spec-review → planning, then as a story.
 - **Task.** A task from the planner is created at `stage:ready`, or at `stage:needs-human` for a human task (section 11.3). Then ready → in-progress → verifying → pr-open → closed, with loops back through clarifying, in-progress or needs-human. A human task from the planner goes needs-human → closed.
 - **Bug, or task filed by the owner.** intake → clarifying → ready, then as a task.
 
@@ -215,11 +229,11 @@ The lifecycle of each type:
 |---|---|---|---|
 | intake | clarifying | all | Issue is trusted (6.2) |
 | clarifying | clarifying | all | Owner answered; interviewer has more questions |
-| clarifying | spec-review | epic | No open questions; spec written into the body |
+| clarifying | spec-review | epic, or story with no parent | No open questions; spec written into the body |
 | clarifying | ready | bug, or task filed by the owner | No open questions; daemon rewrites the body as a task (11.2) |
 | clarifying | ready | task | Owner answered the implementer's or verifier's question |
-| spec-review | clarifying | epic | Owner `/revise <text>`, or any other trusted comment (7.4) |
-| spec-review | planning | epic | Owner approves the current revision with 👍 or `/approve` (7.4) |
+| spec-review | clarifying | epic, or story with no parent | Owner `/revise <text>`, or any other trusted comment (7.4) |
+| spec-review | planning | epic, or story with no parent | Owner approves the current revision with 👍 or `/approve` (7.4) |
 | planning | plan-review | epic, story | Planner output passes validation (11.3) |
 | planning | planned | story | Output passes validation and `plan.review` is false; daemon creates tasks |
 | plan-review | planning | epic, story | Owner `/revise <text>`, or any other trusted comment (7.4) |
@@ -246,6 +260,8 @@ The lifecycle of each type:
 | held | previous | all | Owner `/resume` on the issue or an ancestor |
 | any open | closed | all | A person closed the issue; daemon stops any run for it |
 | closed | held | all | A person reopened the issue |
+
+From `ready` on, a `bug` follows the rows for `task`.
 
 Any transition missing from this table is an error, except a trusted user's manual label change (5.1). The daemon logs the error, leaves the issue unchanged and lists it in the digest.
 
@@ -277,7 +293,7 @@ Any transition missing from this table is an error, except a trusted user's manu
 
 Each loop iteration:
 
-1. Process new trusted comments, reactions and label changes on open issues: answers, `/approve`, `/revise`, `/done`, `/hold`, `/resume`, `/priority`, 👍 on revision comments, hand-off comments and human-task issues, and other comments in review stages (7.4). Revert untrusted label changes (5.1).
+1. Process new trusted comments, reactions and label changes on open issues: answers, `/approve`, `/revise`, `/done`, `/hold`, `/resume`, `/priority`, 👍 on revision comments, hand-off comments, state-error comments and human-task issues, and other comments in review stages (7.4). Revert untrusted label changes (5.1).
 2. Reconcile PRs: merges, closes, reviews with comments (7.2), new head SHAs, and `main` moving under open PRs.
 3. Run any pending non-task stage work for the highest-priority issue that has it: clarifying, spec, planning, story verification.
 4. Otherwise pick the next task:
@@ -331,6 +347,7 @@ Rules:
 - Free-text answers are always allowed.
 - Questions wait for an answer indefinitely. There is no default-on-silence.
 - The interviewer asks at most `max_questions_per_round` (default 7) per round, most blocking first.
+- On an issue with no type, the interviewer's first comment starts with the type it set and why, or with its questions when it can't tell yet (section 4).
 
 ### 9.2 Commands
 
@@ -343,6 +360,7 @@ Rules:
 | `/revise <text>` | Issue | Sends the spec or plan back with the owner's notes |
 | 👍 on the issue | Human task from the planner | Owner finished it (9.3) |
 | 👍 on the latest hand-off comment | Blocked task at `needs-human` | Same as `/done` (9.3) |
+| 👍 on a state-error comment | Any issue | Acknowledges the error (5.3). The stage doesn't change |
 | `/done` | `needs-human` issue | Owner finished the human task (9.3), or wants a closed PR's task started over |
 | `/hold`, `/resume` | Any issue | Pauses or resumes the issue and its descendants |
 | `/priority p1` | Any issue | Sets priority |
@@ -375,7 +393,7 @@ A `stage:needs-human` issue uses this template. The agent must fill every field;
 
 One pinned issue per repo, `issuedog digest`. It uses one of the repo's three pin slots.
 
-- The body is the current list: open questions, pending approvals, hand-offs and unblocked human tasks, PRs waiting for review, and state errors (5.1, 7.2). These are exactly the items the daemon assigns (9.6). Each state error is also posted on its issue as an App comment carrying an `issuedog:error` marker, so it survives a restart. Items are ordered by how many tasks each one unblocks.
+- The body is the current list: open questions, pending approvals, hand-offs and unblocked human tasks, PRs waiting for review, and state errors (5.1, 7.2). These are exactly the items the daemon assigns (9.6). Each state error is also posted on its issue as a comment (5.3). Items are ordered by how many tasks each one unblocks.
 - Each item states what is being decided, the options, the recommendation, and links to the issue.
 - The daemon rewrites the body when the list changes. It posts a short comment that @mentions `notify` only when a new item appears, so GitHub sends one notification per new item.
 
@@ -396,7 +414,7 @@ The owner finds everything waiting on them in GitHub's own "assigned to me" view
 | Hand-off | The task is at `needs-human` after a hand-off comment (9.3) |
 | Human task | The task is at `needs-human` and every issue blocking it is closed |
 | Pull request | The PR is open and its task is at `pr-open`. It is unassigned when the PR merges or closes, or when the task leaves `pr-open` |
-| State error | From the daemon's state-error comment until the issue's next valid transition, or until the owner reacts 👍 or replies `/done` to that comment |
+| State error | From the daemon's state-error comment until the owner reacts 👍 to it, or the issue's next valid transition (5.3) |
 
 - These are the same items the digest lists (9.4).
 - Each PR carries the `priority:*` label of the task it closes. The task's label is the priority: the daemon copies it to the PR and reverts any other change to the PR's label.
@@ -625,6 +643,7 @@ Changes to this file go through a human-authored PR (section 6.3).
    - Organization permissions: Members read (for CODEOWNERS teams) and Issue Types read.
    - Install it on each owner: the personal account and each org. Each installation has its own hourly token, and the daemon refreshes them.
    - No admin permissions.
+   - Import its private key into the state volume once: `docker run --rm -i --cap-add NET_ADMIN -v issuedog-state:/state issuedog key import < app-key.pem`. Then delete the downloaded file. To rotate the key, generate a new one on GitHub and import it the same way.
 2. **Plan.** Rulesets work on public repos on GitHub Free, and on private repos only with Pro, Team or Enterprise. Code owners on private repos also need Pro.
 3. **Ruleset on `main`:**
    - require a pull request
@@ -653,7 +672,7 @@ Changes to this file go through a human-authored PR (section 6.3).
 - **Approving PR reviews with comments.** Section 7.2 covers reviews with comments and approving reviews with none. An approving review that has comments is not yet covered.
 - **Usage-limit text.** The text `-p` prints when a subscription limit is hit is undocumented, so `usage_limit.pattern` must be checked against a real occurrence.
 - **`--bare` becoming the default.** Anthropic plans to make `--bare` the default for `-p`. `--bare` ignores `CLAUDE_CODE_OAUTH_TOKEN` and skips project agents and skills. Pin the Claude Code version, and re-test before upgrading.
-- **Egress firewall on macOS.** The owner-matched firewall rule (section 3.1) needs `NET_ADMIN` at container start. Confirm it works on Docker Desktop for Mac.
+- **Egress firewall on macOS.** The owner-matched firewall rule (section 3.1) needs `--cap-add NET_ADMIN` and the daemon's file capabilities. Confirm both work on Docker Desktop for Mac.
 - **Rumi Black's plan.** Confirm its visibility and plan meet the ruleset requirement in section 15.
 - **Public release.**
   - Anthropic does not allow third-party tools to offer claude.ai login or route requests through users' subscriptions without prior approval. The README should therefore require users to bring their own `ANTHROPIC_API_KEY`.
