@@ -120,8 +120,11 @@ type Item struct {
 	FromPlan bool
 	// Human is true for a plan item the planner marked human (SPEC §11.3).
 	Human bool
-	// ReachedReady is true once a transition marker has taken the issue to
-	// ready. A bug or owner task before that has its own class.
+	// ReachedReady is true once the issue has been at ready: any counted
+	// marker names ready or a later task stage (in-progress, verifying,
+	// pr-open) in its from, to, at or origin field. Using every field means
+	// one ignored marker (SPEC §5.1) can't send a task back to the pre-ready
+	// class. A bug or owner task before that has its own class.
 	ReachedReady bool
 }
 

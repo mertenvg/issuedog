@@ -3,6 +3,7 @@ package state
 import (
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -152,16 +153,27 @@ func TestTableMatchesSpec(t *testing.T) {
 	}
 	_, section, _ := strings.Cut(string(raw), "### 7.2 Transitions")
 	section, _, _ = strings.Cut(section, "### 7.3")
+	// The table runs from its header to the first blank line. Every line in
+	// it is a row, with or without outer pipes, so none can be skipped.
+	lines := strings.Split(section, "\n")
+	start := slices.IndexFunc(lines, func(l string) bool { return strings.HasPrefix(strings.TrimSpace(l), "| From |") })
+	if start < 0 {
+		t.Fatal("SPEC §7.2: no table header")
+	}
 	var n int
-	for i, line := range strings.Split(section, "\n") {
-		if !strings.HasPrefix(strings.TrimSpace(line), "|") {
-			continue
+	for i := start; i < len(lines) && strings.TrimSpace(lines[i]) != ""; i++ {
+		line := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(line, "|") {
+			line = "|" + line
 		}
-		// Split on unescaped pipes only, and fail on any table line that
-		// isn't a 4-column row, so a new SPEC row can't be skipped.
-		cols := strings.Split(strings.ReplaceAll(strings.TrimSpace(line), `\|`, "\x00"), "|")
+		if !strings.HasSuffix(line, "|") || strings.HasSuffix(line, `\|`) {
+			line += "|"
+		}
+		// Split on unescaped pipes only, and fail on any line that isn't a
+		// 4-column row.
+		cols := strings.Split(strings.ReplaceAll(line, `\|`, "\x00"), "|")
 		if len(cols) != 6 {
-			t.Fatalf("SPEC §7.2 line %d doesn't parse as a 4-column row: %q", i, line)
+			t.Fatalf("SPEC §7.2 line %d doesn't parse as a 4-column row: %q", i, lines[i])
 		}
 		if strings.TrimSpace(cols[1]) == "From" || strings.HasPrefix(strings.TrimSpace(cols[1]), "---") {
 			continue
