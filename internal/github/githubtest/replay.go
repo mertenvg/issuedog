@@ -17,14 +17,18 @@ type State struct {
 type IssueState struct {
 	Number                    int
 	Title, Body, Author, Type string
-	Labels                    []string // sorted
-	Parent                    int
-	Comments                  []CommentState // oldest first
+	// BodyEditedBy is the body's last editor, empty if never edited.
+	BodyEditedBy string
+	Labels       []string // sorted
+	Parent       int
+	Comments     []CommentState // oldest first
 }
 
 // CommentState is one comment in a State.
 type CommentState struct {
 	Author, Body string
+	// EditedBy is the last editor, empty if never edited.
+	EditedBy string
 	// Reactions are "<login> <content>", sorted, since GitHub treats them as
 	// a set: one of each content per user.
 	Reactions []string
@@ -37,7 +41,7 @@ func (f *Fake) State() State {
 	var s State
 	for _, is := range f.issues {
 		st := IssueState{Number: is.GetNumber(), Title: is.GetTitle(), Body: is.GetBody(), Author: is.GetUser().GetLogin(),
-			Type: is.GetType().GetName(), Parent: is.parent}
+			Type: is.GetType().GetName(), BodyEditedBy: is.lastEdit.by, Parent: is.parent}
 		for _, l := range is.Labels {
 			st.Labels = append(st.Labels, l.GetName())
 		}
@@ -45,7 +49,7 @@ func (f *Fake) State() State {
 			if c.issue != is.GetNumber() {
 				continue
 			}
-			cs := CommentState{Author: c.GetUser().GetLogin(), Body: c.GetBody()}
+			cs := CommentState{Author: c.GetUser().GetLogin(), Body: c.GetBody(), EditedBy: c.lastEdit.by}
 			for _, r := range c.reactions {
 				cs.Reactions = append(cs.Reactions, r.GetUser().GetLogin()+" "+r.GetContent())
 			}

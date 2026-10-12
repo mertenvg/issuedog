@@ -1,11 +1,10 @@
 package github
 
 import (
-	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 	"time"
 
@@ -17,6 +16,7 @@ type Snapshot struct {
 	Number    int
 	Title     string
 	Body      string
+	BodyEdit  Edit // the body's last edit
 	Author    Author
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -37,6 +37,7 @@ type Comment struct {
 	Body      string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	Edit      Edit // the body's last edit
 }
 
 // Reaction is one reaction to a comment.
@@ -49,14 +50,22 @@ type Reaction struct {
 	CreatedAt time.Time
 }
 
-// Snapshot reads one issue: the issue, its labels, type and parent, and every comment.
+// ErrPullRequest is wrapped by Snapshot's error for a pull request.
+var ErrPullRequest = errors.New("a pull request, not an issue")
+
+// Snapshot reads one issue, not a pull request: its title, author, labels,
+// type and parent from REST, then its body and every comment, each with who
+// last edited it, from GraphQL.
 func (c *Client) Snapshot(ctx context.Context, owner, repo string, number int) (*Snapshot, error) {
 	issue, _, err := c.Issues.Get(ctx, owner, repo, number)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot of %s/%s#%d: %w", owner, repo, number, err)
 	}
+	if issue.IsPullRequest() {
+		return nil, fmt.Errorf("snapshot of %s/%s#%d: %w", owner, repo, number, ErrPullRequest)
+	}
 	s := &Snapshot{
-		Number: issue.GetNumber(), Title: issue.GetTitle(), Body: issue.GetBody(),
+		Number: issue.GetNumber(), Title: issue.GetTitle(),
 		Author:    authorOf(issue.GetUser()),
 		CreatedAt: issue.GetCreatedAt().Time, UpdatedAt: issue.GetUpdatedAt().Time,
 		Type: strings.ToLower(issue.GetType().GetName()),
@@ -76,18 +85,9 @@ func (c *Client) Snapshot(ctx context.Context, owner, repo string, number int) (
 	default:
 		s.Parent = parent.GetNumber()
 	}
-	comments, err := c.CommentsSince(ctx, owner, repo, number, time.Time{})
-	if err != nil {
+	if err := c.readComments(ctx, owner, repo, s); err != nil {
 		return nil, fmt.Errorf("snapshot of %s/%s#%d: %w", owner, repo, number, err)
 	}
-	for _, cm := range comments {
-		s.Comments = append(s.Comments, Comment{
-			ID: cm.GetID(), Author: authorOf(cm.GetUser()), Body: cm.GetBody(),
-			CreatedAt: cm.GetCreatedAt().Time, UpdatedAt: cm.GetUpdatedAt().Time,
-		})
-	}
-	// IDs grow with time, and CommentsSince sorts by update.
-	slices.SortFunc(s.Comments, func(a, b Comment) int { return cmp.Compare(a.ID, b.ID) })
 	return s, nil
 }
 
