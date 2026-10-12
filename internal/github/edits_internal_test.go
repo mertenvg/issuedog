@@ -110,4 +110,9 @@ func TestHistoryBadAnswers(t *testing.T) {
 			}
 		})
 	}
+	// A null history is no entries, not an error: the daemon fails closed on it.
+	h, err := graphQLAnswers(t, `{"data":{"nodes":[{"id":"A","userContentEdits":null}]}}`).History(context.Background(), []string{"A"})
+	if err != nil || len(h["A"]) != 0 {
+		t.Errorf("history = %+v, %v, want none and no error", h, err)
+	}
 }

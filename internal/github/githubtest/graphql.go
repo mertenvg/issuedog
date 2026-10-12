@@ -111,11 +111,12 @@ func (f *Fake) graphql(c *call) (int, any) {
 	}
 	if named["query.nodes"] {
 		f.histories++
-		nodes, err := f.history(v.IDs, v.Cursor)
+		nodes, notFound, err := f.history(v.IDs, v.Cursor)
 		if err != "" {
 			errs = append(errs, map[string]any{"message": err})
 			return reply(nil)
 		}
+		errs = append(errs, notFound...)
 		return reply(map[string]any{"nodes": nodes})
 	}
 	if v.Number < 1 || v.Number > len(f.issues) || f.issues[v.Number-1].IsPullRequest() {
@@ -163,11 +164,20 @@ func (f *Fake) graphql(c *call) (int, any) {
 func issueNode(number int) string { return fmt.Sprintf("I_%d", number) }
 func commentNode(id int64) string { return fmt.Sprintf("IC_%d", id) }
 
+// HistoryCap sets how many entries a history lists: the original post and
+// the n-1 newest edits. It is 100 from New, as on GitHub, and n < 1 lists
+// every edit, so paging past 100 can be tested.
+func (f *Fake) HistoryCap(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.historyCap = n
+}
+
 // history answers the history query: each node's edits, newest first, 100
-// per page. Unlike GitHub, it keeps every edit, so paging past 100 can be
-// tested. A cursor is the number of older edits, so it survives new ones.
-// An unknown ID is an error.
-func (f *Fake) history(ids []string, cursor *string) ([]any, string) {
+// per page, capped as HistoryCap says. A cursor is the number of older
+// entries. As on GitHub, an unknown ID's node is null, with a NOT_FOUND
+// error whose path names it. A bad cursor is the only other error.
+func (f *Fake) history(ids []string, cursor *string) ([]any, []map[string]any, string) {
 	histories := map[string][]lastEdit{}
 	for _, is := range f.issues {
 		histories[issueNode(is.GetNumber())] = is.history
@@ -175,17 +185,23 @@ func (f *Fake) history(ids []string, cursor *string) ([]any, string) {
 	for _, c := range f.comments {
 		histories[commentNode(c.GetID())] = c.history
 	}
-	nodes := []any{}
-	for _, id := range ids {
+	nodes, errs := []any{}, []map[string]any{}
+	for i, id := range ids {
 		h, ok := histories[id]
 		if !ok {
-			return nil, fmt.Sprintf("Could not resolve to a node with the global id of '%s'", id)
+			nodes = append(nodes, nil)
+			errs = append(errs, map[string]any{"type": "NOT_FOUND", "path": []any{"nodes", i},
+				"message": fmt.Sprintf("Could not resolve to a node with the global id of '%s'", id)})
+			continue
+		}
+		if f.historyCap > 0 && len(h) > f.historyCap {
+			h = append(h[:1:1], h[len(h)-f.historyCap+1:]...)
 		}
 		older := len(h)
 		if cursor != nil {
 			n, err := strconv.Atoi(*cursor)
 			if err != nil || n < 0 || n > len(h) {
-				return nil, fmt.Sprintf("`%s` does not appear to be a valid cursor.", *cursor)
+				return nil, nil, fmt.Sprintf("`%s` does not appear to be a valid cursor.", *cursor)
 			}
 			older = n
 		}
@@ -200,7 +216,7 @@ func (f *Fake) history(ids []string, cursor *string) ([]any, string) {
 		nodes = append(nodes, map[string]any{"id": id, "userContentEdits": map[string]any{
 			"pageInfo": map[string]any{"hasNextPage": end > 0, "endCursor": endCursor}, "nodes": page}})
 	}
-	return nodes, ""
+	return nodes, errs, ""
 }
 
 // graphql returns the body, lastEditedAt and editor fields of a body last edited as e.

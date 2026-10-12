@@ -3,6 +3,7 @@ package githubtest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"reflect"
 	"slices"
@@ -240,6 +241,36 @@ func TestGraphQLHistoryFragment(t *testing.T) {
 	}
 	if n := f.HistoryQueries(); n != 0 {
 		t.Errorf("history queries = %d, want a refused one not counted", n)
+	}
+}
+
+// An unknown ID's node is null, with a NOT_FOUND error naming its path, as
+// on GitHub. The known node is still answered.
+func TestGraphQLHistoryUnknownNode(t *testing.T) {
+	f := New(t, "o/r", "issuedog")
+	f.AddIssue("owner", "Title", "body")
+	c := f.Client(t)
+	req, err := c.NewRequest(context.Background(), "POST", "graphql", map[string]any{"query": answeredHistory,
+		"variables": map[string]any{"ids": []string{"I_1", "IC_9"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Data   struct{ Nodes []*struct{ ID string } }
+		Errors []struct {
+			Type, Message string
+			Path          []any
+		}
+	}
+	if _, err := c.Do(req, &out); err != nil {
+		t.Fatal(err)
+	}
+	if n := out.Data.Nodes; len(n) != 2 || n[0] == nil || n[0].ID != "I_1" || n[1] != nil {
+		t.Errorf("nodes = %+v, want I_1 then null", n)
+	}
+	want := "NOT_FOUND [nodes 1] Could not resolve to a node with the global id of 'IC_9'"
+	if e := out.Errors; len(e) != 1 || fmt.Sprintf("%s %v %s", e[0].Type, e[0].Path, e[0].Message) != want {
+		t.Errorf("errors = %+v, want %q", e, want)
 	}
 }
 

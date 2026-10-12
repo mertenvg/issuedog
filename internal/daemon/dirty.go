@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	gogithub "github.com/google/go-github/v92/github"
 	"github.com/mertenvg/issuedog/internal/github"
@@ -12,9 +13,9 @@ import (
 )
 
 // Dirt is an issue's dirty content, by comment ID or state.BodyID (#91),
-// each with the login of someone who edited it without approval: the last
-// editor if that isn't the author, else the first such in its history.
-// "ghost" stands for an editor GitHub doesn't name.
+// each with the login of someone who edited it without approval (see
+// Applier.Dirty for which one). "unknown" stands for an editor GitHub
+// doesn't name.
 type Dirt map[int64]string
 
 // Has reports whether the comment or body id is dirty. It is the dirty
@@ -44,14 +45,21 @@ func contents(s *github.Snapshot) []content {
 
 // Dirty finds the dirty content of s (state.Dirty), whoever wrote it. It
 // reads histories only where the snapshot can't decide, all in one query:
-//   - Unedited content is clean, and content with the App's note is dirty.
-//   - Content last edited by someone other than its author is dirty.
+//   - Unedited content is clean. Content with the App's note is dirty, by
+//     whoever the note names.
+//   - Content whose last edit isn't sanctioned (state.Sanctioned) is dirty,
+//     by its last editor: its history isn't read to find an older one.
 //   - Content last edited by its author needs its history, since someone
-//     else may have edited it before them.
+//     else may have edited it before them. It is dirty by the oldest
+//     editor whose edit isn't sanctioned.
 //
-// The note's marker keeps content dirty even after GitHub drops the edit
-// that made it so, as it keeps only the 99 newest edits (github.History).
-// Anyone can type the marker, but that only makes content ignored.
+// A history that can't show the last edit, with fewer than two entries (the
+// original post and an edit) or a newest entry older than the snapshot's
+// edit, fails closed: the content is dirty by its last editor, with a
+// warning. The note's marker keeps content dirty even after GitHub drops
+// the edit that made it so, as it keeps only the 99 newest edits
+// (github.History). Anyone can type the marker, but that only makes
+// content ignored.
 func (a *Applier) Dirty(ctx context.Context, s *github.Snapshot) (Dirt, error) {
 	d := Dirt{}
 	var need []content
@@ -62,7 +70,7 @@ func (a *Applier) Dirty(ctx context.Context, s *github.Snapshot) (Dirt, error) {
 		case ok:
 			d[c.id] = by
 		case c.edit.At.IsZero():
-		case c.edit.By.Login == "" || c.edit.By.Login != c.author.Login:
+		case !state.Sanctioned(c.author, c.edit.By):
 			d[c.id] = login(c.edit.By)
 		default:
 			need, nodes = append(need, c), append(nodes, c.node)
@@ -76,7 +84,12 @@ func (a *Applier) Dirty(ctx context.Context, s *github.Snapshot) (Dirt, error) {
 		return nil, fmt.Errorf("dirty content of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
 	}
 	for _, c := range need {
-		if by, ok := state.Dirty(c.author, history[c.node]); ok {
+		h := history[c.node]
+		if len(h) < 2 || h[len(h)-1].At.Before(c.edit.At) {
+			logr.Warnf("%s/%s#%d: taking %s %d as dirty: its history has %d entries and doesn't reach its last edit at %s",
+				a.Owner, a.Repo, s.Number, what(c.id), c.id, len(h), c.edit.At.Format(time.RFC3339))
+			d[c.id] = login(c.edit.By)
+		} else if by, ok := state.Dirty(c.author, h); ok {
 			d[c.id] = login(by)
 		}
 	}
@@ -128,7 +141,7 @@ func note(id int64, by, text string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("note: %w", err)
 	}
-	return fmt.Sprintf("%s\n%s%s: @%s edited it without approval.\n\n%s", marker, notePrefix, what(id), by, github.Escape(text)), nil
+	return fmt.Sprintf("%s\n%s%s: **%s** edited it without approval.\n\n%s", marker, notePrefix, what(id), by, github.Escape(text)), nil
 }
 
 // what names content id in a note.
@@ -154,7 +167,7 @@ func noted(text string) (string, bool) {
 // login is who an editor is, as a note names them.
 func login(a github.Author) string {
 	if a.Login == "" {
-		return "ghost"
+		return "unknown"
 	}
 	return a.Login
 }

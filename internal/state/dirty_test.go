@@ -30,6 +30,7 @@ func TestDirty(t *testing.T) {
 		{"the App's comment, edited by a trusted user", app, edits(app, owner), owner, true},
 		{"untrusted, then trusted", app, edits(app, mallory, owner), mallory, true},
 		{"untrusted, then the App", app, edits(app, mallory, app), mallory, true},
+		{"the oldest of several", owner, edits(owner, mallory, app, owner), mallory, true},
 		{"a trusted user's comment, edited by the App", owner, edits(owner, app), app, true},
 		{"an editor GitHub doesn't name", owner, edits(owner, github.Author{}), github.Author{}, true},
 		{"by a deleted account, edited by GitHub's unnamed editor", github.Author{}, edits(github.Author{}), github.Author{}, true},

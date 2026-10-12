@@ -54,6 +54,7 @@ type Fake struct {
 	gqlErrors   []string // for the next GraphQL answer
 	beforeGQL   func()   // runs before the next GraphQL answer
 	histories   int      // edit history queries answered
+	historyCap  int      // see HistoryCap
 }
 
 // discard swallows a reply, for a write that takes effect but answers 500.
@@ -117,7 +118,7 @@ type handler func(c *call) (int, any)
 // New starts a fake of repo ("owner/name") for the App with this slug.
 func New(t testing.TB, repo, slug string) *Fake {
 	t.Helper()
-	f := &Fake{repo: repo, slug: slug, mux: http.NewServeMux(), now: Start, lastID: 1000}
+	f := &Fake{repo: repo, slug: slug, mux: http.NewServeMux(), now: Start, lastID: 1000, historyCap: 100}
 	f.mux.HandleFunc("POST /app/installations/{id}/access_tokens", mintToken)
 	f.handle("GET /issues/{n}", f.getIssue)
 	f.handle("GET /issues/{n}/parent", f.getParent)

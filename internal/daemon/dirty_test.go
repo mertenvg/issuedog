@@ -1,15 +1,19 @@
 package daemon_test
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 	"github.com/mertenvg/issuedog/internal/state"
+	"github.com/mertenvg/logr/v2"
 )
 
 const toClarifying = "Moved.\n\n<!-- issuedog:transition from=intake to=clarifying cmd=5 -->"
@@ -45,8 +49,8 @@ func markPass(t *testing.T) func(*githubtest.Fake) error {
 
 // noteOn is what MarkDirty makes of a comment's text edited by by.
 func noteOn(by, text string) string {
-	return "<!-- issuedog:dirty by=" + by + " -->\n> ⚠️ issuedog ignores this comment: @" + by +
-		" edited it without approval.\n\n" + github.Escape(text)
+	return "<!-- issuedog:dirty by=" + by + " -->\n> ⚠️ issuedog ignores this comment: **" + by +
+		"** edited it without approval.\n\n" + github.Escape(text)
 }
 
 // The rule for an App comment carrying a transition marker, and a trusted
@@ -68,6 +72,7 @@ func TestDirtyRule(t *testing.T) {
 		{"never edited", app, nil, daemon.Dirt{}, state.Clarifying, 0},
 		{"a trusted user's own, edited only by them", "owner", []string{"owner", "owner"}, daemon.Dirt{}, state.Intake, 1},
 		{"a trusted user's own, edited by someone else", "owner", []string{"alice", "owner"}, daemon.Dirt{cmdID: "alice"}, state.Intake, 1},
+		{"the oldest of several, from the history", "owner", []string{"alice", "bob", "owner"}, daemon.Dirt{cmdID: "alice"}, state.Intake, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := githubtest.New(t, "o/r", slug)
@@ -115,7 +120,7 @@ func TestMarkDirty(t *testing.T) {
 
 	f := run(t, dirtyIssue, markPass(t))
 	got := f.State().Issues[0]
-	body := "<!-- issuedog:dirty by=mallory -->\n> ⚠️ issuedog ignores this issue description: @mallory edited it without approval.\n\n" +
+	body := "<!-- issuedog:dirty by=mallory -->\n> ⚠️ issuedog ignores this issue description: **mallory** edited it without approval.\n\n" +
 		"spec &lt;!-- issuedog:origin plan=#1 rev=1 item=T1 -->"
 	if got.Body != body || got.BodyEditedBy != app {
 		t.Errorf("body = %q edited by %s, want %q by the App", got.Body, got.BodyEditedBy, body)
@@ -135,10 +140,12 @@ func TestMarkDirty(t *testing.T) {
 		t.Errorf("derived %+v, want no markers", is)
 	}
 
-	// The command's author removes the note, the owner removes the App
-	// comment's, and a web edit turns the body's line endings into CRLF.
+	// The command's author removes the note, the owner removes only the App
+	// comment's visible line, and a web edit turns the body's line endings
+	// into CRLF.
+	markerOnly := "<!-- issuedog:dirty by=mallory -->\n\n" + github.Escape(toClarifying)
 	f.EditComment(cmdID+1, "owner", "/approve")
-	f.EditComment(cmdID, "owner", toClarifying)
+	f.EditComment(cmdID, "owner", markerOnly)
 	f.EditBody(1, "owner", strings.ReplaceAll(body, "\n", "\r\n"))
 	if err := markPass(t)(f); err != nil {
 		t.Fatal(err)
@@ -147,10 +154,85 @@ func TestMarkDirty(t *testing.T) {
 	if !strings.HasPrefix(got.Body, "<!-- issuedog:dirty by=mallory -->\r\n") || got.BodyEditedBy != "owner" {
 		t.Errorf("body = %q edited by %s, want the CRLF one left alone", got.Body, got.BodyEditedBy)
 	}
-	want = []string{noteOn("owner", toClarifying), noteOn("alice", "/approve"), "clean"}
+	want = []string{noteOn("owner", markerOnly), noteOn("alice", "/approve"), "clean"}
 	for i, c := range got.Comments {
 		if c.Body != want[i] {
 			t.Errorf("comment %d after removing its note = %q, want %q", i, c.Body, want[i])
 		}
+	}
+}
+
+// A history that can't show the last edit fails closed: dirty by the last
+// editor, with a warning.
+func TestDirtyFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		cap    int
+		change func(s *github.Snapshot) int64 // returns the comment it breaks
+	}{
+		{"only the original post", 1, func(*github.Snapshot) int64 { return cmdID }},
+		{"no entries", 100, func(s *github.Snapshot) int64 {
+			s.Comments[1].Edit = s.Comments[0].Edit // an edit the history doesn't show yet
+			return cmdID + 1
+		}},
+		{"older than the last edit", 100, func(s *github.Snapshot) int64 {
+			s.Comments[0].Edit.At = s.Comments[0].Edit.At.Add(time.Second)
+			return cmdID
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := githubtest.New(t, "o/r", slug)
+			n := f.AddIssue("owner", "Title", "body")
+			f.AddComment(n, "owner", "hi")
+			f.AddComment(n, "owner", "yo")
+			f.EditComment(cmdID, "owner", "hi!")
+			f.HistoryCap(tc.cap)
+			a, s, err := applier(t, f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := tc.change(s)
+			var warn bytes.Buffer
+			stop := logr.AddWriter(&warn, logr.WithFilter(logr.W))
+			d, err := a.Dirty(context.Background(), s)
+			logr.Wait()
+			stop()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := (daemon.Dirt{id: "owner"}); !reflect.DeepEqual(d, want) {
+				t.Errorf("dirt = %v, want %v", d, want)
+			}
+			if !strings.Contains(warn.String(), fmt.Sprintf("taking comment %d as dirty", id)) {
+				t.Errorf("warnings = %q, want one for comment %d", warn.String(), id)
+			}
+		})
+	}
+}
+
+// GitHub keeps the original post and the 99 newest edits, so mallory's edit
+// drops out of the history. The note keeps the comment dirty.
+func TestDirtyNoteOutlivesCappedHistory(t *testing.T) {
+	f := githubtest.New(t, "o/r", slug)
+	f.AddComment(f.AddIssue("owner", "Title", "body"), "owner", "/hold")
+	f.EditComment(cmdID, "mallory", "/hold")
+	f.EditComment(cmdID, "owner", "/hold")
+	if err := markPass(t)(f); err != nil {
+		t.Fatal(err)
+	}
+	noted := noteOn("mallory", "/hold")
+	for i := range 99 {
+		f.EditComment(cmdID, "owner", fmt.Sprintf("%s\n\nedit %d", noted, i))
+	}
+	_, s, d := dirt(t, f)
+	h, err := f.Client(t).History(context.Background(), []string{s.Comments[0].Node})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if by, dirty := state.Dirty(s.Comments[0].Author, h[s.Comments[0].Node]); dirty || len(h[s.Comments[0].Node]) != 100 {
+		t.Fatalf("the capped history has %d entries and is dirty by %v, %v; want 100 and clean", len(h[s.Comments[0].Node]), by, dirty)
+	}
+	if want := (daemon.Dirt{cmdID: "mallory"}); !reflect.DeepEqual(d, want) {
+		t.Errorf("dirt = %v, want %v", d, want)
 	}
 }

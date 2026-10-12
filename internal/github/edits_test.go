@@ -211,8 +211,10 @@ func TestHistory(t *testing.T) {
 }
 
 // A history of more than 100 entries is read in full, beside a short one.
+// GitHub caps histories at 100, so the fake's cap is lifted for this.
 func TestHistoryPaging(t *testing.T) {
 	f := githubtest.New(t, "o/r", "issuedog")
+	f.HistoryCap(0)
 	n := f.AddIssue("owner", "Title", "body") // 1
 	id := f.AddComment(n, "owner", "hi")      // 2
 	other := f.AddComment(n, "owner", "yo")   // 3
@@ -235,6 +237,14 @@ func TestHistoryPaging(t *testing.T) {
 	}
 	if q := f.HistoryQueries(); q != 3 {
 		t.Errorf("history queries = %d, want 3", q)
+	}
+
+	// With GitHub's cap: the original post and the 99 newest edits.
+	f.HistoryCap(100)
+	got = history(t, f, s.Comments[0].Node)[s.Comments[0].Node]
+	if len(got) != 100 || got[0].At != at(2) || got[1].At != at(156) || got[99].At != at(254) {
+		t.Errorf("capped history = %d entries from %v, %v to %v, want 100: the post, then %v to %v",
+			len(got), got[0].At, got[min(1, len(got)-1)].At, got[len(got)-1].At, at(156), at(254))
 	}
 }
 
