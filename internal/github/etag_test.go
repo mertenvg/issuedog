@@ -1,8 +1,10 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/mertenvg/logr/v2"
 )
 
 // etagServer serves etag (empty: none) and body, 304s a match, records If-None-Match.
@@ -102,6 +106,67 @@ func TestETagCache(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+type rtFunc func(*http.Request) (*http.Response, error)
+
+func (f rtFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// failBody ends its reads with readErr (nil: io.EOF) and its Close with closeErr.
+type failBody struct {
+	io.Reader
+	readErr, closeErr error
+}
+
+func (b *failBody) Read(p []byte) (int, error) {
+	n, err := b.Reader.Read(p)
+	if err == io.EOF && b.readErr != nil {
+		err = b.readErr
+	}
+	return n, err
+}
+
+func (b *failBody) Close() error { return b.closeErr }
+
+// A failed close after a full read, or a failed drain of a 304, is logged and
+// the response kept; a failed read fails the request with both errors.
+func TestETagCacheBodyErrors(t *testing.T) {
+	errRead, errClose := errors.New("read failed"), errors.New("close failed")
+	steps := []struct {
+		status   int
+		body     *failBody
+		wantBody string // empty: want the read and close errors
+	}{
+		{http.StatusOK, &failBody{strings.NewReader("a"), nil, errClose}, "a"},
+		{http.StatusNotModified, &failBody{strings.NewReader("x"), errRead, errClose}, "a"},
+		{http.StatusOK, &failBody{strings.NewReader("b"), errRead, errClose}, ""},
+	}
+	var i int
+	c := newETagCache(rtFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: steps[i].status, Header: http.Header{"Etag": {`"v1"`}}, Body: steps[i].body}, nil
+	}))
+	var logs bytes.Buffer
+	stop := logr.AddWriter(&logs)
+	defer stop()
+	for i = range steps {
+		resp, err := c.RoundTrip(httptest.NewRequest(http.MethodGet, "https://api.github.com/res", nil))
+		if steps[i].wantBody == "" {
+			if !errors.Is(err, errRead) || !errors.Is(err, errClose) {
+				t.Errorf("step %d: err = %v, want the read and close errors", i, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("step %d: %v", i, err)
+		}
+		if body, _ := io.ReadAll(resp.Body); string(body) != steps[i].wantBody {
+			t.Errorf("step %d: body %q, want %q", i, body, steps[i].wantBody)
+		}
+	}
+	logr.Wait()
+	if n := strings.Count(logs.String(), "not released cleanly"); n != 2 {
+		t.Errorf("%d body warnings, want 2; logs:\n%s", n, logs.String())
 	}
 }
 

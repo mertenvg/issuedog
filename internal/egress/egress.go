@@ -5,12 +5,14 @@ package egress
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/mertenvg/logr/v2"
@@ -102,13 +104,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		upstream.Close()
 		return
 	}
-	relay(client, buf.Reader, upstream)
+	relay(target, client, buf.Reader, upstream)
 }
 
 // relay copies bytes both ways until either side closes, then closes both.
 // Reads from the client go through br, which may hold bytes the server
 // buffered before the hijack.
-func relay(client net.Conn, br *bufio.Reader, upstream net.Conn) {
+func relay(target string, client net.Conn, br *bufio.Reader, upstream net.Conn) {
 	var once sync.Once
 	closeBoth := func() {
 		client.Close()
@@ -118,13 +120,30 @@ func relay(client net.Conn, br *bufio.Reader, upstream net.Conn) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(upstream, br)
+		_, err := io.Copy(upstream, br)
+		logCopy(target, "to upstream", err)
 		once.Do(closeBoth)
 	}()
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(client, upstream)
+		_, err := io.Copy(client, upstream)
+		logCopy(target, "to client", err)
 		once.Do(closeBoth)
 	}()
 	wg.Wait()
+}
+
+// logCopy logs how one direction of a tunnel ended. A side closing or
+// resetting is how tunnels end, so that is debug; anything else is a warning.
+func logCopy(target, direction string, err error) {
+	if err == nil {
+		return
+	}
+	l := logr.With(logr.M("host", target).With("direction", direction).With("error", err.Error()))
+	if errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+		l.Debug("egress tunnel closed")
+		return
+	}
+	l.Warn("egress tunnel copy failed")
 }

@@ -8,6 +8,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,6 +46,21 @@ func TestImportWritesAndReplaces(t *testing.T) {
 		if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
 			t.Errorf("mode %04o, want 0600", info.Mode().Perm())
 		}
+	}
+}
+
+func TestImportReportsTempFileCleanupError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "app-key.pem")
+	if err := os.MkdirAll(filepath.Join(path, "x"), 0o700); err != nil { // a full directory makes the rename fail
+		t.Fatal(err)
+	}
+	errRemove := errors.New("remove failed")
+	defer func(old func(string) error) { remove = old }(remove)
+	remove = func(string) error { return errRemove }
+	err := Import(path, bytes.NewReader(newKey(t, false)))
+	var lerr *os.LinkError
+	if !errors.Is(err, errRemove) || !errors.As(err, &lerr) {
+		t.Errorf("err = %v, want the rename and the remove errors", err)
 	}
 }
 

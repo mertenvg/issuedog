@@ -17,6 +17,9 @@ const DefaultPath = "/state/app-key.pem"
 // maxKeySize bounds the input. A 4096-bit RSA key in PEM is about 3.3 KB.
 const maxKeySize = 64 << 10
 
+// remove deletes the temp file after a failed import. Tests replace it.
+var remove = os.Remove
+
 // Import writes the RSA private key (PEM) read from r to path with mode 0600,
 // through a temp file renamed over path, so bad input leaves any old key.
 func Import(path string, r io.Reader) error {
@@ -47,7 +50,9 @@ func Import(path string, r io.Reader) error {
 		err = cerr
 	}
 	if err != nil {
-		_ = os.Remove(tmp)
+		if rerr := remove(tmp); rerr != nil {
+			err = errors.Join(err, fmt.Errorf("removing the temp file: %w", rerr))
+		}
 		return fmt.Errorf("app key %s: %w", path, err)
 	}
 	return nil
