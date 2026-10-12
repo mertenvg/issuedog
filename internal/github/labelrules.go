@@ -238,8 +238,7 @@ func (r *labelRules) settle(ctx context.Context, l *labelState, reverted map[str
 	if !reverted[key] {
 		verb := map[bool]string{true: "restored", false: "removed"}[want]
 		// The label name is someone else's text, so a marker in it is escaped (§5.1).
-		name := strings.ReplaceAll(l.name, "<!--", "&lt;!--")
-		body := fmt.Sprintf("I %s `%s`: only trusted users can change pipeline labels, and %s isn't one.\n\n<!-- issuedog:revert key=%s -->", verb, name, who, key)
+		body := fmt.Sprintf("I %s `%s`: only trusted users can change pipeline labels, and %s isn't one.\n\n<!-- issuedog:revert key=%s -->", verb, Escape(l.name), who, key)
 		if _, _, err := r.c.Issues.CreateComment(ctx, r.owner, r.repo, r.number, gogithub.IssueCommentRequest{Body: body}); err != nil {
 			return false, nil, -1, fmt.Errorf("comment on revert of %s on %s/%s#%d: %w", l.name, r.owner, r.repo, r.number, err)
 		}
