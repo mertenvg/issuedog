@@ -68,8 +68,10 @@ func (m Move) check() error {
 // trusted user set by hand would be overwritten. That's safe only because
 // Applier.CheckLabels runs first and records such a change as an override
 // (SPEC §5.1): callers run it on a fresh snapshot just before Transition (T11
-// will). A change made in between is still caught: the next CheckLabels
-// records it as an override, as it isn't in the marker this writes.
+// will). A change made after that check, while no other marker lands, is
+// still caught: the next CheckLabels records it as an override, as it isn't
+// in the marker this writes. A snapshot older than the latest marker isn't
+// safe, so a run's result must re-read the issue before its Transition.
 //
 // A move the table lacks changes no label. It is reported once with an
 // error comment keyed by m.Key's ID (SPEC §5.3), logged as an error when

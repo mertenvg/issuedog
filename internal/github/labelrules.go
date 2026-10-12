@@ -80,8 +80,8 @@ func pipelineLabel(name string) bool {
 // CheckLabels applies the label rules of SPEC §5.1 to one issue. An untrusted
 // change to a pipeline label is reverted, with a comment; changes by the App
 // (appSlug) and trusted users stand. It returns labels, the issue's labels
-// as the caller last read them, brought up to date with the timeline and its
-// reverts. It reports an override for a trusted stage change that the latest
+// as the caller last read them, with the pipeline labels brought up to date
+// with the timeline and its reverts. It reports an override for a trusted stage change that the latest
 // transition marker doesn't record (see overrides), or else a disagreement
 // when the stage labels don't match that marker. Issue types on org repos
 // aren't checked. A replay is safe: the comment carries a revert marker keyed
