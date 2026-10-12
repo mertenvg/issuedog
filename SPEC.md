@@ -231,10 +231,10 @@ Comments from people without write access hold nothing. They reach agents only a
   - Nothing in the discussion changes the issue: `origin`. A task whose run was dropped goes to `ready`.
   - The spec changes: the interviewer rewrites it, and the issue goes to `spec-review` for a new 👍 (7.4).
   - The plan changes, or a child story's body: `planning`, then `plan-review` for a new 👍, even when `plan.review` is false. For an epic or story that was already `planned`, the approved revision updates its children rather than starting over:
-    - **Kept** items keep their issues (5.2).
-    - **Changed** items keep their issues, which the daemon rewrites with the new body and `rev`. A changed task goes to `ready`, and any run for it is dropped.
+    - **Kept** items keep their issues and stages (5.2).
+    - **Changed** items keep their issues, which the daemon rewrites with the new body and `rev`. Any hold on them ends, and any run is dropped. A changed task goes to `ready`, or `needs-human` for a human task. A changed story goes to `planning`, where its own children are updated the same way. A changed item whose issue is already closed is treated as new.
     - **New** items become new children.
-    - **Dropped** children are closed as not planned, with a comment naming the revision, along with their open descendants. Closing ends any hold on them, and removes dependency links to them, so kept children aren't left blocked. If a dropped child or any of its descendants has an open PR, nothing in that subtree is closed. The subtree is listed for the owner instead (9.4, 9.6) until the owner closes it or the PR.
+    - **Dropped** items, and every open issue below them, are closed as not planned, deepest first, with a comment naming the revision. Closing ends any hold, and the daemon removes dependency links to them, so kept children aren't left blocked. A story closed this way skips story verification (7.3). The one exception is an issue with an open PR: it is held with `reason=dropped` and listed for the owner (9.4, 9.6). Once its PR merges or closes, it closes as well, and so do its now-empty ancestors in the dropped subtree.
   - A task's body changes: the interviewer rewrites it in its own template (11.2, or 9.3 for a human task), and the task goes to `ready`, or back to `needs-human` for a human task.
   - More answers are needed: a question round, staying at `clarifying`.
 - Each of these writes a fresh transition marker, so an edited or deleted marker can't roll state back.
@@ -283,6 +283,10 @@ The lifecycle of each type:
 | planning | planned | story | Output passes validation and `plan.review` is false, unless the planning follows a discussion hold (6.4); daemon creates tasks |
 | plan-review | planning | epic, story | Owner `/revise <text>`, or any other trusted comment (7.4) |
 | plan-review | planned | epic, story | Owner approves the current revision with 👍 or `/approve` (7.4); daemon creates sub-issues, human tasks and dependencies, or after a discussion hold updates them (6.4) |
+| any open | ready | task | The parent's newly approved revision changed it (6.4); any run is dropped |
+| any open | needs-human | task | The parent's newly approved revision changed this human task (6.4) |
+| any open | planning | story | The parent's newly approved revision changed it (6.4) |
+| any open | held | all | Dropped from the parent's newly approved revision while it has an open PR (6.4, `reason=dropped`) |
 | planned | closed | story, or epic planned into tasks | Every child closed and story verification passes (7.3) |
 | planned | closed | epic planned into stories | Every child closed |
 | ready | in-progress | task | Scheduler picks the task (8.1) |
@@ -322,7 +326,7 @@ Any transition missing from this table is an error, except a trusted user's manu
 
 ### 7.3 Story and epic completion
 
-- When every child of a story, or of an epic planned directly into tasks, is closed, the daemon runs story verification on `main` (section 10.3). The verifier sees each child's close reason, so tasks closed as not planned are not mistaken for delivered work.
+- When every child of a story, or of an epic planned directly into tasks, is closed, the daemon runs story verification on `main` (section 10.3), unless the story itself was dropped from its parent's plan (6.4). The verifier sees each child's close reason, so tasks closed as not planned are not mistaken for delivered work.
   - Failures create `bug` sub-issues under the story.
   - Passing closes the story.
 - An epic planned into stories closes when every child is closed.
@@ -471,7 +475,7 @@ The owner finds everything waiting on them in GitHub's own "assigned to me" view
 | Pull request | The PR is open and its task is at `pr-open`. It is unassigned when the PR merges or closes, or when the task leaves `pr-open` |
 | State error | From the daemon's state-error comment until a trusted user reacts 👍 to it, or its cause is gone (5.3) |
 | Discussion hold | The issue is held for discussion and a trigger is unresolved (6.4) |
-| Dropped with an open PR | The issue was dropped from its parent's latest approved plan and it, or a descendant, still has an open PR (6.4) |
+| Dropped with an open PR | The issue is held with `reason=dropped` (6.4), until its PR merges or closes |
 
 - These are the same items the digest lists (9.4).
 - Each PR carries the `priority:*` label of the task it closes. The task's label is the priority: the daemon copies it to the PR and reverts any other change to the PR's label.
@@ -574,6 +578,7 @@ A task that writes comments or issue bodies adds `- [ ] Text the daemon didn't w
 - Prefer extending existing code over adding new modules; the plan names the existing files each task touches.
 - A scope outside the allowed list becomes a question to the owner.
 - Work only the owner can do is a task marked `human`, written in the template from section 9.3 rather than 11.2.
+- A revised plan for an epic or story that is already `planned` keeps the ID of every kept or changed item and marks each item kept, changed, new or dropped (5.2, 6.4). Validation checks that every existing child appears exactly once.
 
 The daemon validates the plan before it moves to plan-review:
 
