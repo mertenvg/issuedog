@@ -32,4 +32,4 @@ loop:
 network:
   allow: [api.anthropic.com, proxy.golang.org, sum.golang.org]
 usage_limit:
-  pattern: "(?i)(usage|session) limit"
+  pattern: "(?i)((usage|session|weekly|opus|sonnet|fable) limit|you('|’)?ve (hit|reached) your [a-z ]*limit|you have (hit|reached) your [a-z ]*limit)"
