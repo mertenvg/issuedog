@@ -39,10 +39,12 @@ func TestClassOf(t *testing.T) {
 		{Item{Type: "story"}, ClassOwnerStory},
 		{Item{Type: "task", HasParent: true, FromPlan: true}, ClassTask},
 		{Item{Type: "task", HasParent: true, FromPlan: true, Human: true}, ClassHumanTask},
-		{Item{Type: "task"}, ClassOwnerTask},
-		{Item{Type: "task", Human: true}, ClassOwnerTask},
-		{Item{Type: "bug", HasParent: true, FromPlan: true}, ClassBug},
-		{Item{Type: "bug"}, ClassBug},
+		{Item{Type: "task", ReachedReady: true}, ClassOwnerTask},
+		{Item{Type: "task", Human: true, ReachedReady: true}, ClassOwnerTask},
+		{Item{Type: "task"}, ClassNewOwnerTask},
+		{Item{Type: "bug", HasParent: true, FromPlan: true, ReachedReady: true}, ClassBug},
+		{Item{Type: "bug", ReachedReady: true}, ClassBug},
+		{Item{Type: "bug"}, ClassNewBug},
 	} {
 		got, err := ClassOf(c.it)
 		if err != nil || got != c.want {

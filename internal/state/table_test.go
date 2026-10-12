@@ -17,7 +17,7 @@ func TestLookupFindsEveryRow(t *testing.T) {
 		{Intake, Clarifying, ClassUntyped, TriggerTrusted},
 		{Clarifying, Clarifying, ClassBug, TriggerMoreQuestions},
 		{Clarifying, SpecReview, ClassOwnerStory, TriggerSpecWritten},
-		{Clarifying, Ready, ClassOwnerTask, TriggerTaskWritten},
+		{Clarifying, Ready, ClassNewOwnerTask, TriggerTaskWritten},
 		{Clarifying, Ready, ClassTask, TriggerAnswered},
 		{SpecReview, Clarifying, ClassEpic, TriggerSpecRevise},
 		{SpecReview, Planning, ClassEpic, TriggerSpecApproved},
@@ -70,7 +70,7 @@ func TestLookupFindsEveryRow(t *testing.T) {
 			t.Errorf("Lookup(%s, %s, %s, %s): %v", c.from, c.to, c.class, c.trigger, err)
 			continue
 		}
-		found[r.Trigger] = true
+		found[r.Trigger()] = true
 	}
 	if len(found) != len(table) {
 		t.Errorf("found %d distinct rows of %d", len(found), len(table))
@@ -87,6 +87,11 @@ func TestLookupMissing(t *testing.T) {
 		{"story with a parent approved", SpecReview, Planning, ClassStory, TriggerSpecApproved},
 		{"task gets a spec", Clarifying, SpecReview, ClassTask, TriggerSpecWritten},
 		{"owner task gets a spec", Clarifying, SpecReview, ClassOwnerTask, TriggerSpecWritten},
+		{"bug before ready answers a task question", Clarifying, Ready, ClassNewBug, TriggerAnswered},
+		{"owner task before ready answers a task question", Clarifying, Ready, ClassNewOwnerTask, TriggerAnswered},
+		{"bug after ready is rewritten as a new one", Clarifying, Ready, ClassBug, TriggerTaskWritten},
+		{"untyped issue leaves clarifying through origin", Clarifying, PROpen, ClassUntyped, TriggerDiscussionNoChange},
+		{"untyped issue resumes past clarifying", Held, Ready, ClassUntyped, TriggerResume},
 		{"intake to planning", Intake, Planning, ClassEpic, TriggerTrusted},
 		{"wrong trigger", Verifying, PROpen, ClassTask, TriggerFindings},
 		{"bug approved", SpecReview, Planning, ClassBug, TriggerSpecApproved},
@@ -122,13 +127,13 @@ func TestTableMatchesSpec(t *testing.T) {
 	applies := map[string]Class{
 		"all":                               All,
 		"epic, or story with no parent":     epicOrOwnerStory,
-		"bug, or task filed by the owner":   ClassBug | ClassOwnerTask,
+		"bug, or task filed by the owner":   NewBugOrOwnerTask | ClassBug | ClassOwnerTask,
 		"epic, story":                       ClassEpic | AnyStory,
 		"story":                             AnyStory,
 		"story, or epic planned into tasks": ClassEpic | AnyStory,
 		"epic planned into stories":         ClassEpic,
 		"task":                              AnyTask | ClassHumanTask,
-		"task, bug":                         AnyTask | ClassHumanTask,
+		"task, bug":                         AnyTask | ClassHumanTask | NewBugOrOwnerTask,
 	}
 	stage := func(s string) Stage {
 		switch s {
@@ -148,9 +153,17 @@ func TestTableMatchesSpec(t *testing.T) {
 	_, section, _ := strings.Cut(string(raw), "### 7.2 Transitions")
 	section, _, _ = strings.Cut(section, "### 7.3")
 	var n int
-	for _, line := range strings.Split(section, "\n") {
-		cols := strings.Split(line, "|")
-		if !strings.HasPrefix(line, "| ") || len(cols) != 6 || cols[1] == " From " || strings.HasPrefix(cols[1], "---") {
+	for i, line := range strings.Split(section, "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "|") {
+			continue
+		}
+		// Split on unescaped pipes only, and fail on any table line that
+		// isn't a 4-column row, so a new SPEC row can't be skipped.
+		cols := strings.Split(strings.ReplaceAll(strings.TrimSpace(line), `\|`, "\x00"), "|")
+		if len(cols) != 6 {
+			t.Fatalf("SPEC §7.2 line %d doesn't parse as a 4-column row: %q", i, line)
+		}
+		if strings.TrimSpace(cols[1]) == "From" || strings.HasPrefix(strings.TrimSpace(cols[1]), "---") {
 			continue
 		}
 		if n >= len(table) {
@@ -163,8 +176,8 @@ func TestTableMatchesSpec(t *testing.T) {
 			t.Errorf("SPEC §7.2 row %d: unknown Applies to %q", n, cols[3])
 		}
 		from, to := stage(strings.TrimSpace(cols[1])), stage(strings.TrimSpace(cols[2]))
-		if r.From != from || r.To != to || r.Classes == 0 || r.Classes&^want != 0 {
-			t.Errorf("row %d: table has %s → %s for %s, SPEC has %s → %s for %s", n, r.From, r.To, r.Classes, from, to, want)
+		if r.From() != from || r.To() != to || r.Classes() == 0 || r.Classes()&^want != 0 {
+			t.Errorf("row %d: table has %s → %s for %s, SPEC has %s → %s for %s", n, r.From(), r.To(), r.Classes(), from, to, want)
 		}
 	}
 	if n != len(table) {

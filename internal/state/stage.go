@@ -85,6 +85,12 @@ const (
 	// ClassUntyped is an issue with no type yet. It follows only the rows
 	// for all, so it can't leave clarifying (SPEC §4).
 	ClassUntyped
+	// ClassNewBug is a bug that hasn't reached ready yet. Only from ready on
+	// does a bug follow the rows for task (SPEC §7.2).
+	ClassNewBug
+	// ClassNewOwnerTask is a task filed by the owner that hasn't reached
+	// ready yet.
+	ClassNewOwnerTask
 )
 
 // Class sets for the "Applies to" column.
@@ -96,8 +102,10 @@ const (
 	// includes ClassBug: "from ready on, a bug follows the rows for task".
 	// A human task is listed only on the rows whose trigger names it.
 	AnyTask = ClassTask | ClassOwnerTask | ClassBug
+	// NewBugOrOwnerTask is "bug, or task filed by the owner" before ready.
+	NewBugOrOwnerTask = ClassNewBug | ClassNewOwnerTask
 	// All is every class.
-	All = ClassEpic | AnyStory | AnyTask | ClassHumanTask | ClassUntyped
+	All = ClassEpic | AnyStory | AnyTask | ClassHumanTask | ClassUntyped | NewBugOrOwnerTask
 )
 
 // Item is what decides an issue's class.
@@ -112,6 +120,9 @@ type Item struct {
 	FromPlan bool
 	// Human is true for a plan item the planner marked human (SPEC §11.3).
 	Human bool
+	// ReachedReady is true once a transition marker has taken the issue to
+	// ready. A bug or owner task before that has its own class.
+	ReachedReady bool
 }
 
 // ClassOf returns the class of it. An unknown type is an error.
@@ -132,9 +143,14 @@ func ClassOf(it Item) (Class, error) {
 			return ClassHumanTask, nil
 		case it.FromPlan:
 			return ClassTask, nil
+		case !it.ReachedReady:
+			return ClassNewOwnerTask, nil
 		}
 		return ClassOwnerTask, nil
 	case "bug":
+		if !it.ReachedReady {
+			return ClassNewBug, nil
+		}
 		return ClassBug, nil
 	}
 	return 0, fmt.Errorf("class of type %q: unknown type", it.Type)

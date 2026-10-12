@@ -70,15 +70,28 @@ const (
 	TriggerReopened               Trigger = "reopened"
 )
 
-// Row is one row of the §7.2 transition table.
+// Row is one row of the §7.2 transition table. Its fields are unexported, so
+// the only rows that exist are the table's, reached through Lookup.
 type Row struct {
-	From, To Stage
-	// Classes are the classes the row applies to. They follow the "Applies
+	from, to Stage
+	// classes are the classes the row applies to. They follow the "Applies
 	// to" column, narrowed where the trigger names a narrower class (a human
 	// task, a story with a parent).
-	Classes Class
-	Trigger Trigger
+	classes Class
+	trigger Trigger
 }
+
+// From is the row's from stage: a stage, or AnyOpen.
+func (r Row) From() Stage { return r.from }
+
+// To is the row's to stage: a stage, PreviousAt or PreviousOrigin.
+func (r Row) To() Stage { return r.to }
+
+// Classes are the classes the row applies to.
+func (r Row) Classes() Class { return r.classes }
+
+// Trigger is the row's trigger.
+func (r Row) Trigger() Trigger { return r.trigger }
 
 // ErrNoTransition means the table has no row for a transition (SPEC §7.2).
 var ErrNoTransition = errors.New("no such transition")
@@ -91,7 +104,7 @@ var table = []Row{
 	{Intake, Clarifying, All, TriggerTrusted},
 	{Clarifying, Clarifying, All, TriggerMoreQuestions},
 	{Clarifying, SpecReview, epicOrOwnerStory, TriggerSpecWritten},
-	{Clarifying, Ready, ClassBug | ClassOwnerTask, TriggerTaskWritten},
+	{Clarifying, Ready, NewBugOrOwnerTask, TriggerTaskWritten},
 	{Clarifying, Ready, AnyTask, TriggerAnswered},
 	{SpecReview, Clarifying, epicOrOwnerStory, TriggerSpecRevise},
 	{SpecReview, Planning, epicOrOwnerStory, TriggerSpecApproved},
@@ -127,7 +140,7 @@ var table = []Row{
 	{Clarifying, PreviousOrigin, All, TriggerDiscussionNoChange},
 	{Clarifying, SpecReview, epicOrOwnerStory, TriggerSpecRewritten},
 	{Clarifying, Planning, ClassEpic | AnyStory, TriggerPlanChanged},
-	{Clarifying, Ready, AnyTask, TriggerTaskRewritten},
+	{Clarifying, Ready, AnyTask | NewBugOrOwnerTask, TriggerTaskRewritten},
 	{Clarifying, NeedsHuman, ClassHumanTask, TriggerHumanTaskRewritten},
 	{Held, PreviousAt, All, TriggerResume},
 	{Held, Clarifying, All, TriggerResumeAfterDiscussion},
@@ -146,28 +159,33 @@ func Lookup(from, to Stage, class Class, trigger Trigger) (Row, error) {
 		return Row{}, fmt.Errorf("look up %s → %s on %s: class %s is not a single class", from, to, trigger, class)
 	}
 	for _, r := range table {
-		if r.Trigger == trigger && r.Classes&class != 0 && r.from(from) && r.to(to) {
+		if r.trigger == trigger && r.classes&class != 0 && r.matchFrom(from) && r.matchTo(to, class) {
 			return r, nil
 		}
 	}
 	return Row{}, fmt.Errorf("look up %s → %s for %s on %s: %w", from, to, class, trigger, ErrNoTransition)
 }
 
-func (r Row) from(s Stage) bool {
-	if r.From == AnyOpen {
+func (r Row) matchFrom(s Stage) bool {
+	if r.from == AnyOpen {
 		return s.Open()
 	}
-	return r.From == s
+	return r.from == s
 }
 
-func (r Row) to(s Stage) bool {
-	if r.To == PreviousAt || r.To == PreviousOrigin {
+// matchTo also keeps an untyped issue from leaving clarifying through a
+// previous stage, since it can't have been past clarifying (SPEC §4).
+func (r Row) matchTo(s Stage, class Class) bool {
+	if r.to == PreviousAt || r.to == PreviousOrigin {
+		if class == ClassUntyped {
+			return s == Intake || s == Clarifying
+		}
 		return s.Open() && s != Held
 	}
-	return r.To == s
+	return r.to == s
 }
 
-var classNames = []string{"epic", "story", "owner-story", "task", "owner-task", "human-task", "bug", "untyped"}
+var classNames = []string{"epic", "story", "owner-story", "task", "owner-task", "human-task", "bug", "untyped", "new-bug", "new-owner-task"}
 
 // String names the classes in c, joined by "|".
 func (c Class) String() string {
