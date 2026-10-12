@@ -75,6 +75,11 @@ func TestGateResetTime(t *testing.T) {
 		{utc(11, 1, 5, 40, 0), "session limit · resets 1:30am (America/New_York)", utc(11, 1, 6, 30, 0)},
 		// A reset that passed seconds ago means the backoff, not tomorrow.
 		{utc(10, 11, 15, 0, 5), "session limit · resets 3pm (UTC)", utc(10, 11, 15, 15, 5)},
+		// The same just before midnight, and on the second 1am after DST ends.
+		{utc(10, 12, 0, 1, 0), "session limit · resets 11:59pm (UTC)", utc(10, 12, 0, 16, 0)},
+		{utc(11, 1, 6, 2, 0), "session limit · resets 1am (America/New_York)", utc(11, 1, 6, 17, 0)},
+		// DST fall-back east of UTC: at 2:10 CEST, 2:30am means the first 2:30.
+		{utc(10, 25, 0, 10, 0), "session limit · resets 2:30am (Europe/Amsterdam)", utc(10, 25, 0, 30, 0)},
 	} {
 		now := tt.now
 		if now.IsZero() {

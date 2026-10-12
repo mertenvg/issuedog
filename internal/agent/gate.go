@@ -102,11 +102,10 @@ func parseReset(now time.Time, text string) (time.Time, bool) {
 		}
 		reset = time.Unix(secs, 0)
 	} else if m := resetClockRE.FindStringSubmatch(text); m != nil {
-		t, ok := nextClock(now, clock{month: m[1], day: m[2], year: m[3], hour: m[4], minute: m[5], ampm: m[6], zone: m[7]})
-		if !ok {
+		var ok bool
+		if reset, ok = nextClock(now, clock{month: m[1], day: m[2], year: m[3], hour: m[4], minute: m[5], ampm: m[6], zone: m[7]}); !ok {
 			return time.Time{}, false
 		}
-		reset = t
 	} else {
 		return time.Time{}, false
 	}
@@ -119,9 +118,8 @@ func parseReset(now time.Time, text string) (time.Time, bool) {
 // clock is a reset time as printed, split into its parts. Every part but
 // hour may be empty.
 type clock struct {
-	month, day, year   string
-	hour, minute, ampm string
-	zone               string
+	month, day, year         string
+	hour, minute, ampm, zone string
 }
 
 // nextClock returns the next time after now that c names, in c's zone or else
@@ -129,10 +127,7 @@ type clock struct {
 // and day but no year, it's the next such date.
 func nextClock(now time.Time, c clock) (time.Time, bool) {
 	h, _ := strconv.Atoi(c.hour)
-	m := 0
-	if c.minute != "" {
-		m, _ = strconv.Atoi(c.minute)
-	}
+	m, _ := strconv.Atoi(c.minute) // 0 when empty
 	if c.ampm != "" {
 		if h < 1 || h > 12 {
 			return time.Time{}, false
@@ -156,53 +151,60 @@ func nextClock(now time.Time, c clock) (time.Time, bool) {
 	local := now.In(loc)
 
 	if c.month == "" {
-		if t, ok := at(now, loc, local.Year(), local.Month(), local.Day(), h, m); ok {
-			return t, true
+		// The next instant after now, unless one passed within resetGrace
+		// (yesterday too, for one just before midnight). That one is returned
+		// as is, so parseReset uses the backoff rather than waiting a day.
+		var next time.Time
+		for off := -1; off <= 1; off++ {
+			d := time.Date(local.Year(), local.Month(), local.Day()+off, 12, 0, 0, 0, loc)
+			for _, t := range instants(loc, d.Year(), d.Month(), d.Day(), h, m) {
+				if !t.After(now) {
+					if now.Sub(t) <= resetGrace {
+						return t, true
+					}
+					continue
+				}
+				if next.IsZero() || t.Before(next) {
+					next = t
+				}
+			}
 		}
-		// A reset that passed moments ago (the run ended just before it) is
-		// returned as is, so parseReset falls back to the backoff rather
-		// than waiting until tomorrow.
-		today := time.Date(local.Year(), local.Month(), local.Day(), h, m, 0, 0, loc)
-		if now.Sub(today) <= resetGrace {
-			return today, true
-		}
-		next := local.AddDate(0, 0, 1)
-		return at(now, loc, next.Year(), next.Month(), next.Day(), h, m)
+		return next, !next.IsZero()
 	}
 
 	month := time.Month(slices.Index(months, strings.ToLower(c.month)[:3]) + 1)
 	day, _ := strconv.Atoi(c.day)
-	if day < 1 || day > 31 {
+	first := func(year int) (time.Time, bool) {
+		for _, t := range instants(loc, year, month, day, h, m) {
+			if t.After(now) {
+				return t, true
+			}
+		}
 		return time.Time{}, false
 	}
 	if c.year != "" {
 		year, _ := strconv.Atoi(c.year)
-		return at(now, loc, year, month, day, h, m)
+		return first(year)
 	}
-	if t, ok := at(now, loc, local.Year(), month, day, h, m); ok {
+	if t, ok := first(local.Year()); ok {
 		return t, true
 	}
-	return at(now, loc, local.Year()+1, month, day, h, m)
+	return first(local.Year() + 1)
 }
 
-// at returns the first instant after now whose wall clock in loc reads the
-// given date and time. On a DST fall-back day that time occurs twice, and
-// time.Date may return the earlier one even when only the later one is still
-// ahead, so later instants with the same wall clock are tried too. It returns
-// false when the date doesn't exist (such as Feb 30) or no match is after now.
-func at(now time.Time, loc *time.Location, year int, month time.Month, day, hour, minute int) (time.Time, bool) {
-	t := time.Date(year, month, day, hour, minute, 0, 0, loc)
-	if t.Day() != day {
-		return time.Time{}, false
-	}
-	for _, shift := range []time.Duration{0, 30 * time.Minute, time.Hour, 2 * time.Hour} {
-		c := t.Add(shift).In(loc)
-		if !c.After(now) {
-			continue
-		}
-		if c.Year() == year && c.Month() == month && c.Day() == day && c.Hour() == hour && c.Minute() == minute {
-			return c, true
+// instants returns, in order, every instant whose wall clock in loc reads the
+// given date and time. That's usually one, two during a DST fall-back hour,
+// and none for a time skipped by DST or a date that doesn't exist (such as
+// Feb 30). DST shifts are at most 2 hours, in steps of 30 minutes.
+func instants(loc *time.Location, year int, month time.Month, day, hour, minute int) []time.Time {
+	base := time.Date(year, month, day, hour, minute, 0, 0, loc)
+	var out []time.Time
+	for shift := -2 * time.Hour; shift <= 2*time.Hour; shift += 30 * time.Minute {
+		c := base.Add(shift).In(loc)
+		if c.Year() == year && c.Month() == month && c.Day() == day && c.Hour() == hour && c.Minute() == minute &&
+			!slices.ContainsFunc(out, c.Equal) {
+			out = append(out, c)
 		}
 	}
-	return time.Time{}, false
+	return out
 }
