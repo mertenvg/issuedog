@@ -6,11 +6,16 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
+	"fmt"
+	"net"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/mertenvg/logr/v2"
+
+	"github.com/mertenvg/issuedog/internal/egress"
 )
 
 func TestRunVersion(t *testing.T) {
@@ -31,8 +36,84 @@ func TestRunUnknownFlag(t *testing.T) {
 	}
 }
 
+// fakeEgress replaces the startup steps: the firewall returns fwErr, and the
+// proxy listens on a free port, or fails with listenErr. It records the
+// arguments each step got.
+func fakeEgress(t *testing.T, fwErr, listenErr error) *[]string {
+	t.Helper()
+	var calls []string
+	oldApply, oldListen := applyFirewall, listenProxy
+	t.Cleanup(func() { applyFirewall, listenProxy = oldApply, oldListen })
+	applyFirewall = func(user string, port int) error {
+		calls = append(calls, fmt.Sprintf("firewall %s %d", user, port))
+		return fwErr
+	}
+	listenProxy = func(port int) (net.Listener, error) {
+		calls = append(calls, fmt.Sprintf("listen %d", port))
+		if listenErr != nil {
+			return nil, listenErr
+		}
+		return egress.Listen(0)
+	}
+	return &calls
+}
+
+func TestRunStartsEgress(t *testing.T) {
+	var logs, stdout, stderr bytes.Buffer
+	stop := logr.AddWriter(&logs)
+	defer stop()
+	calls := fakeEgress(t, nil, nil)
+
+	code := run(nil, []string{"ANTHROPIC_API_KEY=key"}, nil, &stdout, &stderr)
+	logr.Wait()
+
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if got, want := strings.Join(*calls, ", "), "firewall agent 3128, listen 3128"; got != want {
+		t.Errorf("startup steps = %q, want %q", got, want)
+	}
+	if !strings.Contains(logs.String(), "egress proxy listening on http://127.0.0.1:") {
+		t.Errorf("logs = %q, want the proxy on 127.0.0.1", logs.String())
+	}
+}
+
+func TestRunStopsWhenEgressFails(t *testing.T) {
+	for name, tt := range map[string]struct {
+		fwErr, listenErr error
+		wantCalls, want  string
+	}{
+		"firewall": {errors.New("no NET_ADMIN"), nil, "firewall agent 3128", "starting egress: applying the agent firewall: no NET_ADMIN"},
+		"proxy":    {nil, errors.New("port in use"), "firewall agent 3128, listen 3128", "starting egress: listening for the egress proxy: port in use"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var logs, stdout, stderr bytes.Buffer
+			stop := logr.AddWriter(&logs)
+			defer stop()
+			calls := fakeEgress(t, tt.fwErr, tt.listenErr)
+
+			code := run(nil, []string{"ANTHROPIC_API_KEY=key"}, nil, &stdout, &stderr)
+			logr.Wait()
+
+			if code != 1 {
+				t.Errorf("exit code = %d, want 1", code)
+			}
+			if got := strings.Join(*calls, ", "); got != tt.wantCalls {
+				t.Errorf("startup steps = %q, want %q", got, tt.wantCalls)
+			}
+			if !strings.Contains(logs.String(), tt.want) {
+				t.Errorf("logs = %q, want %q", logs.String(), tt.want)
+			}
+			if strings.Contains(logs.String(), "not implemented") {
+				t.Errorf("logs = %q, want startup to stop at egress", logs.String())
+			}
+		})
+	}
+}
+
 func TestRunNoArgsLogsError(t *testing.T) {
 	var logs, stdout, stderr bytes.Buffer
+	fakeEgress(t, nil, nil)
 	stop := logr.AddWriter(&logs)
 	defer stop()
 
