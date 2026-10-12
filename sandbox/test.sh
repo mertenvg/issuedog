@@ -96,7 +96,18 @@ check_not "agent can't read the imported key" as agent cat "$key"
 check_not "agent started by the daemon can't read the imported key" as issuedog "$bin" as-agent -- cat "$key"
 check_not "a non-PEM import is refused" as issuedog "$bin" key import </etc/hostname
 check "the refused import kept the key" cmp -s /test-key.pem "$key"
-rm -f "$key"
+
+# The daemon loads the key before it applies the firewall. It can't keep
+# running yet, so it exits at "not implemented" either way, and its log shows
+# whether it got as far as the proxy. This needs --cap-add NET_ADMIN.
+log=/run/issuedog/sandbox-test-daemon.log
+as issuedog env ANTHROPIC_API_KEY=sandbox-test "$bin" >"$log" 2>&1
+check "the daemon starts with a 0600 key" grep -q 'egress proxy listening' "$log"
+chmod 0640 "$key"
+as issuedog env ANTHROPIC_API_KEY=sandbox-test "$bin" >"$log" 2>&1
+check "the daemon refuses a 0640 key" grep -q "loading the App key: app key $key: mode 0640" "$log"
+check_not "the daemon stops before egress with a 0640 key" grep -q 'egress proxy listening' "$log"
+rm -f "$key" "$log"
 
 # Agent processes (SPEC §3, §3.1). The unlisted `issuedog as-agent` starts a
 # command as agent through the same uid switch as stage runs, from the
