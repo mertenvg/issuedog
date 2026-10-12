@@ -167,7 +167,7 @@ An issue enters the pipeline when any of these holds:
 - A trusted user added the `approved` label (checked on the timeline).
 - The App created it with an `origin` marker that points to an approved plan revision, or to a story-verifier run. Issues the App creates in another repo (section 14) carry no such marker, so they need `approved`.
 
-Only comments and reactions by trusted users count as answers, approvals or commands. Agents receive other comments in a separate, clearly labeled "untrusted input" section of their context files, and only for epics and stories.
+Only comments and reactions by trusted users count as answers, approvals or commands. Agents receive other comments in a separate, clearly labeled "untrusted input" section of their context files, and only for epics and stories. An issue with no type gets no untrusted input until its type is set.
 
 A command counts once. If its comment is edited after the daemon reacted to it, the edit is ignored and the bot replies asking for a new comment. If it is edited before the daemon processes it, the daemon reads the latest text.
 
@@ -248,6 +248,8 @@ The lifecycle of each type:
 | held | previous | all | Owner `/resume` on the issue or an ancestor |
 | any open | closed | all | A person closed the issue; daemon stops any run for it |
 | closed | held | all | A person reopened the issue |
+
+From `ready` on, a `bug` follows the rows for `task`.
 
 Any transition missing from this table is an error, except a trusted user's manual label change (5.1). The daemon logs the error, leaves the issue unchanged and lists it in the digest.
 
