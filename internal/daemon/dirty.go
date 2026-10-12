@@ -47,11 +47,13 @@ func contents(s *github.Snapshot) []content {
 // reads histories only where the snapshot can't decide, all in one query:
 //   - Unedited content is clean. Content with the App's note is dirty, by
 //     whoever the note names.
-//   - Content whose last edit isn't sanctioned (state.Sanctioned) is dirty,
-//     by its last editor: its history isn't read to find an older one.
-//   - Content last edited by its author needs its history, since someone
-//     else may have edited it before them. It is dirty by the oldest
-//     editor whose edit isn't sanctioned.
+//   - Content last edited by anyone but its author or the App (see
+//     state.Sanctioned) is dirty, by its last editor: its history isn't
+//     read to find an older one.
+//   - Content last edited by its author or the App needs its history,
+//     since someone else may have edited it before them. It is dirty by
+//     the oldest editor whose edit isn't sanctioned. So the App's own note
+//     never makes content look clean: the history keeps the earlier edit.
 //
 // A history that can't show the last edit, with fewer than two entries (the
 // original post and an edit) or a newest entry older than the snapshot's
@@ -70,7 +72,7 @@ func (a *Applier) Dirty(ctx context.Context, s *github.Snapshot) (Dirt, error) {
 		case ok:
 			d[c.id] = by
 		case c.edit.At.IsZero():
-		case !state.Sanctioned(c.author, c.edit.By):
+		case !state.Sanctioned(c.author, c.edit.By, a.AppSlug):
 			d[c.id] = login(c.edit.By)
 		default:
 			need, nodes = append(need, c), append(nodes, c.node)
@@ -89,7 +91,7 @@ func (a *Applier) Dirty(ctx context.Context, s *github.Snapshot) (Dirt, error) {
 			logr.Warnf("%s/%s#%d: taking %s %d as dirty: its history has %d entries and doesn't reach its last edit at %s",
 				a.Owner, a.Repo, s.Number, what(c.id), c.id, len(h), c.edit.At.Format(time.RFC3339))
 			d[c.id] = login(c.edit.By)
-		} else if by, ok := state.Dirty(c.author, h); ok {
+		} else if by, ok := state.Dirty(c.author, h, a.AppSlug); ok {
 			d[c.id] = login(by)
 		}
 	}

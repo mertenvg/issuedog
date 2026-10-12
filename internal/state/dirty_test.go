@@ -31,13 +31,17 @@ func TestDirty(t *testing.T) {
 		{"untrusted, then trusted", app, edits(app, mallory, owner), mallory, true},
 		{"untrusted, then the App", app, edits(app, mallory, app), mallory, true},
 		{"the oldest of several", owner, edits(owner, mallory, app, owner), mallory, true},
-		{"a trusted user's comment, edited by the App", owner, edits(owner, app), app, true},
+		{"a trusted user's comment, rewritten by the App", owner, edits(owner, app, app), github.Author{}, false},
+		{"the App's edit is skipped for the oldest", owner, edits(owner, app, mallory, owner), mallory, true},
+		{"untrusted, then the App, on a trusted user's body", owner, edits(owner, mallory, app), mallory, true},
+		{"another App's bot", owner, edits(owner, github.Author{Login: "other[bot]", Type: "Bot"}),
+			github.Author{Login: "other[bot]", Type: "Bot"}, true},
 		{"an editor GitHub doesn't name", owner, edits(owner, github.Author{}), github.Author{}, true},
 		{"by a deleted account, edited by GitHub's unnamed editor", github.Author{}, edits(github.Author{}), github.Author{}, true},
 		{"a User with the App's login but no [bot]", app, edits(app, github.Author{Login: "issuedog", Type: "User"}),
 			github.Author{Login: "issuedog", Type: "User"}, true},
 	} {
-		by, dirty := Dirty(tc.author, tc.history)
+		by, dirty := Dirty(tc.author, tc.history, "issuedog")
 		if by != tc.want || dirty != tc.dirty {
 			t.Errorf("%s: Dirty = %+v, %v, want %+v, %v", tc.name, by, dirty, tc.want, tc.dirty)
 		}

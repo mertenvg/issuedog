@@ -73,6 +73,8 @@ func TestDirtyRule(t *testing.T) {
 		{"a trusted user's own, edited only by them", "owner", []string{"owner", "owner"}, daemon.Dirt{}, state.Intake, 1},
 		{"a trusted user's own, edited by someone else", "owner", []string{"alice", "owner"}, daemon.Dirt{cmdID: "alice"}, state.Intake, 1},
 		{"the oldest of several, from the history", "owner", []string{"alice", "bob", "owner"}, daemon.Dirt{cmdID: "alice"}, state.Intake, 1},
+		{"a trusted user's own, edited by the App", "owner", []string{app}, daemon.Dirt{}, state.Intake, 1},
+		{"a trusted user's own, by mallory, then the App", "owner", []string{"mallory", app}, daemon.Dirt{cmdID: "mallory"}, state.Intake, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := githubtest.New(t, "o/r", slug)
@@ -131,13 +133,19 @@ func TestMarkDirty(t *testing.T) {
 			t.Errorf("comment %d = %q, want %q", i, c.Body, want[i])
 		}
 	}
-	_, s, d := dirt(t, f)
+	a, s, d := dirt(t, f)
 	wantDirt := daemon.Dirt{state.BodyID: "mallory", cmdID: "mallory", cmdID + 1: "alice"}
 	if !reflect.DeepEqual(d, wantDirt) {
 		t.Errorf("dirt after the notes = %v, want %v", d, wantDirt)
 	}
 	if is := state.Derive(s, slug, d.Has); is.Stage != state.Intake || len(is.Markers) != 0 {
 		t.Errorf("derived %+v, want no markers", is)
+	}
+	// The App's note is a sanctioned edit, so the command was last edited
+	// by the App. Without its marker, the history still finds alice.
+	s.Comments[1].Body = "/approve"
+	if d, err := a.Dirty(context.Background(), s); err != nil || d[cmdID+1] != "alice" {
+		t.Errorf("dirt from the history alone = %v, %v, want the command dirty by alice", d, err)
 	}
 
 	// The command's author removes the note, the owner removes only the App
@@ -159,6 +167,45 @@ func TestMarkDirty(t *testing.T) {
 		if c.Body != want[i] {
 			t.Errorf("comment %d after removing its note = %q, want %q", i, c.Body, want[i])
 		}
+	}
+}
+
+// The owner's body, rewritten by the App as a spec, is clean: it gets no
+// note, and the App's markers elsewhere count. If mallory edited it first,
+// the history shows it, and the note names her.
+func TestDirtyBodyRewrittenByApp(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		editors []string
+		want    daemon.Dirt
+		stage   state.Stage
+		body    string
+	}{
+		{"the spec", []string{app, app}, daemon.Dirt{}, state.Clarifying, "## Problem\n..."},
+		{"mallory, then the App", []string{"mallory", app}, daemon.Dirt{state.BodyID: "mallory"}, state.Clarifying,
+			"<!-- issuedog:dirty by=mallory -->\n> ⚠️ issuedog ignores this issue description: **mallory** edited it without approval.\n\n## Problem\n..."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := githubtest.New(t, "o/r", slug)
+			n := f.AddIssue("owner", "Title", "an idea")
+			f.AddComment(n, app, toClarifying)
+			for _, by := range tc.editors {
+				f.EditBody(n, by, "## Problem\n...")
+			}
+			_, s, d := dirt(t, f)
+			if !reflect.DeepEqual(d, tc.want) || f.HistoryQueries() != 1 {
+				t.Errorf("dirt = %v after %d history queries, want %v after 1", d, f.HistoryQueries(), tc.want)
+			}
+			if got := state.Derive(s, slug, d.Has).Stage; got != tc.stage {
+				t.Errorf("stage = %s, want %s", got, tc.stage)
+			}
+			if err := markPass(t)(f); err != nil {
+				t.Fatal(err)
+			}
+			if got := f.State().Issues[0].Body; got != tc.body {
+				t.Errorf("body = %q, want %q", got, tc.body)
+			}
+		})
 	}
 }
 
@@ -229,7 +276,7 @@ func TestDirtyNoteOutlivesCappedHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if by, dirty := state.Dirty(s.Comments[0].Author, h[s.Comments[0].Node]); dirty || len(h[s.Comments[0].Node]) != 100 {
+	if by, dirty := state.Dirty(s.Comments[0].Author, h[s.Comments[0].Node], slug); dirty || len(h[s.Comments[0].Node]) != 100 {
 		t.Fatalf("the capped history has %d entries and is dirty by %v, %v; want 100 and clean", len(h[s.Comments[0].Node]), by, dirty)
 	}
 	if want := (daemon.Dirt{cmdID: "mallory"}); !reflect.DeepEqual(d, want) {
