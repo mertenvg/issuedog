@@ -2,15 +2,23 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/mertenvg/logr/v2"
 
 	"github.com/mertenvg/issuedog/internal/agent"
 	"github.com/mertenvg/issuedog/internal/appkey"
+	"github.com/mertenvg/issuedog/internal/egress"
+	"github.com/mertenvg/issuedog/internal/firewall"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -54,6 +62,12 @@ func run(args, environ []string, stdin io.Reader, stdout, stderr io.Writer) int 
 		logr.Errorf("checking the Claude credential: %v", err)
 		return 1
 	}
+	proxy, err := startEgress()
+	if err != nil {
+		logr.Errorf("starting egress: %v", err)
+		return 1
+	}
+	defer proxy.Close()
 	logr.Error("the daemon is not implemented yet")
 	return 1
 }
@@ -63,7 +77,11 @@ const usage = `usage:
   issuedog key check [-path file]     the file defaults to ` + appkey.DefaultPath
 
 // command runs "key import" (store the App key from stdin) or "key check".
+// The unlisted "egress" serves the firewall and proxy for sandbox/test.sh.
 func command(args []string, stdin io.Reader) int {
+	if len(args) == 1 && args[0] == "egress" {
+		return serveEgress()
+	}
 	if len(args) < 2 || args[0] != "key" || (args[1] != "import" && args[1] != "check") {
 		logr.Error(usage)
 		return 2
@@ -92,5 +110,62 @@ func command(args []string, stdin io.Reader) int {
 		return 1
 	}
 	logr.Infof("the App key at %s is usable", *path)
+	return 0
+}
+
+// The agent user, and the port on 127.0.0.1 where the egress proxy listens.
+// The firewall lets agent connect to that port and nothing else, so stage
+// runs pass http://127.0.0.1:3128 to agent.Env as the proxy.
+const (
+	agentUser = "agent"
+	proxyPort = 3128
+)
+
+// allowHosts is network.allow (SPEC §13), at its default for now.
+// TODO(#37): read network.allow from .issuedog/config.yaml on main.
+var allowHosts = []string{"api.anthropic.com", "proxy.golang.org", "sum.golang.org"}
+
+// The startup steps that need privileges or a fixed port. Tests replace them.
+var (
+	applyFirewall = firewall.Apply
+	listenProxy   = egress.Listen
+)
+
+// startEgress applies the agent firewall, then serves the egress proxy until
+// the returned server is closed.
+func startEgress() (*http.Server, error) {
+	if err := applyFirewall(agentUser); err != nil {
+		return nil, fmt.Errorf("applying the agent firewall: %w", err)
+	}
+	l, err := listenProxy(proxyPort)
+	if err != nil {
+		return nil, fmt.Errorf("listening for the egress proxy: %w", err)
+	}
+	// Tunnels are hijacked, so the header timeout only limits the request.
+	srv := &http.Server{Handler: egress.New(allowHosts), ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		if err := srv.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logr.Errorf("serving the egress proxy: %v", err)
+		}
+	}()
+	logr.Infof("egress proxy listening on http://%s", l.Addr())
+	return srv, nil
+}
+
+// serveEgress runs startEgress until SIGINT or SIGTERM. It lets
+// sandbox/test.sh check egress while the daemon can't yet keep running.
+func serveEgress() int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	proxy, err := startEgress()
+	if err != nil {
+		logr.Errorf("starting egress: %v", err)
+		return 1
+	}
+	<-ctx.Done()
+	if err := proxy.Close(); err != nil {
+		logr.Errorf("stopping the egress proxy: %v", err)
+		return 1
+	}
 	return 0
 }
