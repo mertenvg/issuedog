@@ -84,7 +84,29 @@ func fakeEgress(t *testing.T, fwErr, listenErr error) *[]string {
 	return &calls
 }
 
+// fakeAppKey points the daemon at a key file with mode perm in a temp dir,
+// and returns its path. A zero perm leaves the file missing.
+func fakeAppKey(t *testing.T, perm os.FileMode) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "app-key.pem")
+	oldPath := appKeyPath
+	t.Cleanup(func() { appKeyPath = oldPath })
+	appKeyPath = path
+	if perm == 0 {
+		return path
+	}
+	if err := os.WriteFile(path, []byte("test key"), perm); err != nil {
+		t.Fatal(err)
+	}
+	// Chmod as well, so the umask can't change the mode under test.
+	if err := os.Chmod(path, perm); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestRunStartsEgress(t *testing.T) {
+	fakeAppKey(t, 0o600)
 	calls := fakeEgress(t, nil, nil)
 	code, logs := runLogged(t, nil, []string{"ANTHROPIC_API_KEY=key"})
 	if code != 1 {
@@ -125,6 +147,31 @@ func TestEgressCommandStopsOnSignal(t *testing.T) {
 	}
 }
 
+func TestRunRefusesBadAppKey(t *testing.T) {
+	for name, tt := range map[string]struct {
+		perm os.FileMode
+		want string
+	}{
+		"missing":   {0, "no such file or directory"},
+		"mode 0640": {0o640, "mode 0640 gives access to group or others"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := fakeAppKey(t, tt.perm)
+			calls := fakeEgress(t, nil, nil)
+			code, logs := runLogged(t, nil, []string{"ANTHROPIC_API_KEY=key"})
+			if code != 1 {
+				t.Errorf("exit code = %d, want 1", code)
+			}
+			if !strings.Contains(logs, "loading the App key: ") || !strings.Contains(logs, path) || !strings.Contains(logs, tt.want) {
+				t.Errorf("logs = %q, want the annotated key error naming %s and %q", logs, path, tt.want)
+			}
+			if len(*calls) != 0 || strings.Contains(logs, "egress proxy listening") {
+				t.Errorf("startup steps = %q, logs %q; want startup to stop before the firewall and proxy", *calls, logs)
+			}
+		})
+	}
+}
+
 func TestRunStopsWhenEgressFails(t *testing.T) {
 	for name, tt := range map[string]struct {
 		fwErr, listenErr error
@@ -134,6 +181,7 @@ func TestRunStopsWhenEgressFails(t *testing.T) {
 		"proxy":    {nil, errors.New("port in use"), "firewall agent, listen 3128", "starting egress: listening for the egress proxy: port in use"},
 	} {
 		t.Run(name, func(t *testing.T) {
+			fakeAppKey(t, 0o600)
 			calls := fakeEgress(t, tt.fwErr, tt.listenErr)
 			code, logs := runLogged(t, nil, []string{"ANTHROPIC_API_KEY=key"})
 			if code != 1 {
@@ -153,6 +201,7 @@ func TestRunStopsWhenEgressFails(t *testing.T) {
 }
 
 func TestRunNoArgsLogsError(t *testing.T) {
+	fakeAppKey(t, 0o600)
 	fakeEgress(t, nil, nil)
 	code, logs := runLogged(t, nil, []string{"ANTHROPIC_API_KEY=key"})
 	if code != 1 || !strings.Contains(logs, "the daemon is not implemented yet") {

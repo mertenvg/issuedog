@@ -69,6 +69,11 @@ func run(args, environ []string, stdin io.Reader, stdout io.Writer) int {
 		logr.Errorf("checking the Claude credential: %v", err)
 		return 1
 	}
+	// A missing or loose key stops startup before the firewall (SPEC §3.1).
+	if _, err := appkey.Load(appKeyPath); err != nil {
+		logr.Errorf("loading the App key: %v", err)
+		return 1
+	}
 	proxy, err := startEgress()
 	if err != nil {
 		logr.Errorf("starting egress: %v", err)
@@ -137,8 +142,10 @@ const (
 // TODO(#37): read network.allow from .issuedog/config.yaml on main.
 var allowHosts = []string{"api.anthropic.com", "proxy.golang.org", "sum.golang.org"}
 
-// The startup steps that need privileges or a fixed port. Tests replace them.
+// The App key's path, and the startup steps that need privileges or a fixed
+// port. Tests replace them.
 var (
+	appKeyPath    = appkey.DefaultPath
 	applyFirewall = firewall.Apply
 	listenProxy   = egress.Listen
 )
