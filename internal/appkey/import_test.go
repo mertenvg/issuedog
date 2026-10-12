@@ -11,10 +11,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
-// newKey returns a fresh RSA key in PEM form: PKCS #1, or PKCS #8 if pkcs8.
 func newKey(t *testing.T, pkcs8 bool) []byte {
 	t.Helper()
 	k, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -31,10 +31,10 @@ func newKey(t *testing.T, pkcs8 bool) []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
 }
 
-// TestImportWritesAndReplaces imports a PKCS #1 key, then replaces it with a
-// PKCS #8 one. Each time Load must return exactly the imported key.
+// TestImportWritesAndReplaces imports a PKCS #1 key, then a PKCS #8 one, under a umask that would deny all access.
 func TestImportWritesAndReplaces(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "app-key.pem")
+	defer syscall.Umask(syscall.Umask(0o777))
 	for _, data := range [][]byte{newKey(t, false), newKey(t, true)} {
 		if err := Import(path, bytes.NewReader(data)); err != nil {
 			t.Fatal(err)
