@@ -151,11 +151,12 @@ Every transition goes through one table in code (section 7). Each write is check
 
 ### 5.3 State errors
 
-A state error is something the daemon reports to the owner instead of acting on: a transition missing from the table (7.2), a stage label that disagreed with its marker (5.1, after the daemon puts the label back), or a type that doesn't fit the issue's stage (4).
+A state error is something the daemon reports to the owner instead of acting on: a transition missing from the table (7.2) other than a rejected command, a stage label that disagreed with its marker (5.1, after the daemon puts the label back), or a type that doesn't fit the issue's stage (4).
 
 - The daemon posts one comment per error, carrying `<!-- issuedog:error key=<key> -->`. The key is the ID of what triggered it: the comment, reaction or timeline event (such as a `labeled` or issue-type event), or the run whose outcome had no row. Before posting, the daemon looks for a comment with that key and reuses it, so the same cause is posted once across polls and restarts, and a new occurrence gets a new key.
 - A trusted 👍 on the comment acknowledges the error. The daemon records it by replying with `<!-- issuedog:error key=<key> ack=r<reaction id> -->`, never posts that key again, and the error stops counting toward assignment (9.6). Removing the 👍 later changes nothing.
-- The error also ends when the issue makes its next valid transition.
+- Otherwise the error ends when its cause is gone. A type mismatch ends when the type fits the stage again. A missing transition or a disagreement ends at the issue's next valid transition, including a trusted user's manual stage change (5.1).
+- A command that doesn't apply at the issue's stage isn't a state error. The rejection reply (9.2) is enough, and nobody is assigned for it.
 
 ## 6. Trust model
 
@@ -414,7 +415,7 @@ The owner finds everything waiting on them in GitHub's own "assigned to me" view
 | Hand-off | The task is at `needs-human` after a hand-off comment (9.3) |
 | Human task | The task is at `needs-human` and every issue blocking it is closed |
 | Pull request | The PR is open and its task is at `pr-open`. It is unassigned when the PR merges or closes, or when the task leaves `pr-open` |
-| State error | From the daemon's state-error comment until the owner reacts 👍 to it, or the issue's next valid transition (5.3) |
+| State error | From the daemon's state-error comment until the owner reacts 👍 to it, or its cause is gone (5.3) |
 
 - These are the same items the digest lists (9.4).
 - Each PR carries the `priority:*` label of the task it closes. The task's label is the priority: the daemon copies it to the PR and reverts any other change to the PR's label.
