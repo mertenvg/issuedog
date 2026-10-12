@@ -147,18 +147,12 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 		if acc != nil && acc.GetEvent() == "labeled" && accAt > markerAt && !r.isApp(acc) && accAt > overrideAt {
 			override, overrideAt = acc, accAt
 		}
-		// last is the latest stage-label change, leaving out the App's
-		// changes toward the marker made after it. Those finish its own
-		// write, or repair a disagreement, whose key mustn't change.
-		for i := len(l.events) - 1; i >= 0; i-- {
-			e := l.events[i]
-			if l.ats[i] > markerAt && r.isApp(e) && strings.EqualFold(l.name, "stage:"+marker) == (e.GetEvent() == "labeled") {
-				continue
-			}
-			if l.ats[i] > lastAt {
-				last, lastAt = e, l.ats[i]
-			}
-			break
+		e, at, err := r.cause(ctx, l, marker, markerAt)
+		if err != nil {
+			return nil, fmt.Errorf("check labels of %s/%s#%d: %w", owner, repo, number, err)
+		}
+		if at > lastAt {
+			last, lastAt = e, at
 		}
 	}
 	if override != nil {
@@ -201,6 +195,33 @@ func (r *labelRules) restores(ctx context.Context, l *labelState, i int) (bool, 
 		}
 	}
 	return before == (l.events[i].GetEvent() == "labeled"), nil
+}
+
+// cause returns the latest change to the stage label l that a disagreement
+// can be keyed by, and its timeline position (nil and -1 if none). It leaves
+// out untrusted changes and the App's reverts of them, and the App's changes
+// toward the marker made after it, which finish its own write or repair a
+// disagreement. So a disagreement keeps its key while it is being repaired.
+func (r *labelRules) cause(ctx context.Context, l *labelState, marker string, markerAt int) (*gogithub.Timeline, int, error) {
+	for i := len(l.events) - 1; i >= 0; i-- {
+		e := l.events[i]
+		if l.ats[i] > markerAt && r.isApp(e) && strings.EqualFold(l.name, "stage:"+marker) == (e.GetEvent() == "labeled") {
+			continue
+		}
+		ok, err := r.accepted(ctx, e)
+		if err == nil && ok && r.isApp(e) {
+			var revert bool
+			revert, err = r.restores(ctx, l, i)
+			ok = !revert
+		}
+		if err != nil {
+			return nil, -1, fmt.Errorf("cause of %s: %w", l.name, err)
+		}
+		if ok {
+			return e, l.ats[i], nil
+		}
+	}
+	return nil, -1, nil
 }
 
 // accepted reports whether e came from the App or a trusted user.

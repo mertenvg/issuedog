@@ -16,13 +16,16 @@ import (
 // what github.CheckLabels finds. It must run before any Transition on s.
 //
 //   - An override, a trusted user's change of the stage label by hand, gets a
-//     transition marker with by=<login> and event=<id>, and at=<previous>
-//     when it moves to held. It isn't looked up in the table. An issue whose
+//     transition marker with by=<login> and event=<id>. It isn't looked up in
+//     the table. A move to held is an owner hold (SPEC §6.4), so it also gets
+//     at=<previous> and reason=owner. An override to the issue's current
+//     stage, held included, since holds stack, gets no marker. An issue whose
 //     labels were set by hand, with no marker of the App's, is adopted this
 //     way (plan #5, assumption 6).
 //   - A disagreement gets one error comment keyed by its timeline event
 //     (SPEC §5.3), then its stage labels are set to match the latest marker.
-//     An override to a label that names no stage is one too.
+//     An override to a label that names no stage is one too. With no marker,
+//     only that label is removed.
 //   - An Unfinished disagreement, the App's own write cut short, only gets
 //     its labels set.
 //
@@ -57,25 +60,21 @@ func (a *Applier) CheckLabels(ctx context.Context, s *github.Snapshot, trust git
 // it needs no check of its own that ev is recorded.
 func (a *Applier) override(ctx context.Context, s *github.Snapshot, dirty func(int64) bool, ev github.LabelEvent, to state.Stage) error {
 	is := state.Derive(s, a.AppSlug, dirty)
-	fields := map[string]string{"from": string(is.Stage), "to": string(to), "by": ev.By, "event": strconv.FormatInt(ev.Key, 10)}
-	if at := string(is.Stage); to == state.Held {
-		if is.Stage == state.Held {
-			// Held already: keep the stage it was held at, if known.
-			at = latestAt(is)
+	if to != is.Stage {
+		fields := map[string]string{"from": string(is.Stage), "to": string(to), "by": ev.By, "event": strconv.FormatInt(ev.Key, 10)}
+		if to == state.Held {
+			fields["at"], fields["reason"] = string(is.Stage), "owner"
 		}
-		if at != "" {
-			fields["at"] = at
+		marker, err := github.FormatMarker(github.Marker{Kind: "transition", Fields: fields})
+		if err != nil {
+			return fmt.Errorf("override: %w", err)
 		}
+		text := fmt.Sprintf("%s set `%s` by hand, so I've recorded it as an owner override.", ev.By, ev.Label)
+		if err := a.comment(ctx, s, join(github.Escape(text), marker)); err != nil {
+			return fmt.Errorf("override: %w", err)
+		}
+		logr.Infof("recorded %s's override to %s on %s/%s#%d", ev.By, to, a.Owner, a.Repo, s.Number)
 	}
-	marker, err := github.FormatMarker(github.Marker{Kind: "transition", Fields: fields})
-	if err != nil {
-		return fmt.Errorf("override: %w", err)
-	}
-	text := fmt.Sprintf("%s set `%s` by hand, so I've recorded it as an owner override.", ev.By, ev.Label)
-	if err := a.comment(ctx, s, join(github.Escape(text), marker)); err != nil {
-		return fmt.Errorf("override: %w", err)
-	}
-	logr.Infof("recorded %s's override to %s on %s/%s#%d", ev.By, to, a.Owner, a.Repo, s.Number)
 	if err := a.setStage(ctx, s, to); err != nil {
 		return fmt.Errorf("override: %w", err)
 	}
@@ -83,11 +82,21 @@ func (a *Applier) override(ctx context.Context, s *github.Snapshot, dirty func(i
 }
 
 // disagreement reports ev once, unless it's Unfinished, then sets the stage
-// labels to match the latest marker.
+// labels to match the latest marker. With no marker, ev is a label that names
+// no stage, and only that label is removed.
 func (a *Applier) disagreement(ctx context.Context, s *github.Snapshot, dirty func(int64) bool, ev github.LabelEvent) error {
 	is := state.Derive(s, a.AppSlug, dirty)
 	key := strconv.FormatInt(ev.Key, 10)
 	desc := fmt.Sprintf("stage labels %v on %s/%s#%d disagree with the latest marker, to=%s", ev.Stages, a.Owner, a.Repo, s.Number, is.Stage)
+	labels := "none"
+	if len(ev.Stages) > 0 {
+		labels = "`" + strings.Join(ev.Stages, "`, `") + "`"
+	}
+	text := fmt.Sprintf("The stage labels didn't match this issue's latest transition, to `%s`, so I've set them to match. They were: %s.", is.Stage, labels)
+	if ev.Marker == "" {
+		desc = fmt.Sprintf("%s on %s/%s#%d names no stage", ev.Label, a.Owner, a.Repo, s.Number)
+		text = fmt.Sprintf("`%s` isn't a pipeline stage, so I've removed it.", ev.Label)
+	}
 	switch {
 	case ev.Unfinished:
 		logr.Infof("finishing the App's own transition: %s", desc)
@@ -98,31 +107,22 @@ func (a *Applier) disagreement(ctx context.Context, s *github.Snapshot, dirty fu
 		if err != nil {
 			return fmt.Errorf("report disagreement: %w", err)
 		}
-		labels := "none"
-		if len(ev.Stages) > 0 {
-			labels = "`" + strings.Join(ev.Stages, "`, `") + "`"
-		}
 		// The labels are someone else's text, so a marker in them is escaped.
-		text := github.Escape(fmt.Sprintf("The stage labels didn't match this issue's latest transition, to `%s`, so I've set them to match. They were: %s.", is.Stage, labels))
-		if err := a.comment(ctx, s, join(text, marker)); err != nil {
+		if err := a.comment(ctx, s, join(github.Escape(text), marker)); err != nil {
 			return fmt.Errorf("report disagreement: %w", err)
 		}
 		logr.Errorf("state error: %s", desc)
 	}
-	if err := a.setStage(ctx, s, is.Stage); err != nil {
+	var err error
+	if ev.Marker == "" {
+		err = a.removeLabel(ctx, s, ev.Label)
+	} else {
+		err = a.setStage(ctx, s, is.Stage)
+	}
+	if err != nil {
 		return fmt.Errorf("repair disagreement: %w", err)
 	}
 	return nil
-}
-
-// latestAt returns the at= of the latest transition marker, or "".
-func latestAt(is state.Issue) string {
-	for _, m := range slices.Backward(is.Markers) {
-		if m.Kind == "transition" {
-			return m.Fields["at"]
-		}
-	}
-	return ""
 }
 
 // isStageLabel reports whether l is a stage:* label, naming a stage or not.

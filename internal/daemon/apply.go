@@ -191,12 +191,25 @@ func (a *Applier) setStage(ctx context.Context, s *github.Snapshot, stage state.
 		if !isStageLabel(l) || strings.EqualFold(l, want) {
 			continue
 		}
-		resp, err := a.Client.Issues.RemoveLabelForIssue(ctx, a.Owner, a.Repo, s.Number, l)
-		if err != nil && (resp == nil || resp.StatusCode != http.StatusNotFound) {
-			return fmt.Errorf("remove %s from %s/%s#%d: %w", l, a.Owner, a.Repo, s.Number, err)
+		if err := a.removeLabel(ctx, s, l); err != nil {
+			return fmt.Errorf("set stage %s: %w", stage, err)
 		}
-		s.Labels = slices.DeleteFunc(s.Labels, func(x string) bool { return x == l })
 	}
+	return nil
+}
+
+// removeLabel removes l from s, if s has it. Like GitHub, it ignores case.
+// A label gone meanwhile is no error.
+func (a *Applier) removeLabel(ctx context.Context, s *github.Snapshot, l string) error {
+	is := func(x string) bool { return strings.EqualFold(x, l) }
+	if !slices.ContainsFunc(s.Labels, is) {
+		return nil
+	}
+	resp, err := a.Client.Issues.RemoveLabelForIssue(ctx, a.Owner, a.Repo, s.Number, l)
+	if err != nil && (resp == nil || resp.StatusCode != http.StatusNotFound) {
+		return fmt.Errorf("remove %s from %s/%s#%d: %w", l, a.Owner, a.Repo, s.Number, err)
+	}
+	s.Labels = slices.DeleteFunc(s.Labels, is)
 	return nil
 }
 
