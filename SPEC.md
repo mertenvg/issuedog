@@ -153,8 +153,8 @@ Every transition goes through one table in code (section 7). Each write is check
 
 A state error is something the daemon reports to the owner instead of acting on: a transition missing from the table (7.2), a stage label that disagreed with its marker (5.1, after the daemon puts the label back), or a type that doesn't fit the issue's stage (4).
 
-- The daemon posts one comment per error, carrying `<!-- issuedog:error key=<key> -->`. The key is stable for the cause: the triggering event's ID for a missing transition, `label=<label> marker=<comment id>` for a disagreement, or `type=<type> marker=<comment id>` for a type that doesn't fit, where the marker is the issue's latest transition marker. Before posting, the daemon looks for a comment with that key and reuses it, so a cause that persists across polls or restarts is posted once.
-- A trusted 👍 on the comment acknowledges the error. The daemon records it by replying with `<!-- issuedog:error key=<key> ack=r<reaction id> -->`, never posts that key again, and unassigns the owner (9.6). Removing the 👍 later changes nothing.
+- The daemon posts one comment per error, carrying `<!-- issuedog:error key=<key> -->`. The key is the ID of what triggered it: the comment, reaction or timeline event (such as a `labeled` or issue-type event), or the run whose outcome had no row. Before posting, the daemon looks for a comment with that key and reuses it, so the same cause is posted once across polls and restarts, and a new occurrence gets a new key.
+- A trusted 👍 on the comment acknowledges the error. The daemon records it by replying with `<!-- issuedog:error key=<key> ack=r<reaction id> -->`, never posts that key again, and the error stops counting toward assignment (9.6). Removing the 👍 later changes nothing.
 - The error also ends when the issue makes its next valid transition.
 
 ## 6. Trust model
