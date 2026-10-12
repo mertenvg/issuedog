@@ -26,7 +26,7 @@ var version = "dev"
 
 func main() {
 	stop := setupLogging(os.Stdout, os.Stderr)
-	code := run(os.Args[1:], os.Environ(), os.Stdin, os.Stdout, os.Stderr)
+	code := run(os.Args[1:], os.Environ(), os.Stdin, os.Stdout)
 	logr.Wait()
 	stop()
 	os.Exit(code)
@@ -43,11 +43,18 @@ func setupLogging(stdout, stderr io.Writer) (stop func()) {
 	}
 }
 
-func run(args, environ []string, stdin io.Reader, stdout, stderr io.Writer) int {
+// run is the whole program. It writes through logr, which main's setupLogging
+// sends to stdout and stderr, except for the version and help text, which are
+// the program's own output rather than logs and go to stdout as plain text.
+func run(args, environ []string, stdin io.Reader, stdout io.Writer) int {
 	fs := flag.NewFlagSet("issuedog", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs.SetOutput(io.Discard) // usage goes through logr
 	showVersion := fs.Bool("version", false, "print the version and exit")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(args); errors.Is(err, flag.ErrHelp) {
+		fmt.Fprintln(stdout, usage)
+		return 0
+	} else if err != nil {
+		logr.Errorf("issuedog: %v\n%s", err, usage)
 		return 2
 	}
 	if *showVersion {
@@ -56,7 +63,7 @@ func run(args, environ []string, stdin io.Reader, stdout, stderr io.Writer) int 
 	}
 	// Key commands don't need a Claude credential, so they run before its check.
 	if fs.NArg() > 0 {
-		return command(fs.Args(), stdin)
+		return command(fs.Args(), stdin, stdout)
 	}
 	if _, err := agent.Credential(environ); err != nil {
 		logr.Errorf("checking the Claude credential: %v", err)
@@ -73,12 +80,13 @@ func run(args, environ []string, stdin io.Reader, stdout, stderr io.Writer) int 
 }
 
 const usage = `usage:
+  issuedog [-version]
   issuedog key import [-path file] < app-key.pem
   issuedog key check [-path file]     the file defaults to ` + appkey.DefaultPath
 
 // command runs "key import" (store the App key from stdin) or "key check".
 // The unlisted "egress" serves the firewall and proxy for sandbox/test.sh.
-func command(args []string, stdin io.Reader) int {
+func command(args []string, stdin io.Reader, stdout io.Writer) int {
 	if len(args) == 1 && args[0] == "egress" {
 		return serveEgress()
 	}
@@ -90,6 +98,10 @@ func command(args []string, stdin io.Reader) int {
 	fs.SetOutput(io.Discard) // usage goes through logr
 	path := fs.String("path", appkey.DefaultPath, "the key file")
 	err := fs.Parse(args[2:])
+	if errors.Is(err, flag.ErrHelp) {
+		fmt.Fprintln(stdout, usage)
+		return 0
+	}
 	if err == nil && fs.NArg() > 0 {
 		err = fmt.Errorf("unexpected arguments %q", fs.Args())
 	}

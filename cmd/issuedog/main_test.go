@@ -8,6 +8,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -21,21 +22,43 @@ import (
 	"github.com/mertenvg/issuedog/internal/egress"
 )
 
-func TestRunVersion(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"--version"}, nil, nil, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
-	}
-	if got, want := stdout.String(), "issuedog dev\n"; got != want {
-		t.Errorf("stdout = %q, want %q", got, want)
+// runLogged runs the program and returns its exit code and what it logged.
+func runLogged(t *testing.T, args, environ []string) (int, string) {
+	t.Helper()
+	var logs bytes.Buffer
+	stop := logr.AddWriter(&logs)
+	defer stop()
+	code := run(args, environ, nil, io.Discard)
+	logr.Wait()
+	return code, logs.String()
+}
+
+// TestRunPlainOutput checks that the version and help text go to stdout as
+// plain text, not through logr, which would add log metadata.
+func TestRunPlainOutput(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--version"}, "issuedog dev\n"},
+		{[]string{"-h"}, usage + "\n"},
+		{[]string{"key", "import", "-h"}, usage + "\n"},
+	} {
+		var logs, stdout bytes.Buffer
+		stop := logr.AddWriter(&logs)
+		code := run(tc.args, nil, nil, &stdout)
+		logr.Wait()
+		stop()
+		if code != 0 || stdout.String() != tc.want || logs.Len() != 0 {
+			t.Errorf("%q: exit code %d, stdout %q, logs %q; want 0, %q and no logs", tc.args, code, stdout.String(), logs.String(), tc.want)
+		}
 	}
 }
 
 func TestRunUnknownFlag(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	if code := run([]string{"--nope"}, nil, nil, &stdout, &stderr); code != 2 {
-		t.Errorf("exit code = %d, want 2", code)
+	code, logs := runLogged(t, []string{"--nope"}, nil)
+	if code != 2 || !strings.Contains(logs, "flag provided but not defined: -nope") || !strings.Contains(logs, "usage:") {
+		t.Errorf("exit code %d, logs %q; want 2, the flag error and the usage", code, logs)
 	}
 }
 
@@ -62,22 +85,16 @@ func fakeEgress(t *testing.T, fwErr, listenErr error) *[]string {
 }
 
 func TestRunStartsEgress(t *testing.T) {
-	var logs, stdout, stderr bytes.Buffer
-	stop := logr.AddWriter(&logs)
-	defer stop()
 	calls := fakeEgress(t, nil, nil)
-
-	code := run(nil, []string{"ANTHROPIC_API_KEY=key"}, nil, &stdout, &stderr)
-	logr.Wait()
-
+	code, logs := runLogged(t, nil, []string{"ANTHROPIC_API_KEY=key"})
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
 	if got, want := strings.Join(*calls, ", "), "firewall agent, listen 3128"; got != want {
 		t.Errorf("startup steps = %q, want %q", got, want)
 	}
-	if !strings.Contains(logs.String(), "egress proxy listening on http://127.0.0.1:") {
-		t.Errorf("logs = %q, want the proxy on 127.0.0.1", logs.String())
+	if !strings.Contains(logs, "egress proxy listening on http://127.0.0.1:") {
+		t.Errorf("logs = %q, want the proxy on 127.0.0.1", logs)
 	}
 }
 
@@ -93,7 +110,7 @@ func TestEgressCommandStopsOnSignal(t *testing.T) {
 		return egress.Listen(0)
 	}
 	done := make(chan int, 1)
-	go func() { done <- command([]string{"egress"}, nil) }()
+	go func() { done <- command([]string{"egress"}, nil, io.Discard) }()
 	<-listening
 	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
 		t.Fatal(err)
@@ -117,47 +134,29 @@ func TestRunStopsWhenEgressFails(t *testing.T) {
 		"proxy":    {nil, errors.New("port in use"), "firewall agent, listen 3128", "starting egress: listening for the egress proxy: port in use"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			var logs, stdout, stderr bytes.Buffer
-			stop := logr.AddWriter(&logs)
-			defer stop()
 			calls := fakeEgress(t, tt.fwErr, tt.listenErr)
-
-			code := run(nil, []string{"ANTHROPIC_API_KEY=key"}, nil, &stdout, &stderr)
-			logr.Wait()
-
+			code, logs := runLogged(t, nil, []string{"ANTHROPIC_API_KEY=key"})
 			if code != 1 {
 				t.Errorf("exit code = %d, want 1", code)
 			}
 			if got := strings.Join(*calls, ", "); got != tt.wantCalls {
 				t.Errorf("startup steps = %q, want %q", got, tt.wantCalls)
 			}
-			if !strings.Contains(logs.String(), tt.want) {
-				t.Errorf("logs = %q, want %q", logs.String(), tt.want)
+			if !strings.Contains(logs, tt.want) {
+				t.Errorf("logs = %q, want %q", logs, tt.want)
 			}
-			if strings.Contains(logs.String(), "not implemented") {
-				t.Errorf("logs = %q, want startup to stop at egress", logs.String())
+			if strings.Contains(logs, "not implemented") {
+				t.Errorf("logs = %q, want startup to stop at egress", logs)
 			}
 		})
 	}
 }
 
 func TestRunNoArgsLogsError(t *testing.T) {
-	var logs, stdout, stderr bytes.Buffer
 	fakeEgress(t, nil, nil)
-	stop := logr.AddWriter(&logs)
-	defer stop()
-
-	code := run(nil, []string{"ANTHROPIC_API_KEY=key"}, nil, &stdout, &stderr)
-	logr.Wait()
-
-	if code != 1 {
-		t.Errorf("exit code = %d, want 1", code)
-	}
-	if !strings.Contains(logs.String(), "the daemon is not implemented yet") {
-		t.Errorf("logs = %q, want the not-implemented error", logs.String())
-	}
-	if stdout.Len() != 0 {
-		t.Errorf("stdout = %q, want empty", stdout.String())
+	code, logs := runLogged(t, nil, []string{"ANTHROPIC_API_KEY=key"})
+	if code != 1 || !strings.Contains(logs, "the daemon is not implemented yet") {
+		t.Errorf("exit code %d, logs %q; want 1 and the not-implemented error", code, logs)
 	}
 }
 
@@ -167,21 +166,15 @@ func TestRunRefusesBadCredentials(t *testing.T) {
 		"neither set": {"GH_TOKEN=gh"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			var logs, stdout, stderr bytes.Buffer
-			stop := logr.AddWriter(&logs)
-			defer stop()
-
-			code := run(nil, environ, nil, &stdout, &stderr)
-			logr.Wait()
-
+			code, logs := runLogged(t, nil, environ)
 			if code != 1 {
 				t.Errorf("exit code = %d, want 1", code)
 			}
-			if !strings.Contains(logs.String(), "checking the Claude credential: ") || !strings.Contains(logs.String(), "CLAUDE_CODE_OAUTH_TOKEN") {
-				t.Errorf("logs = %q, want the annotated credential error", logs.String())
+			if !strings.Contains(logs, "checking the Claude credential: ") || !strings.Contains(logs, "CLAUDE_CODE_OAUTH_TOKEN") {
+				t.Errorf("logs = %q, want the annotated credential error", logs)
 			}
-			if strings.Contains(logs.String(), "not implemented") {
-				t.Errorf("logs = %q, want startup to stop at the credential check", logs.String())
+			if strings.Contains(logs, "not implemented") {
+				t.Errorf("logs = %q, want startup to stop at the credential check", logs)
 			}
 		})
 	}
@@ -236,9 +229,8 @@ func TestRunKeyCommands(t *testing.T) {
 		{[]string{"key", "import", "extra"}, "", 2},
 		{[]string{"key", "check", "-nope"}, "", 2},
 	} {
-		var stdout, stderr bytes.Buffer
-		if code := run(tt.args, nil, strings.NewReader(tt.stdin), &stdout, &stderr); code != tt.want {
-			t.Errorf("%q: exit code = %d, want %d; stderr: %s", tt.args, code, tt.want, stderr.String())
+		if code := run(tt.args, nil, strings.NewReader(tt.stdin), io.Discard); code != tt.want {
+			t.Errorf("%q: exit code = %d, want %d", tt.args, code, tt.want)
 		}
 	}
 	logr.Wait()
