@@ -33,15 +33,15 @@ func Import(path string, r io.Reader) error {
 		return fmt.Errorf("app key %s: %w", path, err)
 	}
 
-	// CreateTemp creates the file with mode 0600.
 	f, err := os.CreateTemp(filepath.Dir(path), ".app-key-*.tmp")
 	if err != nil {
 		return fmt.Errorf("app key %s: %w", path, err)
 	}
 	tmp := f.Name()
-	_, err = f.Write(data)
-	if err == nil {
-		err = f.Sync()
+	if err = f.Chmod(0o600); err == nil { // CreateTemp's 0600 is subject to the umask
+		if _, err = f.Write(data); err == nil {
+			err = f.Sync()
+		}
 	}
 	if cerr := f.Close(); err == nil && cerr == nil {
 		err = os.Rename(tmp, path)
