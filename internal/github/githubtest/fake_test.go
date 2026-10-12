@@ -136,4 +136,22 @@ func TestReplay(t *testing.T) {
 	if len(problems) != 1 || !strings.HasPrefix(problems[0], "crash after write 1 applied") {
 		t.Errorf("problems = %q, want only the crash after write 1 applied", problems)
 	}
+	// Reactions are a set: a pass that adds 👀 then 👍 and carries on after an
+	// error may redo them in another order, and Replay must accept that.
+	react := func(f *Fake) error {
+		ctx, c := context.Background(), f.Client(t)
+		s, err := c.Snapshot(ctx, "o", "r", 1)
+		if err != nil {
+			return err
+		}
+		for _, content := range []string{"eyes", "+1"} {
+			if _, _, err := c.Client.Reactions.CreateIssueCommentReaction(ctx, "o", "r", s.Comments[0].ID, content); err != nil {
+				t.Logf("react %s: %v", content, err)
+			}
+		}
+		return nil
+	}
+	if problems := replay(t, setup, react); len(problems) != 0 {
+		t.Errorf("problems = %q, want none for reactions redone in another order", problems)
+	}
 }
