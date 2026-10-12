@@ -129,6 +129,8 @@ The only local files are the lease (section 8.2) and the run results in `/state/
 ### 5.1 Reading rules
 
 - **Markers.** The daemon only reads markers in comments and issue bodies written by the issuedog App. A marker anywhere else is ignored.
+  - **Embedded text.** Whenever the App writes a comment or body, it escapes `<!--` as `&lt;!--` in all text it didn't write itself, such as agent output, quoted comments, issue titles and file contents. So the only unescaped markers are the daemon's own.
+  - **Edits.** A comment or body whose GraphQL `lastEditedAt` is set counts only if everyone in its edit history (`userContentEdits`) is the App or a trusted user (section 6.1). Otherwise its markers are ignored, and the digest lists it as a state error (section 9.4). Comments that were never edited need no GraphQL query. This keeps owner edits to App bodies working (section 7.4), and the App never edits its own comments to record state, because each revision is a new comment.
 - **Labels.** A `stage:*`, `priority:*`, `scope:*` or `approved` label counts only if the issue timeline shows that its most recent `labeled` event came from the App or a trusted user (section 6.1).
   - When an untrusted actor adds or removes one of these labels, the daemon reverts the change and posts a short comment.
   - When a trusted user changes a stage label by hand, the daemon treats it as an owner override and records a transition marker with `by=<login>`. It does this even if the change is not in the transition table.
@@ -373,7 +375,7 @@ A `stage:needs-human` issue uses this template. The agent must fill every field;
 
 One pinned issue per repo, `issuedog digest`. It uses one of the repo's three pin slots.
 
-- The body is the current list: open questions, pending approvals, human tasks, PRs waiting for review, and state errors (5.1, 7.2). Items are ordered by how many tasks each one unblocks.
+- The body is the current list: open questions, pending approvals, human tasks, PRs waiting for review, and state errors (5.1, 7.2), including App comments and bodies edited by someone untrusted. Items are ordered by how many tasks each one unblocks.
 - Each item states what is being decided, the options, the recommendation, and links to the issue.
 - The daemon rewrites the body when the list changes. It posts a short comment that @mentions `notify` only when a new item appears, so GitHub sends one notification per new item.
 
@@ -467,6 +469,8 @@ What to build.
 ## Test plan
 Which tests prove each criterion.
 ```
+
+A task that writes comments or issue bodies adds `- [ ] Text the daemon didn't write is escaped (5.1)` to its definition of done.
 
 ### 11.3 Planning rules
 
