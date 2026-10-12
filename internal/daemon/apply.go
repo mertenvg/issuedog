@@ -64,8 +64,14 @@ func (m Move) check() error {
 // comment, the new stage label, removing the old ones, then the 👍. Its
 // writes are added to s. dirty is as for state.Derive.
 //
-// A move the table lacks changes no label. It is logged, reported once with
-// an error comment keyed by m.Key's ID (SPEC §5.3), and returned as an error
+// The stage labels are set to match the latest marker, so a stage label a
+// trusted user set by hand would be overwritten. That's safe only because
+// CheckLabels runs first and records such a change as an override (SPEC
+// §5.1, plan #5 T5); callers must keep that order.
+//
+// A move the table lacks changes no label. It is reported once with an
+// error comment keyed by m.Key's ID (SPEC §5.3), logged as an error when
+// that comment is posted and at debug level after, and returned as an error
 // wrapping state.ErrNoTransition.
 func (a *Applier) Transition(ctx context.Context, s *github.Snapshot, dirty func(int64) bool, m Move) error {
 	wrap := func(err error) error {
@@ -84,10 +90,14 @@ func (a *Applier) Transition(ctx context.Context, s *github.Snapshot, dirty func
 			if !errors.Is(err, state.ErrNoTransition) {
 				return wrap(err)
 			}
-			logr.Errorf("state error: %v", wrap(err))
+			if is.Reported("transition", m.Key.ID) {
+				logr.Debugf("state error, reported already: %v", wrap(err))
+				return wrap(err)
+			}
 			if rerr := a.report(ctx, s, is, m, class); rerr != nil {
 				return wrap(rerr)
 			}
+			logr.Errorf("state error: %v", wrap(err))
 			return wrap(err)
 		}
 		fields := maps.Clone(m.Fields)
@@ -133,12 +143,8 @@ func (a *Applier) Ack(ctx context.Context, commentID int64) error {
 	return nil
 }
 
-// report posts the state error for a move the table lacks, unless its key
-// has one already.
+// report posts the state error for a move the table lacks.
 func (a *Applier) report(ctx context.Context, s *github.Snapshot, is state.Issue, m Move, class state.Class) error {
-	if is.Errors[m.Key.ID] {
-		return nil
-	}
 	marker, err := github.FormatMarker(github.Marker{Kind: "error", Fields: map[string]string{"kind": "transition", "key": m.Key.ID}})
 	if err != nil {
 		return fmt.Errorf("report: %w", err)

@@ -1,6 +1,7 @@
 package github
 
 import (
+	"maps"
 	"reflect"
 	"testing"
 )
@@ -120,13 +121,14 @@ func TestFormatMarker(t *testing.T) {
 	} {
 		got, err := FormatMarker(tt.m)
 		if err != nil {
-			t.Fatalf("FormatMarker(%+v): %v", tt.m, err)
+			t.Errorf("FormatMarker(%+v): %v", tt.m, err)
+			continue
 		}
 		if got != tt.want {
 			t.Errorf("FormatMarker(%+v) = %q, want %q", tt.m, got, tt.want)
 		}
 		back := ParseMarkers(got)
-		if len(back) != 1 || back[0].Kind != tt.m.Kind || len(back[0].Fields) != len(tt.m.Fields) {
+		if len(back) != 1 || back[0].Kind != tt.m.Kind || !maps.Equal(back[0].Fields, tt.m.Fields) {
 			t.Errorf("ParseMarkers(%q) = %+v, want %+v back", got, back, tt.m)
 		}
 	}
@@ -140,6 +142,12 @@ func TestFormatMarkerRefusesUnreadable(t *testing.T) {
 		{"transition", map[string]string{"to": "a b"}},
 		{"transition", map[string]string{"to": "x-->"}},
 		{"transition", map[string]string{"To": "ready"}},
+		// Unicode spaces split a field when it's parsed, losing the marker.
+		{"transition", map[string]string{"to": "a\vb"}},
+		{"transition", map[string]string{"to": "a b"}},
+		{"transition", map[string]string{"to": "a b"}},
+		{"transition", map[string]string{"to": "a\u0085b"}},
+		{"transition", map[string]string{"t o": "ready"}},
 	} {
 		if got, err := FormatMarker(m); err == nil {
 			t.Errorf("FormatMarker(%+v) = %q, want an error", m, got)

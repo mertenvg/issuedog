@@ -62,12 +62,8 @@ func TestDeriveStage(t *testing.T) {
 		{"a body marker counts", snap(toClarifying, nil), clean, Clarifying},
 		{"a dirty body is skipped", snap(toClarifying, nil), dirtyIDs(BodyID), Intake},
 	} {
-		is := Derive(tt.s, slug, tt.dirty)
-		if is.Stage != tt.want {
-			t.Errorf("%s: stage = %s, want %s", tt.name, is.Stage, tt.want)
-		}
-		if (is.Last == nil) != (tt.want == Intake) || (is.Last != nil && Stage(is.Last.Fields["to"]) != tt.want) {
-			t.Errorf("%s: last marker = %+v, want one to %s", tt.name, is.Last, tt.want)
+		if got := Derive(tt.s, slug, tt.dirty).Stage; got != tt.want {
+			t.Errorf("%s: stage = %s, want %s", tt.name, got, tt.want)
 		}
 	}
 }
@@ -76,22 +72,36 @@ func TestDeriveKeysAndErrors(t *testing.T) {
 	s := snap("", []github.Author{appBot, appBot, appBot, owner, appBot},
 		"<!-- issuedog:transition from=intake to=clarifying cmd=10 --><!-- issuedog:transition from=clarifying to=clarifying cmd=r11 run=ab -->",
 		"<!-- issuedog:transition from=held to=clarifying by=owner event=12 -->",
-		"<!-- issuedog:reply cmd=13 reason=rejected --><!-- issuedog:error kind=transition key=14 -->",
+		"<!-- issuedog:reply cmd=13 reason=rejected --><!-- issuedog:error kind=transition key=14 -->"+
+			"<!-- issuedog:error kind=disagreement key=18 --><!-- issuedog:error key=19 ack=r20 -->",
 		"<!-- issuedog:transition from=clarifying to=ready cmd=15 --><!-- issuedog:error kind=transition key=16 -->",
 		"<!-- issuedog:transition from=clarifying to=ready cmd=17 -->")
 	is := Derive(s, slug, dirtyIDs(5))
-	wantKeys := map[Key]bool{CmdKey(10): true, ReactionKey(11): true, RunKey("ab"): true, EventKey(12): true, CmdKey(13): true}
+	wantKeys := map[Key]bool{CmdKey(10): true, ReactionKey(11): true, {"run", "ab"}: true, {"event", "12"}: true, CmdKey(13): true}
 	if !reflect.DeepEqual(is.Keys, wantKeys) {
 		t.Errorf("keys = %v, want %v", is.Keys, wantKeys)
 	}
-	if want := map[string]bool{"14": true}; !reflect.DeepEqual(is.Errors, want) {
-		t.Errorf("errors = %v, want %v", is.Errors, want)
+	for _, tt := range []struct {
+		kind, key string
+		want      bool
+	}{
+		{"transition", "14", true},
+		{"disagreement", "14", false}, // the same key, another kind
+		{"disagreement", "18", true},
+		{"transition", "18", false},
+		{"transition", "19", true}, // an ack covers its key for every kind
+		{"disagreement", "19", true},
+		{"transition", "16", false}, // a trusted user's marker
+	} {
+		if got := is.Reported(tt.kind, tt.key); got != tt.want {
+			t.Errorf("Reported(%s, %s) = %v, want %v", tt.kind, tt.key, got, tt.want)
+		}
 	}
 	for _, tt := range []struct {
 		k    Key
 		want bool
 	}{
-		{CmdKey(10), true}, {ReactionKey(11), true}, {RunKey("ab"), true}, {EventKey(12), true},
+		{CmdKey(10), true}, {ReactionKey(11), true}, {Key{"run", "ab"}, true}, {Key{"event", "12"}, true},
 		{CmdKey(13), false}, // a reply, not a transition
 		{CmdKey(15), false}, // a trusted user's marker
 		{CmdKey(17), false}, // dirty

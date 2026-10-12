@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 )
 
 // Marker is a hidden issuedog marker in a comment or issue body (SPEC §5):
@@ -37,7 +38,8 @@ var fieldOrder = []string{"from", "to", "at", "origin", "reason", "by", "kind", 
 
 // FormatMarker writes m as a hidden marker, its fields in a fixed order
 // (fieldOrder). A kind, key or value ParseMarkers wouldn't read back is an
-// error, so a marker never goes out without its idempotency key.
+// error, so a marker never goes out without its idempotency key. That
+// includes any Unicode space, which splits a field when it's parsed.
 func FormatMarker(m Marker) (string, error) {
 	if !kindRE.MatchString(m.Kind) {
 		return "", fmt.Errorf("format marker: bad kind %q", m.Kind)
@@ -54,7 +56,7 @@ func FormatMarker(m Marker) (string, error) {
 	b.WriteString("<!-- issuedog:" + m.Kind)
 	for _, k := range keys {
 		f := k + "=" + m.Fields[k]
-		if !fieldRE.MatchString(f) {
+		if !fieldRE.MatchString(f) || strings.IndexFunc(f, unicode.IsSpace) >= 0 {
 			return "", fmt.Errorf("format %s marker: bad field %q", m.Kind, f)
 		}
 		b.WriteString(" " + f)
