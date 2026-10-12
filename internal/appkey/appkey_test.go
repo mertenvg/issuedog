@@ -2,8 +2,6 @@ package appkey
 
 import (
 	"bytes"
-	"errors"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,79 +28,47 @@ func writeKey(t *testing.T, mode os.FileMode) string {
 
 func TestLoadAccepts(t *testing.T) {
 	for _, mode := range []os.FileMode{0o600, 0o400} {
-		got, err := Load(writeKey(t, mode))
-		if err != nil {
-			t.Errorf("mode %04o: %v", mode, err)
-			continue
-		}
-		if !bytes.Equal(got, key) {
-			t.Errorf("mode %04o: got %q, want %q", mode, got, key)
+		if got, err := Load(writeKey(t, mode)); err != nil || !bytes.Equal(got, key) {
+			t.Errorf("mode %04o: got %q, %v; want the key", mode, got, err)
 		}
 	}
 }
 
-func TestLoadRefusesGroupOrOtherAccess(t *testing.T) {
-	for _, mode := range []os.FileMode{0o640, 0o604, 0o620, 0o602, 0o644} {
-		path := writeKey(t, mode)
-		_, err := Load(path)
-		if err == nil {
-			t.Errorf("mode %04o: loaded, want refused", mode)
-			continue
-		}
-		if !strings.Contains(err.Error(), path) {
-			t.Errorf("mode %04o: error %q doesn't name the path", mode, err)
-		}
-	}
-}
-
-func TestLoadRefusesWrongOwner(t *testing.T) {
-	path := writeKey(t, 0o600)
-	_, err := load(path, os.Getuid()+1)
-	if err == nil {
-		t.Fatal("loaded a file owned by another uid, want refused")
-	}
-	if !strings.Contains(err.Error(), "owned by uid") {
-		t.Errorf("error %q doesn't mention the owner", err)
-	}
-}
-
-func TestLoadRefusesMissingFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "missing.pem")
-	_, err := Load(path)
-	if !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("got %v, want a not-exist error", err)
-	}
-	if !strings.Contains(err.Error(), path) {
-		t.Errorf("error %q doesn't name the path", err)
-	}
-}
-
-func TestLoadRefusesDirectory(t *testing.T) {
+// TestLoadRefuses checks each refusal names the path. The wrong-owner case
+// passes another uid, because tests can't chown without root.
+func TestLoadRefuses(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o700); err != nil {
+	fifo := filepath.Join(dir, "fifo.pem")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Load(dir); err == nil {
-		t.Fatal("loaded a directory, want refused")
+	type refusal struct {
+		path string
+		uid  int
+		want string
 	}
-}
-
-func TestLoadRefusesFIFO(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "app-key.pem")
-	if err := syscall.Mkfifo(path, 0o600); err != nil {
-		t.Fatal(err)
+	cases := map[string]refusal{
+		"wrong owner": {writeKey(t, 0o600), os.Getuid() + 1, "owned by uid"},
+		"missing":     {filepath.Join(dir, "missing.pem"), os.Getuid(), "no such file"},
+		"directory":   {dir, os.Getuid(), "not a regular file"},
+		"FIFO":        {fifo, os.Getuid(), "not a regular file"},
 	}
-	done := make(chan error, 1)
-	go func() {
-		_, err := Load(path)
-		done <- err
-	}()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("loaded a FIFO, want refused")
+	for _, mode := range []os.FileMode{0o640, 0o604, 0o620, 0o602, 0o644} {
+		cases["mode "+mode.String()] = refusal{writeKey(t, mode), os.Getuid(), "gives access to group or others"}
+	}
+	for name, tt := range cases {
+		done := make(chan error, 1)
+		go func() {
+			_, err := load(tt.path, tt.uid)
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if err == nil || !strings.Contains(err.Error(), tt.path) || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("%s: err = %v, want one naming the path and containing %q", name, err, tt.want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: Load blocked", name)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Load blocked on a FIFO")
 	}
 }
