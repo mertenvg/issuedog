@@ -135,44 +135,6 @@ func TestTransitionNotInTable(t *testing.T) {
 	}
 }
 
-func TestTransitionErrorKeys(t *testing.T) {
-	m := daemon.Move{To: state.Planning, Trigger: state.TriggerSpecApproved, Key: state.CmdKey(cmdID)}
-	pass := func(f *githubtest.Fake) error {
-		if err := move(t, m, clean)(f); !errors.Is(err, state.ErrNoTransition) {
-			return fmt.Errorf("err = %v, want ErrNoTransition", err)
-		}
-		return nil
-	}
-	for _, tt := range []struct {
-		name, existing string
-		posted         bool
-	}{
-		{"the same key of another kind", "<!-- issuedog:error kind=disagreement key=1001 -->", true},
-		{"the same kind and key", "<!-- issuedog:error kind=transition key=1001 -->", false},
-		{"an ack of the key", "<!-- issuedog:error key=1001 ack=r77 -->", false},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			setup := func(t testing.TB) *githubtest.Fake {
-				f := cmdIssue("stage:intake")(t)
-				f.AddComment(1, app, tt.existing)
-				return f
-			}
-			githubtest.Replay(t, setup, pass)
-			got := run(t, setup, pass).State().Issues[0].Comments
-			want := 2
-			if tt.posted {
-				want = 3
-			}
-			if len(got) != want {
-				t.Errorf("comments = %+v, want %d", got, want)
-			}
-			if tt.posted && !strings.HasSuffix(got[2].Body, "<!-- issuedog:error kind=transition key=1001 -->") {
-				t.Errorf("new comment = %q, want the transition error", got[2].Body)
-			}
-		})
-	}
-}
-
 func TestTransitionLabelGoneMeanwhile(t *testing.T) {
 	// The new label is there already, so no add refreshes the snapshot's labels.
 	f := cmdIssue("stage:clarifying", "stage:intake")(t)

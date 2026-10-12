@@ -59,6 +59,8 @@ func TestDeriveStage(t *testing.T) {
 		{"a trusted user's marker is ignored", snap("", []github.Author{appBot, owner}, toClarifying, toSpecReview), clean, Clarifying},
 		{"an escaped marker is ignored", snap("", []github.Author{appBot, appBot}, toClarifying, github.Escape(toSpecReview)), clean, Clarifying},
 		{"a marker to no stage is ignored", snap("", []github.Author{appBot, appBot}, toClarifying, "<!-- issuedog:transition to=nowhere cmd=3 -->"), clean, Clarifying},
+		{"a closing marker counts", snap("", []github.Author{appBot, appBot}, toClarifying, "<!-- issuedog:transition from=clarifying to=closed cmd=4 -->"), clean, Closed},
+		{"only a transition marker sets the stage", snap("", []github.Author{appBot, appBot}, toClarifying, "<!-- issuedog:reply cmd=4 reason=rejected to=planning -->"), clean, Clarifying},
 		{"a body marker counts", snap(toClarifying, nil), clean, Clarifying},
 		{"a dirty body is skipped", snap(toClarifying, nil), dirtyIDs(BodyID), Intake},
 	} {
@@ -130,6 +132,7 @@ func TestDeriveItem(t *testing.T) {
 		{"origin in a comment", snap("", []github.Author{appBot}, origin), clean, Item{}},
 		{"a held task reached ready", snap("", []github.Author{appBot}, held), clean, Item{ReachedReady: true}},
 		{"a dirty marker doesn't reach ready", snap("", []github.Author{appBot}, held), dirtyIDs(1), Item{}},
+		{"leaving a hold carries at", snap("", []github.Author{appBot}, "<!-- issuedog:transition from=held to=clarifying at=in-progress cmd=4 -->"), clean, Item{ReachedReady: true}},
 	} {
 		tt.s.Type, tt.s.Parent = "task", 3
 		tt.want.Type, tt.want.HasParent = "task", true
