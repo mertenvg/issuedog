@@ -194,13 +194,15 @@ Write collaborators who aren't trusted users (6.1) can take part in an issue, bu
 - a new comment by such a user
 - their edit to a comment or body written by the App or a trusted user, seen in its GraphQL `userContentEdits`, or to their own comment after it was approved
 - their deletion of such a comment, seen as a `CommentDeletedEvent` on the issue timeline
-- their renaming, closing or reopening of the issue. A close is reverted at once: the daemon reopens the issue, so a parent never closes on an untrusted close (7.3)
+- their renaming of the issue, or closing it. A close is reverted at once: the daemon reopens the issue, so a parent never closes on an untrusted close (7.3). Their reopening of a closed issue is reverted too, and holds nothing.
 
 Comments from people without write access hold nothing. They reach agents only as untrusted input (6.2).
 
 **While held.**
 - The daemon sets `stage:held` with a transition marker carrying `reason=discussion` and the stage before the hold. For anything other than a comment it also posts a notice naming it, since there is nothing else to react to.
-- If the issue is already held, by `/hold` or for discussion, a new trigger joins the open ones and the stage before the hold is kept. A `/hold` from the owner stays in place after the discussion ends.
+- Holds stack. Any hold on an issue that is already held, whether by `/hold` or for discussion, keeps the stage recorded by the first hold. The issue leaves `held` only when every hold on it has ended. A discussion hold ends when resolved, or by `/resume` on the issue itself. An owner hold ends by `/resume` on the issue or an ancestor. If a discussion hold ended while an owner hold stayed, the final `/resume` sends the issue to `clarifying` as below.
+- A comment edited by an untrusted write collaborator never counts as a command or an answer, even after the edit is accepted. In loop step 1 (8.1) the daemon looks for triggers before it processes commands.
+- Before applying any run result, the daemon checks the issue for triggers since the run started. If it finds one, it holds the issue and drops the result.
 - Any run for the issue is stopped and its result dropped. Nothing is pushed, no PR is opened or updated, and the issue makes no other transition until the hold ends. Other issues, including its parent and children, carry on.
 - The digest lists the issue (9.4).
 
@@ -217,7 +219,7 @@ Comments from people without write access hold nothing. They reach agents only a
   - A task's body changes: the interviewer rewrites it as a task (11.2), and the task goes to `ready`.
   - More answers are needed: a question round, staying at `clarifying`.
 - Each of these writes a fresh transition marker, so an edited or deleted marker can't roll state back.
-- A trusted `/resume` on the issue itself ends the hold at once. It accepts every open trigger and restores the stage before the hold, except that a task whose run was dropped goes to `ready`. A `/resume` on an ancestor doesn't end a discussion hold.
+- A trusted `/resume` on the issue itself ends the discussion hold at once. It accepts every open trigger and restores the stage before the hold, except that a task whose run was dropped goes to `ready`. A `/resume` on an ancestor doesn't end a discussion hold.
 - A restart changes nothing, because the hold marker and its triggers are all on GitHub, and the lease of a held issue is dropped (8.2).
 
 ## 7. Pipeline
@@ -281,21 +283,21 @@ The lifecycle of each type:
 | needs-human | ready | task | Owner `/done`, or a 👍 on the latest hand-off comment (9.3), on a task that was waiting on the owner; attempt count resets to 0 |
 | needs-human | closed | task | Owner `/done`, or 👍 on the issue, for a human task from the planner, and its **Done when** check passes when it can be checked automatically (9.3) |
 | any open | held | all | Owner `/hold` on the issue or an ancestor |
-| any open | held | all | An untrusted write collaborator comments, or edits or deletes trusted content, on the issue (6.4) |
-| held | clarifying | all | Every trigger of a discussion hold is resolved (6.4) |
+| any open | held | all | An untrusted write collaborator comments, edits or deletes trusted content, renames the issue or closes it (6.4) |
+| held | clarifying | all | Every trigger of a discussion hold is resolved and no owner `/hold` remains (6.4) |
 | clarifying | previous | all | The interviewer finds the discussion changed nothing (6.4); a task whose run was dropped goes to ready |
 | clarifying | spec-review | epic, or story with no parent | The interviewer rewrote the spec after a discussion hold (6.4) |
 | clarifying | planning | epic, story | The plan changes after a discussion hold (6.4) |
 | clarifying | ready | task, bug | The interviewer rewrote the task body after a discussion hold (6.4) |
-| held | previous | all | Owner `/resume` on the issue or an ancestor |
-| any open | closed | all | A person closed the issue; daemon stops any run for it |
-| closed | held | all | A person reopened the issue |
+| held | previous | all | Owner `/resume` on the issue or an ancestor, when no other hold remains (6.4) |
+| any open | closed | all | A trusted user, the App or a merged PR closed the issue; daemon stops any run for it. An untrusted close is reverted (6.4) |
+| closed | held | all | A trusted user reopened the issue. An untrusted reopen is reverted (6.4) |
 
 From `ready` on, a `bug` follows the rows for `task`.
 
 Any transition missing from this table is an error, except a trusted user's manual label change (5.1). The daemon logs the error, leaves the issue unchanged and lists it in the digest.
 
-`/hold` applies `stage:held` to the issue and to every open descendant, each with its own transition marker. `/resume` restores each one to the stage named in its marker.
+`/hold` applies `stage:held` to the issue and to every open descendant, each with its own transition marker. `/resume` ends that owner hold on each one, restoring the stage named in its marker unless another hold remains (6.4).
 
 ### 7.3 Story and epic completion
 
@@ -339,9 +341,9 @@ Each loop iteration:
 
 - **On pickup.** The daemon writes `/state/lease.json` (write to a temp file, then rename) with the issue number, stage, run ID, clone path and start time. The `stage:in-progress` label and the transition marker show the lease on GitHub.
 - **On startup.** The daemon reads the lease.
+  - First it checks the issue for discussion triggers since the run started (6.4). If the issue is held or closed, it deletes the lease and the clone and leaves the issue as it is.
   - If `/state/runs/<run-id>.json` exists and validates, and for an implementer run the clone also has commits ahead of its base, the daemon applies the transition.
   - Otherwise it deletes the clone, resets the issue to its pre-run stage and starts the run again.
-  - If the issue is now held or closed, it deletes the lease and the clone and leaves the issue as it is.
 
 ### 8.3 Retries
 
