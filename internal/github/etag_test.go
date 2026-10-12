@@ -12,8 +12,7 @@ import (
 	"time"
 )
 
-// etagServer serves a resource with the test's ETag (empty means none) and
-// body, answers 304 to a matching If-None-Match and records that header.
+// etagServer serves etag (empty: none) and body, 304s a match, records If-None-Match.
 type etagServer struct {
 	mu   sync.Mutex
 	etag string
@@ -67,6 +66,10 @@ func TestETagCache(t *testing.T) {
 			{"GET", "", "", "a", "", "a"},
 			{"GET", "", "", "b", "", "b"},
 		}},
+		{"a full last page is not cached, since its 304 would hide a new page", []step{
+			{"GET", "", `"v1"`, "[1,2]", "", "[1,2]"},
+			{"GET", "", `"v1"`, "[1,2]", "", "[1,2]"},
+		}},
 		{"each Accept has its own entry", []step{
 			{"GET", "application/json", `"v1"`, "a", "", "a"},
 			{"GET", "text/plain", `"v1"`, "b", "", "b"},
@@ -83,7 +86,7 @@ func TestETagCache(t *testing.T) {
 				srv.mu.Lock()
 				srv.etag, srv.body = st.etag, st.body
 				srv.mu.Unlock()
-				req, _ := http.NewRequest(st.method, ts.URL+"/res", nil)
+				req, _ := http.NewRequest(st.method, ts.URL+"/res?per_page=2", nil)
 				req.Header.Set("Accept", st.accept)
 				resp, err := hc.Do(req)
 				if err != nil {
@@ -102,8 +105,7 @@ func TestETagCache(t *testing.T) {
 	}
 }
 
-// newClientWith returns a Client whose fake GitHub mints tokens and passes
-// every other request to h.
+// newClientWith returns a Client on a fake GitHub that mints tokens and passes the rest to h.
 func newClientWith(t *testing.T, h http.Handler) *Client {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -121,8 +123,7 @@ func newClientWith(t *testing.T, h http.Handler) *Client {
 	return c
 }
 
-// go-github must see a 304 as a success, with the 304's rate-limit headers.
-// Concurrent hits must not race (run with -race).
+// go-github must see a 304 as a success with fresh rate limits, race-free under -race.
 func TestClientTreats304AsCachedSuccess(t *testing.T) {
 	srv := &etagServer{etag: `"v1"`, body: `{"name":"issuedog"}`}
 	c := newClientWith(t, srv)

@@ -1,6 +1,7 @@
 package github
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"iter"
@@ -10,12 +11,9 @@ import (
 	gogithub "github.com/google/go-github/v92/github"
 )
 
-// The *Since helpers poll with since= (SPEC §8.1) through the ETag cache.
-// Pass the newest timestamp already seen, not the poll's start time, so an
-// unchanged poll repeats its URLs and costs nothing.
+// The *Since helpers poll (§8.1). Pass the newest time seen, so repeats are 304s.
 
-// IssuesSince lists the repo's issues and PRs, open and closed, updated at
-// or after since, oldest update first.
+// IssuesSince lists all issues and PRs updated at or after since, oldest first.
 func (c *Client) IssuesSince(ctx context.Context, owner, repo string, since time.Time) ([]*gogithub.Issue, error) {
 	opts := &gogithub.IssueListByRepoOptions{
 		State: "all", Sort: "updated", Direction: "asc", Since: since,
@@ -28,8 +26,7 @@ func (c *Client) IssuesSince(ctx context.Context, owner, repo string, since time
 	return issues, nil
 }
 
-// CommentsSince lists comments updated at or after since, on one issue, or
-// on every issue in the repo if number is 0.
+// CommentsSince lists comments updated since then on one issue, or all if number is 0.
 func (c *Client) CommentsSince(ctx context.Context, owner, repo string, number int, since time.Time) ([]*gogithub.IssueComment, error) {
 	opts := &gogithub.IssueListCommentsOptions{
 		Sort: new("updated"), Direction: new("asc"), Since: &since,
@@ -42,17 +39,16 @@ func (c *Client) CommentsSince(ctx context.Context, owner, repo string, number i
 	return comments, nil
 }
 
-// TimelineSince lists an issue's timeline events created at or after since.
-// The timeline endpoint takes no since=, so this filters after fetching and
-// relies on the ETag cache to keep unchanged pages free. Events without a
-// creation time, such as commits, are left out.
+// TimelineSince lists timeline events from since on, filtered here as the endpoint
+// has no since=. Reviews use submitted_at; untimed events, like commits, are left out.
 func (c *Client) TimelineSince(ctx context.Context, owner, repo string, number int, since time.Time) ([]*gogithub.Timeline, error) {
 	all, err := collect(c.Issues.ListIssueTimelineIter(ctx, owner, repo, number, &gogithub.ListOptions{PerPage: 100}))
 	if err != nil {
 		return nil, fmt.Errorf("list timeline of %s/%s#%d: %w", owner, repo, number, err)
 	}
 	return slices.DeleteFunc(all, func(e *gogithub.Timeline) bool {
-		return e.CreatedAt == nil || e.CreatedAt.Before(since)
+		at := cmp.Or(e.CreatedAt, e.SubmittedAt)
+		return at == nil || at.Before(since)
 	}), nil
 }
 

@@ -2,28 +2,22 @@ package github
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 )
 
-// maxCacheBytes bounds the bodies an etagCache holds. A moving since= leaves
-// stale entries behind, so the cache must not grow forever.
+// maxCacheBytes bounds the cache, since a moving since= leaves stale entries.
 const maxCacheBytes = 64 << 20
 
-// etagCache makes GETs conditional (SPEC §8.1). It remembers each 200 with
-// an ETag and sends If-None-Match on the next identical GET. A 304 costs no
-// rate limit, and go-github gets the remembered body as a 200, never the 304
-// (which it would report as an error).
-//
-// The cache is memory only (SPEC §5). It sits above the auth transport and
-// belongs to one Client, so it never sees Authorization and is never shared
-// across installations. Successive tokens of one installation share it:
-// GitHub checks the token before it answers 304. Entries are keyed by Accept
-// and URL, since GitHub varies the body by media type.
+// etagCache makes GETs conditional (§8.1): it keeps each 200 with an ETag by Accept
+// and URL, and turns a free 304 into that 200 for go-github. It is memory only (§5),
+// one per Client above auth, so installations never share it.
 type etagCache struct {
 	next    http.RoundTripper
 	mu      sync.Mutex
@@ -81,14 +75,15 @@ func (c *etagCache) roundTrip(req *http.Request) (*http.Response, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read body: %w", err)
 		}
-		c.store(key, &etagEntry{etag: resp.Header.Get("ETag"), header: resp.Header.Clone(), body: body})
+		if !fullLastPage(req, resp.Header, body) {
+			c.store(key, &etagEntry{etag: resp.Header.Get("ETag"), header: resp.Header.Clone(), body: body})
+		}
 		fill(resp, resp.Header, body)
 	}
 	return resp, nil
 }
 
-// store replaces the entry for key. Past maxCacheBytes it starts over, which
-// costs one round of unconditional GETs.
+// store replaces the entry for key, starting over past maxCacheBytes.
 func (c *etagCache) store(key string, e *etagEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -103,8 +98,17 @@ func (c *etagCache) store(key string, e *etagEntry) {
 	c.size += len(e.body)
 }
 
-// fill turns resp into a 200 with its own copy of body, so no reader can
-// touch the bytes the cache holds or another response reads.
+// fullLastPage spots a full page with no next: its Link-less 304 would hide a new page.
+func fullLastPage(req *http.Request, h http.Header, body []byte) bool {
+	n, err := strconv.Atoi(req.URL.Query().Get("per_page"))
+	if err != nil || strings.Contains(h.Get("Link"), `rel="next"`) {
+		return false
+	}
+	var items []json.RawMessage
+	return json.Unmarshal(body, &items) == nil && len(items) == n
+}
+
+// fill turns resp into a 200 with its own copy of body, so readers never share bytes.
 func fill(resp *http.Response, h http.Header, body []byte) {
 	resp.StatusCode, resp.Status = http.StatusOK, "200 OK"
 	resp.Header = h

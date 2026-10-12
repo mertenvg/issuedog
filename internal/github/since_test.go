@@ -26,9 +26,9 @@ func TestSinceHelpers(t *testing.T) {
 			map[string]string{"since": "2026-10-01T12:00:00Z", "sort": "updated"}, 1},
 		{"timeline filters by creation time", "/repos/o/r/issues/5/timeline",
 			`[{"created_at":"2026-09-30T00:00:00Z"},{"created_at":"2026-10-01T12:00:00Z"},
-			  {"event":"committed"},{"created_at":"2026-10-02T00:00:00Z"}]`,
+			  {"event":"committed"},{"created_at":"2026-10-02T00:00:00Z"},{"event":"reviewed","submitted_at":"2026-10-02T00:00:00Z"}]`,
 			func(c *Client) (int, error) { return count(c.TimelineSince(context.Background(), "o", "r", 5, since)) },
-			map[string]string{"per_page": "100", "since": ""}, 2},
+			map[string]string{"per_page": "100", "since": ""}, 3},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
