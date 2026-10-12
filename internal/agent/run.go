@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/user"
@@ -14,6 +15,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/mertenvg/logr/v2"
 )
 
 // waitDelay bounds the wait for claude's output pipes to close after it exits.
@@ -114,10 +117,15 @@ func args(prompt string, s Stage) []string {
 	return a
 }
 
-// sysProcAttr starts claude in its own process group as r.Credential, with no
-// AmbientCaps, so it starts with no capabilities (plan rev 2 on #3).
+// sysProcAttr starts claude in its own process group as r.Credential.
 func (r *Runner) sysProcAttr() *syscall.SysProcAttr {
-	return &syscall.SysProcAttr{Setpgid: true, Credential: r.Credential}
+	return SysProcAttr(r.Credential)
+}
+
+// SysProcAttr starts a process in its own process group as cred, with no
+// AmbientCaps, so it starts with no capabilities (plan rev 2 on #3).
+func SysProcAttr(cred *syscall.Credential) *syscall.SysProcAttr {
+	return &syscall.SysProcAttr{Setpgid: true, Credential: cred}
 }
 
 // cleanup kills every process of the agent uid, even setsid ones, as only one
@@ -171,7 +179,12 @@ func (r *Runner) saveResult(runID string, raw []byte) error {
 	if err != nil {
 		return fmt.Errorf("creating a temp result file: %w", err)
 	}
-	defer os.Remove(f.Name()) // fails harmlessly once renamed
+	defer func() {
+		// After the rename the temp file is gone, which is fine.
+		if err := os.Remove(f.Name()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			logr.Warnf("removing %s: %v", f.Name(), err)
+		}
+	}()
 	_, err = f.Write(raw)
 	if err == nil {
 		err = f.Sync()

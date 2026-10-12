@@ -55,6 +55,21 @@ func TestRunPlainOutput(t *testing.T) {
 	}
 }
 
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("stdout closed") }
+
+func TestRunPlainOutputFails(t *testing.T) {
+	var logs bytes.Buffer
+	stop := logr.AddWriter(&logs)
+	code := run([]string{"--version"}, nil, nil, failingWriter{})
+	logr.Wait()
+	stop()
+	if code != 1 || !strings.Contains(logs.String(), "writing to stdout: stdout closed") {
+		t.Errorf("exit code %d, logs %q; want 1 and the write error", code, logs.String())
+	}
+}
+
 func TestRunUnknownFlag(t *testing.T) {
 	code, logs := runLogged(t, []string{"--nope"}, nil)
 	if code != 2 || !strings.Contains(logs, "flag provided but not defined: -nope") || !strings.Contains(logs, "usage:") {
@@ -169,6 +184,79 @@ func TestRunRefusesBadAppKey(t *testing.T) {
 				t.Errorf("startup steps = %q, logs %q; want startup to stop before the firewall and proxy", *calls, logs)
 			}
 		})
+	}
+}
+
+// fakeAgent makes as-agent switch to the test's own uid, which needs no
+// privileges, and records how often it looked the user up.
+func fakeAgent(t *testing.T, err error) *int {
+	t.Helper()
+	lookups := 0
+	old := agentCredential
+	t.Cleanup(func() { agentCredential = old })
+	agentCredential = func(user string) (*syscall.Credential, error) {
+		lookups++
+		if user != "agent" {
+			t.Errorf("looked up user %q, want agent", user)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return &syscall.Credential{Uid: uint32(os.Getuid()), Gid: uint32(os.Getgid()), NoSetGroups: true}, nil
+	}
+	return &lookups
+}
+
+func TestAsAgentArgs(t *testing.T) {
+	lookups := fakeAgent(t, nil)
+	for _, args := range [][]string{
+		{"as-agent"},
+		{"as-agent", "--"},
+		{"as-agent", "true"},
+		{"as-agent", "-x", "true"},
+	} {
+		code, logs := runLogged(t, args, nil)
+		if code != 2 || !strings.Contains(logs, asAgentUsage) {
+			t.Errorf("%q: exit code %d, logs %q; want 2 and the usage", args, code, logs)
+		}
+	}
+	if *lookups != 0 {
+		t.Errorf("looked agent up %d times, want none for bad arguments", *lookups)
+	}
+	if strings.Contains(usage, "as-agent") {
+		t.Errorf("usage lists as-agent: %q", usage)
+	}
+}
+
+func TestAsAgentRunsCommand(t *testing.T) {
+	fakeAgent(t, nil)
+	var logs, stdout bytes.Buffer
+	stop := logr.AddWriter(&logs)
+	defer stop()
+	script := `echo "$HOME $PATH $(pwd)"; echo oops >&2; exit 3`
+	code := run([]string{"as-agent", "--", "sh", "-c", script}, nil, nil, &stdout)
+	logr.Wait()
+	if code != 3 {
+		t.Errorf("exit code = %d, want the command's 3", code)
+	}
+	if want := "/home/agent /usr/local/bin:/usr/bin:/bin /\n"; stdout.String() != want {
+		t.Errorf("stdout = %q, want %q", stdout.String(), want)
+	}
+	if !strings.Contains(logs.String(), "sh as agent wrote to stderr: oops") {
+		t.Errorf("logs = %q, want the command's stderr", logs.String())
+	}
+}
+
+func TestAsAgentFailures(t *testing.T) {
+	fakeAgent(t, errors.New("no such user"))
+	code, logs := runLogged(t, []string{"as-agent", "--", "true"}, nil)
+	if code != 1 || !strings.Contains(logs, "running true as agent: no such user") {
+		t.Errorf("exit code %d, logs %q; want 1 and the lookup error", code, logs)
+	}
+	fakeAgent(t, nil)
+	code, logs = runLogged(t, []string{"as-agent", "--", "/no/such/command"}, nil)
+	if code != 1 || !strings.Contains(logs, "running /no/such/command as agent: ") {
+		t.Errorf("exit code %d, logs %q; want 1 and the start error", code, logs)
 	}
 }
 

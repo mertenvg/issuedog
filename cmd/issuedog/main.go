@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
 	"time"
@@ -51,15 +53,13 @@ func run(args, environ []string, stdin io.Reader, stdout io.Writer) int {
 	fs.SetOutput(io.Discard) // usage goes through logr
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); errors.Is(err, flag.ErrHelp) {
-		fmt.Fprintln(stdout, usage)
-		return 0
+		return printOut(stdout, usage+"\n")
 	} else if err != nil {
 		logr.Errorf("issuedog: %v\n%s", err, usage)
 		return 2
 	}
 	if *showVersion {
-		fmt.Fprintf(stdout, "issuedog %s\n", version)
-		return 0
+		return printOut(stdout, "issuedog "+version+"\n")
 	}
 	// Key commands don't need a Claude credential, so they run before its check.
 	if fs.NArg() > 0 {
@@ -79,9 +79,23 @@ func run(args, environ []string, stdin io.Reader, stdout io.Writer) int {
 		logr.Errorf("starting egress: %v", err)
 		return 1
 	}
-	defer proxy.Close()
+	defer func() {
+		if err := proxy.Close(); err != nil {
+			logr.Errorf("stopping the egress proxy: %v", err)
+		}
+	}()
 	logr.Error("the daemon is not implemented yet")
 	return 1
+}
+
+// printOut writes the program's own plain output, the version or help, and
+// returns the exit code: 0, or 1 if stdout can't take it.
+func printOut(stdout io.Writer, text string) int {
+	if _, err := io.WriteString(stdout, text); err != nil {
+		logr.Errorf("writing to stdout: %v", err)
+		return 1
+	}
+	return 0
 }
 
 const usage = `usage:
@@ -90,10 +104,14 @@ const usage = `usage:
   issuedog key check [-path file]     the file defaults to ` + appkey.DefaultPath
 
 // command runs "key import" (store the App key from stdin) or "key check".
-// The unlisted "egress" serves the firewall and proxy for sandbox/test.sh.
+// The unlisted "egress" serves the firewall and proxy, and the unlisted
+// "as-agent" runs one command as agent, both for sandbox/test.sh.
 func command(args []string, stdin io.Reader, stdout io.Writer) int {
 	if len(args) == 1 && args[0] == "egress" {
 		return serveEgress()
+	}
+	if len(args) > 0 && args[0] == "as-agent" {
+		return runAsAgent(args[1:], stdin, stdout)
 	}
 	if len(args) < 2 || args[0] != "key" || (args[1] != "import" && args[1] != "check") {
 		logr.Error(usage)
@@ -104,8 +122,7 @@ func command(args []string, stdin io.Reader, stdout io.Writer) int {
 	path := fs.String("path", appkey.DefaultPath, "the key file")
 	err := fs.Parse(args[2:])
 	if errors.Is(err, flag.ErrHelp) {
-		fmt.Fprintln(stdout, usage)
-		return 0
+		return printOut(stdout, usage+"\n")
 	}
 	if err == nil && fs.NArg() > 0 {
 		err = fmt.Errorf("unexpected arguments %q", fs.Args())
@@ -184,6 +201,51 @@ func serveEgress() int {
 	<-ctx.Done()
 	if err := proxy.Close(); err != nil {
 		logr.Errorf("stopping the egress proxy: %v", err)
+		return 1
+	}
+	return 0
+}
+
+// agentCredential looks up agent's uid and gid. Tests replace it.
+var agentCredential = agent.UserCredential
+
+// agentEnv is the whole environment of an as-agent command.
+var agentEnv = []string{"HOME=/home/agent", "PATH=/usr/local/bin:/usr/bin:/bin"}
+
+const asAgentUsage = "usage: issuedog as-agent -- <command> [args...]"
+
+// runAsAgent runs "as-agent -- <command> [args...]": one command as agent,
+// through the uid switch stage runs use, so sandbox/test.sh can check what an
+// agent process gets. The command's stdout is this program's output, and its
+// stderr is logged. It exits with the command's exit code.
+func runAsAgent(args []string, stdin io.Reader, stdout io.Writer) int {
+	if len(args) < 2 || args[0] != "--" {
+		logr.Error(asAgentUsage)
+		return 2
+	}
+	cred, err := agentCredential(agentUser)
+	if err != nil {
+		logr.Errorf("running %s as %s: %v", args[1], agentUser, err)
+		return 1
+	}
+	var stderr bytes.Buffer
+	cmd := exec.Command(args[1], args[2:]...)
+	cmd.Dir = "/"
+	cmd.Env = agentEnv
+	cmd.Stdin = stdin
+	cmd.Stdout = stdout
+	cmd.Stderr = &stderr
+	cmd.SysProcAttr = agent.SysProcAttr(cred)
+	err = cmd.Run()
+	if stderr.Len() > 0 {
+		logr.Warnf("%s as %s wrote to stderr: %s", args[1], agentUser, bytes.TrimSpace(stderr.Bytes()))
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.Exited() {
+		return exitErr.ExitCode()
+	}
+	if err != nil {
+		logr.Errorf("running %s as %s: %v", args[1], agentUser, err)
 		return 1
 	}
 	return 0

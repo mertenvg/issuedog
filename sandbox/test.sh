@@ -93,6 +93,7 @@ check "issuedog imports the key" as issuedog "$bin" key import </test-key.pem
 expect "imported key file" "issuedog:issuedog 600" stat -c '%U:%G %a' "$key"
 check "issuedog can load the key" as issuedog "$bin" key check
 check_not "agent can't read the imported key" as agent cat "$key"
+check_not "agent started by the daemon can't read the imported key" as issuedog "$bin" as-agent -- cat "$key"
 check_not "a non-PEM import is refused" as issuedog "$bin" key import </etc/hostname
 check "the refused import kept the key" cmp -s /test-key.pem "$key"
 
@@ -107,6 +108,17 @@ as issuedog env ANTHROPIC_API_KEY=sandbox-test "$bin" >"$log" 2>&1
 check "the daemon refuses a 0640 key" grep -q "loading the App key: app key $key: mode 0640" "$log"
 check_not "the daemon stops before egress with a 0640 key" grep -q 'egress proxy listening' "$log"
 rm -f "$key" "$log"
+
+# Agent processes (SPEC §3, §3.1). The unlisted `issuedog as-agent` starts a
+# command as agent through the same uid switch as stage runs, from the
+# daemon's cap_setuid and cap_setgid, so these check what an agent run gets.
+expect "the daemon starts agent with agent's uid" 10002 as issuedog "$bin" as-agent -- id -u
+expect "the daemon starts agent with agent's gid" 10002 as issuedog "$bin" as-agent -- id -g
+expect "the daemon starts agent with no groups" 10002 as issuedog "$bin" as-agent -- id -G
+zero=$(printf 'Cap%s:\t0000000000000000\n' Inh Prm Eff Amb)
+expect "the daemon starts agent with no capabilities" "$zero" as issuedog "$bin" as-agent -- grep -E '^Cap(Eff|Prm|Inh|Amb):' /proc/self/status
+check_not "agent started by the daemon can't read /state" as issuedog "$bin" as-agent -- ls /state
+check_not "agent started by the daemon can't read the daemon" as issuedog "$bin" as-agent -- cat "$bin"
 
 # Tools
 check "agent can run claude" as agent claude --version

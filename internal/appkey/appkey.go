@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"syscall"
+
+	"github.com/mertenvg/logr/v2"
 )
 
 // Load reads the key file at path. It refuses anything but a regular file
@@ -20,7 +22,11 @@ func load(path string, uid int) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("app key: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			logr.Warnf("app key %s: closing it after reading: %v", path, err)
+		}
+	}()
 
 	// Check the opened file, not the path, so it can't be swapped before the read.
 	info, err := f.Stat()
