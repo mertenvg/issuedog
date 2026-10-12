@@ -26,7 +26,7 @@ type Config struct {
 
 // Client is a go-github client authenticated as an App installation. It
 // mints an installation token on first use and mints a new one shortly
-// before the cached token expires.
+// before the cached token expires. Its GETs are conditional (see etagCache).
 type Client struct {
 	*gogithub.Client
 	installation *ghinstallation.Transport
@@ -42,7 +42,8 @@ func New(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("github app %d installation %d: %w", cfg.AppID, cfg.InstallationID, err)
 	}
-	opts := []gogithub.ClientOptionsFunc{gogithub.WithTransport(closeMintErrors{itr})}
+	// The ETag cache wraps the auth transport, so each installation has its own.
+	opts := []gogithub.ClientOptionsFunc{gogithub.WithTransport(newETagCache(closeMintErrors{itr}))}
 	if cfg.BaseURL != "" {
 		root := strings.TrimRight(cfg.BaseURL, "/")
 		itr.BaseURL = root
