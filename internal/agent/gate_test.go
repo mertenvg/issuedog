@@ -1,8 +1,13 @@
 package agent
 
 import (
+	"bytes"
+	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/mertenvg/logr/v2"
 )
 
 const gatePattern = "(?i)(usage|session) limit"
@@ -19,6 +24,9 @@ func newGate(t *testing.T) *Gate {
 var gateStart = time.Date(2026, 10, 11, 10, 0, 0, 0, time.UTC)
 
 func TestGateDetectsUsageLimits(t *testing.T) {
+	if _, err := NewGate("(unclosed"); err == nil {
+		t.Fatal("compiled an invalid pattern, want an error")
+	}
 	for _, tt := range []struct {
 		failed bool
 		text   string
@@ -28,8 +36,7 @@ func TestGateDetectsUsageLimits(t *testing.T) {
 		{true, "You've hit your session limit", true},
 		{true, "API Error: 500 Internal Server Error", false},
 		{true, "error_max_turns", false},
-		// A successful run may mention usage limits, for example while
-		// working on this code. That is not a usage limit.
+		// A successful run that mentions usage limits didn't hit one.
 		{false, "Implemented the usage limit gate.", false},
 	} {
 		g := newGate(t)
@@ -39,12 +46,6 @@ func TestGateDetectsUsageLimits(t *testing.T) {
 		if g.Open(gateStart) == tt.want {
 			t.Errorf("%q: Open = %v right after, want %v", tt.text, g.Open(gateStart), !tt.want)
 		}
-	}
-}
-
-func TestGateInvalidPattern(t *testing.T) {
-	if _, err := NewGate("(unclosed"); err == nil {
-		t.Fatal("compiled an invalid pattern, want an error")
 	}
 }
 
@@ -109,10 +110,14 @@ func TestGateUnreadableResetFallsBackToBackoff(t *testing.T) {
 		"usage limit · resets Feb 30, 3pm",      // no such date
 		"usage limit · resets Oct 9, 2026, 3pm", // a date that has passed
 	} {
+		var logs bytes.Buffer
+		stop := logr.AddWriter(&logs)
 		g := newGate(t)
 		g.Observe(gateStart, true, text)
-		if want := gateStart.Add(15 * time.Minute); !g.OpenAt().Equal(want) {
-			t.Errorf("%q: opens at %v, want the 15m backoff %v", text, g.OpenAt(), want)
+		logr.Wait()
+		stop()
+		if want := gateStart.Add(15 * time.Minute); !g.OpenAt().Equal(want) || !strings.Contains(logs.String(), "can't be used") {
+			t.Errorf("%q: opens at %v, logs %q; want the 15m backoff %v and why the reset was refused", text, g.OpenAt(), logs.String(), want)
 		}
 	}
 }
@@ -126,11 +131,8 @@ func TestGateBackoffSequence(t *testing.T) {
 		got = append(got, g.OpenAt().Sub(now))
 		now = g.OpenAt()
 	}
-	want := []time.Duration{15 * time.Minute, 30 * time.Minute, time.Hour, 2 * time.Hour, 2 * time.Hour}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("waits = %v, want %v", got, want)
-		}
+	if want := []time.Duration{15 * time.Minute, 30 * time.Minute, time.Hour, 2 * time.Hour, 2 * time.Hour}; !slices.Equal(got, want) {
+		t.Fatalf("waits = %v, want %v", got, want)
 	}
 
 	// A run that doesn't hit the limit resets the backoff.
@@ -141,22 +143,13 @@ func TestGateBackoffSequence(t *testing.T) {
 	}
 }
 
-// TestGateStubLoop runs a stub of the daemon loop with a fake clock. While the
-// gate is closed, steps 1 and 2 keep running and no stage work starts.
-// Usage-limit failures don't count as attempts.
+// TestGateStubLoop runs a stub daemon loop on a fake clock: while the gate is
+// closed, steps 1 and 2 keep running, and usage limits don't count as attempts.
 func TestGateStubLoop(t *testing.T) {
 	g := newGate(t)
 	now := gateStart
 	step1, step2, stageRuns, attempts, closedPasses := 0, 0, 0, 0, 0
-	outcomes := []struct {
-		failed bool
-		text   string
-	}{
-		{true, "usage limit reached"},
-		{true, "usage limit reached"},
-		{true, "tests failed"},
-		{false, "done"},
-	}
+	outcomes := []string{"usage limit reached", "usage limit reached", "tests failed", "done"} // only "done" succeeds
 
 	for tick := 0; tick < 200 && stageRuns < len(outcomes); tick++ {
 		step1++ // process comments, reactions and labels
@@ -164,7 +157,7 @@ func TestGateStubLoop(t *testing.T) {
 		if g.Open(now) {
 			o := outcomes[stageRuns]
 			stageRuns++
-			if !g.Observe(now, o.failed, o.text) && o.failed {
+			if failed := o != "done"; !g.Observe(now, failed, o) && failed {
 				attempts++
 			}
 		} else {
@@ -179,8 +172,7 @@ func TestGateStubLoop(t *testing.T) {
 	if attempts != 1 {
 		t.Errorf("attempts = %d, want 1 (only the test failure counts)", attempts)
 	}
-	// Waits of 15m and 30m with a one-minute pass leave the gate closed for
-	// 14 + 29 passes, and steps 1 and 2 ran on every one of them.
+	// Waits of 15m and 30m at one pass a minute leave it closed for 14 + 29 passes.
 	if closedPasses != 43 {
 		t.Errorf("closed passes = %d, want 43", closedPasses)
 	}
