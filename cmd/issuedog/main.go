@@ -134,7 +134,7 @@ var (
 // startEgress applies the agent firewall, then serves the egress proxy until
 // the returned server is closed.
 func startEgress() (*http.Server, error) {
-	if err := applyFirewall(agentUser, proxyPort); err != nil {
+	if err := applyFirewall(agentUser); err != nil {
 		return nil, fmt.Errorf("applying the agent firewall: %w", err)
 	}
 	l, err := listenProxy(proxyPort)

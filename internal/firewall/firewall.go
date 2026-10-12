@@ -14,7 +14,6 @@ import (
 	"bytes"
 	"fmt"
 	"os/exec"
-	"strconv"
 	"strings"
 )
 
@@ -22,17 +21,19 @@ import (
 // user's sockets send.
 const Chain = "issuedog-agent"
 
-// Rules returns iptables-restore input that lets user open TCP connections
-// to 127.0.0.1:port only, and rejects everything else it sends, including
-// UDP and so DNS. Other users are unaffected.
-func Rules(user string, port int) string {
-	return filter(user, "-A "+Chain+" -o lo -d 127.0.0.1/32 -p tcp -m tcp --dport "+strconv.Itoa(port)+" -j ACCEPT\n")
+// Rules returns iptables-restore input that lets user reach loopback only:
+// the egress proxy, and test servers its own commands start (go test's
+// httptest, for one). Docker's embedded DNS on 127.0.0.11 forwards queries
+// outside, so it is rejected first. Everything else user sends is rejected,
+// including UDP and so DNS. Other users are unaffected.
+func Rules(user string) string {
+	return filter(user, "-A "+Chain+" -d 127.0.0.11/32 -j REJECT\n"+
+		"-A "+Chain+" -o lo -d 127.0.0.0/8 -j ACCEPT\n")
 }
 
-// Rules6 returns ip6tables-restore input that rejects everything user sends.
-// The proxy listens on 127.0.0.1 only, so the agent needs no IPv6.
+// Rules6 is Rules for IPv6: loopback only.
 func Rules6(user string) string {
-	return filter(user, "")
+	return filter(user, "-A "+Chain+" -o lo -d ::1/128 -j ACCEPT\n")
 }
 
 func filter(user, accept string) string {
@@ -50,8 +51,8 @@ func filter(user, accept string) string {
 
 // Apply loads Rules and Rules6 for user with iptables-restore and
 // ip6tables-restore.
-func Apply(user string, port int) error {
-	if err := restore("iptables-restore", Rules(user, port)); err != nil {
+func Apply(user string) error {
+	if err := restore("iptables-restore", Rules(user)); err != nil {
 		return err
 	}
 	return restore("ip6tables-restore", Rules6(user))

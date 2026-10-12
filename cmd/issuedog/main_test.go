@@ -44,8 +44,8 @@ func fakeEgress(t *testing.T, fwErr, listenErr error) *[]string {
 	var calls []string
 	oldApply, oldListen := applyFirewall, listenProxy
 	t.Cleanup(func() { applyFirewall, listenProxy = oldApply, oldListen })
-	applyFirewall = func(user string, port int) error {
-		calls = append(calls, fmt.Sprintf("firewall %s %d", user, port))
+	applyFirewall = func(user string) error {
+		calls = append(calls, "firewall "+user)
 		return fwErr
 	}
 	listenProxy = func(port int) (net.Listener, error) {
@@ -70,7 +70,7 @@ func TestRunStartsEgress(t *testing.T) {
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
-	if got, want := strings.Join(*calls, ", "), "firewall agent 3128, listen 3128"; got != want {
+	if got, want := strings.Join(*calls, ", "), "firewall agent, listen 3128"; got != want {
 		t.Errorf("startup steps = %q, want %q", got, want)
 	}
 	if !strings.Contains(logs.String(), "egress proxy listening on http://127.0.0.1:") {
@@ -83,8 +83,8 @@ func TestRunStopsWhenEgressFails(t *testing.T) {
 		fwErr, listenErr error
 		wantCalls, want  string
 	}{
-		"firewall": {errors.New("no NET_ADMIN"), nil, "firewall agent 3128", "starting egress: applying the agent firewall: no NET_ADMIN"},
-		"proxy":    {nil, errors.New("port in use"), "firewall agent 3128, listen 3128", "starting egress: listening for the egress proxy: port in use"},
+		"firewall": {errors.New("no NET_ADMIN"), nil, "firewall agent", "starting egress: applying the agent firewall: no NET_ADMIN"},
+		"proxy":    {nil, errors.New("port in use"), "firewall agent, listen 3128", "starting egress: listening for the egress proxy: port in use"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var logs, stdout, stderr bytes.Buffer
