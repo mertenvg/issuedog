@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
 	"time"
@@ -85,10 +87,14 @@ const usage = `usage:
   issuedog key check [-path file]     the file defaults to ` + appkey.DefaultPath
 
 // command runs "key import" (store the App key from stdin) or "key check".
-// The unlisted "egress" serves the firewall and proxy for sandbox/test.sh.
+// The unlisted "egress" serves the firewall and proxy, and the unlisted
+// "as-agent" runs one command as agent, both for sandbox/test.sh.
 func command(args []string, stdin io.Reader, stdout io.Writer) int {
 	if len(args) == 1 && args[0] == "egress" {
 		return serveEgress()
+	}
+	if len(args) > 0 && args[0] == "as-agent" {
+		return runAsAgent(args[1:], stdin, stdout)
 	}
 	if len(args) < 2 || args[0] != "key" || (args[1] != "import" && args[1] != "check") {
 		logr.Error(usage)
@@ -177,6 +183,51 @@ func serveEgress() int {
 	<-ctx.Done()
 	if err := proxy.Close(); err != nil {
 		logr.Errorf("stopping the egress proxy: %v", err)
+		return 1
+	}
+	return 0
+}
+
+// agentCredential looks up agent's uid and gid. Tests replace it.
+var agentCredential = agent.UserCredential
+
+// agentEnv is the whole environment of an as-agent command.
+var agentEnv = []string{"HOME=/home/agent", "PATH=/usr/local/bin:/usr/bin:/bin"}
+
+const asAgentUsage = "usage: issuedog as-agent -- <command> [args...]"
+
+// runAsAgent runs "as-agent -- <command> [args...]": one command as agent,
+// through the uid switch stage runs use, so sandbox/test.sh can check what an
+// agent process gets. The command's stdout is this program's output, and its
+// stderr is logged. It exits with the command's exit code.
+func runAsAgent(args []string, stdin io.Reader, stdout io.Writer) int {
+	if len(args) < 2 || args[0] != "--" {
+		logr.Error(asAgentUsage)
+		return 2
+	}
+	cred, err := agentCredential(agentUser)
+	if err != nil {
+		logr.Errorf("running %s as %s: %v", args[1], agentUser, err)
+		return 1
+	}
+	var stderr bytes.Buffer
+	cmd := exec.Command(args[1], args[2:]...)
+	cmd.Dir = "/"
+	cmd.Env = agentEnv
+	cmd.Stdin = stdin
+	cmd.Stdout = stdout
+	cmd.Stderr = &stderr
+	cmd.SysProcAttr = agent.SysProcAttr(cred)
+	err = cmd.Run()
+	if stderr.Len() > 0 {
+		logr.Warnf("%s as %s wrote to stderr: %s", args[1], agentUser, bytes.TrimSpace(stderr.Bytes()))
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.Exited() {
+		return exitErr.ExitCode()
+	}
+	if err != nil {
+		logr.Errorf("running %s as %s: %v", args[1], agentUser, err)
 		return 1
 	}
 	return 0
