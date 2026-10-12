@@ -97,13 +97,16 @@ The task verifier runs in a fresh checkout of the head SHA, but only after rule 
 | Type | Meaning | Created by |
 |---|---|---|
 | `epic` | A rough idea or large feature | Owner |
-| `story` | One user-visible outcome with acceptance criteria | Planner (epic plan) |
+| `story` | One user-visible outcome with acceptance criteria | Planner (epic plan), or owner |
 | `task` | One PR, one scope; a human task has no PR (section 9.3) | Planner (epic or story plan), or owner for a small change |
 | `bug` | Something broken | Owner, or story verifier |
 
 - Repos owned by an organization use GitHub issue types. The org's defaults are Task, Bug and Feature, so an org owner must create `Epic` and `Story` first. Repos owned by a personal account have no issue types and use `type:epic`, `type:story`, `type:task`, `type:bug` labels instead. Config selects which.
 - Hierarchy uses native sub-issues: epic → story → task, or epic → task. Sub-issues must share the parent's owner. GitHub allows 100 sub-issues per parent.
 - An epic with a single user-facing outcome is planned directly into tasks and acts as its own story, including story verification (section 7.3).
+- **Untyped issues.** The owner may file an issue with no type. At the start of clarifying the interviewer picks one of the four types and sets it: the `type:*` label, or the issue type on org repos. Its first comment names the type with a one-line reason. If it can't tell yet, it asks questions first and sets the type once the issue is clear. An issue with no type doesn't leave `clarifying`.
+- **Changing the type.** The interviewer may set or change the type only while the issue is at `intake` or `clarifying`, and never after the owner has set or changed it. The owner can change it at any time, and the daemon follows the owner's type from then on. If the issue's current stage doesn't apply to the new type (section 7.2), the daemon leaves it where it is and lists it in the digest as a state error until the owner sets a stage (5.1).
+- A story filed by the owner has no parent epic. It goes through clarifying, spec review and planning like an epic, then story verification (section 7.3).
 - A `bug`, or a `task` filed by the owner, goes through clarifying and then becomes a single task. It skips spec review and planning. A bug filed against earlier work starts its body with `Follow-up to #N` and includes the acceptance criterion "the original behavior of #N is unaffected."
 
 ## 5. State
@@ -129,7 +132,7 @@ The only local files are the lease (section 8.2) and the run results in `/state/
 ### 5.1 Reading rules
 
 - **Markers.** The daemon only reads markers in comments and issue bodies written by the issuedog App. A marker anywhere else is ignored.
-- **Labels.** A `stage:*`, `priority:*`, `scope:*` or `approved` label counts only if the issue timeline shows that its most recent `labeled` event came from the App or a trusted user (section 6.1).
+- **Labels.** A `stage:*`, `priority:*`, `scope:*`, `type:*` or `approved` label counts only if the issue timeline shows that its most recent `labeled` event came from the App or a trusted user (section 6.1). On org repos the same applies to the issue type and its most recent type event.
   - When an untrusted actor adds or removes one of these labels, the daemon reverts the change and posts a short comment.
   - When a trusted user changes a stage label by hand, the daemon treats it as an owner override and records a transition marker with `by=<login>`. It does this even if the change is not in the transition table.
 - **Disagreement.** If the stage label and the latest transition marker disagree and 5.1 does not explain the difference, the daemon puts the label back to match the marker and lists the issue in the digest.
@@ -204,6 +207,7 @@ The lifecycle of each type:
 
 - **Epic.** intake → clarifying → spec-review → planning → plan-review → planned → closed.
 - **Story.** Created at `stage:planning` from an approved epic plan, which already carries its acceptance criteria. Then planning → plan-review (or straight to planned, see `plan.review`) → planned → closed.
+- **Story filed by the owner.** intake → clarifying → spec-review → planning, then as a story.
 - **Task.** A task from the planner is created at `stage:ready`, or at `stage:needs-human` for a human task (section 11.3). Then ready → in-progress → verifying → pr-open → closed, with loops back through clarifying, in-progress or needs-human. A human task from the planner goes needs-human → closed.
 - **Bug, or task filed by the owner.** intake → clarifying → ready, then as a task.
 
@@ -213,11 +217,11 @@ The lifecycle of each type:
 |---|---|---|---|
 | intake | clarifying | all | Issue is trusted (6.2) |
 | clarifying | clarifying | all | Owner answered; interviewer has more questions |
-| clarifying | spec-review | epic | No open questions; spec written into the body |
+| clarifying | spec-review | epic, or story with no parent | No open questions; spec written into the body |
 | clarifying | ready | bug, or task filed by the owner | No open questions; daemon rewrites the body as a task (11.2) |
 | clarifying | ready | task | Owner answered the implementer's or verifier's question |
-| spec-review | clarifying | epic | Owner `/revise <text>`, or any other trusted comment (7.4) |
-| spec-review | planning | epic | Owner approves the current revision with 👍 or `/approve` (7.4) |
+| spec-review | clarifying | epic, or story with no parent | Owner `/revise <text>`, or any other trusted comment (7.4) |
+| spec-review | planning | epic, or story with no parent | Owner approves the current revision with 👍 or `/approve` (7.4) |
 | planning | plan-review | epic, story | Planner output passes validation (11.3) |
 | planning | planned | story | Output passes validation and `plan.review` is false; daemon creates tasks |
 | plan-review | planning | epic, story | Owner `/revise <text>`, or any other trusted comment (7.4) |
@@ -329,6 +333,7 @@ Rules:
 - Free-text answers are always allowed.
 - Questions wait for an answer indefinitely. There is no default-on-silence.
 - The interviewer asks at most `max_questions_per_round` (default 7) per round, most blocking first.
+- On an issue with no type, the interviewer's first comment starts with the type it set and why, or with its questions when it can't tell yet (section 4).
 
 ### 9.2 Commands
 
