@@ -124,6 +124,8 @@ GitHub is the single source of truth. The daemon keeps only an in-memory cache, 
 | Spec and plan revisions | One revision comment per revision, naming `rev`. The hash is in the transition marker (section 7.4); for plans, see section 16 |
 | Origin of bot-created issues | Hidden `origin` marker in the issue body (section 6.2) |
 
+Assignees are not state either: the daemon derives them from the stage and the PRs (section 9.6), and corrects them on every poll.
+
 The only local files are the lease (section 8.2) and the run results in `/state/runs/`. Both are scratch: losing the container loses nothing except the current run.
 
 ### 5.1 Reading rules
@@ -373,7 +375,7 @@ A `stage:needs-human` issue uses this template. The agent must fill every field;
 
 One pinned issue per repo, `issuedog digest`. It uses one of the repo's three pin slots.
 
-- The body is the current list: open questions, pending approvals, human tasks, PRs waiting for review, and state errors (5.1, 7.2). Items are ordered by how many tasks each one unblocks.
+- The body is the current list: open questions, pending approvals, hand-offs and unblocked human tasks, PRs waiting for review, and state errors (5.1, 7.2). These are exactly the items the daemon assigns (9.6). Items are ordered by how many tasks each one unblocks.
 - Each item states what is being decided, the options, the recommendation, and links to the issue.
 - The daemon rewrites the body when the list changes. It posts a short comment that @mentions `notify` only when a new item appears, so GitHub sends one notification per new item.
 
@@ -382,6 +384,24 @@ One pinned issue per repo, `issuedog digest`. It uses one of the repo's three pi
 Deterministic rules decide what needs the owner. An LLM may add items to the escalation list. It never removes one.
 
 Escalation triggers come from config (`escalate` in section 13), for example changes to dependency manifests, migrations, deployment files or payment code. A triggered PR gets the `review:high-risk` label and a "Look at these first" section listing the matched files and rules.
+
+### 9.6 Assignment
+
+The owner finds everything waiting on them in GitHub's own "assigned to me" view. The daemon assigns every user in `notify` to an issue or PR while it waits on them, and unassigns them as soon as it doesn't:
+
+| Item | Assigned while |
+|---|---|
+| Question round | The issue is at `clarifying` with an unanswered round (9.1) |
+| Spec or plan | The issue is at `spec-review` or `plan-review` |
+| Hand-off | The task is at `needs-human` after a hand-off comment (9.3) |
+| Human task | The task is at `needs-human` and every issue blocking it is closed |
+| Pull request | The PR is open and its task is at `pr-open`. It is unassigned on merge, on close, or when the task goes back to `in-progress` |
+| State error | The issue is listed in the digest as a state error (5.1, 7.2) |
+
+- These are the same items the digest lists (9.4).
+- Each PR carries the `priority:*` label of the task it closes, and the daemon keeps them in sync.
+- The owner sees what's waiting with `is:open assignee:@me sort:created-asc`, and the most urgent items by adding `label:priority:p0` or `label:priority:p1`. The digest orders the same items by how many tasks each one unblocks.
+- Only the App changes assignees on pipeline issues and PRs. Assignees are never read as state (section 5): a manual change is reverted on the next poll and changes nothing else.
 
 ## 10. Verification
 
