@@ -232,9 +232,9 @@ Comments from people without write access hold nothing. They reach agents only a
   - The spec changes: the interviewer rewrites it, and the issue goes to `spec-review` for a new 👍 (7.4).
   - The plan changes, or a child story's body: `planning`, then `plan-review` for a new 👍, even when `plan.review` is false. For an epic or story that was already `planned`, the approved revision updates its children rather than starting over:
     - **Kept** items keep their issues and stages (5.2).
-    - **Changed** items keep their issues, which the daemon rewrites with the new body and `rev`. Any hold on them ends, and any run is dropped. A changed task goes to `ready`, or `needs-human` for a human task. A changed story goes to `planning`, where its own children are updated the same way. A changed item whose issue is already closed is treated as new.
+    - **Changed** items keep their issues, which the daemon rewrites with the new body and `rev`, and any run is dropped. A changed task goes to `ready`, or `needs-human` for a human task. A changed story goes to `planning`, where its own children are updated the same way. A changed item that is held stays held: the stage it would go to becomes its hold's `at` and `origin`. A closed item can't be marked changed (11.3).
     - **New** items become new children.
-    - **Dropped** items, and every open issue below them, are closed as not planned, deepest first, with a comment naming the revision. Closing ends any hold, and the daemon removes dependency links to them, so kept children aren't left blocked. A story closed this way skips story verification (7.3). The one exception is an issue with an open PR: it is held with `reason=dropped` and listed for the owner (9.4, 9.6). Once its PR merges or closes, it closes as well, and so do its now-empty ancestors in the dropped subtree.
+    - **Dropped** items, and every open issue below them, are closed as not planned, deepest first, with a comment naming the revision. Closing ends any hold, and the daemon removes dependency links to them, so kept children aren't left blocked. A story closed this way skips story verification (7.3). The one exception is an issue with an open PR: it is held with `reason=dropped`, any run for it is stopped, and it is listed for the owner (9.4, 9.6). `/resume` doesn't end this hold. Once its PR merges or closes, or the owner closes the issue, it closes as well, and so do its now-empty ancestors in the dropped subtree.
   - A task's body changes: the interviewer rewrites it in its own template (11.2, or 9.3 for a human task), and the task goes to `ready`, or back to `needs-human` for a human task.
   - More answers are needed: a question round, staying at `clarifying`.
 - Each of these writes a fresh transition marker, so an edited or deleted marker can't roll state back.
@@ -578,7 +578,7 @@ A task that writes comments or issue bodies adds `- [ ] Text the daemon didn't w
 - Prefer extending existing code over adding new modules; the plan names the existing files each task touches.
 - A scope outside the allowed list becomes a question to the owner.
 - Work only the owner can do is a task marked `human`, written in the template from section 9.3 rather than 11.2.
-- A revised plan for an epic or story that is already `planned` keeps the ID of every kept or changed item and marks each item kept, changed, new or dropped (5.2, 6.4). Validation checks that every existing child appears exactly once.
+- A revised plan for an epic or story that is already `planned` keeps the ID of every kept or changed item and marks each item kept, changed, new or dropped (5.2, 6.4). A child whose issue is closed can only be kept; changing it means a new item with a new ID.
 
 The daemon validates the plan before it moves to plan-review:
 
@@ -587,6 +587,7 @@ The daemon validates the plan before it moves to plan-review:
 - task counts
 - the dependency graph has no cycles, including `depends-on` links to other repos
 - no parent would exceed 100 sub-issues, and no issue would exceed 50 links of one dependency type
+- for a revised plan of an issue that is already `planned`: every existing child appears exactly once, marked kept, changed or dropped, and no closed child is marked changed
 
 ### 11.4 Plan
 
@@ -602,7 +603,7 @@ Outcome: one sentence
 - [ ] acceptance criterion
 Depends on: nothing
 
-**T1. Title** · scope:<name> · human (only for a human task)
+**T1. Title** · scope:<name> · human (only for a human task) · kept, changed, new or dropped (only when revising a `planned` issue, 11.3)
 - Change: what to build, and the existing files it touches
 - Acceptance: observable, testable statements
 Depends on: S1, or nothing
