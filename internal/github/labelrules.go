@@ -160,6 +160,23 @@ func (r *labelRules) isApp(e *gogithub.Timeline) bool {
 	return r.appSlug != "" && a.GetType() == "Bot" && a.GetLogin() == r.appSlug+"[bot]"
 }
 
+// restores reports whether event i, by the App, leaves l as the accepted change
+// before it left it (off if there was none), as a revert does.
+func (r *labelRules) restores(ctx context.Context, l *labelState, i int) (bool, error) {
+	before := false
+	for j := i - 1; j >= 0; j-- {
+		ok, err := r.accepted(ctx, l.events[j])
+		if err != nil {
+			return false, err
+		}
+		if ok {
+			before = l.events[j].GetEvent() == "labeled"
+			break
+		}
+	}
+	return before == (l.events[i].GetEvent() == "labeled"), nil
+}
+
 // accepted reports whether e came from the App or a trusted user.
 func (r *labelRules) accepted(ctx context.Context, e *gogithub.Timeline) (bool, error) {
 	if r.isApp(e) {
@@ -188,12 +205,28 @@ func (r *labelRules) settle(ctx context.Context, l *labelState, reverted map[str
 	accAt := -1
 	for i := len(l.events) - 1; i >= 0; i-- {
 		ok, err := r.accepted(ctx, l.events[i])
+		if err == nil && ok && r.isApp(l.events[i]) {
+			// The App's own revert just restores the change before it, so
+			// look past it: a trusted override it restored stays an override.
+			var revert bool
+			revert, err = r.restores(ctx, l, i)
+			ok = !revert
+		}
 		if err != nil {
 			return false, nil, -1, fmt.Errorf("settle %s: %w", l.name, err)
 		}
 		if ok {
 			acc, accAt = l.events[i], l.ats[i]
 			break
+		}
+	}
+	if acc == nil {
+		// Only reverts and untrusted changes: the App's last word stands.
+		for i := len(l.events) - 1; i >= 0; i-- {
+			if r.isApp(l.events[i]) {
+				acc, accAt = l.events[i], l.ats[i]
+				break
+			}
 		}
 	}
 	want := acc != nil && acc.GetEvent() == "labeled"
