@@ -106,7 +106,7 @@ The task verifier runs in a fresh checkout of the head SHA, but only after rule 
 - Hierarchy uses native sub-issues: epic → story → task, or epic → task. Sub-issues must share the parent's owner. GitHub allows 100 sub-issues per parent.
 - An epic with a single user-facing outcome is planned directly into tasks and acts as its own story, including story verification (section 7.3).
 - **Untyped issues.** The owner may file an issue with no type. At the start of clarifying the interviewer picks one of the four types and sets it: the `type:*` label, or the issue type on org repos. Its first comment names the type with a one-line reason. If it can't tell yet, it asks questions first and sets the type once the issue is clear. An issue with no type doesn't leave `clarifying`.
-- **Changing the type.** The interviewer may set or change only a type it set itself, on an issue that arrived with no type, and only while the issue is at `intake` or `clarifying`. Every other type change is the owner's. The owner can change it at any time, and the daemon follows the owner's type from then on. If the issue's current stage doesn't apply to the new type (section 7.2), the daemon leaves it where it is and lists it in the digest as a state error until the owner sets a stage (5.1).
+- **Changing the type.** The interviewer may set or change only a type it set itself, on an issue that arrived with no type, and only while the issue is at `intake` or `clarifying`. Every other type change is the owner's. The owner can change it at any time, and the daemon follows the owner's type from then on. If the issue's current stage doesn't apply to the new type (section 7.2), the daemon leaves it where it is and reports a state error (5.3).
 - A story filed by the owner has no parent epic. It goes through clarifying, spec review and planning like an epic, then story verification (section 7.3).
 - A `bug`, or a `task` filed by the owner, goes through clarifying and then becomes a single task. It skips spec review and planning. A bug filed against earlier work starts its body with `Follow-up to #N` and includes the acceptance criterion "the original behavior of #N is unaffected."
 
@@ -124,9 +124,12 @@ GitHub is the single source of truth. The daemon keeps only an in-memory cache, 
 | Scope | `scope:<name>` from the repo's allowed list |
 | Transition history | Bot comments carrying a hidden marker, e.g. `<!-- issuedog:transition from=clarifying to=spec-review rev=3 body=9f2a61c0 run=8f2c cmd=2214587 -->` |
 | Attempt count | Hidden marker on the latest bot verifier comment |
+| State errors | Bot comments carrying an `error` marker with a stable key (5.3) |
 | Processed commands | The bot's 👍 reaction on the command comment, plus `cmd=<comment id>` in the transition marker. A reaction command (section 9.2) is recorded as `cmd=r<reaction id>` |
 | Spec and plan revisions | One revision comment per revision, naming `rev`. The hash is in the transition marker (section 7.4); for plans, see section 16 |
 | Origin of bot-created issues | Hidden `origin` marker in the issue body (section 6.2) |
+
+Assignees, and the priority labels on PRs, are not state either: the daemon derives them (section 9.6) and corrects them on every poll.
 
 Apart from the App key (section 3.1), the only local files are the lease (section 8.2) and the run results in `/state/runs/`. Both are scratch: losing the container loses nothing except the current run.
 
@@ -138,15 +141,24 @@ Apart from the App key (section 3.1), the only local files are the lease (sectio
 - **Labels.** A `stage:*`, `priority:*`, `scope:*`, `type:*` or `approved` label counts only if the issue timeline shows that its most recent `labeled` event came from the App or a trusted user (section 6.1). On org repos the same applies to the issue type and its most recent type event.
   - When an untrusted actor adds or removes one of these labels, the daemon reverts the change and posts a short comment.
   - When a trusted user changes a stage label by hand, the daemon treats it as an owner override and records a transition marker with `by=<login>`. It does this even if the change is not in the transition table.
-- **Disagreement.** If the stage label and the latest transition marker disagree and 5.1 does not explain the difference, the daemon puts the label back to match the marker and lists the issue in the digest.
+- **Disagreement.** If the stage label and the latest transition marker disagree and 5.1 does not explain the difference, the daemon puts the label back to match the marker and reports a state error (5.3).
 
 ### 5.2 Idempotency
 
 Every transition goes through one table in code (section 7). Each write is checked first, so a crashed run can be replayed safely:
 
 - **Transitions.** Applying a transition whose marker already exists is a no-op.
-- **Commands.** For a command comment, the daemon writes the transition marker with `cmd=<comment id>`, then adds its 👍 reaction. GitHub has no ✅ reaction. On replay, a marker carrying that `cmd` means only the reaction is missing. For a reaction command, the marker carries `cmd=r<reaction id>`. A reaction can't be reacted to, so the transition comment is the acknowledgment.
+- **Commands.** For a command comment, the daemon writes the transition marker with `cmd=<comment id>`, then adds its 👍 reaction. GitHub has no ✅ reaction. On replay, a marker carrying that `cmd` means only the reaction is missing. For a reaction command, the marker carries `cmd=r<reaction id>`. A reaction can't be reacted to, so the transition comment is the acknowledgment, or for a 👍 on a state-error comment, the ack reply (5.3).
 - **Created issues.** Every issue the daemon creates has an `origin` marker with a stable item ID, such as `plan=#12 rev=3 item=T4`. Before creating an issue, the daemon searches for that marker and reuses any match. The same applies to sub-issue links and dependency links: the daemon reads the current links before adding any.
+
+### 5.3 State errors
+
+A state error is something the daemon reports to the owner instead of acting on: a transition missing from the table (7.2) other than a rejected command, a stage label that disagreed with its marker (5.1, after the daemon puts the label back), or a type that doesn't fit the issue's stage (4).
+
+- The daemon posts one comment per error, carrying `<!-- issuedog:error kind=<transition|disagreement|type> key=<key> -->`. The key is the ID of what triggered it: the comment, reaction or timeline event (such as a `labeled` or issue-type event), or the run whose outcome had no row. Before posting, the daemon looks for a comment with that key and reuses it, so the same cause is posted once across polls and restarts, and a new occurrence gets a new key.
+- A trusted 👍 on the comment acknowledges the error. The daemon records it by replying with `<!-- issuedog:error key=<key> ack=r<reaction id> -->`, never posts that key again, and the error stops counting toward assignment (9.6). Removing the 👍 later changes nothing.
+- Otherwise the error ends when its cause is gone. A type mismatch ends when the type fits the stage again. A missing transition or a disagreement ends at the issue's next valid transition, including a trusted user's manual stage change (5.1).
+- A command that doesn't apply at the issue's stage isn't a state error. The rejection reply (9.2) is enough, and nobody is assigned for it.
 
 ## 6. Trust model
 
@@ -300,7 +312,7 @@ The lifecycle of each type:
 
 From `ready` on, a `bug` follows the rows for `task`.
 
-Any transition missing from this table is an error, except a trusted user's manual label change (5.1). The daemon logs the error, leaves the issue unchanged and lists it in the digest.
+Any transition missing from this table is an error, except a trusted user's manual label change (5.1) or a rejected command (9.2). The daemon logs the error, leaves the issue unchanged and reports a state error (5.3).
 
 `/hold` applies `stage:held` to the issue and to every open descendant, each with its own transition marker. `/resume` ends that owner hold on each one, restoring the stage named in its marker unless another hold remains (6.4).
 
@@ -330,7 +342,7 @@ Any transition missing from this table is an error, except a trusted user's manu
 
 Each loop iteration:
 
-1. Process new trusted comments, reactions and label changes on open issues: answers, `/approve`, `/revise`, `/done`, `/hold`, `/resume`, `/priority`, 👍 on revision comments, hand-off comments, human-task issues, untrusted comments and hold notices (6.4), and other comments in review stages (7.4). Revert untrusted label changes (5.1).
+1. Process new trusted comments, reactions and label changes on open issues: answers, `/approve`, `/revise`, `/done`, `/hold`, `/resume`, `/priority`, 👍 on revision comments, hand-off comments, state-error comments, human-task issues, untrusted comments and hold notices (6.4), and other comments in review stages (7.4). Revert untrusted label changes (5.1).
 2. Reconcile PRs: merges, closes, reviews with comments (7.2), new head SHAs, and `main` moving under open PRs.
 3. Run any pending non-task stage work for the highest-priority issue that has it: clarifying, spec, planning, story verification.
 4. Otherwise pick the next task:
@@ -398,6 +410,7 @@ Rules:
 | `/revise <text>` | Issue | Sends the spec or plan back with the owner's notes |
 | 👍 on the issue | Human task from the planner | Owner finished it (9.3) |
 | 👍 on the latest hand-off comment | Blocked task at `needs-human` | Same as `/done` (9.3) |
+| 👍 on a state-error comment | Any issue | Acknowledges the error (5.3). The stage doesn't change |
 | `/done` | `needs-human` issue | Owner finished the human task (9.3), or wants a closed PR's task started over |
 | `/hold`, `/resume` | Any issue | Pauses or resumes the issue and its descendants. `/resume` also ends a discussion hold (6.4) |
 | 👍 on an untrusted comment or a hold notice | Issue held for discussion | Approves the comment, or accepts the edit or deletion (6.4) |
@@ -431,7 +444,7 @@ A `stage:needs-human` issue uses this template. The agent must fill every field;
 
 One pinned issue per repo, `issuedog digest`. It uses one of the repo's three pin slots.
 
-- The body is the current list: open questions, pending approvals, human tasks, PRs waiting for review, issues held for discussion (6.4), and state errors (5.1, 7.2). Items are ordered by how many tasks each one unblocks.
+- The body is the current list: open questions, pending approvals, hand-offs and unblocked human tasks, PRs waiting for review, issues held for discussion (6.4), and state errors (5.3). These are exactly the items the daemon assigns (9.6). Each state error is also posted on its issue as a comment (5.3). Items are ordered by how many tasks each one unblocks.
 - Each item states what is being decided, the options, the recommendation, and links to the issue.
 - The daemon rewrites the body when the list changes. It posts a short comment that @mentions `notify` only when a new item appears, so GitHub sends one notification per new item.
 
@@ -440,6 +453,25 @@ One pinned issue per repo, `issuedog digest`. It uses one of the repo's three pi
 Deterministic rules decide what needs the owner. An LLM may add items to the escalation list. It never removes one.
 
 Escalation triggers come from config (`escalate` in section 13), for example changes to dependency manifests, migrations, deployment files or payment code. A triggered PR gets the `review:high-risk` label and a "Look at these first" section listing the matched files and rules.
+
+### 9.6 Assignment
+
+The owner finds everything waiting on them in GitHub's own "assigned to me" view. The daemon assigns every user in `notify` to an issue or PR while it waits on them, and unassigns them as soon as it doesn't:
+
+| Item | Assigned while |
+|---|---|
+| Question round | The issue is at `clarifying` with an unanswered round (9.1) |
+| Spec or plan | The issue is at `spec-review` or `plan-review` |
+| Hand-off | The task is at `needs-human` after a hand-off comment (9.3) |
+| Human task | The task is at `needs-human` and every issue blocking it is closed |
+| Pull request | The PR is open and its task is at `pr-open`. It is unassigned when the PR merges or closes, or when the task leaves `pr-open` |
+| State error | From the daemon's state-error comment until a trusted user reacts 👍 to it, or its cause is gone (5.3) |
+| Discussion hold | The issue is held for discussion and a trigger is unresolved (6.4) |
+
+- These are the same items the digest lists (9.4).
+- Each PR carries the `priority:*` label of the task it closes. The task's label is the priority: the daemon copies it to the PR and reverts any other change to the PR's label.
+- The owner sees what's waiting with `is:open assignee:@me sort:created-asc`, and the most urgent items by adding `label:priority:p0` or `label:priority:p1`. The digest orders the same items by how many tasks each one unblocks.
+- Only the App changes assignees on pipeline issues and PRs. Assignees are never read as state (section 5): a manual change is reverted on the next poll and changes nothing else.
 
 ## 10. Verification
 

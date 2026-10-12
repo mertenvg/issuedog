@@ -74,6 +74,19 @@ check "issuedog can read the key file" as issuedog cat "$key"
 check_not "agent can't read the key file" as agent cat "$key"
 rm -f "$key"
 
+# Context files: a 0755 run dir and 0644 files owned by issuedog, which agent
+# can read but not change (SPEC §3.2).
+ctx=/run/issuedog/sandbox-test-run
+install -d -o issuedog -g issuedog -m 0755 "$ctx"
+install -o issuedog -g issuedog -m 0644 /dev/null "$ctx/prompt.md"
+expect "context dir" "issuedog:issuedog 755" stat -c '%U:%G %a' "$ctx"
+expect "context file" "issuedog:issuedog 644" stat -c '%U:%G %a' "$ctx/prompt.md"
+check "agent can read a context file" as agent cat "$ctx/prompt.md"
+check_not "agent can't write a context file" as agent sh -c 'echo x >>"$1"' sh "$ctx/prompt.md"
+check_not "agent can't create files in the context dir" as agent touch "$ctx/new.md"
+check_not "agent can't remove a context file" as agent rm -f "$ctx/prompt.md"
+rm -rf "$ctx"
+
 # Key import of a throwaway RSA key that make sandbox-test mounts.
 key=/state/app-key.pem
 check "issuedog imports the key" as issuedog "$bin" key import </test-key.pem
