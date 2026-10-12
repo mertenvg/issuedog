@@ -131,7 +131,7 @@ func TestRunKeyCommands(t *testing.T) {
 		}
 	}
 	logr.Wait()
-	for _, want := range []string{"imported the App key to " + path, "importing the App key: app key " + path, "unexpected arguments"} {
+	for _, want := range []string{"imported the App key to " + path, path + " is usable", "importing the App key: app key " + path, "unexpected arguments", "usage:"} {
 		if !strings.Contains(logs.String(), want) {
 			t.Errorf("logs = %q, want %q", logs.String(), want)
 		}

@@ -60,7 +60,7 @@ func run(args, environ []string, stdin io.Reader, stdout, stderr io.Writer) int 
 
 const usage = `usage:
   issuedog key import [-path file] < app-key.pem
-  issuedog key check [-path file]`
+  issuedog key check [-path file]     the file defaults to ` + appkey.DefaultPath
 
 // command runs "key import" (store the App key from stdin) or "key check".
 func command(args []string, stdin io.Reader) int {
