@@ -106,7 +106,7 @@ type Int int
 // UnmarshalYAML refuses any node not tagged !!int.
 func (i *Int) UnmarshalYAML(n *yaml.Node) error {
 	if n.Tag != "!!int" {
-		return fmt.Errorf("line %d: %q is not an integer", n.Line, n.Value)
+		return fmt.Errorf("line %d: %s %q is not an integer", n.Line, n.ShortTag(), n.Value)
 	}
 	var v int
 	if err := n.Decode(&v); err != nil {
@@ -164,8 +164,11 @@ func Parse(data []byte) (*Config, error) {
 	if err := dec.Decode(c); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parse %s: %w", Path, err)
 	}
-	if err := dec.Decode(&yaml.Node{}); !errors.Is(err, io.EOF) {
+	switch err := dec.Decode(&yaml.Node{}); {
+	case err == nil:
 		return nil, fmt.Errorf("parse %s: more than one YAML document", Path)
+	case !errors.Is(err, io.EOF):
+		return nil, fmt.Errorf("parse %s: %w", Path, err)
 	}
 	if err := c.validate(); err != nil {
 		return nil, fmt.Errorf("validate %s: %w", Path, err)

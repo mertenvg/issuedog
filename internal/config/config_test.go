@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -23,7 +24,8 @@ func TestParseRepoConfig(t *testing.T) {
 	}
 	if c.Types != "labels" || c.Verify.ToolingScope != "tooling" || len(c.Verify.Commands) != 3 ||
 		c.Verify.CommandTimeout != 20*time.Minute || c.Stages.Timeouts.Implementer != time.Hour ||
-		c.Loop.IdleSleep != time.Minute || c.Escalate.Paths[0] != "go.mod" {
+		c.Loop.IdleSleep != time.Minute || c.Escalate.Paths[0] != "go.mod" ||
+		!slices.Equal(c.Verify.SkipMarkers, Defaults().Verify.SkipMarkers) {
 		t.Errorf("unexpected config: %+v", c)
 	}
 }
@@ -35,7 +37,7 @@ func TestParseEmptyGivesDefaults(t *testing.T) {
 		Verify: Verify{
 			CommandTimeout: 20 * time.Minute,
 			MaxDiffLines:   400,
-			SkipMarkers:    []string{"t.Skip(", ".skip(", "xit(", "#[ignore]"},
+			SkipMarkers:    Defaults().Verify.SkipMarkers, // pinned by TestParseRepoConfig
 		},
 		PR: PR{TitleTypes: []string{"feat", "fix", "chore"}},
 		Stages: Stages{
@@ -73,6 +75,8 @@ func TestParseErrors(t *testing.T) {
 		{"verify: {command_timout: 5m}", "command_timout"},
 		{"stages: {timeouts: {reviewer: 5m}}", "reviewer"},
 		{"plan: {max_tasks: many}", `"many" is not an integer`},
+		{"plan: {max_tasks: [1]}", "!!seq"},
+		{"types: labels\n---\n[", "parse"},
 		{"plan: {max_tasks: 1.5}", `"1.5" is not an integer`},
 		{"loop: {max_attempts: '3'}", `"3" is not an integer`},
 		{"types: labels\n---\ntypez: x", "more than one YAML document"},
