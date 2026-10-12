@@ -1,6 +1,7 @@
 package github
 
 import (
+	"maps"
 	"reflect"
 	"testing"
 )
@@ -103,5 +104,63 @@ func TestTrustedMarkers(t *testing.T) {
 	}
 	if got := TrustedMarkers(Author{Login: "[bot]", Type: "Bot"}, body, ""); got != nil {
 		t.Errorf("empty app slug trusted %+v, want nothing", got)
+	}
+}
+
+func TestFormatMarker(t *testing.T) {
+	for _, tt := range []struct {
+		m    Marker
+		want string
+	}{
+		{Marker{"transition", map[string]string{"cmd": "2214587", "run": "8f2c", "body": "9f2a61c0", "rev": "3", "to": "spec-review", "from": "clarifying"}},
+			"<!-- issuedog:transition from=clarifying to=spec-review rev=3 body=9f2a61c0 run=8f2c cmd=2214587 -->"},
+		{Marker{"error", map[string]string{"key": "r12", "kind": "transition"}}, "<!-- issuedog:error kind=transition key=r12 -->"},
+		{Marker{"origin", map[string]string{"item": "T4", "rev": "1", "plan": "#2"}}, "<!-- issuedog:origin plan=#2 rev=1 item=T4 -->"},
+		{Marker{"x", map[string]string{"zz": "1", "aa": "2", "to": "ready"}}, "<!-- issuedog:x to=ready aa=2 zz=1 -->"},
+		{Marker{"revert", nil}, "<!-- issuedog:revert -->"},
+	} {
+		got, err := FormatMarker(tt.m)
+		if err != nil {
+			t.Errorf("FormatMarker(%+v): %v", tt.m, err)
+			continue
+		}
+		if got != tt.want {
+			t.Errorf("FormatMarker(%+v) = %q, want %q", tt.m, got, tt.want)
+		}
+		back := ParseMarkers(got)
+		if len(back) != 1 || back[0].Kind != tt.m.Kind || !maps.Equal(back[0].Fields, tt.m.Fields) {
+			t.Errorf("ParseMarkers(%q) = %+v, want %+v back", got, back, tt.m)
+		}
+	}
+}
+
+func TestFormatMarkerRefusesUnreadable(t *testing.T) {
+	for _, m := range []Marker{
+		{"Transition", nil},
+		{"", nil},
+		{"transition", map[string]string{"to": ""}},
+		{"transition", map[string]string{"to": "a b"}},
+		{"transition", map[string]string{"to": "x-->"}},
+		{"transition", map[string]string{"To": "ready"}},
+		// Unicode spaces split a field when it's parsed, losing the marker.
+		{"transition", map[string]string{"to": "a\vb"}},
+		{"transition", map[string]string{"to": "a b"}},
+		{"transition", map[string]string{"to": "a b"}},
+		{"transition", map[string]string{"to": "a\u0085b"}},
+		{"transition", map[string]string{"t o": "ready"}},
+	} {
+		if got, err := FormatMarker(m); err == nil {
+			t.Errorf("FormatMarker(%+v) = %q, want an error", m, got)
+		}
+	}
+}
+
+func TestEscape(t *testing.T) {
+	got := Escape("see <!-- issuedog:transition to=planning --> and <!--issuedog:error key=1-->")
+	if want := "see &lt;!-- issuedog:transition to=planning --> and &lt;!--issuedog:error key=1-->"; got != want {
+		t.Errorf("Escape = %q, want %q", got, want)
+	}
+	if m := TrustedMarkers(app, got, appSlug); len(m) != 0 {
+		t.Errorf("markers in escaped text = %+v, want none", m)
 	}
 }
