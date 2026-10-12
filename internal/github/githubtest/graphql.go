@@ -73,9 +73,23 @@ func (f *Fake) graphql(c *call) (int, any) {
 			missing = append(missing, p)
 		}
 	}
-	if len(missing) > 0 {
+	var extra []string // unknown fields and aliases, which GitHub would answer differently
+	for p := range named {
+		if !answeredFields[p] {
+			extra = append(extra, p)
+		}
+	}
+	if len(missing) > 0 || len(extra) > 0 {
 		slices.Sort(missing)
-		errs = append(errs, map[string]any{"message": "githubtest: the query doesn't name " + strings.Join(missing, ", ")})
+		slices.Sort(extra)
+		var msg []string
+		if len(missing) > 0 {
+			msg = append(msg, "doesn't name "+strings.Join(missing, ", "))
+		}
+		if len(extra) > 0 {
+			msg = append(msg, "names unknown "+strings.Join(extra, ", "))
+		}
+		errs = append(errs, map[string]any{"message": "githubtest: the query " + strings.Join(msg, " and ")})
 		return reply(nil)
 	}
 	if v.Number < 1 || v.Number > len(f.issues) || f.issues[v.Number-1].IsPullRequest() {

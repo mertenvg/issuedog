@@ -36,7 +36,7 @@ func TestEditBotLogin(t *testing.T) {
 	c := graphQLAnswers(t, `{"data":{"repository":{"issue":{"body":"spec",
 	  "lastEditedAt":"2026-10-12T03:00:00Z","editor":{"login":"issuedog-dev","__typename":"Bot"},
 	  "comments":{"pageInfo":{"hasNextPage":false,"endCursor":"Y3Vyc29yOnYyOpHPAAAAAWxE-eE="},"nodes":[
-	    {"fullDatabaseId":"6106375555","body":"a","createdAt":"2026-10-12T01:00:00Z","updatedAt":"2026-10-12T04:00:00Z",
+	    {"fullDatabaseId":"6106375555","body":"a","createdAt":"2026-10-12T01:00:00Z","updatedAt":"2026-10-12T06:00:00Z",
 	     "author":{"login":"issuedog-dev","__typename":"Bot"},
 	     "lastEditedAt":"2026-10-12T04:00:00Z","editor":{"login":"issuedog-dev[bot]","__typename":"Bot"}},
 	    {"fullDatabaseId":"6110641371","body":"b","createdAt":"2026-10-12T02:00:00Z","updatedAt":"2026-10-12T05:00:00Z",
@@ -50,7 +50,7 @@ func TestEditBotLogin(t *testing.T) {
 	at := func(h int) time.Time { return time.Date(2026, 10, 12, h, 0, 0, 0, time.UTC) }
 	app, owner := Author{Login: "issuedog-dev[bot]", Type: "Bot"}, Author{Login: "mertenvg", Type: "User"}
 	want := &Snapshot{Number: 1, Body: "spec", BodyEdit: Edit{By: app, At: at(3)}, Comments: []Comment{
-		{ID: 6106375555, Author: app, Body: "a", CreatedAt: at(1), UpdatedAt: at(4), Edit: Edit{By: app, At: at(4)}},
+		{ID: 6106375555, Author: app, Body: "a", CreatedAt: at(1), UpdatedAt: at(6), Edit: Edit{By: app, At: at(4)}},
 		{ID: 6110641371, Body: "b", CreatedAt: at(2), UpdatedAt: at(5), Edit: Edit{At: at(5)}},
 		{ID: 6111427042, Author: owner, Body: "d", CreatedAt: at(2), UpdatedAt: at(2)},
 	}}

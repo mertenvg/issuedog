@@ -206,7 +206,10 @@ func TestGraphQLAnswers(t *testing.T) {
 		{"pull request", gqlQuery(t, f, answered, 2, nil), "NOT_FOUND Could not resolve to an Issue with the number of 2."},
 		{"bad cursor", gqlQuery(t, f, answered, n, "nope"), " `nope` does not appear to be a valid cursor."},
 		{"no fullDatabaseId", gqlQuery(t, f, strings.Replace(answered, "fullDatabaseId", "databaseId", 1), n, nil),
-			" githubtest: the query doesn't name query.repository.issue.comments.nodes.fullDatabaseId"},
+			" githubtest: the query doesn't name query.repository.issue.comments.nodes.fullDatabaseId" +
+				" and names unknown query.repository.issue.comments.nodes.databaseId"},
+		{"alias", gqlQuery(t, f, strings.Replace(answered, "nodes { fullDatabaseId body", "nodes { fullDatabaseId body: id", 1), n, nil),
+			" githubtest: the query names unknown query.repository.issue.comments.nodes.id"},
 		{"no comment editor", gqlQuery(t, f, strings.Replace(answered, "} editor { login __typename } }", "} }", 1), n, nil),
 			" githubtest: the query doesn't name query.repository.issue.comments.nodes.editor, " +
 				"query.repository.issue.comments.nodes.editor.__typename, query.repository.issue.comments.nodes.editor.login"},

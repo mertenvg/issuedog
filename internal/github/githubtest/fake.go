@@ -186,7 +186,7 @@ func (f *Fake) AddComment(number int, author, body string) int64 {
 	return f.addCommentBy(f.issues[number-1], author, body).GetID()
 }
 
-// EditBody edits an issue's body as login. An empty login is a deleted account.
+// EditBody edits an issue's body as login. An empty login means GitHub names no editor.
 func (f *Fake) EditBody(number int, login, body string) {
 	f.edit(number, func(is *issue) {
 		now := f.tick()
@@ -194,7 +194,7 @@ func (f *Fake) EditBody(number int, login, body string) {
 	})
 }
 
-// EditComment edits a comment as login. An empty login is a deleted account.
+// EditComment edits a comment as login. An empty login means GitHub names no editor.
 func (f *Fake) EditComment(id int64, login, body string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -10,7 +10,7 @@ import (
 )
 
 // Edit is who last edited a body, and when. The zero Edit means never edited.
-// By is empty if the editor's account is gone.
+// By is empty if GitHub names no editor; a deleted account shows as ghost.
 type Edit struct {
 	By Author
 	At time.Time
@@ -67,7 +67,8 @@ type editNode struct {
 	Editor       *actor
 }
 
-// actor is a GraphQL Actor, nil for a deleted account.
+// actor is a GraphQL Actor, nil if GitHub names none (a deleted account
+// shows as ghost).
 type actor struct {
 	Login    string
 	Typename string `json:"__typename"`
