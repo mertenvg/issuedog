@@ -46,8 +46,7 @@ func run(args, environ []string, stdin io.Reader, stdout, stderr io.Writer) int 
 		fmt.Fprintf(stdout, "issuedog %s\n", version)
 		return 0
 	}
-	// Key commands run before the credential check: importing the App key
-	// doesn't need a Claude credential.
+	// Key commands don't need a Claude credential, so they run before its check.
 	if fs.NArg() > 0 {
 		return command(fs.Args(), stdin, stdout, stderr)
 	}

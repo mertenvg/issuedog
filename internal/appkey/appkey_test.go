@@ -34,8 +34,7 @@ func TestLoadAccepts(t *testing.T) {
 	}
 }
 
-// TestLoadRefuses checks each refusal names the path. The wrong-owner case
-// passes another uid, because tests can't chown without root.
+// TestLoadRefuses passes another uid for the wrong owner: tests can't chown.
 func TestLoadRefuses(t *testing.T) {
 	dir := t.TempDir()
 	fifo := filepath.Join(dir, "fifo.pem")

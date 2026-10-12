@@ -18,9 +18,8 @@ const DefaultPath = "/state/app-key.pem"
 const maxKeySize = 64 << 10
 
 // Import reads an RSA private key in PEM form from r and writes it to path
-// with mode 0600, replacing any key already there. It writes a temporary file
-// in the same directory and renames it over path, so input that isn't an RSA
-// key, or a failed write, leaves the old key in place.
+// with mode 0600, through a temporary file renamed over path. Input that isn't
+// an RSA key, or a failed write, leaves any old key in place.
 func Import(path string, r io.Reader) error {
 	data, err := io.ReadAll(io.LimitReader(r, maxKeySize+1))
 	if err != nil {
