@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,22 +20,30 @@ func runLogged(t *testing.T, args, environ []string) (int, string) {
 	var logs bytes.Buffer
 	stop := logr.AddWriter(&logs)
 	defer stop()
-	code := run(args, environ, nil)
+	code := run(args, environ, nil, io.Discard)
 	logr.Wait()
 	return code, logs.String()
 }
 
-func TestRunVersion(t *testing.T) {
-	code, logs := runLogged(t, []string{"--version"}, nil)
-	if code != 0 || !strings.Contains(logs, "issuedog dev") {
-		t.Errorf("exit code %d, logs %q; want 0 and the version", code, logs)
-	}
-}
-
-func TestRunHelp(t *testing.T) {
-	code, logs := runLogged(t, []string{"-h"}, nil)
-	if code != 0 || !strings.Contains(logs, "usage:") || strings.Contains(logs, "help requested") {
-		t.Errorf("exit code %d, logs %q; want 0 and just the usage", code, logs)
+// TestRunPlainOutput checks that the version and help text go to stdout as
+// plain text, not through logr, which would add log metadata.
+func TestRunPlainOutput(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--version"}, "issuedog dev\n"},
+		{[]string{"-h"}, usage + "\n"},
+		{[]string{"key", "import", "-h"}, usage + "\n"},
+	} {
+		var logs, stdout bytes.Buffer
+		stop := logr.AddWriter(&logs)
+		code := run(tc.args, nil, nil, &stdout)
+		logr.Wait()
+		stop()
+		if code != 0 || stdout.String() != tc.want || logs.Len() != 0 {
+			t.Errorf("%q: exit code %d, stdout %q, logs %q; want 0, %q and no logs", tc.args, code, stdout.String(), logs.String(), tc.want)
+		}
 	}
 }
 
@@ -121,7 +130,7 @@ func TestRunKeyCommands(t *testing.T) {
 		{[]string{"key", "import", "extra"}, "", 2},
 		{[]string{"key", "check", "-nope"}, "", 2},
 	} {
-		if code := run(tt.args, nil, strings.NewReader(tt.stdin)); code != tt.want {
+		if code := run(tt.args, nil, strings.NewReader(tt.stdin), io.Discard); code != tt.want {
 			t.Errorf("%q: exit code = %d, want %d", tt.args, code, tt.want)
 		}
 	}
