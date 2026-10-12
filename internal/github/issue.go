@@ -14,9 +14,11 @@ import (
 
 // Snapshot is one issue as the daemon holds it in memory (plan #5, assumption 2).
 type Snapshot struct {
-	Number    int
-	Title     string
-	Body      string
+	Number int
+	Title  string
+	Body   string
+	// BodyEdit is the body's last edit.
+	BodyEdit  Edit
 	Author    Author
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -37,6 +39,8 @@ type Comment struct {
 	Body      string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	// Edit is the body's last edit.
+	Edit Edit
 }
 
 // Reaction is one reaction to a comment.
@@ -49,7 +53,8 @@ type Reaction struct {
 	CreatedAt time.Time
 }
 
-// Snapshot reads one issue: the issue, its labels, type and parent, and every comment.
+// Snapshot reads one issue: the issue, its labels, type and parent, every
+// comment, and who last edited the body and each comment.
 func (c *Client) Snapshot(ctx context.Context, owner, repo string, number int) (*Snapshot, error) {
 	issue, _, err := c.Issues.Get(ctx, owner, repo, number)
 	if err != nil {
@@ -80,10 +85,15 @@ func (c *Client) Snapshot(ctx context.Context, owner, repo string, number int) (
 	if err != nil {
 		return nil, fmt.Errorf("snapshot of %s/%s#%d: %w", owner, repo, number, err)
 	}
+	body, edits, err := c.edits(ctx, owner, repo, number)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot of %s/%s#%d: %w", owner, repo, number, err)
+	}
+	s.BodyEdit = body
 	for _, cm := range comments {
 		s.Comments = append(s.Comments, Comment{
 			ID: cm.GetID(), Author: authorOf(cm.GetUser()), Body: cm.GetBody(),
-			CreatedAt: cm.GetCreatedAt().Time, UpdatedAt: cm.GetUpdatedAt().Time,
+			CreatedAt: cm.GetCreatedAt().Time, UpdatedAt: cm.GetUpdatedAt().Time, Edit: edits[cm.GetID()],
 		})
 	}
 	// IDs grow with time, and CommentsSince sorts by update.

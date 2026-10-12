@@ -29,8 +29,9 @@ import (
 // Start is the fake clock's first reading. Every change moves it on a second.
 var Start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-// Fake serves one repo's issues, comments, labels, reactions and parents. Its
-// API writes are made by the App, "<slug>[bot]" of type Bot. A GET whose
+// Fake serves one repo's issues, comments, labels, reactions and parents, and
+// the GraphQL query for their last edits. Its API writes, comment edits
+// included, are made by the App, "<slug>[bot]" of type Bot. A GET whose
 // answer hasn't changed gets a 304. Every write (any method but GET) is
 // logged, and FailWrite can fail one.
 //
@@ -50,6 +51,7 @@ type Fake struct {
 	failAt      int
 	failAfter   bool // FailWriteAfter rather than FailWrite
 	notModified int
+	gqlErrors   []string // for the next GraphQL answer
 }
 
 // discard swallows a reply, for a write that takes effect but answers 500.
@@ -63,12 +65,20 @@ func (discard) Write(b []byte) (int, error) { return len(b), nil }
 type issue struct {
 	gogithub.Issue // labels sorted by name
 	parent         int
+	lastEdit       lastEdit
 }
 
 type comment struct {
 	gogithub.IssueComment
 	issue     int
 	reactions []*gogithub.Reaction
+	lastEdit  lastEdit
+}
+
+// lastEdit is who last edited a body, and when. The zero lastEdit means never.
+type lastEdit struct {
+	by string
+	at time.Time
 }
 
 // Write is one write request: its method, its path below the repo (such as
@@ -105,6 +115,7 @@ func New(t testing.TB, repo, slug string) *Fake {
 	f.handle("POST /issues/comments/{id}/reactions", f.addReaction)
 	f.handle("POST /issues/{n}/labels", f.addLabels)
 	f.handle("DELETE /issues/{n}/labels/{name}", f.removeLabel)
+	f.mux.HandleFunc("POST /graphql", func(w http.ResponseWriter, r *http.Request) { f.serve(w, r, false, f.graphql) })
 	f.srv = httptest.NewServer(f.mux)
 	t.Cleanup(f.srv.Close)
 	return f
@@ -167,12 +178,34 @@ func (f *Fake) AddComment(number int, author, body string) int64 {
 	return f.addCommentBy(f.issues[number-1], author, body).GetID()
 }
 
+// EditBody edits an issue's body as login. An empty login is a deleted account.
+func (f *Fake) EditBody(number int, login, body string) {
+	f.edit(number, func(is *issue) {
+		now := f.tick()
+		is.Body, is.UpdatedAt, is.lastEdit = &body, now, lastEdit{login, now.Time}
+	})
+}
+
+// EditComment edits a comment as login. An empty login is a deleted account.
+func (f *Fake) EditComment(id int64, login, body string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.findComment(id).editBy(login, body, f.tick())
+}
+
 // AddReaction reacts to a comment as author and returns the reaction's ID.
 func (f *Fake) AddReaction(commentID int64, author, content string) int64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	r, _ := f.react(f.findComment(commentID), author, content)
 	return r.GetID()
+}
+
+// FailGraphQL makes the next GraphQL answer list these errors beside its data.
+func (f *Fake) FailGraphQL(messages ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.gqlErrors = messages
 }
 
 // FailWrite makes the nth write since New (1-based) fail with a 500 before
@@ -235,8 +268,8 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request, write bool, h handl
 		}
 		if failed {
 			// The write takes effect, but the client only sees a 500.
+			defer send(w, http.StatusInternalServerError, message("FailWriteAfter"))
 			w = discard{w}
-			defer send(w.(discard).ResponseWriter, http.StatusInternalServerError, message("FailWriteAfter"))
 		}
 	}
 	c := &call{w: w, r: r}
@@ -414,8 +447,12 @@ func (f *Fake) editComment(c *call) (int, any) {
 	if status, msg := c.decode(&req); msg != nil {
 		return status, msg
 	}
-	c.comment.Body, c.comment.UpdatedAt = &req.Body, f.tick()
+	c.comment.editBy(f.slug+"[bot]", req.Body, f.tick())
 	return http.StatusOK, c.comment.IssueComment
+}
+
+func (c *comment) editBy(login, body string, now *gogithub.Timestamp) {
+	c.Body, c.UpdatedAt, c.lastEdit = &body, now, lastEdit{login, now.Time}
 }
 
 func (f *Fake) listReactions(c *call) (int, any) {
