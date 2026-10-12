@@ -167,7 +167,7 @@ func (r *labelRules) restores(ctx context.Context, l *labelState, i int) (bool, 
 	for j := i - 1; j >= 0; j-- {
 		ok, err := r.accepted(ctx, l.events[j])
 		if err != nil {
-			return false, err
+			return false, fmt.Errorf("restores %s at %d: %w", l.name, i, err)
 		}
 		if ok {
 			before = l.events[j].GetEvent() == "labeled"
