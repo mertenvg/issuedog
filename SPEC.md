@@ -149,7 +149,7 @@ Every transition goes through one table in code (section 7). Each write is check
 
 - **Transitions.** Applying a transition whose marker already exists is a no-op.
 - **Commands.** For a command comment, the daemon writes the transition marker with `cmd=<comment id>`, then adds its 👍 reaction. GitHub has no ✅ reaction. On replay, a marker carrying that `cmd` means only the reaction is missing. For a reaction command, the marker carries `cmd=r<reaction id>`. A reaction can't be reacted to, so the transition comment is the acknowledgment, or for a 👍 on a state-error comment, the ack reply (5.3).
-- **Created issues.** Every issue the daemon creates has an `origin` marker with a stable item ID, such as `plan=#12 rev=3 item=T4`. Before creating an issue, the daemon searches for that marker and reuses any match. The same applies to sub-issue links and dependency links: the daemon reads the current links before adding any.
+- **Created issues.** Every issue the daemon creates has an `origin` marker with a stable item ID, such as `plan=#12 rev=3 item=T4`. Before creating an issue, the daemon searches for a marker with the same plan and item, whatever its `rev`, and reuses any match. A planner revising a plan keeps the item IDs of unchanged items and gives new items new IDs. The same applies to sub-issue links and dependency links: the daemon reads the current links before adding any.
 
 ### 5.3 State errors
 
@@ -223,14 +223,14 @@ Comments from people without write access hold nothing. They reach agents only a
 
 **Resolving.** Every trigger needs a trusted user's response:
 - A 👍 on an untrusted comment approves it. From then on it counts as that user's input (6.2).
-- A trusted comment counters every untrusted comment posted before it, and is itself owner input. Commands in it apply as usual, except that any that would move the issue wait. This covers `/approve`, and a 👍 on a revision comment made while held. Such a command applies when the issue next reaches a stage it fits, if the revision it names still matches its hash (7.4). Otherwise it gets a rejection reply (9.2).
+- A trusted comment counters every untrusted comment posted before it, and is itself owner input. Commands in it apply as usual, except that any that would move the issue wait. This covers `/approve`, and a 👍 on a revision comment made while held, but not `/resume`, which applies at once. A deferred `/revise` that the interviewer already handled in the post-hold `clarifying` isn't applied again. Such a command applies when the issue next reaches a stage it fits, if the revision it names still matches its hash (7.4). Otherwise it gets a rejection reply (9.2).
 - A 👍 on a notice accepts the change. Markers in edited or deleted content are never read again (5.1). When that content was an App-written body, the daemon reposts its `origin` marker from the App's own last version in the edit history, so the issue stays in the pipeline (6.2) and de-duplication still finds it (5.2).
 
 **Leaving the hold.**
 - Once every trigger is resolved, the issue goes to `clarifying`, and its transition marker carries the stage before the hold. The interviewer reads the discussion, with approved and countering comments as owner input, and picks the next stage. Comments it handled there don't count again as revision requests (7.4):
   - Nothing in the discussion changes the issue: `origin`. A task whose run was dropped goes to `ready`.
   - The spec changes: the interviewer rewrites it, and the issue goes to `spec-review` for a new 👍 (7.4).
-  - The plan changes, or a child story's body: `planning`, then `plan-review` for a new 👍, even when `plan.review` is false.
+  - The plan changes, or a child story's body: `planning`, then `plan-review` for a new 👍, even when `plan.review` is false. For an epic or story that was already `planned`, the approved revision updates its children rather than starting over. Unchanged items keep their issues (5.2), new items become new children, and children dropped from the plan are closed as not planned, with a comment naming the revision. A dropped child with an open PR is listed in the digest instead, for the owner to decide.
   - A task's body changes: the interviewer rewrites it in its own template (11.2, or 9.3 for a human task), and the task goes to `ready`, or back to `needs-human` for a human task.
   - More answers are needed: a question round, staying at `clarifying`.
 - Each of these writes a fresh transition marker, so an edited or deleted marker can't roll state back.
@@ -278,7 +278,7 @@ The lifecycle of each type:
 | planning | plan-review | epic, story | Planner output passes validation (11.3) |
 | planning | planned | story | Output passes validation and `plan.review` is false, unless the planning follows a discussion hold (6.4); daemon creates tasks |
 | plan-review | planning | epic, story | Owner `/revise <text>`, or any other trusted comment (7.4) |
-| plan-review | planned | epic, story | Owner approves the current revision with 👍 or `/approve` (7.4); daemon creates sub-issues, human tasks and dependencies |
+| plan-review | planned | epic, story | Owner approves the current revision with 👍 or `/approve` (7.4); daemon creates sub-issues, human tasks and dependencies, or after a discussion hold updates them (6.4) |
 | planned | closed | story, or epic planned into tasks | Every child closed and story verification passes (7.3) |
 | planned | closed | epic planned into stories | Every child closed |
 | ready | in-progress | task | Scheduler picks the task (8.1) |
@@ -299,13 +299,13 @@ The lifecycle of each type:
 | needs-human | closed | task | Owner `/done`, or 👍 on the issue, for a human task from the planner, and its **Done when** check passes when it can be checked automatically (9.3) |
 | any open | held | all | Owner `/hold` on the issue or an ancestor |
 | any open | held | all | An untrusted write collaborator comments, edits or deletes trusted content, renames the issue or closes it (6.4) |
-| held | clarifying | all | Every trigger of a discussion hold is resolved and no owner `/hold` remains (6.4) |
-| clarifying | previous | all | The interviewer finds the discussion changed nothing (6.4); a task whose run was dropped goes to ready |
+| held | clarifying | all | Every trigger of a discussion hold is resolved and no owner `/hold` remains (6.4); the marker carries `origin` |
+| clarifying | previous (`origin`) | all | The interviewer finds the discussion changed nothing (6.4); a task whose run was dropped goes to ready |
 | clarifying | spec-review | epic, or story with no parent | The interviewer rewrote the spec after a discussion hold (6.4) |
 | clarifying | planning | epic, story | The plan changes after a discussion hold (6.4) |
 | clarifying | ready | task, bug | The interviewer rewrote the task body after a discussion hold (6.4) |
 | clarifying | needs-human | task | The interviewer rewrote a human task's body after a discussion hold (6.4) |
-| held | previous | all | Owner `/resume` on the issue or an ancestor, when no other hold remains and no discussion hold ended meanwhile (6.4); a task whose run a discussion hold dropped goes to ready instead |
+| held | previous (`at`) | all | Owner `/resume` on the issue or an ancestor, when no other hold remains and no discussion hold ended meanwhile (6.4); a task whose run a discussion hold dropped goes to ready instead |
 | held | clarifying | all | Owner `/resume` that ends the last hold, after a discussion hold ended while the owner hold stayed (6.4) |
 | any open | closed | all | A trusted user, the App or a merged PR closed the issue; daemon stops any run for it. An untrusted close is reverted (6.4) |
 | closed | held | all | A trusted user reopened the issue. An untrusted reopen is reverted (6.4) |
@@ -356,7 +356,7 @@ Each loop iteration:
 
 ### 8.2 Leases and restart
 
-- **On pickup.** The daemon writes `/state/lease.json` (write to a temp file, then rename) with the issue number, stage, run ID, clone path and start time. The `stage:in-progress` label and the transition marker show the lease on GitHub.
+- **On pickup.** The daemon writes `/state/lease.json` (write to a temp file, then rename) with the issue number, stage, run ID, clone path, start time, and the time of the last poll before pickup (6.4). The `stage:in-progress` label and the transition marker show the lease on GitHub.
 - **On startup.** The daemon reads the lease.
   - First it checks the issue for discussion triggers since the last poll before the run was picked up (6.4). If the issue is held or closed, it deletes the lease and the clone and leaves the issue as it is.
   - If `/state/runs/<run-id>.json` exists and validates, and for an implementer run the clone also has commits ahead of its base, the daemon applies the transition.
