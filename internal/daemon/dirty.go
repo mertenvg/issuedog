@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"strings"
@@ -63,12 +64,14 @@ func contents(s *github.Snapshot) []content {
 //     note names, else it is clean. So the App's own note never makes
 //     content look clean: the history keeps the earlier edit, and the note
 //     keeps it dirty after GitHub drops that edit, as it keeps only the 99
-//     newest edits (github.History).
+//     newest edits (github.History). Only the author can undo that: after
+//     99 edits of their own, one that drops the note leaves no trace of the
+//     earlier edit. Nobody else can, since their own edit makes it dirty.
 //
 // A history that can't show the last edit, with fewer than two entries (the
 // original post and an edit) or a newest entry older than the snapshot's
-// edit, fails closed: the content is dirty by its last editor, with a
-// warning.
+// edit, fails closed: the content is dirty by whoever its note names, else
+// by its last editor, with a warning.
 func (a *Applier) Dirty(ctx context.Context, s *github.Snapshot) (Dirt, error) {
 	d := Dirt{}
 	var need []content
@@ -97,7 +100,7 @@ func (a *Applier) Dirty(ctx context.Context, s *github.Snapshot) (Dirt, error) {
 		if len(h) < 2 || h[len(h)-1].At.Before(c.edit.At) {
 			logr.Warnf("%s/%s#%d: taking %s %d as dirty: its history has %d entries and doesn't reach its last edit at %s",
 				a.Owner, a.Repo, s.Number, what(c.id), c.id, len(h), c.edit.At.Format(time.RFC3339))
-			d[c.id] = login(c.edit.By)
+			d[c.id] = cmp.Or(c.note, login(c.edit.By))
 		} else if by, ok := state.Dirty(c.author, h, a.AppSlug); ok {
 			d[c.id] = login(by)
 		} else if c.note != "" {

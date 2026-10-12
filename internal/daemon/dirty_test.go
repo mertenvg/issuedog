@@ -160,7 +160,11 @@ func TestMarkDirty(t *testing.T) {
 			t.Errorf("snapshot comment %d = %q edited by %+v, want %q, by the App if noted", i, c.Body, c.Edit.By, want[i])
 		}
 	}
+	q := f.HistoryQueries()
 	_, s, d = dirt(t, f)
+	if q != f.HistoryQueries() {
+		t.Errorf("reading noted content queried its history, want the notes trusted")
+	}
 	wantDirt := daemon.Dirt{state.BodyID: "mallory", cmdID: "mallory", cmdID + 1: "alice"}
 	if !reflect.DeepEqual(d, wantDirt) {
 		t.Errorf("dirt after the notes = %v, want %v", d, wantDirt)
@@ -237,16 +241,21 @@ func TestDirtyFailsClosed(t *testing.T) {
 		name   string
 		cap    int
 		change func(s *github.Snapshot) int64 // returns the comment it breaks
+		want   string
 	}{
-		{"only the original post", 1, func(*github.Snapshot) int64 { return cmdID }},
+		{"only the original post", 1, func(*github.Snapshot) int64 { return cmdID }, "owner"},
+		{"a note keeps its name", 1, func(s *github.Snapshot) int64 {
+			s.Comments[0].Body = noteOn("mallory", "hi!")
+			return cmdID
+		}, "mallory"},
 		{"no entries", 100, func(s *github.Snapshot) int64 {
 			s.Comments[1].Edit = s.Comments[0].Edit // an edit the history doesn't show yet
 			return cmdID + 1
-		}},
+		}, "owner"},
 		{"older than the last edit", 100, func(s *github.Snapshot) int64 {
 			s.Comments[0].Edit.At = s.Comments[0].Edit.At.Add(time.Second)
 			return cmdID
-		}},
+		}, "owner"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := githubtest.New(t, "o/r", slug)
@@ -268,7 +277,7 @@ func TestDirtyFailsClosed(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if want := (daemon.Dirt{id: "owner"}); !reflect.DeepEqual(d, want) {
+			if want := (daemon.Dirt{id: tc.want}); !reflect.DeepEqual(d, want) {
 				t.Errorf("dirt = %v, want %v", d, want)
 			}
 			if !strings.Contains(warn.String(), fmt.Sprintf("taking comment %d as dirty", id)) {
@@ -280,6 +289,21 @@ func TestDirtyFailsClosed(t *testing.T) {
 
 // GitHub keeps the original post and the 99 newest edits, so mallory's edit
 // drops out of the history. The note keeps the comment dirty.
+func TestDirtyHistoryError(t *testing.T) {
+	f := githubtest.New(t, "o/r", slug)
+	n := f.AddIssue("owner", "Title", "body")
+	f.AddComment(n, "owner", "hi")
+	f.EditComment(cmdID, "owner", "hi!")
+	a, s, err := applier(t, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.FailGraphQL("boom")
+	if d, err := a.Dirty(context.Background(), s); err == nil {
+		t.Errorf("dirt = %v with a failed history read, want an error", d)
+	}
+}
+
 func TestDirtyNoteOutlivesCappedHistory(t *testing.T) {
 	f := githubtest.New(t, "o/r", slug)
 	f.AddComment(f.AddIssue("owner", "Title", "body"), "owner", "/hold")
