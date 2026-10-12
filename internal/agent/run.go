@@ -114,10 +114,15 @@ func args(prompt string, s Stage) []string {
 	return a
 }
 
-// sysProcAttr starts claude in its own process group as r.Credential, with no
-// AmbientCaps, so it starts with no capabilities (plan rev 2 on #3).
+// sysProcAttr starts claude in its own process group as r.Credential.
 func (r *Runner) sysProcAttr() *syscall.SysProcAttr {
-	return &syscall.SysProcAttr{Setpgid: true, Credential: r.Credential}
+	return SysProcAttr(r.Credential)
+}
+
+// SysProcAttr starts a process in its own process group as cred, with no
+// AmbientCaps, so it starts with no capabilities (plan rev 2 on #3).
+func SysProcAttr(cred *syscall.Credential) *syscall.SysProcAttr {
+	return &syscall.SysProcAttr{Setpgid: true, Credential: cred}
 }
 
 // cleanup kills every process of the agent uid, even setsid ones, as only one
