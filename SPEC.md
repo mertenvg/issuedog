@@ -35,13 +35,14 @@ Mac host (kept awake while issuedog runs)
 - The daemon acts on GitHub as a GitHub App (section 15) through a Go client: `go-github` with an App installation-token transport, plus raw REST calls for endpoints the client lacks, such as sub-issues and issue dependencies. There is no `gh` dependency. This gives native ETags for polling (section 8.1), typed responses, and tests against `httptest` fakes.
 - The daemon starts a fresh `claude -p` process for every stage run, including every retry. Sessions are never resumed, so each run starts from the issue and the code, and the verifier never shares context with the implementer.
 - The base image follows the existing sandbox setup: `~/.claude/CLAUDE.md` bind-mounted read-only, `--dangerously-skip-permissions` as the non-root `agent` uid, feature branch per task.
+- Nothing in the container runs as root. The image starts the daemon as `issuedog`. The daemon binary is the only file with capabilities: `cap_setuid` and `cap_setgid` to start stage runs as `agent`, and `cap_net_admin` to apply the agent firewall at startup. It is `root:issuedog 0750`, so `agent` can't run it, and processes started as `agent` get no capabilities. Every `docker run` of the image needs `--cap-add NET_ADMIN`, without which the kernel refuses to start the binary, and must not use `--security-opt no-new-privileges`, which ignores file capabilities.
 - The host must not sleep while issuedog runs (for example `caffeinate -s`, or the equivalent Docker Desktop setting).
 
 ### 3.1 Who writes to GitHub
 
 Only the daemon writes to GitHub. Agents return structured output and the daemon validates and applies it.
 
-- The GitHub App private key lives in a file readable only by the `issuedog` uid. The daemon mints short-lived installation tokens and uses them for its own API calls. Nothing running as `agent` ever receives a GitHub credential. That includes GitHub connectors and GitHub MCP servers, which are never configured for an agent.
+- The GitHub App private key lives in `/state/app-key.pem`, on the state volume, readable only by the `issuedog` uid. It is imported once with `issuedog key import` (section 15), so it is never bind-mounted from the host or built into an image. The daemon mints short-lived installation tokens and uses them for its own API calls. Nothing running as `agent` ever receives a GitHub credential. That includes GitHub connectors and GitHub MCP servers, which are never configured for an agent.
 - Claude and every repo command (tests, lint, build) run as the `agent` uid. A different uid cannot read the key file or the daemon's memory.
 - Claude's own credential (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`) is necessarily in the agent's environment. Outbound traffic from the `agent` uid is limited to `network.allow` (section 13), enforced inside the container with an owner-matched firewall rule, so a prompt-injected agent cannot send it, or the code, elsewhere.
 - Agents read issue context from files the daemon writes to `/run/issuedog/<run-id>/`, outside the clone, so the daemon controls which comments an agent sees (section 6) and nothing it writes appears in the diff.
@@ -127,7 +128,7 @@ GitHub is the single source of truth. The daemon keeps only an in-memory cache, 
 | Spec and plan revisions | One revision comment per revision, naming `rev`. The hash is in the transition marker (section 7.4); for plans, see section 16 |
 | Origin of bot-created issues | Hidden `origin` marker in the issue body (section 6.2) |
 
-The only local files are the lease (section 8.2) and the run results in `/state/runs/`. Both are scratch: losing the container loses nothing except the current run.
+Apart from the App key (section 3.1), the only local files are the lease (section 8.2) and the run results in `/state/runs/`. Both are scratch: losing the container loses nothing except the current run.
 
 ### 5.1 Reading rules
 
@@ -612,6 +613,7 @@ Changes to this file go through a human-authored PR (section 6.3).
    - Organization permissions: Members read (for CODEOWNERS teams) and Issue Types read.
    - Install it on each owner: the personal account and each org. Each installation has its own hourly token, and the daemon refreshes them.
    - No admin permissions.
+   - Import its private key into the state volume once: `docker run --rm -i --cap-add NET_ADMIN -v issuedog-state:/state issuedog key import < app-key.pem`. Then delete the downloaded file. To rotate the key, generate a new one on GitHub and import it the same way.
 2. **Plan.** Rulesets work on public repos on GitHub Free, and on private repos only with Pro, Team or Enterprise. Code owners on private repos also need Pro.
 3. **Ruleset on `main`:**
    - require a pull request
@@ -640,7 +642,7 @@ Changes to this file go through a human-authored PR (section 6.3).
 - **Approving PR reviews with comments.** Section 7.2 covers reviews with comments and approving reviews with none. An approving review that has comments is not yet covered.
 - **Usage-limit text.** The text `-p` prints when a subscription limit is hit is undocumented, so `usage_limit.pattern` must be checked against a real occurrence.
 - **`--bare` becoming the default.** Anthropic plans to make `--bare` the default for `-p`. `--bare` ignores `CLAUDE_CODE_OAUTH_TOKEN` and skips project agents and skills. Pin the Claude Code version, and re-test before upgrading.
-- **Egress firewall on macOS.** The owner-matched firewall rule (section 3.1) needs `NET_ADMIN` at container start. Confirm it works on Docker Desktop for Mac.
+- **Egress firewall on macOS.** The owner-matched firewall rule (section 3.1) needs `--cap-add NET_ADMIN` and the daemon's file capabilities. Confirm both work on Docker Desktop for Mac.
 - **Rumi Black's plan.** Confirm its visibility and plan meet the ruleset requirement in section 15.
 - **Public release.**
   - Anthropic does not allow third-party tools to offer claude.ai login or route requests through users' subscriptions without prior approval. The README should therefore require users to bring their own `ANTHROPIC_API_KEY`.
