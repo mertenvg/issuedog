@@ -51,15 +51,13 @@ func run(args, environ []string, stdin io.Reader, stdout io.Writer) int {
 	fs.SetOutput(io.Discard) // usage goes through logr
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); errors.Is(err, flag.ErrHelp) {
-		fmt.Fprintln(stdout, usage)
-		return 0
+		return printOut(stdout, usage+"\n")
 	} else if err != nil {
 		logr.Errorf("issuedog: %v\n%s", err, usage)
 		return 2
 	}
 	if *showVersion {
-		fmt.Fprintf(stdout, "issuedog %s\n", version)
-		return 0
+		return printOut(stdout, "issuedog "+version+"\n")
 	}
 	// Key commands don't need a Claude credential, so they run before its check.
 	if fs.NArg() > 0 {
@@ -74,9 +72,23 @@ func run(args, environ []string, stdin io.Reader, stdout io.Writer) int {
 		logr.Errorf("starting egress: %v", err)
 		return 1
 	}
-	defer proxy.Close()
+	defer func() {
+		if err := proxy.Close(); err != nil {
+			logr.Errorf("stopping the egress proxy: %v", err)
+		}
+	}()
 	logr.Error("the daemon is not implemented yet")
 	return 1
+}
+
+// printOut writes the program's own plain output, the version or help, and
+// returns the exit code: 0, or 1 if stdout can't take it.
+func printOut(stdout io.Writer, text string) int {
+	if _, err := io.WriteString(stdout, text); err != nil {
+		logr.Errorf("writing to stdout: %v", err)
+		return 1
+	}
+	return 0
 }
 
 const usage = `usage:
@@ -99,8 +111,7 @@ func command(args []string, stdin io.Reader, stdout io.Writer) int {
 	path := fs.String("path", appkey.DefaultPath, "the key file")
 	err := fs.Parse(args[2:])
 	if errors.Is(err, flag.ErrHelp) {
-		fmt.Fprintln(stdout, usage)
-		return 0
+		return printOut(stdout, usage+"\n")
 	}
 	if err == nil && fs.NArg() > 0 {
 		err = fmt.Errorf("unexpected arguments %q", fs.Args())

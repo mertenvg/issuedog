@@ -90,18 +90,20 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	hj, ok := w.(http.Hijacker)
 	if !ok {
-		upstream.Close()
+		closeConn(target, "upstream", upstream)
 		http.Error(w, "tunneling not supported", http.StatusInternalServerError)
 		return
 	}
 	client, buf, err := hj.Hijack()
 	if err != nil {
-		upstream.Close()
+		logr.With(logr.M("host", target).With("error", err.Error())).Warn("egress hijack failed")
+		closeConn(target, "upstream", upstream)
 		return
 	}
 	if _, err := client.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
-		client.Close()
-		upstream.Close()
+		logr.With(logr.M("host", target).With("error", err.Error())).Debug("egress client went away")
+		closeConn(target, "client", client)
+		closeConn(target, "upstream", upstream)
 		return
 	}
 	relay(target, client, buf.Reader, upstream)
@@ -113,8 +115,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func relay(target string, client net.Conn, br *bufio.Reader, upstream net.Conn) {
 	var once sync.Once
 	closeBoth := func() {
-		client.Close()
-		upstream.Close()
+		closeConn(target, "client", client)
+		closeConn(target, "upstream", upstream)
 	}
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -131,6 +133,14 @@ func relay(target string, client net.Conn, br *bufio.Reader, upstream net.Conn) 
 		once.Do(closeBoth)
 	}()
 	wg.Wait()
+}
+
+// closeConn closes one side of a tunnel. One that is already closed is fine;
+// any other failure is logged.
+func closeConn(target, side string, c net.Conn) {
+	if err := c.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		logr.With(logr.M("host", target).With("side", side).With("error", err.Error())).Warn("egress close failed")
+	}
 }
 
 // logCopy logs how one direction of a tunnel ended. A side closing or
