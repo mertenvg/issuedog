@@ -1,5 +1,4 @@
-// Package workspace prepares each run's checkout and context files, and
-// removes them afterwards (SPEC §3.2).
+// Package workspace prepares and removes each run's checkout and context files (SPEC §3.2).
 package workspace
 
 import (
@@ -24,6 +23,8 @@ type Workspace struct {
 	RunsDir    string              // /work/runs, owned by agent; checkouts go in RunsDir/<run-id>
 	ContextDir string              // /run/issuedog, owned by the daemon; context files go in ContextDir/<run-id>
 	Credential *syscall.Credential // agent's; nil (tests only) runs as the daemon
+
+	testEnv []string // extra git environment, for tests only
 }
 
 // Dir returns the run's checkout, RunsDir/<run-id>.
@@ -32,10 +33,9 @@ func (w *Workspace) Dir(runID string) string { return filepath.Join(w.RunsDir, r
 // Context returns the run's context dir, ContextDir/<run-id>.
 func (w *Workspace) Context(runID string) string { return filepath.Join(w.ContextDir, runID) }
 
-// Prepare writes the run's context files as the daemon, in a 0755 dir with
-// 0644 files that agent can read but not change. It then clones the bare repo
-// as agent into a fresh checkout, at main when sha is "", otherwise detached
-// at sha. On failure it removes whatever it created.
+// Prepare writes the run's context files as the daemon (0755 dir, 0644 files:
+// agent can read, not change), then clones the bare repo as agent, at main or
+// detached at sha. On failure it removes whatever it created.
 func (w *Workspace) Prepare(ctx context.Context, runID, sha string, files map[string][]byte) (err error) {
 	if !validName(runID) {
 		return fmt.Errorf("prepare run: invalid run ID %q", runID)
@@ -60,14 +60,17 @@ func (w *Workspace) Prepare(ctx context.Context, runID, sha string, files map[st
 	if err := writeContext(cdir, files); err != nil {
 		return fmt.Errorf("prepare run %s: %w", runID, err)
 	}
+	if err := w.writeGitConfig(); err != nil {
+		return fmt.Errorf("prepare run %s: %w", runID, err)
+	}
 	if err := w.checkout(ctx, runID, sha); err != nil {
 		return fmt.Errorf("prepare run %s: %w", runID, err)
 	}
 	return nil
 }
 
-// Cleanup removes the run's checkout as agent, since the daemon can't delete
-// in agent's dir, then the context dir as the daemon. Missing dirs are fine.
+// Cleanup removes the checkout as agent (the daemon can't delete in agent's dir),
+// then the context dir. Missing dirs are fine.
 func (w *Workspace) Cleanup(ctx context.Context, runID string) error {
 	if !validName(runID) {
 		return fmt.Errorf("clean up run: invalid run ID %q", runID)
@@ -86,8 +89,7 @@ func validName(s string) bool {
 	return s != "" && !strings.ContainsRune(s, filepath.Separator) && !strings.HasPrefix(s, ".")
 }
 
-// writeContext writes each file with mode 0644, and sets the dir to 0755,
-// both explicitly so the umask can't change them.
+// writeContext sets the dir to 0755 and each file to 0644, whatever the umask.
 func writeContext(dir string, files map[string][]byte) error {
 	if err := os.Chmod(dir, 0o755); err != nil {
 		return fmt.Errorf("chmod context dir: %w", err)
@@ -111,9 +113,8 @@ func writeContext(dir string, files map[string][]byte) error {
 	return nil
 }
 
-// checkout clones the bare repo as agent, with --no-hardlinks so the checkout
-// shares no object files with the daemon's repo. A failed clone removes its
-// own dir; a failed detach removes the clone.
+// checkout clones as agent with --no-hardlinks, sharing no object files with
+// the daemon's repo. A failed detach removes the clone.
 func (w *Workspace) checkout(ctx context.Context, runID, sha string) error {
 	dir := w.Dir(runID)
 	args := []string{"clone", "--quiet", "--no-hardlinks", "--branch", "main"}
@@ -132,8 +133,7 @@ func (w *Workspace) checkout(ctx context.Context, runID, sha string) error {
 	return nil
 }
 
-// removeCheckout deletes the checkout as agent. It first makes every dir
-// writable, so a read-only dir left by the run can't block the delete.
+// removeCheckout deletes the checkout as agent, making read-only dirs writable first.
 func (w *Workspace) removeCheckout(ctx context.Context, runID string) error {
 	script := `chmod -R u+rwx -- "$1" 2>/dev/null; rm -rf -- "$1"`
 	if err := w.asAgent(ctx, nil, "/bin/sh", "-c", script, "sh", w.Dir(runID)); err != nil {
@@ -142,28 +142,52 @@ func (w *Workspace) removeCheckout(ctx context.Context, runID string) error {
 	return nil
 }
 
-// git runs git as agent with a safe environment:
-//   - nothing is inherited, so no GIT_* variable or SSH_ASKPASS applies;
-//   - the system and global config are ignored and hooks are disabled;
-//   - the daemon's bare repo is a safe.directory, as agent doesn't own it.
+// gitConfig is agent's git config, in the daemon's dir; run IDs can't start with a dot.
+func (w *Workspace) gitConfig() string { return filepath.Join(w.ContextDir, ".agent.gitconfig") }
+
+// writeGitConfig writes gitConfig (0644). It must be a file: git clears
+// GIT_CONFIG_COUNT for a local clone's upload-pack, which checks safe.directory.
+func (w *Workspace) writeGitConfig() error {
+	quoted := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(w.Bare)
+	data := "[core]\n\thooksPath = /dev/null\n[safe]\n\tdirectory = \"" + quoted + "\"\n"
+	f, err := os.CreateTemp(w.ContextDir, ".agent.gitconfig.*")
+	if err != nil {
+		return fmt.Errorf("write git config: %w", err)
+	}
+	defer os.Remove(f.Name()) // fails harmlessly once renamed
+	err = f.Chmod(0o644)
+	if err == nil {
+		_, err = f.WriteString(data)
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(f.Name(), w.gitConfig())
+	}
+	if err != nil {
+		return fmt.Errorf("write git config: %w", err)
+	}
+	return nil
+}
+
+// git runs git as agent, inheriting nothing (no GIT_* or SSH_ASKPASS), with no
+// system config and gitConfig as the global one: no hooks, and the daemon's
+// bare repo, which agent doesn't own, is a safe.directory.
 func (w *Workspace) git(ctx context.Context, args ...string) error {
-	env := []string{
+	env := append([]string{
 		"GIT_CONFIG_NOSYSTEM=1",
-		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_GLOBAL=" + w.gitConfig(),
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_ASKPASS=", // empty, so git doesn't fall back to core.askPass
-		"GIT_CONFIG_COUNT=2",
-		"GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=/dev/null",
-		"GIT_CONFIG_KEY_1=safe.directory", "GIT_CONFIG_VALUE_1=" + w.Bare,
-	}
+	}, w.testEnv...)
 	if err := w.asAgent(ctx, env, "git", args...); err != nil {
 		return fmt.Errorf("git %s: %w", args[0], err)
 	}
 	return nil
 }
 
-// asAgent runs a command as w.Credential from /, with only env. The error
-// includes the command's output.
+// asAgent runs a command as w.Credential from /, with only env; errors include its output.
 func (w *Workspace) asAgent(ctx context.Context, env []string, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = "/"

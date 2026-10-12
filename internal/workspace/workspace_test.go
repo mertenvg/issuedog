@@ -23,8 +23,7 @@ func git(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// newWorkspace makes a bare repo whose main has two commits, each writing
-// f.txt, and returns a workspace for it with the first commit's SHA.
+// newWorkspace makes a bare repo with two commits to f.txt; it returns the first's SHA.
 func newWorkspace(t *testing.T) (*Workspace, string) {
 	t.Helper()
 	root := t.TempDir()
@@ -61,15 +60,21 @@ func mode(t *testing.T, path string) os.FileMode {
 	return fi.Mode().Perm()
 }
 
-// TestPrepare checks out main and an older SHA under a restrictive umask.
+// TestPrepare checks out main and an older SHA under umask 077, and clones a repo
+// git treats as someone else's, as agent's clone of the daemon's repo is.
 func TestPrepare(t *testing.T) {
 	w, first := newWorkspace(t)
 	defer syscall.Umask(syscall.Umask(0o077))
-	for _, tc := range []struct{ name, sha, want, head string }{
-		{"main", "", "two", "main"},
-		{"older-sha", first, "one", "HEAD"},
+	for _, tc := range []struct {
+		name, sha, want, head string
+		env                   []string
+	}{
+		{"main", "", "two", "main", nil},
+		{"older-sha", first, "one", "HEAD", nil},
+		{"other-owner", "", "two", "main", []string{"GIT_TEST_ASSUME_DIFFERENT_OWNER=1"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			w.testEnv = tc.env
 			files := map[string][]byte{"prompt.md": []byte("p"), "system.md": []byte("s")}
 			if err := w.Prepare(context.Background(), tc.name, tc.sha, files); err != nil {
 				t.Fatal(err)
@@ -85,6 +90,9 @@ func TestPrepare(t *testing.T) {
 				if got := git(t, dir, "rev-parse", "HEAD"); got != tc.sha {
 					t.Errorf("HEAD at %s, want %s", got, tc.sha)
 				}
+			}
+			if m := mode(t, w.gitConfig()); m != 0o644 {
+				t.Errorf("git config mode %o, want 644", m)
 			}
 			if m := mode(t, w.Context(tc.name)); m != 0o755 {
 				t.Errorf("context dir mode %o, want 755", m)
@@ -102,8 +110,7 @@ func TestPrepare(t *testing.T) {
 	}
 }
 
-// TestCleanup removes both dirs, even a read-only one in the checkout, and
-// succeeds a second time.
+// TestCleanup removes both dirs, even a read-only one, and succeeds twice.
 func TestCleanup(t *testing.T) {
 	w, _ := newWorkspace(t)
 	ctx := context.Background()
@@ -125,8 +132,7 @@ func TestCleanup(t *testing.T) {
 	}
 }
 
-// TestPrepareRejects refuses bad names and SHAs, and leaves nothing behind,
-// including after a clone that succeeded but couldn't check out the SHA.
+// TestPrepareRejects refuses bad names and SHAs, leaving nothing, even after a failed detach.
 func TestPrepareRejects(t *testing.T) {
 	w, _ := newWorkspace(t)
 	missing := strings.Repeat("a", 40)
@@ -140,6 +146,7 @@ func TestPrepareRejects(t *testing.T) {
 		if err == nil {
 			t.Errorf("Prepare(%q, %q, %q) succeeded", tc.runID, tc.sha, tc.file)
 		}
+		_ = os.Remove(w.gitConfig()) // shared by every run, so it rightly stays
 		for _, d := range []string{w.RunsDir, w.ContextDir} {
 			if entries, _ := os.ReadDir(d); len(entries) != 0 {
 				t.Fatalf("Prepare(%q, %q, %q) left %v in %s", tc.runID, tc.sha, tc.file, entries, d)
