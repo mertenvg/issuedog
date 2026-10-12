@@ -41,7 +41,7 @@ type Config struct {
 }
 
 type Plan struct {
-	MaxTasks int  `yaml:"max_tasks"`
+	MaxTasks Int  `yaml:"max_tasks"`
 	Review   bool `yaml:"review"`
 }
 
@@ -49,7 +49,7 @@ type Verify struct {
 	Commands       []string      `yaml:"commands"`
 	StoryCommands  []string      `yaml:"story_commands"`
 	CommandTimeout time.Duration `yaml:"command_timeout"`
-	MaxDiffLines   int           `yaml:"max_diff_lines"`
+	MaxDiffLines   Int           `yaml:"max_diff_lines"`
 	SkipMarkers    []string      `yaml:"skip_markers"`
 	TestGlobs      []string      `yaml:"test_globs"`
 	SourceGlobs    []string      `yaml:"source_globs"`
@@ -77,15 +77,15 @@ type PerStage[T any] struct {
 
 type Stages struct {
 	Timeouts PerStage[time.Duration] `yaml:"timeouts"`
-	MaxTurns PerStage[int]           `yaml:"max_turns"`
+	MaxTurns PerStage[Int]           `yaml:"max_turns"`
 	// MaxBudgetUSD is optional per stage; 0 means no --max-budget-usd.
 	MaxBudgetUSD PerStage[float64] `yaml:"max_budget_usd"`
 }
 
 type Loop struct {
 	IdleSleep            time.Duration `yaml:"idle_sleep"`
-	MaxAttempts          int           `yaml:"max_attempts"`
-	MaxQuestionsPerRound int           `yaml:"max_questions_per_round"`
+	MaxAttempts          Int           `yaml:"max_attempts"`
+	MaxQuestionsPerRound Int           `yaml:"max_questions_per_round"`
 }
 
 type Network struct {
@@ -98,6 +98,22 @@ type UsageLimit struct {
 
 type CrossRepo struct {
 	Allowed []string `yaml:"allowed"`
+}
+
+// Int is an int that must be written as one, since yaml.v3 truncates 1.5 to 1.
+type Int int
+
+// UnmarshalYAML refuses any node not tagged !!int.
+func (i *Int) UnmarshalYAML(n *yaml.Node) error {
+	if n.Tag != "!!int" {
+		return fmt.Errorf("line %d: %q is not an integer", n.Line, n.Value)
+	}
+	var v int
+	if err := n.Decode(&v); err != nil {
+		return fmt.Errorf("line %d: %w", n.Line, err)
+	}
+	*i = Int(v)
+	return nil
 }
 
 // Defaults returns the §13 defaults. Keys whose §13 values are examples for
@@ -115,7 +131,7 @@ func Defaults() *Config {
 		PR: PR{TitleTypes: []string{"feat", "fix", "chore"}},
 		Stages: Stages{
 			Timeouts: PerStage[time.Duration]{Interviewer: 10 * time.Minute, Planner: 20 * time.Minute, Implementer: 60 * time.Minute, Verifier: 30 * time.Minute},
-			MaxTurns: PerStage[int]{Interviewer: 30, Planner: 60, Implementer: 200, Verifier: 80},
+			MaxTurns: PerStage[Int]{Interviewer: 30, Planner: 60, Implementer: 200, Verifier: 80},
 		},
 		Loop:       Loop{IdleSleep: 60 * time.Second, MaxAttempts: 3, MaxQuestionsPerRound: 7},
 		Network:    Network{Allow: []string{"api.anthropic.com", "proxy.golang.org", "sum.golang.org"}},
@@ -124,8 +140,8 @@ func Defaults() *Config {
 }
 
 // Load reads Path from main and parses it. A missing file is an error
-// matching repo.ErrNotFound, not the defaults: an unconfigured repo has no
-// verify.commands, and the daemon fails closed rather than verify nothing.
+// matching repo.ErrNotFound, not the defaults: a repo is onboarded by adding
+// the file (SPEC §15), and SPEC gives a fallback only for prompts (§3.4).
 func Load(ctx context.Context, r Reader) (*Config, error) {
 	data, err := r.ReadFile(ctx, Path)
 	if err != nil {
@@ -148,6 +164,9 @@ func Parse(data []byte) (*Config, error) {
 	if err := dec.Decode(c); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parse %s: %w", Path, err)
 	}
+	if err := dec.Decode(&yaml.Node{}); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("parse %s: more than one YAML document", Path)
+	}
 	if err := c.validate(); err != nil {
 		return nil, fmt.Errorf("validate %s: %w", Path, err)
 	}
@@ -161,8 +180,11 @@ func (c *Config) validate() error {
 	if c.Verify.ToolingScope != "" && !slices.Contains(c.Scopes, c.Verify.ToolingScope) {
 		return fmt.Errorf("verify.tooling_scope: %q is not in scopes", c.Verify.ToolingScope)
 	}
-	if len(c.PR.TitleTypes) == 0 {
-		return errors.New("pr.title_types: empty")
+	if len(c.PR.TitleTypes) == 0 || slices.Contains(c.PR.TitleTypes, "") {
+		return errors.New("pr.title_types: empty, or has an empty entry")
+	}
+	if c.UsageLimit.Pattern == "" {
+		return errors.New("usage_limit.pattern: empty, which would match every failed run")
 	}
 	if _, err := regexp.Compile(c.UsageLimit.Pattern); err != nil {
 		return fmt.Errorf("usage_limit.pattern: %w", err)
