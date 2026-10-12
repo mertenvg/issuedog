@@ -106,7 +106,7 @@ The task verifier runs in a fresh checkout of the head SHA, but only after rule 
 - Hierarchy uses native sub-issues: epic → story → task, or epic → task. Sub-issues must share the parent's owner. GitHub allows 100 sub-issues per parent.
 - An epic with a single user-facing outcome is planned directly into tasks and acts as its own story, including story verification (section 7.3).
 - **Untyped issues.** The owner may file an issue with no type. At the start of clarifying the interviewer picks one of the four types and sets it: the `type:*` label, or the issue type on org repos. Its first comment names the type with a one-line reason. If it can't tell yet, it asks questions first and sets the type once the issue is clear. An issue with no type doesn't leave `clarifying`.
-- **Changing the type.** The interviewer may set or change only a type it set itself, on an issue that arrived with no type, and only while the issue is at `intake` or `clarifying`. Every other type change is the owner's. The owner can change it at any time, and the daemon follows the owner's type from then on. If the issue's current stage doesn't apply to the new type (section 7.2), the daemon leaves it where it is and lists it in the digest as a state error until the owner sets a stage (5.1).
+- **Changing the type.** The interviewer may set or change only a type it set itself, on an issue that arrived with no type, and only while the issue is at `intake` or `clarifying`. Every other type change is the owner's. The owner can change it at any time, and the daemon follows the owner's type from then on. If the issue's current stage doesn't apply to the new type (section 7.2), the daemon leaves it where it is and reports a state error (5.3).
 - A story filed by the owner has no parent epic. It goes through clarifying, spec review and planning like an epic, then story verification (section 7.3).
 - A `bug`, or a `task` filed by the owner, goes through clarifying and then becomes a single task. It skips spec review and planning. A bug filed against earlier work starts its body with `Follow-up to #N` and includes the acceptance criterion "the original behavior of #N is unaffected."
 
@@ -139,7 +139,7 @@ Apart from the App key (section 3.1), the only local files are the lease (sectio
 - **Labels.** A `stage:*`, `priority:*`, `scope:*`, `type:*` or `approved` label counts only if the issue timeline shows that its most recent `labeled` event came from the App or a trusted user (section 6.1). On org repos the same applies to the issue type and its most recent type event.
   - When an untrusted actor adds or removes one of these labels, the daemon reverts the change and posts a short comment.
   - When a trusted user changes a stage label by hand, the daemon treats it as an owner override and records a transition marker with `by=<login>`. It does this even if the change is not in the transition table.
-- **Disagreement.** If the stage label and the latest transition marker disagree and 5.1 does not explain the difference, the daemon puts the label back to match the marker and lists the issue in the digest.
+- **Disagreement.** If the stage label and the latest transition marker disagree and 5.1 does not explain the difference, the daemon puts the label back to match the marker and reports a state error (5.3).
 
 ### 5.2 Idempotency
 
@@ -153,8 +153,8 @@ Every transition goes through one table in code (section 7). Each write is check
 
 A state error is something the daemon reports to the owner instead of acting on: a transition missing from the table (7.2), a stage label that disagreed with its marker (5.1, after the daemon puts the label back), or a type that doesn't fit the issue's stage (4).
 
-- The daemon posts one comment per error, carrying `<!-- issuedog:error key=<key> -->`. The key is stable for the cause: the triggering event's ID for a missing transition, `label=<label> marker=<comment id>` for a disagreement, or `type=<type> stage=<stage>` for a type that doesn't fit. Before posting, the daemon looks for a comment with that key and reuses it, so a cause that persists across polls or restarts is posted once.
-- A trusted 👍 on the comment acknowledges the error. The daemon never posts that key again, and the owner is unassigned (9.6).
+- The daemon posts one comment per error, carrying `<!-- issuedog:error key=<key> -->`. The key is stable for the cause: the triggering event's ID for a missing transition, `label=<label> marker=<comment id>` for a disagreement, or `type=<type> marker=<comment id>` for a type that doesn't fit, where the marker is the issue's latest transition marker. Before posting, the daemon looks for a comment with that key and reuses it, so a cause that persists across polls or restarts is posted once.
+- A trusted 👍 on the comment acknowledges the error. The daemon records it by replying with `<!-- issuedog:error key=<key> ack=r<reaction id> -->`, never posts that key again, and unassigns the owner (9.6). Removing the 👍 later changes nothing.
 - The error also ends when the issue makes its next valid transition.
 
 ## 6. Trust model
@@ -263,7 +263,7 @@ The lifecycle of each type:
 
 From `ready` on, a `bug` follows the rows for `task`.
 
-Any transition missing from this table is an error, except a trusted user's manual label change (5.1). The daemon logs the error, leaves the issue unchanged and lists it in the digest.
+Any transition missing from this table is an error, except a trusted user's manual label change (5.1). The daemon logs the error, leaves the issue unchanged and reports a state error (5.3).
 
 `/hold` applies `stage:held` to the issue and to every open descendant, each with its own transition marker. `/resume` restores each one to the stage named in its marker.
 
@@ -393,7 +393,7 @@ A `stage:needs-human` issue uses this template. The agent must fill every field;
 
 One pinned issue per repo, `issuedog digest`. It uses one of the repo's three pin slots.
 
-- The body is the current list: open questions, pending approvals, hand-offs and unblocked human tasks, PRs waiting for review, and state errors (5.1, 7.2). These are exactly the items the daemon assigns (9.6). Each state error is also posted on its issue as a comment (5.3). Items are ordered by how many tasks each one unblocks.
+- The body is the current list: open questions, pending approvals, hand-offs and unblocked human tasks, PRs waiting for review, and state errors (5.3). These are exactly the items the daemon assigns (9.6). Each state error is also posted on its issue as a comment (5.3). Items are ordered by how many tasks each one unblocks.
 - Each item states what is being decided, the options, the recommendation, and links to the issue.
 - The daemon rewrites the body when the list changes. It posts a short comment that @mentions `notify` only when a new item appears, so GitHub sends one notification per new item.
 
