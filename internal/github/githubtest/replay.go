@@ -3,6 +3,7 @@ package githubtest
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -24,7 +25,8 @@ type IssueState struct {
 // CommentState is one comment in a State.
 type CommentState struct {
 	Author, Body string
-	// Reactions are "<login> <content>", oldest first.
+	// Reactions are "<login> <content>", sorted, since GitHub treats them as
+	// a set: one of each content per user.
 	Reactions []string
 }
 
@@ -47,6 +49,7 @@ func (f *Fake) State() State {
 			for _, r := range c.reactions {
 				cs.Reactions = append(cs.Reactions, r.GetUser().GetLogin()+" "+r.GetContent())
 			}
+			slices.Sort(cs.Reactions)
 			st.Comments = append(st.Comments, cs)
 		}
 		s.Issues = append(s.Issues, st)
