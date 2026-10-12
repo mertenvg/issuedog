@@ -46,7 +46,7 @@ func run(args, environ []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if _, err := agent.Credential(environ); err != nil {
-		logr.Error(fmt.Errorf("checking the Claude credential: %w", err).Error())
+		logr.Errorf("checking the Claude credential: %v", err)
 		return 1
 	}
 	logr.Error("the daemon is not implemented yet")
