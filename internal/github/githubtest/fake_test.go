@@ -208,8 +208,8 @@ func TestGraphQLAnswers(t *testing.T) {
 		{"no fullDatabaseId", gqlQuery(t, f, strings.Replace(answered, "fullDatabaseId", "databaseId", 1), n, nil),
 			" githubtest: the query doesn't name query.repository.issue.comments.nodes.fullDatabaseId" +
 				" and names unknown query.repository.issue.comments.nodes.databaseId"},
-		{"alias", gqlQuery(t, f, strings.Replace(answered, "nodes { fullDatabaseId body", "nodes { fullDatabaseId body: id", 1), n, nil),
-			" githubtest: the query names unknown query.repository.issue.comments.nodes.id"},
+		{"alias", gqlQuery(t, f, strings.Replace(answered, "nodes { id fullDatabaseId body", "nodes { id fullDatabaseId body: url", 1), n, nil),
+			" githubtest: the query names unknown query.repository.issue.comments.nodes.url"},
 		{"no comment editor", gqlQuery(t, f, strings.Replace(answered, "} editor { login __typename } }", "} }", 1), n, nil),
 			" githubtest: the query doesn't name query.repository.issue.comments.nodes.editor, " +
 				"query.repository.issue.comments.nodes.editor.__typename, query.repository.issue.comments.nodes.editor.login"},
@@ -227,6 +227,19 @@ func TestGraphQLAnswers(t *testing.T) {
 	nodes := gqlQuery(t, f, answered, n, end).Data.Repository.Issue.Comments.Nodes
 	if want := strconv.FormatInt(ids[100], 10); len(nodes) != 1 || nodes[0].FullDatabaseID != want {
 		t.Errorf("page 2 after a delete = %+v, want only %s", nodes, want)
+	}
+}
+
+// An inline fragment is part of the path, so one on the wrong type is refused.
+func TestGraphQLHistoryFragment(t *testing.T) {
+	f := New(t, "o/r", "issuedog")
+	q := strings.Replace(answeredHistory, "on Comment", "on IssueComment", 1)
+	errs := gqlQuery(t, f, q, 1, nil).Errors
+	if want := "names unknown query.nodes.... on IssueComment,"; len(errs) != 1 || !strings.Contains(errs[0].Message, want) {
+		t.Errorf("errors = %+v, want one that %s", errs, want)
+	}
+	if n := f.HistoryQueries(); n != 0 {
+		t.Errorf("history queries = %d, want a refused one not counted", n)
 	}
 }
 

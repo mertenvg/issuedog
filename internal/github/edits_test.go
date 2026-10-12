@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -172,5 +173,75 @@ func TestSnapshotRefusesPullRequest(t *testing.T) {
 	_, err := f.Client(t).Snapshot(context.Background(), "o", "r", n)
 	if !errors.Is(err, github.ErrPullRequest) || !strings.Contains(err.Error(), "o/r#1") {
 		t.Errorf("err = %v, want one wrapping ErrPullRequest with the issue", err)
+	}
+}
+
+func history(t *testing.T, f *githubtest.Fake, nodes ...string) map[string][]github.Edit {
+	t.Helper()
+	h, err := f.Client(t).History(context.Background(), nodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+// Bodies and comments are read in one query, oldest first, the original
+// post first, and an unedited one has none.
+func TestHistory(t *testing.T) {
+	f := githubtest.New(t, "o/r", "issuedog")
+	n := f.AddIssue("owner", "Title", "body")    // 1
+	app := f.AddComment(n, "issuedog[bot]", "a") // 2
+	f.AddComment(n, "owner", "b")                // 3
+	f.EditComment(app, "mallory", "a2")          // 4
+	f.EditComment(app, "issuedog[bot]", "a3")    // 5
+	f.EditBody(n, "owner", "body2")              // 6
+	s := snapshot(t, f, n)
+	h := history(t, f, s.BodyNode, s.Comments[0].Node, s.Comments[1].Node)
+	bot, owner := github.Author{Login: "issuedog[bot]", Type: "Bot"}, github.Author{Login: "owner", Type: "User"}
+	want := map[string][]github.Edit{
+		s.BodyNode:         {{By: owner, At: at(1)}, {By: owner, At: at(6)}},
+		s.Comments[0].Node: {{By: bot, At: at(2)}, {By: github.Author{Login: "mallory", Type: "User"}, At: at(4)}, {By: bot, At: at(5)}},
+	}
+	if !reflect.DeepEqual(h, want) {
+		t.Errorf("history =\n%+v\nwant\n%+v", h, want)
+	}
+	if q := f.HistoryQueries(); q != 1 {
+		t.Errorf("history queries = %d, want 1 for three nodes", q)
+	}
+}
+
+// A history of more than 100 entries is read in full, beside a short one.
+func TestHistoryPaging(t *testing.T) {
+	f := githubtest.New(t, "o/r", "issuedog")
+	n := f.AddIssue("owner", "Title", "body") // 1
+	id := f.AddComment(n, "owner", "hi")      // 2
+	other := f.AddComment(n, "owner", "yo")   // 3
+	f.EditComment(id, "mallory", "evil")      // 4
+	for i := range 250 {                      // 5 to 254
+		f.EditComment(id, "owner", fmt.Sprintf("v%d", i))
+	}
+	f.EditComment(other, "owner", "yo2") // 255
+	s := snapshot(t, f, n)
+	h := history(t, f, s.Comments[0].Node, s.Comments[1].Node)
+	got := h[s.Comments[0].Node]
+	if len(got) != 252 {
+		t.Fatalf("got %d entries, want 252", len(got))
+	}
+	if got[0].At != at(2) || got[1].By.Login != "mallory" || got[1].At != at(4) || got[251].At != at(254) {
+		t.Errorf("entries 0, 1 and 251 = %+v, %+v and %+v, want the post, mallory's edit and the last", got[0], got[1], got[251])
+	}
+	if o := h[s.Comments[1].Node]; len(o) != 2 || o[1].At != at(255) {
+		t.Errorf("the other comment's history = %+v, want its post and one edit", o)
+	}
+	if q := f.HistoryQueries(); q != 3 {
+		t.Errorf("history queries = %d, want 3", q)
+	}
+}
+
+func TestHistoryUnknownNode(t *testing.T) {
+	f := githubtest.New(t, "o/r", "issuedog")
+	_, err := f.Client(t).History(context.Background(), []string{"IC_9"})
+	if !errors.Is(err, github.ErrGraphQL) || !strings.Contains(err.Error(), "IC_9") {
+		t.Errorf("err = %v, want one wrapping ErrGraphQL that names the node", err)
 	}
 }
