@@ -87,11 +87,13 @@ func (r *Repo) git(ctx context.Context, token string, args ...string) ([]byte, e
 	return stdout.Bytes(), nil
 }
 
-// gitEnv builds git's environment from environ (os.Environ format). It drops
-// every inherited GIT_* variable and SSH_ASKPASS, so nothing redirects git to
-// another repo or config or runs a password program, ignores the system and global config, so no diff, filter or
-// credential settings apply, and passes config through GIT_CONFIG_* so none
-// of it lands in the repo's config file.
+// gitEnv builds git's environment from environ (os.Environ format).
+//   - It drops every inherited GIT_* variable and SSH_ASKPASS, so nothing
+//     redirects git to another repo or config, or runs a password program.
+//   - It ignores the system and global config, so no diff, filter or
+//     credential settings apply.
+//   - It passes config through GIT_CONFIG_*, so none lands in the repo's
+//     config file.
 func gitEnv(environ []string, token string) []string {
 	env := make([]string, 0, len(environ)+10)
 	for _, kv := range environ {
