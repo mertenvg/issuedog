@@ -32,7 +32,7 @@ Mac host (kept awake while issuedog runs)
 ```
 
 - One container per repo, so a failure in one repo leaves the others running.
-- The daemon acts on GitHub as a GitHub App (section 15) through a Go client: `go-github` with an App installation-token transport, plus raw REST calls for endpoints the client lacks, such as sub-issues and issue dependencies. There is no `gh` dependency. This gives native ETags for polling (section 8.1), typed responses, and tests against `httptest` fakes.
+- The daemon acts on GitHub as a GitHub App (section 15) through a Go client: `go-github` with an App installation-token transport, plus raw REST calls for endpoints the client lacks, such as sub-issues and issue dependencies, and one GraphQL query per issue reload for edit history (5.1). There is no `gh` dependency. This gives native ETags for polling (section 8.1), typed responses, and tests against `httptest` fakes.
 - The daemon starts a fresh `claude -p` process for every stage run, including every retry. Sessions are never resumed, so each run starts from the issue and the code, and the verifier never shares context with the implementer.
 - The base image follows the existing sandbox setup: `~/.claude/CLAUDE.md` bind-mounted read-only, `--dangerously-skip-permissions` as the non-root `agent` uid, feature branch per task.
 - The host must not sleep while issuedog runs (for example `caffeinate -s`, or the equivalent Docker Desktop setting).
@@ -130,7 +130,7 @@ The only local files are the lease (section 8.2) and the run results in `/state/
 
 - **Markers.** The daemon only reads markers in comments and issue bodies written by the issuedog App. A marker anywhere else is ignored.
   - **Embedded text.** Whenever the App writes a comment or body, it escapes `<!--` as `&lt;!--` in all text it didn't write itself, such as agent output, quoted comments, issue titles and file contents. So the only unescaped markers are the daemon's own.
-  - **Edits.** A comment or body whose GraphQL `lastEditedAt` is set counts only if everyone in its edit history (`userContentEdits`) is the App or a trusted user (section 6.1). Otherwise its markers are ignored, and the digest lists it as a state error (section 9.4). Comments that were never edited need no GraphQL query. This keeps owner edits to App bodies working (section 7.4), and the App never edits its own comments to record state, because each revision is a new comment.
+  - **Edits.** A comment or body whose GraphQL `lastEditedAt` is set counts only if everyone in its edit history (`userContentEdits`) is the App or a trusted user (section 6.1). Otherwise its markers are ignored, and the digest lists it as a state error (section 9.4). The daemon reads `lastEditedAt` and the edit history for an issue's body and all its comments in one GraphQL query whenever it reloads that issue. This keeps owner edits to App-written plan comments (section 7.4) and issue bodies working. The App never edits its own comments to record state, because each revision is a new comment.
 - **Labels.** A `stage:*`, `priority:*`, `scope:*` or `approved` label counts only if the issue timeline shows that its most recent `labeled` event came from the App or a trusted user (section 6.1).
   - When an untrusted actor adds or removes one of these labels, the daemon reverts the change and posts a short comment.
   - When a trusted user changes a stage label by hand, the daemon treats it as an owner override and records a transition marker with `by=<login>`. It does this even if the change is not in the transition table.
