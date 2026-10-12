@@ -77,7 +77,7 @@ claude -p "$(cat /run/issuedog/<run-id>/prompt.md)" \
 - Each stage has a timeout from config. On timeout the daemon kills the whole process group, and the run counts as failed.
 - `--max-budget-usd` is a client-side estimate and is optional.
 - **Credential.** The agent gets exactly one Claude credential: `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`, whichever is set in the daemon's environment. If both are set, the daemon refuses to start.
-- **Usage limits.** `-p` mode does not report the reset time in a machine-readable form. The daemon matches the result text against `usage_limit.pattern`. If the text includes a reset time it waits until then. Otherwise it backs off, starting at 15 minutes and doubling to a 2-hour cap. While it waits, steps 1 and 2 of the loop (section 8.1) keep running, so commands such as `/hold` still apply. Usage-limit waits do not count toward the retry cap.
+- **Usage limits.** `-p` mode does not report the reset time in a machine-readable form. The daemon matches the result text of a failed run (a non-`success` subtype or `is_error`) against `usage_limit.pattern`, so model text that mentions a limit in a successful run doesn't count. If the text includes a reset time it waits until then. Otherwise it backs off, starting at 15 minutes and doubling to a 2-hour cap. While it waits, steps 1 and 2 of the loop (section 8.1) keep running, so commands such as `/hold` still apply. Usage-limit waits do not count toward the retry cap.
 
 ### 3.4 Trusted inputs come from `main`
 
@@ -98,13 +98,13 @@ The task verifier runs in a fresh checkout of the head SHA, but only after rule 
 |---|---|---|
 | `epic` | A rough idea or large feature | Owner |
 | `story` | One user-visible outcome with acceptance criteria | Planner (epic plan) |
-| `task` | One PR, one scope; a human task has no PR (section 9.3) | Planner (epic or story plan) |
+| `task` | One PR, one scope; a human task has no PR (section 9.3) | Planner (epic or story plan), or owner for a small change |
 | `bug` | Something broken | Owner, or story verifier |
 
 - Repos owned by an organization use GitHub issue types. The org's defaults are Task, Bug and Feature, so an org owner must create `Epic` and `Story` first. Repos owned by a personal account have no issue types and use `type:epic`, `type:story`, `type:task`, `type:bug` labels instead. Config selects which.
 - Hierarchy uses native sub-issues: epic → story → task, or epic → task. Sub-issues must share the parent's owner. GitHub allows 100 sub-issues per parent.
 - An epic with a single user-facing outcome is planned directly into tasks and acts as its own story, including story verification (section 7.3).
-- A `bug` goes through clarifying and then becomes a single task. It skips spec review and planning. A bug filed against earlier work starts its body with `Follow-up to #N` and includes the acceptance criterion "the original behavior of #N is unaffected."
+- A `bug`, or a `task` filed by the owner, goes through clarifying and then becomes a single task. It skips spec review and planning. A bug filed against earlier work starts its body with `Follow-up to #N` and includes the acceptance criterion "the original behavior of #N is unaffected."
 
 ## 5. State
 
@@ -204,8 +204,8 @@ The lifecycle of each type:
 
 - **Epic.** intake → clarifying → spec-review → planning → plan-review → planned → closed.
 - **Story.** Created at `stage:planning` from an approved epic plan, which already carries its acceptance criteria. Then planning → plan-review (or straight to planned, see `plan.review`) → planned → closed.
-- **Task.** Created at `stage:ready`, or at `stage:needs-human` for a human task from the planner (section 11.3). Then ready → in-progress → verifying → pr-open → closed, with loops back through clarifying, in-progress or needs-human. A human task from the planner goes needs-human → closed.
-- **Bug.** intake → clarifying → ready, then as a task.
+- **Task.** A task from the planner is created at `stage:ready`, or at `stage:needs-human` for a human task (section 11.3). Then ready → in-progress → verifying → pr-open → closed, with loops back through clarifying, in-progress or needs-human. A human task from the planner goes needs-human → closed.
+- **Bug, or task filed by the owner.** intake → clarifying → ready, then as a task.
 
 ### 7.2 Transitions
 
@@ -214,7 +214,7 @@ The lifecycle of each type:
 | intake | clarifying | all | Issue is trusted (6.2) |
 | clarifying | clarifying | all | Owner answered; interviewer has more questions |
 | clarifying | spec-review | epic | No open questions; spec written into the body |
-| clarifying | ready | bug | No open questions; daemon rewrites the body as a task (11.2) |
+| clarifying | ready | bug, or task filed by the owner | No open questions; daemon rewrites the body as a task (11.2) |
 | clarifying | ready | task | Owner answered the implementer's or verifier's question |
 | spec-review | clarifying | epic | Owner `/revise <text>`, or any other trusted comment (7.4) |
 | spec-review | planning | epic | Owner approves the current revision with 👍 or `/approve` (7.4) |
@@ -516,6 +516,8 @@ A plan contains either stories or tasks (11.3); the template shows both forms. I
 
 ### 11.5 Pull request
 
+The title is `<type>: <short sentence>`, where `<type>` is one of `pr.title_types` (section 13; default `feat`, `fix`, `chore`). The implementer names the type in its structured output, and output naming a type outside the list fails validation (3.3). With squash merging (section 15) the title becomes the commit subject on `main`.
+
 ```
 Closes #N
 
@@ -568,6 +570,8 @@ verify:
   protected_paths: []     # added to the built-in list (section 6.3)
 escalate:
   paths: ["go.mod", "**/migrations/**", "deploy/**", "**/payments/**"]
+pr:
+  title_types: [feat, fix, chore]   # PR title is "<type>: <short sentence>" (11.5)
 stages:
   timeouts: { interviewer: 10m, planner: 20m, implementer: 60m, verifier: 30m }
   max_turns: { interviewer: 30, planner: 60, implementer: 200, verifier: 80 }
@@ -579,7 +583,7 @@ loop:
 network:
   allow: [api.anthropic.com, proxy.golang.org, sum.golang.org]
 usage_limit:
-  pattern: "(?i)(usage|session) limit"
+  pattern: "(?i)((usage|session|weekly|opus|sonnet|fable) limit|you('|’)?ve (hit|reached) your [a-z ]*limit|you have (hit|reached) your [a-z ]*limit)"
 cross_repo:
   allowed: [mertenvg/dmcn, dmcnp/open-dmcn]
 ```
@@ -607,9 +611,12 @@ Changes to this file go through a human-authored PR (section 6.3).
    - require code-owner review, and dismiss stale approvals on new commits
    - require the `issuedog/verify` check with the issuedog App as the pinned source; leave "require branches to be up to date" off (section 10.4)
    - block force pushes
+   - allow squash merges only
    - bypass list: Repository admin, "for pull requests only", so the owner can merge their own protected-path PRs; never the write role and never the App
 
-   **Interim.** While the pipeline is run by hand with the owner's token, the owner authors every PR and cannot approve it. Until the App runs, the ruleset requires only a pull request and blocks force pushes; code-owner review and the check are added then.
+   In the repo's general settings, allow only squash merging and set its default commit message to "Pull request title and description", so the PR title becomes the commit subject and the description its body (11.5).
+
+   **Interim.** While the pipeline is run by hand with the owner's token, the owner authors every PR and cannot approve it. Until the App runs, the ruleset requires only a pull request with squash merging and blocks force pushes; code-owner review and the check are added then.
 
 4. **CODEOWNERS** including `/.github/CODEOWNERS`. The App is never a code owner.
 5. **Labels.** `stage:*`, `priority:*`, `scope:*`, `approved`, `review:high-risk`, and `type:*` for personal-account repos. The daemon creates any that are missing on startup.
