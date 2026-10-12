@@ -201,7 +201,7 @@ Closes and reopens are separate. Any close by someone who isn't trusted, the App
 Comments from people without write access hold nothing. They reach agents only as untrusted input (6.2).
 
 **While held.**
-- The daemon sets `stage:held` with a transition marker carrying `reason=discussion` and the stage before the hold. Every marker written in the `clarifying` that follows a hold, including question rounds and any later hold of either kind, carries the stage from before that first hold, so back-and-forth discussion never loses it. For anything other than a comment it also posts a notice naming it, since there is nothing else to react to.
+- The daemon sets `stage:held` with a transition marker carrying `reason=discussion` and two stages: `at`, where the issue was, and `origin`, where it was before the first discussion hold. Every marker written in the `clarifying` that follows a hold, including question rounds and any later hold of either kind, carries `origin` forward, so back-and-forth discussion never loses it. `/resume` restores `at`. "Nothing changed" returns to `origin`. For anything other than a comment it also posts a notice naming it, since there is nothing else to react to.
 - Holds stack. Any hold on an issue that is already held, whether by `/hold` or for discussion, keeps the stage recorded by the first hold. The issue leaves `held` only when every hold on it has ended. A discussion hold ends when resolved, or by `/resume` on the issue itself. An owner hold ends by `/resume` on the issue or an ancestor. If a discussion hold ended while an owner hold stayed, the final `/resume` sends the issue to `clarifying` as below.
 - A comment edited by an untrusted write collaborator never counts as a command or an answer, even after the edit is accepted. In loop step 1 (8.1) the daemon looks for triggers before it processes commands.
 - Before applying any run result, the daemon checks the issue for triggers since the last poll before the run was picked up. If it finds one, it holds the issue and drops the result.
@@ -211,18 +211,18 @@ Comments from people without write access hold nothing. They reach agents only a
 
 **Resolving.** Every trigger needs a trusted user's response:
 - A 👍 on an untrusted comment approves it. From then on it counts as that user's input (6.2).
-- A trusted comment counters every untrusted comment posted before it, and is itself owner input. Commands in it apply as usual, except that any that would move the issue, such as `/approve`, wait until the hold ends.
+- A trusted comment counters every untrusted comment posted before it, and is itself owner input. Commands in it apply as usual, except that any that would move the issue wait. This covers `/approve`, and a 👍 on a revision comment made while held. Such a command applies when the issue next reaches a stage it fits, if the revision it names still matches its hash (7.4). Otherwise it gets a rejection reply (9.2).
 - A 👍 on a notice accepts the change. Markers in edited or deleted content are never read again (5.1). When that content was an App-written body, the daemon reposts its `origin` marker from the App's own last version in the edit history, so the issue stays in the pipeline (6.2) and de-duplication still finds it (5.2).
 
 **Leaving the hold.**
 - Once every trigger is resolved, the issue goes to `clarifying`, and its transition marker carries the stage before the hold. The interviewer reads the discussion, with approved and countering comments as owner input, and picks the next stage. Comments it handled there don't count again as revision requests (7.4):
-  - Nothing in the discussion changes the issue: the stage before the hold. A task whose run was dropped goes to `ready`.
+  - Nothing in the discussion changes the issue: `origin`. A task whose run was dropped goes to `ready`.
   - The spec changes: the interviewer rewrites it, and the issue goes to `spec-review` for a new 👍 (7.4).
-  - The plan changes: `planning`, then `plan-review` for a new 👍.
-  - A task's body changes: the interviewer rewrites it as a task (11.2), and the task goes to `ready`, or back to `needs-human` for a human task.
+  - The plan changes, or a child story's body: `planning`, then `plan-review` for a new 👍, even when `plan.review` is false.
+  - A task's body changes: the interviewer rewrites it in its own template (11.2, or 9.3 for a human task), and the task goes to `ready`, or back to `needs-human` for a human task.
   - More answers are needed: a question round, staying at `clarifying`.
 - Each of these writes a fresh transition marker, so an edited or deleted marker can't roll state back.
-- A trusted `/resume` on the issue itself ends the discussion hold at once. It accepts every open trigger, including triggers whose notice was deleted, and restores the stage before the hold, except that a task whose run was dropped goes to `ready`. A `/resume` on an ancestor doesn't end a discussion hold.
+- A trusted `/resume` on the issue itself ends the discussion hold at once. It accepts every open trigger, including triggers whose notice was deleted, and restores `at`, except that a task whose run was dropped goes to `ready`. A `/resume` on an ancestor doesn't end a discussion hold.
 - A restart changes nothing, because the hold marker and its triggers are all on GitHub, and the lease of a held issue is dropped (8.2).
 
 ## 7. Pipeline
@@ -264,7 +264,7 @@ The lifecycle of each type:
 | spec-review | clarifying | epic, or story with no parent | Owner `/revise <text>`, or any other trusted comment (7.4) |
 | spec-review | planning | epic, or story with no parent | Owner approves the current revision with 👍 or `/approve` (7.4) |
 | planning | plan-review | epic, story | Planner output passes validation (11.3) |
-| planning | planned | story | Output passes validation and `plan.review` is false; daemon creates tasks |
+| planning | planned | story | Output passes validation and `plan.review` is false, unless the planning follows a discussion hold (6.4); daemon creates tasks |
 | plan-review | planning | epic, story | Owner `/revise <text>`, or any other trusted comment (7.4) |
 | plan-review | planned | epic, story | Owner approves the current revision with 👍 or `/approve` (7.4); daemon creates sub-issues, human tasks and dependencies |
 | planned | closed | story, or epic planned into tasks | Every child closed and story verification passes (7.3) |
