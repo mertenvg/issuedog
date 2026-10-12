@@ -6,12 +6,20 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
+	"fmt"
 	"io"
+	"net"
+	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/mertenvg/logr/v2"
+
+	"github.com/mertenvg/issuedog/internal/egress"
 )
 
 // runLogged runs the program and returns its exit code and what it logged.
@@ -54,7 +62,98 @@ func TestRunUnknownFlag(t *testing.T) {
 	}
 }
 
+// fakeEgress replaces the startup steps: the firewall returns fwErr, and the
+// proxy listens on a free port, or fails with listenErr. It records the
+// arguments each step got.
+func fakeEgress(t *testing.T, fwErr, listenErr error) *[]string {
+	t.Helper()
+	var calls []string
+	oldApply, oldListen := applyFirewall, listenProxy
+	t.Cleanup(func() { applyFirewall, listenProxy = oldApply, oldListen })
+	applyFirewall = func(user string) error {
+		calls = append(calls, "firewall "+user)
+		return fwErr
+	}
+	listenProxy = func(port int) (net.Listener, error) {
+		calls = append(calls, fmt.Sprintf("listen %d", port))
+		if listenErr != nil {
+			return nil, listenErr
+		}
+		return egress.Listen(0)
+	}
+	return &calls
+}
+
+func TestRunStartsEgress(t *testing.T) {
+	calls := fakeEgress(t, nil, nil)
+	code, logs := runLogged(t, nil, []string{"ANTHROPIC_API_KEY=key"})
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if got, want := strings.Join(*calls, ", "), "firewall agent, listen 3128"; got != want {
+		t.Errorf("startup steps = %q, want %q", got, want)
+	}
+	if !strings.Contains(logs, "egress proxy listening on http://127.0.0.1:") {
+		t.Errorf("logs = %q, want the proxy on 127.0.0.1", logs)
+	}
+}
+
+// TestEgressCommandStopsOnSignal runs the unlisted egress command, which
+// sandbox/test.sh relies on, and stops it the way the container does.
+func TestEgressCommandStopsOnSignal(t *testing.T) {
+	listening := make(chan struct{})
+	oldApply, oldListen := applyFirewall, listenProxy
+	t.Cleanup(func() { applyFirewall, listenProxy = oldApply, oldListen })
+	applyFirewall = func(string) error { return nil }
+	listenProxy = func(int) (net.Listener, error) {
+		defer close(listening)
+		return egress.Listen(0)
+	}
+	done := make(chan int, 1)
+	go func() { done <- command([]string{"egress"}, nil, io.Discard) }()
+	<-listening
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Errorf("exit code = %d, want 0", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("egress didn't stop on SIGTERM")
+	}
+}
+
+func TestRunStopsWhenEgressFails(t *testing.T) {
+	for name, tt := range map[string]struct {
+		fwErr, listenErr error
+		wantCalls, want  string
+	}{
+		"firewall": {errors.New("no NET_ADMIN"), nil, "firewall agent", "starting egress: applying the agent firewall: no NET_ADMIN"},
+		"proxy":    {nil, errors.New("port in use"), "firewall agent, listen 3128", "starting egress: listening for the egress proxy: port in use"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			calls := fakeEgress(t, tt.fwErr, tt.listenErr)
+			code, logs := runLogged(t, nil, []string{"ANTHROPIC_API_KEY=key"})
+			if code != 1 {
+				t.Errorf("exit code = %d, want 1", code)
+			}
+			if got := strings.Join(*calls, ", "); got != tt.wantCalls {
+				t.Errorf("startup steps = %q, want %q", got, tt.wantCalls)
+			}
+			if !strings.Contains(logs, tt.want) {
+				t.Errorf("logs = %q, want %q", logs, tt.want)
+			}
+			if strings.Contains(logs, "not implemented") {
+				t.Errorf("logs = %q, want startup to stop at egress", logs)
+			}
+		})
+	}
+}
+
 func TestRunNoArgsLogsError(t *testing.T) {
+	fakeEgress(t, nil, nil)
 	code, logs := runLogged(t, nil, []string{"ANTHROPIC_API_KEY=key"})
 	if code != 1 || !strings.Contains(logs, "the daemon is not implemented yet") {
 		t.Errorf("exit code %d, logs %q; want 1 and the not-implemented error", code, logs)

@@ -101,6 +101,41 @@ rm -f "$key"
 check "agent can run claude" as agent claude --version
 check "git is installed" git --version
 check "iptables is installed" iptables --version
+check "openssl is installed" openssl version
+
+# Egress (SPEC §3.1). The daemon can't keep running yet, so issuedog applies
+# its firewall and serves its proxy with the unlisted `issuedog egress`, which
+# runs until the container stops. This needs --cap-add NET_ADMIN.
+log=/run/issuedog/sandbox-test-egress.log
+as issuedog "$bin" egress >"$log" 2>&1 &
+i=0
+until grep -q 'egress proxy listening' "$log" || [ "$i" -ge 50 ]; do
+	sleep 0.1
+	i=$((i + 1))
+done
+check "issuedog applies the firewall and starts the proxy" grep -q 'egress proxy listening on http://127.0.0.1:3128' "$log"
+check "the IPv4 firewall has the agent chain" iptables -S issuedog-agent
+check "the IPv6 firewall has the agent chain" ip6tables -S issuedog-agent
+
+# tls <user> <host> [options...] completes a TLS handshake with host:443 as
+# user, and verifies the certificate.
+tls() {
+	user=$1
+	host=$2
+	shift 2
+	as "$user" openssl s_client -connect "$host:443" -servername "$host" \
+		-verify_hostname "$host" -verify_return_error "$@" </dev/null
+}
+# These two need internet access, as on the owner's Mac. Without it they fail
+# rather than pass. The refusals below pass offline too, so they only mean
+# something when these two pass.
+check "agent reaches api.anthropic.com through the proxy" tls agent api.anthropic.com -proxy 127.0.0.1:3128
+check "issuedog keeps direct egress" tls issuedog github.com
+check_not "agent can't reach example.com through the proxy" tls agent example.com -proxy 127.0.0.1:3128
+check_not "agent can't connect directly" tls agent api.anthropic.com
+check "issuedog can connect to an address directly" as issuedog openssl s_client -connect 1.1.1.1:443 </dev/null
+check_not "agent can't connect to an address directly" as agent openssl s_client -connect 1.1.1.1:443 </dev/null
+check_not "agent can't resolve names" as agent getent hosts api.anthropic.com
 
 if [ "$failed" -ne 0 ]; then
 	echo "Some checks failed."

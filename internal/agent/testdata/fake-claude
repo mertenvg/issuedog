@@ -1,0 +1,20 @@
+#!/bin/sh
+# A fake claude for run_test.go: records its arguments in ./args, then FAKE_MODE.
+printf '%s\0' "$@" > args
+case "$FAKE_MODE" in
+success | background)
+	# background leaves a child running after success, which cleanup must kill.
+	[ "$FAKE_MODE" = background ] && { sleep 300 >/dev/null 2>&1 & echo $! > child.pid; }
+	echo '{"type":"result","subtype":"success","is_error":false,"result":"Done."}'
+	;;
+fail)
+	echo '{"type":"result","subtype":"error_max_turns","is_error":true}'
+	exit 1
+	;;
+hang)
+	# A child in the same process group, which the timeout must kill too.
+	sleep 300 &
+	echo $! > child.pid
+	wait
+	;;
+esac
