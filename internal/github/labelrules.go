@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -25,7 +26,8 @@ const (
 	// latest transition marker. S4 records it with by=<login> (SPEC §5.1).
 	LabelOverride LabelEventKind = "override"
 	// LabelDisagreement is a stage label that disagrees with the latest
-	// transition marker. S4 puts the label back and reports it (SPEC §5.3).
+	// transition marker. S4 puts the label back and, unless it's Unfinished,
+	// reports it (SPEC §5.3).
 	LabelDisagreement LabelEventKind = "disagreement"
 )
 
@@ -38,8 +40,15 @@ type LabelEvent struct {
 	Marker string
 	// By is the trusted login behind an override.
 	By string
+	// Label is the stage label an override added.
+	Label string
 	// Key is the ID of the timeline event behind it: the state-error key.
 	Key int64
+	// Unfinished marks a disagreement that is the App's own write cut short
+	// (plan #5, assumption 4): no stage label has changed since the latest
+	// marker, except by the App bringing the labels toward it. It is to be
+	// finished, not reported.
+	Unfinished bool
 }
 
 // labelState is the history of one pipeline label on the timeline.
@@ -70,19 +79,28 @@ func pipelineLabel(name string) bool {
 
 // CheckLabels applies the label rules of SPEC §5.1 to one issue. An untrusted
 // change to a pipeline label is reverted, with a comment; changes by the App
-// (appSlug) and trusted users stand. It returns an override for a trusted
-// stage change newer than the latest transition marker, or else a
-// disagreement when the stage labels don't match that marker. Issue types on
-// org repos aren't checked. A replay is safe: the comment carries a revert
-// marker keyed by the event, is posted once, and goes out before the revert.
-func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int, appSlug string, trust Trust) ([]LabelEvent, error) {
+// (appSlug) and trusted users stand. It returns labels, the issue's labels
+// as the caller last read them, with the pipeline labels brought up to date
+// with the timeline and its reverts. It reports an override for a trusted stage change that the latest
+// transition marker doesn't record (see overrides), or else a disagreement
+// when the stage labels don't match that marker. Issue types on org repos
+// aren't checked. A replay is safe: the comment carries a revert marker keyed
+// by the event, is posted once, and goes out before the revert.
+//
+// Markers in a comment that dirty reports, by its ID, are skipped, as
+// state.Derive skips them. The body isn't on the timeline, so dirty is never
+// asked about it.
+func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int, labels []string, appSlug string, trust Trust, dirty func(id int64) bool) ([]string, []LabelEvent, error) {
+	wrap := func(err error) error { return fmt.Errorf("check labels of %s/%s#%d: %w", owner, repo, number, err) }
 	timeline, err := c.TimelineSince(ctx, owner, repo, number, time.Time{})
 	if err != nil {
-		return nil, fmt.Errorf("check labels of %s/%s#%d: %w", owner, repo, number, err)
+		return nil, nil, wrap(err)
 	}
-	labels := map[string]*labelState{}
+	states := map[string]*labelState{}
 	var order []*labelState
-	marker, markerAt := "", -1
+	eventAt := map[string]int{}                // label events' timeline positions, by ID
+	latest := transition{at: -1, recorded: -1} // none yet
+	prev := latest
 	reverted := map[string]bool{}
 	for i, e := range timeline {
 		switch e.GetEvent() {
@@ -92,18 +110,25 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 				continue
 			}
 			key := strings.ToLower(name)
-			if labels[key] == nil {
-				labels[key] = &labelState{name: name}
-				order = append(order, labels[key])
+			if states[key] == nil {
+				states[key] = &labelState{name: name}
+				order = append(order, states[key])
 			}
-			labels[key].events = append(labels[key].events, e)
-			labels[key].ats = append(labels[key].ats, i)
+			states[key].events = append(states[key].events, e)
+			states[key].ats = append(states[key].ats, i)
+			eventAt[strconv.FormatInt(e.GetID(), 10)] = i
 		case "commented":
+			if dirty(e.GetID()) {
+				continue
+			}
 			author := Author{Login: e.GetUser().GetLogin(), Type: e.GetUser().GetType()}
 			for _, m := range TrustedMarkers(author, e.GetBody(), appSlug) {
 				switch {
 				case m.Kind == "transition" && m.Fields["to"] != "":
-					marker, markerAt = m.Fields["to"], i
+					prev, latest = latest, transition{to: m.Fields["to"], from: m.Fields["from"], at: i, recorded: -1}
+					if at, ok := eventAt[m.Fields["event"]]; ok {
+						latest.recorded = at
+					}
 				case m.Kind == "revert":
 					reverted[m.Fields["key"]] = true
 				}
@@ -112,6 +137,8 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 	}
 
 	r := labelRules{c: c, owner: owner, repo: repo, number: number, appSlug: appSlug, trust: trust, verdicts: map[string]bool{}}
+	marker, markerAt := latest.to, latest.at
+	labels = slices.Clone(labels)
 	var stages []string
 	var override, last *gogithub.Timeline
 	overrideAt, lastAt := -1, -1
@@ -121,7 +148,12 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 		// trusted override must not hide that override.
 		on, acc, accAt, err := r.settle(ctx, l, reverted)
 		if err != nil {
-			return nil, fmt.Errorf("check labels of %s/%s#%d: %w", owner, repo, number, err)
+			return nil, nil, wrap(err)
+		}
+		if has := slices.ContainsFunc(labels, func(x string) bool { return strings.EqualFold(x, l.name) }); on && !has {
+			labels = append(labels, l.name)
+		} else if !on && has {
+			labels = slices.DeleteFunc(labels, func(x string) bool { return strings.EqualFold(x, l.name) })
 		}
 		if !strings.HasPrefix(strings.ToLower(l.name), "stage:") {
 			continue
@@ -129,20 +161,56 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 		if on {
 			stages = append(stages, l.name)
 		}
-		if acc != nil && acc.GetEvent() == "labeled" && accAt > markerAt && !r.isApp(acc) && accAt > overrideAt {
+		if acc != nil && acc.GetEvent() == "labeled" && !r.isApp(acc) && accAt > overrideAt && latest.overrides(l.name, accAt, prev.at) {
 			override, overrideAt = acc, accAt
 		}
-		if at := l.ats[len(l.ats)-1]; at > lastAt {
-			last, lastAt = l.latest(), at
+		// last is the latest change that stands, but for changes toward the
+		// marker made after it, which finish the App's own write, repair a
+		// disagreement or agree with it. So a disagreement keeps its key
+		// while it is being repaired.
+		e, at, err := r.standing(ctx, l, func(i int) bool {
+			return l.ats[i] > markerAt && strings.EqualFold(l.name, "stage:"+marker) == (l.events[i].GetEvent() == "labeled")
+		})
+		if err != nil {
+			return nil, nil, wrap(err)
+		}
+		if at > lastAt {
+			last, lastAt = e, at
 		}
 	}
 	if override != nil {
-		return []LabelEvent{{Kind: LabelOverride, Stages: stages, Marker: marker, By: override.GetActor().GetLogin(), Key: override.GetID()}}, nil
+		return labels, []LabelEvent{{Kind: LabelOverride, Stages: stages, Marker: marker, By: override.GetActor().GetLogin(),
+			Label: override.GetLabel().GetName(), Key: override.GetID()}}, nil
 	}
 	if marker != "" && (len(stages) != 1 || !strings.EqualFold(stages[0], "stage:"+marker)) {
-		return []LabelEvent{{Kind: LabelDisagreement, Stages: stages, Marker: marker, Key: last.GetID()}}, nil
+		return labels, []LabelEvent{{Kind: LabelDisagreement, Stages: stages, Marker: marker, Key: last.GetID(), Unfinished: lastAt < markerAt}}, nil
 	}
-	return nil, nil
+	return labels, nil, nil
+}
+
+// transition is a transition marker on the timeline.
+type transition struct {
+	to, from string
+	// at is its timeline position, and recorded that of the label event it
+	// names in event=, or -1.
+	at, recorded int
+}
+
+// overrides reports whether a trusted add of the stage label name, at
+// timeline position at, is an override: a stage change that t, the latest
+// marker, doesn't record. Made after t, it is one unless it agrees with t.
+// Made while t's transition was in flight, after the marker before it (at
+// prevAt) and after the change t records, it is one unless it names t's from
+// or to stage: then the transition saw it, or agrees with it.
+func (t transition) overrides(name string, at, prevAt int) bool {
+	is := func(stage string) bool { return stage != "" && strings.EqualFold(name, "stage:"+stage) }
+	switch {
+	case is(t.to):
+		return false
+	case at > t.at:
+		return true
+	}
+	return at > max(prevAt, t.recorded) && !is(t.from)
 }
 
 // labelRules carries what CheckLabels needs to judge and revert one change.
@@ -177,6 +245,32 @@ func (r *labelRules) restores(ctx context.Context, l *labelState, i int) (bool, 
 	return before == (l.events[i].GetEvent() == "labeled"), nil
 }
 
+// standing returns the latest change to l that stands, and its timeline
+// position (nil and -1 if none), passing over the events that skip reports
+// by index (skip may be nil). A change stands if the App or a trusted user
+// made it, and isn't the App's revert, which just restores the change before
+// it: so a trusted override it restored stays an override.
+func (r *labelRules) standing(ctx context.Context, l *labelState, skip func(i int) bool) (*gogithub.Timeline, int, error) {
+	for i := len(l.events) - 1; i >= 0; i-- {
+		if skip != nil && skip(i) {
+			continue
+		}
+		ok, err := r.accepted(ctx, l.events[i])
+		if err == nil && ok && r.isApp(l.events[i]) {
+			var revert bool
+			revert, err = r.restores(ctx, l, i)
+			ok = !revert
+		}
+		if err != nil {
+			return nil, -1, fmt.Errorf("change to %s that stands: %w", l.name, err)
+		}
+		if ok {
+			return l.events[i], l.ats[i], nil
+		}
+	}
+	return nil, -1, nil
+}
+
 // accepted reports whether e came from the App or a trusted user.
 func (r *labelRules) accepted(ctx context.Context, e *gogithub.Timeline) (bool, error) {
 	if r.isApp(e) {
@@ -201,24 +295,9 @@ func (r *labelRules) accepted(ctx context.Context, e *gogithub.Timeline) (bool, 
 // writes replays cleanly.
 func (r *labelRules) settle(ctx context.Context, l *labelState, reverted map[string]bool) (bool, *gogithub.Timeline, int, error) {
 	latest := l.latest()
-	var acc *gogithub.Timeline
-	accAt := -1
-	for i := len(l.events) - 1; i >= 0; i-- {
-		ok, err := r.accepted(ctx, l.events[i])
-		if err == nil && ok && r.isApp(l.events[i]) {
-			// The App's own revert just restores the change before it, so
-			// look past it: a trusted override it restored stays an override.
-			var revert bool
-			revert, err = r.restores(ctx, l, i)
-			ok = !revert
-		}
-		if err != nil {
-			return false, nil, -1, fmt.Errorf("settle %s: %w", l.name, err)
-		}
-		if ok {
-			acc, accAt = l.events[i], l.ats[i]
-			break
-		}
+	acc, accAt, err := r.standing(ctx, l, nil)
+	if err != nil {
+		return false, nil, -1, fmt.Errorf("settle %s: %w", l.name, err)
 	}
 	if acc == nil {
 		// Only reverts and untrusted changes: the App's last word stands.
@@ -243,7 +322,6 @@ func (r *labelRules) settle(ctx context.Context, l *labelState, reverted map[str
 			return false, nil, -1, fmt.Errorf("comment on revert of %s on %s/%s#%d: %w", l.name, r.owner, r.repo, r.number, err)
 		}
 	}
-	var err error
 	if want {
 		_, _, err = r.c.Issues.AddLabelsToIssue(ctx, r.owner, r.repo, r.number, []string{l.name})
 	} else {

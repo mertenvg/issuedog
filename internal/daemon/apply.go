@@ -66,8 +66,12 @@ func (m Move) check() error {
 //
 // The stage labels are set to match the latest marker, so a stage label a
 // trusted user set by hand would be overwritten. That's safe only because
-// CheckLabels runs first and records such a change as an override (SPEC
-// §5.1, plan #5 T5); callers must keep that order.
+// Applier.CheckLabels runs first and records such a change as an override
+// (SPEC §5.1): callers run it on a fresh snapshot just before Transition (T11
+// will). A change made after that check, while no other marker lands, is
+// still caught: the next CheckLabels records it as an override, as it isn't
+// in the marker this writes. A snapshot older than the latest marker isn't
+// safe, so a run's result must re-read the issue before its Transition.
 //
 // A move the table lacks changes no label. It is reported once with an
 // error comment keyed by m.Key's ID (SPEC §5.3), logged as an error when
@@ -169,8 +173,9 @@ func (a *Applier) comment(ctx context.Context, s *github.Snapshot, body string) 
 	return nil
 }
 
-// setStage makes stage's label the only stage label on s: it adds it, then
-// removes the others. A stage with no label changes nothing.
+// setStage makes stage's label the only stage:* label on s: it adds it, then
+// removes the others, even one that names no stage. A stage with no label
+// changes nothing.
 func (a *Applier) setStage(ctx context.Context, s *github.Snapshot, stage state.Stage) error {
 	want, ok := stage.Label()
 	if !ok {
@@ -187,15 +192,28 @@ func (a *Applier) setStage(ctx context.Context, s *github.Snapshot, stage state.
 		}
 	}
 	for _, l := range slices.Clone(s.Labels) {
-		if st, ok := state.ParseLabel(l); !ok || st == stage {
+		if !isStageLabel(l) || strings.EqualFold(l, want) {
 			continue
 		}
-		resp, err := a.Client.Issues.RemoveLabelForIssue(ctx, a.Owner, a.Repo, s.Number, l)
-		if err != nil && (resp == nil || resp.StatusCode != http.StatusNotFound) {
-			return fmt.Errorf("remove %s from %s/%s#%d: %w", l, a.Owner, a.Repo, s.Number, err)
+		if err := a.removeLabel(ctx, s, l); err != nil {
+			return fmt.Errorf("set stage %s: %w", stage, err)
 		}
-		s.Labels = slices.DeleteFunc(s.Labels, func(x string) bool { return x == l })
 	}
+	return nil
+}
+
+// removeLabel removes l from s, if s has it. Like GitHub, it ignores case.
+// A label gone meanwhile is no error.
+func (a *Applier) removeLabel(ctx context.Context, s *github.Snapshot, l string) error {
+	is := func(x string) bool { return strings.EqualFold(x, l) }
+	if !slices.ContainsFunc(s.Labels, is) {
+		return nil
+	}
+	resp, err := a.Client.Issues.RemoveLabelForIssue(ctx, a.Owner, a.Repo, s.Number, l)
+	if err != nil && (resp == nil || resp.StatusCode != http.StatusNotFound) {
+		return fmt.Errorf("remove %s from %s/%s#%d: %w", l, a.Owner, a.Repo, s.Number, err)
+	}
+	s.Labels = slices.DeleteFunc(s.Labels, is)
 	return nil
 }
 
