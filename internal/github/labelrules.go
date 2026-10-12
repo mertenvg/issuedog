@@ -25,7 +25,8 @@ const (
 	// latest transition marker. S4 records it with by=<login> (SPEC §5.1).
 	LabelOverride LabelEventKind = "override"
 	// LabelDisagreement is a stage label that disagrees with the latest
-	// transition marker. S4 puts the label back and reports it (SPEC §5.3).
+	// transition marker. S4 puts the label back and, unless it's Unfinished,
+	// reports it (SPEC §5.3).
 	LabelDisagreement LabelEventKind = "disagreement"
 )
 
@@ -38,8 +39,15 @@ type LabelEvent struct {
 	Marker string
 	// By is the trusted login behind an override.
 	By string
+	// Label is the stage label an override added.
+	Label string
 	// Key is the ID of the timeline event behind it: the state-error key.
 	Key int64
+	// Unfinished marks a disagreement that is the App's own write cut short
+	// (plan #5, assumption 4): no stage label has changed since the latest
+	// marker, except by the App bringing the labels toward it. It is to be
+	// finished, not reported.
+	Unfinished bool
 }
 
 // labelState is the history of one pipeline label on the timeline.
@@ -75,7 +83,11 @@ func pipelineLabel(name string) bool {
 // disagreement when the stage labels don't match that marker. Issue types on
 // org repos aren't checked. A replay is safe: the comment carries a revert
 // marker keyed by the event, is posted once, and goes out before the revert.
-func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int, appSlug string, trust Trust) ([]LabelEvent, error) {
+//
+// Markers in a comment that dirty reports, by its ID, are skipped, as
+// state.Derive skips them. The body isn't on the timeline, so dirty is never
+// asked about it.
+func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int, appSlug string, trust Trust, dirty func(id int64) bool) ([]LabelEvent, error) {
 	timeline, err := c.TimelineSince(ctx, owner, repo, number, time.Time{})
 	if err != nil {
 		return nil, fmt.Errorf("check labels of %s/%s#%d: %w", owner, repo, number, err)
@@ -99,6 +111,9 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 			labels[key].events = append(labels[key].events, e)
 			labels[key].ats = append(labels[key].ats, i)
 		case "commented":
+			if dirty(e.GetID()) {
+				continue
+			}
 			author := Author{Login: e.GetUser().GetLogin(), Type: e.GetUser().GetType()}
 			for _, m := range TrustedMarkers(author, e.GetBody(), appSlug) {
 				switch {
@@ -132,15 +147,26 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 		if acc != nil && acc.GetEvent() == "labeled" && accAt > markerAt && !r.isApp(acc) && accAt > overrideAt {
 			override, overrideAt = acc, accAt
 		}
-		if at := l.ats[len(l.ats)-1]; at > lastAt {
-			last, lastAt = l.latest(), at
+		// last is the latest stage-label change, leaving out the App's
+		// changes toward the marker made after it. Those finish its own
+		// write, or repair a disagreement, whose key mustn't change.
+		for i := len(l.events) - 1; i >= 0; i-- {
+			e := l.events[i]
+			if l.ats[i] > markerAt && r.isApp(e) && strings.EqualFold(l.name, "stage:"+marker) == (e.GetEvent() == "labeled") {
+				continue
+			}
+			if l.ats[i] > lastAt {
+				last, lastAt = e, l.ats[i]
+			}
+			break
 		}
 	}
 	if override != nil {
-		return []LabelEvent{{Kind: LabelOverride, Stages: stages, Marker: marker, By: override.GetActor().GetLogin(), Key: override.GetID()}}, nil
+		return []LabelEvent{{Kind: LabelOverride, Stages: stages, Marker: marker, By: override.GetActor().GetLogin(),
+			Label: override.GetLabel().GetName(), Key: override.GetID()}}, nil
 	}
 	if marker != "" && (len(stages) != 1 || !strings.EqualFold(stages[0], "stage:"+marker)) {
-		return []LabelEvent{{Kind: LabelDisagreement, Stages: stages, Marker: marker, Key: last.GetID()}}, nil
+		return []LabelEvent{{Kind: LabelDisagreement, Stages: stages, Marker: marker, Key: last.GetID(), Unfinished: lastAt < markerAt}}, nil
 	}
 	return nil, nil
 }

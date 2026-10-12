@@ -66,8 +66,8 @@ func (m Move) check() error {
 //
 // The stage labels are set to match the latest marker, so a stage label a
 // trusted user set by hand would be overwritten. That's safe only because
-// CheckLabels runs first and records such a change as an override (SPEC
-// §5.1, plan #5 T5); callers must keep that order.
+// Applier.CheckLabels runs first and records such a change as an override
+// (SPEC §5.1); callers must keep that order.
 //
 // A move the table lacks changes no label. It is reported once with an
 // error comment keyed by m.Key's ID (SPEC §5.3), logged as an error when
@@ -169,8 +169,9 @@ func (a *Applier) comment(ctx context.Context, s *github.Snapshot, body string) 
 	return nil
 }
 
-// setStage makes stage's label the only stage label on s: it adds it, then
-// removes the others. A stage with no label changes nothing.
+// setStage makes stage's label the only stage:* label on s: it adds it, then
+// removes the others, even one that names no stage. A stage with no label
+// changes nothing.
 func (a *Applier) setStage(ctx context.Context, s *github.Snapshot, stage state.Stage) error {
 	want, ok := stage.Label()
 	if !ok {
@@ -187,7 +188,7 @@ func (a *Applier) setStage(ctx context.Context, s *github.Snapshot, stage state.
 		}
 	}
 	for _, l := range slices.Clone(s.Labels) {
-		if st, ok := state.ParseLabel(l); !ok || st == stage {
+		if !isStageLabel(l) || strings.EqualFold(l, want) {
 			continue
 		}
 		resp, err := a.Client.Issues.RemoveLabelForIssue(ctx, a.Owner, a.Repo, s.Number, l)
