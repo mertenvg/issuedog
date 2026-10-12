@@ -2,6 +2,11 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -10,7 +15,7 @@ import (
 
 func TestRunVersion(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"--version"}, nil, &stdout, &stderr)
+	code := run([]string{"--version"}, nil, nil, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -21,7 +26,7 @@ func TestRunVersion(t *testing.T) {
 
 func TestRunUnknownFlag(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"--nope"}, nil, &stdout, &stderr); code != 2 {
+	if code := run([]string{"--nope"}, nil, nil, &stdout, &stderr); code != 2 {
 		t.Errorf("exit code = %d, want 2", code)
 	}
 }
@@ -31,7 +36,7 @@ func TestRunNoArgsLogsError(t *testing.T) {
 	stop := logr.AddWriter(&logs)
 	defer stop()
 
-	code := run(nil, []string{"ANTHROPIC_API_KEY=key"}, &stdout, &stderr)
+	code := run(nil, []string{"ANTHROPIC_API_KEY=key"}, nil, &stdout, &stderr)
 	logr.Wait()
 
 	if code != 1 {
@@ -55,7 +60,7 @@ func TestRunRefusesBadCredentials(t *testing.T) {
 			stop := logr.AddWriter(&logs)
 			defer stop()
 
-			code := run(nil, environ, &stdout, &stderr)
+			code := run(nil, environ, nil, &stdout, &stderr)
 			logr.Wait()
 
 			if code != 1 {
@@ -92,6 +97,43 @@ func TestSetupLoggingRoutesByLevel(t *testing.T) {
 	for _, msg := range []string{"info message", "warn message"} {
 		if strings.Contains(stderr.String(), msg) {
 			t.Errorf("stderr contains %q; want errors and worse only", msg)
+		}
+	}
+}
+
+func TestRunKeyCommands(t *testing.T) {
+	var logs bytes.Buffer
+	stop := logr.AddWriter(&logs)
+	defer stop()
+
+	k, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(k)})
+	path := filepath.Join(t.TempDir(), "app-key.pem")
+	for _, tt := range []struct {
+		args  []string
+		stdin string
+		want  int
+	}{
+		{[]string{"key", "import", "-path", path}, string(key), 0},
+		{[]string{"key", "check", "-path", path}, "", 0},
+		{[]string{"key", "import", "-path", path}, "not a key", 1},
+		{[]string{"key"}, "", 2},
+		{[]string{"key", "nope"}, "", 2},
+		{[]string{"key", "import", "extra"}, "", 2},
+		{[]string{"key", "check", "-nope"}, "", 2},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := run(tt.args, nil, strings.NewReader(tt.stdin), &stdout, &stderr); code != tt.want {
+			t.Errorf("%q: exit code = %d, want %d; stderr: %s", tt.args, code, tt.want, stderr.String())
+		}
+	}
+	logr.Wait()
+	for _, want := range []string{"imported the App key to " + path, path + " is usable", "importing the App key: app key " + path, "unexpected arguments", "usage:"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("logs = %q, want %q", logs.String(), want)
 		}
 	}
 }
