@@ -6,12 +6,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
+
+	"github.com/mertenvg/logr/v2"
 )
 
 // shaPattern matches a full SHA-1 or SHA-256 object name.
@@ -154,7 +157,12 @@ func (w *Workspace) writeGitConfig() error {
 	if err != nil {
 		return fmt.Errorf("write git config: %w", err)
 	}
-	defer os.Remove(f.Name()) // fails harmlessly once renamed
+	defer func() {
+		// After the rename the temp file is gone, which is fine.
+		if err := os.Remove(f.Name()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			logr.Warnf("removing %s: %v", f.Name(), err)
+		}
+	}()
 	err = f.Chmod(0o644)
 	if err == nil {
 		_, err = f.WriteString(data)

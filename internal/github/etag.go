@@ -3,6 +3,7 @@ package github
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -10,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/mertenvg/logr/v2"
 )
 
 // maxCacheBytes bounds the cache, since a moving since= leaves stale entries.
@@ -62,8 +65,8 @@ func (c *etagCache) roundTrip(req *http.Request) (*http.Response, error) {
 	}
 	switch {
 	case resp.StatusCode == http.StatusNotModified && cached != nil:
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
+		_, err = io.Copy(io.Discard, resp.Body)
+		warnBody(req, errors.Join(err, resp.Body.Close()))
 		// The 304 carries fresh rate-limit headers; keep the cached rest,
 		// such as the Link header go-github paginates with.
 		h := cached.header.Clone()
@@ -71,16 +74,26 @@ func (c *etagCache) roundTrip(req *http.Request) (*http.Response, error) {
 		fill(resp, h, cached.body)
 	case resp.StatusCode == http.StatusOK && resp.Header.Get("ETag") != "":
 		body, err := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
+		cerr := resp.Body.Close()
 		if err != nil {
-			return nil, fmt.Errorf("read body: %w", err)
+			return nil, fmt.Errorf("read body: %w", errors.Join(err, cerr))
 		}
+		warnBody(req, cerr)
 		if !fullLastPage(req, resp.Header, body) {
 			c.store(key, &etagEntry{etag: resp.Header.Get("ETag"), header: resp.Header.Clone(), body: body})
 		}
 		fill(resp, resp.Header, body)
 	}
 	return resp, nil
+}
+
+// warnBody logs a failure to drain or close a body that is already read or not
+// needed. The response is still good and only the connection's reuse is lost,
+// so it doesn't fail the request.
+func warnBody(req *http.Request, err error) {
+	if err != nil {
+		logr.With(logr.M("method", req.Method).With("path", req.URL.Path).With("error", err.Error())).Warn("github response body not released cleanly")
+	}
 }
 
 // store replaces the entry for key, starting over past maxCacheBytes.

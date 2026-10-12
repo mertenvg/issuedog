@@ -5,12 +5,14 @@ package egress
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/mertenvg/logr/v2"
@@ -88,43 +90,70 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	hj, ok := w.(http.Hijacker)
 	if !ok {
-		upstream.Close()
+		closeConn(target, "upstream", upstream)
 		http.Error(w, "tunneling not supported", http.StatusInternalServerError)
 		return
 	}
 	client, buf, err := hj.Hijack()
 	if err != nil {
-		upstream.Close()
+		logr.With(logr.M("host", target).With("error", err.Error())).Warn("egress hijack failed")
+		closeConn(target, "upstream", upstream)
 		return
 	}
 	if _, err := client.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
-		client.Close()
-		upstream.Close()
+		logr.With(logr.M("host", target).With("error", err.Error())).Debug("egress client went away")
+		closeConn(target, "client", client)
+		closeConn(target, "upstream", upstream)
 		return
 	}
-	relay(client, buf.Reader, upstream)
+	relay(target, client, buf.Reader, upstream)
 }
 
 // relay copies bytes both ways until either side closes, then closes both.
 // Reads from the client go through br, which may hold bytes the server
 // buffered before the hijack.
-func relay(client net.Conn, br *bufio.Reader, upstream net.Conn) {
+func relay(target string, client net.Conn, br *bufio.Reader, upstream net.Conn) {
 	var once sync.Once
 	closeBoth := func() {
-		client.Close()
-		upstream.Close()
+		closeConn(target, "client", client)
+		closeConn(target, "upstream", upstream)
 	}
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(upstream, br)
+		_, err := io.Copy(upstream, br)
+		logCopy(target, "to upstream", err)
 		once.Do(closeBoth)
 	}()
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(client, upstream)
+		_, err := io.Copy(client, upstream)
+		logCopy(target, "to client", err)
 		once.Do(closeBoth)
 	}()
 	wg.Wait()
+}
+
+// closeConn closes one side of a tunnel. One that is already closed is fine;
+// any other failure is logged.
+func closeConn(target, side string, c net.Conn) {
+	if err := c.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		logr.With(logr.M("host", target).With("side", side).With("error", err.Error())).Warn("egress close failed")
+	}
+}
+
+// logCopy logs how one direction of a tunnel ended. A side closing or
+// resetting is how tunnels end, so that is debug; anything else is a warning.
+func logCopy(target, direction string, err error) {
+	if err == nil {
+		return
+	}
+	l := logr.With(logr.M("host", target).With("direction", direction).With("error", err.Error()))
+	if errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+		l.Debug("egress tunnel closed")
+		return
+	}
+	l.Warn("egress tunnel copy failed")
 }

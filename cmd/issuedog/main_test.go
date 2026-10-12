@@ -55,6 +55,21 @@ func TestRunPlainOutput(t *testing.T) {
 	}
 }
 
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("stdout closed") }
+
+func TestRunPlainOutputFails(t *testing.T) {
+	var logs bytes.Buffer
+	stop := logr.AddWriter(&logs)
+	code := run([]string{"--version"}, nil, nil, failingWriter{})
+	logr.Wait()
+	stop()
+	if code != 1 || !strings.Contains(logs.String(), "writing to stdout: stdout closed") {
+		t.Errorf("exit code %d, logs %q; want 1 and the write error", code, logs.String())
+	}
+}
+
 func TestRunUnknownFlag(t *testing.T) {
 	code, logs := runLogged(t, []string{"--nope"}, nil)
 	if code != 2 || !strings.Contains(logs, "flag provided but not defined: -nope") || !strings.Contains(logs, "usage:") {

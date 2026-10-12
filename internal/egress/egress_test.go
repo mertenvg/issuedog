@@ -2,16 +2,23 @@ package egress
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/mertenvg/logr/v2"
 )
 
 const allowedHost = "api.anthropic.com"
@@ -229,6 +236,33 @@ func TestAllowed(t *testing.T) {
 		got, ok := p.allowed(authority)
 		if ok != (want != "") || got != want {
 			t.Errorf("allowed(%q) = %q, %v; want %q", authority, got, ok, want)
+		}
+	}
+}
+
+// TestLogCopy checks that a tunnel side closing or resetting is debug, and
+// anything else is a warning.
+func TestLogCopy(t *testing.T) {
+	reset := &net.OpError{Op: "read", Err: &os.SyscallError{Syscall: "read", Err: syscall.ECONNRESET}}
+	for _, tc := range []struct {
+		err   error
+		level logr.Type
+		want  string
+	}{
+		{io.EOF, logr.D, "egress tunnel closed"},
+		{net.ErrClosed, logr.D, "egress tunnel closed"},
+		{reset, logr.D, "egress tunnel closed"},
+		{fmt.Errorf("write: %w", syscall.EPIPE), logr.D, "egress tunnel closed"},
+		{errors.New("disk on fire"), logr.W, "egress tunnel copy failed"},
+	} {
+		// The writer only takes the expected level, so a wrong level fails.
+		var logs bytes.Buffer
+		stop := logr.AddWriter(&logs, logr.WithFilter(tc.level))
+		logCopy(allowedHost, "to client", tc.err)
+		logr.Wait()
+		stop()
+		if !strings.Contains(logs.String(), tc.want) {
+			t.Errorf("%v: logs = %q, want %q", tc.err, logs.String(), tc.want)
 		}
 	}
 }

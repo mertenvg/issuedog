@@ -10,6 +10,7 @@ import (
 
 	"github.com/bradleyfalzon/ghinstallation/v2"
 	gogithub "github.com/google/go-github/v92/github"
+	"github.com/mertenvg/logr/v2"
 )
 
 // Config identifies the App installation to act as.
@@ -88,6 +89,8 @@ func (t closeMintErrors) RoundTrip(req *http.Request) (*http.Response, error) {
 func closeMintResponse(err error) {
 	var herr *ghinstallation.HTTPError
 	if errors.As(err, &herr) && herr.Response != nil && herr.Response.Body != nil {
-		_ = herr.Response.Body.Close()
+		if cerr := herr.Response.Body.Close(); cerr != nil {
+			logr.Warnf("closing the body of a failed installation token mint: %v", cerr)
+		}
 	}
 }
