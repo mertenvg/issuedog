@@ -1,9 +1,9 @@
 package githubtest
 
 import (
-	"encoding/base64"
 	"fmt"
 	"net/http"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -30,16 +30,24 @@ func (f *Fake) serveGraphQL(w http.ResponseWriter, r *http.Request) {
 	f.serve(w, r, false, f.graphql)
 }
 
-// graphql answers internal/github's edits query from its variables alone,
-// paging comments by 100. As on GitHub, a Bot's login has no "[bot]", IDs
-// are BigInt strings, a missing repo or issue or a pull request is a
-// NOT_FOUND error, and errors come with data.
+// answered is every field graphql answers, which a query must name.
+const answered = `query { repository { issue { body lastEditedAt editor { login __typename }
+	comments { pageInfo { hasNextPage endCursor } nodes { fullDatabaseId body createdAt updatedAt
+	lastEditedAt author { login __typename } editor { login __typename } } } } } }`
+
+var answeredFields = fields(answered)
+
+// graphql answers internal/github's comments query for the fake's repo,
+// paging comments by 100, and refuses a query that doesn't name every field
+// in answered. As on GitHub, a Bot's login has no "[bot]", IDs are BigInt
+// strings, a missing issue or a pull request is a NOT_FOUND error, and
+// errors come with data.
 func (f *Fake) graphql(c *call) (int, any) {
 	var req struct {
+		Query     string
 		Variables struct {
-			Owner, Name string
-			Number      int
-			Cursor      *string
+			Number int
+			Cursor *string
 		}
 	}
 	if status, msg := c.decode(&req); msg != nil {
@@ -58,13 +66,20 @@ func (f *Fake) graphql(c *call) (int, any) {
 		}
 		return http.StatusOK, out
 	}
-	notFound := func(m string) { errs = append(errs, map[string]any{"type": "NOT_FOUND", "message": m}) }
-	if !strings.EqualFold(v.Owner+"/"+v.Name, f.repo) {
-		notFound(fmt.Sprintf("Could not resolve to a Repository with the name '%s/%s'.", v.Owner, v.Name))
-		return reply(map[string]any{"repository": nil})
+	var missing []string
+	named := fields(req.Query)
+	for p := range answeredFields {
+		if !named[p] {
+			missing = append(missing, p)
+		}
+	}
+	if len(missing) > 0 {
+		slices.Sort(missing)
+		errs = append(errs, map[string]any{"message": "githubtest: the query doesn't name " + strings.Join(missing, ", ")})
+		return reply(nil)
 	}
 	if v.Number < 1 || v.Number > len(f.issues) || f.issues[v.Number-1].IsPullRequest() {
-		notFound(fmt.Sprintf("Could not resolve to an Issue with the number of %d.", v.Number))
+		errs = append(errs, map[string]any{"type": "NOT_FOUND", "message": fmt.Sprintf("Could not resolve to an Issue with the number of %d.", v.Number)})
 		return reply(map[string]any{"repository": map[string]any{"issue": nil}})
 	}
 	var list []*comment
@@ -75,12 +90,12 @@ func (f *Fake) graphql(c *call) (int, any) {
 	}
 	from := 0
 	if v.Cursor != nil {
-		after, err := fromCursor(*v.Cursor)
+		// The cursor is the last comment's ID, so it survives that comment's deletion.
+		after, err := strconv.ParseInt(*v.Cursor, 10, 64)
 		if err != nil {
 			errs = append(errs, map[string]any{"message": fmt.Sprintf("`%s` does not appear to be a valid cursor.", *v.Cursor)})
 			return reply(nil)
 		}
-		// Like GitHub's, the cursor survives a deleted comment.
 		if from = slices.IndexFunc(list, func(cm *comment) bool { return cm.GetID() > after }); from < 0 {
 			from = len(list)
 		}
@@ -90,11 +105,12 @@ func (f *Fake) graphql(c *call) (int, any) {
 	for _, cm := range list[from:to] {
 		n := cm.lastEdit.graphql(cm.GetBody())
 		n["fullDatabaseId"] = strconv.FormatInt(cm.GetID(), 10)
+		n["author"], n["createdAt"], n["updatedAt"] = actor(cm.GetUser().GetLogin()), cm.GetCreatedAt(), cm.GetUpdatedAt()
 		nodes = append(nodes, n)
 	}
 	var end any
 	if to > from {
-		end = cursor(list[to-1].GetID())
+		end = strconv.FormatInt(list[to-1].GetID(), 10)
 	}
 	is := f.issues[v.Number-1]
 	issue := is.lastEdit.graphql(is.GetBody())
@@ -107,34 +123,44 @@ func (e lastEdit) graphql(body string) map[string]any {
 	if e.at.IsZero() {
 		return map[string]any{"body": body, "lastEditedAt": nil, "editor": nil}
 	}
-	var editor any
-	if e.by != "" {
-		login, typ := e.by, "User"
-		if l, ok := strings.CutSuffix(login, "[bot]"); ok {
-			login, typ = l, "Bot"
+	return map[string]any{"body": body, "lastEditedAt": e.at, "editor": actor(e.by)}
+}
+
+// actor is login as a GraphQL Actor, or nil for "", a deleted account.
+func actor(login string) any {
+	if login == "" {
+		return nil
+	}
+	if l, ok := strings.CutSuffix(login, "[bot]"); ok {
+		return map[string]any{"login": l, "__typename": "Bot"}
+	}
+	return map[string]any{"login": login, "__typename": "User"}
+}
+
+var (
+	queryArgs   = regexp.MustCompile(`\([^)]*\)`)
+	queryTokens = regexp.MustCompile(`[{}]|[A-Za-z_]\w*`)
+)
+
+// fields returns the paths of the fields a query names, such as
+// "query.repository.issue.body". It skips arguments and variables.
+func fields(query string) map[string]bool {
+	paths := map[string]bool{}
+	var outer []string // the enclosing fields' paths
+	last := ""
+	for _, tok := range queryTokens.FindAllString(queryArgs.ReplaceAllString(query, " "), -1) {
+		switch tok {
+		case "{":
+			outer = append(outer, last)
+		case "}":
+			outer = outer[:max(len(outer)-1, 0)]
+		default:
+			last = tok
+			if len(outer) > 0 {
+				last = outer[len(outer)-1] + "." + tok
+			}
+			paths[last] = true
 		}
-		editor = map[string]any{"login": login, "__typename": typ}
 	}
-	return map[string]any{"body": body, "lastEditedAt": e.at, "editor": editor}
-}
-
-// cursor is the opaque cursor after the comment with this ID.
-func cursor(id int64) string {
-	return base64.StdEncoding.EncodeToString([]byte("cursor:" + strconv.FormatInt(id, 10)))
-}
-
-func fromCursor(s string) (int64, error) {
-	b, err := base64.StdEncoding.DecodeString(s)
-	if err != nil {
-		return 0, fmt.Errorf("decode cursor %q: %w", s, err)
-	}
-	rest, ok := strings.CutPrefix(string(b), "cursor:")
-	if !ok {
-		return 0, fmt.Errorf("cursor %q: no cursor: prefix", s)
-	}
-	id, err := strconv.ParseInt(rest, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("cursor %q: %w", s, err)
-	}
-	return id, nil
+	return paths
 }

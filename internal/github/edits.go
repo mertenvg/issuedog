@@ -16,15 +16,9 @@ type Edit struct {
 	At time.Time
 }
 
-// edited is a body and its last edit, read together so they match.
-type edited struct {
-	Body string
-	Edit Edit
-}
-
-// editsQuery reads the body and last edit of an issue and of a page of its
-// comments. REST says when a body was edited, but not who.
-const editsQuery = `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+// commentsQuery reads an issue's body and a page of its comments, each with
+// its last edit. REST says when a body was edited, but not who.
+const commentsQuery = `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     issue(number: $number) {
       body
@@ -32,14 +26,18 @@ const editsQuery = `query($owner: String!, $name: String!, $number: Int!, $curso
       editor { login __typename }
       comments(first: 100, after: $cursor) {
         pageInfo { hasNextPage endCursor }
-        nodes { fullDatabaseId body lastEditedAt editor { login __typename } }
+        nodes {
+          fullDatabaseId body createdAt updatedAt lastEditedAt
+          author { login __typename }
+          editor { login __typename }
+        }
       }
     }
   }
 }`
 
-// editsResponse is editsQuery's answer.
-type editsResponse struct {
+// commentsResponse is commentsQuery's answer.
+type commentsResponse struct {
 	Data struct {
 		Repository *struct {
 			Issue *struct {
@@ -50,7 +48,9 @@ type editsResponse struct {
 						EndCursor   string
 					}
 					Nodes []struct {
-						FullDatabaseID string `json:"fullDatabaseId"` // a BigInt
+						FullDatabaseID       string `json:"fullDatabaseId"` // a BigInt
+						Author               *actor
+						CreatedAt, UpdatedAt time.Time
 						editNode
 					}
 				}
@@ -64,74 +64,78 @@ type editsResponse struct {
 type editNode struct {
 	Body         string
 	LastEditedAt *time.Time
-	Editor       *struct {
-		Login    string
-		Typename string `json:"__typename"`
-	}
+	Editor       *actor
 }
 
-// edit returns n's Edit. GraphQL gives a Bot's login without the "[bot]"
-// that REST shows, so it is added back to match.
+// actor is a GraphQL Actor, nil for a deleted account.
+type actor struct {
+	Login    string
+	Typename string `json:"__typename"`
+}
+
+// author returns a as REST shows it: GraphQL gives a Bot's login without the
+// "[bot]", so it is added back.
+func (a *actor) author() Author {
+	if a == nil {
+		return Author{}
+	}
+	if a.Typename == "Bot" && !strings.HasSuffix(a.Login, "[bot]") {
+		return Author{Login: a.Login + "[bot]", Type: a.Typename}
+	}
+	return Author{Login: a.Login, Type: a.Typename}
+}
+
 func (n editNode) edit() Edit {
 	if n.LastEditedAt == nil {
 		return Edit{}
 	}
-	e := Edit{At: *n.LastEditedAt}
-	if n.Editor != nil {
-		e.By = Author{Login: n.Editor.Login, Type: n.Editor.Typename}
-		if e.By.Type == "Bot" && !strings.HasSuffix(e.By.Login, "[bot]") {
-			e.By.Login += "[bot]"
-		}
-	}
-	return e
+	return Edit{By: n.Editor.author(), At: *n.LastEditedAt}
 }
 
-// edits reads the body and last edit of an issue, and of each comment by ID,
-// with one GraphQL query per 100 comments.
-func (c *Client) edits(ctx context.Context, owner, repo string, number int) (edited, map[int64]edited, error) {
-	wrap := func(err error) error { return fmt.Errorf("edits of %s/%s#%d: %w", owner, repo, number, err) }
-	var body edited
-	comments := map[int64]edited{}
+// readComments sets s's body and comments, oldest first, each with its last
+// edit, from one GraphQL query per 100 comments. A body and its edit come
+// from the same read, so they match.
+func (c *Client) readComments(ctx context.Context, owner, repo string, s *Snapshot) error {
+	wrap := func(err error) error { return fmt.Errorf("comments of %s/%s#%d: %w", owner, repo, s.Number, err) }
 	read := map[string]bool{}
-	vars := map[string]any{"owner": owner, "name": repo, "number": number, "cursor": nil}
+	vars := map[string]any{"owner": owner, "name": repo, "number": s.Number, "cursor": nil}
 	for page := 0; ; page++ {
-		req, err := c.NewRequest(ctx, "POST", "graphql", map[string]any{"query": editsQuery, "variables": vars})
+		req, err := c.NewRequest(ctx, "POST", "graphql", map[string]any{"query": commentsQuery, "variables": vars})
 		if err != nil {
-			return edited{}, nil, wrap(err)
+			return wrap(err)
 		}
-		var out editsResponse
+		var out commentsResponse
 		if _, err := c.Do(req, &out); err != nil {
-			return edited{}, nil, wrap(err)
+			return wrap(err)
 		}
 		if len(out.Errors) > 0 {
 			msgs := make([]string, 0, len(out.Errors))
 			for _, e := range out.Errors {
 				msgs = append(msgs, e.Message)
 			}
-			return edited{}, nil, wrap(fmt.Errorf("%w: %s", ErrGraphQL, strings.Join(msgs, "; ")))
+			return wrap(fmt.Errorf("%w: %s", ErrGraphQL, strings.Join(msgs, "; ")))
 		}
 		if out.Data.Repository == nil || out.Data.Repository.Issue == nil {
-			return edited{}, nil, wrap(errNoIssue)
+			return wrap(errNoIssue)
 		}
 		is := out.Data.Repository.Issue
 		if page == 0 {
-			body = edited{is.Body, is.edit()}
+			s.Body, s.BodyEdit = is.Body, is.edit()
 		}
 		for _, n := range is.Comments.Nodes {
 			id, err := strconv.ParseInt(n.FullDatabaseID, 10, 64)
 			if err != nil {
-				return edited{}, nil, wrap(fmt.Errorf("comment ID: %w", err))
+				return wrap(fmt.Errorf("comment ID: %w", err))
 			}
-			comments[id] = edited{n.Body, n.edit()}
+			s.Comments = append(s.Comments, Comment{ID: id, Author: n.Author.author(), Body: n.Body,
+				CreatedAt: n.CreatedAt, UpdatedAt: n.UpdatedAt, Edit: n.edit()})
 		}
 		cursor := is.Comments.PageInfo.EndCursor
-		switch {
-		case !is.Comments.PageInfo.HasNextPage:
-			return body, comments, nil
-		case cursor == "":
-			return edited{}, nil, wrap(errNoCursor)
-		case read[cursor]:
-			return edited{}, nil, wrap(fmt.Errorf("%w: %q", errStuckCursor, cursor))
+		if !is.Comments.PageInfo.HasNextPage {
+			return nil
+		}
+		if cursor == "" || read[cursor] {
+			return wrap(fmt.Errorf("%w: %q", errCursor, cursor))
 		}
 		read[cursor] = true
 		vars["cursor"] = cursor
@@ -142,7 +146,6 @@ func (c *Client) edits(ctx context.Context, owner, repo string, number int) (edi
 var ErrGraphQL = errors.New("graphql errors")
 
 var (
-	errNoIssue     = errors.New("graphql: no such repository or issue")
-	errNoCursor    = errors.New("graphql: a next page with no cursor")
-	errStuckCursor = errors.New("graphql: a next page at a cursor already read")
+	errNoIssue = errors.New("graphql: no such repository or issue")
+	errCursor  = errors.New("graphql: a next page with no new cursor")
 )

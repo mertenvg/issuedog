@@ -121,7 +121,7 @@ func TestEditsGraphQLErrors(t *testing.T) {
 	if !errors.Is(err, github.ErrGraphQL) {
 		t.Fatalf("err = %v, want one wrapping ErrGraphQL", err)
 	}
-	for _, s := range []string{"edits of o/r#1", "Something went wrong", "And again"} {
+	for _, s := range []string{"comments of o/r#1", "Something went wrong", "And again"} {
 		if !strings.Contains(err.Error(), s) {
 			t.Errorf("err = %q, want it to contain %q", err, s)
 		}

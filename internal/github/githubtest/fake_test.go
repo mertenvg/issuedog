@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	gogithub "github.com/google/go-github/v92/github"
@@ -172,6 +173,22 @@ type gqlAnswer struct {
 	Errors []struct{ Type, Message string }
 }
 
+// gqlQuery sends query to f for issue number from cursor.
+func gqlQuery(t *testing.T, f *Fake, query string, number int, cursor any) gqlAnswer {
+	t.Helper()
+	c := f.Client(t)
+	vars := map[string]any{"owner": "o", "name": "r", "number": number, "cursor": cursor}
+	req, err := c.NewRequest(context.Background(), "POST", "graphql", map[string]any{"query": query, "variables": vars})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out gqlAnswer
+	if _, err := c.Do(req, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
 func TestGraphQLAnswers(t *testing.T) {
 	f := New(t, "o/r", "issuedog")
 	n := f.AddIssue("owner", "Title", "body")
@@ -180,29 +197,19 @@ func TestGraphQLAnswers(t *testing.T) {
 		ids = append(ids, f.AddComment(n, "owner", "hi"))
 	}
 	f.SetPullRequest(f.AddIssue("owner", "PR", "body"))
-	c := f.Client(t)
-	query := func(owner string, number int, cursor any) gqlAnswer {
-		t.Helper()
-		vars := map[string]any{"owner": owner, "name": "r", "number": number, "cursor": cursor}
-		req, err := c.NewRequest(context.Background(), "POST", "graphql", map[string]any{"variables": vars})
-		if err != nil {
-			t.Fatal(err)
-		}
-		var out gqlAnswer
-		if _, err := c.Do(req, &out); err != nil {
-			t.Fatal(err)
-		}
-		return out
-	}
 	for _, tc := range []struct {
 		name   string
 		answer gqlAnswer
 		want   string
 	}{
-		{"other repo", query("x", n, nil), "NOT_FOUND Could not resolve to a Repository with the name 'x/r'."},
-		{"missing issue", query("o", 9, nil), "NOT_FOUND Could not resolve to an Issue with the number of 9."},
-		{"pull request", query("o", 2, nil), "NOT_FOUND Could not resolve to an Issue with the number of 2."},
-		{"bad cursor", query("o", n, "nope"), " `nope` does not appear to be a valid cursor."},
+		{"missing issue", gqlQuery(t, f, answered, 9, nil), "NOT_FOUND Could not resolve to an Issue with the number of 9."},
+		{"pull request", gqlQuery(t, f, answered, 2, nil), "NOT_FOUND Could not resolve to an Issue with the number of 2."},
+		{"bad cursor", gqlQuery(t, f, answered, n, "nope"), " `nope` does not appear to be a valid cursor."},
+		{"no fullDatabaseId", gqlQuery(t, f, strings.Replace(answered, "fullDatabaseId", "databaseId", 1), n, nil),
+			" githubtest: the query doesn't name query.repository.issue.comments.nodes.fullDatabaseId"},
+		{"no comment editor", gqlQuery(t, f, strings.Replace(answered, "} editor { login __typename } }", "} }", 1), n, nil),
+			" githubtest: the query doesn't name query.repository.issue.comments.nodes.editor, " +
+				"query.repository.issue.comments.nodes.editor.__typename, query.repository.issue.comments.nodes.editor.login"},
 	} {
 		if len(tc.answer.Errors) != 1 || tc.answer.Errors[0].Type+" "+tc.answer.Errors[0].Message != tc.want {
 			t.Errorf("%s: errors = %+v, want %q", tc.name, tc.answer.Errors, tc.want)
@@ -212,10 +219,23 @@ func TestGraphQLAnswers(t *testing.T) {
 		}
 	}
 	// A cursor survives the deletion of the comment it points at.
-	end := query("o", n, nil).Data.Repository.Issue.Comments.PageInfo.EndCursor
+	end := gqlQuery(t, f, answered, n, nil).Data.Repository.Issue.Comments.PageInfo.EndCursor
 	f.DeleteComment(ids[99])
-	nodes := query("o", n, end).Data.Repository.Issue.Comments.Nodes
+	nodes := gqlQuery(t, f, answered, n, end).Data.Repository.Issue.Comments.Nodes
 	if want := strconv.FormatInt(ids[100], 10); len(nodes) != 1 || nodes[0].FullDatabaseID != want {
 		t.Errorf("page 2 after a delete = %+v, want only %s", nodes, want)
+	}
+}
+
+func TestBeforeGraphQLRunsOnce(t *testing.T) {
+	f := New(t, "o/r", "issuedog")
+	n := f.AddIssue("owner", "Title", "body")
+	var runs atomic.Int32
+	f.BeforeGraphQL(func() { runs.Add(1) })
+	for range 2 {
+		gqlQuery(t, f, answered, n, nil)
+	}
+	if n := runs.Load(); n != 1 {
+		t.Errorf("the hook ran %d times, want once", n)
 	}
 }
