@@ -245,17 +245,19 @@ func TestAllowed(t *testing.T) {
 func TestLogCopy(t *testing.T) {
 	reset := &net.OpError{Op: "read", Err: &os.SyscallError{Syscall: "read", Err: syscall.ECONNRESET}}
 	for _, tc := range []struct {
-		err  error
-		want string
+		err   error
+		level logr.Type
+		want  string
 	}{
-		{io.EOF, "egress tunnel closed"},
-		{net.ErrClosed, "egress tunnel closed"},
-		{reset, "egress tunnel closed"},
-		{fmt.Errorf("write: %w", syscall.EPIPE), "egress tunnel closed"},
-		{errors.New("disk on fire"), "egress tunnel copy failed"},
+		{io.EOF, logr.D, "egress tunnel closed"},
+		{net.ErrClosed, logr.D, "egress tunnel closed"},
+		{reset, logr.D, "egress tunnel closed"},
+		{fmt.Errorf("write: %w", syscall.EPIPE), logr.D, "egress tunnel closed"},
+		{errors.New("disk on fire"), logr.W, "egress tunnel copy failed"},
 	} {
+		// The writer only takes the expected level, so a wrong level fails.
 		var logs bytes.Buffer
-		stop := logr.AddWriter(&logs, logr.WithFilter(logr.All))
+		stop := logr.AddWriter(&logs, logr.WithFilter(tc.level))
 		logCopy(allowedHost, "to client", tc.err)
 		logr.Wait()
 		stop()
