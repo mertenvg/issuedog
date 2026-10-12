@@ -125,6 +125,7 @@ GitHub is the single source of truth. The daemon keeps only an in-memory cache, 
 | Transition history | Bot comments carrying a hidden marker, e.g. `<!-- issuedog:transition from=clarifying to=spec-review rev=3 body=9f2a61c0 run=8f2c cmd=2214587 -->` |
 | Attempt count | Hidden marker on the latest bot verifier comment |
 | State errors | Bot comments carrying an `error` marker with a stable key (5.3) |
+| Label reverts | Bot comments carrying a `revert` marker keyed by the reverted timeline event, so a replay doesn't comment twice (5.1, 5.2) |
 | Processed commands | The bot's 👍 reaction on the command comment, plus `cmd=<comment id>` in the transition marker. A reaction command (section 9.2) is recorded as `cmd=r<reaction id>` |
 | Spec and plan revisions | One revision comment per revision, naming `rev`. The hash is in the transition marker (section 7.4); for plans, see section 16 |
 | Origin of bot-created issues | Hidden `origin` marker in the issue body (section 6.2) |
