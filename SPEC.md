@@ -149,7 +149,7 @@ Every transition goes through one table in code (section 7). Each write is check
 
 - **Transitions.** Applying a transition whose marker already exists is a no-op.
 - **Commands.** For a command comment, the daemon writes the transition marker with `cmd=<comment id>`, then adds its 👍 reaction. GitHub has no ✅ reaction. On replay, a marker carrying that `cmd` means only the reaction is missing. For a reaction command, the marker carries `cmd=r<reaction id>`. A reaction can't be reacted to, so the transition comment is the acknowledgment, or for a 👍 on a state-error comment, the ack reply (5.3).
-- **Created issues.** Every issue the daemon creates has an `origin` marker with a stable item ID, such as `plan=#12 rev=3 item=T4`. Before creating an issue, the daemon searches for a marker with the same plan and item, whatever its `rev`, and reuses any match. A planner revising a plan keeps the item IDs of unchanged items and gives new items new IDs. The same applies to sub-issue links and dependency links: the daemon reads the current links before adding any.
+- **Created issues.** Every issue the daemon creates has an `origin` marker with a stable item ID, such as `plan=#12 rev=3 item=T4`. Before creating an issue, the daemon searches for a marker with the same plan and item, whatever its `rev`, and reuses any match. A planner revising a plan keeps the item ID of every item it keeps or changes, gives new items new IDs, and marks each item in the plan comment as kept, changed, new or dropped. The same applies to sub-issue links and dependency links: the daemon reads the current links before adding any.
 
 ### 5.3 State errors
 
@@ -223,14 +223,18 @@ Comments from people without write access hold nothing. They reach agents only a
 
 **Resolving.** Every trigger needs a trusted user's response:
 - A 👍 on an untrusted comment approves it. From then on it counts as that user's input (6.2).
-- A trusted comment counters every untrusted comment posted before it, and is itself owner input. Commands in it apply as usual, except that any that would move the issue wait. This covers `/approve`, and a 👍 on a revision comment made while held, but not `/resume`, which applies at once. A deferred `/revise` that the interviewer already handled in the post-hold `clarifying` isn't applied again. Such a command applies when the issue next reaches a stage it fits, if the revision it names still matches its hash (7.4). Otherwise it gets a rejection reply (9.2).
+- A trusted comment counters every untrusted comment posted before it, and is itself owner input. Commands in it apply as usual, except that any that would move the issue wait. This covers `/approve`, and a 👍 on a revision comment made while held, but not `/resume`, which applies at once. A deferred `/revise` that the interviewer already handled in the post-hold `clarifying` isn't applied again: the interviewer's transition marker records it with `cmd=` (5.2). Such a command applies when the issue next reaches a stage it fits, if the revision it names still matches its hash (7.4). Otherwise it gets a rejection reply (9.2).
 - A 👍 on a notice accepts the change. Markers in edited or deleted content are never read again (5.1). When that content was an App-written body, the daemon reposts its `origin` marker from the App's own last version in the edit history, so the issue stays in the pipeline (6.2) and de-duplication still finds it (5.2).
 
 **Leaving the hold.**
 - Once every trigger is resolved, the issue goes to `clarifying`, and its transition marker carries the stage before the hold. The interviewer reads the discussion, with approved and countering comments as owner input, and picks the next stage. Comments it handled there don't count again as revision requests (7.4):
   - Nothing in the discussion changes the issue: `origin`. A task whose run was dropped goes to `ready`.
   - The spec changes: the interviewer rewrites it, and the issue goes to `spec-review` for a new 👍 (7.4).
-  - The plan changes, or a child story's body: `planning`, then `plan-review` for a new 👍, even when `plan.review` is false. For an epic or story that was already `planned`, the approved revision updates its children rather than starting over. Unchanged items keep their issues (5.2), new items become new children, and children dropped from the plan are closed as not planned, with a comment naming the revision. A dropped child with an open PR is listed in the digest instead, for the owner to decide.
+  - The plan changes, or a child story's body: `planning`, then `plan-review` for a new 👍, even when `plan.review` is false. For an epic or story that was already `planned`, the approved revision updates its children rather than starting over:
+    - **Kept** items keep their issues (5.2).
+    - **Changed** items keep their issues, which the daemon rewrites with the new body and `rev`. A changed task goes to `ready`, and any run for it is dropped.
+    - **New** items become new children.
+    - **Dropped** children are closed as not planned, with a comment naming the revision, along with their open descendants. Closing ends any hold on them, and removes dependency links to them, so kept children aren't left blocked. If a dropped child or any of its descendants has an open PR, nothing in that subtree is closed. The subtree is listed for the owner instead (9.4, 9.6) until the owner closes it or the PR.
   - A task's body changes: the interviewer rewrites it in its own template (11.2, or 9.3 for a human task), and the task goes to `ready`, or back to `needs-human` for a human task.
   - More answers are needed: a question round, staying at `clarifying`.
 - Each of these writes a fresh transition marker, so an edited or deleted marker can't roll state back.
@@ -444,7 +448,7 @@ A `stage:needs-human` issue uses this template. The agent must fill every field;
 
 One pinned issue per repo, `issuedog digest`. It uses one of the repo's three pin slots.
 
-- The body is the current list: open questions, pending approvals, hand-offs and unblocked human tasks, PRs waiting for review, issues held for discussion (6.4), and state errors (5.3). These are exactly the items the daemon assigns (9.6). Each state error is also posted on its issue as a comment (5.3). Items are ordered by how many tasks each one unblocks.
+- The body is the current list: open questions, pending approvals, hand-offs and unblocked human tasks, PRs waiting for review, issues held for discussion (6.4), dropped children with an open PR (6.4), and state errors (5.3). These are exactly the items the daemon assigns (9.6). Each state error is also posted on its issue as a comment (5.3). Items are ordered by how many tasks each one unblocks.
 - Each item states what is being decided, the options, the recommendation, and links to the issue.
 - The daemon rewrites the body when the list changes. It posts a short comment that @mentions `notify` only when a new item appears, so GitHub sends one notification per new item.
 
@@ -467,6 +471,7 @@ The owner finds everything waiting on them in GitHub's own "assigned to me" view
 | Pull request | The PR is open and its task is at `pr-open`. It is unassigned when the PR merges or closes, or when the task leaves `pr-open` |
 | State error | From the daemon's state-error comment until a trusted user reacts 👍 to it, or its cause is gone (5.3) |
 | Discussion hold | The issue is held for discussion and a trigger is unresolved (6.4) |
+| Dropped with an open PR | The issue was dropped from its parent's latest approved plan and it, or a descendant, still has an open PR (6.4) |
 
 - These are the same items the digest lists (9.4).
 - Each PR carries the `priority:*` label of the task it closes. The task's label is the priority: the daemon copies it to the PR and reverts any other change to the PR's label.
