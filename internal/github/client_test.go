@@ -63,9 +63,9 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func newClient(t *testing.T, f *fakeGitHub) *Client {
+func newClient(t *testing.T, h http.Handler) *Client {
 	t.Helper()
-	srv := httptest.NewServer(f)
+	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	c, err := New(Config{AppID: 7, InstallationID: 42, Key: testKey(t), BaseURL: srv.URL})
 	if err != nil {
