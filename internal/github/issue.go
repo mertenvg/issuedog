@@ -14,6 +14,7 @@ import (
 // Snapshot is one issue as the daemon holds it in memory (plan #5, assumption 2).
 type Snapshot struct {
 	Number    int
+	Closed    bool
 	Title     string
 	Body      string
 	BodyEdit  Edit   // the body's last edit
@@ -76,7 +77,7 @@ func (c *Client) Snapshot(ctx context.Context, owner, repo string, number int) (
 		return nil, fmt.Errorf("snapshot of %s/%s#%d: %w to %s", owner, repo, number, ErrTransferred, u)
 	}
 	s := &Snapshot{
-		Number: issue.GetNumber(), Title: issue.GetTitle(),
+		Number: issue.GetNumber(), Closed: issue.GetState() == "closed", Title: issue.GetTitle(),
 		Author:    authorOf(issue.GetUser()),
 		CreatedAt: issue.GetCreatedAt().Time, UpdatedAt: issue.GetUpdatedAt().Time,
 		Type: TypeOf(issue),

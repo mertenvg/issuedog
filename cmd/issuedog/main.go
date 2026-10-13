@@ -28,7 +28,9 @@ import (
 	"github.com/mertenvg/issuedog/internal/firewall"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/repo"
+	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/issuedog/internal/trust"
+	"github.com/mertenvg/issuedog/internal/workspace"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -73,7 +75,8 @@ func run(args, environ []string, stdin io.Reader, stdout io.Writer) int {
 	if fs.NArg() > 0 {
 		return command(fs.Args(), stdin, stdout)
 	}
-	if _, err := agent.Credential(environ); err != nil {
+	cred, err := agent.Credential(environ)
+	if err != nil {
 		logr.Errorf("checking the Claude credential: %v", err)
 		return 1
 	}
@@ -97,6 +100,10 @@ func run(args, environ []string, stdin io.Reader, stdout io.Writer) int {
 	}
 	if err != nil {
 		logr.Errorf("starting the daemon: %v", err)
+		return 1
+	}
+	if d.Work, err = stageWork(d, set.name, cred); err != nil {
+		logr.Errorf("setting up stage runs: %v", err)
 		return 1
 	}
 	// network.allow is read once, so a change to it takes effect on restart.
@@ -189,6 +196,31 @@ func startDaemon(ctx context.Context, set settings, key []byte) (*daemon.Daemon,
 	return &daemon.Daemon{Step: newStep(a, tr), Clone: clone, Config: cfg}, nil
 }
 
+// stageWork is d's stage work: the stage-run harness, with no Stage
+// registered yet (#6 adds the interviewer). Runs, their clones in
+// /work/runs and claude, are agent's, and cred is the only credential in
+// the agent's environment. usage_limit.pattern is read once, so a change
+// to it takes effect on restart.
+func stageWork(d *daemon.Daemon, name string, cred agent.Cred) (func(context.Context, []daemon.Ready) error, error) {
+	uid, err := agentCredential(agentUser)
+	if err != nil {
+		return nil, fmt.Errorf("looking up %s: %w", agentUser, err)
+	}
+	gate, err := agent.NewGate(d.Config.UsageLimit.Pattern)
+	if err != nil {
+		return nil, fmt.Errorf("the usage-limit gate: %w", err)
+	}
+	runs := &daemon.Runs{
+		Daemon:    d,
+		Stages:    map[state.Stage]daemon.Stage{},
+		Runner:    &agent.Runner{Claude: claudePath, StateDir: stateDir, Credential: uid},
+		Workspace: &workspace.Workspace{Bare: filepath.Join(workDir, name+".git"), RunsDir: filepath.Join(workDir, "runs"), ContextDir: runDir, Credential: uid},
+		Gate:      gate,
+		Env:       agent.Env(cred, fmt.Sprintf("http://127.0.0.1:%d", proxyPort), agentHome),
+	}
+	return runs.Work, nil
+}
+
 // newStep is step 1 with the command and reaction handlers merged so far.
 // The loop's reloads replace its Trust, so the handlers and the trigger ask
 // for the current one rather than keeping tr.
@@ -265,6 +297,7 @@ func command(args []string, stdin io.Reader, stdout io.Writer) int {
 // runs pass http://127.0.0.1:3128 to agent.Env as the proxy.
 const (
 	agentUser = "agent"
+	agentHome = "/home/agent"
 	proxyPort = 3128
 )
 
@@ -278,6 +311,9 @@ var (
 	apiURL        = "" // api.github.com
 	gitRemote     = func(owner, name string) string { return "https://github.com/" + owner + "/" + name + ".git" }
 	workDir       = "/work"
+	stateDir      = "/state"        // the lease and run results (SPEC §8.2)
+	runDir        = "/run/issuedog" // each run's context files
+	claudePath    = "claude"
 	notifyContext = signal.NotifyContext
 )
 
@@ -325,7 +361,7 @@ func serveEgress() int {
 var agentCredential = agent.UserCredential
 
 // agentEnv is the whole environment of an as-agent command.
-var agentEnv = []string{"HOME=/home/agent", "PATH=/usr/local/bin:/usr/bin:/bin"}
+var agentEnv = []string{"HOME=" + agentHome, "PATH=/usr/local/bin:/usr/bin:/bin"}
 
 const asAgentUsage = "usage: issuedog as-agent -- <command> [args...]"
 

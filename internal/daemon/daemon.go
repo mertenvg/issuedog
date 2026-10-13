@@ -35,7 +35,7 @@ type Daemon struct {
 	// Config is the last config that loaded from main.
 	Config *config.Config
 	// Work, if set, gets each issue whose step 1 succeeded on the snapshot
-	// held, by number, with the Inputs it returned: stage work (T11).
+	// held, by number, with the Inputs it returned: stage work (Runs.Work).
 	Work func(ctx context.Context, ready []Ready) error
 
 	snaps         map[int]*github.Snapshot
@@ -44,6 +44,7 @@ type Daemon struct {
 	missing       map[int]bool             // stale issues found gone since their last good read
 	issuesSince   time.Time
 	commentsSince time.Time
+	polled        time.Time // when the last poll began
 }
 
 // CurrentTrust is a github.Trust that asks st.Trust on each call. Iterate's
@@ -99,6 +100,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	if d.Step.Trust == nil {
 		return errors.New("no trust has loaded from main yet")
 	}
+	d.polled = time.Now()
 	if err := d.poll(ctx); err != nil {
 		return fmt.Errorf("poll %s/%s: %w", d.Step.Owner, d.Step.Repo, err)
 	}
@@ -165,6 +167,20 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// reread makes the next Iterate read issue n again, and gives Work none of
+// its snapshot until then. gone counts a read that found it gone, deleted
+// or transferred, as one of the two that drop it.
+func (d *Daemon) reread(n int, gone bool) {
+	if d.stale == nil {
+		d.snaps, d.inputs, d.stale, d.missing = map[int]*github.Snapshot{}, map[int][]github.Comment{}, map[int]bool{}, map[int]bool{}
+	}
+	delete(d.inputs, n)
+	d.stale[n] = true
+	if gone {
+		d.missing[n] = true
+	}
 }
 
 // reload syncs the clone, then loads config and trust from main. A failure

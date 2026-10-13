@@ -139,8 +139,13 @@ var daemonEnv = []string{"ANTHROPIC_API_KEY=key", "ISSUEDOG_REPO=mertenvg/issued
 // fakeGitHub points the daemon at a fake GitHub for mertenvg/issuedog, with
 // mertenvg an admin and mallory a writer, and at a local bare repo as the
 // remote, whose main has files (path to content). It writes a usable App key.
+// Runs would be the test's own uid's, with state in a temp dir.
 func fakeGitHub(t *testing.T, files map[string]string) *githubtest.Fake {
 	t.Helper()
+	fakeAgent(t, nil)
+	oldState, oldRun := stateDir, runDir
+	t.Cleanup(func() { stateDir, runDir = oldState, oldRun })
+	stateDir, runDir = t.TempDir(), t.TempDir()
 	f := githubtest.New(t, "mertenvg/issuedog", "issuedog-dev")
 	f.SetPermission("mertenvg", "admin")
 	f.SetPermission("mallory", "write")
@@ -340,6 +345,11 @@ func TestRunDaemon(t *testing.T) {
 		f.AddLabel(m, "issuedog-dev[bot]", "stage:spec-review")
 		approve(m, f.AddComment(m, "issuedog-dev[bot]", revisionOf("body")))
 	}
+	// A lease for a stage with no Stage registered, which stage work drops.
+	lease := filepath.Join(stateDir, "lease.json")
+	if err := os.WriteFile(lease, []byte(`{"issue":1,"stage":"clarifying","run_id":"r1"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	calls := fakeEgress(t, nil, nil)
 	cancel, signals := cancelOnCall(t)
 	var logs bytes.Buffer
@@ -349,12 +359,13 @@ func TestRunDaemon(t *testing.T) {
 	go func() { done <- run(nil, daemonEnv, nil, io.Discard) }()
 
 	// The first iteration rejects mertenvg's /frob, as CODEOWNERS on main
-	// trusts only mertenvg, and approves both specs, then sleeps the
-	// config's 60s.
+	// trusts only mertenvg, approves both specs, and drops the lease, then
+	// sleeps the config's 60s.
 	planning := []string{"stage:planning"}
 	iterated := func() bool {
 		is := f.State().Issues
-		return len(is[0].Comments) >= 4 && slices.Equal(is[1].Labels, planning) && slices.Equal(is[2].Labels, planning)
+		_, err := os.Stat(lease)
+		return len(is[0].Comments) >= 4 && slices.Equal(is[1].Labels, planning) && slices.Equal(is[2].Labels, planning) && err != nil
 	}
 	for deadline := time.Now().Add(10 * time.Second); !iterated() && time.Now().Before(deadline); {
 		time.Sleep(10 * time.Millisecond)
@@ -411,7 +422,8 @@ func TestRunDaemon(t *testing.T) {
 		t.Errorf("startup steps = %q, want %q", got, want)
 	}
 	for _, want := range []string{"egress proxy listening on http://127.0.0.1:", "allowing example.com, api.anthropic.com",
-		"running as issuedog-dev[bot] on mertenvg/issuedog", "stopping on a signal"} {
+		"running as issuedog-dev[bot] on mertenvg/issuedog", "stopping on a signal",
+		"dropping the lease of run r1 on #1: no Stage is registered for clarifying"} {
 		if !strings.Contains(logs.String(), want) {
 			t.Errorf("logs = %q, want %q", logs.String(), want)
 		}
