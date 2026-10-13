@@ -12,6 +12,9 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,8 +22,13 @@ import (
 
 	"github.com/mertenvg/issuedog/internal/agent"
 	"github.com/mertenvg/issuedog/internal/appkey"
+	"github.com/mertenvg/issuedog/internal/config"
+	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/egress"
 	"github.com/mertenvg/issuedog/internal/firewall"
+	"github.com/mertenvg/issuedog/internal/github"
+	"github.com/mertenvg/issuedog/internal/repo"
+	"github.com/mertenvg/issuedog/internal/trust"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -69,12 +77,30 @@ func run(args, environ []string, stdin io.Reader, stdout io.Writer) int {
 		logr.Errorf("checking the Claude credential: %v", err)
 		return 1
 	}
+	set, err := readSettings(environ)
+	if err != nil {
+		logr.Errorf("reading the settings: %v", err)
+		return 1
+	}
 	// A missing or loose key stops startup before the firewall (SPEC §3.1).
-	if _, err := appkey.Load(appKeyPath); err != nil {
+	key, err := appkey.Load(appKeyPath)
+	if err != nil {
 		logr.Errorf("loading the App key: %v", err)
 		return 1
 	}
-	proxy, err := startEgress()
+	ctx, stop := notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	d, err := startDaemon(ctx, set, key)
+	if err != nil && ctx.Err() != nil {
+		logr.Infof("stopping on a signal during startup: %v", err)
+		return 0
+	}
+	if err != nil {
+		logr.Errorf("starting the daemon: %v", err)
+		return 1
+	}
+	// network.allow is read once, so a change to it takes effect on restart.
+	proxy, err := startEgress(d.Config.Network.Allow)
 	if err != nil {
 		logr.Errorf("starting egress: %v", err)
 		return 1
@@ -84,8 +110,92 @@ func run(args, environ []string, stdin io.Reader, stdout io.Writer) int {
 			logr.Errorf("stopping the egress proxy: %v", err)
 		}
 	}()
-	logr.Error("the daemon is not implemented yet")
-	return 1
+	d.Run(ctx)
+	logr.Info("stopping on a signal")
+	return 0
+}
+
+// settings are the daemon's own, from the environment (plan #5, assumption 8).
+type settings struct {
+	owner, name           string
+	appID, installationID int64
+}
+
+// readSettings reads ISSUEDOG_REPO (owner/name), ISSUEDOG_APP_ID and
+// ISSUEDOG_INSTALLATION_ID from environ.
+func readSettings(environ []string) (settings, error) {
+	env := map[string]string{}
+	for _, kv := range environ {
+		k, v, _ := strings.Cut(kv, "=")
+		env[k] = v
+	}
+	var set settings
+	var ok bool
+	set.owner, set.name, ok = strings.Cut(env["ISSUEDOG_REPO"], "/")
+	if !ok || set.owner == "" || set.name == "" || strings.Contains(set.name, "/") {
+		return settings{}, fmt.Errorf("ISSUEDOG_REPO is %q, not owner/name", env["ISSUEDOG_REPO"])
+	}
+	for _, id := range []struct {
+		name string
+		to   *int64
+	}{{"ISSUEDOG_APP_ID", &set.appID}, {"ISSUEDOG_INSTALLATION_ID", &set.installationID}} {
+		n, err := strconv.ParseInt(env[id.name], 10, 64)
+		if err != nil || n <= 0 {
+			return settings{}, fmt.Errorf("%s is %q, not a positive number", id.name, env[id.name])
+		}
+		*id.to = n
+	}
+	return set, nil
+}
+
+// startDaemon runs the startup steps after the key check: the client, the
+// App's slug, a token, the clone, config and trust from main, and the
+// labels. It returns the daemon, ready to run.
+func startDaemon(ctx context.Context, set settings, key []byte) (*daemon.Daemon, error) {
+	client, err := github.New(github.Config{AppID: set.appID, InstallationID: set.installationID, Key: key, BaseURL: apiURL})
+	if err != nil {
+		return nil, fmt.Errorf("creating the GitHub client: %w", err)
+	}
+	slug, err := client.AppSlug(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("reading the App's slug: %w", err)
+	}
+	token, err := client.Token(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("minting a token: %w", err)
+	}
+	clone := repo.New(gitRemote(set.owner, set.name), filepath.Join(workDir, set.name+".git"))
+	if err := clone.Sync(ctx, token); err != nil {
+		return nil, fmt.Errorf("syncing the clone: %w", err)
+	}
+	cfg, err := config.Load(ctx, clone)
+	if err != nil {
+		return nil, fmt.Errorf("loading the config from main: %w", err)
+	}
+	tr, err := trust.Load(ctx, clone, client.Client, set.owner, set.name)
+	if err != nil {
+		return nil, fmt.Errorf("loading trust from main: %w", err)
+	}
+	created, err := github.EnsureLabels(ctx, client, set.owner, set.name,
+		github.LabelOptions{Scopes: cfg.Scopes, TypeLabels: cfg.Types == "labels"})
+	if err != nil {
+		return nil, fmt.Errorf("creating the labels: %w", err)
+	}
+	if len(created) > 0 {
+		logr.Infof("created the labels %s", strings.Join(created, ", "))
+	}
+	logr.Infof("running as %s[bot] on %s/%s", slug, set.owner, set.name)
+	a := &daemon.Applier{Client: client, Owner: set.owner, Repo: set.name, AppSlug: slug}
+	return &daemon.Daemon{Step: newStep(a, tr), Clone: clone, Config: cfg}, nil
+}
+
+// newStep is step 1 with the command and reaction handlers merged so far.
+// The loop's reloads replace its Trust, so the trigger asks for the current
+// one rather than keeping tr.
+func newStep(a *daemon.Applier, tr github.Trust) *daemon.Step {
+	st := &daemon.Step{Applier: a, Trust: tr, Commands: map[string]daemon.Handler{"approve": daemon.ApproveCommand()}}
+	st.Reactions = daemon.ApproveByReaction(st.CurrentTrust())
+	return st
 }
 
 // printOut writes the program's own plain output, the version or help, and
@@ -155,21 +265,23 @@ const (
 	proxyPort = 3128
 )
 
-// allowHosts is network.allow (SPEC §13), at its default for now.
-// TODO(#37): read network.allow from .issuedog/config.yaml on main.
-var allowHosts = []string{"api.anthropic.com", "proxy.golang.org", "sum.golang.org"}
-
-// The App key's path, and the startup steps that need privileges or a fixed
-// port. Tests replace them.
+// The App key's path, the startup steps that need privileges or a fixed
+// port, where GitHub and the clone are, and how signals stop the daemon.
+// Tests replace them.
 var (
 	appKeyPath    = appkey.DefaultPath
 	applyFirewall = firewall.Apply
 	listenProxy   = egress.Listen
+	apiURL        = "" // api.github.com
+	gitRemote     = func(owner, name string) string { return "https://github.com/" + owner + "/" + name + ".git" }
+	workDir       = "/work"
+	notifyContext = signal.NotifyContext
 )
 
-// startEgress applies the agent firewall, then serves the egress proxy until
-// the returned server is closed.
-func startEgress() (*http.Server, error) {
+// startEgress applies the agent firewall, then serves the egress proxy,
+// which allows the hosts in allow (network.allow, SPEC §13), until the
+// returned server is closed.
+func startEgress(allow []string) (*http.Server, error) {
 	if err := applyFirewall(agentUser); err != nil {
 		return nil, fmt.Errorf("applying the agent firewall: %w", err)
 	}
@@ -178,22 +290,22 @@ func startEgress() (*http.Server, error) {
 		return nil, fmt.Errorf("listening for the egress proxy: %w", err)
 	}
 	// Tunnels are hijacked, so the header timeout only limits the request.
-	srv := &http.Server{Handler: egress.New(allowHosts), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Handler: egress.New(allow), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := srv.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logr.Errorf("serving the egress proxy: %v", err)
 		}
 	}()
-	logr.Infof("egress proxy listening on http://%s", l.Addr())
+	logr.Infof("egress proxy listening on http://%s, allowing %s", l.Addr(), strings.Join(allow, ", "))
 	return srv, nil
 }
 
-// serveEgress runs startEgress until SIGINT or SIGTERM. It lets
-// sandbox/test.sh check egress while the daemon can't yet keep running.
+// serveEgress runs startEgress, with the default network.allow, until SIGINT
+// or SIGTERM. It lets sandbox/test.sh check egress without GitHub.
 func serveEgress() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	proxy, err := startEgress()
+	proxy, err := startEgress(config.Defaults().Network.Allow)
 	if err != nil {
 		logr.Errorf("starting egress: %v", err)
 		return 1

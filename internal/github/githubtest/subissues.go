@@ -6,12 +6,6 @@ import (
 	gogithub "github.com/google/go-github/v92/github"
 )
 
-// Close closes an issue. It stays listed among its parent's sub-issues, as on
-// GitHub.
-func (f *Fake) Close(number int) {
-	f.edit(number, func(is *issue) { is.State, is.UpdatedAt = new("closed"), f.tick() })
-}
-
 // linked is a sub-issue LinkSubIssue listed.
 type linked struct {
 	repo   string

@@ -24,6 +24,8 @@ type Applier struct {
 	Owner, Repo string
 	// AppSlug is the App's slug. Its comments are by "<slug>[bot]".
 	AppSlug string
+
+	histories histories // see Dirty
 }
 
 // Move is one transition to apply.
