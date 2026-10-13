@@ -63,6 +63,11 @@ func (f *Fake) Close(number int) {
 	f.edit(number, func(is *issue) { is.State, is.UpdatedAt = new("closed"), f.tick() })
 }
 
+// Reopen reopens a closed issue.
+func (f *Fake) Reopen(number int) {
+	f.edit(number, func(is *issue) { is.State, is.UpdatedAt = new("open"), f.tick() })
+}
+
 // DeleteIssue deletes the newest issue and its comments, after which its
 // paths answer 404. Issues are kept by number, so only the newest can go.
 func (f *Fake) DeleteIssue() {

@@ -181,6 +181,26 @@ func TestRedirectsStayOnHost(t *testing.T) {
 	if is, _, err := c.Issues.Get(context.Background(), "o", "r", 2); err != nil || is.GetNumber() != 9 {
 		t.Errorf("Get of a transferred issue = %v, %v; want #9 in its new repo", is, err)
 	}
+	// Host names match in any case. The server is reached as localhost, so
+	// its host has letters, and redirects to LOCALHOST.
+	named := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/o/r/issues/5":
+			http.Redirect(w, r, "http://"+strings.ToUpper(r.Host)+"/repos/o/moved/issues/9", http.StatusMovedPermanently)
+		case "/repos/o/moved/issues/9":
+			_, _ = w.Write([]byte(`{"number":9}`))
+		default:
+			f.ServeHTTP(w, r)
+		}
+	}))
+	t.Cleanup(named.Close)
+	nc, err := New(Config{AppID: 7, InstallationID: 42, Key: testKey(t), BaseURL: strings.Replace(named.URL, "127.0.0.1", "localhost", 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if is, _, err := nc.Issues.Get(context.Background(), "o", "r", 5); err != nil || is.GetNumber() != 9 {
+		t.Errorf("Get of an issue redirected to its host in upper case = %v, %v; want #9", is, err)
+	}
 	// Minting, with the App's JWT, follows no redirect at all.
 	mint := newClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, other.URL+r.URL.Path, http.StatusFound)

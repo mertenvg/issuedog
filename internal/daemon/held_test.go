@@ -149,7 +149,8 @@ func TestIterateDropsDeletedIssues(t *testing.T) {
 }
 
 // One 404, from a proxy or a glitch, doesn't drop an issue: the next read
-// finds it, and it's visited and given to Work again. Two in a row do.
+// finds it, and it's visited and given to Work again. Two with no good read
+// between do.
 func TestIterateDropsAnIssueOnlyAfterTwo404s(t *testing.T) {
 	f := newFake(t)
 	fileAt(f, "spec-review", "a")
@@ -203,6 +204,35 @@ func TestIterateDropsAnIssueOnlyAfterTwo404s(t *testing.T) {
 	notFound()
 	pass("a 404 once it's back", []int{2}, false)
 	pass("the pass after it", []int{1, 2}, true)
+
+	// A close clears a 404, so once reopened a 404 is a first again.
+	touch()
+	notFound()
+	pass("a 404 before a close", []int{2}, false)
+	f.Close(1)
+	f.AddComment(2, "owner", "a comment")
+	pass("the close", []int{2}, false)
+	f.Reopen(1)
+	touch()
+	notFound()
+	pass("a 404 once reopened", []int{2}, false)
+	pass("the pass after it", []int{1, 2}, true)
+
+	// A failed read between two 404s shows nothing, so they count as two.
+	touch()
+	notFound()
+	pass("a 404", []int{2}, false)
+	f.AnswerOnce(func(r githubtest.Request) bool { return r.Method == "GET" && r.Path == "/issues/1" }, 500)
+	if err := d.Iterate(context.Background()); err == nil {
+		t.Fatal("Iterate = nil, want issue 1's failed read")
+	}
+	notFound()
+	pass("a 404 after a failed read", []int{2}, false)
+	from = len(f.Requests())
+	pass("the pass after the drop", []int{2}, false)
+	if r := readsOf(f, from, 1); len(r) != 0 {
+		t.Errorf("read dropped issue 1 again: %+v", r)
+	}
 }
 
 // A visit that fails, even with a 404, as on a deleted comment, doesn't drop

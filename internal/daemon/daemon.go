@@ -41,7 +41,7 @@ type Daemon struct {
 	snaps         map[int]*github.Snapshot
 	inputs        map[int][]github.Comment // only for snapshots step 1 succeeded on
 	stale         map[int]bool             // issues to read again
-	missing       map[int]bool             // stale issues whose last read found them gone
+	missing       map[int]bool             // stale issues found gone since their last good read
 	issuesSince   time.Time
 	commentsSince time.Time
 }
@@ -95,7 +95,8 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		s, err := d.Step.Client.Snapshot(ctx, d.Step.Owner, d.Step.Repo, n)
 		switch {
 		case gone(err) && d.missing[n]:
-			logr.Infof("%s/%s#%d is gone, deleted or transferred, two reads in a row, so it's dropped: %v", d.Step.Owner, d.Step.Repo, n, err)
+			// A failed read between the two shows nothing, so it doesn't count.
+			logr.Infof("%s/%s#%d is gone, deleted or transferred, on two reads with no good one between, so it's dropped: %v", d.Step.Owner, d.Step.Repo, n, err)
 			delete(d.stale, n)
 			delete(d.missing, n)
 		case gone(err):
@@ -182,6 +183,7 @@ func (d *Daemon) poll(ctx context.Context) error {
 				delete(d.snaps, n)
 				delete(d.inputs, n)
 				delete(d.stale, n)
+				delete(d.missing, n) // so a reopened issue starts with no strike
 			case changed(d.snaps[n], is):
 				d.stale[n] = true
 			}
@@ -267,7 +269,7 @@ func parentOf(u string) int {
 // gone reports whether err, from Snapshot, says the issue was deleted (404
 // or 410) or transferred (a 301). A failed visit, which may 404 on a deleted
 // comment, marks the issue stale, so only Snapshot decides, and Iterate
-// drops an issue only when two reads in a row say so.
+// drops an issue only when two reads say so with no good read between.
 func gone(err error) bool {
 	var e *gogithub.ErrorResponse
 	if errors.As(err, &e) && e.Response != nil {
