@@ -46,6 +46,21 @@ type Daemon struct {
 	commentsSince time.Time
 }
 
+// CurrentTrust is a github.Trust that asks st.Trust on each call. Iterate's
+// reloads replace st.Trust, so a trigger built once, such as
+// ApproveByReaction's, takes this to keep up with CODEOWNERS on main.
+func (st *Step) CurrentTrust() github.Trust { return currentTrust{st} }
+
+type currentTrust struct{ st *Step }
+
+func (c currentTrust) Trusted(ctx context.Context, login string) (bool, error) {
+	ok, err := c.st.Trust.Trusted(ctx, login)
+	if err != nil {
+		return false, fmt.Errorf("current trust: %w", err)
+	}
+	return ok, nil
+}
+
 // Ready is an issue whose step 1 succeeded on S, with its Inputs.
 type Ready struct {
 	S      *github.Snapshot
@@ -116,6 +131,8 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		if !read[n] && !slices.ContainsFunc(s.Labels, isSpecReview) {
 			continue
 		}
+		// TODO(#83): a visit at spec-review posts a revision for a body edit
+		// (PostRevision), with the function #83 adds.
 		in, err := d.Step.Run(ctx, s)
 		if err != nil {
 			errs = append(errs, err)

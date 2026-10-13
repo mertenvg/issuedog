@@ -28,8 +28,10 @@ import (
 
 	"github.com/mertenvg/logr/v2"
 
+	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/egress"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/state"
 )
 
 // runLogged runs the program and returns its exit code and what it logged.
@@ -211,6 +213,50 @@ func thisRepo(t *testing.T) map[string]string {
 	return files
 }
 
+// revisionOf is the App's comment for revision 1 of body, with its move to
+// spec-review.
+func revisionOf(body string) string {
+	h := state.BodyHash(body)
+	return "<!-- issuedog:transition from=clarifying to=spec-review rev=1 body=" + h + " run=r1 -->\n" +
+		"<!-- issuedog:revision rev=1 body=" + h + " -->"
+}
+
+// trustSet trusts the logins set true.
+type trustSet map[string]bool
+
+func (ts trustSet) Trusted(_ context.Context, login string) (bool, error) { return ts[login], nil }
+
+// The loop's reloads replace the step's Trust, and the 👍 trigger must use
+// the trust of the moment, not the one newStep got.
+func TestNewStepUsesCurrentTrust(t *testing.T) {
+	f := githubtest.New(t, "o/r", "issuedog-dev")
+	n := f.AddIssue("owner", "Spec", "body")
+	f.SetType(n, "Story")
+	f.AddLabel(n, "issuedog-dev[bot]", "stage:spec-review")
+	f.AddReaction(f.AddComment(n, "issuedog-dev[bot]", revisionOf("body")), "owner2", "+1")
+	c := f.Client(t)
+	st := newStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{"owner2": true})
+	step := func() []string {
+		t.Helper()
+		s, err := c.Snapshot(context.Background(), "o", "r", n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.Run(context.Background(), s); err != nil {
+			t.Fatal(err)
+		}
+		return f.State().Issues[0].Labels
+	}
+	st.Trust = trustSet{} // a reload: owner2 left CODEOWNERS
+	if got := step(); !slices.Equal(got, []string{"stage:spec-review"}) {
+		t.Errorf("labels = %v, want stage:spec-review: owner2 isn't trusted any more", got)
+	}
+	st.Trust = trustSet{"owner2": true}
+	if got := step(); !slices.Equal(got, []string{"stage:planning"}) {
+		t.Errorf("labels = %v, want stage:planning once owner2 is trusted again", got)
+	}
+}
+
 // cancelOnCall makes the daemon's signal context one the returned func
 // cancels, and records the signals it was asked to stop on.
 func cancelOnCall(t *testing.T) (cancel func(), signals *[]os.Signal) {
@@ -233,6 +279,16 @@ func TestRunDaemon(t *testing.T) {
 	f.AddComment(n, "issuedog-dev[bot]", "<!-- issuedog:transition from=intake to=ready run=a -->")
 	f.AddComment(n, "mallory", "/frob")
 	f.AddComment(n, "mertenvg", "/frob")
+	// Specs approved by mertenvg's 👍 on the revision, and by /approve.
+	for _, approve := range []func(m int, rev int64){
+		func(_ int, rev int64) { f.AddReaction(rev, "mertenvg", "+1") },
+		func(m int, _ int64) { f.AddComment(m, "mertenvg", "/approve") },
+	} {
+		m := f.AddIssue("mertenvg", "Spec", "body")
+		f.SetType(m, "Story")
+		f.AddLabel(m, "issuedog-dev[bot]", "stage:spec-review")
+		approve(m, f.AddComment(m, "issuedog-dev[bot]", revisionOf("body")))
+	}
 	calls := fakeEgress(t, nil, nil)
 	cancel, signals := cancelOnCall(t)
 	var logs bytes.Buffer
@@ -242,8 +298,14 @@ func TestRunDaemon(t *testing.T) {
 	go func() { done <- run(nil, daemonEnv, nil, io.Discard) }()
 
 	// The first iteration rejects mertenvg's /frob, as CODEOWNERS on main
-	// trusts only mertenvg, then sleeps the config's 60s.
-	for deadline := time.Now().Add(10 * time.Second); len(f.State().Issues[0].Comments) < 4 && time.Now().Before(deadline); {
+	// trusts only mertenvg, and approves both specs, then sleeps the
+	// config's 60s.
+	planning := []string{"stage:planning"}
+	iterated := func() bool {
+		is := f.State().Issues
+		return len(is[0].Comments) >= 4 && slices.Equal(is[1].Labels, planning) && slices.Equal(is[2].Labels, planning)
+	}
+	for deadline := time.Now().Add(10 * time.Second); !iterated() && time.Now().Before(deadline); {
 		time.Sleep(10 * time.Millisecond)
 	}
 	cancel()
@@ -284,6 +346,11 @@ func TestRunDaemon(t *testing.T) {
 	}
 	if len(slices.DeleteFunc(slices.Clone(labels), func(l string) bool { return l != "stage:intake" })) != 1 {
 		t.Errorf("repo labels = %v, want stage:intake, which existed, once", labels)
+	}
+	for i, is := range f.State().Issues[1:] {
+		if !slices.Equal(is.Labels, planning) {
+			t.Errorf("spec %d labels = %v, want %v: approved by %s", i+2, is.Labels, planning, []string{"👍", "/approve"}[i])
+		}
 	}
 	comments := f.State().Issues[0].Comments
 	if len(comments) != 4 || len(comments[1].Reactions) != 0 || !reflect.DeepEqual(comments[2].Reactions, []string{"issuedog-dev[bot] -1"}) {

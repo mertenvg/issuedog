@@ -186,7 +186,16 @@ func startDaemon(ctx context.Context, set settings, key []byte) (*daemon.Daemon,
 	}
 	logr.Infof("running as %s[bot] on %s/%s", slug, set.owner, set.name)
 	a := &daemon.Applier{Client: client, Owner: set.owner, Repo: set.name, AppSlug: slug}
-	return &daemon.Daemon{Step: &daemon.Step{Applier: a, Trust: tr}, Clone: clone, Config: cfg}, nil
+	return &daemon.Daemon{Step: newStep(a, tr), Clone: clone, Config: cfg}, nil
+}
+
+// newStep is step 1 with the command and reaction handlers merged so far.
+// The loop's reloads replace its Trust, so the trigger asks for the current
+// one rather than keeping tr.
+func newStep(a *daemon.Applier, tr github.Trust) *daemon.Step {
+	st := &daemon.Step{Applier: a, Trust: tr, Commands: map[string]daemon.Handler{"approve": daemon.ApproveCommand()}}
+	st.Reactions = daemon.ApproveByReaction(st.CurrentTrust())
+	return st
 }
 
 // printOut writes the program's own plain output, the version or help, and

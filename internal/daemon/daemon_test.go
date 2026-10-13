@@ -400,3 +400,47 @@ func TestRunStopsWhenCanceled(t *testing.T) {
 		t.Errorf("Run iterated %d times, want once before its 7s sleep", iterations)
 	}
 }
+
+func TestCurrentTrust(t *testing.T) {
+	st := &daemon.Step{Trust: trusted{"owner": true}}
+	tr := st.CurrentTrust()
+	if ok, err := tr.Trusted(context.Background(), "owner"); err != nil || !ok {
+		t.Errorf("Trusted(owner) = %t, %v; want true", ok, err)
+	}
+	st.Trust = failTrust{}
+	if _, err := tr.Trusted(context.Background(), "owner"); !errors.Is(err, errTrust) {
+		t.Errorf("Trusted(owner) after the trust changed: %v, want the new trust's error", err)
+	}
+}
+
+// A 👍 changes no issue's updated_at, so the visit to an issue at spec-review
+// approves it. Trust is main's as of each pass: once owner2 leaves
+// CODEOWNERS, their 👍 no longer approves.
+func TestIterateApprovesAtSpecReview(t *testing.T) {
+	f := newFake(t)
+	f.SetPermission("owner2", "admin")
+	n := f.AddIssue("owner", "Spec", "body")
+	f.SetType(n, "Story")
+	f.AddLabel(n, app, "stage:spec-review")
+	rev := f.AddComment(n, app, revision(1, "body"))
+	o := newOrigin(t)
+	o.commit(".github/CODEOWNERS", "* @owner @owner2\n")
+	d := newDaemon(t, f, o, nil)
+	iterate(t, d)
+	// Wired as main wires it, once trust has loaded.
+	d.Step.Commands["approve"] = daemon.ApproveCommand()
+	d.Step.Reactions = daemon.ApproveByReaction(d.Step.CurrentTrust())
+	labels := func() []string { return f.State().Issues[0].Labels }
+
+	o.commit(".github/CODEOWNERS", "* @owner\n")
+	f.AddReaction(rev, "owner2", "+1")
+	iterate(t, d)
+	if got := labels(); !reflect.DeepEqual(got, []string{"stage:spec-review"}) {
+		t.Errorf("labels after owner2's 👍 = %v, want stage:spec-review: owner2 left CODEOWNERS", got)
+	}
+	f.AddReaction(rev, "owner", "+1")
+	iterate(t, d)
+	if got := labels(); !reflect.DeepEqual(got, []string{"stage:planning"}) {
+		t.Errorf("labels after owner's 👍 = %v, want stage:planning", got)
+	}
+}
