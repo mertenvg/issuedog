@@ -18,8 +18,11 @@ import (
 //     must not write, as Step also calls it to word a lost reply again, and
 //     must not reject a command Apply has begun: a cmd=<comment id> marker
 //     Apply wrote, here or on another issue, means that part is applied.
-//   - Apply makes the writes, each checked first, and acks the command. A
-//     cmd=<comment id> marker on this issue ends it, so Apply writes it last.
+//   - Apply makes the writes, each checked first. A cmd=<comment id> marker
+//     on this issue ends the command, and so does the App's 👍 or 👎 on it, so
+//     Apply writes that marker, then the 👍, last. Transition with a comment
+//     key adds the 👍, so a move on another issue, such as a descendant,
+//     mustn't go through it as it is.
 type Handler struct {
 	Check, Apply func(ctx context.Context, a *Applier, c Cmd) error
 }
