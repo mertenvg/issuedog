@@ -39,6 +39,9 @@ type Move struct {
 	// Text goes before the marker. It is escaped (SPEC §5.1), so it may
 	// quote agent output or comments.
 	Text string
+	// NoAck leaves out the 👍 for a command comment's key: for a move a
+	// command makes before its own marker, such as on a descendant.
+	NoAck bool
 }
 
 // keyFields are the marker fields a Key names.
@@ -61,8 +64,8 @@ func (m Move) check() error {
 
 // Transition moves the issue s to m.To through the §7.2 table. It writes in
 // plan #5's assumption 4 order, skipping each step already done: the marker
-// comment, the new stage label, removing the old ones, then the 👍. Its
-// writes are added to s. dirty is as for state.Derive.
+// comment, the new stage label, removing the old ones, then the 👍, unless
+// m.NoAck. Its writes are added to s. dirty is as for state.Derive.
 //
 // The stage labels are set to match the latest marker, so a stage label a
 // trusted user set by hand would be overwritten. That's safe only because
@@ -121,7 +124,7 @@ func (a *Applier) Transition(ctx context.Context, s *github.Snapshot, dirty func
 	if err := a.setStage(ctx, s, is.Stage); err != nil {
 		return wrap(err)
 	}
-	if id, ok := m.Key.Comment(); ok {
+	if id, ok := m.Key.Comment(); ok && !m.NoAck {
 		if err := a.Ack(ctx, id); err != nil {
 			return wrap(err)
 		}
@@ -200,15 +203,8 @@ func (a *Applier) setStage(ctx context.Context, s *github.Snapshot, stage state.
 	if !ok {
 		return nil
 	}
-	if !slices.ContainsFunc(s.Labels, func(l string) bool { return strings.EqualFold(l, want) }) {
-		labels, _, err := a.Client.Issues.AddLabelsToIssue(ctx, a.Owner, a.Repo, s.Number, []string{want})
-		if err != nil {
-			return fmt.Errorf("add %s to %s/%s#%d: %w", want, a.Owner, a.Repo, s.Number, err)
-		}
-		s.Labels = nil
-		for _, l := range labels {
-			s.Labels = append(s.Labels, l.GetName())
-		}
+	if err := a.addLabel(ctx, s, want); err != nil {
+		return fmt.Errorf("set stage %s: %w", stage, err)
 	}
 	for _, l := range slices.Clone(s.Labels) {
 		if !isStageLabel(l) || strings.EqualFold(l, want) {
@@ -217,6 +213,22 @@ func (a *Applier) setStage(ctx context.Context, s *github.Snapshot, stage state.
 		if err := a.removeLabel(ctx, s, l); err != nil {
 			return fmt.Errorf("set stage %s: %w", stage, err)
 		}
+	}
+	return nil
+}
+
+// addLabel adds l to s, unless s has it. Like GitHub, it ignores case.
+func (a *Applier) addLabel(ctx context.Context, s *github.Snapshot, l string) error {
+	if slices.ContainsFunc(s.Labels, func(x string) bool { return strings.EqualFold(x, l) }) {
+		return nil
+	}
+	labels, _, err := a.Client.Issues.AddLabelsToIssue(ctx, a.Owner, a.Repo, s.Number, []string{l})
+	if err != nil {
+		return fmt.Errorf("add %s to %s/%s#%d: %w", l, a.Owner, a.Repo, s.Number, err)
+	}
+	s.Labels = nil
+	for _, x := range labels {
+		s.Labels = append(s.Labels, x.GetName())
 	}
 	return nil
 }

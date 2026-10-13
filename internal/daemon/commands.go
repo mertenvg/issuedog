@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
+	gogithub "github.com/google/go-github/v92/github"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/logr/v2"
@@ -22,7 +24,7 @@ import (
 //     on this issue ends the command, and so does the App's 👍 or 👎 on it, so
 //     Apply writes that marker, then the 👍, last. Transition with a comment
 //     key adds the 👍, so a move on another issue, such as a descendant,
-//     mustn't go through it as it is.
+//     sets Move.NoAck.
 type Handler struct {
 	Check, Apply func(ctx context.Context, a *Applier, c Cmd) error
 }
@@ -109,6 +111,175 @@ func (st *Step) reply(ctx context.Context, s *github.Snapshot, c github.Comment,
 	line, _, _ := strings.Cut(strings.TrimSpace(c.Body), "\n")
 	if err := st.comment(ctx, s, join(github.Escape("> "+strings.TrimSpace(line)+"\n\n"+text), marker)); err != nil {
 		return fmt.Errorf("reply %s: %w", reason, err)
+	}
+	return nil
+}
+
+// Commands returns the handlers of /hold, /resume and /priority, for
+// Step.Commands. trust is Step's: a descendant's labels are checked
+// (CheckLabels) before it's moved, as Transition needs.
+func Commands(trust github.Trust) map[string]Handler {
+	return map[string]Handler{
+		"hold": {Apply: func(ctx context.Context, a *Applier, c Cmd) error {
+			return a.moveFamily(ctx, c, trust, hold)
+		}},
+		"resume": {Check: resumeCheck, Apply: func(ctx context.Context, a *Applier, c Cmd) error {
+			return a.moveFamily(ctx, c, trust, resume)
+		}},
+		"priority": {Apply: setPriority},
+	}
+}
+
+// hold is /hold's move for an issue, by the command by (SPEC §6.4). Holds
+// stack, so an issue that's held already keeps its first at, and isn't moved.
+func hold(is state.Issue, by string) (Move, bool) {
+	if is.Stage == state.Held {
+		return Move{}, false
+	}
+	return Move{To: state.Held, Trigger: state.TriggerHold, Fields: map[string]string{"at": string(is.Stage), "reason": "owner"},
+		Text: fmt.Sprintf("On hold by %s, from `%s`.", by, is.Stage)}, true
+}
+
+// resume is /resume's move for an issue on an owner hold, by the command by:
+// back to its at. Any other hold, such as for discussion, stays.
+func resume(is state.Issue, by string) (Move, bool) {
+	at, ok := ownerHold(is)
+	return Move{To: at, Trigger: state.TriggerResume, Text: fmt.Sprintf("Resumed by %s, back to `%s`.", by, at)}, ok
+}
+
+// ownerHold returns where an issue on an owner hold goes back to: the at of
+// the marker that held it, if that has reason=owner.
+func ownerHold(is state.Issue) (state.Stage, bool) {
+	if is.Stage != state.Held {
+		return "", false
+	}
+	for _, m := range slices.Backward(is.Markers) {
+		if m.Kind == "transition" && state.Stage(m.Fields["to"]) == state.Held {
+			at := state.Stage(m.Fields["at"])
+			return at, m.Fields["reason"] == "owner" && at.Open() && at != state.Held
+		}
+	}
+	return "", false
+}
+
+// resumeCheck rejects a /resume with nothing to do: no owner hold on c's
+// issue or an open descendant, and no marker of c's, which would mean Apply
+// began.
+func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
+	family, err := a.family(ctx, c)
+	if err != nil {
+		return fmt.Errorf("check /resume: %w", err)
+	}
+	for _, n := range family {
+		is := state.Derive(n.s, a.AppSlug, n.d.Has)
+		if _, held := ownerHold(is); held || is.Moved(state.CmdKey(c.Comment.ID)) {
+			return nil
+		}
+	}
+	return Rejection{Reason: "nothing here or in its open sub-issues is on an owner hold"}
+}
+
+// moveFamily makes the move plan returns, if any, on each open descendant of
+// c's issue, depth first, then on the issue itself, then 👍s c. Each move is
+// keyed by c, and one already written only has its labels finished. A
+// descendant's labels are checked first, and its move has NoAck: the 👍
+// comes only after the issue's own marker (see Handler).
+func (a *Applier) moveFamily(ctx context.Context, c Cmd, trust github.Trust, plan func(is state.Issue, by string) (Move, bool)) error {
+	family, err := a.family(ctx, c)
+	if err != nil {
+		return fmt.Errorf("move: %w", err)
+	}
+	key := state.CmdKey(c.Comment.ID)
+	for _, n := range family {
+		by := "`/" + c.Name + "`"
+		if n.s != c.S {
+			if err := a.CheckLabels(ctx, n.s, trust, n.d.Has); err != nil {
+				return fmt.Errorf("move: %w", err)
+			}
+			by += fmt.Sprintf(" on #%d", c.S.Number)
+		}
+		is := state.Derive(n.s, a.AppSlug, n.d.Has)
+		m, ok := plan(is, by)
+		if is.Moved(key) {
+			m.To, ok = is.Stage, true
+		}
+		if !ok {
+			continue
+		}
+		m.Key, m.NoAck = key, true
+		if err := a.Transition(ctx, n.s, n.d.Has, m); err != nil {
+			return fmt.Errorf("move: %w", err)
+		}
+	}
+	if err := a.Ack(ctx, c.Comment.ID); err != nil {
+		return fmt.Errorf("move: %w", err)
+	}
+	return nil
+}
+
+// node is an issue a command moves, with its dirty content.
+type node struct {
+	s *github.Snapshot
+	d Dirt
+}
+
+// family returns the open descendants of c's issue (sub-issues), depth
+// first, each read fresh, then the issue itself, last.
+func (a *Applier) family(ctx context.Context, c Cmd) ([]node, error) {
+	var nodes []node
+	seen := map[int]bool{c.S.Number: true}
+	var walk func(n int) error
+	walk = func(n int) error {
+		opts := &gogithub.ListOptions{PerPage: 100}
+		for sub, err := range a.Client.SubIssue.ListByIssueIter(ctx, a.Owner, a.Repo, int64(n), opts) {
+			if err != nil {
+				return fmt.Errorf("sub-issues of %s/%s#%d: %w", a.Owner, a.Repo, n, err)
+			}
+			is := (*gogithub.Issue)(sub)
+			if seen[is.GetNumber()] {
+				continue
+			}
+			seen[is.GetNumber()] = true
+			if is.GetState() == "open" {
+				s, err := a.Client.Snapshot(ctx, a.Owner, a.Repo, is.GetNumber())
+				if err != nil {
+					return fmt.Errorf("descendant: %w", err)
+				}
+				d, err := a.Dirty(ctx, s)
+				if err != nil {
+					return fmt.Errorf("descendant: %w", err)
+				}
+				nodes = append(nodes, node{s, d})
+			}
+			if err := walk(is.GetNumber()); err != nil {
+				return fmt.Errorf("below #%d: %w", n, err)
+			}
+		}
+		return nil
+	}
+	if err := walk(c.S.Number); err != nil {
+		return nil, fmt.Errorf("family of %s/%s#%d: %w", a.Owner, a.Repo, c.S.Number, err)
+	}
+	return append(nodes, node{c.S, c.Dirt}), nil
+}
+
+// setPriority sets c's priority:pN label, removes the other priority:*
+// labels, then 👍s c (SPEC §9.2). It writes no marker, so the 👍 ends it.
+// Command.Check has rejected anything but p0 to p3.
+func setPriority(ctx context.Context, a *Applier, c Cmd) error {
+	want := "priority:" + c.Arg
+	if err := a.addLabel(ctx, c.S, want); err != nil {
+		return fmt.Errorf("priority: %w", err)
+	}
+	for _, l := range slices.Clone(c.S.Labels) {
+		if strings.HasPrefix(strings.ToLower(l), "priority:") && !strings.EqualFold(l, want) {
+			if err := a.removeLabel(ctx, c.S, l); err != nil {
+				return fmt.Errorf("priority: %w", err)
+			}
+		}
+	}
+	if err := a.Ack(ctx, c.Comment.ID); err != nil {
+		return fmt.Errorf("priority: %w", err)
 	}
 	return nil
 }
