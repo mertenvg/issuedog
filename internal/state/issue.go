@@ -49,8 +49,12 @@ type Issue struct {
 	Round int64
 }
 
-// FieldSeen is the marker field that ends an interviewer run: seen=<the
-// newest comment ID the run was given> (plan #5, amended assumption 5).
+// FieldSeen is the marker field seen=<the newest comment ID read>, for
+// what came before a write: on the transition that ends an interviewer run,
+// the newest comment the run was given (plan #5, amended assumption 5); on
+// a move by /revise, a revision request or /approve, that comment; on an
+// approval by 👍, and on a revision posted without a move, the newest
+// comment the pass read. Only a comment above it is new input after it.
 const FieldSeen = "seen"
 
 // RoundBound returns the bound on input that marker m, in comment id, sets:

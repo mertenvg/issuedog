@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -29,6 +28,7 @@ type Step struct {
 // is checked first, so a pass that crashed part way can run again (SPEC
 // §5.2). It returns s's Inputs, which are only right after a Run that
 // succeeds, so a caller skips stage work for an issue whose Run failed.
+// After a Run that succeeds, the loop calls ReviewVisit.
 func (st *Step) Run(ctx context.Context, s *github.Snapshot) ([]github.Comment, error) {
 	wrap := func(err error) error { return fmt.Errorf("step 1 on %s/%s#%d: %w", st.Owner, st.Repo, s.Number, err) }
 	d, err := st.Dirty(ctx, s)
@@ -89,11 +89,15 @@ func (st *Step) counted(ctx context.Context, s *github.Snapshot, d Dirt) (map[in
 // and a 👎'd command with no clean reply gets it again (reword). A processed
 // comment missing its 👍 gets it (SPEC §5.2), and one edited since it was
 // used gets one edited reply (SPEC §6.2). At clarifying, a plain comment in
-// the round is an answer, and gets a 👍.
+// the round is an answer, and gets a 👍. At spec-review, a revision request
+// is handled as /revise (requested).
 func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment) error {
 	is := state.Derive(s, st.AppSlug, d.Has)
 	named := is.Keys[state.CmdKey(c.ID)] // any reply marker included
 	cmd, isCmd := state.ParseCommand(c.Body)
+	if r, ok := requested(s, st.AppSlug, d, is, c); ok {
+		cmd, isCmd = r, true
+	}
 	answer := !isCmd && !named && is.Stage == state.Clarifying && c.ID > is.Round
 	reason := replied(is, c.ID)
 	if !isCmd && !answer && !named && c.Edit.At.IsZero() {
@@ -108,7 +112,7 @@ func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github
 		if reason == "rejected" {
 			return nil
 		}
-		return st.reword(ctx, s, d, c, is.Stage)
+		return st.reword(ctx, s, d, c, cmd, isCmd, is.Stage)
 	}
 	if reason == "rejected" { // not the App's own writes, which 👎 first
 		return st.react(ctx, c.ID, "-1")
@@ -140,16 +144,19 @@ func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github
 // reword posts again the reply to c, a 👎'd command with no clean reply. It
 // words the reason again through checks that don't write, so after a crash
 // the reply is the same, or else says it was lost. It never applies c.
-func (st *Step) reword(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment, stage state.Stage) error {
-	reason := lost
-	if cmd, ok := state.ParseCommand(c.Body); ok {
+func (st *Step) reword(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment, cmd state.Command, ok bool, stage state.Stage) error {
+	r := Rejection{Reason: lost}
+	if ok {
 		why, _, err := st.why(ctx, s, d, c, cmd, stage)
 		if err != nil {
 			return fmt.Errorf("reword: %w", err)
 		}
-		reason = cmp.Or(why, lost)
+		if why.Reason != "" {
+			r = why
+		}
 	}
-	return st.rejected(ctx, s, c, reason)
+	_, parsed := state.ParseCommand(c.Body)
+	return st.rejected(ctx, s, c, r, ok && !parsed)
 }
 
 const editedText = "This was edited after I acted on it, so I've ignored the edit. Post a new comment instead."
@@ -160,11 +167,11 @@ func editedSince(c github.Comment, t time.Time) bool {
 	return !c.Edit.At.Before(t) // never edited is the zero time, before any
 }
 
-// usedAt returns when the App first used comment id, and the stage when id
-// was posted, at which a plain comment was an answer. A marker uses id if it
-// names id in cmd or, unless id is a command, if it's a transition whose
-// seen covers id: one with no seen, such as a hold, read no answers. Like
-// state.Derive, it skips dirty comments.
+// usedAt returns when the App first used comment id, and the stage of the
+// round id is in (state.RoundBound), at which a plain comment was an answer.
+// A marker uses id if it names id in cmd or, unless id is a command, if it's
+// a transition whose seen covers id: one with no seen, such as a hold, read
+// no answers. Like state.Derive, it skips dirty comments.
 func (st *Step) usedAt(s *github.Snapshot, d Dirt, id int64, isCmd bool) (at time.Time, used bool, posted state.Stage) {
 	posted = state.Intake
 	for _, c := range s.Comments {
@@ -173,7 +180,7 @@ func (st *Step) usedAt(s *github.Snapshot, d Dirt, id int64, isCmd bool) (at tim
 		}
 		for _, m := range github.TrustedMarkers(c.Author, c.Body, st.AppSlug) {
 			b, bounds := state.RoundBound(m, c.ID)
-			if bounds && c.ID < id {
+			if bounds && b < id {
 				posted = state.Stage(m.Fields["to"])
 			}
 			if !used && (m.Fields["cmd"] == state.CmdKey(id).ID || (!isCmd && bounds && m.Fields[state.FieldSeen] != "" && b >= id)) {
