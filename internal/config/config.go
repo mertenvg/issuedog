@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -105,12 +106,95 @@ func (p PerStage[T]) list() []stageValue[T] {
 // Models lists the model names and aliases that stage defaults, commands and
 // labels may use. An empty list allows no model overrides.
 type Models struct {
-	Allowed []string `yaml:"allowed"`
+	Allowed []Model `yaml:"allowed"`
 }
 
-// Allows reports whether name is on the list. The match is exact.
+// Model is one entry of models.allowed: a plain name, such as "opus", or a
+// map {name: ..., label: ...} whose optional label is a short label suffix.
+type Model struct {
+	Name  string `yaml:"name"`
+	Label string `yaml:"label"`
+}
+
+// labelSuffixMax is the longest label suffix: GitHub caps a label name at 50
+// characters, and "verifier-model:" takes 15 of them.
+const labelSuffixMax = 35
+
+// UnmarshalYAML takes a plain name, or a map of name and label. yaml.v3
+// doesn't pass KnownFields on to a node's Decode, so other keys are refused
+// here.
+func (m *Model) UnmarshalYAML(n *yaml.Node) error {
+	switch n.Kind {
+	case yaml.ScalarNode:
+		if err := n.Decode(&m.Name); err != nil {
+			return fmt.Errorf("line %d: %w", n.Line, err)
+		}
+		return nil
+	case yaml.MappingNode:
+		for i := 0; i < len(n.Content); i += 2 {
+			if k := n.Content[i]; k.Value != "name" && k.Value != "label" {
+				return fmt.Errorf("line %d: field %s not found in a models.allowed entry", k.Line, k.Value)
+			}
+		}
+		type plain Model
+		if err := n.Decode((*plain)(m)); err != nil {
+			return fmt.Errorf("line %d: %w", n.Line, err)
+		}
+		return nil
+	}
+	return fmt.Errorf("line %d: %s is not a model name or {name, label}", n.Line, n.ShortTag())
+}
+
+// Suffix returns the entry's label suffix, as in model:<suffix>: its label if
+// it has one, else its name if that fits in 35 characters, else the name's
+// last 35 characters.
+func (m Model) Suffix() string {
+	if m.Label != "" {
+		return m.Label
+	}
+	r := []rune(m.Name)
+	if len(r) <= labelSuffixMax {
+		return m.Name
+	}
+	return string(r[len(r)-labelSuffixMax:])
+}
+
+// Allows reports whether name is an entry's full name. The match is exact,
+// so it is case-sensitive, and a label suffix doesn't count.
 func (m Models) Allows(name string) bool {
-	return slices.Contains(m.Allowed, name)
+	return slices.ContainsFunc(m.Allowed, func(e Model) bool { return e.Name == name })
+}
+
+// LabelSuffix returns the label suffix of the allowed model name, matched
+// exactly, for its model:* and verifier-model:* labels.
+func (m Models) LabelSuffix(name string) (string, bool) {
+	for _, e := range m.Allowed {
+		if e.Name == name {
+			return e.Suffix(), true
+		}
+	}
+	return "", false
+}
+
+// ModelName returns the full name of the allowed model whose label suffix is
+// suffix, ignoring case, as GitHub matches label names.
+func (m Models) ModelName(suffix string) (string, bool) {
+	for _, e := range m.Allowed {
+		if strings.EqualFold(e.Suffix(), suffix) {
+			return e.Name, true
+		}
+	}
+	return "", false
+}
+
+// Resolve returns the full name that arg names: an allowed full name,
+// matched exactly, or else a label suffix, matched as ModelName does.
+// validateModels makes the two unambiguous.
+func (m Models) Resolve(arg string) (string, bool) {
+	if m.Allows(arg) {
+		return arg, true
+	}
+	return m.ModelName(arg)
 }
 
 // effortLevels are the claude CLI's --effort levels (Claude Code 2.1.296),
@@ -282,11 +366,28 @@ func (c *Config) validate() error {
 
 // validateModels checks models.allowed and the stages' model and effort keys.
 func (c *Config) validateModels() error {
-	for _, m := range c.Models.Allowed {
-		// A model name is a label suffix, a command argument and a
-		// comma-joined --fallback-model entry.
-		if m == "" || strings.Contains(m, ",") || strings.IndexFunc(m, unicode.IsSpace) >= 0 {
-			return fmt.Errorf("models.allowed: %q is empty or has a space or comma", m)
+	allowed := c.Models.Allowed
+	for i, m := range allowed {
+		// A model name is a command argument and a comma-joined
+		// --fallback-model entry, and it or its label is a label suffix.
+		if !token(m.Name) {
+			return fmt.Errorf("models.allowed[%d]: %q is empty, has a space or comma, or isn't printable", i, m.Name)
+		}
+		if m.Label != "" && (!token(m.Label) || utf8.RuneCountInString(m.Label) > labelSuffixMax) {
+			return fmt.Errorf("models.allowed[%d].label: %q has a space or comma, isn't printable, or is longer than %d characters", i, m.Label, labelSuffixMax)
+		}
+	}
+	// Labels match ignoring case, and /model takes a name or a suffix.
+	for i, a := range allowed {
+		for _, b := range allowed[i+1:] {
+			if strings.EqualFold(a.Suffix(), b.Suffix()) {
+				return fmt.Errorf("models.allowed: %q and %q have the same label suffix %q, ignoring case", a.Name, b.Name, b.Suffix())
+			}
+		}
+		for j, b := range allowed {
+			if i != j && strings.EqualFold(a.Name, b.Suffix()) {
+				return fmt.Errorf("models.allowed: %q is also the label suffix of %q, ignoring case", a.Name, b.Name)
+			}
 		}
 	}
 	for _, s := range c.Stages.Model.list() {
@@ -311,4 +412,11 @@ func (c *Config) validateModels() error {
 		return fmt.Errorf("stages.max_effort: %q is not one of %s", c.Stages.MaxEffort, levels)
 	}
 	return nil
+}
+
+// token reports whether s is a nonempty run of printable characters without
+// whitespace or a comma.
+func token(s string) bool {
+	return s != "" && !strings.ContainsRune(s, ',') && strings.IndexFunc(s, unicode.IsSpace) < 0 &&
+		strings.IndexFunc(s, func(r rune) bool { return !unicode.IsGraphic(r) }) < 0
 }

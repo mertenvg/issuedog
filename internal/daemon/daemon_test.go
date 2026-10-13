@@ -352,6 +352,168 @@ func TestIterateKeepsLastGoodConfig(t *testing.T) {
 	}
 }
 
+// A reload that allows a new model creates its labels, once. One that adds
+// none doesn't touch the repo's labels, and a failure is tried again.
+func TestIterateCreatesLabelsForNewModels(t *testing.T) {
+	var logs bytes.Buffer
+	stop := logr.AddWriter(&logs)
+	defer stop()
+	f := quiet(t)
+	o := newOrigin(t)
+	d := newDaemon(t, f, o, nil)
+	labelCalls := func() int {
+		n := 0
+		for _, r := range f.Requests() {
+			if r.Path == "/labels" {
+				n++
+			}
+		}
+		return n
+	}
+	iterate(t, d)
+	if n := labelCalls(); n != 0 {
+		t.Fatalf("%d calls to the repo's labels, want none while no model is allowed", n)
+	}
+	const sonnet = "{name: us.anthropic.claude-sonnet-4-5-20250929-v1:0, label: sonnet-4-5}"
+	o.commit(config.Path, "types: labels\nmodels: {allowed: [opus]}\n")
+	iterate(t, d)
+	labels := f.RepoLabels()
+	for _, want := range []string{"model:opus", "verifier-model:opus", "effort:low", "verifier-effort:max", "stage:ready", "type:task"} {
+		if !slices.Contains(labels, want) {
+			t.Errorf("repo labels = %v, want %s", labels, want)
+		}
+	}
+	logr.Wait()
+	if !strings.Contains(logs.String(), "created the labels stage:intake, ") || !strings.Contains(logs.String(), ", verifier-effort:max on o/r") {
+		t.Errorf("logs = %q, want the labels created, from stage:intake to verifier-effort:max on o/r", logs.String())
+	}
+	calls := labelCalls()
+	iterate(t, d)
+	o.commit(config.Path, "types: labels\nmodels: {allowed: [Opus]}\n") // same label
+	iterate(t, d)
+	if n := labelCalls(); n != calls {
+		t.Errorf("%d more calls to the repo's labels, want none when no model is new", n-calls)
+	}
+
+	o.commit(config.Path, "types: labels\nmodels: {allowed: [{name: opus, label: claude-opus}]}\n") // a new label
+	iterate(t, d)
+	if labels := f.RepoLabels(); !slices.Contains(labels, "model:claude-opus") || !slices.Contains(labels, "verifier-model:claude-opus") {
+		t.Errorf("repo labels = %v, want model:claude-opus and verifier-model:claude-opus for opus's new label", labels)
+	}
+
+	o.commit(config.Path, "types: labels\nmodels: {allowed: [opus, "+sonnet+"]}\n")
+	f.AnswerOnce(func(r githubtest.Request) bool { return r.Method == "POST" && r.Path == "/labels" }, 500)
+	iterate(t, d)
+	logr.Wait()
+	if slices.Contains(f.RepoLabels(), "model:sonnet-4-5") {
+		t.Fatal("model:sonnet-4-5 was created through a failure")
+	}
+	if want := "creating the labels of the new models on o/r failed, so it's tried again next iteration: "; !strings.Contains(logs.String(), want) {
+		t.Errorf("logs = %q, want %q", logs.String(), want)
+	}
+	// retried checks that the next iteration creates the model's labels.
+	retried := func(suffix string) {
+		t.Helper()
+		iterate(t, d)
+		labels := f.RepoLabels()
+		for _, want := range []string{"model:" + suffix, "verifier-model:" + suffix} {
+			if !slices.Contains(labels, want) {
+				t.Errorf("repo labels = %v, want %s after the retry", labels, want)
+			}
+		}
+	}
+	retried("sonnet-4-5") // with the same config, which loads
+
+	// The retry doesn't wait on a config that loads: the last good one stays.
+	o.commit(config.Path, "types: labels\nmodels: {allowed: [opus, "+sonnet+", haiku]}\n")
+	f.AnswerOnce(func(r githubtest.Request) bool { return r.Method == "POST" && r.Path == "/labels" }, 500)
+	iterate(t, d)
+	o.commit(config.Path, "types: labels\nloop: {idle_sleep: 0s}\n")
+	retried("haiku")
+	logr.Wait()
+	if want := "loading the config of o/r from main failed"; !strings.Contains(logs.String(), want) {
+		t.Errorf("logs = %q, want %q", logs.String(), want)
+	}
+	calls = labelCalls()
+	iterate(t, d)
+	o.commit(config.Path, "types: labels\nmodels: {allowed: ["+sonnet+"]}\n") // one removed
+	iterate(t, d)
+	if n := labelCalls(); n != calls {
+		t.Errorf("%d more calls to the repo's labels, want none once they're created", n-calls)
+	}
+	seen := map[string]bool{}
+	for _, l := range f.RepoLabels() {
+		if seen[strings.ToLower(l)] {
+			t.Errorf("label %s created twice", l)
+		}
+		seen[strings.ToLower(l)] = true
+	}
+}
+
+// The labels a reload creates for a new model are safe to replay after a
+// crash at any write.
+func TestIterateReplaysLabelsForNewModels(t *testing.T) {
+	o := newOrigin(t)
+	o.commit(config.Path, "models: {allowed: [opus]}\n")
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := newFake(t)
+		f.AddRepoLabel("stage:intake")
+		fileAt(f, "ready", "a")
+		return f
+	}
+	pass := func(f *githubtest.Fake) error { return newDaemon(t, f, o, nil).Iterate(context.Background()) }
+	f := setup(t)
+	if err := pass(f); err != nil {
+		t.Fatal(err)
+	}
+	labels := f.State().RepoLabels
+	for _, want := range []string{"model:opus ", "verifier-model:opus ", "effort:low ", "verifier-effort:max ", "stage:held "} {
+		if !slices.ContainsFunc(labels, func(l string) bool { return strings.HasPrefix(l, want) }) {
+			t.Errorf("repo labels = %q, want %s", labels, want)
+		}
+	}
+	githubtest.Replay(t, setup, pass)
+}
+
+func TestLabelOptions(t *testing.T) {
+	cfg, err := config.Parse([]byte("types: labels\nscopes: [daemon]\nmodels: {allowed: [opus, {name: claude-sonnet-x, label: sonnet}]}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := github.LabelOptions{Scopes: []string{"daemon"}, TypeLabels: true,
+		Models:  []github.ModelLabel{{Suffix: "opus", Name: "opus"}, {Suffix: "sonnet", Name: "claude-sonnet-x"}},
+		Efforts: []string{"low", "medium", "high", "xhigh", "max"}}
+	if got := daemon.LabelOptions(cfg); !reflect.DeepEqual(got, want) {
+		t.Errorf("LabelOptions = %+v, want %+v", got, want)
+	}
+	if got := daemon.LabelOptions(config.Defaults()); got.TypeLabels || len(got.Models) != 0 || len(got.Efforts) != 5 {
+		t.Errorf("LabelOptions of the defaults = %+v, want no type labels or models, and five efforts", got)
+	}
+}
+
+// A long name with no label falls back to its last 35 characters, and says so.
+func TestLabelOptionsLogsTheFallback(t *testing.T) {
+	const long = "x.us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+	at35, wide := strings.Repeat("a", 35), strings.Repeat("é", 36) // 35 characters, and 36 in 72 bytes
+	cfg, err := config.Parse([]byte("models: {allowed: [opus, " + long + ", {name: y." + long + ", label: sonnet}, " + at35 + ", " + wide + "]}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	stop := logr.AddWriter(&logs, logr.WithFilter(logr.I))
+	defer stop()
+	got := daemon.LabelOptions(cfg)
+	logr.Wait()
+	if got.Models[1].Suffix != "pic.claude-sonnet-4-5-20250929-v1:0" {
+		t.Errorf("suffix of %s = %q, want its last 35 characters", long, got.Models[1].Suffix)
+	}
+	want := `models.allowed: "` + long + `" has no label and is longer than 35 characters, so its labels use its last 35 characters, "pic.claude-sonnet-4-5-20250929-v1:0"`
+	wideWant := `models.allowed: "` + wide + `" has no label and is longer than 35 characters, so its labels use its last 35 characters, "` + wide[2:] + `"`
+	if !strings.Contains(logs.String(), want) || !strings.Contains(logs.String(), wideWant) || strings.Count(logs.String(), "has no label") != 2 {
+		t.Errorf("info logs = %q, want %q and %q, and no others", logs.String(), want, wideWant)
+	}
+}
+
 func TestRunStopsWhenCanceled(t *testing.T) {
 	f := quiet(t)
 	d := newDaemon(t, f, newOrigin(t), nil)

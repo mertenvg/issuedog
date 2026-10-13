@@ -102,6 +102,9 @@ func TestEnsureLabelsCreatesMissing(t *testing.T) {
 			append(slices.Clone(fixed), "scope:daemon", "scope:github")},
 		{"type labels", LabelOptions{TypeLabels: true},
 			append(slices.Clone(fixed), "type:epic", "type:story", "type:task", "type:bug")},
+		{"models and efforts", LabelOptions{Models: []ModelLabel{{"opus", "opus"}, {"sonnet-bedrock", "us.anthropic.claude-sonnet-4-5"}}, Efforts: []string{"low", "max"}},
+			append(slices.Clone(fixed), "model:opus", "verifier-model:opus", "model:sonnet-bedrock", "verifier-model:sonnet-bedrock",
+				"effort:low", "verifier-effort:low", "effort:max", "verifier-effort:max")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -167,9 +170,46 @@ func TestEnsureLabelsLeavesExisting(t *testing.T) {
 	}
 }
 
+// A model label's description names the full model, cut at its start to fit
+// GitHub's 100 characters.
+func TestEnsureLabelsDescribesModels(t *testing.T) {
+	long := "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/" + strings.Repeat("x", 40) + "-end"
+	f := newFakeLabels(100)
+	ensure(t, f, LabelOptions{Models: []ModelLabel{{"sonnet", "us.anthropic.claude-sonnet-4-5"}, {"arn", long}}, Efforts: []string{"high"}})
+	want := map[string]string{
+		"model:sonnet":          "Runs other than the verifier's use us.anthropic.claude-sonnet-4-5",
+		"verifier-model:sonnet": "The verifier's runs use us.anthropic.claude-sonnet-4-5",
+		"effort:high":           "Runs other than the verifier's use high effort",
+		"verifier-effort:high":  "The verifier's runs use high effort",
+	}
+	got := map[string]fakeLabel{}
+	for _, l := range f.created {
+		got[l.Name] = l
+	}
+	for name, desc := range want {
+		if got[name].Description != desc {
+			t.Errorf("%s has description %q, want %q", name, got[name].Description, desc)
+		}
+	}
+	for name, prefix := range map[string]string{"model:arn": "Runs other than the verifier's use ", "verifier-model:arn": "The verifier's runs use "} {
+		d := got[name].Description
+		if tail := long[len(long)-(99-len(prefix)):]; d != prefix+"…"+tail || len([]rune(d)) != 100 {
+			t.Errorf("%s has description %q, want %q", name, d, prefix+"…"+tail)
+		}
+	}
+	colors := map[string]bool{}
+	for _, name := range []string{"model:sonnet", "verifier-model:sonnet", "effort:high", "verifier-effort:high"} {
+		colors[got[name].Color] = true
+	}
+	if len(colors) != 4 {
+		t.Errorf("colors = %v, want one for each kind of label", colors)
+	}
+}
+
 func TestEnsureLabelsSecondRunWritesNothing(t *testing.T) {
 	f := newFakeLabels(100)
-	opts := LabelOptions{Scopes: []string{"daemon", "github"}, TypeLabels: true}
+	opts := LabelOptions{Scopes: []string{"daemon", "github"}, TypeLabels: true,
+		Models: []ModelLabel{{"opus", "opus"}}, Efforts: []string{"low", "max"}}
 	ensure(t, f, opts)
 	f.writes = nil
 	if created := ensure(t, f, opts); len(created) != 0 || len(f.writes) != 0 {
