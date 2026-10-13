@@ -44,6 +44,7 @@ type Daemon struct {
 	missing       map[int]bool             // stale issues found gone since their last good read
 	issuesSince   time.Time
 	commentsSince time.Time
+	relabel       bool // a reload added models whose labels aren't created yet
 }
 
 // CurrentTrust is a github.Trust that asks st.Trust on each call. Iterate's
@@ -168,7 +169,8 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 }
 
 // reload syncs the clone, then loads config and trust from main. A failure
-// keeps the last good ones, and is logged.
+// keeps the last good ones, and is logged. A config that allows a new model
+// gets its labels created, until that succeeds.
 func (d *Daemon) reload(ctx context.Context) {
 	a := d.Step.Applier
 	token, err := a.Client.Token(ctx)
@@ -182,7 +184,11 @@ func (d *Daemon) reload(ctx context.Context) {
 	if cfg, err := config.Load(ctx, d.Clone); err != nil {
 		logr.Errorf("loading the config of %s/%s from main failed, so the last good one stays: %v", a.Owner, a.Repo, err)
 	} else {
+		d.relabel = d.relabel || newModels(d.Config, cfg)
 		d.Config = cfg
+	}
+	if d.relabel {
+		d.relabel = !d.ensureLabels(ctx)
 	}
 	if tr, err := trust.Load(ctx, d.Clone, a.Client.Client, a.Owner, a.Repo); err != nil {
 		logr.Errorf("loading the trust of %s/%s from main failed, so the last good one stays: %v", a.Owner, a.Repo, err)

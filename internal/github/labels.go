@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	gogithub "github.com/google/go-github/v92/github"
 )
@@ -48,6 +49,17 @@ var typeLabels = []labelSpec{
 	{"type:bug", "b60205", "Something broken"},
 }
 
+// Colors of the model and effort override labels, one per kind.
+const (
+	modelColor          = "d4c5f9"
+	verifierModelColor  = "bfdadc"
+	effortColor         = "fef2c0"
+	verifierEffortColor = "f9d0c4"
+)
+
+// descriptionMax is GitHub's cap on a label description, in characters.
+const descriptionMax = 100
+
 // LabelOptions holds the parts of the repo config that decide which labels
 // exist beyond the fixed set.
 type LabelOptions struct {
@@ -55,6 +67,17 @@ type LabelOptions struct {
 	Scopes []string
 	// TypeLabels is true when the repo uses type:* labels (types: labels).
 	TypeLabels bool
+	// Models are the allowed models, each with a model:<suffix> and a
+	// verifier-model:<suffix> label.
+	Models []ModelLabel
+	// Efforts are the effort levels, each with an effort:<level> and a
+	// verifier-effort:<level> label.
+	Efforts []string
+}
+
+// ModelLabel is one allowed model: its label suffix and its full name.
+type ModelLabel struct {
+	Suffix, Name string
 }
 
 // wantedLabels returns every label the repo should have under opts.
@@ -66,7 +89,27 @@ func wantedLabels(opts LabelOptions) []labelSpec {
 	if opts.TypeLabels {
 		want = append(want, typeLabels...)
 	}
+	for _, m := range opts.Models {
+		want = append(want,
+			labelSpec{"model:" + m.Suffix, modelColor, describe("Runs other than the verifier's use ", m.Name)},
+			labelSpec{"verifier-model:" + m.Suffix, verifierModelColor, describe("The verifier's runs use ", m.Name)})
+	}
+	for _, e := range opts.Efforts {
+		want = append(want,
+			labelSpec{"effort:" + e, effortColor, "Runs other than the verifier's use " + e + " effort"},
+			labelSpec{"verifier-effort:" + e, verifierEffortColor, "The verifier's runs use " + e + " effort"})
+	}
 	return want
+}
+
+// describe is prefix and name, with the start of name cut to fit GitHub's cap
+// on a description. A long model name differs in its end.
+func describe(prefix, name string) string {
+	r := []rune(name)
+	if room := descriptionMax - utf8.RuneCountInString(prefix); len(r) > room {
+		name = "…" + string(r[len(r)-room+1:])
+	}
+	return prefix + name
 }
 
 // EnsureLabels creates the pipeline labels missing from owner/repo and
