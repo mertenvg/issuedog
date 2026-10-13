@@ -24,14 +24,15 @@ import (
 
 // fakeClaude counts its runs in $FAKE/count, keeps each prompt and the lease
 // it ran under as $FAKE/prompt.<n> and $FAKE/lease.<n>, sleeps for
-// $FAKE/sleep seconds, if set, prints $FAKE/out and exits with $FAKE/exit,
-// if there is one.
+// $FAKE/sleep seconds, if set, writes $FAKE/stderr, if set, to stderr,
+// prints $FAKE/out and exits with $FAKE/exit, if there is one.
 const fakeClaude = `#!/bin/sh
 n=$(($(cat "$FAKE/count" 2>/dev/null || echo 0) + 1))
 printf '%s' "$2" > "$FAKE/prompt.$n"
 cp "$STATE/lease.json" "$FAKE/lease.$n"
 echo "$n" > "$FAKE/count"
 [ -f "$FAKE/sleep" ] && sleep "$(cat "$FAKE/sleep")"
+[ -f "$FAKE/stderr" ] && cat "$FAKE/stderr" >&2
 cat "$FAKE/out"
 exit "$(cat "$FAKE/exit" 2>/dev/null || echo 0)"
 `

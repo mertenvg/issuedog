@@ -16,6 +16,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/logr/v2"
 )
 
 // errorMarkers lists the state errors on issue n, by their markers.
@@ -174,14 +175,28 @@ func TestApplyStateError(t *testing.T) {
 		answer := interview(f)
 		f.SetType(1, "Weird")
 		g := newRig(t, f, newOrigin(t), t.TempDir())
-		g.d.Config.Loop.MaxAttempts = 1
+		g.d.Config.Loop.MaxAttempts = 3
+		g.stage.pending = func(daemon.Input) bool { return true }
 		g.claude(okOut, 0)
+		for range 4 {
+			if err := g.work(1); err != nil {
+				t.Fatal(err)
+			}
+		}
+		errs := errorMarkers(f, 1)
+		key := fmt.Sprintf("<!-- issuedog:error kind=transition key=clarifying-%d-", answer)
+		if g.runs() != 1 || len(errs) != 1 || !strings.HasPrefix(errs[0], key) || len(g.leftovers()) != 0 || g.lease().RunID != "" {
+			t.Errorf("%d runs, errors %q, left %v, lease %+v; want one run, one error %s…, and nothing left",
+				g.runs(), errs, g.leftovers(), g.lease(), key)
+		}
+		// Fixing the type changes the issue: the stage runs again.
+		f.SetType(1, "Epic")
 		if err := g.work(1); err != nil {
 			t.Fatal(err)
 		}
-		errs := errorMarkers(f, 1)
-		if len(errs) != 2 || errs[1] != capError(answer) || len(g.leftovers()) != 0 {
-			t.Errorf("errors %q, left %v; want the transition error, then the cap, and nothing left", errs, g.leftovers())
+		comments := f.State().Issues[0].Comments
+		if last := comments[len(comments)-1].Body; g.runs() != 2 || !strings.Contains(last, "to=spec-review run=run2 ") {
+			t.Errorf("after the type is fixed: %d runs, newest comment %q; want run2 applied", g.runs(), last)
 		}
 	})
 	t.Run("resumed", func(t *testing.T) {
@@ -341,5 +356,67 @@ func TestPendingAfterTrustCheck(t *testing.T) {
 	in := slices.DeleteFunc(slices.Clone(s.Comments), func(c github.Comment) bool { return c.ID != x })
 	if err := g.r.Work(context.Background(), []daemon.Ready{{S: s, Inputs: in}}); err != nil || g.runs() != 0 {
 		t.Errorf("Work = %v, with %d runs; want none on an untrusted input", err, g.runs())
+	}
+}
+
+// Only an edit to one of the run's inputs drops its result: an untrusted
+// user editing their own comment during the run doesn't. (An edited input
+// is TestAnswerEditedDuringRun.)
+func TestUntrustedEditDuringRunApplies(t *testing.T) {
+	f := newFake(t)
+	interview(f)
+	remark := f.AddComment(1, "mallory", "just a remark")
+	answer := f.AddComment(1, "owner", "1b")
+	f.AddReaction(answer, app, "+1")
+	g := newRig(t, f, newOrigin(t), t.TempDir())
+	g.claude(okOut, 0)
+	g.stage.during = func() { f.EditComment(remark, "mallory", "an edited remark") }
+	iterate(t, g.d)
+	comments := f.State().Issues[0].Comments
+	if last := comments[len(comments)-1].Body; g.runs() != 1 || g.file("prompt.1") != "1a\n1b" || last != specWritten("run1", answer) {
+		t.Errorf("%d runs on %q, newest comment %q; want run1 on both answers, applied", g.runs(), g.file("prompt.1"), last)
+	}
+}
+
+// A failed run logs the last 4 KB of claude's stderr, as text.
+func TestFailedRunLogsStderr(t *testing.T) {
+	for name, tt := range map[string]struct {
+		out    string
+		exit   int
+		logged bool
+	}{
+		"failed":    {out: failOut, exit: 1, logged: true},
+		"invalid":   {out: invalidOut, exit: 0, logged: false},
+		"succeeded": {out: okOut, exit: 0, logged: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t)
+			interview(f)
+			g := newRig(t, f, newOrigin(t), t.TempDir())
+			g.claude(tt.out, tt.exit)
+			stderr := "HEAD" + strings.Repeat("x", 5000) + "\x1b[31mTAIL"
+			if err := os.WriteFile(g.path("claude", "stderr"), []byte(stderr), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var logs strings.Builder
+			stop := logr.AddWriter(&logs, logr.WithFilter(logr.W))
+			err := g.work(1)
+			logr.Wait()
+			stop()
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, tail, found := strings.Cut(logs.String(), fmt.Sprintf("the last 4096 of %d bytes claude wrote to stderr:\n", len(stderr)))
+			if found != tt.logged {
+				t.Fatalf("logged the stderr tail: %t, want %t; logs %q", found, tt.logged, logs.String())
+			}
+			if !found {
+				return
+			}
+			want := strings.Repeat("x", 4096-len("\x1b[31mTAIL")) + "�[31mTAIL"
+			if !strings.HasPrefix(tail, want) || strings.Contains(tail, "HEAD") {
+				t.Errorf("logged tail %q…; want the last 4096 bytes, its control characters replaced", tail[:min(len(tail), 80)])
+			}
+		})
 	}
 }

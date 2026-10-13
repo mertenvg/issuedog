@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -65,12 +66,16 @@ type Result struct {
 	S      *github.Snapshot
 	Dirt   Dirt
 	Output json.RawMessage // valid by the Stage's Schema
+
+	moveKey string // see moveKey
 }
 
 // Move is a move keyed by the run, with seen=r.Seen, so the next round's
-// input is what came after it (state.RoundBound).
+// input is what came after it (state.RoundBound). If the table lacks it,
+// its state error is keyed by moveKey, so the stage runs no more until the
+// issue changes.
 func (r Result) Move(to state.Stage, trigger state.Trigger) Move {
-	m := Move{To: to, Trigger: trigger, Key: state.Key{Field: "run", ID: r.RunID}}
+	m := Move{To: to, Trigger: trigger, Key: state.Key{Field: "run", ID: r.RunID}, ErrorKey: r.moveKey}
 	if r.Seen > 0 {
 		m.Fields = map[string]string{state.FieldSeen: strconv.FormatInt(r.Seen, 10)}
 	}
@@ -90,7 +95,7 @@ type Lease struct {
 	Started time.Time   `json:"started"`
 	Polled  time.Time   `json:"polled"` // when the last poll before pickup began
 	// Seen is the newest comment the run was given, and Edits the last
-	// edit of each edited comment up to it, as the run read them.
+	// edit of each of its inputs, as the run read them: zero for none.
 	Seen  int64               `json:"seen"`
 	Edits map[int64]time.Time `json:"edits,omitempty"`
 	// AttemptKey names the attempts the run is one of (attemptKey), and
@@ -161,8 +166,11 @@ func (r *Runs) Work(ctx context.Context, ready []Ready) error {
 // whether it ran. A run that fails, but not on a usage limit or in its
 // setup, counts as an attempt (failed); after loop.max_attempts in a row
 // the issue gets one state error (SPEC §5.3) and no more runs until the
-// stage moves or gets new input. A run whose result fails to apply keeps
-// its lease, for the next pass to apply it (applyLease).
+// stage moves or gets new input. A result asking for a move the table
+// lacks is no attempt: it gets one state error (Transition), and no run
+// starts until the issue changes (moveKey). A run whose result fails to
+// apply keeps its lease, for the next pass to apply it (applyLease). A
+// failed run logs the end of claude's stderr.
 func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 	a, n := r.Daemon.Step.Applier, rd.S.Number
 	wrap := func(err error) error {
@@ -183,6 +191,10 @@ func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 	errKey := attemptKey(is, rd.Inputs)
 	if is.Reported(kindAttempts, errKey) {
 		logr.Debugf("%s/%s#%d: no %s run: it failed loop.max_attempts times", a.Owner, a.Repo, n, st.Agent())
+		return false, nil
+	}
+	if is.Reported("transition", moveKey(errKey, is.Item)) {
+		logr.Debugf("%s/%s#%d: no %s run: the table lacks the move its last run asked for", a.Owner, a.Repo, n, st.Agent())
 		return false, nil
 	}
 	fresh, err := a.Client.Snapshot(ctx, a.Owner, a.Repo, n)
@@ -208,16 +220,21 @@ func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 		Started: r.now(), Polled: r.Daemon.polled, Edits: map[int64]time.Time{}, AttemptKey: errKey, Attempt: in.Attempt}
 	for _, c := range rd.S.Comments {
 		l.Seen = max(l.Seen, c.ID)
-		if !c.Edit.At.IsZero() {
-			l.Edits[c.ID] = c.Edit.At
-		}
+	}
+	for _, c := range in.Inputs {
+		l.Edits[c.ID] = c.Edit.At
 	}
 	defer r.Daemon.reread(n, false)
 	if err := r.writeLease(l); err != nil {
 		return true, wrap(err)
 	}
 	logr.Infof("%s/%s#%d: starting %s run %s, attempt %d", a.Owner, a.Repo, n, st.Agent(), l.RunID, in.Attempt)
-	raw, runErr := r.run(ctx, st, in)
+	stderr := agent.NewTail(stderrTail)
+	raw, runErr := r.run(ctx, st, in, stderr)
+	if failed, _ := outcome(raw); (failed || runErr != nil) && stderr.Len() > 0 {
+		logr.Warnf("%s/%s#%d: run %s failed; the last %d of %d bytes claude wrote to stderr:\n%s",
+			a.Owner, a.Repo, n, l.RunID, stderr.Len(), stderr.Total(), stderr.Text())
+	}
 	var setup *agent.SetupError
 	switch {
 	case ctx.Err() != nil && runErr == nil:
@@ -243,18 +260,22 @@ func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 	if runErr != nil {
 		return true, wrap(r.failed(ctx, rd.S, st, l, runErr)) // logged there
 	}
-	switch err := r.applyLease(ctx, l, st, out); {
-	case StateError(err):
-		// Transition reported it, and apply finished the run: a failed attempt.
-		return true, wrap(r.failed(ctx, rd.S, st, l, err))
-	default:
+	if err := r.applyLease(ctx, l, st, out); err != nil && !StateError(err) {
 		return true, wrap(err)
 	}
+	// A state error was posted and logged by Transition, keyed so that no
+	// run starts until the issue changes. Running again can't fix it, so
+	// it's no attempt.
+	return true, nil
 }
 
-// run prepares the workspace and runs claude for st, returning its output.
-// A failure to set the run up is an *agent.SetupError, as Runner.Run's are.
-func (r *Runs) run(ctx context.Context, st Stage, in Input) ([]byte, error) {
+// stderrTail is how much of claude's stderr a failed run logs: the end.
+const stderrTail = 4096
+
+// run prepares the workspace and runs claude for st, returning its output
+// and sending its stderr to stderr. A failure to set the run up is an
+// *agent.SetupError, as Runner.Run's are.
+func (r *Runs) run(ctx context.Context, st Stage, in Input, stderr io.Writer) ([]byte, error) {
 	cfg := r.Daemon.Config.Stages
 	turns, okT := pick(cfg.MaxTurns, st.Agent())
 	budget, okB := pick(cfg.MaxBudgetUSD, st.Agent())
@@ -269,7 +290,12 @@ func (r *Runs) run(ctx context.Context, st Stage, in Input) ([]byte, error) {
 	if err := r.Workspace.Prepare(ctx, in.RunID, "", files); err != nil {
 		return nil, &agent.SetupError{Err: err}
 	}
-	out, err := r.Runner.Run(ctx, agent.Stage{RunID: in.RunID, Dir: r.Workspace.Dir(in.RunID), ContextDir: r.Workspace.Context(in.RunID),
+	runner := *r.Runner
+	if runner.Stderr != nil {
+		stderr = io.MultiWriter(runner.Stderr, stderr)
+	}
+	runner.Stderr = stderr
+	out, err := runner.Run(ctx, agent.Stage{RunID: in.RunID, Dir: r.Workspace.Dir(in.RunID), ContextDir: r.Workspace.Context(in.RunID),
 		Schema: st.Schema(), MaxTurns: int(turns), MaxBudgetUSD: budget, Timeout: timeout, Env: r.Env})
 	if err != nil {
 		return out, fmt.Errorf("run %s: %w", in.RunID, err)
@@ -308,8 +334,9 @@ func (r *Runs) applyLease(ctx context.Context, l Lease, st Stage, out json.RawMe
 // l's valid result, through st, then removes the run's files. The result
 // is dropped, writing nothing, when the issue is gone or closed, when its
 // stage changed during the run (the owner's change wins, and CheckLabels
-// records one by hand), or when a comment up to l.Seen was edited since
-// the run read it, so the stage runs again on the edit. A result whose
+// records one by hand), or when one of its inputs was edited since the run
+// read it, so the stage runs again on the edit. Edits to other comments,
+// such as an untrusted user's to their own, don't count. A result whose
 // move is written already is only finished. On an error that isn't a
 // state error, the lease stays.
 func (r *Runs) apply(ctx context.Context, l Lease, st Stage, out json.RawMessage) error {
@@ -336,19 +363,22 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, out json.RawMessage
 	if err != nil {
 		return fmt.Errorf("apply run %s: %w", l.RunID, err)
 	}
-	if is := state.Derive(s, a.AppSlug, d.Has); !is.Moved(state.Key{Field: "run", ID: l.RunID}) {
+	is := state.Derive(s, a.AppSlug, d.Has)
+	if !is.Moved(state.Key{Field: "run", ID: l.RunID}) {
 		if is.Stage != l.Stage {
 			return drop("the issue moved from %s to %s during the run", l.Stage, is.Stage)
 		}
 		for _, c := range s.Comments {
-			if c.ID <= l.Seen && !c.Edit.At.Equal(l.Edits[c.ID]) {
-				return drop("comment %d was edited since the run read it, so the stage runs again", c.ID)
+			if at, input := l.Edits[c.ID]; input && !c.Edit.At.Equal(at) {
+				return drop("input %d was edited since the run read it, so the stage runs again", c.ID)
 			}
 		}
 	}
-	if err := st.Apply(ctx, a, Result{RunID: l.RunID, Seen: l.Seen, S: s, Dirt: d, Output: out}); err != nil {
+	res := Result{RunID: l.RunID, Seen: l.Seen, S: s, Dirt: d, Output: out, moveKey: moveKey(l.AttemptKey, is.Item)}
+	if err := st.Apply(ctx, a, res); err != nil {
 		if StateError(err) {
-			return errors.Join(err, r.finish(ctx, l))
+			// Not an attempt: the stage can't run again until the issue changes.
+			return errors.Join(err, r.uncounted(ctx, l))
 		}
 		return fmt.Errorf("apply run %s: %w", l.RunID, err)
 	}
@@ -481,6 +511,13 @@ func (r *Runs) uncounted(ctx context.Context, l Lease) error {
 	}
 	l.Attempt, l.Failed, l.ApplyFailures = l.Attempt-1, true, 0
 	return r.writeLease(l)
+}
+
+// moveKey keys the state error for a run's move the table lacks: the
+// attempt key, and a hash of what decides the issue's class, so a move, a
+// new input, or a change of type or parent lets the stage run again.
+func moveKey(attemptKey string, it state.Item) string {
+	return attemptKey + "-" + state.BodyHash(fmt.Sprintf("%+v", it))
 }
 
 // attemptKey names the stage's current round of attempts: its stage and the
