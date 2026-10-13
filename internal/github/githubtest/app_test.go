@@ -74,6 +74,11 @@ func TestRepoLabels(t *testing.T) {
 	if got := f.RepoLabels(); got[0] != "Stage:Intake" || len(got) != len(created)+1 {
 		t.Errorf("repo labels = %v, want Stage:Intake and the %d created", got, len(created))
 	}
+	// State has them too, sorted, with their colors and descriptions.
+	st := f.State().RepoLabels
+	if len(st) != len(created)+1 || !slices.IsSorted(st) || !slices.Contains(st, "stage:held 000000 Paused by the owner") {
+		t.Errorf("State().RepoLabels = %q, want every label, sorted, stage:held's with its color and description", st)
+	}
 	again, err := github.EnsureLabels(context.Background(), f.Client(t), "o", "r", github.LabelOptions{})
 	if err != nil || len(again) != 0 {
 		t.Errorf("EnsureLabels again created %v, %v; want none", again, err)

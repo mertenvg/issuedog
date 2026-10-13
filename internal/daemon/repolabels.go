@@ -12,11 +12,16 @@ import (
 
 // LabelOptions returns the labels cfg asks for beyond the fixed set: its
 // scopes, its type labels, and a model and an effort label of each kind for
-// each allowed model and each effort level.
+// each allowed model and each effort level. A model whose labels fall back
+// to the last 35 characters of its name is logged.
 func LabelOptions(cfg *config.Config) github.LabelOptions {
 	opts := github.LabelOptions{Scopes: cfg.Scopes, TypeLabels: cfg.Types == "labels", Efforts: config.EffortLevels()}
 	for _, m := range cfg.Models.Allowed {
-		opts.Models = append(opts.Models, github.ModelLabel{Suffix: m.Suffix(), Name: m.Name})
+		suffix := m.Suffix()
+		if m.Label == "" && suffix != m.Name {
+			logr.Infof("models.allowed: %q has no label and is longer than 35 characters, so its labels use its last 35 characters, %q", m.Name, suffix)
+		}
+		opts.Models = append(opts.Models, github.ModelLabel{Suffix: suffix, Name: m.Name})
 	}
 	return opts
 }

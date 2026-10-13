@@ -407,7 +407,13 @@ func TestIterateCreatesLabelsForNewModels(t *testing.T) {
 	if want := "creating the labels of the new models on o/r failed, so it's tried again next iteration: "; !strings.Contains(logs.String(), want) {
 		t.Errorf("logs = %q, want %q", logs.String(), want)
 	}
+	// The retry doesn't wait on a config that loads: the last good one stays.
+	o.commit(config.Path, "types: labels\nloop: {idle_sleep: 0s}\n")
 	iterate(t, d)
+	logr.Wait()
+	if want := "loading the config of o/r from main failed"; !strings.Contains(logs.String(), want) {
+		t.Fatalf("logs = %q, want %q", logs.String(), want)
+	}
 	labels = f.RepoLabels()
 	for _, want := range []string{"model:sonnet-4-5", "verifier-model:sonnet-4-5"} {
 		if !slices.Contains(labels, want) {
@@ -430,6 +436,31 @@ func TestIterateCreatesLabelsForNewModels(t *testing.T) {
 	}
 }
 
+// The labels a reload creates for a new model are safe to replay after a
+// crash at any write.
+func TestIterateReplaysLabelsForNewModels(t *testing.T) {
+	o := newOrigin(t)
+	o.commit(config.Path, "models: {allowed: [opus]}\n")
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := newFake(t)
+		f.AddRepoLabel("stage:intake")
+		fileAt(f, "ready", "a")
+		return f
+	}
+	pass := func(f *githubtest.Fake) error { return newDaemon(t, f, o, nil).Iterate(context.Background()) }
+	f := setup(t)
+	if err := pass(f); err != nil {
+		t.Fatal(err)
+	}
+	labels := f.State().RepoLabels
+	for _, want := range []string{"model:opus ", "verifier-model:opus ", "effort:low ", "verifier-effort:max ", "stage:held "} {
+		if !slices.ContainsFunc(labels, func(l string) bool { return strings.HasPrefix(l, want) }) {
+			t.Errorf("repo labels = %q, want %s", labels, want)
+		}
+	}
+	githubtest.Replay(t, setup, pass)
+}
+
 func TestLabelOptions(t *testing.T) {
 	cfg, err := config.Parse([]byte("types: labels\nscopes: [daemon]\nmodels: {allowed: [opus, {name: claude-sonnet-x, label: sonnet}]}\n"))
 	if err != nil {
@@ -443,6 +474,27 @@ func TestLabelOptions(t *testing.T) {
 	}
 	if got := daemon.LabelOptions(config.Defaults()); got.TypeLabels || len(got.Models) != 0 || len(got.Efforts) != 5 {
 		t.Errorf("LabelOptions of the defaults = %+v, want no type labels or models, and five efforts", got)
+	}
+}
+
+// A long name with no label falls back to its last 35 characters, and says so.
+func TestLabelOptionsLogsTheFallback(t *testing.T) {
+	const long = "x.us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+	cfg, err := config.Parse([]byte("models: {allowed: [opus, " + long + ", {name: y." + long + ", label: sonnet}]}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	stop := logr.AddWriter(&logs)
+	defer stop()
+	got := daemon.LabelOptions(cfg)
+	logr.Wait()
+	if got.Models[1].Suffix != "pic.claude-sonnet-4-5-20250929-v1:0" {
+		t.Errorf("suffix of %s = %q, want its last 35 characters", long, got.Models[1].Suffix)
+	}
+	want := `models.allowed: "` + long + `" has no label and is longer than 35 characters, so its labels use its last 35 characters, "pic.claude-sonnet-4-5-20250929-v1:0"`
+	if !strings.Contains(logs.String(), want) || strings.Count(logs.String(), "has no label") != 1 {
+		t.Errorf("logs = %q, want %q once", logs.String(), want)
 	}
 }
 
