@@ -481,27 +481,33 @@ func (a *Applier) setLabel(ctx context.Context, c Cmd, want string) error {
 // Daemon.CurrentModels, so a config reload that changes it takes effect.
 func SettingCommands(models func() config.Models) map[string]Handler {
 	return map[string]Handler{
-		"model":  setting(func(c Cmd) (string, error) { return modelLabel(models(), c) }),
-		"effort": setting(effortLabel),
+		"model": setting(func(ctx context.Context, a *Applier, c Cmd) (string, error) {
+			return modelLabel(ctx, a, models(), c)
+		}),
+		"effort": setting(func(_ context.Context, _ *Applier, c Cmd) (string, error) { return effortLabel(c) }),
 	}
 }
 
 // setting is the handler of a command that sets the label that label
 // returns for it, or is rejected with the Rejection that label returns.
-func setting(label func(c Cmd) (string, error)) Handler {
+// label must not write, as Check calls it too.
+func setting(label func(ctx context.Context, a *Applier, c Cmd) (string, error)) Handler {
 	return Handler{
-		Check: func(_ context.Context, _ *Applier, c Cmd) error {
-			if _, err := label(c); err != nil {
+		Check: func(ctx context.Context, a *Applier, c Cmd) error {
+			if _, err := label(ctx, a, c); err != nil {
 				return fmt.Errorf("label: %w", err)
 			}
 			return nil
 		},
 		Apply: func(ctx context.Context, a *Applier, c Cmd) error {
-			want, err := label(c)
+			want, err := label(ctx, a, c)
 			if err != nil {
 				return fmt.Errorf("label: %w", err)
 			}
-			return a.setLabel(ctx, c, want)
+			if err := a.setLabel(ctx, c, want); err != nil {
+				return fmt.Errorf("apply: %w", err)
+			}
+			return nil
 		},
 	}
 }
@@ -522,14 +528,15 @@ func settingKind(c Cmd) (value, kind string) {
 // which quotes c's text; reply escapes it (SPEC §5.1).
 //
 // A reload can drop a model from models.allowed after Apply added its label,
-// and Check mustn't then reject c (see Handler). A dropped model's label no
-// longer names an allowed model, whatever c names, so if exactly one label
-// of c's kind on c's issue is stray, naming no allowed model by its suffix,
-// c names that label, and c removes the others. Two or more stray labels
-// can't be told apart, so c is rejected, and they stay. This also lets any
-// /model stand on an issue with one stray label a trusted user set by hand;
-// run settings refuse that label all the same.
-func modelLabel(models config.Models, c Cmd) (string, error) {
+// and Check mustn't then reject c (see Handler). So when c names no allowed
+// model, the labels of c's kind on c's issue that name no allowed model
+// either, its stray labels, are looked up on the timeline: one whose latest
+// labeled or unlabeled event since c was posted is the App's labeled event
+// is what a begun Apply of c added (see addedSince). If exactly one is, c
+// names that label, and c removes the others. Otherwise c is rejected, and
+// its labels stay: a stray label from before c, or one a person added since,
+// doesn't count. Only this path reads the timeline, and it doesn't write.
+func modelLabel(ctx context.Context, a *Applier, models config.Models, c Cmd) (string, error) {
 	arg, kind := settingKind(c)
 	name, ok := models.Resolve(arg)
 	var same []string // the full names arg matches ignoring case, quoted
@@ -539,14 +546,9 @@ func modelLabel(models config.Models, c Cmd) (string, error) {
 			same = append(same, "`"+m.Name+"`")
 		}
 	}
-	if len(same) == 1 {
-		ok = true
-	}
-	if ok {
-		suffix, found := models.LabelSuffix(name)
-		if !found {
-			return "", fmt.Errorf("models.allowed has %q, but no label suffix for it", name)
-		}
+	if ok || len(same) == 1 {
+		// name is on models.allowed, so it has a suffix: ok is always true.
+		suffix, _ := models.LabelSuffix(name)
 		return kind + ":" + suffix, nil
 	}
 	var stray []string
@@ -556,8 +558,14 @@ func modelLabel(models config.Models, c Cmd) (string, error) {
 			stray = append(stray, l)
 		}
 	}
-	if len(stray) == 1 {
-		return stray[0], nil
+	if len(stray) > 0 {
+		begun, err := a.addedSince(ctx, c, stray)
+		if err != nil {
+			return "", fmt.Errorf("model: %w", err)
+		}
+		if len(begun) == 1 {
+			return begun[0], nil
+		}
 	}
 	if len(same) > 1 {
 		return "", Rejection{Reason: fmt.Sprintf("`%s` matches %s on `models.allowed`, ignoring case, so give the name in its exact case", arg, list(same))}
@@ -570,6 +578,33 @@ func modelLabel(models config.Models, c Cmd) (string, error) {
 		return "", Rejection{Reason: fmt.Sprintf("`%s` isn't on `models.allowed`, and the config allows no model", arg)}
 	}
 	return "", Rejection{Reason: fmt.Sprintf("`%s` isn't on `models.allowed`, which has %s", arg, list(suffixes))}
+}
+
+// addedSince returns those of labels, on c's issue, whose latest labeled or
+// unlabeled event on the timeline since c was posted is a labeled event by
+// the App, as when Apply added it. GitHub's times are to the second, so an
+// event in c's second counts as after c.
+func (a *Applier) addedSince(ctx context.Context, c Cmd, labels []string) ([]string, error) {
+	events, err := a.Client.TimelineSince(ctx, a.Owner, a.Repo, c.S.Number, c.Comment.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("labels added since comment %d: %w", c.Comment.ID, err)
+	}
+	var added []string
+	for _, l := range labels {
+		var last *gogithub.Timeline // events are oldest first
+		for _, e := range events {
+			if (e.GetEvent() == "labeled" || e.GetEvent() == "unlabeled") && strings.EqualFold(e.GetLabel().GetName(), l) {
+				last = e
+			}
+		}
+		if last == nil || last.GetEvent() != "labeled" {
+			continue
+		}
+		if actor := last.GetActor(); state.IsApp(github.Author{Login: actor.GetLogin(), Type: actor.GetType()}, a.AppSlug) {
+			added = append(added, l)
+		}
+	}
+	return added, nil
 }
 
 // effortLabel returns the label c, a /effort command, sets: its kind and

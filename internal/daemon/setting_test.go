@@ -66,6 +66,16 @@ func taskWith(login, body string, labels ...string) func(testing.TB) *githubtest
 	}
 }
 
+// labeledBy adds labels to issue 1 as login, after what's there, as when
+// login adds them after the command.
+func labeledBy(login string, labels ...string) func(f *githubtest.Fake) {
+	return func(f *githubtest.Fake) {
+		for _, l := range labels {
+			f.AddLabel(1, login, l)
+		}
+	}
+}
+
 func TestModelEffortCommands(t *testing.T) {
 	const (
 		react  = "POST /issues/comments/1002/reactions"
@@ -146,25 +156,58 @@ func TestModelEffortCommands(t *testing.T) {
 			labels:  []string{"stage:ready"},
 			comment: rejected("/model OPUS", "`OPUS` matches `Opus` and `opus` on `models.allowed`, ignoring case, so give the name in its exact case", "1002"),
 			reacts:  []string{app + " -1"}, writes: []string{react, reply}},
-		{name: "/model of a model no longer allowed whose label the issue has, as after a crash and a reload, stands",
-			setup:  taskWith("owner", "/model Fable", app+" model:fable", app+" model:opus"),
+		{name: "/model of a model a reload dropped after Apply added its label stands",
+			setup:  then(taskWith("owner", "/model Fable", app+" model:opus"), labeledBy(app, "model:fable")),
 			labels: []string{"model:fable", "stage:ready"},
 			reacts: []string{app + " +1"}, writes: []string{"DELETE /issues/1/labels/model:opus", react}},
-		{name: "/model of a long name no longer allowed keeps its label of the last 35 characters",
+		{name: "/model of a long name a reload dropped after Apply added its label of the last 35 characters stands",
 			allowed: "[opus, {name: claude-sonnet-5-5, label: sonnet}]",
-			setup:   taskWith("owner", "/model "+long, app+" model:"+longSuffix, app+" model:opus"),
+			setup:   then(taskWith("owner", "/model "+long, app+" model:opus"), labeledBy(app, "model:"+longSuffix)),
 			labels:  []string{"model:" + longSuffix, "stage:ready"},
 			reacts:  []string{app + " +1"}, writes: []string{"DELETE /issues/1/labels/model:opus", react}},
-		{name: "/model of a model no longer allowed keeps the one stray model:* label, and a label with no colon isn't one",
+		{name: "/model of a dropped model keeps the one stray label the App added since, removing a stray one from before; a label with no colon isn't one",
 			allowed: "[sonnet]",
-			setup:   taskWith("owner", "/model claude-opus-5-5", "owner model", app+" model:opus5", app+" model:sonnet"),
+			setup:   then(taskWith("owner", "/model claude-opus-5-5", app+" model:retired", app+" model:sonnet"), labeledBy(app, "model", "model:opus5")),
 			labels:  []string{"model", "model:opus5", "stage:ready"},
-			reacts:  []string{app + " +1"}, writes: []string{"DELETE /issues/1/labels/model:sonnet", react}},
-		{name: "/model of a model no longer allowed is rejected with two stray model:* labels",
+			reacts:  []string{app + " +1"}, writes: []string{"DELETE /issues/1/labels/model:retired", "DELETE /issues/1/labels/model:sonnet", react}},
+		{name: "/model of a dropped model keeps a stray label the App added since in another case",
 			allowed: "[sonnet]",
-			setup:   taskWith("owner", "/model claude-opus-5-5", app+" model:opus5", app+" model:haiku"),
+			setup:   then(taskWith("owner", "/model old", app+" model:sonnet"), labeledBy(app, "Model:old")),
+			labels:  []string{"Model:old", "stage:ready"},
+			reacts:  []string{app + " +1"}, writes: []string{"DELETE /issues/1/labels/model:sonnet", react}},
+		{name: "/model of a dropped model is rejected with two stray labels the App added since",
+			allowed: "[sonnet]",
+			setup:   then(taskWith("owner", "/model claude-opus-5-5"), labeledBy(app, "model:opus5", "model:haiku")),
 			labels:  []string{"model:haiku", "model:opus5", "stage:ready"},
 			comment: rejected("/model claude-opus-5-5", "`claude-opus-5-5` isn't on `models.allowed`, which has `sonnet`", "1002"),
+			reacts:  []string{app + " -1"}, writes: []string{react, reply}},
+		{name: "/model gpt is rejected on an issue with a stray label from before it",
+			allowed: "[sonnet]",
+			setup:   taskWith("owner", "/model gpt", app+" model:sonnet", app+" model:retired"),
+			labels:  []string{"model:retired", "model:sonnet", "stage:ready"},
+			comment: rejected("/model gpt", "`gpt` isn't on `models.allowed`, which has `sonnet`", "1002"),
+			reacts:  []string{app + " -1"}, writes: []string{react, reply}},
+		{name: "/model verifier gpt is rejected on an issue with a stray verifier label from before it",
+			allowed: "[sonnet]",
+			setup:   taskWith("owner", "/model verifier gpt", app+" verifier-model:sonnet", app+" verifier-model:retired"),
+			labels:  []string{"stage:ready", "verifier-model:retired", "verifier-model:sonnet"},
+			comment: rejected("/model verifier gpt", "`gpt` isn't on `models.allowed`, which has `sonnet`", "1002"),
+			reacts:  []string{app + " -1"}, writes: []string{react, reply}},
+		{name: "/model of a dropped model is rejected when a person, not the App, added its stray label since",
+			allowed: "[sonnet]",
+			setup:   then(taskWith("owner", "/model fable", app+" model:sonnet"), labeledBy("owner", "model:fable")),
+			labels:  []string{"model:fable", "model:sonnet", "stage:ready"},
+			comment: rejected("/model fable", "`fable` isn't on `models.allowed`, which has `sonnet`", "1002"),
+			reacts:  []string{app + " -1"}, writes: []string{react, reply}},
+		{name: "/model of a dropped model is rejected when the App's stray label was removed and added back by a person since",
+			allowed: "[sonnet]",
+			setup: then(taskWith("owner", "/model fable", app+" model:sonnet"), func(f *githubtest.Fake) {
+				f.AddLabel(1, app, "model:fable")
+				f.RemoveLabel(1, "owner", "model:fable")
+				f.AddLabel(1, "owner", "model:fable")
+			}),
+			labels:  []string{"model:fable", "model:sonnet", "stage:ready"},
+			comment: rejected("/model fable", "`fable` isn't on `models.allowed`, which has `sonnet`", "1002"),
 			reacts:  []string{app + " -1"}, writes: []string{react, reply}},
 		{name: "/model leaves a label whose kind only starts with model",
 			setup:  taskWith("owner", "/model opus", "owner modelx:foo", app+" model:sonnet"),
@@ -240,14 +283,17 @@ func TestModelEffortCommands(t *testing.T) {
 // the issue ends with one model:* label, and the command 👍'd.
 func TestModelRetryAfterReloadDropsIt(t *testing.T) {
 	before := models(t, "[sonnet, {name: claude-opus-5-5, label: opus5}]")
-	after := models(t, "[sonnet]")
 	for _, crash := range []struct {
-		name string
-		at   func(f *githubtest.Fake)
+		name  string
+		at    func(f *githubtest.Fake)
+		after string // models.allowed after the reload
 	}{
-		{"before the removal", func(f *githubtest.Fake) { f.FailWrite(2) }},
-		{"after the add applied", func(f *githubtest.Fake) { f.FailWriteAfter(1) }},
+		{"before the removal", func(f *githubtest.Fake) { f.FailWrite(2) }, "[sonnet]"},
+		{"after the add applied", func(f *githubtest.Fake) { f.FailWriteAfter(1) }, "[sonnet]"},
+		{"before the removal, and the reload dropped both models", func(f *githubtest.Fake) { f.FailWrite(2) }, "[haiku]"},
+		{"after the add applied, and the reload dropped both models", func(f *githubtest.Fake) { f.FailWriteAfter(1) }, "[haiku]"},
 	} {
+		after := models(t, crash.after)
 		t.Run(crash.name, func(t *testing.T) {
 			f := taskWith("owner", "/model claude-opus-5-5", app+" model:sonnet")(t)
 			crash.at(f)
@@ -269,6 +315,44 @@ func TestModelRetryAfterReloadDropsIt(t *testing.T) {
 				t.Errorf("comments = %+v, want the command 👍'd and no reply", is.Comments)
 			}
 		})
+	}
+}
+
+// A failed timeline read, on the path that looks for a begun Apply, fails
+// the pass rather than rejecting the command, and nothing is written.
+func TestModelTimelineFails(t *testing.T) {
+	f := taskWith("owner", "/model gpt", app+" model:retired")(t)
+	timeline := func(r githubtest.Request) bool { return r.Method == "GET" && r.Path == "/issues/1/timeline" }
+	// The label rules read the timeline first; the command's read fails.
+	f.BeforeRequest(timeline, func() { f.AnswerOnce(timeline, 500) })
+	err := settingPass(t, models(t, "[sonnet]"))(f)
+	if err == nil || !strings.Contains(err.Error(), "labels added since comment 1002") {
+		t.Errorf("pass = %v, want the timeline error", err)
+	}
+	if w := f.Writes(); len(w) != 0 {
+		t.Errorf("writes = %+v, want none", w)
+	}
+}
+
+// A stray label whose latest event is an unlabeled one, as when it went
+// after the issue was read, isn't taken, even when the App removed it.
+func TestModelStrayLabelGoneSince(t *testing.T) {
+	f := then(taskWith("owner", "/model fable", app+" model:sonnet"), labeledBy(app, "model:fable"))(t)
+	timeline := func(r githubtest.Request) bool { return r.Method == "GET" && r.Path == "/issues/1/timeline" }
+	// The label rules read the timeline first; before the command's read,
+	// the label goes.
+	f.BeforeRequest(timeline, func() {
+		f.BeforeRequest(timeline, func() { f.RemoveLabel(1, app, "model:fable") })
+	})
+	if err := settingPass(t, models(t, "[sonnet]"))(f); err != nil {
+		t.Fatal(err)
+	}
+	is := f.State().Issues[0]
+	if !reflect.DeepEqual(is.Labels, []string{"model:sonnet", "stage:ready"}) {
+		t.Errorf("labels = %q, want model:sonnet still", is.Labels)
+	}
+	if got := is.Comments[1].Reactions; !reflect.DeepEqual(got, []string{app + " -1"}) {
+		t.Errorf("the command's reactions = %q, want the App's 👎", got)
 	}
 }
 
