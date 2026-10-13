@@ -56,6 +56,13 @@ type Fake struct {
 	beforeGQL   func()   // runs before the next GraphQL answer
 	histories   int      // edit history queries answered
 	historyCap  int      // see HistoryCap
+
+	// The App, permission and repo label endpoints, and the request log (app.go).
+	perms      map[string]string
+	labels     []*gogithub.Label
+	requests   []Request
+	beforeReq  func(Request) func() // see BeforeRequest
+	answerOnce func(Request) int    // see AnswerOnce
 }
 
 // discard swallows a reply, for a write that takes effect but answers 500.
@@ -135,7 +142,8 @@ func New(t testing.TB, repo, slug string) *Fake {
 	f.handle("DELETE /issues/{n}/labels/{name}", f.removeLabel)
 	f.handle("GET /issues/{n}/timeline", f.timeline)
 	f.mux.HandleFunc("POST /graphql", f.serveGraphQL)
-	f.srv = httptest.NewServer(f.mux)
+	f.handleApp()
+	f.srv = httptest.NewServer(f.logged(f.mux))
 	t.Cleanup(f.srv.Close)
 	return f
 }
@@ -447,7 +455,7 @@ func (f *Fake) getParent(c *call) (int, any) {
 }
 
 // listComments serves one issue's comments oldest first, or the repo's,
-// sorted by update for sort=updated, from since= on.
+// sorted by update in direction= for sort=updated, from since= on.
 func (f *Fake) listComments(c *call) (int, any) {
 	var from time.Time
 	if s := c.r.URL.Query().Get("since"); s != "" {
@@ -461,6 +469,9 @@ func (f *Fake) listComments(c *call) (int, any) {
 	})
 	if c.issue == nil && c.r.URL.Query().Get("sort") == "updated" {
 		slices.SortStableFunc(list, func(a, b *comment) int { return a.GetUpdatedAt().Compare(b.GetUpdatedAt().Time) })
+		if c.r.URL.Query().Get("direction") != "asc" {
+			slices.Reverse(list)
+		}
 	}
 	out := []gogithub.IssueComment{}
 	for _, cm := range list {

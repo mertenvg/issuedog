@@ -2,16 +2,25 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -19,7 +28,10 @@ import (
 
 	"github.com/mertenvg/logr/v2"
 
+	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/egress"
+	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/state"
 )
 
 // runLogged runs the program and returns its exit code and what it logged.
@@ -120,18 +132,366 @@ func fakeAppKey(t *testing.T, perm os.FileMode) string {
 	return path
 }
 
-func TestRunStartsEgress(t *testing.T) {
-	fakeAppKey(t, 0o600)
+// daemonEnv is the environment the daemon starts with.
+var daemonEnv = []string{"ANTHROPIC_API_KEY=key", "ISSUEDOG_REPO=mertenvg/issuedog",
+	"ISSUEDOG_APP_ID=5275196", "ISSUEDOG_INSTALLATION_ID=170308396"}
+
+// fakeGitHub points the daemon at a fake GitHub for mertenvg/issuedog, with
+// mertenvg an admin and mallory a writer, and at a local bare repo as the
+// remote, whose main has files (path to content). It writes a usable App key.
+func fakeGitHub(t *testing.T, files map[string]string) *githubtest.Fake {
+	t.Helper()
+	f := githubtest.New(t, "mertenvg/issuedog", "issuedog-dev")
+	f.SetPermission("mertenvg", "admin")
+	f.SetPermission("mallory", "write")
+	dir := t.TempDir()
+	remote, work := filepath.Join(dir, "remote.git"), filepath.Join(dir, "work")
+	gitIn(t, dir, "init", "--bare", "--quiet", "--initial-branch=main", remote)
+	gitIn(t, dir, "init", "--quiet", "--initial-branch=main", work)
+	files["README.md"] = "hello\n"
+	for path, content := range files {
+		if err := os.MkdirAll(filepath.Join(work, filepath.Dir(path)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(work, path), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitIn(t, work, "add", path)
+	}
+	gitIn(t, work, "commit", "--quiet", "-m", "init")
+	gitIn(t, work, "push", "--quiet", remote, "main")
+
+	oldAPI, oldRemote, oldWork := apiURL, gitRemote, workDir
+	t.Cleanup(func() { apiURL, gitRemote, workDir = oldAPI, oldRemote, oldWork })
+	apiURL, workDir = f.URL(), t.TempDir()
+	gitRemote = func(owner, name string) string {
+		if owner+"/"+name != "mertenvg/issuedog" {
+			t.Errorf("remote of %s/%s, want mertenvg/issuedog", owner, name)
+		}
+		return remote
+	}
+	k, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := fakeAppKey(t, 0)
+	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(k)}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+func gitIn(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "GIT_") }),
+		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+}
+
+// thisRepo is this repo's own config, with example.com added to
+// network.allow, and CODEOWNERS.
+func thisRepo(t *testing.T) map[string]string {
+	t.Helper()
+	files := map[string]string{}
+	for _, path := range []string{".issuedog/config.yaml", ".github/CODEOWNERS"} {
+		data, err := os.ReadFile(filepath.Join("..", "..", path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[path] = string(data)
+	}
+	const allow = "allow: [api.anthropic.com,"
+	if !strings.Contains(files[".issuedog/config.yaml"], allow) {
+		t.Fatalf("this repo's config has no %q", allow)
+	}
+	files[".issuedog/config.yaml"] = strings.Replace(files[".issuedog/config.yaml"], allow, "allow: [example.com, api.anthropic.com,", 1)
+	return files
+}
+
+// revisionOf is the App's comment for revision 1 of body, with its move to
+// spec-review.
+func revisionOf(body string) string {
+	h := state.BodyHash(body)
+	return "<!-- issuedog:transition from=clarifying to=spec-review rev=1 body=" + h + " run=r1 -->\n" +
+		"<!-- issuedog:revision rev=1 body=" + h + " -->"
+}
+
+// trustSet trusts the logins set true.
+type trustSet map[string]bool
+
+func (ts trustSet) Trusted(_ context.Context, login string) (bool, error) { return ts[login], nil }
+
+// The loop's reloads replace the step's Trust, and the 👍 trigger must use
+// the trust of the moment, not the one newStep got.
+func TestNewStepUsesCurrentTrust(t *testing.T) {
+	f := githubtest.New(t, "o/r", "issuedog-dev")
+	n := f.AddIssue("owner", "Spec", "body")
+	f.SetType(n, "Story")
+	f.AddLabel(n, "issuedog-dev[bot]", "stage:spec-review")
+	f.AddReaction(f.AddComment(n, "issuedog-dev[bot]", revisionOf("body")), "owner2", "+1")
+	c := f.Client(t)
+	st := newStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{"owner2": true})
+	step := func() []string {
+		t.Helper()
+		s, err := c.Snapshot(context.Background(), "o", "r", n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.Run(context.Background(), s); err != nil {
+			t.Fatal(err)
+		}
+		return f.State().Issues[0].Labels
+	}
+	st.Trust = trustSet{} // a reload: owner2 left CODEOWNERS
+	if got := step(); !slices.Equal(got, []string{"stage:spec-review"}) {
+		t.Errorf("labels = %v, want stage:spec-review: owner2 isn't trusted any more", got)
+	}
+	st.Trust = trustSet{"owner2": true}
+	if got := step(); !slices.Equal(got, []string{"stage:planning"}) {
+		t.Errorf("labels = %v, want stage:planning once owner2 is trusted again", got)
+	}
+}
+
+// cancelOnCall makes the daemon's signal context one the returned func
+// cancels, and records the signals it was asked to stop on.
+func cancelOnCall(t *testing.T) (cancel func(), signals *[]os.Signal) {
+	var sigs []os.Signal
+	ctx, stop := context.WithCancel(context.Background())
+	old := notifyContext
+	t.Cleanup(func() { notifyContext = old; stop() })
+	notifyContext = func(parent context.Context, s ...os.Signal) (context.Context, context.CancelFunc) {
+		sigs = s
+		return ctx, func() {}
+	}
+	return stop, &sigs
+}
+
+func TestRunDaemon(t *testing.T) {
+	f := fakeGitHub(t, thisRepo(t))
+	f.AddRepoLabel("stage:intake")
+	n := f.AddIssue("mertenvg", "Task", "do it")
+	f.AddLabel(n, "issuedog-dev[bot]", "stage:ready")
+	f.AddComment(n, "issuedog-dev[bot]", "<!-- issuedog:transition from=intake to=ready run=a -->")
+	f.AddComment(n, "mallory", "/frob")
+	f.AddComment(n, "mertenvg", "/frob")
+	// Specs approved by mertenvg's 👍 on the revision, and by /approve.
+	for _, approve := range []func(m int, rev int64){
+		func(_ int, rev int64) { f.AddReaction(rev, "mertenvg", "+1") },
+		func(m int, _ int64) { f.AddComment(m, "mertenvg", "/approve") },
+	} {
+		m := f.AddIssue("mertenvg", "Spec", "body")
+		f.SetType(m, "Story")
+		f.AddLabel(m, "issuedog-dev[bot]", "stage:spec-review")
+		approve(m, f.AddComment(m, "issuedog-dev[bot]", revisionOf("body")))
+	}
 	calls := fakeEgress(t, nil, nil)
-	code, logs := runLogged(t, nil, []string{"ANTHROPIC_API_KEY=key"})
-	if code != 1 {
-		t.Errorf("exit code = %d, want 1", code)
+	cancel, signals := cancelOnCall(t)
+	var logs bytes.Buffer
+	stop := logr.AddWriter(&logs)
+	defer stop()
+	done := make(chan int, 1)
+	go func() { done <- run(nil, daemonEnv, nil, io.Discard) }()
+
+	// The first iteration rejects mertenvg's /frob, as CODEOWNERS on main
+	// trusts only mertenvg, and approves both specs, then sleeps the
+	// config's 60s.
+	planning := []string{"stage:planning"}
+	iterated := func() bool {
+		is := f.State().Issues
+		return len(is[0].Comments) >= 4 && slices.Equal(is[1].Labels, planning) && slices.Equal(is[2].Labels, planning)
+	}
+	for deadline := time.Now().Add(10 * time.Second); !iterated() && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Errorf("exit code = %d, want 0", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the daemon didn't stop when its context was canceled")
+	}
+	logr.Wait()
+
+	if !reflect.DeepEqual(*signals, []os.Signal{os.Interrupt, syscall.SIGTERM}) {
+		t.Errorf("stops on %v, want SIGINT and SIGTERM", *signals)
+	}
+	reqs := f.Requests()
+	for _, want := range []string{"GET /app", "POST /app/installations/170308396/access_tokens", "GET /labels", "GET /issues"} {
+		if !slices.ContainsFunc(reqs, func(r githubtest.Request) bool { return r.Method+" "+r.Path == want }) {
+			t.Errorf("requests = %+v, want %s", reqs, want)
+		}
+	}
+	gitConfig, err := os.ReadFile(filepath.Join(workDir, "issuedog.git", "config"))
+	if err != nil {
+		t.Errorf("no clone at %s/issuedog.git: %v", workDir, err)
+	}
+	// The fake mints "fake-token"; git gets it base64-encoded in a header.
+	for _, secret := range []string{"fake-token", base64.StdEncoding.EncodeToString([]byte("x-access-token:fake-token"))} {
+		if strings.Contains(logs.String(), secret) || strings.Contains(string(gitConfig), secret) {
+			t.Errorf("the token is in the logs or the clone's config")
+		}
+	}
+	labels := f.RepoLabels()
+	for _, want := range []string{"stage:spec-review", "scope:daemon", "scope:docs", "type:task"} {
+		if !slices.Contains(labels, want) {
+			t.Errorf("repo labels = %v, want %s from this repo's config", labels, want)
+		}
+	}
+	if len(slices.DeleteFunc(slices.Clone(labels), func(l string) bool { return l != "stage:intake" })) != 1 {
+		t.Errorf("repo labels = %v, want stage:intake, which existed, once", labels)
+	}
+	for i, is := range f.State().Issues[1:] {
+		if !slices.Equal(is.Labels, planning) {
+			t.Errorf("spec %d labels = %v, want %v: approved by %s", i+2, is.Labels, planning, []string{"👍", "/approve"}[i])
+		}
+	}
+	comments := f.State().Issues[0].Comments
+	if len(comments) != 4 || len(comments[1].Reactions) != 0 || !reflect.DeepEqual(comments[2].Reactions, []string{"issuedog-dev[bot] -1"}) {
+		t.Errorf("comments = %+v, want mertenvg's /frob alone 👎'd and replied to", comments)
 	}
 	if got, want := strings.Join(*calls, ", "), "firewall agent, listen 3128"; got != want {
 		t.Errorf("startup steps = %q, want %q", got, want)
 	}
-	if !strings.Contains(logs, "egress proxy listening on http://127.0.0.1:") {
-		t.Errorf("logs = %q, want the proxy on 127.0.0.1", logs)
+	for _, want := range []string{"egress proxy listening on http://127.0.0.1:", "allowing example.com, api.anthropic.com",
+		"running as issuedog-dev[bot] on mertenvg/issuedog", "stopping on a signal"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("logs = %q, want %q", logs.String(), want)
+		}
+	}
+}
+
+func TestRunStartupFailures(t *testing.T) {
+	without := func(key string) []string {
+		return slices.DeleteFunc(slices.Clone(daemonEnv), func(kv string) bool { return strings.HasPrefix(kv, key+"=") })
+	}
+	for name, tt := range map[string]struct {
+		environ   []string
+		files     func(t *testing.T) map[string]string // main's, else this repo's
+		setup     func(t *testing.T, f *githubtest.Fake)
+		failWrite int // the write to fail
+		code      int
+		want      string
+	}{
+		"no repo": {environ: without("ISSUEDOG_REPO"), code: 1, want: `reading the settings: ISSUEDOG_REPO is "", not owner/name`},
+		"slug": {setup: func(t *testing.T, _ *githubtest.Fake) {
+			dead := httptest.NewServer(http.NotFoundHandler())
+			dead.Close()
+			apiURL = dead.URL
+		}, code: 1, want: "starting the daemon: reading the App's slug: github app: "},
+		"token": {setup: func(t *testing.T, f *githubtest.Fake) {
+			target, err := url.Parse(f.URL())
+			if err != nil {
+				t.Fatal(err)
+			}
+			front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/access_tokens") {
+					http.Error(w, `{"message":"boom"}`, http.StatusInternalServerError)
+					return
+				}
+				httputil.NewSingleHostReverseProxy(target).ServeHTTP(w, r)
+			}))
+			t.Cleanup(front.Close)
+			apiURL = front.URL
+		}, code: 1, want: "starting the daemon: minting a token: github installation token: "},
+		"clone": {setup: func(t *testing.T, _ *githubtest.Fake) {
+			gitRemote = func(string, string) string { return filepath.Join(t.TempDir(), "none.git") }
+		}, code: 1, want: "starting the daemon: syncing the clone: fetch "},
+		"config": {files: func(*testing.T) map[string]string { return map[string]string{} }, code: 1,
+			want: "starting the daemon: loading the config from main: load config: read main:.issuedog/config.yaml: not found"},
+		"labels": {failWrite: 1, code: 1, want: "starting the daemon: creating the labels: create label stage:intake"},
+		"signal": {setup: func(t *testing.T, _ *githubtest.Fake) {
+			cancel, _ := cancelOnCall(t)
+			cancel()
+		}, code: 0, want: "stopping on a signal during startup: "},
+	} {
+		t.Run(name, func(t *testing.T) {
+			files := thisRepo
+			if tt.files != nil {
+				files = tt.files
+			}
+			f := fakeGitHub(t, files(t))
+			f.FailWrite(tt.failWrite)
+			if tt.setup != nil {
+				tt.setup(t, f)
+			}
+			calls := fakeEgress(t, nil, nil)
+			environ := tt.environ
+			if environ == nil {
+				environ = daemonEnv
+			}
+			code, logs := runBounded(t, environ)
+			if code != tt.code || !strings.Contains(logs, tt.want) {
+				t.Errorf("exit code %d, logs %q; want %d and %q", code, logs, tt.code, tt.want)
+			}
+			if len(*calls) != 0 {
+				t.Errorf("startup steps = %q, want none of egress", *calls)
+			}
+		})
+	}
+}
+
+func TestReadSettings(t *testing.T) {
+	set, err := readSettings(daemonEnv)
+	if want := (settings{"mertenvg", "issuedog", 5275196, 170308396}); err != nil || set != want {
+		t.Errorf("readSettings = %+v, %v; want %+v", set, err, want)
+	}
+	for kv, want := range map[string]string{
+		"ISSUEDOG_REPO=":                    `ISSUEDOG_REPO is "", not owner/name`,
+		"ISSUEDOG_REPO=mertenvg":            `ISSUEDOG_REPO is "mertenvg", not owner/name`,
+		"ISSUEDOG_REPO=/issuedog":           `ISSUEDOG_REPO is "/issuedog", not owner/name`,
+		"ISSUEDOG_REPO=mertenvg/":           `ISSUEDOG_REPO is "mertenvg/", not owner/name`,
+		"ISSUEDOG_REPO=mertenvg/issuedog/x": `ISSUEDOG_REPO is "mertenvg/issuedog/x", not owner/name`,
+		"ISSUEDOG_APP_ID=abc":               `ISSUEDOG_APP_ID is "abc", not a positive number`,
+		"ISSUEDOG_APP_ID=0":                 `ISSUEDOG_APP_ID is "0", not a positive number`,
+		"ISSUEDOG_INSTALLATION_ID=-1":       `ISSUEDOG_INSTALLATION_ID is "-1", not a positive number`,
+	} {
+		// The later setting wins, as in an environment.
+		if _, err := readSettings(append(slices.Clone(daemonEnv), kv)); err == nil || err.Error() != want {
+			t.Errorf("%s: err = %v, want %q", kv, err, want)
+		}
+	}
+}
+
+// A trust that can't load, with CODEOWNERS on main a directory, stops
+// startup. Called directly, since run would go on into the loop if it didn't.
+func TestStartDaemonFailsOnTrust(t *testing.T) {
+	files := thisRepo(t)
+	delete(files, ".github/CODEOWNERS")
+	files[".github/CODEOWNERS/README"] = "not a file\n"
+	fakeGitHub(t, files)
+	key, err := os.ReadFile(appKeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := startDaemon(context.Background(), settings{"mertenvg", "issuedog", 1, 1}, key)
+	if d != nil || err == nil || !strings.Contains(err.Error(), "loading trust from main: load trust for mertenvg/issuedog: find CODEOWNERS: ") {
+		t.Errorf("startDaemon = %v, %v; want the trust error", d, err)
+	}
+}
+
+// runBounded is runLogged, failing t if run hasn't returned in 20s, as when
+// startup goes on into the loop.
+func runBounded(t *testing.T, environ []string) (int, string) {
+	t.Helper()
+	var logs bytes.Buffer
+	stop := logr.AddWriter(&logs)
+	defer stop()
+	done := make(chan int, 1)
+	go func() { done <- run(nil, environ, nil, io.Discard) }()
+	select {
+	case code := <-done:
+		logr.Wait()
+		return code, logs.String()
+	case <-time.After(20 * time.Second):
+		t.Fatal("run didn't return; want startup to stop")
+		return 0, ""
 	}
 }
 
@@ -173,7 +533,7 @@ func TestRunRefusesBadAppKey(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			path := fakeAppKey(t, tt.perm)
 			calls := fakeEgress(t, nil, nil)
-			code, logs := runLogged(t, nil, []string{"ANTHROPIC_API_KEY=key"})
+			code, logs := runLogged(t, nil, daemonEnv)
 			if code != 1 {
 				t.Errorf("exit code = %d, want 1", code)
 			}
@@ -269,9 +629,9 @@ func TestRunStopsWhenEgressFails(t *testing.T) {
 		"proxy":    {nil, errors.New("port in use"), "firewall agent, listen 3128", "starting egress: listening for the egress proxy: port in use"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			fakeAppKey(t, 0o600)
+			f := fakeGitHub(t, thisRepo(t))
 			calls := fakeEgress(t, tt.fwErr, tt.listenErr)
-			code, logs := runLogged(t, nil, []string{"ANTHROPIC_API_KEY=key"})
+			code, logs := runLogged(t, nil, daemonEnv)
 			if code != 1 {
 				t.Errorf("exit code = %d, want 1", code)
 			}
@@ -281,19 +641,10 @@ func TestRunStopsWhenEgressFails(t *testing.T) {
 			if !strings.Contains(logs, tt.want) {
 				t.Errorf("logs = %q, want %q", logs, tt.want)
 			}
-			if strings.Contains(logs, "not implemented") {
-				t.Errorf("logs = %q, want startup to stop at egress", logs)
+			if slices.ContainsFunc(f.Requests(), func(r githubtest.Request) bool { return r.Path == "/issues" }) {
+				t.Errorf("requests = %+v, want startup to stop at egress, before the loop", f.Requests())
 			}
 		})
-	}
-}
-
-func TestRunNoArgsLogsError(t *testing.T) {
-	fakeAppKey(t, 0o600)
-	fakeEgress(t, nil, nil)
-	code, logs := runLogged(t, nil, []string{"ANTHROPIC_API_KEY=key"})
-	if code != 1 || !strings.Contains(logs, "the daemon is not implemented yet") {
-		t.Errorf("exit code %d, logs %q; want 1 and the not-implemented error", code, logs)
 	}
 }
 
@@ -310,7 +661,7 @@ func TestRunRefusesBadCredentials(t *testing.T) {
 			if !strings.Contains(logs, "checking the Claude credential: ") || !strings.Contains(logs, "CLAUDE_CODE_OAUTH_TOKEN") {
 				t.Errorf("logs = %q, want the annotated credential error", logs)
 			}
-			if strings.Contains(logs, "not implemented") {
+			if strings.Contains(logs, "reading the settings") {
 				t.Errorf("logs = %q, want startup to stop at the credential check", logs)
 			}
 		})
