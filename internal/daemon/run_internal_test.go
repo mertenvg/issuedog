@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -123,5 +124,46 @@ func TestPick(t *testing.T) {
 	}
 	if got, ok := pick(p, "librarian"); got != 0 || ok {
 		t.Errorf("pick(librarian) = %d, %t; want none", got, ok)
+	}
+}
+
+// runFields leaves out what's unset or can't go in a marker, never failing:
+// an unset model or effort, a model name with a space, a modelUsage key
+// with a comma or '>', and output that names no models, such as a crashed
+// run's.
+func TestRunFields(t *testing.T) {
+	for name, tt := range map[string]struct {
+		l    Lease
+		raw  string
+		want map[string]string
+	}{
+		"all":        {Lease{Model: "opus", Effort: "max"}, `{"modelUsage":{"b":{},"a":{}}}`, map[string]string{"model": "opus", "effort": "max", "ran": "a,b"}},
+		"unset":      {Lease{}, `{"modelUsage":{}}`, map[string]string{}},
+		"odd model":  {Lease{Model: "o pus", Effort: "low"}, `{}`, map[string]string{"effort": "low"}},
+		"odd keys":   {Lease{}, `{"modelUsage":{"a,b":{},"c-->":{},"":{},"d":{}}}`, map[string]string{"ran": "d"}},
+		"empty":      {Lease{Model: "opus"}, ``, map[string]string{"model": "opus"}},
+		"not JSON":   {Lease{Model: "opus"}, `Killed`, map[string]string{"model": "opus"}},
+		"usage null": {Lease{}, `{"modelUsage":null}`, map[string]string{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := runFields(tt.l, []byte(tt.raw)); !maps.Equal(got, tt.want) {
+				t.Errorf("runFields = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// labelsKey is the same for the same labels in any order or case, and
+// differs for another set of model and effort labels, but not for other
+// labels.
+func TestLabelsKey(t *testing.T) {
+	a := labelsKey(1, []string{"model:opus", "stage:clarifying", "model:sonnet"})
+	if b := labelsKey(1, []string{"Model:Sonnet", "model:opus", "priority:p1"}); a != b {
+		t.Errorf("labelsKey = %q and %q for the same labels; want them equal", a, b)
+	}
+	for _, other := range [][]string{{"model:opus"}, {"model:opus", "model:sonnet", "effort:max"}, {"model:opus", "verifier-model:sonnet"}} {
+		if b := labelsKey(1, other); a == b {
+			t.Errorf("labelsKey(%q) = %q, as for another set", other, b)
+		}
 	}
 }

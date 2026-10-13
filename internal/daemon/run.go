@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -67,17 +68,24 @@ type Result struct {
 	Dirt   Dirt
 	Output json.RawMessage // valid by the Stage's Schema
 
-	moveKey string // see moveKey
+	moveKey string            // see moveKey
+	fields  map[string]string // the run's model, effort and ran (runFields)
 }
 
 // Move is a move keyed by the run, with seen=r.Seen, so the next round's
-// input is what came after it (state.RoundBound). If the table lacks it,
-// its state error is keyed by moveKey, so the stage runs no more until the
-// issue changes.
+// input is what came after it (state.RoundBound), and the run's model=,
+// effort= and ran= (runFields). If the table lacks it, its state error is
+// keyed by moveKey, so the stage runs no more until the issue changes.
 func (r Result) Move(to state.Stage, trigger state.Trigger) Move {
 	m := Move{To: to, Trigger: trigger, Key: state.Key{Field: "run", ID: r.RunID}, ErrorKey: r.moveKey}
+	if len(r.fields) > 0 {
+		m.Fields = maps.Clone(r.fields)
+	}
 	if r.Seen > 0 {
-		m.Fields = map[string]string{state.FieldSeen: strconv.FormatInt(r.Seen, 10)}
+		if m.Fields == nil {
+			m.Fields = map[string]string{}
+		}
+		m.Fields[state.FieldSeen] = strconv.FormatInt(r.Seen, 10)
 	}
 	return m
 }
@@ -102,6 +110,12 @@ type Lease struct {
 	// Attempt is its number among them, from 1.
 	AttemptKey string `json:"attempt_key"`
 	Attempt    int    `json:"attempt"`
+	// Model, Effort and FallbackModels are the run's settings, resolved when
+	// it started (state.RunSettings), so a restart applies its result with
+	// the settings it ran with, whatever the labels say by then.
+	Model          string   `json:"model,omitempty"`
+	Effort         string   `json:"effort,omitempty"`
+	FallbackModels []string `json:"fallback_models,omitempty"`
 	// ApplyFailures counts the failed applies of the run's result.
 	ApplyFailures int `json:"apply_failures,omitempty"`
 	// Failed marks a run that failed, whose files are gone: the lease is
@@ -109,9 +123,18 @@ type Lease struct {
 	Failed bool `json:"failed,omitempty"`
 }
 
+// settings are the run settings l records.
+func (l Lease) settings() state.Settings {
+	return state.Settings{Model: l.Model, Effort: l.Effort, FallbackModels: l.FallbackModels}
+}
+
 // kindAttempts is the state error for a stage that failed loop.max_attempts
 // times in a row.
 const kindAttempts = "attempts"
+
+// kindLabels is the state error for an issue whose model and effort labels
+// give no run settings (state.ErrLabels).
+const kindLabels = "labels"
 
 // Runs is the stage-run harness. Its Work is the loop's stage work (SPEC
 // §8.1, step 3), one run at a time, under a lease (SPEC §8.2).
@@ -171,6 +194,13 @@ func (r *Runs) Work(ctx context.Context, ready []Ready) error {
 // starts until the issue changes (moveKey). A run whose result fails to
 // apply keeps its lease, for the next pass to apply it (applyLease). A
 // failed run logs the end of claude's stderr.
+//
+// The run's model, effort and fallback models are resolved from the labels
+// step 1 checked (state.RunSettings), for the run's agent and attempt, and
+// kept in the lease, so a label changed during the run changes only the
+// next one. Labels that give no settings (state.ErrLabels) start no run
+// and use no attempt: the issue gets one state error until they change
+// (reportLabels).
 func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 	a, n := r.Daemon.Step.Applier, rd.S.Number
 	wrap := func(err error) error {
@@ -201,6 +231,14 @@ func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 		// The cap was reached, but posting its state error failed: post it.
 		return false, wrap(r.reportCap(ctx, nil, st, Lease{Issue: n, Stage: is.Stage, AttemptKey: errKey}))
 	}
+	attempt := r.attempts[countKey(n, errKey)] + 1
+	set, err := state.RunSettings(state.Agent(st.Agent()), rd.S.Labels, r.Daemon.Config, attempt)
+	switch {
+	case errors.Is(err, state.ErrLabels):
+		return false, wrap(r.reportLabels(ctx, rd.S, is, st, err))
+	case err != nil:
+		return false, wrap(err)
+	}
 	fresh, err := a.Client.Snapshot(ctx, a.Owner, a.Repo, n)
 	switch {
 	case gone(err):
@@ -219,9 +257,10 @@ func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 	if !st.Pending(in) {
 		return false, nil
 	}
-	in.RunID, in.Attempt = r.newID(), r.attempts[countKey(n, errKey)]+1
+	in.RunID, in.Attempt = r.newID(), attempt
 	l := Lease{Issue: n, Stage: is.Stage, RunID: in.RunID, Clone: r.Workspace.Dir(in.RunID),
-		Started: r.now(), Polled: r.Daemon.polled, Edits: map[int64]time.Time{}, AttemptKey: errKey, Attempt: in.Attempt}
+		Started: r.now(), Polled: r.Daemon.polled, Edits: map[int64]time.Time{}, AttemptKey: errKey, Attempt: in.Attempt,
+		Model: set.Model, Effort: set.Effort, FallbackModels: set.FallbackModels}
 	for _, c := range rd.S.Comments {
 		l.Seen = max(l.Seen, c.ID)
 	}
@@ -232,7 +271,8 @@ func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 	if err := r.writeLease(l); err != nil {
 		return true, wrap(err)
 	}
-	logr.Infof("%s/%s#%d: starting %s run %s, attempt %d", a.Owner, a.Repo, n, st.Agent(), l.RunID, in.Attempt)
+	logr.Infof("%s/%s#%d: starting %s run %s, attempt %d, with model %s and effort %s", a.Owner, a.Repo, n, st.Agent(), l.RunID, in.Attempt,
+		cmp.Or(l.Model, "unset"), cmp.Or(l.Effort, "unset"))
 	stderr := agent.NewTail(stderrTail)
 	logStderr := func() {
 		if stderr.Len() > 0 {
@@ -240,7 +280,7 @@ func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 				a.Owner, a.Repo, n, l.RunID, stderr.Len(), stderr.Total(), stderr.Text())
 		}
 	}
-	raw, runErr := r.run(ctx, st, in, stderr)
+	raw, runErr := r.run(ctx, st, in, l.settings(), stderr)
 	var setup *agent.SetupError
 	switch {
 	case ctx.Err() != nil && runErr == nil:
@@ -270,16 +310,16 @@ func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 		// The issue may have changed during the run, so failed reads it again.
 		return true, wrap(r.failed(ctx, st, l, runErr)) // logged there
 	}
-	return true, wrap(r.applyLease(ctx, l, st, out))
+	return true, wrap(r.applyLease(ctx, l, st, raw, out))
 }
 
 // stderrTail is how much of claude's stderr a failed run logs: the end.
 const stderrTail = 4096
 
-// run prepares the workspace and runs claude for st, returning its output
-// and sending its stderr to stderr. A failure to set the run up is an
-// *agent.SetupError, as Runner.Run's are.
-func (r *Runs) run(ctx context.Context, st Stage, in Input, stderr io.Writer) ([]byte, error) {
+// run prepares the workspace and runs claude for st with the settings set,
+// returning its output and sending its stderr to stderr. A failure to set
+// the run up is an *agent.SetupError, as Runner.Run's are.
+func (r *Runs) run(ctx context.Context, st Stage, in Input, set state.Settings, stderr io.Writer) ([]byte, error) {
 	cfg := r.Daemon.Config.Stages
 	turns, okT := pick(cfg.MaxTurns, st.Agent())
 	budget, okB := pick(cfg.MaxBudgetUSD, st.Agent())
@@ -300,7 +340,8 @@ func (r *Runs) run(ctx context.Context, st Stage, in Input, stderr io.Writer) ([
 	}
 	runner.Stderr = stderr
 	out, err := runner.Run(ctx, agent.Stage{RunID: in.RunID, Dir: r.Workspace.Dir(in.RunID), ContextDir: r.Workspace.Context(in.RunID),
-		Schema: st.Schema(), MaxTurns: int(turns), MaxBudgetUSD: budget, Timeout: timeout, Env: r.Env})
+		Schema: st.Schema(), MaxTurns: int(turns), MaxBudgetUSD: budget, Timeout: timeout, Env: r.Env,
+		Model: set.Model, Effort: set.Effort, FallbackModels: set.FallbackModels})
 	if err != nil {
 		return out, fmt.Errorf("run %s: %w", in.RunID, err)
 	}
@@ -318,11 +359,12 @@ func outcome(raw []byte) (failed bool, text string) {
 	return res.Subtype != "success" || res.IsError, res.Result
 }
 
-// applyLease applies l's result (apply). A failure keeps the lease,
-// counted in ApplyFailures, so the next pass tries again; after
-// loop.max_attempts of them, the run is a failed attempt.
-func (r *Runs) applyLease(ctx context.Context, l Lease, st Stage, out json.RawMessage) error {
-	err := r.apply(ctx, l, st, out)
+// applyLease applies l's result (apply): raw, claude's output, whose
+// structured output out is valid. A failure keeps the lease, counted in
+// ApplyFailures, so the next pass tries again; after loop.max_attempts of
+// them, the run is a failed attempt.
+func (r *Runs) applyLease(ctx context.Context, l Lease, st Stage, raw []byte, out json.RawMessage) error {
+	err := r.apply(ctx, l, st, raw, out)
 	if err == nil {
 		return nil
 	}
@@ -342,8 +384,10 @@ func (r *Runs) applyLease(ctx context.Context, l Lease, st Stage, out json.RawMe
 // since the run read it, so the stage runs again on what's there. Edits to
 // other comments, such as an untrusted user's to their own, don't count.
 // A result whose move is written already is only finished. A move the
-// table lacks ends the run (blocked). On an error, the lease stays.
-func (r *Runs) apply(ctx context.Context, l Lease, st Stage, out json.RawMessage) error {
+// table lacks ends the run (blocked). On an error, the lease stays. The
+// run marker's fields are l's settings and the models raw, claude's
+// output, reports (runFields).
+func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out json.RawMessage) error {
 	a := r.Daemon.Step.Applier
 	drop := func(why string, args ...any) error {
 		logr.Infof("%s/%s#%d: dropping the result of run %s: "+why, append([]any{a.Owner, a.Repo, l.Issue, l.RunID}, args...)...)
@@ -387,7 +431,7 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, out json.RawMessage
 		}
 	}
 	key := moveKey(l.AttemptKey, is.Item)
-	res := Result{RunID: l.RunID, Seen: l.Seen, S: s, Dirt: d, Output: out, moveKey: key}
+	res := Result{RunID: l.RunID, Seen: l.Seen, S: s, Dirt: d, Output: out, moveKey: key, fields: runFields(l, raw)}
 	if err := st.Apply(ctx, a, res); err != nil {
 		if StateError(err) {
 			return r.blocked(ctx, s, d, st, l, key, err)
@@ -459,7 +503,7 @@ func (r *Runs) resume(ctx context.Context) (int, error) {
 		return 0, r.failed(ctx, st, l, errors.New("no valid result after a restart"))
 	}
 	logr.Infof("applying the saved result of run %s on #%d", l.RunID, l.Issue)
-	return l.Issue, r.applyLease(ctx, l, st, out)
+	return l.Issue, r.applyLease(ctx, l, st, raw, out)
 }
 
 // failed records l's run as a failed attempt: it removes the run's files,
@@ -538,6 +582,91 @@ func otherStage(s *github.Snapshot, st state.Stage) bool {
 		got, ok := state.ParseLabel(l)
 		return ok && got != st
 	})
+}
+
+// reportLabels makes sure s, in state is, has one state error for its
+// model and effort labels, which give st's run no settings (cause, a
+// state.ErrLabels error), keyed by labelsKey: it's posted once for a set of
+// labels, and again only for another set that's still wrong. cause quotes
+// the labels, which the App didn't write, so the text is escaped (SPEC
+// §5.1).
+func (r *Runs) reportLabels(ctx context.Context, s *github.Snapshot, is state.Issue, st Stage, cause error) error {
+	a := r.Daemon.Step.Applier
+	key := labelsKey(s.Number, s.Labels)
+	if is.Reported(kindLabels, key) {
+		logr.Debugf("%s/%s#%d: no %s run: its model and effort labels give no settings, as reported: %v", a.Owner, a.Repo, s.Number, st.Agent(), cause)
+		return nil
+	}
+	marker, err := github.FormatMarker(github.Marker{Kind: "error", Fields: map[string]string{"kind": kindLabels, "key": key}})
+	if err != nil {
+		return fmt.Errorf("report the labels of #%d: %w", s.Number, err)
+	}
+	text := fmt.Sprintf("I can't start the %s run: %v. Nothing runs here until the model and effort labels are fixed: "+
+		"at most one label of each kind, each naming a model in models.allowed or an effort level.", st.Agent(), cause)
+	if err := a.comment(ctx, s, join(github.Escape(text), marker)); err != nil {
+		return fmt.Errorf("report the labels of #%d: %w", s.Number, err)
+	}
+	logr.Errorf("state error: %s/%s#%d: no %s run: %v", a.Owner, a.Repo, s.Number, st.Agent(), cause)
+	return nil
+}
+
+// labelsKey keys issue n's labels state error: a hash of its model and
+// effort labels of all four kinds, ignoring case and order, so a set that's
+// still wrong after a change is reported again.
+func labelsKey(n int, labels []string) string {
+	var set []string
+	for _, l := range labels {
+		l = strings.ToLower(l)
+		for _, p := range []string{github.ModelPrefix, github.EffortPrefix, github.VerifierModelPrefix, github.VerifierEffortPrefix} {
+			if strings.HasPrefix(l, p) {
+				set = append(set, l)
+				break
+			}
+		}
+	}
+	slices.Sort(set)
+	return fmt.Sprintf("%d-%s", n, state.BodyHash(strings.Join(set, "\n")))
+}
+
+// runFields are the run marker's fields for l's run: model= and effort=,
+// as it started with them, and ran=, the models raw, claude's output,
+// reports in modelUsage, comma-separated. One left unset, so claude used
+// its default, or with no models reported, is left out. A value a marker
+// can't hold, such as a modelUsage key with a space, a '>' or a comma, is
+// left out and logged, so it can't fail the apply.
+func runFields(l Lease, raw []byte) map[string]string {
+	fields := map[string]string{}
+	for _, f := range []struct{ name, value string }{{"model", l.Model}, {"effort", l.Effort}} {
+		switch {
+		case f.value == "":
+		case !markerValue(f.value):
+			logr.Warnf("run %s on #%d: its marker leaves out %s %q, which a marker can't hold", l.RunID, l.Issue, f.name, f.value)
+		default:
+			fields[f.name] = f.value
+		}
+	}
+	models, err := agent.ModelsRan(raw)
+	if err != nil {
+		logr.Warnf("run %s on #%d: its marker has no ran=, as its output names no models: %v", l.RunID, l.Issue, err)
+	}
+	var ran []string
+	for _, m := range models {
+		if strings.Contains(m, ",") || !markerValue(m) {
+			logr.Warnf("run %s on #%d: its marker's ran= leaves out the model %q claude reported, which a marker can't hold", l.RunID, l.Issue, m)
+			continue
+		}
+		ran = append(ran, m)
+	}
+	if len(ran) > 0 {
+		fields["ran"] = strings.Join(ran, ",")
+	}
+	return fields
+}
+
+// markerValue reports whether v is a value FormatMarker writes.
+func markerValue(v string) bool {
+	_, err := github.FormatMarker(github.Marker{Kind: "transition", Fields: map[string]string{"model": v}})
+	return err == nil
 }
 
 // blocked ends l's run, whose result asked for a move the table lacks
