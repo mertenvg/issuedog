@@ -126,9 +126,15 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			delete(d.missing, n)
 		}
 	}
+	// A command may write to other issues, such as a /hold's descendants,
+	// whose snapshots are then out of date: those skip step 1 and Work, and
+	// are read again next pass.
+	touched := map[int]bool{}
+	d.Step.Touched = func(n int) { touched[n] = true }
+	defer func() { d.Step.Touched = nil }()
 	for _, n := range slices.Sorted(maps.Keys(d.snaps)) {
 		s := d.snaps[n]
-		if !read[n] && !slices.ContainsFunc(s.Labels, isSpecReview) {
+		if touched[n] || (!read[n] && !slices.ContainsFunc(s.Labels, isSpecReview)) {
 			continue
 		}
 		// TODO(#83): a visit at spec-review posts a revision for a body edit
@@ -141,6 +147,10 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			continue
 		}
 		d.inputs[n] = in
+	}
+	for n := range touched {
+		delete(d.inputs, n)
+		d.stale[n] = true
 	}
 	if d.Work != nil {
 		var ready []Ready

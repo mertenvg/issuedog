@@ -2,6 +2,7 @@ package daemon_test
 
 import (
 	"context"
+	"net/http"
 	"reflect"
 	"slices"
 	"strings"
@@ -245,6 +246,26 @@ func TestHoldResumePriority(t *testing.T) {
 				1: {[]string{"stage:ready"}, []string{rejected("/resume", madeOn("#2"), "1004")}},
 			},
 			react: "-1"},
+		{name: "/resume ends a hold that a /hold on its grandparent made",
+			// 1 > 2 > 3 > 4, held by a /hold on #1
+			setup: tree([]string{ready, above("ready"), above("in-progress"), above("verifying")}, []int{0, 1, 2, 3}, 3, 1005, "/resume", nil),
+			on:    3,
+			want: map[int]issueWant{
+				3: {[]string{"stage:in-progress"}, []string{moved("Resumed by `/resume`, back to `in-progress`.", "from=held to=in-progress cmd=1005")}},
+				4: {[]string{"stage:verifying"}, []string{moved("Resumed by `/resume` on #3, back to `verifying`.", "from=held to=verifying cmd=1005")}},
+			},
+			react: "+1"},
+		{name: "/resume stops its walk up at a parent in another repo, whose number here is a PR",
+			setup: then(tree([]string{ready, held("ready", "owner")}, []int{0, 1}, 2, 1003, "/resume", func(f *githubtest.Fake) {
+				f.SetPullRequest(1)
+				f.Transfer(1, "o/other")
+			}), func(f *githubtest.Fake) { f.AddComment(2, "owner", "/priority p1") }),
+			on: 2,
+			want: map[int]issueWant{
+				2: {[]string{"priority:p1", "stage:ready"}, []string{moved("Resumed by `/resume`, back to `ready`.", "from=held to=ready cmd=1003")}},
+			},
+			react: "+1", writes: []string{"POST /issues/2/comments", "POST /issues/2/labels", "DELETE /issues/2/labels/stage:held",
+				"POST /issues/comments/1003/reactions", "POST /issues/2/labels", "POST /issues/comments/1004/reactions"}},
 		{name: "/resume isn't rejected once it resumed a child that has since closed",
 			setup: then(tree([]string{ready, held("ready", "owner")}, []int{0, 1}, 1, 1003, "/resume", nil), func(f *githubtest.Fake) {
 				f.AddComment(2, app, moved("Resumed by `/resume` on #1, back to `ready`.", "from=held to=ready cmd=1003"))
@@ -519,5 +540,36 @@ func TestHoldMixedCaseRepo(t *testing.T) {
 	githubtest.Replay(t, setup, passIn(t, "O", 1))
 	if l := run(t, setup, passIn(t, "O", 1)).State().Issues[1].Labels; !reflect.DeepEqual(l, []string{"stage:held"}) {
 		t.Errorf("#2: labels %q, want it held", l)
+	}
+}
+
+// A failed read on the walk up, of #2's parent or of #1, in Check or in
+// Apply, fails the pass, which writes nothing, so no hold ends. The pass
+// reads #2's parent once first, for its snapshot.
+func TestResumeParentReadFails(t *testing.T) {
+	for _, tc := range []struct {
+		name, path string
+		nth        int
+	}{
+		{"parent in Check", "/issues/2/parent", 2}, {"parent in Apply", "/issues/2/parent", 3},
+		{"#1 in Check", "/issues/1", 1}, {"#1 in Apply", "/issues/1", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// 1 > 2 > 3, held by a /hold on #1
+			f := tree([]string{ready, above("ready"), above("verifying")}, []int{0, 1, 2}, 2, 1004, "/resume", nil)(t)
+			reads := 0
+			f.AnswerOnce(func(r githubtest.Request) bool {
+				if r.Method == "GET" && r.Path == tc.path {
+					reads++
+				}
+				return reads == tc.nth
+			}, http.StatusInternalServerError)
+			if err := commandsPass(t, 2)(f); err == nil {
+				t.Errorf("the pass succeeded, want it to fail on read %d of %s", tc.nth, tc.path)
+			}
+			if w := f.Writes(); len(w) != 0 || reads != tc.nth {
+				t.Errorf("%d reads of %s and writes %+v, want %d and none", reads, tc.path, w, tc.nth)
+			}
+		})
 	}
 }

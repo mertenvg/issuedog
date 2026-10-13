@@ -24,6 +24,9 @@ type Applier struct {
 	Owner, Repo string
 	// AppSlug is the App's slug. Its comments are by "<slug>[bot]".
 	AppSlug string
+	// Touched, if set, is told of each issue that a command on another
+	// issue may write to, such as a descendant of a /hold, before it does.
+	Touched func(number int)
 
 	histories histories // see Dirty
 }

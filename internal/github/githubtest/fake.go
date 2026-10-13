@@ -449,11 +449,17 @@ func page[T any](c *call, items []T) (int, any) {
 
 func (f *Fake) getIssue(c *call) (int, any) { return http.StatusOK, c.issue.Issue }
 
+// getParent serves an issue's parent with its repository_url, this repo's
+// unless Transfer set another.
 func (f *Fake) getParent(c *call) (int, any) {
 	if c.issue.parent == 0 {
 		return http.StatusNotFound, message("Not Found")
 	}
-	return http.StatusOK, f.issues[c.issue.parent-1].Issue
+	parent := f.issues[c.issue.parent-1].Issue
+	if parent.RepositoryURL == nil {
+		parent.RepositoryURL = new(fmt.Sprintf("%s/repos/%s", f.srv.URL, f.repo))
+	}
+	return http.StatusOK, parent
 }
 
 // listComments serves one issue's comments oldest first, or the repo's,

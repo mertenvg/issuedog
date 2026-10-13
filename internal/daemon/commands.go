@@ -192,7 +192,8 @@ func ends(is state.Issue, self bool, above map[int64]bool) (state.Stage, bool) {
 }
 
 // madeAbove returns the IDs of the comments on c's issue and its ancestors,
-// read up through each parent.
+// read up through each parent in this repo. It stops at a parent in another
+// repo, as family skips those going down.
 func (a *Applier) madeAbove(ctx context.Context, c Cmd) (map[int64]bool, error) {
 	above, seen := map[int64]bool{}, map[int]bool{}
 	for s := c.S; ; {
@@ -203,12 +204,25 @@ func (a *Applier) madeAbove(ctx context.Context, c Cmd) (map[int64]bool, error) 
 		if s.Parent == 0 || seen[s.Parent] {
 			return above, nil
 		}
-		parent, err := a.Client.Snapshot(ctx, a.Owner, a.Repo, s.Parent)
+		parent, _, err := a.Client.SubIssue.GetParentIssue(ctx, a.Owner, a.Repo, int64(s.Number))
 		if err != nil {
-			return nil, fmt.Errorf("ancestor of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
+			return nil, fmt.Errorf("parent of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
 		}
-		s = parent
+		if !a.inRepo(parent.GetRepositoryURL()) {
+			logr.Infof("%s/%s#%d: its parent #%d of %s isn't in this repo, so it's where the walk up stops",
+				a.Owner, a.Repo, s.Number, parent.GetNumber(), parent.GetRepositoryURL())
+			return above, nil
+		}
+		if s, err = a.Client.Snapshot(ctx, a.Owner, a.Repo, parent.GetNumber()); err != nil {
+			return nil, fmt.Errorf("ancestor of %s/%s#%d: %w", a.Owner, a.Repo, c.S.Number, err)
+		}
 	}
+}
+
+// inRepo reports whether an issue's repository_url, ".../repos/{owner}/{repo}",
+// names this repo. GitHub ignores case in both.
+func (a *Applier) inRepo(url string) bool {
+	return strings.HasSuffix(strings.ToLower(url), strings.ToLower("/repos/"+a.Owner+"/"+a.Repo))
 }
 
 // madeBelow maps the comments on the descendants in family, all but its
@@ -335,6 +349,9 @@ func (a *Applier) moveFamily(ctx context.Context, c Cmd, trust github.Trust, pla
 		}
 		by := "`/" + c.Name + "`"
 		if n.s != c.S {
+			if a.Touched != nil {
+				a.Touched(n.s.Number)
+			}
 			if err := a.CheckLabels(ctx, n.s, trust, n.d.Has); err != nil {
 				return fmt.Errorf("move: %w", err)
 			}
@@ -372,7 +389,6 @@ type node struct {
 func (a *Applier) family(ctx context.Context, c Cmd) ([]node, error) {
 	var nodes []node
 	seen := map[int]bool{c.S.Number: true}
-	here := strings.ToLower("/repos/" + a.Owner + "/" + a.Repo)
 	var walk func(n int) error
 	walk = func(n int) error {
 		opts := &gogithub.ListOptions{PerPage: 100}
@@ -381,7 +397,7 @@ func (a *Applier) family(ctx context.Context, c Cmd) ([]node, error) {
 				return fmt.Errorf("sub-issues of %s/%s#%d: %w", a.Owner, a.Repo, n, err)
 			}
 			is := (*gogithub.Issue)(sub)
-			if !strings.HasSuffix(strings.ToLower(is.GetRepositoryURL()), here) {
+			if !a.inRepo(is.GetRepositoryURL()) {
 				logr.Infof("%s/%s#%d: skipping its sub-issue #%d of %s, which isn't in this repo",
 					a.Owner, a.Repo, n, is.GetNumber(), is.GetRepositoryURL())
 				continue
