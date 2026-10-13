@@ -30,6 +30,10 @@ type Snapshot struct {
 	Parent int
 	// Comments are all the issue's comments, oldest first.
 	Comments []Comment
+	// SettingsEvent is the ID of the newest change to a model or effort
+	// label that stands, or 0: not read with the issue, but set when the
+	// daemon checks its labels (CheckLabels).
+	SettingsEvent int64
 }
 
 // Comment is one issue comment.

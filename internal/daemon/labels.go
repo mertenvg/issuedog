@@ -33,14 +33,15 @@ import (
 // pass that crashed part way can run again: once an override's marker is
 // posted, the override is older than the latest marker, and what's left is
 // an Unfinished disagreement; an error comment is posted once per key. The
-// writes are added to s. dirty is as for state.Derive.
+// writes are added to s, and s.SettingsEvent is set. dirty is as for
+// state.Derive.
 func (a *Applier) CheckLabels(ctx context.Context, s *github.Snapshot, trust github.Trust, dirty func(int64) bool) error {
-	labels, events, err := a.Client.CheckLabels(ctx, a.Owner, a.Repo, s.Number, s.Labels, a.AppSlug, trust, dirty)
+	labels, events, settings, err := a.Client.CheckLabels(ctx, a.Owner, a.Repo, s.Number, s.Labels, a.AppSlug, trust, dirty)
 	if err != nil {
 		return fmt.Errorf("labels of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
 	}
 	// CheckLabels may have reverted labels since s was read.
-	s.Labels = labels
+	s.Labels, s.SettingsEvent = labels, settings
 	for _, ev := range events {
 		to, ok := state.ParseLabel(ev.Label)
 		if ev.Kind == github.LabelOverride && ok {

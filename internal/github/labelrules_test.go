@@ -121,6 +121,43 @@ func TestCheckLabels(t *testing.T) {
 	}
 }
 
+// CheckLabels' settings is the newest change to a model or effort label
+// that stands: a trusted user's or the App's, but no untrusted change, and
+// no App revert of one.
+func TestCheckLabelsSettings(t *testing.T) {
+	revert := func(id, of int64) ev { return said(id, appBot, fmt.Sprintf("<!-- issuedog:revert key=%d -->", of)) }
+	for name, tt := range map[string]struct {
+		timeline []ev
+		want     int64
+	}{
+		"none":                        {[]ev{added(1, "owner", "priority:p1"), added(2, appBot, "stage:ready")}, 0},
+		"trusted adds":                {[]ev{added(1, "owner", "model:opus"), added(2, "owner", "Model:Sonnet")}, 2},
+		"trusted removal":             {[]ev{added(1, "owner", "model:opus"), added(2, "owner", "model:sonnet"), removed(3, "owner", "model:sonnet")}, 3},
+		"verifier-effort":             {[]ev{added(1, "owner", "model:opus"), added(2, "owner", "verifier-effort:max")}, 2},
+		"the App's own change":        {[]ev{added(1, "owner", "model:opus"), added(2, appBot, "model:sonnet"), removed(3, appBot, "model:opus")}, 3},
+		"other labels after":          {[]ev{added(1, "owner", "model:opus"), added(2, "owner", "priority:p1"), removed(3, "owner", "priority:p1")}, 1},
+		"untrusted add, reverted":     {[]ev{added(1, "owner", "model:opus"), added(2, "mallory", "effort:low"), revert(3, 2), removed(4, appBot, "effort:low")}, 1},
+		"untrusted removal, reverted": {[]ev{added(1, "owner", "model:opus"), removed(2, "mallory", "model:opus"), revert(3, 2), added(4, appBot, "model:opus")}, 1},
+		"untrusted add, not yet":      {[]ev{added(1, "owner", "model:opus"), added(2, "mallory", "effort:low")}, 1},
+		"untrusted only":              {[]ev{added(1, "mallory", "model:opus"), revert(2, 1), removed(3, appBot, "model:opus")}, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, got := checkLabelsAll(t, tt.timeline, func(int64) bool { return false }); got != tt.want {
+				t.Errorf("settings = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOverrideLabel(t *testing.T) {
+	for name, want := range map[string]bool{"model:opus": true, "Verifier-Model:opus": true, "effort:max": true, "VERIFIER-EFFORT:LOW": true,
+		"models:opus": false, "stage:ready": false, "priority:p1": false, "approved": false} {
+		if got := OverrideLabel(name); got != want {
+			t.Errorf("OverrideLabel(%q) = %t, want %t", name, got, want)
+		}
+	}
+}
+
 func TestPipelineLabel(t *testing.T) {
 	for _, name := range []string{"stage:ready", "priority:p1", "scope:x", "type:task", "approved",
 		"model:opus", "verifier-model:opus", "effort:max", "verifier-effort:low", "Model:Opus", "VERIFIER-EFFORT:LOW"} {
@@ -179,6 +216,13 @@ func TestCheckLabelsDisagreement(t *testing.T) {
 // and the events.
 func checkLabels(t *testing.T, timeline []ev, dirty func(int64) bool) ([]string, []LabelEvent) {
 	t.Helper()
+	writes, events, _ := checkLabelsAll(t, timeline, dirty)
+	return writes, events
+}
+
+// checkLabelsAll is checkLabels, also returning CheckLabels' settings.
+func checkLabelsAll(t *testing.T, timeline []ev, dirty func(int64) bool) ([]string, []LabelEvent, int64) {
+	t.Helper()
 	var writes []string
 	c := newClientWith(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/repos/o/r")
@@ -202,11 +246,11 @@ func checkLabels(t *testing.T, timeline []ev, dirty func(int64) bool) ([]string,
 		writes = append(writes, desc)
 		_, _ = io.WriteString(w, map[bool]string{true: "[]", false: "{}"}[strings.HasSuffix(path, "/labels")])
 	}))
-	_, got, err := c.CheckLabels(context.Background(), "o", "r", 7, nil, "issuedog", fakeTrust{"owner": true}, dirty)
+	_, got, settings, err := c.CheckLabels(context.Background(), "o", "r", 7, nil, "issuedog", fakeTrust{"owner": true}, dirty)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return writes, got
+	return writes, got, settings
 }
 
 func readAll(r io.Reader) []byte {

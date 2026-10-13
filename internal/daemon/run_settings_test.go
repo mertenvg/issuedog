@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -311,8 +312,8 @@ func TestBadLabelsReportOnce(t *testing.T) {
 	if left := g.leftovers(); len(left) != 0 {
 		t.Errorf("left %v; want no lease", left)
 	}
-	// Once it's reported, stage work reads only the timeline, for the key,
-	// which step 1 read already: a 304. It doesn't read the issue again.
+	// Once it's reported, stage work reads nothing: the key is from step 1's
+	// label check, and the issue isn't read again.
 	ctx := context.Background()
 	s, err := g.d.Step.Client.Snapshot(ctx, "o", "r", 1)
 	if err != nil {
@@ -326,8 +327,8 @@ func TestBadLabelsReportOnce(t *testing.T) {
 	if err := g.r.Work(ctx, []daemon.Ready{{S: s, Inputs: in}}); err != nil {
 		t.Fatal(err)
 	}
-	if reads := readsOf(f, from, 1); len(reads) != 1 || reads[0].Path != "/issues/1/timeline" || !reads[0].Conditional || reads[0].Status != 304 {
-		t.Errorf("stage work on a reported issue read %+v; want only the timeline, answered 304", reads)
+	if reads := readsOf(f, from, 1); len(reads) != 0 {
+		t.Errorf("stage work on a reported issue read %+v; want nothing", reads)
 	}
 
 	f.RemoveLabel(1, "owner", "model:<!--x")
@@ -367,6 +368,45 @@ func TestBadLabelsAgainAfterFix(t *testing.T) {
 	g.workN(2)
 	if errs := labelErrors(f, 1); g.runs() != 1 || len(errs) != 3 {
 		t.Errorf("after a verifier-effort label: %d runs, label errors %q; want no run and a third error", g.runs(), errs)
+	}
+}
+
+// An untrusted change to a model or effort label of a blocked issue, which
+// step 1 reverts, is no new occurrence: neither it nor the revert posts
+// another error, whether it adds a label or removes one. A trusted change
+// that leaves the labels wrong is one, a removal among them, but a change
+// to another kind of label isn't.
+func TestBadLabelsWhoseChangeCounts(t *testing.T) {
+	f, g := badLabels(t, "model:sonnet")
+	f.AddLabel(1, "owner", "model:haiku")
+	g.workN(2)
+	if errs := labelErrors(f, 1); len(errs) != 1 {
+		t.Fatalf("%d label errors; want 1", len(errs))
+	}
+	for range 3 {
+		f.AddLabel(1, "mallory", "effort:low")
+		g.workN(2)
+	}
+	f.RemoveLabel(1, "mallory", "model:sonnet")
+	g.workN(2)
+	is := f.State().Issues[0]
+	if errs := labelErrors(f, 1); len(errs) != 1 || slices.Contains(is.Labels, "effort:low") || !slices.Contains(is.Labels, "model:sonnet") {
+		t.Fatalf("after mallory's changes: %d label errors, labels %v; want them reverted and still 1 error", len(errs), is.Labels)
+	}
+	for _, step := range []struct {
+		change func()
+		errs   int
+	}{
+		{func() { f.AddLabel(1, app, "priority:p1") }, 1},
+		{func() { f.AddLabel(1, "owner", "priority:p0") }, 1},
+		{func() { f.RemoveLabel(1, "owner", "model:opus") }, 2}, // the oldest; still two model:* labels
+		{func() { f.AddLabel(1, "owner", "effort:high") }, 3},
+	} {
+		step.change()
+		g.workN(2)
+		if errs := labelErrors(f, 1); len(errs) != step.errs || g.runs() != 0 {
+			t.Fatalf("after a change to labels %v: %d label errors, %d runs; want %d and none", f.State().Issues[0].Labels, len(errs), g.runs(), step.errs)
+		}
 	}
 }
 

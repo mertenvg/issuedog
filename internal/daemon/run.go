@@ -200,8 +200,8 @@ func (r *Runs) Work(ctx context.Context, ready []Ready) error {
 // kept in the lease, so a label changed during the run changes only the
 // next one. Labels that give no settings (state.ErrLabels) start no run
 // and use no attempt: the issue gets one state error for each change to
-// them (labelsErrorKey), checked before the issue is read again, and
-// posted only if the issue read again would have run (reportLabels).
+// them that stands (labelsKey), checked before the issue is read again,
+// and posted only if the issue read again would have run (reportLabels).
 func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 	a, n := r.Daemon.Step.Applier, rd.S.Number
 	wrap := func(err error) error {
@@ -234,16 +234,11 @@ func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 	}
 	attempt := r.attempts[countKey(n, errKey)] + 1
 	set, badLabels := state.RunSettings(state.Agent(st.Agent()), rd.S.Labels, r.Daemon.Config, attempt)
-	var labelsKey string
-	if errors.Is(badLabels, state.ErrLabels) {
-		if labelsKey, err = r.labelsErrorKey(ctx, n); err != nil {
-			return false, wrap(err)
-		}
-		if is.Reported(kindLabels, labelsKey) {
-			logr.Debugf("%s/%s#%d: no %s run: its model and effort labels give no settings, as reported: %v", a.Owner, a.Repo, n, st.Agent(), badLabels)
-			return false, nil
-		}
-	} else if badLabels != nil {
+	switch {
+	case errors.Is(badLabels, state.ErrLabels) && is.Reported(kindLabels, labelsKey(rd.S)):
+		logr.Debugf("%s/%s#%d: no %s run: its model and effort labels give no settings, as reported: %v", a.Owner, a.Repo, n, st.Agent(), badLabels)
+		return false, nil
+	case badLabels != nil && !errors.Is(badLabels, state.ErrLabels):
 		return false, wrap(badLabels)
 	}
 	fresh, err := a.Client.Snapshot(ctx, a.Owner, a.Repo, n)
@@ -266,7 +261,7 @@ func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 	}
 	if badLabels != nil {
 		r.Daemon.reread(n, false)
-		return false, wrap(r.reportLabels(ctx, rd.S, fresh, is.Stage, st, labelsKey, badLabels))
+		return false, wrap(r.reportLabels(ctx, rd.S, fresh, is.Stage, st, badLabels))
 	}
 	in.RunID, in.Attempt = r.newID(), attempt
 	l := Lease{Issue: n, Stage: is.Stage, RunID: in.RunID, Clone: r.Workspace.Dir(in.RunID),
@@ -597,19 +592,19 @@ func otherStage(s *github.Snapshot, st state.Stage) bool {
 
 // reportLabels posts the state error for the model and effort labels of
 // the issue step 1 read as s, which give st's run no settings (cause, a
-// state.ErrLabels error), keyed by key (labelsErrorKey), which it doesn't
-// have yet. fresh is the issue read again, open and at stage, with work
+// state.ErrLabels error), keyed by labelsKey, which it doesn't have yet.
+// fresh is the issue read again, open and at stage, with work
 // pending: if it has another stage label, such as one the owner just set,
 // or other model and effort labels than s, which may fix them, it gets
 // none. cause quotes the labels, which the App didn't write, so the text
 // is escaped (SPEC §5.1).
-func (r *Runs) reportLabels(ctx context.Context, s, fresh *github.Snapshot, stage state.Stage, st Stage, key string, cause error) error {
+func (r *Runs) reportLabels(ctx context.Context, s, fresh *github.Snapshot, stage state.Stage, st Stage, cause error) error {
 	a, n := r.Daemon.Step.Applier, s.Number
 	if otherStage(fresh, stage) || !slices.Equal(overrideLabels(s.Labels), overrideLabels(fresh.Labels)) {
 		logr.Debugf("%s/%s#%d: no %s run, and no state error yet: its stage or its model and effort labels changed since step 1", a.Owner, a.Repo, n, st.Agent())
 		return nil
 	}
-	marker, err := github.FormatMarker(github.Marker{Kind: "error", Fields: map[string]string{"kind": kindLabels, "key": key}})
+	marker, err := github.FormatMarker(github.Marker{Kind: "error", Fields: map[string]string{"kind": kindLabels, "key": labelsKey(s)}})
 	if err != nil {
 		return fmt.Errorf("report the labels of #%d: %w", n, err)
 	}
@@ -627,39 +622,23 @@ func (r *Runs) reportLabels(ctx context.Context, s, fresh *github.Snapshot, stag
 	return nil
 }
 
-// labelsErrorKey keys issue n's labels state error: the ID of the newest
-// labeled or unlabeled event of a model or effort label of any of the four
-// kinds, or 0 if there is none. Each change to them is a new occurrence
-// (SPEC §5.3), so the same wrong labels set again after a fix are reported
-// again. It reads the timeline, which only a run blocked by its labels
-// needs: step 1's CheckLabels read it this pass, so the read is a
-// conditional GET that GitHub answers with a 304 unless it changed.
-func (r *Runs) labelsErrorKey(ctx context.Context, n int) (string, error) {
-	a := r.Daemon.Step.Applier
-	timeline, err := a.Client.TimelineSince(ctx, a.Owner, a.Repo, n, time.Time{})
-	if err != nil {
-		return "", fmt.Errorf("key the labels state error: %w", err)
-	}
-	var newest int64
-	for _, e := range timeline {
-		if ev := e.GetEvent(); (ev == "labeled" || ev == "unlabeled") && len(overrideLabels([]string{e.GetLabel().GetName()})) > 0 {
-			newest = e.GetID()
-		}
-	}
-	return strconv.FormatInt(newest, 10), nil
-}
+// labelsKey keys the labels state error of s, as step 1 read it: the ID
+// of the newest change to its model and effort labels that stands
+// (Snapshot.SettingsEvent), as CheckLabels judged it. Each such change is a
+// new occurrence (SPEC §5.3), so the same wrong labels set again after a
+// fix are reported again, but an untrusted change and the App's revert of
+// it don't count, so they post nothing. It costs no read: step 1's
+// CheckLabels set it from the timeline when it last checked s, which may
+// have been in an earlier pass, as step 1 runs only on changed issues.
+func labelsKey(s *github.Snapshot) string { return strconv.FormatInt(s.SettingsEvent, 10) }
 
 // overrideLabels returns the model and effort labels of all four kinds in
 // labels, in lower case and sorted.
 func overrideLabels(labels []string) []string {
 	var set []string
 	for _, l := range labels {
-		l = strings.ToLower(l)
-		for _, p := range []string{github.ModelPrefix, github.EffortPrefix, github.VerifierModelPrefix, github.VerifierEffortPrefix} {
-			if strings.HasPrefix(l, p) {
-				set = append(set, l)
-				break
-			}
+		if github.OverrideLabel(l) {
+			set = append(set, strings.ToLower(l))
 		}
 	}
 	slices.Sort(set)
