@@ -49,6 +49,16 @@ var typeLabels = []labelSpec{
 	{"type:bug", "b60205", "Something broken"},
 }
 
+// The prefixes of the model and effort override labels. model:* and effort:*
+// apply to every run on an issue but the verifier's; verifier-model:* and
+// verifier-effort:* apply only to the verifier's (#93's plan, assumption 4).
+const (
+	ModelPrefix          = "model:"
+	EffortPrefix         = "effort:"
+	VerifierModelPrefix  = "verifier-model:"
+	VerifierEffortPrefix = "verifier-effort:"
+)
+
 // Colors of the model and effort override labels, one per kind.
 const (
 	modelColor          = "d4c5f9"
@@ -91,13 +101,13 @@ func wantedLabels(opts LabelOptions) []labelSpec {
 	}
 	for _, m := range opts.Models {
 		want = append(want,
-			labelSpec{"model:" + m.Suffix, modelColor, describe("Runs other than the verifier's use ", m.Name)},
-			labelSpec{"verifier-model:" + m.Suffix, verifierModelColor, describe("The verifier's runs use ", m.Name)})
+			labelSpec{ModelPrefix + m.Suffix, modelColor, describe("Runs other than the verifier's use ", m.Name)},
+			labelSpec{VerifierModelPrefix + m.Suffix, verifierModelColor, describe("The verifier's runs use ", m.Name)})
 	}
 	for _, e := range opts.Efforts {
 		want = append(want,
-			labelSpec{"effort:" + e, effortColor, "Runs other than the verifier's use " + e + " effort"},
-			labelSpec{"verifier-effort:" + e, verifierEffortColor, "The verifier's runs use " + e + " effort"})
+			labelSpec{EffortPrefix + e, effortColor, "Runs other than the verifier's use " + e + " effort"},
+			labelSpec{VerifierEffortPrefix + e, verifierEffortColor, "The verifier's runs use " + e + " effort"})
 	}
 	return want
 }
