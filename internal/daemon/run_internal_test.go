@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -153,17 +154,12 @@ func TestRunFields(t *testing.T) {
 	}
 }
 
-// labelsKey is the same for the same labels in any order or case, and
-// differs for another set of model and effort labels, but not for other
-// labels.
-func TestLabelsKey(t *testing.T) {
-	a := labelsKey(1, []string{"model:opus", "stage:clarifying", "model:sonnet"})
-	if b := labelsKey(1, []string{"Model:Sonnet", "model:opus", "priority:p1"}); a != b {
-		t.Errorf("labelsKey = %q and %q for the same labels; want them equal", a, b)
-	}
-	for _, other := range [][]string{{"model:opus"}, {"model:opus", "model:sonnet", "effort:max"}, {"model:opus", "verifier-model:sonnet"}} {
-		if b := labelsKey(1, other); a == b {
-			t.Errorf("labelsKey(%q) = %q, as for another set", other, b)
-		}
+// overrideLabels keeps the model and effort labels of all four kinds, in
+// lower case and sorted, and nothing else.
+func TestOverrideLabels(t *testing.T) {
+	got := overrideLabels([]string{"stage:clarifying", "Model:Sonnet", "verifier-effort:max", "priority:p1", "effort:low", "Verifier-Model:opus", "modelx"})
+	want := []string{"effort:low", "model:sonnet", "verifier-effort:max", "verifier-model:opus"}
+	if !slices.Equal(got, want) {
+		t.Errorf("overrideLabels = %q, want %q", got, want)
 	}
 }

@@ -256,73 +256,223 @@ func TestResumeUsesLeaseSettings(t *testing.T) {
 	}
 }
 
-// Labels that give no settings start no run and use no attempt. They get
-// one state error, its text escaped, and another only when they change and
-// are still wrong.
-func TestBadLabelsReportOnce(t *testing.T) {
+// labelErrors are the bodies of issue n's labels state errors.
+func labelErrors(f *githubtest.Fake, n int) []string {
+	var bodies []string
+	for _, c := range f.State().Issues[n-1].Comments {
+		if strings.Contains(c.Body, "<!-- issuedog:error kind=labels key=") {
+			bodies = append(bodies, c.Body)
+		}
+	}
+	return bodies
+}
+
+// badLabels files issue 1 as interview does, with model:opus and second,
+// which the owner set, on a rig whose stage always has work pending, with
+// max_attempts 1.
+func badLabels(t *testing.T, second string) (*githubtest.Fake, *rig) {
+	t.Helper()
 	f := newFake(t)
 	interview(f)
 	f.AddLabel(1, "owner", "model:opus")
-	f.AddLabel(1, "owner", "model:<!--x")
+	f.AddLabel(1, "owner", second)
 	g := newRig(t, f, newOrigin(t), t.TempDir())
 	g.allow()
 	g.d.Config.Loop.MaxAttempts = 1
 	g.stage.pending = func(daemon.Input) bool { return true }
 	g.claude(okOut, 0)
-	labelErrors := func() []string {
-		var bodies []string
-		for _, c := range f.State().Issues[0].Comments {
-			if strings.Contains(c.Body, "<!-- issuedog:error kind=labels key=1-") {
-				bodies = append(bodies, c.Body)
-			}
-		}
-		return bodies
-	}
-	for range 2 {
+	return f, g
+}
+
+// workN runs g.work(1) passes times.
+func (g *rig) workN(passes int) {
+	g.t.Helper()
+	for range passes {
 		if err := g.work(1); err != nil {
-			t.Fatal(err)
+			g.t.Fatal(err)
 		}
 	}
-	errs := labelErrors()
+}
+
+// Labels that give no settings start no run and use no attempt. They get
+// one state error, its text escaped, and another when they change and are
+// still wrong.
+func TestBadLabelsReportOnce(t *testing.T) {
+	f, g := badLabels(t, "model:<!--x")
+	g.workN(2)
+	errs := labelErrors(f, 1)
 	if g.runs() != 0 || len(errs) != 1 {
 		t.Fatalf("after 2 passes: %d runs, label errors %q; want no run and one error", g.runs(), errs)
 	}
-	if body := errs[0]; strings.Count(body, "<!--") != 1 || !strings.Contains(body, `"model:&lt;!--x"`) || !strings.Contains(body, "interviewer") {
-		t.Errorf("the error says %q; want the interviewer's run named, the label quoted and escaped, and only the marker unescaped", body)
+	want := `I can't start the interviewer run, because of this issue's model and effort labels: "model:&lt;!--x" and "model:opus" are both model:* labels.`
+	if body := errs[0]; strings.Count(body, "<!--") != 1 || !strings.HasPrefix(body, want) {
+		t.Errorf("the error says %q; want it to start %q, with only the marker unescaped", body, want)
 	}
 	if left := g.leftovers(); len(left) != 0 {
 		t.Errorf("left %v; want no lease", left)
 	}
+	// Once it's reported, stage work reads only the timeline, for the key,
+	// which step 1 read already: a 304. It doesn't read the issue again.
+	ctx := context.Background()
+	s, err := g.d.Step.Client.Snapshot(ctx, "o", "r", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, err := g.d.Step.Run(ctx, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := len(f.Requests())
+	if err := g.r.Work(ctx, []daemon.Ready{{S: s, Inputs: in}}); err != nil {
+		t.Fatal(err)
+	}
+	if reads := readsOf(f, from, 1); len(reads) != 1 || reads[0].Path != "/issues/1/timeline" || !reads[0].Conditional || reads[0].Status != 304 {
+		t.Errorf("stage work on a reported issue read %+v; want only the timeline, answered 304", reads)
+	}
 
 	f.RemoveLabel(1, "owner", "model:<!--x")
 	f.AddLabel(1, "owner", "effort:extreme")
-	for range 2 {
-		if err := g.work(1); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if errs := labelErrors(); g.runs() != 0 || len(errs) != 2 || !strings.Contains(errs[1], `"effort:extreme" is not one of`) {
+	g.workN(2)
+	if errs := labelErrors(f, 1); g.runs() != 0 || len(errs) != 2 || !strings.Contains(errs[1], `"effort:extreme" is not one of`) {
 		t.Fatalf("after another bad set: %d runs, label errors %q; want no run and a second error naming effort:extreme", g.runs(), errs)
 	}
 
 	f.RemoveLabel(1, "owner", "effort:extreme")
-	if err := g.work(1); err != nil {
-		t.Fatal(err)
-	}
+	g.workN(1)
 	if g.runs() != 1 || !strings.HasPrefix(newestBody(f), "The spec") {
 		t.Errorf("after the fix: %d runs, newest comment %q; want a run, applied, though max_attempts is 1", g.runs(), newestBody(f))
 	}
 	g.checkFlags(1, "opus", "", "")
 }
 
+// The same wrong labels set again after a fix are a new occurrence, with a
+// new state error, as is any change to labels of the four kinds, a
+// verifier-effort label among them, that leaves them wrong.
+func TestBadLabelsAgainAfterFix(t *testing.T) {
+	f, g := badLabels(t, "model:sonnet")
+	g.stage.moreQuestions = true // stays at clarifying
+	g.workN(2)
+	f.RemoveLabel(1, "owner", "model:sonnet")
+	g.workN(1)
+	if errs := labelErrors(f, 1); g.runs() != 1 || len(errs) != 1 {
+		t.Fatalf("after the fix: %d runs, label errors %q; want a run and the first error only", g.runs(), errs)
+	}
+	f.AddLabel(1, "owner", "model:sonnet")
+	g.workN(2)
+	errs := labelErrors(f, 1)
+	if g.runs() != 1 || len(errs) != 2 || errs[0] == errs[1] {
+		t.Fatalf("after the same labels again: %d runs, label errors %q; want no run and a second error, with a new key", g.runs(), errs)
+	}
+	f.AddLabel(1, "owner", "verifier-effort:high")
+	g.workN(2)
+	if errs := labelErrors(f, 1); g.runs() != 1 || len(errs) != 3 {
+		t.Errorf("after a verifier-effort label: %d runs, label errors %q; want no run and a third error", g.runs(), errs)
+	}
+}
+
+// The error is posted only on the issue read again just before it: not if
+// that finds it closed, held, with its labels fixed, or with no work
+// pending once its inputs' authors are checked again.
+func TestBadLabelsCheckedAgain(t *testing.T) {
+	for name, change := range map[string]func(f *githubtest.Fake, g *rig){
+		"closed":      func(f *githubtest.Fake, _ *rig) { f.Close(1) },
+		"held":        func(f *githubtest.Fake, _ *rig) { f.AddLabel(1, "owner", "stage:held") },
+		"fixed":       func(f *githubtest.Fake, _ *rig) { f.RemoveLabel(1, "owner", "model:sonnet") },
+		"not pending": func(_ *githubtest.Fake, g *rig) { g.d.Step.Trust = trusted{} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, g := badLabels(t, "model:sonnet")
+			g.stage.pending = func(in daemon.Input) bool { return len(in.Inputs) > 0 }
+			ctx := context.Background()
+			s, err := g.d.Step.Client.Snapshot(ctx, "o", "r", 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			in, err := g.d.Step.Run(ctx, s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			change(f, g)
+			writes := len(f.Writes())
+			if err := g.r.Work(ctx, []daemon.Ready{{S: s, Inputs: in}}); err != nil {
+				t.Fatal(err)
+			}
+			if len(f.Writes()) != writes || g.runs() != 0 {
+				t.Errorf("wrote %+v and ran %d times; want neither", f.Writes()[writes:], g.runs())
+			}
+		})
+	}
+}
+
+// An issue blocked by its labels doesn't hold up the next one in the pass.
+func TestBadLabelsSkipToNextIssue(t *testing.T) {
+	f, g := badLabels(t, "model:sonnet")
+	f.AddLabel(1, app, "priority:p1")
+	answer := interview(f)
+	ctx := context.Background()
+	var ready []daemon.Ready
+	for n := 1; n <= 2; n++ {
+		s, err := g.d.Step.Client.Snapshot(ctx, "o", "r", n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		in, err := g.d.Step.Run(ctx, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ready = append(ready, daemon.Ready{S: s, Inputs: in})
+	}
+	if err := g.r.Work(ctx, ready); err != nil {
+		t.Fatal(err)
+	}
+	comments := f.State().Issues[1].Comments
+	if len(labelErrors(f, 1)) != 1 || g.runs() != 1 || comments[len(comments)-1].Body != specWritten("run1", answer) {
+		t.Errorf("label errors on #1 %q, %d runs, newest comment on #2 %q; want one error, and #2 run and applied",
+			labelErrors(f, 1), g.runs(), comments[len(comments)-1].Body)
+	}
+}
+
+// A failure to post the error fails the pass, and the next pass posts it.
+func TestBadLabelsPostFails(t *testing.T) {
+	f, g := badLabels(t, "model:sonnet")
+	ctx := context.Background()
+	s, err := g.d.Step.Client.Snapshot(ctx, "o", "r", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, err := g.d.Step.Run(ctx, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.FailWrite(len(f.Writes()) + 1)
+	if err := g.r.Work(ctx, []daemon.Ready{{S: s, Inputs: in}}); err == nil || len(labelErrors(f, 1)) != 0 {
+		t.Fatalf("Work = %v, with label errors %q; want an error and none posted", err, labelErrors(f, 1))
+	}
+	f.FailWrite(0)
+	g.workN(1)
+	if errs := labelErrors(f, 1); len(errs) != 1 || g.runs() != 0 {
+		t.Errorf("the next pass: label errors %q, %d runs; want one error and no run", errs, g.runs())
+	}
+}
+
 func TestBadLabelsReplay(t *testing.T) {
-	replayRuns(t, func(_ testing.TB, f *githubtest.Fake, _ string) {
+	setup := func(_ testing.TB, f *githubtest.Fake, _ string) {
 		interview(f)
 		f.AddLabel(1, "owner", "model:opus")
 		f.AddLabel(1, "owner", "model:sonnet")
-	}, func(g *rig) {
+	}
+	more := func(g *rig) {
 		g.allow()
 		g.stage.pending = func(daemon.Input) bool { return true }
 		g.claude(okOut, 0)
-	})
+	}
+	f := newFake(t)
+	setup(t, f, "")
+	g := newRig(t, f, newOrigin(t), t.TempDir())
+	more(g)
+	g.workN(1)
+	if errs := labelErrors(f, 1); len(errs) != 1 || g.runs() != 0 {
+		t.Fatalf("the clean pass: label errors %q, %d runs; want one error and no run", errs, g.runs())
+	}
+	replayRuns(t, setup, more)
 }
