@@ -74,8 +74,6 @@ func TestRunSettings(t *testing.T) {
 
 		{name: "verifier ignores model and effort labels", agent: Verifier, attempt: 1, labels: []string{"model:haiku", "effort:low"},
 			want: Settings{Model: "opus", Effort: "high", FallbackModels: []string{"sonnet"}}},
-		{name: "verifier ignores bad and duplicate model and effort labels", agent: Verifier, attempt: 1, labels: []string{"model:gpt", "model:haiku", "effort:extreme", "effort:low"},
-			want: Settings{Model: "opus", Effort: "high", FallbackModels: []string{"sonnet"}}},
 		{name: "implementer ignores verifier labels", agent: Implementer, attempt: 1, labels: []string{"verifier-model:haiku", "verifier-effort:max"},
 			want: Settings{Model: "sonnet", Effort: "medium", FallbackModels: []string{"opus", "haiku"}}},
 		{name: "planner ignores verifier labels", agent: Planner, attempt: 1, labels: []string{"verifier-model:haiku", "verifier-effort:low"},
@@ -105,6 +103,10 @@ func TestRunSettings(t *testing.T) {
 			want: Settings{Model: "opus", Effort: "high", FallbackModels: []string{"sonnet"}}},
 		{name: "attempts don't raise the planner's effort", agent: Planner, attempt: 3,
 			want: Settings{Model: "opus", Effort: "high"}},
+		{name: "attempt 2 doesn't raise the interviewer's effort", agent: Interviewer, attempt: 2,
+			want: Settings{Model: "sonnet", Effort: "low"}},
+		{name: "attempt 3 doesn't raise the interviewer's effort", agent: Interviewer, attempt: 3,
+			want: Settings{Model: "sonnet", Effort: "low"}},
 
 		{name: "label case", agent: Implementer, attempt: 1, labels: []string{"Model:HAIKU", "EFFORT:High"},
 			want: Settings{Model: "haiku", Effort: "high", FallbackModels: []string{"opus"}}},
@@ -127,6 +129,20 @@ func TestRunSettings(t *testing.T) {
 	}
 }
 
+func TestRunSettingsKeepsConfig(t *testing.T) {
+	cfg := runConfig()
+	got, err := RunSettings(Implementer, []string{"model:opus"}, cfg, 1)
+	if err != nil {
+		t.Fatalf("RunSettings: %v", err)
+	}
+	if want := []string{"haiku"}; !slices.Equal(got.FallbackModels, want) {
+		t.Fatalf("FallbackModels = %q, want %q", got.FallbackModels, want)
+	}
+	if want := []string{"opus", "haiku"}; !slices.Equal(cfg.Stages.FallbackModel.Implementer, want) {
+		t.Errorf("stages.fallback_model.implementer after RunSettings = %q, want %q", cfg.Stages.FallbackModel.Implementer, want)
+	}
+}
+
 func TestRunSettingsErrors(t *testing.T) {
 	for _, c := range []struct {
 		name   string
@@ -145,6 +161,14 @@ func TestRunSettingsErrors(t *testing.T) {
 		{"empty model", Planner, []string{"model:"}},
 		{"full name of a model with a label suffix", Implementer, []string{"model:claude-fable-5"}},
 		{"full name of a long model", Implementer, []string{"model:" + longModel}},
+		// Every run checks all four kinds, including those it doesn't use.
+		{"verifier with an unknown effort level", Verifier, []string{"effort:extreme"}},
+		{"verifier with a model not allowed", Verifier, []string{"model:gpt"}},
+		{"verifier with duplicate model labels", Verifier, []string{"model:gpt", "model:haiku"}},
+		{"verifier with duplicate effort labels", Verifier, []string{"effort:extreme", "effort:low"}},
+		{"implementer with an unknown verifier effort level", Implementer, []string{"verifier-effort:extreme"}},
+		{"implementer with duplicate verifier-model labels", Implementer, []string{"verifier-model:opus", "verifier-model:haiku"}},
+		{"planner with a verifier model not allowed", Planner, []string{"verifier-model:gpt"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got, err := RunSettings(c.agent, c.labels, runConfig(), 1)
