@@ -42,6 +42,9 @@ type Move struct {
 	// NoAck leaves out the 👍 for a command comment's key: for a move a
 	// command makes before its own marker, such as on a descendant.
 	NoAck bool
+	// Markers go after the transition marker, in the same comment, such as
+	// a revision marker.
+	Markers []github.Marker
 }
 
 // keyFields are the marker fields a Key names.
@@ -111,6 +114,13 @@ func (a *Applier) Transition(ctx context.Context, s *github.Snapshot, dirty func
 		marker, err := github.FormatMarker(github.Marker{Kind: "transition", Fields: fields})
 		if err != nil {
 			return wrap(err)
+		}
+		for _, x := range m.Markers {
+			more, err := github.FormatMarker(x)
+			if err != nil {
+				return wrap(err)
+			}
+			marker += "\n" + more
 		}
 		if err := a.comment(ctx, s, join(github.Escape(m.Text), marker)); err != nil {
 			return wrap(err)
