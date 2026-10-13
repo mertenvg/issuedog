@@ -90,14 +90,18 @@ func (st *Step) counted(ctx context.Context, s *github.Snapshot, d Dirt) (map[in
 // comment missing its 👍 gets it (SPEC §5.2), and one edited since it was
 // used gets one edited reply (SPEC §6.2). At clarifying, a plain comment in
 // the round is an answer, and gets a 👍. A revision request, a plain comment
-// posted at spec-review, is handled as /revise (requested) at any stage, so
-// one 👎'd with no clean reply gets it after the stage moves on.
+// posted at spec-review, is handled as /revise (requested). Once the stage
+// has moved on, one is only a 👎'd request whose reply was lost, which gets
+// it (reword). One the App never reacted to is left alone, such as one from
+// before #83, one by a user trusted only since, or one posted just before
+// the owner set the stage by hand.
 func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment) error {
 	is := state.Derive(s, st.AppSlug, d.Has)
 	named := is.Keys[state.CmdKey(c.ID)] // any reply marker included
 	cmd, isCmd := state.ParseCommand(c.Body)
+	late := false // a request at a stage since moved on
 	if r, ok := requested(s, st.AppSlug, d, is, c); ok {
-		cmd, isCmd = r, true
+		cmd, isCmd, late = r, true, is.Stage != state.SpecReview
 	}
 	answer := !isCmd && !named && is.Stage == state.Clarifying && c.ID > is.Round
 	reason := replied(is, c.ID)
@@ -114,6 +118,9 @@ func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github
 			return nil
 		}
 		return st.reword(ctx, s, d, c, cmd, isCmd, is.Stage)
+	}
+	if late && !acked {
+		return nil
 	}
 	if reason == "rejected" { // not the App's own writes, which 👎 first
 		return st.react(ctx, c.ID, "-1")

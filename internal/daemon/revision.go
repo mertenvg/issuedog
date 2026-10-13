@@ -259,8 +259,11 @@ func ReviseCommand() Handler {
 // the one c was posted after: only the App posts one, and only after a pass
 // whose Run succeeded, so had the reply. This reads only the markers in s,
 // and Step reads the App's reactions only to a request, not to every plain
-// comment. It handles a request in the pass that finds it, after which a
-// reply or a move names it, so it's no longer one.
+// comment. At spec-review it handles a request in the pass that finds it,
+// after which a reply or a move names it. Once the stage has moved on, the
+// requests left are those posted after the latest revision that the App
+// never handled, such as one by a user trusted only since: the leftovers
+// of the last spec-review visit, which the next revision ends.
 func requested(s *github.Snapshot, appSlug string, d Dirt, is state.Issue, c github.Comment) (state.Command, bool) {
 	if _, cmd := state.ParseCommand(c.Body); cmd || is.Keys[state.CmdKey(c.ID)] || postedAt(s, appSlug, d, c.ID) != state.SpecReview {
 		return state.Command{}, false
