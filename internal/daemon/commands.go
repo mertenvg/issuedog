@@ -120,7 +120,7 @@ func (st *Step) reply(ctx context.Context, s *github.Snapshot, c github.Comment,
 // (CheckLabels) before it's moved, as Transition needs.
 func Commands(trust github.Trust) map[string]Handler {
 	return map[string]Handler{
-		"hold": {Apply: func(ctx context.Context, a *Applier, c Cmd) error {
+		"hold": {Check: holdCheck, Apply: func(ctx context.Context, a *Applier, c Cmd) error {
 			return a.moveFamily(ctx, c, trust, hold)
 		}},
 		"resume": {Check: resumeCheck, Apply: func(ctx context.Context, a *Applier, c Cmd) error {
@@ -130,13 +130,14 @@ func Commands(trust github.Trust) map[string]Handler {
 	}
 }
 
-// planner returns a command's move for issue s, in state is, if any. self
-// is set for the command's own issue, and by names the command.
-type planner func(s *github.Snapshot, is state.Issue, self bool, by string) (Move, bool)
+// planner returns a command's move for an issue in state is, if any. self
+// is set for the command's own issue, below maps the comments on its
+// descendants to their issues, and by names the command.
+type planner func(is state.Issue, self bool, below map[int64]int, by string) (Move, bool)
 
 // hold is /hold's move for an issue, by the command by (SPEC §6.4). Holds
 // stack, so an issue that's held already keeps its first at, and isn't moved.
-func hold(_ *github.Snapshot, is state.Issue, _ bool, by string) (Move, bool) {
+func hold(is state.Issue, _ bool, _ map[int64]int, by string) (Move, bool) {
 	if is.Stage == state.Held {
 		return Move{}, false
 	}
@@ -147,8 +148,8 @@ func hold(_ *github.Snapshot, is state.Issue, _ bool, by string) (Move, bool) {
 // resume is /resume's move for an issue on an owner hold that the command
 // ends (see ends), by the command by: back to its at. Any other hold, such
 // as for discussion, stays.
-func resume(s *github.Snapshot, is state.Issue, self bool, by string) (Move, bool) {
-	at, ok := ends(s, is, self)
+func resume(is state.Issue, self bool, below map[int64]int, by string) (Move, bool) {
+	at, ok := ends(is, self, below)
 	return Move{To: at, Trigger: state.TriggerResume, Text: fmt.Sprintf("Resumed by %s, back to `%s`.", by, at)}, ok
 }
 
@@ -167,53 +168,103 @@ func ownerHold(is state.Issue) (state.Stage, github.Marker, bool) {
 	return "", github.Marker{}, false
 }
 
-// ends returns where /resume on issue s, if self, or on an ancestor of s
-// ends s's owner hold, if it does. On s itself it ends any. On an ancestor it
-// ends only one an ancestor's /hold made: a marker whose cmd names a comment
-// that isn't s's. A /hold on s names s's own comment, and a hand-set hold has
-// no cmd (by= and event=), so those stay until /resume on s. Holds stack, so
-// a /hold on s after an ancestor's writes no marker, and the ancestor's
-// /resume still ends it; #87 may record stacked holds.
-func ends(s *github.Snapshot, is state.Issue, self bool) (state.Stage, bool) {
+// ends returns where /resume on an issue ends the owner hold of an issue in
+// its family, in state is, if it does. On the issue itself, if self, it ends
+// any. On a descendant it ends only one that a /hold on the issue or an
+// ancestor of it made: a marker whose cmd names a comment not in below, the
+// comments on the issue's descendants. A /hold on a descendant names its own
+// comment, and a hand-set hold has no cmd (by= and event=), so those stay
+// until /resume there. Holds stack, so a /hold below after one above writes
+// no marker, and /resume above still ends it; #87 may record stacked holds.
+func ends(is state.Issue, self bool, below map[int64]int) (state.Stage, bool) {
 	at, m, ok := ownerHold(is)
 	if !ok || self {
 		return at, ok
 	}
 	id, ok := state.Key{Field: "cmd", ID: m.Fields["cmd"]}.Comment()
-	return at, ok && !slices.ContainsFunc(s.Comments, func(c github.Comment) bool { return c.ID == id })
+	_, mine := below[id]
+	return at, ok && !mine
 }
 
-// resumeCheck rejects a /resume unless Apply began, which a marker of c's on
-// c's issue or any descendant, closed ones included, would show. A child
-// unlinked since Apply moved it isn't found, so in that narrow window a
-// replay can reject the command it began. Otherwise it rejects one that ends
-// no hold (see ends) on c's issue or an open descendant, saying which
-// descendants have holds of their own: an owner hold it doesn't end, or a
-// stage:held label no marker explains, which Apply's CheckLabels would
-// record as one of their own. And it rejects one whose issue's own owner
-// hold has no row back to its at, which Apply would only report as a state
-// error.
+// madeBelow maps the comments on the descendants in family, all but its
+// last node, to their issue numbers.
+func madeBelow(family []node) map[int64]int {
+	below := map[int64]int{}
+	for _, n := range family[:len(family)-1] {
+		for _, c := range n.s.Comments {
+			below[c.ID] = n.s.Number
+		}
+	}
+	return below
+}
+
+// begun reports whether a marker of c's is on an issue in family, closed
+// ones included, which means Apply began. A child unlinked since Apply
+// moved it isn't found, so in that narrow window a replay can reject the
+// command it began.
+func (a *Applier) begun(family []node, c Cmd) bool {
+	return slices.ContainsFunc(family, func(n node) bool {
+		return state.Derive(n.s, a.AppSlug, n.d.Has).Moved(state.CmdKey(c.Comment.ID))
+	})
+}
+
+// holdCheck rejects a /hold, unless Apply began (see begun), when its
+// issue's own move to held has no row, as for an unknown type.
+func holdCheck(ctx context.Context, a *Applier, c Cmd) error {
+	family, err := a.family(ctx, c)
+	if err != nil {
+		return fmt.Errorf("check /hold: %w", err)
+	}
+	is := state.Derive(c.S, a.AppSlug, c.Dirt.Has)
+	if a.begun(family, c) || is.Stage == state.Held {
+		return nil
+	}
+	why, err := noRow(is, Move{To: state.Held, Trigger: state.TriggerHold})
+	if StateError(err) {
+		return Rejection{Reason: "this issue can't go on hold: " + why}
+	}
+	if err != nil {
+		return fmt.Errorf("check /hold: %w", err)
+	}
+	return nil
+}
+
+// resumeCheck rejects a /resume, unless Apply began (see begun), that ends
+// no hold (see ends) on c's issue or an open descendant. It names the issues
+// whose /resume would end the holds left: those that made them, by /hold or
+// by hand, including a stage:held label no marker explains, which Apply's
+// CheckLabels would record as a hold by hand. And it rejects one whose
+// issue's own owner hold has no row back to its at, which Apply would only
+// report as a state error.
 func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 	family, err := a.family(ctx, c)
 	if err != nil {
 		return fmt.Errorf("check /resume: %w", err)
 	}
+	if a.begun(family, c) {
+		return nil
+	}
+	below := madeBelow(family)
 	held := false
-	var own []string
+	var makers []string
 	for _, n := range family {
-		is := state.Derive(n.s, a.AppSlug, n.d.Has)
-		if is.Moved(state.CmdKey(c.Comment.ID)) {
-			return nil
-		}
 		if !n.open {
 			continue
 		}
-		_, ended := ends(n.s, is, n.s == c.S)
-		_, _, owner := ownerHold(is)
+		is := state.Derive(n.s, a.AppSlug, n.d.Has)
+		_, ended := ends(is, n.s == c.S, below)
+		_, m, owner := ownerHold(is)
 		unrecorded := is.Stage != state.Held && slices.ContainsFunc(n.s.Labels, func(l string) bool { return strings.EqualFold(l, "stage:held") })
 		held = held || ended
-		if !ended && (owner || unrecorded) {
-			own = append(own, fmt.Sprintf("#%d", n.s.Number))
+		if owner || unrecorded {
+			id, _ := state.Key{Field: "cmd", ID: m.Fields["cmd"]}.Comment()
+			by, ok := below[id]
+			if !ok {
+				by = n.s.Number
+			}
+			if s := fmt.Sprintf("#%d", by); !slices.Contains(makers, s) {
+				makers = append(makers, s)
+			}
 		}
 	}
 	is := state.Derive(c.S, a.AppSlug, c.Dirt.Has)
@@ -229,25 +280,24 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 	switch {
 	case held:
 		return nil
-	case len(own) > 0:
-		return Rejection{Reason: fmt.Sprintf("the only holds below are the sub-issues' own (%s), which only `/resume` on each of them ends", strings.Join(own, ", "))}
+	case len(makers) > 0:
+		return Rejection{Reason: fmt.Sprintf("the holds below were made on %s, by `/hold` or by hand, so `/resume` there ends them", strings.Join(makers, ", "))}
 	}
 	return Rejection{Reason: "nothing here or in its open sub-issues is on an owner hold"}
 }
 
 // moveFamily makes the move plan returns, if any, on each open descendant of
 // c's issue, depth first, then on the issue itself, then 👍s c. Each move is
-// keyed by c, and one already written only has its labels finished. A
-// descendant's labels are checked first, and its move has NoAck: the 👍
-// comes only after the issue's own marker (see Handler). A move that's a
-// state error, which Transition reports once, is logged and skipped, so one
-// issue can't stall the rest.
+// keyed by c, so none is written twice. A descendant's labels are checked
+// first, and its move has NoAck: the 👍 comes only after the issue's own
+// marker (see Handler). A move that's a state error, which Transition
+// reports once, is logged and skipped, so one issue can't stall the rest.
 func (a *Applier) moveFamily(ctx context.Context, c Cmd, trust github.Trust, plan planner) error {
 	family, err := a.family(ctx, c)
 	if err != nil {
 		return fmt.Errorf("move: %w", err)
 	}
-	key := state.CmdKey(c.Comment.ID)
+	below := madeBelow(family)
 	for _, n := range family {
 		if !n.open {
 			continue
@@ -260,14 +310,11 @@ func (a *Applier) moveFamily(ctx context.Context, c Cmd, trust github.Trust, pla
 			by += fmt.Sprintf(" on #%d", c.S.Number)
 		}
 		is := state.Derive(n.s, a.AppSlug, n.d.Has)
-		m, ok := plan(n.s, is, n.s == c.S, by)
-		if is.Moved(key) {
-			m.To, ok = is.Stage, true
-		}
+		m, ok := plan(is, n.s == c.S, below, by)
 		if !ok {
 			continue
 		}
-		m.Key, m.NoAck = key, true
+		m.Key, m.NoAck = state.CmdKey(c.Comment.ID), true
 		err := a.Transition(ctx, n.s, n.d.Has, m)
 		if StateError(err) {
 			logr.Warnf("%s/%s#%d: /%s in comment %d left #%d as it is: %v", a.Owner, a.Repo, c.S.Number, c.Name, c.Comment.ID, n.s.Number, err)

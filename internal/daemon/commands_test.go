@@ -11,16 +11,20 @@ import (
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
 
-// commandsPass runs step 1 on issue n with daemon.Commands, "owner" trusted.
-func commandsPass(t testing.TB, n int) func(*githubtest.Fake) error {
+// commandsPass runs step 1 on issue n of o/r with daemon.Commands, "owner"
+// trusted.
+func commandsPass(t testing.TB, n int) func(*githubtest.Fake) error { return passIn(t, "o", n) }
+
+// passIn is commandsPass in the repo owner/r.
+func passIn(t testing.TB, owner string, n int) func(*githubtest.Fake) error {
 	return func(f *githubtest.Fake) error {
 		c := f.Client(t)
-		s, err := c.Snapshot(context.Background(), "o", "r", n)
+		s, err := c.Snapshot(context.Background(), owner, "r", n)
 		if err != nil {
 			return err
 		}
 		tr := trusted{"owner": true}
-		st := &daemon.Step{Applier: &daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: slug}, Trust: tr, Commands: daemon.Commands(tr)}
+		st := &daemon.Step{Applier: &daemon.Applier{Client: c, Owner: owner, Repo: "r", AppSlug: slug}, Trust: tr, Commands: daemon.Commands(tr)}
 		_, err = st.Run(context.Background(), s)
 		return err
 	}
@@ -82,9 +86,9 @@ func above(at string) string {
 	return "from=" + at + " to=held at=" + at + " reason=owner cmd=1001"
 }
 
-// ownOnly is /resume's rejection when only these sub-issues' own holds remain.
-func ownOnly(issues string) string {
-	return "the only holds below are the sub-issues' own (" + issues + "), which only `/resume` on each of them ends"
+// madeOn is /resume's rejection when only holds made on these issues remain.
+func madeOn(issues string) string {
+	return "the holds below were made on " + issues + ", by `/hold` or by hand, so `/resume` there ends them"
 }
 
 // issueWant is an issue after the passes: its labels and its new comments.
@@ -119,10 +123,11 @@ func TestHoldResumePriority(t *testing.T) {
 			},
 			react: "+1", posts: []string{"/issues/2/comments", "/issues/3/comments", "/issues/5/comments", "/issues/7/comments", "/issues/1/comments"}},
 		{name: "/hold skips a sub-issue in another repo and all below it, comparing the repo in any case",
-			// 1 > o/other#2, 1 > O/R#3, o/r#2 > 4
+			// 1 > o/other#2, 1 > O/R#3, 1 > o/rx#4, o/r#2 > 4
 			setup: tree([]string{ready, ready, ready, ready}, []int{0, 0, 0, 2}, 1, 1005, "/hold", func(f *githubtest.Fake) {
 				f.LinkSubIssue(1, "o/other", 2)
 				f.LinkSubIssue(1, "O/R", 3)
+				f.LinkSubIssue(1, "o/rx", 4)
 			}),
 			on: 1,
 			want: map[int]issueWant{
@@ -130,14 +135,33 @@ func TestHoldResumePriority(t *testing.T) {
 				3: {[]string{"stage:held"}, []string{moved("On hold by `/hold` on #1, from `ready`.", "from=ready to=held at=ready reason=owner cmd=1005")}},
 			},
 			react: "+1"},
-		{name: "/hold reports a sub-issue of unknown type once, and holds the rest",
-			setup: tree([]string{ready, ready, ready}, []int{0, 1, 1}, 1, 1004, "/hold", func(f *githubtest.Fake) { f.SetType(2, "Feature") }),
+		{name: "/hold reports a sub-issue of unknown type once, escaped, and holds the rest",
+			setup: tree([]string{ready, ready, ready}, []int{0, 1, 1}, 1, 1004, "/hold", func(f *githubtest.Fake) { f.SetType(2, "Feature<!--x") }),
 			on:    1,
 			want: map[int]issueWant{
 				1: {[]string{"stage:held"}, []string{moved("On hold by `/hold`, from `ready`.", "from=ready to=held at=ready reason=owner cmd=1004")}},
-				2: {[]string{"stage:ready"}, []string{"I can't move this issue from `ready` to `held` on hold: its type `feature` isn't one the pipeline knows (SPEC §4). " +
+				2: {[]string{"stage:ready"}, []string{"I can't move this issue from `ready` to `held` on hold: its type `feature&lt;!--x` isn't one the pipeline knows (SPEC §4). " +
 					"It stays at `ready`.\n\n<!-- issuedog:error kind=transition key=1004 -->"}},
 				3: {[]string{"stage:held"}, []string{moved("On hold by `/hold` on #1, from `ready`.", "from=ready to=held at=ready reason=owner cmd=1004")}},
+			},
+			react: "+1"},
+		{name: "/hold on an issue of unknown type is rejected",
+			setup: tree([]string{ready, ready}, []int{0, 1}, 1, 1003, "/hold", func(f *githubtest.Fake) { f.SetType(1, "Feature") }),
+			on:    1,
+			want: map[int]issueWant{
+				1: {[]string{"stage:ready"}, []string{rejected("/hold", "this issue can't go on hold: its type `feature` isn't one the pipeline knows (SPEC §4)", "1003")}},
+			},
+			react: "-1"},
+		{name: "/hold that began isn't rejected when its issue's type turns unknown",
+			setup: then(tree([]string{ready, ready}, []int{0, 1}, 1, 1003, "/hold", nil), func(f *githubtest.Fake) {
+				f.AddComment(2, app, moved("On hold by `/hold` on #1, from `ready`.", "from=ready to=held at=ready reason=owner cmd=1003"))
+				f.SetType(1, "Feature")
+			}),
+			on: 1,
+			want: map[int]issueWant{
+				1: {[]string{"stage:ready"}, []string{"I can't move this issue from `ready` to `held` on hold: its type `feature` isn't one the pipeline knows (SPEC §4). " +
+					"It stays at `ready`.\n\n<!-- issuedog:error kind=transition key=1003 -->"}},
+				2: {[]string{"stage:held"}, nil},
 			},
 			react: "+1"},
 		{name: "/hold on a held issue writes it no marker, but holds its descendants",
@@ -192,17 +216,17 @@ func TestHoldResumePriority(t *testing.T) {
 			}),
 			on: 1,
 			want: map[int]issueWant{
-				1: {[]string{"stage:ready"}, []string{rejected("/resume", ownOnly("#2"), "1003")}},
+				1: {[]string{"stage:ready"}, []string{rejected("/resume", madeOn("#2"), "1003")}},
 			},
 			react: "-1"},
-		{name: "/resume on a parent leaves a child labelled held by hand, with no marker yet",
+		{name: "/resume on a parent leaves a child labelled held by hand, in any case, with no marker yet",
 			setup: tree([]string{ready, ready}, []int{0, 1}, 1, 1003, "/resume", func(f *githubtest.Fake) {
 				f.RemoveLabel(2, "owner", "stage:ready")
-				f.AddLabel(2, "owner", "stage:held")
+				f.AddLabel(2, "owner", "Stage:Held")
 			}),
 			on: 1,
 			want: map[int]issueWant{
-				1: {[]string{"stage:ready"}, []string{rejected("/resume", ownOnly("#2"), "1003")}},
+				1: {[]string{"stage:ready"}, []string{rejected("/resume", madeOn("#2"), "1003")}},
 			},
 			react: "-1"},
 		{name: "/resume isn't rejected once it resumed a child that has since closed",
@@ -212,10 +236,11 @@ func TestHoldResumePriority(t *testing.T) {
 			}),
 			on: 1, react: "+1"},
 		{name: "/resume doesn't count a hold whose at isn't a stage to go back to",
-			setup: tree([]string{ready, "from=held to=held at=held reason=owner run=h"}, []int{0, 1}, 1, 1003, "/resume", nil),
-			on:    1,
+			setup: tree([]string{ready, "from=held to=held at=held reason=owner cmd=1001", "from=ready to=held at=closed reason=owner cmd=1001"},
+				[]int{0, 1, 1}, 1, 1004, "/resume", nil),
+			on: 1,
 			want: map[int]issueWant{
-				1: {[]string{"stage:ready"}, []string{rejected("/resume", "nothing here or in its open sub-issues is on an owner hold", "1003")}},
+				1: {[]string{"stage:ready"}, []string{rejected("/resume", "nothing here or in its open sub-issues is on an owner hold", "1004")}},
 			},
 			react: "-1"},
 		{name: "/resume goes back to the latest hold's at",
@@ -356,20 +381,23 @@ func TestHoldAcksLast(t *testing.T) {
 	}
 }
 
-// A parent's /resume ends only the holds a parent's /hold made: a child's
-// own hold, by its /hold or by hand, stays until /resume on the child.
+// A /resume ends only the holds below that a /hold on its issue or above
+// made: a child's own hold, by its /hold or by hand, and the holds its /hold
+// made below it, stay until /resume on the child.
 func TestOwnHolds(t *testing.T) {
 	type step struct {
 		on   int
 		body string
 	}
 	// #1 at ready, its child #2 at in-progress, maybe held by the owner's
-	// hand, then each step but the last applied.
+	// hand, and #2's child #3 at verifying, then each step but the last
+	// applied.
 	setup := func(hand bool, steps []step) func(testing.TB) *githubtest.Fake {
 		return func(t testing.TB) *githubtest.Fake {
 			f := githubtest.New(t, "o/r", slug)
 			file(f, 0, ready)
 			file(f, 1, "from=ready to=in-progress run=a")
+			file(f, 2, "from=in-progress to=verifying run=a")
 			if hand {
 				f.RemoveLabel(2, "owner", "stage:in-progress")
 				f.AddLabel(2, "owner", "stage:held")
@@ -390,26 +418,26 @@ func TestOwnHolds(t *testing.T) {
 		name   string
 		hand   bool
 		steps  []step
-		labels [2]string // #1's and #2's stage
+		labels [3]string // #1's, #2's and #3's stage
 		react  string    // the App's reaction to the last command
 		reply  string    // the reason of its rejection, if any
 	}{
-		{name: "a child's own /hold stays when its parent resumes",
+		{name: "a child's own /hold, and the hold it made below, stay when its parent resumes",
 			steps:  []step{{2, "/hold"}, {1, "/hold"}, {1, "/resume"}},
-			labels: [2]string{"stage:ready", "stage:held"}, react: "+1"},
+			labels: [3]string{"stage:ready", "stage:held", "stage:held"}, react: "+1"},
 		{name: "a child held by hand stays when its parent resumes",
 			hand:   true,
 			steps:  []step{{1, "/hold"}, {1, "/resume"}},
-			labels: [2]string{"stage:ready", "stage:held"}, react: "+1"},
-		{name: "a parent's /resume ends the hold its /hold made",
+			labels: [3]string{"stage:ready", "stage:held", "stage:verifying"}, react: "+1"},
+		{name: "a parent's /resume ends the holds its /hold made",
 			steps:  []step{{1, "/hold"}, {1, "/resume"}},
-			labels: [2]string{"stage:ready", "stage:in-progress"}, react: "+1"},
-		{name: "a child's /resume ends its own hold",
+			labels: [3]string{"stage:ready", "stage:in-progress", "stage:verifying"}, react: "+1"},
+		{name: "a child's /resume ends its own hold and the one it made below",
 			steps:  []step{{2, "/hold"}, {1, "/hold"}, {2, "/resume"}},
-			labels: [2]string{"stage:held", "stage:in-progress"}, react: "+1"},
-		{name: "a parent's /resume with only its children's own holds is rejected",
+			labels: [3]string{"stage:held", "stage:in-progress", "stage:verifying"}, react: "+1"},
+		{name: "a grandparent's /resume with only holds made below it is rejected",
 			steps:  []step{{2, "/hold"}, {1, "/resume"}},
-			labels: [2]string{"stage:ready", "stage:held"}, react: "-1", reply: ownOnly("#2")},
+			labels: [3]string{"stage:ready", "stage:held", "stage:held"}, react: "-1", reply: madeOn("#2")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -445,5 +473,20 @@ func TestOwnHolds(t *testing.T) {
 				t.Errorf("replies %q, want %q", replies, want)
 			}
 		})
+	}
+}
+
+// The Applier's repo, in any case, matches its sub-issues' repository_url.
+func TestHoldMixedCaseRepo(t *testing.T) {
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := githubtest.New(t, "O/r", slug)
+		file(f, 0, ready)
+		file(f, 1, ready)
+		f.AddComment(1, "owner", "/hold")
+		return f
+	}
+	githubtest.Replay(t, setup, passIn(t, "O", 1))
+	if l := run(t, setup, passIn(t, "O", 1)).State().Issues[1].Labels; !reflect.DeepEqual(l, []string{"stage:held"}) {
+		t.Errorf("#2: labels %q, want it held", l)
 	}
 }
