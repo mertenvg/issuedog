@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -45,12 +46,11 @@ func (st *Step) Run(ctx context.Context, s *github.Snapshot) ([]github.Comment, 
 		return nil, wrap(err)
 	}
 	// Replies are added to s.Comments, so range over the comments read.
-	out := map[int64]bool{} // rejected: never input
 	for _, c := range slices.Clone(s.Comments) {
 		if !counts[c.ID] {
 			continue
 		}
-		if err := st.handle(ctx, s, d, c, out); err != nil {
+		if err := st.handle(ctx, s, d, c); err != nil {
 			return nil, wrap(fmt.Errorf("comment %d: %w", c.ID, err))
 		}
 	}
@@ -59,7 +59,7 @@ func (st *Step) Run(ctx context.Context, s *github.Snapshot) ([]github.Comment, 
 			return nil, wrap(err)
 		}
 	}
-	return state.Derive(s, st.AppSlug, d.Has).Inputs(s, func(c github.Comment) bool { return counts[c.ID] && !out[c.ID] }), nil
+	return state.Derive(s, st.AppSlug, d.Has).Inputs(s, func(c github.Comment) bool { return counts[c.ID] }), nil
 }
 
 // counted returns which of s's comments count as trusted input (SPEC §6.2,
@@ -83,16 +83,17 @@ func (st *Step) counted(ctx context.Context, s *github.Snapshot, d Dirt) (map[in
 	return counts, nil
 }
 
-// handle processes c, a comment that counts as trusted input, and records in
-// out a comment the App 👎'd. c is processed once a cmd or reply marker names
-// it, or the App has 👍'd or 👎'd it: only the App can remove its reaction,
-// so a 👎 outlasts a lost reply.
-//   - A processed comment missing its reaction gets it (SPEC §5.2).
+// handle processes c, a comment that counts as trusted input. c is processed
+// once a cmd or reply marker names it, or the App has 👍'd or 👎'd it: only
+// the App can remove its reaction, so a rejection is 👎 first, then the reply.
+//   - A processed comment missing its reaction gets it (SPEC §5.2), and a
+//     👎'd one with no clean reply gets the reply again (reword), whose marker
+//     keeps it out of Inputs.
 //   - One edited since it was used (usedAt), or a 👍'd one that wasn't an
 //     answer edited since the 👍, gets one edited reply (SPEC §6.2).
 //   - At clarifying, a comment in the round that isn't a command is an
 //     answer, and gets a 👍. A command is applied or rejected.
-func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment, out map[int64]bool) error {
+func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment) error {
 	is := state.Derive(s, st.AppSlug, d.Has)
 	named := is.Keys[state.CmdKey(c.ID)]
 	cmd, isCmd := state.ParseCommand(c.Body)
@@ -107,10 +108,12 @@ func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github
 	}
 	up, acked := mine["+1"]
 	if _, downed := mine["-1"]; downed {
-		out[c.ID] = true
-		return nil
+		if reason == "rejected" {
+			return nil
+		}
+		return st.reword(ctx, s, d, c, is.Stage)
 	}
-	if reason == "rejected" {
+	if reason == "rejected" { // not the App's own writes, which 👎 first
 		return st.react(ctx, c.ID, "-1")
 	}
 	if named && !acked {
@@ -135,6 +138,23 @@ func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github
 		return nil
 	}
 	return st.command(ctx, s, d, c, cmd, is.Stage)
+}
+
+// reword posts again the reply to c, a rejected command with no clean reply:
+// the App crashed after its 👎, or the reply was deleted or made dirty. It
+// gives the reason again, through checks that don't write, so a crash leaves
+// the same reply; if the command would apply now, or isn't one any more, it
+// says the reply was lost. It never applies the command.
+func (st *Step) reword(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment, stage state.Stage) error {
+	reason := lost
+	if cmd, ok := state.ParseCommand(c.Body); ok {
+		why, _, err := st.why(ctx, s, d, c, cmd, stage)
+		if err != nil {
+			return fmt.Errorf("reword: %w", err)
+		}
+		reason = cmp.Or(why, lost)
+	}
+	return st.rejected(ctx, s, c, reason)
 }
 
 const editedText = "This was edited after I acted on it, so I've ignored the edit. Post a new comment instead."

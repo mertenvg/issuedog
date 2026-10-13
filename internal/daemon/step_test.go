@@ -18,7 +18,8 @@ import (
 
 // stepper runs step 1 on issue 1, with "owner" trusted, and records what its
 // handlers see. /hold, /resume and /priority record the command and ack it,
-// /approve is rejected, and Reactions records "reactions".
+// /resume is rejected unless the issue is held, /approve is rejected, and
+// Reactions records "reactions".
 type stepper struct {
 	calls  []string
 	inputs [][]github.Comment // each pass's
@@ -30,16 +31,23 @@ func (sp *stepper) pass(t *testing.T) func(*githubtest.Fake) error {
 		if err != nil {
 			return err
 		}
-		apply := func(ctx context.Context, a *daemon.Applier, c daemon.Cmd) error {
+		apply := daemon.Handler{Apply: func(ctx context.Context, a *daemon.Applier, c daemon.Cmd) error {
 			sp.calls = append(sp.calls, strings.TrimSpace("/"+c.Name+" "+c.Arg))
 			return a.Ack(ctx, c.Comment.ID)
+		}}
+		resume := apply
+		resume.Check = func(_ context.Context, a *daemon.Applier, c daemon.Cmd) error {
+			if state.Derive(c.S, a.AppSlug, c.Dirt.Has).Stage != state.Held {
+				return daemon.Rejection{Reason: "nothing is held"}
+			}
+			return nil
 		}
 		// The App is trusted here, to show Step skips it whatever Trust says.
 		st := &daemon.Step{Applier: a, Trust: trusted{"owner": true, app: true},
-			Commands: map[string]daemon.Handler{"hold": apply, "resume": apply, "priority": apply,
-				"approve": func(context.Context, *daemon.Applier, daemon.Cmd) error {
+			Commands: map[string]daemon.Handler{"hold": apply, "resume": resume, "priority": apply,
+				"approve": {Check: func(context.Context, *daemon.Applier, daemon.Cmd) error {
 					return daemon.Rejection{Reason: "the spec changed"}
-				}},
+				}}},
 			Reactions: func(context.Context, *daemon.Applier, *github.Snapshot, daemon.Dirt) error {
 				sp.calls = append(sp.calls, "reactions")
 				return nil
@@ -76,6 +84,8 @@ func rejected(quote, reason, id string) string {
 const unknownFrob = "unknown command `/frob`: the commands are " +
 	"`/approve`, `/revise <text>`, `/hold`, `/resume`, `/priority pN` and `/done`"
 
+const lost = "my reply saying why was lost"
+
 // forged is an App comment's text as mallory rewrites it: under a copy of
 // the note MarkDirty would write, which it then leaves alone, so the marker
 // stays readable.
@@ -92,6 +102,7 @@ func TestStep(t *testing.T) {
 	tests := []struct {
 		name     string
 		setup    func(testing.TB) *githubtest.Fake
+		writes   []string // the clean run's, as method and path, if set
 		comments []string // the comments it adds
 		calls    []string // the handlers' calls, in order
 		acks     []string // the comments the App has 👍'd after it
@@ -123,19 +134,30 @@ func TestStep(t *testing.T) {
 				rejected("/approve", "wrong stage: `/approve` applies only at `spec-review` or `plan-review`, "+
 					"and this issue is at `needs-human`", "1003")},
 			downs: []string{"/done", "/approve"}},
-		{name: "a rejected command stays rejected when its reply is made dirty or deleted",
+		{name: "a rejection is a 👎, then one reply, and a later /hold doesn't apply it",
+			setup: at(state.Ready, func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, "owner", "/resume")
+				post(t, f, 1003, "owner", "/hold")
+			}),
+			writes:   []string{"POST /issues/comments/1002/reactions", "POST /issues/1/comments", "POST /issues/comments/1003/reactions"},
+			comments: []string{rejected("/resume", "nothing is held", "1002")},
+			calls:    []string{"/hold"}, acks: []string{"/hold"}, downs: []string{"/resume"}},
+		{name: "a rejected command whose reply is made dirty or deleted gets it again, and still never runs",
 			setup: at(state.Ready, func(t testing.TB, f *githubtest.Fake) {
 				for _, id := range []int64{1002, 1005} {
 					post(t, f, id, "owner", "/resume")
-					post(t, f, id+1, app, rejected("/resume", "nothing is held", strconv.FormatInt(id, 10)))
 					f.AddReaction(id, app, "-1")
+					post(t, f, id+2, app, rejected("/resume", "nothing is held", strconv.FormatInt(id, 10)))
 				}
-				post(t, f, 1008, "owner", "/hold")
-				f.EditComment(1003, "mallory", "nothing to see")
-				f.DeleteComment(1006)
+				post(t, f, 1008, "owner", "/hold") // now /resume would apply
+				post(t, f, 1009, app, "<!-- issuedog:transition from=ready to=held at=ready reason=owner cmd=1008 -->")
+				f.AddReaction(1008, app, "+1")
+				f.EditComment(1004, "mallory", "nothing to see")
+				f.DeleteComment(1007)
 			}),
-			calls: []string{"/hold"}, acks: []string{"/hold"}, downs: []string{"/resume", "/resume"}},
-		{name: "a rejected command edited into plain text isn't an answer, and gets only its missing 👎",
+			comments: []string{rejected("/resume", lost, "1002"), rejected("/resume", lost, "1005")},
+			acks:     []string{"/hold"}, downs: []string{"/resume", "/resume"}},
+		{name: "a rejected command edited into plain text isn't an answer; a reply with no 👎 gets only the 👎",
 			setup: at(state.Clarifying, func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1002, "owner", "/frob")
 				post(t, f, 1003, app, "<!-- issuedog:reply reason=rejected cmd=1002 -->") // but no 👎 yet
@@ -144,7 +166,7 @@ func TestStep(t *testing.T) {
 				f.AddReaction(1004, app, "-1")
 				f.EditComment(1004, "owner", "2b")
 			}),
-			downs: []string{"1a", "2b"}},
+			comments: []string{rejected("2b", lost, "1004")}, downs: []string{"1a", "2b"}},
 		{name: "a valid command nothing handles waits",
 			setup: at(state.SpecReview, func(t testing.TB, f *githubtest.Fake) { post(t, f, 1002, "owner", "/revise shorter") })},
 		{name: "commands are applied oldest first, with their latest text, and once",
@@ -290,6 +312,13 @@ func TestStep(t *testing.T) {
 			// The second pass calls no handler.
 			if want := slices.Concat(tt.calls, []string{"reactions", "reactions"}); !reflect.DeepEqual(sp.calls, want) {
 				t.Errorf("calls = %q, want %q", sp.calls, want)
+			}
+			var writes []string
+			for _, w := range f.Writes() {
+				writes = append(writes, w.Method+" "+w.Path)
+			}
+			if tt.writes != nil && !reflect.DeepEqual(writes, tt.writes) {
+				t.Errorf("writes = %q, want %q", writes, tt.writes)
 			}
 			got := f.State().Issues[0]
 			var added, acks, downs []string
