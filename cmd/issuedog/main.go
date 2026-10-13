@@ -102,10 +102,12 @@ func run(args, environ []string, stdin io.Reader, stdout io.Writer) int {
 		logr.Errorf("starting the daemon: %v", err)
 		return 1
 	}
-	if d.Work, err = stageWork(d, set.name, cred); err != nil {
+	runs, err := stageWork(d, set.name, cred)
+	if err != nil {
 		logr.Errorf("setting up stage runs: %v", err)
 		return 1
 	}
+	d.Work = runs.Work
 	// network.allow is read once, so a change to it takes effect on restart.
 	proxy, err := startEgress(d.Config.Network.Allow)
 	if err != nil {
@@ -196,12 +198,12 @@ func startDaemon(ctx context.Context, set settings, key []byte) (*daemon.Daemon,
 	return &daemon.Daemon{Step: newStep(a, tr), Clone: clone, Config: cfg}, nil
 }
 
-// stageWork is d's stage work: the stage-run harness, with no Stage
+// stageWork is the stage-run harness for d's stage work, with no Stage
 // registered yet (#6 adds the interviewer). Runs, their clones in
 // /work/runs and claude, are agent's, and cred is the only credential in
 // the agent's environment. usage_limit.pattern is read once, so a change
 // to it takes effect on restart.
-func stageWork(d *daemon.Daemon, name string, cred agent.Cred) (func(context.Context, []daemon.Ready) error, error) {
+func stageWork(d *daemon.Daemon, name string, cred agent.Cred) (*daemon.Runs, error) {
 	uid, err := agentCredential(agentUser)
 	if err != nil {
 		return nil, fmt.Errorf("looking up %s: %w", agentUser, err)
@@ -218,7 +220,7 @@ func stageWork(d *daemon.Daemon, name string, cred agent.Cred) (func(context.Con
 		Gate:      gate,
 		Env:       agent.Env(cred, fmt.Sprintf("http://127.0.0.1:%d", proxyPort), agentHome),
 	}
-	return runs.Work, nil
+	return runs, nil
 }
 
 // newStep is step 1 with the command and reaction handlers merged so far.

@@ -28,6 +28,8 @@ import (
 
 	"github.com/mertenvg/logr/v2"
 
+	"github.com/mertenvg/issuedog/internal/agent"
+	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/egress"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
@@ -369,6 +371,12 @@ func TestRunDaemon(t *testing.T) {
 	}
 	for deadline := time.Now().Add(10 * time.Second); !iterated() && time.Now().Before(deadline); {
 		time.Sleep(10 * time.Millisecond)
+	}
+	if !iterated() {
+		t.Error("the first iteration didn't finish in 10s")
+	}
+	if _, err := os.Stat(lease); !os.IsNotExist(err) {
+		t.Errorf("the lease is still there: %v", err)
 	}
 	cancel()
 	select {
@@ -789,5 +797,51 @@ func TestRunKeyCommands(t *testing.T) {
 		if !strings.Contains(logs.String(), want) {
 			t.Errorf("logs = %q, want %q", logs.String(), want)
 		}
+	}
+}
+
+// Stage runs are agent's, workspace and claude both, with the Claude
+// credential and the egress proxy as the only way out, in the repo's clone,
+// and the gate matches the config's usage_limit.pattern.
+func TestStageWork(t *testing.T) {
+	fakeAgent(t, nil)
+	oldWork, oldState, oldRun := workDir, stateDir, runDir
+	t.Cleanup(func() { workDir, stateDir, runDir = oldWork, oldState, oldRun })
+	workDir, stateDir, runDir = t.TempDir(), t.TempDir(), t.TempDir()
+	cfg := config.Defaults()
+	cfg.UsageLimit.Pattern = "frobnicated"
+	cred := agent.Cred{Name: agent.APIKeyVar, Value: "key"}
+	runs, err := stageWork(&daemon.Daemon{Config: cfg}, "repo", cred)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uid := uint32(os.Getuid())
+	if c := runs.Runner.Credential; c == nil || c.Uid != uid {
+		t.Errorf("claude runs as %+v, want agent's credential", c)
+	}
+	if c := runs.Workspace.Credential; c == nil || c.Uid != uid {
+		t.Errorf("the workspace's git runs as %+v, want agent's credential", c)
+	}
+	wantEnv := []string{"ANTHROPIC_API_KEY=key", "HTTPS_PROXY=http://127.0.0.1:3128", "HTTP_PROXY=http://127.0.0.1:3128",
+		"HOME=/home/agent", "PATH=/usr/local/bin:/usr/bin:/bin"}
+	if !slices.Equal(runs.Env, wantEnv) {
+		t.Errorf("the agent's environment = %q, want %q", runs.Env, wantEnv)
+	}
+	ws := runs.Workspace
+	if ws.Bare != filepath.Join(workDir, "repo.git") || ws.RunsDir != filepath.Join(workDir, "runs") || ws.ContextDir != runDir ||
+		runs.Runner.StateDir != stateDir || runs.Runner.Claude != "claude" {
+		t.Errorf("workspace %+v, runner %+v; want the clone, runs and context dirs, and the state dir", ws, runs.Runner)
+	}
+	if len(runs.Stages) != 0 {
+		t.Errorf("stages = %v, want none yet", runs.Stages)
+	}
+	now := time.Now()
+	if runs.Gate.Observe(now, true, "usage limit reached") || !runs.Gate.Observe(now, true, "frobnicated") {
+		t.Error("the gate doesn't match by the config's usage_limit.pattern")
+	}
+
+	fakeAgent(t, errors.New("no such user"))
+	if _, err := stageWork(&daemon.Daemon{Config: cfg}, "repo", cred); err == nil || !strings.Contains(err.Error(), "looking up agent: no such user") {
+		t.Errorf("stageWork = %v, want the lookup error", err)
 	}
 }

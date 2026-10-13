@@ -1,13 +1,16 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/mertenvg/issuedog/internal/agent"
+	"github.com/mertenvg/issuedog/internal/workspace"
 )
 
 // The lease is replaced by a rename, never written in place: a link to the
@@ -51,24 +54,60 @@ func TestWriteLeaseReplaces(t *testing.T) {
 	}
 }
 
-// A lease that can't be read is removed, as nothing can resume it.
+// A lease that can't be read is removed, as nothing can resume it, with
+// the clone it names if that's in the workspace.
 func TestReadLeaseRemovesBadOnes(t *testing.T) {
-	for name, data := range map[string]string{
-		"malformed": "{",
-		"no run ID": `{"issue":1}`,
-		"path":      `{"issue":1,"run_id":"../x"}`,
+	for name, tt := range map[string]struct {
+		data      string
+		cloneGoes bool
+	}{
+		"malformed":             {data: "{"},
+		"no run ID":             {data: `{"issue":1}`},
+		"path":                  {data: `{"issue":1,"run_id":"../x","clone":"/elsewhere/x"}`},
+		"clone in the runs dir": {data: `{"issue":1,"run_id":"","clone":"RUNS/x"}`, cloneGoes: true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			r := &Runs{Runner: &agent.Runner{StateDir: t.TempDir()}}
+			runs := t.TempDir()
+			r := &Runs{Runner: &agent.Runner{StateDir: t.TempDir()},
+				Workspace: &workspace.Workspace{RunsDir: runs, ContextDir: t.TempDir()}}
+			if err := os.Mkdir(filepath.Join(runs, "x"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			data := strings.ReplaceAll(tt.data, "RUNS", runs)
 			if err := os.WriteFile(r.leasePath(), []byte(data), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if _, ok, err := r.readLease(); ok || err != nil {
+			if _, ok, err := r.readLease(context.Background()); ok || err != nil {
 				t.Errorf("readLease = %t, %v; want no lease and no error", ok, err)
 			}
 			if _, err := os.Stat(r.leasePath()); !os.IsNotExist(err) {
 				t.Errorf("the lease is still there: %v", err)
 			}
+			if _, err := os.Stat(filepath.Join(runs, "x")); os.IsNotExist(err) != tt.cloneGoes {
+				t.Errorf("the clone is gone: %t, want %t", os.IsNotExist(err), tt.cloneGoes)
+			}
 		})
+	}
+}
+
+// The first Work removes the temp leases a crash left, and nothing else.
+func TestWorkSweepsTempLeases(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"lease.123.tmp", "lease.4.tmp", "other.tmp"} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gate, err := agent.NewGate("x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &Runs{Runner: &agent.Runner{StateDir: dir}, Gate: gate}
+	if err := r.Work(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "other.tmp" {
+		t.Errorf("the state dir has %v, %v; want only other.tmp", entries, err)
 	}
 }

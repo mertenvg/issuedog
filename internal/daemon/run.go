@@ -77,10 +77,11 @@ func (r Result) Move(to state.Stage, trigger state.Trigger) Move {
 	return m
 }
 
-// Lease is /state/lease.json, the run in progress (SPEC §8.2). A non-task
-// run doesn't move its issue when it starts, so Stage is also the stage a
-// restart resets it to, which writes nothing: an issue at another stage
-// was moved by the owner, which wins.
+// Lease is /state/lease.json, the run in progress (SPEC §8.2), or with
+// Failed, the record of the attempts of the last run that failed. A
+// non-task run doesn't move its issue when it starts, so Stage is also the
+// stage a restart resets it to, which writes nothing: an issue at another
+// stage was moved by the owner, which wins.
 type Lease struct {
 	Issue   int         `json:"issue"`
 	Stage   state.Stage `json:"stage"`
@@ -92,6 +93,15 @@ type Lease struct {
 	// edit of each edited comment up to it, as the run read them.
 	Seen  int64               `json:"seen"`
 	Edits map[int64]time.Time `json:"edits,omitempty"`
+	// AttemptKey names the attempts the run is one of (attemptKey), and
+	// Attempt is its number among them, from 1.
+	AttemptKey string `json:"attempt_key"`
+	Attempt    int    `json:"attempt"`
+	// ApplyFailures counts the failed applies of the run's result.
+	ApplyFailures int `json:"apply_failures,omitempty"`
+	// Failed marks a run that failed, whose files are gone: the lease is
+	// kept for Attempt, so a restart doesn't reset the count.
+	Failed bool `json:"failed,omitempty"`
 }
 
 // kindAttempts is the state error for a stage that failed loop.max_attempts
@@ -112,7 +122,8 @@ type Runs struct {
 	Now       func() time.Time // nil is time.Now
 	NewID     func() string    // nil makes random run IDs
 
-	attempts map[string]int // failed runs, by issue and attemptKey
+	attempts map[string]int // failed runs, by countKey
+	swept    bool           // leftover temp leases are removed
 }
 
 // Work is Daemon.Work. It first finishes a lease a run left, after a
@@ -120,6 +131,10 @@ type Runs struct {
 // the gate, it runs the first issue, by priority then number, whose stage
 // has a Stage with work pending.
 func (r *Runs) Work(ctx context.Context, ready []Ready) error {
+	if !r.swept {
+		r.sweep()
+		r.swept = true
+	}
 	skip, err := r.resume(ctx)
 	if err != nil {
 		return err
@@ -143,11 +158,11 @@ func (r *Runs) Work(ctx context.Context, ready []Ready) error {
 }
 
 // RunStage runs st on the issue rd if it has work pending, and reports
-// whether it ran. A run that fails, but not on a usage limit, counts as an
-// attempt; after loop.max_attempts in a row the issue gets one state error
-// (SPEC §5.3) and no more runs until the stage moves or gets new input.
-// The run's lease and files stay only if applying its result fails, for
-// the next pass to try again.
+// whether it ran. A run that fails, but not on a usage limit or in its
+// setup, counts as an attempt (failed); after loop.max_attempts in a row
+// the issue gets one state error (SPEC §5.3) and no more runs until the
+// stage moves or gets new input. A run whose result fails to apply keeps
+// its lease, for the next pass to apply it (applyLease).
 func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 	a, n := r.Daemon.Step.Applier, rd.S.Number
 	wrap := func(err error) error {
@@ -166,7 +181,6 @@ func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 	}
 	is := state.Derive(rd.S, a.AppSlug, d.Has)
 	errKey := attemptKey(is, rd.Inputs)
-	key := strconv.Itoa(n) + "/" + errKey
 	if is.Reported(kindAttempts, errKey) {
 		logr.Debugf("%s/%s#%d: no %s run: it failed loop.max_attempts times", a.Owner, a.Repo, n, st.Agent())
 		return false, nil
@@ -189,9 +203,9 @@ func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 	if !st.Pending(in) {
 		return false, nil
 	}
-	in.RunID, in.Attempt = r.newID(), r.attempts[key]+1
+	in.RunID, in.Attempt = r.newID(), r.attempts[countKey(n, errKey)]+1
 	l := Lease{Issue: n, Stage: is.Stage, RunID: in.RunID, Clone: r.Workspace.Dir(in.RunID),
-		Started: r.now(), Polled: r.Daemon.polled, Edits: map[int64]time.Time{}}
+		Started: r.now(), Polled: r.Daemon.polled, Edits: map[int64]time.Time{}, AttemptKey: errKey, Attempt: in.Attempt}
 	for _, c := range rd.S.Comments {
 		l.Seen = max(l.Seen, c.ID)
 		if !c.Edit.At.IsZero() {
@@ -204,62 +218,63 @@ func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 	}
 	logr.Infof("%s/%s#%d: starting %s run %s, attempt %d", a.Owner, a.Repo, n, st.Agent(), l.RunID, in.Attempt)
 	raw, runErr := r.run(ctx, st, in)
-	var prep prepError
-	if errors.As(runErr, &prep) || ctx.Err() != nil {
-		// Not the agent's failure. A lease left by a shutdown is reset on restart.
-		return true, wrap(errors.Join(runErr, r.finishUnless(ctx, l)))
+	var setup *agent.SetupError
+	switch {
+	case ctx.Err() != nil && runErr == nil:
+		return true, wrap(ctx.Err()) // the lease and result stay, for the restart to apply
+	case ctx.Err() != nil || errors.As(runErr, &setup):
+		// Not the agent's failure, so not an attempt. The daemon may be
+		// stopping, so the cleanup ignores ctx.
+		return true, wrap(errors.Join(runErr, r.uncounted(context.WithoutCancel(ctx), l)))
 	}
 	if failed, text := outcome(raw); r.Gate.Observe(r.now(), failed, text) {
 		logr.Warnf("%s/%s#%d: run %s hit a usage limit, so stage work waits until %s; it isn't counted as an attempt",
 			a.Owner, a.Repo, n, l.RunID, r.Gate.OpenAt().Format(time.RFC3339))
-		return true, wrap(r.finish(ctx, l))
+		return true, wrap(r.uncounted(ctx, l))
 	}
 	out := json.RawMessage(nil)
 	if runErr == nil {
 		var schema *agent.Schema
 		if schema, err = agent.CompileSchema(st.Schema()); err != nil {
-			return true, wrap(errors.Join(err, r.finish(ctx, l)))
+			return true, wrap(errors.Join(err, r.uncounted(ctx, l)))
 		}
 		out, runErr = agent.Validate(raw, schema)
 	}
 	if runErr != nil {
-		return true, wrap(errors.Join(r.failed(ctx, rd.S, key, errKey, st, l, runErr), r.finish(ctx, l)))
+		return true, wrap(r.failed(ctx, rd.S, st, l, runErr)) // logged there
 	}
-	switch err := r.apply(ctx, l, st, out); {
-	case err == nil:
-		delete(r.attempts, key)
-		return true, nil
+	switch err := r.applyLease(ctx, l, st, out); {
 	case StateError(err):
 		// Transition reported it, and apply finished the run: a failed attempt.
-		return true, wrap(r.failed(ctx, rd.S, key, errKey, st, l, err))
+		return true, wrap(r.failed(ctx, rd.S, st, l, err))
 	default:
-		return true, wrap(err) // the lease stays, so the next pass applies it
+		return true, wrap(err)
 	}
 }
 
-// prepError is a failure to set a run up, which isn't the agent's.
-type prepError struct{ error }
-
-func (e prepError) Unwrap() error { return e.error }
-
 // run prepares the workspace and runs claude for st, returning its output.
+// A failure to set the run up is an *agent.SetupError, as Runner.Run's are.
 func (r *Runs) run(ctx context.Context, st Stage, in Input) ([]byte, error) {
 	cfg := r.Daemon.Config.Stages
 	turns, okT := pick(cfg.MaxTurns, st.Agent())
 	budget, okB := pick(cfg.MaxBudgetUSD, st.Agent())
 	timeout, okD := pick(cfg.Timeouts, st.Agent())
 	if !okT || !okB || !okD {
-		return nil, prepError{fmt.Errorf("no settings in config.stages for agent %q", st.Agent())}
+		return nil, &agent.SetupError{Err: fmt.Errorf("no settings in config.stages for agent %q", st.Agent())}
 	}
 	files, err := st.Context(in)
 	if err != nil {
-		return nil, prepError{fmt.Errorf("context files: %w", err)}
+		return nil, &agent.SetupError{Err: fmt.Errorf("context files: %w", err)}
 	}
 	if err := r.Workspace.Prepare(ctx, in.RunID, "", files); err != nil {
-		return nil, prepError{err}
+		return nil, &agent.SetupError{Err: err}
 	}
-	return r.Runner.Run(ctx, agent.Stage{RunID: in.RunID, Dir: r.Workspace.Dir(in.RunID), ContextDir: r.Workspace.Context(in.RunID),
+	out, err := r.Runner.Run(ctx, agent.Stage{RunID: in.RunID, Dir: r.Workspace.Dir(in.RunID), ContextDir: r.Workspace.Context(in.RunID),
 		Schema: st.Schema(), MaxTurns: int(turns), MaxBudgetUSD: budget, Timeout: timeout, Env: r.Env})
+	if err != nil {
+		return out, fmt.Errorf("run %s: %w", in.RunID, err)
+	}
+	return out, nil
 }
 
 // outcome reads from a run's output whether it failed, and its text: it
@@ -273,6 +288,22 @@ func outcome(raw []byte) (failed bool, text string) {
 	return res.Subtype != "success" || res.IsError, res.Result
 }
 
+// applyLease applies l's result (apply). A failure other than a state
+// error keeps the lease, counted in ApplyFailures, so the next pass tries
+// again; after loop.max_attempts of them, the run is a failed attempt.
+func (r *Runs) applyLease(ctx context.Context, l Lease, st Stage, out json.RawMessage) error {
+	err := r.apply(ctx, l, st, out)
+	if err == nil || StateError(err) {
+		return err
+	}
+	l.ApplyFailures++
+	if l.ApplyFailures < r.limit() {
+		logr.Warnf("applying run %s on #%d failed, %d of %d times, so it's tried again: %v", l.RunID, l.Issue, l.ApplyFailures, r.limit(), err)
+		return errors.Join(err, r.writeLease(l))
+	}
+	return errors.Join(err, r.failed(ctx, nil, st, l, fmt.Errorf("applying its result failed %d times: %w", l.ApplyFailures, err)))
+}
+
 // apply reads the issue again, runs CheckLabels on it, and applies out,
 // l's valid result, through st, then removes the run's files. The result
 // is dropped, writing nothing, when the issue is gone or closed, when its
@@ -280,12 +311,12 @@ func outcome(raw []byte) (failed bool, text string) {
 // records one by hand), or when a comment up to l.Seen was edited since
 // the run read it, so the stage runs again on the edit. A result whose
 // move is written already is only finished. On an error that isn't a
-// state error, the lease stays for the next pass.
+// state error, the lease stays.
 func (r *Runs) apply(ctx context.Context, l Lease, st Stage, out json.RawMessage) error {
 	a := r.Daemon.Step.Applier
 	drop := func(why string, args ...any) error {
 		logr.Infof("%s/%s#%d: dropping the result of run %s: "+why, append([]any{a.Owner, a.Repo, l.Issue, l.RunID}, args...)...)
-		return r.finish(ctx, l)
+		return r.uncounted(ctx, l)
 	}
 	s, err := a.Client.Snapshot(ctx, a.Owner, a.Repo, l.Issue)
 	switch {
@@ -322,19 +353,25 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, out json.RawMessage
 		return fmt.Errorf("apply run %s: %w", l.RunID, err)
 	}
 	logr.Infof("%s/%s#%d: applied run %s", a.Owner, a.Repo, l.Issue, l.RunID)
+	delete(r.attempts, countKey(l.Issue, l.AttemptKey))
 	return r.finish(ctx, l)
 }
 
 // resume finishes the lease a run left, if there is one, and returns the
 // issue it applied a result to, which gets no stage work this pass. A
-// valid saved result is applied (apply). Otherwise the clone is deleted,
-// and the issue, at its pre-run stage (see Lease), runs again when its
-// stage has work pending. A held or closed issue's lease and clone are
-// dropped by apply, or by that reset.
+// valid saved result is applied (applyLease). Otherwise the run counts as
+// a failed attempt, its clone is deleted, and the issue, at its pre-run
+// stage (see Lease), runs again when its stage has work pending. A held
+// or closed issue's lease and clone are dropped by apply, or by that
+// reset. A Failed lease only gives its count.
 func (r *Runs) resume(ctx context.Context) (int, error) {
-	l, ok, err := r.readLease()
+	l, ok, err := r.readLease(ctx)
 	if err != nil || !ok {
 		return 0, err
+	}
+	if l.Failed {
+		r.count(l)
+		return 0, nil
 	}
 	st, ok := r.Stages[l.Stage]
 	if !ok {
@@ -355,39 +392,95 @@ func (r *Runs) resume(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("resume run %s: %w", l.RunID, err)
 	}
 	if out == nil {
-		logr.Infof("run %s on #%d left no valid result, so its clone is deleted and #%d stays at %s to run again",
+		logr.Infof("run %s on #%d left no valid result, so it's a failed attempt, its clone is deleted, and #%d stays at %s to run again",
 			l.RunID, l.Issue, l.Issue, l.Stage)
-		return 0, r.finish(ctx, l)
+		return 0, r.failed(ctx, nil, st, l, errors.New("no valid result after a restart"))
 	}
 	logr.Infof("applying the saved result of run %s on #%d", l.RunID, l.Issue)
-	return l.Issue, r.apply(ctx, l, st, out)
+	return l.Issue, r.applyLease(ctx, l, st, out)
 }
 
-// failed counts a failed attempt at key. The last one allowed posts one
-// state error on s, keyed by errKey, after which RunStage runs no more. If
-// posting it fails, the next failed run posts it.
-func (r *Runs) failed(ctx context.Context, s *github.Snapshot, key, errKey string, st Stage, l Lease, cause error) error {
+// failed records l's run as a failed attempt: it removes the run's files,
+// and keeps the lease, as Failed, for the count. The last attempt allowed
+// posts one state error (reportCap) on s, or on the issue read again if s
+// is nil, after which RunStage runs no more. If posting it fails, the next
+// failed run posts it.
+func (r *Runs) failed(ctx context.Context, s *github.Snapshot, st Stage, l Lease, cause error) error {
+	n := r.count(l)
+	logr.Warnf("%s run %s on #%d failed, attempt %d of %d: %v", st.Agent(), l.RunID, l.Issue, n, r.limit(), cause)
+	err := r.cleanup(ctx, l)
+	if err == nil {
+		l.Attempt, l.Failed, l.ApplyFailures = n, true, 0
+		err = r.writeLease(l)
+	}
+	if err != nil {
+		return fmt.Errorf("record failed run %s: %w", l.RunID, err)
+	}
+	if n < r.limit() {
+		return nil
+	}
+	return r.reportCap(ctx, s, st, l)
+}
+
+// count adds l's attempt to the count of its attempts, which it returns.
+func (r *Runs) count(l Lease) int {
 	if r.attempts == nil {
 		r.attempts = map[string]int{}
 	}
-	r.attempts[key]++
-	limit := int(r.Daemon.Config.Loop.MaxAttempts)
+	key := countKey(l.Issue, l.AttemptKey)
+	r.attempts[key] = max(r.attempts[key], l.Attempt)
+	return r.attempts[key]
+}
+
+// reportCap posts the state error for l's stage failing loop.max_attempts
+// times, keyed by l.AttemptKey, on s or, if nil, the issue read again. An
+// issue that has it, has moved on, or is closed or gone gets none.
+func (r *Runs) reportCap(ctx context.Context, s *github.Snapshot, st Stage, l Lease) error {
 	a := r.Daemon.Step.Applier
-	logr.Warnf("%s/%s#%d: %s run %s failed, attempt %d of %d: %v", a.Owner, a.Repo, s.Number, st.Agent(), l.RunID, r.attempts[key], limit, cause)
-	if r.attempts[key] < limit {
+	wrap := func(err error) error { return fmt.Errorf("report the attempt cap on #%d: %w", l.Issue, err) }
+	if s == nil {
+		fresh, err := a.Client.Snapshot(ctx, a.Owner, a.Repo, l.Issue)
+		if gone(err) {
+			logr.Infof("#%d looks gone, so it gets no attempt cap error: %v", l.Issue, err)
+			return nil
+		}
+		if err != nil {
+			return wrap(err)
+		}
+		s = fresh
+	}
+	d, err := a.Dirty(ctx, s)
+	if err != nil {
+		return wrap(err)
+	}
+	if is := state.Derive(s, a.AppSlug, d.Has); s.Closed || is.Stage != l.Stage || is.Reported(kindAttempts, l.AttemptKey) {
 		return nil
 	}
-	marker, err := github.FormatMarker(github.Marker{Kind: "error", Fields: map[string]string{"kind": kindAttempts, "key": errKey}})
+	marker, err := github.FormatMarker(github.Marker{Kind: "error", Fields: map[string]string{"kind": kindAttempts, "key": l.AttemptKey}})
 	if err != nil {
-		return fmt.Errorf("report the attempt cap: %w", err)
+		return wrap(err)
 	}
 	text := fmt.Sprintf("The %s run failed %d times in a row, so I've stopped running it here. "+
-		"New input, or a move to another stage, lets it run again.", st.Agent(), limit)
+		"New input, or a move to another stage, lets it run again.", st.Agent(), r.limit())
 	if err := a.comment(ctx, s, join(github.Escape(text), marker)); err != nil {
-		return fmt.Errorf("report the attempt cap: %w", err)
+		return wrap(err)
 	}
-	logr.Errorf("state error: %s run on %s/%s#%d failed %d times, the last: %v", st.Agent(), a.Owner, a.Repo, s.Number, limit, cause)
+	logr.Errorf("state error: the %s run on %s/%s#%d failed %d times", st.Agent(), a.Owner, a.Repo, l.Issue, r.limit())
 	return nil
+}
+
+// uncounted ends l's run without counting it as an attempt: a setup
+// failure, a usage limit, a shutdown or a dropped result. A count of
+// attempts before it stays, as a Failed lease.
+func (r *Runs) uncounted(ctx context.Context, l Lease) error {
+	if l.Attempt <= 1 {
+		return r.finish(ctx, l)
+	}
+	if err := r.cleanup(ctx, l); err != nil {
+		return fmt.Errorf("end run %s: %w", l.RunID, err)
+	}
+	l.Attempt, l.Failed, l.ApplyFailures = l.Attempt-1, true, 0
+	return r.writeLease(l)
 }
 
 // attemptKey names the stage's current round of attempts: its stage and the
@@ -400,6 +493,9 @@ func attemptKey(is state.Issue, inputs []github.Comment) string {
 	}
 	return fmt.Sprintf("%s-%d", is.Stage, bound)
 }
+
+// countKey is the key of issue n's attempts in Runs.attempts.
+func countKey(n int, attemptKey string) string { return strconv.Itoa(n) + "/" + attemptKey }
 
 // trusted returns the inputs whose author the current trust trusts,
 // checking each author once (#84).
@@ -430,9 +526,15 @@ func (r *Runs) resultPath(id string) string {
 	return filepath.Join(r.Runner.StateDir, "runs", id+".json")
 }
 
+// validID reports whether id can name a run's files.
+func validID(id string) bool {
+	return id != "" && filepath.Base(id) == id && !strings.HasPrefix(id, ".")
+}
+
 // readLease reads the lease, if there is one. One that can't be read is
-// logged and removed, as nothing can resume it.
-func (r *Runs) readLease() (Lease, bool, error) {
+// logged and removed, as nothing can resume it, with its clone if it names
+// one in the workspace.
+func (r *Runs) readLease(ctx context.Context) (Lease, bool, error) {
 	data, err := os.ReadFile(r.leasePath())
 	if errors.Is(err, fs.ErrNotExist) {
 		return Lease{}, false, nil
@@ -442,21 +544,28 @@ func (r *Runs) readLease() (Lease, bool, error) {
 	}
 	var l Lease
 	err = json.Unmarshal(data, &l)
-	if err == nil && (l.RunID == "" || filepath.Base(l.RunID) != l.RunID || strings.HasPrefix(l.RunID, ".")) {
+	if err == nil && !validID(l.RunID) {
 		err = fmt.Errorf("bad run ID %q", l.RunID)
 	}
-	if err != nil {
-		logr.Errorf("removing %s, which nothing can resume: %v", r.leasePath(), err)
-		if rerr := os.Remove(r.leasePath()); rerr != nil {
-			return Lease{}, false, fmt.Errorf("remove the lease: %w", rerr)
-		}
-		return Lease{}, false, nil
+	if err == nil {
+		return l, true, nil
 	}
-	return l, true, nil
+	logr.Errorf("removing %s, which nothing can resume: %v", r.leasePath(), err)
+	if id := filepath.Base(l.Clone); l.Clone != "" && filepath.Dir(l.Clone) == r.Workspace.RunsDir && validID(id) {
+		if err := r.Workspace.Cleanup(ctx, id); err != nil {
+			logr.Errorf("removing the clone %s of the bad lease: %v", l.Clone, err)
+		}
+	} else {
+		logr.Warnf("the bad lease names no clone in %s, so any clone it had stays", r.Workspace.RunsDir)
+	}
+	if err := r.remove(r.leasePath()); err != nil {
+		return Lease{}, false, fmt.Errorf("remove the lease: %w", err)
+	}
+	return Lease{}, false, nil
 }
 
-// writeLease writes the lease through a temp file and a rename, so a
-// restart never reads half of one.
+// writeLease writes the lease through a temp file and a rename, then syncs
+// the state dir, so a restart reads the whole of one lease or another.
 func (r *Runs) writeLease(l Lease) error {
 	data, err := json.Marshal(l)
 	if err != nil {
@@ -482,23 +591,44 @@ func (r *Runs) writeLease(l Lease) error {
 	if err == nil {
 		err = os.Rename(f.Name(), r.leasePath())
 	}
+	if err == nil {
+		err = syncDir(r.Runner.StateDir)
+	}
 	if err != nil {
 		return fmt.Errorf("write the lease: %w", err)
 	}
 	return nil
 }
 
-// finish removes the run's clone and context files, its result, then the
-// lease. The lease goes last, so a crash before it only repeats this.
-func (r *Runs) finish(ctx context.Context, l Lease) error {
-	err := r.Workspace.Cleanup(ctx, l.RunID)
-	if rerr := os.Remove(r.resultPath(l.RunID)); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
-		err = errors.Join(err, rerr)
+// sweep removes the temp leases a crash in writeLease left.
+func (r *Runs) sweep() {
+	tmps, err := filepath.Glob(filepath.Join(r.Runner.StateDir, "lease.*.tmp"))
+	if err != nil {
+		logr.Errorf("finding leftover temp leases: %v", err)
 	}
-	if err == nil {
-		if err = os.Remove(r.leasePath()); errors.Is(err, fs.ErrNotExist) {
-			err = nil
+	for _, tmp := range tmps {
+		if err := os.Remove(tmp); err != nil {
+			logr.Errorf("removing the leftover temp lease %s: %v", tmp, err)
+			continue
 		}
+		logr.Infof("removed the leftover temp lease %s", tmp)
+	}
+}
+
+// cleanup removes the run's clone and context files, then its result.
+func (r *Runs) cleanup(ctx context.Context, l Lease) error {
+	if err := r.Workspace.Cleanup(ctx, l.RunID); err != nil {
+		return fmt.Errorf("clean up run %s: %w", l.RunID, err)
+	}
+	return r.remove(r.resultPath(l.RunID))
+}
+
+// finish removes the run's files (cleanup), then the lease. The lease goes
+// last, so a crash before it only repeats this.
+func (r *Runs) finish(ctx context.Context, l Lease) error {
+	err := r.cleanup(ctx, l)
+	if err == nil {
+		err = r.remove(r.leasePath())
 	}
 	if err != nil {
 		return fmt.Errorf("finish run %s: %w", l.RunID, err)
@@ -506,14 +636,34 @@ func (r *Runs) finish(ctx context.Context, l Lease) error {
 	return nil
 }
 
-// finishUnless finishes l unless the daemon is stopping, which leaves the
-// lease for the restart to reset.
-func (r *Runs) finishUnless(ctx context.Context, l Lease) error {
-	if ctx.Err() != nil {
+// remove removes path, if it's there, then syncs its dir, so the removal
+// survives a crash.
+func (r *Runs) remove(path string) error {
+	if err := os.Remove(path); errors.Is(err, fs.ErrNotExist) {
 		return nil
+	} else if err != nil {
+		return fmt.Errorf("remove %s: %w", path, err)
 	}
-	return r.finish(ctx, l)
+	return syncDir(filepath.Dir(path))
 }
+
+// syncDir flushes dir's entries to disk.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("sync %s: %w", dir, err)
+	}
+	err = d.Sync()
+	if cerr := d.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return fmt.Errorf("sync %s: %w", dir, err)
+	}
+	return nil
+}
+
+func (r *Runs) limit() int { return int(r.Daemon.Config.Loop.MaxAttempts) }
 
 func (r *Runs) now() time.Time {
 	if r.Now != nil {

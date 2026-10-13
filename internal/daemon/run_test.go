@@ -1,6 +1,7 @@
 package daemon_test
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -22,13 +23,15 @@ import (
 )
 
 // fakeClaude counts its runs in $FAKE/count, keeps each prompt and the lease
-// it ran under as $FAKE/prompt.<n> and $FAKE/lease.<n>, prints $FAKE/out and
-// exits with $FAKE/exit, if there is one.
+// it ran under as $FAKE/prompt.<n> and $FAKE/lease.<n>, sleeps for
+// $FAKE/sleep seconds, if set, prints $FAKE/out and exits with $FAKE/exit,
+// if there is one.
 const fakeClaude = `#!/bin/sh
 n=$(($(cat "$FAKE/count" 2>/dev/null || echo 0) + 1))
-echo "$n" > "$FAKE/count"
 printf '%s' "$2" > "$FAKE/prompt.$n"
 cp "$STATE/lease.json" "$FAKE/lease.$n"
+echo "$n" > "$FAKE/count"
+[ -f "$FAKE/sleep" ] && sleep "$(cat "$FAKE/sleep")"
 cat "$FAKE/out"
 exit "$(cat "$FAKE/exit" 2>/dev/null || echo 0)"
 `
@@ -53,9 +56,12 @@ type fakeStage struct {
 	pending       func(daemon.Input) bool // nil: when the newest comment isn't the App's
 	during        func()
 	moreQuestions bool
+	contextErr    error  // Context's error
+	applyErr      error  // Apply's error, before any write
+	agent         string // "" is the interviewer
 }
 
-func (*fakeStage) Agent() string { return "interviewer" }
+func (fs *fakeStage) Agent() string { return cmp.Or(fs.agent, "interviewer") }
 
 func (fs *fakeStage) Pending(in daemon.Input) bool {
 	if fs.pending != nil {
@@ -67,6 +73,9 @@ func (fs *fakeStage) Pending(in daemon.Input) bool {
 func (fs *fakeStage) Context(in daemon.Input) (map[string][]byte, error) {
 	if fs.during != nil {
 		fs.during()
+	}
+	if fs.contextErr != nil {
+		return nil, fs.contextErr
 	}
 	var prompt []string
 	for _, c := range in.Inputs {
@@ -80,6 +89,9 @@ func (*fakeStage) Schema() []byte {
 }
 
 func (fs *fakeStage) Apply(ctx context.Context, a *daemon.Applier, r daemon.Result) error {
+	if fs.applyErr != nil {
+		return fs.applyErr
+	}
 	var out struct{ Text string }
 	if err := json.Unmarshal(r.Output, &out); err != nil {
 		return err
@@ -200,7 +212,23 @@ func (g *rig) leftovers() []string {
 			}
 		}
 	}
-	return slices.DeleteFunc(left, func(p string) bool { return p == "ctx/.agent.gitconfig" })
+	return slices.DeleteFunc(left, func(p string) bool {
+		return p == "ctx/.agent.gitconfig" || p == "state/lease.json" && g.lease().Failed
+	})
+}
+
+// lease reads the lease, the zero Lease if there's none.
+func (g *rig) lease() daemon.Lease {
+	g.t.Helper()
+	var l daemon.Lease
+	data, err := os.ReadFile(g.path("state", "lease.json"))
+	if err != nil {
+		return l
+	}
+	if err := json.Unmarshal(data, &l); err != nil {
+		g.t.Fatal(err)
+	}
+	return l
 }
 
 // interview files an epic at clarifying, as the App moved it there, with
@@ -226,10 +254,14 @@ func applied(to, run string, seen int64) string {
 
 // saveRun leaves the files of run id on issue 1 at clarifying under root,
 // as a daemon that stopped during it would: the lease, the result, if out
-// isn't empty, and a clone.
-func saveRun(t testing.TB, root, id, out string, seen int64) {
+// isn't empty, and a clone. The run is the first attempt on the answer seen.
+func saveRun(t testing.TB, root, id, out string, seen int64) { saveAttempt(t, root, id, out, seen, 1) }
+
+// saveAttempt is saveRun for attempt n.
+func saveAttempt(t testing.TB, root, id, out string, seen int64, n int) {
 	t.Helper()
-	l, err := json.Marshal(daemon.Lease{Issue: 1, Stage: state.Clarifying, RunID: id, Clone: filepath.Join(root, "runs", id), Seen: seen})
+	l, err := json.Marshal(daemon.Lease{Issue: 1, Stage: state.Clarifying, RunID: id, Clone: filepath.Join(root, "runs", id), Seen: seen,
+		AttemptKey: fmt.Sprintf("clarifying-%d", seen), Attempt: n})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -408,19 +440,28 @@ func TestResumeDropsHeldOrClosed(t *testing.T) {
 	}
 }
 
-// A usage limit closes the gate, whatever the exit code: stage work waits
-// while step 1 keeps running, and it isn't an attempt, so with
-// max_attempts 1 the stage runs again once the gate opens.
+// A usage limit in a failed run closes the gate, whatever the exit code:
+// a failed subtype, is_error on success, or output that doesn't parse.
+// Stage work waits while step 1 keeps running, and it isn't an attempt,
+// so with max_attempts 1 the stage runs again once the gate opens.
 func TestUsageLimitGate(t *testing.T) {
-	for _, exit := range []int{0, 1} {
-		t.Run("exit "+strconv.Itoa(exit), func(t *testing.T) {
+	reset := githubtest.Start.Add(time.Hour)
+	for name, tt := range map[string]struct {
+		out  string
+		exit int
+	}{
+		"exit 1":              {limitOut("error_during_execution", reset), 1},
+		"exit 0":              {limitOut("error_during_execution", reset), 0},
+		"is_error on success": {limitOut("success", reset), 0},
+		"not JSON":            {fmt.Sprintf("Claude usage limit reached|%d", reset.Unix()), 0},
+	} {
+		t.Run(name, func(t *testing.T) {
 			f := newFake(t)
 			interview(f)
 			o := newOrigin(t)
 			o.commit(config.Path, "types: labels\nloop:\n  max_attempts: 1\n")
 			g := newRig(t, f, o, t.TempDir())
-			reset := githubtest.Start.Add(time.Hour)
-			g.claude(limitOut("error_during_execution", reset), exit)
+			g.claude(tt.out, tt.exit)
 			iterate(t, g.d)
 			if g.runs() != 1 || g.r.Gate.Open(g.now) || !g.r.Gate.OpenAt().Equal(reset) {
 				t.Fatalf("after %d runs the gate opens at %s; want one run, and the gate shut until %s", g.runs(), g.r.Gate.OpenAt(), reset)
@@ -565,7 +606,15 @@ func TestAnswerEditedDuringRun(t *testing.T) {
 		g.stage.during = nil
 		f.EditComment(answer, "owner", "1b")
 	}
+	before := time.Now()
 	iterate(t, g.d)
+	var l daemon.Lease
+	if err := json.Unmarshal([]byte(g.file("lease.1")), &l); err != nil {
+		t.Fatal(err)
+	}
+	if l.Polled.Before(before) || l.Polled.After(time.Now()) {
+		t.Errorf("the lease's polled = %s, want when the pass's poll began, after %s", l.Polled, before)
+	}
 	comments := f.State().Issues[0].Comments
 	if g.runs() != 1 || strings.Contains(comments[len(comments)-1].Body, "run=run1") {
 		t.Fatalf("after %d runs the newest comment is %q; want run1's result dropped", g.runs(), comments[len(comments)-1].Body)
