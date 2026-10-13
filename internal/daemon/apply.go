@@ -76,10 +76,10 @@ func (m Move) check() error {
 // in the marker this writes. A snapshot older than the latest marker isn't
 // safe, so a run's result must re-read the issue before its Transition.
 //
-// A move the table lacks changes no label. It is reported once with an
-// error comment keyed by m.Key's ID (SPEC §5.3), logged as an error when
-// that comment is posted and at debug level after, and returned as an error
-// wrapping state.ErrNoTransition.
+// A move the table lacks, including one for an issue of unknown type,
+// changes no label. It is reported once with an error comment keyed by
+// m.Key's ID (SPEC §5.3), logged as an error when that comment is posted and
+// at debug level after, and returned as an error StateError reports.
 func (a *Applier) Transition(ctx context.Context, s *github.Snapshot, dirty func(int64) bool, m Move) error {
 	wrap := func(err error) error {
 		return fmt.Errorf("move %s/%s#%d to %s on %s: %w", a.Owner, a.Repo, s.Number, m.To, m.Trigger, err)
@@ -89,19 +89,15 @@ func (a *Applier) Transition(ctx context.Context, s *github.Snapshot, dirty func
 	}
 	is := state.Derive(s, a.AppSlug, dirty)
 	if !is.Moved(m.Key) {
-		class, err := state.ClassOf(is.Item)
-		if err != nil {
-			return wrap(err)
-		}
-		if _, err := state.Lookup(is.Stage, m.To, class, m.Trigger); err != nil {
-			if !errors.Is(err, state.ErrNoTransition) {
+		if why, err := noRow(is, m); err != nil {
+			if !StateError(err) {
 				return wrap(err)
 			}
 			if is.Reported("transition", m.Key.ID) {
 				logr.Debugf("state error, reported already: %v", wrap(err))
 				return wrap(err)
 			}
-			if rerr := a.report(ctx, s, is, m, class); rerr != nil {
+			if rerr := a.report(ctx, s, is, m, why); rerr != nil {
 				return wrap(rerr)
 			}
 			logr.Errorf("state error: %v", wrap(err))
@@ -169,15 +165,41 @@ func (a *Applier) react(ctx context.Context, commentID int64, content string) er
 	return nil
 }
 
-// report posts the state error for a move the table lacks.
-func (a *Applier) report(ctx context.Context, s *github.Snapshot, is state.Issue, m Move, class state.Class) error {
+// StateError reports whether err is a state error (SPEC §5.3) from
+// Transition: a move the table lacks, or an issue of unknown type.
+func StateError(err error) bool {
+	return errors.Is(err, state.ErrNoTransition) || errors.Is(err, state.ErrUnknownType)
+}
+
+// noRow returns why the table has no row for m on an issue in state is,
+// with a StateError, or "" and nil if it has one. Other errors come back
+// with no reason.
+func noRow(is state.Issue, m Move) (string, error) {
+	class, err := state.ClassOf(is.Item)
+	if errors.Is(err, state.ErrUnknownType) {
+		return fmt.Sprintf("its type `%s` isn't one the pipeline knows (SPEC §4)", is.Item.Type), err
+	}
+	if err != nil {
+		return "", err
+	}
+	if _, err := state.Lookup(is.Stage, m.To, class, m.Trigger); err != nil {
+		if errors.Is(err, state.ErrNoTransition) {
+			return fmt.Sprintf("the transition table (SPEC §7.2) has no such row for a %s issue", class), err
+		}
+		return "", err
+	}
+	return "", nil
+}
+
+// report posts the state error for a move the table lacks, saying why. The
+// type in why isn't the App's text, so it's escaped (SPEC §5.1).
+func (a *Applier) report(ctx context.Context, s *github.Snapshot, is state.Issue, m Move, why string) error {
 	marker, err := github.FormatMarker(github.Marker{Kind: "error", Fields: map[string]string{"kind": "transition", "key": m.Key.ID}})
 	if err != nil {
 		return fmt.Errorf("report: %w", err)
 	}
-	text := fmt.Sprintf("I can't move this issue from `%s` to `%s` on %s: the transition table (SPEC §7.2) has no such row for a %s issue. It stays at `%s`.",
-		is.Stage, m.To, m.Trigger, class, is.Stage)
-	if err := a.comment(ctx, s, join(text, marker)); err != nil {
+	text := fmt.Sprintf("I can't move this issue from `%s` to `%s` on %s: %s. It stays at `%s`.", is.Stage, m.To, m.Trigger, why, is.Stage)
+	if err := a.comment(ctx, s, join(github.Escape(text), marker)); err != nil {
 		return fmt.Errorf("report: %w", err)
 	}
 	return nil

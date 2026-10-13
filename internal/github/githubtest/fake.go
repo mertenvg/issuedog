@@ -52,10 +52,11 @@ type Fake struct {
 	failAt      int
 	failAfter   bool // FailWriteAfter rather than FailWrite
 	notModified int
-	gqlErrors   []string // for the next GraphQL answer
-	beforeGQL   func()   // runs before the next GraphQL answer
-	histories   int      // edit history queries answered
-	historyCap  int      // see HistoryCap
+	gqlErrors   []string         // for the next GraphQL answer
+	beforeGQL   func()           // runs before the next GraphQL answer
+	histories   int              // edit history queries answered
+	historyCap  int              // see HistoryCap
+	linked      map[int][]linked // see LinkSubIssue
 }
 
 // discard swallows a reply, for a write that takes effect but answers 500.

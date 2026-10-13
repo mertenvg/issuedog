@@ -3,6 +3,7 @@
 package state
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -128,7 +129,8 @@ type Item struct {
 	ReachedReady bool
 }
 
-// ClassOf returns the class of it. An unknown type is an error.
+// ClassOf returns the class of it. An unknown type is an error wrapping
+// ErrUnknownType.
 func ClassOf(it Item) (Class, error) {
 	switch strings.ToLower(it.Type) {
 	case "":
@@ -156,5 +158,9 @@ func ClassOf(it Item) (Class, error) {
 		}
 		return ClassBug, nil
 	}
-	return 0, fmt.Errorf("class of type %q: unknown type", it.Type)
+	return 0, fmt.Errorf("class of type %q: %w", it.Type, ErrUnknownType)
 }
+
+// ErrUnknownType is wrapped by ClassOf's error for a type that isn't epic,
+// story, task or bug (SPEC §4).
+var ErrUnknownType = errors.New("unknown type")

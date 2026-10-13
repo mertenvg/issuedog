@@ -162,28 +162,53 @@ func ownerHold(is state.Issue) (state.Stage, bool) {
 	return "", false
 }
 
-// resumeCheck rejects a /resume with nothing to do: no owner hold on c's
-// issue or an open descendant, and no marker of c's, which would mean Apply
-// began.
+// resumeCheck rejects a /resume unless Apply began, which a marker of c's on
+// c's issue or any descendant, closed ones included, would show. A child
+// unlinked since Apply moved it isn't found, so in that narrow window a
+// replay can reject the command it began. Otherwise it rejects one with
+// nothing to do: no owner hold on c's issue or an open descendant, nor a
+// stage:held label no marker explains, which Apply's CheckLabels may record
+// as one. And it rejects one
+// whose issue's own owner hold has no row back to its at, which Apply
+// would only report as a state error.
 func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 	family, err := a.family(ctx, c)
 	if err != nil {
 		return fmt.Errorf("check /resume: %w", err)
 	}
+	held := false
 	for _, n := range family {
 		is := state.Derive(n.s, a.AppSlug, n.d.Has)
-		if _, held := ownerHold(is); held || is.Moved(state.CmdKey(c.Comment.ID)) {
+		if is.Moved(state.CmdKey(c.Comment.ID)) {
 			return nil
 		}
+		_, owner := ownerHold(is)
+		unrecorded := is.Stage != state.Held && slices.ContainsFunc(n.s.Labels, func(l string) bool { return strings.EqualFold(l, "stage:held") })
+		held = held || (n.open && (owner || unrecorded))
 	}
-	return Rejection{Reason: "nothing here or in its open sub-issues is on an owner hold"}
+	is := state.Derive(c.S, a.AppSlug, c.Dirt.Has)
+	if at, ok := ownerHold(is); ok {
+		why, err := noRow(is, Move{To: at, Trigger: state.TriggerResume})
+		if StateError(err) {
+			return Rejection{Reason: fmt.Sprintf("this issue can't go back to `%s`: %s", at, why)}
+		}
+		if err != nil {
+			return fmt.Errorf("check /resume: %w", err)
+		}
+	}
+	if !held {
+		return Rejection{Reason: "nothing here or in its open sub-issues is on an owner hold"}
+	}
+	return nil
 }
 
 // moveFamily makes the move plan returns, if any, on each open descendant of
 // c's issue, depth first, then on the issue itself, then 👍s c. Each move is
 // keyed by c, and one already written only has its labels finished. A
 // descendant's labels are checked first, and its move has NoAck: the 👍
-// comes only after the issue's own marker (see Handler).
+// comes only after the issue's own marker (see Handler). A move that's a
+// state error, which Transition reports once, is logged and skipped, so one
+// issue can't stall the rest.
 func (a *Applier) moveFamily(ctx context.Context, c Cmd, trust github.Trust, plan func(is state.Issue, by string) (Move, bool)) error {
 	family, err := a.family(ctx, c)
 	if err != nil {
@@ -191,6 +216,9 @@ func (a *Applier) moveFamily(ctx context.Context, c Cmd, trust github.Trust, pla
 	}
 	key := state.CmdKey(c.Comment.ID)
 	for _, n := range family {
+		if !n.open {
+			continue
+		}
 		by := "`/" + c.Name + "`"
 		if n.s != c.S {
 			if err := a.CheckLabels(ctx, n.s, trust, n.d.Has); err != nil {
@@ -207,7 +235,10 @@ func (a *Applier) moveFamily(ctx context.Context, c Cmd, trust github.Trust, pla
 			continue
 		}
 		m.Key, m.NoAck = key, true
-		if err := a.Transition(ctx, n.s, n.d.Has, m); err != nil {
+		err := a.Transition(ctx, n.s, n.d.Has, m)
+		if StateError(err) {
+			logr.Warnf("%s/%s#%d: /%s in comment %d left #%d as it is: %v", a.Owner, a.Repo, c.S.Number, c.Name, c.Comment.ID, n.s.Number, err)
+		} else if err != nil {
 			return fmt.Errorf("move: %w", err)
 		}
 	}
@@ -219,15 +250,18 @@ func (a *Applier) moveFamily(ctx context.Context, c Cmd, trust github.Trust, pla
 
 // node is an issue a command moves, with its dirty content.
 type node struct {
-	s *github.Snapshot
-	d Dirt
+	s    *github.Snapshot
+	d    Dirt
+	open bool
 }
 
-// family returns the open descendants of c's issue (sub-issues), depth
-// first, each read fresh, then the issue itself, last.
+// family returns the descendants of c's issue (sub-issues) in this repo,
+// open and closed, depth first, each read fresh, then the issue itself,
+// last. A sub-issue in another repo is skipped, with all below it.
 func (a *Applier) family(ctx context.Context, c Cmd) ([]node, error) {
 	var nodes []node
 	seen := map[int]bool{c.S.Number: true}
+	here := strings.ToLower("/repos/" + a.Owner + "/" + a.Repo)
 	var walk func(n int) error
 	walk = func(n int) error {
 		opts := &gogithub.ListOptions{PerPage: 100}
@@ -236,21 +270,24 @@ func (a *Applier) family(ctx context.Context, c Cmd) ([]node, error) {
 				return fmt.Errorf("sub-issues of %s/%s#%d: %w", a.Owner, a.Repo, n, err)
 			}
 			is := (*gogithub.Issue)(sub)
+			if !strings.HasSuffix(strings.ToLower(is.GetRepositoryURL()), here) {
+				logr.Infof("%s/%s#%d: skipping its sub-issue #%d of %s, which isn't in this repo",
+					a.Owner, a.Repo, n, is.GetNumber(), is.GetRepositoryURL())
+				continue
+			}
 			if seen[is.GetNumber()] {
 				continue
 			}
 			seen[is.GetNumber()] = true
-			if is.GetState() == "open" {
-				s, err := a.Client.Snapshot(ctx, a.Owner, a.Repo, is.GetNumber())
-				if err != nil {
-					return fmt.Errorf("descendant: %w", err)
-				}
-				d, err := a.Dirty(ctx, s)
-				if err != nil {
-					return fmt.Errorf("descendant: %w", err)
-				}
-				nodes = append(nodes, node{s, d})
+			s, err := a.Client.Snapshot(ctx, a.Owner, a.Repo, is.GetNumber())
+			if err != nil {
+				return fmt.Errorf("descendant: %w", err)
 			}
+			d, err := a.Dirty(ctx, s)
+			if err != nil {
+				return fmt.Errorf("descendant: %w", err)
+			}
+			nodes = append(nodes, node{s, d, is.GetState() == "open"})
 			if err := walk(is.GetNumber()); err != nil {
 				return fmt.Errorf("below #%d: %w", n, err)
 			}
@@ -260,7 +297,7 @@ func (a *Applier) family(ctx context.Context, c Cmd) ([]node, error) {
 	if err := walk(c.S.Number); err != nil {
 		return nil, fmt.Errorf("family of %s/%s#%d: %w", a.Owner, a.Repo, c.S.Number, err)
 	}
-	return append(nodes, node{c.S, c.Dirt}), nil
+	return append(nodes, node{c.S, c.Dirt, true}), nil
 }
 
 // setPriority sets c's priority:pN label, removes the other priority:*
