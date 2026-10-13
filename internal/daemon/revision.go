@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"strconv"
+	"strings"
 
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
@@ -72,10 +73,11 @@ func (a *Applier) PostRevision(ctx context.Context, s *github.Snapshot, dirty fu
 // ApproveCommand is the /approve handler (SPEC §9.2). At spec-review, a
 // trusted /approve posted after the latest revision comment approves that
 // revision while the body still has its hash and isn't dirty (SPEC §7.4):
-// Apply moves the issue to planning with cmd=<comment id>, rev and body,
-// then the 👍. Check rejects it otherwise, when the table has no such move
-// for the issue's class (SPEC §7.2), and at plan-review, which isn't handled
-// yet.
+// Apply moves the issue to planning with cmd=<comment id>, rev, body and
+// seen=<comment id>, so a comment posted after the /approve is planning's
+// input (state.Inputs), then the 👍. Check rejects it otherwise, when the
+// table has no such move for the issue's class (SPEC §7.2), and at
+// plan-review, which isn't handled yet.
 func ApproveCommand() Handler {
 	return Handler{
 		Check: func(_ context.Context, a *Applier, c Cmd) error {
@@ -99,16 +101,7 @@ func ApproveCommand() Handler {
 			case state.BodyHash(c.S.Body) != latest.Hash:
 				return Rejection{Reason: fmt.Sprintf("the issue description changed after revision %d, so it no longer matches that revision's hash, `%s`", latest.Rev, latest.Hash)}
 			}
-			class, err := state.ClassOf(is.Item)
-			if err != nil {
-				return Rejection{Reason: fmt.Sprintf("I can't tell what kind of issue this is: %v", err)}
-			}
-			if _, err := state.Lookup(is.Stage, state.Planning, class, state.TriggerSpecApproved); errors.Is(err, state.ErrNoTransition) {
-				return Rejection{Reason: fmt.Sprintf("only an epic, or a story with no parent, goes from `%s` to `planning` on approval, and this is a %s issue", is.Stage, class)}
-			} else if err != nil {
-				return fmt.Errorf("approve: %w", err)
-			}
-			return nil
+			return inTable(is, state.Planning, state.TriggerSpecApproved, "on approval")
 		},
 		Apply: func(ctx context.Context, a *Applier, c Cmd) error {
 			return a.approve(ctx, c.S, c.Dirt, state.CmdKey(c.Comment.ID), c.Comment.Author.Login+"'s `/approve`")
@@ -167,7 +160,7 @@ func ApproveByReaction(trust github.Trust) func(ctx context.Context, a *Applier,
 
 // approve moves s from spec-review to planning on key, approving the latest
 // revision, if the body isn't dirty and still has its hash, and the revision
-// isn't Hidden. by says whose approval it is.
+// isn't Hidden. by says whose approval it is. A comment's key is also seen.
 func (a *Applier) approve(ctx context.Context, s *github.Snapshot, d Dirt, key state.Key, by string) error {
 	if d.Has(state.BodyID) {
 		logr.Debugf("%s/%s#%d: not approving by %s: the body has an edit by %s that wasn't approved", a.Owner, a.Repo, s.Number, by, d[state.BodyID])
@@ -185,8 +178,112 @@ func (a *Applier) approve(ctx context.Context, s *github.Snapshot, d Dirt, key s
 	m := Move{To: state.Planning, Trigger: state.TriggerSpecApproved, Key: key,
 		Fields: map[string]string{"rev": strconv.Itoa(latest.Rev), "body": latest.Hash},
 		Text:   fmt.Sprintf("Revision %d of the spec is approved, by %s.", latest.Rev, by)}
+	if _, ok := key.Comment(); ok {
+		m.Fields[state.FieldSeen] = key.ID
+	}
 	if err := a.Transition(ctx, s, d.Has, m); err != nil {
 		return fmt.Errorf("approve: %w", err)
+	}
+	return nil
+}
+
+// inTable returns a Rejection unless the table moves an issue like is to
+// stage to on trigger (SPEC §7.2). on says when, for the reason.
+func inTable(is state.Issue, to state.Stage, trigger state.Trigger, on string) error {
+	class, err := state.ClassOf(is.Item)
+	if err != nil {
+		return Rejection{Reason: fmt.Sprintf("I can't tell what kind of issue this is: %v", err)}
+	}
+	if _, err := state.Lookup(is.Stage, to, class, trigger); errors.Is(err, state.ErrNoTransition) {
+		return Rejection{Reason: fmt.Sprintf("only an epic, or a story with no parent, goes from `%s` to `%s` %s, and this is a %s issue", is.Stage, to, on, class)}
+	} else if err != nil {
+		return fmt.Errorf("move to %s %s: %w", to, on, err)
+	}
+	return nil
+}
+
+// ReviseCommand is the /revise handler (SPEC §9.2), and Step sends it each
+// revision request too (requested). At spec-review, Apply sends the spec
+// back: it moves the issue to clarifying with cmd=<comment id> and
+// seen=<comment id>, then the 👍. The comment is the notes in state.Inputs,
+// and a comment posted after it is the next round's answer. Check rejects it
+// when the table has no such move for the issue's class (SPEC §7.2), and at
+// plan-review, which isn't handled yet.
+func ReviseCommand() Handler {
+	return Handler{
+		Check: func(_ context.Context, a *Applier, c Cmd) error {
+			// Once Apply's marker exists, the stage is clarifying, so Step
+			// rejects or finishes the command before it asks Check.
+			is := state.Derive(c.S, a.AppSlug, c.Dirt.Has)
+			if is.Stage == state.PlanReview {
+				return Rejection{Reason: "revising a plan isn't handled yet"}
+			}
+			return inTable(is, state.Clarifying, state.TriggerSpecRevise, "on a revision request")
+		},
+		Apply: func(ctx context.Context, a *Applier, c Cmd) error {
+			m := Move{To: state.Clarifying, Trigger: state.TriggerSpecRevise, Key: state.CmdKey(c.Comment.ID),
+				Fields: map[string]string{state.FieldSeen: strconv.FormatInt(c.Comment.ID, 10)},
+				Text:   fmt.Sprintf("The spec is sent back for revision, with %s's comment as the notes.", c.Comment.Author.Login)}
+			if err := a.Transition(ctx, c.S, c.Dirt.Has, m); err != nil {
+				return fmt.Errorf("revise: %w", err)
+			}
+			return nil
+		},
+	}
+}
+
+// requested returns the /revise that comment c, trusted input, stands for
+// if it is a revision request (SPEC §7.4): at spec-review, a comment that
+// isn't a command and that no marker names, posted after the latest
+// revision comment and after the issue entered the stage (is.Round), so a
+// remark left at an earlier stage never counts.
+func requested(s *github.Snapshot, appSlug string, d Dirt, is state.Issue, c github.Comment) (state.Command, bool) {
+	if _, cmd := state.ParseCommand(c.Body); cmd || is.Stage != state.SpecReview || is.Keys[state.CmdKey(c.ID)] {
+		return state.Command{}, false
+	}
+	if latest, _ := state.LatestRevision(s, appSlug, d.Has); c.ID <= max(latest.Comment, is.Round) {
+		return state.Command{}, false
+	}
+	text := strings.TrimSpace(c.Body)
+	line, _, _ := strings.Cut(text, "\n")
+	return state.Command{Name: "revise", Arg: strings.TrimSpace(line), Text: text}, true
+}
+
+// ReviewVisit ends a visit to an issue at spec-review: the loop calls it
+// after Run succeeds on the issue, and at any other stage it does nothing.
+// While the latest revision is stale, Hidden or missing (SPEC §7.4), it
+// posts the next one (PostRevision), as after the owner edits the body,
+// which voids any pending approval: that binds to the latest revision. A
+// dirty body, or one last edited by a user Trust doesn't trust, gets none,
+// so the mismatch keeps approval blocked; the second is logged here.
+func (st *Step) ReviewVisit(ctx context.Context, s *github.Snapshot) error {
+	wrap := func(err error) error { return fmt.Errorf("revision of %s/%s#%d: %w", st.Owner, st.Repo, s.Number, err) }
+	d, err := st.Dirty(ctx, s)
+	if err != nil {
+		return wrap(err)
+	}
+	if state.Derive(s, st.AppSlug, d.Has).Stage != state.SpecReview {
+		return nil
+	}
+	latest, ok := state.LatestRevision(s, st.AppSlug, d.Has)
+	if stale := !ok || latest.Hidden || latest.Hash != state.BodyHash(s.Body); stale && !d.Has(state.BodyID) {
+		by := s.Author
+		if !s.BodyEdit.At.IsZero() {
+			by = s.BodyEdit.By
+		}
+		t := state.IsApp(by, st.AppSlug)
+		if !t && by.Type != "Bot" && by.Login != "" {
+			if t, err = st.Trust.Trusted(ctx, by.Login); err != nil {
+				return wrap(fmt.Errorf("trust %s: %w", by.Login, err))
+			}
+		}
+		if !t {
+			logr.Debugf("%s/%s#%d: no revision: the body was last edited by %s, who isn't trusted", st.Owner, st.Repo, s.Number, login(by))
+			return nil
+		}
+	}
+	if err := st.PostRevision(ctx, s, d.Has, Move{}); err != nil {
+		return wrap(err)
 	}
 	return nil
 }

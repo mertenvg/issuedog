@@ -78,8 +78,8 @@ func dirtyReview(owner bool, more func(t testing.TB, f *githubtest.Fake)) func(t
 	})
 }
 
-// approveBoth adds the owner's 👍 on comment 1002 (1003 in dirtyReview),
-// then an /approve.
+// approveBoth posts the owner's /approve, comment 1003, then adds their 👍
+// on comment 1002, dirtyReview's revision 2.
 func approveBoth(t testing.TB, f *githubtest.Fake) {
 	post(t, f, 1003, "owner", "/approve")
 	f.AddReaction(1002, "owner", "+1")
@@ -87,8 +87,12 @@ func approveBoth(t testing.TB, f *githubtest.Fake) {
 
 const dirtyBody = "the issue description has an edit by mallory that wasn't approved, so I can't approve it"
 
-// approvedRev is the comment approving revision rev of "body" by key.
+// approvedRev is the comment approving revision rev of "body" by key. A
+// comment's key is also seen.
 func approvedRev(rev int, by, key string) string {
+	if !strings.HasPrefix(key, "r") {
+		key += " seen=" + key
+	}
 	return fmt.Sprintf("Revision %d of the spec is approved, by %s.\n\n"+
 		"<!-- issuedog:transition from=spec-review to=planning rev=%d body=%s cmd=%s -->", rev, by, rev, state.BodyHash("body"), key)
 }
