@@ -10,7 +10,9 @@ import (
 	"io"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -34,6 +36,7 @@ type Config struct {
 	Escalate   Escalate   `yaml:"escalate"`
 	PR         PR         `yaml:"pr"`
 	Stages     Stages     `yaml:"stages"`
+	Models     Models     `yaml:"models"`
 	Loop       Loop       `yaml:"loop"`
 	Network    Network    `yaml:"network"`
 	UsageLimit UsageLimit `yaml:"usage_limit"`
@@ -80,6 +83,59 @@ type Stages struct {
 	MaxTurns PerStage[Int]           `yaml:"max_turns"`
 	// MaxBudgetUSD is optional per stage; 0 means no --max-budget-usd.
 	MaxBudgetUSD PerStage[float64] `yaml:"max_budget_usd"`
+	// Model, Effort and FallbackModel are optional per stage; empty means
+	// no --model, --effort or --fallback-model, so the CLI's default applies.
+	Model         PerStage[string]   `yaml:"model"`
+	Effort        PerStage[string]   `yaml:"effort"`
+	FallbackModel PerStage[[]string] `yaml:"fallback_model"`
+	// MaxEffort caps the effort that retries raise to (RaiseEffort).
+	MaxEffort string `yaml:"max_effort"`
+}
+
+// stageValue is one stage's key and value in a PerStage.
+type stageValue[T any] struct {
+	stage string
+	v     T
+}
+
+func (p PerStage[T]) list() []stageValue[T] {
+	return []stageValue[T]{{"interviewer", p.Interviewer}, {"planner", p.Planner}, {"implementer", p.Implementer}, {"verifier", p.Verifier}}
+}
+
+// Models lists the model names and aliases that stage defaults, commands and
+// labels may use. An empty list allows no model overrides.
+type Models struct {
+	Allowed []string `yaml:"allowed"`
+}
+
+// Allows reports whether name is on the list. The match is exact.
+func (m Models) Allows(name string) bool {
+	return slices.Contains(m.Allowed, name)
+}
+
+// effortLevels are the claude CLI's --effort levels (Claude Code 2.1.296),
+// lowest first. Config can't add to them.
+var effortLevels = []string{"low", "medium", "high", "xhigh", "max"}
+
+// EffortLevels returns the effort levels, lowest first.
+func EffortLevels() []string {
+	return slices.Clone(effortLevels)
+}
+
+// ValidEffort reports whether level is one of EffortLevels.
+func ValidEffort(level string) bool {
+	return slices.Contains(effortLevels, level)
+}
+
+// RaiseEffort returns the level one above level, capped at limit. It never
+// lowers a level already at or above limit, and returns an unset or unknown
+// level, or any level under an unknown limit, unchanged.
+func RaiseEffort(level, limit string) string {
+	i, top := slices.Index(effortLevels, level), slices.Index(effortLevels, limit)
+	if i < 0 || i >= top {
+		return level
+	}
+	return effortLevels[i+1]
 }
 
 type Loop struct {
@@ -130,8 +186,9 @@ func Defaults() *Config {
 		},
 		PR: PR{TitleTypes: []string{"feat", "fix", "chore"}},
 		Stages: Stages{
-			Timeouts: PerStage[time.Duration]{Interviewer: 10 * time.Minute, Planner: 20 * time.Minute, Implementer: 60 * time.Minute, Verifier: 30 * time.Minute},
-			MaxTurns: PerStage[Int]{Interviewer: 30, Planner: 60, Implementer: 200, Verifier: 80},
+			Timeouts:  PerStage[time.Duration]{Interviewer: 10 * time.Minute, Planner: 20 * time.Minute, Implementer: 60 * time.Minute, Verifier: 30 * time.Minute},
+			MaxTurns:  PerStage[Int]{Interviewer: 30, Planner: 60, Implementer: 200, Verifier: 80},
+			MaxEffort: "max",
 		},
 		Loop:       Loop{IdleSleep: 60 * time.Second, MaxAttempts: 3, MaxQuestionsPerRound: 7},
 		Network:    Network{Allow: []string{"api.anthropic.com", "proxy.golang.org", "sum.golang.org"}},
@@ -219,6 +276,39 @@ func (c *Config) validate() error {
 	b := c.Stages.MaxBudgetUSD
 	if b.Interviewer < 0 || b.Planner < 0 || b.Implementer < 0 || b.Verifier < 0 {
 		return errors.New("stages.max_budget_usd: must not be negative")
+	}
+	return c.validateModels()
+}
+
+// validateModels checks models.allowed and the stages' model and effort keys.
+func (c *Config) validateModels() error {
+	for _, m := range c.Models.Allowed {
+		// A model name is a label suffix, a command argument and a
+		// comma-joined --fallback-model entry.
+		if m == "" || strings.Contains(m, ",") || strings.IndexFunc(m, unicode.IsSpace) >= 0 {
+			return fmt.Errorf("models.allowed: %q is empty or has a space or comma", m)
+		}
+	}
+	for _, s := range c.Stages.Model.list() {
+		if s.v != "" && !c.Models.Allows(s.v) {
+			return fmt.Errorf("stages.model.%s: %q is not in models.allowed", s.stage, s.v)
+		}
+	}
+	for _, s := range c.Stages.FallbackModel.list() {
+		for _, m := range s.v {
+			if !c.Models.Allows(m) {
+				return fmt.Errorf("stages.fallback_model.%s: %q is not in models.allowed", s.stage, m)
+			}
+		}
+	}
+	levels := strings.Join(effortLevels, ", ")
+	for _, s := range c.Stages.Effort.list() {
+		if s.v != "" && !ValidEffort(s.v) {
+			return fmt.Errorf("stages.effort.%s: %q is not one of %s", s.stage, s.v, levels)
+		}
+	}
+	if !ValidEffort(c.Stages.MaxEffort) {
+		return fmt.Errorf("stages.max_effort: %q is not one of %s", c.Stages.MaxEffort, levels)
 	}
 	return nil
 }
