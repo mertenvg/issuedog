@@ -108,7 +108,10 @@ func (r *Repo) git(ctx context.Context, token string, args ...string) ([]byte, e
 //     URL it was given. Git's default follows the first request's redirect,
 //     then sends http.extraHeader to wherever that pointed. It sets it for
 //     remote too, if given: a per-URL key in the repo's config would beat the
-//     generic one, while on an exact match the env's later entry wins.
+//     generic one, while on an exact match the env's later entry wins. A
+//     repo-config key more specific than remote (a trailing "//" on the path,
+//     or a trailing dot on the host) still beats it, and so does a
+//     url.*.insteadOf rewrite. Only the daemon can write that config.
 func gitEnv(environ []string, remote, token string) []string {
 	env := make([]string, 0, len(environ)+10)
 	for _, kv := range environ {
