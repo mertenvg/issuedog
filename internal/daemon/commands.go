@@ -522,13 +522,13 @@ func settingKind(c Cmd) (value, kind string) {
 // which quotes c's text; reply escapes it (SPEC §5.1).
 //
 // A reload can drop a model from models.allowed after Apply added its label,
-// and Check mustn't then reject c (see Handler). So a model that isn't
-// allowed, whose label c's issue has already, named as c names it or by its
-// default suffix (config.Model.Suffix), is that label, and c removes the
-// others. The label of a full name with a short label of its own can't be
-// told, so that case is rejected, and its label stays. This also lets a
-// /model stand that names a label a trusted user set by hand for a model
-// that isn't allowed; run settings refuse that label all the same.
+// and Check mustn't then reject c (see Handler). A dropped model's label no
+// longer names an allowed model, whatever c names, so if exactly one label
+// of c's kind on c's issue is stray, naming no allowed model by its suffix,
+// c names that label, and c removes the others. Two or more stray labels
+// can't be told apart, so c is rejected, and they stay. This also lets any
+// /model stand on an issue with one stray label a trusted user set by hand;
+// run settings refuse that label all the same.
 func modelLabel(models config.Models, c Cmd) (string, error) {
 	arg, kind := settingKind(c)
 	name, ok := models.Resolve(arg)
@@ -549,9 +549,15 @@ func modelLabel(models config.Models, c Cmd) (string, error) {
 		}
 		return kind + ":" + suffix, nil
 	}
-	have := kind + ":" + config.Model{Name: arg}.Suffix()
-	if i := slices.IndexFunc(c.S.Labels, func(l string) bool { return strings.EqualFold(l, have) }); i >= 0 {
-		return c.S.Labels[i], nil
+	var stray []string
+	for _, l := range c.S.Labels {
+		k, suffix, colon := strings.Cut(l, ":")
+		if _, allowed := models.ModelName(suffix); colon && strings.EqualFold(k, kind) && !allowed {
+			stray = append(stray, l)
+		}
+	}
+	if len(stray) == 1 {
+		return stray[0], nil
 	}
 	if len(same) > 1 {
 		return "", Rejection{Reason: fmt.Sprintf("`%s` matches %s on `models.allowed`, ignoring case, so give the name in its exact case", arg, list(same))}

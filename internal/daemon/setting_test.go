@@ -150,6 +150,44 @@ func TestModelEffortCommands(t *testing.T) {
 			setup:  taskWith("owner", "/model Fable", app+" model:fable", app+" model:opus"),
 			labels: []string{"model:fable", "stage:ready"},
 			reacts: []string{app + " +1"}, writes: []string{"DELETE /issues/1/labels/model:opus", react}},
+		{name: "/model of a long name no longer allowed keeps its label of the last 35 characters",
+			allowed: "[opus, {name: claude-sonnet-5-5, label: sonnet}]",
+			setup:   taskWith("owner", "/model "+long, app+" model:"+longSuffix, app+" model:opus"),
+			labels:  []string{"model:" + longSuffix, "stage:ready"},
+			reacts:  []string{app + " +1"}, writes: []string{"DELETE /issues/1/labels/model:opus", react}},
+		{name: "/model of a model no longer allowed keeps the one stray model:* label, and a label with no colon isn't one",
+			allowed: "[sonnet]",
+			setup:   taskWith("owner", "/model claude-opus-5-5", "owner model", app+" model:opus5", app+" model:sonnet"),
+			labels:  []string{"model", "model:opus5", "stage:ready"},
+			reacts:  []string{app + " +1"}, writes: []string{"DELETE /issues/1/labels/model:sonnet", react}},
+		{name: "/model of a model no longer allowed is rejected with two stray model:* labels",
+			allowed: "[sonnet]",
+			setup:   taskWith("owner", "/model claude-opus-5-5", app+" model:opus5", app+" model:haiku"),
+			labels:  []string{"model:haiku", "model:opus5", "stage:ready"},
+			comment: rejected("/model claude-opus-5-5", "`claude-opus-5-5` isn't on `models.allowed`, which has `sonnet`", "1002"),
+			reacts:  []string{app + " -1"}, writes: []string{react, reply}},
+		{name: "/model leaves a label whose kind only starts with model",
+			setup:  taskWith("owner", "/model opus", "owner modelx:foo", app+" model:sonnet"),
+			labels: []string{"model:opus", "modelx:foo", "stage:ready"},
+			reacts: []string{app + " +1"}, writes: []string{label, "DELETE /issues/1/labels/model:sonnet", react}},
+		{name: "/model picks the exact name among names that differ only in case",
+			allowed: "[{name: Opus, label: o1}, {name: opus, label: o2}]",
+			setup:   taskWith("owner", "/model Opus"),
+			labels:  []string{"model:o1", "stage:ready"},
+			reacts:  []string{app + " +1"}, writes: []string{label, react}},
+		{name: "/model picks the other exact name among names that differ only in case",
+			allowed: "[{name: Opus, label: o1}, {name: opus, label: o2}]",
+			setup:   taskWith("owner", "/model opus"),
+			labels:  []string{"model:o2", "stage:ready"},
+			reacts:  []string{app + " +1"}, writes: []string{label, react}},
+		{name: "/effort HIGH sets effort:high on an issue with none",
+			setup:  taskWith("owner", "/effort HIGH"),
+			labels: []string{"effort:high", "stage:ready"},
+			reacts: []string{app + " +1"}, writes: []string{label, react}},
+		{name: "/model VERIFIER opus is the verifier form",
+			setup:  taskWith("owner", "/model VERIFIER opus", app+" model:sonnet"),
+			labels: []string{"model:sonnet", "stage:ready", "verifier-model:opus"},
+			reacts: []string{app + " +1"}, writes: []string{label, react}},
 		{name: "an untrusted user's /model isn't processed",
 			setup:  taskWith("mallory", "/model opus", app+" model:sonnet"),
 			labels: []string{"model:sonnet", "stage:ready"}},
@@ -194,6 +232,65 @@ func TestModelEffortCommands(t *testing.T) {
 				t.Errorf("writes = %q, want %q", writes, tt.writes)
 			}
 		})
+	}
+}
+
+// A /model whose Apply crashed after adding its label, before removing the
+// old one, isn't rejected on the next pass after a reload dropped its model:
+// the issue ends with one model:* label, and the command 👍'd.
+func TestModelRetryAfterReloadDropsIt(t *testing.T) {
+	before := models(t, "[sonnet, {name: claude-opus-5-5, label: opus5}]")
+	after := models(t, "[sonnet]")
+	for _, crash := range []struct {
+		name string
+		at   func(f *githubtest.Fake)
+	}{
+		{"before the removal", func(f *githubtest.Fake) { f.FailWrite(2) }},
+		{"after the add applied", func(f *githubtest.Fake) { f.FailWriteAfter(1) }},
+	} {
+		t.Run(crash.name, func(t *testing.T) {
+			f := taskWith("owner", "/model claude-opus-5-5", app+" model:sonnet")(t)
+			crash.at(f)
+			if err := settingPass(t, before)(f); err == nil {
+				t.Fatal("the crashed pass returned no error")
+			}
+			if got := f.State().Issues[0].Labels; !reflect.DeepEqual(got, []string{"model:opus5", "model:sonnet", "stage:ready"}) {
+				t.Fatalf("labels after the crash = %q, want model:opus5 added and model:sonnet still there", got)
+			}
+			f.FailWrite(0)
+			if err := settingPass(t, after)(f); err != nil { // the reload dropped claude-opus-5-5
+				t.Fatal(err)
+			}
+			is := f.State().Issues[0]
+			if !reflect.DeepEqual(is.Labels, []string{"model:opus5", "stage:ready"}) {
+				t.Errorf("labels = %q, want model:opus5 alone", is.Labels)
+			}
+			if len(is.Comments) != 2 || !reflect.DeepEqual(is.Comments[1].Reactions, []string{app + " +1"}) {
+				t.Errorf("comments = %+v, want the command 👍'd and no reply", is.Comments)
+			}
+		})
+	}
+}
+
+// A failed write ends Apply with an error and writes nothing after it, so
+// the command isn't 👍'd with its labels half set: the label's add, the old
+// label's removal and the 👍, for each command that sets a label.
+func TestSettingWriteFails(t *testing.T) {
+	for _, tc := range []struct{ body, old string }{
+		{"/model opus", "model:sonnet"},
+		{"/effort verifier high", "verifier-effort:low"},
+		{"/priority p1", "priority:p2"},
+	} {
+		for n := 1; n <= 3; n++ {
+			f := taskWith("owner", tc.body, app+" "+tc.old)(t)
+			f.FailWrite(n)
+			if err := settingPass(t, models(t, threeModels))(f); err == nil {
+				t.Errorf("%s with write %d failing: no error", tc.body, n)
+			}
+			if w := f.Writes(); len(w) != n {
+				t.Errorf("%s with write %d failing: writes %+v, want none after it", tc.body, n, w)
+			}
+		}
 	}
 }
 

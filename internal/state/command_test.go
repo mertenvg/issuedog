@@ -69,6 +69,8 @@ func TestCommandSetting(t *testing.T) {
 	}{
 		{"/model opus", "opus", false, nil},
 		{"/MODEL Verifier claude-opus-5-5", "claude-opus-5-5", true, nil},
+		{"/model VERIFIER opus", "opus", true, nil},
+		{"/effort VERIFIER", "", false, ErrBadArgument},
 		{"/effort verifier max\nnotes below", "max", true, nil},
 		{"/effort \thigh ", "high", false, nil},
 		{"/model gpt", "gpt", false, nil},
