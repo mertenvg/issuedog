@@ -50,6 +50,17 @@ type Move struct {
 	// Markers go after the transition marker, in the same comment, such as
 	// a revision marker.
 	Markers []github.Marker
+	// ErrorKey, if set, keys the state error for a move the table lacks,
+	// instead of Key's ID.
+	ErrorKey string
+}
+
+// errorKey keys the state error for m, if the table lacks it.
+func (m Move) errorKey() string {
+	if m.ErrorKey != "" {
+		return m.ErrorKey
+	}
+	return m.Key.ID
 }
 
 // keyFields are the marker fields a Key names.
@@ -86,8 +97,9 @@ func (m Move) check() error {
 //
 // A move the table lacks, including one for an issue of unknown type,
 // changes no label. It is reported once with an error comment keyed by
-// m.Key's ID (SPEC §5.3), logged as an error when that comment is posted and
-// at debug level after, and returned as an error StateError reports.
+// m.ErrorKey or m.Key's ID (SPEC §5.3), logged as an error when that
+// comment is posted and at debug level after, and returned as an error
+// StateError reports.
 func (a *Applier) Transition(ctx context.Context, s *github.Snapshot, dirty func(int64) bool, m Move) error {
 	wrap := func(err error) error {
 		return fmt.Errorf("move %s/%s#%d to %s on %s: %w", a.Owner, a.Repo, s.Number, m.To, m.Trigger, err)
@@ -101,7 +113,7 @@ func (a *Applier) Transition(ctx context.Context, s *github.Snapshot, dirty func
 			if !StateError(err) {
 				return wrap(err)
 			}
-			if is.Reported("transition", m.Key.ID) {
+			if is.Reported("transition", m.errorKey()) {
 				logr.Debugf("state error, reported already: %v", wrap(err))
 				return wrap(err)
 			}
@@ -209,7 +221,7 @@ func noRow(is state.Issue, m Move) (string, error) {
 // report posts the state error for a move the table lacks, saying why. The
 // type in why isn't the App's text, so it's escaped (SPEC §5.1).
 func (a *Applier) report(ctx context.Context, s *github.Snapshot, is state.Issue, m Move, why string) error {
-	marker, err := github.FormatMarker(github.Marker{Kind: "error", Fields: map[string]string{"kind": "transition", "key": m.Key.ID}})
+	marker, err := github.FormatMarker(github.Marker{Kind: "error", Fields: map[string]string{"kind": "transition", "key": m.errorKey()}})
 	if err != nil {
 		return fmt.Errorf("report: %w", err)
 	}
