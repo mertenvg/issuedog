@@ -28,6 +28,7 @@ import (
 
 	"github.com/mertenvg/logr/v2"
 
+	"github.com/mertenvg/issuedog/internal/agent"
 	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/egress"
@@ -140,8 +141,13 @@ var daemonEnv = []string{"ANTHROPIC_API_KEY=key", "ISSUEDOG_REPO=mertenvg/issued
 // fakeGitHub points the daemon at a fake GitHub for mertenvg/issuedog, with
 // mertenvg an admin and mallory a writer, and at a local bare repo as the
 // remote, whose main has files (path to content). It writes a usable App key.
+// Runs would be the test's own uid's, with state in a temp dir.
 func fakeGitHub(t *testing.T, files map[string]string) *githubtest.Fake {
 	t.Helper()
+	fakeAgent(t, nil)
+	oldState, oldRun := stateDir, runDir
+	t.Cleanup(func() { stateDir, runDir = oldState, oldRun })
+	stateDir, runDir = t.TempDir(), t.TempDir()
 	f := githubtest.New(t, "mertenvg/issuedog", "issuedog-dev")
 	f.SetPermission("mertenvg", "admin")
 	f.SetPermission("mallory", "write")
@@ -415,6 +421,11 @@ func TestRunDaemon(t *testing.T) {
 		f.AddLabel(m, "issuedog-dev[bot]", "stage:spec-review")
 		approve(m, f.AddComment(m, "issuedog-dev[bot]", revisionOf("body")))
 	}
+	// A lease for a stage with no Stage registered, which stage work drops.
+	lease := filepath.Join(stateDir, "lease.json")
+	if err := os.WriteFile(lease, []byte(`{"issue":1,"stage":"clarifying","run_id":"r1"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	calls := fakeEgress(t, nil, nil)
 	cancel, signals := cancelOnCall(t)
 	var logs bytes.Buffer
@@ -424,15 +435,22 @@ func TestRunDaemon(t *testing.T) {
 	go func() { done <- run(nil, daemonEnv, nil, io.Discard) }()
 
 	// The first iteration rejects mertenvg's /frob, as CODEOWNERS on main
-	// trusts only mertenvg, and approves both specs, then sleeps the
-	// config's 60s.
+	// trusts only mertenvg, approves both specs, and drops the lease, then
+	// sleeps the config's 60s.
 	planning := []string{"stage:planning"}
 	iterated := func() bool {
 		is := f.State().Issues
-		return len(is[0].Comments) >= 4 && slices.Equal(is[1].Labels, planning) && slices.Equal(is[2].Labels, planning)
+		_, err := os.Stat(lease)
+		return len(is[0].Comments) >= 4 && slices.Equal(is[1].Labels, planning) && slices.Equal(is[2].Labels, planning) && err != nil
 	}
 	for deadline := time.Now().Add(10 * time.Second); !iterated() && time.Now().Before(deadline); {
 		time.Sleep(10 * time.Millisecond)
+	}
+	if !iterated() {
+		t.Error("the first iteration didn't finish in 10s")
+	}
+	if _, err := os.Stat(lease); !os.IsNotExist(err) {
+		t.Errorf("the lease is still there: %v", err)
 	}
 	cancel()
 	select {
@@ -486,7 +504,8 @@ func TestRunDaemon(t *testing.T) {
 		t.Errorf("startup steps = %q, want %q", got, want)
 	}
 	for _, want := range []string{"egress proxy listening on http://127.0.0.1:", "allowing example.com, api.anthropic.com",
-		"running as issuedog-dev[bot] on mertenvg/issuedog", "stopping on a signal"} {
+		"running as issuedog-dev[bot] on mertenvg/issuedog", "stopping on a signal",
+		"dropping the lease of run r1 on #1: no Stage is registered for clarifying"} {
 		if !strings.Contains(logs.String(), want) {
 			t.Errorf("logs = %q, want %q", logs.String(), want)
 		}
@@ -852,5 +871,51 @@ func TestRunKeyCommands(t *testing.T) {
 		if !strings.Contains(logs.String(), want) {
 			t.Errorf("logs = %q, want %q", logs.String(), want)
 		}
+	}
+}
+
+// Stage runs are agent's, workspace and claude both, with the Claude
+// credential and the egress proxy as the only way out, in the repo's clone,
+// and the gate matches the config's usage_limit.pattern.
+func TestStageWork(t *testing.T) {
+	fakeAgent(t, nil)
+	oldWork, oldState, oldRun := workDir, stateDir, runDir
+	t.Cleanup(func() { workDir, stateDir, runDir = oldWork, oldState, oldRun })
+	workDir, stateDir, runDir = t.TempDir(), t.TempDir(), t.TempDir()
+	cfg := config.Defaults()
+	cfg.UsageLimit.Pattern = "frobnicated"
+	cred := agent.Cred{Name: agent.APIKeyVar, Value: "key"}
+	runs, err := stageWork(&daemon.Daemon{Config: cfg}, "repo", cred)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uid := uint32(os.Getuid())
+	if c := runs.Runner.Credential; c == nil || c.Uid != uid {
+		t.Errorf("claude runs as %+v, want agent's credential", c)
+	}
+	if c := runs.Workspace.Credential; c == nil || c.Uid != uid {
+		t.Errorf("the workspace's git runs as %+v, want agent's credential", c)
+	}
+	wantEnv := []string{"ANTHROPIC_API_KEY=key", "HTTPS_PROXY=http://127.0.0.1:3128", "HTTP_PROXY=http://127.0.0.1:3128",
+		"HOME=/home/agent", "PATH=/usr/local/bin:/usr/bin:/bin"}
+	if !slices.Equal(runs.Env, wantEnv) {
+		t.Errorf("the agent's environment = %q, want %q", runs.Env, wantEnv)
+	}
+	ws := runs.Workspace
+	if ws.Bare != filepath.Join(workDir, "repo.git") || ws.RunsDir != filepath.Join(workDir, "runs") || ws.ContextDir != runDir ||
+		runs.Runner.StateDir != stateDir || runs.Runner.Claude != "claude" {
+		t.Errorf("workspace %+v, runner %+v; want the clone, runs and context dirs, and the state dir", ws, runs.Runner)
+	}
+	if len(runs.Stages) != 0 {
+		t.Errorf("stages = %v, want none yet", runs.Stages)
+	}
+	now := time.Now()
+	if runs.Gate.Observe(now, true, "usage limit reached") || !runs.Gate.Observe(now, true, "frobnicated") {
+		t.Error("the gate doesn't match by the config's usage_limit.pattern")
+	}
+
+	fakeAgent(t, errors.New("no such user"))
+	if _, err := stageWork(&daemon.Daemon{Config: cfg}, "repo", cred); err == nil || !strings.Contains(err.Error(), "looking up agent: no such user") {
+		t.Errorf("stageWork = %v, want the lookup error", err)
 	}
 }

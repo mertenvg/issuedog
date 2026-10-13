@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -129,13 +130,17 @@ func TestRunFailures(t *testing.T) {
 		cred    *syscall.Credential
 		wantErr string
 		wantOut string
+		setup   bool // a *SetupError, not the agent's failure
 	}{
 		{name: "non-zero exit", mode: "fail", wantErr: "exit status 1", wantOut: "error_max_turns"},
 		{name: "timeout", mode: "hang", wantErr: "deadline exceeded"},
 		{name: "timeout with credential", mode: "hang", cred: currentUser(), wantErr: "deadline exceeded"},
-		{name: "run ID with a path", mode: "success", runID: "../run-1", wantErr: "invalid run ID"},
-		{name: "empty run ID", mode: "success", runID: "", wantErr: "invalid run ID"},
-		{name: "no environment", mode: "success", wantErr: "no agent environment"},
+		{name: "run ID with a path", mode: "success", runID: "../run-1", wantErr: "invalid run ID", setup: true},
+		{name: "empty run ID", mode: "success", runID: "", wantErr: "invalid run ID", setup: true},
+		{name: "no environment", mode: "success", wantErr: "no agent environment", setup: true},
+		{name: "no prompt", mode: "success", wantErr: "reading the prompt", setup: true},
+		{name: "no claude", mode: "success", wantErr: "starting claude", setup: true},
+		{name: "result not saved", mode: "success", wantErr: "saving the result", wantOut: "Done."},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -143,16 +148,29 @@ func TestRunFailures(t *testing.T) {
 			if tt.mode == "hang" {
 				s.Timeout = 300 * time.Millisecond
 			}
-			if tt.wantErr == "invalid run ID" {
+			switch tt.wantErr {
+			case "invalid run ID":
 				s.RunID = tt.runID
-			}
-			if tt.wantErr == "no agent environment" {
+			case "no agent environment":
 				s.Env = nil
+			case "reading the prompt":
+				s.ContextDir = t.TempDir()
+			case "starting claude":
+				r.Claude = filepath.Join(t.TempDir(), "none")
+			case "saving the result":
+				// A file where the runs dir goes.
+				if err := os.WriteFile(filepath.Join(r.StateDir, "runs"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			start := time.Now()
 			out, err := r.Run(context.Background(), s)
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("err = %v, want one containing %q", err, tt.wantErr)
+			}
+			var setup *SetupError
+			if errors.As(err, &setup) != tt.setup {
+				t.Errorf("err = %v, a *SetupError: %t, want %t", err, !tt.setup, tt.setup)
 			}
 			if !strings.Contains(string(out), tt.wantOut) {
 				t.Errorf("output = %q, want it to contain %q", out, tt.wantOut)
