@@ -40,6 +40,9 @@ func TestLatestRevision(t *testing.T) {
 		{"a dirty one isn't a revision", snap("", []github.Author{appBot, appBot}, rev1, rev2), dirtyIDs(2), Revision{1, "aaaaaaaa", 1}, true},
 		{"only the App's count", snap("", []github.Author{appBot, owner}, rev1, rev2), clean, Revision{1, "aaaaaaaa", 1}, true},
 		{"the body's don't count", snap(rev1, nil), clean, Revision{}, false},
+		{"only revision markers count, not others with rev and body",
+			snap("", []github.Author{appBot, appBot}, rev1, "<!-- issuedog:transition from=spec-review to=planning rev=1 body=aaaaaaaa cmd=r9 -->"),
+			clean, Revision{1, "aaaaaaaa", 1}, true},
 		{"a malformed one is skipped", snap("", []github.Author{appBot, appBot}, rev1, "<!-- issuedog:revision rev=x body=cccccccc -->"), clean, Revision{1, "aaaaaaaa", 1}, true},
 	} {
 		got, ok := LatestRevision(tt.s, slug, tt.dirty)

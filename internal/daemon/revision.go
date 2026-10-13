@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"strconv"
@@ -22,8 +23,20 @@ import (
 //     approve it. Once the move's marker exists, Transition only finishes it.
 //   - With no m.To, it posts the revision on its own, unless the latest
 //     revision has the body's hash already.
+//
+// A dirty body (#91) gets no revision, since nothing may approve it. A move
+// still happens, saying why there's no revision, so the issue doesn't wait
+// on a stage run that can't succeed.
 func (a *Applier) PostRevision(ctx context.Context, s *github.Snapshot, dirty func(int64) bool, m Move) error {
 	if m.To != "" && state.Derive(s, a.AppSlug, dirty).Moved(m.Key) {
+		return a.Transition(ctx, s, dirty, m)
+	}
+	if dirty(state.BodyID) {
+		logr.Debugf("%s/%s#%d: no revision: the body has an unsanctioned edit", a.Owner, a.Repo, s.Number)
+		if m.To == "" {
+			return nil
+		}
+		m.Text = join(m.Text, "There's no revision to approve: the issue description was edited without approval (see the note on it).")
 		return a.Transition(ctx, s, dirty, m)
 	}
 	latest, _ := state.LatestRevision(s, a.AppSlug, dirty)
@@ -58,25 +71,39 @@ func (a *Applier) PostRevision(ctx context.Context, s *github.Snapshot, dirty fu
 
 // ApproveCommand is the /approve handler (SPEC §9.2). At spec-review, a
 // trusted /approve posted after the latest revision comment approves that
-// revision while the body still has its hash (SPEC §7.4): Apply moves the
-// issue to planning with cmd=<comment id>, rev and body, then the 👍. Check
-// rejects it otherwise, and at plan-review, which isn't handled yet.
+// revision while the body still has its hash and isn't dirty (SPEC §7.4):
+// Apply moves the issue to planning with cmd=<comment id>, rev and body,
+// then the 👍. Check rejects it otherwise, when the table has no such move
+// for the issue's class (SPEC §7.2), and at plan-review, which isn't handled
+// yet.
 func ApproveCommand() Handler {
 	return Handler{
 		Check: func(_ context.Context, a *Applier, c Cmd) error {
 			// Once Apply's marker exists, the stage is planning, so Step
 			// rejects or finishes the command before it asks Check.
-			if state.Derive(c.S, a.AppSlug, c.Dirt.Has).Stage == state.PlanReview {
+			is := state.Derive(c.S, a.AppSlug, c.Dirt.Has)
+			if is.Stage == state.PlanReview {
 				return Rejection{Reason: "approving a plan isn't handled yet"}
 			}
 			latest, ok := state.LatestRevision(c.S, a.AppSlug, c.Dirt.Has)
 			switch {
+			case c.Dirt.Has(state.BodyID):
+				return Rejection{Reason: fmt.Sprintf("the issue description has an edit by %s that wasn't approved, so I can't approve it", c.Dirt[state.BodyID])}
 			case !ok:
 				return Rejection{Reason: "there's no revision to approve yet"}
 			case c.Comment.ID < latest.Comment:
 				return Rejection{Reason: fmt.Sprintf("it was posted before revision %d, the latest. To approve that, react 👍 to it, or post `/approve` again", latest.Rev)}
 			case state.BodyHash(c.S.Body) != latest.Hash:
 				return Rejection{Reason: fmt.Sprintf("the issue description changed after revision %d, so it no longer matches that revision's hash, `%s`", latest.Rev, latest.Hash)}
+			}
+			class, err := state.ClassOf(is.Item)
+			if err != nil {
+				return Rejection{Reason: fmt.Sprintf("I can't tell what kind of issue this is: %v", err)}
+			}
+			if _, err := state.Lookup(is.Stage, state.Planning, class, state.TriggerSpecApproved); errors.Is(err, state.ErrNoTransition) {
+				return Rejection{Reason: fmt.Sprintf("only an epic, or a story with no parent, goes from `%s` to `planning` on approval, and this is a %s issue", is.Stage, class)}
+			} else if err != nil {
+				return fmt.Errorf("approve: %w", err)
 			}
 			return nil
 		},
@@ -92,7 +119,8 @@ func ApproveCommand() Handler {
 // while the body still has its hash: the issue moves to planning with
 // cmd=r<reaction id>, rev and body. Other 👍s, the App's included, are
 // ignored. At any other stage it reads nothing, so removing the 👍 once the
-// approval is applied changes nothing.
+// approval is applied changes nothing. A 👍 the table can't apply is
+// reported once by Transition (SPEC §5.3), then only logged.
 func ApproveByReaction(trust github.Trust) func(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt) error {
 	return func(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt) error {
 		latest, ok := state.LatestRevision(s, a.AppSlug, d.Has)
@@ -119,13 +147,23 @@ func ApproveByReaction(trust github.Trust) func(ctx context.Context, a *Applier,
 		if first == nil {
 			return nil
 		}
-		return a.approve(ctx, s, d, state.ReactionKey(first.ID), first.User.Login+"'s 👍")
+		err = a.approve(ctx, s, d, state.ReactionKey(first.ID), first.User.Login+"'s 👍")
+		if errors.Is(err, state.ErrNoTransition) {
+			logr.Debugf("%s/%s#%d: ignoring the 👍 on revision %d: %v", a.Owner, a.Repo, s.Number, latest.Rev, err)
+			return nil
+		}
+		return err
 	}
 }
 
 // approve moves s from spec-review to planning on key, approving the latest
-// revision, if the body still has its hash. by says whose approval it is.
+// revision, if the body isn't dirty and still has its hash. by says whose
+// approval it is.
 func (a *Applier) approve(ctx context.Context, s *github.Snapshot, d Dirt, key state.Key, by string) error {
+	if d.Has(state.BodyID) {
+		logr.Debugf("%s/%s#%d: not approving by %s: the body has an edit by %s that wasn't approved", a.Owner, a.Repo, s.Number, by, d[state.BodyID])
+		return nil
+	}
 	latest, _ := state.LatestRevision(s, a.AppSlug, d.Has)
 	if hash := state.BodyHash(s.Body); hash != latest.Hash {
 		logr.Debugf("%s/%s#%d: not approving revision %d by %s: the body's hash is %s, not %s", a.Owner, a.Repo, s.Number, latest.Rev, by, hash, latest.Hash)

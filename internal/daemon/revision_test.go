@@ -2,12 +2,17 @@ package daemon_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
+	gogithub "github.com/google/go-github/v92/github"
 	"github.com/mertenvg/issuedog/internal/daemon"
+	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 	"github.com/mertenvg/issuedog/internal/state"
 )
@@ -33,7 +38,8 @@ func review(more func(t testing.TB, f *githubtest.Fake)) func(testing.TB) *githu
 }
 
 // approvePass runs step 1 on issue 1 with the approval handlers, and the
-// owners and, to show it's ignored anyway, the App trusted.
+// owners and, to show it's ignored anyway, the App trusted. /priority only
+// gets a 👍.
 func approvePass(t *testing.T) func(*githubtest.Fake) error {
 	return func(f *githubtest.Fake) error {
 		a, s, err := applier(t, f)
@@ -41,12 +47,38 @@ func approvePass(t *testing.T) func(*githubtest.Fake) error {
 			return err
 		}
 		tr := trusted{"owner": true, "owner2": true, app: true}
-		st := &daemon.Step{Applier: a, Trust: tr, Commands: map[string]daemon.Handler{"approve": daemon.ApproveCommand()},
+		ack := daemon.Handler{Apply: func(ctx context.Context, a *daemon.Applier, c daemon.Cmd) error { return a.Ack(ctx, c.Comment.ID) }}
+		st := &daemon.Step{Applier: a, Trust: tr, Commands: map[string]daemon.Handler{"approve": daemon.ApproveCommand(), "priority": ack},
 			Reactions: daemon.ApproveByReaction(tr)}
 		_, err = st.Run(context.Background(), s)
 		return err
 	}
 }
+
+// noted is body under the note MarkDirty writes for mallory's edit. Mallory
+// can write it herself, and then MarkDirty leaves the body alone.
+func noted(body string) string {
+	return "<!-- issuedog:dirty by=mallory -->\n> ⚠️ issuedog ignores this issue description: " +
+		"**mallory** edited it without approval.\n\n" + body
+}
+
+// dirtyReview is review with the body made dirty by mallory, under her own
+// note, and then, if owner is set, edited by the owner. Comment 1002 is
+// revision 2 of the body as it ends up, so its hash matches. Then it runs more.
+func dirtyReview(owner bool, more func(t testing.TB, f *githubtest.Fake)) func(testing.TB) *githubtest.Fake {
+	return review(func(t testing.TB, f *githubtest.Fake) {
+		body := noted("body")
+		f.EditBody(1, "mallory", body)
+		if owner {
+			body = noted("body, the owner's")
+			f.EditBody(1, "owner", body)
+		}
+		post(t, f, 1002, app, revision(2, body))
+		more(t, f)
+	})
+}
+
+const dirtyBody = "the issue description has an edit by mallory that wasn't approved, so I can't approve it"
 
 // approved is the comment approving revision 1 of "body" by key.
 func approved(by, key string) string {
@@ -167,6 +199,42 @@ func TestApprove(t *testing.T) {
 		{"an /approve with no revision is rejected",
 			at(state.SpecReview, func(t testing.TB, f *githubtest.Fake) { post(t, f, 1002, "owner", "/approve") }),
 			outcome{comments: []string{rejected("/approve", "there's no revision to approve yet", "1002")}, labels: atReview, downs: []string{"/approve"}}},
+		{"a 👍 approves nothing while the body is dirty, under a note mallory wrote herself",
+			dirtyReview(false, func(t testing.TB, f *githubtest.Fake) { f.AddReaction(1002, "owner", "+1") }),
+			outcome{labels: atReview}},
+		{"a 👍 approves nothing while the body is dirty, even after the owner edits it",
+			dirtyReview(true, func(t testing.TB, f *githubtest.Fake) { f.AddReaction(1002, "owner", "+1") }),
+			outcome{labels: atReview}},
+		{"an /approve while the body is dirty is rejected",
+			dirtyReview(false, func(t testing.TB, f *githubtest.Fake) { post(t, f, 1003, "owner", "/approve") }),
+			outcome{comments: []string{rejected("/approve", dirtyBody, "1003")}, labels: atReview, downs: []string{"/approve"}}},
+		{"an /approve while the body is dirty is rejected, even after the owner edits it",
+			dirtyReview(true, func(t testing.TB, f *githubtest.Fake) { post(t, f, 1003, "owner", "/approve") }),
+			outcome{comments: []string{rejected("/approve", dirtyBody, "1003")}, labels: atReview, downs: []string{"/approve"}}},
+		{"an /approve the table can't apply is rejected, and a later command is still processed",
+			review(func(t testing.TB, f *githubtest.Fake) {
+				f.SetParent(1, f.AddIssue("owner", "Epic", "epic"))
+				post(t, f, 1002, "owner", "/approve")
+				post(t, f, 1003, "owner", "/priority p1")
+			}),
+			outcome{comments: []string{rejected("/approve", "only an epic, or a story with no parent, goes from `spec-review` "+
+				"to `planning` on approval, and this is a story issue", "1002")},
+				labels: atReview, acks: []string{"/priority p1"}, downs: []string{"/approve"}}},
+		{"an /approve on an issue of an unknown type is rejected",
+			review(func(t testing.TB, f *githubtest.Fake) {
+				f.SetType(1, "Feature")
+				post(t, f, 1002, "owner", "/approve")
+			}),
+			outcome{comments: []string{rejected("/approve", "I can't tell what kind of issue this is: "+
+				"class of type \"feature\": unknown type", "1002")}, labels: atReview, downs: []string{"/approve"}}},
+		{"a 👍 the table can't apply is reported once, and doesn't fail the pass",
+			review(func(t testing.TB, f *githubtest.Fake) {
+				f.SetParent(1, f.AddIssue("owner", "Epic", "epic"))
+				f.AddReaction(1001, "owner", "+1")
+			}),
+			outcome{comments: []string{"I can't move this issue from `spec-review` to `planning` on spec-approved: " +
+				"the transition table (SPEC §7.2) has no such row for a story issue. It stays at `spec-review`.\n\n" +
+				"<!-- issuedog:error kind=transition key=r1002 -->"}, labels: atReview}},
 		{"an /approve at plan-review is rejected",
 			at(state.PlanReview, func(t testing.TB, f *githubtest.Fake) { post(t, f, 1002, "owner", "/approve") }),
 			outcome{comments: []string{rejected("/approve", "approving a plan isn't handled yet", "1002")},
@@ -230,6 +298,25 @@ func TestPostRevision(t *testing.T) {
 				f.EditBody(1, "owner", "body v2")
 			}),
 			daemon.Move{}, outcome{comments: []string{posted(2, "body v2", "", "")}, labels: atReview}},
+		{"none while the body is dirty",
+			review(func(t testing.TB, f *githubtest.Fake) { f.EditBody(1, "mallory", "body v2") }),
+			daemon.Move{}, outcome{labels: atReview}},
+		{"none while the body is dirty, even after the owner edits it",
+			review(func(t testing.TB, f *githubtest.Fake) {
+				f.EditBody(1, "mallory", "body v2")
+				f.EditBody(1, "owner", "body v3")
+			}),
+			daemon.Move{}, outcome{labels: atReview}},
+		{"with a move and a dirty body, the move happens with no revision",
+			review(func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, app, "<!-- issuedog:transition from=spec-review to=clarifying run=q -->")
+				f.AddLabel(1, app, "stage:clarifying")
+				f.RemoveLabel(1, app, "stage:spec-review")
+				f.EditBody(1, "mallory", "body v2")
+			}),
+			daemon.Move{To: state.SpecReview, Trigger: state.TriggerSpecWritten, Key: state.Key{Field: "run", ID: "s"}, Text: "Answered."},
+			outcome{comments: []string{"Answered.\n\nThere's no revision to approve: the issue description was edited without approval " +
+				"(see the note on it).\n\n<!-- issuedog:transition from=clarifying to=spec-review run=s -->"}, labels: atReview}},
 		{"with a move, in one comment, even when the hash is the same",
 			review(func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1002, app, "<!-- issuedog:transition from=spec-review to=clarifying run=q -->")
@@ -241,5 +328,47 @@ func TestPostRevision(t *testing.T) {
 				"<!-- issuedog:transition from=clarifying to=spec-review rev=2 body="+state.BodyHash("body")+" run=s -->")}, labels: atReview}},
 	} {
 		t.Run(tt.name, func(t *testing.T) { check(t, tt.setup, revisionPass(t, tt.m), tt.want) })
+	}
+}
+
+var errTrust = errors.New("trust is down")
+
+type failTrust struct{}
+
+func (failTrust) Trusted(context.Context, string) (bool, error) { return false, errTrust }
+
+// An error reading trust or the reactions fails the pass, wrapped, and
+// writes nothing.
+func TestApproveByReactionErrors(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		trust github.Trust
+		gone  bool // delete the revision comment after the snapshot
+		want  func(error) bool
+	}{
+		{"trust", failTrust{}, false, func(err error) bool {
+			return errors.Is(err, errTrust) && strings.HasPrefix(err.Error(), "approvals on o/r#1: trust owner: ")
+		}},
+		{"reactions", trusted{"owner": true}, true, func(err error) bool {
+			var e *gogithub.ErrorResponse
+			return errors.As(err, &e) && e.Response.StatusCode == http.StatusNotFound && strings.HasPrefix(err.Error(), "approvals on o/r#1: ")
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := review(func(t testing.TB, f *githubtest.Fake) { f.AddReaction(1001, "owner", "+1") })(t)
+			a, s, err := applier(t, f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.gone {
+				f.DeleteComment(1001)
+			}
+			if err := daemon.ApproveByReaction(tt.trust)(context.Background(), a, s, daemon.Dirt{}); !tt.want(err) {
+				t.Errorf("err = %v, want it wrapped", err)
+			}
+			if w := f.Writes(); len(w) != 0 {
+				t.Errorf("writes = %+v, want none", w)
+			}
+		})
 	}
 }
