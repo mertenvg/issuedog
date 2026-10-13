@@ -120,10 +120,12 @@ func (a *Applier) Dirty(ctx context.Context, s *github.Snapshot) (Dirt, error) {
 	return d, nil
 }
 
-// histories are the edit histories Dirty kept, by node.
+// histories are the edit histories Dirty kept, by node. Nothing is removed,
+// so it grows with the content the daemon has seen edited.
 type histories map[string]kept
 
-// kept is a history read for content with this last edit and body.
+// kept is a history read for content with this last edit and body. The key
+// leaves out the editor: any later edit changes lastEditedAt.
 type kept struct {
 	at    time.Time
 	body  string

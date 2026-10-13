@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
 	"path"
 	"slices"
 	"strconv"
@@ -90,6 +91,11 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		delete(d.snaps, n)
 		delete(d.inputs, n)
 		s, err := d.Step.Client.Snapshot(ctx, d.Step.Owner, d.Step.Repo, n)
+		if gone(err) {
+			logr.Infof("%s/%s#%d is gone, deleted or transferred, so it's dropped: %v", d.Step.Owner, d.Step.Repo, n, err)
+			delete(d.stale, n)
+			continue
+		}
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -202,8 +208,8 @@ func (d *Daemon) poll(ctx context.Context) error {
 }
 
 // changed reports whether the listed issue is newer than s, or s is nil.
-// GitHub's times are to the second, so at the same time it compares the body
-// and labels too.
+// GitHub's times are to the second, so at the same time it compares the
+// title, body, type, labels and, if listed, the parent too.
 func changed(s *github.Snapshot, is *gogithub.Issue) bool {
 	if s == nil {
 		return true
@@ -211,6 +217,12 @@ func changed(s *github.Snapshot, is *gogithub.Issue) bool {
 	at := is.GetUpdatedAt().Time
 	if !at.Equal(s.UpdatedAt) {
 		return at.After(s.UpdatedAt)
+	}
+	if is.GetTitle() != s.Title || github.TypeOf(is) != s.Type {
+		return true
+	}
+	if is.ParentIssueURL != nil && parentOf(is.GetParentIssueURL()) != s.Parent {
+		return true
 	}
 	var labels []string
 	for _, l := range is.Labels {
@@ -234,6 +246,27 @@ func commentChanged(s *github.Snapshot, c *gogithub.IssueComment) bool {
 	}
 	at, held := c.GetUpdatedAt().Time, s.Comments[i]
 	return at.After(held.UpdatedAt) || at.Equal(held.UpdatedAt) && c.GetBody() != held.Body
+}
+
+// parentOf is the number a parent_issue_url ends in, or 0 for none.
+func parentOf(u string) int {
+	n, err := strconv.Atoi(path.Base(u))
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// gone reports whether err, from Snapshot, says the issue was deleted (404
+// or 410) or transferred (a 301). A failed visit, which may 404 on a deleted
+// comment, marks the issue stale, so only Snapshot decides.
+func gone(err error) bool {
+	var e *gogithub.ErrorResponse
+	if errors.As(err, &e) && e.Response != nil {
+		return e.Response.StatusCode == http.StatusNotFound || e.Response.StatusCode == http.StatusGone
+	}
+	var r *gogithub.RedirectionError
+	return errors.Is(err, github.ErrTransferred) || errors.As(err, &r) && r.StatusCode == http.StatusMovedPermanently
 }
 
 func isSpecReview(label string) bool {

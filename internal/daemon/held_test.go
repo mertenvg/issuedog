@@ -1,0 +1,215 @@
+package daemon_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"reflect"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/mertenvg/issuedog/internal/daemon"
+	"github.com/mertenvg/issuedog/internal/github"
+	"github.com/mertenvg/issuedog/internal/github/githubtest"
+)
+
+// recordWork makes d's Work add the issues it gets, each pass, to the result.
+func recordWork(d *daemon.Daemon) *[][]int {
+	var passes [][]int
+	d.Work = func(_ context.Context, ready []daemon.Ready) error {
+		ns := []int{}
+		for _, r := range ready {
+			ns = append(ns, r.S.Number)
+		}
+		passes = append(passes, ns)
+		return nil
+	}
+	return &passes
+}
+
+// readsOf lists the requests after from whose path names issue n.
+func readsOf(f *githubtest.Fake, from, n int) []githubtest.Request {
+	prefix := fmt.Sprintf("/issues/%d", n)
+	return slices.DeleteFunc(f.Requests()[from:], func(r githubtest.Request) bool {
+		return r.Path != prefix && !strings.HasPrefix(r.Path, prefix+"/")
+	})
+}
+
+func TestIterateReadsChangedHeldIssues(t *testing.T) {
+	f := quiet(t)
+	d := newDaemon(t, f, newOrigin(t), nil)
+	iterate(t, d)
+	f.AddLabel(1, "mallory", "priority:p0")
+	f.EditBody(1, "mallory", "do it now")
+	iterate(t, d)
+	is := f.State().Issues[0]
+	if !reflect.DeepEqual(is.Labels, []string{"priority:p2", "stage:ready"}) {
+		t.Errorf("labels = %v, want mallory's priority:p0 reverted", is.Labels)
+	}
+	if !strings.HasPrefix(is.Body, "<!-- issuedog:dirty by=mallory -->") {
+		t.Errorf("body = %q, want the note on mallory's edit", is.Body)
+	}
+}
+
+func TestIterateDropsClosedIssues(t *testing.T) {
+	f := quiet(t)
+	f.AddComment(1, "owner", "/hold")
+	var visits []int
+	d := newDaemon(t, f, newOrigin(t), &visits)
+	d.Step.Commands["hold"] = daemon.Handler{Apply: func(context.Context, *daemon.Applier, daemon.Cmd) error {
+		return errors.New("boom")
+	}}
+	work := recordWork(d)
+	if err := d.Iterate(context.Background()); err == nil {
+		t.Fatal("Iterate = nil, want issue 1's step 1 error")
+	}
+	f.Close(1) // its step 1 failed, so it's stale
+	f.Close(2) // at spec-review, so it's visited
+	visits = nil
+	from := len(f.Requests())
+	iterate(t, d)
+	if len(visits) != 0 || !reflect.DeepEqual(*work, [][]int{{2}, {}}) {
+		t.Errorf("after the closes, step 1 ran on %v and Work got %v; want neither issue", visits, (*work)[1])
+	}
+	if r := readsOf(f, from, 1); len(r) != 0 {
+		t.Errorf("read closed issue 1 again: %+v", r)
+	}
+}
+
+func TestIterateIgnoresCommentsOnUntrackedIssues(t *testing.T) {
+	f := quiet(t)
+	d := newDaemon(t, f, newOrigin(t), nil)
+	iterate(t, d)
+	f.AddComment(3, "owner", "on the pull request")
+	f.AddComment(4, "owner", "on the closed issue")
+	from := len(f.Requests())
+	iterate(t, d)
+	if r := append(readsOf(f, from, 3), readsOf(f, from, 4)...); len(r) != 0 {
+		t.Errorf("read the pull request or the closed issue: %+v", r)
+	}
+}
+
+func TestIterateSkipsIssuesWhoseReadOrVisitFails(t *testing.T) {
+	f := quiet(t)
+	var visits []int
+	d := newDaemon(t, f, newOrigin(t), &visits)
+	work := recordWork(d)
+	iterate(t, d)
+
+	// Issue 2's read fails: its old snapshot isn't visited or given to Work.
+	f.AddComment(2, "owner", "a comment")
+	f.FailGraphQL("boom")
+	visits = nil
+	if err := d.Iterate(context.Background()); err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Errorf("Iterate = %v, want issue 2's read error", err)
+	}
+	if len(visits) != 0 || !reflect.DeepEqual((*work)[1], []int{1}) {
+		t.Errorf("with issue 2's read failing, step 1 ran on %v and Work got %v; want neither on issue 2", visits, (*work)[1])
+	}
+	iterate(t, d)
+
+	// Issue 2's visit fails, without a read: it isn't given to Work.
+	d.Step.Reactions = func(context.Context, *daemon.Applier, *github.Snapshot, daemon.Dirt) error { return errors.New("bang") }
+	if err := d.Iterate(context.Background()); err == nil || !strings.Contains(err.Error(), "bang") {
+		t.Errorf("Iterate = %v, want issue 2's visit error", err)
+	}
+	if got := *work; !reflect.DeepEqual(got[2:], [][]int{{1, 2}, {1}}) {
+		t.Errorf("Work got %v, then %v; want [1 2] once issue 2 is read, then [1] when its visit fails", got[2], got[3])
+	}
+}
+
+func TestIterateDropsDeletedIssues(t *testing.T) {
+	f := newFake(t)
+	fileAt(f, "ready", "a")
+	fileAt(f, "spec-review", "b")
+	d := newDaemon(t, f, newOrigin(t), nil)
+	work := recordWork(d)
+	iterate(t, d)
+	f.DeleteIssue()
+	if err := d.Iterate(context.Background()); err == nil {
+		t.Error("Iterate = nil, want the visit to deleted issue 2 to fail")
+	}
+	iterate(t, d) // its read gets a 404, and it's dropped
+	from := len(f.Requests())
+	iterate(t, d)
+	if r := readsOf(f, from, 2); len(r) != 0 {
+		t.Errorf("read deleted issue 2 again: %+v", r)
+	}
+	if !reflect.DeepEqual(*work, [][]int{{1, 2}, {1}, {1}, {1}}) {
+		t.Errorf("Work got %v, want issue 2 only before it was deleted", *work)
+	}
+}
+
+// A comment edited while the comment poll pages moves to the front of a
+// newest-first list, so a later page repeats a comment and skips none.
+func TestIteratePollSkipsNoComment(t *testing.T) {
+	f := newFake(t)
+	fileAt(f, "ready", "a")
+	var many []int64
+	for i := range 100 {
+		many = append(many, f.AddComment(1, "owner", fmt.Sprint("comment ", i)))
+	}
+	fileAt(f, "ready", "b", "priority:p2")
+	cmd := f.AddComment(2, "owner", "hello")
+	d := newDaemon(t, f, newOrigin(t), nil)
+	iterate(t, d)
+
+	for _, id := range many {
+		f.EditComment(id, "owner", "edited")
+	}
+	f.EditComment(cmd, "owner", "/priority p1") // edits change no issue's updated_at
+	f.BeforeRequest(func(r githubtest.Request) bool {
+		return r.Path == "/issues/comments" && strings.Contains(r.Query, "page=2")
+	}, func() { f.EditComment(many[0], "owner", "edited again") })
+	iterate(t, d)
+	if got := f.State().Issues[1].Labels; !reflect.DeepEqual(got, []string{"priority:p1", "stage:ready"}) {
+		t.Errorf("issue 2's labels = %v, want /priority p1 applied", got)
+	}
+}
+
+// The Dirty cache is keyed on lastEditedAt as well as the body, so an edit
+// that restores the body is read: here mallory's, behind owner's.
+func TestDirtyCacheMissesARestoredBody(t *testing.T) {
+	f := newFake(t)
+	f.AddIssue("owner", "Issue", "body")
+	id := f.AddComment(1, "owner", "x")
+	f.EditComment(id, "owner", "y")
+	a, s, err := applier(t, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d, err := a.Dirty(context.Background(), s); err != nil || d.Has(id) {
+		t.Fatalf("Dirty = %v, %v; want the owner's own edit clean", d, err)
+	}
+	f.EditComment(id, "mallory", "z")
+	f.EditComment(id, "owner", "y")
+	s, err = a.Client.Snapshot(context.Background(), "o", "r", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d, err := a.Dirty(context.Background(), s); err != nil || d[id] != "mallory" {
+		t.Errorf("Dirty = %v, %v; want comment %d dirty by mallory", d, err, id)
+	}
+}
+
+// A history that fails closed isn't kept, so it's read again once GitHub
+// has caught up.
+func TestDirtyCacheSkipsAShortHistory(t *testing.T) {
+	f := newFake(t)
+	f.AddIssue("owner", "Issue", "body")
+	id := f.AddComment(1, "owner", "x")
+	f.EditComment(id, "owner", "y")
+	f.HistoryCap(1) // the original post only, short of the edit
+	a, s, err := applier(t, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d, err := a.Dirty(context.Background(), s); err != nil || !d.Has(id) {
+		t.Fatalf("Dirty = %v, %v; want comment %d dirty while its history is short", d, err, id)
+	}
+	f.HistoryCap(100)
+	if d, err := a.Dirty(context.Background(), s); err != nil || d.Has(id) {
+		t.Errorf("Dirty = %v, %v; want comment %d clean once its history shows the edit", d, err, id)
+	}
+}

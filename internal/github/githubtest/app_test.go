@@ -2,6 +2,7 @@ package githubtest
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"reflect"
 	"slices"
@@ -28,6 +29,21 @@ func TestAppSlug(t *testing.T) {
 	// The fake answers GET /app only with the App's JWT, not a token.
 	if r := f.Requests(); len(r) != 1 || r[0].Path != "/app" || r[0].Status != http.StatusOK {
 		t.Errorf("requests = %+v, want one GET /app answered 200", r)
+	}
+}
+
+func TestSnapshotOfTransferredIssue(t *testing.T) {
+	f := New(t, "o/r", "issuedog")
+	f.AddIssue("owner", "Moved", "")
+	f.AddIssue("owner", "Here", "")
+	f.Transfer(1, "o/elsewhere")
+	f.Transfer(2, "O/R") // its own repo, in another case
+	c := f.Client(t)
+	if _, err := c.Snapshot(context.Background(), "o", "r", 1); !errors.Is(err, github.ErrTransferred) {
+		t.Errorf("Snapshot of a transferred issue: %v, want ErrTransferred", err)
+	}
+	if _, err := c.Snapshot(context.Background(), "o", "r", 2); err != nil {
+		t.Errorf("Snapshot of an issue in its repo: %v", err)
 	}
 }
 

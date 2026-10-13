@@ -58,9 +58,10 @@ type Fake struct {
 	historyCap  int      // see HistoryCap
 
 	// The App, permission and repo label endpoints, and the request log (app.go).
-	perms    map[string]string
-	labels   []*gogithub.Label
-	requests []Request
+	perms     map[string]string
+	labels    []*gogithub.Label
+	requests  []Request
+	beforeReq func(Request) func() // see BeforeRequest
 }
 
 // discard swallows a reply, for a write that takes effect but answers 500.
@@ -453,7 +454,7 @@ func (f *Fake) getParent(c *call) (int, any) {
 }
 
 // listComments serves one issue's comments oldest first, or the repo's,
-// sorted by update for sort=updated, from since= on.
+// sorted by update in direction= for sort=updated, from since= on.
 func (f *Fake) listComments(c *call) (int, any) {
 	var from time.Time
 	if s := c.r.URL.Query().Get("since"); s != "" {
@@ -467,6 +468,9 @@ func (f *Fake) listComments(c *call) (int, any) {
 	})
 	if c.issue == nil && c.r.URL.Query().Get("sort") == "updated" {
 		slices.SortStableFunc(list, func(a, b *comment) int { return a.GetUpdatedAt().Compare(b.GetUpdatedAt().Time) })
+		if c.r.URL.Query().Get("direction") != "asc" {
+			slices.Reverse(list)
+		}
 	}
 	out := []gogithub.IssueComment{}
 	for _, cm := range list {

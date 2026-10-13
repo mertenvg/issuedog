@@ -63,6 +63,37 @@ func (f *Fake) Close(number int) {
 	f.edit(number, func(is *issue) { is.State, is.UpdatedAt = new("closed"), f.tick() })
 }
 
+// DeleteIssue deletes the newest issue and its comments, after which its
+// paths answer 404. Issues are kept by number, so only the newest can go.
+func (f *Fake) DeleteIssue() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := len(f.issues)
+	f.issues = f.issues[:n-1]
+	f.comments = slices.DeleteFunc(f.comments, func(c *comment) bool { return c.issue == n })
+}
+
+// Transfer gives an issue the repository URL of repo ("owner/name"), as a
+// read of an issue transferred there does once its 301 is followed.
+func (f *Fake) Transfer(number int, repo string) {
+	f.edit(number, func(is *issue) { is.RepositoryURL = new(f.srv.URL + "/repos/" + repo) })
+}
+
+// BeforeRequest runs do, once, just before the fake answers the next request
+// that match accepts (only its Method, Path and Query are set), as when
+// something changes while a list pages. do may call the fake's methods.
+func (f *Fake) BeforeRequest(match func(Request) bool, do func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.beforeReq = func(r Request) func() {
+		if !match(r) {
+			return nil
+		}
+		f.beforeReq = nil
+		return do
+	}
+}
+
 // handleApp registers GET /app, the issue list, the repo labels and the
 // permission endpoint.
 func (f *Fake) handleApp() {
@@ -84,12 +115,22 @@ func (f *Fake) handleApp() {
 // logged adds each request to the log once it's answered.
 func (f *Fake) logged(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req := Request{Method: r.Method, Path: strings.TrimPrefix(r.URL.Path, "/repos/"+f.repo), Query: r.URL.RawQuery}
+		f.mu.Lock()
+		var do func()
+		if f.beforeReq != nil {
+			do = f.beforeReq(req)
+		}
+		f.mu.Unlock()
+		if do != nil {
+			do()
+		}
 		rec := &recorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
+		req.Status, req.Conditional = rec.status, r.Header.Get("If-None-Match") != ""
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		f.requests = append(f.requests, Request{Method: r.Method, Path: strings.TrimPrefix(r.URL.Path, "/repos/"+f.repo),
-			Query: r.URL.RawQuery, Status: rec.status, Conditional: r.Header.Get("If-None-Match") != ""})
+		f.requests = append(f.requests, req)
 	})
 }
 

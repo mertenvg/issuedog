@@ -55,6 +55,10 @@ type Reaction struct {
 // ErrPullRequest is wrapped by Snapshot's error for a pull request.
 var ErrPullRequest = errors.New("a pull request, not an issue")
 
+// ErrTransferred is wrapped by Snapshot's error for an issue moved to
+// another repo.
+var ErrTransferred = errors.New("transferred")
+
 // Snapshot reads one issue, not a pull request: its title, author, labels,
 // type and parent from REST, then its body and every comment, each with who
 // last edited it, from GraphQL.
@@ -66,17 +70,19 @@ func (c *Client) Snapshot(ctx context.Context, owner, repo string, number int) (
 	if issue.IsPullRequest() {
 		return nil, fmt.Errorf("snapshot of %s/%s#%d: %w", owner, repo, number, ErrPullRequest)
 	}
+	// GitHub answers for a transferred issue with a 301, which the client
+	// follows to the issue's new repo.
+	if u := issue.GetRepositoryURL(); u != "" && !strings.HasSuffix(strings.ToLower(u), strings.ToLower("/repos/"+owner+"/"+repo)) {
+		return nil, fmt.Errorf("snapshot of %s/%s#%d: %w to %s", owner, repo, number, ErrTransferred, u)
+	}
 	s := &Snapshot{
 		Number: issue.GetNumber(), Title: issue.GetTitle(),
 		Author:    authorOf(issue.GetUser()),
 		CreatedAt: issue.GetCreatedAt().Time, UpdatedAt: issue.GetUpdatedAt().Time,
-		Type: strings.ToLower(issue.GetType().GetName()),
+		Type: TypeOf(issue),
 	}
 	for _, l := range issue.Labels {
 		s.Labels = append(s.Labels, l.GetName())
-		if name, ok := strings.CutPrefix(strings.ToLower(l.GetName()), "type:"); ok && s.Type == "" {
-			s.Type = name
-		}
 	}
 	parent, resp, err := c.SubIssue.GetParentIssue(ctx, owner, repo, int64(number))
 	switch {
@@ -91,6 +97,19 @@ func (c *Client) Snapshot(ctx context.Context, owner, repo string, number int) (
 		return nil, fmt.Errorf("snapshot of %s/%s#%d: %w", owner, repo, number, err)
 	}
 	return s, nil
+}
+
+// TypeOf is Snapshot.Type for an issue as REST gives it.
+func TypeOf(issue *gogithub.Issue) string {
+	if t := issue.GetType().GetName(); t != "" {
+		return strings.ToLower(t)
+	}
+	for _, l := range issue.Labels {
+		if name, ok := strings.CutPrefix(strings.ToLower(l.GetName()), "type:"); ok {
+			return name
+		}
+	}
+	return ""
 }
 
 // Reactions lists the reactions to one issue comment, oldest first. It hides

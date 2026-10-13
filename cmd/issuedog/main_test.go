@@ -12,6 +12,10 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -300,47 +304,105 @@ func TestRunStartupFailures(t *testing.T) {
 	without := func(key string) []string {
 		return slices.DeleteFunc(slices.Clone(daemonEnv), func(kv string) bool { return strings.HasPrefix(kv, key+"=") })
 	}
+	with := func(kv string) []string {
+		k, _, _ := strings.Cut(kv, "=")
+		return append(without(k), kv)
+	}
+	// A trust that can't load: CODEOWNERS on main is a directory.
+	badTrust := func(t *testing.T) map[string]string {
+		files := thisRepo(t)
+		delete(files, ".github/CODEOWNERS")
+		files[".github/CODEOWNERS/README"] = "not a file\n"
+		return files
+	}
 	for name, tt := range map[string]struct {
 		environ   []string
-		setup     func(t *testing.T) // after fakeGitHub
-		files     map[string]string  // main's, else this repo's
-		failWrite int                // the write to fail
+		files     func(t *testing.T) map[string]string // main's, else this repo's
+		setup     func(t *testing.T, f *githubtest.Fake)
+		failWrite int // the write to fail
+		code      int
 		want      string
 	}{
-		"no repo":            {environ: without("ISSUEDOG_REPO"), want: `reading the settings: ISSUEDOG_REPO is "", not owner/name`},
-		"bad repo":           {environ: append(without("ISSUEDOG_REPO"), "ISSUEDOG_REPO=mertenvg"), want: `ISSUEDOG_REPO is "mertenvg", not owner/name`},
-		"bad app ID":         {environ: append(without("ISSUEDOG_APP_ID"), "ISSUEDOG_APP_ID=abc"), want: `reading the settings: ISSUEDOG_APP_ID is "abc", not a positive number`},
-		"no installation ID": {environ: without("ISSUEDOG_INSTALLATION_ID"), want: `ISSUEDOG_INSTALLATION_ID is "", not a positive number`},
-		"clone": {setup: func(t *testing.T) {
+		"no repo":         {environ: without("ISSUEDOG_REPO"), code: 1, want: `reading the settings: ISSUEDOG_REPO is "", not owner/name`},
+		"repo of 1 part":  {environ: with("ISSUEDOG_REPO=mertenvg"), code: 1, want: `ISSUEDOG_REPO is "mertenvg", not owner/name`},
+		"repo of 3 parts": {environ: with("ISSUEDOG_REPO=mertenvg/issuedog/x"), code: 1, want: `ISSUEDOG_REPO is "mertenvg/issuedog/x", not owner/name`},
+		"bad app ID":      {environ: with("ISSUEDOG_APP_ID=abc"), code: 1, want: `reading the settings: ISSUEDOG_APP_ID is "abc", not a positive number`},
+		"app ID 0":        {environ: with("ISSUEDOG_APP_ID=0"), code: 1, want: `ISSUEDOG_APP_ID is "0", not a positive number`},
+		"no installation": {environ: without("ISSUEDOG_INSTALLATION_ID"), code: 1, want: `ISSUEDOG_INSTALLATION_ID is "", not a positive number`},
+		"slug": {setup: func(t *testing.T, _ *githubtest.Fake) {
+			dead := httptest.NewServer(http.NotFoundHandler())
+			dead.Close()
+			apiURL = dead.URL
+		}, code: 1, want: "starting the daemon: reading the App's slug: github app: "},
+		"token": {setup: func(t *testing.T, f *githubtest.Fake) {
+			target, err := url.Parse(f.URL())
+			if err != nil {
+				t.Fatal(err)
+			}
+			front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/access_tokens") {
+					http.Error(w, `{"message":"boom"}`, http.StatusInternalServerError)
+					return
+				}
+				httputil.NewSingleHostReverseProxy(target).ServeHTTP(w, r)
+			}))
+			t.Cleanup(front.Close)
+			apiURL = front.URL
+		}, code: 1, want: "starting the daemon: minting a token: github installation token: "},
+		"clone": {setup: func(t *testing.T, _ *githubtest.Fake) {
 			gitRemote = func(string, string) string { return filepath.Join(t.TempDir(), "none.git") }
-		},
-			want: "starting the daemon: syncing the clone: fetch "},
-		"config": {files: map[string]string{}, want: "starting the daemon: loading the config from main: load config: read main:.issuedog/config.yaml: not found"},
-		"labels": {failWrite: 1, want: "starting the daemon: creating the labels: create label stage:intake"},
+		}, code: 1, want: "starting the daemon: syncing the clone: fetch "},
+		"config": {files: func(*testing.T) map[string]string { return map[string]string{} }, code: 1,
+			want: "starting the daemon: loading the config from main: load config: read main:.issuedog/config.yaml: not found"},
+		"trust":  {files: badTrust, code: 1, want: "starting the daemon: loading trust from main: load trust for mertenvg/issuedog: find CODEOWNERS: "},
+		"labels": {failWrite: 1, code: 1, want: "starting the daemon: creating the labels: create label stage:intake"},
+		"signal": {setup: func(t *testing.T, _ *githubtest.Fake) {
+			cancel, _ := cancelOnCall(t)
+			cancel()
+		}, code: 0, want: "stopping on a signal during startup: "},
 	} {
 		t.Run(name, func(t *testing.T) {
-			files := tt.files
-			if files == nil {
-				files = thisRepo(t)
+			files := thisRepo
+			if tt.files != nil {
+				files = tt.files
 			}
-			f := fakeGitHub(t, files)
+			f := fakeGitHub(t, files(t))
 			f.FailWrite(tt.failWrite)
 			if tt.setup != nil {
-				tt.setup(t)
+				tt.setup(t, f)
 			}
 			calls := fakeEgress(t, nil, nil)
 			environ := tt.environ
 			if environ == nil {
 				environ = daemonEnv
 			}
-			code, logs := runLogged(t, nil, environ)
-			if code != 1 || !strings.Contains(logs, tt.want) {
-				t.Errorf("exit code %d, logs %q; want 1 and %q", code, logs, tt.want)
+			code, logs := runBounded(t, environ)
+			if code != tt.code || !strings.Contains(logs, tt.want) {
+				t.Errorf("exit code %d, logs %q; want %d and %q", code, logs, tt.code, tt.want)
 			}
 			if len(*calls) != 0 {
 				t.Errorf("startup steps = %q, want none of egress", *calls)
 			}
 		})
+	}
+}
+
+// runBounded is runLogged, failing t if run hasn't returned in 20s, as when
+// startup goes on into the loop.
+func runBounded(t *testing.T, environ []string) (int, string) {
+	t.Helper()
+	var logs bytes.Buffer
+	stop := logr.AddWriter(&logs)
+	defer stop()
+	done := make(chan int, 1)
+	go func() { done <- run(nil, environ, nil, io.Discard) }()
+	select {
+	case code := <-done:
+		logr.Wait()
+		return code, logs.String()
+	case <-time.After(20 * time.Second):
+		t.Fatal("run didn't return; want startup to stop")
+		return 0, ""
 	}
 }
 

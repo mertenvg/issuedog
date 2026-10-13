@@ -91,6 +91,10 @@ func run(args, environ []string, stdin io.Reader, stdout io.Writer) int {
 	ctx, stop := notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	d, err := startDaemon(ctx, set, key)
+	if err != nil && ctx.Err() != nil {
+		logr.Infof("stopping on a signal during startup: %v", err)
+		return 0
+	}
 	if err != nil {
 		logr.Errorf("starting the daemon: %v", err)
 		return 1

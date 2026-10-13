@@ -344,16 +344,22 @@ func TestIterateKeepsLastGoodConfig(t *testing.T) {
 
 	o.commit(config.Path, "types: labels\nloop:\n  idle_sleep: 0s\n")
 	iterate(t, d)
+	trusted := d.Step.Trust
+	// CODEOWNERS on main becomes a directory, which trust can't load.
+	gitIn(t, o.work, "rm", "--quiet", ".github/CODEOWNERS")
+	o.commit(".github/CODEOWNERS/README", "not a file\n")
+	iterate(t, d)
 	if err := os.RemoveAll(o.url); err != nil {
 		t.Fatal(err)
 	}
 	iterate(t, d)
 	logr.Wait()
-	if d.Config != good {
-		t.Errorf("config = %+v, want the last good one kept", d.Config)
+	if d.Config != good || d.Step.Trust != trusted {
+		t.Errorf("config = %+v, trust %v; want the last good ones kept", d.Config, d.Step.Trust)
 	}
 	for _, want := range []string{
 		"loading the config of o/r from main failed, so the last good one stays: ", "loop.idle_sleep: must be positive",
+		"loading the trust of o/r from main failed, so the last good one stays: ",
 		"syncing the clone of o/r failed, so the last good config and trust stay: ",
 	} {
 		if !strings.Contains(logs.String(), want) {
