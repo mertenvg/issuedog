@@ -44,6 +44,28 @@ type Issue struct {
 	// Item is what Derive knows of the class. Human is never set: no marker
 	// records it yet.
 	Item Item
+	// Round is the latest transition's RoundBound: comments with a higher
+	// ID are this round's input. 0 if there is no transition.
+	Round int64
+}
+
+// FieldSeen is the marker field that ends an interviewer run: seen=<the
+// newest comment ID the run was given> (plan #5, amended assumption 5).
+const FieldSeen = "seen"
+
+// RoundBound returns the bound on input that marker m, in comment id, sets:
+// comments with a higher ID are the next round's. A transition sets it, to
+// its seen if it has one, or else to id, so on entering a stage only later
+// comments count. Comment IDs only increase, so a comment posted during a
+// run is above its seen. Other markers set none.
+func RoundBound(m github.Marker, id int64) (int64, bool) {
+	if to := Stage(m.Fields["to"]); m.Kind != "transition" || (!to.Open() && to != Closed) {
+		return 0, false
+	}
+	if seen, err := strconv.ParseInt(m.Fields[FieldSeen], 10, 64); err == nil && seen > 0 {
+		return seen, true
+	}
+	return id, true
 }
 
 // ErrorKey names a state error: its kind and key (SPEC §5.3).
@@ -78,6 +100,9 @@ func Derive(s *github.Snapshot, appSlug string, dirty func(id int64) bool) Issue
 		}
 		for _, m := range github.TrustedMarkers(author, body, appSlug) {
 			is.Markers = append(is.Markers, m)
+			if b, ok := RoundBound(m, id); ok {
+				is.Round = b
+			}
 			if m.Kind == "origin" && id == BodyID && m.Fields["plan"] != "" {
 				is.Item.FromPlan = true
 			}
