@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -133,6 +134,97 @@ func TestMintFailureSurfaces(t *testing.T) {
 	}
 	if _, err := c.Token(context.Background()); err == nil || !strings.Contains(err.Error(), "github installation token") {
 		t.Errorf("Token() err = %v, want an annotated minting error", err)
+	}
+}
+
+// A transferred issue's 301 stays on the API host and is followed. A
+// redirect elsewhere isn't, so the token never leaves the host.
+func TestRedirectsStayOnHost(t *testing.T) {
+	var elsewhere []string // Authorization headers another host saw
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		elsewhere = append(elsewhere, r.Header.Get("Authorization"))
+		_, _ = w.Write([]byte(`{"number":1}`))
+	}))
+	t.Cleanup(other.Close)
+	f := &fakeGitHub{ttl: time.Hour}
+	c := newClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/o/r/issues/1", "/app":
+			http.Redirect(w, r, other.URL+r.URL.Path, http.StatusMovedPermanently)
+		case "/repos/o/r/issues/2":
+			http.Redirect(w, r, "/repos/o/moved/issues/9", http.StatusMovedPermanently)
+		case "/repos/o/r/issues/3": // the same host, but not TLS
+			http.Redirect(w, r, "https://"+r.Host+r.URL.Path, http.StatusMovedPermanently)
+		case "/repos/o/r/issues/4": // a loop
+			http.Redirect(w, r, r.URL.Path, http.StatusMovedPermanently)
+		case "/repos/o/moved/issues/9":
+			_, _ = w.Write([]byte(`{"number":9}`))
+		default:
+			f.ServeHTTP(w, r)
+		}
+	}))
+	if _, _, err := c.Issues.Get(context.Background(), "o", "r", 1); !errors.Is(err, ErrCrossHostRedirect) {
+		t.Errorf("Get of an issue redirected to another host: %v, want ErrCrossHostRedirect", err)
+	}
+	if _, _, err := c.Issues.Get(context.Background(), "o", "r", 3); !errors.Is(err, ErrCrossHostRedirect) {
+		t.Errorf("Get of an issue redirected to another scheme: %v, want ErrCrossHostRedirect", err)
+	}
+	if _, _, err := c.Issues.Get(context.Background(), "o", "r", 4); err == nil || !strings.Contains(err.Error(), "stopped after 10 redirects") {
+		t.Errorf("Get of an issue in a redirect loop: %v, want it stopped after 10", err)
+	}
+	if _, err := c.AppSlug(context.Background()); !errors.Is(err, ErrCrossHostRedirect) {
+		t.Errorf("AppSlug redirected to another host: %v, want ErrCrossHostRedirect", err)
+	}
+	if len(elsewhere) != 0 {
+		t.Errorf("the other host got %d requests, with Authorization %q; want none", len(elsewhere), elsewhere)
+	}
+	if is, _, err := c.Issues.Get(context.Background(), "o", "r", 2); err != nil || is.GetNumber() != 9 {
+		t.Errorf("Get of a transferred issue = %v, %v; want #9 in its new repo", is, err)
+	}
+	// Host names match in any case. The server is reached as localhost, so
+	// its host has letters, and redirects to LOCALHOST.
+	named := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/o/r/issues/5":
+			http.Redirect(w, r, "http://"+strings.ToUpper(r.Host)+"/repos/o/moved/issues/9", http.StatusMovedPermanently)
+		case "/repos/o/moved/issues/9":
+			_, _ = w.Write([]byte(`{"number":9}`))
+		default:
+			f.ServeHTTP(w, r)
+		}
+	}))
+	t.Cleanup(named.Close)
+	nc, err := New(Config{AppID: 7, InstallationID: 42, Key: testKey(t), BaseURL: strings.Replace(named.URL, "127.0.0.1", "localhost", 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if is, _, err := nc.Issues.Get(context.Background(), "o", "r", 5); err != nil || is.GetNumber() != 9 {
+		t.Errorf("Get of an issue redirected to its host in upper case = %v, %v; want #9", is, err)
+	}
+	// Minting, with the App's JWT, follows no redirect at all.
+	mint := newClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+r.URL.Path, http.StatusFound)
+	}))
+	if _, err := mint.Token(context.Background()); err == nil {
+		t.Error("Token with its mint redirected to another host succeeded, want an error")
+	}
+	if len(elsewhere) != 0 {
+		t.Errorf("the other host got the mint, with Authorization %q; want none", elsewhere)
+	}
+}
+
+func TestAppSlugFailures(t *testing.T) {
+	for reply, want := range map[string]string{`{"id":7}`: "GET /app gave no slug", "": "github app: "} {
+		c := newClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if reply == "" || r.URL.Path != "/app" {
+				http.Error(w, `{"message":"boom"}`, http.StatusInternalServerError)
+				return
+			}
+			_, _ = w.Write([]byte(reply))
+		}))
+		if slug, err := c.AppSlug(context.Background()); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("reply %q: AppSlug = %q, %v; want an error with %q", reply, slug, err, want)
+		}
 	}
 }
 

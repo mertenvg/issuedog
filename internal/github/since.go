@@ -26,10 +26,13 @@ func (c *Client) IssuesSince(ctx context.Context, owner, repo string, since time
 	return issues, nil
 }
 
-// CommentsSince lists comments updated since then on one issue, or all if number is 0.
+// CommentsSince lists comments updated since then on one issue, or all if
+// number is 0, the newest first. The list pages by number, and a comment
+// edited while it pages moves to the front, so a later page repeats a
+// comment rather than skipping one, as oldest first would.
 func (c *Client) CommentsSince(ctx context.Context, owner, repo string, number int, since time.Time) ([]*gogithub.IssueComment, error) {
 	opts := &gogithub.IssueListCommentsOptions{
-		Sort: new("updated"), Direction: new("asc"), Since: &since,
+		Sort: new("updated"), Direction: new("desc"), Since: &since,
 		ListOptions: gogithub.ListOptions{PerPage: 100},
 	}
 	comments, err := collect(c.Issues.ListCommentsIter(ctx, owner, repo, number, opts))
