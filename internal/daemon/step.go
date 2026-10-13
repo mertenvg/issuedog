@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -146,15 +145,18 @@ func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github
 // words the reason again through checks that don't write, so after a crash
 // the reply is the same, or else says it was lost. It never applies c.
 func (st *Step) reword(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment, cmd state.Command, ok bool, stage state.Stage) error {
-	reason := lost
+	r := Rejection{Reason: lost}
 	if ok {
 		why, _, err := st.why(ctx, s, d, c, cmd, stage)
 		if err != nil {
 			return fmt.Errorf("reword: %w", err)
 		}
-		reason = cmp.Or(why, lost)
+		if why.Reason != "" {
+			r = why
+		}
 	}
-	return st.rejected(ctx, s, c, reason)
+	_, parsed := state.ParseCommand(c.Body)
+	return st.rejected(ctx, s, c, r, ok && !parsed)
 }
 
 const editedText = "This was edited after I acted on it, so I've ignored the edit. Post a new comment instead."

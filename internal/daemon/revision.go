@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -23,7 +24,10 @@ import (
 //     nothing changed (SPEC §7.4), and the earlier revision's 👍s mustn't
 //     approve it. Once the move's marker exists, Transition only finishes it.
 //   - With no m.To, it posts the revision on its own, unless the latest
-//     revision has the body's hash already and isn't Hidden.
+//     revision has the body's hash already and isn't Hidden. Its marker
+//     gets seen (newestRead), so a comment posted after s was read can
+//     still be a revision request on it (requested). With a move, the
+//     transition's seen, if the move has one, does that.
 //
 // A dirty body (#91) gets no revision, since nothing may approve it. A move
 // still happens, saying why there's no revision, so the issue doesn't wait
@@ -59,6 +63,10 @@ func (a *Applier) PostRevision(ctx context.Context, s *github.Snapshot, dirty fu
 		m.Fields["rev"], m.Fields["body"] = rev, hash
 		m.Text, m.Markers = text, append(m.Markers[:len(m.Markers):len(m.Markers)], marker)
 		return a.Transition(ctx, s, dirty, m)
+	}
+	floor := max(latest.Comment, state.Derive(s, a.AppSlug, dirty).Round)
+	if seen := newestRead(s, a.AppSlug, floor); seen > 0 {
+		marker.Fields[state.FieldSeen] = strconv.FormatInt(seen, 10)
 	}
 	f, err := github.FormatMarker(marker)
 	if err != nil {
@@ -160,7 +168,11 @@ func ApproveByReaction(trust github.Trust) func(ctx context.Context, a *Applier,
 
 // approve moves s from spec-review to planning on key, approving the latest
 // revision, if the body isn't dirty and still has its hash, and the revision
-// isn't Hidden. by says whose approval it is. A comment's key is also seen.
+// isn't Hidden. by says whose approval it is. Its seen is a comment key's
+// ID, else, for a 👍, the newest comment read (newestRead), so a comment
+// posted after s was read is planning's input. That swallows no revision
+// request: Step handled every comment in s first, and one it rejected for
+// the table or the type would make the approval fail the same way.
 func (a *Applier) approve(ctx context.Context, s *github.Snapshot, d Dirt, key state.Key, by string) error {
 	if d.Has(state.BodyID) {
 		logr.Debugf("%s/%s#%d: not approving by %s: the body has an edit by %s that wasn't approved", a.Owner, a.Repo, s.Number, by, d[state.BodyID])
@@ -178,8 +190,9 @@ func (a *Applier) approve(ctx context.Context, s *github.Snapshot, d Dirt, key s
 	m := Move{To: state.Planning, Trigger: state.TriggerSpecApproved, Key: key,
 		Fields: map[string]string{"rev": strconv.Itoa(latest.Rev), "body": latest.Hash},
 		Text:   fmt.Sprintf("Revision %d of the spec is approved, by %s.", latest.Rev, by)}
-	if _, ok := key.Comment(); ok {
-		m.Fields[state.FieldSeen] = key.ID
+	m.Fields[state.FieldSeen] = key.ID
+	if _, ok := key.Comment(); !ok {
+		m.Fields[state.FieldSeen] = strconv.FormatInt(newestRead(s, a.AppSlug, latest.Comment), 10)
 	}
 	if err := a.Transition(ctx, s, d.Has, m); err != nil {
 		return fmt.Errorf("approve: %w", err)
@@ -187,15 +200,15 @@ func (a *Applier) approve(ctx context.Context, s *github.Snapshot, d Dirt, key s
 	return nil
 }
 
-// inTable returns a Rejection unless the table moves an issue like is to
-// stage to on trigger (SPEC §7.2). on says when, for the reason.
+// inTable returns a Final Rejection unless the table moves an issue like is
+// to stage to on trigger (SPEC §7.2). on says when, for the reason.
 func inTable(is state.Issue, to state.Stage, trigger state.Trigger, on string) error {
 	class, err := state.ClassOf(is.Item)
 	if err != nil {
-		return Rejection{Reason: fmt.Sprintf("I can't tell what kind of issue this is: %v", err)}
+		return Rejection{Reason: fmt.Sprintf("I can't tell what kind of issue this is: %v", err), Final: true}
 	}
 	if _, err := state.Lookup(is.Stage, to, class, trigger); errors.Is(err, state.ErrNoTransition) {
-		return Rejection{Reason: fmt.Sprintf("only an epic, or a story with no parent, goes from `%s` to `%s` %s, and this is a %s issue", is.Stage, to, on, class)}
+		return Rejection{Reason: fmt.Sprintf("only an epic, or a story with no parent, goes from `%s` to `%s` %s, and this is a %s issue", is.Stage, to, on, class), Final: true}
 	} else if err != nil {
 		return fmt.Errorf("move to %s %s: %w", to, on, err)
 	}
@@ -235,18 +248,33 @@ func ReviseCommand() Handler {
 // requested returns the /revise that comment c, trusted input, stands for
 // if it is a revision request (SPEC §7.4): at spec-review, a comment that
 // isn't a command and that no marker names, posted after the latest
-// revision comment and after the issue entered the stage (is.Round), so a
-// remark left at an earlier stage never counts.
+// revision, and after the issue entered the stage (is.Round), so a remark
+// left at an earlier stage never counts. After the revision is the
+// revision's Seen, if it has one, as a comment posted after the App read
+// the issue may come before the revision comment; else after its comment.
 func requested(s *github.Snapshot, appSlug string, d Dirt, is state.Issue, c github.Comment) (state.Command, bool) {
 	if _, cmd := state.ParseCommand(c.Body); cmd || is.Stage != state.SpecReview || is.Keys[state.CmdKey(c.ID)] {
 		return state.Command{}, false
 	}
-	if latest, _ := state.LatestRevision(s, appSlug, d.Has); c.ID <= max(latest.Comment, is.Round) {
+	latest, _ := state.LatestRevision(s, appSlug, d.Has)
+	if c.ID <= max(cmp.Or(latest.Seen, latest.Comment), is.Round) {
 		return state.Command{}, false
 	}
 	text := strings.TrimSpace(c.Body)
 	line, _, _ := strings.Cut(text, "\n")
 	return state.Command{Name: "revise", Arg: strings.TrimSpace(line), Text: text}, true
+}
+
+// newestRead returns the newest ID of s's comments by anyone but the App,
+// or floor if it is newer: a seen for what a pass read. The App's own
+// comments in s may be this pass's writes, posted after a comment s lacks.
+func newestRead(s *github.Snapshot, appSlug string, floor int64) int64 {
+	for _, c := range s.Comments {
+		if !state.IsApp(c.Author, appSlug) && c.ID > floor {
+			floor = c.ID
+		}
+	}
+	return floor
 }
 
 // ReviewVisit ends a visit to an issue at spec-review: the loop calls it
