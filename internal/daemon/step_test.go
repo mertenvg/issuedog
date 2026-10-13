@@ -71,6 +71,11 @@ func rejected(quote, reason, id string) string {
 		". Post a new comment to try again.\n\n<!-- issuedog:reply reason=rejected cmd=" + id + " -->"
 }
 
+func edited(quote, id string) string {
+	return "> " + quote + "\n\nThis was edited after I acted on it, so I've ignored the edit. " +
+		"Post a new comment instead.\n\n<!-- issuedog:reply reason=edited cmd=" + id + " -->"
+}
+
 func TestStep(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -115,15 +120,23 @@ func TestStep(t *testing.T) {
 				f.AddReaction(1002, app, "+1")
 			}),
 			acks: []string{"/resume"}},
-		{name: "a command edited after the App's 👍 gets one reply",
+		{name: "a command edited after the App's 👍, with no marker, gets one reply",
+			setup: at(state.Ready, func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, "owner", "/priority p1")
+				f.AddReaction(1002, app, "+1")
+				f.EditComment(1002, "owner", "/priority p2 <!-- x -->")
+			}),
+			comments: []string{edited("/priority p2 &lt;!-- x -->", "1002")}, acks: []string{"/priority p2 <!-- x -->"}},
+		{name: "only the App's 👍 makes a command processed",
 			setup: at(state.Ready, func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1002, "owner", "/hold")
-				f.AddReaction(1002, app, "+1")
-				f.EditComment(1002, "owner", "/resume <!-- x -->")
+				f.AddReaction(1002, "mallory", "+1")
+				f.AddReaction(1002, "owner", "+1")
 			}),
-			comments: []string{"> /resume &lt;!-- x -->\n\nThis was edited after I acted on it, so I've ignored the edit. " +
-				"Post a new comment instead.\n\n<!-- issuedog:reply reason=edited cmd=1002 -->"},
-			acks: []string{"/resume <!-- x -->"}},
+			calls: []string{"/hold"}, acks: []string{"/hold"}},
+		{name: "a known command glued to punctuation has a bad argument",
+			setup:    at(state.SpecReview, func(t testing.TB, f *githubtest.Fake) { post(t, f, 1002, "owner", "/approve.") }),
+			comments: []string{rejected("/approve.", "bad argument: put a space between `/approve` and what follows it", "1002")}},
 		{name: "a command a marker names only gets its 👍",
 			setup: at(state.Ready, func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1002, "owner", "/hold")
@@ -147,6 +160,24 @@ func TestStep(t *testing.T) {
 				post(t, f, 1007, "owner", "2: free text")
 			}),
 			acks: []string{"used", "1b", "2: free text"}, inputs: []string{"1b", "2: free text"}},
+		{name: "an answer edited after its 👍 but before a marker used it gets no reply",
+			setup: at(state.Clarifying, func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, "owner", "1a")
+				f.AddReaction(1002, app, "+1")
+				f.EditComment(1002, "owner", "1b")
+				post(t, f, 1004, app, "<!-- issuedog:transition from=clarifying to=clarifying run=b cmd=1002 -->")
+			}),
+			acks: []string{"1b"}},
+		{name: "an answer edited after a marker used it gets one reply",
+			setup: at(state.Clarifying, func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, "owner", "1a")
+				f.AddReaction(1002, app, "+1")
+				post(t, f, 1004, app, "<!-- issuedog:transition from=clarifying to=clarifying run=b cmd=1002 -->")
+				f.EditComment(1002, "owner", "1b")
+			}),
+			comments: []string{edited("1b", "1002")}, acks: []string{"1b"}},
+		{name: "a plain comment outside clarifying isn't an answer",
+			setup: at(state.Ready, func(t testing.TB, f *githubtest.Fake) { post(t, f, 1002, "owner", "a note") })},
 		{name: "untrusted and App comments don't count",
 			setup: at(state.Clarifying, func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1002, "mallory", "/frob")

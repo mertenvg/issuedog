@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
@@ -16,7 +17,7 @@ type Step struct {
 	Trust github.Trust
 	// Commands are the handlers, by command name. A valid command with none
 	// stays unprocessed for the task that adds it, except /done, which is
-	// rejected as not handled yet.
+	// rejected as not handled yet. Each must be replay-safe (see Handler).
 	Commands map[string]Handler
 	// Reactions, if set, runs after the comments: the reaction triggers.
 	Reactions func(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt) error
@@ -84,9 +85,10 @@ func (st *Step) counted(ctx context.Context, s *github.Snapshot, d Dirt) (map[in
 // handle processes c, a comment that counts as trusted input. It is
 // processed once a marker names it in cmd, a reply marker included, or the
 // App has 👍'd it.
-//   - A comment the App 👍'd and that was edited since gets one edited
-//     reply, and isn't applied again. An answer no marker has used yet is
-//     the exception: its latest text is the input.
+//   - A comment edited since it was acted on gets one edited reply, and isn't
+//     applied again. That is since the first App comment whose marker names
+//     it, or, for one only 👍'd, such as /priority, since the 👍. An answer
+//     no marker has used yet is the exception: its latest text is the input.
 //   - One a marker names, but the App hasn't 👍'd, only gets its 👍.
 //   - At clarifying, one that isn't a command is an answer, and gets a 👍.
 //   - A command is checked, then applied by its handler or rejected.
@@ -98,35 +100,48 @@ func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github
 	if replied(is, c.ID) || (!isCmd && !answer && !named && c.Edit.At.IsZero()) {
 		return nil
 	}
+	if at, ok := st.usedAt(s, d, c.ID); ok && editedSince(c, at) {
+		return st.reply(ctx, s, c, "edited", editedText)
+	}
 	ack, err := st.appAck(ctx, c.ID)
 	if err != nil {
-		return err
+		return fmt.Errorf("read the App's 👍 on comment %d: %w", c.ID, err)
 	}
 	switch {
-	case ack != nil && !answer && !c.Edit.At.Before(ack.CreatedAt):
-		return st.reply(ctx, s, c, "edited", "This was edited after I acted on it, so I've ignored the edit. Post a new comment instead.")
+	case ack != nil && !named && !answer && editedSince(c, ack.CreatedAt):
+		return st.reply(ctx, s, c, "edited", editedText)
 	case ack != nil:
 		return nil
 	case named || answer:
-		return st.Ack(ctx, c.ID)
+		return st.addAck(ctx, c.ID)
 	case !isCmd:
 		return nil
 	}
 	return st.command(ctx, s, d, c, cmd, is.Stage)
 }
 
-// appAck returns the App's 👍 on a comment, or nil.
-func (st *Step) appAck(ctx context.Context, commentID int64) (*github.Reaction, error) {
-	reactions, err := st.Client.Reactions(ctx, st.Owner, st.Repo, commentID)
-	if err != nil {
-		return nil, fmt.Errorf("App's 👍: %w", err)
-	}
-	for _, r := range reactions {
-		if r.Content == "+1" && state.IsApp(r.User, st.AppSlug) {
-			return &r, nil
+const editedText = "This was edited after I acted on it, so I've ignored the edit. Post a new comment instead."
+
+// editedSince reports whether c was edited at or after t. GitHub's times are
+// to the second, so an edit in t's second counts as after it.
+func editedSince(c github.Comment, t time.Time) bool {
+	return !c.Edit.At.IsZero() && !c.Edit.At.Before(t)
+}
+
+// usedAt returns when the first App comment whose marker names comment id
+// in cmd was posted. Like state.Derive, it skips dirty comments.
+func (st *Step) usedAt(s *github.Snapshot, d Dirt, id int64) (time.Time, bool) {
+	for _, c := range s.Comments {
+		if d.Has(c.ID) {
+			continue
+		}
+		for _, m := range github.TrustedMarkers(c.Author, c.Body, st.AppSlug) {
+			if m.Fields["cmd"] == state.CmdKey(id).ID {
+				return c.CreatedAt, true
+			}
 		}
 	}
-	return nil, nil
+	return time.Time{}, false
 }
 
 // replied reports whether a reply marker names comment id.

@@ -13,8 +13,14 @@ import (
 
 // Handler applies one valid command for Step. It acks the command once it
 // is applied, as Transition does for a cmd key, or returns a Rejection.
-// Like Transition, it checks each write first, so it can run again after a
-// crash.
+//
+// It must be replay-safe: Step calls it again after a crash until the
+// command is processed, so it checks each write first, as Transition does.
+// Once any marker on the issue names cmd=<comment id>, Step never calls it
+// again, so a handler that writes more than once writes that marker on its
+// own issue last. Writes elsewhere come first, and a cmd=<comment id> marker
+// already on another issue, such as a descendant /hold reached, means that
+// issue's part is applied.
 type Handler func(ctx context.Context, a *Applier, c Cmd) error
 
 // Cmd is a command for a Handler.

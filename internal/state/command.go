@@ -21,20 +21,32 @@ type Command struct {
 	// Text is everything after the name, later lines included, trimmed:
 	// /revise's notes.
 	Text string
+	// glued is set when Arg follows the name with no space between.
+	glued bool
 }
 
-var commandRE = regexp.MustCompile(`^/([A-Za-z][A-Za-z0-9_-]*)(?:[ \t]+(.*))?$`)
+var commandRE = regexp.MustCompile(`^/([A-Za-z][A-Za-z0-9_-]*)(.*)$`)
 
 // ParseCommand reads body's first line as a command: a slash, a word, and
 // any argument. It reports false for anything else, which isn't a command.
+// A known command's name followed by anything but a space, as in
+// "/approve.", is that command with a bad argument (see Check), not plain
+// text. An unknown word must end at a space or the line's end, so a path
+// such as "/usr/bin" stays plain text.
 func ParseCommand(body string) (Command, bool) {
 	line, rest, _ := strings.Cut(strings.TrimSpace(body), "\n")
 	m := commandRE.FindStringSubmatch(strings.TrimSpace(line))
 	if m == nil {
 		return Command{}, false
 	}
+	name := strings.ToLower(m[1])
+	_, known := commands[name]
+	glued := m[2] != "" && m[2][0] != ' ' && m[2][0] != '\t'
+	if glued && !known {
+		return Command{}, false
+	}
 	arg := strings.TrimSpace(m[2])
-	return Command{Name: strings.ToLower(m[1]), Arg: arg, Text: strings.TrimSpace(arg + "\n" + rest)}, true
+	return Command{Name: name, Arg: arg, Text: strings.TrimSpace(arg + "\n" + rest), glued: glued}, true
 }
 
 // Why Check rejects a command.
@@ -62,6 +74,8 @@ func (c Command) Check(stage Stage) error {
 	case !known:
 		return fmt.Errorf("%w `/%s`: the commands are `/approve`, `/revise <text>`, `/hold`, `/resume`, `/priority pN` and `/done`",
 			ErrUnknownCommand, c.Name)
+	case c.glued:
+		return fmt.Errorf("%w: put a space between `/%s` and what follows it", ErrBadArgument, c.Name)
 	case c.Name == "revise" && c.Text == "":
 		return fmt.Errorf("%w: `/revise` needs the notes to send back", ErrBadArgument)
 	case c.Name == "priority" && !priorityRE.MatchString(c.Arg):

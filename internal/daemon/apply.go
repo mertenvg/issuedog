@@ -131,16 +131,32 @@ func (a *Applier) Transition(ctx context.Context, s *github.Snapshot, dirty func
 
 // Ack adds the App's 👍 to a comment, unless it has one already.
 func (a *Applier) Ack(ctx context.Context, commentID int64) error {
-	reactions, err := a.Client.Reactions(ctx, a.Owner, a.Repo, commentID)
+	r, err := a.appAck(ctx, commentID)
 	if err != nil {
 		return fmt.Errorf("ack comment %d: %w", commentID, err)
 	}
-	app := github.Author{Login: a.AppSlug + "[bot]", Type: "Bot"}
+	if r != nil {
+		return nil
+	}
+	return a.addAck(ctx, commentID)
+}
+
+// appAck returns the App's 👍 on a comment, or nil.
+func (a *Applier) appAck(ctx context.Context, commentID int64) (*github.Reaction, error) {
+	reactions, err := a.Client.Reactions(ctx, a.Owner, a.Repo, commentID)
+	if err != nil {
+		return nil, fmt.Errorf("the App's 👍: %w", err)
+	}
 	for _, r := range reactions {
-		if r.Content == "+1" && r.User == app {
-			return nil
+		if r.Content == "+1" && state.IsApp(r.User, a.AppSlug) {
+			return &r, nil
 		}
 	}
+	return nil, nil
+}
+
+// addAck adds the App's 👍 to a comment, with no check: see Ack.
+func (a *Applier) addAck(ctx context.Context, commentID int64) error {
 	if _, _, err := a.Client.Client.Reactions.CreateIssueCommentReaction(ctx, a.Owner, a.Repo, commentID, "+1"); err != nil {
 		return fmt.Errorf("ack comment %d in %s/%s: %w", commentID, a.Owner, a.Repo, err)
 	}
