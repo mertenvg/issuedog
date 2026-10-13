@@ -12,7 +12,7 @@ import (
 )
 
 // commandsPass runs step 1 on issue n with daemon.Commands, "owner" trusted.
-func commandsPass(t *testing.T, n int) func(*githubtest.Fake) error {
+func commandsPass(t testing.TB, n int) func(*githubtest.Fake) error {
 	return func(f *githubtest.Fake) error {
 		c := f.Client(t)
 		s, err := c.Snapshot(context.Background(), "o", "r", n)
@@ -74,6 +74,19 @@ func moved(text, fields string) string {
 	return text + "\n\n<!-- issuedog:transition " + fields + " -->"
 }
 
+const ready = "from=intake to=ready run=a"
+
+// above is the marker fields of an owner hold at at that a /hold on an
+// ancestor made: its cmd names comment 1001, on #1.
+func above(at string) string {
+	return "from=" + at + " to=held at=" + at + " reason=owner cmd=1001"
+}
+
+// ownOnly is /resume's rejection when only these sub-issues' own holds remain.
+func ownOnly(issues string) string {
+	return "the only holds below are the sub-issues' own (" + issues + "), which only `/resume` on each of them ends"
+}
+
 // issueWant is an issue after the passes: its labels and its new comments.
 type issueWant struct{ labels, comments []string }
 
@@ -81,7 +94,6 @@ func TestHoldResumePriority(t *testing.T) {
 	held := func(at, reason string) string {
 		return "from=" + at + " to=held at=" + at + " reason=" + reason + " run=h"
 	}
-	const ready = "from=intake to=ready run=a"
 	untyped := func(n int) func(f *githubtest.Fake) { return func(f *githubtest.Fake) { f.SetType(n, "") } }
 	tests := []struct {
 		name   string
@@ -150,7 +162,7 @@ func TestHoldResumePriority(t *testing.T) {
 			react: "+1"},
 		{name: "/resume ends owner holds on the issue and below, but not above, nor a discussion hold",
 			// 1 > 2 > 3, 2 > 4 (discussion)
-			setup: tree([]string{held("ready", "owner"), held("in-progress", "owner"), held("verifying", "owner"), held("ready", "discussion")},
+			setup: tree([]string{held("ready", "owner"), held("in-progress", "owner"), above("verifying"), held("ready", "discussion")},
 				[]int{0, 1, 2, 2}, 2, 1005, "/resume", nil),
 			on: 2,
 			want: map[int]issueWant{
@@ -159,7 +171,7 @@ func TestHoldResumePriority(t *testing.T) {
 			},
 			react: "+1", posts: []string{"/issues/3/comments", "/issues/2/comments"}},
 		{name: "/resume on an issue that isn't held resumes its descendants, three levels down",
-			setup: tree([]string{"from=intake to=ready run=a", held("ready", "owner"), held("planning", "owner")}, []int{0, 1, 2}, 1, 1004, "/resume", nil),
+			setup: tree([]string{"from=intake to=ready run=a", above("ready"), above("planning")}, []int{0, 1, 2}, 1, 1004, "/resume", nil),
 			on:    1,
 			want: map[int]issueWant{
 				2: {[]string{"stage:ready"}, []string{moved("Resumed by `/resume` on #1, back to `ready`.", "from=held to=ready cmd=1004")}},
@@ -174,23 +186,25 @@ func TestHoldResumePriority(t *testing.T) {
 				1: {[]string{"stage:ready"}, []string{rejected("/resume", "nothing here or in its open sub-issues is on an owner hold", "1004")}},
 			},
 			react: "-1"},
-		{name: "/resume doesn't read a dirty hold marker",
-			setup: tree([]string{ready, held("ready", "owner")}, []int{0, 1}, 1, 1003, "/resume", func(f *githubtest.Fake) {
-				f.EditComment(1002, "mallory", "<!-- issuedog:transition "+held("ready", "owner")+" -->")
+		{name: "/resume doesn't read a dirty hold marker, and its stage:held label is the child's own",
+			setup: tree([]string{ready, above("ready")}, []int{0, 1}, 1, 1003, "/resume", func(f *githubtest.Fake) {
+				f.EditComment(1002, "mallory", "<!-- issuedog:transition "+above("ready")+" -->")
 			}),
-			on: 1, react: "+1"},
-		{name: "/resume isn't rejected while a child is labelled held by hand, and records it first",
+			on: 1,
+			want: map[int]issueWant{
+				1: {[]string{"stage:ready"}, []string{rejected("/resume", ownOnly("#2"), "1003")}},
+			},
+			react: "-1"},
+		{name: "/resume on a parent leaves a child labelled held by hand, with no marker yet",
 			setup: tree([]string{ready, ready}, []int{0, 1}, 1, 1003, "/resume", func(f *githubtest.Fake) {
 				f.RemoveLabel(2, "owner", "stage:ready")
 				f.AddLabel(2, "owner", "stage:held")
 			}),
 			on: 1,
 			want: map[int]issueWant{
-				2: {[]string{"stage:ready"}, []string{
-					moved("owner set `stage:held` by hand, so I've recorded it as an owner override.", "from=ready to=held at=ready reason=owner by=owner event=9004"),
-					moved("Resumed by `/resume` on #1, back to `ready`.", "from=held to=ready cmd=1003")}},
+				1: {[]string{"stage:ready"}, []string{rejected("/resume", ownOnly("#2"), "1003")}},
 			},
-			react: "+1"},
+			react: "-1"},
 		{name: "/resume isn't rejected once it resumed a child that has since closed",
 			setup: then(tree([]string{ready, held("ready", "owner")}, []int{0, 1}, 1, 1003, "/resume", nil), func(f *githubtest.Fake) {
 				f.AddComment(2, app, moved("Resumed by `/resume` on #1, back to `ready`.", "from=held to=ready cmd=1003"))
@@ -218,7 +232,7 @@ func TestHoldResumePriority(t *testing.T) {
 			},
 			react: "+1"},
 		{name: "/resume reports a child it can't move once, resumes the rest, and a later comment is still processed",
-			setup: then(tree([]string{ready, held("ready", "owner"), held("ready", "owner")}, []int{0, 1, 1}, 1, 1004, "/resume", untyped(2)),
+			setup: then(tree([]string{ready, above("ready"), above("ready")}, []int{0, 1, 1}, 1, 1004, "/resume", untyped(2)),
 				func(f *githubtest.Fake) { f.AddComment(1, "owner", "/priority p1") }),
 			on: 1,
 			want: map[int]issueWant{
@@ -339,5 +353,97 @@ func TestHoldAcksLast(t *testing.T) {
 		if marked := slices.ContainsFunc(is.Comments, func(c githubtest.CommentState) bool { return strings.Contains(c.Body, "to=held") }); acked && !marked {
 			t.Errorf("crash at write %d: /hold is 👍'd, but #1 has no hold marker", n)
 		}
+	}
+}
+
+// A parent's /resume ends only the holds a parent's /hold made: a child's
+// own hold, by its /hold or by hand, stays until /resume on the child.
+func TestOwnHolds(t *testing.T) {
+	type step struct {
+		on   int
+		body string
+	}
+	// #1 at ready, its child #2 at in-progress, maybe held by the owner's
+	// hand, then each step but the last applied.
+	setup := func(hand bool, steps []step) func(testing.TB) *githubtest.Fake {
+		return func(t testing.TB) *githubtest.Fake {
+			f := githubtest.New(t, "o/r", slug)
+			file(f, 0, ready)
+			file(f, 1, "from=ready to=in-progress run=a")
+			if hand {
+				f.RemoveLabel(2, "owner", "stage:in-progress")
+				f.AddLabel(2, "owner", "stage:held")
+			}
+			for i, s := range steps {
+				f.AddComment(s.on, "owner", s.body)
+				if i < len(steps)-1 {
+					if err := commandsPass(t, s.on)(f); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			f.ForgetWrites()
+			return f
+		}
+	}
+	tests := []struct {
+		name   string
+		hand   bool
+		steps  []step
+		labels [2]string // #1's and #2's stage
+		react  string    // the App's reaction to the last command
+		reply  string    // the reason of its rejection, if any
+	}{
+		{name: "a child's own /hold stays when its parent resumes",
+			steps:  []step{{2, "/hold"}, {1, "/hold"}, {1, "/resume"}},
+			labels: [2]string{"stage:ready", "stage:held"}, react: "+1"},
+		{name: "a child held by hand stays when its parent resumes",
+			hand:   true,
+			steps:  []step{{1, "/hold"}, {1, "/resume"}},
+			labels: [2]string{"stage:ready", "stage:held"}, react: "+1"},
+		{name: "a parent's /resume ends the hold its /hold made",
+			steps:  []step{{1, "/hold"}, {1, "/resume"}},
+			labels: [2]string{"stage:ready", "stage:in-progress"}, react: "+1"},
+		{name: "a child's /resume ends its own hold",
+			steps:  []step{{2, "/hold"}, {1, "/hold"}, {2, "/resume"}},
+			labels: [2]string{"stage:held", "stage:in-progress"}, react: "+1"},
+		{name: "a parent's /resume with only its children's own holds is rejected",
+			steps:  []step{{2, "/hold"}, {1, "/resume"}},
+			labels: [2]string{"stage:ready", "stage:held"}, react: "-1", reply: ownOnly("#2")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			last := tt.steps[len(tt.steps)-1]
+			githubtest.Replay(t, setup(tt.hand, tt.steps), commandsPass(t, last.on))
+
+			got := run(t, setup(tt.hand, tt.steps), commandsPass(t, last.on)).State()
+			for i, want := range tt.labels {
+				if l := got.Issues[i].Labels; !reflect.DeepEqual(l, []string{want}) {
+					t.Errorf("#%d: labels %q, want %q", i+1, l, want)
+				}
+			}
+			// The last command is the owner's last comment on its issue.
+			comments := got.Issues[last.on-1].Comments
+			i := len(comments) - 1
+			for comments[i].Author != "owner" {
+				i--
+			}
+			if want := []string{app + " " + tt.react}; !reflect.DeepEqual(comments[i].Reactions, want) {
+				t.Errorf("the last command's reactions = %q, want %q", comments[i].Reactions, want)
+			}
+			var replies, want []string
+			for _, c := range comments[i+1:] {
+				if strings.Contains(c.Body, "issuedog:reply") {
+					replies = append(replies, c.Body)
+				}
+			}
+			if tt.reply != "" {
+				// Up to its cmd's value, the command's ID.
+				want = []string{strings.TrimSuffix(rejected(last.body, tt.reply, ""), " -->")}
+			}
+			if len(replies) != len(want) || (len(want) > 0 && !strings.HasPrefix(replies[0], want[0])) {
+				t.Errorf("replies %q, want %q", replies, want)
+			}
+		})
 	}
 }
