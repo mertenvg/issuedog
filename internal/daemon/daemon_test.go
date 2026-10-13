@@ -67,39 +67,20 @@ func gitIn(t testing.TB, dir string, args ...string) {
 	}
 }
 
-// priority stands in for #81's /priority handler: it sets the label, drops
-// the other priority labels, then 👍s.
-var priority = daemon.Handler{Apply: func(ctx context.Context, a *daemon.Applier, c daemon.Cmd) error {
-	want := "priority:" + c.Arg
-	if !slices.Contains(c.S.Labels, want) {
-		if _, _, err := a.Client.Issues.AddLabelsToIssue(ctx, a.Owner, a.Repo, c.S.Number, []string{want}); err != nil {
-			return err
-		}
-		c.S.Labels = append(c.S.Labels, want)
-	}
-	for _, l := range slices.Clone(c.S.Labels) {
-		if strings.HasPrefix(l, "priority:") && l != want {
-			if _, err := a.Client.Issues.RemoveLabelForIssue(ctx, a.Owner, a.Repo, c.S.Number, l); err != nil {
-				return err
-			}
-			c.S.Labels = slices.DeleteFunc(c.S.Labels, func(x string) bool { return x == l })
-		}
-	}
-	return a.Ack(ctx, c.Comment.ID)
-}}
-
-// newDaemon is a fresh daemon of o/r on f, cloning o, with the /priority
-// handler. Its Reactions hook adds each issue it sees to *visits.
+// newDaemon is a fresh daemon of o/r on f, cloning o, with the /hold,
+// /resume and /priority handlers. Its Reactions hook adds each issue it sees
+// to *visits.
 func newDaemon(t testing.TB, f *githubtest.Fake, o *origin, visits *[]int) *daemon.Daemon {
 	t.Helper()
 	a := &daemon.Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: slug}
-	st := &daemon.Step{Applier: a, Commands: map[string]daemon.Handler{"priority": priority},
+	st := &daemon.Step{Applier: a,
 		Reactions: func(_ context.Context, _ *daemon.Applier, s *github.Snapshot, _ daemon.Dirt) error {
 			if visits != nil {
 				*visits = append(*visits, s.Number)
 			}
 			return nil
 		}}
+	st.Commands = daemon.Commands(st.CurrentTrust())
 	return &daemon.Daemon{Step: st, Clone: repo.New(o.url, filepath.Join(t.TempDir(), "r.git")), Config: config.Defaults()}
 }
 

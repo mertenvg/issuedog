@@ -190,10 +190,12 @@ func startDaemon(ctx context.Context, set settings, key []byte) (*daemon.Daemon,
 }
 
 // newStep is step 1 with the command and reaction handlers merged so far.
-// The loop's reloads replace its Trust, so the trigger asks for the current
-// one rather than keeping tr.
+// The loop's reloads replace its Trust, so the handlers and the trigger ask
+// for the current one rather than keeping tr.
 func newStep(a *daemon.Applier, tr github.Trust) *daemon.Step {
-	st := &daemon.Step{Applier: a, Trust: tr, Commands: map[string]daemon.Handler{"approve": daemon.ApproveCommand()}}
+	st := &daemon.Step{Applier: a, Trust: tr}
+	st.Commands = daemon.Commands(st.CurrentTrust())
+	st.Commands["approve"] = daemon.ApproveCommand()
 	st.Reactions = daemon.ApproveByReaction(st.CurrentTrust())
 	return st
 }

@@ -164,6 +164,13 @@ func TestHoldResumePriority(t *testing.T) {
 				2: {[]string{"stage:held"}, nil},
 			},
 			react: "+1"},
+		{name: "/hold on a held issue of unknown type isn't rejected, and holds its descendants",
+			setup: tree([]string{held("ready", "owner"), ready}, []int{0, 1}, 1, 1003, "/hold", func(f *githubtest.Fake) { f.SetType(1, "Feature") }),
+			on:    1,
+			want: map[int]issueWant{
+				2: {[]string{"stage:held"}, []string{moved("On hold by `/hold` on #1, from `ready`.", "from=ready to=held at=ready reason=owner cmd=1003")}},
+			},
+			react: "+1"},
 		{name: "/hold on a held issue writes it no marker, but holds its descendants",
 			setup: tree([]string{held("planning", "discussion"), "from=intake to=ready run=a"}, []int{0, 1}, 1, 1003, "/hold", nil),
 			on:    1,
@@ -227,6 +234,15 @@ func TestHoldResumePriority(t *testing.T) {
 			on: 1,
 			want: map[int]issueWant{
 				1: {[]string{"stage:ready"}, []string{rejected("/resume", madeOn("#2"), "1003")}},
+			},
+			react: "-1"},
+		{name: "/resume names a closed issue whose /hold made the holds left below it",
+			// 1 > 2 (closed) > 3, held by a /hold on #2: comment 1002 is #2's
+			setup: tree([]string{ready, ready, "from=ready to=held at=ready reason=owner cmd=1002"}, []int{0, 1, 2}, 1, 1004, "/resume",
+				func(f *githubtest.Fake) { f.Close(2) }),
+			on: 1,
+			want: map[int]issueWant{
+				1: {[]string{"stage:ready"}, []string{rejected("/resume", madeOn("#2"), "1004")}},
 			},
 			react: "-1"},
 		{name: "/resume isn't rejected once it resumed a child that has since closed",
@@ -391,8 +407,8 @@ func TestOwnHolds(t *testing.T) {
 	}
 	// #1 at ready, its child #2 at in-progress, maybe held by the owner's
 	// hand, and #2's child #3 at verifying, then each step but the last
-	// applied.
-	setup := func(hand bool, steps []step) func(testing.TB) *githubtest.Fake {
+	// applied, the first one's comment deleted after if gone.
+	setup := func(hand, gone bool, steps []step) func(testing.TB) *githubtest.Fake {
 		return func(t testing.TB) *githubtest.Fake {
 			f := githubtest.New(t, "o/r", slug)
 			file(f, 0, ready)
@@ -403,11 +419,14 @@ func TestOwnHolds(t *testing.T) {
 				f.AddLabel(2, "owner", "stage:held")
 			}
 			for i, s := range steps {
-				f.AddComment(s.on, "owner", s.body)
+				id := f.AddComment(s.on, "owner", s.body)
 				if i < len(steps)-1 {
 					if err := commandsPass(t, s.on)(f); err != nil {
 						t.Fatal(err)
 					}
+				}
+				if i == 0 && gone {
+					f.DeleteComment(id)
 				}
 			}
 			f.ForgetWrites()
@@ -417,6 +436,7 @@ func TestOwnHolds(t *testing.T) {
 	tests := []struct {
 		name   string
 		hand   bool
+		gone   bool // the first step's comment is deleted
 		steps  []step
 		labels [3]string // #1's, #2's and #3's stage
 		react  string    // the App's reaction to the last command
@@ -438,13 +458,24 @@ func TestOwnHolds(t *testing.T) {
 		{name: "a grandparent's /resume with only holds made below it is rejected",
 			steps:  []step{{2, "/hold"}, {1, "/resume"}},
 			labels: [3]string{"stage:ready", "stage:held", "stage:held"}, react: "-1", reply: madeOn("#2")},
+		{name: "a /resume ends the holds a /hold on its parent made",
+			steps:  []step{{1, "/hold"}, {2, "/resume"}},
+			labels: [3]string{"stage:held", "stage:in-progress", "stage:verifying"}, react: "+1"},
+		{name: "a hold whose /hold comment is gone isn't ended from above",
+			gone:   true,
+			steps:  []step{{2, "/hold"}, {1, "/resume"}},
+			labels: [3]string{"stage:ready", "stage:held", "stage:held"}, react: "-1", reply: madeOn("#2, #3")},
+		{name: "a /resume on the issue itself ends its hold whose /hold comment is gone",
+			gone:   true,
+			steps:  []step{{2, "/hold"}, {2, "/resume"}},
+			labels: [3]string{"stage:ready", "stage:in-progress", "stage:held"}, react: "+1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			last := tt.steps[len(tt.steps)-1]
-			githubtest.Replay(t, setup(tt.hand, tt.steps), commandsPass(t, last.on))
+			githubtest.Replay(t, setup(tt.hand, tt.gone, tt.steps), commandsPass(t, last.on))
 
-			got := run(t, setup(tt.hand, tt.steps), commandsPass(t, last.on)).State()
+			got := run(t, setup(tt.hand, tt.gone, tt.steps), commandsPass(t, last.on)).State()
 			for i, want := range tt.labels {
 				if l := got.Issues[i].Labels; !reflect.DeepEqual(l, []string{want}) {
 					t.Errorf("#%d: labels %q, want %q", i+1, l, want)

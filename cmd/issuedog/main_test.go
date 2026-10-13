@@ -257,6 +257,43 @@ func TestNewStepUsesCurrentTrust(t *testing.T) {
 	}
 }
 
+// newStep has every command handler, and /hold checks a child's labels with
+// the trust of the moment: owner2's hand-set stage counts once a reload
+// trusts owner2.
+func TestNewStepCommands(t *testing.T) {
+	const app = "issuedog-dev[bot]"
+	f := githubtest.New(t, "o/r", "issuedog-dev")
+	for n := 1; n <= 2; n++ {
+		f.AddIssue("owner", "Task", "body")
+		f.SetType(n, "Task")
+		f.AddLabel(n, app, "stage:ready")
+		f.AddComment(n, app, "<!-- issuedog:transition from=intake to=ready run=a -->")
+	}
+	f.SetParent(2, 1)
+	f.RemoveLabel(2, "owner2", "stage:ready")
+	f.AddLabel(2, "owner2", "stage:planned")
+	f.AddComment(1, "owner", "/hold")
+	c := f.Client(t)
+	st := newStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{})
+	for _, name := range []string{"approve", "hold", "resume", "priority"} {
+		if _, ok := st.Commands[name]; !ok {
+			t.Errorf("newStep has no /%s handler", name)
+		}
+	}
+	st.Trust = trustSet{"owner": true, "owner2": true} // a reload
+	s, err := c.Snapshot(context.Background(), "o", "r", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Run(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	child := f.State().Issues[1].Comments
+	if last := child[len(child)-1].Body; !strings.Contains(last, "to=held at=planned") {
+		t.Errorf("#2's last comment = %q, want its hold from owner2's planned", last)
+	}
+}
+
 // cancelOnCall makes the daemon's signal context one the returned func
 // cancels, and records the signals it was asked to stop on.
 func cancelOnCall(t *testing.T) (cancel func(), signals *[]os.Signal) {
