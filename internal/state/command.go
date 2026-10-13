@@ -58,8 +58,11 @@ var (
 // means any stage.
 var commands = map[string][]Stage{
 	"approve": {SpecReview, PlanReview}, "revise": {SpecReview, PlanReview}, "done": {NeedsHuman},
-	"hold": nil, "resume": nil, "priority": nil,
+	"hold": nil, "resume": nil, "priority": nil, "model": nil, "effort": nil,
 }
+
+// takesArg are the commands that take an argument.
+var takesArg = []string{"revise", "priority", "model", "effort"}
 
 var priorityRE = regexp.MustCompile(`^p[0-3]$`)
 
@@ -70,15 +73,19 @@ func (c Command) Check(stage Stage) error {
 	stages, known := commands[c.Name]
 	switch {
 	case !known:
-		return fmt.Errorf("%w `/%s`: the commands are `/approve`, `/revise <text>`, `/hold`, `/resume`, `/priority pN` and `/done`",
-			ErrUnknownCommand, c.Name)
+		return fmt.Errorf("%w `/%s`: the commands are `/approve`, `/revise <text>`, `/hold`, `/resume`, `/priority pN`, "+
+			"`/model [verifier] <name>`, `/effort [verifier] <level>` and `/done`", ErrUnknownCommand, c.Name)
 	case c.glued:
 		return fmt.Errorf("%w: put a space between `/%s` and what follows it", ErrBadArgument, c.Name)
 	case c.Name == "revise" && c.Text == "":
 		return fmt.Errorf("%w: `/revise` needs the notes to send back", ErrBadArgument)
 	case c.Name == "priority" && !priorityRE.MatchString(c.Arg):
 		return fmt.Errorf("%w: `/priority` takes p0, p1, p2 or p3", ErrBadArgument)
-	case c.Name != "revise" && c.Name != "priority" && c.Arg != "":
+	case c.Name == "model" && !c.setting():
+		return fmt.Errorf("%w: `/model` takes a model name, or `verifier` and a model name", ErrBadArgument)
+	case c.Name == "effort" && !c.setting():
+		return fmt.Errorf("%w: `/effort` takes an effort level, or `verifier` and an effort level", ErrBadArgument)
+	case c.Arg != "" && !slices.Contains(takesArg, c.Name):
 		return fmt.Errorf("%w: `/%s` takes no argument", ErrBadArgument, c.Name)
 	case stages != nil && !slices.Contains(stages, stage):
 		names := make([]string, len(stages))
@@ -88,6 +95,28 @@ func (c Command) Check(stage Stage) error {
 		return fmt.Errorf("%w: `/%s` applies only at %s, and this issue is at `%s`", ErrWrongStage, c.Name, strings.Join(names, " or "), stage)
 	}
 	return nil
+}
+
+// Setting returns the value a /model or /effort command sets, and whether it
+// sets it for the verifier's runs: "/model verifier opus" sets opus for them,
+// and "/model opus" for the others (plan #93, assumption 4). "verifier" is
+// matched in any case. For an argument of any other shape, which Check
+// rejects, value is "".
+func (c Command) Setting() (value string, verifier bool) {
+	switch f := strings.Fields(c.Arg); {
+	case c.glued:
+	case len(f) == 1 && !strings.EqualFold(f[0], "verifier"):
+		return f[0], false
+	case len(f) == 2 && strings.EqualFold(f[0], "verifier"):
+		return f[1], true
+	}
+	return "", false
+}
+
+// setting reports whether c's argument is a value, or "verifier" and a value.
+func (c Command) setting() bool {
+	v, _ := c.Setting()
+	return v != ""
 }
 
 // Inputs are s's input to the next stage run, oldest first: comments that

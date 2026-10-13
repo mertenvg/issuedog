@@ -57,3 +57,40 @@ func TestCommandCheck(t *testing.T) {
 		}
 	}
 }
+
+// /model and /effort take a value, or "verifier" and a value, at any stage.
+// Check leaves the value itself to the daemon's handlers.
+func TestCommandSetting(t *testing.T) {
+	for _, tc := range []struct {
+		body     string
+		value    string
+		verifier bool
+		check    error
+	}{
+		{"/model opus", "opus", false, nil},
+		{"/MODEL Verifier claude-opus-5-5", "claude-opus-5-5", true, nil},
+		{"/effort verifier max\nnotes below", "max", true, nil},
+		{"/effort \thigh ", "high", false, nil},
+		{"/model gpt", "gpt", false, nil},
+		{"/effort extreme", "extreme", false, nil},
+		{"/model", "", false, ErrBadArgument},
+		{"/model verifier", "", false, ErrBadArgument},
+		{"/model opus sonnet", "", false, ErrBadArgument},
+		{"/effort verifier max now", "", false, ErrBadArgument},
+		{"/effort", "", false, ErrBadArgument},
+		{"/model.opus", "", false, ErrBadArgument},
+	} {
+		c, ok := ParseCommand(tc.body)
+		if !ok {
+			t.Fatalf("%q isn't a command", tc.body)
+		}
+		if v, verifier := c.Setting(); v != tc.value || verifier != tc.verifier {
+			t.Errorf("%q: Setting = %q, %t; want %q, %t", tc.body, v, verifier, tc.value, tc.verifier)
+		}
+		for _, stage := range []Stage{Ready, Held, SpecReview} {
+			if err := c.Check(stage); !errors.Is(err, tc.check) {
+				t.Errorf("%q at %s: Check = %v, want %v", tc.body, stage, err, tc.check)
+			}
+		}
+	}
+}

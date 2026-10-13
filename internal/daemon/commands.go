@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	gogithub "github.com/google/go-github/v92/github"
+	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/logr/v2"
@@ -442,22 +443,149 @@ func (a *Applier) family(ctx context.Context, c Cmd) ([]node, error) {
 }
 
 // setPriority sets c's priority:pN label, removes the other priority:*
-// labels, then 👍s c (SPEC §9.2). It writes no marker, so the 👍 ends it.
-// Command.Check has rejected anything but p0 to p3.
+// labels, then 👍s c (SPEC §9.2). Command.Check has rejected anything but p0
+// to p3.
 func setPriority(ctx context.Context, a *Applier, c Cmd) error {
-	want := "priority:" + c.Arg
-	if err := a.addLabel(ctx, c.S, want); err != nil {
+	if err := a.setLabel(ctx, c, "priority:"+c.Arg); err != nil {
 		return fmt.Errorf("priority: %w", err)
 	}
+	return nil
+}
+
+// setLabel adds want to c's issue, removes the other labels of its kind, the
+// part up to its first colon, ignoring case, then 👍s c. It writes no marker,
+// so the 👍 ends c, and each write is checked first, so a replay redoes only
+// what's missing. A label kept in another case stays as it is.
+func (a *Applier) setLabel(ctx context.Context, c Cmd, want string) error {
+	kind, _, _ := strings.Cut(want, ":")
+	if err := a.addLabel(ctx, c.S, want); err != nil {
+		return fmt.Errorf("set %s: %w", want, err)
+	}
 	for _, l := range slices.Clone(c.S.Labels) {
-		if strings.HasPrefix(strings.ToLower(l), "priority:") && !strings.EqualFold(l, want) {
+		if strings.HasPrefix(strings.ToLower(l), strings.ToLower(kind)+":") && !strings.EqualFold(l, want) {
 			if err := a.removeLabel(ctx, c.S, l); err != nil {
-				return fmt.Errorf("priority: %w", err)
+				return fmt.Errorf("set %s: %w", want, err)
 			}
 		}
 	}
 	if err := a.Ack(ctx, c.Comment.ID); err != nil {
-		return fmt.Errorf("priority: %w", err)
+		return fmt.Errorf("set %s: %w", want, err)
 	}
 	return nil
+}
+
+// SettingCommands returns the handlers of /model and /effort (plan #93,
+// T5), for Step.Commands. Each sets one label of its kind, as /priority
+// does: model:*, effort:*, or for the verifier's runs, verifier-model:* or
+// verifier-effort:*. models returns models.allowed as of the call, such as
+// Daemon.CurrentModels, so a config reload that changes it takes effect.
+func SettingCommands(models func() config.Models) map[string]Handler {
+	return map[string]Handler{
+		"model":  setting(func(c Cmd) (string, error) { return modelLabel(models(), c) }),
+		"effort": setting(effortLabel),
+	}
+}
+
+// setting is the handler of a command that sets the label that label
+// returns for it, or is rejected with the Rejection that label returns.
+func setting(label func(c Cmd) (string, error)) Handler {
+	return Handler{
+		Check: func(_ context.Context, _ *Applier, c Cmd) error {
+			if _, err := label(c); err != nil {
+				return fmt.Errorf("label: %w", err)
+			}
+			return nil
+		},
+		Apply: func(ctx context.Context, a *Applier, c Cmd) error {
+			want, err := label(c)
+			if err != nil {
+				return fmt.Errorf("label: %w", err)
+			}
+			return a.setLabel(ctx, c, want)
+		},
+	}
+}
+
+// settingKind is the label kind of c, a /model or /effort command: its name,
+// with "verifier-" before it for the verifier's runs.
+func settingKind(c Cmd) (value, kind string) {
+	value, verifier := c.Setting()
+	if verifier {
+		return value, "verifier-" + c.Name
+	}
+	return value, c.Name
+}
+
+// modelLabel returns the label c, a /model command, sets: its kind and the
+// label suffix of the model on models.allowed that it names, by full name
+// or by suffix, either ignoring case. Otherwise it returns a Rejection,
+// which quotes c's text; reply escapes it (SPEC §5.1).
+//
+// A reload can drop a model from models.allowed after Apply added its label,
+// and Check mustn't then reject c (see Handler). So a model that isn't
+// allowed, whose label c's issue has already, named as c names it or by its
+// default suffix (config.Model.Suffix), is that label, and c removes the
+// others. The label of a full name with a short label of its own can't be
+// told, so that case is rejected, and its label stays. This also lets a
+// /model stand that names a label a trusted user set by hand for a model
+// that isn't allowed; run settings refuse that label all the same.
+func modelLabel(models config.Models, c Cmd) (string, error) {
+	arg, kind := settingKind(c)
+	name, ok := models.Resolve(arg)
+	var same []string // the full names arg matches ignoring case, quoted
+	for _, m := range models.Allowed {
+		if !ok && strings.EqualFold(m.Name, arg) {
+			name = m.Name
+			same = append(same, "`"+m.Name+"`")
+		}
+	}
+	if len(same) == 1 {
+		ok = true
+	}
+	if ok {
+		suffix, found := models.LabelSuffix(name)
+		if !found {
+			return "", fmt.Errorf("models.allowed has %q, but no label suffix for it", name)
+		}
+		return kind + ":" + suffix, nil
+	}
+	have := kind + ":" + config.Model{Name: arg}.Suffix()
+	if i := slices.IndexFunc(c.S.Labels, func(l string) bool { return strings.EqualFold(l, have) }); i >= 0 {
+		return c.S.Labels[i], nil
+	}
+	if len(same) > 1 {
+		return "", Rejection{Reason: fmt.Sprintf("`%s` matches %s on `models.allowed`, ignoring case, so give the name in its exact case", arg, list(same))}
+	}
+	var suffixes []string
+	for _, m := range models.Allowed {
+		suffixes = append(suffixes, "`"+m.Suffix()+"`")
+	}
+	if len(suffixes) == 0 {
+		return "", Rejection{Reason: fmt.Sprintf("`%s` isn't on `models.allowed`, and the config allows no model", arg)}
+	}
+	return "", Rejection{Reason: fmt.Sprintf("`%s` isn't on `models.allowed`, which has %s", arg, list(suffixes))}
+}
+
+// effortLabel returns the label c, a /effort command, sets: its kind and
+// the effort level it names, ignoring case. Otherwise it returns a
+// Rejection, which quotes c's text; reply escapes it (SPEC §5.1). The levels
+// are fixed in code, so no reload changes them.
+func effortLabel(c Cmd) (string, error) {
+	arg, kind := settingKind(c)
+	if level := strings.ToLower(arg); config.ValidEffort(level) {
+		return kind + ":" + level, nil
+	}
+	levels := config.EffortLevels()
+	for i, l := range levels {
+		levels[i] = "`" + l + "`"
+	}
+	return "", Rejection{Reason: fmt.Sprintf("`%s` isn't an effort level: the levels are %s", arg, list(levels))}
+}
+
+// list joins items as "a, b and c".
+func list(items []string) string {
+	if len(items) < 2 {
+		return strings.Join(items, "")
+	}
+	return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
 }

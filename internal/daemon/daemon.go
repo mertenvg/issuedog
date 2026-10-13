@@ -62,6 +62,17 @@ func (c currentTrust) Trusted(ctx context.Context, login string) (bool, error) {
 	return ok, nil
 }
 
+// CurrentModels returns d.Config's models.allowed as of the call, or none
+// before a config loads. Iterate's reloads replace d.Config, so a handler
+// built once, such as SettingCommands', takes this method to keep up with
+// the config on main.
+func (d *Daemon) CurrentModels() config.Models {
+	if d.Config == nil {
+		return config.Models{}
+	}
+	return d.Config.Models
+}
+
 // Ready is an issue whose step 1 succeeded on S, with its Inputs.
 type Ready struct {
 	S      *github.Snapshot
