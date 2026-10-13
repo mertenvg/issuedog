@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -17,6 +19,19 @@ type Result struct {
 	IsError          bool            `json:"is_error"`
 	Result           string          `json:"result"`
 	StructuredOutput json.RawMessage `json:"structured_output"`
+	// ModelUsage is keyed by the full name of each model that ran, for
+	// example claude-haiku-5-5 for a --model haiku run.
+	ModelUsage map[string]json.RawMessage `json:"modelUsage"`
+}
+
+// ModelsRan parses a run's JSON result and returns the names of the models
+// that ran, sorted. A result without modelUsage reports none.
+func ModelsRan(raw []byte) ([]string, error) {
+	var r Result
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return nil, fmt.Errorf("malformed result: %w", err)
+	}
+	return slices.Sorted(maps.Keys(r.ModelUsage)), nil
 }
 
 // Schema is a compiled JSON schema for one stage's structured output.
