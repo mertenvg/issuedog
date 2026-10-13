@@ -4,6 +4,7 @@ import (
 	"context"
 	"maps"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -199,6 +200,24 @@ func TestModelEffortCommands(t *testing.T) {
 			labels:  []string{"model:fable", "model:sonnet", "stage:ready"},
 			comment: rejected("/model fable", "`fable` isn't on `models.allowed`, which has `sonnet`", "1002"),
 			reacts:  []string{app + " -1"}, writes: []string{react, reply}},
+		{name: "/model of a dropped model is rejected when the App added labels of other kinds since",
+			allowed: "[sonnet]",
+			setup:   then(taskWith("owner", "/model fable", app+" model:sonnet"), labeledBy(app, "verifier-model:fable", "modelx:fable", "effort:high")),
+			labels:  []string{"effort:high", "model:sonnet", "modelx:fable", "stage:ready", "verifier-model:fable"},
+			comment: rejected("/model fable", "`fable` isn't on `models.allowed`, which has `sonnet`", "1002"),
+			reacts:  []string{app + " -1"}, writes: []string{react, reply}},
+		{name: "/model verifier of a dropped model is rejected when the App added a model:* label since",
+			allowed: "[sonnet]",
+			setup:   then(taskWith("owner", "/model verifier fable"), labeledBy(app, "model:fable")),
+			labels:  []string{"model:fable", "stage:ready"},
+			comment: rejected("/model verifier fable", "`fable` isn't on `models.allowed`, which has `sonnet`", "1002"),
+			reacts:  []string{app + " -1"}, writes: []string{react, reply}},
+		{name: "/model of a dropped model is rejected when the App added a still-allowed model's label since",
+			allowed: "[sonnet]",
+			setup:   then(taskWith("owner", "/model fable"), labeledBy(app, "model:sonnet")),
+			labels:  []string{"model:sonnet", "stage:ready"},
+			comment: rejected("/model fable", "`fable` isn't on `models.allowed`, which has `sonnet`", "1002"),
+			reacts:  []string{app + " -1"}, writes: []string{react, reply}},
 		{name: "/model of a dropped model is rejected when the App's stray label was removed and added back by a person since",
 			allowed: "[sonnet]",
 			setup: then(taskWith("owner", "/model fable", app+" model:sonnet"), func(f *githubtest.Fake) {
@@ -315,6 +334,81 @@ func TestModelRetryAfterReloadDropsIt(t *testing.T) {
 				t.Errorf("comments = %+v, want the command 👍'd and no reply", is.Comments)
 			}
 		})
+	}
+}
+
+// An untrusted user removes a stray label, before or after the owner's
+// /model gpt, and the label rules put it back as the App. That labeled event
+// is the revert, not a begun Apply, so /model gpt is still rejected, and the
+// allowed label stays (the verifier's attack on attempt 3).
+func TestModelRevertIsNotApply(t *testing.T) {
+	const reason = "`gpt` isn't on `models.allowed`, which has `sonnet`"
+	for _, tc := range []struct {
+		name   string
+		labels []string
+		before bool // the removal is before the command
+	}{
+		{"one stray, removed after", []string{"model:retired", "model:sonnet"}, false},
+		{"one stray, removed before", []string{"model:retired", "model:sonnet"}, true},
+		{"two strays, removed after", []string{"model:older", "model:retired"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setup := func(t testing.TB) *githubtest.Fake {
+				f := newFake(t)
+				file(f, 0, ready)
+				labeledBy(app, tc.labels...)(f)
+				if tc.before {
+					f.RemoveLabel(1, "mallory", "model:retired")
+				}
+				if id := f.AddComment(1, "owner", "/model gpt"); id != 1002 {
+					t.Fatalf("command ID = %d, want 1002", id)
+				}
+				if !tc.before {
+					f.RemoveLabel(1, "mallory", "model:retired")
+				}
+				return f
+			}
+			pass := settingPass(t, models(t, "[sonnet]"))
+			githubtest.Replay(t, setup, pass)
+
+			is := run(t, setup, pass).State().Issues[0]
+			if want := append(slices.Clone(tc.labels), "stage:ready"); !reflect.DeepEqual(is.Labels, want) {
+				t.Errorf("labels = %q, want %q", is.Labels, want)
+			}
+			if got := is.Comments[1].Reactions; !reflect.DeepEqual(got, []string{app + " -1"}) {
+				t.Errorf("the command's reactions = %q, want the App's 👎", got)
+			}
+			if got := is.Comments[len(is.Comments)-1].Body; got != rejected("/model gpt", reason, "1002") {
+				t.Errorf("the last comment = %q, want the rejection", got)
+			}
+		})
+	}
+}
+
+// Apply reads the timeline again, and a failure there fails the pass, after
+// Check's read succeeded: nothing is written, not even a 👎.
+func TestModelApplyTimelineFails(t *testing.T) {
+	f := then(taskWith("owner", "/model fable", app+" model:sonnet"), labeledBy(app, "model:fable"))(t)
+	timeline := func(r githubtest.Request) bool { return r.Method == "GET" && r.Path == "/issues/1/timeline" }
+	// The label rules' read, then Check's, then Apply's, which fails.
+	f.BeforeRequest(timeline, func() {
+		f.BeforeRequest(timeline, func() { f.AnswerOnce(timeline, 500) })
+	})
+	err := settingPass(t, models(t, "[sonnet]"))(f)
+	if err == nil || !strings.Contains(err.Error(), "labels added since comment 1002") {
+		t.Errorf("pass = %v, want the timeline error", err)
+	}
+	reads := 0
+	for _, r := range f.Requests() {
+		if timeline(r) {
+			reads++
+		}
+	}
+	if reads != 3 {
+		t.Errorf("%d timeline reads, want 3: the label rules', Check's and Apply's", reads)
+	}
+	if w := f.Writes(); len(w) != 0 {
+		t.Errorf("writes = %+v, want none", w)
 	}
 }
 

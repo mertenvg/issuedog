@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	gogithub "github.com/google/go-github/v92/github"
 	"github.com/mertenvg/issuedog/internal/config"
@@ -512,32 +514,37 @@ func setting(label func(ctx context.Context, a *Applier, c Cmd) (string, error))
 	}
 }
 
-// settingKind is the label kind of c, a /model or /effort command: its name,
-// with "verifier-" before it for the verifier's runs.
-func settingKind(c Cmd) (value, kind string) {
+// settingPrefix returns the value c, a /model or /effort command, sets, and
+// the prefix of the label it sets it in: github.ModelPrefix or
+// github.EffortPrefix, or for the verifier's runs github.VerifierModelPrefix
+// or github.VerifierEffortPrefix.
+func settingPrefix(c Cmd) (value, prefix string) {
 	value, verifier := c.Setting()
-	if verifier {
-		return value, "verifier-" + c.Name
+	switch {
+	case c.Name == "model" && verifier:
+		return value, github.VerifierModelPrefix
+	case c.Name == "model":
+		return value, github.ModelPrefix
+	case verifier:
+		return value, github.VerifierEffortPrefix
 	}
-	return value, c.Name
+	return value, github.EffortPrefix
 }
 
-// modelLabel returns the label c, a /model command, sets: its kind and the
+// modelLabel returns the label c, a /model command, sets: its prefix and the
 // label suffix of the model on models.allowed that it names, by full name
 // or by suffix, either ignoring case. Otherwise it returns a Rejection,
 // which quotes c's text; reply escapes it (SPEC §5.1).
 //
 // A reload can drop a model from models.allowed after Apply added its label,
 // and Check mustn't then reject c (see Handler). So when c names no allowed
-// model, the labels of c's kind on c's issue that name no allowed model
-// either, its stray labels, are looked up on the timeline: one whose latest
-// labeled or unlabeled event since c was posted is the App's labeled event
-// is what a begun Apply of c added (see addedSince). If exactly one is, c
-// names that label, and c removes the others. Otherwise c is rejected, and
-// its labels stay: a stray label from before c, or one a person added since,
-// doesn't count. Only this path reads the timeline, and it doesn't write.
+// model, the labels with c's prefix on c's issue that name no allowed model
+// either, its stray labels, are looked up on the timeline: one that a begun
+// Apply of c added (see addedSince) stands. If exactly one did, c names that
+// label, and c removes the others. Otherwise c is rejected, and its labels
+// stay. Only this path reads the timeline, and it doesn't write.
 func modelLabel(ctx context.Context, a *Applier, models config.Models, c Cmd) (string, error) {
-	arg, kind := settingKind(c)
+	arg, prefix := settingPrefix(c)
 	name, ok := models.Resolve(arg)
 	var same []string // the full names arg matches ignoring case, quoted
 	for _, m := range models.Allowed {
@@ -549,12 +556,14 @@ func modelLabel(ctx context.Context, a *Applier, models config.Models, c Cmd) (s
 	if ok || len(same) == 1 {
 		// name is on models.allowed, so it has a suffix: ok is always true.
 		suffix, _ := models.LabelSuffix(name)
-		return kind + ":" + suffix, nil
+		return prefix + suffix, nil
 	}
 	var stray []string
 	for _, l := range c.S.Labels {
-		k, suffix, colon := strings.Cut(l, ":")
-		if _, allowed := models.ModelName(suffix); colon && strings.EqualFold(k, kind) && !allowed {
+		if !strings.HasPrefix(strings.ToLower(l), prefix) {
+			continue
+		}
+		if _, allowed := models.ModelName(l[len(prefix):]); !allowed {
 			stray = append(stray, l)
 		}
 	}
@@ -580,41 +589,66 @@ func modelLabel(ctx context.Context, a *Applier, models config.Models, c Cmd) (s
 	return "", Rejection{Reason: fmt.Sprintf("`%s` isn't on `models.allowed`, which has %s", arg, list(suffixes))}
 }
 
-// addedSince returns those of labels, on c's issue, whose latest labeled or
-// unlabeled event on the timeline since c was posted is a labeled event by
-// the App, as when Apply added it. GitHub's times are to the second, so an
-// event in c's second counts as after c.
+// addedSince returns those of labels, on c's issue, that a begun Apply of c
+// added: each one whose latest labeled or unlabeled event on the timeline,
+// after c's own commented event, is the App's labeled event, and isn't the
+// label rules' revert. A revert puts back a label an untrusted user removed,
+// and its marker's key is the ID of that unlabeled event (github.CheckLabels),
+// so an App's labeled event right after an unlabeled event a trusted revert
+// marker names is a revert. Like the label rules, it skips dirty comments.
 func (a *Applier) addedSince(ctx context.Context, c Cmd, labels []string) ([]string, error) {
-	events, err := a.Client.TimelineSince(ctx, a.Owner, a.Repo, c.S.Number, c.Comment.CreatedAt)
+	wrap := func(err error) error { return fmt.Errorf("labels added since comment %d: %w", c.Comment.ID, err) }
+	events, err := a.Client.TimelineSince(ctx, a.Owner, a.Repo, c.S.Number, time.Time{})
 	if err != nil {
-		return nil, fmt.Errorf("labels added since comment %d: %w", c.Comment.ID, err)
+		return nil, wrap(err)
+	}
+	after := slices.IndexFunc(events, func(e *gogithub.Timeline) bool {
+		return e.GetEvent() == "commented" && e.GetID() == c.Comment.ID
+	})
+	if after < 0 {
+		return nil, wrap(fmt.Errorf("the comment isn't on the timeline of %s/%s#%d", a.Owner, a.Repo, c.S.Number))
+	}
+	reverted := map[string]bool{}
+	for _, e := range events {
+		if e.GetEvent() != "commented" || c.Dirt.Has(e.GetID()) {
+			continue
+		}
+		for _, m := range github.TrustedMarkers(github.Author{Login: e.GetUser().GetLogin(), Type: e.GetUser().GetType()}, e.GetBody(), a.AppSlug) {
+			if m.Kind == "revert" {
+				reverted[m.Fields["key"]] = true
+			}
+		}
 	}
 	var added []string
 	for _, l := range labels {
-		var last *gogithub.Timeline // events are oldest first
-		for _, e := range events {
+		last, prev := -1, -1 // events are oldest first
+		for i, e := range events {
 			if (e.GetEvent() == "labeled" || e.GetEvent() == "unlabeled") && strings.EqualFold(e.GetLabel().GetName(), l) {
-				last = e
+				prev, last = last, i
 			}
 		}
-		if last == nil || last.GetEvent() != "labeled" {
+		if last <= after || events[last].GetEvent() != "labeled" {
 			continue
 		}
-		if actor := last.GetActor(); state.IsApp(github.Author{Login: actor.GetLogin(), Type: actor.GetType()}, a.AppSlug) {
-			added = append(added, l)
+		if actor := events[last].GetActor(); !state.IsApp(github.Author{Login: actor.GetLogin(), Type: actor.GetType()}, a.AppSlug) {
+			continue
 		}
+		if prev >= 0 && events[prev].GetEvent() == "unlabeled" && reverted[strconv.FormatInt(events[prev].GetID(), 10)] {
+			continue
+		}
+		added = append(added, l)
 	}
 	return added, nil
 }
 
-// effortLabel returns the label c, a /effort command, sets: its kind and
+// effortLabel returns the label c, a /effort command, sets: its prefix and
 // the effort level it names, ignoring case. Otherwise it returns a
 // Rejection, which quotes c's text; reply escapes it (SPEC §5.1). The levels
 // are fixed in code, so no reload changes them.
 func effortLabel(c Cmd) (string, error) {
-	arg, kind := settingKind(c)
+	arg, prefix := settingPrefix(c)
 	if level := strings.ToLower(arg); config.ValidEffort(level) {
-		return kind + ":" + level, nil
+		return prefix + level, nil
 	}
 	levels := config.EffortLevels()
 	for i, l := range levels {
