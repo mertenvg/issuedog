@@ -49,6 +49,20 @@ func final(quote, lead, reason, id string) string {
 	return "> " + quote + "\n\n" + lead + ": " + reason + ".\n\n<!-- issuedog:reply reason=rejected cmd=" + id + " -->"
 }
 
+// overridden is the App's comment recording the owner's move to stage:clarifying
+// by hand, with the marker's fields.
+func overridden(fields string) string {
+	return "owner set `stage:clarifying` by hand, so I've recorded it as an owner override.\n\n" +
+		"<!-- issuedog:transition " + fields + " -->"
+}
+
+// movedOn is the reply to a revision request, comment id, rejected at
+// clarifying, after the stage moved on from spec-review.
+func movedOn(quote, id string) string {
+	return final(quote, "I didn't send the spec back for revision",
+		"this issue is at `clarifying` now, and a comment sends the spec back only at `spec-review`", id)
+}
+
 // approved files issue 1 as review does, with revision 2 (comment 1003)
 // after a remark (1002), approved by the owner's 👍 (reaction 1004, marker
 // 1005). Then it runs more.
@@ -170,6 +184,35 @@ func TestReviseAndEdits(t *testing.T) {
 			}), owners,
 			outcome{comments: []string{final("too long", "I didn't send the spec back for revision", "only an epic, or a story with no parent, goes from `spec-review` "+
 				"to `clarifying` on a revision request, and this is a story issue", "1002")}, labels: atReview, downs: []string{"too long"}}, nil},
+		{"a 👎'd request whose reply was lost gets it after a stage change, worded for the stage now",
+			review(func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, "owner", "too long")
+				f.AddReaction(1002, app, "-1")
+				f.RemoveLabel(1, "owner", "stage:spec-review")
+				labelEvent(t, f.AddLabel(1, "owner", "stage:clarifying"), 9003)
+			}), owners,
+			outcome{comments: []string{overridden("from=spec-review to=clarifying by=owner event=9003"), movedOn("too long", "1002")},
+				labels: clarifying, downs: []string{"too long"}}, nil},
+		{"a comment posted at another stage is no request after a stage change",
+			approved(func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1006, "owner", "also Y")
+				f.RemoveLabel(1, "owner", "stage:planning")
+				labelEvent(t, f.AddLabel(1, "owner", "stage:clarifying"), 9005)
+			}), owners,
+			outcome{comments: []string{overridden("from=planning to=clarifying by=owner event=9005")}, labels: clarifying}, nil},
+		{"an applied request, and the answer after it, are unaffected once the spec is back at review",
+			review(func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, "owner", "too long")
+				post(t, f, 1003, app, sentBack("1002"))
+				f.AddLabel(1, app, "stage:clarifying")
+				f.RemoveLabel(1, app, "stage:spec-review")
+				post(t, f, 1004, "owner", "add X")
+				post(t, f, 1005, app, revision(2, "body"))
+				f.AddLabel(1, app, "stage:spec-review")
+				f.RemoveLabel(1, app, "stage:clarifying")
+				f.AddReaction(1002, app, "+1")
+				f.AddReaction(1004, app, "+1")
+			}), owners, outcome{labels: atReview, acks: []string{"too long", "add X"}}, nil},
 		{"/revise at plan-review is rejected",
 			at(state.PlanReview, func(t testing.TB, f *githubtest.Fake) { post(t, f, 1002, "owner", "/revise shorter") }), owners,
 			outcome{comments: []string{rejected("/revise shorter", "revising a plan isn't handled yet", "1002")},
@@ -259,6 +302,75 @@ func TestReviseAndEdits(t *testing.T) {
 				t.Errorf("inputs = %q, want %q", in, tt.inputs)
 			}
 		})
+	}
+}
+
+// #83's verifier's case: request 1002 is rejected, as the issue is a story
+// with a parent, but the reply's write fails after the 👎. The owner sets
+// the stage by hand, and the next pass records the move to clarifying and
+// posts the reply, worded for the stage now. The setup runs the failed pass,
+// so Replay covers the repost.
+func TestLostReplyAfterStageChange(t *testing.T) {
+	var in []string
+	setup := func(tb testing.TB) *githubtest.Fake {
+		f := review(func(t testing.TB, f *githubtest.Fake) {
+			f.SetParent(1, f.AddIssue("owner", "Epic", "epic"))
+			post(t, f, 1002, "owner", "too long")
+		})(tb)
+		f.FailWrite(2)
+		if err := visit(t, owners, &in)(f); err == nil {
+			tb.Fatal("the first pass succeeded, want its reply to fail")
+		}
+		w := f.Writes()
+		if len(w) != 2 || w[0].Path != "/issues/comments/1002/reactions" || w[0].Failed || !w[1].Failed {
+			tb.Fatalf("first pass writes %+v, want the 👎 on 1002, then the failed reply", w)
+		}
+		f.FailWrite(0)
+		f.ForgetWrites()
+		f.RemoveLabel(1, "owner", "stage:spec-review")
+		labelEvent(tb, f.AddLabel(1, "owner", "stage:clarifying"), 9003)
+		return f
+	}
+	check(t, setup, visit(t, owners, &in), outcome{
+		comments: []string{overridden("from=spec-review to=clarifying by=owner event=9003"), movedOn("too long", "1002")},
+		labels:   []string{"stage:clarifying"}, downs: []string{"too long"}})
+	if in != nil {
+		t.Errorf("inputs = %q, want none", in)
+	}
+}
+
+// Telling a revision request costs no API call: Step reads the App's
+// reactions to a plain comment only if it's a request, so not to a comment
+// posted at another stage, an answer at clarifying included.
+func TestRequestReadsNoReactions(t *testing.T) {
+	f := review(func(t testing.TB, f *githubtest.Fake) {
+		post(t, f, 1002, "owner", "/revise too long")
+		post(t, f, 1003, app, sentBack("1002"))
+		f.AddLabel(1, app, "stage:clarifying")
+		f.RemoveLabel(1, app, "stage:spec-review")
+		post(t, f, 1004, "owner", "add X")
+		post(t, f, 1005, app, revision(2, "body"))
+		f.AddLabel(1, app, "stage:spec-review")
+		f.RemoveLabel(1, app, "stage:clarifying")
+		post(t, f, 1006, "owner", "/approve")
+		post(t, f, 1007, app, approvedRev(2, "owner's `/approve`", "1006", "1006"))
+		f.AddLabel(1, app, "stage:planning")
+		f.RemoveLabel(1, app, "stage:spec-review")
+		post(t, f, 1008, "owner", "also Y")
+		f.RemoveLabel(1, "owner", "stage:planning")
+		f.AddLabel(1, "owner", "stage:clarifying")
+		for _, id := range []int64{1002, 1004, 1006} {
+			f.AddReaction(id, app, "+1")
+		}
+	})(t)
+	var in []string
+	if err := visit(t, owners, &in)(f); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range f.Requests() {
+		if r.Path == "/issues/comments/1004/reactions" || r.Path == "/issues/comments/1008/reactions" {
+			t.Errorf("read %s, want no reactions read on a plain comment that isn't a request", r.Path)
+		}
 	}
 }
 
