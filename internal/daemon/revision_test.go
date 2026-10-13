@@ -81,9 +81,12 @@ func dirtyReview(owner bool, more func(t testing.TB, f *githubtest.Fake)) func(t
 const dirtyBody = "the issue description has an edit by mallory that wasn't approved, so I can't approve it"
 
 // approved is the comment approving revision 1 of "body" by key.
-func approved(by, key string) string {
-	return fmt.Sprintf("Revision 1 of the spec is approved, by %s.\n\n"+
-		"<!-- issuedog:transition from=spec-review to=planning rev=1 body=%s cmd=%s -->", by, state.BodyHash("body"), key)
+func approved(by, key string) string { return approvedRev(1, by, key) }
+
+// approvedRev is the comment approving revision rev of "body" by key.
+func approvedRev(rev int, by, key string) string {
+	return fmt.Sprintf("Revision %d of the spec is approved, by %s.\n\n"+
+		"<!-- issuedog:transition from=spec-review to=planning rev=%d body=%s cmd=%s -->", rev, by, rev, state.BodyHash("body"), key)
 }
 
 // outcome is what a pass on issue 1 should leave: the comments it adds, the
@@ -146,14 +149,14 @@ func TestApprove(t *testing.T) {
 				post(t, f, 1003, app, revision(2, "body"))
 			}),
 			outcome{labels: atReview}},
-		{"a dirty revision isn't one: its 👍 is ignored, and the one before it is the latest",
+		{"a dirty revision isn't one, and hides the one before it: neither's 👍 approves",
 			review(func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1002, app, revision(2, "body"))
 				f.EditComment(1002, "mallory", forged(revision(2, "body")))
 				f.AddReaction(1002, "owner", "+1")
-				f.AddReaction(1001, "owner2", "+1") // 1004
+				f.AddReaction(1001, "owner2", "+1")
 			}),
-			outcome{comments: []string{approved("owner2's 👍", "r1004")}, labels: planning}},
+			outcome{labels: atReview}},
 		{"a 👍 approves nothing once the body changed",
 			review(func(t testing.TB, f *githubtest.Fake) {
 				f.EditBody(1, "owner", "body, edited")
@@ -328,6 +331,80 @@ func TestPostRevision(t *testing.T) {
 				"<!-- issuedog:transition from=clarifying to=spec-review rev=2 body="+state.BodyHash("body")+" run=s -->")}, labels: atReview}},
 	} {
 		t.Run(tt.name, func(t *testing.T) { check(t, tt.setup, revisionPass(t, tt.m), tt.want) })
+	}
+}
+
+// probe is the verifier's: revision 1 of "body" with the owner's 👍 (1002),
+// revision 2 of "body v2" (1003), and revision 3 of "body" again (1004),
+// which mallory makes dirty. Then it runs more.
+func probe(more func(t testing.TB, f *githubtest.Fake)) func(testing.TB) *githubtest.Fake {
+	return review(func(t testing.TB, f *githubtest.Fake) {
+		f.AddReaction(1001, "owner", "+1")
+		f.EditBody(1, "owner", "body v2")
+		post(t, f, 1003, app, revision(2, "body v2"))
+		f.EditBody(1, "owner", "body")
+		post(t, f, 1004, app, revision(3, "body"))
+		f.EditComment(1003, "mallory", forged(revision(2, "body v2")))
+		f.EditComment(1004, "mallory", forged(revision(3, "body")))
+		more(t, f)
+	})
+}
+
+// visitPass is approvePass, then PostRevision on its own, as a visit at
+// spec-review would run them.
+func visitPass(t *testing.T) func(*githubtest.Fake) error {
+	return func(f *githubtest.Fake) error {
+		if err := approvePass(t)(f); err != nil {
+			return err
+		}
+		return revisionPass(t, daemon.Move{})(f)
+	}
+}
+
+const hidden = "a comment of mine after revision 1 was edited without approval, " +
+	"so it may hide a newer revision. Approve the next revision I post instead"
+
+// A dirty App comment after the latest clean revision may be a newer
+// revision, so nothing approves until a fresh one follows it.
+func TestApproveHiddenRevision(t *testing.T) {
+	atReview := []string{"stage:spec-review"}
+	for _, tt := range []struct {
+		name  string
+		setup func(testing.TB) *githubtest.Fake
+		want  outcome
+	}{
+		{"the old 👍 doesn't approve, and a fresh revision is posted",
+			probe(func(testing.TB, *githubtest.Fake) {}),
+			outcome{comments: []string{posted(2, "body", "", "")}, labels: atReview}},
+		{"an /approve is rejected, and a fresh revision is posted",
+			probe(func(t testing.TB, f *githubtest.Fake) { post(t, f, 1005, "owner", "/approve") }),
+			outcome{comments: []string{rejected("/approve", hidden, "1005"), posted(2, "body", "", "")},
+				labels: atReview, downs: []string{"/approve"}}},
+		{"once a fresh revision follows, the old 👍 still doesn't approve",
+			probe(func(t testing.TB, f *githubtest.Fake) { post(t, f, 1005, app, revision(2, "body")) }),
+			outcome{labels: atReview}},
+		{"once a fresh revision follows, a 👍 on it approves",
+			probe(func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1005, app, revision(2, "body"))
+				f.AddReaction(1005, "owner2", "+1") // 1006
+			}),
+			outcome{comments: []string{approvedRev(2, "owner2's 👍", "r1006")}, labels: []string{"stage:planning"}}},
+		{"any dirty App comment after the latest revision hides it",
+			review(func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, app, "Noted.")
+				f.EditComment(1002, "mallory", forged("Noted."))
+				f.AddReaction(1001, "owner", "+1")
+			}),
+			outcome{comments: []string{posted(2, "body", "", "")}, labels: atReview}},
+		{"a dirty comment by anyone else doesn't",
+			review(func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, "owner", "Noted.")
+				f.EditComment(1002, "mallory", "Noted!")
+				f.AddReaction(1001, "owner", "+1") // 1003
+			}),
+			outcome{comments: []string{approved("owner's 👍", "r1003")}, labels: []string{"stage:planning"}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) { check(t, tt.setup, visitPass(t), tt.want) })
 	}
 }
 

@@ -22,7 +22,7 @@ import (
 //     nothing changed (SPEC §7.4), and the earlier revision's 👍s mustn't
 //     approve it. Once the move's marker exists, Transition only finishes it.
 //   - With no m.To, it posts the revision on its own, unless the latest
-//     revision has the body's hash already.
+//     revision has the body's hash already and isn't Hidden.
 //
 // A dirty body (#91) gets no revision, since nothing may approve it. A move
 // still happens, saying why there's no revision, so the issue doesn't wait
@@ -41,7 +41,7 @@ func (a *Applier) PostRevision(ctx context.Context, s *github.Snapshot, dirty fu
 	}
 	latest, _ := state.LatestRevision(s, a.AppSlug, dirty)
 	hash := state.BodyHash(s.Body)
-	if m.To == "" && latest.Rev > 0 && latest.Hash == hash {
+	if m.To == "" && latest.Rev > 0 && latest.Hash == hash && !latest.Hidden {
 		return nil
 	}
 	rev := strconv.Itoa(latest.Rev + 1)
@@ -91,6 +91,9 @@ func ApproveCommand() Handler {
 				return Rejection{Reason: fmt.Sprintf("the issue description has an edit by %s that wasn't approved, so I can't approve it", c.Dirt[state.BodyID])}
 			case !ok:
 				return Rejection{Reason: "there's no revision to approve yet"}
+			case latest.Hidden:
+				return Rejection{Reason: fmt.Sprintf("a comment of mine after revision %d was edited without approval, "+
+					"so it may hide a newer revision. Approve the next revision I post instead", latest.Rev)}
 			case c.Comment.ID < latest.Comment:
 				return Rejection{Reason: fmt.Sprintf("it was posted before revision %d, the latest. To approve that, react 👍 to it, or post `/approve` again", latest.Rev)}
 			case state.BodyHash(c.S.Body) != latest.Hash:
@@ -157,14 +160,18 @@ func ApproveByReaction(trust github.Trust) func(ctx context.Context, a *Applier,
 }
 
 // approve moves s from spec-review to planning on key, approving the latest
-// revision, if the body isn't dirty and still has its hash. by says whose
-// approval it is.
+// revision, if the body isn't dirty and still has its hash, and the revision
+// isn't Hidden. by says whose approval it is.
 func (a *Applier) approve(ctx context.Context, s *github.Snapshot, d Dirt, key state.Key, by string) error {
 	if d.Has(state.BodyID) {
 		logr.Debugf("%s/%s#%d: not approving by %s: the body has an edit by %s that wasn't approved", a.Owner, a.Repo, s.Number, by, d[state.BodyID])
 		return nil
 	}
 	latest, _ := state.LatestRevision(s, a.AppSlug, d.Has)
+	if latest.Hidden {
+		logr.Debugf("%s/%s#%d: not approving revision %d by %s: a dirty comment of the App's after it may hide a newer one", a.Owner, a.Repo, s.Number, latest.Rev, by)
+		return nil
+	}
 	if hash := state.BodyHash(s.Body); hash != latest.Hash {
 		logr.Debugf("%s/%s#%d: not approving revision %d by %s: the body's hash is %s, not %s", a.Owner, a.Repo, s.Number, latest.Rev, by, hash, latest.Hash)
 		return nil

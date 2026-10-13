@@ -17,6 +17,10 @@ type Revision struct {
 	Hash string
 	// Comment is the revision comment's ID.
 	Comment int64
+	// Hidden is set when a dirty App comment comes after it. Its marker
+	// can't be read, so it may be a newer revision, and then this one isn't
+	// the latest: nothing may approve until a clean revision follows it.
+	Hidden bool
 }
 
 // BodyHash is the hash a revision records of an issue body: the first 8 hex
@@ -32,12 +36,18 @@ func BodyHash(body string) string {
 // LatestRevision returns the revision in the last of s's comments with a
 // revision marker that counts: by the App and not dirty (as for Derive). A
 // dirty revision comment is no revision, so the one before it is the latest,
-// and the next one posted takes the dirty one's number. It reports false if
-// there is none.
+// and the next one posted takes the dirty one's number. Any dirty App
+// comment after it marks it Hidden: only the App writes revision markers, so
+// a dirty comment by anyone else can't hide one. It reports false if there
+// is none.
 func LatestRevision(s *github.Snapshot, appSlug string, dirty func(int64) bool) (Revision, bool) {
 	var latest Revision
+	var lastDirty int64 // the last dirty App comment
 	for _, c := range s.Comments {
 		if dirty(c.ID) {
+			if IsApp(c.Author, appSlug) {
+				lastDirty = c.ID
+			}
 			continue
 		}
 		for _, m := range github.TrustedMarkers(c.Author, c.Body, appSlug) {
@@ -47,5 +57,6 @@ func LatestRevision(s *github.Snapshot, appSlug string, dirty func(int64) bool) 
 			}
 		}
 	}
+	latest.Hidden = lastDirty > latest.Comment
 	return latest, latest.Comment != 0
 }
