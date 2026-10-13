@@ -84,36 +84,47 @@ func (st *Step) counted(ctx context.Context, s *github.Snapshot, d Dirt) (map[in
 
 // handle processes c, a comment that counts as trusted input. It is
 // processed once a marker names it in cmd, a reply marker included, or the
-// App has 👍'd it.
+// App has 👍'd or 👎'd it. Only the App can remove its reaction, so a 👎
+// keeps a rejected command rejected after its reply is edited or deleted.
+//   - A rejected command whose reply is posted, but not its 👎, gets the 👎.
 //   - A comment edited since it was acted on gets one edited reply, and isn't
 //     applied again. That is since the first App comment whose marker names
-//     it, or, for one only 👍'd, such as /priority, since the 👍. An answer
-//     no marker has used yet is the exception: its latest text is the input.
+//     it, or whose transition's round covers it, for an answer the App 👍'd.
+//     For a command only 👍'd, such as /priority, it is since the 👍. An
+//     answer in the current round is the exception: its latest text counts.
 //   - One a marker names, but the App hasn't 👍'd, only gets its 👍.
-//   - At clarifying, one that isn't a command is an answer, and gets a 👍.
+//   - At clarifying, one in the current round (state.Issue.Round) that
+//     isn't a command is an answer, and gets a 👍.
 //   - A command is checked, then applied by its handler or rejected.
 func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment) error {
 	is := state.Derive(s, st.AppSlug, d.Has)
 	named := is.Keys[state.CmdKey(c.ID)]
 	cmd, isCmd := state.ParseCommand(c.Body)
-	answer := !isCmd && !named && is.Stage == state.Clarifying
-	if replied(is, c.ID) || (!isCmd && !answer && !named && c.Edit.At.IsZero()) {
+	answer := !isCmd && is.Stage == state.Clarifying && c.ID > is.Round
+	reason := replied(is, c.ID)
+	if reason == "edited" || (reason == "" && !isCmd && !answer && !named && c.Edit.At.IsZero()) {
 		return nil
 	}
-	if at, ok := st.usedAt(s, d, c.ID); ok && editedSince(c, at) {
-		return st.reply(ctx, s, c, "edited", editedText)
-	}
-	ack, err := st.appAck(ctx, c.ID)
+	mine, err := st.appReactions(ctx, c.ID)
 	if err != nil {
-		return fmt.Errorf("read the App's 👍 on comment %d: %w", c.ID, err)
+		return fmt.Errorf("read the App's reactions to comment %d: %w", c.ID, err)
 	}
+	up, acked := mine["+1"]
+	_, downed := mine["-1"]
+	at, used := st.usedAt(s, d, c.ID, isCmd)
 	switch {
-	case ack != nil && !named && !answer && editedSince(c, ack.CreatedAt):
+	case downed:
+		return nil
+	case reason == "rejected":
+		return st.react(ctx, c.ID, "-1")
+	case used && (acked || named) && editedSince(c, at):
 		return st.reply(ctx, s, c, "edited", editedText)
-	case ack != nil:
+	case acked && isCmd && !named && editedSince(c, up.CreatedAt):
+		return st.reply(ctx, s, c, "edited", editedText)
+	case acked:
 		return nil
 	case named || answer:
-		return st.addAck(ctx, c.ID)
+		return st.react(ctx, c.ID, "+1")
 	case !isCmd:
 		return nil
 	}
@@ -128,15 +139,18 @@ func editedSince(c github.Comment, t time.Time) bool {
 	return !c.Edit.At.IsZero() && !c.Edit.At.Before(t)
 }
 
-// usedAt returns when the first App comment whose marker names comment id
-// in cmd was posted. Like state.Derive, it skips dirty comments.
-func (st *Step) usedAt(s *github.Snapshot, d Dirt, id int64) (time.Time, bool) {
+// usedAt returns when the App first used comment id: when the first App
+// comment was posted whose marker names id in cmd or, unless id is a
+// command, whose transition's round bound covers id. Like state.Derive, it
+// skips dirty comments.
+func (st *Step) usedAt(s *github.Snapshot, d Dirt, id int64, isCmd bool) (time.Time, bool) {
 	for _, c := range s.Comments {
 		if d.Has(c.ID) {
 			continue
 		}
 		for _, m := range github.TrustedMarkers(c.Author, c.Body, st.AppSlug) {
-			if m.Fields["cmd"] == state.CmdKey(id).ID {
+			b, bounds := state.RoundBound(m, c.ID)
+			if m.Fields["cmd"] == state.CmdKey(id).ID || (!isCmd && bounds && c.ID > id && b >= id) {
 				return c.CreatedAt, true
 			}
 		}
@@ -144,9 +158,13 @@ func (st *Step) usedAt(s *github.Snapshot, d Dirt, id int64) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// replied reports whether a reply marker names comment id.
-func replied(is state.Issue, id int64) bool {
-	return slices.ContainsFunc(is.Markers, func(m github.Marker) bool {
-		return m.Kind == "reply" && m.Fields["cmd"] == state.CmdKey(id).ID
-	})
+// replied returns the reason of the first reply marker naming comment id,
+// or "".
+func replied(is state.Issue, id int64) string {
+	for _, m := range is.Markers {
+		if m.Kind == "reply" && m.Fields["cmd"] == state.CmdKey(id).ID {
+			return m.Fields["reason"]
+		}
+	}
+	return ""
 }

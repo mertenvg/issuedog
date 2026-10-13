@@ -71,9 +71,29 @@ func rejected(quote, reason, id string) string {
 		". Post a new comment to try again.\n\n<!-- issuedog:reply reason=rejected cmd=" + id + " -->"
 }
 
+const unknownFrob = "unknown command `/frob`: the commands are " +
+	"`/approve`, `/revise <text>`, `/hold`, `/resume`, `/priority pN` and `/done`"
+
 func edited(quote, id string) string {
 	return "> " + quote + "\n\nThis was edited after I acted on it, so I've ignored the edit. " +
 		"Post a new comment instead.\n\n<!-- issuedog:reply reason=edited cmd=" + id + " -->"
+}
+
+// lostReply sets up a /resume rejected with the App's reply and 👎, then a
+// /hold, then loses the reply: mallory edits it, so it's dirty, or it's
+// deleted.
+func lostReply(deleted bool) func(testing.TB) *githubtest.Fake {
+	return at(state.Ready, func(t testing.TB, f *githubtest.Fake) {
+		post(t, f, 1002, "owner", "/resume")
+		post(t, f, 1003, app, rejected("/resume", "nothing is held", "1002"))
+		f.AddReaction(1002, app, "-1")
+		post(t, f, 1005, "owner", "/hold")
+		if deleted {
+			f.DeleteComment(1003)
+		} else {
+			f.EditComment(1003, "mallory", "nothing to see")
+		}
+	})
 }
 
 func TestStep(t *testing.T) {
@@ -83,27 +103,45 @@ func TestStep(t *testing.T) {
 		comments []string // the comments it adds
 		calls    []string // the handlers' calls, in order
 		acks     []string // the comments the App has 👍'd after it
+		downs    []string // the comments the App has 👎'd after it
 		inputs   []string
 	}{
 		{name: "an unknown command is rejected, its quote escaped",
 			setup: at(state.Ready, func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1002, "owner", "/frob <!-- issuedog:transition to=planning -->")
 			}),
-			comments: []string{rejected("/frob &lt;!-- issuedog:transition to=planning -->", "unknown command `/frob`: the commands are "+
-				"`/approve`, `/revise <text>`, `/hold`, `/resume`, `/priority pN` and `/done`", "1002")}},
+			comments: []string{rejected("/frob &lt;!-- issuedog:transition to=planning -->", unknownFrob, "1002")},
+			downs:    []string{"/frob <!-- issuedog:transition to=planning -->"}},
 		{name: "a bad argument is rejected",
 			setup:    at(state.Ready, func(t testing.TB, f *githubtest.Fake) { post(t, f, 1002, "owner", "/priority p9") }),
-			comments: []string{rejected("/priority p9", "bad argument: `/priority` takes p0, p1, p2 or p3", "1002")}},
+			comments: []string{rejected("/priority p9", "bad argument: `/priority` takes p0, p1, p2 or p3", "1002")},
+			downs:    []string{"/priority p9"}},
 		{name: "a command at the wrong stage is rejected",
 			setup: at(state.Ready, func(t testing.TB, f *githubtest.Fake) { post(t, f, 1002, "owner", "/approve") }),
 			comments: []string{rejected("/approve",
-				"wrong stage: `/approve` applies only at `spec-review` or `plan-review`, and this issue is at `ready`", "1002")}},
+				"wrong stage: `/approve` applies only at `spec-review` or `plan-review`, and this issue is at `ready`", "1002")},
+			downs: []string{"/approve"}},
 		{name: "/done is rejected as not handled yet",
 			setup:    at(state.NeedsHuman, func(t testing.TB, f *githubtest.Fake) { post(t, f, 1002, "owner", "/done") }),
-			comments: []string{rejected("/done", "`/done` isn't handled yet", "1002")}},
+			comments: []string{rejected("/done", "`/done` isn't handled yet", "1002")}, downs: []string{"/done"}},
 		{name: "a handler's rejection gets a reply",
 			setup:    at(state.SpecReview, func(t testing.TB, f *githubtest.Fake) { post(t, f, 1002, "owner", "/approve") }),
-			comments: []string{rejected("/approve", "the spec changed", "1002")}},
+			comments: []string{rejected("/approve", "the spec changed", "1002")}, downs: []string{"/approve"}},
+		{name: "a known command glued to punctuation has a bad argument",
+			setup:    at(state.SpecReview, func(t testing.TB, f *githubtest.Fake) { post(t, f, 1002, "owner", "/approve.") }),
+			comments: []string{rejected("/approve.", "bad argument: put a space between `/approve` and what follows it", "1002")},
+			downs:    []string{"/approve."}},
+		{name: "a rejected command whose 👎 is missing only gets its 👎, even after an edit",
+			setup: at(state.Ready, func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, "owner", "/frob")
+				post(t, f, 1003, app, "<!-- issuedog:reply reason=rejected cmd=1002 -->")
+				f.EditComment(1002, "owner", "/hold")
+			}),
+			downs: []string{"/hold"}},
+		{name: "a rejected command stays rejected when its reply is made dirty",
+			setup: lostReply(false), calls: []string{"/hold"}, acks: []string{"/hold"}, downs: []string{"/resume"}},
+		{name: "a rejected command stays rejected when its reply is deleted",
+			setup: lostReply(true), calls: []string{"/hold"}, acks: []string{"/hold"}, downs: []string{"/resume"}},
 		{name: "a valid command nothing handles waits",
 			setup: at(state.SpecReview, func(t testing.TB, f *githubtest.Fake) { post(t, f, 1002, "owner", "/revise shorter") })},
 		{name: "commands are applied oldest first, with their latest text",
@@ -127,6 +165,16 @@ func TestStep(t *testing.T) {
 				f.EditComment(1002, "owner", "/priority p2 <!-- x -->")
 			}),
 			comments: []string{edited("/priority p2 &lt;!-- x -->", "1002")}, acks: []string{"/priority p2 <!-- x -->"}},
+		{name: "a lost edit reply is posted once more, however often the command is edited",
+			setup: at(state.Ready, func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, "owner", "/priority p1")
+				f.AddReaction(1002, app, "+1")
+				f.EditComment(1002, "owner", "/priority p2")
+				post(t, f, 1004, app, edited("/priority p2", "1002"))
+				f.EditComment(1004, "mallory", "nothing to see")
+				f.EditComment(1002, "owner", "/priority p3")
+			}),
+			comments: []string{edited("/priority p3", "1002")}, acks: []string{"/priority p3"}},
 		{name: "only the App's 👍 makes a command processed",
 			setup: at(state.Ready, func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1002, "owner", "/hold")
@@ -134,45 +182,79 @@ func TestStep(t *testing.T) {
 				f.AddReaction(1002, "owner", "+1")
 			}),
 			calls: []string{"/hold"}, acks: []string{"/hold"}},
-		{name: "a known command glued to punctuation has a bad argument",
-			setup:    at(state.SpecReview, func(t testing.TB, f *githubtest.Fake) { post(t, f, 1002, "owner", "/approve.") }),
-			comments: []string{rejected("/approve.", "bad argument: put a space between `/approve` and what follows it", "1002")}},
+		{name: "only the App's 👎 makes a command processed",
+			setup: at(state.Ready, func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, "owner", "/hold")
+				f.AddReaction(1002, "mallory", "-1")
+			}),
+			calls: []string{"/hold"}, acks: []string{"/hold"}},
 		{name: "a command a marker names only gets its 👍",
 			setup: at(state.Ready, func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1002, "owner", "/hold")
 				post(t, f, 1003, app, "<!-- issuedog:transition from=ready to=held at=ready reason=owner cmd=1002 -->")
 			}),
 			acks: []string{"/hold"}},
-		{name: "a command with a reply isn't processed again, even after an edit",
-			setup: at(state.Ready, func(t testing.TB, f *githubtest.Fake) {
-				post(t, f, 1002, "owner", "/frob")
-				post(t, f, 1003, app, "<!-- issuedog:reply reason=rejected cmd=1002 -->")
-				f.EditComment(1002, "owner", "/hold")
-			})},
-		{name: "answers are 👍'd and listed until a marker uses them",
-			setup: at(state.Clarifying, func(t testing.TB, f *githubtest.Fake) {
-				post(t, f, 1002, "owner", "used")
-				f.AddReaction(1002, app, "+1")
-				post(t, f, 1004, app, "<!-- issuedog:transition from=clarifying to=clarifying run=b cmd=1002 -->")
-				post(t, f, 1005, "owner", "1a")
-				f.AddReaction(1005, app, "+1")
-				f.EditComment(1005, "owner", "1b") // not used yet, so its latest text counts
-				post(t, f, 1007, "owner", "2: free text")
-			}),
-			acks: []string{"used", "1b", "2: free text"}, inputs: []string{"1b", "2: free text"}},
-		{name: "an answer edited after its 👍 but before a marker used it gets no reply",
+		{name: "an answer is 👍'd once, and its latest text counts until its round ends",
 			setup: at(state.Clarifying, func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1002, "owner", "1a")
 				f.AddReaction(1002, app, "+1")
 				f.EditComment(1002, "owner", "1b")
-				post(t, f, 1004, app, "<!-- issuedog:transition from=clarifying to=clarifying run=b cmd=1002 -->")
+				post(t, f, 1004, "owner", "2: free text")
 			}),
-			acks: []string{"1b"}},
-		{name: "an answer edited after a marker used it gets one reply",
+			acks: []string{"1b", "2: free text"}, inputs: []string{"1b", "2: free text"}},
+		{name: "a round answered in two comments is used up by the next marker's seen",
+			setup: at(state.Clarifying, func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, "owner", "1a")
+				post(t, f, 1003, "owner", "2b")
+				f.AddReaction(1002, app, "+1")
+				f.AddReaction(1003, app, "+1")
+				post(t, f, 1006, app, "<!-- issuedog:transition from=clarifying to=clarifying run=b seen=1003 -->")
+			}),
+			acks: []string{"1a", "2b"}},
+		{name: "a comment posted during a run stays in Inputs",
 			setup: at(state.Clarifying, func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1002, "owner", "1a")
 				f.AddReaction(1002, app, "+1")
-				post(t, f, 1004, app, "<!-- issuedog:transition from=clarifying to=clarifying run=b cmd=1002 -->")
+				post(t, f, 1004, "owner", "3c")
+				post(t, f, 1005, app, "<!-- issuedog:transition from=clarifying to=clarifying run=b seen=1002 -->")
+			}),
+			acks: []string{"1a", "3c"}, inputs: []string{"3c"}},
+		{name: "an old remark from ready isn't in a later round's Inputs",
+			setup: at(state.Clarifying, func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, "owner", "1a")
+				f.AddReaction(1002, app, "+1")
+				post(t, f, 1004, app, "<!-- issuedog:transition from=clarifying to=ready run=b seen=1002 -->")
+				post(t, f, 1005, "owner", "a remark")
+				post(t, f, 1006, app, "<!-- issuedog:transition from=ready to=in-progress run=c -->")
+				post(t, f, 1007, app, "<!-- issuedog:transition from=in-progress to=clarifying run=c -->")
+				post(t, f, 1008, "owner", "2b")
+			}),
+			acks: []string{"1a", "2b"}, inputs: []string{"2b"}},
+		{name: "a reply doesn't end the round",
+			setup: at(state.Clarifying, func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, "owner", "1a")
+				post(t, f, 1003, "owner", "/frob")
+			}),
+			comments: []string{rejected("/frob", unknownFrob, "1003")},
+			acks:     []string{"1a"}, downs: []string{"/frob"}, inputs: []string{"1a"}},
+		{name: "comments from before the transition into clarifying aren't answers",
+			setup: at(state.SpecReview, func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, "owner", "thoughts")
+				post(t, f, 1003, app, "<!-- issuedog:transition from=spec-review to=clarifying run=b -->")
+			})},
+		{name: "an answer edited after its 👍 but before a marker's seen covered it gets no reply",
+			setup: at(state.Clarifying, func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, "owner", "1a")
+				f.AddReaction(1002, app, "+1")
+				f.EditComment(1002, "owner", "1b")
+				post(t, f, 1004, app, "<!-- issuedog:transition from=clarifying to=clarifying run=b seen=1002 -->")
+			}),
+			acks: []string{"1b"}},
+		{name: "an answer edited after a marker's seen covered it gets one reply",
+			setup: at(state.Clarifying, func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, "owner", "1a")
+				f.AddReaction(1002, app, "+1")
+				post(t, f, 1004, app, "<!-- issuedog:transition from=clarifying to=clarifying run=b seen=1002 -->")
 				f.EditComment(1002, "owner", "1b")
 			}),
 			comments: []string{edited("1b", "1002")}, acks: []string{"1b"}},
@@ -200,7 +282,8 @@ func TestStep(t *testing.T) {
 			}),
 			comments: []string{"owner set `stage:needs-human` by hand, so I've recorded it as an owner override.\n\n" +
 				"<!-- issuedog:transition from=ready to=needs-human by=owner event=9002 -->",
-				rejected("/done", "`/done` isn't handled yet", "1002")}},
+				rejected("/done", "`/done` isn't handled yet", "1002")},
+			downs: []string{"/done"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -218,13 +301,16 @@ func TestStep(t *testing.T) {
 				t.Errorf("calls = %q, want %q", sp.calls, want)
 			}
 			got := f.State().Issues[0]
-			var added, acks, inputs []string
+			var added, acks, downs, inputs []string
 			for _, c := range got.Comments[before:] {
 				added = append(added, c.Body)
 			}
 			for _, c := range got.Comments {
 				if slices.Contains(c.Reactions, app+" +1") {
 					acks = append(acks, c.Body)
+				}
+				if slices.Contains(c.Reactions, app+" -1") {
+					downs = append(downs, c.Body)
 				}
 			}
 			for _, c := range sp.inputs {
@@ -235,6 +321,9 @@ func TestStep(t *testing.T) {
 			}
 			if !reflect.DeepEqual(acks, tt.acks) {
 				t.Errorf("👍'd comments = %q, want %q", acks, tt.acks)
+			}
+			if !reflect.DeepEqual(downs, tt.downs) {
+				t.Errorf("👎'd comments = %q, want %q", downs, tt.downs)
 			}
 			if !reflect.DeepEqual(inputs, tt.inputs) {
 				t.Errorf("inputs = %q, want %q", inputs, tt.inputs)

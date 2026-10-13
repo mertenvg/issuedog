@@ -62,10 +62,19 @@ func (st *Step) command(ctx context.Context, s *github.Snapshot, d Dirt, c githu
 	return nil
 }
 
-// reject replies to command comment c with why it doesn't apply.
+// reject replies to command comment c with why it doesn't apply, then adds
+// the App's 👎 to it. The reply's marker keeps a replay from posting it
+// again, and the 👎, which only the App can remove, keeps c processed if the
+// reply is edited or deleted (plan #5, amended assumption 5).
 func (st *Step) reject(ctx context.Context, s *github.Snapshot, c github.Comment, reason string) error {
 	logr.Infof("%s/%s#%d: rejected comment %d: %s", st.Owner, st.Repo, s.Number, c.ID, reason)
-	return st.reply(ctx, s, c, "rejected", "I didn't apply this command: "+reason+". Post a new comment to try again.")
+	if err := st.reply(ctx, s, c, "rejected", "I didn't apply this command: "+reason+". Post a new comment to try again."); err != nil {
+		return fmt.Errorf("reject: %w", err)
+	}
+	if err := st.react(ctx, c.ID, "-1"); err != nil {
+		return fmt.Errorf("reject: %w", err)
+	}
+	return nil
 }
 
 // reply posts text below a quote of comment c's first line, with a reply

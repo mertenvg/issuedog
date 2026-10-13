@@ -131,34 +131,37 @@ func (a *Applier) Transition(ctx context.Context, s *github.Snapshot, dirty func
 
 // Ack adds the App's 👍 to a comment, unless it has one already.
 func (a *Applier) Ack(ctx context.Context, commentID int64) error {
-	r, err := a.appAck(ctx, commentID)
+	mine, err := a.appReactions(ctx, commentID)
 	if err != nil {
 		return fmt.Errorf("ack comment %d: %w", commentID, err)
 	}
-	if r != nil {
+	if _, ok := mine["+1"]; ok {
 		return nil
 	}
-	return a.addAck(ctx, commentID)
+	return a.react(ctx, commentID, "+1")
 }
 
-// appAck returns the App's 👍 on a comment, or nil.
-func (a *Applier) appAck(ctx context.Context, commentID int64) (*github.Reaction, error) {
+// appReactions returns the App's reactions to a comment, by content. Only
+// the App's Bot counts.
+func (a *Applier) appReactions(ctx context.Context, commentID int64) (map[string]github.Reaction, error) {
 	reactions, err := a.Client.Reactions(ctx, a.Owner, a.Repo, commentID)
 	if err != nil {
-		return nil, fmt.Errorf("the App's 👍: %w", err)
+		return nil, fmt.Errorf("the App's reactions: %w", err)
 	}
+	mine := map[string]github.Reaction{}
 	for _, r := range reactions {
-		if r.Content == "+1" && state.IsApp(r.User, a.AppSlug) {
-			return &r, nil
+		if state.IsApp(r.User, a.AppSlug) {
+			mine[r.Content] = r
 		}
 	}
-	return nil, nil
+	return mine, nil
 }
 
-// addAck adds the App's 👍 to a comment, with no check: see Ack.
-func (a *Applier) addAck(ctx context.Context, commentID int64) error {
-	if _, _, err := a.Client.Client.Reactions.CreateIssueCommentReaction(ctx, a.Owner, a.Repo, commentID, "+1"); err != nil {
-		return fmt.Errorf("ack comment %d in %s/%s: %w", commentID, a.Owner, a.Repo, err)
+// react adds the App's reaction, such as "+1", to a comment, with no check:
+// see Ack.
+func (a *Applier) react(ctx context.Context, commentID int64, content string) error {
+	if _, _, err := a.Client.Client.Reactions.CreateIssueCommentReaction(ctx, a.Owner, a.Repo, commentID, content); err != nil {
+		return fmt.Errorf("react %s to comment %d in %s/%s: %w", content, commentID, a.Owner, a.Repo, err)
 	}
 	return nil
 }

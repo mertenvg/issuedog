@@ -92,17 +92,18 @@ func (c Command) Check(stage Stage) error {
 	return nil
 }
 
-// Inputs are s's comments that are input to the next stage run and that no
-// marker names yet (plan #5, assumption 5), oldest first. At clarifying,
-// those are the answers: comments counts accepts that aren't commands (SPEC
-// §9.1). counts reports whether a comment is trusted input (SPEC §6.2).
+// Inputs are s's comments that are input to the next stage run, oldest
+// first. At clarifying, those are this round's answers (plan #5, amended
+// assumption 5): comments above is.Round that counts accepts and that aren't
+// commands (SPEC §9.1). counts reports whether a comment is trusted input
+// (SPEC §6.2).
 func (is Issue) Inputs(s *github.Snapshot, counts func(github.Comment) bool) []github.Comment {
 	if is.Stage != Clarifying {
 		return nil
 	}
 	var in []github.Comment
 	for _, c := range s.Comments {
-		if _, cmd := ParseCommand(c.Body); counts(c) && !cmd && !is.Keys[CmdKey(c.ID)] {
+		if _, cmd := ParseCommand(c.Body); c.ID > is.Round && counts(c) && !cmd {
 			in = append(in, c)
 		}
 	}
