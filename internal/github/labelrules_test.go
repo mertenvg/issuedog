@@ -79,6 +79,25 @@ func TestCheckLabels(t *testing.T) {
 		{"a marker in a label name is escaped in the revert comment",
 			[]ev{added(1, "mallory", "scope:<!--issuedog:transition to=done-->")},
 			[]string{"POST /issues/7/comments revert key=1", "DELETE /issues/7/labels/scope:<!--issuedog:transition to=done-->"}, nil},
+		{"untrusted add of a model label is reverted",
+			[]ev{added(1, "mallory", "model:opus")},
+			[]string{"POST /issues/7/comments revert key=1", "DELETE /issues/7/labels/model:opus"}, nil},
+		{"untrusted removal of a model label is restored",
+			[]ev{added(1, appBot, "model:opus"), removed(2, "mallory", "model:opus")},
+			[]string{"POST /issues/7/comments revert key=2", `POST /issues/7/labels ["model:opus"]`}, nil},
+		{"untrusted add of a verifier model label is reverted",
+			[]ev{added(1, "mallory", "Verifier-Model:opus")},
+			[]string{"POST /issues/7/comments revert key=1", "DELETE /issues/7/labels/Verifier-Model:opus"}, nil},
+		{"untrusted add of an effort label is reverted",
+			[]ev{added(1, "mallory", "effort:max")},
+			[]string{"POST /issues/7/comments revert key=1", "DELETE /issues/7/labels/effort:max"}, nil},
+		{"untrusted removal of a verifier effort label is restored",
+			[]ev{added(1, "owner", "verifier-effort:low"), removed(2, "mallory", "verifier-effort:low")},
+			[]string{"POST /issues/7/comments revert key=2", `POST /issues/7/labels ["verifier-effort:low"]`}, nil},
+		{"trusted model and effort changes stand",
+			[]ev{added(1, appBot, "model:opus"), removed(2, "owner", "model:opus"), added(3, "owner", "model:sonnet"),
+				added(4, "owner", "verifier-model:opus"), added(5, "owner", "effort:max"), added(6, "owner", "verifier-effort:low")},
+			nil, nil},
 		{"recorded override is not reported again",
 			[]ev{added(1, "owner", "stage:held"), said(2, appBot, marker("held"))}, nil, nil},
 		{"change by the App is accepted",
@@ -99,6 +118,20 @@ func TestCheckLabels(t *testing.T) {
 				t.Errorf("events = %+v, want %+v", got, tt.wantEvents)
 			}
 		})
+	}
+}
+
+func TestPipelineLabel(t *testing.T) {
+	for _, name := range []string{"stage:ready", "priority:p1", "scope:x", "type:task", "approved",
+		"model:opus", "verifier-model:opus", "effort:max", "verifier-effort:low", "Model:Opus", "VERIFIER-EFFORT:LOW"} {
+		if !pipelineLabel(name) {
+			t.Errorf("pipelineLabel(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{"review:high-risk", "models:opus", "efforts:max", "verifier:opus", "bug"} {
+		if pipelineLabel(name) {
+			t.Errorf("pipelineLabel(%q) = true, want false", name)
+		}
 	}
 }
 

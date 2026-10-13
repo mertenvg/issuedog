@@ -66,10 +66,11 @@ func (l *labelState) latest() *gogithub.Timeline {
 	return l.events[len(l.events)-1]
 }
 
-// pipelineLabel reports whether name is a label SPEC §5.1 guards.
+// pipelineLabel reports whether name is a label SPEC §5.1 guards, or a model
+// or effort override label (#93's plan, T4).
 func pipelineLabel(name string) bool {
 	n := strings.ToLower(name)
-	for _, p := range []string{"stage:", "priority:", "scope:", "type:"} {
+	for _, p := range []string{"stage:", "priority:", "scope:", "type:", "model:", "verifier-model:", "effort:", "verifier-effort:"} {
 		if strings.HasPrefix(n, p) {
 			return true
 		}

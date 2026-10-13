@@ -185,8 +185,7 @@ func startDaemon(ctx context.Context, set settings, key []byte) (*daemon.Daemon,
 	if err != nil {
 		return nil, fmt.Errorf("loading trust from main: %w", err)
 	}
-	created, err := github.EnsureLabels(ctx, client, set.owner, set.name,
-		github.LabelOptions{Scopes: cfg.Scopes, TypeLabels: cfg.Types == "labels"})
+	created, err := github.EnsureLabels(ctx, client, set.owner, set.name, daemon.LabelOptions(cfg))
 	if err != nil {
 		return nil, fmt.Errorf("creating the labels: %w", err)
 	}

@@ -44,10 +44,13 @@ func fakeRun(t *testing.T, mode string, cred *syscall.Credential) (*Runner, Stag
 	}
 }
 
-// TestRunSuccess checks the full argument list, with a budget and without.
+// TestRunSuccess checks the full argument list, with every optional flag set.
 func TestRunSuccess(t *testing.T) {
 	r, s := fakeRun(t, "success", nil)
 	s.MaxBudgetUSD = 2.5
+	s.Model = "opus"
+	s.Effort = "high"
+	s.FallbackModels = []string{"sonnet", "haiku"}
 	out, err := r.Run(context.Background(), s)
 	if err != nil {
 		t.Fatal(err)
@@ -73,12 +76,49 @@ func TestRunSuccess(t *testing.T) {
 		"--no-session-persistence",
 		"--max-turns", "200",
 		"--max-budget-usd", "2.5",
+		"--model", "opus",
+		"--effort", "high",
+		"--fallback-model", "sonnet,haiku",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("args = %q, want %q", got, want)
 	}
 	if a := args("p", Stage{}); slices.Contains(a, "--max-budget-usd") {
 		t.Errorf("args without a budget = %q, want no --max-budget-usd", a)
+	}
+}
+
+// TestArgsModelFlags checks that --model, --effort and --fallback-model are
+// passed only when set, after the fixed flags.
+func TestArgsModelFlags(t *testing.T) {
+	base := args("p", Stage{})
+	tests := []struct {
+		name string
+		s    Stage
+		want []string
+	}{
+		{name: "none", want: []string{}},
+		{name: "model", s: Stage{Model: "opus"}, want: []string{"--model", "opus"}},
+		{name: "effort", s: Stage{Effort: "xhigh"}, want: []string{"--effort", "xhigh"}},
+		{name: "one fallback", s: Stage{FallbackModels: []string{"sonnet"}}, want: []string{"--fallback-model", "sonnet"}},
+		{name: "two fallbacks", s: Stage{FallbackModels: []string{"sonnet", "haiku"}}, want: []string{"--fallback-model", "sonnet,haiku"}},
+		{name: "empty fallback list", s: Stage{FallbackModels: []string{}}, want: []string{}},
+		{
+			name: "all",
+			s:    Stage{Model: "claude-opus-5-5", Effort: "low", FallbackModels: []string{"sonnet", "haiku"}},
+			want: []string{"--model", "claude-opus-5-5", "--effort", "low", "--fallback-model", "sonnet,haiku"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := args("p", tt.s)
+			if len(got) < len(base) || !slices.Equal(got[:len(base)], base) {
+				t.Fatalf("args = %q, want them to start with %q", got, base)
+			}
+			if tail := got[len(base):]; !slices.Equal(tail, tt.want) {
+				t.Errorf("model flags = %q, want %q", tail, tt.want)
+			}
+		})
 	}
 }
 

@@ -239,6 +239,38 @@ func TestCheckLabels(t *testing.T) {
 			writes:   []string{"POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:in-progress"},
 			comments: []string{disagreement("`stage:in-progress`", "9003")},
 			labels:   []string{"stage:ready"}, errors: 1},
+		{name: "an untrusted model label is removed",
+			setup: atReady(func(t testing.TB, f *githubtest.Fake) {
+				labelEvent(t, f.AddLabel(1, "mallory", "model:opus"), 9002)
+			}),
+			writes:   []string{"POST /issues/1/comments", "DELETE /issues/1/labels/model:opus"},
+			comments: []string{"I removed `model:opus`: only trusted users can change pipeline labels, and mallory isn't one.\n\n<!-- issuedog:revert key=9002 -->"},
+			labels:   []string{"stage:ready"}},
+		{name: "an untrusted removal of a model label is put back",
+			setup: atReady(func(t testing.TB, f *githubtest.Fake) {
+				f.AddLabel(1, "owner", "model:opus")
+				labelEvent(t, f.RemoveLabel(1, "mallory", "model:opus"), 9003)
+			}),
+			writes:   []string{"POST /issues/1/comments", "POST /issues/1/labels"},
+			comments: []string{"I restored `model:opus`: only trusted users can change pipeline labels, and mallory isn't one.\n\n<!-- issuedog:revert key=9003 -->"},
+			labels:   []string{"model:opus", "stage:ready"}},
+		{name: "an untrusted effort label is removed, its marker escaped",
+			setup: atReady(func(t testing.TB, f *githubtest.Fake) {
+				labelEvent(t, f.AddLabel(1, "mallory", "verifier-effort:<!--x-->"), 9002)
+			}),
+			writes:   []string{"POST /issues/1/comments", "DELETE /issues/1/labels/verifier-effort:<!--x-->"},
+			comments: []string{"I removed `verifier-effort:&lt;!--x-->`: only trusted users can change pipeline labels, and mallory isn't one.\n\n<!-- issuedog:revert key=9002 -->"},
+			labels:   []string{"stage:ready"}},
+		{name: "trusted model and effort changes stand",
+			setup: atReady(func(_ testing.TB, f *githubtest.Fake) {
+				f.AddLabel(1, app, "model:sonnet")
+				f.RemoveLabel(1, "owner", "model:sonnet")
+				f.AddLabel(1, "owner", "model:opus")
+				f.AddLabel(1, "owner", "verifier-model:opus")
+				f.AddLabel(1, "owner", "effort:max")
+				f.AddLabel(1, "owner", "verifier-effort:low")
+			}),
+			labels: []string{"effort:max", "model:opus", "stage:ready", "verifier-effort:low", "verifier-model:opus"}},
 		{name: "labels that agree are left alone",
 			setup:  atReady(func(testing.TB, *githubtest.Fake) {}),
 			labels: []string{"stage:ready"}},

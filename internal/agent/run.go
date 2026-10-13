@@ -32,6 +32,11 @@ type Stage struct {
 	MaxBudgetUSD float64       // stages.max_budget_usd.<stage>; 0 leaves the flag out
 	Timeout      time.Duration // stages.timeouts.<stage>; 0 fails the run
 	Env          []string      // the agent environment, from Env
+	// Model, Effort and FallbackModels are the run's resolved settings; each
+	// left empty leaves its flag out, so claude uses its default.
+	Model          string
+	Effort         string
+	FallbackModels []string // tried in order, passed comma-joined
 }
 
 // Runner starts stage runs.
@@ -124,6 +129,15 @@ func args(prompt string, s Stage) []string {
 	}
 	if s.MaxBudgetUSD > 0 {
 		a = append(a, "--max-budget-usd", strconv.FormatFloat(s.MaxBudgetUSD, 'f', -1, 64))
+	}
+	if s.Model != "" {
+		a = append(a, "--model", s.Model)
+	}
+	if s.Effort != "" {
+		a = append(a, "--effort", s.Effort)
+	}
+	if len(s.FallbackModels) > 0 {
+		a = append(a, "--fallback-model", strings.Join(s.FallbackModels, ","))
 	}
 	return a
 }

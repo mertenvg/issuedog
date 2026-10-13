@@ -11,6 +11,8 @@ import (
 // replayed pass is free to change.
 type State struct {
 	Issues []IssueState
+	// RepoLabels are the repo's labels, a set (repolabels.go).
+	RepoLabels []string
 }
 
 // IssueState is one issue in a State.
@@ -58,6 +60,7 @@ func (f *Fake) State() State {
 		}
 		s.Issues = append(s.Issues, st)
 	}
+	s.RepoLabels = f.repoLabelState()
 	return s
 }
 
