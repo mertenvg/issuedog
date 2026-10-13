@@ -29,11 +29,11 @@ import (
 // Start is the fake clock's first reading. Every change moves it on a second.
 var Start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-// Fake serves one repo's issues, comments, labels, timelines, reactions and
-// parents, and the GraphQL queries for their edits. Its API writes, comment edits
-// included, are made by the App, "<slug>[bot]" of type Bot. A GET whose
-// answer hasn't changed gets a 304. Every write (any method but GET) is
-// logged, and FailWrite can fail one.
+// Fake serves one repo's issues, comments, labels, timelines, reactions,
+// parents and sub-issues, and the GraphQL queries for their edits. Its API
+// writes, comment edits included, are made by the App, "<slug>[bot]" of type
+// Bot. A GET whose answer hasn't changed gets a 304. Every write (any method
+// but GET) is logged, and FailWrite can fail one.
 //
 // To add an endpoint, write a handler and register it in New with handle, or
 // with serve for a POST that only reads, as GraphQL does.
@@ -52,10 +52,11 @@ type Fake struct {
 	failAt      int
 	failAfter   bool // FailWriteAfter rather than FailWrite
 	notModified int
-	gqlErrors   []string // for the next GraphQL answer
-	beforeGQL   func()   // runs before the next GraphQL answer
-	histories   int      // edit history queries answered
-	historyCap  int      // see HistoryCap
+	gqlErrors   []string         // for the next GraphQL answer
+	beforeGQL   func()           // runs before the next GraphQL answer
+	histories   int              // edit history queries answered
+	historyCap  int              // see HistoryCap
+	linked      map[int][]linked // see LinkSubIssue
 
 	// The App, permission and repo label endpoints, and the request log (app.go).
 	perms      map[string]string
@@ -131,6 +132,7 @@ func New(t testing.TB, repo, slug string) *Fake {
 	f.mux.HandleFunc("POST /app/installations/{id}/access_tokens", mintToken)
 	f.handle("GET /issues/{n}", f.getIssue)
 	f.handle("GET /issues/{n}/parent", f.getParent)
+	f.handle("GET /issues/{n}/sub_issues", f.subIssues)
 	f.handle("GET /issues/{n}/comments", f.listComments)
 	f.handle("GET /issues/comments", f.listComments)
 	f.handle("POST /issues/{n}/comments", f.addComment)
@@ -447,11 +449,17 @@ func page[T any](c *call, items []T) (int, any) {
 
 func (f *Fake) getIssue(c *call) (int, any) { return http.StatusOK, c.issue.Issue }
 
+// getParent serves an issue's parent with its repository_url, this repo's
+// unless Transfer set another.
 func (f *Fake) getParent(c *call) (int, any) {
 	if c.issue.parent == 0 {
 		return http.StatusNotFound, message("Not Found")
 	}
-	return http.StatusOK, f.issues[c.issue.parent-1].Issue
+	parent := f.issues[c.issue.parent-1].Issue
+	if parent.RepositoryURL == nil {
+		parent.RepositoryURL = new(fmt.Sprintf("%s/repos/%s", f.srv.URL, f.repo))
+	}
+	return http.StatusOK, parent
 }
 
 // listComments serves one issue's comments oldest first, or the repo's,

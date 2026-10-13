@@ -1,6 +1,9 @@
 package state
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestLabels(t *testing.T) {
 	for _, s := range openStages {
@@ -51,7 +54,7 @@ func TestClassOf(t *testing.T) {
 			t.Errorf("ClassOf(%+v) = %s, %v; want %s", c.it, got, err, c.want)
 		}
 	}
-	if _, err := ClassOf(Item{Type: "feature"}); err == nil {
-		t.Error("ClassOf(feature): want an error")
+	if _, err := ClassOf(Item{Type: "feature"}); !errors.Is(err, ErrUnknownType) {
+		t.Errorf("ClassOf(feature) = %v, want ErrUnknownType", err)
 	}
 }

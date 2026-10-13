@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -67,39 +68,20 @@ func gitIn(t testing.TB, dir string, args ...string) {
 	}
 }
 
-// priority stands in for #81's /priority handler: it sets the label, drops
-// the other priority labels, then 👍s.
-var priority = daemon.Handler{Apply: func(ctx context.Context, a *daemon.Applier, c daemon.Cmd) error {
-	want := "priority:" + c.Arg
-	if !slices.Contains(c.S.Labels, want) {
-		if _, _, err := a.Client.Issues.AddLabelsToIssue(ctx, a.Owner, a.Repo, c.S.Number, []string{want}); err != nil {
-			return err
-		}
-		c.S.Labels = append(c.S.Labels, want)
-	}
-	for _, l := range slices.Clone(c.S.Labels) {
-		if strings.HasPrefix(l, "priority:") && l != want {
-			if _, err := a.Client.Issues.RemoveLabelForIssue(ctx, a.Owner, a.Repo, c.S.Number, l); err != nil {
-				return err
-			}
-			c.S.Labels = slices.DeleteFunc(c.S.Labels, func(x string) bool { return x == l })
-		}
-	}
-	return a.Ack(ctx, c.Comment.ID)
-}}
-
-// newDaemon is a fresh daemon of o/r on f, cloning o, with the /priority
-// handler. Its Reactions hook adds each issue it sees to *visits.
+// newDaemon is a fresh daemon of o/r on f, cloning o, with the /hold,
+// /resume and /priority handlers. Its Reactions hook adds each issue it sees
+// to *visits.
 func newDaemon(t testing.TB, f *githubtest.Fake, o *origin, visits *[]int) *daemon.Daemon {
 	t.Helper()
 	a := &daemon.Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: slug}
-	st := &daemon.Step{Applier: a, Commands: map[string]daemon.Handler{"priority": priority},
+	st := &daemon.Step{Applier: a,
 		Reactions: func(_ context.Context, _ *daemon.Applier, s *github.Snapshot, _ daemon.Dirt) error {
 			if visits != nil {
 				*visits = append(*visits, s.Number)
 			}
 			return nil
 		}}
+	st.Commands = daemon.Commands(st.CurrentTrust())
 	return &daemon.Daemon{Step: st, Clone: repo.New(o.url, filepath.Join(t.TempDir(), "r.git")), Config: config.Defaults()}
 }
 
@@ -444,6 +426,124 @@ func TestIterateApprovesAtSpecReview(t *testing.T) {
 	iterate(t, d)
 	if got := labels(); !reflect.DeepEqual(got, []string{"stage:planning"}) {
 		t.Errorf("labels after owner's 👍 = %v, want stage:planning", got)
+	}
+}
+
+// chain files tasks 1 > 2 > 3 at ready, in-progress and verifying.
+func chain(t testing.TB) *githubtest.Fake {
+	f := newFake(t)
+	for n, stage := range []string{"ready", "in-progress", "verifying"} {
+		fileAt(f, stage, "task")
+		f.SetType(n+1, "Task")
+		if n > 0 {
+			f.SetParent(n+1, n)
+		}
+	}
+	return f
+}
+
+// A whole pass with a /hold on a tree is safe to replay, and the issues it
+// touched, read again on the next Iterate, need nothing more.
+func TestIterateHoldReplay(t *testing.T) {
+	o := newOrigin(t)
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := chain(t)
+		f.AddComment(1, "owner", "/hold")
+		return f
+	}
+	pass := func(f *githubtest.Fake) error {
+		d := newDaemon(t, f, o, nil)
+		if err := d.Iterate(context.Background()); err != nil {
+			return err
+		}
+		return d.Iterate(context.Background())
+	}
+	githubtest.Replay(t, setup, pass)
+	f := setup(t)
+	if err := pass(f); err != nil {
+		t.Fatal(err)
+	}
+	for _, is := range f.State().Issues {
+		if !reflect.DeepEqual(is.Labels, []string{"stage:held"}) || len(is.Comments) != map[int]int{1: 3, 2: 2, 3: 2}[is.Number] {
+			t.Errorf("#%d: labels %q and %d comments, want held, with only the hold's comments added", is.Number, is.Labels, len(is.Comments))
+		}
+	}
+}
+
+// Work never gets an issue a command wrote to in the same pass, even one
+// whose step 1 ran before the command: #1 is #2's child.
+func TestIterateWorkSkipsTouched(t *testing.T) {
+	f := newFake(t)
+	fileAt(f, "ready", "child")
+	fileAt(f, "ready", "parent")
+	f.SetParent(1, 2)
+	f.AddComment(2, "owner", "/hold")
+	d := newDaemon(t, f, newOrigin(t), nil)
+	var ready [][]int
+	d.Work = func(_ context.Context, rs []daemon.Ready) error {
+		var ns []int
+		for _, r := range rs {
+			ns = append(ns, r.S.Number)
+		}
+		ready = append(ready, ns)
+		return nil
+	}
+	iterate(t, d)
+	iterate(t, d)
+	if !reflect.DeepEqual(ready, [][]int{{2}, {1, 2}}) {
+		t.Errorf("Work got issues %v, want [2] while #1's snapshot is out of date, then [1 2]", ready)
+	}
+}
+
+// Commands on a parent and a child in the same poll end as they do a poll
+// apart: the child, which the parent's command may have written to, is read
+// again before its step 1, even when nothing was written to it. Comment IDs,
+// which differ, are left out.
+func TestIterateSamePollCommands(t *testing.T) {
+	ids := regexp.MustCompile(`=[0-9]{4,}`)
+	for _, tc := range []struct {
+		name    string
+		priorOn int // the issue a /hold is run on first, if any
+		cmds    [2]string
+	}{
+		{"/resume on the parent, then /hold on the child", 1, [2]string{"/resume", "/hold"}},
+		{"/hold on the parent, then /resume on the child", 0, [2]string{"/hold", "/resume"}},
+		{"/hold on the parent, which writes nothing to the held child, then /resume on it", 2, [2]string{"/hold", "/resume"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o := newOrigin(t)
+			run := func(apart bool) [][]string {
+				f := chain(t)
+				d := newDaemon(t, f, o, nil)
+				if tc.priorOn != 0 {
+					f.AddComment(tc.priorOn, "owner", "/hold")
+				}
+				iterate(t, d)
+				for i, cmd := range tc.cmds {
+					f.AddComment(i+1, "owner", cmd)
+					if apart {
+						iterate(t, d)
+						iterate(t, d)
+					}
+				}
+				for range 3 {
+					iterate(t, d)
+				}
+				var got [][]string
+				for _, is := range f.State().Issues {
+					bodies := is.Labels
+					for _, c := range is.Comments {
+						bodies = append(bodies, ids.ReplaceAllString(c.Body, "=N")+" "+strings.Join(c.Reactions, ","))
+					}
+					slices.Sort(bodies[len(is.Labels):])
+					got = append(got, bodies)
+				}
+				return got
+			}
+			if same, apart := run(false), run(true); !reflect.DeepEqual(same, apart) {
+				t.Errorf("in the same poll:\n%q\nwant as a poll apart:\n%q", same, apart)
+			}
+		})
 	}
 }
 

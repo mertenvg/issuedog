@@ -58,7 +58,8 @@ func (f *Fake) RepoLabels() []string {
 	return names
 }
 
-// Close closes an issue.
+// Close closes an issue. It stays listed among its parent's sub-issues, as on
+// GitHub.
 func (f *Fake) Close(number int) {
 	f.edit(number, func(is *issue) { is.State, is.UpdatedAt = new("closed"), f.tick() })
 }
