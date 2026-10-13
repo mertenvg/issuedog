@@ -28,11 +28,9 @@ type Command struct {
 var commandRE = regexp.MustCompile(`^/([A-Za-z][A-Za-z0-9_-]*)(.*)$`)
 
 // ParseCommand reads body's first line as a command: a slash, a word, and
-// any argument. It reports false for anything else, which isn't a command.
-// A known command's name followed by anything but a space, as in
-// "/approve.", is that command with a bad argument (see Check), not plain
-// text. An unknown word must end at a space or the line's end, so a path
-// such as "/usr/bin" stays plain text.
+// any argument, else it reports false. A known name glued to more text, as in
+// "/approve.", has a bad argument (see Check); an unknown one, as in
+// "/usr/bin", is plain text.
 func ParseCommand(body string) (Command, bool) {
 	line, rest, _ := strings.Cut(strings.TrimSpace(body), "\n")
 	m := commandRE.FindStringSubmatch(strings.TrimSpace(line))
@@ -94,16 +92,17 @@ func (c Command) Check(stage Stage) error {
 
 // Inputs are s's comments that are input to the next stage run, oldest
 // first. At clarifying, those are this round's answers (plan #5, amended
-// assumption 5): comments above is.Round that counts accepts and that aren't
-// commands (SPEC §9.1). counts reports whether a comment is trusted input
-// (SPEC §6.2).
+// assumption 5): comments above is.Round that counts accepts, that aren't
+// commands, and that no cmd or reply marker names, as a command edited into
+// plain text would be (SPEC §9.1). counts reports whether a comment is
+// trusted input (SPEC §6.2).
 func (is Issue) Inputs(s *github.Snapshot, counts func(github.Comment) bool) []github.Comment {
 	if is.Stage != Clarifying {
 		return nil
 	}
 	var in []github.Comment
 	for _, c := range s.Comments {
-		if _, cmd := ParseCommand(c.Body); c.ID > is.Round && counts(c) && !cmd {
+		if _, cmd := ParseCommand(c.Body); c.ID > is.Round && counts(c) && !cmd && !is.Keys[CmdKey(c.ID)] {
 			in = append(in, c)
 		}
 	}

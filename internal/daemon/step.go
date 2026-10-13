@@ -45,11 +45,12 @@ func (st *Step) Run(ctx context.Context, s *github.Snapshot) ([]github.Comment, 
 		return nil, wrap(err)
 	}
 	// Replies are added to s.Comments, so range over the comments read.
+	out := map[int64]bool{} // rejected: never input
 	for _, c := range slices.Clone(s.Comments) {
 		if !counts[c.ID] {
 			continue
 		}
-		if err := st.handle(ctx, s, d, c); err != nil {
+		if err := st.handle(ctx, s, d, c, out); err != nil {
 			return nil, wrap(fmt.Errorf("comment %d: %w", c.ID, err))
 		}
 	}
@@ -58,7 +59,7 @@ func (st *Step) Run(ctx context.Context, s *github.Snapshot) ([]github.Comment, 
 			return nil, wrap(err)
 		}
 	}
-	return state.Derive(s, st.AppSlug, d.Has).Inputs(s, func(c github.Comment) bool { return counts[c.ID] }), nil
+	return state.Derive(s, st.AppSlug, d.Has).Inputs(s, func(c github.Comment) bool { return counts[c.ID] && !out[c.ID] }), nil
 }
 
 // counted returns which of s's comments count as trusted input (SPEC §6.2,
@@ -82,27 +83,22 @@ func (st *Step) counted(ctx context.Context, s *github.Snapshot, d Dirt) (map[in
 	return counts, nil
 }
 
-// handle processes c, a comment that counts as trusted input. It is
-// processed once a marker names it in cmd, a reply marker included, or the
-// App has 👍'd or 👎'd it. Only the App can remove its reaction, so a 👎
-// keeps a rejected command rejected after its reply is edited or deleted.
-//   - A rejected command whose reply is posted, but not its 👎, gets the 👎.
-//   - A comment edited since it was acted on gets one edited reply, and isn't
-//     applied again. That is since the first App comment whose marker names
-//     it, or whose transition's round covers it, for an answer the App 👍'd.
-//     For a command only 👍'd, such as /priority, it is since the 👍. An
-//     answer in the current round is the exception: its latest text counts.
-//   - One a marker names, but the App hasn't 👍'd, only gets its 👍.
-//   - At clarifying, one in the current round (state.Issue.Round) that
-//     isn't a command is an answer, and gets a 👍.
-//   - A command is checked, then applied by its handler or rejected.
-func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment) error {
+// handle processes c, a comment that counts as trusted input, and records in
+// out a comment the App 👎'd. c is processed once a cmd or reply marker names
+// it, or the App has 👍'd or 👎'd it: only the App can remove its reaction,
+// so a 👎 outlasts a lost reply.
+//   - A processed comment missing its reaction gets it (SPEC §5.2).
+//   - One edited since it was used (usedAt), or a 👍'd one that wasn't an
+//     answer edited since the 👍, gets one edited reply (SPEC §6.2).
+//   - At clarifying, a comment in the round that isn't a command is an
+//     answer, and gets a 👍. A command is applied or rejected.
+func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment, out map[int64]bool) error {
 	is := state.Derive(s, st.AppSlug, d.Has)
 	named := is.Keys[state.CmdKey(c.ID)]
 	cmd, isCmd := state.ParseCommand(c.Body)
-	answer := !isCmd && is.Stage == state.Clarifying && c.ID > is.Round
+	answer := !isCmd && !named && is.Stage == state.Clarifying && c.ID > is.Round
 	reason := replied(is, c.ID)
-	if reason == "edited" || (reason == "" && !isCmd && !answer && !named && c.Edit.At.IsZero()) {
+	if (reason == "edited" && !named) || (reason == "" && !isCmd && !answer && !named && c.Edit.At.IsZero()) {
 		return nil
 	}
 	mine, err := st.appReactions(ctx, c.ID)
@@ -110,20 +106,30 @@ func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github
 		return fmt.Errorf("read the App's reactions to comment %d: %w", c.ID, err)
 	}
 	up, acked := mine["+1"]
-	_, downed := mine["-1"]
+	if _, downed := mine["-1"]; downed {
+		out[c.ID] = true
+		return nil
+	}
+	if reason == "rejected" {
+		return st.react(ctx, c.ID, "-1")
+	}
+	if named && !acked {
+		if err := st.react(ctx, c.ID, "+1"); err != nil {
+			return fmt.Errorf("finish: %w", err)
+		}
+		acked = true
+	}
 	at, used := st.usedAt(s, d, c.ID, isCmd)
 	switch {
-	case downed:
+	case reason == "edited":
 		return nil
-	case reason == "rejected":
-		return st.react(ctx, c.ID, "-1")
-	case used && (acked || named) && editedSince(c, at):
+	case used && acked && editedSince(c, at):
 		return st.reply(ctx, s, c, "edited", editedText)
-	case acked && isCmd && !named && editedSince(c, up.CreatedAt):
+	case acked && !named && (isCmd || st.stageAt(s, d, c.ID) != state.Clarifying) && editedSince(c, up.CreatedAt):
 		return st.reply(ctx, s, c, "edited", editedText)
 	case acked:
 		return nil
-	case named || answer:
+	case answer:
 		return st.react(ctx, c.ID, "+1")
 	case !isCmd:
 		return nil
@@ -136,13 +142,14 @@ const editedText = "This was edited after I acted on it, so I've ignored the edi
 // editedSince reports whether c was edited at or after t. GitHub's times are
 // to the second, so an edit in t's second counts as after it.
 func editedSince(c github.Comment, t time.Time) bool {
-	return !c.Edit.At.IsZero() && !c.Edit.At.Before(t)
+	return !c.Edit.At.Before(t) // never edited is the zero time, before any
 }
 
 // usedAt returns when the App first used comment id: when the first App
 // comment was posted whose marker names id in cmd or, unless id is a
-// command, whose transition's round bound covers id. Like state.Derive, it
-// skips dirty comments.
+// command, whose transition's seen covers id. A transition with no seen,
+// such as a hold, didn't read the answers. Like state.Derive, it skips dirty
+// comments.
 func (st *Step) usedAt(s *github.Snapshot, d Dirt, id int64, isCmd bool) (time.Time, bool) {
 	for _, c := range s.Comments {
 		if d.Has(c.ID) {
@@ -150,12 +157,30 @@ func (st *Step) usedAt(s *github.Snapshot, d Dirt, id int64, isCmd bool) (time.T
 		}
 		for _, m := range github.TrustedMarkers(c.Author, c.Body, st.AppSlug) {
 			b, bounds := state.RoundBound(m, c.ID)
-			if m.Fields["cmd"] == state.CmdKey(id).ID || (!isCmd && bounds && c.ID > id && b >= id) {
+			if m.Fields["cmd"] == state.CmdKey(id).ID || (!isCmd && bounds && m.Fields[state.FieldSeen] != "" && b >= id) {
 				return c.CreatedAt, true
 			}
 		}
 	}
 	return time.Time{}, false
+}
+
+// stageAt returns the stage the issue was at when comment id was posted: the
+// latest transition before it. A plain comment posted at clarifying was an
+// answer. Like state.Derive, it skips dirty comments.
+func (st *Step) stageAt(s *github.Snapshot, d Dirt, id int64) state.Stage {
+	stage := state.Intake
+	for _, c := range s.Comments {
+		if c.ID >= id {
+			break
+		}
+		for _, m := range github.TrustedMarkers(c.Author, c.Body, st.AppSlug) {
+			if _, ok := state.RoundBound(m, c.ID); ok && !d.Has(c.ID) {
+				stage = state.Stage(m.Fields["to"])
+			}
+		}
+	}
+	return stage
 }
 
 // replied returns the reason of the first reply marker naming comment id,

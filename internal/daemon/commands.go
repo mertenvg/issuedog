@@ -11,16 +11,11 @@ import (
 	"github.com/mertenvg/logr/v2"
 )
 
-// Handler applies one valid command for Step. It acks the command once it
-// is applied, as Transition does for a cmd key, or returns a Rejection.
-//
-// It must be replay-safe: Step calls it again after a crash until the
-// command is processed, so it checks each write first, as Transition does.
-// Once any marker on the issue names cmd=<comment id>, Step never calls it
-// again, so a handler that writes more than once writes that marker on its
-// own issue last. Writes elsewhere come first, and a cmd=<comment id> marker
-// already on another issue, such as a descendant /hold reached, means that
-// issue's part is applied.
+// Handler applies one valid command for Step and acks it, or returns a
+// Rejection. It must be replay-safe, checking each write first. Step stops
+// calling it once a marker on the issue names cmd=<comment id>, so it writes
+// that marker last; such a marker already on another issue, such as a
+// descendant, means that part is applied.
 type Handler func(ctx context.Context, a *Applier, c Cmd) error
 
 // Cmd is a command for a Handler.
@@ -62,10 +57,8 @@ func (st *Step) command(ctx context.Context, s *github.Snapshot, d Dirt, c githu
 	return nil
 }
 
-// reject replies to command comment c with why it doesn't apply, then adds
-// the App's 👎 to it. The reply's marker keeps a replay from posting it
-// again, and the 👎, which only the App can remove, keeps c processed if the
-// reply is edited or deleted (plan #5, amended assumption 5).
+// reject replies to command comment c with why it doesn't apply, then 👎s it,
+// which keeps c processed if the reply is lost (plan #5, amended assumption 5).
 func (st *Step) reject(ctx context.Context, s *github.Snapshot, c github.Comment, reason string) error {
 	logr.Infof("%s/%s#%d: rejected comment %d: %s", st.Owner, st.Repo, s.Number, c.ID, reason)
 	if err := st.reply(ctx, s, c, "rejected", "I didn't apply this command: "+reason+". Post a new comment to try again."); err != nil {
@@ -77,10 +70,8 @@ func (st *Step) reject(ctx context.Context, s *github.Snapshot, c github.Comment
 	return nil
 }
 
-// reply posts text below a quote of comment c's first line, with a reply
-// marker naming c, which counts it as processed (plan #5, assumption 5). Both
-// are escaped (SPEC §5.1). Run doesn't reach it once c is processed, so it's
-// posted once.
+// reply posts text, escaped (SPEC §5.1), below a quote of comment c's first
+// line, with a reply marker naming c, which counts it as processed.
 func (st *Step) reply(ctx context.Context, s *github.Snapshot, c github.Comment, reason, text string) error {
 	marker, err := github.FormatMarker(github.Marker{Kind: "reply", Fields: map[string]string{"cmd": state.CmdKey(c.ID).ID, "reason": reason}})
 	if err != nil {
