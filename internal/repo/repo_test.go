@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -24,7 +25,7 @@ func run(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(gitEnv(os.Environ(), ""),
+	cmd.Env = append(gitEnv(os.Environ(), "", ""),
 		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
 		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
 	out, err := cmd.CombinedOutput()
@@ -201,13 +202,26 @@ func TestGitEnv(t *testing.T) {
 	base := []string{
 		"PATH=/bin", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=", "LC_ALL=C",
 	}
+	const remote = "https://github.com/o/r.git"
 	tests := []struct {
-		name  string
-		token string
-		want  []string
+		name   string
+		remote string
+		token  string
+		want   []string
 	}{
 		{
-			name:  "with token",
+			name:   "remote and token",
+			remote: remote,
+			token:  fakeToken,
+			want: append(slices.Clone(base), "GIT_CONFIG_COUNT=4",
+				"GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=/dev/null",
+				"GIT_CONFIG_KEY_1=http.followRedirects", "GIT_CONFIG_VALUE_1=false",
+				"GIT_CONFIG_KEY_2=http."+remote+".followRedirects", "GIT_CONFIG_VALUE_2=false",
+				"GIT_CONFIG_KEY_3=http.extraHeader", "GIT_CONFIG_VALUE_3="+header,
+			),
+		},
+		{
+			name:  "token, no remote",
 			token: fakeToken,
 			want: append(slices.Clone(base), "GIT_CONFIG_COUNT=3",
 				"GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=/dev/null",
@@ -216,7 +230,7 @@ func TestGitEnv(t *testing.T) {
 			),
 		},
 		{
-			name: "no token, no header",
+			name: "no remote, no token, no header",
 			want: append(slices.Clone(base), "GIT_CONFIG_COUNT=2",
 				"GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=/dev/null",
 				"GIT_CONFIG_KEY_1=http.followRedirects", "GIT_CONFIG_VALUE_1=false",
@@ -225,7 +239,7 @@ func TestGitEnv(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			env := gitEnv([]string{"PATH=/bin", "GIT_DIR=/agent/.git", "GIT_SSH_COMMAND=evil", "SSH_ASKPASS=/evil"}, tt.token)
+			env := gitEnv([]string{"PATH=/bin", "GIT_DIR=/agent/.git", "GIT_SSH_COMMAND=evil", "SSH_ASKPASS=/evil"}, tt.remote, tt.token)
 			if !slices.Equal(env, tt.want) {
 				t.Errorf("env =\n%q\nwant\n%q", env, tt.want)
 			}
@@ -234,16 +248,23 @@ func TestGitEnv(t *testing.T) {
 }
 
 // TestSyncRefusesRedirect has a remote answer every request under /old.git
-// with a 301 to /moved.git, on another server or on itself. Git must not
+// with a redirect to /moved.git, on another server or on itself. Git must not
 // follow it, so /moved.git gets no request, let alone the token.
 func TestSyncRefusesRedirect(t *testing.T) {
 	header := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+fakeToken))
-	for _, crossHost := range []bool{true, false} {
-		name := "same host"
-		if crossHost {
-			name = "cross host"
-		}
-		t.Run(name, func(t *testing.T) {
+	tests := []struct {
+		name      string
+		code      int
+		crossHost bool
+		follow    bool // the bare repo's own config asks to follow redirects from the remote
+	}{
+		{name: "cross host", code: http.StatusMovedPermanently, crossHost: true},
+		{name: "same host", code: http.StatusTemporaryRedirect},
+		{name: "cross host, repo config follows", code: http.StatusFound, crossHost: true, follow: true},
+		{name: "same host, repo config follows", code: http.StatusMovedPermanently, follow: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			var mu sync.Mutex
 			var asked, moved []string // requests to /old.git and to /moved.git, with their Authorization
 			record := func(to *[]string, r *http.Request) {
@@ -258,7 +279,7 @@ func TestSyncRefusesRedirect(t *testing.T) {
 			other := httptest.NewServer(target)
 			t.Cleanup(other.Close)
 			prefix := "" // a path, so the same host
-			if crossHost {
+			if tt.crossHost {
 				prefix = other.URL
 			}
 			mux := http.NewServeMux()
@@ -266,20 +287,31 @@ func TestSyncRefusesRedirect(t *testing.T) {
 			mux.HandleFunc("/old.git/", func(w http.ResponseWriter, r *http.Request) {
 				record(&asked, r)
 				to := prefix + "/moved.git/" + strings.TrimPrefix(r.URL.Path, "/old.git/") + "?" + r.URL.RawQuery
-				http.Redirect(w, r, to, http.StatusMovedPermanently)
+				http.Redirect(w, r, to, tt.code)
 			})
 			first := httptest.NewServer(mux)
 			t.Cleanup(first.Close)
 
-			r := New(first.URL+"/old.git", filepath.Join(t.TempDir(), "target.git"))
+			url := first.URL + "/old.git"
+			dir := filepath.Join(t.TempDir(), "target.git")
+			if tt.follow {
+				run(t, filepath.Dir(dir), "init", "--bare", "--quiet", "--initial-branch=main", dir)
+				run(t, dir, "config", "http."+url+".followRedirects", "true")
+			}
+			r := New(url, dir)
 			err := r.Sync(context.Background(), fakeToken)
 			if err == nil {
 				t.Fatal("Sync followed a redirect; want an error")
 			}
-			for _, want := range []string{"fetch " + first.URL + "/old.git: the remote redirected (HTTP 301)", "ISSUEDOG_REPO", "returned error: 301"} {
+			code := strconv.Itoa(tt.code)
+			for _, want := range []string{"fetch " + url + ": the remote redirected (HTTP " + code + ")", "ISSUEDOG_REPO", "returned error: " + code} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("Sync err = %v, want it to contain %q", err, want)
 				}
+			}
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) {
+				t.Errorf("Sync err = %v, want it to wrap git's *exec.ExitError", err)
 			}
 			mu.Lock()
 			defer mu.Unlock()
@@ -294,12 +326,35 @@ func TestSyncRefusesRedirect(t *testing.T) {
 }
 
 func TestSyncOtherFailureNamesNoRedirect(t *testing.T) {
-	r := New(filepath.Join(t.TempDir(), "missing.git"), filepath.Join(t.TempDir(), "target.git"))
-	err := r.Sync(context.Background(), fakeToken)
-	if err == nil {
-		t.Fatal("Sync from a missing remote: want an error")
+	refuse := func(code int) string {
+		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, http.StatusText(code), code)
+		}))
+		t.Cleanup(s.Close)
+		return s.URL + "/repo.git"
 	}
-	if strings.Contains(err.Error(), "redirect") || strings.Contains(err.Error(), "ISSUEDOG_REPO") {
-		t.Errorf("Sync err = %v, want no redirect hint", err)
+	tests := []struct {
+		name   string
+		remote string
+		want   string // in git's error
+	}{
+		{name: "403", remote: refuse(http.StatusForbidden), want: "returned error: 403"},
+		{name: "404", remote: refuse(http.StatusNotFound), want: "not found"},
+		{name: "missing local repo", remote: filepath.Join(t.TempDir(), "missing.git"), want: "does not appear to be a git repository"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := New(tt.remote, filepath.Join(t.TempDir(), "target.git"))
+			err := r.Sync(context.Background(), fakeToken)
+			if err == nil {
+				t.Fatal("Sync: want an error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("Sync err = %v, want it to contain %q", err, tt.want)
+			}
+			if strings.Contains(err.Error(), "redirect") || strings.Contains(err.Error(), "ISSUEDOG_REPO") {
+				t.Errorf("Sync err = %v, want no redirect hint", err)
+			}
+		})
 	}
 }

@@ -88,7 +88,7 @@ func (r *Repo) ReadFile(ctx context.Context, path string) ([]byte, error) {
 // The error includes git's stderr.
 func (r *Repo) git(ctx context.Context, token string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"--git-dir=" + r.dir}, args...)...)
-	cmd.Env = gitEnv(os.Environ(), token)
+	cmd.Env = gitEnv(os.Environ(), r.remote, token)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
@@ -106,8 +106,10 @@ func (r *Repo) git(ctx context.Context, token string, args ...string) ([]byte, e
 //     config file.
 //   - It sets http.followRedirects=false, so git sends the token only to the
 //     URL it was given. Git's default follows the first request's redirect,
-//     then sends http.extraHeader to wherever that pointed.
-func gitEnv(environ []string, token string) []string {
+//     then sends http.extraHeader to wherever that pointed. It sets it for
+//     remote too, if given: a per-URL key in the repo's config would beat the
+//     generic one, while on an exact match the env's later entry wins.
+func gitEnv(environ []string, remote, token string) []string {
 	env := make([]string, 0, len(environ)+10)
 	for _, kv := range environ {
 		if !strings.HasPrefix(kv, "GIT_") && !strings.HasPrefix(kv, "SSH_ASKPASS=") {
@@ -119,9 +121,12 @@ func gitEnv(environ []string, token string) []string {
 		"GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_ASKPASS=", // empty, so git doesn't fall back to core.askPass or SSH_ASKPASS
-		"LC_ALL=C",     // ReadFile matches git's English error text.
+		"LC_ALL=C",     // ReadFile and Sync match git's English error text.
 	)
 	config := [][2]string{{"core.hooksPath", "/dev/null"}, {"http.followRedirects", "false"}}
+	if remote != "" {
+		config = append(config, [2]string{"http." + remote + ".followRedirects", "false"})
+	}
 	if token != "" {
 		basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 		config = append(config, [2]string{"http.extraHeader", "Authorization: Basic " + basic})
