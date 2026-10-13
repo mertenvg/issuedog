@@ -1,6 +1,7 @@
 package state
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"strconv"
@@ -21,6 +22,10 @@ type Revision struct {
 	// can't be read, so it may be a newer revision, and then this one isn't
 	// the latest: nothing may approve until a clean revision follows it.
 	Hidden bool
+	// Seen is the newest comment ID read before the revision was posted:
+	// its marker's seen, else that of a transition in its comment, else 0.
+	// Only a later comment can be a revision request on it.
+	Seen int64
 }
 
 // BodyHash is the hash a revision records of an issue body: the first 8 hex
@@ -50,11 +55,24 @@ func LatestRevision(s *github.Snapshot, appSlug string, dirty func(int64) bool) 
 			}
 			continue
 		}
+		var found *Revision
+		var moved int64 // a transition's seen
 		for _, m := range github.TrustedMarkers(c.Author, c.Body, appSlug) {
 			rev, err := strconv.Atoi(m.Fields["rev"])
-			if m.Kind == "revision" && err == nil && rev > 0 && m.Fields["body"] != "" {
-				latest = Revision{Rev: rev, Hash: m.Fields["body"], Comment: c.ID}
+			seen, serr := strconv.ParseInt(m.Fields[FieldSeen], 10, 64)
+			if serr != nil || seen < 0 {
+				seen = 0
 			}
+			switch {
+			case m.Kind == "revision" && err == nil && rev > 0 && m.Fields["body"] != "":
+				found = &Revision{Rev: rev, Hash: m.Fields["body"], Comment: c.ID, Seen: seen}
+			case m.Kind == "transition":
+				moved = seen
+			}
+		}
+		if found != nil {
+			latest = *found
+			latest.Seen = cmp.Or(latest.Seen, moved)
 		}
 	}
 	latest.Hidden = lastDirty > latest.Comment

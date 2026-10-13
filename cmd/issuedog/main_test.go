@@ -294,6 +294,20 @@ func TestNewStepCommands(t *testing.T) {
 	}
 }
 
+// newStep handles the phase 1 spec commands, so one left out fails here, not
+// through TestRunDaemon's timeout.
+func TestNewStepHandlesSpecCommands(t *testing.T) {
+	st := newStep(&daemon.Applier{}, trustSet{})
+	for _, name := range []string{"approve", "revise"} {
+		if h, ok := st.Commands[name]; !ok || h.Check == nil || h.Apply == nil {
+			t.Errorf("Commands[%q] = %+v, %t; want a handler with Check and Apply", name, h, ok)
+		}
+	}
+	if st.Reactions == nil {
+		t.Error("Reactions is nil, want the 👍 trigger")
+	}
+}
+
 // cancelOnCall makes the daemon's signal context one the returned func
 // cancels, and records the signals it was asked to stop on.
 func cancelOnCall(t *testing.T) (cancel func(), signals *[]os.Signal) {

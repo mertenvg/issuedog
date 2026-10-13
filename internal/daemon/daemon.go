@@ -137,9 +137,12 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		if touched[n] || (!read[n] && !slices.ContainsFunc(s.Labels, isSpecReview)) {
 			continue
 		}
-		// TODO(#83): a visit at spec-review posts a revision for a body edit
-		// (PostRevision), with the function #83 adds.
+		// ReviewVisit, on an issue read again too, posts a revision for a body
+		// edit; it does nothing at any other stage than spec-review.
 		in, err := d.Step.Run(ctx, s)
+		if err == nil {
+			err = d.Step.ReviewVisit(ctx, s)
+		}
 		if err != nil {
 			errs = append(errs, err)
 			delete(d.inputs, n)

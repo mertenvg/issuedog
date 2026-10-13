@@ -196,6 +196,7 @@ func newStep(a *daemon.Applier, tr github.Trust) *daemon.Step {
 	st := &daemon.Step{Applier: a, Trust: tr}
 	st.Commands = daemon.Commands(st.CurrentTrust())
 	st.Commands["approve"] = daemon.ApproveCommand()
+	st.Commands["revise"] = daemon.ReviseCommand()
 	st.Reactions = daemon.ApproveByReaction(st.CurrentTrust())
 	return st
 }

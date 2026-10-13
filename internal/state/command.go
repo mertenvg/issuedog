@@ -90,21 +90,48 @@ func (c Command) Check(stage Stage) error {
 	return nil
 }
 
-// Inputs are s's input to the next stage run, oldest first. At clarifying,
-// those are this round's answers (plan #5, amended assumption 5): comments
-// above is.Round that counts accepts as trusted input, that aren't commands,
-// and that no cmd or reply marker names. It's only right after a successful
-// daemon Step.Run on s, which posts a lost reply again: without it, a 👎'd
-// command edited into plain text would be listed.
+// Inputs are s's input to the next stage run, oldest first: comments that
+// counts accepts as trusted input, posted above is.Round, that aren't
+// commands, and that no cmd or reply marker names. At clarifying, those are
+// this round's answers (plan #5, amended assumption 5), after the revision
+// request that sent the spec back, if one did, as the notes (SPEC §7.4). At
+// planning, they are comments posted after the approval. It's only right
+// after a successful daemon Step.Run on s, which posts a lost reply again:
+// without it, a 👎'd command edited into plain text would be listed.
 func (is Issue) Inputs(s *github.Snapshot, counts func(github.Comment) bool) []github.Comment {
-	if is.Stage != Clarifying {
+	if is.Stage != Clarifying && is.Stage != Planning {
 		return nil
 	}
+	notes := is.notes()
 	var in []github.Comment
 	for _, c := range s.Comments {
-		if _, cmd := ParseCommand(c.Body); c.ID > is.Round && counts(c) && !cmd && !is.Keys[CmdKey(c.ID)] {
+		if _, cmd := ParseCommand(c.Body); counts(c) && (c.ID == notes || c.ID > is.Round && !cmd && !is.Keys[CmdKey(c.ID)]) {
 			in = append(in, c)
 		}
 	}
 	return in
+}
+
+// notes returns the ID of the comment whose revision request sent the spec
+// back, if the latest transition did so: from spec-review to clarifying,
+// keyed by the comment. A reply marker naming it, as for an edit made after
+// it was used, drops it. Otherwise it returns 0.
+func (is Issue) notes() int64 {
+	var last github.Marker
+	for _, m := range is.Markers {
+		if _, sets := RoundBound(m, 0); sets {
+			last = m
+		}
+	}
+	key := last.Fields["cmd"]
+	id, ok := Key{"cmd", key}.Comment()
+	if !ok || Stage(last.Fields["from"]) != SpecReview || Stage(last.Fields["to"]) != Clarifying {
+		return 0
+	}
+	for _, m := range is.Markers {
+		if m.Kind == "reply" && m.Fields["cmd"] == key {
+			return 0
+		}
+	}
+	return id
 }
