@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -24,6 +25,10 @@ var ErrNotFound = errors.New("not found")
 // each Sync. Refs outside refs/heads, such as refs/issuedog/runs/*, are left
 // alone.
 const refspec = "+refs/heads/*:refs/heads/*"
+
+// redirected matches git's error when the remote answers with a redirect,
+// which gitEnv tells git not to follow. Git doesn't say where it pointed.
+var redirected = regexp.MustCompile(`The requested URL returned error: (3[0-9][0-9])`)
 
 // Repo is a daemon-owned bare clone.
 type Repo struct {
@@ -40,7 +45,8 @@ func New(remote, dir string) *Repo {
 // Sync creates the bare repo if it's missing, then fetches every branch from
 // the remote. A first sync that fails part way leaves a repo the next Sync
 // fetches into. The token is sent as an HTTP header and is never written to
-// disk or passed in argv.
+// disk or passed in argv. A remote that redirects fails the fetch, with an
+// error that points at ISSUEDOG_REPO.
 func (r *Repo) Sync(ctx context.Context, token string) error {
 	_, err := os.Stat(filepath.Join(r.dir, "HEAD"))
 	switch {
@@ -52,6 +58,10 @@ func (r *Repo) Sync(ctx context.Context, token string) error {
 		return fmt.Errorf("stat bare repo %s: %w", r.dir, err)
 	}
 	if _, err := r.git(ctx, token, "fetch", "--quiet", "--prune", "--no-tags", "--", r.remote, refspec); err != nil {
+		if m := redirected.FindStringSubmatch(err.Error()); m != nil {
+			return fmt.Errorf("fetch %s: the remote redirected (HTTP %s), and git doesn't follow redirects "+
+				"while it carries the token; if the repo was renamed or transferred, check ISSUEDOG_REPO: %w", r.remote, m[1], err)
+		}
 		return fmt.Errorf("fetch %s: %w", r.remote, err)
 	}
 	return nil
@@ -94,6 +104,9 @@ func (r *Repo) git(ctx context.Context, token string, args ...string) ([]byte, e
 //     credential settings apply.
 //   - It passes config through GIT_CONFIG_*, so none lands in the repo's
 //     config file.
+//   - It sets http.followRedirects=false, so git sends the token only to the
+//     URL it was given. Git's default follows the first request's redirect,
+//     then sends http.extraHeader to wherever that pointed.
 func gitEnv(environ []string, token string) []string {
 	env := make([]string, 0, len(environ)+10)
 	for _, kv := range environ {
@@ -108,7 +121,7 @@ func gitEnv(environ []string, token string) []string {
 		"GIT_ASKPASS=", // empty, so git doesn't fall back to core.askPass or SSH_ASKPASS
 		"LC_ALL=C",     // ReadFile matches git's English error text.
 	)
-	config := [][2]string{{"core.hooksPath", "/dev/null"}}
+	config := [][2]string{{"core.hooksPath", "/dev/null"}, {"http.followRedirects", "false"}}
 	if token != "" {
 		basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 		config = append(config, [2]string{"http.extraHeader", "Authorization: Basic " + basic})

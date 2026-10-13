@@ -5,11 +5,14 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -195,41 +198,108 @@ func TestTokenNeverOnDisk(t *testing.T) {
 
 func TestGitEnv(t *testing.T) {
 	header := "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+fakeToken))
+	base := []string{
+		"PATH=/bin", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=", "LC_ALL=C",
+	}
 	tests := []struct {
-		name    string
-		token   string
-		want    []string
-		notWant []string
+		name  string
+		token string
+		want  []string
 	}{
 		{
 			name:  "with token",
 			token: fakeToken,
-			want: []string{
-				"PATH=/bin", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_ASKPASS=", "GIT_CONFIG_COUNT=2",
+			want: append(slices.Clone(base), "GIT_CONFIG_COUNT=3",
 				"GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=/dev/null",
-				"GIT_CONFIG_KEY_1=http.extraHeader", "GIT_CONFIG_VALUE_1=" + header,
-			},
-			notWant: []string{"GIT_DIR=/agent/.git", "GIT_SSH_COMMAND=evil", "SSH_ASKPASS=/evil"},
+				"GIT_CONFIG_KEY_1=http.followRedirects", "GIT_CONFIG_VALUE_1=false",
+				"GIT_CONFIG_KEY_2=http.extraHeader", "GIT_CONFIG_VALUE_2="+header,
+			),
 		},
 		{
-			name:    "no token, no header",
-			want:    []string{"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.hooksPath"},
-			notWant: []string{"GIT_CONFIG_KEY_1=http.extraHeader", "GIT_DIR=/agent/.git"},
+			name: "no token, no header",
+			want: append(slices.Clone(base), "GIT_CONFIG_COUNT=2",
+				"GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=/dev/null",
+				"GIT_CONFIG_KEY_1=http.followRedirects", "GIT_CONFIG_VALUE_1=false",
+			),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			env := gitEnv([]string{"PATH=/bin", "GIT_DIR=/agent/.git", "GIT_SSH_COMMAND=evil", "SSH_ASKPASS=/evil"}, tt.token)
-			for _, w := range tt.want {
-				if !slices.Contains(env, w) {
-					t.Errorf("env lacks %q: %v", w, env)
-				}
-			}
-			for _, nw := range tt.notWant {
-				if slices.Contains(env, nw) {
-					t.Errorf("env has %q", nw)
-				}
+			if !slices.Equal(env, tt.want) {
+				t.Errorf("env =\n%q\nwant\n%q", env, tt.want)
 			}
 		})
+	}
+}
+
+// TestSyncRefusesRedirect has a remote answer every request under /old.git
+// with a 301 to /moved.git, on another server or on itself. Git must not
+// follow it, so /moved.git gets no request, let alone the token.
+func TestSyncRefusesRedirect(t *testing.T) {
+	header := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+fakeToken))
+	for _, crossHost := range []bool{true, false} {
+		name := "same host"
+		if crossHost {
+			name = "cross host"
+		}
+		t.Run(name, func(t *testing.T) {
+			var mu sync.Mutex
+			var asked, moved []string // requests to /old.git and to /moved.git, with their Authorization
+			record := func(to *[]string, r *http.Request) {
+				mu.Lock()
+				defer mu.Unlock()
+				*to = append(*to, r.Method+" "+r.URL.Path+" Authorization="+r.Header.Get("Authorization"))
+			}
+			target := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				record(&moved, r)
+				http.NotFound(w, r)
+			})
+			other := httptest.NewServer(target)
+			t.Cleanup(other.Close)
+			prefix := "" // a path, so the same host
+			if crossHost {
+				prefix = other.URL
+			}
+			mux := http.NewServeMux()
+			mux.Handle("/moved.git/", target)
+			mux.HandleFunc("/old.git/", func(w http.ResponseWriter, r *http.Request) {
+				record(&asked, r)
+				to := prefix + "/moved.git/" + strings.TrimPrefix(r.URL.Path, "/old.git/") + "?" + r.URL.RawQuery
+				http.Redirect(w, r, to, http.StatusMovedPermanently)
+			})
+			first := httptest.NewServer(mux)
+			t.Cleanup(first.Close)
+
+			r := New(first.URL+"/old.git", filepath.Join(t.TempDir(), "target.git"))
+			err := r.Sync(context.Background(), fakeToken)
+			if err == nil {
+				t.Fatal("Sync followed a redirect; want an error")
+			}
+			for _, want := range []string{"fetch " + first.URL + "/old.git: the remote redirected (HTTP 301)", "ISSUEDOG_REPO", "returned error: 301"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("Sync err = %v, want it to contain %q", err, want)
+				}
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if want := "GET /old.git/info/refs Authorization=" + header; !slices.Equal(asked, []string{want}) {
+				t.Errorf("/old.git got %q, want only %q", asked, want)
+			}
+			if len(moved) != 0 {
+				t.Errorf("git followed the redirect: /moved.git got %q", moved)
+			}
+		})
+	}
+}
+
+func TestSyncOtherFailureNamesNoRedirect(t *testing.T) {
+	r := New(filepath.Join(t.TempDir(), "missing.git"), filepath.Join(t.TempDir(), "target.git"))
+	err := r.Sync(context.Background(), fakeToken)
+	if err == nil {
+		t.Fatal("Sync from a missing remote: want an error")
+	}
+	if strings.Contains(err.Error(), "redirect") || strings.Contains(err.Error(), "ISSUEDOG_REPO") {
+		t.Errorf("Sync err = %v, want no redirect hint", err)
 	}
 }
