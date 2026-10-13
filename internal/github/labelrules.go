@@ -70,7 +70,7 @@ func (l *labelState) latest() *gogithub.Timeline {
 // or effort override label (#93's plan, T4).
 func pipelineLabel(name string) bool {
 	n := strings.ToLower(name)
-	for _, p := range []string{"stage:", "priority:", "scope:", "type:", "model:", "verifier-model:", "effort:", "verifier-effort:"} {
+	for _, p := range []string{"stage:", "priority:", "scope:", "type:", ModelPrefix, VerifierModelPrefix, EffortPrefix, VerifierEffortPrefix} {
 		if strings.HasPrefix(n, p) {
 			return true
 		}
