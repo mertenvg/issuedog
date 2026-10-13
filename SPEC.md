@@ -137,7 +137,7 @@ GitHub is the single source of truth. The daemon keeps only an in-memory cache, 
 | Priority | `priority:p0` to `priority:p3` (default `p2`) |
 | Scope | `scope:<name>` from the repo's allowed list |
 | Transition history | Bot comments carrying a `transition` marker, e.g. `<!-- issuedog:transition from=clarifying to=spec-review rev=3 body=9f2a61c0 run=8f2c seen=2214587 -->` |
-| Attempt count | Hidden marker on the latest bot verifier comment for a task. For other stage runs, the daemon's memory and the lease (8.2, 8.3) |
+| Attempt count | Hidden marker on the latest bot verifier comment for a task. For other stage runs, the daemon's memory and the lease (8.2, 8.3), so losing the container resets that count |
 | State errors | Bot comments carrying an `error` marker with a stable key (5.3) |
 | Label reverts | Bot comments carrying a `revert` marker keyed by the reverted timeline event, so a replay doesn't comment twice (5.1, 5.2) |
 | Processed commands | The bot's 👍 on an applied command comment or 👎 on a rejected one, plus `cmd=<comment id>` in the transition marker or a `reply` marker (9.2). A reaction command (section 9.2) is recorded as `cmd=r<reaction id>` |
@@ -145,23 +145,24 @@ GitHub is the single source of truth. The daemon keeps only an in-memory cache, 
 | Dirty content | A visible note carrying a `dirty` marker at the top of the comment or body (5.1) |
 | Origin of bot-created issues | Hidden `origin` marker in the issue body (section 6.2) |
 
-Every marker is an HTML comment, `<!-- issuedog:<kind> key=value ... -->`, with its fields in a fixed order. The kinds:
+Every marker is an HTML comment, `<!-- issuedog:<kind> key=value ... -->`, with its fields in a fixed order. The kinds so far:
 
 - `transition`: `from`, `to`, and the key that makes it idempotent (5.2). The key is `cmd=<comment id>`, or `cmd=r<reaction id>`, for a command; `run=<run id>` for a stage run's result; or `event=<timeline event id>`, with `by=<login>`, for a stage label a trusted user changed by hand (5.1). Some transitions carry more:
   - A move to `held` carries `at`, the stage the issue was at, and `reason`: `owner` for `/hold` or a hold set by hand, or `discussion` or `dropped` (6.4). A discussion hold also carries `origin`.
   - A move that posts or approves a revision carries `rev` and `body`, the body's hash (7.4).
   - `seen=<comment id>` is the newest comment read before the move. It bounds the next round's input (9.2). On a stage run's move it is the newest comment on the issue when the run started. On a move by `/revise`, a revision request or `/approve`, it is that comment. On an approval by 👍 it is the newest comment the daemon had read.
 - `revision rev=<n> body=<hash>`: in each revision comment (7.4). Posted without a transition, it also carries `seen`.
-- `reply cmd=<comment id> reason=<rejected|edited>`: on the App's reply to a rejected command, or to an edit made after the App acted on the comment (9.2). It marks the comment as processed.
+- `reply reason=<rejected|edited> cmd=<comment id>`: on the App's reply to a rejected command, or to an edit made after the App acted on the comment (9.2). It marks the comment as processed.
 - `error kind=<kind> key=<key>`, and the `ack` reply to it: a state error (5.3).
 - `revert key=<event id>`: an untrusted label change the daemon reverted (5.1).
 - `dirty by=<login>`: the note on dirty content (5.1).
 - `origin`: in the body of an issue the daemon created (5.2), or reposted in a comment once that body is dirty (6.4).
 - `depends-on url=<issue url>`: a dependency across owners (section 14).
+- Planned: the attempt marker on the latest verifier comment of a task (8.3), not built yet.
 
 Assignees, and the priority labels on PRs, are not state either: the daemon derives them (section 9.6) and corrects them on every poll.
 
-Apart from the App key (section 3.1), the only local files are the lease (section 8.2) and the run results in `/state/runs/`. Both are scratch: losing the container loses nothing except the current run.
+Apart from the App key (section 3.1), the only local files are the lease (section 8.2) and the run results in `/state/runs/`. Both are scratch: losing the container loses nothing except the current run and the count of failed non-task runs toward the attempt cap (8.3).
 
 ### 5.1 Reading rules
 
@@ -175,14 +176,14 @@ Apart from the App key (section 3.1), the only local files are the lease (sectio
   - When an untrusted actor adds or removes one of these labels, the daemon posts a short comment carrying a `revert` marker, then reverts the change.
   - When a trusted user changes a stage label by hand, the daemon treats it as an owner override and records a transition marker with `by=<login>` and `event=<timeline event id>`. It does this even if the change is not in the transition table. Setting `stage:held` by hand is an owner hold: its marker also carries `at=<previous stage>` and `reason=owner`. A change to the stage the issue is already at, `held` included, writes no marker, since holds stack (6.4).
 - **Disagreement.** If the stage label and the latest transition marker disagree and 5.1 does not explain the difference, the daemon reports a state error (5.3), then puts the label back to match the marker.
-- **Unfinished writes.** If no stage label has changed since the latest transition marker, other than by the App moving the labels toward it, the disagreement is the App's own write cut short (5.2). The daemon finishes it by setting the labels to match the marker. That isn't a state error.
+- **Unfinished writes.** If no stage label has changed since the latest transition marker, other than changes toward it, the disagreement is the App's own write cut short (5.2). The daemon finishes it by setting the labels to match the marker. That isn't a state error.
 
 ### 5.2 Idempotency
 
 Every transition goes through one table in code (section 7). Each write is checked first, so a crashed run can be replayed safely:
 
 - **Transitions.** A transition writes in this order: the comment with its marker, the new stage label, removal of any other stage label, then the 👍 for a command comment. A marker with the same key (`cmd`, `run` or `event`) means the transition is written, so a replay only finishes the labels and the 👍. A crash between the marker and the labels leaves an unfinished write, which the next poll finishes (5.1).
-- **Commands.** For a command comment, the daemon writes the transition marker with `cmd=<comment id>`, then adds its 👍 reaction. GitHub has no ✅ reaction. On replay, a marker carrying that `cmd` means only the reaction is missing. `/priority` writes no marker, so its 👍 is the record. A rejected command gets the App's 👎 first, then the reply (9.2). For a reaction command, the marker carries `cmd=r<reaction id>`. A reaction can't be reacted to, so the transition comment is the acknowledgment, or for a 👍 on a state-error comment, the ack reply (5.3).
+- **Commands.** For a command comment, the daemon writes the transition marker with `cmd=<comment id>`, then adds its 👍 reaction. GitHub has no ✅ reaction. On replay, a marker carrying that `cmd` means the command is applied, and only the labels and the 👍 may be missing. `/priority` writes no marker, so its 👍 is the record. A rejected command gets the App's 👎 first, then the reply (9.2). For a reaction command, the marker carries `cmd=r<reaction id>`. A reaction can't be reacted to, so the transition comment is the acknowledgment, or for a 👍 on a state-error comment, the ack reply (5.3).
 - **Created issues.** Every issue the daemon creates has an `origin` marker with a stable item ID, such as `plan=#12 rev=3 item=T4`. Before creating an issue, the daemon searches for a marker with the same plan and item, whatever its `rev`, and reuses any match. A planner revising a plan keeps the item ID of every item it keeps or changes, gives new items new IDs, and marks each item in the plan comment as kept, changed, new or dropped. The same applies to sub-issue links and dependency links: the daemon reads the current links before adding any.
 
 ### 5.3 State errors
@@ -219,7 +220,7 @@ An issue enters the pipeline when any of these holds:
 
 Only comments and reactions by trusted users count as answers, approvals or commands. A comment a trusted user approved (6.4) counts as their input, never as a command. Agents receive other comments in a separate, clearly labeled "untrusted input" section of their context files, and only for epics and stories. An issue with no type gets no untrusted input until its type is set.
 
-A command counts once. If its comment is edited after the daemon reacted to it, the edit is ignored and the bot replies asking for a new comment. If it is edited before the daemon processes it, the daemon reads the latest text. Section 9.2 has the details, including edited answers.
+A command counts once. If its comment is edited after the daemon applied it (its 👍), the edit is ignored and the bot replies asking for a new comment. A rejected command (its 👎) gets no new reply when edited. If it is edited before the daemon processes it, the daemon reads the latest text. Section 9.2 has the details, including edited answers.
 
 ### 6.3 Protecting the trust inputs
 
@@ -379,8 +380,7 @@ Any transition missing from this table is an error, except a trusted user's manu
 - **Revising.** In `spec-review` or `plan-review`, any trusted comment that is not a command (9.2) and isn't dirty, posted after the latest revision comment and after the issue entered the stage, is a revision request with the comment as the notes. "After the revision comment" means after the newest comment the App had read when it posted it, its `seen`, if it has one. A revision request is handled exactly like `/revise`: applied with a 👍, rejected with a reason, and replied to if edited after it was applied (5.2, 9.2).
   - A comment beats a pending 👍, since comments are handled before reactions.
   - A question counts as a revision request: the agent answers it and posts the next revision, even if nothing else changed.
-  - A comment posted after the approval was applied goes to the next stage as owner input.
-  - The transition of `/revise`, a revision request or `/approve` carries `seen=<its comment id>`, and a 👍 approval the newest comment read (section 5). So a comment posted in the same poll belongs to the next round instead of being lost.
+  - A comment posted after the approval was applied goes to the next stage as owner input. The transition's `seen` (section 5) decides which comments come after it, so one posted in the same poll isn't lost.
 - **The body is edited.** The hash no longer matches. After an edit by the body's author, if trusted, or by the App, the daemon increments `rev` and posts a new revision comment with the new hash (for plans, see section 16), which voids any pending approval. An edit by anyone else makes the body dirty (5.1): it gets no revision, nothing can approve it, and a move that would have posted one says why there is none. An untrusted author's own edit gets no revision either, and the mismatch keeps approval blocked.
 - **PR approval.** This relies on GitHub. The ruleset dismisses stale approvals when new commits are pushed, and `issuedog/verify` is posted for an exact head SHA.
 
@@ -474,11 +474,11 @@ Rules:
 A comment is a command when its first line is a slash and a word, such as `/priority p1`. A known command followed directly by more text, such as `/approve.`, is that command with a bad argument. An unknown word followed directly by more text, such as `/usr/bin`, is plain text. Only comments by trusted users that aren't dirty (5.1) count, oldest first.
 
 - **Applied.** The daemon reacts 👍 to each command comment it has applied, after its marker (5.2). GitHub has no ✅ reaction. A reaction command is acknowledged by the transition comment (5.2).
-- **Rejected.** A command that doesn't apply, because it is unknown, has a bad argument, doesn't fit the issue's stage or fails its own check, gets the App's 👎, then a reply with the reason carrying `<!-- issuedog:reply cmd=<comment id> reason=rejected -->`. The 👎 is the record that it was processed: a reply can be edited or deleted, but only the App can remove its own reaction. A command with the App's 👎 but no clean reply gets its reply posted again. A rejection isn't a state error (5.3).
+- **Rejected.** A command that doesn't apply, because it is unknown, has a bad argument, doesn't fit the issue's stage or fails its own check, gets the App's 👎, then a reply with the reason carrying `<!-- issuedog:reply reason=rejected cmd=<comment id> -->`. The 👎 is the record that it was processed: a reply can be edited or deleted, but only the App can remove its own reaction. A command with the App's 👎 but no clean reply gets its reply posted again. A rejection isn't a state error (5.3).
 - **Processed.** A comment is processed once a `cmd` or `reply` marker names it, or it has the App's 👍 or 👎. It is never applied again.
-- **Edited.** A comment edited after the App used it gets one reply asking for a new comment, carrying `reply ... reason=edited`, and the edit is ignored. That covers a command edited after its 👍, even into plain text except as below, and an answer edited after a later transition's `seen` covered it. A rejected command edited later gets no new reply, and never counts as an answer.
+- **Edited.** A comment edited after the App used it gets one reply asking for a new comment, carrying `reply reason=edited cmd=...`, and the edit is ignored. That covers a command edited after its 👍, even into plain text except as below, and an answer edited after a later transition's `seen` covered it. A rejected command edited later gets no new reply, and never counts as an answer.
 - **Answers.** At `clarifying`, a trusted comment that is not a command, posted after the round bound, is an answer to the current round, and gets a 👍. The bound is the latest transition marker's `seen` (section 5), or, if it has none, the ID of the App comment holding that transition. Comment IDs only increase, so a comment posted during a run belongs to the next round. Only transition markers move the bound: a reply, error, revision or dirty marker doesn't, so a rejection posted at `clarifying` keeps that round's answers. A command or answer edited before the App uses it is read with its latest text.
-- **Commands edited into answers.** The App 👍s both applied commands, such as `/priority`, which writes no marker, and answers, so GitHub can't tell them apart. An applied command edited into plain text at `clarifying` therefore becomes an answer, and the interviewer reads the edited text. A command that a `cmd` or `reply` marker names, or that the App 👎'd, is never an answer.
+- **Commands edited into answers.** The App 👍s both applied commands, such as `/priority`, which writes no marker, and answers, so GitHub can't tell them apart. An applied command edited into plain text at `clarifying` therefore becomes an answer, and the interviewer reads the edited text. A command that a marker names, or that the App 👎'd, isn't.
 
 PR reviews use GitHub's own review flow.
 
@@ -789,6 +789,9 @@ Changes to this file go through a human-authored PR (section 6.3).
 - **Pinning the check source.** The ruleset can only pin the App as the source of `issuedog/verify` once the App "has recently submitted a check run". Setup must post one bootstrap check run before adding the rule.
 - **Pinning the digest.** The permission `pinIssue` needs from an App is not documented. Test it with Issues write.
 - **`--json-schema` in long runs.** It must work together with `--dangerously-skip-permissions` and long tool loops. Also confirm how many structured-output retries are allowed.
+- **Kind on an ack.** An ack reply (5.3) names no kind, so it covers its key for every kind. Comment IDs and timeline event IDs come from separate sequences, so an ack of one error could silence a later, different error with the same number. Consider copying `kind=` into the ack and matching on kind and key, with a kindless ack still covering every kind (#78).
+- **Where a reposted `origin` lives.** Section 6.4 reposts an `origin` marker in an App comment, since markers in a dirty body are never read. #87 confirms this, and that the class derivation and the de-duplication search (5.2) read it there.
+- **Stacked holds.** A `/hold` on a child that is already held by its parent's `/hold` writes no marker (6.4), so the parent's `/resume` ends the child's hold too. #87 decides whether stacked holds are recorded.
 - **Where a plan's hash lives.** A plan comment is also its revision comment (section 7.4), so its hash can't be written inside it without changing it. Decide whether it goes in a separate transition comment or is derived from the comment's edit history. If plan revisions reuse the `revision` marker, it needs a field that tells spec revisions from plan revisions.
 - **Running a Done-when check.** The **Done when** text of a human task is written by an agent. Decide how the daemon runs an automatable check (which uid, which credential) without breaking sections 3.1 and 3.2.
 - **Approving PR reviews with comments.** Section 7.2 covers reviews with comments and approving reviews with none. An approving review that has comments is not yet covered.
