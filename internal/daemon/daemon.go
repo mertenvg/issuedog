@@ -41,6 +41,7 @@ type Daemon struct {
 	snaps         map[int]*github.Snapshot
 	inputs        map[int][]github.Comment // only for snapshots step 1 succeeded on
 	stale         map[int]bool             // issues to read again
+	missing       map[int]bool             // stale issues whose last read found them gone
 	issuesSince   time.Time
 	commentsSince time.Time
 }
@@ -77,6 +78,7 @@ func (d *Daemon) Run(ctx context.Context) {
 func (d *Daemon) Iterate(ctx context.Context) error {
 	if d.snaps == nil {
 		d.snaps, d.inputs, d.stale = map[int]*github.Snapshot{}, map[int][]github.Comment{}, map[int]bool{}
+		d.missing = map[int]bool{}
 	}
 	d.reload(ctx)
 	if d.Step.Trust == nil {
@@ -91,17 +93,22 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		delete(d.snaps, n)
 		delete(d.inputs, n)
 		s, err := d.Step.Client.Snapshot(ctx, d.Step.Owner, d.Step.Repo, n)
-		if gone(err) {
-			logr.Infof("%s/%s#%d is gone, deleted or transferred, so it's dropped: %v", d.Step.Owner, d.Step.Repo, n, err)
+		switch {
+		case gone(err) && d.missing[n]:
+			logr.Infof("%s/%s#%d is gone, deleted or transferred, two reads in a row, so it's dropped: %v", d.Step.Owner, d.Step.Repo, n, err)
 			delete(d.stale, n)
-			continue
-		}
-		if err != nil {
+			delete(d.missing, n)
+		case gone(err):
+			// One answer may be wrong, so it's read again next pass.
+			logr.Infof("%s/%s#%d looks gone, deleted or transferred, so it's read again: %v", d.Step.Owner, d.Step.Repo, n, err)
+			d.missing[n] = true
+		case err != nil:
 			errs = append(errs, err)
-			continue
+		default:
+			d.snaps[n], read[n] = s, true
+			delete(d.stale, n)
+			delete(d.missing, n)
 		}
-		d.snaps[n], read[n] = s, true
-		delete(d.stale, n)
 	}
 	for _, n := range slices.Sorted(maps.Keys(d.snaps)) {
 		s := d.snaps[n]
@@ -259,7 +266,8 @@ func parentOf(u string) int {
 
 // gone reports whether err, from Snapshot, says the issue was deleted (404
 // or 410) or transferred (a 301). A failed visit, which may 404 on a deleted
-// comment, marks the issue stale, so only Snapshot decides.
+// comment, marks the issue stale, so only Snapshot decides, and Iterate
+// drops an issue only when two reads in a row say so.
 func gone(err error) bool {
 	var e *gogithub.ErrorResponse
 	if errors.As(err, &e) && e.Response != nil {

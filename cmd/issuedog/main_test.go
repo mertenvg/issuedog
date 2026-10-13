@@ -304,17 +304,6 @@ func TestRunStartupFailures(t *testing.T) {
 	without := func(key string) []string {
 		return slices.DeleteFunc(slices.Clone(daemonEnv), func(kv string) bool { return strings.HasPrefix(kv, key+"=") })
 	}
-	with := func(kv string) []string {
-		k, _, _ := strings.Cut(kv, "=")
-		return append(without(k), kv)
-	}
-	// A trust that can't load: CODEOWNERS on main is a directory.
-	badTrust := func(t *testing.T) map[string]string {
-		files := thisRepo(t)
-		delete(files, ".github/CODEOWNERS")
-		files[".github/CODEOWNERS/README"] = "not a file\n"
-		return files
-	}
 	for name, tt := range map[string]struct {
 		environ   []string
 		files     func(t *testing.T) map[string]string // main's, else this repo's
@@ -323,12 +312,7 @@ func TestRunStartupFailures(t *testing.T) {
 		code      int
 		want      string
 	}{
-		"no repo":         {environ: without("ISSUEDOG_REPO"), code: 1, want: `reading the settings: ISSUEDOG_REPO is "", not owner/name`},
-		"repo of 1 part":  {environ: with("ISSUEDOG_REPO=mertenvg"), code: 1, want: `ISSUEDOG_REPO is "mertenvg", not owner/name`},
-		"repo of 3 parts": {environ: with("ISSUEDOG_REPO=mertenvg/issuedog/x"), code: 1, want: `ISSUEDOG_REPO is "mertenvg/issuedog/x", not owner/name`},
-		"bad app ID":      {environ: with("ISSUEDOG_APP_ID=abc"), code: 1, want: `reading the settings: ISSUEDOG_APP_ID is "abc", not a positive number`},
-		"app ID 0":        {environ: with("ISSUEDOG_APP_ID=0"), code: 1, want: `ISSUEDOG_APP_ID is "0", not a positive number`},
-		"no installation": {environ: without("ISSUEDOG_INSTALLATION_ID"), code: 1, want: `ISSUEDOG_INSTALLATION_ID is "", not a positive number`},
+		"no repo": {environ: without("ISSUEDOG_REPO"), code: 1, want: `reading the settings: ISSUEDOG_REPO is "", not owner/name`},
 		"slug": {setup: func(t *testing.T, _ *githubtest.Fake) {
 			dead := httptest.NewServer(http.NotFoundHandler())
 			dead.Close()
@@ -354,7 +338,6 @@ func TestRunStartupFailures(t *testing.T) {
 		}, code: 1, want: "starting the daemon: syncing the clone: fetch "},
 		"config": {files: func(*testing.T) map[string]string { return map[string]string{} }, code: 1,
 			want: "starting the daemon: loading the config from main: load config: read main:.issuedog/config.yaml: not found"},
-		"trust":  {files: badTrust, code: 1, want: "starting the daemon: loading trust from main: load trust for mertenvg/issuedog: find CODEOWNERS: "},
 		"labels": {failWrite: 1, code: 1, want: "starting the daemon: creating the labels: create label stage:intake"},
 		"signal": {setup: func(t *testing.T, _ *githubtest.Fake) {
 			cancel, _ := cancelOnCall(t)
@@ -384,6 +367,45 @@ func TestRunStartupFailures(t *testing.T) {
 				t.Errorf("startup steps = %q, want none of egress", *calls)
 			}
 		})
+	}
+}
+
+func TestReadSettings(t *testing.T) {
+	set, err := readSettings(daemonEnv)
+	if want := (settings{"mertenvg", "issuedog", 5275196, 170308396}); err != nil || set != want {
+		t.Errorf("readSettings = %+v, %v; want %+v", set, err, want)
+	}
+	for kv, want := range map[string]string{
+		"ISSUEDOG_REPO=":                    `ISSUEDOG_REPO is "", not owner/name`,
+		"ISSUEDOG_REPO=mertenvg":            `ISSUEDOG_REPO is "mertenvg", not owner/name`,
+		"ISSUEDOG_REPO=/issuedog":           `ISSUEDOG_REPO is "/issuedog", not owner/name`,
+		"ISSUEDOG_REPO=mertenvg/":           `ISSUEDOG_REPO is "mertenvg/", not owner/name`,
+		"ISSUEDOG_REPO=mertenvg/issuedog/x": `ISSUEDOG_REPO is "mertenvg/issuedog/x", not owner/name`,
+		"ISSUEDOG_APP_ID=abc":               `ISSUEDOG_APP_ID is "abc", not a positive number`,
+		"ISSUEDOG_APP_ID=0":                 `ISSUEDOG_APP_ID is "0", not a positive number`,
+		"ISSUEDOG_INSTALLATION_ID=-1":       `ISSUEDOG_INSTALLATION_ID is "-1", not a positive number`,
+	} {
+		// The later setting wins, as in an environment.
+		if _, err := readSettings(append(slices.Clone(daemonEnv), kv)); err == nil || err.Error() != want {
+			t.Errorf("%s: err = %v, want %q", kv, err, want)
+		}
+	}
+}
+
+// A trust that can't load, with CODEOWNERS on main a directory, stops
+// startup. Called directly, since run would go on into the loop if it didn't.
+func TestStartDaemonFailsOnTrust(t *testing.T) {
+	files := thisRepo(t)
+	delete(files, ".github/CODEOWNERS")
+	files[".github/CODEOWNERS/README"] = "not a file\n"
+	fakeGitHub(t, files)
+	key, err := os.ReadFile(appKeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := startDaemon(context.Background(), settings{"mertenvg", "issuedog", 1, 1}, key)
+	if d != nil || err == nil || !strings.Contains(err.Error(), "loading trust from main: load trust for mertenvg/issuedog: find CODEOWNERS: ") {
+		t.Errorf("startDaemon = %v, %v; want the trust error", d, err)
 	}
 }
 

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,7 +11,40 @@ import (
 	gogithub "github.com/google/go-github/v92/github"
 
 	"github.com/mertenvg/issuedog/internal/github"
+	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
+
+// The fake's clock can't put two edits in one second, so this pins that a
+// kept history is used only for the same last edit and the same body.
+func TestHistoriesKeyedOnEditAndBody(t *testing.T) {
+	f := githubtest.New(t, "o/r", "issuedog")
+	f.AddIssue("owner", "Issue", "body")
+	f.EditComment(f.AddComment(1, "owner", "x"), "owner", "y")
+	client := f.Client(t)
+	s, err := client.Snapshot(context.Background(), "o", "r", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := s.Comments[0]
+	need := []content{{node: c.Node, edit: c.Edit, body: c.Body}}
+	for _, tc := range []struct {
+		name string
+		kept kept
+		hit  bool
+	}{
+		{"same edit and body", kept{at: c.Edit.At, body: c.Body}, true},
+		{"same edit, another body", kept{at: c.Edit.At, body: "z"}, false},
+		{"same body, another edit", kept{at: c.Edit.At.Add(-time.Second), body: c.Body}, false},
+	} {
+		before := f.HistoryQueries()
+		if _, err := (histories{c.Node: tc.kept}).read(context.Background(), client, need); err != nil {
+			t.Fatal(err)
+		}
+		if hit := f.HistoryQueries() == before; hit != tc.hit {
+			t.Errorf("%s: used the kept history = %t, want %t", tc.name, hit, tc.hit)
+		}
+	}
+}
 
 // The fake can delete an issue, but not answer 410 or 301.
 func TestGone(t *testing.T) {
@@ -83,6 +117,13 @@ func TestChangedInTheSameSecond(t *testing.T) {
 		if got := changed(s, tc.issue); got != tc.want {
 			t.Errorf("%s: changed = %t, want %t", tc.name, got, tc.want)
 		}
+	}
+	// A list without parent_issue_url says nothing of the parent, so a
+	// sub-issue at the cursor isn't read again on every pass.
+	sub := *s
+	sub.Parent = 3
+	if changed(&sub, issue(0, "body", "stage:ready", "priority:p2")) {
+		t.Error("a sub-issue listed with no parent URL is changed, want unchanged")
 	}
 	if !changed(nil, issue(0, "body")) {
 		t.Error("an issue with no snapshot isn't changed, want changed")

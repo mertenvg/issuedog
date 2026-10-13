@@ -79,6 +79,20 @@ func (f *Fake) Transfer(number int, repo string) {
 	f.edit(number, func(is *issue) { is.RepositoryURL = new(f.srv.URL + "/repos/" + repo) })
 }
 
+// AnswerOnce answers the next request that match accepts with status alone,
+// as a proxy or a glitch might, without serving it.
+func (f *Fake) AnswerOnce(match func(Request) bool, status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.answerOnce = func(r Request) int {
+		if !match(r) {
+			return 0
+		}
+		f.answerOnce = nil
+		return status
+	}
+}
+
 // BeforeRequest runs do, once, just before the fake answers the next request
 // that match accepts (only its Method, Path and Query are set), as when
 // something changes while a list pages. do may call the fake's methods.
@@ -121,12 +135,20 @@ func (f *Fake) logged(next http.Handler) http.Handler {
 		if f.beforeReq != nil {
 			do = f.beforeReq(req)
 		}
+		status := 0
+		if f.answerOnce != nil {
+			status = f.answerOnce(req)
+		}
 		f.mu.Unlock()
 		if do != nil {
 			do()
 		}
 		rec := &recorder{ResponseWriter: w, status: http.StatusOK}
-		next.ServeHTTP(rec, r)
+		if status != 0 {
+			send(rec, status, message(http.StatusText(status)))
+		} else {
+			next.ServeHTTP(rec, r)
+		}
 		req.Status, req.Conditional = rec.status, r.Header.Get("If-None-Match") != ""
 		f.mu.Lock()
 		defer f.mu.Unlock()

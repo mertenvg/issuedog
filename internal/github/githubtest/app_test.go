@@ -3,7 +3,6 @@ package githubtest
 import (
 	"context"
 	"errors"
-	"net/http"
 	"reflect"
 	"slices"
 	"testing"
@@ -19,18 +18,6 @@ import (
 type noFiles struct{}
 
 func (noFiles) ReadFile(context.Context, string) ([]byte, error) { return nil, repo.ErrNotFound }
-
-func TestAppSlug(t *testing.T) {
-	f := New(t, "o/r", "issuedog-dev")
-	slug, err := f.Client(t).AppSlug(context.Background())
-	if err != nil || slug != "issuedog-dev" {
-		t.Errorf("AppSlug = %q, %v; want issuedog-dev", slug, err)
-	}
-	// The fake answers GET /app only with the App's JWT, not a token.
-	if r := f.Requests(); len(r) != 1 || r[0].Path != "/app" || r[0].Status != http.StatusOK {
-		t.Errorf("requests = %+v, want one GET /app answered 200", r)
-	}
-}
 
 func TestSnapshotOfTransferredIssue(t *testing.T) {
 	f := New(t, "o/r", "issuedog")

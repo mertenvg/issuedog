@@ -45,9 +45,13 @@ func New(cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("github app %d installation %d: %w", cfg.AppID, cfg.InstallationID, err)
 	}
 	itr := ghinstallation.NewFromAppsTransport(atr, cfg.InstallationID)
+	// The transports add the token or JWT to every request, a redirected
+	// one too, so no client follows a redirect to another host. Minting a
+	// token follows none.
+	guarded := &http.Client{CheckRedirect: sameHost}
 	// The ETag cache wraps the auth transport, so each installation has its own.
-	opts := []gogithub.ClientOptionsFunc{gogithub.WithTransport(newETagCache(closeMintErrors{itr}))}
-	appOpts := []gogithub.ClientOptionsFunc{gogithub.WithTransport(atr)}
+	opts := []gogithub.ClientOptionsFunc{gogithub.WithHTTPClient(guarded), gogithub.WithTransport(newETagCache(closeMintErrors{itr}))}
+	appOpts := []gogithub.ClientOptionsFunc{gogithub.WithHTTPClient(guarded), gogithub.WithTransport(atr)}
 	if cfg.BaseURL != "" {
 		root := strings.TrimRight(cfg.BaseURL, "/")
 		atr.BaseURL, itr.BaseURL = root, root
@@ -64,6 +68,22 @@ func New(cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("github app client: %w", err)
 	}
 	return &Client{Client: client, installation: itr, app: app}, nil
+}
+
+// ErrCrossHostRedirect is wrapped by the error for a redirect to another
+// host, which no client follows.
+var ErrCrossHostRedirect = errors.New("a redirect to another host")
+
+// sameHost is a CheckRedirect that refuses a redirect to another host or
+// scheme, and stops after 10, as the default does.
+func sameHost(req *http.Request, via []*http.Request) error {
+	if from := via[0].URL; !strings.EqualFold(req.URL.Host, from.Host) || req.URL.Scheme != from.Scheme {
+		return fmt.Errorf("%w: from %s to %s", ErrCrossHostRedirect, from.Host, req.URL.Host)
+	}
+	if len(via) >= 10 {
+		return fmt.Errorf("stopped after %d redirects", len(via))
+	}
+	return nil
 }
 
 // AppSlug returns the App's slug from GET /app, which only the App itself,

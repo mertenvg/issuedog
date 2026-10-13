@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
+	gogithub "github.com/google/go-github/v92/github"
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
@@ -130,14 +132,104 @@ func TestIterateDropsDeletedIssues(t *testing.T) {
 	if err := d.Iterate(context.Background()); err == nil {
 		t.Error("Iterate = nil, want the visit to deleted issue 2 to fail")
 	}
-	iterate(t, d) // its read gets a 404, and it's dropped
 	from := len(f.Requests())
+	iterate(t, d) // its read gets a 404, so it's read again
+	if r := readsOf(f, from, 2); len(r) != 1 || r[0].Status != 404 {
+		t.Fatalf("reads of deleted issue 2 = %+v, want one 404", r)
+	}
+	iterate(t, d) // a second 404 in a row, and it's dropped
+	from = len(f.Requests())
 	iterate(t, d)
 	if r := readsOf(f, from, 2); len(r) != 0 {
 		t.Errorf("read deleted issue 2 again: %+v", r)
 	}
-	if !reflect.DeepEqual(*work, [][]int{{1, 2}, {1}, {1}, {1}}) {
+	if !reflect.DeepEqual(*work, [][]int{{1, 2}, {1}, {1}, {1}, {1}}) {
 		t.Errorf("Work got %v, want issue 2 only before it was deleted", *work)
+	}
+}
+
+// One 404, from a proxy or a glitch, doesn't drop an issue: the next read
+// finds it, and it's visited and given to Work again. Two in a row do.
+func TestIterateDropsAnIssueOnlyAfterTwo404s(t *testing.T) {
+	f := newFake(t)
+	fileAt(f, "spec-review", "a")
+	fileAt(f, "ready", "b")
+	var visits []int
+	d := newDaemon(t, f, newOrigin(t), &visits)
+	work := recordWork(d)
+	iterate(t, d)
+	// touch makes issue 1 changed, so it's read again, and issue 2 newer,
+	// so the cursor moves past issue 1 and the poll lists it only once.
+	touch := func() {
+		f.AddComment(1, "owner", "a comment")
+		f.AddComment(2, "owner", "a comment")
+	}
+	notFound := func() {
+		f.AnswerOnce(func(r githubtest.Request) bool { return r.Method == "GET" && r.Path == "/issues/1" }, 404)
+	}
+	pass := func(step string, want []int, visited bool) {
+		t.Helper()
+		visits = nil
+		iterate(t, d)
+		got, saw := (*work)[len(*work)-1], slices.Contains(visits, 1)
+		if !reflect.DeepEqual(got, want) || saw != visited {
+			t.Fatalf("%s: Work got %v, and issue 1 visited is %t; want %v and %t", step, got, saw, want, visited)
+		}
+	}
+	touch()
+	notFound()
+	pass("a 404", []int{2}, false)
+	pass("the next pass", []int{1, 2}, true)
+
+	// The good read cleared that 404, so a later one is a first again.
+	touch()
+	notFound()
+	pass("a later 404", []int{2}, false)
+	pass("the pass after it", []int{1, 2}, true)
+
+	touch()
+	notFound()
+	pass("a 404", []int{2}, false)
+	notFound()
+	pass("a second 404 in a row", []int{2}, false)
+	from := len(f.Requests())
+	pass("the pass after the drop", []int{2}, false)
+	if r := readsOf(f, from, 1); len(r) != 0 {
+		t.Errorf("read dropped issue 1 again: %+v", r)
+	}
+
+	// A dropped issue that changes is read again, and a 404 then is a first.
+	touch()
+	notFound()
+	pass("a 404 once it's back", []int{2}, false)
+	pass("the pass after it", []int{1, 2}, true)
+}
+
+// A visit that fails, even with a 404, as on a deleted comment, doesn't drop
+// the issue: it's read again and given to Work.
+func TestIterateKeepsAnIssueWhoseVisit404s(t *testing.T) {
+	f := quiet(t)
+	d := newDaemon(t, f, newOrigin(t), nil)
+	work := recordWork(d)
+	iterate(t, d)
+	failed := false
+	d.Step.Reactions = func(_ context.Context, _ *daemon.Applier, s *github.Snapshot, _ daemon.Dirt) error {
+		if s.Number != 2 || failed {
+			return nil
+		}
+		failed = true
+		return fmt.Errorf("reactions: %w", &gogithub.ErrorResponse{Response: &http.Response{StatusCode: http.StatusNotFound}})
+	}
+	if err := d.Iterate(context.Background()); err == nil {
+		t.Error("Iterate = nil, want issue 2's visit to fail")
+	}
+	from := len(f.Requests())
+	iterate(t, d)
+	if r := readsOf(f, from, 2); len(r) == 0 || r[0].Path != "/issues/2" || r[0].Status >= 400 {
+		t.Errorf("reads of issue 2 = %+v, want it read again", r)
+	}
+	if !reflect.DeepEqual(*work, [][]int{{1, 2}, {1}, {1, 2}}) {
+		t.Errorf("Work got %v, want issue 2 left out once, then back", *work)
 	}
 }
 

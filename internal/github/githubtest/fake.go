@@ -58,10 +58,11 @@ type Fake struct {
 	historyCap  int      // see HistoryCap
 
 	// The App, permission and repo label endpoints, and the request log (app.go).
-	perms     map[string]string
-	labels    []*gogithub.Label
-	requests  []Request
-	beforeReq func(Request) func() // see BeforeRequest
+	perms      map[string]string
+	labels     []*gogithub.Label
+	requests   []Request
+	beforeReq  func(Request) func() // see BeforeRequest
+	answerOnce func(Request) int    // see AnswerOnce
 }
 
 // discard swallows a reply, for a write that takes effect but answers 500.
