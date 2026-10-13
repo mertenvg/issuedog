@@ -136,6 +136,21 @@ func TestMintFailureSurfaces(t *testing.T) {
 	}
 }
 
+func TestAppSlugFailures(t *testing.T) {
+	for reply, want := range map[string]string{`{"id":7}`: "GET /app gave no slug", "": "github app: "} {
+		c := newClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if reply == "" || r.URL.Path != "/app" {
+				http.Error(w, `{"message":"boom"}`, http.StatusInternalServerError)
+				return
+			}
+			_, _ = w.Write([]byte(reply))
+		}))
+		if slug, err := c.AppSlug(context.Background()); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("reply %q: AppSlug = %q, %v; want an error with %q", reply, slug, err, want)
+		}
+	}
+}
+
 func TestNewRejectsBadKey(t *testing.T) {
 	_, err := New(Config{AppID: 7, InstallationID: 42, Key: []byte("not a key")})
 	if err == nil || !strings.Contains(err.Error(), "github app 7 installation 42") {

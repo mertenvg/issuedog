@@ -56,6 +56,11 @@ type Fake struct {
 	beforeGQL   func()   // runs before the next GraphQL answer
 	histories   int      // edit history queries answered
 	historyCap  int      // see HistoryCap
+
+	// The App, permission and repo label endpoints, and the request log (app.go).
+	perms    map[string]string
+	labels   []*gogithub.Label
+	requests []Request
 }
 
 // discard swallows a reply, for a write that takes effect but answers 500.
@@ -135,7 +140,8 @@ func New(t testing.TB, repo, slug string) *Fake {
 	f.handle("DELETE /issues/{n}/labels/{name}", f.removeLabel)
 	f.handle("GET /issues/{n}/timeline", f.timeline)
 	f.mux.HandleFunc("POST /graphql", f.serveGraphQL)
-	f.srv = httptest.NewServer(f.mux)
+	f.handleApp()
+	f.srv = httptest.NewServer(f.logged(f.mux))
 	t.Cleanup(f.srv.Close)
 	return f
 }

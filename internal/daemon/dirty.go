@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -72,10 +73,13 @@ func contents(s *github.Snapshot) []content {
 // original post and an edit) or a newest entry older than the snapshot's
 // edit, fails closed: the content is dirty by whoever its note names, else
 // by its last editor, with a warning.
+//
+// A history that reaches the last edit is kept, by node, and used again
+// while the content has the same last edit and body, so the loop's visits
+// to an unchanged issue send no query (#84).
 func (a *Applier) Dirty(ctx context.Context, s *github.Snapshot) (Dirt, error) {
 	d := Dirt{}
 	var need []content
-	var nodes []string
 	for _, c := range contents(s) {
 		edited := !c.edit.At.IsZero()
 		switch {
@@ -85,13 +89,16 @@ func (a *Applier) Dirty(ctx context.Context, s *github.Snapshot) (Dirt, error) {
 			d[c.id] = c.note
 		case !edited:
 		default:
-			need, nodes = append(need, c), append(nodes, c.node)
+			need = append(need, c)
 		}
 	}
 	if len(need) == 0 {
 		return d, nil
 	}
-	history, err := a.Client.History(ctx, nodes)
+	if a.histories == nil {
+		a.histories = histories{}
+	}
+	history, err := a.histories.read(ctx, a.Client, need)
 	if err != nil {
 		return nil, fmt.Errorf("dirty content of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
 	}
@@ -101,13 +108,49 @@ func (a *Applier) Dirty(ctx context.Context, s *github.Snapshot) (Dirt, error) {
 			logr.Warnf("%s/%s#%d: taking %s %d as dirty: its history has %d entries and doesn't reach its last edit at %s",
 				a.Owner, a.Repo, s.Number, what(c.id), c.id, len(h), c.edit.At.Format(time.RFC3339))
 			d[c.id] = cmp.Or(c.note, login(c.edit.By))
-		} else if by, ok := state.Dirty(c.author, h, a.AppSlug); ok {
+			continue
+		}
+		a.histories[c.node] = kept{at: c.edit.At, body: c.body, edits: h}
+		if by, ok := state.Dirty(c.author, h, a.AppSlug); ok {
 			d[c.id] = login(by)
 		} else if c.note != "" {
 			d[c.id] = c.note
 		}
 	}
 	return d, nil
+}
+
+// histories are the edit histories Dirty kept, by node.
+type histories map[string]kept
+
+// kept is a history read for content with this last edit and body.
+type kept struct {
+	at    time.Time
+	body  string
+	edits []github.Edit
+}
+
+// read returns the history of each of need, by node: a kept one while the
+// content's last edit and body match it, else from one query for the rest.
+func (hs histories) read(ctx context.Context, client *github.Client, need []content) (map[string][]github.Edit, error) {
+	all := map[string][]github.Edit{}
+	var nodes []string
+	for _, c := range need {
+		if h, ok := hs[c.node]; ok && h.at.Equal(c.edit.At) && h.body == c.body {
+			all[c.node] = h.edits
+		} else {
+			nodes = append(nodes, c.node)
+		}
+	}
+	if len(nodes) == 0 {
+		return all, nil
+	}
+	read, err := client.History(ctx, nodes)
+	if err != nil {
+		return nil, fmt.Errorf("read edit histories: %w", err)
+	}
+	maps.Copy(all, read)
+	return all, nil
 }
 
 // MarkDirty puts a visible note at the top of each dirty body or comment in

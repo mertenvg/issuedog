@@ -2,16 +2,21 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -20,6 +25,7 @@ import (
 	"github.com/mertenvg/logr/v2"
 
 	"github.com/mertenvg/issuedog/internal/egress"
+	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
 
 // runLogged runs the program and returns its exit code and what it logged.
@@ -120,18 +126,221 @@ func fakeAppKey(t *testing.T, perm os.FileMode) string {
 	return path
 }
 
-func TestRunStartsEgress(t *testing.T) {
-	fakeAppKey(t, 0o600)
+// daemonEnv is the environment the daemon starts with.
+var daemonEnv = []string{"ANTHROPIC_API_KEY=key", "ISSUEDOG_REPO=mertenvg/issuedog",
+	"ISSUEDOG_APP_ID=5275196", "ISSUEDOG_INSTALLATION_ID=170308396"}
+
+// fakeGitHub points the daemon at a fake GitHub for mertenvg/issuedog, with
+// mertenvg an admin and mallory a writer, and at a local bare repo as the
+// remote, whose main has files (path to content). It writes a usable App key.
+func fakeGitHub(t *testing.T, files map[string]string) *githubtest.Fake {
+	t.Helper()
+	f := githubtest.New(t, "mertenvg/issuedog", "issuedog-dev")
+	f.SetPermission("mertenvg", "admin")
+	f.SetPermission("mallory", "write")
+	dir := t.TempDir()
+	remote, work := filepath.Join(dir, "remote.git"), filepath.Join(dir, "work")
+	gitIn(t, dir, "init", "--bare", "--quiet", "--initial-branch=main", remote)
+	gitIn(t, dir, "init", "--quiet", "--initial-branch=main", work)
+	files["README.md"] = "hello\n"
+	for path, content := range files {
+		if err := os.MkdirAll(filepath.Join(work, filepath.Dir(path)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(work, path), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitIn(t, work, "add", path)
+	}
+	gitIn(t, work, "commit", "--quiet", "-m", "init")
+	gitIn(t, work, "push", "--quiet", remote, "main")
+
+	oldAPI, oldRemote, oldWork := apiURL, gitRemote, workDir
+	t.Cleanup(func() { apiURL, gitRemote, workDir = oldAPI, oldRemote, oldWork })
+	apiURL, workDir = f.URL(), t.TempDir()
+	gitRemote = func(owner, name string) string {
+		if owner+"/"+name != "mertenvg/issuedog" {
+			t.Errorf("remote of %s/%s, want mertenvg/issuedog", owner, name)
+		}
+		return remote
+	}
+	k, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := fakeAppKey(t, 0)
+	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(k)}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+func gitIn(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "GIT_") }),
+		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+}
+
+// thisRepo is this repo's own config, with example.com added to
+// network.allow, and CODEOWNERS.
+func thisRepo(t *testing.T) map[string]string {
+	t.Helper()
+	files := map[string]string{}
+	for _, path := range []string{".issuedog/config.yaml", ".github/CODEOWNERS"} {
+		data, err := os.ReadFile(filepath.Join("..", "..", path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[path] = string(data)
+	}
+	const allow = "allow: [api.anthropic.com,"
+	if !strings.Contains(files[".issuedog/config.yaml"], allow) {
+		t.Fatalf("this repo's config has no %q", allow)
+	}
+	files[".issuedog/config.yaml"] = strings.Replace(files[".issuedog/config.yaml"], allow, "allow: [example.com, api.anthropic.com,", 1)
+	return files
+}
+
+// cancelOnCall makes the daemon's signal context one the returned func
+// cancels, and records the signals it was asked to stop on.
+func cancelOnCall(t *testing.T) (cancel func(), signals *[]os.Signal) {
+	var sigs []os.Signal
+	ctx, stop := context.WithCancel(context.Background())
+	old := notifyContext
+	t.Cleanup(func() { notifyContext = old; stop() })
+	notifyContext = func(parent context.Context, s ...os.Signal) (context.Context, context.CancelFunc) {
+		sigs = s
+		return ctx, func() {}
+	}
+	return stop, &sigs
+}
+
+func TestRunDaemon(t *testing.T) {
+	f := fakeGitHub(t, thisRepo(t))
+	f.AddRepoLabel("stage:intake")
+	n := f.AddIssue("mertenvg", "Task", "do it")
+	f.AddLabel(n, "issuedog-dev[bot]", "stage:ready")
+	f.AddComment(n, "issuedog-dev[bot]", "<!-- issuedog:transition from=intake to=ready run=a -->")
+	f.AddComment(n, "mallory", "/frob")
+	f.AddComment(n, "mertenvg", "/frob")
 	calls := fakeEgress(t, nil, nil)
-	code, logs := runLogged(t, nil, []string{"ANTHROPIC_API_KEY=key"})
-	if code != 1 {
-		t.Errorf("exit code = %d, want 1", code)
+	cancel, signals := cancelOnCall(t)
+	var logs bytes.Buffer
+	stop := logr.AddWriter(&logs)
+	defer stop()
+	done := make(chan int, 1)
+	go func() { done <- run(nil, daemonEnv, nil, io.Discard) }()
+
+	// The first iteration rejects mertenvg's /frob, as CODEOWNERS on main
+	// trusts only mertenvg, then sleeps the config's 60s.
+	for deadline := time.Now().Add(10 * time.Second); len(f.State().Issues[0].Comments) < 4 && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Errorf("exit code = %d, want 0", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the daemon didn't stop when its context was canceled")
+	}
+	logr.Wait()
+
+	if !reflect.DeepEqual(*signals, []os.Signal{os.Interrupt, syscall.SIGTERM}) {
+		t.Errorf("stops on %v, want SIGINT and SIGTERM", *signals)
+	}
+	reqs := f.Requests()
+	for _, want := range []string{"GET /app", "POST /app/installations/170308396/access_tokens", "GET /labels", "GET /issues"} {
+		if !slices.ContainsFunc(reqs, func(r githubtest.Request) bool { return r.Method+" "+r.Path == want }) {
+			t.Errorf("requests = %+v, want %s", reqs, want)
+		}
+	}
+	gitConfig, err := os.ReadFile(filepath.Join(workDir, "issuedog.git", "config"))
+	if err != nil {
+		t.Errorf("no clone at %s/issuedog.git: %v", workDir, err)
+	}
+	// The fake mints "fake-token"; git gets it base64-encoded in a header.
+	for _, secret := range []string{"fake-token", base64.StdEncoding.EncodeToString([]byte("x-access-token:fake-token"))} {
+		if strings.Contains(logs.String(), secret) || strings.Contains(string(gitConfig), secret) {
+			t.Errorf("the token is in the logs or the clone's config")
+		}
+	}
+	labels := f.RepoLabels()
+	for _, want := range []string{"stage:spec-review", "scope:daemon", "scope:docs", "type:task"} {
+		if !slices.Contains(labels, want) {
+			t.Errorf("repo labels = %v, want %s from this repo's config", labels, want)
+		}
+	}
+	if len(slices.DeleteFunc(slices.Clone(labels), func(l string) bool { return l != "stage:intake" })) != 1 {
+		t.Errorf("repo labels = %v, want stage:intake, which existed, once", labels)
+	}
+	comments := f.State().Issues[0].Comments
+	if len(comments) != 4 || len(comments[1].Reactions) != 0 || !reflect.DeepEqual(comments[2].Reactions, []string{"issuedog-dev[bot] -1"}) {
+		t.Errorf("comments = %+v, want mertenvg's /frob alone 👎'd and replied to", comments)
 	}
 	if got, want := strings.Join(*calls, ", "), "firewall agent, listen 3128"; got != want {
 		t.Errorf("startup steps = %q, want %q", got, want)
 	}
-	if !strings.Contains(logs, "egress proxy listening on http://127.0.0.1:") {
-		t.Errorf("logs = %q, want the proxy on 127.0.0.1", logs)
+	for _, want := range []string{"egress proxy listening on http://127.0.0.1:", "allowing example.com, api.anthropic.com",
+		"running as issuedog-dev[bot] on mertenvg/issuedog", "stopping on a signal"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("logs = %q, want %q", logs.String(), want)
+		}
+	}
+}
+
+func TestRunStartupFailures(t *testing.T) {
+	without := func(key string) []string {
+		return slices.DeleteFunc(slices.Clone(daemonEnv), func(kv string) bool { return strings.HasPrefix(kv, key+"=") })
+	}
+	for name, tt := range map[string]struct {
+		environ   []string
+		setup     func(t *testing.T) // after fakeGitHub
+		files     map[string]string  // main's, else this repo's
+		failWrite int                // the write to fail
+		want      string
+	}{
+		"no repo":            {environ: without("ISSUEDOG_REPO"), want: `reading the settings: ISSUEDOG_REPO is "", not owner/name`},
+		"bad repo":           {environ: append(without("ISSUEDOG_REPO"), "ISSUEDOG_REPO=mertenvg"), want: `ISSUEDOG_REPO is "mertenvg", not owner/name`},
+		"bad app ID":         {environ: append(without("ISSUEDOG_APP_ID"), "ISSUEDOG_APP_ID=abc"), want: `reading the settings: ISSUEDOG_APP_ID is "abc", not a positive number`},
+		"no installation ID": {environ: without("ISSUEDOG_INSTALLATION_ID"), want: `ISSUEDOG_INSTALLATION_ID is "", not a positive number`},
+		"clone": {setup: func(t *testing.T) {
+			gitRemote = func(string, string) string { return filepath.Join(t.TempDir(), "none.git") }
+		},
+			want: "starting the daemon: syncing the clone: fetch "},
+		"config": {files: map[string]string{}, want: "starting the daemon: loading the config from main: load config: read main:.issuedog/config.yaml: not found"},
+		"labels": {failWrite: 1, want: "starting the daemon: creating the labels: create label stage:intake"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			files := tt.files
+			if files == nil {
+				files = thisRepo(t)
+			}
+			f := fakeGitHub(t, files)
+			f.FailWrite(tt.failWrite)
+			if tt.setup != nil {
+				tt.setup(t)
+			}
+			calls := fakeEgress(t, nil, nil)
+			environ := tt.environ
+			if environ == nil {
+				environ = daemonEnv
+			}
+			code, logs := runLogged(t, nil, environ)
+			if code != 1 || !strings.Contains(logs, tt.want) {
+				t.Errorf("exit code %d, logs %q; want 1 and %q", code, logs, tt.want)
+			}
+			if len(*calls) != 0 {
+				t.Errorf("startup steps = %q, want none of egress", *calls)
+			}
+		})
 	}
 }
 
@@ -173,7 +382,7 @@ func TestRunRefusesBadAppKey(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			path := fakeAppKey(t, tt.perm)
 			calls := fakeEgress(t, nil, nil)
-			code, logs := runLogged(t, nil, []string{"ANTHROPIC_API_KEY=key"})
+			code, logs := runLogged(t, nil, daemonEnv)
 			if code != 1 {
 				t.Errorf("exit code = %d, want 1", code)
 			}
@@ -269,9 +478,9 @@ func TestRunStopsWhenEgressFails(t *testing.T) {
 		"proxy":    {nil, errors.New("port in use"), "firewall agent, listen 3128", "starting egress: listening for the egress proxy: port in use"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			fakeAppKey(t, 0o600)
+			f := fakeGitHub(t, thisRepo(t))
 			calls := fakeEgress(t, tt.fwErr, tt.listenErr)
-			code, logs := runLogged(t, nil, []string{"ANTHROPIC_API_KEY=key"})
+			code, logs := runLogged(t, nil, daemonEnv)
 			if code != 1 {
 				t.Errorf("exit code = %d, want 1", code)
 			}
@@ -281,19 +490,10 @@ func TestRunStopsWhenEgressFails(t *testing.T) {
 			if !strings.Contains(logs, tt.want) {
 				t.Errorf("logs = %q, want %q", logs, tt.want)
 			}
-			if strings.Contains(logs, "not implemented") {
-				t.Errorf("logs = %q, want startup to stop at egress", logs)
+			if slices.ContainsFunc(f.Requests(), func(r githubtest.Request) bool { return r.Path == "/issues" }) {
+				t.Errorf("requests = %+v, want startup to stop at egress, before the loop", f.Requests())
 			}
 		})
-	}
-}
-
-func TestRunNoArgsLogsError(t *testing.T) {
-	fakeAppKey(t, 0o600)
-	fakeEgress(t, nil, nil)
-	code, logs := runLogged(t, nil, []string{"ANTHROPIC_API_KEY=key"})
-	if code != 1 || !strings.Contains(logs, "the daemon is not implemented yet") {
-		t.Errorf("exit code %d, logs %q; want 1 and the not-implemented error", code, logs)
 	}
 }
 
@@ -310,7 +510,7 @@ func TestRunRefusesBadCredentials(t *testing.T) {
 			if !strings.Contains(logs, "checking the Claude credential: ") || !strings.Contains(logs, "CLAUDE_CODE_OAUTH_TOKEN") {
 				t.Errorf("logs = %q, want the annotated credential error", logs)
 			}
-			if strings.Contains(logs, "not implemented") {
+			if strings.Contains(logs, "reading the settings") {
 				t.Errorf("logs = %q, want startup to stop at the credential check", logs)
 			}
 		})
