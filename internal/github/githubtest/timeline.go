@@ -39,6 +39,27 @@ func (f *Fake) RemoveLabel(number int, login, name string) int64 {
 	return f.labelEvent(is, "unlabeled", login, name, is.UpdatedAt)
 }
 
+// RenameLabel renames a label, matched ignoring case, as the owner can in
+// the repo's settings: in the repo and on every issue that has it. Past
+// labeled and unlabeled events keep the name they had.
+func (f *Fake) RenameLabel(from, to string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, l := range f.labels {
+		if strings.EqualFold(l.GetName(), from) {
+			l.Name = to
+		}
+	}
+	for _, is := range f.issues {
+		for i, l := range is.Labels {
+			if strings.EqualFold(l.GetName(), from) {
+				is.Labels[i] = &gogithub.Label{Name: to}
+			}
+		}
+		slices.SortFunc(is.Labels, func(a, b *gogithub.Label) int { return strings.Compare(a.GetName(), b.GetName()) })
+	}
+}
+
 // labelEvent adds a labeled or unlabeled event to an issue's timeline, and
 // returns its ID.
 func (f *Fake) labelEvent(is *issue, event, login, name string, at *gogithub.Timestamp) int64 {

@@ -2,6 +2,7 @@ package daemon_test
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"reflect"
 	"slices"
@@ -44,7 +45,7 @@ func settingPass(t testing.TB, allowed config.Models) func(*githubtest.Fake) err
 		}
 		tr := trusted{"owner": true}
 		st := &daemon.Step{Applier: &daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: slug}, Trust: tr, Commands: daemon.Commands(tr)}
-		maps.Copy(st.Commands, daemon.SettingCommands(func() config.Models { return allowed }))
+		maps.Copy(st.Commands, daemon.SettingCommands(tr, func() config.Models { return allowed }))
 		_, err = st.Run(context.Background(), s)
 		return err
 	}
@@ -176,6 +177,14 @@ func TestModelEffortCommands(t *testing.T) {
 			setup:   then(taskWith("owner", "/model old", app+" model:sonnet"), labeledBy(app, "Model:old")),
 			labels:  []string{"Model:old", "stage:ready"},
 			reacts:  []string{app + " +1"}, writes: []string{"DELETE /issues/1/labels/model:sonnet", react}},
+		{name: "/model of a dropped model keeps a stray label the App added since, renamed in another case since",
+			allowed: "[sonnet]",
+			setup: then(taskWith("owner", "/model old", app+" model:sonnet"), func(f *githubtest.Fake) {
+				f.AddLabel(1, app, "model:old")
+				f.RenameLabel("model:old", "Model:OLD")
+			}),
+			labels: []string{"Model:OLD", "stage:ready"},
+			reacts: []string{app + " +1"}, writes: []string{"DELETE /issues/1/labels/model:sonnet", react}},
 		{name: "/model of a dropped model is rejected with two stray labels the App added since",
 			allowed: "[sonnet]",
 			setup:   then(taskWith("owner", "/model claude-opus-5-5"), labeledBy(app, "model:opus5", "model:haiku")),
@@ -385,6 +394,150 @@ func TestModelRevertIsNotApply(t *testing.T) {
 	}
 }
 
+// A pass reverts mallory's removal of a stray label, then fails before the
+// command; mallory deletes the revert's comment, or edits it so it's dirty,
+// and its marker can't be read. The revert is still told by the removal's
+// untrusted actor, so the next pass rejects /model gpt, and model:sonnet
+// stays (the verifier's probe on attempt 4).
+func TestModelRevertMarkerGone(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		hide func(f *githubtest.Fake, id int64, body string)
+	}{
+		{"deleted", func(f *githubtest.Fake, id int64, _ string) { f.DeleteComment(id) }},
+		{"edited", func(f *githubtest.Fake, id int64, body string) { f.EditComment(id, "mallory", body+" hi") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := taskWith("owner", "/model gpt", app+" model:retired", app+" model:sonnet")(t)
+			f.RemoveLabel(1, "mallory", "model:retired")
+			f.AnswerOnce(func(r githubtest.Request) bool {
+				return r.Method == "GET" && r.Path == "/issues/comments/1002/reactions"
+			}, 500)
+			pass := settingPass(t, models(t, "[sonnet]"))
+			if err := pass(f); err == nil {
+				t.Fatal("the first pass returned no error")
+			}
+			cs, _, err := f.Client(t).Issues.ListComments(context.Background(), "o", "r", 1, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			revert := cs[len(cs)-1]
+			if !strings.Contains(revert.GetBody(), "<!-- issuedog:revert key=") {
+				t.Fatalf("the last comment = %q, want the revert's", revert.GetBody())
+			}
+			tc.hide(f, revert.GetID(), revert.GetBody())
+			if err := pass(f); err != nil {
+				t.Fatal(err)
+			}
+			is := f.State().Issues[0]
+			if want := []string{"model:retired", "model:sonnet", "stage:ready"}; !reflect.DeepEqual(is.Labels, want) {
+				t.Errorf("labels = %q, want %q", is.Labels, want)
+			}
+			if got := is.Comments[1].Reactions; !reflect.DeepEqual(got, []string{app + " -1"}) {
+				t.Errorf("the command's reactions = %q, want the App's 👎", got)
+			}
+			if got := is.Comments[len(is.Comments)-1].Body; got != rejected("/model gpt", "`gpt` isn't on `models.allowed`, which has `sonnet`", "1002") {
+				t.Errorf("the last comment = %q, want the rejection", got)
+			}
+		})
+	}
+}
+
+// markerSetup files issue 1, whose model:opus5 owner, a trusted user,
+// removed; then the App's note, edited by editor to hold a revert marker
+// naming that removal; then the owner's /model claude-opus-5-5, comment
+// 1003; then the App adding model:opus5 back, as a begun Apply would. The
+// removal is trusted, so only the marker can make that add a revert. It
+// returns the marker and the note's ID too.
+func markerSetup(t testing.TB, editor string) (*githubtest.Fake, string, int64) {
+	f := newFake(t)
+	file(f, 0, ready)
+	labeledBy(app, "model:opus5", "model:sonnet")(f)
+	marker := fmt.Sprintf("<!-- issuedog:revert key=%d -->", f.RemoveLabel(1, "owner", "model:opus5"))
+	note := f.AddComment(1, app, "A note.")
+	f.EditComment(note, editor, "A note.\n\n"+marker)
+	if id := f.AddComment(1, "owner", "/model claude-opus-5-5"); id != 1003 {
+		t.Fatalf("command ID = %d, want 1003", id)
+	}
+	f.AddLabel(1, app, "model:opus5")
+	return f, marker, note
+}
+
+// A revert marker is read only from a clean comment of the App's. A clean
+// one naming the removal makes the App's add a revert, so the command is
+// rejected. In a comment mallory edited, MarkDirty escapes it before
+// commands run, so the add is the begun Apply.
+func TestModelRevertMarker(t *testing.T) {
+	for _, tc := range []struct {
+		editor string
+		labels []string
+		react  string
+	}{
+		{app, []string{"model:opus5", "model:sonnet", "stage:ready"}, "-1"},
+		{"mallory", []string{"model:opus5", "stage:ready"}, "+1"},
+	} {
+		t.Run("edited by "+tc.editor, func(t *testing.T) {
+			setup := func(t testing.TB) *githubtest.Fake {
+				f, _, _ := markerSetup(t, tc.editor)
+				return f
+			}
+			pass := settingPass(t, models(t, "[sonnet]"))
+			githubtest.Replay(t, setup, pass)
+
+			is := run(t, setup, pass).State().Issues[0]
+			if !reflect.DeepEqual(is.Labels, tc.labels) {
+				t.Errorf("labels = %q, want %q", is.Labels, tc.labels)
+			}
+			if want := []string{app + " " + tc.react}; !reflect.DeepEqual(is.Comments[2].Reactions, want) {
+				t.Errorf("the command's reactions = %q, want %q", is.Comments[2].Reactions, want)
+			}
+		})
+	}
+}
+
+// addedSince skips a marker in a dirty comment itself: here mallory puts the
+// raw marker back in her dirty comment after MarkDirty escaped it, before
+// the command's timeline read, and the begun Apply still stands.
+func TestModelRevertMarkerDirtySkipped(t *testing.T) {
+	f, marker, note := markerSetup(t, "mallory")
+	timeline := func(r githubtest.Request) bool { return r.Method == "GET" && r.Path == "/issues/1/timeline" }
+	// The label rules read the timeline first, after the dirty content is
+	// read; then Check's read.
+	f.BeforeRequest(timeline, func() {
+		f.BeforeRequest(timeline, func() { f.EditComment(note, "mallory", "A note.\n\n"+marker) })
+	})
+	if err := settingPass(t, models(t, "[sonnet]"))(f); err != nil {
+		t.Fatal(err)
+	}
+	is := f.State().Issues[0]
+	if !strings.Contains(is.Comments[1].Body, marker) {
+		t.Fatalf("the note = %q, want the raw marker in it", is.Comments[1].Body)
+	}
+	if want := []string{"model:opus5", "stage:ready"}; !reflect.DeepEqual(is.Labels, want) {
+		t.Errorf("labels = %q, want %q", is.Labels, want)
+	}
+	if want := []string{app + " +1"}; !reflect.DeepEqual(is.Comments[2].Reactions, want) {
+		t.Errorf("the command's reactions = %q, want %q", is.Comments[2].Reactions, want)
+	}
+}
+
+// The command's comment gone from the timeline, as when it's deleted after
+// the issue was read, fails the pass rather than rejecting the command.
+func TestModelCommandNotOnTimeline(t *testing.T) {
+	f := taskWith("owner", "/model gpt", app+" model:retired")(t)
+	timeline := func(r githubtest.Request) bool { return r.Method == "GET" && r.Path == "/issues/1/timeline" }
+	// The label rules read the timeline first; before Check's read, the
+	// command goes.
+	f.BeforeRequest(timeline, func() { f.BeforeRequest(timeline, func() { f.DeleteComment(1002) }) })
+	err := settingPass(t, models(t, "[sonnet]"))(f)
+	if err == nil || !strings.Contains(err.Error(), "the comment isn't on the timeline of o/r#1") {
+		t.Errorf("pass = %v, want the missing comment's error", err)
+	}
+	if w := f.Writes(); len(w) != 0 {
+		t.Errorf("writes = %+v, want none", w)
+	}
+}
+
 // Apply reads the timeline again, and a failure there fails the pass, after
 // Check's read succeeded: nothing is written, not even a 👎.
 func TestModelApplyTimelineFails(t *testing.T) {
@@ -480,7 +633,7 @@ func TestIterateModelsReload(t *testing.T) {
 	o := newOrigin(t)
 	o.commit(config.Path, "types: labels\nmodels:\n  allowed: [opus]\n")
 	d := newDaemon(t, f, o, nil)
-	maps.Copy(d.Step.Commands, daemon.SettingCommands(d.CurrentModels))
+	maps.Copy(d.Step.Commands, daemon.SettingCommands(d.Step.CurrentTrust(), d.CurrentModels))
 	last := func() githubtest.CommentState {
 		cs := f.State().Issues[0].Comments
 		return cs[len(cs)-1]

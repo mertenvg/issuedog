@@ -234,7 +234,7 @@ func newStep(a *daemon.Applier, tr github.Trust, models func() config.Models) *d
 	st.Commands = daemon.Commands(st.CurrentTrust())
 	st.Commands["approve"] = daemon.ApproveCommand()
 	st.Commands["revise"] = daemon.ReviseCommand()
-	maps.Copy(st.Commands, daemon.SettingCommands(models))
+	maps.Copy(st.Commands, daemon.SettingCommands(st.CurrentTrust(), models))
 	st.Reactions = daemon.ApproveByReaction(st.CurrentTrust())
 	return st
 }

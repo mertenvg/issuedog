@@ -481,10 +481,12 @@ func (a *Applier) setLabel(ctx context.Context, c Cmd, want string) error {
 // does: model:*, effort:*, or for the verifier's runs, verifier-model:* or
 // verifier-effort:*. models returns models.allowed as of the call, such as
 // Daemon.CurrentModels, so a config reload that changes it takes effect.
-func SettingCommands(models func() config.Models) map[string]Handler {
+// trust is Step's, such as Step.CurrentTrust, for telling the label rules'
+// reverts apart (see addedSince).
+func SettingCommands(trust github.Trust, models func() config.Models) map[string]Handler {
 	return map[string]Handler{
 		"model": setting(func(ctx context.Context, a *Applier, c Cmd) (string, error) {
-			return modelLabel(ctx, a, models(), c)
+			return modelLabel(ctx, a, trust, models(), c)
 		}),
 		"effort": setting(func(_ context.Context, _ *Applier, c Cmd) (string, error) { return effortLabel(c) }),
 	}
@@ -543,7 +545,7 @@ func settingPrefix(c Cmd) (value, prefix string) {
 // Apply of c added (see addedSince) stands. If exactly one did, c names that
 // label, and c removes the others. Otherwise c is rejected, and its labels
 // stay. Only this path reads the timeline, and it doesn't write.
-func modelLabel(ctx context.Context, a *Applier, models config.Models, c Cmd) (string, error) {
+func modelLabel(ctx context.Context, a *Applier, trust github.Trust, models config.Models, c Cmd) (string, error) {
 	arg, prefix := settingPrefix(c)
 	name, ok := models.Resolve(arg)
 	var same []string // the full names arg matches ignoring case, quoted
@@ -568,7 +570,7 @@ func modelLabel(ctx context.Context, a *Applier, models config.Models, c Cmd) (s
 		}
 	}
 	if len(stray) > 0 {
-		begun, err := a.addedSince(ctx, c, stray)
+		begun, err := a.addedSince(ctx, c, trust, stray)
 		if err != nil {
 			return "", fmt.Errorf("model: %w", err)
 		}
@@ -593,10 +595,16 @@ func modelLabel(ctx context.Context, a *Applier, models config.Models, c Cmd) (s
 // added: each one whose latest labeled or unlabeled event on the timeline,
 // after c's own commented event, is the App's labeled event, and isn't the
 // label rules' revert. A revert puts back a label an untrusted user removed,
-// and its marker's key is the ID of that unlabeled event (github.CheckLabels),
-// so an App's labeled event right after an unlabeled event a trusted revert
-// marker names is a revert. Like the label rules, it skips dirty comments.
-func (a *Applier) addedSince(ctx context.Context, c Cmd, labels []string) ([]string, error) {
+// so an App's labeled event right after an unlabeled event is a revert if
+// either:
+//   - a trusted revert marker names that unlabeled event: its key is the
+//     event's ID (github.CheckLabels). Like the label rules, it skips dirty
+//     comments.
+//   - neither the App nor a trusted user, by trust, made that unlabeled
+//     event. An untrusted user can delete or edit the revert's comment, but
+//     not the event. CheckLabels runs before commands in each pass, so it
+//     puts back an untrusted removal before Apply could add the label.
+func (a *Applier) addedSince(ctx context.Context, c Cmd, trust github.Trust, labels []string) ([]string, error) {
 	wrap := func(err error) error { return fmt.Errorf("labels added since comment %d: %w", c.Comment.ID, err) }
 	events, err := a.Client.TimelineSince(ctx, a.Owner, a.Repo, c.S.Number, time.Time{})
 	if err != nil {
@@ -613,7 +621,7 @@ func (a *Applier) addedSince(ctx context.Context, c Cmd, labels []string) ([]str
 		if e.GetEvent() != "commented" || c.Dirt.Has(e.GetID()) {
 			continue
 		}
-		for _, m := range github.TrustedMarkers(github.Author{Login: e.GetUser().GetLogin(), Type: e.GetUser().GetType()}, e.GetBody(), a.AppSlug) {
+		for _, m := range github.TrustedMarkers(author(e.GetUser()), e.GetBody(), a.AppSlug) {
 			if m.Kind == "revert" {
 				reverted[m.Fields["key"]] = true
 			}
@@ -630,15 +638,32 @@ func (a *Applier) addedSince(ctx context.Context, c Cmd, labels []string) ([]str
 		if last <= after || events[last].GetEvent() != "labeled" {
 			continue
 		}
-		if actor := events[last].GetActor(); !state.IsApp(github.Author{Login: actor.GetLogin(), Type: actor.GetType()}, a.AppSlug) {
+		if !state.IsApp(author(events[last].GetActor()), a.AppSlug) {
 			continue
 		}
-		if prev >= 0 && events[prev].GetEvent() == "unlabeled" && reverted[strconv.FormatInt(events[prev].GetID(), 10)] {
-			continue
+		if prev >= 0 && events[prev].GetEvent() == "unlabeled" {
+			if reverted[strconv.FormatInt(events[prev].GetID(), 10)] {
+				continue
+			}
+			by := events[prev].GetActor()
+			if !state.IsApp(author(by), a.AppSlug) {
+				ok, err := trust.Trusted(ctx, by.GetLogin())
+				if err != nil {
+					return nil, wrap(fmt.Errorf("trust %s: %w", by.GetLogin(), err))
+				}
+				if !ok {
+					continue
+				}
+			}
 		}
 		added = append(added, l)
 	}
 	return added, nil
+}
+
+// author is u as a github.Author.
+func author(u *gogithub.User) github.Author {
+	return github.Author{Login: u.GetLogin(), Type: u.GetType()}
 }
 
 // effortLabel returns the label c, a /effort command, sets: its prefix and
