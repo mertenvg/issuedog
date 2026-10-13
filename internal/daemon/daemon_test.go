@@ -383,6 +383,10 @@ func TestIterateCreatesLabelsForNewModels(t *testing.T) {
 			t.Errorf("repo labels = %v, want %s", labels, want)
 		}
 	}
+	logr.Wait()
+	if !strings.Contains(logs.String(), "created the labels stage:intake, ") || !strings.Contains(logs.String(), ", verifier-effort:max on o/r") {
+		t.Errorf("logs = %q, want the labels created, from stage:intake to verifier-effort:max on o/r", logs.String())
+	}
 	calls := labelCalls()
 	iterate(t, d)
 	o.commit(config.Path, "types: labels\nmodels: {allowed: [Opus]}\n") // same label
@@ -407,18 +411,28 @@ func TestIterateCreatesLabelsForNewModels(t *testing.T) {
 	if want := "creating the labels of the new models on o/r failed, so it's tried again next iteration: "; !strings.Contains(logs.String(), want) {
 		t.Errorf("logs = %q, want %q", logs.String(), want)
 	}
+	// retried checks that the next iteration creates the model's labels.
+	retried := func(suffix string) {
+		t.Helper()
+		iterate(t, d)
+		labels := f.RepoLabels()
+		for _, want := range []string{"model:" + suffix, "verifier-model:" + suffix} {
+			if !slices.Contains(labels, want) {
+				t.Errorf("repo labels = %v, want %s after the retry", labels, want)
+			}
+		}
+	}
+	retried("sonnet-4-5") // with the same config, which loads
+
 	// The retry doesn't wait on a config that loads: the last good one stays.
-	o.commit(config.Path, "types: labels\nloop: {idle_sleep: 0s}\n")
+	o.commit(config.Path, "types: labels\nmodels: {allowed: [opus, "+sonnet+", haiku]}\n")
+	f.AnswerOnce(func(r githubtest.Request) bool { return r.Method == "POST" && r.Path == "/labels" }, 500)
 	iterate(t, d)
+	o.commit(config.Path, "types: labels\nloop: {idle_sleep: 0s}\n")
+	retried("haiku")
 	logr.Wait()
 	if want := "loading the config of o/r from main failed"; !strings.Contains(logs.String(), want) {
-		t.Fatalf("logs = %q, want %q", logs.String(), want)
-	}
-	labels = f.RepoLabels()
-	for _, want := range []string{"model:sonnet-4-5", "verifier-model:sonnet-4-5"} {
-		if !slices.Contains(labels, want) {
-			t.Errorf("repo labels = %v, want %s after the retry", labels, want)
-		}
+		t.Errorf("logs = %q, want %q", logs.String(), want)
 	}
 	calls = labelCalls()
 	iterate(t, d)
@@ -480,12 +494,13 @@ func TestLabelOptions(t *testing.T) {
 // A long name with no label falls back to its last 35 characters, and says so.
 func TestLabelOptionsLogsTheFallback(t *testing.T) {
 	const long = "x.us.anthropic.claude-sonnet-4-5-20250929-v1:0"
-	cfg, err := config.Parse([]byte("models: {allowed: [opus, " + long + ", {name: y." + long + ", label: sonnet}]}\n"))
+	at35, wide := strings.Repeat("a", 35), strings.Repeat("é", 36) // 35 characters, and 36 in 72 bytes
+	cfg, err := config.Parse([]byte("models: {allowed: [opus, " + long + ", {name: y." + long + ", label: sonnet}, " + at35 + ", " + wide + "]}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var logs bytes.Buffer
-	stop := logr.AddWriter(&logs)
+	stop := logr.AddWriter(&logs, logr.WithFilter(logr.I))
 	defer stop()
 	got := daemon.LabelOptions(cfg)
 	logr.Wait()
@@ -493,8 +508,9 @@ func TestLabelOptionsLogsTheFallback(t *testing.T) {
 		t.Errorf("suffix of %s = %q, want its last 35 characters", long, got.Models[1].Suffix)
 	}
 	want := `models.allowed: "` + long + `" has no label and is longer than 35 characters, so its labels use its last 35 characters, "pic.claude-sonnet-4-5-20250929-v1:0"`
-	if !strings.Contains(logs.String(), want) || strings.Count(logs.String(), "has no label") != 1 {
-		t.Errorf("logs = %q, want %q once", logs.String(), want)
+	wideWant := `models.allowed: "` + wide + `" has no label and is longer than 35 characters, so its labels use its last 35 characters, "` + wide[2:] + `"`
+	if !strings.Contains(logs.String(), want) || !strings.Contains(logs.String(), wideWant) || strings.Count(logs.String(), "has no label") != 2 {
+		t.Errorf("info logs = %q, want %q and %q, and no others", logs.String(), want, wideWant)
 	}
 }
 
