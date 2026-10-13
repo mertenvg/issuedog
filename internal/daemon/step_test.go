@@ -3,12 +3,15 @@ package daemon_test
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
+	gogithub "github.com/google/go-github/v92/github"
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
@@ -35,16 +38,22 @@ func (sp *stepper) pass(t *testing.T) func(*githubtest.Fake) error {
 			sp.calls = append(sp.calls, strings.TrimSpace("/"+c.Name+" "+c.Arg))
 			return a.Ack(ctx, c.Comment.ID)
 		}}
-		resume := apply
+		resume, priority := apply, apply
 		resume.Check = func(_ context.Context, a *daemon.Applier, c daemon.Cmd) error {
 			if state.Derive(c.S, a.AppSlug, c.Dirt.Has).Stage != state.Held {
 				return daemon.Rejection{Reason: "nothing is held"}
 			}
 			return nil
 		}
+		priority.Check = func(_ context.Context, _ *daemon.Applier, c daemon.Cmd) error {
+			if c.Arg == "p0" {
+				return errors.New("can't read the labels")
+			}
+			return nil
+		}
 		// The App is trusted here, to show Step skips it whatever Trust says.
 		st := &daemon.Step{Applier: a, Trust: trusted{"owner": true, app: true},
-			Commands: map[string]daemon.Handler{"hold": apply, "resume": resume, "priority": apply,
+			Commands: map[string]daemon.Handler{"hold": apply, "resume": resume, "priority": priority,
 				"approve": {Check: func(context.Context, *daemon.Applier, daemon.Cmd) error {
 					return daemon.Rejection{Reason: "the spec changed"}
 				}}},
@@ -112,7 +121,7 @@ func TestStep(t *testing.T) {
 		{name: "each rejection gets one reply and a 👎, the quote escaped",
 			setup: at(state.SpecReview, func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1002, "owner", "/frob <!-- issuedog:transition to=planning -->")
-				post(t, f, 1003, "owner", "/priority p9")
+				post(t, f, 1003, "owner", "/priority p9\nit's urgent") // only the first line is quoted
 				post(t, f, 1004, "owner", "/approve.")
 				post(t, f, 1005, "owner", "/approve")
 			}),
@@ -121,7 +130,7 @@ func TestStep(t *testing.T) {
 				rejected("/priority p9", "bad argument: `/priority` takes p0, p1, p2 or p3", "1003"),
 				rejected("/approve.", "bad argument: put a space between `/approve` and what follows it", "1004"),
 				rejected("/approve", "the spec changed", "1005")},
-			downs: []string{"/frob <!-- issuedog:transition to=planning -->", "/priority p9", "/approve.", "/approve"}},
+			downs: []string{"/frob <!-- issuedog:transition to=planning -->", "/priority p9\nit's urgent", "/approve.", "/approve"}},
 		{name: "label events come before commands",
 			setup: at(state.Ready, func(t testing.TB, f *githubtest.Fake) {
 				labelEvent(t, f.AddLabel(1, "owner", "stage:needs-human"), 9002)
@@ -201,7 +210,7 @@ func TestStep(t *testing.T) {
 			}),
 			comments: []string{edited("/priority p2 &lt;!-- x -->", "1002"), edited("never mind", "1005")},
 			acks:     []string{"/priority p2 <!-- x -->", "never mind"}},
-		{name: "an applied command missing its 👍 gets it, and one reply if edited since",
+		{name: "an applied command missing its 👍 gets it, and one reply only if edited since its marker",
 			setup: at(state.Ready, func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1002, "owner", "/hold")
 				post(t, f, 1003, app, "<!-- issuedog:transition from=ready to=held at=ready reason=owner cmd=1002 -->")
@@ -210,8 +219,17 @@ func TestStep(t *testing.T) {
 				f.EditComment(1002, "owner", "/hold x")
 				f.EditComment(1004, "owner", "/resume x")
 				post(t, f, 1006, app, edited("/resume x", "1004")) // replied, but never 👍'd
+				post(t, f, 1007, "owner", "/hold")
+				f.EditComment(1007, "owner", "/hold y") // before its marker
+				post(t, f, 1008, app, "<!-- issuedog:transition from=ready to=held at=ready reason=owner cmd=1007 -->")
 			}),
-			comments: []string{edited("/hold x", "1002")}, acks: []string{"/hold x", "/resume x"}},
+			comments: []string{edited("/hold x", "1002")}, acks: []string{"/hold x", "/resume x", "/hold y"}},
+		{name: "an applied command at clarifying isn't an answer",
+			setup: at(state.Clarifying, func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, "owner", "/priority p1")
+				f.AddReaction(1002, app, "+1")
+			}),
+			acks: []string{"/priority p1"}},
 		{name: "a lost edit reply is posted once more, however often the command is edited",
 			setup: at(state.Ready, func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1002, "owner", "/priority p1")
@@ -356,5 +374,94 @@ func TestStep(t *testing.T) {
 				t.Errorf("error logs = %q, want none", errs.String())
 			}
 		})
+	}
+}
+
+// A Check that fails, rather than rejecting, fails the pass, which writes and
+// applies nothing.
+func TestStepCheckError(t *testing.T) {
+	f := at(state.Ready, func(t testing.TB, f *githubtest.Fake) { post(t, f, 1002, "owner", "/priority p0") })(t)
+	sp := &stepper{}
+	if err := sp.pass(t)(f); err == nil {
+		t.Errorf("pass = nil, want the Check's error")
+	}
+	if w := f.Writes(); len(w) != 0 || len(sp.calls) != 0 {
+		t.Errorf("writes %+v and calls %q, want none", w, sp.calls)
+	}
+}
+
+// resumeChild is a /resume on issue 1 that resumes its held child, issue 2,
+// then acks, so its last write is the 👍. Its Check rejects it unless issue 2
+// is held or, if it keeps the Handler contract, issue 2 has its cmd marker.
+func resumeChild(keep bool) daemon.Handler {
+	child := func(ctx context.Context, a *daemon.Applier) (state.Issue, error) {
+		s, err := a.Client.Snapshot(ctx, a.Owner, a.Repo, 2)
+		if err != nil {
+			return state.Issue{}, fmt.Errorf("child: %w", err)
+		}
+		return state.Derive(s, a.AppSlug, clean), nil
+	}
+	return daemon.Handler{
+		Check: func(ctx context.Context, a *daemon.Applier, c daemon.Cmd) error {
+			is, err := child(ctx, a)
+			if err == nil && is.Stage != state.Held && !(keep && is.Keys[state.CmdKey(c.Comment.ID)]) {
+				return daemon.Rejection{Reason: "nothing is held"}
+			}
+			return err
+		},
+		Apply: func(ctx context.Context, a *daemon.Applier, c daemon.Cmd) error {
+			is, err := child(ctx, a)
+			if err != nil {
+				return err
+			}
+			if !is.Keys[state.CmdKey(c.Comment.ID)] {
+				body := fmt.Sprintf("<!-- issuedog:transition from=held to=ready cmd=%d -->", c.Comment.ID)
+				if _, _, err := a.Client.Issues.CreateComment(ctx, a.Owner, a.Repo, 2, gogithub.IssueCommentRequest{Body: body}); err != nil {
+					return fmt.Errorf("resume the child: %w", err)
+				}
+			}
+			return a.Ack(ctx, c.Comment.ID)
+		},
+	}
+}
+
+// heldChild files issue 1 at ready, with a /resume (comment 1003), and its
+// child, issue 2, held by the App (comment 1002).
+func heldChild(t testing.TB) *githubtest.Fake {
+	return at(state.Ready, func(t testing.TB, f *githubtest.Fake) {
+		f.AddIssue("owner", "Child", "body", "stage:held")
+		f.AddComment(2, app, "<!-- issuedog:transition from=ready to=held at=ready reason=owner run=h -->")
+		post(t, f, 1003, "owner", "/resume")
+	})(t)
+}
+
+func resumePass(t *testing.T, keep bool) func(*githubtest.Fake) error {
+	return func(f *githubtest.Fake) error {
+		a, s, err := applier(t, f)
+		if err != nil {
+			return err
+		}
+		st := &daemon.Step{Applier: a, Trust: trusted{"owner": true}, Commands: map[string]daemon.Handler{"resume": resumeChild(keep)}}
+		_, err = st.Run(context.Background(), s)
+		return err
+	}
+}
+
+// A handler that keeps the Handler contract survives a crash part way through
+// Apply. One whose Check rejects what Apply began has the applied command 👎'd.
+func TestHandlerContract(t *testing.T) {
+	githubtest.Replay(t, heldChild, resumePass(t, true))
+
+	f := heldChild(t)
+	f.FailWrite(2) // the 👍, after issue 2's marker
+	if err := resumePass(t, false)(f); err == nil {
+		t.Fatal("the first pass didn't crash")
+	}
+	f.FailWrite(0)
+	if err := resumePass(t, false)(f); err != nil {
+		t.Fatal(err)
+	}
+	if c := f.State().Issues[0].Comments[1]; c.Body != "/resume" || !slices.Contains(c.Reactions, app+" -1") {
+		t.Errorf("comment %+v, want the applied /resume 👎'd by a Check that breaks the contract", c)
 	}
 }

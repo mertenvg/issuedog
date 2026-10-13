@@ -11,15 +11,15 @@ import (
 	"github.com/mertenvg/logr/v2"
 )
 
-// Handler handles one valid command for Step.
-//   - Check, if set, returns a Rejection when the command doesn't apply now.
-//     It must not write: Step also calls it to word again a rejection whose
-//     reply was lost.
-//   - Apply makes the writes and acks the command. It must be replay-safe,
-//     checking each write first. Step stops calling it once a marker on the
-//     issue names cmd=<comment id>, so it writes that marker last; such a
-//     marker already on another issue, such as a descendant, means that part
-//     is applied.
+// Handler handles one valid command for Step. Until the command is
+// processed, each pass calls Check, then Apply, even after a crash part way
+// through Apply.
+//   - Check, if set, returns a Rejection when the command doesn't apply. It
+//     must not write, as Step also calls it to word a lost reply again, and
+//     must not reject a command Apply has begun: a cmd=<comment id> marker
+//     Apply wrote, here or on another issue, means that part is applied.
+//   - Apply makes the writes, each checked first, and acks the command. A
+//     cmd=<comment id> marker on this issue ends it, so Apply writes it last.
 type Handler struct {
 	Check, Apply func(ctx context.Context, a *Applier, c Cmd) error
 }
@@ -83,14 +83,11 @@ func (st *Step) why(ctx context.Context, s *github.Snapshot, d Dirt, c github.Co
 	return "", h, nil
 }
 
-// lost is the reason a reply gives when the one it replaces can't be worded
-// again: the command would apply now, or is no longer a command.
+// lost is a lost reply's reason when it can't be worded again.
 const lost = "my reply saying why was lost"
 
-// rejected posts the reply to command comment c, which the App has 👎'd,
-// saying why it doesn't apply. The 👎 comes first: only the App can remove
-// it, so it keeps c processed if the reply is lost, and Step then posts the
-// reply again (plan #5, amended assumption 5).
+// rejected posts the reply to c, a command the App 👎'd first (plan #5,
+// amended assumption 5), saying why it doesn't apply.
 func (st *Step) rejected(ctx context.Context, s *github.Snapshot, c github.Comment, reason string) error {
 	logr.Infof("%s/%s#%d: rejected comment %d: %s", st.Owner, st.Repo, s.Number, c.ID, reason)
 	if err := st.reply(ctx, s, c, "rejected", "I didn't apply this command: "+reason+". Post a new comment to try again."); err != nil {

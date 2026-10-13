@@ -90,12 +90,12 @@ func (c Command) Check(stage Stage) error {
 	return nil
 }
 
-// Inputs are s's comments that are input to the next stage run, oldest
-// first. At clarifying, those are this round's answers (plan #5, amended
-// assumption 5): comments above is.Round that counts accepts, that aren't
-// commands, and that no cmd or reply marker names, as a command edited into
-// plain text would be (SPEC §9.1). counts reports whether a comment is
-// trusted input (SPEC §6.2).
+// Inputs are s's input to the next stage run, oldest first. At clarifying,
+// those are this round's answers (plan #5, amended assumption 5): comments
+// above is.Round that counts accepts as trusted input, that aren't commands,
+// and that no cmd or reply marker names. It's only right after a successful
+// daemon Step.Run on s, which posts a lost reply again: without it, a 👎'd
+// command edited into plain text would be listed.
 func (is Issue) Inputs(s *github.Snapshot, counts func(github.Comment) bool) []github.Comment {
 	if is.Stage != Clarifying {
 		return nil
