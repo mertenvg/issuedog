@@ -124,14 +124,16 @@ func fileAt(f *githubtest.Fake, stage, body string, labels ...string) int {
 }
 
 // quiet files issue 1 at ready with priority:p2, issue 2 at spec-review
-// with a body its author edited, so Dirty reads its history, a pull request
-// and a closed issue. Last, owner comments on issue 1, which makes it the
-// newest: the issue at the cursor, which every poll lists again.
+// with a body its author edited, so Dirty reads its history, and revision 1
+// of it, a pull request and a closed issue. Last, owner comments on issue 1,
+// which makes it the newest: the issue at the cursor, which every poll lists
+// again.
 func quiet(t testing.TB) *githubtest.Fake {
 	f := newFake(t)
 	fileAt(f, "ready", "do it", "priority:p2")
-	fileAt(f, "spec-review", "the spec")
+	f.AddLabel(f.AddIssue("owner", "Issue", "the spec"), app, "stage:spec-review")
 	f.EditBody(2, "owner", "the spec, edited")
+	f.AddComment(2, app, revision(1, "the spec, edited"))
 	f.SetPullRequest(f.AddIssue("owner", "PR", ""))
 	f.Close(f.AddIssue("owner", "Closed", ""))
 	if id := f.AddComment(1, "owner", "hello"); id != hello {
@@ -442,5 +444,103 @@ func TestIterateApprovesAtSpecReview(t *testing.T) {
 	iterate(t, d)
 	if got := labels(); !reflect.DeepEqual(got, []string{"stage:planning"}) {
 		t.Errorf("labels after owner's 👍 = %v, want stage:planning", got)
+	}
+}
+
+// reviewing files issue 1, a story at spec-review with revision 1 of its
+// body, and runs a first, quiet iteration of a daemon that handles /revise.
+func reviewing(t *testing.T) (*githubtest.Fake, *daemon.Daemon) {
+	f := newFake(t)
+	n := f.AddIssue("owner", "Spec", "body")
+	f.SetType(n, "Story")
+	f.AddLabel(n, app, "stage:spec-review")
+	f.AddComment(n, app, revision(1, "body"))
+	d := newDaemon(t, f, newOrigin(t), nil)
+	d.Step.Commands["revise"] = daemon.ReviseCommand()
+	iterate(t, d)
+	if w := f.Writes(); len(w) != 0 {
+		t.Fatalf("the first iteration wrote %+v, want nothing", w)
+	}
+	return f, d
+}
+
+// A failed ReviewVisit fails the issue's pass as Run would: Work doesn't get
+// it, and the next pass reads it again and posts the revision.
+func TestIterateRetriesAFailedReviewVisit(t *testing.T) {
+	f, d := reviewing(t)
+	work := recordWork(d)
+	f.EditBody(1, "owner", "body v2")
+	f.FailWrite(1) // the revision
+	if err := d.Iterate(context.Background()); err == nil || !strings.Contains(err.Error(), "revision of o/r#1") {
+		t.Errorf("Iterate = %v, want the revision's error", err)
+	}
+	f.FailWrite(0)
+	iterate(t, d)
+	got := f.State().Issues[0].Comments
+	if last := got[len(got)-1].Body; last != posted(2, "body v2", "", "", "1001") || !reflect.DeepEqual(*work, [][]int{{}, {1}}) {
+		t.Errorf("newest comment %q and Work got %v; want revision 2, and issue 1 only once it's posted", last, *work)
+	}
+}
+
+// ReviewVisit runs only after Run succeeds: one after a failed Run would post
+// a revision above a request Run didn't get to, and lose it.
+func TestIterateSkipsReviewVisitWhenRunFails(t *testing.T) {
+	f, d := reviewing(t)
+	f.EditBody(1, "owner", "body v2")
+	f.AddComment(1, "owner", "too long")
+	f.FailWrite(1) // sending the spec back
+	if err := d.Iterate(context.Background()); err == nil {
+		t.Error("Iterate = nil, want the failed write's error")
+	}
+	if w := f.Writes(); len(w) != 1 {
+		t.Errorf("the failed pass wrote %+v, want only the failed write", w)
+	}
+	f.FailWrite(0)
+	iterate(t, d)
+	got := f.State().Issues[0]
+	if last := got.Comments[len(got.Comments)-1].Body; last != sentBack("1002") || !slices.Equal(got.Labels, []string{"stage:clarifying"}) {
+		t.Errorf("newest comment %q and labels %v, want the spec sent back", last, got.Labels)
+	}
+}
+
+// Each pass on an issue at spec-review ends with ReviewVisit: the owner's
+// edit of the body posts the next revision, and so does mallory dirtying the
+// newest one; an owner's plain comment sends the spec back.
+func TestIterateReviewsSpecs(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		change func(t *testing.T, f *githubtest.Fake, d *daemon.Daemon)
+		last   string // the newest comment
+		label  string
+	}{
+		{"the owner's edit posts the next revision",
+			func(_ *testing.T, f *githubtest.Fake, _ *daemon.Daemon) { f.EditBody(1, "owner", "body v2") },
+			posted(2, "body v2", "", "", "1001"), "stage:spec-review"},
+		{"mallory dirtying the newest revision posts it again",
+			func(t *testing.T, f *githubtest.Fake, d *daemon.Daemon) {
+				f.EditBody(1, "owner", "body v2")
+				iterate(t, d) // posts revision 2, comment 1002
+				f.EditComment(1002, "mallory", "nothing to approve here")
+			},
+			posted(2, "body v2", "", "", "1001"), "stage:spec-review"},
+		{"the owner's plain comment sends the spec back",
+			func(_ *testing.T, f *githubtest.Fake, _ *daemon.Daemon) { f.AddComment(1, "owner", "too long") },
+			sentBack("1002"), "stage:clarifying"},
+		{"with an edit in the same poll, the comment still sends it back: Run comes first",
+			func(_ *testing.T, f *githubtest.Fake, _ *daemon.Daemon) {
+				f.EditBody(1, "owner", "body v2")
+				f.AddComment(1, "owner", "too long")
+			},
+			sentBack("1002"), "stage:clarifying"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f, d := reviewing(t)
+			tt.change(t, f, d)
+			iterate(t, d)
+			got := f.State().Issues[0]
+			if last := got.Comments[len(got.Comments)-1].Body; last != tt.last || !slices.Equal(got.Labels, []string{tt.label}) {
+				t.Errorf("newest comment %q and labels %v, want %q and %s", last, got.Labels, tt.last, tt.label)
+			}
+		})
 	}
 }
