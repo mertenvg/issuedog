@@ -140,7 +140,7 @@ func TestRunFailures(t *testing.T) {
 		{name: "no environment", mode: "success", wantErr: "no agent environment", setup: true},
 		{name: "no prompt", mode: "success", wantErr: "reading the prompt", setup: true},
 		{name: "no claude", mode: "success", wantErr: "starting claude", setup: true},
-		{name: "result not saved", mode: "success", wantErr: "saving the result", setup: true},
+		{name: "result not saved", mode: "success", wantErr: "saving the result", wantOut: "Done."},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

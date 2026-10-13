@@ -167,8 +167,9 @@ func TestMoveResetsAttemptCount(t *testing.T) {
 	}
 }
 
-// A state error from Apply, such as for an issue of unknown type, ends the
-// run: live, it's a failed attempt; resumed, the lease goes.
+// A move the table lacks, such as for an issue of unknown type, gets one
+// state error and ends the run, which is no attempt and no error of Work's:
+// no run starts until the issue changes. Live or resumed, nothing is left.
 func TestApplyStateError(t *testing.T) {
 	t.Run("live", func(t *testing.T) {
 		f := newFake(t)
@@ -206,8 +207,8 @@ func TestApplyStateError(t *testing.T) {
 		root := t.TempDir()
 		saveRun(t, root, "saved", okOut, answer)
 		g := newRig(t, f, newOrigin(t), root)
-		if err := g.work(1); !daemon.StateError(err) {
-			t.Errorf("Work = %v, want the state error", err)
+		if err := g.work(1); err != nil {
+			t.Errorf("Work = %v, want nil: Transition logged the state error", err)
 		}
 		if errs := errorMarkers(f, 1); len(errs) != 1 || len(g.leftovers()) != 0 || g.lease().RunID != "" {
 			t.Errorf("errors %q, left %v and lease %+v; want the transition error, and nothing left", errs, g.leftovers(), g.lease())
@@ -378,24 +379,28 @@ func TestUntrustedEditDuringRunApplies(t *testing.T) {
 	}
 }
 
-// A failed run logs the last 4 KB of claude's stderr, as text.
+// A failed run logs the last 4 KB of claude's stderr, as text, whatever its
+// exit code, and so does one whose output fails the schema (SPEC §3.3). A
+// run with no stderr logs none.
 func TestFailedRunLogsStderr(t *testing.T) {
+	long := "HEAD" + strings.Repeat("x", 5000) + "\x1b[31mTAIL"
 	for name, tt := range map[string]struct {
-		out    string
-		exit   int
-		logged bool
+		out, stderr string
+		exit        int
+		logged      bool
 	}{
-		"failed":    {out: failOut, exit: 1, logged: true},
-		"invalid":   {out: invalidOut, exit: 0, logged: false},
-		"succeeded": {out: okOut, exit: 0, logged: false},
+		"failed":          {out: failOut, stderr: long, exit: 1, logged: true},
+		"failed, exit 0":  {out: failOut, stderr: long, exit: 0, logged: true},
+		"invalid":         {out: invalidOut, stderr: long, exit: 0, logged: true},
+		"succeeded":       {out: okOut, stderr: long, exit: 0, logged: false},
+		"failed, nothing": {out: failOut, stderr: "", exit: 1, logged: false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFake(t)
 			interview(f)
 			g := newRig(t, f, newOrigin(t), t.TempDir())
 			g.claude(tt.out, tt.exit)
-			stderr := "HEAD" + strings.Repeat("x", 5000) + "\x1b[31mTAIL"
-			if err := os.WriteFile(g.path("claude", "stderr"), []byte(stderr), 0o644); err != nil {
+			if err := os.WriteFile(g.path("claude", "stderr"), []byte(tt.stderr), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			var logs strings.Builder
@@ -406,7 +411,10 @@ func TestFailedRunLogsStderr(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, tail, found := strings.Cut(logs.String(), fmt.Sprintf("the last 4096 of %d bytes claude wrote to stderr:\n", len(stderr)))
+			if logged := strings.Contains(logs.String(), "claude wrote to stderr"); logged != tt.logged {
+				t.Fatalf("logged stderr: %t, want %t; logs %q", logged, tt.logged, logs.String())
+			}
+			_, tail, found := strings.Cut(logs.String(), fmt.Sprintf("the last 4096 of %d bytes claude wrote to stderr:\n", len(long)))
 			if found != tt.logged {
 				t.Fatalf("logged the stderr tail: %t, want %t; logs %q", found, tt.logged, logs.String())
 			}

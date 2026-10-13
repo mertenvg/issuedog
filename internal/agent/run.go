@@ -61,8 +61,8 @@ func UserCredential(name string) (*syscall.Credential, error) {
 	return &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: []uint32{}}, nil
 }
 
-// SetupError is a stage run's failure that isn't the agent's: one setting
-// the run up, starting claude, or saving its result.
+// SetupError is a stage run's failure before claude starts: setting the run
+// up, or starting claude. It isn't the agent's, as claude never ran.
 type SetupError struct{ Err error }
 
 func (e *SetupError) Error() string { return e.Err.Error() }
@@ -70,9 +70,9 @@ func (e *SetupError) Unwrap() error { return e.Err }
 
 // Run executes claude -p for one stage and saves its raw JSON result to
 // StateDir/runs/<run-id>.json before returning it. A run that times out or
-// exits non-zero fails; its output is returned with the error, unsaved, so the
-// caller can still match usage limits (SPEC §3.3). Any other failure is a
-// *SetupError.
+// exits non-zero fails, and so does one whose result can't be saved; its
+// output is returned with the error, unsaved, so the caller can still match
+// usage limits (SPEC §3.3). A failure before claude starts is a *SetupError.
 func (r *Runner) Run(ctx context.Context, s Stage) ([]byte, error) {
 	if filepath.Base(s.RunID) != s.RunID || strings.HasPrefix(s.RunID, ".") {
 		return nil, &SetupError{fmt.Errorf("invalid run ID %q", s.RunID)}
@@ -111,7 +111,7 @@ func (r *Runner) Run(ctx context.Context, s Stage) ([]byte, error) {
 		return stdout.Bytes(), fmt.Errorf("running claude: %w", err)
 	}
 	if err := r.saveResult(s.RunID, stdout.Bytes()); err != nil {
-		return nil, &SetupError{fmt.Errorf("saving the result of run %s: %w", s.RunID, err)}
+		return stdout.Bytes(), fmt.Errorf("saving the result of run %s: %w", s.RunID, err)
 	}
 	return stdout.Bytes(), nil
 }

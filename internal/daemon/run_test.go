@@ -14,9 +14,11 @@ import (
 	"testing"
 	"time"
 
+	gogithub "github.com/google/go-github/v92/github"
 	"github.com/mertenvg/issuedog/internal/agent"
 	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/daemon"
+	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/issuedog/internal/workspace"
@@ -60,6 +62,7 @@ type fakeStage struct {
 	contextErr    error  // Context's error
 	applyErr      error  // Apply's error, before any write
 	agent         string // "" is the interviewer
+	followUp      bool   // Apply posts a follow-up comment after its move, once
 }
 
 func (fs *fakeStage) Agent() string { return cmp.Or(fs.agent, "interviewer") }
@@ -102,8 +105,18 @@ func (fs *fakeStage) Apply(ctx context.Context, a *daemon.Applier, r daemon.Resu
 		m = r.Move(state.Clarifying, state.TriggerMoreQuestions)
 	}
 	m.Text = out.Text
-	return a.Transition(ctx, r.S, r.Dirt.Has, m)
+	if err := a.Transition(ctx, r.S, r.Dirt.Has, m); err != nil || !fs.followUp {
+		return err
+	}
+	if slices.ContainsFunc(r.S.Comments, func(c github.Comment) bool { return c.Body == followUp }) {
+		return nil
+	}
+	_, _, err := a.Client.Issues.CreateComment(ctx, a.Owner, a.Repo, r.S.Number, gogithub.IssueCommentRequest{Body: followUp})
+	return err
 }
+
+// followUp is the comment fakeStage.Apply posts after its move.
+const followUp = "Follow-up."
 
 // rig is a Runs on a fresh daemon of f, with the fakeStage at clarifying, a
 // fake claude, and its state, clones and context files under root. Its
@@ -335,7 +348,10 @@ func TestRunStageAppliesResult(t *testing.T) {
 }
 
 func TestRunStageApplyReplay(t *testing.T) {
-	replayRuns(t, func(_ testing.TB, f *githubtest.Fake, _ string) { interview(f) }, func(g *rig) { g.claude(okOut, 0) })
+	replayRuns(t, func(_ testing.TB, f *githubtest.Fake, _ string) { interview(f) }, func(g *rig) {
+		g.claude(okOut, 0)
+		g.stage.followUp = true // a write after the move, which a replay must finish
+	})
 }
 
 // A lease with a valid result, left by a restart, is applied once, without

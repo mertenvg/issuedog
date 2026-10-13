@@ -197,6 +197,10 @@ func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 		logr.Debugf("%s/%s#%d: no %s run: the table lacks the move its last run asked for", a.Owner, a.Repo, n, st.Agent())
 		return false, nil
 	}
+	if r.attempts[countKey(n, errKey)] >= r.limit() {
+		// The cap was reached, but posting its state error failed: post it.
+		return false, wrap(r.reportCap(ctx, nil, st, Lease{Issue: n, Stage: is.Stage, AttemptKey: errKey}))
+	}
 	fresh, err := a.Client.Snapshot(ctx, a.Owner, a.Repo, n)
 	switch {
 	case gone(err):
@@ -230,21 +234,24 @@ func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 	}
 	logr.Infof("%s/%s#%d: starting %s run %s, attempt %d", a.Owner, a.Repo, n, st.Agent(), l.RunID, in.Attempt)
 	stderr := agent.NewTail(stderrTail)
-	raw, runErr := r.run(ctx, st, in, stderr)
-	if failed, _ := outcome(raw); (failed || runErr != nil) && stderr.Len() > 0 {
-		logr.Warnf("%s/%s#%d: run %s failed; the last %d of %d bytes claude wrote to stderr:\n%s",
-			a.Owner, a.Repo, n, l.RunID, stderr.Len(), stderr.Total(), stderr.Text())
+	logStderr := func() {
+		if stderr.Len() > 0 {
+			logr.Warnf("%s/%s#%d: run %s failed; the last %d of %d bytes claude wrote to stderr:\n%s",
+				a.Owner, a.Repo, n, l.RunID, stderr.Len(), stderr.Total(), stderr.Text())
+		}
 	}
+	raw, runErr := r.run(ctx, st, in, stderr)
 	var setup *agent.SetupError
 	switch {
 	case ctx.Err() != nil && runErr == nil:
 		return true, wrap(ctx.Err()) // the lease and result stay, for the restart to apply
 	case ctx.Err() != nil || errors.As(runErr, &setup):
-		// Not the agent's failure, so not an attempt. The daemon may be
-		// stopping, so the cleanup ignores ctx.
+		// Not the agent's failure, so not an attempt: claude didn't start,
+		// or the daemon is stopping, so the cleanup ignores ctx.
 		return true, wrap(errors.Join(runErr, r.uncounted(context.WithoutCancel(ctx), l)))
 	}
 	if failed, text := outcome(raw); r.Gate.Observe(r.now(), failed, text) {
+		logStderr()
 		logr.Warnf("%s/%s#%d: run %s hit a usage limit, so stage work waits until %s; it isn't counted as an attempt",
 			a.Owner, a.Repo, n, l.RunID, r.Gate.OpenAt().Format(time.RFC3339))
 		return true, wrap(r.uncounted(ctx, l))
@@ -255,18 +262,15 @@ func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 		if schema, err = agent.CompileSchema(st.Schema()); err != nil {
 			return true, wrap(errors.Join(err, r.uncounted(ctx, l)))
 		}
+		// Validate fails whatever outcome calls failed, and invalid output.
 		out, runErr = agent.Validate(raw, schema)
 	}
 	if runErr != nil {
-		return true, wrap(r.failed(ctx, rd.S, st, l, runErr)) // logged there
+		logStderr()
+		// The issue may have changed during the run, so failed reads it again.
+		return true, wrap(r.failed(ctx, st, l, runErr)) // logged there
 	}
-	if err := r.applyLease(ctx, l, st, out); err != nil && !StateError(err) {
-		return true, wrap(err)
-	}
-	// A state error was posted and logged by Transition, keyed so that no
-	// run starts until the issue changes. Running again can't fix it, so
-	// it's no attempt.
-	return true, nil
+	return true, wrap(r.applyLease(ctx, l, st, out))
 }
 
 // stderrTail is how much of claude's stderr a failed run logs: the end.
@@ -314,31 +318,31 @@ func outcome(raw []byte) (failed bool, text string) {
 	return res.Subtype != "success" || res.IsError, res.Result
 }
 
-// applyLease applies l's result (apply). A failure other than a state
-// error keeps the lease, counted in ApplyFailures, so the next pass tries
-// again; after loop.max_attempts of them, the run is a failed attempt.
+// applyLease applies l's result (apply). A failure keeps the lease,
+// counted in ApplyFailures, so the next pass tries again; after
+// loop.max_attempts of them, the run is a failed attempt.
 func (r *Runs) applyLease(ctx context.Context, l Lease, st Stage, out json.RawMessage) error {
 	err := r.apply(ctx, l, st, out)
-	if err == nil || StateError(err) {
-		return err
+	if err == nil {
+		return nil
 	}
 	l.ApplyFailures++
 	if l.ApplyFailures < r.limit() {
 		logr.Warnf("applying run %s on #%d failed, %d of %d times, so it's tried again: %v", l.RunID, l.Issue, l.ApplyFailures, r.limit(), err)
 		return errors.Join(err, r.writeLease(l))
 	}
-	return errors.Join(err, r.failed(ctx, nil, st, l, fmt.Errorf("applying its result failed %d times: %w", l.ApplyFailures, err)))
+	return errors.Join(err, r.failed(ctx, st, l, fmt.Errorf("applying its result failed %d times: %w", l.ApplyFailures, err)))
 }
 
 // apply reads the issue again, runs CheckLabels on it, and applies out,
 // l's valid result, through st, then removes the run's files. The result
 // is dropped, writing nothing, when the issue is gone or closed, when its
 // stage changed during the run (the owner's change wins, and CheckLabels
-// records one by hand), or when one of its inputs was edited since the run
-// read it, so the stage runs again on the edit. Edits to other comments,
-// such as an untrusted user's to their own, don't count. A result whose
-// move is written already is only finished. On an error that isn't a
-// state error, the lease stays.
+// records one by hand), or when one of its inputs was edited or deleted
+// since the run read it, so the stage runs again on what's there. Edits to
+// other comments, such as an untrusted user's to their own, don't count.
+// A result whose move is written already is only finished. A move the
+// table lacks ends the run (blocked). On an error, the lease stays.
 func (r *Runs) apply(ctx context.Context, l Lease, st Stage, out json.RawMessage) error {
 	a := r.Daemon.Step.Applier
 	drop := func(why string, args ...any) error {
@@ -368,17 +372,25 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, out json.RawMessage
 		if is.Stage != l.Stage {
 			return drop("the issue moved from %s to %s during the run", l.Stage, is.Stage)
 		}
+		inputs := 0
 		for _, c := range s.Comments {
-			if at, input := l.Edits[c.ID]; input && !c.Edit.At.Equal(at) {
+			at, input := l.Edits[c.ID]
+			if input && !c.Edit.At.Equal(at) {
 				return drop("input %d was edited since the run read it, so the stage runs again", c.ID)
 			}
+			if input {
+				inputs++
+			}
+		}
+		if inputs < len(l.Edits) {
+			return drop("an input was deleted since the run read it, so the stage runs again")
 		}
 	}
-	res := Result{RunID: l.RunID, Seen: l.Seen, S: s, Dirt: d, Output: out, moveKey: moveKey(l.AttemptKey, is.Item)}
+	key := moveKey(l.AttemptKey, is.Item)
+	res := Result{RunID: l.RunID, Seen: l.Seen, S: s, Dirt: d, Output: out, moveKey: key}
 	if err := st.Apply(ctx, a, res); err != nil {
 		if StateError(err) {
-			// Not an attempt: the stage can't run again until the issue changes.
-			return errors.Join(err, r.uncounted(ctx, l))
+			return r.blocked(ctx, s, d, st, l, key, err)
 		}
 		return fmt.Errorf("apply run %s: %w", l.RunID, err)
 	}
@@ -422,9 +434,29 @@ func (r *Runs) resume(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("resume run %s: %w", l.RunID, err)
 	}
 	if out == nil {
+		// A crash in finish, after the result went, left a run that was
+		// applied: that's no failure.
+		a := r.Daemon.Step.Applier
+		s, err := a.Client.Snapshot(ctx, a.Owner, a.Repo, l.Issue)
+		switch {
+		case gone(err):
+			r.Daemon.reread(l.Issue, true)
+			logr.Infof("dropping the lease of run %s: #%d looks gone, deleted or transferred: %v", l.RunID, l.Issue, err)
+			return 0, r.finish(ctx, l)
+		case err != nil:
+			return 0, fmt.Errorf("resume run %s: %w", l.RunID, err)
+		}
+		d, err := a.Dirty(ctx, s)
+		if err != nil {
+			return 0, fmt.Errorf("resume run %s: %w", l.RunID, err)
+		}
+		if state.Derive(s, a.AppSlug, d.Has).Moved(state.Key{Field: "run", ID: l.RunID}) {
+			logr.Infof("run %s on #%d was applied before the restart, so only its files are left to remove", l.RunID, l.Issue)
+			return 0, r.finish(ctx, l)
+		}
 		logr.Infof("run %s on #%d left no valid result, so it's a failed attempt, its clone is deleted, and #%d stays at %s to run again",
 			l.RunID, l.Issue, l.Issue, l.Stage)
-		return 0, r.failed(ctx, nil, st, l, errors.New("no valid result after a restart"))
+		return 0, r.failed(ctx, st, l, errors.New("no valid result after a restart"))
 	}
 	logr.Infof("applying the saved result of run %s on #%d", l.RunID, l.Issue)
 	return l.Issue, r.applyLease(ctx, l, st, out)
@@ -432,10 +464,9 @@ func (r *Runs) resume(ctx context.Context) (int, error) {
 
 // failed records l's run as a failed attempt: it removes the run's files,
 // and keeps the lease, as Failed, for the count. The last attempt allowed
-// posts one state error (reportCap) on s, or on the issue read again if s
-// is nil, after which RunStage runs no more. If posting it fails, the next
-// failed run posts it.
-func (r *Runs) failed(ctx context.Context, s *github.Snapshot, st Stage, l Lease, cause error) error {
+// posts one state error (reportCap), after which RunStage runs no more. If
+// posting it fails, RunStage posts it instead of starting a run.
+func (r *Runs) failed(ctx context.Context, st Stage, l Lease, cause error) error {
 	n := r.count(l)
 	logr.Warnf("%s run %s on #%d failed, attempt %d of %d: %v", st.Agent(), l.RunID, l.Issue, n, r.limit(), cause)
 	err := r.cleanup(ctx, l)
@@ -449,7 +480,7 @@ func (r *Runs) failed(ctx context.Context, s *github.Snapshot, st Stage, l Lease
 	if n < r.limit() {
 		return nil
 	}
-	return r.reportCap(ctx, s, st, l)
+	return r.reportCap(ctx, nil, st, l)
 }
 
 // count adds l's attempt to the count of its attempts, which it returns.
@@ -464,7 +495,8 @@ func (r *Runs) count(l Lease) int {
 
 // reportCap posts the state error for l's stage failing loop.max_attempts
 // times, keyed by l.AttemptKey, on s or, if nil, the issue read again. An
-// issue that has it, has moved on, or is closed or gone gets none.
+// issue that has it, has moved on, by a marker or a stage label not yet
+// recorded, or is closed or gone gets none.
 func (r *Runs) reportCap(ctx context.Context, s *github.Snapshot, st Stage, l Lease) error {
 	a := r.Daemon.Step.Applier
 	wrap := func(err error) error { return fmt.Errorf("report the attempt cap on #%d: %w", l.Issue, err) }
@@ -483,7 +515,7 @@ func (r *Runs) reportCap(ctx context.Context, s *github.Snapshot, st Stage, l Le
 	if err != nil {
 		return wrap(err)
 	}
-	if is := state.Derive(s, a.AppSlug, d.Has); s.Closed || is.Stage != l.Stage || is.Reported(kindAttempts, l.AttemptKey) {
+	if is := state.Derive(s, a.AppSlug, d.Has); s.Closed || is.Stage != l.Stage || otherStage(s, l.Stage) || is.Reported(kindAttempts, l.AttemptKey) {
 		return nil
 	}
 	marker, err := github.FormatMarker(github.Marker{Kind: "error", Fields: map[string]string{"kind": kindAttempts, "key": l.AttemptKey}})
@@ -497,6 +529,38 @@ func (r *Runs) reportCap(ctx context.Context, s *github.Snapshot, st Stage, l Le
 	}
 	logr.Errorf("state error: the %s run on %s/%s#%d failed %d times", st.Agent(), a.Owner, a.Repo, l.Issue, r.limit())
 	return nil
+}
+
+// otherStage reports whether s has a stage label for another stage than
+// st, such as one the owner set that step 1 hasn't recorded yet.
+func otherStage(s *github.Snapshot, st state.Stage) bool {
+	return slices.ContainsFunc(s.Labels, func(l string) bool {
+		got, ok := state.ParseLabel(l)
+		return ok && got != st
+	})
+}
+
+// blocked ends l's run, whose result asked for a move the table lacks
+// (cause, a StateError), on s. Running again can't fix that, so it's no
+// attempt. It makes sure the issue has one state error keyed by key, the
+// run's moveKey, so no run starts until the issue changes: Transition
+// posts it for a move by Result.Move, and blocked for any other. Only an
+// error that isn't cause is returned, as Transition logged cause.
+func (r *Runs) blocked(ctx context.Context, s *github.Snapshot, d Dirt, st Stage, l Lease, key string, cause error) error {
+	a := r.Daemon.Step.Applier
+	if !state.Derive(s, a.AppSlug, d.Has).Reported("transition", key) {
+		marker, err := github.FormatMarker(github.Marker{Kind: "error", Fields: map[string]string{"kind": "transition", "key": key}})
+		if err != nil {
+			return fmt.Errorf("report run %s's move: %w", l.RunID, err)
+		}
+		text := fmt.Sprintf("I can't apply the result of the %s run: %v. It won't run again until this issue changes.", st.Agent(), cause)
+		if err := a.comment(ctx, s, join(github.Escape(text), marker)); err != nil {
+			return fmt.Errorf("report run %s's move: %w", l.RunID, err)
+		}
+		logr.Errorf("state error: %s/%s#%d: run %s: %v", a.Owner, a.Repo, l.Issue, l.RunID, cause)
+	}
+	logr.Infof("%s/%s#%d: run %s asked for a move the table lacks, so the %s stage waits for the issue to change", a.Owner, a.Repo, l.Issue, l.RunID, st.Agent())
+	return r.uncounted(ctx, l)
 }
 
 // uncounted ends l's run without counting it as an attempt: a setup

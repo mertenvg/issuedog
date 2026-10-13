@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mertenvg/issuedog/internal/agent"
+	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/workspace"
 )
 
@@ -109,5 +110,18 @@ func TestWorkSweepsTempLeases(t *testing.T) {
 	entries, err := os.ReadDir(dir)
 	if err != nil || len(entries) != 1 || entries[0].Name() != "other.tmp" {
 		t.Errorf("the state dir has %v, %v; want only other.tmp", entries, err)
+	}
+}
+
+// pick finds each agent's setting, and none for an unknown agent.
+func TestPick(t *testing.T) {
+	p := config.PerStage[int]{Interviewer: 1, Planner: 2, Implementer: 3, Verifier: 4}
+	for name, want := range map[string]int{"interviewer": 1, "planner": 2, "implementer": 3, "verifier": 4} {
+		if got, ok := pick(p, name); got != want || !ok {
+			t.Errorf("pick(%s) = %d, %t; want %d", name, got, ok, want)
+		}
+	}
+	if got, ok := pick(p, "librarian"); got != 0 || ok {
+		t.Errorf("pick(librarian) = %d, %t; want none", got, ok)
 	}
 }
