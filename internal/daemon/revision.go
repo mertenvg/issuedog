@@ -123,11 +123,17 @@ func ApproveCommand() Handler {
 // cmd=r<reaction id>, rev and body. Other 👍s, the App's included, are
 // ignored. At any other stage it reads nothing, so removing the 👍 once the
 // approval is applied changes nothing. A 👍 the table can't apply is
-// reported once by Transition (SPEC §5.3), then only logged.
+// reported once by Transition (SPEC §5.3), then only logged. An issue of a
+// type ClassOf doesn't know is only logged: the §4 type error will report it.
 func ApproveByReaction(trust github.Trust) func(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt) error {
 	return func(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt) error {
 		latest, ok := state.LatestRevision(s, a.AppSlug, d.Has)
-		if state.Derive(s, a.AppSlug, d.Has).Stage != state.SpecReview || !ok {
+		is := state.Derive(s, a.AppSlug, d.Has)
+		if is.Stage != state.SpecReview || !ok {
+			return nil
+		}
+		if _, err := state.ClassOf(is.Item); err != nil {
+			logr.Debugf("%s/%s#%d: no approval by 👍: %v", a.Owner, a.Repo, s.Number, err)
 			return nil
 		}
 		reactions, err := a.Client.Reactions(ctx, a.Owner, a.Repo, latest.Comment)

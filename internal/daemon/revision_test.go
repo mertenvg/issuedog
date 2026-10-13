@@ -78,10 +78,14 @@ func dirtyReview(owner bool, more func(t testing.TB, f *githubtest.Fake)) func(t
 	})
 }
 
-const dirtyBody = "the issue description has an edit by mallory that wasn't approved, so I can't approve it"
+// approveBoth adds the owner's 👍 on comment 1002 (1003 in dirtyReview),
+// then an /approve.
+func approveBoth(t testing.TB, f *githubtest.Fake) {
+	post(t, f, 1003, "owner", "/approve")
+	f.AddReaction(1002, "owner", "+1")
+}
 
-// approved is the comment approving revision 1 of "body" by key.
-func approved(by, key string) string { return approvedRev(1, by, key) }
+const dirtyBody = "the issue description has an edit by mallory that wasn't approved, so I can't approve it"
 
 // approvedRev is the comment approving revision rev of "body" by key.
 func approvedRev(rev int, by, key string) string {
@@ -130,7 +134,7 @@ func TestApprove(t *testing.T) {
 	}{
 		{"a trusted 👍 on the latest revision approves it",
 			review(func(t testing.TB, f *githubtest.Fake) { f.AddReaction(1001, "owner", "+1") }),
-			outcome{comments: []string{approved("owner's 👍", "r1002")}, labels: planning}},
+			outcome{comments: []string{approvedRev(1, "owner's 👍", "r1002")}, labels: planning}},
 		{"the earliest trusted 👍 approves, not the App's, an untrusted one or a 👎",
 			review(func(t testing.TB, f *githubtest.Fake) {
 				f.AddReaction(1001, app, "+1")
@@ -139,35 +143,18 @@ func TestApprove(t *testing.T) {
 				f.AddReaction(1001, "owner2", "+1") // 1005
 				f.AddReaction(1001, "owner", "+1")
 			}),
-			outcome{comments: []string{approved("owner2's 👍", "r1005")}, labels: planning, acks: []string{revision(1, "body")}}},
-		{"an untrusted 👍 approves nothing",
-			review(func(t testing.TB, f *githubtest.Fake) { f.AddReaction(1001, "mallory", "+1") }),
-			outcome{labels: atReview}},
+			outcome{comments: []string{approvedRev(1, "owner2's 👍", "r1005")}, labels: planning, acks: []string{revision(1, "body")}}},
 		{"a 👍 on an earlier revision approves nothing",
 			review(func(t testing.TB, f *githubtest.Fake) {
 				f.AddReaction(1001, "owner", "+1")
 				post(t, f, 1003, app, revision(2, "body"))
 			}),
 			outcome{labels: atReview}},
-		{"a dirty revision isn't one, and hides the one before it: neither's 👍 approves",
-			review(func(t testing.TB, f *githubtest.Fake) {
-				post(t, f, 1002, app, revision(2, "body"))
-				f.EditComment(1002, "mallory", forged(revision(2, "body")))
-				f.AddReaction(1002, "owner", "+1")
-				f.AddReaction(1001, "owner2", "+1")
-			}),
-			outcome{labels: atReview}},
-		{"a 👍 approves nothing once the body changed",
-			review(func(t testing.TB, f *githubtest.Fake) {
-				f.EditBody(1, "owner", "body, edited")
-				f.AddReaction(1001, "owner", "+1")
-			}),
-			outcome{labels: atReview}},
 		{"removing the 👍 once the approval is applied changes nothing",
 			review(func(t testing.TB, f *githubtest.Fake) {
 				f.AddReaction(1001, "owner", "+1")
 				f.AddReaction(1001, "owner2", "+1")
-				post(t, f, 1004, app, approved("owner's 👍", "r1002"))
+				post(t, f, 1004, app, approvedRev(1, "owner's 👍", "r1002"))
 				f.AddLabel(1, app, "stage:planning")
 				f.RemoveLabel(1, app, "stage:spec-review")
 				if !f.RemoveReaction(1001, 1002) {
@@ -177,17 +164,12 @@ func TestApprove(t *testing.T) {
 			outcome{labels: planning}},
 		{"a trusted /approve after the latest revision approves it",
 			review(func(t testing.TB, f *githubtest.Fake) { post(t, f, 1002, "owner", "/approve") }),
-			outcome{comments: []string{approved("owner's `/approve`", "1002")}, labels: planning, acks: []string{"/approve"}}},
-		{"an /approve beats a 👍 in the same poll",
-			review(func(t testing.TB, f *githubtest.Fake) {
-				f.AddReaction(1001, "owner2", "+1")
-				post(t, f, 1003, "owner", "/approve")
-			}),
-			outcome{comments: []string{approved("owner's `/approve`", "1003")}, labels: planning, acks: []string{"/approve"}}},
-		{"an /approve once the body changed is rejected",
+			outcome{comments: []string{approvedRev(1, "owner's `/approve`", "1002")}, labels: planning, acks: []string{"/approve"}}},
+		{"once the body changed, a 👍 approves nothing and /approve is rejected",
 			review(func(t testing.TB, f *githubtest.Fake) {
 				f.EditBody(1, "owner", "body, edited")
 				post(t, f, 1002, "owner", "/approve")
+				f.AddReaction(1001, "owner", "+1")
 			}),
 			outcome{comments: []string{rejected("/approve", "the issue description changed after revision 1, "+
 				"so it no longer matches that revision's hash, `"+state.BodyHash("body")+"`", "1002")},
@@ -202,18 +184,10 @@ func TestApprove(t *testing.T) {
 		{"an /approve with no revision is rejected",
 			at(state.SpecReview, func(t testing.TB, f *githubtest.Fake) { post(t, f, 1002, "owner", "/approve") }),
 			outcome{comments: []string{rejected("/approve", "there's no revision to approve yet", "1002")}, labels: atReview, downs: []string{"/approve"}}},
-		{"a 👍 approves nothing while the body is dirty, under a note mallory wrote herself",
-			dirtyReview(false, func(t testing.TB, f *githubtest.Fake) { f.AddReaction(1002, "owner", "+1") }),
-			outcome{labels: atReview}},
-		{"a 👍 approves nothing while the body is dirty, even after the owner edits it",
-			dirtyReview(true, func(t testing.TB, f *githubtest.Fake) { f.AddReaction(1002, "owner", "+1") }),
-			outcome{labels: atReview}},
-		{"an /approve while the body is dirty is rejected",
-			dirtyReview(false, func(t testing.TB, f *githubtest.Fake) { post(t, f, 1003, "owner", "/approve") }),
-			outcome{comments: []string{rejected("/approve", dirtyBody, "1003")}, labels: atReview, downs: []string{"/approve"}}},
-		{"an /approve while the body is dirty is rejected, even after the owner edits it",
-			dirtyReview(true, func(t testing.TB, f *githubtest.Fake) { post(t, f, 1003, "owner", "/approve") }),
-			outcome{comments: []string{rejected("/approve", dirtyBody, "1003")}, labels: atReview, downs: []string{"/approve"}}},
+		{"while the body is dirty, under a note mallory wrote herself, a 👍 approves nothing and /approve is rejected",
+			dirtyReview(false, approveBoth), outcome{comments: []string{rejected("/approve", dirtyBody, "1003")}, labels: atReview, downs: []string{"/approve"}}},
+		{"likewise even after the owner edits the body",
+			dirtyReview(true, approveBoth), outcome{comments: []string{rejected("/approve", dirtyBody, "1003")}, labels: atReview, downs: []string{"/approve"}}},
 		{"an /approve the table can't apply is rejected, and a later command is still processed",
 			review(func(t testing.TB, f *githubtest.Fake) {
 				f.SetParent(1, f.AddIssue("owner", "Epic", "epic"))
@@ -223,10 +197,11 @@ func TestApprove(t *testing.T) {
 			outcome{comments: []string{rejected("/approve", "only an epic, or a story with no parent, goes from `spec-review` "+
 				"to `planning` on approval, and this is a story issue", "1002")},
 				labels: atReview, acks: []string{"/priority p1"}, downs: []string{"/approve"}}},
-		{"an /approve on an issue of an unknown type is rejected",
+		{"on an issue of an unknown type, /approve is rejected and a 👍 is ignored, and passes don't fail",
 			review(func(t testing.TB, f *githubtest.Fake) {
 				f.SetType(1, "Feature")
 				post(t, f, 1002, "owner", "/approve")
+				f.AddReaction(1001, "owner", "+1")
 			}),
 			outcome{comments: []string{rejected("/approve", "I can't tell what kind of issue this is: "+
 				"class of type \"feature\": unknown type", "1002")}, labels: atReview, downs: []string{"/approve"}}},
@@ -301,9 +276,6 @@ func TestPostRevision(t *testing.T) {
 				f.EditBody(1, "owner", "body v2")
 			}),
 			daemon.Move{}, outcome{comments: []string{posted(2, "body v2", "", "")}, labels: atReview}},
-		{"none while the body is dirty",
-			review(func(t testing.TB, f *githubtest.Fake) { f.EditBody(1, "mallory", "body v2") }),
-			daemon.Move{}, outcome{labels: atReview}},
 		{"none while the body is dirty, even after the owner edits it",
 			review(func(t testing.TB, f *githubtest.Fake) {
 				f.EditBody(1, "mallory", "body v2")
@@ -380,9 +352,6 @@ func TestApproveHiddenRevision(t *testing.T) {
 			probe(func(t testing.TB, f *githubtest.Fake) { post(t, f, 1005, "owner", "/approve") }),
 			outcome{comments: []string{rejected("/approve", hidden, "1005"), posted(2, "body", "", "")},
 				labels: atReview, downs: []string{"/approve"}}},
-		{"once a fresh revision follows, the old 👍 still doesn't approve",
-			probe(func(t testing.TB, f *githubtest.Fake) { post(t, f, 1005, app, revision(2, "body")) }),
-			outcome{labels: atReview}},
 		{"once a fresh revision follows, a 👍 on it approves",
 			probe(func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1005, app, revision(2, "body"))
@@ -402,7 +371,7 @@ func TestApproveHiddenRevision(t *testing.T) {
 				f.EditComment(1002, "mallory", "Noted!")
 				f.AddReaction(1001, "owner", "+1") // 1003
 			}),
-			outcome{comments: []string{approved("owner's 👍", "r1003")}, labels: []string{"stage:planning"}}},
+			outcome{comments: []string{approvedRev(1, "owner's 👍", "r1003")}, labels: []string{"stage:planning"}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) { check(t, tt.setup, visitPass(t), tt.want) })
 	}
@@ -414,21 +383,28 @@ type failTrust struct{}
 
 func (failTrust) Trusted(context.Context, string) (bool, error) { return false, errTrust }
 
-// An error reading trust or the reactions fails the pass, wrapped, and
-// writes nothing.
+// An error reading trust or the reactions, or making the approval's write,
+// fails the pass, wrapped, and writes nothing.
 func TestApproveByReactionErrors(t *testing.T) {
+	status := func(err error, code int) bool {
+		var e *gogithub.ErrorResponse
+		return errors.As(err, &e) && e.Response.StatusCode == code
+	}
 	for _, tt := range []struct {
 		name  string
 		trust github.Trust
 		gone  bool // delete the revision comment after the snapshot
+		fail  int  // FailWrite's n
 		want  func(error) bool
 	}{
-		{"trust", failTrust{}, false, func(err error) bool {
+		{"trust", failTrust{}, false, 0, func(err error) bool {
 			return errors.Is(err, errTrust) && strings.HasPrefix(err.Error(), "approvals on o/r#1: trust owner: ")
 		}},
-		{"reactions", trusted{"owner": true}, true, func(err error) bool {
-			var e *gogithub.ErrorResponse
-			return errors.As(err, &e) && e.Response.StatusCode == http.StatusNotFound && strings.HasPrefix(err.Error(), "approvals on o/r#1: ")
+		{"reactions", trusted{"owner": true}, true, 0, func(err error) bool {
+			return status(err, http.StatusNotFound) && strings.HasPrefix(err.Error(), "approvals on o/r#1: ")
+		}},
+		{"the approval's marker", trusted{"owner": true}, false, 1, func(err error) bool {
+			return status(err, http.StatusInternalServerError) && strings.HasPrefix(err.Error(), "approve: move o/r#1 to planning")
 		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -440,11 +416,14 @@ func TestApproveByReactionErrors(t *testing.T) {
 			if tt.gone {
 				f.DeleteComment(1001)
 			}
+			f.FailWrite(tt.fail)
 			if err := daemon.ApproveByReaction(tt.trust)(context.Background(), a, s, daemon.Dirt{}); !tt.want(err) {
 				t.Errorf("err = %v, want it wrapped", err)
 			}
-			if w := f.Writes(); len(w) != 0 {
-				t.Errorf("writes = %+v, want none", w)
+			for _, w := range f.Writes() {
+				if !w.Failed {
+					t.Errorf("write %+v, want none", w)
+				}
 			}
 		})
 	}

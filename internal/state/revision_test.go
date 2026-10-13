@@ -42,6 +42,8 @@ func TestLatestRevision(t *testing.T) {
 			Revision{Rev: 1, Hash: "aaaaaaaa", Comment: 1, Hidden: true}, true},
 		{"any dirty App comment after it hides it, whatever it says", snap("", []github.Author{appBot, appBot}, rev1, "a reply"), dirtyIDs(2),
 			Revision{Rev: 1, Hash: "aaaaaaaa", Comment: 1, Hidden: true}, true},
+		{"the last dirty App comment decides", snap("", []github.Author{appBot, appBot, appBot}, "x", rev1, "y"), dirtyIDs(1, 3),
+			Revision{Rev: 1, Hash: "aaaaaaaa", Comment: 2, Hidden: true}, true},
 		{"a dirty comment by anyone else doesn't hide it", snap("", []github.Author{appBot, owner}, rev1, rev2), dirtyIDs(2),
 			Revision{Rev: 1, Hash: "aaaaaaaa", Comment: 1}, true},
 		{"a dirty App comment before it doesn't hide it", snap("", []github.Author{appBot, appBot}, rev2, rev1), dirtyIDs(1),
