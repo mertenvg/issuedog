@@ -20,6 +20,9 @@ const (
 	Planner     Agent = "planner"
 	Implementer Agent = "implementer"
 	Verifier    Agent = "verifier"
+	// Triage classifies issues with no stage label (plan #6). It has the
+	// interviewer's settings, so config has no keys of its own for it.
+	Triage Agent = "triage"
 )
 
 // Settings are a run's model, effort and fallback models, as agent.Stage
@@ -101,10 +104,11 @@ func RunSettings(a Agent, labels []string, cfg *config.Config, attempt int) (Set
 	return Settings{Model: model, Effort: effort, FallbackModels: fallback}, nil
 }
 
-// forAgent returns a's value in p, or false for an unknown agent.
+// forAgent returns a's value in p, or false for an unknown agent. Triage
+// has the interviewer's.
 func forAgent[T any](p config.PerStage[T], a Agent) (T, bool) {
 	switch a {
-	case Interviewer:
+	case Interviewer, Triage:
 		return p.Interviewer, true
 	case Planner:
 		return p.Planner, true

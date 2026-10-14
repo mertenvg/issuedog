@@ -76,7 +76,7 @@ func (fs *fakeStage) Pending(in daemon.Input) bool {
 	return in.S.Comments[len(in.S.Comments)-1].Author.Login != app
 }
 
-func (fs *fakeStage) Context(in daemon.Input) (map[string][]byte, error) {
+func (fs *fakeStage) Context(_ context.Context, in daemon.Input) (map[string][]byte, error) {
 	if fs.during != nil {
 		fs.during()
 	}

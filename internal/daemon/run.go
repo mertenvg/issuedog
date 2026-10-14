@@ -34,14 +34,24 @@ type Stage interface {
 	// before the trust check of in.Inputs, and again after it.
 	Pending(in Input) bool
 	// Context returns the run's context files by name, prompt.md and
-	// system.md among them, which the agent can read but not change.
-	Context(in Input) (map[string][]byte, error)
+	// system.md among them, which the agent can read but not change. An
+	// error is a setup failure: no run starts, and it isn't counted.
+	Context(ctx context.Context, in Input) (map[string][]byte, error)
 	// Schema is the JSON schema of the stage's structured output.
 	Schema() []byte
 	// Apply makes the writes for a valid result, each checked first, so it
 	// can run again after a crash part way (SPEC §5.2). Its moves are
 	// r.Move's, keyed by run=<id>. It may run again after a restart.
 	Apply(ctx context.Context, a *Applier, r Result) error
+}
+
+// Checker is a Stage that checks a valid result before it's applied, past
+// what its schema can say. Runs calls Check on the issue read again, before
+// Apply, and only while the run's move isn't written, so a result applied
+// part way before a restart isn't checked again. An error is a failed
+// attempt (SPEC §8.3), with nothing written, never a failure to apply.
+type Checker interface {
+	Check(ctx context.Context, r Result) error
 }
 
 // Input is what a Stage gets before a run.
@@ -55,6 +65,10 @@ type Input struct {
 	// Attempt is the run's number, from 1, since the stage last moved or
 	// got new input.
 	Attempt int
+	// Dirt is S's dirty content, and Issue is state.Derive of S, both read
+	// before the first Pending.
+	Dirt  Dirt
+	Issue state.Issue
 }
 
 // Result is a valid run result, for a Stage to apply.
@@ -108,6 +122,9 @@ type Lease struct {
 	// edit of each of its inputs, as the run read them: zero for none.
 	Seen  int64               `json:"seen"`
 	Edits map[int64]time.Time `json:"edits,omitempty"`
+	// BodyEdit is the time of the body's last edit, as the run read it: zero
+	// for never edited.
+	BodyEdit time.Time `json:"body_edit,omitzero"`
 	// AttemptKey names the attempts the run is one of (attemptKey), and
 	// Attempt is its number among them, from 1.
 	AttemptKey string `json:"attempt_key"`
@@ -147,7 +164,12 @@ type Runs struct {
 	// Daemon gives the applier, trust and config of the moment.
 	Daemon *Daemon
 	// Stages are the registered Stages, by the stage they run at.
-	Stages    map[state.Stage]Stage
+	Stages map[state.Stage]Stage
+	// Unlabeled, if set, runs on open issues with no stage label and no
+	// transition marker, such as triage (#6), in a pass where no Stage ran.
+	// Its lease records the stage intake, which state.Derive gives such an
+	// issue, so Stages has no Stage at intake while it's set.
+	Unlabeled Stage
 	Runner    *agent.Runner // its StateDir holds the lease and the results
 	Workspace *workspace.Workspace
 	Gate      *agent.Gate
@@ -164,9 +186,16 @@ type Runs struct {
 // Work is Daemon.Work. It first finishes a lease a run left, after a
 // restart or a failed apply (resume). Then, unless a usage limit closed
 // the gate, it runs the first issue, by priority then number, whose stage
-// has a Stage with work pending. A lease whose issue has labels held back
+// has a Stage with work pending. If none ran, it runs Unlabeled, if set, on
+// the newest issue, by number, with no stage label and no transition
+// marker that it has work for. A lease whose issue has labels held back
 // (ErrLabelsHeld) waits, and no run starts until it's applied. An issue
-// with labels held back is never ready, so it starts no run either.
+// with labels held back is never ready, so it starts no run either, and
+// one with a stage label left out (Snapshot.LeftOut) is no Unlabeled work.
+//
+// Every open issue whose step 1 succeeded is ready, those with no stage
+// label among them, so finding Unlabeled work costs no reads: Dirty keeps
+// the histories it reads, and only the issue about to run is read again.
 func (r *Runs) Work(ctx context.Context, ready []Ready) error {
 	if !r.swept {
 		r.sweep()
@@ -195,7 +224,47 @@ func (r *Runs) Work(ctx context.Context, ready []Ready) error {
 			return err
 		}
 	}
+	if r.Unlabeled == nil {
+		return nil
+	}
+	slices.SortStableFunc(ready, func(a, b Ready) int { return cmp.Compare(b.S.Number, a.S.Number) })
+	for _, rd := range ready {
+		if stageOf(rd.S) != "" || leftOutStage(rd.S) || rd.S.Number == skip {
+			continue
+		}
+		if ran, err := r.runStage(ctx, rd, r.Unlabeled, true); err != nil || ran {
+			return err
+		}
+	}
 	return nil
+}
+
+// unlabeled reports whether s, whose state is is, is Unlabeled work: it has
+// no stage label, none left out, and no transition marker.
+func unlabeled(s *github.Snapshot, is state.Issue) bool {
+	return stageOf(s) == "" && !leftOutStage(s) &&
+		!slices.ContainsFunc(is.Markers, func(m github.Marker) bool { return m.Kind == "transition" })
+}
+
+// leftOutStage reports whether s has a stage label left out of its Labels
+// (Snapshot.LeftOut).
+func leftOutStage(s *github.Snapshot) bool {
+	for l := range s.LeftOut {
+		if _, ok := state.ParseLabel(l); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// leaseStage returns the Stage l's run is of, and whether that's the
+// Unlabeled stage, whose leases record intake.
+func (r *Runs) leaseStage(l Lease) (st Stage, isUnlabeled, ok bool) {
+	if l.Stage == state.Intake && r.Unlabeled != nil {
+		return r.Unlabeled, true, true
+	}
+	st, ok = r.Stages[l.Stage]
+	return st, false, ok
 }
 
 // RunStage runs st on the issue rd if it has work pending, and reports
@@ -221,6 +290,13 @@ func (r *Runs) Work(ctx context.Context, ready []Ready) error {
 // them that stands (labelsKey), checked before the issue is read again,
 // and posted only if the issue read again would have run (reportLabels).
 func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
+	return r.runStage(ctx, rd, st, false)
+}
+
+// runStage is RunStage, or with isUnlabeled, the same for the Unlabeled
+// stage st: it runs only on an issue that's unlabeled as step 1 read it,
+// and as it's read again before the run, and its lease records intake.
+func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled bool) (bool, error) {
 	a, n := r.Daemon.Step.Applier, rd.S.Number
 	wrap := func(err error) error {
 		if err == nil {
@@ -228,15 +304,18 @@ func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 		}
 		return fmt.Errorf("stage run on %s/%s#%d: %w", a.Owner, a.Repo, n, err)
 	}
-	in := Input{S: rd.S, Inputs: rd.Inputs}
-	if !st.Pending(in) {
-		return false, nil
-	}
 	d, err := a.Dirty(ctx, rd.S)
 	if err != nil {
 		return false, wrap(err)
 	}
 	is := state.Derive(rd.S, a.AppSlug, d.Has)
+	if isUnlabeled && !unlabeled(rd.S, is) {
+		return false, nil
+	}
+	in := Input{S: rd.S, Inputs: rd.Inputs, Dirt: d, Issue: is}
+	if !st.Pending(in) {
+		return false, nil
+	}
 	errKey := attemptKey(is, rd.Inputs)
 	if is.Reported(kindAttempts, errKey) {
 		logr.Debugf("%s/%s#%d: no %s run: it failed loop.max_attempts times", a.Owner, a.Repo, n, st.Agent())
@@ -279,9 +358,21 @@ func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 		return false, nil
 	case err != nil:
 		return false, wrap(err)
-	case fresh.Closed || stageOf(fresh) != is.Stage:
+	case fresh.Closed || !isUnlabeled && stageOf(fresh) != is.Stage:
 		r.Daemon.reread(n, false)
 		return false, nil
+	}
+	if isUnlabeled {
+		// A stage label or a transition since step 1 makes it pipeline work.
+		fd, err := a.Dirty(ctx, fresh)
+		if err != nil {
+			return false, wrap(err)
+		}
+		if !unlabeled(fresh, state.Derive(fresh, a.AppSlug, fd.Has)) {
+			logr.Debugf("%s/%s#%d: no %s run: it has a stage label or a transition since step 1", a.Owner, a.Repo, n, st.Agent())
+			r.Daemon.reread(n, false)
+			return false, nil
+		}
 	}
 	if in.Inputs, err = r.trusted(ctx, rd.Inputs); err != nil {
 		return false, wrap(err)
@@ -295,7 +386,7 @@ func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 	}
 	in.RunID, in.Attempt = r.newID(), attempt
 	l := Lease{Issue: n, Stage: is.Stage, RunID: in.RunID, Clone: r.Workspace.Dir(in.RunID),
-		Started: r.now(), Polled: r.Daemon.polled, Edits: map[int64]time.Time{}, AttemptKey: errKey, Attempt: in.Attempt,
+		Started: r.now(), Polled: r.Daemon.polled, Edits: map[int64]time.Time{}, BodyEdit: rd.S.BodyEdit.At, AttemptKey: errKey, Attempt: in.Attempt,
 		Model: set.Model, Effort: set.Effort, FallbackModels: set.FallbackModels}
 	for _, c := range rd.S.Comments {
 		l.Seen = max(l.Seen, c.ID)
@@ -383,7 +474,7 @@ func (r *Runs) run(ctx context.Context, st Stage, in Input, set state.Settings, 
 	if !okT || !okB || !okD {
 		return nil, &agent.SetupError{Err: fmt.Errorf("no settings in config.stages for agent %q", st.Agent())}
 	}
-	files, err := st.Context(in)
+	files, err := st.Context(ctx, in)
 	if err != nil {
 		return nil, &agent.SetupError{Err: fmt.Errorf("context files: %w", err)}
 	}
@@ -424,12 +515,17 @@ func outcome(raw []byte) (failed bool, text string) {
 // issue whose labels CheckLabels holds back: the error wraps
 // ErrLabelsHeld, and the lease and the result stay as they are, for a
 // later pass to apply once the labels are explained, or left out after
-// github.HoldBound.
+// github.HoldBound. A result its Checker rejects (a checkError) is a failed
+// attempt, not a failure to apply.
 func (r *Runs) applyLease(ctx context.Context, l Lease, st Stage, raw []byte, out json.RawMessage) error {
 	err := r.apply(ctx, l, st, raw, out)
 	var ending *endError
 	if err == nil || errors.As(err, &ending) {
 		return err
+	}
+	var check *checkError
+	if errors.As(err, &check) {
+		return r.failed(ctx, st, l, check.err)
 	}
 	if errors.Is(err, ErrLabelsHeld) {
 		logr.Infof("run %s on #%d waits to be applied, which isn't counted as a failure: %v", l.RunID, l.Issue, err)
@@ -445,19 +541,29 @@ func (r *Runs) applyLease(ctx context.Context, l Lease, st Stage, raw []byte, ou
 
 // apply reads the issue again, runs CheckLabels on it, and applies out,
 // l's valid result, through st, then removes the run's files. The result
-// is dropped, writing nothing, when the issue is gone or closed, when its
-// stage changed during the run (the owner's change wins, and CheckLabels
-// records one by hand), or when one of its inputs was edited or deleted
-// since the run read it, so the stage runs again on what's there. Edits to
-// other comments, such as an untrusted user's to their own, don't count.
-// A result whose move is written already is only finished. A move the
+// is dropped, writing nothing and with no attempt counted, when the issue
+// is gone or closed, or, unless the run's move is written already:
+//   - when its stage changed during the run: the owner's change wins, and
+//     CheckLabels records one by hand. An Unlabeled run's result is also
+//     dropped when the issue has a stage label, or a transition, at all.
+//   - when one of its inputs was edited or deleted since the run read it,
+//     or its body has a later edit by anyone but the App, so the stage
+//     runs again on what's there. Edits to other comments, such as an
+//     untrusted user's to their own, don't count, and nor does the App's
+//     own edit, such as one a result applied part way made before a
+//     restart.
+//   - when it has new trusted input since the run's seen (newInput), which
+//     the stage runs again with.
+//
+// Then a Checker checks the result: its error is a checkError. A result
+// whose move is written already is only finished, unchecked. A move the
 // table lacks ends the run (blocked). On an error, the lease stays. The
 // run marker's fields are l's settings and the models raw, claude's
 // output, reports (runFields).
 func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out json.RawMessage) error {
 	a := r.Daemon.Step.Applier
 	drop := func(why string, args ...any) error {
-		logr.Infof("%s/%s#%d: dropping the result of run %s: "+why, append([]any{a.Owner, a.Repo, l.Issue, l.RunID}, args...)...)
+		logr.Infof("%s/%s#%d: dropping the result of run %s, uncounted: "+why, append([]any{a.Owner, a.Repo, l.Issue, l.RunID}, args...)...)
 		return r.uncounted(ctx, l)
 	}
 	s, err := a.Client.Snapshot(ctx, a.Owner, a.Repo, l.Issue)
@@ -479,8 +585,13 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 		return fmt.Errorf("apply run %s: %w", l.RunID, err)
 	}
 	is := state.Derive(s, a.AppSlug, d.Has)
-	if !is.Moved(state.Key{Field: "run", ID: l.RunID}) {
-		if is.Stage != l.Stage {
+	moved := is.Moved(state.Key{Field: "run", ID: l.RunID})
+	if !moved {
+		_, isUnlabeled, _ := r.leaseStage(l)
+		switch {
+		case isUnlabeled && !unlabeled(s, is):
+			return drop("the issue has a stage label or a transition since the run started")
+		case is.Stage != l.Stage:
 			return drop("the issue moved from %s to %s during the run", l.Stage, is.Stage)
 		}
 		inputs := 0
@@ -496,9 +607,24 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 		if inputs < len(l.Edits) {
 			return drop("an input was deleted since the run read it, so the stage runs again")
 		}
+		if e := s.BodyEdit; e.At.After(l.BodyEdit) && !state.IsApp(e.By, a.AppSlug) {
+			return drop("%s edited the issue's body since the run read it, so the stage runs again", login(e.By))
+		}
+		id, err := r.newInput(ctx, s, d, l.Seen)
+		if err != nil {
+			return fmt.Errorf("apply run %s: %w", l.RunID, err)
+		}
+		if id != 0 {
+			return drop("comment %d is new trusted input since the run started, so the stage runs again with it", id)
+		}
 	}
 	key := moveKey(l.AttemptKey, is.Item)
 	res := Result{RunID: l.RunID, Seen: l.Seen, S: s, Dirt: d, Output: out, moveKey: key, fields: runFields(l, raw)}
+	if c, ok := st.(Checker); ok && !moved {
+		if err := c.Check(ctx, res); err != nil {
+			return &checkError{fmt.Errorf("its result failed the %s stage's check: %w", st.Agent(), err)}
+		}
+	}
 	if err := st.Apply(ctx, a, res); err != nil {
 		if StateError(err) {
 			return r.blocked(ctx, s, d, st, l, key, err)
@@ -508,6 +634,40 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 	logr.Infof("%s/%s#%d: applied run %s", a.Owner, a.Repo, l.Issue, l.RunID)
 	delete(r.attempts, countKey(l.Issue, l.AttemptKey))
 	return r.finish(ctx, l)
+}
+
+// checkError is a Checker's rejection of a run's result, which applyLease
+// counts as a failed attempt (SPEC §8.3), not a failure to apply.
+type checkError struct{ err error }
+
+func (e *checkError) Error() string { return e.err.Error() }
+func (e *checkError) Unwrap() error { return e.err }
+
+// newInput returns the ID of the first comment on s that's new trusted
+// input since seen, the newest comment a run was given, or 0 if there's
+// none (plan #6, assumption 5): one above seen, by a trusted user, that
+// isn't a command and isn't dirty. The App's comments, and other bots',
+// aren't, as no bot is trusted. A result applied without it would lose
+// it, such as an answer step 1 👍'd before a delayed apply.
+func (r *Runs) newInput(ctx context.Context, s *github.Snapshot, d Dirt, seen int64) (int64, error) {
+	ok := map[string]bool{}
+	for _, c := range s.Comments {
+		if _, cmd := state.ParseCommand(c.Body); c.ID <= seen || cmd || c.Author.Type == "Bot" || d.Has(c.ID) {
+			continue
+		}
+		t, checked := ok[c.Author.Login]
+		if !checked {
+			var err error
+			if t, err = r.Daemon.Step.Trust.Trusted(ctx, c.Author.Login); err != nil {
+				return 0, fmt.Errorf("new input: trust %s: %w", c.Author.Login, err)
+			}
+			ok[c.Author.Login] = t
+		}
+		if t {
+			return c.ID, nil
+		}
+	}
+	return 0, nil
 }
 
 // resume finishes the lease a run left, if there is one, and returns the
@@ -530,7 +690,7 @@ func (r *Runs) resume(ctx context.Context) (int, error) {
 	if l.Failed {
 		return 0, r.endedLease(ctx, l)
 	}
-	st, ok := r.Stages[l.Stage]
+	st, _, ok := r.leaseStage(l)
 	if !ok {
 		logr.Warnf("dropping the lease of run %s on #%d: no Stage is registered for %s", l.RunID, l.Issue, l.Stage)
 		return 0, r.finish(ctx, l)
@@ -1046,10 +1206,11 @@ func (r *Runs) newID() string {
 	return strings.ToLower(rand.Text()[:8])
 }
 
-// pick is a PerStage's value for agent name.
+// pick is a PerStage's value for agent name. The triage agent has the
+// interviewer's (plan #6, assumption 2), so config needn't change.
 func pick[T any](p config.PerStage[T], name string) (T, bool) {
 	switch name {
-	case "interviewer":
+	case "interviewer", "triage":
 		return p.Interviewer, true
 	case "planner":
 		return p.Planner, true
