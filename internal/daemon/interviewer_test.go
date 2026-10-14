@@ -787,25 +787,65 @@ type ivFailTrust struct{}
 func (ivFailTrust) Trusted(context.Context, string) (bool, error) { return false, errTrust }
 
 // ivEve files an issue by eve, who isn't trusted, as EVE-TITLE with the
-// body EVE-BODY, typed typ by the owner if typ isn't "", at stage:clarifying.
+// body EVE-BODY, typed typ by the owner if typ isn't "", with no stage
+// label.
 func ivEve(f *githubtest.Fake, typ string) int {
 	n := f.AddIssue("eve", "EVE-TITLE", "EVE-BODY")
 	if typ != "" {
 		f.AddLabel(n, "owner", "type:"+typ)
 	}
-	f.AddLabel(n, app, "stage:clarifying")
 	return n
 }
 
-// ivApproved admits eve's issue n as IntakeVisit does: the owner adds
-// approved, and the App moves it, keyed by that event. between runs between
-// the two.
-func ivApproved(f *githubtest.Fake, n int, between func()) {
+// ivApproved admits eve's issue n as IntakeVisit's writes do: the owner
+// adds approved, then the App adds stage:clarifying and posts its move,
+// keyed by that event, whose comment's ID it returns. between runs between
+// the approval and the move.
+func ivApproved(f *githubtest.Fake, n int, between func()) int64 {
 	ev := f.AddLabel(n, "owner", "approved")
 	if between != nil {
 		between()
 	}
-	f.AddComment(n, app, fmt.Sprintf("Approved.\n\n<!-- issuedog:transition from=intake to=clarifying event=%d -->", ev))
+	f.AddLabel(n, app, "stage:clarifying")
+	return f.AddComment(n, app, fmt.Sprintf("Approved.\n\n<!-- issuedog:transition from=intake to=clarifying event=%d -->", ev))
+}
+
+// ivPass runs a pass of the loop's step 1 on issue n, then IntakeVisit.
+func ivPass(t *testing.T, d *daemon.Daemon, n int) {
+	t.Helper()
+	ctx := context.Background()
+	s, err := d.Step.Client.Snapshot(ctx, "o", "r", n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Step.Run(ctx, s); err != nil {
+		t.Fatalf("step 1: %v", err)
+	}
+	if err := d.Step.IntakeVisit(ctx, s); err != nil {
+		t.Fatalf("IntakeVisit: %v", err)
+	}
+}
+
+// ivStage is issue n's stage, as its markers say.
+func ivStage(t *testing.T, d *daemon.Daemon, n int) state.Stage {
+	t.Helper()
+	return ivInput(t, d, n).Issue.Stage
+}
+
+// ivFirstApp is the ID of the App's first comment on issue n.
+func ivFirstApp(t testing.TB, f *githubtest.Fake, n int) int64 {
+	t.Helper()
+	s, err := f.Client(t).Snapshot(context.Background(), "o", "r", n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range s.Comments {
+		if c.Author.Login == app {
+			return c.ID
+		}
+	}
+	t.Fatalf("#%d has no comment by the App", n)
+	return 0
 }
 
 // TestInterviewerAdmission: once an untrusted author's issue is admitted,
@@ -901,33 +941,121 @@ func TestInterviewerAdmission(t *testing.T) {
 			f.AddComment(n, app, fmt.Sprintf("Overridden.\n\n<!-- issuedog:transition from=intake to=clarifying by=owner event=%d -->", ev))
 			return n
 		}, map[string][]string{"EVE-EDITED": {"untrusted.md"}}, bodyAfter},
-		{"admitted by a command, edited after it", func(f *githubtest.Fake) int {
+		{"admitted by a command, edited after the App's move", func(f *githubtest.Fake) int {
 			n := ivEve(f, "epic")
 			cmd := f.AddComment(n, "owner", "/track")
-			f.EditBody(n, "eve", "EVE-EDITED")
+			f.AddLabel(n, app, "stage:clarifying")
 			f.AddComment(n, app, fmt.Sprintf("Tracked.\n\n<!-- issuedog:transition from=intake to=clarifying cmd=%d -->", cmd))
+			f.EditBody(n, "eve", "EVE-EDITED")
 			return n
 		}, map[string][]string{"EVE-EDITED": {"untrusted.md"}}, bodyAfter},
-		{"admitted by a command, edited before it", func(f *githubtest.Fake) int {
+		// The rule's known gap: a command is dated by the App's stage label,
+		// a pass after it, as a comment can't date anything.
+		{"admitted by a command, edited before the App's move", func(f *githubtest.Fake) int {
 			n := ivEve(f, "epic")
-			f.EditBody(n, "eve", "EVE-EDITED")
 			cmd := f.AddComment(n, "owner", "/track")
+			f.EditBody(n, "eve", "EVE-EDITED")
+			f.AddLabel(n, app, "stage:clarifying")
 			f.AddComment(n, app, fmt.Sprintf("Tracked.\n\n<!-- issuedog:transition from=intake to=clarifying cmd=%d -->", cmd))
 			return n
 		}, map[string][]string{"EVE-EDITED": {"issue.md"}}, "```text\nEVE-EDITED\n```"},
-		{"no clean admission, edited", func(f *githubtest.Fake) int {
+		{"no admission on the timeline, edited", func(f *githubtest.Fake) int {
 			n := ivEve(f, "epic")
 			f.EditBody(n, "eve", "EVE-EDITED")
-			id := f.AddComment(n, app, "<!-- issuedog:transition from=intake to=clarifying event=5 -->")
-			f.EditComment(id, "mallory", "<!-- issuedog:transition from=intake to=clarifying event=5 -->")
+			f.AddComment(n, app, "<!-- issuedog:transition from=intake to=clarifying event=5 -->")
 			return n
 		}, map[string][]string{"EVE-EDITED": {"untrusted.md"}}, bodyAfter},
-		{"no clean admission, not edited", func(f *githubtest.Fake) int {
+		{"no admission on the timeline, not edited", func(f *githubtest.Fake) int {
 			n := ivEve(f, "epic")
-			id := f.AddComment(n, app, "<!-- issuedog:transition from=intake to=clarifying event=5 -->")
-			f.EditComment(id, "mallory", "<!-- issuedog:transition from=intake to=clarifying event=5 -->")
+			f.AddComment(n, app, "<!-- issuedog:transition from=intake to=clarifying event=5 -->")
 			return n
 		}, map[string][]string{"EVE-BODY": {"issue.md"}}, "```text\nEVE-BODY\n```"},
+		{"the move's comment dirtied after a later move", func(f *githubtest.Fake) int {
+			n := ivEve(f, "epic")
+			move := ivApproved(f, n, nil)
+			f.EditBody(n, "eve", "EVE-EDITED")
+			f.RenameIssue(n, "eve", "EVE-RENAMED")
+			ivAsked(f, n, 1, 1, move)
+			f.EditComment(move, "mallory", "harmless")
+			return n
+		}, map[string][]string{"EVE-EDITED": {"untrusted.md"}, "EVE-RENAMED": {"untrusted.md"}}, bodyAfter},
+		{"the move's comment deleted after a later move", func(f *githubtest.Fake) int {
+			n := ivEve(f, "epic")
+			move := ivApproved(f, n, nil)
+			f.EditBody(n, "eve", "EVE-EDITED")
+			ivAsked(f, n, 1, 1, move)
+			f.DeleteComment(move)
+			return n
+		}, map[string][]string{"EVE-EDITED": {"untrusted.md"}}, bodyAfter},
+		{"an untrusted approved before the trusted one", func(f *githubtest.Fake) int {
+			n := ivEve(f, "epic")
+			f.AddLabel(n, "mallory", "approved")
+			f.RemoveLabel(n, app, "approved")
+			f.EditBody(n, "eve", "EVE-EDITED")
+			ivApproved(f, n, nil)
+			return n
+		}, map[string][]string{"EVE-EDITED": {"issue.md"}}, "```text\nEVE-EDITED\n```"},
+		{"an untrusted stage label, reverted, before approval", func(f *githubtest.Fake) int {
+			n := ivEve(f, "epic")
+			f.AddLabel(n, "mallory", "stage:clarifying")
+			f.RemoveLabel(n, app, "stage:clarifying")
+			f.EditBody(n, "eve", "EVE-EDITED")
+			ivApproved(f, n, nil)
+			return n
+		}, map[string][]string{"EVE-EDITED": {"issue.md"}}, "```text\nEVE-EDITED\n```"},
+		{"approved in another case", func(f *githubtest.Fake) int {
+			n := ivEve(f, "epic")
+			ev := f.AddLabel(n, "owner", "Approved")
+			f.EditBody(n, "eve", "EVE-EDITED")
+			f.AddLabel(n, app, "stage:clarifying")
+			f.AddComment(n, app, fmt.Sprintf("Approved.\n\n<!-- issuedog:transition from=intake to=clarifying event=%d -->", ev))
+			return n
+		}, map[string][]string{"EVE-EDITED": {"untrusted.md"}}, bodyAfter},
+		{"the App's approved before approval", func(f *githubtest.Fake) int {
+			n := ivEve(f, "epic")
+			f.AddLabel(n, app, "approved")
+			f.RemoveLabel(n, app, "approved")
+			f.EditBody(n, "eve", "EVE-EDITED")
+			ivApproved(f, n, nil)
+			return n
+		}, map[string][]string{"EVE-EDITED": {"issue.md"}}, "```text\nEVE-EDITED\n```"},
+		{"a hold and a resume at intake, before approval", func(f *githubtest.Fake) int {
+			n := ivEve(f, "epic")
+			f.AddLabel(n, "owner", "stage:intake")
+			f.RemoveLabel(n, app, "stage:intake")
+			f.AddLabel(n, app, "stage:held")
+			f.EditBody(n, "eve", "EVE-EDITED")
+			f.RemoveLabel(n, app, "stage:held")
+			f.AddLabel(n, "owner", "stage:intake")
+			f.AddLabel(n, "owner", "Stage:Bogus")
+			f.RemoveLabel(n, "owner", "stage:intake")
+			ivApproved(f, n, nil)
+			return n
+		}, map[string][]string{"EVE-EDITED": {"issue.md"}}, "```text\nEVE-EDITED\n```"},
+		{"a hand-set stage label, any case", func(f *githubtest.Fake) int {
+			n := ivEve(f, "epic")
+			f.AddLabel(n, "owner", "Stage:Clarifying")
+			f.EditBody(n, "eve", "EVE-EDITED")
+			ivApproved(f, n, nil)
+			return n
+		}, map[string][]string{"EVE-EDITED": {"untrusted.md"}}, bodyAfter},
+		{"re-admitted after an override back to intake", func(f *githubtest.Fake) int {
+			n := ivEve(f, "epic")
+			ivApproved(f, n, nil)
+			f.RemoveLabel(n, "owner", "stage:clarifying")
+			f.AddLabel(n, "owner", "stage:intake")
+			f.EditBody(n, "eve", "EVE-EDITED")
+			f.RemoveLabel(n, "owner", "stage:intake")
+			f.AddLabel(n, "owner", "stage:clarifying")
+			return n
+		}, map[string][]string{"EVE-EDITED": {"untrusted.md"}}, bodyAfter},
+		{"renamed after approval by mallory", func(f *githubtest.Fake) int {
+			n := ivEve(f, "epic")
+			ivApproved(f, n, nil)
+			f.RenameIssue(n, "mallory", "MALLORY-TITLE")
+			return n
+		}, map[string][]string{"MALLORY-TITLE": {"untrusted.md"}},
+			"- Title: mallory changed the title after the issue was admitted, so it's in untrusted.md, as untrusted data."},
 		{"edited by mallory after approval: dirty", func(f *githubtest.Fake) int {
 			n := ivEve(f, "epic")
 			ivApproved(f, n, nil)
@@ -993,6 +1121,39 @@ func TestInterviewerAdmission(t *testing.T) {
 			t.Errorf("Context = %d files, %v; want none and the trust error, wrapped", len(files), err)
 		}
 	})
+	t.Run("trust of the approver fails", func(t *testing.T) {
+		f := newFake(t)
+		n := ivEve(f, "")
+		f.AddLabel(n, "mallory", "approved")
+		d := ivDaemon(t, f, newOrigin(t))
+		in := ivInput(t, d, n)
+		d.Step.Trust = ivRenamerFails{}
+		files, err := (&daemon.Interviewer{Daemon: d}).Context(context.Background(), in)
+		if !errors.Is(err, errTrust) || !strings.Contains(err.Error(), "the admission of an untrusted author's issue") || files != nil {
+			t.Errorf("Context = %d files, %v; want none and the trust error, wrapped", len(files), err)
+		}
+	})
+	t.Run("logins that aren't", func(t *testing.T) {
+		f := newFake(t)
+		n := f.AddIssue("eve_x", "EVE-TITLE", "EVE-BODY")
+		f.AddLabel(n, "owner", "type:epic")
+		ivApproved(f, n, nil)
+		f.EditBody(n, "eve_x", "EVE-EDITED")
+		f.RenameIssue(n, "eve_x", "EVE-RENAMED")
+		d := ivDaemon(t, f, newOrigin(t))
+		files := ivContext(t, d, n)
+		for _, w := range []struct{ file, text string }{
+			{"issue.md", "- Title: someone unnamed changed the title after the issue was admitted"},
+			{"issue.md", "someone unnamed edited the body after the issue was admitted"},
+			{"untrusted.md", "the issue's title, which someone unnamed changed after the issue was admitted"},
+			{"untrusted.md", "the issue's body, which someone unnamed edited after the issue was admitted"},
+		} {
+			if !strings.Contains(files[w.file], w.text) {
+				t.Errorf("%s lacks %q:\n%s", w.file, w.text, files[w.file])
+			}
+		}
+		ivOnlyIn(t, files, "eve_x")
+	})
 	t.Run("trust of the renamer fails", func(t *testing.T) {
 		f := newFake(t)
 		n := ivEve(f, "")
@@ -1055,4 +1216,63 @@ func TestInterviewerOneTimelineRead(t *testing.T) {
 	if reads != 1 {
 		t.Errorf("Context read the timeline %d times, want 1", reads)
 	}
+}
+
+// TestInterviewerAdmissionFlow: the admission through the loop's own
+// writes, step 1 and IntakeVisit, against the fake.
+func TestInterviewerAdmissionFlow(t *testing.T) {
+	// The App's move is dirtied or deleted after a later move: eve's edits
+	// after admission stay untrusted.
+	for name, undo := range map[string]func(f *githubtest.Fake, id int64){
+		"dirtied": func(f *githubtest.Fake, id int64) { f.EditComment(id, "mallory", "harmless") },
+		"deleted": func(f *githubtest.Fake, id int64) { f.DeleteComment(id) },
+	} {
+		t.Run("the move "+name, func(t *testing.T) {
+			f := newFake(t)
+			n := ivEve(f, "epic")
+			d := ivDaemon(t, f, newOrigin(t))
+			f.AddLabel(n, "owner", "approved")
+			ivPass(t, d, n)
+			if st := ivStage(t, d, n); st != state.Clarifying {
+				t.Fatalf("stage after approval = %s, want clarifying", st)
+			}
+			move := ivFirstApp(t, f, n)
+			f.EditBody(n, "eve", "EVE-EDITED")
+			f.RenameIssue(n, "eve", "EVE-RENAMED")
+			ivAsked(f, n, 1, 1, move)
+			ivPass(t, d, n)
+			undo(f, move)
+			ivPass(t, d, n)
+			files := ivContext(t, d, n)
+			ivOnlyIn(t, files, "EVE-EDITED", "untrusted.md")
+			ivOnlyIn(t, files, "EVE-RENAMED", "untrusted.md")
+		})
+	}
+	// /hold and /resume at intake, then approved: the body the owner
+	// approved, edited while held, is trusted.
+	t.Run("hold and resume before approval", func(t *testing.T) {
+		f := newFake(t)
+		n := ivEve(f, "epic")
+		f.AddLabel(n, "owner", "stage:intake")
+		d := ivDaemon(t, f, newOrigin(t))
+		ivPass(t, d, n)
+		f.AddComment(n, "owner", "/hold")
+		ivPass(t, d, n)
+		if st := ivStage(t, d, n); st != state.Held {
+			t.Fatalf("stage after /hold = %s, want held", st)
+		}
+		f.EditBody(n, "eve", "EVE-APPROVED-BODY")
+		f.AddComment(n, "owner", "/resume")
+		ivPass(t, d, n)
+		if st := ivStage(t, d, n); st != state.Intake {
+			t.Fatalf("stage after /resume = %s, want intake", st)
+		}
+		f.AddLabel(n, "owner", "approved")
+		ivPass(t, d, n)
+		if st := ivStage(t, d, n); st != state.Clarifying {
+			t.Fatalf("stage after approval = %s, want clarifying", st)
+		}
+		files := ivContext(t, d, n)
+		ivOnlyIn(t, files, "EVE-APPROVED-BODY", "issue.md")
+	})
 }

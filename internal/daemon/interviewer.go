@@ -195,7 +195,7 @@ func (iv *Interviewer) Context(ctx context.Context, in Input) (map[string][]byte
 	rounds := interviewerRounds(s, a.AppSlug, in.Dirt.Has)
 	takesUntrusted := s.Type == "epic" || s.Type == "story" // SPEC §6.2
 	tc := trustCache{st: d.Step, verdicts: map[string]bool{}}
-	titleBy, bodyBy, err := iv.admission(ctx, s, in.Dirt, tc, timeline)
+	titleBy, bodyBy, err := iv.admission(ctx, s, tc, timeline)
 	if err != nil {
 		return nil, wrap(err)
 	}
@@ -350,7 +350,7 @@ func (t *ivTimeline) get(ctx context.Context) ([]*gogithub.Timeline, error) {
 //
 // Times are to the second, so a change in the admission's second counts
 // as after it. With no admission found, every change counts as after.
-func (iv *Interviewer) admission(ctx context.Context, s *github.Snapshot, dirt Dirt, tc trustCache, tl *ivTimeline) (titleBy, bodyBy string, err error) {
+func (iv *Interviewer) admission(ctx context.Context, s *github.Snapshot, tc trustCache, tl *ivTimeline) (titleBy, bodyBy string, err error) {
 	a := iv.Daemon.Step.Applier
 	if state.IsApp(s.Author, a.AppSlug) {
 		return "", "", nil
@@ -366,7 +366,10 @@ func (iv *Interviewer) admission(ctx context.Context, s *github.Snapshot, dirt D
 	if err != nil {
 		return "", "", fmt.Errorf("the admission of an untrusted author's issue: %w", err)
 	}
-	at, admitted := ivAdmitted(s, timeline, a.AppSlug, dirt.Has)
+	at, admitted, err := ivAdmitted(ctx, timeline, a.AppSlug, tc)
+	if err != nil {
+		return "", "", fmt.Errorf("the admission of an untrusted author's issue: %w", err)
+	}
 	after := func(t time.Time) bool { return !admitted || !t.Before(at) }
 	if e := s.BodyEdit; !e.At.IsZero() && !state.IsApp(e.By, a.AppSlug) && after(e.At) {
 		bodyBy = login(e.By)
@@ -393,39 +396,44 @@ func (iv *Interviewer) admission(ctx context.Context, s *github.Snapshot, dirt D
 	return titleBy, bodyBy, nil
 }
 
-// ivAdmitted returns when s was admitted to the pipeline, and whether it
-// was: the time of the first clean transition, the App's move out of
-// intake (SPEC §6.2), or else of what that move names, if it's earlier:
-// the timeline event in its event=, such as the trusted approved label or
-// a trusted user's stage label (IntakeVisit, an override), or the command
-// comment in its cmd=. A move keyed by a run (triage) or a reaction has
-// only its own time.
-func ivAdmitted(s *github.Snapshot, timeline []*gogithub.Timeline, appSlug string, dirty func(int64) bool) (time.Time, bool) {
-	for _, c := range s.Comments {
-		if dirty(c.ID) {
+// ivAdmitted returns when an issue was admitted to the pipeline (SPEC
+// §6.2), and whether it was, from its timeline alone, which nobody can edit
+// or delete, unlike the App's comments: the earliest labeled event of
+//   - approved, added by a trusted user, or
+//   - a stage:* label of a stage past intake, other than held, added by
+//     the App or a trusted user, as a hand-set stage is (an override), or
+//     as the App's move into the pipeline is.
+//
+// An untrusted add counts for neither, even before step 1 reverts it. The
+// earliest is the safe bound: an earlier one makes more edits count as
+// after it. With none, there's no admission, so every edit counts as after.
+func ivAdmitted(ctx context.Context, timeline []*gogithub.Timeline, appSlug string, tc trustCache) (time.Time, bool, error) {
+	var at time.Time
+	admitted := false
+	for _, e := range timeline {
+		if e.GetEvent() != "labeled" {
 			continue
 		}
-		for _, m := range github.TrustedMarkers(c.Author, c.Body, appSlug) {
-			if _, ok := state.RoundBound(m, c.ID); !ok {
-				continue
+		name := e.GetLabel().GetName()
+		stage, isStage := state.ParseLabel(name)
+		approved := strings.EqualFold(name, approvedLabel)
+		if !approved && (!isStage || stage == state.Intake || stage == state.Held) {
+			continue
+		}
+		actor := github.Author{Login: e.GetActor().GetLogin(), Type: e.GetActor().GetType()}
+		ok := state.IsApp(actor, appSlug) && !approved
+		if !ok {
+			trusted, err := tc.trusted(ctx, actor)
+			if err != nil {
+				return time.Time{}, false, fmt.Errorf("event %d: %w", e.GetID(), err)
 			}
-			at := c.CreatedAt
-			for _, e := range timeline {
-				if id := m.Fields["event"]; id != "" && strconv.FormatInt(e.GetID(), 10) == id && e.GetCreatedAt().Before(at) {
-					at = e.GetCreatedAt().Time
-				}
-			}
-			if id, ok := (state.Key{Field: "cmd", ID: m.Fields["cmd"]}).Comment(); ok {
-				for _, cmd := range s.Comments {
-					if cmd.ID == id && cmd.CreatedAt.Before(at) {
-						at = cmd.CreatedAt
-					}
-				}
-			}
-			return at, true
+			ok = trusted
+		}
+		if t := e.GetCreatedAt().Time; ok && (!admitted || t.Before(at)) {
+			at, admitted = t, true
 		}
 	}
-	return time.Time{}, false
+	return at, admitted, nil
 }
 
 // interviewerPreamble is the start of system.md, which no prompt on main
