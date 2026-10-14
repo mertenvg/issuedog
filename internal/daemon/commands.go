@@ -545,13 +545,35 @@ func settingPrefix(c Cmd) (value, prefix string) {
 // or by suffix, either ignoring case. Otherwise it returns a Rejection,
 // which quotes c's text; reply escapes it (SPEC §5.1).
 //
-// A reload can drop a model from models.allowed after Apply added its label,
-// and Check mustn't then reject c (see Handler). So when c names no allowed
+// A reload can drop a model from models.allowed after Apply began, and
+// Check mustn't then reject c (see Handler). So when c names no allowed
 // model, the labels with c's prefix on c's issue that name no allowed model
-// either, its stray labels, are looked up on the timeline: one that a begun
-// Apply of c added (see addedSince) stands. If exactly one did, c names that
-// label, and c removes the others. Otherwise c is rejected, and its labels
-// stay. Only this path reads the timeline, and it doesn't write.
+// either, its stray labels, are looked up on the timeline (see addedSince),
+// and c names a stray label if either:
+//   - a begun Apply of c added it, and it is the only stray label that one
+//     added. c then removes the others.
+//   - it is the only stray label, and the App removed another label with
+//     c's prefix since c: a begun Apply whose add found its label there
+//     already, which then removed the others.
+//
+// Otherwise c is rejected, and its labels stay. Only this path reads the
+// timeline, and it doesn't write.
+//
+// Known limits:
+//   - Two begun Applies still go unseen, so c is rejected and its labels
+//     stay as they are. One crashed before its first write, so it changed
+//     nothing. In the other, the add found its label there already, and
+//     another stray label is still on the issue, so the App's removals
+//     don't show which one c named.
+//   - The App's label writes since c are taken as c's Apply's, but an
+//     earlier command's Apply can make them after c is posted. Say the
+//     owner posts /model opus, then /model gpt, and a pass applies the
+//     first, adding model:opus after the second, then crashes before
+//     handling the second, and a reload drops opus. The next pass 👍s
+//     /model gpt as if it named opus, and its Apply removes the other
+//     labels of its kind, such as a model:haiku a trusted user added in
+//     between. This needs only the owner's own commands, a crash and a
+//     reload, and an untrusted user can't cause it.
 func modelLabel(ctx context.Context, a *Applier, trust github.Trust, models config.Models, c Cmd) (string, error) {
 	arg, prefix := settingPrefix(c)
 	name, ok := models.Resolve(arg)
@@ -577,12 +599,19 @@ func modelLabel(ctx context.Context, a *Applier, trust github.Trust, models conf
 		}
 	}
 	if len(stray) > 0 {
-		begun, err := a.addedSince(ctx, c, trust, stray)
+		kind := "" // removals count only with one stray label
+		if len(stray) == 1 {
+			kind = prefix
+		}
+		begun, removed, err := a.addedSince(ctx, c, trust, stray, kind)
 		if err != nil {
 			return "", fmt.Errorf("model: %w", err)
 		}
-		if len(begun) == 1 {
+		switch {
+		case len(begun) == 1:
 			return begun[0], nil
+		case len(begun) == 0 && removed:
+			return stray[0], nil
 		}
 	}
 	if len(same) > 1 {
@@ -601,71 +630,158 @@ func modelLabel(ctx context.Context, a *Applier, trust github.Trust, models conf
 // addedSince returns those of labels, on c's issue, that a begun Apply of c
 // added: each one whose latest labeled or unlabeled event on the timeline,
 // after c's own commented event, is the App's labeled event, and isn't the
-// label rules' revert. A revert puts back a label an untrusted user removed,
-// so an App's labeled event right after an unlabeled event is a revert if
-// either:
-//   - a trusted revert marker names that unlabeled event: its key is the
-//     event's ID (github.CheckLabels). Like the label rules, it skips dirty
-//     comments.
-//   - neither the App nor a trusted user, by trust, made that unlabeled
-//     event. An untrusted user can delete or edit the revert's comment, but
-//     not the event. CheckLabels runs before commands in each pass, so it
-//     puts back an untrusted removal before Apply could add the label.
-func (a *Applier) addedSince(ctx context.Context, c Cmd, trust github.Trust, labels []string) ([]string, error) {
+// label rules' revert (see appRevert). If kind, a label prefix, isn't
+// empty, it also reports whether the App, after c's commented event,
+// removed a label with that prefix that isn't one of labels, in an
+// unlabeled event that isn't a revert either: Apply removes the other
+// labels of its kind after its add. As the App, only /model commands and
+// the label rules change those labels, and Step handles commands in order.
+// A label rules' change that isn't keyed by the event before it, such as a
+// removal of a pipeline label that no trusted or App event explains (#118,
+// keyed name@id), is still a revert by appRevert's walk back, not by its
+// marker: the label rules remove a label only when the last accepted change
+// left it off.
+func (a *Applier) addedSince(ctx context.Context, c Cmd, trust github.Trust, labels []string, kind string) ([]string, bool, error) {
 	wrap := func(err error) error { return fmt.Errorf("labels added since comment %d: %w", c.Comment.ID, err) }
 	events, err := a.Client.TimelineSince(ctx, a.Owner, a.Repo, c.S.Number, time.Time{})
 	if err != nil {
-		return nil, wrap(err)
+		return nil, false, wrap(err)
 	}
 	after := slices.IndexFunc(events, func(e *gogithub.Timeline) bool {
 		return e.GetEvent() == "commented" && e.GetID() == c.Comment.ID
 	})
 	if after < 0 {
-		return nil, wrap(fmt.Errorf("the comment isn't on the timeline of %s/%s#%d", a.Owner, a.Repo, c.S.Number))
+		return nil, false, wrap(fmt.Errorf("the comment isn't on the timeline of %s/%s#%d", a.Owner, a.Repo, c.S.Number))
 	}
-	reverted := map[string]bool{}
-	for _, e := range events {
-		if e.GetEvent() != "commented" || c.Dirt.Has(e.GetID()) {
-			continue
-		}
-		for _, m := range github.TrustedMarkers(author(e.GetUser()), e.GetBody(), a.AppSlug) {
-			if m.Kind == "revert" {
-				reverted[m.Fields["key"]] = true
+	h := labelHistory{a: a, trust: trust, events: events, reverted: map[string]bool{}, verdicts: map[string]bool{}}
+	byLabel := map[string][]int{} // each label's events' positions, by lower-case name
+	var names []string            // byLabel's keys, in timeline order
+	for i, e := range events {
+		switch e.GetEvent() {
+		case "labeled", "unlabeled":
+			l := strings.ToLower(e.GetLabel().GetName())
+			if byLabel[l] == nil {
+				names = append(names, l)
+			}
+			byLabel[l] = append(byLabel[l], i)
+		case "commented":
+			if c.Dirt.Has(e.GetID()) {
+				continue
+			}
+			for _, m := range github.TrustedMarkers(author(e.GetUser()), e.GetBody(), a.AppSlug) {
+				if m.Kind == "revert" {
+					h.reverted[m.Fields["key"]] = true
+				}
 			}
 		}
+	}
+	// since reports whether the k-th of a label's events, at the positions
+	// ats, is the App's event of kind ev after c's, and not a revert.
+	since := func(ats []int, k int, ev string) (bool, error) {
+		e := events[ats[k]]
+		if ats[k] <= after || e.GetEvent() != ev || !state.IsApp(author(e.GetActor()), a.AppSlug) {
+			return false, nil
+		}
+		revert, err := h.appRevert(ctx, ats, k)
+		if err != nil {
+			return false, fmt.Errorf("%s %s: %w", ev, e.GetLabel().GetName(), err)
+		}
+		return !revert, nil
 	}
 	var added []string
 	for _, l := range labels {
-		last, prev := -1, -1 // events are oldest first
-		for i, e := range events {
-			if (e.GetEvent() == "labeled" || e.GetEvent() == "unlabeled") && strings.EqualFold(e.GetLabel().GetName(), l) {
-				prev, last = last, i
-			}
-		}
-		if last <= after || events[last].GetEvent() != "labeled" {
+		ats := byLabel[strings.ToLower(l)]
+		if len(ats) == 0 {
 			continue
 		}
-		if !state.IsApp(author(events[last].GetActor()), a.AppSlug) {
-			continue
+		ok, err := since(ats, len(ats)-1, "labeled")
+		if err != nil {
+			return nil, false, wrap(err)
 		}
-		if prev >= 0 && events[prev].GetEvent() == "unlabeled" {
-			if reverted[strconv.FormatInt(events[prev].GetID(), 10)] {
-				continue
-			}
-			by := events[prev].GetActor()
-			if !state.IsApp(author(by), a.AppSlug) {
-				ok, err := trust.Trusted(ctx, by.GetLogin())
-				if err != nil {
-					return nil, wrap(fmt.Errorf("trust %s: %w", by.GetLogin(), err))
-				}
-				if !ok {
-					continue
-				}
-			}
+		if ok {
+			added = append(added, l)
 		}
-		added = append(added, l)
 	}
-	return added, nil
+	removed := false
+	for _, l := range names {
+		if removed || kind == "" || !strings.HasPrefix(l, kind) || slices.ContainsFunc(labels, func(x string) bool { return strings.EqualFold(x, l) }) {
+			continue
+		}
+		for k := range byLabel[l] {
+			ok, err := since(byLabel[l], k, "unlabeled")
+			if err != nil {
+				return nil, false, wrap(err)
+			}
+			if ok {
+				removed = true
+				break
+			}
+		}
+	}
+	return added, removed, nil
+}
+
+// labelHistory is an issue's timeline, oldest first, for telling the label
+// rules' reverts apart from a begun Apply's writes.
+type labelHistory struct {
+	a        *Applier
+	trust    github.Trust
+	events   []*gogithub.Timeline
+	reverted map[string]bool // the keys of trusted revert markers in clean comments
+	verdicts map[string]bool // trust by lower-case login, asked once
+}
+
+// appRevert reports whether the App's label event at events[ats[k]], the
+// k-th of its label's events, at the positions ats, is the label rules'
+// revert, which puts back a change an untrusted user made. It is one if
+// either:
+//   - a trusted revert marker names the event before it: its key is that
+//     event's ID (github.CheckLabels). Like the label rules, it skips dirty
+//     comments.
+//   - it restores the last accepted state: the label's latest event before
+//     it that the App or a trusted user, by trust, made left the label as
+//     it does, or there is none and it removes the label. This is the label
+//     rules' own test (labelRules.restores, package github's own, so done
+//     again here). An untrusted user can delete or edit a revert's comment,
+//     but not the events. CheckLabels runs before commands in each pass, so
+//     it puts back an untrusted change before Apply could write the label,
+//     and untrusted changes that leave nothing to put back, such as an add
+//     and then a removal, don't make Apply's later add a revert.
+func (h *labelHistory) appRevert(ctx context.Context, ats []int, k int) (bool, error) {
+	if k > 0 && h.reverted[strconv.FormatInt(h.events[ats[k-1]].GetID(), 10)] {
+		return true, nil
+	}
+	before := false
+	for j := k - 1; j >= 0; j-- {
+		ok, err := h.accepted(ctx, h.events[ats[j]])
+		if err != nil {
+			return false, fmt.Errorf("revert: %w", err)
+		}
+		if ok {
+			before = h.events[ats[j]].GetEvent() == "labeled"
+			break
+		}
+	}
+	return before == (h.events[ats[k]].GetEvent() == "labeled"), nil
+}
+
+// accepted reports whether the App or a trusted user made e. trust isn't
+// asked about the App.
+func (h *labelHistory) accepted(ctx context.Context, e *gogithub.Timeline) (bool, error) {
+	by := e.GetActor()
+	if state.IsApp(author(by), h.a.AppSlug) {
+		return true, nil
+	}
+	login := strings.ToLower(by.GetLogin())
+	if v, ok := h.verdicts[login]; ok {
+		return v, nil
+	}
+	v, err := h.trust.Trusted(ctx, by.GetLogin())
+	if err != nil {
+		return false, fmt.Errorf("trust %s: %w", by.GetLogin(), err)
+	}
+	h.verdicts[login] = v
+	return v, nil
 }
 
 // author is u as a github.Author.
