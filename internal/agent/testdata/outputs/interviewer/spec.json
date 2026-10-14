@@ -1,8 +1,8 @@
 {
   "outcome": "spec",
-  "message": "Your note on reporting is answered: expired quotes are kept and marked.",
+  "message": "Your notes are answered:\n\n- Reporting: expired quotes are kept and marked.\n- Expiry time: shown on the quote.",
   "spec": {
-    "problem": "Quotes never expire, so customers book at prices that are out of date.",
+    "problem": "Quotes never expire, so customers book at prices that are out of date.\n\nSupport then has to honour the old price or cancel the booking.",
     "goals": [
       "A quote expires 24 hours after it's issued.",
       "Expired quotes stay available for reporting."

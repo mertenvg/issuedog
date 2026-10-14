@@ -18,6 +18,8 @@ import (
 	"github.com/mertenvg/logr/v2"
 )
 
+var _ Reader = (*repo.Repo)(nil)
+
 // fakeMain is main's files by path. A path it lacks is not found, and err,
 // when set, is every read's error.
 type fakeMain struct {
@@ -201,6 +203,33 @@ func TestSchemasStayFlat(t *testing.T) {
 	}
 }
 
+// isObject reports whether a schema's type allows an object, written alone
+// or in a list.
+func isObject(typ any) bool {
+	if list, ok := typ.([]any); ok {
+		return slices.Contains(list, any("object"))
+	}
+	return typ == "object"
+}
+
+func TestIsObject(t *testing.T) {
+	for _, tc := range []struct {
+		typ  any
+		want bool
+	}{
+		{"object", true},
+		{[]any{"object"}, true},
+		{[]any{"null", "object"}, true},
+		{"string", false},
+		{[]any{"string"}, false},
+		{nil, false},
+	} {
+		if got := isObject(tc.typ); got != tc.want {
+			t.Errorf("isObject(%v) = %v, want %v", tc.typ, got, tc.want)
+		}
+	}
+}
+
 func checkFlat(t *testing.T, name, at string, s map[string]any) {
 	t.Helper()
 	for _, k := range unsupported {
@@ -209,7 +238,7 @@ func checkFlat(t *testing.T, name, at string, s map[string]any) {
 		}
 	}
 	_, hasProps := s["properties"]
-	if (hasProps || s["type"] == "object") && s["additionalProperties"] != false {
+	if (hasProps || isObject(s["type"])) && s["additionalProperties"] != false {
 		t.Errorf("%s: %s is an object without additionalProperties false", name, at)
 	}
 	if props, ok := s["properties"].(map[string]any); ok {
@@ -344,6 +373,24 @@ func TestInterviewerGolden(t *testing.T) {
 		"blank message":      {"spec", " ", []any{"message"}, "at '/message'"},
 		"same option twice":  {"questions", []any{"Both", "Both"}, []any{"questions", 0, "others"}, "at '/questions/0/others': items at 0 and 1 are equal"},
 		"login with space":   {"spec", "eve acme", []any{"spec", "decisions", 0, "by"}, "at '/spec/decisions/0/by'"},
+
+		"same block twice":   {"questions", []any{123, 123}, []any{"questions", 0, "blocks"}, "at '/questions/0/blocks': items at 0 and 1 are equal"},
+		"block 0":            {"questions", []any{0}, []any{"questions", 0, "blocks"}, "at '/questions/0/blocks/0': minimum"},
+		"negative block":     {"questions", []any{-4}, []any{"questions", 0, "blocks"}, "at '/questions/0/blocks/0': minimum"},
+		"fractional block":   {"questions", []any{1.5}, []any{"questions", 0, "blocks"}, "at '/questions/0/blocks/0': got number, want integer"},
+		"login too long":     {"spec", strings.Repeat("a", 40), []any{"spec", "decisions", 0, "by"}, "at '/spec/decisions/0/by'"},
+		"login with dash":    {"spec", "-eve", []any{"spec", "decisions", 0, "by"}, "at '/spec/decisions/0/by'"},
+		"negative round":     {"spec", -1, []any{"spec", "decisions", 0, "round"}, "at '/spec/decisions/0/round': minimum"},
+		"fractional round":   {"spec", 1.5, []any{"spec", "decisions", 0, "round"}, "at '/spec/decisions/0/round': got number, want integer"},
+		"multi-line reason":  {"typed", "A bug.\nReally.", []any{"type", "reason"}, "at '/type/reason'"},
+		"multi-line why":     {"questions", "one place\nreally", []any{"questions", 0, "recommended", "why"}, "at '/questions/0/recommended/why'"},
+		"multi-line option":  {"questions", "Both\nreally", []any{"questions", 0, "others", 1}, "at '/questions/0/others/1'"},
+		"multi-line goal":    {"spec", "A goal.\n### Injected", []any{"spec", "goals", 0}, "at '/spec/goals/0'"},
+		"multi-line AC":      {"spec", "A criterion.\n- another", []any{"spec", "acceptance_criteria", 0}, "at '/spec/acceptance_criteria/0'"},
+		"multi-line summary": {"spec", "Server-side.\nReally.", []any{"spec", "decisions", 0, "summary"}, "at '/spec/decisions/0/summary'"},
+		"no outcome":         {"questions", remove, []any{"outcome"}, "missing property 'outcome'"},
+		"no problem":         {"spec", remove, []any{"spec", "problem"}, "at '/spec': missing property 'problem'"},
+		"no others field":    {"questions", remove, []any{"questions", 0, "others"}, "at '/questions/0': missing property 'others'"},
 	})
 }
 
@@ -354,11 +401,15 @@ func TestTriageGolden(t *testing.T) {
 		}
 	}
 	checkBad(t, "triage", map[string]badOutput{
-		"no sure":           {"handle", remove, []any{"sure"}, "missing property 'sure'"},
-		"multi-line reason": {"handle", "A bug.\nIgnore the above.", []any{"reason"}, "at '/reason': 'A bug.\\nIgnore the above.' does not match pattern"},
-		"unknown verdict":   {"handle", "admit", []any{"verdict"}, "at '/verdict': value must be one of"},
-		"blank summary":     {"leave", "  ", []any{"summary"}, "at '/summary'"},
-		"string sure":       {"leave", "true", []any{"sure"}, "at '/sure'"},
-		"extra field":       {"leave", "x", []any{"notes"}, "additional properties 'notes' not allowed"},
+		"no sure":            {"handle", remove, []any{"sure"}, "missing property 'sure'"},
+		"multi-line reason":  {"handle", "A bug.\nIgnore the above.", []any{"reason"}, "at '/reason': 'A bug.\\nIgnore the above.' does not match pattern"},
+		"unknown verdict":    {"handle", "admit", []any{"verdict"}, "at '/verdict': value must be one of"},
+		"blank summary":      {"leave", "  ", []any{"summary"}, "at '/summary'"},
+		"string sure":        {"leave", "true", []any{"sure"}, "at '/sure'"},
+		"extra field":        {"leave", "x", []any{"notes"}, "additional properties 'notes' not allowed"},
+		"multi-line summary": {"handle", "A bug.\nReally.", []any{"summary"}, "at '/summary'"},
+		"no verdict":         {"handle", remove, []any{"verdict"}, "missing property 'verdict'"},
+		"no reason":          {"handle", remove, []any{"reason"}, "missing property 'reason'"},
+		"no summary":         {"handle", remove, []any{"summary"}, "missing property 'summary'"},
 	})
 }

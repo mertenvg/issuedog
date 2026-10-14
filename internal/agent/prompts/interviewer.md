@@ -62,15 +62,15 @@ Set `type` only where the preamble says you may: on an issue with no type, or on
 - If you can tell the type, set it in your first output, with a one-line reason.
 - If you can't tell yet, ask questions first and set the type once it's clear.
 - A spec on an issue with no type must set the type to epic or story.
-- If the preamble says you can't set a type and the issue has none, ask the owner to set it, as one of your questions. Write the spec only once it's set.
-- If the issue is a bug or a task, return `typed` with that type and nothing else. It waits for a later stage.
+- If the preamble says you can't set a type and the issue has none, ask the owner, as one of your questions, to set the type on the issue itself. Offer the types as options, your pick first, and say in the question that a reply alone doesn't set it. Write the spec only once it's set.
+- If you may set a type and the issue is a bug or a task, return `typed` with that type and nothing else. It waits for a later stage.
 
 ## Output
 
 Your output is one flat object. Set `outcome`, then only the fields that go with it:
 
 - `questions`: `questions`, and `type` if you set one.
-- `spec`: `spec`, `type` if you set one (always on an issue with no type), and `message` when it helps.
+- `spec`: `spec`, `type` if you set one (always on an issue with no type), and `message`, always after revision notes.
 - `typed`: `type` only.
 
 Leave out every field that doesn't go with the outcome. Output that breaks these rules fails the run, and nothing is posted.
