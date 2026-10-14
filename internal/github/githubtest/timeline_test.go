@@ -42,25 +42,35 @@ func TestTimeline(t *testing.T) {
 }
 
 // RenameLabel renames a label in the repo and on its issues, ignoring case,
-// and past events keep the old name.
+// and past events keep the old name. RenameLabelInEvents renames them too.
 func TestRenameLabel(t *testing.T) {
-	f := New(t, "o/r", "issuedog")
-	f.AddRepoLabel("model:old")
-	n := f.AddIssue("owner", "Title", "body")
-	f.AddLabel(n, "owner", "model:old")
-	f.AddLabel(n, "owner", "aa")
-	f.RenameLabel("MODEL:OLD", "Model:Old")
-	if got := f.RepoLabels(); !reflect.DeepEqual(got, []string{"Model:Old"}) {
-		t.Errorf("repo labels = %q, want Model:Old", got)
-	}
-	if got := f.State().Issues[0].Labels; !reflect.DeepEqual(got, []string{"Model:Old", "aa"}) {
-		t.Errorf("issue labels = %q, want Model:Old and aa", got)
-	}
-	events, err := f.Client(t).TimelineSince(context.Background(), "o", "r", n, time.Time{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(events) != 2 || events[0].GetLabel().GetName() != "model:old" {
-		t.Errorf("events = %+v, want the first still named model:old", events)
+	for name, tt := range map[string]struct {
+		rename func(f *Fake, from, to string)
+		event  string // the first event's label after it
+	}{
+		"RenameLabel":         {(*Fake).RenameLabel, "model:old"},
+		"RenameLabelInEvents": {(*Fake).RenameLabelInEvents, "Model:Old"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := New(t, "o/r", "issuedog")
+			f.AddRepoLabel("model:old")
+			n := f.AddIssue("owner", "Title", "body")
+			f.AddLabel(n, "owner", "model:old")
+			f.AddLabel(n, "owner", "aa")
+			tt.rename(f, "MODEL:OLD", "Model:Old")
+			if got := f.RepoLabels(); !reflect.DeepEqual(got, []string{"Model:Old"}) {
+				t.Errorf("repo labels = %q, want Model:Old", got)
+			}
+			if got := f.State().Issues[0].Labels; !reflect.DeepEqual(got, []string{"Model:Old", "aa"}) {
+				t.Errorf("issue labels = %q, want Model:Old and aa", got)
+			}
+			events, err := f.Client(t).TimelineSince(context.Background(), "o", "r", n, time.Time{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(events) != 2 || events[0].GetLabel().GetName() != tt.event || events[1].GetLabel().GetName() != "aa" {
+				t.Errorf("events = %+v, want the first named %s and the second aa", events, tt.event)
+			}
+		})
 	}
 }

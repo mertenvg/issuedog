@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -100,6 +101,9 @@ func OverrideLabel(name string) bool {
 // aren't checked. A replay is safe: the comment carries a revert marker keyed
 // by the event, is posted once, and goes out before the revert.
 //
+// A pipeline label on the issue that no standing change explains, as from a
+// repo label rename, is removed the same way (see unexplained).
+//
 // It also returns settings, the ID of the newest change to a model or
 // effort label (OverrideLabel) that stands, as standing judges it, or 0 if
 // there is none: a trusted user's or the App's, but no untrusted change and
@@ -156,7 +160,9 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 
 	r := labelRules{c: c, owner: owner, repo: repo, number: number, appSlug: appSlug, trust: trust, verdicts: map[string]bool{}}
 	marker, markerAt := latest.to, latest.at
+	given := labels
 	labels = slices.Clone(labels)
+	settled := map[string]bool{} // whether each label is on, by lowercase name, after settle
 	var stages []string
 	var override, last *gogithub.Timeline
 	overrideAt, lastAt, settingsAt := -1, -1, -1
@@ -168,6 +174,7 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 		if err != nil {
 			return nil, nil, 0, wrap(err)
 		}
+		settled[strings.ToLower(l.name)] = on
 		if has := slices.ContainsFunc(labels, func(x string) bool { return strings.EqualFold(x, l.name) }); on && !has {
 			labels = append(labels, l.name)
 		} else if !on && has {
@@ -206,6 +213,9 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 		if at > lastAt {
 			last, lastAt = e, at
 		}
+	}
+	if labels, err = r.unexplained(ctx, labels, given, states, settled, reverted); err != nil {
+		return nil, nil, 0, wrap(err)
 	}
 	if override != nil {
 		return labels, []LabelEvent{{Kind: LabelOverride, Stages: stages, Marker: marker, By: override.GetActor().GetLogin(),
@@ -365,4 +375,124 @@ func (r *labelRules) settle(ctx context.Context, l *labelState, reverted map[str
 	}
 	logr.Infof("reverted %s's change to %s on %s/%s#%d", who, l.name, r.owner, r.repo, r.number)
 	return want, acc, accAt, nil
+}
+
+// unexplained removes, with a revert comment, each pipeline label in given
+// that the timeline says is off once settle is done (settled), whether no
+// event names it or the last change that stands removed it. It returns labels
+// without the labels it removed or found gone.
+//
+// Such a label comes from a repo label rename (#118). A rename puts the new
+// name on every issue that has the label and adds nothing to their
+// timelines, so a write collaborator who isn't trusted could rename an
+// unguarded label to a pipeline one, or one pipeline label to another. What
+// GitHub reports, as far as is known:
+//
+//   - No issue event records a label rename. The timeline's renamed event is
+//     a change of the issue's title (GitHub Docs, "Issue event types").
+//   - A labeled or unlabeled event's label has only a name and a color, with
+//     no ID or URL as a live label has (GitHub Docs, "Issue event types";
+//     go-github's Timeline.Label). That suggests the event keeps the name the
+//     label had then, and a third-party report says refetched events keep the
+//     old name (iFixit/pulldasher#522). GitHub doesn't document it, and it
+//     hasn't been checked by hand on a scratch repo.
+//
+// So both ways are handled, failing closed wherever the timeline can tell:
+//
+//   - Old events keep the old name (githubtest.RenameLabel): the new name is
+//     on the issue with nothing on the timeline to explain it, and is
+//     removed here.
+//   - Old events take the new name (githubtest.RenameLabelInEvents): the
+//     rename looks like an add of the new name by whoever added the old one.
+//     An untrusted user's add is reverted by settle, and a stage label that
+//     disagrees with the latest transition marker is reported and put back.
+//     A rename of a label that the App or a trusted user added can't be told
+//     from their own add, so it stands: the one gap left.
+//
+// A label renamed away, which the timeline says is on but the issue doesn't
+// have, is left as before: CheckLabels keeps it in labels, as for a read made
+// before the change. Putting it on the issue again would also re-create a
+// pipeline label the owner deleted, on every issue that ever had it.
+//
+// given is the issue's labels as the caller read them, before the timeline,
+// so a change made in between can make a label look unexplained. So before
+// it removes any, unexplained reads the issue's labels again, then the
+// timeline. A label still on the issue, with no event for it since the first
+// timeline read, is on with nothing to explain it. A label with a new event
+// is left to the next pass, and one that's gone is dropped from labels.
+//
+// Labels set by hand before issuedog adopted an issue have their labeled
+// events like any other, so this doesn't touch them. The revert key is the
+// label's lowercase name, URL-escaped, then "@" and the ID of its latest
+// event on the timeline, or 0. It holds across a replay, and is new once the
+// App's removal is on the timeline.
+func (r *labelRules) unexplained(ctx context.Context, labels, given []string, states map[string]*labelState, settled, reverted map[string]bool) ([]string, error) {
+	var suspects []string
+	for _, x := range given {
+		if pipelineLabel(x) && !settled[strings.ToLower(x)] {
+			suspects = append(suspects, x)
+		}
+	}
+	if len(suspects) == 0 {
+		return labels, nil
+	}
+	drop := func(name string) {
+		labels = slices.DeleteFunc(labels, func(x string) bool { return strings.EqualFold(x, name) })
+	}
+	issue, _, err := r.c.Issues.Get(ctx, r.owner, r.repo, r.number)
+	if err != nil {
+		return nil, fmt.Errorf("read the labels of %s/%s#%d again: %w", r.owner, r.repo, r.number, err)
+	}
+	var still []string
+	for _, x := range suspects {
+		i := slices.IndexFunc(issue.Labels, func(l *gogithub.Label) bool { return strings.EqualFold(l.GetName(), x) })
+		if i < 0 {
+			drop(x)
+			continue
+		}
+		still = append(still, issue.Labels[i].GetName())
+	}
+	if len(still) == 0 {
+		return labels, nil
+	}
+	timeline, err := r.c.TimelineSince(ctx, r.owner, r.repo, r.number, time.Time{})
+	if err != nil {
+		return nil, fmt.Errorf("read the timeline of %s/%s#%d again: %w", r.owner, r.repo, r.number, err)
+	}
+	for _, x := range still {
+		had, latest := 0, int64(0)
+		if l := states[strings.ToLower(x)]; l != nil {
+			had, latest = len(l.events), l.latest().GetID()
+		}
+		n := 0
+		for _, e := range timeline {
+			if (e.GetEvent() == "labeled" || e.GetEvent() == "unlabeled") && strings.EqualFold(e.GetLabel().GetName(), x) {
+				n++
+			}
+		}
+		if n != had {
+			logr.Debugf("%s on %s/%s#%d changed while its labels were checked; the next pass checks it", x, r.owner, r.repo, r.number)
+			continue
+		}
+		key := url.QueryEscape(strings.ToLower(x)) + "@" + strconv.FormatInt(latest, 10)
+		marker, err := FormatMarker(Marker{Kind: "revert", Fields: map[string]string{"key": key}})
+		if err != nil {
+			return nil, fmt.Errorf("revert %s on %s/%s#%d: %w", x, r.owner, r.repo, r.number, err)
+		}
+		if !reverted[key] {
+			// The label name is someone else's text, so a marker in it is escaped (§5.1).
+			body := fmt.Sprintf("I removed `%s`: no change by a trusted user or the App explains it, so it may have come from a renamed repo label. "+
+				"Only trusted users can change pipeline labels.\n\n%s", Escape(x), marker)
+			if _, _, err := r.c.Issues.CreateComment(ctx, r.owner, r.repo, r.number, gogithub.IssueCommentRequest{Body: body}); err != nil {
+				return nil, fmt.Errorf("comment on removal of %s from %s/%s#%d: %w", x, r.owner, r.repo, r.number, err)
+			}
+		}
+		resp, err := r.c.Issues.RemoveLabelForIssue(ctx, r.owner, r.repo, r.number, x)
+		if err != nil && (resp == nil || resp.StatusCode != http.StatusNotFound) {
+			return nil, fmt.Errorf("remove %s from %s/%s#%d: %w", x, r.owner, r.repo, r.number, err)
+		}
+		drop(x)
+		logr.Infof("removed %s from %s/%s#%d: no trusted change explains it", x, r.owner, r.repo, r.number)
+	}
+	return labels, nil
 }

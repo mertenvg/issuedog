@@ -68,6 +68,10 @@ func TestCheckLabels(t *testing.T) {
 		return "The stage labels didn't match this issue's latest transition, to `ready`, so I've set them to match. They were: " +
 			were + ".\n\n<!-- issuedog:error kind=disagreement key=" + key + " -->"
 	}
+	renamed := func(label, key string) string {
+		return "I removed `" + label + "`: no change by a trusted user or the App explains it, so it may have come from a renamed repo label. " +
+			"Only trusted users can change pipeline labels.\n\n<!-- issuedog:revert key=" + key + " -->"
+	}
 	tests := []struct {
 		name  string
 		setup func(testing.TB) *githubtest.Fake
@@ -271,6 +275,33 @@ func TestCheckLabels(t *testing.T) {
 				f.AddLabel(1, "owner", "verifier-effort:low")
 			}),
 			labels: []string{"effort:max", "model:opus", "stage:ready", "verifier-effort:low", "verifier-model:opus"}},
+		{name: "a stage label a repo label rename put on is removed, and no disagreement is reported",
+			setup: atReady(func(_ testing.TB, f *githubtest.Fake) {
+				f.AddLabel(1, "mallory", "foo")
+				f.RenameLabel("foo", "stage:done")
+			}),
+			writes:   []string{"POST /issues/1/comments", "DELETE /issues/1/labels/stage:done"},
+			comments: []string{renamed("stage:done", "stage%3Adone@0")},
+			labels:   []string{"stage:ready"}},
+		{name: "an override is recorded beside a renamed label that's removed",
+			setup: atReady(func(t testing.TB, f *githubtest.Fake) {
+				labelEvent(t, f.AddLabel(1, "owner", "stage:held"), 9002)
+				f.AddLabel(1, "mallory", "foo")
+				f.RenameLabel("foo", "priority:p0")
+			}),
+			writes: []string{"POST /issues/1/comments", "DELETE /issues/1/labels/priority:p0", "POST /issues/1/comments", "DELETE /issues/1/labels/stage:ready"},
+			comments: []string{renamed("priority:p0", "priority%3Ap0@0"),
+				overridden("stage:held", "from=ready to=held at=ready reason=owner by=owner event=9002")},
+			labels: []string{"stage:held"}},
+		{name: "a disagreement is reported beside a renamed stage label that's removed",
+			setup: atReady(func(t testing.TB, f *githubtest.Fake) {
+				labelEvent(t, f.RemoveLabel(1, "owner", "stage:ready"), 9002)
+				f.AddLabel(1, "mallory", "foo")
+				f.RenameLabel("foo", "stage:verifying")
+			}),
+			writes:   []string{"POST /issues/1/comments", "DELETE /issues/1/labels/stage:verifying", "POST /issues/1/comments", "POST /issues/1/labels"},
+			comments: []string{renamed("stage:verifying", "stage%3Averifying@0"), disagreement("none", "9002")},
+			labels:   []string{"stage:ready"}, errors: 1},
 		{name: "labels that agree are left alone",
 			setup:  atReady(func(testing.TB, *githubtest.Fake) {}),
 			labels: []string{"stage:ready"}},

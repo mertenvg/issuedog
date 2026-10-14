@@ -40,9 +40,16 @@ func (f *Fake) RemoveLabel(number int, login, name string) int64 {
 }
 
 // RenameLabel renames a label, matched ignoring case, as the owner can in
-// the repo's settings: in the repo and on every issue that has it. Past
-// labeled and unlabeled events keep the name they had.
-func (f *Fake) RenameLabel(from, to string) {
+// the repo's settings: in the repo and on every issue that has it. No event
+// says so, and past labeled and unlabeled events keep the name they had, as
+// GitHub is believed to (see github.CheckLabels).
+func (f *Fake) RenameLabel(from, to string) { f.rename(from, to, false) }
+
+// RenameLabelInEvents is RenameLabel, but past labeled and unlabeled events
+// take the new name too: the other way GitHub might report a rename.
+func (f *Fake) RenameLabelInEvents(from, to string) { f.rename(from, to, true) }
+
+func (f *Fake) rename(from, to string, events bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, l := range f.labels {
@@ -57,6 +64,11 @@ func (f *Fake) RenameLabel(from, to string) {
 			}
 		}
 		slices.SortFunc(is.Labels, func(a, b *gogithub.Label) int { return strings.Compare(a.GetName(), b.GetName()) })
+		for _, e := range is.labelEvents {
+			if events && strings.EqualFold(e.GetLabel().GetName(), from) {
+				e.Label = &gogithub.Label{Name: to}
+			}
+		}
 	}
 }
 
