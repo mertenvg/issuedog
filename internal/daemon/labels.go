@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -10,6 +11,11 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/logr/v2"
 )
+
+// ErrLabelsHeld is wrapped by CheckLabels' error for an issue with a label
+// held back: one with no event to explain it yet. Iterate skips the rest of
+// step 1 and Work for the issue, and reads it again next pass.
+var ErrLabelsHeld = errors.New("labels held back until their events explain them, or they are removed")
 
 // CheckLabels applies the label rules (SPEC §5.1) to the issue s and acts on
 // what github.CheckLabels finds. It must run before any Transition on s.
@@ -35,13 +41,25 @@ import (
 // an Unfinished disagreement; an error comment is posted once per key. The
 // writes are added to s, and s.SettingsEvent is set. dirty is as for
 // state.Derive.
+//
+// A pipeline label that nothing on the timeline explains yet, whose events
+// may be late or which a repo label rename may have put on, is held back
+// (github.CheckLabels). Then nothing else is acted on, and the error wraps
+// ErrLabelsHeld: the caller acts on nothing of s, and reads it again later.
 func (a *Applier) CheckLabels(ctx context.Context, s *github.Snapshot, trust github.Trust, dirty func(int64) bool) error {
-	labels, events, settings, err := a.Client.CheckLabels(ctx, a.Owner, a.Repo, s.Number, s.Labels, a.AppSlug, trust, dirty)
+	seen := a.Unexplained
+	if seen == nil {
+		seen = &a.unexplained
+	}
+	labels, events, settings, held, err := a.Client.CheckLabels(ctx, a.Owner, a.Repo, s.Number, s.Labels, a.AppSlug, trust, dirty, seen)
 	if err != nil {
 		return fmt.Errorf("labels of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
 	}
 	// CheckLabels may have reverted labels since s was read.
 	s.Labels, s.SettingsEvent = labels, settings
+	if len(held) > 0 {
+		return fmt.Errorf("labels of %s/%s#%d: %v: %w", a.Owner, a.Repo, s.Number, held, ErrLabelsHeld)
+	}
 	for _, ev := range events {
 		to, ok := state.ParseLabel(ev.Label)
 		if ev.Kind == github.LabelOverride && ok {

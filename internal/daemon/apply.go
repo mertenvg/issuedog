@@ -27,8 +27,12 @@ type Applier struct {
 	// Touched, if set, is told of each issue that a command on another
 	// issue may write to, such as a descendant of a /hold, before it does.
 	Touched func(number int)
+	// Unexplained, if set, is the memory of unexplained labels CheckLabels
+	// keeps between passes. If nil, the Applier keeps its own.
+	Unexplained *github.Unexplained
 
-	histories histories // see Dirty
+	histories   histories // see Dirty
+	unexplained github.Unexplained
 }
 
 // Move is one transition to apply.

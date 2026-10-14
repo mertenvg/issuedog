@@ -102,7 +102,9 @@ func (d *Daemon) Run(ctx context.Context) {
 // then runs step 1 on them and on every issue at spec-review, whose 👍s
 // change no updated_at (plan #5, assumption 7). Last it hands Work the
 // issues ready for it. It returns the errors of the issues it couldn't read
-// or run step 1 on, which the next Iterate reads again.
+// or run step 1 on, which the next Iterate reads again. An issue whose
+// labels CheckLabels holds back (ErrLabelsHeld) is no error: like a touched
+// issue, it gets nothing more this pass, and is read again on the next.
 func (d *Daemon) Iterate(ctx context.Context) error {
 	if d.snaps == nil {
 		d.snaps, d.inputs, d.stale = map[int]*github.Snapshot{}, map[int][]github.Comment{}, map[int]bool{}
@@ -156,6 +158,12 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		in, err := d.Step.Run(ctx, s)
 		if err == nil {
 			err = d.Step.ReviewVisit(ctx, s)
+		}
+		if errors.Is(err, ErrLabelsHeld) {
+			// Like a touched issue: nothing more this pass, and read again.
+			logr.Infof("%s/%s#%d waits for its next pass: %v", d.Step.Owner, d.Step.Repo, n, err)
+			touched[n] = true
+			continue
 		}
 		if err != nil {
 			errs = append(errs, err)
