@@ -420,7 +420,8 @@ func outcome(raw []byte) (failed bool, text string) {
 // leaves the lease as end or finish left it, for the next pass. Nor is an
 // issue whose labels CheckLabels holds back: the error wraps
 // ErrLabelsHeld, and the lease and the result stay as they are, for a
-// later pass to apply once the labels are explained or removed.
+// later pass to apply once the labels are explained, or left out after
+// github.HoldBound.
 func (r *Runs) applyLease(ctx context.Context, l Lease, st Stage, raw []byte, out json.RawMessage) error {
 	err := r.apply(ctx, l, st, raw, out)
 	var ending *endError

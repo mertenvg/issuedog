@@ -2,12 +2,15 @@ package daemon_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/mertenvg/issuedog/internal/config"
+	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
@@ -34,91 +37,208 @@ func (g *rig) pass() {
 	}
 }
 
+// specApplied reports whether issue n is at spec-review with run's result.
+func specApplied(f *githubtest.Fake, n int, run string, answer int64) bool {
+	is := f.State().Issues[n-1]
+	return slices.Contains(is.Labels, "stage:spec-review") &&
+		slices.ContainsFunc(is.Comments, func(c githubtest.CommentState) bool { return c.Body == specWritten(run, answer) })
+}
+
 // A label a rename puts on during a run holds the run's apply back, with
-// its lease and result kept, for as long as the label is held back: no
-// failed apply, no attempt and no cap error, even at max_attempts 1. Once
-// the label is removed, the result is applied.
-func TestHeldLabelDuringApplyWaits(t *testing.T) {
+// its lease and result kept, uncounted, but for github.HoldBound only:
+// then the result is applied with the label left out, with no attempt and
+// no cap error, even at max_attempts 1. The label is removed later.
+func TestHeldLabelDuringApplyWaitsBriefly(t *testing.T) {
 	for _, max := range []int{1, 3} {
 		t.Run(fmt.Sprintf("max_attempts %d", max), func(t *testing.T) {
 			f, g, answer := heldRig(t, max)
 			g.stage.during = func() { f.RenameLabel("foo", "priority:p0") }
 			g.pass()
-			for i := range 6 {
-				on := slices.Contains(f.State().Issues[0].Labels, "priority:p0")
-				l := g.lease()
-				switch {
-				case on && (l.RunID != "run1" || l.Failed || l.ApplyFailures != 0):
-					t.Fatalf("pass %d: lease %+v while priority:p0 is held back; want run1's, kept as it was", i, l)
-				case on && !slices.Contains(g.leftovers(), "state/runs/run1.json"):
-					t.Fatalf("pass %d: left %v; want run1's result kept", i, g.leftovers())
+			for _, wait := range []time.Duration{0, 10 * time.Second, github.HoldBound - 10*time.Second - time.Second} {
+				f.Advance(wait)
+				if wait > 0 {
+					g.pass()
 				}
-				if g.runs() != 1 || len(errorMarkers(f, 1)) != 0 {
-					t.Fatalf("pass %d: %d runs, errors %q; want one run and no error", i, g.runs(), errorMarkers(f, 1))
+				if l := g.lease(); l.RunID != "run1" || l.Failed || l.ApplyFailures != 0 || !slices.Contains(g.leftovers(), "state/runs/run1.json") {
+					t.Fatalf("%v into the hold: lease %+v, left %v; want run1's lease and result kept as they were", wait, l, g.leftovers())
 				}
-				f.Advance(2 * time.Minute)
-				g.pass()
 			}
-			is := f.State().Issues[0]
-			if !slices.Equal(is.Labels, []string{"stage:spec-review"}) || !slices.ContainsFunc(is.Comments, func(c githubtest.CommentState) bool {
-				return c.Body == specWritten("run1", answer)
-			}) {
-				t.Errorf("labels %q; want priority:p0 removed and run1's result applied, to spec-review", is.Labels)
+			f.Advance(time.Second)
+			g.pass()
+			if !specApplied(f, 1, "run1", answer) || !slices.Contains(f.State().Issues[0].Labels, "priority:p0") {
+				t.Fatalf("labels %q at the end of the hold; want run1 applied, priority:p0 left out but still on", f.State().Issues[0].Labels)
 			}
 			if g.runs() != 1 || len(errorMarkers(f, 1)) != 0 || len(g.leftovers()) != 0 {
 				t.Errorf("%d runs, errors %q, left %v; want one run, no error, and nothing left", g.runs(), errorMarkers(f, 1), g.leftovers())
+			}
+			f.Advance(github.UnexplainedWait)
+			g.pass()
+			if slices.Contains(f.State().Issues[0].Labels, "priority:p0") {
+				t.Errorf("labels %q after the wait; want priority:p0 removed", f.State().Issues[0].Labels)
 			}
 		})
 	}
 }
 
-// An issue with a label held back starts no run, and uses no attempt,
-// until the label is removed.
-func TestHeldLabelStartsNoRun(t *testing.T) {
+// An issue with a label held back starts no run, and uses no attempt, for
+// github.HoldBound; then it runs with the label left out of its settings.
+func TestHeldLabelStartsNoRunWhileHeld(t *testing.T) {
 	f, g, answer := heldRig(t, 1)
-	f.RenameLabel("foo", "priority:p0")
-	for i := range 3 {
-		if i > 0 {
-			f.Advance(2 * time.Minute)
-		}
+	f.RenameLabel("foo", "effort:max")
+	for _, wait := range []time.Duration{0, 10 * time.Second, github.HoldBound - 10*time.Second - time.Second} {
+		f.Advance(wait)
 		g.pass()
 		if g.runs() != 0 || g.lease().RunID != "" {
-			t.Fatalf("pass %d: %d runs, lease %+v; want no run while priority:p0 is held back", i, g.runs(), g.lease())
+			t.Fatalf("%v into the hold: %d runs, lease %+v; want no run", wait, g.runs(), g.lease())
 		}
 	}
-	f.Advance(2 * time.Minute)
+	f.Advance(time.Second)
 	g.pass()
-	is := f.State().Issues[0]
-	if g.runs() != 1 || !slices.Equal(is.Labels, []string{"stage:spec-review"}) || len(errorMarkers(f, 1)) != 0 {
-		t.Errorf("%d runs, labels %q, errors %q; want priority:p0 removed, then one run, applied", g.runs(), is.Labels, errorMarkers(f, 1))
+	if g.runs() != 1 || !specApplied(f, 1, "run1", answer) || len(errorMarkers(f, 1)) != 0 {
+		t.Fatalf("%d runs, labels %q, errors %q; want one run, applied, with no error", g.runs(), f.State().Issues[0].Labels, errorMarkers(f, 1))
 	}
-	if last := is.Comments[len(is.Comments)-1].Body; last != specWritten("run1", answer) {
-		t.Errorf("newest comment %q; want run1's result", last)
+	var l daemon.Lease
+	if err := json.Unmarshal([]byte(g.file("lease.1")), &l); err != nil {
+		t.Fatal(err)
+	}
+	if l.Effort == "max" {
+		t.Errorf("the run's lease %+v took its effort from the unexplained effort:max", l)
 	}
 }
 
 // While one issue's lease waits on a held label, no other issue's run
-// starts, since there's one lease; once it's applied, the next runs.
-func TestHeldLeaseHoldsOtherRuns(t *testing.T) {
-	f, g, _ := heldRig(t, 3)
-	interview(f) // issue 2
+// starts, as there's one lease, but for github.HoldBound only.
+func TestHeldLeaseHoldsOtherRunsBriefly(t *testing.T) {
+	f, g, answer := heldRig(t, 3)
+	answer2 := interview(f) // issue 2
 	g.stage.during = func() { f.RenameLabel("foo", "priority:p0") }
 	g.pass() // issue 1's run, held back at its apply
 	g.stage.during = nil
-	for i := range 3 {
+	f.Advance(github.HoldBound - time.Second)
+	g.pass()
+	if g.runs() != 1 || g.lease().RunID != "run1" {
+		t.Fatalf("%d runs, lease %+v within the hold; want issue 2 to wait for run1's apply", g.runs(), g.lease())
+	}
+	f.Advance(time.Second)
+	g.pass()
+	if g.runs() != 2 || !specApplied(f, 1, "run1", answer) || !specApplied(f, 2, "run2", answer2) {
+		t.Errorf("%d runs, labels %q and %q at the end of the hold; want run1 applied, then run2 on issue 2",
+			g.runs(), f.State().Issues[0].Labels, f.State().Issues[1].Labels)
+	}
+}
+
+// A label renamed to a new pipeline name every four minutes, while a run's
+// lease waits on it, holds stage work up for github.HoldBound only: the
+// result is applied, and the other issue runs.
+func TestRenamedAgainAndAgainDoesNotStall(t *testing.T) {
+	f, g, answer := heldRig(t, 3)
+	answer2 := interview(f) // issue 2
+	g.stage.during = func() { f.RenameLabel("foo", "scope:z0") }
+	g.pass()
+	g.stage.during = nil
+	cur := "scope:z0"
+	for minute := 1; minute <= 20; minute++ {
+		if minute%4 == 0 {
+			next := fmt.Sprintf("scope:z%d", minute)
+			f.RenameLabel(cur, next)
+			cur = next
+		}
 		f.Advance(time.Minute)
 		g.pass()
-		if g.runs() != 1 || g.lease().RunID != "run1" {
-			t.Fatalf("pass %d: %d runs, lease %+v; want issue 2 to wait for run1's apply", i, g.runs(), g.lease())
+		if minute == 1 && (g.runs() != 2 || !specApplied(f, 1, "run1", answer) || !specApplied(f, 2, "run2", answer2)) {
+			t.Fatalf("a minute on: %d runs; want run1 applied and issue 2 run", g.runs())
 		}
 	}
-	for range 4 {
-		f.Advance(time.Minute)
-		g.pass()
+	if !slices.Contains(f.State().Issues[0].Labels, cur) || len(errorMarkers(f, 1)) != 0 {
+		t.Errorf("labels %q, errors %q; want %s left on, never removed, and no error", f.State().Issues[0].Labels, errorMarkers(f, 1), cur)
 	}
-	if g.runs() != 2 || !slices.Equal(f.State().Issues[0].Labels, []string{"stage:spec-review"}) ||
-		!slices.Equal(f.State().Issues[1].Labels, []string{"stage:spec-review"}) {
-		t.Errorf("%d runs, labels %q and %q; want both runs applied", g.runs(), f.State().Issues[0].Labels, f.State().Issues[1].Labels)
+}
+
+// One label on every issue, renamed to a new pipeline name every four
+// minutes, holds each issue back once, and Work gets every issue on every
+// pass after that, without the label: no repo-wide stall.
+func TestRepoWideRenamesDoNotStall(t *testing.T) {
+	f := newFake(t)
+	for range 4 {
+		n := fileAt(f, "ready", "do it", "priority:p2")
+		f.AddLabel(n, "mallory", "foo")
+	}
+	f.Advance(time.Hour)
+	d := newDaemon(t, f, newOrigin(t), nil)
+	var got [][]daemon.Ready
+	d.Work = func(_ context.Context, rs []daemon.Ready) error { got = append(got, rs); return nil }
+	iterate(t, d)
+	cur := "foo"
+	for minute := range 20 {
+		if minute%4 == 0 {
+			next := fmt.Sprintf("scope:z%d", minute)
+			f.RenameLabel(cur, next)
+			cur = next
+			if minute == 0 {
+				for n := 1; n <= 4; n++ {
+					f.AddComment(n, "mallory", "poke")
+				}
+			}
+		}
+		f.Advance(time.Minute)
+		iterate(t, d)
+		rs := got[len(got)-1]
+		if minute > 0 && len(rs) != 4 {
+			t.Errorf("minute %d: Work got %d issues, want all 4", minute, len(rs))
+		}
+		for _, r := range rs {
+			if slices.ContainsFunc(r.S.Labels, func(l string) bool { return strings.HasPrefix(l, "scope:") }) {
+				t.Errorf("minute %d: Work got #%d with a renamed label: %q", minute, r.S.Number, r.S.Labels)
+			}
+		}
+	}
+	if w := f.Writes(); len(w) != 0 {
+		t.Errorf("writes = %+v, want none, as no name stays five minutes", w)
+	}
+}
+
+// A type label or a stage label left out is acted on nowhere: Work gets the
+// issue with no type from it, and a stage label left out beside the one the
+// marker names gets no repair, nor a state error, until it's removed.
+func TestLeftOutLabelsAreNotActedOn(t *testing.T) {
+	for name, to := range map[string]string{"type": "type:epic", "stage": "stage:done"} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t)
+			fileAt(f, "ready", "do it", "priority:p2")
+			f.AddLabel(1, "mallory", "foo")
+			f.Advance(time.Hour)
+			d := newDaemon(t, f, newOrigin(t), nil)
+			var got []*github.Snapshot
+			d.Work = func(_ context.Context, rs []daemon.Ready) error {
+				for _, r := range rs {
+					got = append(got, r.S)
+				}
+				return nil
+			}
+			iterate(t, d)
+			f.RenameLabel("foo", to)
+			f.AddComment(1, "mallory", "poke")
+			for range 5 {
+				f.Advance(time.Minute)
+				iterate(t, d)
+			}
+			s := got[len(got)-1]
+			if slices.Contains(s.Labels, to) || s.Type != "" {
+				t.Errorf("Work got labels %q, type %q; want %s left out, and no type", s.Labels, s.Type, to)
+			}
+			if w := f.Writes(); len(w) != 0 {
+				t.Errorf("writes = %+v before the wait is up; want none", w)
+			}
+			f.Advance(time.Minute)
+			iterate(t, d)
+			var paths []string
+			for _, w := range f.Writes() {
+				paths = append(paths, w.Method+" "+w.Path)
+			}
+			if want := []string{"POST /issues/1/comments", "DELETE /issues/1/labels/" + to}; !slices.Equal(paths, want) {
+				t.Errorf("writes = %q after the wait; want only the removal, %q", paths, want)
+			}
+		})
 	}
 }
 
@@ -150,7 +270,7 @@ func TestClosedIssueForgetsUnexplained(t *testing.T) {
 			tt.back(f)
 			iterate(t, d)
 			if !slices.Contains(f.State().Issues[0].Labels, "priority:p0") || len(f.Writes()) != 0 {
-				t.Fatalf("labels %q, writes %+v once it's back; want priority:p0 held back again, nothing written", f.State().Issues[0].Labels, f.Writes())
+				t.Fatalf("labels %q, writes %+v once it's back; want priority:p0 kept for now, nothing written", f.State().Issues[0].Labels, f.Writes())
 			}
 			f.Advance(github.UnexplainedWait)
 			iterate(t, d)

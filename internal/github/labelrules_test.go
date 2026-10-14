@@ -306,26 +306,31 @@ func TestCheckLabelsDateFallback(t *testing.T) {
 	}))
 	seen := &Unexplained{}
 	start := time.Now()
+	// Held back at first; left out once the hold is up, four minutes on; and
+	// removed six minutes on. Had the first time been other than the local
+	// clock's, the second pass would have removed it, or held it back.
 	for i, tt := range []struct {
 		date   string
 		writes int
+		held   bool
 	}{
-		{"", 0},
-		{start.Add(4 * time.Minute).UTC().Format(http.TimeFormat), 0},
-		{start.Add(6 * time.Minute).UTC().Format(http.TimeFormat), 2},
+		{"", 0, true},
+		{start.Add(4 * time.Minute).UTC().Format(http.TimeFormat), 0, false},
+		{start.Add(6 * time.Minute).UTC().Format(http.TimeFormat), 2, false},
 	} {
 		date = tt.date
 		var logs bytes.Buffer
 		stop := logr.AddWriter(&logs, logr.WithFilter(logr.D))
-		_, _, _, held, err := c.CheckLabels(context.Background(), "o", "r", 7, []string{"priority:p0"}, "issuedog", fakeTrust{},
+		labels, _, _, held, err := c.CheckLabels(context.Background(), "o", "r", 7, []string{"priority:p0"}, "issuedog", fakeTrust{},
 			func(int64) bool { return false }, seen)
 		logr.Wait()
 		stop()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(writes) != tt.writes || (tt.writes == 0) != (len(held) == 1) {
-			t.Errorf("pass %d: writes %q, held %q; want %d writes, and the label held only with none", i, writes, held, tt.writes)
+		if len(writes) != tt.writes || (len(held) == 1) != tt.held || (len(labels) == 1) != tt.held {
+			t.Errorf("pass %d: writes %q, held %q, labels %q; want %d writes, held back %v, and the label returned only if so",
+				i, writes, held, labels, tt.writes, tt.held)
 		}
 		if fell := strings.Contains(logs.String(), "the local clock times"); fell != (tt.date == "") {
 			t.Errorf("pass %d: logs = %q, want the fallback logged only with no Date", i, logs.String())

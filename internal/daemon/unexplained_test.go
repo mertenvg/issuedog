@@ -30,9 +30,10 @@ func watchWork(d *daemon.Daemon) *[][]string {
 }
 
 // A label a rename put on is removed once it has stayed unexplained for
-// github.UnexplainedWait, however busy the issue is meanwhile, and until
-// then the daemon reads the issue again each pass and does nothing else
-// with it: Work never gets it with the label.
+// github.UnexplainedWait, however busy the issue is meanwhile. The issue
+// is held back for its first pass only, as the passes are further apart
+// than github.HoldBound, and after that Work gets it with the label left
+// out: Work never gets it with the label.
 func TestIterateRemovesUnexplainedLabel(t *testing.T) {
 	every := func(n int, first, gap time.Duration) []time.Duration {
 		waits := []time.Duration{first}
@@ -95,8 +96,9 @@ func TestIterateRemovesUnexplainedLabel(t *testing.T) {
 				switch {
 				case slices.Contains(got, "priority:p0"):
 					t.Errorf("pass %d: Work got issue 1 with priority:p0: %q", i, got)
-				case on && got != nil:
-					t.Errorf("pass %d: Work got issue 1 while priority:p0 is held back: %q", i, got)
+				case held >= 0 && i > held && got == nil:
+					// Every gap is longer than the hold, so it's held back once.
+					t.Errorf("pass %d: Work didn't get issue 1, held back past github.HoldBound", i)
 				case held >= 0 && since < github.UnexplainedWait-10*time.Second && !on:
 					t.Errorf("pass %d: priority:p0 removed %v after it was first held back, want %v", i, since, github.UnexplainedWait)
 				}
@@ -117,6 +119,28 @@ func TestIterateRemovesUnexplainedLabel(t *testing.T) {
 				t.Errorf("%d revert comments, want 1", reverts)
 			}
 		})
+	}
+}
+
+// An issue with a label left out is read again each pass, though nothing
+// changes its updated_at, so the label is removed in time.
+func TestIterateRereadsLeftOutLabels(t *testing.T) {
+	f := newFake(t)
+	fileAt(f, "ready", "do it", "priority:p2")
+	f.AddLabel(1, "mallory", "foo")
+	fileAt(f, "ready", "do it too")
+	f.Advance(time.Hour)
+	d := newDaemon(t, f, newOrigin(t), nil)
+	iterate(t, d)
+	f.RenameLabel("foo", "priority:p0")
+	f.AddComment(1, "mallory", "poke")
+	f.AddComment(2, "owner", "the newest, which every poll lists again")
+	for range 7 {
+		f.Advance(time.Minute)
+		iterate(t, d)
+	}
+	if slices.Contains(f.State().Issues[0].Labels, "priority:p0") {
+		t.Errorf("labels %q after 7 minutes; want priority:p0 removed", f.State().Issues[0].Labels)
 	}
 }
 

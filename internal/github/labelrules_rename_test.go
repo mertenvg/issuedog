@@ -44,13 +44,18 @@ func (m memory) of(f *githubtest.Fake) *github.Unexplained {
 // from a fresh client and snapshot, and mem's memory of f. It keeps what
 // CheckLabels returns in out, unless out is nil.
 func checkPass(t *testing.T, mem memory, out *checked) func(*githubtest.Fake) error {
+	return checkPassOn(t, 1, mem, out)
+}
+
+// checkPassOn is checkPass on issue n.
+func checkPassOn(t *testing.T, n int, mem memory, out *checked) func(*githubtest.Fake) error {
 	return func(f *githubtest.Fake) error {
 		c := f.Client(t)
-		s, err := c.Snapshot(context.Background(), "o", "r", 1)
+		s, err := c.Snapshot(context.Background(), "o", "r", n)
 		if err != nil {
 			return err
 		}
-		labels, events, _, held, err := c.CheckLabels(context.Background(), "o", "r", 1, s.Labels, "issuedog", ownerTrusted{},
+		labels, events, _, held, err := c.CheckLabels(context.Background(), "o", "r", n, s.Labels, "issuedog", ownerTrusted{},
 			func(int64) bool { return false }, mem.of(f))
 		if err != nil {
 			return err
@@ -269,7 +274,7 @@ func TestCheckLabelsRenames(t *testing.T) {
 				})
 			},
 			labels: []string{"priority:p1"}, held: []string{"priority:p1"}},
-		{name: "a renamed label changed between the second reads is held back",
+		{name: "a renamed label changed between the second reads is left out, not removed",
 			setup: func(f *githubtest.Fake) {
 				f.AddLabel(1, "mallory", "foo")
 				f.RenameLabel("foo", "priority:p0")
@@ -279,8 +284,7 @@ func TestCheckLabelsRenames(t *testing.T) {
 				f.BeforeRequest(isTimeline, func() {
 					f.BeforeRequest(isTimeline, func() { f.RemoveLabel(1, "owner", "priority:p0") })
 				})
-			},
-			returned: []string{"priority:p0"}, held: []string{"priority:p0"}},
+			}},
 		{name: "a renamed label with no events that's gone on the second read is dropped",
 			setup: func(f *githubtest.Fake) {
 				f.AddLabel(1, "mallory", "foo")
@@ -420,7 +424,7 @@ func passes(t *testing.T, f *githubtest.Fake, mem memory, waits []time.Duration,
 func TestCheckLabelsUnexplainedWait(t *testing.T) {
 	f, mem := renamed(t), memory{}
 	held, at := passes(t, f, mem, []time.Duration{0, github.UnexplainedWait - time.Second, time.Second}, nil)
-	if want := [][]string{{"priority:p0"}, {"priority:p0"}, nil}; !reflect.DeepEqual(held, want) || at != 2 {
+	if want := [][]string{{"priority:p0"}, nil, nil}; !reflect.DeepEqual(held, want) || at != 2 {
 		t.Errorf("held = %q, removed by pass %d; want %q, and removed by pass 2", held, at, want)
 	}
 	if w := writesOf(f); !slices.Equal(w, []string{"POST /issues/1/comments", "DELETE /issues/1/labels/priority:p0"}) {
@@ -470,7 +474,7 @@ func TestCheckLabelsUnexplainedForgotten(t *testing.T) {
 			f.AddLabel(1, "mallory", "bar")
 			f.RenameLabel("bar", "priority:p0")
 			held, at := passes(t, f, mem, []time.Duration{0, 2 * time.Minute, github.UnexplainedWait - 2*time.Minute}, nil)
-			if want := [][]string{{"priority:p0"}, {"priority:p0"}, nil}; !reflect.DeepEqual(held, want) || at != 2 {
+			if want := [][]string{{"priority:p0"}, nil, nil}; !reflect.DeepEqual(held, want) || at != 2 {
 				t.Errorf("held = %q, removed by pass %d; want %q, and removed by pass 2", held, at, want)
 			}
 		})
@@ -661,5 +665,125 @@ func TestCheckLabelsRenameErrors(t *testing.T) {
 				t.Errorf("error = %v, want one saying %q that wraps GitHub's", err, tt.want)
 			}
 		})
+	}
+}
+
+// An issue is held back for HoldBound from when it was first found with an
+// unexplained label, not a second longer; after that, the label is left
+// out of the labels returned, and nothing is written.
+func TestCheckLabelsHoldBound(t *testing.T) {
+	f, mem := renamed(t), memory{}
+	for i, tt := range []struct {
+		wait time.Duration
+		held bool
+	}{{0, true}, {github.HoldBound - time.Second, true}, {time.Second, false}, {time.Minute, false}} {
+		f.Advance(tt.wait)
+		var got checked
+		if err := checkPass(t, mem, &got)(f); err != nil {
+			t.Fatal(err)
+		}
+		if (got.held != nil) != tt.held || slices.Contains(got.labels, "priority:p0") != tt.held {
+			t.Errorf("pass %d: held %q, labels %q; want held back %v, and priority:p0 returned only if so", i, got.held, got.labels, tt.held)
+		}
+	}
+	if w := writesOf(f); len(w) != 0 {
+		t.Errorf("writes = %q, want none", w)
+	}
+}
+
+// The hold is timed per issue: an issue first found with an unexplained
+// label is held back even while another, found so earlier, isn't any more.
+func TestCheckLabelsHoldPerIssue(t *testing.T) {
+	f, mem := renamed(t), memory{}
+	f.AddIssue("owner", "Other", "body")
+	if err := checkPass(t, mem, nil)(f); err != nil {
+		t.Fatal(err)
+	}
+	f.Advance(time.Minute)
+	f.LagEvents(2 * time.Second)
+	f.AddLabel(2, appBot, "priority:p1")
+	var one, two checked
+	if err := checkPassOn(t, 1, mem, &one)(f); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkPassOn(t, 2, mem, &two)(f); err != nil {
+		t.Fatal(err)
+	}
+	if one.held != nil || !slices.Equal(two.held, []string{"priority:p1"}) {
+		t.Errorf("held %q on #1 and %q on #2; want #1 past its hold, and #2 held back for its late event", one.held, two.held)
+	}
+}
+
+// A label renamed to a new name every four minutes, so that no name stays
+// for UnexplainedWait, holds the issue back only at first. It's never
+// removed, but it's always left out.
+func TestCheckLabelsRenamedAgainAndAgain(t *testing.T) {
+	f, mem := renamed(t), memory{}
+	cur, names := "priority:p0", []string{"priority:p1", "priority:p0"}
+	for i := range 30 {
+		if i%4 == 3 {
+			next := names[(i/4)%2]
+			f.RenameLabel(cur, next)
+			cur = next
+		}
+		var got checked
+		if err := checkPass(t, mem, &got)(f); err != nil {
+			t.Fatal(err)
+		}
+		if i > 0 && (got.held != nil || slices.Contains(got.labels, cur)) {
+			t.Errorf("minute %d: held %q, labels %q; want %s left out, and nothing held back", i, got.held, got.labels, cur)
+		}
+		f.Advance(time.Minute)
+	}
+	if w := writesOf(f); len(w) != 0 {
+		t.Errorf("writes = %q, want none", w)
+	}
+}
+
+// A label's removal starts again when its events change, so the owner's
+// removing it and adding it back, with the add's event late, isn't removed.
+func TestCheckLabelsOwnerAddsBackInLag(t *testing.T) {
+	f, mem := renamed(t), memory{}
+	if err := checkPass(t, mem, nil)(f); err != nil {
+		t.Fatal(err)
+	}
+	f.Advance(github.UnexplainedWait)
+	f.RemoveLabel(1, "owner", "priority:p0")
+	f.LagEvents(5 * time.Second)
+	f.AddLabel(1, "owner", "priority:p0")
+	if err := checkPass(t, mem, nil)(f); err != nil {
+		t.Fatal(err)
+	}
+	f.Advance(5 * time.Second)
+	var got checked
+	if err := checkPass(t, mem, &got)(f); err != nil {
+		t.Fatal(err)
+	}
+	if w := writesOf(f); len(w) != 0 || !slices.Contains(got.labels, "priority:p0") {
+		t.Errorf("writes %q, labels %q; want the owner's priority:p0 kept", w, got.labels)
+	}
+}
+
+// A stage label that names the latest transition marker's stage is the App's
+// own, explained by the marker: its late event holds nothing back, and it's
+// never left out or removed.
+func TestCheckLabelsMarkerStageExplained(t *testing.T) {
+	f, mem := githubtest.New(t, "o/r", "issuedog"), memory{}
+	f.AddIssue("owner", "Title", "body")
+	f.AddComment(1, appBot, "<!-- issuedog:transition from=intake to=ready run=a -->")
+	f.LagEvents(time.Hour)
+	f.AddLabel(1, appBot, "stage:ready")
+	for _, wait := range []time.Duration{0, time.Minute, github.UnexplainedWait} {
+		f.Advance(wait)
+		var got checked
+		if err := checkPass(t, mem, &got)(f); err != nil {
+			t.Fatal(err)
+		}
+		if got.held != nil || !slices.Equal(got.labels, []string{"stage:ready"}) {
+			t.Errorf("%v on: held %q, labels %q; want stage:ready kept, nothing held back", wait, got.held, got.labels)
+		}
+	}
+	if w := writesOf(f); len(w) != 0 {
+		t.Errorf("writes = %q, want none", w)
 	}
 }

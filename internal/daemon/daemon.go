@@ -173,6 +173,11 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			continue
 		}
 		d.inputs[n] = in
+		if d.Step.unexplainedOn(n) {
+			// Labels left out, which a rename changes no updated_at for:
+			// read again next pass, to remove them in time.
+			d.stale[n] = true
+		}
 	}
 	for n := range touched {
 		delete(d.inputs, n)

@@ -37,7 +37,7 @@ func TestSnapshot(t *testing.T) {
 	}
 	owner := github.Author{Login: "owner", Type: "User"}
 	wantTask := &github.Snapshot{Number: task, Title: "Task", Body: "do it", BodyNode: "I_2", Author: owner, CreatedAt: at(2), UpdatedAt: at(132),
-		Labels: []string{"stage:ready", "type:task"}, Type: "task", Parent: epic, Comments: want}
+		Labels: []string{"stage:ready", "type:task"}, Type: "task", TypeFromLabels: true, Parent: epic, Comments: want}
 	if !reflect.DeepEqual(got, wantTask) {
 		t.Errorf("snapshot with a parent =\n%+v\nwant\n%+v", got, wantTask)
 	}

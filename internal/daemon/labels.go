@@ -20,6 +20,10 @@ func (a *Applier) seen() *github.Unexplained {
 	return &a.unexplained
 }
 
+// unexplainedOn reports whether issue n has unexplained labels, held back or
+// left out, which a later pass must check again.
+func (a *Applier) unexplainedOn(n int) bool { return a.seen().Has(a.Owner, a.Repo, n) }
+
 // forgetLabels forgets issue n's unexplained labels, once it's closed or
 // gone, so the memory of them doesn't outlive it.
 func (a *Applier) forgetLabels(n int) { a.seen().ForgetIssue(a.Owner, a.Repo, n) }
@@ -58,13 +62,19 @@ var ErrLabelsHeld = errors.New("labels held back until their events explain them
 // may be late or which a repo label rename may have put on, is held back
 // (github.CheckLabels). Then nothing else is acted on, and the error wraps
 // ErrLabelsHeld: the caller acts on nothing of s, and reads it again later.
+// That lasts github.HoldBound at most, for each issue: after it, such a
+// label is left out of s.Labels, and s.Type with it, so the caller goes on
+// without acting on it, and the issue is read again each pass until the
+// label is explained or removed.
 func (a *Applier) CheckLabels(ctx context.Context, s *github.Snapshot, trust github.Trust, dirty func(int64) bool) error {
 	labels, events, settings, held, err := a.Client.CheckLabels(ctx, a.Owner, a.Repo, s.Number, s.Labels, a.AppSlug, trust, dirty, a.seen())
 	if err != nil {
 		return fmt.Errorf("labels of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
 	}
-	// CheckLabels may have reverted labels since s was read.
-	s.Labels, s.SettingsEvent = labels, settings
+	// CheckLabels may have reverted labels since s was read, or left out
+	// some it can't explain yet.
+	s.SetLabels(labels)
+	s.SettingsEvent = settings
 	if len(held) > 0 {
 		return fmt.Errorf("labels of %s/%s#%d: %v: %w", a.Owner, a.Repo, s.Number, held, ErrLabelsHeld)
 	}

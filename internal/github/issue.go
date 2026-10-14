@@ -34,6 +34,10 @@ type Snapshot struct {
 	// label that stands, or 0: not read with the issue, but set when the
 	// daemon checks its labels (CheckLabels).
 	SettingsEvent int64
+
+	// TypeFromLabels is set when Type comes from the labels, as the issue has
+	// no issue type, so SetLabels keeps it up to date with them.
+	TypeFromLabels bool
 }
 
 // Comment is one issue comment.
@@ -84,7 +88,7 @@ func (c *Client) Snapshot(ctx context.Context, owner, repo string, number int) (
 		Number: issue.GetNumber(), Closed: issue.GetState() == "closed", Title: issue.GetTitle(),
 		Author:    authorOf(issue.GetUser()),
 		CreatedAt: issue.GetCreatedAt().Time, UpdatedAt: issue.GetUpdatedAt().Time,
-		Type: TypeOf(issue),
+		Type: TypeOf(issue), TypeFromLabels: issue.GetType().GetName() == "",
 	}
 	for _, l := range issue.Labels {
 		s.Labels = append(s.Labels, l.GetName())
@@ -109,12 +113,31 @@ func TypeOf(issue *gogithub.Issue) string {
 	if t := issue.GetType().GetName(); t != "" {
 		return strings.ToLower(t)
 	}
+	var labels []string
 	for _, l := range issue.Labels {
-		if name, ok := strings.CutPrefix(strings.ToLower(l.GetName()), "type:"); ok {
+		labels = append(labels, l.GetName())
+	}
+	return typeOfLabels(labels)
+}
+
+// typeOfLabels is the first type:* label's suffix, in lower case, or "".
+func typeOfLabels(labels []string) string {
+	for _, l := range labels {
+		if name, ok := strings.CutPrefix(strings.ToLower(l), "type:"); ok {
 			return name
 		}
 	}
 	return ""
+}
+
+// SetLabels sets s.Labels to labels, as the label rules (CheckLabels) left
+// them, and s.Type with them when it came from a type:* label rather than
+// the issue type, so a type label they removed or left out gives no type.
+func (s *Snapshot) SetLabels(labels []string) {
+	s.Labels = labels
+	if s.TypeFromLabels {
+		s.Type = typeOfLabels(labels)
+	}
 }
 
 // Reactions lists the reactions to one issue comment, oldest first. It hides
