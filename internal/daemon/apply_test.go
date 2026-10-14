@@ -161,6 +161,16 @@ func TestTransitionLabelGoneMeanwhile(t *testing.T) {
 	}
 }
 
+// With the new label there already, each removal changes the snapshot's
+// labels, which mustn't cut short the list of those to remove.
+func TestTransitionRemovesEveryOtherStageLabel(t *testing.T) {
+	m := daemon.Move{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.ReactionKey(9)}
+	f := run(t, cmdIssue("stage:clarifying", "stage:intake", "stage:planning"), move(t, m, clean))
+	if got := f.State().Issues[0].Labels; !reflect.DeepEqual(got, []string{"stage:clarifying"}) {
+		t.Errorf("labels = %v, want only stage:clarifying", got)
+	}
+}
+
 func TestTransitionOlderKeySetsLatestStage(t *testing.T) {
 	// The command's move is done, but its label and 👍 aren't, and a later
 	// move has happened since. A replay finishes them at the latest stage.
