@@ -153,6 +153,22 @@ func TestCheckLabelsSettings(t *testing.T) {
 	}
 }
 
+// CheckLabels gives settings with an override or a disagreement too.
+func TestCheckLabelsSettingsWithEvents(t *testing.T) {
+	marker := said(2, appBot, "<!-- issuedog:transition from=x to=ready -->")
+	for kind, timeline := range map[LabelEventKind][]ev{
+		LabelOverride:     {added(1, appBot, "stage:ready"), marker, added(3, "owner", "model:opus"), removed(4, "owner", "stage:ready"), added(5, "owner", "stage:held")},
+		LabelDisagreement: {added(1, appBot, "stage:ready"), marker, added(3, "owner", "model:opus"), removed(4, "owner", "stage:ready")},
+	} {
+		t.Run(string(kind), func(t *testing.T) {
+			_, events, settings := checkLabelsAll(t, timeline, func(int64) bool { return false })
+			if len(events) != 1 || events[0].Kind != kind || settings != 3 {
+				t.Errorf("events %+v and settings %d; want one %s, and settings 3, the model label's", events, settings, kind)
+			}
+		})
+	}
+}
+
 func TestOverrideLabel(t *testing.T) {
 	for name, want := range map[string]bool{"model:opus": true, "Verifier-Model:opus": true, "effort:max": true, "VERIFIER-EFFORT:LOW": true,
 		"models:opus": false, "stage:ready": false, "priority:p1": false, "approved": false} {

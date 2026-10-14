@@ -331,6 +331,44 @@ func TestNewStepUsesCurrentModels(t *testing.T) {
 	}
 }
 
+// /model tells a begun Apply's add from the label rules' revert with the
+// trust of the moment, not the one newStep got. owner2 removed
+// model:opus5, then the owner posted /model claude-opus-5-5, whose Apply
+// added it back before a reload dropped the model. Once a reload trusts
+// owner2, that removal was accepted, so the add restores nothing: it's the
+// begun Apply's, which finishes.
+func TestNewStepSettingsUseCurrentTrust(t *testing.T) {
+	const app = "issuedog-dev[bot]"
+	f := githubtest.New(t, "o/r", "issuedog-dev")
+	n := f.AddIssue("owner", "Task", "body")
+	f.SetType(n, "Task")
+	f.AddLabel(n, app, "stage:ready")
+	f.AddComment(n, app, "<!-- issuedog:transition from=intake to=ready run=a -->")
+	f.AddLabel(n, app, "model:opus5")
+	f.AddLabel(n, app, "model:sonnet")
+	f.RemoveLabel(n, "owner2", "model:opus5")
+	f.AddComment(n, "owner", "/model claude-opus-5-5")
+	f.AddLabel(n, app, "model:opus5")
+	c := f.Client(t)
+	st := newStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{"owner": true},
+		func() config.Models { return config.Models{Allowed: []config.Model{{Name: "sonnet"}}} })
+	st.Trust = trustSet{"owner": true, "owner2": true} // a reload
+	s, err := c.Snapshot(context.Background(), "o", "r", n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Run(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	is := f.State().Issues[0]
+	if !slices.Equal(is.Labels, []string{"model:opus5", "stage:ready"}) {
+		t.Errorf("labels = %v, want model:opus5 alone", is.Labels)
+	}
+	if got := is.Comments[1].Reactions; !slices.Equal(got, []string{app + " +1"}) {
+		t.Errorf("the command's reactions = %q, want the App's 👍", got)
+	}
+}
+
 // startDaemon wires /model to the daemon's config of the moment: the
 // startup config's models.allowed applies, then a reload's from main.
 func TestStartDaemonUsesCurrentModels(t *testing.T) {
