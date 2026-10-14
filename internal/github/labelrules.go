@@ -420,6 +420,17 @@ func (u *Unexplained) set(issue string, since map[string]time.Time) {
 	u.since[issue] = since
 }
 
+// unexplainedKey is how Unexplained names an issue.
+func unexplainedKey(owner, repo string, number int) string {
+	return fmt.Sprintf("%s/%s#%d", owner, repo, number)
+}
+
+// ForgetIssue forgets the labels of owner/repo#number, as for an issue that
+// is closed or gone, so its times don't outlive it.
+func (u *Unexplained) ForgetIssue(owner, repo string, number int) {
+	u.set(unexplainedKey(owner, repo, number), nil)
+}
+
 // forget drops label, lowercase, of issue.
 func (u *Unexplained) forget(issue, label string) {
 	u.mu.Lock()
@@ -510,7 +521,7 @@ func (r *labelRules) unexplained(ctx context.Context, labels, given []string, st
 	if seen == nil {
 		seen = &Unexplained{}
 	}
-	issueKey := fmt.Sprintf("%s/%s#%d", r.owner, r.repo, r.number)
+	issueKey := unexplainedKey(r.owner, r.repo, r.number)
 	var suspects []string
 	for _, x := range given {
 		if pipelineLabel(x) && !settled[strings.ToLower(x)] {

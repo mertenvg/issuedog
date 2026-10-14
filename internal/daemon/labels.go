@@ -12,6 +12,18 @@ import (
 	"github.com/mertenvg/logr/v2"
 )
 
+// seen is the memory of unexplained labels: a.Unexplained, or a's own.
+func (a *Applier) seen() *github.Unexplained {
+	if a.Unexplained != nil {
+		return a.Unexplained
+	}
+	return &a.unexplained
+}
+
+// forgetLabels forgets issue n's unexplained labels, once it's closed or
+// gone, so the memory of them doesn't outlive it.
+func (a *Applier) forgetLabels(n int) { a.seen().ForgetIssue(a.Owner, a.Repo, n) }
+
 // ErrLabelsHeld is wrapped by CheckLabels' error for an issue with a label
 // held back: one with no event to explain it yet. Iterate skips the rest of
 // step 1 and Work for the issue, and reads it again next pass.
@@ -47,11 +59,7 @@ var ErrLabelsHeld = errors.New("labels held back until their events explain them
 // (github.CheckLabels). Then nothing else is acted on, and the error wraps
 // ErrLabelsHeld: the caller acts on nothing of s, and reads it again later.
 func (a *Applier) CheckLabels(ctx context.Context, s *github.Snapshot, trust github.Trust, dirty func(int64) bool) error {
-	seen := a.Unexplained
-	if seen == nil {
-		seen = &a.unexplained
-	}
-	labels, events, settings, held, err := a.Client.CheckLabels(ctx, a.Owner, a.Repo, s.Number, s.Labels, a.AppSlug, trust, dirty, seen)
+	labels, events, settings, held, err := a.Client.CheckLabels(ctx, a.Owner, a.Repo, s.Number, s.Labels, a.AppSlug, trust, dirty, a.seen())
 	if err != nil {
 		return fmt.Errorf("labels of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
 	}

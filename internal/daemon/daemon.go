@@ -130,6 +130,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			logr.Infof("%s/%s#%d is gone, deleted or transferred, on two reads with no good one between, so it's dropped: %v", d.Step.Owner, d.Step.Repo, n, err)
 			delete(d.stale, n)
 			delete(d.missing, n)
+			d.Step.forgetLabels(n)
 		case gone(err):
 			// One answer may be wrong, so it's read again next pass.
 			logr.Infof("%s/%s#%d looks gone, deleted or transferred, so it's read again: %v", d.Step.Owner, d.Step.Repo, n, err)
@@ -255,6 +256,7 @@ func (d *Daemon) poll(ctx context.Context) error {
 				delete(d.inputs, n)
 				delete(d.stale, n)
 				delete(d.missing, n) // so a reopened issue starts with no strike
+				a.forgetLabels(n)
 			case changed(d.snaps[n], is):
 				d.stale[n] = true
 			}

@@ -164,13 +164,19 @@ type Runs struct {
 // Work is Daemon.Work. It first finishes a lease a run left, after a
 // restart or a failed apply (resume). Then, unless a usage limit closed
 // the gate, it runs the first issue, by priority then number, whose stage
-// has a Stage with work pending.
+// has a Stage with work pending. A lease whose issue has labels held back
+// (ErrLabelsHeld) waits, and no run starts until it's applied. An issue
+// with labels held back is never ready, so it starts no run either.
 func (r *Runs) Work(ctx context.Context, ready []Ready) error {
 	if !r.swept {
 		r.sweep()
 		r.swept = true
 	}
 	skip, err := r.resume(ctx)
+	if errors.Is(err, ErrLabelsHeld) {
+		// The lease waits to be applied, and no run may start before it is.
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -203,7 +209,8 @@ func (r *Runs) Work(ctx context.Context, ready []Ready) error {
 // result asking for a move the table lacks is no attempt: it gets one
 // state error (Transition), and no run starts until the issue changes
 // (moveKey). A run whose result fails to apply keeps its lease, for the
-// next pass to apply it (applyLease). A failed run logs the end of
+// next pass to apply it (applyLease), as does one whose issue has labels
+// held back, uncounted. A failed run logs the end of
 // claude's stderr.
 //
 // The run's model, effort and fallback models are resolved from the labels
@@ -332,7 +339,10 @@ func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 		// The issue may have changed during the run, so failed reads it again.
 		return true, wrap(r.failed(ctx, st, l, runErr)) // logged there
 	}
-	return true, wrap(r.applyLease(ctx, l, st, raw, out))
+	if err := r.applyLease(ctx, l, st, raw, out); !errors.Is(err, ErrLabelsHeld) {
+		return true, wrap(err)
+	}
+	return true, nil // the lease waits for the next pass to apply it
 }
 
 // stderrTail is how much of claude's stderr a failed run logs: the end.
@@ -407,11 +417,18 @@ func outcome(raw []byte) (failed bool, text string) {
 // ApplyFailures, so the next pass tries again; after loop.max_attempts of
 // them, the run is a failed attempt. A failure to end the run once the
 // result is applied, dropped or blocked (an endError) isn't counted, and
-// leaves the lease as end or finish left it, for the next pass.
+// leaves the lease as end or finish left it, for the next pass. Nor is an
+// issue whose labels CheckLabels holds back: the error wraps
+// ErrLabelsHeld, and the lease and the result stay as they are, for a
+// later pass to apply once the labels are explained or removed.
 func (r *Runs) applyLease(ctx context.Context, l Lease, st Stage, raw []byte, out json.RawMessage) error {
 	err := r.apply(ctx, l, st, raw, out)
 	var ending *endError
 	if err == nil || errors.As(err, &ending) {
+		return err
+	}
+	if errors.Is(err, ErrLabelsHeld) {
+		logr.Infof("run %s on #%d waits to be applied, which isn't counted as a failure: %v", l.RunID, l.Issue, err)
 		return err
 	}
 	l.ApplyFailures++
