@@ -52,9 +52,9 @@ func (g *rig) triage() triageStage {
 	return ts
 }
 
-// admitted is the App's comment applying triage run's result, on an issue
+// triageAdmitted is the App's comment applying triage run's result, on an issue
 // with no comments before it, so it has no seen.
-func admitted(run string) string {
+func triageAdmitted(run string) string {
 	return fmt.Sprintf("Admitted.\n\n<!-- issuedog:transition from=intake to=clarifying run=%s -->", run)
 }
 
@@ -364,8 +364,8 @@ func TestUnlabeledRunsWhenNoStageRan(t *testing.T) {
 	if !specApplied(f, 1, "run1", answer) || !slices.Equal(is[2].Labels, []string{"stage:clarifying"}) || !slices.Equal(is[1].Labels, []string{"stage:clarifying"}) {
 		t.Errorf("labels %v, %v and %v; want 1 at spec-review, then 3 and 2 admitted", is[0].Labels, is[1].Labels, is[2].Labels)
 	}
-	if got := commentBodies(f, 3); !slices.Equal(got, []string{admitted("run2")}) {
-		t.Errorf("#3's comments = %q, want only %q", got, admitted("run2"))
+	if got := commentBodies(f, 3); !slices.Equal(got, []string{triageAdmitted("run2")}) {
+		t.Errorf("#3's comments = %q, want only %q", got, triageAdmitted("run2"))
 	}
 	var l daemon.Lease
 	if err := json.Unmarshal([]byte(g.file("lease.2")), &l); err != nil {
@@ -374,6 +374,142 @@ func TestUnlabeledRunsWhenNoStageRan(t *testing.T) {
 	if l.Stage != state.Intake || l.AttemptKey != "intake-0" {
 		t.Errorf("the Unlabeled run's lease = %+v; want it at intake", l)
 	}
+}
+
+// A pass where a registered stage ran starts no Unlabeled run, even with
+// Unlabeled work pending.
+func TestUnlabeledOneRunPerPass(t *testing.T) {
+	f := newFake(t)
+	interview(f)
+	f.AddIssue("owner", "Idea", "no labels")
+	g := newRig(t, f, newOrigin(t), t.TempDir())
+	g.triage()
+	g.claude(okOut, 0)
+	g.pass()
+	if got := g.leaseIssues(); !slices.Equal(got, []int{1}) || len(commentBodies(f, 2)) != 0 {
+		t.Errorf("the first pass ran on %v, and #2 has comments %q; want only the interviewer's run, on #1", got, commentBodies(f, 2))
+	}
+}
+
+// An issue a trusted user approved with no stage label is moved in by step
+// 1 (IntakeVisit), before Work, so it's no Unlabeled work.
+func TestUnlabeledLeavesApprovedToIntake(t *testing.T) {
+	f := newFake(t)
+	f.AddIssue("mallory", "Idea", "no labels")
+	f.AddLabel(1, "owner", "approved")
+	g := newRig(t, f, newOrigin(t), t.TempDir())
+	g.triage()
+	g.claude(okOut, 0)
+	g.pass()
+	if is := f.State().Issues[0]; g.runs() != 0 || !slices.Equal(is.Labels, []string{"approved", "stage:clarifying"}) {
+		t.Errorf("%d runs, labels %v; want IntakeVisit's move and no triage run", g.runs(), is.Labels)
+	}
+}
+
+// The issue a resume just handled gets no Unlabeled run in that pass, as
+// its snapshot predates the resume, even when the result was dropped.
+func TestUnlabeledSkipsResumedIssue(t *testing.T) {
+	f := newFake(t)
+	f.AddIssue("owner", "Idea", "no labels")
+	f.AddComment(1, "owner", "More detail.") // after the run's seen, so its result is dropped
+	root := t.TempDir()
+	saveIntake(t, root, "saved", okOut)
+	g := newRig(t, f, newOrigin(t), root)
+	g.triage()
+	g.claude(okOut, 0)
+	if err := g.r.Work(context.Background(), g.ready(1)); err != nil {
+		t.Fatal(err)
+	}
+	if g.runs() != 0 || g.lease().RunID != "" || marked(f, 1, "saved") {
+		t.Fatalf("%d runs, lease %+v; want the saved result dropped, and no run in that pass", g.runs(), g.lease())
+	}
+	if err := g.r.Work(context.Background(), g.ready(1)); err != nil {
+		t.Fatal(err)
+	}
+	if g.runs() != 1 || !marked(f, 1, "run1") {
+		t.Errorf("%d runs in the next pass; want one, applied", g.runs())
+	}
+}
+
+// A stage label that a rename puts on during an Unlabeled run holds the
+// apply back, then, once it's left out, drops the result: it's no
+// Unlabeled work while it's there.
+func TestUnlabeledDropsOnLeftOutStageLabel(t *testing.T) {
+	f := newFake(t)
+	f.AddIssue("owner", "Idea", "no labels")
+	f.AddLabel(1, "mallory", "foo") // unguarded, so it stands
+	f.Advance(time.Hour)
+	g := newRig(t, f, newOrigin(t), t.TempDir())
+	ts := g.triage()
+	ts.during = func() { f.RenameLabel("foo", "stage:planning") }
+	g.claude(okOut, 0)
+	g.pass()
+	if l := g.lease(); l.RunID != "run1" || l.Failed {
+		t.Fatalf("lease %+v during the hold; want run1's kept", l)
+	}
+	f.Advance(github.HoldBound)
+	g.pass()
+	if g.runs() != 1 || marked(f, 1, "run1") || g.lease().RunID != "" {
+		t.Errorf("%d runs, lease %+v, comments %q; want run1 dropped once the label is left out, and no other run", g.runs(), g.lease(), commentBodies(f, 1))
+	}
+}
+
+// loginErrTrust fails to check one login.
+type loginErrTrust struct {
+	trusted
+	login string
+}
+
+func (e loginErrTrust) Trusted(ctx context.Context, login string) (bool, error) {
+	if login == e.login {
+		return false, errors.New("503 trust is down")
+	}
+	return e.trusted.Trusted(ctx, login)
+}
+
+// A failure to check whether a new commenter is trusted is a failure to
+// apply: the lease stays, counting it, and nothing is written.
+func TestNewInputTrustErrorIsApplyFailure(t *testing.T) {
+	f := newFake(t)
+	answer := interview(f)
+	g := newRig(t, f, newOrigin(t), t.TempDir())
+	g.claude(okOut, 0)
+	g.stage.during = func() {
+		g.stage.during = nil
+		f.AddComment(1, "flaky", "hello")
+		g.d.Step.Trust = loginErrTrust{trusted{"owner": true}, "flaky"}
+	}
+	err := g.work(1)
+	if l := g.lease(); err == nil || !strings.Contains(err.Error(), "503") || l.ApplyFailures != 1 || l.Failed || specApplied(f, 1, "run1", answer) {
+		t.Errorf("Work = %v, lease %+v; want the trust error, as one failed apply, with the lease kept and nothing applied", err, l)
+	}
+}
+
+func TestNewInputTrustErrorWritesNothing(t *testing.T) {
+	o := newOrigin(t)
+	roots := map[*githubtest.Fake]string{}
+	githubtest.Replay(t, func(tb testing.TB) *githubtest.Fake {
+		f := newFake(tb)
+		roots[f] = t.TempDir()
+		saveRun(tb, roots[f], "saved", okOut, interview(f))
+		f.AddComment(1, "flaky", "hello")
+		return f
+	}, func(f *githubtest.Fake) error {
+		g := newRig(t, f, o, roots[f])
+		g.d.Step.Trust = loginErrTrust{trusted{"owner": true}, "flaky"}
+		writes := len(f.Writes())
+		err := g.r.Work(context.Background(), nil)
+		if err == nil || !strings.Contains(err.Error(), "503") {
+			return fmt.Errorf("Work = %v; want the trust error", err)
+		}
+		if w := f.Writes(); len(w) != writes {
+			return fmt.Errorf("the pass wrote %+v; want nothing", w[writes:])
+		}
+		if l := g.lease(); l.RunID != "saved" || l.Failed || l.ApplyFailures == 0 {
+			return fmt.Errorf("the pass left the lease %+v; want it kept, counting the failed apply", l)
+		}
+		return nil
+	})
 }
 
 // No Unlabeled run starts while the usage gate is closed.
@@ -393,7 +529,7 @@ func TestUnlabeledWaitsForTheGate(t *testing.T) {
 	}
 	g.now = reset
 	g.pass()
-	if got := commentBodies(f, 1); g.runs() != 1 || !slices.Equal(got, []string{admitted("run1")}) {
+	if got := commentBodies(f, 1); g.runs() != 1 || !slices.Equal(got, []string{triageAdmitted("run1")}) {
 		t.Errorf("%d runs once it opened, comments %q; want one, applied", g.runs(), got)
 	}
 }
@@ -440,7 +576,7 @@ func TestUnlabeledResume(t *testing.T) {
 	if err := g.r.Work(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
-	if is := f.State().Issues[0]; !slices.Equal(commentBodies(f, 1), []string{admitted("saved")}) || !slices.Equal(is.Labels, []string{"stage:clarifying"}) || len(g.leftovers()) != 0 {
+	if is := f.State().Issues[0]; !slices.Equal(commentBodies(f, 1), []string{triageAdmitted("saved")}) || !slices.Equal(is.Labels, []string{"stage:clarifying"}) || len(g.leftovers()) != 0 {
 		t.Errorf("labels %v, comments %+v, left %v; want the saved result applied, and nothing left", is.Labels, is.Comments, g.leftovers())
 	}
 }
