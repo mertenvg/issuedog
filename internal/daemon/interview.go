@@ -126,12 +126,12 @@ const (
 	ruleLength             = "length"
 )
 
-// checkError is an output that breaks a rule.
-type checkError struct {
+// ruleError is an output that breaks a rule.
+type ruleError struct {
 	Rule, Detail string
 }
 
-func (e *checkError) Error() string { return "rule " + e.Rule + ": " + e.Detail }
+func (e *ruleError) Error() string { return "rule " + e.Rule + ": " + e.Detail }
 
 // maxText is GitHub's limit on a comment or body, in characters. textRoom
 // is kept free of it for the markers, the revision text and a dirty note
@@ -142,12 +142,12 @@ const (
 )
 
 // checkInterview checks out against f after the schema (plan for #6,
-// assumptions 6, 7 and 10). Its error joins a *checkError for every rule
+// assumptions 6, 7 and 10). Its error joins a *ruleError for every rule
 // broken. Nothing may be written from an output that fails.
 func checkInterview(out interviewOutput, f interviewFacts) error {
 	var errs []error
 	fail := func(rule, format string, args ...any) {
-		errs = append(errs, &checkError{Rule: rule, Detail: fmt.Sprintf(format, args...)})
+		errs = append(errs, &ruleError{Rule: rule, Detail: fmt.Sprintf(format, args...)})
 	}
 	switch out.Outcome {
 	case outcomeQuestions:
