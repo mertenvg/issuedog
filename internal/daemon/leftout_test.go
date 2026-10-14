@@ -4,6 +4,7 @@ import (
 	"context"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -215,7 +216,8 @@ func TestAppWriteOfLeftOutLabelStands(t *testing.T) {
 
 // A new issue the owner files with labels, a stage label among them, whose
 // events are a second or two late, is held back once, then is clean: no
-// revert or state error, and its labels kept.
+// revert or state error, its other labels kept, and one move from intake,
+// keyed by its stage:intake event.
 func TestIntakeLagIsClean(t *testing.T) {
 	f := newFake(t)
 	d := newDaemon(t, f, newOrigin(t), nil)
@@ -225,7 +227,7 @@ func TestIntakeLagIsClean(t *testing.T) {
 	n := f.AddIssue("owner", "Bug", "broken")
 	f.AddLabel(n, "owner", "type:bug")
 	f.AddLabel(n, "owner", "priority:p1")
-	f.AddLabel(n, "owner", "stage:intake")
+	intake := f.AddLabel(n, "owner", "stage:intake")
 	iterate(t, d)
 	if got := (*seen)[1]; got != nil {
 		t.Errorf("Work got the issue before its label events: %q", got)
@@ -235,12 +237,19 @@ func TestIntakeLagIsClean(t *testing.T) {
 		iterate(t, d)
 	}
 	is := f.State().Issues[0]
+	var moves []string
 	for _, c := range is.Comments {
 		if strings.Contains(c.Body, "issuedog:revert") || strings.Contains(c.Body, "issuedog:error") {
 			t.Errorf("a revert or state error: %q", c.Body)
 		}
+		if strings.Contains(c.Body, "issuedog:transition") {
+			moves = append(moves, c.Body)
+		}
 	}
-	if want := []string{"priority:p1", "stage:intake", "type:bug"}; !slices.Equal(is.Labels, want) {
+	if want := []string{waits(byOwner, "bug", strconv.FormatInt(intake, 10))}; !slices.Equal(moves, want) {
+		t.Errorf("transitions %q, want %q", moves, want)
+	}
+	if want := []string{"priority:p1", "stage:clarifying", "type:bug"}; !slices.Equal(is.Labels, want) {
 		t.Errorf("labels %q, want %q", is.Labels, want)
 	}
 }

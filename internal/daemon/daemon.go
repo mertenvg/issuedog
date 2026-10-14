@@ -168,6 +168,9 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		if err == nil {
 			err = d.Step.ReviewVisit(ctx, s)
 		}
+		if err == nil {
+			err = d.Step.IntakeVisit(ctx, s)
+		}
 		if errors.Is(err, ErrLabelsHeld) {
 			// Like a touched issue: nothing more this pass, and read again.
 			logr.Infof("%s/%s#%d waits for its next pass: %v", d.Step.Owner, d.Step.Repo, n, err)
