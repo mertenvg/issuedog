@@ -442,33 +442,51 @@ func orNone(s string) string {
 var (
 	// atEntityRE is an HTML entity for "@", which GitHub may mention on.
 	atEntityRE = regexp.MustCompile(`(?i)&(?:#0*64|#x0*40|commat);`)
-	mentionRE  = regexp.MustCompile(`@([A-Za-z0-9])`)
+	// tagRE starts an HTML tag, comment or declaration. Inline, it could
+	// add a heading or hide what follows, and at the start of a line it
+	// starts an HTML block that could swallow the template's headings.
+	tagRE = regexp.MustCompile(`<([A-Za-z/!?])`)
 	// container is the block quote and list markers before a line's text.
 	container = `(?:[ \t]*(?:>|[-*+](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$)))*[ \t]*`
 	headingRE = regexp.MustCompile(`^(` + container + `)#{1,2}([ \t]|$)`)
 	taskRE    = regexp.MustCompile(`^(` + container + `(?:[-*+]|\d{1,9}[.)])[ \t]+)\[[ xX]\](?:[ \t]+|$)`)
-	// htmlRE starts an HTML block, which could swallow the template's
-	// headings after it.
-	htmlRE   = regexp.MustCompile(`^((?: {0,3}>)* {0,3})<([A-Za-z/!?])`)
-	fenceRE  = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})")
-	setextRE = regexp.MustCompile(`^ {0,3}(?:=+|-+)[ \t]*$`)
+	// breakRE is a line a CommonMark parser could read as a code fence or
+	// a setext heading's underline, at any indent and in any container.
+	// Its second group starts at the character block escapes.
+	breakRE = regexp.MustCompile("^(" + container + ")(`{3,}|~{3,}|=+[ \t]*$|-+[ \t]*$)")
+	// fenceRE is the only fence block keeps: one at column 0, outside any
+	// container, whose info string has no backtick if it's a backtick
+	// fence. CommonMark reads such a line as a fence wherever block meets
+	// it, since block escapes every other fence and HTML block.
+	fenceRE = regexp.MustCompile("^(?:(`{3,})[^`]*|(~{3,}).*)$")
 )
 
-// defuse puts a zero-width space after each "@" that could start a
-// mention, so agent text can't notify anyone (plan for #6, assumption 14).
+// defuse puts a zero-width space after each "@", or HTML entity for one,
+// that isn't followed by a space or the end of text, so agent text can't
+// mention anyone (plan for #6, assumption 14).
 func defuse(text string) string {
-	return mentionRE.ReplaceAllString(atEntityRE.ReplaceAllString(text, "@"), "@\u200b${1}")
+	parts := strings.Split(atEntityRE.ReplaceAllString(text, "@"), "@")
+	for i := 1; i < len(parts); i++ {
+		if r, _ := utf8.DecodeRuneInString(parts[i]); parts[i] != "" && !unicode.IsSpace(r) && r != '\u200b' {
+			parts[i] = "\u200b" + parts[i]
+		}
+	}
+	return strings.Join(parts, "@")
 }
 
-// inline is agent text for the middle of a line: defused, on one line.
+// inline is agent text for the middle of a line: on one line, with its
+// HTML tags escaped and its mentions defused.
 func inline(text string) string {
-	return defuse(strings.TrimSpace(strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(text)))
+	text = strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(text)
+	return defuse(tagRE.ReplaceAllString(strings.TrimSpace(text), "&lt;${1}"))
 }
 
-// block is agent Markdown for a section: defused, with headings demoted to
-// ###, setext headings broken up, task list boxes stripped and HTML blocks
-// escaped, except in code fences. A fence left open is closed, so it
-// can't swallow what follows.
+// block is agent Markdown for a section. Every line is defused. Outside
+// code fences, each line is cleaned as clean says. Only a fence fenceRE
+// matches is kept as one, and it ends where CommonMark ends it: at a line
+// of at most 3 spaces, then at least as many of its characters, then only
+// spaces or tabs. A fence left open is closed, so it can't swallow what
+// follows.
 func block(text string) string {
 	var out []string
 	fence := ""
@@ -476,16 +494,14 @@ func block(text string) string {
 		line = defuse(line)
 		switch {
 		case fence != "":
-			if t := strings.TrimSpace(line); strings.HasPrefix(t, fence) && strings.Trim(t, fence[:1]) == "" {
+			if closesFence(line, fence) {
 				fence = ""
 			}
 		case fenceRE.MatchString(line):
-			fence = fenceRE.FindStringSubmatch(line)[1]
+			m := fenceRE.FindStringSubmatch(line)
+			fence = m[1] + m[2]
 		default:
-			if setextRE.MatchString(line) && len(out) > 0 && strings.TrimSpace(out[len(out)-1]) != "" {
-				out = append(out, "")
-			}
-			line = htmlRE.ReplaceAllString(item(line), "${1}&lt;${2}")
+			line = clean(line)
 		}
 		out = append(out, line)
 	}
@@ -495,35 +511,56 @@ func block(text string) string {
 	return orNone(strings.TrimLeft(strings.TrimRight(strings.Join(out, "\n"), " \t\n"), "\n"))
 }
 
+// closesFence reports whether line closes a fence opened by fence, by
+// CommonMark's rule. A tab counts as 4 spaces of indent, so it never does.
+func closesFence(line, fence string) bool {
+	t := strings.TrimLeft(line, " ")
+	if len(line)-len(t) > 3 {
+		return false
+	}
+	t = strings.TrimRight(t, " \t")
+	return len(t) >= len(fence) && strings.Trim(t, fence[:1]) == ""
+}
+
 // bullets renders items as a plain "- " list, never a task list.
 func bullets(items []string) string {
 	lines := make([]string, len(items))
 	for i, s := range items {
-		lines[i] = item("- " + inline(s))
+		lines[i] = clean("- " + inline(s))
 	}
 	return orNone(strings.Join(lines, "\n"))
 }
 
-// item demotes a heading and strips task list boxes at the start of line,
-// until there are none.
-func item(line string) string {
+// clean makes a line of agent Markdown outside a kept fence safe: HTML
+// tags escaped, # and ## headings demoted to ###, and task list boxes
+// stripped, until there are none. Then a line that could be a fence or a
+// setext underline gets its first such character backslash-escaped, so
+// no parser reads a fence block doesn't track, or a heading.
+func clean(line string) string {
+	line = tagRE.ReplaceAllString(line, "&lt;${1}")
 	for {
 		next := taskRE.ReplaceAllString(headingRE.ReplaceAllString(line, "${1}###${2}"), "${1}")
 		if next == line {
-			return line
+			break
 		}
 		line = next
 	}
+	if m := breakRE.FindStringSubmatchIndex(line); m != nil {
+		line = line[:m[4]] + `\` + line[m[4]:]
+	}
+	return line
 }
 
-// lowerFirst lowercases text's first letter when its first word is
-// otherwise lowercase, so a reason reads on after "because". "I" and
-// words like "PWA" or "GitHub" keep their case.
+// lowerWords are the first words lowerFirst lowercases. Any other word may
+// be a name, such as "Alice" or "GitHub", so it keeps its case.
+var lowerWords = []string{"A", "An", "The", "It", "It's", "Its", "This", "That", "These", "Those", "There", "They", "Each", "Every", "Some", "Most", "All", "No", "One"}
+
+// lowerFirst lowercases text's first word if it's one of lowerWords, so a
+// reason reads on after "because".
 func lowerFirst(text string) string {
 	word, _, _ := strings.Cut(text, " ")
-	r, n := utf8.DecodeRuneInString(word)
-	if !unicode.IsUpper(r) || word == "I" || strings.HasPrefix(word, "I'") || word[n:] != strings.ToLower(word[n:]) {
+	if !slices.Contains(lowerWords, word) {
 		return text
 	}
-	return string(unicode.ToLower(r)) + text[n:]
+	return strings.ToLower(word) + text[len(word):]
 }

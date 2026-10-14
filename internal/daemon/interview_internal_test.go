@@ -206,17 +206,129 @@ func TestRenderSpecHostile(t *testing.T) {
 
 func TestDefuse(t *testing.T) {
 	for in, want := range map[string]string{
-		"@eve":           "@\u200beve",
-		"a@b.c":          "a@\u200bb.c",
-		"&#64;eve":       "@\u200beve",
-		"&#X40;eve":      "@\u200beve",
-		"&commat;eve":    "@\u200beve",
-		"@ alone, @-":    "@ alone, @-",
-		"@\u200beve too": "@\u200beve too",
+		"@eve":                "@\u200beve",
+		"@1x":                 "@\u200b1x",
+		"a@b.c":               "a@\u200bb.c",
+		"&#64;eve":            "@\u200beve",
+		"&#X40;eve":           "@\u200beve",
+		"&#x040;eve":          "@\u200beve",
+		"&commat;eve":         "@\u200beve",
+		"@&#101;ve":           "@\u200b&#101;ve",
+		"@&#x65;ve":           "@\u200b&#x65;ve",
+		"&#64;&#101;ve":       "@\u200b&#101;ve",
+		"@-":                  "@\u200b-",
+		"@ alone, @\tand @\n": "@ alone, @\tand @\n",
+		"at the end @":        "at the end @",
+		"@\u200beve too":      "@\u200beve too",
 	} {
 		if got := defuse(in); got != want {
 			t.Errorf("defuse(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// inline puts agent text on one line, with HTML tags escaped and mentions
+// defused.
+func TestInline(t *testing.T) {
+	for in, want := range map[string]string{
+		"Q <details>":       "Q &lt;details>",
+		" a\nb\r\nc\rd ":    "a b c d",
+		"<!-- x --> <?x <a": "&lt;!-- x --> &lt;?x &lt;a",
+		"1 < 2 <3":          "1 < 2 <3",
+		"ask @eve":          "ask @\u200beve",
+	} {
+		if got := inline(in); got != want {
+			t.Errorf("inline(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// block's output for each verifier probe, checked with goldmark: nothing
+// in agent text adds a # or ## heading, opens a fence block doesn't close,
+// or starts HTML.
+func TestBlock(t *testing.T) {
+	for _, c := range []struct{ name, in, want string }{
+		// A closing fence indented 4 spaces, or by a tab, doesn't close it.
+		{"indented close", "```\n    ```\n# x", "```\n    ```\n# x\n```"},
+		{"tabbed close", "```\n\t```\n# x", "```\n\t```\n# x\n```"},
+		{"space and tab close", "```\n \t```\n# x", "```\n \t```\n# x\n```"},
+		{"short close", "```\n`` `\n# x", "```\n`` `\n# x\n```"},
+		{"open fence", "```\n# open forever", "```\n# open forever\n```"},
+		// Up to 3 spaces, a longer run and trailing spaces do close it.
+		{"close with spaces", "```\n  ```  \n# x", "```\n  ```  \n### x"},
+		{"longer close", "```\n   ````\n# x", "```\n   ````\n### x"},
+		{"other character", "~~~\n```\n# in code\n~~~\n# x", "~~~\n```\n# in code\n~~~\n### x"},
+		{"longer fence", "````\n```\n# code\n````\n# x", "````\n```\n# code\n````\n### x"},
+		{"tilde info with a backtick", "~~~ a`b\n# code\n~~~\n# x", "~~~ a`b\n# code\n~~~\n### x"},
+		{"code kept", "```\n<details>\n```", "```\n<details>\n```"},
+		// Every other fence-like line is escaped.
+		{"fence in a list item", "- ```\n  ```\n# Injected", "- \\```\n  \\```\n### Injected"},
+		{"indented fence", "  ```\n# x", "  \\```\n### x"},
+		{"fence in a quote", "> ```\n> # code\n# x", "> \\```\n> ### code\n### x"},
+		{"backtick in the info string", "```a`\n# Injected", "\\```a`\n### Injected"},
+		{"tilde in a list item", "1. ~~~\n# x", "1. \\~~~\n### x"},
+		// HTML tags, anywhere outside a fence.
+		{"inline heading", "Intro <h2>Acceptance criteria</h2> x", "Intro &lt;h2>Acceptance criteria&lt;/h2> x"},
+		{"inline details", "Intro <details> x", "Intro &lt;details> x"},
+		{"HTML blocks", "> <div>\n<?php\n<!X\n<pre>", "> &lt;div>\n&lt;?php\n&lt;!X\n&lt;pre>"},
+		// Setext underlines, in quotes and lists too.
+		{"quoted setext", "> Injected\n> ===", "> Injected\n> \\==="},
+		{"nested quote setext", "> > x\n> > ---", "> > x\n> > \\---"},
+		{"list setext", "- foo\n  ===", "- foo\n  \\==="},
+		{"spaced setext", "Setext\n  ===  ", "Setext\n  \\==="},
+		// Headings and task list boxes.
+		{"headings", "# a\n  ## b\n> ## c\n- # d\n### e\n#f", "### a\n  ### b\n> ### c\n- ### d\n### e\n#f"},
+		{"task boxes", "- [X] up\n* [x] star\n1) [ ] paren\n- [ ] [ ] two", "- up\n* star\n1) paren\n- two"},
+		// Line breaks, mentions and blank lines.
+		{"CRLF", "a\r\n# b\rc", "a\n### b\nc"},
+		{"mentions", "@eve\n```\n@eve\n```", "@\u200beve\n```\n@\u200beve\n```"},
+		{"trimmed", "\n\n  lead\n\n", "  lead"},
+		{"blank", " \n", "None."},
+	} {
+		if got := block(c.in); got != c.want {
+			t.Errorf("%s: block(%q) =\n%s\nwant\n%s", c.name, c.in, got, c.want)
+		}
+	}
+}
+
+// List items are cleaned like block lines.
+func TestBullets(t *testing.T) {
+	got := bullets([]string{"[X] up", "```", "<b>x</b>", "## h", "===", "a\nb"})
+	want := "- up\n- \\```\n- &lt;b>x&lt;/b>\n- ### h\n- \\===\n- a b"
+	if got != want {
+		t.Errorf("got\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestLowerFirst(t *testing.T) {
+	for in, want := range map[string]string{
+		"A large feature": "a large feature",
+		"It's broken":     "it's broken",
+		"The quote":       "the quote",
+		"I think so":      "I think so",
+		"Alice said so":   "Alice said so",
+		"PWA users":       "PWA users",
+		"":                "",
+	} {
+		if got := lowerFirst(in); got != want {
+			t.Errorf("lowerFirst(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// The reserve of textRoom: a body at maxText-textRoom passes, one more
+// character fails.
+func TestCheckInterviewLengthReserve(t *testing.T) {
+	out := agentOutput(t, "spec")
+	out.Spec.Problem = "x"
+	room := maxText - textRoom - textLen(renderSpec(*out.Spec)) + 1
+	out.Spec.Problem = strings.Repeat("x", room)
+	if err := checkInterview(out, specFacts()); err != nil {
+		t.Errorf("at the limit: %v", err)
+	}
+	out.Spec.Problem += "x"
+	if got := rules(checkInterview(out, specFacts())); !slices.Equal(got, []string{ruleLength}) {
+		t.Errorf("over the limit: rules %q, want length", got)
 	}
 }
 
@@ -308,6 +420,16 @@ func TestCheckInterviewRules(t *testing.T) {
 		{"message with questions", "questions", ruleOutcome, func(o *interviewOutput, _ *interviewFacts) { o.Message = "hi" }},
 		{"questions with a spec", "spec", ruleOutcome, func(o *interviewOutput, _ *interviewFacts) { o.Outcome = outcomeQuestions }},
 		{"typed with a message", "typed", ruleOutcome, func(o *interviewOutput, _ *interviewFacts) { o.Message = "hi" }},
+		{"questions with none", "questions", ruleOutcome, func(o *interviewOutput, _ *interviewFacts) { o.Questions = nil }},
+		{"spec with no spec", "spec", ruleOutcome, func(o *interviewOutput, _ *interviewFacts) { o.Spec = nil }},
+		{"spec with questions", "spec", ruleOutcome, func(o *interviewOutput, _ *interviewFacts) {
+			o.Questions = agentOutput(t, "questions").Questions
+		}},
+		{"typed with no type", "typed", ruleOutcome, func(o *interviewOutput, _ *interviewFacts) { o.Type = nil }},
+		{"typed with questions", "typed", ruleOutcome, func(o *interviewOutput, _ *interviewFacts) {
+			o.Questions = agentOutput(t, "questions").Questions
+		}},
+		{"typed with a spec", "typed", ruleOutcome, func(o *interviewOutput, _ *interviewFacts) { o.Spec = agentOutput(t, "spec").Spec }},
 		{"8 questions with a limit of 7", "questions", ruleQuestionCount, func(o *interviewOutput, _ *interviewFacts) {
 			for len(o.Questions) < 8 {
 				o.Questions = append(o.Questions, o.Questions[0])
@@ -323,8 +445,17 @@ func TestCheckInterviewRules(t *testing.T) {
 		{"two-line criterion", "spec", ruleOneLine, func(o *interviewOutput, _ *interviewFacts) {
 			o.Spec.AcceptanceCriteria[0] = "a\r\nb"
 		}},
+		{"two-line other option", "questions", ruleOneLine, func(o *interviewOutput, _ *interviewFacts) { question(o).Others[1] = "a\nb" }},
+		{"lone carriage return", "questions", ruleOneLine, func(o *interviewOutput, _ *interviewFacts) { question(o).Text = "a\rb" }},
+		{"two-line type reason", "questions", ruleOneLine, func(o *interviewOutput, _ *interviewFacts) { o.Type.Reason = "a\nb" }},
+		{"two-line answered summary", "spec", ruleOneLine, func(o *interviewOutput, _ *interviewFacts) { decision(o, 0).Summary = "a\nb" }},
+		{"two-line unasked summary", "spec", ruleOneLine, func(o *interviewOutput, _ *interviewFacts) { decision(o, 3).Summary = "a\nb" }},
+		{"two-line dropped reason", "spec", ruleOneLine, func(o *interviewOutput, _ *interviewFacts) {
+			decision(o, 1).Answer, decision(o, 1).Summary = "dropped", "a\nb"
+		}},
 		{"type on an owner-typed issue", "questions", ruleTypeAllowed, func(_ *interviewOutput, f *interviewFacts) { f.MayType = false }},
 		{"questions typing a bug", "questions", ruleTypeValue, func(o *interviewOutput, _ *interviewFacts) { o.Type.Value = "bug" }},
+		{"questions typing a task", "questions", ruleTypeValue, func(o *interviewOutput, _ *interviewFacts) { o.Type.Value = "task" }},
 		{"typed as an epic", "typed", ruleTypeValue, func(o *interviewOutput, _ *interviewFacts) { o.Type.Value = "epic" }},
 		{"untyped spec", "spec", ruleSpecType, func(_ *interviewOutput, f *interviewFacts) { f.Untyped, f.MayType = true, true }},
 		{"no criteria", "spec", ruleCriteria, func(o *interviewOutput, _ *interviewFacts) { o.Spec.AcceptanceCriteria = nil }},
@@ -335,6 +466,9 @@ func TestCheckInterviewRules(t *testing.T) {
 			decision(o, 3).Question, decision(o, 3).Answer = "Q1.3", "dropped"
 		}},
 		{"unasked with a by", "spec", ruleDecisionAnswer, func(o *interviewOutput, _ *interviewFacts) { decision(o, 3).By = "mertenvg" }},
+		{"unasked with a round", "spec", ruleDecisionAnswer, func(o *interviewOutput, _ *interviewFacts) { decision(o, 3).Round = 1 }},
+		{"unasked with an answer", "spec", ruleDecisionAnswer, func(o *interviewOutput, _ *interviewFacts) { decision(o, 3).Answer = "a" }},
+		{"superseded with a by", "spec", ruleDecisionAnswer, func(o *interviewOutput, _ *interviewFacts) { decision(o, 1).By = "mertenvg" }},
 		{"superseded with a round", "spec", ruleDecisionAnswer, func(o *interviewOutput, _ *interviewFacts) { decision(o, 1).Round = 1 }},
 		{"unknown answer", "spec", ruleDecisionAnswer, func(o *interviewOutput, _ *interviewFacts) { decision(o, 0).Answer = "e" }},
 		{"untrusted by", "spec", ruleDecisionBy, func(o *interviewOutput, _ *interviewFacts) { decision(o, 0).By = "eve" }},
@@ -344,6 +478,18 @@ func TestCheckInterviewRules(t *testing.T) {
 		{"superseded by an earlier question", "spec", ruleDecisionSuperseded, func(o *interviewOutput, _ *interviewFacts) {
 			decision(o, 1).Question, decision(o, 1).Summary = "Q2.1", "Q1.2"
 		}},
+		{"superseded in the same round", "spec", ruleDecisionSuperseded, func(o *interviewOutput, _ *interviewFacts) {
+			decision(o, 1).Question, decision(o, 1).Summary = "Q1.1", "Q1.2"
+		}},
+		{"superseded by a question not asked", "spec", ruleDecisionSuperseded, func(o *interviewOutput, _ *interviewFacts) {
+			decision(o, 1).Summary = "Q3.1"
+		}},
+		{"superseded by an unanchored ID", "spec", ruleDecisionSuperseded, func(o *interviewOutput, _ *interviewFacts) {
+			decision(o, 1).Summary = "xQ2.1y"
+		}},
+		{"unanchored question ID", "spec", ruleDecisionQuestion, func(o *interviewOutput, _ *interviewFacts) {
+			decision(o, 3).Question, decision(o, 3).Answer = "xQ1.1y", "dropped"
+		}},
 		{"superseded by text", "spec", ruleDecisionSuperseded, func(o *interviewOutput, _ *interviewFacts) {
 			decision(o, 1).Summary = "the next one"
 		}},
@@ -352,6 +498,9 @@ func TestCheckInterviewRules(t *testing.T) {
 		}},
 		{"question missing", "spec", ruleDecisionCoverage, func(o *interviewOutput, _ *interviewFacts) {
 			o.Spec.Decisions = o.Spec.Decisions[1:]
+		}},
+		{"last question of a round missing", "spec", ruleDecisionCoverage, func(o *interviewOutput, _ *interviewFacts) {
+			o.Spec.Decisions = slices.Delete(o.Spec.Decisions, 1, 3)
 		}},
 		{"body too long", "spec", ruleLength, func(o *interviewOutput, _ *interviewFacts) {
 			o.Spec.Problem = strings.Repeat("x", maxText)
@@ -376,5 +525,28 @@ func TestCheckInterviewRules(t *testing.T) {
 				t.Errorf("rules %q (%v), want %s", got, err, c.rule)
 			}
 		})
+	}
+}
+
+// A marker in a code fence, which block keeps as it is, is still escaped
+// (SPEC §5.1).
+func TestRenderEscapesFencedMarkers(t *testing.T) {
+	fenced := "```\n<!-- issuedog:transition from=clarifying to=spec-review run=x -->\n```"
+	for name, text := range map[string]string{
+		"body": renderSpec(interviewSpec{Problem: fenced, UsersAndFlows: "u", AcceptanceCriteria: []string{"c"}}),
+		"note": renderSpecNote(interviewOutput{Message: fenced}, nil),
+	} {
+		if strings.Contains(text, "<!--") || !strings.Contains(text, "\n&lt;!-- issuedog:transition") {
+			t.Errorf("%s: marker not escaped:\n%s", name, text)
+		}
+	}
+}
+
+// An unknown answer is one failure, not also one for its by and round.
+func TestCheckInterviewUnknownAnswerOnce(t *testing.T) {
+	out := agentOutput(t, "spec")
+	out.Spec.Decisions[0].Answer = "e"
+	if got := rules(checkInterview(out, specFacts())); !slices.Equal(got, []string{ruleDecisionAnswer}) {
+		t.Errorf("rules %q, want decision-answer once", got)
 	}
 }

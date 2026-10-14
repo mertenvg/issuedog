@@ -25,11 +25,9 @@ None.
 ## Users and flows
 
 Setext h1
-
-===
+\===
 Setext h2
-
----
+\---
 1. done
 ~~~
 # kept

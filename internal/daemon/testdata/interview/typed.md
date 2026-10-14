@@ -1,3 +1,3 @@
-Type: bug, because booking accepts a quote that should have expired.
+Type: bug, because Booking accepts a quote that should have expired.
 
 cc @mertenvg
