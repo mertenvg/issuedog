@@ -78,8 +78,9 @@ func TestPromptMissingUsesDefault(t *testing.T) {
 func TestPromptBlankUsesDefaultAndWarns(t *testing.T) {
 	for _, blank := range []string{"", " \n\t\r\n"} {
 		r := &fakeMain{files: map[string][]byte{".issuedog/prompts/triage.md": []byte(blank)}}
+		// The writer takes only warnings, so another level fails.
 		var logs bytes.Buffer
-		stop := logr.AddWriter(&logs)
+		stop := logr.AddWriter(&logs, logr.WithFilter(logr.W))
 		got, override, err := Prompt(context.Background(), r, "triage")
 		logr.Wait()
 		stop()
@@ -175,7 +176,10 @@ func TestShippedPromptsAndSchemasPair(t *testing.T) {
 
 // unsupported are the schema keywords that --json-schema isn't known to
 // support (SPEC §16), or that would let a schema accept more than it lists.
+// claude refuses a schema with a $schema URL it doesn't have, such as
+// draft 2020-12's, and exits before the run starts.
 var unsupported = []string{
+	"$schema", "format",
 	"oneOf", "anyOf", "allOf", "not", "if", "then", "else",
 	"$ref", "$defs", "definitions", "dependentSchemas", "dependentRequired",
 	"patternProperties", "unevaluatedProperties", "prefixItems",
@@ -204,7 +208,8 @@ func checkFlat(t *testing.T, name, at string, s map[string]any) {
 			t.Errorf("%s: %s uses %s", name, at, k)
 		}
 	}
-	if s["type"] == "object" && s["additionalProperties"] != false {
+	_, hasProps := s["properties"]
+	if (hasProps || s["type"] == "object") && s["additionalProperties"] != false {
 		t.Errorf("%s: %s is an object without additionalProperties false", name, at)
 	}
 	if props, ok := s["properties"].(map[string]any); ok {
@@ -334,6 +339,11 @@ func TestInterviewerGolden(t *testing.T) {
 		"unknown type":       {"typed", "chore", []any{"type", "value"}, "at '/type/value': value must be one of"},
 		"type with no why":   {"typed", remove, []any{"type", "reason"}, "missing property 'reason'"},
 		"spec with no field": {"spec", remove, []any{"spec", "decisions"}, "missing property 'decisions'"},
+		"blank problem":      {"spec", " \n ", []any{"spec", "problem"}, "at '/spec/problem'"},
+		"blank flows":        {"spec", "\t", []any{"spec", "users_and_flows"}, "at '/spec/users_and_flows'"},
+		"blank message":      {"spec", " ", []any{"message"}, "at '/message'"},
+		"same option twice":  {"questions", []any{"Both", "Both"}, []any{"questions", 0, "others"}, "at '/questions/0/others': items at 0 and 1 are equal"},
+		"login with space":   {"spec", "eve acme", []any{"spec", "decisions", 0, "by"}, "at '/spec/decisions/0/by'"},
 	})
 }
 
