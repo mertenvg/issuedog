@@ -91,7 +91,9 @@ func (r Result) Move(to state.Stage, trigger state.Trigger) Move {
 }
 
 // Lease is /state/lease.json, the run in progress (SPEC §8.2), or with
-// Failed, the record of the attempts of the last run that failed. A
+// Failed, the record of the last run that ended, failed or not counted:
+// the count of failed attempts in a row it leaves, and any of its files a
+// crash or a failed removal left (end). A
 // non-task run doesn't move its issue when it starts, so Stage is also the
 // stage a restart resets it to, which writes nothing: an issue at another
 // stage was moved by the owner, which wins.
@@ -782,6 +784,14 @@ func (r *Runs) uncounted(ctx context.Context, l Lease) error {
 // count from (endedLease), never one it counts as another failed attempt.
 // Then it removes the run's files (cleanup), and the lease if count is 0.
 // Its error is an endError.
+//
+// A gap remains: when the ended lease can't be written, the lease stays
+// the run's, so resume treats the run as one a restart cut short, and so
+// it does after a crash in the short window before that write. A usage
+// limit is then observed twice, once more on resume, if claude exited 0,
+// as the runner saved its result; with a non-zero exit there's no saved
+// result, so it's counted as a failed attempt, as are a setup failure and
+// a shutdown, which leave none either.
 func (r *Runs) end(ctx context.Context, l Lease, count int) error {
 	l.Attempt, l.Failed, l.ApplyFailures = count, true, 0
 	err := r.writeLease(l)

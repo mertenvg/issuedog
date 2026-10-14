@@ -490,3 +490,147 @@ func TestResumeReadErrors(t *testing.T) {
 		})
 	}
 }
+
+// chmod sets path's mode, and puts it back to 0700 when the test ends.
+func chmod(t *testing.T, path string, mode os.FileMode) {
+	t.Helper()
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(path, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+}
+
+// A saved usage-limit result found after a restart keeps the count of the
+// failures before it, so with max_attempts 2 the next failure is the cap.
+func TestResumedUsageLimitKeepsCount(t *testing.T) {
+	f := newFake(t)
+	answer := interview(f)
+	root := t.TempDir()
+	reset := githubtest.Start.Add(time.Hour)
+	saveAttempt(t, root, "saved", limitOut("error_during_execution", reset), answer, 2)
+	g := newRig(t, f, newOrigin(t), root)
+	g.d.Config.Loop.MaxAttempts = 2
+	g.stage.pending = always
+	g.claude(failOut, 1)
+	g.workN(1)
+	if l := g.lease(); !l.Failed || l.Attempt != 1 {
+		t.Errorf("lease %+v, want saved's, ended with a count of 1", l)
+	}
+	g.now = reset
+	g.workN(2)
+	if errs := errorMarkers(f, 1); g.runs() != 1 || len(errs) != 1 || errs[0] != capError(answer) {
+		t.Errorf("%d runs, errors %q; want one run, then the cap", g.runs(), errs)
+	}
+}
+
+// An ended lease with a count, resumed in passes with no run, keeps it for
+// a later restart.
+func TestEndedLeaseKeptAcrossPasses(t *testing.T) {
+	f := newFake(t)
+	answer := interview(f)
+	o, root := newOrigin(t), t.TempDir()
+	rig := func() *rig {
+		g := newRig(t, f, o, root)
+		g.d.Config.Loop.MaxAttempts = 2
+		g.stage.pending = always
+		g.claude(failOut, 1)
+		return g
+	}
+	g := rig()
+	g.workN(1) // attempt 1 fails
+	g.stage.pending = func(daemon.Input) bool { return false }
+	g.workN(2)
+	g = rig()
+	g.workN(1) // attempt 2 fails: the cap
+	if errs := errorMarkers(f, 1); g.runs() != 2 || len(errs) != 1 || errs[0] != capError(answer) {
+		t.Errorf("%d runs, errors %q; want 2 runs, then the cap", g.runs(), errs)
+	}
+}
+
+// A failure to finish a run whose result is applied isn't a failed apply:
+// with max_attempts 1, it gives no cap error, and the next pass finishes.
+func TestFinishFailureIsNoAttempt(t *testing.T) {
+	f := newFake(t)
+	answer := interview(f)
+	g := newRig(t, f, newOrigin(t), t.TempDir())
+	g.d.Config.Loop.MaxAttempts = 1
+	g.stage.pending = always
+	g.claude(okOut, 0)
+	if err := os.Mkdir(g.path("state", "runs"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Once the result is saved and being applied, it can't be removed.
+	f.BeforeRequest(postsOn(1), func() {
+		if err := os.Chmod(g.path("state", "runs"), 0o500); err != nil {
+			t.Error(err)
+		}
+	})
+	t.Cleanup(func() {
+		if err := os.Chmod(g.path("state", "runs"), 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := g.work(1); err == nil || !strings.Contains(err.Error(), "finish run run1") {
+		t.Fatalf("Work = %v, want the error finishing run1", err)
+	}
+	if err := os.Chmod(g.path("state", "runs"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	g.workN(2)
+	if errs := errorMarkers(f, 1); len(errs) != 0 || g.lease().RunID != "" || len(g.leftovers()) != 0 || newestComment(f, 1) != specWritten("run1", answer) {
+		t.Errorf("errors %q, lease %+v, left %v, newest comment %q; want run1 applied, no error, and nothing left",
+			errs, g.lease(), g.leftovers(), newestComment(f, 1))
+	}
+}
+
+// Errors ending a run are returned: removing an ended lease's files or the
+// lease itself in resume, and ending a failed run.
+func TestEndErrorsAreReturned(t *testing.T) {
+	t.Run("ended lease's files", func(t *testing.T) {
+		f := newFake(t)
+		answer := interview(f)
+		root := t.TempDir()
+		saveRun(t, root, "x", failOut, answer)
+		endLease(t, root, "x", answer, 1)
+		g := newRig(t, f, newOrigin(t), root)
+		chmod(t, g.path("state", "runs"), 0o500)
+		if err := g.r.Work(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "resume ended run x") {
+			t.Errorf("Work = %v, want the error removing x's result", err)
+		}
+	})
+	t.Run("ended lease", func(t *testing.T) {
+		f := newFake(t)
+		answer := interview(f)
+		root := t.TempDir()
+		endLease(t, root, "x", answer, 0)
+		g := newRig(t, f, newOrigin(t), root)
+		chmod(t, g.path("state"), 0o500)
+		if err := g.r.Work(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "resume ended run x") {
+			t.Errorf("Work = %v, want the error removing the lease", err)
+		}
+	})
+	t.Run("failed run", func(t *testing.T) {
+		f := newFake(t)
+		interview(f)
+		g := newRig(t, f, newOrigin(t), t.TempDir())
+		g.claude(failOut, 1)
+		// The lease can't be replaced once the run has started.
+		g.stage.during = func() {
+			if err := os.Chmod(g.path("state"), 0o500); err != nil {
+				t.Error(err)
+			}
+		}
+		t.Cleanup(func() {
+			if err := os.Chmod(g.path("state"), 0o700); err != nil {
+				t.Error(err)
+			}
+		})
+		if err := g.work(1); err == nil || !strings.Contains(err.Error(), "record the failed attempt: end run run1") {
+			t.Errorf("Work = %v, want the error ending run1", err)
+		}
+	})
+}
