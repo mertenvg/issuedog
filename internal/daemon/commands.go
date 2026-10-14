@@ -557,11 +557,23 @@ func settingPrefix(c Cmd) (value, prefix string) {
 //     already, which then removed the others.
 //
 // Otherwise c is rejected, and its labels stay. Only this path reads the
-// timeline, and it doesn't write. Known limit: two begun Applies still go
-// unseen, so c is rejected and its labels stay as they are. One crashed
-// before its first write, so it changed nothing. In the other, the add
-// found its label there already, and another stray label is still on the
-// issue, so the App's removals don't show which one c named.
+// timeline, and it doesn't write.
+//
+// Known limits:
+//   - Two begun Applies still go unseen, so c is rejected and its labels
+//     stay as they are. One crashed before its first write, so it changed
+//     nothing. In the other, the add found its label there already, and
+//     another stray label is still on the issue, so the App's removals
+//     don't show which one c named.
+//   - The App's label writes since c are taken as c's Apply's, but an
+//     earlier command's Apply can make them after c is posted. Say the
+//     owner posts /model opus, then /model gpt, and a pass applies the
+//     first, adding model:opus after the second, then crashes before
+//     handling the second, and a reload drops opus. The next pass 👍s
+//     /model gpt as if it named opus, and its Apply removes the other
+//     labels of its kind, such as a model:haiku a trusted user added in
+//     between. This needs only the owner's own commands, a crash and a
+//     reload, and an untrusted user can't cause it.
 func modelLabel(ctx context.Context, a *Applier, trust github.Trust, models config.Models, c Cmd) (string, error) {
 	arg, prefix := settingPrefix(c)
 	name, ok := models.Resolve(arg)
@@ -622,8 +634,13 @@ func modelLabel(ctx context.Context, a *Applier, trust github.Trust, models conf
 // empty, it also reports whether the App, after c's commented event,
 // removed a label with that prefix that isn't one of labels, in an
 // unlabeled event that isn't a revert either: Apply removes the other
-// labels of its kind after its add. Only a /model command and the label
-// rules change those labels as the App, and Step handles commands in order.
+// labels of its kind after its add. As the App, only /model commands and
+// the label rules change those labels, and Step handles commands in order.
+// A label rules' change that isn't keyed by the event before it, such as a
+// removal of a pipeline label that no trusted or App event explains (#118,
+// keyed name@id), is still a revert by appRevert's walk back, not by its
+// marker: the label rules remove a label only when the last accepted change
+// left it off.
 func (a *Applier) addedSince(ctx context.Context, c Cmd, trust github.Trust, labels []string, kind string) ([]string, bool, error) {
 	wrap := func(err error) error { return fmt.Errorf("labels added since comment %d: %w", c.Comment.ID, err) }
 	events, err := a.Client.TimelineSince(ctx, a.Owner, a.Repo, c.S.Number, time.Time{})

@@ -505,10 +505,11 @@ func TestModelNoOpAddTwoStrays(t *testing.T) {
 }
 
 // An App removal of a model label counts for /model gpt only if it's since
-// the command and not the label rules' revert, so these still reject it,
-// and the stray model:retired stays: the App reverting mallory's add, with
-// its comment or without, as when mallory deleted it; the App's removal
-// before the command; and the owner's, not the App's, since.
+// the command, not the label rules' revert, and of a model:* label, so
+// these still reject it, and the stray model:retired stays: the App
+// reverting mallory's add, with its comment or without, as when mallory
+// deleted it; the App's removal before the command; the owner's, not the
+// App's, since; and the App's removals of labels of other kinds since.
 func TestModelRemovalNotApply(t *testing.T) {
 	const reason = "`gpt` isn't on `models.allowed`, which has `sonnet`"
 	for _, tc := range []struct {
@@ -534,6 +535,11 @@ func TestModelRemovalNotApply(t *testing.T) {
 		}, []string{"model:retired", "stage:ready"}},
 		{"by the owner", then(taskWith("owner", "/model gpt", app+" model:retired", app+" model:sonnet"),
 			func(f *githubtest.Fake) { f.RemoveLabel(1, "owner", "model:sonnet") }), []string{"model:retired", "stage:ready"}},
+		{"of other kinds", then(taskWith("owner", "/model gpt", app+" effort:high", app+" model:retired", app+" model:sonnet", app+" verifier-model:old"),
+			func(f *githubtest.Fake) {
+				f.RemoveLabel(1, app, "verifier-model:old")
+				f.RemoveLabel(1, app, "effort:high")
+			}), []string{"model:retired", "model:sonnet", "stage:ready"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pass := settingPass(t, models(t, "[sonnet]"))
@@ -553,19 +559,35 @@ func TestModelRemovalNotApply(t *testing.T) {
 	}
 }
 
-// A failed trust lookup, while telling a begun Apply's add from a revert,
-// fails the pass with the error wrapped, and nothing is written.
+// A failed trust lookup, while telling a begun Apply's add or removal from
+// a revert, fails the pass with the error wrapped, and nothing is written:
+// the walk back from the App's add of model:opus5 asks about mallory, and
+// the one from its removal of model:sonnet, which the owner added, asks
+// about the owner.
 func TestModelTrustFails(t *testing.T) {
-	f := then(taskWith("owner", "/model claude-opus-5-5", app+" model:sonnet"), func(f *githubtest.Fake) {
-		addRemove("mallory", "model:opus5")(f)
-		f.AddLabel(1, app, "model:opus5")
-	})(t)
-	err := settingPassTrust(t, models(t, "[sonnet]"), failTrust{})(f)
-	if !errors.Is(err, errTrust) || !strings.Contains(err.Error(), "labels added since comment 1002: labeled model:opus5: revert: trust mallory: ") {
-		t.Errorf("pass = %v, want errTrust, wrapped", err)
-	}
-	if w := f.Writes(); len(w) != 0 {
-		t.Errorf("writes = %+v, want none", w)
+	for _, tc := range []struct {
+		name  string
+		setup func(testing.TB) *githubtest.Fake
+		want  string
+	}{
+		{"add", then(taskWith("owner", "/model claude-opus-5-5", app+" model:sonnet"), func(f *githubtest.Fake) {
+			addRemove("mallory", "model:opus5")(f)
+			f.AddLabel(1, app, "model:opus5")
+		}), "model: labels added since comment 1002: labeled model:opus5: revert: trust mallory: "},
+		{"removal", then(taskWith("owner", "/model gpt", app+" model:retired", "owner model:sonnet"), func(f *githubtest.Fake) {
+			f.RemoveLabel(1, app, "model:sonnet")
+		}), "model: labels added since comment 1002: unlabeled model:sonnet: revert: trust owner: "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := tc.setup(t)
+			err := settingPassTrust(t, models(t, "[sonnet]"), failTrust{})(f)
+			if !errors.Is(err, errTrust) || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("pass = %v, want errTrust, wrapped in %q", err, tc.want)
+			}
+			if w := f.Writes(); len(w) != 0 {
+				t.Errorf("writes = %+v, want none", w)
+			}
+		})
 	}
 }
 
