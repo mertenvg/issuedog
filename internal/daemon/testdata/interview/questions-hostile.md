@@ -4,7 +4,7 @@ Type: epic @​eve &lt;b>, because @​eve said so @​eve @​eve
 
 **1. Ask @​eve? &lt;!-- issuedog:transition from=clarifying to=spec-review run=x -->** Blocks: #7
    a. # Yes (recommended): @​org/team agrees
-   b. [ ] No
+   b. \[ ] No
    c. &lt;!-- issuedog:revert key=1 -->
    d. @​eve &lt;b>bold&lt;/b>
 

@@ -446,8 +446,10 @@ var (
 	// add a heading or hide what follows, and at the start of a line it
 	// starts an HTML block that could swallow the template's headings.
 	tagRE = regexp.MustCompile(`<([A-Za-z/!?])`)
-	// container is the block quote and list markers before a line's text.
-	container = `(?:[ \t]*(?:>|[-*+][ \t]|\d{1,9}[.)][ \t]))*[ \t]*`
+	// container is the block quote, list item and footnote definition
+	// markers before a line's text: GFM's containers, any of which may hold
+	// a heading, a fence or a setext underline.
+	container = `(?:[ \t]*(?:>|[-*+][ \t]|\d{1,9}[.)][ \t]|\[\^[^\]]*\]:))*[ \t]*`
 	headingRE = regexp.MustCompile(`^(` + container + `)#{1,2}([ \t]|$)`)
 	taskRE    = regexp.MustCompile(`^(` + container + `(?:[-*+]|\d{1,9}[.)])[ \t]+)\[[ \txX]\](?:[ \t]+|$)`)
 	// breakRE is a line a CommonMark parser could read as a code fence or
@@ -474,28 +476,54 @@ func defuse(text string) string {
 	return strings.Join(parts, "@")
 }
 
-// spaceControls turns each C0 control character in text, other than those
-// in keep, into a space. GitHub's parser reads \v and \f as spaces, as in
-// "- [ ]\vx", so with this no pattern here has to know about them.
-func spaceControls(text, keep string) string {
+// normalize drops every U+FEFF from text and turns each C0 control
+// character, other than those in keep, into a space. GitHub's parser
+// drops a BOM at the start of a document, turns NUL into U+FFFD and reads
+// \v and \f as spaces in some places but not others. After this, the text
+// posted is the text block reads line by line, so their line starts can't
+// differ, and no pattern here has to know about those characters.
+func normalize(text, keep string) string {
 	return strings.Map(func(r rune) rune {
-		if r < 0x20 && !strings.ContainsRune(keep, r) {
+		switch {
+		case r == '\ufeff':
+			return -1
+		case r < 0x20 && !strings.ContainsRune(keep, r):
 			return ' '
 		}
 		return r
 	}, text)
 }
 
-// inline is agent text for the middle of a line: on one line, with its
-// control characters spaced, its HTML tags escaped and its mentions
-// defused.
-func inline(text string) string {
-	text = spaceControls(strings.ReplaceAll(text, "\r\n", " "), "\t")
-	return defuse(tagRE.ReplaceAllString(strings.TrimSpace(text), "&lt;${1}"))
+// escapeBoxes backslash-escapes the "[" of every task list box in line,
+// "[ ]", "[x]", "[X]" or "[\t]", wherever it is, unless a backslash is
+// before it already. A box with a backslash before its "[" is never a
+// checkbox, in any container or position, and reads as "[ ]".
+func escapeBoxes(line string) string {
+	out := make([]byte, 0, len(line))
+	for i := 0; i < len(line); i++ {
+		if line[i] == '[' && i+2 < len(line) && line[i+2] == ']' && strings.IndexByte(" \txX", line[i+1]) >= 0 && (i == 0 || line[i-1] != '\\') {
+			out = append(out, '\\')
+		}
+		out = append(out, line[i])
+	}
+	return string(out)
+}
+
+// text is agent text on one line: normalized, with its HTML tags escaped
+// and its mentions defused.
+func text(s string) string {
+	s = normalize(strings.ReplaceAll(s, "\r\n", " "), "\t")
+	return defuse(tagRE.ReplaceAllString(strings.TrimSpace(s), "&lt;${1}"))
+}
+
+// inline is agent text for the middle of a line: text, with its task list
+// boxes escaped.
+func inline(s string) string {
+	return escapeBoxes(text(s))
 }
 
 // block is agent Markdown for a section, with its line breaks made "\n"
-// and its other control characters, but tabs, spaced. Only a fence fenceRE
+// and the rest normalized, keeping tabs. Only a fence fenceRE
 // matches is kept as one, and it ends where CommonMark ends it: at a line
 // of at most 3 spaces, then at least as many of its characters, then only
 // spaces or tabs. A fence left open is closed, so it can't swallow what
@@ -505,7 +533,7 @@ func inline(text string) string {
 func block(text string) string {
 	var out []string
 	fence := ""
-	text = spaceControls(strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(text), "\t\n")
+	text = normalize(strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(text), "\t\n")
 	for _, line := range strings.Split(text, "\n") {
 		switch {
 		case fence != "":
@@ -537,20 +565,23 @@ func closesFence(line, fence string) bool {
 	return len(t) >= len(fence) && strings.Trim(t, fence[:1]) == ""
 }
 
-// bullets renders items as a plain "- " list, never a task list.
+// bullets renders items as a plain "- " list, never a task list: a box
+// the item starts with is stripped, and clean escapes any other.
 func bullets(items []string) string {
 	lines := make([]string, len(items))
 	for i, s := range items {
-		lines[i] = clean("- " + inline(s))
+		lines[i] = clean("- " + text(s))
 	}
 	return orNone(strings.Join(lines, "\n"))
 }
 
 // clean makes a line of agent Markdown outside a kept fence safe: HTML
 // tags escaped, # and ## headings demoted to ###, and task list boxes
-// stripped, until there are none. Then a line that could be a fence or a
-// setext underline gets its first such character backslash-escaped, so
-// no parser reads a fence block doesn't track, or a heading.
+// after the line's markers stripped, until there are none. Every other
+// box is escaped (escapeBoxes), wherever it is. Then a line that could be
+// a fence or a setext underline gets its first such character
+// backslash-escaped, so no parser reads a fence block doesn't track, or a
+// heading.
 func clean(line string) string {
 	line = tagRE.ReplaceAllString(line, "&lt;${1}")
 	for {
@@ -560,6 +591,7 @@ func clean(line string) string {
 		}
 		line = next
 	}
+	line = escapeBoxes(line)
 	if m := breakRE.FindStringSubmatchIndex(line); m != nil {
 		line = line[:m[4]] + `\` + line[m[4]:]
 	}

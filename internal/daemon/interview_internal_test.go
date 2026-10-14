@@ -250,8 +250,10 @@ func TestInline(t *testing.T) {
 		"<!-- x --> <?x <a": "&lt;!-- x --> &lt;?x &lt;a",
 		"1 < 2 <3":          "1 < 2 <3",
 		"ask @eve":          "ask @\u200beve",
-		"[ ]\vx":            "[ ] x",
-		"\v[ ] x\f":         "[ ] x",
+		"[ ]\vx":            "\\[ ] x",
+		"\v[ ] x\f":         "\\[ ] x",
+		"see [x] and [y]":   "see \\[x] and [y]",
+		"\ufeff@eve":        "@\u200beve",
 		"a\tb\x00c":         "a\tb c",
 	} {
 		if got := inline(in); got != want {
@@ -305,12 +307,44 @@ func TestBlock(t *testing.T) {
 		{"other controls", "a\x00b\x1bc\x7fd", "a b c\x7fd"},
 		// Containers: more digits, +, and ).
 		{"containers", "10. # a\n+ ## b\n1) # c\n10. ```\n+ ~~~\n1) ```", "10. ### a\n+ ### b\n1) ### c\n10. \\```\n+ \\~~~\n1) \\```"},
+		{"long ordered markers", "1234. # a\n123456789) ```", "1234. ### a\n123456789) \\```"},
+		// A link reference definition isn't a container: only a footnote's is.
+		{"link reference definition", "[ref]: # y\n[^ref]: # y", "[ref]: # y\n[^ref]: ### y"},
 		{"heading forms", "#\tx\n#\n##", "###\tx\n###\n###"},
 		{"single dash underline", "Foo\n-", "Foo\n\\-"},
 		{"tilde in a tilde info string", "~~~ a~b\n# code\n~~~\n# x", "~~~ a~b\n# code\n~~~\n### x"},
 		{"fence indented 1 space", " ```\n# x", " \\```\n### x"},
 		{"close with a trailing tab", "```\ncode\n```\t\n# x", "```\ncode\n```\t\n### x"},
 		{"uppercase tag", "<DETAILS>\n# x", "&lt;DETAILS>\n### x"},
+		// GitHub drops a BOM at the start of a document, so block drops
+		// every one, and a fence after it is kept as one.
+		{"BOM before a fence", "\ufeff```\nx\n```\n@eve\n<details>\n# H1\n```",
+			"```\nx\n```\n@\u200beve\n&lt;details>\n### H1\n```\n```"},
+		{"BOM line", "\ufeff\n```\nx\n```\n@eve", "```\nx\n```\n@\u200beve"},
+		{"BOM inside", "a\ufeffb @\ufeffeve", "ab @\u200beve"},
+		// NUL is a space, not a character that stops a closing fence.
+		{"NUL before a closer", "```\n\x00```\n# x", "```\n ```\n### x"},
+		// A box is escaped wherever it is, so no container or line start
+		// can make it a checkbox.
+		{"box after 1x", "- a\n\n  1x [ ] y", "- a\n\n  1x \\[ ] y"},
+		{"box after a year", "- a\n\n  2026 [ ] y", "- a\n\n  2026 \\[ ] y"},
+		{"box after 10 digits", "- a\n\n  1234567890. [ ] y", "- a\n\n  1234567890. \\[ ] y"},
+		{"box after an empty item", "*\n  1x [ ] y", "*\n  1x \\[ ] y"},
+		{"boxes mid-line", "a [ ] b [x] c [X] d [\t] e [y] f \\[ ] g", "a \\[ ] b \\[x] c \\[X] d \\[\t] e [y] f \\[ ] g"},
+		{"box at the end", "x [ ]", "x \\[ ]"},
+		{"box at the start", "[x] marks", "\\[x] marks"},
+		{"box forms after a marker", "- [ ]\tx\n-\t[ ] y\n+ [ ] z\n1234. [ ] w\n123456789) [x] v",
+			"- x\n-\ty\n+ z\n1234. w\n123456789) v"},
+		{"not boxes", "- [y] a\n- [\u00a0] b\n- [] c\n- [  ] d", "- [y] a\n- [\u00a0] b\n- [] c\n- [  ] d"},
+		// Footnote definitions are containers too.
+		{"footnote heading", "x[^1]\n\n[^1]: # H1", "x[^1]\n\n[^1]: ### H1"},
+		{"footnote fence", "[^1]: ```\n@eve", "[^1]: \\```\n@\u200beve"},
+		{"footnote quote heading", "[^n]: > ## H2", "[^n]: > ### H2"},
+		// Two characters are no fence; NBSP is no space to CommonMark.
+		{"two backticks", "``\n# x\n``", "``\n### x\n``"},
+		{"two tildes", "~~\n# x", "~~\n### x"},
+		{"NBSP before a closer", "```\n\u00a0```\n# x", "```\n\u00a0```\n# x\n```"},
+		{"NBSP after a closer", "```\n```\u00a0\n# x", "```\n```\u00a0\n# x\n```"},
 		// Line breaks, mentions and blank lines.
 		{"CRLF", "a\r\n# b\rc", "a\n### b\nc"},
 		// A fence's code is kept as it is, mentions included, since GitHub
@@ -327,8 +361,8 @@ func TestBlock(t *testing.T) {
 
 // List items are cleaned like block lines.
 func TestBullets(t *testing.T) {
-	got := bullets([]string{"[X] up", "```", "<b>x</b>", "## h", "===", "a\nb", "[ ]\vx", "[X]\fx", "\v[ ] x", "[\t] x"})
-	want := "- up\n- \\```\n- &lt;b>x&lt;/b>\n- ### h\n- \\===\n- a b\n- x\n- x\n- x\n- x"
+	got := bullets([]string{"[X] up", "```", "<b>x</b>", "## h", "===", "a\nb", "[ ]\vx", "[X]\fx", "\v[ ] x", "[\t] x", "a [ ] b", "\ufeff[ ] c"})
+	want := "- up\n- \\```\n- &lt;b>x&lt;/b>\n- ### h\n- \\===\n- a b\n- x\n- x\n- x\n- x\n- a \\[ ] b\n- c"
 	if got != want {
 		t.Errorf("got\n%s\nwant\n%s", got, want)
 	}
