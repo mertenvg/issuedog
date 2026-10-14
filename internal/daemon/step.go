@@ -89,14 +89,19 @@ func (st *Step) counted(ctx context.Context, s *github.Snapshot, d Dirt) (map[in
 // and a 👎'd command with no clean reply gets it again (reword). A processed
 // comment missing its 👍 gets it (SPEC §5.2), and one edited since it was
 // used gets one edited reply (SPEC §6.2). At clarifying, a plain comment in
-// the round is an answer, and gets a 👍. At spec-review, a revision request
-// is handled as /revise (requested).
+// the round is an answer, and gets a 👍. A revision request, a plain comment
+// posted at spec-review, is handled as /revise (requested). Once the stage
+// has moved on, one is only a 👎'd request whose reply was lost, which gets
+// it (reword). One the App never reacted to is left alone, such as one from
+// before #83, one by a user trusted only since, or one posted just before
+// the owner set the stage by hand.
 func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment) error {
 	is := state.Derive(s, st.AppSlug, d.Has)
 	named := is.Keys[state.CmdKey(c.ID)] // any reply marker included
 	cmd, isCmd := state.ParseCommand(c.Body)
+	late := false // a request at a stage since moved on
 	if r, ok := requested(s, st.AppSlug, d, is, c); ok {
-		cmd, isCmd = r, true
+		cmd, isCmd, late = r, true, is.Stage != state.SpecReview
 	}
 	answer := !isCmd && !named && is.Stage == state.Clarifying && c.ID > is.Round
 	reason := replied(is, c.ID)
@@ -113,6 +118,9 @@ func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github
 			return nil
 		}
 		return st.reword(ctx, s, d, c, cmd, isCmd, is.Stage)
+	}
+	if late && !acked {
+		return nil
 	}
 	if reason == "rejected" { // not the App's own writes, which 👎 first
 		return st.react(ctx, c.ID, "-1")
@@ -173,16 +181,13 @@ func editedSince(c github.Comment, t time.Time) bool {
 // a transition whose seen covers id: one with no seen, such as a hold, read
 // no answers. Like state.Derive, it skips dirty comments.
 func (st *Step) usedAt(s *github.Snapshot, d Dirt, id int64, isCmd bool) (at time.Time, used bool, posted state.Stage) {
-	posted = state.Intake
+	posted = postedAt(s, st.AppSlug, d, id)
 	for _, c := range s.Comments {
 		if d.Has(c.ID) {
 			continue
 		}
 		for _, m := range github.TrustedMarkers(c.Author, c.Body, st.AppSlug) {
 			b, bounds := state.RoundBound(m, c.ID)
-			if bounds && b < id {
-				posted = state.Stage(m.Fields["to"])
-			}
 			if !used && (m.Fields["cmd"] == state.CmdKey(id).ID || (!isCmd && bounds && m.Fields[state.FieldSeen] != "" && b >= id)) {
 				at, used = c.CreatedAt, true
 			}

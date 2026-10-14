@@ -75,8 +75,15 @@ func (st *Step) command(ctx context.Context, s *github.Snapshot, d Dirt, c githu
 }
 
 // why returns why cmd, from comment c, doesn't apply at stage, or a
-// Rejection with no Reason and its handler. It doesn't write.
+// Rejection with no Reason and its handler. It doesn't write. A revision
+// request (requested) at any stage but spec-review was posted there, and
+// the stage has moved on since, so its reason says that, whatever /revise
+// would say at the stage now. It's Final: a new comment now wouldn't send
+// the spec back.
 func (st *Step) why(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment, cmd state.Command, stage state.Stage) (Rejection, Handler, error) {
+	if _, parsed := state.ParseCommand(c.Body); !parsed && stage != state.SpecReview {
+		return Rejection{Reason: fmt.Sprintf("this issue is at `%s` now, and a comment sends the spec back only at `%s`", stage, state.SpecReview), Final: true}, Handler{}, nil
+	}
 	if err := cmd.Check(stage); err != nil {
 		return Rejection{Reason: err.Error()}, Handler{}, nil
 	}

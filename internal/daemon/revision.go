@@ -246,23 +246,53 @@ func ReviseCommand() Handler {
 }
 
 // requested returns the /revise that comment c, trusted input, stands for
-// if it is a revision request (SPEC §7.4): at spec-review, a comment that
-// isn't a command and that no marker names, posted after the latest
-// revision, and after the issue entered the stage (is.Round), so a remark
-// left at an earlier stage never counts. After the revision is the
-// revision's Seen, if it has one, as a comment posted after the App read
-// the issue may come before the revision comment; else after its comment.
+// if it is a revision request (SPEC §7.4): a comment that isn't a command
+// and that no marker names, posted at spec-review after the latest revision,
+// whatever the stage is now. The stage c was posted at is its round's
+// (postedAt), so a remark left at another stage never counts. After the
+// revision is after its Seen, if it has one, as a comment posted after the
+// App read the issue may come before the revision comment; else after its
+// comment.
+//
+// So a request rejected at spec-review whose reply was lost still gets it
+// after the stage moves on (Step.handle). The latest revision is then still
+// the one c was posted after: only the App posts one, and only after a pass
+// whose Run succeeded, so had the reply. This reads only the markers in s,
+// and Step reads the App's reactions only to a request, not to every plain
+// comment. At spec-review it handles a request in the pass that finds it,
+// after which a reply or a move names it. Once the stage has moved on, the
+// requests left are those posted after the latest revision that the App
+// never handled, such as one by a user trusted only since: the leftovers
+// of the last spec-review visit, which the next revision ends.
 func requested(s *github.Snapshot, appSlug string, d Dirt, is state.Issue, c github.Comment) (state.Command, bool) {
-	if _, cmd := state.ParseCommand(c.Body); cmd || is.Stage != state.SpecReview || is.Keys[state.CmdKey(c.ID)] {
+	if _, cmd := state.ParseCommand(c.Body); cmd || is.Keys[state.CmdKey(c.ID)] || postedAt(s, appSlug, d, c.ID) != state.SpecReview {
 		return state.Command{}, false
 	}
 	latest, _ := state.LatestRevision(s, appSlug, d.Has)
-	if c.ID <= max(cmp.Or(latest.Seen, latest.Comment), is.Round) {
+	if c.ID <= cmp.Or(latest.Seen, latest.Comment) {
 		return state.Command{}, false
 	}
 	text := strings.TrimSpace(c.Body)
 	line, _, _ := strings.Cut(text, "\n")
 	return state.Command{Name: "revise", Arg: strings.TrimSpace(line), Text: text}, true
+}
+
+// postedAt returns the stage of the round comment id is in (state.RoundBound),
+// at which it was posted: the to= of the last transition whose bound is below
+// id, or Intake if there is none. Like state.Derive, it skips dirty comments.
+func postedAt(s *github.Snapshot, appSlug string, d Dirt, id int64) state.Stage {
+	posted := state.Intake
+	for _, c := range s.Comments {
+		if d.Has(c.ID) {
+			continue
+		}
+		for _, m := range github.TrustedMarkers(c.Author, c.Body, appSlug) {
+			if b, bounds := state.RoundBound(m, c.ID); bounds && b < id {
+				posted = state.Stage(m.Fields["to"])
+			}
+		}
+	}
+	return posted
 }
 
 // newestRead returns the newest ID of s's comments by anyone but the App,
