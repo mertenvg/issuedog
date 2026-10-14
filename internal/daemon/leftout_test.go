@@ -283,3 +283,45 @@ func TestLeftOutIssueReadOnlyWhenDue(t *testing.T) {
 		t.Errorf("labels %q once due; want issue 1 read again, and scope:x removed", f.State().Issues[0].Labels)
 	}
 }
+
+// A stage label for another stage, left out, doesn't stop the attempt cap's
+// state error, which the issue read again would take for a move on.
+func TestLeftOutStageKeepsCapError(t *testing.T) {
+	f, g, answer := heldRig(t, 1)
+	g.claude(failOut, 1)
+	g.stage.pending = priorityP1
+	f.RenameLabel("foo", "stage:held")
+	g.pass() // held back
+	f.Advance(github.HoldBound)
+	g.pass()
+	f.AddComment(1, "owner", "/priority p1")
+	g.pass()
+	if want := []string{capError(answer)}; g.runs() != 1 || !slices.Equal(errorMarkers(f, 1), want) {
+		t.Errorf("%d runs, errors %q; want one failed run, and %q", g.runs(), errorMarkers(f, 1), want)
+	}
+}
+
+// A stage:held label left out on a sub-issue isn't a hold /resume would
+// end there.
+func TestLeftOutHoldIsNoHoldForResume(t *testing.T) {
+	f := chain(t) // 1 > 2 > 3
+	f.AddLabel(3, "mallory", "foo")
+	f.Advance(time.Hour)
+	d := newDaemon(t, f, newOrigin(t), nil)
+	iterate(t, d)
+	f.RenameLabel("foo", "stage:held")
+	f.AddComment(3, "mallory", "poke")
+	iterate(t, d) // held back
+	f.Advance(time.Minute)
+	f.AddComment(1, "owner", "/resume")
+	iterate(t, d)
+	var reply string
+	for _, c := range f.State().Issues[0].Comments {
+		if strings.Contains(c.Body, "issuedog:reply reason=rejected") {
+			reply = c.Body
+		}
+	}
+	if !strings.Contains(reply, "nothing here or in its open sub-issues is on an owner hold") {
+		t.Errorf("reply %q; want /resume rejected as there's no hold", reply)
+	}
+}
