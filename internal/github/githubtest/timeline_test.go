@@ -2,6 +2,7 @@ package githubtest
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"reflect"
 	"testing"
@@ -102,5 +103,39 @@ func TestLagEvents(t *testing.T) {
 	}
 	if date, want := resp.Header.Get("Date"), Start.Add(3*time.Second).Format(http.TimeFormat); date != want {
 		t.Errorf("Date = %q, want the clock's, %q", date, want)
+	}
+}
+
+// RenameIssue changes the title and writes a renamed event with its own ID,
+// by its actor, saying what the title was and is.
+func TestRenameIssue(t *testing.T) {
+	f := New(t, "o/r", "issuedog")
+	n := f.AddIssue("owner", "Old", "body")
+	label := f.AddLabel(n, "owner", "priority:p1")
+	first := f.RenameIssue(n, "eve", "Middle")
+	second := f.RenameIssue(n, "owner", "New")
+	if first == label || second == first || first == 0 {
+		t.Errorf("event IDs: label %d, renames %d and %d; want them distinct", label, first, second)
+	}
+	c := f.Client(t)
+	s, err := c.Snapshot(context.Background(), "o", "r", n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Title != "New" {
+		t.Errorf("title = %q, want New", s.Title)
+	}
+	events, err := c.TimelineSince(context.Background(), "o", "r", n, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range events {
+		if e.GetEvent() == "renamed" {
+			got = append(got, fmt.Sprintf("%d %s %s to %s", e.GetID(), e.GetActor().GetLogin(), e.GetRename().GetFrom(), e.GetRename().GetTo()))
+		}
+	}
+	if want := []string{fmt.Sprintf("%d eve Old to Middle", first), fmt.Sprintf("%d owner Middle to New", second)}; !reflect.DeepEqual(got, want) {
+		t.Errorf("renamed events = %q, want %q", got, want)
 	}
 }

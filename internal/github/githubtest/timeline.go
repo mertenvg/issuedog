@@ -92,6 +92,21 @@ func (f *Fake) Advance(d time.Duration) {
 	f.now = f.now.Add(d)
 }
 
+// RenameIssue changes an issue's title as login, with a renamed event on its
+// timeline, as GitHub writes one, and returns the event's ID.
+func (f *Fake) RenameIssue(number int, login, title string) int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	is := f.issues[number-1]
+	from := is.GetTitle()
+	is.Title, is.UpdatedAt = &title, f.tick()
+	f.lastEvent++
+	id := firstEvent + f.lastEvent
+	is.labelEvents = append(is.labelEvents, &gogithub.Timeline{ID: &id, Event: new("renamed"), Actor: user(login),
+		Rename: &gogithub.Rename{From: &from, To: &title}, CreatedAt: &gogithub.Timestamp{Time: is.UpdatedAt.Time}})
+	return id
+}
+
 // labelEvent adds a labeled or unlabeled event to an issue's timeline, made
 // at at and written after the lag, and returns its ID.
 func (f *Fake) labelEvent(is *issue, event, login, name string, at *gogithub.Timestamp) int64 {
@@ -102,7 +117,7 @@ func (f *Fake) labelEvent(is *issue, event, login, name string, at *gogithub.Tim
 	return id
 }
 
-// timeline serves an issue's labeled, unlabeled and commented events, oldest
+// timeline serves an issue's labeled, unlabeled, renamed and commented events, oldest
 // first, but for label events not written yet (LagEvents). As on GitHub, a
 // commented event has its comment's ID, user and current body, and a deleted
 // comment's is gone.

@@ -80,7 +80,7 @@ type issue struct {
 	parent         int
 	lastEdit       lastEdit
 	history        []lastEdit
-	labelEvents    []*gogithub.Timeline // labeled and unlabeled, oldest first
+	labelEvents    []*gogithub.Timeline // labeled, unlabeled and renamed, oldest first
 }
 
 type comment struct {
