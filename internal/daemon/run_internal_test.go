@@ -115,10 +115,11 @@ func TestWorkSweepsTempLeases(t *testing.T) {
 	}
 }
 
-// pick finds each agent's setting, and none for an unknown agent.
+// pick finds each agent's setting, the interviewer's for triage, and none
+// for an unknown agent.
 func TestPick(t *testing.T) {
 	p := config.PerStage[int]{Interviewer: 1, Planner: 2, Implementer: 3, Verifier: 4}
-	for name, want := range map[string]int{"interviewer": 1, "planner": 2, "implementer": 3, "verifier": 4} {
+	for name, want := range map[string]int{"interviewer": 1, "planner": 2, "implementer": 3, "verifier": 4, "triage": 1} {
 		if got, ok := pick(p, name); got != want || !ok {
 			t.Errorf("pick(%s) = %d, %t; want %d", name, got, ok, want)
 		}

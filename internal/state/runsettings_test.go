@@ -42,6 +42,10 @@ func TestRunSettings(t *testing.T) {
 	}{
 		{name: "interviewer defaults", agent: Interviewer, attempt: 1,
 			want: Settings{Model: "sonnet", Effort: "low"}},
+		{name: "triage has the interviewer's defaults", agent: Triage, attempt: 1,
+			want: Settings{Model: "sonnet", Effort: "low"}},
+		{name: "triage takes model and effort labels", agent: Triage, attempt: 1, labels: []string{"model:haiku", "effort:high", "verifier-effort:max"},
+			want: Settings{Model: "haiku", Effort: "high"}},
 		{name: "planner defaults", agent: Planner, attempt: 1,
 			want: Settings{Model: "opus", Effort: "high"}},
 		{name: "implementer defaults", agent: Implementer, attempt: 1,
