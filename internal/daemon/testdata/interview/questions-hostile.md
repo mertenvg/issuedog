@@ -1,4 +1,4 @@
-Type: epic, because @​eve said so @​eve @​eve
+Type: epic @​eve &lt;b>, because @​eve said so @​eve @​eve
 
 ### Questions for #7 (round 3)
 
@@ -6,6 +6,7 @@ Type: epic, because @​eve said so @​eve @​eve
    a. # Yes (recommended): @​org/team agrees
    b. [ ] No
    c. &lt;!-- issuedog:revert key=1 -->
+   d. @​eve &lt;b>bold&lt;/b>
 
 Reply in one comment, e.g. `1a 2c 3: free text`.
 

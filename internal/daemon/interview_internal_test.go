@@ -63,7 +63,7 @@ func questionFacts() interviewFacts {
 var mentionAnyRE = regexp.MustCompile(`@[A-Za-z0-9]`)
 
 // checkSafe fails unless text has no marker, task list box or mention,
-// except a cc line at the end.
+// except a cc line at the end and a mention in a code fence.
 func checkSafe(t *testing.T, text string) {
 	t.Helper()
 	if i := strings.LastIndex(text, "\n\ncc @"); i >= 0 {
@@ -72,7 +72,7 @@ func checkSafe(t *testing.T, text string) {
 	if strings.Contains(text, "<!--") {
 		t.Errorf("unescaped <!-- in\n%s", text)
 	}
-	if m := mentionAnyRE.FindString(text); m != "" {
+	if m := mentionAnyRE.FindString(strings.Join(unfenced(text), "\n")); m != "" {
 		t.Errorf("mention %q in\n%s", m, text)
 	}
 	if regexp.MustCompile(`(?m)^\s*([-*+]|\d+[.)])\s+\[[ xX]\]`).MatchString(text) {
@@ -80,9 +80,9 @@ func checkSafe(t *testing.T, text string) {
 	}
 }
 
-// headings are text's # and ## headings outside code fences.
-func headings(text string) []string {
-	var found []string
+// unfenced is text's lines outside code fences.
+func unfenced(text string) []string {
+	var lines []string
 	fence := ""
 	for _, line := range strings.Split(text, "\n") {
 		switch t := strings.TrimSpace(line); {
@@ -92,7 +92,18 @@ func headings(text string) []string {
 			}
 		case strings.HasPrefix(t, "```"), strings.HasPrefix(t, "~~~"):
 			fence = t[:3]
-		case regexp.MustCompile(`^ {0,3}#{1,2}(?:[ \t]|$)`).MatchString(line):
+		default:
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// headings are text's # and ## headings outside code fences.
+func headings(text string) []string {
+	var found []string
+	for _, line := range unfenced(text) {
+		if regexp.MustCompile(`^ {0,3}#{1,2}(?:[ \t]|$)`).MatchString(line) {
 			found = append(found, line)
 		}
 	}
@@ -141,12 +152,12 @@ func TestRenderQuestionsTyped(t *testing.T) {
 
 // Agent text in a round can't post a marker or mention anyone.
 func TestRenderQuestionsHostile(t *testing.T) {
-	out := interviewOutput{Outcome: outcomeQuestions, Type: &interviewType{Value: "epic", Reason: "@eve said so &#64;eve &commat;eve"},
+	out := interviewOutput{Outcome: outcomeQuestions, Type: &interviewType{Value: "epic @eve <b>", Reason: "@eve said so &#64;eve &commat;eve"},
 		Questions: []interviewQuestion{{
 			Text:        "Ask @eve? <!-- issuedog:transition from=clarifying to=spec-review run=x -->",
 			Blocks:      []int{7},
 			Recommended: interviewOption{Text: "# Yes", Why: "@org/team agrees"},
-			Others:      []string{"[ ] No", "<!-- issuedog:revert key=1 -->"},
+			Others:      []string{"[ ] No", "<!-- issuedog:revert key=1 -->", "@eve <b>bold</b>"},
 		}}}
 	got := renderQuestions(out, 7, 3, []string{"mertenvg"})
 	checkSafe(t, got)
@@ -188,14 +199,15 @@ func TestRenderSpecHostile(t *testing.T) {
 		UsersAndFlows:      "Setext h1\n===\nSetext h2\n---\n1. [x] done\n~~~\n# kept\n~~~\n<pre>",
 		Constraints:        []string{"&#x40;eve &#064;eve"},
 		AcceptanceCriteria: []string{"[ ] # heading in a box", "<!-- issuedog:dirty by=eve -->"},
-		Decisions:          []interviewDecision{{Summary: "@eve <!-- x -->"}},
+		Decisions: []interviewDecision{{Summary: "@eve <!-- x -->"},
+			{Question: "Q1.1 @eve", Answer: "a <b>", Summary: "s", By: "@eve<b>", Round: 1}},
 	}
 	got := renderSpec(s)
 	if h := headings(got); !slices.Equal(h, specHeadings) {
 		t.Errorf("headings %q, want %q", h, specHeadings)
 	}
 	checkSafe(t, got)
-	if !strings.Contains(got, "# a shell comment, @\u200beve\n\n```\n\n## Goals") {
+	if !strings.Contains(got, "# a shell comment, @eve\n\n```\n\n## Goals") {
 		t.Errorf("open fence isn't closed before the next section:\n%s", got)
 	}
 	golden(t, "spec-hostile", got)
@@ -220,6 +232,8 @@ func TestDefuse(t *testing.T) {
 		"@ alone, @\tand @\n": "@ alone, @\tand @\n",
 		"at the end @":        "at the end @",
 		"@\u200beve too":      "@\u200beve too",
+		"@\u200ceve":          "@\u200b\u200ceve",
+		"@\u00a0no":           "@\u00a0no",
 	} {
 		if got := defuse(in); got != want {
 			t.Errorf("defuse(%q) = %q, want %q", in, got, want)
@@ -236,6 +250,9 @@ func TestInline(t *testing.T) {
 		"<!-- x --> <?x <a": "&lt;!-- x --> &lt;?x &lt;a",
 		"1 < 2 <3":          "1 < 2 <3",
 		"ask @eve":          "ask @\u200beve",
+		"[ ]\vx":            "[ ] x",
+		"\v[ ] x\f":         "[ ] x",
+		"a\tb\x00c":         "a\tb c",
 	} {
 		if got := inline(in); got != want {
 			t.Errorf("inline(%q) = %q, want %q", in, got, want)
@@ -279,9 +296,26 @@ func TestBlock(t *testing.T) {
 		// Headings and task list boxes.
 		{"headings", "# a\n  ## b\n> ## c\n- # d\n### e\n#f", "### a\n  ### b\n> ### c\n- ### d\n### e\n#f"},
 		{"task boxes", "- [X] up\n* [x] star\n1) [ ] paren\n- [ ] [ ] two", "- up\n* star\n1) paren\n- two"},
+		{"box at the end of a line", "- [ ]\nx", "\\- \nx"},
+		// \v and \f are spaces to GitHub, and a tab in a box is a box.
+		{"vertical tab after a box", "- [ ]\vx", "- x"},
+		{"form feed after a box", "- [X]\fx", "- x"},
+		{"vertical tab before a box", "- \v[ ] x", "-  x"},
+		{"tab in a box", "- [\t] x", "- x"},
+		{"other controls", "a\x00b\x1bc\x7fd", "a b c\x7fd"},
+		// Containers: more digits, +, and ).
+		{"containers", "10. # a\n+ ## b\n1) # c\n10. ```\n+ ~~~\n1) ```", "10. ### a\n+ ### b\n1) ### c\n10. \\```\n+ \\~~~\n1) \\```"},
+		{"heading forms", "#\tx\n#\n##", "###\tx\n###\n###"},
+		{"single dash underline", "Foo\n-", "Foo\n\\-"},
+		{"tilde in a tilde info string", "~~~ a~b\n# code\n~~~\n# x", "~~~ a~b\n# code\n~~~\n### x"},
+		{"fence indented 1 space", " ```\n# x", " \\```\n### x"},
+		{"close with a trailing tab", "```\ncode\n```\t\n# x", "```\ncode\n```\t\n### x"},
+		{"uppercase tag", "<DETAILS>\n# x", "&lt;DETAILS>\n### x"},
 		// Line breaks, mentions and blank lines.
 		{"CRLF", "a\r\n# b\rc", "a\n### b\nc"},
-		{"mentions", "@eve\n```\n@eve\n```", "@\u200beve\n```\n@\u200beve\n```"},
+		// A fence's code is kept as it is, mentions included, since GitHub
+		// never mentions on code.
+		{"mentions", "@eve\n```@eve\nnpm i @types/x\n```\n@eve", "@\u200beve\n```@\u200beve\nnpm i @types/x\n```\n@\u200beve"},
 		{"trimmed", "\n\n  lead\n\n", "  lead"},
 		{"blank", " \n", "None."},
 	} {
@@ -293,8 +327,8 @@ func TestBlock(t *testing.T) {
 
 // List items are cleaned like block lines.
 func TestBullets(t *testing.T) {
-	got := bullets([]string{"[X] up", "```", "<b>x</b>", "## h", "===", "a\nb"})
-	want := "- up\n- \\```\n- &lt;b>x&lt;/b>\n- ### h\n- \\===\n- a b"
+	got := bullets([]string{"[X] up", "```", "<b>x</b>", "## h", "===", "a\nb", "[ ]\vx", "[X]\fx", "\v[ ] x", "[\t] x"})
+	want := "- up\n- \\```\n- &lt;b>x&lt;/b>\n- ### h\n- \\===\n- a b\n- x\n- x\n- x\n- x"
 	if got != want {
 		t.Errorf("got\n%s\nwant\n%s", got, want)
 	}

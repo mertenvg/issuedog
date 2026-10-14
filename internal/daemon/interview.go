@@ -447,9 +447,9 @@ var (
 	// starts an HTML block that could swallow the template's headings.
 	tagRE = regexp.MustCompile(`<([A-Za-z/!?])`)
 	// container is the block quote and list markers before a line's text.
-	container = `(?:[ \t]*(?:>|[-*+](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$)))*[ \t]*`
+	container = `(?:[ \t]*(?:>|[-*+][ \t]|\d{1,9}[.)][ \t]))*[ \t]*`
 	headingRE = regexp.MustCompile(`^(` + container + `)#{1,2}([ \t]|$)`)
-	taskRE    = regexp.MustCompile(`^(` + container + `(?:[-*+]|\d{1,9}[.)])[ \t]+)\[[ xX]\](?:[ \t]+|$)`)
+	taskRE    = regexp.MustCompile(`^(` + container + `(?:[-*+]|\d{1,9}[.)])[ \t]+)\[[ \txX]\](?:[ \t]+|$)`)
 	// breakRE is a line a CommonMark parser could read as a code fence or
 	// a setext heading's underline, at any indent and in any container.
 	// Its second group starts at the character block escapes.
@@ -474,24 +474,39 @@ func defuse(text string) string {
 	return strings.Join(parts, "@")
 }
 
+// spaceControls turns each C0 control character in text, other than those
+// in keep, into a space. GitHub's parser reads \v and \f as spaces, as in
+// "- [ ]\vx", so with this no pattern here has to know about them.
+func spaceControls(text, keep string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 && !strings.ContainsRune(keep, r) {
+			return ' '
+		}
+		return r
+	}, text)
+}
+
 // inline is agent text for the middle of a line: on one line, with its
-// HTML tags escaped and its mentions defused.
+// control characters spaced, its HTML tags escaped and its mentions
+// defused.
 func inline(text string) string {
-	text = strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(text)
+	text = spaceControls(strings.ReplaceAll(text, "\r\n", " "), "\t")
 	return defuse(tagRE.ReplaceAllString(strings.TrimSpace(text), "&lt;${1}"))
 }
 
-// block is agent Markdown for a section. Every line is defused. Outside
-// code fences, each line is cleaned as clean says. Only a fence fenceRE
+// block is agent Markdown for a section, with its line breaks made "\n"
+// and its other control characters, but tabs, spaced. Only a fence fenceRE
 // matches is kept as one, and it ends where CommonMark ends it: at a line
 // of at most 3 spaces, then at least as many of its characters, then only
 // spaces or tabs. A fence left open is closed, so it can't swallow what
-// follows.
+// follows. A line inside a kept fence is code, which GitHub never
+// mentions on, so it's kept as it is, apart from github.Escape. Every
+// other line is defused, and cleaned as clean says.
 func block(text string) string {
 	var out []string
 	fence := ""
-	for _, line := range strings.Split(strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(text), "\n") {
-		line = defuse(line)
+	text = spaceControls(strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(text), "\t\n")
+	for _, line := range strings.Split(text, "\n") {
 		switch {
 		case fence != "":
 			if closesFence(line, fence) {
@@ -499,9 +514,9 @@ func block(text string) string {
 			}
 		case fenceRE.MatchString(line):
 			m := fenceRE.FindStringSubmatch(line)
-			fence = m[1] + m[2]
+			fence, line = m[1]+m[2], defuse(line)
 		default:
-			line = clean(line)
+			line = clean(defuse(line))
 		}
 		out = append(out, line)
 	}

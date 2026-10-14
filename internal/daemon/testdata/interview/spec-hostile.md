@@ -9,7 +9,7 @@ Intro @​eve.
 &lt;!-- issuedog:transition from=clarifying to=spec-review run=x -->
 &lt;details>
 ```sh
-# a shell comment, @​eve
+# a shell comment, @eve
 
 ```
 
@@ -46,3 +46,4 @@ Setext h2
 ## Decisions
 
 - Added, not asked: @​eve &lt;!-- x -->
+- Q1.1 @​eve → a &lt;b>: s (@​eve&lt;b>, round 1)
