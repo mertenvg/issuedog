@@ -224,7 +224,7 @@ func TestHoldResumePriority(t *testing.T) {
 			}),
 			on: 1,
 			want: map[int]issueWant{
-				1: {[]string{"stage:ready"}, []string{rejected("/resume", madeOn("#2"), "1003")}},
+				1: {[]string{"stage:ready"}, []string{final("/resume", "I didn't apply this command", madeOn("#2"), "1003")}},
 			},
 			react: "-1"},
 		{name: "/resume on a parent leaves a child labelled held by hand, in any case, with no marker yet",
@@ -234,7 +234,7 @@ func TestHoldResumePriority(t *testing.T) {
 			}),
 			on: 1,
 			want: map[int]issueWant{
-				1: {[]string{"stage:ready"}, []string{rejected("/resume", madeOn("#2"), "1003")}},
+				1: {[]string{"stage:ready"}, []string{final("/resume", "I didn't apply this command", madeOn("#2"), "1003")}},
 			},
 			react: "-1"},
 		{name: "/resume names a closed issue whose /hold made the holds left below it",
@@ -243,7 +243,7 @@ func TestHoldResumePriority(t *testing.T) {
 				func(f *githubtest.Fake) { f.Close(2) }),
 			on: 1,
 			want: map[int]issueWant{
-				1: {[]string{"stage:ready"}, []string{rejected("/resume", madeOn("#2"), "1004")}},
+				1: {[]string{"stage:ready"}, []string{final("/resume", "I didn't apply this command", madeOn("#2"), "1004")}},
 			},
 			react: "-1"},
 		{name: "/resume ends a hold that a /hold on its grandparent made",
@@ -519,7 +519,7 @@ func TestOwnHolds(t *testing.T) {
 			}
 			if tt.reply != "" {
 				// Up to its cmd's value, the command's ID.
-				want = []string{strings.TrimSuffix(rejected(last.body, tt.reply, ""), " -->")}
+				want = []string{strings.TrimSuffix(final(last.body, "I didn't apply this command", tt.reply, ""), " -->")}
 			}
 			if len(replies) != len(want) || (len(want) > 0 && !strings.HasPrefix(replies[0], want[0])) {
 				t.Errorf("replies %q, want %q", replies, want)

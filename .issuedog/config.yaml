@@ -27,7 +27,7 @@ stages:
   max_budget_usd: {}
 loop:
   idle_sleep: 60s
-  max_attempts: 3
+  max_attempts: 5
   max_questions_per_round: 7
 network:
   allow: [api.anthropic.com, proxy.golang.org, sum.golang.org]
