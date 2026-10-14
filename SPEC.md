@@ -149,7 +149,7 @@ GitHub is the single source of truth. The daemon keeps only an in-memory cache, 
 | Scope | `scope:<name>` from the repo's allowed list |
 | Model and effort | At most one each of `model:<suffix>`, `effort:<level>`, `verifier-model:<suffix>` and `verifier-effort:<level>` (3.3, section 13) |
 | Transition history | Bot comments carrying a `transition` marker, e.g. `<!-- issuedog:transition from=clarifying to=spec-review rev=3 body=9f2a61c0 run=8f2c effort=high model=opus ran=claude-opus-5-5 seen=2214587 -->` |
-| Attempt count | Hidden marker on the latest bot verifier comment for a task. For other stage runs, the daemon's memory and the lease (8.2, 8.3), so losing the container resets that count |
+| Attempt count | Hidden marker on the latest bot verifier comment for a task. For other stage runs, the daemon's memory and the lease (8.2, 8.3), so a restart resets every count but the latest run's |
 | State errors | Bot comments carrying an `error` marker with a stable key (5.3) |
 | Label reverts | Bot comments carrying a `revert` marker keyed by the reverted timeline event, so a replay doesn't comment twice (5.1, 5.2) |
 | Processed commands | The bot's 👍 on an applied command comment or 👎 on a rejected one, plus `cmd=<comment id>` in the transition marker or a `reply` marker (9.2). A reaction command (section 9.2) is recorded as `cmd=r<reaction id>` |
@@ -163,7 +163,7 @@ Every marker is an HTML comment, `<!-- issuedog:<kind> key=value ... -->`, with 
   - A move to `held` carries `at`, the stage the issue was at, and `reason`: `owner` for `/hold` or a hold set by hand, or `discussion` or `dropped` (6.4). A discussion hold also carries `origin`.
   - A move that posts or approves a revision carries `rev` and `body`, the body's hash (7.4).
   - `seen=<comment id>` is the newest comment read before the move. It bounds the next round's input (9.2). On a stage run's move it is the newest comment on the issue when the run started. On a move by `/revise`, a revision request or `/approve`, it is that comment. On an approval by 👍 it is the newest comment the daemon had read.
-  - A stage run's move carries `model` and `effort`, the settings the run started with, each only when set, and `ran`, the full names of the models that ran, comma-separated, from the result's `modelUsage` (3.3).
+  - A stage run's move carries `model` and `effort`, the settings the run started with, each only when set, and `ran`, the full names of the models that ran, comma-separated, from the result's `modelUsage` (3.3). A value a marker can't hold, such as one with a space, is left out and logged.
 - `revision rev=<n> body=<hash>`: in each revision comment (7.4). Posted without a transition, it also carries `seen`.
 - `reply reason=<rejected|edited> cmd=<comment id>`: on the App's reply to a rejected command, or to an edit made after the App used the comment (9.2). It marks the comment as processed. A command the App 👎'd gets no edited reply.
 - `error kind=<kind> key=<key>`, and the `ack` reply to it: a state error (5.3).
@@ -234,7 +234,7 @@ An issue enters the pipeline when any of these holds:
 
 Only comments and reactions by trusted users count as answers, approvals or commands. A comment a trusted user approved (6.4) counts as their input, never as a command. Agents receive other comments in a separate, clearly labeled "untrusted input" section of their context files, and only for epics and stories. An issue with no type gets no untrusted input until its type is set.
 
-A command counts once. If its comment is edited after the daemon applied it (its 👍), the edit is ignored and the bot replies asking for a new comment, except as 9.2 says for answers: an applied command that wrote no marker, such as `/priority`, edited into plain text at `clarifying` becomes an answer, with no reply. A rejected command (its 👎) gets no new reply when edited. If it is edited before the daemon processes it, the daemon reads the latest text. Section 9.2 has the details, including edited answers.
+A command counts once. If its comment is edited after the daemon applied it (its 👍), the edit is ignored and the bot replies asking for a new comment, except as 9.2 says for answers: an applied command that wrote no marker, such as `/priority`, edited into plain text at `clarifying`, in the current round, becomes an answer, with no reply. A rejected command (its 👎) gets no new reply when edited. If it is edited before the daemon processes it, the daemon reads the latest text. Section 9.2 has the details, including edited answers.
 
 ### 6.3 Protecting the trust inputs
 
@@ -264,7 +264,7 @@ Comments from people without write access hold nothing. They reach agents only a
 
 **While held.**
 - The daemon sets `stage:held` with a transition marker carrying `reason=discussion` and two stages: `at`, where the issue was, and `origin`, where it was before the first discussion hold. Every marker written in the `clarifying` that follows a hold, including question rounds and any later hold of either kind, carries `origin` forward, so back-and-forth discussion never loses it. `/resume` restores `at`. "Nothing changed" returns to `origin`. For anything other than a comment it also posts a notice naming it, since there is nothing else to react to.
-- Holds stack. Any hold on an issue that is already held, whether by `/hold`, by hand (5.1) or for discussion, keeps the stage recorded by the first hold. The issue leaves `held` only when every hold on it has ended. A discussion hold ends when resolved, or by `/resume` on the issue itself. An owner hold ends by `/resume` on the issue itself, on the issue where its `/hold` was posted, or on any issue between the two. A hold set by hand ends by `/resume` on the issue itself, or when a trusted user changes the stage label by hand again, which 5.1 records as an override. If a discussion hold ended while an owner hold stayed, the final `/resume` sends the issue to `clarifying` as below.
+- Holds stack. Any hold on an issue that is already held, whether by `/hold`, by hand (5.1) or for discussion, keeps the stage recorded by the first hold. The issue leaves `held` only when every hold on it has ended. A discussion hold ends when resolved, or by `/resume` on the issue itself. An owner hold ends by `/resume` on the issue itself, on the issue where its `/hold` was posted, or on any issue between the two. A hold set by hand ends by `/resume` on the issue itself. Every hold on the issue also ends at once when a trusted user sets another stage label by hand, which 5.1 records as an override. Removing `stage:held` alone is a disagreement (5.3) and is put back. If a discussion hold ended while an owner hold stayed, the final `/resume` sends the issue to `clarifying` as below.
 - Content edited by an untrusted write collaborator is dirty (5.1), so it never counts as a command or an answer, even after the edit is accepted. In loop step 1 (8.1) the daemon looks for triggers before it processes commands.
 - Before applying any run result, the daemon checks the issue for triggers since the last poll before the run was picked up. If it finds one, it holds the issue and drops the result.
 - Comments and pushes made while the issue is held are handled once it leaves `held`, in the stage it lands in. A PR review made while held is handled when the task next reaches `pr-open`, through the usual `pr-open` rows (7.2).
@@ -497,9 +497,9 @@ A comment is a command when its first line is a slash and a word, such as `/prio
 - **Model and effort.** `/model` and `/effort` work like `/priority`: each adds one label, `model:*`, `effort:*`, `verifier-model:*` or `verifier-effort:*`, removes the others of that kind, then 👍s the comment, with no marker (5.2). `verifier` matches in any case.
   - `/model` takes a full name on `models.allowed` or an entry's label suffix (section 13), ignoring case, and sets the label with that entry's suffix. A name that matches more than one full name only when case is ignored must be given in its exact case.
   - `/effort` takes `low`, `medium`, `high`, `xhigh` or `max`, ignoring case.
-  - A missing or extra argument, a model not on `models.allowed`, or an unknown level is rejected (see Rejected). The reply lists the allowed label suffixes, or says the config allows no model, or lists the levels.
+  - A missing or extra argument, a model not on `models.allowed`, or an unknown level is rejected (see Rejected). For a model or level that isn't allowed, the reply lists the allowed label suffixes, or says the config allows no model, or lists the levels.
   - Each write is checked first, so a replay after a crash redoes only what's missing. If a reload dropped the model from `models.allowed` after the label was added, the replay still finishes rather than rejecting the command.
-- **Commands edited into answers.** The App 👍s both applied commands, such as `/priority`, which writes no marker, and answers, so GitHub can't tell them apart. An applied command edited into plain text at `clarifying` therefore becomes an answer, and the interviewer reads the edited text. A command that a marker names, or that the App 👎'd, isn't.
+- **Commands edited into answers.** The App 👍s both applied commands, such as `/priority`, which writes no marker, and answers, so GitHub can't tell them apart. An applied command edited into plain text at `clarifying`, in the current round, therefore becomes an answer, and the interviewer reads the edited text. A command that a marker names, or that the App 👎'd, isn't.
 
 PR reviews use GitHub's own review flow.
 
