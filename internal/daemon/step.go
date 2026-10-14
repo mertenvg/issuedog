@@ -28,6 +28,8 @@ type Step struct {
 // is checked first, so a pass that crashed part way can run again (SPEC
 // §5.2). It returns s's Inputs, which are only right after a Run that
 // succeeds, so a caller skips stage work for an issue whose Run failed.
+// When CheckLabels holds labels back, Run stops there, and its error wraps
+// ErrLabelsHeld.
 // After a Run that succeeds, the loop calls ReviewVisit.
 func (st *Step) Run(ctx context.Context, s *github.Snapshot) ([]github.Comment, error) {
 	wrap := func(err error) error { return fmt.Errorf("step 1 on %s/%s#%d: %w", st.Owner, st.Repo, s.Number, err) }

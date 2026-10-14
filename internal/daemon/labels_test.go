@@ -3,11 +3,14 @@ package daemon_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/mertenvg/issuedog/internal/daemon"
+	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/logr/v2"
@@ -25,10 +28,47 @@ func labelsPass(t *testing.T, dirty func(int64) bool, m *daemon.Move) func(*gith
 		if err != nil {
 			return err
 		}
+		a.Unexplained = memoryOf(f)
 		if err := a.CheckLabels(context.Background(), s, trusted{"owner": true}, dirty); err != nil || m == nil {
 			return err
 		}
 		return a.Transition(context.Background(), s, dirty, *m)
+	}
+}
+
+// memories keeps each fake's memory of unexplained labels, so that the passes
+// on one fake share it, as one daemon's passes do.
+var memories = struct {
+	sync.Mutex
+	of map[*githubtest.Fake]*github.Unexplained
+}{of: map[*githubtest.Fake]*github.Unexplained{}}
+
+func memoryOf(f *githubtest.Fake) *github.Unexplained {
+	memories.Lock()
+	defer memories.Unlock()
+	if memories.of[f] == nil {
+		memories.of[f] = &github.Unexplained{}
+	}
+	return memories.of[f]
+}
+
+// sighted runs setup, then a pass that holds back the unexplained labels and
+// writes nothing, then waits until they can be removed.
+func sighted(setup func(testing.TB) *githubtest.Fake) func(testing.TB) *githubtest.Fake {
+	return func(t testing.TB) *githubtest.Fake {
+		f := setup(t)
+		tt, ok := t.(*testing.T)
+		if !ok {
+			t.Fatal("sighted needs a *testing.T")
+		}
+		if err := labelsPass(tt, clean, nil)(f); !errors.Is(err, daemon.ErrLabelsHeld) {
+			t.Fatalf("first pass: %v, want labels held back", err)
+		}
+		if w := f.Writes(); len(w) != 0 {
+			t.Fatalf("the first pass wrote %+v, want nothing", w)
+		}
+		f.Advance(github.UnexplainedWait)
+		return f
 	}
 }
 
@@ -67,6 +107,10 @@ func TestCheckLabels(t *testing.T) {
 	disagreement := func(were, key string) string {
 		return "The stage labels didn't match this issue's latest transition, to `ready`, so I've set them to match. They were: " +
 			were + ".\n\n<!-- issuedog:error kind=disagreement key=" + key + " -->"
+	}
+	renamed := func(label, key string) string {
+		return "I removed `" + label + "`: no change by a trusted user or the App explains it, so it may have come from a renamed repo label. " +
+			"Only trusted users can change pipeline labels.\n\n<!-- issuedog:revert key=" + key + " -->"
 	}
 	tests := []struct {
 		name  string
@@ -271,6 +315,33 @@ func TestCheckLabels(t *testing.T) {
 				f.AddLabel(1, "owner", "verifier-effort:low")
 			}),
 			labels: []string{"effort:max", "model:opus", "stage:ready", "verifier-effort:low", "verifier-model:opus"}},
+		{name: "a stage label a repo label rename put on is removed, and no disagreement is reported",
+			setup: sighted(atReady(func(_ testing.TB, f *githubtest.Fake) {
+				f.AddLabel(1, "mallory", "foo")
+				f.RenameLabel("foo", "stage:done")
+			})),
+			writes:   []string{"POST /issues/1/comments", "DELETE /issues/1/labels/stage:done"},
+			comments: []string{renamed("stage:done", "stage%3Adone@0")},
+			labels:   []string{"stage:ready"}},
+		{name: "an override is recorded beside a renamed label that's removed",
+			setup: sighted(atReady(func(t testing.TB, f *githubtest.Fake) {
+				labelEvent(t, f.AddLabel(1, "owner", "stage:held"), 9002)
+				f.AddLabel(1, "mallory", "foo")
+				f.RenameLabel("foo", "priority:p0")
+			})),
+			writes: []string{"POST /issues/1/comments", "DELETE /issues/1/labels/priority:p0", "POST /issues/1/comments", "DELETE /issues/1/labels/stage:ready"},
+			comments: []string{renamed("priority:p0", "priority%3Ap0@0"),
+				overridden("stage:held", "from=ready to=held at=ready reason=owner by=owner event=9002")},
+			labels: []string{"stage:held"}},
+		{name: "a disagreement is reported beside a renamed stage label that's removed",
+			setup: sighted(atReady(func(t testing.TB, f *githubtest.Fake) {
+				labelEvent(t, f.RemoveLabel(1, "owner", "stage:ready"), 9002)
+				f.AddLabel(1, "mallory", "foo")
+				f.RenameLabel("foo", "stage:verifying")
+			})),
+			writes:   []string{"POST /issues/1/comments", "DELETE /issues/1/labels/stage:verifying", "POST /issues/1/comments", "POST /issues/1/labels"},
+			comments: []string{renamed("stage:verifying", "stage%3Averifying@0"), disagreement("none", "9002")},
+			labels:   []string{"stage:ready"}, errors: 1},
 		{name: "labels that agree are left alone",
 			setup:  atReady(func(testing.TB, *githubtest.Fake) {}),
 			labels: []string{"stage:ready"}},

@@ -322,10 +322,12 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 		if !n.open {
 			continue
 		}
-		is := state.Derive(n.s, a.AppSlug, n.d.Has)
+		// Not a label the label rules left out, or would (Applier.hidden).
+		s := a.hidden(n.s)
+		is := state.Derive(s, a.AppSlug, n.d.Has)
 		_, ended := ends(is, n.s == c.S, above)
 		_, m, owner := ownerHold(is)
-		unrecorded := is.Stage != state.Held && slices.ContainsFunc(n.s.Labels, func(l string) bool { return strings.EqualFold(l, "stage:held") })
+		unrecorded := is.Stage != state.Held && slices.ContainsFunc(s.Labels, func(l string) bool { return strings.EqualFold(l, "stage:held") })
 		held = held || ended
 		if owner || unrecorded {
 			id, _ := state.Key{Field: "cmd", ID: m.Fields["cmd"]}.Comment()

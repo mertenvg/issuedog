@@ -102,7 +102,9 @@ func (d *Daemon) Run(ctx context.Context) {
 // then runs step 1 on them and on every issue at spec-review, whose 👍s
 // change no updated_at (plan #5, assumption 7). Last it hands Work the
 // issues ready for it. It returns the errors of the issues it couldn't read
-// or run step 1 on, which the next Iterate reads again.
+// or run step 1 on, which the next Iterate reads again. An issue whose
+// labels CheckLabels holds back (ErrLabelsHeld) is no error: like a touched
+// issue, it gets nothing more this pass, and is read again on the next.
 func (d *Daemon) Iterate(ctx context.Context) error {
 	if d.snaps == nil {
 		d.snaps, d.inputs, d.stale = map[int]*github.Snapshot{}, map[int][]github.Comment{}, map[int]bool{}
@@ -116,6 +118,14 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	if err := d.poll(ctx); err != nil {
 		return fmt.Errorf("poll %s/%s: %w", d.Step.Owner, d.Step.Repo, err)
 	}
+	// A label left out, which a rename changes no updated_at for, is
+	// removed once it falls due: read its issue again then, and no sooner.
+	now := d.Step.Client.Now()
+	for n := range d.snaps {
+		if d.Step.unexplainedDue(n, now) {
+			d.stale[n] = true
+		}
+	}
 	var errs []error
 	read := map[int]bool{}
 	for _, n := range slices.Sorted(maps.Keys(d.stale)) {
@@ -128,6 +138,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			logr.Infof("%s/%s#%d is gone, deleted or transferred, on two reads with no good one between, so it's dropped: %v", d.Step.Owner, d.Step.Repo, n, err)
 			delete(d.stale, n)
 			delete(d.missing, n)
+			d.Step.forgetLabels(n)
 		case gone(err):
 			// One answer may be wrong, so it's read again next pass.
 			logr.Infof("%s/%s#%d looks gone, deleted or transferred, so it's read again: %v", d.Step.Owner, d.Step.Repo, n, err)
@@ -156,6 +167,12 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		in, err := d.Step.Run(ctx, s)
 		if err == nil {
 			err = d.Step.ReviewVisit(ctx, s)
+		}
+		if errors.Is(err, ErrLabelsHeld) {
+			// Like a touched issue: nothing more this pass, and read again.
+			logr.Infof("%s/%s#%d waits for its next pass: %v", d.Step.Owner, d.Step.Repo, n, err)
+			touched[n] = true
+			continue
 		}
 		if err != nil {
 			errs = append(errs, err)
@@ -247,6 +264,7 @@ func (d *Daemon) poll(ctx context.Context) error {
 				delete(d.inputs, n)
 				delete(d.stale, n)
 				delete(d.missing, n) // so a reopened issue starts with no strike
+				a.forgetLabels(n)
 			case changed(d.snaps[n], is):
 				d.stale[n] = true
 			}
@@ -290,15 +308,23 @@ func changed(s *github.Snapshot, is *gogithub.Issue) bool {
 	if !at.Equal(s.UpdatedAt) {
 		return at.After(s.UpdatedAt)
 	}
-	if is.GetTitle() != s.Title || github.TypeOf(is) != s.Type {
+	// A label left out of s is no change: its issue is read again once it's
+	// due (Applier.unexplainedDue), nor is the type it would give.
+	var labels, names []string
+	for _, l := range is.Labels {
+		if !s.LeftOut[strings.ToLower(l.GetName())] {
+			labels, names = append(labels, strings.ToLower(l.GetName())), append(names, l.GetName())
+		}
+	}
+	typ := strings.ToLower(is.GetType().GetName())
+	if typ == "" {
+		typ = github.TypeOfLabels(names)
+	}
+	if is.GetTitle() != s.Title || typ != s.Type {
 		return true
 	}
 	if is.ParentIssueURL != nil && parentOf(is.GetParentIssueURL()) != s.Parent {
 		return true
-	}
-	var labels []string
-	for _, l := range is.Labels {
-		labels = append(labels, strings.ToLower(l.GetName()))
 	}
 	held := make([]string, 0, len(s.Labels))
 	for _, l := range s.Labels {

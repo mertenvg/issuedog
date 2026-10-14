@@ -3,6 +3,7 @@ package githubtest
 import (
 	"slices"
 	"strings"
+	"time"
 
 	gogithub "github.com/google/go-github/v92/github"
 )
@@ -40,9 +41,16 @@ func (f *Fake) RemoveLabel(number int, login, name string) int64 {
 }
 
 // RenameLabel renames a label, matched ignoring case, as the owner can in
-// the repo's settings: in the repo and on every issue that has it. Past
-// labeled and unlabeled events keep the name they had.
-func (f *Fake) RenameLabel(from, to string) {
+// the repo's settings: in the repo and on every issue that has it. No event
+// says so, and past labeled and unlabeled events keep the name they had, as
+// GitHub is believed to (see github.CheckLabels).
+func (f *Fake) RenameLabel(from, to string) { f.rename(from, to, false) }
+
+// RenameLabelInEvents is RenameLabel, but past labeled and unlabeled events
+// take the new name too: the other way GitHub might report a rename.
+func (f *Fake) RenameLabelInEvents(from, to string) { f.rename(from, to, true) }
+
+func (f *Fake) rename(from, to string, events bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, l := range f.labels {
@@ -57,24 +65,49 @@ func (f *Fake) RenameLabel(from, to string) {
 			}
 		}
 		slices.SortFunc(is.Labels, func(a, b *gogithub.Label) int { return strings.Compare(a.GetName(), b.GetName()) })
+		for _, e := range is.labelEvents {
+			if events && strings.EqualFold(e.GetLabel().GetName(), from) {
+				e.Label = &gogithub.Label{Name: to}
+			}
+		}
 	}
 }
 
-// labelEvent adds a labeled or unlabeled event to an issue's timeline, and
-// returns its ID.
+// LagEvents makes the label events of every later change, the App's
+// included, be written d after the change, as GitHub was seen to write an
+// issue's labeled events a second or two after the issue was filed with its
+// labels. Until the clock reaches it (see Advance), an event is missing from
+// the timeline. 0 writes them at once again.
+func (f *Fake) LagEvents(d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.eventLag = d
+}
+
+// Advance moves the fake clock on by d, as time passing with no change.
+// Answers are dated by the clock.
+func (f *Fake) Advance(d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.now = f.now.Add(d)
+}
+
+// labelEvent adds a labeled or unlabeled event to an issue's timeline, made
+// at at and written after the lag, and returns its ID.
 func (f *Fake) labelEvent(is *issue, event, login, name string, at *gogithub.Timestamp) int64 {
 	f.lastEvent++
 	id := firstEvent + f.lastEvent
 	is.labelEvents = append(is.labelEvents, &gogithub.Timeline{ID: &id, Event: &event, Actor: user(login),
-		Label: &gogithub.Label{Name: name}, CreatedAt: at})
+		Label: &gogithub.Label{Name: name}, CreatedAt: &gogithub.Timestamp{Time: at.Add(f.eventLag)}})
 	return id
 }
 
 // timeline serves an issue's labeled, unlabeled and commented events, oldest
-// first. As on GitHub, a commented event has its comment's ID, user and
-// current body, and a deleted comment's is gone.
+// first, but for label events not written yet (LagEvents). As on GitHub, a
+// commented event has its comment's ID, user and current body, and a deleted
+// comment's is gone.
 func (f *Fake) timeline(c *call) (int, any) {
-	events := slices.Clone(c.issue.labelEvents)
+	events := slices.DeleteFunc(slices.Clone(c.issue.labelEvents), func(e *gogithub.Timeline) bool { return e.GetCreatedAt().After(f.now) })
 	for _, cm := range f.comments {
 		if cm.issue == c.issue.GetNumber() {
 			events = append(events, &gogithub.Timeline{ID: cm.ID, Event: new("commented"), Actor: cm.User, User: cm.User,
