@@ -1,0 +1,7 @@
+{
+  "outcome": "typed",
+  "type": {
+    "value": "bug",
+    "reason": "Booking accepts a quote that should have expired."
+  }
+}
