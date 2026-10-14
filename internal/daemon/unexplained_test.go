@@ -122,8 +122,8 @@ func TestIterateRemovesUnexplainedLabel(t *testing.T) {
 	}
 }
 
-// An issue with a label left out is read again each pass, though nothing
-// changes its updated_at, so the label is removed in time.
+// An issue with a label left out is read again once the label falls due,
+// though nothing changes its updated_at, so the label is removed in time.
 func TestIterateRereadsLeftOutLabels(t *testing.T) {
 	f := newFake(t)
 	fileAt(f, "ready", "do it", "priority:p2")

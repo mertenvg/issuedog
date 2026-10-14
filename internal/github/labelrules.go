@@ -461,19 +461,18 @@ func (u *Unexplained) ForgetIssue(owner, repo string, number int) {
 }
 
 // due is when the label first seen as fs is to be removed, if it stays
-// unexplained with no change to its events: UnexplainedWait after it was
-// first seen, or, once the issue has had unexplained labels for
-// UnexplainedWait, HoldBound after it was first seen, whichever is first.
-// So a label renamed to a new name every few minutes is removed too, while
-// a label whose events are only late, or that the owner just added back,
-// gets HoldBound for its events to show.
+// unexplained with no change to its events: UnexplainedWait after the issue
+// was first found with unexplained labels, but no sooner than HoldBound
+// after the label was. A label is never first seen before its issue, so a
+// label there from the start waits UnexplainedWait, and one that came later,
+// as by renaming again, waits until the issue has had unexplained labels
+// for UnexplainedWait. So a label renamed to a new name every few minutes is
+// removed too, while a label whose events are only late, or that the owner
+// just added back, gets HoldBound for its events to show.
 func (h heldIssue) due(fs firstSeen) time.Time {
-	byIssue := h.since.Add(UnexplainedWait)
-	if held := fs.at.Add(HoldBound); held.After(byIssue) {
-		byIssue = held
-	}
-	if own := fs.at.Add(UnexplainedWait); own.Before(byIssue) {
-		return own
+	byIssue, byLabel := h.since.Add(UnexplainedWait), fs.at.Add(HoldBound)
+	if byLabel.After(byIssue) {
+		return byLabel
 	}
 	return byIssue
 }

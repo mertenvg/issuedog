@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"net/http"
 	"slices"
 	"testing"
 	"time"
@@ -68,6 +69,19 @@ func TestAddLabelForgetsUnexplained(t *testing.T) {
 	}
 	if w := f.Writes()[writes:]; len(w) != 0 || !slices.Contains(f.State().Issues[0].Labels, "priority:p1") {
 		t.Errorf("writes %+v, labels %q; want the App's priority:p1 kept", w, f.State().Issues[0].Labels)
+	}
+}
+
+// The App's write of a label left out still adds it when its removal finds
+// it gone already.
+func TestAddLabelLeftOutGoneMeanwhile(t *testing.T) {
+	f, a, s := leftOutApplier(t, "priority:p1")
+	f.AnswerOnce(func(r githubtest.Request) bool { return r.Method == http.MethodDelete }, http.StatusNotFound)
+	if err := a.addLabel(context.Background(), s, "priority:p1"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(s.Labels, "priority:p1") || s.LeftOut["priority:p1"] {
+		t.Errorf("labels %q, left out %v; want priority:p1 added and no longer left out", s.Labels, s.LeftOut)
 	}
 }
 

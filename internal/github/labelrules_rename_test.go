@@ -799,6 +799,28 @@ func TestCheckLabelsOwnerAddsBackInLag(t *testing.T) {
 	}
 }
 
+// Due is when the first of an issue's unexplained labels falls due: here
+// the one there from the start, not one renamed onto the issue later.
+func TestUnexplainedDueIsTheEarliest(t *testing.T) {
+	f, mem := renamed(t), memory{}
+	f.AddLabel(1, "mallory", "bar") // unguarded, so it stands
+	if err := checkPass(t, mem, nil)(f); err != nil {
+		t.Fatal(err)
+	}
+	first, ok := mem.of(f).Due("o", "r", 1)
+	if !ok {
+		t.Fatal("no due time for priority:p0")
+	}
+	f.Advance(github.UnexplainedWait - 10*time.Second)
+	f.RenameLabel("bar", "scope:y") // due HoldBound from now, after priority:p0
+	if err := checkPass(t, mem, nil)(f); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := mem.of(f).Due("o", "r", 1); !got.Equal(first) {
+		t.Errorf("due %v with scope:y too, want priority:p0's, %v", got, first)
+	}
+}
+
 // A stage label that names the latest transition marker's stage is the App's
 // own, explained by the marker: its late event holds nothing back, and it's
 // never left out or removed.

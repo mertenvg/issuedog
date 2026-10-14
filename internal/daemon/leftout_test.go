@@ -246,42 +246,76 @@ func TestIntakeLagIsClean(t *testing.T) {
 }
 
 // An issue with a label left out isn't read again until the label is due
-// for removal: then it is, and the label is removed.
+// for removal, though the poll lists it again each pass, as the newest
+// issue: the label left out, and the type it would give, are no change.
+// Once due, the issue is read again, and the label is removed.
 func TestLeftOutIssueReadOnlyWhenDue(t *testing.T) {
-	f := newFake(t)
-	fileAt(f, "ready", "do it")
-	f.AddLabel(1, "mallory", "foo")
-	fileAt(f, "ready", "other")
-	f.Advance(time.Hour)
-	d := newDaemon(t, f, newOrigin(t), nil)
-	iterate(t, d)
-	f.RenameLabel("foo", "scope:x")
-	f.AddComment(1, "owner", "poke")
-	iterate(t, d) // held back, and first seen
-	reads := func() int {
-		n := 0
-		for _, r := range f.Requests() {
-			if r.Method == "GET" && (r.Path == "/issues/1" || strings.HasPrefix(r.Path, "/issues/1/timeline")) {
-				n++
+	for _, label := range []string{"scope:x", "type:epic"} {
+		t.Run(label, func(t *testing.T) {
+			f := newFake(t)
+			fileAt(f, "ready", "other")
+			fileAt(f, "ready", "do it")
+			f.AddLabel(2, "mallory", "foo")
+			f.Advance(time.Hour)
+			d := newDaemon(t, f, newOrigin(t), nil)
+			iterate(t, d)
+			f.RenameLabel("foo", label)
+			f.AddComment(2, "owner", "poke")
+			iterate(t, d) // held back, and first seen
+			reads := func() int {
+				n := 0
+				for _, r := range f.Requests() {
+					if r.Method == "GET" && (r.Path == "/issues/2" || strings.HasPrefix(r.Path, "/issues/2/timeline")) {
+						n++
+					}
+				}
+				return n
 			}
-		}
-		return n
+			f.Advance(time.Minute)
+			iterate(t, d) // left out
+			before := reads()
+			for range 3 {
+				f.Advance(time.Minute)
+				iterate(t, d)
+			}
+			if n := reads() - before; n != 0 {
+				t.Errorf("issue 2 read %d times while its label wasn't due, want none", n)
+			}
+			f.Advance(time.Minute) // five minutes since it was first seen
+			iterate(t, d)
+			if reads() == before || slices.Contains(f.State().Issues[1].Labels, label) {
+				t.Errorf("labels %q once due; want issue 2 read again, and %s removed", f.State().Issues[1].Labels, label)
+			}
+		})
 	}
-	f.Advance(time.Minute)
-	iterate(t, d) // left out
-	before := reads()
-	for range 3 {
-		f.Advance(time.Minute)
-		iterate(t, d)
+}
+
+// /model opus onto a model:opus left out, with the run in the same pass:
+// the App's write puts the label back in, and the run takes opus.
+func TestAppWriteOfLeftOutLabelSamePassRun(t *testing.T) {
+	f := newFake(t)
+	interview(f)
+	f.AddLabel(1, "mallory", "foo")
+	f.Advance(time.Hour)
+	o := newOrigin(t)
+	o.commit(config.Path, "types: labels\nmodels:\n  allowed: [opus, sonnet]\n")
+	g := newRig(t, f, o, t.TempDir())
+	g.claude(okOut, 0)
+	allowed := models(t, "[opus, sonnet]")
+	maps.Copy(g.d.Step.Commands, daemon.SettingCommands(g.d.Step.CurrentTrust(), func() config.Models { return allowed }))
+	g.stage.pending = func(in daemon.Input) bool {
+		return slices.ContainsFunc(in.S.Comments, func(c github.Comment) bool { return c.Body == "/model opus" })
 	}
-	if n := reads() - before; n != 0 {
-		t.Errorf("issue 1 read %d times while its label wasn't due, want none", n)
+	f.RenameLabel("foo", "model:opus")
+	g.pass() // held back
+	f.Advance(github.HoldBound)
+	g.pass() // left out
+	f.AddComment(1, "owner", "/model opus")
+	g.pass()
+	if g.runs() != 1 {
+		t.Fatalf("%d runs, errors %q; want one", g.runs(), errorMarkers(f, 1))
 	}
-	f.Advance(time.Minute) // five minutes since it was first seen
-	iterate(t, d)
-	if reads() == before || slices.Contains(f.State().Issues[0].Labels, "scope:x") {
-		t.Errorf("labels %q once due; want issue 1 read again, and scope:x removed", f.State().Issues[0].Labels)
-	}
+	g.checkFlags(1, "opus", "", "")
 }
 
 // A stage label for another stage, left out, doesn't stop the attempt cap's

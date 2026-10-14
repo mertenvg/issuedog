@@ -95,8 +95,8 @@ var ErrLabelsHeld = errors.New("labels held back until their events explain them
 // ErrLabelsHeld: the caller acts on nothing of s, and reads it again later.
 // That lasts github.HoldBound at most, for each issue: after it, such a
 // label is left out of s.Labels, and s.Type with it, so the caller goes on
-// without acting on it, and the issue is read again each pass until the
-// label is explained or removed.
+// without acting on it, and Iterate reads the issue again when the label
+// falls due for removal (unexplainedDue), or sooner if the issue changes.
 func (a *Applier) CheckLabels(ctx context.Context, s *github.Snapshot, trust github.Trust, dirty func(int64) bool) error {
 	// The labels as read, those left out before included, so a label left
 	// out is checked again.
