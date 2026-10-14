@@ -380,8 +380,8 @@ func TestUntrustedEditDuringRunApplies(t *testing.T) {
 }
 
 // A failed run logs the last 4 KB of claude's stderr, as text, whatever its
-// exit code, and so does one whose output fails the schema (SPEC §3.3). A
-// run with no stderr logs none.
+// exit code, and so do one whose output fails the schema (SPEC §3.3) and
+// one that hits a usage limit. A run with no stderr logs none.
 func TestFailedRunLogsStderr(t *testing.T) {
 	long := "HEAD" + strings.Repeat("x", 5000) + "\x1b[31mTAIL"
 	for name, tt := range map[string]struct {
@@ -390,6 +390,7 @@ func TestFailedRunLogsStderr(t *testing.T) {
 		logged      bool
 	}{
 		"failed":          {out: failOut, stderr: long, exit: 1, logged: true},
+		"usage limit":     {out: limitOut("error_during_execution", githubtest.Start.Add(time.Hour)), stderr: long, exit: 1, logged: true},
 		"failed, exit 0":  {out: failOut, stderr: long, exit: 0, logged: true},
 		"invalid":         {out: invalidOut, stderr: long, exit: 0, logged: true},
 		"succeeded":       {out: okOut, stderr: long, exit: 0, logged: false},

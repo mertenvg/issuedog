@@ -472,6 +472,25 @@ func TestBadLabelsSkipToNextIssue(t *testing.T) {
 	}
 }
 
+// An issue blocked by its labels, its error posted, doesn't hold up the
+// next one in later passes either.
+func TestBadLabelsReportedSkipToNextIssue(t *testing.T) {
+	f, g := badLabels(t, "model:sonnet")
+	f.AddLabel(1, app, "priority:p1")
+	g.workN(1)
+	if errs := labelErrors(f, 1); len(errs) != 1 {
+		t.Fatalf("label errors %q, want one", errs)
+	}
+	answer := interview(f)
+	if err := g.r.Work(context.Background(), g.ready(1, 2)); err != nil {
+		t.Fatal(err)
+	}
+	if errs := labelErrors(f, 1); g.runs() != 1 || len(errs) != 1 || newestComment(f, 2) != specWritten("run1", answer) {
+		t.Errorf("label errors on #1 %q, %d runs, newest comment on #2 %q; want still one error, and #2 run and applied",
+			errs, g.runs(), newestComment(f, 2))
+	}
+}
+
 // A failure to post the error fails the pass, and the next pass posts it.
 func TestBadLabelsPostFails(t *testing.T) {
 	f, g := badLabels(t, "model:sonnet")
