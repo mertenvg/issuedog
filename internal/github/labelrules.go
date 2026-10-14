@@ -321,6 +321,27 @@ func (r *labelRules) standing(ctx context.Context, l *labelState, skip func(i in
 	return nil, -1, nil
 }
 
+// StandingLabelChange returns the latest change to the label name in
+// timeline that stands, as CheckLabels judges it (standing), or nil if none
+// does: the App's or a trusted user's, but no untrusted change and no App
+// restore of a reverted one, so a label the App restored stands as the
+// change it restored. Names match ignoring case. Only trust is read.
+func StandingLabelChange(ctx context.Context, timeline []*gogithub.Timeline, name, appSlug string, trust Trust) (*gogithub.Timeline, error) {
+	l := &labelState{name: name}
+	for i, e := range timeline {
+		if (e.GetEvent() == "labeled" || e.GetEvent() == "unlabeled") && strings.EqualFold(e.GetLabel().GetName(), name) {
+			l.events = append(l.events, e)
+			l.ats = append(l.ats, i)
+		}
+	}
+	r := labelRules{appSlug: appSlug, trust: trust, verdicts: map[string]bool{}}
+	e, _, err := r.standing(ctx, l, nil)
+	if err != nil {
+		return nil, fmt.Errorf("standing change to %s: %w", name, err)
+	}
+	return e, nil
+}
+
 // accepted reports whether e came from the App or a trusted user.
 func (r *labelRules) accepted(ctx context.Context, e *gogithub.Timeline) (bool, error) {
 	if r.isApp(e) {

@@ -194,14 +194,14 @@ func (iv *Interviewer) Context(ctx context.Context, in Input) (map[string][]byte
 	var conversation, untrusted, logins []string
 	if by, dirty := in.Dirt[state.BodyID]; dirty && takesUntrusted {
 		_, rest := noted(s.Body)
-		untrusted = append(untrusted, ivUntrusted("the issue's body, edited by "+ivLogin(by)+" without approval", rest))
+		untrusted = append(untrusted, ivUntrusted("the issue's body, edited by "+ivEditor(by, s.BodyEdit, a.AppSlug)+" without approval", rest))
 	}
 	for _, c := range s.Comments {
 		at := "comment " + strconv.FormatInt(c.ID, 10) + " by " + ivLogin(c.Author.Login)
 		if by, dirty := in.Dirt[c.ID]; dirty {
 			if takesUntrusted {
 				_, rest := noted(c.Body)
-				untrusted = append(untrusted, ivUntrusted(at+", edited by "+ivLogin(by)+" without approval", rest))
+				untrusted = append(untrusted, ivUntrusted(at+", edited by "+ivEditor(by, c.Edit, a.AppSlug)+" without approval", rest))
 			}
 			continue
 		}
@@ -241,7 +241,9 @@ func (iv *Interviewer) Context(ctx context.Context, in Input) (map[string][]byte
 // typing returns the preamble's line on whether the interviewer may set
 // s's type (plan #6, assumption 13): only on a repo that types issues by
 // label (types: labels), and there only on an untyped issue, or one whose
-// type:* label that stands the App added, as the timeline shows.
+// type:* label that stands the App added, as the timeline shows. The App's
+// restore of a change someone untrusted reverted isn't the App's add: the
+// change it restored stands (github.StandingLabelChange).
 func (iv *Interviewer) typing(ctx context.Context, s *github.Snapshot) (string, error) {
 	d := iv.Daemon
 	a := d.Step.Applier
@@ -261,11 +263,13 @@ func (iv *Interviewer) typing(ctx context.Context, s *github.Snapshot) (string, 
 	if err != nil {
 		return "", fmt.Errorf("who set the type: %w", err)
 	}
-	ev, err := trustCache{st: d.Step, verdicts: map[string]bool{}}.admitting(ctx, timeline, "type:"+s.Type, true)
+	// A restore of a reverted change isn't the App's typing: the change it
+	// restored is what stands.
+	ev, err := github.StandingLabelChange(ctx, timeline, "type:"+s.Type, a.AppSlug, d.Step.Trust)
 	if err != nil {
 		return "", fmt.Errorf("who set the type: %w", err)
 	}
-	if ev != nil && state.IsApp(github.Author{Login: ev.GetActor().GetLogin(), Type: ev.GetActor().GetType()}, a.AppSlug) {
+	if ev.GetEvent() == "labeled" && state.IsApp(github.Author{Login: ev.GetActor().GetLogin(), Type: ev.GetActor().GetType()}, a.AppSlug) {
 		return fmt.Sprintf("issuedog set this issue's type, %s, so you may change it.", github.Escape(s.Type)), nil
 	}
 	return owners, nil
@@ -465,14 +469,31 @@ func ivStripMarkers(text string) string {
 	return strings.TrimSpace(ivMarkerRE.ReplaceAllString(text, ""))
 }
 
-// ivLoginRE is a GitHub login, or an App's.
-var ivLoginRE = regexp.MustCompile(`^[A-Za-z0-9-]+(\[bot\])?$`)
+// ivLoginRE is a GitHub login, by GitHub's rules: alphanumerics and
+// single hyphens, starting and ending with an alphanumeric, then "[bot]"
+// for an App. ivLogin checks its length.
+var ivLoginRE = regexp.MustCompile(`^([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)(\[bot\])?$`)
+
+// ivMaxLogin is the longest login GitHub allows.
+const ivMaxLogin = 39
 
 // ivLogin is login for a heading, or "someone unnamed" for anything that
-// isn't a login, such as the name a forged dirty note gives.
+// isn't a login.
 func ivLogin(login string) string {
-	if !ivLoginRE.MatchString(login) {
+	if m := ivLoginRE.FindStringSubmatch(login); m == nil || len(m[1]) > ivMaxLogin {
 		return "someone unnamed"
 	}
 	return login
+}
+
+// ivEditor names who made content dirty, for its heading: by, as Dirt gives
+// it, if GitHub names them as the content's last editor, or the App made
+// the last edit, which wrote the note by comes from (Applier.MarkDirty).
+// Otherwise by may be a name the author put in a note of their own, so
+// it's "someone unnamed".
+func ivEditor(by string, last github.Edit, appSlug string) string {
+	if last.By.Login == by || state.IsApp(last.By, appSlug) {
+		return ivLogin(by)
+	}
+	return "someone unnamed"
 }
