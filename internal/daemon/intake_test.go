@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github"
@@ -131,6 +133,10 @@ func TestIntakeVisit(t *testing.T) {
 				return f
 			},
 			want: outcome{comments: []string{withNote(byOwner, storyNote, "9001")}, labels: []string{"stage:clarifying", "type:story"}}},
+		{name: "an untrusted type:task, reverted, gives no note in the same pass",
+			setup: issueBy("owner", intake, func(t testing.TB, f *githubtest.Fake) { labelEvent(t, f.AddLabel(1, "mallory", "type:task"), 9002) }),
+			want: outcome{comments: []string{"I removed `type:task`: only trusted users can change pipeline labels, and mallory isn't one.\n\n" +
+				"<!-- issuedog:revert key=9002 -->", admitted(byOwner, "9001")}, labels: clarifying}},
 		{name: "a story with no parent gets no note",
 			setup: issueBy("owner", []string{"stage:intake", "type:story"}, nil),
 			want:  outcome{comments: []string{admitted(byOwner, "9001")}, labels: []string{"stage:clarifying", "type:story"}}},
@@ -445,6 +451,78 @@ func TestIntakeVisitReads(t *testing.T) {
 				t.Errorf("%s: read the timeline, want no read: %+v", name, r)
 			}
 		}
+	}
+}
+
+// A stage:intake whose event is later than the hold bound is held back,
+// then left out, so the issue doesn't move on a label nothing explains.
+// Once its event shows, the issue is read again when the label falls due,
+// with no change to it, and moves, keyed by that event.
+func TestIntakeMovesOnceALateEventShows(t *testing.T) {
+	f := newFake(t)
+	d := newDaemon(t, f, newOrigin(t), nil)
+	iterate(t, d)
+	f.LagEvents(2 * time.Minute)
+	n := f.AddIssue("owner", "Idea", "body")
+	ev := f.AddLabel(n, "owner", "stage:intake")
+	f.LagEvents(0)
+	iterate(t, d) // held back
+	f.Advance(github.HoldBound + time.Second)
+	iterate(t, d) // left out
+	if got := len(f.State().Issues[0].Comments); got != 0 {
+		t.Fatalf("%d comments with stage:intake left out, want none", got)
+	}
+	var moves []string
+	for range 6 {
+		f.Advance(time.Minute)
+		iterate(t, d)
+	}
+	is := f.State().Issues[0]
+	for _, c := range is.Comments {
+		if strings.Contains(c.Body, "issuedog:revert") || strings.Contains(c.Body, "issuedog:error") {
+			t.Errorf("a revert or state error: %q", c.Body)
+		}
+		if strings.Contains(c.Body, "issuedog:transition") {
+			moves = append(moves, c.Body)
+		}
+	}
+	if want := []string{admitted(byOwner, strconv.FormatInt(ev, 10))}; !reflect.DeepEqual(moves, want) || !reflect.DeepEqual(is.Labels, []string{"stage:clarifying"}) {
+		t.Errorf("transitions %q, labels %v; want %q, at stage:clarifying", moves, is.Labels, want)
+	}
+}
+
+// A stage label a repo rename put on, left out, neither stops the move
+// from intake nor is removed by it: the label rules remove it once it's
+// due, with no override recorded for it.
+func TestIntakeMoveLeavesALeftOutStageLabel(t *testing.T) {
+	f := newFake(t)
+	f.AddIssue("owner", "Idea", "body", "stage:intake")
+	f.AddLabel(1, "mallory", "foo")
+	f.Advance(time.Hour)
+	d := newDaemon(t, f, newOrigin(t), nil)
+	iterate(t, d)
+	f.RenameLabel("foo", "stage:held")
+	f.AddComment(1, "owner", "poke")
+	iterate(t, d) // held back
+	f.Advance(github.HoldBound + time.Second)
+	iterate(t, d) // left out, and the move
+	is := f.State().Issues[0]
+	if want := []string{"stage:clarifying", "stage:held"}; !reflect.DeepEqual(is.Labels, want) {
+		t.Errorf("labels after the move %v, want %v: the left-out label kept", is.Labels, want)
+	}
+	for range 6 {
+		f.Advance(time.Minute)
+		iterate(t, d)
+	}
+	is = f.State().Issues[0]
+	var moves []string
+	for _, c := range is.Comments {
+		if strings.Contains(c.Body, "issuedog:transition") {
+			moves = append(moves, c.Body)
+		}
+	}
+	if want := []string{admitted(byOwner, "9001")}; !reflect.DeepEqual(moves, want) || !reflect.DeepEqual(is.Labels, []string{"stage:clarifying"}) {
+		t.Errorf("transitions %q, labels %v; want %q, at stage:clarifying alone", moves, is.Labels, want)
 	}
 }
 
