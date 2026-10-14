@@ -715,12 +715,14 @@ func TestCheckLabelsHoldPerIssue(t *testing.T) {
 }
 
 // A label renamed to a new name every four minutes, so that no name stays
-// for UnexplainedWait, holds the issue back only at first. It's never
-// removed, but it's always left out.
+// for UnexplainedWait, holds the issue back only at first, and is left out
+// after that. Once the issue has had unexplained labels for
+// UnexplainedWait, the name it has then is removed, with a revert comment.
 func TestCheckLabelsRenamedAgainAndAgain(t *testing.T) {
 	f, mem := renamed(t), memory{}
 	cur, names := "priority:p0", []string{"priority:p1", "priority:p0"}
-	for i := range 30 {
+	removedAt := -1
+	for i := range 12 {
 		if i%4 == 3 {
 			next := names[(i/4)%2]
 			f.RenameLabel(cur, next)
@@ -730,13 +732,46 @@ func TestCheckLabelsRenamedAgainAndAgain(t *testing.T) {
 		if err := checkPass(t, mem, &got)(f); err != nil {
 			t.Fatal(err)
 		}
+		on := slices.Contains(f.State().Issues[0].Labels, cur)
+		if removedAt < 0 && !on {
+			removedAt = i
+		}
 		if i > 0 && (got.held != nil || slices.Contains(got.labels, cur)) {
 			t.Errorf("minute %d: held %q, labels %q; want %s left out, and nothing held back", i, got.held, got.labels, cur)
 		}
 		f.Advance(time.Minute)
 	}
-	if w := writesOf(f); len(w) != 0 {
-		t.Errorf("writes = %q, want none", w)
+	// Renamed at minute 3 to priority:p1, there for HoldBound by minute 4,
+	// but the issue has had unexplained labels for five minutes at 5.
+	if want := []string{"POST /issues/1/comments", "DELETE /issues/1/labels/priority:p1"}; removedAt != 5 || !slices.Equal(writesOf(f), want) {
+		t.Errorf("removed at minute %d, writes %q; want priority:p1 removed at minute 5, with a comment", removedAt, writesOf(f))
+	}
+}
+
+// Late events and an owner's label added back stay safe under the issue's
+// own five minutes: a label is removed by them only once it has been there
+// for HoldBound, long enough for a late event to show.
+func TestCheckLabelsIssueWaitSparesLateEvents(t *testing.T) {
+	f, mem := renamed(t), memory{}
+	if err := checkPass(t, mem, nil)(f); err != nil {
+		t.Fatal(err)
+	}
+	f.Advance(github.UnexplainedWait - time.Second)
+	f.RemoveLabel(1, "owner", "priority:p0")
+	f.LagEvents(5 * time.Second)
+	f.AddLabel(1, "owner", "priority:p1") // new, its event late
+	f.AddLabel(1, "owner", "priority:p0") // added back, its event late
+	f.Advance(time.Second)                // the issue's five minutes are up
+	var got checked
+	if err := checkPass(t, mem, &got)(f); err != nil {
+		t.Fatal(err)
+	}
+	f.Advance(github.HoldBound)
+	if err := checkPass(t, mem, &got)(f); err != nil {
+		t.Fatal(err)
+	}
+	if w := writesOf(f); len(w) != 0 || !slices.Equal(f.State().Issues[0].Labels, []string{"priority:p0", "priority:p1"}) {
+		t.Errorf("writes %q, labels %q; want the owner's labels kept", w, f.State().Issues[0].Labels)
 	}
 }
 

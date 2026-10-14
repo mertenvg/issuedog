@@ -118,6 +118,14 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	if err := d.poll(ctx); err != nil {
 		return fmt.Errorf("poll %s/%s: %w", d.Step.Owner, d.Step.Repo, err)
 	}
+	// A label left out, which a rename changes no updated_at for, is
+	// removed once it falls due: read its issue again then, and no sooner.
+	now := d.Step.Client.Now()
+	for n := range d.snaps {
+		if d.Step.unexplainedDue(n, now) {
+			d.stale[n] = true
+		}
+	}
 	var errs []error
 	read := map[int]bool{}
 	for _, n := range slices.Sorted(maps.Keys(d.stale)) {
@@ -173,11 +181,6 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			continue
 		}
 		d.inputs[n] = in
-		if d.Step.unexplainedOn(n) {
-			// Labels left out, which a rename changes no updated_at for:
-			// read again next pass, to remove them in time.
-			d.stale[n] = true
-		}
 	}
 	for n := range touched {
 		delete(d.inputs, n)
@@ -305,15 +308,23 @@ func changed(s *github.Snapshot, is *gogithub.Issue) bool {
 	if !at.Equal(s.UpdatedAt) {
 		return at.After(s.UpdatedAt)
 	}
-	if is.GetTitle() != s.Title || github.TypeOf(is) != s.Type {
+	// A label left out of s is no change: its issue is read again once it's
+	// due (Applier.unexplainedDue), nor is the type it would give.
+	var labels, names []string
+	for _, l := range is.Labels {
+		if !s.LeftOut[strings.ToLower(l.GetName())] {
+			labels, names = append(labels, strings.ToLower(l.GetName())), append(names, l.GetName())
+		}
+	}
+	typ := strings.ToLower(is.GetType().GetName())
+	if typ == "" {
+		typ = github.TypeOfLabels(names)
+	}
+	if is.GetTitle() != s.Title || typ != s.Type {
 		return true
 	}
 	if is.ParentIssueURL != nil && parentOf(is.GetParentIssueURL()) != s.Parent {
 		return true
-	}
-	var labels []string
-	for _, l := range is.Labels {
-		labels = append(labels, strings.ToLower(l.GetName()))
 	}
 	held := make([]string, 0, len(s.Labels))
 	for _, l := range s.Labels {

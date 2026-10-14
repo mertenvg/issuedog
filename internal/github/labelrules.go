@@ -389,7 +389,8 @@ func (r *labelRules) settle(ctx context.Context, l *labelState, reverted map[str
 }
 
 // UnexplainedWait is how long a pipeline label must stay unexplained, with
-// no change to its events, before it is removed.
+// no change to its events, before it is removed, or, for a label renamed
+// again and again, how long its issue must have had unexplained labels.
 const UnexplainedWait = 5 * time.Minute
 
 // HoldBound is how long an issue with unexplained labels is held back, from
@@ -459,12 +460,57 @@ func (u *Unexplained) ForgetIssue(owner, repo string, number int) {
 	u.set(unexplainedKey(owner, repo, number), heldIssue{})
 }
 
-// Has reports whether u keeps unexplained labels of owner/repo#number: ones
-// held back or left out, for a later call to check again.
-func (u *Unexplained) Has(owner, repo string, number int) bool {
+// due is when the label first seen as fs is to be removed, if it stays
+// unexplained with no change to its events: UnexplainedWait after it was
+// first seen, or, once the issue has had unexplained labels for
+// UnexplainedWait, HoldBound after it was first seen, whichever is first.
+// So a label renamed to a new name every few minutes is removed too, while
+// a label whose events are only late, or that the owner just added back,
+// gets HoldBound for its events to show.
+func (h heldIssue) due(fs firstSeen) time.Time {
+	byIssue := h.since.Add(UnexplainedWait)
+	if held := fs.at.Add(HoldBound); held.After(byIssue) {
+		byIssue = held
+	}
+	if own := fs.at.Add(UnexplainedWait); own.Before(byIssue) {
+		return own
+	}
+	return byIssue
+}
+
+// Due returns when the first unexplained label of owner/repo#number is to
+// be removed, by GitHub's clock, if it stays so, and false if u keeps none
+// of it. Until then, a caller that left its labels out needn't read the
+// issue again for them.
+func (u *Unexplained) Due(owner, repo string, number int) (time.Time, bool) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	return len(u.issues[unexplainedKey(owner, repo, number)].labels) > 0
+	h := u.issues[unexplainedKey(owner, repo, number)]
+	var first time.Time
+	for _, fs := range h.labels {
+		if at := h.due(fs); first.IsZero() || at.Before(first) {
+			first = at
+		}
+	}
+	return first, !first.IsZero()
+}
+
+// Labels returns the unexplained labels u keeps of owner/repo#number, in
+// lower case: those held back or left out.
+func (u *Unexplained) Labels(owner, repo string, number int) map[string]bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	labels := map[string]bool{}
+	for l := range u.issues[unexplainedKey(owner, repo, number)].labels {
+		labels[l] = true
+	}
+	return labels
+}
+
+// ForgetLabel forgets label of owner/repo#number, ignoring case, as for one
+// the App has just written, which its own event now explains.
+func (u *Unexplained) ForgetLabel(owner, repo string, number int, label string) {
+	u.forget(unexplainedKey(owner, repo, number), strings.ToLower(label))
 }
 
 // forget drops label, lowercase, of issue, and the issue once it has none.
@@ -480,8 +526,8 @@ func (u *Unexplained) forget(issue, label string) {
 // unexplained deals with each pipeline label in given that the timeline
 // says is off once settle is done (settled), whether no event names it or
 // the last change that stands removed it. Such a label is removed, with a
-// revert comment, once it has stayed unexplained for UnexplainedWait with
-// no change to its events. Until then, for HoldBound from when the issue
+// revert comment, once it falls due (heldIssue.due) with no change to its
+// events. Until then, for HoldBound from when the issue
 // was first found with one, it's returned in held, and the caller holds the
 // issue back; after that, it's left out of labels, so the caller goes ahead
 // and acts on nothing of it. It returns labels without the labels it
@@ -538,12 +584,14 @@ func (u *Unexplained) forget(issue, label string) {
 // the App's own events can lag the same way. A read in that gap sees labels
 // with no events yet, which is why the issue is held back, briefly, before
 // anything is acted on. The hold is timed per issue, so renaming a label
-// again, to a new name, doesn't hold the issue back again; the removal is
-// timed per label, and starts again when the label's events change, as when
-// the owner removes it and adds it back by hand. Times are by GitHub's
-// clock, the Date of the response that reads the issue again (see below),
-// or the local clock if it has none. A label renamed to a new name every
-// few minutes is never removed, but it's left out, so nothing acts on it.
+// again, to a new name, doesn't hold the issue back again. The removal is
+// timed per label (heldIssue.due), and starts again when the label's events
+// change, as when the owner removes it and adds it back by hand. A label
+// renamed to a new name every few minutes is removed too, once the issue
+// has had unexplained labels for UnexplainedWait and that name has been
+// there for HoldBound, long enough for a late event to show. Times are by
+// GitHub's clock, the Date of the response that reads the issue again (see
+// below), or the local clock if it has none.
 //
 // given is the issue's labels as the caller read them, before the timeline,
 // so a change made in between can make a label look unexplained. So
@@ -622,8 +670,8 @@ func (r *labelRules) unexplained(ctx context.Context, labels, given []string, st
 			fs = firstSeen{at: now, events: had} // new, or its events changed: start again
 		}
 		next.labels[strings.ToLower(x)] = fs
-		if waited := now.Sub(fs.at); waited < UnexplainedWait {
-			logr.Debugf("%s on %s/%s#%d is unexplained, for %v so far", x, r.owner, r.repo, r.number, waited)
+		if now.Before(next.due(fs)) {
+			logr.Debugf("%s on %s/%s#%d is unexplained, for %v so far", x, r.owner, r.repo, r.number, now.Sub(fs.at))
 			pending = append(pending, x)
 			continue
 		}

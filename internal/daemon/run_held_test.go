@@ -156,7 +156,9 @@ func TestRenamedAgainAndAgainDoesNotStall(t *testing.T) {
 
 // One label on every issue, renamed to a new pipeline name every four
 // minutes, holds each issue back once, and Work gets every issue on every
-// pass after that, without the label: no repo-wide stall.
+// pass after that, without the label: no repo-wide stall. The label is
+// removed in the end, as its issue has had unexplained labels for five
+// minutes.
 func TestRepoWideRenamesDoNotStall(t *testing.T) {
 	f := newFake(t)
 	for range 4 {
@@ -192,8 +194,13 @@ func TestRepoWideRenamesDoNotStall(t *testing.T) {
 			}
 		}
 	}
-	if w := f.Writes(); len(w) != 0 {
-		t.Errorf("writes = %+v, want none, as no name stays five minutes", w)
+	// Each issue had unexplained labels for five minutes, so its label, by
+	// then a new name, is removed, with a revert comment.
+	for _, is := range f.State().Issues {
+		reverts := slices.ContainsFunc(is.Comments, func(c githubtest.CommentState) bool { return strings.Contains(c.Body, "issuedog:revert key=scope") })
+		if slices.ContainsFunc(is.Labels, func(l string) bool { return strings.HasPrefix(l, "scope:") }) || !reverts {
+			t.Errorf("#%d: labels %q, a revert comment %v; want the renamed label removed, with one", is.Number, is.Labels, reverts)
+		}
 	}
 }
 

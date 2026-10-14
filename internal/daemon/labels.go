@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
@@ -20,9 +23,37 @@ func (a *Applier) seen() *github.Unexplained {
 	return &a.unexplained
 }
 
-// unexplainedOn reports whether issue n has unexplained labels, held back or
-// left out, which a later pass must check again.
-func (a *Applier) unexplainedOn(n int) bool { return a.seen().Has(a.Owner, a.Repo, n) }
+// unexplainedDue reports whether one of issue n's unexplained labels, left
+// out until then, is due for removal by now, GitHub's clock: then the issue
+// must be read again, for CheckLabels to remove it. Nothing acts on such a
+// label before then, so the issue needn't be read again for it sooner.
+func (a *Applier) unexplainedDue(n int, now time.Time) bool {
+	due, ok := a.seen().Due(a.Owner, a.Repo, n)
+	return ok && !now.Before(due)
+}
+
+// hide leaves out of s, the issue read again by a path that doesn't run
+// CheckLabels on it, the labels CheckLabels last held back or left out on
+// it, so nothing acts on them there either.
+func (a *Applier) hide(s *github.Snapshot) {
+	s.LeftOut = a.seen().Labels(a.Owner, a.Repo, s.Number)
+	s.SetLabels(s.Labels)
+}
+
+// hidden is a copy of s with hide applied, for a check on a snapshot that
+// CheckLabels may yet run on, which must keep all its labels.
+func (a *Applier) hidden(s *github.Snapshot) *github.Snapshot {
+	c := *s
+	c.LeftOut = maps.Clone(s.LeftOut)
+	for l := range a.seen().Labels(a.Owner, a.Repo, s.Number) {
+		if c.LeftOut == nil {
+			c.LeftOut = map[string]bool{}
+		}
+		c.LeftOut[l] = true
+	}
+	c.SetLabels(s.Labels)
+	return &c
+}
 
 // forgetLabels forgets issue n's unexplained labels, once it's closed or
 // gone, so the memory of them doesn't outlive it.
@@ -67,12 +98,29 @@ var ErrLabelsHeld = errors.New("labels held back until their events explain them
 // without acting on it, and the issue is read again each pass until the
 // label is explained or removed.
 func (a *Applier) CheckLabels(ctx context.Context, s *github.Snapshot, trust github.Trust, dirty func(int64) bool) error {
-	labels, events, settings, held, err := a.Client.CheckLabels(ctx, a.Owner, a.Repo, s.Number, s.Labels, a.AppSlug, trust, dirty, a.seen())
+	// The labels as read, those left out before included, so a label left
+	// out is checked again.
+	given := slices.Clone(s.Labels)
+	for l := range s.LeftOut {
+		if !slices.ContainsFunc(given, func(x string) bool { return strings.EqualFold(x, l) }) {
+			given = append(given, l)
+		}
+	}
+	labels, events, settings, held, err := a.Client.CheckLabels(ctx, a.Owner, a.Repo, s.Number, given, a.AppSlug, trust, dirty, a.seen())
 	if err != nil {
 		return fmt.Errorf("labels of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
 	}
 	// CheckLabels may have reverted labels since s was read, or left out
-	// some it can't explain yet.
+	// some it can't explain yet: those stay out of s.Labels, however the
+	// labels are read again (SetLabels).
+	// Those are the unexplained ones it remembers, held back or not, that
+	// it didn't return; not those it or settle removed.
+	s.LeftOut = a.seen().Labels(a.Owner, a.Repo, s.Number)
+	for l := range s.LeftOut {
+		if slices.ContainsFunc(labels, func(x string) bool { return strings.EqualFold(x, l) }) {
+			delete(s.LeftOut, l)
+		}
+	}
 	s.SetLabels(labels)
 	s.SettingsEvent = settings
 	if len(held) > 0 {

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/bradleyfalzon/ghinstallation/v2"
 	gogithub "github.com/google/go-github/v92/github"
@@ -32,6 +34,39 @@ type Client struct {
 	*gogithub.Client
 	installation *ghinstallation.Transport
 	app          *gogithub.Client // as the App itself, for GET /app
+	clock        *githubClock
+}
+
+// githubClock is a RoundTripper that keeps GitHub's clock: the Date of the
+// latest response that has one, and the local time it came.
+type githubClock struct {
+	next        http.RoundTripper
+	mu          sync.Mutex
+	date, local time.Time
+}
+
+func (g *githubClock) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := g.next.RoundTrip(req)
+	if err != nil {
+		return nil, fmt.Errorf("github %s %s: %w", req.Method, req.URL.Path, err)
+	}
+	if date, perr := http.ParseTime(resp.Header.Get("Date")); perr == nil {
+		g.mu.Lock()
+		g.date, g.local = date, time.Now()
+		g.mu.Unlock()
+	}
+	return resp, nil
+}
+
+// Now is GitHub's clock now: the Date of the latest response, moved on by
+// the local time since, or the local clock before any response had one.
+func (c *Client) Now() time.Time {
+	c.clock.mu.Lock()
+	defer c.clock.mu.Unlock()
+	if c.clock.date.IsZero() {
+		return time.Now()
+	}
+	return c.clock.date.Add(time.Since(c.clock.local))
 }
 
 // New returns a client for the installation in cfg. It makes no requests.
@@ -50,7 +85,8 @@ func New(cfg Config) (*Client, error) {
 	// token follows none.
 	guarded := &http.Client{CheckRedirect: sameHost}
 	// The ETag cache wraps the auth transport, so each installation has its own.
-	opts := []gogithub.ClientOptionsFunc{gogithub.WithHTTPClient(guarded), gogithub.WithTransport(newETagCache(closeMintErrors{itr}))}
+	clock := &githubClock{next: newETagCache(closeMintErrors{itr})}
+	opts := []gogithub.ClientOptionsFunc{gogithub.WithHTTPClient(guarded), gogithub.WithTransport(clock)}
 	appOpts := []gogithub.ClientOptionsFunc{gogithub.WithHTTPClient(guarded), gogithub.WithTransport(atr)}
 	if cfg.BaseURL != "" {
 		root := strings.TrimRight(cfg.BaseURL, "/")
@@ -67,7 +103,7 @@ func New(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("github app client: %w", err)
 	}
-	return &Client{Client: client, installation: itr, app: app}, nil
+	return &Client{Client: client, installation: itr, app: app, clock: clock}, nil
 }
 
 // ErrCrossHostRedirect is wrapped by the error for a redirect to another

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -38,6 +39,10 @@ type Snapshot struct {
 	// TypeFromLabels is set when Type comes from the labels, as the issue has
 	// no issue type, so SetLabels keeps it up to date with them.
 	TypeFromLabels bool
+	// LeftOut are the labels, in lower case, on the issue but left out of
+	// Labels, as the label rules can't explain them yet (CheckLabels), so
+	// nothing acts on them. SetLabels keeps them out.
+	LeftOut map[string]bool
 }
 
 // Comment is one issue comment.
@@ -117,11 +122,12 @@ func TypeOf(issue *gogithub.Issue) string {
 	for _, l := range issue.Labels {
 		labels = append(labels, l.GetName())
 	}
-	return typeOfLabels(labels)
+	return TypeOfLabels(labels)
 }
 
-// typeOfLabels is the first type:* label's suffix, in lower case, or "".
-func typeOfLabels(labels []string) string {
+// TypeOfLabels is the first type:* label's suffix, in lower case, or "": an
+// issue's type when it has no issue type (TypeOf).
+func TypeOfLabels(labels []string) string {
 	for _, l := range labels {
 		if name, ok := strings.CutPrefix(strings.ToLower(l), "type:"); ok {
 			return name
@@ -130,13 +136,15 @@ func typeOfLabels(labels []string) string {
 	return ""
 }
 
-// SetLabels sets s.Labels to labels, as the label rules (CheckLabels) left
-// them, and s.Type with them when it came from a type:* label rather than
-// the issue type, so a type label they removed or left out gives no type.
+// SetLabels sets s.Labels to labels, without those in s.LeftOut, and s.Type
+// with them when it came from a type:* label rather than the issue type, so
+// a type label removed or left out gives no type. Every change to s.Labels
+// goes through it, so a label left out stays out, however the labels are
+// read again.
 func (s *Snapshot) SetLabels(labels []string) {
-	s.Labels = labels
+	s.Labels = slices.DeleteFunc(slices.Clone(labels), func(l string) bool { return s.LeftOut[strings.ToLower(l)] })
 	if s.TypeFromLabels {
-		s.Type = typeOfLabels(labels)
+		s.Type = TypeOfLabels(s.Labels)
 	}
 }
 

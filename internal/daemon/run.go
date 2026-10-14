@@ -269,6 +269,9 @@ func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 		return false, wrap(err)
 	}
 	fresh, err := a.Client.Snapshot(ctx, a.Owner, a.Repo, n)
+	if err == nil {
+		a.hide(fresh) // nothing here runs CheckLabels on it
+	}
 	switch {
 	case gone(err):
 		logr.Infof("%s/%s#%d looks gone, deleted or transferred, so it gets no run and is read again: %v", a.Owner, a.Repo, n, err)
@@ -513,9 +516,12 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 // usage limit closes the gate, and isn't counted, as in RunStage.
 // Otherwise the run counts as a failed attempt, its clone is deleted, and
 // the issue, at its pre-run stage (see Lease), runs again when its stage
-// has work pending. A held or closed issue's lease and clone are dropped
-// by apply, or by that reset. A Failed lease only gives its count
-// (endedLease).
+// has work pending. For a held or closed issue, the clone is deleted; a
+// valid saved result is dropped; without one, the run counts as a failed
+// attempt unless it hit a usage limit or was applied; and the lease stays,
+// marked ended, while it holds a count. A Failed lease only gives its
+// count (endedLease). A saved result whose issue has labels held back
+// waits, its lease kept (applyLease).
 func (r *Runs) resume(ctx context.Context) (int, error) {
 	l, ok, err := r.readLease(ctx)
 	if err != nil || !ok {
@@ -639,6 +645,7 @@ func (r *Runs) reportCap(ctx context.Context, s *github.Snapshot, st Stage, l Le
 		if err != nil {
 			return wrap(err)
 		}
+		a.hide(fresh)
 		s = fresh
 	}
 	d, err := a.Dirty(ctx, s)
