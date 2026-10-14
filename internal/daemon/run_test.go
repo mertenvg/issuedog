@@ -24,13 +24,15 @@ import (
 	"github.com/mertenvg/issuedog/internal/workspace"
 )
 
-// fakeClaude counts its runs in $FAKE/count, keeps each prompt and the lease
-// it ran under as $FAKE/prompt.<n> and $FAKE/lease.<n>, sleeps for
-// $FAKE/sleep seconds, if set, writes $FAKE/stderr, if set, to stderr,
-// prints $FAKE/out and exits with $FAKE/exit, if there is one.
+// fakeClaude counts its runs in $FAKE/count, keeps each prompt, its
+// arguments, one a line, and the lease it ran under as $FAKE/prompt.<n>,
+// $FAKE/args.<n> and $FAKE/lease.<n>, sleeps for $FAKE/sleep seconds, if
+// set, writes $FAKE/stderr, if set, to stderr, prints $FAKE/out and exits
+// with $FAKE/exit, if there is one.
 const fakeClaude = `#!/bin/sh
 n=$(($(cat "$FAKE/count" 2>/dev/null || echo 0) + 1))
 printf '%s' "$2" > "$FAKE/prompt.$n"
+printf '%s\n' "$@" > "$FAKE/args.$n"
 cp "$STATE/lease.json" "$FAKE/lease.$n"
 echo "$n" > "$FAKE/count"
 [ -f "$FAKE/sleep" ] && sleep "$(cat "$FAKE/sleep")"
