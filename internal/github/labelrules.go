@@ -162,7 +162,9 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 	marker, markerAt := latest.to, latest.at
 	given := labels
 	labels = slices.Clone(labels)
-	settled := map[string]bool{} // whether each label is on, by lowercase name, after settle
+	// Whether each label, by lowercase name, is on after settle, or was just
+	// reverted by it: either way, unexplained leaves it alone.
+	settled := map[string]bool{}
 	var stages []string
 	var override, last *gogithub.Timeline
 	overrideAt, lastAt, settingsAt := -1, -1, -1
@@ -170,11 +172,11 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 		// acc is the last change that stands: the latest if accepted, or
 		// else the one a revert goes back to. An untrusted change after a
 		// trusted override must not hide that override.
-		on, acc, accAt, err := r.settle(ctx, l, reverted)
+		on, acc, accAt, wrote, err := r.settle(ctx, l, reverted)
 		if err != nil {
 			return nil, nil, 0, wrap(err)
 		}
-		settled[strings.ToLower(l.name)] = on
+		settled[strings.ToLower(l.name)] = on || wrote
 		if has := slices.ContainsFunc(labels, func(x string) bool { return strings.EqualFold(x, l.name) }); on && !has {
 			labels = append(labels, l.name)
 		} else if !on && has {
@@ -329,14 +331,14 @@ func (r *labelRules) accepted(ctx context.Context, e *gogithub.Timeline) (bool, 
 
 // settle finds the last accepted change to l, from the App or a trusted user,
 // and its timeline position (nil and -1 if none), and reverts l to how that
-// change left it, or off. It reports whether l is on. The comment, keyed by
-// the latest event, goes first and only once, so a crash between the two
-// writes replays cleanly.
-func (r *labelRules) settle(ctx context.Context, l *labelState, reverted map[string]bool) (bool, *gogithub.Timeline, int, error) {
+// change left it, or off. It reports whether l is on, and whether it reverted
+// l. The comment, keyed by the latest event, goes first and only once, so a
+// crash between the two writes replays cleanly.
+func (r *labelRules) settle(ctx context.Context, l *labelState, reverted map[string]bool) (bool, *gogithub.Timeline, int, bool, error) {
 	latest := l.latest()
 	acc, accAt, err := r.standing(ctx, l, nil)
 	if err != nil {
-		return false, nil, -1, fmt.Errorf("settle %s: %w", l.name, err)
+		return false, nil, -1, false, fmt.Errorf("settle %s: %w", l.name, err)
 	}
 	if acc == nil {
 		// Only reverts and untrusted changes: the App's last word stands.
@@ -349,7 +351,7 @@ func (r *labelRules) settle(ctx context.Context, l *labelState, reverted map[str
 	}
 	want := acc != nil && acc.GetEvent() == "labeled"
 	if acc == latest || want == (latest.GetEvent() == "labeled") {
-		return want, acc, accAt, nil
+		return want, acc, accAt, false, nil
 	}
 	key := strconv.FormatInt(latest.GetID(), 10)
 	who := latest.GetActor().GetLogin()
@@ -358,7 +360,7 @@ func (r *labelRules) settle(ctx context.Context, l *labelState, reverted map[str
 		// The label name is someone else's text, so a marker in it is escaped (§5.1).
 		body := fmt.Sprintf("I %s `%s`: only trusted users can change pipeline labels, and %s isn't one.\n\n<!-- issuedog:revert key=%s -->", verb, Escape(l.name), who, key)
 		if _, _, err := r.c.Issues.CreateComment(ctx, r.owner, r.repo, r.number, gogithub.IssueCommentRequest{Body: body}); err != nil {
-			return false, nil, -1, fmt.Errorf("comment on revert of %s on %s/%s#%d: %w", l.name, r.owner, r.repo, r.number, err)
+			return false, nil, -1, false, fmt.Errorf("comment on revert of %s on %s/%s#%d: %w", l.name, r.owner, r.repo, r.number, err)
 		}
 	}
 	if want {
@@ -371,11 +373,16 @@ func (r *labelRules) settle(ctx context.Context, l *labelState, reverted map[str
 		}
 	}
 	if err != nil {
-		return false, nil, -1, fmt.Errorf("revert %s on %s/%s#%d: %w", l.name, r.owner, r.repo, r.number, err)
+		return false, nil, -1, false, fmt.Errorf("revert %s on %s/%s#%d: %w", l.name, r.owner, r.repo, r.number, err)
 	}
 	logr.Infof("reverted %s's change to %s on %s/%s#%d", who, l.name, r.owner, r.repo, r.number)
-	return want, acc, accAt, nil
+	return want, acc, accAt, true, nil
 }
+
+// labelEventLag is how long after an issue's last update unexplained waits
+// for the issue's label events to be written, well past the 1 to 2 seconds
+// GitHub was seen to take.
+const labelEventLag = time.Minute
 
 // unexplained removes, with a revert comment, each pipeline label in given
 // that the timeline says is off once settle is done (settled), whether no
@@ -409,10 +416,34 @@ func (r *labelRules) settle(ctx context.Context, l *labelState, reverted map[str
 //     A rename of a label that the App or a trusted user added can't be told
 //     from their own add, so it stands: the one gap left.
 //
+// No rename names who made it, so this fails closed for the owner too: a
+// trusted rename of a pipeline label, such as scope:gh to scope:github,
+// removes the new name from every issue that has it, each with a comment.
+// The owner adds it back by hand after renaming, which makes events that
+// explain it.
+//
 // A label renamed away, which the timeline says is on but the issue doesn't
 // have, is left as before: CheckLabels keeps it in labels, as for a read made
 // before the change. Putting it on the issue again would also re-create a
 // pipeline label the owner deleted, on every issue that ever had it.
+//
+// Label events are written late: GitHub was seen writing an issue's labeled
+// events 1 to 2 seconds after the issue was created with those labels, and
+// the App's own events can lag the same way. A read in that gap sees labels
+// with no events yet. So a label is only removed when the issue was last
+// updated at least labelEventLag before now, by GitHub's clock: the Date of
+// the response that reads the issue again (see below), or the local clock if
+// it has none. A 304 answered from the client's cache keeps the 304's own
+// Date, and an older cached one only makes the wait longer. Adding a label
+// updates the issue, and a rename is believed not to, so a renamed label is
+// still removed, once the issue has been quiet that long. Until then, it's
+// left to a later pass. Someone who keeps the issue busy, with a comment a
+// minute, holds the removal off as long as they do.
+//
+// The App's own comment updates the issue too, so a label whose revert
+// comment is posted already, as after a crash, doesn't wait again. That's
+// why one comment covers every label removed in a pass, each with its own
+// revert marker: once it's posted, a replay removes them all.
 //
 // given is the issue's labels as the caller read them, before the timeline,
 // so a change made in between can make a label look unexplained. So before
@@ -420,12 +451,18 @@ func (r *labelRules) settle(ctx context.Context, l *labelState, reverted map[str
 // timeline. A label still on the issue, with no event for it since the first
 // timeline read, is on with nothing to explain it. A label with a new event
 // is left to the next pass, and one that's gone is dropped from labels.
+// Labels settle has just reverted are left out: settle has commented on them
+// already, and the reads may not show its write yet.
 //
 // Labels set by hand before issuedog adopted an issue have their labeled
-// events like any other, so this doesn't touch them. The revert key is the
-// label's lowercase name, URL-escaped, then "@" and the ID of its latest
-// event on the timeline, or 0. It holds across a replay, and is new once the
-// App's removal is on the timeline.
+// events like any other, so this doesn't touch them, with one exception.
+// GitHub has recorded labeled events only since about mid-2014, so an issue
+// labelled before then has no events for those labels: an issue that old,
+// still open, with pipeline labels would have them all removed.
+//
+// The revert key is the label's lowercase name, URL-escaped, then "@" and
+// the ID of its latest event on the timeline, or 0. It holds across a
+// replay, and is new once the App's removal is on the timeline.
 func (r *labelRules) unexplained(ctx context.Context, labels, given []string, states map[string]*labelState, settled, reverted map[string]bool) ([]string, error) {
 	var suspects []string
 	for _, x := range given {
@@ -439,7 +476,7 @@ func (r *labelRules) unexplained(ctx context.Context, labels, given []string, st
 	drop := func(name string) {
 		labels = slices.DeleteFunc(labels, func(x string) bool { return strings.EqualFold(x, name) })
 	}
-	issue, _, err := r.c.Issues.Get(ctx, r.owner, r.repo, r.number)
+	issue, resp, err := r.c.Issues.Get(ctx, r.owner, r.repo, r.number)
 	if err != nil {
 		return nil, fmt.Errorf("read the labels of %s/%s#%d again: %w", r.owner, r.repo, r.number, err)
 	}
@@ -455,44 +492,77 @@ func (r *labelRules) unexplained(ctx context.Context, labels, given []string, st
 	if len(still) == 0 {
 		return labels, nil
 	}
-	timeline, err := r.c.TimelineSince(ctx, r.owner, r.repo, r.number, time.Time{})
+	now, err := http.ParseTime(resp.Header.Get("Date"))
 	if err != nil {
-		return nil, fmt.Errorf("read the timeline of %s/%s#%d again: %w", r.owner, r.repo, r.number, err)
+		now = time.Now()
 	}
+	quiet := now.Sub(issue.GetUpdatedAt().Time)
+	type removal struct {
+		name, key string
+		had       int // its events on the first timeline read
+	}
+	var due []removal
 	for _, x := range still {
 		had, latest := 0, int64(0)
 		if l := states[strings.ToLower(x)]; l != nil {
 			had, latest = len(l.events), l.latest().GetID()
 		}
+		key := url.QueryEscape(strings.ToLower(x)) + "@" + strconv.FormatInt(latest, 10)
+		if quiet < labelEventLag && !reverted[key] {
+			logr.Debugf("%s on %s/%s#%d has no event yet, %v after the issue's last update; a later pass checks it", x, r.owner, r.repo, r.number, quiet)
+			continue
+		}
+		due = append(due, removal{x, key, had})
+	}
+	if len(due) == 0 {
+		return labels, nil
+	}
+	timeline, err := r.c.TimelineSince(ctx, r.owner, r.repo, r.number, time.Time{})
+	if err != nil {
+		return nil, fmt.Errorf("read the timeline of %s/%s#%d again: %w", r.owner, r.repo, r.number, err)
+	}
+	due = slices.DeleteFunc(due, func(d removal) bool {
 		n := 0
 		for _, e := range timeline {
-			if (e.GetEvent() == "labeled" || e.GetEvent() == "unlabeled") && strings.EqualFold(e.GetLabel().GetName(), x) {
+			if (e.GetEvent() == "labeled" || e.GetEvent() == "unlabeled") && strings.EqualFold(e.GetLabel().GetName(), d.name) {
 				n++
 			}
 		}
-		if n != had {
-			logr.Debugf("%s on %s/%s#%d changed while its labels were checked; the next pass checks it", x, r.owner, r.repo, r.number)
+		if n != d.had {
+			logr.Debugf("%s on %s/%s#%d changed while its labels were checked; the next pass checks it", d.name, r.owner, r.repo, r.number)
+		}
+		return n != d.had
+	})
+	// One comment for them all, so once it's posted a replay needn't wait.
+	var names, markers []string
+	for _, d := range due {
+		if reverted[d.key] {
 			continue
 		}
-		key := url.QueryEscape(strings.ToLower(x)) + "@" + strconv.FormatInt(latest, 10)
-		marker, err := FormatMarker(Marker{Kind: "revert", Fields: map[string]string{"key": key}})
+		marker, err := FormatMarker(Marker{Kind: "revert", Fields: map[string]string{"key": d.key}})
 		if err != nil {
-			return nil, fmt.Errorf("revert %s on %s/%s#%d: %w", x, r.owner, r.repo, r.number, err)
+			return nil, fmt.Errorf("revert %s on %s/%s#%d: %w", d.name, r.owner, r.repo, r.number, err)
 		}
-		if !reverted[key] {
-			// The label name is someone else's text, so a marker in it is escaped (§5.1).
-			body := fmt.Sprintf("I removed `%s`: no change by a trusted user or the App explains it, so it may have come from a renamed repo label. "+
-				"Only trusted users can change pipeline labels.\n\n%s", Escape(x), marker)
-			if _, _, err := r.c.Issues.CreateComment(ctx, r.owner, r.repo, r.number, gogithub.IssueCommentRequest{Body: body}); err != nil {
-				return nil, fmt.Errorf("comment on removal of %s from %s/%s#%d: %w", x, r.owner, r.repo, r.number, err)
-			}
+		// The label name is someone else's text, so a marker in it is escaped (§5.1).
+		names, markers = append(names, "`"+Escape(d.name)+"`"), append(markers, marker)
+	}
+	if len(names) > 0 {
+		text := "no change by a trusted user or the App explains it, so it may have come from a renamed repo label"
+		if len(names) > 1 {
+			text = "no change by a trusted user or the App explains them, so they may have come from renamed repo labels"
 		}
-		resp, err := r.c.Issues.RemoveLabelForIssue(ctx, r.owner, r.repo, r.number, x)
+		body := fmt.Sprintf("I removed %s: %s. Only trusted users can change pipeline labels.\n\n%s", strings.Join(names, ", "), text, strings.Join(markers, "\n"))
+		if _, _, err := r.c.Issues.CreateComment(ctx, r.owner, r.repo, r.number, gogithub.IssueCommentRequest{Body: body}); err != nil {
+			return nil, fmt.Errorf("comment on removal of %s from %s/%s#%d: %w", strings.Join(names, ", "), r.owner, r.repo, r.number, err)
+		}
+	}
+	for _, d := range due {
+		resp, err := r.c.Issues.RemoveLabelForIssue(ctx, r.owner, r.repo, r.number, d.name)
 		if err != nil && (resp == nil || resp.StatusCode != http.StatusNotFound) {
-			return nil, fmt.Errorf("remove %s from %s/%s#%d: %w", x, r.owner, r.repo, r.number, err)
+			return nil, fmt.Errorf("remove %s from %s/%s#%d: %w", d.name, r.owner, r.repo, r.number, err)
 		}
-		drop(x)
-		logr.Infof("removed %s from %s/%s#%d: no trusted change explains it", x, r.owner, r.repo, r.number)
+		drop(d.name)
+		logr.Infof("removed %s from %s/%s#%d: no trusted change explains it", d.name, r.owner, r.repo, r.number)
 	}
 	return labels, nil
 }

@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
@@ -279,6 +280,7 @@ func TestCheckLabels(t *testing.T) {
 			setup: atReady(func(_ testing.TB, f *githubtest.Fake) {
 				f.AddLabel(1, "mallory", "foo")
 				f.RenameLabel("foo", "stage:done")
+				f.Advance(time.Minute)
 			}),
 			writes:   []string{"POST /issues/1/comments", "DELETE /issues/1/labels/stage:done"},
 			comments: []string{renamed("stage:done", "stage%3Adone@0")},
@@ -288,6 +290,7 @@ func TestCheckLabels(t *testing.T) {
 				labelEvent(t, f.AddLabel(1, "owner", "stage:held"), 9002)
 				f.AddLabel(1, "mallory", "foo")
 				f.RenameLabel("foo", "priority:p0")
+				f.Advance(time.Minute)
 			}),
 			writes: []string{"POST /issues/1/comments", "DELETE /issues/1/labels/priority:p0", "POST /issues/1/comments", "DELETE /issues/1/labels/stage:ready"},
 			comments: []string{renamed("priority:p0", "priority%3Ap0@0"),
@@ -298,6 +301,7 @@ func TestCheckLabels(t *testing.T) {
 				labelEvent(t, f.RemoveLabel(1, "owner", "stage:ready"), 9002)
 				f.AddLabel(1, "mallory", "foo")
 				f.RenameLabel("foo", "stage:verifying")
+				f.Advance(time.Minute)
 			}),
 			writes:   []string{"POST /issues/1/comments", "DELETE /issues/1/labels/stage:verifying", "POST /issues/1/comments", "POST /issues/1/labels"},
 			comments: []string{renamed("stage:verifying", "stage%3Averifying@0"), disagreement("none", "9002")},

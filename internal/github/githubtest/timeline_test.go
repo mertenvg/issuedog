@@ -2,6 +2,7 @@ package githubtest
 
 import (
 	"context"
+	"net/http"
 	"reflect"
 	"testing"
 	"time"
@@ -72,5 +73,34 @@ func TestRenameLabel(t *testing.T) {
 				t.Errorf("events = %+v, want the first named %s and the second aa", events, tt.event)
 			}
 		})
+	}
+}
+
+// LagEvents hides label events until the clock, which Advance moves and
+// every answer is dated by, reaches them.
+func TestLagEvents(t *testing.T) {
+	f := New(t, "o/r", "issuedog")
+	f.LagEvents(2 * time.Second)
+	n := f.AddIssue("owner", "Title", "body", "stage:ready")
+	c := f.Client(t)
+	for _, tt := range []struct {
+		wait   time.Duration
+		events int
+	}{{0, 0}, {time.Second, 0}, {time.Second, 1}} {
+		f.Advance(tt.wait)
+		events, err := c.TimelineSince(context.Background(), "o", "r", n, time.Time{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(events) != tt.events {
+			t.Errorf("events after %v more = %+v, want %d", tt.wait, events, tt.events)
+		}
+	}
+	_, resp, err := c.Issues.Get(context.Background(), "o", "r", n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if date, want := resp.Header.Get("Date"), Start.Add(3*time.Second).Format(http.TimeFormat); date != want {
+		t.Errorf("Date = %q, want the clock's, %q", date, want)
 	}
 }
