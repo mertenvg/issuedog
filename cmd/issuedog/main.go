@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -194,7 +195,9 @@ func startDaemon(ctx context.Context, set settings, key []byte) (*daemon.Daemon,
 	}
 	logr.Infof("running as %s[bot] on %s/%s", slug, set.owner, set.name)
 	a := &daemon.Applier{Client: client, Owner: set.owner, Repo: set.name, AppSlug: slug}
-	return &daemon.Daemon{Step: newStep(a, tr), Clone: clone, Config: cfg}, nil
+	d := &daemon.Daemon{Clone: clone, Config: cfg}
+	d.Step = newStep(a, tr, d.CurrentModels)
+	return d, nil
 }
 
 // stageWork is the stage-run harness for d's stage work, with no Stage
@@ -223,13 +226,15 @@ func stageWork(d *daemon.Daemon, name string, cred agent.Cred) (*daemon.Runs, er
 }
 
 // newStep is step 1 with the command and reaction handlers merged so far.
-// The loop's reloads replace its Trust, so the handlers and the trigger ask
-// for the current one rather than keeping tr.
-func newStep(a *daemon.Applier, tr github.Trust) *daemon.Step {
+// The loop's reloads replace its Trust and the daemon's Config, so the
+// handlers and the trigger ask for the current trust, and models for the
+// current models.allowed, rather than keeping what they had at the start.
+func newStep(a *daemon.Applier, tr github.Trust, models func() config.Models) *daemon.Step {
 	st := &daemon.Step{Applier: a, Trust: tr}
 	st.Commands = daemon.Commands(st.CurrentTrust())
 	st.Commands["approve"] = daemon.ApproveCommand()
 	st.Commands["revise"] = daemon.ReviseCommand()
+	maps.Copy(st.Commands, daemon.SettingCommands(st.CurrentTrust(), models))
 	st.Reactions = daemon.ApproveByReaction(st.CurrentTrust())
 	return st
 }

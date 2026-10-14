@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	gogithub "github.com/google/go-github/v92/github"
+	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/logr/v2"
@@ -442,22 +445,247 @@ func (a *Applier) family(ctx context.Context, c Cmd) ([]node, error) {
 }
 
 // setPriority sets c's priority:pN label, removes the other priority:*
-// labels, then 👍s c (SPEC §9.2). It writes no marker, so the 👍 ends it.
-// Command.Check has rejected anything but p0 to p3.
+// labels, then 👍s c (SPEC §9.2). Command.Check has rejected anything but p0
+// to p3.
 func setPriority(ctx context.Context, a *Applier, c Cmd) error {
-	want := "priority:" + c.Arg
-	if err := a.addLabel(ctx, c.S, want); err != nil {
+	if err := a.setLabel(ctx, c, "priority:"+c.Arg); err != nil {
 		return fmt.Errorf("priority: %w", err)
 	}
+	return nil
+}
+
+// setLabel adds want to c's issue, removes the other labels of its kind, the
+// part up to its first colon, ignoring case, then 👍s c. It writes no marker,
+// so the 👍 ends c, and each write is checked first, so a replay redoes only
+// what's missing. A label kept in another case stays as it is.
+func (a *Applier) setLabel(ctx context.Context, c Cmd, want string) error {
+	kind, _, _ := strings.Cut(want, ":")
+	if err := a.addLabel(ctx, c.S, want); err != nil {
+		return fmt.Errorf("set %s: %w", want, err)
+	}
 	for _, l := range slices.Clone(c.S.Labels) {
-		if strings.HasPrefix(strings.ToLower(l), "priority:") && !strings.EqualFold(l, want) {
+		if strings.HasPrefix(strings.ToLower(l), strings.ToLower(kind)+":") && !strings.EqualFold(l, want) {
 			if err := a.removeLabel(ctx, c.S, l); err != nil {
-				return fmt.Errorf("priority: %w", err)
+				return fmt.Errorf("set %s: %w", want, err)
 			}
 		}
 	}
 	if err := a.Ack(ctx, c.Comment.ID); err != nil {
-		return fmt.Errorf("priority: %w", err)
+		return fmt.Errorf("set %s: %w", want, err)
 	}
 	return nil
+}
+
+// SettingCommands returns the handlers of /model and /effort (plan #93,
+// T5), for Step.Commands. Each sets one label of its kind, as /priority
+// does: model:*, effort:*, or for the verifier's runs, verifier-model:* or
+// verifier-effort:*. models returns models.allowed as of the call, such as
+// Daemon.CurrentModels, so a config reload that changes it takes effect.
+// trust is Step's, such as Step.CurrentTrust, for telling the label rules'
+// reverts apart (see addedSince).
+func SettingCommands(trust github.Trust, models func() config.Models) map[string]Handler {
+	return map[string]Handler{
+		"model": setting(func(ctx context.Context, a *Applier, c Cmd) (string, error) {
+			return modelLabel(ctx, a, trust, models(), c)
+		}),
+		"effort": setting(func(_ context.Context, _ *Applier, c Cmd) (string, error) { return effortLabel(c) }),
+	}
+}
+
+// setting is the handler of a command that sets the label that label
+// returns for it, or is rejected with the Rejection that label returns.
+// label must not write, as Check calls it too.
+func setting(label func(ctx context.Context, a *Applier, c Cmd) (string, error)) Handler {
+	return Handler{
+		Check: func(ctx context.Context, a *Applier, c Cmd) error {
+			if _, err := label(ctx, a, c); err != nil {
+				return fmt.Errorf("label: %w", err)
+			}
+			return nil
+		},
+		Apply: func(ctx context.Context, a *Applier, c Cmd) error {
+			want, err := label(ctx, a, c)
+			if err != nil {
+				return fmt.Errorf("label: %w", err)
+			}
+			if err := a.setLabel(ctx, c, want); err != nil {
+				return fmt.Errorf("apply: %w", err)
+			}
+			return nil
+		},
+	}
+}
+
+// settingPrefix returns the value c, a /model or /effort command, sets, and
+// the prefix of the label it sets it in: github.ModelPrefix or
+// github.EffortPrefix, or for the verifier's runs github.VerifierModelPrefix
+// or github.VerifierEffortPrefix.
+func settingPrefix(c Cmd) (value, prefix string) {
+	value, verifier := c.Setting()
+	switch {
+	case c.Name == "model" && verifier:
+		return value, github.VerifierModelPrefix
+	case c.Name == "model":
+		return value, github.ModelPrefix
+	case verifier:
+		return value, github.VerifierEffortPrefix
+	}
+	return value, github.EffortPrefix
+}
+
+// modelLabel returns the label c, a /model command, sets: its prefix and the
+// label suffix of the model on models.allowed that it names, by full name
+// or by suffix, either ignoring case. Otherwise it returns a Rejection,
+// which quotes c's text; reply escapes it (SPEC §5.1).
+//
+// A reload can drop a model from models.allowed after Apply added its label,
+// and Check mustn't then reject c (see Handler). So when c names no allowed
+// model, the labels with c's prefix on c's issue that name no allowed model
+// either, its stray labels, are looked up on the timeline: one that a begun
+// Apply of c added (see addedSince) stands. If exactly one did, c names that
+// label, and c removes the others. Otherwise c is rejected, and its labels
+// stay. Only this path reads the timeline, and it doesn't write.
+func modelLabel(ctx context.Context, a *Applier, trust github.Trust, models config.Models, c Cmd) (string, error) {
+	arg, prefix := settingPrefix(c)
+	name, ok := models.Resolve(arg)
+	var same []string // the full names arg matches ignoring case, quoted
+	for _, m := range models.Allowed {
+		if !ok && strings.EqualFold(m.Name, arg) {
+			name = m.Name
+			same = append(same, "`"+m.Name+"`")
+		}
+	}
+	if ok || len(same) == 1 {
+		// name is on models.allowed, so it has a suffix: ok is always true.
+		suffix, _ := models.LabelSuffix(name)
+		return prefix + suffix, nil
+	}
+	var stray []string
+	for _, l := range c.S.Labels {
+		if !strings.HasPrefix(strings.ToLower(l), prefix) {
+			continue
+		}
+		if _, allowed := models.ModelName(l[len(prefix):]); !allowed {
+			stray = append(stray, l)
+		}
+	}
+	if len(stray) > 0 {
+		begun, err := a.addedSince(ctx, c, trust, stray)
+		if err != nil {
+			return "", fmt.Errorf("model: %w", err)
+		}
+		if len(begun) == 1 {
+			return begun[0], nil
+		}
+	}
+	if len(same) > 1 {
+		return "", Rejection{Reason: fmt.Sprintf("`%s` matches %s on `models.allowed`, ignoring case, so give the name in its exact case", arg, list(same))}
+	}
+	var suffixes []string
+	for _, m := range models.Allowed {
+		suffixes = append(suffixes, "`"+m.Suffix()+"`")
+	}
+	if len(suffixes) == 0 {
+		return "", Rejection{Reason: fmt.Sprintf("`%s` isn't on `models.allowed`, and the config allows no model", arg)}
+	}
+	return "", Rejection{Reason: fmt.Sprintf("`%s` isn't on `models.allowed`, which has %s", arg, list(suffixes))}
+}
+
+// addedSince returns those of labels, on c's issue, that a begun Apply of c
+// added: each one whose latest labeled or unlabeled event on the timeline,
+// after c's own commented event, is the App's labeled event, and isn't the
+// label rules' revert. A revert puts back a label an untrusted user removed,
+// so an App's labeled event right after an unlabeled event is a revert if
+// either:
+//   - a trusted revert marker names that unlabeled event: its key is the
+//     event's ID (github.CheckLabels). Like the label rules, it skips dirty
+//     comments.
+//   - neither the App nor a trusted user, by trust, made that unlabeled
+//     event. An untrusted user can delete or edit the revert's comment, but
+//     not the event. CheckLabels runs before commands in each pass, so it
+//     puts back an untrusted removal before Apply could add the label.
+func (a *Applier) addedSince(ctx context.Context, c Cmd, trust github.Trust, labels []string) ([]string, error) {
+	wrap := func(err error) error { return fmt.Errorf("labels added since comment %d: %w", c.Comment.ID, err) }
+	events, err := a.Client.TimelineSince(ctx, a.Owner, a.Repo, c.S.Number, time.Time{})
+	if err != nil {
+		return nil, wrap(err)
+	}
+	after := slices.IndexFunc(events, func(e *gogithub.Timeline) bool {
+		return e.GetEvent() == "commented" && e.GetID() == c.Comment.ID
+	})
+	if after < 0 {
+		return nil, wrap(fmt.Errorf("the comment isn't on the timeline of %s/%s#%d", a.Owner, a.Repo, c.S.Number))
+	}
+	reverted := map[string]bool{}
+	for _, e := range events {
+		if e.GetEvent() != "commented" || c.Dirt.Has(e.GetID()) {
+			continue
+		}
+		for _, m := range github.TrustedMarkers(author(e.GetUser()), e.GetBody(), a.AppSlug) {
+			if m.Kind == "revert" {
+				reverted[m.Fields["key"]] = true
+			}
+		}
+	}
+	var added []string
+	for _, l := range labels {
+		last, prev := -1, -1 // events are oldest first
+		for i, e := range events {
+			if (e.GetEvent() == "labeled" || e.GetEvent() == "unlabeled") && strings.EqualFold(e.GetLabel().GetName(), l) {
+				prev, last = last, i
+			}
+		}
+		if last <= after || events[last].GetEvent() != "labeled" {
+			continue
+		}
+		if !state.IsApp(author(events[last].GetActor()), a.AppSlug) {
+			continue
+		}
+		if prev >= 0 && events[prev].GetEvent() == "unlabeled" {
+			if reverted[strconv.FormatInt(events[prev].GetID(), 10)] {
+				continue
+			}
+			by := events[prev].GetActor()
+			if !state.IsApp(author(by), a.AppSlug) {
+				ok, err := trust.Trusted(ctx, by.GetLogin())
+				if err != nil {
+					return nil, wrap(fmt.Errorf("trust %s: %w", by.GetLogin(), err))
+				}
+				if !ok {
+					continue
+				}
+			}
+		}
+		added = append(added, l)
+	}
+	return added, nil
+}
+
+// author is u as a github.Author.
+func author(u *gogithub.User) github.Author {
+	return github.Author{Login: u.GetLogin(), Type: u.GetType()}
+}
+
+// effortLabel returns the label c, a /effort command, sets: its prefix and
+// the effort level it names, ignoring case. Otherwise it returns a
+// Rejection, which quotes c's text; reply escapes it (SPEC §5.1). The levels
+// are fixed in code, so no reload changes them.
+func effortLabel(c Cmd) (string, error) {
+	arg, prefix := settingPrefix(c)
+	if level := strings.ToLower(arg); config.ValidEffort(level) {
+		return prefix + level, nil
+	}
+	levels := config.EffortLevels()
+	for i, l := range levels {
+		levels[i] = "`" + l + "`"
+	}
+	return "", Rejection{Reason: fmt.Sprintf("`%s` isn't an effort level: the levels are %s", arg, list(levels))}
+}
+
+// list joins items as "a, b and c".
+func list(items []string) string {
+	if len(items) < 2 {
+		return strings.Join(items, "")
+	}
+	return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
 }

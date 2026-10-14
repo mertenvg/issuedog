@@ -242,7 +242,7 @@ func TestNewStepUsesCurrentTrust(t *testing.T) {
 	f.AddLabel(n, "issuedog-dev[bot]", "stage:spec-review")
 	f.AddReaction(f.AddComment(n, "issuedog-dev[bot]", revisionOf("body")), "owner2", "+1")
 	c := f.Client(t)
-	st := newStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{"owner2": true})
+	st := newStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{"owner2": true}, noModels)
 	step := func() []string {
 		t.Helper()
 		s, err := c.Snapshot(context.Background(), "o", "r", n)
@@ -281,8 +281,8 @@ func TestNewStepCommands(t *testing.T) {
 	f.AddLabel(2, "owner2", "stage:planned")
 	f.AddComment(1, "owner", "/hold")
 	c := f.Client(t)
-	st := newStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{})
-	for _, name := range []string{"approve", "hold", "resume", "priority"} {
+	st := newStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{}, noModels)
+	for _, name := range []string{"approve", "hold", "resume", "priority", "model", "effort"} {
 		if _, ok := st.Commands[name]; !ok {
 			t.Errorf("newStep has no /%s handler", name)
 		}
@@ -301,10 +301,84 @@ func TestNewStepCommands(t *testing.T) {
 	}
 }
 
+// noModels is a models.allowed that's empty.
+func noModels() config.Models { return config.Models{} }
+
+// /model asks newStep's models func on each call, not once: a reload that
+// allows opus lets /model opus through.
+func TestNewStepUsesCurrentModels(t *testing.T) {
+	const app = "issuedog-dev[bot]"
+	f := githubtest.New(t, "o/r", "issuedog-dev")
+	n := f.AddIssue("owner", "Task", "body")
+	f.SetType(n, "Task")
+	f.AddLabel(n, app, "stage:ready")
+	f.AddComment(n, app, "<!-- issuedog:transition from=intake to=ready run=a -->")
+	f.AddComment(n, "owner", "/model opus")
+	c := f.Client(t)
+	var allowed config.Models
+	st := newStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{"owner": true},
+		func() config.Models { return allowed })
+	allowed = config.Models{Allowed: []config.Model{{Name: "opus"}}} // a reload
+	s, err := c.Snapshot(context.Background(), "o", "r", n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Run(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.State().Issues[0].Labels; !slices.Equal(got, []string{"model:opus", "stage:ready"}) {
+		t.Errorf("labels = %v, want model:opus, allowed since the reload", got)
+	}
+}
+
+// startDaemon wires /model to the daemon's config of the moment: the
+// startup config's models.allowed applies, then a reload's from main.
+func TestStartDaemonUsesCurrentModels(t *testing.T) {
+	const app = "issuedog-dev[bot]"
+	files := thisRepo(t)
+	files[".issuedog/config.yaml"] += "\nmodels:\n  allowed: [opus]\n"
+	f := fakeGitHub(t, files)
+	n := f.AddIssue("mertenvg", "Task", "do it")
+	f.AddLabel(n, app, "stage:ready")
+	f.AddComment(n, app, "<!-- issuedog:transition from=intake to=ready run=a -->")
+	f.AddComment(n, "mertenvg", "/model opus")
+	key, err := os.ReadFile(appKeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	d, err := startDaemon(ctx, settings{"mertenvg", "issuedog", 1, 1}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	iterate := func(want []string) {
+		t.Helper()
+		if err := d.Iterate(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got := f.State().Issues[0].Labels; !slices.Equal(got, want) {
+			t.Errorf("labels = %v, want %v", got, want)
+		}
+	}
+	iterate([]string{"model:opus", "stage:ready"})
+
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	gitIn(t, dir, "clone", "--quiet", gitRemote("mertenvg", "issuedog"), work)
+	path := filepath.Join(work, ".issuedog", "config.yaml")
+	if err := os.WriteFile(path, []byte(strings.Replace(files[".issuedog/config.yaml"], "[opus]", "[opus, sonnet]", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, work, "commit", "--quiet", "-am", "allow sonnet")
+	gitIn(t, work, "push", "--quiet", "origin", "main")
+	f.AddComment(n, "mertenvg", "/model sonnet")
+	iterate([]string{"model:sonnet", "stage:ready"})
+}
+
 // newStep handles the phase 1 spec commands, so one left out fails here, not
 // through TestRunDaemon's timeout.
 func TestNewStepHandlesSpecCommands(t *testing.T) {
-	st := newStep(&daemon.Applier{}, trustSet{})
+	st := newStep(&daemon.Applier{}, trustSet{}, noModels)
 	for _, name := range []string{"approve", "revise"} {
 		if h, ok := st.Commands[name]; !ok || h.Check == nil || h.Apply == nil {
 			t.Errorf("Commands[%q] = %+v, %t; want a handler with Check and Apply", name, h, ok)
