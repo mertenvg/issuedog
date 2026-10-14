@@ -462,7 +462,7 @@ func TestCheckInterviewGolden(t *testing.T) {
 // rules returns the rules err names.
 func rules(err error) []string {
 	switch e := err.(type) {
-	case *checkError:
+	case *ruleError:
 		return []string{e.Rule}
 	case interface{ Unwrap() []error }:
 		var names []string
