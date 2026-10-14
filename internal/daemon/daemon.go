@@ -157,6 +157,9 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		if err == nil {
 			err = d.Step.ReviewVisit(ctx, s)
 		}
+		if err == nil {
+			err = d.Step.IntakeVisit(ctx, s)
+		}
 		if err != nil {
 			errs = append(errs, err)
 			delete(d.inputs, n)

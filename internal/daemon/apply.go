@@ -245,17 +245,20 @@ func (a *Applier) comment(ctx context.Context, s *github.Snapshot, body string) 
 }
 
 // setStage makes stage's label the only stage:* label on s: it adds it, then
-// removes the others, even one that names no stage. A stage with no label
-// changes nothing.
+// removes the others, even one that names no stage. Only those s had before
+// the add go: one that the add's answer shows for the first time was set
+// since s was read, perhaps by hand, so it's left for the next CheckLabels
+// to record as an override or repair. A stage with no label changes nothing.
 func (a *Applier) setStage(ctx context.Context, s *github.Snapshot, stage state.Stage) error {
 	want, ok := stage.Label()
 	if !ok {
 		return nil
 	}
+	known := slices.Clone(s.Labels)
 	if err := a.addLabel(ctx, s, want); err != nil {
 		return fmt.Errorf("set stage %s: %w", stage, err)
 	}
-	for _, l := range slices.Clone(s.Labels) {
+	for _, l := range known {
 		if !isStageLabel(l) || strings.EqualFold(l, want) {
 			continue
 		}
