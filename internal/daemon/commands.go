@@ -45,8 +45,9 @@ type Cmd struct {
 // replies with its reason (SPEC §9.2). It isn't a state error (SPEC §5.3).
 type Rejection struct {
 	Reason string
-	// Final is set when a new comment would be rejected the same way, so
-	// the reply doesn't suggest one.
+	// Final is set when a new comment would be rejected the same way, or
+	// when Reason already says what to do next, so the reply doesn't
+	// suggest one.
 	Final bool
 }
 
@@ -351,7 +352,7 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 	case held:
 		return nil
 	case len(makers) > 0:
-		return Rejection{Reason: fmt.Sprintf("the holds below were made on %s, by `/hold` or by hand, so `/resume` there ends them", strings.Join(makers, ", "))}
+		return Rejection{Reason: fmt.Sprintf("the holds below were made on %s, by `/hold` or by hand, so `/resume` there ends them", strings.Join(makers, ", ")), Final: true}
 	}
 	return Rejection{Reason: "nothing here or in its open sub-issues is on an owner hold"}
 }

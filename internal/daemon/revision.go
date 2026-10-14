@@ -103,9 +103,9 @@ func ApproveCommand() Handler {
 				return Rejection{Reason: "there's no revision to approve yet"}
 			case latest.Hidden:
 				return Rejection{Reason: fmt.Sprintf("a comment of mine after revision %d was edited without approval, "+
-					"so it may hide a newer revision. Approve the next revision I post instead", latest.Rev)}
+					"so it may hide a newer revision. Approve the next revision I post instead", latest.Rev), Final: true}
 			case c.Comment.ID < latest.Comment:
-				return Rejection{Reason: fmt.Sprintf("it was posted before revision %d, the latest. To approve that, react 👍 to it, or post `/approve` again", latest.Rev)}
+				return Rejection{Reason: fmt.Sprintf("it was posted before revision %d, the latest. To approve that, react 👍 to it, or post `/approve` again", latest.Rev), Final: true}
 			case state.BodyHash(c.S.Body) != latest.Hash:
 				return Rejection{Reason: fmt.Sprintf("the issue description changed after revision %d, so it no longer matches that revision's hash, `%s`", latest.Rev, latest.Hash)}
 			}

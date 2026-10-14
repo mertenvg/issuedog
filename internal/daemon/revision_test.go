@@ -180,7 +180,7 @@ func TestApprove(t *testing.T) {
 				post(t, f, 1002, "owner", "/approve")
 				post(t, f, 1003, app, revision(2, "body"))
 			}),
-			outcome{comments: []string{rejected("/approve", "it was posted before revision 2, the latest. "+
+			outcome{comments: []string{final("/approve", "I didn't apply this command", "it was posted before revision 2, the latest. "+
 				"To approve that, react 👍 to it, or post `/approve` again", "1002")}, labels: atReview, downs: []string{"/approve"}}},
 		{"an /approve with no revision is rejected",
 			at(state.SpecReview, func(t testing.TB, f *githubtest.Fake) { post(t, f, 1002, "owner", "/approve") }),
@@ -354,7 +354,7 @@ func TestApproveHiddenRevision(t *testing.T) {
 			outcome{comments: []string{posted(2, "body", "", "", "1001")}, labels: atReview}},
 		{"an /approve is rejected, and a fresh revision is posted",
 			probe(func(t testing.TB, f *githubtest.Fake) { post(t, f, 1005, "owner", "/approve") }),
-			outcome{comments: []string{rejected("/approve", hidden, "1005"), posted(2, "body", "", "", "1005")},
+			outcome{comments: []string{final("/approve", "I didn't apply this command", hidden, "1005"), posted(2, "body", "", "", "1005")},
 				labels: atReview, downs: []string{"/approve"}}},
 		{"once a fresh revision follows, a 👍 on it approves",
 			probe(func(t testing.TB, f *githubtest.Fake) {
