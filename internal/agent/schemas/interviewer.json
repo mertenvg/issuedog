@@ -1,0 +1,147 @@
+{
+  "title": "interviewer",
+  "description": "One interviewer run: a question round, a spec, or a type for a bug or task. Set outcome, then only the fields that go with it.",
+  "type": "object",
+  "required": ["outcome"],
+  "additionalProperties": false,
+  "properties": {
+    "outcome": {
+      "description": "questions: ask a round. spec: write the spec. typed: the issue is a bug or task; set type and nothing else.",
+      "enum": ["questions", "spec", "typed"]
+    },
+    "type": {
+      "description": "The type you set on the issue. Only where you may set one.",
+      "type": "object",
+      "required": ["value", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "value": { "enum": ["epic", "story", "task", "bug"] },
+        "reason": {
+          "description": "Why, in one line.",
+          "type": "string",
+          "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+        }
+      }
+    },
+    "message": {
+      "description": "A few lines for the owner, with a spec after revision notes: the answer to each note, or what changed.",
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "questions": {
+      "description": "With outcome questions: this round's questions, most blocking first.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["text", "blocks", "recommended", "others"],
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "description": "The question, in one line that stands alone.",
+            "type": "string",
+            "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+          },
+          "blocks": {
+            "description": "The issue numbers the question blocks.",
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "integer", "minimum": 1 }
+          },
+          "recommended": {
+            "description": "The option you recommend, listed first.",
+            "type": "object",
+            "required": ["text", "why"],
+            "additionalProperties": false,
+            "properties": {
+              "text": {
+                "description": "The option, in one line.",
+                "type": "string",
+                "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+              },
+              "why": {
+                "description": "Why you recommend it, in one line.",
+                "type": "string",
+                "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+              }
+            }
+          },
+          "others": {
+            "description": "The other options, one line each.",
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+            }
+          }
+        }
+      }
+    },
+    "spec": {
+      "description": "With outcome spec: the spec's sections, as Markdown without headings.",
+      "type": "object",
+      "required": ["problem", "goals", "out_of_scope", "users_and_flows", "constraints", "acceptance_criteria", "decisions"],
+      "additionalProperties": false,
+      "properties": {
+        "problem": { "type": "string", "pattern": "\\S" },
+        "goals": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$" }
+        },
+        "out_of_scope": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$" }
+        },
+        "users_and_flows": { "type": "string", "pattern": "\\S" },
+        "constraints": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$" }
+        },
+        "acceptance_criteria": {
+          "description": "Observable, testable statements, one line each.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$" }
+        },
+        "decisions": {
+          "description": "Every question asked in any round, at least once, and each decision made without asking.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["question", "answer", "summary", "by", "round"],
+            "additionalProperties": false,
+            "properties": {
+              "question": {
+                "description": "The question's ID, Q<round>.<number>, or empty for a decision made without asking.",
+                "type": "string",
+                "pattern": "^(Q[1-9][0-9]*\\.[1-9][0-9]*)?$"
+              },
+              "answer": {
+                "description": "The option letter chosen, free for a free-text answer, superseded, dropped, or empty for a decision made without asking.",
+                "enum": ["a", "b", "c", "d", "free", "superseded", "dropped", ""]
+              },
+              "summary": {
+                "description": "In one line: the decision; for superseded, the ID of the question that replaced it; for dropped, why.",
+                "type": "string",
+                "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+              },
+              "by": {
+                "description": "The login of the person whose answer this is, or empty when nobody answered.",
+                "type": "string",
+                "pattern": "^([A-Za-z0-9_][A-Za-z0-9_-]{0,38})?$"
+              },
+              "round": {
+                "description": "The round the answer was given in: the latest round posted before the answering comment. 0 when nobody answered.",
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

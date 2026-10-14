@@ -27,8 +27,12 @@ type Applier struct {
 	// Touched, if set, is told of each issue that a command on another
 	// issue may write to, such as a descendant of a /hold, before it does.
 	Touched func(number int)
+	// Unexplained, if set, is the memory of unexplained labels CheckLabels
+	// keeps between passes. If nil, the Applier keeps its own.
+	Unexplained *github.Unexplained
 
-	histories histories // see Dirty
+	histories   histories // see Dirty
+	unexplained github.Unexplained
 }
 
 // Move is one transition to apply.
@@ -269,19 +273,34 @@ func (a *Applier) setStage(ctx context.Context, s *github.Snapshot, stage state.
 	return nil
 }
 
-// addLabel adds l to s, unless s has it. Like GitHub, it ignores case.
+// addLabel adds l to s, unless s has it. Like GitHub, it ignores case. The
+// labels GitHub answers with replace s's, but for those left out
+// (Snapshot.LeftOut). A label that's on the issue but left out, unexplained,
+// is first removed, so the add makes the App's own event, which explains it:
+// otherwise GitHub would make none, and the label would be removed later as
+// unexplained. A crash between the two leaves the label off, which a replay
+// adds, as for any label not yet added.
 func (a *Applier) addLabel(ctx context.Context, s *github.Snapshot, l string) error {
 	if slices.ContainsFunc(s.Labels, func(x string) bool { return strings.EqualFold(x, l) }) {
 		return nil
+	}
+	if s.LeftOut[strings.ToLower(l)] {
+		resp, err := a.Client.Issues.RemoveLabelForIssue(ctx, a.Owner, a.Repo, s.Number, l)
+		if err != nil && (resp == nil || resp.StatusCode != http.StatusNotFound) {
+			return fmt.Errorf("remove %s, unexplained, from %s/%s#%d to add it: %w", l, a.Owner, a.Repo, s.Number, err)
+		}
+		delete(s.LeftOut, strings.ToLower(l))
+		a.seen().ForgetLabel(a.Owner, a.Repo, s.Number, l)
 	}
 	labels, _, err := a.Client.Issues.AddLabelsToIssue(ctx, a.Owner, a.Repo, s.Number, []string{l})
 	if err != nil {
 		return fmt.Errorf("add %s to %s/%s#%d: %w", l, a.Owner, a.Repo, s.Number, err)
 	}
-	s.Labels = nil
+	var names []string
 	for _, x := range labels {
-		s.Labels = append(s.Labels, x.GetName())
+		names = append(names, x.GetName())
 	}
+	s.SetLabels(names)
 	return nil
 }
 
@@ -296,7 +315,7 @@ func (a *Applier) removeLabel(ctx context.Context, s *github.Snapshot, l string)
 	if err != nil && (resp == nil || resp.StatusCode != http.StatusNotFound) {
 		return fmt.Errorf("remove %s from %s/%s#%d: %w", l, a.Owner, a.Repo, s.Number, err)
 	}
-	s.Labels = slices.DeleteFunc(s.Labels, is)
+	s.SetLabels(slices.DeleteFunc(slices.Clone(s.Labels), is))
 	return nil
 }
 

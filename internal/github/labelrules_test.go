@@ -1,6 +1,7 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/mertenvg/logr/v2"
 
 	"github.com/mertenvg/issuedog/internal/trust"
 )
@@ -262,7 +266,7 @@ func checkLabelsAll(t *testing.T, timeline []ev, dirty func(int64) bool) ([]stri
 		writes = append(writes, desc)
 		_, _ = io.WriteString(w, map[bool]string{true: "[]", false: "{}"}[strings.HasSuffix(path, "/labels")])
 	}))
-	_, got, settings, err := c.CheckLabels(context.Background(), "o", "r", 7, nil, "issuedog", fakeTrust{"owner": true}, dirty)
+	_, got, settings, _, err := c.CheckLabels(context.Background(), "o", "r", 7, nil, "issuedog", fakeTrust{"owner": true}, dirty, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,4 +276,64 @@ func checkLabelsAll(t *testing.T, timeline []ev, dirty func(int64) bool) ([]stri
 func readAll(r io.Reader) []byte {
 	b, _ := io.ReadAll(r)
 	return b
+}
+
+// With no Date on the second read of the issue, the local clock times an
+// unexplained label, which is logged, and a later Date counts from there.
+func TestCheckLabelsDateFallback(t *testing.T) {
+	var date string // the Date of each read of the issue, or none
+	var writes []string
+	c := newClientWith(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/repos/o/r")
+		var err error
+		switch {
+		case r.Method == http.MethodGet && path == "/issues/7/timeline":
+			err = json.NewEncoder(w).Encode([]map[string]any{added(1, "mallory", "foo").json()})
+		case r.Method == http.MethodGet && path == "/issues/7":
+			if date == "" {
+				w.Header()["Date"] = nil // so the server sends none
+			} else {
+				w.Header().Set("Date", date)
+			}
+			err = json.NewEncoder(w).Encode(map[string]any{"number": 7, "labels": []map[string]any{{"name": "priority:p0"}}})
+		default:
+			writes = append(writes, r.Method+" "+path)
+			_, err = io.WriteString(w, "{}")
+		}
+		if err != nil {
+			t.Errorf("reply to %s %s: %v", r.Method, path, err)
+		}
+	}))
+	seen := &Unexplained{}
+	start := time.Now()
+	// Held back at first; left out once the hold is up, four minutes on; and
+	// removed six minutes on. Had the first time been other than the local
+	// clock's, the second pass would have removed it, or held it back.
+	for i, tt := range []struct {
+		date   string
+		writes int
+		held   bool
+	}{
+		{"", 0, true},
+		{start.Add(4 * time.Minute).UTC().Format(http.TimeFormat), 0, false},
+		{start.Add(6 * time.Minute).UTC().Format(http.TimeFormat), 2, false},
+	} {
+		date = tt.date
+		var logs bytes.Buffer
+		stop := logr.AddWriter(&logs, logr.WithFilter(logr.D))
+		labels, _, _, held, err := c.CheckLabels(context.Background(), "o", "r", 7, []string{"priority:p0"}, "issuedog", fakeTrust{},
+			func(int64) bool { return false }, seen)
+		logr.Wait()
+		stop()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(writes) != tt.writes || (len(held) == 1) != tt.held || (len(labels) == 1) != tt.held {
+			t.Errorf("pass %d: writes %q, held %q, labels %q; want %d writes, held back %v, and the label returned only if so",
+				i, writes, held, labels, tt.writes, tt.held)
+		}
+		if fell := strings.Contains(logs.String(), "the local clock times"); fell != (tt.date == "") {
+			t.Errorf("pass %d: logs = %q, want the fallback logged only with no Date", i, logs.String())
+		}
+	}
 }

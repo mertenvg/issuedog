@@ -1,0 +1,27 @@
+{
+  "title": "triage",
+  "description": "Whether issuedog should handle an issue with no stage label.",
+  "type": "object",
+  "required": ["verdict", "sure", "reason", "summary"],
+  "additionalProperties": false,
+  "properties": {
+    "verdict": {
+      "description": "handle: issuedog should take the issue into its pipeline. leave: it should leave the issue to people.",
+      "enum": ["handle", "leave"]
+    },
+    "sure": {
+      "description": "true only when the issue clearly falls on the verdict's side; false lets a code owner decide.",
+      "type": "boolean"
+    },
+    "reason": {
+      "description": "Why, in one line.",
+      "type": "string",
+      "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+    },
+    "summary": {
+      "description": "What the issue asks for, in one line of your own words.",
+      "type": "string",
+      "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+    }
+  }
+}

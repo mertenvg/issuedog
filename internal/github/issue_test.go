@@ -37,7 +37,7 @@ func TestSnapshot(t *testing.T) {
 	}
 	owner := github.Author{Login: "owner", Type: "User"}
 	wantTask := &github.Snapshot{Number: task, Title: "Task", Body: "do it", BodyNode: "I_2", Author: owner, CreatedAt: at(2), UpdatedAt: at(132),
-		Labels: []string{"stage:ready", "type:task"}, Type: "task", Parent: epic, Comments: want}
+		Labels: []string{"stage:ready", "type:task"}, Type: "task", TypeFromLabels: true, Parent: epic, Comments: want}
 	if !reflect.DeepEqual(got, wantTask) {
 		t.Errorf("snapshot with a parent =\n%+v\nwant\n%+v", got, wantTask)
 	}
@@ -61,5 +61,34 @@ func TestSnapshot(t *testing.T) {
 	}
 	if !reflect.DeepEqual(reactions, wantReactions) {
 		t.Errorf("reactions = %+v, want %+v", reactions, wantReactions)
+	}
+}
+
+// A type label gives the type in lower case, whatever its case, unless the
+// issue has an issue type, and SetLabels keeps the type up to date with the
+// labels it leaves, without those left out.
+func TestSnapshotTypeFromLabels(t *testing.T) {
+	f := githubtest.New(t, "o/r", "issuedog")
+	plain := f.AddIssue("owner", "Plain", "body", "Type:Epic", "stage:ready")
+	typed := f.AddIssue("owner", "Typed", "body", "Type:Epic")
+	f.SetType(typed, "Task")
+	c := f.Client(t)
+	for _, tt := range []struct {
+		n                int
+		read, set, after string
+	}{{plain, "epic", "", ""}, {typed, "task", "task", "task"}} {
+		s, err := c.Snapshot(context.Background(), "o", "r", tt.n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := []string{s.Type}
+		s.SetLabels([]string{"stage:ready"})
+		got = append(got, s.Type)
+		s.LeftOut = map[string]bool{"type:epic": true}
+		s.SetLabels([]string{"Type:Epic", "stage:ready"})
+		got = append(got, s.Type)
+		if want := []string{tt.read, tt.set, tt.after}; !reflect.DeepEqual(got, want) || !reflect.DeepEqual(s.Labels, []string{"stage:ready"}) {
+			t.Errorf("#%d: types %q, labels %q; want %q, and Type:Epic left out", tt.n, got, s.Labels, want)
+		}
 	}
 }

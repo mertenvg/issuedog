@@ -45,9 +45,10 @@ type Fake struct {
 	mu          sync.Mutex
 	now         time.Time
 	lastID      int64
-	lastEvent   int64      // timeline events have IDs of their own
-	issues      []*issue   // by number, from 1
-	comments    []*comment // oldest first
+	lastEvent   int64         // timeline events have IDs of their own
+	eventLag    time.Duration // see LagEvents
+	issues      []*issue      // by number, from 1
+	comments    []*comment    // oldest first
 	writes      []Write
 	failAt      int
 	failAfter   bool // FailWriteAfter rather than FailWrite
@@ -291,10 +292,12 @@ func (f *Fake) handle(pattern string, h handler) {
 
 // serve runs h with the fake locked. A write is logged and may be failed. A
 // path naming a missing issue or comment gets a 404. A read gets an ETag over
-// its body and Link header, and a 304 if that matches If-None-Match.
+// its body and Link header, and a 304 if that matches If-None-Match. Every
+// answer is dated by the fake clock, as GitHub dates its own.
 func (f *Fake) serve(w http.ResponseWriter, r *http.Request, write bool, h handler) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	w.Header().Set("Date", f.now.UTC().Format(http.TimeFormat))
 	if write {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
