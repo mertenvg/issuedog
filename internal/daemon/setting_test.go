@@ -2,6 +2,7 @@ package daemon_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"reflect"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/daemon"
+	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
 
@@ -37,6 +39,12 @@ const (
 // settingPass runs step 1 on issue 1 of o/r with daemon.Commands and
 // daemon.SettingCommands of allowed, "owner" trusted.
 func settingPass(t testing.TB, allowed config.Models) func(*githubtest.Fake) error {
+	return settingPassTrust(t, allowed, trusted{"owner": true})
+}
+
+// settingPassTrust is settingPass with daemon.SettingCommands given
+// handlers as its trust; the rest of step 1 still trusts "owner" alone.
+func settingPassTrust(t testing.TB, allowed config.Models, handlers github.Trust) func(*githubtest.Fake) error {
 	return func(f *githubtest.Fake) error {
 		c := f.Client(t)
 		s, err := c.Snapshot(context.Background(), "o", "r", 1)
@@ -45,7 +53,7 @@ func settingPass(t testing.TB, allowed config.Models) func(*githubtest.Fake) err
 		}
 		tr := trusted{"owner": true}
 		st := &daemon.Step{Applier: &daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: slug}, Trust: tr, Commands: daemon.Commands(tr)}
-		maps.Copy(st.Commands, daemon.SettingCommands(tr, func() config.Models { return allowed }))
+		maps.Copy(st.Commands, daemon.SettingCommands(handlers, func() config.Models { return allowed }))
 		_, err = st.Run(context.Background(), s)
 		return err
 	}
@@ -344,6 +352,272 @@ func TestModelRetryAfterReloadDropsIt(t *testing.T) {
 			}
 		})
 	}
+}
+
+// beforeReload allows claude-opus-5-5, labeled opus5, which the reloads in
+// the crash tests drop.
+const beforeReload = "[sonnet, {name: claude-opus-5-5, label: opus5}]"
+
+// reloadAfterCrash runs a pass on f under before, with crash set, which
+// must fail; then, after a reload to after, a pass that must succeed. The
+// handlers of daemon.SettingCommands trust as handlers does.
+func reloadAfterCrash(t *testing.T, f *githubtest.Fake, crash func(f *githubtest.Fake), before, after config.Models, handlers github.Trust) {
+	t.Helper()
+	crash(f)
+	if err := settingPassTrust(t, before, handlers)(f); err == nil {
+		t.Fatal("the crashed pass returned no error")
+	}
+	f.FailWrite(0)
+	if err := settingPassTrust(t, after, handlers)(f); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// acked checks that issue 1 has labels, and its command, comment 1002, the
+// App's 👍 and no reply.
+func acked(t *testing.T, f *githubtest.Fake, labels ...string) {
+	t.Helper()
+	is := f.State().Issues[0]
+	if !reflect.DeepEqual(is.Labels, labels) {
+		t.Errorf("labels = %q, want %q", is.Labels, labels)
+	}
+	if len(is.Comments) != 2 || !reflect.DeepEqual(is.Comments[1].Reactions, []string{app + " +1"}) {
+		t.Errorf("comments = %+v, want the command 👍'd and no reply", is.Comments)
+	}
+}
+
+// addRemove adds label to issue 1 as login, then removes it as login.
+func addRemove(login, label string) func(f *githubtest.Fake) {
+	return func(f *githubtest.Fake) {
+		f.AddLabel(1, login, label)
+		f.RemoveLabel(1, login, label)
+	}
+}
+
+// crashes are the two crash points of a /model whose first write is its
+// add: before its second write, and after its first applied.
+var crashes = []struct {
+	name string
+	at   func(f *githubtest.Fake)
+}{
+	{"before write 2", func(f *githubtest.Fake) { f.FailWrite(2) }},
+	{"after write 1 applied", func(f *githubtest.Fake) { f.FailWriteAfter(1) }},
+}
+
+// mallory adds model:opus5 and then removes it, before or after the
+// owner's /model claude-opus-5-5, so the label rules have nothing to put
+// back. The command's Apply adds model:opus5 and crashes, and a reload
+// drops the model. That add restores no accepted state, so it's the begun
+// Apply's, not a revert: the command ends 👍'd, with model:opus5 alone
+// (#116, item 1).
+func TestModelRetryAfterUntrustedAddAndRemove(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(testing.TB) *githubtest.Fake
+	}{
+		{"before the command", func(t testing.TB) *githubtest.Fake {
+			f := newFake(t)
+			file(f, 0, ready)
+			labeledBy(app, "model:sonnet")(f)
+			addRemove("mallory", "model:opus5")(f)
+			if id := f.AddComment(1, "owner", "/model claude-opus-5-5"); id != 1002 {
+				t.Fatalf("command ID = %d, want 1002", id)
+			}
+			return f
+		}},
+		{"after the command", then(taskWith("owner", "/model claude-opus-5-5", app+" model:sonnet"), addRemove("mallory", "model:opus5"))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, crash := range crashes {
+				t.Run(crash.name, func(t *testing.T) {
+					f := tc.setup(t)
+					reloadAfterCrash(t, f, crash.at, models(t, beforeReload), models(t, "[sonnet]"), trusted{"owner": true})
+					acked(t, f, "model:opus5", "stage:ready")
+				})
+			}
+			// The issue as the crash left it: Apply added model:opus5.
+			setup := then(tc.setup, labeledBy(app, "model:opus5"))
+			pass := settingPass(t, models(t, "[sonnet]"))
+			githubtest.Replay(t, setup, pass)
+			acked(t, run(t, setup, pass), "model:opus5", "stage:ready")
+		})
+	}
+}
+
+// The issue has model:opus5 already when the owner posts /model
+// claude-opus-5-5, so Apply's add writes nothing. It removes the other
+// model labels and crashes before its 👍, and a reload drops the model, so
+// model:opus5 is the only stray label. The App removed another since the
+// command, not as a revert, so the command ends 👍'd (#116, item 2): when
+// the reload drops sonnet too, and when Apply removed one label and not
+// yet the allowed model:sonnet, which it then removes.
+func TestModelRetryAfterNoOpAdd(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		labels []string // the App's, before the command
+		crash  func(f *githubtest.Fake)
+		after  string // models.allowed after the reload
+	}{
+		{"before the 👍", []string{"model:opus5", "model:sonnet"}, func(f *githubtest.Fake) { f.FailWrite(2) }, "[sonnet]"},
+		{"after the removal applied", []string{"model:opus5", "model:sonnet"}, func(f *githubtest.Fake) { f.FailWriteAfter(1) }, "[sonnet]"},
+		{"after the removal applied, and the reload dropped both models", []string{"model:opus5", "model:sonnet"}, func(f *githubtest.Fake) { f.FailWriteAfter(1) }, "[haiku]"},
+		{"between the removals", []string{"model:old", "model:opus5", "model:sonnet"}, func(f *githubtest.Fake) { f.FailWriteAfter(1) }, "[sonnet]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var labels []string
+			for _, l := range tc.labels {
+				labels = append(labels, app+" "+l)
+			}
+			f := taskWith("owner", "/model claude-opus-5-5", labels...)(t)
+			reloadAfterCrash(t, f, tc.crash, models(t, beforeReload), models(t, tc.after), trusted{"owner": true})
+			acked(t, f, "model:opus5", "stage:ready")
+		})
+	}
+	// The issue as the crash left it: Apply removed model:sonnet.
+	setup := then(taskWith("owner", "/model claude-opus-5-5", app+" model:opus5", app+" model:sonnet"),
+		func(f *githubtest.Fake) { f.RemoveLabel(1, app, "model:sonnet") })
+	pass := settingPass(t, models(t, "[sonnet]"))
+	githubtest.Replay(t, setup, pass)
+	acked(t, run(t, setup, pass), "model:opus5", "stage:ready")
+}
+
+// The App's removal names no label when two are stray: here the owner adds
+// model:aaa after a crash like TestModelRetryAfterNoOpAdd's, so the command
+// is rejected, the known limit, and both labels stay.
+func TestModelNoOpAddTwoStrays(t *testing.T) {
+	f := taskWith("owner", "/model claude-opus-5-5", app+" model:opus5", app+" model:sonnet")(t)
+	f.FailWriteAfter(1)
+	if err := settingPass(t, models(t, beforeReload))(f); err == nil {
+		t.Fatal("the crashed pass returned no error")
+	}
+	f.FailWrite(0)
+	f.AddLabel(1, "owner", "model:aaa")
+	if err := settingPass(t, models(t, "[sonnet]"))(f); err != nil {
+		t.Fatal(err)
+	}
+	is := f.State().Issues[0]
+	if want := []string{"model:aaa", "model:opus5", "stage:ready"}; !reflect.DeepEqual(is.Labels, want) {
+		t.Errorf("labels = %q, want %q", is.Labels, want)
+	}
+	if got := is.Comments[1].Reactions; !reflect.DeepEqual(got, []string{app + " -1"}) {
+		t.Errorf("the command's reactions = %q, want the App's 👎", got)
+	}
+}
+
+// An App removal of a model label counts for /model gpt only if it's since
+// the command, not the label rules' revert, and of a model:* label, so
+// these still reject it, and the stray model:retired stays: the App
+// reverting mallory's add, with its comment or without, as when mallory
+// deleted it; the App's removal before the command; the owner's, not the
+// App's, since; and the App's removals of labels of other kinds since.
+func TestModelRemovalNotApply(t *testing.T) {
+	const reason = "`gpt` isn't on `models.allowed`, which has `sonnet`"
+	for _, tc := range []struct {
+		name   string
+		setup  func(testing.TB) *githubtest.Fake
+		labels []string
+	}{
+		{"a revert", then(taskWith("owner", "/model gpt", app+" model:retired"), labeledBy("mallory", "model:foo")),
+			[]string{"model:retired", "stage:ready"}},
+		{"a revert without its comment", then(taskWith("owner", "/model gpt", app+" model:retired"), func(f *githubtest.Fake) {
+			f.AddLabel(1, "mallory", "model:foo")
+			f.RemoveLabel(1, app, "model:foo")
+		}), []string{"model:retired", "stage:ready"}},
+		{"before the command", func(t testing.TB) *githubtest.Fake {
+			f := newFake(t)
+			file(f, 0, ready)
+			labeledBy(app, "model:old", "model:retired")(f)
+			f.RemoveLabel(1, app, "model:old")
+			if id := f.AddComment(1, "owner", "/model gpt"); id != 1002 {
+				t.Fatalf("command ID = %d, want 1002", id)
+			}
+			return f
+		}, []string{"model:retired", "stage:ready"}},
+		{"by the owner", then(taskWith("owner", "/model gpt", app+" model:retired", app+" model:sonnet"),
+			func(f *githubtest.Fake) { f.RemoveLabel(1, "owner", "model:sonnet") }), []string{"model:retired", "stage:ready"}},
+		{"of other kinds", then(taskWith("owner", "/model gpt", app+" effort:high", app+" model:retired", app+" model:sonnet", app+" verifier-model:old"),
+			func(f *githubtest.Fake) {
+				f.RemoveLabel(1, app, "verifier-model:old")
+				f.RemoveLabel(1, app, "effort:high")
+			}), []string{"model:retired", "model:sonnet", "stage:ready"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pass := settingPass(t, models(t, "[sonnet]"))
+			githubtest.Replay(t, tc.setup, pass)
+
+			is := run(t, tc.setup, pass).State().Issues[0]
+			if !reflect.DeepEqual(is.Labels, tc.labels) {
+				t.Errorf("labels = %q, want %q", is.Labels, tc.labels)
+			}
+			if got := is.Comments[1].Reactions; !reflect.DeepEqual(got, []string{app + " -1"}) {
+				t.Errorf("the command's reactions = %q, want the App's 👎", got)
+			}
+			if got := is.Comments[len(is.Comments)-1].Body; got != rejected("/model gpt", reason, "1002") {
+				t.Errorf("the last comment = %q, want the rejection", got)
+			}
+		})
+	}
+}
+
+// A failed trust lookup, while telling a begun Apply's add or removal from
+// a revert, fails the pass with the error wrapped, and nothing is written:
+// the walk back from the App's add of model:opus5 asks about mallory, and
+// the one from its removal of model:sonnet, which the owner added, asks
+// about the owner.
+func TestModelTrustFails(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(testing.TB) *githubtest.Fake
+		want  string
+	}{
+		{"add", then(taskWith("owner", "/model claude-opus-5-5", app+" model:sonnet"), func(f *githubtest.Fake) {
+			addRemove("mallory", "model:opus5")(f)
+			f.AddLabel(1, app, "model:opus5")
+		}), "model: labels added since comment 1002: labeled model:opus5: revert: trust mallory: "},
+		{"removal", then(taskWith("owner", "/model gpt", app+" model:retired", "owner model:sonnet"), func(f *githubtest.Fake) {
+			f.RemoveLabel(1, app, "model:sonnet")
+		}), "model: labels added since comment 1002: unlabeled model:sonnet: revert: trust owner: "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := tc.setup(t)
+			err := settingPassTrust(t, models(t, "[sonnet]"), failTrust{})(f)
+			if !errors.Is(err, errTrust) || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("pass = %v, want errTrust, wrapped in %q", err, tc.want)
+			}
+			if w := f.Writes(); len(w) != 0 {
+				t.Errorf("writes = %+v, want none", w)
+			}
+		})
+	}
+}
+
+// The App removed model:opus5 before the owner's /model claude-opus-5-5,
+// whose Apply adds it back and crashes before a reload drops the model.
+// That removal is the App's own, so trust isn't asked about it, here
+// failing if it is, and the add is the begun Apply's.
+func TestModelAppRemovalTrustNotAsked(t *testing.T) {
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := newFake(t)
+		file(f, 0, ready)
+		labeledBy(app, "model:opus5", "model:sonnet")(f)
+		f.RemoveLabel(1, app, "model:opus5")
+		if id := f.AddComment(1, "owner", "/model claude-opus-5-5"); id != 1002 {
+			t.Fatalf("command ID = %d, want 1002", id)
+		}
+		return f
+	}
+	for _, crash := range crashes {
+		t.Run(crash.name, func(t *testing.T) {
+			f := setup(t)
+			reloadAfterCrash(t, f, crash.at, models(t, beforeReload), models(t, "[sonnet]"), failTrust{})
+			acked(t, f, "model:opus5", "stage:ready")
+		})
+	}
+	// The issue as the crash left it: Apply added model:opus5.
+	crashed := then(setup, labeledBy(app, "model:opus5"))
+	pass := settingPassTrust(t, models(t, "[sonnet]"), failTrust{})
+	githubtest.Replay(t, crashed, pass)
+	acked(t, run(t, crashed, pass), "model:opus5", "stage:ready")
 }
 
 // An untrusted user removes a stray label, before or after the owner's
