@@ -32,7 +32,8 @@ const approvedLabel = "approved"
 // Otherwise the issue stays: an untrusted author's issue waits for approved,
 // and one with no stage label and no approved is left to triage. Its
 // comment says why the issue is in and, under plan #6's Q1a, tells a bug or
-// a task that it waits at clarifying until phase 3.
+// a task that it waits at clarifying until phase 3, and a story with a
+// parent that it waits there too, since the interviewer doesn't run on it.
 //
 // CheckLabels has run on s, so its labels are the ones that stand. The
 // events are read from a fresh timeline, and the move waits for the next
@@ -100,9 +101,11 @@ func (st *Step) IntakeVisit(ctx context.Context, s *github.Snapshot) error {
 		logr.Debugf("%s/%s#%d: no move from intake yet: the timeline has no labeled event that stands for its labels %v", st.Owner, st.Repo, s.Number, s.Labels)
 		return nil
 	}
-	switch s.Type {
-	case "bug", "task":
+	switch {
+	case s.Type == "bug" || s.Type == "task":
 		text += fmt.Sprintf(" It's a %s: bugs and tasks wait at `clarifying` for now, until issuedog can implement them (build phase 3).", s.Type)
+	case s.Type == "story" && s.Parent != 0:
+		text += " It's a story with a parent: those wait at `clarifying` for now, as issuedog only clarifies epics, stories with no parent and untyped issues."
 	}
 	key := state.Key{Field: "event", ID: strconv.FormatInt(ev.GetID(), 10)}
 	if is.Moved(key) {
@@ -146,10 +149,12 @@ func (tc trustCache) trusted(ctx context.Context, a github.Author) (bool, error)
 	return v, nil
 }
 
-// admitting returns the newest labeled event of the label name in timeline
-// by a trusted user, or by the App if app is set, or nil if there is none or
-// the label's newest event of all removed it. Ignoring untrusted events
-// matches CheckLabels, which reverts them.
+// admitting returns the change to the label name in timeline that stands,
+// if it added the label: the newest change by a trusted user or the App,
+// passing over untrusted changes, as CheckLabels reverts them. With app
+// unset, an add by the App is a restore, so the trusted add before it is
+// returned. It returns nil if the label's newest change of all removed it,
+// or the change that stands did.
 func (tc trustCache) admitting(ctx context.Context, timeline []*gogithub.Timeline, name string, app bool) (*gogithub.Timeline, error) {
 	newest := true
 	for _, e := range slices.Backward(timeline) {
@@ -160,22 +165,26 @@ func (tc trustCache) admitting(ctx context.Context, timeline []*gogithub.Timelin
 			return nil, nil
 		}
 		newest = false
-		if e.GetEvent() != "labeled" {
-			continue
-		}
+		added := e.GetEvent() == "labeled"
 		actor := github.Author{Login: e.GetActor().GetLogin(), Type: e.GetActor().GetType()}
 		if state.IsApp(actor, tc.st.AppSlug) {
-			if app {
+			switch {
+			case added && app:
 				return e, nil
+			case !added:
+				return nil, nil
 			}
-			continue
+			continue // a restore: the trusted add it restored is the key
 		}
 		ok, err := tc.trusted(ctx, actor)
 		if err != nil {
 			return nil, fmt.Errorf("event %d: %w", e.GetID(), err)
 		}
-		if ok {
+		switch {
+		case ok && added:
 			return e, nil
+		case ok:
+			return nil, nil
 		}
 	}
 	return nil, nil
