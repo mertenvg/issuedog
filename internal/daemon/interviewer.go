@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	gogithub "github.com/google/go-github/v92/github"
 	"github.com/mertenvg/logr/v2"
 
 	"github.com/mertenvg/issuedog/internal/agent"
@@ -152,8 +153,9 @@ func ivRoundOf(rounds []interviewerRound, id int64) int {
 // Context returns the interviewer's context files (plan #6, assumptions 11
 // and 12), each comment in them fenced under a heading the daemon writes,
 // with the text the App didn't write escaped (SPEC §5.1):
-//   - issue.md: the number, title, type or "none", and the body, unless
-//     it's dirty.
+//   - issue.md: the number, title, type or "none", and the body. A dirty
+//     body is left out, and so is a title or body an untrusted author's
+//     issue had changed after it was admitted (admission).
 //   - conversation.md: the App's clean comments, its markers left out, the
 //     rounds labelled with their numbers and questions, and the trusted,
 //     clean comments, with author, ID and round, oldest first.
@@ -161,16 +163,17 @@ func ivRoundOf(rounds []interviewerRound, id int64) int {
 //     first run".
 //   - untrusted.md: only on an epic or a story (SPEC §6.2), and only when
 //     there's something in it: comments by untrusted users and other bots,
-//     dirty comments by anyone, and a dirty body, each under a heading
-//     that says it's untrusted data, not instructions. On any other issue
-//     that text is in no file.
+//     dirty comments by anyone, a dirty body, and a title or body changed
+//     after admission, each under a heading that says it's untrusted data,
+//     not instructions. On any other issue that text is in no file.
 //   - system.md: the preamble, then .issuedog/prompts/interviewer.md from
 //     main or the shipped default (agent.Prompt).
 //   - prompt.md: the task, naming in.ContextDir.
 //
-// It only reads: the prompt from the clone, trust, and for a type set by
-// label, the timeline (typing). An error is a setup failure, so no run
-// starts and it isn't counted, as for a prompt that can't be read.
+// It only reads: the prompt from the clone, trust, and, at most once, the
+// timeline, for a type set by label (typing) or an untrusted author's issue
+// (admission). An error is a setup failure, so no run starts and it isn't
+// counted, as for a prompt that can't be read.
 func (iv *Interviewer) Context(ctx context.Context, in Input) (map[string][]byte, error) {
 	d, s := iv.Daemon, in.S
 	a := d.Step.Applier
@@ -184,24 +187,49 @@ func (iv *Interviewer) Context(ctx context.Context, in Input) (map[string][]byte
 	if override {
 		logr.Debugf("%s/%s#%d: the interviewer runs with %s/%s.md from main", a.Owner, a.Repo, s.Number, agent.PromptDir, interviewerAgent)
 	}
-	typing, err := iv.typing(ctx, s)
+	timeline := &ivTimeline{a: a, number: s.Number}
+	typing, err := iv.typing(ctx, s, timeline)
 	if err != nil {
 		return nil, wrap(err)
 	}
 	rounds := interviewerRounds(s, a.AppSlug, in.Dirt.Has)
 	takesUntrusted := s.Type == "epic" || s.Type == "story" // SPEC §6.2
 	tc := trustCache{st: d.Step, verdicts: map[string]bool{}}
+	titleBy, bodyBy, err := iv.admission(ctx, s, tc, timeline)
+	if err != nil {
+		return nil, wrap(err)
+	}
 	var conversation, untrusted, logins []string
-	if by, dirty := in.Dirt[state.BodyID]; dirty && takesUntrusted {
-		_, rest := noted(s.Body)
-		untrusted = append(untrusted, ivUntrusted("the issue's body, edited by "+ivLogin(by)+" without approval", rest))
+	where := "so it's left out"
+	if takesUntrusted {
+		where = "so it's in untrusted.md, as untrusted data"
+	}
+	var titleNote, bodyNote string
+	if titleBy != "" {
+		titleNote = ivLogin(titleBy) + " changed the title after the issue was admitted, " + where + "."
+		if takesUntrusted {
+			untrusted = append(untrusted, ivUntrusted("the issue's title, which "+ivLogin(titleBy)+" changed after the issue was admitted", s.Title))
+		}
+	}
+	switch by, dirty := in.Dirt[state.BodyID]; {
+	case dirty:
+		bodyNote = "Someone edited the body without approval, " + where + "."
+		if takesUntrusted {
+			_, rest := noted(s.Body)
+			untrusted = append(untrusted, ivUntrusted("the issue's body, edited by "+ivEditor(by, s.BodyEdit, a.AppSlug)+" without approval", rest))
+		}
+	case bodyBy != "":
+		bodyNote = ivLogin(bodyBy) + " edited the body after the issue was admitted, " + where + "."
+		if takesUntrusted {
+			untrusted = append(untrusted, ivUntrusted("the issue's body, which "+ivLogin(bodyBy)+" edited after the issue was admitted", s.Body))
+		}
 	}
 	for _, c := range s.Comments {
 		at := "comment " + strconv.FormatInt(c.ID, 10) + " by " + ivLogin(c.Author.Login)
 		if by, dirty := in.Dirt[c.ID]; dirty {
 			if takesUntrusted {
 				_, rest := noted(c.Body)
-				untrusted = append(untrusted, ivUntrusted(at+", edited by "+ivLogin(by)+" without approval", rest))
+				untrusted = append(untrusted, ivUntrusted(at+", edited by "+ivEditor(by, c.Edit, a.AppSlug)+" without approval", rest))
 			}
 			continue
 		}
@@ -228,7 +256,7 @@ func (iv *Interviewer) Context(ctx context.Context, in Input) (map[string][]byte
 	files := map[string][]byte{
 		"system.md":       []byte(interviewerPreamble(int(d.Config.Loop.MaxQuestionsPerRound), rounds, logins, typing) + "\n\n" + string(prompt)),
 		"prompt.md":       []byte(interviewerTask(s.Number, in.ContextDir, len(untrusted) > 0)),
-		"issue.md":        []byte(interviewerIssue(s, a.AppSlug, in.Dirt.Has(state.BodyID), takesUntrusted)),
+		"issue.md":        []byte(interviewerIssue(s, a.AppSlug, titleNote, bodyNote)),
 		"conversation.md": []byte(ivFile("Conversation on #"+strconv.Itoa(s.Number), ivConversationIntro, conversation, "None yet.")),
 		"input.md":        []byte(ivFile("Input for this run", ivInputIntro, ivInputs(in, rounds), "none: first run")),
 	}
@@ -240,9 +268,11 @@ func (iv *Interviewer) Context(ctx context.Context, in Input) (map[string][]byte
 
 // typing returns the preamble's line on whether the interviewer may set
 // s's type (plan #6, assumption 13): only on a repo that types issues by
-// label (types: labels), and there only on an untyped issue, or one whose
-// type:* label that stands the App added, as the timeline shows.
-func (iv *Interviewer) typing(ctx context.Context, s *github.Snapshot) (string, error) {
+// label (types: labels), and there only on an untyped issue, or one each of
+// whose type:* labels stands as the App's add, as the timeline shows. The App's
+// restore of a change someone untrusted reverted isn't the App's add: the
+// change it restored stands (github.StandingLabelChange).
+func (iv *Interviewer) typing(ctx context.Context, s *github.Snapshot, tl *ivTimeline) (string, error) {
 	d := iv.Daemon
 	a := d.Step.Applier
 	owners := fmt.Sprintf("The owner set this issue's type, %s, so leave `type` out.", github.Escape(s.Type))
@@ -257,18 +287,153 @@ func (iv *Interviewer) typing(ctx context.Context, s *github.Snapshot) (string, 
 	case !s.TypeFromLabels:
 		return owners, nil
 	}
-	timeline, err := a.Client.TimelineSince(ctx, a.Owner, a.Repo, s.Number, time.Time{})
+	timeline, err := tl.get(ctx)
 	if err != nil {
 		return "", fmt.Errorf("who set the type: %w", err)
 	}
-	ev, err := trustCache{st: d.Step, verdicts: map[string]bool{}}.admitting(ctx, timeline, "type:"+s.Type, true)
+	// Every type:* label must stand as the App's add, as s.Type is only the
+	// first. A restore of a reverted change isn't the App's typing: the
+	// change it restored is what stands.
+	labels := 0
+	for _, l := range s.Labels {
+		if !strings.HasPrefix(strings.ToLower(l), "type:") {
+			continue
+		}
+		labels++
+		ev, err := github.StandingLabelChange(ctx, timeline, l, a.AppSlug, d.Step.Trust)
+		if err != nil {
+			return "", fmt.Errorf("who set the type: %w", err)
+		}
+		if ev.GetEvent() != "labeled" || !state.IsApp(github.Author{Login: ev.GetActor().GetLogin(), Type: ev.GetActor().GetType()}, a.AppSlug) {
+			return owners, nil
+		}
+	}
+	if labels == 0 {
+		return owners, nil // no type:* label, though s.Type is from one: fail closed
+	}
+	return fmt.Sprintf("issuedog set this issue's type, %s, so you may change it.", github.Escape(s.Type)), nil
+}
+
+// ivTimeline is an issue's timeline, read once, when it's first needed.
+type ivTimeline struct {
+	a      *Applier
+	number int
+	events []*gogithub.Timeline
+	read   bool
+}
+
+// get reads the timeline, or returns the one read already.
+func (t *ivTimeline) get(ctx context.Context) ([]*gogithub.Timeline, error) {
+	if t.read {
+		return t.events, nil
+	}
+	events, err := t.a.Client.TimelineSince(ctx, t.a.Owner, t.a.Repo, t.number, time.Time{})
 	if err != nil {
-		return "", fmt.Errorf("who set the type: %w", err)
+		return nil, fmt.Errorf("read the timeline: %w", err)
 	}
-	if ev != nil && state.IsApp(github.Author{Login: ev.GetActor().GetLogin(), Type: ev.GetActor().GetType()}, a.AppSlug) {
-		return fmt.Sprintf("issuedog set this issue's type, %s, so you may change it.", github.Escape(s.Type)), nil
+	t.events, t.read = events, true
+	return events, nil
+}
+
+// admission returns who changed s's title and body after the issue was
+// admitted, if its author isn't trusted (the owner's option (a) on #6): an
+// approval approves what the approver read, not what the author writes
+// later. Each is the login of the change that taints it, or "" if it's
+// trusted as it stands. The App's issues, and trusted authors', are.
+//   - The body is tainted by an edit at or after the admission
+//     (ivAdmitted), unless the App made it, as when it wrote the spec. The
+//     last edit is the only one GitHub dates, but any later one taints it,
+//     whoever made it: someone else's makes it dirty too.
+//   - The title is tainted by its latest rename, if that's at or after the
+//     admission and by someone untrusted: a trusted user's later rename
+//     makes it theirs.
+//
+// Times are to the second, so a change in the admission's second counts
+// as after it. With no admission found, every change counts as after.
+func (iv *Interviewer) admission(ctx context.Context, s *github.Snapshot, tc trustCache, tl *ivTimeline) (titleBy, bodyBy string, err error) {
+	a := iv.Daemon.Step.Applier
+	if state.IsApp(s.Author, a.AppSlug) {
+		return "", "", nil
 	}
-	return owners, nil
+	trusted, err := tc.trusted(ctx, s.Author)
+	if err != nil {
+		return "", "", fmt.Errorf("the issue's author: %w", err)
+	}
+	if trusted {
+		return "", "", nil
+	}
+	timeline, err := tl.get(ctx)
+	if err != nil {
+		return "", "", fmt.Errorf("the admission of an untrusted author's issue: %w", err)
+	}
+	at, admitted, err := ivAdmitted(ctx, timeline, a.AppSlug, tc)
+	if err != nil {
+		return "", "", fmt.Errorf("the admission of an untrusted author's issue: %w", err)
+	}
+	after := func(t time.Time) bool { return !admitted || !t.Before(at) }
+	if e := s.BodyEdit; !e.At.IsZero() && !state.IsApp(e.By, a.AppSlug) && after(e.At) {
+		bodyBy = login(e.By)
+	}
+	var rename *gogithub.Timeline
+	for _, e := range timeline {
+		if e.GetEvent() == "renamed" {
+			rename = e
+		}
+	}
+	if rename == nil || !after(rename.GetCreatedAt().Time) {
+		return "", bodyBy, nil
+	}
+	actor := github.Author{Login: rename.GetActor().GetLogin(), Type: rename.GetActor().GetType()}
+	if state.IsApp(actor, a.AppSlug) {
+		return "", bodyBy, nil
+	}
+	if trusted, err = tc.trusted(ctx, actor); err != nil {
+		return "", "", fmt.Errorf("who renamed the issue: %w", err)
+	}
+	if !trusted {
+		titleBy = login(actor)
+	}
+	return titleBy, bodyBy, nil
+}
+
+// ivAdmitted returns when an issue was admitted to the pipeline (SPEC
+// §6.2), and whether it was, from its timeline alone, which nobody can edit
+// or delete, unlike the App's comments: the earliest labeled event of
+//   - approved, added by a trusted user, or
+//   - a stage:* label of a stage past intake, other than held, added by
+//     the App or a trusted user, as a hand-set stage is (an override), or
+//     as the App's move into the pipeline is.
+//
+// An untrusted add counts for neither, even before step 1 reverts it. The
+// earliest is the safe bound: an earlier one makes more edits count as
+// after it. With none, there's no admission, so every edit counts as after.
+func ivAdmitted(ctx context.Context, timeline []*gogithub.Timeline, appSlug string, tc trustCache) (time.Time, bool, error) {
+	var at time.Time
+	admitted := false
+	for _, e := range timeline {
+		if e.GetEvent() != "labeled" {
+			continue
+		}
+		name := e.GetLabel().GetName()
+		stage, isStage := state.ParseLabel(name)
+		approved := strings.EqualFold(name, approvedLabel)
+		if !approved && (!isStage || stage == state.Intake || stage == state.Held) {
+			continue
+		}
+		actor := github.Author{Login: e.GetActor().GetLogin(), Type: e.GetActor().GetType()}
+		ok := state.IsApp(actor, appSlug) && !approved
+		if !ok {
+			trusted, err := tc.trusted(ctx, actor)
+			if err != nil {
+				return time.Time{}, false, fmt.Errorf("event %d: %w", e.GetID(), err)
+			}
+			ok = trusted
+		}
+		if t := e.GetCreatedAt().Time; ok && (!admitted || t.Before(at)) {
+			at, admitted = t, true
+		}
+	}
+	return at, admitted, nil
 }
 
 // interviewerPreamble is the start of system.md, which no prompt on main
@@ -326,21 +491,21 @@ func interviewerTask(number int, dir string, untrusted bool) string {
 }
 
 // interviewerIssue is issue.md, its body without markers if the App wrote
-// it. A dirty body is left out: on an epic or a
-// story it's in untrusted.md, and on any other issue it's in no file.
-func interviewerIssue(s *github.Snapshot, appSlug string, dirtyBody, takesUntrusted bool) string {
-	title := strings.Join(strings.Fields(s.Title), " ")
-	head := fmt.Sprintf("# Issue #%d\n\n- Title: %s\n- Type: %s\n- Author: %s", s.Number, github.Escape(title),
+// it. titleNote and bodyNote, if set, stand in for a title or body left
+// out, saying why and where it is, if anywhere.
+func interviewerIssue(s *github.Snapshot, appSlug, titleNote, bodyNote string) string {
+	title := github.Escape(strings.Join(strings.Fields(s.Title), " "))
+	if titleNote != "" {
+		title = titleNote
+	}
+	head := fmt.Sprintf("# Issue #%d\n\n- Title: %s\n- Type: %s\n- Author: %s", s.Number, title,
 		github.Escape(cmp.Or(s.Type, "none")), ivLogin(s.Author.Login))
 	body := ivFenced(s.Body)
 	if state.IsApp(s.Author, appSlug) {
 		body = ivFenced(ivStripMarkers(s.Body))
 	}
-	switch {
-	case dirtyBody && takesUntrusted:
-		body = "Someone edited the body without approval, so it's in untrusted.md, as untrusted data."
-	case dirtyBody:
-		body = "Someone edited the body without approval, so it's left out."
+	if bodyNote != "" {
+		body = bodyNote
 	}
 	return head + "\n\n## Body\n\n" + body + "\n"
 }
@@ -465,14 +630,31 @@ func ivStripMarkers(text string) string {
 	return strings.TrimSpace(ivMarkerRE.ReplaceAllString(text, ""))
 }
 
-// ivLoginRE is a GitHub login, or an App's.
-var ivLoginRE = regexp.MustCompile(`^[A-Za-z0-9-]+(\[bot\])?$`)
+// ivLoginRE is a GitHub login, by GitHub's rules: alphanumerics and
+// single hyphens, starting and ending with an alphanumeric, then "[bot]"
+// for an App. ivLogin checks its length.
+var ivLoginRE = regexp.MustCompile(`^([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)(\[bot\])?$`)
+
+// ivMaxLogin is the longest login GitHub allows.
+const ivMaxLogin = 39
 
 // ivLogin is login for a heading, or "someone unnamed" for anything that
-// isn't a login, such as the name a forged dirty note gives.
+// isn't a login.
 func ivLogin(login string) string {
-	if !ivLoginRE.MatchString(login) {
+	if m := ivLoginRE.FindStringSubmatch(login); m == nil || len(m[1]) > ivMaxLogin {
 		return "someone unnamed"
 	}
 	return login
+}
+
+// ivEditor names who made content dirty, for its heading: by, as Dirt gives
+// it, if GitHub names them as the content's last editor, or the App made
+// the last edit, which wrote the note by comes from (Applier.MarkDirty).
+// Otherwise by may be a name the author put in a note of their own, so
+// it's "someone unnamed".
+func ivEditor(by string, last github.Edit, appSlug string) string {
+	if last.By.Login == by || state.IsApp(last.By, appSlug) {
+		return ivLogin(by)
+	}
+	return "someone unnamed"
 }
