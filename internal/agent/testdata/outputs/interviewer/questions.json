@@ -1,0 +1,36 @@
+{
+  "outcome": "questions",
+  "type": {
+    "value": "epic",
+    "reason": "A large feature with several user-visible outcomes."
+  },
+  "questions": [
+    {
+      "text": "Where should the quote expiry be enforced?",
+      "blocks": [
+        123
+      ],
+      "recommended": {
+        "text": "Server-side on booking",
+        "why": "one place, covers PWA and MCP"
+      },
+      "others": [
+        "Client-side countdown only",
+        "Both"
+      ]
+    },
+    {
+      "text": "Should expired quotes be deleted or kept for reporting?",
+      "blocks": [
+        123
+      ],
+      "recommended": {
+        "text": "Kept, marked expired",
+        "why": "reports need them"
+      },
+      "others": [
+        "Deleted after 30 days"
+      ]
+    }
+  ]
+}

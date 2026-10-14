@@ -1,0 +1,52 @@
+{
+  "outcome": "spec",
+  "message": "Your note on reporting is answered: expired quotes are kept and marked.",
+  "spec": {
+    "problem": "Quotes never expire, so customers book at prices that are out of date.",
+    "goals": [
+      "A quote expires 24 hours after it's issued.",
+      "Expired quotes stay available for reporting."
+    ],
+    "out_of_scope": [
+      "Changing how prices are calculated."
+    ],
+    "users_and_flows": "A customer asks for a quote, then books it:\n\n1. The quote shows when it expires.\n2. Booking an expired quote is refused, with a link to a new quote.",
+    "constraints": [
+      "The PWA and the MCP server use the same booking API."
+    ],
+    "acceptance_criteria": [
+      "Booking a quote more than 24 hours old returns an expired error.",
+      "An expired quote still appears in the monthly report."
+    ],
+    "decisions": [
+      {
+        "question": "Q1.1",
+        "answer": "a",
+        "summary": "Expiry is enforced server-side on booking.",
+        "by": "mertenvg",
+        "round": 1
+      },
+      {
+        "question": "Q1.2",
+        "answer": "superseded",
+        "summary": "Q2.1",
+        "by": "",
+        "round": 0
+      },
+      {
+        "question": "Q2.1",
+        "answer": "free",
+        "summary": "Expired quotes are kept and marked.",
+        "by": "mertenvg",
+        "round": 2
+      },
+      {
+        "question": "",
+        "answer": "",
+        "summary": "The expiry time is shown on the quote.",
+        "by": "",
+        "round": 0
+      }
+    ]
+  }
+}

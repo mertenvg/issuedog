@@ -1,0 +1,6 @@
+{
+  "verdict": "handle",
+  "sure": true,
+  "reason": "A clear bug in the booking API, with steps to reproduce.",
+  "summary": "Booking accepts quotes after they should have expired."
+}
