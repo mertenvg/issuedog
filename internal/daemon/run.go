@@ -69,6 +69,9 @@ type Input struct {
 	// before the first Pending.
 	Dirt  Dirt
 	Issue state.Issue
+	// ContextDir is where the run's context files go, set with RunID, so
+	// prompt.md can tell the agent where to read them.
+	ContextDir string
 }
 
 // Result is a valid run result, for a Stage to apply.
@@ -385,6 +388,7 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		return false, wrap(r.reportLabels(ctx, rd.S, fresh, is.Stage, st, badLabels))
 	}
 	in.RunID, in.Attempt = r.newID(), attempt
+	in.ContextDir = r.Workspace.Context(in.RunID)
 	l := Lease{Issue: n, Stage: is.Stage, RunID: in.RunID, Clone: r.Workspace.Dir(in.RunID),
 		Started: r.now(), Polled: r.Daemon.polled, Edits: map[int64]time.Time{}, BodyEdit: rd.S.BodyEdit.At, AttemptKey: errKey, Attempt: in.Attempt,
 		Model: set.Model, Effort: set.Effort, FallbackModels: set.FallbackModels}
