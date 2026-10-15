@@ -95,17 +95,20 @@ type comment struct {
 }
 
 // lastEdit is who last edited a body, and when. The zero lastEdit means never.
-// In a history, it is one edit.
+// In a history, it is one edit, with the text after it, which an issue
+// body's history answers as its diff (DeleteRevision empties it).
 type lastEdit struct {
-	by string
-	at time.Time
+	by   string
+	at   time.Time
+	text string
 }
 
 // record makes e the last edit and adds it to history, oldest first. As on
-// GitHub, the first edit also adds the original post, by its author.
-func record(history *[]lastEdit, last *lastEdit, author string, created time.Time, e lastEdit) {
+// GitHub, the first edit also adds the original post, by its author, with
+// the text before the edit, was.
+func record(history *[]lastEdit, last *lastEdit, author string, created time.Time, was string, e lastEdit) {
 	if len(*history) == 0 {
-		*history = append(*history, lastEdit{author, created})
+		*history = append(*history, lastEdit{author, created, was})
 	}
 	*history, *last = append(*history, e), e
 }
@@ -231,6 +234,15 @@ func (f *Fake) AddComment(number int, author, body string) int64 {
 // EditBody edits an issue's body as login. An empty login means GitHub names no editor.
 func (f *Fake) EditBody(number int, login, body string) {
 	f.edit(number, func(is *issue) { is.editBy(login, body, f.tick()) })
+}
+
+// DeleteRevision deletes the text of entry i, oldest first, of an issue
+// body's edit history, as someone with write access can on GitHub: the
+// entry keeps its editor and time, and its diff is null.
+func (f *Fake) DeleteRevision(number, i int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.issues[number-1].history[i].text = ""
 }
 
 // EditComment edits a comment as login. An empty login means GitHub names no editor.
@@ -533,8 +545,9 @@ func (f *Fake) editIssue(c *call) (int, any) {
 }
 
 func (is *issue) editBy(login, body string, now *gogithub.Timestamp) {
+	was := is.GetBody()
 	is.Body, is.UpdatedAt = &body, now
-	record(&is.history, &is.lastEdit, is.GetUser().GetLogin(), is.GetCreatedAt().Time, lastEdit{login, now.Time})
+	record(&is.history, &is.lastEdit, is.GetUser().GetLogin(), is.GetCreatedAt().Time, was, lastEdit{login, now.Time, body})
 }
 
 func (f *Fake) editComment(c *call) (int, any) {
@@ -547,8 +560,9 @@ func (f *Fake) editComment(c *call) (int, any) {
 }
 
 func (c *comment) editBy(login, body string, now *gogithub.Timestamp) {
+	was := c.GetBody()
 	c.Body, c.UpdatedAt = &body, now
-	record(&c.history, &c.lastEdit, c.GetUser().GetLogin(), c.GetCreatedAt().Time, lastEdit{login, now.Time})
+	record(&c.history, &c.lastEdit, c.GetUser().GetLogin(), c.GetCreatedAt().Time, was, lastEdit{login, now.Time, body})
 }
 
 func (f *Fake) listReactions(c *call) (int, any) {

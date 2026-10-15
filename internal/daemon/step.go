@@ -34,7 +34,7 @@ type Step struct {
 // then FlagVisit.
 func (st *Step) Run(ctx context.Context, s *github.Snapshot) ([]github.Comment, error) {
 	wrap := func(err error) error { return fmt.Errorf("step 1 on %s/%s#%d: %w", st.Owner, st.Repo, s.Number, err) }
-	d, err := st.Dirty(ctx, s)
+	d, err := st.Dirty(ctx, s, st.Trust)
 	if err != nil {
 		return nil, wrap(err)
 	}

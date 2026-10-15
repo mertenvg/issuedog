@@ -323,7 +323,7 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		}
 		return fmt.Errorf("stage run on %s/%s#%d: %w", a.Owner, a.Repo, n, err)
 	}
-	d, err := a.Dirty(ctx, rd.S)
+	d, err := a.Dirty(ctx, rd.S, r.Daemon.Step.Trust)
 	if err != nil {
 		return false, wrap(err)
 	}
@@ -383,7 +383,7 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 	}
 	if isUnlabeled {
 		// A stage label or a transition since step 1 makes it pipeline work.
-		fd, err := a.Dirty(ctx, fresh)
+		fd, err := a.Dirty(ctx, fresh, r.Daemon.Step.Trust)
 		if err != nil {
 			return false, wrap(err)
 		}
@@ -598,7 +598,7 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 		return drop("the issue is closed")
 	}
 	defer r.Daemon.reread(l.Issue, false)
-	d, err := a.Dirty(ctx, s)
+	d, err := a.Dirty(ctx, s, r.Daemon.Step.Trust)
 	if err == nil {
 		err = a.CheckLabels(ctx, s, r.Daemon.Step.Trust, d.Has)
 	}
@@ -760,7 +760,7 @@ func (r *Runs) resume(ctx context.Context) (int, error) {
 		case err != nil:
 			return 0, fmt.Errorf("resume run %s: %w", l.RunID, err)
 		}
-		d, err := a.Dirty(ctx, s)
+		d, err := a.Dirty(ctx, s, r.Daemon.Step.Trust)
 		if err != nil {
 			return 0, fmt.Errorf("resume run %s: %w", l.RunID, err)
 		}
@@ -844,7 +844,7 @@ func (r *Runs) reportCap(ctx context.Context, s *github.Snapshot, st Stage, l Le
 		a.hide(fresh)
 		s = fresh
 	}
-	d, err := a.Dirty(ctx, s)
+	d, err := a.Dirty(ctx, s, r.Daemon.Step.Trust)
 	if err != nil {
 		return wrap(err)
 	}

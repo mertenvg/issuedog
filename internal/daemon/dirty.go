@@ -50,24 +50,34 @@ func contents(s *github.Snapshot) []content {
 	return all
 }
 
-// Dirty finds the dirty content of s (state.Dirty), whoever wrote it. It
-// reads histories only where the snapshot can't decide, all in one query:
-//   - Content last edited by anyone but its author or the App (see
-//     state.Sanctioned) is dirty, by its last editor, whatever note it
-//     carries: its history isn't read to find an older editor.
+// Dirty finds the dirty content of s (state.Dirty), whoever wrote it, as
+// trust holds now (SPEC §6.1; nil trusts nobody). An edit is sanctioned if
+// its author, the App or, except on a comment the App wrote, a trusted user
+// made it (state.Sanctioned), and for the body only the history after the
+// App's last full rewrite counts (state.Rewrote). It reads histories only
+// where the snapshot can't decide, all in one query:
+//   - Content last edited by anyone whose edit isn't sanctioned is dirty,
+//     by its last editor, whatever note it carries: its history isn't read
+//     to find an older editor.
 //   - Content with a note is dirty, by whoever the note names, if the App
 //     made the last edit (the App wrote the note) or nobody edited it (its
 //     author typed it, which only makes their own content ignored).
 //   - Other unedited content is clean.
-//   - Content last edited by its author or the App needs its history,
-//     since someone else may have edited it before them. It is dirty by
-//     the oldest editor whose edit isn't sanctioned, else by whoever its
-//     note names, else it is clean. So the App's own note never makes
-//     content look clean: the history keeps the earlier edit, and the note
-//     keeps it dirty after GitHub drops that edit, as it keeps only the 99
-//     newest edits (github.History). Only the author can undo that: after
-//     99 edits of their own, one that drops the note leaves no trace of the
-//     earlier edit. Nobody else can, since their own edit makes it dirty.
+//   - A body the App last edited with a full rewrite is clean: the body s
+//     read is the text of that edit, so it starts with the rewrite marker
+//     (rewritten), and no edit after it exists.
+//   - Other content last edited with a sanctioned edit needs its history,
+//     since someone else may have edited it before. It is dirty by the
+//     oldest editor whose edit isn't sanctioned (after the last rewrite,
+//     for the body), else by whoever its note names, else it is clean. So
+//     the App's own note never makes content look clean: the history keeps
+//     the earlier edit, and the note keeps it dirty after GitHub drops that
+//     edit, as it keeps only the 99 newest edits (github.History). Only
+//     the author or a trusted user can undo that, or the App's full
+//     rewrite of a body: after 99 edits of their own, one that drops the
+//     note leaves no trace of the earlier edit. Nobody else can, since
+//     their own edit makes it dirty. So a trusted user who loses trust
+//     leaves their earlier edits dirty for good once MarkDirty notes them.
 //
 // A history that can't show the last edit, with fewer than two entries (the
 // original post and an edit) or a newest entry older than the snapshot's
@@ -76,18 +86,29 @@ func contents(s *github.Snapshot) []content {
 //
 // A history that reaches the last edit is kept, by node, and used again
 // while the content has the same last edit and body, so the loop's visits
-// to an unchanged issue send no query (#84).
-func (a *Applier) Dirty(ctx context.Context, s *github.Snapshot) (Dirt, error) {
+// to an unchanged issue send no query (#84). Trust is asked once per login
+// in each call, and only for an editor whose edit it decides
+// (dirtyTrust), so trust that changed is used on the next call.
+func (a *Applier) Dirty(ctx context.Context, s *github.Snapshot, trust github.Trust) (Dirt, error) {
+	wrap := func(err error) error {
+		return fmt.Errorf("dirty content of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
+	}
+	tr := dirtyTrust{trust: trust, appSlug: a.AppSlug, verdicts: map[string]bool{}}
 	d := Dirt{}
 	var need []content
 	for _, c := range contents(s) {
 		edited := !c.edit.At.IsZero()
+		if edited {
+			if err := tr.ask(ctx, c, c.edit.By); err != nil {
+				return nil, wrap(err)
+			}
+		}
 		switch {
-		case edited && !state.Sanctioned(c.author, c.edit.By, a.AppSlug):
+		case edited && !state.Sanctioned(c.id, c.author, c.edit.By, a.AppSlug, tr.trusted):
 			d[c.id] = login(c.edit.By)
 		case c.note != "" && (!edited || state.IsApp(c.edit.By, a.AppSlug)):
 			d[c.id] = c.note
-		case !edited:
+		case !edited || rewritten(c, a.AppSlug):
 		default:
 			need = append(need, c)
 		}
@@ -100,7 +121,7 @@ func (a *Applier) Dirty(ctx context.Context, s *github.Snapshot) (Dirt, error) {
 	}
 	history, err := a.histories.read(ctx, a.Client, need)
 	if err != nil {
-		return nil, fmt.Errorf("dirty content of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
+		return nil, wrap(err)
 	}
 	for _, c := range need {
 		h := history[c.node]
@@ -111,13 +132,61 @@ func (a *Applier) Dirty(ctx context.Context, s *github.Snapshot) (Dirt, error) {
 			continue
 		}
 		a.histories[c.node] = kept{at: c.edit.At, body: c.body, edits: h}
-		if by, ok := state.Dirty(c.author, h, a.AppSlug); ok {
+		for _, e := range h {
+			if err := tr.ask(ctx, c, e.By); err != nil {
+				return nil, wrap(err)
+			}
+		}
+		if by, ok := state.Dirty(c.id, c.author, h, a.AppSlug, tr.trusted); ok {
 			d[c.id] = login(by)
 		} else if c.note != "" {
 			d[c.id] = c.note
 		}
 	}
 	return d, nil
+}
+
+// rewritten reports whether c is the body, last edited by the App with a
+// full rewrite: its text, which is that edit's, starts with the rewrite
+// marker (state.Rewrote). Its note, if any, is checked before this.
+func rewritten(c content, appSlug string) bool {
+	return c.id == state.BodyID && state.Rewrote(github.Edit{By: c.edit.By, Text: c.body}, appSlug)
+}
+
+// dirtyTrust is the trust Dirty asks, each login once per call, by login
+// in lower case, since GitHub's logins ignore case.
+type dirtyTrust struct {
+	trust    github.Trust
+	appSlug  string
+	verdicts map[string]bool
+}
+
+// ask asks trust about editor if only trust decides whether editor's edit
+// to c is sanctioned (state.Sanctioned): an editor who is a person, not
+// c's author, on the body or a comment the App didn't write. A nil trust
+// trusts nobody.
+func (t dirtyTrust) ask(ctx context.Context, c content, editor github.Author) error {
+	switch {
+	case t.trust == nil || editor.Login == "" || editor.Type == "Bot" || editor.Login == c.author.Login:
+		return nil
+	case c.id != state.BodyID && state.IsApp(c.author, t.appSlug):
+		return nil
+	}
+	l := strings.ToLower(editor.Login)
+	if _, ok := t.verdicts[l]; ok {
+		return nil
+	}
+	v, err := t.trust.Trusted(ctx, editor.Login)
+	if err != nil {
+		return fmt.Errorf("trust %s, who edited %s %d: %w", editor.Login, what(c.id), c.id, err)
+	}
+	t.verdicts[l] = v
+	return nil
+}
+
+// trusted is the verdict ask got for login, false if it asked none.
+func (t dirtyTrust) trusted(login string) bool {
+	return t.verdicts[strings.ToLower(login)]
 }
 
 // histories are the edit histories Dirty kept, by node. Nothing is removed,

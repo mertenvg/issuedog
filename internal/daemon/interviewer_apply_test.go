@@ -306,7 +306,7 @@ func TestInterviewerCheck(t *testing.T) {
 		{"a spec missing round 1", asked("alice"), "labels", 7, ivSpec(), "rule decision-coverage"},
 		{"a spec deciding by alice, whose comment is dirty", func(f *githubtest.Fake, n int, entry int64) {
 			asked("")(f, n, entry)
-			f.EditComment(f.AddComment(n, "alice", "1a"), "owner", "1b")
+			f.EditComment(f.AddComment(n, "alice", "1a"), "mallory", "1b")
 		}, "labels", 7, ivSpec(decision("Q1.1", "alice")), "rule decision-by"},
 		{"a spec with no type, on an untyped issue", nil, "labels", 7, ivSpec(), "rule spec-type"},
 		{"a round on the owner's task", func(f *githubtest.Fake, n int, _ int64) { f.AddLabel(n, "owner", "type:task") }, "labels", 7, ivRound(1, ""),
