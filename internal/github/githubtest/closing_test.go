@@ -8,9 +8,9 @@ import (
 	gogithub "github.com/google/go-github/v92/github"
 )
 
-// closeEvents is issue n's closed and reopened events, as "event by login",
+// digestCloseEvents is issue n's closed and reopened events, as "event by login",
 // or "event by no one" for one that names no actor.
-func closeEvents(t *testing.T, f *Fake, n int) []string {
+func digestCloseEvents(t *testing.T, f *Fake, n int) []string {
 	t.Helper()
 	events, _, err := f.Client(t).Issues.ListIssueTimeline(context.Background(), "o", "r", n, nil)
 	if err != nil {
@@ -32,7 +32,7 @@ func closeEvents(t *testing.T, f *Fake, n int) []string {
 // A close or reopen, by a user or by the App's PATCH, sets closed_at and
 // state_reason, moves updated_at, and adds its event, naming who made it.
 // One to the state the issue has changes nothing.
-func TestCloseAndReopenEvents(t *testing.T) {
+func TestDigestCloseAndReopenEvents(t *testing.T) {
 	f := New(t, "o/r", "issuedog")
 	n := f.AddIssue("owner", "Issue", "")
 	ctx, c := context.Background(), f.Client(t)
@@ -78,7 +78,7 @@ func TestCloseAndReopenEvents(t *testing.T) {
 	f.ReopenBy(n, "owner")
 	f.Close(n)
 	want := []string{"closed by mallory", "reopened by issuedog[bot]", "closed by issuedog[bot]", "reopened by owner", "closed by no one"}
-	if got := closeEvents(t, f, n); !reflect.DeepEqual(got, want) {
+	if got := digestCloseEvents(t, f, n); !reflect.DeepEqual(got, want) {
 		t.Errorf("events = %q, want %q", got, want)
 	}
 }
