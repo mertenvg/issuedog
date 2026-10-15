@@ -106,10 +106,11 @@ func (a *Applier) CheckLabels(ctx context.Context, s *github.Snapshot, trust git
 			given = append(given, l)
 		}
 	}
-	labels, events, settings, held, err := a.Client.CheckLabels(ctx, a.Owner, a.Repo, s.Number, given, a.AppSlug, trust, dirty, a.seen())
+	found, err := a.Client.CheckLabels(ctx, a.Owner, a.Repo, s.Number, given, a.AppSlug, trust, dirty, a.seen())
 	if err != nil {
 		return fmt.Errorf("labels of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
 	}
+	labels, events, settings, held := found.Labels, found.Events, found.Settings, found.Held
 	// CheckLabels may have reverted labels since s was read, or left out
 	// some it can't explain yet: those stay out of s.Labels, however the
 	// labels are read again (SetLabels).

@@ -475,6 +475,9 @@ func interviewerPreamble(maxQuestions int, rounds []interviewerRound, logins []s
 		"- " + asked,
 		"- " + by,
 		"- " + typing,
+		"- An issue with a parent is never typed `story`, and issue.md names the parent if there is one. " +
+			"issuedog doesn't clarify a story with a parent, and the pipeline has no spec move for one, " +
+			"so output that types an issue with a parent `story` fails the run.",
 	}, "\n\n")
 }
 
@@ -494,14 +497,20 @@ func interviewerTask(number int, dir string, untrusted bool) string {
 
 // interviewerIssue is issue.md, its body without markers if the App wrote
 // it. titleNote and bodyNote, if set, stand in for a title or body left
-// out, saying why and where it is, if anywhere.
+// out, saying why and where it is, if anywhere. It names the parent, so
+// the run knows not to type the issue a story (#135's verify, and the
+// preamble's rule).
 func interviewerIssue(s *github.Snapshot, appSlug, titleNote, bodyNote string) string {
 	title := github.Escape(strings.Join(strings.Fields(s.Title), " "))
 	if titleNote != "" {
 		title = titleNote
 	}
-	head := fmt.Sprintf("# Issue #%d\n\n- Title: %s\n- Type: %s\n- Author: %s", s.Number, title,
-		github.Escape(cmp.Or(s.Type, "none")), ivLogin(s.Author.Login))
+	parent := "none"
+	if s.Parent != 0 {
+		parent = "#" + strconv.Itoa(s.Parent)
+	}
+	head := fmt.Sprintf("# Issue #%d\n\n- Title: %s\n- Type: %s\n- Parent: %s\n- Author: %s", s.Number, title,
+		github.Escape(cmp.Or(s.Type, "none")), parent, ivLogin(s.Author.Login))
 	body := ivFenced(s.Body)
 	if state.IsApp(s.Author, appSlug) {
 		body = ivFenced(ivStripMarkers(s.Body))
@@ -633,9 +642,10 @@ func ivStripMarkers(text string) string {
 }
 
 // ivLoginRE is a GitHub login, by GitHub's rules: alphanumerics and
-// single hyphens, starting and ending with an alphanumeric, then "[bot]"
-// for an App. ivLogin checks its length.
-var ivLoginRE = regexp.MustCompile(`^([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)(\[bot\])?$`)
+// single hyphens, starting and ending with an alphanumeric, then an
+// Enterprise Managed User's "_shortcode" suffix, if any (merten_acme),
+// then "[bot]" for an App. ivLogin checks its length.
+var ivLoginRE = regexp.MustCompile(`^([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*(?:_[A-Za-z0-9]+)?)(\[bot\])?$`)
 
 // ivMaxLogin is the longest login GitHub allows.
 const ivMaxLogin = 39

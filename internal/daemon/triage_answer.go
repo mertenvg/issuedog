@@ -81,11 +81,18 @@ func flagAdmit(s *github.Snapshot, key state.Key, by string) Move {
 }
 
 // flagIgnoreCheck rejects an /ignore on an issue in the pipeline (see
-// flagInPipeline), or one left to people already.
+// flagInPipeline), one with approved, or one left to people already. Step
+// ran the label rules first, so approved is a trusted user's or the App's
+// (as for Triage.Pending), and IntakeVisit admits the issue later in this
+// pass: a "left" comment beside that would contradict it (#141's verify),
+// as Triage.Apply's check of approved says.
 func flagIgnoreCheck(_ context.Context, a *Applier, c Cmd) error {
 	is := state.Derive(c.S, a.AppSlug, c.Dirt.Has)
 	if why := flagInPipeline(c.S, is); why != "" {
 		return Rejection{Reason: "only an issue with no stage label can be left to people, and " + why}
+	}
+	if triageApproved(c.S) {
+		return Rejection{Reason: "this issue has `approved`, which brings it into the pipeline instead"}
 	}
 	if is.Triage.Verdict == triageLeave {
 		return Rejection{Reason: "issuedog has left this issue to people already", Final: true}
@@ -153,7 +160,9 @@ func flagInPipeline(s *github.Snapshot, is state.Issue) string {
 //     cmd=r<reaction id>. A move the table lacks is reported once by
 //     Transition (SPEC §5.3), then only logged.
 //   - leave records "left", keyed the same way, unless the issue is in the
-//     pipeline (flagInPipeline), as /ignore's check says.
+//     pipeline (flagInPipeline) or has approved, as /ignore's check says.
+//     With approved, IntakeVisit admits the issue later in this pass, and
+//     that move answers the flag, so the 👍 is never applied.
 //
 // 👍s on an older flag, untrusted 👍s and the App's are ignored, and so is
 // a flag answered already by a transition after it, as when an override
@@ -215,6 +224,11 @@ func FlagByReaction(trust github.Trust) func(ctx context.Context, a *Applier, s 
 		case triageLeave:
 			if why := flagInPipeline(s, is); why != "" {
 				logr.Infof("%s/%s#%d: ignoring the 👍 on the flag in comment %d, which recommends leaving it: %s", a.Owner, a.Repo, s.Number, flag.Comment, why)
+				return nil
+			}
+			if triageApproved(s) {
+				logr.Infof("%s/%s#%d: ignoring the 👍 on the flag in comment %d, which recommends leaving it: the issue has approved, so IntakeVisit admits it",
+					a.Owner, a.Repo, s.Number, flag.Comment)
 				return nil
 			}
 			if err := flagLeave(ctx, a, s, d, key, by+": issuedog leaves this issue to people."); err != nil {

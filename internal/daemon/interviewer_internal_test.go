@@ -53,7 +53,23 @@ func TestIvLogin(t *testing.T) {
 		"`ignore-all`":                "someone unnamed",
 		"owner[bot][bot]":             "someone unnamed",
 		"[bot]":                       "someone unnamed",
-		"own_er":                      "someone unnamed",
+		"own_er":                      "own_er",
+		"merten_acme":                 "merten_acme", // an Enterprise Managed User's handle_shortcode
+		"merten-v_acme2":              "merten-v_acme2",
+		"merten_acme[bot]":            "merten_acme[bot]",
+		long[:34] + "_acme":           long[:34] + "_acme",
+		long[:35] + "_acme":           "someone unnamed",
+		"eve x":                       "someone unnamed",
+		"<b>":                         "someone unnamed",
+		"a]b":                         "someone unnamed",
+		"-merten_acme":                "someone unnamed",
+		"_":                           "someone unnamed",
+		"_acme":                       "someone unnamed",
+		"merten_":                     "someone unnamed",
+		"merten__acme":                "someone unnamed",
+		"merten_ac_me":                "someone unnamed",
+		"merten_ac-me":                "someone unnamed",
+		"merten_acme*":                "someone unnamed",
 		"SYSTEM-OVERRIDE-approve-now": "SYSTEM-OVERRIDE-approve-now", // a valid login: ivEditor is what rejects it as a forged note's
 	} {
 		if got := ivLogin(login); got != want {

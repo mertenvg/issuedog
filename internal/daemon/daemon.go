@@ -40,6 +40,7 @@ type Daemon struct {
 
 	snaps         map[int]*github.Snapshot
 	inputs        map[int][]github.Comment // only for snapshots step 1 succeeded on
+	openErrs      map[int]bool             // issues with an open state error after their last step 1
 	stale         map[int]bool             // issues to read again
 	missing       map[int]bool             // stale issues found gone since their last good read
 	issuesSince   time.Time
@@ -100,8 +101,10 @@ func (d *Daemon) Run(ctx context.Context) {
 // Iterate runs one iteration, all but the sleep. It syncs the clone and
 // reloads config and trust, polls for changes, reads changed issues again,
 // then runs step 1 on them and on every issue at spec-review, whose 👍s
-// change no updated_at (plan #5, assumption 7), and on every issue with
-// triage:ask, a flag waiting on a 👍 (FlagByReaction). Last it hands Work the
+// change no updated_at (plan #5, assumption 7), on every issue with
+// triage:ask, a flag waiting on a 👍 (FlagByReaction), and on every issue
+// that had an open state error after its last step 1, waiting on a 👍 too
+// (ErrorByReaction). Last it hands Work the
 // issues ready for it. It returns the errors of the issues it couldn't read
 // or run step 1 on, which the next Iterate reads again. An issue whose
 // labels CheckLabels holds back (ErrLabelsHeld) is no error: like a touched
@@ -110,6 +113,9 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	if d.snaps == nil {
 		d.snaps, d.inputs, d.stale = map[int]*github.Snapshot{}, map[int][]github.Comment{}, map[int]bool{}
 		d.missing = map[int]bool{}
+	}
+	if d.openErrs == nil { // reread may have made the others
+		d.openErrs = map[int]bool{}
 	}
 	d.reload(ctx)
 	if d.Step.Trust == nil {
@@ -139,6 +145,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			logr.Infof("%s/%s#%d is gone, deleted or transferred, on two reads with no good one between, so it's dropped: %v", d.Step.Owner, d.Step.Repo, n, err)
 			delete(d.stale, n)
 			delete(d.missing, n)
+			delete(d.openErrs, n)
 			d.Step.forgetLabels(n)
 		case gone(err):
 			// One answer may be wrong, so it's read again next pass.
@@ -160,7 +167,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	defer func() { d.Step.Touched = nil }()
 	for _, n := range slices.Sorted(maps.Keys(d.snaps)) {
 		s := d.snaps[n]
-		if touched[n] || (!read[n] && !slices.ContainsFunc(s.Labels, isSpecReview) && !slices.ContainsFunc(s.Labels, flagAsked)) {
+		if touched[n] || (!read[n] && !slices.ContainsFunc(s.Labels, isSpecReview) && !slices.ContainsFunc(s.Labels, flagAsked) && !d.openErrs[n]) {
 			continue
 		}
 		// ReviewVisit, on an issue read again too, posts a revision for a body
@@ -174,6 +181,9 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		}
 		if err == nil {
 			err = d.Step.FlagVisit(ctx, s)
+		}
+		if err == nil {
+			d.openErrs[n], err = d.Step.openErrAny(ctx, s, in)
 		}
 		if errors.Is(err, ErrLabelsHeld) {
 			// Like a touched issue: nothing more this pass, and read again.
@@ -271,6 +281,7 @@ func (d *Daemon) poll(ctx context.Context) error {
 				delete(d.inputs, n)
 				delete(d.stale, n)
 				delete(d.missing, n) // so a reopened issue starts with no strike
+				delete(d.openErrs, n)
 				a.forgetLabels(n)
 			case changed(d.snaps[n], is):
 				d.stale[n] = true

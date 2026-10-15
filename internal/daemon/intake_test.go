@@ -45,9 +45,15 @@ func admitted(why, key string) string { return waits(why, "", key) }
 func waits(why, typ, key string) string {
 	note := ""
 	if typ != "" {
-		note = " It's a " + typ + ": bugs and tasks wait at `clarifying` for now, until issuedog can implement them (build phase 3)."
+		note = phase3Note(typ)
 	}
 	return withNote(why, note, key)
+}
+
+// phase3Note is the note a move into the pipeline adds for typ, a bug or a
+// task: it waits for phase 3.
+func phase3Note(typ string) string {
+	return " It's a " + typ + ": bugs and tasks wait at `clarifying` for now, until issuedog can implement them (build phase 3)."
 }
 
 // withNote is admitted with note after the move.

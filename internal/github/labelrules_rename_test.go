@@ -55,13 +55,13 @@ func checkPassOn(t *testing.T, n int, mem memory, out *checked) func(*githubtest
 		if err != nil {
 			return err
 		}
-		labels, events, _, held, err := c.CheckLabels(context.Background(), "o", "r", n, s.Labels, "issuedog", ownerTrusted{},
+		found, err := c.CheckLabels(context.Background(), "o", "r", n, s.Labels, "issuedog", ownerTrusted{},
 			func(int64) bool { return false }, mem.of(f))
 		if err != nil {
 			return err
 		}
 		if out != nil {
-			*out = checked{labels, held, events}
+			*out = checked{found.Labels, found.Held, found.Events}
 		}
 		return nil
 	}
