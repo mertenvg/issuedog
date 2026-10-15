@@ -82,7 +82,7 @@ type issue struct {
 	parent         int
 	lastEdit       lastEdit
 	history        []lastEdit
-	labelEvents    []*gogithub.Timeline // labeled, unlabeled and renamed, oldest first
+	labelEvents    []*gogithub.Timeline // labeled, unlabeled, renamed, closed and reopened, oldest first
 	pinned         bool                 // to the repo's issue list (PinIssue)
 }
 
@@ -510,10 +510,14 @@ func (f *Fake) addComment(c *call) (int, any) {
 	return http.StatusCreated, f.addCommentBy(c.issue, f.slug+"[bot]", req.Body).IssueComment
 }
 
-// editIssue edits an issue's body, its state (open or closed), or both.
+// editIssue edits an issue's body, its state (open or closed), or both, as
+// the App. A state change is setState's, with state_reason if given.
 // Nothing else of an issue is edited yet.
 func (f *Fake) editIssue(c *call) (int, any) {
-	var req struct{ Body, State *string }
+	var req struct {
+		Body, State *string
+		StateReason string `json:"state_reason"`
+	}
 	if status, msg := c.decode(&req); msg != nil {
 		return status, msg
 	}
@@ -527,7 +531,7 @@ func (f *Fake) editIssue(c *call) (int, any) {
 		c.issue.editBy(f.slug+"[bot]", *req.Body, f.tick())
 	}
 	if req.State != nil {
-		c.issue.State, c.issue.UpdatedAt = new(*req.State), f.tick()
+		f.setState(c.issue, *req.State, req.StateReason, f.slug+"[bot]")
 	}
 	return http.StatusOK, c.issue.Issue
 }

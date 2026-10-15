@@ -37,7 +37,12 @@ type Daemon struct {
 	// Work, if set, gets each issue whose step 1 succeeded on the snapshot
 	// held, by number, with the Inputs it returned: stage work (Runs.Work).
 	Work func(ctx context.Context, ready []Ready) error
+	// Digest, if set, keeps the digest issue: Iterate creates it, pins it,
+	// and handles its close (digest.go). Set or not, every digest is kept
+	// out of the pipeline.
+	Digest bool
 
+	digest        digestState
 	snaps         map[int]*github.Snapshot
 	inputs        map[int][]github.Comment // only for snapshots step 1 succeeded on
 	openErrs      map[int]bool             // issues with an open state error after their last step 1
@@ -104,7 +109,7 @@ func (d *Daemon) Run(ctx context.Context) {
 // change no updated_at (plan #5, assumption 7), on every issue with
 // triage:ask, a flag waiting on a 👍 (FlagByReaction), and on every issue
 // that had an open state error after its last step 1, waiting on a 👍 too
-// (ErrorByReaction). Last it hands Work the
+// (ErrorByReaction). Then it keeps the digest (digestPass). Last it hands Work the
 // issues ready for it. It returns the errors of the issues it couldn't read
 // or run step 1 on, which the next Iterate reads again. An issue whose
 // labels CheckLabels holds back (ErrLabelsHeld) is no error: like a touched
@@ -136,6 +141,10 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	var errs []error
 	read := map[int]bool{}
 	for _, n := range slices.Sorted(maps.Keys(d.stale)) {
+		if d.digest.has(n) { // never in the pipeline, as when a command touched it
+			delete(d.stale, n)
+			continue
+		}
 		delete(d.snaps, n)
 		delete(d.inputs, n)
 		s, err := d.Step.Client.Snapshot(ctx, d.Step.Owner, d.Step.Repo, n)
@@ -203,6 +212,9 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		delete(d.inputs, n)
 		d.stale[n] = true
 	}
+	if err := d.digestPass(ctx); err != nil {
+		errs = append(errs, err)
+	}
 	if d.Work != nil {
 		var ready []Ready
 		for _, n := range slices.Sorted(maps.Keys(d.inputs)) {
@@ -262,7 +274,9 @@ func (d *Daemon) reload(ctx context.Context) {
 // marks as stale each open issue that changed. Each cursor moves to the
 // newest updated_at GitHub returned. A list whose cursor moved is read once
 // more from there, so the next poll of an unchanged repo repeats that
-// request and gets a 304. Closed issues and pull requests are dropped.
+// request and gets a 304. Closed issues and pull requests are dropped, and
+// so are digests, which it records, with the App's digest-new comments
+// (digest.go).
 func (d *Daemon) poll(ctx context.Context) error {
 	a := d.Step.Applier
 	for range 2 {
@@ -276,7 +290,7 @@ func (d *Daemon) poll(ctx context.Context) error {
 			n := is.GetNumber()
 			switch {
 			case is.IsPullRequest():
-			case is.GetState() != "open":
+			case d.digest.listed(a.AppSlug, is) || is.GetState() != "open": // a digest is never in the pipeline
 				delete(d.snaps, n)
 				delete(d.inputs, n)
 				delete(d.stale, n)
@@ -304,6 +318,7 @@ func (d *Daemon) poll(ctx context.Context) error {
 				logr.Warnf("%s/%s: skipping comment %d, whose issue URL %q names no number", a.Owner, a.Repo, c.GetID(), c.GetIssueURL())
 				continue
 			}
+			d.digest.comment(a.AppSlug, n, c)
 			if s := d.snaps[n]; s != nil && commentChanged(s, c) {
 				d.stale[n] = true
 			}

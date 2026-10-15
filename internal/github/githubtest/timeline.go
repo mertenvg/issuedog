@@ -74,7 +74,8 @@ func (f *Fake) rename(from, to string, events bool) {
 }
 
 // LagEvents makes the label events of every later change, the App's
-// included, be written d after the change, as GitHub was seen to write an
+// included, be written d after the change, and its closed and reopened
+// events too, as GitHub may (CloseBy). GitHub was seen to write an
 // issue's labeled events a second or two after the issue was filed with its
 // labels. Until the clock reaches it (see Advance), an event is missing from
 // the timeline. 0 writes them at once again.
@@ -117,8 +118,9 @@ func (f *Fake) labelEvent(is *issue, event, login, name string, at *gogithub.Tim
 	return id
 }
 
-// timeline serves an issue's labeled, unlabeled, renamed and commented events, oldest
-// first, but for label events not written yet (LagEvents). As on GitHub, a
+// timeline serves an issue's labeled, unlabeled, renamed, closed, reopened
+// and commented events, oldest first, but for label events not written yet
+// (LagEvents). As on GitHub, a
 // commented event has its comment's ID, user and current body, and a deleted
 // comment's is gone.
 func (f *Fake) timeline(c *call) (int, any) {
