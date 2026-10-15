@@ -261,13 +261,16 @@ func TestDigestMovedRedirect(t *testing.T) {
 	var got []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got = append(got, r.Method+" "+r.URL.Path)
+		body := `{"number": 1, "repository_url": "https://api.github.com/repos/x/y", "body": "old"}`
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/repos/o/r/"):
 			http.Redirect(w, r, "/repositories/9/"+strings.TrimPrefix(r.URL.Path, "/repos/o/r/"), http.StatusMovedPermanently)
+			return
 		case strings.HasSuffix(r.URL.Path, "/comments"):
-			fmt.Fprint(w, `[]`)
-		default:
-			fmt.Fprint(w, `{"number": 1, "repository_url": "https://api.github.com/repos/x/y", "body": "old"}`)
+			body = `[]`
+		}
+		if _, err := fmt.Fprint(w, body); err != nil {
+			t.Errorf("write the answer: %v", err)
 		}
 	}))
 	defer srv.Close()
