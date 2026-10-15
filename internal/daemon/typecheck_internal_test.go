@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/mertenvg/issuedog/internal/github"
@@ -46,6 +47,36 @@ func TestTypeErrCause(t *testing.T) {
 	} {
 		if got := typeErrCause(tc.stage, tc.typ); got != tc.want {
 			t.Errorf("typeErrCause(%s, %q) = %t, want %t", tc.stage, tc.typ, got, tc.want)
+		}
+	}
+}
+
+// waitFind lists an open type error as err-<n>-type-<key>, beside the
+// approval at spec-review, while the type change that keys it stands and
+// the type doesn't fit; a newer type change, or a type that fits, ends it.
+func TestTypeErrWaitFind(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		typ   string
+		event int64
+		want  []string
+	}{
+		{"open", "task", 70, []string{"err-14-type-70", "rev-14-1"}},
+		{"a newer type change", "task", 71, []string{"rev-14-1"}},
+		{"a type that fits", "epic", 70, []string{"rev-14-1"}},
+	} {
+		s := waitSnap(14, nil, waitRevision(1, "The spec."), "Doesn't fit.\n\n<!-- issuedog:error kind=type key=70 -->")
+		s.Type, s.TypeEvent = tc.typ, tc.event
+		items, err := waitFind(waitIn(s, Dirt{}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var keys []string
+		for _, it := range items {
+			keys = append(keys, it.Key)
+		}
+		if !slices.Equal(keys, tc.want) {
+			t.Errorf("%s: keys = %v, want %v", tc.name, keys, tc.want)
 		}
 	}
 }

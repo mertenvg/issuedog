@@ -412,6 +412,8 @@ func TestWaitFindApprovalLatest(t *testing.T) {
 func TestWaitFindErrorInBody(t *testing.T) {
 	s := waitSnap(12, nil)
 	s.Author, s.Body = waitApp, "Body text.\n\n<!-- issuedog:error kind=type key=70 -->"
+	// Its cause stands: a type the pipeline doesn't know, set by event 70.
+	s.Type, s.TypeEvent = "feature", 70
 	got := waitFindOne(t, waitIn(s, Dirt{}))
 	want := []string{"State error `type`, keyed `70`.", "It's in the issue description, where a 👍 can't acknowledge it, so it ends when its cause is gone."}
 	if got.Key != "err-12-type-70" || got.Link != "https://github.com/o/r/issues/12" || got.Comment != state.BodyID || !slices.Equal(waitTexts(got.Lines), want) {
