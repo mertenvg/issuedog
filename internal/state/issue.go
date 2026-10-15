@@ -36,17 +36,25 @@ type Issue struct {
 	Markers []github.Marker
 	// Keys are the cmd, run and event IDs the markers name.
 	Keys map[Key]bool
-	// Errors are the state errors posted (SPEC §5.3), by kind and key.
-	Errors map[ErrorKey]bool
-	// Acked are the keys of acknowledged state errors. An ack reply names
-	// no kind, so it covers its key for every kind.
-	Acked map[string]bool
+	// Errors are the state errors posted (SPEC §5.3), by kind and key, each
+	// with the ID of the earliest comment that carries it, or BodyID. An ack
+	// reply isn't one: it's in Acks.
+	Errors map[ErrorKey]int64
+	// Acks are the acknowledged state errors, by kind and key. An ack reply
+	// names the error's kind (plan #7, Q5a). One from before it did has an
+	// empty Kind and covers its key for every kind: see Acked.
+	Acks map[ErrorKey]bool
 	// Item is what Derive knows of the class. Human is never set: no marker
 	// records it yet.
 	Item Item
 	// Round is the latest transition's RoundBound: comments with a higher
 	// ID are this round's input. 0 if there is no transition.
 	Round int64
+	// TransitionComment is the ID of the comment holding the latest
+	// transition marker, the one that sets Stage. It's 0 if there's none or
+	// it's in the body, which comes before every comment, so an error whose
+	// comment ID is higher was posted after that transition.
+	TransitionComment int64
 	// Triage is the latest triage marker in a comment, or none.
 	Triage TriageVerdict
 }
@@ -91,9 +99,17 @@ func RoundBound(m github.Marker, id int64) (int64, bool) {
 type ErrorKey struct{ Kind, Key string }
 
 // Reported reports whether the state error of this kind and key needs no
-// comment: one was posted, or a trusted user acknowledged its key.
+// comment: one was posted, or a trusted user acknowledged it.
 func (is Issue) Reported(kind, key string) bool {
-	return is.Errors[ErrorKey{kind, key}] || is.Acked[key]
+	_, posted := is.Errors[ErrorKey{kind, key}]
+	return posted || is.Acked(kind, key)
+}
+
+// Acked reports whether an ack reply covers the state error of this kind
+// and key: one that names the kind and key, or one with no kind that names
+// the key, which covers it for every kind (plan #7, Q5a).
+func (is Issue) Acked(kind, key string) bool {
+	return is.Acks[ErrorKey{kind, key}] || is.Acks[ErrorKey{"", key}]
 }
 
 // Moved reports whether a transition marker carries k: the transition it
@@ -111,7 +127,7 @@ func (is Issue) Moved(k Key) bool {
 // in content that dirty reports, by comment ID or BodyID, are skipped:
 // dirty decides what an edit taints, not Derive.
 func Derive(s *github.Snapshot, appSlug string, dirty func(id int64) bool) Issue {
-	is := Issue{Stage: Intake, Keys: map[Key]bool{}, Errors: map[ErrorKey]bool{}, Acked: map[string]bool{},
+	is := Issue{Stage: Intake, Keys: map[Key]bool{}, Errors: map[ErrorKey]int64{}, Acks: map[ErrorKey]bool{},
 		Item: Item{Type: s.Type, HasParent: s.Parent != 0}}
 	read := func(id int64, author github.Author, body string) {
 		if dirty(id) {
@@ -120,8 +136,9 @@ func Derive(s *github.Snapshot, appSlug string, dirty func(id int64) bool) Issue
 		for _, m := range github.TrustedMarkers(author, body, appSlug) {
 			is.Markers = append(is.Markers, m)
 			if b, ok := RoundBound(m, id); ok {
-				is.Round = b
+				is.Round, is.TransitionComment = b, id
 			}
+			is.readError(m, id)
 			if m.Kind == "origin" && id == BodyID && m.Fields["plan"] != "" {
 				is.Item.FromPlan = true
 			}
@@ -140,14 +157,6 @@ func Derive(s *github.Snapshot, appSlug string, dirty func(id int64) bool) Issue
 				is.Keys[Key{f, id}] = true
 			}
 		}
-		if key := m.Fields["key"]; m.Kind == "error" && key != "" {
-			if kind := m.Fields["kind"]; kind != "" {
-				is.Errors[ErrorKey{kind, key}] = true
-			}
-			if m.Fields["ack"] != "" {
-				is.Acked[key] = true
-			}
-		}
 		for _, f := range []string{"from", "to", "at", "origin"} {
 			switch Stage(m.Fields[f]) {
 			case Ready, InProgress, Verifying, PROpen:
@@ -159,4 +168,22 @@ func Derive(s *github.Snapshot, appSlug string, dirty func(id int64) bool) Issue
 		}
 	}
 	return is
+}
+
+// readError records m, read in comment id (or BodyID), if it's an error
+// marker with a key: an ack reply in Acks, under its kind, which may be
+// empty; or else a posted error in Errors, which needs a kind. A posted
+// error keeps the first comment that carries it, since Derive reads the
+// body, then the comments in order.
+func (is *Issue) readError(m github.Marker, id int64) {
+	key, kind := m.Fields["key"], m.Fields["kind"]
+	switch {
+	case m.Kind != "error" || key == "":
+	case m.Fields["ack"] != "":
+		is.Acks[ErrorKey{kind, key}] = true
+	case kind != "":
+		if _, ok := is.Errors[ErrorKey{kind, key}]; !ok {
+			is.Errors[ErrorKey{kind, key}] = id
+		}
+	}
 }

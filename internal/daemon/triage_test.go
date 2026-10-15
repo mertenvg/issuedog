@@ -368,6 +368,14 @@ func TestTriagePending(t *testing.T) {
 			f.AddComment(1, app, "Can't move it.\n\n<!-- issuedog:error kind=transition key=12 -->")
 			f.AddComment(1, app, "<!-- issuedog:error key=12 ack=r5 -->")
 		}, true},
+		{"admission error acknowledged by kind", func(f *githubtest.Fake) {
+			f.AddComment(1, app, "Can't move it.\n\n<!-- issuedog:error kind=transition key=12 -->")
+			f.AddComment(1, app, "<!-- issuedog:error kind=transition key=12 ack=r5 -->")
+		}, true},
+		{"an ack of another kind", func(f *githubtest.Fake) {
+			f.AddComment(1, app, "Can't move it.\n\n<!-- issuedog:error kind=transition key=12 -->")
+			f.AddComment(1, app, "<!-- issuedog:error kind=labels key=12 ack=r5 -->")
+		}, false},
 		{"a run's move error", func(f *githubtest.Fake) {
 			f.AddComment(1, app, "Can't apply it.\n\n<!-- issuedog:error kind=transition key=intake-0-9f2a61c0 -->")
 		}, true},
