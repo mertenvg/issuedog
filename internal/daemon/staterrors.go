@@ -213,12 +213,9 @@ func ErrorByReaction(trust github.Trust) func(ctx context.Context, a *Applier, s
 }
 
 // openErrAny reports whether s, which step 1 just ran on and gave inputs,
-// has an open state error (openErrors), so Iterate visits it on every pass.
-func (st *Step) openErrAny(ctx context.Context, s *github.Snapshot, inputs []github.Comment) (bool, error) {
-	d, err := st.Dirty(ctx, s, st.trustOnceTrust())
-	if err != nil {
-		return false, fmt.Errorf("open state errors of %s/%s#%d: %w", st.Owner, st.Repo, s.Number, err)
-	}
+// with dirty content d, has an open state error (openErrors), so Iterate
+// visits it on every pass. Iterate finds d once, for the digest's items too.
+func (st *Step) openErrAny(s *github.Snapshot, inputs []github.Comment, d Dirt) (bool, error) {
 	open, err := openErrors(s, state.Derive(s, st.AppSlug, d.Has), func() ([]github.Comment, error) { return inputs, nil })
 	if err != nil {
 		return false, fmt.Errorf("open state errors of %s/%s#%d: %w", st.Owner, st.Repo, s.Number, err)

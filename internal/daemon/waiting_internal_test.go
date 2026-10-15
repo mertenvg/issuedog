@@ -339,6 +339,13 @@ func TestWaitFindApprovalBlocked(t *testing.T) {
 	untyped.Type = ""
 	unknown := waitSnap(10, nil, waitRevision(1, "The spec."))
 	unknown.Type = "feature"
+	// A type change that stands, to a type that can't be at spec-review or
+	// one the pipeline doesn't know, holds a 👍 back (#156's verify).
+	retyped := waitSnap(10, nil, waitRevision(1, "The spec."))
+	retyped.Type, retyped.TypeEvent = "task", 70
+	retypedUnknown := waitSnap(10, nil, waitRevision(1, "The spec."))
+	retypedUnknown.Type, retypedUnknown.TypeEvent = "feature", 71
+	held := "its type doesn't fit `spec-review`, so a 👍 is held back until the type changes (see the type error)"
 	cases := []struct {
 		name string
 		s    *github.Snapshot
@@ -354,6 +361,8 @@ func TestWaitFindApprovalBlocked(t *testing.T) {
 			[]string{"the issue description changed after revision 1, so it no longer matches `" + state.BodyHash("An older spec.") + "`"}},
 		{"untyped", untyped, Dirt{}, "rev-10-1", []string{"an issue of its type doesn't go on to `planning` on approval"}},
 		{"unknown type", unknown, Dirt{}, "rev-10-1", []string{"I can't tell what kind of issue this is from its type"}},
+		{"retyped", retyped, Dirt{}, "rev-10-1", []string{held}},
+		{"retyped to an unknown type", retypedUnknown, Dirt{}, "rev-10-1", []string{held}},
 		{"no revision, dirty", waitSnap(10, nil, "No revision.\n\n<!-- issuedog:transition from=clarifying to=spec-review run=s1 -->"),
 			Dirt{state.BodyID: "eve"}, "rev-10-0", []string{"the issue description has an edit that wasn't approved (see the note on it)"}},
 		{"dirty and hash", waitSnap(10, nil, waitRevision(1, "An older spec.")), Dirt{state.BodyID: "eve"}, "rev-10-1",

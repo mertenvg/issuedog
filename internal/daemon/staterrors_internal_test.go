@@ -204,3 +204,18 @@ func TestOpenErrorsInputs(t *testing.T) {
 		t.Errorf("two errors keyed on input: %v, %v, with %d calls; want both open, with one call", open, err, calls)
 	}
 }
+
+// openErrAny reads the errors with the dirty content it's given: an error
+// whose comment is dirty isn't open.
+func TestOpenErrAnyDirt(t *testing.T) {
+	st := &Step{Applier: &Applier{Owner: "o", Repo: "r", AppSlug: openErrSlug}}
+	s := openErrSnap("", openErrMarker("disagreement", "9", ""))
+	for _, tc := range []struct {
+		dirt Dirt
+		want bool
+	}{{Dirt{}, true}, {Dirt{1: "eve"}, false}} {
+		if got, err := st.openErrAny(s, nil, tc.dirt); err != nil || got != tc.want {
+			t.Errorf("openErrAny with dirt %v = %t, %v; want %t", tc.dirt, got, err, tc.want)
+		}
+	}
+}
