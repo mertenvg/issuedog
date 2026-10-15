@@ -167,16 +167,17 @@ func TestInterviewerSetsType(t *testing.T) {
 		before string // the App's type:* label before the run, if any
 		writes int    // the writes the run's apply makes
 	}{
-		{"untyped", "", 2},              // the label, then the comment
-		{"the App's story", "story", 3}, // the label, the removal of type:story, then the comment
-		{"the App's epic", "epic", 1},   // only the comment
+		{"untyped", "", 2},                        // the label, then the comment
+		{"the App's story", "type:story", 3},      // the label, the removal of type:story, then the comment
+		{"the App's epic", "type:epic", 1},        // only the comment
+		{"the App's Type:Story", "Type:Story", 3}, // the label, the removal of Type:Story, in its own case, then the comment
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newFake(t)
 			n, entry := ivFiled(f, "", false, "from=intake to=clarifying event=5")
 			if tt.before != "" {
-				f.AddLabel(n, app, "type:"+tt.before)
+				f.AddLabel(n, app, tt.before)
 			}
 			g := ivRig(t, f)
 			g.claude(ivResult(t, ivRound(2, "epic")), 0)
@@ -235,7 +236,7 @@ func TestInterviewerCheckFailsAttempt(t *testing.T) {
 		{"a type on an owner-typed issue", "epic", ivRound(2, "story")},
 		{"typed, on an owner-typed issue", "story", ivTyped("bug")},
 		{"8 questions with a limit of 7", "epic", ivRound(8, "")},
-		{"a spec, which #135 writes", "epic", ivSpec()},
+		{"a spec with no type, on an untyped issue", "", ivSpec()},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -259,7 +260,9 @@ func TestInterviewerCheckFailsAttempt(t *testing.T) {
 
 // TestInterviewerCheck: Check holds an output to the facts of the issue:
 // its rounds, who owns its type, the trusted logins and the question
-// limit. A spec passes no check until #135.
+// limit, and to its class, read again: an issue the interviewer no longer
+// runs on fails, unless the output's own type, which the App set, made it
+// so.
 func TestInterviewerCheck(t *testing.T) {
 	decision := func(q, by string) map[string]any {
 		return map[string]any{"question": q, "answer": "a", "summary": "Yes.", "by": by, "round": 1}
@@ -295,8 +298,8 @@ func TestInterviewerCheck(t *testing.T) {
 		{"typed, on an untyped issue", nil, "labels", 7, ivTyped("task"), ""},
 		{"8 questions with a limit of 7", nil, "labels", 7, ivRound(8, ""), "rule question-count: 8 questions, over the limit of 7"},
 		{"8 questions with a limit of 8", nil, "labels", 8, ivRound(8, ""), ""},
-		{"a spec", asked(""), "labels", 7, ivSpec(map[string]any{"question": "Q1.1", "answer": "dropped", "summary": "Moot.", "by": "", "round": 0}), "#135"},
-		{"a spec deciding by alice", asked("alice"), "labels", 7, ivSpec(decision("Q1.1", "alice")), "#135"},
+		{"a spec", asked(""), "labels", 7, ivSpec(map[string]any{"question": "Q1.1", "answer": "dropped", "summary": "Moot.", "by": "", "round": 0}), ""},
+		{"a spec deciding by alice", asked("alice"), "labels", 7, ivSpec(decision("Q1.1", "alice")), ""},
 		{"a spec deciding by eve", asked("eve"), "labels", 7, ivSpec(decision("Q1.1", "eve")), "rule decision-by"},
 		{"a spec deciding a question not asked", asked("alice"), "labels", 7, ivSpec(decision("Q1.1", "alice"), decision("Q1.2", "alice")),
 			"rule decision-question"},
@@ -306,6 +309,23 @@ func TestInterviewerCheck(t *testing.T) {
 			f.EditComment(f.AddComment(n, "alice", "1a"), "owner", "1b")
 		}, "labels", 7, ivSpec(decision("Q1.1", "alice")), "rule decision-by"},
 		{"a spec with no type, on an untyped issue", nil, "labels", 7, ivSpec(), "rule spec-type"},
+		{"a round on the owner's task", func(f *githubtest.Fake, n int, _ int64) { f.AddLabel(n, "owner", "type:task") }, "labels", 7, ivRound(1, ""),
+			"no longer runs on #1, with type \"task\" and a parent false"},
+		{"a spec on the owner's bug", func(f *githubtest.Fake, n int, _ int64) { f.AddLabel(n, "owner", "type:bug") }, "labels", 7, ivSpec(),
+			"no longer runs on #1, with type \"bug\""},
+		{"a round on a story with a parent", func(f *githubtest.Fake, n int, _ int64) {
+			f.AddLabel(n, "owner", "type:story")
+			f.SetParent(n, f.AddIssue("owner", "Parent", ""))
+		}, "labels", 7, ivRound(1, ""), "no longer runs on #1, with type \"story\" and a parent true"},
+		{"typed, on the App's task it set", func(f *githubtest.Fake, n int, _ int64) { f.AddLabel(n, app, "type:task") }, "labels", 7, ivTyped("task"), ""},
+		{"typed, on the App's Task in another case", func(f *githubtest.Fake, n int, _ int64) { f.AddLabel(n, app, "Type:Task") }, "labels", 7,
+			ivTyped("task"), ""},
+		{"typed, on the App's bug", func(f *githubtest.Fake, n int, _ int64) { f.AddLabel(n, app, "type:bug") }, "labels", 7, ivTyped("task"),
+			"no longer runs"},
+		{"a round, on the App's task", func(f *githubtest.Fake, n int, _ int64) { f.AddLabel(n, app, "type:task") }, "labels", 7, ivRound(1, ""),
+			"no longer runs"},
+		{"typed task, on the owner's task", func(f *githubtest.Fake, n int, _ int64) { f.AddLabel(n, "owner", "type:task") }, "labels", 7,
+			ivTyped("task"), "no longer runs"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -481,19 +501,23 @@ func TestInterviewerRoundReplay(t *testing.T) {
 	}
 }
 
-// TestInterviewerApplySpec: Apply refuses a spec, which #135 writes, with
-// nothing written.
-func TestInterviewerApplySpec(t *testing.T) {
-	f := newFake(t)
-	n, _ := ivFiled(f, "epic", false, "from=intake to=clarifying event=5")
-	d := ivDaemon(t, f, newOrigin(t))
-	in := ivInput(t, d, n)
-	err := (&daemon.Interviewer{Daemon: d}).Apply(context.Background(), d.Step.Applier,
-		daemon.Result{RunID: "run1", S: in.S, Dirt: in.Dirt, Output: ivJSON(t, ivSpec())})
-	if err == nil || !strings.Contains(err.Error(), "#135") {
-		t.Errorf("Apply = %v, want the error naming #135", err)
-	}
-	if w := f.Writes(); len(w) != 0 {
-		t.Errorf("Apply wrote %v", w)
+// TestInterviewerApplyBadOutput: Apply fails on output Check fails, a
+// spec outcome with no spec or an unknown outcome, with nothing written.
+func TestInterviewerApplyBadOutput(t *testing.T) {
+	for _, out := range []string{`{"outcome":"spec"}`, `{"outcome":"done"}`} {
+		t.Run(out, func(t *testing.T) {
+			f := newFake(t)
+			n, _ := ivFiled(f, "epic", false, "from=intake to=clarifying event=5")
+			d := ivDaemon(t, f, newOrigin(t))
+			in := ivInput(t, d, n)
+			err := (&daemon.Interviewer{Daemon: d}).Apply(context.Background(), d.Step.Applier,
+				daemon.Result{RunID: "run1", S: in.S, Dirt: in.Dirt, Output: []byte(out)})
+			if err == nil || !strings.Contains(err.Error(), "apply interviewer run run1 on o/r#1") {
+				t.Errorf("Apply = %v, want an error", err)
+			}
+			if w := f.Writes(); len(w) != 0 {
+				t.Errorf("Apply wrote %v", w)
+			}
+		})
 	}
 }
