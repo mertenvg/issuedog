@@ -288,3 +288,28 @@ func TestDeriveErrorAndTransitionComments(t *testing.T) {
 		t.Errorf("errors = %v, want none from a dirty body", errs)
 	}
 }
+
+// An ack that names its kind makes Reported true with no clean error
+// posted, as when the error comment went dirty after the ack: the error
+// is never posted again (plan #7, assumption 8). It covers no other kind.
+func TestErrAckReported(t *testing.T) {
+	s := snap("", []github.Author{appBot, appBot},
+		"<!-- issuedog:error kind=transition key=5 -->",
+		"<!-- issuedog:error kind=transition key=5 ack=r9 -->")
+	is := Derive(s, slug, dirtyIDs(1))
+	if len(is.Errors) != 0 {
+		t.Fatalf("errors = %v, want none: the error comment is dirty", is.Errors)
+	}
+	for _, tt := range []struct {
+		kind, key string
+		want      bool
+	}{
+		{"transition", "5", true},
+		{"disagreement", "5", false},
+		{"transition", "6", false},
+	} {
+		if got := is.Reported(tt.kind, tt.key); got != tt.want {
+			t.Errorf("Reported(%s, %s) = %v, want %v", tt.kind, tt.key, got, tt.want)
+		}
+	}
+}
