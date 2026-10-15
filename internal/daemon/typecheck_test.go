@@ -1,6 +1,7 @@
 package daemon_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 	"github.com/mertenvg/issuedog/internal/state"
+	"github.com/mertenvg/logr/v2"
 )
 
 // typeErrWant is the type error for type typ at stage, keyed key: one
@@ -324,6 +326,34 @@ func TestTypeErrTransition(t *testing.T) {
 		f.AddComment(1, app, errAckReply("owner", "type", "9004", 1))
 	})(t)
 	typeErrQuiet(t, acked, pass)
+}
+
+// The move held back for the type error is logged at info level when the
+// type error is posted, and at debug level on every pass after, as a
+// reported error is (#156's verify).
+func TestTypeErrHoldBackLog(t *testing.T) {
+	var logs bytes.Buffer
+	stop := logr.AddWriter(&logs, logr.WithFilter(logr.I))
+	defer stop()
+	m := daemon.Move{To: state.Planning, Trigger: state.TriggerSpecApproved, Key: state.Key{Field: "run", ID: "x"}}
+	f := typeErrEpic(func(t testing.TB, f *githubtest.Fake) { flagWant(t, typeErrRetype(f, 1, "epic", "task"), 9004) })(t)
+	for range 3 {
+		a, s, err := applier(t, f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		none := func(int64) bool { return false }
+		if err := a.CheckLabels(context.Background(), s, typeErrTrust, none); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.Transition(context.Background(), s, none, m); !daemon.StateError(err) {
+			t.Fatalf("Transition = %v; want a state error", err)
+		}
+	}
+	logr.Wait()
+	if got := strings.Count(logs.String(), "state error held back, as the type error keyed 9004 has the same cause"); got != 1 {
+		t.Errorf("the hold-back is logged at info level %d times; want once, with the post:\n%s", got, logs.String())
+	}
 }
 
 // On a repo that uses issue types, the type error keys on the newest

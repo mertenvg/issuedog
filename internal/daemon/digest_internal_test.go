@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -248,6 +250,107 @@ func TestDigestCacheGone(t *testing.T) {
 	}
 	if _, ok := d.digestCache[n]; ok || f.State().Issues[0].Body != digestBody("", nil) {
 		t.Errorf("cache %+v, body %q; want the item gone", d.digestCache, f.State().Issues[0].Body)
+	}
+}
+
+// A transferred digest's writes, which GitHub answers with a 301 that the
+// client follows, and Go turns into a GET that succeeds, are each the
+// digest gone, not a write (#160's verify): the edit, the announcement and
+// the state change.
+func TestDigestMovedRedirect(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Method+" "+r.URL.Path)
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/repos/o/r/"):
+			http.Redirect(w, r, "/repositories/9/"+strings.TrimPrefix(r.URL.Path, "/repos/o/r/"), http.StatusMovedPermanently)
+		case strings.HasSuffix(r.URL.Path, "/comments"):
+			fmt.Fprint(w, `[]`)
+		default:
+			fmt.Fprint(w, `{"number": 1, "repository_url": "https://api.github.com/repos/x/y", "body": "old"}`)
+		}
+	}))
+	defer srv.Close()
+	base := srv.URL + "/"
+	gc, err := gogithub.NewClient(gogithub.WithURLs(&base, &base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &Daemon{Step: &Step{Applier: &Applier{Client: &github.Client{Client: gc}, Owner: "o", Repo: "r", AppSlug: "issuedog"}}}
+	d.digest.issues = map[int]digestSeen{1: {number: 1, open: true, body: "old"}}
+	for name, write := range map[string]func() error{
+		"edit":     func() error { return d.digestEdit(context.Background(), 1, "new") },
+		"announce": func() error { return d.digestAnnounce(context.Background(), 1, "<!-- issuedog:digest-new items=a -->") },
+		"state":    func() error { return digestGone(d.digestSetState(context.Background(), 1, "open")) },
+	} {
+		if err := write(); !errors.Is(err, digestErrGone) || !errors.Is(err, github.ErrTransferred) {
+			t.Errorf("%s = %v; want the digest gone, transferred", name, err)
+		}
+	}
+	if d.digest.issues[1].body != "old" || len(d.digest.news) != 0 || !d.digest.wrote.IsZero() {
+		t.Errorf("digest state %+v; want nothing recorded as written", d.digest)
+	}
+	if !slices.Contains(got, "GET /repositories/9/issues/1") {
+		t.Errorf("requests = %q; want the redirect followed with a GET", got)
+	}
+}
+
+// digestMoved takes a write answered at this repo's path, by an issue of
+// this repo or none, as not moved, matching the repo in any case.
+func TestDigestMoved(t *testing.T) {
+	a := &Applier{Owner: "O", Repo: "r"}
+	resp := func(path string) *gogithub.Response {
+		u, err := url.Parse("https://api.github.com" + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &gogithub.Response{Response: &http.Response{Request: &http.Request{Method: http.MethodPatch, URL: u}}}
+	}
+	repoURL := func(u string) *gogithub.Issue { return &gogithub.Issue{RepositoryURL: &u} }
+	for _, tc := range []struct {
+		resp  *gogithub.Response
+		is    *gogithub.Issue
+		moved bool
+	}{
+		{nil, nil, false},
+		{resp("/repos/o/R/issues/1"), repoURL("https://api.github.com/repos/o/R"), false},
+		{resp("/api/v3/repos/o/r/issues/1"), nil, false},
+		{resp("/repositories/9/issues/1"), nil, true},
+		{resp("/repos/o/rr/issues/1"), nil, true},
+		{nil, repoURL("https://api.github.com/repos/o/r2"), true},
+		{&gogithub.Response{}, &gogithub.Issue{}, false},
+	} {
+		err := digestMoved(a, tc.resp, tc.is)
+		if (err != nil) != tc.moved || err != nil && !errors.Is(err, github.ErrTransferred) {
+			t.Errorf("digestMoved(%v, %v) = %v; want moved %t", tc.resp, tc.is.GetRepositoryURL(), err, tc.moved)
+		}
+	}
+}
+
+// digestTrust404 fails every lookup with a 404, as a permission check for
+// a user GitHub doesn't know might.
+type digestTrust404 struct{}
+
+func (digestTrust404) Trusted(context.Context, string) (bool, error) {
+	return false, fmt.Errorf("permission: %w", &gogithub.ErrorResponse{Response: &http.Response{StatusCode: http.StatusNotFound}})
+}
+
+// A trust lookup that fails with a 404, while the close of the digest is
+// resolved, is the pass's error, but not the digest gone: it's kept, and
+// the issues aren't listed again.
+func TestDigestTrust404NotGone(t *testing.T) {
+	f := githubtest.New(t, "o/r", "issuedog")
+	f.AddIssue("issuedog[bot]", "issuedog digest", digestBody("", nil))
+	f.CloseBy(1, "owner")
+	f.ReopenBy(1, "owner")
+	st := &Step{Applier: &Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}, Trust: digestTrust404{}}
+	d := &Daemon{Step: st, Clone: repo.New(filepath.Join(t.TempDir(), "none"), filepath.Join(t.TempDir(), "r.git")), Config: config.Defaults(), Digest: true}
+	err := d.Iterate(context.Background())
+	if err == nil || errors.Is(err, digestErrGone) || !strings.Contains(err.Error(), "trust owner") {
+		t.Fatalf("Iterate = %v; want the trust lookup's error, not the digest gone", err)
+	}
+	if !d.digest.has(1) || d.issuesSince.IsZero() {
+		t.Errorf("digests %v, issues cursor %v; want the digest kept, and the cursor too", d.digest.issues, d.issuesSince)
 	}
 }
 

@@ -377,10 +377,7 @@ func TestDigestRewriteNoTimelineAfterOwnWrites(t *testing.T) {
 func TestDigestRewriteDeleted(t *testing.T) {
 	f := newFake(t)
 	n := digestError(f, "A", "5")
-	// Its pin note makes this start check its pin. The fake gives the new
-	// digest its number, 2, which GitHub never would, so a pin check kept
-	// from the old one would leave the new one unpinned.
-	f.AddIssue(app, "issuedog digest", digestPending)
+	f.AddIssue(app, "issuedog digest", digestPending) // its pin note makes this start check its pin
 	d := digestDaemon(t, f, digestNotifyOrigin(t), nil)
 	iterate(t, d)
 	if !f.State().Issues[1].Pinned {
@@ -392,9 +389,12 @@ func TestDigestRewriteDeleted(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "the digest is gone, deleted or transferred") {
 		t.Fatalf("Iterate = %v; want the digest gone", err)
 	}
+	// The fake numbers an issue by count, so this takes 2: the new digest
+	// gets 3, as GitHub, which never reuses a number, would give it a new one.
+	f.AddIssue("owner", "Filler", "")
 	from, reqs := len(f.Writes()), len(f.Requests())
 	iterate(t, d)
-	if got, want := digestWrites(f, from), []string{"POST /issues", "POST /graphql", "PATCH /issues/2", "POST /issues/2/comments"}; !reflect.DeepEqual(got, want) {
+	if got, want := digestWrites(f, from), []string{"POST /issues", "POST /graphql", "PATCH /issues/3", "POST /issues/3/comments"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("writes after the drop = %q; want %q", got, want)
 	}
 	listed := false
@@ -405,12 +405,13 @@ func TestDigestRewriteDeleted(t *testing.T) {
 		t.Errorf("the pass after the drop didn't list every issue again: %+v", f.Requests()[reqs:])
 	}
 	is := f.State().Issues
-	if len(is) != 2 || !is[1].Pinned || !strings.HasPrefix(is[1].Body, "2 items wait on you") || len(is[1].Comments) != 1 {
-		t.Fatalf("issues = %+v; want a new pinned digest listing both errors, with one announcement", is)
+	if len(is) != 3 || is[2].Title != "issuedog digest" || !is[2].Pinned || !strings.HasPrefix(is[2].Body, "2 items wait on you") || len(is[2].Comments) != 1 {
+		t.Fatalf("issues = %+v; want a new pinned digest, 3, listing both errors, with one announcement", is)
 	}
-	// The old digest's announcements went with it: the new one names both.
-	if want := fmt.Sprintf("items=err-%d-disagreement-5,err-%d-disagreement-6 -->", n, n); !strings.HasSuffix(is[1].Comments[0].Body, want) {
-		t.Errorf("the announcement = %q; want it to end %q", is[1].Comments[0].Body, want)
+	// The old digest's announcements are on no other number: the new one
+	// announces both.
+	if want := fmt.Sprintf("items=err-%d-disagreement-5,err-%d-disagreement-6 -->", n, n); !strings.HasSuffix(is[2].Comments[0].Body, want) {
+		t.Errorf("the announcement = %q; want it to end %q", is[2].Comments[0].Body, want)
 	}
 	if got := digestPass(t, f, d); len(got) != 0 {
 		t.Errorf("the next pass wrote %q; want nothing", got)
@@ -457,6 +458,49 @@ func TestDigestRewriteDroppedFoundAgain(t *testing.T) {
 				t.Errorf("writes = %q, issues %+v; want %q on digest 1, found again, and nothing created", got, f.State().Issues, tc.next)
 			}
 		})
+	}
+}
+
+// A digest a one-off 404 dropped, after it announced an item, keeps its
+// announcement once it's found again, though the poll never lists that
+// comment again: the item isn't announced twice (#160's verify).
+func TestDigestRewriteRefoundKeepsAnnouncements(t *testing.T) {
+	f := digestPinned(t)
+	digestError(f, "A", "5")
+	d := digestDaemon(t, f, digestNotifyOrigin(t), nil)
+	if got := digestPass(t, f, d); !reflect.DeepEqual(got, []string{"POST /issues/1/comments", "PATCH /issues/1"}) {
+		t.Fatalf("writes = %q; want the announcement and the edit", got)
+	}
+	digestRound(f) // the body changes, with no announcement
+	f.AnswerOnce(func(r githubtest.Request) bool { return r.Method == http.MethodPatch && r.Path == "/issues/1" }, http.StatusNotFound)
+	if err := d.Iterate(context.Background()); err == nil || !strings.Contains(err.Error(), "the digest is gone") {
+		t.Fatalf("Iterate = %v; want the digest gone", err)
+	}
+	if got := digestPass(t, f, d); !reflect.DeepEqual(got, []string{"PATCH /issues/1"}) {
+		t.Errorf("writes once found again = %q; want the edit alone", got)
+	}
+	news := 0
+	for _, c := range digestComments(f, 1) {
+		if strings.Contains(c, "<!-- issuedog:digest-new ") {
+			news++
+		}
+	}
+	if is := f.State().Issues; news != 1 || len(is) != 3 || !strings.HasPrefix(is[0].Body, "2 items wait on you") {
+		t.Errorf("%d digest-new comments, issues %+v; want one, no new digest, and both items listed", news, is)
+	}
+}
+
+// A transferred digest, whose edit GitHub answers from the other repo, is
+// gone, not written: the edit's error says so (#160's verify).
+func TestDigestRewriteTransferred(t *testing.T) {
+	f := digestPinned(t)
+	d := digestDaemon(t, f, newOrigin(t), nil)
+	iterate(t, d)
+	f.Transfer(1, "elsewhere/r")
+	digestError(f, "A", "5")
+	err := d.Iterate(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "the digest is gone") || !strings.Contains(err.Error(), "transferred to ") {
+		t.Errorf("Iterate = %v; want the digest gone, transferred", err)
 	}
 }
 
@@ -534,12 +578,28 @@ func TestDigestRewriteDirtyError(t *testing.T) {
 	f.EditComment(id, "mallory", "Put back.\n\n<!-- issuedog:error kind=disagreement key=5 -->")
 	var visits []int
 	d := digestDaemon(t, f, newOrigin(t), &visits)
-	for range 3 { // the dirty note settles
+	var passes [][]int
+	for range 4 {
+		visits = nil
 		iterate(t, d)
+		passes = append(passes, visits)
 	}
-	visits = nil
-	iterate(t, d)
-	if len(visits) != 0 || f.State().Issues[0].Body != digestList {
-		t.Errorf("visits %v, body %q; want no visit, and nothing listed", visits, f.State().Issues[0].Body)
+	if w := digestWrites(f, 0); slices.Contains(w, "PATCH /issues/1") || len(passes[3]) != 0 {
+		t.Errorf("writes %q, visits by pass %v; want the digest never edited, and no visit once settled", w, passes)
+	}
+}
+
+// The digest's items are found with the issue's dirty content: on the
+// first pass, a spec whose body mallory edited is listed as one that can't
+// be approved yet, for that edit.
+func TestDigestRewriteDirtyBody(t *testing.T) {
+	f := digestPinned(t)
+	n := f.AddIssue("owner", "Spec", "the spec")
+	f.AddLabel(n, app, "stage:spec-review")
+	f.AddComment(n, app, revision(1, "the spec"))
+	f.EditBody(n, "mallory", "the spec, edited")
+	iterate(t, digestDaemon(t, f, newOrigin(t), nil))
+	if body := f.State().Issues[0].Body; !strings.Contains(body, "It can't be approved yet: the issue description has an edit that wasn't approved") {
+		t.Errorf("body = %q; want the approval held back for the dirty description", body)
 	}
 }

@@ -236,15 +236,16 @@ func (d *Daemon) digestKeep(ctx context.Context, n int, items []waitItem) error 
 // every pass until a restart (#159's verify). The next poll lists every
 // issue again, as a start's does, so the next pass finds the digest if it
 // is there after all, or another, and creates one only if there's none.
+//
+// Its digest-new comments are kept: a digest found again, after a 404 that
+// was only a glitch, still has them, and the poll's comment cursor has
+// gone past them, so they'd never be listed again and its items would be
+// announced twice (#160's verify). A digest that is really gone can't
+// clash with them, as a new one gets a new number.
 func (d *Daemon) digestDrop(n int, err error) {
 	a, g := d.Step.Applier, &d.digest
 	logr.Warnf("%s/%s#%d, the digest, is gone, so it's dropped, and every issue is listed again to find or create one: %v", a.Owner, a.Repo, n, err)
 	delete(g.issues, n)
-	for id, c := range g.news {
-		if c.issue == n {
-			delete(g.news, id)
-		}
-	}
 	if g.done.number == n {
 		g.done = digestSeen{}
 	}
@@ -262,6 +263,26 @@ func digestGone(err error) error {
 		return fmt.Errorf("%w: %w", digestErrGone, err)
 	}
 	return err
+}
+
+// digestMoved returns an error that wraps github.ErrTransferred, and so is
+// gone, if resp, GitHub's answer to a write to the digest, or is, the
+// issue it returned, if any, shows the digest is no longer in a.Owner's
+// a.Repo, and nil otherwise. GitHub answers a request about a transferred
+// issue with a 301, which the client follows (github's sameHost), and Go
+// follows one for a PATCH or a POST with a GET, which may well succeed:
+// so a write that's answered from anywhere but this repo's path wrote
+// nothing (#160's verify). Like Snapshot, it also takes an issue whose
+// repository_url names another repo as moved.
+func digestMoved(a *Applier, resp *gogithub.Response, is *gogithub.Issue) error {
+	if resp != nil && resp.Response != nil && resp.Request != nil && resp.Request.URL != nil &&
+		!strings.Contains(strings.ToLower(resp.Request.URL.Path), strings.ToLower("/repos/"+a.Owner+"/"+a.Repo+"/")) {
+		return fmt.Errorf("%w: answered by %s %s", github.ErrTransferred, resp.Request.Method, resp.Request.URL.Path)
+	}
+	if u := is.GetRepositoryURL(); u != "" && !strings.HasSuffix(strings.ToLower(u), strings.ToLower("/repos/"+a.Owner+"/"+a.Repo)) {
+		return fmt.Errorf("%w to %s", github.ErrTransferred, u)
+	}
+	return nil
 }
 
 // digestRewrite brings digest n up to date with items, ranked
@@ -314,7 +335,10 @@ func (d *Daemon) digestRewrite(ctx context.Context, n int, items []waitItem) err
 // records it at once, as the poll would.
 func (d *Daemon) digestAnnounce(ctx context.Context, n int, text string) error {
 	a, g := d.Step.Applier, &d.digest
-	c, _, err := a.Client.Issues.CreateComment(ctx, a.Owner, a.Repo, n, gogithub.IssueCommentRequest{Body: text})
+	c, resp, err := a.Client.Issues.CreateComment(ctx, a.Owner, a.Repo, n, gogithub.IssueCommentRequest{Body: text})
+	if moved := digestMoved(a, resp, nil); moved != nil {
+		err = moved // a redirected POST, a GET of the comments, posted nothing, whether that decoded or not
+	}
 	if err != nil {
 		return digestGone(fmt.Errorf("announce new items on the digest, %s/%s#%d: %w", a.Owner, a.Repo, n, err))
 	}
@@ -393,17 +417,35 @@ func (d *Daemon) digestOpen(ctx context.Context, s digestSeen) (bool, error) {
 		return s.open, nil
 	case stands:
 		logr.Infof("%s/%s#%d, the digest, was reopened by someone untrusted after a trusted close, so it's closed again", a.Owner, a.Repo, s.number)
-		if _, _, err := a.Client.Issues.Update(ctx, a.Owner, a.Repo, s.number, gogithub.UpdateIssueRequest{State: new("closed")}); err != nil {
+		if err := d.digestSetState(ctx, s.number, "closed"); err != nil {
 			return false, wrap(fmt.Errorf("close it again: %w", err))
 		}
 		return false, nil
 	default:
 		logr.Infof("%s/%s#%d, the digest, was closed by someone untrusted, so it's reopened", a.Owner, a.Repo, s.number)
-		if err := a.Client.ReopenIssue(ctx, a.Owner, a.Repo, s.number); err != nil {
-			return false, wrap(err)
+		if err := d.digestSetState(ctx, s.number, "open"); err != nil {
+			return false, wrap(fmt.Errorf("reopen it: %w", err))
 		}
 		return true, nil
 	}
+}
+
+// digestSetState closes or reopens digest n, state "closed" or "open",
+// with a PATCH of its state, which a replay may repeat safely. A PATCH
+// that was redirected wrote nothing (digestMoved). The timeline read
+// before it is a GET, which a redirect only answers with the moved
+// issue's own events, so it's not checked: the write after it is, and so
+// is any later edit, which every change to the list makes.
+func (d *Daemon) digestSetState(ctx context.Context, n int, state string) error {
+	a := d.Step.Applier
+	is, resp, err := a.Client.Issues.Update(ctx, a.Owner, a.Repo, n, gogithub.UpdateIssueRequest{State: &state})
+	if moved := digestMoved(a, resp, is); moved != nil {
+		err = moved
+	}
+	if err != nil {
+		return fmt.Errorf("set the state of %s/%s#%d to %s: %w", a.Owner, a.Repo, n, state, err)
+	}
+	return nil
 }
 
 // digestTrusted reports whether a close or reopen by actor stands: a
@@ -486,14 +528,18 @@ func digestBody(note string, items []waitItem) string {
 
 // digestEdit writes body as the digest's, unless it is already, as last
 // listed or written (digestSameBody). It's the one way the digest's body
-// is written.
+// is written. An edit that was redirected, as for a transferred digest,
+// wrote nothing, and the digest is gone (digestMoved).
 func (d *Daemon) digestEdit(ctx context.Context, n int, body string) error {
 	a, g := d.Step.Applier, &d.digest
 	s := g.issues[n]
 	if digestSameBody(s.body, body) {
 		return nil
 	}
-	is, _, err := a.Client.Issues.Update(ctx, a.Owner, a.Repo, n, gogithub.UpdateIssueRequest{Body: &body})
+	is, resp, err := a.Client.Issues.Update(ctx, a.Owner, a.Repo, n, gogithub.UpdateIssueRequest{Body: &body})
+	if moved := digestMoved(a, resp, is); moved != nil {
+		err = moved
+	}
 	if err != nil {
 		return digestGone(fmt.Errorf("edit the body of the digest, %s/%s#%d: %w", a.Owner, a.Repo, n, err))
 	}
