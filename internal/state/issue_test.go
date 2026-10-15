@@ -141,3 +141,36 @@ func TestDeriveItem(t *testing.T) {
 		}
 	}
 }
+
+// Derive reads the latest triage marker that counts, and its comment: not
+// a dirty one, nor one in the body or by anyone but the App.
+func TestDeriveTriage(t *testing.T) {
+	const (
+		flag = "<!-- issuedog:triage verdict=ask run=a recommend=handle -->"
+		left = "<!-- issuedog:triage verdict=leave cmd=r9 -->"
+	)
+	for _, tt := range []struct {
+		name  string
+		s     *github.Snapshot
+		dirty func(int64) bool
+		want  TriageVerdict
+	}{
+		{"none", snap("", []github.Author{appBot}, "hello"), clean, TriageVerdict{}},
+		{"a flag", snap("", []github.Author{appBot}, flag), clean, TriageVerdict{Verdict: "ask", Recommend: "handle", Comment: 1}},
+		{"the latest wins", snap("", []github.Author{appBot, appBot}, flag, left), clean, TriageVerdict{Verdict: "leave", Comment: 2}},
+		{"a dirty one falls back to the one before", snap("", []github.Author{appBot, appBot}, flag, left), dirtyIDs(2),
+			TriageVerdict{Verdict: "ask", Recommend: "handle", Comment: 1}},
+		{"a trusted user's is ignored", snap("", []github.Author{appBot, owner}, flag, left), clean,
+			TriageVerdict{Verdict: "ask", Recommend: "handle", Comment: 1}},
+		{"one in the body is ignored", snap(left, nil), clean, TriageVerdict{}},
+		{"a transition after it leaves it the latest", snap("", []github.Author{appBot, appBot}, flag,
+			"<!-- issuedog:transition from=intake to=clarifying cmd=r5 -->"), clean, TriageVerdict{Verdict: "ask", Recommend: "handle", Comment: 1}},
+	} {
+		if got := Derive(tt.s, slug, tt.dirty).Triage; got != tt.want {
+			t.Errorf("%s: triage = %+v, want %+v", tt.name, got, tt.want)
+		}
+	}
+	if keys := Derive(snap("", []github.Author{appBot}, left), slug, clean).Keys; !keys[ReactionKey(9)] {
+		t.Errorf("keys = %v, want the triage marker's cmd=r9", keys)
+	}
+}

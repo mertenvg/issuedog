@@ -187,7 +187,7 @@ func (iv *Interviewer) Context(ctx context.Context, in Input) (map[string][]byte
 	rounds := interviewerRounds(s, a.AppSlug, in.Dirt.Has)
 	takesUntrusted := s.Type == "epic" || s.Type == "story" // SPEC §6.2
 	tc := trustCache{st: d.Step, verdicts: map[string]bool{}}
-	titleBy, bodyBy, err := iv.admission(ctx, s, tc, timeline)
+	titleBy, bodyBy, err := iv.admission(ctx, s, in.Dirt, tc, timeline)
 	if err != nil {
 		return nil, wrap(err)
 	}
@@ -344,7 +344,7 @@ func (t *ivTimeline) get(ctx context.Context) ([]*gogithub.Timeline, error) {
 //
 // Times are to the second, so a change in the admission's second counts
 // as after it. With no admission found, every change counts as after.
-func (iv *Interviewer) admission(ctx context.Context, s *github.Snapshot, tc trustCache, tl *ivTimeline) (titleBy, bodyBy string, err error) {
+func (iv *Interviewer) admission(ctx context.Context, s *github.Snapshot, d Dirt, tc trustCache, tl *ivTimeline) (titleBy, bodyBy string, err error) {
 	a := iv.Daemon.Step.Applier
 	if state.IsApp(s.Author, a.AppSlug) {
 		return "", "", nil
@@ -360,7 +360,7 @@ func (iv *Interviewer) admission(ctx context.Context, s *github.Snapshot, tc tru
 	if err != nil {
 		return "", "", fmt.Errorf("the admission of an untrusted author's issue: %w", err)
 	}
-	at, admitted, err := ivAdmitted(ctx, timeline, a.AppSlug, tc)
+	at, admitted, err := ivAdmitted(ctx, a, s, d, timeline, tc)
 	if err != nil {
 		return "", "", fmt.Errorf("the admission of an untrusted author's issue: %w", err)
 	}
@@ -390,20 +390,28 @@ func (iv *Interviewer) admission(ctx context.Context, s *github.Snapshot, tc tru
 	return titleBy, bodyBy, nil
 }
 
-// ivAdmitted returns when an issue was admitted to the pipeline (SPEC
-// §6.2), and whether it was, from its timeline alone, which nobody can edit
-// or delete, unlike the App's comments: the earliest labeled event of
+// ivAdmitted returns when an issue s was admitted to the pipeline (SPEC
+// §6.2), and whether it was. Its timeline, which nobody can edit or
+// delete, unlike the App's comments, gives the earliest labeled event of
 //   - approved, added by a trusted user, or
 //   - a stage:* label of a stage past intake, other than held, added by
 //     the App or a trusted user, as a hand-set stage is (an override), or
 //     as the App's move into the pipeline is.
 //
+// A /track or a 👍 on a flag admits the issue a pass before the App's
+// stage label, so the time of one that a clean App move out of intake
+// names (flagAdmittedAt), if earlier, is used instead. Dirtying or
+// deleting that move or the command falls back to the label's time.
+//
 // An untrusted add counts for neither, even before step 1 reverts it. The
 // earliest is the safe bound: an earlier one makes more edits count as
 // after it. With none, there's no admission, so every edit counts as after.
-func ivAdmitted(ctx context.Context, timeline []*gogithub.Timeline, appSlug string, tc trustCache) (time.Time, bool, error) {
-	var at time.Time
-	admitted := false
+func ivAdmitted(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt, timeline []*gogithub.Timeline, tc trustCache) (time.Time, bool, error) {
+	appSlug := a.AppSlug
+	at, admitted, err := flagAdmittedAt(ctx, a, s, d, tc)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("the command that admitted it: %w", err)
+	}
 	for _, e := range timeline {
 		if e.GetEvent() != "labeled" {
 			continue

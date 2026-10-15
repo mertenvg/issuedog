@@ -101,12 +101,7 @@ func (st *Step) IntakeVisit(ctx context.Context, s *github.Snapshot) error {
 		logr.Debugf("%s/%s#%d: no move from intake yet: the timeline has no labeled event that stands for its labels %v", st.Owner, st.Repo, s.Number, s.Labels)
 		return nil
 	}
-	switch {
-	case s.Type == "bug" || s.Type == "task":
-		text += fmt.Sprintf(" It's a %s: bugs and tasks wait at `clarifying` for now, until issuedog can implement them (build phase 3).", s.Type)
-	case s.Type == "story" && s.Parent != 0:
-		text += " It's a story with a parent: those wait at `clarifying` for now, as issuedog only clarifies epics, stories with no parent and untyped issues."
-	}
+	text += intakeNote(s)
 	key := state.Key{Field: "event", ID: strconv.FormatInt(ev.GetID(), 10)}
 	if is.Moved(key) {
 		id := lastTransition(s, st.AppSlug, d.Has)
@@ -125,6 +120,20 @@ func (st *Step) IntakeVisit(ctx context.Context, s *github.Snapshot) error {
 	}
 	logr.Infof("%s/%s#%d: moved from intake to clarifying, keyed event=%s", st.Owner, st.Repo, s.Number, key.ID)
 	return nil
+}
+
+// intakeNote is what a move into the pipeline tells an issue that waits at
+// clarifying, under plan #6's Q1a, after a space, or "": a bug or a task
+// waits until phase 3, and a story with a parent waits too, since the
+// interviewer doesn't run on it.
+func intakeNote(s *github.Snapshot) string {
+	switch {
+	case s.Type == "bug" || s.Type == "task":
+		return fmt.Sprintf(" It's a %s: bugs and tasks wait at `clarifying` for now, until issuedog can implement them (build phase 3).", s.Type)
+	case s.Type == "story" && s.Parent != 0:
+		return " It's a story with a parent: those wait at `clarifying` for now, as issuedog only clarifies epics, stories with no parent and untyped issues."
+	}
+	return ""
 }
 
 // trustCache asks st.Trust about each login once. No bot is trusted.

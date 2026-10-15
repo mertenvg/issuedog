@@ -296,7 +296,9 @@ func (t *Triage) Check(_ context.Context, r Result) error {
 // If the issue has the approved label, and no decision is written yet,
 // Apply writes nothing: approved was added during the run, and IntakeVisit
 // admits the issue, so a flag or a "left" verdict beside that would
-// contradict it (#130's verify). That isn't a failed attempt.
+// contradict it (#130's verify). That isn't a failed attempt. Nor is a
+// triage marker that isn't the run's, as /ignore writes during the run: a
+// code owner decided, and Apply writes nothing either.
 func (t *Triage) Apply(ctx context.Context, a *Applier, r Result) error {
 	s := r.S
 	wrap := func(err error) error { return fmt.Errorf("apply triage run %s on #%d: %w", r.RunID, s.Number, err) }
@@ -319,6 +321,10 @@ func (t *Triage) Apply(ctx context.Context, a *Applier, r Result) error {
 	if verdict == "" {
 		if triageApproved(s) {
 			logr.Infof("%s/%s#%d: triage run %s writes nothing: the issue has approved, so IntakeVisit admits it", a.Owner, a.Repo, s.Number, r.RunID)
+			return nil
+		}
+		if is.Triage.Verdict != "" {
+			logr.Infof("%s/%s#%d: triage run %s writes nothing: a code owner's answer recorded %s during the run", a.Owner, a.Repo, s.Number, r.RunID, is.Triage.Verdict)
 			return nil
 		}
 		tc := trustCache{st: t.Daemon.Step, verdicts: map[string]bool{}}

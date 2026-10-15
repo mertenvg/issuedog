@@ -47,6 +47,21 @@ type Issue struct {
 	// Round is the latest transition's RoundBound: comments with a higher
 	// ID are this round's input. 0 if there is no transition.
 	Round int64
+	// Triage is the latest triage marker in a comment, or none.
+	Triage TriageVerdict
+}
+
+// TriageVerdict is a triage marker (plan #6, assumption 3): a decision on
+// an issue with no stage label, by a triage run or a code owner's answer.
+type TriageVerdict struct {
+	// Verdict is "ask" for a flag, which waits for a code owner, or "leave"
+	// for an issue left to people. It's empty if there's no marker.
+	Verdict string
+	// Recommend is a flag's recommendation, "handle" or "leave", which a
+	// code owner's 👍 on it takes.
+	Recommend string
+	// Comment is the ID of the comment holding the marker.
+	Comment int64
 }
 
 // FieldSeen is the marker field seen=<the newest comment ID read>, for
@@ -109,6 +124,9 @@ func Derive(s *github.Snapshot, appSlug string, dirty func(id int64) bool) Issue
 			}
 			if m.Kind == "origin" && id == BodyID && m.Fields["plan"] != "" {
 				is.Item.FromPlan = true
+			}
+			if m.Kind == "triage" && id != BodyID {
+				is.Triage = TriageVerdict{Verdict: m.Fields["verdict"], Recommend: m.Fields["recommend"], Comment: id}
 			}
 		}
 	}
