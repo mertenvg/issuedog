@@ -344,6 +344,12 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		logr.Debugf("%s/%s#%d: no %s run: the table lacks the move its last run asked for", a.Owner, a.Repo, n, st.Agent())
 		return false, nil
 	}
+	if typeErrStands(rd.S, is) && is.Reported(typeErrKind, typeErrKey(rd.S)) {
+		// The table has no move from here for the type, so a run's move
+		// would fail too: the type error stands for it (blocked).
+		logr.Debugf("%s/%s#%d: no %s run: its type doesn't fit its stage, as reported", a.Owner, a.Repo, n, st.Agent())
+		return false, nil
+	}
 	if r.attempts[countKey(n, errKey)] >= r.limit() {
 		// The cap was reached, but posting its state error failed: post it.
 		// A post that keeps failing mustn't hold up the other issues.
@@ -979,11 +985,21 @@ func markerValue(v string) bool {
 // (cause, a StateError), on s. Running again can't fix that, so it's no
 // attempt. It makes sure the issue has one state error keyed by key, the
 // run's moveKey, so no run starts until the issue changes: Transition
-// posts it for a move by Result.Move, and blocked for any other. Only an
+// posts it for a move by Result.Move, and blocked for any other. When the
+// type is the cause (typeErrStands), the type error stands for it instead,
+// as in Transition, and the stage waits for the type to change. Only an
 // error that isn't cause is returned, as Transition logged cause.
 func (r *Runs) blocked(ctx context.Context, s *github.Snapshot, d Dirt, st Stage, l Lease, key string, cause error) error {
 	a := r.Daemon.Step.Applier
-	if !state.Derive(s, a.AppSlug, d.Has).Reported("transition", key) {
+	is := state.Derive(s, a.AppSlug, d.Has)
+	switch {
+	case typeErrStands(s, is):
+		// Its type error stands for it, and keeps the stage from running
+		// until the type changes (runStage).
+		if err := a.typeErrReport(ctx, s, is); err != nil {
+			return fmt.Errorf("report run %s's move: %w", l.RunID, err)
+		}
+	case !is.Reported("transition", key):
 		marker, err := github.FormatMarker(github.Marker{Kind: "error", Fields: map[string]string{"kind": "transition", "key": key}})
 		if err != nil {
 			return fmt.Errorf("report run %s's move: %w", l.RunID, err)

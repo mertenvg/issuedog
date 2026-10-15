@@ -30,6 +30,11 @@ type Applier struct {
 	// Unexplained, if set, is the memory of unexplained labels CheckLabels
 	// keeps between passes. If nil, the Applier keeps its own.
 	Unexplained *github.Unexplained
+	// IssueTypes is set on a repo that uses issue types (types:
+	// issue-types), so CheckLabels takes the type change that stands from
+	// the issue-type events, not the type:* labels (LabelCheck.TypeEvent).
+	// Daemon.reload keeps it up to date with the config.
+	IssueTypes bool
 
 	histories   histories // see Dirty
 	unexplained github.Unexplained
@@ -103,7 +108,11 @@ func (m Move) check() error {
 // changes no label. It is reported once with an error comment keyed by
 // m.ErrorKey or m.Key's ID (SPEC §5.3), logged as an error when that
 // comment is posted and at debug level after, and returned as an error
-// StateError reports.
+// StateError reports. But when the type is the cause (typeErrStands), as
+// for an unknown type or one that can't be at the issue's stage, the
+// type error, kind=type keyed by the type change that stands, is posted
+// instead, once (typeErrReport), and the move's error is only logged: so
+// is it while that type error is reported or acknowledged.
 func (a *Applier) Transition(ctx context.Context, s *github.Snapshot, dirty func(int64) bool, m Move) error {
 	wrap := func(err error) error {
 		return fmt.Errorf("move %s/%s#%d to %s on %s: %w", a.Owner, a.Repo, s.Number, m.To, m.Trigger, err)
@@ -115,6 +124,15 @@ func (a *Applier) Transition(ctx context.Context, s *github.Snapshot, dirty func
 	if !is.Moved(m.Key) {
 		if why, err := noRow(is, m); err != nil {
 			if !StateError(err) {
+				return wrap(err)
+			}
+			if typeErrStands(s, is) {
+				// The type is the cause (SPEC §4): its type error, posted once
+				// per type change, says so, and this one isn't posted.
+				if rerr := a.typeErrReport(ctx, s, is); rerr != nil {
+					return wrap(rerr)
+				}
+				logr.Infof("state error held back, as the type error keyed %s has the same cause: %v", typeErrKey(s), wrap(err))
 				return wrap(err)
 			}
 			if is.Reported("transition", m.errorKey()) {

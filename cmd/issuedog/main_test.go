@@ -392,6 +392,45 @@ func TestNewStepErrAck(t *testing.T) {
 	}
 }
 
+// newStep runs the state error trigger after the others: an approval by
+// 👍 in the same pass moves the issue, which ends a disagreement posted
+// after the revision, so the error gets no ack and no read of its
+// reactions, though it has a trusted 👍 too.
+func TestNewStepErrAckLast(t *testing.T) {
+	const app = "issuedog-dev[bot]"
+	f := githubtest.New(t, "o/r", "issuedog-dev")
+	n := f.AddIssue("owner", "Spec", "body")
+	f.SetType(n, "Story")
+	f.AddLabel(n, app, "stage:spec-review")
+	f.AddReaction(f.AddComment(n, app, revisionOf("body")), "owner", "+1")
+	errComment := f.AddComment(n, app, "Disagreed.\n\n<!-- issuedog:error kind=disagreement key=9 -->")
+	f.AddReaction(errComment, "owner", "+1")
+	c := f.Client(t)
+	st := newStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{"owner": true}, noModels)
+	s, err := c.Snapshot(context.Background(), "o", "r", n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Run(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	got := f.State().Issues[0].Comments
+	if last := got[len(got)-1].Body; !strings.Contains(last, "to=planning") {
+		t.Errorf("last comment %q; want the approval", last)
+	}
+	for _, cm := range got {
+		if strings.Contains(cm.Body, "ack=") {
+			t.Errorf("comment %q acks the error the approval ended", cm.Body)
+		}
+	}
+	path := fmt.Sprintf("/issues/comments/%d/reactions", errComment)
+	for _, r := range f.Requests() {
+		if r.Method == "GET" && r.Path == path {
+			t.Errorf("read the ended error's reactions: %+v", r)
+		}
+	}
+}
+
 // noModels is a models.allowed that's empty.
 func noModels() config.Models { return config.Models{} }
 

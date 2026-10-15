@@ -40,8 +40,10 @@ type openErr struct {
 //   - attempts: when the attempt key changes (attemptKey).
 //   - labels: when the change to the model and effort labels that stands
 //     changes (labelsKey), which CheckLabels must have set on s.
-//   - any other kind, type included until T4 (#156) gives it its rule:
-//     only an ack ends it.
+//   - type: when the type fits the stage (typeErrStands), or the type
+//     change that stands changes (typeErrKey), which CheckLabels must have
+//     set on s too.
+//   - any other kind: only an ack ends it.
 //
 // inputs gives step 1's Inputs for s. It's called at most once, and only
 // for a run's transition error or an attempts error, which key on them.
@@ -79,6 +81,8 @@ func openErrors(s *github.Snapshot, is state.Issue, inputs func() ([]github.Comm
 			ended = k.Key != a
 		case k.Kind == kindLabels:
 			ended = k.Key != labelsKey(s)
+		case k.Kind == typeErrKind:
+			ended = k.Key != typeErrKey(s) || !typeErrStands(s, is)
 		}
 		if !ended {
 			open = append(open, openErr{ErrorKey: k, Comment: id})

@@ -23,7 +23,8 @@ type Step struct {
 }
 
 // Run runs step 1 on s, in this order: the label rules (CheckLabels), dirty
-// content (MarkDirty), trusted comments oldest first, then Reactions. Dirty
+// content (MarkDirty), the type (typeCheck), trusted comments oldest first,
+// then Reactions. Dirty
 // is read before CheckLabels, which needs it. Writes are added to s, and each
 // is checked first, so a pass that crashed part way can run again (SPEC
 // §5.2). It returns s's Inputs, which are only right after a Run that
@@ -42,6 +43,9 @@ func (st *Step) Run(ctx context.Context, s *github.Snapshot) ([]github.Comment, 
 		return nil, wrap(err)
 	}
 	if err := st.MarkDirty(ctx, s, d); err != nil {
+		return nil, wrap(err)
+	}
+	if err := st.typeCheck(ctx, s, d); err != nil {
 		return nil, wrap(err)
 	}
 	counts, err := st.counted(ctx, s, d)

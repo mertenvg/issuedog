@@ -230,7 +230,8 @@ func (d *Daemon) reread(n int, gone bool) {
 }
 
 // reload syncs the clone, then loads config and trust from main. A failure
-// keeps the last good ones, and is logged. A config that allows a new model
+// keeps the last good ones, and is logged. The Applier's IssueTypes follows
+// the config's types. A config that allows a new model
 // gets its labels created, until that succeeds.
 func (d *Daemon) reload(ctx context.Context) {
 	a := d.Step.Applier
@@ -247,6 +248,9 @@ func (d *Daemon) reload(ctx context.Context) {
 	} else {
 		d.relabel = d.relabel || newModels(d.Config, cfg)
 		d.Config = cfg
+	}
+	if d.Config != nil {
+		a.IssueTypes = d.Config.Types == "issue-types"
 	}
 	if d.relabel {
 		d.relabel = !d.ensureLabels(ctx)

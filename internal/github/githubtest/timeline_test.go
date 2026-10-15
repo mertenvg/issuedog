@@ -139,3 +139,49 @@ func TestRenameIssue(t *testing.T) {
 		t.Errorf("renamed events = %q, want %q", got, want)
 	}
 }
+
+// SetTypeBy sets the issue type with the issue-type event GitHub writes,
+// added, changed or removed, which CheckLabels takes as IssueType.
+func TestSetTypeBy(t *testing.T) {
+	f := New(t, "o/r", "app")
+	n := f.AddIssue("owner", "Issue", "")
+	c := f.Client(t)
+	filed, err := c.Snapshot(context.Background(), "o", "r", n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := filed.UpdatedAt
+	for _, tc := range []struct{ name, event, typ string }{
+		{"Epic", "issue_type_added", "epic"},
+		{"Task", "issue_type_changed", "task"},
+		{"", "issue_type_removed", ""},
+	} {
+		id := f.SetTypeBy(n, "mallory", tc.name)
+		s, err := c.Snapshot(context.Background(), "o", "r", n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		timeline, err := c.TimelineSince(context.Background(), "o", "r", n, time.Time{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		last := timeline[len(timeline)-1]
+		if !s.UpdatedAt.Equal(last.GetCreatedAt().Time) || !s.UpdatedAt.After(updated) {
+			t.Errorf("%q: updated at %v, want the event's time %v, after %v", tc.name, s.UpdatedAt, last.GetCreatedAt(), updated)
+		}
+		updated = s.UpdatedAt
+		if s.Type != tc.typ || last.GetID() != id || last.GetEvent() != tc.event || last.GetActor().GetLogin() != "mallory" {
+			t.Errorf("%q: type %q, last event %d %s by %s; want %q, %d %s by mallory", tc.name, s.Type, last.GetID(), last.GetEvent(),
+				last.GetActor().GetLogin(), tc.typ, id, tc.event)
+		}
+		found, err := c.CheckLabels(context.Background(), "o", "r", n, s.Labels, "app", typeByTrust{}, func(int64) bool { return false }, nil)
+		if err != nil || found.IssueType != id {
+			t.Errorf("%q: CheckLabels' IssueType %d, %v; want %d", tc.name, found.IssueType, err, id)
+		}
+	}
+}
+
+// typeByTrust trusts nobody. Issue types aren't checked for trust.
+type typeByTrust struct{}
+
+func (typeByTrust) Trusted(context.Context, string) (bool, error) { return false, nil }

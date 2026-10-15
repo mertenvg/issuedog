@@ -86,8 +86,9 @@ var ErrLabelsHeld = errors.New("labels held back until their events explain them
 // pass that crashed part way can run again: once an override's marker is
 // posted, the override is older than the latest marker, and what's left is
 // an Unfinished disagreement; an error comment is posted once per key. The
-// writes are added to s, and s.SettingsEvent is set. dirty is as for
-// state.Derive.
+// writes are added to s, and s.SettingsEvent and s.TypeEvent are set, the
+// latter from the issue types or the type:* labels, as a.IssueTypes says.
+// dirty is as for state.Derive.
 //
 // A pipeline label that nothing on the timeline explains yet, whose events
 // may be late or which a repo label rename may have put on, is held back
@@ -123,7 +124,7 @@ func (a *Applier) CheckLabels(ctx context.Context, s *github.Snapshot, trust git
 		}
 	}
 	s.SetLabels(labels)
-	s.SettingsEvent = settings
+	s.SettingsEvent, s.TypeEvent = settings, found.TypeEvent(a.IssueTypes)
 	if len(held) > 0 {
 		return fmt.Errorf("labels of %s/%s#%d: %v: %w", a.Owner, a.Repo, s.Number, held, ErrLabelsHeld)
 	}
