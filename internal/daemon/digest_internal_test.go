@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	gogithub "github.com/google/go-github/v92/github"
@@ -171,6 +172,82 @@ func TestDigestRewriteNote(t *testing.T) {
 		if got := f.State().Issues[0].Body; got != tc.want {
 			t.Errorf("checked #%d: body = %q, want %q", tc.pinned, got, tc.want)
 		}
+	}
+}
+
+// digestRewriteDaemon is a daemon of o/r on f, notifying notify, that has
+// polled once.
+func digestRewriteDaemon(t *testing.T, f *githubtest.Fake, notify ...string) *Daemon {
+	t.Helper()
+	cfg := config.Defaults()
+	cfg.Notify = notify
+	d := &Daemon{Step: &Step{Applier: &Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}}, Config: cfg, stale: map[int]bool{}}
+	if err := d.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+// An announcement is recorded as soon as it's posted: a second rewrite
+// before any poll lists it announces nothing again (#158's verify).
+func TestDigestRewriteRecordsAtOnce(t *testing.T) {
+	f := githubtest.New(t, "o/r", "issuedog")
+	f.AddIssue("issuedog[bot]", "issuedog digest", digestBody("", nil))
+	d := digestRewriteDaemon(t, f, "owner")
+	items := []waitItem{{Issue: 2, Kind: waitError, Key: "err-2-labels-0", Title: "T", Link: "https://github.com/o/r/issues/2"}}
+	for range 2 {
+		if err := d.digestRewrite(context.Background(), 1, items); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if w := f.Writes(); len(w) != 2 || w[0].Path != "/issues/1/comments" || w[1].Method != http.MethodPatch {
+		t.Errorf("writes = %+v; want one announcement and one edit", w)
+	}
+	if got := slices.Collect(maps.Keys(d.digest.announced(1))); !slices.Equal(got, []string{"err-2-labels-0"}) {
+		t.Errorf("announced = %q; want the item", got)
+	}
+}
+
+// An announcement that can't be rendered, for an item too big for any
+// comment, is logged, and the body is still written, with no error.
+func TestDigestRewriteNewsFails(t *testing.T) {
+	f := githubtest.New(t, "o/r", "issuedog")
+	f.AddIssue("issuedog[bot]", "issuedog digest", digestBody("", nil))
+	d := digestRewriteDaemon(t, f, "owner")
+	items := []waitItem{{Issue: 2, Kind: waitError, Key: "err-2-labels-0", Title: strings.Repeat("x", digestRenderLimit), Link: "https://github.com/o/r/issues/2"}}
+	if err := d.digestRewrite(context.Background(), 1, items); err != nil {
+		t.Fatalf("digestRewrite = %v; want no error", err)
+	}
+	if w := f.Writes(); len(w) != 1 || w[0].Method != http.MethodPatch || f.State().Issues[0].Body != digestBody("", items) {
+		t.Errorf("writes = %+v; want the body edit alone", w)
+	}
+}
+
+// An issue found gone on two reads loses its items, as one that closes
+// does, and the digest stops listing it.
+func TestDigestCacheGone(t *testing.T) {
+	f := githubtest.New(t, "o/r", "issuedog")
+	f.SetPermission("owner", "admin")
+	f.AddIssue("issuedog[bot]", "issuedog digest", digestBody("", nil))
+	n := f.AddIssue("owner", "Mine", "")
+	f.AddLabel(n, "issuedog[bot]", "stage:ready")
+	f.AddComment(n, "issuedog[bot]", "<!-- issuedog:transition from=intake to=ready run=r1 -->")
+	f.AddComment(n, "issuedog[bot]", "Put back. <!-- issuedog:error kind=disagreement key=9 -->")
+	st := &Step{Applier: &Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}, Trust: ownerOnly{}}
+	d := &Daemon{Step: st, Clone: repo.New(filepath.Join(t.TempDir(), "none"), filepath.Join(t.TempDir(), "r.git")), Config: config.Defaults(), Digest: true}
+	if err := d.Iterate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.digestCache[n]) != 1 || !strings.Contains(f.State().Issues[0].Body, "1 item waits on you.") {
+		t.Fatalf("cache %+v, body %q; want the error cached and listed", d.digestCache, f.State().Issues[0].Body)
+	}
+	f.DeleteIssue()
+	d.reread(n, true) // one read found it gone already
+	if err := d.Iterate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := d.digestCache[n]; ok || f.State().Issues[0].Body != digestBody("", nil) {
+		t.Errorf("cache %+v, body %q; want the item gone", d.digestCache, f.State().Issues[0].Body)
 	}
 }
 

@@ -350,6 +350,21 @@ func TestDigestRewriteNoTimelineAfterOwnWrites(t *testing.T) {
 	if got := digestRequests(f, reqs); len(got) != 0 {
 		t.Errorf("the pass after the last writes sent %+v about the digest; want none", got)
 	}
+	// A pass that only comments, as when an edit undid an announcement,
+	// needs no read after it either.
+	comments, err := f.Client(t).CommentsSince(context.Background(), "o", "r", 1, time.Time{})
+	if err != nil || len(comments) == 0 {
+		t.Fatalf("the digest's comments = %+v, %v; want the announcements", comments, err)
+	}
+	f.EditComment(comments[0].GetID(), "mallory", "Gone quiet.")
+	if got := digestPass(t, f, d); !reflect.DeepEqual(got, []string{"POST /issues/1/comments"}) {
+		t.Errorf("writes after the edit = %q; want the announcement alone", got)
+	}
+	reqs = len(f.Requests())
+	iterate(t, d)
+	if got := timeline(reqs); got != 0 {
+		t.Errorf("the pass after the App's comment read the digest's timeline %d times; want none", got)
+	}
 	f.CloseBy(1, "mallory")
 	if got := digestPass(t, f, d); !reflect.DeepEqual(got, []string{"PATCH /issues/1"}) || f.State().Issues[0].Closed {
 		t.Errorf("writes on mallory's close = %q; want the reopen", got)
@@ -362,9 +377,15 @@ func TestDigestRewriteNoTimelineAfterOwnWrites(t *testing.T) {
 func TestDigestRewriteDeleted(t *testing.T) {
 	f := newFake(t)
 	n := digestError(f, "A", "5")
-	f.SetPinned(f.AddIssue(app, "issuedog digest", digestList), true)
+	// Its pin note makes this start check its pin. The fake gives the new
+	// digest its number, 2, which GitHub never would, so a pin check kept
+	// from the old one would leave the new one unpinned.
+	f.AddIssue(app, "issuedog digest", digestPending)
 	d := digestDaemon(t, f, digestNotifyOrigin(t), nil)
 	iterate(t, d)
+	if !f.State().Issues[1].Pinned {
+		t.Fatalf("issue %+v; want the digest pinned", f.State().Issues[1])
+	}
 	f.DeleteIssue() // the digest, issue 2, the last
 	digestErrorOn(f, n, "6")
 	err := d.Iterate(context.Background())
@@ -385,25 +406,74 @@ func TestDigestRewriteDeleted(t *testing.T) {
 	}
 	is := f.State().Issues
 	if len(is) != 2 || !is[1].Pinned || !strings.HasPrefix(is[1].Body, "2 items wait on you") || len(is[1].Comments) != 1 {
-		t.Errorf("issues = %+v; want a new pinned digest listing both errors, with one announcement", is)
+		t.Fatalf("issues = %+v; want a new pinned digest listing both errors, with one announcement", is)
+	}
+	// The old digest's announcements went with it: the new one names both.
+	if want := fmt.Sprintf("items=err-%d-disagreement-5,err-%d-disagreement-6 -->", n, n); !strings.HasSuffix(is[1].Comments[0].Body, want) {
+		t.Errorf("the announcement = %q; want it to end %q", is[1].Comments[0].Body, want)
 	}
 	if got := digestPass(t, f, d); len(got) != 0 {
 		t.Errorf("the next pass wrote %q; want nothing", got)
 	}
 }
 
-// A digest a transient 404 dropped is found again by the full listing, and
-// no second digest is created.
+// A digest a transient 404 dropped, on its comment, its body edit or the
+// read of its timeline, is found again by the full listing, and no second
+// digest is created.
 func TestDigestRewriteDroppedFoundAgain(t *testing.T) {
-	f := digestPinned(t)
-	digestError(f, "A", "5")
-	d := digestDaemon(t, f, digestNotifyOrigin(t), nil)
-	f.AnswerOnce(func(r githubtest.Request) bool { return r.Method == http.MethodPost && r.Path == "/issues/1/comments" }, http.StatusNotFound)
-	if err := d.Iterate(context.Background()); err == nil || !strings.Contains(err.Error(), "the digest is gone") {
-		t.Fatalf("Iterate = %v; want the digest gone", err)
+	for _, tc := range []struct {
+		name   string
+		notify bool
+		before func(t *testing.T, f *githubtest.Fake, d *daemon.Daemon)
+		method string
+		path   string
+		next   []string
+	}{
+		{"the comment", true, nil, http.MethodPost, "/issues/1/comments", []string{"POST /issues/1/comments", "PATCH /issues/1"}},
+		{"the edit", false, nil, http.MethodPatch, "/issues/1", []string{"PATCH /issues/1"}},
+		{"the timeline", false, func(t *testing.T, f *githubtest.Fake, d *daemon.Daemon) {
+			iterate(t, d)
+			f.CloseBy(1, "owner")
+			iterate(t, d)
+			f.ReopenBy(1, "owner")
+		}, http.MethodGet, "/issues/1/timeline", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := digestPinned(t)
+			digestError(f, "A", "5")
+			o := newOrigin(t)
+			if tc.notify {
+				o = digestNotifyOrigin(t)
+			}
+			d := digestDaemon(t, f, o, nil)
+			if tc.before != nil {
+				tc.before(t, f, d)
+			}
+			f.AnswerOnce(func(r githubtest.Request) bool { return r.Method == tc.method && r.Path == tc.path }, http.StatusNotFound)
+			if err := d.Iterate(context.Background()); err == nil || !strings.Contains(err.Error(), "the digest is gone") {
+				t.Fatalf("Iterate = %v; want the digest gone", err)
+			}
+			if got := digestPass(t, f, d); !reflect.DeepEqual(got, tc.next) || len(f.State().Issues) != 2 {
+				t.Errorf("writes = %q, issues %+v; want %q on digest 1, found again, and nothing created", got, f.State().Issues, tc.next)
+			}
+		})
 	}
-	if got := digestPass(t, f, d); !reflect.DeepEqual(got, []string{"POST /issues/1/comments", "PATCH /issues/1"}) || len(f.State().Issues) != 2 {
-		t.Errorf("writes = %q, issues %+v; want digest 1 found again, announced and edited, and nothing created", got, f.State().Issues)
+}
+
+// The digest lists items in Q3a's order, which waitRank gives: an issue
+// with an open sub-issue first, though it's newer, with its count.
+func TestDigestRewriteRanked(t *testing.T) {
+	f := digestPinned(t)
+	older := digestError(f, "Older", "5")
+	newer := digestError(f, "Newer", "6")
+	child := f.AddIssue("owner", "Child", "")
+	f.SetParent(child, newer)
+	iterate(t, digestDaemon(t, f, newOrigin(t), nil))
+	body := f.State().Issues[0].Body
+	first := fmt.Sprintf("### 1. #%d: Newer\n\n**State error**, priority p2, unblocks 2 open issues (itself included)", newer)
+	second := fmt.Sprintf("### 2. #%d: Older\n", older)
+	if !strings.Contains(body, first) || !strings.Contains(body, second) {
+		t.Errorf("body = %q; want #%d first, unblocking 2, then #%d", body, newer, older)
 	}
 }
 
@@ -449,5 +519,27 @@ func TestDigestRewriteCache(t *testing.T) {
 	f.Close(n)
 	if got := digestPass(t, f, d); !reflect.DeepEqual(got, []string{"PATCH /issues/1"}) || f.State().Issues[0].Body != digestList {
 		t.Errorf("writes %q, body %q once it closed; want the edit that lists nothing", got, f.State().Issues[0].Body)
+	}
+}
+
+// An error whose comment mallory edited isn't open, once step 1 has noted
+// the dirty content: its issue isn't visited on every pass, and the digest
+// doesn't list it.
+func TestDigestRewriteDirtyError(t *testing.T) {
+	f := digestPinned(t)
+	n := f.AddIssue("owner", "A", "do it")
+	f.AddLabel(n, app, "stage:ready")
+	f.AddComment(n, app, "<!-- issuedog:transition from=intake to=ready run=rready -->")
+	id := f.AddComment(n, app, "Put back.\n\n<!-- issuedog:error kind=disagreement key=5 -->")
+	f.EditComment(id, "mallory", "Put back.\n\n<!-- issuedog:error kind=disagreement key=5 -->")
+	var visits []int
+	d := digestDaemon(t, f, newOrigin(t), &visits)
+	for range 3 { // the dirty note settles
+		iterate(t, d)
+	}
+	visits = nil
+	iterate(t, d)
+	if len(visits) != 0 || f.State().Issues[0].Body != digestList {
+		t.Errorf("visits %v, body %q; want no visit, and nothing listed", visits, f.State().Issues[0].Body)
 	}
 }
