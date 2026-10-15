@@ -117,12 +117,16 @@ func newWholeRun(t *testing.T, c wholeRunCase) *wholeRun {
 	maps.Copy(st.Commands, daemon.SettingCommands(st.CurrentTrust(), g.d.CurrentModels))
 	maps.Copy(st.Commands, daemon.FlagCommands())
 	approve, answer := daemon.ApproveByReaction(st.CurrentTrust()), daemon.FlagByReaction(st.CurrentTrust())
+	errAck := daemon.ErrorByReaction(st.CurrentTrust())
 	st.Reactions = func(ctx context.Context, a *daemon.Applier, s *github.Snapshot, d daemon.Dirt) error {
 		if err := approve(ctx, a, s, d); err != nil {
 			return fmt.Errorf("approval by 👍: %w", err)
 		}
 		if err := answer(ctx, a, s, d); err != nil {
 			return fmt.Errorf("flag answer by 👍: %w", err)
+		}
+		if err := errAck(ctx, a, s, d); err != nil {
+			return fmt.Errorf("state error ack by 👍: %w", err)
 		}
 		return nil
 	}
