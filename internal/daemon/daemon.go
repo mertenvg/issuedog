@@ -100,7 +100,8 @@ func (d *Daemon) Run(ctx context.Context) {
 // Iterate runs one iteration, all but the sleep. It syncs the clone and
 // reloads config and trust, polls for changes, reads changed issues again,
 // then runs step 1 on them and on every issue at spec-review, whose 👍s
-// change no updated_at (plan #5, assumption 7). Last it hands Work the
+// change no updated_at (plan #5, assumption 7), and on every issue with
+// triage:ask, a flag waiting on a 👍 (FlagByReaction). Last it hands Work the
 // issues ready for it. It returns the errors of the issues it couldn't read
 // or run step 1 on, which the next Iterate reads again. An issue whose
 // labels CheckLabels holds back (ErrLabelsHeld) is no error: like a touched
@@ -159,7 +160,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	defer func() { d.Step.Touched = nil }()
 	for _, n := range slices.Sorted(maps.Keys(d.snaps)) {
 		s := d.snaps[n]
-		if touched[n] || (!read[n] && !slices.ContainsFunc(s.Labels, isSpecReview)) {
+		if touched[n] || (!read[n] && !slices.ContainsFunc(s.Labels, isSpecReview) && !slices.ContainsFunc(s.Labels, flagAsked)) {
 			continue
 		}
 		// ReviewVisit, on an issue read again too, posts a revision for a body
@@ -170,6 +171,9 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		}
 		if err == nil {
 			err = d.Step.IntakeVisit(ctx, s)
+		}
+		if err == nil {
+			err = d.Step.FlagVisit(ctx, s)
 		}
 		if errors.Is(err, ErrLabelsHeld) {
 			// Like a touched issue: nothing more this pass, and read again.

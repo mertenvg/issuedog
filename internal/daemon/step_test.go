@@ -92,7 +92,7 @@ func rejected(quote, reason, id string) string {
 
 const unknownFrob = "unknown command `/frob`: the commands are " +
 	"`/approve`, `/revise <text>`, `/hold`, `/resume`, `/priority pN`, " +
-	"`/model [verifier] <name>`, `/effort [verifier] <level>` and `/done`"
+	"`/model [verifier] <name>`, `/effort [verifier] <level>`, `/done`, `/track` and `/ignore`"
 
 const lost = "my reply saying why was lost"
 

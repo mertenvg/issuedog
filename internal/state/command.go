@@ -59,6 +59,9 @@ var (
 var commands = map[string][]Stage{
 	"approve": {SpecReview, PlanReview}, "revise": {SpecReview, PlanReview}, "done": {NeedsHuman},
 	"hold": nil, "resume": nil, "priority": nil, "model": nil, "effort": nil,
+	// A code owner's answer to a flag, or a way past triage (plan #6, Q2a
+	// and Q6a): /track admits the issue, and /ignore leaves it to people.
+	"track": {Intake}, "ignore": {Intake},
 }
 
 // takesArg are the commands that take an argument.
@@ -74,7 +77,7 @@ func (c Command) Check(stage Stage) error {
 	switch {
 	case !known:
 		return fmt.Errorf("%w `/%s`: the commands are `/approve`, `/revise <text>`, `/hold`, `/resume`, `/priority pN`, "+
-			"`/model [verifier] <name>`, `/effort [verifier] <level>` and `/done`", ErrUnknownCommand, c.Name)
+			"`/model [verifier] <name>`, `/effort [verifier] <level>`, `/done`, `/track` and `/ignore`", ErrUnknownCommand, c.Name)
 	case c.glued:
 		return fmt.Errorf("%w: put a space between `/%s` and what follows it", ErrBadArgument, c.Name)
 	case c.Name == "revise" && c.Text == "":

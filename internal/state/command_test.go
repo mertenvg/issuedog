@@ -47,6 +47,14 @@ func TestCommandCheck(t *testing.T) {
 		{"/done", NeedsHuman, nil},
 		{"/done", Ready, ErrWrongStage},
 		{"/frob", Ready, ErrUnknownCommand},
+		{"/track", Intake, nil},
+		{"/TRACK", Intake, nil},
+		{"/track", Clarifying, ErrWrongStage},
+		{"/track", Held, ErrWrongStage},
+		{"/track it", Intake, ErrBadArgument},
+		{"/ignore", Intake, nil},
+		{"/ignore", Clarifying, ErrWrongStage},
+		{"/ignore.", Intake, ErrBadArgument},
 	} {
 		c, ok := ParseCommand(tc.body)
 		if !ok {
