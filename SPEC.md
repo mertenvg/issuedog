@@ -245,7 +245,7 @@ Every other issue enters by one move, `intake → clarifying`, on the "issue is 
 - A triage run admits it (below). The key is `run=<run id>`.
 - A trusted user posts `/track` at intake (`cmd=<comment id>`), or reacts 👍 to a flag that recommends handling it (`cmd=r<reaction id>`).
 
-If the event already keys a transition, as when an override brought the issue back to intake, the move is keyed `event=<the ID of the comment holding that transition>` instead. The move's comment says why the issue is in. For a bug or a task, and a story with a parent, it also says that the issue waits at `clarifying` (7.2).
+If the event already keys a transition, as when an override brought the issue back to intake, the move is keyed `event=<the ID of the comment holding that transition>` instead. Every move into the pipeline says in its comment why the issue is in. For a bug or a task, and a story with a parent, it also says that the issue waits at `clarifying` (7.2).
 
 An untrusted author's issue enters only by `approved`, `/track` or a trusted 👍 on a flag. Each of these is the approval. A trusted user's `stage:intake` alone doesn't let it in.
 
@@ -441,7 +441,7 @@ The lifecycle of each type:
 
 From `ready` on, a `bug` follows the rows for `task`.
 
-Until build phase 3, the interviewer runs only on an epic, a story with no parent and an untyped issue (9.1). A bug or a task, whether filed so or typed so by the interviewer, waits at `clarifying` with no more runs until the implementer stage adds the 11.2 rewrite. So does a story with a parent. The move into `clarifying` says so.
+Until build phase 3, the interviewer runs only on an epic, a story with no parent and an untyped issue (9.1). A bug or a task, whether filed so or typed so by the interviewer, waits at `clarifying` with no more runs until the implementer stage adds the 11.2 rewrite. So does a story with a parent. Every move into the pipeline says so (6.2).
 
 Any transition missing from this table is an error, except a trusted user's manual label change (5.1) or a rejected command (9.2). The daemon logs the error, leaves the issue unchanged and reports a state error (5.3).
 
@@ -495,8 +495,8 @@ Each loop iteration:
 
 - **On pickup.** The daemon writes `/state/lease.json` (write to a temp file, then rename) with the issue number, stage, run ID, clone path, start time, and the time of the last poll before pickup (6.4). It also records what the run read: the newest comment on the issue (the run's `seen`, section 5), the last edit time of each input and of the body (`body_edit`), and the run's resolved model, effort and fallback models (3.3). A triage run's lease records the stage `intake`, which is what the daemon reads for an issue with no stage label. For a task, the `stage:in-progress` label and the transition marker show the lease on GitHub. A non-task run doesn't move its issue, so the lease's stage is the one a reset returns to.
 - **Attempts.** The lease names the round of attempts the run belongs to and its number in it (8.3). When a run ends, failed or not counted, the lease is first marked ended with the count of failed attempts in a row it leaves; then the run's files are deleted, and the lease too if that count is 0. A restart that finds an ended lease only takes its count and deletes what's left. The lease holds only the latest run, so every other count, such as another issue's, is held in memory and resets on any restart.
-- **On apply.** The daemon reads the issue again and applies the result through its `run=<run id>` key (5.2). Unless the run's move is written already, it drops the result, writing nothing and counting no attempt, in these cases, and every stage follows the same rules:
-  - The issue is closed or its stage changed during the run, since the owner's change wins. A triage result is also dropped once the issue has a stage label or a transition marker.
+- **On apply.** The daemon reads the issue again and applies the result through its `run=<run id>` key (5.2). It drops the result, writing nothing and counting no attempt, when the issue is closed or gone, even if the run's move is written already. Unless the move is written already, it also drops the result in these cases, and every stage follows the same rules:
+  - The issue's stage changed during the run, since the owner's change wins. A triage result is also dropped once the issue has a stage label or a transition marker.
   - An input was edited or deleted since the run read it, or the body has a later edit by anyone but the App. The stage runs again on what's there. The App's own edit, such as one a result applied part way made before a restart, doesn't drop it.
   - The issue has new trusted input since the run's `seen`: a comment above it by a trusted user that isn't a command and isn't dirty. The stage runs again with that comment as input. Without this, an answer step 1 👍'd before a delayed apply would be lost.
 - **Checks.** A stage may check its result past what the schema can say, on the issue read again, before anything is written. The interviewer and triage do (9.1, 6.2). A broken rule is a failed attempt (8.3), with nothing written. A result whose move is written already isn't checked again. A GitHub read that fails during the check says nothing about the result, so it isn't a failed attempt: it is a failure to apply.
@@ -521,7 +521,7 @@ Each loop iteration:
 
 The owner should never have to go and work out what is being asked.
 
-Bot-created issues do not subscribe the owner to notifications. So every question round, typed comment, spec, plan, human task, triage flag and new digest item @mentions the users in `notify` (section 13). Each of these comments ends with a `cc @<login> @<login>` line.
+Bot-created issues do not subscribe the owner to notifications. So every question round, typed comment, spec, plan, human task, triage flag and new digest item @mentions the users in `notify` (section 13). Each of these comments carries a `cc @<login> @<login>` line: at the end, or for a spec, just before the revision (11.1).
 
 Agent text can't mention anyone: the daemon puts a zero-width space after each `@`, or HTML entity for one, that isn't followed by a space. It also escapes markers (5.1) and HTML tags in agent text.
 
@@ -853,12 +853,12 @@ Closes #N
   - A blank file on `main` falls back to the default, with a warning. A file over 64 KiB, or a read error other than not-found, is a setup error: the run doesn't start and isn't counted.
 - **Context files.** Each run gets its files in `/run/issuedog/<run-id>/` (3.1). Text in `untrusted.md`, and every comment and body in the interviewer's files, sits in a code fence it can't close, under a heading the daemon writes.
   - `system.md` is a fixed preamble the daemon writes, then the stage prompt. The preamble covers the trust rules, the output contract and this repo's limits, and a prompt on `main` can't remove it. The interviewer's limits are the questions per round, the rounds so far and the next round's number, the logins a decision may name, and whether it may set the type (section 4). Its preamble always says, too, that an issue with a parent is never typed `story`.
-  - `prompt.md` is the daemon's short task text, naming each context file by its full path.
+  - `prompt.md` is the daemon's short task text, saying where the context files are. Triage's names each one by its full path. The interviewer's names the context directory once, then each file by name.
   - `untrusted.md`, when there is anything for it, holds the untrusted input of 6.2.
 - **The interviewer's files.**
   - `issue.md`: the number, title, type or "none", parent (`#N` or "none"), author, and the body. A dirty body, or a title or body an untrusted author changed after admission (6.2), is replaced by a line saying where it is, if anywhere.
   - `conversation.md`: the App's clean comments, with markers left out, earlier rounds labelled "Round N, QN.1–N.k" and revisions labelled; and trusted, clean comments, with author, ID and the round they answer. Oldest first.
-  - `input.md`: this run's input (9.2): the answers to the latest round, or the revision notes that sent the spec back, or "none: first run".
+  - `input.md`: this run's input (9.2): each input labelled as an answer to the latest round, as the revision notes that sent the spec back, or as new since the issue came to `clarifying`, as after an override. With no input, it says "none: first run".
   - A login in these files' headings is named only when it is a valid GitHub login: letters, digits and single hyphens, with an optional Enterprise Managed User `_shortcode` suffix, 39 characters at most, or an App's `[bot]` login. Anything else shows as "someone unnamed".
 - **The triage agent's files.**
   - `issue.md`: the number, the author and whether they're trusted, and the type. For a trusted author, it also has the title and, unless it's dirty, the body.
