@@ -180,7 +180,9 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			continue
 		}
 		// ReviewVisit, on an issue read again too, posts a revision for a body
-		// edit; it does nothing at any other stage than spec-review.
+		// edit; it does nothing at any other stage than spec-review. The
+		// visit's Dirty calls ask trust about each editor once (#174).
+		d.Step.trustOnceBegin()
 		in, err := d.Step.Run(ctx, s)
 		if err == nil {
 			err = d.Step.ReviewVisit(ctx, s)
@@ -194,6 +196,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		if err == nil {
 			d.openErrs[n], err = d.Step.openErrAny(ctx, s, in)
 		}
+		d.Step.trustOnceEnd()
 		if errors.Is(err, ErrLabelsHeld) {
 			// Like a touched issue: nothing more this pass, and read again.
 			logr.Infof("%s/%s#%d waits for its next pass: %v", d.Step.Owner, d.Step.Repo, n, err)

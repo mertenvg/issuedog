@@ -51,6 +51,21 @@ func IsApp(a github.Author, appSlug string) bool {
 // answer (SPEC §5.1, §6.4). history is as github.History returns it,
 // oldest first. trusted is as for Sanctioned.
 func Dirty(id int64, author github.Author, history []github.Edit, appSlug string, trusted func(login string) bool) (github.Author, bool) {
+	for _, e := range SinceRewrite(id, history, appSlug) {
+		if !Sanctioned(id, author, e.By, appSlug, trusted) {
+			return e.By, true
+		}
+	}
+	return github.Author{}, false
+}
+
+// SinceRewrite returns the entries of history, the history of content id,
+// that Dirty counts: all of a comment's, and only the body's after its
+// newest entry that Rewrote, which leaves none if that is the last (#169,
+// Q1a). So an editor whose edits all come before it decides nothing, and
+// needn't be asked about (#174). history is as for Dirty, and the result
+// shares its array.
+func SinceRewrite(id int64, history []github.Edit, appSlug string) []github.Edit {
 	from := 0
 	if id == BodyID {
 		for i, e := range history {
@@ -59,12 +74,7 @@ func Dirty(id int64, author github.Author, history []github.Edit, appSlug string
 			}
 		}
 	}
-	for _, e := range history[from:] {
-		if !Sanctioned(id, author, e.By, appSlug, trusted) {
-			return e.By, true
-		}
-	}
-	return github.Author{}, false
+	return history[from:]
 }
 
 // RewriteKind is the kind of the marker on the first line of every whole

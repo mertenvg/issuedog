@@ -118,6 +118,45 @@ func TestDirtyAfterRewrite(t *testing.T) {
 	}
 }
 
+// SinceRewrite keeps what Dirty counts: a body's history after its last
+// full rewrite, none if that is the last entry, and all of a comment's
+// (#174).
+func TestSinceRewrite(t *testing.T) {
+	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
+	owner := github.Author{Login: "owner", Type: "User"}
+	mallory := github.Author{Login: "mallory", Type: "User"}
+	rewrite := "<!-- issuedog:rewrite run=r1 -->\n## Problem"
+	idea, evil, rw, edit := github.Edit{By: owner, Text: "idea"}, github.Edit{By: mallory, Text: "evil"},
+		github.Edit{By: app, Text: rewrite}, github.Edit{By: owner, Text: "x"}
+	for _, tc := range []struct {
+		name    string
+		id      int64
+		history []github.Edit
+		want    []github.Edit
+	}{
+		{"no rewrite", BodyID, []github.Edit{idea, evil, edit}, []github.Edit{idea, evil, edit}},
+		{"after the rewrite", BodyID, []github.Edit{idea, evil, rw, edit}, []github.Edit{edit}},
+		{"after the last rewrite", BodyID, []github.Edit{idea, rw, evil, rw, edit}, []github.Edit{edit}},
+		{"the rewrite last", BodyID, []github.Edit{idea, evil, rw}, []github.Edit{}},
+		{"someone else's rewrite text", BodyID, []github.Edit{idea, {By: mallory, Text: rewrite}, edit},
+			[]github.Edit{idea, {By: mallory, Text: rewrite}, edit}},
+		{"a comment", 7, []github.Edit{idea, evil, rw, edit}, []github.Edit{idea, evil, rw, edit}},
+		{"no history", BodyID, nil, nil},
+	} {
+		got := SinceRewrite(tc.id, tc.history, "issuedog")
+		if len(got) != len(tc.want) {
+			t.Errorf("%s: SinceRewrite = %+v, want %+v", tc.name, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("%s: SinceRewrite = %+v, want %+v", tc.name, got, tc.want)
+				break
+			}
+		}
+	}
+}
+
 // ParseRewrite takes only a first line exactly as FormatMarker writes a
 // rewrite marker, with run and replaced at most, and returns the text
 // below it, whatever ends the line.

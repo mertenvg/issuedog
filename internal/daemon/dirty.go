@@ -87,8 +87,10 @@ func contents(s *github.Snapshot) []content {
 // A history that reaches the last edit is kept, by node, and used again
 // while the content has the same last edit and body, so the loop's visits
 // to an unchanged issue send no query (#84). Trust is asked once per login
-// in each call, and only for an editor whose edit it decides
-// (dirtyTrust), so trust that changed is used on the next call.
+// in each call, and only for an editor whose edit it decides (dirtyTrust):
+// none whose edits all come before the body's last full rewrite. So trust
+// that changed is used on the next call, unless trust keeps its verdicts,
+// as a visit's does (trustOnceVisit): then it is used on the next pass.
 func (a *Applier) Dirty(ctx context.Context, s *github.Snapshot, trust github.Trust) (Dirt, error) {
 	wrap := func(err error) error {
 		return fmt.Errorf("dirty content of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
@@ -132,7 +134,10 @@ func (a *Applier) Dirty(ctx context.Context, s *github.Snapshot, trust github.Tr
 			continue
 		}
 		a.histories[c.node] = kept{at: c.edit.At, body: c.body, edits: h}
-		for _, e := range h {
+		// An edit before the body's last full rewrite no longer counts, so
+		// its editor isn't asked about: their trust decides nothing, and a
+		// failed lookup would fail the call for nothing (#174).
+		for _, e := range state.SinceRewrite(c.id, h, a.AppSlug) {
 			if err := tr.ask(ctx, c, e.By); err != nil {
 				return nil, wrap(err)
 			}
@@ -187,6 +192,62 @@ func (t dirtyTrust) ask(ctx context.Context, c content, editor github.Author) er
 // trusted is the verdict ask got for login, false if it asked none.
 func (t dirtyTrust) trusted(login string) bool {
 	return t.verdicts[strings.ToLower(login)]
+}
+
+// trustOnceVisit is the trust one visit to an issue shares between its
+// Dirty calls (#174). Iterate's visit finds the issue's dirty content in
+// Run, ReviewVisit, IntakeVisit, FlagVisit and openErrAny, and each call
+// would ask trust about the same editors again: up to five permission
+// requests per editor on an unchanged pass. It asks trust about each
+// login once, ignoring case, as GitHub's logins do. It keeps verdicts
+// only: an error isn't kept, so it fails the call that got it, and so the
+// visit, and the next call asks again.
+//
+// Iterate makes one for each visit (Step.trustOnceBegin) and drops it
+// after (Step.trustOnceEnd), so no verdict outlives the visit: each pass
+// asks afresh, and trust that changed between passes is used on the next.
+// Only the visit's own Dirty calls use it (Step.trustOnceTrust). The
+// visit's other trust lookups, a command's on other issues, and stage
+// work's, which comes after the visits, ask Step.Trust as before.
+type trustOnceVisit struct {
+	trust    github.Trust
+	verdicts map[string]bool // by login in lower case
+}
+
+// Trusted asks t.trust about login, unless t already has its verdict.
+func (t *trustOnceVisit) Trusted(ctx context.Context, login string) (bool, error) {
+	l := strings.ToLower(login)
+	if v, ok := t.verdicts[l]; ok {
+		return v, nil
+	}
+	v, err := t.trust.Trusted(ctx, login)
+	if err != nil {
+		return false, fmt.Errorf("trust for this visit: %w", err)
+	}
+	t.verdicts[l] = v
+	return v, nil
+}
+
+// trustOnceBegin starts a visit to an issue: until trustOnceEnd, the
+// visit's Dirty calls share one trustOnceVisit over st.Trust as it is now.
+// With no Trust there is nothing to share, and they use st.Trust, nil.
+func (st *Step) trustOnceBegin() {
+	st.trustOnce = nil
+	if st.Trust != nil {
+		st.trustOnce = &trustOnceVisit{trust: st.Trust, verdicts: map[string]bool{}}
+	}
+}
+
+// trustOnceEnd ends the visit trustOnceBegin started, dropping its verdicts.
+func (st *Step) trustOnceEnd() { st.trustOnce = nil }
+
+// trustOnceTrust is the trust for one of a visit's Dirty calls: the
+// visit's while one is under way, else st.Trust, as outside Iterate.
+func (st *Step) trustOnceTrust() github.Trust {
+	if st.trustOnce != nil {
+		return st.trustOnce
+	}
+	return st.Trust
 }
 
 // histories are the edit histories Dirty kept, by node. Nothing is removed,
