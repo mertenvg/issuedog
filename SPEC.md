@@ -100,7 +100,7 @@ The daemon reads these from `main` in its bare clone, never from a task branch:
 - `.issuedog/prompts/*.md`; a missing file falls back to the default that ships with issuedog
 - JSON schemas, which ship with issuedog and are not overridable
 
-The interviewer, planner and story verifier run in a fresh checkout of `main`.
+The triage agent, interviewer, planner and story verifier run in a fresh checkout of `main`.
 
 The task verifier runs in a fresh checkout of the head SHA, but only after rule 2 of section 10.1 has passed. Every agent-config path (section 6.3) in that checkout therefore matches `main`.
 
@@ -114,7 +114,7 @@ The daemon's own settings come from its environment, not from the repo:
 
 The App's slug is read from `GET /app` at startup, so it can't be misconfigured. The App's comments are those by the bot `<slug>[bot]` (5.1).
 
-Startup checks the Claude credential, the settings and the App key, then reads the slug, mints a token, syncs the bare clone, loads config and trust from `main`, and creates missing labels (section 15). Only then does it apply the agent firewall and start the loop. A missing or malformed setting, or a failed step, stops the daemon with exit code 1 and the reason logged.
+Startup checks the Claude credential, the settings and the App key, then reads the slug, mints a token, syncs the bare clone, loads config and trust from `main`, and creates missing labels (section 15). It also checks the stages registered in code: none may run at `intake` while triage is set, since a triage run's lease records `intake` (8.2), so that stage's results would all be dropped. Only then does it apply the agent firewall and start the loop. A missing or malformed setting, or a failed step, stops the daemon with exit code 1 and the reason logged.
 
 `network.allow` and `usage_limit.pattern` (section 13) are read once at startup, so a change to either takes effect on restart. The rest of the config, and trust, are reloaded on every loop iteration (8.1).
 
@@ -128,12 +128,14 @@ Startup checks the Claude credential, the settings and the App key, then reads t
 | `bug` | Something broken | Owner, or story verifier |
 
 - Repos owned by an organization use GitHub issue types. The org's defaults are Task, Bug and Feature, so an org owner must create `Epic` and `Story` first. Repos owned by a personal account have no issue types and use `type:epic`, `type:story`, `type:task`, `type:bug` labels instead. Config selects which.
+- For now, issuedog sets a type only by label (`types: labels`). On a `types: issue-types` repo the interviewer can't set one: on an untyped issue there, one of its questions asks the owner to set the type on the issue.
 - Hierarchy uses native sub-issues: epic → story → task, or epic → task. Sub-issues must share the parent's owner. GitHub allows 100 sub-issues per parent.
 - An epic with a single user-facing outcome is planned directly into tasks and acts as its own story, including story verification (section 7.3).
-- **Untyped issues.** The owner may file an issue with no type. At the start of clarifying the interviewer picks one of the four types and sets it: the `type:*` label, or the issue type on org repos. Its first comment names the type with a one-line reason. If it can't tell yet, it asks questions first and sets the type once the issue is clear. An issue with no type doesn't leave `clarifying`.
-- **Changing the type.** The interviewer may set or change only a type it set itself, on an issue that arrived with no type, and only while the issue is at `intake` or `clarifying`. Every other type change is the owner's. The owner can change it at any time, and the daemon follows the owner's type from then on. If the issue's current stage doesn't apply to the new type (section 7.2), the daemon leaves it where it is and reports a state error (5.3).
+- **Untyped issues.** The owner may file an issue with no type. At `clarifying` the interviewer picks one of the four types and sets it with a question round, a spec, or for a bug or task the `typed` outcome (9.1). The App adds the `type:<type>` label and removes any other `type:*` label. Every comment that sets a type starts with the type and a one-line reason (9.1). If it can't tell yet, it asks questions first and sets the type once the issue is clear. A spec on an untyped issue must set it to epic or story, so an issue with no type doesn't leave `clarifying`.
+- **Changing the type.** The interviewer may set or change only a type it set itself: on an untyped issue, or on one each of whose `type:*` labels stands, on the timeline, as the App's add. It runs only at `clarifying`, so that's the only stage it types at. Every other type change is the owner's. The owner can change it at any time, and the daemon follows the owner's type from then on. If the issue's current stage doesn't apply to the new type (section 7.2), the daemon leaves it where it is and reports a state error (5.3).
+- **A child is never typed `story`.** The interviewer doesn't run on a story with a parent, and the table has no spec move for one (7.2). So typing an issue with a parent as `story` is invalid interviewer output and a failed attempt (8.3). `issue.md` names the parent, and the interviewer's preamble states this rule (section 12).
 - A story filed by the owner has no parent epic. It goes through clarifying, spec review and planning like an epic, then story verification (section 7.3).
-- A `bug`, or a `task` filed by the owner, goes through clarifying and then becomes a single task. It skips spec review and planning. A bug filed against earlier work starts its body with `Follow-up to #N` and includes the acceptance criterion "the original behavior of #N is unaffected."
+- A `bug`, or a `task` filed by the owner, goes through clarifying and then becomes a single task. It skips spec review and planning. Until build phase 3 (section 17), such an issue, whether filed with its type or typed by the interviewer, waits at `clarifying` with no interviewer runs (7.2). A bug filed against earlier work starts its body with `Follow-up to #N` and includes the acceptance criterion "the original behavior of #N is unaffected."
 
 ## 5. State
 
@@ -154,26 +156,30 @@ GitHub is the single source of truth. The daemon keeps only an in-memory cache, 
 | Label reverts | Bot comments carrying a `revert` marker keyed by the reverted timeline event, so a replay doesn't comment twice (5.1, 5.2) |
 | Processed commands | The bot's 👍 on an applied command comment or 👎 on a rejected one, plus `cmd=<comment id>` in the transition marker or a `reply` marker (9.2). A reaction command (section 9.2) is recorded as `cmd=r<reaction id>` |
 | Spec and plan revisions | One revision comment per revision, carrying a `revision` marker with `rev` and the body's hash. A transition posted with a revision, or approving one, carries both too (section 7.4); for plans, see section 16 |
+| Triage decisions | Bot comments carrying a `triage` marker: a flag waiting on a code owner, or an issue left to people (6.2) |
 | Dirty content | A visible note carrying a `dirty` marker at the top of the comment or body (5.1) |
 | Origin of bot-created issues | Hidden `origin` marker in the issue body (section 6.2) |
 
-Every marker is an HTML comment, `<!-- issuedog:<kind> key=value ... -->`, with its fields in a fixed order. The kinds so far:
+Every marker is an HTML comment, `<!-- issuedog:<kind> key=value ... -->`, with its fields in a fixed order. The order is a fixed list in code, such as `from`, `to`, `round`, `run`, `event`, `cmd`. Any field not on the list, such as `effort`, `model`, `questions`, `ran`, `recommend` or `seen`, follows them, sorted by name. The kinds so far:
 
-- `transition`: `from`, `to`, and the key that makes it idempotent (5.2). The key is `cmd=<comment id>`, or `cmd=r<reaction id>`, for a command; `run=<run id>` for a stage run's result; or `event=<timeline event id>`, with `by=<login>`, for a stage label a trusted user changed by hand (5.1). Some transitions carry more:
+- `transition`: `from`, `to`, and the key that makes it idempotent (5.2). The key is `cmd=<comment id>`, or `cmd=r<reaction id>`, for a command; `run=<run id>` for a stage run's result; or `event=<timeline event id>`. An event key carries `by=<login>` for a stage label a trusted user changed by hand (5.1), and no `by` for a move into the pipeline by a label (6.2). Some transitions carry more:
   - A move to `held` carries `at`, the stage the issue was at, and `reason`: `owner` for `/hold` or a hold set by hand, or `discussion` or `dropped` (6.4). A discussion hold also carries `origin`.
   - A move that posts or approves a revision carries `rev` and `body`, the body's hash (7.4).
   - `seen=<comment id>` is the newest comment read before the move. It bounds the next round's input (9.2). On a stage run's move it is the newest comment on the issue when the run started. On a move by `/revise`, a revision request or `/approve`, it is that comment. On an approval by 👍 it is the newest comment the daemon had read.
   - A stage run's move carries `model` and `effort`, the settings the run started with, each only when set, and `ran`, the full names of the models that ran, comma-separated, from the result's `modelUsage` (3.3). A value a marker can't hold, such as one with a space, is left out and logged.
+  - An interviewer question round's move, `clarifying → clarifying`, carries `round=<n>` and `questions=<count>` (9.1), for example `<!-- issuedog:transition from=clarifying to=clarifying round=2 run=8f2c effort=high model=opus questions=3 ran=claude-opus-5-5 seen=2214587 -->`. The interviewer's `typed` move (9.1) is the same move and carries neither.
+  - A move into the pipeline is keyed by how the issue got in (6.2): `event=` for `stage:intake` or `approved`, `run=` for triage, `cmd=` for `/track` and `cmd=r` for a 👍 on a flag.
 - `revision rev=<n> body=<hash>`: in each revision comment (7.4). Posted without a transition, it also carries `seen`.
 - `reply reason=<rejected|edited> cmd=<comment id>`: on the App's reply to a rejected command, or to an edit made after the App used the comment (9.2). It marks the comment as processed. A command the App 👎'd gets no edited reply.
 - `error kind=<kind> key=<key>`, and the `ack` reply to it: a state error (5.3).
 - `revert key=<event id>`: an untrusted label change the daemon reverted (5.1). For an unexplained label it removed, the key is `<label>@<event id>`: the label in lower case, URL-escaped, and the ID of its latest event, or 0. One comment may carry several.
+- `triage verdict=<ask|leave>`: a triage decision on an issue with no stage label (6.2), with one key. The key is `run=<run id>` for a triage run's result, `cmd=<comment id>` for `/ignore`, or `cmd=r<reaction id>` for a 👍 on a flag. A flag, `verdict=ask`, also carries `recommend=<handle|leave>`, its recommendation, for example `<!-- issuedog:triage verdict=ask run=8f2c recommend=handle -->`. The issue's decision is the latest triage marker in its comments. One in dirty content doesn't count.
 - `dirty by=<login>`: the note on dirty content (5.1).
 - `origin`: in the body of an issue the daemon created (5.2), or reposted in a comment once that body is dirty (6.4).
 - `depends-on url=<issue url>`: a dependency across owners (section 14).
 - Planned: the attempt marker on the latest verifier comment of a task (8.3), not built yet.
 
-Assignees, and the priority labels on PRs, are not state either: the daemon derives them (section 9.6) and corrects them on every poll.
+Assignees, and the priority labels on PRs, are not state either: the daemon derives them (section 9.6) and corrects them on every poll. Nor are the `triage:*` labels, which follow the latest triage marker (6.2).
 
 Apart from the App key (section 3.1), the only local files are the lease (section 8.2) and the run results in `/state/runs/`. Both are scratch: losing the container loses nothing except the current run and the count of failed non-task runs toward the attempt cap (8.3).
 
@@ -230,13 +236,74 @@ The issuedog App, and any other bot account, is never trusted.
 
 ### 6.2 What the daemon acts on
 
-An issue enters the pipeline when any of these holds:
+The App creates an issue in the pipeline when its `origin` marker points to an approved plan revision, or to a story-verifier run. Issues the App creates in another repo (section 14) carry no such marker, so they need `approved`.
 
-- A trusted user opened it.
-- A trusted user added the `approved` label (checked on the timeline).
-- The App created it with an `origin` marker that points to an approved plan revision, or to a story-verifier run. Issues the App creates in another repo (section 14) carry no such marker, so they need `approved`.
+Every other issue enters by one move, `intake → clarifying`, on the "issue is trusted" row (7.2). The ways in, with the key the move's marker carries (section 5):
 
-Only comments and reactions by trusted users count as answers, approvals or commands. A comment a trusted user approved (6.4) counts as their input, never as a command. Agents receive other comments in a separate, clearly labeled "untrusted input" section of their context files, and only for epics and stories. An issue with no type gets no untrusted input until its type is set.
+- It has `stage:intake`, set by a trusted user or the App, and a trusted author. The key is `event=<the labeled event of stage:intake that stands>`.
+- A trusted user added `approved` (checked on the timeline), and the issue is at `stage:intake` or has no stage label. The key is `event=<that labeled event>`.
+- A triage run admits it (below). The key is `run=<run id>`.
+- A trusted user posts `/track` at intake (`cmd=<comment id>`), or reacts 👍 to a flag that recommends handling it (`cmd=r<reaction id>`).
+
+If the event already keys a transition, as when an override brought the issue back to intake, the move is keyed `event=<the ID of the comment holding that transition>` instead. Every move into the pipeline says in its comment why the issue is in. For a bug or a task, and a story with a parent, it also says that the issue waits at `clarifying` (7.2).
+
+An untrusted author's issue enters only by `approved`, `/track` or a trusted 👍 on a flag. Each of these is the approval. A trusted user's `stage:intake` alone doesn't let it in.
+
+An issue the table can't move, such as an approved issue of a type the pipeline doesn't know, stays at intake and gets one `kind=transition` state error (5.3), keyed by the admitting event, comment or reaction. Triage doesn't run on it while that error stands. Only these move it on: a trusted 👍 on the error, which lets triage run again, a stage label, `approved` or `/track`.
+
+**Triage.** An open issue with no stage label (none left out, 5.1), no transition marker, no triage marker that counts, no `approved` label and no standing admission error is classified once by a short triage run. That covers the issues already open when the daemon first runs on a repo, and each new one. Closed issues and pull requests aren't triaged, and an issue with a stage label is adopted by the label rules (5.1) instead.
+
+- **When.** Triage runs only in a pass where no other stage ran, on the newest such issue first, one per pass (8.1). Like every stage run, it runs under the usage gate and the attempt cap (8.3). It uses the interviewer's `stages` settings (section 13).
+- **Output.** `verdict` (`handle` or `leave`), `sure` (true or false), `reason` and `summary`, each one line. The daemon decides:
+  - A sure `handle` on a trusted author's issue admits it, keyed `run=<run id>`.
+  - A sure `leave` records "left": a short comment with the reason, saying that a code owner can `/track` it, carrying `<!-- issuedog:triage verdict=leave run=<run id> -->`. The issue isn't classified again.
+  - Anything else posts a flag, with the verdict as the recommendation. That covers every verdict that isn't sure, and any `handle` on an untrusted author's issue, which triage never admits.
+- **A flag** is one App comment in the 9.1 style, carrying `<!-- issuedog:triage verdict=ask run=<run id> recommend=<verdict> -->`:
+
+  ```
+  ### Should issuedog handle #N?
+
+  **1. <summary>** Blocks: #N
+     a. Handle it (recommended): <reason>
+     b. Leave it
+
+  React 👍 to take the recommendation, or post `/track` or `/ignore`.
+
+  cc @<notify>
+  ```
+
+  With a `leave` recommendation, "Leave it" is option a.
+- **During the run.** If a trusted user adds `approved`, or a code owner's answer records a triage marker, the result writes nothing, and the run isn't counted. A triage marker in dirty content doesn't count, so that issue is classified again.
+
+**Answering a flag.** Each answer must come from a trusted user, in a clean comment or a 👍:
+
+- The earliest trusted 👍 on the latest flag takes its recommendation, keyed `cmd=r<reaction id>`. A `handle` admits the issue, an untrusted author's too. A `leave` records "left" with `<!-- issuedog:triage verdict=leave cmd=r<reaction id> -->`, unless the issue is in the pipeline or has `approved`. With `approved`, no "left" comment is written, and the move into the pipeline answers the flag.
+- A 👍 on an older flag, an untrusted 👍 and the App's 👍 are ignored. So are 👍s on a flag a later move answered, as when an override brought the issue back to intake, or after a hold and `/resume`. Only `/track` or `approved` admit such an issue.
+- `/track` admits the issue at intake, keyed `cmd=<comment id>`, whether it is flagged, left or never triaged.
+- `/ignore` records "left", keyed `cmd=<comment id>`. It's rejected on an issue in the pipeline, meaning one with a stage label, a left-out one included, or a transition marker, and on one already left. On an issue with `approved` it's rejected too, since `approved` brings the issue into the pipeline instead.
+
+**The `triage:*` labels.** `triage:ask` and `triage:left` show the two waiting states in GitHub's filters. They follow the latest triage marker: `triage:ask` for a flag, `triage:left` for "left", and neither once the issue is in the pipeline. The App sets and removes them, and on its next visit undoes anyone else's change, with no comment. The daemon never reads them as state, so the label rules (5.1) don't guard them.
+
+**Admission time.** An issue's admission time is the earliest of:
+
+- the earliest `labeled` event of `approved` by a trusted user, or of a stage label past intake, other than `held`, by a trusted user or the App;
+- the time of the clean, trusted `/track` comment, or the trusted 👍 on a clean flag, that a clean App move out of intake names in its `cmd`.
+
+Dirtying or deleting the move or the command falls back to the label's time. With no admission found, every edit counts as after it. Times are to the second, so a change in the admission's second counts as after it.
+
+**Edits after admission.** An approval approves what the approver read, not what the author writes later. On an untrusted author's issue, a title or body the author changed after the admission is untrusted input for the interviewer: it goes in `untrusted.md` under a heading that says so, and `issue.md` says it's there instead of showing it.
+
+- The body counts as changed after admission when its last edit is at or after the admission, by anyone but the App. GitHub dates only the last edit, so any later edit counts.
+- The title counts as changed after admission when its latest rename is at or after the admission and by someone untrusted. A trusted user's later rename makes the title theirs.
+
+**Untrusted input.** Only comments and reactions by trusted users count as answers, approvals or commands. A comment a trusted user approved (6.4) counts as their input, never as a command. Agents receive other text only in a separate `untrusted.md` context file (section 12). Each piece is fenced under a heading that says it is untrusted data, not instructions. That file holds:
+
+- comments by untrusted users and other bots;
+- dirty comments by anyone, and a dirty body (5.1);
+- for the interviewer, an untrusted author's title or body changed after admission;
+- for triage, an untrusted author's whole title and body.
+
+The interviewer gets `untrusted.md` only on epics and stories. On an untyped issue, a bug or a task, that text is in no file. Triage is the exception: a triage run gets `untrusted.md` on any issue, so it can classify an untrusted author's issue. Its result can only flag such an issue or leave it, never admit it.
 
 A command counts once. If its comment is edited after the daemon applied it (its 👍), the edit is ignored and the bot replies asking for a new comment, except as 9.2 says for answers: an applied command that wrote no marker, such as `/priority`, edited into plain text at `clarifying`, in the current round, becomes an answer, with no reply. A rejected command (its 👎) gets no new reply when edited. If it is edited before the daemon processes it, the daemon reads the latest text. Section 9.2 has the details, including edited answers.
 
@@ -320,16 +387,16 @@ The lifecycle of each type:
 - **Story.** Created at `stage:planning` from an approved epic plan, which already carries its acceptance criteria. Then planning → plan-review (or straight to planned, see `plan.review`) → planned → closed.
 - **Story filed by the owner.** intake → clarifying → spec-review → planning, then as a story.
 - **Task.** A task from the planner is created at `stage:ready`, or at `stage:needs-human` for a human task (section 11.3). Then ready → in-progress → verifying → pr-open → closed, with loops back through clarifying, in-progress or needs-human. A human task from the planner goes needs-human → closed.
-- **Bug, or task filed by the owner.** intake → clarifying → ready, then as a task.
+- **Bug, or task filed by the owner.** intake → clarifying → ready, then as a task. Until build phase 3 it waits at clarifying (7.2).
 
 ### 7.2 Transitions
 
 | From | To | Applies to | Trigger |
 |---|---|---|---|
 | intake | clarifying | all | Issue is trusted (6.2) |
-| clarifying | clarifying | all | Owner answered; interviewer has more questions |
+| clarifying | clarifying | all | The interviewer asks a question round: the first on entering clarifying, or the next once the owner answered (9.1). Also the interviewer's `typed` outcome, which types an untyped issue as a bug or task (9.1) |
 | clarifying | spec-review | epic, or story with no parent | No open questions; spec written into the body |
-| clarifying | ready | bug, or task filed by the owner | No open questions; daemon rewrites the body as a task (11.2) |
+| clarifying | ready | bug, or task filed by the owner | No open questions; daemon rewrites the body as a task (11.2). Not built until phase 3: until then the issue waits at clarifying with no interviewer runs |
 | clarifying | ready | task | Owner answered the implementer's or verifier's question |
 | spec-review | clarifying | epic, or story with no parent | Owner `/revise <text>`, or any other trusted comment (7.4) |
 | spec-review | planning | epic, or story with no parent | Owner approves the current revision with 👍 or `/approve` (7.4) |
@@ -374,6 +441,8 @@ The lifecycle of each type:
 
 From `ready` on, a `bug` follows the rows for `task`.
 
+Until build phase 3, the interviewer runs only on an epic, a story with no parent and an untyped issue (9.1). A bug or a task, whether filed so or typed so by the interviewer, waits at `clarifying` with no more runs until the implementer stage adds the 11.2 rewrite. So does a story with a parent. Every move into the pipeline says so (6.2).
+
 Any transition missing from this table is an error, except a trusted user's manual label change (5.1) or a rejected command (9.2). The daemon logs the error, leaves the issue unchanged and reports a state error (5.3).
 
 `/hold` applies `stage:held` to every open descendant of the issue, then to the issue, each with its own transition marker, then 👍s the command. An issue that is already held gets no new marker (6.4). `/resume` ends that owner hold on each one, restoring the stage named in its marker unless another hold remains (6.4). A `/resume` that would end no hold is rejected, naming the issues where `/resume` would.
@@ -400,6 +469,7 @@ Any transition missing from this table is an error, except a trusted user's manu
   - A question counts as a revision request: the agent answers it and posts the next revision, even if nothing else changed.
   - A comment posted after the approval was applied goes to the next stage as owner input. The transition's `seen` (section 5) decides which comments come after it, so one posted in the same poll isn't lost.
 - **The body is edited.** The hash no longer matches. After an edit by the body's author, if trusted, or by the App, the daemon increments `rev` and posts a new revision comment with the new hash (for plans, see section 16), which voids any pending approval. An edit by anyone else makes the body dirty (5.1): it gets no revision, nothing can approve it, and a move that would have posted one says why there is none. An untrusted author's own edit gets no revision either, and the mismatch keeps approval blocked.
+  - **Leaving `spec-review` with a dirty body.** The interviewer's spec keeps the dirty note at the top of the body (11.1), so the spec goes to `spec-review` with no revision to approve. A body stays dirty for good, so a `/revise` or a revision request sends it back to `clarifying`, but the next spec has no revision either. The way out is an override: a trusted user sets the next stage label by hand (5.1).
 - **PR approval.** This relies on GitHub. The ruleset dismisses stale approvals when new commits are pushed, and `issuedog/verify` is posted for an exact head SHA.
 
 ## 8. Scheduling
@@ -408,9 +478,9 @@ Any transition missing from this table is an error, except a trusted user's manu
 
 Each loop iteration:
 
-1. Process new trusted comments, reactions and label changes on open issues: answers, `/approve`, `/revise`, `/done`, `/hold`, `/resume`, `/priority`, `/model`, `/effort`, 👍 on revision comments, hand-off comments, state-error comments, human-task issues, untrusted comments and hold notices (6.4), and other comments in review stages (7.4). Revert untrusted label changes, record overrides and note dirty content first (5.1).
+1. Process new trusted comments, reactions and label changes on open issues: answers, `/approve`, `/revise`, `/done`, `/hold`, `/resume`, `/priority`, `/model`, `/effort`, `/track`, `/ignore`, 👍 on revision comments, triage flags (6.2), hand-off comments, state-error comments, human-task issues, untrusted comments and hold notices (6.4), and other comments in review stages (7.4). Revert untrusted label changes, record overrides and note dirty content first (5.1). Then move admitted issues from intake to clarifying (6.2), and bring the `triage:*` labels in line. An issue with `triage:ask` is visited on every pass, since a 👍 on its flag doesn't change the issue's `updated_at`.
 2. Reconcile PRs: merges, closes, reviews with comments (7.2), new head SHAs, and `main` moving under open PRs.
-3. Run any pending non-task stage work for the highest-priority issue that has it: clarifying, spec, planning, story verification.
+3. Run any pending non-task stage work for the highest-priority issue that has it: clarifying, spec, planning, story verification. If no stage ran, run triage (6.2) on the newest open issue that needs it.
 4. Otherwise pick the next task:
    - It is `stage:ready`.
    - It is not blocked, judged by advanced search `is:blocked` plus any open `depends-on` markers. Search results lag behind dependency writes, so the daemon confirms a candidate through the issue dependencies API before picking it.
@@ -423,9 +493,14 @@ Each loop iteration:
 
 ### 8.2 Leases and restart
 
-- **On pickup.** The daemon writes `/state/lease.json` (write to a temp file, then rename) with the issue number, stage, run ID, clone path, start time, and the time of the last poll before pickup (6.4). It also records what the run read: the newest comment on the issue (the run's `seen`, section 5) and the last edit time of each input, and the run's resolved model, effort and fallback models (3.3). For a task, the `stage:in-progress` label and the transition marker show the lease on GitHub. A non-task run doesn't move its issue, so the lease's stage is the one a reset returns to.
+- **On pickup.** The daemon writes `/state/lease.json` (write to a temp file, then rename) with the issue number, stage, run ID, clone path, start time, and the time of the last poll before pickup (6.4). It also records what the run read: the newest comment on the issue (the run's `seen`, section 5), the last edit time of each input and of the body (`body_edit`), and the run's resolved model, effort and fallback models (3.3). A triage run's lease records the stage `intake`, which is what the daemon reads for an issue with no stage label. For a task, the `stage:in-progress` label and the transition marker show the lease on GitHub. A non-task run doesn't move its issue, so the lease's stage is the one a reset returns to.
 - **Attempts.** The lease names the round of attempts the run belongs to and its number in it (8.3). When a run ends, failed or not counted, the lease is first marked ended with the count of failed attempts in a row it leaves; then the run's files are deleted, and the lease too if that count is 0. A restart that finds an ended lease only takes its count and deletes what's left. The lease holds only the latest run, so every other count, such as another issue's, is held in memory and resets on any restart.
-- **On apply.** The daemon reads the issue again and applies the result through its `run=<run id>` key (5.2). It drops the result if the issue is closed or its stage changed during the run, since the owner's change wins. If an input was edited or deleted since the run read it, it drops the result and the stage runs again on what's there. A result that fails to apply keeps its lease, and the next pass tries again. While the issue has unexplained labels held back (5.1), the result waits with its lease, uncounted, and no other run starts; once they're left out, it applies without them. The read before a run and the attempt cap's check leave them out too.
+- **On apply.** The daemon reads the issue again and applies the result through its `run=<run id>` key (5.2). It drops the result, writing nothing and counting no attempt, when the issue is closed or gone, even if the run's move is written already. Unless the move is written already, it also drops the result in these cases, and every stage follows the same rules:
+  - The issue's stage changed during the run, since the owner's change wins. A triage result is also dropped once the issue has a stage label or a transition marker.
+  - An input was edited or deleted since the run read it, or the body has a later edit by anyone but the App. The stage runs again on what's there. The App's own edit, such as one a result applied part way made before a restart, doesn't drop it.
+  - The issue has new trusted input since the run's `seen`: a comment above it by a trusted user that isn't a command and isn't dirty. The stage runs again with that comment as input. Without this, an answer step 1 👍'd before a delayed apply would be lost.
+- **Checks.** A stage may check its result past what the schema can say, on the issue read again, before anything is written. The interviewer and triage do (9.1, 6.2). A broken rule is a failed attempt (8.3), with nothing written. A result whose move is written already isn't checked again. A GitHub read that fails during the check says nothing about the result, so it isn't a failed attempt: it is a failure to apply.
+- **Failing to apply.** A result that fails to apply keeps its lease, and the next pass tries again. After `loop.max_attempts` failures, the run is a failed attempt (8.3). While the issue has unexplained labels held back (5.1), the result waits with its lease, uncounted, and no other run starts; once they're left out, it applies without them. The read before a run and the attempt cap's check leave them out too.
 - **On startup.** The daemon reads the lease.
   - First it checks the issue for discussion triggers since the last poll before the run was picked up (6.4). If the issue is held or closed, it deletes the clone and leaves the issue as it is. A valid saved result is dropped. Without one, the run counts as a failed attempt, unless it hit a usage limit or a marker shows the result was applied. The lease is deleted, unless it holds a count of failed attempts in a row (see Attempts): then it stays, marked ended, with that count.
   - If `/state/runs/<run-id>.json` exists and validates, and for an implementer run the clone also has commits ahead of its base, the daemon applies the transition.
@@ -436,16 +511,19 @@ Each loop iteration:
 - The verify loop allows `max_attempts` (default 3) implementer runs per round. A round starts when a task becomes `ready`, or when a review with comments sends it back (7.2).
 - Each retry prompt includes the previous verifier findings verbatim, and each retry runs one effort level higher, up to `stages.max_effort` (3.3).
 - After the last failed attempt, the task moves to `stage:needs-human` with the findings attached.
-- **Other stage runs.** A failed interviewer, planner or story-verifier run is tried again, up to `loop.max_attempts` (default 3) runs in a row per round. A round starts when the issue moves, or when it gets new input. After the last failed attempt, the issue gets one state error, `kind=attempts` (5.3), and the stage doesn't run again until the round changes.
-  - A run fails when its result isn't a `success` or is an error (3.3), when its output fails validation, when it times out, when it leaves no valid result across a restart (8.2), or when its result fails to apply `loop.max_attempts` times.
+- **Other stage runs.** A failed triage, interviewer, planner or story-verifier run is tried again, up to `loop.max_attempts` (default 3) runs in a row per round. A round starts when the issue moves, or when it gets new input. After the last failed attempt, the issue gets one state error, `kind=attempts` (5.3), and the stage doesn't run again until the round changes.
+  - A run fails when its result isn't a `success` or is an error (3.3), when its output fails validation or the stage's check (8.2), when it times out, when it leaves no valid result across a restart (8.2), or when its result fails to apply `loop.max_attempts` times. A GitHub read that fails inside a stage's check is a failure to apply, so it counts only toward that limit.
   - A usage limit (3.3), a failure to start the run, a shutdown and a dropped result (8.2) don't count, nor an apply held back by unexplained labels (5.1).
   - A result asking for a transition the table lacks isn't an attempt either. It gets one state error, `kind=transition`, and the stage doesn't run again until the issue moves, gets new input, or changes type or parent.
+  - **The interviewer is an exception to that rule.** Its check (9.1) fails a result that would leave the issue with no move, before anything is written. The main case is typing an issue with a parent as `story` (section 4): the table moves only a story with no parent to `spec-review`, and the interviewer doesn't run on a story with a parent, so a round would get no answers read. Such output is invalid, so it is a failed attempt, not a `kind=transition` state error. After `loop.max_attempts` of them, the owner gets the `kind=attempts` state error. A result on an issue the interviewer no longer runs on, such as one the owner retyped as a task or gave a parent during the run, is a failed attempt too.
 
 ## 9. Owner interaction
 
 The owner should never have to go and work out what is being asked.
 
-Bot-created issues do not subscribe the owner to notifications. So every question round, spec, plan, human task and new digest item @mentions the users in `notify` (section 13).
+Bot-created issues do not subscribe the owner to notifications. So every question round, typed comment, spec, plan, human task, triage flag and new digest item @mentions the users in `notify` (section 13). Each of these comments carries a `cc @<login> @<login>` line: at the end, or for a spec, just before the revision (11.1).
+
+Agent text can't mention anyone: the daemon puts a zero-width space after each `@`, or HTML entity for one, that isn't followed by a space. It also escapes markers (5.1) and HTML tags in agent text.
 
 ### 9.1 Questions
 
@@ -464,13 +542,43 @@ Questions go in one comment per round:
 Reply in one comment, e.g. `1a 2c 3: free text`.
 ```
 
+The comment then ends with the `cc` line (section 9).
+
 Rules:
 
 - Each question stands alone, lists what it blocks, and offers 2 to 4 options with the recommended option first and marked.
 - Free-text answers are always allowed.
 - Questions wait for an answer indefinitely. There is no default-on-silence.
 - The interviewer asks at most `max_questions_per_round` (default 7) per round, most blocking first.
-- On an issue with no type, the interviewer's first comment starts with the type it set and why, or with its questions when it can't tell yet (section 4).
+- **The type line.** Every comment that sets a type starts with `Type: <type>, because <reason>`: a question round, a typed comment or a spec's revision comment (11.1). On an issue with no type, the interviewer's first comment starts with it, or with its questions when it can't tell yet (section 4).
+
+**When the interviewer runs.** It runs at `clarifying` on an epic, a story with no parent, or an untyped issue, in two cases:
+
+- **On entry.** The latest transition entered `clarifying` by anything other than an interviewer run: a move into the pipeline (6.2), `/revise` or a revision request, or an override. It runs at once, with no input needed.
+- **After a round.** The latest transition is an interviewer run's `clarifying → clarifying`, and there is at least one trusted answer since (9.2). Commands, App comments and dirty comments don't count.
+
+Any answer starts the next run, including a partial one. That run sees every answer so far and asks again whatever is still open. Rounds end when it returns a spec. There's no cap on rounds. A bug, a task and a story with a parent get no runs (7.2).
+
+**Rounds.**
+
+- A round's transition marker carries `round=<n>` and `questions=<count>` (section 5), so round numbers and question IDs come from markers, not from comment text. Question `<k>` of round `<n>` has the ID `Q<n>.<k>`.
+- A round is numbered one more than the highest round on a clean round marker.
+- A round whose comment is dirty (5.1) isn't read, so it counts as 0 questions. If it was the latest round, its marker no longer counts and the next round takes its number: the round is cancelled, and the interviewer runs again. Under CODEOWNERS trust (6.1), a write collaborator who isn't trusted can edit an App comment, so they can do this.
+
+**The interviewer's outcomes.** Its output is one object whose `outcome` is `questions`, `spec` or `typed`:
+
+- `questions`: a round in the format above, at `clarifying`.
+- `spec`: the spec, written into the body and posted as a revision (11.1). The issue moves to `spec-review`.
+- `typed`: only for an issue whose type the interviewer may set (section 4), when it finds the issue is a bug or a task. It sets the type, and its comment has the type line, then "Bugs and tasks wait at `clarifying` for now, until issuedog can implement them (build phase 3), so I won't ask anything more here.", then the `cc` line. The move is `clarifying → clarifying`, with no `round` or `questions`. The issue then waits (7.2).
+
+**Checks.** The daemon checks the output after its schema, and fails closed: a broken rule is a failed attempt (8.3), logged with the reason, and nothing is written.
+
+- 1 to `max_questions_per_round` questions, each blocking at least one issue, with 2 to 4 options.
+- One-line question, option, reason and list item text.
+- A `type` only where the interviewer may set one (section 4). `typed` sets bug or task. A round or a spec sets epic or story, and a spec on an untyped issue must set one.
+- The Decisions rules (11.1). A decision's `by` is a login with a clean, trusted comment on the issue.
+- Every text it renders fits GitHub's 65,536-character limit, with 1,024 to spare.
+- The move fits the issue once its type is set, and the issue is still one the interviewer runs on (8.3).
 
 ### 9.2 Commands
 
@@ -484,6 +592,9 @@ Rules:
 | 👍 on the issue | Human task from the planner | Owner finished it (9.3) |
 | 👍 on the latest hand-off comment | Blocked task at `needs-human` | Same as `/done` (9.3) |
 | 👍 on a state-error comment | Any issue | Acknowledges the error (5.3). The stage doesn't change |
+| 👍 on the latest triage flag | Issue at `intake` | Takes the flag's recommendation: admits the issue, or leaves it to people (6.2) |
+| `/track` | Issue at `intake` | Admits the issue, flagged, left or never triaged (6.2) |
+| `/ignore` | Issue at `intake` that isn't in the pipeline | Leaves the issue to people (6.2) |
 | `/done` | `needs-human` issue | Owner finished the human task (9.3), or wants a closed PR's task started over |
 | `/hold`, `/resume` | Any issue | Pauses or resumes the issue and its descendants. `/resume` also ends a discussion hold (6.4) |
 | 👍 on an untrusted comment or a hold notice | Issue held for discussion | Approves the comment, or accepts the edit or deletion (6.4) |
@@ -494,7 +605,7 @@ Rules:
 A comment is a command when its first line is a slash and a word, such as `/priority p1`. A known command followed directly by more text, such as `/approve.`, is that command with a bad argument. An unknown word followed directly by more text, such as `/usr/bin`, is plain text. Only comments by trusted users that aren't dirty (5.1) count, oldest first.
 
 - **Applied.** The daemon reacts 👍 to each command comment it has applied, after its marker (5.2). GitHub has no ✅ reaction. A reaction command is acknowledged by the transition comment (5.2).
-- **Rejected.** A command that doesn't apply, because it is unknown, has a bad argument, doesn't fit the issue's stage or fails its own check, gets the App's 👎, then a reply with the reason carrying `<!-- issuedog:reply reason=rejected cmd=<comment id> -->`. The 👎 is the record that it was processed: a reply can be edited or deleted, but only the App can remove its own reaction. A command with the App's 👎 but no clean reply gets its reply posted again. A rejection isn't a state error (5.3).
+- **Rejected.** A command that doesn't apply, because it is unknown, has a bad argument, doesn't fit the issue's stage or fails its own check, gets the App's 👎, then a reply with the reason carrying `<!-- issuedog:reply reason=rejected cmd=<comment id> -->`. The 👎 is the record that it was processed: a reply can be edited or deleted, but only the App can remove its own reaction. A command with the App's 👎 but no clean reply gets its reply posted again. A rejection isn't a state error (5.3). The reply to an unknown command lists the commands, `/track` and `/ignore` included.
 - **Processed.** A comment is processed once a `cmd` or `reply` marker names it, or it has the App's 👍 or 👎. It is never applied again.
 - **Edited.** A comment edited after the App used it gets one reply asking for a new comment, carrying `reply reason=edited cmd=...`, and the edit is ignored. That covers a command edited after its 👍, even into plain text except as below, and an answer edited after a later transition's `seen` covered it. A rejected command edited later gets no new reply, and never counts as an answer.
 - **Answers.** At `clarifying`, a trusted comment that is not a command, posted after the round bound, is an answer to the current round, and gets a 👍. The bound is the latest transition marker's `seen` (section 5), or, if it has none, the ID of the App comment holding that transition. Comment IDs only increase, so a comment posted during a run belongs to the next round. Only transition markers move the bound: a reply, error, revision or dirty marker doesn't, so a rejection posted at `clarifying` keeps that round's answers. A command or answer edited before the App uses it is read with its latest text.
@@ -531,7 +642,7 @@ A `stage:needs-human` issue uses this template. The agent must fill every field;
 
 One pinned issue per repo, `issuedog digest`. It uses one of the repo's three pin slots.
 
-- The body is the current list: open questions, pending approvals, hand-offs and unblocked human tasks, PRs waiting for review, issues held for discussion (6.4), dropped children with an open PR (6.4), and state errors (5.3). These are exactly the items the daemon assigns (9.6). Each state error is also posted on its issue as a comment (5.3). Items are ordered by how many tasks each one unblocks.
+- The body is the current list: open questions, pending approvals, hand-offs and unblocked human tasks, PRs waiting for review, issues held for discussion (6.4), dropped children with an open PR (6.4), triage flags waiting on a code owner (6.2), and state errors (5.3). Listing triage flags isn't built yet (#7). These are exactly the items the daemon assigns (9.6). Each state error is also posted on its issue as a comment (5.3). Items are ordered by how many tasks each one unblocks.
 - Each item states what is being decided, the options, the recommendation, and links to the issue.
 - The daemon rewrites the body when the list changes. It posts a short comment that @mentions `notify` only when a new item appears, so GitHub sends one notification per new item.
 
@@ -555,6 +666,7 @@ The owner finds everything waiting on them in GitHub's own "assigned to me" view
 | State error | From the daemon's state-error comment until a trusted user reacts 👍 to it, or its cause is gone (5.3) |
 | Discussion hold | The issue is held for discussion and a trigger is unresolved (6.4) |
 | Dropped with an open PR | The issue is held with `reason=dropped` (6.4), until its PR merges or closes |
+| Triage flag | The issue's latest triage marker is a flag (6.2), until a code owner answers it. Not built yet (#87) |
 
 - These are the same items the digest lists (9.4).
 - Each PR carries the `priority:*` label of the task it closes. The task's label is the priority: the daemon copies it to the PR and reverts any other change to the PR's label.
@@ -627,8 +739,23 @@ Acceptance criteria and the definition of done are plain `-` bullets, not `- [ ]
 ## Acceptance criteria
 - observable, testable statements
 ## Decisions
-- Q2.1 → c (owner, round 2)
+- Q2.1 → c: summary of the answer (owner, round 2)
 ```
+
+The interviewer's `spec` output fills these sections, and the daemon renders them:
+
+- **Writing it.** The spec replaces the whole body. The title stays, and the original text stays in GitHub's edit history.
+  - Agent text is escaped (5.1). A `#` or `##` heading in it is demoted to `###`, so it can't add a section.
+  - Acceptance criteria are plain `- ` bullets, with any `[ ]` the agent wrote stripped. An empty section reads "None.".
+  - With a dirty body (5.1), the dirty note stays at the top, naming the same login, so the body stays dirty (7.4).
+- **Write order.** The type label, if the spec sets a type, then the body edit, skipped if the body already matches. Then the revision is posted with the move to `spec-review` (7.4), and its hash is taken from the body GitHub returns. Once the move is written, a replay doesn't edit the body or the type again.
+- **The revision comment.** It starts with the type line when the spec sets a type (9.1). Then come the agent's `message`, which answers revision notes or says what changed, a list of the decisions "Added, not asked", and the `cc` line (section 9). Then the revision and how to approve it (7.4).
+- **Decisions.** Every question asked appears at least once, in one of these forms:
+  - answered: `- Q2.1 → c: <summary> (mertenvg, round 2)`, or `- Q2.1 → free text: <summary> (mertenvg, round 2)`
+  - superseded: `- Q1.3 → superseded by Q2.1`, by a question asked in a later round
+  - dropped: `- Q1.3 → dropped: <why>`
+
+  A decision the interviewer made without asking reads `- Added, not asked: <summary>`. An answer names a login with a clean, trusted comment on the issue, and the round it was answered in, which is no earlier than the question's. Only questions on clean round markers count as asked (9.1).
 
 ### 11.2 Task
 
@@ -721,7 +848,21 @@ Closes #N
 
 ## 12. Agents and skills
 
-- **Stage prompts.** These live in `.issuedog/prompts/{interviewer,planner,implementer,verifier}.md`. issuedog ships defaults, and a file on `main` overrides the default (section 3.4).
+- **Stage prompts.** These live in `.issuedog/prompts/{triage,interviewer,planner,implementer,verifier}.md`. issuedog ships defaults, and a file on `main` overrides the default (section 3.4).
+  - The defaults and the schemas are embedded in the binary, so the image needs no extra files. `triage.md` and `interviewer.md` ship now. The planner, implementer and verifier prompts ship with their stages. Schemas can't be overridden.
+  - A blank file on `main` falls back to the default, with a warning. A file over 64 KiB, or a read error other than not-found, is a setup error: the run doesn't start and isn't counted.
+- **Context files.** Each run gets its files in `/run/issuedog/<run-id>/` (3.1). Text in `untrusted.md`, and every comment and body in the interviewer's files, sits in a code fence it can't close, under a heading the daemon writes.
+  - `system.md` is a fixed preamble the daemon writes, then the stage prompt. The preamble covers the trust rules, the output contract and this repo's limits, and a prompt on `main` can't remove it. The interviewer's limits are the questions per round, the rounds so far and the next round's number, the logins a decision may name, and whether it may set the type (section 4). Its preamble always says, too, that an issue with a parent is never typed `story`.
+  - `prompt.md` is the daemon's short task text, saying where the context files are. Triage's names each one by its full path. The interviewer's names the context directory once, then each file by name.
+  - `untrusted.md`, when there is anything for it, holds the untrusted input of 6.2.
+- **The interviewer's files.**
+  - `issue.md`: the number, title, type or "none", parent (`#N` or "none"), author, and the body. A dirty body, or a title or body an untrusted author changed after admission (6.2), is replaced by a line saying where it is, if anywhere.
+  - `conversation.md`: the App's clean comments, with markers left out, earlier rounds labelled "Round N, QN.1–N.k" and revisions labelled; and trusted, clean comments, with author, ID and the round they answer. Oldest first.
+  - `input.md`: this run's input (9.2): each input labelled as an answer to the latest round, as the revision notes that sent the spec back, or as new since the issue came to `clarifying`, as after an override. With no input, it says "none: first run".
+  - A login in these files' headings is named only when it is a valid GitHub login: letters, digits and single hyphens, with an optional Enterprise Managed User `_shortcode` suffix, 39 characters at most, or an App's `[bot]` login. Anything else shows as "someone unnamed".
+- **The triage agent's files.**
+  - `issue.md`: the number, the author and whether they're trusted, and the type. For a trusted author, it also has the title and, unless it's dirty, the body.
+  - `comments.md`, if there are any: trusted people's clean comments. The App's comments are left out.
 - **Domain subagents.** These live in `.claude/agents/*.md` and are available to the implementer and verifier during a run. Add one only when a domain has rules the model keeps getting wrong.
 - **Skills.** These live in `.claude/skills/*`, for repeatable procedures such as adding a migration.
 - **Changing them.** Agents cannot change any of these. They are protected paths, and the verifier only ever loads the versions on `main`.
@@ -785,6 +926,7 @@ cross_repo:
 Model and effort keys:
 
 - `stages.model`, `stages.effort` and `stages.fallback_model` are optional for each stage. An unset one passes no flag, so the CLI's default applies (3.3).
+- Triage runs (6.2) use the interviewer's entries in every `stages` key, so `stages` has no `triage` key.
 - Effort levels are the CLI's five, `low`, `medium`, `high`, `xhigh` and `max`, fixed in code. `stages.effort` and `stages.max_effort` must be one of them.
 - Each `models.allowed` entry is a name, such as `opus`, or a map of `name` and an optional `label`. A name has no space or comma.
 - An entry's label suffix, as in `model:<suffix>`, is its `label`, else its name if that is at most 35 characters, else the name's last 35 characters. GitHub caps a label name at 50 characters, and `verifier-model:` takes 15. A `label` is at most 35 characters, with no space or comma. The daemon logs each entry whose suffix is cut from its name.
@@ -825,6 +967,8 @@ Changes to this file go through a human-authored PR (section 6.3).
 
 4. **CODEOWNERS** including `/.github/CODEOWNERS`. The App is never a code owner.
 5. **Labels.** `stage:*`, `priority:*`, `scope:*`, `approved`, `review:high-risk`, and `type:*` for personal-account repos. `model:<suffix>` and `verifier-model:<suffix>` for each entry in `models.allowed`, and `effort:<level>` and `verifier-effort:<level>` for each effort level (section 13). The daemon creates any that are missing on startup, and a new model's after a reload (8.1). It never edits or deletes a label, so a model dropped from the list keeps its labels.
+
+   `triage:ask` and `triage:left` (6.2) aren't created on startup: GitHub creates each the first time the App adds it.
 6. **Org repos.** An org owner creates the `Epic` and `Story` issue types.
 
 ## 16. Open items to confirm
