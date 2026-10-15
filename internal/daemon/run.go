@@ -813,7 +813,9 @@ func (r *Runs) count(l Lease) int {
 // reportCap posts the state error for l's stage failing loop.max_attempts
 // times, keyed by l.AttemptKey, on s or, if nil, the issue read again. An
 // issue that has it, has moved on, by a marker or a stage label not yet
-// recorded, or is closed or gone gets none.
+// recorded, or is closed or gone gets none. For the Unlabeled stage, whose
+// round of input never changes, the text names the ways into the pipeline
+// instead of new input.
 func (r *Runs) reportCap(ctx context.Context, s *github.Snapshot, st Stage, l Lease) error {
 	a := r.Daemon.Step.Applier
 	wrap := func(err error) error { return fmt.Errorf("report the attempt cap on #%d: %w", l.Issue, err) }
@@ -842,6 +844,12 @@ func (r *Runs) reportCap(ctx context.Context, s *github.Snapshot, st Stage, l Le
 	}
 	text := fmt.Sprintf("The %s run failed %d times in a row, so I've stopped running it here. "+
 		"New input, or a move to another stage, lets it run again.", st.Agent(), r.limit())
+	if _, isUnlabeled, _ := r.leaseStage(l); isUnlabeled {
+		// No input counts at intake, so nothing runs it again: only a way
+		// into the pipeline (plan for #6, assumption 1) moves the issue on.
+		text = fmt.Sprintf("The %s run failed %d times in a row, so I've stopped running it here, and a comment won't start it again. "+
+			"A code owner can bring this issue into the pipeline with a stage label, the `approved` label or `/track`.", st.Agent(), r.limit())
+	}
 	if err := a.comment(ctx, s, join(github.Escape(text), marker)); err != nil {
 		return wrap(err)
 	}
