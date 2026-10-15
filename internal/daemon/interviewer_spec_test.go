@@ -350,7 +350,53 @@ func TestInterviewerRetypedDuringRun(t *testing.T) {
 	}
 }
 
-// TestInterviewerResumeAfterRetype: a result whose round was posted before
+// TestInterviewerMoveDoesntFit: output whose move the table lacks for the
+// issue once typed, or whose round would leave a story with a parent, is
+// one failed attempt with nothing written: no label, no body, no comment.
+func TestInterviewerMoveDoesntFit(t *testing.T) {
+	for name, tt := range map[string]struct {
+		appType string // the App's type:* label before the run, if any
+		parent  bool   // a parent before the run
+		during  bool   // the owner gives it a parent during the run
+		out     map[string]any
+	}{
+		"a spec keeping the App's story, given a parent during the run":  {"type:story", false, true, specOut("story", "")},
+		"a spec typing an issue with a parent a story":                   {"", true, false, specOut("story", "")},
+		"a round typing an issue with a parent a story":                  {"", true, false, ivRound(1, "story")},
+		"a round keeping the App's story, given a parent during the run": {"type:story", false, true, ivRound(1, "story")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t)
+			n, _ := ivFiled(f, "", tt.parent, "from=intake to=clarifying event=5")
+			if tt.appType != "" {
+				f.AddLabel(n, app, tt.appType)
+			}
+			g := ivRig(t, f)
+			g.claude(ivResult(t, tt.out), 0)
+			before, writes := f.State(), len(f.Writes())
+			f.BeforeRequest(func(githubtest.Request) bool { return g.runs() > 0 }, func() {
+				if tt.during {
+					f.SetParent(n, f.AddIssue("owner", "Parent", ""))
+				}
+				before, writes = f.State(), len(f.Writes())
+			})
+			if err := g.work(n); err != nil {
+				t.Fatal(err)
+			}
+			if w := f.Writes()[writes:]; len(w) != 0 {
+				t.Errorf("wrote %v, want nothing", w)
+			}
+			if after := f.State(); !reflect.DeepEqual(after.Issues[n-1], before.Issues[n-1]) {
+				t.Errorf("the issue changed:\n%+v\nwant\n%+v", after.Issues[n-1], before.Issues[n-1])
+			}
+			if l := g.lease(); g.runs() != 1 || !l.Failed || l.Attempt != 1 || l.ApplyFailures != 0 {
+				t.Errorf("after %d runs, lease %+v; want one failed attempt", g.runs(), l)
+			}
+		})
+	}
+}
+
+// TestInterviewerResumeAfterRetype:a result whose round was posted before
 // a crash, on an issue the owner then retyped to a task, finishes on resume
 // with nothing written: the owner's type stands.
 func TestInterviewerResumeAfterRetype(t *testing.T) {
@@ -446,27 +492,49 @@ func TestInterviewerSpecApplyDirect(t *testing.T) {
 	}
 }
 
-// TestInterviewerSpecBodyMatches: a body that has the spec already, line
-// endings aside, as GitHub may return it, isn't edited again, and the
-// revision has its hash.
+// TestInterviewerSpecBodyMatches: a body that has the spec already, with
+// CRLF or bare CR line endings, as GitHub may return it, isn't edited
+// again, and the revision has its hash. One that differs from it only in
+// whitespace isn't the spec, so it's edited.
 func TestInterviewerSpecBodyMatches(t *testing.T) {
-	f := newFake(t)
-	n, entry := ivFiled(f, "epic", false, "from=intake to=clarifying event=5")
-	body := strings.ReplaceAll(specRendered("Quotes expire.", "None."), "\n", "\r\n")
-	f.EditBody(n, app, body)
-	g := ivRig(t, f)
-	g.claude(ivResult(t, specOut("", "")), 0)
-	writes := len(f.Writes())
-	if err := g.work(n); err != nil {
-		t.Fatal(err)
-	}
-	for _, w := range f.Writes()[writes:] {
-		if w.Method == http.MethodPatch {
-			t.Errorf("the body was edited: %+v", w)
-		}
-	}
-	if got, want := newestComment(f, n), "cc @owner\n\n"+specRevision(1, state.BodyHash(body), "run1", entry); got != want {
-		t.Errorf("the revision comment =\n%s\nwant\n%s", got, want)
+	spec := specRendered("Quotes expire.", "None.")
+	for name, tt := range map[string]struct {
+		body  string
+		edits int
+	}{
+		"CRLF":              {strings.ReplaceAll(spec, "\n", "\r\n"), 0},
+		"bare CR":           {strings.ReplaceAll(spec, "\n", "\r"), 0},
+		"a trailing space":  {spec + " ", 1},
+		"a blank line more": {strings.Replace(spec, "## Goals", "\n## Goals", 1), 1},
+		"a tab for a space": {strings.Replace(spec, "Quotes expire.", "Quotes\texpire.", 1), 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t)
+			n, entry := ivFiled(f, "epic", false, "from=intake to=clarifying event=5")
+			f.EditBody(n, app, tt.body)
+			g := ivRig(t, f)
+			g.claude(ivResult(t, specOut("", "")), 0)
+			writes := len(f.Writes())
+			if err := g.work(n); err != nil {
+				t.Fatal(err)
+			}
+			edits := 0
+			for _, w := range f.Writes()[writes:] {
+				if w.Method == http.MethodPatch {
+					edits++
+				}
+			}
+			body := tt.body
+			if tt.edits > 0 {
+				body = spec
+			}
+			if got := f.State().Issues[n-1].Body; edits != tt.edits || got != body {
+				t.Errorf("%d body edits, body %q; want %d, body %q", edits, got, tt.edits, body)
+			}
+			if got, want := newestComment(f, n), "cc @owner\n\n"+specRevision(1, state.BodyHash(body), "run1", entry); got != want {
+				t.Errorf("the revision comment =\n%s\nwant\n%s", got, want)
+			}
+		})
 	}
 }
 

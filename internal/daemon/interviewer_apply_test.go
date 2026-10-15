@@ -324,6 +324,20 @@ func TestInterviewerCheck(t *testing.T) {
 			"no longer runs"},
 		{"a round, on the App's task", func(f *githubtest.Fake, n int, _ int64) { f.AddLabel(n, app, "type:task") }, "labels", 7, ivRound(1, ""),
 			"no longer runs"},
+		{"a spec typing an issue with a parent a story", func(f *githubtest.Fake, n int, _ int64) { f.SetParent(n, f.AddIssue("owner", "Parent", "")) },
+			"labels", 7, specOut("story", ""), "the interviewer's spec on #1: an issue of type \"story\" with a parent true can't move: look up clarifying → spec-review"},
+		{"a round typing an issue with a parent a story", func(f *githubtest.Fake, n int, _ int64) { f.SetParent(n, f.AddIssue("owner", "Parent", "")) },
+			"labels", 7, ivRound(1, "story"), "a round would leave an issue of type \"story\" with a parent true"},
+		{"a round typing an issue with a parent an epic", func(f *githubtest.Fake, n int, _ int64) { f.SetParent(n, f.AddIssue("owner", "Parent", "")) },
+			"labels", 7, ivRound(1, "epic"), ""},
+		{"a spec typing an issue with a parent an epic", func(f *githubtest.Fake, n int, _ int64) { f.SetParent(n, f.AddIssue("owner", "Parent", "")) },
+			"labels", 7, specOut("epic", ""), ""},
+		{"typed, on an issue with a parent", func(f *githubtest.Fake, n int, _ int64) { f.SetParent(n, f.AddIssue("owner", "Parent", "")) },
+			"labels", 7, ivTyped("task"), ""},
+		{"a round on the App's story, given a parent", func(f *githubtest.Fake, n int, _ int64) {
+			f.AddLabel(n, app, "type:story")
+			f.SetParent(n, f.AddIssue("owner", "Parent", ""))
+		}, "labels", 7, ivRound(1, "story"), "no longer runs on #1, with type \"story\" and a parent true"},
 		{"typed task, on the owner's task", func(f *githubtest.Fake, n int, _ int64) { f.AddLabel(n, "owner", "type:task") }, "labels", 7,
 			ivTyped("task"), "no longer runs"},
 	}

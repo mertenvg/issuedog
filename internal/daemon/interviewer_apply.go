@@ -22,11 +22,17 @@ import (
 // Check checks r's output after its schema (checkInterview, plan #6,
 // assumptions 7 and 10) against the facts of r.S, the issue read again
 // (ivFacts). A broken rule is a failed attempt, with nothing written. So is
-// an issue the interviewer no longer runs on (ivStillRuns), such as one the
-// owner retyped to a task or bug, or gave a parent, during the run: Pending
-// is false for it from then on, so no run follows. A read that fails while
-// gathering the facts is a *checkReadError, so the result is kept and
-// applied again on the next pass.
+//   - an issue the interviewer no longer runs on (ivStillRuns), such as one
+//     the owner retyped to a task or bug, or gave a parent, during the run:
+//     Pending is false for it from then on, so no run follows;
+//   - output whose move doesn't fit the issue once the output's type is set
+//     (ivMoveFits), such as a spec typing an issue with a parent a story,
+//     which the table moves to spec-review only with no parent. Checked
+//     here, it writes nothing, where Transition would report it as a state
+//     error only after the type label and the body.
+//
+// A read that fails while gathering the facts is a *checkReadError, so the
+// result is kept and applied again on the next pass.
 func (iv *Interviewer) Check(ctx context.Context, r Result) error {
 	out, err := decodeInterview(r.Output)
 	if err != nil {
@@ -36,21 +42,60 @@ func (iv *Interviewer) Check(ctx context.Context, r Result) error {
 	if err != nil {
 		return &checkReadError{fmt.Errorf("the interviewer's facts on #%d: %w", r.S.Number, err)}
 	}
-	if it := state.Derive(r.S, iv.Daemon.Step.AppSlug, r.Dirt.Has).Item; !ivStillRuns(it, out, f.MayType) {
+	it := state.Derive(r.S, iv.Daemon.Step.AppSlug, r.Dirt.Has).Item
+	if !ivStillRuns(it, out, f.MayType) {
 		return fmt.Errorf("the interviewer no longer runs on #%d, with type %q and a parent %t: "+
 			"it runs only on an epic, a story with no parent or an untyped issue", r.S.Number, it.Type, it.HasParent)
 	}
-	return checkInterview(out, f)
+	if err := checkInterview(out, f); err != nil {
+		return err
+	}
+	if err := ivMoveFits(it, out); err != nil {
+		return fmt.Errorf("the interviewer's %s on #%d: %w", out.Outcome, r.S.Number, err)
+	}
+	return nil
 }
 
 // ivStillRuns reports whether the interviewer still runs on an issue like
 // it, read again after a run whose output is out (interviewerClass), or
-// whether out's own type, set before a crash, made it a task, bug or story
-// with a parent: the type is out's, and the App set it (may, as typing
-// says), so it isn't the owner's retype. Pending is false for such an
-// issue, so the only run on it is the one that typed it.
+// whether out, a typed outcome, made it the task or bug it is with its own
+// type, set before a crash: the type is out's, and the App set it (may, as
+// typing says), so it isn't the owner's retype. Pending is false for such
+// an issue, so the only run on it is the one that typed it. Only a typed
+// outcome sets a type the interviewer doesn't run on, so a story with a
+// parent never passes, whoever typed it.
 func ivStillRuns(it state.Item, out interviewOutput, may bool) bool {
-	return interviewerClass(it) || out.Type != nil && may && strings.EqualFold(it.Type, out.Type.Value)
+	return interviewerClass(it) ||
+		out.Outcome == outcomeTyped && out.Type != nil && may && strings.EqualFold(it.Type, out.Type.Value)
+}
+
+// ivMoveFits returns an error unless out's move fits an issue like it once
+// out's type, if it sets one, is set: the table has the move for its class
+// (SPEC §7.2), clarifying → spec-review on spec-written for a spec, and
+// clarifying → clarifying on more-questions otherwise. A question round
+// must also leave the issue one the interviewer runs on, or no run would
+// read its answers: a story with a parent waits at clarifying for good.
+// out has passed checkInterview, so its type is a known one.
+func ivMoveFits(it state.Item, out interviewOutput) error {
+	if out.Type != nil {
+		it.Type = out.Type.Value
+	}
+	class, err := state.ClassOf(it)
+	if err != nil {
+		return fmt.Errorf("the issue's class once typed: %w", err)
+	}
+	to, trigger := state.Clarifying, state.TriggerMoreQuestions
+	if out.Outcome == outcomeSpec {
+		to, trigger = state.SpecReview, state.TriggerSpecWritten
+	}
+	if _, err := state.Lookup(state.Clarifying, to, class, trigger); err != nil {
+		return fmt.Errorf("an issue of type %q with a parent %t can't move: %w", it.Type, it.HasParent, err)
+	}
+	if out.Outcome == outcomeQuestions && !interviewerClass(it) {
+		return fmt.Errorf("a round would leave an issue of type %q with a parent %t, which the interviewer doesn't run on, "+
+			"so nothing would read its answers", it.Type, it.HasParent)
+	}
+	return nil
 }
 
 // facts are what Check holds r's output to, from r.S:
