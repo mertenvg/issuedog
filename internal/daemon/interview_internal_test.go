@@ -254,6 +254,7 @@ func TestInline(t *testing.T) {
 		"\v[ ] x\f":         "\\[ ] x",
 		"see [x] and [y]":   "see \\[x] and [y]",
 		"\ufeff@eve":        "@\u200beve",
+		"<\ufeffdetails>":   "&lt;details>",
 		"a\tb\x00c":         "a\tb c",
 	} {
 		if got := inline(in); got != want {
@@ -322,6 +323,9 @@ func TestBlock(t *testing.T) {
 			"```\nx\n```\n@\u200beve\n&lt;details>\n### H1\n```\n```"},
 		{"BOM line", "\ufeff\n```\nx\n```\n@eve", "```\nx\n```\n@\u200beve"},
 		{"BOM inside", "a\ufeffb @\ufeffeve", "ab @\u200beve"},
+		// It's dropped before tags are escaped, so one inside a tag can't
+		// hide it.
+		{"BOM inside a tag", "<\ufeffdetails>\n# H1", "&lt;details>\n### H1"},
 		// NUL is a space, not a character that stops a closing fence.
 		{"NUL before a closer", "```\n\x00```\n# x", "```\n ```\n### x"},
 		// A box is escaped wherever it is, so no container or line start
@@ -340,6 +344,9 @@ func TestBlock(t *testing.T) {
 		{"footnote heading", "x[^1]\n\n[^1]: # H1", "x[^1]\n\n[^1]: ### H1"},
 		{"footnote fence", "[^1]: ```\n@eve", "[^1]: \\```\n@\u200beve"},
 		{"footnote quote heading", "[^n]: > ## H2", "[^n]: > ### H2"},
+		{"footnote with no space", "[^a]:# H1", "[^a]:### H1"},
+		// A tab after a bullet marker is a container's space too.
+		{"tab after a bullet, before a fence", "-\t```\n# x", "-\t\\```\n### x"},
 		// Two characters are no fence; NBSP is no space to CommonMark.
 		{"two backticks", "``\n# x\n``", "``\n### x\n``"},
 		{"two tildes", "~~\n# x", "~~\n### x"},

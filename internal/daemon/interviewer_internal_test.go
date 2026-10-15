@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
@@ -95,5 +96,39 @@ func TestInterviewerRoundsOnly(t *testing.T) {
 	got := interviewerRounds(s, "issuedog", func(int64) bool { return false })
 	if want := []interviewerRound{{Number: 1, Questions: 3, Comment: 11, Bound: 10}}; !reflect.DeepEqual(got, want) {
 		t.Errorf("interviewerRounds = %+v, want %+v", got, want)
+	}
+}
+
+// TestIvRoundCounts: the counts are by round number, a round with no
+// clean comment counting 0.
+func TestIvRoundCounts(t *testing.T) {
+	for _, tt := range []struct {
+		rounds []interviewerRound
+		want   []int
+	}{
+		{nil, nil},
+		{[]interviewerRound{{Number: 1, Questions: 3}, {Number: 2, Questions: 1}}, []int{3, 1}},
+		{[]interviewerRound{{Number: 1, Questions: 3}, {Number: 3, Questions: 2}}, []int{3, 0, 2}},
+	} {
+		if got := ivRoundCounts(tt.rounds); !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("ivRoundCounts(%+v) = %v, want %v", tt.rounds, got, tt.want)
+		}
+	}
+}
+
+// TestIvSetTypeRefuses: a type that isn't one of the four, or an issue
+// with an issue type, fails before any write: the Applier has no client.
+func TestIvSetTypeRefuses(t *testing.T) {
+	for _, tt := range []struct {
+		typ  string
+		s    *github.Snapshot
+		want string
+	}{
+		{"feature", &github.Snapshot{TypeFromLabels: true}, `"feature" isn't one of epic, story, bug, task`},
+		{"epic", &github.Snapshot{Type: "story"}, "the issue has an issue type, story, which only the owner sets"},
+	} {
+		if err := ivSetType(context.Background(), &Applier{}, tt.s, tt.typ); err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("ivSetType(%s) = %v, want %q", tt.typ, err, tt.want)
+		}
 	}
 }
