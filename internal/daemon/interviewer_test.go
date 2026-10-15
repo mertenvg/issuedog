@@ -72,7 +72,7 @@ func ivInput(t *testing.T, d *daemon.Daemon, n int) daemon.Input {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dirt, err := a.Dirty(ctx, s)
+	dirt, err := a.Dirty(ctx, s, d.Step.Trust)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func TestInterviewerDirtyNote(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dirt, err := d.Step.Dirty(ctx, s)
+	dirt, err := d.Step.Dirty(ctx, s, d.Step.Trust)
 	if err != nil {
 		t.Fatal(err)
 	}

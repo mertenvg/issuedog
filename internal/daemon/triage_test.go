@@ -231,7 +231,7 @@ func triageContext(t *testing.T, g *rig, n int) map[string]string {
 	t.Helper()
 	ctx := context.Background()
 	s := g.snapshot(n)
-	d, err := g.d.Step.Dirty(ctx, s)
+	d, err := g.d.Step.Dirty(ctx, s, g.d.Step.Trust)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,7 +426,7 @@ func TestTriagePending(t *testing.T) {
 			tc.setup(f)
 			g := newRig(t, f, newOrigin(t), t.TempDir())
 			s := g.snapshot(1)
-			d, err := g.d.Step.Dirty(context.Background(), s)
+			d, err := g.d.Step.Dirty(context.Background(), s, g.d.Step.Trust)
 			if err != nil {
 				t.Fatal(err)
 			}

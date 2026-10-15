@@ -16,6 +16,11 @@ import (
 type Edit struct {
 	By Author
 	At time.Time
+	// Text is the whole text after the edit, only in the History of an
+	// issue body: GitHub's userContentEdits diff, which is that text rather
+	// than a diff (live, 2026-10-15). It is empty elsewhere, and where
+	// someone deleted the revision.
+	Text string
 }
 
 // commentsQuery reads an issue's body and a page of its comments, each with
@@ -173,6 +178,11 @@ var (
 // Live (2026-10-12), GitHub lists the original post last, by its author,
 // and keeps only the 99 newest edits after it. A revision someone deleted
 // from the history keeps its entry, editor and time; only its text goes.
+// For an issue body, it also reads each entry's diff, which live
+// (2026-10-15) is the body's whole text after the edit: the newest one's
+// equals the body. A comment's text isn't needed (state.Dirty), so the
+// Issue fragment asks for it alone. GitHub merges the two selections of
+// userContentEdits, which have the same arguments, for an Issue.
 const historyQuery = `query($ids: [ID!]!, $cursor: String) {
   nodes(ids: $ids) {
     id
@@ -181,6 +191,9 @@ const historyQuery = `query($ids: [ID!]!, $cursor: String) {
         pageInfo { hasNextPage endCursor }
         nodes { editedAt editor { login __typename } }
       }
+    }
+    ... on Issue {
+      userContentEdits(first: 100, after: $cursor) { nodes { diff } }
     }
   }
 }`
@@ -198,6 +211,7 @@ type historyResponse struct {
 				Nodes []struct {
 					EditedAt time.Time
 					Editor   *actor
+					Diff     *string // null for a comment, or a deleted revision
 				}
 			}
 		}
@@ -207,8 +221,9 @@ type historyResponse struct {
 
 // History reads the edit history of each issue body or comment, by node ID
 // (Snapshot.BodyNode, Comment.Node), oldest first. Once there is an edit,
-// the first entry is the original post. It asks for up to 100 nodes per
-// query, then pages on its own each node with more than 100 entries.
+// the first entry is the original post. A body's entries carry their Text.
+// It asks for up to 100 nodes per query, then pages on its own each node
+// with more than 100 entries.
 func (c *Client) History(ctx context.Context, nodes []string) (map[string][]Edit, error) {
 	all := map[string][]Edit{}
 	for ids := range slices.Chunk(nodes, 100) {
@@ -261,7 +276,11 @@ func (c *Client) historyPage(ctx context.Context, ids []string, cursor *string, 
 			return nil, fmt.Errorf("%w: %s", errNoNode, ids[i])
 		}
 		for _, e := range n.UserContentEdits.Nodes {
-			all[n.ID] = append(all[n.ID], Edit{By: e.Editor.author(), At: e.EditedAt})
+			var text string
+			if e.Diff != nil {
+				text = *e.Diff
+			}
+			all[n.ID] = append(all[n.ID], Edit{By: e.Editor.author(), At: e.EditedAt, Text: text})
 		}
 		if n.UserContentEdits.PageInfo.HasNextPage {
 			more[n.ID] = n.UserContentEdits.PageInfo.EndCursor

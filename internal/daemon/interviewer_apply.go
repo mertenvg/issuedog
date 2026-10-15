@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -173,7 +174,8 @@ func ivRoundCounts(rounds []interviewerRound) []int {
 //     means the type was set before it, so this is skipped, and a type the
 //     owner set since stands.
 //  2. A spec is written into the body (specWriteBody), unless the move is
-//     written already, so an edit made since stands.
+//     written already, so an edit made since stands. It is the App's full
+//     rewrite, so a body that was dirty is clean from then on (#169, Q1a).
 //  3. The move, keyed by the run, with seen= and the run's model= and
 //     effort= (Result.Move):
 //     - A question round's is clarifying → clarifying on more-questions.
@@ -185,11 +187,12 @@ func ivRoundCounts(rounds []interviewerRound) []int {
 //     cc line.
 //     - A spec's is clarifying → spec-review on spec-written, posted with
 //     the next revision (PostRevision), so its marker carries rev= and
-//     body=, the hash of the body GitHub returned. Its text is the type
-//     line when it sets one, the agent's message (the answers to the
-//     revision notes, or what changed), the decisions added without asking,
-//     and the cc line (renderSpecNote). On a dirty body, PostRevision posts
-//     no revision, and the move's text says why.
+//     body=, the hash of the body GitHub returned. Its text is the line
+//     naming whose edit the spec replaced, if the body was dirty
+//     (rewriteReplacedText), the type line when it sets one, the agent's
+//     message (the answers to the revision notes, or what changed), the
+//     decisions added without asking, and the cc line (renderSpecNote).
+//     The body is clean after step 2, so it is a normal revision.
 //
 // A type:* label can be left without its type line: when the comment after
 // it fails, and a trusted comment comes before the retry, the result is
@@ -220,14 +223,23 @@ func (iv *Interviewer) Apply(ctx context.Context, a *Applier, r Result) error {
 		if out.Spec == nil {
 			return wrap(errors.New("the spec outcome has no spec"))
 		}
-		if !moved {
-			if err := specWriteBody(ctx, a, r.S, r.Dirt, renderSpec(*out.Spec)); err != nil {
-				return wrap(err)
-			}
-		}
 		m := r.Move(state.SpecReview, state.TriggerSpecWritten)
 		m.Text = renderSpecNote(out, notify)
-		if err := a.PostRevision(ctx, r.S, r.Dirt.Has, m); err != nil {
+		dirt := r.Dirt
+		if !moved {
+			replaced, err := specWriteBody(ctx, a, r.S, r.Dirt, r.RunID, renderSpec(*out.Spec))
+			if err != nil {
+				return wrap(err)
+			}
+			if replaced != "" {
+				m.Text = strings.TrimSpace(rewriteReplacedText(replaced) + "\n\n" + m.Text)
+			}
+			// The body is the App's full rewrite now, so it's clean
+			// (Applier.Dirty), and the spec gets a normal revision.
+			dirt = maps.Clone(r.Dirt)
+			delete(dirt, state.BodyID)
+		}
+		if err := a.PostRevision(ctx, r.S, dirt.Has, m); err != nil {
 			return wrap(err)
 		}
 		return nil
@@ -252,31 +264,71 @@ func (iv *Interviewer) Apply(ctx context.Context, a *Applier, r Result) error {
 }
 
 // specWriteBody makes spec, the rendered spec, s's whole body, with s's
-// title left as it is (plan #6, assumption 9). On a dirty body (d), the
-// dirty note stays at the top, naming the same login, so the body stays
-// dirty and nothing approves it (SPEC §5.1). A body that has that text
-// already, as after a crash just after the edit, isn't edited again. s
-// takes the body GitHub returns, which the revision's hash is taken from,
-// and the App as its last editor.
-func specWriteBody(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt, spec string) error {
-	body := spec
-	if by, dirty := d[state.BodyID]; dirty {
-		var err error
-		if body, err = note(state.BodyID, by, spec); err != nil {
-			return fmt.Errorf("write the spec into the body: %w", err)
+// title left as it is (plan #6, assumption 9), and returns who made the
+// body it replaced dirty, if anyone did, from d. The App's full rewrite
+// replaces all text in the body, so it cleans it (#169, Q1a): the body
+// starts with the rewrite marker (state.RewriteKind), with run= and, on a
+// dirty body, replaced=, naming who made it dirty, and has no dirty note.
+// A body that is the spec already, as the App's last edit, isn't edited
+// again. That is the case after a crash just after the edit, when its
+// marker names this run: its replaced= is returned, so the move's text is
+// the same. When an earlier run wrote it, the body was clean from then on
+// (Applier.Dirty), so this run replaced nothing. s takes the body GitHub
+// returns, which the revision's hash is taken from, and the App as its
+// last editor.
+func specWriteBody(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt, run, spec string) (string, error) {
+	if m, rest, ok := state.ParseRewrite(s.Body); ok && state.IsApp(s.BodyEdit.By, a.AppSlug) {
+		if specSameText(rest, spec) {
+			logr.Debugf("%s/%s#%d: the body has the spec already", a.Owner, a.Repo, s.Number)
+			if m.Fields["run"] != run {
+				return "", nil
+			}
+			return m.Fields["replaced"], nil
 		}
 	}
-	if specSameText(s.Body, body) {
-		logr.Debugf("%s/%s#%d: the body has the spec already", a.Owner, a.Repo, s.Number)
-		return nil
+	replaced := ""
+	if by, dirty := d[state.BodyID]; dirty {
+		replaced = rewriteLogin(by)
 	}
-	logr.Infof("%s/%s#%d: writing the spec into the body", a.Owner, a.Repo, s.Number)
+	marker := github.Marker{Kind: state.RewriteKind, Fields: map[string]string{"run": run}}
+	if replaced != "" {
+		marker.Fields["replaced"] = replaced
+	}
+	f, err := github.FormatMarker(marker)
+	if err != nil {
+		return "", fmt.Errorf("write the spec into the body: %w", err)
+	}
+	body := f + "\n" + spec
+	if replaced != "" {
+		logr.Infof("%s/%s#%d: writing the spec into the body, replacing %s's edit, which wasn't approved", a.Owner, a.Repo, s.Number, replaced)
+	} else {
+		logr.Infof("%s/%s#%d: writing the spec into the body", a.Owner, a.Repo, s.Number)
+	}
 	is, _, err := a.Client.Issues.Update(ctx, a.Owner, a.Repo, s.Number, gogithub.UpdateIssueRequest{Body: &body})
 	if err != nil {
-		return fmt.Errorf("write the spec into the body: %w", err)
+		return "", fmt.Errorf("write the spec into the body: %w", err)
 	}
 	s.Body, s.BodyEdit = is.GetBody(), github.Edit{By: github.Author{Login: a.AppSlug + "[bot]", Type: "Bot"}, At: is.GetUpdatedAt().Time}
-	return nil
+	return replaced, nil
+}
+
+// rewriteLogin is by, a login as Dirt gives it, for a rewrite marker's
+// replaced=: by if it is a GitHub login (ivLogin), else "unknown", as Dirt
+// names an editor GitHub doesn't name. Dirt's login may come from a note
+// the author typed on content nobody edited, so it isn't the App's text.
+func rewriteLogin(by string) string {
+	if l := ivLogin(by); l != by {
+		return "unknown"
+	}
+	return by
+}
+
+// rewriteReplacedText is the line a spec's move adds when the spec replaced
+// a body that replaced, a login rewriteLogin gave, made dirty. The login
+// is defused, so it mentions nobody.
+func rewriteReplacedText(replaced string) string {
+	return fmt.Sprintf("This spec replaces the whole issue description, with the edit by `%s` that wasn't approved, "+
+		"so the description is clean again.", defuse(replaced))
 }
 
 // specSameText reports whether a and b are the same text, with CRLF and CR

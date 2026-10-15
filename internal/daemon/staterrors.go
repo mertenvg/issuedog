@@ -211,7 +211,7 @@ func ErrorByReaction(trust github.Trust) func(ctx context.Context, a *Applier, s
 // openErrAny reports whether s, which step 1 just ran on and gave inputs,
 // has an open state error (openErrors), so Iterate visits it on every pass.
 func (st *Step) openErrAny(ctx context.Context, s *github.Snapshot, inputs []github.Comment) (bool, error) {
-	d, err := st.Dirty(ctx, s)
+	d, err := st.Dirty(ctx, s, st.Trust)
 	if err != nil {
 		return false, fmt.Errorf("open state errors of %s/%s#%d: %w", st.Owner, st.Repo, s.Number, err)
 	}

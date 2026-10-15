@@ -377,6 +377,21 @@ func TestReviseAndEdits(t *testing.T) {
 		{"nor does a bot's, even one Trust names",
 			authored("other[bot]", func(t testing.TB, f *githubtest.Fake) { f.EditBody(1, "other[bot]", "body v2") }),
 			trusted{"owner": true, "other[bot]": true}, outcome{labels: atReview}, nil},
+		{"the owner's edit of a body someone else filed posts the next revision (epic flow 5, #169)",
+			authored("filer", func(t testing.TB, f *githubtest.Fake) {
+				f.AddReaction(1001, "owner", "+1")
+				f.EditBody(1, "owner", "body v2")
+			}), owners, outcome{comments: []string{posted(2, "body v2", "", "", "1001")}, labels: atReview}, nil},
+		{"so does another trusted user's edit of the owner's body",
+			review(func(t testing.TB, f *githubtest.Fake) { f.EditBody(1, "owner2", "body v2") }), owners,
+			outcome{comments: []string{posted(2, "body v2", "", "", "1001")}, labels: atReview}, nil},
+		{"an edit by a user who has since lost trust posts none, and approves nothing",
+			review(func(t testing.TB, f *githubtest.Fake) {
+				f.EditBody(1, "owner2", "body v2")
+				f.EditBody(1, "owner", "body v3")
+				post(t, f, 1002, "owner", "/approve")
+			}), trusted{"owner": true},
+			outcome{comments: []string{rejected("/approve", strings.Replace(dirtyBody, "mallory", "owner2", 1), "1002")}, labels: atReview, downs: []string{"/approve"}}, nil},
 		{"the App's edit of an untrusted author's body posts the next revision",
 			authored("mallory", func(t testing.TB, f *githubtest.Fake) { f.EditBody(1, app, "body v2") }), owners,
 			outcome{comments: []string{posted(2, "body v2", "", "", "1001")}, labels: atReview}, nil},
