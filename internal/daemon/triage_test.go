@@ -334,7 +334,7 @@ func TestTriageContextTrustedAuthor(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(files["issue.md"], "- Title: Edited\n\nThe body was edited by someone other than its author, so it's in untrusted.md.") {
+	if !strings.Contains(files["issue.md"], "- Title: Edited\n\nThe body was edited by someone who isn't trusted, so it's in untrusted.md.") {
 		t.Errorf("issue.md = %q; want the title, and the body sent to untrusted.md", files["issue.md"])
 	}
 	if !strings.Contains(files["untrusted.md"], "## The issue's body, edited by mallory, so untrusted") ||
