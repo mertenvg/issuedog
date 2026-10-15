@@ -655,6 +655,41 @@ func TestRegisterInterviewerParent(t *testing.T) {
 	}
 }
 
+// TestRegisterInterviewerEMULogin: a trusted Enterprise Managed User's
+// login, handle_shortcode, names its answer in conversation.md and
+// input.md, as system.md names it as a decision's by (#138's whole run).
+func TestRegisterInterviewerEMULogin(t *testing.T) {
+	f := newFake(t)
+	n, _ := ivFiled(f, "epic", false, "from=intake to=clarifying event=5")
+	ivAsked(f, n, 1, 1, 0)
+	answer := f.AddComment(n, "merten_acme", "1a")
+	d := ivDaemon(t, f, newOrigin(t))
+	tr := trusted{"owner": true, "merten_acme": true}
+	d.Step.Trust = tr
+	in := ivInput(t, d, n)
+	in.Inputs = in.Issue.Inputs(in.S, func(c github.Comment) bool { return c.Author.Type != "Bot" && !in.Dirt.Has(c.ID) && tr[c.Author.Login] })
+	raw, err := (&daemon.Interviewer{Daemon: d}).Context(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Context: %v", err)
+	}
+	files := map[string]string{}
+	for name, data := range raw {
+		files[name] = string(data)
+	}
+	for _, w := range []struct{ file, text string }{
+		{"conversation.md", fmt.Sprintf("## Comment %d by merten_acme, in round 1\n\n```text\n1a\n```", answer)},
+		{"input.md", fmt.Sprintf("## Comment %d by merten_acme: an answer to round 1\n\n```text\n1a\n```", answer)},
+		{"system.md", "A decision's `by` is one of: merten_acme."},
+	} {
+		if !strings.Contains(files[w.file], w.text) {
+			t.Errorf("%s lacks\n%s\nin\n%s", w.file, w.text, files[w.file])
+		}
+	}
+	if strings.Contains(files["conversation.md"]+files["input.md"], "someone unnamed") {
+		t.Errorf("an answer is unnamed:\n%s\n%s", files["conversation.md"], files["input.md"])
+	}
+}
+
 // TestInterviewerPromptFails: a prompt main has that can't be used starts
 // no run, and isn't counted: the run once it's fixed is attempt 1. The run
 // is told where its context files are.
@@ -1321,11 +1356,11 @@ func TestInterviewerAdmission(t *testing.T) {
 	})
 	t.Run("logins that aren't", func(t *testing.T) {
 		f := newFake(t)
-		n := f.AddIssue("eve_x", "EVE-TITLE", "EVE-BODY")
+		n := f.AddIssue("eve x", "EVE-TITLE", "EVE-BODY")
 		f.AddLabel(n, "owner", "type:epic")
 		ivApproved(f, n, nil)
-		f.EditBody(n, "eve_x", "EVE-EDITED")
-		f.RenameIssue(n, "eve_x", "EVE-RENAMED")
+		f.EditBody(n, "eve x", "EVE-EDITED")
+		f.RenameIssue(n, "eve x", "EVE-RENAMED")
 		d := ivDaemon(t, f, newOrigin(t))
 		files := ivContext(t, d, n)
 		for _, w := range []struct{ file, text string }{
@@ -1338,7 +1373,7 @@ func TestInterviewerAdmission(t *testing.T) {
 				t.Errorf("%s lacks %q:\n%s", w.file, w.text, files[w.file])
 			}
 		}
-		ivOnlyIn(t, files, "eve_x")
+		ivOnlyIn(t, files, "eve x")
 	})
 	t.Run("trust of the renamer fails", func(t *testing.T) {
 		f := newFake(t)

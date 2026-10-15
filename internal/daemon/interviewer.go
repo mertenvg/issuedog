@@ -642,9 +642,10 @@ func ivStripMarkers(text string) string {
 }
 
 // ivLoginRE is a GitHub login, by GitHub's rules: alphanumerics and
-// single hyphens, starting and ending with an alphanumeric, then "[bot]"
-// for an App. ivLogin checks its length.
-var ivLoginRE = regexp.MustCompile(`^([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)(\[bot\])?$`)
+// single hyphens, starting and ending with an alphanumeric, then an
+// Enterprise Managed User's "_shortcode" suffix, if any (merten_acme),
+// then "[bot]" for an App. ivLogin checks its length.
+var ivLoginRE = regexp.MustCompile(`^([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*(?:_[A-Za-z0-9]+)?)(\[bot\])?$`)
 
 // ivMaxLogin is the longest login GitHub allows.
 const ivMaxLogin = 39
