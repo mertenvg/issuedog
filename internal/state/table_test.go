@@ -196,3 +196,137 @@ func TestTableMatchesSpec(t *testing.T) {
 		t.Errorf("SPEC §7.2 has %d rows, the table %d", n, len(table))
 	}
 }
+
+// fitsItems is an item of each class, by the class's name, and one of a
+// type the pipeline doesn't know.
+var fitsItems = map[string]Item{
+	"epic":           {Type: "epic"},
+	"story":          {Type: "story", HasParent: true},
+	"owner-story":    {Type: "story"},
+	"task":           {Type: "task", FromPlan: true},
+	"owner-task":     {Type: "task", ReachedReady: true},
+	"human-task":     {Type: "task", FromPlan: true, Human: true},
+	"bug":            {Type: "bug", ReachedReady: true},
+	"untyped":        {},
+	"new-bug":        {Type: "bug"},
+	"new-owner-task": {Type: "task"},
+	"feature":        {Type: "feature"},
+}
+
+// Fits, in the acceptance criteria's cases and a few more (plan #7, T1).
+func TestFits(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		s    Stage
+		item Item
+		want bool
+	}{
+		{"an epic at ready", Ready, fitsItems["epic"], false},
+		{"a task at spec-review", SpecReview, fitsItems["task"], false},
+		{"an owner's task at spec-review", SpecReview, fitsItems["new-owner-task"], false},
+		{"an untyped issue at spec-review", SpecReview, fitsItems["untyped"], false},
+		{"a story with a parent at spec-review", SpecReview, fitsItems["story"], false},
+		{"an owner's story at planning", Planning, fitsItems["owner-story"], true},
+		{"an epic at spec-review, its type in capitals", SpecReview, Item{Type: "Epic"}, true},
+		{"a task at in-progress", InProgress, fitsItems["task"], true},
+		{"a new bug at ready", Ready, fitsItems["new-bug"], true},
+		{"a new bug at in-progress", InProgress, fitsItems["new-bug"], false},
+		{"a human task at in-progress", InProgress, fitsItems["human-task"], false},
+		{"an untyped issue at planning", Planning, fitsItems["untyped"], false},
+		{"an untyped issue at closed", Closed, fitsItems["untyped"], true},
+		{"feature at closed", Closed, fitsItems["feature"], false},
+		{"a placeholder from", AnyOpen, fitsItems["epic"], false},
+		{"a placeholder to", PreviousAt, fitsItems["task"], false},
+		{"a placeholder to, untyped", PreviousOrigin, fitsItems["untyped"], false},
+		{"no stage", Stage("nowhere"), fitsItems["task"], false},
+		{"an empty stage", Stage(""), fitsItems["untyped"], false},
+	} {
+		if got := Fits(tt.s, tt.item); got != tt.want {
+			t.Errorf("%s: Fits(%s, %+v) = %v, want %v", tt.name, tt.s, tt.item, got, tt.want)
+		}
+	}
+}
+
+// Fits, for every class at every stage: intake, clarifying and held fit
+// every type; other stages follow the §7.2 rows, other than those from "any
+// open"; an unknown type fits only intake.
+func TestFitsEveryClass(t *testing.T) {
+	always := []Stage{Intake, Clarifying, Held}
+	story := []Stage{Planning, PlanReview, Planned, Closed}
+	task := []Stage{Ready, InProgress, Verifying, PROpen, NeedsHuman, Closed}
+	want := map[string][]Stage{
+		"epic":           append([]Stage{SpecReview}, story...),
+		"story":          story,
+		"owner-story":    append([]Stage{SpecReview}, story...),
+		"task":           task,
+		"owner-task":     task,
+		"human-task":     {NeedsHuman, Closed},
+		"bug":            task,
+		"untyped":        {Closed},
+		"new-bug":        {Ready, Closed},
+		"new-owner-task": {Ready, Closed},
+	}
+	if len(want)+1 != len(fitsItems) {
+		t.Fatalf("%d classes for %d items", len(want), len(fitsItems))
+	}
+	for name, it := range fitsItems {
+		c, err := ClassOf(it)
+		fits := slices.Concat(want[name], always)
+		switch {
+		case name == "feature" && !errors.Is(err, ErrUnknownType):
+			t.Fatalf("ClassOf(%+v) = %s, %v; want an unknown type", it, c, err)
+		case name == "feature":
+			fits = []Stage{Intake}
+		case err != nil || c.String() != name:
+			t.Fatalf("ClassOf(%+v) = %s, %v; want %s", it, c, err, name)
+		}
+		for _, s := range append(slices.Clone(openStages), Closed) {
+			if got := Fits(s, it); got != slices.Contains(fits, s) {
+				t.Errorf("Fits(%s, %s) = %v, want %v", s, name, got, !got)
+			}
+		}
+	}
+}
+
+// Leaving out the rows from "any open" leaves out no stage they lead to:
+// another row, or the rule for held, has each of their classes there.
+func TestFitsAnyOpenRowsAreCovered(t *testing.T) {
+	var n int
+	for _, r := range table {
+		if r.From() != AnyOpen {
+			continue
+		}
+		n++
+		for name, it := range fitsItems {
+			if c, err := ClassOf(it); err == nil && r.Classes()&c != 0 && !Fits(r.To(), it) {
+				t.Errorf("%s → %s on %s: %s doesn't fit there", r.From(), r.To(), r.Trigger(), name)
+			}
+		}
+	}
+	if n != 7 {
+		t.Errorf("%d rows from any open, want 7", n)
+	}
+}
+
+// Fits's own rules hold whatever the table says: with no rows, intake,
+// clarifying and held still fit every type and nothing else fits; and a
+// row from "any open" adds no stage to its class.
+func TestFitsRulesBesideTheTable(t *testing.T) {
+	saved := table
+	t.Cleanup(func() { table = saved })
+	table = nil
+	for name, it := range fitsItems {
+		for _, s := range append(slices.Clone(openStages), Closed) {
+			want := s == Intake || (name != "feature" && (s == Clarifying || s == Held))
+			if got := Fits(s, it); got != want {
+				t.Errorf("with no rows, Fits(%s, %s) = %v, want %v", s, name, got, want)
+			}
+		}
+	}
+	table = []Row{{AnyOpen, Ready, ClassEpic, TriggerHold}, {AnyOpen, Closed, All, TriggerClosed}}
+	for _, s := range []Stage{Ready, Closed} {
+		if Fits(s, fitsItems["epic"]) {
+			t.Errorf("with only rows from any open, an epic fits %s", s)
+		}
+	}
+}
