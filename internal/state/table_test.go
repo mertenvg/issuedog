@@ -307,3 +307,26 @@ func TestFitsAnyOpenRowsAreCovered(t *testing.T) {
 		t.Errorf("%d rows from any open, want 7", n)
 	}
 }
+
+// Fits's own rules hold whatever the table says: with no rows, intake,
+// clarifying and held still fit every type and nothing else fits; and a
+// row from "any open" adds no stage to its class.
+func TestFitsRulesBesideTheTable(t *testing.T) {
+	saved := table
+	t.Cleanup(func() { table = saved })
+	table = nil
+	for name, it := range fitsItems {
+		for _, s := range append(slices.Clone(openStages), Closed) {
+			want := s == Intake || (name != "feature" && (s == Clarifying || s == Held))
+			if got := Fits(s, it); got != want {
+				t.Errorf("with no rows, Fits(%s, %s) = %v, want %v", s, name, got, want)
+			}
+		}
+	}
+	table = []Row{{AnyOpen, Ready, ClassEpic, TriggerHold}, {AnyOpen, Closed, All, TriggerClosed}}
+	for _, s := range []Stage{Ready, Closed} {
+		if Fits(s, fitsItems["epic"]) {
+			t.Errorf("with only rows from any open, an epic fits %s", s)
+		}
+	}
+}

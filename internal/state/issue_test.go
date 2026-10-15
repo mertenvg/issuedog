@@ -181,7 +181,9 @@ func TestDeriveTriage(t *testing.T) {
 // covers nothing.
 func TestDeriveAcksByKind(t *testing.T) {
 	s := snap("", []github.Author{appBot, appBot, owner, appBot},
-		"<!-- issuedog:error kind=attempts key=5 --><!-- issuedog:error kind=transition key=5 --><!-- issuedog:error kind=labels key=6 -->",
+		"<!-- issuedog:error kind=attempts key=5 --><!-- issuedog:error kind=transition key=5 --><!-- issuedog:error kind=labels key=6 -->"+
+			// An error with no kind, and markers of other kinds, are neither.
+			"<!-- issuedog:error key=24 --><!-- issuedog:revert kind=labels key=25 --><!-- issuedog:reply kind=type key=26 ack=r27 -->",
 		"<!-- issuedog:error kind=attempts key=5 ack=r9 --><!-- issuedog:error key=6 ack=r10 --><!-- issuedog:error kind=type ack=r13 -->",
 		"<!-- issuedog:error kind=disagreement key=7 ack=r11 -->",
 		"<!-- issuedog:error kind=disagreement key=8 ack=r12 -->")
@@ -271,6 +273,8 @@ func TestDeriveErrorAndTransitionComments(t *testing.T) {
 			"<!-- issuedog:transition from=clarifying to=held at=clarifying reason=owner cmd=5 -->"), clean, 2, Held},
 		{"a close counts", snap("", []github.Author{appBot, appBot}, toClarifying,
 			"<!-- issuedog:transition from=clarifying to=closed cmd=5 -->"), clean, 2, Closed},
+		{"its comment, not its seen", snap("", []github.Author{appBot, appBot, appBot}, toClarifying, "a question",
+			"<!-- issuedog:transition from=clarifying to=spec-review run=b seen=2 -->"), clean, 3, SpecReview},
 	} {
 		if is := Derive(tt.s, slug, tt.dirty); is.TransitionComment != tt.want || is.Stage != tt.stage {
 			t.Errorf("%s: stage %s from comment %d, want %s from comment %d", tt.name, is.Stage, is.TransitionComment, tt.stage, tt.want)

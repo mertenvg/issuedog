@@ -210,6 +210,8 @@ func Fits(s Stage, it Item) bool {
 	}
 	switch s {
 	case Intake, Clarifying, Held:
+		// Rows for all lead from each of these today, but the rule doesn't
+		// rest on that.
 		return true
 	}
 	for _, r := range table {
