@@ -1,9 +1,12 @@
 package daemon
 
 import (
+	"context"
+	"slices"
 	"testing"
 
 	"github.com/mertenvg/issuedog/internal/github"
+	"github.com/mertenvg/issuedog/internal/github/githubtest"
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
@@ -26,6 +29,45 @@ func TestFlagInPipeline(t *testing.T) {
 		if got := flagInPipeline(tc.s, tc.is); got != tc.want {
 			t.Errorf("%s: flagInPipeline = %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+// flagLeave checks its comment first: with a clean "left" marker keyed by
+// its key on the issue already, it only finishes the labels. A marker of
+// another key, a dirty one, or another kind's, doesn't count.
+func TestFlagLeaveCheckedFirst(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		dirty      bool
+		comments   int
+	}{
+		{"its own", "<!-- issuedog:triage verdict=leave cmd=r5 -->", false, 1},
+		{"another key's", "<!-- issuedog:triage verdict=leave cmd=r6 -->", false, 2},
+		{"a dirty one", "<!-- issuedog:triage verdict=leave cmd=r5 -->", true, 2},
+		{"a transition's", "<!-- issuedog:transition from=intake to=clarifying cmd=r5 -->", false, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := githubtest.New(t, "o/r", "issuedog")
+			f.AddIssue("owner", "Title", "body")
+			id := f.AddComment(1, "issuedog[bot]", tc.body)
+			c := f.Client(t)
+			s, err := c.Snapshot(context.Background(), "o", "r", 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d := Dirt{}
+			if tc.dirty {
+				d[id] = "mallory"
+			}
+			a := &Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog"}
+			if err := flagLeave(context.Background(), a, s, d, state.ReactionKey(5), "Left."); err != nil {
+				t.Fatal(err)
+			}
+			is := f.State().Issues[0]
+			if len(is.Comments) != tc.comments || !slices.Equal(is.Labels, []string{triageLeftLabel}) {
+				t.Errorf("%d comments, labels %v; want %d and triage:left", len(is.Comments), is.Labels, tc.comments)
+			}
+		})
 	}
 }
 

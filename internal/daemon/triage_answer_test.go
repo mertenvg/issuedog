@@ -373,6 +373,75 @@ func TestFlagVisitClosed(t *testing.T) {
 	}
 }
 
+// A 👍 on a flag recommending leave applies once. Its "left" comment is
+// then the latest triage marker, so a second visit writes nothing, even
+// with the issue still at intake and no stage label, and a visit after a
+// crash between that comment and triage:left only adds the label, by
+// FlagVisit: no second "left" comment.
+func TestFlagLeaveByReactionAppliesOnce(t *testing.T) {
+	setup := flagIssue("owner", flagWith("leave", func(_ testing.TB, f *githubtest.Fake) { f.AddReaction(1001, "owner", "+1") }))
+	want := []string{flagText("leave"), flagLeft(flagTakes+": issuedog leaves this issue to people.", "r1002")}
+	for _, crash := range []bool{false, true} {
+		t.Run(map[bool]string{false: "a second visit", true: "after a crash before the label"}[crash], func(t *testing.T) {
+			f := setup(t)
+			if crash {
+				f.FailWrite(2) // the add of triage:left, after the comment
+			}
+			pass := flagPass(t, flagOwners)
+			if err := pass(f); (err != nil) != crash {
+				t.Fatalf("first visit: %v", err)
+			}
+			if got := f.State().Issues[0].Labels; crash && !slices.Equal(got, []string{"triage:ask"}) {
+				t.Fatalf("labels after the crash = %v, want triage:ask still", got)
+			}
+			n := len(f.Writes())
+			if err := pass(f); err != nil {
+				t.Fatal(err)
+			}
+			is := f.State().Issues[0]
+			if got := commentBodies(f, 1); !slices.Equal(got, want) || !slices.Equal(is.Labels, []string{"triage:left"}) {
+				t.Errorf("comments %q, labels %v; want one left comment and triage:left", got, is.Labels)
+			}
+			for _, w := range f.Writes()[n:] {
+				if !strings.Contains(w.Path, "/labels") {
+					t.Errorf("the second visit wrote %+v, want only label writes", w)
+				}
+			}
+			if !crash && len(f.Writes()) != n {
+				t.Errorf("the second visit wrote %+v, want nothing", f.Writes()[n:])
+			}
+		})
+	}
+}
+
+// FlagByReaction reads no reactions on a closed issue, or on one past
+// intake, whatever its flag says.
+func TestFlagByReactionReadsNothingOffIntake(t *testing.T) {
+	for name, more := range map[string]func(f *githubtest.Fake){
+		"closed":        func(f *githubtest.Fake) { f.Close(1) },
+		"at clarifying": func(f *githubtest.Fake) { flagTracked(f, 1, "r1002") },
+		"held from intake": func(f *githubtest.Fake) {
+			f.AddComment(1, app, "<!-- issuedog:transition from=intake to=held at=intake reason=owner cmd=5 -->")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := flagIssue("owner", flagWith("handle", func(_ testing.TB, f *githubtest.Fake) { f.AddReaction(1001, "owner", "+1") }))(t)
+			more(f)
+			a, s, err := applier(t, f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := len(f.Requests())
+			if err := daemon.FlagByReaction(flagOwners)(context.Background(), a, s, daemon.Dirt{}); err != nil {
+				t.Fatal(err)
+			}
+			if got := f.Requests()[before:]; len(got) != 0 {
+				t.Errorf("FlagByReaction made %+v, want no request", got)
+			}
+		})
+	}
+}
+
 // An error reading trust or the reactions, or making a write, fails the
 // pass, wrapped.
 func TestFlagByReactionErrors(t *testing.T) {

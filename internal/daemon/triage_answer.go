@@ -155,9 +155,13 @@ func flagInPipeline(s *github.Snapshot, is state.Issue) string {
 //   - leave records "left", keyed the same way, unless the issue is in the
 //     pipeline (flagInPipeline), as /ignore's check says.
 //
-// 👍s on an older flag, untrusted 👍s and the App's are ignored. A flag
-// answered already, by a transition after it, is too, unless that
-// transition is its earliest 👍's own, which is only finished.
+// 👍s on an older flag, untrusted 👍s and the App's are ignored, and so is
+// a flag answered already by a transition after it, as when an override
+// brought the issue back to intake. Each answer applies once: its move
+// takes the issue past intake, and its "left" comment is the latest triage
+// marker, so the flag is no longer the latest. A crash before the labels
+// leaves them to FlagVisit, and a crash between a move's marker and its
+// stage label to the label rules' unfinished-write repair (SPEC §5.1).
 func FlagByReaction(trust github.Trust) func(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt) error {
 	return func(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt) error {
 		wrap := func(err error) error {
@@ -189,7 +193,7 @@ func FlagByReaction(trust github.Trust) func(ctx context.Context, a *Applier, s 
 			return nil
 		}
 		key := state.ReactionKey(first.ID)
-		if !is.Moved(key) && lastTransition(s, a.AppSlug, d.Has) > flag.Comment {
+		if lastTransition(s, a.AppSlug, d.Has) > flag.Comment {
 			logr.Debugf("%s/%s#%d: ignoring the 👍 on the flag in comment %d: a move after it answered it", a.Owner, a.Repo, s.Number, flag.Comment)
 			return nil
 		}
@@ -289,7 +293,7 @@ func flagAdmittedAt(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt,
 			}
 			key := m.Fields["cmd"]
 			if r, ok := strings.CutPrefix(key, "r"); ok {
-				if id, err := strconv.ParseInt(r, 10, 64); err == nil && id > 0 {
+				if id, err := strconv.ParseInt(r, 10, 64); err == nil { // no reaction has an ID of 0 or less, so none matches one
 					reactions = append(reactions, id)
 				}
 				continue

@@ -984,7 +984,7 @@ func TestInterviewerAdmission(t *testing.T) {
 			move := flagTracked(f, n, fmt.Sprint(cmd))
 			f.RenameIssue(n, "eve", "EVE-RENAMED")
 			ivAsked(f, n, 1, 1, move)
-			f.EditComment(move, "mallory", "harmless")
+			f.EditComment(move, "mallory", fmt.Sprintf("Edited.\n\n<!-- issuedog:transition from=intake to=clarifying cmd=%d -->", cmd)) // the marker stays, dirty
 			return n
 		}, map[string][]string{"EVE-BEFORE-LABEL": {"issue.md"}, "EVE-RENAMED": {"untrusted.md"}}, "```text\nEVE-BEFORE-LABEL\n```"},
 		{"the /track's move deleted: the label's time", func(f *githubtest.Fake) int {
@@ -1003,7 +1003,7 @@ func TestInterviewerAdmission(t *testing.T) {
 			f.EditBody(n, "eve", "EVE-BEFORE-LABEL")
 			move := flagTracked(f, n, fmt.Sprintf("r%d", r))
 			f.RenameIssue(n, "eve", "EVE-RENAMED")
-			f.EditComment(move, "mallory", "harmless")
+			f.EditComment(move, "mallory", fmt.Sprintf("Edited.\n\n<!-- issuedog:transition from=intake to=clarifying cmd=r%d -->", r))
 			return n
 		}, map[string][]string{"EVE-BEFORE-LABEL": {"issue.md"}, "EVE-RENAMED": {"untrusted.md"}}, "```text\nEVE-BEFORE-LABEL\n```"},
 		{"the /track deleted: the label's time", func(f *githubtest.Fake) int {
@@ -1038,7 +1038,7 @@ func TestInterviewerAdmission(t *testing.T) {
 			r := f.AddReaction(flag, "owner", "+1")
 			f.EditBody(n, "eve", "EVE-BEFORE-LABEL")
 			flagTracked(f, n, fmt.Sprintf("r%d", r))
-			f.EditComment(flag, "mallory", "harmless")
+			f.EditComment(flag, "mallory", flagText("handle")+" edited")
 			return n
 		}, map[string][]string{"EVE-BEFORE-LABEL": {"issue.md"}}, "```text\nEVE-BEFORE-LABEL\n```"},
 		// Only what a trusted user did counts: mallory's /track or 👍, or
@@ -1080,6 +1080,38 @@ func TestInterviewerAdmission(t *testing.T) {
 			f.AddComment(n, app, fmt.Sprintf("<!-- issuedog:transition from=intake to=clarifying cmd=%d -->", first))
 			return n
 		}, map[string][]string{"EVE-EDITED": {"untrusted.md"}}, bodyAfter},
+		{"a move from another stage names no admission", func(f *githubtest.Fake) int {
+			n := ivEve(f, "epic")
+			cmd := f.AddComment(n, "owner", "/revise shorter")
+			f.EditBody(n, "eve", "EVE-BEFORE-LABEL")
+			ivApproved(f, n, nil)
+			f.AddComment(n, app, fmt.Sprintf("<!-- issuedog:transition from=spec-review to=clarifying cmd=%d -->", cmd))
+			return n
+		}, map[string][]string{"EVE-BEFORE-LABEL": {"issue.md"}}, "```text\nEVE-BEFORE-LABEL\n```"},
+		{"only the 👍 the move names dates it", func(f *githubtest.Fake) int {
+			n := ivEve(f, "epic")
+			flag := flagPosted(f, n)
+			f.AddReaction(flag, "alice", "+1") // trusted, but the move names another
+			f.EditBody(n, "eve", "EVE-BEFORE-LABEL")
+			flagTracked(f, n, fmt.Sprintf("r%d", f.AddReaction(flag, "owner", "+1")))
+			return n
+		}, map[string][]string{"EVE-BEFORE-LABEL": {"issue.md"}}, "```text\nEVE-BEFORE-LABEL\n```"},
+		{"a move to no stage names no admission", func(f *githubtest.Fake) int {
+			n := ivEve(f, "epic")
+			cmd := f.AddComment(n, "owner", "/track")
+			f.AddComment(n, app, fmt.Sprintf("<!-- issuedog:transition from=intake to=nowhere cmd=%d -->", cmd))
+			f.EditBody(n, "eve", "EVE-BEFORE-LABEL")
+			ivApproved(f, n, nil)
+			return n
+		}, map[string][]string{"EVE-BEFORE-LABEL": {"issue.md"}}, "```text\nEVE-BEFORE-LABEL\n```"},
+		{"a move that stays at intake names no admission", func(f *githubtest.Fake) int {
+			n := ivEve(f, "epic")
+			cmd := f.AddComment(n, "owner", "/track")
+			f.AddComment(n, app, fmt.Sprintf("<!-- issuedog:transition from=intake to=intake cmd=%d -->", cmd))
+			f.EditBody(n, "eve", "EVE-BEFORE-LABEL")
+			ivApproved(f, n, nil)
+			return n
+		}, map[string][]string{"EVE-BEFORE-LABEL": {"issue.md"}}, "```text\nEVE-BEFORE-LABEL\n```"},
 		{"a move to held names no admission", func(f *githubtest.Fake) int {
 			n := ivEve(f, "epic")
 			cmd := f.AddComment(n, "owner", "/hold")
