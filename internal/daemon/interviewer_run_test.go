@@ -471,9 +471,9 @@ func (w *wholeRun) run() {
 		t.Errorf("interviewer run 3: conversation.md =\n%s\nwant round 2 labelled, and %s a by in system.md", files["conversation.md"], wholeRunOther)
 	}
 	is := f.State().Issues[n-1]
-	body := wholeRunGolden(t, "spec", n)
+	body := specBody("run"+strconv.Itoa(w.skip+3), wholeRunGolden(t, "spec", n))
 	if is.Body != body || is.Title != "Quote expiry" || is.BodyEditedBy != app {
-		t.Errorf("the spec: title %q, body edited by %q:\n%s\nwant the title kept, and the App's body, spec.md:\n%s", is.Title, is.BodyEditedBy, is.Body, body)
+		t.Errorf("the spec: title %q, body edited by %q:\n%s\nwant the title kept, and the App's body, its rewrite marker and spec.md:\n%s", is.Title, is.BodyEditedBy, is.Body, body)
 	}
 	_, decisions, _ := strings.Cut(is.Body, "\n## Decisions\n\n")
 	for _, q := range []string{"Q1.1", "Q1.2", "Q2.1"} {

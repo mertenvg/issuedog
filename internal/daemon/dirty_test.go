@@ -25,7 +25,7 @@ func dirt(t *testing.T, f *githubtest.Fake) (*daemon.Applier, *github.Snapshot, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := a.Dirty(context.Background(), s)
+	d, err := a.Dirty(context.Background(), s, trusted{"owner": true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func markPass(t *testing.T) func(*githubtest.Fake) error {
 		if err != nil {
 			return err
 		}
-		d, err := a.Dirty(context.Background(), s)
+		d, err := a.Dirty(context.Background(), s, trusted{"owner": true})
 		if err != nil {
 			return err
 		}
@@ -271,7 +271,7 @@ func TestDirtyFailsClosed(t *testing.T) {
 			id := tc.change(s)
 			var warn bytes.Buffer
 			stop := logr.AddWriter(&warn, logr.WithFilter(logr.W))
-			d, err := a.Dirty(context.Background(), s)
+			d, err := a.Dirty(context.Background(), s, trusted{"owner": true})
 			logr.Wait()
 			stop()
 			if err != nil {
@@ -299,7 +299,7 @@ func TestDirtyHistoryError(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.FailGraphQL("boom")
-	if d, err := a.Dirty(context.Background(), s); err == nil {
+	if d, err := a.Dirty(context.Background(), s, trusted{"owner": true}); err == nil {
 		t.Errorf("dirt = %v with a failed history read, want an error", d)
 	}
 }
@@ -321,7 +321,7 @@ func TestDirtyNoteOutlivesCappedHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if by, dirty := state.Dirty(s.Comments[0].Author, h[s.Comments[0].Node], slug); dirty || len(h[s.Comments[0].Node]) != 100 {
+	if by, dirty := state.Dirty(s.Comments[0].ID, s.Comments[0].Author, h[s.Comments[0].Node], slug, nil); dirty || len(h[s.Comments[0].Node]) != 100 {
 		t.Errorf("the capped history has %d entries and is dirty by %v, %v; want 100 and clean", len(h[s.Comments[0].Node]), by, dirty)
 		return
 	}

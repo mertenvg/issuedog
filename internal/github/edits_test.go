@@ -198,8 +198,8 @@ func TestHistory(t *testing.T) {
 	s := snapshot(t, f, n)
 	h := history(t, f, s.BodyNode, s.Comments[0].Node, s.Comments[1].Node)
 	bot, owner := github.Author{Login: "issuedog[bot]", Type: "Bot"}, github.Author{Login: "owner", Type: "User"}
-	want := map[string][]github.Edit{
-		s.BodyNode:         {{By: owner, At: at(1)}, {By: owner, At: at(6)}},
+	want := map[string][]github.Edit{ // only a body's entries have their text
+		s.BodyNode:         {{By: owner, At: at(1), Text: "body"}, {By: owner, At: at(6), Text: "body2"}},
 		s.Comments[0].Node: {{By: bot, At: at(2)}, {By: github.Author{Login: "mallory", Type: "User"}, At: at(4)}, {By: bot, At: at(5)}},
 	}
 	if !reflect.DeepEqual(h, want) {
@@ -207,6 +207,23 @@ func TestHistory(t *testing.T) {
 	}
 	if q := f.HistoryQueries(); q != 1 {
 		t.Errorf("history queries = %d, want 1 for three nodes", q)
+	}
+}
+
+// A revision someone deleted keeps its editor and time, but no text: its
+// diff is null.
+func TestHistoryDeletedRevision(t *testing.T) {
+	f := githubtest.New(t, "o/r", "issuedog")
+	n := f.AddIssue("owner", "Title", "body") // 1
+	f.EditBody(n, "issuedog[bot]", "spec")    // 2
+	f.EditBody(n, "owner", "spec2")           // 3
+	f.DeleteRevision(n, 1)
+	s := snapshot(t, f, n)
+	got := history(t, f, s.BodyNode)[s.BodyNode]
+	bot, owner := github.Author{Login: "issuedog[bot]", Type: "Bot"}, github.Author{Login: "owner", Type: "User"}
+	want := []github.Edit{{By: owner, At: at(1), Text: "body"}, {By: bot, At: at(2)}, {By: owner, At: at(3), Text: "spec2"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("history =\n%+v\nwant\n%+v", got, want)
 	}
 }
 

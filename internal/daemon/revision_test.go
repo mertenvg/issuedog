@@ -230,7 +230,7 @@ func revisionPass(t *testing.T, m daemon.Move) func(*githubtest.Fake) error {
 		if err != nil {
 			return err
 		}
-		d, err := a.Dirty(context.Background(), s)
+		d, err := a.Dirty(context.Background(), s, trusted{"owner": true})
 		if err != nil {
 			return err
 		}
