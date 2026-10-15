@@ -185,6 +185,41 @@ func (r Row) matchTo(s Stage, class Class) bool {
 	return r.to == s
 }
 
+// Fits reports whether an issue like it can be at stage s (SPEC §4, plan
+// #7, assumption 9). If not, a type change left the issue where it doesn't
+// belong, and that is a kind=type state error (SPEC §5.3).
+//   - An unknown type, which ClassOf rejects, fits only intake: the
+//     pipeline never takes it in.
+//   - Intake, clarifying and held fit every other type, untyped included:
+//     any issue can be at them, and the interviewer types it at clarifying.
+//   - Any other stage, closed included, fits the issue's class when a §7.2
+//     row for that class has the stage as its from or to. The rows from
+//     "any open" don't count, as their from would let their classes be
+//     at every stage. Their to doesn't count either, and needn't: other rows
+//     have each of their classes at that stage.
+//
+// Anything that isn't a §7.1 stage or closed, such as AnyOpen, fits nothing.
+func Fits(s Stage, it Item) bool {
+	if !s.Open() && s != Closed {
+		return false
+	}
+	c, err := ClassOf(it)
+	if err != nil {
+		// ClassOf's only error is an unknown type.
+		return s == Intake
+	}
+	switch s {
+	case Intake, Clarifying, Held:
+		return true
+	}
+	for _, r := range table {
+		if r.from != AnyOpen && r.classes&c != 0 && (r.from == s || r.to == s) {
+			return true
+		}
+	}
+	return false
+}
+
 var classNames = []string{"epic", "story", "owner-story", "task", "owner-task", "human-task", "bug", "untyped", "new-bug", "new-owner-task"}
 
 // String names the classes in c, joined by "|".

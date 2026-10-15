@@ -108,7 +108,7 @@ func (*Triage) Pending(in Input) bool {
 		}
 	}
 	for e := range in.Issue.Errors {
-		if e.Kind == "transition" && triageAdmissionKey(e.Key) && !in.Issue.Acked[e.Key] {
+		if e.Kind == "transition" && triageAdmissionKey(e.Key) && !in.Issue.Acked(e.Kind, e.Key) {
 			return false
 		}
 	}
