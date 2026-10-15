@@ -3,6 +3,7 @@ package daemon_test
 import (
 	"bytes"
 	"context"
+	"net/http"
 	"reflect"
 	"slices"
 	"strings"
@@ -157,7 +158,7 @@ func TestDigestLowestWinsAndStaysOut(t *testing.T) {
 	if !slices.Equal(visits, []int{3}) {
 		t.Errorf("step 1 visited %v; want only the user's issue 3", visits)
 	}
-	if want := "o/r has more than one digest: #1 is the digest, and the App's issues [2], which carry its marker too, are left alone"; strings.Count(logs.String(), want) != 1 {
+	if want := "o/r has more than one digest: #1 is the digest, and the App's issues [2], which are digests too, are left alone"; strings.Count(logs.String(), want) != 1 {
 		t.Errorf("logs = %q; want %q once", logs.String(), want)
 	}
 }
@@ -262,6 +263,10 @@ func TestDigestClose(t *testing.T) {
 	step("mallory closes", func() { f.CloseBy(1, "mallory") }, []string{"PATCH /issues/1"}, false)
 	step("a bot closes", func() { f.CloseBy(1, "other[bot]") }, []string{"PATCH /issues/1"}, false)
 	step("a ghost closes", func() { f.Close(1) }, []string{"PATCH /issues/1"}, false)
+	// The listing is open and reopened, as last resolved, but newer.
+	step("owner closes, then mallory reopens, between passes", func() { f.CloseBy(1, "owner"); f.ReopenBy(1, "mallory") },
+		[]string{"PATCH /issues/1"}, true)
+	step("owner reopens", func() { f.ReopenBy(1, "owner") }, nil, false)
 	step("owner closes again", func() { f.CloseBy(1, "owner") }, nil, true)
 
 	// What stands is read from the timeline, so a new daemon finds it too.
@@ -321,6 +326,149 @@ func TestDigestCloseEventLate(t *testing.T) {
 	iterate(t, d)
 	if got := digestWrites(f, 1); len(got) != 0 || f.State().Issues[0].Closed {
 		t.Errorf("writes %q on the owner's late reopen; want none", got)
+	}
+}
+
+// A start's first pass leaves the pin note alone on a digest that is off: a
+// trusted close stands, and one closed again after an untrusted reopen is
+// off too. Neither is pinned or edited.
+func TestDigestOffNotPinned(t *testing.T) {
+	for name, tc := range map[string]struct {
+		change func(*githubtest.Fake)
+		want   []string
+	}{
+		"closed by the owner": {func(f *githubtest.Fake) { f.CloseBy(1, "owner") }, nil},
+		"reopened by mallory": {func(f *githubtest.Fake) { f.CloseBy(1, "owner"); f.ReopenBy(1, "mallory") }, []string{"PATCH /issues/1"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t)
+			f.AddIssue(app, "issuedog digest", digestPending)
+			tc.change(f)
+			iterate(t, digestDaemon(t, f, newOrigin(t), nil))
+			is := f.State().Issues
+			if got := digestWrites(f, 0); !reflect.DeepEqual(got, tc.want) || len(is) != 1 || !is[0].Closed || is[0].Pinned || is[0].Body != digestPending {
+				t.Errorf("writes %q, issues %+v; want %q, and the digest closed, unpinned and with its note", got, is, tc.want)
+			}
+		})
+	}
+}
+
+// GitHub answering a pin with no error but no pin is a refusal: logged,
+// named in the note, and not tried again until the next start.
+func TestDigestPinNotPinned(t *testing.T) {
+	var logs bytes.Buffer
+	stop := logr.AddWriter(&logs, logr.WithFilter(logr.E))
+	defer stop()
+	f := newFake(t)
+	graphql := 0
+	f.AnswerOnce(func(r githubtest.Request) bool {
+		if r.Path == "/graphql" {
+			graphql++
+		}
+		return graphql == 2 // the pin, after IsPinned
+	}, http.StatusOK)
+	d := digestDaemon(t, f, newOrigin(t), nil)
+	iterate(t, d)
+	logr.Wait()
+	note := "I couldn't pin this issue: `GitHub answered without pinning it`. Pin it by hand.\n\n"
+	if is := f.State().Issues[0]; is.Pinned || is.Body != note+digestList {
+		t.Fatalf("issue %+v; want it unpinned, with the note", is)
+	}
+	if want := "pinning o/r#1, the digest, failed"; !strings.Contains(logs.String(), want) {
+		t.Errorf("logs = %q; want %q", logs.String(), want)
+	}
+	reqs := len(f.Requests())
+	iterate(t, d)
+	if got := digestRequests(f, reqs); len(got) != 0 {
+		t.Errorf("the next pass sent %+v about the digest; want none", got)
+	}
+}
+
+// An edit that would drop the pin note, and fails, is the pass's error, and
+// the next pass checks again and drops it, so the note doesn't stay till a
+// restart.
+func TestDigestPinNoteEditFails(t *testing.T) {
+	f := newFake(t)
+	d := digestDaemon(t, f, newOrigin(t), nil)
+	f.FailWrite(3) // the create, the pin, then this edit
+	if err := d.Iterate(context.Background()); err == nil || !strings.Contains(err.Error(), "edit the body of the digest") {
+		t.Fatalf("Iterate = %v; want the edit's error", err)
+	}
+	iterate(t, d)
+	want := []string{"POST /issues", "POST /graphql", "PATCH /issues/1", "PATCH /issues/1"}
+	if got := digestWrites(f, 0); !reflect.DeepEqual(got, want) || f.State().Issues[0].Body != digestList || !f.State().Issues[0].Pinned {
+		t.Errorf("writes %q, issue %+v; want %q, and the note gone", got, f.State().Issues[0], want)
+	}
+}
+
+// An edit that takes the marker out, by the owner or by mallory, changes
+// nothing: the digest stays the digest, out of the pipeline, with no new
+// digest, no triage run, flag or dirty note, and the next pass puts the
+// marker back, with the pin note the body should have. So does a new
+// daemon, which finds the digest by its title.
+func TestDigestMarkerRemoved(t *testing.T) {
+	for _, tc := range []struct {
+		name, by         string
+		failPin, restart bool
+	}{
+		{"by the owner", "owner", false, false},
+		{"by mallory", "mallory", false, false},
+		{"with the pin note", "owner", true, false},
+		{"before a restart", "mallory", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, o := newFake(t), triageOrigin(t)
+			if tc.failPin {
+				f.FailPin("Forbidden")
+			}
+			rig := func() *rig {
+				g := triageRig(t, f, o, t.TempDir())
+				g.d.Digest = true
+				g.claude(triageOut("ask", false, triageReason, triageSummary), 0)
+				return g
+			}
+			g := rig()
+			g.pass()
+			want := f.State().Issues[0].Body
+			f.EditBody(1, tc.by, "gone")
+			if tc.restart {
+				g = rig()
+			}
+			from := len(f.Writes())
+			g.pass()
+			g.pass()
+			is := f.State().Issues
+			if len(is) != 1 || is[0].Body != want || len(is[0].Comments) != 0 || len(is[0].Labels) != 0 || g.runs() != 0 {
+				t.Errorf("issues %+v, %d runs; want the one digest, its body put back as %q, no comment or label, and no run", is, g.runs(), want)
+			}
+			if got := digestWrites(f, from); !reflect.DeepEqual(got, []string{"PATCH /issues/1"}) {
+				t.Errorf("writes = %q; want the edit that puts the marker back", got)
+			}
+		})
+	}
+}
+
+// Replay passes for the edit that puts the marker back.
+func TestDigestMarkerReplay(t *testing.T) {
+	o := newOrigin(t)
+	githubtest.Replay(t, func(t testing.TB) *githubtest.Fake {
+		f := newFake(t)
+		f.SetPinned(f.AddIssue(app, "issuedog digest", digestList), true)
+		f.EditBody(1, "mallory", "gone")
+		return f
+	}, func(f *githubtest.Fake) error { return digestDaemon(t, f, o, nil).Iterate(context.Background()) })
+}
+
+// The gap listed documents: a digest whose marker and title edits changed
+// before a restart isn't found, so a new one is created.
+func TestDigestRestartGap(t *testing.T) {
+	f, o := newFake(t), newOrigin(t)
+	iterate(t, digestDaemon(t, f, o, nil))
+	f.EditBody(1, "mallory", "gone")
+	f.RenameIssue(1, "mallory", "Renamed")
+	iterate(t, digestDaemon(t, f, o, nil))
+	if is := f.State().Issues; len(is) != 2 || is[1].Title != "issuedog digest" || !is[1].Pinned {
+		t.Errorf("issues = %+v; want a new, pinned digest", is)
 	}
 }
 

@@ -19,7 +19,11 @@ import (
 
 // The poll records the digests and the App's digest-new comments on any
 // issue. An edited one counts for nothing, nor does one by anyone else. A
-// comment or body whose marker an edit took out is forgotten.
+// comment whose marker an edit took out is forgotten. A digest whose marker
+// and title edits changed stays one, but a new daemon finds it no more: the
+// gap listed documents. One of the App's titled as the digest, with no
+// marker, is found, unless it has an origin marker, and so is one of the
+// App's with the marker and another title. Another bot's never is.
 func TestDigestPollRecords(t *testing.T) {
 	const app = "issuedog[bot]"
 	f := githubtest.New(t, "o/r", "issuedog")
@@ -30,27 +34,42 @@ func TestDigestPollRecords(t *testing.T) {
 	f.AddComment(1, "owner", "<!-- issuedog:digest-new items=owners -->")
 	f.AddComment(2, app, "<!-- issuedog:digest-new items=elsewhere -->")
 	f.SetPullRequest(f.AddIssue(app, "A pull request", "<!-- issuedog:digest -->"))
-	d := &Daemon{Step: &Step{Applier: &Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}}, stale: map[int]bool{}}
-	poll := func() {
+	f.AddIssue(app, "issuedog digest", "Its marker was taken out.")                              // 4: a digest
+	f.AddIssue(app, "issuedog digest", "A task. <!-- issuedog:origin plan=#1 rev=1 item=T1 -->") // 5: not one
+	f.AddIssue(app, "A task", "No marker.")                                                      // 6: not one
+	f.AddIssue(app, "Renamed", "<!-- issuedog:digest -->")                                       // 7: a digest
+	f.AddIssue("other[bot]", "issuedog digest", "<!-- issuedog:digest -->")                      // 8: not one
+	newDaemon := func() *Daemon {
+		return &Daemon{Step: &Step{Applier: &Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}}, stale: map[int]bool{}}
+	}
+	d := newDaemon()
+	poll := func(d *Daemon) {
 		t.Helper()
 		if err := d.poll(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 	}
-	poll()
+	poll(d)
 	keys := func(n int) []string { return slices.Sorted(maps.Keys(d.digest.announced(n))) }
-	if !d.digest.has(1) || d.digest.has(2) || d.digest.has(3) || !slices.Equal(keys(1), []string{"q-1-1", "rev-1-2"}) || !slices.Equal(keys(2), []string{"elsewhere"}) {
-		t.Errorf("digests %v, announced on 1 %q and on 2 %q; want issue 1 alone, with q-1-1 and rev-1-2, and elsewhere on 2",
-			d.digest.issues, keys(1), keys(2))
+	if got := slices.Sorted(maps.Keys(d.digest.issues)); !slices.Equal(got, []int{1, 4, 7}) || !slices.Equal(keys(1), []string{"q-1-1", "rev-1-2"}) ||
+		!slices.Equal(keys(2), []string{"elsewhere"}) {
+		t.Errorf("digests %v, announced on 1 %q and on 2 %q; want issues 1, 4 and 7, q-1-1 and rev-1-2 on 1, and elsewhere on 2", got, keys(1), keys(2))
 	}
-	if !d.stale[2] || d.stale[1] {
-		t.Errorf("stale = %v; want the user's issue 2, not the digest", d.stale)
+	if got := slices.Sorted(maps.Keys(d.stale)); !slices.Equal(got, []int{2, 5, 6, 8}) {
+		t.Errorf("stale = %v; want issues 2, 5, 6 and 8, none of them digests", got)
 	}
 	f.EditComment(first, app, "No marker now.")
-	f.EditBody(1, "owner", "No marker now.")
-	poll()
-	if d.digest.has(1) || len(keys(1)) != 0 {
-		t.Errorf("digests %v, announced on 1 %q; want both forgotten", d.digest.issues, keys(1))
+	f.EditBody(1, "mallory", "No marker now.")
+	f.RenameIssue(1, "mallory", "Renamed")
+	poll(d)
+	if !d.digest.has(1) || d.stale[1] || len(keys(1)) != 0 {
+		t.Errorf("digests %v, stale %v, announced on 1 %q; want issue 1 still a digest, not stale, and the comment forgotten",
+			d.digest.issues, d.stale, keys(1))
+	}
+	d = newDaemon()
+	poll(d)
+	if got := slices.Sorted(maps.Keys(d.digest.issues)); !slices.Equal(got, []int{4, 7}) {
+		t.Errorf("a new daemon's digests = %v; want issues 4 and 7", got)
 	}
 }
 
@@ -97,6 +116,32 @@ func TestDigestEditOnce(t *testing.T) {
 	}
 	if w := f.Writes(); len(w) != 1 || f.State().Issues[0].Body != "new <!-- issuedog:digest -->" {
 		t.Errorf("writes = %+v; want one edit, to the new body", w)
+	}
+}
+
+// digestMark puts the marker back with the pin note this start's check
+// found for this digest, and with none when the check was for another.
+func TestDigestMarkNote(t *testing.T) {
+	for _, tc := range []struct {
+		pinned int
+		want   string
+	}{
+		{1, "Note.\n\n" + digestBody("")},
+		{2, digestBody("")},
+	} {
+		f := githubtest.New(t, "o/r", "issuedog")
+		f.AddIssue("issuedog[bot]", "issuedog digest", "gone")
+		d := &Daemon{Step: &Step{Applier: &Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}}, stale: map[int]bool{}}
+		if err := d.poll(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		d.digest.pinned, d.digest.note = tc.pinned, "Note."
+		if err := d.digestMark(context.Background(), 1); err != nil {
+			t.Fatal(err)
+		}
+		if got := f.State().Issues[0].Body; got != tc.want {
+			t.Errorf("checked #%d: body = %q, want %q", tc.pinned, got, tc.want)
+		}
 	}
 }
 

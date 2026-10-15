@@ -18,7 +18,8 @@ import (
 // The digest (SPEC §9.4, plan #7 T7) is the App's issue that lists what
 // waits on the owner. It is the issue the App authored whose body has the
 // identity marker, read even in an edited body (the plan's assumption 1),
-// since the marker holds no state. If there's more than one, the lowest
+// since the marker holds no state, or one listed finds by other means if
+// an edit took the marker out. If there's more than one, the lowest
 // number wins and the rest are logged. Every one of them is kept out of the
 // pipeline: the poll never marks one stale, so it has no snapshot, and step
 // 1, CheckLabels, intake, stage runs and triage never see it.
@@ -66,13 +67,27 @@ type digestNews struct {
 
 // listed records a listed issue, never a pull request, which the poll
 // passes over: as a digest if it is one, and reports whether it is. An
-// issue that no longer is one, such as after an edit took its marker out,
-// is forgotten.
+// issue of the App's is a digest if:
+//   - its body has the identity marker, or
+//   - this daemon has found it a digest before, so an edit that takes the
+//     marker out, by anyone, changes nothing, and the next pass puts the
+//     marker back (digestMark), or
+//   - its title is digestTitle and its body has no origin marker, which every
+//     other issue the App files has (SPEC §5.2). That finds a digest whose
+//     marker was taken out while no daemon ran, or just before a restart.
+//
+// Gap, for SPEC §16 (T10, #162): a digest whose marker was taken out and
+// whose title was changed, both before this daemon listed it, isn't found.
+// A new digest is created, and the old one is an issue like any other, so
+// triage runs on it.
 func (g *digestState) listed(slug string, is *gogithub.Issue) bool {
 	n := is.GetNumber()
-	author := github.Author{Login: is.GetUser().GetLogin(), Type: is.GetUser().GetType()}
-	if !slices.ContainsFunc(github.TrustedMarkers(author, is.GetBody(), slug), digestIdentity) {
-		delete(g.issues, n)
+	if is.GetUser().GetLogin() != slug+"[bot]" {
+		return false // only the App's issues, whose author never changes, are ever digests; only a bot's login ends in [bot]
+	}
+	markers := github.ParseMarkers(is.GetBody())
+	titled := is.GetTitle() == digestTitle && !slices.ContainsFunc(markers, func(m github.Marker) bool { return m.Kind == "origin" })
+	if !g.has(n) && !titled && !slices.ContainsFunc(markers, digestIdentity) {
 		return false
 	}
 	if g.issues == nil {
@@ -132,6 +147,7 @@ func (g *digestState) has(n int) bool {
 //   - It resolves a close or reopen (digestOpen, Q4a). A digest a trusted
 //     user closed is off: nothing more is done to it.
 //   - It handles the pin note (digestPin).
+//   - It puts back the identity marker if an edit took it out (digestMark).
 //
 // An unchanged pass makes no request about the digest: the poll has already
 // listed it.
@@ -158,7 +174,7 @@ func (d *Daemon) digestPass(ctx context.Context) error {
 	if others := fmt.Sprint(nums[1:]); others != g.others {
 		g.others = others
 		if len(nums) > 1 {
-			logr.Warnf("%s/%s has more than one digest: #%d is the digest, and the App's issues %v, which carry its marker too, are left alone",
+			logr.Warnf("%s/%s has more than one digest: #%d is the digest, and the App's issues %v, which are digests too, are left alone",
 				a.Owner, a.Repo, n, nums[1:])
 		}
 	}
@@ -166,10 +182,31 @@ func (d *Daemon) digestPass(ctx context.Context) error {
 	if err != nil || !on {
 		return err
 	}
-	// T8 goes on after the pin: it renders the list with g.note at its top,
-	// writes it with digestEdit, and announces the keys g.announced(n)
-	// doesn't have.
-	return d.digestPin(ctx, n)
+	if err := d.digestPin(ctx, n); err != nil {
+		return err
+	}
+	// T8 replaces digestMark: it renders the list with g.note at its top,
+	// which has the marker, writes it with digestEdit, and announces the
+	// keys g.announced(n) doesn't have.
+	return d.digestMark(ctx, n)
+}
+
+// digestMark puts back the digest's identity marker if an edit took it
+// out, rewriting the body with the pin note the body should have: the one
+// this start's pin check found, if it ran (digestPin), and none otherwise,
+// since then the body had none. The body is the App's own, so whatever the
+// edit wrote goes, rather than being posted again as the App's.
+func (d *Daemon) digestMark(ctx context.Context, n int) error {
+	a, g := d.Step.Applier, &d.digest
+	if slices.ContainsFunc(github.ParseMarkers(g.issues[n].body), digestIdentity) {
+		return nil
+	}
+	logr.Infof("%s/%s#%d, the digest, lost its marker to an edit, so it's put back", a.Owner, a.Repo, n)
+	note := ""
+	if g.pinned == n {
+		note = g.note
+	}
+	return d.digestEdit(ctx, n, digestBody(note))
 }
 
 // digestOpen resolves the digest's close or reopen (Q4a) and reports whether
@@ -258,9 +295,11 @@ func (d *Daemon) digestTrusted(ctx context.Context, actor *gogithub.User) (bool,
 // checks whether it's pinned, and if not, pins it. Once the digest is
 // pinned, the note goes, and it's never pinned again, so an unpin by the
 // owner stands. If GitHub refuses the pin, such as for a missing permission
-// or three pinned issues already, that's logged, the note names GitHub's
-// message, and the loop carries on. Any other failure is the pass's error,
-// and the next pass tries again.
+// or three pinned issues already, or answers with no error but no pin,
+// that's logged, the note names GitHub's message, and the loop carries on.
+// Any other failure is the pass's error, which Run logs, and the next pass
+// tries again. So does a failed edit of the note: the check counts as done
+// only once the body says what it found.
 func (d *Daemon) digestPin(ctx context.Context, n int) error {
 	a, g := d.Step.Applier, &d.digest
 	if g.pinned == n || !strings.HasPrefix(strings.TrimSpace(g.issues[n].body), digestPinPrefix) {
@@ -277,24 +316,31 @@ func (d *Daemon) digestPin(ctx context.Context, n int) error {
 	if !pinned {
 		err := a.Client.PinIssue(ctx, a.Owner, a.Repo, n)
 		switch {
-		case errors.Is(err, github.ErrGraphQL):
+		case errors.Is(err, github.ErrGraphQL) || errors.Is(err, github.ErrNotPinned):
 			logr.Errorf("pinning %s/%s#%d, the digest, failed, so its body says so, and the next start tries again: %v", a.Owner, a.Repo, n, err)
 			note = digestPinNote(err)
 		case err != nil:
 			return wrap(err)
 		}
 	}
+	if err := d.digestEdit(ctx, n, digestBody(note)); err != nil {
+		return err
+	}
 	g.pinned, g.note = n, note
-	return d.digestEdit(ctx, n, digestBody(note))
+	return nil
 }
 
 // digestPinNote is the pin note naming GitHub's message in err, a pin's
-// error that wraps github.ErrGraphQL. GitHub wrote the message, not the App,
-// so it's escaped (SPEC §5.1), and kept to one code span.
+// error that wraps github.ErrGraphQL, or github.ErrNotPinned's text for one
+// that wraps that. GitHub wrote the message, not the App, so it's escaped
+// (SPEC §5.1), and kept to one code span.
 func digestPinNote(err error) string {
 	msg := err.Error()
 	if _, after, ok := strings.Cut(msg, github.ErrGraphQL.Error()+": "); ok {
 		msg = after
+	}
+	if errors.Is(err, github.ErrNotPinned) {
+		msg = github.ErrNotPinned.Error()
 	}
 	msg = strings.ReplaceAll(github.Escape(text(msg)), "`", "'")
 	return digestPinPrefix + ": `" + msg + "`. Pin it by hand."
