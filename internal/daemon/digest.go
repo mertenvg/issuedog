@@ -17,17 +17,22 @@ import (
 
 // The digest (SPEC §9.4, plan #7 T7) is the App's issue that lists what
 // waits on the owner. It is the issue the App authored whose body has the
-// identity marker, read even in an edited body (the plan's assumption 1),
-// since the marker holds no state, or one listed finds by other means if
-// an edit took the marker out. If there's more than one, the lowest
-// number wins and the rest are logged. Every one of them is kept out of the
-// pipeline: the poll never marks one stale, so it has no snapshot, and step
-// 1, CheckLabels, intake, stage runs and triage never see it.
+// identity marker (digestRenderIdentity), read even in an edited body (the
+// plan's assumption 1), since the marker holds no state, or one listed
+// finds by other means if an edit took the marker out. If there's more
+// than one, the lowest number wins and the rest are logged. Every one of
+// them is kept out of the pipeline: the poll never marks one stale, so it
+// has no snapshot, and step 1, CheckLabels, intake, stage runs and triage
+// never see it.
+//
+// The digest's body has no rewrite marker (SPEC §5.1, #169), though it's
+// a whole body the App writes: it is never read for state but for its
+// identity marker, which is read in an edited body anyway, it has no run
+// to name, and the pin note must be its first line (digestPin). It's an
+// exception for #162 (T10) to write into §5.1, beside the identity
+// marker's.
 const (
-	digestTitle  = "issuedog digest"
-	digestMarker = "<!-- issuedog:digest -->"
-	// digestPlaceholder stands in for the list until T8 renders it.
-	digestPlaceholder = "This issue will list what waits on you: open questions, pending approvals and state errors."
+	digestTitle = "issuedog digest"
 	// digestPinPrefix starts the pin note, the body's first line while the
 	// digest may not be pinned (digestPin).
 	digestPinPrefix = "I couldn't pin this issue"
@@ -36,7 +41,12 @@ const (
 	digestPinPending = digestPinPrefix + " yet. If this line stays, pin it by hand."
 )
 
-// digestState is what the daemon knows of the digest, from the poll.
+// digestErrGone marks the error of a request about the digest that found
+// it gone, deleted (404 or 410) or transferred (gone): digestPass drops it.
+var digestErrGone = errors.New("the digest is gone, deleted or transferred")
+
+// digestState is what the daemon knows of the digest, from the poll and
+// its own writes.
 type digestState struct {
 	issues map[int]digestSeen   // the digests, by number, as last listed or written
 	news   map[int64]digestNews // the App's digest-new comments, by ID
@@ -44,6 +54,9 @@ type digestState struct {
 	pinned int                  // the digest whose pin note this start has handled
 	note   string               // the pin note the body should start with, "" for none
 	others string               // the other digests last logged
+	// wrote is the digest's updated_at after the App's last write to it,
+	// a body edit or a comment, as GitHub answered it (digestOpen).
+	wrote time.Time
 }
 
 // digestSeen is a digest as listed: its number, state, state_reason,
@@ -70,8 +83,8 @@ type digestNews struct {
 // issue of the App's is a digest if:
 //   - its body has the identity marker, or
 //   - this daemon has found it a digest before, so an edit that takes the
-//     marker out, by anyone, changes nothing, and the next pass puts the
-//     marker back (digestMark), or
+//     marker out, by anyone, changes nothing, and the next pass writes the
+//     body again, marker and all (digestRewrite), or
 //   - its title is digestTitle and its body has no origin marker, which every
 //     other issue the App files has (SPEC §5.2). That finds a digest whose
 //     marker was taken out while no daemon ran, or just before a restart.
@@ -105,21 +118,34 @@ func digestIdentity(m github.Marker) bool { return m.Kind == "digest" }
 // a digest-new marker, and forgets it otherwise.
 func (g *digestState) comment(slug string, n int, c *gogithub.IssueComment) {
 	author := github.Author{Login: c.GetUser().GetLogin(), Type: c.GetUser().GetType()}
-	for _, m := range github.TrustedMarkers(author, c.GetBody(), slug) {
+	if !g.record(c.GetID(), n, github.TrustedMarkers(author, c.GetBody(), slug), c.GetUpdatedAt().After(c.GetCreatedAt().Time)) {
+		delete(g.news, c.GetID())
+	}
+}
+
+// record records comment id on issue n as a digest-new comment, edited or
+// not, if markers, the App's in it, have a digest-new marker, and reports
+// whether they do.
+func (g *digestState) record(id int64, n int, markers []github.Marker, edited bool) bool {
+	for _, m := range markers {
 		if m.Kind == "digest-new" {
 			if g.news == nil {
 				g.news = map[int64]digestNews{}
 			}
-			g.news[c.GetID()] = digestNews{issue: n, items: strings.Split(m.Fields["items"], ","),
-				edited: c.GetUpdatedAt().After(c.GetCreatedAt().Time)}
-			return
+			g.news[id] = digestNews{issue: n, items: strings.Split(m.Fields["items"], ","), edited: edited}
+			return true
 		}
 	}
-	delete(g.news, c.GetID())
+	return false
 }
 
 // announced returns the item keys the App's digest-new comments on issue n
-// announced, but for edited ones: the items not new any more (T8).
+// announced, but for edited ones: the items not new any more. A deleted
+// comment still counts until a restart, as the poll lists no deletion:
+// its items aren't announced again till then (#159's verify). Whether a
+// reaction on a comment, or hiding it, moves its updated_at isn't known
+// (SPEC §16): if one does, the comment counts as edited, and its items
+// are announced once more.
 func (g *digestState) announced(n int) map[string]bool {
 	keys := map[string]bool{}
 	for _, c := range g.news {
@@ -140,25 +166,31 @@ func (g *digestState) has(n int) bool {
 }
 
 // digestPass keeps the digest, if Daemon.Digest is set: after step 1 and
-// before Work, since a stage run can take minutes (assumption 13).
-//   - With no digest, it creates one (assumption 2). That's in the loop, not
-//     at startup, so a failure doesn't stop the daemon (SPEC §3.5); after a
-//     crash that follows the create, the next poll finds it.
+// before Work, since a stage run can take minutes (assumption 13). It ranks
+// the items cached for every issue (digestCacheRanked), then:
+//   - With no digest, it creates one with them listed (assumption 2).
+//     That's in the loop, not at startup, so a failure doesn't stop the
+//     daemon (SPEC §3.5); after a crash that follows the create, the next
+//     poll finds it.
 //   - It resolves a close or reopen (digestOpen, Q4a). A digest a trusted
 //     user closed is off: nothing more is done to it.
 //   - It handles the pin note (digestPin).
-//   - It puts back the identity marker if an edit took it out (digestMark).
+//   - It announces new items, and writes the body if it changed
+//     (digestRewrite).
 //
-// An unchanged pass makes no request about the digest: the poll has already
-// listed it.
+// A digest a request finds gone, deleted or transferred, is dropped
+// (digestDrop), so the next pass finds or creates one. Iterate takes the
+// pass's error, and Work runs anyway. An unchanged pass makes no request
+// about the digest: the poll has already listed it.
 func (d *Daemon) digestPass(ctx context.Context) error {
 	if !d.Digest {
 		return nil
 	}
 	a, g := d.Step.Applier, &d.digest
+	items := d.digestCacheRanked()
 	nums := slices.Sorted(maps.Keys(g.issues))
 	if len(nums) == 0 {
-		body := digestBody(digestPinPending)
+		body := digestBody(digestPinPending, items)
 		n, err := a.Client.CreateIssue(ctx, a.Owner, a.Repo, digestTitle, body)
 		if err != nil {
 			return fmt.Errorf("create the digest: %w", err)
@@ -178,35 +210,118 @@ func (d *Daemon) digestPass(ctx context.Context) error {
 				a.Owner, a.Repo, n, nums[1:])
 		}
 	}
-	on, err := d.digestOpen(ctx, g.issues[n])
+	err := d.digestKeep(ctx, n, items)
+	if errors.Is(err, digestErrGone) {
+		d.digestDrop(n, err)
+	}
+	return err
+}
+
+// digestKeep keeps digest n, which lists items: it resolves a close or
+// reopen, and on a digest that is on, handles the pin note, then
+// announces new items and writes the body.
+func (d *Daemon) digestKeep(ctx context.Context, n int, items []waitItem) error {
+	on, err := d.digestOpen(ctx, d.digest.issues[n])
 	if err != nil || !on {
 		return err
 	}
-	if err := d.digestPin(ctx, n); err != nil {
+	if err := d.digestPin(ctx, n, items); err != nil {
 		return err
 	}
-	// T8 replaces digestMark: it renders the list with g.note at its top,
-	// which has the marker, writes it with digestEdit, and announces the
-	// keys g.announced(n) doesn't have.
-	return d.digestMark(ctx, n)
+	return d.digestRewrite(ctx, n, items)
 }
 
-// digestMark puts back the digest's identity marker if an edit took it
-// out, rewriting the body with the pin note the body should have: the one
-// this start's pin check found, if it ran (digestPin), and none otherwise,
-// since then the body had none. The body is the App's own, so whatever the
-// edit wrote goes, rather than being posted again as the App's.
-func (d *Daemon) digestMark(ctx context.Context, n int) error {
+// digestDrop forgets digest n, which err, a request's, found gone: deleted
+// (404 or 410) or transferred. It stays in no listing, so it would fail on
+// every pass until a restart (#159's verify). The next poll lists every
+// issue again, as a start's does, so the next pass finds the digest if it
+// is there after all, or another, and creates one only if there's none.
+func (d *Daemon) digestDrop(n int, err error) {
 	a, g := d.Step.Applier, &d.digest
-	if slices.ContainsFunc(github.ParseMarkers(g.issues[n].body), digestIdentity) {
-		return nil
+	logr.Warnf("%s/%s#%d, the digest, is gone, so it's dropped, and every issue is listed again to find or create one: %v", a.Owner, a.Repo, n, err)
+	delete(g.issues, n)
+	for id, c := range g.news {
+		if c.issue == n {
+			delete(g.news, id)
+		}
 	}
-	logr.Infof("%s/%s#%d, the digest, lost its marker to an edit, so it's put back", a.Owner, a.Repo, n)
+	if g.done.number == n {
+		g.done = digestSeen{}
+	}
+	if g.pinned == n {
+		g.pinned, g.note = 0, ""
+	}
+	g.wrote = time.Time{}
+	d.issuesSince = time.Time{}
+}
+
+// digestGone returns err, from a request about the digest, marked with
+// digestErrGone too if it says the digest is gone (gone).
+func digestGone(err error) error {
+	if gone(err) {
+		return fmt.Errorf("%w: %w", digestErrGone, err)
+	}
+	return err
+}
+
+// digestRewrite brings digest n up to date with items, ranked
+// (assumptions 10 and 11, Q1a and Q2a):
+//   - The items whose keys no never-edited digest-new comment of the App's
+//     on n holds are new (digestRenderNew). If digestRenderNews gives a
+//     comment for them, as it does for a kind that doesn't mention the
+//     owner already, with notify set, it's posted, one per pass. Its keys
+//     are recorded at once (digestState.record), so the next pass doesn't
+//     announce them again before the poll lists the comment. A new item
+//     with no comment, such as a round, stays new, and never gets one.
+//   - Then the body is written, if it isn't already (digestEdit), with
+//     the pin note this start's check left (digestPin), or none: when the
+//     check didn't run, the body had none.
+//
+// The comment comes first, so a crash between the two leaves it, and the
+// next pass finds its keys. A failed announcement, or a comment that
+// can't be rendered, which is logged, still leaves the body written, and
+// the next pass announces the items. The edit's error and the comment's
+// are the pass's, but for a digest that's gone, which needs no edit.
+func (d *Daemon) digestRewrite(ctx context.Context, n int, items []waitItem) error {
+	a, g := d.Step.Applier, &d.digest
+	var notify []string
+	if d.Config != nil {
+		notify = d.Config.Notify
+	}
+	var errs []error
+	news, err := digestRenderNews(digestRenderNew(items, g.announced(n)), notify)
+	if err != nil {
+		logr.Errorf("the new items on %s/%s#%d, the digest, can't be announced, so only its body is written: %v", a.Owner, a.Repo, n, err)
+	}
+	if news != "" {
+		if err := d.digestAnnounce(ctx, n, news); errors.Is(err, digestErrGone) {
+			return err
+		} else if err != nil {
+			errs = append(errs, err)
+		}
+	}
 	note := ""
 	if g.pinned == n {
 		note = g.note
 	}
-	return d.digestEdit(ctx, n, digestBody(note))
+	if err := d.digestEdit(ctx, n, digestBody(note, items)); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+// digestAnnounce posts text, a digest-new comment, on digest n, and
+// records it at once, as the poll would.
+func (d *Daemon) digestAnnounce(ctx context.Context, n int, text string) error {
+	a, g := d.Step.Applier, &d.digest
+	c, _, err := a.Client.Issues.CreateComment(ctx, a.Owner, a.Repo, n, gogithub.IssueCommentRequest{Body: text})
+	if err != nil {
+		return digestGone(fmt.Errorf("announce new items on the digest, %s/%s#%d: %w", a.Owner, a.Repo, n, err))
+	}
+	g.record(c.GetID(), n, github.ParseMarkers(text), false)
+	g.wrote = latest(g.wrote, c.GetCreatedAt().Time)
+	logr.Infof("announced new items on %s/%s#%d, the digest, in comment %d", a.Owner, a.Repo, n, c.GetID())
+	return nil
 }
 
 // digestOpen resolves the digest's close or reopen (Q4a) and reports whether
@@ -218,14 +333,30 @@ func (d *Daemon) digestMark(ctx context.Context, n int) error {
 // "reopened"), and only when it changed since the last resolution, so an
 // unchanged pass reads nothing. An event GitHub hasn't written yet leaves
 // the state as it is, until the next pass.
+//
+// The App's own write, a body edit or a comment, changes the digest's
+// updated_at alone. A listing that differs from the last resolution in
+// nothing else, and is at the updated_at that write gave (digestState.wrote),
+// is that write's, and needs no read: so a digest that was reopened once
+// doesn't have its whole timeline read after every write (#159's verify).
+// Gap: a close and a reopen, of which only the close stands, both after
+// the poll that listed the digest and before the App's write, or in the
+// same second as the write, look like that write's. They're found at the
+// next close or reopen, or the next start.
 func (d *Daemon) digestOpen(ctx context.Context, s digestSeen) (bool, error) {
 	a, g := d.Step.Applier, &d.digest
 	s.body = ""
 	if s == g.done || s.open && s.reason != "reopened" {
 		return s.open, nil
 	}
+	if own := g.done; !g.wrote.IsZero() && s.updated.Equal(g.wrote) {
+		if own.updated = s.updated; own == s {
+			g.done = s
+			return s.open, nil
+		}
+	}
 	wrap := func(err error) error {
-		return fmt.Errorf("the close of the digest, %s/%s#%d: %w", a.Owner, a.Repo, s.number, err)
+		return digestGone(fmt.Errorf("the close of the digest, %s/%s#%d: %w", a.Owner, a.Repo, s.number, err))
 	}
 	events, err := a.Client.TimelineSince(ctx, a.Owner, a.Repo, s.number, time.Time{})
 	if err != nil {
@@ -239,7 +370,7 @@ func (d *Daemon) digestOpen(ctx context.Context, s digestSeen) (bool, error) {
 		last, lastAt = e.GetEvent(), e.GetCreatedAt().Time
 		ok, err := d.digestTrusted(ctx, e.GetActor())
 		if err != nil {
-			return false, wrap(err)
+			return false, fmt.Errorf("the close of the digest, %s/%s#%d: %w", a.Owner, a.Repo, s.number, err)
 		}
 		if ok {
 			stands = e.GetEvent() == "closed"
@@ -297,10 +428,11 @@ func (d *Daemon) digestTrusted(ctx context.Context, actor *gogithub.User) (bool,
 // owner stands. If GitHub refuses the pin, such as for a missing permission
 // or three pinned issues already, or answers with no error but no pin,
 // that's logged, the note names GitHub's message, and the loop carries on.
-// Any other failure is the pass's error, which Run logs, and the next pass
-// tries again. So does a failed edit of the note: the check counts as done
-// only once the body says what it found.
-func (d *Daemon) digestPin(ctx context.Context, n int) error {
+// Any other failure, the check's included, is the pass's error, which Run
+// logs, and the next pass tries again. So does a failed edit of the note:
+// the check counts as done only once the body says what it found. The body
+// it writes lists items, so the rewrite that follows has nothing to change.
+func (d *Daemon) digestPin(ctx context.Context, n int, items []waitItem) error {
 	a, g := d.Step.Applier, &d.digest
 	if g.pinned == n || !strings.HasPrefix(strings.TrimSpace(g.issues[n].body), digestPinPrefix) {
 		return nil
@@ -323,7 +455,7 @@ func (d *Daemon) digestPin(ctx context.Context, n int) error {
 			return wrap(err)
 		}
 	}
-	if err := d.digestEdit(ctx, n, digestBody(note)); err != nil {
+	if err := d.digestEdit(ctx, n, digestBody(note, items)); err != nil {
 		return err
 	}
 	g.pinned, g.note = n, note
@@ -346,30 +478,69 @@ func digestPinNote(err error) string {
 	return digestPinPrefix + ": `" + msg + "`. Pin it by hand."
 }
 
-// digestBody is the digest's body: note, the pin note, at its top if it
-// isn't "", then the list, then the identity marker. The list is a
-// placeholder until T8 renders it here (plan #7, T6 and T8).
-func digestBody(note string) string {
-	body := digestPlaceholder + "\n\n" + digestMarker
-	if note != "" {
-		body = note + "\n\n" + body
-	}
-	return body
+// digestBody is the digest's body (digestRenderBody): note, the pin note,
+// at its top if it isn't "", then items, ranked, then the identity marker.
+func digestBody(note string, items []waitItem) string {
+	return digestRenderBody(note, items)
 }
 
 // digestEdit writes body as the digest's, unless it is already, as last
-// listed or written. It's the one way the digest's body is written: T8's
-// rewrite of the list calls it too.
+// listed or written (digestSameBody). It's the one way the digest's body
+// is written.
 func (d *Daemon) digestEdit(ctx context.Context, n int, body string) error {
 	a, g := d.Step.Applier, &d.digest
 	s := g.issues[n]
-	if s.body == body {
+	if digestSameBody(s.body, body) {
 		return nil
 	}
-	if _, _, err := a.Client.Issues.Update(ctx, a.Owner, a.Repo, n, gogithub.UpdateIssueRequest{Body: &body}); err != nil {
-		return fmt.Errorf("edit the body of the digest, %s/%s#%d: %w", a.Owner, a.Repo, n, err)
+	is, _, err := a.Client.Issues.Update(ctx, a.Owner, a.Repo, n, gogithub.UpdateIssueRequest{Body: &body})
+	if err != nil {
+		return digestGone(fmt.Errorf("edit the body of the digest, %s/%s#%d: %w", a.Owner, a.Repo, n, err))
 	}
 	s.body = body
 	g.issues[n] = s
+	g.wrote = latest(g.wrote, is.GetUpdatedAt().Time)
 	return nil
+}
+
+// digestSameBody reports whether bodies a and b are the same as GitHub
+// keeps them: it may store a body's line breaks as "\r\n", as a web edit
+// does, and trim the space around it. Neither changes what a body shows,
+// so a pass never writes again for them alone.
+func digestSameBody(a, b string) bool {
+	norm := func(s string) string { return strings.TrimSpace(strings.ReplaceAll(s, "\r\n", "\n")) }
+	return norm(a) == norm(b)
+}
+
+// digestCacheSet caches what waits on the owner on s (waitFind), which
+// step 1 just succeeded on and returned inputs for, as step 1 left it,
+// with its dirty content dirt. An issue with nothing waiting has no
+// entry. If waitFind fails, that's logged, and the issue keeps the items
+// it had, as one whose step 1 failed does.
+func (d *Daemon) digestCacheSet(s *github.Snapshot, inputs []github.Comment, dirt Dirt) {
+	st := d.Step
+	items, err := waitFind(waitInput{Owner: st.Owner, Repo: st.Repo, AppSlug: st.AppSlug, S: s, Dirt: dirt, Inputs: inputs})
+	if err != nil {
+		logr.Errorf("%s/%s#%d keeps the items it had on the digest: %v", st.Owner, st.Repo, s.Number, err)
+		return
+	}
+	if len(items) == 0 {
+		delete(d.digestCache, s.Number)
+		return
+	}
+	if d.digestCache == nil {
+		d.digestCache = map[int][]waitItem{}
+	}
+	d.digestCache[s.Number] = items
+}
+
+// digestCacheRanked returns every issue's cached items, ranked by Q3a
+// against every snapshot held (waitRank).
+func (d *Daemon) digestCacheRanked() []waitItem {
+	var items []waitItem
+	for _, n := range slices.Sorted(maps.Keys(d.digestCache)) {
+		items = append(items, d.digestCache[n]...)
+	}
+	waitRank(items, d.snaps)
+	return items
 }

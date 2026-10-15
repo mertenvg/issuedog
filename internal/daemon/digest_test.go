@@ -15,10 +15,10 @@ import (
 	"github.com/mertenvg/logr/v2"
 )
 
-// The digest's body as T7 writes it: a placeholder list and the identity
+// The digest's body with nothing waiting: the empty list and the identity
 // marker, under the pin note while there is one.
 const (
-	digestList    = "This issue will list what waits on you: open questions, pending approvals and state errors.\n\n<!-- issuedog:digest -->"
+	digestList    = "Nothing is waiting on you.\n\n<!-- issuedog:digest -->"
 	digestPending = "I couldn't pin this issue yet. If this line stays, pin it by hand.\n\n" + digestList
 )
 
@@ -137,16 +137,17 @@ func TestDigestNeverTriaged(t *testing.T) {
 // With two digests, the lower number is the digest and the other is
 // logged, and neither is in the pipeline: step 1 never visits them, nor
 // creates another. Their marker is read even once an edit made the body
-// dirty. The user's issue with the marker is visited as any other.
+// dirty: the other's, which is left alone, as the digest's would be
+// written again. The user's issue with the marker is visited as any other.
 func TestDigestLowestWinsAndStaysOut(t *testing.T) {
 	var logs bytes.Buffer
 	stop := logr.AddWriter(&logs, logr.WithFilter(logr.W))
 	defer stop()
 	f := newFake(t)
 	f.SetPinned(f.AddIssue(app, "issuedog digest", digestList), true)
-	f.AddIssue(app, "issuedog digest", digestList)
+	f.AddIssue(app, "Another digest", digestList)
 	f.AddIssue("owner", "Mine", digestList)
-	f.EditBody(1, "mallory", "Edited. <!-- issuedog:digest -->")
+	f.EditBody(2, "mallory", "Edited. <!-- issuedog:digest -->")
 	var visits []int
 	d := digestDaemon(t, f, newOrigin(t), &visits)
 	iterate(t, d)

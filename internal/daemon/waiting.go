@@ -240,7 +240,8 @@ func waitErrorLines(s *github.Snapshot, e openErr) []waitLine {
 // revision's number, or 0 with none, the comment to link (the revision's,
 // or else the transition's), and its lines. The reasons it can't be
 // approved yet are ApproveCommand's and approve's, in their order, without
-// the login of who made the body dirty, which isn't the App's text.
+// the login of who made the body dirty, which isn't the App's text, and,
+// for a type that can't be at spec-review, Transition's hold-back.
 func waitApprovalLines(in waitInput, is state.Issue) (int, int64, []waitLine) {
 	s := in.S
 	latest, ok := state.LatestRevision(s, in.AppSlug, in.Dirt.Has)
@@ -261,7 +262,12 @@ func waitApprovalLines(in waitInput, is state.Issue) (int, int64, []waitLine) {
 	case state.BodyHash(s.Body) != latest.Hash:
 		why = append(why, fmt.Sprintf("the issue description changed after revision %d, so it no longer matches `%s`", latest.Rev, latest.Hash))
 	}
-	if class, err := state.ClassOf(is.Item); err != nil {
+	// A type change that stands is the cause (typeErrStands): Transition
+	// holds the 👍's move back, and the type error, listed beside this,
+	// says what to do (#156's verify).
+	if typeErrStands(s, is) {
+		why = append(why, "its type doesn't fit `spec-review`, so a 👍 is held back until the type changes (see the type error)")
+	} else if class, err := state.ClassOf(is.Item); err != nil {
 		why = append(why, "I can't tell what kind of issue this is from its type")
 	} else if _, err := state.Lookup(state.SpecReview, state.Planning, class, state.TriggerSpecApproved); err != nil {
 		why = append(why, "an issue of its type doesn't go on to `planning` on approval")

@@ -38,11 +38,13 @@ type Daemon struct {
 	// held, by number, with the Inputs it returned: stage work (Runs.Work).
 	Work func(ctx context.Context, ready []Ready) error
 	// Digest, if set, keeps the digest issue: Iterate creates it, pins it,
-	// and handles its close (digest.go). Set or not, every digest is kept
-	// out of the pipeline.
+	// handles its close, lists what waits on the owner in it and announces
+	// new items (digest.go). Set or not, every digest is kept out of the
+	// pipeline.
 	Digest bool
 
 	digest        digestState
+	digestCache   map[int][]waitItem // what waits on the owner, by issue, after its last good step 1; only with Digest set
 	snaps         map[int]*github.Snapshot
 	inputs        map[int][]github.Comment // only for snapshots step 1 succeeded on
 	openErrs      map[int]bool             // issues with an open state error after their last step 1
@@ -109,7 +111,11 @@ func (d *Daemon) Run(ctx context.Context) {
 // change no updated_at (plan #5, assumption 7), on every issue with
 // triage:ask, a flag waiting on a 👍 (FlagByReaction), and on every issue
 // that had an open state error after its last step 1, waiting on a 👍 too
-// (ErrorByReaction). Then it keeps the digest (digestPass). Last it hands Work the
+// (ErrorByReaction). On each issue step 1 succeeds on, it caches what
+// waits on the owner (digestCacheSet), with the issue's dirty content, which
+// openErrAny takes too; an issue whose read or step 1 fails keeps its last
+// items, and one that closes or leaves the listing loses them. Then it
+// keeps the digest (digestPass), whose failure stops nothing. Last it hands Work the
 // issues ready for it. It returns the errors of the issues it couldn't read
 // or run step 1 on, which the next Iterate reads again. An issue whose
 // labels CheckLabels holds back (ErrLabelsHeld) is no error: like a touched
@@ -155,6 +161,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			delete(d.stale, n)
 			delete(d.missing, n)
 			delete(d.openErrs, n)
+			delete(d.digestCache, n)
 			d.Step.forgetLabels(n)
 		case gone(err):
 			// One answer may be wrong, so it's read again next pass.
@@ -191,8 +198,14 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		if err == nil {
 			err = d.Step.FlagVisit(ctx, s)
 		}
+		// The open errors and what waits on the owner are read from the
+		// snapshot as the visits left it, with one look at its dirty content.
+		var dirt Dirt
 		if err == nil {
-			d.openErrs[n], err = d.Step.openErrAny(ctx, s, in)
+			dirt, err = d.Step.Dirty(ctx, s, d.Step.Trust)
+		}
+		if err == nil {
+			d.openErrs[n], err = d.Step.openErrAny(s, in, dirt)
 		}
 		if errors.Is(err, ErrLabelsHeld) {
 			// Like a touched issue: nothing more this pass, and read again.
@@ -207,6 +220,9 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			continue
 		}
 		d.inputs[n] = in
+		if d.Digest {
+			d.digestCacheSet(s, in, dirt)
+		}
 	}
 	for n := range touched {
 		delete(d.inputs, n)
@@ -300,6 +316,7 @@ func (d *Daemon) poll(ctx context.Context) error {
 				delete(d.stale, n)
 				delete(d.missing, n) // so a reopened issue starts with no strike
 				delete(d.openErrs, n)
+				delete(d.digestCache, n) // a closed issue has nothing waiting
 				a.forgetLabels(n)
 			case changed(d.snaps[n], is):
 				d.stale[n] = true

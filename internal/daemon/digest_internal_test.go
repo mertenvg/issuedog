@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -119,15 +120,43 @@ func TestDigestEditOnce(t *testing.T) {
 	}
 }
 
-// digestMark puts the marker back with the pin note this start's check
-// found for this digest, and with none when the check was for another.
-func TestDigestMarkNote(t *testing.T) {
+// A body GitHub keeps with "\r\n" line breaks, or space around it, is
+// the same body: digestEdit writes nothing for it.
+func TestDigestEditNormalised(t *testing.T) {
+	f := githubtest.New(t, "o/r", "issuedog")
+	f.AddIssue("issuedog[bot]", "issuedog digest", "Nothing is waiting on you.\r\n\r\n<!-- issuedog:digest -->\r\n")
+	d := &Daemon{Step: &Step{Applier: &Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}}, stale: map[int]bool{}}
+	if err := d.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.digestEdit(context.Background(), 1, digestBody("", nil)); err != nil {
+		t.Fatal(err)
+	}
+	if w := f.Writes(); len(w) != 0 {
+		t.Errorf("writes = %+v; want none for the same body", w)
+	}
+	for a, b := range map[string]string{"a\r\nb": "a\nb", " a\n": "a", "a\n\nb": "a\r\n\r\nb"} {
+		if !digestSameBody(a, b) {
+			t.Errorf("digestSameBody(%q, %q) = false, want true", a, b)
+		}
+	}
+	for a, b := range map[string]string{"a\nb": "a b", "a\n\nb": "a\nb", "a": "A"} {
+		if digestSameBody(a, b) {
+			t.Errorf("digestSameBody(%q, %q) = true, want false", a, b)
+		}
+	}
+}
+
+// digestRewrite writes the body with the pin note this start's check found
+// for this digest, and with none when the check was for another, so an
+// edit that took the marker out is put right.
+func TestDigestRewriteNote(t *testing.T) {
 	for _, tc := range []struct {
 		pinned int
 		want   string
 	}{
-		{1, "Note.\n\n" + digestBody("")},
-		{2, digestBody("")},
+		{1, "Note.\n\n" + digestBody("", nil)},
+		{2, digestBody("", nil)},
 	} {
 		f := githubtest.New(t, "o/r", "issuedog")
 		f.AddIssue("issuedog[bot]", "issuedog digest", "gone")
@@ -136,11 +165,34 @@ func TestDigestMarkNote(t *testing.T) {
 			t.Fatal(err)
 		}
 		d.digest.pinned, d.digest.note = tc.pinned, "Note."
-		if err := d.digestMark(context.Background(), 1); err != nil {
+		if err := d.digestRewrite(context.Background(), 1, nil); err != nil {
 			t.Fatal(err)
 		}
 		if got := f.State().Issues[0].Body; got != tc.want {
 			t.Errorf("checked #%d: body = %q, want %q", tc.pinned, got, tc.want)
+		}
+	}
+}
+
+// digestGone marks only a 404, a 410 or a transfer, and keeps the error.
+func TestDigestGone(t *testing.T) {
+	status := func(code int) error {
+		return fmt.Errorf("edit: %w", &gogithub.ErrorResponse{Response: &http.Response{StatusCode: code}})
+	}
+	for _, tc := range []struct {
+		err  error
+		want bool
+	}{
+		{status(http.StatusNotFound), true},
+		{status(http.StatusGone), true},
+		{fmt.Errorf("read: %w", github.ErrTransferred), true},
+		{status(http.StatusForbidden), false},
+		{status(http.StatusInternalServerError), false},
+		{errors.New("boom"), false},
+	} {
+		got := digestGone(tc.err)
+		if errors.Is(got, digestErrGone) != tc.want || !errors.Is(got, tc.err) {
+			t.Errorf("digestGone(%v) = %v; want gone %t, wrapping it", tc.err, got, tc.want)
 		}
 	}
 }
