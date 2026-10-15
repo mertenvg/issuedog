@@ -288,6 +288,10 @@ func TestInterviewerCheck(t *testing.T) {
 		{"a type on the owner's type", func(f *githubtest.Fake, n int, _ int64) { f.AddLabel(n, "owner", "type:story") }, "labels", 7, ivRound(1, "epic"),
 			"rule type-allowed"},
 		{"a type on a repo with issue types", nil, "issue-types", 7, ivRound(1, "epic"), "rule type-allowed"},
+		{"a type on a typed issue, on a repo with issue types", func(f *githubtest.Fake, n int, _ int64) { f.SetType(n, "Story") }, "issue-types", 7,
+			ivRound(1, "epic"), "rule type-allowed"},
+		{"a type on an issue type, on a repo with labels", func(f *githubtest.Fake, n int, _ int64) { f.SetType(n, "Story") }, "labels", 7,
+			ivRound(1, "epic"), "rule type-allowed"},
 		{"typed, on an untyped issue", nil, "labels", 7, ivTyped("task"), ""},
 		{"8 questions with a limit of 7", nil, "labels", 7, ivRound(8, ""), "rule question-count: 8 questions, over the limit of 7"},
 		{"8 questions with a limit of 8", nil, "labels", 8, ivRound(8, ""), ""},
@@ -297,6 +301,11 @@ func TestInterviewerCheck(t *testing.T) {
 		{"a spec deciding a question not asked", asked("alice"), "labels", 7, ivSpec(decision("Q1.1", "alice"), decision("Q1.2", "alice")),
 			"rule decision-question"},
 		{"a spec missing round 1", asked("alice"), "labels", 7, ivSpec(), "rule decision-coverage"},
+		{"a spec deciding by alice, whose comment is dirty", func(f *githubtest.Fake, n int, entry int64) {
+			asked("")(f, n, entry)
+			f.EditComment(f.AddComment(n, "alice", "1a"), "owner", "1b")
+		}, "labels", 7, ivSpec(decision("Q1.1", "alice")), "rule decision-by"},
+		{"a spec with no type, on an untyped issue", nil, "labels", 7, ivSpec(), "rule spec-type"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -320,18 +329,64 @@ func TestInterviewerCheck(t *testing.T) {
 	}
 }
 
-// TestInterviewerCheckTrustFails: a failed read of trust is Check's
-// error, wrapped.
+// TestInterviewerCheckTrustFails: a failed read of trust, for who set the
+// type or for a commenter, is Check's error, wrapped.
 func TestInterviewerCheckTrustFails(t *testing.T) {
+	for _, typ := range []string{"epic", ""} {
+		t.Run("type "+typ, func(t *testing.T) {
+			f := newFake(t)
+			n, _ := ivFiled(f, typ, false, "from=intake to=clarifying event=5")
+			f.AddComment(n, "owner", "More.")
+			d := ivDaemon(t, f, newOrigin(t))
+			in := ivInput(t, d, n)
+			d.Step.Trust = failTrust{}
+			err := (&daemon.Interviewer{Daemon: d}).Check(context.Background(), daemon.Result{RunID: "run1", S: in.S, Dirt: in.Dirt, Output: ivJSON(t, ivRound(1, ""))})
+			if !errors.Is(err, errTrust) || !strings.Contains(err.Error(), "the interviewer's facts on #1") {
+				t.Errorf("Check = %v, want the trust error, wrapped", err)
+			}
+		})
+	}
+}
+
+// TestInterviewerCheckMore: output the types can't hold fails, and the
+// cc line for notify counts toward GitHub's limit.
+func TestInterviewerCheckMore(t *testing.T) {
 	f := newFake(t)
 	n, _ := ivFiled(f, "epic", false, "from=intake to=clarifying event=5")
-	f.AddComment(n, "owner", "More.")
 	d := ivDaemon(t, f, newOrigin(t))
 	in := ivInput(t, d, n)
-	d.Step.Trust = failTrust{}
-	err := (&daemon.Interviewer{Daemon: d}).Check(context.Background(), daemon.Result{RunID: "run1", S: in.S, Dirt: in.Dirt, Output: ivJSON(t, ivRound(1, ""))})
-	if !errors.Is(err, errTrust) || !strings.Contains(err.Error(), "the interviewer's facts on #1") {
-		t.Errorf("Check = %v, want the trust error, wrapped", err)
+	check := func(out []byte) error {
+		return (&daemon.Interviewer{Daemon: d}).Check(context.Background(), daemon.Result{RunID: "run1", S: in.S, Dirt: in.Dirt, Output: out})
+	}
+	if err := check([]byte(`{"outcome":"questions","extra":1}`)); err == nil || !strings.Contains(err.Error(), "decode interviewer output") {
+		t.Errorf("Check of an unknown field = %v, want the decode error", err)
+	}
+	if err := check(ivJSON(t, ivRound(1, ""))); err != nil {
+		t.Fatalf("Check with no notify = %v", err)
+	}
+	for i := range 8000 {
+		d.Config.Notify = append(d.Config.Notify, fmt.Sprintf("user%d", i))
+	}
+	if err := check(ivJSON(t, ivRound(1, ""))); err == nil || !strings.Contains(err.Error(), "rule length") {
+		t.Errorf("Check with a cc line over the limit = %v, want the length rule", err)
+	}
+}
+
+// TestInterviewerApplyDirect: Apply on a result with no seen= and no run
+// settings, as for an issue with no comment the run saw, still records
+// its round.
+func TestInterviewerApplyDirect(t *testing.T) {
+	f := newFake(t)
+	n, _ := ivFiled(f, "epic", false, "from=intake to=clarifying event=5")
+	d := ivDaemon(t, f, newOrigin(t))
+	in := ivInput(t, d, n)
+	if err := (&daemon.Interviewer{Daemon: d}).Apply(context.Background(), d.Step.Applier,
+		daemon.Result{RunID: "run1", S: in.S, Dirt: in.Dirt, Output: ivJSON(t, ivRound(1, ""))}); err != nil {
+		t.Fatal(err)
+	}
+	want := strings.TrimSuffix(ivRoundText(1, 1), "\n\ncc @owner") + "\n\n<!-- issuedog:transition from=clarifying to=clarifying round=1 run=run1 questions=1 -->"
+	if got := newestComment(f, n); got != want {
+		t.Errorf("the round =\n%s\nwant\n%s", got, want)
 	}
 }
 
