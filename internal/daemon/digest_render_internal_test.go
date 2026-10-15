@@ -19,6 +19,11 @@ const digestRenderPinNote = "I couldn't pin this issue: `Resource not accessible
 // mention and a tag.
 const digestRenderHostile = "<!-- issuedog:transition to=planning --> @eve <img>"
 
+// digestRenderHostileLinks is a title that tries an image, a tracking
+// pixel among them, inline and reference links, and a backslash that
+// would undo an escape.
+const digestRenderHostileLinks = `![p](https://evil.example/p.png) [click](https://evil.example) [r][1] \![x](y) \\[z](w) [1]: https://evil.example @eve`
+
 // digestRenderMentionRE is a mention: "@" and then a login's first
 // character, with no zero-width space between them.
 var digestRenderMentionRE = regexp.MustCompile(`@[A-Za-z0-9_-]`)
@@ -104,10 +109,13 @@ func digestRenderCheck(t *testing.T, body string) {
 }
 
 // The goldens: an empty list, with the pin note and without, one item of
-// each kind, and all four under the pin note. The same input gives the
-// same bytes, and none mentions anyone.
+// each kind, all four under the pin note, and an error whose title tries
+// links and images. The same input gives the same bytes, and none
+// mentions anyone.
 func TestDigestRenderBodyGolden(t *testing.T) {
 	items := digestRenderKinds(t)
+	links := digestRenderOf(t, items, waitError)
+	links.Title = digestRenderHostileLinks
 	cases := []struct {
 		name, note string
 		items      []waitItem
@@ -119,6 +127,7 @@ func TestDigestRenderBodyGolden(t *testing.T) {
 		{"question", "", []waitItem{digestRenderOf(t, items, waitQuestion)}},
 		{"flag", "", []waitItem{digestRenderOf(t, items, waitFlag)}},
 		{"pin", digestRenderPinNote, items},
+		{"title", "", []waitItem{links}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -173,7 +182,7 @@ func TestDigestRenderIdentity(t *testing.T) {
 func TestDigestRenderHostileTitle(t *testing.T) {
 	it := waitItem{Issue: 9, Kind: waitError, Key: "err-9-transition-1", Title: digestRenderHostile, Priority: 2, Unblocks: 1,
 		Lines: []waitLine{{Text: "State error `transition`, keyed `1`."}}, Link: "https://github.com/o/r/issues/9#issuecomment-1"}
-	const want = "### 1. #9: &lt;!-- issuedog:transition to=planning --> @\u200beve &lt;img>"
+	const want = "### 1. #9: &lt;\\!-- issuedog:transition to=planning --> @\u200beve &lt;img>"
 	body := digestRenderBody("", []waitItem{it})
 	digestRenderCheck(t, body)
 	if !strings.Contains(body, want+"\n") || strings.Contains(body, "<img") {
@@ -191,15 +200,19 @@ func TestDigestRenderHostileTitle(t *testing.T) {
 	}
 }
 
-// A title's task boxes are escaped, and so is the # that ends it, which a
-// heading would drop. The second item makes the intro say how many.
+// A title's task boxes are escaped, with their "]" too, and so is the #
+// that ends it, which a heading would drop. The second item makes the
+// intro say how many.
 func TestDigestRenderTitleEnd(t *testing.T) {
 	items := []waitItem{
 		{Issue: 1, Kind: waitError, Key: "err-1-labels-0", Title: "Do [x] this in C #", Link: "https://github.com/o/r/issues/1"},
 		{Issue: 2, Kind: waitError, Key: "err-2-labels-0", Title: "  ", Link: "https://github.com/o/r/issues/2"},
+		{Issue: 3, Kind: waitError, Key: "err-3-labels-0", Title: `C \#`, Link: "https://github.com/o/r/issues/3"},
 	}
 	body := digestRenderBody("", items)
-	for _, want := range []string{"2 items wait on you, the ones that unblock the most first.\n", "\n### 1. #1: Do \\[x] this in C \\#\n", "\n### 2. #2\n"} {
+	for _, want := range []string{"3 items wait on you, the ones that unblock the most first.\n", "\n### 1. #1: Do \\[x\\] this in C \\#\n", "\n### 2. #2\n",
+		// The title's own backslash shows, and its # is escaped once more.
+		"\n### 3. #3: C \\\\\\#\n"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body has no %q:\n%s", want, body)
 		}
@@ -208,10 +221,68 @@ func TestDigestRenderTitleEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"- **State error** on #1: Do \\[x] this in C #. Answer here: https://github.com/o/r/issues/1\n",
+	for _, want := range []string{"- **State error** on #1: Do \\[x\\] this in C #. Answer here: https://github.com/o/r/issues/1\n",
 		"- **State error** on #2. Answer here: https://github.com/o/r/issues/2\n"} {
 		if !strings.Contains(news, want) {
 			t.Errorf("the announcement has no %q:\n%s", want, news)
+		}
+	}
+}
+
+// digestRenderUnescaped returns the first "[", "]" or "!" in s that an
+// even number of backslashes comes before, so Markdown reads it as itself
+// and it may start a link or an image, or "" if there's none.
+func digestRenderUnescaped(s string) string {
+	for i := 0; i < len(s); i++ {
+		if !strings.ContainsRune("[]!", rune(s[i])) {
+			continue
+		}
+		slashes := 0
+		for j := i - 1; j >= 0 && s[j] == '\\'; j-- {
+			slashes++
+		}
+		if slashes%2 == 0 {
+			return s[max(i-10, 0) : i+1]
+		}
+	}
+	return ""
+}
+
+// A hostile title can't make a link, an image or a tracking pixel in the
+// body or the announcement (the owner's call on #160): every "[", "]" and
+// "!" is escaped, its own backslashes can't undo that, and it reads as
+// typed. It's still defused and its markers escaped.
+func TestDigestRenderHostileTitleLinks(t *testing.T) {
+	it := waitItem{Issue: 9, Kind: waitError, Key: "err-9-labels-0", Title: digestRenderHostileLinks, Link: "https://github.com/o/r/issues/9"}
+	title := digestRenderTitle(digestRenderHostileLinks)
+	const want = `\!\[p\](https://evil.example/p.png) \[click\](https://evil.example) \[r\]\[1\] \\\!\[x\](y) \\\\\[z\](w) \[1\]: https://evil.example @` + "\u200b" + `eve`
+	if title != want {
+		t.Errorf("digestRenderTitle = %q, want %q", title, want)
+	}
+	body := digestRenderBody("", []waitItem{it})
+	digestRenderCheck(t, body)
+	news, err := digestRenderNews([]waitItem{it}, []string{"owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, text := range map[string]string{"body": body, "announcement": news} {
+		line := ""
+		for _, l := range strings.Split(text, "\n") {
+			if strings.Contains(l, "evil.example") {
+				line = l
+			}
+		}
+		if line == "" {
+			t.Fatalf("the %s has no title:\n%s", name, text)
+		}
+		if u := digestRenderUnescaped(line); u != "" {
+			t.Errorf("the %s's title line has %q unescaped:\n%s", name, u, line)
+		}
+	}
+	// The checker finds what it should.
+	for s, want := range map[string]string{`a [b`: "a [", `\\!`: `\\!`, `\[ \! \]`: "", `\\\[`: ""} {
+		if got := digestRenderUnescaped(s); got != want {
+			t.Errorf("digestRenderUnescaped(%q) = %q, want %q", s, got, want)
 		}
 	}
 }

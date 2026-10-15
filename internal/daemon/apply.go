@@ -111,8 +111,9 @@ func (m Move) check() error {
 // StateError reports. But when the type is the cause (typeErrStands), as
 // for an unknown type or one that can't be at the issue's stage, the
 // type error, kind=type keyed by the type change that stands, is posted
-// instead, once (typeErrReport), and the move's error is only logged: so
-// is it while that type error is reported or acknowledged.
+// instead, once (typeErrReport), and the move's error is only logged, at
+// info level with that post and at debug level after: so is it while that
+// type error is reported or acknowledged.
 func (a *Applier) Transition(ctx context.Context, s *github.Snapshot, dirty func(int64) bool, m Move) error {
 	wrap := func(err error) error {
 		return fmt.Errorf("move %s/%s#%d to %s on %s: %w", a.Owner, a.Repo, s.Number, m.To, m.Trigger, err)
@@ -128,11 +129,17 @@ func (a *Applier) Transition(ctx context.Context, s *github.Snapshot, dirty func
 			}
 			if typeErrStands(s, is) {
 				// The type is the cause (SPEC §4): its type error, posted once
-				// per type change, says so, and this one isn't posted.
+				// per type change, says so, and this one isn't posted. It's
+				// logged at info level with the type error's post, and at
+				// debug level after, as a reported error is (#156's verify).
+				log := logr.Infof
+				if is.Reported(typeErrKind, typeErrKey(s)) {
+					log = logr.Debugf
+				}
 				if rerr := a.typeErrReport(ctx, s, is); rerr != nil {
 					return wrap(rerr)
 				}
-				logr.Infof("state error held back, as the type error keyed %s has the same cause: %v", typeErrKey(s), wrap(err))
+				log("state error held back, as the type error keyed %s has the same cause: %v", typeErrKey(s), wrap(err))
 				return wrap(err)
 			}
 			if is.Reported("transition", m.errorKey()) {

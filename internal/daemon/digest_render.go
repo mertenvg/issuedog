@@ -23,7 +23,10 @@ import (
 // relative or not.
 //
 // Whose text is what (assumption 12):
-//   - an item's Title is raw, so it goes through inline and github.Escape;
+//   - an item's Title is raw, so it goes through text and github.Escape,
+//     with its "[", "]", "!" and "\" escaped too, so it can't make a link,
+//     an image or a tracking pixel (digestRenderTitle, the owner's call
+//     on #160);
 //   - a line the App copied from its own comment (waitLine.Copied) was only
 //     made safe for the middle of a line, and a state error's lines were
 //     escaped but never defused, so every copied line is inline'd and
@@ -36,8 +39,9 @@ import (
 // (#159). Only the announcement's cc line mentions anyone.
 
 // digestRenderIdentity is the digest's identity marker, as
-// github.FormatMarker writes kind "digest" with no fields. It's the same
-// text as #159's digestMarker, under another name until T8 keeps one.
+// github.FormatMarker writes kind "digest" with no fields. It's the one
+// constant for it: digest.go writes it through digestBody, and finds the
+// digest by it (digestIdentity).
 const digestRenderIdentity = "<!-- issuedog:digest -->"
 
 // digestRenderLimit is what a body or comment may come to, by
@@ -105,7 +109,7 @@ func digestRenderFit(n int, render func(k int) string) int {
 // answer at.
 func digestRenderItem(rank int, it waitItem) string {
 	heading := fmt.Sprintf("### %d. #%d", rank, it.Issue)
-	if title := digestRenderText(it.Title); title != "" {
+	if title := digestRenderTitle(it.Title); title != "" {
 		// A heading drops the #s that end it after a space, so an escaped
 		// title keeps its last one.
 		if strings.HasSuffix(title, "#") {
@@ -146,6 +150,24 @@ func digestRenderItem(rank int, it waitItem) string {
 // already made safe, so App text copied as posted comes out unchanged.
 func digestRenderText(s string) string {
 	return github.Escape(inline(s))
+}
+
+// digestRenderTitle is an issue's raw title made safe for the middle of a
+// line: one line, its tags escaped and its mentions defused (text), then
+// each "[", "]" and "!" backslash-escaped, so a title can't make a link,
+// an image or a tracking pixel, and each "\" too, so none of those escapes
+// can be undone, and the title reads as typed. Then its markers are
+// escaped (SPEC §5.1). With every "[" escaped, no task box is left
+// (escapeBoxes).
+func digestRenderTitle(s string) string {
+	var b strings.Builder
+	for _, r := range text(s) {
+		if strings.ContainsRune(`\[]!`, r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return github.Escape(b.String())
 }
 
 // digestRenderOrderedRE starts an ordered list item.
@@ -266,7 +288,7 @@ func digestRenderNews(items []waitItem, notify []string) (string, error) {
 	keys := make([]string, len(mention))
 	for i, it := range mention {
 		title := ""
-		if t := digestRenderText(it.Title); t != "" {
+		if t := digestRenderTitle(it.Title); t != "" {
 			title = ": " + t
 		}
 		lines[i] = fmt.Sprintf("- **%s** on #%d%s. Answer here: %s", digestRenderKindName(it.Kind), it.Issue, title, it.Link)

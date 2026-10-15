@@ -5,8 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	gogithub "github.com/google/go-github/v92/github"
@@ -119,15 +123,43 @@ func TestDigestEditOnce(t *testing.T) {
 	}
 }
 
-// digestMark puts the marker back with the pin note this start's check
-// found for this digest, and with none when the check was for another.
-func TestDigestMarkNote(t *testing.T) {
+// A body GitHub keeps with "\r\n" line breaks, or space around it, is
+// the same body: digestEdit writes nothing for it.
+func TestDigestEditNormalised(t *testing.T) {
+	f := githubtest.New(t, "o/r", "issuedog")
+	f.AddIssue("issuedog[bot]", "issuedog digest", "Nothing is waiting on you.\r\n\r\n<!-- issuedog:digest -->\r\n")
+	d := &Daemon{Step: &Step{Applier: &Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}}, stale: map[int]bool{}}
+	if err := d.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.digestEdit(context.Background(), 1, digestBody("", nil)); err != nil {
+		t.Fatal(err)
+	}
+	if w := f.Writes(); len(w) != 0 {
+		t.Errorf("writes = %+v; want none for the same body", w)
+	}
+	for a, b := range map[string]string{"a\r\nb": "a\nb", " a\n": "a", "a\n\nb": "a\r\n\r\nb"} {
+		if !digestSameBody(a, b) {
+			t.Errorf("digestSameBody(%q, %q) = false, want true", a, b)
+		}
+	}
+	for a, b := range map[string]string{"a\nb": "a b", "a\n\nb": "a\nb", "a": "A"} {
+		if digestSameBody(a, b) {
+			t.Errorf("digestSameBody(%q, %q) = true, want false", a, b)
+		}
+	}
+}
+
+// digestRewrite writes the body with the pin note this start's check found
+// for this digest, and with none when the check was for another, so an
+// edit that took the marker out is put right.
+func TestDigestRewriteNote(t *testing.T) {
 	for _, tc := range []struct {
 		pinned int
 		want   string
 	}{
-		{1, "Note.\n\n" + digestBody("")},
-		{2, digestBody("")},
+		{1, "Note.\n\n" + digestBody("", nil)},
+		{2, digestBody("", nil)},
 	} {
 		f := githubtest.New(t, "o/r", "issuedog")
 		f.AddIssue("issuedog[bot]", "issuedog digest", "gone")
@@ -136,11 +168,214 @@ func TestDigestMarkNote(t *testing.T) {
 			t.Fatal(err)
 		}
 		d.digest.pinned, d.digest.note = tc.pinned, "Note."
-		if err := d.digestMark(context.Background(), 1); err != nil {
+		if err := d.digestRewrite(context.Background(), 1, nil); err != nil {
 			t.Fatal(err)
 		}
 		if got := f.State().Issues[0].Body; got != tc.want {
 			t.Errorf("checked #%d: body = %q, want %q", tc.pinned, got, tc.want)
+		}
+	}
+}
+
+// digestRewriteDaemon is a daemon of o/r on f, notifying notify, that has
+// polled once.
+func digestRewriteDaemon(t *testing.T, f *githubtest.Fake, notify ...string) *Daemon {
+	t.Helper()
+	cfg := config.Defaults()
+	cfg.Notify = notify
+	d := &Daemon{Step: &Step{Applier: &Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}}, Config: cfg, stale: map[int]bool{}}
+	if err := d.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+// An announcement is recorded as soon as it's posted: a second rewrite
+// before any poll lists it announces nothing again (#158's verify).
+func TestDigestRewriteRecordsAtOnce(t *testing.T) {
+	f := githubtest.New(t, "o/r", "issuedog")
+	f.AddIssue("issuedog[bot]", "issuedog digest", digestBody("", nil))
+	d := digestRewriteDaemon(t, f, "owner")
+	items := []waitItem{{Issue: 2, Kind: waitError, Key: "err-2-labels-0", Title: "T", Link: "https://github.com/o/r/issues/2"}}
+	for range 2 {
+		if err := d.digestRewrite(context.Background(), 1, items); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if w := f.Writes(); len(w) != 2 || w[0].Path != "/issues/1/comments" || w[1].Method != http.MethodPatch {
+		t.Errorf("writes = %+v; want one announcement and one edit", w)
+	}
+	if got := slices.Collect(maps.Keys(d.digest.announced(1))); !slices.Equal(got, []string{"err-2-labels-0"}) {
+		t.Errorf("announced = %q; want the item", got)
+	}
+}
+
+// An announcement that can't be rendered, for an item too big for any
+// comment, is logged, and the body is still written, with no error.
+func TestDigestRewriteNewsFails(t *testing.T) {
+	f := githubtest.New(t, "o/r", "issuedog")
+	f.AddIssue("issuedog[bot]", "issuedog digest", digestBody("", nil))
+	d := digestRewriteDaemon(t, f, "owner")
+	items := []waitItem{{Issue: 2, Kind: waitError, Key: "err-2-labels-0", Title: strings.Repeat("x", digestRenderLimit), Link: "https://github.com/o/r/issues/2"}}
+	if err := d.digestRewrite(context.Background(), 1, items); err != nil {
+		t.Fatalf("digestRewrite = %v; want no error", err)
+	}
+	if w := f.Writes(); len(w) != 1 || w[0].Method != http.MethodPatch || f.State().Issues[0].Body != digestBody("", items) {
+		t.Errorf("writes = %+v; want the body edit alone", w)
+	}
+}
+
+// An issue found gone on two reads loses its items, as one that closes
+// does, and the digest stops listing it.
+func TestDigestCacheGone(t *testing.T) {
+	f := githubtest.New(t, "o/r", "issuedog")
+	f.SetPermission("owner", "admin")
+	f.AddIssue("issuedog[bot]", "issuedog digest", digestBody("", nil))
+	n := f.AddIssue("owner", "Mine", "")
+	f.AddLabel(n, "issuedog[bot]", "stage:ready")
+	f.AddComment(n, "issuedog[bot]", "<!-- issuedog:transition from=intake to=ready run=r1 -->")
+	f.AddComment(n, "issuedog[bot]", "Put back. <!-- issuedog:error kind=disagreement key=9 -->")
+	st := &Step{Applier: &Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}, Trust: ownerOnly{}}
+	d := &Daemon{Step: st, Clone: repo.New(filepath.Join(t.TempDir(), "none"), filepath.Join(t.TempDir(), "r.git")), Config: config.Defaults(), Digest: true}
+	if err := d.Iterate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.digestCache[n]) != 1 || !strings.Contains(f.State().Issues[0].Body, "1 item waits on you.") {
+		t.Fatalf("cache %+v, body %q; want the error cached and listed", d.digestCache, f.State().Issues[0].Body)
+	}
+	f.DeleteIssue()
+	d.reread(n, true) // one read found it gone already
+	if err := d.Iterate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := d.digestCache[n]; ok || f.State().Issues[0].Body != digestBody("", nil) {
+		t.Errorf("cache %+v, body %q; want the item gone", d.digestCache, f.State().Issues[0].Body)
+	}
+}
+
+// A transferred digest's writes, which GitHub answers with a 301 that the
+// client follows, and Go turns into a GET that succeeds, are each the
+// digest gone, not a write (#160's verify): the edit, the announcement and
+// the state change.
+func TestDigestMovedRedirect(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Method+" "+r.URL.Path)
+		body := `{"number": 1, "repository_url": "https://api.github.com/repos/x/y", "body": "old"}`
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/repos/o/r/"):
+			http.Redirect(w, r, "/repositories/9/"+strings.TrimPrefix(r.URL.Path, "/repos/o/r/"), http.StatusMovedPermanently)
+			return
+		case strings.HasSuffix(r.URL.Path, "/comments"):
+			body = `[]`
+		}
+		if _, err := fmt.Fprint(w, body); err != nil {
+			t.Errorf("write the answer: %v", err)
+		}
+	}))
+	defer srv.Close()
+	base := srv.URL + "/"
+	gc, err := gogithub.NewClient(gogithub.WithURLs(&base, &base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &Daemon{Step: &Step{Applier: &Applier{Client: &github.Client{Client: gc}, Owner: "o", Repo: "r", AppSlug: "issuedog"}}}
+	d.digest.issues = map[int]digestSeen{1: {number: 1, open: true, body: "old"}}
+	for name, write := range map[string]func() error{
+		"edit":     func() error { return d.digestEdit(context.Background(), 1, "new") },
+		"announce": func() error { return d.digestAnnounce(context.Background(), 1, "<!-- issuedog:digest-new items=a -->") },
+		"state":    func() error { return digestGone(d.digestSetState(context.Background(), 1, "open")) },
+	} {
+		if err := write(); !errors.Is(err, digestErrGone) || !errors.Is(err, github.ErrTransferred) {
+			t.Errorf("%s = %v; want the digest gone, transferred", name, err)
+		}
+	}
+	if d.digest.issues[1].body != "old" || len(d.digest.news) != 0 || !d.digest.wrote.IsZero() {
+		t.Errorf("digest state %+v; want nothing recorded as written", d.digest)
+	}
+	if !slices.Contains(got, "GET /repositories/9/issues/1") {
+		t.Errorf("requests = %q; want the redirect followed with a GET", got)
+	}
+}
+
+// digestMoved takes a write answered at this repo's path, by an issue of
+// this repo or none, as not moved, matching the repo in any case.
+func TestDigestMoved(t *testing.T) {
+	a := &Applier{Owner: "O", Repo: "r"}
+	resp := func(path string) *gogithub.Response {
+		u, err := url.Parse("https://api.github.com" + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &gogithub.Response{Response: &http.Response{Request: &http.Request{Method: http.MethodPatch, URL: u}}}
+	}
+	repoURL := func(u string) *gogithub.Issue { return &gogithub.Issue{RepositoryURL: &u} }
+	for _, tc := range []struct {
+		resp  *gogithub.Response
+		is    *gogithub.Issue
+		moved bool
+	}{
+		{nil, nil, false},
+		{resp("/repos/o/R/issues/1"), repoURL("https://api.github.com/repos/o/R"), false},
+		{resp("/api/v3/repos/o/r/issues/1"), nil, false},
+		{resp("/repositories/9/issues/1"), nil, true},
+		{resp("/repos/o/rr/issues/1"), nil, true},
+		{nil, repoURL("https://api.github.com/repos/o/r2"), true},
+		{&gogithub.Response{}, &gogithub.Issue{}, false},
+	} {
+		err := digestMoved(a, tc.resp, tc.is)
+		if (err != nil) != tc.moved || err != nil && !errors.Is(err, github.ErrTransferred) {
+			t.Errorf("digestMoved(%v, %v) = %v; want moved %t", tc.resp, tc.is.GetRepositoryURL(), err, tc.moved)
+		}
+	}
+}
+
+// digestTrust404 fails every lookup with a 404, as a permission check for
+// a user GitHub doesn't know might.
+type digestTrust404 struct{}
+
+func (digestTrust404) Trusted(context.Context, string) (bool, error) {
+	return false, fmt.Errorf("permission: %w", &gogithub.ErrorResponse{Response: &http.Response{StatusCode: http.StatusNotFound}})
+}
+
+// A trust lookup that fails with a 404, while the close of the digest is
+// resolved, is the pass's error, but not the digest gone: it's kept, and
+// the issues aren't listed again.
+func TestDigestTrust404NotGone(t *testing.T) {
+	f := githubtest.New(t, "o/r", "issuedog")
+	f.AddIssue("issuedog[bot]", "issuedog digest", digestBody("", nil))
+	f.CloseBy(1, "owner")
+	f.ReopenBy(1, "owner")
+	st := &Step{Applier: &Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}, Trust: digestTrust404{}}
+	d := &Daemon{Step: st, Clone: repo.New(filepath.Join(t.TempDir(), "none"), filepath.Join(t.TempDir(), "r.git")), Config: config.Defaults(), Digest: true}
+	err := d.Iterate(context.Background())
+	if err == nil || errors.Is(err, digestErrGone) || !strings.Contains(err.Error(), "trust owner") {
+		t.Fatalf("Iterate = %v; want the trust lookup's error, not the digest gone", err)
+	}
+	if !d.digest.has(1) || d.issuesSince.IsZero() {
+		t.Errorf("digests %v, issues cursor %v; want the digest kept, and the cursor too", d.digest.issues, d.issuesSince)
+	}
+}
+
+// digestGone marks only a 404, a 410 or a transfer, and keeps the error.
+func TestDigestGone(t *testing.T) {
+	status := func(code int) error {
+		return fmt.Errorf("edit: %w", &gogithub.ErrorResponse{Response: &http.Response{StatusCode: code}})
+	}
+	for _, tc := range []struct {
+		err  error
+		want bool
+	}{
+		{status(http.StatusNotFound), true},
+		{status(http.StatusGone), true},
+		{fmt.Errorf("read: %w", github.ErrTransferred), true},
+		{status(http.StatusForbidden), false},
+		{status(http.StatusInternalServerError), false},
+		{errors.New("boom"), false},
+	} {
+		got := digestGone(tc.err)
+		if errors.Is(got, digestErrGone) != tc.want || !errors.Is(got, tc.err) {
+			t.Errorf("digestGone(%v) = %v; want gone %t, wrapping it", tc.err, got, tc.want)
 		}
 	}
 }
