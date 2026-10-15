@@ -63,8 +63,11 @@ func triageLeft(run, reason string) string {
 
 // triageAdmit is the move triage makes for run, on an issue with no
 // comments before it, so it has no seen.
-func triageAdmit(run, reason string) string {
-	return "Triage: issuedog will handle this issue: " + reason + " I've moved it to `clarifying`.\n\n" +
+func triageAdmit(run, reason string) string { return triageAdmitNote(run, reason, "") }
+
+// triageAdmitNote is triageAdmit with note, intakeNote's, after the move.
+func triageAdmitNote(run, reason, note string) string {
+	return "Triage: issuedog will handle this issue: " + reason + " I've moved it to `clarifying`." + note + "\n\n" +
 		"<!-- issuedog:transition from=intake to=clarifying run=" + run + " -->"
 }
 
@@ -100,6 +103,40 @@ func TestTriageAdmitsSureHandle(t *testing.T) {
 	}
 	if is := f.State().Issues[0]; !slices.Equal(is.Labels, []string{"stage:spec-review"}) {
 		t.Errorf("labels %v after the interviewer's run; want its move to spec-review", is.Labels)
+	}
+}
+
+// A sure handle on a trusted author's bug, task or story with a parent
+// tells it that it waits at clarifying, as the other ways in do; an epic,
+// an untyped issue and a story with no parent get no note.
+func TestTriageAdmitWaitNote(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		labels []string
+		parent bool
+		note   string
+	}{
+		{"a bug waits", []string{"type:bug"}, false, phase3Note("bug")},
+		{"a task waits", []string{"type:task"}, false, phase3Note("task")},
+		{"a story with a parent waits", []string{"type:story"}, true, storyNote},
+		{"an epic gets no note", []string{"type:epic"}, false, ""},
+		{"an untyped issue gets no note", nil, false, ""},
+		{"a story with no parent gets no note", []string{"type:story"}, false, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFake(t)
+			n := f.AddIssue("owner", "Idea", "An idea.", c.labels...)
+			if c.parent {
+				f.SetParent(n, f.AddIssue("owner", "Epic", "An epic.", "stage:planning", "type:epic"))
+			}
+			g := triageRig(t, f, triageOrigin(t), t.TempDir())
+			g.claude(triageOut("handle", true, triageReason, triageSummary), 0)
+			g.pass()
+			want := triageAdmitNote("run1", triageReason, c.note)
+			if got := commentBodies(f, n); !slices.Equal(got, []string{want}) {
+				t.Errorf("comments %q; want only %q", got, want)
+			}
+		})
 	}
 }
 
@@ -557,13 +594,13 @@ func TestTriageAttemptCapText(t *testing.T) {
 
 // triageReplay is Replay over one pass of the loop with the real Triage,
 // on owner's or eve's fresh issue, with the fake claude printing out.
-func triageReplay(t *testing.T, author, out string) {
+func triageReplay(t *testing.T, author, out string, labels ...string) {
 	t.Helper()
 	o := triageOrigin(t)
 	roots := map[*githubtest.Fake]string{}
 	githubtest.Replay(t, func(tb testing.TB) *githubtest.Fake {
 		f := newFake(tb)
-		f.AddIssue(author, "Idea", "An idea.")
+		f.AddIssue(author, "Idea", "An idea.", labels...)
 		roots[f] = t.TempDir()
 		return f
 	}, func(f *githubtest.Fake) error {
@@ -575,6 +612,10 @@ func triageReplay(t *testing.T, author, out string) {
 
 func TestTriageAdmitReplay(t *testing.T) {
 	triageReplay(t, "owner", triageOut("handle", true, triageReason, triageSummary))
+}
+
+func TestTriageAdmitBugReplay(t *testing.T) {
+	triageReplay(t, "owner", triageOut("handle", true, triageReason, triageSummary), "type:bug")
 }
 
 func TestTriageFlagReplay(t *testing.T) {
