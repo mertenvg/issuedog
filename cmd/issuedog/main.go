@@ -160,7 +160,8 @@ func readSettings(environ []string) (settings, error) {
 
 // startDaemon runs the startup steps after the key check: the client, the
 // App's slug, a token, the clone, config and trust from main, and the
-// labels. It returns the daemon, ready to run.
+// labels. It returns the daemon, ready to run, keeping the digest: its loop
+// creates the digest, not this startup (SPEC §3.5).
 func startDaemon(ctx context.Context, set settings, key []byte) (*daemon.Daemon, error) {
 	client, err := github.New(github.Config{AppID: set.appID, InstallationID: set.installationID, Key: key, BaseURL: apiURL})
 	if err != nil {
@@ -195,7 +196,7 @@ func startDaemon(ctx context.Context, set settings, key []byte) (*daemon.Daemon,
 	}
 	logr.Infof("running as %s[bot] on %s/%s", slug, set.owner, set.name)
 	a := &daemon.Applier{Client: client, Owner: set.owner, Repo: set.name, AppSlug: slug}
-	d := &daemon.Daemon{Clone: clone, Config: cfg}
+	d := &daemon.Daemon{Clone: clone, Config: cfg, Digest: true}
 	d.Step = newStep(a, tr, d.CurrentModels)
 	return d, nil
 }

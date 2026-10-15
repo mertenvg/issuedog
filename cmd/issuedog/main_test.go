@@ -529,6 +529,10 @@ func TestStartDaemonUsesCurrentModels(t *testing.T) {
 		}
 	}
 	iterate([]string{"model:opus", "stage:ready"})
+	// The daemon keeps the digest: its first Iterate created and pinned it.
+	if is := f.State().Issues; len(is) != 2 || is[1].Title != "issuedog digest" || is[1].Author != app || !is[1].Pinned {
+		t.Errorf("issues = %+v; want the task and a pinned digest of the App's", is)
+	}
 
 	dir := t.TempDir()
 	work := filepath.Join(dir, "work")
@@ -660,7 +664,8 @@ func TestRunDaemon(t *testing.T) {
 	if len(slices.DeleteFunc(slices.Clone(labels), func(l string) bool { return l != "stage:intake" })) != 1 {
 		t.Errorf("repo labels = %v, want stage:intake, which existed, once", labels)
 	}
-	for i, is := range f.State().Issues[1:] {
+	// Issue 4 is the digest, which the loop created after the specs.
+	for i, is := range f.State().Issues[1:3] {
 		if !slices.Equal(is.Labels, planning) {
 			t.Errorf("spec %d labels = %v, want %v: approved by %s", i+2, is.Labels, planning, []string{"👍", "/approve"}[i])
 		}

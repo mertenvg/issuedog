@@ -33,10 +33,14 @@ func (c *Client) ReopenIssue(ctx context.Context, owner, repo string, number int
 }
 
 var (
-	errNoNumber  = errors.New("GitHub gave the new issue no number")
-	errNoNodeID  = errors.New("GitHub gave the issue no node ID")
-	errNotPinned = errors.New("GitHub answered without pinning it")
+	errNoNumber = errors.New("GitHub gave the new issue no number")
+	errNoNodeID = errors.New("GitHub gave the issue no node ID")
 )
+
+// ErrNotPinned is wrapped by PinIssue's error when GitHub answers with no
+// error but the issue isn't pinned: a refusal, like one that wraps
+// ErrGraphQL.
+var ErrNotPinned = errors.New("GitHub answered without pinning it")
 
 // pinIssueMutation pins an issue to the repo's issue list, by its node ID.
 const pinIssueMutation = `mutation($id: ID!) {
@@ -85,7 +89,7 @@ func (c *Client) PinIssue(ctx context.Context, owner, repo string, number int) e
 		return wrap(err)
 	}
 	if p := out.Data.PinIssue; p == nil || p.Issue == nil || !p.Issue.IsPinned {
-		return wrap(errNotPinned)
+		return wrap(ErrNotPinned)
 	}
 	return nil
 }
