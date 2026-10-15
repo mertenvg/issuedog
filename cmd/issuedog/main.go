@@ -226,9 +226,10 @@ func stageWork(d *daemon.Daemon, name string, cred agent.Cred) (*daemon.Runs, er
 }
 
 // newStep is step 1 with the command and reaction handlers merged so far,
-// /track and /ignore among them, and both reaction triggers: a 👍 on a
-// revision and a 👍 on a flag. Each acts at its own stage, spec-review or
-// intake, so at most one of them acts on an issue. The loop's reloads
+// /track and /ignore among them, and the reaction triggers: a 👍 on a
+// revision and a 👍 on a flag, each at its own stage, spec-review or
+// intake, so at most one of them acts on an issue, then a 👍 on a state
+// error, at any stage. The loop's reloads
 // replace its Trust and the daemon's Config, so the handlers and the
 // triggers ask for the current trust, and models for the current
 // models.allowed, rather than keeping what they had at the start.
@@ -240,12 +241,17 @@ func newStep(a *daemon.Applier, tr github.Trust, models func() config.Models) *d
 	maps.Copy(st.Commands, daemon.SettingCommands(st.CurrentTrust(), models))
 	maps.Copy(st.Commands, daemon.FlagCommands())
 	approve, answer := daemon.ApproveByReaction(st.CurrentTrust()), daemon.FlagByReaction(st.CurrentTrust())
+	errAck := daemon.ErrorByReaction(st.CurrentTrust())
 	st.Reactions = func(ctx context.Context, a *daemon.Applier, s *github.Snapshot, d daemon.Dirt) error {
 		if err := approve(ctx, a, s, d); err != nil {
 			return fmt.Errorf("approval by 👍: %w", err)
 		}
 		if err := answer(ctx, a, s, d); err != nil {
 			return fmt.Errorf("flag answer by 👍: %w", err)
+		}
+		// Last, so an error a move above ended gets no read.
+		if err := errAck(ctx, a, s, d); err != nil {
+			return fmt.Errorf("state error ack by 👍: %w", err)
 		}
 		return nil
 	}

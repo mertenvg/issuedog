@@ -355,6 +355,43 @@ func TestNewStepFlagAnswers(t *testing.T) {
 	}
 }
 
+// newStep's state error trigger runs too: a trusted 👍 on a state error
+// gets its ack. Its error comes back wrapped.
+func TestNewStepErrAck(t *testing.T) {
+	const app = "issuedog-dev[bot]"
+	const errorText = "Disagreed.\n\n<!-- issuedog:error kind=disagreement key=9 -->"
+	f := githubtest.New(t, "o/r", "issuedog-dev")
+	for range 2 {
+		n := f.AddIssue("owner", "Task", "body")
+		f.AddLabel(n, app, "stage:ready")
+		f.AddComment(n, app, "<!-- issuedog:transition from=intake to=ready run=a -->")
+	}
+	r := f.AddReaction(f.AddComment(1, app, errorText), "owner", "+1")
+	gone := f.AddComment(2, app, errorText)
+	c := f.Client(t)
+	st := newStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{"owner": true}, noModels)
+	s, err := c.Snapshot(context.Background(), "o", "r", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Run(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("Acknowledged, by `owner`'s 👍.\n\n<!-- issuedog:error kind=disagreement key=9 ack=r%d -->", r)
+	if got := f.State().Issues[0].Comments; len(got) != 3 || got[2].Body != want {
+		t.Errorf("#1's comments = %+v; want the ack last: %q", got, want)
+	}
+	// Its error: the error comment is gone after the read, so its
+	// reactions can't be listed.
+	if s, err = c.Snapshot(context.Background(), "o", "r", 2); err != nil {
+		t.Fatal(err)
+	}
+	f.DeleteComment(gone)
+	if err := st.Reactions(context.Background(), st.Applier, s, daemon.Dirt{}); err == nil || !strings.HasPrefix(err.Error(), "state error ack by 👍: ") {
+		t.Errorf("Reactions = %v, want an error starting %q", err, "state error ack by 👍: ")
+	}
+}
+
 // noModels is a models.allowed that's empty.
 func noModels() config.Models { return config.Models{} }
 
