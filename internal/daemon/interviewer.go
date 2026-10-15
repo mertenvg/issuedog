@@ -3,7 +3,6 @@ package daemon
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -68,13 +67,6 @@ func (*Interviewer) Pending(in Input) bool {
 		return true
 	}
 	return len(in.Inputs) > 0
-}
-
-// Apply is a stub: #134 (plan #6, T5 and T6) completes it with the
-// question rounds, the typing and the spec. Until then it writes nothing
-// and fails, and the interviewer isn't registered as a Stage (#137).
-func (*Interviewer) Apply(context.Context, *Applier, Result) error {
-	return errors.New("the interviewer can't apply a result yet: #134 builds that")
 }
 
 // interviewerClass reports whether the interviewer runs on an issue of
@@ -188,7 +180,7 @@ func (iv *Interviewer) Context(ctx context.Context, in Input) (map[string][]byte
 		logr.Debugf("%s/%s#%d: the interviewer runs with %s/%s.md from main", a.Owner, a.Repo, s.Number, agent.PromptDir, interviewerAgent)
 	}
 	timeline := &ivTimeline{a: a, number: s.Number}
-	typing, err := iv.typing(ctx, s, timeline)
+	typing, _, err := iv.typing(ctx, s, timeline)
 	if err != nil {
 		return nil, wrap(err)
 	}
@@ -267,29 +259,31 @@ func (iv *Interviewer) Context(ctx context.Context, in Input) (map[string][]byte
 }
 
 // typing returns the preamble's line on whether the interviewer may set
-// s's type (plan #6, assumption 13): only on a repo that types issues by
-// label (types: labels), and there only on an untyped issue, or one each of
-// whose type:* labels stands as the App's add, as the timeline shows. The App's
-// restore of a change someone untrusted reverted isn't the App's add: the
-// change it restored stands (github.StandingLabelChange).
-func (iv *Interviewer) typing(ctx context.Context, s *github.Snapshot, tl *ivTimeline) (string, error) {
+// s's type (plan #6, assumption 13), and whether it may: only on a repo
+// that types issues by label (types: labels), and there only on an untyped
+// issue, or one each of whose type:* labels stands as the App's add, as the
+// timeline shows. The App's restore of a change someone untrusted reverted
+// isn't the App's add: the change it restored stands
+// (github.StandingLabelChange). Context gives the run the line, and Check
+// holds the run's output to whether it may.
+func (iv *Interviewer) typing(ctx context.Context, s *github.Snapshot, tl *ivTimeline) (string, bool, error) {
 	d := iv.Daemon
 	a := d.Step.Applier
 	owners := fmt.Sprintf("The owner set this issue's type, %s, so leave `type` out.", github.Escape(s.Type))
 	switch {
 	case d.Config.Types != "labels" && s.Type == "":
 		return "This repo uses GitHub's issue types, which issuedog can't set yet, so leave `type` out. " +
-			"The issue has no type, so ask the owner to set it on the issue itself, as one of your questions, before you write the spec.", nil
+			"The issue has no type, so ask the owner to set it on the issue itself, as one of your questions, before you write the spec.", false, nil
 	case d.Config.Types != "labels":
-		return "This repo uses GitHub's issue types, which issuedog can't set yet, so leave `type` out.", nil
+		return "This repo uses GitHub's issue types, which issuedog can't set yet, so leave `type` out.", false, nil
 	case s.Type == "":
-		return "This issue has no type, so you may set it.", nil
+		return "This issue has no type, so you may set it.", true, nil
 	case !s.TypeFromLabels:
-		return owners, nil
+		return owners, false, nil
 	}
 	timeline, err := tl.get(ctx)
 	if err != nil {
-		return "", fmt.Errorf("who set the type: %w", err)
+		return "", false, fmt.Errorf("who set the type: %w", err)
 	}
 	// Every type:* label must stand as the App's add, as s.Type is only the
 	// first. A restore of a reverted change isn't the App's typing: the
@@ -302,16 +296,16 @@ func (iv *Interviewer) typing(ctx context.Context, s *github.Snapshot, tl *ivTim
 		labels++
 		ev, err := github.StandingLabelChange(ctx, timeline, l, a.AppSlug, d.Step.Trust)
 		if err != nil {
-			return "", fmt.Errorf("who set the type: %w", err)
+			return "", false, fmt.Errorf("who set the type: %w", err)
 		}
 		if ev.GetEvent() != "labeled" || !state.IsApp(github.Author{Login: ev.GetActor().GetLogin(), Type: ev.GetActor().GetType()}, a.AppSlug) {
-			return owners, nil
+			return owners, false, nil
 		}
 	}
 	if labels == 0 {
-		return owners, nil // no type:* label, though s.Type is from one: fail closed
+		return owners, false, nil // no type:* label, though s.Type is from one: fail closed
 	}
-	return fmt.Sprintf("issuedog set this issue's type, %s, so you may change it.", github.Escape(s.Type)), nil
+	return fmt.Sprintf("issuedog set this issue's type, %s, so you may change it.", github.Escape(s.Type)), true, nil
 }
 
 // ivTimeline is an issue's timeline, read once, when it's first needed.
