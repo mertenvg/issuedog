@@ -115,6 +115,12 @@ const (
 
 var flagOwners = trusted{"owner": true, "owner2": true}
 
+// registerReverted is the App's revert of mallory's approved, whose
+// labeled event is key.
+func registerReverted(key string) string {
+	return "I removed `approved`: only trusted users can change pipeline labels, and mallory isn't one.\n\n<!-- issuedog:revert key=" + key + " -->"
+}
+
 // A code owner's 👍 on the latest flag takes its recommendation, and every
 // other 👍 is ignored. Each runs under Replay.
 func TestFlagByReaction(t *testing.T) {
@@ -185,6 +191,22 @@ func TestFlagByReaction(t *testing.T) {
 				flagWith("leave", up("owner"))(t, f)
 			}),
 			want: outcome{labels: []string{"stage:intake"}}},
+		// approved added in the same pass as the 👍 (#141's verify): no
+		// "left" comment beside IntakeVisit's admission, whose move then
+		// answers the flag.
+		{name: "a 👍 recommending leave on an issue with approved is ignored, and IntakeVisit admits it",
+			setup: flagIssue("eve", flagWith("leave", func(t testing.TB, f *githubtest.Fake) {
+				labelEvent(t, f.AddLabel(1, "owner", "approved"), 9002)
+				up("owner")(t, f)
+			})),
+			want: outcome{comments: []string{admitted(byApproved, "9002")}, labels: []string{"approved", "stage:clarifying"}}},
+		{name: "a 👍 recommending leave applies once mallory's approved is reverted",
+			setup: flagIssue("eve", flagWith("leave", func(t testing.TB, f *githubtest.Fake) {
+				labelEvent(t, f.AddLabel(1, "mallory", "approved"), 9002)
+				up("owner")(t, f)
+			})),
+			want: outcome{comments: []string{registerReverted("9002"), flagLeft(flagTakes+": issuedog leaves this issue to people.", "r1002")},
+				labels: []string{"triage:left"}}},
 		{name: "a 👍 recommending handle admits an issue with stage:intake",
 			setup: flagIssue("eve", func(t testing.TB, f *githubtest.Fake) {
 				f.AddLabel(1, "owner", "stage:intake")
@@ -270,6 +292,22 @@ func TestFlagCommands(t *testing.T) {
 		{name: "/ignore records left on a flagged issue",
 			setup: flagIssue("owner", flagWith("handle", post("/ignore", 1002))),
 			want:  outcome{comments: []string{flagLeft(flagIgnore, "1002")}, labels: []string{"triage:left"}, acks: []string{"/ignore"}}},
+		// approved added in the same pass as /ignore (#141's verify): no
+		// "left" comment beside IntakeVisit's admission.
+		{name: "/ignore on an issue with approved is rejected, and IntakeVisit admits it",
+			setup: flagIssue("eve", flagWith("handle", func(t testing.TB, f *githubtest.Fake) {
+				labelEvent(t, f.AddLabel(1, "owner", "approved"), 9002)
+				post("/ignore", 1002)(t, f)
+			})),
+			want: outcome{comments: []string{rejected("/ignore", "this issue has `approved`, which brings it into the pipeline instead", "1002"),
+				admitted(byApproved, "9002")}, labels: []string{"approved", "stage:clarifying"}, downs: []string{"/ignore"}}},
+		{name: "/ignore applies once mallory's approved is reverted",
+			setup: flagIssue("eve", flagWith("handle", func(t testing.TB, f *githubtest.Fake) {
+				labelEvent(t, f.AddLabel(1, "mallory", "approved"), 9002)
+				post("/ignore", 1002)(t, f)
+			})),
+			want: outcome{comments: []string{registerReverted("9002"), flagLeft(flagIgnore, "1002")},
+				labels: []string{"triage:left"}, acks: []string{"/ignore"}}},
 		{name: "/ignore records left on an issue triage hasn't seen",
 			setup: flagIssue("eve", post("/IGNORE", 1001)),
 			want:  outcome{comments: []string{flagLeft(flagIgnore, "1001")}, labels: []string{"triage:left"}, acks: []string{"/IGNORE"}}},

@@ -273,6 +273,19 @@ func (r *Runs) leaseStage(l Lease) (st Stage, isUnlabeled, ok bool) {
 	return st, false, ok
 }
 
+// CheckRegistered is the startup check of the registered Stages (#130's
+// verify): it returns an error if Stages has a Stage at intake while
+// Unlabeled is set. An intake lease always resolves to Unlabeled
+// (leaseStage), so every result of that Stage would be dropped, silently.
+func (r *Runs) CheckRegistered() error {
+	if st, ok := r.Stages[state.Intake]; ok && r.Unlabeled != nil {
+		return fmt.Errorf("a Stage (%T) is registered at %s while Unlabeled (%T) is set: "+
+			"Unlabeled's leases record %s, so every result of the Stage at %s would be dropped",
+			st, state.Intake, r.Unlabeled, state.Intake, state.Intake)
+	}
+	return nil
+}
+
 // RunStage runs st on the issue rd if it has work pending, and reports
 // whether it ran. A run that fails, but not on a usage limit or in its
 // setup, counts as an attempt (failed); after loop.max_attempts in a row
