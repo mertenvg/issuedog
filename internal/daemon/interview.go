@@ -353,7 +353,7 @@ func (q questionID) String() string { return fmt.Sprintf("Q%d.%d", q.round, q.n)
 func renderQuestions(out interviewOutput, issue, round int, notify []string) string {
 	var parts []string
 	if t := out.Type; t != nil {
-		parts = append(parts, "Type: "+inline(t.Value)+", because "+lowerFirst(inline(t.Reason)))
+		parts = append(parts, renderTypeLine(*t))
 	}
 	if len(out.Questions) > 0 {
 		lines := []string{fmt.Sprintf("### Questions for #%d (round %d)", issue, round)}
@@ -404,10 +404,20 @@ func renderSpec(s interviewSpec) string {
 	}, "\n\n"))
 }
 
-// renderSpecNote renders the text of a spec's revision comment: out's
-// message, the decisions made without asking, and the cc line for notify.
+// renderTypeLine is the line naming the type t sets, and why, that starts
+// the comment of an output that sets one (SPEC §9.1).
+func renderTypeLine(t interviewType) string {
+	return "Type: " + inline(t.Value) + ", because " + lowerFirst(inline(t.Reason))
+}
+
+// renderSpecNote renders the text of a spec's revision comment: the type
+// line when out sets a type, out's message, the decisions made without
+// asking, and the cc line for notify.
 func renderSpecNote(out interviewOutput, notify []string) string {
 	var parts, added []string
+	if t := out.Type; t != nil {
+		parts = append(parts, renderTypeLine(*t))
+	}
 	if strings.TrimSpace(out.Message) != "" {
 		parts = append(parts, block(out.Message))
 	}
