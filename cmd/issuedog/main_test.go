@@ -282,7 +282,7 @@ func TestNewStepCommands(t *testing.T) {
 	f.AddComment(1, "owner", "/hold")
 	c := f.Client(t)
 	st := newStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{}, noModels)
-	for _, name := range []string{"approve", "hold", "resume", "priority", "model", "effort"} {
+	for _, name := range []string{"approve", "hold", "resume", "priority", "model", "effort", "track", "ignore"} {
 		if _, ok := st.Commands[name]; !ok {
 			t.Errorf("newStep has no /%s handler", name)
 		}
@@ -298,6 +298,60 @@ func TestNewStepCommands(t *testing.T) {
 	child := f.State().Issues[1].Comments
 	if last := child[len(child)-1].Body; !strings.Contains(last, "to=held at=planned") {
 		t.Errorf("#2's last comment = %q, want its hold from owner2's planned", last)
+	}
+}
+
+// newStep's reaction triggers both run: in one Step, a 👍 on a revision
+// approves it, and a 👍 on a flag admits its issue. A failing trigger's
+// error comes back wrapped.
+func TestNewStepFlagAnswers(t *testing.T) {
+	const app = "issuedog-dev[bot]"
+	f := githubtest.New(t, "o/r", "issuedog-dev")
+	spec := f.AddIssue("owner", "Spec", "body")
+	f.SetType(spec, "Story")
+	f.AddLabel(spec, app, "stage:spec-review")
+	f.AddReaction(f.AddComment(spec, app, revisionOf("body")), "owner", "+1")
+	flagged := f.AddIssue("eve", "Idea", "body")
+	f.AddLabel(flagged, app, "triage:ask")
+	flag := f.AddComment(flagged, app, "Flag.\n\n<!-- issuedog:triage verdict=ask run=t1 recommend=handle -->")
+	f.AddReaction(flag, "owner", "+1")
+	c := f.Client(t)
+	st := newStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{"owner": true}, noModels)
+	for _, n := range []int{spec, flagged} {
+		s, err := c.Snapshot(context.Background(), "o", "r", n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.Run(context.Background(), s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, want := range []string{"stage:planning", "stage:clarifying"} {
+		if got := f.State().Issues[i].Labels; !slices.Contains(got, want) {
+			t.Errorf("#%d's labels = %v, want %s", i+1, got, want)
+		}
+	}
+	// Each trigger's error: its comment is gone after the read, so its
+	// reactions can't be listed.
+	spec2 := f.AddIssue("owner", "Spec", "body")
+	f.SetType(spec2, "Story")
+	f.AddLabel(spec2, app, "stage:spec-review")
+	revision := f.AddComment(spec2, app, revisionOf("body"))
+	flagged2 := f.AddIssue("eve", "Idea", "body")
+	flag2 := f.AddComment(flagged2, app, "Flag.\n\n<!-- issuedog:triage verdict=ask run=t2 recommend=handle -->")
+	for _, tc := range []struct {
+		issue   int
+		comment int64
+		want    string
+	}{{spec2, revision, "approval by 👍: "}, {flagged2, flag2, "flag answer by 👍: "}} {
+		s, err := c.Snapshot(context.Background(), "o", "r", tc.issue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.DeleteComment(tc.comment)
+		if err := st.Reactions(context.Background(), st.Applier, s, daemon.Dirt{}); err == nil || !strings.HasPrefix(err.Error(), tc.want) {
+			t.Errorf("#%d: Reactions = %v, want an error starting %q", tc.issue, err, tc.want)
+		}
 	}
 }
 
