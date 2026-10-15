@@ -436,7 +436,7 @@ func TestInterviewerFirstRun(t *testing.T) {
 	d := ivDaemon(t, f, newOrigin(t))
 	files := ivContext(t, d, n)
 	want := map[string]string{
-		"issue.md": "# Issue #1\n\n- Title: Idea\n- Type: none\n- Author: owner\n\n## Body\n\n```text\nthe idea\n```\n",
+		"issue.md": "# Issue #1\n\n- Title: Idea\n- Type: none\n- Parent: none\n- Author: owner\n\n## Body\n\n```text\nthe idea\n```\n",
 		"input.md": "# Input for this run\n\nWhat's new since the interviewer last ran, or since the issue came to clarifying: " +
 			"answers to the latest round, or the revision notes that sent the spec back.\n\nnone: first run\n",
 		"prompt.md": "Clarify issue #1. Your context files are in /run/issuedog/run1: issue.md, conversation.md and input.md. " +
@@ -627,6 +627,31 @@ func TestInterviewerSystem(t *testing.T) {
 	}
 	if got, want := ivContext(t, d, n)["system.md"], preamble+"\n\nAsk about <!-- the data --> model.\n"; got != want {
 		t.Errorf("system.md with an override =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// TestRegisterInterviewerParent: issue.md names an untyped issue's parent,
+// and the preamble says such an issue is never typed story, which the
+// table has no spec move for (#135's verify). Every run gets the rule.
+func TestRegisterInterviewerParent(t *testing.T) {
+	const rule = "- An issue with a parent is never typed `story`, and issue.md names the parent if there is one. " +
+		"issuedog doesn't clarify a story with a parent, and the pipeline has no spec move for one, " +
+		"so output that types an issue with a parent `story` fails the run."
+	f := newFake(t)
+	n, _ := ivFiled(f, "", true, "from=intake to=clarifying event=5")
+	orphan, _ := ivFiled(f, "", false, "from=intake to=clarifying event=5")
+	d := ivDaemon(t, f, newOrigin(t))
+	for _, tt := range []struct {
+		n    int
+		want string
+	}{{n, "- Type: none\n- Parent: #2\n- Author: owner\n"}, {orphan, "- Type: none\n- Parent: none\n- Author: owner\n"}} {
+		files := ivContext(t, d, tt.n)
+		if !strings.Contains(files["issue.md"], tt.want) {
+			t.Errorf("#%d's issue.md lacks %q:\n%s", tt.n, tt.want, files["issue.md"])
+		}
+		if !strings.Contains(files["system.md"], "\n\n"+rule+"\n\n") {
+			t.Errorf("#%d's system.md lacks the parent rule:\n%s", tt.n, files["system.md"])
+		}
 	}
 }
 
@@ -909,7 +934,7 @@ func TestInterviewerAdmission(t *testing.T) {
 			return n
 		}, map[string][]string{"EVE-EDITED": nil, "EVE-RENAMED": nil},
 			"- Title: eve changed the title after the issue was admitted, so it's left out.\n" +
-				"- Type: none\n- Author: eve\n\n## Body\n\neve edited the body after the issue was admitted, so it's left out.\n"},
+				"- Type: none\n- Parent: none\n- Author: eve\n\n## Body\n\neve edited the body after the issue was admitted, so it's left out.\n"},
 		{"renamed after approval, then by the owner", func(f *githubtest.Fake) int {
 			n := ivEve(f, "epic")
 			ivApproved(f, n, nil)

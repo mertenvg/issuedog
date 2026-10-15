@@ -513,9 +513,10 @@ func TestRunDaemon(t *testing.T) {
 		f.AddLabel(m, "issuedog-dev[bot]", "stage:spec-review")
 		approve(m, f.AddComment(m, "issuedog-dev[bot]", revisionOf("body")))
 	}
-	// A lease for a stage with no Stage registered, which stage work drops.
+	// A lease for a stage with no Stage registered, planning, which stage
+	// work drops. clarifying has the interviewer, and intake triage.
 	lease := filepath.Join(stateDir, "lease.json")
-	if err := os.WriteFile(lease, []byte(`{"issue":1,"stage":"clarifying","run_id":"r1"}`), 0o600); err != nil {
+	if err := os.WriteFile(lease, []byte(`{"issue":1,"stage":"planning","run_id":"r1"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	calls := fakeEgress(t, nil, nil)
@@ -597,7 +598,7 @@ func TestRunDaemon(t *testing.T) {
 	}
 	for _, want := range []string{"egress proxy listening on http://127.0.0.1:", "allowing example.com, api.anthropic.com",
 		"running as issuedog-dev[bot] on mertenvg/issuedog", "stopping on a signal",
-		"dropping the lease of run r1 on #1: no Stage is registered for clarifying"} {
+		"dropping the lease of run r1 on #1: no Stage is registered for planning"} {
 		if !strings.Contains(logs.String(), want) {
 			t.Errorf("logs = %q, want %q", logs.String(), want)
 		}
@@ -977,7 +978,8 @@ func TestStageWork(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.UsageLimit.Pattern = "frobnicated"
 	cred := agent.Cred{Name: agent.APIKeyVar, Value: "key"}
-	runs, err := stageWork(&daemon.Daemon{Config: cfg}, "repo", cred)
+	d := &daemon.Daemon{Config: cfg}
+	runs, err := stageWork(d, "repo", cred)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -998,8 +1000,16 @@ func TestStageWork(t *testing.T) {
 		runs.Runner.StateDir != stateDir || runs.Runner.Claude != "claude" {
 		t.Errorf("workspace %+v, runner %+v; want the clone, runs and context dirs, and the state dir", ws, runs.Runner)
 	}
-	if len(runs.Stages) != 0 {
-		t.Errorf("stages = %v, want none yet", runs.Stages)
+	// The interviewer at clarifying and triage as Unlabeled, both on d, and
+	// nothing else: a Stage at intake beside triage fails CheckRegistered.
+	if iv, ok := runs.Stages[state.Clarifying].(*daemon.Interviewer); len(runs.Stages) != 1 || !ok || iv.Daemon != d {
+		t.Errorf("stages = %v, want only the interviewer on d at clarifying", runs.Stages)
+	}
+	if tr, ok := runs.Unlabeled.(*daemon.Triage); !ok || tr.Daemon != d {
+		t.Errorf("Unlabeled = %#v, want triage on d", runs.Unlabeled)
+	}
+	if err := runs.CheckRegistered(); err != nil {
+		t.Errorf("CheckRegistered = %v, want nil", err)
 	}
 	now := time.Now()
 	if runs.Gate.Observe(now, true, "usage limit reached") || !runs.Gate.Observe(now, true, "frobnicated") {
@@ -1009,5 +1019,48 @@ func TestStageWork(t *testing.T) {
 	fakeAgent(t, errors.New("no such user"))
 	if _, err := stageWork(&daemon.Daemon{Config: cfg}, "repo", cred); err == nil || !strings.Contains(err.Error(), "looking up agent: no such user") {
 		t.Errorf("stageWork = %v, want the lookup error", err)
+	}
+}
+
+// A Stage registered at intake while Unlabeled is set fails startup, with
+// the reason, before egress and the loop: every result of that Stage would
+// be dropped (#130's verify).
+func TestRegisterStagesChecked(t *testing.T) {
+	f := fakeGitHub(t, thisRepo(t))
+	calls := fakeEgress(t, nil, nil)
+	old := registerStages
+	t.Cleanup(func() { registerStages = old })
+	registerStages = func(d *daemon.Daemon) (map[state.Stage]daemon.Stage, daemon.Stage) {
+		stages, unlabeled := old(d)
+		stages[state.Intake] = &daemon.Interviewer{Daemon: d}
+		return stages, unlabeled
+	}
+	// Startup that passes the check would run the loop until canceled, so
+	// it gets 10s, then a cancel, and fails rather than hangs.
+	cancel, _ := cancelOnCall(t)
+	var buf bytes.Buffer
+	stop := logr.AddWriter(&buf)
+	defer stop()
+	done := make(chan int, 1)
+	go func() { done <- run(nil, daemonEnv, nil, io.Discard) }()
+	var code int
+	select {
+	case code = <-done:
+	case <-time.After(10 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("startup passed the check and ran the loop")
+	}
+	logr.Wait()
+	logs := buf.String()
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if want := "setting up stage runs: registering the stages: a Stage (*daemon.Interviewer) is registered at intake while Unlabeled (*daemon.Triage) is set: " +
+		"Unlabeled's leases record intake, so every result of the Stage at intake would be dropped"; !strings.Contains(logs, want) {
+		t.Errorf("logs = %q, want %q", logs, want)
+	}
+	if len(*calls) != 0 || slices.ContainsFunc(f.Requests(), func(r githubtest.Request) bool { return r.Path == "/issues" }) {
+		t.Errorf("startup steps %q, requests %+v; want startup to stop before egress and the loop", *calls, f.Requests())
 	}
 }
