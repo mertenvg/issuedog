@@ -54,6 +54,51 @@ type LabelEvent struct {
 	Unfinished bool
 }
 
+// LabelCheck is what CheckLabels found on one issue.
+type LabelCheck struct {
+	// Labels are the issue's labels as the caller last read them, with the
+	// pipeline labels brought up to date with the timeline and its reverts,
+	// and without those left out as unexplained.
+	Labels []string
+	// Events are the override or disagreement S4 has to act on, if any.
+	Events []LabelEvent
+	// Settings is the ID of the newest change to a model or effort label
+	// (OverrideLabel) that stands, as standing judges it, or 0 if there is
+	// none: a trusted user's or the App's, but no untrusted change and no
+	// App revert of one.
+	Settings int64
+	// TypeLabel is the ID of the newest change to a type:* label that
+	// stands, judged as Settings is, or 0 if there is none. So an untrusted
+	// change, reverted or not yet, gives the change before it that stands.
+	TypeLabel int64
+	// IssueType is the ID of the newest issue-type event on the timeline
+	// (issue_type_added, issue_type_changed or issue_type_removed), whoever
+	// made it, or 0 if there is none. Issue types aren't checked for trust
+	// (SPEC §5.1 asks for it; nothing reverts them yet).
+	IssueType int64
+	// Held are the labels held back as unexplained: the caller must not act
+	// on the issue until a later call holds nothing back.
+	Held []string
+}
+
+// TypeEvent is the ID of the type change that stands, the state-error key
+// of a type that doesn't fit the issue's stage (SPEC §5.3): IssueType on a
+// repo that uses issue types (types: issue-types), else TypeLabel. It is 0
+// if there is none.
+func (lc LabelCheck) TypeEvent(issueTypes bool) int64 {
+	if issueTypes {
+		return lc.IssueType
+	}
+	return lc.TypeLabel
+}
+
+// issueTypeEvent reports whether e is an issue-type event. GitHub's REST
+// timeline names them issue_type_added (seen live, 2026-10-15),
+// issue_type_changed and issue_type_removed; go-github doesn't list them.
+func issueTypeEvent(e *gogithub.Timeline) bool {
+	return strings.HasPrefix(e.GetEvent(), "issue_type_")
+}
+
 // labelState is the history of one pipeline label on the timeline.
 type labelState struct {
 	name   string
@@ -95,9 +140,10 @@ func OverrideLabel(name string) bool {
 
 // CheckLabels applies the label rules of SPEC §5.1 to one issue. An untrusted
 // change to a pipeline label is reverted, with a comment; changes by the App
-// (appSlug) and trusted users stand. It returns labels, the issue's labels
-// as the caller last read them, with the pipeline labels brought up to date
-// with the timeline and its reverts. It reports an override for a trusted stage change that the latest
+// (appSlug) and trusted users stand. It returns, in LabelCheck.Labels, the
+// issue's labels as the caller last read them, with the pipeline labels
+// brought up to date with the timeline and its reverts. It reports an
+// override for a trusted stage change that the latest
 // transition marker doesn't record (see overrides), or else a disagreement
 // when the stage labels don't match that marker. Issue types on org repos
 // aren't checked. A replay is safe: the comment carries a revert marker keyed
@@ -107,26 +153,25 @@ func OverrideLabel(name string) bool {
 // repo label rename, is removed the same way once it has stayed unexplained
 // for UnexplainedWait, by seen's memory (see unexplained). Until HoldBound
 // after the issue was first found with one, such labels are returned in
-// held: the caller must not act on the issue until a later call holds
-// nothing back. After that, they're left out of labels, so the caller can
+// Held: the caller must not act on the issue until a later call holds
+// nothing back. After that, they're left out of Labels, so the caller can
 // go ahead without acting on them. A nil seen remembers nothing, so the
 // issue is held back for good.
 //
-// It also returns settings, the ID of the newest change to a model or
-// effort label (OverrideLabel) that stands, as standing judges it, or 0 if
-// there is none: a trusted user's or the App's, but no untrusted change and
-// no App revert of one.
+// It also returns the newest change that stands to the settings labels
+// (Settings) and to the type (TypeLabel and IssueType; see TypeEvent).
 //
 // Markers in a comment that dirty reports, by its ID, are skipped, as
 // state.Derive skips them. The body isn't on the timeline, so dirty is never
 // asked about it.
 func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int, labels []string, appSlug string, trust Trust, dirty func(id int64) bool,
-	seen *Unexplained) (_ []string, _ []LabelEvent, settings int64, held []string, _ error) {
+	seen *Unexplained) (LabelCheck, error) {
 	wrap := func(err error) error { return fmt.Errorf("check labels of %s/%s#%d: %w", owner, repo, number, err) }
 	timeline, err := c.TimelineSince(ctx, owner, repo, number, time.Time{})
 	if err != nil {
-		return nil, nil, 0, nil, wrap(err)
+		return LabelCheck{}, wrap(err)
 	}
+	var found LabelCheck
 	states := map[string]*labelState{}
 	var order []*labelState
 	eventAt := map[string]int{}                // label events' timeline positions, by ID
@@ -164,6 +209,10 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 					reverted[m.Fields["key"]] = true
 				}
 			}
+		default:
+			if issueTypeEvent(e) {
+				found.IssueType = e.GetID() // oldest first, so the newest wins
+			}
 		}
 	}
 
@@ -176,14 +225,14 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 	settled := map[string]bool{}
 	var stages []string
 	var override, last *gogithub.Timeline
-	overrideAt, lastAt, settingsAt := -1, -1, -1
+	overrideAt, lastAt, settingsAt, typeAt := -1, -1, -1, -1
 	for _, l := range order {
 		// acc is the last change that stands: the latest if accepted, or
 		// else the one a revert goes back to. An untrusted change after a
 		// trusted override must not hide that override.
 		on, acc, accAt, wrote, err := r.settle(ctx, l, reverted)
 		if err != nil {
-			return nil, nil, 0, nil, wrap(err)
+			return LabelCheck{}, wrap(err)
 		}
 		settled[strings.ToLower(l.name)] = on || wrote
 		if has := slices.ContainsFunc(labels, func(x string) bool { return strings.EqualFold(x, l.name) }); on && !has {
@@ -191,14 +240,23 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 		} else if !on && has {
 			labels = slices.DeleteFunc(labels, func(x string) bool { return strings.EqualFold(x, l.name) })
 		}
-		if OverrideLabel(l.name) {
-			// Not settle's acc, which falls back to the App's revert.
+		// The settings and the type each key on their newest change that
+		// stands. Not settle's acc, which falls back to the App's revert.
+		var into *int64
+		var intoAt *int
+		switch {
+		case OverrideLabel(l.name):
+			into, intoAt = &found.Settings, &settingsAt
+		case strings.HasPrefix(strings.ToLower(l.name), "type:"):
+			into, intoAt = &found.TypeLabel, &typeAt
+		}
+		if into != nil {
 			e, at, err := r.standing(ctx, l, nil)
 			if err != nil {
-				return nil, nil, 0, nil, wrap(err)
+				return LabelCheck{}, wrap(err)
 			}
-			if at > settingsAt {
-				settings, settingsAt = e.GetID(), at
+			if at > *intoAt {
+				*into, *intoAt = e.GetID(), at
 			}
 			continue
 		}
@@ -219,23 +277,23 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 			return l.ats[i] > markerAt && strings.EqualFold(l.name, "stage:"+marker) == (l.events[i].GetEvent() == "labeled")
 		})
 		if err != nil {
-			return nil, nil, 0, nil, wrap(err)
+			return LabelCheck{}, wrap(err)
 		}
 		if at > lastAt {
 			last, lastAt = e, at
 		}
 	}
-	if labels, held, err = r.unexplained(ctx, labels, given, states, settled, reverted, marker, seen); err != nil {
-		return nil, nil, 0, nil, wrap(err)
+	if found.Labels, found.Held, err = r.unexplained(ctx, labels, given, states, settled, reverted, marker, seen); err != nil {
+		return LabelCheck{}, wrap(err)
 	}
-	if override != nil {
-		return labels, []LabelEvent{{Kind: LabelOverride, Stages: stages, Marker: marker, By: override.GetActor().GetLogin(),
-			Label: override.GetLabel().GetName(), Key: override.GetID()}}, settings, held, nil
+	switch {
+	case override != nil:
+		found.Events = []LabelEvent{{Kind: LabelOverride, Stages: stages, Marker: marker, By: override.GetActor().GetLogin(),
+			Label: override.GetLabel().GetName(), Key: override.GetID()}}
+	case marker != "" && (len(stages) != 1 || !strings.EqualFold(stages[0], "stage:"+marker)):
+		found.Events = []LabelEvent{{Kind: LabelDisagreement, Stages: stages, Marker: marker, Key: last.GetID(), Unfinished: lastAt < markerAt}}
 	}
-	if marker != "" && (len(stages) != 1 || !strings.EqualFold(stages[0], "stage:"+marker)) {
-		return labels, []LabelEvent{{Kind: LabelDisagreement, Stages: stages, Marker: marker, Key: last.GetID(), Unfinished: lastAt < markerAt}}, settings, held, nil
-	}
-	return labels, nil, settings, held, nil
+	return found, nil
 }
 
 // transition is a transition marker on the timeline.
