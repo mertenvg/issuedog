@@ -343,7 +343,7 @@ func (t *Triage) Apply(ctx context.Context, a *Applier, r Result) error {
 	}
 	if verdict == triageHandle {
 		m := r.Move(state.Clarifying, state.TriggerTrusted)
-		m.Text = triageAdmitText(out)
+		m.Text = triageAdmitText(out) + intakeNote(s)
 		if err := a.Transition(ctx, s, r.Dirt.Has, m); err != nil {
 			return wrap(err)
 		}
@@ -410,7 +410,8 @@ func triageLabels(ctx context.Context, a *Applier, s *github.Snapshot, label str
 	return nil
 }
 
-// triageAdmitText is the admission's text, which Transition escapes.
+// triageAdmitText is the admission's text, which Transition escapes. Apply
+// adds intakeNote after it, as the other ways in do.
 func triageAdmitText(out triageOutput) string {
 	return "Triage: issuedog will handle this issue: " + inline(out.Reason) + " I've moved it to `clarifying`."
 }
