@@ -1,7 +1,10 @@
 package githubtest
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"slices"
@@ -18,7 +21,8 @@ func (f *Fake) BeforeGraphQL(do func()) {
 	f.beforeGQL = do
 }
 
-// serveGraphQL runs the BeforeGraphQL hook, then serves the query as a read.
+// serveGraphQL runs the BeforeGraphQL hook, then serves a query as a read
+// and a mutation as a write, which is logged and which FailWrite can fail.
 func (f *Fake) serveGraphQL(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	do := f.beforeGQL
@@ -27,20 +31,37 @@ func (f *Fake) serveGraphQL(w http.ResponseWriter, r *http.Request) {
 	if do != nil {
 		do()
 	}
-	f.serve(w, r, false, f.graphql)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		send(w, http.StatusBadRequest, message(err.Error()))
+		return
+	}
+	var req struct{ Query string }
+	if err := json.Unmarshal(body, &req); err != nil {
+		send(w, http.StatusUnprocessableEntity, message(err.Error()))
+		return
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	f.serve(w, r, fields(req.Query)["mutation"], f.graphql)
 }
 
 // answered is every field graphql answers for the comments query, which a
-// query must name. answeredHistory is the same for the history query.
+// query must name. answeredHistory, answeredPinned and answeredPin are the
+// same for the history query, the isPinned query and the pinIssue mutation.
 const (
 	answered = `query { repository { issue { id body lastEditedAt editor { login __typename }
 	comments { pageInfo { hasNextPage endCursor } nodes { id fullDatabaseId body createdAt updatedAt
 	lastEditedAt author { login __typename } editor { login __typename } } } } } }`
 	answeredHistory = `query { nodes { id ... on Comment { userContentEdits {
 	pageInfo { hasNextPage endCursor } nodes { editedAt editor { login __typename } } } } } }`
+	answeredPinned = `query { repository { issue { isPinned } } }`
+	answeredPin    = `mutation { pinIssue { issue { isPinned } } }`
 )
 
-var answeredFields, historyFields = fields(answered), fields(answeredHistory)
+var (
+	answeredFields, historyFields = fields(answered), fields(answeredHistory)
+	pinnedFields, pinFields       = fields(answeredPinned), fields(answeredPin)
+)
 
 // HistoryQueries counts the edit history queries answered.
 func (f *Fake) HistoryQueries() int {
@@ -50,11 +71,13 @@ func (f *Fake) HistoryQueries() int {
 }
 
 // graphql answers internal/github's comments query for the fake's repo,
-// paging comments by 100, and its history query (see history). It refuses
-// a query that doesn't name every field in answered, or answeredHistory
-// for a query of nodes. As on GitHub, a Bot's login has no "[bot]", IDs are
-// BigInt strings, a missing issue or a pull request is a NOT_FOUND error,
-// and errors come with data.
+// paging comments by 100, its history query (see history), its isPinned
+// query and its pinIssue mutation (see pinIssue). It refuses a query that
+// doesn't name every field in answered, or answeredHistory for a query of
+// nodes, answeredPinned for one of isPinned, or answeredPin for a mutation.
+// As on GitHub, a Bot's login has no "[bot]", IDs are BigInt strings, a
+// missing issue or a pull request is a NOT_FOUND error, and errors come
+// with data.
 func (f *Fake) graphql(c *call) (int, any) {
 	var req struct {
 		Query     string
@@ -62,6 +85,7 @@ func (f *Fake) graphql(c *call) (int, any) {
 			Number int
 			Cursor *string
 			IDs    []string
+			ID     string // pinIssue's issue
 		}
 	}
 	if status, msg := c.decode(&req); msg != nil {
@@ -82,8 +106,13 @@ func (f *Fake) graphql(c *call) (int, any) {
 	}
 	var missing []string
 	named, want := fields(req.Query), answeredFields
-	if named["query.nodes"] {
+	switch {
+	case named["mutation"]:
+		want = pinFields
+	case named["query.nodes"]:
 		want = historyFields
+	case named["query.repository.issue.isPinned"]:
+		want = pinnedFields
 	}
 	for p := range want {
 		if !named[p] {
@@ -119,9 +148,17 @@ func (f *Fake) graphql(c *call) (int, any) {
 		errs = append(errs, notFound...)
 		return reply(map[string]any{"nodes": nodes})
 	}
+	if named["mutation"] {
+		data, failed := f.pinIssue(req.Variables.ID)
+		errs = append(errs, failed...)
+		return reply(data)
+	}
 	if v.Number < 1 || v.Number > len(f.issues) || f.issues[v.Number-1].IsPullRequest() {
 		errs = append(errs, map[string]any{"type": "NOT_FOUND", "message": fmt.Sprintf("Could not resolve to an Issue with the number of %d.", v.Number)})
 		return reply(map[string]any{"repository": map[string]any{"issue": nil}})
+	}
+	if named["query.repository.issue.isPinned"] {
+		return reply(map[string]any{"repository": map[string]any{"issue": map[string]any{"isPinned": f.issues[v.Number-1].pinned}}})
 	}
 	var list []*comment
 	for _, cm := range f.comments {

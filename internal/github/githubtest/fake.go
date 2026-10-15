@@ -30,10 +30,11 @@ import (
 var Start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // Fake serves one repo's issues, comments, labels, timelines, reactions,
-// parents and sub-issues, and the GraphQL queries for their edits. Its API
-// writes, comment edits included, are made by the App, "<slug>[bot]" of type
-// Bot. A GET whose answer hasn't changed gets a 304. Every write (any method
-// but GET) is logged, and FailWrite can fail one.
+// parents and sub-issues, the GraphQL queries for their edits and pins, and
+// the pinIssue mutation. Its API writes, comment edits, created issues and
+// pins included, are made by the App, "<slug>[bot]" of type Bot. A GET whose
+// answer hasn't changed gets a 304. Every write (any method but GET, and a
+// GraphQL mutation) is logged, and FailWrite can fail one.
 //
 // To add an endpoint, write a handler and register it in New with handle, or
 // with serve for a POST that only reads, as GraphQL does.
@@ -54,6 +55,7 @@ type Fake struct {
 	failAfter   bool // FailWriteAfter rather than FailWrite
 	notModified int
 	gqlErrors   []string         // for the next GraphQL answer
+	pinFailure  string           // see FailPin
 	beforeGQL   func()           // runs before the next GraphQL answer
 	histories   int              // edit history queries answered
 	historyCap  int              // see HistoryCap
@@ -81,6 +83,7 @@ type issue struct {
 	lastEdit       lastEdit
 	history        []lastEdit
 	labelEvents    []*gogithub.Timeline // labeled, unlabeled and renamed, oldest first
+	pinned         bool                 // to the repo's issue list (PinIssue)
 }
 
 type comment struct {
@@ -137,6 +140,7 @@ func New(t testing.TB, repo, slug string) *Fake {
 	f.handle("GET /issues/{n}/comments", f.listComments)
 	f.handle("GET /issues/comments", f.listComments)
 	f.handle("POST /issues/{n}/comments", f.addComment)
+	f.handle("POST /issues", f.createIssue)
 	f.handle("PATCH /issues/{n}", f.editIssue)
 	f.handle("PATCH /issues/comments/{id}", f.editComment)
 	f.handle("GET /issues/comments/{id}/reactions", f.listReactions)
@@ -177,8 +181,15 @@ func (f *Fake) Client(t testing.TB) *github.Client {
 func (f *Fake) AddIssue(author, title, body string, labels ...string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	return f.fileIssue(author, title, body, labels).GetNumber()
+}
+
+// fileIssue files an issue by author, with its labels added by author, and
+// returns it. Its node ID is the one GraphQL knows it by (issueNode).
+func (f *Fake) fileIssue(author, title, body string, labels []string) *issue {
 	now := f.tick()
-	is := &issue{Issue: gogithub.Issue{Number: new(len(f.issues) + 1), Title: &title, Body: &body, State: new("open"),
+	n := len(f.issues) + 1
+	is := &issue{Issue: gogithub.Issue{Number: &n, NodeID: new(issueNode(n)), Title: &title, Body: &body, State: new("open"),
 		User: user(author), CreatedAt: now, UpdatedAt: now}}
 	for _, l := range labels {
 		if is.addLabel(l) {
@@ -186,7 +197,7 @@ func (f *Fake) AddIssue(author, title, body string, labels ...string) int {
 		}
 	}
 	f.issues = append(f.issues, is)
-	return is.GetNumber()
+	return is
 }
 
 // SetType sets an issue's type, as on org repos.
@@ -499,16 +510,25 @@ func (f *Fake) addComment(c *call) (int, any) {
 	return http.StatusCreated, f.addCommentBy(c.issue, f.slug+"[bot]", req.Body).IssueComment
 }
 
-// editIssue edits an issue's body. Nothing else of an issue is edited yet.
+// editIssue edits an issue's body, its state (open or closed), or both.
+// Nothing else of an issue is edited yet.
 func (f *Fake) editIssue(c *call) (int, any) {
-	var req struct{ Body *string }
+	var req struct{ Body, State *string }
 	if status, msg := c.decode(&req); msg != nil {
 		return status, msg
 	}
-	if req.Body == nil {
-		return http.StatusUnprocessableEntity, message("githubtest: only the body can be edited")
+	if req.Body == nil && req.State == nil {
+		return http.StatusUnprocessableEntity, message("githubtest: only the body and the state can be edited")
 	}
-	c.issue.editBy(f.slug+"[bot]", *req.Body, f.tick())
+	if req.State != nil && *req.State != "open" && *req.State != "closed" {
+		return http.StatusUnprocessableEntity, message(fmt.Sprintf("Validation Failed: state %q is not open or closed", *req.State))
+	}
+	if req.Body != nil {
+		c.issue.editBy(f.slug+"[bot]", *req.Body, f.tick())
+	}
+	if req.State != nil {
+		c.issue.State, c.issue.UpdatedAt = new(*req.State), f.tick()
+	}
 	return http.StatusOK, c.issue.Issue
 }
 

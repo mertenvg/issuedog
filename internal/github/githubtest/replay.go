@@ -24,6 +24,10 @@ type IssueState struct {
 	Labels       []string // sorted
 	Parent       int
 	Comments     []CommentState // oldest first
+
+	// Closed and Pinned are whether the issue is closed, and pinned to the
+	// repo's issue list.
+	Closed, Pinned bool
 }
 
 // CommentState is one comment in a State.
@@ -43,7 +47,8 @@ func (f *Fake) State() State {
 	var s State
 	for _, is := range f.issues {
 		st := IssueState{Number: is.GetNumber(), Title: is.GetTitle(), Body: is.GetBody(), Author: is.GetUser().GetLogin(),
-			Type: is.GetType().GetName(), BodyEditedBy: is.lastEdit.by, Parent: is.parent}
+			Type: is.GetType().GetName(), BodyEditedBy: is.lastEdit.by, Parent: is.parent,
+			Closed: is.GetState() == "closed", Pinned: is.pinned}
 		for _, l := range is.Labels {
 			st.Labels = append(st.Labels, l.GetName())
 		}

@@ -35,9 +35,12 @@ func (e ev) json() map[string]any {
 		user["type"] = "Bot"
 	}
 	m := map[string]any{"id": e.id, "event": e.event, "created_at": fmt.Sprintf("2026-10-01T00:00:%02dZ", e.id)}
-	if e.event == "commented" {
+	switch {
+	case e.event == "commented":
 		m["user"], m["body"] = user, e.text
-	} else {
+	case strings.HasPrefix(e.event, "issue_type_"):
+		m["actor"], m["issue_type"] = user, map[string]any{"name": e.text}
+	default:
 		m["actor"], m["label"] = user, map[string]any{"name": e.text}
 	}
 	return m
@@ -48,6 +51,9 @@ const appBot = "issuedog[bot]"
 func added(id int64, who, label string) ev   { return ev{id, "labeled", who, label} }
 func removed(id int64, who, label string) ev { return ev{id, "unlabeled", who, label} }
 func said(id int64, who, body string) ev     { return ev{id, "commented", who, body} }
+
+// typed is an issue-type event, such as issue_type_added, of the type name.
+func typed(id int64, who, event, name string) ev { return ev{id, event, who, name} }
 
 func TestCheckLabels(t *testing.T) {
 	marker := func(to string) string { return "<!-- issuedog:transition from=x to=" + to + " -->" }
@@ -146,8 +152,8 @@ func TestCheckLabelsSettings(t *testing.T) {
 		"untrusted only":              {[]ev{added(1, "mallory", "model:opus"), revert(2, 1), removed(3, appBot, "model:opus")}, 0},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, _, got := checkLabelsAll(t, tt.timeline, func(int64) bool { return false }); got != tt.want {
-				t.Errorf("settings = %d, want %d", got, tt.want)
+			if _, found := checkLabelsAll(t, tt.timeline, func(int64) bool { return false }); found.Settings != tt.want {
+				t.Errorf("settings = %d, want %d", found.Settings, tt.want)
 			}
 		})
 	}
@@ -161,9 +167,50 @@ func TestCheckLabelsSettingsWithEvents(t *testing.T) {
 		LabelDisagreement: {added(1, appBot, "stage:ready"), marker, added(3, "owner", "model:opus"), removed(4, "owner", "stage:ready")},
 	} {
 		t.Run(string(kind), func(t *testing.T) {
-			_, events, settings := checkLabelsAll(t, timeline, func(int64) bool { return false })
+			_, found := checkLabelsAll(t, timeline, func(int64) bool { return false })
+			events, settings := found.Events, found.Settings
 			if len(events) != 1 || events[0].Kind != kind || settings != 3 {
 				t.Errorf("events %+v and settings %d; want one %s, and settings 3, the model label's", events, settings, kind)
+			}
+		})
+	}
+}
+
+// CheckLabels' TypeLabel is the newest change to a type:* label that
+// stands, judged as settings are: a trusted user's or the App's, but no
+// untrusted change and no App revert of one. IssueType is the newest
+// issue-type event, whoever made it. TypeEvent picks one by the repo's
+// types setting.
+func TestCheckLabelsType(t *testing.T) {
+	revert := func(id, of int64) ev { return said(id, appBot, fmt.Sprintf("<!-- issuedog:revert key=%d -->", of)) }
+	marker := said(2, appBot, "<!-- issuedog:transition from=x to=ready -->")
+	for name, tt := range map[string]struct {
+		timeline         []ev
+		label, issueType int64
+	}{
+		"none":                          {[]ev{added(1, "owner", "priority:p1"), added(2, "owner", "model:opus")}, 0, 0},
+		"trusted type:task":             {[]ev{added(1, "owner", "type:task")}, 1, 0},
+		"trusted retype":                {[]ev{added(1, "owner", "type:epic"), removed(2, "owner", "type:epic"), added(3, "owner", "Type:Task")}, 3, 0},
+		"trusted removal":               {[]ev{added(1, "owner", "type:epic"), added(2, "owner", "type:task"), removed(3, "owner", "type:task")}, 3, 0},
+		"the App's own":                 {[]ev{added(1, appBot, "type:story")}, 1, 0},
+		"other labels after":            {[]ev{added(1, "owner", "type:epic"), added(2, "owner", "model:opus"), added(3, appBot, "stage:ready")}, 1, 0},
+		"untrusted type:task, reverted": {[]ev{added(1, "owner", "type:epic"), added(2, "mallory", "type:task"), revert(3, 2), removed(4, appBot, "type:task")}, 1, 0},
+		"untrusted type:task, not yet":  {[]ev{added(1, "owner", "type:epic"), added(2, "mallory", "type:task")}, 1, 0},
+		"untrusted removal, reverted":   {[]ev{added(1, "owner", "type:epic"), removed(2, "mallory", "type:epic"), revert(3, 2), added(4, appBot, "type:epic")}, 1, 0},
+		"untrusted only":                {[]ev{added(1, "mallory", "type:task"), revert(2, 1), removed(3, appBot, "type:task")}, 0, 0},
+		"with a disagreement":           {[]ev{added(1, appBot, "stage:ready"), marker, added(3, "owner", "type:task"), removed(4, "owner", "stage:ready")}, 3, 0},
+		"issue types": {[]ev{typed(1, "owner", "issue_type_added", "Epic"), added(2, "owner", "type:bug"),
+			typed(3, "mallory", "issue_type_changed", "Task")}, 2, 3},
+		"issue type removed": {[]ev{typed(1, "owner", "issue_type_added", "Epic"), typed(2, "owner", "issue_type_removed", "Epic")}, 0, 2},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, found := checkLabelsAll(t, tt.timeline, func(int64) bool { return false })
+			if found.TypeLabel != tt.label || found.IssueType != tt.issueType {
+				t.Errorf("type label %d and issue type %d, want %d and %d", found.TypeLabel, found.IssueType, tt.label, tt.issueType)
+			}
+			if found.TypeEvent(false) != tt.label || found.TypeEvent(true) != tt.issueType {
+				t.Errorf("TypeEvent gives %d for labels and %d for issue types, want %d and %d",
+					found.TypeEvent(false), found.TypeEvent(true), tt.label, tt.issueType)
 			}
 		})
 	}
@@ -236,12 +283,12 @@ func TestCheckLabelsDisagreement(t *testing.T) {
 // and the events.
 func checkLabels(t *testing.T, timeline []ev, dirty func(int64) bool) ([]string, []LabelEvent) {
 	t.Helper()
-	writes, events, _ := checkLabelsAll(t, timeline, dirty)
-	return writes, events
+	writes, found := checkLabelsAll(t, timeline, dirty)
+	return writes, found.Events
 }
 
-// checkLabelsAll is checkLabels, also returning CheckLabels' settings.
-func checkLabelsAll(t *testing.T, timeline []ev, dirty func(int64) bool) ([]string, []LabelEvent, int64) {
+// checkLabelsAll is checkLabels, returning all CheckLabels found.
+func checkLabelsAll(t *testing.T, timeline []ev, dirty func(int64) bool) ([]string, LabelCheck) {
 	t.Helper()
 	var writes []string
 	c := newClientWith(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -266,11 +313,11 @@ func checkLabelsAll(t *testing.T, timeline []ev, dirty func(int64) bool) ([]stri
 		writes = append(writes, desc)
 		_, _ = io.WriteString(w, map[bool]string{true: "[]", false: "{}"}[strings.HasSuffix(path, "/labels")])
 	}))
-	_, got, settings, _, err := c.CheckLabels(context.Background(), "o", "r", 7, nil, "issuedog", fakeTrust{"owner": true}, dirty, nil)
+	found, err := c.CheckLabels(context.Background(), "o", "r", 7, nil, "issuedog", fakeTrust{"owner": true}, dirty, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return writes, got, settings
+	return writes, found
 }
 
 func readAll(r io.Reader) []byte {
@@ -321,8 +368,9 @@ func TestCheckLabelsDateFallback(t *testing.T) {
 		date = tt.date
 		var logs bytes.Buffer
 		stop := logr.AddWriter(&logs, logr.WithFilter(logr.D))
-		labels, _, _, held, err := c.CheckLabels(context.Background(), "o", "r", 7, []string{"priority:p0"}, "issuedog", fakeTrust{},
+		found, err := c.CheckLabels(context.Background(), "o", "r", 7, []string{"priority:p0"}, "issuedog", fakeTrust{},
 			func(int64) bool { return false }, seen)
+		labels, held := found.Labels, found.Held
 		logr.Wait()
 		stop()
 		if err != nil {
