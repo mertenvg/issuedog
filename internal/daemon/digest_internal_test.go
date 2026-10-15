@@ -9,6 +9,8 @@ import (
 	"slices"
 	"testing"
 
+	gogithub "github.com/google/go-github/v92/github"
+
 	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
@@ -95,6 +97,30 @@ func TestDigestEditOnce(t *testing.T) {
 	}
 	if w := f.Writes(); len(w) != 1 || f.State().Issues[0].Body != "new <!-- issuedog:digest -->" {
 		t.Errorf("writes = %+v; want one edit, to the new body", w)
+	}
+}
+
+// digestTrustAll trusts every login it's asked about.
+type digestTrustAll struct{}
+
+func (digestTrustAll) Trusted(context.Context, string) (bool, error) { return true, nil }
+
+// No close or reopen by a bot, the App's included, or a ghost stands, even
+// where trust would say yes; a trusted user's does.
+func TestDigestTrusted(t *testing.T) {
+	d := &Daemon{Step: &Step{Applier: &Applier{AppSlug: "issuedog"}, Trust: digestTrustAll{}}}
+	for _, tc := range []struct {
+		actor *gogithub.User
+		want  bool
+	}{
+		{nil, false},
+		{&gogithub.User{Login: new("issuedog[bot]"), Type: new("Bot")}, false},
+		{&gogithub.User{Login: new("other[bot]"), Type: new("Bot")}, false},
+		{&gogithub.User{Login: new("owner"), Type: new("User")}, true},
+	} {
+		if got, err := d.digestTrusted(context.Background(), tc.actor); err != nil || got != tc.want {
+			t.Errorf("digestTrusted(%s) = %t, %v; want %t", tc.actor.GetLogin(), got, err, tc.want)
+		}
 	}
 }
 
