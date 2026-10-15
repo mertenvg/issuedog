@@ -49,7 +49,10 @@ type Stage interface {
 // what its schema can say. Runs calls Check on the issue read again, before
 // Apply, and only while the run's move isn't written, so a result applied
 // part way before a restart isn't checked again. An error is a failed
-// attempt (SPEC §8.3), with nothing written, never a failure to apply.
+// attempt (SPEC §8.3), with nothing written, never a failure to apply,
+// unless it's a *checkReadError: a read of what the result is checked
+// against failed, which says nothing of the result, so it's a failure to
+// apply, tried again on the next pass.
 type Checker interface {
 	Check(ctx context.Context, r Result) error
 }
@@ -559,7 +562,8 @@ func (r *Runs) applyLease(ctx context.Context, l Lease, st Stage, raw []byte, ou
 //   - when it has new trusted input since the run's seen (newInput), which
 //     the stage runs again with.
 //
-// Then a Checker checks the result: its error is a checkError. A result
+// Then a Checker checks the result: its error is a checkError, but for a
+// checkReadError, which is a failure to apply like any other. A result
 // whose move is written already is only finished, unchecked. A move the
 // table lacks ends the run (blocked). On an error, the lease stays. The
 // run marker's fields are l's settings and the models raw, claude's
@@ -625,7 +629,11 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 	key := moveKey(l.AttemptKey, is.Item)
 	res := Result{RunID: l.RunID, Seen: l.Seen, S: s, Dirt: d, Output: out, moveKey: key, fields: runFields(l, raw)}
 	if c, ok := st.(Checker); ok && !moved {
-		if err := c.Check(ctx, res); err != nil {
+		var read *checkReadError
+		switch err := c.Check(ctx, res); {
+		case errors.As(err, &read):
+			return fmt.Errorf("apply run %s: the %s stage's check: %w", l.RunID, st.Agent(), err)
+		case err != nil:
 			return &checkError{fmt.Errorf("its result failed the %s stage's check: %w", st.Agent(), err)}
 		}
 	}
@@ -646,6 +654,15 @@ type checkError struct{ err error }
 
 func (e *checkError) Error() string { return e.err.Error() }
 func (e *checkError) Unwrap() error { return e.err }
+
+// checkReadError is a Checker's failure to read what it checks a result
+// against, such as the timeline or trust, which applyLease counts as a
+// failure to apply, kept for the next pass, not as a failed attempt: the
+// result may be fine.
+type checkReadError struct{ err error }
+
+func (e *checkReadError) Error() string { return e.err.Error() }
+func (e *checkReadError) Unwrap() error { return e.err }
 
 // newInput returns the ID of the first comment on s that's new trusted
 // input since seen, the newest comment a run was given, or 0 if there's

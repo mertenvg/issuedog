@@ -694,12 +694,7 @@ func TestInterviewerStage(t *testing.T) {
 	if _, err := agent.CompileSchema(iv.Schema()); err != nil {
 		t.Errorf("Schema doesn't compile: %v", err)
 	}
-	if err := iv.Apply(context.Background(), d.Step.Applier, daemon.Result{}); err == nil || !strings.Contains(err.Error(), "#134") {
-		t.Errorf("Apply = %v, want the stub's error naming #134", err)
-	}
-	if w := f.Writes(); len(w) != 0 {
-		t.Errorf("Apply wrote %v", w)
-	}
+	var _ daemon.Checker = iv // Check is TestInterviewerCheck's
 }
 
 // TestInterviewerApproval: a move that approved a revision carries its rev,
