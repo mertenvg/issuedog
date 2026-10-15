@@ -119,14 +119,23 @@ func TestOpenErrors(t *testing.T) {
 			none, nil, nil},
 		{"a move doesn't end a labels error", openErrSnap("", labels, toClarifying), none, nil, []string{"labels/40@1"}},
 
-		// type, until T4, and any other kind: only an ack ends it.
-		{"a type error outlasts a move", openErrSnap("", typed, toClarifying), none, input, []string{"type/70@1"}},
-		{"a type error ends when acknowledged", openErrSnap("", typed, openErrMarker("type", "70", "r8")), none, nil, nil},
+		// type: until the type fits the stage, or a newer type change.
+		{"a type error", typeErrSnap("task", 70, "", toSpecReview, typed), none, nil, []string{"type/70@2"}},
+		{"a type error outlasts a move where it still doesn't fit", typeErrSnap("task", 70, "", typed, toSpecReview), none, input,
+			[]string{"type/70@1"}},
+		{"a type that fits ends it", typeErrSnap("epic", 70, "", toSpecReview, typed), none, nil, nil},
+		{"a move to a stage the type fits ends it", typeErrSnap("task", 70, "", typed, toClarifying), none, nil, nil},
+		{"a newer type change ends it", typeErrSnap("task", 71, "", toSpecReview, typed), none, nil, nil},
+		{"no type change that stands ends it", typeErrSnap("task", 0, "", toSpecReview, typed), none, nil, nil},
+		{"an unknown type's error is open at intake", typeErrSnap("frob", 70, "", typed), none, nil, []string{"type/70@1"}},
+		{"a type error ends when acknowledged", typeErrSnap("task", 70, "", toSpecReview, typed, openErrMarker("type", "70", "r8")), none, nil, nil},
+
+		// Any other kind: only an ack ends it.
 		{"another kind outlasts a move", openErrSnap("", openErrMarker("frob", "1", ""), toClarifying), none, nil, []string{"frob/1@1"}},
 
 		{"a closed issue has none", func() *github.Snapshot { s := openErrSnap("", toClarifying, trCmd, typed); s.Closed = true; return s }(),
 			none, nil, nil},
-		{"oldest first, then by kind and key", openErrSnap(typed, toClarifying, labels+disagr+trCmd, openErrMarker("frob", "1", "")), none, nil,
+		{"oldest first, then by kind and key", typeErrSnap("frob", 70, typed, toClarifying, labels+disagr+trCmd, openErrMarker("frob", "1", "")), none, nil,
 			[]string{"type/70@0", "disagreement/9@2", "labels/40@2", "transition/50@2", "frob/1@3"}},
 	} {
 		calls := 0

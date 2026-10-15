@@ -53,7 +53,8 @@ const (
 	comments { pageInfo { hasNextPage endCursor } nodes { id fullDatabaseId body createdAt updatedAt
 	lastEditedAt author { login __typename } editor { login __typename } } } } } }`
 	answeredHistory = `query { nodes { id ... on Comment { userContentEdits {
-	pageInfo { hasNextPage endCursor } nodes { editedAt editor { login __typename } } } } } }`
+	pageInfo { hasNextPage endCursor } nodes { editedAt editor { login __typename } } } }
+	... on Issue { userContentEdits { nodes { diff } } } } }`
 	answeredPinned = `query { repository { issue { isPinned } } }`
 	answeredPin    = `mutation { pinIssue { issue { isPinned } } }`
 )
@@ -211,13 +212,14 @@ func (f *Fake) HistoryCap(n int) {
 }
 
 // history answers the history query: each node's edits, newest first, 100
-// per page, capped as HistoryCap says. A cursor is the number of older
+// per page, capped as HistoryCap says, with an issue body's text after each
+// edit as its diff. A cursor is the number of older
 // entries. As on GitHub, an unknown ID's node is null, with a NOT_FOUND
 // error whose path names it. A bad cursor is the only other error.
 func (f *Fake) history(ids []string, cursor *string) ([]any, []map[string]any, string) {
-	histories := map[string][]lastEdit{}
+	histories, bodies := map[string][]lastEdit{}, map[string]bool{}
 	for _, is := range f.issues {
-		histories[issueNode(is.GetNumber())] = is.history
+		histories[issueNode(is.GetNumber())], bodies[issueNode(is.GetNumber())] = is.history, true
 	}
 	for _, c := range f.comments {
 		histories[commentNode(c.GetID())] = c.history
@@ -244,7 +246,14 @@ func (f *Fake) history(ids []string, cursor *string) ([]any, []map[string]any, s
 		}
 		end, page := max(older-100, 0), []any{}
 		for i := older - 1; i >= end; i-- {
-			page = append(page, map[string]any{"editedAt": h[i].at, "editor": actor(h[i].by)})
+			e := map[string]any{"editedAt": h[i].at, "editor": actor(h[i].by)}
+			if bodies[id] { // an Issue: a comment has no diff in the query
+				e["diff"] = nil
+				if h[i].text != "" {
+					e["diff"] = h[i].text
+				}
+			}
+			page = append(page, e)
 		}
 		var endCursor any
 		if len(page) > 0 {

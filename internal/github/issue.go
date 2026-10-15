@@ -35,6 +35,11 @@ type Snapshot struct {
 	// label that stands, or 0: not read with the issue, but set when the
 	// daemon checks its labels (CheckLabels).
 	SettingsEvent int64
+	// TypeEvent is the ID of the type change that stands
+	// (LabelCheck.TypeEvent), or 0: like SettingsEvent, set when the daemon
+	// checks its labels. It keys a type that doesn't fit the issue's stage
+	// (SPEC §5.3).
+	TypeEvent int64
 
 	// TypeFromLabels is set when Type comes from the labels, as the issue has
 	// no issue type, so SetLabels keeps it up to date with them.

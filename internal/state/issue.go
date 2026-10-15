@@ -125,12 +125,20 @@ func (is Issue) Moved(k Key) bool {
 
 // Derive reads s's state from the markers the App wrote (SPEC §5.1). Markers
 // in content that dirty reports, by comment ID or BodyID, are skipped:
-// dirty decides what an edit taints, not Derive.
+// dirty decides what an edit taints, not Derive. The body's are also
+// skipped unless the App made its last edit, or nobody edited it: a
+// trusted user's edit leaves the body clean (Sanctioned) but isn't the
+// App's text (#169, Q2a). The App's own body edits either write the whole
+// body or escape the text they keep (SPEC §5.1), so after one, every
+// marker in the body is the App's.
 func Derive(s *github.Snapshot, appSlug string, dirty func(id int64) bool) Issue {
 	is := Issue{Stage: Intake, Keys: map[Key]bool{}, Errors: map[ErrorKey]int64{}, Acks: map[ErrorKey]bool{},
 		Item: Item{Type: s.Type, HasParent: s.Parent != 0}}
 	read := func(id int64, author github.Author, body string) {
 		if dirty(id) {
+			return
+		}
+		if e := s.BodyEdit; id == BodyID && !e.At.IsZero() && !IsApp(e.By, appSlug) {
 			return
 		}
 		for _, m := range github.TrustedMarkers(author, body, appSlug) {

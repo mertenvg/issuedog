@@ -222,13 +222,12 @@ func TestFlagByReaction(t *testing.T) {
 				f.AddReaction(1001, "owner", "+1")
 			})),
 			want: outcome{labels: []string{"stage:intake"}}},
-		{name: "a 👍 for a type the pipeline doesn't know is reported once",
+		{name: "a 👍 for a type the pipeline doesn't know is reported once, as a type error keyed by its event",
 			setup: flagIssue("owner", func(t testing.TB, f *githubtest.Fake) {
-				f.AddLabel(1, "owner", "type:frob")
+				flagWant(t, f.AddLabel(1, "owner", "type:frob"), 9001)
 				flagWith("handle", up("owner"))(t, f)
 			}),
-			want: outcome{comments: []string{"I can't move this issue from `intake` to `clarifying` on trusted: " + flagFrob +
-				". It stays at `intake`.\n\n<!-- issuedog:error kind=transition key=r1002 -->"}, labels: []string{"triage:ask", "type:frob"}}},
+			want: outcome{comments: []string{typeErrWant("frob", "intake", 9001, true)}, labels: []string{"triage:ask", "type:frob"}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			tr := tt.trust

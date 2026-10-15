@@ -316,7 +316,7 @@ func newestRead(s *github.Snapshot, appSlug string, floor int64) int64 {
 // so the mismatch keeps approval blocked; the second is logged here.
 func (st *Step) ReviewVisit(ctx context.Context, s *github.Snapshot) error {
 	wrap := func(err error) error { return fmt.Errorf("revision of %s/%s#%d: %w", st.Owner, st.Repo, s.Number, err) }
-	d, err := st.Dirty(ctx, s)
+	d, err := st.Dirty(ctx, s, st.Trust)
 	if err != nil {
 		return wrap(err)
 	}

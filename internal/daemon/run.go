@@ -323,7 +323,7 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		}
 		return fmt.Errorf("stage run on %s/%s#%d: %w", a.Owner, a.Repo, n, err)
 	}
-	d, err := a.Dirty(ctx, rd.S)
+	d, err := a.Dirty(ctx, rd.S, r.Daemon.Step.Trust)
 	if err != nil {
 		return false, wrap(err)
 	}
@@ -342,6 +342,12 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 	}
 	if is.Reported("transition", moveKey(errKey, is.Item)) {
 		logr.Debugf("%s/%s#%d: no %s run: the table lacks the move its last run asked for", a.Owner, a.Repo, n, st.Agent())
+		return false, nil
+	}
+	if typeErrStands(rd.S, is) && is.Reported(typeErrKind, typeErrKey(rd.S)) {
+		// The table has no move from here for the type, so a run's move
+		// would fail too: the type error stands for it (blocked).
+		logr.Debugf("%s/%s#%d: no %s run: its type doesn't fit its stage, as reported", a.Owner, a.Repo, n, st.Agent())
 		return false, nil
 	}
 	if r.attempts[countKey(n, errKey)] >= r.limit() {
@@ -383,7 +389,7 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 	}
 	if isUnlabeled {
 		// A stage label or a transition since step 1 makes it pipeline work.
-		fd, err := a.Dirty(ctx, fresh)
+		fd, err := a.Dirty(ctx, fresh, r.Daemon.Step.Trust)
 		if err != nil {
 			return false, wrap(err)
 		}
@@ -598,7 +604,7 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 		return drop("the issue is closed")
 	}
 	defer r.Daemon.reread(l.Issue, false)
-	d, err := a.Dirty(ctx, s)
+	d, err := a.Dirty(ctx, s, r.Daemon.Step.Trust)
 	if err == nil {
 		err = a.CheckLabels(ctx, s, r.Daemon.Step.Trust, d.Has)
 	}
@@ -760,7 +766,7 @@ func (r *Runs) resume(ctx context.Context) (int, error) {
 		case err != nil:
 			return 0, fmt.Errorf("resume run %s: %w", l.RunID, err)
 		}
-		d, err := a.Dirty(ctx, s)
+		d, err := a.Dirty(ctx, s, r.Daemon.Step.Trust)
 		if err != nil {
 			return 0, fmt.Errorf("resume run %s: %w", l.RunID, err)
 		}
@@ -844,7 +850,7 @@ func (r *Runs) reportCap(ctx context.Context, s *github.Snapshot, st Stage, l Le
 		a.hide(fresh)
 		s = fresh
 	}
-	d, err := a.Dirty(ctx, s)
+	d, err := a.Dirty(ctx, s, r.Daemon.Step.Trust)
 	if err != nil {
 		return wrap(err)
 	}
@@ -979,11 +985,21 @@ func markerValue(v string) bool {
 // (cause, a StateError), on s. Running again can't fix that, so it's no
 // attempt. It makes sure the issue has one state error keyed by key, the
 // run's moveKey, so no run starts until the issue changes: Transition
-// posts it for a move by Result.Move, and blocked for any other. Only an
+// posts it for a move by Result.Move, and blocked for any other. When the
+// type is the cause (typeErrStands), the type error stands for it instead,
+// as in Transition, and the stage waits for the type to change. Only an
 // error that isn't cause is returned, as Transition logged cause.
 func (r *Runs) blocked(ctx context.Context, s *github.Snapshot, d Dirt, st Stage, l Lease, key string, cause error) error {
 	a := r.Daemon.Step.Applier
-	if !state.Derive(s, a.AppSlug, d.Has).Reported("transition", key) {
+	is := state.Derive(s, a.AppSlug, d.Has)
+	switch {
+	case typeErrStands(s, is):
+		// Its type error stands for it, and keeps the stage from running
+		// until the type changes (runStage).
+		if err := a.typeErrReport(ctx, s, is); err != nil {
+			return fmt.Errorf("report run %s's move: %w", l.RunID, err)
+		}
+	case !is.Reported("transition", key):
 		marker, err := github.FormatMarker(github.Marker{Kind: "error", Fields: map[string]string{"kind": "transition", "key": key}})
 		if err != nil {
 			return fmt.Errorf("report run %s's move: %w", l.RunID, err)

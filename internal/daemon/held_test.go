@@ -301,7 +301,7 @@ func TestDirtyCacheMissesARestoredBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d, err := a.Dirty(context.Background(), s); err != nil || d.Has(id) {
+	if d, err := a.Dirty(context.Background(), s, trusted{"owner": true}); err != nil || d.Has(id) {
 		t.Fatalf("Dirty = %v, %v; want the owner's own edit clean", d, err)
 	}
 	f.EditComment(id, "mallory", "z")
@@ -310,7 +310,7 @@ func TestDirtyCacheMissesARestoredBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d, err := a.Dirty(context.Background(), s); err != nil || d[id] != "mallory" {
+	if d, err := a.Dirty(context.Background(), s, trusted{"owner": true}); err != nil || d[id] != "mallory" {
 		t.Errorf("Dirty = %v, %v; want comment %d dirty by mallory", d, err, id)
 	}
 }
@@ -327,11 +327,11 @@ func TestDirtyCacheSkipsAShortHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d, err := a.Dirty(context.Background(), s); err != nil || !d.Has(id) {
+	if d, err := a.Dirty(context.Background(), s, trusted{"owner": true}); err != nil || !d.Has(id) {
 		t.Fatalf("Dirty = %v, %v; want comment %d dirty while its history is short", d, err, id)
 	}
 	f.HistoryCap(100)
-	if d, err := a.Dirty(context.Background(), s); err != nil || d.Has(id) {
+	if d, err := a.Dirty(context.Background(), s, trusted{"owner": true}); err != nil || d.Has(id) {
 		t.Errorf("Dirty = %v, %v; want comment %d clean once its history shows the edit", d, err, id)
 	}
 }

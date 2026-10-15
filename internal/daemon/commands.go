@@ -39,6 +39,9 @@ type Cmd struct {
 	// S is the issue. The handler adds its writes to it.
 	S    *github.Snapshot
 	Dirt Dirt
+	// Trust is Step's, which Dirt was found with, for the dirty content
+	// of the other issues a command reads, such as a /hold's descendants.
+	Trust github.Trust
 }
 
 // Rejection is a Handler's error for a command that doesn't apply. Step
@@ -69,7 +72,7 @@ func (st *Step) command(ctx context.Context, s *github.Snapshot, d Dirt, c githu
 		logr.Debugf("%s/%s#%d: /%s in comment %d waits: nothing handles it yet", st.Owner, st.Repo, s.Number, cmd.Name, c.ID)
 		return nil
 	}
-	if err := h.Apply(ctx, st.Applier, Cmd{Command: cmd, Comment: c, S: s, Dirt: d}); err != nil {
+	if err := h.Apply(ctx, st.Applier, Cmd{Command: cmd, Comment: c, S: s, Dirt: d, Trust: st.Trust}); err != nil {
 		return fmt.Errorf("/%s: %w", cmd.Name, err)
 	}
 	return nil
@@ -95,7 +98,7 @@ func (st *Step) why(ctx context.Context, s *github.Snapshot, d Dirt, c github.Co
 	case h.Check == nil:
 		return Rejection{}, h, nil
 	}
-	err := h.Check(ctx, st.Applier, Cmd{Command: cmd, Comment: c, S: s, Dirt: d})
+	err := h.Check(ctx, st.Applier, Cmd{Command: cmd, Comment: c, S: s, Dirt: d, Trust: st.Trust})
 	if r := (Rejection{}); errors.As(err, &r) {
 		return r, h, nil
 	}
@@ -437,7 +440,7 @@ func (a *Applier) family(ctx context.Context, c Cmd) ([]node, error) {
 			if err != nil {
 				return fmt.Errorf("descendant: %w", err)
 			}
-			d, err := a.Dirty(ctx, s)
+			d, err := a.Dirty(ctx, s, c.Trust)
 			if err != nil {
 				return fmt.Errorf("descendant: %w", err)
 			}

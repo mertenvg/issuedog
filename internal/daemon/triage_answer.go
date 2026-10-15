@@ -252,7 +252,7 @@ func (st *Step) FlagVisit(ctx context.Context, s *github.Snapshot) error {
 	if s.Closed {
 		return nil
 	}
-	d, err := st.Dirty(ctx, s)
+	d, err := st.Dirty(ctx, s, st.Trust)
 	if err != nil {
 		return fmt.Errorf("triage labels of %s/%s#%d: %w", st.Owner, st.Repo, s.Number, err)
 	}

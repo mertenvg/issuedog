@@ -219,10 +219,9 @@ func TestIntakeVisit(t *testing.T) {
 			}),
 			want: outcome{comments: []string{overriddenTo("stage:intake", "from=clarifying to=intake by=owner event=9004"),
 				admitted(byOwner, "1002")}, labels: clarifying}},
-		{name: "a type the pipeline doesn't know is reported once, and the issue stays",
+		{name: "a type the pipeline doesn't know is reported once, as a type error keyed by its event, and the issue stays",
 			setup: issueBy("owner", []string{"stage:intake", "type:frob"}, nil),
-			want: outcome{comments: []string{"I can't move this issue from `intake` to `clarifying` on trusted: its type `frob` isn't one " +
-				"the pipeline knows (SPEC §4). It stays at `intake`.\n\n<!-- issuedog:error kind=transition key=9001 -->"},
+			want: outcome{comments: []string{typeErrWant("frob", "intake", 9002, true)},
 				labels: []string{"stage:intake", "type:frob"}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
