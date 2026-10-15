@@ -34,9 +34,13 @@ func errAckIssue(more func(t testing.TB, f *githubtest.Fake)) func(testing.TB) *
 	}
 }
 
-// errAckTrust trusts owner and owner2, and, to show they're ignored
-// whatever trust says, the App and a helper bot.
-var errAckTrust = trusted{"owner": true, "owner2": true, app: true, "helper[bot]": true}
+// errAckTrust trusts owner and owner2, a login no user can have, to show
+// it's escaped and defused, and, to show they're ignored whatever trust
+// says, the App and a helper bot.
+var errAckTrust = trusted{"owner": true, "owner2": true, errAckHostile: true, app: true, "helper[bot]": true}
+
+// errAckHostile is a login that holds a marker's start and a mention.
+const errAckHostile = "eve<!--@owner"
 
 // errAckPass runs step 1 on issue 1 with only the state error trigger.
 func errAckPass(t testing.TB) func(*githubtest.Fake) error {
@@ -89,6 +93,9 @@ func TestErrAckByReaction(t *testing.T) {
 		{"a trusted 👍", func(t testing.TB, f *githubtest.Fake) {
 			flagWant(t, f.AddReaction(1002, "owner", "+1"), 1003)
 		}, []string{errAckReply("owner", "disagreement", "9", 1003)}},
+		{"a login is escaped and defused", func(t testing.TB, f *githubtest.Fake) {
+			flagWant(t, f.AddReaction(1002, errAckHostile, "+1"), 1003)
+		}, []string{errAckReply("eve&lt;!--@​owner", "disagreement", "9", 1003)}},
 		{"the earliest trusted 👍 wins", func(t testing.TB, f *githubtest.Fake) {
 			f.AddReaction(1002, app, "+1")
 			f.AddReaction(1002, "helper[bot]", "+1")

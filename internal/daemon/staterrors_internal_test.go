@@ -149,6 +149,26 @@ func TestOpenErrors(t *testing.T) {
 	}
 }
 
+// openErrCopies finds every clean comment of the App's that posts the
+// error, and nothing else: not the body, a dirty copy, an ack reply, a
+// user's copy, or another kind or key.
+func TestOpenErrCopies(t *testing.T) {
+	posted := openErrMarker("disagreement", "9", "")
+	s := openErrSnap(posted,
+		posted,                                   // 1
+		posted,                                   // 2: dirty
+		openErrMarker("disagreement", "9", "r5"), // 3: an ack
+		openErrMarker("transition", "9", ""),     // 4: another kind
+		openErrMarker("disagreement", "8", ""),   // 5: another key
+		posted,                                   // 6: a user's
+		"Again.\n\n"+posted)                      // 7
+	s.Comments[5].Author = github.Author{Login: "owner", Type: "User"}
+	got := openErrCopies(s, openErrSlug, func(id int64) bool { return id == 2 }, state.ErrorKey{Kind: "disagreement", Key: "9"})
+	if want := []int64{1, 7}; !slices.Equal(got, want) {
+		t.Errorf("copies = %v, want %v", got, want)
+	}
+}
+
 // openErrors asks for the inputs once, and only for an error keyed on
 // them, and returns its error.
 func TestOpenErrorsInputs(t *testing.T) {
