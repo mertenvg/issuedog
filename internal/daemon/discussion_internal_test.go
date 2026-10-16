@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
+	"github.com/mertenvg/issuedog/internal/trust"
 )
 
 // discCounting is trustOnceCounting with DiscAccess: the logins in writers
@@ -112,8 +114,17 @@ func TestDiscCurrentTrust(t *testing.T) {
 	}
 }
 
+// discNoWriters is a DiscTrust that says, as trust.Set does with no
+// CODEOWNERS file, whether nobody can be a writer.
+type discNoWriters struct {
+	*discCounting
+	none bool
+}
+
+func (n discNoWriters) DiscNoWriters() bool { return n.none }
+
 // Only a DiscTrust, or the visit's or the current trust over one, knows
-// writers.
+// writers, and not one that says nobody can be one.
 func TestDiscKnowsWriters(t *testing.T) {
 	disc, plain := newDiscCounting(), &trustOnceCounting{}
 	for _, tt := range []struct {
@@ -124,6 +135,8 @@ func TestDiscKnowsWriters(t *testing.T) {
 		{&trustOnceVisit{trust: disc}, true}, {&trustOnceVisit{trust: plain}, false},
 		{(&Step{Trust: disc}).CurrentTrust(), true}, {(&Step{Trust: plain}).CurrentTrust(), false},
 		{&trustOnceVisit{trust: (&Step{Trust: disc}).CurrentTrust()}, true},
+		{discNoWriters{disc, true}, false}, {discNoWriters{disc, false}, true},
+		{&trustOnceVisit{trust: discNoWriters{disc, true}}, false}, {(&Step{Trust: discNoWriters{disc, true}}).CurrentTrust(), false},
 	} {
 		if got := discKnowsWriters(tt.tr); got != tt.want {
 			t.Errorf("discKnowsWriters(%T over %v) = %v, want %v", tt.tr, tt.tr, got, tt.want)
@@ -248,7 +261,11 @@ func TestDiscOpenAfter(t *testing.T) {
 		{discBound{ID: 10, At: at(5)}, "x", at(5), 0, true},
 		{discBound{ID: 10, At: at(5)}, "x", at(4), 0, false},
 	} {
-		if got := discOpenAfter(tt.b, records)(tt.key, tt.at, tt.id); got != tt.want {
+		got, rec := discOpenAfter(tt.b, records)(tt.key, tt.at, tt.id)
+		if _, want := records[tt.key]; rec != want {
+			t.Errorf("open after %+v (%s): recorded %v, want %v", tt.b, tt.key, rec, want)
+		}
+		if got != tt.want {
 			t.Errorf("open after %+v (%s at %s, %d) = %v, want %v", tt.b, tt.key, tt.at.Format(time.TimeOnly), tt.id, got, tt.want)
 		}
 	}
@@ -306,7 +323,7 @@ func TestDiscWhoOf(t *testing.T) {
 		{Author: github.Author{Login: "bo"}, Association: ""},
 	}}
 	inner := newDiscCounting()
-	who := discWhoOf(s, inner)
+	who := (&Applier{}).discWhoOf(s, inner)
 	for _, l := range []string{"eve", "mallory", "ann", "bo", "zed"} {
 		if _, _, err := who.ask(context.Background(), github.Author{Login: l}); err != nil {
 			t.Fatal(err)
@@ -323,7 +340,7 @@ func TestDiscWhoAsksOnce(t *testing.T) {
 	ctx := context.Background()
 	inner := newDiscCounting()
 	inner.writers["helper[bot]"], inner.writers["robo"] = true, true
-	who := discWhoOf(&github.Snapshot{}, inner)
+	who := (&Applier{}).discWhoOf(&github.Snapshot{}, inner)
 	for _, a := range []github.Author{{Login: "mallory"}, {Login: "MALLORY"}, {Login: "helper[bot]", Type: "Bot"},
 		{Login: "robo", Type: "Bot"}, {}, {Login: "unknown"}} {
 		w, err := who.writer(ctx, a)
@@ -348,7 +365,7 @@ func TestDiscWhoAsksOnce(t *testing.T) {
 func TestDiscWhoTrustedAsksTrusted(t *testing.T) {
 	ctx := context.Background()
 	inner := newDiscCounting()
-	who := discWhoOf(&github.Snapshot{Comments: []github.Comment{{Author: github.Author{Login: "eve"}, Association: "NONE"}}}, inner)
+	who := (&Applier{}).discWhoOf(&github.Snapshot{Comments: []github.Comment{{Author: github.Author{Login: "eve"}, Association: "NONE"}}}, inner)
 	if _, err := who.writer(ctx, github.Author{Login: "mallory"}); err != nil {
 		t.Fatal(err)
 	}
@@ -367,6 +384,66 @@ func TestDiscWhoTrustedAsksTrusted(t *testing.T) {
 	}
 	if ok, err := (discWho{verdicts: map[string]bool{}}).trusted(ctx, github.Author{Login: "owner"}); ok || err != nil {
 		t.Errorf("trusted with no Trust = %v, %v", ok, err)
+	}
+}
+
+// discNoRecordTrust is discCounting, but GitHub has no permission record
+// of ghost.
+type discNoRecordTrust struct{ *discCounting }
+
+func (c discNoRecordTrust) DiscAccess(ctx context.Context, login string) (bool, bool, error) {
+	if strings.EqualFold(login, "ghost") {
+		c.access["ghost"]++
+		return false, false, fmt.Errorf("permission of ghost: %w", trust.ErrNoRecord)
+	}
+	return c.discCounting.DiscAccess(ctx, login)
+}
+
+// A "no permission record" answer is remembered across calls, for each
+// issue asked about, until its wait is up, when Due gives those issues to
+// read again; a snapshot that shows the login as a collaborator forgets it.
+func TestDiscNoRecord(t *testing.T) {
+	ctx := context.Background()
+	inner := discNoRecordTrust{newDiscCounting()}
+	a := &Applier{}
+	ask := func(s *github.Snapshot) {
+		t.Helper()
+		if w, err := a.discWhoOf(s, inner).writer(ctx, github.Author{Login: "Ghost"}); w || err != nil {
+			t.Fatalf("writer(ghost) = %v, %v; want no writer, no error", w, err)
+		}
+	}
+	ask(&github.Snapshot{Number: 1})
+	ask(&github.Snapshot{Number: 1})
+	ask(&github.Snapshot{Number: 2})
+	if inner.access["ghost"] != 1 {
+		t.Fatalf("asked about ghost %d times; want once, then remembered", inner.access["ghost"])
+	}
+	if due := a.discNoRecordDue(time.Now()); len(due) != 0 {
+		t.Errorf("due %v at once; want none", due)
+	}
+	if due := a.discNoRecordDue(time.Now().Add(discNoRecordWait + time.Second)); !reflect.DeepEqual(due, []int{1, 2}) {
+		t.Errorf("due %v after the wait; want the issues asked for, [1 2]", due)
+	}
+	ask(&github.Snapshot{Number: 3})
+	if inner.access["ghost"] != 2 {
+		t.Errorf("asked about ghost %d times after the wait; want twice", inner.access["ghost"])
+	}
+	ask(&github.Snapshot{Number: 3, Comments: []github.Comment{{Author: github.Author{Login: "ghost"}, Association: "COLLABORATOR"}}})
+	if inner.access["ghost"] != 3 || a.discNoRecords["ghost"] == nil {
+		t.Errorf("asked about ghost %d times when shown as a collaborator; want three, and the record noted again", inner.access["ghost"])
+	}
+	a.discNoRecords["ghost"].at = time.Now().Add(-discNoRecordWait)
+	ask(&github.Snapshot{Number: 4})
+	ask(&github.Snapshot{Number: 5})
+	if inner.access["ghost"] != 4 {
+		t.Errorf("asked about ghost %d times once the wait was up; want four, the wait started again", inner.access["ghost"])
+	}
+	if r := a.discNoRecords["ghost"]; !reflect.DeepEqual(r.issues, map[int]bool{3: true, 4: true, 5: true}) {
+		t.Errorf("issues %v; want 3, 4 and 5", r.issues)
+	}
+	a.discNoRecordForget("ghost")
+	if _, ok := a.discNoRecords["ghost"]; ok {
+		t.Error("ghost still remembered after discNoRecordForget")
 	}
 }
 

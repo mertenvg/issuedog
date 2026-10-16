@@ -2,7 +2,9 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
+	"github.com/mertenvg/issuedog/internal/trust"
 	"github.com/mertenvg/logr/v2"
 )
 
@@ -205,28 +208,36 @@ func discRecords(s *github.Snapshot, appSlug string, dirty func(int64) bool) map
 // nor an outsider: someone every association the snapshot gives says has
 // no access (github.DiscOutsider), so a stranger's comment costs no
 // permission request, which GitHub would answer with a 404 on every pass.
+// Nor is a login GitHub had no permission record of on an earlier pass
+// (discNoRecord), unless the snapshot shows them as a collaborator again.
 //
-// Only writer asks DiscAccess, and only about who made an act: a comment's
-// or an issue's author, whose association the snapshot gives, or someone
-// who changed what another wrote, a deleter, a renamer or an editor of
-// another's content, which only a collaborator can, so GitHub answers
-// with a 200 its ETag saves. A question of trust alone goes to Trusted
-// (trusted).
+// Only writer asks DiscAccess, and only about who made an act that is open
+// and that no marker records (discFind): what a marker records was judged
+// when it was made, so nobody is asked about it again. A question of trust
+// alone goes to Trusted (trusted).
 type discWho struct {
+	a        *Applier
+	number   int // the issue, for discNoRecord
 	trust    github.Trust
 	access   map[string][2]bool // by login in lower case
 	verdicts map[string]bool    // Trusted's alone, by login in lower case
 	outsider map[string]bool    // by login in lower case
+	member   map[string]bool    // shown as the owner, a member or a collaborator, by login in lower case
 }
 
 // discWhoOf is a discWho over trust for s, knowing the associations of its
 // author and of its comments' authors.
-func discWhoOf(s *github.Snapshot, trust github.Trust) discWho {
-	w := discWho{trust: trust, access: map[string][2]bool{}, verdicts: map[string]bool{}, outsider: map[string]bool{}}
+func (a *Applier) discWhoOf(s *github.Snapshot, trust github.Trust) discWho {
+	w := discWho{a: a, number: s.Number, trust: trust, access: map[string][2]bool{}, verdicts: map[string]bool{},
+		outsider: map[string]bool{}, member: map[string]bool{}}
 	note := func(login, association string) {
 		l := strings.ToLower(login)
 		if was, ok := w.outsider[l]; !ok || was {
 			w.outsider[l] = github.DiscOutsider(association)
+		}
+		switch association {
+		case "OWNER", "MEMBER", "COLLABORATOR":
+			w.member[l] = true
 		}
 	}
 	note(s.Author.Login, s.AuthorAssociation)
@@ -236,9 +247,28 @@ func discWhoOf(s *github.Snapshot, trust github.Trust) discWho {
 	return w
 }
 
+// nobody reports whether a is surely neither trusted nor a writer, with no
+// request: a bot, nobody GitHub names, an outsider (discWhoOf), anyone
+// with no Trust, or a login GitHub had no permission record of lately
+// (discNoRecordKnown), unless the snapshot shows them as a collaborator,
+// which forgets that record.
+func (w discWho) nobody(a github.Author) bool {
+	l := strings.ToLower(a.Login)
+	switch {
+	case a.Login == "" || a.Login == "unknown" || a.Type == "Bot" || w.trust == nil || w.outsider[l]:
+		return true
+	case w.a == nil:
+		return false
+	case w.member[l]:
+		w.a.discNoRecordForget(l)
+		return false
+	}
+	return w.a.discNoRecordKnown(l, w.number)
+}
+
 func (w discWho) ask(ctx context.Context, a github.Author) (trusted, writer bool, err error) {
 	l := strings.ToLower(a.Login)
-	if a.Login == "" || a.Login == "unknown" || a.Type == "Bot" || w.trust == nil || w.outsider[l] {
+	if w.nobody(a) {
 		return false, false, nil
 	}
 	if v, ok := w.access[l]; ok {
@@ -249,6 +279,12 @@ func (w discWho) ask(ctx context.Context, a github.Author) (trusted, writer bool
 	} else {
 		trusted, err = w.trust.Trusted(ctx, a.Login)
 	}
+	if errors.Is(err, trust.ErrNoRecord) {
+		if w.a != nil {
+			w.a.discNoRecordNote(l, w.number)
+		}
+		trusted, writer, err = false, false, nil
+	}
 	if err != nil {
 		return false, false, fmt.Errorf("access of %s: %w", a.Login, err)
 	}
@@ -258,8 +294,9 @@ func (w discWho) ask(ctx context.Context, a github.Author) (trusted, writer bool
 
 // discKnowsWriters reports whether tr can name a write collaborator who
 // isn't trusted: it's a github.DiscTrust, or the visit's or the current
-// trust over one. With any other, nothing holds an issue, so discFind asks
-// it about nobody.
+// trust over one, and not one that says nobody can be (DiscNoWriters), as
+// with no CODEOWNERS file. With any other, nothing holds an issue, so
+// discFind asks it about nobody.
 func discKnowsWriters(tr github.Trust) bool {
 	switch t := tr.(type) {
 	case *trustOnceVisit:
@@ -267,7 +304,8 @@ func discKnowsWriters(tr github.Trust) bool {
 	case currentTrust:
 		return discKnowsWriters(t.st.Trust)
 	case github.DiscTrust:
-		return true
+		none, ok := t.(interface{ DiscNoWriters() bool })
+		return !ok || !none.DiscNoWriters()
 	}
 	return false
 }
@@ -285,7 +323,7 @@ func (w discWho) writer(ctx context.Context, a github.Author) (bool, error) {
 // would ask GitHub about them on every pass, for a 404 no ETag saves.
 func (w discWho) trusted(ctx context.Context, a github.Author) (bool, error) {
 	l := strings.ToLower(a.Login)
-	if a.Login == "" || a.Login == "unknown" || a.Type == "Bot" || w.trust == nil || w.outsider[l] {
+	if w.nobody(a) {
 		return false, nil
 	}
 	if v, ok := w.access[l]; ok {
@@ -302,21 +340,105 @@ func (w discWho) trusted(ctx context.Context, a github.Author) (bool, error) {
 	return v, nil
 }
 
+// discNoRecordWait is how long a login GitHub had no permission record of
+// is remembered as such (discNoRecord). Within it, a removed collaborator
+// who is added back holds nothing by an act the snapshot shows no
+// association for, a rename, a deletion or an edit of another's content;
+// their comment shows them as a collaborator, which ends it at once.
+const discNoRecordWait = time.Hour
+
+// discNoRecord is a login GitHub answered with no permission record (a
+// 404, trust.ErrNoRecord), such as a removed collaborator or a deleted
+// account, which no ETag saves. It's remembered, in memory, so an
+// unchanged pass doesn't ask again (SPEC §8.1). It ends:
+//   - after discNoRecordWait, when the issues it was asked for are read
+//     again (discNoRecordDue), so an act a re-added writer made meanwhile
+//     is judged then, on any issue, visited on every pass or not: the
+//     window is bounded, at the cost of one request per such login each
+//     discNoRecordWait;
+//   - when a snapshot shows the login as the owner, a member or a
+//     collaborator (discWho.nobody), as a re-added writer's comment does;
+//   - on a restart, with the rest of the daemon's memory.
+//
+// A trust reload doesn't end it: trust reloads on every pass, and a
+// permission record isn't in CODEOWNERS.
+type discNoRecord struct {
+	at     time.Time    // when GitHub first answered so
+	issues map[int]bool // the issues it was asked for
+}
+
+// discNow is the time on GitHub's clock, or the local one with no client.
+func (a *Applier) discNow() time.Time {
+	if a.Client == nil {
+		return time.Now()
+	}
+	return a.Client.Now()
+}
+
+// discNoRecordKnown reports whether login, in lower case, had no
+// permission record within discNoRecordWait, and if so adds issue n to
+// those read again when it ends.
+func (a *Applier) discNoRecordKnown(login string, n int) bool {
+	r, ok := a.discNoRecords[login]
+	if !ok || a.discNow().Sub(r.at) >= discNoRecordWait {
+		return false
+	}
+	r.issues[n] = true
+	return true
+}
+
+// discNoRecordNote remembers that login, in lower case, had no permission
+// record when asked for issue n.
+func (a *Applier) discNoRecordNote(login string, n int) {
+	if a.discNoRecords == nil {
+		a.discNoRecords = map[string]*discNoRecord{}
+	}
+	now := a.discNow()
+	r, ok := a.discNoRecords[login]
+	if !ok {
+		r = &discNoRecord{issues: map[int]bool{}}
+		a.discNoRecords[login] = r
+	}
+	if !ok || now.Sub(r.at) >= discNoRecordWait {
+		r.at = now // asked again once its wait was up: the wait starts again
+	}
+	r.issues[n] = true
+	logr.Infof("%s/%s: %s has no permission record, so they aren't asked about for %s", a.Owner, a.Repo, login, discNoRecordWait)
+}
+
+// discNoRecordForget forgets that login, in lower case, had no permission
+// record.
+func (a *Applier) discNoRecordForget(login string) { delete(a.discNoRecords, login) }
+
+// discNoRecordDue forgets each login whose discNoRecordWait is up by now,
+// and returns the issues it was asked for, sorted, to read again.
+func (a *Applier) discNoRecordDue(now time.Time) []int {
+	due := map[int]bool{}
+	for l, r := range a.discNoRecords {
+		if now.Sub(r.at) >= discNoRecordWait {
+			maps.Copy(due, r.issues)
+			delete(a.discNoRecords, l)
+		}
+	}
+	return slices.Sorted(maps.Keys(due))
+}
+
 // discOpen reports whether an act keyed key, made at at, is open after the
-// bound b: recorded by a marker in b's comment or a later one, or, with no
-// record, made at or after b's time, failing closed in its second, or for
-// a comment id, unless b is by time, above b's comment.
-type discOpen func(key string, at time.Time, id int64) bool
+// bound b, and whether a marker records it: recorded by a marker in b's
+// comment or a later one, or, with no record, made at or after b's time,
+// failing closed in its second, or for a comment id, unless b is by time,
+// above b's comment.
+type discOpen func(key string, at time.Time, id int64) (open, recorded bool)
 
 func discOpenAfter(b discBound, records map[string]int64) discOpen {
-	return func(key string, at time.Time, id int64) bool {
+	return func(key string, at time.Time, id int64) (bool, bool) {
 		if r, recorded := records[key]; recorded {
-			return r >= b.ID
+			return r >= b.ID, true
 		}
 		if id != 0 && !b.ByTime {
-			return id > b.ID
+			return id > b.ID, false
 		}
-		return !at.Before(b.At)
+		return !at.Before(b.At), false
 	}
 }
 
@@ -336,8 +458,12 @@ func discOpenAfter(b discBound, records map[string]int64) discOpen {
 //     from the timeline it reads, so this costs no request; it acts on
 //     none of them itself. A snapshot CheckLabels hasn't checked has none.
 //
-// It asks trust only about the logins of such acts, and reads the
-// reactions only of a writer's comment they edited after the floor.
+// An open act a marker records is one, with no question: it was judged
+// when the marker was written. Of the rest, it asks about each open act
+// only, and only once nothing else rules it out, so an act before the
+// floor, or by a login known to be nobody (discWho.nobody), costs no
+// request. It reads the reactions only of a writer's comment they edited
+// after the floor.
 func (a *Applier) discFind(ctx context.Context, s *github.Snapshot, d Dirt, trust github.Trust) ([]discTrigger, error) {
 	wrap := func(err error) error {
 		return fmt.Errorf("discussion triggers on %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
@@ -346,22 +472,29 @@ func (a *Applier) discFind(ctx context.Context, s *github.Snapshot, d Dirt, trus
 	if !ok || !discKnowsWriters(trust) {
 		return nil, nil
 	}
-	open, who := discOpenAfter(b, discRecords(s, a.AppSlug, d.Has)), discWhoOf(s, trust)
+	records := discRecords(s, a.AppSlug, d.Has)
+	open, who := discOpenAfter(b, records), a.discWhoOf(s, trust)
+	// counts reports whether an act by by, keyed key, is a trigger: open,
+	// and recorded or by a writer.
+	counts := func(key string, at time.Time, id int64, by github.Author) (bool, error) {
+		o, recorded := open(key, at, id)
+		if !o || recorded {
+			return o, nil
+		}
+		return who.writer(ctx, by)
+	}
 	var found []discTrigger
 	for _, c := range s.Comments {
 		key := "c" + strconv.FormatInt(c.ID, 10)
-		if !open(key, c.CreatedAt, c.ID) {
-			continue
-		}
-		w, err := who.writer(ctx, c.Author)
+		ok, err := counts(key, c.CreatedAt, c.ID, c.Author)
 		if err != nil {
 			return nil, wrap(err)
 		}
-		if w {
+		if ok {
 			found = append(found, discTrigger{Kind: discComment, Key: key, By: c.Author.Login, At: c.CreatedAt, ID: c.ID})
 		}
 	}
-	edits, err := a.discEdits(ctx, s, d, who, open)
+	edits, err := a.discEdits(ctx, s, d, who, b, records, open)
 	if err != nil {
 		return nil, wrap(err)
 	}
@@ -371,36 +504,35 @@ func (a *Applier) discFind(ctx context.Context, s *github.Snapshot, d Dirt, trus
 	}
 	found = append(append(found, edits...), own...)
 	for _, e := range s.Deleted {
-		if !open("d"+e.ID, e.At, 0) || strings.EqualFold(e.By.Login, e.Author.Login) {
+		key := "d" + e.ID
+		o, recorded := open(key, e.At, 0)
+		if !o || !recorded && strings.EqualFold(e.By.Login, e.Author.Login) {
 			continue
 		}
-		w, err := who.writer(ctx, e.By)
-		if err != nil || !w {
+		if !recorded {
+			w, err := who.writer(ctx, e.By)
 			if err != nil {
 				return nil, wrap(err)
 			}
-			continue
-		}
-		trustedOf := e.Author.Login == "" || state.IsApp(e.Author, a.AppSlug)
-		if !trustedOf {
-			if trustedOf, err = who.trusted(ctx, e.Author); err != nil {
-				return nil, wrap(err)
+			trustedOf := e.Author.Login == "" || state.IsApp(e.Author, a.AppSlug)
+			if w && !trustedOf {
+				if trustedOf, err = who.trusted(ctx, e.Author); err != nil {
+					return nil, wrap(err)
+				}
+			}
+			if !w || !trustedOf {
+				continue
 			}
 		}
-		if trustedOf {
-			found = append(found, discTrigger{Kind: discDeletion, Key: "d" + e.ID, By: e.By.Login, At: e.At, Of: e.Author.Login})
-		}
+		found = append(found, discTrigger{Kind: discDeletion, Key: key, By: e.By.Login, At: e.At, Of: e.Author.Login})
 	}
 	for _, e := range s.DiscRenames {
 		key := strconv.FormatInt(e.ID, 10)
-		if !open(key, e.At, 0) {
-			continue
-		}
-		w, err := who.writer(ctx, e.By)
+		ok, err := counts(key, e.At, 0, e.By)
 		if err != nil {
 			return nil, wrap(err)
 		}
-		if w {
+		if ok {
 			found = append(found, discTrigger{Kind: discRename, Key: key, By: e.By.Login, At: e.At, Title: e.Title})
 		}
 	}
@@ -435,23 +567,33 @@ func discEditKey(id int64, at time.Time) string { return fmt.Sprintf("e%d-%d", i
 // history (Dirty), so it's read once for each change of the content: an
 // unchanged pass reads none. An edit the history no longer has, past its
 // 99 newest, is skipped, logged: it was handled, or nothing can key it.
-func (a *Applier) discEdits(ctx context.Context, s *github.Snapshot, d Dirt, who discWho, open discOpen) ([]discTrigger, error) {
+//
+// Nothing is read or asked for content last edited before the floor b, as
+// the snapshot dates its last edit, since an edit of it is older still,
+// unless a marker records an edit of it from b on (records), as the hold
+// discRestore writes for an edit from before its own first marker; nor for
+// content an editor known to be nobody made dirty (discWho.nobody). An
+// edit a marker records is one, with no question; of the others, only the
+// open ones' editors are asked about.
+func (a *Applier) discEdits(ctx context.Context, s *github.Snapshot, d Dirt, who discWho, b discBound, records map[string]int64,
+	open discOpen) ([]discTrigger, error) {
 	type cand struct {
 		c  content
 		by github.Author
+	}
+	recordedFrom := map[int64]bool{} // content with an edit a marker records from b on
+	for key, r := range records {
+		var id, at int64
+		if _, err := fmt.Sscanf(key, "e%d-%d", &id, &at); err == nil && r >= b.ID {
+			recordedFrom[id] = true
+		}
 	}
 	var found []discTrigger
 	var need []cand
 	for _, c := range contents(s) {
 		login, dirty := d[c.id]
 		by := github.Author{Login: login}
-		if !dirty {
-			continue
-		}
-		if w, err := who.writer(ctx, by); err != nil || !w {
-			if err != nil {
-				return nil, fmt.Errorf("who edited %s %d: %w", what(c.id), c.id, err)
-			}
+		if !dirty || who.nobody(by) || c.edit.At.Before(b.At) && !recordedFrom[c.id] {
 			continue
 		}
 		need = append(need, cand{c, by})
@@ -486,18 +628,26 @@ func (a *Applier) discEdits(ctx context.Context, s *github.Snapshot, d Dirt, who
 		}
 		at, of := h[i].At, state.AuthorEditWriter(n.c.id, n.c.author, h[:i], a.AppSlug)
 		key := discEditKey(n.c.id, at)
-		if !open(key, at, 0) || strings.EqualFold(of.Login, n.by.Login) {
+		o, recorded := open(key, at, 0)
+		if !o || !recorded && strings.EqualFold(of.Login, n.by.Login) {
 			continue
 		}
-		ok := state.IsApp(of, a.AppSlug)
-		if !ok {
-			if ok, err = who.trusted(ctx, of); err != nil {
-				return nil, fmt.Errorf("the writer of %s %d: %w", what(n.c.id), n.c.id, err)
+		if !recorded {
+			w, err := who.writer(ctx, n.by)
+			if err != nil {
+				return nil, fmt.Errorf("who edited %s %d: %w", what(n.c.id), n.c.id, err)
+			}
+			ok := w && state.IsApp(of, a.AppSlug)
+			if w && !ok {
+				if ok, err = who.trusted(ctx, of); err != nil {
+					return nil, fmt.Errorf("the writer of %s %d: %w", what(n.c.id), n.c.id, err)
+				}
+			}
+			if !ok {
+				continue
 			}
 		}
-		if ok {
-			found = append(found, discTrigger{Kind: discEdit, Key: key, By: n.by.Login, At: at, ID: n.c.id, Of: of.Login})
-		}
+		found = append(found, discTrigger{Kind: discEdit, Key: key, By: n.by.Login, At: at, ID: n.c.id, Of: of.Login})
 	}
 	return found, nil
 }
@@ -505,7 +655,8 @@ func (a *Applier) discEdits(ctx context.Context, s *github.Snapshot, d Dirt, who
 // discOwnEdits returns the triggers of a write collaborator who isn't
 // trusted editing their own clean comment at or after a trusted 👍 on it,
 // which approved it (#87's assumption 6), if open says the edit counts.
-// GitHub dates only the last edit, so it's that one's. It reads the
+// GitHub dates only the last edit, so it's that one's. One a marker
+// records is one, with no question and no read. Otherwise it reads the
 // reactions only of a comment such a writer edited last, when that counts:
 // the reads are conditional, so an unchanged pass costs no rate limit.
 func (a *Applier) discOwnEdits(ctx context.Context, s *github.Snapshot, d Dirt, who discWho, open discOpen) ([]discTrigger, error) {
@@ -515,7 +666,13 @@ func (a *Applier) discOwnEdits(ctx context.Context, s *github.Snapshot, d Dirt, 
 			continue
 		}
 		key := discEditKey(c.ID, c.Edit.At)
-		if !open(key, c.Edit.At, 0) {
+		tr := discTrigger{Kind: discOwnEdit, Key: key, By: c.Author.Login, At: c.Edit.At, ID: c.ID}
+		o, recorded := open(key, c.Edit.At, 0)
+		switch {
+		case !o:
+			continue
+		case recorded:
+			found = append(found, tr)
 			continue
 		}
 		w, err := who.writer(ctx, c.Author)
@@ -538,7 +695,7 @@ func (a *Applier) discOwnEdits(ctx context.Context, s *github.Snapshot, d Dirt, 
 				return nil, fmt.Errorf("approvals of comment %d: %w", c.ID, err)
 			}
 			if t {
-				found = append(found, discTrigger{Kind: discOwnEdit, Key: key, By: c.Author.Login, At: c.Edit.At, ID: c.ID})
+				found = append(found, tr)
 				break
 			}
 		}

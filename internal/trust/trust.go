@@ -146,11 +146,26 @@ func (s *Set) Trusted(ctx context.Context, login string) (bool, error) {
 		return false, nil
 	}
 	trusted, _, err := s.DiscAccess(ctx, login)
+	if errors.Is(err, ErrNoRecord) {
+		return false, nil
+	}
 	if err != nil {
 		return false, fmt.Errorf("trust %s: %w", login, err)
 	}
 	return trusted, nil
 }
+
+// ErrNoRecord is wrapped by DiscAccess's error for a login GitHub has no
+// permission record of, such as a removed collaborator or a deleted
+// account: it answers 404, which no ETag saves, so the caller may remember
+// it rather than ask again on every pass. Such a login is neither trusted
+// nor a writer.
+var ErrNoRecord = errors.New("no permission record")
+
+// DiscNoWriters reports whether nobody can be a write collaborator who
+// isn't trusted, as with no CODEOWNERS file every writer is trusted, so a
+// caller needn't ask DiscAccess at all.
+func (s *Set) DiscNoWriters() bool { return s.owners == nil }
 
 // DiscAccess answers, from one permission request, whether login is trusted,
 // as Trusted says, and whether they are a write collaborator who isn't
@@ -159,7 +174,8 @@ func (s *Set) Trusted(ctx context.Context, login string) (bool, error) {
 // CODEOWNERS doesn't trust them. With no CODEOWNERS file every such role is
 // trusted, so nobody is the second. Bots, the App included, are neither, so
 // a bot's comments hold nothing. Unlike Trusted, it asks the API about a
-// login CODEOWNERS doesn't name, as only the API knows their role.
+// login CODEOWNERS doesn't name, as only the API knows their role. A login
+// GitHub has no record of gives an error wrapping ErrNoRecord.
 func (s *Set) DiscAccess(ctx context.Context, login string) (trusted, writer bool, err error) {
 	login = strings.ToLower(login)
 	if login == "" || strings.HasSuffix(login, "[bot]") {
@@ -167,7 +183,7 @@ func (s *Set) DiscAccess(ctx context.Context, login string) (trusted, writer boo
 	}
 	perm, resp, err := s.api.Repositories.GetPermissionLevel(ctx, s.owner, s.repo, login)
 	if notFound(resp) {
-		return false, false, nil
+		return false, false, fmt.Errorf("permission of %s on %s/%s: %w", login, s.owner, s.repo, ErrNoRecord)
 	}
 	if err != nil {
 		return false, false, fmt.Errorf("permission of %s on %s/%s: %w", login, s.owner, s.repo, err)

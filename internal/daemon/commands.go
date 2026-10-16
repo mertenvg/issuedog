@@ -386,7 +386,12 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 			}
 		}
 	}
-	is := state.Derive(c.S, a.AppSlug, c.Dirt.Has)
+	// The issue's own discussion holds stay too (discHeldStack), so it
+	// can't go back while one does, whatever the table says.
+	is, err := a.discHeldStack(ctx, c.S, c.Dirt, c.Trust, state.Derive(c.S, a.AppSlug, c.Dirt.Has))
+	if err != nil {
+		return fmt.Errorf("check /resume: %w", err)
+	}
 	if at, ended, left := heldStackResume(is, true, above); ended > 0 && len(left) == 0 {
 		why, err := noRow(is, Move{To: at, Trigger: state.TriggerResume})
 		if StateError(err) {

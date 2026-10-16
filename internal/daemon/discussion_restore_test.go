@@ -6,7 +6,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
 
@@ -226,6 +228,219 @@ func TestDiscStrangerAsksNothingThroughTheLoop(t *testing.T) {
 				t.Errorf("labels %q; want the issue still held", l)
 			}
 		})
+	}
+}
+
+// discUnchanged runs an unchanged pass of d and reports each request it
+// sent that wasn't a conditional GET answered 304.
+func discUnchanged(t *testing.T, f *githubtest.Fake, d *daemon.Daemon) []githubtest.Request {
+	t.Helper()
+	from := len(f.Requests())
+	iterate(t, d)
+	var bad []githubtest.Request
+	for _, r := range f.Requests()[from:] {
+		if r.Method != "GET" || !r.Conditional || r.Status != 304 {
+			bad = append(bad, r)
+		}
+	}
+	return bad
+}
+
+// Through the loop, an actor GitHub has no permission record of, a writer
+// removed after their act or a deleted account (ghost), costs an unchanged
+// pass no request that can't be conditional: an act a marker records is
+// asked about no more, a 404 is remembered (discNoRecord), and an edit
+// from before the issue's first marker is never asked about.
+func TestDiscNoRecordThroughTheLoop(t *testing.T) {
+	type act func(f *githubtest.Fake, n int, login string)
+	rename := func(f *githubtest.Fake, n int, login string) { f.RenameIssue(n, login, "Renamed") }
+	deletion := func(f *githubtest.Fake, n int, login string) {
+		f.DeleteCommentBy(login, f.AddComment(n, app, "A note."))
+	}
+	edit := func(f *githubtest.Fake, n int, login string) {
+		f.EditComment(f.AddComment(n, "owner", "Ship it."), login, "Don't.")
+	}
+	for _, tt := range []struct {
+		name   string
+		login  string
+		act    act
+		remove bool // the writer is removed after the act's pass
+	}{
+		{"a removed writer's rename", "mallory", rename, true},
+		{"a removed writer's deletion", "mallory", deletion, true},
+		{"a removed writer's edit", "mallory", edit, true},
+		{"ghost's rename", "ghost", rename, false},
+		{"ghost's deletion", "ghost", deletion, false},
+		{"ghost's edit", "ghost", edit, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFake(t)
+			n := fileAt(f, "ready", "do it")
+			f.AddComment(n, "owner", "/hold")
+			d := newDaemon(t, f, newOrigin(t), nil)
+			iterate(t, d)
+			tt.act(f, n, tt.login)
+			iterate(t, d)
+			if tt.remove {
+				f.RemovePermission(tt.login)
+			}
+			iterate(t, d)
+			iterate(t, d)
+			if bad := discUnchanged(t, f, d); len(bad) != 0 {
+				t.Errorf("the unchanged pass sent %+v; want only conditional GETs answered 304", bad)
+			}
+			if l := f.State().Issues[n-1].Labels; !slices.Equal(l, []string{"stage:held"}) {
+				t.Errorf("labels %q; want the issue still held", l)
+			}
+		})
+	}
+	t.Run("an edit before the first marker", func(t *testing.T) {
+		f := newFake(t)
+		n := f.AddIssue("owner", "Issue", "do it")
+		f.EditComment(f.AddComment(n, "owner", "Ship it."), "ghost", "Don't.")
+		f.AddLabel(n, app, "stage:ready")
+		f.AddComment(n, app, "<!-- issuedog:transition from=intake to=ready run=r -->")
+		f.AddComment(n, "owner", "/hold")
+		d := newDaemon(t, f, newOrigin(t), nil)
+		for range 3 {
+			iterate(t, d)
+		}
+		for _, r := range f.Requests() {
+			if strings.Contains(r.Path, "/collaborators/ghost/") {
+				t.Errorf("sent %+v; want ghost, whose edit is before the issue's first marker, never asked about", r)
+			}
+		}
+		if bad := discUnchanged(t, f, d); len(bad) != 0 {
+			t.Errorf("the unchanged pass sent %+v; want only conditional GETs answered 304", bad)
+		}
+	})
+}
+
+// An act a marker records stays open when its maker loses access: it was
+// judged when its notice was written, so nobody is asked about it again,
+// and /resume still leaves the issue held.
+func TestDiscRecordedOutlivesAccess(t *testing.T) {
+	for name, act := range map[string]func(f *githubtest.Fake, n int){
+		"a rename":   func(f *githubtest.Fake, n int) { f.RenameIssue(n, "mallory", "Renamed") },
+		"a deletion": func(f *githubtest.Fake, n int) { f.DeleteCommentBy("mallory", f.AddComment(n, app, "A note.")) },
+		"an edit": func(f *githubtest.Fake, n int) {
+			f.EditComment(f.AddComment(n, "owner", "Ship it."), "mallory", "Don't.")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t)
+			n := fileAt(f, "ready", "do it")
+			f.AddComment(n, "owner", "/hold")
+			d := newDaemon(t, f, newOrigin(t), nil)
+			iterate(t, d)
+			act(f, n)
+			iterate(t, d)
+			f.RemovePermission("mallory")
+			from := len(f.Requests())
+			f.AddComment(n, "owner", "/resume")
+			iterate(t, d)
+			iterate(t, d)
+			for _, r := range f.Requests()[from:] {
+				if strings.Contains(r.Path, "/collaborators/mallory/") {
+					t.Errorf("sent %+v; want mallory, whose act a marker records, never asked about again", r)
+				}
+			}
+			is := f.State().Issues[n-1]
+			if !slices.Equal(is.Labels, []string{"stage:held"}) || !slices.ContainsFunc(is.Comments, func(c githubtest.CommentState) bool {
+				return strings.Contains(c.Body, "also on hold for discussion")
+			}) {
+				t.Errorf("labels %q, comments %q; want the issue still held, the /resume rejected for the discussion", is.Labels, is.Comments)
+			}
+		})
+	}
+}
+
+// Content an outsider made dirty, or one noted dirty before the issue's
+// first marker, costs no history read: nothing could make it a trigger.
+func TestDiscEditsReadNoHistory(t *testing.T) {
+	for name, setup := range map[string]func(f *githubtest.Fake) int{
+		"an outsider's edit": func(f *githubtest.Fake) int {
+			n := fileAt(f, "ready", "do it")
+			f.AddComment(n, "eve", "Hi.")
+			f.EditComment(f.AddComment(n, "owner", "Ship it."), "eve", "Don't.")
+			return n
+		},
+		"a note from before the first marker": func(f *githubtest.Fake) int {
+			n := f.AddIssue("owner", "Issue", "do it")
+			id := f.AddComment(n, "owner", "Ship it.")
+			f.EditComment(id, "ghost", "Don't.")
+			f.EditComment(id, app, "<!-- issuedog:dirty by=ghost -->\n> ⚠️ issuedog ignores this comment: **ghost** edited it without approval.\n\nDon't.")
+			f.AddLabel(n, app, "stage:ready")
+			f.AddComment(n, app, "<!-- issuedog:transition from=intake to=ready run=r -->")
+			return n
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t)
+			n := setup(f)
+			f.AddComment(n, "owner", "/hold")
+			d := newDaemon(t, f, newOrigin(t), nil)
+			for range 3 {
+				iterate(t, d)
+			}
+			if q := f.HistoryQueries(); q != 0 {
+				t.Errorf("%d history queries; want none", q)
+			}
+		})
+	}
+}
+
+// A remembered "no permission record" ends when a snapshot shows the
+// login as a collaborator again, on any issue: a re-added writer's rename
+// elsewhere then holds that issue, before the wait is up.
+func TestDiscNoRecordEndsForCollaborator(t *testing.T) {
+	f := newFake(t)
+	first := fileAt(f, "ready", "do it")
+	second := fileAt(f, "ready", "do that")
+	d := newDaemon(t, f, newOrigin(t), nil)
+	iterate(t, d)
+	f.RenameIssue(first, "trent", "Renamed") // no record yet
+	iterate(t, d)
+	f.SetPermission("trent", "write")
+	f.AddComment(second, "trent", "Wait.")
+	iterate(t, d)
+	f.RenameIssue(first, "trent", "Renamed again")
+	iterate(t, d)
+	if l := f.State().Issues[first-1].Labels; !slices.Equal(l, []string{"stage:held"}) {
+		t.Errorf("#%d labels %q; want trent's rename, after their comment showed them a collaborator, to hold it", first, l)
+	}
+}
+
+// A remembered "no permission record" ends after its wait: the issue it
+// was asked for is read again, and the login asked about once more, so a
+// writer added back holds the issue by an act made meanwhile.
+func TestDiscNoRecordEnds(t *testing.T) {
+	f := newFake(t)
+	n := fileAt(f, "ready", "do it")
+	d := newDaemon(t, f, newOrigin(t), nil)
+	iterate(t, d)
+	f.RenameIssue(n, "trent", "Renamed") // no record yet
+	iterate(t, d)
+	iterate(t, d)
+	asked := func(from int) int {
+		c := 0
+		for _, r := range f.Requests()[from:] {
+			if strings.Contains(r.Path, "/collaborators/trent/") {
+				c++
+			}
+		}
+		return c
+	}
+	from := len(f.Requests())
+	iterate(t, d)
+	if c := asked(from); c != 0 {
+		t.Fatalf("an unchanged pass asked about trent %d times; want none", c)
+	}
+	f.SetPermission("trent", "write")
+	f.Advance(time.Hour + time.Minute)
+	iterate(t, d)
+	if l := f.State().Issues[n-1].Labels; !slices.Equal(l, []string{"stage:held"}) {
+		t.Errorf("labels %q after the wait; want trent's rename to hold the issue", l)
 	}
 }
 

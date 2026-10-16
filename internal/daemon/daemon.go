@@ -169,6 +169,14 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			d.stale[n] = true
 		}
 	}
+	// A login with no permission record is asked about again once its
+	// wait is up (discNoRecord): read the issues it was asked for again,
+	// so an act it made meanwhile is judged.
+	for _, n := range d.Step.discNoRecordDue(now) {
+		if _, ok := d.snaps[n]; ok {
+			d.stale[n] = true
+		}
+	}
 	var errs []error
 	read := map[int]bool{}
 	for _, n := range slices.Sorted(maps.Keys(d.stale)) {

@@ -40,8 +40,9 @@ type Applier struct {
 	// date with the config.
 	Notify []string
 
-	histories   histories // see Dirty
-	unexplained github.Unexplained
+	histories     histories                // see Dirty
+	discNoRecords map[string]*discNoRecord // logins with no permission record, in lower case (discNoRecord)
+	unexplained   github.Unexplained
 }
 
 // Move is one transition to apply.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -180,7 +181,9 @@ func discCheck(t *testing.T, files fakeFiles, api *gogithub.Client, want map[str
 	}
 	for login, w := range want {
 		trusted, writer, err := s.DiscAccess(ctx, login)
-		if err != nil {
+		if errors.Is(err, ErrNoRecord) != (login == "stranger") {
+			t.Errorf("DiscAccess(%s) = %v; want no record only for stranger", login, err)
+		} else if err != nil && !errors.Is(err, ErrNoRecord) {
 			t.Fatalf("DiscAccess(%s): %v", login, err)
 		}
 		if got := [2]bool{trusted, writer}; got != w {
@@ -243,8 +246,14 @@ func TestTrustedNonOwnerAsksNothing(t *testing.T) {
 	if ok, err := s.Trusted(context.Background(), "bob"); ok || err != nil || asked != 0 {
 		t.Errorf("Trusted(bob) = %v, %v after %d requests; want false with none", ok, err, asked)
 	}
-	if _, _, err := s.DiscAccess(context.Background(), "bob"); err != nil || asked != 1 {
-		t.Errorf("DiscAccess(bob) = %v after %d requests; want one", err, asked)
+	if _, _, err := s.DiscAccess(context.Background(), "bob"); !errors.Is(err, ErrNoRecord) || asked != 1 {
+		t.Errorf("DiscAccess(bob) = %v after %d requests; want one, with no record", err, asked)
+	}
+	if s.DiscNoWriters() {
+		t.Error("DiscNoWriters under CODEOWNERS = true")
+	}
+	if none, err := Load(context.Background(), fakeFiles{}, api, "acme", "app"); err != nil || !none.DiscNoWriters() {
+		t.Errorf("DiscNoWriters with no CODEOWNERS = false, %v", err)
 	}
 }
 

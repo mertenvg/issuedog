@@ -40,6 +40,15 @@ func (f *Fake) SetPermission(login, role string) {
 	f.perms[strings.ToLower(login)] = role
 }
 
+// RemovePermission removes login from the repo's collaborators, as the
+// owner can: the permission endpoint then answers 404 for them, and their
+// comments' authorAssociation is NONE.
+func (f *Fake) RemovePermission(login string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.perms, strings.ToLower(login))
+}
+
 // AddRepoLabel creates a repo label, as the owner would by hand.
 func (f *Fake) AddRepoLabel(name string) {
 	f.mu.Lock()
