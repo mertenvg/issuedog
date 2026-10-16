@@ -226,6 +226,24 @@ func (f *Fake) createLabel(c *call) (int, any) {
 	return http.StatusCreated, l
 }
 
+// discAssociation is login's authorAssociation with the repo, as GitHub
+// gives it on a comment or an issue: OWNER for the repo's owner,
+// COLLABORATOR for a login SetPermission gave a role, else NONE, a bot's
+// included. The caller holds f.mu.
+func (f *Fake) discAssociation(login string) string {
+	owner, _, _ := strings.Cut(f.repo, "/")
+	_, collaborator := f.perms[strings.ToLower(login)]
+	switch {
+	case strings.HasSuffix(login, "[bot]"):
+		return "NONE"
+	case strings.EqualFold(login, owner):
+		return "OWNER"
+	case collaborator:
+		return "COLLABORATOR"
+	}
+	return "NONE"
+}
+
 // permission answers with the role SetPermission gave, as both the
 // permission and the role name.
 func (f *Fake) permission(c *call) (int, any) {

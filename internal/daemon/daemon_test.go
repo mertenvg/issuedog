@@ -218,7 +218,7 @@ func TestIterateAppliesNewCommands(t *testing.T) {
 	iterate(t, d)
 	labels := func() []string { return f.State().Issues[0].Labels }
 
-	f.AddComment(1, "mallory", "/priority p0") // untrusted: ignored
+	f.AddComment(1, "eve", "/priority p0") // untrusted, without write access: ignored, and holds nothing
 	cmd := f.AddComment(1, "owner", "/priority p1")
 	iterate(t, d)
 	if got := labels(); !reflect.DeepEqual(got, []string{"priority:p1", "stage:ready"}) {
@@ -778,11 +778,12 @@ func TestIterateReviewsSpecs(t *testing.T) {
 		{"the owner's edit posts the next revision",
 			func(_ *testing.T, f *githubtest.Fake, _ *daemon.Daemon) { f.EditBody(1, "owner", "body v2") },
 			posted(2, "body v2", "", "", "1001"), "stage:spec-review"},
-		{"mallory dirtying the newest revision posts it again",
+		// eve has no write access, so her edit holds nothing (SPEC §6.4).
+		{"eve dirtying the newest revision posts it again",
 			func(t *testing.T, f *githubtest.Fake, d *daemon.Daemon) {
 				f.EditBody(1, "owner", "body v2")
 				iterate(t, d) // posts revision 2, comment 1002
-				f.EditComment(1002, "mallory", "nothing to approve here")
+				f.EditComment(1002, "eve", "nothing to approve here")
 			},
 			posted(2, "body v2", "", "", "1001"), "stage:spec-review"},
 		{"the owner's plain comment sends the spec back",

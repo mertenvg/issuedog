@@ -78,6 +78,23 @@ func (c currentTrust) Trusted(ctx context.Context, login string) (bool, error) {
 	return ok, nil
 }
 
+// DiscAccess asks st.Trust's DiscAccess (github.DiscTrust), so a trigger
+// built once judges write collaborators by CODEOWNERS on main too. A Trust
+// without it knows no write collaborator who isn't trusted.
+func (c currentTrust) DiscAccess(ctx context.Context, login string) (trusted, writer bool, err error) {
+	dt, ok := c.st.Trust.(github.DiscTrust)
+	if !ok {
+		if trusted, err = c.Trusted(ctx, login); err != nil {
+			return false, false, fmt.Errorf("current access: %w", err)
+		}
+		return trusted, false, nil
+	}
+	if trusted, writer, err = dt.DiscAccess(ctx, login); err != nil {
+		return false, false, fmt.Errorf("current access: %w", err)
+	}
+	return trusted, writer, nil
+}
+
 // CurrentModels returns d.Config's models.allowed as of the call, or none
 // before a config loads. Iterate's reloads replace d.Config, so a handler
 // built once, such as SettingCommands', takes this method to keep up with
@@ -118,7 +135,8 @@ func (d *Daemon) Run(ctx context.Context) {
 // change no updated_at (plan #5, assumption 7), on every issue with
 // triage:ask, a flag waiting on a 👍 (FlagByReaction), and on every issue
 // that had an open state error after its last step 1, waiting on a 👍 too
-// (ErrorByReaction). On each issue step 1 succeeds on, it caches what
+// (ErrorByReaction), and on every held issue, for its discussion
+// triggers (discHeldLabel). On each issue step 1 succeeds on, it caches what
 // waits on the owner (digestCacheSet), with the issue's dirty content, which
 // openErrAny takes too; an issue whose read or step 1 fails keeps its last
 // items, and one that closes or leaves the listing loses them. Then it
@@ -191,7 +209,8 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	defer func() { d.Step.Touched = nil }()
 	for _, n := range slices.Sorted(maps.Keys(d.snaps)) {
 		s := d.snaps[n]
-		if touched[n] || (!read[n] && !slices.ContainsFunc(s.Labels, isSpecReview) && !slices.ContainsFunc(s.Labels, flagAsked) && !d.openErrs[n]) {
+		if touched[n] || (!read[n] && !slices.ContainsFunc(s.Labels, isSpecReview) && !slices.ContainsFunc(s.Labels, flagAsked) &&
+			!slices.ContainsFunc(s.Labels, discHeldLabel) && !d.openErrs[n]) {
 			continue
 		}
 		// ReviewVisit, on an issue read again too, posts a revision for a body
@@ -291,6 +310,7 @@ func (d *Daemon) reload(ctx context.Context) {
 	}
 	if d.Config != nil {
 		a.IssueTypes = d.Config.Types == "issue-types"
+		d.Step.Notify = d.Config.Notify
 	}
 	if d.relabel {
 		d.relabel = !d.ensureLabels(ctx)

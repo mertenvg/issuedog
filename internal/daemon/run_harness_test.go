@@ -275,18 +275,19 @@ func TestBodyEditDropWritesNothing(t *testing.T) {
 
 // A trusted comment posted during the run drops the result, and the next
 // run has it as input. An untrusted comment, the App's, a command and a
-// dirty comment don't.
+// dirty comment don't, when the untrusted user has no write access: a
+// write collaborator's holds the issue (TestDiscDuringRunDrops).
 func TestCommentDuringRun(t *testing.T) {
 	for name, tt := range map[string]struct {
 		post func(f *githubtest.Fake)
 		drop bool
 	}{
 		"trusted":   {post: func(f *githubtest.Fake) { f.AddComment(1, "owner", "1b too") }, drop: true},
-		"untrusted": {post: func(f *githubtest.Fake) { f.AddComment(1, "mallory", "1c, surely") }},
+		"untrusted": {post: func(f *githubtest.Fake) { f.AddComment(1, "eve", "1c, surely") }},
 		"the App":   {post: func(f *githubtest.Fake) { f.AddComment(1, app, "A note.") }},
 		"command":   {post: func(f *githubtest.Fake) { f.AddComment(1, "owner", "/priority p1") }},
 		"dirty": {post: func(f *githubtest.Fake) {
-			f.EditComment(f.AddComment(1, "owner", "1b too"), "mallory", "1c")
+			f.EditComment(f.AddComment(1, "owner", "1b too"), "eve", "1c")
 		}},
 	} {
 		t.Run(name, func(t *testing.T) {

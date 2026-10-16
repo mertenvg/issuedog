@@ -221,6 +221,39 @@ func (t dirtyTrust) trusted(login string) bool {
 type trustOnceVisit struct {
 	trust    github.Trust
 	verdicts map[string]bool // by login in lower case
+	// discWriters are DiscAccess's second answers, by login in lower case
+	// (discussion.go). Its first answers are kept in verdicts.
+	discWriters map[string]bool
+}
+
+// DiscAccess asks t.trust's DiscAccess about login, unless t has both its
+// answers: a trusted login is no write collaborator who isn't trusted, so
+// a verdict of trusted needs no request. A t.trust that isn't a
+// github.DiscTrust knows no such collaborator.
+func (t *trustOnceVisit) DiscAccess(ctx context.Context, login string) (trusted, writer bool, err error) {
+	l := strings.ToLower(login)
+	if w, ok := t.discWriters[l]; ok {
+		return t.verdicts[l], w, nil
+	}
+	if t.verdicts[l] {
+		return true, false, nil
+	}
+	dt, ok := t.trust.(github.DiscTrust)
+	if !ok {
+		v, err := t.Trusted(ctx, login)
+		if err != nil {
+			return false, false, fmt.Errorf("access of %s: %w", login, err)
+		}
+		return v, false, nil
+	}
+	if trusted, writer, err = dt.DiscAccess(ctx, login); err != nil {
+		return false, false, fmt.Errorf("trust for this visit: %w", err)
+	}
+	if t.discWriters == nil {
+		t.discWriters = map[string]bool{}
+	}
+	t.verdicts[l], t.discWriters[l] = trusted, writer
+	return trusted, writer, nil
 }
 
 // Trusted asks t.trust about login, unless t already has its verdict.

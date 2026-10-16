@@ -13,6 +13,7 @@ import (
 
 func TestSnapshot(t *testing.T) {
 	f := githubtest.New(t, "o/r", "issuedog")
+	f.SetPermission("owner", "admin") // a collaborator, as authorAssociation says
 	at := func(s int) time.Time { return githubtest.Start.Add(time.Duration(s) * time.Second) }
 	epic := f.AddIssue("owner", "Epic", "an idea")
 	f.SetType(epic, "Epic")
@@ -23,8 +24,9 @@ func TestSnapshot(t *testing.T) {
 		author := map[bool]string{true: "issuedog[bot]", false: "owner"}[i%2 == 0]
 		id := f.AddComment(task, author, fmt.Sprintf("comment %d", i))
 		typ := map[bool]string{true: "Bot", false: "User"}[i%2 == 0]
+		association := map[bool]string{true: "NONE", false: "COLLABORATOR"}[i%2 == 0]
 		want = append(want, github.Comment{ID: id, Node: fmt.Sprintf("IC_%d", id), Author: github.Author{Login: author, Type: typ},
-			Body: fmt.Sprintf("comment %d", i), CreatedAt: at(3 + i), UpdatedAt: at(3 + i)})
+			Body: fmt.Sprintf("comment %d", i), CreatedAt: at(3 + i), UpdatedAt: at(3 + i), Association: association})
 	}
 	f.AddReaction(want[120].ID, "owner", "+1")
 	f.AddReaction(want[120].ID, "issuedog[bot]", "eyes")
@@ -36,7 +38,8 @@ func TestSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner := github.Author{Login: "owner", Type: "User"}
-	wantTask := &github.Snapshot{Number: task, Title: "Task", Body: "do it", BodyNode: "I_2", Author: owner, CreatedAt: at(2), UpdatedAt: at(132),
+	wantTask := &github.Snapshot{Number: task, Title: "Task", Body: "do it", BodyNode: "I_2", Author: owner, AuthorAssociation: "COLLABORATOR",
+		CreatedAt: at(2), UpdatedAt: at(132),
 		Labels: []string{"stage:ready", "type:task"}, Type: "task", TypeFromLabels: true, Parent: epic, Comments: want}
 	if !reflect.DeepEqual(got, wantTask) {
 		t.Errorf("snapshot with a parent =\n%+v\nwant\n%+v", got, wantTask)
@@ -46,7 +49,8 @@ func TestSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantEpic := &github.Snapshot{Number: epic, Title: "Epic", Body: "an idea", BodyNode: "I_1", Author: owner, CreatedAt: at(1), UpdatedAt: at(1), Type: "epic"}
+	wantEpic := &github.Snapshot{Number: epic, Title: "Epic", Body: "an idea", BodyNode: "I_1", Author: owner, AuthorAssociation: "COLLABORATOR",
+		CreatedAt: at(1), UpdatedAt: at(1), Type: "epic"}
 	if !reflect.DeepEqual(got, wantEpic) {
 		t.Errorf("snapshot without a parent =\n%+v\nwant\n%+v", got, wantEpic)
 	}

@@ -149,21 +149,30 @@ func (st *Step) reply(ctx context.Context, s *github.Snapshot, c github.Comment,
 func Commands(trust github.Trust) map[string]Handler {
 	return map[string]Handler{
 		"hold": {Check: holdCheck, Apply: func(ctx context.Context, a *Applier, c Cmd) error {
-			return a.moveFamily(ctx, c, trust, hold)
+			return a.moveFamily(ctx, c, trust, false, hold)
 		}},
 		"resume": {Check: resumeCheck, Apply: func(ctx context.Context, a *Applier, c Cmd) error {
 			above, err := a.madeAbove(ctx, c)
 			if err != nil {
 				return fmt.Errorf("resume: %w", err)
 			}
-			var rest []string // the descendants it ends a hold on that stay held
-			return a.moveFamily(ctx, c, trust, func(is state.Issue, self bool, n int, by string) (Move, bool) {
+			// The descendants it ends a hold on that stay held: by hand, or
+			// for discussion (discHeldStack), which /resume doesn't end yet.
+			var rest, discussed []string
+			return a.moveFamily(ctx, c, trust, true, func(is state.Issue, self bool, n int, by string) (Move, bool) {
 				m, ok := resume(is, self, above, by)
 				if _, ended, left := heldStackResume(is, self, above); ended > 0 && len(left) > 0 {
-					rest = append(rest, fmt.Sprintf("#%d", n))
+					if slices.ContainsFunc(left, func(m github.Marker) bool { return m.Fields["reason"] == "discussion" }) {
+						discussed = append(discussed, fmt.Sprintf("#%d", n))
+					} else {
+						rest = append(rest, fmt.Sprintf("#%d", n))
+					}
 				}
 				if self && len(rest) > 0 {
 					m.Text += fmt.Sprintf(" Still on hold: %s, also held by hand, so `/resume` there ends that.", list(rest))
+				}
+				if self && len(discussed) > 0 {
+					m.Text += fmt.Sprintf(" Still on hold for discussion: %s.", list(discussed))
 				}
 				return m, ok
 			})
@@ -339,16 +348,24 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 	}
 	below := madeBelow(family)
 	held := false
-	var makers []string
+	var makers, discussed []string
 	for _, n := range family {
 		if !n.open {
 			continue
 		}
 		// Not a label the label rules left out, or would (Applier.hidden).
 		s := a.hidden(n.s)
-		is := state.Derive(s, a.AppSlug, n.d.Has)
+		is, err := a.discHeldStack(ctx, s, n.d, c.Trust, state.Derive(s, a.AppSlug, n.d.Has))
+		if err != nil {
+			return fmt.Errorf("check /resume: %w", err)
+		}
 		_, ended, left := heldStackResume(is, n.s == c.S, above)
 		held = held || ended > 0 && len(left) == 0
+		// The issue itself, or one whose owner hold this ends, that stays
+		// held for discussion.
+		if (n.s == c.S || ended > 0) && slices.ContainsFunc(left, func(m github.Marker) bool { return m.Fields["reason"] == "discussion" }) {
+			discussed = append(discussed, fmt.Sprintf("#%d", n.s.Number))
+		}
 		var made []int64 // the comments that made the owner holds left, or 0
 		for _, m := range left {
 			if m.Fields["reason"] == "owner" {
@@ -382,6 +399,12 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 	switch {
 	case held:
 		return nil
+	case len(discussed) > 0:
+		// Nothing resolves a discussion trigger yet, nor does /resume end
+		// one (T4, #188), so the issue stays held. A stage label set by
+		// hand, an override, ends every hold (SPEC §6.4).
+		return Rejection{Reason: fmt.Sprintf("%s also on hold for discussion, which this `/resume` doesn't end, "+
+			"so it stays held: setting a stage label there by hand ends every hold", strings.Join(discussed, ", ")), Final: true}
 	case len(makers) > 0:
 		return Rejection{Reason: fmt.Sprintf("the holds below were made on %s, by `/hold` or by hand, so `/resume` there ends them", strings.Join(makers, ", ")), Final: true}
 	}
@@ -394,7 +417,9 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 // first, and its move has NoAck: the 👍 comes only after the issue's own
 // marker (see Handler). A move that's a state error, which Transition
 // reports once, is logged and skipped, so one issue can't stall the rest.
-func (a *Applier) moveFamily(ctx context.Context, c Cmd, trust github.Trust, plan planner) error {
+// With discussion, plan gets the open discussion triggers of a held issue
+// among its holds (discHeldStack), as /resume needs.
+func (a *Applier) moveFamily(ctx context.Context, c Cmd, trust github.Trust, discussion bool, plan planner) error {
 	family, err := a.family(ctx, c)
 	if err != nil {
 		return fmt.Errorf("move: %w", err)
@@ -414,6 +439,11 @@ func (a *Applier) moveFamily(ctx context.Context, c Cmd, trust github.Trust, pla
 			by += fmt.Sprintf(" on #%d", c.S.Number)
 		}
 		is := state.Derive(n.s, a.AppSlug, n.d.Has)
+		if discussion {
+			if is, err = a.discHeldStack(ctx, n.s, n.d, trust, is); err != nil {
+				return fmt.Errorf("move: %w", err)
+			}
+		}
 		m, ok := plan(is, n.s == c.S, n.s.Number, by)
 		if !ok {
 			continue

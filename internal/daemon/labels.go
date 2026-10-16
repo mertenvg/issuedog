@@ -92,7 +92,8 @@ var ErrLabelsHeld = errors.New("labels held back until their events explain them
 // posted, the override is older than the latest marker, and what's left is
 // an Unfinished disagreement; an error comment is posted once per key. The
 // writes are added to s, and s.SettingsEvent and s.TypeEvent are set, the
-// latter from the issue types or the type:* labels, as a.IssueTypes says.
+// latter from the issue types or the type:* labels, as a.IssueTypes says,
+// and so is s.DiscRenames, for the discussion triggers (discussion.go).
 // On a repo that uses issue types, the issue type is guarded too
 // (issueTypeRevertGuard): an untrusted change of it is reverted, and s.Type
 // set back with it, and a type no event explains yet is held back, as such
@@ -132,7 +133,7 @@ func (a *Applier) CheckLabels(ctx context.Context, s *github.Snapshot, trust git
 		}
 	}
 	s.SetLabels(labels)
-	s.SettingsEvent, s.TypeEvent = settings, found.TypeEvent(a.IssueTypes)
+	s.SettingsEvent, s.TypeEvent, s.DiscRenames = settings, found.TypeEvent(a.IssueTypes), found.DiscRenames
 	if rv := found.IssueTypeRevert; rv != nil {
 		// Nothing after this in the pass acts on the type set back from: not
 		// the type check, a type error's end, a move, a stage run or the

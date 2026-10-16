@@ -20,12 +20,17 @@ type Step struct {
 	Commands map[string]Handler
 	// Reactions, if set, runs after the comments: the reaction triggers.
 	Reactions func(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt) error
+	// Notify are config's notify users, for the cc line of a discussion
+	// hold and its notices (discussion.go). Daemon.reload keeps it up to
+	// date with the config.
+	Notify []string
 
 	trustOnce *trustOnceVisit // the trust of Iterate's visit under way, if any (#174)
 }
 
 // Run runs step 1 on s, in this order: the label rules (CheckLabels), dirty
-// content (MarkDirty), the type (typeCheck), trusted comments oldest first,
+// content (MarkDirty), the type (typeCheck), the discussion triggers
+// (discussion), trusted comments oldest first,
 // from the first again each time one takes the issue out of held, then
 // Reactions. Dirty
 // is read before CheckLabels, which needs it. Writes are added to s, and each
@@ -49,6 +54,11 @@ func (st *Step) Run(ctx context.Context, s *github.Snapshot) ([]github.Comment, 
 		return nil, wrap(err)
 	}
 	if err := st.typeCheck(ctx, s, d); err != nil {
+		return nil, wrap(err)
+	}
+	// Triggers first, so a command can't move an issue a discussion holds
+	// (SPEC §6.4).
+	if _, err := st.discussion(ctx, s, d); err != nil {
 		return nil, wrap(err)
 	}
 	counts, err := st.counted(ctx, s, d)
