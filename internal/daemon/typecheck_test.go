@@ -580,16 +580,27 @@ func TestTypeErrInputsTrustError(t *testing.T) {
 // was posted, changed to type:idea, triage doesn't run even where step 1
 // hasn't posted the new key's error, as when Work is given the issue
 // straight after the label rules. An ack reply alone, as after the error's
-// comment was deleted, counts as reported too.
+// comment was deleted, counts as reported too, but a state error of
+// another kind, posted or acknowledged, doesn't: triage runs, and its move
+// reports the type error.
 func TestTypeHoldAnyKey(t *testing.T) {
-	for name, reported := range map[string]string{
-		"posted":       typeErrWant("feature", "intake", 9001, true),
-		"acknowledged": errAckReply("owner", "type", "9001", 5),
+	labels := "Labels.\n\n<!-- issuedog:error kind=labels key=1 -->"
+	for name, tc := range map[string]struct {
+		reported []string
+		runs     int
+		errs     []string
+	}{
+		"posted":       {[]string{typeErrWant("feature", "intake", 9001, true)}, 0, []string{"<!-- issuedog:error kind=type key=9001 -->"}},
+		"acknowledged": {[]string{errAckReply("owner", "type", "9001", 5)}, 0, []string{"<!-- issuedog:error kind=type key=9001 ack=r5 -->"}},
+		"another kind": {[]string{labels, errAckReply("owner", "labels", "1", 5)}, 1, []string{"<!-- issuedog:error kind=labels key=1 -->",
+			"<!-- issuedog:error kind=labels key=1 ack=r5 -->", "<!-- issuedog:error kind=type key=9003 -->"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFake(t)
 			f.AddIssue("owner", "Idea", "An idea.", "type:feature")
-			f.AddComment(1, app, reported)
+			for _, c := range tc.reported {
+				f.AddComment(1, app, c)
+			}
 			typeErrRetype(f, 1, "feature", "idea")
 			g := triageRig(t, f, triageOrigin(t), t.TempDir())
 			g.claude(triageOut("handle", true, triageReason, triageSummary), 0)
@@ -600,9 +611,8 @@ func TestTypeHoldAnyKey(t *testing.T) {
 			if err := g.r.Work(context.Background(), []daemon.Ready{{S: s}}); err != nil {
 				t.Fatal(err)
 			}
-			want := reported[strings.Index(reported, "<!-- issuedog:error"):]
-			if errs := errorMarkers(f, 1); g.runs() != 0 || !slices.Equal(errs, []string{want}) {
-				t.Errorf("%d runs, errors %q; want no run, and %q alone", g.runs(), errs, want)
+			if errs := errorMarkers(f, 1); g.runs() != tc.runs || !slices.Equal(errs, tc.errs) {
+				t.Errorf("%d runs, errors %q; want %d, and %q", g.runs(), errs, tc.runs, tc.errs)
 			}
 		})
 	}

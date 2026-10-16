@@ -121,8 +121,8 @@ func typeHoldReported(is state.Issue) bool {
 			return true
 		}
 	}
-	for k, acked := range is.Acks {
-		if acked && k.Kind == typeErrKind {
+	for k := range is.Acks { // Derive records only acks, as true
+		if k.Kind == typeErrKind {
 			return true
 		}
 	}

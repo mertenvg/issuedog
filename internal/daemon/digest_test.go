@@ -406,6 +406,7 @@ func TestDigestLateReopenBounded(t *testing.T) {
 	iterate(t, d)
 	f.ReopenBy(1, "owner")
 	iterate(t, d)
+	f.Advance(10 * time.Second) // so the wait is timed from the comment, not the reopen
 	f.AddComment(1, "owner", "Thanks.")
 	iterate(t, d)
 	f.Advance(github.HoldBound - 2*time.Second)
