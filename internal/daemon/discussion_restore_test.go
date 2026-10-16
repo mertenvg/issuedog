@@ -318,40 +318,113 @@ func TestDiscNoRecordThroughTheLoop(t *testing.T) {
 
 // An act a marker records stays open when its maker loses access: it was
 // judged when its notice was written, so nobody is asked about it again,
-// and /resume still leaves the issue held.
+// and /resume on the typed issue, which has a row back, still leaves it
+// held. That holds for each kind of act, whether their own comment then
+// shows them with no access, or a 404 on another issue is remembered of
+// them (discNoRecord).
 func TestDiscRecordedOutlivesAccess(t *testing.T) {
-	for name, act := range map[string]func(f *githubtest.Fake, n int){
+	acts := map[string]func(f *githubtest.Fake, n int){
 		"a rename":   func(f *githubtest.Fake, n int) { f.RenameIssue(n, "mallory", "Renamed") },
 		"a deletion": func(f *githubtest.Fake, n int) { f.DeleteCommentBy("mallory", f.AddComment(n, app, "A note.")) },
 		"an edit": func(f *githubtest.Fake, n int) {
 			f.EditComment(f.AddComment(n, "owner", "Ship it."), "mallory", "Don't.")
 		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			f := newFake(t)
-			n := fileAt(f, "ready", "do it")
-			f.AddComment(n, "owner", "/hold")
-			d := newDaemon(t, f, newOrigin(t), nil)
-			iterate(t, d)
-			act(f, n)
-			iterate(t, d)
-			f.RemovePermission("mallory")
-			from := len(f.Requests())
-			f.AddComment(n, "owner", "/resume")
-			iterate(t, d)
-			iterate(t, d)
-			for _, r := range f.Requests()[from:] {
-				if strings.Contains(r.Path, "/collaborators/mallory/") {
-					t.Errorf("sent %+v; want mallory, whose act a marker records, never asked about again", r)
+		"an own edit": func(f *githubtest.Fake, n int) {
+			id := f.AddComment(n, "mallory", "Do it this way.")
+			f.AddReaction(id, "owner", "+1")
+			f.EditComment(id, "mallory", "Do it that way.")
+		},
+	}
+	for name, act := range acts {
+		for _, mode := range []string{"", " after her comment", " remembered"} {
+			t.Run(name+mode, func(t *testing.T) {
+				f := newFake(t)
+				n := fileAt(f, "ready", "do it")
+				f.SetType(n, "task")
+				other := fileAt(f, "ready", "do that")
+				f.AddComment(n, "owner", "/hold")
+				d := newDaemon(t, f, newOrigin(t), nil)
+				iterate(t, d)
+				if mode == " after her comment" {
+					f.AddComment(n, "mallory", "Hello.")
 				}
-			}
-			is := f.State().Issues[n-1]
-			if !slices.Equal(is.Labels, []string{"stage:held"}) || !slices.ContainsFunc(is.Comments, func(c githubtest.CommentState) bool {
-				return strings.Contains(c.Body, "also on hold for discussion")
-			}) {
-				t.Errorf("labels %q, comments %q; want the issue still held, the /resume rejected for the discussion", is.Labels, is.Comments)
-			}
-		})
+				act(f, n)
+				iterate(t, d)
+				iterate(t, d)
+				f.RemovePermission("mallory")
+				if mode == " remembered" {
+					f.RenameIssue(other, "mallory", "Renamed")
+					iterate(t, d)
+				}
+				from := len(f.Requests())
+				f.AddComment(n, "owner", "/resume")
+				iterate(t, d)
+				iterate(t, d)
+				for _, r := range f.Requests()[from:] {
+					if strings.Contains(r.Path, "/collaborators/mallory/") {
+						t.Errorf("sent %+v; want mallory, whose act a marker records, never asked about again", r)
+					}
+				}
+				is := f.State().Issues[n-1]
+				if !slices.Equal(is.Labels, []string{"stage:held"}) || !slices.ContainsFunc(is.Comments, func(c githubtest.CommentState) bool {
+					return strings.Contains(c.Body, "also on hold for discussion")
+				}) {
+					t.Errorf("labels %q, comments %q; want the issue still held, the /resume rejected for the discussion", is.Labels, is.Comments)
+				}
+			})
+		}
+	}
+}
+
+// A deletion from before the issue's first marker holds nothing, and its
+// maker is never asked about.
+func TestDiscDeletionBeforeTheFloor(t *testing.T) {
+	f := newFake(t)
+	n := f.AddIssue("owner", "Issue", "do it")
+	f.SetType(n, "task")
+	f.DeleteCommentBy("ghost", f.AddComment(n, "owner", "A note."))
+	f.AddLabel(n, app, "stage:ready")
+	f.AddComment(n, app, "<!-- issuedog:transition from=intake to=ready run=r -->")
+	d := newDaemon(t, f, newOrigin(t), nil)
+	for range 3 {
+		iterate(t, d)
+	}
+	for _, r := range f.Requests() {
+		if strings.Contains(r.Path, "/collaborators/ghost/") {
+			t.Errorf("sent %+v; want ghost, whose deletion is before the first marker, never asked about", r)
+		}
+	}
+	if l := f.State().Issues[n-1].Labels; !slices.Equal(l, []string{"stage:ready"}) {
+		t.Errorf("labels %q; want the issue still at ready", l)
+	}
+}
+
+// /resume on a parent that ends its children's /hold names the child
+// that stays held for discussion, when the parent itself goes back.
+func TestDiscResumeNamesHeldChild(t *testing.T) {
+	f := newFake(t)
+	parent := fileAt(f, "ready", "do it")
+	f.SetType(parent, "task")
+	child := fileAt(f, "ready", "do that")
+	f.SetType(child, "task")
+	f.SetParent(child, parent)
+	f.AddComment(parent, "owner", "/hold")
+	d := newDaemon(t, f, newOrigin(t), nil)
+	iterate(t, d)
+	iterate(t, d)
+	f.AddComment(child, "mallory", "Wait.")
+	iterate(t, d)
+	resume := f.AddComment(parent, "owner", "/resume")
+	iterate(t, d)
+	iterate(t, d)
+	st := f.State()
+	if !slices.Equal(st.Issues[parent-1].Labels, []string{"stage:ready"}) || !slices.Equal(st.Issues[child-1].Labels, []string{"stage:held"}) {
+		t.Fatalf("labels %q and %q; want the parent back at ready, the child still held", st.Issues[parent-1].Labels, st.Issues[child-1].Labels)
+	}
+	want := moved(fmt.Sprintf("Resumed by `/resume`, back to `ready`. Still on hold for discussion: #%d.", child), fmt.Sprintf("from=held to=ready cmd=%d seen=1001", resume))
+	cs := st.Issues[parent-1].Comments
+	if !slices.ContainsFunc(cs, func(c githubtest.CommentState) bool { return c.Body == want }) {
+		t.Errorf("the parent's comments %q; want %q", cs, want)
 	}
 }
 

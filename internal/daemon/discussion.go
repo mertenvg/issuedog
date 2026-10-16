@@ -354,8 +354,12 @@ const discNoRecordWait = time.Hour
 //   - after discNoRecordWait, when the issues it was asked for are read
 //     again (discNoRecordDue), so an act a re-added writer made meanwhile
 //     is judged then, on any issue, visited on every pass or not: the
-//     window is bounded, at the cost of one request per such login each
-//     discNoRecordWait;
+//     window is bounded. The cost, each discNoRecordWait, is three
+//     requests no ETag saves: for each issue, the snapshot's GraphQL
+//     query and its parent's GET, and for each login, the permission
+//     404. It goes on for as long as an open act of theirs is on an issue
+//     visited: on one that isn't held, nothing moves the floor past the
+//     act;
 //   - when a snapshot shows the login as the owner, a member or a
 //     collaborator (discWho.nobody), as a re-added writer's comment does;
 //   - on a restart, with the rest of the daemon's memory.
@@ -593,7 +597,10 @@ func (a *Applier) discEdits(ctx context.Context, s *github.Snapshot, d Dirt, who
 	for _, c := range contents(s) {
 		login, dirty := d[c.id]
 		by := github.Author{Login: login}
-		if !dirty || who.nobody(by) || c.edit.At.Before(b.At) && !recordedFrom[c.id] {
+		// Content a marker records an edit of is read whoever made it
+		// dirty: that edit is a trigger with no question, even once its
+		// editor has no access.
+		if !dirty || !recordedFrom[c.id] && (c.edit.At.Before(b.At) || who.nobody(by)) {
 			continue
 		}
 		need = append(need, cand{c, by})
