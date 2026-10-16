@@ -27,12 +27,19 @@ import (
 //     result each trigger it finds resolved;
 //   - handled once a marker records its key: the hold's transition marker,
 //     keyed event=<key> with reason=discussion, or a notice's marker,
-//     notice key=<key> (discRecorded). So a second pass writes nothing, and
+//     notice key=<key> (discRecords). So a second pass writes nothing, and
 //     no key gets a second notice. A comment trigger on an issue held
 //     already has no record at all (Q2b): it is known by being open.
 //
-// T6 (#190) adds closes as a kind of its own, and T8 (#192) lists the open
-// triggers of a held issue in the digest and assignment.
+// An edit or a deletion of the App's own content can hide the markers that
+// set the issue's stage, since markers in such content are never read
+// again (SPEC §5.1). discRestore holds such an issue at the stage it was
+// at before, before the label rules would put the label back to the stage
+// the markers left show.
+//
+// T6 (#190) adds closes as a kind of its own, and restores through
+// discRestore what a close hides too. T8 (#192) lists the open triggers of
+// a held issue in the digest and assignment.
 
 // discKind is what kind of act a discussion trigger is.
 type discKind string
@@ -93,43 +100,101 @@ func discLogin(login string) string {
 	return "`" + defuse(login) + "`"
 }
 
-// discFloor returns the comment, and its time, that bounds an issue's open
-// discussion triggers: the one holding its first transition marker, or
-// else its latest move out of held, whichever is later. Only an act after
-// it is a trigger: nothing before the first transition marker, so old
-// comments don't hold issues on the day this ships (#87's assumption 2),
-// and nothing a move out of held resolved. In this task the only move out
-// of held that a discussion hold allows is a stage label set by hand, an
-// override, which ends every hold (SPEC §6.4), and so resolves every
-// trigger before it. It reads markers as state.Derive does: the App's, not
-// in dirty content, and in the body only while the App made its last
-// edit. ok is false with no transition marker, as on an issue that isn't
-// in the pipeline, which nothing holds. That includes one whose every
-// transition marker is in dirty content, which Derive reads as out of the
-// pipeline too. A body marker is at the issue's creation, before every
-// comment.
-func discFloor(s *github.Snapshot, appSlug string, dirty func(int64) bool) (id int64, at time.Time, ok bool) {
-	read := func(cid int64, author github.Author, body string, created time.Time) {
-		if dirty(cid) {
+// discMarkers calls do with each marker s's state is read from, as
+// state.Derive reads them: the App's, not in dirty content, and in the
+// body only while the App made its last edit. The body's come first, at
+// the issue's creation, then each comment's, with its ID and time.
+func discMarkers(s *github.Snapshot, appSlug string, dirty func(int64) bool, do func(id int64, at time.Time, m github.Marker)) {
+	read := func(id int64, author github.Author, body string, at time.Time) {
+		if dirty(id) {
 			return
 		}
-		if e := s.BodyEdit; cid == state.BodyID && !e.At.IsZero() && !state.IsApp(e.By, appSlug) {
+		if e := s.BodyEdit; id == state.BodyID && !e.At.IsZero() && !state.IsApp(e.By, appSlug) {
 			return
 		}
 		for _, m := range github.TrustedMarkers(author, body, appSlug) {
-			if _, bounds := state.RoundBound(m, cid); !bounds {
-				continue
-			}
-			if !ok || state.Stage(m.Fields["from"]) == state.Held && state.Stage(m.Fields["to"]) != state.Held {
-				id, at, ok = cid, created, true
-			}
+			do(id, at, m)
 		}
 	}
 	read(state.BodyID, s.Author, s.Body, s.CreatedAt)
 	for _, c := range s.Comments {
 		read(c.ID, c.Author, c.Body, c.CreatedAt)
 	}
-	return id, at, ok
+}
+
+// discBound bounds an issue's open discussion triggers (discFloor): an act
+// counts at or after At, and a comment, unless ByTime, only above ID. A
+// trigger a marker records counts if that marker is in comment ID or a
+// later one (discRecords).
+type discBound struct {
+	ID     int64     // the comment holding the marker that sets the bound
+	At     time.Time // when the bound begins
+	ByTime bool      // compare comments by their creation, not their ID
+}
+
+// discFloor returns what bounds an issue's open discussion triggers: its
+// first transition marker, or else its latest move out of held, whichever
+// is later.
+//   - Nothing before the first transition marker counts, so old comments
+//     don't hold issues on the day this ships (#87's assumption 2).
+//   - A move out of held resolves every trigger before it. In this task the
+//     only one a discussion hold allows is a stage label set by hand, an
+//     override, which ends every hold (SPEC §6.4). The App records it on
+//     its next pass, after the label's event, so the bound is that event's
+//     time (s.DiscLabelTimes), and comments are compared by when they were
+//     posted: an act between the label and its record still counts. With
+//     the event's time unknown, as on a snapshot CheckLabels hasn't
+//     checked, it's the record's.
+//
+// The markers are read as state.Derive reads them (discMarkers). With none,
+// ok is false, as on an issue that isn't in the pipeline, which nothing
+// holds, but for one with a stage label past intake: its markers were
+// hidden by an edit or a deletion of the App's content, which discRestore
+// holds, so every act counts, failing closed.
+func discFloor(s *github.Snapshot, appSlug string, dirty func(int64) bool) (b discBound, ok bool) {
+	discMarkers(s, appSlug, dirty, func(id int64, at time.Time, m github.Marker) {
+		if _, bounds := state.RoundBound(m, id); !bounds {
+			return
+		}
+		out := state.Stage(m.Fields["from"]) == state.Held && state.Stage(m.Fields["to"]) != state.Held
+		if ok && !out {
+			return
+		}
+		b, ok = discBound{ID: id, At: at}, true
+		if ev, err := strconv.ParseInt(m.Fields["event"], 10, 64); out && m.Fields["by"] != "" && err == nil {
+			if t, known := s.DiscLabelTimes[ev]; known {
+				b.At, b.ByTime = t, true
+			}
+		}
+	})
+	if !ok && slices.ContainsFunc(s.Labels, func(l string) bool {
+		stage, staged := state.ParseLabel(l)
+		return staged && stage != state.Intake
+	}) {
+		return discBound{}, true
+	}
+	return b, ok
+}
+
+// discRecords returns the trigger keys s's markers record, each with the
+// ID of the first comment holding one: the event of a discussion hold's
+// transition marker, and the key of a notice marker. Markers are read as
+// state.Derive reads them (discMarkers).
+func discRecords(s *github.Snapshot, appSlug string, dirty func(int64) bool) map[string]int64 {
+	keys := map[string]int64{}
+	discMarkers(s, appSlug, dirty, func(id int64, _ time.Time, m github.Marker) {
+		key := ""
+		switch {
+		case m.Kind == "notice":
+			key = m.Fields["key"]
+		case m.Kind == "transition" && m.Fields["reason"] == "discussion":
+			key = m.Fields["event"]
+		}
+		if _, seen := keys[key]; key != "" && !seen {
+			keys[key] = id
+		}
+	})
+	return keys
 }
 
 // discWho asks trust about each login once: whether they're trusted, and
@@ -209,9 +274,27 @@ func (w discWho) trusted(ctx context.Context, a github.Author) (bool, error) {
 	return trusted, err
 }
 
+// discOpen reports whether an act keyed key, made at at, is open after the
+// bound b: recorded by a marker in b's comment or a later one, or, with no
+// record, made at or after b's time, failing closed in its second, or for
+// a comment id, unless b is by time, above b's comment.
+type discOpen func(key string, at time.Time, id int64) bool
+
+func discOpenAfter(b discBound, records map[string]int64) discOpen {
+	return func(key string, at time.Time, id int64) bool {
+		if r, recorded := records[key]; recorded {
+			return r >= b.ID
+		}
+		if id != 0 && !b.ByTime {
+			return id > b.ID
+		}
+		return !at.Before(b.At)
+	}
+}
+
 // discFind returns the open discussion triggers on s, oldest first: each
-// act after its floor (discFloor) by a write collaborator who isn't
-// trusted, as trust says (#87's assumptions 1 and 2):
+// act after its floor (discFloor, discOpen) by a write collaborator who
+// isn't trusted, as trust says (#87's assumptions 1 and 2):
 //   - a comment of theirs (discComment);
 //   - their edit of content the App or a trusted user wrote, which made it
 //     dirty, d says by them, at their newest edit of it (discEdits);
@@ -231,15 +314,15 @@ func (a *Applier) discFind(ctx context.Context, s *github.Snapshot, d Dirt, trus
 	wrap := func(err error) error {
 		return fmt.Errorf("discussion triggers on %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
 	}
-	floorID, floorAt, ok := discFloor(s, a.AppSlug, d.Has)
+	b, ok := discFloor(s, a.AppSlug, d.Has)
 	if !ok || !discKnowsWriters(trust) {
 		return nil, nil
 	}
-	who := discWhoOf(s, trust)
-	after := func(t time.Time) bool { return !t.Before(floorAt) } // same second counts, failing closed
+	open, who := discOpenAfter(b, discRecords(s, a.AppSlug, d.Has)), discWhoOf(s, trust)
 	var found []discTrigger
 	for _, c := range s.Comments {
-		if c.ID <= floorID {
+		key := "c" + strconv.FormatInt(c.ID, 10)
+		if !open(key, c.CreatedAt, c.ID) {
 			continue
 		}
 		w, err := who.writer(ctx, c.Author)
@@ -247,20 +330,20 @@ func (a *Applier) discFind(ctx context.Context, s *github.Snapshot, d Dirt, trus
 			return nil, wrap(err)
 		}
 		if w {
-			found = append(found, discTrigger{Kind: discComment, Key: "c" + strconv.FormatInt(c.ID, 10), By: c.Author.Login, At: c.CreatedAt, ID: c.ID})
+			found = append(found, discTrigger{Kind: discComment, Key: key, By: c.Author.Login, At: c.CreatedAt, ID: c.ID})
 		}
 	}
-	edits, err := a.discEdits(ctx, s, d, who, after)
+	edits, err := a.discEdits(ctx, s, d, who, open)
 	if err != nil {
 		return nil, wrap(err)
 	}
-	own, err := a.discOwnEdits(ctx, s, d, who, after)
+	own, err := a.discOwnEdits(ctx, s, d, who, open)
 	if err != nil {
 		return nil, wrap(err)
 	}
 	found = append(append(found, edits...), own...)
 	for _, e := range s.Deleted {
-		if !after(e.At) || strings.EqualFold(e.By.Login, e.Author.Login) {
+		if !open("d"+e.ID, e.At, 0) || strings.EqualFold(e.By.Login, e.Author.Login) {
 			continue
 		}
 		w, err := who.writer(ctx, e.By)
@@ -281,7 +364,8 @@ func (a *Applier) discFind(ctx context.Context, s *github.Snapshot, d Dirt, trus
 		}
 	}
 	for _, e := range s.DiscRenames {
-		if !after(e.At) {
+		key := strconv.FormatInt(e.ID, 10)
+		if !open(key, e.At, 0) {
 			continue
 		}
 		w, err := who.writer(ctx, e.By)
@@ -289,7 +373,7 @@ func (a *Applier) discFind(ctx context.Context, s *github.Snapshot, d Dirt, trus
 			return nil, wrap(err)
 		}
 		if w {
-			found = append(found, discTrigger{Kind: discRename, Key: strconv.FormatInt(e.ID, 10), By: e.By.Login, At: e.At, Title: e.Title})
+			found = append(found, discTrigger{Kind: discRename, Key: key, By: e.By.Login, At: e.At, Title: e.Title})
 		}
 	}
 	// A key a marker can't hold, as from an event ID GitHub changed the
@@ -310,9 +394,9 @@ func discEditKey(id int64, at time.Time) string { return fmt.Sprintf("e%d-%d", i
 
 // discEdits returns the edit triggers among s's dirty content, d: content
 // someone made dirty (Dirty), who is a write collaborator who isn't
-// trusted, at their newest edit of it, if after says it's after the
-// floor, when the content is the App's or a trusted user's as it stood
-// before that edit. The body is the App's after the App rewrote it whole
+// trusted, at their newest edit of it, if open says it counts, when the
+// content is the App's or a trusted user's as it stood before that edit.
+// The body is the App's after the App rewrote it whole
 // (state.AuthorEditWriter), so the issue author's own edit after that is
 // one (#87, Q4a). Content they wrote themselves, as when they typed a note
 // into their own comment, is none.
@@ -323,29 +407,13 @@ func discEditKey(id int64, at time.Time) string { return fmt.Sprintf("e%d-%d", i
 // history (Dirty), so it's read once for each change of the content: an
 // unchanged pass reads none. An edit the history no longer has, past its
 // 99 newest, is skipped, logged: it was handled, or nothing can key it.
-func (a *Applier) discEdits(ctx context.Context, s *github.Snapshot, d Dirt, who discWho, after func(time.Time) bool) ([]discTrigger, error) {
+func (a *Applier) discEdits(ctx context.Context, s *github.Snapshot, d Dirt, who discWho, open discOpen) ([]discTrigger, error) {
 	type cand struct {
 		c  content
 		by github.Author
 	}
 	var found []discTrigger
 	var need []cand
-	add := func(c content, by github.Author, at time.Time, of github.Author) error {
-		if !after(at) || strings.EqualFold(of.Login, by.Login) {
-			return nil
-		}
-		ok := state.IsApp(of, a.AppSlug)
-		if !ok {
-			var err error
-			if ok, err = who.trusted(ctx, of); err != nil {
-				return fmt.Errorf("the writer of %s %d: %w", what(c.id), c.id, err)
-			}
-		}
-		if ok {
-			found = append(found, discTrigger{Kind: discEdit, Key: discEditKey(c.id, at), By: by.Login, At: at, ID: c.id, Of: of.Login})
-		}
-		return nil
-	}
 	for _, c := range contents(s) {
 		login, dirty := d[c.id]
 		by := github.Author{Login: login}
@@ -388,8 +456,19 @@ func (a *Applier) discEdits(ctx context.Context, s *github.Snapshot, d Dirt, who
 				a.Owner, a.Repo, s.Number, what(n.c.id), n.c.id, n.by.Login)
 			continue
 		}
-		if err := add(n.c, n.by, h[i].At, state.AuthorEditWriter(n.c.id, n.c.author, h[:i], a.AppSlug)); err != nil {
-			return nil, err
+		at, of := h[i].At, state.AuthorEditWriter(n.c.id, n.c.author, h[:i], a.AppSlug)
+		key := discEditKey(n.c.id, at)
+		if !open(key, at, 0) || strings.EqualFold(of.Login, n.by.Login) {
+			continue
+		}
+		ok := state.IsApp(of, a.AppSlug)
+		if !ok {
+			if ok, err = who.trusted(ctx, of); err != nil {
+				return nil, fmt.Errorf("the writer of %s %d: %w", what(n.c.id), n.c.id, err)
+			}
+		}
+		if ok {
+			found = append(found, discTrigger{Kind: discEdit, Key: key, By: n.by.Login, At: at, ID: n.c.id, Of: of.Login})
 		}
 	}
 	return found, nil
@@ -397,15 +476,18 @@ func (a *Applier) discEdits(ctx context.Context, s *github.Snapshot, d Dirt, who
 
 // discOwnEdits returns the triggers of a write collaborator who isn't
 // trusted editing their own clean comment at or after a trusted 👍 on it,
-// which approved it (#87's assumption 6), if after says the edit is after
-// the floor. GitHub dates only the last edit, so it's that one's. It reads
-// the reactions only of a comment such a writer edited last, after the
-// floor: the reads are conditional, so an unchanged pass costs no rate
-// limit.
-func (a *Applier) discOwnEdits(ctx context.Context, s *github.Snapshot, d Dirt, who discWho, after func(time.Time) bool) ([]discTrigger, error) {
+// which approved it (#87's assumption 6), if open says the edit counts.
+// GitHub dates only the last edit, so it's that one's. It reads the
+// reactions only of a comment such a writer edited last, when that counts:
+// the reads are conditional, so an unchanged pass costs no rate limit.
+func (a *Applier) discOwnEdits(ctx context.Context, s *github.Snapshot, d Dirt, who discWho, open discOpen) ([]discTrigger, error) {
 	var found []discTrigger
 	for _, c := range s.Comments {
-		if d.Has(c.ID) || c.Edit.At.IsZero() || !after(c.Edit.At) || !strings.EqualFold(c.Edit.By.Login, c.Author.Login) {
+		if d.Has(c.ID) || c.Edit.At.IsZero() || !strings.EqualFold(c.Edit.By.Login, c.Author.Login) {
+			continue
+		}
+		key := discEditKey(c.ID, c.Edit.At)
+		if !open(key, c.Edit.At, 0) {
 			continue
 		}
 		w, err := who.writer(ctx, c.Author)
@@ -428,28 +510,12 @@ func (a *Applier) discOwnEdits(ctx context.Context, s *github.Snapshot, d Dirt, 
 				return nil, fmt.Errorf("approvals of comment %d: %w", c.ID, err)
 			}
 			if t {
-				found = append(found, discTrigger{Kind: discOwnEdit, Key: discEditKey(c.ID, c.Edit.At), By: c.Author.Login, At: c.Edit.At, ID: c.ID})
+				found = append(found, discTrigger{Kind: discOwnEdit, Key: key, By: c.Author.Login, At: c.Edit.At, ID: c.ID})
 				break
 			}
 		}
 	}
 	return found, nil
-}
-
-// discRecorded returns the trigger keys that is's markers record: the
-// event of each discussion hold's transition marker, and the key of each
-// notice marker. Markers in dirty content don't count (state.Derive).
-func discRecorded(is state.Issue) map[string]bool {
-	keys := map[string]bool{}
-	for _, m := range is.Markers {
-		switch {
-		case m.Kind == "notice" && m.Fields["key"] != "":
-			keys[m.Fields["key"]] = true
-		case m.Kind == "transition" && m.Fields["reason"] == "discussion" && m.Fields["event"] != "":
-			keys[m.Fields["event"]] = true
-		}
-	}
-	return keys
 }
 
 // discLost reports whether a notice for tr may have been posted and then
@@ -472,39 +538,150 @@ func discLost(s *github.Snapshot, d Dirt, tr discTrigger, appSlug string) bool {
 	})
 }
 
-// discOrigin is the origin of a discussion hold on an issue in state is,
-// which isn't held: where it was before its first discussion hold (SPEC
-// §6.4). In the clarifying after a hold, every marker carries the origin
-// forward (T4 and T5 write it there), so it's the latest transition's;
-// anywhere else, and with none, it's the issue's stage, as for a first
-// hold.
-func discOrigin(is state.Issue) state.Stage {
+// discOrigin is the origin of a discussion hold, from stage, on an issue
+// in state is: where it was before its first discussion hold (SPEC §6.4).
+// In the clarifying after a hold, every marker carries the origin forward
+// (T4 and T5 write it there), so it's the latest transition's; anywhere
+// else, and with none, it's stage, as for a first hold.
+func discOrigin(is state.Issue, stage state.Stage) state.Stage {
 	for i := len(is.Markers) - 1; i >= 0; i-- {
 		m := is.Markers[i]
 		if _, bounds := state.RoundBound(m, 0); !bounds {
 			continue
 		}
-		if o := state.Stage(m.Fields["origin"]); is.Stage == state.Clarifying && o.Open() && o != state.Held {
+		if o := state.Stage(m.Fields["origin"]); stage == state.Clarifying && o.Open() && o != state.Held {
 			return o
 		}
 		break
 	}
-	return is.Stage
+	return stage
+}
+
+// discHitsApp reports whether tr is an edit or a deletion of the App's
+// content, or of a comment GitHub names no author of, which may have held
+// the markers the issue's stage is read from.
+func discHitsApp(tr discTrigger, appSlug string) bool {
+	app := strings.EqualFold(tr.Of, appSlug+"[bot]")
+	return tr.Kind == discEdit && app || tr.Kind == discDeletion && (app || tr.Of == "")
+}
+
+// discHoldMove is the discussion hold for tr on s, at at with origin,
+// from from if set (Move.DiscFrom), with the round bound seen (#87's
+// assumption 7), the sentence also, if any, after its own, and more
+// markers after its own. A hold for a trigger that isn't a comment is also
+// its notice, carrying its notice marker, unless a marker records tr or it
+// may have had a notice already (discLost). The hold's comment ends in cc
+// @<notify> (assumption 5).
+func (a *Applier) discHoldMove(s *github.Snapshot, d Dirt, tr discTrigger, from, at, origin state.Stage, seen int64, also string, more ...github.Marker) Move {
+	fields := map[string]string{"at": string(at), "origin": string(origin), "reason": "discussion"}
+	text := fmt.Sprintf("On hold for discussion, from `%s`: %s. Only a code owner can move this issue, "+
+		"so it stays on hold until they resolve this.", at, discWhat(tr))
+	if also != "" {
+		text += " " + also
+	}
+	m := Move{To: state.Held, Trigger: state.TriggerDiscussionHold, Key: state.Key{Field: "event", ID: tr.Key},
+		Fields: state.HeldStackFields(fields, seen), DiscFrom: from, Markers: more, Text: discCC(text, a.Notify)}
+	if _, recorded := discRecords(s, a.AppSlug, d.Has)[tr.Key]; tr.Kind != discComment && !recorded && !discLost(s, d, tr, a.AppSlug) {
+		m.Markers = append(m.Markers, github.Marker{Kind: "notice", Fields: map[string]string{"key": tr.Key}})
+	}
+	return m
+}
+
+// discRestore holds s, before the label rules act on events (the
+// disagreement or override CheckLabels found), when a write collaborator's
+// edit or deletion of the App's content (discHitsApp) hid the markers that
+// set its stage. It reports whether it held s, so the events are left
+// alone: the hold sets the labels. It holds nothing when an override
+// stands, as the owner's change wins, nor when the App's own write was cut
+// short (Unfinished), which CheckLabels finishes.
+//
+// The stage before the act is the one stage label on s, which the label
+// rules have just judged: an untrusted change of it is reverted already,
+// and the App set it with its last move, so it shows the stage the hidden
+// markers set. That is so for an edit and a deletion alike: a deleted
+// comment's text is gone, and an edited one's old text is in its history
+// only while nobody deletes the revision, and is never read for state
+// (SPEC §5.1). The markers left, in clean content, show where the issue
+// was before the hidden moves. The hold, keyed by the oldest open such act
+// that no marker records:
+//   - from a stage that isn't held, is at that stage, from it
+//     (Move.DiscFrom), with its origin as a first hold's (discOrigin);
+//   - from held, is at the stage the markers left show, the one before the
+//     hidden move into held, and also records the hidden hold again as an
+//     owner hold with no cmd, which only /resume on the issue itself ends
+//     (heldStackEnds). Whether it was the owner's or a discussion's isn't
+//     known, so it fails closed: an open trigger keeps the issue held as
+//     before, and an owner hold made on an ancestor needs /resume here.
+//
+// Either way no label moves but held's, and no disagreement is posted.
+// Markers in the edited or deleted content are never read again: the hold
+// is the issue's state from then on. Nothing hides a stage that the label
+// and the markers left agree on, so then this holds nothing, and step 1's
+// discussion holds the issue as for any trigger.
+func (a *Applier) discRestore(ctx context.Context, s *github.Snapshot, trust github.Trust, d Dirt, events []github.LabelEvent) (bool, error) {
+	if slices.ContainsFunc(events, func(ev github.LabelEvent) bool { return ev.Kind == github.LabelOverride || ev.Unfinished }) {
+		return false, nil
+	}
+	var stages []state.Stage
+	for _, l := range s.Labels {
+		if !isStageLabel(l) {
+			continue
+		}
+		stage, ok := state.ParseLabel(l)
+		if !ok {
+			return false, nil
+		}
+		stages = append(stages, stage)
+	}
+	is := state.Derive(s, a.AppSlug, d.Has)
+	if len(stages) != 1 || !stages[0].Open() || stages[0] == is.Stage {
+		return false, nil
+	}
+	before := stages[0]
+	found, err := a.discFind(ctx, s, d, trust)
+	if err != nil {
+		return false, fmt.Errorf("restore: %w", err)
+	}
+	records := discRecords(s, a.AppSlug, d.Has)
+	i := slices.IndexFunc(found, func(tr discTrigger) bool {
+		_, recorded := records[tr.Key]
+		return discHitsApp(tr, a.AppSlug) && !recorded
+	})
+	if i < 0 {
+		return false, nil
+	}
+	tr := found[i]
+	m := a.discHoldMove(s, d, tr, before, before, discOrigin(is, before), is.Round, "")
+	if before == state.Held {
+		owner := state.HeldStackFields(map[string]string{"from": string(state.Held), "to": string(state.Held), "at": string(is.Stage),
+			"reason": "owner", "event": tr.Key}, is.Round)
+		m = a.discHoldMove(s, d, tr, before, is.Stage, discOrigin(is, is.Stage), is.Round,
+			"It was on hold already, so it also stays on hold until `/resume` here.", github.Marker{Kind: "transition", Fields: owner})
+	}
+	err = a.Transition(ctx, s, d.Has, m)
+	if StateError(err) {
+		logr.Warnf("%s/%s#%d: no discussion hold restoring %s for %s: %v", a.Owner, a.Repo, s.Number, before, tr.Key, err)
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("restore %s: %w", before, err)
+	}
+	logr.Infof("%s/%s#%d: on hold for discussion at %s, which %s hid, for %s", a.Owner, a.Repo, s.Number, before, tr.By, tr.Key)
+	return true, nil
 }
 
 // discussion is step 1's look for discussion triggers (SPEC §6.4, §8.1),
 // after the type check and before the commands, and the check before a
 // run's result is applied (§8.2). It returns the open triggers on s
 // (discFind). If there are any:
-//   - An issue that isn't held goes to held, keyed event=<the oldest
-//     one's key>, with reason=discussion, at, origin (discOrigin) and the
-//     round's bound in seen (#87's assumption 7). A hold's comment for a
-//     trigger that isn't a comment is also its notice, carrying its notice
-//     marker, so it gets no second one.
+//   - An issue that isn't held goes to held (discHoldMove), keyed by the
+//     oldest that no transition marker records, at its stage, with its
+//     origin (discOrigin) and the round's bound in seen. One that hid the
+//     issue's stage was held by discRestore already, at the stage before.
 //   - An issue held already gets no hold marker (Q2b): it stays held while
 //     the trigger is open (discHeldStack).
 //   - Each trigger that isn't a comment, and that no marker records
-//     (discRecorded), gets one notice: an App comment naming it, carrying
+//     (discRecords), gets one notice: an App comment naming it, carrying
 //     notice key=<its key> (#87's assumption 4), unless it may have had
 //     one already (discLost).
 //
@@ -525,17 +702,9 @@ func (st *Step) discussion(ctx context.Context, s *github.Snapshot, d Dirt) ([]d
 		return nil, nil
 	}
 	is := state.Derive(s, st.AppSlug, d.Has)
-	if is.Stage != state.Held {
-		first, recorded := found[0], discRecorded(is)
-		fields := map[string]string{"at": string(is.Stage), "origin": string(discOrigin(is)), "reason": "discussion"}
-		m := Move{To: state.Held, Trigger: state.TriggerDiscussionHold, Key: state.Key{Field: "event", ID: first.Key},
-			Fields: state.HeldStackFields(fields, is.Round),
-			Text: discCC(fmt.Sprintf("On hold for discussion, from `%s`: %s. Only a code owner can move this issue, "+
-				"so it stays on hold until they resolve this.", is.Stage, discWhat(first)), st.Notify)}
-		if first.Kind != discComment && !recorded[first.Key] && !discLost(s, d, first, st.AppSlug) {
-			m.Markers = []github.Marker{{Kind: "notice", Fields: map[string]string{"key": first.Key}}}
-		}
-		err := st.Transition(ctx, s, d.Has, m)
+	if i := slices.IndexFunc(found, func(tr discTrigger) bool { return !is.Moved(state.Key{Field: "event", ID: tr.Key}) }); is.Stage != state.Held && i >= 0 {
+		first := found[i]
+		err := st.Transition(ctx, s, d.Has, st.discHoldMove(s, d, first, "", is.Stage, discOrigin(is, is.Stage), is.Round, ""))
 		if StateError(err) {
 			logr.Warnf("%s/%s#%d: no discussion hold for %s: %v", st.Owner, st.Repo, s.Number, first.Key, err)
 			return found, nil
@@ -544,11 +713,10 @@ func (st *Step) discussion(ctx context.Context, s *github.Snapshot, d Dirt) ([]d
 			return nil, wrap(err)
 		}
 		logr.Infof("%s/%s#%d: on hold for discussion, from %s, for %s", st.Owner, st.Repo, s.Number, is.Stage, first.Key)
-		is = state.Derive(s, st.AppSlug, d.Has)
 	}
-	recorded := discRecorded(is)
+	records := discRecords(s, st.AppSlug, d.Has)
 	for _, tr := range found {
-		if tr.Kind == discComment || recorded[tr.Key] {
+		if _, recorded := records[tr.Key]; tr.Kind == discComment || recorded {
 			continue
 		}
 		if discLost(s, d, tr, st.AppSlug) {

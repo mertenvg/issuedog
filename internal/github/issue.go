@@ -55,6 +55,8 @@ type Snapshot struct {
 	// when the daemon checks its labels, for its discussion triggers (SPEC
 	// §6.4). Nil until then.
 	DiscRenames []DiscRename
+	// DiscLabelTimes are LabelCheck.DiscLabelTimes, set with DiscRenames.
+	DiscLabelTimes map[int64]time.Time
 
 	// TypeFromLabels is set when Type comes from the labels, as the issue has
 	// no issue type, so SetLabels keeps it up to date with them.

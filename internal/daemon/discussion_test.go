@@ -55,8 +55,8 @@ func discPass(t testing.TB, n int) func(*githubtest.Fake) error {
 			return err
 		}
 		tr := discTrust{}
-		st := &daemon.Step{Applier: &daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: slug}, Trust: tr,
-			Commands: daemon.Commands(tr), Notify: []string{"owner"}}
+		st := &daemon.Step{Applier: &daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: slug, Notify: []string{"owner"}}, Trust: tr,
+			Commands: daemon.Commands(tr)}
 		_, err = st.Run(context.Background(), s)
 		return err
 	}
@@ -289,16 +289,8 @@ func TestDiscEditHolds(t *testing.T) {
 				"from=ready to=held at=ready origin=ready reason=discussion event="+key+" seen=1001", discNoticeMarker(key))}}}
 		})
 	})
-	// Dirtying the App's only transition marker takes the issue out of the
-	// pipeline as Derive reads it (discFloor), so nothing holds it.
-	t.Run("the App's only move", func(t *testing.T) {
-		f := run(t, discWith(func(_ testing.TB, f *githubtest.Fake) {
-			f.EditComment(1001, "mallory", "<!-- issuedog:transition from=intake to=done run=a -->")
-		}), discPass(t, 1))
-		if l := f.State().Issues[0].Labels; slices.Contains(l, "stage:held") {
-			t.Errorf("labels %q; want no hold", l)
-		}
-	})
+	// An edit of the App's marker, which hides the stage, is
+	// TestDiscRestore's.
 	t.Run("the owner's description", func(t *testing.T) {
 		setup := discWith(func(_ testing.TB, f *githubtest.Fake) { f.EditBody(1, "mallory", "do it differently") })
 		discCheck(t, setup, 1, func(f *githubtest.Fake) map[int]issueWant {

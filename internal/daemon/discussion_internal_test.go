@@ -153,28 +153,29 @@ func TestDiscWhat(t *testing.T) {
 }
 
 // The origin is the latest transition's in the clarifying after a hold,
-// and the issue's stage anywhere else, or with no origin to carry.
+// and the hold's from stage anywhere else, or with no origin to carry.
 func TestDiscOrigin(t *testing.T) {
 	tr := func(fields map[string]string) github.Marker { return github.Marker{Kind: "transition", Fields: fields} }
 	for _, tt := range []struct {
-		name string
-		is   state.Issue
-		want state.Stage
+		name  string
+		is    state.Issue
+		stage state.Stage
+		want  state.Stage
 	}{
-		{"first hold", state.Issue{Stage: state.SpecReview, Markers: []github.Marker{tr(map[string]string{"from": "clarifying", "to": "spec-review"})}}, state.SpecReview},
-		{"clarifying after a hold", state.Issue{Stage: state.Clarifying, Markers: []github.Marker{
+		{"first hold", state.Issue{Markers: []github.Marker{tr(map[string]string{"from": "clarifying", "to": "spec-review"})}}, state.SpecReview, state.SpecReview},
+		{"clarifying after a hold", state.Issue{Markers: []github.Marker{
 			tr(map[string]string{"from": "held", "to": "clarifying", "origin": "spec-review"}),
-			{Kind: "revision", Fields: map[string]string{"rev": "1"}}}}, state.SpecReview},
-		{"origin elsewhere", state.Issue{Stage: state.Planning, Markers: []github.Marker{
-			tr(map[string]string{"from": "clarifying", "to": "planning", "origin": "spec-review"})}}, state.Planning},
-		{"an older origin", state.Issue{Stage: state.Clarifying, Markers: []github.Marker{
+			{Kind: "revision", Fields: map[string]string{"rev": "1"}}}}, state.Clarifying, state.SpecReview},
+		{"origin elsewhere", state.Issue{Markers: []github.Marker{
+			tr(map[string]string{"from": "clarifying", "to": "planning", "origin": "spec-review"})}}, state.Planning, state.Planning},
+		{"an older origin", state.Issue{Markers: []github.Marker{
 			tr(map[string]string{"from": "held", "to": "clarifying", "origin": "spec-review"}),
-			tr(map[string]string{"from": "spec-review", "to": "clarifying"})}}, state.Clarifying},
-		{"a bad origin", state.Issue{Stage: state.Clarifying, Markers: []github.Marker{
-			tr(map[string]string{"from": "held", "to": "clarifying", "origin": "held"})}}, state.Clarifying},
-		{"no marker", state.Issue{Stage: state.Intake}, state.Intake},
+			tr(map[string]string{"from": "spec-review", "to": "clarifying"})}}, state.Clarifying, state.Clarifying},
+		{"a bad origin", state.Issue{Markers: []github.Marker{
+			tr(map[string]string{"from": "held", "to": "clarifying", "origin": "held"})}}, state.Clarifying, state.Clarifying},
+		{"no marker", state.Issue{}, state.Ready, state.Ready},
 	} {
-		if got := discOrigin(tt.is); got != tt.want {
+		if got := discOrigin(tt.is, tt.stage); got != tt.want {
 			t.Errorf("%s: discOrigin = %s, want %s", tt.name, got, tt.want)
 		}
 	}
@@ -182,7 +183,9 @@ func TestDiscOrigin(t *testing.T) {
 
 // The floor is the first transition marker, or a later move out of held,
 // read as Derive reads markers: not in dirty content, nor in a body
-// someone else edited last.
+// someone else edited last. A hand-set move out of held is bounded by its
+// label event's time, by time, once the label rules give it; with no
+// marker, a stage label past intake bounds nothing.
 func TestDiscFloor(t *testing.T) {
 	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
 	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
@@ -195,18 +198,98 @@ func TestDiscFloor(t *testing.T) {
 		{ID: 14, Author: app, Body: mark("from=ready to=held at=ready reason=owner cmd=7"), CreatedAt: at(6)},
 	}}
 	none := func(int64) bool { return false }
-	if id, when, ok := discFloor(s, "issuedog", none); !ok || id != 12 || !when.Equal(at(4)) {
-		t.Errorf("floor = %d at %s, %v; want the move out of held, 12", id, when, ok)
+	if b, ok := discFloor(s, "issuedog", none); !ok || b != (discBound{ID: 12, At: at(4)}) {
+		t.Errorf("floor = %+v, %v; want the move out of held, 12, by ID", b, ok)
 	}
-	if id, _, ok := discFloor(s, "issuedog", func(id int64) bool { return id == 12 }); !ok || id != state.BodyID {
-		t.Errorf("floor with 12 dirty = %d, %v; want the body's first marker", id, ok)
+	s.DiscLabelTimes = map[int64]time.Time{5: at(3), 4: at(0)}
+	if b, ok := discFloor(s, "issuedog", none); !ok || b != (discBound{ID: 12, At: at(3), ByTime: true}) {
+		t.Errorf("floor = %+v, %v; want the move out of held, 12, by its label's time", b, ok)
+	}
+	if b, ok := discFloor(s, "issuedog", func(id int64) bool { return id == 12 }); !ok || b != (discBound{ID: state.BodyID, At: at(1)}) {
+		t.Errorf("floor with 12 dirty = %+v, %v; want the body's first marker", b, ok)
 	}
 	s.BodyEdit = github.Edit{By: github.Author{Login: "owner"}, At: at(9)}
-	if id, _, ok := discFloor(s, "issuedog", func(id int64) bool { return id == 12 }); !ok || id != 10 {
-		t.Errorf("floor with the body edited = %d, %v; want comment 10's marker first", id, ok)
+	if b, ok := discFloor(s, "issuedog", func(id int64) bool { return id == 12 }); !ok || b.ID != 10 {
+		t.Errorf("floor with the body edited = %+v, %v; want comment 10's marker first", b, ok)
 	}
-	if _, _, ok := discFloor(&github.Snapshot{Comments: []github.Comment{{ID: 1, Author: app, Body: "no marker"}}}, "issuedog", none); ok {
+	bare := &github.Snapshot{Comments: []github.Comment{{ID: 1, Author: app, Body: "no marker"}}}
+	if _, ok := discFloor(bare, "issuedog", none); ok {
 		t.Error("floor found with no transition marker")
+	}
+	for labels, want := range map[string]bool{"stage:intake": false, "stage:ready": true, "stage:held": true, "priority:p1": false} {
+		bare.Labels = []string{labels}
+		if b, ok := discFloor(bare, "issuedog", none); ok != want || b != (discBound{}) {
+			t.Errorf("floor with %s and no marker = %+v, %v; want %v, bounding nothing", labels, b, ok, want)
+		}
+	}
+}
+
+// A recorded act counts while its record is in the bound's comment or a
+// later one; an unrecorded one at or after the bound's time, in its
+// second too, or for a comment above its ID, unless the bound is by time.
+func TestDiscOpenAfter(t *testing.T) {
+	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
+	records := map[string]int64{"c5": 9, "c6": 10, "r": 11}
+	for _, tt := range []struct {
+		b    discBound
+		key  string
+		at   time.Time
+		id   int64
+		want bool
+	}{
+		{discBound{ID: 10, At: at(5)}, "c5", at(9), 5, false},
+		{discBound{ID: 10, At: at(5)}, "c6", at(1), 6, true},
+		{discBound{ID: 10, At: at(5)}, "r", at(1), 0, true},
+		{discBound{ID: 10, At: at(5)}, "c9", at(9), 9, false},
+		{discBound{ID: 10, At: at(5)}, "c10", at(1), 10, false},
+		{discBound{ID: 10, At: at(5)}, "c11", at(1), 11, true},
+		{discBound{ID: 10, At: at(5), ByTime: true}, "c9", at(5), 9, true},
+		{discBound{ID: 10, At: at(5), ByTime: true}, "c11", at(4), 11, false},
+		{discBound{ID: 10, At: at(5)}, "x", at(5), 0, true},
+		{discBound{ID: 10, At: at(5)}, "x", at(4), 0, false},
+	} {
+		if got := discOpenAfter(tt.b, records)(tt.key, tt.at, tt.id); got != tt.want {
+			t.Errorf("open after %+v (%s at %s, %d) = %v, want %v", tt.b, tt.key, tt.at.Format(time.TimeOnly), tt.id, got, tt.want)
+		}
+	}
+}
+
+// The records are the first comment of each key, of a discussion hold or a
+// notice, read as Derive reads markers.
+func TestDiscRecords(t *testing.T) {
+	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
+	s := &github.Snapshot{Comments: []github.Comment{
+		{ID: 1, Author: app, Body: "<!-- issuedog:transition from=ready to=held at=ready reason=discussion event=c9 -->\n<!-- issuedog:notice key=x -->"},
+		{ID: 2, Author: app, Body: "<!-- issuedog:notice key=x -->\n<!-- issuedog:notice key=y -->"},
+		{ID: 3, Author: app, Body: "<!-- issuedog:transition from=ready to=held at=ready reason=owner event=z -->"},
+		{ID: 4, Author: app, Body: "<!-- issuedog:notice key=w -->"},
+		{ID: 5, Author: github.Author{Login: "mallory"}, Body: "<!-- issuedog:notice key=v -->"},
+	}}
+	got := discRecords(s, "issuedog", func(id int64) bool { return id == 4 })
+	if want := map[string]int64{"c9": 1, "x": 1, "y": 2}; !reflect.DeepEqual(got, want) {
+		t.Errorf("records = %v, want %v", got, want)
+	}
+}
+
+// discHitsApp: an edit of the App's content, or a deletion of the App's or
+// an unnamed author's comment.
+func TestDiscHitsApp(t *testing.T) {
+	for _, tt := range []struct {
+		tr   discTrigger
+		want bool
+	}{
+		{discTrigger{Kind: discEdit, Of: "issuedog[bot]"}, true},
+		{discTrigger{Kind: discEdit, Of: "owner"}, false},
+		{discTrigger{Kind: discEdit, Of: ""}, false},
+		{discTrigger{Kind: discDeletion, Of: "issuedog[bot]"}, true},
+		{discTrigger{Kind: discDeletion, Of: ""}, true},
+		{discTrigger{Kind: discDeletion, Of: "owner"}, false},
+		{discTrigger{Kind: discComment, Of: "issuedog[bot]"}, false},
+		{discTrigger{Kind: discRename}, false},
+	} {
+		if got := discHitsApp(tt.tr, "issuedog"); got != tt.want {
+			t.Errorf("discHitsApp(%+v) = %v, want %v", tt.tr, got, tt.want)
+		}
 	}
 }
 
@@ -231,6 +314,53 @@ func TestDiscWhoOf(t *testing.T) {
 	}
 	if want := map[string]int{"mallory": 1, "ann": 1, "bo": 1, "zed": 1}; !reflect.DeepEqual(inner.access, want) {
 		t.Errorf("asked %v, want %v: all but eve, an outsider everywhere", inner.access, want)
+	}
+}
+
+// A discWho asks about each login once per call, whatever its case, and
+// never about a bot, nobody, or anyone with no Trust: none is a writer.
+func TestDiscWhoAsksOnce(t *testing.T) {
+	ctx := context.Background()
+	inner := newDiscCounting()
+	inner.writers["helper[bot]"], inner.writers["robo"] = true, true
+	who := discWhoOf(&github.Snapshot{}, inner)
+	for _, a := range []github.Author{{Login: "mallory"}, {Login: "MALLORY"}, {Login: "helper[bot]", Type: "Bot"},
+		{Login: "robo", Type: "Bot"}, {}, {Login: "unknown"}} {
+		w, err := who.writer(ctx, a)
+		if want := strings.EqualFold(a.Login, "mallory"); err != nil || w != want {
+			t.Errorf("writer(%+v) = %v, %v; want %v", a, w, err, want)
+		}
+	}
+	if want := map[string]int{"mallory": 1}; !reflect.DeepEqual(inner.access, want) {
+		t.Errorf("asked %v, want %v", inner.access, want)
+	}
+	if w, err := (discWho{access: map[string][2]bool{}}).writer(ctx, github.Author{Login: "mallory"}); w || err != nil {
+		t.Errorf("writer with no Trust = %v, %v", w, err)
+	}
+	if _, err := who.trusted(ctx, github.Author{Login: "bob"}); !errors.Is(err, errTrustOnce) || !strings.Contains(err.Error(), "access of bob") {
+		t.Errorf("trusted(bob) = %v; want the error, wrapped", err)
+	}
+}
+
+// A trigger whose key no marker can hold is left out, as it would fail
+// every pass.
+func TestDiscFindSkipsBadKeys(t *testing.T) {
+	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
+	at := time.Date(2026, 1, 1, 0, 0, 9, 0, time.UTC)
+	s := &github.Snapshot{Comments: []github.Comment{
+		{ID: 1, Author: app, Body: "<!-- issuedog:transition from=intake to=ready run=a -->", CreatedAt: at.Add(-time.Hour)},
+	}, Deleted: []github.DeletedComment{
+		{ID: "CDE bad", By: github.Author{Login: "mallory", Type: "User"}, Author: app, At: at},
+		{ID: "CDE_<x>", By: github.Author{Login: "mallory", Type: "User"}, Author: app, At: at},
+		{ID: "CDE_ok", By: github.Author{Login: "mallory", Type: "User"}, Author: app, At: at},
+	}}
+	a := &Applier{Owner: "o", Repo: "r", AppSlug: "issuedog"}
+	found, err := a.discFind(context.Background(), s, Dirt{}, newDiscCounting())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 || found[0].Key != "dCDE_ok" {
+		t.Errorf("found %+v; want only the deletion whose key a marker holds", found)
 	}
 }
 

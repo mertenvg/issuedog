@@ -107,6 +107,11 @@ type LabelCheck struct {
 	// timeline CheckLabels reads anyway, so a rename's discussion trigger
 	// costs no request (#87's assumption 2). CheckLabels acts on none.
 	DiscRenames []DiscRename
+	// DiscLabelTimes are when each labeled or unlabeled event of a
+	// pipeline label was made, by its ID, from the same timeline: a
+	// discussion trigger after a stage label set by hand is bounded by
+	// that event's time, not by the App's record of it, which comes later.
+	DiscLabelTimes map[int64]time.Time
 }
 
 // TypeEvent is the ID of the type change that stands, the state-error key
@@ -252,6 +257,10 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 			states[key].events = append(states[key].events, e)
 			states[key].ats = append(states[key].ats, i)
 			eventAt[strconv.FormatInt(e.GetID(), 10)] = i
+			if found.DiscLabelTimes == nil {
+				found.DiscLabelTimes = map[int64]time.Time{}
+			}
+			found.DiscLabelTimes[e.GetID()] = e.GetCreatedAt().Time
 		case "commented":
 			if dirty(e.GetID()) {
 				continue

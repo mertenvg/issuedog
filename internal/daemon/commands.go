@@ -433,7 +433,7 @@ func (a *Applier) moveFamily(ctx context.Context, c Cmd, trust github.Trust, dis
 			if a.Touched != nil {
 				a.Touched(n.s.Number)
 			}
-			if err := a.CheckLabels(ctx, n.s, trust, n.d.Has); err != nil {
+			if err := a.discCheckLabels(ctx, n.s, trust, n.d); err != nil {
 				return fmt.Errorf("move: %w", err)
 			}
 			by += fmt.Sprintf(" on #%d", c.S.Number)

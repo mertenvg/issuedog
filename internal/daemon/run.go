@@ -613,7 +613,7 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 	defer r.Daemon.reread(l.Issue, false)
 	d, err := a.Dirty(ctx, s, r.Daemon.Step.Trust)
 	if err == nil {
-		err = a.CheckLabels(ctx, s, r.Daemon.Step.Trust, d.Has)
+		err = a.discCheckLabels(ctx, s, r.Daemon.Step.Trust, d)
 	}
 	if err != nil {
 		return fmt.Errorf("apply run %s: %w", l.RunID, err)

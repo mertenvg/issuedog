@@ -20,10 +20,6 @@ type Step struct {
 	Commands map[string]Handler
 	// Reactions, if set, runs after the comments: the reaction triggers.
 	Reactions func(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt) error
-	// Notify are config's notify users, for the cc line of a discussion
-	// hold and its notices (discussion.go). Daemon.reload keeps it up to
-	// date with the config.
-	Notify []string
 
 	trustOnce *trustOnceVisit // the trust of Iterate's visit under way, if any (#174)
 }
@@ -47,7 +43,7 @@ func (st *Step) Run(ctx context.Context, s *github.Snapshot) ([]github.Comment, 
 	if err != nil {
 		return nil, wrap(err)
 	}
-	if err := st.CheckLabels(ctx, s, st.Trust, d.Has); err != nil {
+	if err := st.discCheckLabels(ctx, s, st.Trust, d); err != nil {
 		return nil, wrap(err)
 	}
 	if err := st.MarkDirty(ctx, s, d); err != nil {
