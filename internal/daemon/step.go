@@ -20,6 +20,8 @@ type Step struct {
 	Commands map[string]Handler
 	// Reactions, if set, runs after the comments: the reaction triggers.
 	Reactions func(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt) error
+
+	trustOnce *trustOnceVisit // the trust of Iterate's visit under way, if any (#174)
 }
 
 // Run runs step 1 on s, in this order: the label rules (CheckLabels), dirty
@@ -35,7 +37,7 @@ type Step struct {
 // then FlagVisit.
 func (st *Step) Run(ctx context.Context, s *github.Snapshot) ([]github.Comment, error) {
 	wrap := func(err error) error { return fmt.Errorf("step 1 on %s/%s#%d: %w", st.Owner, st.Repo, s.Number, err) }
-	d, err := st.Dirty(ctx, s, st.Trust)
+	d, err := st.Dirty(ctx, s, st.trustOnceTrust())
 	if err != nil {
 		return nil, wrap(err)
 	}

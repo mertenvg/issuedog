@@ -49,7 +49,7 @@ func (st *Step) IntakeVisit(ctx context.Context, s *github.Snapshot) error {
 	if s.Closed {
 		return nil
 	}
-	d, err := st.Dirty(ctx, s, st.Trust)
+	d, err := st.Dirty(ctx, s, st.trustOnceTrust())
 	if err != nil {
 		return wrap(err)
 	}
