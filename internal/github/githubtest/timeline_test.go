@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/mertenvg/issuedog/internal/github"
 )
 
 func TestTimeline(t *testing.T) {
@@ -175,7 +177,7 @@ func TestSetTypeBy(t *testing.T) {
 			t.Errorf("%q: type %q, last event %d %s by %s; want %q, %d %s by owner", tc.name, s.Type, last.GetID(), last.GetEvent(),
 				last.GetActor().GetLogin(), tc.typ, id, tc.event)
 		}
-		found, err := c.CheckLabels(context.Background(), "o", "r", n, s.Labels, "app", typeByTrust{}, func(int64) bool { return false }, nil)
+		found, err := c.CheckLabels(context.Background(), "o", "r", n, s.Labels, "app", typeByTrust{}, func(int64) bool { return false }, nil, &github.IssueTypeGuard{Type: tc.name})
 		if err != nil || found.IssueType != id || found.IssueTypeRevert != nil {
 			t.Errorf("%q: CheckLabels' IssueType %d and revert %+v, %v; want %d and none", tc.name, found.IssueType, found.IssueTypeRevert, err, id)
 		}

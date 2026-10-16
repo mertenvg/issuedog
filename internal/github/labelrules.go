@@ -73,17 +73,16 @@ type LabelCheck struct {
 	TypeLabel int64
 	// IssueType is the ID of the newest issue-type event (issue_type_added,
 	// issue_type_changed or issue_type_removed) that stands, judged as
-	// TypeLabel is, or 0 if there is none. So an untrusted change, reverted
-	// or not yet, gives the change before it that stands.
+	// TypeLabel is, or 0 if there is none or the caller didn't ask for the
+	// issue type to be guarded. So an untrusted change, reverted or not yet,
+	// gives the change before it that stands.
 	IssueType int64
-	// IssueTypeRevert is the revert of the issue type that the label rules
-	// ask for, or nil: an untrusted change, the newest issue-type event,
-	// left the issue another type than the one that stands. CheckLabels
-	// writes nothing for it, since only a repo that uses issue types
-	// (types: issue-types) guards them; RevertIssueType makes it there.
+	// IssueTypeRevert is the revert of the issue type CheckLabels made, or
+	// nil: To is the type the issue has now.
 	IssueTypeRevert *IssueTypeRevert
-	// Held are the labels held back as unexplained: the caller must not act
-	// on the issue until a later call holds nothing back.
+	// Held are the labels held back as unexplained, and the issue type, if
+	// no event explains it yet: the caller must not act on the issue until a
+	// later call holds nothing back.
 	Held []string
 }
 
@@ -173,9 +172,12 @@ func OverrideLabel(name string) bool {
 // comment carries a revert marker keyed by the event, is posted once, and
 // goes out before the revert.
 //
-// The issue type is judged as a type:* label is, but not reverted here:
-// LabelCheck.IssueTypeRevert says what to revert, for RevertIssueType on a
-// repo that uses issue types.
+// With guard, as on a repo that uses issue types, the issue type is judged
+// as a type:* label is, against the type the caller read, guard.Type, and
+// an untrusted change of it is reverted the same way, through
+// RevertIssueType. A type no event explains yet is held back, as such a
+// label is, then reverted (see issueTypeRevertGuard). With no guard, issue
+// types are left alone.
 //
 // A pipeline label on the issue that no standing change explains, as from a
 // repo label rename, is removed the same way once it has stayed unexplained
@@ -188,14 +190,13 @@ func OverrideLabel(name string) bool {
 //
 // It also returns the newest change that stands to the settings labels
 // (Settings) and to the type (TypeLabel and IssueType; see TypeEvent), and
-// the revert that an untrusted change of the issue type asks for
-// (IssueTypeRevert).
+// the revert of the issue type it made (IssueTypeRevert).
 //
 // Markers in a comment that dirty reports, by its ID, are skipped, as
 // state.Derive skips them. The body isn't on the timeline, so dirty is never
 // asked about it.
 func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int, labels []string, appSlug string, trust Trust, dirty func(id int64) bool,
-	seen *Unexplained) (LabelCheck, error) {
+	seen *Unexplained, guard *IssueTypeGuard) (LabelCheck, error) {
 	wrap := func(err error) error { return fmt.Errorf("check labels of %s/%s#%d: %w", owner, repo, number, err) }
 	events, err := c.issueTypeRevertTimeline(ctx, owner, repo, number, time.Time{})
 	if err != nil {
@@ -320,11 +321,15 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 			last, lastAt = e, at
 		}
 	}
-	if found.IssueType, found.IssueTypeRevert, err = r.issueTypeRevertCheck(ctx, issueType, reverted); err != nil {
+	var heldType string
+	if found.IssueType, found.IssueTypeRevert, heldType, err = r.issueTypeRevertGuard(ctx, issueType, reverted, guard, seen); err != nil {
 		return LabelCheck{}, wrap(err)
 	}
 	if found.Labels, found.Held, err = r.unexplained(ctx, labels, given, states, settled, reverted, marker, seen); err != nil {
 		return LabelCheck{}, wrap(err)
+	}
+	if heldType != "" {
+		found.Held = append(found.Held, heldType)
 	}
 	switch {
 	case override != nil:
@@ -531,6 +536,9 @@ const HoldBound = 30 * time.Second
 type Unexplained struct {
 	mu     sync.Mutex
 	issues map[string]heldIssue // by unexplainedKey
+	// types are the issues whose type no event explains, by unexplainedKey
+	// (issueTypeRevertGuard).
+	types map[string]issueTypeRevertSeen
 }
 
 // heldIssue is what Unexplained keeps of one issue.
@@ -577,6 +585,7 @@ func unexplainedKey(owner, repo string, number int) string {
 // is closed or gone, so its times don't outlive it.
 func (u *Unexplained) ForgetIssue(owner, repo string, number int) {
 	u.set(unexplainedKey(owner, repo, number), heldIssue{})
+	u.issueTypeRevertForget(unexplainedKey(owner, repo, number))
 }
 
 // due is when the label first seen as fs is to be removed, if it stays

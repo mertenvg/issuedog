@@ -181,9 +181,10 @@ func TestCheckLabelsSettingsWithEvents(t *testing.T) {
 
 // CheckLabels' TypeLabel is the newest change to a type:* label that
 // stands, judged as settings are: a trusted user's or the App's, but no
-// untrusted change and no App revert of one. IssueType is the newest
-// issue-type event that stands, judged the same way. TypeEvent picks one
-// by the repo's types setting.
+// untrusted change and no App revert of one. With no guard, as on a repo
+// that uses labels, IssueType is 0, however the issue types changed:
+// TestCheckLabelsIssueTypeRevert has the issue types guarded. TypeEvent
+// picks one by the repo's types setting.
 func TestCheckLabelsType(t *testing.T) {
 	revert := func(id, of int64) ev { return said(id, appBot, fmt.Sprintf("<!-- issuedog:revert key=%d -->", of)) }
 	marker := said(2, appBot, "<!-- issuedog:transition from=x to=ready -->")
@@ -203,10 +204,10 @@ func TestCheckLabelsType(t *testing.T) {
 		"untrusted only":                {[]ev{added(1, "mallory", "type:task"), revert(2, 1), removed(3, appBot, "type:task")}, 0, 0},
 		"with a disagreement":           {[]ev{added(1, appBot, "stage:ready"), marker, added(3, "owner", "type:task"), removed(4, "owner", "stage:ready")}, 3, 0},
 		"issue types": {[]ev{typed(1, "owner", "issue_type_added", "Epic"), added(2, "owner", "type:bug"),
-			typed(3, "mallory", "issue_type_changed", "Task")}, 2, 1},
+			typed(3, "mallory", "issue_type_changed", "Task")}, 2, 0},
 		"trusted issue type change": {[]ev{typed(1, "owner", "issue_type_added", "Epic"), added(2, "owner", "type:bug"),
-			typed(3, "owner", "issue_type_changed", "Task")}, 2, 3},
-		"issue type removed": {[]ev{typed(1, "owner", "issue_type_added", "Epic"), typed(2, "owner", "issue_type_removed", "Epic")}, 0, 2},
+			typed(3, "owner", "issue_type_changed", "Task")}, 2, 0},
+		"issue type removed": {[]ev{typed(1, "owner", "issue_type_added", "Epic"), typed(2, "owner", "issue_type_removed", "Epic")}, 0, 0},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, found := checkLabelsAll(t, tt.timeline, func(int64) bool { return false })
@@ -318,7 +319,7 @@ func checkLabelsAll(t *testing.T, timeline []ev, dirty func(int64) bool) ([]stri
 		writes = append(writes, desc)
 		_, _ = io.WriteString(w, map[bool]string{true: "[]", false: "{}"}[strings.HasSuffix(path, "/labels")])
 	}))
-	found, err := c.CheckLabels(context.Background(), "o", "r", 7, nil, "issuedog", fakeTrust{"owner": true}, dirty, nil)
+	found, err := c.CheckLabels(context.Background(), "o", "r", 7, nil, "issuedog", fakeTrust{"owner": true}, dirty, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +375,7 @@ func TestCheckLabelsDateFallback(t *testing.T) {
 		var logs bytes.Buffer
 		stop := logr.AddWriter(&logs, logr.WithFilter(logr.D))
 		found, err := c.CheckLabels(context.Background(), "o", "r", 7, []string{"priority:p0"}, "issuedog", fakeTrust{},
-			func(int64) bool { return false }, seen)
+			func(int64) bool { return false }, seen, nil)
 		labels, held := found.Labels, found.Held
 		logr.Wait()
 		stop()

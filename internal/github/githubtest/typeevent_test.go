@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 
@@ -22,10 +23,10 @@ func issueTypeRevertLast(t *testing.T, c *github.Client, n int) *gogithub.Timeli
 	return timeline[len(timeline)-1]
 }
 
-// The timeline serves an issue-type event's types, so CheckLabels finds
-// what an untrusted change left and what stands. RevertIssueType sets the
-// type back as the App, a write with its own issue-type event, which the
-// next CheckLabels takes for the App's restore, not a change.
+// The timeline serves an issue-type event's types, so CheckLabels, asked
+// to guard the issue type, finds what an untrusted change left and what
+// stands, and reverts it. The App's write has its own issue-type event,
+// which the next CheckLabels takes for the App's restore, not a change.
 func TestSetTypeByRevert(t *testing.T) {
 	f := New(t, "o/r", "app")
 	n := f.AddIssue("owner", "Issue", "")
@@ -33,16 +34,13 @@ func TestSetTypeByRevert(t *testing.T) {
 	flip := f.SetTypeBy(n, "mallory", "Epic")
 	c := f.Client(t)
 	none := func(int64) bool { return false }
-	found, err := c.CheckLabels(context.Background(), "o", "r", n, nil, "app", typeByTrust{}, none, nil)
+	found, err := c.CheckLabels(context.Background(), "o", "r", n, nil, "app", typeByTrust{}, none, nil, &github.IssueTypeGuard{Type: "epic"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := &github.IssueTypeRevert{Key: flip, By: "mallory", From: "Epic", To: "Task"}
+	want := &github.IssueTypeRevert{Key: strconv.FormatInt(flip, 10), By: "mallory", From: "Epic", To: "Task"}
 	if found.IssueType != owner || found.IssueTypeRevert == nil || *found.IssueTypeRevert != *want {
 		t.Fatalf("IssueType %d and revert %+v; want %d and %+v", found.IssueType, found.IssueTypeRevert, owner, want)
-	}
-	if err := c.RevertIssueType(context.Background(), "o", "r", n, *found.IssueTypeRevert); err != nil {
-		t.Fatal(err)
 	}
 	if got := f.State().Issues[0].Type; got != "Task" {
 		t.Errorf("type %q; want Task back", got)
@@ -54,9 +52,89 @@ func TestSetTypeByRevert(t *testing.T) {
 	if last := issueTypeRevertLast(t, c, n); last.GetEvent() != "issue_type_changed" || last.GetActor().GetLogin() != "app[bot]" {
 		t.Errorf("last event %s by %s; want issue_type_changed by app[bot]", last.GetEvent(), last.GetActor().GetLogin())
 	}
-	found, err = c.CheckLabels(context.Background(), "o", "r", n, nil, "app", typeByTrust{}, none, nil)
-	if err != nil || found.IssueType != owner || found.IssueTypeRevert != nil {
-		t.Errorf("after the revert, IssueType %d and revert %+v, %v; want %d and none", found.IssueType, found.IssueTypeRevert, err, owner)
+	found, err = c.CheckLabels(context.Background(), "o", "r", n, nil, "app", typeByTrust{}, none, nil, &github.IssueTypeGuard{Type: "task"})
+	if err != nil || found.IssueType != owner || found.IssueTypeRevert != nil || len(f.Writes()) != 2 {
+		t.Errorf("after the revert, IssueType %d, revert %+v, writes %d, %v; want %d, none and 2", found.IssueType, found.IssueTypeRevert, len(f.Writes()), err, owner)
+	}
+}
+
+// An untrusted change whose event GitHub hasn't written yet (LagEvents) is
+// held back, for HoldBound from when it was first found, by seen's memory,
+// then reverted all the same, keyed by the type and the newest event. Then
+// the type is the one that stands, so nothing more is written, though the
+// App's own event isn't written yet either.
+func TestSetTypeByRevertLate(t *testing.T) {
+	f := New(t, "o/r", "app")
+	n := f.AddIssue("owner", "Issue", "")
+	owner := f.SetTypeBy(n, "owner", "Task")
+	f.LagEvents(time.Hour)
+	f.SetTypeBy(n, "mallory", "Epic")
+	c := f.Client(t)
+	seen := &github.Unexplained{}
+	check := func(typ string) github.LabelCheck {
+		t.Helper()
+		found, err := c.CheckLabels(context.Background(), "o", "r", n, nil, "app", typeByTrust{}, func(int64) bool { return false }, seen,
+			&github.IssueTypeGuard{Type: typ})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return found
+	}
+	for _, wait := range []time.Duration{0, github.HoldBound - 2*time.Second} {
+		f.Advance(wait)
+		if found := check("epic"); len(found.Held) != 1 || found.IssueType != owner || found.IssueTypeRevert != nil || len(f.Writes()) != 0 {
+			t.Fatalf("after %v: held %q, IssueType %d, revert %+v, writes %+v; want the type held back, and nothing written",
+				wait, found.Held, found.IssueType, found.IssueTypeRevert, f.Writes())
+		}
+	}
+	f.Advance(3 * time.Second) // past the bound
+	want := github.IssueTypeRevert{Key: "issue-type:epic@" + strconv.FormatInt(owner, 10), From: "epic", To: "Task"}
+	if found := check("epic"); len(found.Held) != 0 || found.IssueTypeRevert == nil || *found.IssueTypeRevert != want {
+		t.Fatalf("held %q and revert %+v; want %+v", found.Held, found.IssueTypeRevert, want)
+	}
+	if got := f.State().Issues[0].Type; got != "Task" || len(f.Writes()) != 2 {
+		t.Errorf("type %q, writes %+v; want Task back, with the comment and the type", got, f.Writes())
+	}
+	if found := check("task"); len(found.Held) != 0 || found.IssueTypeRevert != nil || len(f.Writes()) != 2 {
+		t.Errorf("after the revert: held %q, revert %+v, writes %d; want nothing", found.Held, found.IssueTypeRevert, len(f.Writes()))
+	}
+}
+
+// A late event that lands within HoldBound explains the type, so an
+// untrusted change is reverted keyed by its event, and a trusted one stands,
+// with no revert.
+func TestSetTypeByRevertLateLands(t *testing.T) {
+	for _, tc := range []struct {
+		login string
+		want  bool // a revert
+	}{{"mallory", true}, {"owner", false}} {
+		t.Run(tc.login, func(t *testing.T) {
+			f := New(t, "o/r", "app")
+			n := f.AddIssue("owner", "Issue", "")
+			owner := f.SetTypeBy(n, "owner", "Task")
+			f.LagEvents(2 * time.Second)
+			flip := f.SetTypeBy(n, tc.login, "Epic")
+			c := f.Client(t)
+			seen := &github.Unexplained{}
+			guard := &github.IssueTypeGuard{Type: "epic"}
+			found, err := c.CheckLabels(context.Background(), "o", "r", n, nil, "app", typeByTrust{}, func(int64) bool { return false }, seen, guard)
+			if err != nil || len(found.Held) != 1 || found.IssueType != owner {
+				t.Fatalf("first check: held %q, IssueType %d, %v; want the type held back", found.Held, found.IssueType, err)
+			}
+			f.Advance(3 * time.Second)
+			if found, err = c.CheckLabels(context.Background(), "o", "r", n, nil, "app", typeByTrust{}, func(int64) bool { return false }, seen, guard); err != nil {
+				t.Fatal(err)
+			}
+			if got := found.IssueTypeRevert != nil; got != tc.want || len(found.Held) != 0 {
+				t.Errorf("revert %+v, held %q; want a revert %t, nothing held", found.IssueTypeRevert, found.Held, tc.want)
+			}
+			if tc.want && found.IssueTypeRevert.Key != strconv.FormatInt(flip, 10) {
+				t.Errorf("revert key %q; want the event's, %d", found.IssueTypeRevert.Key, flip)
+			}
+			if !tc.want && found.IssueType != flip {
+				t.Errorf("IssueType %d; want the owner's change, %d", found.IssueType, flip)
+			}
+		})
 	}
 }
 
@@ -67,7 +145,7 @@ func TestSetTypeByRevertRemoves(t *testing.T) {
 	n := f.AddIssue("owner", "Issue", "")
 	flip := f.SetTypeBy(n, "mallory", "Bug")
 	c := f.Client(t)
-	if err := c.RevertIssueType(context.Background(), "o", "r", n, github.IssueTypeRevert{Key: flip, By: "mallory", From: "Bug"}); err != nil {
+	if err := c.RevertIssueType(context.Background(), "o", "r", n, github.IssueTypeRevert{Key: strconv.FormatInt(flip, 10), By: "mallory", From: "Bug"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.State().Issues[0].Type; got != "" {
@@ -94,7 +172,7 @@ func TestSetTypeByRevertNoChange(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := c.RevertIssueType(context.Background(), "o", "r", tc.n, github.IssueTypeRevert{Key: 1, To: tc.to, Posted: true}); err != nil {
+		if err := c.RevertIssueType(context.Background(), "o", "r", tc.n, github.IssueTypeRevert{Key: "1", To: tc.to, Posted: true}); err != nil {
 			t.Fatal(err)
 		}
 		after, err := c.TimelineSince(context.Background(), "o", "r", tc.n, time.Time{})
@@ -112,7 +190,7 @@ func TestSetTypeByRevertNoChange(t *testing.T) {
 // nothing, and a type that is neither a name nor null is refused.
 func TestSetTypeByRevertRefused(t *testing.T) {
 	rv := func(key int64) github.IssueTypeRevert {
-		return github.IssueTypeRevert{Key: key, By: "mallory", From: "Epic", To: "Task", Posted: true}
+		return github.IssueTypeRevert{Key: strconv.FormatInt(key, 10), By: "mallory", From: "Epic", To: "Task", Posted: true}
 	}
 	t.Run("dropped", func(t *testing.T) {
 		f := New(t, "o/r", "app")

@@ -88,9 +88,10 @@ var ErrLabelsHeld = errors.New("labels held back until their events explain them
 // an Unfinished disagreement; an error comment is posted once per key. The
 // writes are added to s, and s.SettingsEvent and s.TypeEvent are set, the
 // latter from the issue types or the type:* labels, as a.IssueTypes says.
-// On a repo that uses issue types, an untrusted change of the issue type
-// is reverted, and s.Type set back with it (issueTypeRevert).
-// dirty is as for state.Derive.
+// On a repo that uses issue types, the issue type is guarded too
+// (issueTypeRevertGuard): an untrusted change of it is reverted, and s.Type
+// set back with it, and a type no event explains yet is held back, as such
+// a label is. dirty is as for state.Derive.
 //
 // A pipeline label that nothing on the timeline explains yet, whose events
 // may be late or which a repo label rename may have put on, is held back
@@ -109,7 +110,7 @@ func (a *Applier) CheckLabels(ctx context.Context, s *github.Snapshot, trust git
 			given = append(given, l)
 		}
 	}
-	found, err := a.Client.CheckLabels(ctx, a.Owner, a.Repo, s.Number, given, a.AppSlug, trust, dirty, a.seen())
+	found, err := a.Client.CheckLabels(ctx, a.Owner, a.Repo, s.Number, given, a.AppSlug, trust, dirty, a.seen(), a.issueTypeRevertGuard(s))
 	if err != nil {
 		return fmt.Errorf("labels of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
 	}
@@ -127,8 +128,13 @@ func (a *Applier) CheckLabels(ctx context.Context, s *github.Snapshot, trust git
 	}
 	s.SetLabels(labels)
 	s.SettingsEvent, s.TypeEvent = settings, found.TypeEvent(a.IssueTypes)
-	if err := a.issueTypeRevert(ctx, s, found.IssueTypeRevert); err != nil {
-		return fmt.Errorf("labels of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
+	if rv := found.IssueTypeRevert; rv != nil {
+		// Nothing after this in the pass acts on the type set back from: not
+		// the type check, a type error's end, a move, a stage run or the
+		// digest. With no issue type, s.Type comes from the labels, as for
+		// an issue read with none.
+		s.Type, s.TypeFromLabels = strings.ToLower(rv.To), rv.To == ""
+		s.SetLabels(s.Labels)
 	}
 	if len(held) > 0 {
 		return fmt.Errorf("labels of %s/%s#%d: %v: %w", a.Owner, a.Repo, s.Number, held, ErrLabelsHeld)
@@ -147,25 +153,20 @@ func (a *Applier) CheckLabels(ctx context.Context, s *github.Snapshot, trust git
 	return nil
 }
 
-// issueTypeRevert makes rv, the revert of an untrusted change of s's issue
-// type that github.CheckLabels found, on a repo that uses issue types
-// (a.IssueTypes), and sets s.Type to the type it set back, so nothing after
-// it in the pass acts on the untrusted type: not the type check, a type
-// error's end, a move, a stage run or the digest. With no issue type set
-// back, s.Type comes from the labels, as for an issue read with none. A
-// repo that uses labels leaves issue types alone, as before (SPEC §5.1).
-// A failed revert is the caller's error, so nothing acts on s in this pass,
-// and the next pass finds the change and tries again.
-func (a *Applier) issueTypeRevert(ctx context.Context, s *github.Snapshot, rv *github.IssueTypeRevert) error {
-	if !a.IssueTypes || rv == nil {
+// issueTypeRevertGuard is what asks github.CheckLabels to guard s's issue
+// type: on a repo that uses issue types (a.IssueTypes), the issue type as s
+// has it, or nil on a repo that uses labels, which leaves issue types
+// alone, as before (SPEC §5.1). A failed revert is CheckLabels' error, so
+// nothing acts on s in this pass, and the next pass tries again.
+func (a *Applier) issueTypeRevertGuard(s *github.Snapshot) *github.IssueTypeGuard {
+	if !a.IssueTypes {
 		return nil
 	}
-	if err := a.Client.RevertIssueType(ctx, a.Owner, a.Repo, s.Number, *rv); err != nil {
-		return fmt.Errorf("issue type: %w", err)
+	guard := &github.IssueTypeGuard{}
+	if !s.TypeFromLabels {
+		guard.Type = s.Type
 	}
-	s.Type, s.TypeFromLabels = strings.ToLower(rv.To), rv.To == ""
-	s.SetLabels(s.Labels)
-	return nil
+	return guard
 }
 
 // override records ev, a trusted user's move to stage to, then sets the

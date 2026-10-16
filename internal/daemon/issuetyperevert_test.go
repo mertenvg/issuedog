@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/daemon"
@@ -266,5 +267,92 @@ func TestIssueTypeRevertDroppedLoop(t *testing.T) {
 	issueTypeRevertCheck(t, f, "Epic", issueTypeRevertWant("restored", "Task", key))
 	if got := digestRunNews(f, 2); got != news {
 		t.Errorf("%d digest announcements; want %d", got, news)
+	}
+}
+
+// GitHub writes issue-type events a few seconds late (#182's verify). An
+// untrusted change whose event isn't written yet holds the issue back,
+// with no type error and no mention, and is reverted once its event lands,
+// keyed by it. A pass after that writes nothing, though the App's own
+// event is late too.
+func TestIssueTypeRevertLateEvent(t *testing.T) {
+	f := issueTypeRevertReady(nil)(t)
+	d := issueTypeRevertDaemon(t, f)
+	news := digestRunNews(f, 2)
+	f.LagEvents(2 * time.Second)
+	key := f.SetTypeBy(1, "mallory", "Epic")
+	if w := d.pass(t); len(w) != 0 {
+		t.Errorf("before the event lands: writes %q; want none", w)
+	}
+	issueTypeRevertCheck(t, f, "Epic")
+	f.Advance(3 * time.Second)
+	if w := d.pass(t); !slices.Equal(w, []string{"POST /issues/1/comments", "PATCH /issues/1"}) {
+		t.Errorf("once the event lands: writes %q; want the revert alone", w)
+	}
+	issueTypeRevertCheck(t, f, "Task", issueTypeRevertWant("restored", "Task", key))
+	if w := d.pass(t); len(w) != 0 {
+		t.Errorf("before the App's event lands: writes %q; want none", w)
+	}
+	f.Advance(3 * time.Second)
+	if w := d.pass(t); len(w) != 0 {
+		t.Errorf("once the App's event lands: writes %q; want none", w)
+	}
+	if got := digestRunNews(f, 2); got != news {
+		t.Errorf("%d digest announcements; want %d", got, news)
+	}
+}
+
+// An untrusted change whose event never lands is held back for
+// github.HoldBound, then reverted all the same, keyed by the type and the
+// newest event, with no type error and no mention.
+func TestIssueTypeRevertEventNeverLands(t *testing.T) {
+	f := issueTypeRevertReady(nil)(t)
+	d := issueTypeRevertDaemon(t, f)
+	news := digestRunNews(f, 2)
+	f.LagEvents(time.Hour)
+	f.SetTypeBy(1, "mallory", "Epic")
+	for _, wait := range []time.Duration{0, github.HoldBound / 2} {
+		f.Advance(wait)
+		if w := d.pass(t); len(w) != 0 {
+			t.Errorf("held back, after %v: writes %q; want none", wait, w)
+		}
+	}
+	f.Advance(github.HoldBound/2 + time.Second) // past the bound, by GitHub's clock
+	if w := d.pass(t); !slices.Equal(w, []string{"POST /issues/1/comments", "PATCH /issues/1"}) {
+		t.Errorf("at the bound: writes %q; want the revert alone", w)
+	}
+	issueTypeRevertCheck(t, f, "Task", "I restored the issue type `Task`: no change by a trusted user or the App explains `epic`, "+
+		"and only trusted users can change the issue type.\n\n<!-- issuedog:revert key=issue-type:epic@9001 -->")
+	if w := d.pass(t); len(w) != 0 {
+		t.Errorf("after the revert: writes %q; want none", w)
+	}
+	if got := digestRunNews(f, 2); got != news {
+		t.Errorf("%d digest announcements; want %d", got, news)
+	}
+}
+
+// A trusted change whose event isn't written yet holds the issue back too,
+// so its type error is posted once, keyed by its own event once that
+// lands, and never under the change before it, with one mention.
+func TestIssueTypeRevertLateTrusted(t *testing.T) {
+	f := issueTypeRevertReady(nil)(t)
+	d := issueTypeRevertDaemon(t, f)
+	news := digestRunNews(f, 2)
+	f.LagEvents(2 * time.Second)
+	key := f.SetTypeBy(1, "owner", "Epic")
+	if w := d.pass(t); len(w) != 0 {
+		t.Errorf("before the event lands: writes %q; want none", w)
+	}
+	f.Advance(3 * time.Second)
+	d.pass(t)
+	d.pass(t)
+	if errs := errorMarkers(f, 1); !slices.Equal(errs, []string{fmt.Sprintf("<!-- issuedog:error kind=type key=%d -->", key)}) {
+		t.Errorf("state errors %q; want the one type error, keyed %d", errs, key)
+	}
+	if got := f.State().Issues[0].Type; got != "Epic" {
+		t.Errorf("type %q; want the owner's Epic", got)
+	}
+	if got := digestRunNews(f, 2); got != news+1 {
+		t.Errorf("%d digest announcements; want %d", got, news+1)
 	}
 }
