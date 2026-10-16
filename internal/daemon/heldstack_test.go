@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/mertenvg/issuedog/internal/daemon"
@@ -264,6 +265,103 @@ func TestHeldStackHoldAndResumeInOnePass(t *testing.T) {
 	}
 	if w := []string{"too long", "use X"}; !reflect.DeepEqual(in, w) {
 		t.Errorf("inputs %q, want %q", in, w)
+	}
+}
+
+// #185's verify, attempt 2: holds that start and end more than once in one
+// pass. Each comment is handled in the stage the issue had right after the
+// last move out of held before it, as a replay after a crash anywhere in
+// the pass does, and the next pass writes nothing.
+func TestHeldStackHoldsInOnePass(t *testing.T) {
+	var request int64
+	ids := map[string]*int64{}
+	say := func(bodies ...string) heldStackStep {
+		return heldStackStep{1, func(t testing.TB, f *githubtest.Fake) {
+			for _, b := range bodies {
+				id := new(int64)
+				heldStackSay(1, b, id)(t, f)
+				ids[b] = id
+			}
+		}}
+	}
+	sentBackAt := []heldStackStep{{1, heldStackSay(1, "too long", &request)}}
+	for _, tt := range []struct {
+		name   string
+		steps  []heldStackStep
+		labels []string
+		acked  []string // the comments the App 👍'd, in order
+		inputs []string
+		// markers are the fields of the transition markers this pass posts,
+		// in order.
+		markers func() []string
+	}{
+		{"at clarifying: a comment between two holds is an answer, and one in the second waits",
+			append(sentBackAt, say("/hold", "c1", "/resume", "/hold ", "c2")), []string{"stage:held"},
+			[]string{"too long", "/hold", "c1", "/resume", "/hold "}, nil,
+			func() []string {
+				return []string{
+					fmt.Sprintf("from=clarifying to=held at=clarifying reason=owner cmd=%d seen=%d", *ids["/hold"], request),
+					fmt.Sprintf("from=held to=clarifying cmd=%d seen=%d", *ids["/resume"], request),
+					fmt.Sprintf("from=clarifying to=held at=clarifying reason=owner cmd=%d seen=%d", *ids["/hold "], request),
+				}
+			}},
+		{"at clarifying: a comment in each of two holds is an answer once both end",
+			append(sentBackAt, say("/hold", "c1", "/resume", "/hold ", "c2", "/resume ")), []string{"stage:clarifying"},
+			[]string{"too long", "/hold", "c1", "/resume", "/hold ", "c2", "/resume "}, []string{"too long", "c1", "c2"},
+			func() []string {
+				return []string{
+					fmt.Sprintf("from=clarifying to=held at=clarifying reason=owner cmd=%d seen=%d", *ids["/hold"], request),
+					fmt.Sprintf("from=held to=clarifying cmd=%d seen=%d", *ids["/resume"], request),
+					fmt.Sprintf("from=clarifying to=held at=clarifying reason=owner cmd=%d seen=%d", *ids["/hold "], request),
+					fmt.Sprintf("from=held to=clarifying cmd=%d seen=%d", *ids["/resume "], request),
+				}
+			}},
+		{"at spec-review: the comment while held is the request, and the one after it an answer",
+			[]heldStackStep{say("/hold", "too long", "/resume", "use X")}, []string{"stage:clarifying"},
+			[]string{"/hold", "too long", "/resume", "use X"}, []string{"too long", "use X"},
+			func() []string {
+				return []string{
+					fmt.Sprintf("from=spec-review to=held at=spec-review reason=owner cmd=%d seen=1001", *ids["/hold"]),
+					fmt.Sprintf("from=held to=spec-review cmd=%d seen=1001", *ids["/resume"]),
+					fmt.Sprintf("from=spec-review to=clarifying cmd=%d seen=%[1]d", *ids["too long"]),
+				}
+			}},
+		{"at spec-review: the request between two holds sends the spec back before the second",
+			[]heldStackStep{say("/hold", "c1", "/resume", "/hold ", "/resume ")}, []string{"stage:clarifying"},
+			[]string{"/hold", "c1", "/resume", "/hold ", "/resume "}, []string{"c1"},
+			func() []string {
+				return []string{
+					fmt.Sprintf("from=spec-review to=held at=spec-review reason=owner cmd=%d seen=1001", *ids["/hold"]),
+					fmt.Sprintf("from=held to=spec-review cmd=%d seen=1001", *ids["/resume"]),
+					fmt.Sprintf("from=spec-review to=clarifying cmd=%d seen=%[1]d", *ids["c1"]),
+					fmt.Sprintf("from=clarifying to=held at=clarifying reason=owner cmd=%d seen=%d", *ids["/hold "], *ids["c1"]),
+					fmt.Sprintf("from=held to=clarifying cmd=%d seen=%d", *ids["/resume "], *ids["c1"]),
+				}
+			}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			setup := heldStackSetup(review(func(testing.TB, *githubtest.Fake) {}), tt.steps)
+			var in []string
+			githubtest.Replay(t, setup, heldStackPass(t, 1, &in))
+			before := len(setup(t).State().Issues[0].Comments)
+			got := run(t, setup, heldStackPass(t, 1, &in)).State().Issues[0]
+			var markers, acked []string
+			for i, c := range got.Comments {
+				if i >= before {
+					_, m, _ := strings.Cut(c.Body, "<!-- issuedog:transition ")
+					markers = append(markers, strings.TrimSuffix(m, " -->"))
+				}
+				if slices.Contains(c.Reactions, app+" +1") {
+					acked = append(acked, c.Body)
+				}
+			}
+			if !reflect.DeepEqual(markers, tt.markers()) || !reflect.DeepEqual(got.Labels, tt.labels) {
+				t.Errorf("new markers %q and labels %q, want %q and %q", markers, got.Labels, tt.markers(), tt.labels)
+			}
+			if !reflect.DeepEqual(acked, tt.acked) || !reflect.DeepEqual(in, tt.inputs) {
+				t.Errorf("👍'd %q and inputs %q, want %q and %q", acked, in, tt.acked, tt.inputs)
+			}
+		})
 	}
 }
 

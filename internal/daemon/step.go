@@ -26,7 +26,8 @@ type Step struct {
 
 // Run runs step 1 on s, in this order: the label rules (CheckLabels), dirty
 // content (MarkDirty), the type (typeCheck), trusted comments oldest first,
-// again if a command took the issue out of held, then Reactions. Dirty
+// from the first again each time one takes the issue out of held, then
+// Reactions. Dirty
 // is read before CheckLabels, which needs it. Writes are added to s, and each
 // is checked first, so a pass that crashed part way can run again (SPEC
 // §5.2). It returns s's Inputs, which are only right after a Run that
@@ -56,10 +57,10 @@ func (st *Step) Run(ctx context.Context, s *github.Snapshot) ([]github.Comment, 
 	}
 	// Replies are added to s.Comments, so range over the comments read.
 	read := slices.Clone(s.Comments)
-	// comments handles the comments read, and reports whether one of them
-	// took the issue out of held, even one that held it in the same pass.
-	comments := func() (bool, error) {
-		left, held := false, state.Derive(s, st.AppSlug, d.Has).Stage == state.Held
+	// sweep handles the comments read, oldest first, until one takes the
+	// issue out of held, and reports whether one did.
+	sweep := func() (bool, error) {
+		held := state.Derive(s, st.AppSlug, d.Has).Stage == state.Held
 		for _, c := range read {
 			if !counts[c.ID] {
 				continue
@@ -68,22 +69,30 @@ func (st *Step) Run(ctx context.Context, s *github.Snapshot) ([]github.Comment, 
 				return false, fmt.Errorf("comment %d: %w", c.ID, err)
 			}
 			now := state.Derive(s, st.AppSlug, d.Has).Stage == state.Held
-			left, held = left || held && !now, now
+			if held && !now {
+				return true, nil
+			}
+			held = now
 		}
-		return left, nil
-	}
-	left, err := comments()
-	if err != nil {
-		return nil, wrap(err)
+		return false, nil
 	}
 	// A hold keeps the round it came in (state.HeldStack.Seen), so once a
-	// command takes the issue out of held, the comments posted while it was
-	// held are handled again in the stage it landed in, as the next pass
-	// would, and as a replay of this one after a crash does. The commands
-	// are processed by then, so this pass moves the issue no more.
-	if left {
-		if _, err := comments(); err != nil {
-			return nil, wrap(fmt.Errorf("after the hold: %w", err))
+	// command takes the issue out of held, the comments are handled again
+	// from the first, each in the stage the issue had right after the last
+	// move out of held before it, as the next pass would, and as a replay of
+	// this one after a crash does. A processed command is never applied
+	// again, so each restart needs a move out of held by a command not
+	// applied before, and there are no more of those than comments read.
+	for restarts := 0; ; restarts++ {
+		left, err := sweep()
+		if err != nil {
+			return nil, wrap(err)
+		}
+		if !left {
+			break
+		}
+		if restarts >= len(read) {
+			return nil, wrap(fmt.Errorf("the comments took the issue out of held more than %d times", len(read)))
 		}
 	}
 	if st.Reactions != nil {
