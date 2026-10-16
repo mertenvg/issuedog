@@ -6,6 +6,7 @@ import (
 
 	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/github"
+	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
 
 // What counts as a pipeline issue (assignPipeline): an item, a stage
@@ -81,5 +82,42 @@ func TestAssignCompare(t *testing.T) {
 		if got := assignSame(tc.a, tc.b); got != tc.want {
 			t.Errorf("assignSame(%q, %q) = %t; want %t", tc.a, tc.b, got, tc.want)
 		}
+	}
+}
+
+// The snapshot takes each write's answer, GitHub's assignees after it: a
+// login GitHub left out of the add isn't there, and a removal leaves
+// nobody, so a pass that GitHub's updated_at doesn't make read the issue
+// again still compares against what GitHub has.
+func TestAssignTakesAnswer(t *testing.T) {
+	f := githubtest.New(t, "o/r", "issuedog")
+	item := f.AddIssue("owner", "Waits", "")
+	f.SetAssignees(item, "bob")
+	done := f.AddIssue("owner", "Ready", "", "stage:ready")
+	f.SetAssignees(done, "bob")
+	f.Unassignable("ghost")
+	c := f.Client(t)
+	d := &Daemon{Step: &Step{Applier: &Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog"}},
+		Config: &config.Config{Notify: []string{"owner", "Ghost"}}, Assign: true,
+		digestCache: map[int][]waitItem{item: {{Issue: item, Kind: waitFlag}}},
+		snaps:       map[int]*github.Snapshot{}, inputs: map[int][]github.Comment{}}
+	for _, n := range []int{item, done} {
+		s, err := c.Snapshot(t.Context(), "o", "r", n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d.snaps[n], d.inputs[n] = s, nil
+	}
+	if err := d.assignPass(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.snaps[item].Assignees; !slices.Equal(got, []string{"owner"}) {
+		t.Errorf("the snapshot's assignees with an item = %q; want owner alone, as GitHub answered", got)
+	}
+	if got := d.snaps[done].Assignees; got != nil {
+		t.Errorf("the snapshot's assignees without one = %q; want none, as GitHub answered", got)
+	}
+	if !d.assignDropped["ghost"] || len(d.assignDropped) != 1 {
+		t.Errorf("the dropped logins = %v; want ghost alone, in lower case", d.assignDropped)
 	}
 }

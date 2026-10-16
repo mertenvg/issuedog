@@ -311,3 +311,19 @@ func TestAssignReplay(t *testing.T) {
 		})
 	}
 }
+
+// An issue read as closed, closed between the poll and its read, is left
+// alone that pass, though it's at a stage, and the next poll drops it.
+func TestAssignClosedInThePass(t *testing.T) {
+	f, o := digestRunFake(t), digestRunOrigin(t)
+	d := assignDaemon(t, f, o, nil)
+	iterate(t, d)
+	f.SetAssignees(7, "bob")
+	f.BeforeRequest(func(r githubtest.Request) bool { return r.Method == http.MethodGet && r.Path == "/issues/7" },
+		func() { f.CloseBy(7, digestRunOwner) })
+	assignStep(t, f, d, "the pass that reads 7 closed")
+	assignStep(t, f, d, "the next pass")
+	if got := assignees(f, 7); !slices.Equal(got, []string{"bob"}) || !f.State().Issues[6].Closed {
+		t.Errorf("issue 7's assignees = %q; want bob kept on the closed issue", got)
+	}
+}
