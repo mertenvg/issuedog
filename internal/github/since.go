@@ -5,7 +5,9 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"net/http"
 	"slices"
+	"strconv"
 	"time"
 
 	gogithub "github.com/google/go-github/v92/github"
@@ -45,11 +47,61 @@ func (c *Client) CommentsSince(ctx context.Context, owner, repo string, number i
 // TimelineSince lists timeline events from since on, filtered here as the endpoint
 // has no since=. Reviews use submitted_at; untimed events, like commits, are left out.
 func (c *Client) TimelineSince(ctx context.Context, owner, repo string, number int, since time.Time) ([]*gogithub.Timeline, error) {
-	all, err := collect(c.Issues.ListIssueTimelineIter(ctx, owner, repo, number, &gogithub.ListOptions{PerPage: 100}))
+	events, err := c.issueTypeRevertTimeline(ctx, owner, repo, number, since)
 	if err != nil {
-		return nil, fmt.Errorf("list timeline of %s/%s#%d: %w", owner, repo, number, err)
+		return nil, err
 	}
-	return slices.DeleteFunc(all, func(e *gogithub.Timeline) bool {
+	timeline := make([]*gogithub.Timeline, 0, len(events))
+	for _, e := range events {
+		timeline = append(timeline, &e.Timeline)
+	}
+	return timeline, nil
+}
+
+// issueTypeRevertEvent is one timeline event as REST gives it, with the
+// issue types of an issue-type event, which go-github's Timeline leaves out.
+// GitHub's REST description (github/rest-api-description, the
+// issue-type-*-issue-event schemas) gives issue_type_added an issue_type,
+// issue_type_changed an issue_type and a prev_issue_type, and
+// issue_type_removed a prev_issue_type, each with an id and a name.
+type issueTypeRevertEvent struct {
+	gogithub.Timeline
+	// IssueType is the type an issue_type_added or issue_type_changed event
+	// set, or nil.
+	IssueType *gogithub.IssueType `json:"issue_type,omitempty"`
+	// PrevIssueType is the type an issue_type_changed or issue_type_removed
+	// event replaced, or nil.
+	PrevIssueType *gogithub.IssueType `json:"prev_issue_type,omitempty"`
+}
+
+// issueTypeRevertTimeline is TimelineSince, with each event's issue types.
+// It pages the endpoint as go-github's ListIssueTimelineIter does, with the
+// same Accept header, so its answers are the ones TimelineSince read before.
+func (c *Client) issueTypeRevertTimeline(ctx context.Context, owner, repo string, number int, since time.Time) ([]*issueTypeRevertEvent, error) {
+	wrap := func(err error) error { return fmt.Errorf("list timeline of %s/%s#%d: %w", owner, repo, number, err) }
+	var all []*issueTypeRevertEvent
+	for page := 0; ; {
+		u := fmt.Sprintf("repos/%v/%v/issues/%v/timeline?per_page=100", owner, repo, number)
+		if page > 0 {
+			u += "&page=" + strconv.Itoa(page)
+		}
+		req, err := c.NewRequest(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			return nil, wrap(err)
+		}
+		req.Header.Set("Accept", "application/vnd.github.mockingbird-preview+json, application/vnd.github.inertia-preview+json")
+		var events []*issueTypeRevertEvent
+		resp, err := c.Do(req, &events)
+		if err != nil {
+			return nil, wrap(fmt.Errorf("next page: %w", err))
+		}
+		all = append(all, events...)
+		if resp.NextPage == 0 {
+			break
+		}
+		page = resp.NextPage
+	}
+	return slices.DeleteFunc(all, func(e *issueTypeRevertEvent) bool {
 		at := cmp.Or(e.CreatedAt, e.SubmittedAt)
 		return at == nil || at.Before(since)
 	}), nil
