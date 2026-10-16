@@ -40,9 +40,9 @@ type openErr struct {
 //   - attempts: when the attempt key changes (attemptKey).
 //   - labels: when the change to the model and effort labels that stands
 //     changes (labelsKey), which CheckLabels must have set on s.
-//   - type: when the type fits the stage (typeErrStands), or the type
-//     change that stands changes (typeErrKey), which CheckLabels must have
-//     set on s too.
+//   - type: when the type is no longer the cause (typeErrStands), or the
+//     type change that stands changes (typeErrKey), which CheckLabels must
+//     have set on s too.
 //   - any other kind: only an ack ends it.
 //
 // inputs gives step 1's Inputs for s. It's called at most once, and only

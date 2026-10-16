@@ -24,9 +24,11 @@ import (
 //
 // Whose text is what (assumption 12):
 //   - an item's Title is raw, so it goes through text and github.Escape,
-//     with its "[", "]", "!" and "\" escaped too, so it can't make a link,
-//     an image or a tracking pixel (digestRenderTitle, the owner's call
-//     on #160);
+//     with its "[", "]", "!" and "\" escaped too, so it makes no Markdown
+//     link, image or tracking pixel (digestRenderTitle, the owner's call
+//     on #160). GitHub still autolinks a bare https://… or www.… in it,
+//     and owner/repo#1 still makes a cross-reference, each showing its
+//     whole target and loading nothing (SPEC §16, "Links in titles");
 //   - a line the App copied from its own comment (waitLine.Copied) was only
 //     made safe for the middle of a line, and a state error's lines were
 //     escaped but never defused, so every copied line is inline'd and
@@ -154,11 +156,13 @@ func digestRenderText(s string) string {
 
 // digestRenderTitle is an issue's raw title made safe for the middle of a
 // line: one line, its tags escaped and its mentions defused (text), then
-// each "[", "]" and "!" backslash-escaped, so a title can't make a link,
-// an image or a tracking pixel, and each "\" too, so none of those escapes
-// can be undone, and the title reads as typed. Then its markers are
-// escaped (SPEC §5.1). With every "[" escaped, no task box is left
-// (escapeBoxes).
+// each "[", "]" and "!" backslash-escaped, so a title makes no Markdown
+// link, image or tracking pixel, and each "\" too, so none of those
+// escapes can be undone, and the title reads as typed. Then its markers
+// are escaped (SPEC §5.1). With every "[" escaped, no task box is left
+// (escapeBoxes). A bare https://… or www.… still autolinks, and
+// owner/repo#1 still makes a cross-reference: each shows its whole target
+// and loads nothing (SPEC §16, "Links in titles").
 func digestRenderTitle(s string) string {
 	var b strings.Builder
 	for _, r := range text(s) {

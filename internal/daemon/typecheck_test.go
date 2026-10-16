@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -24,12 +25,12 @@ func typeErrWant(typ, stage string, key int64, unknown bool) string {
 	if typ == "" {
 		what = "This issue has no type, which"
 	}
-	why := fmt.Sprintf("doesn't fit its stage, `%s`", stage)
+	why, to := fmt.Sprintf("doesn't fit its stage, `%s`", stage), "one"
 	if unknown {
-		why = "isn't one the pipeline knows"
+		why, to = "isn't one the pipeline knows", "one the pipeline knows"
 	}
-	return fmt.Sprintf("%s %s (SPEC §4). It stays at `%s` until its type fits it, or someone moves it by hand. "+
-		"A 👍 on this comment acknowledges it.\n\n<!-- issuedog:error kind=type key=%d -->", what, why, stage, key)
+	return fmt.Sprintf("%s %s (SPEC §4). It stays at `%s` until its type changes to %s that can be at `%s`, or someone moves it by hand. "+
+		"A 👍 on this comment acknowledges it.\n\n<!-- issuedog:error kind=type key=%d -->", what, why, stage, to, stage, key)
 }
 
 // typeErrEpic files issue 1, an epic its owner typed with type:epic (event
@@ -441,7 +442,10 @@ func TestTypeErrConfigTypes(t *testing.T) {
 // Triage on an issue of a type the pipeline doesn't know, set by a type
 // change, runs once: its move's state error is the type error, with no
 // transition error beside it, and no run starts again while it stands,
-// not even on new input.
+// not even on new input. A change to another unknown type gives triage
+// no run either (#179's Q1a): step 1 posts its type error, once, and an
+// ack of that lets no run start. A change to a type the
+// pipeline knows lets triage run again.
 func TestTypeErrTriageUnknownType(t *testing.T) {
 	f := newFake(t)
 	f.AddIssue("owner", "Idea", "An idea.", "type:feature")
@@ -454,6 +458,32 @@ func TestTypeErrTriageUnknownType(t *testing.T) {
 	g.pass()
 	if errs := errorMarkers(f, 1); g.runs() != 1 || !slices.Equal(errs, []string{"<!-- issuedog:error kind=type key=9001 -->"}) {
 		t.Errorf("%d runs, errors %q; want one run and the type error alone", g.runs(), errs)
+	}
+	next := typeErrRetype(f, 1, "feature", "idea")
+	for range 3 {
+		g.pass()
+	}
+	want := []string{"<!-- issuedog:error kind=type key=9001 -->", fmt.Sprintf("<!-- issuedog:error kind=type key=%d -->", next)}
+	if errs := errorMarkers(f, 1); g.runs() != 1 || !slices.Equal(errs, want) {
+		t.Fatalf("%d runs, errors %q after a change to another unknown type; want still one run, and %q", g.runs(), errs, want)
+	}
+	if got := commentBodies(f, 1); len(got) == 0 || got[len(got)-1] != typeErrWant("idea", "intake", next, true) {
+		t.Errorf("comments %q; want the last %q", got, typeErrWant("idea", "intake", next, true))
+	}
+	// The rig records no ack, so the App's ack reply stands for one.
+	r := f.AddReaction(digestRunCommentID(t, f, 1, want[1]), "owner", "+1")
+	f.AddComment(1, app, errAckReply("owner", "type", strconv.FormatInt(next, 10), r))
+	for range 2 {
+		g.pass()
+	}
+	want = append(want, fmt.Sprintf("<!-- issuedog:error kind=type key=%d ack=r%d -->", next, r))
+	if errs := errorMarkers(f, 1); g.runs() != 1 || !slices.Equal(errs, want) {
+		t.Fatalf("%d runs, errors %q after the 👍; want still one run, and %q", g.runs(), errs, want)
+	}
+	typeErrRetype(f, 1, "idea", "task")
+	g.pass()
+	if g.runs() != 2 {
+		t.Errorf("%d runs after a change to a known type; want triage to run again", g.runs())
 	}
 }
 
@@ -561,5 +591,78 @@ func TestTypeErrInputsTrustError(t *testing.T) {
 	err = daemon.ErrorByReaction(typeErrLoginTrust{errAckTrust, "mallory"})(context.Background(), a, s, daemon.Dirt{})
 	if !errors.Is(err, errTrust) || !strings.HasPrefix(err.Error(), "acknowledgments on o/r#1: open state errors of #1: inputs of #1: trust mallory: ") {
 		t.Errorf("err = %v; want errTrust, wrapped", err)
+	}
+}
+
+// runStage holds a run back while any type error reported on the issue is
+// still the cause, not only the one keyed by the type change that stands
+// (#179's Q1a): on an issue at intake whose type error for type:feature
+// was posted, changed to type:idea, triage doesn't run even where step 1
+// hasn't posted the new key's error, as when Work is given the issue
+// straight after the label rules. An ack reply alone, as after the error's
+// comment was deleted, counts as reported too, but a state error of
+// another kind, posted or acknowledged, doesn't, nor does an ack with no
+// kind, which is older than type errors: triage runs, and its move reports
+// the type error.
+func TestTypeHoldAnyKey(t *testing.T) {
+	labels := "Labels.\n\n<!-- issuedog:error kind=labels key=1 -->"
+	kindless := "Acknowledged, by `owner`'s 👍.\n\n<!-- issuedog:error key=9001 ack=r5 -->" // from before acks named a kind
+	for name, tc := range map[string]struct {
+		reported []string
+		runs     int
+		errs     []string
+	}{
+		"posted":       {[]string{typeErrWant("feature", "intake", 9001, true)}, 0, []string{"<!-- issuedog:error kind=type key=9001 -->"}},
+		"acknowledged": {[]string{errAckReply("owner", "type", "9001", 5)}, 0, []string{"<!-- issuedog:error kind=type key=9001 ack=r5 -->"}},
+		"another kind": {[]string{labels, errAckReply("owner", "labels", "1", 5)}, 1, []string{"<!-- issuedog:error kind=labels key=1 -->",
+			"<!-- issuedog:error kind=labels key=1 ack=r5 -->", "<!-- issuedog:error kind=type key=9003 -->"}},
+		"a kindless ack": {[]string{kindless}, 1, []string{"<!-- issuedog:error key=9001 ack=r5 -->", "<!-- issuedog:error kind=type key=9003 -->"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t)
+			f.AddIssue("owner", "Idea", "An idea.", "type:feature")
+			for _, c := range tc.reported {
+				f.AddComment(1, app, c)
+			}
+			typeErrRetype(f, 1, "feature", "idea")
+			g := triageRig(t, f, triageOrigin(t), t.TempDir())
+			g.claude(triageOut("handle", true, triageReason, triageSummary), 0)
+			s := g.snapshot(1)
+			if err := g.d.Step.CheckLabels(context.Background(), s, g.d.Step.Trust, func(int64) bool { return false }); err != nil {
+				t.Fatal(err)
+			}
+			if err := g.r.Work(context.Background(), []daemon.Ready{{S: s}}); err != nil {
+				t.Fatal(err)
+			}
+			if errs := errorMarkers(f, 1); g.runs() != tc.runs || !slices.Equal(errs, tc.errs) {
+				t.Errorf("%d runs, errors %q; want %d, and %q", g.runs(), errs, tc.runs, tc.errs)
+			}
+		})
+	}
+}
+
+// A 👍 on the revision of an epic retyped as a task, given while the type
+// error holds the approval back, still counts once the type is fixed
+// (#179's Q2a): setting type:epic again moves the issue to planning on
+// that 👍, as the revision it approves still matches the body (SPEC §7.4).
+func TestTypeHoldApprovalCountsLater(t *testing.T) {
+	f := typeErrEpic(func(t testing.TB, f *githubtest.Fake) {
+		flagWant(t, typeErrRetype(f, 1, "epic", "task"), 9004)
+		flagWant(t, f.AddReaction(1001, "owner", "+1"), 1002)
+	})(t)
+	pass := typeErrPass(t, false)
+	errAckRun(t, f, pass)
+	if labels := f.State().Issues[0].Labels; !slices.Contains(labels, "stage:spec-review") {
+		t.Fatalf("labels %v while the type error stands; want it still at spec-review", labels)
+	}
+	typeErrRetype(f, 1, "task", "epic")
+	errAckRun(t, f, pass)
+	got := commentBodies(f, 1)
+	if len(got) == 0 || !strings.HasPrefix(got[len(got)-1], "Revision 1 of the spec is approved, by owner's 👍.") ||
+		!strings.Contains(got[len(got)-1], "cmd=r1002") {
+		t.Errorf("comments %q; want the last to approve revision 1 on the 👍 r1002", got)
+	}
+	if labels := f.State().Issues[0].Labels; !slices.Contains(labels, "stage:planning") {
+		t.Errorf("labels %v once the type is fixed; want it at planning", labels)
 	}
 }
