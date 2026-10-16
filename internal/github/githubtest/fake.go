@@ -30,8 +30,8 @@ import (
 var Start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // Fake serves one repo's issues, comments, labels, timelines, reactions,
-// parents and sub-issues, the GraphQL queries for their edits and pins, and
-// the pinIssue mutation. Its API writes, comment edits, created issues and
+// parents and sub-issues, the GraphQL queries for their edits, deleted
+// comments and pins, and the pinIssue mutation. Its API writes, comment edits, created issues and
 // pins included, are made by the App, "<slug>[bot]" of type Bot. A GET whose
 // answer hasn't changed gets a 304. Every write (any method but GET, and a
 // GraphQL mutation) is logged, and FailWrite can fail one.
@@ -86,6 +86,7 @@ type issue struct {
 	labelEvents    []*gogithub.Timeline            // labeled, unlabeled, renamed, closed, reopened and issue-type events, oldest first
 	pinned         bool                            // to the repo's issue list (PinIssue)
 	typeEvents     map[int64]issueTypeRevertChange // the types of each issue-type event, by its ID
+	deletions      []deletedEvent                  // CommentDeletedEvents, oldest first (DeleteCommentBy)
 }
 
 type comment struct {
@@ -254,7 +255,8 @@ func (f *Fake) EditComment(id int64, login, body string) {
 	f.findComment(id).editBy(login, body, f.tick())
 }
 
-// DeleteComment deletes a comment, as its author or a maintainer can.
+// DeleteComment deletes a comment, as its author or a maintainer can, with
+// no CommentDeletedEvent: DeleteCommentBy records one.
 func (f *Fake) DeleteComment(id int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

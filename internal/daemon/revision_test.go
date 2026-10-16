@@ -337,7 +337,7 @@ func visitPass(t *testing.T) func(*githubtest.Fake) error {
 	}
 }
 
-const hidden = "a comment of mine after revision 1 was edited without approval, " +
+const hidden = "a comment of mine after revision 1 was edited without approval or deleted, " +
 	"so it may hide a newer revision. Approve the next revision I post instead"
 
 // A dirty App comment after the latest clean revision may be a newer
