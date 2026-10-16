@@ -533,6 +533,11 @@ func TestStartDaemonUsesCurrentModels(t *testing.T) {
 	if is := f.State().Issues; len(is) != 2 || is[1].Title != "issuedog digest" || is[1].Author != app || !is[1].Pinned {
 		t.Errorf("issues = %+v; want the task and a pinned digest of the App's", is)
 	}
+	// It keeps the assignees too (#191): the task, at ready with nothing
+	// waiting, has nobody.
+	if is := f.State().Issues[0]; !d.Assign || is.Assignees != nil {
+		t.Errorf("Assign = %t, the task's assignees = %q; want assignment on, and nobody", d.Assign, is.Assignees)
+	}
 
 	dir := t.TempDir()
 	work := filepath.Join(dir, "work")

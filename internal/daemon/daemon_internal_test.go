@@ -113,6 +113,11 @@ func TestChangedInTheSameSecond(t *testing.T) {
 			is.ParentIssueURL = new("")
 			return is
 		}(), false},
+		{"same second, an assignee", func() *gogithub.Issue {
+			is := issue(0, "body", "stage:ready", "priority:p2")
+			is.Assignees = []*gogithub.User{{Login: new("owner")}}
+			return is
+		}(), true},
 	} {
 		if got := changed(s, tc.issue); got != tc.want {
 			t.Errorf("%s: changed = %t, want %t", tc.name, got, tc.want)
@@ -124,6 +129,17 @@ func TestChangedInTheSameSecond(t *testing.T) {
 	sub.Parent = 3
 	if changed(&sub, issue(0, "body", "stage:ready", "priority:p2")) {
 		t.Error("a sub-issue listed with no parent URL is changed, want unchanged")
+	}
+	// Assignees compare as a set, in any case, as GitHub's logins do (#191).
+	assigned := *s
+	assigned.Assignees = []string{"Owner", "bob"}
+	same := issue(0, "body", "stage:ready", "priority:p2")
+	same.Assignees = []*gogithub.User{{Login: new("bob")}, {Login: new("owner")}}
+	if changed(&assigned, same) {
+		t.Error("the same assignees in another order and case are changed, want unchanged")
+	}
+	if !changed(&assigned, issue(0, "body", "stage:ready", "priority:p2")) {
+		t.Error("an issue listed with its assignees gone isn't changed, want changed")
 	}
 	if !changed(nil, issue(0, "body")) {
 		t.Error("an issue with no snapshot isn't changed, want changed")

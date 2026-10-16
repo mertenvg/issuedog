@@ -24,6 +24,10 @@ type Snapshot struct {
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	Labels    []string
+	// Assignees are the issue's assignees' logins, in GitHub's order, read
+	// from the issue GET Snapshot makes anyway (#191). They're never state
+	// (SPEC §5): only assignment reads them, to write the difference.
+	Assignees []string
 	// Type is the issue type's name or else the first type:* label's
 	// suffix, in lower case, and empty if there is neither (SPEC §4).
 	Type string
@@ -106,6 +110,7 @@ func (c *Client) Snapshot(ctx context.Context, owner, repo string, number int) (
 	for _, l := range issue.Labels {
 		s.Labels = append(s.Labels, l.GetName())
 	}
+	s.Assignees = assignLogins(issue.Assignees)
 	parent, resp, err := c.SubIssue.GetParentIssue(ctx, owner, repo, int64(number))
 	switch {
 	case resp != nil && resp.StatusCode == http.StatusNotFound:

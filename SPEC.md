@@ -786,7 +786,7 @@ The owner finds everything waiting on them in GitHub's own "assigned to me" view
 | Dropped with an open PR | The issue is held with `reason=dropped` (6.4), until its PR merges or closes |
 | Triage flag | The issue's latest triage marker is a flag (6.2), until a code owner answers it |
 
-- These are the same items the digest lists (9.4). Assignment isn't built yet (#87). It takes its items from the same list the digest builds, so the two never disagree, and each story that adds a kind of item adds it to that list. Phase 1's list has no item at `plan-review` yet, since nothing approves a plan (9.4).
+- These are the same items the digest lists (9.4). Assignment is built for the items that list has today, on issues (#191): a question round, a spec at `spec-review`, a state error and a triage flag. It takes its items from the same list the digest builds, so the two never disagree, and each story that adds a kind of item adds it to that list. Phase 1's list has no item at `plan-review` yet, since nothing approves a plan (9.4).
 - Each PR carries the `priority:*` label of the task it closes. The task's label is the priority: the daemon copies it to the PR and reverts any other change to the PR's label.
 - The owner sees what's waiting with `is:open assignee:@me sort:created-asc`, and the most urgent items by adding `label:priority:p0` or `label:priority:p1`. The digest orders the same items by how much each one unblocks (9.4).
 - Only the App changes assignees on pipeline issues and PRs. Assignees are never read as state (section 5): a manual change is reverted on the next poll and changes nothing else.

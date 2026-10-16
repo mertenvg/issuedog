@@ -42,9 +42,16 @@ type Daemon struct {
 	// new items (digest.go). Set or not, every digest is kept out of the
 	// pipeline.
 	Digest bool
+	// Assign, if set, keeps each pipeline issue's assignees: the notify
+	// users while something on it waits on the owner, and nobody otherwise
+	// (assign.go). Set or not, what waits is listed for every issue.
+	Assign bool
 
 	digest        digestState
-	digestCache   map[int][]waitItem // what waits on the owner, by issue, after its last good step 1; only with Digest set
+	digestCache   map[int][]waitItem // what waits on the owner, by issue, after its last good step 1, for the digest and assignment
+	assignManaged map[int]bool       // issues whose assignees assignment keeps, as of their last pass (assign.go)
+	assignDropped map[string]bool    // logins, in lower case, GitHub wouldn't assign (assignDrop)
+	assignFor     string             // the notify list, in lower case, that assignDropped was found with
 	snaps         map[int]*github.Snapshot
 	inputs        map[int][]github.Comment // only for snapshots step 1 succeeded on
 	openErrs      map[int]bool             // issues with an open state error after their last step 1
@@ -115,8 +122,8 @@ func (d *Daemon) Run(ctx context.Context) {
 // waits on the owner (digestCacheSet), with the issue's dirty content, which
 // openErrAny takes too; an issue whose read or step 1 fails keeps its last
 // items, and one that closes or leaves the listing loses them. Then it
-// keeps the digest (digestPass), whose failure stops nothing. Last it hands Work the
-// issues ready for it. It returns the errors of the issues it couldn't read
+// keeps the digest (digestPass), and then the assignees (assignPass), whose
+// failures stop nothing. Last it hands Work the issues ready for it. It returns the errors of the issues it couldn't read
 // or run step 1 on, which the next Iterate reads again. An issue whose
 // labels CheckLabels holds back (ErrLabelsHeld) is no error: like a touched
 // issue, it gets nothing more this pass, and is read again on the next.
@@ -162,6 +169,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			delete(d.missing, n)
 			delete(d.openErrs, n)
 			delete(d.digestCache, n)
+			delete(d.assignManaged, n)
 			d.Step.forgetLabels(n)
 		case gone(err):
 			// One answer may be wrong, so it's read again next pass.
@@ -223,15 +231,16 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			continue
 		}
 		d.inputs[n] = in
-		if d.Digest {
-			d.digestCacheSet(s, in, dirt)
-		}
+		d.digestCacheSet(s, in, dirt) // for assignment too, so with the digest off as well
 	}
 	for n := range touched {
 		delete(d.inputs, n)
 		d.stale[n] = true
 	}
 	if err := d.digestPass(ctx); err != nil {
+		errs = append(errs, err)
+	}
+	if err := d.assignPass(ctx); err != nil {
 		errs = append(errs, err)
 	}
 	if d.Work != nil {
@@ -320,6 +329,7 @@ func (d *Daemon) poll(ctx context.Context) error {
 				delete(d.missing, n) // so a reopened issue starts with no strike
 				delete(d.openErrs, n)
 				delete(d.digestCache, n) // a closed issue has nothing waiting
+				delete(d.assignManaged, n)
 				a.forgetLabels(n)
 			case changed(d.snaps[n], is):
 				d.stale[n] = true
@@ -356,7 +366,7 @@ func (d *Daemon) poll(ctx context.Context) error {
 
 // changed reports whether the listed issue is newer than s, or s is nil.
 // GitHub's times are to the second, so at the same time it compares the
-// title, body, type, labels and, if listed, the parent too.
+// title, body, type, labels, assignees and, if listed, the parent too.
 func changed(s *github.Snapshot, is *gogithub.Issue) bool {
 	if s == nil {
 		return true
@@ -381,6 +391,9 @@ func changed(s *github.Snapshot, is *gogithub.Issue) bool {
 		return true
 	}
 	if is.ParentIssueURL != nil && parentOf(is.GetParentIssueURL()) != s.Parent {
+		return true
+	}
+	if !assignSame(assignListed(is), s.Assignees) {
 		return true
 	}
 	held := make([]string, 0, len(s.Labels))
