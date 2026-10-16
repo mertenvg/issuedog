@@ -198,7 +198,7 @@ Apart from the App key (section 3.1), the only local files are the lease (sectio
     - The daemon finds such edits in the GraphQL `userContentEdits` history. It reads the history only for content whose last edit was sanctioned, since someone else may have edited it before, and not for a body whose last edit is the App's full rewrite, since the body is that edit's text. A history that doesn't reach the last edit counts as dirty.
     - GitHub keeps only the original post and the 99 newest edits (section 16). So the App puts a visible note at the top of dirty content, carrying `<!-- issuedog:dirty by=<login> -->`, and keeps the rest of the text, escaped. The note keeps the content dirty after the history drops the edit. A note that is removed, or names someone else, is put back.
   - **Edits and deletions by untrusted users.** When an untrusted write collaborator edits trusted content, or deletes a comment, section 6.4 says what happens.
-  - **The digest.** Its body is the exception to two rules above (9.4). The daemon never takes a snapshot of the digest, so it never reads the body for state, only to find the digest.
+  - **The digest.** Its body and comments are exceptions to the rules above (9.4). The daemon never takes a snapshot of the digest, so it never reads the body for state, only to find the digest and its pin note (9.4).
     - **Its identity marker.** `<!-- issuedog:digest -->` is read even in an edited or dirty body. Only the App can author the issue, the marker holds no state, and the next pass writes the body again anyway.
     - **No `rewrite` marker.** The digest's body is a whole body the App writes, but it doesn't start with a `rewrite` marker. It has no run to name, and its first line is the pin note when there is one (9.4).
     - Its `digest-new` comments count only while they have never been edited, by anyone (9.4). That is stricter than the dirty rule.
@@ -233,20 +233,20 @@ A state error is something the daemon reports to the owner instead of acting on:
   - **Kind.** An ack covers only the kind and key it names. An ack with no `kind`, from before acks named one, covers its key for every kind. Comment IDs and timeline event IDs come from separate sequences, so without the kind an ack of one error could silence a later, different error with the same number.
   - **Only open errors.** A 👍 on an error that has ended, acknowledged or with its cause gone, is ignored: its reactions aren't read. An error whose only copy is in an issue body can't be acknowledged, but the App never posts one there.
   - A 👍 doesn't change the issue's `updated_at`, so step 1 visits an issue with an open error on every pass (8.1).
-- Otherwise the error ends when its cause is gone. A type mismatch ends when the type fits the stage again. A missing transition or a disagreement ends at the issue's next valid transition, including a trusted user's manual stage change (5.1). A stage run's error ends when the issue moves or gets new input. A labels error ends at the next change to the labels that stands; if they still give no settings, that is a new occurrence.
+- Otherwise the error ends when its cause is gone. A type mismatch ends when the type is no longer the cause (see Types). A missing transition or a disagreement ends at the issue's next valid transition, including a trusted user's manual stage change (5.1). A stage run's error ends when the issue moves or gets new input. A labels error ends at the next change to the labels that stands; if they still give no settings, that is a new occurrence.
   - **Open.** An error is open until it is acknowledged or its cause is gone. One on a closed issue is never open. For each kind, the cause is gone:
     - `transition` and `disagreement`: at a transition marker in a later comment than the error's. A run's missing transition also ends when its key changes: the issue moves, gets new input, or changes type or parent.
     - `attempts`: when its key changes, as the issue moves or gets new input.
     - `labels`: when the change to the model and effort labels that stands changes.
-    - `type`: when the type fits the stage, or a newer type change stands. If that type doesn't fit either, it's a new occurrence with a new key.
+    - `type`: when the type is no longer the cause, or a newer type change stands. If the type is still the cause, it's a new occurrence with a new key.
     - any other kind: never, so only an ack ends it.
 - **Types.** A type that doesn't fit the issue's stage is a `kind=type` error (section 4).
-  - **What fits.** `intake`, `clarifying` and `held` fit every type, untyped included. Any other stage, closed included, fits a class when a 7.2 row for that class has it as its from or to. The "any open" rows don't count. A type the pipeline doesn't know, such as `type:feature`, fits only `intake`.
-  - **The cause.** The type is the cause only when no issue of that type fits the stage, whatever its parent, origin or past. So an owner's story at `spec-review` that gains a parent is no type error. A move the table lacks there is a `kind=transition` error, as before.
+  - **What fits.** `intake`, `clarifying` and `held` fit every type the pipeline knows, untyped included. Any other stage, closed included, fits a class when a 7.2 row for that class has it as its from or to. The "any open" rows don't count. A type the pipeline doesn't know, such as `type:feature`, fits only `intake`.
+  - **The cause.** The type is the cause when the pipeline doesn't know it, at any stage: even at `intake`, which it fits, since the table never moves it on. A known type is the cause only when no issue of that type fits the stage, whatever its parent, origin or past. So an owner's story at `spec-review` that gains a parent is no type error. A move the table lacks there is a `kind=transition` error, as before.
   - **The key.** The type change that stands: the newest `labeled` or `unlabeled` event of a `type:*` label that stands (5.1), or on a `types: issue-types` repo, the newest issue-type event, whoever made it (section 16). On a `types: labels` repo, an issue that also has a GitHub issue type takes its type from the issue type, but its key from the labels. With no type change standing, nothing keys a type error.
-  - **When.** Step 1 checks the type right after the label rules and the dirty notes (8.1), on an open issue with a transition marker. A type that is the cause, with a key, gets one error per key, and the issue stays where it is. The interviewer sets a type only at `clarifying`, which fits every type, so it never causes one.
+  - **When.** Step 1 checks the type right after the label rules and the dirty notes (8.1), on an open issue with a transition marker. A type that is the cause, with a key, gets one error per key, and the issue stays where it is. The interviewer sets only types the pipeline knows, and only at `clarifying`, which fits every such type, so it never causes one.
   - **Unknown types and missing moves.** A move the table lacks because the type is the cause, such as an unknown type's move out of intake (6.2), reports the type error, not `kind=transition`. With no type change standing, it's a `kind=transition` error, keyed by its trigger.
-  - **Holding back.** While a type error has been reported, acknowledged or not, a move it blocks is logged, not posted as a second error, and no stage runs on the issue, triage included, until its type fits the stage (8.3). So a 👍 acknowledges a type error but doesn't let the stage run again.
+  - **Holding back.** While a type error has been reported, acknowledged or not, a move it blocks is logged, not posted as a second error, and no stage runs on the issue, triage included, until the type is no longer the cause (8.3). So a 👍 acknowledges a type error but doesn't let the stage run again.
 - A command that doesn't apply at the issue's stage isn't a state error. The rejection reply (9.2) is enough, and nobody is assigned for it.
 
 ## 6. Trust model
@@ -280,7 +280,7 @@ An untrusted author's issue enters only by `approved`, `/track` or a trusted �
 
 An issue the table can't move, such as an approved issue of a type the pipeline doesn't know, stays at intake and gets one state error (5.3):
 
-- When a type change stands, the type is the cause, so it is a `kind=type` error, keyed by that change. Triage doesn't run on the issue while that error is reported, even once a trusted 👍 acknowledges it, until its type fits.
+- When a type change stands, the type is the cause, so it is a `kind=type` error, keyed by that change. Triage doesn't run on the issue while that error is reported, even once a trusted 👍 acknowledges it, until the type changes to one the pipeline knows (5.3).
 - Otherwise, as for a GitHub issue type on a `types: labels` repo, it is a `kind=transition` error, keyed by the admitting event, comment or reaction. Triage doesn't run on the issue while that error stands.
 
 Only these move it on: a trusted 👍 on a `kind=transition` error, which lets triage run again, a stage label, `approved` or `/track`, or a fix to its type while `approved`, or a trusted author's `stage:intake`, still stands.
@@ -364,7 +364,7 @@ Write collaborators who aren't trusted users (6.1) can take part in an issue, bu
 - their deletion of such a comment, seen as a `CommentDeletedEvent` on the issue timeline
 - their renaming of the issue
 
-Closes and reopens are separate. Any close by someone who isn't trusted, the App, or a merged PR is reverted at once: the daemon reopens the issue, so a parent never closes on an untrusted close (7.3). The close holds the issue only if the closer is a write collaborator. An untrusted reopen of a closed issue is reverted too, and holds nothing. The digest isn't in the pipeline and is never held: 9.4 says how its closes and reopens are handled.
+Closes and reopens are separate. Any close by someone who isn't trusted, the App, or a merged PR is reverted at once: the daemon reopens the issue, so a parent never closes on an untrusted close (7.3). The close holds the issue only if the closer is a write collaborator. An untrusted reopen of a closed issue is reverted too, and holds nothing. The digest isn't in the pipeline and is never held by its own close or reopen: 9.4 says how they are handled.
 
 Comments from people without write access hold nothing. They reach agents only as untrusted input (6.2).
 
@@ -550,7 +550,7 @@ Each loop iteration:
 - **Other stage runs.** A failed triage, interviewer, planner or story-verifier run is tried again, up to `loop.max_attempts` (default 3) runs in a row per round. A round starts when the issue moves, or when it gets new input. For triage, only a way into the pipeline (6.2) ends it, since triage's input never starts a new round. After the last failed attempt, the issue gets one state error, `kind=attempts` (5.3), and the stage doesn't run again until the round changes.
   - A run fails when its result isn't a `success` or is an error (3.3), when its output fails validation or the stage's check (8.2), when it times out, when it leaves no valid result across a restart (8.2), or when its result fails to apply `loop.max_attempts` times. A GitHub read that fails inside a stage's check is a failure to apply, so it counts only toward that limit.
   - A usage limit (3.3), a failure to start the run, a shutdown and a dropped result (8.2) don't count, nor an apply held back by unexplained labels (5.1).
-  - A result asking for a transition the table lacks isn't an attempt either. It gets one state error, `kind=transition`, and the stage doesn't run again until the issue moves, gets new input, or changes type or parent. When the type is the cause, the type error (5.3) stands for it instead, and the stage waits until the type fits.
+  - A result asking for a transition the table lacks isn't an attempt either. It gets one state error, `kind=transition`, and the stage doesn't run again until the issue moves, gets new input, or changes type or parent. When the type is the cause, the type error (5.3) stands for it instead, and the stage waits until the type is no longer the cause.
   - **The interviewer is an exception to that rule.** Its check (9.1) fails a result that would leave the issue with no move, before anything is written. The main case is typing an issue with a parent as `story` (section 4): the table moves only a story with no parent to `spec-review`, and the interviewer doesn't run on a story with a parent, so a round would get no answers read. Such output is invalid, so it is a failed attempt, not a `kind=transition` state error. After `loop.max_attempts` of them, the owner gets the `kind=attempts` state error. A result on an issue the interviewer no longer runs on, such as one the owner retyped as a task or gave a parent during the run, is a failed attempt too.
 
 ## 9. Owner interaction
@@ -706,14 +706,14 @@ One pinned issue per repo, `issuedog digest`. It uses one of the repo's three pi
 **Closing it.**
 
 - A close by a trusted user (6.1), not a bot, turns the digest off until a trusted user reopens it: no edits, no comments and no pin. No other digest is created meanwhile.
-- Any other close or reopen is reverted, as 6.4 does for any issue. A reopen after a trusted close is closed again. The digest is never held, so the revert is silent: no notice is posted.
+- Any other close or reopen is reverted, as 6.4 does for any issue. A reopen after a trusted close is closed again. The digest is never held by its own close or reopen, so the revert is silent: no notice is posted.
 - Which close stands is read from the timeline, so it holds across restarts. A closer who later loses trust no longer counts, so the next read of the timeline reopens the digest.
-- The timeline is read only for a digest that was ever closed, and only when its listing changed other than by the App's own write. A close or reopen whose event GitHub hasn't written yet is looked at again on the next pass, with nothing reverted.
+- The timeline is read only for a digest that was ever closed, and only when its listing changed other than by the App's own write. A close whose event GitHub hasn't written yet is looked at again on the next pass, with nothing reverted. A late reopen is looked at again only while a close is the newest event (section 16).
 
 **Items in phase 1, and their keys.** Each item has a key that names it across passes and restarts. `<n>` is the issue number.
 
 - **State error.** Each open error (5.3). Key: `err-<n>-<kind>-<key>`. The item gives the kind and key, copies the lines of the error comment, and says to 👍 it. An error whose only copy is in the issue body says it ends when its cause is gone.
-- **Pending approval.** The issue is at `spec-review`. Key: `rev-<n>-<rev>`, the latest revision, or `rev-<n>-0` with none yet. If the revision can't be approved yet, the item says why: a dirty body, a dirty App comment after the revision that may hide a newer one, a body that no longer matches its hash, a type error that holds the approval back (5.3), or a type that doesn't go on to `planning`. Nothing approves a plan yet, so `plan-review` gives no item, although 9.6 assigns it.
+- **Pending approval.** The issue is at `spec-review`. Key: `rev-<n>-<rev>`, the latest revision, or `rev-<n>-0` with none yet. If the revision can't be approved yet, the item says why: a dirty body, a dirty App comment after the revision that may hide a newer one, a body that no longer matches its hash, a type error that holds the approval back (5.3), a type that doesn't say what kind of issue it is, or a type that doesn't go on to `planning`. Nothing approves a plan yet, so `plan-review` gives no item, although 9.6 assigns it.
 - **Open question.** The issue is at `clarifying`, its latest transition is an interviewer round with `round` and `questions` of 1 or more (9.1), and no trusted answer has come since. Key: `q-<n>-<round>`. A typed bug or task's move carries neither field, so it gives no item while it waits for phase 3.
 - **Triage flag.** The issue is at intake with no stage label, and its latest triage marker that counts is a flag, `verdict=ask` (6.2). Key: `flag-<n>-<comment id>`.
 - A round's or a flag's questions and options are copied from the App's own clean comment, whose `**N. …** Blocks:` and `a. … (recommended):` lines have a fixed format. If they can't be read back, the item says to see the comment.
@@ -769,7 +769,7 @@ The owner finds everything waiting on them in GitHub's own "assigned to me" view
 | State error | From the daemon's state-error comment until a trusted user reacts 👍 to it, or its cause is gone (5.3) |
 | Discussion hold | The issue is held for discussion and a trigger is unresolved (6.4) |
 | Dropped with an open PR | The issue is held with `reason=dropped` (6.4), until its PR merges or closes |
-| Triage flag | The issue's latest triage marker is a flag (6.2), until a code owner answers it. Not built yet (#87) |
+| Triage flag | The issue's latest triage marker is a flag (6.2), until a code owner answers it |
 
 - These are the same items the digest lists (9.4). Assignment isn't built yet (#87). It takes its items from the same list the digest builds, so the two never disagree, and each story that adds a kind of item adds it to that list. Phase 1's list has no item at `plan-review` yet, since nothing approves a plan (9.4).
 - Each PR carries the `priority:*` label of the task it closes. The task's label is the priority: the daemon copies it to the PR and reverts any other change to the PR's label.
@@ -1087,6 +1087,7 @@ Changes to this file go through a human-authored PR (section 6.3).
   - Both are visible to the owner. A later fix could read an App issue's original text through `userContentEdits`.
 - **The digest's pin note.** An untrusted write collaborator who puts "I couldn't pin this issue…" at the top of the digest's body just before a restart makes that start pin it again, overriding the owner's unpin. Otherwise the next pass writes the body again without it.
 - **The digest's closes and reopens.** A trusted close followed by an untrusted reopen, both between the poll and the App's next write to the digest, or in the same second as that write, look like the write's own change (9.4). They're missed until the next change to the digest by someone other than the App, or a restart.
+- **A late reopen of the digest.** The daemon waits for a late close's event, but takes any `reopened` event as the newest. So on a digest that was reopened before, a trusted close and an untrusted reopen, both within GitHub's event lag, leave the digest open until it changes again or the daemon restarts. #179 fixes the code.
 - **The digest as a sub-issue.** Someone may make the digest a sub-issue. If the owner then holds its parent, `/hold` gives the digest `stage:held` and a transition comment. It still stays out of the pipeline.
 - **Links in titles.** The digest escapes `[`, `]`, `!` and `\` in titles (9.4), but GitHub still autolinks a bare `https://…` or `www.…`, which shows its whole target and loads nothing, and `owner/repo#1` still makes a cross-reference. Decide whether to escape those too.
 - **Hiding an announcement.** Whether hiding a comment changes its `updated_at` isn't known. If it does, a hidden `digest-new` comment counts as edited, and its items are announced once more.
