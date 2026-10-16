@@ -356,35 +356,38 @@ type transition struct {
 // prevAt) and after the change t records, it is one unless it names t's from
 // or to stage: then the transition saw it, or agrees with it.
 //
-// The one add of t's to stage that is still one is stage:held that the user
-// who adds it back removed after t moved the issue to held. Holds stack
+// The one add of t's to stage that is still one is stage:held whose last
+// change before it is a removal by the same user, made after t moved the
+// issue to held (heldStackRemovedBy). Holds stack
 // (SPEC §6.4), so a hold set by hand on a held issue is a hold of its own
 // (plan #87 rev 2, Q2b), which S4 records in a held → held marker. An add
 // of stage:held that wasn't on since t, as after the App's own write was cut
-// short or after someone else removed it, agrees with t. acc is the latest
-// change to l that stands, so a removal by its user after t comes before
-// it, and an add made while t was in flight has none. Once recorded, the
-// removal is older than the latest marker.
+// short or after someone else removed it last, agrees with t, as does an
+// add made while t was in flight. Once recorded, the removal is older than
+// the latest marker.
 func (t transition) overrides(l *labelState, acc *gogithub.Timeline, at, prevAt int) bool {
 	is := func(stage string) bool { return stage != "" && strings.EqualFold(l.name, "stage:"+stage) }
 	switch {
 	case is(t.to):
-		return strings.EqualFold(t.to, "held") && l.heldStackRemovedBy(acc.GetActor().GetLogin(), t.at)
+		return strings.EqualFold(t.to, "held") && l.heldStackRemovedBy(acc, at, t.at)
 	case at > t.at:
 		return true
 	}
 	return at > max(prevAt, t.recorded) && !is(t.from)
 }
 
-// heldStackRemovedBy reports whether login removed the label l after
-// timeline position after.
-func (l *labelState) heldStackRemovedBy(login string, after int) bool {
-	for i, e := range l.events {
-		if l.ats[i] > after && e.GetEvent() == "unlabeled" && strings.EqualFold(e.GetActor().GetLogin(), login) {
-			return true
-		}
+// heldStackRemovedBy reports whether the change to the label l just before
+// add, its event at timeline position at, is a removal by add's user, made
+// after timeline position after: the user removed the label and added it
+// back. A removal by someone else in between, even after the App put back
+// one by add's user, makes add agree with the label as it stood.
+func (l *labelState) heldStackRemovedBy(add *gogithub.Timeline, at, after int) bool {
+	k := slices.Index(l.ats, at)
+	if k < 1 {
+		return false
 	}
-	return false
+	e := l.events[k-1]
+	return l.ats[k-1] > after && e.GetEvent() == "unlabeled" && strings.EqualFold(e.GetActor().GetLogin(), add.GetActor().GetLogin())
 }
 
 // labelRules carries what CheckLabels needs to judge and revert one change.

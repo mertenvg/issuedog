@@ -56,27 +56,33 @@ func (st *Step) Run(ctx context.Context, s *github.Snapshot) ([]github.Comment, 
 	}
 	// Replies are added to s.Comments, so range over the comments read.
 	read := slices.Clone(s.Comments)
-	comments := func() error {
+	// comments handles the comments read, and reports whether one of them
+	// took the issue out of held, even one that held it in the same pass.
+	comments := func() (bool, error) {
+		left, held := false, state.Derive(s, st.AppSlug, d.Has).Stage == state.Held
 		for _, c := range read {
 			if !counts[c.ID] {
 				continue
 			}
 			if err := st.handle(ctx, s, d, c); err != nil {
-				return fmt.Errorf("comment %d: %w", c.ID, err)
+				return false, fmt.Errorf("comment %d: %w", c.ID, err)
 			}
+			now := state.Derive(s, st.AppSlug, d.Has).Stage == state.Held
+			left, held = left || held && !now, now
 		}
-		return nil
+		return left, nil
 	}
-	held := state.Derive(s, st.AppSlug, d.Has).Stage == state.Held
-	if err := comments(); err != nil {
+	left, err := comments()
+	if err != nil {
 		return nil, wrap(err)
 	}
 	// A hold keeps the round it came in (state.HeldStack.Seen), so once a
 	// command takes the issue out of held, the comments posted while it was
 	// held are handled again in the stage it landed in, as the next pass
-	// would, and as a replay of this one after a crash does.
-	if held && state.Derive(s, st.AppSlug, d.Has).Stage != state.Held {
-		if err := comments(); err != nil {
+	// would, and as a replay of this one after a crash does. The commands
+	// are processed by then, so this pass moves the issue no more.
+	if left {
+		if _, err := comments(); err != nil {
 			return nil, wrap(fmt.Errorf("after the hold: %w", err))
 		}
 	}

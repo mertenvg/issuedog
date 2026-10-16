@@ -224,6 +224,49 @@ func TestHeldStackResumeNamesTheRest(t *testing.T) {
 	})
 }
 
+// #185's verify: a hold that starts and ends in one pass keeps the round
+// too. /hold, a comment and /resume, all posted before one poll, leave the
+// comment an answer at once, as a replay after a crash part way does, and
+// the next pass writes nothing.
+func TestHeldStackHoldAndResumeInOnePass(t *testing.T) {
+	var request, hold, during, resume int64
+	steps := []heldStackStep{
+		{1, heldStackSay(1, "too long", &request)},
+		{1, func(t testing.TB, f *githubtest.Fake) {
+			heldStackSay(1, "/hold", &hold)(t, f)
+			heldStackSay(1, "use X", &during)(t, f)
+			heldStackSay(1, "/resume", &resume)(t, f)
+		}},
+	}
+	setup := heldStackSetup(review(func(testing.TB, *githubtest.Fake) {}), steps)
+	var in []string
+	githubtest.Replay(t, setup, heldStackPass(t, 1, &in))
+	before := len(setup(t).State().Issues[0].Comments)
+	got := run(t, setup, heldStackPass(t, 1, &in)).State().Issues[0]
+	var added, acked []string
+	for i, c := range got.Comments {
+		if i >= before {
+			added = append(added, c.Body)
+		}
+		if slices.Contains(c.Reactions, app+" +1") {
+			acked = append(acked, c.Body)
+		}
+	}
+	want := []string{
+		moved("On hold by `/hold`, from `clarifying`.", fmt.Sprintf("from=clarifying to=held at=clarifying reason=owner cmd=%d seen=%d", hold, request)),
+		moved("Resumed by `/resume`, back to `clarifying`.", fmt.Sprintf("from=held to=clarifying cmd=%d seen=%d", resume, request)),
+	}
+	if !reflect.DeepEqual(added, want) || !reflect.DeepEqual(got.Labels, []string{"stage:clarifying"}) {
+		t.Errorf("new comments %q and labels %q, want %q and clarifying", added, got.Labels, want)
+	}
+	if w := []string{"too long", "/hold", "use X", "/resume"}; !reflect.DeepEqual(acked, w) {
+		t.Errorf("👍'd %q, want %q", acked, w)
+	}
+	if w := []string{"too long", "use X"}; !reflect.DeepEqual(in, w) {
+		t.Errorf("inputs %q, want %q", in, w)
+	}
+}
+
 // #80's note 2 and #83's note: a hold at clarifying keeps the round, so a
 // comment posted while held is an answer after it, and the revision
 // request's notes are still input.

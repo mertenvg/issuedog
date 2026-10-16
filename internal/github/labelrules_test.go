@@ -118,6 +118,21 @@ func TestCheckLabels(t *testing.T) {
 		{"stage:held removed and added back on a held issue is an override",
 			[]ev{said(1, appBot, marker("held")), added(2, appBot, "stage:held"), removed(3, "owner", "stage:held"), added(4, "owner", "stage:held")},
 			nil, []LabelEvent{{Kind: LabelOverride, Stages: []string{"stage:held"}, Marker: "held", By: "owner", Label: "stage:held", Key: 4}}},
+		// #185's verify: only a removal by the same user just before the add
+		// makes it a hold by hand.
+		{"stage:held added back after another trusted user removed it last agrees with the hold",
+			[]ev{said(1, appBot, marker("held")), added(2, appBot, "stage:held"), removed(3, "owner", "stage:held"),
+				said(4, appBot, "<!-- issuedog:error kind=disagreement key=3 -->"), added(5, appBot, "stage:held"),
+				removed(6, "owner2", "stage:held"), added(7, "owner", "stage:held")}, nil, nil},
+		{"stage:held added back after an untrusted user removed it last agrees with the hold",
+			[]ev{said(1, appBot, marker("held")), added(2, appBot, "stage:held"), removed(3, "owner", "stage:held"),
+				said(4, appBot, "<!-- issuedog:error kind=disagreement key=3 -->"), added(5, appBot, "stage:held"),
+				removed(6, "mallory", "stage:held"), added(7, "owner", "stage:held")}, nil, nil},
+		{"stage:held removed again by the same user after the App put it back, then added back, is an override",
+			[]ev{said(1, appBot, marker("held")), added(2, appBot, "stage:held"), removed(3, "owner", "stage:held"),
+				said(4, appBot, "<!-- issuedog:error kind=disagreement key=3 -->"), added(5, appBot, "stage:held"),
+				removed(6, "owner", "stage:held"), added(7, "owner", "stage:held")},
+			nil, []LabelEvent{{Kind: LabelOverride, Stages: []string{"stage:held"}, Marker: "held", By: "owner", Label: "stage:held", Key: 7}}},
 		{"a recorded hold by hand on a held issue is not reported again",
 			[]ev{said(1, appBot, marker("held")), added(2, appBot, "stage:held"), removed(3, "owner", "stage:held"), added(4, "owner", "stage:held"),
 				said(5, appBot, "<!-- issuedog:transition from=held to=held event=4 -->")}, nil, nil},
@@ -342,7 +357,7 @@ func checkLabelsAll(t *testing.T, timeline []ev, dirty func(int64) bool) ([]stri
 		writes = append(writes, desc)
 		_, _ = io.WriteString(w, map[bool]string{true: "[]", false: "{}"}[strings.HasSuffix(path, "/labels")])
 	}))
-	found, err := c.CheckLabels(context.Background(), "o", "r", 7, nil, "issuedog", fakeTrust{"owner": true}, dirty, nil, nil)
+	found, err := c.CheckLabels(context.Background(), "o", "r", 7, nil, "issuedog", fakeTrust{"owner": true, "owner2": true}, dirty, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
