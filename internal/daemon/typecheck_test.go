@@ -581,10 +581,12 @@ func TestTypeErrInputsTrustError(t *testing.T) {
 // hasn't posted the new key's error, as when Work is given the issue
 // straight after the label rules. An ack reply alone, as after the error's
 // comment was deleted, counts as reported too, but a state error of
-// another kind, posted or acknowledged, doesn't: triage runs, and its move
-// reports the type error.
+// another kind, posted or acknowledged, doesn't, nor does an ack with no
+// kind, which is older than type errors: triage runs, and its move reports
+// the type error.
 func TestTypeHoldAnyKey(t *testing.T) {
 	labels := "Labels.\n\n<!-- issuedog:error kind=labels key=1 -->"
+	kindless := "Acknowledged, by `owner`'s 👍.\n\n<!-- issuedog:error key=9001 ack=r5 -->" // from before acks named a kind
 	for name, tc := range map[string]struct {
 		reported []string
 		runs     int
@@ -594,6 +596,7 @@ func TestTypeHoldAnyKey(t *testing.T) {
 		"acknowledged": {[]string{errAckReply("owner", "type", "9001", 5)}, 0, []string{"<!-- issuedog:error kind=type key=9001 ack=r5 -->"}},
 		"another kind": {[]string{labels, errAckReply("owner", "labels", "1", 5)}, 1, []string{"<!-- issuedog:error kind=labels key=1 -->",
 			"<!-- issuedog:error kind=labels key=1 ack=r5 -->", "<!-- issuedog:error kind=type key=9003 -->"}},
+		"a kindless ack": {[]string{kindless}, 1, []string{"<!-- issuedog:error key=9001 ack=r5 -->", "<!-- issuedog:error kind=type key=9003 -->"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFake(t)
