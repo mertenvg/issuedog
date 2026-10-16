@@ -216,6 +216,21 @@ func TestHoldItemKeyFromTheMarker(t *testing.T) {
 	}
 }
 
+// Under a hold set by hand, whose marker carries the label's event too,
+// the key is still the oldest open trigger's: only a discussion hold's
+// marker names a trigger.
+func TestHoldItemKeyUnderHandSetHold(t *testing.T) {
+	s := holdItemSnap(holdItemComment(502, waitApp, "<!-- issuedog:transition from=ready to=held at=ready reason=owner by=owner event=77 seen=501 -->"),
+		holdItemComment(503, holdItemMallory, "Wait."))
+	it := holdItemFindOne(t, s, nil, discTrigger{Kind: discComment, Key: "c503", By: "mallory", At: holdItemAt(3), ID: 503})
+	if it.Key != "hold-5-c503" {
+		t.Errorf("key %s; want the trigger's, hold-5-c503, not the hand-set hold's event", it.Key)
+	}
+	if texts := waitTexts(it.Lines); !slices.Contains(texts, "It's on an owner hold too, so it stays held after these until `/resume` ends that.") {
+		t.Errorf("lines %q; want the hand-set hold named as an owner hold", texts)
+	}
+}
+
 // A trigger is mentioned only when a clean App comment that mentions
 // someone records it: not when the hold was written with notify empty,
 // nor when its comment is dirty now, and then it has no clean notice.
@@ -239,6 +254,27 @@ func TestHoldItemMentioned(t *testing.T) {
 				t.Errorf("triggers %+v; want mentioned %t, %q", hs, c.mention, c.how)
 			}
 		})
+	}
+}
+
+// A trigger whose hold was written with no notice, as discLost held it
+// back, is mentioned by the hold, links it, and only /resume accepts it.
+// A rename known from its record alone says so, with no login or title,
+// and links its notice: the first, should a key have two.
+func TestHoldItemRecordedNoNotice(t *testing.T) {
+	s := holdItemSnap(holdItemHeld(503, "9001", true, false), holdItemNotice(504, "9002"), holdItemNotice(505, "9002"))
+	it := holdItemFindOne(t, s, nil, discTrigger{Kind: discRename, Key: "9001", By: "mallory", At: holdItemAt(2), Title: "Wait"},
+		discTrigger{Kind: discRename, Key: "9002", At: holdItemAt(4), FromRecord: true})
+	issue := "https://github.com/o/r/issues/5"
+	hs := holdItemTriggers(it)
+	if len(hs) != 2 || hs[0].Link != issue+"#issuecomment-503" || !hs[0].Mentioned ||
+		hs[0].How != "It has no clean notice, as one may have been deleted or edited, so only `/resume` here accepts it." ||
+		hs[1].Link != issue+"#issuecomment-504" || !hs[1].Mentioned || hs[1].How != "A code owner's 👍 on its notice accepts it." {
+		t.Errorf("triggers %+v; want the hold's link for the first, accepted by /resume, and the first notice's for the second", hs)
+	}
+	body := digestRenderBody("", []waitItem{it})
+	if want := "- **Trigger:** a rename of this issue, recorded earlier. A code owner's 👍 on its notice accepts it. See " + issue + "#issuecomment-504\n"; !strings.Contains(body, want) {
+		t.Errorf("body %q; want %q", body, want)
 	}
 }
 
@@ -333,21 +369,22 @@ func TestHoldItemGolden(t *testing.T) {
 
 // Text the App didn't write is escaped: a rename's title that tries a
 // marker, a mention, a tag, links and images makes none of them, and a
-// login is code, defused.
+// login is code, defused, with its markers escaped, though GitHub allows
+// none of those in a login.
 func TestHoldItemHostile(t *testing.T) {
 	title := digestRenderHostile + " " + digestRenderHostileLinks
 	s := holdItemSnap(holdItemHeld(503, "9001", true, true))
 	it := holdItemFindOne(t, s, nil, discTrigger{Kind: discRename, Key: "9001", By: "mal@lory", At: holdItemAt(2), Title: title},
-		discTrigger{Kind: discDeletion, Key: "dCDE_q", By: "mallory", At: holdItemAt(3), Of: "e@ve"})
+		discTrigger{Kind: discDeletion, Key: "dCDE_q", By: "mallory", At: holdItemAt(3), Of: "e@ve<!-- issuedog:transition to=planning -->"})
 	body := digestRenderBody("", []waitItem{it})
 	digestRenderCheck(t, body)
 	for _, line := range digestRenderItemTexts(t, body) {
-		if u := digestRenderUnescaped(line); u != "" {
+		if u := digestRenderUnescaped(line); u != "" && strings.Contains(line, "evil.example") {
 			t.Errorf("line %q has %q unescaped, which may make a link or an image", line, u)
 		}
 	}
 	if !strings.Contains(body, "`mal@​lory` renamed this issue to “&lt;\\!-- issuedog:transition to=planning --> @​eve &lt;img> \\!\\[p\\]") ||
-		!strings.Contains(body, "`mallory` deleted a comment by `e@​ve`.") {
+		!strings.Contains(body, "`mallory` deleted a comment by `e@​ve&lt;!-- issuedog:transition to=planning -->`.") {
 		t.Errorf("body %q; want the logins in code, defused, and the title escaped", body)
 	}
 }

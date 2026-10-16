@@ -45,17 +45,25 @@ func holdItemOwnerHeld(t testing.TB) *githubtest.Fake {
 }
 
 // holdItemQuiet runs two passes of d, then checks that a third writes
-// nothing and asks only conditional GETs that GitHub answers 304, and that
-// a new daemon's pass writes nothing either.
+// nothing and asks only conditional GETs that GitHub answers 304, with no
+// login's permission asked twice: the hold item's look for triggers shares
+// the visit's trust with step 1's. A new daemon's pass writes nothing
+// either.
 func holdItemQuiet(t *testing.T, f *githubtest.Fake, d *daemon.Daemon, o *origin, step string) {
 	t.Helper()
 	iterate(t, d)
 	iterate(t, d)
 	writes, from := len(f.Writes()), len(f.Requests())
 	iterate(t, d)
+	asked := map[string]int{}
 	for _, r := range f.Requests()[from:] {
 		if r.Method != "GET" || !r.Conditional || r.Status != 304 {
 			t.Errorf("%s: the unchanged pass sent %+v; want only conditional GETs answered 304", step, r)
+		}
+		if strings.HasSuffix(r.Path, "/permission") {
+			if asked[r.Path]++; asked[r.Path] > 1 {
+				t.Errorf("%s: the unchanged pass asked %s %d times; want once at most", step, r.Path, asked[r.Path])
+			}
 		}
 	}
 	if w := f.Writes()[writes:]; len(w) != 0 {

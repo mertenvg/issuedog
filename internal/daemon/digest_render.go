@@ -252,14 +252,10 @@ func digestRenderMentions(it waitItem) bool {
 // says it was recorded earlier (discWhatRecorded), in the App's words
 // only, and links the comment that holds the record (holdItemTrigger.Link).
 func digestRenderHold(h holdItemTrigger) string {
-	tr, what := h.Trigger, ""
-	switch {
-	case tr.FromRecord:
-		what = discWhatRecorded(tr)
-	case tr.Kind == discRename:
+	tr := h.Trigger
+	what := discWhat(tr) // discWhatRecorded for one known from its record alone
+	if tr.Kind == discRename && !tr.FromRecord {
 		what = fmt.Sprintf("%s renamed this issue to “%s”", discLogin(tr.By), digestRenderTitle(tr.Title))
-	default:
-		what = discWhat(tr)
 	}
 	return fmt.Sprintf("**Trigger:** %s. %s See %s", github.Escape(what), h.How, h.Link)
 }
