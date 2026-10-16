@@ -49,6 +49,7 @@ func TestDeletedBadAnswers(t *testing.T) {
 		want    error
 	}{
 		{"no cursor", []string{page(true, "null", event)}, errCursor},
+		{"no cursor, then a last page", []string{page(true, "null", event), page(false, "null", event)}, errCursor},
 		{"same cursor", []string{page(true, `"d1"`, event)}, errCursor},
 		{"cursor back", []string{page(true, `"d1"`, event), page(true, `"d2"`, event), page(true, `"d1"`, event)}, errCursor},
 		{"a node with no ID", []string{page(false, "null", `{}`)}, errDeletedNoID},
