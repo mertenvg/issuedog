@@ -339,8 +339,12 @@ func waitQuestions(body, heading string, n int, missing string) []waitLine {
 // and last by issue number, the comment linked and the key, so the order
 // is total and the same input always gives the same order. Descendants
 // are counted from the parents in snaps, every issue the daemon holds, by
-// number, through closed issues too, as an open issue below a closed one
-// still waits.
+// number. The poll drops a closed issue's snapshot, so the snapshots hold
+// only open issues, and the walk never reaches a closed issue or what's
+// below it: an open issue below a closed one doesn't count toward the
+// closed one's ancestors (SPEC §9.4, "The order"). A snapshot read as its
+// issue closed is closed till the next poll drops it: it's walked
+// through, but not counted.
 //
 // Each issue has one parent, so the walk down from an issue meets each
 // issue below it once, unless the parents loop back to the issue itself,

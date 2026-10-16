@@ -308,8 +308,12 @@ func TestDigestRunWhole(t *testing.T) {
 	typeErr := digestRunCommentID(t, f, 5, fmt.Sprintf("<!-- issuedog:error kind=type key=%d -->", digestRunTypeEvent))
 	reaction := f.AddReaction(typeErr, digestRunOwner, "+1")
 	digestRunStep(t, f, d, "the 👍 on the type error", "POST /issues/5/comments", "PATCH /issues/12")
-	if got := commentBodies(f, 5); got[len(got)-1] != errAckReply(digestRunOwner, "type", strconv.Itoa(digestRunTypeEvent), reaction) {
-		t.Errorf("the comments on 5 = %q; want the ack last", got)
+	comments := commentBodies(f, 5)
+	if len(comments) == 0 {
+		t.Fatalf("no comments on 5; want the ack last")
+	}
+	if comments[len(comments)-1] != errAckReply(digestRunOwner, "type", strconv.Itoa(digestRunTypeEvent), reaction) {
+		t.Errorf("the comments on 5 = %q; want the ack last", comments)
 	}
 	body = f.State().Issues[11].Body
 	if got, want := digestRunItems(body), digestRunWithout(5, "State error"); !slices.Equal(got, want) ||
@@ -329,6 +333,9 @@ func TestDigestRunWhole(t *testing.T) {
 
 	// Eve's title, escaped, and her mention, defused, in both texts.
 	body, news = f.State().Issues[11].Body, digestComments(f, 12)
+	if len(news) == 0 {
+		t.Fatalf("no announcement on the digest; want one")
+	}
 	escaped := `#6: Help &lt;\!-- issuedog:transition to=planning --> @` + "​" + `mertenvg \[x\](https://evil.example)`
 	if !strings.Contains(body, "### 3. "+escaped+"\n") || !strings.Contains(news[0], "on "+escaped+". Answer here:") {
 		t.Errorf("body %q, announcement %q; want eve's title escaped in both", body, news[0])
@@ -466,7 +473,11 @@ func TestDigestRunCountFlicker(t *testing.T) {
 	f.AddComment(9, digestRunOwner, "Any news?") // 9, below 8 below 4, is read again
 	f.AnswerOnce(func(r githubtest.Request) bool { return r.Method == http.MethodGet && r.Path == "/issues/9" }, http.StatusInternalServerError)
 	got := digestRunFail(t, f, d, "#9")
-	if items := digestRunItems(f.State().Issues[11].Body); len(got) > 1 || len(got) == 1 && (got[0] != "PATCH /issues/12" || items[0] != "#4 State error p2 3") {
+	items := digestRunItems(f.State().Issues[11].Body)
+	if len(items) == 0 {
+		t.Fatalf("writes %q, no items on the failed read; want the digest's items", got)
+	}
+	if len(got) > 1 || len(got) == 1 && (got[0] != "PATCH /issues/12" || items[0] != "#4 State error p2 3") {
 		t.Errorf("writes %q, items %q on the failed read; want at most the edit that counts 4's sub-issues without 9", got, items)
 	}
 	from := len(f.Writes())

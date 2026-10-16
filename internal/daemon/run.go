@@ -344,9 +344,13 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		logr.Debugf("%s/%s#%d: no %s run: the table lacks the move its last run asked for", a.Owner, a.Repo, n, st.Agent())
 		return false, nil
 	}
-	if typeErrStands(rd.S, is) && is.Reported(typeErrKind, typeErrKey(rd.S)) {
+	if typeErrStands(rd.S, is) && typeHoldReported(is) {
 		// The table has no move from here for the type, so a run's move
-		// would fail too: the type error stands for it (blocked).
+		// would fail too: the type error stands for it (blocked). Any type
+		// error reported holds the run back, not only the one keyed by the
+		// type change that stands, so a change from one unknown type to
+		// another at intake gives triage no run (#179's Q1a): step 1 posts
+		// the new key's error (typeCheck).
 		logr.Debugf("%s/%s#%d: no %s run: its type doesn't fit its stage, as reported", a.Owner, a.Repo, n, st.Agent())
 		return false, nil
 	}
