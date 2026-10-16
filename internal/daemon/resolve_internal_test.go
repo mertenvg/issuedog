@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"maps"
 	"slices"
 	"testing"
@@ -44,6 +45,45 @@ func TestResolveByNotice(t *testing.T) {
 	} {
 		if got := resolveByNotice(tt.tr, s, "issuedog"); got != tt.want {
 			t.Errorf("%s: resolveByNotice = %t; want %t", tt.name, got, tt.want)
+		}
+	}
+}
+
+// A comment trigger is countered only by a later clean comment of a
+// trusted user, not by itself, even once its author is trusted, nor by
+// a dirty one; with none, the earliest trusted 👍 on it approves it, but
+// not on a dirty or gone comment, whose reactions aren't read.
+func TestResolverComment(t *testing.T) {
+	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
+	owner := github.Author{Login: "owner", Type: "User"}
+	s := &github.Snapshot{Comments: []github.Comment{
+		{ID: 10, Author: owner, CreatedAt: at(10)},
+		{ID: 11, Author: github.Author{Login: "mallory", Type: "User"}, CreatedAt: at(11)},
+		{ID: 12, Author: owner, CreatedAt: at(12)},
+	}}
+	ctx := context.Background()
+	for _, tt := range []struct {
+		name  string
+		tr    discTrigger
+		dirty Dirt
+		want  *resolveAct
+		reads int
+	}{
+		{"a recorded comment of someone trusted since", discTrigger{Kind: discComment, Key: "c12", ID: 12}, Dirt{}, nil, 1},
+		{"mallory's, countered", discTrigger{Kind: discComment, Key: "c11", ID: 11}, Dirt{}, &resolveAct{By: "owner", At: at(12), How: resolveCountered}, 0},
+		{"mallory's, with the counter dirty", discTrigger{Kind: discComment, Key: "c11", ID: 11}, Dirt{12: "eve"}, nil, 1},
+		{"mallory's, dirty itself, with the counter dirty", discTrigger{Kind: discComment, Key: "c11", ID: 11}, Dirt{11: "eve", 12: "eve"}, nil, 0},
+		{"one gone", discTrigger{Kind: discComment, Key: "c13", ID: 13, FromRecord: true}, Dirt{}, nil, 0},
+	} {
+		reads := 0
+		a := &Applier{Client: noReactions(t, &reads), Owner: "o", Repo: "r", AppSlug: "issuedog"}
+		r := a.resolverOf(s, tt.dirty, a.discWhoOf(s, newDiscCounting()), map[string]int64{})
+		got, err := r.comment(ctx, tt.tr)
+		if err != nil {
+			t.Fatalf("%s: %v", tt.name, err)
+		}
+		if (got == nil) != (tt.want == nil) || got != nil && *got != *tt.want || reads != tt.reads {
+			t.Errorf("%s: act %+v, with %d reads; want %+v, with %d", tt.name, got, reads, tt.want, tt.reads)
 		}
 	}
 }

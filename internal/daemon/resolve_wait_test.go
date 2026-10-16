@@ -66,7 +66,7 @@ func TestResolveApproveAfterResume(t *testing.T) {
 func TestResolveApproveWaitsAtClarifying(t *testing.T) {
 	setup := resolveReview(func(t testing.TB, f *githubtest.Fake) { post(t, f, 1004, "owner", "/approve") })
 	resolveCheck(t, setup, 1, func(f *githubtest.Fake) issueWant {
-		return issueWant{[]string{"stage:clarifying"}, []string{resolveLeft("`owner`", "spec-review",
+		return issueWant{[]string{"stage:clarifying"}, []string{resolveLeaveText("`owner`", "spec-review",
 			fmt.Sprintf("from=held to=clarifying at=spec-review origin=spec-review event=h1003 resolved=%d seen=1001", resolveCommentAt(t, f, 1, 1004)))}}
 	})
 	f := run(t, setup, resolvePass(t, 1))
@@ -139,7 +139,7 @@ func TestResolveParentResumeThenResolved(t *testing.T) {
 	}
 	resolveCheck(t, resolved, 2, func(f *githubtest.Fake) issueWant {
 		hold := commentIDs(t, f, 2)[1]
-		return issueWant{[]string{"stage:clarifying"}, []string{resolveLeft("`owner`", "ready",
+		return issueWant{[]string{"stage:clarifying"}, []string{resolveLeaveText("`owner`", "ready",
 			fmt.Sprintf("from=held to=clarifying at=ready origin=ready event=h%d resolved=%d seen=1002", hold, resolveReactionAt(t, f, c)))}}
 	})
 }

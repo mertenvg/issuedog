@@ -108,17 +108,17 @@ func resolveCommentAt(t testing.TB, f *githubtest.Fake, n int, id int64) int64 {
 	return 0
 }
 
-// resolveLeft is the App's comment taking an issue held at at out of the
+// resolveLeaveText is the App's comment taking an issue held at at out of the
 // hold, to clarifying, once a discussion is resolved by by, with the
 // transition's fields.
-func resolveLeft(by, at, fields string) string {
+func resolveLeaveText(by, at, fields string) string {
 	return fmt.Sprintf("The discussion is resolved, by %s, so this issue leaves its hold from `%s` for `clarifying`. "+
 		"It waits at `clarifying` until a code owner sets its stage by hand.\n\ncc @owner\n\n<!-- issuedog:transition %s -->", by, at, fields)
 }
 
-// resolveEnded is the App's record that a discussion resolved by by ended
+// resolveEndedText is the App's record that a discussion resolved by by ended
 // while an owner hold stays, at resolved.
-func resolveEnded(by string, resolved int64) string {
+func resolveEndedText(by string, resolved int64) string {
 	return fmt.Sprintf("The discussion is resolved, by %s, but this issue stays on hold: an owner hold on it hasn't ended. "+
 		"`/resume` here ends that, and then it goes to `clarifying`.\n\ncc @owner\n\n<!-- issuedog:ended reason=discussion resolved=%d -->", by, resolved)
 }
@@ -128,7 +128,7 @@ func resolveEnded(by string, resolved int64) string {
 func TestResolveByThumbsUp(t *testing.T) {
 	setup := resolveHeldWith(func(_ testing.TB, f *githubtest.Fake) { f.AddReaction(1002, "owner", "+1") })
 	resolveCheck(t, setup, 1, func(f *githubtest.Fake) issueWant {
-		return issueWant{[]string{"stage:clarifying"}, []string{resolveLeft("`owner`", "ready",
+		return issueWant{[]string{"stage:clarifying"}, []string{resolveLeaveText("`owner`", "ready",
 			fmt.Sprintf("from=held to=clarifying at=ready origin=ready event=h1003 resolved=%d seen=1001", resolveReactionAt(t, f, 1002)))}}
 	})
 }
@@ -143,7 +143,7 @@ func TestResolveByCounterComment(t *testing.T) {
 		counter = f.AddComment(1, "owner", "Noted, both of you.")
 	})
 	resolveCheck(t, setup, 1, func(f *githubtest.Fake) issueWant {
-		return issueWant{[]string{"stage:clarifying"}, []string{resolveLeft("`owner`", "ready",
+		return issueWant{[]string{"stage:clarifying"}, []string{resolveLeaveText("`owner`", "ready",
 			fmt.Sprintf("from=held to=clarifying at=ready origin=ready event=h1003 resolved=%d seen=1001", resolveCommentAt(t, f, 1, counter)))}}
 	})
 }
@@ -208,7 +208,7 @@ func TestResolveByNoticeOnHold(t *testing.T) {
 		}
 	}
 	resolveCheck(t, setup("+1"), 1, func(f *githubtest.Fake) issueWant {
-		return issueWant{[]string{"stage:clarifying"}, []string{resolveLeft("`owner`", "ready",
+		return issueWant{[]string{"stage:clarifying"}, []string{resolveLeaveText("`owner`", "ready",
 			fmt.Sprintf("from=held to=clarifying at=ready origin=ready event=h1002 resolved=%d seen=1001", resolveReactionAt(t, f, 1002)))}}
 	})
 	if w := run(t, setup("-1"), resolvePass(t, 1)).Writes(); len(w) != 0 {
@@ -216,11 +216,11 @@ func TestResolveByNoticeOnHold(t *testing.T) {
 	}
 }
 
-// resolveOwnerHeld is discFake with the owner's /hold on #1, then
+// resolveOwnerHeldFake is discFake with the owner's /hold on #1, then
 // mallory's comment and her rename, with its notice, by passes: the
 // comment has no record (Q2b). It returns the comment's ID and the
 // notice's.
-func resolveOwnerHeld(t testing.TB) (f *githubtest.Fake, comment, notice int64) {
+func resolveOwnerHeldFake(t testing.TB) (f *githubtest.Fake, comment, notice int64) {
 	f = discFake(t)
 	f.AddComment(1, "owner", "/hold") // 1002, the hold in 1003
 	if err := discPass(t, 1)(f); err != nil {
@@ -247,7 +247,7 @@ func TestResolveOwnerHoldStays(t *testing.T) {
 	var comment, notice int64
 	partly := func(t testing.TB) *githubtest.Fake {
 		var f *githubtest.Fake
-		f, comment, notice = resolveOwnerHeld(t)
+		f, comment, notice = resolveOwnerHeldFake(t)
 		f.AddReaction(comment, "owner", "+1")
 		return f
 	}
@@ -260,7 +260,7 @@ func TestResolveOwnerHoldStays(t *testing.T) {
 		return f
 	}
 	resolveCheck(t, both, 1, func(f *githubtest.Fake) issueWant {
-		return issueWant{[]string{"stage:held"}, []string{resolveEnded("`owner`", resolveReactionAt(t, f, notice))}}
+		return issueWant{[]string{"stage:held"}, []string{resolveEndedText("`owner`", resolveReactionAt(t, f, notice))}}
 	})
 	var resume int64
 	resumed := func(t testing.TB) *githubtest.Fake {
@@ -284,7 +284,7 @@ func TestResolveOwnerHoldStays(t *testing.T) {
 func TestResolveResumeBeforeRecord(t *testing.T) {
 	var resume int64
 	setup := func(t testing.TB) *githubtest.Fake {
-		f, comment, notice := resolveOwnerHeld(t)
+		f, comment, notice := resolveOwnerHeldFake(t)
 		f.AddReaction(comment, "owner", "+1")
 		f.AddReaction(notice, "owner", "+1")
 		resume = f.AddComment(1, "owner", "/resume")
@@ -304,7 +304,7 @@ func TestResolveResumeBeforeRecord(t *testing.T) {
 func TestResolveResumeAcceptsAll(t *testing.T) {
 	var resume int64
 	setup := func(t testing.TB) *githubtest.Fake {
-		f, _, _ := resolveOwnerHeld(t)
+		f, _, _ := resolveOwnerHeldFake(t)
 		resume = f.AddComment(1, "owner", "/resume")
 		return f
 	}
@@ -317,7 +317,7 @@ func TestResolveResumeAcceptsAll(t *testing.T) {
 // opened a trigger again before it, as the owner taking back a 👍, writes
 // nothing: the record bounds the triggers.
 func TestResolveRecordHolds(t *testing.T) {
-	f, comment, notice := resolveOwnerHeld(t)
+	f, comment, notice := resolveOwnerHeldFake(t)
 	f.AddReaction(comment, "owner", "+1")
 	r := f.AddReaction(notice, "owner", "+1")
 	if err := resolvePass(t, 1)(f); err != nil {
@@ -406,10 +406,57 @@ func TestResolveTwoNotices(t *testing.T) {
 	if err := resolvePass(t, 1)(f); err != nil {
 		t.Fatal(err)
 	}
-	want := resolveLeft("`owner`", "ready", fmt.Sprintf("from=held to=clarifying at=ready origin=ready event=h%d resolved=%d seen=1001",
+	want := resolveLeaveText("`owner`", "ready", fmt.Sprintf("from=held to=clarifying at=ready origin=ready event=h%d resolved=%d seen=1001",
 		hold, resolveReactionAt(t, f, hold)))
 	if l := f.State().Issues[0].Labels; !slices.Equal(l, []string{"stage:clarifying"}) || newestComment(f, 1) != want {
 		t.Errorf("labels %q, newest comment %q; want %q", l, newestComment(f, 1), want)
+	}
+}
+
+// A comment that held the issue and is gone since, which its record
+// still keeps open, is resolved by a counter comment alone: its 👍s are
+// gone with it, so nothing reads them.
+func TestResolveGoneCommentCountered(t *testing.T) {
+	var counter int64
+	setup := resolveHeldWith(func(_ testing.TB, f *githubtest.Fake) {
+		f.DeleteCommentBy("mallory", 1002)
+		counter = f.AddComment(1, "owner", "Noted.")
+	})
+	if w := run(t, resolveHeldWith(func(_ testing.TB, f *githubtest.Fake) { f.DeleteCommentBy("mallory", 1002) }), resolvePass(t, 1)).Writes(); len(w) != 0 {
+		t.Errorf("with the gone comment uncountered, writes %+v; want none", w)
+	}
+	resolveCheck(t, setup, 1, func(f *githubtest.Fake) issueWant {
+		return issueWant{[]string{"stage:clarifying"}, []string{resolveLeaveText("`owner`", "ready",
+			fmt.Sprintf("from=held to=clarifying at=ready origin=ready event=h1003 resolved=%d seen=1001", resolveCommentAt(t, f, 1, counter)))}}
+	})
+}
+
+// Only a candidate trigger's reactions are read: those of a writer's open
+// comment, not the owner's comment nor that of eve, who has no access.
+func TestResolveReadsOnlyCandidates(t *testing.T) {
+	f := discFake(t)
+	f.RemoveLabel(1, app, "stage:ready")
+	f.AddLabel(1, app, "stage:held")
+	f.AddComment(1, app, "<!-- issuedog:transition from=ready to=held at=ready reason=owner cmd=9 seen=1001 -->")
+	owner := f.AddComment(1, "owner", "Fine.")
+	eve := f.AddComment(1, "eve", "Hmm.")
+	mallory := f.AddComment(1, "mallory", "Wait.")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	read := map[int64]bool{}
+	for _, r := range f.Requests() {
+		for _, id := range []int64{owner, eve, mallory} {
+			if r.Path == fmt.Sprintf("/issues/comments/%d/reactions", id) {
+				read[id] = true
+			}
+		}
+	}
+	if !read[mallory] || read[owner] || read[eve] {
+		t.Errorf("read the reactions of %v; want only mallory's comment %d", read, mallory)
+	}
+	if w := f.Writes(); len(w) != 0 {
+		t.Errorf("writes %+v; want none, mallory's comment open", w)
 	}
 }
 
