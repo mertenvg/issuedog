@@ -54,7 +54,9 @@ func contents(s *github.Snapshot) []content {
 // trust holds now (SPEC §6.1; nil trusts nobody). An edit is sanctioned if
 // its author, the App or, except on a comment the App wrote, a trusted user
 // made it (state.Sanctioned), and for the body only the history after the
-// App's last full rewrite counts (state.Rewrote). It reads histories only
+// App's last full rewrite counts (state.Rewrote), with the App as its
+// author (state.AuthorEditWriter), so an untrusted issue author's own edit
+// after a rewrite makes the body dirty (#87, Q4a). It reads histories only
 // where the snapshot can't decide, all in one query:
 //   - Content last edited by anyone whose edit isn't sanctioned is dirty,
 //     by its last editor, whatever note it carries: its history isn't read
@@ -136,9 +138,15 @@ func (a *Applier) Dirty(ctx context.Context, s *github.Snapshot, trust github.Tr
 		a.histories[c.node] = kept{at: c.edit.At, body: c.body, edits: h}
 		// An edit before the body's last full rewrite no longer counts, so
 		// its editor isn't asked about: their trust decides nothing, and a
-		// failed lookup would fail the call for nothing (#174).
-		for _, e := range state.SinceRewrite(c.id, h, a.AppSlug) {
-			if err := tr.ask(ctx, c, e.By); err != nil {
+		// failed lookup would fail the call for nothing (#174). Each edit
+		// is asked about with the author state.Dirty judges it with: after
+		// a rewrite the App is the body's author, so the issue's author is
+		// asked about like anyone else (#87, Q4a).
+		since := state.SinceRewrite(c.id, h, a.AppSlug)
+		for i, e := range since {
+			w := c
+			w.author = state.AuthorEditWriter(c.id, c.author, h[:len(h)-len(since)+i], a.AppSlug)
+			if err := tr.ask(ctx, w, e.By); err != nil {
 				return nil, wrap(err)
 			}
 		}
