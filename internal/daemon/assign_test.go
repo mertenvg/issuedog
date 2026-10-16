@@ -1,12 +1,16 @@
 package daemon_test
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"net/http"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/mertenvg/logr/v2"
 
 	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/daemon"
@@ -220,15 +224,22 @@ func TestAssignFailures(t *testing.T) {
 // out, and no pass asks again, so he causes no write on every pass. A
 // restart asks once more, with one add that changes nothing, and so does
 // a change to notify. Assigned by hand all the same, he stays where an
-// item wants him.
+// item wants him. The first pass warns of him once, and of no other add.
 func TestAssignDropped(t *testing.T) {
 	f, o := digestRunFake(t), newOrigin(t)
 	o.commit(".github/CODEOWNERS", "* @"+digestRunOwner+"\n")
 	o.commit(config.Path, "types: labels\nnotify: ["+digestRunOwner+", ghost]\n")
 	f.Unassignable("ghost")
 	d := assignDaemon(t, f, o, nil)
+	var warnings bytes.Buffer
+	stop := logr.AddWriter(&warnings, logr.WithFilter(logr.W))
 	assignStep(t, f, d, "the first pass", assignAdd(1, digestRunOwner, "ghost"), assignAdd(2, digestRunOwner), assignAdd(3, digestRunOwner),
 		assignAdd(4, digestRunOwner), assignAdd(5, digestRunOwner), assignAdd(6, digestRunOwner))
+	logr.Wait()
+	stop()
+	if got := warnings.String(); strings.Count(got, "GitHub left") != 1 || !strings.Contains(got, "GitHub left ghost out when assigning o/r#1") {
+		t.Errorf("the first pass's warnings = %q; want one, of ghost on issue 1", got)
+	}
 	assignStep(t, f, d, "a second pass")
 	assignStep(t, f, d, "a third pass")
 	r := assignDaemon(t, f, o, nil)
@@ -325,5 +336,113 @@ func TestAssignClosedInThePass(t *testing.T) {
 	assignStep(t, f, d, "the next pass")
 	if got := assignees(f, 7); !slices.Equal(got, []string{"bob"}) || !f.State().Issues[6].Closed {
 		t.Errorf("issue 7's assignees = %q; want bob kept on the closed issue", got)
+	}
+}
+
+// assignGoneFake is digestRunFake with issue 12, at ready, after the
+// first pass, then bob assigned to it by hand.
+func assignGoneFake(t *testing.T) (*githubtest.Fake, *daemon.Daemon) {
+	t.Helper()
+	f, o := digestRunFake(t), digestRunOrigin(t)
+	d := assignDaemon(t, f, o, nil)
+	if n := fileAt(f, "ready", "do it"); n != 12 {
+		t.Fatalf("the issue at ready is %d; want 12", n)
+	}
+	iterate(t, d)
+	f.SetAssignees(12, "bob")
+	return f, d
+}
+
+// A write that finds the issue gone, deleted or transferred after a write
+// to it failed, is no error, and makes no write again: the issue isn't
+// given to Work that pass, and the next pass reads it again and drops it.
+// A deleted issue's number filed again is an issue like any other, which
+// the dropped one's memory doesn't follow: outside the pipeline, it keeps
+// mertenvg, assigned by hand.
+func TestAssignGone(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		gone func(f *githubtest.Fake)
+	}{
+		{"deleted", func(f *githubtest.Fake) { f.DeleteIssue() }},
+		{"transferred", func(f *githubtest.Fake) { f.Transfer(12, "o/elsewhere") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, d := assignGoneFake(t)
+			var worked []int
+			d.Work = func(_ context.Context, ready []daemon.Ready) error {
+				for _, r := range ready {
+					worked = append(worked, r.S.Number)
+				}
+				return nil
+			}
+			f.FailWrite(len(f.Writes()) + 1)
+			from := len(f.Writes())
+			if err := d.Iterate(t.Context()); err == nil || !strings.Contains(err.Error(), "the assignees of o/r#12") {
+				t.Errorf("Iterate with a failed write = %v; want its error", err)
+			}
+			tc.gone(f)
+			worked = nil
+			iterate(t, d)
+			if slices.Contains(worked, 12) {
+				t.Errorf("Work got %v in the pass that found 12 gone; want it left out", worked)
+			}
+			reads := len(f.Requests())
+			iterate(t, d)
+			iterate(t, d)
+			var again []string
+			for _, r := range f.Requests()[reads:] {
+				if r.Method == http.MethodGet && r.Path == "/issues/12" {
+					again = append(again, r.Path)
+				}
+			}
+			// The fake still lists a transferred issue, as GitHub doesn't, and
+			// applies the write to it, so the poll finds it again: only a
+			// deleted one shows the one read.
+			if tc.name == "deleted" && len(again) != 1 {
+				t.Errorf("12 was read %d times after the write found it gone; want once, which drops it", len(again))
+			}
+			if got, want := assignWrites(f, from), []string{assignRemove(12, "bob"), assignRemove(12, "bob")}; !slices.Equal(got, want) {
+				t.Errorf("assignee writes = %q; want %q, the failed one and one that finds 12 gone", got, want)
+			}
+			if tc.name != "deleted" {
+				return
+			}
+			if n := f.AddIssue(digestRunEve, "Filed again", "An idea."); n != 12 {
+				t.Fatalf("the new issue is %d; want 12", n)
+			}
+			f.SetAssignees(12, digestRunOwner)
+			assignStep(t, f, d, "a new issue 12, outside the pipeline")
+		})
+	}
+}
+
+// A delete between an issue's read and its assignee write, in one pass,
+// is no error either, and the next pass drops the issue with no write.
+func TestAssignGoneInThePass(t *testing.T) {
+	f, d := assignGoneFake(t)
+	f.BeforeRequest(func(r githubtest.Request) bool {
+		return r.Method == http.MethodDelete && r.Path == "/issues/12/assignees"
+	}, f.DeleteIssue)
+	assignStep(t, f, d, "the pass that finds 12 gone", assignRemove(12, "bob"))
+	assignStep(t, f, d, "the next pass")
+	assignStep(t, f, d, "a pass after")
+}
+
+// An issue closed, then reopened outside the pipeline, is no longer one
+// assignment kept: the close forgets that, so it keeps what was assigned
+// by hand meanwhile, mertenvg too.
+func TestAssignClosedForgets(t *testing.T) {
+	f, o := digestRunFake(t), digestRunOrigin(t)
+	d := assignDaemon(t, f, o, nil)
+	iterate(t, d)
+	f.CloseBy(3, digestRunOwner)
+	assignStep(t, f, d, "the close")
+	f.DeleteComment(digestRunCommentID(t, f, 3, "<!-- issuedog:triage verdict=ask "))
+	f.SetAssignees(3, digestRunOwner, "bob")
+	f.ReopenBy(3, digestRunOwner)
+	assignStep(t, f, d, "the reopen, with no flag left")
+	if got := assignees(f, 3); !slices.Equal(got, []string{"bob", digestRunOwner}) {
+		t.Errorf("issue 3's assignees = %q; want bob and mertenvg kept", got)
 	}
 }

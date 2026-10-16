@@ -117,3 +117,19 @@ func TestAssignErrors(t *testing.T) {
 		t.Errorf("RemoveAssignees on a transferred issue = %v; want ErrTransferred", err)
 	}
 }
+
+// The transfer check compares repos in any case, as GitHub's names are: an
+// answer that names this repo in another case is no transfer, whichever
+// side has the capitals.
+func TestAssignTransferCase(t *testing.T) {
+	for _, tc := range []struct{ fake, url string }{{"o/r", "O/R"}, {"O/R", "o/r"}} {
+		f := githubtest.New(t, tc.fake, "issuedog")
+		n := f.AddIssue("owner", "Issue", "")
+		f.Transfer(n, tc.url)
+		owner, repo, _ := strings.Cut(tc.fake, "/")
+		got, err := f.Client(t).AddAssignees(context.Background(), owner, repo, n, []string{"owner"})
+		if err != nil || !slices.Equal(got, []string{"owner"}) {
+			t.Errorf("AddAssignees on %s, answered as %s = %q, %v; want owner, and no transfer", tc.fake, tc.url, got, err)
+		}
+	}
+}

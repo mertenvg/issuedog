@@ -68,7 +68,8 @@ import (
 // set, after the digest pass and before Work. A failed write is the pass's
 // error, which Run logs, and the rest of the issues, and Work, carry on.
 // The next pass writes again, as the snapshot still differs, or GitHub's
-// answer moved the issue's updated_at.
+// answer moved the issue's updated_at. A write that finds the issue gone
+// is no error, and the issue is read again instead (assignFailed).
 func (d *Daemon) assignPass(ctx context.Context) error {
 	if !d.Assign {
 		return nil
@@ -131,7 +132,7 @@ func (d *Daemon) assignIssue(ctx context.Context, s *github.Snapshot, notify []s
 	if len(remove) > 0 {
 		got, err := a.Client.RemoveAssignees(ctx, a.Owner, a.Repo, n, remove)
 		if err != nil {
-			return fmt.Errorf("the assignees of %s/%s#%d: %w", a.Owner, a.Repo, n, err)
+			return d.assignFailed(n, err)
 		}
 		logr.Infof("unassigned %s from %s/%s#%d", strings.Join(remove, ", "), a.Owner, a.Repo, n)
 		s.Assignees = got
@@ -139,7 +140,7 @@ func (d *Daemon) assignIssue(ctx context.Context, s *github.Snapshot, notify []s
 	if len(add) > 0 {
 		got, err := a.Client.AddAssignees(ctx, a.Owner, a.Repo, n, add)
 		if err != nil {
-			return fmt.Errorf("the assignees of %s/%s#%d: %w", a.Owner, a.Repo, n, err)
+			return d.assignFailed(n, err)
 		}
 		logr.Infof("assigned %s to %s/%s#%d", strings.Join(add, ", "), a.Owner, a.Repo, n)
 		s.Assignees = got
@@ -149,6 +150,24 @@ func (d *Daemon) assignIssue(ctx context.Context, s *github.Snapshot, notify []s
 		delete(d.assignManaged, n) // a failed removal returned above, and is tried again next pass
 	}
 	return nil
+}
+
+// assignFailed returns the error of a failed assignee write to issue n,
+// err, for the pass. A write that finds the issue gone, deleted (404 or
+// 410) or transferred (a 301, or an answer from another repo), is no
+// error: the poll never lists such an issue again, so its snapshot would
+// stay, and every pass would write again. So it's read again next pass,
+// with this as the first of the two reads that drop it, and Work doesn't
+// get it this pass (Daemon.reread), as a stage run does when its fresh
+// read finds the issue gone.
+func (d *Daemon) assignFailed(n int, err error) error {
+	a := d.Step.Applier
+	if gone(err) {
+		logr.Infof("%s/%s#%d looks gone, deleted or transferred, so its assignees aren't written and it's read again: %v", a.Owner, a.Repo, n, err)
+		d.reread(n, true)
+		return nil
+	}
+	return fmt.Errorf("the assignees of %s/%s#%d: %w", a.Owner, a.Repo, n, err)
 }
 
 // assignDrop remembers logins, which GitHub left out of an add to issue
