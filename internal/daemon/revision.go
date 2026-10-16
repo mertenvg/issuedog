@@ -102,7 +102,7 @@ func ApproveCommand() Handler {
 			case !ok:
 				return Rejection{Reason: "there's no revision to approve yet"}
 			case latest.Hidden:
-				return Rejection{Reason: fmt.Sprintf("a comment of mine after revision %d was edited without approval, "+
+				return Rejection{Reason: fmt.Sprintf("a comment of mine after revision %d was edited without approval or deleted, "+
 					"so it may hide a newer revision. Approve the next revision I post instead", latest.Rev), Final: true}
 			case c.Comment.ID < latest.Comment:
 				return Rejection{Reason: fmt.Sprintf("it was posted before revision %d, the latest. To approve that, react 👍 to it, or post `/approve` again", latest.Rev), Final: true}
@@ -180,7 +180,7 @@ func (a *Applier) approve(ctx context.Context, s *github.Snapshot, d Dirt, key s
 	}
 	latest, _ := state.LatestRevision(s, a.AppSlug, d.Has)
 	if latest.Hidden {
-		logr.Debugf("%s/%s#%d: not approving revision %d by %s: a dirty comment of the App's after it may hide a newer one", a.Owner, a.Repo, s.Number, latest.Rev, by)
+		logr.Debugf("%s/%s#%d: not approving revision %d by %s: a dirty or deleted comment of the App's after it may hide a newer one", a.Owner, a.Repo, s.Number, latest.Rev, by)
 		return nil
 	}
 	if hash := state.BodyHash(s.Body); hash != latest.Hash {
