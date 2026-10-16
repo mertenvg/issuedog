@@ -17,7 +17,10 @@ import (
 // any time; the daemon then leaves the issue where it is and says so, once
 // per type change. Step 1 checks the type (typeCheck), and Transition
 // reports it when the type is why the table lacks a move. openErrors keeps
-// it open until the type fits the stage, or a newer type change stands.
+// it open until the type is no longer the cause, or a newer type change
+// stands. While any type error on the issue has been reported and the
+// type is still the cause, no stage runs on it, triage included
+// (typeHoldReported, #179's Q1a).
 
 // typeErrKind is the kind of the state error for a type that doesn't fit
 // the issue's stage.
@@ -66,18 +69,26 @@ func typeErrStands(s *github.Snapshot, is state.Issue) bool {
 }
 
 // typeCheck is step 1's check of the type (plan #7, assumption 9): on an
-// open issue with a transition marker, whose type, set by a type change
-// that stands, can't be at its stage (typeErrStands), it posts the type
-// error, once per key (typeErrReport).
-// The issue stays where it is. An issue with no transition marker is at
-// intake, which every type the pipeline knows fits, and an unknown type
-// there is reported by the move out of it (Transition).
+// open issue whose type, set by a type change that stands, can't be at its
+// stage (typeErrStands), it posts the type error, once per key
+// (typeErrReport), if the issue has a transition marker, or an earlier
+// type error has been reported on it (typeHoldReported).
+// The issue stays where it is.
+//
+// An issue with no transition marker is at intake, which every type the
+// pipeline knows fits. An unknown type there is reported by the move out
+// of it (Transition): triage's, or IntakeVisit's for an approved issue or
+// a trusted author's stage:intake. Once a type error has been reported on
+// it, triage doesn't run while the type is the cause (runStage, #179's
+// Q1a), so a change to another unknown type would go unreported till
+// something else tried to move it: this check reports it instead, before
+// IntakeVisit's move, which then finds it reported.
 func (st *Step) typeCheck(ctx context.Context, s *github.Snapshot, d Dirt) error {
 	if s.Closed {
 		return nil
 	}
 	is := state.Derive(s, st.AppSlug, d.Has)
-	if !typeErrMoved(is) || !typeErrStands(s, is) {
+	if !typeErrStands(s, is) || !typeErrMoved(is) && !typeHoldReported(is) {
 		return nil
 	}
 	if err := st.typeErrReport(ctx, s, is); err != nil {
@@ -91,6 +102,27 @@ func (st *Step) typeCheck(ctx context.Context, s *github.Snapshot, d Dirt) error
 func typeErrMoved(is state.Issue) bool {
 	for _, m := range is.Markers {
 		if _, ok := state.RoundBound(m, state.BodyID); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// typeHoldReported reports whether a type error has been reported on is,
+// whatever its key: posted, in a clean comment, or acknowledged by a reply
+// that names its kind (state.Issue.Reported). While one has, and the type
+// is still the cause (typeErrStands), no stage runs on the issue, triage
+// included, even when the type change that stands, a newer one, keys an
+// error not posted yet (#179's Q1a): its move would only fail again. An
+// ack with no kind is older than type errors, so it's no type error's.
+func typeHoldReported(is state.Issue) bool {
+	for k := range is.Errors {
+		if k.Kind == typeErrKind {
+			return true
+		}
+	}
+	for k, acked := range is.Acks {
+		if acked && k.Kind == typeErrKind {
 			return true
 		}
 	}
@@ -118,17 +150,22 @@ func (a *Applier) typeErrReport(ctx context.Context, s *github.Snapshot, is stat
 	return nil
 }
 
-// typeErrText says why is's type doesn't fit its stage. The type isn't the
-// App's text, so it's defused here, and the caller escapes it (SPEC §5.1).
+// typeErrText says why is's type doesn't fit its stage, and that it stays
+// there until the type changes to one the pipeline knows that can be at
+// the stage, or someone moves it by hand to a stage the type can be at:
+// either ends the cause (typeErrStands). "Until its type fits it" would
+// mislead at intake, which an unknown type fits but can't leave. The type
+// isn't the App's text, so it's defused here, and the caller escapes it
+// (SPEC §5.1).
 func typeErrText(is state.Issue) string {
 	what := "This issue has no type, which"
 	if is.Item.Type != "" {
 		what = fmt.Sprintf("This issue's type, `%s`,", defuse(is.Item.Type))
 	}
-	why := fmt.Sprintf("doesn't fit its stage, `%s`", is.Stage)
+	why, to := fmt.Sprintf("doesn't fit its stage, `%s`", is.Stage), "one"
 	if _, err := state.ClassOf(is.Item); errors.Is(err, state.ErrUnknownType) {
-		why = "isn't one the pipeline knows"
+		why, to = "isn't one the pipeline knows", "one the pipeline knows"
 	}
-	return fmt.Sprintf("%s %s (SPEC §4). It stays at `%s` until its type fits it, or someone moves it by hand. "+
-		"A 👍 on this comment acknowledges it.", what, why, is.Stage)
+	return fmt.Sprintf("%s %s (SPEC §4). It stays at `%s` until its type changes to %s that can be at `%s`, or someone moves it by hand. "+
+		"A 👍 on this comment acknowledges it.", what, why, is.Stage, to, is.Stage)
 }
