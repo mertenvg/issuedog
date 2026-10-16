@@ -142,10 +142,11 @@ func (g *digestState) record(id int64, n int, markers []github.Marker, edited bo
 // announced returns the item keys the App's digest-new comments on issue n
 // announced, but for edited ones: the items not new any more. A deleted
 // comment still counts until a restart, as the poll lists no deletion:
-// its items aren't announced again till then (#159's verify). Whether a
-// reaction on a comment, or hiding it, moves its updated_at isn't known
-// (SPEC §16): if one does, the comment counts as edited, and its items
-// are announced once more.
+// its items aren't announced again till then (#159's verify). A reaction
+// on a comment doesn't move its updated_at (checked on real GitHub in
+// #160's verify), so a 👍 on an announcement isn't an edit. Whether hiding
+// a comment moves it isn't known (SPEC §16): if it does, a hidden comment
+// counts as edited, and its items are announced once more.
 func (g *digestState) announced(n int) map[string]bool {
 	keys := map[string]bool{}
 	for _, c := range g.news {
@@ -355,8 +356,14 @@ func (d *Daemon) digestAnnounce(ctx context.Context, n int, text string) error {
 // read from the timeline, so it holds across restarts. The timeline is read
 // only for a digest that was ever closed (closed, or open with state_reason
 // "reopened"), and only when it changed since the last resolution, so an
-// unchanged pass reads nothing. An event GitHub hasn't written yet leaves
-// the state as it is, until the next pass.
+// unchanged pass reads nothing.
+//
+// An event GitHub hasn't written yet leaves the state as it is, and the
+// digest off for the pass, with nothing written to it, until the next pass
+// looks again: a close whose event isn't on the timeline yet, from
+// closed_at on, or a reopen whose event isn't (lateReopen). A write while
+// a reopen is looked for would make the next listing look like the App's
+// own (below), so the reopen would never be looked at again.
 //
 // The App's own write, a body edit or a comment, changes the digest's
 // updated_at alone. A listing that differs from the last resolution in
@@ -402,14 +409,15 @@ func (d *Daemon) digestOpen(ctx context.Context, s digestSeen) (bool, error) {
 	}
 	// The newest event must be the one that made the state listed: for a
 	// close, one from closed_at on, as an older close may be newest while
-	// a later reopen's and close's events are still to come.
-	want, written := "reopened", last == "reopened"
+	// a later reopen's and close's events are still to come. A reopen
+	// clears closed_at, so lateReopen judges a reopen event.
+	want, written := "reopened", last == "reopened" && !d.lateReopen(s, lastAt)
 	if !s.open {
 		want, written = "closed", last == "closed" && !lastAt.Before(s.closed)
 	}
 	if !written {
 		logr.Infof("%s/%s#%d, the digest, has no %s event yet, so it's looked at again next pass", a.Owner, a.Repo, s.number, want)
-		return s.open, nil
+		return false, nil
 	}
 	switch {
 	case stands == !s.open:
@@ -428,6 +436,33 @@ func (d *Daemon) digestOpen(ctx context.Context, s digestSeen) (bool, error) {
 		}
 		return true, nil
 	}
+}
+
+// lateReopenWait is how long, by GitHub's clock, after the digest's
+// updated_at a reopen event older than it is waited for (lateReopen): as
+// long as an issue with unexplained labels is held back, long enough for
+// a late event to show.
+const lateReopenWait = github.HoldBound
+
+// lateReopen reports whether the reopen event at at, the newest close or
+// reopen on the timeline of digest s, listed open, may not be the reopen
+// that made it open, so the timeline is read again next pass (digestOpen).
+// A reopen clears closed_at, so nothing in the listing dates it. The
+// reopen that made s open moved its updated_at, so its event is from
+// updated_at on, unless a later change moved updated_at again. An event
+// older than updated_at may be an earlier reopen's, with a later close's
+// and reopen's events still to come, as when a trusted close and an
+// untrusted reopen come in GitHub's event lag on a digest reopened before.
+//
+// So such an event is waited for, until GitHub's clock is lateReopenWait
+// past updated_at. After that, the events of every change up to updated_at
+// have had time to show, and the event is taken as the newest. That bounds
+// the wait when a later change, such as a comment, a label or someone
+// else's edit, moved updated_at past a reopen that is the newest. While
+// the digest is looked at again, the App writes nothing to it, so only
+// someone else's change moves updated_at, and starts the wait again.
+func (d *Daemon) lateReopen(s digestSeen, at time.Time) bool {
+	return at.Before(s.updated) && d.Step.Client.Now().Before(s.updated.Add(lateReopenWait))
 }
 
 // digestSetState closes or reopens digest n, state "closed" or "open",
