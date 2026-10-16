@@ -337,8 +337,113 @@ func TestDiscWhoAsksOnce(t *testing.T) {
 	if w, err := (discWho{access: map[string][2]bool{}}).writer(ctx, github.Author{Login: "mallory"}); w || err != nil {
 		t.Errorf("writer with no Trust = %v, %v", w, err)
 	}
-	if _, err := who.trusted(ctx, github.Author{Login: "bob"}); !errors.Is(err, errTrustOnce) || !strings.Contains(err.Error(), "access of bob") {
+	if _, err := who.trusted(ctx, github.Author{Login: "bob"}); !errors.Is(err, errTrustOnce) || !strings.Contains(err.Error(), "trust of bob") {
 		t.Errorf("trusted(bob) = %v; want the error, wrapped", err)
+	}
+}
+
+// A question of trust alone asks Trusted, never DiscAccess, once per call
+// and login, whatever its case, and uses DiscAccess's answer when writer
+// asked already. A bot, nobody, an outsider and no Trust ask nothing.
+func TestDiscWhoTrustedAsksTrusted(t *testing.T) {
+	ctx := context.Background()
+	inner := newDiscCounting()
+	who := discWhoOf(&github.Snapshot{Comments: []github.Comment{{Author: github.Author{Login: "eve"}, Association: "NONE"}}}, inner)
+	if _, err := who.writer(ctx, github.Author{Login: "mallory"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range []github.Author{{Login: "owner"}, {Login: "Owner"}, {Login: "ann"}, {Login: "mallory"}, {Login: "eve"},
+		{Login: "robo", Type: "Bot"}, {}, {Login: "unknown"}} {
+		got, err := who.trusted(ctx, a)
+		if want := strings.EqualFold(a.Login, "owner"); err != nil || got != want {
+			t.Errorf("trusted(%+v) = %v, %v; want %v", a, got, err, want)
+		}
+	}
+	if want := map[string]int{"mallory": 1}; !reflect.DeepEqual(inner.access, want) {
+		t.Errorf("DiscAccess asked %v, want %v: writer's question only", inner.access, want)
+	}
+	if want := map[string]int{"owner": 1, "ann": 1}; !reflect.DeepEqual(inner.asked, want) {
+		t.Errorf("Trusted asked %v, want %v", inner.asked, want)
+	}
+	if ok, err := (discWho{verdicts: map[string]bool{}}).trusted(ctx, github.Author{Login: "owner"}); ok || err != nil {
+		t.Errorf("trusted with no Trust = %v, %v", ok, err)
+	}
+}
+
+// A first marker that records a stage label set by hand, as when the owner
+// brings an issue in by label, is bounded by the label's time, by time.
+func TestDiscFloorFirstOverride(t *testing.T) {
+	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
+	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
+	s := &github.Snapshot{Comments: []github.Comment{
+		{ID: 10, Author: app, Body: "<!-- issuedog:transition from=intake to=ready by=owner event=5 -->", CreatedAt: at(8)},
+	}, DiscLabelTimes: map[int64]time.Time{5: at(3)}}
+	if b, ok := discFloor(s, "issuedog", func(int64) bool { return false }); !ok || b != (discBound{ID: 10, At: at(3), ByTime: true}) {
+		t.Errorf("floor = %+v, %v; want the label's time, by time", b, ok)
+	}
+	// A move into the pipeline keyed by its label event, with no by, is the
+	// App's admission, which comes later: nothing before it counts.
+	s.Comments[0].Body = "<!-- issuedog:transition from=intake to=clarifying event=5 -->"
+	if b, ok := discFloor(s, "issuedog", func(int64) bool { return false }); !ok || b != (discBound{ID: 10, At: at(8)}) {
+		t.Errorf("floor = %+v, %v; want the admission's comment, by ID", b, ok)
+	}
+}
+
+// At a floor by ID, a comment in the floor's second counts only above the
+// floor's comment: one posted just before the marker, in its second,
+// doesn't.
+func TestDiscFindByID(t *testing.T) {
+	at := time.Date(2026, 1, 1, 0, 0, 5, 0, time.UTC)
+	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
+	mallory := github.Author{Login: "mallory", Type: "User"}
+	s := &github.Snapshot{Comments: []github.Comment{
+		{ID: 9, Author: mallory, Body: "before", CreatedAt: at},
+		{ID: 10, Author: app, Body: "<!-- issuedog:transition from=intake to=ready run=a -->", CreatedAt: at},
+		{ID: 11, Author: mallory, Body: "after", CreatedAt: at},
+	}}
+	a := &Applier{Owner: "o", Repo: "r", AppSlug: "issuedog"}
+	found, err := a.discFind(context.Background(), s, Dirt{}, newDiscCounting())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 || found[0].Key != "c11" {
+		t.Errorf("found %+v; want only comment 11", found)
+	}
+}
+
+// A notice may be lost only to App content posted, or a deletion made, at
+// or after its trigger: a dirty App comment or a deletion from before it
+// isn't its notice, nor is the trigger's own content.
+func TestDiscLostTimes(t *testing.T) {
+	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
+	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
+	tr := discTrigger{Kind: discRename, Key: "77", At: at(5)}
+	for _, tt := range []struct {
+		name string
+		s    *github.Snapshot
+		d    Dirt
+		want bool
+	}{
+		{"dirty before", &github.Snapshot{Comments: []github.Comment{{ID: 1, Author: app, CreatedAt: at(4)}}}, Dirt{1: "eve"}, false},
+		{"dirty at", &github.Snapshot{Comments: []github.Comment{{ID: 1, Author: app, CreatedAt: at(5)}}}, Dirt{1: "eve"}, true},
+		{"clean after", &github.Snapshot{Comments: []github.Comment{{ID: 1, Author: app, CreatedAt: at(6)}}}, Dirt{}, false},
+		{"dirty owner's after", &github.Snapshot{Comments: []github.Comment{{ID: 1, Author: github.Author{Login: "owner"}, CreatedAt: at(6)}}}, Dirt{1: "eve"}, false},
+		{"deleted before", &github.Snapshot{Deleted: []github.DeletedComment{{ID: "x", Author: app, At: at(4)}}}, Dirt{}, false},
+		{"deleted at", &github.Snapshot{Deleted: []github.DeletedComment{{ID: "x", Author: app, At: at(5)}}}, Dirt{}, true},
+		{"unnamed deleted after", &github.Snapshot{Deleted: []github.DeletedComment{{ID: "x", At: at(6)}}}, Dirt{}, true},
+		{"owner's deleted after", &github.Snapshot{Deleted: []github.DeletedComment{{ID: "x", Author: github.Author{Login: "owner"}, At: at(6)}}}, Dirt{}, false},
+	} {
+		if got := discLost(tt.s, tt.d, tr, "issuedog"); got != tt.want {
+			t.Errorf("%s: discLost = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+	own := discTrigger{Kind: discEdit, Key: "e1-5", ID: 1, At: at(5)}
+	if discLost(&github.Snapshot{Comments: []github.Comment{{ID: 1, Author: app, CreatedAt: at(5)}}}, Dirt{1: "mallory"}, own, "issuedog") {
+		t.Error("discLost for an edit's own comment = true")
+	}
+	del := discTrigger{Kind: discDeletion, Key: "dx", At: at(5)}
+	if discLost(&github.Snapshot{Deleted: []github.DeletedComment{{ID: "x", Author: app, At: at(5)}}}, Dirt{}, del, "issuedog") {
+		t.Error("discLost for a deletion's own event = true")
 	}
 }
 

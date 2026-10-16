@@ -142,9 +142,11 @@ type discBound struct {
 //     override, which ends every hold (SPEC §6.4). The App records it on
 //     its next pass, after the label's event, so the bound is that event's
 //     time (s.DiscLabelTimes), and comments are compared by when they were
-//     posted: an act between the label and its record still counts. With
-//     the event's time unknown, as on a snapshot CheckLabels hasn't
-//     checked, it's the record's.
+//     posted: an act between the label and its record still counts. So is
+//     a first marker that records a stage label set by hand, as when the
+//     owner brings an issue into the pipeline by label. With the event's
+//     time unknown, as on a snapshot CheckLabels hasn't checked, it's the
+//     record's.
 //
 // The markers are read as state.Derive reads them (discMarkers). With none,
 // ok is false, as on an issue that isn't in the pipeline, which nothing
@@ -161,7 +163,7 @@ func discFloor(s *github.Snapshot, appSlug string, dirty func(int64) bool) (b di
 			return
 		}
 		b, ok = discBound{ID: id, At: at}, true
-		if ev, err := strconv.ParseInt(m.Fields["event"], 10, 64); out && m.Fields["by"] != "" && err == nil {
+		if ev, err := strconv.ParseInt(m.Fields["event"], 10, 64); m.Fields["by"] != "" && err == nil {
 			if t, known := s.DiscLabelTimes[ev]; known {
 				b.At, b.ByTime = t, true
 			}
@@ -203,16 +205,24 @@ func discRecords(s *github.Snapshot, appSlug string, dirty func(int64) bool) map
 // nor an outsider: someone every association the snapshot gives says has
 // no access (github.DiscOutsider), so a stranger's comment costs no
 // permission request, which GitHub would answer with a 404 on every pass.
+//
+// Only writer asks DiscAccess, and only about who made an act: a comment's
+// or an issue's author, whose association the snapshot gives, or someone
+// who changed what another wrote, a deleter, a renamer or an editor of
+// another's content, which only a collaborator can, so GitHub answers
+// with a 200 its ETag saves. A question of trust alone goes to Trusted
+// (trusted).
 type discWho struct {
 	trust    github.Trust
 	access   map[string][2]bool // by login in lower case
+	verdicts map[string]bool    // Trusted's alone, by login in lower case
 	outsider map[string]bool    // by login in lower case
 }
 
 // discWhoOf is a discWho over trust for s, knowing the associations of its
 // author and of its comments' authors.
 func discWhoOf(s *github.Snapshot, trust github.Trust) discWho {
-	w := discWho{trust: trust, access: map[string][2]bool{}, outsider: map[string]bool{}}
+	w := discWho{trust: trust, access: map[string][2]bool{}, verdicts: map[string]bool{}, outsider: map[string]bool{}}
 	note := func(login, association string) {
 		l := strings.ToLower(login)
 		if was, ok := w.outsider[l]; !ok || was {
@@ -269,9 +279,27 @@ func (w discWho) writer(ctx context.Context, a github.Author) (bool, error) {
 }
 
 // trusted reports whether a is trusted.
+// It asks only Trusted, which needs no request for a login CODEOWNERS
+// doesn't name, unless ask already has both answers: a deleted comment's
+// author or a reactor has no association in the snapshot, so DiscAccess
+// would ask GitHub about them on every pass, for a 404 no ETag saves.
 func (w discWho) trusted(ctx context.Context, a github.Author) (bool, error) {
-	trusted, _, err := w.ask(ctx, a)
-	return trusted, err
+	l := strings.ToLower(a.Login)
+	if a.Login == "" || a.Login == "unknown" || a.Type == "Bot" || w.trust == nil || w.outsider[l] {
+		return false, nil
+	}
+	if v, ok := w.access[l]; ok {
+		return v[0], nil
+	}
+	if v, ok := w.verdicts[l]; ok {
+		return v, nil
+	}
+	v, err := w.trust.Trusted(ctx, a.Login)
+	if err != nil {
+		return false, fmt.Errorf("trust of %s: %w", a.Login, err)
+	}
+	w.verdicts[l] = v
+	return v, nil
 }
 
 // discOpen reports whether an act keyed key, made at at, is open after the
@@ -524,7 +552,11 @@ func (a *Applier) discOwnEdits(ctx context.Context, s *github.Snapshot, d Dirt, 
 // name, was deleted at or after it. Then no notice is posted again, so no
 // key gets a second one; the trigger stays open, and T4's /resume on the
 // issue accepts it (#87's assumption 4). The trigger's own content, an App
-// comment it edited or deleted, is no notice of it.
+// comment it edited or deleted, is no notice of it. A deletion event
+// doesn't say which comment went, nor when it was posted, so any deletion
+// of an App comment after tr counts, even the owner's cleanup of an old
+// one: then tr gets no notice, which fails toward no second one, and the
+// issue stays held all the same.
 func discLost(s *github.Snapshot, d Dirt, tr discTrigger, appSlug string) bool {
 	for _, c := range s.Comments {
 		own := tr.Kind == discEdit && c.ID == tr.ID
@@ -704,6 +736,10 @@ func (st *Step) discussion(ctx context.Context, s *github.Snapshot, d Dirt) ([]d
 	is := state.Derive(s, st.AppSlug, d.Has)
 	if i := slices.IndexFunc(found, func(tr discTrigger) bool { return !is.Moved(state.Key{Field: "event", ID: tr.Key}) }); is.Stage != state.Held && i >= 0 {
 		first := found[i]
+		// A move the table lacks, as for a type the pipeline doesn't know,
+		// holds nothing: the type error, or the transition error, stands
+		// for it, and no stage runs on such an issue, so a run's apply
+		// doesn't drop its result for it either (Runs.apply).
 		err := st.Transition(ctx, s, d.Has, st.discHoldMove(s, d, first, "", is.Stage, discOrigin(is, is.Stage), is.Round, ""))
 		if StateError(err) {
 			logr.Warnf("%s/%s#%d: no discussion hold for %s: %v", st.Owner, st.Repo, s.Number, first.Key, err)

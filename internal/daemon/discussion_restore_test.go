@@ -192,6 +192,115 @@ func TestDiscRestoreLeftAlone(t *testing.T) {
 	})
 }
 
+// Through the loop, with the trust CODEOWNERS gives, on an issue the owner
+// held: a question of trust alone, about someone the snapshot gives no
+// association for, costs no permission request. Neither eve's deleted
+// comment nor her 👍 on mallory's comment, which mallory edits later,
+// makes an unchanged pass ask about her.
+func TestDiscStrangerAsksNothingThroughTheLoop(t *testing.T) {
+	for name, act := range map[string]func(f *githubtest.Fake, n int){
+		"a deletion of her comment": func(f *githubtest.Fake, n int) { f.DeleteCommentBy("mallory", f.AddComment(n, "eve", "Spam.")) },
+		"her 👍 on an edited comment": func(f *githubtest.Fake, n int) {
+			id := f.AddComment(n, "mallory", "Wait.")
+			f.AddReaction(id, "eve", "+1")
+			f.EditComment(id, "mallory", "Wait, please.")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t)
+			n := fileAt(f, "ready", "do it")
+			f.AddComment(n, "owner", "/hold")
+			d := newDaemon(t, f, newOrigin(t), nil)
+			iterate(t, d)
+			act(f, n)
+			iterate(t, d)
+			iterate(t, d) // reads the App's writes back
+			from := len(f.Requests())
+			iterate(t, d)
+			for _, r := range f.Requests()[from:] {
+				if strings.Contains(r.Path, "/collaborators/eve/") || r.Method != "GET" || !r.Conditional || r.Status != 304 {
+					t.Errorf("the unchanged pass sent %+v; want only conditional GETs answered 304, none about eve", r)
+				}
+			}
+			if l := f.State().Issues[n-1].Labels; !slices.Equal(l, []string{"stage:held"}) {
+				t.Errorf("labels %q; want the issue still held", l)
+			}
+		})
+	}
+}
+
+// The restore runs where the label rules do with the issue's dirty
+// content: a run's apply holds the issue at the stage an edit of the App's
+// move hid during the run, with no disagreement, and drops the result.
+func TestDiscRestoreAtApply(t *testing.T) {
+	f := newFake(t)
+	answer := interview(f) // the move to clarifying is comment 1001
+	g := newRig(t, f, newOrigin(t), t.TempDir())
+	g.claude(okOut, 0)
+	g.stage.during = func() {
+		g.stage.during = nil
+		f.EditComment(1001, "mallory", "Questions, changed.")
+	}
+	g.pass()
+	is := f.State().Issues[0]
+	if specApplied(f, 1, "run1", answer) || !slices.Equal(is.Labels, []string{"stage:held"}) ||
+		!strings.HasPrefix(newestComment(f, 1), "On hold for discussion, from `clarifying`") {
+		t.Errorf("labels %q, newest comment %q; want run1 dropped, and the issue held from clarifying", is.Labels, newestComment(f, 1))
+	}
+	for _, c := range is.Comments {
+		if strings.Contains(c.Body, "kind=disagreement") {
+			t.Errorf("comment %q; want no disagreement", c.Body)
+		}
+	}
+}
+
+// A command's moves of other issues restore them too: a /hold on the
+// parent finds its child held at the stage an edit of the child's App move
+// hid, and doesn't hold it again from the stage the markers left.
+func TestDiscRestoreOnFamily(t *testing.T) {
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := githubtest.New(t, "o/r", slug)
+		f.SetPermission("owner", "admin")
+		f.SetPermission("mallory", "write")
+		file(f, 0, ready) // #1, comment 1001
+		file(f, 1, ready) // #2, comment 1002
+		f.EditComment(1002, "mallory", "nothing here")
+		f.AddComment(1, "owner", "/hold")
+		return f
+	}
+	githubtest.Replay(t, setup, discPass(t, 1))
+	f := run(t, setup, discPass(t, 1))
+	child := f.State().Issues[1]
+	var bodies []string
+	for _, c := range child.Comments[1:] {
+		bodies = append(bodies, c.Body)
+	}
+	if !slices.Equal(child.Labels, []string{"stage:held"}) || len(bodies) != 1 || !strings.HasPrefix(bodies[0], "On hold for discussion, from `ready`") {
+		t.Errorf("#2: labels %q, new comments %q; want only the discussion hold from ready", child.Labels, bodies)
+	}
+}
+
+// An issue the owner brought in by label is bounded by the label's time:
+// a comment between the label and the App's record of it holds the issue.
+func TestDiscAfterAdoptingLabel(t *testing.T) {
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := githubtest.New(t, "o/r", slug)
+		f.SetPermission("owner", "admin")
+		f.SetPermission("mallory", "write")
+		n := f.AddIssue("owner", "Issue", "body")
+		f.SetType(n, "task")
+		f.AddLabel(n, "owner", "stage:ready")
+		f.AddComment(n, "mallory", "Wait.") // 1001
+		return f
+	}
+	githubtest.Replay(t, setup, discPass(t, 1))
+	f := run(t, setup, discPass(t, 1))
+	is := f.State().Issues[0]
+	if !slices.Equal(is.Labels, []string{"stage:held"}) || !strings.Contains(newestComment(f, 1), "reason=discussion event=c1001 ") {
+		t.Errorf("labels %q, newest comment %q; want the adoption recorded, then a hold keyed c1001", is.Labels, newestComment(f, 1))
+	}
+}
+
 // After the owner's hold is restored, its /resume ends that hold but the
 // issue stays held while the act is open; and a parent's /resume doesn't
 // end the reposted hold, which only /resume on the issue itself ends.
