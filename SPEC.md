@@ -152,13 +152,14 @@ GitHub is the single source of truth. The daemon keeps only an in-memory cache, 
 | Model and effort | At most one each of `model:<suffix>`, `effort:<level>`, `verifier-model:<suffix>` and `verifier-effort:<level>` (3.3, section 13) |
 | Transition history | Bot comments carrying a `transition` marker, e.g. `<!-- issuedog:transition from=clarifying to=spec-review rev=3 body=9f2a61c0 run=8f2c effort=high model=opus ran=claude-opus-5-5 seen=2214587 -->` |
 | Attempt count | Hidden marker on the latest bot verifier comment for a task. For other stage runs, the daemon's memory and the lease (8.2, 8.3), so a restart resets every count but the latest run's |
-| State errors | Bot comments carrying an `error` marker with a stable key (5.3) |
+| State errors | Bot comments carrying an `error` marker with a stable key, and the bot's `ack` replies to them (5.3) |
 | Label reverts | Bot comments carrying a `revert` marker keyed by the reverted timeline event, so a replay doesn't comment twice (5.1, 5.2) |
 | Processed commands | The bot's 👍 on an applied command comment or 👎 on a rejected one, plus `cmd=<comment id>` in the transition marker or a `reply` marker (9.2). A reaction command (section 9.2) is recorded as `cmd=r<reaction id>` |
 | Spec and plan revisions | One revision comment per revision, carrying a `revision` marker with `rev` and the body's hash. A transition posted with a revision, or approving one, carries both too (section 7.4); for plans, see section 16 |
 | Triage decisions | Bot comments carrying a `triage` marker: a flag waiting on a code owner, or an issue left to people (6.2) |
 | Dirty content | A visible note carrying a `dirty` marker at the top of the comment or body (5.1) |
 | Origin of bot-created issues | Hidden `origin` marker in the issue body (section 6.2) |
+| Digest | The bot's issue carrying a `digest` marker, and its `digest-new` comments, which record the items already announced (9.4) |
 
 Every marker is an HTML comment, `<!-- issuedog:<kind> key=value ... -->`, with its fields in a fixed order. The order is a fixed list in code, such as `from`, `to`, `round`, `run`, `event`, `cmd`. Any field not on the list, such as `effort`, `model`, `questions`, `ran`, `recommend` or `seen`, follows them, sorted by name. The kinds so far:
 
@@ -171,16 +172,18 @@ Every marker is an HTML comment, `<!-- issuedog:<kind> key=value ... -->`, with 
   - A move into the pipeline is keyed by how the issue got in (6.2): `event=` for `stage:intake` or `approved`, `run=` for triage, `cmd=` for `/track` and `cmd=r` for a 👍 on a flag.
 - `revision rev=<n> body=<hash>`: in each revision comment (7.4). Posted without a transition, it also carries `seen`.
 - `reply reason=<rejected|edited> cmd=<comment id>`: on the App's reply to a rejected command, or to an edit made after the App used the comment (9.2). It marks the comment as processed. A command the App 👎'd gets no edited reply.
-- `error kind=<kind> key=<key>`, and the `ack` reply to it: a state error (5.3).
+- `error kind=<kind> key=<key>`: a state error (5.3). The ack reply to it carries `error kind=<kind> key=<key> ack=r<reaction id>`, and covers only that kind and key. An ack from before acks named a kind has no `kind`, and covers its key for every kind.
 - `revert key=<event id>`: an untrusted label change the daemon reverted (5.1). For an unexplained label it removed, the key is `<label>@<event id>`: the label in lower case, URL-escaped, and the ID of its latest event, or 0. One comment may carry several.
 - `triage verdict=<ask|leave>`: a triage decision on an issue with no stage label (6.2), with one key. The key is `run=<run id>` for a triage run's result, `cmd=<comment id>` for `/ignore`, or `cmd=r<reaction id>` for a 👍 on a flag. A flag, `verdict=ask`, also carries `recommend=<handle|leave>`, its recommendation, for example `<!-- issuedog:triage verdict=ask run=8f2c recommend=handle -->`. The issue's decision is the latest triage marker in its comments. One in dirty content doesn't count.
 - `dirty by=<login>`: the note on dirty content (5.1).
 - `rewrite run=<run id>`: the first line of every whole body the App writes, such as a spec (11.1). It also carries `replaced=<login>` when the body it replaced was dirty. It marks the App's full rewrite, which cleans the body (5.1).
 - `origin`: in the body of an issue the daemon created (5.2), or reposted in a comment once that body is dirty (6.4).
 - `depends-on url=<issue url>`: a dependency across owners (section 14).
+- `digest`: the digest's identity marker, with no fields, on the last line of its body (9.4).
+- `digest-new items=<key>,<key>`: on the App's comment on the digest that announces new items, naming their keys (9.4).
 - Planned: the attempt marker on the latest verifier comment of a task (8.3), not built yet.
 
-Assignees, and the priority labels on PRs, are not state either: the daemon derives them (section 9.6) and corrects them on every poll. Nor are the `triage:*` labels, which follow the latest triage marker (6.2).
+Assignees, and the priority labels on PRs, are not state either: the daemon derives them (section 9.6) and corrects them on every poll. Nor are the `triage:*` labels, which follow the latest triage marker (6.2). Nor is the digest's body, which the daemon renders from what waits on the owner (9.4).
 
 Apart from the App key (section 3.1), the only local files are the lease (section 8.2) and the run results in `/state/runs/`. Both are scratch: losing the container loses nothing except the current run and the count of failed non-task runs toward the attempt cap (8.3).
 
@@ -195,7 +198,11 @@ Apart from the App key (section 3.1), the only local files are the lease (sectio
     - The daemon finds such edits in the GraphQL `userContentEdits` history. It reads the history only for content whose last edit was sanctioned, since someone else may have edited it before, and not for a body whose last edit is the App's full rewrite, since the body is that edit's text. A history that doesn't reach the last edit counts as dirty.
     - GitHub keeps only the original post and the 99 newest edits (section 16). So the App puts a visible note at the top of dirty content, carrying `<!-- issuedog:dirty by=<login> -->`, and keeps the rest of the text, escaped. The note keeps the content dirty after the history drops the edit. A note that is removed, or names someone else, is put back.
   - **Edits and deletions by untrusted users.** When an untrusted write collaborator edits trusted content, or deletes a comment, section 6.4 says what happens.
-- **Labels.** A `stage:*`, `priority:*`, `scope:*`, `type:*` or `approved` label, or a `model:*`, `effort:*`, `verifier-model:*` or `verifier-effort:*` label (3.3), counts only if the issue timeline shows that its most recent `labeled` event came from the App or a trusted user (section 6.1). On org repos the same applies to the issue type and its most recent type event.
+  - **The digest.** Its body is the exception to two rules above (9.4). The daemon never takes a snapshot of the digest, so it never reads the body for state, only to find the digest.
+    - **Its identity marker.** `<!-- issuedog:digest -->` is read even in an edited or dirty body. Only the App can author the issue, the marker holds no state, and the next pass writes the body again anyway.
+    - **No `rewrite` marker.** The digest's body is a whole body the App writes, but it doesn't start with a `rewrite` marker. It has no run to name, and its first line is the pin note when there is one (9.4).
+    - Its `digest-new` comments count only while they have never been edited, by anyone (9.4). That is stricter than the dirty rule.
+- **Labels.** A `stage:*`, `priority:*`, `scope:*`, `type:*` or `approved` label, or a `model:*`, `effort:*`, `verifier-model:*` or `verifier-effort:*` label (3.3), counts only if the issue timeline shows that its most recent `labeled` event came from the App or a trusted user (section 6.1). On org repos the same applies to the issue type and its most recent type event. That isn't built yet: issue-type events aren't checked for trust or reverted (section 16).
   - When an untrusted actor adds or removes one of these labels, the daemon posts a short comment carrying a `revert` marker, then reverts the change.
   - **Unexplained labels.** A pipeline label on the issue that no standing `labeled` event explains is unexplained. A repo label rename makes one, since it adds no event to the issues that carry the label. GitHub also writes label events a second or two late, so the daemon holds such an issue back, acting on nothing of it, for up to 30 seconds from when it first finds one. After that it carries on with the unexplained labels left out of everything it reads and acts on, and reads the issue again when one falls due for removal. A label falls due once it has been unexplained for 5 minutes, or, once the issue has had unexplained labels for 5 minutes, once the label has been there for 30 seconds. A change to the label's events starts its time again. The daemon then posts a comment carrying a `revert` marker and removes the label.
     - A stage label that names the latest transition marker's stage is never unexplained.
@@ -211,17 +218,35 @@ Every transition goes through one table in code (section 7). Each write is check
 
 - **Transitions.** A transition writes in this order: the comment with its marker, the new stage label, removal of any other stage label, then the 👍 for a command comment. A marker with the same key (`cmd`, `run` or `event`) means the transition is written, so a replay only finishes the labels and the 👍. A crash between the marker and the labels leaves an unfinished write, which the next poll finishes (5.1).
 - **Commands.** For a command comment, the daemon writes the transition marker with `cmd=<comment id>`, then adds its 👍 reaction. GitHub has no ✅ reaction. On replay, a marker carrying that `cmd` means the command is applied, and only the labels and the 👍 may be missing. `/priority`, `/model` and `/effort` write no marker, so the 👍 is the record. A rejected command gets the App's 👎 first, then the reply (9.2). For a reaction command, the marker carries `cmd=r<reaction id>`. A reaction can't be reacted to, so the transition comment is the acknowledgment, or for a 👍 on a state-error comment, the ack reply (5.3).
-- **Created issues.** Every issue the daemon creates has an `origin` marker with a stable item ID, such as `plan=#12 rev=3 item=T4`. Before creating an issue, the daemon searches for a marker with the same plan and item, whatever its `rev`, and reuses any match. A planner revising a plan keeps the item ID of every item it keeps or changes, gives new items new IDs, and marks each item in the plan comment as kept, changed, new or dropped. The same applies to sub-issue links and dependency links: the daemon reads the current links before adding any.
+- **Created issues.** Every issue the daemon creates has an `origin` marker with a stable item ID, such as `plan=#12 rev=3 item=T4`. Before creating an issue, the daemon searches for a marker with the same plan and item, whatever its `rev`, and reuses any match. A planner revising a plan keeps the item ID of every item it keeps or changes, gives new items new IDs, and marks each item in the plan comment as kept, changed, new or dropped. The same applies to sub-issue links and dependency links: the daemon reads the current links before adding any. The digest is the one created issue with no `origin` marker. It carries the `digest` marker instead, and the daemon looks for it in the poll before creating one (9.4).
 
 ### 5.3 State errors
 
 A state error is something the daemon reports to the owner instead of acting on: a transition missing from the table (7.2) other than a rejected command, a stage label that disagreed with its marker (5.1), a type that doesn't fit the issue's stage (4), a stage run that failed `loop.max_attempts` times in a row (8.3), or model and effort labels that give a run no settings (3.3).
 
-- The daemon posts one comment per error, carrying `<!-- issuedog:error kind=<transition|disagreement|type|attempts|labels> key=<key> -->`. The key is the ID of what triggered it: the comment, reaction or timeline event (such as a `labeled` or issue-type event). For a stage run, the key names the stage and its round of input (8.3), so the stage doesn't run again until the issue moves or gets new input. A run's missing transition also keys on the issue's type and parent. For model and effort labels, the key is the timeline event of the newest change to any of the four kinds that stands (5.1): the App's or a trusted user's, but not an untrusted change or the App's revert of one. So the same bad labels set again after a fix are reported again, and an untrusted change posts nothing. Before posting, the daemon looks for a comment with that key and kind and reuses it, so the same cause is posted once across polls and restarts, and a new occurrence gets a new key.
+- The daemon posts one comment per error, carrying `<!-- issuedog:error kind=<transition|disagreement|type|attempts|labels> key=<key> -->`. The key is the ID of what triggered it: the comment, reaction or timeline event (such as a `labeled` or issue-type event). For a stage run, the key names the stage and its round of input (8.3), so the stage doesn't run again until the issue moves or gets new input. A run's missing transition also keys on the issue's type and parent. For model and effort labels, the key is the timeline event of the newest change to any of the four kinds that stands (5.1): the App's or a trusted user's, but not an untrusted change or the App's revert of one. So the same bad labels set again after a fix are reported again, and an untrusted change posts nothing. For a type, the key is the type change that stands (see Types). Before posting, the daemon looks for a comment with that key and kind and reuses it, so the same cause is posted once across polls and restarts, and a new occurrence gets a new key.
 - For a disagreement, the comment is posted before the label is put back, so a crash between the two can't lose the report.
 - For model and effort labels, the daemon reads the issue again first. It posts nothing if the issue closed, changed stage, has no stage work pending, or has other model and effort labels than it had in step 1 (8.1), since the change may fix them.
-- A trusted 👍 on the comment acknowledges the error. The daemon records it by replying with `<!-- issuedog:error key=<key> ack=r<reaction id> -->`, never posts that key again, and the error stops counting toward assignment (9.6). Removing the 👍 later changes nothing.
+- A trusted 👍 on the comment acknowledges the error. The daemon records it by replying with `<!-- issuedog:error kind=<kind> key=<key> ack=r<reaction id> -->`, never posts that kind and key again, and the error stops counting toward assignment (9.6) and leaves the digest (9.4). Removing the 👍 later changes nothing.
+  - **Which 👍.** The earliest 👍 by a trusted user (6.1), not a bot, on any clean comment carrying the error. A race may have posted it twice, and a 👍 on either copy counts. The reply reads "Acknowledged, by `<login>`'s 👍.", with the login defused (section 9).
+  - **The reply is the record.** A replay finds it, so it is posted once. A 👍 on a comment that carries several open errors gets one reply for each.
+  - **Kind.** An ack covers only the kind and key it names. An ack with no `kind`, from before acks named one, covers its key for every kind. Comment IDs and timeline event IDs come from separate sequences, so without the kind an ack of one error could silence a later, different error with the same number.
+  - **Only open errors.** A 👍 on an error that has ended, acknowledged or with its cause gone, is ignored: its reactions aren't read. An error whose only copy is in an issue body can't be acknowledged, but the App never posts one there.
+  - A 👍 doesn't change the issue's `updated_at`, so step 1 visits an issue with an open error on every pass (8.1).
 - Otherwise the error ends when its cause is gone. A type mismatch ends when the type fits the stage again. A missing transition or a disagreement ends at the issue's next valid transition, including a trusted user's manual stage change (5.1). A stage run's error ends when the issue moves or gets new input. A labels error ends at the next change to the labels that stands; if they still give no settings, that is a new occurrence.
+  - **Open.** An error is open until it is acknowledged or its cause is gone. One on a closed issue is never open. For each kind, the cause is gone:
+    - `transition` and `disagreement`: at a transition marker in a later comment than the error's. A run's missing transition also ends when its key changes: the issue moves, gets new input, or changes type or parent.
+    - `attempts`: when its key changes, as the issue moves or gets new input.
+    - `labels`: when the change to the model and effort labels that stands changes.
+    - `type`: when the type fits the stage, or a newer type change stands. If that type doesn't fit either, it's a new occurrence with a new key.
+    - any other kind: never, so only an ack ends it.
+- **Types.** A type that doesn't fit the issue's stage is a `kind=type` error (section 4).
+  - **What fits.** `intake`, `clarifying` and `held` fit every type, untyped included. Any other stage, closed included, fits a class when a 7.2 row for that class has it as its from or to. The "any open" rows don't count. A type the pipeline doesn't know, such as `type:feature`, fits only `intake`.
+  - **The cause.** The type is the cause only when no issue of that type fits the stage, whatever its parent, origin or past. So an owner's story at `spec-review` that gains a parent is no type error. A move the table lacks there is a `kind=transition` error, as before.
+  - **The key.** The type change that stands: the newest `labeled` or `unlabeled` event of a `type:*` label that stands (5.1), or on a `types: issue-types` repo, the newest issue-type event, whoever made it (section 16). On a `types: labels` repo, an issue that also has a GitHub issue type takes its type from the issue type, but its key from the labels. With no type change standing, nothing keys a type error.
+  - **When.** Step 1 checks the type right after the label rules and the dirty notes (8.1), on an open issue with a transition marker. A type that is the cause, with a key, gets one error per key, and the issue stays where it is. The interviewer sets a type only at `clarifying`, which fits every type, so it never causes one.
+  - **Unknown types and missing moves.** A move the table lacks because the type is the cause, such as an unknown type's move out of intake (6.2), reports the type error, not `kind=transition`. With no type change standing, it's a `kind=transition` error, keyed by its trigger.
+  - **Holding back.** While a type error has been reported, acknowledged or not, a move it blocks is logged, not posted as a second error, and no stage runs on the issue, triage included, until its type fits the stage (8.3). So a 👍 acknowledges a type error but doesn't let the stage run again.
 - A command that doesn't apply at the issue's stage isn't a state error. The rejection reply (9.2) is enough, and nobody is assigned for it.
 
 ## 6. Trust model
@@ -253,9 +278,14 @@ If the event already keys a transition, as when an override brought the issue ba
 
 An untrusted author's issue enters only by `approved`, `/track` or a trusted 👍 on a flag. Each of these is the approval. A trusted user's `stage:intake` alone doesn't let it in.
 
-An issue the table can't move, such as an approved issue of a type the pipeline doesn't know, stays at intake and gets one `kind=transition` state error (5.3), keyed by the admitting event, comment or reaction. Triage doesn't run on it while that error stands. Only these move it on: a trusted 👍 on the error, which lets triage run again, a stage label, `approved` or `/track`, or a fix to its type while `approved`, or a trusted author's `stage:intake`, still stands.
+An issue the table can't move, such as an approved issue of a type the pipeline doesn't know, stays at intake and gets one state error (5.3):
 
-**Triage.** An open issue with no stage label (none left out, 5.1), no transition marker, no triage marker that counts, no `approved` label and no standing admission error is classified once by a short triage run. That covers the issues already open when the daemon first runs on a repo, and each new one. Closed issues and pull requests aren't triaged, and an issue with a stage label is adopted by the label rules (5.1) instead.
+- When a type change stands, the type is the cause, so it is a `kind=type` error, keyed by that change. Triage doesn't run on the issue while that error is reported, even once a trusted 👍 acknowledges it, until its type fits.
+- Otherwise, as for a GitHub issue type on a `types: labels` repo, it is a `kind=transition` error, keyed by the admitting event, comment or reaction. Triage doesn't run on the issue while that error stands.
+
+Only these move it on: a trusted 👍 on a `kind=transition` error, which lets triage run again, a stage label, `approved` or `/track`, or a fix to its type while `approved`, or a trusted author's `stage:intake`, still stands.
+
+**Triage.** An open issue with no stage label (none left out, 5.1), no transition marker, no triage marker that counts, no `approved` label, no standing admission error and no reported type error is classified once by a short triage run. That covers the issues already open when the daemon first runs on a repo, and each new one. Closed issues and pull requests aren't triaged, and an issue with a stage label is adopted by the label rules (5.1) instead. Nor is the digest, which is never in the pipeline (9.4).
 
 - **When.** Triage runs only in a pass where no other stage ran, on the newest such issue first, one per pass (8.1). Like every stage run, it runs under the usage gate and the attempt cap (8.3). It uses the interviewer's `stages` settings (section 13).
 - **Output.** `verdict` (`handle` or `leave`), `sure` (true or false), `reason` and `summary`, each one line. The daemon decides:
@@ -334,7 +364,7 @@ Write collaborators who aren't trusted users (6.1) can take part in an issue, bu
 - their deletion of such a comment, seen as a `CommentDeletedEvent` on the issue timeline
 - their renaming of the issue
 
-Closes and reopens are separate. Any close by someone who isn't trusted, the App, or a merged PR is reverted at once: the daemon reopens the issue, so a parent never closes on an untrusted close (7.3). The close holds the issue only if the closer is a write collaborator. An untrusted reopen of a closed issue is reverted too, and holds nothing.
+Closes and reopens are separate. Any close by someone who isn't trusted, the App, or a merged PR is reverted at once: the daemon reopens the issue, so a parent never closes on an untrusted close (7.3). The close holds the issue only if the closer is a write collaborator. An untrusted reopen of a closed issue is reverted too, and holds nothing. The digest isn't in the pipeline and is never held: 9.4 says how its closes and reopens are handled.
 
 Comments from people without write access hold nothing. They reach agents only as untrusted input (6.2).
 
@@ -345,7 +375,7 @@ Comments from people without write access hold nothing. They reach agents only a
 - Before applying any run result, the daemon checks the issue for triggers since the last poll before the run was picked up. If it finds one, it holds the issue and drops the result.
 - Comments and pushes made while the issue is held are handled once it leaves `held`, in the stage it lands in. A PR review made while held is handled when the task next reaches `pr-open`, through the usual `pr-open` rows (7.2).
 - Any run for the issue is stopped and its result dropped. Nothing is pushed, no PR is opened or updated, and the issue makes no other transition until the hold ends. Other issues, including its parent and children, carry on.
-- The digest lists the issue (9.4).
+- The digest lists the issue (9.4). Not built yet (#87).
 
 **Resolving.** Every trigger needs a trusted user's response:
 - A 👍 on an untrusted comment approves it. From then on it counts as that user's input (6.2).
@@ -483,7 +513,7 @@ Any transition missing from this table is an error, except a trusted user's manu
 
 Each loop iteration:
 
-1. Process new trusted comments, reactions and label changes on open issues: answers, `/approve`, `/revise`, `/done`, `/hold`, `/resume`, `/priority`, `/model`, `/effort`, `/track`, `/ignore`, 👍 on revision comments, triage flags (6.2), hand-off comments, state-error comments, human-task issues, untrusted comments and hold notices (6.4), and other comments in review stages (7.4). Revert untrusted label changes, record overrides and note dirty content first (5.1). Then move admitted issues from intake to clarifying (6.2), and bring the `triage:*` labels in line. An issue with `triage:ask` is visited on every pass, since a 👍 on its flag doesn't change the issue's `updated_at`.
+1. Process new trusted comments, reactions and label changes on open issues: answers, `/approve`, `/revise`, `/done`, `/hold`, `/resume`, `/priority`, `/model`, `/effort`, `/track`, `/ignore`, 👍 on revision comments, triage flags (6.2), hand-off comments, state-error comments, human-task issues, untrusted comments and hold notices (6.4), and other comments in review stages (7.4). Revert untrusted label changes, record overrides and note dirty content first (5.1), then check the type (5.3). Then move admitted issues from intake to clarifying (6.2), and bring the `triage:*` labels in line. An issue with `triage:ask` is visited on every pass, since a 👍 on its flag doesn't change the issue's `updated_at`. So is an issue at `spec-review`, for a 👍 on its revision (7.4), and one that had an open state error after its last step 1, for a 👍 on the error (5.3). Their reaction reads are conditional, so an unchanged pass costs no rate limit.
 2. Reconcile PRs: merges, closes, reviews with comments (7.2), new head SHAs, and `main` moving under open PRs.
 3. Run any pending non-task stage work for the highest-priority issue that has it: clarifying, spec, planning, story verification. If no stage ran, run triage (6.2) on the newest open issue that needs it.
 4. Otherwise pick the next task:
@@ -492,8 +522,9 @@ Each loop iteration:
    - Ties are ordered by priority, then the parent's priority, then issue number.
 5. If nothing is available, sleep `idle_sleep` (default 60s).
 
+- **The digest.** After step 1 on every issue, and before any stage runs (steps 3 and 4), the daemon brings the digest up to date (9.4), since a stage run can take minutes. A stage run's writes show in it on the next pass. A failure to keep the digest is logged and stops nothing. The digest itself is never in the loop's steps: it is never visited, never runs a stage and is never picked.
 - **One task at a time.** Only one task is `stage:in-progress` at a time. A task waiting on the owner releases the worker, and the scheduler moves on to the next independent task.
-- **Polling cost.** Polling uses conditional requests (ETags) and `since=` filters, so unchanged resources don't count against the rate limit.
+- **Polling cost.** Polling uses conditional requests (ETags) and `since=` filters, so unchanged resources don't count against the rate limit. On a pass where nothing changed, the digest makes no request beyond the poll (9.4).
 - **Reloading.** Each iteration first syncs the bare clone and reloads config and trust from `main` (3.4, 3.5). If that fails, the last good ones stay and the failure is logged. A config that allows a new model gets the model's labels created (section 15), tried again each iteration until that succeeds.
 
 ### 8.2 Leases and restart
@@ -519,14 +550,14 @@ Each loop iteration:
 - **Other stage runs.** A failed triage, interviewer, planner or story-verifier run is tried again, up to `loop.max_attempts` (default 3) runs in a row per round. A round starts when the issue moves, or when it gets new input. For triage, only a way into the pipeline (6.2) ends it, since triage's input never starts a new round. After the last failed attempt, the issue gets one state error, `kind=attempts` (5.3), and the stage doesn't run again until the round changes.
   - A run fails when its result isn't a `success` or is an error (3.3), when its output fails validation or the stage's check (8.2), when it times out, when it leaves no valid result across a restart (8.2), or when its result fails to apply `loop.max_attempts` times. A GitHub read that fails inside a stage's check is a failure to apply, so it counts only toward that limit.
   - A usage limit (3.3), a failure to start the run, a shutdown and a dropped result (8.2) don't count, nor an apply held back by unexplained labels (5.1).
-  - A result asking for a transition the table lacks isn't an attempt either. It gets one state error, `kind=transition`, and the stage doesn't run again until the issue moves, gets new input, or changes type or parent.
+  - A result asking for a transition the table lacks isn't an attempt either. It gets one state error, `kind=transition`, and the stage doesn't run again until the issue moves, gets new input, or changes type or parent. When the type is the cause, the type error (5.3) stands for it instead, and the stage waits until the type fits.
   - **The interviewer is an exception to that rule.** Its check (9.1) fails a result that would leave the issue with no move, before anything is written. The main case is typing an issue with a parent as `story` (section 4): the table moves only a story with no parent to `spec-review`, and the interviewer doesn't run on a story with a parent, so a round would get no answers read. Such output is invalid, so it is a failed attempt, not a `kind=transition` state error. After `loop.max_attempts` of them, the owner gets the `kind=attempts` state error. A result on an issue the interviewer no longer runs on, such as one the owner retyped as a task or gave a parent during the run, is a failed attempt too.
 
 ## 9. Owner interaction
 
 The owner should never have to go and work out what is being asked.
 
-Bot-created issues do not subscribe the owner to notifications. So every question round, typed comment, spec, plan, human task, triage flag and new digest item @mentions the users in `notify` (section 13). Each of these comments carries a `cc @<login> @<login>` line: at the end, or for a spec, just before the revision (11.1).
+Bot-created issues do not subscribe the owner to notifications. So every question round, typed comment, spec, plan, human task and triage flag @mentions the users in `notify` (section 13), and so does every new digest item that its own comment doesn't, such as a state error (9.4). Each of these comments, and the digest's announcement, carries a `cc @<login> @<login>` line: at the end, or for a spec, just before the revision (11.1).
 
 Agent text can't mention anyone: the daemon puts a zero-width space after each `@`, or HTML entity for one, that isn't followed by a space. Lines inside a code fence the agent kept are left as they are, since GitHub never mentions anyone in code. It also escapes markers (5.1) and HTML tags in agent text.
 
@@ -647,9 +678,76 @@ A `stage:needs-human` issue uses this template. The agent must fill every field;
 
 One pinned issue per repo, `issuedog digest`. It uses one of the repo's three pin slots.
 
-- The body is the current list: open questions, pending approvals, hand-offs and unblocked human tasks, PRs waiting for review, issues held for discussion (6.4), dropped children with an open PR (6.4), triage flags waiting on a code owner (6.2), and state errors (5.3). Listing triage flags isn't built yet (#7). These are exactly the items the daemon assigns (9.6). Each state error is also posted on its issue as a comment (5.3). Items are ordered by how many tasks each one unblocks.
-- Each item states what is being decided, the options, the recommendation, and links to the issue.
-- The daemon rewrites the body when the list changes. It posts a short comment that @mentions `notify` only when a new item appears, so GitHub sends one notification per new item.
+- The body is the current list: open questions, pending approvals, hand-offs and unblocked human tasks, PRs waiting for review, issues held for discussion (6.4), dropped children with an open PR (6.4), triage flags waiting on a code owner (6.2), and state errors (5.3). These are exactly the items the daemon assigns (9.6). Each state error is also posted on its issue as a comment (5.3). Items are ordered by how much each one unblocks (see The order).
+- Each item states what is being decided, the options, the recommendation, and links to where to answer.
+- The daemon rewrites the body when the list changes. It posts a short comment that @mentions `notify` only when a new item appears: one comment per pass, listing every new item, so a burst is one notification (see Announcing new items).
+
+**Finding it.**
+
+- The digest is an issue the App authored (`<slug>[bot]`, 3.5) that meets one of these:
+  - its body has `<!-- issuedog:digest -->`, its identity marker;
+  - this daemon has already found it to be the digest;
+  - its title is exactly `issuedog digest`, and its body has no `origin` marker, which every other issue the App creates has (5.2).
+- The daemon finds it in the poll's issue list, which is `state=all` and listed in full on each start, with no search. A closed digest is still the digest.
+- If more than one issue qualifies, open or closed, the lowest number is the digest. The others are logged and left alone.
+- The identity marker is read even in an edited body (5.1). Once the daemon has found the digest, an edit that removes the marker, by anyone, changes nothing: the next pass writes the body again, marker and all. The title rule finds a digest whose marker was removed while no daemon ran.
+- **Out of the pipeline.** The daemon never takes a snapshot of the digest, so step 1, the label rules, intake, stage runs and triage never see it. Its labels, comments and commands are ignored, with no reply.
+- **Gone.** A request that finds the digest deleted or transferred drops it, and the next poll lists every issue again, to find it or create one. The items it announced are kept in memory until a restart, so a digest found again after a one-off 404 never announces them twice. GitHub never reuses an issue number, so this can't hide an announcement on a new digest.
+- **A renamed repo** looks like a transfer to the digest's writes. Each write fails with a warning, and the daemon lists every issue again, which finds the same digest, so there's no second one. Every issue's read fails as a transfer too, so a rename needs `ISSUEDOG_REPO` (3.5) changed.
+
+**Creating and pinning it.**
+
+- On the first pass that finds no digest, the daemon creates one, titled `issuedog digest`, listing the current items. That happens in the loop, not at startup, so a failure doesn't stop the daemon (3.5). After a crash that follows the create, the next poll finds the issue, so there's no duplicate.
+- A new digest's body starts with a pin note: "I couldn't pin this issue yet. If this line stays, pin it by hand." While the body starts with "I couldn't pin this issue", the first pass of each start that finds the digest open checks GraphQL `isPinned`. If it isn't pinned, the daemon pins it with GraphQL `pinIssue`. Then it writes the body without the note.
+- If GitHub refuses the pin, or answers with no pin, the daemon logs an error, and the note becomes "I couldn't pin this issue: `<GitHub's message>`. Pin it by hand." The cause could be the undocumented permission (section 16), or three pinned issues already. The next start tries again. Any other failure, including the `isPinned` check's, is tried again on the next pass. A failure never stops the loop.
+- Once a pin has worked, the daemon never pins again, so an unpin by the owner stands.
+- Pinning doesn't change an issue's `updated_at` (checked live, #154).
+
+**Closing it.**
+
+- A close by a trusted user (6.1), not a bot, turns the digest off until a trusted user reopens it: no edits, no comments and no pin. No other digest is created meanwhile.
+- Any other close or reopen is reverted, as 6.4 does for any issue. A reopen after a trusted close is closed again. The digest is never held, so the revert is silent: no notice is posted.
+- Which close stands is read from the timeline, so it holds across restarts. A closer who later loses trust no longer counts, so the next read of the timeline reopens the digest.
+- The timeline is read only for a digest that was ever closed, and only when its listing changed other than by the App's own write. A close or reopen whose event GitHub hasn't written yet is looked at again on the next pass, with nothing reverted.
+
+**Items in phase 1, and their keys.** Each item has a key that names it across passes and restarts. `<n>` is the issue number.
+
+- **State error.** Each open error (5.3). Key: `err-<n>-<kind>-<key>`. The item gives the kind and key, copies the lines of the error comment, and says to 👍 it. An error whose only copy is in the issue body says it ends when its cause is gone.
+- **Pending approval.** The issue is at `spec-review`. Key: `rev-<n>-<rev>`, the latest revision, or `rev-<n>-0` with none yet. If the revision can't be approved yet, the item says why: a dirty body, a dirty App comment after the revision that may hide a newer one, a body that no longer matches its hash, a type error that holds the approval back (5.3), or a type that doesn't go on to `planning`. Nothing approves a plan yet, so `plan-review` gives no item, although 9.6 assigns it.
+- **Open question.** The issue is at `clarifying`, its latest transition is an interviewer round with `round` and `questions` of 1 or more (9.1), and no trusted answer has come since. Key: `q-<n>-<round>`. A typed bug or task's move carries neither field, so it gives no item while it waits for phase 3.
+- **Triage flag.** The issue is at intake with no stage label, and its latest triage marker that counts is a flag, `verdict=ask` (6.2). Key: `flag-<n>-<comment id>`.
+- A round's or a flag's questions and options are copied from the App's own clean comment, whose `**N. …** Blocks:` and `a. … (recommended):` lines have a fixed format. If they can't be read back, the item says to see the comment.
+- Each item links to where to answer: `https://github.com/<owner>/<repo>/issues/<n>#issuecomment-<id>`, or the issue itself for an error in the body.
+- Not built yet: hand-offs and human tasks (9.3, phases 2 and 3), PRs (phase 3), and discussion holds and dropped children (#87). Each adds its own kind to the same list.
+- **Keeping the list.** The items are cached per issue, and updated each time step 1 succeeds on it (8.1). An issue whose read or step 1 fails keeps its last items. One that closes or is dropped loses them.
+
+**The order.**
+
+- Each item scores 1 plus the open issues below its issue, counted from the parents in the daemon's snapshots. Those hold only open issues, so an open issue below a closed one doesn't count toward the closed one's ancestors. Phase 2 adds the issues it blocks once dependencies exist.
+- The highest score comes first. Ties go by kind: state errors, then approvals, then questions, then flags. Then by priority, p0 first (default p2), then the oldest issue, then by issue number, comment and key, so the same items always come out in the same order.
+
+**The body.**
+
+- The body is rendered the same way from the same items: it holds no times, relative or not. The pin note comes first, if there is one. Then a line says how many items wait, and each item follows: a heading `### <rank>. #<n>: <title>`, its kind, priority and score, its lines, and its link. With nothing waiting it says "Nothing is waiting on you." The identity marker is the last line.
+- It's written only when it differs from the body last listed or written, ignoring CRLF line endings and the space around it.
+- It has no `rewrite` marker (5.1).
+- It must fit GitHub's 65,536-character limit, with 1,024 to spare: 64,512, counted as UTF-8 bytes plus one for each newline, which is never less than GitHub's count. Over that, the lowest-ranked items are cut, and a line after them says "…and N more, cut to fit GitHub's limit on an issue body."
+- The body mentions nobody. Titles are escaped like any text the App didn't write (5.1, section 9): one line, tags escaped, mentions defused and markers escaped. `[`, `]`, `!` and `\` are backslash-escaped too, so a title makes no link, image or footnote. GitHub still autolinks a bare `https://…` or `www.…` in a title, and `owner/repo#1` still makes a cross-reference (section 16). Such a link shows its whole target and loads nothing.
+- Lines copied from the App's own comments are defused and escaped again, and can't start a block such as a heading or a quote.
+
+**Announcing new items.**
+
+- An item is new when its key isn't in any `digest-new` comment of the App's on the digest that was never edited. An item that goes away and comes back with the same key isn't new.
+- A new item gets the digest's mention only if its own comment doesn't mention `notify` already. Question rounds, specs and flags end in a `cc` line, so in phase 1 only state errors get it. A new item with no mention is listed in the body only, and its key is never written into a `digest-new` comment.
+- Each pass with new items to mention posts one comment. It lists them in rank order, each with its issue, title, kind and link, then the `cc` line (section 9), then `<!-- issuedog:digest-new items=<key>,<key> -->`.
+- In the marker, a key's spaces, control and non-ASCII bytes, `%`, `,`, `<` and `>` are percent-encoded as `%XX`. That changes no key phase 1 makes.
+- Over the size limit, the lowest-ranked items are left out of the list and the marker, and a line says "…and N more, which I'll announce in the next comment." They're new on the next pass.
+- With `notify` empty, no comment is posted.
+- The comment is posted before the body is written, so a replay finds it and doesn't post it again. A failed comment still lets the body be written, and the next pass announces the items.
+- An edited comment counts for nothing, so an untrusted write collaborator can't silence future mentions by adding keys. At worst the owner gets one repeated mention. A reaction doesn't change a comment's `updated_at` (checked on real GitHub, #160), so a 👍 on an announcement doesn't count as an edit.
+- A deleted comment still counts until a restart, since the poll lists no deletions.
+
+**Cost.** On a pass where nothing changed, the digest makes no request beyond the poll. When something changes, it adds at most one comment and one body edit per pass, a timeline read and any revert when the digest was closed or reopened, and one `isPinned` check per start while the pin note is there. Step 1's reaction reads on open errors are conditional (8.1).
 
 ### 9.5 Escalation
 
@@ -673,9 +771,9 @@ The owner finds everything waiting on them in GitHub's own "assigned to me" view
 | Dropped with an open PR | The issue is held with `reason=dropped` (6.4), until its PR merges or closes |
 | Triage flag | The issue's latest triage marker is a flag (6.2), until a code owner answers it. Not built yet (#87) |
 
-- These are the same items the digest lists (9.4).
+- These are the same items the digest lists (9.4). Assignment isn't built yet (#87). It takes its items from the same list the digest builds, so the two never disagree, and each story that adds a kind of item adds it to that list. Phase 1's list has no item at `plan-review` yet, since nothing approves a plan (9.4).
 - Each PR carries the `priority:*` label of the task it closes. The task's label is the priority: the daemon copies it to the PR and reverts any other change to the PR's label.
-- The owner sees what's waiting with `is:open assignee:@me sort:created-asc`, and the most urgent items by adding `label:priority:p0` or `label:priority:p1`. The digest orders the same items by how many tasks each one unblocks.
+- The owner sees what's waiting with `is:open assignee:@me sort:created-asc`, and the most urgent items by adding `label:priority:p0` or `label:priority:p1`. The digest orders the same items by how much each one unblocks (9.4).
 - Only the App changes assignees on pipeline issues and PRs. Assignees are never read as state (section 5): a manual change is reverted on the next poll and changes nothing else.
 
 ## 10. Verification
@@ -981,9 +1079,18 @@ Changes to this file go through a human-authored PR (section 6.3).
 - **Edit history and link events.** Checked live (#91): `userContentEdits` keeps at most 100 entries, the original post and the 99 newest edits, newest first, and deleted revisions keep their `editor`. So the history alone can't keep content dirty, and the `dirty` note does (5.1). Section 6.4 reposts an `origin` marker from the App's last version in `userContentEdits`, or from the original post. Checked live (2026-10-15): an issue body's entry's `diff` is that version's full text, and the newest entry's equals the body. The App's full rewrite (5.1) relies on it. A deleted revision's text is gone. Also confirm which timeline events show who changed sub-issues and dependencies, so untrusted changes to them can be treated as discussion triggers.
 - **Cross-owner dependencies.** Do native blocked-by links work across owners? One report says GitHub returns 422. If they do work, they could replace the `depends-on` marker.
 - **Pinning the check source.** The ruleset can only pin the App as the source of `issuedog/verify` once the App "has recently submitted a check run". Setup must post one bootstrap check run before adding the rule.
-- **Pinning the digest.** The permission `pinIssue` needs from an App is not documented. Test it with Issues write.
+- **Pinning the digest.** The daemon pins the digest with GraphQL `pinIssue` (9.4), but the permission `pinIssue` needs from an App is not documented. Test it with Issues write on a real run. A refusal there is logged and named in the digest's pin note, and becomes a `type:bug` issue. Checked live (#154): pinning doesn't change an issue's `updated_at`.
+- **Trust on issue types.** Changes to GitHub issue types aren't checked for trust or reverted, though 5.1 asks for it. So an untrusted change can start and end type errors (5.3). Together with a trusted 👍, it can let an approval through or let stage runs start again. The gap is older than the type errors (#156).
+- **Finding the digest across a restart.** Changes made while no daemon runs can lead to a second digest (9.4):
+  - The marker removed and the title changed. The old digest isn't found, so a new one is created, and the old one is an issue like any other, which triage runs on.
+  - The `digest` marker swapped for an `origin` marker. The old issue isn't found, so a new one is created. Then step 1's dirty note escapes the `origin` marker, the old issue matches the title rule and becomes the digest again, and there are two pinned digests, with the newer one left alone for good.
+  - Both are visible to the owner. A later fix could read an App issue's original text through `userContentEdits`.
+- **The digest's pin note.** An untrusted write collaborator who puts "I couldn't pin this issue…" at the top of the digest's body just before a restart makes that start pin it again, overriding the owner's unpin. Otherwise the next pass writes the body again without it.
+- **The digest's closes and reopens.** A trusted close followed by an untrusted reopen, both between the poll and the App's next write to the digest, or in the same second as that write, look like the write's own change (9.4). They're missed until the next change to the digest by someone other than the App, or a restart.
+- **The digest as a sub-issue.** Someone may make the digest a sub-issue. If the owner then holds its parent, `/hold` gives the digest `stage:held` and a transition comment. It still stays out of the pipeline.
+- **Links in titles.** The digest escapes `[`, `]`, `!` and `\` in titles (9.4), but GitHub still autolinks a bare `https://…` or `www.…`, which shows its whole target and loads nothing, and `owner/repo#1` still makes a cross-reference. Decide whether to escape those too.
+- **Hiding an announcement.** Whether hiding a comment changes its `updated_at` isn't known. If it does, a hidden `digest-new` comment counts as edited, and its items are announced once more.
 - **`--json-schema` in long runs.** It must work together with `--dangerously-skip-permissions` and long tool loops. Also confirm how many structured-output retries are allowed.
-- **Kind on an ack.** An ack reply (5.3) names no kind, so it covers its key for every kind. Comment IDs and timeline event IDs come from separate sequences, so an ack of one error could silence a later, different error with the same number. Consider copying `kind=` into the ack and matching on kind and key, with a kindless ack still covering every kind (#78).
 - **Where a reposted `origin` lives.** Section 6.4 reposts an `origin` marker in an App comment, since markers in a dirty body are never read. #87 confirms this, and that the class derivation and the de-duplication search (5.2) read it there.
 - **Stacked holds.** A `/hold` on a child that is already held by its parent's `/hold` writes no marker (6.4), so the parent's `/resume` ends the child's hold too. #87 decides whether stacked holds are recorded.
 - **Where a plan's hash lives.** A plan comment is also its revision comment (section 7.4), so its hash can't be written inside it without changing it. Decide whether it goes in a separate transition comment or is derived from the comment's edit history. If plan revisions reuse the `revision` marker, it needs a field that tells spec revisions from plan revisions.
