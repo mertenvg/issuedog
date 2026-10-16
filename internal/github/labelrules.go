@@ -304,7 +304,8 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 		if on {
 			stages = append(stages, l.name)
 		}
-		if acc != nil && acc.GetEvent() == "labeled" && !r.isApp(acc) && accAt > overrideAt && latest.overrides(l.name, accAt, prev.at) {
+		if acc != nil && acc.GetEvent() == "labeled" && !r.isApp(acc) && accAt > overrideAt &&
+			(latest.overrides(l.name, accAt, prev.at) || latest.heldStackReadded(l, acc, accAt)) {
 			override, overrideAt = acc, accAt
 		}
 		// last is the latest change that stands, but for changes toward the
@@ -364,6 +365,27 @@ func (t transition) overrides(name string, at, prevAt int) bool {
 		return true
 	}
 	return at > max(prevAt, t.recorded) && !is(t.from)
+}
+
+// heldStackReadded reports whether acc, a trusted add of the label l at
+// timeline position at, sets a hold by hand on an issue that t, the latest
+// marker, moved to held. Holds stack (SPEC §6.4), so stage:held that one
+// user removes after t and then adds back is a hold of its own (plan #87
+// rev 2, Q2b), which S4 records in a held → held marker. An add of
+// stage:held that wasn't on since t, as after the App's own write was cut
+// short, or after someone else removed it, agrees with t (overrides), as
+// does one made while t was in flight. Once recorded, the add is older than
+// the latest marker.
+func (t transition) heldStackReadded(l *labelState, acc *gogithub.Timeline, at int) bool {
+	if !strings.EqualFold(t.to, "held") || !strings.EqualFold(l.name, "stage:held") || at <= t.at {
+		return false
+	}
+	for i, e := range l.events {
+		if l.ats[i] > t.at && l.ats[i] < at && e.GetEvent() == "unlabeled" && strings.EqualFold(e.GetActor().GetLogin(), acc.GetActor().GetLogin()) {
+			return true
+		}
+	}
+	return false
 }
 
 // labelRules carries what CheckLabels needs to judge and revert one change.

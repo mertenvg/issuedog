@@ -401,6 +401,37 @@ func TestInterviewerRounds(t *testing.T) {
 	}
 }
 
+// #83's note: a hold at clarifying keeps the round, so the revision notes
+// are still the notes after it, and a comment posted while held is input.
+func TestInterviewerRevisionNotesAfterAHold(t *testing.T) {
+	f := newFake(t)
+	n, entry := ivFiled(f, "epic", false, "from=intake to=clarifying event=5")
+	ivAsked(f, n, 1, 1, entry)
+	f.AddComment(n, "owner", "1a")
+	f.AddComment(n, app, "Spec rev 1.\n\n<!-- issuedog:transition from=clarifying to=spec-review run=iv1 rev=1 body=abcd1234 -->\n<!-- issuedog:revision rev=1 body=abcd1234 -->")
+	notes := f.AddComment(n, "owner", "/revise cut the second goal")
+	f.AddComment(n, app, fmt.Sprintf("Back.\n\n<!-- issuedog:transition from=spec-review to=clarifying cmd=%d seen=%d -->", notes, notes))
+	hold := f.AddComment(n, "owner", "/hold")
+	f.AddComment(n, app, fmt.Sprintf("On hold.\n\n<!-- issuedog:transition from=clarifying to=held at=clarifying reason=owner cmd=%d seen=%d -->", hold, notes))
+	during := f.AddComment(n, "owner", "and keep it small")
+	resume := f.AddComment(n, "owner", "/resume")
+	f.AddComment(n, app, fmt.Sprintf("Resumed.\n\n<!-- issuedog:transition from=held to=clarifying cmd=%d seen=%d -->", resume, notes))
+	files := ivContext(t, ivDaemon(t, f, newOrigin(t)), n)
+	for _, w := range []string{
+		fmt.Sprintf("## Comment %d by owner: the revision notes that sent the spec back\n\n```text\n/revise cut the second goal\n```", notes),
+		fmt.Sprintf("## Comment %d by owner: new since the issue came to clarifying\n\n```text\nand keep it small\n```", during),
+	} {
+		if !strings.Contains(files["input.md"], w) {
+			t.Errorf("input.md lacks\n%s\nin\n%s", w, files["input.md"])
+		}
+	}
+	for _, w := range []string{"/hold", "/resume", "1a"} {
+		if strings.Contains(files["input.md"], w) {
+			t.Errorf("input.md has %q:\n%s", w, files["input.md"])
+		}
+	}
+}
+
 func TestInterviewerRevisionNotes(t *testing.T) {
 	f := newFake(t)
 	n, entry := ivFiled(f, "epic", false, "from=intake to=clarifying event=5")

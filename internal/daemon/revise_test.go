@@ -212,7 +212,7 @@ func TestReviseAndEdits(t *testing.T) {
 				labels: []string{"stage:plan-review"}, downs: []string{"too long"}}, nil},
 		{"and one held by hand",
 			lostReply(state.Held), owners,
-			outcome{comments: []string{overridden(state.Held, "from=spec-review to=held at=spec-review reason=owner by=owner event=9003"), movedOn("too long", "1002", state.Held)},
+			outcome{comments: []string{overridden(state.Held, "from=spec-review to=held at=spec-review reason=owner by=owner event=9003 seen=1001"), movedOn("too long", "1002", state.Held)},
 				labels: []string{"stage:held"}, downs: []string{"too long"}}, nil},
 		{"and one moved on to planning",
 			lostReply(state.Planning), owners,
@@ -241,7 +241,7 @@ func TestReviseAndEdits(t *testing.T) {
 				post(t, f, 1002, "owner", "too long")
 				handSet(t, f, state.SpecReview, state.Held, 9003)
 			}), owners,
-			outcome{comments: []string{overridden(state.Held, "from=spec-review to=held at=spec-review reason=owner by=owner event=9003")}, labels: []string{"stage:held"}}, nil},
+			outcome{comments: []string{overridden(state.Held, "from=spec-review to=held at=spec-review reason=owner by=owner event=9003 seen=1001")}, labels: []string{"stage:held"}}, nil},
 		{"nor, once the stage moved on, a request by a user trusted only since",
 			review(func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1002, "newbie", "looks fine to me")

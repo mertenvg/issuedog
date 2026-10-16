@@ -129,7 +129,7 @@ func TestCheckLabels(t *testing.T) {
 				labelEvent(t, f.AddLabel(1, "owner", "stage:held"), 9003)
 			}),
 			writes:   []string{"POST /issues/1/comments"},
-			comments: []string{overridden("stage:held", "from=ready to=held at=ready reason=owner by=owner event=9003")},
+			comments: []string{overridden("stage:held", "from=ready to=held at=ready reason=owner by=owner event=9003 seen=1001")},
 			labels:   []string{"stage:held"}},
 		{name: "an override is recorded before the old label goes",
 			setup: atReady(func(t testing.TB, f *githubtest.Fake) {
@@ -147,7 +147,7 @@ func TestCheckLabels(t *testing.T) {
 				f.RemoveLabel(1, app, "stage:ready")
 			}),
 			writes:   []string{"POST /issues/1/comments", "DELETE /issues/1/labels/stage:in-progress"},
-			comments: []string{overridden("stage:held", "from=in-progress to=held at=in-progress reason=owner by=owner event=9002")},
+			comments: []string{overridden("stage:held", "from=in-progress to=held at=in-progress reason=owner by=owner event=9002 seen=1002")},
 			labels:   []string{"stage:held"}},
 		{name: "a change older than the override the latest marker records isn't one",
 			setup: atReady(func(t testing.TB, f *githubtest.Fake) {
@@ -163,14 +163,17 @@ func TestCheckLabels(t *testing.T) {
 			}),
 			writes: []string{"POST /issues/1/labels", "DELETE /issues/1/labels/stage:intake"},
 			labels: []string{"stage:clarifying"}},
-		{name: "an override to held while held stacks and writes nothing",
-			setup: atReady(func(_ testing.TB, f *githubtest.Fake) {
+		{name: "an override to held while held stacks: one held → held marker keeps the first hold's at and origin",
+			setup: atReady(func(t testing.TB, f *githubtest.Fake) {
 				f.AddComment(1, app, "<!-- issuedog:transition from=ready to=held at=ready reason=discussion origin=ready -->")
 				f.AddLabel(1, app, "stage:held")
 				f.RemoveLabel(1, app, "stage:ready")
 				f.RemoveLabel(1, "owner", "stage:held")
-				f.AddLabel(1, "owner", "stage:held")
+				labelEvent(t, f.AddLabel(1, "owner", "stage:held"), 9005)
 			}),
+			writes: []string{"POST /issues/1/comments"},
+			comments: []string{"owner set `stage:held` by hand on this held issue, so I've recorded it as an owner hold of its own. " +
+				"It stays held until `/resume` here.\n\n<!-- issuedog:transition from=held to=held at=ready origin=ready reason=owner by=owner event=9005 seen=1001 -->"},
 			labels: []string{"stage:held"}},
 		{name: "an override to held while held only fixes the labels",
 			setup: atReady(func(_ testing.TB, f *githubtest.Fake) {
@@ -331,7 +334,7 @@ func TestCheckLabels(t *testing.T) {
 			})),
 			writes: []string{"POST /issues/1/comments", "DELETE /issues/1/labels/priority:p0", "POST /issues/1/comments", "DELETE /issues/1/labels/stage:ready"},
 			comments: []string{renamed("priority:p0", "priority%3Ap0@0"),
-				overridden("stage:held", "from=ready to=held at=ready reason=owner by=owner event=9002")},
+				overridden("stage:held", "from=ready to=held at=ready reason=owner by=owner event=9002 seen=1001")},
 			labels: []string{"stage:held"}},
 		{name: "a disagreement is reported beside a renamed stage label that's removed",
 			setup: sighted(atReady(func(t testing.TB, f *githubtest.Fake) {

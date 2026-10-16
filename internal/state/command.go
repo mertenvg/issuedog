@@ -127,14 +127,16 @@ func (c Command) setting() bool {
 // commands, and that no cmd or reply marker names. At clarifying, those are
 // this round's answers (plan #5, amended assumption 5), after the revision
 // request that sent the spec back, if one did, as the notes (SPEC §7.4). At
-// planning, they are comments posted after the approval. It's only right
+// planning, they are comments posted after the approval. A hold keeps the
+// round it came in (HeldStack.Seen), so after one they include what was
+// posted while the issue was held, and the notes (Notes). It's only right
 // after a successful daemon Step.Run on s, which posts a lost reply again:
 // without it, a 👎'd command edited into plain text would be listed.
 func (is Issue) Inputs(s *github.Snapshot, counts func(github.Comment) bool) []github.Comment {
 	if is.Stage != Clarifying && is.Stage != Planning {
 		return nil
 	}
-	notes := is.notes()
+	notes := is.Notes()
 	var in []github.Comment
 	for _, c := range s.Comments {
 		if _, cmd := ParseCommand(c.Body); counts(c) && (c.ID == notes || c.ID > is.Round && !cmd && !is.Keys[CmdKey(c.ID)]) {
@@ -144,20 +146,23 @@ func (is Issue) Inputs(s *github.Snapshot, counts func(github.Comment) bool) []g
 	return in
 }
 
-// notes returns the ID of the comment whose revision request sent the spec
+// Notes returns the ID of the comment whose revision request sent the spec
 // back, if the latest transition did so: from spec-review to clarifying,
-// keyed by the comment. A reply marker naming it, as for an edit made after
-// it was used, drops it. Otherwise it returns 0.
-func (is Issue) notes() int64 {
+// keyed by the comment. It looks through a hold at clarifying (#83's note):
+// through the move into held, any held → held marker, and the move back to
+// clarifying that keeps the round (heldStackThrough). A reply marker naming
+// the comment, as for an edit made after it was used, drops it. Otherwise,
+// or while the issue isn't at clarifying, as while held, it returns 0.
+func (is Issue) Notes() int64 {
 	var last github.Marker
 	for _, m := range is.Markers {
-		if _, sets := RoundBound(m, 0); sets {
+		if _, sets := RoundBound(m, 0); sets && !heldStackThrough(last, m) {
 			last = m
 		}
 	}
 	key := last.Fields["cmd"]
 	id, ok := Key{"cmd", key}.Comment()
-	if !ok || Stage(last.Fields["from"]) != SpecReview || Stage(last.Fields["to"]) != Clarifying {
+	if !ok || is.Stage != Clarifying || Stage(last.Fields["from"]) != SpecReview || Stage(last.Fields["to"]) != Clarifying {
 		return 0
 	}
 	for _, m := range is.Markers {
