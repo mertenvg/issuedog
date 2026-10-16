@@ -743,7 +743,7 @@ One pinned issue per repo, `issuedog digest`. It uses one of the repo's three pi
 - In the marker, a key's spaces, control and non-ASCII bytes, `%`, `,`, `<` and `>` are percent-encoded as `%XX`. That changes no key phase 1 makes.
 - Over the size limit, the lowest-ranked items are left out of the list and the marker, and a line says "…and N more, which I'll announce in the next comment." They're new on the next pass.
 - With `notify` empty, no comment is posted.
-- The comment is posted before the body is written, so a replay finds it and doesn't post it again. A failed comment still lets the body be written, and the next pass announces the items.
+- The comment is posted before the body is written, so a replay finds it and doesn't post it again. A failed comment still lets the body be written, and the next pass announces the items. The exception is the pin: on the pass that creates the digest, and on a start's first pass while the pin note is there, the create and the pin's body edit come before the comment. No comment has been posted yet then, so a replay still announces the items once.
 - An edited comment counts for nothing, so an untrusted write collaborator can't silence future mentions by adding keys. At worst the owner gets one repeated mention. A reaction doesn't change a comment's `updated_at` (checked on real GitHub, #160), so a 👍 on an announcement doesn't count as an edit.
 - A deleted comment still counts until a restart, since the poll lists no deletions.
 
