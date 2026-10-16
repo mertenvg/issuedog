@@ -88,6 +88,8 @@ var ErrLabelsHeld = errors.New("labels held back until their events explain them
 // an Unfinished disagreement; an error comment is posted once per key. The
 // writes are added to s, and s.SettingsEvent and s.TypeEvent are set, the
 // latter from the issue types or the type:* labels, as a.IssueTypes says.
+// On a repo that uses issue types, an untrusted change of the issue type
+// is reverted, and s.Type set back with it (issueTypeRevert).
 // dirty is as for state.Derive.
 //
 // A pipeline label that nothing on the timeline explains yet, whose events
@@ -125,6 +127,9 @@ func (a *Applier) CheckLabels(ctx context.Context, s *github.Snapshot, trust git
 	}
 	s.SetLabels(labels)
 	s.SettingsEvent, s.TypeEvent = settings, found.TypeEvent(a.IssueTypes)
+	if err := a.issueTypeRevert(ctx, s, found.IssueTypeRevert); err != nil {
+		return fmt.Errorf("labels of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
+	}
 	if len(held) > 0 {
 		return fmt.Errorf("labels of %s/%s#%d: %v: %w", a.Owner, a.Repo, s.Number, held, ErrLabelsHeld)
 	}
@@ -139,6 +144,27 @@ func (a *Applier) CheckLabels(ctx context.Context, s *github.Snapshot, trust git
 			return fmt.Errorf("labels of %s/%s#%d: %s at event %d: %w", a.Owner, a.Repo, s.Number, ev.Kind, ev.Key, err)
 		}
 	}
+	return nil
+}
+
+// issueTypeRevert makes rv, the revert of an untrusted change of s's issue
+// type that github.CheckLabels found, on a repo that uses issue types
+// (a.IssueTypes), and sets s.Type to the type it set back, so nothing after
+// it in the pass acts on the untrusted type: not the type check, a type
+// error's end, a move, a stage run or the digest. With no issue type set
+// back, s.Type comes from the labels, as for an issue read with none. A
+// repo that uses labels leaves issue types alone, as before (SPEC §5.1).
+// A failed revert is the caller's error, so nothing acts on s in this pass,
+// and the next pass finds the change and tries again.
+func (a *Applier) issueTypeRevert(ctx context.Context, s *github.Snapshot, rv *github.IssueTypeRevert) error {
+	if !a.IssueTypes || rv == nil {
+		return nil
+	}
+	if err := a.Client.RevertIssueType(ctx, a.Owner, a.Repo, s.Number, *rv); err != nil {
+		return fmt.Errorf("issue type: %w", err)
+	}
+	s.Type, s.TypeFromLabels = strings.ToLower(rv.To), rv.To == ""
+	s.SetLabels(s.Labels)
 	return nil
 }
 

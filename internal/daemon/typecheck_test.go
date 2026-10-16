@@ -357,11 +357,11 @@ func TestTypeErrHoldBackLog(t *testing.T) {
 }
 
 // On a repo that uses issue types, the type error keys on the newest
-// issue-type event. Issue types aren't checked for trust, and nothing
-// reverts them (github.LabelCheck.IssueType; SPEC §16 for T10, #162): so
-// an untrusted user's type change is followed like anyone's, ending the
-// owner's type error and starting a new one. A repo that uses labels
-// ignores the issue-type events.
+// issue-type event that stands, judged as a type:* label's (#182): a
+// trusted user's type change is followed, ending the owner's type error
+// and starting a new one, but an untrusted user's is reverted, which ends
+// nothing and starts nothing. A repo that uses labels ignores the
+// issue-type events.
 func TestTypeErrIssueTypes(t *testing.T) {
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := newFake(t)
@@ -381,15 +381,35 @@ func TestTypeErrIssueTypes(t *testing.T) {
 		t.Fatalf("comments %q; want %q", got, want)
 	}
 	typeErrQuiet(t, f, pass)
-	// mallory, untrusted, sets the type back, then to bug.
-	f.SetTypeBy(1, "mallory", "Epic")
-	f.AddReaction(1002, "owner", "+1")
-	typeErrQuiet(t, f, pass)
-	flagWant(t, f.SetTypeBy(1, "mallory", "Bug"), 9005)
+	// mallory, untrusted, sets the type back: it's reverted, and the
+	// owner's type error stays open, for the owner to acknowledge.
+	flagWant(t, f.SetTypeBy(1, "mallory", "Epic"), 9004)
 	errAckRun(t, f, pass)
-	want = append(want, typeErrWant("bug", "spec-review", 9005, false))
+	want = append(want, issueTypeRevertWant("restored", "Task", 9004))
 	if got := commentBodies(f, 1); !slices.Equal(got, want) {
-		t.Errorf("comments %q; want mallory's type change followed: %q", got, want)
+		t.Fatalf("comments %q; want mallory's type change reverted: %q", got, want)
+	}
+	if got := f.State().Issues[0].Type; got != "Task" {
+		t.Errorf("type %q; want Task back", got)
+	}
+	typeErrQuiet(t, f, pass)
+	f.AddReaction(1002, "owner", "+1")
+	errAckRun(t, f, pass)
+	want = append(want, errAckReply("owner", "type", "9003", 1004))
+	// mallory sets it to bug: reverted, with no type error.
+	flagWant(t, f.SetTypeBy(1, "mallory", "Bug"), 9006)
+	errAckRun(t, f, pass)
+	want = append(want, issueTypeRevertWant("restored", "Task", 9006))
+	if got := commentBodies(f, 1); !slices.Equal(got, want) {
+		t.Fatalf("comments %q; want %q", got, want)
+	}
+	typeErrQuiet(t, f, pass)
+	// The owner's own change to bug is followed, as before.
+	flagWant(t, f.SetTypeBy(1, "owner", "Bug"), 9008)
+	errAckRun(t, f, pass)
+	want = append(want, typeErrWant("bug", "spec-review", 9008, false))
+	if got := commentBodies(f, 1); !slices.Equal(got, want) {
+		t.Errorf("comments %q; want the owner's type change followed: %q", got, want)
 	}
 	typeErrQuiet(t, setup(t), typeErrPass(t, false))
 }
