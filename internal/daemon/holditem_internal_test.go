@@ -231,6 +231,19 @@ func TestHoldItemKeyUnderHandSetHold(t *testing.T) {
 	}
 }
 
+// A hold set by hand on a held issue writes a held → held marker, but the
+// first hold still keys the item: the key doesn't move while the issue
+// stays held.
+func TestHoldItemKeyFirstHoldWins(t *testing.T) {
+	s := holdItemSnap(append(holdItemOwnerHeld(),
+		holdItemComment(504, waitApp, "<!-- issuedog:transition from=held to=held at=ready reason=owner by=owner event=77 seen=501 -->"),
+		holdItemComment(505, holdItemMallory, "Wait."))...)
+	it := holdItemFindOne(t, s, nil, discTrigger{Kind: discComment, Key: "c505", By: "mallory", At: holdItemAt(5), ID: 505})
+	if it.Key != "hold-5-cmd502" {
+		t.Errorf("key %s; want the first hold's, hold-5-cmd502", it.Key)
+	}
+}
+
 // A hold marker with no key, which the App doesn't write, keys the item
 // by the oldest open trigger. One with no reason, from before #87, is an
 // owner hold. A /hold by 👍 keys it by its reaction, and a run's by its
