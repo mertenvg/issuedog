@@ -71,13 +71,18 @@ type LabelCheck struct {
 	// stands, judged as Settings is, or 0 if there is none. So an untrusted
 	// change, reverted or not yet, gives the change before it that stands.
 	TypeLabel int64
-	// IssueType is the ID of the newest issue-type event on the timeline
-	// (issue_type_added, issue_type_changed or issue_type_removed), whoever
-	// made it, or 0 if there is none. Issue types aren't checked for trust
-	// (SPEC §5.1 asks for it; nothing reverts them yet).
+	// IssueType is the ID of the newest issue-type event (issue_type_added,
+	// issue_type_changed or issue_type_removed) that stands, judged as
+	// TypeLabel is, or 0 if there is none or the caller didn't ask for the
+	// issue type to be guarded. So an untrusted change, reverted or not yet,
+	// gives the change before it that stands.
 	IssueType int64
-	// Held are the labels held back as unexplained: the caller must not act
-	// on the issue until a later call holds nothing back.
+	// IssueTypeRevert is the revert of the issue type CheckLabels made, or
+	// nil: To is the type the issue has now.
+	IssueTypeRevert *IssueTypeRevert
+	// Held are the labels held back as unexplained, and the issue type, if
+	// no event explains it yet: the caller must not act on the issue until a
+	// later call holds nothing back.
 	Held []string
 }
 
@@ -99,11 +104,29 @@ func issueTypeEvent(e *gogithub.Timeline) bool {
 	return strings.HasPrefix(e.GetEvent(), "issue_type_")
 }
 
-// labelState is the history of one pipeline label on the timeline.
+// labelState is the history of one pipeline label on the timeline, or of
+// the issue type.
 type labelState struct {
 	name   string
-	events []*gogithub.Timeline // labeled and unlabeled, oldest first
+	events []*gogithub.Timeline // labeled and unlabeled, or issue-type events, oldest first
 	ats    []int                // each event's timeline position
+	// issueTypes is set for the issue type's history, and types are then
+	// the type each event left, "" for none (issueTypeRevertLeft).
+	issueTypes bool
+	types      []string
+}
+
+// value is what event i left: for a label, "on", or "" for off; for the
+// issue type, the type's name in lower case, or "" for none. So "" is how
+// either is before any event.
+func (l *labelState) value(i int) string {
+	if l.issueTypes {
+		return strings.ToLower(l.types[i])
+	}
+	if l.events[i].GetEvent() == "labeled" {
+		return "on"
+	}
+	return ""
 }
 
 // latest returns the newest change to l, or nil if l is nil.
@@ -145,9 +168,16 @@ func OverrideLabel(name string) bool {
 // brought up to date with the timeline and its reverts. It reports an
 // override for a trusted stage change that the latest
 // transition marker doesn't record (see overrides), or else a disagreement
-// when the stage labels don't match that marker. Issue types on org repos
-// aren't checked. A replay is safe: the comment carries a revert marker keyed
-// by the event, is posted once, and goes out before the revert.
+// when the stage labels don't match that marker. A replay is safe: the
+// comment carries a revert marker keyed by the event, is posted once, and
+// goes out before the revert.
+//
+// With guard, as on a repo that uses issue types, the issue type is judged
+// as a type:* label is, against the type the caller read, guard.Type, and
+// an untrusted change of it is reverted the same way, through
+// RevertIssueType. A type no event explains yet is held back, as such a
+// label is, then reverted (see issueTypeRevertGuard). With no guard, issue
+// types are left alone.
 //
 // A pipeline label on the issue that no standing change explains, as from a
 // repo label rename, is removed the same way once it has stayed unexplained
@@ -159,19 +189,25 @@ func OverrideLabel(name string) bool {
 // issue is held back for good.
 //
 // It also returns the newest change that stands to the settings labels
-// (Settings) and to the type (TypeLabel and IssueType; see TypeEvent).
+// (Settings) and to the type (TypeLabel and IssueType; see TypeEvent), and
+// the revert of the issue type it made (IssueTypeRevert).
 //
 // Markers in a comment that dirty reports, by its ID, are skipped, as
 // state.Derive skips them. The body isn't on the timeline, so dirty is never
 // asked about it.
 func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int, labels []string, appSlug string, trust Trust, dirty func(id int64) bool,
-	seen *Unexplained) (LabelCheck, error) {
+	seen *Unexplained, guard *IssueTypeGuard) (LabelCheck, error) {
 	wrap := func(err error) error { return fmt.Errorf("check labels of %s/%s#%d: %w", owner, repo, number, err) }
-	timeline, err := c.TimelineSince(ctx, owner, repo, number, time.Time{})
+	events, err := c.issueTypeRevertTimeline(ctx, owner, repo, number, time.Time{})
 	if err != nil {
 		return LabelCheck{}, wrap(err)
 	}
+	timeline := make([]*gogithub.Timeline, 0, len(events))
+	for _, e := range events {
+		timeline = append(timeline, &e.Timeline)
+	}
 	var found LabelCheck
+	issueType := &labelState{name: "the issue type", issueTypes: true}
 	states := map[string]*labelState{}
 	var order []*labelState
 	eventAt := map[string]int{}                // label events' timeline positions, by ID
@@ -211,7 +247,9 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 			}
 		default:
 			if issueTypeEvent(e) {
-				found.IssueType = e.GetID() // oldest first, so the newest wins
+				issueType.events = append(issueType.events, e)
+				issueType.ats = append(issueType.ats, i)
+				issueType.types = append(issueType.types, issueTypeRevertLeft(events[i]))
 			}
 		}
 	}
@@ -283,8 +321,15 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 			last, lastAt = e, at
 		}
 	}
+	var heldType string
+	if found.IssueType, found.IssueTypeRevert, heldType, err = r.issueTypeRevertGuard(ctx, issueType, reverted, guard, seen); err != nil {
+		return LabelCheck{}, wrap(err)
+	}
 	if found.Labels, found.Held, err = r.unexplained(ctx, labels, given, states, settled, reverted, marker, seen); err != nil {
 		return LabelCheck{}, wrap(err)
+	}
+	if heldType != "" {
+		found.Held = append(found.Held, heldType)
 	}
 	switch {
 	case override != nil:
@@ -337,20 +382,20 @@ func (r *labelRules) isApp(e *gogithub.Timeline) bool {
 }
 
 // restores reports whether event i, by the App, leaves l as the accepted change
-// before it left it (off if there was none), as a revert does.
+// before it left it (off, or no type, if there was none), as a revert does.
 func (r *labelRules) restores(ctx context.Context, l *labelState, i int) (bool, error) {
-	before := false
+	before := ""
 	for j := i - 1; j >= 0; j-- {
 		ok, err := r.accepted(ctx, l.events[j])
 		if err != nil {
 			return false, fmt.Errorf("restores %s at %d: %w", l.name, i, err)
 		}
 		if ok {
-			before = l.events[j].GetEvent() == "labeled"
+			before = l.value(j)
 			break
 		}
 	}
-	return before == (l.events[i].GetEvent() == "labeled"), nil
+	return before == l.value(i), nil
 }
 
 // standing returns the latest change to l that stands, and its timeline
@@ -491,6 +536,9 @@ const HoldBound = 30 * time.Second
 type Unexplained struct {
 	mu     sync.Mutex
 	issues map[string]heldIssue // by unexplainedKey
+	// types are the issues whose type no event explains, by unexplainedKey
+	// (issueTypeRevertGuard).
+	types map[string]issueTypeRevertSeen
 }
 
 // heldIssue is what Unexplained keeps of one issue.
@@ -537,6 +585,7 @@ func unexplainedKey(owner, repo string, number int) string {
 // is closed or gone, so its times don't outlive it.
 func (u *Unexplained) ForgetIssue(owner, repo string, number int) {
 	u.set(unexplainedKey(owner, repo, number), heldIssue{})
+	u.issueTypeRevertForget(unexplainedKey(owner, repo, number))
 }
 
 // due is when the label first seen as fs is to be removed, if it stays
