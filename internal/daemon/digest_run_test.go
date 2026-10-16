@@ -106,7 +106,11 @@ func digestRunFake(t testing.TB) *githubtest.Fake {
 		f.AddComment(n, app, "<!-- issuedog:transition from=intake to=ready run=rready -->")
 		f.SetParent(n, parent)
 	}
-	f.Close(11)
+	// 11 is closed, and its close judged, as the App leaves an accepted
+	// close (T6): a start reads nothing of it.
+	f.RemoveLabel(11, app, "stage:ready")
+	f.AddLabel(11, app, "stage:completed")
+	f.CloseBy(11, digestRunOwner)
 	return f
 }
 

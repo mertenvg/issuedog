@@ -254,7 +254,10 @@ func TestLeftOutLabelsAreNotActedOn(t *testing.T) {
 // the label waits the whole time again.
 func TestClosedIssueForgetsUnexplained(t *testing.T) {
 	for name, tt := range map[string]struct{ away, back func(f *githubtest.Fake) }{
-		"closed": {func(f *githubtest.Fake) { f.Close(1) }, func(f *githubtest.Fake) { f.Reopen(1) }},
+		// The owner's close and reopen stand (T6): the close's closed stage
+		// is written while it's away, and the hold for the reopen only once
+		// the label rules hold back nothing.
+		"closed": {func(f *githubtest.Fake) { f.CloseBy(1, "owner") }, func(f *githubtest.Fake) { f.ReopenBy(1, "owner") }},
 		"transferred": {func(f *githubtest.Fake) { f.Transfer(1, "x/y") }, func(f *githubtest.Fake) {
 			f.Transfer(1, "o/r")
 			f.AddComment(1, "owner", "it's back")
@@ -275,9 +278,10 @@ func TestClosedIssueForgetsUnexplained(t *testing.T) {
 			iterate(t, d) // a gone issue is dropped on its second read
 			f.Advance(github.UnexplainedWait + time.Minute)
 			tt.back(f)
+			from := len(f.Writes())
 			iterate(t, d)
-			if !slices.Contains(f.State().Issues[0].Labels, "priority:p0") || len(f.Writes()) != 0 {
-				t.Fatalf("labels %q, writes %+v once it's back; want priority:p0 kept for now, nothing written", f.State().Issues[0].Labels, f.Writes())
+			if !slices.Contains(f.State().Issues[0].Labels, "priority:p0") || len(f.Writes()) != from {
+				t.Fatalf("labels %q, writes %+v once it's back; want priority:p0 kept for now, nothing written", f.State().Issues[0].Labels, f.Writes()[from:])
 			}
 			f.Advance(github.UnexplainedWait)
 			iterate(t, d)

@@ -1,0 +1,222 @@
+package daemon
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	gogithub "github.com/google/go-github/v92/github"
+
+	"github.com/mertenvg/issuedog/internal/github"
+	"github.com/mertenvg/issuedog/internal/github/githubtest"
+)
+
+// A recorded close and a recorded rename are both keyed by a timeline event
+// ID: the snapshot's closed events tell a close from a rename. A reopened
+// event's ID, and any key the timeline doesn't list as a close, stay
+// renames, as on a snapshot CheckLabels hasn't checked; other kinds stay
+// as they are.
+func TestClosingFromKey(t *testing.T) {
+	rec := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	s := &github.Snapshot{Closings: []github.Closing{{ID: 9005}, {ID: 9006, Reopen: true}}}
+	for key, want := range map[string]discKind{"9005": discClose, "9006": discRename, "9007": discRename, "c9005": discComment, "dCDE_9005": discDeletion} {
+		if got := closingFromKey(s, discFromKey(key, rec)); got.Kind != want || got.Key != key || !got.FromRecord {
+			t.Errorf("closingFromKey(%q) = %+v; want a %s from its record", key, got, want)
+		}
+	}
+	if got := closingFromKey(&github.Snapshot{}, discFromKey("9005", rec)); got.Kind != discRename {
+		t.Errorf("on an unchecked snapshot, closingFromKey(9005) = %+v; want a rename", got)
+	}
+}
+
+// A close is worded by who made it, defused, and one from its record says
+// so; discWhat words a close so either way.
+func TestClosingWhat(t *testing.T) {
+	for _, tc := range []struct {
+		tr   discTrigger
+		want string
+	}{
+		{discTrigger{Kind: discClose, By: "mallory"}, "`mallory` closed this issue, which I reopened"},
+		{discTrigger{Kind: discClose, By: "m@owner"}, "`m@​owner` closed this issue, which I reopened"},
+		{discTrigger{Kind: discClose, By: ""}, "someone GitHub doesn't name closed this issue, which I reopened"},
+		{discTrigger{Kind: discClose, FromRecord: true}, "a close of this issue, recorded earlier"},
+	} {
+		if got := closingWhat(tc.tr); got != tc.want {
+			t.Errorf("closingWhat(%+v) = %q; want %q", tc.tr, got, tc.want)
+		}
+		if got := discWhat(tc.tr); got != tc.want {
+			t.Errorf("discWhat(%+v) = %q; want %q", tc.tr, got, tc.want)
+		}
+	}
+}
+
+// Whether a commit is a merged pull request's is asked once per commit,
+// and a failed answer isn't kept.
+func TestClosingMergedAsksOnce(t *testing.T) {
+	f := githubtest.New(t, "o/r", "issuedog")
+	f.CloseByCommit(f.AddIssue("owner", "A", ""), "mallory", "abc", true)
+	a := &Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}
+	asked := func() (n int) {
+		for _, r := range f.Requests() {
+			if r.Path == "/commits/abc/pulls" || r.Path == "/commits/def/pulls" {
+				n++
+			}
+		}
+		return n
+	}
+	f.AnswerOnce(func(r githubtest.Request) bool { return r.Path == "/commits/abc/pulls" }, 500)
+	if _, err := a.closingMerged(context.Background(), "abc"); err == nil {
+		t.Fatal("closingMerged = nil error; want the failed read's")
+	}
+	for range 3 {
+		if merged, err := a.closingMerged(context.Background(), "abc"); err != nil || !merged {
+			t.Fatalf("closingMerged(abc) = %t, %v; want true", merged, err)
+		}
+		if merged, err := a.closingMerged(context.Background(), "def"); err != nil || merged {
+			t.Fatalf("closingMerged(def) = %t, %v; want false", merged, err)
+		}
+	}
+	if got := asked(); got != 3 {
+		t.Errorf("asked %d times; want 3: the failure, then once for each commit", got)
+	}
+}
+
+// closingAsks is a Trust that fails the test for any question, so a close
+// it judges asks nothing.
+type closingAsks struct{ t *testing.T }
+
+func (c closingAsks) Trusted(_ context.Context, login string) (bool, error) {
+	c.t.Errorf("asked whether %s is trusted", login)
+	return false, nil
+}
+
+func (c closingAsks) DiscAccess(_ context.Context, login string) (bool, bool, error) {
+	c.t.Errorf("asked about %s's access", login)
+	return false, false, nil
+}
+
+// closingCounts judges a close in discFind's order: a reopen, or a close
+// before the floor, is none, and a recorded one is, both with no question;
+// then only a write collaborator's close counts, and not one a merged pull
+// request made.
+func TestClosingCounts(t *testing.T) {
+	ctx := context.Background()
+	f := githubtest.New(t, "o/r", "issuedog")
+	f.CloseByCommit(f.AddIssue("owner", "A", ""), "mallory", "merged", true)
+	a := &Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}
+	s := &github.Snapshot{Number: 1}
+	open := func(key string, _ time.Time, _ int64) (bool, bool) { return key != "1", key == "2" }
+	none := a.discWhoOf(s, closingAsks{t})
+	for _, cl := range []github.Closing{{ID: 1, By: github.Author{Login: "mallory"}}, {ID: 3, Reopen: true, By: github.Author{Login: "mallory"}}} {
+		if ok, err := a.closingCounts(ctx, cl, open, none); ok || err != nil {
+			t.Errorf("closingCounts(%+v) = %t, %v; want false, with no question", cl, ok, err)
+		}
+	}
+	if ok, err := a.closingCounts(ctx, github.Closing{ID: 2, By: github.Author{Login: "eve"}}, open, none); !ok || err != nil {
+		t.Errorf("a recorded close = %t, %v; want true, with no question", ok, err)
+	}
+	who := a.discWhoOf(s, newDiscCounting())
+	for _, tc := range []struct {
+		cl   github.Closing
+		want bool
+	}{
+		{github.Closing{ID: 4, By: github.Author{Login: "mallory"}}, true},
+		{github.Closing{ID: 5, By: github.Author{Login: "mallory"}, CommitID: "pushed"}, true},
+		{github.Closing{ID: 6, By: github.Author{Login: "mallory"}, CommitID: "merged"}, false},
+		{github.Closing{ID: 7, By: github.Author{Login: "eve"}}, false},
+		{github.Closing{ID: 8, By: github.Author{Login: "owner"}}, false},
+		{github.Closing{ID: 9, By: github.Author{Login: "issuedog[bot]", Type: "Bot"}}, false},
+	} {
+		if ok, err := a.closingCounts(ctx, tc.cl, open, who); ok != tc.want || err != nil {
+			t.Errorf("closingCounts(%+v) = %t, %v; want %t", tc.cl, ok, err, tc.want)
+		}
+	}
+	if _, err := a.closingCounts(ctx, github.Closing{ID: 10, By: github.Author{Login: "bob"}}, open, who); !errors.Is(err, errTrustOnce) {
+		t.Errorf("a failed question = %v; want its error, wrapped", err)
+	}
+	f.AnswerOnce(func(r githubtest.Request) bool { return r.Path == "/commits/other/pulls" }, 500)
+	if _, err := a.closingCounts(ctx, github.Closing{ID: 11, By: github.Author{Login: "mallory"}, CommitID: "other"}, open, who); err == nil {
+		t.Error("a failed read of the commit's pull requests = nil; want its error")
+	}
+}
+
+// closingIssue is a closed issue as the poll lists it, number n, closed
+// at second at of the fake clock, with labels.
+func closingIssue(n, at int, labels ...string) *gogithub.Issue {
+	is := &gogithub.Issue{Number: &n, State: new("closed"), ClosedAt: &gogithub.Timestamp{Time: githubtest.Start.Add(time.Duration(at) * time.Second)}}
+	for _, l := range labels {
+		is.Labels = append(is.Labels, &gogithub.Label{Name: l})
+	}
+	return is
+}
+
+// A closed issue is due unless its close is explained: as judged, with the
+// listing as it left it; on a start, with one closed stage alone; or never
+// in the pipeline, with no stage label, unless this daemon held it with
+// one. Listed again, a due issue stays due.
+func TestClosingList(t *testing.T) {
+	d := &Daemon{Step: &Step{Applier: &Applier{}}}
+	d.closingList(closingIssue(1, 1, "stage:completed"), true, false)
+	d.closingList(closingIssue(2, 1, "stage:pr-open"), true, false)
+	d.closingList(closingIssue(3, 1, "stage:completed", "stage:pr-open"), true, false)
+	d.closingList(closingIssue(4, 1, "priority:p1"), true, false)
+	d.closingList(closingIssue(5, 1), false, true)
+	d.closingList(closingIssue(5, 1), false, false) // listed again at the cursor
+	d.closingList(closingIssue(6, 1, "Stage:Discarded"), false, false)
+	due := func() (got []int) {
+		for n := range 8 {
+			if d.closingDue[n] != nil {
+				got = append(got, n)
+			}
+		}
+		return got
+	}
+	if got := due(); !equalInts(got, []int{2, 3, 5, 6}) {
+		t.Errorf("due %v; want 2, 3, 5 and 6", got)
+	}
+	d.closingSeen[2] = closingListed{closed: githubtest.Start.Add(time.Second), stages: "stage:completed"}
+	d.closingList(closingIssue(2, 1, "stage:completed"), false, false)
+	d.closingList(closingIssue(1, 9, "stage:completed"), false, false) // closed again
+	d.closingList(closingIssue(6, 1, "stage:pr-open"), false, false)
+	d.Step.closingAgain = map[int]closingListed{3: {closed: githubtest.Start.Add(5 * time.Second), stages: "stage:completed"}}
+	d.closingList(closingIssue(3, 5, "stage:completed"), false, false)
+	if got := due(); !equalInts(got, []int{1, 5, 6}) || len(d.Step.closingAgain) != 0 {
+		t.Errorf("due %v, closed again %v; want 1, 5 and 6, and the App's close again judged", got, d.Step.closingAgain)
+	}
+	d.closingForget(1)
+	if got := due(); !equalInts(got, []int{5, 6}) {
+		t.Errorf("due %v after 1 is forgotten; want 5 and 6", got)
+	}
+}
+
+func equalInts(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// An open issue's closed stage is judged as a reopen only while no
+// override stands; a closed issue's isn't.
+func TestClosingReopenLeavesAlone(t *testing.T) {
+	a := &Applier{AppSlug: "issuedog"}
+	s := &github.Snapshot{Number: 1, Labels: []string{"stage:completed"}, Closings: []github.Closing{{ID: 9, Reopen: true, By: github.Author{Login: "owner"}}}}
+	override := []github.LabelEvent{{Kind: github.LabelOverride, Label: "stage:ready"}}
+	if done, err := a.closingReopen(context.Background(), s, closingAsks{t}, func(int64) bool { return false }, override); done || err != nil {
+		t.Errorf("with an override, closingReopen = %t, %v; want nothing done", done, err)
+	}
+	s.Closed = true
+	if done, err := a.closingReopen(context.Background(), s, closingAsks{t}, func(int64) bool { return false }, nil); done || err != nil {
+		t.Errorf("on a closed issue, closingReopen = %t, %v; want nothing done", done, err)
+	}
+	s.Closed, s.Closings = false, []github.Closing{{ID: 8}, {ID: 9, Reopen: true, By: github.Author{Login: "issuedog[bot]", Type: "Bot"}}}
+	if done, err := a.closingReopen(context.Background(), s, closingAsks{t}, func(int64) bool { return false }, nil); done || err != nil {
+		t.Errorf("with only the App's reopen, closingReopen = %t, %v; want nothing done", done, err)
+	}
+}

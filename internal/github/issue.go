@@ -57,6 +57,10 @@ type Snapshot struct {
 	DiscRenames []DiscRename
 	// DiscLabelTimes are LabelCheck.DiscLabelTimes, set with DiscRenames.
 	DiscLabelTimes map[int64]time.Time
+	// Closings are LabelCheck.Closings, the issue's closed and reopened
+	// events, set with DiscRenames: for a close's discussion trigger, and
+	// for the judgement of a reopen (T6). Nil until then.
+	Closings []Closing
 
 	// TypeFromLabels is set when Type comes from the labels, as the issue has
 	// no issue type, so SetLabels keeps it up to date with them.

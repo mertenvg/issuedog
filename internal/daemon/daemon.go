@@ -59,8 +59,10 @@ type Daemon struct {
 	missing       map[int]bool             // stale issues found gone since their last good read
 	issuesSince   time.Time
 	commentsSince time.Time
-	polled        time.Time // when the last poll began
-	relabel       bool      // a reload added models whose labels aren't created yet
+	polled        time.Time               // when the last poll began
+	relabel       bool                    // a reload added models whose labels aren't created yet
+	closingSeen   map[int]closingListed   // closed issues whose close is judged, as they were listed then (closing.go)
+	closingDue    map[int]*gogithub.Issue // closed issues with a close to judge, as last listed (closingList)
 }
 
 // CurrentTrust is a github.Trust that asks st.Trust on each call. Iterate's
@@ -130,8 +132,9 @@ func (d *Daemon) Run(ctx context.Context) {
 }
 
 // Iterate runs one iteration, all but the sleep. It syncs the clone and
-// reloads config and trust, polls for changes, reads changed issues again,
-// then runs step 1 on them and on every issue at spec-review, whose 👍s
+// reloads config and trust, polls for changes, judges the closes still to
+// judge (closingPass), reads changed issues again, those it reopened
+// included, then runs step 1 on them and on every issue at spec-review, whose 👍s
 // change no updated_at (plan #5, assumption 7), on every issue with
 // triage:ask, a flag waiting on a 👍 (FlagByReaction), and on every issue
 // that had an open state error after its last step 1, waiting on a 👍 too
@@ -143,8 +146,9 @@ func (d *Daemon) Run(ctx context.Context) {
 // keeps the digest (digestPass), and then the assignees (assignPass), whose
 // failures stop nothing. Last it hands Work the issues ready for it. It returns the errors of the issues it couldn't read
 // or run step 1 on, which the next Iterate reads again. An issue whose
-// labels CheckLabels holds back (ErrLabelsHeld) is no error: like a touched
-// issue, it gets nothing more this pass, and is read again on the next.
+// labels CheckLabels holds back (ErrLabelsHeld), or that it closed again
+// (closingErrClosedAgain), is no error: like a touched issue, it gets
+// nothing more this pass, and is read again on the next.
 func (d *Daemon) Iterate(ctx context.Context) error {
 	if d.snaps == nil {
 		d.snaps, d.inputs, d.stale = map[int]*github.Snapshot{}, map[int][]github.Comment{}, map[int]bool{}
@@ -160,6 +164,12 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	d.polled = time.Now()
 	if err := d.poll(ctx); err != nil {
 		return fmt.Errorf("poll %s/%s: %w", d.Step.Owner, d.Step.Repo, err)
+	}
+	// Closes still to judge, before the reads: an issue it reopens is read
+	// and visited this pass (closing.go).
+	var errs []error
+	if err := d.closingPass(ctx); err != nil {
+		errs = append(errs, err)
 	}
 	// A label left out, which a rename changes no updated_at for, is
 	// removed once it falls due: read its issue again then, and no sooner.
@@ -177,7 +187,6 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			d.stale[n] = true
 		}
 	}
-	var errs []error
 	read := map[int]bool{}
 	for _, n := range slices.Sorted(maps.Keys(d.stale)) {
 		if d.digest.has(n) { // never in the pipeline, as when a command touched it
@@ -197,6 +206,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			delete(d.digestCache, n)
 			delete(d.assignManaged, n)
 			d.Step.forgetLabels(n)
+			d.closingForget(n)
 		case gone(err):
 			// One answer may be wrong, so it's read again next pass.
 			logr.Infof("%s/%s#%d looks gone, deleted or transferred, so it's read again: %v", d.Step.Owner, d.Step.Repo, n, err)
@@ -245,7 +255,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			d.openErrs[n], err = d.Step.openErrAny(s, in, dirt)
 		}
 		d.Step.trustOnceEnd()
-		if errors.Is(err, ErrLabelsHeld) {
+		if errors.Is(err, ErrLabelsHeld) || errors.Is(err, closingErrClosedAgain) {
 			// Like a touched issue: nothing more this pass, and read again.
 			logr.Infof("%s/%s#%d waits for its next pass: %v", d.Step.Owner, d.Step.Repo, n, err)
 			touched[n] = true
@@ -336,9 +346,11 @@ func (d *Daemon) reload(ctx context.Context) {
 // more from there, so the next poll of an unchanged repo repeats that
 // request and gets a 304. Closed issues and pull requests are dropped, and
 // so are digests, which it records, with the App's digest-new comments
-// (digest.go).
+// (digest.go). A closed issue whose close is still to judge is kept for
+// closingPass (closingList), and an open one forgets its close.
 func (d *Daemon) poll(ctx context.Context) error {
 	a := d.Step.Applier
+	start := d.issuesSince.IsZero() // a start's first poll, which lists every issue
 	for range 2 {
 		since := d.issuesSince
 		issues, err := a.Client.IssuesSince(ctx, a.Owner, a.Repo, since)
@@ -351,6 +363,10 @@ func (d *Daemon) poll(ctx context.Context) error {
 			switch {
 			case is.IsPullRequest():
 			case d.digest.listed(a.AppSlug, is) || is.GetState() != "open": // a digest is never in the pipeline
+				if is.GetState() != "open" && !d.digest.has(n) {
+					// A close still to judge is kept (closing.go).
+					d.closingList(is, start, d.snaps[n] != nil && slices.ContainsFunc(d.snaps[n].Labels, isStageLabel))
+				}
 				delete(d.snaps, n)
 				delete(d.inputs, n)
 				delete(d.stale, n)
@@ -360,6 +376,7 @@ func (d *Daemon) poll(ctx context.Context) error {
 				delete(d.assignManaged, n)
 				a.forgetLabels(n)
 			case changed(d.snaps[n], is):
+				d.closingForget(n)
 				d.stale[n] = true
 			}
 		}

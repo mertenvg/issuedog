@@ -30,7 +30,8 @@ import (
 var Start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // Fake serves one repo's issues, comments, labels, timelines, reactions,
-// parents and sub-issues, the GraphQL queries for their edits, deleted
+// parents and sub-issues, a commit's pull requests (closing.go), the
+// GraphQL queries for their edits, deleted
 // comments and pins, and the pinIssue mutation. Its API writes, comment edits, created issues and
 // pins included, are made by the App, "<slug>[bot]" of type Bot. A GET whose
 // answer hasn't changed gets a 304. Every write (any method but GET, and a
@@ -64,6 +65,8 @@ type Fake struct {
 
 	unassignable map[string]bool // logins in lower case, see Unassignable (assign.go)
 
+	closingMerged map[string]bool // commits of merged pull requests (CloseByCommit)
+
 	// The App, permission and repo label endpoints, and the request log (app.go).
 	perms      map[string]string
 	labels     []*gogithub.Label
@@ -89,6 +92,7 @@ type issue struct {
 	pinned         bool                            // to the repo's issue list (PinIssue)
 	typeEvents     map[int64]issueTypeRevertChange // the types of each issue-type event, by its ID
 	deletions      []deletedEvent                  // CommentDeletedEvents, oldest first (DeleteCommentBy)
+	closingReasons map[int64]string                // the state_reason of each closed event, by its ID (closingServe)
 }
 
 type comment struct {
@@ -156,6 +160,7 @@ func New(t testing.TB, repo, slug string) *Fake {
 	f.handle("POST /issues/{n}/labels", f.addLabels)
 	f.handle("DELETE /issues/{n}/labels/{name}", f.removeLabel)
 	f.handle("GET /issues/{n}/timeline", f.timeline)
+	f.handle("GET /commits/{sha}/pulls", f.closingPulls)
 	f.mux.HandleFunc("POST /graphql", f.serveGraphQL)
 	f.handleApp()
 	f.handleAssign()

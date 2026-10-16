@@ -42,6 +42,8 @@ type Applier struct {
 
 	histories     histories                // see Dirty
 	discNoRecords map[string]*discNoRecord // logins with no permission record, in lower case (discNoRecord)
+	closingPRs    map[string]bool          // whether each commit a close named is a merged pull request's (closingMerged)
+	closingAgain  map[int]closingListed    // issues the App closed again, after an untrusted reopen, as it left them (closingCloseAgain)
 	unexplained   github.Unexplained
 }
 
