@@ -222,6 +222,32 @@ func TestDiscAccessWithoutCodeowners(t *testing.T) {
 	discCheck(t, fakeFiles{}, api, map[string][2]bool{"wanda": {true, false}, "tom": {false, false}})
 }
 
+// Under CODEOWNERS, Trusted answers for a login it doesn't name with no
+// request; only DiscAccess asks about them.
+func TestTrustedNonOwnerAsksNothing(t *testing.T) {
+	asked := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		asked++
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	base := srv.URL + "/"
+	api, err := gogithub.NewClient(gogithub.WithURLs(&base, &base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := Load(context.Background(), fakeFiles{"CODEOWNERS": "/CODEOWNERS @alice\n"}, api, "acme", "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.Trusted(context.Background(), "bob"); ok || err != nil || asked != 0 {
+		t.Errorf("Trusted(bob) = %v, %v after %d requests; want false with none", ok, err, asked)
+	}
+	if _, _, err := s.DiscAccess(context.Background(), "bob"); err != nil || asked != 1 {
+		t.Errorf("DiscAccess(bob) = %v after %d requests; want one", err, asked)
+	}
+}
+
 // A failed permission request is DiscAccess's error, and Trusted's.
 func TestDiscAccessError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

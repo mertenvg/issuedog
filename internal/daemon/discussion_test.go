@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
@@ -172,6 +173,64 @@ func TestDiscCommentsThatHoldNothing(t *testing.T) {
 	}
 }
 
+// Edits from before the first transition marker hold nothing: one of the
+// owner's comment, and one of their own comment after a trusted 👍.
+func TestDiscEditsBeforeTheFloor(t *testing.T) {
+	for name, do := range map[string]func(f *githubtest.Fake, n int){
+		"the owner's comment": func(f *githubtest.Fake, n int) {
+			f.EditComment(f.AddComment(n, "owner", "Ship it."), "mallory", "Don't ship it.")
+		},
+		"their approved comment": func(f *githubtest.Fake, n int) {
+			id := f.AddComment(n, "mallory", "Do it this way.")
+			f.AddReaction(id, "owner", "+1")
+			f.EditComment(id, "mallory", "Do it that way.")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := run(t, func(t testing.TB) *githubtest.Fake {
+				f := githubtest.New(t, "o/r", slug)
+				f.SetPermission("owner", "admin")
+				f.SetPermission("mallory", "write")
+				n := f.AddIssue("owner", "Issue", "body")
+				f.SetType(n, "task")
+				do(f, n)
+				f.AddLabel(n, app, "stage:ready")
+				f.AddComment(n, app, "<!-- issuedog:transition "+ready+" -->")
+				return f
+			}, discPass(t, 1))
+			if l := f.State().Issues[0].Labels; !slices.Equal(l, []string{"stage:ready"}) {
+				t.Errorf("labels %q; want the issue still at ready", l)
+			}
+		})
+	}
+}
+
+// The history an edit's key is read from is kept: once the note is on, a
+// pass on the same Applier reads none.
+func TestDiscEditHistoryKept(t *testing.T) {
+	f := discWith(func(_ testing.TB, f *githubtest.Fake) {
+		f.EditComment(f.AddComment(1, "owner", "Ship it."), "mallory", "Don't ship it.")
+	})(t)
+	c := f.Client(t)
+	st := &daemon.Step{Applier: &daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: slug}, Trust: discTrust{}}
+	for i := range 3 {
+		s, err := c.Snapshot(context.Background(), "o", "r", 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := f.HistoryQueries()
+		if _, err := st.Run(context.Background(), s); err != nil {
+			t.Fatal(err)
+		}
+		if got := f.HistoryQueries() - before; i > 0 && got != 0 {
+			t.Errorf("pass %d sent %d history queries; want none, the history kept", i+1, got)
+		}
+	}
+	if l := f.State().Issues[0].Labels; !slices.Equal(l, []string{"stage:held"}) {
+		t.Errorf("labels %q; want the issue held", l)
+	}
+}
+
 // A stranger's comment costs no permission request, as their
 // authorAssociation says they have no access: GitHub would answer it with
 // a 404 on every pass, which no conditional request saves.
@@ -316,6 +375,10 @@ func TestDiscOwnApprovedEdit(t *testing.T) {
 			f.AddReaction(id, app, "+1")
 			f.EditComment(id, "mallory", "Shouldn't this wait a week?")
 		},
+		"after the owner's 👀": func(f *githubtest.Fake, id int64) {
+			f.AddReaction(id, "owner", "eyes")
+			f.EditComment(id, "mallory", "Shouldn't this wait a week?")
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := run(t, discWith(func(t testing.TB, f *githubtest.Fake) { do(f, base(t, f)) }), discPass(t, 1))
@@ -390,6 +453,49 @@ func TestDiscSeveralTriggers(t *testing.T) {
 			discNotice("`mallory` renamed this issue to “Renamed”", fmt.Sprint(ev)),
 		}}}
 	})
+}
+
+// The oldest trigger keys the hold, whatever its kind: a rename before a
+// comment. A rename from before the first transition marker is none.
+func TestDiscOldestKeysTheHold(t *testing.T) {
+	var ev int64
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := githubtest.New(t, "o/r", slug)
+		f.SetPermission("owner", "admin")
+		f.SetPermission("mallory", "write")
+		n := f.AddIssue("owner", "Issue", "body")
+		f.SetType(n, "task")
+		f.RenameIssue(n, "mallory", "Too early")
+		f.AddLabel(n, app, "stage:ready")
+		f.AddComment(n, app, "<!-- issuedog:transition "+ready+" -->") // 1001
+		ev = f.RenameIssue(n, "mallory", "Renamed")
+		f.AddComment(n, "mallory", "Then this.") // 1002
+		return f
+	}
+	discCheck(t, setup, 1, func(*githubtest.Fake) map[int]issueWant {
+		key := fmt.Sprint(ev)
+		return map[int]issueWant{1: {[]string{"stage:held"}, []string{discHeld("ready", "`mallory` renamed this issue to “Renamed”",
+			"from=ready to=held at=ready origin=ready reason=discussion event="+key+" seen=1001", discNoticeMarker(key))}}}
+	})
+}
+
+// /resume on an issue held only for discussion is rejected, for the
+// discussion, and the issue stays held.
+func TestDiscResumeOnDiscussionHold(t *testing.T) {
+	f := discFake(t)
+	f.AddComment(1, "mallory", "Wait.")
+	if err := discPass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	f.AddComment(1, "owner", "/resume")
+	if err := discPass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	is := f.State().Issues[0]
+	last := is.Comments[len(is.Comments)-1]
+	if !slices.Equal(is.Labels, []string{"stage:held"}) || !strings.Contains(last.Body, "#1 also on hold for discussion, which this `/resume` doesn't end") {
+		t.Errorf("labels %q, newest comment %q; want #1 still held, and the /resume rejected for the discussion", is.Labels, last.Body)
+	}
 }
 
 // On an issue already held, a trigger writes no hold marker (Q2b): a
@@ -643,11 +749,15 @@ func TestDiscThroughTheLoop(t *testing.T) {
 	n := fileAt(f, "ready", "do it") // comment 1001
 	f.AddComment(n, "mallory", "Wait.")
 	o := newOrigin(t)
+	o.commit(config.Path, "types: labels\nnotify: [owner]\n")
 	var visits []int
 	d := newDaemon(t, f, o, &visits)
 	iterate(t, d)
 	if l := f.State().Issues[n-1].Labels; !slices.Equal(l, []string{"stage:held"}) {
 		t.Fatalf("labels %q; want the issue held for discussion", l)
+	}
+	if c := newestComment(f, n); !strings.Contains(c, "\n\ncc @owner\n\n") {
+		t.Errorf("hold %q; want a cc of config's notify", c)
 	}
 	iterate(t, d) // reads the App's writes back
 	writes, from := len(f.Writes()), len(f.Requests())

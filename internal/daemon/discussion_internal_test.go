@@ -210,6 +210,30 @@ func TestDiscFloor(t *testing.T) {
 	}
 }
 
+// A login is an outsider only when every association the snapshot gives
+// says so, whatever its case: one that says COLLABORATOR, or one not
+// known, is asked about.
+func TestDiscWhoOf(t *testing.T) {
+	s := &github.Snapshot{Author: github.Author{Login: "Eve"}, AuthorAssociation: "NONE", Comments: []github.Comment{
+		{Author: github.Author{Login: "eve"}, Association: "FIRST_TIMER"},
+		{Author: github.Author{Login: "mallory"}, Association: "NONE"},
+		{Author: github.Author{Login: "Mallory"}, Association: "COLLABORATOR"},
+		{Author: github.Author{Login: "ann"}, Association: "COLLABORATOR"},
+		{Author: github.Author{Login: "ann"}, Association: "NONE"},
+		{Author: github.Author{Login: "bo"}, Association: ""},
+	}}
+	inner := newDiscCounting()
+	who := discWhoOf(s, inner)
+	for _, l := range []string{"eve", "mallory", "ann", "bo", "zed"} {
+		if _, _, err := who.ask(context.Background(), github.Author{Login: l}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if want := map[string]int{"mallory": 1, "ann": 1, "bo": 1, "zed": 1}; !reflect.DeepEqual(inner.access, want) {
+		t.Errorf("asked %v, want %v: all but eve, an outsider everywhere", inner.access, want)
+	}
+}
+
 // An edit's key names its content and time in Unix seconds.
 func TestDiscEditKey(t *testing.T) {
 	if got := discEditKey(42, time.Unix(1767225606, 0)); got != "e42-1767225606" {
