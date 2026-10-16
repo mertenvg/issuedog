@@ -652,20 +652,36 @@ func TestDigestRunTransferred(t *testing.T) {
 	digestRunReplaced(t, f, d, m, "PATCH /repos/o/r/issues/12", digestRunWithout(1, ""))
 }
 
-// The revert of an untrusted close, on a digest transferred before it,
-// marks it gone (#160's verify): the PATCH that would reopen it gets a
-// 301, the digest is dropped, and the next pass replaces it, rather than
+// The revert of an untrusted close, or of an untrusted reopen after a
+// trusted close, on a digest transferred before it, marks it gone (#160's
+// verify): the PATCH that would reopen it, or close it again, gets a 301,
+// the digest is dropped, and the next pass replaces it, rather than
 // failing the revert on every pass.
 func TestDigestRunTransferredRevert(t *testing.T) {
-	f := digestRunFake(t)
-	m, c := digestRunMove(t, f)
-	d := digestRunDaemon(t, f, digestRunOrigin(t), c, nil)
-	digestRunStep(t, f, d, "the first pass", digestRunFirst...)
-	f.CloseBy(12, "mallory")
-	// The poll lists it closed; it's transferred before the revert.
-	f.BeforeRequest(func(r githubtest.Request) bool { return r.Method == http.MethodGet && r.Path == "/issues/12/timeline" }, func() { m.move(12) })
-	if got := digestRunFail(t, f, d, "the digest is gone", "the close of the digest, o/r#12: reopen it"); len(got) != 0 {
-		t.Errorf("writes = %q; want none", got)
+	for _, tc := range []struct {
+		name   string
+		change func(t *testing.T, f *githubtest.Fake, d *daemon.Daemon)
+		err    string
+	}{
+		{"untrusted close", func(_ *testing.T, f *githubtest.Fake, _ *daemon.Daemon) { f.CloseBy(12, "mallory") }, "reopen it"},
+		{"untrusted reopen", func(t *testing.T, f *githubtest.Fake, d *daemon.Daemon) {
+			f.CloseBy(12, digestRunOwner)
+			digestRunStep(t, f, d, "the owner's close")
+			f.ReopenBy(12, "mallory")
+		}, "close it again"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := digestRunFake(t)
+			m, c := digestRunMove(t, f)
+			d := digestRunDaemon(t, f, digestRunOrigin(t), c, nil)
+			digestRunStep(t, f, d, "the first pass", digestRunFirst...)
+			tc.change(t, f, d)
+			// The poll lists the change; the digest is transferred before the revert.
+			f.BeforeRequest(func(r githubtest.Request) bool { return r.Method == http.MethodGet && r.Path == "/issues/12/timeline" }, func() { m.move(12) })
+			if got := digestRunFail(t, f, d, "the digest is gone", "the close of the digest, o/r#12: "+tc.err); len(got) != 0 {
+				t.Errorf("writes = %q; want none", got)
+			}
+			digestRunReplaced(t, f, d, m, "PATCH /repos/o/r/issues/12", digestRunRanked)
+		})
 	}
-	digestRunReplaced(t, f, d, m, "PATCH /repos/o/r/issues/12", digestRunRanked)
 }
