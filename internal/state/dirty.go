@@ -10,7 +10,8 @@ import (
 // or BodyID, by author is sanctioned (SPEC §5.1; #169, Q2a). It is if
 //   - the App made it: the App rewrites bodies others wrote, such as a
 //     spec, so its edits always are;
-//   - the author made it; or
+//   - the author made it: for the body, once the App has rewritten it
+//     whole, that is the App (AuthorEditWriter, which Dirty applies); or
 //   - a user trusted holds as trusted now (SPEC §6.1) made it, unless the
 //     content is a comment the App wrote. Such a comment carries state
 //     markers, so only the App may edit it. The issue body counts as
@@ -46,17 +47,45 @@ func IsApp(a github.Author, appSlug string) bool {
 // an edit that isn't Sanctioned after the App's last full rewrite of it,
 // and returns the oldest such editor. For a comment, that is any edit: the
 // App never rewrites one whole. For the body, an edit before the newest
-// entry that Rewrote is replaced, so it no longer counts (#169, Q1a).
+// entry that Rewrote is replaced, so it no longer counts (#169, Q1a). Each
+// edit is judged with the author its text had before it
+// (AuthorEditWriter): for the body, the App once it has rewritten it.
 // Dirty content's markers are never read, and it is never a command or an
 // answer (SPEC §5.1, §6.4). history is as github.History returns it,
 // oldest first. trusted is as for Sanctioned.
 func Dirty(id int64, author github.Author, history []github.Edit, appSlug string, trusted func(login string) bool) (github.Author, bool) {
-	for _, e := range SinceRewrite(id, history, appSlug) {
-		if !Sanctioned(id, author, e.By, appSlug, trusted) {
+	since := SinceRewrite(id, history, appSlug)
+	from := len(history) - len(since)
+	for i, e := range since {
+		if !Sanctioned(id, AuthorEditWriter(id, author, history[:from+i], appSlug), e.By, appSlug, trusted) {
 			return e.By, true
 		}
 	}
 	return github.Author{}, false
+}
+
+// AuthorEditWriter returns whose text content id by author is after
+// history, its entries so far, for Sanctioned to judge the next edit:
+// author's, unless id is the body and the App has rewritten it whole
+// (Rewrote), after which the text is the App's (#87, Q4a). So the issue's
+// author's own body edit after a rewrite is sanctioned only as anyone
+// else's is, by trust: an untrusted author's makes the body dirty. Their
+// edits before any rewrite still are. history is as for Dirty. An App
+// entry whose text someone deleted may have been a rewrite, so it counts
+// as one here, which fails closed: else deleting the rewrite's text from
+// the history would sanction the author's edits after it again. The App's
+// only other body edit is the note on a body that was dirty already
+// (Applier.MarkDirty).
+func AuthorEditWriter(id int64, author github.Author, history []github.Edit, appSlug string) github.Author {
+	if id != BodyID {
+		return author
+	}
+	for _, e := range history {
+		if Rewrote(e, appSlug) || (e.Text == "" && IsApp(e.By, appSlug)) {
+			return github.Author{Login: appSlug + "[bot]", Type: "Bot"}
+		}
+	}
+	return author
 }
 
 // SinceRewrite returns the entries of history, the history of content id,

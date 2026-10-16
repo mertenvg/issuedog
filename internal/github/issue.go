@@ -31,6 +31,9 @@ type Snapshot struct {
 	Parent int
 	// Comments are all the issue's comments, oldest first.
 	Comments []Comment
+	// Deleted are the issue's CommentDeletedEvents, oldest first: read
+	// with the comments, in the same GraphQL query (#186).
+	Deleted []DeletedComment
 	// SettingsEvent is the ID of the newest change to a model or effort
 	// label that stands, or 0: not read with the issue, but set when the
 	// daemon checks its labels (CheckLabels).
@@ -79,8 +82,8 @@ var ErrPullRequest = errors.New("a pull request, not an issue")
 var ErrTransferred = errors.New("transferred")
 
 // Snapshot reads one issue, not a pull request: its title, author, labels,
-// type and parent from REST, then its body and every comment, each with who
-// last edited it, from GraphQL.
+// type and parent from REST, then its body, every comment, each with who
+// last edited it, and every deleted comment, from GraphQL.
 func (c *Client) Snapshot(ctx context.Context, owner, repo string, number int) (*Snapshot, error) {
 	issue, _, err := c.Issues.Get(ctx, owner, repo, number)
 	if err != nil {

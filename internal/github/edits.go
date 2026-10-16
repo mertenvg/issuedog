@@ -23,9 +23,14 @@ type Edit struct {
 	Text string
 }
 
-// commentsQuery reads an issue's body and a page of its comments, each with
-// its last edit. REST says when a body was edited, but not who.
-const commentsQuery = `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+// commentsQuery reads an issue's body, a page of its comments, each with
+// its last edit, and a page of its CommentDeletedEvents. REST says when a
+// body was edited, but not who, and lists no deletions. The deletions come
+// in the same query (#186), so they cost no request of their own. An
+// event's databaseId isn't read: GitHub's schema makes it a 32-bit Int,
+// and timeline event IDs are past 2^31 (33402593746 on #186, read live
+// 2026-10-16), so the node ID is the event's stable ID.
+const commentsQuery = `query($owner: String!, $name: String!, $number: Int!, $cursor: String, $deletedCursor: String) {
   repository(owner: $owner, name: $name) {
     issue(number: $number) {
       id
@@ -40,9 +45,35 @@ const commentsQuery = `query($owner: String!, $name: String!, $number: Int!, $cu
           editor { login __typename }
         }
       }
+      timelineItems(itemTypes: [COMMENT_DELETED_EVENT], first: 100, after: $deletedCursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          ... on CommentDeletedEvent {
+            id createdAt
+            actor { login __typename }
+            deletedCommentAuthor { login __typename }
+          }
+        }
+      }
     }
   }
 }`
+
+// DeletedComment is one CommentDeletedEvent on an issue's timeline:
+// someone deleted a comment on it (SPEC §6.4). GitHub says who deleted it,
+// who wrote it and when, but not which comment it was. An Author is empty
+// where GitHub names nobody; a deleted account shows as ghost.
+type DeletedComment struct {
+	// ID is the event's GraphQL node ID, the same on every read, so it can
+	// key what the deletion leads to.
+	ID string
+	// By is who deleted the comment: the event's actor.
+	By Author
+	// Author is who wrote the deleted comment.
+	Author Author
+	// At is when the comment was deleted.
+	At time.Time
+}
 
 // commentsResponse is commentsQuery's answer.
 type commentsResponse struct {
@@ -60,6 +91,18 @@ type commentsResponse struct {
 						Author               *actor
 						CreatedAt, UpdatedAt time.Time
 						editNode
+					}
+				}
+				TimelineItems struct { // the CommentDeletedEvents
+					PageInfo struct {
+						HasNextPage bool
+						EndCursor   string
+					}
+					Nodes []struct {
+						ID                   string
+						CreatedAt            time.Time
+						Actor                *actor
+						DeletedCommentAuthor *actor
 					}
 				}
 			}
@@ -120,12 +163,15 @@ func (n editNode) edit() Edit {
 }
 
 // readComments sets s's body and comments, oldest first, each with its last
-// edit, from one GraphQL query per 100 comments. A body and its edit come
-// from the same read, so they match.
+// edit, and its deleted comments (s.Deleted), oldest first, from one
+// GraphQL query per 100 comments or deletions, whichever has more pages. A
+// body and its edit come from the same read, so they match. Once one list
+// has no next page, the next query asks for it after its end cursor, which
+// gives only what was added since, so nothing is read twice.
 func (c *Client) readComments(ctx context.Context, owner, repo string, s *Snapshot) error {
 	wrap := func(err error) error { return fmt.Errorf("comments of %s/%s#%d: %w", owner, repo, s.Number, err) }
-	read := map[string]bool{}
-	vars := map[string]any{"owner": owner, "name": repo, "number": s.Number, "cursor": nil}
+	read := map[string]bool{} // the cursors read, by variable and cursor
+	vars := map[string]any{"owner": owner, "name": repo, "number": s.Number, "cursor": nil, "deletedCursor": nil}
 	for page := 0; ; page++ {
 		req, err := c.NewRequest(ctx, "POST", "graphql", map[string]any{"query": commentsQuery, "variables": vars})
 		if err != nil {
@@ -153,15 +199,37 @@ func (c *Client) readComments(ctx context.Context, owner, repo string, s *Snapsh
 			s.Comments = append(s.Comments, Comment{ID: id, Node: n.ID, Author: n.Author.author(), Body: n.Body,
 				CreatedAt: n.CreatedAt, UpdatedAt: n.UpdatedAt, Edit: n.edit()})
 		}
-		cursor := is.Comments.PageInfo.EndCursor
-		if !is.Comments.PageInfo.HasNextPage {
+		for _, n := range is.TimelineItems.Nodes {
+			// The query asks only for CommentDeletedEvents, so a node
+			// without an ID isn't one: fail rather than miss a deletion.
+			if n.ID == "" {
+				return wrap(errDeletedNoID)
+			}
+			s.Deleted = append(s.Deleted, DeletedComment{ID: n.ID, By: n.Actor.author(),
+				Author: n.DeletedCommentAuthor.author(), At: n.CreatedAt})
+		}
+		more := false
+		for _, p := range []struct {
+			name   string
+			next   bool
+			cursor string
+		}{
+			{"cursor", is.Comments.PageInfo.HasNextPage, is.Comments.PageInfo.EndCursor},
+			{"deletedCursor", is.TimelineItems.PageInfo.HasNextPage, is.TimelineItems.PageInfo.EndCursor},
+		} {
+			if p.next {
+				if p.cursor == "" || read[p.name+" "+p.cursor] {
+					return wrap(fmt.Errorf("%w: %s %q", errCursor, p.name, p.cursor))
+				}
+				read[p.name+" "+p.cursor], more = true, true
+			}
+			if p.cursor != "" {
+				vars[p.name] = p.cursor
+			}
+		}
+		if !more {
 			return nil
 		}
-		if cursor == "" || read[cursor] {
-			return wrap(fmt.Errorf("%w: %q", errCursor, cursor))
-		}
-		read[cursor] = true
-		vars["cursor"] = cursor
 	}
 }
 
@@ -172,6 +240,8 @@ var (
 	errNoIssue = errors.New("graphql: no such repository or issue")
 	errCursor  = errors.New("graphql: a next page with no new cursor")
 	errNoNode  = errors.New("graphql: no such node")
+
+	errDeletedNoID = errors.New("graphql: a CommentDeletedEvent with no ID")
 )
 
 // historyQuery reads a page of each node's userContentEdits, newest first.

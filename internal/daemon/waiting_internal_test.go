@@ -356,7 +356,7 @@ func TestWaitFindApprovalBlocked(t *testing.T) {
 		{"dirty body", waitSnap(10, nil, waitRevision(1, "The spec.")), Dirt{state.BodyID: "eve"}, "rev-10-1",
 			[]string{"the issue description has an edit that wasn't approved (see the note on it)"}},
 		{"hidden", hidden, Dirt{1002: "eve"}, "rev-10-1",
-			[]string{"a comment of mine after revision 1 was edited without approval, so it may hide a newer revision"}},
+			[]string{"a comment of mine after revision 1 was edited without approval or deleted, so it may hide a newer revision"}},
 		{"hash", waitSnap(10, nil, waitRevision(1, "An older spec.")), Dirt{}, "rev-10-1",
 			[]string{"the issue description changed after revision 1, so it no longer matches `" + state.BodyHash("An older spec.") + "`"}},
 		{"untyped", untyped, Dirt{}, "rev-10-1", []string{"an issue of its type doesn't go on to `planning` on approval"}},
