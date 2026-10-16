@@ -512,7 +512,8 @@ func TestDigestLateReopenBoundaries(t *testing.T) {
 // While a close is the newest event and the owner's reopen has no event
 // yet, the digest is off for 30 seconds at most, by GitHub's clock: then
 // it's on again, as before #179, with nothing reverted, and still looked
-// at each pass until the reopen's event shows.
+// at each pass until the reopen's event shows. A new newest event starts
+// the wait again.
 func TestDigestLateReopenCloseNewest(t *testing.T) {
 	var logs bytes.Buffer
 	stop := logr.AddWriter(&logs, logr.WithFilter(logr.I))
@@ -544,14 +545,22 @@ func TestDigestLateReopenCloseNewest(t *testing.T) {
 	if want := "o/r#1, the digest, still has no reopened event, so it's on, and looked at again next pass"; strings.Count(logs.String(), want) != 2 {
 		t.Errorf("logs = %q; want %q on each pass after the wait", logs.String(), want)
 	}
+	// The reopen's event shows, but the owner's next edit makes it older
+	// than updated_at: a new newest event, so the wait starts again.
 	f.Advance(time.Minute)
+	f.EditBody(1, "owner", "Edited again.")
+	iterate(t, d)
+	if got := digestWrites(f, 1); len(got) != 0 {
+		t.Fatalf("writes %q once the reopen's event showed, older than the edit; want none while it's waited for", got)
+	}
+	f.Advance(github.HoldBound)
 	for range 2 {
 		iterate(t, d)
 	}
 	reqs = len(f.Requests())
 	iterate(t, d)
-	if got := digestWrites(f, 1); len(got) != 0 || f.State().Issues[0].Closed {
-		t.Errorf("writes %q once the reopen's event showed; want none, and the digest open", got)
+	if got := digestWrites(f, 1); !reflect.DeepEqual(got, []string{"PATCH /issues/1"}) || f.State().Issues[0].Closed {
+		t.Errorf("writes %q after that wait; want the body written again, and the digest open", got)
 	}
 	if got := digestRequests(f, reqs); len(got) != 0 {
 		t.Errorf("an unchanged pass once the event showed sent %+v about the digest; want none", got)

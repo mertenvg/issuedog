@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	gogithub "github.com/google/go-github/v92/github"
 
@@ -418,5 +419,24 @@ func TestDigestPinNote(t *testing.T) {
 		if got := digestPinNote(tc.err); got != tc.want {
 			t.Errorf("digestPinNote(%q) = %q, want %q", tc.err, got, tc.want)
 		}
+	}
+}
+
+// A reopen waited for is kept per digest (lateReopenSeen): another digest,
+// even with no close or reopen event either, waits from its own first pass,
+// and so does the same digest found again after it was dropped.
+func TestLateReopenSeenPerDigest(t *testing.T) {
+	f := githubtest.New(t, "o/r", "issuedog")
+	d := digestRewriteDaemon(t, f)
+	now := d.Step.Client.Now()
+	long := lateReopenSeen{number: 1, since: now.Add(-time.Hour)}
+	d.digest.late = long
+	if !d.lateReopen(digestSeen{number: 2, open: true, reason: "reopened", updated: now}, 0) {
+		t.Errorf("digest 2 doesn't wait, with digest 1's wait from an hour ago kept; want its own wait")
+	}
+	d.digest.late = long
+	d.digestDrop(1, errors.New("404"))
+	if !d.lateReopen(digestSeen{number: 1, open: true, reason: "reopened", updated: now}, 0) {
+		t.Errorf("digest 1, found again after a drop, doesn't wait; want a new wait")
 	}
 }
