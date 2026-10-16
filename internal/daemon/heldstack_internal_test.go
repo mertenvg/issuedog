@@ -82,7 +82,8 @@ func TestHeldStackResume(t *testing.T) {
 		{"as does a /hold made below", at(ready, below), true, 1, 0},
 		{"a hold by hand on top of a /hold made above stays", at(ready, above, onHeld), false, 1, 1},
 		{"until /resume on the issue itself", at(ready, above, onHeld), true, 2, 0},
-		{"a discussion hold isn't ended yet", at(ready, discussion), true, 0, 1},
+		{"a discussion hold ends on the issue itself (T4)", at(ready, discussion), true, 1, 0},
+		{"but not from above", at(ready, discussion), false, 0, 1},
 		{"nor is a hold by hand on top of it, from above", at(ready, discussion, onHeld), false, 0, 2},
 		{"an at that's no stage to go back to has no holds", at(ready, "from=ready to=held at=held reason=owner cmd=5"), true, 0, 0},
 		{"nor has one that isn't open", at(ready, "from=ready to=held at=closed reason=owner cmd=5"), true, 0, 0},
@@ -92,7 +93,7 @@ func TestHeldStackResume(t *testing.T) {
 		if ended != tt.ended || len(left) != tt.left {
 			t.Errorf("%s: ended %d, %d left; want %d and %d", tt.name, ended, len(left), tt.ended, tt.left)
 		}
-		if _, ok := resume(tt.is, tt.self, made, "`/resume`"); ok != (tt.ended > 0 && tt.left == 0) {
+		if _, ok := resume(tt.is, tt.self, made, "`/resume`", false); ok != (tt.ended > 0 && tt.left == 0) {
 			t.Errorf("%s: resume moves it = %t, want %t", tt.name, ok, !ok)
 		}
 	}

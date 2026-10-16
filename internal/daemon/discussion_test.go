@@ -471,29 +471,29 @@ func TestDiscOldestKeysTheHold(t *testing.T) {
 	})
 }
 
-// /resume on an issue held only for discussion is rejected, for the
-// discussion, and the issue stays held.
+// /resume on an issue held only for discussion ends the hold, accepting
+// its triggers, and restores at (SPEC §6.4, T4).
 func TestDiscResumeOnDiscussionHold(t *testing.T) {
 	f := discFake(t)
 	f.AddComment(1, "mallory", "Wait.")
 	if err := discPass(t, 1)(f); err != nil {
 		t.Fatal(err)
 	}
-	f.AddComment(1, "owner", "/resume")
+	resume := f.AddComment(1, "owner", "/resume")
 	if err := discPass(t, 1)(f); err != nil {
 		t.Fatal(err)
 	}
 	is := f.State().Issues[0]
-	last := is.Comments[len(is.Comments)-1]
-	if !slices.Equal(is.Labels, []string{"stage:held"}) || !strings.Contains(last.Body, "#1 also on hold for discussion, which this `/resume` doesn't end") {
-		t.Errorf("labels %q, newest comment %q; want #1 still held, and the /resume rejected for the discussion", is.Labels, last.Body)
+	want := moved("Resumed by `/resume`, back to `ready`.", fmt.Sprintf("from=held to=ready cmd=%d seen=1001", resume))
+	if last := is.Comments[len(is.Comments)-1]; !slices.Equal(is.Labels, []string{"stage:ready"}) || last.Body != want {
+		t.Errorf("labels %q, newest comment %q; want #1 back at ready: %q", is.Labels, last.Body, want)
 	}
 }
 
 // On an issue already held, a trigger writes no hold marker (Q2b): a
-// comment writes nothing, and anything else only its notice, once. The
-// issue stays held while the trigger is open: /resume on it ends the
-// owner's hold but is rejected, and the issue stays held.
+// comment writes nothing, and anything else only its notice, once. /resume
+// on the issue ends the owner's hold and accepts the triggers (T4), back
+// to ready.
 func TestDiscOnHeldIssue(t *testing.T) {
 	var ev int64
 	setup := discWith(func(_ testing.TB, f *githubtest.Fake) {
@@ -522,9 +522,8 @@ func TestDiscOnHeldIssue(t *testing.T) {
 	}
 	is = f.State().Issues[0]
 	last := is.Comments[len(is.Comments)-1]
-	if !slices.Equal(is.Labels, []string{"stage:held"}) || !strings.Contains(last.Body, "#1 also on hold for discussion, which this `/resume` doesn't end") ||
-		!strings.Contains(last.Body, fmt.Sprintf("cmd=%d", resume)) {
-		t.Errorf("labels %q, newest comment %q; want #1 still held, and the /resume rejected for the discussion", is.Labels, last.Body)
+	if !slices.Equal(is.Labels, []string{"stage:ready"}) || !strings.Contains(last.Body, fmt.Sprintf("from=held to=ready cmd=%d ", resume)) {
+		t.Errorf("labels %q, newest comment %q; want #1 back at ready by the /resume", is.Labels, last.Body)
 	}
 }
 
@@ -689,10 +688,11 @@ func TestDiscResumeOnParent(t *testing.T) {
 	}
 }
 
-// A /resume on the parent whose own discussion keeps it held is rejected,
-// and the rejection names, beside the parent, the child whose /hold it
-// would end but which stays held for discussion too.
-func TestDiscResumeRejectionNamesHeldChild(t *testing.T) {
+// A /resume on the parent held for discussion too accepts the parent's
+// triggers, back to ready, and ends the hold its /hold put on the child,
+// which stays held for its own discussion: the parent's move names it, and
+// the child gets a record that its owner hold ended (resolveResumed).
+func TestDiscResumeOnParentHeldForDiscussion(t *testing.T) {
 	f := githubtest.New(t, "o/r", slug)
 	f.SetPermission("mallory", "write")
 	file(f, 0, above("ready")) // #1, held by its /hold in comment 1001
@@ -704,13 +704,17 @@ func TestDiscResumeRejectionNamesHeldChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := f.State()
-	if !slices.Equal(st.Issues[0].Labels, []string{"stage:held"}) || !slices.Equal(st.Issues[1].Labels, []string{"stage:held"}) {
-		t.Fatalf("labels %q and %q; want both still held for discussion", st.Issues[0].Labels, st.Issues[1].Labels)
+	if !slices.Equal(st.Issues[0].Labels, []string{"stage:ready"}) || !slices.Equal(st.Issues[1].Labels, []string{"stage:held"}) {
+		t.Fatalf("labels %q and %q; want #1 back at ready, and #2 still held for discussion", st.Issues[0].Labels, st.Issues[1].Labels)
 	}
-	cs := st.Issues[0].Comments
-	last := cs[len(cs)-1].Body
-	if !strings.Contains(last, "#2, #1 also on hold for discussion, which this `/resume` doesn't end") || !strings.Contains(last, fmt.Sprintf("cmd=%d", resume)) {
-		t.Errorf("newest comment on #1 %q; want the /resume rejected, naming #2 and #1", last)
+	want := moved("Resumed by `/resume`, back to `ready`. Still on hold for discussion: #2.", fmt.Sprintf("from=held to=ready cmd=%d", resume))
+	if cs := st.Issues[0].Comments; cs[len(cs)-1].Body != want {
+		t.Errorf("newest comment on #1 %q; want %q", cs[len(cs)-1].Body, want)
+	}
+	record := fmt.Sprintf("`/resume` on #1 ended the owner hold on this issue, but it stays on hold for discussion until a code owner resolves that, "+
+		"or posts `/resume` here.\n\n<!-- issuedog:ended reason=owner key=1001 cmd=%d -->", resume)
+	if cs := st.Issues[1].Comments; cs[len(cs)-1].Body != record {
+		t.Errorf("newest comment on #2 %q; want %q", cs[len(cs)-1].Body, record)
 	}
 }
 

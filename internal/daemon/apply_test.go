@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -262,6 +263,12 @@ func TestTransitionRefusesBadMoves(t *testing.T) {
 		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.CmdKey(1), Fields: map[string]string{"run": "x"}},
 		{To: state.Closed, Trigger: state.TriggerClosed, Key: state.CmdKey(1)},
 		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.CmdKey(1), Fields: map[string]string{"rev": "two words"}},
+		// cmd only beside a run key, and only naming a comment (T4).
+		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.CmdKey(1), Fields: map[string]string{"cmd": "2"}},
+		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.Key{Field: "event", ID: "9"}, Fields: map[string]string{"cmd": "2"}},
+		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.Key{Field: "run", ID: "a"}, Fields: map[string]string{"cmd": "r2"}},
+		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.Key{Field: "run", ID: "a"}, Fields: map[string]string{"cmd": "0"}},
+		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.Key{Field: "run", ID: "a"}, Fields: map[string]string{"event": "2"}},
 	} {
 		f := cmdIssue("stage:intake")(t)
 		if err := move(t, m, clean)(f); err == nil || errors.Is(err, state.ErrNoTransition) {
@@ -270,6 +277,28 @@ func TestTransitionRefusesBadMoves(t *testing.T) {
 		if w := f.Writes(); len(w) != 0 {
 			t.Errorf("%+v: writes = %+v, want none", m, w)
 		}
+	}
+}
+
+// A run's move may name a command it handled, by cmd= beside its run key,
+// as the interviewer does for a /revise that waited through a hold (#87's
+// assumption 8): the marker carries both, and the command is processed.
+func TestTransitionRunWithCmd(t *testing.T) {
+	setup := cmdIssue("stage:intake")
+	m := daemon.Move{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.Key{Field: "run", ID: "a"},
+		Fields: map[string]string{"cmd": strconv.Itoa(cmdID)}, Text: "Picked up."}
+	githubtest.Replay(t, setup, move(t, m, clean))
+	f := run(t, setup, move(t, m, clean))
+	want := "Picked up.\n\n<!-- issuedog:transition from=intake to=clarifying run=a cmd=1001 -->"
+	if cs := f.State().Issues[0].Comments; cs[len(cs)-1].Body != want {
+		t.Errorf("newest comment %q; want %q", cs[len(cs)-1].Body, want)
+	}
+	a, s, err := applier(t, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if is := state.Derive(s, a.AppSlug, clean); !is.Moved(state.CmdKey(cmdID)) {
+		t.Error("the command isn't processed: no transition names it")
 	}
 }
 

@@ -318,8 +318,8 @@ func TestDiscNoRecordThroughTheLoop(t *testing.T) {
 
 // An act a marker records stays open when its maker loses access: it was
 // judged when its notice was written, so nobody is asked about it again,
-// and /resume on the typed issue, which has a row back, still leaves it
-// held. That holds for each kind of act, whether their own comment then
+// and a /resume on its parent, which ends its owner hold, still leaves it
+// held (discUnderHold). That holds for each kind of act, whether their own comment then
 // shows them with no access, or a 404 on another issue is remembered of
 // them (discNoRecord).
 func TestDiscRecordedOutlivesAccess(t *testing.T) {
@@ -339,10 +339,8 @@ func TestDiscRecordedOutlivesAccess(t *testing.T) {
 		for _, mode := range []string{"", " after her comment", " remembered"} {
 			t.Run(name+mode, func(t *testing.T) {
 				f := newFake(t)
-				n := fileAt(f, "ready", "do it")
-				f.SetType(n, "task")
+				parent, n := discUnderHold(f)
 				other := fileAt(f, "ready", "do that")
-				f.AddComment(n, "owner", "/hold")
 				d := newDaemon(t, f, newOrigin(t), nil)
 				iterate(t, d)
 				if mode == " after her comment" {
@@ -357,7 +355,7 @@ func TestDiscRecordedOutlivesAccess(t *testing.T) {
 					iterate(t, d)
 				}
 				from := len(f.Requests())
-				f.AddComment(n, "owner", "/resume")
+				f.AddComment(parent, "owner", "/resume")
 				iterate(t, d)
 				iterate(t, d)
 				for _, r := range f.Requests()[from:] {
@@ -367,9 +365,9 @@ func TestDiscRecordedOutlivesAccess(t *testing.T) {
 				}
 				is := f.State().Issues[n-1]
 				if !slices.Equal(is.Labels, []string{"stage:held"}) || !slices.ContainsFunc(is.Comments, func(c githubtest.CommentState) bool {
-					return strings.Contains(c.Body, "also on hold for discussion")
+					return strings.Contains(c.Body, "stays on hold for discussion")
 				}) {
-					t.Errorf("labels %q, comments %q; want the issue still held, the /resume rejected for the discussion", is.Labels, is.Comments)
+					t.Errorf("labels %q, comments %q; want the issue still held for the discussion after its parent's /resume", is.Labels, is.Comments)
 				}
 			})
 		}
@@ -415,6 +413,8 @@ func TestDiscResumeNamesHeldChild(t *testing.T) {
 	f.AddComment(child, "mallory", "Wait.")
 	iterate(t, d)
 	resume := f.AddComment(parent, "owner", "/resume")
+	// The parent's visit, then the child's, which its /resume touched.
+	iterate(t, d)
 	iterate(t, d)
 	iterate(t, d)
 	st := f.State()
@@ -589,23 +589,23 @@ func TestDiscAfterAdoptingLabel(t *testing.T) {
 	}
 }
 
-// After the owner's hold is restored, its /resume ends that hold but the
-// issue stays held while the act is open; and a parent's /resume doesn't
-// end the reposted hold, which only /resume on the issue itself ends.
+// After the owner's hold is restored, a /resume on the issue itself ends
+// that hold and accepts the act that hid it (T4), back to the stage before
+// the hold, with no disagreement.
 func TestDiscRestoredHoldStays(t *testing.T) {
 	f := discHeldBy(true)(t)
 	f.EditComment(1003, "mallory", "nothing here")
 	if err := discPass(t, 1)(f); err != nil {
 		t.Fatal(err)
 	}
-	f.AddComment(1, "owner", "/resume")
+	resume := f.AddComment(1, "owner", "/resume")
 	if err := discPass(t, 1)(f); err != nil {
 		t.Fatal(err)
 	}
 	is := f.State().Issues[0]
 	last := is.Comments[len(is.Comments)-1].Body
-	if !slices.Equal(is.Labels, []string{"stage:held"}) || !strings.Contains(last, "#1 also on hold for discussion") {
-		t.Errorf("labels %q, newest comment %q; want #1 still held, the /resume rejected for the discussion", is.Labels, last)
+	if !slices.Equal(is.Labels, []string{"stage:ready"}) || !strings.Contains(last, fmt.Sprintf("from=held to=ready cmd=%d ", resume)) {
+		t.Errorf("labels %q, newest comment %q; want #1 back at ready by the /resume", is.Labels, last)
 	}
 	for _, c := range is.Comments {
 		if strings.Contains(c.Body, "kind=disagreement") {

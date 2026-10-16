@@ -53,7 +53,8 @@ type Move struct {
 	// idempotent, and a command comment's key also gets the App's 👍.
 	Key state.Key
 	// Fields are further marker fields, such as rev and body. They can't
-	// be from, to or a key's field.
+	// be from, to or a key's field, but for cmd=<comment id> beside a run
+	// key: a command the run handled.
 	Fields map[string]string
 	// Text goes before the marker. It is escaped (SPEC §5.1), so it may
 	// quote agent output or comments.
@@ -89,7 +90,16 @@ func (m Move) check() error {
 	if !slices.Contains(keyFields, m.Key.Field) || m.Key.ID == "" {
 		return fmt.Errorf("bad key %+v", m.Key)
 	}
-	for f := range m.Fields {
+	for f, v := range m.Fields {
+		// A run's move may also name a command it handled, by cmd=<comment
+		// id>, as the interviewer does for a /revise that waited through a
+		// hold (#87's assumption 8, T5): the command is then processed.
+		if f == "cmd" && m.Key.Field == "run" {
+			if _, ok := (state.Key{Field: "cmd", ID: v}).Comment(); !ok {
+				return fmt.Errorf("field cmd=%s names no comment", v)
+			}
+			continue
+		}
 		if f == "from" || f == "to" || slices.Contains(keyFields, f) {
 			return fmt.Errorf("field %s is set by the move", f)
 		}

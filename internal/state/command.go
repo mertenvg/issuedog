@@ -64,6 +64,46 @@ var commands = map[string][]Stage{
 	"track": {Intake}, "ignore": {Intake},
 }
 
+// waits are the commands that would move the issue (#87's assumption 8,
+// SPEC §6.4). Posted while the issue is held, they wait (Waits). /resume
+// isn't one: it applies at once, and so do /hold, which moves only an
+// issue that isn't held, and the commands that set a label. A 👍 on a
+// revision waits too, as only an issue at spec-review reads it.
+var waits = []string{"approve", "revise", "done", "track", "ignore"}
+
+// Waits reports whether c waits on an issue in state is: it would move the
+// issue (waits), which is held, or at the clarifying after a hold
+// (AfterHold). Such a command is neither applied nor rejected then: once
+// the issue is at another stage, it goes through its usual checks, such as
+// a revision's hash (SPEC §7.4). One posted before the hold waits too, as
+// step 1 holds the issue before it handles commands. A command the
+// interviewer handled at the clarifying after a hold is named by its
+// marker's cmd (T5, #189), so it's processed, and never reaches this.
+func (c Command) Waits(is Issue) bool {
+	return slices.Contains(waits, c.Name) && (is.Stage == Held || is.AfterHold())
+}
+
+// AfterHold reports whether is is at the clarifying after a hold (SPEC
+// §6.4): its latest transition, the one that put it at clarifying, carries
+// an origin, an open stage other than held. The move out of the hold
+// carries it, and so does every marker written at that clarifying (#87's
+// assumption 9), so it holds until the issue moves on. A move to
+// clarifying for any other reason, such as /revise, carries none.
+func (is Issue) AfterHold() bool {
+	if is.Stage != Clarifying {
+		return false
+	}
+	for i := len(is.Markers) - 1; i >= 0; i-- {
+		m := is.Markers[i]
+		if _, bounds := RoundBound(m, 0); !bounds {
+			continue
+		}
+		o := Stage(m.Fields["origin"])
+		return Stage(m.Fields["to"]) == Clarifying && o.Open() && o != Held
+	}
+	return false
+}
+
 // takesArg are the commands that take an argument.
 var takesArg = []string{"revise", "priority", "model", "effort"}
 
