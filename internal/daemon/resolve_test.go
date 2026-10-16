@@ -506,3 +506,28 @@ func TestResolveUnchangedPass(t *testing.T) {
 		t.Error("an unchanged pass read no reactions; want the open comment's and the notice's read, conditionally")
 	}
 }
+
+// A comment the owner countered before the App saw it holds nothing, and
+// its author is never asked about: a resolved trigger drops out before the
+// writer question, so it costs no permission request.
+func TestResolveCounteredBeforeHold(t *testing.T) {
+	f := newFake(t)
+	n := fileAt(f, "ready", "do it")
+	f.SetType(n, "task")
+	d := resolveDaemon(t, f, newOrigin(t))
+	iterate(t, d)
+	f.AddComment(n, "mallory", "Wait.")
+	f.AddComment(n, "owner", "Noted, carry on.")
+	from := len(f.Requests())
+	for range 2 {
+		iterate(t, d)
+	}
+	for _, r := range f.Requests()[from:] {
+		if strings.Contains(r.Path, "/collaborators/mallory/") {
+			t.Errorf("sent %+v; want mallory, whose comment the owner countered, never asked about", r)
+		}
+	}
+	if l := f.State().Issues[n-1].Labels; !slices.Equal(l, []string{"stage:ready"}) {
+		t.Errorf("labels %q; want the issue still at ready", l)
+	}
+}

@@ -88,6 +88,52 @@ func TestResolverComment(t *testing.T) {
 	}
 }
 
+// The earliest trusted 👍 resolves, by its time: not a 👎, nor a 👍 by
+// someone untrusted or a bot, however early.
+func TestResolverThumbsUp(t *testing.T) {
+	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
+	user := func(l string) github.Author { return github.Author{Login: l, Type: "User"} }
+	tr := newDiscCounting()
+	tr.trusted["owner2"] = true
+	s := &github.Snapshot{}
+	a := &Applier{Owner: "o", Repo: "r", AppSlug: "issuedog"}
+	r := a.resolverOf(s, Dirt{}, a.discWhoOf(s, tr), map[string]int64{})
+	r.reactions[7] = []github.Reaction{
+		{ID: 1, User: user("owner"), Content: "-1", CreatedAt: at(1)},
+		{ID: 2, User: user("mallory"), Content: "+1", CreatedAt: at(2)},
+		{ID: 3, User: github.Author{Login: "helper[bot]", Type: "Bot"}, Content: "+1", CreatedAt: at(3)},
+		{ID: 5, User: user("owner2"), Content: "+1", CreatedAt: at(5)},
+		{ID: 4, User: user("owner"), Content: "+1", CreatedAt: at(4)},
+	}
+	got, err := r.thumbsUp(context.Background(), 7, resolveAccepted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (resolveAct{By: "owner", At: at(4), How: resolveAccepted}); got == nil || *got != want {
+		t.Errorf("act %+v; want %+v", got, want)
+	}
+}
+
+// The record of a discussion's end is written once for each resolution: an
+// act no later than the latest record's time, as one in its second that a
+// comparison by time finds again, or one from before the hold, writes
+// nothing, and costs no request.
+func TestResolveEndedOnce(t *testing.T) {
+	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
+	reads := 0
+	a := &Applier{Client: noReactions(t, &reads), Owner: "o", Repo: "r", AppSlug: "issuedog"}
+	s := &github.Snapshot{Number: 1}
+	r := a.resolverOf(s, Dirt{}, a.discWhoOf(s, newDiscCounting()), map[string]int64{})
+	r.acts = []resolveAct{
+		{Key: "c5", By: "owner", At: at(9), How: resolveCountered, Recorded: true},
+		{Key: "c4", By: "owner", At: at(2), How: resolveCountered, Recorded: true},
+	}
+	p := resolvePeriod{start: 3, at: at(3), ended: true, endedAt: at(9)}
+	if err := a.resolveEnded(context.Background(), s, r, p, false); err != nil || reads != 0 || len(s.Comments) != 0 {
+		t.Errorf("err %v, %d requests, comments %v; want nothing written", err, reads, s.Comments)
+	}
+}
+
 // A move out of held is bounded by its resolved time, else by the time of
 // the comment on the issue its cmd names; an "ended reason=discussion"
 // record by its resolved time alone.
@@ -167,6 +213,7 @@ func TestResolvePeriodOf(t *testing.T) {
 		{"a record before the hold doesn't count", snap(ready, ended, hold), none, 12, time.Time{}, map[string]string{}},
 		{"nor one from a hold since ended", snap(ready, hold, ended, out, hold), none, 14, time.Time{}, map[string]string{}},
 		{"a held → held with the hold's comment dirty begins it", snap(ready, hold, onHeld), func(id int64) bool { return id == 11 }, 12, time.Time{}, map[string]string{}},
+		{"a move into held from another stage begins it afresh, as a restore after a hidden move out", snap(ready, hold, owner, hold), none, 13, time.Time{}, map[string]string{}},
 	} {
 		p := resolvePeriodOf(tt.s, "issuedog", tt.dirty)
 		if p.start != tt.start || !p.endedAt.Equal(tt.ended) || p.ended != !tt.ended.IsZero() || !maps.Equal(p.owners, tt.owners) {

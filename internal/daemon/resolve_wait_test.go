@@ -144,6 +144,126 @@ func TestResolveParentResumeThenResolved(t *testing.T) {
 	})
 }
 
+// A /resume on a parent that isn't held, which ends only the owner hold of
+// a child that stays held for discussion, applies: it gets its 👍, and the
+// child the record.
+func TestResolveParentResumeEndsOnlyARecord(t *testing.T) {
+	f, _ := resolveFamily(t)
+	f.RemoveLabel(1, "owner", "stage:held")
+	f.AddLabel(1, "owner", "stage:ready")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	resume := f.AddComment(1, "owner", "/resume")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	st := f.State()
+	cs := st.Issues[0].Comments
+	if r := cs[len(cs)-1].Reactions; cs[len(cs)-1].Body != "/resume" || !slices.Equal(r, []string{app + " +1"}) {
+		t.Errorf("newest comment on #1 %q with %q; want the /resume, 👍'd", cs[len(cs)-1].Body, r)
+	}
+	if body := newestComment(f, 2); !strings.Contains(body, fmt.Sprintf("<!-- issuedog:ended reason=owner key=1003 cmd=%d -->", resume)) ||
+		!slices.Equal(st.Issues[1].Labels, []string{"stage:held"}) {
+		t.Errorf("#2: labels %q, newest comment %q; want it still held, with the record", st.Issues[1].Labels, body)
+	}
+}
+
+// An issue the owner held at intake, whose discussion is resolved in the
+// same pass as the owner's /resume, goes back to intake, not to
+// clarifying.
+func TestResolveResumeFromIntake(t *testing.T) {
+	f := githubtest.New(t, "o/r", slug)
+	f.SetPermission("owner", "admin")
+	f.SetPermission("mallory", "write")
+	file(f, 0, "from=clarifying to=intake event=9 by=owner") // 1001
+	f.AddComment(1, "owner", "/hold")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	f.RenameIssue(1, "mallory", "Renamed")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	ids := commentIDs(t, f, 1)
+	f.AddReaction(ids[len(ids)-1], "owner", "+1") // on the rename's notice
+	resume := f.AddComment(1, "owner", "/resume")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	if l, body := f.State().Issues[0].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:intake"}) ||
+		!strings.Contains(body, fmt.Sprintf("from=held to=intake cmd=%d ", resume)) {
+		t.Errorf("labels %q, newest comment %q; want the /resume back to intake", l, body)
+	}
+}
+
+// A discussion resolved before an owner hold began didn't end during it:
+// the owner's /resume restores at.
+func TestResolveBeforeTheHold(t *testing.T) {
+	f := discFake(t)
+	f.AddComment(1, "mallory", "Wait.")
+	f.AddComment(1, "owner", "Noted.")
+	f.AddComment(1, "owner", "/hold")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	resume := f.AddComment(1, "owner", "/resume")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	if l, body := f.State().Issues[0].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:ready"}) ||
+		!strings.Contains(body, fmt.Sprintf("from=held to=ready cmd=%d ", resume)) {
+		t.Errorf("labels %q, newest comment %q; want the /resume back to ready", l, body)
+	}
+}
+
+// A comment the owner countered resolves nothing when its author isn't a
+// writer, as trudy, who can only read: while the owner's hold stays, no
+// record is written that a discussion ended.
+func TestResolveNoRecordForNonWriter(t *testing.T) {
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := discFake(t)
+		f.SetPermission("trudy", "read")
+		f.AddComment(1, "owner", "/hold")
+		if err := resolvePass(t, 1)(f); err != nil {
+			t.Fatal(err)
+		}
+		f.ForgetWrites()
+		f.AddComment(1, "trudy", "Looks risky.")
+		f.AddComment(1, "owner", "It's fine.")
+		return f
+	}
+	if w := run(t, setup, resolvePass(t, 1)).Writes(); len(w) != 0 {
+		t.Errorf("writes %+v; want none", w)
+	}
+}
+
+// The record that a discussion ended while an owner hold stayed closes the
+// triggers it saw resolved: once the owner takes back the 👍 that approved
+// mallory's comment, the comment holds nothing, and a /resume on the parent
+// sends the child to clarifying.
+func TestResolveRecordCloses(t *testing.T) {
+	f, c := resolveFamily(t)
+	r := f.AddReaction(c, "owner", "+1")
+	if err := resolvePass(t, 2)(f); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(newestComment(f, 2), "issuedog:ended reason=discussion") {
+		t.Fatalf("newest comment on #2 %q; want the record that the discussion ended", newestComment(f, 2))
+	}
+	if !f.RemoveReaction(c, r) {
+		t.Fatal("no 👍 to remove")
+	}
+	resume := f.AddComment(1, "owner", "/resume")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	if l, body := f.State().Issues[1].Labels, newestComment(f, 2); !slices.Equal(l, []string{"stage:clarifying"}) ||
+		!strings.Contains(body, fmt.Sprintf("from=held to=clarifying at=ready origin=ready cmd=%d ", resume)) {
+		t.Errorf("#2: labels %q, newest comment %q; want it sent to clarifying by #1's /resume", l, body)
+	}
+}
+
 // The move out of held is bounded by when the act that resolved the last
 // trigger happened, not by when the App recorded it: a comment posted
 // between the 👍, or the /resume, and the App's move holds the issue

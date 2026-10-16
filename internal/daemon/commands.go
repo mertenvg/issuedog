@@ -385,8 +385,9 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 		// It leaves held, or stays held for discussion only, which Apply
 		// records (resolveResumed).
 		held = held || ended > 0 && !resolveOwnerHeld(left)
-		// A descendant held for discussion, which this doesn't end.
-		if ended == 0 && len(left) > 0 && !resolveOwnerHeld(left) {
+		// A descendant held for discussion only, which this doesn't end; if
+		// it ends an owner hold there too, the /resume applies (held).
+		if len(left) > 0 && !resolveOwnerHeld(left) {
 			discussed = append(discussed, fmt.Sprintf("#%d", n.s.Number))
 		}
 		var made []int64 // the comments that made the owner holds left, or 0

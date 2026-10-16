@@ -99,7 +99,7 @@ func (is Issue) AfterHold() bool {
 			continue
 		}
 		o := Stage(m.Fields["origin"])
-		return Stage(m.Fields["to"]) == Clarifying && o.Open() && o != Held
+		return o.Open() && o != Held
 	}
 	return false
 }
