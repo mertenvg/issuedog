@@ -57,6 +57,18 @@ type digestState struct {
 	// wrote is the digest's updated_at after the App's last write to it,
 	// a body edit or a comment, as GitHub answered it (digestOpen).
 	wrote time.Time
+	// late is the reopen being waited for (lateReopen), or the zero value.
+	late lateReopenSeen
+}
+
+// lateReopenSeen is a reopen of the digest being waited for (lateReopen):
+// the digest's number, the ID of the newest close or reopen event on its
+// timeline then, 0 for none, and GitHub's clock when a pass first found
+// it so.
+type lateReopenSeen struct {
+	number int
+	event  int64
+	since  time.Time
 }
 
 // digestSeen is a digest as listed: its number, state, state_reason,
@@ -250,6 +262,9 @@ func (d *Daemon) digestDrop(n int, err error) {
 	if g.done.number == n {
 		g.done = digestSeen{}
 	}
+	if g.late.number == n {
+		g.late = lateReopenSeen{}
+	}
 	if g.pinned == n {
 		g.pinned, g.note = 0, ""
 	}
@@ -358,12 +373,13 @@ func (d *Daemon) digestAnnounce(ctx context.Context, n int, text string) error {
 // "reopened"), and only when it changed since the last resolution, so an
 // unchanged pass reads nothing.
 //
-// An event GitHub hasn't written yet leaves the state as it is, and the
-// digest off for the pass, with nothing written to it, until the next pass
-// looks again: a close whose event isn't on the timeline yet, from
-// closed_at on, or a reopen whose event isn't (lateReopen). A write while
-// a reopen is looked for would make the next listing look like the App's
-// own (below), so the reopen would never be looked at again.
+// An event GitHub hasn't written yet leaves the state as it is, with
+// nothing reverted, and the next pass looks again. A close's event must
+// be from closed_at on, and the digest, listed closed, is off meanwhile.
+// For a reopen, see lateReopen: the digest is off while it's waited for,
+// at most lateReopenWait, since a write then would make the next listing
+// look like the App's own (below), and the reopen would never be looked
+// at again.
 //
 // The App's own write, a body edit or a comment, changes the digest's
 // updated_at alone. A listing that differs from the last resolution in
@@ -393,12 +409,12 @@ func (d *Daemon) digestOpen(ctx context.Context, s digestSeen) (bool, error) {
 	if err != nil {
 		return false, wrap(err)
 	}
-	stands, last, lastAt := false, "", time.Time{}
+	stands, last, lastAt, lastID := false, "", time.Time{}, int64(0)
 	for _, e := range events {
 		if e.GetEvent() != "closed" && e.GetEvent() != "reopened" {
 			continue
 		}
-		last, lastAt = e.GetEvent(), e.GetCreatedAt().Time
+		last, lastAt, lastID = e.GetEvent(), e.GetCreatedAt().Time, e.GetID()
 		ok, err := d.digestTrusted(ctx, e.GetActor())
 		if err != nil {
 			return false, fmt.Errorf("the close of the digest, %s/%s#%d: %w", a.Owner, a.Repo, s.number, err)
@@ -410,15 +426,22 @@ func (d *Daemon) digestOpen(ctx context.Context, s digestSeen) (bool, error) {
 	// The newest event must be the one that made the state listed: for a
 	// close, one from closed_at on, as an older close may be newest while
 	// a later reopen's and close's events are still to come. A reopen
-	// clears closed_at, so lateReopen judges a reopen event.
-	want, written := "reopened", last == "reopened" && !d.lateReopen(s, lastAt)
-	if !s.open {
-		want, written = "closed", last == "closed" && !lastAt.Before(s.closed)
-	}
-	if !written {
-		logr.Infof("%s/%s#%d, the digest, has no %s event yet, so it's looked at again next pass", a.Owner, a.Repo, s.number, want)
+	// clears closed_at, so lateReopen judges a reopen.
+	if !s.open && (last != "closed" || lastAt.Before(s.closed)) {
+		logr.Infof("%s/%s#%d, the digest, has no closed event yet, so it's looked at again next pass", a.Owner, a.Repo, s.number)
 		return false, nil
 	}
+	if s.open && (last != "reopened" || lastAt.Before(s.updated)) {
+		switch {
+		case d.lateReopen(s, lastID):
+			logr.Infof("%s/%s#%d, the digest, has no reopened event yet, so it's looked at again next pass", a.Owner, a.Repo, s.number)
+			return false, nil
+		case last != "reopened":
+			logr.Infof("%s/%s#%d, the digest, still has no reopened event, so it's on, and looked at again next pass", a.Owner, a.Repo, s.number)
+			return true, nil
+		}
+	}
+	g.late = lateReopenSeen{}
 	switch {
 	case stands == !s.open:
 		g.done = s
@@ -438,31 +461,44 @@ func (d *Daemon) digestOpen(ctx context.Context, s digestSeen) (bool, error) {
 	}
 }
 
-// lateReopenWait is how long, by GitHub's clock, after the digest's
-// updated_at a reopen event older than it is waited for (lateReopen): as
-// long as an issue with unexplained labels is held back, long enough for
-// a late event to show.
+// lateReopenWait is how long, by GitHub's clock, a reopen of the digest is
+// waited for at most (lateReopen): as long as an issue with unexplained
+// labels is held back, long enough for a late event to show.
 const lateReopenWait = github.HoldBound
 
-// lateReopen reports whether the reopen event at at, the newest close or
-// reopen on the timeline of digest s, listed open, may not be the reopen
-// that made it open, so the timeline is read again next pass (digestOpen).
-// A reopen clears closed_at, so nothing in the listing dates it. The
-// reopen that made s open moved its updated_at, so its event is from
-// updated_at on, unless a later change moved updated_at again. An event
-// older than updated_at may be an earlier reopen's, with a later close's
-// and reopen's events still to come, as when a trusted close and an
-// untrusted reopen come in GitHub's event lag on a digest reopened before.
+// lateReopen reports whether digest s, listed open, still waits for the
+// reopen that made it open, whose event isn't on the timeline yet, so the
+// digest is off for the pass and the timeline is read again next pass
+// (digestOpen). event is the ID of the newest close or reopen event, 0
+// for none: a close, or a reopen older than updated_at. A reopen clears
+// closed_at, so nothing in the listing dates it. The reopen moved
+// updated_at, so its event is from updated_at on, unless a later change
+// moved updated_at again: an older one may be an earlier reopen's, with a
+// later close's and reopen's events still to come, as when a trusted
+// close and an untrusted reopen come in GitHub's event lag on a digest
+// reopened before.
 //
-// So such an event is waited for, until GitHub's clock is lateReopenWait
-// past updated_at. After that, the events of every change up to updated_at
-// have had time to show, and the event is taken as the newest. That bounds
-// the wait when a later change, such as a comment, a label or someone
-// else's edit, moved updated_at past a reopen that is the newest. While
-// the digest is looked at again, the App writes nothing to it, so only
-// someone else's change moves updated_at, and starts the wait again.
-func (d *Daemon) lateReopen(s digestSeen, at time.Time) bool {
-	return at.Before(s.updated) && d.Step.Client.Now().Before(s.updated.Add(lateReopenWait))
+// The wait ends once GitHub's clock is lateReopenWait past the earlier of
+// updated_at and the time a pass first found the digest waiting with this
+// newest event (lateReopenSeen.since), kept in memory. So a change found
+// long after it is hardly waited for, and later changes, such as steady
+// comments, which move updated_at, can't stretch the wait (#179's verify):
+// the digest is written on the first pass after it. Then an older reopen
+// is taken as the newest (digestOpen), and the wait is forgotten, so the
+// next change waits again. While a close is the newest event, the digest
+// is on again after the wait, as before #179, and still looked at each
+// pass until the reopen's event shows. A newer newest event, or another
+// digest, starts the wait again.
+func (d *Daemon) lateReopen(s digestSeen, event int64) bool {
+	g, now := &d.digest, d.Step.Client.Now()
+	if l := g.late; l.number != s.number || l.event != event {
+		g.late = lateReopenSeen{number: s.number, event: event, since: now}
+	}
+	start := g.late.since
+	if s.updated.Before(start) {
+		start = s.updated
+	}
+	return now.Before(start.Add(lateReopenWait))
 }
 
 // digestSetState closes or reopens digest n, state "closed" or "open",

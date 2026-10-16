@@ -431,6 +431,133 @@ func TestDigestLateReopenBounded(t *testing.T) {
 	}
 }
 
+// lateReopenRig is a pinned digest the owner closed and reopened, with
+// those events written, and a daemon that has resolved both, then later by
+// wait.
+func lateReopenRig(t *testing.T, wait time.Duration) (*githubtest.Fake, *daemon.Daemon) {
+	t.Helper()
+	f := newFake(t)
+	f.SetPinned(f.AddIssue(app, "issuedog digest", digestList), true)
+	d := digestDaemon(t, f, newOrigin(t), nil)
+	iterate(t, d)
+	f.CloseBy(1, "owner")
+	iterate(t, d)
+	f.ReopenBy(1, "owner")
+	iterate(t, d)
+	if w := f.Writes(); len(w) != 0 || f.State().Issues[0].Closed {
+		t.Fatalf("wrote %+v on the owner's close and reopen; want nothing, and the digest open", w)
+	}
+	f.Advance(wait)
+	return f, d
+}
+
+// Steady comments, under 30 seconds apart, can't keep the digest off
+// (#179's verify): the wait is timed from the pass that first found the
+// reopen older than the listing, not from each comment, so the body the
+// owner's edit changed is written on the first pass 30 seconds after it.
+// The next change waits again, for 30 seconds at most too.
+func TestDigestLateReopenSteadyComments(t *testing.T) {
+	f, d := lateReopenRig(t, time.Hour)
+	f.EditBody(1, "owner", "Edited.")
+	pass := func(name string, want ...string) {
+		t.Helper()
+		from := len(f.Writes())
+		f.AddComment(1, "mallory", "Still here.")
+		iterate(t, d)
+		if got := digestWrites(f, from); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s: writes %q; want %q", name, got, want)
+		}
+		f.Advance(20 * time.Second)
+	}
+	pass("the first pass, which starts the wait")
+	pass("20 seconds on")
+	pass("40 seconds on", "PATCH /issues/1")
+	if body := f.State().Issues[0].Body; body != digestList {
+		t.Errorf("body %q; want it written again: %q", body, digestList)
+	}
+	f.EditBody(1, "owner", "Edited again.")
+	pass("the next change, which starts the wait again")
+	pass("20 seconds on, again")
+	pass("40 seconds on, again", "PATCH /issues/1")
+}
+
+// The wait's bounds, to the second: a reopen event one second older than
+// updated_at is waited for, the wait ends 30 seconds after updated_at, by
+// GitHub's clock, and a change a pass first finds 30 seconds or more after
+// it isn't waited for at all.
+func TestDigestLateReopenBoundaries(t *testing.T) {
+	f, d := lateReopenRig(t, 0) // the owner's edit comes a second after the reopen
+	f.EditBody(1, "owner", "Edited.")
+	iterate(t, d)
+	f.Advance(github.HoldBound - time.Second)
+	iterate(t, d)
+	if w := f.Writes(); len(w) != 0 {
+		t.Fatalf("wrote %+v within 30 seconds of the edit a second after the reopen; want nothing", w)
+	}
+	f.Advance(time.Second)
+	iterate(t, d)
+	if got := digestWrites(f, 0); !reflect.DeepEqual(got, []string{"PATCH /issues/1"}) {
+		t.Fatalf("writes %q 30 seconds after the edit; want the body written again", got)
+	}
+
+	f, d = lateReopenRig(t, time.Hour)
+	f.EditBody(1, "owner", "Edited.")
+	f.Advance(github.HoldBound)
+	iterate(t, d)
+	if got := digestWrites(f, 0); !reflect.DeepEqual(got, []string{"PATCH /issues/1"}) {
+		t.Errorf("writes %q on the first pass, 30 seconds after the edit; want the body written again", got)
+	}
+}
+
+// While a close is the newest event and the owner's reopen has no event
+// yet, the digest is off for 30 seconds at most, by GitHub's clock: then
+// it's on again, as before #179, with nothing reverted, and still looked
+// at each pass until the reopen's event shows.
+func TestDigestLateReopenCloseNewest(t *testing.T) {
+	var logs bytes.Buffer
+	stop := logr.AddWriter(&logs, logr.WithFilter(logr.I))
+	defer stop()
+	f := newFake(t)
+	f.SetPinned(f.AddIssue(app, "issuedog digest", digestList), true)
+	d := digestDaemon(t, f, newOrigin(t), nil)
+	iterate(t, d)
+	f.CloseBy(1, "owner")
+	iterate(t, d)
+	f.LagEvents(time.Minute)
+	f.ReopenBy(1, "owner")
+	f.EditBody(1, "owner", "Edited.")
+	iterate(t, d)
+	if w := f.Writes(); len(w) != 0 {
+		t.Fatalf("wrote %+v while the reopen was waited for; want nothing", w)
+	}
+	f.Advance(github.HoldBound)
+	iterate(t, d)
+	if got := digestWrites(f, 0); !reflect.DeepEqual(got, []string{"PATCH /issues/1"}) || f.State().Issues[0].Closed {
+		t.Fatalf("writes %q after the wait; want the body written again, and the digest open", got)
+	}
+	reqs := len(f.Requests())
+	iterate(t, d)
+	logr.Wait()
+	if got := digestRequests(f, reqs); len(got) == 0 {
+		t.Errorf("a pass with no reopened event sent nothing about the digest; want the timeline read again")
+	}
+	if want := "o/r#1, the digest, still has no reopened event, so it's on, and looked at again next pass"; strings.Count(logs.String(), want) != 2 {
+		t.Errorf("logs = %q; want %q on each pass after the wait", logs.String(), want)
+	}
+	f.Advance(time.Minute)
+	for range 2 {
+		iterate(t, d)
+	}
+	reqs = len(f.Requests())
+	iterate(t, d)
+	if got := digestWrites(f, 1); len(got) != 0 || f.State().Issues[0].Closed {
+		t.Errorf("writes %q once the reopen's event showed; want none, and the digest open", got)
+	}
+	if got := digestRequests(f, reqs); len(got) != 0 {
+		t.Errorf("an unchanged pass once the event showed sent %+v about the digest; want none", got)
+	}
+}
+
 // A start's first pass leaves the pin note alone on a digest that is off: a
 // trusted close stands, and one closed again after an untrusted reopen is
 // off too. Neither is pinned or edited.
