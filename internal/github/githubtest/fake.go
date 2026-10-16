@@ -60,6 +60,7 @@ type Fake struct {
 	histories   int              // edit history queries answered
 	historyCap  int              // see HistoryCap
 	linked      map[int][]linked // see LinkSubIssue
+	dropTypes   bool             // see DropTypeChanges
 
 	// The App, permission and repo label endpoints, and the request log (app.go).
 	perms      map[string]string
@@ -82,8 +83,9 @@ type issue struct {
 	parent         int
 	lastEdit       lastEdit
 	history        []lastEdit
-	labelEvents    []*gogithub.Timeline // labeled, unlabeled, renamed, closed and reopened, oldest first
-	pinned         bool                 // to the repo's issue list (PinIssue)
+	labelEvents    []*gogithub.Timeline            // labeled, unlabeled, renamed, closed, reopened and issue-type events, oldest first
+	pinned         bool                            // to the repo's issue list (PinIssue)
+	typeEvents     map[int64]issueTypeRevertChange // the types of each issue-type event, by its ID
 }
 
 type comment struct {
@@ -522,22 +524,30 @@ func (f *Fake) addComment(c *call) (int, any) {
 	return http.StatusCreated, f.addCommentBy(c.issue, f.slug+"[bot]", req.Body).IssueComment
 }
 
-// editIssue edits an issue's body, its state (open or closed), or both, as
-// the App. A state change is setState's, with state_reason if given.
-// Nothing else of an issue is edited yet.
+// editIssue edits an issue's body, its state (open or closed), its type, or
+// any of them, as the App. A state change is setState's, with state_reason
+// if given, and a type change is issueTypeRevertEdit's. Nothing else of an
+// issue is edited yet.
 func (f *Fake) editIssue(c *call) (int, any) {
 	var req struct {
 		Body, State *string
 		StateReason string `json:"state_reason"`
+		// Type is the type field as sent, null included, or nil if absent.
+		Type json.RawMessage
 	}
 	if status, msg := c.decode(&req); msg != nil {
 		return status, msg
 	}
-	if req.Body == nil && req.State == nil {
-		return http.StatusUnprocessableEntity, message("githubtest: only the body and the state can be edited")
+	if req.Body == nil && req.State == nil && req.Type == nil {
+		return http.StatusUnprocessableEntity, message("githubtest: only the body, the state and the type can be edited")
 	}
 	if req.State != nil && *req.State != "open" && *req.State != "closed" {
 		return http.StatusUnprocessableEntity, message(fmt.Sprintf("Validation Failed: state %q is not open or closed", *req.State))
+	}
+	if req.Type != nil {
+		if status, msg := f.issueTypeRevertEdit(c.issue, req.Type); msg != nil {
+			return status, msg
+		}
 	}
 	if req.Body != nil {
 		c.issue.editBy(f.slug+"[bot]", *req.Body, f.tick())

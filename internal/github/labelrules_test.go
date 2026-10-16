@@ -38,6 +38,8 @@ func (e ev) json() map[string]any {
 	switch {
 	case e.event == "commented":
 		m["user"], m["body"] = user, e.text
+	case e.event == "issue_type_removed":
+		m["actor"], m["prev_issue_type"] = user, map[string]any{"name": e.text}
 	case strings.HasPrefix(e.event, "issue_type_"):
 		m["actor"], m["issue_type"] = user, map[string]any{"name": e.text}
 	default:
@@ -52,7 +54,8 @@ func added(id int64, who, label string) ev   { return ev{id, "labeled", who, lab
 func removed(id int64, who, label string) ev { return ev{id, "unlabeled", who, label} }
 func said(id int64, who, body string) ev     { return ev{id, "commented", who, body} }
 
-// typed is an issue-type event, such as issue_type_added, of the type name.
+// typed is an issue-type event, such as issue_type_added, of the type name:
+// the type it set, or for issue_type_removed, the type it removed.
 func typed(id int64, who, event, name string) ev { return ev{id, event, who, name} }
 
 func TestCheckLabels(t *testing.T) {
@@ -179,8 +182,8 @@ func TestCheckLabelsSettingsWithEvents(t *testing.T) {
 // CheckLabels' TypeLabel is the newest change to a type:* label that
 // stands, judged as settings are: a trusted user's or the App's, but no
 // untrusted change and no App revert of one. IssueType is the newest
-// issue-type event, whoever made it. TypeEvent picks one by the repo's
-// types setting.
+// issue-type event that stands, judged the same way. TypeEvent picks one
+// by the repo's types setting.
 func TestCheckLabelsType(t *testing.T) {
 	revert := func(id, of int64) ev { return said(id, appBot, fmt.Sprintf("<!-- issuedog:revert key=%d -->", of)) }
 	marker := said(2, appBot, "<!-- issuedog:transition from=x to=ready -->")
@@ -200,7 +203,9 @@ func TestCheckLabelsType(t *testing.T) {
 		"untrusted only":                {[]ev{added(1, "mallory", "type:task"), revert(2, 1), removed(3, appBot, "type:task")}, 0, 0},
 		"with a disagreement":           {[]ev{added(1, appBot, "stage:ready"), marker, added(3, "owner", "type:task"), removed(4, "owner", "stage:ready")}, 3, 0},
 		"issue types": {[]ev{typed(1, "owner", "issue_type_added", "Epic"), added(2, "owner", "type:bug"),
-			typed(3, "mallory", "issue_type_changed", "Task")}, 2, 3},
+			typed(3, "mallory", "issue_type_changed", "Task")}, 2, 1},
+		"trusted issue type change": {[]ev{typed(1, "owner", "issue_type_added", "Epic"), added(2, "owner", "type:bug"),
+			typed(3, "owner", "issue_type_changed", "Task")}, 2, 3},
 		"issue type removed": {[]ev{typed(1, "owner", "issue_type_added", "Epic"), typed(2, "owner", "issue_type_removed", "Epic")}, 0, 2},
 	} {
 		t.Run(name, func(t *testing.T) {
