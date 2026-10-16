@@ -14,16 +14,19 @@ import (
 
 // Snapshot is one issue as the daemon holds it in memory (plan #5, assumption 2).
 type Snapshot struct {
-	Number    int
-	Closed    bool
-	Title     string
-	Body      string
-	BodyEdit  Edit   // the body's last edit
-	BodyNode  string // the issue's GraphQL node ID, for History
-	Author    Author
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	Labels    []string
+	Number   int
+	Closed   bool
+	Title    string
+	Body     string
+	BodyEdit Edit   // the body's last edit
+	BodyNode string // the issue's GraphQL node ID, for History
+	Author   Author
+	// AuthorAssociation is the issue author's authorAssociation with the
+	// repo, from REST, as Comment.Association is.
+	AuthorAssociation string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	Labels            []string
 	// Assignees are the issue's assignees' logins, in GitHub's order, read
 	// from the issue GET Snapshot makes anyway (#191). They're never state
 	// (SPEC §5): only assignment reads them, to write the difference.
@@ -47,6 +50,13 @@ type Snapshot struct {
 	// checks its labels. It keys a type that doesn't fit the issue's stage
 	// (SPEC §5.3).
 	TypeEvent int64
+	// DiscRenames are the issue's renamed events (LabelCheck.DiscRenames),
+	// oldest first: like SettingsEvent, not read with the issue, but set
+	// when the daemon checks its labels, for its discussion triggers (SPEC
+	// §6.4). Nil until then.
+	DiscRenames []DiscRename
+	// DiscLabelTimes are LabelCheck.DiscLabelTimes, set with DiscRenames.
+	DiscLabelTimes map[int64]time.Time
 
 	// TypeFromLabels is set when Type comes from the labels, as the issue has
 	// no issue type, so SetLabels keeps it up to date with them.
@@ -66,6 +76,25 @@ type Comment struct {
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	Edit      Edit // the body's last edit
+	// Association is GitHub's authorAssociation of the comment's author
+	// with the repo, such as COLLABORATOR or NONE, as of the read: only a
+	// discussion trigger reads it, to skip the permission request for an
+	// author with no access (DiscOutsider).
+	Association string
+}
+
+// DiscOutsider reports whether association, an authorAssociation, says
+// the author has no access to the repo: not its owner, a member of its
+// org, nor a collaborator, any of which a write collaborator is. So
+// their permission needn't be asked for, which GitHub answers with a 404
+// that no conditional request saves (SPEC §8.1). "" isn't known, and
+// isn't one.
+func DiscOutsider(association string) bool {
+	switch association {
+	case "CONTRIBUTOR", "FIRST_TIMER", "FIRST_TIME_CONTRIBUTOR", "MANNEQUIN", "NONE":
+		return true
+	}
+	return false
 }
 
 // Reaction is one reaction to a comment.
@@ -103,7 +132,7 @@ func (c *Client) Snapshot(ctx context.Context, owner, repo string, number int) (
 	}
 	s := &Snapshot{
 		Number: issue.GetNumber(), Closed: issue.GetState() == "closed", Title: issue.GetTitle(),
-		Author:    authorOf(issue.GetUser()),
+		Author: authorOf(issue.GetUser()), AuthorAssociation: issue.GetAuthorAssociation(),
 		CreatedAt: issue.GetCreatedAt().Time, UpdatedAt: issue.GetUpdatedAt().Time,
 		Type: TypeOf(issue), TypeFromLabels: issue.GetType().GetName() == "",
 	}

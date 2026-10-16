@@ -25,7 +25,8 @@ type Step struct {
 }
 
 // Run runs step 1 on s, in this order: the label rules (CheckLabels), dirty
-// content (MarkDirty), the type (typeCheck), trusted comments oldest first,
+// content (MarkDirty), the type (typeCheck), the discussion triggers
+// (discussion), trusted comments oldest first,
 // from the first again each time one takes the issue out of held, then
 // Reactions. Dirty
 // is read before CheckLabels, which needs it. Writes are added to s, and each
@@ -42,13 +43,18 @@ func (st *Step) Run(ctx context.Context, s *github.Snapshot) ([]github.Comment, 
 	if err != nil {
 		return nil, wrap(err)
 	}
-	if err := st.CheckLabels(ctx, s, st.Trust, d.Has); err != nil {
+	if err := st.discCheckLabels(ctx, s, st.Trust, d); err != nil {
 		return nil, wrap(err)
 	}
 	if err := st.MarkDirty(ctx, s, d); err != nil {
 		return nil, wrap(err)
 	}
 	if err := st.typeCheck(ctx, s, d); err != nil {
+		return nil, wrap(err)
+	}
+	// Triggers first, so a command can't move an issue a discussion holds
+	// (SPEC §6.4).
+	if _, err := st.discussion(ctx, s, d); err != nil {
 		return nil, wrap(err)
 	}
 	counts, err := st.counted(ctx, s, d)

@@ -40,6 +40,15 @@ func (f *Fake) SetPermission(login, role string) {
 	f.perms[strings.ToLower(login)] = role
 }
 
+// RemovePermission removes login from the repo's collaborators, as the
+// owner can: the permission endpoint then answers 404 for them, and their
+// comments' authorAssociation is NONE.
+func (f *Fake) RemovePermission(login string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.perms, strings.ToLower(login))
+}
+
 // AddRepoLabel creates a repo label, as the owner would by hand.
 func (f *Fake) AddRepoLabel(name string) {
 	f.mu.Lock()
@@ -224,6 +233,24 @@ func (f *Fake) createLabel(c *call) (int, any) {
 	}
 	f.labels = append(f.labels, &l)
 	return http.StatusCreated, l
+}
+
+// discAssociation is login's authorAssociation with the repo, as GitHub
+// gives it on a comment or an issue: OWNER for the repo's owner,
+// COLLABORATOR for a login SetPermission gave a role, else NONE, a bot's
+// included. The caller holds f.mu.
+func (f *Fake) discAssociation(login string) string {
+	owner, _, _ := strings.Cut(f.repo, "/")
+	_, collaborator := f.perms[strings.ToLower(login)]
+	switch {
+	case strings.HasSuffix(login, "[bot]"):
+		return "NONE"
+	case strings.EqualFold(login, owner):
+		return "OWNER"
+	case collaborator:
+		return "COLLABORATOR"
+	}
+	return "NONE"
 }
 
 // permission answers with the role SetPermission gave, as both the

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -167,4 +168,111 @@ func TestBotNeverTrusted(t *testing.T) {
 		map[string][]string{"core": {"robo"}})
 	check(t, fakeFiles{}, api, map[string]bool{"issuedog[bot]": false, "robo": false})
 	check(t, fakeFiles{"CODEOWNERS": "/CODEOWNERS @acme/core\n"}, api, map[string]bool{"robo": false})
+}
+
+// discCheck loads the set and asserts each login's DiscAccess: trusted,
+// and a write collaborator who isn't trusted. Trusted must agree.
+func discCheck(t *testing.T, files fakeFiles, api *gogithub.Client, want map[string][2]bool) {
+	t.Helper()
+	ctx := context.Background()
+	s, err := Load(ctx, files, api, "acme", "app")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for login, w := range want {
+		trusted, writer, err := s.DiscAccess(ctx, login)
+		if errors.Is(err, ErrNoRecord) != (login == "stranger") {
+			t.Errorf("DiscAccess(%s) = %v; want no record only for stranger", login, err)
+		} else if err != nil && !errors.Is(err, ErrNoRecord) {
+			t.Fatalf("DiscAccess(%s): %v", login, err)
+		}
+		if got := [2]bool{trusted, writer}; got != w {
+			t.Errorf("DiscAccess(%s) = trusted %v, writer %v; want %v", login, trusted, writer, w)
+		}
+		if tr, err := s.Trusted(ctx, login); err != nil || tr != trusted {
+			t.Errorf("Trusted(%s) = %v, %v; want %v, as DiscAccess says", login, tr, err, trusted)
+		}
+	}
+}
+
+// Under CODEOWNERS, a writer, maintainer or admin it doesn't trust is a
+// write collaborator who isn't trusted (#87's assumption 1). A trusted
+// owner isn't, nor is an owner without write access, anyone with a lesser
+// role, a stranger or a bot.
+func TestDiscAccessUnderCodeowners(t *testing.T) {
+	admin := access{perm: "admin", role: "admin", typ: "User"}
+	api := fakeAPI(t, map[string]access{
+		"alice": admin,
+		"wanda": writer,
+		"mia":   {perm: "write", role: "maintain", typ: "User"},
+		"adam":  admin,
+		"rita":  {perm: "read", role: "triage", typ: "User"},
+		"tom":   {perm: "read", role: "triage", typ: "User"},
+		"ron":   {perm: "read", role: "read", typ: "User"},
+		"robo":  {perm: "admin", role: "admin", typ: "Bot"},
+	}, nil)
+	discCheck(t, fakeFiles{"CODEOWNERS": "/CODEOWNERS @alice @rita\n"}, api, map[string][2]bool{
+		"alice": {true, false}, "Wanda": {false, true}, "mia": {false, true}, "adam": {false, true},
+		"rita": {false, false}, "tom": {false, false}, "ron": {false, false}, "stranger": {false, false},
+		"robo": {false, false}, "issuedog[bot]": {false, false}, "": {false, false},
+	})
+}
+
+// With no CODEOWNERS file, every writer is trusted, so nobody is a write
+// collaborator who isn't.
+func TestDiscAccessWithoutCodeowners(t *testing.T) {
+	api := fakeAPI(t, map[string]access{"wanda": writer, "tom": {perm: "read", role: "triage", typ: "User"}}, nil)
+	discCheck(t, fakeFiles{}, api, map[string][2]bool{"wanda": {true, false}, "tom": {false, false}})
+}
+
+// Under CODEOWNERS, Trusted answers for a login it doesn't name with no
+// request; only DiscAccess asks about them.
+func TestTrustedNonOwnerAsksNothing(t *testing.T) {
+	asked := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		asked++
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	base := srv.URL + "/"
+	api, err := gogithub.NewClient(gogithub.WithURLs(&base, &base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := Load(context.Background(), fakeFiles{"CODEOWNERS": "/CODEOWNERS @alice\n"}, api, "acme", "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.Trusted(context.Background(), "bob"); ok || err != nil || asked != 0 {
+		t.Errorf("Trusted(bob) = %v, %v after %d requests; want false with none", ok, err, asked)
+	}
+	if _, _, err := s.DiscAccess(context.Background(), "bob"); !errors.Is(err, ErrNoRecord) || asked != 1 {
+		t.Errorf("DiscAccess(bob) = %v after %d requests; want one, with no record", err, asked)
+	}
+	if s.DiscNoWriters() {
+		t.Error("DiscNoWriters under CODEOWNERS = true")
+	}
+	if none, err := Load(context.Background(), fakeFiles{}, api, "acme", "app"); err != nil || !none.DiscNoWriters() {
+		t.Errorf("DiscNoWriters with no CODEOWNERS = false, %v", err)
+	}
+}
+
+// A failed permission request is DiscAccess's error, and Trusted's.
+func TestDiscAccessError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	base := srv.URL + "/"
+	api, err := gogithub.NewClient(gogithub.WithURLs(&base, &base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Set{api: api, owner: "acme", repo: "app"}
+	if _, _, err := s.DiscAccess(context.Background(), "wanda"); err == nil {
+		t.Error("DiscAccess on a 500: no error")
+	}
+	if _, err := s.Trusted(context.Background(), "wanda"); err == nil {
+		t.Error("Trusted on a 500: no error")
+	}
 }

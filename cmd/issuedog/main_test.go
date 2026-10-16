@@ -586,7 +586,7 @@ func TestRunDaemon(t *testing.T) {
 	n := f.AddIssue("mertenvg", "Task", "do it")
 	f.AddLabel(n, "issuedog-dev[bot]", "stage:ready")
 	f.AddComment(n, "issuedog-dev[bot]", "<!-- issuedog:transition from=intake to=ready run=a -->")
-	f.AddComment(n, "mallory", "/frob")
+	f.AddComment(n, "eve", "/frob") // untrusted, without write access: ignored, and holds nothing
 	f.AddComment(n, "mertenvg", "/frob")
 	// Specs approved by mertenvg's 👍 on the revision, and by /approve.
 	for _, approve := range []func(m int, rev int64){

@@ -40,7 +40,7 @@ const commentsQuery = `query($owner: String!, $name: String!, $number: Int!, $cu
       comments(first: 100, after: $cursor) {
         pageInfo { hasNextPage endCursor }
         nodes {
-          id fullDatabaseId body createdAt updatedAt lastEditedAt
+          id fullDatabaseId body createdAt updatedAt lastEditedAt authorAssociation
           author { login __typename }
           editor { login __typename }
         }
@@ -88,6 +88,7 @@ type commentsResponse struct {
 					}
 					Nodes []struct {
 						FullDatabaseID       string `json:"fullDatabaseId"` // a BigInt
+						AuthorAssociation    string
 						Author               *actor
 						CreatedAt, UpdatedAt time.Time
 						editNode
@@ -197,7 +198,7 @@ func (c *Client) readComments(ctx context.Context, owner, repo string, s *Snapsh
 				return wrap(fmt.Errorf("comment ID: %w", err))
 			}
 			s.Comments = append(s.Comments, Comment{ID: id, Node: n.ID, Author: n.Author.author(), Body: n.Body,
-				CreatedAt: n.CreatedAt, UpdatedAt: n.UpdatedAt, Edit: n.edit()})
+				CreatedAt: n.CreatedAt, UpdatedAt: n.UpdatedAt, Edit: n.edit(), Association: n.AuthorAssociation})
 		}
 		for _, n := range is.TimelineItems.Nodes {
 			// The query asks only for CommentDeletedEvents, so a node

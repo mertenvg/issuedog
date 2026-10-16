@@ -178,7 +178,7 @@ func TestRepoWideRenamesDoNotStall(t *testing.T) {
 			cur = next
 			if minute == 0 {
 				for n := 1; n <= 4; n++ {
-					f.AddComment(n, "mallory", "poke")
+					f.AddComment(n, "eve", "poke") // no write access, so no discussion hold
 				}
 			}
 		}
@@ -224,7 +224,7 @@ func TestLeftOutLabelsAreNotActedOn(t *testing.T) {
 			}
 			iterate(t, d)
 			f.RenameLabel("foo", to)
-			f.AddComment(1, "mallory", "poke")
+			f.AddComment(1, "eve", "poke") // no write access, so no discussion hold
 			for range 5 {
 				f.Advance(time.Minute)
 				iterate(t, d)

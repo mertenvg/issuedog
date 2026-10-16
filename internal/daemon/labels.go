@@ -92,7 +92,9 @@ var ErrLabelsHeld = errors.New("labels held back until their events explain them
 // posted, the override is older than the latest marker, and what's left is
 // an Unfinished disagreement; an error comment is posted once per key. The
 // writes are added to s, and s.SettingsEvent and s.TypeEvent are set, the
-// latter from the issue types or the type:* labels, as a.IssueTypes says.
+// latter from the issue types or the type:* labels, as a.IssueTypes says,
+// and so are s.DiscRenames and s.DiscLabelTimes, for the discussion
+// triggers (discussion.go).
 // On a repo that uses issue types, the issue type is guarded too
 // (issueTypeRevertGuard): an untrusted change of it is reverted, and s.Type
 // set back with it, and a type no event explains yet is held back, as such
@@ -107,6 +109,25 @@ var ErrLabelsHeld = errors.New("labels held back until their events explain them
 // without acting on it, and Iterate reads the issue again when the label
 // falls due for removal (unexplainedDue), or sooner if the issue changes.
 func (a *Applier) CheckLabels(ctx context.Context, s *github.Snapshot, trust github.Trust, dirty func(int64) bool) error {
+	return a.checkLabels(ctx, s, trust, dirty, nil)
+}
+
+// discCheckLabels is CheckLabels, but before it acts on an override or a
+// disagreement, discRestore holds s if a write collaborator's edit or
+// deletion of the App's content hid the stage its label shows: then it
+// acts on neither, as the hold sets the labels (SPEC §6.4). Every caller
+// that has s's dirty content d uses it: step 1, a command's moves of other
+// issues, and a run's apply.
+func (a *Applier) discCheckLabels(ctx context.Context, s *github.Snapshot, trust github.Trust, d Dirt) error {
+	return a.checkLabels(ctx, s, trust, d.Has, func(events []github.LabelEvent) (bool, error) {
+		return a.discRestore(ctx, s, trust, d, events)
+	})
+}
+
+// checkLabels is CheckLabels, with restore, if set, asked before the
+// events are acted on, and none acted on if it reports it held s.
+func (a *Applier) checkLabels(ctx context.Context, s *github.Snapshot, trust github.Trust, dirty func(int64) bool,
+	restore func([]github.LabelEvent) (bool, error)) error {
 	// The labels as read, those left out before included, so a label left
 	// out is checked again.
 	given := slices.Clone(s.Labels)
@@ -133,6 +154,7 @@ func (a *Applier) CheckLabels(ctx context.Context, s *github.Snapshot, trust git
 	}
 	s.SetLabels(labels)
 	s.SettingsEvent, s.TypeEvent = settings, found.TypeEvent(a.IssueTypes)
+	s.DiscRenames, s.DiscLabelTimes = found.DiscRenames, found.DiscLabelTimes
 	if rv := found.IssueTypeRevert; rv != nil {
 		// Nothing after this in the pass acts on the type set back from: not
 		// the type check, a type error's end, a move, a stage run or the
@@ -143,6 +165,15 @@ func (a *Applier) CheckLabels(ctx context.Context, s *github.Snapshot, trust git
 	}
 	if len(held) > 0 {
 		return fmt.Errorf("labels of %s/%s#%d: %v: %w", a.Owner, a.Repo, s.Number, held, ErrLabelsHeld)
+	}
+	if restore != nil {
+		restored, err := restore(events)
+		if err != nil {
+			return fmt.Errorf("labels of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
+		}
+		if restored {
+			return nil
+		}
 	}
 	for _, ev := range events {
 		to, ok := state.ParseLabel(ev.Label)

@@ -573,6 +573,9 @@ func (r *Runs) applyLease(ctx context.Context, l Lease, st Stage, raw []byte, ou
 // l's valid result, through st, then removes the run's files. The result
 // is dropped, writing nothing and with no attempt counted, when the issue
 // is gone or closed, or, unless the run's move is written already:
+//   - when a discussion trigger holds the issue (Step.discussion), which
+//     writes the hold and its notices first: then nothing of the result
+//     is written (SPEC §6.4, §8.2).
 //   - when its stage changed during the run: the owner's change wins, and
 //     CheckLabels records one by hand. An Unlabeled run's result is also
 //     dropped when the issue has a stage label, or a transition, at all.
@@ -610,7 +613,7 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 	defer r.Daemon.reread(l.Issue, false)
 	d, err := a.Dirty(ctx, s, r.Daemon.Step.Trust)
 	if err == nil {
-		err = a.CheckLabels(ctx, s, r.Daemon.Step.Trust, d.Has)
+		err = a.discCheckLabels(ctx, s, r.Daemon.Step.Trust, d)
 	}
 	if err != nil {
 		return fmt.Errorf("apply run %s: %w", l.RunID, err)
@@ -618,6 +621,22 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 	is := state.Derive(s, a.AppSlug, d.Has)
 	moved := is.Moved(state.Key{Field: "run", ID: l.RunID})
 	if !moved {
+		// A discussion trigger holds the issue, and drops the result, with
+		// nothing pushed or posted from it (SPEC §6.4, §8.2). Step 1 held
+		// the issue for every trigger before the run's poll, l.Polled, as
+		// no run starts on a held issue, so any it finds here is one since,
+		// or one step 1 couldn't see, such as a deletion that changed no
+		// updated_at: either holds the issue all the same. A hold the
+		// table lacks holds nothing (Step.discussion), so then the result
+		// is judged as before.
+		found, err := r.Daemon.Step.discussion(ctx, s, d)
+		if err != nil {
+			return fmt.Errorf("apply run %s: %w", l.RunID, err)
+		}
+		if is = state.Derive(s, a.AppSlug, d.Has); len(found) > 0 && is.Stage == state.Held {
+			return drop("a discussion trigger, %s by %s at %s, holds the issue (the run's poll began at %s)",
+				found[len(found)-1].Key, found[len(found)-1].By, found[len(found)-1].At.Format(time.RFC3339), l.Polled.Format(time.RFC3339))
+		}
 		_, isUnlabeled, _ := r.leaseStage(l)
 		switch {
 		case isUnlabeled && !unlabeled(s, is):

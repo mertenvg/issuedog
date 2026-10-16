@@ -140,36 +140,71 @@ func (s *Set) addTeam(ctx context.Context, team string) error {
 // Trusted reports whether login is trusted. A CODEOWNERS owner must have write
 // access. With no CODEOWNERS file, the user's role must be write, maintain or
 // admin. Bots, the App included, are never trusted. Logins match regardless
-// of case.
+// of case. A login CODEOWNERS doesn't name is untrusted without a request.
 func (s *Set) Trusted(ctx context.Context, login string) (bool, error) {
-	login = strings.ToLower(login)
-	if login == "" || strings.HasSuffix(login, "[bot]") {
+	if s.owners != nil && !s.owners[strings.ToLower(login)] {
 		return false, nil
 	}
-	if s.owners != nil && !s.owners[login] {
-		return false, nil
-	}
-	perm, resp, err := s.api.Repositories.GetPermissionLevel(ctx, s.owner, s.repo, login)
-	if notFound(resp) {
+	trusted, _, err := s.DiscAccess(ctx, login)
+	if errors.Is(err, ErrNoRecord) {
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("permission of %s on %s/%s: %w", login, s.owner, s.repo, err)
+		return false, fmt.Errorf("trust %s: %w", login, err)
+	}
+	return trusted, nil
+}
+
+// ErrNoRecord is wrapped by DiscAccess's error for a login GitHub has no
+// permission record of, such as a removed collaborator or a deleted
+// account: it answers 404, which no ETag saves, so the caller may remember
+// it rather than ask again on every pass. Such a login is neither trusted
+// nor a writer.
+var ErrNoRecord = errors.New("no permission record")
+
+// DiscNoWriters reports whether nobody can be a write collaborator who
+// isn't trusted, as with no CODEOWNERS file every writer is trusted, so a
+// caller needn't ask DiscAccess at all.
+func (s *Set) DiscNoWriters() bool { return s.owners == nil }
+
+// DiscAccess answers, from one permission request, whether login is trusted,
+// as Trusted says, and whether they are a write collaborator who isn't
+// trusted, who can hold an issue for discussion but not move it (SPEC §6.4,
+// #87's assumption 1): their role_name is write, maintain or admin, and
+// CODEOWNERS doesn't trust them. With no CODEOWNERS file every such role is
+// trusted, so nobody is the second. Bots, the App included, are neither, so
+// a bot's comments hold nothing. Unlike Trusted, it asks the API about a
+// login CODEOWNERS doesn't name, as only the API knows their role. A login
+// GitHub has no record of gives an error wrapping ErrNoRecord.
+func (s *Set) DiscAccess(ctx context.Context, login string) (trusted, writer bool, err error) {
+	login = strings.ToLower(login)
+	if login == "" || strings.HasSuffix(login, "[bot]") {
+		return false, false, nil
+	}
+	perm, resp, err := s.api.Repositories.GetPermissionLevel(ctx, s.owner, s.repo, login)
+	if notFound(resp) {
+		return false, false, fmt.Errorf("permission of %s on %s/%s: %w", login, s.owner, s.repo, ErrNoRecord)
+	}
+	if err != nil {
+		return false, false, fmt.Errorf("permission of %s on %s/%s: %w", login, s.owner, s.repo, err)
 	}
 	if perm.GetUser().GetType() == "Bot" {
-		return false, nil
-	}
-	if s.owners != nil {
-		// GitHub ignores code owners without write access. maintain reports
-		// as write here, and custom roles as their base role.
-		p := perm.GetPermission()
-		return p == "write" || p == "admin", nil
+		return false, false, nil
 	}
 	switch perm.GetRoleName() {
 	case "write", "maintain", "admin":
-		return true, nil
+		writer = true
 	}
-	return false, nil
+	if s.owners == nil {
+		return writer, false, nil
+	}
+	if s.owners[login] {
+		// GitHub ignores code owners without write access. maintain reports
+		// as write here, and custom roles as their base role.
+		p := perm.GetPermission()
+		trusted = p == "write" || p == "admin"
+	}
+	return trusted, writer && !trusted, nil
 }
 
 func notFound(resp *gogithub.Response) bool {

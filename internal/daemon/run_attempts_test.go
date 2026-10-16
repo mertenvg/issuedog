@@ -366,12 +366,12 @@ func TestPendingAfterTrustCheck(t *testing.T) {
 func TestUntrustedEditDuringRunApplies(t *testing.T) {
 	f := newFake(t)
 	interview(f)
-	remark := f.AddComment(1, "mallory", "just a remark")
+	remark := f.AddComment(1, "eve", "just a remark") // no write access, so no discussion hold
 	answer := f.AddComment(1, "owner", "1b")
 	f.AddReaction(answer, app, "+1")
 	g := newRig(t, f, newOrigin(t), t.TempDir())
 	g.claude(okOut, 0)
-	g.stage.during = func() { f.EditComment(remark, "mallory", "an edited remark") }
+	g.stage.during = func() { f.EditComment(remark, "eve", "an edited remark") }
 	iterate(t, g.d)
 	comments := f.State().Issues[0].Comments
 	if last := comments[len(comments)-1].Body; g.runs() != 1 || g.file("prompt.1") != "1a\n1b" || last != specWritten("run1", answer) {

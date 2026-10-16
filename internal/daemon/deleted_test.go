@@ -96,12 +96,15 @@ func TestDeletedHidesRevision(t *testing.T) {
 
 // Through the loop, with the trust CODEOWNERS gives: the deletions are
 // read, the old 👍 approves nothing, a fresh revision is posted and
-// nothing is held. Once the App's write is read back, an unchanged pass
+// nothing is held: eve can read the repo, but not write to it, so her
+// deletion is no discussion trigger (SPEC §6.4; mallory's is,
+// TestDiscDeletionHolds), and her permission is a conditional read. Once the App's write is read back, an unchanged pass
 // makes only conditional GETs, answered 304, and no history query: the
 // deletions come in the snapshot's own GraphQL query. Then the owner's 👍
 // on the fresh revision approves it.
 func TestDeletedThroughTheLoop(t *testing.T) {
 	f := newFake(t)
+	f.SetPermission("eve", "read")
 	n := fileAt(f, "spec-review", "body", "type:story") // comment 1001
 	rev1 := f.AddComment(n, app, revision(1, "body"))   // 1002
 	f.AddReaction(rev1, "owner", "+1")                  // 1003
@@ -109,7 +112,7 @@ func TestDeletedThroughTheLoop(t *testing.T) {
 	rev2 := f.AddComment(n, app, revision(2, "body v2")) // 1004
 	f.EditBody(n, "owner", "body")
 	rev3 := f.AddComment(n, app, revision(3, "body")) // 1005
-	f.DeleteCommentBy("mallory", rev3)
+	f.DeleteCommentBy("eve", rev3)
 	f.DeleteCommentBy("owner", rev2)
 	d := newDaemon(t, f, newOrigin(t), nil)
 	d.Step.Reactions = daemon.ApproveByReaction(d.Step.CurrentTrust())
@@ -118,9 +121,9 @@ func TestDeletedThroughTheLoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snap.Deleted) != 2 || snap.Deleted[0].By.Login != "mallory" || snap.Deleted[1].By.Login != "owner" ||
+	if len(snap.Deleted) != 2 || snap.Deleted[0].By.Login != "eve" || snap.Deleted[1].By.Login != "owner" ||
 		!state.IsApp(snap.Deleted[0].Author, slug) || !state.IsApp(snap.Deleted[1].Author, slug) {
-		t.Fatalf("deleted = %+v; want mallory's deletion of the App's comment, then the owner's", snap.Deleted)
+		t.Fatalf("deleted = %+v; want eve's deletion of the App's comment, then the owner's", snap.Deleted)
 	}
 
 	iterate(t, d)

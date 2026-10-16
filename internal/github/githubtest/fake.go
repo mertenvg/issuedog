@@ -480,7 +480,14 @@ func page[T any](c *call, items []T) (int, any) {
 	return http.StatusOK, append([]T{}, items[min((n-1)*per, len(items)):min(n*per, len(items))]...)
 }
 
-func (f *Fake) getIssue(c *call) (int, any) { return http.StatusOK, c.issue.Issue }
+// getIssue serves an issue, with its author's association (discAssociation),
+// which the shallower field puts in the JSON in place of the Issue's own.
+func (f *Fake) getIssue(c *call) (int, any) {
+	return http.StatusOK, struct {
+		gogithub.Issue
+		AuthorAssociation string `json:"author_association"`
+	}{c.issue.Issue, f.discAssociation(c.issue.GetUser().GetLogin())}
+}
 
 // getParent serves an issue's parent with its repository_url, this repo's
 // unless Transfer set another.

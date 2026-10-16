@@ -51,7 +51,7 @@ func (f *Fake) serveGraphQL(w http.ResponseWriter, r *http.Request) {
 // same for the history query, the isPinned query and the pinIssue mutation.
 const (
 	answered = `query { repository { issue { id body lastEditedAt editor { login __typename }
-	comments { pageInfo { hasNextPage endCursor } nodes { id fullDatabaseId body createdAt updatedAt
+	comments { pageInfo { hasNextPage endCursor } nodes { id fullDatabaseId body createdAt updatedAt authorAssociation
 	lastEditedAt author { login __typename } editor { login __typename } } }
 	timelineItems(itemTypes: [COMMENT_DELETED_EVENT], first: 100) { pageInfo { hasNextPage endCursor } nodes { ... on CommentDeletedEvent {
 	id createdAt actor { login __typename } deletedCommentAuthor { login __typename } } } } } } }`
@@ -190,6 +190,7 @@ func (f *Fake) graphql(c *call) (int, any) {
 		n := cm.lastEdit.graphql(cm.GetBody())
 		n["id"], n["fullDatabaseId"] = commentNode(cm.GetID()), strconv.FormatInt(cm.GetID(), 10)
 		n["author"], n["createdAt"], n["updatedAt"] = actor(cm.GetUser().GetLogin()), cm.GetCreatedAt(), cm.GetUpdatedAt()
+		n["authorAssociation"] = f.discAssociation(cm.GetUser().GetLogin())
 		nodes = append(nodes, n)
 	}
 	var end any

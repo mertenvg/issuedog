@@ -566,7 +566,7 @@ func TestDigestRewriteCache(t *testing.T) {
 	}
 }
 
-// An error whose comment mallory edited isn't open, once step 1 has noted
+// An error whose comment eve edited isn't open, once step 1 has noted
 // the dirty content: its issue isn't visited on every pass, and the digest
 // doesn't list it.
 func TestDigestRewriteDirtyError(t *testing.T) {
@@ -575,7 +575,7 @@ func TestDigestRewriteDirtyError(t *testing.T) {
 	f.AddLabel(n, app, "stage:ready")
 	f.AddComment(n, app, "<!-- issuedog:transition from=intake to=ready run=rready -->")
 	id := f.AddComment(n, app, "Put back.\n\n<!-- issuedog:error kind=disagreement key=5 -->")
-	f.EditComment(id, "mallory", "Put back.\n\n<!-- issuedog:error kind=disagreement key=5 -->")
+	f.EditComment(id, "eve", "Put back.\n\n<!-- issuedog:error kind=disagreement key=5 -->") // no write access, so no hold
 	var visits []int
 	d := digestDaemon(t, f, newOrigin(t), &visits)
 	var passes [][]int
@@ -590,14 +590,14 @@ func TestDigestRewriteDirtyError(t *testing.T) {
 }
 
 // The digest's items are found with the issue's dirty content: on the
-// first pass, a spec whose body mallory edited is listed as one that can't
+// first pass, a spec whose body eve edited is listed as one that can't
 // be approved yet, for that edit.
 func TestDigestRewriteDirtyBody(t *testing.T) {
 	f := digestPinned(t)
 	n := f.AddIssue("owner", "Spec", "the spec")
 	f.AddLabel(n, app, "stage:spec-review")
 	f.AddComment(n, app, revision(1, "the spec"))
-	f.EditBody(n, "mallory", "the spec, edited")
+	f.EditBody(n, "eve", "the spec, edited") // no write access, so no hold
 	iterate(t, digestDaemon(t, f, newOrigin(t), nil))
 	if body := f.State().Issues[0].Body; !strings.Contains(body, "It can't be approved yet: the issue description has an edit that wasn't approved") {
 		t.Errorf("body = %q; want the approval held back for the dirty description", body)

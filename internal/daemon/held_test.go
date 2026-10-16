@@ -43,14 +43,14 @@ func TestIterateReadsChangedHeldIssues(t *testing.T) {
 	d := newDaemon(t, f, newOrigin(t), nil)
 	iterate(t, d)
 	f.AddLabel(1, "mallory", "priority:p0")
-	f.EditBody(1, "mallory", "do it now")
+	f.EditBody(1, "eve", "do it now") // no write access, so no discussion hold
 	iterate(t, d)
 	is := f.State().Issues[0]
 	if !reflect.DeepEqual(is.Labels, []string{"priority:p2", "stage:ready"}) {
 		t.Errorf("labels = %v, want mallory's priority:p0 reverted", is.Labels)
 	}
-	if !strings.HasPrefix(is.Body, "<!-- issuedog:dirty by=mallory -->") {
-		t.Errorf("body = %q, want the note on mallory's edit", is.Body)
+	if !strings.HasPrefix(is.Body, "<!-- issuedog:dirty by=eve -->") {
+		t.Errorf("body = %q, want the note on eve's edit", is.Body)
 	}
 }
 

@@ -35,9 +35,14 @@ type Applier struct {
 	// the issue-type events, not the type:* labels (LabelCheck.TypeEvent).
 	// Daemon.reload keeps it up to date with the config.
 	IssueTypes bool
+	// Notify are config's notify users, for the cc line of a discussion
+	// hold and its notices (discussion.go). Daemon.reload keeps it up to
+	// date with the config.
+	Notify []string
 
-	histories   histories // see Dirty
-	unexplained github.Unexplained
+	histories     histories                // see Dirty
+	discNoRecords map[string]*discNoRecord // logins with no permission record, in lower case (discNoRecord)
+	unexplained   github.Unexplained
 }
 
 // Move is one transition to apply.
@@ -62,6 +67,11 @@ type Move struct {
 	// ErrorKey, if set, keys the state error for a move the table lacks,
 	// instead of Key's ID.
 	ErrorKey string
+	// DiscFrom, if set, is the stage the move is from, for its marker and
+	// the table, in place of the latest marker's: for a discussion hold
+	// that restores the stage a write collaborator's edit or deletion of
+	// the App's marker hid (discRestore).
+	DiscFrom state.Stage
 }
 
 // errorKey keys the state error for m, if the table lacks it.
@@ -123,6 +133,9 @@ func (a *Applier) Transition(ctx context.Context, s *github.Snapshot, dirty func
 	}
 	is := state.Derive(s, a.AppSlug, dirty)
 	if !is.Moved(m.Key) {
+		if m.DiscFrom != "" {
+			is.Stage = m.DiscFrom
+		}
 		if why, err := noRow(is, m); err != nil {
 			if !StateError(err) {
 				return wrap(err)

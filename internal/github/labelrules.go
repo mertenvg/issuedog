@@ -21,6 +21,25 @@ type Trust interface {
 	Trusted(ctx context.Context, login string) (bool, error)
 }
 
+// DiscTrust is a Trust that also says, from the same permission request,
+// whether a login is a write collaborator who isn't trusted: one who can
+// hold an issue for discussion, but not move it (SPEC §6.4, #87's
+// assumption 1). *trust.Set satisfies it. A Trust without it knows no such
+// collaborator, so nothing it judges holds an issue.
+type DiscTrust interface {
+	Trust
+	DiscAccess(ctx context.Context, login string) (trusted, writer bool, err error)
+}
+
+// DiscRename is one renamed event on an issue's timeline: someone changed
+// its title (SPEC §6.4).
+type DiscRename struct {
+	ID    int64 // the timeline event's ID
+	By    Author
+	At    time.Time
+	Title string // the title it set
+}
+
 // LabelEventKind is what CheckLabels found that S4 has to act on.
 type LabelEventKind string
 
@@ -84,6 +103,15 @@ type LabelCheck struct {
 	// no event explains it yet: the caller must not act on the issue until a
 	// later call holds nothing back.
 	Held []string
+	// DiscRenames are the issue's renamed events, oldest first, from the
+	// timeline CheckLabels reads anyway, so a rename's discussion trigger
+	// costs no request (#87's assumption 2). CheckLabels acts on none.
+	DiscRenames []DiscRename
+	// DiscLabelTimes are when each labeled or unlabeled event of a
+	// pipeline label was made, by its ID, from the same timeline: a
+	// discussion trigger after a stage label set by hand is bounded by
+	// that event's time, not by the App's record of it, which comes later.
+	DiscLabelTimes map[int64]time.Time
 }
 
 // TypeEvent is the ID of the type change that stands, the state-error key
@@ -229,6 +257,10 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 			states[key].events = append(states[key].events, e)
 			states[key].ats = append(states[key].ats, i)
 			eventAt[strconv.FormatInt(e.GetID(), 10)] = i
+			if found.DiscLabelTimes == nil {
+				found.DiscLabelTimes = map[int64]time.Time{}
+			}
+			found.DiscLabelTimes[e.GetID()] = e.GetCreatedAt().Time
 		case "commented":
 			if dirty(e.GetID()) {
 				continue
@@ -245,6 +277,9 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 					reverted[m.Fields["key"]] = true
 				}
 			}
+		case "renamed":
+			found.DiscRenames = append(found.DiscRenames, DiscRename{ID: e.GetID(), By: Author{Login: e.GetActor().GetLogin(), Type: e.GetActor().GetType()},
+				At: e.GetCreatedAt().Time, Title: e.GetRename().GetTo()})
 		default:
 			if issueTypeEvent(e) {
 				issueType.events = append(issueType.events, e)
