@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mertenvg/issuedog/internal/github"
 )
@@ -18,9 +19,10 @@ type Revision struct {
 	Hash string
 	// Comment is the revision comment's ID.
 	Comment int64
-	// Hidden is set when a dirty App comment comes after it. Its marker
-	// can't be read, so it may be a newer revision, and then this one isn't
-	// the latest: nothing may approve until a clean revision follows it.
+	// Hidden is set when a dirty App comment comes after it, or an App
+	// comment was deleted after it was posted (#186). Its marker can't be
+	// read, so it may be a newer revision, and then this one isn't the
+	// latest: nothing may approve until a clean revision follows it.
 	Hidden bool
 	// Seen is the newest comment ID read before the revision was posted:
 	// its marker's seen, else that of a transition in its comment, else 0.
@@ -43,11 +45,15 @@ func BodyHash(body string) string {
 // dirty revision comment is no revision, so the one before it is the latest,
 // and the next one posted takes the dirty one's number. Any dirty App
 // comment after it marks it Hidden: only the App writes revision markers, so
-// a dirty comment by anyone else can't hide one. It reports false if there
-// is none.
+// a dirty comment by anyone else can't hide one. So does an App comment
+// deleted after it was posted (deletedHides), which may have been a newer
+// revision: else deleting the newer revisions would bring back an older
+// one, and a 👍 left on it earlier (#87's note 3). It reports false if
+// there is none.
 func LatestRevision(s *github.Snapshot, appSlug string, dirty func(int64) bool) (Revision, bool) {
 	var latest Revision
-	var lastDirty int64 // the last dirty App comment
+	var latestAt time.Time // when the latest revision's comment was posted
+	var lastDirty int64    // the last dirty App comment
 	for _, c := range s.Comments {
 		if dirty(c.ID) {
 			if IsApp(c.Author, appSlug) {
@@ -71,10 +77,30 @@ func LatestRevision(s *github.Snapshot, appSlug string, dirty func(int64) bool) 
 			}
 		}
 		if found != nil {
-			latest = *found
+			latest, latestAt = *found, c.CreatedAt
 			latest.Seen = cmp.Or(latest.Seen, moved)
 		}
 	}
-	latest.Hidden = lastDirty > latest.Comment
+	latest.Hidden = lastDirty > latest.Comment || deletedHides(s.Deleted, appSlug, latestAt)
 	return latest, latest.Comment != 0
+}
+
+// deletedHides reports whether a comment the App may have written was
+// deleted after since, when the latest revision's comment was posted. A
+// CommentDeletedEvent doesn't say which comment went, so any App comment
+// deleted after it counts, even one older than it: that fails closed, and
+// the next revision the daemon posts comes after the deletion. So does a
+// deleted comment whose author GitHub doesn't name, who may be the App. Who
+// deleted it doesn't matter. Times are to the second, so a deletion in the
+// same second as the revision's post doesn't count: it could only have
+// deleted a comment posted in that second too, and a revision the daemon
+// posts just after a deletion it read stays the latest, so it isn't posted
+// again.
+func deletedHides(deleted []github.DeletedComment, appSlug string, since time.Time) bool {
+	for _, d := range deleted {
+		if (d.Author.Login == "" || IsApp(d.Author, appSlug)) && d.At.After(since) {
+			return true
+		}
+	}
+	return false
 }

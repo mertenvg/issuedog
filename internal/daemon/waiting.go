@@ -259,7 +259,7 @@ func waitApprovalLines(in waitInput, is state.Issue) (int, int64, []waitLine) {
 	switch {
 	case !ok:
 	case latest.Hidden:
-		why = append(why, fmt.Sprintf("a comment of mine after revision %d was edited without approval, so it may hide a newer revision", latest.Rev))
+		why = append(why, fmt.Sprintf("a comment of mine after revision %d was edited without approval or deleted, so it may hide a newer revision", latest.Rev))
 	case state.BodyHash(s.Body) != latest.Hash:
 		why = append(why, fmt.Sprintf("the issue description changed after revision %d, so it no longer matches `%s`", latest.Rev, latest.Hash))
 	}
