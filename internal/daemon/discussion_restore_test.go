@@ -134,6 +134,64 @@ func TestDiscRestore(t *testing.T) {
 	}
 }
 
+// discRestore holds nothing, and the label rules act as before, when the
+// owner set a stage by hand after the act, which wins; when the App's own
+// write was cut short, which is finished; when the issue has two stage
+// labels, which is a disagreement; and when the label and the markers left
+// agree, as on a held issue whose App note was edited, which gets only its
+// notice.
+func TestDiscRestoreLeftAlone(t *testing.T) {
+	t.Run("an override", func(t *testing.T) {
+		f := run(t, discWith(func(_ testing.TB, f *githubtest.Fake) {
+			f.EditComment(1001, "mallory", "nothing here")
+			f.RemoveLabel(1, "owner", "stage:ready")
+			f.AddLabel(1, "owner", "stage:clarifying")
+		}), discPass(t, 1))
+		is := f.State().Issues[0]
+		if last := is.Comments[len(is.Comments)-1].Body; !slices.Equal(is.Labels, []string{"stage:clarifying"}) || !strings.Contains(last, "owner override") {
+			t.Errorf("labels %q, newest comment %q; want the owner's override recorded, and no hold", is.Labels, last)
+		}
+	})
+	t.Run("an unfinished write", func(t *testing.T) {
+		setup := discWith(func(_ testing.TB, f *githubtest.Fake) {
+			f.AddComment(1, app, "<!-- issuedog:transition from=ready to=held at=ready reason=owner cmd=9 seen=1001 -->") // 1002, labels not set
+			f.EditComment(1001, "mallory", "nothing here")
+		})
+		discCheck(t, setup, 1, func(f *githubtest.Fake) map[int]issueWant {
+			key := discEditKey(t, f, 1, 1001)
+			return map[int]issueWant{1: {[]string{"stage:held"}, []string{discNotice("`mallory` edited comment 1001 by `issuedog[bot]`", key)}}}
+		})
+	})
+	t.Run("two stage labels", func(t *testing.T) {
+		f := run(t, discWith(func(_ testing.TB, f *githubtest.Fake) {
+			f.RemoveLabel(1, app, "stage:ready")
+			f.AddLabel(1, app, "stage:clarifying")
+			f.AddLabel(1, app, "stage:ready")
+			f.EditComment(f.AddComment(1, app, "A note."), "mallory", "A note, changed.")
+		}), discPass(t, 1))
+		is := f.State().Issues[0]
+		var bodies []string
+		for _, c := range is.Comments {
+			bodies = append(bodies, c.Body)
+		}
+		if !slices.ContainsFunc(bodies, func(b string) bool { return strings.Contains(b, "kind=disagreement") }) ||
+			!strings.HasPrefix(bodies[len(bodies)-1], "On hold for discussion, from `ready`") || !slices.Equal(is.Labels, []string{"stage:held"}) {
+			t.Errorf("labels %q, comments %q; want the disagreement reported, then a hold from ready", is.Labels, bodies)
+		}
+	})
+	t.Run("a held issue's note", func(t *testing.T) {
+		setup := func(t testing.TB) *githubtest.Fake {
+			f := discHeldBy(true)(t)
+			f.EditComment(f.AddComment(1, app, "A note."), "mallory", "A note, changed.")
+			return f
+		}
+		discCheck(t, setup, 1, func(f *githubtest.Fake) map[int]issueWant {
+			key := discEditKey(t, f, 1, 1005)
+			return map[int]issueWant{1: {[]string{"stage:held"}, []string{discNotice("`mallory` edited comment 1005 by `issuedog[bot]`", key)}}}
+		})
+	})
+}
+
 // After the owner's hold is restored, its /resume ends that hold but the
 // issue stays held while the act is open; and a parent's /resume doesn't
 // end the reposted hold, which only /resume on the issue itself ends.
