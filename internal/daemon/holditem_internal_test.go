@@ -170,8 +170,8 @@ func holdItemStacked() (*github.Snapshot, []discTrigger) {
 	}
 }
 
-// Under an owner hold, the key is the oldest open trigger's, as no hold
-// marker names one. The comment and the deletion with no notice aren't
+// Under an owner hold, the key names the /hold's marker, cmd=502, which no
+// trigger changes. The comment and the deletion with no notice aren't
 // mentioned, so they announce the hold; the rename's and the recorded
 // edit's notices mentioned them. The deletion is resolved only by
 // /resume, and the owner hold is named.
@@ -179,8 +179,8 @@ func TestHoldItemStacked(t *testing.T) {
 	s, holds := holdItemStacked()
 	it := holdItemFindOne(t, s, nil, holds...)
 	issue := "https://github.com/o/r/issues/5"
-	if it.Key != "hold-5-"+holds[0].Key {
-		t.Errorf("key %s; want the oldest trigger's, hold-5-%s", it.Key, holds[0].Key)
+	if it.Key != "hold-5-cmd502" {
+		t.Errorf("key %s; want the /hold marker's, hold-5-cmd502", it.Key)
 	}
 	want := []holdItemTrigger{
 		{Trigger: holds[0], Link: issue + "#issuecomment-506", How: "A code owner's 👍 on its notice accepts it.", Mentioned: true},
@@ -216,18 +216,48 @@ func TestHoldItemKeyFromTheMarker(t *testing.T) {
 	}
 }
 
-// Under a hold set by hand, whose marker carries the label's event too,
-// the key is still the oldest open trigger's: only a discussion hold's
-// marker names a trigger.
+// Under a hold set by hand, the key names its marker by the label's
+// event, not by the trigger, and the hand-set hold is named as an owner
+// hold.
 func TestHoldItemKeyUnderHandSetHold(t *testing.T) {
 	s := holdItemSnap(holdItemComment(502, waitApp, "<!-- issuedog:transition from=ready to=held at=ready reason=owner by=owner event=77 seen=501 -->"),
 		holdItemComment(503, holdItemMallory, "Wait."))
 	it := holdItemFindOne(t, s, nil, discTrigger{Kind: discComment, Key: "c503", By: "mallory", At: holdItemAt(3), ID: 503})
-	if it.Key != "hold-5-c503" {
-		t.Errorf("key %s; want the trigger's, hold-5-c503, not the hand-set hold's event", it.Key)
+	if it.Key != "hold-5-77" {
+		t.Errorf("key %s; want the hand-set hold's event, hold-5-77", it.Key)
 	}
 	if texts := waitTexts(it.Lines); !slices.Contains(texts, "It's on an owner hold too, so it stays held after these until `/resume` ends that.") {
 		t.Errorf("lines %q; want the hand-set hold named as an owner hold", texts)
+	}
+}
+
+// A hold marker with no key, which the App doesn't write, keys the item
+// by the oldest open trigger. One with no reason, from before #87, is an
+// owner hold. A /hold by 👍 keys it by its reaction, and a run's by its
+// run.
+func TestHoldItemKeyFallback(t *testing.T) {
+	tr := discTrigger{Kind: discComment, Key: "c503", By: "mallory", At: holdItemAt(3), ID: 503}
+	for fields, key := range map[string]string{"": "hold-5-c503", "cmd=r42 ": "hold-5-cmdr42", "run=h1 ": "hold-5-runh1"} {
+		s := holdItemSnap(holdItemComment(502, waitApp, "<!-- issuedog:transition from=ready to=held at=ready "+fields+"seen=501 -->"),
+			holdItemComment(503, holdItemMallory, "Wait."))
+		it := holdItemFindOne(t, s, nil, tr)
+		if it.Key != key {
+			t.Errorf("%q: key %s; want %s", fields, it.Key, key)
+		}
+		if texts := waitTexts(it.Lines); !slices.Contains(texts, "It's on an owner hold too, so it stays held after these until `/resume` ends that.") {
+			t.Errorf("%q: lines %q; want the hold with no reason named as an owner hold", fields, texts)
+		}
+	}
+}
+
+// Only a notice marker links a trigger's notice: another App marker with
+// a key= field, such as a revert's, is none.
+func TestHoldItemNoticeOnly(t *testing.T) {
+	s := holdItemSnap(holdItemComment(502, waitApp, "Put back.\n\ncc @owner\n\n<!-- issuedog:revert key=9001 -->"), holdItemHeld(503, "9001", true, false))
+	hs := holdItemTriggers(holdItemFindOne(t, s, nil, discTrigger{Kind: discRename, Key: "9001", By: "mallory", At: holdItemAt(2), Title: "Wait"}))
+	if len(hs) != 1 || hs[0].Link != "https://github.com/o/r/issues/5#issuecomment-503" ||
+		hs[0].How != "It has no clean notice, as one may have been deleted or edited, so only `/resume` here accepts it." {
+		t.Errorf("triggers %+v; want the hold's link, accepted only by /resume, not the revert's", hs)
 	}
 }
 
@@ -278,14 +308,16 @@ func TestHoldItemRecordedNoNotice(t *testing.T) {
 	}
 }
 
-// An edit with no clean notice and no record links the content it
-// edited: a comment, or the issue for the body.
+// An edit of either kind with no clean notice and no record links the
+// content it edited: a comment, or the issue for the body.
 func TestHoldItemUnrecordedEditLink(t *testing.T) {
 	s := holdItemSnap(holdItemOwnerHeld()...)
 	hs := holdItemTriggers(holdItemFindOne(t, s, nil, discTrigger{Kind: discEdit, Key: "e502-9", By: "mallory", At: holdItemAt(9), ID: 502, Of: "owner"},
-		discTrigger{Kind: discEdit, Key: "e0-9", By: "mallory", At: holdItemAt(9), ID: state.BodyID, Of: "owner"}))
-	if len(hs) != 2 || hs[0].Link != "https://github.com/o/r/issues/5#issuecomment-502" || hs[1].Link != "https://github.com/o/r/issues/5" {
-		t.Errorf("triggers %+v; want comment 502's link, then the issue's", hs)
+		discTrigger{Kind: discEdit, Key: "e0-9", By: "mallory", At: holdItemAt(9), ID: state.BodyID, Of: "owner"},
+		discTrigger{Kind: discOwnEdit, Key: "e504-9", By: "mallory", At: holdItemAt(9), ID: 504}))
+	if len(hs) != 3 || hs[0].Link != "https://github.com/o/r/issues/5#issuecomment-502" || hs[1].Link != "https://github.com/o/r/issues/5" ||
+		hs[2].Link != "https://github.com/o/r/issues/5#issuecomment-504" {
+		t.Errorf("triggers %+v; want comment 502's link, the issue's, then comment 504's", hs)
 	}
 }
 

@@ -324,10 +324,13 @@ type holdItemTrigger struct {
 	// hold's transition or a notice, in a comment with a cc line
 	// (holdItemCCRE), as the hold's comment and each notice end in one
 	// (#87's assumption 5). A comment trigger on an issue held already has
-	// no record (Q2b), nor has a trigger whose notice discLost held back,
-	// nor one whose record is in content made dirty or deleted since, so
-	// none of those is mentioned. Nor is one recorded while notify was
-	// empty, whose comment has no cc line: that mentioned nobody.
+	// no record (Q2b), nor has a trigger whose notice discLost held back on
+	// an issue held already, nor one whose record is in content made dirty
+	// or deleted since, so none of those is mentioned. The trigger whose
+	// hold moved the issue into held is mentioned, notice or not: the
+	// hold's transition marker records it, as event=, in a comment with a
+	// cc line. Nor is one recorded while notify was empty mentioned, whose
+	// comment has no cc line: that mentioned nobody.
 	Mentioned bool
 }
 
@@ -341,16 +344,17 @@ var holdItemCCRE = regexp.MustCompile(`(?m)^cc @[^\s\x{200b}]`)
 // holdItemOf returns the hold item of in.S, which is held with in.Holds
 // open, oldest first (#192): the id its key ends in, and its lines.
 //
-// The key is hold-<n>-<hold marker id>, where the id is the event= key a
-// discussion hold's transition marker carries, its trigger's key (#87's
-// assumption 3): the one of the marker that moved the issue into held, if
-// that was a discussion hold's. On an issue an owner hold held first, a
-// discussion hold writes no marker (Q2b), so the id is then the key of the
-// oldest open trigger, which its marker would have carried had the issue
-// not been held. So the key stays the same from pass to pass, and while
-// triggers come and go under one hold, and a hold after a move out of
-// held has a key of its own. Which triggers to announce isn't the key's
-// job: see waitItem.news.
+// The key is hold-<n>-<hold marker id>, where the id names the transition
+// marker that moved the issue into held, whatever hold it was
+// (holdItemMarkerID): the first hold wins (Q2b), so that marker stands
+// while the issue is held, and a discussion hold on an issue held already
+// writes none. So the key stays the same from pass to pass, and while
+// triggers come and go under one hold, as when the oldest is resolved or
+// a comment trigger is deleted, and a hold after a move out of held has a
+// key of its own, as its marker has a key of its own (SPEC §5.2). Only a
+// marker with no key, which the App doesn't write, falls back to the
+// oldest open trigger's key, which changes as that trigger goes. Which
+// triggers to announce isn't the key's job: see waitItem.news.
 //
 // The lines say the issue is held for discussion, from where, and how
 // many triggers are open; then one line for each (waitLine.Hold), with a
@@ -369,8 +373,8 @@ var holdItemCCRE = regexp.MustCompile(`(?m)^cc @[^\s\x{200b}]`)
 func holdItemOf(in waitInput, is state.Issue) (string, []waitLine) {
 	s := in.S
 	id := in.Holds[0].Key
-	if hs := is.HeldStack.Holds; len(hs) > 0 && hs[0].Fields["reason"] == "discussion" && hs[0].Fields["event"] != "" {
-		id = hs[0].Fields["event"]
+	if hs := is.HeldStack.Holds; len(hs) > 0 && holdItemMarkerID(hs[0]) != "" {
+		id = holdItemMarkerID(hs[0])
 	}
 	records := discRecords(s, in.AppSlug, in.Dirt.Has)
 	notices := map[string]int64{}
@@ -405,7 +409,7 @@ func holdItemOf(in waitInput, is state.Issue) (string, []waitLine) {
 			switch {
 			case recorded:
 				h.Link = link(rec)
-			case tr.Kind == discEdit:
+			case tr.Kind == discEdit || tr.Kind == discOwnEdit:
 				h.Link = link(tr.ID)
 			}
 		}
@@ -415,6 +419,25 @@ func holdItemOf(in waitInput, is state.Issue) (string, []waitLine) {
 		lines = append(lines, waitLine{Text: "It's on an owner hold too, so it stays held after these until `/resume` ends that."})
 	}
 	return id, append(lines, waitLine{Text: "Post `/resume` here to accept every open trigger at once."})
+}
+
+// holdItemMarkerID names m, the transition marker that moved an issue into
+// held, by the key that makes it unique (SPEC §5.2), or "" for none:
+//   - event= as it is: a discussion hold's trigger key (#87's assumption
+//     3), such as c<comment id>, or a hand-set hold's label event ID;
+//   - else cmd= after "cmd": a /hold's comment, or r<reaction id>, as
+//     cmd502, which no trigger key looks like;
+//   - else run= after "run".
+func holdItemMarkerID(m github.Marker) string {
+	switch {
+	case m.Fields["event"] != "":
+		return m.Fields["event"]
+	case m.Fields["cmd"] != "":
+		return "cmd" + m.Fields["cmd"]
+	case m.Fields["run"] != "":
+		return "run" + m.Fields["run"]
+	}
+	return ""
 }
 
 // news returns the keys that announce it (digestRenderNew): its Key, or,
