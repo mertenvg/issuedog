@@ -413,11 +413,9 @@ func closingWhat(tr discTrigger) string {
 // are both keyed by their timeline event ID (#87's assumption 3), so only
 // the timeline tells them apart, and it only grows. A snapshot CheckLabels
 // hasn't checked has no closes, so its keys stay renames, which only words
-// the trigger.
+// the trigger. Only a rename's key is a timeline event ID, so no other
+// kind's matches one.
 func closingFromKey(s *github.Snapshot, tr discTrigger) discTrigger {
-	if tr.Kind != discRename {
-		return tr
-	}
 	for _, cl := range s.Closings {
 		if !cl.Reopen && strconv.FormatInt(cl.ID, 10) == tr.Key {
 			tr.Kind = discClose

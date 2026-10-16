@@ -228,6 +228,59 @@ func TestClosingUntrustedReopen(t *testing.T) {
 	}
 }
 
+// An untrusted reopen is closed again with the state_reason of the newest
+// close before it, not an older one's.
+func TestClosingUntrustedReopenNewestReason(t *testing.T) {
+	f := closingJudged("discarded", func(f *githubtest.Fake) {
+		f.CloseAs(1, "owner", "not_planned")
+		f.ReopenBy(1, "owner")
+		f.CloseAs(1, "owner", "duplicate")
+	})(t)
+	f.ReopenBy(1, "eve")
+	iterate(t, newDaemon(t, f, digestNotifyOrigin(t), nil))
+	is, _, err := f.Client(t).Issues.Get(context.Background(), "o", "r", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if is.GetState() != "closed" || is.GetStateReason() != "duplicate" {
+		t.Errorf("%s as %s; want closed again as duplicate", is.GetState(), is.GetStateReason())
+	}
+}
+
+// An earlier revert comment of another event, a label's, doesn't stand for
+// a close's: the close gets its own.
+func TestClosingRevertCommentKeyed(t *testing.T) {
+	var event int64
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := closingFake(t)
+		f.AddComment(1, app, "I removed `priority:p0`: only trusted users can change pipeline labels, and eve isn't one.\n\n<!-- issuedog:revert key=77 -->")
+		event = f.CloseBy(1, "eve")
+		return f
+	}
+	f := run(t, setup, closingPass(t, digestNotifyOrigin(t)))
+	if got := closingComments(f, 1, 2); f.State().Issues[0].Closed || !slices.Equal(got, []string{closingReverted("`eve`", event)}) {
+		t.Errorf("comments %q; want the close reverted with its own revert comment", got)
+	}
+}
+
+// The digest is never judged as a pipeline issue, even with a stage label.
+func TestClosingNotTheDigest(t *testing.T) {
+	f, o := digestPinned(t), digestNotifyOrigin(t)
+	f.AddLabel(1, app, "stage:held")
+	f.CloseBy(1, "owner")
+	d := digestDaemon(t, f, o, nil)
+	iterate(t, d)
+	iterate(t, d)
+	if is := f.State().Issues[0]; !slices.Equal(is.Labels, []string{"stage:held"}) {
+		t.Errorf("the digest's labels %q; want stage:held left alone", is.Labels)
+	}
+	for _, w := range f.Writes() {
+		if strings.HasPrefix(w.Path, "/issues/1/labels") || w.Path == "/issues/1/comments" {
+			t.Errorf("wrote %+v to the digest; want nothing judged", w)
+		}
+	}
+}
+
 // A trusted reopen moves the issue to held, closed → held, at the stage
 // the latest transition marker shows, as an owner hold, and the closed
 // stage goes. /resume here then puts it back there.
@@ -443,6 +496,21 @@ func TestClosingLateCloseAfterReopen(t *testing.T) {
 				t.Errorf("closed, labels %q, once the events show; want eve's close reverted", is.Labels)
 			}
 		})
+	}
+}
+
+// A reopen made between the poll and the timeline's read isn't judged as
+// the close: nothing is written to the issue, which is open now.
+func TestClosingReopenedBeforeTheRead(t *testing.T) {
+	f, o := closingFake(t), digestNotifyOrigin(t)
+	d := newDaemon(t, f, o, nil)
+	iterate(t, d)
+	f.CloseBy(1, "owner")
+	f.BeforeRequest(func(r githubtest.Request) bool { return r.Path == "/issues/1/timeline" }, func() { f.ReopenBy(1, "owner") })
+	writes := len(f.Writes())
+	iterate(t, d)
+	if w := f.Writes()[writes:]; len(w) != 0 {
+		t.Errorf("writes %+v; want none for the reopened issue", w)
 	}
 }
 

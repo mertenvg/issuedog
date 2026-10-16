@@ -207,7 +207,6 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			delete(d.digestCache, n)
 			delete(d.assignManaged, n)
 			d.Step.forgetLabels(n)
-			d.closingForget(n)
 		case gone(err):
 			// One answer may be wrong, so it's read again next pass.
 			logr.Infof("%s/%s#%d looks gone, deleted or transferred, so it's read again: %v", d.Step.Owner, d.Step.Repo, n, err)
