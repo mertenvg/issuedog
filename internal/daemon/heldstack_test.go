@@ -94,6 +94,14 @@ func heldStackTasks(t testing.TB) *githubtest.Fake {
 	return f
 }
 
+// heldStackFamily is heldStackTasks with a second child, #3, at ready
+// (comment 1003).
+func heldStackFamily(t testing.TB) *githubtest.Fake {
+	f := heldStackTasks(t)
+	file(f, 1, ready)
+	return f
+}
+
 // heldStackCheck runs the last of steps under Replay, then twice, the second
 // time writing nothing, and checks each issue's labels and new comments
 // against want, and the App's reaction to the last command, if react.
@@ -144,36 +152,40 @@ func TestHeldStackHandSetHold(t *testing.T) {
 		{2, heldStackSay(2, "/resume", &resume2)},
 	}
 	t.Run("/hold on the parent", func(t *testing.T) {
-		heldStackCheck(t, heldStackTasks, steps[:1], func() map[int]issueWant {
+		heldStackCheck(t, heldStackFamily, steps[:1], func() map[int]issueWant {
 			return map[int]issueWant{
 				1: {[]string{"stage:held"}, []string{moved("On hold by `/hold`, from `ready`.", fmt.Sprintf("from=ready to=held at=ready reason=owner cmd=%d seen=1001", hold))}},
 				2: {[]string{"stage:held"}, []string{moved("On hold by `/hold` on #1, from `in-progress`.",
 					fmt.Sprintf("from=in-progress to=held at=in-progress reason=owner cmd=%d seen=1002", hold))}},
+				3: {[]string{"stage:held"}, []string{moved("On hold by `/hold` on #1, from `ready`.", fmt.Sprintf("from=ready to=held at=ready reason=owner cmd=%d seen=1003", hold))}},
 			}
 		}, "+1", &hold)
 	})
 	t.Run("a hold by hand on the held child writes one marker", func(t *testing.T) {
-		heldStackCheck(t, heldStackTasks, steps[:2], func() map[int]issueWant {
+		heldStackCheck(t, heldStackFamily, steps[:2], func() map[int]issueWant {
 			return map[int]issueWant{
 				1: {[]string{"stage:held"}, nil},
 				2: {[]string{"stage:held"}, []string{heldStackHand(fmt.Sprintf("from=held to=held at=in-progress reason=owner by=owner event=%d seen=1002", ev))}},
+				3: {[]string{"stage:held"}, nil},
 			}
 		}, "", nil)
 	})
 	t.Run("the parent's /resume leaves the child held, and names it", func(t *testing.T) {
-		heldStackCheck(t, heldStackTasks, steps[:3], func() map[int]issueWant {
+		heldStackCheck(t, heldStackFamily, steps[:3], func() map[int]issueWant {
 			return map[int]issueWant{
 				1: {[]string{"stage:ready"}, []string{moved("Resumed by `/resume`, back to `ready`. Still on hold: #2, also held by hand, so `/resume` there ends that.",
 					fmt.Sprintf("from=held to=ready cmd=%d seen=1001", resume1))}},
 				2: {[]string{"stage:held"}, nil},
+				3: {[]string{"stage:ready"}, []string{moved("Resumed by `/resume` on #1, back to `ready`.", fmt.Sprintf("from=held to=ready cmd=%d seen=1003", resume1))}},
 			}
 		}, "+1", &resume1)
 	})
 	t.Run("the child's own /resume ends its hold by hand", func(t *testing.T) {
-		heldStackCheck(t, heldStackTasks, steps, func() map[int]issueWant {
+		heldStackCheck(t, heldStackFamily, steps, func() map[int]issueWant {
 			return map[int]issueWant{
 				1: {[]string{"stage:ready"}, nil},
 				2: {[]string{"stage:in-progress"}, []string{moved("Resumed by `/resume`, back to `in-progress`.", fmt.Sprintf("from=held to=in-progress cmd=%d seen=1002", resume2))}},
+				3: {[]string{"stage:ready"}, nil},
 			}
 		}, "+1", &resume2)
 	})

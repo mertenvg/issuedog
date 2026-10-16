@@ -80,5 +80,5 @@ func heldStackThrough(last, m github.Marker) bool {
 	case from != Held || m.Fields[FieldSeen] == "":
 		return false
 	}
-	return last.Kind != "" && to == Stage(last.Fields["to"])
+	return to == Stage(last.Fields["to"])
 }

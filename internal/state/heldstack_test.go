@@ -51,8 +51,8 @@ func TestHeldStack(t *testing.T) {
 		want  heldStackWant
 	}{
 		{"not held, no stack", heldStackSnap(toReady), clean, heldStackWant{}},
-		{"a hold keeps its own seen", heldStackSnap(readyRun, "from=ready to=held at=ready reason=owner cmd=5 seen=9"), clean,
-			heldStackWant{At: Ready, Seen: 9, Keys: []string{"5"}}},
+		{"a hold keeps its own seen", heldStackSnap(readyRun, "from=ready to=held at=ready reason=owner cmd=5 seen=7"), clean,
+			heldStackWant{At: Ready, Seen: 7, Keys: []string{"5"}}},
 		{"a hold with no seen takes the bound before it: the marker's comment", heldStackSnap(toReady, "from=ready to=held at=ready reason=owner cmd=5"), clean,
 			heldStackWant{At: Ready, Seen: 1, Keys: []string{"5"}}},
 		{"a hold with no seen takes the bound before it: that marker's seen", heldStackSnap(readyRun, "from=ready to=held at=ready reason=owner cmd=5"), clean,
@@ -66,6 +66,9 @@ func TestHeldStack(t *testing.T) {
 		{"a new hold after leaving starts afresh", heldStackSnap(toReady, "from=ready to=held at=ready reason=owner cmd=5", "from=held to=held at=ready reason=owner by=owner event=6 seen=1",
 			"from=held to=planning by=owner event=7 seen=1", "", "from=planning to=held at=planning reason=owner cmd=8"), clean,
 			heldStackWant{At: Planning, Seen: 1, Keys: []string{"8"}}},
+		{"a hold after a dirty move out of held starts afresh", heldStackSnap(toReady, "from=ready to=held at=ready reason=owner cmd=5",
+			"from=held to=ready cmd=6 seen=1", "from=ready to=held at=ready reason=owner cmd=7"), dirtyIDs(3),
+			heldStackWant{At: Ready, Seen: 2, Keys: []string{"7"}}},
 		{"a held → held marker after a dirty first hold starts the stack", heldStackSnap(toReady, "from=ready to=held at=ready reason=owner cmd=5",
 			"from=held to=held at=ready reason=owner by=owner event=6 seen=1"), dirtyIDs(2),
 			heldStackWant{At: Ready, Seen: 1, Keys: []string{"6"}}},
@@ -147,6 +150,9 @@ func TestNotesThroughAHold(t *testing.T) {
 		{"a resume to another stage than the hold's", []string{"from=spec-review to=clarifying cmd=5 seen=5", "from=clarifying to=held at=clarifying reason=owner cmd=6 seen=5",
 			"from=held to=spec-review by=owner event=8 seen=5"}, 0},
 		{"a hold with nothing before it", []string{"from=intake to=held at=intake reason=owner cmd=6", "from=held to=intake cmd=7 seen=1"}, 0},
+		{"a hold left by way of another stage drops them", []string{"from=spec-review to=clarifying cmd=5 seen=5",
+			"from=clarifying to=held at=clarifying reason=owner cmd=6 seen=5", "from=held to=spec-review by=owner event=8 seen=5",
+			"from=spec-review to=held at=spec-review reason=owner cmd=9 seen=5", "from=held to=clarifying by=owner event=10 seen=5"}, 0},
 		{"a hold from spec-review back to clarifying isn't a request", []string{"from=spec-review to=held at=spec-review reason=owner cmd=6 seen=5",
 			"from=held to=clarifying by=owner event=8 seen=5"}, 0},
 	} {

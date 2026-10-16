@@ -71,8 +71,9 @@ var ErrLabelsHeld = errors.New("labels held back until their events explain them
 //     transition marker with by=<login> and event=<id>. That includes a change
 //     made while a transition was in flight, so the owner's intent wins. It
 //     isn't looked up in the table. A move to held is an owner hold (SPEC §6.4), so it also gets
-//     at=<previous> and reason=owner. Holds stack, so stage:held set by hand
-//     on a held issue is an owner hold of its own (plan #87 rev 2, Q2b): a
+//     at=<previous> and reason=owner. Holds stack, so stage:held removed and
+//     added back by hand on a held issue, which github.CheckLabels reports
+//     as an override, is an owner hold of its own (plan #87 rev 2, Q2b): a
 //     held → held marker with reason=owner that keeps the first hold's at
 //     and origin. Each move into, within or out of held also carries the
 //     round bound from before the hold in seen. An override to any other
