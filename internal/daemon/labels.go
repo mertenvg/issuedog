@@ -71,8 +71,13 @@ var ErrLabelsHeld = errors.New("labels held back until their events explain them
 //     transition marker with by=<login> and event=<id>. That includes a change
 //     made while a transition was in flight, so the owner's intent wins. It
 //     isn't looked up in the table. A move to held is an owner hold (SPEC §6.4), so it also gets
-//     at=<previous> and reason=owner. An override to the issue's current
-//     stage, held included, since holds stack, gets no marker. An issue whose
+//     at=<previous> and reason=owner. Holds stack, so stage:held removed and
+//     added back by hand on a held issue, which github.CheckLabels reports
+//     as an override, is an owner hold of its own (plan #87 rev 2, Q2b): a
+//     held → held marker with reason=owner that keeps the first hold's at
+//     and origin. Each move into, within or out of held also carries the
+//     round bound from before the hold in seen. An override to any other
+//     stage the issue is at already gets no marker. An issue whose
 //     labels were set by hand, with no marker of the App's, is adopted this
 //     way (plan #5, assumption 6).
 //   - A disagreement gets one error comment keyed by its timeline event
@@ -171,19 +176,38 @@ func (a *Applier) issueTypeRevertGuard(s *github.Snapshot) *github.IssueTypeGuar
 
 // override records ev, a trusted user's move to stage to, then sets the
 // labels. CheckLabels reports no override older than the latest marker, so
-// it needs no check of its own that ev is recorded.
+// it needs no check of its own that ev is recorded. Every move into, within
+// or out of held carries the round bound from before the hold
+// (state.HeldStack.Seen), so the round the hold came in goes on after it.
 func (a *Applier) override(ctx context.Context, s *github.Snapshot, dirty func(int64) bool, ev github.LabelEvent, to state.Stage) error {
 	is := state.Derive(s, a.AppSlug, dirty)
-	if to != is.Stage {
+	if to != is.Stage || to == state.Held {
 		fields := map[string]string{"from": string(is.Stage), "to": string(to), "by": ev.By, "event": strconv.FormatInt(ev.Key, 10)}
-		if to == state.Held {
+		switch h := is.HeldStack; {
+		case to == state.Held && is.Stage == state.Held:
+			// A hold by hand on a held issue (plan #87 rev 2, Q2b): the
+			// first hold's at and origin stay, and this hold is recorded.
+			fields["at"], fields["reason"] = string(h.At), "owner"
+			if h.Origin != "" {
+				fields["origin"] = string(h.Origin)
+			}
+			state.HeldStackFields(fields, h.Seen)
+		case to == state.Held:
 			fields["at"], fields["reason"] = string(is.Stage), "owner"
+			state.HeldStackFields(fields, is.Round)
+		case is.Stage == state.Held:
+			// Every hold ends (SPEC §6.4).
+			state.HeldStackFields(fields, h.Seen)
 		}
 		marker, err := github.FormatMarker(github.Marker{Kind: "transition", Fields: fields})
 		if err != nil {
 			return fmt.Errorf("override: %w", err)
 		}
 		text := fmt.Sprintf("%s set `%s` by hand, so I've recorded it as an owner override.", ev.By, ev.Label)
+		if to == is.Stage {
+			text = fmt.Sprintf("%s set `%s` by hand on this held issue, so I've recorded it as an owner hold of its own. "+
+				"It stays held until `/resume` here.", ev.By, ev.Label)
+		}
 		if err := a.comment(ctx, s, join(github.Escape(text), marker)); err != nil {
 			return fmt.Errorf("override: %w", err)
 		}

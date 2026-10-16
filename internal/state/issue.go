@@ -57,6 +57,9 @@ type Issue struct {
 	TransitionComment int64
 	// Triage is the latest triage marker in a comment, or none.
 	Triage TriageVerdict
+	// HeldStack is what holds the issue while Stage is Held, else the zero
+	// HeldStack.
+	HeldStack HeldStack
 }
 
 // TriageVerdict is a triage marker (plan #6, assumption 3): a decision on
@@ -77,7 +80,9 @@ type TriageVerdict struct {
 // the newest comment the run was given (plan #5, amended assumption 5); on
 // a move by /revise, a revision request or /approve, that comment; on an
 // approval by 👍, and on a revision posted without a move, the newest
-// comment the pass read. Only a comment above it is new input after it.
+// comment the pass read; on a move into, within or out of held, the round
+// bound from before the hold (HeldStack.Seen), so a hold doesn't end the
+// round it came in. Only a comment above it is new input after it.
 const FieldSeen = "seen"
 
 // RoundBound returns the bound on input that marker m, in comment id, sets:
@@ -144,6 +149,7 @@ func Derive(s *github.Snapshot, appSlug string, dirty func(id int64) bool) Issue
 		for _, m := range github.TrustedMarkers(author, body, appSlug) {
 			is.Markers = append(is.Markers, m)
 			if b, ok := RoundBound(m, id); ok {
+				is.HeldStack = is.HeldStack.heldStackNext(m, is.Round)
 				is.Round, is.TransitionComment = b, id
 			}
 			is.readError(m, id)

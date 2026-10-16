@@ -556,18 +556,17 @@ func ivRoundLabel(n int) string {
 }
 
 // ivInputs are input.md's sections: each of in.Inputs, as the revision
-// notes when the latest move sent the spec back keyed by it, else as an
-// answer to the latest round, else as new since the issue came to
-// clarifying.
+// notes when the latest move sent the spec back keyed by it, looking
+// through a hold (state.Issue.Notes), else as an answer to the latest
+// round, else as new since the issue came to clarifying.
 func ivInputs(in Input, rounds []interviewerRound) []string {
 	last := ivLatestMove(in.Issue)
-	notes, isNotes := state.Key{Field: "cmd", ID: last.Fields["cmd"]}.Comment()
-	isNotes = isNotes && state.Stage(last.Fields["from"]) == state.SpecReview
+	notes := in.Issue.Notes()
 	var sections []string
 	for _, c := range in.Inputs {
 		at := "comment " + strconv.FormatInt(c.ID, 10) + " by " + ivLogin(c.Author.Login)
 		switch n := ivRoundOf(rounds, c.ID); {
-		case isNotes && c.ID == notes:
+		case c.ID == notes:
 			at += ": the revision notes that sent the spec back"
 		case ivRoundMove(last) && n > 0:
 			at += ": an answer to round " + strconv.Itoa(n)

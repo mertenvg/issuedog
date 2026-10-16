@@ -26,7 +26,8 @@ type Step struct {
 
 // Run runs step 1 on s, in this order: the label rules (CheckLabels), dirty
 // content (MarkDirty), the type (typeCheck), trusted comments oldest first,
-// then Reactions. Dirty
+// from the first again each time one takes the issue out of held, then
+// Reactions. Dirty
 // is read before CheckLabels, which needs it. Writes are added to s, and each
 // is checked first, so a pass that crashed part way can run again (SPEC
 // §5.2). It returns s's Inputs, which are only right after a Run that
@@ -55,12 +56,43 @@ func (st *Step) Run(ctx context.Context, s *github.Snapshot) ([]github.Comment, 
 		return nil, wrap(err)
 	}
 	// Replies are added to s.Comments, so range over the comments read.
-	for _, c := range slices.Clone(s.Comments) {
-		if !counts[c.ID] {
-			continue
+	read := slices.Clone(s.Comments)
+	// sweep handles the comments read, oldest first, until one takes the
+	// issue out of held, and reports whether one did.
+	sweep := func() (bool, error) {
+		held := state.Derive(s, st.AppSlug, d.Has).Stage == state.Held
+		for _, c := range read {
+			if !counts[c.ID] {
+				continue
+			}
+			if err := st.handle(ctx, s, d, c); err != nil {
+				return false, fmt.Errorf("comment %d: %w", c.ID, err)
+			}
+			now := state.Derive(s, st.AppSlug, d.Has).Stage == state.Held
+			if held && !now {
+				return true, nil
+			}
+			held = now
 		}
-		if err := st.handle(ctx, s, d, c); err != nil {
-			return nil, wrap(fmt.Errorf("comment %d: %w", c.ID, err))
+		return false, nil
+	}
+	// A hold keeps the round it came in (state.HeldStack.Seen), so once a
+	// command takes the issue out of held, the comments are handled again
+	// from the first, each in the stage the issue had right after the last
+	// move out of held before it, as the next pass would, and as a replay of
+	// this one after a crash does. A processed command is never applied
+	// again, so each restart needs a move out of held by a command not
+	// applied before, and there are no more of those than comments read.
+	for restarts := 0; ; restarts++ {
+		left, err := sweep()
+		if err != nil {
+			return nil, wrap(err)
+		}
+		if !left {
+			break
+		}
+		if restarts >= len(read) {
+			return nil, wrap(fmt.Errorf("the comments took the issue out of held more than %d times", len(read)))
 		}
 	}
 	if st.Reactions != nil {
@@ -187,8 +219,10 @@ func editedSince(c github.Comment, t time.Time) bool {
 // usedAt returns when the App first used comment id, and the stage of the
 // round id is in (state.RoundBound), at which a plain comment was an answer.
 // A marker uses id if it names id in cmd or, unless id is a command, if it's
-// a transition whose seen covers id: one with no seen, such as a hold, read
-// no answers. Like state.Derive, it skips dirty comments.
+// a transition whose seen covers id: one with no seen read no answers. A
+// move into, within or out of held carries the bound from before the hold
+// (state.HeldStack.Seen), so its seen covers only what an earlier marker's
+// did. Like state.Derive, it skips dirty comments.
 func (st *Step) usedAt(s *github.Snapshot, d Dirt, id int64, isCmd bool) (at time.Time, used bool, posted state.Stage) {
 	posted = postedAt(s, st.AppSlug, d, id)
 	for _, c := range s.Comments {

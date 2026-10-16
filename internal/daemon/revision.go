@@ -279,7 +279,10 @@ func requested(s *github.Snapshot, appSlug string, d Dirt, is state.Issue, c git
 
 // postedAt returns the stage of the round comment id is in (state.RoundBound),
 // at which it was posted: the to= of the last transition whose bound is below
-// id, or Intake if there is none. Like state.Derive, it skips dirty comments.
+// id, or Intake if there is none. A move to held posted after id doesn't
+// count, though its bound, the one from before the hold (state.HeldStack),
+// is below id: id was posted before the hold. Like state.Derive, it skips
+// dirty comments.
 func postedAt(s *github.Snapshot, appSlug string, d Dirt, id int64) state.Stage {
 	posted := state.Intake
 	for _, c := range s.Comments {
@@ -287,7 +290,7 @@ func postedAt(s *github.Snapshot, appSlug string, d Dirt, id int64) state.Stage 
 			continue
 		}
 		for _, m := range github.TrustedMarkers(c.Author, c.Body, appSlug) {
-			if b, bounds := state.RoundBound(m, c.ID); bounds && b < id {
+			if b, bounds := state.RoundBound(m, c.ID); bounds && b < id && (c.ID < id || state.Stage(m.Fields["to"]) != state.Held) {
 				posted = state.Stage(m.Fields["to"])
 			}
 		}

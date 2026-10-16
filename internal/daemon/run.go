@@ -1066,9 +1066,14 @@ func moveKey(attemptKey string, it state.Item) string {
 
 // attemptKey names the stage's current round of attempts: its stage and the
 // newest of the latest transition's bound and the inputs, so a move or a new
-// input starts a new one.
+// input starts a new one. A move out of held keeps the bound from before the
+// hold (state.HeldStack.Seen), so after one the newest is at least the
+// move's comment.
 func attemptKey(is state.Issue, inputs []github.Comment) string {
 	bound := is.Round
+	if state.Stage(ivLatestMove(is).Fields["from"]) == state.Held {
+		bound = max(bound, is.TransitionComment)
+	}
 	for _, c := range inputs {
 		bound = max(bound, c.ID)
 	}

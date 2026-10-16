@@ -156,8 +156,16 @@ func Commands(trust github.Trust) map[string]Handler {
 			if err != nil {
 				return fmt.Errorf("resume: %w", err)
 			}
-			return a.moveFamily(ctx, c, trust, func(is state.Issue, self bool, by string) (Move, bool) {
-				return resume(is, self, above, by)
+			var rest []string // the descendants it ends a hold on that stay held
+			return a.moveFamily(ctx, c, trust, func(is state.Issue, self bool, n int, by string) (Move, bool) {
+				m, ok := resume(is, self, above, by)
+				if _, ended, left := heldStackResume(is, self, above); ended > 0 && len(left) > 0 {
+					rest = append(rest, fmt.Sprintf("#%d", n))
+				}
+				if self && len(rest) > 0 {
+					m.Text += fmt.Sprintf(" Still on hold: %s, also held by hand, so `/resume` there ends that.", list(rest))
+				}
+				return m, ok
 			})
 		}},
 		"priority": {Apply: setPriority},
@@ -165,58 +173,68 @@ func Commands(trust github.Trust) map[string]Handler {
 }
 
 // planner returns a command's move for an issue in state is, if any. self
-// is set for the command's own issue, and by names the command.
-type planner func(is state.Issue, self bool, by string) (Move, bool)
+// is set for the command's own issue, n is the issue's number, and by names
+// the command.
+type planner func(is state.Issue, self bool, n int, by string) (Move, bool)
 
 // hold is /hold's move for an issue, by the command by (SPEC §6.4). Holds
-// stack, so an issue that's held already keeps its first at, and isn't moved.
-func hold(is state.Issue, _ bool, by string) (Move, bool) {
+// stack, and the first hold wins (plan #87 rev 2, Q2b), so an issue that's
+// held already keeps its first at, and isn't moved. The move carries the
+// round's bound, which the hold keeps (state.HeldStack.Seen).
+func hold(is state.Issue, _ bool, _ int, by string) (Move, bool) {
 	if is.Stage == state.Held {
 		return Move{}, false
 	}
-	return Move{To: state.Held, Trigger: state.TriggerHold, Fields: map[string]string{"at": string(is.Stage), "reason": "owner"},
+	return Move{To: state.Held, Trigger: state.TriggerHold, Fields: state.HeldStackFields(map[string]string{"at": string(is.Stage), "reason": "owner"}, is.Round),
 		Text: fmt.Sprintf("On hold by %s, from `%s`.", by, is.Stage)}, true
 }
 
-// resume is /resume's move for an issue on an owner hold that the command
-// ends (see ends), by the command by: back to its at. Any other hold, such
-// as for discussion, stays.
+// resume is /resume's move for an issue in its family, in state is, by the
+// command by: back to the first hold's at, once the command ends every hold
+// on it (heldStackResume). The move carries the round bound from before the
+// hold (state.HeldStack.Seen), so the round the hold came in goes on.
 func resume(is state.Issue, self bool, above map[int64]bool, by string) (Move, bool) {
-	at, ok := ends(is, self, above)
-	return Move{To: at, Trigger: state.TriggerResume, Text: fmt.Sprintf("Resumed by %s, back to `%s`.", by, at)}, ok
+	at, ended, left := heldStackResume(is, self, above)
+	return Move{To: at, Trigger: state.TriggerResume, Fields: state.HeldStackFields(nil, is.HeldStack.Seen),
+		Text: fmt.Sprintf("Resumed by %s, back to `%s`.", by, at)}, ended > 0 && len(left) == 0
 }
 
-// ownerHold returns where an issue on an owner hold goes back to, and the
-// marker that held it: its at, if it has reason=owner.
-func ownerHold(is state.Issue) (state.Stage, github.Marker, bool) {
-	if is.Stage != state.Held {
-		return "", github.Marker{}, false
+// heldStackResume returns what /resume on an issue does to an issue in its
+// family, in state is (SPEC §6.4): at is where the issue goes back to, the
+// first hold's at; ended counts the holds on it the command ends
+// (heldStackEnds); and left are the holds that stay. The issue leaves held
+// only when none is left. An issue that isn't held, or whose at isn't a
+// stage to go back to, has no hold the command ends or leaves.
+func heldStackResume(is state.Issue, self bool, above map[int64]bool) (at state.Stage, ended int, left []github.Marker) {
+	h := is.HeldStack
+	if is.Stage != state.Held || !h.At.Open() || h.At == state.Held {
+		return h.At, 0, nil
 	}
-	for _, m := range slices.Backward(is.Markers) {
-		if m.Kind == "transition" && state.Stage(m.Fields["to"]) == state.Held {
-			at := state.Stage(m.Fields["at"])
-			return at, m, m.Fields["reason"] == "owner" && at.Open() && at != state.Held
+	for _, m := range h.Holds {
+		if heldStackEnds(m, self, above) {
+			ended++
+		} else {
+			left = append(left, m)
 		}
 	}
-	return "", github.Marker{}, false
+	return h.At, ended, left
 }
 
-// ends returns where /resume on an issue ends the owner hold of an issue in
-// its family, in state is, if it does. On the issue itself, if self, it ends
-// any. On a descendant it ends only one that a /hold on the issue or an
-// ancestor of it made: a marker whose cmd names a comment in above (see
-// madeAbove). A /hold on a descendant names a comment below, a hand-set hold
-// has no cmd (by= and event=), and a deleted /hold comment is found nowhere,
-// so those stay until /resume there. Holds stack, so a /hold below after one
-// above writes no marker, and /resume above still ends it; #87 may record
-// stacked holds.
-func ends(is state.Issue, self bool, above map[int64]bool) (state.Stage, bool) {
-	at, m, ok := ownerHold(is)
-	if !ok || self {
-		return at, ok
+// heldStackEnds reports whether /resume on an issue ends the hold that
+// marker m records on an issue in its family. It ends only owner holds:
+// on the issue itself, if self, any; on a descendant only one that a /hold
+// on the issue or an ancestor of it made: a marker whose cmd names a
+// comment in above (see madeAbove). A /hold on a descendant names a comment
+// below, a hold set by hand has no cmd (by= and event=), and a deleted
+// /hold comment is found nowhere, so those stay until /resume there. The
+// first hold wins (plan #87 rev 2, Q2b), so a /hold below after one above
+// writes no marker, and /resume above still ends it.
+func heldStackEnds(m github.Marker, self bool, above map[int64]bool) bool {
+	if m.Fields["reason"] != "owner" {
+		return false
 	}
 	id, ok := state.Key{Field: "cmd", ID: m.Fields["cmd"]}.Comment()
-	return at, ok && above[id]
+	return self || ok && above[id]
 }
 
 // madeAbove returns the IDs of the comments on c's issue and its ancestors,
@@ -299,13 +317,14 @@ func holdCheck(ctx context.Context, a *Applier, c Cmd) error {
 	return Rejection{Reason: "this issue can't go on hold: " + why}
 }
 
-// resumeCheck rejects a /resume, unless Apply began (see begun), that ends
-// no hold (see ends) on c's issue or an open descendant. It names the issues
-// whose /resume would end the holds left: those that made them, by /hold or
-// by hand, including a stage:held label no marker explains, which Apply's
-// CheckLabels would record as a hold by hand. And it rejects one whose
-// issue's own owner hold has no row back to its at, which Apply would only
-// report as a state error.
+// resumeCheck rejects a /resume, unless Apply began (see begun), that takes
+// neither c's issue nor an open descendant out of held (heldStackResume).
+// It names the issues whose /resume would end the owner holds left: those
+// that made them, by /hold or by hand, including a stage:held label no
+// marker explains, which Apply's CheckLabels would record as a hold by
+// hand. And it rejects one whose issue's own owner holds would all end but
+// have no row back to their at, which Apply would only report as a state
+// error.
 func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 	family, err := a.family(ctx, c)
 	if err != nil {
@@ -328,12 +347,19 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 		// Not a label the label rules left out, or would (Applier.hidden).
 		s := a.hidden(n.s)
 		is := state.Derive(s, a.AppSlug, n.d.Has)
-		_, ended := ends(is, n.s == c.S, above)
-		_, m, owner := ownerHold(is)
-		unrecorded := is.Stage != state.Held && slices.ContainsFunc(s.Labels, func(l string) bool { return strings.EqualFold(l, "stage:held") })
-		held = held || ended
-		if owner || unrecorded {
-			id, _ := state.Key{Field: "cmd", ID: m.Fields["cmd"]}.Comment()
+		_, ended, left := heldStackResume(is, n.s == c.S, above)
+		held = held || ended > 0 && len(left) == 0
+		var made []int64 // the comments that made the owner holds left, or 0
+		for _, m := range left {
+			if m.Fields["reason"] == "owner" {
+				id, _ := state.Key{Field: "cmd", ID: m.Fields["cmd"]}.Comment()
+				made = append(made, id)
+			}
+		}
+		if is.Stage != state.Held && slices.ContainsFunc(s.Labels, func(l string) bool { return strings.EqualFold(l, "stage:held") }) {
+			made = append(made, 0) // unrecorded: a hold by hand
+		}
+		for _, id := range made {
 			by, ok := below[id]
 			if !ok {
 				by = n.s.Number
@@ -344,7 +370,7 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 		}
 	}
 	is := state.Derive(c.S, a.AppSlug, c.Dirt.Has)
-	if at, _, ok := ownerHold(is); ok {
+	if at, ended, left := heldStackResume(is, true, above); ended > 0 && len(left) == 0 {
 		why, err := noRow(is, Move{To: at, Trigger: state.TriggerResume})
 		if StateError(err) {
 			return Rejection{Reason: fmt.Sprintf("this issue can't go back to `%s`: %s", at, why)}
@@ -388,7 +414,7 @@ func (a *Applier) moveFamily(ctx context.Context, c Cmd, trust github.Trust, pla
 			by += fmt.Sprintf(" on #%d", c.S.Number)
 		}
 		is := state.Derive(n.s, a.AppSlug, n.d.Has)
-		m, ok := plan(is, n.s == c.S, by)
+		m, ok := plan(is, n.s == c.S, n.s.Number, by)
 		if !ok {
 			continue
 		}
