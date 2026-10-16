@@ -164,9 +164,10 @@ func (d *Daemon) closingList(is *gogithub.Issue, start, had bool) {
 	switch {
 	case known && seen == listed:
 		delete(d.closingDue, n)
-	case len(stages) == 0 && !had && !known && d.closingDue[n] == nil:
-		// Never in the pipeline. One listed again, as at the poll's cursor,
-		// after the first listing dropped its snapshot, stays due.
+	case len(stages) == 0 && !had && !known:
+		// Never in the pipeline. One due already, listed again, as at the
+		// poll's cursor, after the first listing dropped its snapshot,
+		// stays due.
 	case start && len(stages) == 1 && closingLabel(stages[0]):
 		d.closingSeen[n] = listed // judged on an earlier run
 		delete(d.closingDue, n)

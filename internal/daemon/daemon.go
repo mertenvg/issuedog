@@ -59,10 +59,11 @@ type Daemon struct {
 	missing       map[int]bool             // stale issues found gone since their last good read
 	issuesSince   time.Time
 	commentsSince time.Time
-	polled        time.Time               // when the last poll began
-	relabel       bool                    // a reload added models whose labels aren't created yet
-	closingSeen   map[int]closingListed   // closed issues whose close is judged, as they were listed then (closing.go)
-	closingDue    map[int]*gogithub.Issue // closed issues with a close to judge, as last listed (closingList)
+	polled        time.Time // when the last poll began
+	relabel       bool      // a reload added models whose labels aren't created yet
+
+	closingSeen map[int]closingListed   // closed issues whose close is judged, as they were listed then (closing.go)
+	closingDue  map[int]*gogithub.Issue // closed issues with a close to judge, as last listed (closingList)
 }
 
 // CurrentTrust is a github.Trust that asks st.Trust on each call. Iterate's

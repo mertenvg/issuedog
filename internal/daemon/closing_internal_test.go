@@ -30,6 +30,17 @@ func TestClosingFromKey(t *testing.T) {
 	}
 }
 
+// discRecorded builds a recorded key the snapshot's closed events list as a
+// close, which no pass rebuilt, as a close, and a rename's as a rename.
+func TestClosingRecorded(t *testing.T) {
+	s := &github.Snapshot{Closings: []github.Closing{{ID: 9005}}, Comments: []github.Comment{{ID: 1001}}}
+	open := func(string, time.Time, int64) (bool, bool) { return true, true }
+	got := discRecorded(s, map[string]int64{"9005": 1001, "9006": 1001}, open, nil)
+	if len(got) != 2 || got[0].Kind != discClose || got[0].Key != "9005" || got[1].Kind != discRename || got[1].Key != "9006" {
+		t.Errorf("discRecorded = %+v; want 9005 a close and 9006 a rename", got)
+	}
+}
+
 // A close is worded by who made it, defused, and one from its record says
 // so; discWhat words a close so either way.
 func TestClosingWhat(t *testing.T) {

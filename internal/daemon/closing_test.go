@@ -413,6 +413,73 @@ func TestClosingLateEvent(t *testing.T) {
 	}
 }
 
+// eve's close, whose event is late, after the owner's reopen, or after a
+// reopen and a close whose events are late too, isn't taken for the newest
+// event before it: it's judged, and reverted, once its event shows.
+func TestClosingLateCloseAfterReopen(t *testing.T) {
+	for name, judged := range map[string]bool{"after a reopen judged": true, "after a late reopen": false} {
+		t.Run(name, func(t *testing.T) {
+			f, o := closingFake(t), digestNotifyOrigin(t)
+			f.CloseBy(1, "owner")
+			d := newDaemon(t, f, o, nil)
+			iterate(t, d)
+			if judged {
+				f.ReopenBy(1, "owner")
+				iterate(t, d)
+				f.LagEvents(5 * time.Second)
+			} else {
+				f.LagEvents(5 * time.Second)
+				f.ReopenBy(1, "owner")
+			}
+			f.CloseBy(1, "eve")
+			writes := len(f.Writes())
+			iterate(t, d)
+			if w := f.Writes()[writes:]; len(w) != 0 {
+				t.Fatalf("writes %+v before the events show; want none", w)
+			}
+			f.Advance(10 * time.Second)
+			iterate(t, d)
+			if is := f.State().Issues[0]; is.Closed {
+				t.Errorf("closed, labels %q, once the events show; want eve's close reverted", is.Labels)
+			}
+		})
+	}
+}
+
+// After a restart, a comment on a judged closed issue reads nothing either.
+func TestClosingRestartThenComment(t *testing.T) {
+	f, o := closingFake(t), digestNotifyOrigin(t)
+	f.CloseBy(1, "owner")
+	iterate(t, newDaemon(t, f, o, nil))
+	d := newDaemon(t, f, o, nil)
+	iterate(t, d)
+	f.AddComment(1, "eve", "why?")
+	reqs := len(f.Requests())
+	iterate(t, d)
+	if r := readsOf(f, reqs, 1); len(r) != 0 {
+		t.Errorf("read closed issue 1 for a comment: %+v", r)
+	}
+}
+
+// A closed issue deleted while its close waits to be judged is forgotten,
+// with no error, and isn't read again.
+func TestClosingGone(t *testing.T) {
+	f, o := closingFake(t), digestNotifyOrigin(t)
+	d := newDaemon(t, f, o, nil)
+	iterate(t, d)
+	f.LagEvents(5 * time.Second)
+	f.CloseBy(1, "owner")
+	iterate(t, d)
+	f.DeleteIssue()
+	f.Advance(10 * time.Second)
+	iterate(t, d)
+	reqs := len(f.Requests())
+	iterate(t, d)
+	if r := readsOf(f, reqs, 1); len(r) != 0 {
+		t.Errorf("read deleted issue 1 again: %+v", r)
+	}
+}
+
 // A reopen whose event GitHub hasn't written yet holds the issue back, with
 // nothing written: the closed stage isn't put back meanwhile.
 func TestClosingLateReopen(t *testing.T) {
@@ -577,6 +644,24 @@ func TestClosingStageSwapped(t *testing.T) {
 	}
 }
 
+// A closed stage whose standing change is the App's removal, which eve put
+// back, explains nothing: the close as not planned gets stage:discarded.
+func TestClosingStageRemovedByTheApp(t *testing.T) {
+	f, o := closingFake(t), digestNotifyOrigin(t)
+	f.CloseBy(1, "owner")
+	d := newDaemon(t, f, o, nil)
+	iterate(t, d)
+	f.ReopenBy(1, "owner")
+	iterate(t, d) // held, and stage:completed removed
+	f.CloseAs(1, "owner", "not_planned")
+	f.RemoveLabel(1, "eve", "stage:held")
+	f.AddLabel(1, "eve", "stage:completed")
+	iterate(t, d)
+	if is := f.State().Issues[0]; !slices.Equal(is.Labels, []string{"stage:discarded"}) {
+		t.Errorf("labels %q; want stage:discarded", is.Labels)
+	}
+}
+
 // eve takes the stage label off and closes the issue between passes: the
 // close is still judged, from the issue this daemon held, and reverted,
 // and the label rules put the label back.
@@ -631,6 +716,116 @@ func TestClosingChildWritesNothingToParent(t *testing.T) {
 	}
 	if child := f.State().Issues[1]; child.Closed {
 		t.Error("the child is closed; want eve's close reverted")
+	}
+}
+
+// A closed event with no state_reason, as from before GitHub had them, is
+// judged by the issue's own, and a close again after an untrusted reopen
+// takes the closed stage's when no close before it has one.
+func TestClosingNoStateReason(t *testing.T) {
+	f, o := closingFake(t), digestNotifyOrigin(t)
+	f.CloseAs(1, "owner", "not_planned")
+	f.ForgetStateReasons(1)
+	d := newDaemon(t, f, o, nil)
+	iterate(t, d)
+	if is := f.State().Issues[0]; !slices.Equal(is.Labels, []string{"stage:discarded"}) {
+		t.Fatalf("labels %q; want stage:discarded, from the issue's state_reason", is.Labels)
+	}
+	f.ReopenBy(1, "eve")
+	iterate(t, d)
+	is, _, err := f.Client(t).Issues.Get(context.Background(), "o", "r", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if is.GetState() != "closed" || is.GetStateReason() != "not_planned" {
+		t.Errorf("%s as %s after eve's reopen; want closed again as not_planned, from stage:discarded", is.GetState(), is.GetStateReason())
+	}
+}
+
+// A close reopened between the poll and the read of the issue to revert it
+// writes nothing, and the next pass forgets it.
+func TestClosingReopenedMeanwhile(t *testing.T) {
+	f, o := closingFake(t), digestNotifyOrigin(t)
+	d := newDaemon(t, f, o, nil)
+	iterate(t, d)
+	f.CloseBy(1, "eve")
+	f.BeforeRequest(func(r githubtest.Request) bool { return r.Method == "GET" && r.Path == "/issues/1" }, func() { f.ReopenBy(1, "owner") })
+	writes := len(f.Writes())
+	iterate(t, d)
+	iterate(t, d)
+	reqs := len(f.Requests())
+	iterate(t, d)
+	if w, r := f.Writes()[writes:], readsOf(f, reqs, 1); len(w) != 0 || len(r) != 0 || f.State().Issues[0].Closed {
+		t.Errorf("writes %+v, then reads %+v; want none, and the issue open", w, r)
+	}
+}
+
+// A write collaborator's close of an issue that isn't in the pipeline, at
+// stage:intake with no transition marker, holds nothing: it's reverted with
+// a comment, as anyone's.
+func TestClosingWriterOutsideThePipeline(t *testing.T) {
+	var event int64
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := newFake(t)
+		f.AddLabel(f.AddIssue("eve", "Issue", "body"), "owner", "stage:intake") // an untrusted author's, so not admitted
+		event = f.CloseBy(1, "mallory")
+		return f
+	}
+	githubtest.Replay(t, setup, closingPass(t, digestNotifyOrigin(t)))
+	f := run(t, setup, closingPass(t, digestNotifyOrigin(t)))
+	is := f.State().Issues[0]
+	if got := closingComments(f, 1, 0); is.Closed || !slices.Equal(is.Labels, []string{"stage:intake"}) || !slices.Equal(got, []string{closingReverted("`mallory`", event)}) {
+		t.Errorf("closed %t, labels %q, comments %q; want the close reverted with a comment, and no hold", is.Closed, is.Labels, got)
+	}
+}
+
+// A closed stage the owner sets by hand on an issue held for its reopen is
+// a disagreement, as on any open issue: the reopen is judged already.
+func TestClosingStageAfterReopenHold(t *testing.T) {
+	f, o := closingJudged("completed", func(f *githubtest.Fake) { f.CloseBy(1, "owner") })(t), digestNotifyOrigin(t)
+	f.ReopenBy(1, "owner")
+	d := newDaemon(t, f, o, nil)
+	iterate(t, d)
+	event := f.AddLabel(1, "owner", "stage:completed")
+	iterate(t, d)
+	is := f.State().Issues[0]
+	want := fmt.Sprintf("The stage labels didn't match this issue's latest transition, to `held`, so I've set them to match. "+
+		"They were: `stage:completed`, `stage:held`. `stage:completed` and `stage:discarded` are only for a closed issue.\n\n"+
+		"<!-- issuedog:error kind=disagreement key=%d -->", event)
+	if got := closingComments(f, 1, 2); !slices.Equal(is.Labels, []string{"stage:held"}) || !slices.Equal(got, []string{want}) {
+		t.Errorf("labels %q, comments\n%q\nwant stage:held and\n%q", is.Labels, got, want)
+	}
+}
+
+// A trusted reopen of an issue whose hold recorded no stage to go back to
+// holds it at clarifying, the one stage /resume could restore.
+func TestClosingTrustedReopenNoAt(t *testing.T) {
+	f, o := newFake(t), digestNotifyOrigin(t)
+	fileAt(f, "held", "do it")
+	f.CloseBy(1, "owner")
+	f.AddLabel(1, app, "stage:completed")
+	f.RemoveLabel(1, app, "stage:held")
+	event := f.ReopenBy(1, "owner")
+	iterate(t, newDaemon(t, f, o, nil))
+	want := fmt.Sprintf("`owner` reopened this issue, so it's on hold, at `clarifying`, where it was before it closed. `/resume` here puts it back there.\n\n"+
+		"<!-- issuedog:transition from=closed to=held at=clarifying reason=owner event=%d -->", event)
+	if got := closingComments(f, 1, 1); !slices.Equal(got, []string{want}) {
+		t.Errorf("comments\n%q\nwant\n%q", got, want)
+	}
+}
+
+// A trusted reopen the table can't move, as of a type the pipeline doesn't
+// know, holds nothing: its type error stands, and the label rules put the
+// closed stage back to the latest marker's.
+func TestClosingTrustedReopenUnknownType(t *testing.T) {
+	f, o := closingJudged("completed", func(f *githubtest.Fake) { f.CloseBy(1, "owner") })(t), digestNotifyOrigin(t)
+	f.SetType(1, "feature")
+	f.ReopenBy(1, "owner")
+	iterate(t, newDaemon(t, f, o, nil))
+	is := f.State().Issues[0]
+	if got := closingComments(f, 1, 1); is.Closed || !slices.Equal(is.Labels, []string{"stage:pr-open"}) || len(got) == 0 ||
+		strings.Contains(strings.Join(got, "\n"), "to=held") {
+		t.Errorf("closed %t, labels %q, comments %q; want no hold, and stage:pr-open back", is.Closed, is.Labels, got)
 	}
 }
 

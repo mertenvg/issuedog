@@ -27,9 +27,10 @@ func (f *Fake) CloseAs(number int, login, reason string) int64 {
 // event that names commit sha, as GitHub writes one when a pull request
 // that says "Closes #N" merges, its merger the actor, or when a commit
 // that says so is pushed. With merged, sha is a merged pull request's, as
-// the commit's pull requests list it (closingPulls); without, it's a
-// commit no pull request has. It returns the event's ID, or 0 if the issue
-// was closed already.
+// the commit's pull requests list it (closingPulls); without, the only
+// pull request that has it is open, unmerged, as when it was pushed to
+// main too. It returns the event's ID, or 0 if the issue was closed
+// already.
 func (f *Fake) CloseByCommit(number int, login, sha string, merged bool) int64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -38,13 +39,18 @@ func (f *Fake) CloseByCommit(number int, login, sha string, merged bool) int64 {
 	if id != 0 {
 		is.labelEvents[len(is.labelEvents)-1].CommitID = &sha
 	}
-	if merged {
-		if f.closingMerged == nil {
-			f.closingMerged = map[string]bool{}
-		}
-		f.closingMerged[sha] = true
+	if f.closingMerged == nil {
+		f.closingMerged = map[string]bool{}
 	}
+	f.closingMerged[sha] = f.closingMerged[sha] || merged
 	return id
+}
+
+// ForgetStateReasons makes issue number's closed events carry no
+// state_reason, as GitHub's from before it had state reasons may not.
+// The issue keeps its own.
+func (f *Fake) ForgetStateReasons(number int) {
+	f.edit(number, func(is *issue) { is.closingReasons = nil })
 }
 
 // ReopenBy reopens an issue as login, and returns the reopened event's ID,
@@ -112,14 +118,18 @@ func (is *issue) closingServe(e *gogithub.Timeline) any {
 }
 
 // closingPulls serves the pull requests of the commit {sha}, as GitHub's
-// list of a commit's pull requests does: one merged pull request for a
-// commit CloseByCommit merged, and none for any other.
+// list of a commit's pull requests does: for a commit CloseByCommit named,
+// one merged pull request, or one open, unmerged, and none for any other.
 func (f *Fake) closingPulls(c *call) (int, any) {
 	sha := c.r.PathValue("sha")
 	prs := []*gogithub.PullRequest{}
-	if f.closingMerged[sha] {
+	merged, ok := f.closingMerged[sha]
+	switch {
+	case merged:
 		prs = append(prs, &gogithub.PullRequest{Number: new(9999), State: new("closed"), MergeCommitSHA: &sha,
 			MergedAt: &gogithub.Timestamp{Time: f.now}})
+	case ok:
+		prs = append(prs, &gogithub.PullRequest{Number: new(9998), State: new("open")})
 	}
 	return http.StatusOK, prs
 }

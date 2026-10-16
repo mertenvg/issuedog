@@ -58,13 +58,30 @@ func TestClosingServed(t *testing.T) {
 	if got := closingServed(t, f, n); !reflect.DeepEqual(got, want) {
 		t.Errorf("closed events %q; want %q", got, want)
 	}
-	for sha, merged := range map[string]bool{"abc": true, "def": false, "ghi": false} {
-		prs, _, err := c.PullRequests.ListPullRequestsWithCommit(ctx, "o", "r", sha, nil)
+	for _, tc := range []struct {
+		sha         string
+		prs         int
+		merged      bool
+		description string
+	}{
+		{"abc", 1, true, "a merged one"},
+		{"def", 1, false, "an open one"},
+		{"ghi", 1, false, "an open one"},
+		{"unknown", 0, false, "none"},
+	} {
+		prs, _, err := c.PullRequests.ListPullRequestsWithCommit(ctx, "o", "r", tc.sha, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := len(prs) == 1 && prs[0].MergedAt != nil && prs[0].GetMergeCommitSHA() == sha; got != merged || !merged && len(prs) != 0 {
-			t.Errorf("pull requests of %s: %+v; want a merged one %v", sha, prs, merged)
+		if len(prs) != tc.prs || tc.prs == 1 && (prs[0].MergedAt != nil) != tc.merged {
+			t.Errorf("pull requests of %s: %+v; want %s", tc.sha, prs, tc.description)
 		}
+		if tc.merged && prs[0].GetMergeCommitSHA() != tc.sha {
+			t.Errorf("pull request of %s merged as %s", tc.sha, prs[0].GetMergeCommitSHA())
+		}
+	}
+	f.ForgetStateReasons(n)
+	if got := closingServed(t, f, n); !reflect.DeepEqual(got, []string{"owner  ", "mallory  abc", "eve  def", "issuedog[bot]  "}) {
+		t.Errorf("closed events %q once their state reasons are forgotten; want none with one", got)
 	}
 }
