@@ -515,18 +515,32 @@ func TestDigestRenderNews(t *testing.T) {
 	}
 }
 
-// Which kinds get the digest's mention, and what each is called.
+// Which kinds get the digest's mention, and what each is called. A hold
+// gets it only with a trigger no App comment mentioned (#192): one with
+// none, as with no triggers at all, gets none.
 func TestDigestRenderKinds(t *testing.T) {
-	for k, want := range map[waitKind]bool{waitError: true, waitApproval: false, waitQuestion: false, waitFlag: false, waitKind(9): true} {
-		if got := digestRenderMentions(k); got != want {
+	for k, want := range map[waitKind]bool{waitError: true, waitHold: false, waitApproval: false, waitQuestion: false, waitFlag: false, waitKind(9): true} {
+		if got := digestRenderMentions(waitItem{Kind: k}); got != want {
 			t.Errorf("digestRenderMentions(%s) = %v, want %v", k, got, want)
 		}
 	}
-	for k, want := range map[waitKind]string{waitError: "State error", waitApproval: "Approval", waitQuestion: "Question round",
+	quiet := waitItem{Issue: 5, Kind: waitHold, Lines: []waitLine{{Hold: &holdItemTrigger{Trigger: discTrigger{Key: "c1"}, Mentioned: true}}}}
+	if digestRenderMentions(quiet) {
+		t.Errorf("a hold whose one trigger was mentioned gets the mention; want none")
+	}
+	loud := quiet
+	loud.Lines = append(slices.Clone(quiet.Lines), waitLine{Hold: &holdItemTrigger{Trigger: discTrigger{Key: "c2"}}})
+	if !digestRenderMentions(loud) {
+		t.Errorf("a hold with a trigger no App comment mentioned gets no mention; want one")
+	}
+	for k, want := range map[waitKind]string{waitError: "State error", waitHold: "Discussion hold", waitApproval: "Approval", waitQuestion: "Question round",
 		waitFlag: "Triage flag", waitKind(9): "Item (kind9)"} {
 		if got := digestRenderKindName(k); got != want {
 			t.Errorf("digestRenderKindName(%d) = %q, want %q", k, got, want)
 		}
+	}
+	if got := waitKind(9).String(); got != "kind9" || waitHold.String() != "hold" {
+		t.Errorf("kind names %q and %q; want kind9 and hold", got, waitHold.String())
 	}
 }
 
