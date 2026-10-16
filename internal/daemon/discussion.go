@@ -31,8 +31,10 @@ import (
 //   - handled once a marker records its key: the hold's transition marker,
 //     keyed event=<key> with reason=discussion, or a notice's marker,
 //     notice key=<key> (discRecords). So a second pass writes nothing, and
-//     no key gets a second notice. A comment trigger on an issue held
-//     already has no record at all (Q2b): it is known by being open.
+//     no key gets a second notice. A recorded trigger is found from its
+//     record from then on (discRecorded), whatever its content shows now.
+//     A comment trigger on an issue held already has no record at all
+//     (Q2b): it is known by being open.
 //
 // An edit or a deletion of the App's own content can hide the markers that
 // set the issue's stage, since markers in such content are never read
@@ -71,6 +73,11 @@ type discTrigger struct {
 	// GitHub names; Title is the title a rename set. Neither is the App's
 	// text, so discWhat escapes them.
 	Of, Title string
+	// FromRecord is set for a trigger built from its record alone
+	// (discRecorded), as the act is no longer in the snapshot as it was
+	// recorded: only Kind, Key, ID and At are known, and By, Of and Title
+	// are "".
+	FromRecord bool
 }
 
 // discWhat says what tr is, for its hold's comment or its notice. The
@@ -78,6 +85,9 @@ type discTrigger struct {
 // defused, the title is defused and its tags escaped (inline), and the
 // caller escapes the whole (github.Escape).
 func discWhat(tr discTrigger) string {
+	if tr.FromRecord {
+		return discWhatRecorded(tr)
+	}
 	by := discLogin(tr.By)
 	switch tr.Kind {
 	case discComment:
@@ -93,6 +103,29 @@ func discWhat(tr discTrigger) string {
 		return fmt.Sprintf("%s deleted a comment by %s", by, discLogin(tr.Of))
 	}
 	return fmt.Sprintf("%s renamed this issue to “%s”", by, inline(tr.Title))
+}
+
+// discWhatRecorded says what tr, a trigger built from its record alone
+// (discRecorded), is, from what its key tells: its kind, its comment or
+// content, and an edit's time. Only an edit's time isn't fixed text, and
+// it's the App's, from the key.
+func discWhatRecorded(tr discTrigger) string {
+	what := "an act on this issue"
+	switch tr.Kind {
+	case discComment:
+		what = fmt.Sprintf("comment %d, which is gone now", tr.ID)
+	case discEdit:
+		of := fmt.Sprintf("comment %d", tr.ID)
+		if tr.ID == state.BodyID {
+			of = "the issue description"
+		}
+		what = fmt.Sprintf("an edit of %s at %s", of, tr.At.UTC().Format(time.RFC3339))
+	case discDeletion:
+		what = "a deletion of a comment"
+	case discRename:
+		what = "a rename of this issue"
+	}
+	return what + ", recorded earlier"
 }
 
 // discLogin is login as code, defused, or words for nobody GitHub names.
@@ -463,11 +496,17 @@ func discOpenAfter(b discBound, records map[string]int64) discOpen {
 //     none of them itself. A snapshot CheckLabels hasn't checked has none.
 //
 // An open act a marker records is one, with no question: it was judged
-// when the marker was written. Of the rest, it asks about each open act
-// only, and only once nothing else rules it out, so an act before the
-// floor, or by a login known to be nobody (discWho.nobody), costs no
-// request. It reads the reactions only of a writer's comment they edited
-// after the floor.
+// when the marker was written. Each such key is a trigger from its record,
+// whatever the snapshot shows now (discRecorded): a later edit, another
+// writer's or a bot's, a deletion, or the editor's loss of access changes
+// the content or the answers the passes above rebuild a trigger from, but
+// not the record. Each pass above still finds a recorded act it sees as it
+// was, with what the snapshot says of it.
+//
+// Of the rest, it asks about each open act only, and only once nothing
+// else rules it out, so an act before the floor, or by a login known to be
+// nobody (discWho.nobody), costs no request. It reads the reactions only
+// of a writer's comment they edited after the floor.
 func (a *Applier) discFind(ctx context.Context, s *github.Snapshot, d Dirt, trust github.Trust) ([]discTrigger, error) {
 	wrap := func(err error) error {
 		return fmt.Errorf("discussion triggers on %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
@@ -498,7 +537,7 @@ func (a *Applier) discFind(ctx context.Context, s *github.Snapshot, d Dirt, trus
 			found = append(found, discTrigger{Kind: discComment, Key: key, By: c.Author.Login, At: c.CreatedAt, ID: c.ID})
 		}
 	}
-	edits, err := a.discEdits(ctx, s, d, who, b, records, open)
+	edits, err := a.discEdits(ctx, s, d, who, b, open)
 	if err != nil {
 		return nil, wrap(err)
 	}
@@ -540,6 +579,7 @@ func (a *Applier) discFind(ctx context.Context, s *github.Snapshot, d Dirt, trus
 			found = append(found, discTrigger{Kind: discRename, Key: key, By: e.By.Login, At: e.At, Title: e.Title})
 		}
 	}
+	found = append(found, discRecorded(s, records, open, found)...)
 	// A key a marker can't hold, as from an event ID GitHub changed the
 	// shape of, could hold nothing, and would fail every pass.
 	found = slices.DeleteFunc(found, func(tr discTrigger) bool {
@@ -555,6 +595,78 @@ func (a *Applier) discFind(ctx context.Context, s *github.Snapshot, d Dirt, trus
 
 // discEditKey is the key of an edit at at of content id.
 func discEditKey(id int64, at time.Time) string { return fmt.Sprintf("e%d-%d", id, at.Unix()) }
+
+// discRecorded returns a trigger for each key records holds that open says
+// is open, that found, the triggers rebuilt from the snapshot, lacks
+// (discFind), in key order. Each is built from its record and its
+// key alone (discFromKey), with no question and no read: it was judged
+// when its marker was written, and what the snapshot shows now can't undo
+// that. So a recorded edit counts after a later edit of the same content,
+// by its writer, another writer or a bot, after the content is deleted,
+// and after its editor loses access; a recorded comment after it's
+// deleted; and a recorded deletion or rename when the snapshot no longer
+// lists it, as one CheckLabels hasn't checked has no renames.
+//
+// For T4 (#188): two notices can now be open on the same content at once,
+// as when a writer edits a comment, gets its notice, and edits it again:
+// each edit is a trigger of its own, keyed by its time, with a notice of
+// its own, and only the newest is the content as it is now. Each is
+// resolved by its own notice's 👍, or by /resume on the issue.
+func discRecorded(s *github.Snapshot, records map[string]int64, open discOpen, found []discTrigger) []discTrigger {
+	have := map[string]bool{}
+	for _, tr := range found {
+		have[tr.Key] = true
+	}
+	when := map[int64]time.Time{state.BodyID: s.CreatedAt} // when each comment was posted, the body as the issue
+	for _, c := range s.Comments {
+		when[c.ID] = c.CreatedAt
+	}
+	var more []discTrigger
+	for _, key := range slices.Sorted(maps.Keys(records)) {
+		// Each key here is recorded, so open judges it by its record alone.
+		if o, _ := open(key, time.Time{}, 0); have[key] || !o {
+			continue
+		}
+		more = append(more, discFromKey(key, when[records[key]]))
+	}
+	return more
+}
+
+// discFromKey is the trigger keyed key, as its key tells it, recorded at
+// recordedAt (discRecorded): its kind by its shape (#87's assumption 3),
+// with c<comment id> a comment, e<id>-<edit time> an edit, its content and
+// time in it, d<event node id> a deletion, and a timeline event ID a
+// rename. An edit of either kind is a discEdit, as the key doesn't say
+// whose content it changed, and nothing that acts on a recorded trigger
+// needs to know. Any other kind is at recordedAt, as is a key of a shape
+// none of these has, which is still a trigger, failing closed: a marker
+// the App wrote recorded it.
+//
+// T6 (#190): a close is keyed by its timeline event ID too, so a recorded
+// one is a rename here until T6 tells them apart.
+func discFromKey(key string, recordedAt time.Time) discTrigger {
+	tr := discTrigger{Key: key, At: recordedAt, FromRecord: true}
+	switch {
+	case strings.HasPrefix(key, "c"):
+		if id, err := strconv.ParseInt(key[1:], 10, 64); err == nil {
+			tr.Kind, tr.ID = discComment, id
+		}
+	case strings.HasPrefix(key, "e"):
+		id, at, _ := strings.Cut(key[1:], "-") // with no "-", at is "", which doesn't parse
+		i, err := strconv.ParseInt(id, 10, 64)
+		t, terr := strconv.ParseInt(at, 10, 64)
+		if err == nil && terr == nil {
+			tr.Kind, tr.ID, tr.At = discEdit, i, time.Unix(t, 0).UTC()
+		}
+	case strings.HasPrefix(key, "d") && len(key) > 1:
+		tr.Kind = discDeletion
+	default:
+		if _, err := strconv.ParseInt(key, 10, 64); err == nil {
+			tr.Kind = discRename
+		}
+	}
+	return tr
+}
 
 // discEdits returns the edit triggers among s's dirty content, d: content
 // someone made dirty (Dirty), who is a write collaborator who isn't
@@ -573,34 +685,24 @@ func discEditKey(id int64, at time.Time) string { return fmt.Sprintf("e%d-%d", i
 // 99 newest, is skipped, logged: it was handled, or nothing can key it.
 //
 // Nothing is read or asked for content last edited before the floor b, as
-// the snapshot dates its last edit, since an edit of it is older still,
-// unless a marker records an edit of it from b on (records), as the hold
-// discRestore writes for an edit from before its own first marker; nor for
-// content an editor known to be nobody made dirty (discWho.nobody). An
-// edit a marker records is one, with no question; of the others, only the
-// open ones' editors are asked about.
-func (a *Applier) discEdits(ctx context.Context, s *github.Snapshot, d Dirt, who discWho, b discBound, records map[string]int64,
-	open discOpen) ([]discTrigger, error) {
+// the snapshot dates its last edit, since an edit of it is older still;
+// nor for content an editor known to be nobody made dirty (discWho.nobody).
+// An edit a marker records is one, with no question, and with no read
+// either: where this doesn't find it, discRecorded does, as when the
+// content changed since, or the edit is from before b, as one the hold
+// discRestore writes can be, from before that hold's own marker. Of the
+// others, only the open ones' editors are asked about.
+func (a *Applier) discEdits(ctx context.Context, s *github.Snapshot, d Dirt, who discWho, b discBound, open discOpen) ([]discTrigger, error) {
 	type cand struct {
 		c  content
 		by github.Author
-	}
-	recordedFrom := map[int64]bool{} // content with an edit a marker records from b on
-	for key, r := range records {
-		var id, at int64
-		if _, err := fmt.Sscanf(key, "e%d-%d", &id, &at); err == nil && r >= b.ID {
-			recordedFrom[id] = true
-		}
 	}
 	var found []discTrigger
 	var need []cand
 	for _, c := range contents(s) {
 		login, dirty := d[c.id]
 		by := github.Author{Login: login}
-		// Content a marker records an edit of is read whoever made it
-		// dirty: that edit is a trigger with no question, even once its
-		// editor has no access.
-		if !dirty || !recordedFrom[c.id] && (c.edit.At.Before(b.At) || who.nobody(by)) {
+		if !dirty || c.edit.At.Before(b.At) || who.nobody(by) {
 			continue
 		}
 		need = append(need, cand{c, by})
