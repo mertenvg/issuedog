@@ -48,10 +48,12 @@ func issueTypeRevertLeft(e *issueTypeRevertEvent) string {
 // issueTypeRevertCheck judges the issue type's history l, oldest first, as
 // settle judges a pipeline label's. It returns the ID of the newest
 // issue-type event that stands (standing), or 0, and, if the newest event
-// doesn't stand and left another type than the one that stands, the revert
-// to make. The type that stands is the one the newest standing event left,
-// or with none, the App's last word, or else no type. reverted holds the
-// revert keys posted already. It writes nothing.
+// left another type than the one that stands, the revert to make. The type
+// that stands is the one the newest standing event left, or no type if
+// none stands. Unlike settle, it needs no fallback to the App's last word:
+// with none standing, each of the App's events is a restore (standing), so
+// of the type before it, and so all of them restore no type. reverted
+// holds the revert keys posted already. It writes nothing.
 func (r *labelRules) issueTypeRevertCheck(ctx context.Context, l *labelState, reverted map[string]bool) (int64, *IssueTypeRevert, error) {
 	if len(l.events) == 0 {
 		return 0, nil, nil
@@ -61,24 +63,13 @@ func (r *labelRules) issueTypeRevertCheck(ctx context.Context, l *labelState, re
 		return 0, nil, fmt.Errorf("check the issue type: %w", err)
 	}
 	var id int64
-	want := -1 // the index of the event whose type stands, or -1 for none
-	if acc != nil {
-		id, want = acc.GetID(), slices.Index(l.ats, accAt)
-	} else {
-		// Only reverts and untrusted changes: the App's last word stands.
-		for i := len(l.events) - 1; i >= 0; i-- {
-			if r.isApp(l.events[i]) {
-				want = i
-				break
-			}
-		}
-	}
 	to := ""
-	if want >= 0 {
-		to = l.types[want]
+	if acc != nil {
+		id, to = acc.GetID(), l.types[slices.Index(l.ats, accAt)]
 	}
+	// The newest event stands, or left the type that stands already.
 	last := len(l.events) - 1
-	if want == last || strings.EqualFold(to, l.types[last]) {
+	if strings.EqualFold(to, l.types[last]) {
 		return id, nil, nil
 	}
 	latest := l.events[last]

@@ -46,6 +46,8 @@ func TestCheckLabelsIssueTypeRevert(t *testing.T) {
 			typed(2, "mallory", "issue_type_changed", "Epic"), revert(3, 2), typed(4, appBot, "issue_type_changed", "Task")}, 1, nil},
 		"untrusted back to the type that stands": {[]ev{typed(1, "owner", "issue_type_added", "Task"),
 			typed(2, "mallory", "issue_type_changed", "Epic"), typed(3, "mallory", "issue_type_changed", "Task")}, 1, nil},
+		"the App's revert in another case still restores": {[]ev{typed(1, "owner", "issue_type_added", "Task"),
+			typed(2, "mallory", "issue_type_changed", "Epic"), revert(3, 2), typed(4, appBot, "issue_type_changed", "task")}, 1, nil},
 		"a name matches ignoring case": {[]ev{typed(1, "owner", "issue_type_added", "Task"),
 			typed(2, "mallory", "issue_type_changed", "task")}, 1, nil},
 		// Task, then Epic, Bug, Epic and Task by mallory, each reverted
@@ -53,7 +55,7 @@ func TestCheckLabelsIssueTypeRevert(t *testing.T) {
 		"a reverted flip, flipped again": {[]ev{typed(1, "owner", "issue_type_added", "Task"),
 			typed(2, "mallory", "issue_type_changed", "Epic"), revert(3, 2), typed(4, appBot, "issue_type_changed", "Task"),
 			typed(5, "mallory", "issue_type_changed", "Bug")}, 1, &IssueTypeRevert{Key: 5, By: "mallory", From: "Bug", To: "Task"}},
-		"the App's own change with none standing stands as its last word": {[]ev{typed(1, appBot, "issue_type_added", "Task"),
+		"the App's own change stands": {[]ev{typed(1, appBot, "issue_type_added", "Task"),
 			typed(2, "mallory", "issue_type_changed", "Bug")}, 1, &IssueTypeRevert{Key: 2, By: "mallory", From: "Bug", To: "Task"}},
 		"an untrusted change after the App's revert with none standing": {[]ev{typed(1, "mallory", "issue_type_added", "Bug"),
 			revert(2, 1), typed(3, appBot, "issue_type_removed", "Bug"), typed(4, "mallory", "issue_type_added", "Epic")}, 0,
