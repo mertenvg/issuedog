@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // issueTypeRevertServer serves timeline as issue 7's, answers the writes
@@ -190,6 +191,35 @@ func TestCheckLabelsIssueTypeRevert(t *testing.T) {
 				t.Errorf("held %q; want held %t", found.Held, tt.held)
 			}
 		})
+	}
+}
+
+// Unexplained keeps when an issue's type was first found unexplained, per
+// type and count of events, and ForgetIssue forgets it with the issue's
+// labels.
+func TestIssueTypeRevertFirst(t *testing.T) {
+	var u Unexplained
+	t0 := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	key := unexplainedKey("o", "r", 7)
+	for _, tc := range []struct {
+		typ    string
+		events int
+		now    time.Time
+		want   time.Time
+	}{
+		{"epic", 1, t0, t0},
+		{"epic", 1, t0.Add(time.Second), t0},
+		{"bug", 1, t0.Add(2 * time.Second), t0.Add(2 * time.Second)},
+		{"bug", 2, t0.Add(3 * time.Second), t0.Add(3 * time.Second)},
+		{"bug", 2, t0.Add(4 * time.Second), t0.Add(3 * time.Second)},
+	} {
+		if got := u.issueTypeRevertFirst(key, tc.typ, tc.events, tc.now); !got.Equal(tc.want) {
+			t.Errorf("%s with %d events at %v: first %v; want %v", tc.typ, tc.events, tc.now, got, tc.want)
+		}
+	}
+	u.ForgetIssue("o", "r", 7)
+	if got := u.issueTypeRevertFirst(key, "bug", 2, t0.Add(5*time.Second)); !got.Equal(t0.Add(5 * time.Second)) {
+		t.Errorf("after ForgetIssue, first %v; want now", got)
 	}
 }
 

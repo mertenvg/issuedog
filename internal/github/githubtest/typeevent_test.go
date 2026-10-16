@@ -100,6 +100,107 @@ func TestSetTypeByRevertLate(t *testing.T) {
 	}
 }
 
+// issueTypeRevertChecker is CheckLabels on issue n of f, guarding the issue
+// type typ, with seen's memory. It fails t on an error.
+func issueTypeRevertChecker(t *testing.T, f *Fake, n int, seen *github.Unexplained) func(typ string) github.LabelCheck {
+	c := f.Client(t)
+	return func(typ string) github.LabelCheck {
+		t.Helper()
+		found, err := c.CheckLabels(context.Background(), "o", "r", n, nil, "app", typeByTrust{}, func(int64) bool { return false }, seen,
+			&github.IssueTypeGuard{Type: typ})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return found
+	}
+}
+
+// The hold starts again when the unexplained type changes, or a late event
+// lands while the type is still unexplained: GitHub is catching up.
+func TestSetTypeByRevertHoldRestarts(t *testing.T) {
+	t.Run("another type", func(t *testing.T) {
+		f := New(t, "o/r", "app")
+		n := f.AddIssue("owner", "Issue", "")
+		f.SetTypeBy(n, "owner", "Task")
+		f.LagEvents(time.Hour)
+		f.SetTypeBy(n, "mallory", "Epic")
+		check := issueTypeRevertChecker(t, f, n, &github.Unexplained{})
+		if found := check("epic"); len(found.Held) != 1 {
+			t.Fatalf("held %q; want epic held back", found.Held)
+		}
+		f.Advance(github.HoldBound - 5*time.Second)
+		f.SetTypeBy(n, "mallory", "Bug")
+		if found := check("bug"); len(found.Held) != 1 {
+			t.Fatalf("held %q; want bug held back", found.Held)
+		}
+		f.Advance(10 * time.Second)
+		if found := check("bug"); len(found.Held) != 1 || len(f.Writes()) != 0 {
+			t.Errorf("past epic's bound: held %q, writes %+v; want bug still held back, from when it was first found", found.Held, f.Writes())
+		}
+	})
+	t.Run("a late event lands", func(t *testing.T) {
+		f := New(t, "o/r", "app")
+		n := f.AddIssue("owner", "Issue", "")
+		f.SetTypeBy(n, "owner", "Task")
+		f.LagEvents(20 * time.Second)
+		f.SetTypeBy(n, "mallory", "Bug")
+		f.LagEvents(time.Hour)
+		f.SetTypeBy(n, "mallory", "Epic")
+		check := issueTypeRevertChecker(t, f, n, &github.Unexplained{})
+		if found := check("epic"); len(found.Held) != 1 {
+			t.Fatalf("held %q; want epic held back", found.Held)
+		}
+		f.Advance(25 * time.Second) // bug's event lands
+		if found := check("epic"); len(found.Held) != 1 {
+			t.Fatalf("held %q; want epic held back", found.Held)
+		}
+		f.Advance(10 * time.Second)
+		if found := check("epic"); len(found.Held) != 1 || len(f.Writes()) != 0 {
+			t.Errorf("past the first bound: held %q, writes %+v; want epic still held back, from when bug's event landed", found.Held, f.Writes())
+		}
+	})
+}
+
+// Once the type is explained, or reverted, the memory of it is forgotten,
+// so the same unexplained type later is held back afresh, not reverted at
+// once by the old time.
+func TestSetTypeByRevertHoldForgets(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		clear func(t *testing.T, f *Fake, n int, check func(string) github.LabelCheck)
+	}{
+		{"explained", func(t *testing.T, f *Fake, n int, check func(string) github.LabelCheck) {
+			f.SetType(n, "Task")
+			if found := check("task"); len(found.Held) != 0 {
+				t.Fatalf("held %q; want nothing", found.Held)
+			}
+		}},
+		{"reverted", func(t *testing.T, f *Fake, n int, check func(string) github.LabelCheck) {
+			if found := check("epic"); found.IssueTypeRevert == nil {
+				t.Fatalf("revert %+v; want epic reverted at the bound", found.IssueTypeRevert)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := New(t, "o/r", "app")
+			n := f.AddIssue("owner", "Issue", "")
+			f.SetTypeBy(n, "owner", "Task")
+			f.LagEvents(time.Hour)
+			f.SetTypeBy(n, "mallory", "Epic")
+			check := issueTypeRevertChecker(t, f, n, &github.Unexplained{})
+			if found := check("epic"); len(found.Held) != 1 {
+				t.Fatalf("held %q; want epic held back", found.Held)
+			}
+			f.Advance(github.HoldBound + time.Second)
+			tc.clear(t, f, n, check)
+			f.SetType(n, "Epic") // no event
+			if found := check("epic"); len(found.Held) != 1 || found.IssueTypeRevert != nil {
+				t.Errorf("the same type again: held %q, revert %+v; want it held back afresh", found.Held, found.IssueTypeRevert)
+			}
+		})
+	}
+}
+
 // A late event that lands within HoldBound explains the type, so an
 // untrusted change is reverted keyed by its event, and a trusted one stands,
 // with no revert.

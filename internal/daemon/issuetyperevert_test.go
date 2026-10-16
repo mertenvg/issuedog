@@ -172,6 +172,17 @@ func TestIssueTypeRevertLabelsRepo(t *testing.T) {
 	}
 }
 
+// On a repo that uses issue types, an issue with a type:* label and no
+// issue type has no issue type to guard: its label's type isn't taken for
+// an unexplained issue type, so nothing is held back or written.
+func TestIssueTypeRevertLabelTypeOnly(t *testing.T) {
+	f := newFake(t)
+	f.AddIssue("owner", "Sync", "Fix the sync.", "type:task")
+	f.AddLabel(1, app, "stage:ready")
+	f.AddComment(1, app, "<!-- issuedog:transition from=intake to=ready run=rready -->")
+	typeErrQuiet(t, f, typeErrPass(t, true))
+}
+
 // issueTypeRevertDaemon is a daemon of the whole loop, the digest
 // included, on a repo that uses issue types, with owner as notify, after
 // its first pass, which creates the digest as issue 2.
