@@ -689,6 +689,31 @@ func TestDiscResumeOnParent(t *testing.T) {
 	}
 }
 
+// A /resume on the parent whose own discussion keeps it held is rejected,
+// and the rejection names, beside the parent, the child whose /hold it
+// would end but which stays held for discussion too.
+func TestDiscResumeRejectionNamesHeldChild(t *testing.T) {
+	f := githubtest.New(t, "o/r", slug)
+	f.SetPermission("mallory", "write")
+	file(f, 0, above("ready")) // #1, held by its /hold in comment 1001
+	file(f, 1, above("ready")) // #2, held by the same /hold
+	f.AddComment(1, "mallory", "Wait.")
+	f.AddComment(2, "mallory", "Wait too.")
+	resume := f.AddComment(1, "owner", "/resume")
+	if err := discPass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	st := f.State()
+	if !slices.Equal(st.Issues[0].Labels, []string{"stage:held"}) || !slices.Equal(st.Issues[1].Labels, []string{"stage:held"}) {
+		t.Fatalf("labels %q and %q; want both still held for discussion", st.Issues[0].Labels, st.Issues[1].Labels)
+	}
+	cs := st.Issues[0].Comments
+	last := cs[len(cs)-1].Body
+	if !strings.Contains(last, "#2, #1 also on hold for discussion, which this `/resume` doesn't end") || !strings.Contains(last, fmt.Sprintf("cmd=%d", resume)) {
+		t.Errorf("newest comment on #1 %q; want the /resume rejected, naming #2 and #1", last)
+	}
+}
+
 // With no notify users, the hold has no cc line.
 func TestDiscNoNotify(t *testing.T) {
 	f := discWith(func(_ testing.TB, f *githubtest.Fake) { f.AddComment(1, "mallory", "Wait.") })(t)
