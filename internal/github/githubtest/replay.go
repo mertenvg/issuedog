@@ -24,6 +24,9 @@ type IssueState struct {
 	Labels       []string // sorted
 	Parent       int
 	Comments     []CommentState // oldest first
+	// Assignees are the logins assigned, sorted, since GitHub treats them
+	// as a set (assign.go).
+	Assignees []string
 
 	// Closed and Pinned are whether the issue is closed, and pinned to the
 	// repo's issue list.
@@ -52,6 +55,10 @@ func (f *Fake) State() State {
 		for _, l := range is.Labels {
 			st.Labels = append(st.Labels, l.GetName())
 		}
+		for _, u := range is.Assignees {
+			st.Assignees = append(st.Assignees, u.GetLogin())
+		}
+		slices.Sort(st.Assignees)
 		for _, c := range f.comments {
 			if c.issue != is.GetNumber() {
 				continue
@@ -86,8 +93,9 @@ func (f *Fake) State() State {
 //     clean result, a crash after the last write.
 //  4. Each run's final State must equal the clean run's. State leaves out IDs
 //     and times. Labels and reactions are sets, so those may be redone in
-//     another order; comments are compared in order, with their bodies. A
-//     run may not leave an extra comment, reaction or label, or miss one.
+//     another order, and so are assignees; comments are compared in
+//     order, with their bodies. A run may not leave an extra comment,
+//     reaction, label or assignee, or miss one.
 //
 // pass must build its own client and in-memory state from the fake it gets,
 // as the daemon does on restart, and must decide its writes only from what

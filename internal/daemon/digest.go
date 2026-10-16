@@ -638,9 +638,10 @@ func digestSameBody(a, b string) bool {
 
 // digestCacheSet caches what waits on the owner on s (waitFind), which
 // step 1 just succeeded on and returned inputs for, as step 1 left it,
-// with its dirty content dirt. An issue with nothing waiting has no
-// entry. If waitFind fails, that's logged, and the issue keeps the items
-// it had, as one whose step 1 failed does.
+// with its dirty content dirt. Iterate calls it whether or not the digest
+// is on, since assignment takes the same items (assign.go). An issue with
+// nothing waiting has no entry. If waitFind fails, that's logged, and the
+// issue keeps the items it had, as one whose step 1 failed does.
 func (d *Daemon) digestCacheSet(s *github.Snapshot, inputs []github.Comment, dirt Dirt) {
 	st := d.Step
 	items, err := waitFind(waitInput{Owner: st.Owner, Repo: st.Repo, AppSlug: st.AppSlug, S: s, Dirt: dirt, Inputs: inputs})

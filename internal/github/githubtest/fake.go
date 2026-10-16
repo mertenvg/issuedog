@@ -62,6 +62,8 @@ type Fake struct {
 	linked      map[int][]linked // see LinkSubIssue
 	dropTypes   bool             // see DropTypeChanges
 
+	unassignable map[string]bool // logins in lower case, see Unassignable (assign.go)
+
 	// The App, permission and repo label endpoints, and the request log (app.go).
 	perms      map[string]string
 	labels     []*gogithub.Label
@@ -155,6 +157,7 @@ func New(t testing.TB, repo, slug string) *Fake {
 	f.handle("GET /issues/{n}/timeline", f.timeline)
 	f.mux.HandleFunc("POST /graphql", f.serveGraphQL)
 	f.handleApp()
+	f.handleAssign()
 	f.srv = httptest.NewServer(f.logged(f.mux))
 	t.Cleanup(f.srv.Close)
 	return f

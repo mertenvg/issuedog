@@ -16,15 +16,16 @@ import (
 // What waits on the owner (SPEC §9.4, §9.6; plan #7, assumptions 5, 6 and
 // 12, and Q3a). It's two pure functions, which read only what they're
 // given and do no I/O:
-//   - waitFind lists one issue's items. The digest (T8, #160) calls it on
-//     each issue right after step 1 succeeds on it, with the snapshot as
-//     step 1 left it, the Inputs it returned and the issue's Dirt, and
-//     caches the items by issue. An issue whose step 1 fails keeps the
-//     items it had.
+//   - waitFind lists one issue's items. Iterate calls it on each issue
+//     right after step 1 succeeds on it (digestCacheSet, T8 #160), with
+//     the snapshot as step 1 left it, the Inputs it returned and the
+//     issue's Dirt, and caches the items by issue, whether or not the
+//     digest is on. An issue whose step 1 fails keeps the items it had.
 //   - waitRank orders every issue's items, once per pass: it counts each
 //     item's open descendants from the parents in all the snapshots held.
 //
-// Assignment (§9.6, #87) can take the same items.
+// Assignment (§9.6, #191) takes the same items, from the same cache, and
+// assigns for any kind (assign.go).
 //
 // Which text is whose (assumption 12): an item's Title is raw, and T6
 // escapes it. No line is raw: each is the App's, either this file's own
