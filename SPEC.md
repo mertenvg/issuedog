@@ -383,7 +383,7 @@ Comments from people without write access hold nothing. They reach agents only a
 - Before applying any run result, the daemon checks the issue for triggers since the last poll before the run was picked up. If it finds one, it holds the issue and drops the result.
 - Comments and pushes made while the issue is held are handled once it leaves `held`, in the stage it lands in. A PR review made while held is handled when the task next reaches `pr-open`, through the usual `pr-open` rows (7.2).
 - Any run for the issue is stopped and its result dropped. Nothing is pushed, no PR is opened or updated, and the issue makes no other transition until the hold ends. Other issues, including its parent and children, carry on.
-- The digest lists the issue (9.4). Not built yet (#87).
+- The digest lists the issue while a discussion trigger on it is open, with each open trigger, a link to it and how to resolve it, and assignment (9.6) assigns `notify` to it for as long (9.4, #192). A hold that only owner holds make is the owner's own, so it gives no item.
 
 **Resolving.** Every trigger needs a trusted user's response:
 - A 👍 on an untrusted comment approves it. From then on it counts as that user's input (6.2).
@@ -728,18 +728,24 @@ One pinned issue per repo, `issuedog digest`. It uses one of the repo's three pi
 **Items in phase 1, and their keys.** Each item has a key that names it across passes and restarts. `<n>` is the issue number.
 
 - **State error.** Each open error (5.3). Key: `err-<n>-<kind>-<key>`. The item gives the kind and key, copies the lines of the error comment, and says to 👍 it. An error whose only copy is in the issue body says it ends when its cause is gone.
+- **Discussion hold.** The issue is held, and a discussion trigger on it is open (6.4). Key: `hold-<n>-<event>`, where `<event>` is the trigger key that the hold's transition marker carries as `event=`: the marker that moved the issue into `held`, if that was a discussion hold. On an issue another hold held first, a discussion hold writes no marker, so `<event>` is the oldest open trigger's key. The key stays the same while the hold stands, however triggers come and go. The item lists each open trigger, oldest first, with who did what, a link and how a code owner resolves it:
+  - a comment: a 👍 on it approves it, and a later comment of theirs counters it. A comment known from its record alone is gone, so it says so and links the App comment that recorded it;
+  - any other trigger: a 👍 on its notice, which it links;
+  - one with no clean notice, deleted, edited or never posted because an App comment was deleted or edited after the trigger: only `/resume`.
+
+  It names an owner hold on the issue too, and ends with `/resume`, which accepts every trigger. Logins are code and defused, and a rename's title is escaped as a heading's title is (below). A trigger known from its record alone says it was "recorded earlier".
 - **Pending approval.** The issue is at `spec-review`. Key: `rev-<n>-<rev>`, the latest revision, or `rev-<n>-0` with none yet. If the revision can't be approved yet, the item says why: a dirty body, a dirty App comment after the revision that may hide a newer one, a body that no longer matches its hash, a type error that holds the approval back (5.3), a type that doesn't say what kind of issue it is, or a type that doesn't go on to `planning`. Nothing approves a plan yet, so `plan-review` gives no item, although 9.6 assigns it.
 - **Open question.** The issue is at `clarifying`, its latest transition is an interviewer round with `round` and `questions` of 1 or more (9.1), and no trusted answer has come since. Key: `q-<n>-<round>`. A typed bug or task's move carries neither field, so it gives no item while it waits for phase 3.
 - **Triage flag.** The issue is at intake with no stage label, and its latest triage marker that counts is a flag, `verdict=ask` (6.2). Key: `flag-<n>-<comment id>`.
 - A round's or a flag's questions and options are copied from the App's own clean comment, whose `**N. …** Blocks:` and `a. … (recommended):` lines have a fixed format. If they can't be read back, the item says to see the comment.
 - Each item links to where to answer: `https://github.com/<owner>/<repo>/issues/<n>#issuecomment-<id>`, or the issue itself for an error in the body.
-- Not built yet: hand-offs and human tasks (9.3, phases 2 and 3), PRs (phase 3), and discussion holds and dropped children (#87). Each adds its own kind to the same list.
+- Not built yet: hand-offs and human tasks (9.3, phases 2 and 3), PRs (phase 3), and dropped children (6.4, phase 2). Each adds its own kind to the same list.
 - **Keeping the list.** The items are cached per issue, and updated each time step 1 succeeds on it (8.1). An issue whose read or step 1 fails keeps its last items. One that closes or is dropped loses them.
 
 **The order.**
 
 - Each item scores 1 plus the open issues below its issue, counted from the parents in the daemon's snapshots. Those hold only open issues, so an open issue below a closed one doesn't count toward the closed one's ancestors. Phase 2 adds the issues it blocks once dependencies exist.
-- The highest score comes first. Ties go by kind: state errors, then approvals, then questions, then flags. Then by priority, p0 first (default p2), then the oldest issue, then by issue number, comment and key, so the same items always come out in the same order.
+- The highest score comes first. Ties go by kind: state errors, then discussion holds, then approvals, then questions, then flags. Then by priority, p0 first (default p2), then the oldest issue, then by issue number, comment and key, so the same items always come out in the same order.
 
 **The body.**
 
@@ -753,7 +759,9 @@ One pinned issue per repo, `issuedog digest`. It uses one of the repo's three pi
 **Announcing new items.**
 
 - An item is new when its key isn't in any `digest-new` comment of the App's on the digest that was never edited. An item that goes away and comes back with the same key isn't new.
-- A new item gets the digest's mention only if its own comment doesn't mention `notify` already. Question rounds, specs and flags end in a `cc` line, so in phase 1 only state errors get it. A new item with no mention is listed in the body only, and its key is never written into a `digest-new` comment.
+- A new item gets the digest's mention only if its own comment doesn't mention `notify` already. Question rounds, specs and flags end in a `cc` line, so in phase 1 only state errors get it, and discussion holds that no App comment mentioned.
+- A discussion hold is announced by its triggers, not by its own key. A trigger is mentioned already when a clean App comment with a `cc` line records its key: the hold's own transition marker, or a notice (6.4). A comment trigger on an issue that was already held has neither, and nor has a trigger whose notice wasn't posted, or whose record was edited or deleted since. Each trigger that isn't mentioned has the key `hold-<n>-<trigger key>`, and the hold is new while one of those keys isn't in a `digest-new` comment. Its announcement writes them all into the marker. So each such trigger is announced once, whatever order they're found in, and resolving one doesn't make the hold new again. A hold whose triggers are all mentioned is never new.
+- A new item with no mention is listed in the body only, and its key is never written into a `digest-new` comment.
 - Each pass with new items to mention posts one comment. It lists them in rank order, each with its issue, title, kind and link, then the `cc` line (section 9), then `<!-- issuedog:digest-new items=<key>,<key> -->`.
 - In the marker, a key's spaces, control and non-ASCII bytes, `%`, `,`, `<` and `>` are percent-encoded as `%XX`. That changes no key phase 1 makes.
 - Over the size limit, the lowest-ranked items are left out of the list and the marker, and a line says "…and N more, which I'll announce in the next comment." They're new on the next pass.
@@ -786,7 +794,7 @@ The owner finds everything waiting on them in GitHub's own "assigned to me" view
 | Dropped with an open PR | The issue is held with `reason=dropped` (6.4), until its PR merges or closes |
 | Triage flag | The issue's latest triage marker is a flag (6.2), until a code owner answers it |
 
-- These are the same items the digest lists (9.4). Assignment is built for the items that list has today, on issues (#191): a question round, a spec at `spec-review`, a state error and a triage flag. It takes its items from the same list the digest builds, so the two never disagree, and each story that adds a kind of item adds it to that list. Phase 1's list has no item at `plan-review` yet, since nothing approves a plan (9.4).
+- These are the same items the digest lists (9.4). Assignment is built for the items that list has today, on issues (#191, #192): a question round, a spec at `spec-review`, a state error, a triage flag and a discussion hold. It takes its items from the same list the digest builds, so the two never disagree, and each story that adds a kind of item adds it to that list. Phase 1's list has no item at `plan-review` yet, since nothing approves a plan (9.4).
 - Each PR carries the `priority:*` label of the task it closes. The task's label is the priority: the daemon copies it to the PR and reverts any other change to the PR's label.
 - The owner sees what's waiting with `is:open assignee:@me sort:created-asc`, and the most urgent items by adding `label:priority:p0` or `label:priority:p1`. The digest orders the same items by how much each one unblocks (9.4).
 - Only the App changes assignees on pipeline issues and PRs. Assignees are never read as state (section 5): a manual change is reverted on the next poll and changes nothing else.
