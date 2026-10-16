@@ -184,7 +184,7 @@ func (t *Triage) Context(ctx context.Context, in Input) (map[string][]byte, erro
 		untrusted = append(untrusted, triageFenced(fmt.Sprintf("The issue's title and body, by %s, who isn't trusted", login(s.Author)),
 			"Title: "+s.Title+"\n\n"+s.Body))
 	case in.Dirt.Has(state.BodyID):
-		issue = append(issue, "- Title: "+s.Title, "", "The body was edited by someone other than its author, so it's in untrusted.md.")
+		issue = append(issue, "- Title: "+s.Title, "", "The body was edited by someone who isn't trusted, so it's in untrusted.md.")
 		untrusted = append(untrusted, triageFenced("The issue's body, edited by "+in.Dirt[state.BodyID]+", so untrusted", s.Body))
 	default:
 		issue = append(issue, "- Title: "+s.Title, "", "## Body", "", s.Body)
