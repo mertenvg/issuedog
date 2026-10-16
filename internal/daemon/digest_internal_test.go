@@ -431,12 +431,29 @@ func TestLateReopenSeenPerDigest(t *testing.T) {
 	now := d.Step.Client.Now()
 	long := lateReopenSeen{number: 1, since: now.Add(-time.Hour)}
 	d.digest.late = long
-	if !d.lateReopen(digestSeen{number: 2, open: true, reason: "reopened", updated: now}, 0) {
+	if !d.lateReopen(digestSeen{number: 2, open: true, reason: "reopened", updated: now}, 0, now) {
 		t.Errorf("digest 2 doesn't wait, with digest 1's wait from an hour ago kept; want its own wait")
 	}
 	d.digest.late = long
 	d.digestDrop(1, errors.New("404"))
-	if !d.lateReopen(digestSeen{number: 1, open: true, reason: "reopened", updated: now}, 0) {
+	if !d.lateReopen(digestSeen{number: 1, open: true, reason: "reopened", updated: now}, 0, now) {
 		t.Errorf("digest 1, found again after a drop, doesn't wait; want a new wait")
+	}
+}
+
+// The wait ends at lateReopenWait exactly, by the clock given: a
+// nanosecond before, the digest still waits.
+func TestLateReopenLastInstant(t *testing.T) {
+	d := &Daemon{}
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	s := digestSeen{number: 1, open: true, reason: "reopened", updated: start}
+	if !d.lateReopen(s, 7, start) {
+		t.Fatalf("no wait at its start; want one")
+	}
+	if !d.lateReopen(s, 7, start.Add(lateReopenWait-time.Nanosecond)) {
+		t.Errorf("no wait a nanosecond before lateReopenWait; want the wait still on")
+	}
+	if d.lateReopen(s, 7, start.Add(lateReopenWait)) {
+		t.Errorf("still waiting at lateReopenWait exactly; want the wait over")
 	}
 }

@@ -433,10 +433,15 @@ func (d *Daemon) digestOpen(ctx context.Context, s digestSeen) (bool, error) {
 	}
 	if s.open && (last != "reopened" || lastAt.Before(s.updated)) {
 		switch {
-		case d.lateReopen(s, lastID):
+		case d.lateReopen(s, lastID, d.Step.Client.Now()):
 			logr.Infof("%s/%s#%d, the digest, has no reopened event yet, so it's looked at again next pass", a.Owner, a.Repo, s.number)
 			return false, nil
 		case last != "reopened":
+			// No resolution stands for the App's writes to match (above),
+			// so every pass reads the timeline till the reopen's event
+			// shows, even where the last resolution was an earlier reopen
+			// (#179's verify).
+			g.done = digestSeen{}
 			logr.Infof("%s/%s#%d, the digest, still has no reopened event, so it's on, and looked at again next pass", a.Owner, a.Repo, s.number)
 			return true, nil
 		}
@@ -487,10 +492,12 @@ const lateReopenWait = github.HoldBound
 // is taken as the newest (digestOpen), and the wait is forgotten, so the
 // next change waits again. While a close is the newest event, the digest
 // is on again after the wait, as before #179, and still looked at each
-// pass until the reopen's event shows. A newer newest event, or another
-// digest, starts the wait again.
-func (d *Daemon) lateReopen(s digestSeen, event int64) bool {
-	g, now := &d.digest, d.Step.Client.Now()
+// pass until the reopen's event shows: digestOpen forgets the last
+// resolution, so no write of the App's ends that. A newer newest event, or
+// another digest, starts the wait again. now is GitHub's clock; the wait
+// is over at lateReopenWait exactly.
+func (d *Daemon) lateReopen(s digestSeen, event int64, now time.Time) bool {
+	g := &d.digest
 	if l := g.late; l.number != s.number || l.event != event {
 		g.late = lateReopenSeen{number: s.number, event: event, since: now}
 	}

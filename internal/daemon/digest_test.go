@@ -567,6 +567,42 @@ func TestDigestLateReopenCloseNewest(t *testing.T) {
 	}
 }
 
+// The verifier's probe for a close still newest (#179's verify), where the
+// last resolution is an earlier reopen: the owner closes and reopens the
+// digest, resolved, and closes it again, its event written at once. With
+// events lagging, mallory reopens it and the owner edits its body. After
+// the wait the digest is on, and its body is written, but the App's write
+// doesn't end the look: once mallory's reopen event shows, it's reverted,
+// and the owner's close stands.
+func TestDigestLateReopenCloseNewestAfterReopen(t *testing.T) {
+	f, d := lateReopenRig(t, time.Hour)
+	f.CloseBy(1, "owner")
+	f.LagEvents(2 * time.Minute)
+	f.ReopenBy(1, "mallory")
+	f.EditBody(1, "owner", "Edited.")
+	iterate(t, d)
+	if w := f.Writes(); len(w) != 0 {
+		t.Fatalf("wrote %+v while the reopen was waited for; want nothing", w)
+	}
+	f.Advance(github.HoldBound)
+	iterate(t, d)
+	if got := digestWrites(f, 0); !reflect.DeepEqual(got, []string{"PATCH /issues/1"}) {
+		t.Fatalf("writes %q after the wait; want the body written again", got)
+	}
+	reqs := len(f.Requests())
+	iterate(t, d)
+	if got := digestRequests(f, reqs); len(got) == 0 {
+		t.Errorf("a pass after the App's write sent nothing about the digest; want the timeline read again")
+	}
+	f.Advance(2 * time.Minute)
+	for range 3 {
+		iterate(t, d)
+	}
+	if got := digestWrites(f, 1); !reflect.DeepEqual(got, []string{"PATCH /issues/1"}) || !f.State().Issues[0].Closed {
+		t.Errorf("writes %q once mallory's reopen event showed; want it reverted, and the digest closed", got)
+	}
+}
+
 // A start's first pass leaves the pin note alone on a digest that is off: a
 // trusted close stands, and one closed again after an untrusted reopen is
 // off too. Neither is pinned or edited.
