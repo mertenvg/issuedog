@@ -238,11 +238,15 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		// The open errors and what waits on the owner are read from the
 		// snapshot as the visits left it, with one look at its dirty content.
 		var dirt Dirt
+		var holds []discTrigger
 		if err == nil {
 			dirt, err = d.Step.Dirty(ctx, s, d.Step.trustOnceTrust())
 		}
 		if err == nil {
 			d.openErrs[n], err = d.Step.openErrAny(s, in, dirt)
+		}
+		if err == nil { // a held issue's open triggers, for its hold item (#192)
+			holds, err = d.Step.holdItemFind(ctx, s, dirt)
 		}
 		d.Step.trustOnceEnd()
 		if errors.Is(err, ErrLabelsHeld) {
@@ -258,7 +262,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			continue
 		}
 		d.inputs[n] = in
-		d.digestCacheSet(s, in, dirt) // for assignment too, so with the digest off as well
+		d.digestCacheSet(s, in, dirt, holds) // for assignment too, so with the digest off as well
 	}
 	for n := range touched {
 		delete(d.inputs, n)

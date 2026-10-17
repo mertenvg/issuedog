@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -34,6 +35,9 @@ import (
 //     escaped but never defused, so every copied line is inline'd and
 //     escaped again, and then gets the line-start defences
 //     (digestRenderLead), as it starts a list item here;
+//   - a hold's trigger (waitLine.Hold) names logins and a rename's title,
+//     which aren't the App's: logins go in code, defused, and the title
+//     is escaped as an item's Title is (digestRenderHold);
 //   - waiting.go's own lines, the pin note and the link are the App's.
 //
 // The body mentions nobody: titles and copied lines are defused, and the
@@ -130,6 +134,8 @@ func digestRenderItem(rank int, it waitItem) string {
 			t = digestRenderLead(digestRenderText(t))
 		}
 		switch {
+		case l.Hold != nil:
+			lines = append(lines, "- "+digestRenderHold(*l.Hold))
 		case l.Question > 0:
 			lines = append(lines, fmt.Sprintf("- **Question %d:** %s", l.Question, t))
 		case l.Option != "" && l.Recommended:
@@ -205,6 +211,8 @@ func digestRenderKindName(k waitKind) string {
 	switch k {
 	case waitError:
 		return "State error"
+	case waitHold:
+		return "Discussion hold"
 	case waitApproval:
 		return "Approval"
 	case waitQuestion:
@@ -215,17 +223,42 @@ func digestRenderKindName(k waitKind) string {
 	return "Item (" + k.String() + ")"
 }
 
-// digestRenderMentions reports whether a new item of kind k gets the
-// digest's mention (Q2a): only one whose own comment doesn't mention
-// notify already. A question round, a spec's revision and a triage flag
-// end in a cc line, so in phase 1 that leaves state errors. A kind added
-// later gets the mention unless it's listed here.
-func digestRenderMentions(k waitKind) bool {
-	switch k {
+// digestRenderMentions reports whether new item it gets the digest's
+// mention (Q2a): only one whose own comment doesn't mention notify
+// already. A question round, a spec's revision and a triage flag end in a
+// cc line, so in phase 1 that leaves state errors, and a discussion hold
+// with a trigger that no App comment mentioning notify names
+// (waitItem.news, #192): a comment on an issue held already (Q2b), or a
+// trigger whose notice discLost held back, unless the hold's own
+// transition marker records it. A hold's other triggers, named by the
+// hold's comment or a notice, each ending in a cc line (#87's assumption
+// 5), give it none. A kind added later gets the mention unless
+// it's listed here.
+func digestRenderMentions(it waitItem) bool {
+	switch it.Kind {
 	case waitApproval, waitQuestion, waitFlag:
 		return false
+	case waitHold:
+		return len(it.news()) > 0
 	}
 	return true
+}
+
+// digestRenderHold renders h, an open trigger on a hold item, for its line
+// in the list: what it is, how a code owner resolves it, and its link.
+// What it is says who did it and to whose content, as the hold's comment
+// and its notice do (discWhat), with each login in code and defused, and a
+// rename's title escaped as an item's Title is (digestRenderTitle), so it
+// makes no link, image, mention or marker. One known from its record alone
+// says it was recorded earlier (discWhatRecorded), in the App's words
+// only, and links the comment that holds the record (holdItemTrigger.Link).
+func digestRenderHold(h holdItemTrigger) string {
+	tr := h.Trigger
+	what := discWhat(tr) // discWhatRecorded for one known from its record alone
+	if tr.Kind == discRename && !tr.FromRecord {
+		what = fmt.Sprintf("%s renamed this issue to “%s”", discLogin(tr.By), digestRenderTitle(tr.Title))
+	}
+	return fmt.Sprintf("**Trigger:** %s. %s See %s", github.Escape(what), h.How, h.Link)
 }
 
 // digestRenderKey is key as a digest-new marker holds it, one of a
@@ -249,15 +282,17 @@ func digestRenderKey(key string) string {
 	return b.String()
 }
 
-// digestRenderNew returns the items, in order, whose key, as
-// digestRenderKey writes it, isn't in announced: the keys the App's
-// digest-new comments that were never edited hold (#159's
-// digestState.announced). An item announced before isn't new, even if it
-// went away and came back with the same key (assumption 11).
+// digestRenderNew returns the items, in order, with a key that announces
+// them (waitItem.news), as digestRenderKey writes it, that isn't in
+// announced: the keys the App's digest-new comments that were never
+// edited hold (#159's digestState.announced). That's an item's own key,
+// or for a hold, one for each trigger no App comment mentioned (#192). An
+// item announced before isn't new, even if it went away and came back
+// with the same key (assumption 11).
 func digestRenderNew(items []waitItem, announced map[string]bool) []waitItem {
 	var fresh []waitItem
 	for _, it := range items {
-		if !announced[digestRenderKey(it.Key)] {
+		if slices.ContainsFunc(it.news(), func(k string) bool { return !announced[digestRenderKey(k)] }) {
 			fresh = append(fresh, it)
 		}
 	}
@@ -274,14 +309,17 @@ func digestRenderNew(items []waitItem, announced map[string]bool) []waitItem {
 //
 // The comment lists each item it announces on one line, with its issue,
 // escaped title, kind and link, then the cc line for notify, then a
-// digest-new marker with their keys (digestRenderKey). If it would go over
-// digestRenderLimit, the lowest-ranked items are left out of the list and
+// digest-new marker with the keys that announce them (waitItem.news,
+// digestRenderKey): a hold's keys name each trigger no App comment
+// mentioned, so a later one makes the hold new again, and one resolved
+// doesn't (#192). If it would go over digestRenderLimit, the
+// lowest-ranked items are left out of the list and
 // the marker both, and a line says so: they're new on the next pass, and
 // the next comment announces them.
 func digestRenderNews(items []waitItem, notify []string) (string, error) {
 	var mention []waitItem
 	for _, it := range items {
-		if digestRenderMentions(it.Kind) {
+		if digestRenderMentions(it) {
 			mention = append(mention, it)
 		}
 	}
@@ -296,7 +334,11 @@ func digestRenderNews(items []waitItem, notify []string) (string, error) {
 			title = ": " + t
 		}
 		lines[i] = fmt.Sprintf("- **%s** on #%d%s. Answer here: %s", digestRenderKindName(it.Kind), it.Issue, title, it.Link)
-		keys[i] = digestRenderKey(it.Key)
+		var news []string
+		for _, k := range it.news() {
+			news = append(news, digestRenderKey(k))
+		}
+		keys[i] = strings.Join(news, ",")
 	}
 	// The marker is formatted with one key at least, so k = 0 is sized
 	// with one too much, rather than failing.
