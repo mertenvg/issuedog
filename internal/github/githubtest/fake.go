@@ -30,7 +30,8 @@ import (
 var Start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // Fake serves one repo's issues, comments, labels, timelines, reactions,
-// parents and sub-issues, the GraphQL queries for their edits, deleted
+// parents and sub-issues, a closed event's closer (closing.go), the
+// GraphQL queries for their edits, deleted
 // comments and pins, and the pinIssue mutation. Its API writes, comment edits, created issues and
 // pins included, are made by the App, "<slug>[bot]" of type Bot. A GET whose
 // answer hasn't changed gets a 304. Every write (any method but GET, and a
@@ -64,6 +65,8 @@ type Fake struct {
 
 	unassignable map[string]bool // logins in lower case, see Unassignable (assign.go)
 
+	closingErrs []map[string]any // for the next GraphQL answer, with their paths (FailGraphQLAt)
+
 	// The App, permission and repo label endpoints, and the request log (app.go).
 	perms      map[string]string
 	labels     []*gogithub.Label
@@ -89,6 +92,7 @@ type issue struct {
 	pinned         bool                            // to the repo's issue list (PinIssue)
 	typeEvents     map[int64]issueTypeRevertChange // the types of each issue-type event, by its ID
 	deletions      []deletedEvent                  // CommentDeletedEvents, oldest first (DeleteCommentBy)
+	closingClosers map[int64]closingCloser         // how each closed event was made, by its ID (closingAnswer)
 }
 
 type comment struct {

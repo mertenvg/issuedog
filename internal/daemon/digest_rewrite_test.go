@@ -560,8 +560,9 @@ func TestDigestRewriteCache(t *testing.T) {
 	if got := digestWrites(f, from); len(got) != 0 || f.State().Issues[0].Body != listed {
 		t.Errorf("writes %q after the failed read; want none, and the item kept", got)
 	}
-	f.Close(n)
-	if got := digestPass(t, f, d); !reflect.DeepEqual(got, []string{"PATCH /issues/1"}) || f.State().Issues[0].Body != digestList {
+	f.CloseBy(n, "owner") // the owner's close stands, so it gets its closed stage (T6)
+	if got := digestPass(t, f, d); !reflect.DeepEqual(got, []string{fmt.Sprintf("POST /issues/%d/labels", n),
+		fmt.Sprintf("DELETE /issues/%d/labels/stage:ready", n), "PATCH /issues/1"}) || f.State().Issues[0].Body != digestList {
 		t.Errorf("writes %q, body %q once it closed; want the edit that lists nothing", got, f.State().Issues[0].Body)
 	}
 }

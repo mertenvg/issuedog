@@ -530,14 +530,12 @@ func (d *Daemon) digestSetState(ctx context.Context, n int, state string) error 
 // digestTrusted reports whether a close or reopen by actor stands: a
 // trusted user's (SPEC §6.1), not a bot's or a ghost's. The App's own
 // closes and reopens only revert someone else's, so they never change what
-// stands, and count as no one's.
+// stands, and count as no one's. A pipeline issue's close judges its actor
+// the same way (closingTrusted), but accepts the App's close too.
 func (d *Daemon) digestTrusted(ctx context.Context, actor *gogithub.User) (bool, error) {
-	if actor.GetLogin() == "" || actor.GetType() == "Bot" {
-		return false, nil
-	}
-	ok, err := d.Step.Trust.Trusted(ctx, actor.GetLogin())
+	ok, err := closingTrusted(ctx, d.Step.Trust, github.Author{Login: actor.GetLogin(), Type: actor.GetType()})
 	if err != nil {
-		return false, fmt.Errorf("trust %s: %w", actor.GetLogin(), err)
+		return false, fmt.Errorf("the digest's closer: %w", err)
 	}
 	return ok, nil
 }
