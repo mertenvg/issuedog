@@ -644,9 +644,12 @@ func resolveOwnerHold(id int64) github.Marker {
 // valid trusted /hold posted on one of those issues since the transition
 // before n's hold, that no marker on n names, and that no /resume after it
 // on its issue, on one below it on the path, or on n itself, ended. A
-// /hold on c's issue, or above it, is c's to end: above holds those
-// comments (madeAbove). Each is an owner hold marker on n.
-func (a *Applier) resolveHeldBy(ctx context.Context, family []node, c Cmd, n node, trust github.Trust, above map[int64]bool) ([]github.Marker, error) {
+// /hold on c's issue, or above it, is c's to end, so it's read only when
+// a marker on the path names it: then c ends it (heldStackEnds), and the
+// record that it did, on n held for discussion (resolveResumed), keeps
+// the leave path from counting it again (resolveLeft). Each is an owner
+// hold marker on n.
+func (a *Applier) resolveHeldBy(ctx context.Context, family []node, c Cmd, n node, trust github.Trust) ([]github.Marker, error) {
 	byNumber := map[int]node{}
 	for _, x := range family {
 		byNumber[x.s.Number] = x
@@ -657,7 +660,7 @@ func (a *Applier) resolveHeldBy(ctx context.Context, family []node, c Cmd, n nod
 	for x, ok := byNumber[n.s.Parent]; ok && x.s != c.S && len(path) < len(family); x, ok = byNumber[x.s.Parent] {
 		path = append(path, x)
 	}
-	return a.resolveUnended(ctx, n, path, is, p, trust, above, c.Comment.ID, c.Comment.ID)
+	return a.resolveUnended(ctx, n, path, is, p, trust, c.Comment.ID, c.Comment.ID)
 }
 
 // resolveUnended returns, as owner hold markers on self, an issue in
@@ -695,7 +698,7 @@ func (a *Applier) resolveHeldBy(ctx context.Context, family []node, c Cmd, n nod
 // applied in the pass that began the hold, as one that accepted the
 // triggers before it while a later one kept the issue held, is below the
 // hold's marker.
-func (a *Applier) resolveUnended(ctx context.Context, self node, path []node, is state.Issue, p resolvePeriod, trust github.Trust, above map[int64]bool, before, except int64) ([]github.Marker, error) {
+func (a *Applier) resolveUnended(ctx context.Context, self node, path []node, is state.Issue, p resolvePeriod, trust github.Trust, before, except int64) ([]github.Marker, error) {
 	resumes := map[int64]int{} // each applied /resume, by its level on the path, -1 for self's
 	own, err := a.resolveCommands(ctx, self.s, self.d, trust, "resume", p.prev, 0)
 	if err != nil {
@@ -782,12 +785,13 @@ func (a *Applier) resolveUnended(ctx context.Context, self node, path []node, is
 			}
 		}
 	}
-	// A /hold whose comment is gone, deleted, is known by its marker
-	// alone, as posted on the farthest issue on the path that has one, or
-	// above it, failing closed: so only /resume there, or nearer, or on
-	// self, ends it. One on c's issue or above is c's to end (above).
+	// A /hold whose comment isn't on the path, deleted or on an issue
+	// above it, as c's own, is known by its marker alone, as posted on the
+	// farthest issue on the path that has one, failing closed: so /resume
+	// there, or nearer, or on self ends it, and c, a /resume above, ends
+	// one whose comment it finds above it (heldStackEnds).
 	for _, id := range slices.Sorted(maps.Keys(marked)) {
-		if !posted[id] && !above[id] && in(id) {
+		if !posted[id] && in(id) {
 			holds = append(holds, made{id, marked[id]})
 		}
 	}
@@ -798,8 +802,8 @@ func (a *Applier) resolveUnended(ctx context.Context, self node, path []node, is
 		// on the first hold, which the /resume ends, so it ends that /hold
 		// too, there and below, as it ends the issue's own (Q2b,
 		// heldStackEnds). One known by its marker alone, its comment gone,
-		// isn't known to be.
-		if before != 0 && posted[h.id] && !markedOn[h.level][h.id] {
+		// is taken as posted where its farthest marker is, so it never is.
+		if before != 0 && !markedOn[h.level][h.id] {
 			continue
 		}
 		ended := false
@@ -865,7 +869,7 @@ func (a *Applier) resolveAbove(ctx context.Context, s *github.Snapshot, sd Dirt,
 		}
 		path = append(path, node{s: x, d: d, open: true})
 	}
-	return a.resolveUnended(ctx, node{s: s, d: sd, open: true}, path, is, p, trust, nil, 0, 0)
+	return a.resolveUnended(ctx, node{s: s, d: sd, open: true}, path, is, p, trust, 0, 0)
 }
 
 // resolveHoldsLeft returns the holds on s, in state is, held, that

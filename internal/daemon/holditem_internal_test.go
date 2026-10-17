@@ -543,3 +543,22 @@ func TestHoldItemUnknownKindNoticed(t *testing.T) {
 		t.Errorf("triggers %+v; want one accepted only by /resume, linked to its notice", hs)
 	}
 }
+
+// A deletion made during the hold, of the owner's comment, with its
+// notice, is accepted only by /resume, as it may have hidden a /hold
+// (resolveHitsApp): one made before the hold began, which held the issue,
+// is accepted by a 👍 on its notice.
+func TestHoldItemDeletionDuringHold(t *testing.T) {
+	s := holdItemSnap(holdItemHeld(503, "c502", true, false), holdItemNotice(505, "dCDE_d1"))
+	during := discTrigger{Kind: discDeletion, Key: "dCDE_d1", By: "mallory", At: holdItemAt(4), Of: "owner"}
+	hs := holdItemTriggers(holdItemFindOne(t, s, nil, during))
+	if len(hs) != 1 || !strings.Contains(hs[0].How, "only `/resume` here accepts it") || hs[0].Link != "https://github.com/o/r/issues/5#issuecomment-505" {
+		t.Errorf("triggers %+v; want the deletion during the hold accepted only by /resume, linked to its notice", hs)
+	}
+	before := during
+	before.At = holdItemAt(2)
+	hs = holdItemTriggers(holdItemFindOne(t, s, nil, before))
+	if len(hs) != 1 || hs[0].How != "A code owner's 👍 on its notice accepts it." {
+		t.Errorf("triggers %+v; want the deletion before the hold accepted by its notice", hs)
+	}
+}
