@@ -158,6 +158,31 @@ func TestResolveHeldSameSecond(t *testing.T) {
 	}
 }
 
+// After a bound by time, a recorded act is open when its record is in the
+// bound's comment or later, or when the act is at or after the bound's
+// time, its own second included; one known only from its record, at the
+// zero time, is judged by its record.
+func TestResolveOpenRecordedByTime(t *testing.T) {
+	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
+	open := discOpenAfter(discBound{ID: 20, At: at(12), ByTime: true}, map[string]int64{"77": 10, "78": 20})
+	for _, tt := range []struct {
+		name string
+		key  string
+		at   time.Time
+		want bool
+	}{
+		{"recorded before, made in the bound's second", "77", at(12), true},
+		{"recorded before, made after", "77", at(13), true},
+		{"recorded before, made before", "77", at(11), false},
+		{"recorded before, known from its record alone", "77", time.Time{}, false},
+		{"recorded in the bound's comment", "78", at(1), true},
+	} {
+		if o, recorded := open(tt.key, tt.at, 0); o != tt.want || !recorded {
+			t.Errorf("%s: open = %t, %t; want %t, true", tt.name, o, recorded, tt.want)
+		}
+	}
+}
+
 // Only a move out of held is bounded by the time of the comment its cmd
 // names: a first marker keyed by a command, as /track's, is bounded by its
 // own comment, by ID.

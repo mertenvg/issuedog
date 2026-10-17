@@ -759,7 +759,14 @@ func ResolveByReaction(trust github.Trust) func(ctx context.Context, a *Applier,
 //
 // A pure owner hold, with no trigger resolved, writes nothing. A move the
 // table lacks, as for a type the pipeline doesn't know, is reported once by
-// Transition, then only logged.
+// Transition, then only logged, and the ancestors aren't read for it.
+//
+// When the last trigger goes with no act to resolve it, as a comment its
+// author deleted that no marker records, the issue still goes to
+// clarifying here, saying the discussion is resolved; but where an
+// ancestor's /hold keeps it held, its record says no discussion ended, and
+// that ancestor's /resume sends it back to at (resolveEnded,
+// resolvePeriodOf). T10 (#194) settles which rule SPEC keeps.
 func (a *Applier) resolveLeave(ctx context.Context, s *github.Snapshot, d Dirt, trust github.Trust) error {
 	is := state.Derive(s, a.AppSlug, d.Has)
 	if is.Stage != state.Held {
@@ -782,15 +789,6 @@ func (a *Applier) resolveLeave(ctx context.Context, s *github.Snapshot, d Dirt, 
 	if resolveIntake(is.HeldStack) || resolveOwnerHeld(holds) {
 		return a.resolveEnded(ctx, s, rs, p, resolveIntake(is.HeldStack), nil)
 	}
-	// About to leave: a /hold on an ancestor posted while it was held, which
-	// no marker here records (Q2b), keeps it held (SPEC §6.4).
-	above, err := a.resolveAbove(ctx, s, trust, is, p)
-	if err != nil {
-		return fmt.Errorf("leave: %w", err)
-	}
-	if len(resolveLeft(above, p, 0)) > 0 {
-		return a.resolveEnded(ctx, s, rs, p, false, resolveLeft(above, p, 0))
-	}
 	var last time.Time
 	var by []string
 	for _, act := range rs.acts {
@@ -809,6 +807,21 @@ func (a *Applier) resolveLeave(ctx context.Context, s *github.Snapshot, d Dirt, 
 	text += fmt.Sprintf(", so this issue leaves its hold from `%s` for `clarifying`. %s", h.At, resolveWait)
 	m := Move{To: state.Clarifying, Trigger: state.TriggerDiscussionResolved, Key: state.Key{Field: "event", ID: "h" + strconv.FormatInt(p.start, 10)},
 		Fields: resolveFields(h, last), Text: discCC(text, a.Notify)}
+	// About to leave: a /hold on an ancestor posted while it was held, which
+	// no marker here records (Q2b), keeps it held (SPEC §6.4). The ancestors
+	// are read only when the move can be made: one the table lacks, as for a
+	// type the pipeline doesn't know, writes nothing that would stop the
+	// next pass reading them again, so Transition only reports it, once,
+	// and returns any other error.
+	if _, err := noRow(is, m); err == nil {
+		above, err := a.resolveAbove(ctx, s, trust, is, p)
+		if err != nil {
+			return fmt.Errorf("leave: %w", err)
+		}
+		if len(resolveLeft(above, p, 0)) > 0 {
+			return a.resolveEnded(ctx, s, rs, p, false, resolveLeft(above, p, 0))
+		}
+	}
 	err = a.Transition(ctx, s, d.Has, m)
 	if StateError(err) {
 		logr.Warnf("%s/%s#%d: the discussion is resolved, but the issue stays held: %v", a.Owner, a.Repo, s.Number, err)
