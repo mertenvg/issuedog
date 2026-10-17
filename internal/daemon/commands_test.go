@@ -491,10 +491,10 @@ func TestOwnHolds(t *testing.T) {
 			gone:   true,
 			steps:  []step{{2, "/hold"}, {1, "/resume"}},
 			labels: [3]string{"stage:ready", "stage:held", "stage:held"}, react: "-1", reply: madeOn("#2, #3")},
-		{name: "a /resume on the issue itself ends its hold whose /hold comment is gone",
+		{name: "a /resume on the issue itself ends its hold whose /hold comment is gone, and the one below, as its marker there names it (#188's verify, attempt 3)",
 			gone:   true,
 			steps:  []step{{2, "/hold"}, {2, "/resume"}},
-			labels: [3]string{"stage:ready", "stage:in-progress", "stage:held"}, react: "+1"},
+			labels: [3]string{"stage:ready", "stage:in-progress", "stage:verifying"}, react: "+1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

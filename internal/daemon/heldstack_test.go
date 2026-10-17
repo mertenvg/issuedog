@@ -175,7 +175,7 @@ func TestHeldStackHandSetHold(t *testing.T) {
 	t.Run("the parent's /resume leaves the child held, and names it", func(t *testing.T) {
 		heldStackCheck(t, heldStackFamily, steps[:3], func() map[int]issueWant {
 			return map[int]issueWant{
-				1: {[]string{"stage:ready"}, []string{moved("Resumed by `/resume`, back to `ready`. Still on hold: #2, by a hold made by hand or by a `/hold` below this issue, which this `/resume` doesn't end, so `/resume` where it was made ends that.",
+				1: {[]string{"stage:ready"}, []string{moved("Resumed by `/resume`, back to `ready`. Still on hold: #2, by a hold this `/resume` doesn't end: one set by hand, a `/hold` below this issue, or a deleted comment that was, or may have been, a `/hold`. `/resume` there ends it.",
 					fmt.Sprintf("from=held to=ready cmd=%d seen=1001", resume1))}},
 				2: {[]string{"stage:held"}, nil},
 				3: {[]string{"stage:ready"}, []string{moved("Resumed by `/resume` on #1, back to `ready`.", fmt.Sprintf("from=held to=ready cmd=%d seen=1003", resume1))}},

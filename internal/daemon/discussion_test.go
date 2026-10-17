@@ -636,6 +636,7 @@ func TestDiscOverrideResolves(t *testing.T) {
 func TestDiscOriginCarriedForward(t *testing.T) {
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := githubtest.New(t, "o/r", slug)
+		f.SetPermission("owner", "admin")
 		f.SetPermission("mallory", "write")
 		file(f, 0, "from=held to=clarifying at=spec-review origin=spec-review event=c9 seen=7")
 		f.AddComment(1, "mallory", "And another thing.")
@@ -652,6 +653,7 @@ func TestDiscOriginCarriedForward(t *testing.T) {
 func TestDiscHoldsOnlyItsIssue(t *testing.T) {
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := githubtest.New(t, "o/r", slug)
+		f.SetPermission("owner", "admin")
 		f.SetPermission("mallory", "write")
 		file(f, 0, ready)                             // #1, comment 1001
 		file(f, 1, "from=ready to=in-progress run=a") // #2, comment 1002
@@ -670,6 +672,7 @@ func TestDiscHoldsOnlyItsIssue(t *testing.T) {
 // says so.
 func TestDiscResumeOnParent(t *testing.T) {
 	f := githubtest.New(t, "o/r", slug)
+	f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, attempt 3)
 	f.SetPermission("mallory", "write")
 	file(f, 0, above("ready")) // #1, held by its /hold in comment 1001
 	file(f, 1, above("ready")) // #2, held by the same /hold
@@ -694,6 +697,7 @@ func TestDiscResumeOnParent(t *testing.T) {
 // the child gets a record that its owner hold ended (resolveResumed).
 func TestDiscResumeOnParentHeldForDiscussion(t *testing.T) {
 	f := githubtest.New(t, "o/r", slug)
+	f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, attempt 3)
 	f.SetPermission("mallory", "write")
 	file(f, 0, above("ready")) // #1, held by its /hold in comment 1001
 	file(f, 1, above("ready")) // #2, held by the same /hold
