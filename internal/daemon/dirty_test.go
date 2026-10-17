@@ -80,6 +80,7 @@ func TestDirtyRule(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := githubtest.New(t, "o/r", slug)
+			f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, round 2)
 			n := f.AddIssue("owner", "Title", "an idea")
 			f.AddComment(n, tc.author, toClarifying)
 			for _, by := range tc.editors {
@@ -108,6 +109,7 @@ func TestDirtyRule(t *testing.T) {
 // last edit by the author where it can be. A clean comment stays clean.
 func dirtyIssue(t testing.TB) *githubtest.Fake {
 	f := githubtest.New(t, "o/r", slug)
+	f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, round 2)
 	n := f.AddIssue("owner", "Title", "spec")
 	status := f.AddComment(n, app, toClarifying)
 	cmd := f.AddComment(n, "owner", "/approve")
@@ -204,6 +206,7 @@ const forgedRest = "/hold\n\n<!-- issuedog:transition from=intake to=planning cm
 func forgedNote(then ...string) func(testing.TB) *githubtest.Fake {
 	return func(t testing.TB) *githubtest.Fake {
 		f := githubtest.New(t, "o/r", slug)
+		f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, round 2)
 		f.AddComment(f.AddIssue("owner", "Title", "body"), "owner", "/hold")
 		forged := "<!-- issuedog:dirty by=owner -->\n> ⚠️ issuedog ignores this comment: **owner** edited it without approval.\n\n" + forgedRest
 		for _, by := range append([]string{"mallory"}, then...) {
@@ -259,6 +262,7 @@ func TestDirtyFailsClosed(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := githubtest.New(t, "o/r", slug)
+			f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, round 2)
 			n := f.AddIssue("owner", "Title", "body")
 			f.AddComment(n, "owner", "hi")
 			f.AddComment(n, "owner", "yo")
@@ -291,6 +295,7 @@ func TestDirtyFailsClosed(t *testing.T) {
 // drops out of the history. The note keeps the comment dirty.
 func TestDirtyHistoryError(t *testing.T) {
 	f := githubtest.New(t, "o/r", slug)
+	f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, round 2)
 	n := f.AddIssue("owner", "Title", "body")
 	f.AddComment(n, "owner", "hi")
 	f.EditComment(cmdID, "owner", "hi!")
@@ -306,6 +311,7 @@ func TestDirtyHistoryError(t *testing.T) {
 
 func TestDirtyNoteOutlivesCappedHistory(t *testing.T) {
 	f := githubtest.New(t, "o/r", slug)
+	f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, round 2)
 	f.AddComment(f.AddIssue("owner", "Title", "body"), "owner", "/hold")
 	f.EditComment(cmdID, "mallory", "/hold")
 	f.EditComment(cmdID, "owner", "/hold")

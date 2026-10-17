@@ -133,7 +133,7 @@ func TestHoldItemKinds(t *testing.T) {
 		"edit":    {Link: issue + "#issuecomment-503", How: "A code owner's 👍 on its notice accepts it."},
 		"own-edit": {Link: issue + "#issuecomment-503",
 			How: "A code owner's 👍 on its notice accepts it."},
-		"deletion": {Link: issue + "#issuecomment-503", How: "It edited or deleted what may have been the App's content, so only `/resume` here accepts it, not a 👍 on a notice."},
+		"deletion": {Link: issue + "#issuecomment-503", How: "It edited or deleted what may have been the App's record or a code owner's `/hold`, so only `/resume` here accepts it, not a 👍 on a notice."},
 		"rename":   {Link: issue + "#issuecomment-503", How: "A code owner's 👍 on its notice accepts it."},
 		"recorded": {Link: issue + "#issuecomment-503", How: "A later comment by a code owner here, other than `/hold` or `/resume`, counters it."},
 		"close":    {Link: issue + "#issuecomment-503", How: "A code owner's 👍 on its notice accepts it."},
@@ -180,9 +180,10 @@ func holdItemStacked() (*github.Snapshot, []discTrigger) {
 // Under an owner hold, the key names the /hold's marker, cmd=502, which no
 // trigger changes. The comment and the deletion with no notice aren't
 // mentioned, so they announce the hold; the rename's and the recorded
-// edit's notices mentioned them. The deletion, with no notice, and the
-// body's edit, which may have hidden the App's record (resolveHitsApp),
-// are resolved only by /resume, and the owner hold is named.
+// edit's notices mentioned them. The deletion, made during the hold, which
+// may have hidden a /hold, and the body's edit, which may have hidden the
+// App's record (resolveHitsApp), are resolved only by /resume, and the
+// owner hold is named.
 func TestHoldItemStacked(t *testing.T) {
 	s, holds := holdItemStacked()
 	it := holdItemFindOne(t, s, nil, holds...)
@@ -191,10 +192,10 @@ func TestHoldItemStacked(t *testing.T) {
 		t.Errorf("key %s; want the /hold marker's, hold-5-cmd502", it.Key)
 	}
 	want := []holdItemTrigger{
-		{Trigger: holds[0], Link: issue + "#issuecomment-506", How: "It edited or deleted what may have been the App's content, so only `/resume` here accepts it, not a 👍 on a notice.", Mentioned: true},
+		{Trigger: holds[0], Link: issue + "#issuecomment-506", How: "It edited or deleted what may have been the App's record or a code owner's `/hold`, so only `/resume` here accepts it, not a 👍 on a notice.", Mentioned: true},
 		{Trigger: holds[1], Link: issue + "#issuecomment-504", How: "A code owner's 👍 on the comment approves it, and any later comment of theirs here, other than `/hold` or `/resume`, counters it."},
 		{Trigger: holds[2], Link: issue + "#issuecomment-505", How: "A code owner's 👍 on its notice accepts it.", Mentioned: true},
-		{Trigger: holds[3], Link: issue, How: "It has no clean notice, as one may have been deleted or edited, so only `/resume` here accepts it."},
+		{Trigger: holds[3], Link: issue, How: "It edited or deleted what may have been the App's record or a code owner's `/hold`, so only `/resume` here accepts it, not a 👍 on a notice."},
 	}
 	if got := holdItemTriggers(it); !slices.Equal(got, want) {
 		t.Errorf("triggers\n%+v\nwant\n%+v", got, want)

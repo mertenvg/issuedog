@@ -58,10 +58,26 @@ func TestResolveResumeThenLaterAct(t *testing.T) {
 				t.Fatalf("labels %q, new comments %q; want the issue held, the act's notice, then %q", is.Labels, added, record)
 			}
 			// The notice accepted, the issue leaves: no owner hold is left.
+			// But a deletion during the hold may have hidden a code owner's
+			// /hold, so only /resume accepts it (resolveHitsApp, #188's
+			// verify, round 2).
 			ids := commentIDs(t, f, 1)
 			f.AddReaction(ids[len(ids)-2], "owner", "+1")
 			if err := resolvePass(t, 1)(f); err != nil {
 				t.Fatal(err)
+			}
+			if name == "a deletion of owner's comment" {
+				if l := f.State().Issues[0].Labels; !slices.Equal(l, []string{"stage:held"}) {
+					t.Fatalf("labels %q, newest comment %q; want the issue held, as only /resume accepts the deletion", l, newestComment(f, 1))
+				}
+				f.AddComment(1, "owner", "/resume")
+				if err := resolvePass(t, 1)(f); err != nil {
+					t.Fatal(err)
+				}
+				if l := f.State().Issues[0].Labels; !slices.Equal(l, []string{"stage:ready"}) {
+					t.Errorf("labels %q, newest comment %q; want the second /resume to restore ready", l, newestComment(f, 1))
+				}
+				return
 			}
 			if l := f.State().Issues[0].Labels; !slices.Equal(l, []string{"stage:clarifying"}) {
 				t.Errorf("labels %q, newest comment %q; want the issue at clarifying once the act is accepted", l, newestComment(f, 1))
@@ -302,9 +318,10 @@ func TestResolveParentHoldThenResume(t *testing.T) {
 }
 
 // A /hold on an issue between a grandparent and its grandchild, posted
-// while both were held, keeps the grandchild held: the grandparent's
-// /resume, which ends only its own /hold below, is rejected, naming that
-// issue, as its /resume would end the rest.
+// while both were held, writes no marker (Q2b): the grandparent's /resume,
+// with the grandparent out of held by an override, ends its own /hold
+// below, and the one between too, stacked on it, there and on the
+// grandchild (#87's Q2b, #188's verify, round 2), so both go back.
 func TestResolveHoldBetween(t *testing.T) {
 	f := discFake(t)
 	file(f, 1, ready) // #2, under #1
@@ -322,23 +339,24 @@ func TestResolveHoldBetween(t *testing.T) {
 	if err := resolvePass(t, 2)(f); err != nil {
 		t.Fatal(err)
 	}
-	resume := f.AddComment(1, "owner", "/resume")
+	f.AddComment(1, "owner", "/resume")
 	if err := resolvePass(t, 1)(f); err != nil {
 		t.Fatal(err)
 	}
-	want := final("/resume", "I didn't apply this command", madeOn("#2"), fmt.Sprint(resume))
-	if body := newestComment(f, 1); body != want {
-		t.Errorf("newest comment on #1 %q; want %q", body, want)
+	if body := newestComment(f, 1); !slices.ContainsFunc(f.State().Issues[0].Comments, func(c githubtest.CommentState) bool {
+		return c.Body == "/resume" && slices.Contains(c.Reactions, slug+"[bot] +1")
+	}) {
+		t.Errorf("newest comment on #1 %q; want the /resume applied, 👍'd", body)
 	}
 	for i := 1; i < 3; i++ {
-		if l := f.State().Issues[i].Labels; !slices.Equal(l, []string{"stage:held"}) {
-			t.Errorf("#%d: labels %q; want it still held", i+1, l)
+		if l := f.State().Issues[i].Labels; !slices.Equal(l, []string{"stage:ready"}) {
+			t.Errorf("#%d: labels %q; want it back at ready", i+1, l)
 		}
 	}
 }
 
-// With the grandparent still held, its /resume applies, but the /hold
-// between keeps the grandchild held, as it does the issue it's on.
+// With the grandparent still held, its /resume applies, and ends the
+// /hold between too, stacked on its own (Q2b): all three go back.
 func TestResolveHoldBetweenApplied(t *testing.T) {
 	f := discFake(t)
 	file(f, 1, ready) // #2, under #1
@@ -356,7 +374,7 @@ func TestResolveHoldBetweenApplied(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := f.State()
-	for i, want := range []string{"stage:ready", "stage:held", "stage:held"} {
+	for i, want := range []string{"stage:ready", "stage:ready", "stage:ready"} {
 		if l := st.Issues[i].Labels; !slices.Equal(l, []string{want}) {
 			t.Errorf("#%d: labels %q; want %s", i+1, l, want)
 		}

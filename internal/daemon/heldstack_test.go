@@ -90,6 +90,7 @@ func heldStackHand(fields string) string {
 // at in-progress (comment 1002).
 func heldStackTasks(t testing.TB) *githubtest.Fake {
 	f := githubtest.New(t, "o/r", slug)
+	f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, round 2)
 	file(f, 0, ready)
 	file(f, 1, "from=ready to=in-progress run=a")
 	return f
@@ -174,7 +175,7 @@ func TestHeldStackHandSetHold(t *testing.T) {
 	t.Run("the parent's /resume leaves the child held, and names it", func(t *testing.T) {
 		heldStackCheck(t, heldStackFamily, steps[:3], func() map[int]issueWant {
 			return map[int]issueWant{
-				1: {[]string{"stage:ready"}, []string{moved("Resumed by `/resume`, back to `ready`. Still on hold: #2, also held by hand, so `/resume` there ends that.",
+				1: {[]string{"stage:ready"}, []string{moved("Resumed by `/resume`, back to `ready`. Still on hold: #2, by a hold made by hand or by a `/hold` below this issue, which this `/resume` doesn't end, so `/resume` where it was made ends that.",
 					fmt.Sprintf("from=held to=ready cmd=%d seen=1001", resume1))}},
 				2: {[]string{"stage:held"}, nil},
 				3: {[]string{"stage:ready"}, []string{moved("Resumed by `/resume` on #1, back to `ready`.", fmt.Sprintf("from=held to=ready cmd=%d seen=1003", resume1))}},

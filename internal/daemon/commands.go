@@ -149,7 +149,7 @@ func (st *Step) reply(ctx context.Context, s *github.Snapshot, c github.Comment,
 func Commands(trust github.Trust) map[string]Handler {
 	return map[string]Handler{
 		"hold": {Check: holdCheck, Apply: func(ctx context.Context, a *Applier, c Cmd) error {
-			return a.moveFamily(ctx, c, trust, nil, hold)
+			return a.moveFamily(ctx, c, trust, nil, nil, hold)
 		}},
 		"resume": {Check: resumeCheck, Apply: func(ctx context.Context, a *Applier, c Cmd) error {
 			above, err := a.madeAbove(ctx, c)
@@ -165,7 +165,7 @@ func Commands(trust github.Trust) map[string]Handler {
 			// for discussion (resolveHeld), which /resume on an ancestor
 			// doesn't end.
 			var rest, discussed []string
-			return a.moveFamily(ctx, c, trust, record, func(is state.Issue, self bool, n int, by string, after bool) (Move, bool) {
+			return a.moveFamily(ctx, c, trust, above, record, func(is state.Issue, self bool, n int, by string, after bool) (Move, bool) {
 				m, ok := resume(is, self, above, by, after)
 				if _, ended, left := heldStackResume(is, self, above); ended > 0 && len(left) > 0 {
 					if slices.ContainsFunc(left, func(m github.Marker) bool { return m.Fields["reason"] == "discussion" }) {
@@ -175,7 +175,7 @@ func Commands(trust github.Trust) map[string]Handler {
 					}
 				}
 				if self && len(rest) > 0 {
-					m.Text += fmt.Sprintf(" Still on hold: %s, also held by hand, so `/resume` there ends that.", list(rest))
+					m.Text += fmt.Sprintf(" Still on hold: %s, by a hold made by hand or by a `/hold` below this issue, which this `/resume` doesn't end, so `/resume` where it was made ends that.", list(rest))
 				}
 				if self && len(discussed) > 0 {
 					m.Text += fmt.Sprintf(" Still on hold for discussion: %s.", list(discussed))
@@ -265,7 +265,9 @@ func heldStackResume(is state.Issue, self bool, above map[int64]bool) (at state.
 // hold set by hand has no cmd (by= and event=), and a deleted /hold
 // comment is found nowhere, so those stay until /resume there, as does a
 // discussion hold. The first hold wins (plan #87 rev 2, Q2b), so a /hold
-// below after one above writes no marker, and /resume above still ends it.
+// below after one above writes no marker, and /resume above still ends it:
+// resolveHeld counts such a /hold, posted before the /resume, as an owner
+// hold marked resolveOwn, which ends on any issue in the family.
 // Nor does /resume on the issue end a discussion hold whose trigger came
 // after it (resolveStays).
 func heldStackEnds(m github.Marker, self bool, above map[int64]bool) bool {
@@ -274,6 +276,12 @@ func heldStackEnds(m github.Marker, self bool, above map[int64]bool) bool {
 	}
 	if m.Fields["reason"] != "owner" {
 		return false
+	}
+	if m.Fields[resolveOwn] != "" {
+		// The issue's own /hold, posted before the /resume, that wrote no
+		// marker, as the issue was held already (resolveOwnHolds): the
+		// first hold wins, so /resume on it or on any ancestor ends it (Q2b).
+		return true
 	}
 	id, ok := state.Key{Field: "cmd", ID: m.Fields["cmd"]}.Comment()
 	return self || ok && above[id]
@@ -394,7 +402,7 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 		s := a.hidden(n.s)
 		var extra []github.Marker
 		if n.s != c.S {
-			if extra, err = a.resolveHeldBy(ctx, family, c, n, c.Trust); err != nil {
+			if extra, err = a.resolveHeldBy(ctx, family, c, n, c.Trust, above); err != nil {
 				return fmt.Errorf("check /resume: %w", err)
 			}
 		}
@@ -471,8 +479,10 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 // reports once, is logged and skipped, so one issue can't stall the rest.
 // With record, as for /resume, plan gets the open discussion triggers of a
 // held issue among its holds, its owner holds no marker records, and its
-// after (resolveHeld), and record runs first on each issue, for its writes.
-func (a *Applier) moveFamily(ctx context.Context, c Cmd, trust github.Trust, record func(ctx context.Context, n node, is state.Issue, after bool) error, plan planner) error {
+// after (resolveHeld), and record runs first on each issue, for its writes;
+// above is then the comments on c's issue and its ancestors (madeAbove),
+// whose /holds are c's to end (resolveHeldBy).
+func (a *Applier) moveFamily(ctx context.Context, c Cmd, trust github.Trust, above map[int64]bool, record func(ctx context.Context, n node, is state.Issue, after bool) error, plan planner) error {
 	family, err := a.family(ctx, c)
 	if err != nil {
 		return fmt.Errorf("move: %w", err)
@@ -495,7 +505,7 @@ func (a *Applier) moveFamily(ctx context.Context, c Cmd, trust github.Trust, rec
 		if record != nil {
 			var extra []github.Marker
 			if n.s != c.S {
-				if extra, err = a.resolveHeldBy(ctx, family, c, n, trust); err != nil {
+				if extra, err = a.resolveHeldBy(ctx, family, c, n, trust, above); err != nil {
 					return fmt.Errorf("move: %w", err)
 				}
 			}

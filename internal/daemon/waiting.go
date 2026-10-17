@@ -385,6 +385,7 @@ func holdItemOf(in waitInput, is state.Issue) (string, []waitLine) {
 		id = holdItemMarkerID(hs[0])
 	}
 	records := discRecords(s, in.AppSlug, in.Dirt.Has)
+	period := resolvePeriodOf(s, in.AppSlug, in.Dirt.Has)
 	notices := map[string]int64{}
 	discMarkers(s, in.AppSlug, in.Dirt.Has, func(c int64, _ time.Time, m github.Marker) {
 		if k := m.Fields["key"]; m.Kind == "notice" && k != "" {
@@ -410,13 +411,13 @@ func holdItemOf(in waitInput, is state.Issue) (string, []waitLine) {
 			h.Link, h.How = link(tr.ID), "A code owner's 👍 on the comment approves it, and any later comment of theirs here, other than `/hold` or `/resume`, counters it."
 		case tr.Kind == discComment:
 			h.Link, h.How = link(rec), "A later comment by a code owner here, other than `/hold` or `/resume`, counters it."
-		case noticed && resolveByNotice(tr, s, in.AppSlug):
+		case noticed && resolveByNotice(tr, s, in.AppSlug, period.at):
 			h.Link, h.How = link(notice), "A code owner's 👍 on its notice accepts it."
 		default:
 			h.Link, h.How = link(state.BodyID), "It has no clean notice, as one may have been deleted or edited, so only `/resume` here accepts it."
 			switch {
-			case resolveHitsApp(tr, s, in.AppSlug):
-				h.How = "It edited or deleted what may have been the App's content, so only `/resume` here accepts it, not a 👍 on a notice."
+			case resolveHitsApp(tr, s, in.AppSlug, period.at):
+				h.How = "It edited or deleted what may have been the App's record or a code owner's `/hold`, so only `/resume` here accepts it, not a 👍 on a notice."
 			case noticed:
 				h.How = "Only `/resume` here accepts it."
 			}
@@ -433,7 +434,7 @@ func holdItemOf(in waitInput, is state.Issue) (string, []waitLine) {
 	}
 	// An owner hold that stays: in.OwnerHeld, from what only a request can
 	// tell, or one a marker records that no /resume ended (resolveLeft).
-	if in.OwnerHeld || resolveOwnerHeld(resolveLeft(is.HeldStack.Holds, resolvePeriodOf(s, in.AppSlug, in.Dirt.Has), 0)) {
+	if in.OwnerHeld || resolveOwnerHeld(resolveLeft(is.HeldStack.Holds, period, 0)) {
 		lines = append(lines, waitLine{Text: "It's on an owner hold too, so it stays held after these until `/resume` ends that."})
 	}
 	return id, append(lines, waitLine{Text: "Post `/resume` here to accept every open trigger at once."})

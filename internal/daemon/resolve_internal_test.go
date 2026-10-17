@@ -16,37 +16,43 @@ import (
 // from its record alone of the body, of a comment gone, or of the App's.
 // A notice accepts any other edit, a deletion of a trusted user's comment,
 // a rename and a close, which hides no App content (#190's verify note);
-// nothing accepts a comment, or a key of no known shape.
+// nothing accepts a comment, or a key of no known shape, nor a deletion
+// during the hold, which may have hidden an applied /hold (#188's verify,
+// round 2), though one that held the issue, made before, is accepted.
 func TestResolveByNotice(t *testing.T) {
 	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
 	s := &github.Snapshot{Comments: []github.Comment{
 		{ID: 5, Author: github.Author{Login: "owner", Type: "User"}},
 		{ID: 6, Author: app},
 	}}
+	held := time.Date(2026, 1, 1, 0, 1, 0, 0, time.UTC)
 	for _, tt := range []struct {
-		name string
-		tr   discTrigger
-		want bool
+		name   string
+		tr     discTrigger
+		want   bool
+		heldAt time.Time
 	}{
-		{"an edit of a trusted user's comment", discTrigger{Kind: discEdit, ID: 5, Of: "owner"}, true},
-		{"an edit of the App's comment", discTrigger{Kind: discEdit, ID: 6, Of: "issuedog[bot]"}, false},
-		{"an own edit", discTrigger{Kind: discOwnEdit, ID: 7}, true},
-		{"a deletion of a trusted user's comment", discTrigger{Kind: discDeletion, Of: "owner"}, true},
-		{"a deletion of the App's comment", discTrigger{Kind: discDeletion, Of: "issuedog[bot]"}, false},
-		{"a deletion of nobody GitHub names", discTrigger{Kind: discDeletion}, false},
-		{"a rename", discTrigger{Kind: discRename}, true},
-		{"a recorded edit of a trusted user's comment still there", discTrigger{Kind: discEdit, ID: 5, FromRecord: true}, true},
-		{"a recorded edit of the App's comment", discTrigger{Kind: discEdit, ID: 6, FromRecord: true}, false},
-		{"a recorded edit of a comment gone", discTrigger{Kind: discEdit, ID: 8, FromRecord: true}, false},
-		{"a recorded edit of the body", discTrigger{Kind: discEdit, ID: state.BodyID, FromRecord: true}, false},
-		{"a recorded deletion", discTrigger{Kind: discDeletion, FromRecord: true}, false},
-		{"a recorded rename", discTrigger{Kind: discRename, FromRecord: true}, true},
-		{"a close", discTrigger{Kind: discClose, Of: ""}, true},
-		{"a recorded close", discTrigger{Kind: discClose, FromRecord: true}, true},
-		{"a comment", discTrigger{Kind: discComment, ID: 5}, false},
-		{"a key of no known shape", discTrigger{Key: "x1", FromRecord: true}, false},
+		{"an edit of a trusted user's comment", discTrigger{Kind: discEdit, ID: 5, Of: "owner"}, true, time.Time{}},
+		{"an edit of the App's comment", discTrigger{Kind: discEdit, ID: 6, Of: "issuedog[bot]"}, false, time.Time{}},
+		{"an own edit", discTrigger{Kind: discOwnEdit, ID: 7}, true, time.Time{}},
+		{"a deletion of a trusted user's comment", discTrigger{Kind: discDeletion, Of: "owner"}, true, time.Time{}},
+		{"a deletion of the App's comment", discTrigger{Kind: discDeletion, Of: "issuedog[bot]"}, false, time.Time{}},
+		{"a deletion of nobody GitHub names", discTrigger{Kind: discDeletion}, false, time.Time{}},
+		{"a rename", discTrigger{Kind: discRename}, true, time.Time{}},
+		{"a recorded edit of a trusted user's comment still there", discTrigger{Kind: discEdit, ID: 5, FromRecord: true}, true, time.Time{}},
+		{"a recorded edit of the App's comment", discTrigger{Kind: discEdit, ID: 6, FromRecord: true}, false, time.Time{}},
+		{"a recorded edit of a comment gone", discTrigger{Kind: discEdit, ID: 8, FromRecord: true}, false, time.Time{}},
+		{"a recorded edit of the body", discTrigger{Kind: discEdit, ID: state.BodyID, FromRecord: true}, false, time.Time{}},
+		{"a recorded deletion", discTrigger{Kind: discDeletion, FromRecord: true}, false, time.Time{}},
+		{"a recorded rename", discTrigger{Kind: discRename, FromRecord: true}, true, time.Time{}},
+		{"a close", discTrigger{Kind: discClose, Of: ""}, true, time.Time{}},
+		{"a recorded close", discTrigger{Kind: discClose, FromRecord: true}, true, time.Time{}},
+		{"a deletion of a trusted user's comment during the hold", discTrigger{Kind: discDeletion, Of: "owner", At: held}, false, held},
+		{"a deletion of a trusted user's comment that held the issue", discTrigger{Kind: discDeletion, Of: "owner", At: held.Add(-time.Second)}, true, held},
+		{"a comment", discTrigger{Kind: discComment, ID: 5}, false, time.Time{}},
+		{"a key of no known shape", discTrigger{Key: "x1", FromRecord: true}, false, time.Time{}},
 	} {
-		if got := resolveByNotice(tt.tr, s, "issuedog"); got != tt.want {
+		if got := resolveByNotice(tt.tr, s, "issuedog", tt.heldAt); got != tt.want {
 			t.Errorf("%s: resolveByNotice = %t; want %t", tt.name, got, tt.want)
 		}
 	}
@@ -426,5 +432,30 @@ func TestBegunNotByReply(t *testing.T) {
 	}
 	if !a.begun([]node{with(""), with("<!-- issuedog:ended reason=owner key=c5 cmd=7 -->")}, c) {
 		t.Errorf("not begun by its record on a descendant; want begun")
+	}
+}
+
+// resolveCommands finds only the clean, valid commands of its name by a
+// trusted user, above after and below before: not one Check rejects at
+// held, as a /hold with an argument, nor another command, a dirty one, an
+// untrusted user's, or one out of range.
+func TestResolveCommands(t *testing.T) {
+	owner := github.Author{Login: "owner", Type: "User"}
+	s := &github.Snapshot{Number: 1, Comments: []github.Comment{
+		{ID: 10, Author: owner, Association: "OWNER", Body: "/hold"},
+		{ID: 11, Author: owner, Association: "OWNER", Body: "/hold now"},
+		{ID: 12, Author: owner, Association: "OWNER", Body: "/resume"},
+		{ID: 13, Author: owner, Association: "OWNER", Body: "/hold"},
+		{ID: 14, Author: github.Author{Login: "eve", Type: "User"}, Association: "CONTRIBUTOR", Body: "/hold"},
+		{ID: 15, Author: owner, Association: "OWNER", Body: "/hold"},
+		{ID: 16, Author: owner, Association: "OWNER", Body: "/hold"},
+	}}
+	a := &Applier{AppSlug: "issuedog"}
+	got, err := a.resolveCommands(context.Background(), s, Dirt{13: "mallory"}, ownerOnly{}, "hold", 9, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got, []int64{10, 15}) {
+		t.Errorf("resolveCommands = %v; want [10 15]", got)
 	}
 }

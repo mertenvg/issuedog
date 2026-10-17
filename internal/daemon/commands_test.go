@@ -52,6 +52,7 @@ func file(f *githubtest.Fake, parent int, fields string) int {
 func tree(fields []string, parents []int, on int, cmd int64, body string, more func(f *githubtest.Fake)) func(testing.TB) *githubtest.Fake {
 	return func(t testing.TB) *githubtest.Fake {
 		f := githubtest.New(t, "o/r", slug)
+		f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, round 2)
 		for i, fl := range fields {
 			file(f, parents[i], fl)
 		}
@@ -432,6 +433,7 @@ func TestOwnHolds(t *testing.T) {
 	setup := func(hand, gone bool, steps []step) func(testing.TB) *githubtest.Fake {
 		return func(t testing.TB) *githubtest.Fake {
 			f := githubtest.New(t, "o/r", slug)
+			f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, round 2)
 			file(f, 0, ready)
 			file(f, 1, "from=ready to=in-progress run=a")
 			file(f, 2, "from=in-progress to=verifying run=a")
@@ -535,6 +537,7 @@ func TestOwnHolds(t *testing.T) {
 func TestHoldMixedCaseRepo(t *testing.T) {
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := githubtest.New(t, "O/r", slug)
+		f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, round 2)
 		file(f, 0, ready)
 		file(f, 1, ready)
 		f.AddComment(1, "owner", "/hold")
