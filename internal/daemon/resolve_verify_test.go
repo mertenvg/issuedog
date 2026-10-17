@@ -24,6 +24,7 @@ func resolveSelfResumed(resolved int64, resume int64) string {
 // ended the rest. The next pass writes nothing, and once a code owner
 // accepts the act, the issue leaves the hold.
 func TestResolveResumeThenLaterAct(t *testing.T) {
+	t.Parallel()
 	for name, act := range map[string]func(f *githubtest.Fake, x int64){
 		"a rename":                      func(f *githubtest.Fake, _ int64) { f.RenameIssue(1, "mallory", "Renamed") },
 		"a deletion of owner's comment": func(f *githubtest.Fake, x int64) { f.DeleteCommentBy("mallory", x) },
@@ -90,6 +91,7 @@ func TestResolveResumeThenLaterAct(t *testing.T) {
 // alone, by the time its key gives: edited again, its notice still needs
 // its own 👍, after the newer edit's.
 func TestResolveResumeThenEditedTwice(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	x := f.AddComment(1, "owner", "Ship it.") // 1002
 	f.AddComment(1, "mallory", "Wait.")       // 1003
@@ -119,6 +121,7 @@ func TestResolveResumeThenEditedTwice(t *testing.T) {
 // open after the /resume: it isn't countered by the /resume, which
 // counters nothing.
 func TestResolveResumeThenLaterComment(t *testing.T) {
+	t.Parallel()
 	f := resolveHeldWith(func(_ testing.TB, f *githubtest.Fake) {})(t)
 	resume := f.AddComment(1, "owner", "/resume")
 	late := f.AddComment(1, "mallory", "One more thing.")
@@ -134,6 +137,7 @@ func TestResolveResumeThenLaterComment(t *testing.T) {
 // A /resume counters no comment, even one rejected, as for a bad
 // argument: mallory's comment stays open, and the issue held.
 func TestResolveRejectedResumeCountersNothing(t *testing.T) {
+	t.Parallel()
 	f := run(t, resolveHeldWith(func(_ testing.TB, f *githubtest.Fake) { f.AddComment(1, "owner", "/resume now") }), resolvePass(t, 1))
 	if l, body := f.State().Issues[0].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:held"}) || !strings.Contains(body, "reason=rejected") {
 		t.Errorf("labels %q, newest comment %q; want the issue held, the /resume rejected", l, body)
@@ -145,6 +149,7 @@ func TestResolveRejectedResumeCountersNothing(t *testing.T) {
 // issue stays held once the discussion is resolved, with the record, and
 // its /resume sends it to clarifying.
 func TestResolveHoldOnDiscussionHold(t *testing.T) {
+	t.Parallel()
 	f := resolveHeldWith(func(_ testing.TB, f *githubtest.Fake) {})(t)
 	hold := f.AddComment(1, "owner", "/hold")
 	if err := resolvePass(t, 1)(f); err != nil {
@@ -174,6 +179,7 @@ func TestResolveHoldOnDiscussionHold(t *testing.T) {
 // A /hold rejected for a bad argument holds nothing: once the discussion
 // is resolved, the issue goes to clarifying.
 func TestResolveRejectedHoldHoldsNothing(t *testing.T) {
+	t.Parallel()
 	f := resolveHeldWith(func(_ testing.TB, f *githubtest.Fake) {})(t)
 	f.AddComment(1, "owner", "/hold now")
 	if err := resolvePass(t, 1)(f); err != nil {
@@ -192,6 +198,7 @@ func TestResolveRejectedHoldHoldsNothing(t *testing.T) {
 // holds nothing in a later hold: a new discussion, once resolved, takes the
 // issue to clarifying.
 func TestResolveEndedHoldCountsNoMore(t *testing.T) {
+	t.Parallel()
 	f := resolveHeldWith(func(_ testing.TB, f *githubtest.Fake) {})(t)
 	f.AddComment(1, "owner", "/hold")
 	f.AddComment(1, "owner", "/resume")
@@ -220,6 +227,7 @@ func TestResolveEndedHoldCountsNoMore(t *testing.T) {
 // the parent again. The parent's /resume then sends the child to
 // clarifying.
 func TestResolveParentHoldKeepsChild(t *testing.T) {
+	t.Parallel()
 	var hold, c int64
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := discFake(t)
@@ -267,6 +275,7 @@ func TestResolveParentHoldKeepsChild(t *testing.T) {
 // A /resume on the parent posted before its /hold doesn't end that /hold:
 // the child stays held once its discussion is resolved.
 func TestResolveEarlierResumeAbove(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	file(f, 1, ready)
 	c := f.AddComment(2, "mallory", "Wait.")
@@ -294,6 +303,7 @@ func TestResolveEarlierResumeAbove(t *testing.T) {
 // discussion: once the discussion is resolved, the child goes to
 // clarifying, the parent's /hold ended.
 func TestResolveParentHoldThenResume(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	file(f, 1, ready)
 	c := f.AddComment(2, "mallory", "Wait.")
@@ -325,6 +335,7 @@ func TestResolveParentHoldThenResume(t *testing.T) {
 // between, so it's rejected, naming that issue. Its /resume there then
 // takes both back.
 func TestResolveHoldBetween(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	file(f, 1, ready) // #2, under #1
 	file(f, 2, ready) // #3, under #2
@@ -372,6 +383,7 @@ func TestResolveHoldBetween(t *testing.T) {
 // round 3): the grandparent goes back, and its move names the issues
 // still on hold. /resume on the issue between then takes both back.
 func TestResolveHoldBetweenApplied(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	file(f, 1, ready) // #2, under #1
 	file(f, 2, ready) // #3, under #2
@@ -447,6 +459,7 @@ func resolveStillWaiting(t *testing.T, f *githubtest.Fake) {
 // /approve keeps waiting (#188's verify, attempt 1): a discussion hold, an
 // owner /hold, and a hold set by hand.
 func TestResolveOriginCarried(t *testing.T) {
+	t.Parallel()
 	t.Run("a discussion hold", func(t *testing.T) {
 		f := resolveAtClarifying(t)
 		f.AddComment(1, "mallory", "And another thing.")
@@ -496,6 +509,7 @@ func TestResolveOriginCarried(t *testing.T) {
 // discussion with an open trigger, is rejected, naming the child: a
 // /resume on an ancestor doesn't end a discussion hold.
 func TestResolveResumeOnParentOfDiscussion(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	file(f, 1, ready)
 	f.AddComment(2, "mallory", "Wait.")
@@ -517,6 +531,7 @@ func TestResolveResumeOnParentOfDiscussion(t *testing.T) {
 // who can only read, ended no discussion: a /resume in the same pass ends
 // the owner's hold back to at, not to clarifying.
 func TestResolveResumeAfterNonWriter(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	f.SetPermission("trudy", "read")
 	f.AddComment(1, "owner", "/hold")
@@ -539,6 +554,7 @@ func TestResolveResumeAfterNonWriter(t *testing.T) {
 // leaves nothing: the move to clarifying is a state error, reported once,
 // and the issue stays held.
 func TestResolveLeaveStateError(t *testing.T) {
+	t.Parallel()
 	setup := resolveHeldWith(func(_ testing.TB, f *githubtest.Fake) {
 		f.SetType(1, "chore")
 		f.AddReaction(1002, "owner", "+1")

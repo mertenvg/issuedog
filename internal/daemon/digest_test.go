@@ -57,6 +57,7 @@ func digestRequests(f *githubtest.Fake, from int) []githubtest.Request {
 // fake, find it and write nothing, and an unchanged pass makes no request
 // about it.
 func TestDigestCreatedAndPinnedOnce(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
 	var logs bytes.Buffer
 	stop := logr.AddWriter(&logs, logr.WithFilter(logr.W))
 	defer stop()
@@ -92,6 +93,7 @@ func TestDigestCreatedAndPinnedOnce(t *testing.T) {
 // A failed create is the pass's error, after which Work still runs, and the
 // next pass creates the digest.
 func TestDigestCreateFailure(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	d := digestDaemon(t, f, newOrigin(t), nil)
 	worked := 0
@@ -109,6 +111,7 @@ func TestDigestCreateFailure(t *testing.T) {
 // Replay passes for the create, the pin and the edit that drops the note,
 // including a crash after the create was applied, which the next pass finds.
 func TestDigestCreateReplay(t *testing.T) {
+	t.Parallel()
 	o := newOrigin(t)
 	githubtest.Replay(t, func(t testing.TB) *githubtest.Fake { return newFake(t) },
 		func(f *githubtest.Fake) error { return digestDaemon(t, f, o, nil).Iterate(context.Background()) })
@@ -118,6 +121,7 @@ func TestDigestCreateReplay(t *testing.T) {
 // digest's marker, which isn't a digest, and never on the digest the
 // daemon creates beside it.
 func TestDigestNeverTriaged(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	f.AddIssue("owner", "Not a digest", "Please list things. <!-- issuedog:digest -->")
 	g := triageRig(t, f, triageOrigin(t), t.TempDir())
@@ -141,6 +145,7 @@ func TestDigestNeverTriaged(t *testing.T) {
 // dirty: the other's, which is left alone, as the digest's would be
 // written again. The user's issue with the marker is visited as any other.
 func TestDigestLowestWinsAndStaysOut(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
 	var logs bytes.Buffer
 	stop := logr.AddWriter(&logs, logr.WithFilter(logr.W))
 	defer stop()
@@ -170,6 +175,7 @@ func TestDigestLowestWinsAndStaysOut(t *testing.T) {
 // The same daemon doesn't try again; the next start does, and once the pin
 // works, the note goes. An unpin by the owner after that stands.
 func TestDigestPinFailure(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
 	var logs bytes.Buffer
 	stop := logr.AddWriter(&logs, logr.WithFilter(logr.E))
 	defer stop()
@@ -215,6 +221,7 @@ func TestDigestPinFailure(t *testing.T) {
 // A digest pinned by hand while its note is there loses the note on the next
 // start, with no pin, as IsPinned is asked first.
 func TestDigestPinnedByHand(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	f.SetPinned(f.AddIssue(app, "issuedog digest", digestPending), true)
 	iterate(t, digestDaemon(t, f, newOrigin(t), nil))
@@ -225,6 +232,7 @@ func TestDigestPinnedByHand(t *testing.T) {
 
 // Replay passes for a refused pin and its note.
 func TestDigestPinFailureReplay(t *testing.T) {
+	t.Parallel()
 	o := newOrigin(t)
 	githubtest.Replay(t, func(t testing.TB) *githubtest.Fake {
 		f := newFake(t)
@@ -240,6 +248,7 @@ func TestDigestPinFailureReplay(t *testing.T) {
 // bot. A trusted reopen turns it on. A pass after a revert's reads makes no
 // request about the digest.
 func TestDigestClose(t *testing.T) {
+	t.Parallel()
 	f, o := newFake(t), newOrigin(t)
 	d := digestDaemon(t, f, o, nil)
 	iterate(t, d)
@@ -289,6 +298,7 @@ func TestDigestClose(t *testing.T) {
 // pass, with nothing reverted, until the event shows: then an untrusted
 // close is reverted, and a trusted one stands.
 func TestDigestCloseEventLate(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
 	var logs bytes.Buffer
 	stop := logr.AddWriter(&logs, logr.WithFilter(logr.I))
 	defer stop()
@@ -340,6 +350,7 @@ func TestDigestCloseEventLate(t *testing.T) {
 // until the events show. Then mallory's reopen is reverted, and the
 // owner's close stands, with no reopen ever written.
 func TestDigestLateReopen(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
 	var logs bytes.Buffer
 	stop := logr.AddWriter(&logs, logr.WithFilter(logr.I))
 	defer stop()
@@ -398,6 +409,7 @@ func TestDigestLateReopen(t *testing.T) {
 // it's taken as the newest, the digest is on again, and an unchanged pass
 // reads nothing. While it's waited for, nothing is written to the digest.
 func TestDigestLateReopenBounded(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	f.SetPinned(f.AddIssue(app, "issuedog digest", digestList), true)
 	d := digestDaemon(t, f, newOrigin(t), nil)
@@ -457,6 +469,7 @@ func lateReopenRig(t *testing.T, wait time.Duration) (*githubtest.Fake, *daemon.
 // owner's edit changed is written on the first pass 30 seconds after it.
 // The next change waits again, for 30 seconds at most too.
 func TestDigestLateReopenSteadyComments(t *testing.T) {
+	t.Parallel()
 	f, d := lateReopenRig(t, time.Hour)
 	f.EditBody(1, "owner", "Edited.")
 	pass := func(name string, want ...string) {
@@ -486,6 +499,7 @@ func TestDigestLateReopenSteadyComments(t *testing.T) {
 // GitHub's clock, and a change a pass first finds 30 seconds or more after
 // it isn't waited for at all.
 func TestDigestLateReopenBoundaries(t *testing.T) {
+	t.Parallel()
 	f, d := lateReopenRig(t, 0) // the owner's edit comes a second after the reopen
 	f.EditBody(1, "owner", "Edited.")
 	iterate(t, d)
@@ -515,6 +529,7 @@ func TestDigestLateReopenBoundaries(t *testing.T) {
 // at each pass until the reopen's event shows. A new newest event starts
 // the wait again.
 func TestDigestLateReopenCloseNewest(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
 	var logs bytes.Buffer
 	stop := logr.AddWriter(&logs, logr.WithFilter(logr.I))
 	defer stop()
@@ -575,6 +590,7 @@ func TestDigestLateReopenCloseNewest(t *testing.T) {
 // doesn't end the look: once mallory's reopen event shows, it's reverted,
 // and the owner's close stands.
 func TestDigestLateReopenCloseNewestAfterReopen(t *testing.T) {
+	t.Parallel()
 	f, d := lateReopenRig(t, time.Hour)
 	f.CloseBy(1, "owner")
 	f.LagEvents(2 * time.Minute)
@@ -607,6 +623,7 @@ func TestDigestLateReopenCloseNewestAfterReopen(t *testing.T) {
 // trusted close stands, and one closed again after an untrusted reopen is
 // off too. Neither is pinned or edited.
 func TestDigestOffNotPinned(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		change func(*githubtest.Fake)
 		want   []string
@@ -630,6 +647,7 @@ func TestDigestOffNotPinned(t *testing.T) {
 // GitHub answering a pin with no error but no pin is a refusal: logged,
 // named in the note, and not tried again until the next start.
 func TestDigestPinNotPinned(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
 	var logs bytes.Buffer
 	stop := logr.AddWriter(&logs, logr.WithFilter(logr.E))
 	defer stop()
@@ -662,6 +680,7 @@ func TestDigestPinNotPinned(t *testing.T) {
 // the next pass checks again and drops it, so the note doesn't stay till a
 // restart.
 func TestDigestPinNoteEditFails(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	d := digestDaemon(t, f, newOrigin(t), nil)
 	f.FailWrite(3) // the create, the pin, then this edit
@@ -681,6 +700,7 @@ func TestDigestPinNoteEditFails(t *testing.T) {
 // marker back, with the pin note the body should have. So does a new
 // daemon, which finds the digest by its title.
 func TestDigestMarkerRemoved(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, by         string
 		failPin, restart bool
@@ -724,6 +744,7 @@ func TestDigestMarkerRemoved(t *testing.T) {
 
 // Replay passes for the edit that puts the marker back.
 func TestDigestMarkerReplay(t *testing.T) {
+	t.Parallel()
 	o := newOrigin(t)
 	githubtest.Replay(t, func(t testing.TB) *githubtest.Fake {
 		f := newFake(t)
@@ -736,6 +757,7 @@ func TestDigestMarkerReplay(t *testing.T) {
 // The gap listed documents: a digest whose marker and title edits changed
 // before a restart isn't found, so a new one is created.
 func TestDigestRestartGap(t *testing.T) {
+	t.Parallel()
 	f, o := newFake(t), newOrigin(t)
 	iterate(t, digestDaemon(t, f, o, nil))
 	f.EditBody(1, "mallory", "gone")
@@ -748,6 +770,7 @@ func TestDigestRestartGap(t *testing.T) {
 
 // Replay passes for both reverts.
 func TestDigestCloseReplay(t *testing.T) {
+	t.Parallel()
 	o := newOrigin(t)
 	for name, change := range map[string]func(*githubtest.Fake){
 		"untrusted close":  func(f *githubtest.Fake) { f.CloseBy(1, "mallory") },

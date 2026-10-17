@@ -49,6 +49,7 @@ func specApplied(f *githubtest.Fake, n int, run string, answer int64) bool {
 // then the result is applied with the label left out, with no attempt and
 // no cap error, even at max_attempts 1. The label is removed later.
 func TestHeldLabelDuringApplyWaitsBriefly(t *testing.T) {
+	t.Parallel()
 	for _, max := range []int{1, 3} {
 		t.Run(fmt.Sprintf("max_attempts %d", max), func(t *testing.T) {
 			f, g, answer := heldRig(t, max)
@@ -83,6 +84,7 @@ func TestHeldLabelDuringApplyWaitsBriefly(t *testing.T) {
 // An issue with a label held back starts no run, and uses no attempt, for
 // github.HoldBound; then it runs with the label left out of its settings.
 func TestHeldLabelStartsNoRunWhileHeld(t *testing.T) {
+	t.Parallel()
 	f, g, answer := heldRig(t, 1)
 	f.RenameLabel("foo", "effort:max")
 	for _, wait := range []time.Duration{0, 10 * time.Second, github.HoldBound - 10*time.Second - time.Second} {
@@ -109,6 +111,7 @@ func TestHeldLabelStartsNoRunWhileHeld(t *testing.T) {
 // While one issue's lease waits on a held label, no other issue's run
 // starts, as there's one lease, but for github.HoldBound only.
 func TestHeldLeaseHoldsOtherRunsBriefly(t *testing.T) {
+	t.Parallel()
 	f, g, answer := heldRig(t, 3)
 	answer2 := interview(f) // issue 2
 	g.stage.during = func() { f.RenameLabel("foo", "priority:p0") }
@@ -131,6 +134,7 @@ func TestHeldLeaseHoldsOtherRunsBriefly(t *testing.T) {
 // lease waits on it, holds stage work up for github.HoldBound only: the
 // result is applied, and the other issue runs.
 func TestRenamedAgainAndAgainDoesNotStall(t *testing.T) {
+	t.Parallel()
 	f, g, answer := heldRig(t, 3)
 	answer2 := interview(f) // issue 2
 	g.stage.during = func() { f.RenameLabel("foo", "scope:z0") }
@@ -160,6 +164,7 @@ func TestRenamedAgainAndAgainDoesNotStall(t *testing.T) {
 // removed in the end, as its issue has had unexplained labels for five
 // minutes.
 func TestRepoWideRenamesDoNotStall(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	for range 4 {
 		n := fileAt(f, "ready", "do it", "priority:p2")
@@ -208,6 +213,7 @@ func TestRepoWideRenamesDoNotStall(t *testing.T) {
 // issue with no type from it, and a stage label left out beside the one the
 // marker names gets no repair, nor a state error, until it's removed.
 func TestLeftOutLabelsAreNotActedOn(t *testing.T) {
+	t.Parallel()
 	for name, to := range map[string]string{"type": "type:epic", "stage": "stage:done"} {
 		t.Run(name, func(t *testing.T) {
 			f := newFake(t)
@@ -253,6 +259,7 @@ func TestLeftOutLabelsAreNotActedOn(t *testing.T) {
 // issue gone to another repo, so when it's back with the label still on,
 // the label waits the whole time again.
 func TestClosedIssueForgetsUnexplained(t *testing.T) {
+	t.Parallel()
 	for name, tt := range map[string]struct{ away, back func(f *githubtest.Fake) }{
 		// The owner's close and reopen stand (T6): the close's closed stage
 		// is written while it's away, and the hold for the reopen only once

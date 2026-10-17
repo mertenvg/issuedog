@@ -78,6 +78,7 @@ func resolveR2Tail(t testing.TB, f *githubtest.Fake) {
 // #2's stage by hand, which ends #2's hold, so #2's /resume later applies
 // on #1 alone.
 func TestResolveR2OverrideBetween(t *testing.T) {
+	t.Parallel()
 	resolveR2Check(t, func(t testing.TB) *githubtest.Fake {
 		f := discFake(t)
 		file(f, 0, ready)
@@ -108,6 +109,7 @@ func TestResolveR2OverrideBetween(t *testing.T) {
 // so the /hold never held #2, and #1's record names it once its first
 // comment is resolved.
 func TestResolveR2Relink(t *testing.T) {
+	t.Parallel()
 	resolveR2Check(t, func(t testing.TB) *githubtest.Fake {
 		f := discFake(t)
 		file(f, 0, ready)

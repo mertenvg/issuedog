@@ -56,6 +56,7 @@ func (l *resolveLoop) resumeApplied(n int) bool {
 // before it or after, with a restart between, at two levels, the /resume
 // on the issue of the deletion, and at three, the /resume between.
 func TestResolveRound3GoneAboveResume(t *testing.T) {
+	t.Parallel()
 	for _, levels := range []int{2, 3} {
 		for _, thumbsFirst := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%d levels, thumbs first %v", levels, thumbsFirst), func(t *testing.T) {
@@ -114,6 +115,7 @@ func TestResolveRound3GoneAboveResume(t *testing.T) {
 // either path: the issue below stays held, with the 👍 on mallory's comment
 // before the /resume or after, until a /resume posted after.
 func TestResolveRound3GoneSameSecond(t *testing.T) {
+	t.Parallel()
 	for _, thumbsFirst := range []bool{false, true} {
 		t.Run(fmt.Sprintf("thumbs first %v", thumbsFirst), func(t *testing.T) {
 			l := newResolveLoop(t, newFake(t))
@@ -159,6 +161,7 @@ func TestResolveRound3GoneSameSecond(t *testing.T) {
 // it ended, so #2's /resume takes #1 out of held, whether the deletion
 // came before it or after.
 func TestResolveRound3EndedHoldStaysEnded(t *testing.T) {
+	t.Parallel()
 	for _, deleteFirst := range []bool{true, false} {
 		t.Run(fmt.Sprintf("deleted before #2's /resume %v", deleteFirst), func(t *testing.T) {
 			f := discFake(t)  // #1
@@ -206,6 +209,7 @@ func TestResolveRound3EndedHoldStaysEnded(t *testing.T) {
 // marker names: #2's /resume sends #1 to clarifying, whether the deletion
 // came before it or after.
 func TestResolveRound3HeldRecordAfterDeletion(t *testing.T) {
+	t.Parallel()
 	for _, deleteFirst := range []bool{true, false} {
 		t.Run(fmt.Sprintf("deleted before the /resume %v", deleteFirst), func(t *testing.T) {
 			f := discFake(t)  // #1
@@ -243,6 +247,7 @@ func TestResolveRound3HeldRecordAfterDeletion(t *testing.T) {
 // (SPEC §6.4), so #3 stays held, as #1 does. (#2's own /resume ends every
 // hold on #2, a race of its own: #188's verify, round 3, note 3.)
 func TestResolveRound3MarkerPostedAfterResume(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)  // #1
 	file(f, 1, ready) // #2, under #1
 	file(f, 2, ready) // #3, under #2
@@ -265,6 +270,7 @@ func TestResolveRound3MarkerPostedAfterResume(t *testing.T) {
 // its marker, so #3's /resume, above that, doesn't end it, on #2 or on #1,
 // in either order of the 👍 on mallory's comment; #2's /resume does.
 func TestResolveRound3DeletedHoldFarthestMarker(t *testing.T) {
+	t.Parallel()
 	for _, thumbsFirst := range []bool{false, true} {
 		t.Run(fmt.Sprintf("thumbs first %v", thumbsFirst), func(t *testing.T) {
 			f := discFake(t)  // #1
@@ -312,6 +318,7 @@ func TestResolveRound3DeletedHoldFarthestMarker(t *testing.T) {
 // below it and after it, so #2 stays held by it, and #1 too once mallory's
 // comment is resolved, until #2's /resume.
 func TestResolveRound3PathHoldPostedAfterResume(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)  // #1
 	file(f, 0, ready) // #2
 	file(f, 0, ready) // #3
@@ -339,6 +346,7 @@ func TestResolveRound3PathHoldPostedAfterResume(t *testing.T) {
 // before #1's hold, so the edited comment is no /hold of it, and once the
 // owner's 👍 resolves mallory's comment, #1 goes to clarifying.
 func TestResolveRound3EditedBeforeHoldOnPath(t *testing.T) {
+	t.Parallel()
 	l := newResolveLoop(t, newFake(t))
 	top := l.task(0)
 	low := l.task(top)
@@ -361,6 +369,7 @@ func TestResolveRound3EditedBeforeHoldOnPath(t *testing.T) {
 // pass came first, so #1 stays held by it, as #2 does, until #2's
 // /resume.
 func TestResolveRound3PathHoldPostedAfterResumeAlone(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)  // #1
 	file(f, 0, ready) // #2
 	file(f, 0, ready) // #3
@@ -382,6 +391,7 @@ func TestResolveRound3PathHoldPostedAfterResumeAlone(t *testing.T) {
 // handled yet, isn't one the /resume judges: #2's /resume takes #1 back,
 // and #1's /hold, handled next, holds it again with a marker of its own.
 func TestResolveRound3OwnHoldAfterResumeUnhandled(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)  // #1
 	file(f, 0, ready) // #2
 	f.SetParent(1, 2)
@@ -407,6 +417,7 @@ func TestResolveRound3OwnHoldAfterResumeUnhandled(t *testing.T) {
 // record alone, not again as posted on #2, which would leave #1 held for
 // the /resume's move to name.
 func TestResolveRound3HeldRecordMarkedBelow(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)  // #1
 	file(f, 0, ready) // #2
 	file(f, 0, ready) // #3
@@ -440,6 +451,7 @@ func TestResolveRound3HeldRecordMarkedBelow(t *testing.T) {
 // records the end of that one hold once, as #2 stays held for her new
 // comment.
 func TestResolveRound3GoneRecordedOnce(t *testing.T) {
+	t.Parallel()
 	l := newResolveLoop(t, newFake(t))
 	top := l.task(0)
 	low := l.task(top)

@@ -109,6 +109,7 @@ func edited(quote, id string) string {
 }
 
 func TestStep(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
 	tests := []struct {
 		name     string
 		setup    func(testing.TB) *githubtest.Fake
@@ -381,6 +382,7 @@ func TestStep(t *testing.T) {
 // A Check that fails, rather than rejecting, fails the pass, which writes and
 // applies nothing.
 func TestStepCheckError(t *testing.T) {
+	t.Parallel()
 	f := at(state.Ready, func(t testing.TB, f *githubtest.Fake) { post(t, f, 1002, "owner", "/priority p0") })(t)
 	sp := &stepper{}
 	if err := sp.pass(t)(f); err == nil {
@@ -451,6 +453,7 @@ func resumePass(t *testing.T, keep bool) func(*githubtest.Fake) error {
 // A handler that keeps the Handler contract survives a crash part way through
 // Apply. One whose Check rejects what Apply began has the applied command 👎'd.
 func TestHandlerContract(t *testing.T) {
+	t.Parallel()
 	githubtest.Replay(t, heldChild, resumePass(t, true))
 
 	f := heldChild(t)

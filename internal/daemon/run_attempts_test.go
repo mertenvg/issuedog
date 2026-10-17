@@ -49,6 +49,7 @@ func (g *rig) snapshot(n int) *github.Snapshot {
 // max_attempts times, counted in the lease, then counts as a failed
 // attempt. So the attempt cap takes over, and other issues run.
 func TestApplyFailuresAreBounded(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	first := interview(f)
 	interview(f)
@@ -79,6 +80,7 @@ func TestApplyFailuresAreBounded(t *testing.T) {
 // The count of failed attempts outlives a restart, kept in the lease: a
 // failed run's, and a crashed run's, which counts when it's reset.
 func TestRestartKeepsAttemptCount(t *testing.T) {
+	t.Parallel()
 	t.Run("failed runs", func(t *testing.T) {
 		f := newFake(t)
 		answer := interview(f)
@@ -122,6 +124,7 @@ func TestRestartKeepsAttemptCount(t *testing.T) {
 // A leftover lease is finished while a usage limit shuts the gate, and
 // nothing calls claude.
 func TestResumeWhileGateShut(t *testing.T) {
+	t.Parallel()
 	for name, out := range map[string]string{"result": okOut, "no result": ""} {
 		t.Run(name, func(t *testing.T) {
 			f := newFake(t)
@@ -147,6 +150,7 @@ func TestResumeWhileGateShut(t *testing.T) {
 
 // A move starts a new count of attempts, even with no inputs.
 func TestMoveResetsAttemptCount(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	interview(f)
 	g := newRig(t, f, newOrigin(t), t.TempDir())
@@ -171,6 +175,7 @@ func TestMoveResetsAttemptCount(t *testing.T) {
 // state error and ends the run, which is no attempt and no error of Work's:
 // no run starts until the issue changes. Live or resumed, nothing is left.
 func TestApplyStateError(t *testing.T) {
+	t.Parallel()
 	t.Run("live", func(t *testing.T) {
 		f := newFake(t)
 		answer := interview(f)
@@ -218,6 +223,7 @@ func TestApplyStateError(t *testing.T) {
 
 // A failure to set a run up isn't the agent's, so it's no attempt.
 func TestSetupFailureIsNoAttempt(t *testing.T) {
+	t.Parallel()
 	for name, set := range map[string]func(g *rig){
 		"context files":  func(g *rig) { g.stage.contextErr = errors.New("no template") },
 		"no environment": func(g *rig) { g.r.Env = nil },
@@ -244,6 +250,7 @@ func TestSetupFailureIsNoAttempt(t *testing.T) {
 // A run that doesn't count keeps the count of the failures before it,
 // across a restart.
 func TestUncountedRunKeepsCount(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	answer := interview(f)
 	o, root := newOrigin(t), t.TempDir()
@@ -276,6 +283,7 @@ func TestUncountedRunKeepsCount(t *testing.T) {
 
 // A shutdown while claude runs is no attempt: the run's files go.
 func TestShutdownDuringRun(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	interview(f)
 	g := newRig(t, f, newOrigin(t), t.TempDir())
@@ -304,6 +312,7 @@ func TestShutdownDuringRun(t *testing.T) {
 // An issue deleted during a run is found gone by the read before the
 // apply, so the daemon drops it within two passes.
 func TestApplyFindsIssueGone(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	interview(f)
 	g := newRig(t, f, newOrigin(t), t.TempDir())
@@ -323,6 +332,7 @@ func TestApplyFindsIssueGone(t *testing.T) {
 
 // The read before a run skips an issue closed or moved since step 1 read it.
 func TestPreRunReadSkips(t *testing.T) {
+	t.Parallel()
 	for name, change := range map[string]func(f *githubtest.Fake){
 		"closed": func(f *githubtest.Fake) { f.Close(1) },
 		"moved": func(f *githubtest.Fake) {
@@ -347,6 +357,7 @@ func TestPreRunReadSkips(t *testing.T) {
 // Pending is asked again after the trust check: an issue whose only
 // inputs are from someone no longer trusted gets no run.
 func TestPendingAfterTrustCheck(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	interview(f)
 	x := f.AddComment(1, "x", "x's answer")
@@ -364,6 +375,7 @@ func TestPendingAfterTrustCheck(t *testing.T) {
 // user editing their own comment during the run doesn't. (An edited input
 // is TestAnswerEditedDuringRun.)
 func TestUntrustedEditDuringRunApplies(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	interview(f)
 	remark := f.AddComment(1, "eve", "just a remark") // no write access, so no discussion hold
@@ -383,6 +395,7 @@ func TestUntrustedEditDuringRunApplies(t *testing.T) {
 // exit code, and so do one whose output fails the schema (SPEC §3.3) and
 // one that hits a usage limit. A run with no stderr logs none.
 func TestFailedRunLogsStderr(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
 	long := "HEAD" + strings.Repeat("x", 5000) + "\x1b[31mTAIL"
 	for name, tt := range map[string]struct {
 		out, stderr string

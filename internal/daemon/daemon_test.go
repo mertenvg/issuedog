@@ -162,6 +162,7 @@ func later(a, b time.Time) time.Time {
 }
 
 func TestIterateUnchanged(t *testing.T) {
+	t.Parallel()
 	f := quiet(t)
 	var visits []int
 	d := newDaemon(t, f, newOrigin(t), &visits)
@@ -213,6 +214,7 @@ func TestIterateUnchanged(t *testing.T) {
 }
 
 func TestIterateAppliesNewCommands(t *testing.T) {
+	t.Parallel()
 	f := quiet(t)
 	d := newDaemon(t, f, newOrigin(t), nil)
 	iterate(t, d)
@@ -256,6 +258,7 @@ func busy(t testing.TB) *githubtest.Fake {
 }
 
 func TestIterateReplay(t *testing.T) {
+	t.Parallel()
 	o := newOrigin(t)
 	pass := func(f *githubtest.Fake) error { return newDaemon(t, f, o, nil).Iterate(context.Background()) }
 	f := busy(t)
@@ -271,6 +274,7 @@ func TestIterateReplay(t *testing.T) {
 }
 
 func TestIterateSkipsWorkAfterStepFails(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	fileAt(f, "clarifying", "a")
 	answer := f.AddComment(1, "owner", "my answer")
@@ -314,6 +318,7 @@ func TestIterateSkipsWorkAfterStepFails(t *testing.T) {
 }
 
 func TestIterateKeepsLastGoodConfig(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
 	var logs bytes.Buffer
 	stop := logr.AddWriter(&logs)
 	defer stop()
@@ -355,6 +360,7 @@ func TestIterateKeepsLastGoodConfig(t *testing.T) {
 // A reload that allows a new model creates its labels, once. One that adds
 // none doesn't touch the repo's labels, and a failure is tried again.
 func TestIterateCreatesLabelsForNewModels(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
 	var logs bytes.Buffer
 	stop := logr.AddWriter(&logs)
 	defer stop()
@@ -453,6 +459,7 @@ func TestIterateCreatesLabelsForNewModels(t *testing.T) {
 // The labels a reload creates for a new model are safe to replay after a
 // crash at any write.
 func TestIterateReplaysLabelsForNewModels(t *testing.T) {
+	t.Parallel()
 	o := newOrigin(t)
 	o.commit(config.Path, "models: {allowed: [opus]}\n")
 	setup := func(t testing.TB) *githubtest.Fake {
@@ -476,6 +483,7 @@ func TestIterateReplaysLabelsForNewModels(t *testing.T) {
 }
 
 func TestLabelOptions(t *testing.T) {
+	t.Parallel()
 	cfg, err := config.Parse([]byte("types: labels\nscopes: [daemon]\nmodels: {allowed: [opus, {name: claude-sonnet-x, label: sonnet}]}\n"))
 	if err != nil {
 		t.Fatal(err)
@@ -493,6 +501,7 @@ func TestLabelOptions(t *testing.T) {
 
 // A long name with no label falls back to its last 35 characters, and says so.
 func TestLabelOptionsLogsTheFallback(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
 	const long = "x.us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 	at35, wide := strings.Repeat("a", 35), strings.Repeat("é", 36) // 35 characters, and 36 in 72 bytes
 	cfg, err := config.Parse([]byte("models: {allowed: [opus, " + long + ", {name: y." + long + ", label: sonnet}, " + at35 + ", " + wide + "]}\n"))
@@ -515,6 +524,7 @@ func TestLabelOptionsLogsTheFallback(t *testing.T) {
 }
 
 func TestRunStopsWhenCanceled(t *testing.T) {
+	t.Parallel()
 	f := quiet(t)
 	d := newDaemon(t, f, newOrigin(t), nil)
 	iterations := 0
@@ -548,6 +558,7 @@ func TestRunStopsWhenCanceled(t *testing.T) {
 }
 
 func TestCurrentTrust(t *testing.T) {
+	t.Parallel()
 	st := &daemon.Step{Trust: trusted{"owner": true}}
 	tr := st.CurrentTrust()
 	if ok, err := tr.Trusted(context.Background(), "owner"); err != nil || !ok {
@@ -563,6 +574,7 @@ func TestCurrentTrust(t *testing.T) {
 // approves it. Trust is main's as of each pass: once owner2 leaves
 // CODEOWNERS, their 👍 no longer approves.
 func TestIterateApprovesAtSpecReview(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	f.SetPermission("owner2", "admin")
 	n := f.AddIssue("owner", "Spec", "body")
@@ -607,6 +619,7 @@ func chain(t testing.TB) *githubtest.Fake {
 // A whole pass with a /hold on a tree is safe to replay, and the issues it
 // touched, read again on the next Iterate, need nothing more.
 func TestIterateHoldReplay(t *testing.T) {
+	t.Parallel()
 	o := newOrigin(t)
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := chain(t)
@@ -635,6 +648,7 @@ func TestIterateHoldReplay(t *testing.T) {
 // Work never gets an issue a command wrote to in the same pass, even one
 // whose step 1 ran before the command: #1 is #2's child.
 func TestIterateWorkSkipsTouched(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	fileAt(f, "ready", "child")
 	fileAt(f, "ready", "parent")
@@ -662,6 +676,7 @@ func TestIterateWorkSkipsTouched(t *testing.T) {
 // again before its step 1, even when nothing was written to it. Comment IDs,
 // which differ, are left out.
 func TestIterateSamePollCommands(t *testing.T) {
+	t.Parallel()
 	ids := regexp.MustCompile(`=[0-9]{4,}`)
 	for _, tc := range []struct {
 		name    string
@@ -729,6 +744,7 @@ func reviewing(t *testing.T) (*githubtest.Fake, *daemon.Daemon) {
 // A failed ReviewVisit fails the issue's pass as Run would: Work doesn't get
 // it, and the next pass reads it again and posts the revision.
 func TestIterateRetriesAFailedReviewVisit(t *testing.T) {
+	t.Parallel()
 	f, d := reviewing(t)
 	work := recordWork(d)
 	f.EditBody(1, "owner", "body v2")
@@ -747,6 +763,7 @@ func TestIterateRetriesAFailedReviewVisit(t *testing.T) {
 // ReviewVisit runs only after Run succeeds: one after a failed Run would post
 // a revision above a request Run didn't get to, and lose it.
 func TestIterateSkipsReviewVisitWhenRunFails(t *testing.T) {
+	t.Parallel()
 	f, d := reviewing(t)
 	f.EditBody(1, "owner", "body v2")
 	f.AddComment(1, "owner", "too long")
@@ -769,6 +786,7 @@ func TestIterateSkipsReviewVisitWhenRunFails(t *testing.T) {
 // edit of the body posts the next revision, and so does mallory dirtying the
 // newest one; an owner's plain comment sends the spec back.
 func TestIterateReviewsSpecs(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name   string
 		change func(t *testing.T, f *githubtest.Fake, d *daemon.Daemon)

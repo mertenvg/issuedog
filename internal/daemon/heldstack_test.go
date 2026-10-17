@@ -146,6 +146,7 @@ func heldStackCheck(t *testing.T, base func(testing.TB) *githubtest.Fake, steps 
 // by hand, and names the issue, which records that the /hold ended; the
 // issue leaves held only on its own /resume. Each move carries the round bound from before the hold.
 func TestHeldStackHandSetHold(t *testing.T) {
+	t.Parallel()
 	var hold, resume1, resume2, ev int64
 	steps := []heldStackStep{
 		{1, heldStackSay(1, "/hold", &hold)},
@@ -202,6 +203,7 @@ func TestHeldStackHandSetHold(t *testing.T) {
 // /resume ends the rest. A hand-set stage out of held ends every hold on
 // the parent, and keeps its round too.
 func TestHeldStackResumeNamesTheRest(t *testing.T) {
+	t.Parallel()
 	var hold, resume, ev int64
 	steps := []heldStackStep{
 		{1, heldStackSay(1, "/hold", &hold)},
@@ -235,6 +237,7 @@ func TestHeldStackResumeNamesTheRest(t *testing.T) {
 // comment an answer at once, as a replay after a crash part way does, and
 // the next pass writes nothing.
 func TestHeldStackHoldAndResumeInOnePass(t *testing.T) {
+	t.Parallel()
 	var request, hold, during, resume int64
 	steps := []heldStackStep{
 		{1, heldStackSay(1, "too long", &request)},
@@ -278,6 +281,7 @@ func TestHeldStackHoldAndResumeInOnePass(t *testing.T) {
 // last move out of held before it, as a replay after a crash anywhere in
 // the pass does, and the next pass writes nothing.
 func TestHeldStackHoldsInOnePass(t *testing.T) {
+	t.Parallel()
 	var request int64
 	ids := map[string]*int64{}
 	say := func(bodies ...string) heldStackStep {
@@ -374,6 +378,7 @@ func TestHeldStackHoldsInOnePass(t *testing.T) {
 // comment posted while held is an answer after it, and the revision
 // request's notes are still input.
 func TestHeldStackKeepsTheRound(t *testing.T) {
+	t.Parallel()
 	var request, hold, during, resume int64
 	steps := []heldStackStep{
 		{1, heldStackSay(1, "too long", &request)},

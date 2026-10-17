@@ -82,6 +82,7 @@ func digestPass(t *testing.T, f *githubtest.Fake, d *daemon.Daemon) []string {
 // and its key, and a body edit that lists it. Repeating the pass, or a new
 // daemon's first pass, writes nothing.
 func TestDigestRewriteNewError(t *testing.T) {
+	t.Parallel()
 	f, o := digestPinned(t), digestNotifyOrigin(t)
 	n := digestError(f, "Broken [x](https://evil.example)", "77")
 	d := digestDaemon(t, f, o, nil)
@@ -110,6 +111,7 @@ func TestDigestRewriteNewError(t *testing.T) {
 // as the round's own comment mentions the owner already (Q2a), and it's
 // never announced however many passes it stays new.
 func TestDigestRewriteRound(t *testing.T) {
+	t.Parallel()
 	f := digestPinned(t)
 	n := digestRound(f)
 	d := digestDaemon(t, f, digestNotifyOrigin(t), nil)
@@ -137,6 +139,7 @@ func TestDigestRewriteRound(t *testing.T) {
 // Two new items in one pass give one comment that announces both (Q1a).
 // A round new in the same pass is listed, and not announced (Q2a).
 func TestDigestRewriteTwoNew(t *testing.T) {
+	t.Parallel()
 	f := digestPinned(t)
 	a, b := digestError(f, "A", "5"), digestError(f, "B", "6")
 	digestRound(f)
@@ -157,6 +160,7 @@ func TestDigestRewriteTwoNew(t *testing.T) {
 // its items are announced again, once. A later item gets a comment of its
 // own, which names it alone.
 func TestDigestRewriteEditedAnnouncement(t *testing.T) {
+	t.Parallel()
 	f, o := digestPinned(t), digestNotifyOrigin(t)
 	n := digestError(f, "A", "5")
 	d := digestDaemon(t, f, o, nil)
@@ -184,6 +188,7 @@ func TestDigestRewriteEditedAnnouncement(t *testing.T) {
 
 // With notify empty, no comment is posted, and the body is edited.
 func TestDigestRewriteNoNotify(t *testing.T) {
+	t.Parallel()
 	f := digestPinned(t)
 	digestError(f, "A", "5")
 	d := digestDaemon(t, f, newOrigin(t), nil)
@@ -198,6 +203,7 @@ func TestDigestRewriteNoNotify(t *testing.T) {
 // A failed comment or body edit is the pass's error, and Work runs anyway.
 // The body is edited after a failed comment, and the next pass posts it.
 func TestDigestRewriteWriteFails(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		fail      int
@@ -238,6 +244,7 @@ func TestDigestRewriteWriteFails(t *testing.T) {
 // after the comment and before the edit included, which the next pass
 // finds without announcing it again.
 func TestDigestRewriteReplay(t *testing.T) {
+	t.Parallel()
 	o := digestNotifyOrigin(t)
 	githubtest.Replay(t, func(t testing.TB) *githubtest.Fake {
 		f := digestPinned(t)
@@ -248,6 +255,7 @@ func TestDigestRewriteReplay(t *testing.T) {
 
 // Replay passes for a digest created, pinned and announcing at once.
 func TestDigestRewriteCreateReplay(t *testing.T) {
+	t.Parallel()
 	o := digestNotifyOrigin(t)
 	githubtest.Replay(t, func(t testing.TB) *githubtest.Fake {
 		f := newFake(t)
@@ -259,6 +267,7 @@ func TestDigestRewriteCreateReplay(t *testing.T) {
 // A new digest is created with its items listed, and the pin's edit keeps
 // them: no edit follows to put the list in.
 func TestDigestRewriteCreate(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	digestError(f, "A", "5")
 	if got, want := digestPass(t, f, digestDaemon(t, f, digestNotifyOrigin(t), nil)),
@@ -288,6 +297,7 @@ func digestRequestSet(f *githubtest.Fake, from int) []string {
 // An unchanged pass with items listed makes no digest write, and no request
 // a daemon without the digest doesn't make too: the digest adds no reads.
 func TestDigestRewriteUnchangedPass(t *testing.T) {
+	t.Parallel()
 	o := digestNotifyOrigin(t)
 	var passes [2][]string
 	for i, keep := range []bool{false, true} {
@@ -317,6 +327,7 @@ func TestDigestRewriteUnchangedPass(t *testing.T) {
 // make the next pass read its timeline again (#159's verify); someone
 // else's close still does, and is reverted.
 func TestDigestRewriteNoTimelineAfterOwnWrites(t *testing.T) {
+	t.Parallel()
 	f := digestPinned(t)
 	n := digestError(f, "A", "5")
 	d := digestDaemon(t, f, digestNotifyOrigin(t), nil)
@@ -375,6 +386,7 @@ func TestDigestRewriteNoTimelineAfterOwnWrites(t *testing.T) {
 // dropped. The next pass lists every issue again and, finding no digest,
 // creates one, which lists and announces the items.
 func TestDigestRewriteDeleted(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	n := digestError(f, "A", "5")
 	f.AddIssue(app, "issuedog digest", digestPending) // its pin note makes this start check its pin
@@ -422,6 +434,7 @@ func TestDigestRewriteDeleted(t *testing.T) {
 // read of its timeline, is found again by the full listing, and no second
 // digest is created.
 func TestDigestRewriteDroppedFoundAgain(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		notify bool
@@ -465,6 +478,7 @@ func TestDigestRewriteDroppedFoundAgain(t *testing.T) {
 // announcement once it's found again, though the poll never lists that
 // comment again: the item isn't announced twice (#160's verify).
 func TestDigestRewriteRefoundKeepsAnnouncements(t *testing.T) {
+	t.Parallel()
 	f := digestPinned(t)
 	digestError(f, "A", "5")
 	d := digestDaemon(t, f, digestNotifyOrigin(t), nil)
@@ -493,6 +507,7 @@ func TestDigestRewriteRefoundKeepsAnnouncements(t *testing.T) {
 // A transferred digest, whose edit GitHub answers from the other repo, is
 // gone, not written: the edit's error says so (#160's verify).
 func TestDigestRewriteTransferred(t *testing.T) {
+	t.Parallel()
 	f := digestPinned(t)
 	d := digestDaemon(t, f, newOrigin(t), nil)
 	iterate(t, d)
@@ -507,6 +522,7 @@ func TestDigestRewriteTransferred(t *testing.T) {
 // The digest lists items in Q3a's order, which waitRank gives: an issue
 // with an open sub-issue first, though it's newer, with its count.
 func TestDigestRewriteRanked(t *testing.T) {
+	t.Parallel()
 	f := digestPinned(t)
 	older := digestError(f, "Older", "5")
 	newer := digestError(f, "Newer", "6")
@@ -525,6 +541,7 @@ func TestDigestRewriteRanked(t *testing.T) {
 // a read that failed, nor its note dropped, and Work runs. The next pass
 // checks again and pins it (#159's verify, survivor N11).
 func TestDigestRewritePinCheckFails(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	f.AddIssue(app, "issuedog digest", digestPending)
 	d := digestDaemon(t, f, newOrigin(t), nil)
@@ -546,6 +563,7 @@ func TestDigestRewritePinCheckFails(t *testing.T) {
 // An issue whose read fails keeps its items, so the digest isn't edited;
 // once it closes, its items go.
 func TestDigestRewriteCache(t *testing.T) {
+	t.Parallel()
 	f := digestPinned(t)
 	n := digestError(f, "A", "5")
 	d := digestDaemon(t, f, newOrigin(t), nil)
@@ -571,6 +589,7 @@ func TestDigestRewriteCache(t *testing.T) {
 // the dirty content: its issue isn't visited on every pass, and the digest
 // doesn't list it.
 func TestDigestRewriteDirtyError(t *testing.T) {
+	t.Parallel()
 	f := digestPinned(t)
 	n := f.AddIssue("owner", "A", "do it")
 	f.AddLabel(n, app, "stage:ready")
@@ -594,6 +613,7 @@ func TestDigestRewriteDirtyError(t *testing.T) {
 // first pass, a spec whose body eve edited is listed as one that can't
 // be approved yet, for that edit.
 func TestDigestRewriteDirtyBody(t *testing.T) {
+	t.Parallel()
 	f := digestPinned(t)
 	n := f.AddIssue("owner", "Spec", "the spec")
 	f.AddLabel(n, app, "stage:spec-review")

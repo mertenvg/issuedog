@@ -19,6 +19,7 @@ import (
 // The lease is replaced by a rename, never written in place: a link to the
 // old one keeps the old content, and no temp file is left.
 func TestWriteLeaseReplaces(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	r := &Runs{Runner: &agent.Runner{StateDir: dir}}
 	path := filepath.Join(dir, "lease.json")
@@ -60,6 +61,7 @@ func TestWriteLeaseReplaces(t *testing.T) {
 // A lease that can't be read is removed, as nothing can resume it, with
 // the clone it names if that's in the workspace.
 func TestReadLeaseRemovesBadOnes(t *testing.T) {
+	t.Parallel()
 	for name, tt := range map[string]struct {
 		data      string
 		cloneGoes bool
@@ -95,6 +97,7 @@ func TestReadLeaseRemovesBadOnes(t *testing.T) {
 
 // The first Work removes the temp leases a crash left, and nothing else.
 func TestWorkSweepsTempLeases(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	for _, name := range []string{"lease.123.tmp", "lease.4.tmp", "other.tmp"} {
 		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
@@ -118,6 +121,7 @@ func TestWorkSweepsTempLeases(t *testing.T) {
 // pick finds each agent's setting, the interviewer's for triage, and none
 // for an unknown agent.
 func TestPick(t *testing.T) {
+	t.Parallel()
 	p := config.PerStage[int]{Interviewer: 1, Planner: 2, Implementer: 3, Verifier: 4}
 	for name, want := range map[string]int{"interviewer": 1, "planner": 2, "implementer": 3, "verifier": 4, "triage": 1} {
 		if got, ok := pick(p, name); got != want || !ok {
@@ -134,6 +138,7 @@ func TestPick(t *testing.T) {
 // with a comma or '>', and output that names no models, such as a crashed
 // run's.
 func TestRunFields(t *testing.T) {
+	t.Parallel()
 	for name, tt := range map[string]struct {
 		l    Lease
 		raw  string
@@ -158,6 +163,7 @@ func TestRunFields(t *testing.T) {
 // overrideLabels keeps the model and effort labels of all four kinds, in
 // lower case and sorted, and nothing else.
 func TestOverrideLabels(t *testing.T) {
+	t.Parallel()
 	got := overrideLabels([]string{"stage:clarifying", "Model:Sonnet", "verifier-effort:max", "priority:p1", "effort:low", "Verifier-Model:opus", "modelx"})
 	want := []string{"effort:low", "model:sonnet", "verifier-effort:max", "verifier-model:opus"}
 	if !slices.Equal(got, want) {

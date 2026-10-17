@@ -317,6 +317,7 @@ func replayRuns(t *testing.T, setup func(t testing.TB, f *githubtest.Fake, root 
 }
 
 func TestRunStageAppliesResult(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	answer := interview(f)
 	g := newRig(t, f, newOrigin(t), t.TempDir())
@@ -350,6 +351,7 @@ func TestRunStageAppliesResult(t *testing.T) {
 }
 
 func TestRunStageApplyReplay(t *testing.T) {
+	t.Parallel()
 	replayRuns(t, func(_ testing.TB, f *githubtest.Fake, _ string) { interview(f) }, func(g *rig) {
 		g.claude(okOut, 0)
 		g.stage.followUp = true // a write after the move, which a replay must finish
@@ -361,6 +363,7 @@ func TestRunStageApplyReplay(t *testing.T) {
 // issue gets no run in that pass, as its snapshot predates the result,
 // even when the move keeps it at clarifying.
 func TestResumeAppliesSavedResultOnce(t *testing.T) {
+	t.Parallel()
 	for _, to := range []string{"spec-review", "clarifying"} {
 		t.Run(to, func(t *testing.T) {
 			f := newFake(t)
@@ -399,6 +402,7 @@ func TestResumeAppliesSavedResultOnce(t *testing.T) {
 }
 
 func TestResumeReplay(t *testing.T) {
+	t.Parallel()
 	replayRuns(t, func(t testing.TB, f *githubtest.Fake, root string) {
 		saveRun(t, root, "saved", okOut, interview(f))
 	}, func(g *rig) { g.claude(failOut, 1) })
@@ -406,6 +410,7 @@ func TestResumeReplay(t *testing.T) {
 
 // A lease with no valid result deletes the clone, and the stage runs again.
 func TestResumeWithNoResultRunsAgain(t *testing.T) {
+	t.Parallel()
 	for name, out := range map[string]string{"none": "", "invalid": invalidOut} {
 		t.Run(name, func(t *testing.T) {
 			f := newFake(t)
@@ -430,6 +435,7 @@ func TestResumeWithNoResultRunsAgain(t *testing.T) {
 
 // A held or closed issue's lease and clone are dropped, its result unused.
 func TestResumeDropsHeldOrClosed(t *testing.T) {
+	t.Parallel()
 	for name, change := range map[string]func(f *githubtest.Fake){
 		"closed": func(f *githubtest.Fake) { f.Close(1) },
 		"held": func(f *githubtest.Fake) {
@@ -464,6 +470,7 @@ func TestResumeDropsHeldOrClosed(t *testing.T) {
 // Stage work waits while step 1 keeps running, and it isn't an attempt,
 // so with max_attempts 1 the stage runs again once the gate opens.
 func TestUsageLimitGate(t *testing.T) {
+	t.Parallel()
 	reset := githubtest.Start.Add(time.Hour)
 	for name, tt := range map[string]struct {
 		out  string
@@ -506,6 +513,7 @@ func TestUsageLimitGate(t *testing.T) {
 // text names a limit closes no gate, valid or not, and an invalid one is
 // an attempt.
 func TestLimitTextInSuccessfulRun(t *testing.T) {
+	t.Parallel()
 	for name, tt := range map[string]struct {
 		out   string
 		cap   bool // an attempt, which with max_attempts 1 is the last
@@ -536,6 +544,7 @@ func TestLimitTextInSuccessfulRun(t *testing.T) {
 // no more runs, counted in memory over one snapshot, and read back from
 // GitHub after a restart, until new input starts a new count.
 func TestAttemptCap(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	answer := interview(f)
 	o := newOrigin(t)
@@ -586,6 +595,7 @@ func TestAttemptCap(t *testing.T) {
 }
 
 func TestAttemptCapReplay(t *testing.T) {
+	t.Parallel()
 	replayRuns(t, func(_ testing.TB, f *githubtest.Fake, _ string) { interview(f) }, func(g *rig) {
 		g.d.Config.Loop.MaxAttempts = 1
 		g.claude(failOut, 1)
@@ -595,6 +605,7 @@ func TestAttemptCapReplay(t *testing.T) {
 // The issue is read again, and CheckLabels run, before a result is
 // applied: the owner's move to held during the run wins.
 func TestOwnerMoveDuringRunWins(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	interview(f)
 	g := newRig(t, f, newOrigin(t), t.TempDir())
@@ -617,6 +628,7 @@ func TestOwnerMoveDuringRunWins(t *testing.T) {
 // An answer edited during a run drops its result, and the stage runs again
 // on the edit.
 func TestAnswerEditedDuringRun(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	answer := interview(f)
 	g := newRig(t, f, newOrigin(t), t.TempDir())
@@ -659,6 +671,7 @@ func (c countTrust) Trusted(ctx context.Context, login string) (bool, error) {
 // A run uses only inputs whose author is trusted when it starts, checking
 // each author once.
 func TestRunChecksTrustAtStart(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	interview(f)
 	for _, body := range []string{"x's first", "x's second"} {
@@ -689,6 +702,7 @@ func TestRunChecksTrustAtStart(t *testing.T) {
 // An issue deleted while it's held and quiet is found gone by the read
 // before a run, so the daemon drops it within two passes.
 func TestRunFindsIssueGone(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	interview(f)
 	g := newRig(t, f, newOrigin(t), t.TempDir())
@@ -722,6 +736,7 @@ func TestRunFindsIssueGone(t *testing.T) {
 
 // Work runs one issue a pass, the highest priority first.
 func TestWorkPicksByPriority(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	interview(f)
 	interview(f)

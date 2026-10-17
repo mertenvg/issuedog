@@ -67,6 +67,7 @@ func issueTypeRevertCheck(t *testing.T, f *githubtest.Fake, typ string, comments
 // error, and a pass after it writes nothing, taking the App's own write
 // for the restore it is.
 func TestIssueTypeRevertReplay(t *testing.T) {
+	t.Parallel()
 	setup := issueTypeRevertReady(func(t testing.TB, f *githubtest.Fake) {
 		flagWant(t, f.SetTypeBy(1, "mallory", "Epic"), 9003)
 	})
@@ -83,6 +84,7 @@ func TestIssueTypeRevertReplay(t *testing.T) {
 
 // An untrusted type on an issue with no type that stands is removed.
 func TestIssueTypeRevertRemoves(t *testing.T) {
+	t.Parallel()
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := newFake(t)
 		f.AddIssue("owner", "Sync", "Fix the sync.")
@@ -102,6 +104,7 @@ func TestIssueTypeRevertRemoves(t *testing.T) {
 // After a trusted change, an untrusted one is reverted to the trusted
 // type, not the one before it, and the trusted change keys the type.
 func TestIssueTypeRevertTrustedStands(t *testing.T) {
+	t.Parallel()
 	f := issueTypeRevertReady(func(t testing.TB, f *githubtest.Fake) {
 		flagWant(t, f.SetTypeBy(1, "owner", "Bug"), 9003)
 		flagWant(t, f.SetTypeBy(1, "mallory", "Epic"), 9004)
@@ -124,6 +127,7 @@ func TestIssueTypeRevertTrustedStands(t *testing.T) {
 // type error. The next pass finds the change again, and only sets the type
 // back, as the comment is posted already.
 func TestIssueTypeRevertFails(t *testing.T) {
+	t.Parallel()
 	f := issueTypeRevertReady(func(t testing.TB, f *githubtest.Fake) {
 		flagWant(t, f.SetTypeBy(1, "mallory", "Epic"), 9003)
 	})(t)
@@ -148,6 +152,7 @@ func TestIssueTypeRevertFails(t *testing.T) {
 // pass with ErrIssueTypeRevertDropped, with one comment, and the untrusted
 // type gives no type error.
 func TestIssueTypeRevertDropped(t *testing.T) {
+	t.Parallel()
 	f := issueTypeRevertReady(func(t testing.TB, f *githubtest.Fake) {
 		flagWant(t, f.SetTypeBy(1, "mallory", "Epic"), 9003)
 	})(t)
@@ -163,6 +168,7 @@ func TestIssueTypeRevertDropped(t *testing.T) {
 
 // A repo that uses labels leaves issue types alone, as before #182.
 func TestIssueTypeRevertLabelsRepo(t *testing.T) {
+	t.Parallel()
 	f := issueTypeRevertReady(func(t testing.TB, f *githubtest.Fake) {
 		f.SetTypeBy(1, "mallory", "Epic")
 	})(t)
@@ -176,6 +182,7 @@ func TestIssueTypeRevertLabelsRepo(t *testing.T) {
 // issue type has no issue type to guard: its label's type isn't taken for
 // an unexplained issue type, so nothing is held back or written.
 func TestIssueTypeRevertLabelTypeOnly(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	f.AddIssue("owner", "Sync", "Fix the sync.", "type:task")
 	f.AddLabel(1, app, "stage:ready")
@@ -222,6 +229,7 @@ func (d *issueTypeRevertLoop) pass(t *testing.T) []string {
 // nothing at all. The owner's own flip to Epic, by contrast, is a type
 // error, which the digest announces.
 func TestIssueTypeRevertFlips(t *testing.T) {
+	t.Parallel()
 	f := issueTypeRevertReady(nil)(t)
 	d := issueTypeRevertDaemon(t, f)
 	news := digestRunNews(f, 2)
@@ -265,6 +273,7 @@ func TestIssueTypeRevertFlips(t *testing.T) {
 // A revert GitHub drops fails Iterate, every pass, and the untrusted type
 // still gives no type error and no mention.
 func TestIssueTypeRevertDroppedLoop(t *testing.T) {
+	t.Parallel()
 	f := issueTypeRevertReady(nil)(t)
 	d := issueTypeRevertDaemon(t, f)
 	news := digestRunNews(f, 2)
@@ -287,6 +296,7 @@ func TestIssueTypeRevertDroppedLoop(t *testing.T) {
 // keyed by it. A pass after that writes nothing, though the App's own
 // event is late too.
 func TestIssueTypeRevertLateEvent(t *testing.T) {
+	t.Parallel()
 	f := issueTypeRevertReady(nil)(t)
 	d := issueTypeRevertDaemon(t, f)
 	news := digestRunNews(f, 2)
@@ -317,6 +327,7 @@ func TestIssueTypeRevertLateEvent(t *testing.T) {
 // github.HoldBound, then reverted all the same, keyed by the type and the
 // newest event, with no type error and no mention.
 func TestIssueTypeRevertEventNeverLands(t *testing.T) {
+	t.Parallel()
 	f := issueTypeRevertReady(nil)(t)
 	d := issueTypeRevertDaemon(t, f)
 	news := digestRunNews(f, 2)
@@ -346,6 +357,7 @@ func TestIssueTypeRevertEventNeverLands(t *testing.T) {
 // so its type error is posted once, keyed by its own event once that
 // lands, and never under the change before it, with one mention.
 func TestIssueTypeRevertLateTrusted(t *testing.T) {
+	t.Parallel()
 	f := issueTypeRevertReady(nil)(t)
 	d := issueTypeRevertDaemon(t, f)
 	news := digestRunNews(f, 2)

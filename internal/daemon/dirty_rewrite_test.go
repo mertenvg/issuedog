@@ -18,6 +18,7 @@ const rewriteSpec = "<!-- issuedog:rewrite run=run1 replaced=mallory -->\n## Pro
 // Q1a), and a full rewrite is the App's edit whose text starts with the
 // rewrite marker. A body the App last rewrote needs no history read.
 func TestDirtyRewrite(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		edits   [][2]string // editor, text
@@ -62,6 +63,7 @@ func TestDirtyRewrite(t *testing.T) {
 // The App never rewrites a comment whole, so a comment's text that starts
 // with a rewrite marker, even as the App's last edit, cleans nothing.
 func TestDirtyRewriteNotForComments(t *testing.T) {
+	t.Parallel()
 	f := githubtest.New(t, "o/r", slug)
 	id := f.AddComment(f.AddIssue("owner", "Title", "an idea"), "owner", "hi")
 	f.EditComment(id, "mallory", "evil")
@@ -77,6 +79,7 @@ func TestDirtyRewriteNotForComments(t *testing.T) {
 // (#169, Q2a). Each editor's trust is asked once per call, and only where
 // it decides.
 func TestDirtyTrustedEdits(t *testing.T) {
+	t.Parallel()
 	f := githubtest.New(t, "o/r", slug)
 	n := f.AddIssue("filer", "Title", "an idea")
 	mine := f.AddComment(n, "alice", "1a")
@@ -116,6 +119,7 @@ func TestDirtyTrustedEdits(t *testing.T) {
 // trusted user's edit of the App's body leaves it clean but not the App's
 // text (#169, Q2a), and the App's own later edit makes it so again.
 func TestDirtyTrustedBodyMarkers(t *testing.T) {
+	t.Parallel()
 	f := githubtest.New(t, "o/r", slug)
 	n := f.AddIssue(app, "Title", "a task <!-- issuedog:origin plan=#1 rev=1 item=T1 -->")
 	f.EditBody(n, "owner", "a task <!-- issuedog:origin plan=#1 rev=1 item=T1 -->")

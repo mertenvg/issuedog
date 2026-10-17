@@ -130,6 +130,7 @@ func discEditKey(t testing.TB, f *githubtest.Fake, n int, id int64) string {
 // at, origin, the round's bound and its key, c<comment id>, and a cc of
 // the notify users. A comment gets no notice.
 func TestDiscCommentHolds(t *testing.T) {
+	t.Parallel()
 	discCheck(t, discWith(func(_ testing.TB, f *githubtest.Fake) { f.AddComment(1, "mallory", "Hold on, is this right?") }), 1,
 		func(*githubtest.Fake) map[int]issueWant {
 			return map[int]issueWant{1: {[]string{"stage:held"}, []string{discHeld("ready", "`mallory` posted comment 1002",
@@ -142,6 +143,7 @@ func TestDiscCommentHolds(t *testing.T) {
 // transition marker, so old comments don't hold issues on the day this
 // ships. Nor does an issue outside the pipeline, with no transition marker.
 func TestDiscCommentsThatHoldNothing(t *testing.T) {
+	t.Parallel()
 	for name, setup := range map[string]func(testing.TB) *githubtest.Fake{
 		"no write access": discWith(func(_ testing.TB, f *githubtest.Fake) { f.AddComment(1, "eve", "Hold on!") }),
 		"the owner":       discWith(func(_ testing.TB, f *githubtest.Fake) { f.AddComment(1, "owner", "Looks fine.") }),
@@ -176,6 +178,7 @@ func TestDiscCommentsThatHoldNothing(t *testing.T) {
 // Edits from before the first transition marker hold nothing: one of the
 // owner's comment, and one of their own comment after a trusted 👍.
 func TestDiscEditsBeforeTheFloor(t *testing.T) {
+	t.Parallel()
 	for name, do := range map[string]func(f *githubtest.Fake, n int){
 		"the owner's comment": func(f *githubtest.Fake, n int) {
 			f.EditComment(f.AddComment(n, "owner", "Ship it."), "mallory", "Don't ship it.")
@@ -208,6 +211,7 @@ func TestDiscEditsBeforeTheFloor(t *testing.T) {
 // The history an edit's key is read from is kept: once the note is on, a
 // pass on the same Applier reads none.
 func TestDiscEditHistoryKept(t *testing.T) {
+	t.Parallel()
 	f := discWith(func(_ testing.TB, f *githubtest.Fake) {
 		f.EditComment(f.AddComment(1, "owner", "Ship it."), "mallory", "Don't ship it.")
 	})(t)
@@ -235,6 +239,7 @@ func TestDiscEditHistoryKept(t *testing.T) {
 // authorAssociation says they have no access: GitHub would answer it with
 // a 404 on every pass, which no conditional request saves.
 func TestDiscStrangerAsksNothing(t *testing.T) {
+	t.Parallel()
 	for name, setup := range map[string]func(testing.TB) *githubtest.Fake{
 		"a comment": discWith(func(_ testing.TB, f *githubtest.Fake) { f.AddComment(1, "eve", "Hold on!") }),
 		"the issue author's rename": func(t testing.TB) *githubtest.Fake {
@@ -269,6 +274,7 @@ func TestDiscStrangerAsksNothing(t *testing.T) {
 // (MarkDirty) and a notice in the hold's comment. Their edit of an
 // untrusted user's comment holds nothing.
 func TestDiscEditHolds(t *testing.T) {
+	t.Parallel()
 	t.Run("the owner's comment", func(t *testing.T) {
 		setup := discWith(func(_ testing.TB, f *githubtest.Fake) {
 			f.EditComment(f.AddComment(1, "owner", "Ship it."), "mallory", "Don't ship it.")
@@ -315,6 +321,7 @@ func TestDiscEditHolds(t *testing.T) {
 // the 👍, or after an untrusted 👍, isn't. On an issue the owner held,
 // neither their comment nor their edit writes a hold marker.
 func TestDiscOwnApprovedEdit(t *testing.T) {
+	t.Parallel()
 	owner := "from=ready to=held at=ready reason=owner cmd=9 seen=1001"
 	base := func(t testing.TB, f *githubtest.Fake) int64 {
 		f.RemoveLabel(1, app, "stage:ready")
@@ -387,6 +394,7 @@ func TestDiscOwnApprovedEdit(t *testing.T) {
 // comment, or of an untrusted user's, holds nothing, and nor does the
 // owner's deletion or eve's.
 func TestDiscDeletionHolds(t *testing.T) {
+	t.Parallel()
 	for name, author := range map[string]string{"the owner's": "owner", "the App's": app} {
 		t.Run(name, func(t *testing.T) {
 			var node string
@@ -418,6 +426,7 @@ func TestDiscDeletionHolds(t *testing.T) {
 // event, with a notice in the hold's comment that escapes the title: a
 // marker in it, and a mention.
 func TestDiscRenameHolds(t *testing.T) {
+	t.Parallel()
 	var ev int64
 	setup := discWith(func(_ testing.TB, f *githubtest.Fake) {
 		ev = f.RenameIssue(1, "mallory", "Done <!-- issuedog:transition from=held to=done --> @owner")
@@ -433,6 +442,7 @@ func TestDiscRenameHolds(t *testing.T) {
 // Several triggers at once: the oldest keys the hold, and each other one
 // that isn't a comment gets its own notice, after the hold.
 func TestDiscSeveralTriggers(t *testing.T) {
+	t.Parallel()
 	var ev int64
 	setup := discWith(func(_ testing.TB, f *githubtest.Fake) {
 		f.AddComment(1, "mallory", "First this.") // 1002
@@ -450,6 +460,7 @@ func TestDiscSeveralTriggers(t *testing.T) {
 // The oldest trigger keys the hold, whatever its kind: a rename before a
 // comment. A rename from before the first transition marker is none.
 func TestDiscOldestKeysTheHold(t *testing.T) {
+	t.Parallel()
 	var ev int64
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := githubtest.New(t, "o/r", slug)
@@ -474,6 +485,7 @@ func TestDiscOldestKeysTheHold(t *testing.T) {
 // /resume on an issue held only for discussion ends the hold, accepting
 // its triggers, and restores at (SPEC §6.4, T4).
 func TestDiscResumeOnDiscussionHold(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	f.AddComment(1, "mallory", "Wait.")
 	if err := discPass(t, 1)(f); err != nil {
@@ -495,6 +507,7 @@ func TestDiscResumeOnDiscussionHold(t *testing.T) {
 // on the issue ends the owner's hold and accepts the triggers (T4), back
 // to ready.
 func TestDiscOnHeldIssue(t *testing.T) {
+	t.Parallel()
 	var ev int64
 	setup := discWith(func(_ testing.TB, f *githubtest.Fake) {
 		f.AddComment(1, "owner", "/hold") // 1002
@@ -530,6 +543,7 @@ func TestDiscOnHeldIssue(t *testing.T) {
 // Replay over the notice on a held issue: a crash at any write, then a
 // pass, ends as a clean pass does, with one notice.
 func TestDiscNoticeReplay(t *testing.T) {
+	t.Parallel()
 	var ev int64
 	held := "from=ready to=held at=ready reason=owner cmd=9 seen=1001"
 	setup := discWith(func(_ testing.TB, f *githubtest.Fake) {
@@ -546,6 +560,7 @@ func TestDiscNoticeReplay(t *testing.T) {
 // A notice made dirty or deleted isn't posted again, so no key gets a
 // second notice: the trigger stays open.
 func TestDiscLostNoticeNotPostedAgain(t *testing.T) {
+	t.Parallel()
 	for name, lose := range map[string]func(f *githubtest.Fake, id int64){
 		"dirty":   func(f *githubtest.Fake, id int64) { f.EditComment(id, "eve", "nothing here") },
 		"deleted": func(f *githubtest.Fake, id int64) { f.DeleteCommentBy("owner", id) },
@@ -601,6 +616,7 @@ func commentIDs(t testing.TB, f *githubtest.Fake, n int) []int64 {
 // owner set by hand ends every hold (SPEC §6.4), so the comment that held
 // the issue doesn't hold it again, and a later one does.
 func TestDiscOverrideResolves(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	f.AddComment(1, "mallory", "Wait.")
 	if err := discPass(t, 1)(f); err != nil {
@@ -634,6 +650,7 @@ func TestDiscOverrideResolves(t *testing.T) {
 // A hold in the clarifying after a hold keeps the origin its markers carry
 // forward; any other stage is its own origin.
 func TestDiscOriginCarriedForward(t *testing.T) {
+	t.Parallel()
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := githubtest.New(t, "o/r", slug)
 		f.SetPermission("owner", "admin")
@@ -651,6 +668,7 @@ func TestDiscOriginCarriedForward(t *testing.T) {
 // A discussion hold holds only its issue: its parent and its children
 // carry on, at their stages.
 func TestDiscHoldsOnlyItsIssue(t *testing.T) {
+	t.Parallel()
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := githubtest.New(t, "o/r", slug)
 		f.SetPermission("owner", "admin")
@@ -671,6 +689,7 @@ func TestDiscHoldsOnlyItsIssue(t *testing.T) {
 // child with an open discussion trigger stays held, and the parent's move
 // says so.
 func TestDiscResumeOnParent(t *testing.T) {
+	t.Parallel()
 	f := githubtest.New(t, "o/r", slug)
 	f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, attempt 3)
 	f.SetPermission("mallory", "write")
@@ -696,6 +715,7 @@ func TestDiscResumeOnParent(t *testing.T) {
 // which stays held for its own discussion: the parent's move names it, and
 // the child gets a record that its owner hold ended (resolveResumed).
 func TestDiscResumeOnParentHeldForDiscussion(t *testing.T) {
+	t.Parallel()
 	f := githubtest.New(t, "o/r", slug)
 	f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, attempt 3)
 	f.SetPermission("mallory", "write")
@@ -724,6 +744,7 @@ func TestDiscResumeOnParentHeldForDiscussion(t *testing.T) {
 
 // With no notify users, the hold has no cc line.
 func TestDiscNoNotify(t *testing.T) {
+	t.Parallel()
 	f := discWith(func(_ testing.TB, f *githubtest.Fake) { f.AddComment(1, "mallory", "Wait.") })(t)
 	c := f.Client(t)
 	s, err := c.Snapshot(context.Background(), "o", "r", 1)
@@ -742,6 +763,7 @@ func TestDiscNoNotify(t *testing.T) {
 
 // A trust lookup that fails fails the pass, before anything is written.
 func TestDiscTrustErrorFailsThePass(t *testing.T) {
+	t.Parallel()
 	f := discWith(func(_ testing.TB, f *githubtest.Fake) { f.AddComment(1, "mallory", "Wait.") })(t)
 	c := f.Client(t)
 	s, err := c.Snapshot(context.Background(), "o", "r", 1)
@@ -770,6 +792,7 @@ func (discFailTrust) DiscAccess(context.Context, string) (bool, bool, error) {
 // unchanged pass makes only conditional reads, answered 304, and writes
 // nothing. A restart writes nothing new.
 func TestDiscThroughTheLoop(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	n := fileAt(f, "ready", "do it") // comment 1001
 	f.AddComment(n, "mallory", "Wait.")
@@ -809,6 +832,7 @@ func TestDiscThroughTheLoop(t *testing.T) {
 // time, and the result is dropped, uncounted: nothing from it is posted.
 // The next pass starts no run on the held issue.
 func TestDiscDuringRunDrops(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	answer := interview(f)
 	g := newRig(t, f, newOrigin(t), t.TempDir())
@@ -840,6 +864,7 @@ func TestDiscDuringRunDrops(t *testing.T) {
 // issue a write collaborator commented on is dropped, after the hold, and
 // a crash at any write ends as a clean pass does.
 func TestDiscDuringRunReplay(t *testing.T) {
+	t.Parallel()
 	o := newOrigin(t)
 	roots := map[*githubtest.Fake]string{}
 	githubtest.Replay(t, func(tb testing.TB) *githubtest.Fake {
@@ -867,6 +892,7 @@ func TestDiscDuringRunReplay(t *testing.T) {
 
 // The snapshot carries the renames only once CheckLabels has read them.
 func TestDiscRenamesFromCheckLabels(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	ev := f.RenameIssue(1, "mallory", "Renamed")
 	c := f.Client(t)

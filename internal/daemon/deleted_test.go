@@ -33,6 +33,7 @@ func deletedProbe(more func(t testing.TB, f *githubtest.Fake)) func(testing.TB) 
 // doesn't matter, and nothing is held. A deletion of anyone else's comment,
 // or of an App comment before the revision was posted, hides nothing.
 func TestDeletedHidesRevision(t *testing.T) {
+	t.Parallel()
 	atReview := []string{"stage:spec-review"}
 	planning := []string{"stage:planning"}
 	for _, tt := range []struct {
@@ -103,6 +104,7 @@ func TestDeletedHidesRevision(t *testing.T) {
 // deletions come in the snapshot's own GraphQL query. Then the owner's 👍
 // on the fresh revision approves it.
 func TestDeletedThroughTheLoop(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	f.SetPermission("eve", "read")
 	n := fileAt(f, "spec-review", "body", "type:story") // comment 1001
@@ -164,6 +166,7 @@ func TestDeletedThroughTheLoop(t *testing.T) {
 // A snapshot of an issue with deletions sends the same requests as one
 // without: the deletions come in the comments' GraphQL query.
 func TestDeletedNoExtraRequest(t *testing.T) {
+	t.Parallel()
 	sent := func(del bool) []string {
 		f := githubtest.New(t, "o/r", slug)
 		n := f.AddIssue("owner", "Title", "body")

@@ -77,6 +77,7 @@ func discResumeRejected(t *testing.T, f *githubtest.Fake, d *daemon.Daemon, n in
 // /resume on its parent doesn't take it out of held. With or without an
 // earlier comment of theirs, which shows them as a collaborator.
 func TestDiscRecordedEditOutlivesChange(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"", " after her comment"} {
 		t.Run("edited twice"+mode, func(t *testing.T) {
 			f := newFake(t)
@@ -116,6 +117,7 @@ func TestDiscRecordedEditOutlivesChange(t *testing.T) {
 //   - that comment, then edited by a bot with write access, which loses
 //     nothing and is no trigger itself.
 func TestDiscRecordedActOutlivesChange(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"own edit twice", "second editor", "then deleted", "bot edit"} {
 		t.Run(name, func(t *testing.T) {
 			f := newFake(t)
@@ -168,6 +170,7 @@ func TestDiscRecordedActOutlivesChange(t *testing.T) {
 // comment, and neither is posted again, nor does a /resume on the
 // issue's parent take it out of held.
 func TestDiscRecordedEditThenNewEdit(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	parent, n := discUnderHold(f)
 	d := newDaemon(t, f, newOrigin(t), nil)

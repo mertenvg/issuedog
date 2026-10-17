@@ -123,6 +123,7 @@ func closingHeld(by string, event int64, at string, seen int64) string {
 // comment. Each was closed while no daemon ran, as the closes from before
 // T6 are, so the first start judges each, and relabels it once.
 func TestClosingAccepted(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		close func(f *githubtest.Fake)
@@ -155,6 +156,7 @@ func TestClosingAccepted(t *testing.T) {
 // nothing; a commit pushed with "Closes #1" is no merged pull request. The
 // stage label is left alone.
 func TestClosingUntrusted(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		close func(f *githubtest.Fake) int64
@@ -188,6 +190,7 @@ func TestClosingUntrusted(t *testing.T) {
 // same pass, with the hold's comment as its notice. A commit they pushed
 // is no merged pull request either.
 func TestClosingWriter(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		close func(f *githubtest.Fake) int64
@@ -211,6 +214,7 @@ func TestClosingWriter(t *testing.T) {
 // closed again with the state_reason of the close it undid, with a revert
 // comment, and its label stays.
 func TestClosingUntrustedReopen(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, by string
 		login    string
@@ -244,6 +248,7 @@ func TestClosingUntrustedReopen(t *testing.T) {
 // An untrusted reopen is closed again with the state_reason of the newest
 // close before it, not an older one's.
 func TestClosingUntrustedReopenNewestReason(t *testing.T) {
+	t.Parallel()
 	f := closingJudged("discarded", func(f *githubtest.Fake) {
 		f.CloseAs(1, "owner", "not_planned")
 		f.ReopenBy(1, "owner")
@@ -263,6 +268,7 @@ func TestClosingUntrustedReopenNewestReason(t *testing.T) {
 // An earlier revert comment of another event, a label's, doesn't stand for
 // a close's: the close gets its own.
 func TestClosingRevertCommentKeyed(t *testing.T) {
+	t.Parallel()
 	var event int64
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := closingFake(t)
@@ -278,6 +284,7 @@ func TestClosingRevertCommentKeyed(t *testing.T) {
 
 // The digest is never judged as a pipeline issue, even with a stage label.
 func TestClosingNotTheDigest(t *testing.T) {
+	t.Parallel()
 	f, o := digestPinned(t), digestNotifyOrigin(t)
 	f.AddLabel(1, app, "stage:held")
 	f.CloseBy(1, "owner")
@@ -298,6 +305,7 @@ func TestClosingNotTheDigest(t *testing.T) {
 // the latest transition marker shows, as an owner hold, and the closed
 // stage goes. /resume here then puts it back there.
 func TestClosingTrustedReopen(t *testing.T) {
+	t.Parallel()
 	var event int64
 	setup := then(closingJudged("completed", func(f *githubtest.Fake) { f.CloseBy(1, "owner") }),
 		func(f *githubtest.Fake) { event = f.ReopenBy(1, "owner") })
@@ -317,6 +325,7 @@ func TestClosingTrustedReopen(t *testing.T) {
 // A trusted reopen of an issue closed while held keeps the first hold's at
 // and origin.
 func TestClosingTrustedReopenHeld(t *testing.T) {
+	t.Parallel()
 	var event int64
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := newFake(t)
@@ -340,6 +349,7 @@ func TestClosingTrustedReopenHeld(t *testing.T) {
 // pass, and an unchanged pass after reads nothing of the closed issue, nor
 // does a comment on it.
 func TestClosingWhileRunning(t *testing.T) {
+	t.Parallel()
 	f, o := closingFake(t), digestNotifyOrigin(t)
 	d := newDaemon(t, f, o, nil)
 	iterate(t, d)
@@ -385,6 +395,7 @@ func TestClosingWhileRunning(t *testing.T) {
 // most 20, the newest closes first; the rest wait for the next pass. Then
 // nothing is read again, on a pass or a restart.
 func TestClosingFirstStart(t *testing.T) {
+	t.Parallel()
 	f, o := newFake(t), digestNotifyOrigin(t)
 	for i := 1; i <= 23; i++ {
 		fileAt(f, "pr-open", "do it")
@@ -446,6 +457,7 @@ func TestClosingFirstStart(t *testing.T) {
 // A crash part way through the first start's relabel resumes: Replay over
 // three closed issues, whatever write a crash comes at.
 func TestClosingFirstStartReplay(t *testing.T) {
+	t.Parallel()
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := newFake(t)
 		for i := 1; i <= 3; i++ {
@@ -462,6 +474,7 @@ func TestClosingFirstStartReplay(t *testing.T) {
 // A close whose event GitHub hasn't written yet is looked at again on the
 // next pass, with nothing written meanwhile.
 func TestClosingLateEvent(t *testing.T) {
+	t.Parallel()
 	f, o := closingFake(t), digestNotifyOrigin(t)
 	d := newDaemon(t, f, o, nil)
 	iterate(t, d)
@@ -483,6 +496,7 @@ func TestClosingLateEvent(t *testing.T) {
 // reopen and a close whose events are late too, isn't taken for the newest
 // event before it: it's judged, and reverted, once its event shows.
 func TestClosingLateCloseAfterReopen(t *testing.T) {
+	t.Parallel()
 	for name, judged := range map[string]bool{"after a reopen judged": true, "after a late reopen": false} {
 		t.Run(name, func(t *testing.T) {
 			f, o := closingFake(t), digestNotifyOrigin(t)
@@ -515,6 +529,7 @@ func TestClosingLateCloseAfterReopen(t *testing.T) {
 // A reopen made between the poll and the timeline's read isn't judged as
 // the close: nothing is written to the issue, which is open now.
 func TestClosingReopenedBeforeTheRead(t *testing.T) {
+	t.Parallel()
 	f, o := closingFake(t), digestNotifyOrigin(t)
 	d := newDaemon(t, f, o, nil)
 	iterate(t, d)
@@ -529,6 +544,7 @@ func TestClosingReopenedBeforeTheRead(t *testing.T) {
 
 // After a restart, a comment on a judged closed issue reads nothing either.
 func TestClosingRestartThenComment(t *testing.T) {
+	t.Parallel()
 	f, o := closingFake(t), digestNotifyOrigin(t)
 	f.CloseBy(1, "owner")
 	iterate(t, newDaemon(t, f, o, nil))
@@ -545,6 +561,7 @@ func TestClosingRestartThenComment(t *testing.T) {
 // A closed issue deleted while its close waits to be judged is forgotten,
 // with no error, and isn't read again.
 func TestClosingGone(t *testing.T) {
+	t.Parallel()
 	f, o := closingFake(t), digestNotifyOrigin(t)
 	d := newDaemon(t, f, o, nil)
 	iterate(t, d)
@@ -564,6 +581,7 @@ func TestClosingGone(t *testing.T) {
 // A reopen whose event GitHub hasn't written yet holds the issue back, with
 // nothing written: the closed stage isn't put back meanwhile.
 func TestClosingLateReopen(t *testing.T) {
+	t.Parallel()
 	f, o := closingJudged("completed", func(f *githubtest.Fake) { f.CloseBy(1, "owner") })(t), digestNotifyOrigin(t)
 	d := newDaemon(t, f, o, nil)
 	iterate(t, d)
@@ -586,6 +604,7 @@ func TestClosingLateReopen(t *testing.T) {
 // updated_at holds it back no longer: the label rules put the closed stage
 // back to the latest marker's, with a disagreement error.
 func TestClosingLateReopenBound(t *testing.T) {
+	t.Parallel()
 	f, o := closingJudged("completed", func(f *githubtest.Fake) { f.CloseBy(1, "owner") })(t), digestNotifyOrigin(t)
 	d := newDaemon(t, f, o, nil)
 	iterate(t, d)
@@ -610,6 +629,7 @@ func TestClosingLateReopenBound(t *testing.T) {
 // next pass: her close is reverted, the owner's reopen holds the issue, and
 // her close, on a held issue, gets its notice alone.
 func TestClosingWriterAfterTrustedReopen(t *testing.T) {
+	t.Parallel()
 	f, o := closingFake(t), digestNotifyOrigin(t)
 	f.CloseBy(1, "owner")
 	d := newDaemon(t, f, o, nil)
@@ -634,6 +654,7 @@ func TestClosingWriterAfterTrustedReopen(t *testing.T) {
 // closed stage as judged, so a trusted reopen and an untrusted close that
 // both come while no daemon runs, after an accepted close, aren't found.
 func TestClosingGapWhileStopped(t *testing.T) {
+	t.Parallel()
 	f := closingJudged("completed", func(f *githubtest.Fake) { f.CloseBy(1, "owner") })(t)
 	f.ReopenBy(1, "owner")
 	f.CloseBy(1, "mallory")
@@ -648,6 +669,7 @@ func TestClosingGapWhileStopped(t *testing.T) {
 // back, with a disagreement error, or removed from an issue with no
 // transition marker; an untrusted user's is reverted as any label is.
 func TestClosingStageOnOpenIssue(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		setup  func(t testing.TB) *githubtest.Fake
@@ -700,6 +722,7 @@ func TestClosingStageOnOpenIssue(t *testing.T) {
 // is set back, with no comment. The owner's swap stands, and is never read
 // again.
 func TestClosingStageSwapped(t *testing.T) {
+	t.Parallel()
 	f, o := closingFake(t), digestNotifyOrigin(t)
 	f.CloseBy(1, "owner")
 	d := newDaemon(t, f, o, nil)
@@ -728,6 +751,7 @@ func TestClosingStageSwapped(t *testing.T) {
 // A closed stage whose standing change is the App's removal, which eve put
 // back, explains nothing: the close as not planned gets stage:discarded.
 func TestClosingStageRemovedByTheApp(t *testing.T) {
+	t.Parallel()
 	f, o := closingFake(t), digestNotifyOrigin(t)
 	f.CloseBy(1, "owner")
 	d := newDaemon(t, f, o, nil)
@@ -747,6 +771,7 @@ func TestClosingStageRemovedByTheApp(t *testing.T) {
 // close is still judged, from the issue this daemon held, and reverted,
 // and the label rules put the label back.
 func TestClosingStageTakenOff(t *testing.T) {
+	t.Parallel()
 	f, o := closingFake(t), digestNotifyOrigin(t)
 	d := newDaemon(t, f, o, nil)
 	iterate(t, d)
@@ -761,6 +786,7 @@ func TestClosingStageTakenOff(t *testing.T) {
 // A closed issue with no stage label is no pipeline issue, so its close is
 // never judged, on a pass or a start.
 func TestClosingOutsideThePipeline(t *testing.T) {
+	t.Parallel()
 	f, o := newFake(t), digestNotifyOrigin(t)
 	f.CloseBy(f.AddIssue("owner", "Issue", "body"), "eve")
 	d := newDaemon(t, f, o, nil)
@@ -776,6 +802,7 @@ func TestClosingOutsideThePipeline(t *testing.T) {
 // A child's untrusted close writes nothing to its parent: only the child
 // is reopened.
 func TestClosingChildWritesNothingToParent(t *testing.T) {
+	t.Parallel()
 	f, o := githubtest.New(t, "o/r", slug), digestNotifyOrigin(t)
 	f.SetPermission("owner", "admin")
 	file(f, 0, "from=plan-review to=planned cmd=r1")
@@ -804,6 +831,7 @@ func TestClosingChildWritesNothingToParent(t *testing.T) {
 // has none, and a close again after an untrusted reopen takes the closed
 // stage's when GraphQL gives the close it undid no state reason either.
 func TestClosingNoStateReason(t *testing.T) {
+	t.Parallel()
 	f, o := closingFake(t), digestNotifyOrigin(t)
 	f.ForgetCloser(1, f.CloseAs(1, "owner", "duplicate"))
 	d := newDaemon(t, f, o, nil)
@@ -825,6 +853,7 @@ func TestClosingNoStateReason(t *testing.T) {
 // A close reopened between the poll and the read of the issue to revert it
 // writes nothing, and the next pass forgets it.
 func TestClosingReopenedMeanwhile(t *testing.T) {
+	t.Parallel()
 	f, o := closingFake(t), digestNotifyOrigin(t)
 	d := newDaemon(t, f, o, nil)
 	iterate(t, d)
@@ -844,6 +873,7 @@ func TestClosingReopenedMeanwhile(t *testing.T) {
 // stage:intake with no transition marker, holds nothing: it's reverted with
 // a comment, as anyone's.
 func TestClosingWriterOutsideThePipeline(t *testing.T) {
+	t.Parallel()
 	var event int64
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := newFake(t)
@@ -862,6 +892,7 @@ func TestClosingWriterOutsideThePipeline(t *testing.T) {
 // A closed stage the owner sets by hand on an issue held for its reopen is
 // a disagreement, as on any open issue: the reopen is judged already.
 func TestClosingStageAfterReopenHold(t *testing.T) {
+	t.Parallel()
 	f, o := closingJudged("completed", func(f *githubtest.Fake) { f.CloseBy(1, "owner") })(t), digestNotifyOrigin(t)
 	f.ReopenBy(1, "owner")
 	d := newDaemon(t, f, o, nil)
@@ -880,6 +911,7 @@ func TestClosingStageAfterReopenHold(t *testing.T) {
 // A trusted reopen of an issue whose hold recorded no stage to go back to
 // holds it at clarifying, the one stage /resume could restore.
 func TestClosingTrustedReopenNoAt(t *testing.T) {
+	t.Parallel()
 	f, o := newFake(t), digestNotifyOrigin(t)
 	fileAt(f, "held", "do it")
 	f.CloseBy(1, "owner")
@@ -898,6 +930,7 @@ func TestClosingTrustedReopenNoAt(t *testing.T) {
 // know, holds nothing: its type error stands, and the label rules put the
 // closed stage back to the latest marker's.
 func TestClosingTrustedReopenUnknownType(t *testing.T) {
+	t.Parallel()
 	f, o := closingJudged("completed", func(f *githubtest.Fake) { f.CloseBy(1, "owner") })(t), digestNotifyOrigin(t)
 	f.SetType(1, "feature")
 	f.ReopenBy(1, "owner")
@@ -913,6 +946,7 @@ func TestClosingTrustedReopenUnknownType(t *testing.T) {
 // names this issue is reverted once, and the next pass asks nothing more;
 // a write collaborator's merge of a pull request stands, asked about once.
 func TestClosingMergesWhileRunning(t *testing.T) {
+	t.Parallel()
 	f, o := closingFake(t), digestNotifyOrigin(t)
 	d := newDaemon(t, f, o, nil)
 	iterate(t, d)
@@ -959,6 +993,7 @@ func closingGraphQL(f *githubtest.Fake, from int) int {
 // project's workflow's, is no merge: eve's is reverted once, with its
 // comment, and nothing is asked again, on the next pass or the one after.
 func TestClosingCloserForbidden(t *testing.T) {
+	t.Parallel()
 	for name, close := range map[string]func(f *githubtest.Fake) (int64, string){
 		"forbidden": func(f *githubtest.Fake) (int64, string) {
 			id := f.CloseByPullRequest(1, "eve", githubtest.ClosingPR{Merged: true})
@@ -992,6 +1027,7 @@ func TestClosingCloserForbidden(t *testing.T) {
 // show the App as no merge too: the reopened issue is held for it, asked
 // once, and a second pass asks nothing.
 func TestClosingCloserForbiddenStep1(t *testing.T) {
+	t.Parallel()
 	var event int64
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := closingFake(t)
@@ -1020,6 +1056,7 @@ func TestClosingCloserForbiddenStep1(t *testing.T) {
 // A close whose event is late, on an issue the poll's cursor has passed,
 // stays due, and is judged once its event shows.
 func TestClosingLateEventOlderIssue(t *testing.T) {
+	t.Parallel()
 	f, o := newFake(t), digestNotifyOrigin(t)
 	fileAt(f, "pr-open", "one")
 	fileAt(f, "pr-open", "two")
@@ -1041,6 +1078,7 @@ func TestClosingLateEventOlderIssue(t *testing.T) {
 // eve takes the closed stage off a judged issue while the daemon runs: it's
 // judged again, and put back.
 func TestClosingStageRemoved(t *testing.T) {
+	t.Parallel()
 	f, o := closingFake(t), digestNotifyOrigin(t)
 	f.CloseBy(1, "owner")
 	d := newDaemon(t, f, o, nil)
@@ -1055,6 +1093,7 @@ func TestClosingStageRemoved(t *testing.T) {
 // A failed write of a close's judgement is the pass's error, and the close
 // stays due, so the next pass judges it.
 func TestClosingFailedWrite(t *testing.T) {
+	t.Parallel()
 	f, o := closingFake(t), digestNotifyOrigin(t)
 	f.CloseBy(1, "owner")
 	d := newDaemon(t, f, o, nil)

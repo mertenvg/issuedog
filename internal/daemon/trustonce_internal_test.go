@@ -29,6 +29,7 @@ func (c *trustOnceCounting) Trusted(_ context.Context, login string) (bool, erro
 // A visit's trust asks about each login once, whatever its case, keeps
 // no error, and wraps it.
 func TestTrustOnceVisit(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	inner := &trustOnceCounting{trusted: map[string]bool{"owner": true}, fail: map[string]bool{"mallory": true}, asked: map[string]int{}}
 	v := &trustOnceVisit{trust: inner, verdicts: map[string]bool{}}
@@ -52,6 +53,7 @@ func TestTrustOnceVisit(t *testing.T) {
 // then, trustOnceEnd drops it, and outside one the visit's Dirty calls use
 // Step.Trust itself.
 func TestTrustOnceBeginEnd(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := &Step{}
 	if st.trustOnceBegin(); st.trustOnce != nil || st.trustOnceTrust() != nil {

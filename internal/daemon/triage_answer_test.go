@@ -124,6 +124,7 @@ func registerReverted(key string) string {
 // A code owner's 👍 on the latest flag takes its recommendation, and every
 // other 👍 is ignored. Each runs under Replay.
 func TestFlagByReaction(t *testing.T) {
+	t.Parallel()
 	ask, clarifying := []string{"triage:ask"}, []string{"stage:clarifying"}
 	up := func(by string) func(testing.TB, *githubtest.Fake) {
 		return func(t testing.TB, f *githubtest.Fake) { flagWant(t, f.AddReaction(1001, by, "+1"), 1002) }
@@ -242,6 +243,7 @@ func TestFlagByReaction(t *testing.T) {
 // /track admits a flagged or left issue, and /ignore records left, at
 // intake only. Each runs under Replay.
 func TestFlagCommands(t *testing.T) {
+	t.Parallel()
 	clarifying := []string{"stage:clarifying"}
 	post := func(body string, want int64) func(testing.TB, *githubtest.Fake) {
 		return func(t testing.TB, f *githubtest.Fake) { flagWant(t, f.AddComment(1, "owner", body), want) }
@@ -340,6 +342,7 @@ func TestFlagCommands(t *testing.T) {
 // FlagVisit brings the triage:* labels in line with the latest triage
 // marker, and writes no comment. Each runs under Replay.
 func TestFlagVisitLabels(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name  string
 		setup func(testing.TB) *githubtest.Fake
@@ -394,6 +397,7 @@ func TestFlagVisitLabels(t *testing.T) {
 
 // FlagVisit leaves a closed issue's labels alone.
 func TestFlagVisitClosed(t *testing.T) {
+	t.Parallel()
 	f := flagIssue("owner", func(_ testing.TB, f *githubtest.Fake) {
 		f.AddLabel(1, "mallory", "triage:ask")
 		f.Close(1)
@@ -416,6 +420,7 @@ func TestFlagVisitClosed(t *testing.T) {
 // crash between that comment and triage:left only adds the label, by
 // FlagVisit: no second "left" comment.
 func TestFlagLeaveByReactionAppliesOnce(t *testing.T) {
+	t.Parallel()
 	setup := flagIssue("owner", flagWith("leave", func(_ testing.TB, f *githubtest.Fake) { f.AddReaction(1001, "owner", "+1") }))
 	want := []string{flagText("leave"), flagLeft(flagTakes+": issuedog leaves this issue to people.", "r1002")}
 	for _, crash := range []bool{false, true} {
@@ -454,6 +459,7 @@ func TestFlagLeaveByReactionAppliesOnce(t *testing.T) {
 // FlagByReaction reads no reactions on a closed issue, or on one past
 // intake, whatever its flag says.
 func TestFlagByReactionReadsNothingOffIntake(t *testing.T) {
+	t.Parallel()
 	for name, more := range map[string]func(f *githubtest.Fake){
 		"closed":        func(f *githubtest.Fake) { f.Close(1) },
 		"at clarifying": func(f *githubtest.Fake) { flagTracked(f, 1, "r1002") },
@@ -482,6 +488,7 @@ func TestFlagByReactionReadsNothingOffIntake(t *testing.T) {
 // An error reading trust or the reactions, or making a write, fails the
 // pass, wrapped.
 func TestFlagByReactionErrors(t *testing.T) {
+	t.Parallel()
 	status := func(err error, code int) bool {
 		var e *gogithub.ErrorResponse
 		return errors.As(err, &e) && e.Response.StatusCode == code
@@ -532,6 +539,7 @@ func TestFlagByReactionErrors(t *testing.T) {
 
 // The commands' writes fail the pass, wrapped, and the next pass finishes.
 func TestFlagCommandErrors(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name, body string
 		fail       int
@@ -568,6 +576,7 @@ func TestFlagCommandErrors(t *testing.T) {
 // nothing to write: a code owner decided, so there's no flag, no "left"
 // of the run's, and no admission. The run isn't counted.
 func TestTriageAfterIgnoreDuringRun(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	f.AddIssue("owner", "Idea", "An idea.")
 	g := triageRig(t, f, triageOrigin(t), t.TempDir())
@@ -588,6 +597,7 @@ func TestTriageAfterIgnoreDuringRun(t *testing.T) {
 // back with no comment, and the owner's 👍, which changes no updated_at,
 // is found on the next pass and admits the issue.
 func TestFlagAnswerThroughTheLoop(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	f.AddIssue("eve", "Dry run?", "Maybe a --dry-run.")
 	g := triageRig(t, f, triageOrigin(t), t.TempDir())
@@ -622,6 +632,7 @@ func TestFlagAnswerThroughTheLoop(t *testing.T) {
 // the comment, through the loop's own writes: an edit between it and the
 // App's move is untrusted.
 func TestFlagAdmissionFlow(t *testing.T) {
+	t.Parallel()
 	for name, answer := range map[string]func(f *githubtest.Fake){
 		"👍":      func(f *githubtest.Fake) { f.AddReaction(1001, "owner", "+1") },
 		"/track": func(f *githubtest.Fake) { f.AddComment(1, "owner", "/track") },
@@ -647,6 +658,7 @@ func TestFlagAdmissionFlow(t *testing.T) {
 // Context fails, with no files, when the 👍s on the flag a move names, or
 // the trust of a command's author, can't be read.
 func TestFlagAdmissionErrors(t *testing.T) {
+	t.Parallel()
 	t.Run("the reactions", func(t *testing.T) {
 		f := newFake(t)
 		n := ivEve(f, "epic")

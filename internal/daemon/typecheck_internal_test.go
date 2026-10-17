@@ -18,6 +18,7 @@ func typeErrSnap(typ string, event int64, body string, comments ...string) *gith
 // The type is a type error's cause where no issue of it can be (state.Fits),
 // whatever its parent, origin or past, and an unknown type anywhere.
 func TestTypeErrCause(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		stage state.Stage
 		typ   string
@@ -55,6 +56,7 @@ func TestTypeErrCause(t *testing.T) {
 // approval at spec-review, while the type change that keys it stands and
 // the type doesn't fit; a newer type change, or a type that fits, ends it.
 func TestTypeErrWaitFind(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		typ   string
@@ -84,6 +86,7 @@ func TestTypeErrWaitFind(t *testing.T) {
 // typeErrStands needs a type change that stands, which keys the error, as
 // well as a cause.
 func TestTypeErrStands(t *testing.T) {
+	t.Parallel()
 	task := state.Issue{Stage: state.SpecReview, Item: state.Item{Type: "task"}}
 	for _, tc := range []struct {
 		event int64

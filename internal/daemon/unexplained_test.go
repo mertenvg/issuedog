@@ -35,6 +35,7 @@ func watchWork(d *daemon.Daemon) *[][]string {
 // than github.HoldBound, and after that Work gets it with the label left
 // out: Work never gets it with the label.
 func TestIterateRemovesUnexplainedLabel(t *testing.T) {
+	t.Parallel()
 	every := func(n int, first, gap time.Duration) []time.Duration {
 		waits := []time.Duration{first}
 		for range n - 1 {
@@ -125,6 +126,7 @@ func TestIterateRemovesUnexplainedLabel(t *testing.T) {
 // An issue with a label left out is read again once the label falls due,
 // though nothing changes its updated_at, so the label is removed in time.
 func TestIterateRereadsLeftOutLabels(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	fileAt(f, "ready", "do it", "priority:p2")
 	f.AddLabel(1, "mallory", "foo")
@@ -147,6 +149,7 @@ func TestIterateRereadsLeftOutLabels(t *testing.T) {
 // A new issue whose label events are a second or two late is held back for
 // one pass, then is clean: nothing is removed, and nothing posted.
 func TestIterateLateLabelEvents(t *testing.T) {
+	t.Parallel()
 	for name, file := range map[string]func(f *githubtest.Fake){
 		"filed by the App": func(f *githubtest.Fake) { fileAt(f, "ready", "do it", "priority:p2") },
 		"filed by the owner, with labels": func(f *githubtest.Fake) {

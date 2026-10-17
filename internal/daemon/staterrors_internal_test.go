@@ -42,6 +42,7 @@ func openErrMarker(kind, key, ack string) string {
 // Each kind of state error is open until it's acknowledged or its cause is
 // gone (plan #7, assumption 7), and each way it ends ends it.
 func TestOpenErrors(t *testing.T) {
+	t.Parallel()
 	const (
 		toClarifying = "<!-- issuedog:transition from=intake to=clarifying cmd=100 -->"
 		toSpecReview = "<!-- issuedog:transition from=clarifying to=spec-review run=r1 -->"
@@ -162,6 +163,7 @@ func TestOpenErrors(t *testing.T) {
 // error, and nothing else: not the body, a dirty copy, an ack reply, a
 // user's copy, or another kind or key.
 func TestOpenErrCopies(t *testing.T) {
+	t.Parallel()
 	posted := openErrMarker("disagreement", "9", "")
 	s := openErrSnap(posted,
 		posted,                                   // 1
@@ -181,6 +183,7 @@ func TestOpenErrCopies(t *testing.T) {
 // openErrors asks for the inputs once, and only for an error keyed on
 // them, and returns its error.
 func TestOpenErrorsInputs(t *testing.T) {
+	t.Parallel()
 	const toClarifying = "<!-- issuedog:transition from=intake to=clarifying cmd=100 -->"
 	boom := errors.New("boom")
 	calls := 0
@@ -208,6 +211,7 @@ func TestOpenErrorsInputs(t *testing.T) {
 // openErrAny reads the errors with the dirty content it's given: an error
 // whose comment is dirty isn't open.
 func TestOpenErrAnyDirt(t *testing.T) {
+	t.Parallel()
 	st := &Step{Applier: &Applier{Owner: "o", Repo: "r", AppSlug: openErrSlug}}
 	s := openErrSnap("", openErrMarker("disagreement", "9", ""))
 	for _, tc := range []struct {

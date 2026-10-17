@@ -13,6 +13,7 @@ import (
 // flagInPipeline names the first reason an issue is in the pipeline: a
 // stage label, one left out, then a transition marker.
 func TestFlagInPipeline(t *testing.T) {
+	t.Parallel()
 	transition := state.Issue{Markers: []github.Marker{{Kind: "triage"}, {Kind: "transition"}}}
 	for _, tc := range []struct {
 		name string
@@ -36,6 +37,7 @@ func TestFlagInPipeline(t *testing.T) {
 // its key on the issue already, it only finishes the labels. A marker of
 // another key, a dirty one, or another kind's, doesn't count.
 func TestFlagLeaveCheckedFirst(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, body string
 		dirty      bool
@@ -72,6 +74,7 @@ func TestFlagLeaveCheckedFirst(t *testing.T) {
 }
 
 func TestFlagAsked(t *testing.T) {
+	t.Parallel()
 	for label, want := range map[string]bool{"triage:ask": true, "Triage:ASK": true, "triage:left": false, "stage:intake": false, "": false} {
 		if got := flagAsked(label); got != want {
 			t.Errorf("flagAsked(%q) = %t, want %t", label, got, want)

@@ -31,6 +31,7 @@ func holdItemResolveDaemon(t testing.TB, f *githubtest.Fake, o *origin) *daemon.
 // clarifying. An unchanged pass, and a restart, write nothing, and the
 // unchanged pass asks only conditional GETs answered 304.
 func TestHoldItemGoneAfterThumbsUp(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		fake  func(t testing.TB) *githubtest.Fake
@@ -74,6 +75,7 @@ func TestHoldItemGoneAfterThumbsUp(t *testing.T) {
 // owner 👍'd, her open comment, and her rename, with its notice. The item
 // lists the open comment and the rename, and names the owner hold.
 func TestHoldItemResolvedUnchangedPass(t *testing.T) {
+	t.Parallel()
 	f, o := holdItemFake(t), digestNotifyOrigin(t)
 	d := holdItemResolveDaemon(t, f, o)
 	first := f.AddComment(2, "mallory", "Wait.")
@@ -101,6 +103,7 @@ func TestHoldItemResolvedUnchangedPass(t *testing.T) {
 // once the issue's own /resume ends it, while a trigger after the /resume
 // keeps it held, it's no longer named.
 func TestHoldItemOwnHoldEndedByResume(t *testing.T) {
+	t.Parallel()
 	f, o := holdItemFake(t), digestNotifyOrigin(t)
 	d := holdItemResolveDaemon(t, f, o)
 	f.AddComment(2, "mallory", "Wait.")

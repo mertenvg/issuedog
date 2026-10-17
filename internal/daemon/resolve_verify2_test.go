@@ -35,6 +35,7 @@ func resolveResumeTwice(t *testing.T, f *githubtest.Fake) int64 {
 // says no discussion ended, as that /resume itself went back to at. So it
 // is from a discussion hold, and from an owner /hold.
 func TestResolveSecondResume(t *testing.T) {
+	t.Parallel()
 	for name, setup := range map[string]func(t testing.TB) *githubtest.Fake{
 		"a discussion hold": resolveHeldWith(func(_ testing.TB, _ *githubtest.Fake) {}),
 		"an owner /hold": func(t testing.TB) *githubtest.Fake {
@@ -61,6 +62,7 @@ func TestResolveSecondResume(t *testing.T) {
 // resolved while the owner's hold stayed, carries that in its record
 // (after=1), so the second /resume goes to clarifying.
 func TestResolveSecondResumeAfterDiscussion(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	f.AddComment(1, "owner", "/hold")
 	if err := resolvePass(t, 1)(f); err != nil {
@@ -92,6 +94,7 @@ func TestResolveSecondResumeAfterDiscussion(t *testing.T) {
 // 2), with no resolved time, so no later pass reads the ancestors again:
 // an unchanged pass costs no rate limit.
 func TestResolveAncestorHoldWithNoAct(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	for n := 1; n <= 3; n++ {
 		fileAt(f, "ready", "do it")
@@ -145,6 +148,7 @@ func TestResolveAncestorHoldWithNoAct(t *testing.T) {
 // The walk up for ancestors' /holds stops at a parent in another repo, as
 // madeAbove's does: its /hold keeps nothing held here.
 func TestResolveAboveStopsAtOtherRepo(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	file(f, 1, ready)
 	c := f.AddComment(2, "mallory", "Wait.")

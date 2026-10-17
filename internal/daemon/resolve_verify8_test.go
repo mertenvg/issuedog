@@ -99,6 +99,7 @@ func resolveGoneSetup(byHand, same bool) func(testing.TB) *githubtest.Fake {
 // and, from then on, writes nothing more. The owner's /resume on #2 ends
 // it, and #1 goes to clarifying.
 func TestResolveGoneAncestorHold(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name         string
 		byHand, same bool
@@ -160,6 +161,7 @@ func resolveGoneBelow(t testing.TB) *githubtest.Fake {
 // it may have been, so #3's /resume, which ends nothing else, is rejected,
 // naming #2, and #1 stays held.
 func TestResolveGoneNotEndedFromAbove(t *testing.T) {
+	t.Parallel()
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := resolveGoneBelow(t)
 		f.AddComment(3, "owner", "/resume")
@@ -180,6 +182,7 @@ func TestResolveGoneNotEndedFromAbove(t *testing.T) {
 // /resume, posted before the 👍's pass, leaves #1 held by it, and the
 // record follows.
 func TestResolveGoneNotEndedFromAboveUnrecorded(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	file(f, 0, "from=ready to=held at=ready reason=owner by=owner event=77") // #2
 	file(f, 0, ready)                                                        // #3
@@ -212,6 +215,7 @@ func TestResolveGoneNotEndedFromAboveUnrecorded(t *testing.T) {
 // ends #3's hold everywhere, leaves #2 held for its own deletion, and #1
 // held by the deleted comment on #2.
 func TestResolveGoneStillOnHoldText(t *testing.T) {
+	t.Parallel()
 	var resume int64
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := discFake(t)
@@ -269,6 +273,7 @@ func resolveOwnOnDiscussion(t testing.TB) (*githubtest.Fake, int64, int64) {
 // the owner's 👍 resolves mallory's comment, #1 stays held for its /hold,
 // until its own /resume, which sends it to clarifying.
 func TestResolveOwnHoldOnDiscussionStays(t *testing.T) {
+	t.Parallel()
 	var w, resume int64
 	setup := func(t testing.TB) *githubtest.Fake {
 		var f *githubtest.Fake
@@ -301,6 +306,7 @@ func TestResolveOwnHoldOnDiscussionStays(t *testing.T) {
 // neither: it's rejected, naming #2, and once mallory's comment is
 // resolved, #2 and #3 both stay held, as the /hold on #2 holds them.
 func TestResolveOwnHoldOnDiscussionThreeLevels(t *testing.T) {
+	t.Parallel()
 	var w, resume int64
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := discFake(t)  // #1, at the top
@@ -334,6 +340,7 @@ func TestResolveOwnHoldOnDiscussionThreeLevels(t *testing.T) {
 // stays held by its own /hold, until its own /resume sends it to
 // clarifying.
 func TestResolveOwnHoldUnderParentHoldWithoutMarker(t *testing.T) {
+	t.Parallel()
 	var w, parent int64
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := discFake(t)
@@ -375,6 +382,7 @@ func TestResolveOwnHoldUnderParentHoldWithoutMarker(t *testing.T) {
 // resolves that, #1 still stays held, until #2's /resume, which takes #2
 // back and sends #1 to clarifying.
 func TestResolveHoldMarkedBelowNotEndedFromAbove(t *testing.T) {
+	t.Parallel()
 	var w, between, top int64
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := discFake(t)
@@ -425,6 +433,7 @@ func TestResolveHoldMarkedBelowNotEndedFromAbove(t *testing.T) {
 // #2 go to clarifying, whichever came first (#188's verify, attempt 3);
 // #4 stays held.
 func TestResolveDeletedAboveEitherOrder(t *testing.T) {
+	t.Parallel()
 	for _, resumeFirst := range []bool{false, true} {
 		t.Run(fmt.Sprintf("resume first %v", resumeFirst), func(t *testing.T) {
 			f := discFake(t)
@@ -467,6 +476,7 @@ func TestResolveDeletedAboveEitherOrder(t *testing.T) {
 // mallory's comment is resolved, #1 goes to clarifying (resolveOwnHolds'
 // bound).
 func TestResolveEditedBeforeHoldIsNoHold(t *testing.T) {
+	t.Parallel()
 	f := githubtest.New(t, "o/r", slug)
 	f.SetPermission("owner", "admin")
 	f.SetPermission("mallory", "write")
@@ -493,6 +503,7 @@ func TestResolveEditedBeforeHoldIsNoHold(t *testing.T) {
 // held. No pass over #3 has marked the edit yet, so only madeAbove's own
 // reading of #3's edits keeps the forged marker out.
 func TestResolveForgedMarkerAbove(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)  // #1
 	file(f, 0, ready) // #2
 	file(f, 0, ready) // #3
@@ -531,6 +542,7 @@ func resolveGoneParent(t testing.TB) (*githubtest.Fake, int64, int64) {
 // before the deletion doesn't, as the deleted comment may have been a
 // later /hold, failing closed.
 func TestResolveGoneEndedBy(t *testing.T) {
+	t.Parallel()
 	t.Run("a /resume on #2 after the deletion, before the 👍", func(t *testing.T) {
 		f, w, hold := resolveGoneParent(t)
 		f.DeleteCommentBy("mallory", hold)
@@ -584,6 +596,7 @@ func TestResolveGoneEndedBy(t *testing.T) {
 // user who isn't trusted. A comment by someone GitHub doesn't name, and
 // two deleted on the same issue, do; the record names that issue once.
 func TestResolveGoneWhich(t *testing.T) {
+	t.Parallel()
 	t.Run("deleted before the hold", func(t *testing.T) {
 		f := discFake(t)
 		file(f, 0, ready) // #2
@@ -653,6 +666,7 @@ func TestResolveGoneWhich(t *testing.T) {
 // below #3, so #3's /resume ends #3's hold alone, and #2 and #1 stay held
 // by #2's.
 func TestResolveMarkedHoldNotStacked(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	file(f, 0, ready) // #2
 	file(f, 0, ready) // #3
@@ -673,6 +687,7 @@ func TestResolveMarkedHoldNotStacked(t *testing.T) {
 // /resume ends #2's hold, and #1 stays held by its own /hold once
 // mallory's comment is resolved, as it was posted below #2.
 func TestResolveOwnHoldBeforeParentHold(t *testing.T) {
+	t.Parallel()
 	f, w, _ := resolveOwnOnDiscussion(t)
 	f.AddComment(2, "owner", "/hold")
 	resolveSettle(t, f, 2, 1)
@@ -690,6 +705,7 @@ func TestResolveOwnHoldBeforeParentHold(t *testing.T) {
 // A later /hold and /resume on #3 end neither, on #2 or on #1, as #2's
 // /hold was posted below #3.
 func TestResolveOwnHoldNotStackedOnEarlierHold(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	file(f, 0, ready) // #2
 	file(f, 0, ready) // #3
@@ -720,6 +736,7 @@ func TestResolveOwnHoldNotStackedOnEarlierHold(t *testing.T) {
 // so #3's /resume doesn't end it, on #2 or on #1, and both stay held by it
 // once the discussions are resolved.
 func TestResolveOwnHoldNotStackedOnEndedHoldAbove(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	file(f, 0, ready) // #2
 	file(f, 0, ready) // #3
@@ -797,6 +814,7 @@ func (l *resolveLoop) task(parent int) int {
 // /hold, whether the 👍s come before #2's /resume or after it, with a
 // restart between, until #3's /resume, which sends both to clarifying.
 func TestResolveHoldAboveResumeNotABase(t *testing.T) {
+	t.Parallel()
 	for _, thumbsFirst := range []bool{false, true} {
 		t.Run(fmt.Sprintf("thumbs first %v", thumbsFirst), func(t *testing.T) {
 			l := newResolveLoop(t, newFake(t))
@@ -859,6 +877,7 @@ func TestResolveHoldAboveResumeNotABase(t *testing.T) {
 // comment, agrees once that is resolved: both stay held, until #2's
 // /resume.
 func TestResolveMarkedHoldAboveResumeNotABase(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name         string
 		byHand, gone bool
@@ -915,6 +934,7 @@ func TestResolveMarkedHoldAboveResumeNotABase(t *testing.T) {
 // sends #1 to clarifying, and #2 stays held by its own /hold until #2's
 // /resume.
 func TestResolveHoldsBetweenNotEndedFromAbove(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)  // #1
 	file(f, 0, ready) // #2
 	file(f, 0, ready) // #3

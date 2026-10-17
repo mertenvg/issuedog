@@ -66,6 +66,7 @@ func postsOn(n int) func(githubtest.Request) bool {
 // anything is removed. With max_attempts 1, a blocked run gives only its
 // transition error, and a result dropped for an edited input no cap error.
 func TestUncountedRunWhoseLeaseOutlivesCleanup(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"blocked", "dropped"} {
 		t.Run(name, func(t *testing.T) {
 			f := newFake(t)
@@ -126,6 +127,7 @@ func TestUncountedRunWhoseLeaseOutlivesCleanup(t *testing.T) {
 // the lease, which holds no count. With max_attempts 1, a blocked run
 // gives only its transition error.
 func TestEndedRunLeftoversRemoved(t *testing.T) {
+	t.Parallel()
 	blockedRig := func(f *githubtest.Fake, o *origin, root string) *rig {
 		g := newRig(t, f, o, root)
 		g.d.Config.Loop.MaxAttempts = 1
@@ -193,6 +195,7 @@ func (badSchemaStage) Schema() []byte { return []byte(`{"type": 5}`) }
 // A Stage whose schema doesn't compile starts no run, as nothing could
 // check its result. It's a setup failure, so no attempt, reported once.
 func TestBadSchemaStartsNoRun(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	interview(f)
 	g := newRig(t, f, newOrigin(t), t.TempDir())
@@ -218,6 +221,7 @@ func TestBadSchemaStartsNoRun(t *testing.T) {
 // gate and isn't counted, so with max_attempts 1 the stage runs again once
 // the gate opens.
 func TestResumedUsageLimitIsNoAttempt(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	answer := interview(f)
 	root := t.TempDir()
@@ -246,6 +250,7 @@ func TestResumedUsageLimitIsNoAttempt(t *testing.T) {
 // failure is logged and the next issue runs. Once the post works, the cap
 // is posted once.
 func TestCapPostFailureDoesNotStarveOthers(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
 	f := newFake(t)
 	interview(f)
 	f.AddLabel(1, app, "priority:p1")
@@ -290,6 +295,7 @@ func TestCapPostFailureDoesNotStarveOthers(t *testing.T) {
 // Replay over the cap's state error, posted by RunStage once a restart
 // finds the cap reached.
 func TestCapRetryReplay(t *testing.T) {
+	t.Parallel()
 	replayRuns(t, func(t testing.TB, f *githubtest.Fake, root string) {
 		endLease(t, root, "failed", interview(f), 1)
 	}, func(g *rig) {
@@ -302,6 +308,7 @@ func TestCapRetryReplay(t *testing.T) {
 // A run whose move the table lacks keeps the count of the failures before
 // it, across restarts, so the next failure in the round can be the last.
 func TestBlockedKeepsEarlierCount(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	answer := interview(f)
 	o, root := newOrigin(t), t.TempDir()
@@ -330,6 +337,7 @@ func TestBlockedKeepsEarlierCount(t *testing.T) {
 // blocked's state error quotes Apply's error, which may hold text the App
 // didn't write, so it's escaped.
 func TestBlockedTextIsEscaped(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	interview(f)
 	g := newRig(t, f, newOrigin(t), t.TempDir())
@@ -344,6 +352,7 @@ func TestBlockedTextIsEscaped(t *testing.T) {
 // A failure to post blocked's state error is returned, and the run's
 // result kept, so the next pass posts it with no run.
 func TestBlockedPostFailureIsReturned(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	interview(f)
 	g := newRig(t, f, newOrigin(t), t.TempDir())
@@ -366,6 +375,7 @@ func TestBlockedPostFailureIsReturned(t *testing.T) {
 // Replay over a live run whose move the table lacks, with its state error
 // posted by Transition, or by blocked for a move not by Result.Move.
 func TestBlockedRunReplay(t *testing.T) {
+	t.Parallel()
 	for name, more := range map[string]func(g *rig){
 		"by Transition": func(*rig) {},
 		"by blocked":    func(g *rig) { g.stage.applyErr = fmt.Errorf("no row: %w", state.ErrNoTransition) },
@@ -386,6 +396,7 @@ func TestBlockedRunReplay(t *testing.T) {
 // A lease with no result, whose issue is found gone, is dropped with its
 // clone, and the daemon drops the issue within two passes.
 func TestResumeFindsIssueGone(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	answer := interview(f)
 	root := t.TempDir()
@@ -420,6 +431,7 @@ func TestResumeFindsIssueGone(t *testing.T) {
 
 // After a run the issue is read again, though the run wrote nothing.
 func TestIssueReadAgainAfterRun(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	interview(f)
 	g := newRig(t, f, newOrigin(t), t.TempDir())
@@ -438,6 +450,7 @@ func TestIssueReadAgainAfterRun(t *testing.T) {
 // An issue with the cap's state error gets no run, even with no count of
 // its attempts, such as after a restart that lost the lease.
 func TestReportedCapNeedsNoCount(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	interview(f)
 	o, root := newOrigin(t), t.TempDir()
@@ -461,6 +474,7 @@ func TestReportedCapNeedsNoCount(t *testing.T) {
 // A lease whose result, or issue, can't be read stays for the next pass:
 // neither is a failed attempt.
 func TestResumeReadErrors(t *testing.T) {
+	t.Parallel()
 	for name, fail := range map[string]func(t *testing.T, f *githubtest.Fake, g *rig){
 		"result": func(t *testing.T, _ *githubtest.Fake, g *rig) {
 			if err := os.MkdirAll(g.path("state", "runs", "lost.json"), 0o700); err != nil {
@@ -507,6 +521,7 @@ func chmod(t *testing.T, path string, mode os.FileMode) {
 // A saved usage-limit result found after a restart keeps the count of the
 // failures before it, so with max_attempts 2 the next failure is the cap.
 func TestResumedUsageLimitKeepsCount(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	answer := interview(f)
 	root := t.TempDir()
@@ -530,6 +545,7 @@ func TestResumedUsageLimitKeepsCount(t *testing.T) {
 // An ended lease with a count, resumed in passes with no run, keeps it for
 // a later restart.
 func TestEndedLeaseKeptAcrossPasses(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	answer := interview(f)
 	o, root := newOrigin(t), t.TempDir()
@@ -554,6 +570,7 @@ func TestEndedLeaseKeptAcrossPasses(t *testing.T) {
 // A failure to finish a run whose result is applied isn't a failed apply:
 // with max_attempts 1, it gives no cap error, and the next pass finishes.
 func TestFinishFailureIsNoAttempt(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	answer := interview(f)
 	g := newRig(t, f, newOrigin(t), t.TempDir())
@@ -590,6 +607,7 @@ func TestFinishFailureIsNoAttempt(t *testing.T) {
 // Errors ending a run are returned: removing an ended lease's files or the
 // lease itself in resume, and ending a failed run.
 func TestEndErrorsAreReturned(t *testing.T) {
+	t.Parallel()
 	t.Run("ended lease's files", func(t *testing.T) {
 		f := newFake(t)
 		answer := interview(f)

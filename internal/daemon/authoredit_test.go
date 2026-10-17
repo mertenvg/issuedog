@@ -17,6 +17,7 @@ import (
 // deleted may have been a rewrite, so it counts as one. Trust is asked
 // about the author only where it decides, once.
 func TestAuthorEditAfterRewrite(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		author string
@@ -100,6 +101,7 @@ func authorEditReview(rewrite bool, more func(t testing.TB, f *githubtest.Fake))
 // revision 1's text again. Before any rewrite their edit is still
 // sanctioned: the body stays clean and the 👍 approves it.
 func TestAuthorEditApproval(t *testing.T) {
+	t.Parallel()
 	atReview := []string{"stage:spec-review"}
 	byFiler := "the issue description has an edit by filer that wasn't approved, so I can't approve it"
 	noted := "<!-- issuedog:dirty by=filer -->\n> ⚠️ issuedog ignores this issue description: " +

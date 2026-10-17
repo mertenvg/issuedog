@@ -14,6 +14,7 @@ import (
 // marker, or the App's of another kind, doesn't count, nor does a label
 // that only looks like a stage.
 func TestAssignPipeline(t *testing.T) {
+	t.Parallel()
 	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
 	owner := github.Author{Login: "owner", Type: "User"}
 	const move = "<!-- issuedog:transition from=intake to=ready run=r1 -->"
@@ -41,6 +42,7 @@ func TestAssignPipeline(t *testing.T) {
 // assignNotify gives notify without an empty login or a repeat in any
 // case, and forgets the dropped logins only when notify changes.
 func TestAssignNotify(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{Config: &config.Config{Notify: []string{"Owner", "", "bob", "owner"}}}
 	if got := d.assignNotify(); !slices.Equal(got, []string{"Owner", "bob"}) {
 		t.Errorf("assignNotify = %q; want Owner and bob", got)
@@ -63,6 +65,7 @@ func TestAssignNotify(t *testing.T) {
 
 // assignMinus and assignSame compare logins in any case.
 func TestAssignCompare(t *testing.T) {
+	t.Parallel()
 	if got := assignMinus([]string{"Amy", "bob", "Cy"}, []string{"BOB"}); !slices.Equal(got, []string{"Amy", "Cy"}) {
 		t.Errorf("assignMinus = %q; want Amy and Cy", got)
 	}
@@ -90,6 +93,7 @@ func TestAssignCompare(t *testing.T) {
 // nobody, so a pass that GitHub's updated_at doesn't make read the issue
 // again still compares against what GitHub has.
 func TestAssignTakesAnswer(t *testing.T) {
+	t.Parallel()
 	f := githubtest.New(t, "o/r", "issuedog")
 	item := f.AddIssue("owner", "Waits", "")
 	f.SetAssignees(item, "bob")

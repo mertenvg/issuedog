@@ -35,6 +35,7 @@ func discRecordedSnapshot(at func(int) time.Time, more ...string) *github.Snapsh
 // snapshot no longer shows. A move out of held after them
 // resolves them all.
 func TestDiscFindRecordedFromTheFloor(t *testing.T) {
+	t.Parallel()
 	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
 	s := discRecordedSnapshot(at, "c7", "dCDE_x", "77")
 	d := Dirt{}
@@ -69,6 +70,7 @@ func TestDiscFindRecordedFromTheFloor(t *testing.T) {
 // own pass, with what the snapshot says of it, and discRecorded adds no
 // second one of it.
 func TestDiscRecordedOnce(t *testing.T) {
+	t.Parallel()
 	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
 	s := discRecordedSnapshot(at, "c12")
 	s.Comments = append(s.Comments, github.Comment{ID: 12, Author: github.Author{Login: "mallory", Type: "User"}, Body: "Wait.", CreatedAt: at(25)})
@@ -89,6 +91,7 @@ func TestDiscRecordedOnce(t *testing.T) {
 // A key tells its trigger's kind, content and an edit's time; any other
 // key is a trigger of no kind, at its record's time.
 func TestDiscFromKey(t *testing.T) {
+	t.Parallel()
 	rec := time.Date(2026, 1, 1, 0, 0, 9, 0, time.UTC)
 	for _, tt := range []struct {
 		key  string
@@ -116,6 +119,7 @@ func TestDiscFromKey(t *testing.T) {
 // A trigger from its record says what its key tells, and that it was
 // recorded earlier.
 func TestDiscWhatRecorded(t *testing.T) {
+	t.Parallel()
 	at := time.Unix(1767225606, 0)
 	for _, tt := range []struct {
 		tr   discTrigger

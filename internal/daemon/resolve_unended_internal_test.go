@@ -15,6 +15,7 @@ import (
 // #188's verify, attempt 3): a /resume the App applied there ends it, and
 // one above it doesn't.
 func TestResolveUnendedFarthestMarker(t *testing.T) {
+	t.Parallel()
 	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
 	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
 	owner := github.Author{Login: "owner", Type: "User"}
@@ -75,6 +76,7 @@ func TestResolveUnendedFarthestMarker(t *testing.T) {
 // nothing else parses: the record that names it is read back only when
 // it's well formed (resolvePeriodOf).
 func TestResolveGoneParse(t *testing.T) {
+	t.Parallel()
 	m := resolveGoneHold(12, time.Unix(1767225600, 0))
 	if v := m.Fields[resolveGone]; v != "12-1767225600" || resolveHoldKey(m) != "g12-1767225600" {
 		t.Fatalf("gone hold %v, key %q; want gone=12-1767225600, key g12-1767225600", m, resolveHoldKey(m))

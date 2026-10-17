@@ -30,6 +30,7 @@ import (
 // marker, is found, unless it has an origin marker, and so is one of the
 // App's with the marker and another title. Another bot's never is.
 func TestDigestPollRecords(t *testing.T) {
+	t.Parallel()
 	const app = "issuedog[bot]"
 	f := githubtest.New(t, "o/r", "issuedog")
 	f.AddIssue(app, "issuedog digest", "<!-- issuedog:digest -->")
@@ -81,6 +82,7 @@ func TestDigestPollRecords(t *testing.T) {
 // A digest marked to be read again, as a run's lease or a command that
 // touched it would, is never read or visited: it stays out of the pipeline.
 func TestDigestNeverReadAgain(t *testing.T) {
+	t.Parallel()
 	f := githubtest.New(t, "o/r", "issuedog")
 	f.AddIssue("issuedog[bot]", "issuedog digest", "<!-- issuedog:digest -->")
 	f.AddIssue("owner", "Mine", "")
@@ -108,6 +110,7 @@ func TestDigestNeverReadAgain(t *testing.T) {
 // digestEdit writes a body once: the body it wrote is the one it compares
 // with until the poll lists the digest again, as T8 relies on.
 func TestDigestEditOnce(t *testing.T) {
+	t.Parallel()
 	f := githubtest.New(t, "o/r", "issuedog")
 	f.AddIssue("issuedog[bot]", "issuedog digest", "<!-- issuedog:digest -->")
 	d := &Daemon{Step: &Step{Applier: &Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}}, stale: map[int]bool{}}
@@ -127,6 +130,7 @@ func TestDigestEditOnce(t *testing.T) {
 // A body GitHub keeps with "\r\n" line breaks, or space around it, is
 // the same body: digestEdit writes nothing for it.
 func TestDigestEditNormalised(t *testing.T) {
+	t.Parallel()
 	f := githubtest.New(t, "o/r", "issuedog")
 	f.AddIssue("issuedog[bot]", "issuedog digest", "Nothing is waiting on you.\r\n\r\n<!-- issuedog:digest -->\r\n")
 	d := &Daemon{Step: &Step{Applier: &Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}}, stale: map[int]bool{}}
@@ -155,6 +159,7 @@ func TestDigestEditNormalised(t *testing.T) {
 // for this digest, and with none when the check was for another, so an
 // edit that took the marker out is put right.
 func TestDigestRewriteNote(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		pinned int
 		want   string
@@ -194,6 +199,7 @@ func digestRewriteDaemon(t *testing.T, f *githubtest.Fake, notify ...string) *Da
 // An announcement is recorded as soon as it's posted: a second rewrite
 // before any poll lists it announces nothing again (#158's verify).
 func TestDigestRewriteRecordsAtOnce(t *testing.T) {
+	t.Parallel()
 	f := githubtest.New(t, "o/r", "issuedog")
 	f.AddIssue("issuedog[bot]", "issuedog digest", digestBody("", nil))
 	d := digestRewriteDaemon(t, f, "owner")
@@ -214,6 +220,7 @@ func TestDigestRewriteRecordsAtOnce(t *testing.T) {
 // An announcement that can't be rendered, for an item too big for any
 // comment, is logged, and the body is still written, with no error.
 func TestDigestRewriteNewsFails(t *testing.T) {
+	t.Parallel()
 	f := githubtest.New(t, "o/r", "issuedog")
 	f.AddIssue("issuedog[bot]", "issuedog digest", digestBody("", nil))
 	d := digestRewriteDaemon(t, f, "owner")
@@ -229,6 +236,7 @@ func TestDigestRewriteNewsFails(t *testing.T) {
 // An issue found gone on two reads loses its items, as one that closes
 // does, and the digest stops listing it.
 func TestDigestCacheGone(t *testing.T) {
+	t.Parallel()
 	f := githubtest.New(t, "o/r", "issuedog")
 	f.SetPermission("owner", "admin")
 	f.AddIssue("issuedog[bot]", "issuedog digest", digestBody("", nil))
@@ -259,6 +267,7 @@ func TestDigestCacheGone(t *testing.T) {
 // digest gone, not a write (#160's verify): the edit, the announcement and
 // the state change.
 func TestDigestMovedRedirect(t *testing.T) {
+	t.Parallel()
 	var got []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got = append(got, r.Method+" "+r.URL.Path)
@@ -304,6 +313,7 @@ func TestDigestMovedRedirect(t *testing.T) {
 // digestMoved takes a write answered at this repo's path, by an issue of
 // this repo or none, as not moved, matching the repo in any case.
 func TestDigestMoved(t *testing.T) {
+	t.Parallel()
 	a := &Applier{Owner: "O", Repo: "r"}
 	resp := func(path string) *gogithub.Response {
 		u, err := url.Parse("https://api.github.com" + path)
@@ -345,6 +355,7 @@ func (digestTrust404) Trusted(context.Context, string) (bool, error) {
 // resolved, is the pass's error, but not the digest gone: it's kept, and
 // the issues aren't listed again.
 func TestDigestTrust404NotGone(t *testing.T) {
+	t.Parallel()
 	f := githubtest.New(t, "o/r", "issuedog")
 	f.AddIssue("issuedog[bot]", "issuedog digest", digestBody("", nil))
 	f.CloseBy(1, "owner")
@@ -362,6 +373,7 @@ func TestDigestTrust404NotGone(t *testing.T) {
 
 // digestGone marks only a 404, a 410 or a transfer, and keeps the error.
 func TestDigestGone(t *testing.T) {
+	t.Parallel()
 	status := func(code int) error {
 		return fmt.Errorf("edit: %w", &gogithub.ErrorResponse{Response: &http.Response{StatusCode: code}})
 	}
@@ -391,6 +403,7 @@ func (digestTrustAll) Trusted(context.Context, string) (bool, error) { return tr
 // No close or reopen by a bot, the App's included, or a ghost stands, even
 // where trust would say yes; a trusted user's does.
 func TestDigestTrusted(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{Step: &Step{Applier: &Applier{AppSlug: "issuedog"}, Trust: digestTrustAll{}}}
 	for _, tc := range []struct {
 		actor *gogithub.User
@@ -410,6 +423,7 @@ func TestDigestTrusted(t *testing.T) {
 // The pin note names GitHub's message alone when the error wraps
 // github.ErrGraphQL, and the whole error otherwise, on one line.
 func TestDigestPinNote(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		err  error
 		want string
@@ -428,6 +442,7 @@ func TestDigestPinNote(t *testing.T) {
 // even with no close or reopen event either, waits from its own first pass,
 // and so does the same digest found again after it was dropped.
 func TestLateReopenSeenPerDigest(t *testing.T) {
+	t.Parallel()
 	f := githubtest.New(t, "o/r", "issuedog")
 	d := digestRewriteDaemon(t, f)
 	now := d.Step.Client.Now()
@@ -446,6 +461,7 @@ func TestLateReopenSeenPerDigest(t *testing.T) {
 // The wait ends at lateReopenWait exactly, by the clock given: a
 // nanosecond before, the digest still waits.
 func TestLateReopenLastInstant(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{}
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	s := digestSeen{number: 1, open: true, reason: "reopened", updated: start}

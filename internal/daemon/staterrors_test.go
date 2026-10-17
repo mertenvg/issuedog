@@ -85,6 +85,7 @@ func errAckRun(t *testing.T, f *githubtest.Fake, pass func(*githubtest.Fake) err
 // The earliest trusted 👍 on an open state error gets one ack reply that
 // names its kind and key, under Replay, and a pass after it writes nothing.
 func TestErrAckByReaction(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		more    func(t testing.TB, f *githubtest.Fake)
@@ -139,6 +140,7 @@ func TestErrAckByReaction(t *testing.T) {
 // No ack for a 👍 that isn't a trusted user's, or one on an error that has
 // ended. An ended error's reactions aren't read.
 func TestErrAckIgnored(t *testing.T) {
+	t.Parallel()
 	const moved = "<!-- issuedog:transition from=ready to=ready run=again -->"
 	for _, tc := range []struct {
 		name  string
@@ -186,6 +188,7 @@ func TestErrAckIgnored(t *testing.T) {
 // Removing the 👍 after the ack changes nothing, and a later 👍 adds no
 // second ack.
 func TestErrAckRemoved(t *testing.T) {
+	t.Parallel()
 	f := errAckIssue(func(t testing.TB, f *githubtest.Fake) { flagWant(t, f.AddReaction(1002, "owner", "+1"), 1003) })(t)
 	errAckRun(t, f, errAckPass(t))
 	want := []string{"<!-- issuedog:transition from=intake to=ready run=rready -->", errAckError, errAckReply("owner", "disagreement", "9", 1003)}
@@ -211,6 +214,7 @@ func TestErrAckRemoved(t *testing.T) {
 // dirty, so only the ack says it was posted. Here a 👍 on a task's revision
 // asks for a move the table lacks (SPEC §5.3), and each pass tries it.
 func TestErrAckNeverPostedAgain(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	n := f.AddIssue("owner", "Task", "body")
 	f.SetType(n, "Task")
@@ -262,6 +266,7 @@ func TestErrAckNeverPostedAgain(t *testing.T) {
 // only conditional reads. An issue whose error has ended, or was
 // acknowledged, isn't visited.
 func TestErrAckThroughTheLoop(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	fileAt(f, "ready", "body")
 	flagWant(t, f.AddComment(1, app, errAckError), 1002)
@@ -320,6 +325,7 @@ func TestErrAckThroughTheLoop(t *testing.T) {
 // out itself: a trusted user's clean comment, new input, ends it, so its
 // 👍 is ignored and not read. Any other comment leaves it open.
 func TestErrAckInputs(t *testing.T) {
+	t.Parallel()
 	const attempts = "Failed.\n\n<!-- issuedog:error kind=attempts key=clarifying-1001 -->"
 	for _, tc := range []struct {
 		name  string
@@ -354,6 +360,7 @@ func TestErrAckInputs(t *testing.T) {
 // An error reading trust or reactions, or posting the ack, fails the
 // trigger, wrapped.
 func TestErrAckErrors(t *testing.T) {
+	t.Parallel()
 	status := func(err error, code int) bool {
 		var e *gogithub.ErrorResponse
 		return errors.As(err, &e) && e.Response.StatusCode == code

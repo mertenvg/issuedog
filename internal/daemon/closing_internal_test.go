@@ -19,6 +19,7 @@ import (
 // renames, as on a snapshot CheckLabels hasn't checked; other kinds stay
 // as they are.
 func TestClosingFromKey(t *testing.T) {
+	t.Parallel()
 	rec := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	s := &github.Snapshot{Closings: []github.Closing{{ID: 9005}, {ID: 9006, Reopen: true}}}
 	for key, want := range map[string]discKind{"9005": discClose, "9006": discRename, "9007": discRename, "c9005": discComment, "dCDE_9005": discDeletion} {
@@ -34,6 +35,7 @@ func TestClosingFromKey(t *testing.T) {
 // discRecorded builds a recorded key the snapshot's closed events list as a
 // close, which no pass rebuilt, as a close, and a rename's as a rename.
 func TestClosingRecorded(t *testing.T) {
+	t.Parallel()
 	s := &github.Snapshot{Closings: []github.Closing{{ID: 9005}}, Comments: []github.Comment{{ID: 1001}}}
 	open := func(string, time.Time, int64) (bool, bool) { return true, true }
 	got := discRecorded(s, map[string]int64{"9005": 1001, "9006": 1001}, open, nil)
@@ -45,6 +47,7 @@ func TestClosingRecorded(t *testing.T) {
 // A close is worded by who made it, defused, and one from its record says
 // so; discWhat words a close so either way.
 func TestClosingWhat(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		tr   discTrigger
 		want string
@@ -66,6 +69,7 @@ func TestClosingWhat(t *testing.T) {
 // How a close was made is asked once per event, an event with no node ID
 // isn't asked about, and a failed answer isn't kept.
 func TestClosingCloserAsksOnce(t *testing.T) {
+	t.Parallel()
 	f := githubtest.New(t, "o/r", "issuedog")
 	merged := f.CloseByPullRequest(f.AddIssue("owner", "A", ""), "mallory", githubtest.ClosingPR{Merged: true})
 	byHand := f.CloseBy(f.AddIssue("owner", "B", ""), "mallory")
@@ -119,6 +123,7 @@ func (c closingAsks) DiscAccess(_ context.Context, login string) (bool, bool, er
 // then only a write collaborator's close counts, and not a merge's into
 // the default branch.
 func TestClosingCounts(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	f := githubtest.New(t, "o/r", "issuedog")
 	merged := f.CloseByPullRequest(f.AddIssue("owner", "A", ""), "mallory", githubtest.ClosingPR{Merged: true})
@@ -175,6 +180,7 @@ func closingIssue(n, at int, labels ...string) *gogithub.Issue {
 // in the pipeline, with no stage label, unless this daemon held it with
 // one. Listed again, a due issue stays due.
 func TestClosingList(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{Step: &Step{Applier: &Applier{}}}
 	d.closingList(closingIssue(1, 1, "stage:completed"), true, false)
 	d.closingList(closingIssue(2, 1, "stage:pr-open"), true, false)
@@ -224,6 +230,7 @@ func equalInts(a, b []int) bool {
 // An open issue's closed stage is judged as a reopen only while no
 // override stands; a closed issue's isn't.
 func TestClosingReopenLeavesAlone(t *testing.T) {
+	t.Parallel()
 	a := &Applier{AppSlug: "issuedog"}
 	s := &github.Snapshot{Number: 1, Labels: []string{"stage:completed"}, Closings: []github.Closing{{ID: 9, Reopen: true, By: github.Author{Login: "owner"}}}}
 	override := []github.LabelEvent{{Kind: github.LabelOverride, Label: "stage:ready"}}

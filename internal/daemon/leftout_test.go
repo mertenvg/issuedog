@@ -40,6 +40,7 @@ func watchRig(g *rig) *[][]string {
 // for /priority, and Work runs in the same pass: the run's settings, state
 // errors, stage and labels come from the labels without it.
 func TestLeftOutLabelStaysOutAfterAWrite(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name, to string
 		setup    func(f *githubtest.Fake)
@@ -99,6 +100,7 @@ func TestLeftOutLabelStaysOutAfterAWrite(t *testing.T) {
 // A type label left out gives the issue no type, also after a label write
 // in the same pass.
 func TestLeftOutTypeStaysOutAfterAWrite(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	fileAt(f, "ready", "do it")
 	f.AddLabel(1, "mallory", "foo")
@@ -129,6 +131,7 @@ func TestLeftOutTypeStaysOutAfterAWrite(t *testing.T) {
 // doesn't stop the issue's runs: the read just before a run leaves it out
 // too.
 func TestLeftOutStageLetsTheIssueRun(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	fileAt(f, "ready", "do it")
 	f.AddLabel(1, "mallory", "foo")
@@ -166,6 +169,7 @@ func settingDaemon(t *testing.T, f *githubtest.Fake, o *origin, mem *github.Unex
 // event: the label stays past the wait, and no revert is posted. It's safe
 // to replay.
 func TestAppWriteOfLeftOutLabelStands(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct{ rename, cmd string }{{"model:opus", "/model opus"}, {"priority:p1", "/priority p1"}} {
 		t.Run(tt.cmd, func(t *testing.T) {
 			o := newOrigin(t)
@@ -219,6 +223,7 @@ func TestAppWriteOfLeftOutLabelStands(t *testing.T) {
 // revert or state error, its other labels kept, and one move from intake,
 // keyed by its stage:intake event.
 func TestIntakeLagIsClean(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	d := newDaemon(t, f, newOrigin(t), nil)
 	seen := watchWork(d)
@@ -259,6 +264,7 @@ func TestIntakeLagIsClean(t *testing.T) {
 // issue: the label left out, and the type it would give, are no change.
 // Once due, the issue is read again, and the label is removed.
 func TestLeftOutIssueReadOnlyWhenDue(t *testing.T) {
+	t.Parallel()
 	for _, label := range []string{"scope:x", "type:epic"} {
 		t.Run(label, func(t *testing.T) {
 			f := newFake(t)
@@ -302,6 +308,7 @@ func TestLeftOutIssueReadOnlyWhenDue(t *testing.T) {
 // /model opus onto a model:opus left out, with the run in the same pass:
 // the App's write puts the label back in, and the run takes opus.
 func TestAppWriteOfLeftOutLabelSamePassRun(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	interview(f)
 	f.AddLabel(1, "mallory", "foo")
@@ -330,6 +337,7 @@ func TestAppWriteOfLeftOutLabelSamePassRun(t *testing.T) {
 // A stage label for another stage, left out, doesn't stop the attempt cap's
 // state error, which the issue read again would take for a move on.
 func TestLeftOutStageKeepsCapError(t *testing.T) {
+	t.Parallel()
 	f, g, answer := heldRig(t, 1)
 	g.claude(failOut, 1)
 	g.stage.pending = priorityP1
@@ -347,6 +355,7 @@ func TestLeftOutStageKeepsCapError(t *testing.T) {
 // A stage:held label left out on a sub-issue isn't a hold /resume would
 // end there.
 func TestLeftOutHoldIsNoHoldForResume(t *testing.T) {
+	t.Parallel()
 	f := chain(t) // 1 > 2 > 3
 	f.AddLabel(3, "mallory", "foo")
 	f.Advance(time.Hour)

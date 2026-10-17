@@ -64,6 +64,7 @@ func holdItemKeyAfter(t *testing.T, d *Daemon) (string, int) {
 // stage set by hand ends the hold, mallory's next comment holds the issue
 // afresh, with a key of its own: her comment's, which its marker carries.
 func TestHoldItemKeyAcrossTheHold(t *testing.T) {
+	t.Parallel()
 	f, d := holdItemLoop(t, nil)
 	hold := f.AddComment(1, "owner", "/hold")
 	if key, _ := holdItemKeyAfter(t, d); key != "" {
@@ -100,6 +101,7 @@ func TestHoldItemKeyAcrossTheHold(t *testing.T) {
 // about bob, fails the issue's pass: its items stay as they were, and it's
 // read again, though step 1 succeeded.
 func TestHoldItemFindFails(t *testing.T) {
+	t.Parallel()
 	var inject github.Comment
 	f, d := holdItemLoop(t, &inject)
 	f.AddComment(1, "mallory", "Wait.")

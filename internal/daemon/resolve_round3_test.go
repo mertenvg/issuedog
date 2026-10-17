@@ -169,6 +169,7 @@ func (c round3Case) run(t *testing.T, thumbsFirst bool) {
 // posted below it, so the child and its own child stay held, whether the
 // 👍s come before the /resume or after it, until the child's /resume.
 func TestResolveRound3OwnHoldUnderEditedHold(t *testing.T) {
+	t.Parallel()
 	const unended = "hasn't ended"
 	var cases []round3Case
 	for _, touch := range []string{"edited", "deleted", "deleted, no marker"} {
@@ -214,6 +215,7 @@ func TestResolveRound3OwnHoldUnderEditedHold(t *testing.T) {
 // it, so that issue, and the one under it, stay held, whether the 👍s come
 // before the /resume or after it, until /resume on that issue.
 func TestResolveRound3OwnHoldBelowResume(t *testing.T) {
+	t.Parallel()
 	const unended = "hasn't ended"
 	for _, c := range []round3Case{
 		{name: "three levels", levels: 3, discussed: []int{2}, holds: []int{0, 2},
@@ -241,6 +243,7 @@ func TestResolveRound3OwnHoldBelowResume(t *testing.T) {
 // doesn't end it, as for any /hold: the issue below stays held, in either
 // order, until a /resume on that ancestor, or below it, does.
 func TestResolveRound3GoneNotEndedFromAbove(t *testing.T) {
+	t.Parallel()
 	for _, thumbsFirst := range []bool{false, true} {
 		t.Run(fmt.Sprintf("thumbs first %v", thumbsFirst), func(t *testing.T) {
 			l := newResolveLoop(t, newFake(t))
@@ -301,6 +304,7 @@ func TestResolveRound3GoneNotEndedFromAbove(t *testing.T) {
 // move names it. A crash at any write leaves the same result, as the
 // replay counts that record as the /resume's own (resolveLeft).
 func TestResolveRound3DeletedHoldAboveReplay(t *testing.T) {
+	t.Parallel()
 	for _, commentFirst := range []bool{true, false} {
 		t.Run(fmt.Sprintf("comment first %v", commentFirst), func(t *testing.T) {
 			var hold int64
@@ -350,6 +354,7 @@ func TestResolveRound3DeletedHoldAboveReplay(t *testing.T) {
 // it counts as posted there, above #3, though the farthest marker on #1's
 // path is #2's. So #4's move doesn't name #1 as a hold it ended.
 func TestResolveRound3DeletedHoldEndedBetween(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)  // #1
 	file(f, 0, ready) // #2
 	file(f, 0, ready) // #3

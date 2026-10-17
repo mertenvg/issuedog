@@ -545,18 +545,21 @@ func (w *wholeRun) intakeEvent() int64 {
 // TestWholeRun: you file an epic with stage:intake, eve comments, and the
 // loop takes it through two question rounds and a spec to planning.
 func TestWholeRun(t *testing.T) {
+	t.Parallel()
 	newWholeRun(t, wholeRunCase{}).run()
 }
 
 // TestWholeRunPromptOverride: with .issuedog/prompts/interviewer.md on
 // main, each run's system.md is the preamble, then that prompt.
 func TestWholeRunPromptOverride(t *testing.T) {
+	t.Parallel()
 	newWholeRun(t, wholeRunCase{override: "# Our interviewer\n\nAsk about quotes, in British English.\n"}).run()
 }
 
 // TestWholeRunUntyped: an epic filed with no type is typed in round 1,
 // whose comment starts with the type line, before its move.
 func TestWholeRunUntyped(t *testing.T) {
+	t.Parallel()
 	newWholeRun(t, wholeRunCase{untyped: true}).run()
 }
 
@@ -564,5 +567,6 @@ func TestWholeRunUntyped(t *testing.T) {
 // triage first, in a run of its own, and the next pass runs the
 // interviewer.
 func TestWholeRunTriaged(t *testing.T) {
+	t.Parallel()
 	newWholeRun(t, wholeRunCase{triaged: true}).run()
 }
