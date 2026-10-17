@@ -1,0 +1,334 @@
+package daemon_test
+
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/mertenvg/issuedog/internal/github/githubtest"
+)
+
+// #188's verify, attempt 5, and the class it belongs to: a command on the
+// issue or an ancestor counts toward a hold only once the App applied it.
+// A rejected /resume ends nothing (SPEC §9.2), nor does a rejected /hold
+// hold anything, and an owner hold ends only by a /resume that applies
+// (SPEC §6.4).
+
+// resolveSteps runs resolvePass on each of ns in turn, as one Iterate
+// visits them, failing t on an error.
+func resolveSteps(t testing.TB, f *githubtest.Fake, ns ...int) {
+	t.Helper()
+	for _, n := range ns {
+		if err := resolvePass(t, n)(f); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// resolveRejectedResume is #1 at ready under #2 at ready, then the owner's
+// /hold on #2, the owner's /resume on #1, while it isn't held, and
+// mallory's comment on #1, by one pass over #1, then #2: #1 is held for
+// discussion, its /resume is rejected, as mallory's comment came after it,
+// and #2's /hold, the first hold being #1's own, writes no marker on #1
+// (Q2b). It returns the fake, the /hold's ID, the /resume's and mallory's
+// comment's.
+func resolveRejectedResume(t testing.TB) (*githubtest.Fake, int64, int64, int64) {
+	t.Helper()
+	f := discFake(t)
+	file(f, 0, ready)
+	f.SetParent(1, 2)
+	hold := f.AddComment(2, "owner", "/hold")
+	resume := f.AddComment(1, "owner", "/resume")
+	w := f.AddComment(1, "mallory", "Wait.")
+	resolveSteps(t, f, 1, 2)
+	if l := f.State().Issues[1].Labels; !slices.Equal(l, []string{"stage:held"}) {
+		t.Fatalf("#2: labels %q; want it held by its /hold", l)
+	}
+	if l := f.State().Issues[0].Labels; !slices.Equal(l, []string{"stage:held"}) {
+		t.Fatalf("#1: labels %q; want it held for discussion", l)
+	}
+	if !slices.ContainsFunc(f.State().Issues[0].Comments, func(c githubtest.CommentState) bool {
+		return strings.Contains(c.Body, fmt.Sprintf("<!-- issuedog:reply reason=rejected cmd=%d -->", resume))
+	}) {
+		t.Fatalf("#1: comments %q; want the /resume rejected", closingComments(f, 1, 0))
+	}
+	return f, hold, resume, w
+}
+
+// A /resume on the issue that the App rejected doesn't end a /hold on its
+// parent posted before it: once the owner's 👍 resolves mallory's comment,
+// #1 stays held, its record naming #2's /hold, while #2 is still held by
+// it. Without the rejected /resume, it's the same.
+func TestResolveRejectedResumeKeepsParentHold(t *testing.T) {
+	var hold int64
+	setup := func(t testing.TB) *githubtest.Fake {
+		f, h, _, w := resolveRejectedResume(t)
+		hold = h
+		f.ForgetWrites()
+		f.AddReaction(w, "owner", "+1")
+		return f
+	}
+	githubtest.Replay(t, setup, resolvePass(t, 1))
+	f := run(t, setup, resolvePass(t, 1))
+	if l, body := f.State().Issues[0].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:held"}) ||
+		!strings.Contains(body, fmt.Sprintf("<!-- issuedog:ended reason=discussion held=%d resolved=", hold)) {
+		t.Errorf("#1: labels %q, newest comment %q; want it held, with the record naming #2's /hold %d", l, body, hold)
+	}
+	if l := f.State().Issues[1].Labels; !slices.Equal(l, []string{"stage:held"}) {
+		t.Errorf("#2: labels %q; want it still held", l)
+	}
+}
+
+// The verifier's probe as it ran, through Iterate, with #1 visited before
+// #2: with the rejected /resume, and without it, #1 stays held once the
+// owner's 👍 resolves mallory's comment.
+func TestResolveRejectedResumeThroughIterate(t *testing.T) {
+	for _, withResume := range []bool{false, true} {
+		t.Run(fmt.Sprintf("resume=%t", withResume), func(t *testing.T) {
+			f := newFake(t)
+			fileAt(f, "ready", "do it")
+			fileAt(f, "ready", "do it")
+			f.SetType(1, "task")
+			f.SetType(2, "task")
+			f.SetParent(1, 2)
+			d := resolveDaemon(t, f, newOrigin(t))
+			iterate(t, d)
+			hold := f.AddComment(2, "owner", "/hold")
+			if withResume {
+				f.AddComment(1, "owner", "/resume")
+			}
+			w := f.AddComment(1, "mallory", "Wait.")
+			for range 2 {
+				iterate(t, d)
+			}
+			if l := f.State().Issues[1].Labels; !slices.Equal(l, []string{"stage:held"}) {
+				t.Fatalf("#2: labels %q; want it held", l)
+			}
+			f.AddReaction(w, "owner", "+1")
+			for range 2 {
+				iterate(t, d)
+			}
+			if l, body := f.State().Issues[0].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:held"}) ||
+				!strings.Contains(body, fmt.Sprintf("held=%d ", hold)) {
+				t.Errorf("#1: labels %q, newest comment %q; want it held by #2's /hold", l, body)
+			}
+		})
+	}
+}
+
+// Once #2's /resume ends its /hold, #1, held by it after the rejected
+// /resume, goes to clarifying, as its discussion was resolved during the
+// hold.
+func TestResolveRejectedResumeParentResumes(t *testing.T) {
+	f, _, _, w := resolveRejectedResume(t)
+	f.AddReaction(w, "owner", "+1")
+	resolveSteps(t, f, 1)
+	f.AddComment(2, "owner", "/resume")
+	resolveSteps(t, f, 2)
+	if l := f.State().Issues[0].Labels; !slices.Equal(l, []string{"stage:clarifying"}) {
+		t.Errorf("#1: labels %q, newest comment %q; want it at clarifying once #2's /resume ends the /hold", l, newestComment(f, 1))
+	}
+	if l := f.State().Issues[1].Labels; !slices.Equal(l, []string{"stage:ready"}) {
+		t.Errorf("#2: labels %q; want it back at ready", l)
+	}
+}
+
+// resolveResumeBeforeStart is #1 at ready under #2 at ready, then the
+// owner's /hold on #2, mallory's comment on #1, the owner's /resume on #1
+// and mallory's second comment on #1, by one pass over #1, then #2: #1 is
+// held for the first comment, in an App comment above the /resume, which
+// the /resume accepts, while the second keeps #1 held, so the /resume
+// applies, with its record on #1; and #2's /hold writes no marker on #1.
+// The /resume is between the transition before #1's hold and the hold's
+// marker. It returns the fake and the second comment's ID.
+func resolveResumeBeforeStart(t testing.TB) (*githubtest.Fake, int64) {
+	t.Helper()
+	f := discFake(t)
+	file(f, 0, ready)
+	f.SetParent(1, 2)
+	f.AddComment(2, "owner", "/hold")
+	f.AddComment(1, "mallory", "Wait.")
+	resume := f.AddComment(1, "owner", "/resume")
+	late := f.AddComment(1, "mallory", "One more thing.")
+	resolveSteps(t, f, 1, 2)
+	if l, body := f.State().Issues[0].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:held"}) ||
+		!strings.Contains(body, fmt.Sprintf("cmd=%d", resume)) {
+		t.Fatalf("#1: labels %q, newest comment %q; want it held, with its /resume's record", l, body)
+	}
+	if l := f.State().Issues[1].Labels; !slices.Equal(l, []string{"stage:held"}) {
+		t.Fatalf("#2: labels %q; want it held by its /hold", l)
+	}
+	return f, late
+}
+
+// An applied /resume on the issue counts from the transition before its
+// hold, not from the hold's start: one applied in the pass that began the
+// hold, below the hold's marker, ends a /hold on the parent posted before
+// it, so once the late comment is resolved, #1 goes to clarifying.
+func TestResolveAppliedResumeBeforeHoldStart(t *testing.T) {
+	setup := func(t testing.TB) *githubtest.Fake {
+		f, late := resolveResumeBeforeStart(t)
+		f.ForgetWrites()
+		f.AddReaction(late, "owner", "+1")
+		return f
+	}
+	githubtest.Replay(t, setup, resolvePass(t, 1))
+	f := run(t, setup, resolvePass(t, 1))
+	if l, body := f.State().Issues[0].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:clarifying"}) || strings.Contains(body, "held=") {
+		t.Errorf("#1: labels %q, newest comment %q; want it at clarifying, with no record of #2's /hold", l, body)
+	}
+}
+
+// A /resume on a parent that the App rejected doesn't end a /hold on the
+// grandparent for #1 either. #3 is #2's parent, and #2 is #1's; the
+// owner's /hold on #3, the owner's /resume on #2, and mallory's comment
+// on #1, by one pass over #1, #2, then #3: #1 is held for discussion, so
+// #2's /resume, which ends no hold, is rejected, and #3's /hold holds #3
+// and #2, but writes no marker on #1. Once the owner's 👍 resolves
+// mallory's comment, #1 stays held, its record naming #3's /hold.
+func TestResolveRejectedParentResumeKeepsHold(t *testing.T) {
+	var hold int64
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := discFake(t)
+		file(f, 0, ready)
+		file(f, 0, ready)
+		f.SetParent(1, 2)
+		f.SetParent(2, 3)
+		hold = f.AddComment(3, "owner", "/hold")
+		resume := f.AddComment(2, "owner", "/resume")
+		w := f.AddComment(1, "mallory", "Wait.")
+		resolveSteps(t, f, 1, 2, 3)
+		for n, want := range map[int]string{1: "stage:held", 2: "stage:held", 3: "stage:held"} {
+			if l := f.State().Issues[n-1].Labels; !slices.Equal(l, []string{want}) {
+				t.Fatalf("#%d: labels %q; want %s", n, l, want)
+			}
+		}
+		if !slices.ContainsFunc(f.State().Issues[1].Comments, func(c githubtest.CommentState) bool {
+			return strings.Contains(c.Body, fmt.Sprintf("<!-- issuedog:reply reason=rejected cmd=%d -->", resume))
+		}) {
+			t.Fatalf("#2: comments %q; want its /resume rejected", closingComments(f, 2, 0))
+		}
+		f.ForgetWrites()
+		f.AddReaction(w, "owner", "+1")
+		return f
+	}
+	githubtest.Replay(t, setup, resolvePass(t, 1))
+	f := run(t, setup, resolvePass(t, 1))
+	if l, body := f.State().Issues[0].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:held"}) ||
+		!strings.Contains(body, fmt.Sprintf("held=%d ", hold)) {
+		t.Errorf("#1: labels %q, newest comment %q; want it held, with the record naming #3's /hold %d", l, body, hold)
+	}
+}
+
+// A /hold on the parent that the App rejected holds nothing: #2's type is
+// one the pipeline doesn't know, so it can't go on hold, and once the
+// owner's 👍 resolves mallory's comment, #1 goes to clarifying.
+func TestResolveRejectedParentHoldHoldsNothing(t *testing.T) {
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := discFake(t)
+		file(f, 0, ready)
+		f.SetType(2, "Weird")
+		f.SetParent(1, 2)
+		w := f.AddComment(1, "mallory", "Wait.")
+		resolveSteps(t, f, 1)
+		hold := f.AddComment(2, "owner", "/hold")
+		resolveSteps(t, f, 2)
+		if !slices.ContainsFunc(f.State().Issues[1].Comments, func(c githubtest.CommentState) bool {
+			return strings.Contains(c.Body, fmt.Sprintf("<!-- issuedog:reply reason=rejected cmd=%d -->", hold))
+		}) {
+			t.Fatalf("#2: comments %q; want its /hold rejected", closingComments(f, 2, 0))
+		}
+		f.ForgetWrites()
+		f.AddReaction(w, "owner", "+1")
+		return f
+	}
+	githubtest.Replay(t, setup, resolvePass(t, 1))
+	f := run(t, setup, resolvePass(t, 1))
+	if l, body := f.State().Issues[0].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:clarifying"}) || strings.Contains(body, "held=") {
+		t.Errorf("#1: labels %q, newest comment %q; want it at clarifying, as #2's /hold was rejected", l, body)
+	}
+}
+
+// A /hold on the parent that the App hasn't handled yet, as on a parent
+// visited after the issue in the pass, holds nothing yet: once the owner's
+// 👍 resolves mallory's comment, #1 goes to clarifying, and the /hold,
+// handled then, holds it again by a marker of its own.
+func TestResolvePendingParentHold(t *testing.T) {
+	f := discFake(t)
+	file(f, 0, ready)
+	f.SetParent(1, 2)
+	w := f.AddComment(1, "mallory", "Wait.")
+	resolveSteps(t, f, 1)
+	hold := f.AddComment(2, "owner", "/hold")
+	f.AddReaction(w, "owner", "+1")
+	resolveSteps(t, f, 1)
+	if l, body := f.State().Issues[0].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:clarifying"}) || strings.Contains(body, "held=") {
+		t.Fatalf("#1: labels %q, newest comment %q; want it at clarifying, as #2's /hold isn't handled yet", l, body)
+	}
+	resolveSteps(t, f, 2)
+	if l, body := f.State().Issues[0].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:held"}) ||
+		!strings.Contains(body, fmt.Sprintf("from=clarifying to=held at=clarifying origin=ready reason=owner cmd=%d ", hold)) {
+		t.Errorf("#1: labels %q, newest comment %q; want it held by #2's /hold, with its marker", l, body)
+	}
+}
+
+// A /hold on the issue itself that the App rejected, while its type was
+// one the pipeline doesn't know, holds nothing once a discussion holds
+// it: once the owner's 👍 resolves mallory's comment, it goes to
+// clarifying.
+func TestResolveRejectedOwnHoldHoldsNothing(t *testing.T) {
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := discFake(t)
+		f.SetType(1, "Weird")
+		hold := f.AddComment(1, "owner", "/hold")
+		resolveSteps(t, f, 1)
+		if !strings.Contains(newestComment(f, 1), fmt.Sprintf("<!-- issuedog:reply reason=rejected cmd=%d -->", hold)) {
+			t.Fatalf("newest comment %q; want the /hold rejected", newestComment(f, 1))
+		}
+		f.SetType(1, "task")
+		w := f.AddComment(1, "mallory", "Wait.")
+		resolveSteps(t, f, 1)
+		if l := f.State().Issues[0].Labels; !slices.Equal(l, []string{"stage:held"}) {
+			t.Fatalf("labels %q; want it held for discussion", l)
+		}
+		f.ForgetWrites()
+		f.AddReaction(w, "owner", "+1")
+		return f
+	}
+	githubtest.Replay(t, setup, resolvePass(t, 1))
+	f := run(t, setup, resolvePass(t, 1))
+	if l, body := f.State().Issues[0].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:clarifying"}) {
+		t.Errorf("labels %q, newest comment %q; want it at clarifying, as its /hold was rejected", l, body)
+	}
+}
+
+// A write collaborator's close is resolved by a code owner's 👍 on its
+// notice, the hold's own comment: a close hides no App content (#87's
+// assumption 4), so the issue leaves its hold for clarifying.
+func TestResolveCloseByNotice(t *testing.T) {
+	o := digestNotifyOrigin(t)
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := closingFake(t)
+		f.CloseBy(1, "mallory")
+		if err := resolveDaemon(t, f, o).Iterate(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		ids := commentIDs(t, f, 1)
+		if l, body := f.State().Issues[0].Labels, newestComment(f, 1); f.State().Issues[0].Closed || !slices.Equal(l, []string{"stage:held"}) ||
+			!strings.Contains(body, "<!-- issuedog:notice key=") {
+			t.Fatalf("labels %q, newest comment %q; want it reopened and held, with the hold's notice", l, body)
+		}
+		f.ForgetWrites()
+		f.AddReaction(ids[len(ids)-1], "owner", "+1")
+		return f
+	}
+	pass := func(f *githubtest.Fake) error { return resolveDaemon(t, f, o).Iterate(context.Background()) }
+	githubtest.Replay(t, setup, pass)
+	f := run(t, setup, pass)
+	if l, body := f.State().Issues[0].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:clarifying"}) ||
+		!strings.HasPrefix(body, "The discussion is resolved, by `owner`, so this issue leaves its hold from `pr-open` for `clarifying`.") {
+		t.Errorf("labels %q, newest comment %q; want it at clarifying", l, body)
+	}
+}

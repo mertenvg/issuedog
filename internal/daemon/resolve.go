@@ -295,10 +295,12 @@ func (r *resolver) verified(ctx context.Context, act resolveAct) (bool, error) {
 
 // resolveByNotice reports whether a 👍 on tr's notice may accept it: a
 // trigger that isn't a comment, of a kind discFind knows, and that didn't
-// edit or delete the App's content (resolveHitsApp).
+// edit or delete the App's content (resolveHitsApp). A close (closing.go)
+// hides no App content, so its notice, the hold's comment or one of its
+// own, accepts it (#87's assumption 4, #190's verify note).
 func resolveByNotice(tr discTrigger, s *github.Snapshot, appSlug string) bool {
 	switch tr.Kind {
-	case discEdit, discOwnEdit, discDeletion, discRename:
+	case discEdit, discOwnEdit, discDeletion, discRename, discClose:
 		return !resolveHitsApp(tr, s, appSlug)
 	}
 	return false
@@ -458,9 +460,34 @@ func resolveHoldCommand(body string) bool {
 	return ok && (c.Name == "hold" || c.Name == "resume")
 }
 
+// resolveApplied reports whether the App applied the command in comment
+// id on the issue in state is, as a marker on it says: one that names it
+// in its cmd field, but a reply, which a rejection is (Step.rejected), as
+// an "edited" reply to an applied one is too. A /resume that the App
+// rejected, or hasn't handled yet, has none, and ends nothing (SPEC §9.2,
+// §6.4). One applied on an issue held for it writes one on that issue: a
+// move out of held, or the record that it ended the holds before it while
+// a later trigger keeps the issue held (resolveResumed). So one that
+// ended no hold on its own issue, as one applied for its descendants
+// alone, has none there either.
+func resolveApplied(is state.Issue, id int64) bool {
+	return slices.ContainsFunc(is.Markers, func(m github.Marker) bool {
+		return m.Kind != "reply" && m.Fields["cmd"] == state.CmdKey(id).ID
+	})
+}
+
+// resolveRejected reports whether the App rejected the command in comment
+// id on the issue in state is: its reply says so (Step.rejected). One
+// 👎'd whose reply is lost isn't known here, and counts until reword
+// posts it again, failing closed.
+func resolveRejected(is state.Issue, id int64) bool {
+	return replied(is, id) == "rejected"
+}
+
 // resolveCommands returns the IDs of the clean comments on s, above after
 // and, unless before is 0, below before, that are a valid command named
-// name, by a user trust trusts, no bot.
+// name, by a user trust trusts, no bot. Whether the App applied each is
+// for the caller to judge (resolveApplied, resolveRejected).
 func (a *Applier) resolveCommands(ctx context.Context, s *github.Snapshot, d Dirt, trust github.Trust, name string, after, before int64) ([]int64, error) {
 	who := a.discWhoOf(s, trust)
 	var ids []int64
@@ -487,12 +514,17 @@ func (a *Applier) resolveCommands(ctx context.Context, s *github.Snapshot, d Dir
 // the record of that hold; and each /hold on an ancestor that the record of
 // the discussion's end names (resolveAbove). For a /resume, before is its
 // comment: a /hold posted after it is no hold it could end, and holds the
-// issue itself once handled (hold).
+// issue itself once handled (hold). A /hold on s that the App rejected
+// holds nothing (resolveRejected), as one posted before the hold began,
+// while s couldn't go on hold; one not handled yet counts, as it holds s
+// once handled, since a /hold on an issue held already is never rejected
+// (holdCheck).
 func (a *Applier) resolveOwnHolds(ctx context.Context, s *github.Snapshot, d Dirt, trust github.Trust, is state.Issue, p resolvePeriod, before int64) ([]github.Marker, error) {
 	ids, err := a.resolveCommands(ctx, s, d, trust, "hold", p.prev, before)
 	if err != nil {
 		return nil, fmt.Errorf("owner holds: %w", err)
 	}
+	ids = slices.DeleteFunc(ids, func(id int64) bool { return resolveRejected(is, id) })
 	var holds []github.Marker
 	for _, id := range append(ids, p.held...) {
 		if !is.Moved(state.CmdKey(id)) {
@@ -533,27 +565,47 @@ func (a *Applier) resolveHeldBy(ctx context.Context, family []node, c Cmd, n nod
 // resolveUnended returns, as owner hold markers on self, an issue in
 // state is, held, p, the valid trusted /holds on the issues in path, its
 // ancestors nearest first, posted since the transition before its hold and
-// named by no marker on it, that no later /resume ended (heldStackEnds):
-// one on their issue or a nearer one, or on self, which ends every hold on
-// it, as when it kept self held for a trigger made after it
-// (resolveResumed); and, unless before is 0, posted before before.
+// named by no marker on it, that the App applied (resolveHoldApplied), and
+// that no later /resume the App applied ended (heldStackEnds): one on
+// their issue or a nearer one, or on self, which ends every hold on it, as
+// when it kept self held for a trigger made after it (resolveResumed);
+// and, unless before is 0, posted before before.
+//
+// Each /resume counts only once the App applied it on its own issue, as a
+// marker there names it (resolveApplied): a rejected one ends nothing
+// (SPEC §9.2), as one posted before a write collaborator's comment that
+// held the issue first, and so does one not handled yet. So does one
+// applied for its descendants alone, which ended no hold on its own issue:
+// a /hold posted before it, handled after it in the same pass, as on an
+// ancestor visited later, holds the issue it was posted on, so it holds
+// self too. A /resume that took self out of held is before p.prev, in an
+// earlier hold. It's bounded by p.prev, not by the hold's start: one
+// applied in the pass that began the hold, as one that accepted the
+// triggers before it while a later one kept the issue held, is below the
+// hold's marker.
 func (a *Applier) resolveUnended(ctx context.Context, self node, path []node, is state.Issue, p resolvePeriod, trust github.Trust, before int64) ([]github.Marker, error) {
-	resumes := map[int64]int{} // each /resume, by its level on the path, -1 for self's
+	resumes := map[int64]int{} // each applied /resume, by its level on the path, -1 for self's
 	own, err := a.resolveCommands(ctx, self.s, self.d, trust, "resume", p.prev, 0)
 	if err != nil {
 		return nil, fmt.Errorf("held from above: %w", err)
 	}
 	for _, id := range own {
-		resumes[id] = -1
+		if resolveApplied(is, id) {
+			resumes[id] = -1
+		}
 	}
 	var holds []github.Marker
+	states := make([]state.Issue, len(path)) // each issue's on the path
 	for level, x := range path {
+		states[level] = state.Derive(x.s, a.AppSlug, x.d.Has)
 		r, err := a.resolveCommands(ctx, x.s, x.d, trust, "resume", p.prev, 0)
 		if err != nil {
 			return nil, fmt.Errorf("held from above: %w", err)
 		}
 		for _, id := range r {
-			resumes[id] = level
+			if resolveApplied(states[level], id) {
+				resumes[id] = level
+			}
 		}
 	}
 	for level, x := range path {
@@ -562,6 +614,13 @@ func (a *Applier) resolveUnended(ctx context.Context, self node, path []node, is
 			return nil, fmt.Errorf("held from above: %w", err)
 		}
 		for _, id := range h {
+			applied, err := a.resolveHoldApplied(ctx, states[level], id)
+			if err != nil {
+				return nil, fmt.Errorf("held from above: %w", err)
+			}
+			if !applied {
+				continue
+			}
 			ended := false
 			for r, at := range resumes {
 				ended = ended || r > id && at <= level
@@ -572,6 +631,32 @@ func (a *Applier) resolveUnended(ctx context.Context, self node, path []node, is
 		}
 	}
 	return holds, nil
+}
+
+// resolveHoldApplied reports whether the App applied the /hold in comment
+// id on an ancestor in state is: a marker on it names it (resolveApplied),
+// as when it moved that issue into held, or else the App 👍'd it, as it
+// does once it has moved the family (moveFamily), which it also does on
+// an issue held already, where it writes no marker (Q2b). A rejected one,
+// 👎'd, holds nothing, nor does one not handled yet, as on an ancestor
+// visited after self in the pass: once handled, it holds self by a marker
+// if self has left held by then, and else is read here again. Its
+// reactions are read only for a /hold with no marker, and only when self
+// is about to leave held, or a /resume is judged, so an unchanged pass
+// reads none.
+func (a *Applier) resolveHoldApplied(ctx context.Context, is state.Issue, id int64) (bool, error) {
+	if resolveApplied(is, id) {
+		return true, nil
+	}
+	if resolveRejected(is, id) {
+		return false, nil
+	}
+	mine, err := a.appReactions(ctx, id)
+	if err != nil {
+		return false, fmt.Errorf("/hold in comment %d: %w", id, err)
+	}
+	_, acked := mine["+1"]
+	return acked, nil
 }
 
 // resolveAbove returns the /holds on s's ancestors in this repo that keep
@@ -601,6 +686,21 @@ func (a *Applier) resolveAbove(ctx context.Context, s *github.Snapshot, sd Dirt,
 		path = append(path, node{s: x, d: d, open: true})
 	}
 	return a.resolveUnended(ctx, node{s: s, d: sd, open: true}, path, is, p, trust, 0)
+}
+
+// resolveHoldsLeft returns the holds on s, in state is, held, that
+// resolveLeave judges by, and the hold period p it's in: those its markers
+// record, and the owner holds no marker records (resolveOwnHolds), less
+// the owner holds a /resume ended while the issue stayed held
+// (resolveLeft). The hold item says from it whether an owner hold stays
+// (Step.holdItemFind).
+func (a *Applier) resolveHoldsLeft(ctx context.Context, s *github.Snapshot, d Dirt, trust github.Trust, is state.Issue) ([]github.Marker, resolvePeriod, error) {
+	p := resolvePeriodOf(s, a.AppSlug, d.Has)
+	own, err := a.resolveOwnHolds(ctx, s, d, trust, is, p, 0)
+	if err != nil {
+		return nil, p, fmt.Errorf("holds left: %w", err)
+	}
+	return resolveLeft(append(slices.Clone(is.HeldStack.Holds), own...), p, 0), p, nil
 }
 
 // resolveOwnerHeld reports whether any of holds isn't a discussion hold:
@@ -790,12 +890,10 @@ func (a *Applier) resolveLeave(ctx context.Context, s *github.Snapshot, d Dirt, 
 		}
 		return nil
 	}
-	p := resolvePeriodOf(s, a.AppSlug, d.Has)
-	own, err := a.resolveOwnHolds(ctx, s, d, trust, is, p, 0)
+	holds, p, err := a.resolveHoldsLeft(ctx, s, d, trust, is)
 	if err != nil {
 		return fmt.Errorf("leave: %w", err)
 	}
-	holds := resolveLeft(append(slices.Clone(is.HeldStack.Holds), own...), p, 0)
 	if resolveIntake(is.HeldStack) || resolveOwnerHeld(holds) {
 		return a.resolveEnded(ctx, s, rs, p, resolveIntake(is.HeldStack), nil)
 	}
