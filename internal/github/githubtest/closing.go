@@ -122,6 +122,15 @@ func (f *Fake) ForbidCloser(number int, id int64) {
 	})
 }
 
+// FailGraphQLAt makes the next GraphQL answer list an error of type typ,
+// with message, at path, such as ["repository", "defaultBranchRef"],
+// beside its data.
+func (f *Fake) FailGraphQLAt(typ, message string, path ...any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closingErrs = append(f.closingErrs, map[string]any{"type": typ, "message": message, "path": path})
+}
+
 // ForgetCloser makes closed event id of issue number a node with no
 // ClosedEvent's fields, so GraphQL gives it no state reason and no closer.
 func (f *Fake) ForgetCloser(number int, id int64) {

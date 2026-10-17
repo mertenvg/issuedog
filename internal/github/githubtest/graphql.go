@@ -108,6 +108,7 @@ func (f *Fake) graphql(c *call) (int, any) {
 		errs = append(errs, map[string]any{"message": m})
 	}
 	f.gqlErrors = nil
+	errs, f.closingErrs = append(errs, f.closingErrs...), nil
 	reply := func(data any) (int, any) {
 		out := map[string]any{"data": data}
 		if len(errs) > 0 {

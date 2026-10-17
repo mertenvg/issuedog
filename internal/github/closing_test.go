@@ -137,6 +137,10 @@ func TestClosingCloserFails(t *testing.T) {
 	if got, err := c.ClosingCloser(context.Background(), "o", "r", "CE_"+strconv.FormatInt(event, 10)); !errors.Is(err, github.ErrGraphQL) || got.Merge {
 		t.Errorf("ClosingCloser = %+v, %v; want GitHub's error", got, err)
 	}
+	f.FailGraphQLAt("FORBIDDEN", "Resource not accessible by integration", "repository", "defaultBranchRef")
+	if got, err := c.ClosingCloser(context.Background(), "o", "r", "CE_"+strconv.FormatInt(event, 10)); !errors.Is(err, github.ErrGraphQL) || got.Merge {
+		t.Errorf("ClosingCloser with an error on the repository = %+v, %v; want GitHub's error", got, err)
+	}
 	if got, err := c.ClosingCloser(context.Background(), "o", "gone", "CE_"+strconv.FormatInt(event, 10)); err == nil || got.Merge {
 		t.Errorf("ClosingCloser in another repo = %+v, %v; want an error", got, err)
 	}

@@ -65,6 +65,8 @@ type Fake struct {
 
 	unassignable map[string]bool // logins in lower case, see Unassignable (assign.go)
 
+	closingErrs []map[string]any // for the next GraphQL answer, with their paths (FailGraphQLAt)
+
 	// The App, permission and repo label endpoints, and the request log (app.go).
 	perms      map[string]string
 	labels     []*gogithub.Label
