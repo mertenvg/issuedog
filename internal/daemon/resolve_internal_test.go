@@ -15,7 +15,8 @@ import (
 // have been the App's: discHitsApp's, and, failing closed, an edit known
 // from its record alone of the body, of a comment gone, or of the App's.
 // A notice accepts any other edit, a deletion of a trusted user's comment,
-// and a rename; nothing accepts a comment, or a key of no known shape.
+// a rename and a close, which hides no App content (#190's verify note);
+// nothing accepts a comment, or a key of no known shape.
 func TestResolveByNotice(t *testing.T) {
 	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
 	s := &github.Snapshot{Comments: []github.Comment{
@@ -40,6 +41,8 @@ func TestResolveByNotice(t *testing.T) {
 		{"a recorded edit of the body", discTrigger{Kind: discEdit, ID: state.BodyID, FromRecord: true}, false},
 		{"a recorded deletion", discTrigger{Kind: discDeletion, FromRecord: true}, false},
 		{"a recorded rename", discTrigger{Kind: discRename, FromRecord: true}, true},
+		{"a close", discTrigger{Kind: discClose, Of: ""}, true},
+		{"a recorded close", discTrigger{Kind: discClose, FromRecord: true}, true},
 		{"a comment", discTrigger{Kind: discComment, ID: 5}, false},
 		{"a key of no known shape", discTrigger{Key: "x1", FromRecord: true}, false},
 	} {
@@ -372,5 +375,56 @@ func TestResolveFields(t *testing.T) {
 		if got := resolveFields(tt.h, tt.resolved); !maps.Equal(got, tt.want) {
 			t.Errorf("%s: fields %v; want %v", tt.name, got, tt.want)
 		}
+	}
+}
+
+// A command counts as applied on an issue only by a marker on it that
+// names it and isn't a reply: a move, or an "ended" record, but not the
+// rejection's reply, nor an "edited" one, nor a marker naming another
+// comment. Only the rejection's reply says it was rejected.
+func TestResolveApplied(t *testing.T) {
+	is := func(markers ...string) state.Issue {
+		s := &github.Snapshot{Comments: []github.Comment{{ID: 900, Author: github.Author{Login: "issuedog[bot]", Type: "Bot"}, Body: ""}}}
+		for _, m := range markers {
+			s.Comments[0].Body += "<!-- issuedog:" + m + " -->\n"
+		}
+		return state.Derive(s, "issuedog", func(int64) bool { return false })
+	}
+	for _, tt := range []struct {
+		name              string
+		is                state.Issue
+		applied, rejected bool
+	}{
+		{"no marker", is(), false, false},
+		{"a move", is("transition from=held to=ready cmd=7"), true, false},
+		{"an ended record", is("ended reason=discussion resolved=1 cmd=7"), true, false},
+		{"the rejection's reply", is("reply reason=rejected cmd=7"), false, true},
+		{"an edited reply", is("reply reason=edited cmd=7"), false, false},
+		{"another comment's move", is("transition from=held to=ready cmd=8"), false, false},
+		{"another comment's rejection", is("reply reason=rejected cmd=8"), false, false},
+	} {
+		if got := resolveApplied(tt.is, 7); got != tt.applied {
+			t.Errorf("%s: resolveApplied = %t; want %t", tt.name, got, tt.applied)
+		}
+		if got := resolveRejected(tt.is, 7); got != tt.rejected {
+			t.Errorf("%s: resolveRejected = %t; want %t", tt.name, got, tt.rejected)
+		}
+	}
+}
+
+// begun counts a command as begun only by a marker of its own that isn't a
+// reply, on any issue in the family: a rejection's reply begins nothing.
+func TestBegunNotByReply(t *testing.T) {
+	a := &Applier{AppSlug: "issuedog"}
+	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
+	with := func(body string) node {
+		return node{s: &github.Snapshot{Comments: []github.Comment{{ID: 900, Author: app, Body: body}}}, open: true}
+	}
+	c := Cmd{Comment: github.Comment{ID: 7}}
+	if a.begun([]node{with("<!-- issuedog:reply reason=rejected cmd=7 -->")}, c) {
+		t.Errorf("begun by the rejection's reply; want not")
+	}
+	if !a.begun([]node{with(""), with("<!-- issuedog:ended reason=owner key=c5 cmd=7 -->")}, c) {
+		t.Errorf("not begun by its record on a descendant; want begun")
 	}
 }

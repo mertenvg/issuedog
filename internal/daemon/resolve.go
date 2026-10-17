@@ -1037,7 +1037,7 @@ func (a *Applier) resolveEnded(ctx context.Context, s *github.Snapshot, rs *reso
 func (a *Applier) resolveResumed(ctx context.Context, c Cmd, n node, is state.Issue, above map[int64]bool, after bool) error {
 	self := n.s == c.S
 	_, ended, left := heldStackResume(is, self, above)
-	if ended == 0 || len(left) == 0 || resolveOwnerHeld(left) || state.Derive(n.s, a.AppSlug, n.d.Has).Keys[state.CmdKey(c.Comment.ID)] {
+	if ended == 0 || len(left) == 0 || resolveOwnerHeld(left) || resolveApplied(state.Derive(n.s, a.AppSlug, n.d.Has), c.Comment.ID) {
 		return nil
 	}
 	cmd := state.CmdKey(c.Comment.ID).ID

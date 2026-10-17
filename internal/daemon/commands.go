@@ -327,12 +327,13 @@ func madeBelow(family []node) map[int64]int {
 
 // begun reports whether a marker of c's is on an issue in family, closed
 // ones included, which means Apply began: a move it keys, or a record of
-// an owner hold it ended (resolveResumed). A child unlinked since Apply
-// moved it isn't found, so in that narrow window a replay can reject the
-// command it began.
+// an owner hold it ended (resolveResumed), but not a reply, as a
+// rejection's is (resolveApplied). A child unlinked since Apply moved it
+// isn't found, so in that narrow window a replay can reject the command
+// it began.
 func (a *Applier) begun(family []node, c Cmd) bool {
 	return slices.ContainsFunc(family, func(n node) bool {
-		return state.Derive(n.s, a.AppSlug, n.d.Has).Keys[state.CmdKey(c.Comment.ID)]
+		return resolveApplied(state.Derive(n.s, a.AppSlug, n.d.Has), c.Comment.ID)
 	})
 }
 
