@@ -638,14 +638,16 @@ func digestSameBody(a, b string) bool {
 // digestCacheSet caches what waits on the owner on s (waitFind), which
 // step 1 just succeeded on and returned inputs for, as step 1 left it,
 // with its dirty content dirt and, if it's held, its open discussion
-// triggers holds (holdItemFind). Iterate calls it whether or not the
+// triggers holds, and whether an owner hold stays too, ownerHeld
+// (holdItemFind). Iterate calls it whether or not the
 // digest is on, since assignment takes the same items (assign.go). An
 // issue with nothing waiting has no entry. If waitFind fails, that's
 // logged, and the issue keeps the items it had, as one whose step 1
 // failed does.
-func (d *Daemon) digestCacheSet(s *github.Snapshot, inputs []github.Comment, dirt Dirt, holds []discTrigger) {
+func (d *Daemon) digestCacheSet(s *github.Snapshot, inputs []github.Comment, dirt Dirt, holds []discTrigger, ownerHeld bool) {
 	st := d.Step
-	items, err := waitFind(waitInput{Owner: st.Owner, Repo: st.Repo, AppSlug: st.AppSlug, S: s, Dirt: dirt, Inputs: inputs, Holds: holds})
+	items, err := waitFind(waitInput{Owner: st.Owner, Repo: st.Repo, AppSlug: st.AppSlug, S: s, Dirt: dirt, Inputs: inputs, Holds: holds,
+		OwnerHeld: ownerHeld})
 	if err != nil {
 		logr.Errorf("%s/%s#%d keeps the items it had on the digest: %v", st.Owner, st.Repo, s.Number, err)
 		return
@@ -673,16 +675,34 @@ func (d *Daemon) digestCacheSet(s *github.Snapshot, inputs []github.Comment, dir
 // read it may repeat is the reactions of a writer's own edited comment
 // that no marker records (discOwnEdits), as for an own edit whose notice
 // discLost held back: that read is conditional, so on an unchanged pass
-// it costs no rate limit.
-func (st *Step) holdItemFind(ctx context.Context, s *github.Snapshot, dirt Dirt) ([]discTrigger, error) {
-	if s.Closed || state.Derive(s, st.AppSlug, dirt.Has).Stage != state.Held {
-		return nil, nil
+// it costs no rate limit. So are the reactions of the comments a trigger
+// may be resolved by (resolver), as step 1 read them already.
+//
+// With a trigger open, it also reports whether an owner hold on s stays
+// once they're resolved (resolveHoldsLeft), as resolveLeave would judge
+// it: one a marker records, or a /hold on s no marker records, or on an
+// ancestor that the record of a discussion's end names, but not one a
+// /resume ended while the issue stayed held (resolveLeft), on s or an
+// ancestor. That reads nothing more: an ancestor's /hold that no record
+// names yet is read only once s is about to leave held (resolveAbove), so
+// until then the item doesn't name it.
+func (st *Step) holdItemFind(ctx context.Context, s *github.Snapshot, dirt Dirt) ([]discTrigger, bool, error) {
+	is := state.Derive(s, st.AppSlug, dirt.Has)
+	if s.Closed || is.Stage != state.Held {
+		return nil, false, nil
 	}
 	found, err := st.discFind(ctx, s, dirt, st.trustOnceTrust())
-	if err != nil {
-		return nil, fmt.Errorf("the digest's hold item: %w", err)
+	if err != nil || len(found) == 0 {
+		if err != nil {
+			return nil, false, fmt.Errorf("the digest's hold item: %w", err)
+		}
+		return nil, false, nil
 	}
-	return found, nil
+	holds, _, err := st.resolveHoldsLeft(ctx, s, dirt, st.trustOnceTrust(), is)
+	if err != nil {
+		return nil, false, fmt.Errorf("the digest's hold item: %w", err)
+	}
+	return found, resolveOwnerHeld(holds), nil
 }
 
 // digestCacheRanked returns every issue's cached items, ranked by Q3a

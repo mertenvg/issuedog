@@ -69,12 +69,16 @@ type Daemon struct {
 // CurrentTrust is a github.Trust that asks st.Trust on each call. Iterate's
 // reloads replace st.Trust, so a trigger built once, such as
 // ApproveByReaction's, takes this to keep up with CODEOWNERS on main.
+// During one of Iterate's visits it asks the visit's trust
+// (Step.trustOnceTrust), over st.Trust as it is then, so a held issue's
+// reaction triggers, such as ResolveByReaction's, which look for its
+// triggers again, ask nobody step 1 asked already (#192's verify note).
 func (st *Step) CurrentTrust() github.Trust { return currentTrust{st} }
 
 type currentTrust struct{ st *Step }
 
 func (c currentTrust) Trusted(ctx context.Context, login string) (bool, error) {
-	ok, err := c.st.Trust.Trusted(ctx, login)
+	ok, err := c.st.trustOnceTrust().Trusted(ctx, login)
 	if err != nil {
 		return false, fmt.Errorf("current trust: %w", err)
 	}
@@ -85,7 +89,7 @@ func (c currentTrust) Trusted(ctx context.Context, login string) (bool, error) {
 // built once judges write collaborators by CODEOWNERS on main too. A Trust
 // without it knows no write collaborator who isn't trusted.
 func (c currentTrust) DiscAccess(ctx context.Context, login string) (trusted, writer bool, err error) {
-	dt, ok := c.st.Trust.(github.DiscTrust)
+	dt, ok := c.st.trustOnceTrust().(github.DiscTrust)
 	if !ok {
 		if trusted, err = c.Trusted(ctx, login); err != nil {
 			return false, false, fmt.Errorf("current access: %w", err)
@@ -249,6 +253,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		// snapshot as the visits left it, with one look at its dirty content.
 		var dirt Dirt
 		var holds []discTrigger
+		ownerHeld := false
 		if err == nil {
 			dirt, err = d.Step.Dirty(ctx, s, d.Step.trustOnceTrust())
 		}
@@ -256,7 +261,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			d.openErrs[n], err = d.Step.openErrAny(s, in, dirt)
 		}
 		if err == nil { // a held issue's open triggers, for its hold item (#192)
-			holds, err = d.Step.holdItemFind(ctx, s, dirt)
+			holds, ownerHeld, err = d.Step.holdItemFind(ctx, s, dirt)
 		}
 		d.Step.trustOnceEnd()
 		if errors.Is(err, ErrLabelsHeld) || errors.Is(err, closingErrClosedAgain) {
@@ -272,7 +277,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			continue
 		}
 		d.inputs[n] = in
-		d.digestCacheSet(s, in, dirt, holds) // for assignment too, so with the digest off as well
+		d.digestCacheSet(s, in, dirt, holds, ownerHeld) // for assignment too, so with the digest off as well
 	}
 	for n := range touched {
 		delete(d.inputs, n)

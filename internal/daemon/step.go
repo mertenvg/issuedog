@@ -136,7 +136,7 @@ func (st *Step) counted(ctx context.Context, s *github.Snapshot, d Dirt) (map[in
 		t, seen := trusted[c.Author.Login]
 		if !seen {
 			var err error
-			if t, err = st.Trust.Trusted(ctx, c.Author.Login); err != nil {
+			if t, err = st.trustOnceTrust().Trusted(ctx, c.Author.Login); err != nil {
 				return nil, fmt.Errorf("trust %s: %w", c.Author.Login, err)
 			}
 			trusted[c.Author.Login] = t

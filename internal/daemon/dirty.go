@@ -215,9 +215,13 @@ func (t dirtyTrust) trusted(login string) bool {
 // Iterate makes one for each visit (Step.trustOnceBegin) and drops it
 // after (Step.trustOnceEnd), so no verdict outlives the visit: each pass
 // asks afresh, and trust that changed between passes is used on the next.
-// Only the visit's own Dirty calls use it (Step.trustOnceTrust). The
-// visit's other trust lookups, a command's on other issues, and stage
-// work's, which comes after the visits, ask Step.Trust as before.
+// The visit's own Dirty calls use it (Step.trustOnceTrust), and so do
+// step 1's look for discussion triggers, its count of trusted comments
+// (Step.counted), the hold item's look (Step.holdItemFind), and anything
+// that asks Step.CurrentTrust during the visit, as the reaction triggers
+// do, since a held issue's are looked for there again (T4, #188). The
+// visit's other trust lookups, a command's (Cmd.Trust), and stage work's,
+// which comes after the visits, ask Step.Trust as before.
 type trustOnceVisit struct {
 	trust    github.Trust
 	verdicts map[string]bool // by login in lower case

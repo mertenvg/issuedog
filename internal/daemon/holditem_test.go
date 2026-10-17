@@ -13,9 +13,10 @@ import (
 
 // Hold items (#192, plan #87's T8) against the fakes, through Iterate with
 // the digest and assignment on, and owner to notify. #1 is the pinned
-// digest, and #2 the owner's issue at ready. Until T4 (#188) lands, only
-// a move out of held resolves a trigger: a stage label the owner sets by
-// hand.
+// digest, and #2 the owner's issue at ready. The daemon holdItemDaemon
+// makes has no reaction triggers, so only a move out of held resolves a
+// trigger there: a stage label the owner sets by hand. T4's (#188)
+// resolutions are tested with them on in holditem_resolve_test.go.
 
 // holdItemDaemon is digestDaemon with assignment on too.
 func holdItemDaemon(t testing.TB, f *githubtest.Fake, o *origin) *daemon.Daemon {
@@ -51,6 +52,12 @@ func holdItemOwnerHeld(t testing.TB) *githubtest.Fake {
 // either.
 func holdItemQuiet(t *testing.T, f *githubtest.Fake, d *daemon.Daemon, o *origin, step string) {
 	t.Helper()
+	holdItemQuietWith(t, f, d, step, func() *daemon.Daemon { return holdItemDaemon(t, f, o) })
+}
+
+// holdItemQuietWith is holdItemQuiet, with restart the new daemon.
+func holdItemQuietWith(t *testing.T, f *githubtest.Fake, d *daemon.Daemon, step string, restart func() *daemon.Daemon) {
+	t.Helper()
 	iterate(t, d)
 	iterate(t, d)
 	writes, from := len(f.Writes()), len(f.Requests())
@@ -69,7 +76,7 @@ func holdItemQuiet(t *testing.T, f *githubtest.Fake, d *daemon.Daemon, o *origin
 	if w := f.Writes()[writes:]; len(w) != 0 {
 		t.Errorf("%s: the unchanged pass wrote %+v; want nothing", step, w)
 	}
-	iterate(t, holdItemDaemon(t, f, o))
+	iterate(t, restart())
 	if w := f.Writes()[writes:]; len(w) != 0 {
 		t.Errorf("%s: a restart wrote %+v; want nothing", step, w)
 	}
