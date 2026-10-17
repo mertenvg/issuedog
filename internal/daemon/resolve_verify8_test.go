@@ -114,6 +114,14 @@ func TestResolveGoneAncestorHold(t *testing.T) {
 			if !strings.HasPrefix(body, resolveGoneText+"\n\ncc @owner\n\n"+resolveGoneMarker) {
 				t.Errorf("#1: newest comment %q; want the record that the deleted comment on #2 keeps it held", body)
 			}
+			// The record names what holds it, so a pass over #1 reads #2 no more.
+			n := len(f.Requests())
+			resolveSteps(t, f, 1)
+			for _, r := range f.Requests()[n:] {
+				if r.Path == "/issues/2" || strings.HasPrefix(r.Path, "/issues/2/") {
+					t.Errorf("a pass over #1 after the record read #2: %+v", r)
+				}
+			}
 			resolveSettle(t, f, 2, 1)
 			resolveLabels(t, f, "after the 👍", "held", "held")
 			f.AddComment(2, "owner", "/resume")
@@ -458,4 +466,263 @@ func TestResolveEditedBeforeHoldIsNoHold(t *testing.T) {
 	f.AddReaction(w, "owner", "+1")
 	resolveSettle(t, f, n)
 	resolveLabels(t, f, "after the 👍", "clarifying")
+}
+
+// A marker in App content a write collaborator edited isn't read (SPEC
+// §5.1), on an issue above the /resume's too: one forged on #3 to name
+// #1's own /hold doesn't let #2's /resume end that (madeAbove), so the
+// /resume, which ends nothing else, is rejected, naming #1, and #1 stays
+// held. No pass over #3 has marked the edit yet, so only madeAbove's own
+// reading of #3's edits keeps the forged marker out.
+func TestResolveForgedMarkerAbove(t *testing.T) {
+	f := discFake(t)  // #1
+	file(f, 0, ready) // #2
+	file(f, 0, ready) // #3
+	f.SetParent(1, 2)
+	f.SetParent(2, 3)
+	hold := f.AddComment(1, "owner", "/hold")
+	resolveSteps(t, f, 1)
+	resolveLabels(t, f, "after #1's /hold", "held", "ready", "ready")
+	f.EditComment(commentIDs(t, f, 3)[0], "mallory", fmt.Sprintf("<!-- issuedog:transition from=ready to=held at=ready reason=owner cmd=%d -->", hold))
+	resume := f.AddComment(2, "owner", "/resume")
+	resolveSettle(t, f, 2, 1)
+	if !resolveRejectedWith(f, 2, resume, madeOn("#1")) {
+		t.Errorf("#2: newest comment %q; want the /resume rejected, naming #1", newestComment(f, 2))
+	}
+	resolveLabels(t, f, "after #2's /resume", "held", "ready")
+}
+
+// resolveGoneParent is #2, held by the owner's hand, and #1 under it, held
+// for mallory's comment w, by a pass; then the owner's /hold on #2, which
+// writes no marker on either, by passes. It returns the fake, w and the
+// /hold.
+func resolveGoneParent(t testing.TB) (*githubtest.Fake, int64, int64) {
+	t.Helper()
+	f := discFake(t)
+	file(f, 0, "from=ready to=held at=ready reason=owner by=owner event=77") // #2
+	f.SetParent(1, 2)
+	w := f.AddComment(1, "mallory", "Wait.")
+	resolveSteps(t, f, 1)
+	hold := f.AddComment(2, "owner", "/hold")
+	resolveSteps(t, f, 2, 1)
+	return f, w, hold
+}
+
+// Which /resume ends what a comment deleted on #2 may have been: one the
+// App applied after the deletion, on #2 or on #1 itself, does; one posted
+// before the deletion doesn't, as the deleted comment may have been a
+// later /hold, failing closed.
+func TestResolveGoneEndedBy(t *testing.T) {
+	t.Run("a /resume on #2 after the deletion, before the 👍", func(t *testing.T) {
+		f, w, hold := resolveGoneParent(t)
+		f.DeleteCommentBy("mallory", hold)
+		f.AddComment(2, "owner", "/resume")
+		resolveSettle(t, f, 2, 1)
+		resolveLabels(t, f, "after #2's /resume", "held", "ready")
+		f.AddReaction(w, "owner", "+1")
+		resolveSettle(t, f, 2, 1)
+		resolveLabels(t, f, "after the 👍", "clarifying", "ready")
+	})
+	t.Run("a /resume on #1 after the deletion, which a later comment kept held", func(t *testing.T) {
+		f, _, hold := resolveGoneParent(t)
+		f.DeleteCommentBy("mallory", hold)
+		f.AddComment(1, "owner", "/resume")
+		later := f.AddComment(1, "mallory", "And another thing.")
+		resolveSettle(t, f, 2, 1)
+		resolveLabels(t, f, "after #1's /resume", "held", "held")
+		f.AddReaction(later, "owner", "+1")
+		resolveSettle(t, f, 2, 1)
+		resolveLabels(t, f, "after the 👍", "clarifying", "held")
+	})
+	t.Run("a /resume on #2 posted before the deletion, applied after the record", func(t *testing.T) {
+		f, w, hold := resolveGoneParent(t)
+		f.AddComment(2, "owner", "/resume")
+		f.DeleteCommentBy("mallory", hold)
+		f.AddReaction(w, "owner", "+1")
+		resolveSteps(t, f, 1)
+		if body := newestComment(f, 1); !strings.Contains(body, resolveGoneMarker) {
+			t.Fatalf("#1: newest comment %q; want the record of the comment deleted on #2", body)
+		}
+		resolveSettle(t, f, 2, 1)
+		resolveLabels(t, f, "after #2's /resume", "held", "held")
+	})
+	t.Run("a /resume on #2 before the deletion", func(t *testing.T) {
+		f, w, hold := resolveGoneParent(t)
+		f.AddComment(2, "owner", "/resume")
+		resolveSettle(t, f, 2, 1)
+		resolveLabels(t, f, "after #2's /resume", "held", "ready")
+		f.DeleteCommentBy("mallory", hold)
+		f.AddReaction(w, "owner", "+1")
+		resolveSettle(t, f, 2, 1)
+		resolveLabels(t, f, "after the 👍", "held", "held")
+		if body := newestComment(f, 1); !strings.Contains(body, resolveGoneMarker) {
+			t.Errorf("#1: newest comment %q; want the record of the comment deleted on #2", body)
+		}
+	})
+}
+
+// Only a deletion that may have hidden a code owner's /hold during the
+// hold counts: not one before the hold began, nor one of a comment by a
+// user who isn't trusted. A comment by someone GitHub doesn't name, and
+// two deleted on the same issue, do; the record names that issue once.
+func TestResolveGoneWhich(t *testing.T) {
+	t.Run("deleted before the hold", func(t *testing.T) {
+		f := discFake(t)
+		file(f, 0, ready) // #2
+		f.SetParent(1, 2)
+		note := f.AddComment(2, "owner", "Note.")
+		f.DeleteCommentBy("mallory", note)
+		resolveSettle(t, f, 2)
+		f.AddReaction(commentIDs(t, f, 2)[len(commentIDs(t, f, 2))-1], "owner", "+1") // the hold's notice
+		resolveSettle(t, f, 2)
+		resolveLabels(t, f, "after the notice's 👍", "ready", "clarifying")
+		w := f.AddComment(1, "mallory", "Wait.")
+		resolveSettle(t, f, 1)
+		f.AddReaction(w, "owner", "+1")
+		resolveSettle(t, f, 2, 1)
+		resolveLabels(t, f, "after the 👍", "clarifying", "clarifying")
+	})
+	t.Run("an untrusted user's comment", func(t *testing.T) {
+		f, w, _ := resolveGoneParent(t)
+		f.SetPermission("eve", "read")
+		aside := f.AddComment(2, "eve", "An aside.")
+		f.DeleteCommentBy("mallory", aside)
+		f.AddReaction(w, "owner", "+1")
+		resolveSettle(t, f, 2, 1)
+		resolveLabels(t, f, "after the 👍", "held", "held")
+		if body := newestComment(f, 1); strings.Contains(body, resolveGoneMarker) || !strings.Contains(body, "a `/hold` on an issue above it") {
+			t.Errorf("#1: newest comment %q; want it held by the /hold on #2 alone", body)
+		}
+	})
+	t.Run("deleted by a user without write access", func(t *testing.T) {
+		f, w, _ := resolveGoneParent(t)
+		f.SetPermission("eve", "read")
+		note := f.AddComment(2, "owner", "Note.")
+		f.DeleteCommentBy("eve", note)
+		f.AddReaction(w, "owner", "+1")
+		resolveSettle(t, f, 2, 1)
+		if body := newestComment(f, 1); strings.Contains(body, resolveGoneMarker) || !strings.Contains(body, "a `/hold` on an issue above it") {
+			t.Errorf("#1: newest comment %q; want it held by the /hold on #2 alone", body)
+		}
+	})
+	t.Run("a comment by someone GitHub doesn't name", func(t *testing.T) {
+		f, w, _ := resolveGoneParent(t)
+		ghost := f.AddComment(2, "", "Gone.")
+		f.DeleteCommentBy("mallory", ghost)
+		f.AddReaction(w, "owner", "+1")
+		resolveSettle(t, f, 2, 1)
+		if body := newestComment(f, 1); !strings.Contains(body, resolveGoneMarker) {
+			t.Errorf("#1: newest comment %q; want the record of the comment deleted on #2", body)
+		}
+	})
+	t.Run("two deleted on #2", func(t *testing.T) {
+		f, w, hold := resolveGoneParent(t)
+		note := f.AddComment(2, "owner", "Note.")
+		f.DeleteCommentBy("mallory", hold)
+		f.DeleteCommentBy("mallory", note)
+		f.AddReaction(w, "owner", "+1")
+		resolveSettle(t, f, 2, 1)
+		body := newestComment(f, 1)
+		if !strings.HasPrefix(body, resolveGoneText+"\n\ncc @owner\n\n"+resolveGoneMarker) || strings.Count(body, ",2-") != 1 {
+			t.Errorf("#1: newest comment %q; want the record naming #2 once, and both deletions", body)
+		}
+	})
+}
+
+// #3 > #2 > #1. The owner's /hold on #3 is posted before the one on #2,
+// but #2's pass comes first, so #2's /hold moves #2 and #1 into held, its
+// marker on both, and #3's then writes none on them. #2's /hold isn't
+// stacked on #3's, so #3's /resume ends #3's hold alone, and #2 and #1
+// stay held by #2's.
+func TestResolveMarkedHoldNotStacked(t *testing.T) {
+	f := discFake(t)
+	file(f, 0, ready) // #2
+	file(f, 0, ready) // #3
+	f.SetParent(1, 2)
+	f.SetParent(2, 3)
+	f.AddComment(3, "owner", "/hold")
+	f.AddComment(2, "owner", "/hold")
+	resolveSettle(t, f, 2)
+	resolveSettle(t, f, 3)
+	resolveLabels(t, f, "after the /holds", "held", "held", "held")
+	f.AddComment(3, "owner", "/resume")
+	resolveSettle(t, f, 3, 2, 1)
+	resolveLabels(t, f, "after #3's /resume", "held", "held", "ready")
+}
+
+// #1's own /hold, posted while it was held for mallory's comment, comes
+// before the owner's /hold on #2, which writes no marker on #1, so it
+// isn't stacked on that: #2's /resume ends #2's hold, and #1 stays held by
+// its own /hold once mallory's comment is resolved.
+func TestResolveOwnHoldBeforeParentHold(t *testing.T) {
+	f, w, _ := resolveOwnOnDiscussion(t)
+	f.AddComment(2, "owner", "/hold")
+	resolveSettle(t, f, 2, 1)
+	resolveLabels(t, f, "after #2's /hold", "held", "held")
+	f.AddComment(2, "owner", "/resume")
+	resolveSettle(t, f, 2, 1)
+	f.AddReaction(w, "owner", "+1")
+	resolveSettle(t, f, 2, 1)
+	resolveLabels(t, f, "after the 👍", "held", "ready")
+}
+
+// #3 > #2 > #1. An earlier hold on #2, by #3's /hold, ended with #3's
+// /resume; then mallory's comment held #2, and #2's own /hold, which
+// writes no marker on #2, sits on that discussion hold alone, not on the
+// earlier one, and writes a marker on #1. A later /hold and /resume on #3
+// end neither, on #2 or on #1.
+func TestResolveOwnHoldNotStackedOnEarlierHold(t *testing.T) {
+	f := discFake(t)
+	file(f, 0, ready) // #2
+	file(f, 0, ready) // #3
+	f.SetParent(1, 2)
+	f.SetParent(2, 3)
+	f.AddComment(3, "owner", "/hold")
+	resolveSettle(t, f, 3)
+	f.AddComment(3, "owner", "/resume")
+	resolveSettle(t, f, 3)
+	resolveLabels(t, f, "after #3's first /resume", "ready", "ready", "ready")
+	w := f.AddComment(2, "mallory", "Wait.")
+	resolveSettle(t, f, 2)
+	f.AddComment(2, "owner", "/hold")
+	resolveSettle(t, f, 2)
+	f.AddComment(3, "owner", "/hold")
+	resolveSettle(t, f, 3)
+	f.AddComment(3, "owner", "/resume")
+	resolveSettle(t, f, 3, 2, 1)
+	f.AddReaction(w, "owner", "+1")
+	resolveSettle(t, f, 3, 2, 1)
+	resolveLabels(t, f, "at the end", "held", "held", "ready")
+}
+
+// #3 > #2 > #1, #1 held for mallory's comment throughout. #3's /hold,
+// which writes no marker on #2, held for discussion then, nor on #1, held
+// #2 in a hold that #2's /resume ended. Then mallory's comment held #2
+// again, and #2's own /hold, which writes no marker, sits on that alone,
+// not on #3's earlier /hold, so #3's /resume doesn't end it, on #2 or on
+// #1, and both stay held by it once the discussions are resolved.
+func TestResolveOwnHoldNotStackedOnEndedHoldAbove(t *testing.T) {
+	f := discFake(t)
+	file(f, 0, ready) // #2
+	file(f, 0, ready) // #3
+	f.SetParent(1, 2)
+	f.SetParent(2, 3)
+	w1 := f.AddComment(1, "mallory", "Wait 1.")
+	f.AddComment(2, "mallory", "Wait 2.")
+	resolveSettle(t, f, 1, 2)
+	f.AddComment(3, "owner", "/hold")
+	resolveSettle(t, f, 3, 2, 1)
+	f.AddComment(2, "owner", "/resume")
+	resolveSettle(t, f, 3, 2, 1)
+	resolveLabels(t, f, "after #2's /resume", "held", "ready", "held")
+	w3 := f.AddComment(2, "mallory", "Wait 3.")
+	resolveSettle(t, f, 2)
+	f.AddComment(2, "owner", "/hold")
+	resolveSettle(t, f, 2, 1)
+	f.AddComment(3, "owner", "/resume")
+	resolveSettle(t, f, 3, 2, 1)
+	f.AddReaction(w1, "owner", "+1")
+	f.AddReaction(w3, "owner", "+1")
+	resolveSettle(t, f, 3, 2, 1)
+	resolveLabels(t, f, "at the end", "held", "held", "ready")
 }

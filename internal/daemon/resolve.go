@@ -760,13 +760,14 @@ type resolveJudged struct {
 // out those a record on self says a /resume ended, but for j (resolveLeft),
 // as every other judgement of the owner holds left does.
 //
-// Judged for j, a hold j ends is kept, marked resolveStacked, so that
-// heldStackEnds ends it, and resolveResumed records that, which the leave
-// path, where j may not count as applied, reads too (resolveLeft). The
-// judgement returned says the same of the owner holds resolveOwnHolds
-// finds on self: a /hold on self, or one the record of the discussion's
-// end names, that j ends, as above; and a deleted comment that record
-// names (resolveGone), on j's issue or above it, deleted before j.
+// Judged for j, a hold j ends is kept, and the judgement returned says j
+// ends it, so that resolveHeld marks it resolveStacked, heldStackEnds ends
+// it, and resolveResumed records that, which the leave path, where j may
+// not count as applied, reads too (resolveLeft). The judgement says the
+// same of the owner holds resolveOwnHolds finds on self: a /hold on self,
+// or one the record of the discussion's end names, that j ends, as above;
+// and a deleted comment that record names (resolveGone), on j's issue or
+// above it, deleted before j.
 //
 // A /hold counts by the App's record that it applied it, whatever its
 // comment shows now (#188's verify, round 2): an owner hold marker on an
@@ -948,11 +949,7 @@ func (a *Applier) resolveUnended(ctx context.Context, self node, path []node, is
 		if ended {
 			continue
 		}
-		m := resolveOwnerHold(h.id)
-		if j != nil && ends(h, j.c.ID, resolveResume{level: top, at: j.c.CreatedAt}) {
-			m = resolveStackedHold(m)
-		}
-		left = append(left, m)
+		left = append(left, resolveOwnerHold(h.id))
 	}
 	for level, x := range path {
 		who := a.discWhoOf(x.s, trust)
