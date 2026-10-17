@@ -706,7 +706,7 @@ func resolveHeldAfterHold(is state.Issue) (state.Stage, bool) {
 		}
 	}
 	o := state.Stage(before.Fields["origin"])
-	return o, is.Stage == state.Held && state.Stage(before.Fields["to"]) == state.Clarifying && o.Open() && o != state.Held
+	return o, state.Stage(before.Fields["to"]) == state.Clarifying && o.Open() && o != state.Held
 }
 
 // resolveIntake reports whether h, the holds on an issue, began at intake:
@@ -813,24 +813,22 @@ func (a *Applier) resolveLeave(ctx context.Context, s *github.Snapshot, d Dirt, 
 }
 
 // resolveEnded writes the "ended reason=discussion" record on s, held by
-// an owner hold that stays, or from intake, if a writer's trigger was
-// resolved during the hold, p, since the latest such record, or if above,
-// /holds on ancestors that keep it held (resolveAbove), name one no record
-// names yet (resolveLeave). Its time is the latest of those resolutions,
-// and its held field names the ancestors' /holds, so no later pass reads
-// them again: their /resume ends them (resolveHeld).
+// an owner hold that stays, or from intake, or by above, /holds on
+// ancestors (resolveAbove), if a writer's trigger was resolved during the
+// hold, p, since the latest such record (resolveLeave). Its time is the
+// latest of those resolutions, and its held field names the ancestors'
+// /holds, so no later pass reads them again: their /resume ends them
+// (resolveHeld). An ancestor's /hold is read only once the discussion is
+// resolved with no other hold left, so a new resolution comes with it.
 func (a *Applier) resolveEnded(ctx context.Context, s *github.Snapshot, rs *resolver, p resolvePeriod, intake bool, above []github.Marker) error {
 	var held []string
-	news := false
 	for _, m := range above {
-		id, _ := state.Key{Field: "cmd", ID: m.Fields["cmd"]}.Comment()
-		news = news || !slices.Contains(p.held, id)
 		held = append(held, m.Fields["cmd"])
 	}
 	var last time.Time
 	var by []string
 	for _, act := range rs.acts {
-		if act.At.Before(p.at) || p.ended && !act.At.After(p.endedAt) && !news {
+		if act.At.Before(p.at) || p.ended && !act.At.After(p.endedAt) {
 			continue
 		}
 		ok, err := rs.verified(ctx, act)
@@ -847,13 +845,10 @@ func (a *Applier) resolveEnded(ctx context.Context, s *github.Snapshot, rs *reso
 			by = append(by, l)
 		}
 	}
-	if last.IsZero() && !news {
+	if last.IsZero() {
 		return nil
 	}
-	fields := map[string]string{"reason": "discussion"}
-	if !last.IsZero() {
-		fields[resolveField] = strconv.FormatInt(last.Unix(), 10)
-	}
+	fields := map[string]string{"reason": "discussion", resolveField: strconv.FormatInt(last.Unix(), 10)}
 	if len(held) > 0 {
 		fields["held"] = strings.Join(held, ",")
 	}

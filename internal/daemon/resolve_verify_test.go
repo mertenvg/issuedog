@@ -70,6 +70,35 @@ func TestResolveResumeThenLaterAct(t *testing.T) {
 	}
 }
 
+// An edit made after the /resume stays open once known from its record
+// alone, by the time its key gives: edited again, its notice still needs
+// its own 👍, after the newer edit's.
+func TestResolveResumeThenEditedTwice(t *testing.T) {
+	f := discFake(t)
+	x := f.AddComment(1, "owner", "Ship it.") // 1002
+	f.AddComment(1, "mallory", "Wait.")       // 1003
+	if err := discPass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	f.AddComment(1, "owner", "/resume")
+	f.EditComment(x, "mallory", "Don't ship it.")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	f.EditComment(x, "mallory", "Never ship it.")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	ids := commentIDs(t, f, 1)
+	f.AddReaction(ids[len(ids)-1], "owner", "+1") // the newer edit's notice
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	if l := f.State().Issues[0].Labels; !slices.Equal(l, []string{"stage:held"}) || len(discNoticeKeys(f, 1)) != 2 {
+		t.Errorf("labels %q, notices %q; want the issue held for the older edit, with two notices", l, discNoticeKeys(f, 1))
+	}
+}
+
 // A comment in the same window holds the issue again too, the trigger
 // open after the /resume: it isn't countered by the /resume, which
 // counters nothing.
@@ -83,6 +112,15 @@ func TestResolveResumeThenLaterComment(t *testing.T) {
 	if l, body := f.State().Issues[0].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:held"}) ||
 		body != resolveSelfResumed(resolveCommentAt(t, f, 1, resume), resume) {
 		t.Errorf("labels %q, newest comment %q; want the issue held for comment %d, with the record", l, body, late)
+	}
+}
+
+// A /resume counters no comment, even one rejected, as for a bad
+// argument: mallory's comment stays open, and the issue held.
+func TestResolveRejectedResumeCountersNothing(t *testing.T) {
+	f := run(t, resolveHeldWith(func(_ testing.TB, f *githubtest.Fake) { f.AddComment(1, "owner", "/resume now") }), resolvePass(t, 1))
+	if l, body := f.State().Issues[0].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:held"}) || !strings.Contains(body, "reason=rejected") {
+		t.Errorf("labels %q, newest comment %q; want the issue held, the /resume rejected", l, body)
 	}
 }
 
@@ -114,6 +152,49 @@ func TestResolveHoldOnDiscussionHold(t *testing.T) {
 	if l, body := f.State().Issues[0].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:clarifying"}) ||
 		!strings.Contains(body, fmt.Sprintf("from=held to=clarifying at=ready origin=ready cmd=%d ", resume)) {
 		t.Errorf("labels %q, newest comment %q; want the /resume to clarifying", l, body)
+	}
+}
+
+// A /hold rejected for a bad argument holds nothing: once the discussion
+// is resolved, the issue goes to clarifying.
+func TestResolveRejectedHoldHoldsNothing(t *testing.T) {
+	f := resolveHeldWith(func(_ testing.TB, f *githubtest.Fake) {})(t)
+	f.AddComment(1, "owner", "/hold now")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	f.AddReaction(1002, "owner", "+1")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	if l := f.State().Issues[0].Labels; !slices.Equal(l, []string{"stage:clarifying"}) {
+		t.Errorf("labels %q, newest comment %q; want clarifying, the rejected /hold no hold", l, newestComment(f, 1))
+	}
+}
+
+// A /hold posted while the issue was held, which a /resume since ended,
+// holds nothing in a later hold: a new discussion, once resolved, takes the
+// issue to clarifying.
+func TestResolveEndedHoldCountsNoMore(t *testing.T) {
+	f := resolveHeldWith(func(_ testing.TB, f *githubtest.Fake) {})(t)
+	f.AddComment(1, "owner", "/hold")
+	f.AddComment(1, "owner", "/resume")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	if l := f.State().Issues[0].Labels; !slices.Equal(l, []string{"stage:ready"}) {
+		t.Fatalf("labels %q, newest comment %q; want the /resume back to ready", l, newestComment(f, 1))
+	}
+	c := f.AddComment(1, "mallory", "Wait again.")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	f.AddReaction(c, "owner", "+1")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	if l := f.State().Issues[0].Labels; !slices.Equal(l, []string{"stage:clarifying"}) {
+		t.Errorf("labels %q, newest comment %q; want clarifying, the old /hold ended", l, newestComment(f, 1))
 	}
 }
 
@@ -164,6 +245,121 @@ func TestResolveParentHoldKeepsChild(t *testing.T) {
 	if l, body := f.State().Issues[1].Labels, newestComment(f, 2); !slices.Equal(l, []string{"stage:clarifying"}) ||
 		!strings.Contains(body, fmt.Sprintf("from=held to=clarifying at=ready origin=ready cmd=%d ", resume)) {
 		t.Errorf("#2: labels %q, newest comment %q; want it sent to clarifying by #1's /resume", l, body)
+	}
+}
+
+// A /resume on the parent posted before its /hold doesn't end that /hold:
+// the child stays held once its discussion is resolved.
+func TestResolveEarlierResumeAbove(t *testing.T) {
+	f := discFake(t)
+	file(f, 1, ready)
+	c := f.AddComment(2, "mallory", "Wait.")
+	if err := resolvePass(t, 2)(f); err != nil {
+		t.Fatal(err)
+	}
+	f.AddComment(1, "owner", "/resume")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	f.AddComment(1, "owner", "/hold")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	f.AddReaction(c, "owner", "+1")
+	if err := resolvePass(t, 2)(f); err != nil {
+		t.Fatal(err)
+	}
+	if l, body := f.State().Issues[1].Labels, newestComment(f, 2); !slices.Equal(l, []string{"stage:held"}) || !strings.Contains(body, "held=") {
+		t.Errorf("#2: labels %q, newest comment %q; want it held by #1's /hold, with the record", l, body)
+	}
+}
+
+// A parent's /hold, then its /resume, both while the child is held for
+// discussion: once the discussion is resolved, the child goes to
+// clarifying, the parent's /hold ended.
+func TestResolveParentHoldThenResume(t *testing.T) {
+	f := discFake(t)
+	file(f, 1, ready)
+	c := f.AddComment(2, "mallory", "Wait.")
+	if err := resolvePass(t, 2)(f); err != nil {
+		t.Fatal(err)
+	}
+	f.AddComment(1, "owner", "/hold")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	f.AddComment(1, "owner", "/resume")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	f.AddReaction(c, "owner", "+1")
+	if err := resolvePass(t, 2)(f); err != nil {
+		t.Fatal(err)
+	}
+	if l := f.State().Issues[1].Labels; !slices.Equal(l, []string{"stage:clarifying"}) {
+		t.Errorf("#2: labels %q, newest comment %q; want clarifying", l, newestComment(f, 2))
+	}
+}
+
+// A /hold on an issue between a grandparent and its grandchild, posted
+// while both were held, keeps the grandchild held: the grandparent's
+// /resume, which ends only its own /hold below, is rejected, naming that
+// issue, as its /resume would end the rest.
+func TestResolveHoldBetween(t *testing.T) {
+	f := discFake(t)
+	file(f, 1, ready) // #2, under #1
+	file(f, 2, ready) // #3, under #2
+	f.AddComment(1, "owner", "/hold")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	f.RemoveLabel(1, "owner", "stage:held")
+	f.AddLabel(1, "owner", "stage:ready")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	f.AddComment(2, "owner", "/hold")
+	if err := resolvePass(t, 2)(f); err != nil {
+		t.Fatal(err)
+	}
+	resume := f.AddComment(1, "owner", "/resume")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	want := final("/resume", "I didn't apply this command", madeOn("#2"), fmt.Sprint(resume))
+	if body := newestComment(f, 1); body != want {
+		t.Errorf("newest comment on #1 %q; want %q", body, want)
+	}
+	for i := 1; i < 3; i++ {
+		if l := f.State().Issues[i].Labels; !slices.Equal(l, []string{"stage:held"}) {
+			t.Errorf("#%d: labels %q; want it still held", i+1, l)
+		}
+	}
+}
+
+// With the grandparent still held, its /resume applies, but the /hold
+// between keeps the grandchild held, as it does the issue it's on.
+func TestResolveHoldBetweenApplied(t *testing.T) {
+	f := discFake(t)
+	file(f, 1, ready) // #2, under #1
+	file(f, 2, ready) // #3, under #2
+	f.AddComment(1, "owner", "/hold")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	f.AddComment(2, "owner", "/hold")
+	if err := resolvePass(t, 2)(f); err != nil {
+		t.Fatal(err)
+	}
+	f.AddComment(1, "owner", "/resume")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	st := f.State()
+	for i, want := range []string{"stage:ready", "stage:held", "stage:held"} {
+		if l := st.Issues[i].Labels; !slices.Equal(l, []string{want}) {
+			t.Errorf("#%d: labels %q; want %s", i+1, l, want)
+		}
 	}
 }
 

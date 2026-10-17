@@ -220,7 +220,7 @@ func hold(is state.Issue, _ bool, _ int, by string, _ bool) (Move, bool) {
 func resume(is state.Issue, self bool, above map[int64]bool, by string, after bool) (Move, bool) {
 	at, ended, left := heldStackResume(is, self, above)
 	fields := map[string]string{}
-	if o, ok := resolveHeldAfterHold(is); at == state.Clarifying && ok {
+	if o, ok := resolveHeldAfterHold(is); ok {
 		// Back to the clarifying after a hold, which carries its origin
 		// forward (SPEC §6.4), so the commands there keep waiting.
 		fields["origin"] = string(o)

@@ -486,7 +486,7 @@ type discOpen func(key string, at time.Time, id int64) (open, recorded bool)
 func discOpenAfter(b discBound, records map[string]int64) discOpen {
 	return func(key string, at time.Time, id int64) (bool, bool) {
 		if r, recorded := records[key]; recorded {
-			return r >= b.ID || b.ByTime && !at.IsZero() && !at.Before(b.At), true
+			return r >= b.ID || b.ByTime && !at.Before(b.At), true
 		}
 		if id != 0 && !b.ByTime {
 			return id > b.ID, false
