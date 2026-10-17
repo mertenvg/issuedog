@@ -328,19 +328,20 @@ func TestResolveOwnHoldOnDiscussionThreeLevels(t *testing.T) {
 // writes a marker on #2 but none on #1, then by its own /hold, which
 // writes none either. #2's /resume ends #2's /hold on #1 (#2's is its own
 // to end, so #1 never counts it), but not #1's own /hold, posted below it
-// (#188's decision, round 3), so #1 stays held, with no record of an
-// owner hold ended; once the owner's 👍 resolves mallory's comment, #1
+// (#188's decision, round 3), so #1 stays held, with the record that
+// #2's /hold ended there, and only that, so it stays ended (#188's verify,
+// round 3, note 1); once the owner's 👍 resolves mallory's comment, #1
 // stays held by its own /hold, until its own /resume sends it to
 // clarifying.
 func TestResolveOwnHoldUnderParentHoldWithoutMarker(t *testing.T) {
-	var w int64
+	var w, parent int64
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := discFake(t)
 		file(f, 0, ready) // #2
 		f.SetParent(1, 2)
 		w = f.AddComment(1, "mallory", "Wait.")
 		resolveSteps(t, f, 1)
-		f.AddComment(2, "owner", "/hold")
+		parent = f.AddComment(2, "owner", "/hold")
 		resolveSteps(t, f, 2, 1)
 		f.AddComment(1, "owner", "/hold")
 		resolveSteps(t, f, 1)
@@ -351,8 +352,8 @@ func TestResolveOwnHoldUnderParentHoldWithoutMarker(t *testing.T) {
 	githubtest.Replay(t, setup, resolvePass(t, 2))
 	f := run(t, setup, resolvePass(t, 2))
 	resolveLabels(t, f, "after #2's /resume", "held", "ready")
-	if body := newestComment(f, 1); strings.Contains(body, "issuedog:ended") {
-		t.Errorf("#1: newest comment %q; want no record that an owner hold ended", body)
+	if body := newestComment(f, 1); strings.Count(body, "issuedog:ended") != 1 || !strings.Contains(body, fmt.Sprintf("<!-- issuedog:ended reason=owner key=c%d cmd=", parent)) {
+		t.Errorf("#1: newest comment %q; want the record that #2's /hold ended, and only that", body)
 	}
 	f.AddReaction(w, "owner", "+1")
 	resolveSettle(t, f, 2, 1)
@@ -369,19 +370,19 @@ func TestResolveOwnHoldUnderParentHoldWithoutMarker(t *testing.T) {
 // then #2's /hold, which writes no marker on #2, held by #3's, but one on
 // #1; then mallory's comment on #1. #3's /resume ends #3's hold on #2, but
 // not #2's /hold, posted below it, on #2 or on #1 (#188's decision, round
-// 3): #2 stays held by its own /hold, and #1 by #2's and for mallory's
-// comment, with no record of an owner hold ended. Once the owner's 👍
+// 3): #2 stays held by its own /hold, with the record that #3's ended,
+// and #1 by #2's and for mallory's comment, with no record. Once the owner's 👍
 // resolves that, #1 still stays held, until #2's /resume, which takes #2
 // back and sends #1 to clarifying.
 func TestResolveHoldMarkedBelowNotEndedFromAbove(t *testing.T) {
-	var w, between int64
+	var w, between, top int64
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := discFake(t)
 		file(f, 0, ready) // #2
 		file(f, 0, ready) // #3
 		f.SetParent(1, 2)
 		f.SetParent(2, 3)
-		f.AddComment(3, "owner", "/hold")
+		top = f.AddComment(3, "owner", "/hold")
 		resolveSteps(t, f, 3)
 		f.AddComment(1, "owner", "/resume")
 		resolveSteps(t, f, 1)
@@ -399,10 +400,13 @@ func TestResolveHoldMarkedBelowNotEndedFromAbove(t *testing.T) {
 	githubtest.Replay(t, setup, resolvePass(t, 3))
 	f := run(t, setup, resolvePass(t, 3))
 	resolveLabels(t, f, "after #3's /resume", "held", "held", "ready")
-	for n := 1; n <= 2; n++ {
-		if body := newestComment(f, n); strings.Contains(body, "issuedog:ended") {
-			t.Errorf("#%d: newest comment %q; want no record that an owner hold ended", n, body)
-		}
+	// #2 records that #3's /hold ended there, though #2's own stays
+	// (#188's verify, round 3, note 1); #1 was in no hold of #3's.
+	if body := newestComment(f, 2); !strings.Contains(body, fmt.Sprintf("<!-- issuedog:ended reason=owner key=c%d cmd=", top)) {
+		t.Errorf("#2: newest comment %q; want the record that #3's /hold ended", body)
+	}
+	if body := newestComment(f, 1); strings.Contains(body, "issuedog:ended") {
+		t.Errorf("#1: newest comment %q; want no record that an owner hold ended", body)
 	}
 	f.AddReaction(w, "owner", "+1")
 	resolveSettle(t, f, 3, 2, 1)
@@ -831,8 +835,8 @@ func TestResolveHoldAboveResumeNotABase(t *testing.T) {
 			}
 			resolveLabels(t, l.f, "after both", "held", "ready", "held", "held")
 			for _, n := range []int{x, c} {
-				if body := newestComment(l.f, n); !strings.Contains(body, "hasn't ended") {
-					t.Errorf("#%d: newest comment %q; want the record that a hold on it hasn't ended", n, body)
+				if !anyComment(l.f, n, "hasn't ended") {
+					t.Errorf("#%d: newest comment %q; want the record that a hold on it hasn't ended", n, newestComment(l.f, n))
 				}
 			}
 			l.restart()

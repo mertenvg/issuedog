@@ -132,7 +132,7 @@ func TestResolveHeldRecordReplay(t *testing.T) {
 	githubtest.Replay(t, setup, resolvePass(t, 3))
 	f := run(t, setup, resolvePass(t, 3))
 	if l, body := f.State().Issues[2].Labels, newestComment(f, 3); !slices.Equal(l, []string{"stage:held"}) ||
-		!strings.Contains(body, fmt.Sprintf("<!-- issuedog:ended reason=discussion held=%d -->", hold)) {
+		!strings.Contains(body, fmt.Sprintf("<!-- issuedog:ended reason=discussion held=%d heldon=1 -->", hold)) {
 		t.Errorf("#3: labels %q, newest comment %q; want it held, with the record naming #1's /hold", l, body)
 	}
 }

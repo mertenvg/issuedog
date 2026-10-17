@@ -73,7 +73,7 @@ func TestResolveRejectedResumeKeepsParentHold(t *testing.T) {
 	githubtest.Replay(t, setup, resolvePass(t, 1))
 	f := run(t, setup, resolvePass(t, 1))
 	if l, body := f.State().Issues[0].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:held"}) ||
-		!strings.Contains(body, fmt.Sprintf("<!-- issuedog:ended reason=discussion held=%d resolved=", hold)) {
+		!strings.Contains(body, fmt.Sprintf("<!-- issuedog:ended reason=discussion held=%d heldon=2 resolved=", hold)) {
 		t.Errorf("#1: labels %q, newest comment %q; want it held, with the record naming #2's /hold %d", l, body, hold)
 	}
 	if l := f.State().Issues[1].Labels; !slices.Equal(l, []string{"stage:held"}) {

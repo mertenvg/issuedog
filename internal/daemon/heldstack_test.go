@@ -143,8 +143,8 @@ func heldStackCheck(t *testing.T, base func(testing.TB) *githubtest.Fake, steps 
 
 // #87's note 1 and Q2b: a hold by hand on an issue under an owner /hold
 // writes one marker. Its parent's /resume ends the /hold, but not the hold
-// by hand, and names the issue; the issue leaves held only on its own
-// /resume. Each move carries the round bound from before the hold.
+// by hand, and names the issue, which records that the /hold ended; the
+// issue leaves held only on its own /resume. Each move carries the round bound from before the hold.
 func TestHeldStackHandSetHold(t *testing.T) {
 	var hold, resume1, resume2, ev int64
 	steps := []heldStackStep{
@@ -177,7 +177,11 @@ func TestHeldStackHandSetHold(t *testing.T) {
 			return map[int]issueWant{
 				1: {[]string{"stage:ready"}, []string{moved("Resumed by `/resume`, back to `ready`. Still on hold: #2, by a hold this `/resume` doesn't end: one set by hand, a `/hold` below this issue, or a deleted comment that was, or may have been, a `/hold`. `/resume` there ends it.",
 					fmt.Sprintf("from=held to=ready cmd=%d seen=1001", resume1))}},
-				2: {[]string{"stage:held"}, nil},
+				// The record that the /hold ended, which keeps it ended
+				// (#188's verify, round 3, note 1).
+				2: {[]string{"stage:held"}, []string{fmt.Sprintf("`/resume` on #1 ended an owner hold on this issue, but it stays on hold by one that `/resume` doesn't end: "+
+					"one set by hand, a `/hold` below #1, or a deleted comment that was, or may have been, a `/hold`. `/resume` here ends it.\n\n"+
+					"<!-- issuedog:ended reason=owner key=c%d cmd=%d -->", hold, resume1)}},
 				3: {[]string{"stage:ready"}, []string{moved("Resumed by `/resume` on #1, back to `ready`.", fmt.Sprintf("from=held to=ready cmd=%d seen=1003", resume1))}},
 			}
 		}, "+1", &resume1)

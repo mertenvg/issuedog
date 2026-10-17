@@ -244,10 +244,18 @@ func resume(is state.Issue, self bool, above madeAboveSet, by string, after bool
 // (heldStackEnds); and left are the holds that stay. The issue leaves held
 // only when none is left. An issue that isn't held, or whose at isn't a
 // stage to go back to, has no hold the command ends or leaves.
+//
+// The command's own issue, held with no hold left to judge, as when
+// records say a /resume above ended each one (resolveLeft, resolveResumed),
+// is held by a /hold no marker on it records, posted above it, which the
+// command ends too, as it ends every hold there: so it leaves.
 func heldStackResume(is state.Issue, self bool, above madeAboveSet) (at state.Stage, ended int, left []github.Marker) {
 	h := is.HeldStack
 	if is.Stage != state.Held || !h.At.Open() || h.At == state.Held {
 		return h.At, 0, nil
+	}
+	if self && len(h.Holds) == 0 {
+		return h.At, 1, nil
 	}
 	for _, m := range h.Holds {
 		if heldStackEnds(m, self, above) {
@@ -306,13 +314,18 @@ type madeAboveSet struct {
 	// when it was posted, and its level, 0, which made gives the holds
 	// made on its issue or above too.
 	resume resolveResume
+	// nodes are the /resume's issue and its ancestors, nearest first, as
+	// read, so the /resume's judgement of a descendant reads every issue
+	// above it, as the leave path does (resolveHeldBy, resolveAbove).
+	nodes []node
 }
 
 // made returns the owner hold that marker m records on a descendant of
 // the /resume's issue, as resolveEndsHold judges it for above.resume: the
 // /hold its cmd names, or the comment deleted that its resolveGone field
 // names, at level 0, the /resume's, if it was posted on the /resume's
-// issue or above it (ids, issues), else at -1, below it. A hold set by
+// issue or above it (ids, issues), or counted as posted there when a
+// record named it (resolveOn), else at -1, below it. A hold set by
 // hand, which names neither, isn't one, nor is a marker whose field is ill
 // formed.
 func (above madeAboveSet) made(m github.Marker) (resolveMade, bool) {
@@ -326,7 +339,7 @@ func (above madeAboveSet) made(m github.Marker) (resolveMade, bool) {
 	}
 	id, ok := state.Key{Field: "cmd", ID: m.Fields["cmd"]}.Comment()
 	h := resolveMade{id: id, level: -1}
-	if above.ids[id] {
+	if on, err := strconv.Atoi(m.Fields[resolveOn]); above.ids[id] || err == nil && above.issues[on] {
 		h.level = 0
 	}
 	return h, ok
@@ -343,6 +356,7 @@ func (a *Applier) madeAbove(ctx context.Context, c Cmd) (madeAboveSet, error) {
 	for s, d := c.S, c.Dirt; ; {
 		seen[s.Number] = true
 		above.issues[s.Number] = true
+		above.nodes = append(above.nodes, node{s: s, d: d, open: true})
 		for _, cm := range s.Comments {
 			above.ids[cm.ID] = true
 		}
@@ -457,11 +471,9 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 		}
 		// Not a label the label rules left out, or would (Applier.hidden).
 		s := a.hidden(n.s)
-		var extra []github.Marker
-		if n.s != c.S {
-			if extra, err = a.resolveHeldBy(ctx, family, c, n, c.Trust, above); err != nil {
-				return fmt.Errorf("check /resume: %w", err)
-			}
+		extra, err := a.resolveHeldBy(ctx, family, c, n, c.Trust, above)
+		if err != nil {
+			return fmt.Errorf("check /resume: %w", err)
 		}
 		is, _, err := a.resolveHeld(ctx, s, n.d, c.Trust, state.Derive(s, a.AppSlug, n.d.Has), c.Comment, n.s == c.S, extra)
 		if err != nil {
@@ -566,11 +578,9 @@ func (a *Applier) moveFamily(ctx context.Context, c Cmd, trust github.Trust, r *
 		}
 		is, after := state.Derive(n.s, a.AppSlug, n.d.Has), false
 		if r != nil {
-			var extra []github.Marker
-			if n.s != c.S {
-				if extra, err = a.resolveHeldBy(ctx, family, c, n, trust, r.above); err != nil {
-					return fmt.Errorf("move: %w", err)
-				}
+			extra, err := a.resolveHeldBy(ctx, family, c, n, trust, r.above)
+			if err != nil {
+				return fmt.Errorf("move: %w", err)
 			}
 			if is, after, err = a.resolveHeld(ctx, n.s, n.d, trust, is, c.Comment, n.s == c.S, extra); err != nil {
 				return fmt.Errorf("move: %w", err)

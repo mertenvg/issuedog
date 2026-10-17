@@ -41,8 +41,8 @@ func resolveOwnHoldUnder(t testing.TB) (*githubtest.Fake, int64) {
 // The parent's /resume ends the hold its /hold made on the child, but not
 // the child's own /hold, which wrote no marker (Q2b) and was posted below
 // it (#188's decision, round 3), so the child stays held by both, and the
-// parent's move names it for each, with no record on the child, as no
-// owner hold there ended alone. Once the owner's 👍 resolves mallory's
+// parent's move names it for each. The child records that the parent's
+// /hold ended, so it stays ended (#188's verify, round 3, note 1). Once the owner's 👍 resolves mallory's
 // comment, the child stays held by its own /hold, and the record says so;
 // its own /resume then sends it to clarifying.
 func TestResolveParentResumeLeavesOwnHoldUnderDiscussion(t *testing.T) {
@@ -61,8 +61,8 @@ func TestResolveParentResumeLeavesOwnHoldUnderDiscussion(t *testing.T) {
 		t.Errorf("#1: labels %q, newest comment %q; want it back at ready, naming #2 as still on hold, by an owner hold and for discussion", l, body)
 	}
 	if l, body := f.State().Issues[1].Labels, newestComment(f, 2); !slices.Equal(l, []string{"stage:held"}) ||
-		strings.Contains(body, "issuedog:ended") {
-		t.Fatalf("#2: labels %q, newest comment %q; want it held, with no record of an owner hold ended", l, body)
+		strings.Count(body, "<!-- issuedog:ended reason=owner key=c") != 1 || !strings.Contains(body, "It's on hold for discussion too.") {
+		t.Fatalf("#2: labels %q, newest comment %q; want it held, with the record that the parent's /hold ended, and only that", l, body)
 	}
 	f.AddReaction(w, "owner", "+1")
 	resolveSteps(t, f, 2)

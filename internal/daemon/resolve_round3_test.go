@@ -44,6 +44,11 @@ func (l *resolveLoop) delete(n int, id int64) {
 	l.f.AddComment(n, "eve", "Bump.")
 }
 
+// anyComment reports whether a comment on issue n contains sub.
+func anyComment(f *githubtest.Fake, n int, sub string) bool {
+	return slices.ContainsFunc(f.State().Issues[n-1].Comments, func(c githubtest.CommentState) bool { return strings.Contains(c.Body, sub) })
+}
+
 // stages checks each issue's stage, want[i] for issues[i].
 func (l *resolveLoop) stages(when string, issues []int, want ...string) {
 	l.t.Helper()
@@ -139,8 +144,8 @@ func (c round3Case) run(t *testing.T, thumbsFirst bool) {
 	}
 	l.stages("after both", issues, c.want...)
 	for _, i := range c.records {
-		if body := newestComment(l.f, issues[i]); !strings.Contains(body, c.unendedText) {
-			t.Errorf("#%d: newest comment %q; want the record that an owner hold on it hasn't ended", issues[i], body)
+		if !anyComment(l.f, issues[i], c.unendedText) {
+			t.Errorf("#%d: newest comment %q; want the record that an owner hold on it hasn't ended", issues[i], newestComment(l.f, issues[i]))
 		}
 	}
 	l.restart()
@@ -272,8 +277,8 @@ func TestResolveRound3GoneNotEndedFromAbove(t *testing.T) {
 				thumbs()
 			}
 			l.stages("after both", issues, "ready", "held", "held")
-			if body := newestComment(l.f, low); !strings.Contains(body, fmt.Sprintf("a write collaborator deleted a comment on #%d during this hold", mid)) {
-				t.Errorf("#%d: newest comment %q; want the record that the comment deleted on #%d keeps it held", low, body, mid)
+			if !anyComment(l.f, low, fmt.Sprintf("a write collaborator deleted a comment on #%d during this hold", mid)) {
+				t.Errorf("#%d: newest comment %q; want the record that the comment deleted on #%d keeps it held", low, newestComment(l.f, low), mid)
 			}
 			l.restart()
 			l.settle("a restart")

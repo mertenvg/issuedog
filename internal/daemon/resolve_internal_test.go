@@ -328,6 +328,36 @@ func TestResolvePeriodOf(t *testing.T) {
 	}
 }
 
+// A record's held= /holds are read with the issue each counted as posted
+// on, from its heldon=, in order; one with no issue there, as in a record
+// from before heldon=, or an ill-formed one, has none, and counts as it
+// did (resolveHeldOn).
+func TestResolvePeriodOfHeldOn(t *testing.T) {
+	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
+	for _, tt := range []struct {
+		name   string
+		record string
+		held   []int64
+		on     map[int64]int
+	}{
+		{"each with its issue", "held=21,22 heldon=3,4", []int64{21, 22}, map[int64]int{21: 3, 22: 4}},
+		{"an old record has none", "held=21", []int64{21}, nil},
+		{"a short heldon names the first ones", "held=21,22 heldon=3", []int64{21, 22}, map[int64]int{21: 3}},
+		{"an ill-formed issue names none", "held=21,22 heldon=x,0", []int64{21, 22}, nil},
+		{"an ill-formed /hold is skipped, with its issue", "held=x,22 heldon=3,4", []int64{22}, map[int64]int{22: 4}},
+	} {
+		s := &github.Snapshot{Comments: []github.Comment{
+			{ID: 10, Author: app, Body: "<!-- issuedog:transition from=intake to=ready run=a -->"},
+			{ID: 11, Author: app, Body: "<!-- issuedog:transition from=ready to=held at=ready reason=owner cmd=5 -->"},
+			{ID: 12, Author: app, Body: "<!-- issuedog:ended reason=discussion " + tt.record + " -->"},
+		}}
+		p := resolvePeriodOf(s, "issuedog", func(int64) bool { return false })
+		if !slices.Equal(p.held, tt.held) || !maps.Equal(p.heldOn, tt.on) {
+			t.Errorf("%s: held %v on %v; want %v on %v", tt.name, p.held, p.heldOn, tt.held, tt.on)
+		}
+	}
+}
+
 // An owner hold a /resume's record names counts no more, by its /hold's
 // cmd or its event, but for the /resume itself; one no record names, or
 // one with neither, stays.
