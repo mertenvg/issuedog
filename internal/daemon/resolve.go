@@ -739,7 +739,7 @@ type resolveJudged struct {
 // left does.
 //
 // Judged for j, a hold j ends, a /hold known by its marker alone that was
-// posted on j's issue or above it (levelOf), is kept, so that
+// posted on j's issue or above it, is kept, so that
 // heldStackEnds ends it, and resolveResumed records that, which the leave
 // path, where j may not count as applied, reads too (resolveLeft).
 //
@@ -808,28 +808,6 @@ func (a *Applier) resolveUnended(ctx context.Context, self node, path []node, is
 			}
 		}
 	}
-	// levelOf is the level of the issue the /hold in comment id was posted
-	// on. One whose comment isn't on self or the path, deleted or on an
-	// issue above it, is known by its marker alone: it's taken as posted on
-	// j's issue, the path's length, if madeAbove found it or a marker of it
-	// there or above, so j ends it; else on the farthest issue on the path
-	// that has its marker, failing closed, so /resume there, or nearer, or
-	// on self ends it; else on self, so only /resume there does. The leave
-	// path, which reads the ancestors to the top, gives it the level it was
-	// posted on, or the farthest with its marker; j's issue and those above
-	// it are all one to j, as j ends a /hold posted on any of them.
-	levelOf := func(id int64) int {
-		if level, ok := posted[id]; ok {
-			return level
-		}
-		if j != nil && j.above.ids[id] {
-			return len(path)
-		}
-		if level, ok := marked[id]; ok {
-			return level
-		}
-		return -1
-	}
 	var holds []resolveMade
 	for level, x := range path {
 		h, err := a.resolveCommands(ctx, x.s, x.d, trust, "hold", p.prev, before)
@@ -872,12 +850,24 @@ func (a *Applier) resolveUnended(ctx context.Context, self node, path []node, is
 			}
 		}
 	}
-	// A /hold whose comment isn't on the path, deleted or on an issue
-	// above it, is known by its marker alone (levelOf).
+	// A /hold whose comment isn't on self or the path, deleted or on an
+	// issue above it, is known by its marker alone: it's taken as posted on
+	// j's issue, the path's length, if madeAbove found it or a marker of it
+	// there or above, so j ends it; else on the farthest issue on the path
+	// that has its marker, failing closed, so /resume there, or nearer, or
+	// on self ends it. The leave path, which reads the ancestors to the
+	// top, gives it the level it was posted on, or the farthest with its
+	// marker; j's issue and those above it are all one to j, as j ends a
+	// /hold posted on any of them.
 	for _, id := range slices.Sorted(maps.Keys(marked)) {
-		if _, ok := posted[id]; !ok && in(id) {
-			holds = append(holds, resolveMade{id: id, level: levelOf(id)})
+		if _, ok := posted[id]; ok || !in(id) {
+			continue
 		}
+		level := marked[id]
+		if j != nil && j.above.ids[id] {
+			level = len(path)
+		}
+		holds = append(holds, resolveMade{id: id, level: level})
 	}
 	ended := func(h resolveMade) bool {
 		return slices.ContainsFunc(resumes, func(r resolveResume) bool { return resolveEndsHold(h, r) })

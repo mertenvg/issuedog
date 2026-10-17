@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
 
 // #188's decision, round 3: every owner hold ends by /resume on the held
@@ -282,5 +284,95 @@ func TestResolveRound3GoneNotEndedFromAbove(t *testing.T) {
 			l.stages("after the /resume on the middle", issues, "ready", "ready", "clarifying")
 			l.unchanged("at the end")
 		})
+	}
+}
+
+// #3 > #2 > #1. The owner's /hold on #3 writes markers on #3 and #2, and
+// on #1 unless mallory's comment held it first, else her comment comes
+// after, and the owner deletes the /hold. #3's /resume ends it on #1 too,
+// as a marker on #3 names it, so it counts as posted there (madeAbove):
+// #1 stays held for discussion only, with one record that the /hold
+// ended, whether its marker on #1 or the one on #2 told #1 of it, and #3's
+// move names it. A crash at any write leaves the same result, as the
+// replay counts that record as the /resume's own (resolveLeft).
+func TestResolveRound3DeletedHoldAboveReplay(t *testing.T) {
+	for _, commentFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("comment first %v", commentFirst), func(t *testing.T) {
+			var hold int64
+			setup := func(t testing.TB) *githubtest.Fake {
+				f := discFake(t)  // #1
+				file(f, 0, ready) // #2
+				file(f, 0, ready) // #3
+				f.SetParent(1, 2)
+				f.SetParent(2, 3)
+				if commentFirst {
+					f.AddComment(1, "mallory", "Wait.")
+					resolveSettle(t, f, 1)
+				}
+				hold = f.AddComment(3, "owner", "/hold")
+				resolveSettle(t, f, 3, 2, 1)
+				if marked := strings.Contains(newestComment(f, 1), fmt.Sprintf("cmd=%d", hold)); marked == commentFirst {
+					t.Fatalf("#1: newest comment %q; want a marker of the /hold only if #1 wasn't held", newestComment(f, 1))
+				}
+				if !commentFirst {
+					f.AddComment(1, "mallory", "Wait.")
+					resolveSettle(t, f, 1)
+				}
+				f.DeleteComment(hold)
+				f.AddComment(3, "owner", "/resume")
+				f.ForgetWrites()
+				return f
+			}
+			githubtest.Replay(t, setup, resolvePass(t, 3))
+			f := run(t, setup, resolvePass(t, 3))
+			resolveLabels(t, f, "after #3's /resume", "held", "ready", "ready")
+			if body := newestComment(f, 1); strings.Count(body, fmt.Sprintf("<!-- issuedog:ended reason=owner key=c%d cmd=", hold)) != 1 {
+				t.Errorf("#1: newest comment %q; want one record that the deleted /hold ended", body)
+			}
+			if body := newestComment(f, 3); !strings.Contains(body, "Still on hold for discussion: #1.") {
+				t.Errorf("#3: newest comment %q; want it to name #1 as still on hold for discussion", body)
+			}
+		})
+	}
+}
+
+// #4 > #3 > #2 > #1. #1's own /hold holds it; #3 is held by hand; then
+// the owner's /hold on #4 writes markers on #4 and #2, none on #3 or #1.
+// #3's /resume ends it on #2 and #1, as it was posted above #3, but #1
+// stays held by its own /hold. Then the owner deletes the /hold on #4, and
+// #4's /resume takes #4 out. It ends nothing on #1, as #3's /resume ended
+// the deleted /hold there before it: a marker on #4 names that /hold, so
+// it counts as posted there, above #3, though the farthest marker on #1's
+// path is #2's. So #4's move doesn't name #1 as a hold it ended.
+func TestResolveRound3DeletedHoldEndedBetween(t *testing.T) {
+	f := discFake(t)  // #1
+	file(f, 0, ready) // #2
+	file(f, 0, ready) // #3
+	file(f, 0, ready) // #4
+	f.SetParent(1, 2)
+	f.SetParent(2, 3)
+	f.SetParent(3, 4)
+	f.AddComment(1, "owner", "/hold")
+	resolveSettle(t, f, 1)
+	f.RemoveLabel(3, "owner", "stage:ready")
+	f.AddLabel(3, "owner", "stage:held")
+	resolveSettle(t, f, 3)
+	hold := f.AddComment(4, "owner", "/hold")
+	resolveSettle(t, f, 4, 3, 2, 1)
+	resolveLabels(t, f, "after the /hold on #4", "held", "held", "held", "held")
+	for _, n := range []int{1, 3} {
+		if strings.Contains(newestComment(f, n), fmt.Sprintf("cmd=%d", hold)) {
+			t.Fatalf("#%d: newest comment %q; want no marker of the /hold on #4", n, newestComment(f, n))
+		}
+	}
+	f.AddComment(3, "owner", "/resume")
+	resolveSettle(t, f, 4, 3, 2, 1)
+	resolveLabels(t, f, "after #3's /resume", "held", "ready", "ready", "held")
+	f.DeleteComment(hold)
+	f.AddComment(4, "owner", "/resume")
+	resolveSettle(t, f, 4, 3, 2, 1)
+	resolveLabels(t, f, "after #4's /resume", "held", "ready", "ready", "ready")
+	if body := newestComment(f, 4); !strings.Contains(body, "Resumed by `/resume`") || strings.Contains(body, "Still on hold") {
+		t.Errorf("#4: newest comment %q; want its move back, naming no issue still on hold", body)
 	}
 }
