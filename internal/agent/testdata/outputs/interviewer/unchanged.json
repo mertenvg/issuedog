@@ -1,0 +1,4 @@
+{
+  "outcome": "unchanged",
+  "message": "The comments asked whether quotes expire at midnight. The spec already says they expire 24 hours after they're issued, so nothing changes."
+}

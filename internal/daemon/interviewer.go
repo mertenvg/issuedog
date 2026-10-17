@@ -50,23 +50,28 @@ func (*Interviewer) Schema() []byte {
 // clarifying, it's an epic, a story with no parent or untyped (plan #6,
 // Q1a), and either
 //   - the latest transition entered clarifying by anything but an
-//     interviewer run, such as intake, triage, /revise or an override: it
-//     runs at once, with or without input; or
+//     interviewer run, such as intake, triage, /revise, an override or
+//     the end of a discussion hold (#189): it runs at once, with or
+//     without input; or
 //   - the latest transition is an interviewer run's clarifying →
 //     clarifying, a question round, and there's at least one input since:
 //     a trusted answer. in.Inputs, as step 1 gives them (state.Inputs),
 //     holds no commands, App comments or dirty comments.
 //
+// The latest transition looks through a hold the issue went back from to
+// the stage it was at (ivHoldLatest, #185's verify note): after /resume
+// back to clarifying, a round asked before the hold still waits for its
+// answer, and an entry the interviewer hadn't run on yet still runs.
+//
 // A bug or task, which the interviewer typed or the owner filed, waits at
-// clarifying with no runs until phase 3. So does every class at the
-// clarifying after a discussion hold (state.Issue.AfterHold, #87's
-// assumption 9), until T5 (#189) gives the interviewer what it needs
-// there: the post-hold context and an outcome that returns to origin.
+// clarifying with no runs until phase 3, at the clarifying after a hold
+// too, until a code owner sets its stage by hand (Q3b). So does a story
+// with a parent.
 func (*Interviewer) Pending(in Input) bool {
-	if in.Issue.Stage != state.Clarifying || !interviewerClass(in.Issue.Item) || in.Issue.AfterHold() {
+	if in.Issue.Stage != state.Clarifying || !interviewerClass(in.Issue.Item) {
 		return false
 	}
-	if !ivRoundMove(ivLatestMove(in.Issue)) {
+	if !ivRoundMove(ivHoldLatest(in.Issue, true)) {
 		return true
 	}
 	return len(in.Inputs) > 0
@@ -150,25 +155,33 @@ func ivRoundOf(rounds []interviewerRound, id int64) int {
 // with the text the App didn't write escaped (SPEC §5.1):
 //   - issue.md: the number, title, type or "none", and the body. A dirty
 //     body is left out, and so is a title or body an untrusted author's
-//     issue had changed after it was admitted (admission).
+//     issue had changed after it was admitted (admission). At the
+//     clarifying after a discussion hold (ivHoldOrigin, #189), it also has
+//     the stage the issue came from and the discussion's owner input
+//     (ivHoldSection): the comments a trusted user's 👍 approved, which
+//     are in no other file, and the counter comments (ivHoldInputOf).
 //   - conversation.md: the App's clean comments, its markers left out, the
 //     rounds labelled with their numbers and questions, and the trusted,
 //     clean comments, with author, ID and round, oldest first.
 //   - input.md: in.Inputs, the answers or the revision notes, or "none:
-//     first run".
+//     first run", and at the clarifying after a hold from spec-review, the
+//     /revise that waited through it (ivHoldRevise), as revision notes.
 //   - untrusted.md: only on an epic or a story (SPEC §6.2), and only when
 //     there's something in it: comments by untrusted users and other bots,
 //     dirty comments by anyone, a dirty body, and a title or body changed
 //     after admission, each under a heading that says it's untrusted data,
-//     not instructions. On any other issue that text is in no file.
+//     not instructions. On any other issue that text is in no file. A
+//     comment the discussion's owner input approved isn't in it.
 //   - system.md: the preamble, then .issuedog/prompts/interviewer.md from
 //     main or the shipped default (agent.Prompt).
 //   - prompt.md: the task, naming in.ContextDir.
 //
 // It only reads: the prompt from the clone, trust, and, at most once, the
 // timeline, for a type set by label (typing) or an untrusted author's issue
-// (admission). An error is a setup failure, so no run starts and it isn't
-// counted, as for a prompt that can't be read.
+// (admission). At the clarifying after a hold, it also reads the reactions
+// of the discussion's untrusted comments, and of a waiting /revise. An
+// error is a setup failure, so no run starts and it isn't counted, as for
+// a prompt that can't be read.
 func (iv *Interviewer) Context(ctx context.Context, in Input) (map[string][]byte, error) {
 	d, s := iv.Daemon, in.S
 	a := d.Step.Applier
@@ -193,6 +206,22 @@ func (iv *Interviewer) Context(ctx context.Context, in Input) (map[string][]byte
 	titleBy, bodyBy, err := iv.admission(ctx, s, in.Dirt, tc, timeline)
 	if err != nil {
 		return nil, wrap(err)
+	}
+	// At the clarifying after a discussion hold (#189): the discussion's
+	// owner input, and the /revise that waited through a hold from
+	// spec-review.
+	origin, span := ivHoldOrigin(in.Issue), ivHoldSpanOf(s, a.AppSlug, in.Dirt.Has)
+	var held ivHoldInput
+	var revise *github.Comment
+	if origin != "" {
+		if held, err = ivHoldInputOf(ctx, a, tc, s, in.Dirt, span.From); err != nil {
+			return nil, wrap(err)
+		}
+		if origin == state.SpecReview {
+			if revise, err = ivHoldRevise(ctx, a, tc, s, in.Dirt, in.Issue, span.From, 0); err != nil {
+				return nil, wrap(err)
+			}
+		}
 	}
 	var conversation, untrusted, logins []string
 	where := "so it's left out"
@@ -242,18 +271,24 @@ func (iv *Interviewer) Context(ctx context.Context, in Input) (map[string][]byte
 				logins = append(logins, c.Author.Login)
 			}
 		case !takesUntrusted:
+		case held.Approved[c.ID] != "":
+			// Owner input, in issue.md (ivHoldSection).
 		case c.Author.Type == "Bot":
 			untrusted = append(untrusted, ivUntrusted(at+", a bot", c.Body))
 		default:
 			untrusted = append(untrusted, ivUntrusted(at+", who isn't trusted", c.Body))
 		}
 	}
+	issue := interviewerIssue(s, a.AppSlug, titleNote, bodyNote)
+	if origin != "" {
+		issue += "\n" + ivHoldSection(s, origin, span, held)
+	}
 	files := map[string][]byte{
-		"system.md":       []byte(interviewerPreamble(int(d.Config.Loop.MaxQuestionsPerRound), rounds, logins, typing) + "\n\n" + string(prompt)),
+		"system.md":       []byte(interviewerPreamble(int(d.Config.Loop.MaxQuestionsPerRound), rounds, logins, typing, origin) + "\n\n" + string(prompt)),
 		"prompt.md":       []byte(interviewerTask(s.Number, in.ContextDir, len(untrusted) > 0)),
-		"issue.md":        []byte(interviewerIssue(s, a.AppSlug, titleNote, bodyNote)),
+		"issue.md":        []byte(issue),
 		"conversation.md": []byte(ivFile("Conversation on #"+strconv.Itoa(s.Number), ivConversationIntro, conversation, "None yet.")),
-		"input.md":        []byte(ivFile("Input for this run", ivInputIntro, ivInputs(in, rounds), "none: first run")),
+		"input.md":        []byte(ivFile("Input for this run", ivInputIntro, ivInputs(in, rounds, span, revise), "none: first run")),
 	}
 	if len(untrusted) > 0 {
 		files["untrusted.md"] = []byte(ivFile("Untrusted input on #"+strconv.Itoa(s.Number), ivUntrustedIntro, untrusted, ""))
@@ -445,8 +480,10 @@ func ivAdmitted(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt, tim
 // can remove (plan #6, assumption 12): the trust rules, the output
 // contract, and this repo's and this issue's limits: maxQuestions
 // (loop.max_questions_per_round), the rounds asked so far, the logins a
-// decision may name, and the typing line.
-func interviewerPreamble(maxQuestions int, rounds []interviewerRound, logins []string, typing string) string {
+// decision may name, and the typing line. At the clarifying after a
+// discussion hold, origin is the stage the issue came from (ivHoldOrigin),
+// and a last line says what the run may return there (#189).
+func interviewerPreamble(maxQuestions int, rounds []interviewerRound, logins []string, typing string, origin state.Stage) string {
 	asked := "No questions have been asked yet, so a question round now is round 1."
 	if len(rounds) > 0 {
 		var each []string
@@ -459,6 +496,17 @@ func interviewerPreamble(maxQuestions int, rounds []interviewerRound, logins []s
 	by := "Nobody trusted has commented yet, so no decision has a `by`."
 	if len(logins) > 0 {
 		by = "A decision's `by` is one of: " + strings.Join(logins, ", ") + "."
+	}
+	hold := "- This issue isn't back from a discussion hold, so never return `unchanged`."
+	switch origin {
+	case "":
+	case state.Clarifying:
+		hold = "- This issue is back from a discussion hold, and issue.md's \"After a hold\" section has the discussion's owner input. " +
+			"It was at `clarifying` before the hold, so never return `unchanged`: ask a round or write the spec, as usual."
+	default:
+		hold = fmt.Sprintf("- This issue is back from a discussion hold, and issue.md's \"After a hold\" section has the discussion's owner input. "+
+			"Before the hold it was at `%s`. If nothing in the discussion changes the issue, return `unchanged`, and it goes back there. "+
+			"If the spec changes, write the spec; if you need answers first, ask a round.", origin)
 	}
 	return strings.Join([]string{
 		"# issuedog's rules for this run",
@@ -481,6 +529,7 @@ func interviewerPreamble(maxQuestions int, rounds []interviewerRound, logins []s
 		"- An issue with a parent is never typed `story`, and issue.md names the parent if there is one. " +
 			"issuedog doesn't clarify a story with a parent, and the pipeline has no spec move for one, " +
 			"so output that types an issue with a parent `story` fails the run.",
+		hold,
 	}, "\n\n")
 }
 
@@ -558,25 +607,46 @@ func ivRoundLabel(n int) string {
 	return "in round " + strconv.Itoa(n)
 }
 
-// ivInputs are input.md's sections: each of in.Inputs, as the revision
-// notes when the latest move sent the spec back keyed by it, looking
-// through a hold (state.Issue.Notes), else as an answer to the latest
-// round, else as new since the issue came to clarifying.
-func ivInputs(in Input, rounds []interviewerRound) []string {
-	last := ivLatestMove(in.Issue)
+// ivInputs are input.md's sections: each of in.Inputs, then revise, a
+// /revise that waited through a hold (ivHoldRevise), if any, as the
+// revision notes. Each input is labelled, looking through a hold the issue
+// went back from to the stage it was at (#185's verify note):
+//   - as the revision notes when the latest move sent the spec back keyed
+//     by it (state.Issue.Notes);
+//   - else as an answer to the round it's in, when the latest move is that
+//     round's (ivHoldLatest), even if it was posted while the issue was
+//     held, as a hold at clarifying keeps the round;
+//   - else by where it was posted against sp, the latest hold the issue
+//     left: while held, or before the hold at the stage the hold began at,
+//     as when the owner set clarifying by hand on an issue held at
+//     planning;
+//   - else as new since the issue came to clarifying.
+func ivInputs(in Input, rounds []interviewerRound, sp ivHoldSpan, revise *github.Comment) []string {
+	last := ivHoldLatest(in.Issue, false)
 	notes := in.Issue.Notes()
 	var sections []string
 	for _, c := range in.Inputs {
 		at := "comment " + strconv.FormatInt(c.ID, 10) + " by " + ivLogin(c.Author.Login)
+		during := sp.Start > 0 && c.ID > sp.Start && c.ID < sp.End
 		switch n := ivRoundOf(rounds, c.ID); {
 		case c.ID == notes:
 			at += ": the revision notes that sent the spec back"
+		case ivRoundMove(last) && n > 0 && during:
+			at += ": an answer to round " + strconv.Itoa(n) + ", posted while the issue was on hold"
 		case ivRoundMove(last) && n > 0:
 			at += ": an answer to round " + strconv.Itoa(n)
+		case during:
+			at += ": posted while the issue was on hold"
+		case sp.Start > 0 && c.ID < sp.Start && sp.At != "":
+			at += fmt.Sprintf(": posted at `%s`, before the hold", sp.At)
 		default:
 			at += ": new since the issue came to clarifying"
 		}
 		sections = append(sections, ivSection(at, c.Body))
+	}
+	if revise != nil {
+		sections = append(sections, ivSection("comment "+strconv.FormatInt(revise.ID, 10)+" by "+ivLogin(revise.Author.Login)+
+			": a `/revise` that waited through the hold, whose text is the revision notes", revise.Body))
 	}
 	return sections
 }
