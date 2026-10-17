@@ -425,7 +425,14 @@ func resolvePeriodOf(s *github.Snapshot, appSlug string, dirty func(int64) bool)
 // resolveLeft returns holds without the owner holds that p says a /resume
 // ended while the issue stayed held (resolveResumed), but for those that
 // the /resume in comment except ended, which a replay of it still counts
-// as its own to end.
+// as its own to end. It's the one rule for which owner holds remain, so
+// every judgement of them agrees: the holds markers record and the
+// /holds no marker records on the issue (resolveHoldsLeft, resolveHeld),
+// the /holds on its ancestors (resolveUnended, so resolveAbove and
+// resolveHeldBy), and the hold item's (holdItemOf). A record that says a
+// /resume ended an ancestor's /hold, which no marker on the issue names,
+// ends it here too, whether or not that /resume applied on its own issue,
+// as when that issue was out of held by then (#188's verify, round 2).
 func resolveLeft(holds []github.Marker, p resolvePeriod, except int64) []github.Marker {
 	return slices.DeleteFunc(slices.Clone(holds), func(m github.Marker) bool {
 		by, ended := p.owners[resolveHoldKey(m)]
@@ -559,7 +566,7 @@ func (a *Applier) resolveHeldBy(ctx context.Context, family []node, c Cmd, n nod
 	for x, ok := byNumber[n.s.Parent]; ok && x.s != c.S && len(path) < len(family); x, ok = byNumber[x.s.Parent] {
 		path = append(path, x)
 	}
-	return a.resolveUnended(ctx, n, path, is, p, trust, c.Comment.ID)
+	return a.resolveUnended(ctx, n, path, is, p, trust, c.Comment.ID, c.Comment.ID)
 }
 
 // resolveUnended returns, as owner hold markers on self, an issue in
@@ -569,7 +576,10 @@ func (a *Applier) resolveHeldBy(ctx context.Context, family []node, c Cmd, n nod
 // that no later /resume the App applied ended (heldStackEnds): one on
 // their issue or a nearer one, or on self, which ends every hold on it, as
 // when it kept self held for a trigger made after it (resolveResumed);
-// and, unless before is 0, posted before before.
+// and, unless before is 0, posted before before. Last, it leaves out
+// those a record on self says a /resume ended, but for the /resume in
+// comment except (resolveLeft), as every other judgement of the owner
+// holds left does.
 //
 // Each /resume counts only once the App applied it on its own issue, as a
 // marker there names it (resolveApplied): a rejected one ends nothing
@@ -583,7 +593,7 @@ func (a *Applier) resolveHeldBy(ctx context.Context, family []node, c Cmd, n nod
 // applied in the pass that began the hold, as one that accepted the
 // triggers before it while a later one kept the issue held, is below the
 // hold's marker.
-func (a *Applier) resolveUnended(ctx context.Context, self node, path []node, is state.Issue, p resolvePeriod, trust github.Trust, before int64) ([]github.Marker, error) {
+func (a *Applier) resolveUnended(ctx context.Context, self node, path []node, is state.Issue, p resolvePeriod, trust github.Trust, before, except int64) ([]github.Marker, error) {
 	resumes := map[int64]int{} // each applied /resume, by its level on the path, -1 for self's
 	own, err := a.resolveCommands(ctx, self.s, self.d, trust, "resume", p.prev, 0)
 	if err != nil {
@@ -630,7 +640,7 @@ func (a *Applier) resolveUnended(ctx context.Context, self node, path []node, is
 			}
 		}
 	}
-	return holds, nil
+	return resolveLeft(holds, p, except), nil
 }
 
 // resolveHoldApplied reports whether the App applied the /hold in comment
@@ -685,7 +695,7 @@ func (a *Applier) resolveAbove(ctx context.Context, s *github.Snapshot, sd Dirt,
 		}
 		path = append(path, node{s: x, d: d, open: true})
 	}
-	return a.resolveUnended(ctx, node{s: s, d: sd, open: true}, path, is, p, trust, 0)
+	return a.resolveUnended(ctx, node{s: s, d: sd, open: true}, path, is, p, trust, 0, 0)
 }
 
 // resolveHoldsLeft returns the holds on s, in state is, held, that
