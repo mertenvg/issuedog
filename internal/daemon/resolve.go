@@ -513,8 +513,9 @@ func resolveOwnerHold(id int64) github.Marker {
 // issue in family, up to c's issue, between them, that keep n held: each
 // valid trusted /hold posted on one of those issues since the transition
 // before n's hold, that no marker on n names, and that no /resume after it
-// on its issue, or on one below it on the path, ended. A /hold on c's
-// issue, or above it, is c's to end. Each is an owner hold marker on n.
+// on its issue, on one below it on the path, or on n itself, ended. A
+// /hold on c's issue, or above it, is c's to end. Each is an owner hold
+// marker on n.
 func (a *Applier) resolveHeldBy(ctx context.Context, family []node, c Cmd, n node, trust github.Trust) ([]github.Marker, error) {
 	byNumber := map[int]node{}
 	for _, x := range family {
@@ -526,16 +527,25 @@ func (a *Applier) resolveHeldBy(ctx context.Context, family []node, c Cmd, n nod
 	for x, ok := byNumber[n.s.Parent]; ok && x.s != c.S && len(path) < len(family); x, ok = byNumber[x.s.Parent] {
 		path = append(path, x)
 	}
-	return a.resolveUnended(ctx, path, is, p, trust, c.Comment.ID)
+	return a.resolveUnended(ctx, n, path, is, p, trust, c.Comment.ID)
 }
 
-// resolveUnended returns, as owner hold markers on an issue in state is,
-// held, p, the valid trusted /holds on the issues in path, its ancestors
-// nearest first, posted since the transition before its hold and named by
-// no marker on it, that no later /resume on their issue or a nearer one
-// ended (heldStackEnds), and, unless before is 0, posted before before.
-func (a *Applier) resolveUnended(ctx context.Context, path []node, is state.Issue, p resolvePeriod, trust github.Trust, before int64) ([]github.Marker, error) {
-	resumes := map[int64]int{} // each /resume, by its level on the path
+// resolveUnended returns, as owner hold markers on self, an issue in
+// state is, held, p, the valid trusted /holds on the issues in path, its
+// ancestors nearest first, posted since the transition before its hold and
+// named by no marker on it, that no later /resume ended (heldStackEnds):
+// one on their issue or a nearer one, or on self, which ends every hold on
+// it, as when it kept self held for a trigger made after it
+// (resolveResumed); and, unless before is 0, posted before before.
+func (a *Applier) resolveUnended(ctx context.Context, self node, path []node, is state.Issue, p resolvePeriod, trust github.Trust, before int64) ([]github.Marker, error) {
+	resumes := map[int64]int{} // each /resume, by its level on the path, -1 for self's
+	own, err := a.resolveCommands(ctx, self.s, self.d, trust, "resume", p.prev, 0)
+	if err != nil {
+		return nil, fmt.Errorf("held from above: %w", err)
+	}
+	for _, id := range own {
+		resumes[id] = -1
+	}
 	var holds []github.Marker
 	for level, x := range path {
 		r, err := a.resolveCommands(ctx, x.s, x.d, trust, "resume", p.prev, 0)
@@ -569,7 +579,7 @@ func (a *Applier) resolveUnended(ctx context.Context, path []node, is state.Issu
 // as madeAbove reads them. It reads only when s's discussion is resolved
 // with no other hold left, and the record of the discussion's end names
 // what it finds, so no other pass reads them again (resolveLeave).
-func (a *Applier) resolveAbove(ctx context.Context, s *github.Snapshot, trust github.Trust, is state.Issue, p resolvePeriod) ([]github.Marker, error) {
+func (a *Applier) resolveAbove(ctx context.Context, s *github.Snapshot, sd Dirt, trust github.Trust, is state.Issue, p resolvePeriod) ([]github.Marker, error) {
 	var path []node
 	seen := map[int]bool{s.Number: true}
 	for x := s; x.Parent != 0 && !seen[x.Parent]; {
@@ -590,7 +600,7 @@ func (a *Applier) resolveAbove(ctx context.Context, s *github.Snapshot, trust gi
 		}
 		path = append(path, node{s: x, d: d, open: true})
 	}
-	return a.resolveUnended(ctx, path, is, p, trust, 0)
+	return a.resolveUnended(ctx, node{s: s, d: sd, open: true}, path, is, p, trust, 0)
 }
 
 // resolveOwnerHeld reports whether any of holds isn't a discussion hold:
@@ -814,12 +824,12 @@ func (a *Applier) resolveLeave(ctx context.Context, s *github.Snapshot, d Dirt, 
 	// next pass reading them again, so Transition only reports it, once,
 	// and returns any other error.
 	if _, err := noRow(is, m); err == nil {
-		above, err := a.resolveAbove(ctx, s, trust, is, p)
+		above, err := a.resolveAbove(ctx, s, d, trust, is, p)
 		if err != nil {
 			return fmt.Errorf("leave: %w", err)
 		}
-		if len(resolveLeft(above, p, 0)) > 0 {
-			return a.resolveEnded(ctx, s, rs, p, false, resolveLeft(above, p, 0))
+		if len(above) > 0 {
+			return a.resolveEnded(ctx, s, rs, p, false, above)
 		}
 	}
 	err = a.Transition(ctx, s, d.Has, m)

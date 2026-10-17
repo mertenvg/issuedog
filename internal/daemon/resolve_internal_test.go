@@ -183,6 +183,36 @@ func TestResolveOpenRecordedByTime(t *testing.T) {
 	}
 }
 
+// A hold began at the clarifying after a hold only when the transition
+// before it is to clarifying and carries an open origin but held: one to
+// any other stage, even with an origin, didn't.
+func TestResolveHeldAfterHold(t *testing.T) {
+	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
+	at := func(markers ...string) state.Issue {
+		s := &github.Snapshot{}
+		for i, m := range markers {
+			s.Comments = append(s.Comments, github.Comment{ID: int64(10 + i), Author: app, Body: "<!-- issuedog:transition " + m + " -->"})
+		}
+		return state.Derive(s, "issuedog", func(int64) bool { return false })
+	}
+	const hold = "to=held at=clarifying reason=owner cmd=5"
+	for _, tt := range []struct {
+		name   string
+		before string
+		want   bool
+	}{
+		{"the clarifying after a hold", "from=held to=clarifying at=spec-review origin=spec-review event=h3", true},
+		{"a clarifying with no origin", "from=spec-review to=clarifying cmd=4", false},
+		{"another stage, with an origin", "from=clarifying to=spec-review origin=spec-review run=a", false},
+		{"an origin of held", "from=held to=clarifying at=ready origin=held event=h3", false},
+	} {
+		o, ok := resolveHeldAfterHold(at(tt.before, "from=x "+hold))
+		if ok != tt.want || ok && o != state.SpecReview {
+			t.Errorf("%s: %q, %t; want %t", tt.name, o, ok, tt.want)
+		}
+	}
+}
+
 // Only a move out of held is bounded by the time of the comment its cmd
 // names: a first marker keyed by a command, as /track's, is bounded by its
 // own comment, by ID.
