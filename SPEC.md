@@ -378,7 +378,7 @@ Comments from people without write access hold nothing. They reach agents only a
 
 **While held.**
 - The daemon sets `stage:held` with a transition marker carrying `reason=discussion` and two stages: `at`, where the issue was, and `origin`, where it was before the first discussion hold. Every marker written in the `clarifying` that follows a hold, including question rounds and any later hold of either kind, carries `origin` forward, so back-and-forth discussion never loses it. `/resume` restores `at`. "Nothing changed" returns to `origin`. For anything other than a comment it also posts a notice naming it, since there is nothing else to react to.
-- Holds stack. Any hold on an issue that is already held, whether by `/hold`, by hand (5.1) or for discussion, keeps the stage recorded by the first hold. The issue leaves `held` only when every hold on it has ended. A discussion hold ends when resolved, or by `/resume` on the issue itself. An owner hold ends by a `/resume` posted after its `/hold`, on the issue itself, on the issue where its `/hold` was posted, or on any issue between the two, and by no other `/resume`. A `/hold` on an issue that is already held writes no marker there, but still holds it until that rule ends it, whatever held the issue when the `/hold` was posted: a parent's `/resume` never ends a `/hold` posted on its child, so only `/resume` on the child ends the child's own `/hold`. A `/hold` counts by the App's record that it applied it, so a write collaborator's edit of its comment doesn't end it. A `/hold` whose comment is deleted counts as posted on the farthest issue with its marker, unless the App recorded where it counted before then. A hold a `/resume` ended stays ended, whatever happens to its comment after. A comment that an untrusted write collaborator deletes on an ancestor during the hold may have been a `/hold` that wrote no marker, so it counts as one posted on that ancestor, which only a `/resume` posted after the deletion ends. A hold set by hand ends by `/resume` on the issue itself. Every hold on the issue also ends at once when a trusted user sets another stage label by hand, which 5.1 records as an override. Removing `stage:held` alone is a disagreement (5.3) and is put back. If a discussion hold ended while an owner hold stayed, the final `/resume` sends the issue to `clarifying` as below.
+- Holds stack. Any hold on an issue that is already held, whether by `/hold`, by hand (5.1) or for discussion, keeps the stage recorded by the first hold. The issue leaves `held` only when every hold on it has ended. A discussion hold ends when resolved, or by `/resume` on the issue itself. An owner hold ends by a `/resume` posted after its `/hold`, on the issue itself, on the issue where its `/hold` was posted, or on any issue between the two, and by no other `/resume`. A `/hold` on an issue that is already held writes no marker there, but still holds it until that rule ends it, whatever held the issue when the `/hold` was posted: a parent's `/resume` never ends a `/hold` posted on its child, so only `/resume` on the child ends the child's own `/hold`. A `/hold` counts by the App's record that it applied it, so a write collaborator's edit of its comment doesn't end it. A `/hold` whose comment is deleted counts as posted on the farthest issue with its marker, unless the App recorded where it counted before then. A hold a `/resume` ended stays ended, whatever happens to its comment after. A comment that an untrusted write collaborator deletes on an ancestor during the hold may have been a `/hold` that wrote no marker, so it counts as one posted on that ancestor, which only a `/resume` posted after the deletion ends. A hold set by hand ends by `/resume` on the issue itself. Every hold on the issue also ends at once when a trusted user sets another stage label by hand, which 5.1 records as an override. Removing `stage:held` alone is a disagreement (5.3) and is put back. If a discussion trigger was resolved by a trusted response during the hold, the final `/resume` sends the issue to `clarifying` as below, whatever else held it.
 - Content edited by an untrusted write collaborator is dirty (5.1), so it never counts as a command or an answer, even after the edit is accepted. In loop step 1 (8.1) the daemon looks for triggers before it processes commands.
 - Before applying any run result, the daemon checks the issue for triggers since the last poll before the run was picked up. If it finds one, it holds the issue and drops the result.
 - Comments and pushes made while the issue is held are handled once it leaves `held`, in the stage it lands in. A PR review made while held is handled when the task next reaches `pr-open`, through the usual `pr-open` rows (7.2).
@@ -402,7 +402,7 @@ Comments from people without write access hold nothing. They reach agents only a
   - A task's body changes: the interviewer rewrites it in its own template (11.2, or 9.3 for a human task), and the task goes to `ready`, or back to `needs-human` for a human task.
   - More answers are needed: a question round, staying at `clarifying`.
 - Each of these writes a fresh transition marker, so an edited or deleted marker can't roll state back.
-- A trusted `/resume` on the issue itself ends the discussion hold at once. It accepts every open trigger, including triggers whose notice was deleted, and restores `at`, except that a task whose run was dropped goes to `ready`. A `/resume` on an ancestor doesn't end a discussion hold.
+- A trusted `/resume` on the issue itself ends the discussion hold at once. It accepts every open trigger, including triggers whose notice was deleted, and restores `at`, except that a task whose run was dropped goes to `ready`. When a trusted response resolved a trigger before the `/resume`, it goes to `clarifying` instead, so the interviewer reads what was approved or countered. A `/resume` on an ancestor doesn't end a discussion hold.
 - A restart changes nothing, because the hold marker and its triggers are all on GitHub, and the lease of a held issue is dropped (8.2).
 
 ## 7. Pipeline
@@ -477,14 +477,14 @@ The lifecycle of each type:
 | clarifying | planning | epic, story | The plan changes after a discussion hold (6.4) |
 | clarifying | ready | task, bug | The interviewer rewrote the task body after a discussion hold (6.4) |
 | clarifying | needs-human | task | The interviewer rewrote a human task's body after a discussion hold (6.4) |
-| held | previous (`at`) | all | Owner `/resume` that ends the owner hold (6.4), when no other hold remains and no discussion hold ended meanwhile; a task whose run a discussion hold dropped goes to ready instead |
-| held | clarifying | all | Owner `/resume` that ends the last hold, after a discussion hold ended while the owner hold stayed (6.4) |
+| held | previous (`at`) | all | Owner `/resume` that ends the owner hold (6.4), when no other hold remains and no discussion trigger was resolved meanwhile; a task whose run a discussion hold dropped goes to ready instead |
+| held | clarifying | all | Owner `/resume` that ends the last hold, after a trusted response resolved a discussion trigger during the hold (6.4) |
 | any open | closed | all | A trusted user, the App or a merged PR closed the issue; daemon stops any run for it. An untrusted close is reverted (6.4) |
 | closed | held | all | A trusted user reopened the issue. An untrusted reopen is reverted (6.4) |
 
 From `ready` on, a `bug` follows the rows for `task`.
 
-Until build phase 3, the interviewer runs only on an epic, a story with no parent and an untyped issue (9.1). A bug or a task, whether filed so or typed so by the interviewer, waits at `clarifying` with no more runs until the implementer stage adds the 11.2 rewrite. So does a story with a parent. Every move into the pipeline says so (6.2).
+Until build phase 3, the interviewer runs only on an epic, a story with no parent and an untyped issue (9.1). A bug or a task, whether filed so or typed so by the interviewer, waits at `clarifying` with no more runs until the implementer stage adds the 11.2 rewrite. So does a story with a parent. Every move into the pipeline says so (6.2). Each of these also waits at the `clarifying` after a discussion hold, until a code owner sets its stage by hand, and the move there says so (6.4).
 
 Any transition missing from this table is an error, except a trusted user's manual label change (5.1) or a rejected command (9.2). The daemon logs the error, leaves the issue unchanged and reports a state error (5.3).
 
@@ -598,8 +598,8 @@ Rules:
 
 **When the interviewer runs.** It runs at `clarifying` on an epic, a story with no parent, or an untyped issue, in two cases:
 
-- **On entry.** The latest transition entered `clarifying` by anything other than an interviewer run: a move into the pipeline (6.2), `/revise` or a revision request, or an override. It runs at once, with no input needed.
-- **After a round.** The latest transition is an interviewer run's `clarifying → clarifying`, and there is at least one trusted answer since (9.2). Commands, App comments and dirty comments don't count.
+- **On entry.** The latest transition entered `clarifying` by anything other than an interviewer run: a move into the pipeline (6.2), `/revise` or a revision request, an override, or the end of a discussion hold (6.4). It runs at once, with no input needed.
+- **After a round.** The latest transition is an interviewer run's `clarifying → clarifying`, and there is at least one trusted answer since (9.2). Commands, App comments and dirty comments don't count. A hold the issue went back from by `/resume`, to `clarifying`, doesn't count as a transition here, so its round still waits for an answer.
 
 Any answer starts the next run, including a partial one. That run sees every answer so far and asks again whatever is still open. Rounds end when it returns a spec. There's no cap on rounds. A bug, a task and a story with a parent get no runs (7.2).
 
@@ -609,11 +609,12 @@ Any answer starts the next run, including a partial one. That run sees every ans
 - A round is numbered one more than the highest round on a clean round marker.
 - A round whose comment is dirty (5.1) isn't read, so it counts as 0 questions. If it was the latest round, its marker no longer counts and the next round takes its number: the round is cancelled, and the interviewer runs again. Under CODEOWNERS trust (6.1), a write collaborator who isn't trusted can edit an App comment, so they can do this.
 
-**The interviewer's outcomes.** Its output is one object whose `outcome` is `questions`, `spec` or `typed`:
+**The interviewer's outcomes.** Its output is one object whose `outcome` is `questions`, `spec`, `typed` or, after a discussion hold, `unchanged`:
 
 - `questions`: a round in the format above, at `clarifying`.
 - `spec`: the spec, written into the body and posted as a revision (11.1). The issue moves to `spec-review`.
 - `typed`: only for an issue whose type the interviewer may set (section 4), when it finds the issue is a bug or a task. It sets the type, and its comment has the type line, then "Bugs and tasks wait at `clarifying` for now, until issuedog can implement them (build phase 3), so I won't ask anything more here.", then the `cc` line. The move is `clarifying → clarifying`, with no `round` or `questions`. The issue then waits (7.2).
+- `unchanged`: only at the `clarifying` after a discussion hold from another stage, when nothing in the discussion changes the issue, with a message at most. The issue goes back to `origin` with no new revision, so a revision still at `spec-review` with its hash stands, and its comment says so (6.4, 7.4).
 
 **Checks.** The daemon checks the output after its schema, and fails closed: a broken rule is a failed attempt (8.3), logged with the reason, and nothing is written.
 
@@ -623,6 +624,7 @@ Any answer starts the next run, including a partial one. That run sees every ans
 - The Decisions rules (11.1). A decision's `by` is a login with a clean, trusted comment on the issue.
 - Every text it renders fits GitHub's 65,536-character limit, with 1,024 to spare.
 - The move fits the issue once its type is set, and the issue is still one the interviewer runs on (8.3).
+- `unchanged` only at the `clarifying` after a discussion hold, and not when `origin` is `clarifying`.
 
 ### 9.2 Commands
 

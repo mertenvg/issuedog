@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/mertenvg/issuedog/internal/github"
+	"github.com/mertenvg/issuedog/internal/state"
 )
 
 // The interviewer's outcomes.
@@ -21,6 +22,10 @@ const (
 	outcomeQuestions = "questions"
 	outcomeSpec      = "spec"
 	outcomeTyped     = "typed"
+	// outcomeUnchanged is only for the clarifying after a discussion hold
+	// (#189, SPEC §6.4): nothing in the discussion changes the issue, so it
+	// goes back to its origin.
+	outcomeUnchanged = "unchanged"
 )
 
 // interviewOutput is the interviewer's structured output, as
@@ -103,6 +108,11 @@ type interviewFacts struct {
 	// ones a decision may name.
 	Trusted []string
 	Notify  []string // config's notify, for the cc line
+	// Origin is the stage the issue was at before its first discussion
+	// hold, while it's at the clarifying after one (ivHoldOrigin), or "".
+	// Only then may the interviewer return unchanged, and not when it's
+	// clarifying itself: the issue is there already.
+	Origin state.Stage
 }
 
 // The rules checkInterview enforces. Each failure names one.
@@ -124,6 +134,7 @@ const (
 	ruleDecisionDropped    = "decision-dropped"
 	ruleDecisionCoverage   = "decision-coverage"
 	ruleLength             = "length"
+	ruleUnchanged          = "unchanged"
 )
 
 // ruleError is an output that breaks a rule.
@@ -168,6 +179,13 @@ func checkInterview(out interviewOutput, f interviewFacts) error {
 	case outcomeTyped:
 		if out.Type == nil || out.Spec != nil || out.Message != "" || len(out.Questions) > 0 {
 			fail(ruleOutcome, "typed has a type and nothing else")
+		}
+	case outcomeUnchanged:
+		if out.Type != nil || out.Spec != nil || len(out.Questions) > 0 {
+			fail(ruleOutcome, "unchanged has a message at most")
+		}
+		if f.Origin == "" || f.Origin == state.Clarifying {
+			fail(ruleUnchanged, "unchanged is only for the clarifying after a discussion hold from another stage")
 		}
 	default:
 		fail(ruleOutcome, "unknown outcome %q", out.Outcome)
@@ -293,6 +311,9 @@ type rendered struct{ what, text string }
 
 // renderedTexts is what out renders to under f.
 func renderedTexts(out interviewOutput, f interviewFacts) []rendered {
+	if out.Outcome == outcomeUnchanged {
+		return []rendered{{"comment", renderUnchanged(out, f.Origin, "", f.Notify)}}
+	}
 	if out.Outcome != outcomeSpec {
 		return []rendered{{"comment", renderQuestions(out, f.Issue, len(f.Rounds)+1, f.Notify)}}
 	}
@@ -432,6 +453,25 @@ func renderSpecNote(out interviewOutput, notify []string) string {
 		parts = append(parts, "Added, not asked:\n\n"+bullets(added))
 	}
 	return github.Escape(strings.Join(append(parts, ccLines(notify)...), "\n\n"))
+}
+
+// renderUnchanged renders an unchanged outcome's comment (#189): that the
+// discussion changed nothing, so the issue goes back to origin, then
+// standing, the App's line on a revision that still stands, if any, then
+// out's message, then the cc line for notify when the issue waits on the
+// owner there, at a review stage.
+func renderUnchanged(out interviewOutput, origin state.Stage, standing string, notify []string) string {
+	parts := []string{fmt.Sprintf("Nothing in the discussion during the hold changes this issue, so it goes back to `%s`.", origin)}
+	if standing != "" {
+		parts = append(parts, standing)
+	}
+	if strings.TrimSpace(out.Message) != "" {
+		parts = append(parts, block(out.Message))
+	}
+	if origin == state.SpecReview || origin == state.PlanReview {
+		parts = append(parts, ccLines(notify)...)
+	}
+	return github.Escape(strings.Join(parts, "\n\n"))
 }
 
 func ccLines(notify []string) []string {

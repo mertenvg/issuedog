@@ -349,7 +349,7 @@ func checkBad(t *testing.T, stage string, cases map[string]badOutput) {
 }
 
 func TestInterviewerGolden(t *testing.T) {
-	for _, name := range []string{"questions", "spec", "typed"} {
+	for _, name := range []string{"questions", "spec", "typed", "unchanged"} {
 		if err := validateOutput(t, "interviewer", golden(t, "interviewer", name)); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
@@ -391,6 +391,10 @@ func TestInterviewerGolden(t *testing.T) {
 		"no outcome":         {"questions", remove, []any{"outcome"}, "missing property 'outcome'"},
 		"no problem":         {"spec", remove, []any{"spec", "problem"}, "at '/spec': missing property 'problem'"},
 		"no others field":    {"questions", remove, []any{"questions", 0, "others"}, "at '/questions/0': missing property 'others'"},
+		// unchanged (#189): only a message goes with it, and checkInterview
+		// holds it to the issue; the schema only knows its fields.
+		"blank unchanged message": {"unchanged", " ", []any{"message"}, "at '/message'"},
+		"unchanged with a field":  {"unchanged", "x", []any{"notes"}, "additional properties 'notes' not allowed"},
 	})
 }
 

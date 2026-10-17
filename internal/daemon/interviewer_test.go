@@ -184,14 +184,56 @@ func TestInterviewerPending(t *testing.T) {
 			f.EditComment(f.AddComment(n, "owner", "1a"), "mallory", "1b")
 			return n
 		}, false},
-		// Until T5 (#189), no class runs at the clarifying after a hold, with
-		// answers or without (T4).
-		{"at the clarifying after a hold", entered("epic", false, "from=held to=clarifying at=spec-review origin=spec-review event=h9 seen=7"), false},
+		// T5 (#189): the interviewer runs at once at the clarifying after a
+		// discussion hold, with answers or without, on the classes it runs
+		// on, but no other (Q3b).
+		{"at the clarifying after a hold", entered("epic", false, "from=held to=clarifying at=spec-review origin=spec-review event=h9 seen=7"), true},
 		{"at the clarifying after a hold, with a trusted comment", func(f *githubtest.Fake) int {
 			n, _ := ivFiled(f, "story", false, "from=held to=clarifying at=spec-review origin=spec-review cmd=9 seen=7")
 			f.AddComment(n, "owner", "Go on.")
 			return n
+		}, true},
+		{"a task at the clarifying after a hold", entered("task", false, "from=held to=clarifying at=ready origin=ready event=h9 seen=7"), false},
+		{"a story with a parent at the clarifying after a hold", entered("story", true, "from=held to=clarifying at=planning origin=planning event=h9 seen=7"), false},
+		{"after a round at the clarifying after a hold, nothing", func(f *githubtest.Fake) int {
+			n, entry := ivFiled(f, "epic", false, "from=held to=clarifying at=spec-review origin=spec-review event=h9 seen=7")
+			f.AddComment(n, app, fmt.Sprintf("Round.\n\n<!-- issuedog:transition from=clarifying to=clarifying round=1 run=iv1 origin=spec-review questions=1 seen=%d -->", entry))
+			return n
 		}, false},
+		{"a discussion's end at clarifying, after a round", func(f *githubtest.Fake) int {
+			n := answered("", "")(f)
+			f.AddComment(n, app, "Held.\n\n<!-- issuedog:transition from=clarifying to=held at=clarifying origin=clarifying reason=discussion event=c90 seen=3 -->")
+			f.AddComment(n, app, "Resolved.\n\n<!-- issuedog:transition from=held to=clarifying at=clarifying origin=clarifying event=h4 seen=3 -->")
+			return n
+		}, true},
+		// #185's verify note: /resume back to clarifying keeps the round
+		// asked before the hold, so it waits for an answer, and an entry the
+		// interviewer hadn't run on still runs.
+		{"after /resume back to a round, nothing", func(f *githubtest.Fake) int {
+			n := answered("", "")(f)
+			f.AddComment(n, app, "On hold.\n\n<!-- issuedog:transition from=clarifying to=held at=clarifying reason=owner cmd=90 seen=3 -->")
+			f.AddComment(n, app, "Resumed.\n\n<!-- issuedog:transition from=held to=clarifying cmd=91 seen=3 -->")
+			return n
+		}, false},
+		{"after /resume back to a round, an answer", func(f *githubtest.Fake) int {
+			n := answered("", "")(f)
+			f.AddComment(n, app, "On hold.\n\n<!-- issuedog:transition from=clarifying to=held at=clarifying reason=owner cmd=90 seen=3 -->")
+			f.AddComment(n, "owner", "1a 2b")
+			f.AddComment(n, app, "Resumed.\n\n<!-- issuedog:transition from=held to=clarifying cmd=91 seen=3 -->")
+			return n
+		}, true},
+		{"after /resume back to an entry", func(f *githubtest.Fake) int {
+			n, entry := ivFiled(f, "epic", false, intake)
+			f.AddComment(n, app, fmt.Sprintf("On hold.\n\n<!-- issuedog:transition from=clarifying to=held at=clarifying reason=owner cmd=90 seen=%d -->", entry))
+			f.AddComment(n, app, fmt.Sprintf("Resumed.\n\n<!-- issuedog:transition from=held to=clarifying cmd=91 seen=%d -->", entry))
+			return n
+		}, true},
+		{"an override out of a hold at a round", func(f *githubtest.Fake) int {
+			n := answered("", "")(f)
+			f.AddComment(n, app, "On hold.\n\n<!-- issuedog:transition from=clarifying to=held at=clarifying reason=owner cmd=90 seen=3 -->")
+			f.AddComment(n, app, "Overridden.\n\n<!-- issuedog:transition from=held to=clarifying event=92 by=owner seen=3 -->")
+			return n
+		}, true},
 		{"after a typed bug", func(f *githubtest.Fake) int {
 			n, entry := ivFiled(f, "bug", false, intake)
 			f.AddComment(n, app, fmt.Sprintf("Type: bug.\n\n<!-- issuedog:transition from=clarifying to=clarifying run=iv1 seen=%d -->", entry))
@@ -427,7 +469,7 @@ func TestInterviewerRevisionNotesAfterAHold(t *testing.T) {
 	files := ivContext(t, ivDaemon(t, f, newOrigin(t)), n)
 	for _, w := range []string{
 		fmt.Sprintf("## Comment %d by owner: the revision notes that sent the spec back\n\n```text\n/revise cut the second goal\n```", notes),
-		fmt.Sprintf("## Comment %d by owner: new since the issue came to clarifying\n\n```text\nand keep it small\n```", during),
+		fmt.Sprintf("## Comment %d by owner: posted while the issue was on hold\n\n```text\nand keep it small\n```", during),
 	} {
 		if !strings.Contains(files["input.md"], w) {
 			t.Errorf("input.md lacks\n%s\nin\n%s", w, files["input.md"])

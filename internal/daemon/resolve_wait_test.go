@@ -32,41 +32,60 @@ func resolveReview(do func(t testing.TB, f *githubtest.Fake)) func(testing.TB) *
 // An /approve posted while held waits (#87's assumption 8), and once
 // /resume takes the issue back to spec-review, in the same pass, it's
 // applied while the body still has revision 1's hash, and rejected with
-// the reason once it doesn't.
+// the reason once it doesn't. The /resume comes first: an /approve before
+// it would counter mallory's comment, which sends the issue to clarifying
+// instead (#188's note for #189, TestResolveCounterThenResume).
 func TestResolveApproveAfterResume(t *testing.T) {
-	resumed := moved("Resumed by `/resume`, back to `spec-review`.", "from=held to=spec-review cmd=1005 seen=1001")
+	resumed := moved("Resumed by `/resume`, back to `spec-review`.", "from=held to=spec-review cmd=1004 seen=1001")
 	h := state.BodyHash("body")
 	t.Run("the hash matches", func(t *testing.T) {
 		setup := resolveReview(func(t testing.TB, f *githubtest.Fake) {
-			post(t, f, 1004, "owner", "/approve")
-			post(t, f, 1005, "owner", "/resume")
+			post(t, f, 1004, "owner", "/resume")
+			post(t, f, 1005, "owner", "/approve")
 		})
 		resolveCheck(t, setup, 1, func(*githubtest.Fake) issueWant {
 			return issueWant{[]string{"stage:planning"}, []string{resumed, moved("Revision 1 of the spec is approved, by owner's `/approve`.",
-				"from=spec-review to=planning rev=1 body="+h+" cmd=1004 seen=1004")}}
+				"from=spec-review to=planning rev=1 body="+h+" cmd=1005 seen=1005")}}
 		})
 	})
 	t.Run("the body changed", func(t *testing.T) {
 		setup := resolveReview(func(t testing.TB, f *githubtest.Fake) {
-			post(t, f, 1004, "owner", "/approve")
 			f.EditBody(1, "owner", "body, changed")
-			post(t, f, 1005, "owner", "/resume")
+			post(t, f, 1004, "owner", "/resume")
+			post(t, f, 1005, "owner", "/approve")
 		})
 		resolveCheck(t, setup, 1, func(*githubtest.Fake) issueWant {
 			return issueWant{[]string{"stage:spec-review"}, []string{resumed, rejected("/approve",
-				"the issue description changed after revision 1, so it no longer matches that revision's hash, `"+h+"`", "1004")}}
+				"the issue description changed after revision 1, so it no longer matches that revision's hash, `"+h+"`", "1005")}}
 		})
+	})
+}
+
+// #188's note for #189: a trusted comment that counters the comment that
+// held the issue, here an /approve, before a /resume on the issue, sends
+// it to clarifying, as it would go with no /resume, and as it goes when an
+// owner hold shows on it: the interviewer reads what was countered. The
+// /approve still waits there.
+func TestResolveCounterThenResume(t *testing.T) {
+	setup := resolveReview(func(t testing.TB, f *githubtest.Fake) {
+		post(t, f, 1004, "owner", "/approve")
+		post(t, f, 1005, "owner", "/resume")
+	})
+	resolveCheck(t, setup, 1, func(*githubtest.Fake) issueWant {
+		return issueWant{[]string{"stage:clarifying"}, []string{moved("Resumed by `/resume`. A discussion on this issue was resolved during its hold "+
+			"from `spec-review`, so it goes to `clarifying`. The interviewer reads the discussion next, and picks where it goes from there.",
+			"from=held to=clarifying at=spec-review origin=spec-review cmd=1005 seen=1001")}}
 	})
 }
 
 // An /approve posted while held counters mallory's comment, so the issue
 // leaves the hold, to clarifying, where the /approve still waits, with no
-// reaction and no reply. Once the owner sets spec-review by hand, it's
-// applied.
+// reaction and no reply, while the interviewer reads the discussion
+// (#189). Once the owner sets spec-review by hand, it's applied.
 func TestResolveApproveWaitsAtClarifying(t *testing.T) {
 	setup := resolveReview(func(t testing.TB, f *githubtest.Fake) { post(t, f, 1004, "owner", "/approve") })
 	resolveCheck(t, setup, 1, func(f *githubtest.Fake) issueWant {
-		return issueWant{[]string{"stage:clarifying"}, []string{resolveLeaveText("`owner`", "spec-review",
+		return issueWant{[]string{"stage:clarifying"}, []string{ivHoldLeaveText("`owner`", "spec-review",
 			fmt.Sprintf("from=held to=clarifying at=spec-review origin=spec-review event=h1003 resolved=%d seen=1001", resolveCommentAt(t, f, 1, 1004)))}}
 	})
 	f := run(t, setup, resolvePass(t, 1))

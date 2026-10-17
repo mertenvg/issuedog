@@ -154,7 +154,8 @@ type waitInput struct {
 //     of no revision. One that can't be approved yet, for a dirty body, a
 //     Hidden revision, a body that no longer has its hash or a type with
 //     no approval to planning, says why;
-//   - at clarifying, a question round: when the latest transition is an
+//   - at clarifying, a question round: when the latest transition, looking
+//     through a hold the issue went back from (ivHoldLatest), is an
 //     interviewer round with round= and questions= above 0, and no
 //     trusted answer has come since (no Inputs). A typed bug or task's
 //     move carries neither, so it waits for phase 3 with no item;
@@ -191,18 +192,26 @@ func waitFind(in waitInput) ([]waitItem, error) {
 		rev, comment, lines := waitApprovalLines(in, is)
 		add(waitApproval, strconv.Itoa(rev), comment, lines)
 	case is.Stage == state.Clarifying && len(in.Inputs) == 0:
-		m := ivLatestMove(is)
+		// Through a hold the issue went back from (#185's verify note):
+		// after /resume back to clarifying, the round still waits.
+		m := ivHoldLatest(is, true)
 		round, rerr := strconv.Atoi(m.Fields["round"])
 		n, nerr := strconv.Atoi(m.Fields["questions"])
 		if !ivRoundMove(m) || rerr != nil || nerr != nil || round < 1 || n < 1 {
 			break
 		}
+		comment := is.TransitionComment
+		for _, r := range interviewerRounds(s, in.AppSlug, in.Dirt.Has) {
+			if r.Number == round {
+				comment = r.Comment
+			}
+		}
 		lines := []waitLine{{Text: fmt.Sprintf("Round %d asks %s, and waits for an answer.", round, waitCount(n, "question"))}}
 		heading := fmt.Sprintf("### Questions for #%d (round %d)", s.Number, round)
-		lines = append(lines, waitQuestions(waitBody(s, is.TransitionComment), heading, n,
+		lines = append(lines, waitQuestions(waitBody(s, comment), heading, n,
 			"I couldn't read them back from the round comment, so see it there.")...)
 		lines = append(lines, waitLine{Text: "Reply in one comment, e.g. `1a 2c 3: free text`."})
-		add(waitQuestion, strconv.Itoa(round), is.TransitionComment, lines)
+		add(waitQuestion, strconv.Itoa(round), comment, lines)
 	case is.Stage == state.Intake && stageOf(s) == "" && is.Triage.Verdict == triageAsk:
 		lines := []waitLine{{Text: "Triage flagged this issue: should issuedog handle it?"}}
 		heading := fmt.Sprintf("### Should issuedog handle #%d?", s.Number)
