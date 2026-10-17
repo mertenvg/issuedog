@@ -22,6 +22,7 @@ type closingCloser struct {
 	reason, typename string
 	merged           bool
 	base, repo       string
+	forbidden        bool // see ForbidCloser
 }
 
 // ClosingPR is a pull request that closes an issue as it merges
@@ -92,6 +93,33 @@ func (f *Fake) CloseByCommit(number int, login, sha, repo string) int64 {
 		is.closingClosers[id] = closingCloser{reason: "completed", typename: "Commit", repo: repo}
 	}
 	return id
+}
+
+// CloseByProject closes an issue as login, as completed, the way a
+// project's workflow does, as GitHub's project automation bot: its
+// ClosedEvent's closer is a ProjectV2. It returns the event's ID, or 0 if
+// the issue was closed already.
+func (f *Fake) CloseByProject(number int, login string) int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	is := f.issues[number-1]
+	id := f.setState(is, "closed", "", login)
+	if id != 0 {
+		is.closingClosers[id] = closingCloser{reason: "completed", typename: "ProjectV2"}
+	}
+	return id
+}
+
+// ForbidCloser makes GraphQL refuse the App closed event id's closer, as
+// GitHub does for one the App may not read, such as a project's on a
+// personal account or a commit in a private repo it can't see: the closer
+// is null, with a FORBIDDEN error at ["node", "closer"].
+func (f *Fake) ForbidCloser(number int, id int64) {
+	f.edit(number, func(is *issue) {
+		cl := is.closingClosers[id]
+		cl.forbidden = true
+		is.closingClosers[id] = cl
+	})
 }
 
 // ForgetCloser makes closed event id of issue number a node with no
@@ -201,12 +229,18 @@ func (f *Fake) closingAnswer(owner, name, id string) (any, []map[string]any) {
 				return map[string]any{"repository": repo, "node": map[string]any{}}, nil
 			}
 			var closer any
+			if cl.forbidden {
+				return map[string]any{"repository": repo, "node": map[string]any{"stateReason": strings.ToUpper(cl.reason), "closer": nil}},
+					[]map[string]any{{"type": "FORBIDDEN", "path": []any{"node", "closer"}, "message": "Resource not accessible by integration"}}
+			}
 			switch cl.typename {
 			case "PullRequest":
 				closer = map[string]any{"__typename": cl.typename, "merged": cl.merged, "baseRefName": cl.base,
 					"baseRepository": map[string]any{"nameWithOwner": cl.repo}}
 			case "Commit":
 				closer = map[string]any{"__typename": cl.typename, "repository": map[string]any{"nameWithOwner": cl.repo}}
+			case "ProjectV2":
+				closer = map[string]any{"__typename": cl.typename}
 			}
 			return map[string]any{"repository": repo, "node": map[string]any{"stateReason": strings.ToUpper(cl.reason), "closer": closer}}, nil
 		}

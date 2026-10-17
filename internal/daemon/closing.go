@@ -50,8 +50,15 @@ import (
 // commit or a pull request in another repo that names the issue is no
 // merge, so it's reverted like any untrusted close. It's one GraphQL query,
 // asked only for a close nobody trusted made, and remembered per event
-// while the daemon runs (closingCloser); an event GitHub can't resolve is
-// no merge, and isn't asked about again. The close's state reason is
+// while the daemon runs (closingCloser). An event GitHub can't resolve, or
+// whose closer it won't show the App (an error under node, as FORBIDDEN
+// for a project's workflow on a personal account, or a commit in a private
+// repo), is no merge, logged, and isn't asked about again, so its close is
+// reverted. A project's workflow's closer (ProjectV2) is no merge either.
+// Any other failure, a failed request, a rate limit or an error on the
+// repository, is the pass's error, and the next pass asks again, without
+// bound: none of those says how the issue was closed, and a merge
+// reverted on a guess would reopen and hold a finished issue. The close's state reason is
 // the issue's state_reason as listed, which is the newest close's, and,
 // for a close again after an untrusted reopen, the ClosedEvent's
 // stateReason of the close it undid (closingCloseAgain).

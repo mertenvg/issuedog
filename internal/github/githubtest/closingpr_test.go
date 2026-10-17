@@ -105,6 +105,31 @@ func TestClosingServed(t *testing.T) {
 			t.Errorf("%s: data %v, errors %q; want node %v, errors %q", tc.id, data, types, tc.node, tc.types)
 		}
 	}
+	m := f.AddIssue("owner", "Another", "")
+	project := f.CloseByProject(m, "github-project-automation[bot]")
+	if data, types := closingAsk(t, f, "o", "r", fmt.Sprintf("CE_%d", project)); !reflect.DeepEqual(data["node"],
+		map[string]any{"stateReason": "COMPLETED", "closer": map[string]any{"__typename": "ProjectV2"}}) || types != nil {
+		t.Errorf("a project's close: %v, %q; want a ProjectV2 closer", data, types)
+	}
+	f.ForbidCloser(m, project)
+	var errs struct {
+		Errors []struct {
+			Type string
+			Path []any
+		}
+	}
+	req, err := c.NewRequest(ctx, "POST", "graphql", map[string]any{"query": answeredCloser,
+		"variables": map[string]any{"id": fmt.Sprintf("CE_%d", project), "owner": "o", "name": "r"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Do(req, &errs); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := closingAsk(t, f, "o", "r", fmt.Sprintf("CE_%d", project)); !reflect.DeepEqual(data["node"], map[string]any{"stateReason": "COMPLETED", "closer": nil}) ||
+		len(errs.Errors) != 1 || errs.Errors[0].Type != "FORBIDDEN" || !reflect.DeepEqual(errs.Errors[0].Path, []any{"node", "closer"}) {
+		t.Errorf("a forbidden closer: node %v, errors %+v; want a null closer, FORBIDDEN at node.closer", data["node"], errs.Errors)
+	}
 	f.ForgetCloser(n, pr)
 	if data, _ := closingAsk(t, f, "o", "r", fmt.Sprintf("CE_%d", pr)); !reflect.DeepEqual(data["node"], map[string]any{}) {
 		t.Errorf("a forgotten closer's node is %v; want no ClosedEvent's fields", data["node"])

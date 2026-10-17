@@ -944,6 +944,79 @@ func TestClosingMergesWhileRunning(t *testing.T) {
 	quiet("the pass after the merge")
 }
 
+// closingGraphQL counts the GraphQL requests from the from'th on.
+func closingGraphQL(f *githubtest.Fake, from int) int {
+	n := 0
+	for _, r := range f.Requests()[from:] {
+		if r.Path == "/graphql" && r.Method == "POST" {
+			n++
+		}
+	}
+	return n
+}
+
+// A close whose closer GitHub won't show the App, FORBIDDEN, or a
+// project's workflow's, is no merge: eve's is reverted once, with its
+// comment, and nothing is asked again, on the next pass or the one after.
+func TestClosingCloserForbidden(t *testing.T) {
+	for name, close := range map[string]func(f *githubtest.Fake) (int64, string){
+		"forbidden": func(f *githubtest.Fake) (int64, string) {
+			id := f.CloseByPullRequest(1, "eve", githubtest.ClosingPR{Merged: true})
+			f.ForbidCloser(1, id)
+			return id, "`eve`"
+		},
+		"a project's": func(f *githubtest.Fake) (int64, string) {
+			return f.CloseByProject(1, "github-project-automation[bot]"), "`github-project-automation[bot]`"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, o := closingFake(t), digestNotifyOrigin(t)
+			d := newDaemon(t, f, o, nil)
+			iterate(t, d)
+			event, by := close(f)
+			iterate(t, d)
+			if is := f.State().Issues[0]; is.Closed || !slices.Equal(closingComments(f, 1, 1), []string{closingReverted(by, event)}) {
+				t.Fatalf("closed %t, comments %q; want the close reverted, with its comment", is.Closed, closingComments(f, 1, 1))
+			}
+			reqs, writes := len(f.Requests()), len(f.Writes())
+			iterate(t, d)
+			iterate(t, d)
+			if n := closingGraphQL(f, reqs); n != 0 || len(f.Writes()) != writes {
+				t.Errorf("%d GraphQL requests and writes %+v after the revert; want none", n, f.Writes()[writes:])
+			}
+		})
+	}
+}
+
+// Step 1 judges a write collaborator's close whose closer GitHub won't
+// show the App as no merge too: the reopened issue is held for it, asked
+// once, and a second pass asks nothing.
+func TestClosingCloserForbiddenStep1(t *testing.T) {
+	var event int64
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := closingFake(t)
+		event = f.CloseByPullRequest(1, "mallory", githubtest.ClosingPR{Merged: true})
+		f.ForbidCloser(1, event)
+		f.ReopenBy(1, app) // reverted while no daemon ran its step 1
+		return f
+	}
+	githubtest.Replay(t, setup, closingPass(t, digestNotifyOrigin(t)))
+	f, o := setup(t), digestNotifyOrigin(t)
+	d := newDaemon(t, f, o, nil)
+	iterate(t, d)
+	key := fmt.Sprint(event)
+	want := []string{discHeld("pr-open", "`mallory` closed this issue, which I reopened",
+		"from=pr-open to=held at=pr-open origin=pr-open reason=discussion event="+key+" seen=1001", discNoticeMarker(key))}
+	if is := f.State().Issues[0]; !slices.Equal(is.Labels, []string{"stage:held"}) || !slices.Equal(closingComments(f, 1, 1), want) {
+		t.Fatalf("labels %q, comments %q; want the hold", is.Labels, closingComments(f, 1, 1))
+	}
+	reqs := len(f.Requests())
+	iterate(t, d)
+	if n := closingGraphQL(f, reqs); n != 1 {
+		t.Errorf("%d GraphQL requests on the next pass; want 1, the snapshot's, and no closer question", n)
+	}
+}
+
 // A close whose event is late, on an issue the poll's cursor has passed,
 // stays due, and is judged once its event shows.
 func TestClosingLateEventOlderIssue(t *testing.T) {

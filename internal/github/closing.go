@@ -7,6 +7,7 @@ import (
 	"time"
 
 	gogithub "github.com/google/go-github/v92/github"
+	"github.com/mertenvg/logr/v2"
 )
 
 // Closing is one closed or reopened event on an issue's timeline (SPEC
@@ -67,7 +68,8 @@ type ClosingCloser struct {
 	// a merged pull request whose base is this repo's default branch, or a
 	// commit in this repo, which closes an issue it names only once it is
 	// on the default branch. A pull request or a commit in another repo
-	// that names this repo's issue, an unmerged pull request, and a close
+	// that names this repo's issue, an unmerged pull request, a project's
+	// workflow (ProjectV2), a closer GitHub won't show the App, and a close
 	// by hand (closer null) are none.
 	Merge bool
 	// StateReason is the close's state reason in lower case, such as
@@ -110,14 +112,24 @@ type closingCloserResponse struct {
 			}
 		}
 	}
-	Errors []struct{ Type, Message string }
+	Errors []struct {
+		Type, Message string
+		Path          []any
+	}
 }
 
 // ClosingCloser reads how the closed event with node ID nodeID, on an
 // issue in owner/repo, was made, with one GraphQL query (closingCloserQuery,
 // SPEC §16). An event GitHub can't resolve, NOT_FOUND, is a close by
 // nobody named, no merge, so it's no error and needn't be asked about
-// again; any other error is one, wrapping ErrGraphQL for GitHub's.
+// again. So is any error GitHub gives under node, logged: one the App may
+// not read, FORBIDDEN, as a closer in a private repo it can't see, or a
+// project's (ProjectV2) on a personal account, which can't grant Projects
+// access. It's no merge the App can tell, so the close is judged as one by
+// hand, and asking again would get the same answer. A ProjectV2 closer the
+// App can read is no merge either. Any other error is one, wrapping
+// ErrGraphQL for GitHub's, as for the repository, and so is a failed
+// request, which the caller asks again.
 func (c *Client) ClosingCloser(ctx context.Context, owner, repo, nodeID string) (ClosingCloser, error) {
 	wrap := func(err error) error { return fmt.Errorf("closer of event %s in %s/%s: %w", nodeID, owner, repo, err) }
 	req, err := c.NewRequest(ctx, "POST", "graphql", map[string]any{"query": closingCloserQuery,
@@ -131,7 +143,11 @@ func (c *Client) ClosingCloser(ctx context.Context, owner, repo, nodeID string) 
 	}
 	var msgs []string
 	for _, e := range out.Errors {
-		if e.Type != "NOT_FOUND" {
+		switch {
+		case len(e.Path) > 0 && e.Path[0] == "node":
+			logr.Warnf("%s/%s: GitHub won't say how event %s closed its issue (%s: %s at %v), so it's judged as a close by hand",
+				owner, repo, nodeID, e.Type, e.Message, e.Path)
+		case e.Type != "NOT_FOUND":
 			msgs = append(msgs, e.Message)
 		}
 	}

@@ -100,6 +100,19 @@ func TestClosingCloser(t *testing.T) {
 		{f.CloseAs(7, "owner", "duplicate"), github.ClosingCloser{StateReason: "duplicate"}, "a close by hand"},
 		{f.CloseByPullRequest(8, "mallory", githubtest.ClosingPR{Merged: true, Repo: "O/R"}), github.ClosingCloser{Merge: true, StateReason: "completed"}, "this repo, in another case"},
 	}
+	f.AddIssue("owner", "Issue", "")
+	f.AddIssue("owner", "Issue", "")
+	forbidden := f.CloseByPullRequest(9, "mallory", githubtest.ClosingPR{Merged: true})
+	f.ForbidCloser(9, forbidden)
+	cases = append(cases, struct {
+		event  int64
+		want   github.ClosingCloser
+		reason string
+	}{forbidden, github.ClosingCloser{StateReason: "completed"}, "a closer GitHub won't show the App"}, struct {
+		event  int64
+		want   github.ClosingCloser
+		reason string
+	}{f.CloseByProject(10, "github-project-automation[bot]"), github.ClosingCloser{StateReason: "completed"}, "a project's workflow"})
 	c := f.Client(t)
 	for _, tc := range cases {
 		got, err := c.ClosingCloser(context.Background(), "o", "r", "CE_"+strconv.FormatInt(tc.event, 10))
