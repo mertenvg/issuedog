@@ -2,8 +2,10 @@ package github_test
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -11,8 +13,8 @@ import (
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
 
-// closingDescribe is each closing as "<closed|reopened> by <login> <state
-// reason> <commit>", for comparison, with no IDs or times.
+// closingDescribe is each closing as "<closed|reopened> by <login> <node
+// id>", for comparison, with no times.
 func closingDescribe(closings []github.Closing) []string {
 	var got []string
 	for _, cl := range closings {
@@ -20,15 +22,15 @@ func closingDescribe(closings []github.Closing) []string {
 		if cl.Reopen {
 			what = "reopened"
 		}
-		got = append(got, what+" by "+cl.By.Login+" "+cl.StateReason+" "+cl.CommitID)
+		got = append(got, what+" by "+cl.By.Login+" "+cl.NodeID)
 	}
 	return got
 }
 
 // ClosingTimeline reads the whole timeline once, and returns its closed and
-// reopened events, oldest first, each with its actor, its time, a closed
-// event's state_reason and the commit it names; CheckLabels returns the
-// same from the timeline it reads, acting on none of them.
+// reopened events, oldest first, each with its actor, its time and its node
+// ID; CheckLabels returns the same from the timeline it reads, acting on
+// none of them.
 func TestClosingTimeline(t *testing.T) {
 	f := githubtest.New(t, "o/r", "issuedog")
 	n := f.AddIssue("owner", "Title", "body")
@@ -36,9 +38,9 @@ func TestClosingTimeline(t *testing.T) {
 	ids := []int64{
 		f.CloseAs(n, "owner", "not_planned"),
 		f.ReopenBy(n, "mallory"),
-		f.CloseByCommit(n, "mallory", "abc123", true),
+		f.CloseByPullRequest(n, "mallory", githubtest.ClosingPR{Merged: true}),
 		f.ReopenBy(n, "owner"),
-		f.CloseAs(n, "eve", "duplicate"),
+		f.CloseByCommit(n, "eve", "abc123", ""),
 	}
 	ctx, c := context.Background(), f.Client(t)
 	from := len(f.Requests())
@@ -50,8 +52,8 @@ func TestClosingTimeline(t *testing.T) {
 	if len(reqs) != 1 || reqs[0].Path != "/issues/1/timeline" {
 		t.Errorf("requests %+v; want one timeline read", reqs)
 	}
-	want := []string{"closed by owner not_planned ", "reopened by mallory  ", "closed by mallory completed abc123", "reopened by owner  ",
-		"closed by eve duplicate "}
+	want := []string{"closed by owner CE_9001", "reopened by mallory REE_9002", "closed by mallory CE_9003", "reopened by owner REE_9004",
+		"closed by eve CE_9005"}
 	if got := closingDescribe(closings); !reflect.DeepEqual(got, want) {
 		t.Errorf("closings %q; want %q", got, want)
 	}
@@ -60,8 +62,8 @@ func TestClosingTimeline(t *testing.T) {
 			t.Errorf("closing %d: ID %d at %v; want ID %d, in order", i, cl.ID, cl.At, ids[i])
 		}
 	}
-	if len(timeline) != 6 || timeline[0].GetEvent() != "commented" {
-		t.Errorf("timeline %d events, first %q; want the comment and the 5 closes and reopens", len(timeline), timeline[0].GetEvent())
+	if len(timeline) != 6 || timeline[0].GetEvent() != "commented" || timeline[5].GetCommitID() != "abc123" || timeline[3].GetCommitID() != "" {
+		t.Errorf("timeline %d events; want the comment and the 5 closes and reopens, only the commit's naming it", len(timeline))
 	}
 	found, err := c.CheckLabels(ctx, "o", "r", n, nil, "issuedog", discNobody{}, func(int64) bool { return false }, nil, nil)
 	if err != nil {
@@ -75,30 +77,62 @@ func TestClosingTimeline(t *testing.T) {
 	}
 }
 
-// A commit is a merged pull request's only when GitHub lists a merged pull
-// request for it.
-func TestClosingMerged(t *testing.T) {
+// A close is a merge only when its closer is a merged pull request into
+// this repo's default branch, or a commit in this repo. Its state reason
+// comes with it, in lower case. An event GitHub can't resolve is a close
+// by nobody named, with no error.
+func TestClosingCloser(t *testing.T) {
 	f := githubtest.New(t, "o/r", "issuedog")
-	f.CloseByCommit(f.AddIssue("owner", "A", ""), "mallory", "merged1", true)
-	f.CloseByCommit(f.AddIssue("owner", "B", ""), "mallory", "pushed1", false)
+	for range 8 {
+		f.AddIssue("owner", "Issue", "")
+	}
+	cases := []struct {
+		event  int64
+		want   github.ClosingCloser
+		reason string
+	}{
+		{f.CloseByPullRequest(1, "mallory", githubtest.ClosingPR{Merged: true}), github.ClosingCloser{Merge: true, StateReason: "completed"}, "a merged pull request"},
+		{f.CloseByPullRequest(2, "mallory", githubtest.ClosingPR{Merged: false}), github.ClosingCloser{StateReason: "completed"}, "an unmerged one"},
+		{f.CloseByPullRequest(3, "mallory", githubtest.ClosingPR{Merged: true, Base: "dev"}), github.ClosingCloser{StateReason: "completed"}, "one merged into another branch"},
+		{f.CloseByPullRequest(4, "mallory", githubtest.ClosingPR{Merged: true, Repo: "x/y"}), github.ClosingCloser{StateReason: "completed"}, "one in another repo"},
+		{f.CloseByCommit(5, "mallory", "abc", ""), github.ClosingCloser{Merge: true, StateReason: "completed"}, "a commit in this repo"},
+		{f.CloseByCommit(6, "mallory", "def", "x/y"), github.ClosingCloser{StateReason: "completed"}, "a commit in another repo"},
+		{f.CloseAs(7, "owner", "duplicate"), github.ClosingCloser{StateReason: "duplicate"}, "a close by hand"},
+		{f.CloseByPullRequest(8, "mallory", githubtest.ClosingPR{Merged: true, Repo: "O/R"}), github.ClosingCloser{Merge: true, StateReason: "completed"}, "this repo, in another case"},
+	}
 	c := f.Client(t)
-	for sha, want := range map[string]bool{"merged1": true, "pushed1": false, "unknown": false} {
-		got, err := c.ClosingMerged(context.Background(), "o", "r", sha)
-		if err != nil || got != want {
-			t.Errorf("ClosingMerged(%s) = %t, %v; want %t", sha, got, err, want)
+	for _, tc := range cases {
+		got, err := c.ClosingCloser(context.Background(), "o", "r", "CE_"+strconv.FormatInt(tc.event, 10))
+		if err != nil || got != tc.want {
+			t.Errorf("%s: ClosingCloser = %+v, %v; want %+v", tc.reason, got, err, tc.want)
+		}
+	}
+	for _, id := range []string{"CE_1", "nope", "REE_" + strconv.FormatInt(cases[0].event, 10)} {
+		if got, err := c.ClosingCloser(context.Background(), "o", "r", id); err != nil || got != (github.ClosingCloser{}) {
+			t.Errorf("ClosingCloser(%s) = %+v, %v; want nothing, no error", id, got, err)
 		}
 	}
 }
 
-// A failed read of a commit's pull requests is an error, not a no.
-func TestClosingMergedFails(t *testing.T) {
+// A failed question is an error, not a close by hand: GitHub's errors,
+// other than NOT_FOUND, an answer with no repository, and a failed read.
+func TestClosingCloserFails(t *testing.T) {
 	f := githubtest.New(t, "o/r", "issuedog")
-	f.AnswerOnce(func(r githubtest.Request) bool { return r.Path == "/commits/abc/pulls" }, 500)
-	if got, err := f.Client(t).ClosingMerged(context.Background(), "o", "r", "abc"); err == nil || got {
-		t.Errorf("ClosingMerged = %t, %v; want the read's error", got, err)
+	event := f.CloseByPullRequest(f.AddIssue("owner", "A", ""), "mallory", githubtest.ClosingPR{Merged: true})
+	c := f.Client(t)
+	f.FailGraphQL("boom")
+	if got, err := c.ClosingCloser(context.Background(), "o", "r", "CE_"+strconv.FormatInt(event, 10)); !errors.Is(err, github.ErrGraphQL) || got.Merge {
+		t.Errorf("ClosingCloser = %+v, %v; want GitHub's error", got, err)
+	}
+	if got, err := c.ClosingCloser(context.Background(), "o", "gone", "CE_"+strconv.FormatInt(event, 10)); err == nil || got.Merge {
+		t.Errorf("ClosingCloser in another repo = %+v, %v; want an error", got, err)
+	}
+	f.AnswerOnce(func(r githubtest.Request) bool { return r.Path == "/graphql" }, 500)
+	if _, err := c.ClosingCloser(context.Background(), "o", "r", "CE_"+strconv.FormatInt(event, 10)); err == nil {
+		t.Error("ClosingCloser = nil; want the read's error")
 	}
 	f.AnswerOnce(func(r githubtest.Request) bool { return r.Path == "/issues/9/timeline" }, 500)
-	if _, _, err := f.Client(t).ClosingTimeline(context.Background(), "o", "r", 9); err == nil {
+	if _, _, err := c.ClosingTimeline(context.Background(), "o", "r", 9); err == nil {
 		t.Error("ClosingTimeline = nil; want the read's error")
 	}
 }

@@ -60,11 +60,15 @@ const (
 	... on Issue { userContentEdits { nodes { diff } } } } }`
 	answeredPinned = `query { repository { issue { isPinned } } }`
 	answeredPin    = `mutation { pinIssue { issue { isPinned } } }`
+	answeredCloser = `query { repository { nameWithOwner defaultBranchRef { name } } node { ... on ClosedEvent { stateReason
+	closer { __typename ... on PullRequest { merged baseRefName baseRepository { nameWithOwner } }
+	... on Commit { repository { nameWithOwner } } } } } }`
 )
 
 var (
 	answeredFields, historyFields = fields(answered), fields(answeredHistory)
 	pinnedFields, pinFields       = fields(answeredPinned), fields(answeredPin)
+	closerFields                  = fields(answeredCloser)
 )
 
 // HistoryQueries counts the edit history queries answered.
@@ -92,6 +96,7 @@ func (f *Fake) graphql(c *call) (int, any) {
 			DeletedCursor *string // the comments query's timelineItems
 			IDs           []string
 			ID            string // pinIssue's issue
+			Owner, Name   string // the closer query's repo
 		}
 	}
 	if status, msg := c.decode(&req); msg != nil {
@@ -119,6 +124,8 @@ func (f *Fake) graphql(c *call) (int, any) {
 		want = historyFields
 	case named["query.repository.issue.isPinned"]:
 		want = pinnedFields
+	case named["query.node"]:
+		want = closerFields
 	}
 	for p := range want {
 		if !named[p] {
@@ -153,6 +160,11 @@ func (f *Fake) graphql(c *call) (int, any) {
 		}
 		errs = append(errs, notFound...)
 		return reply(map[string]any{"nodes": nodes})
+	}
+	if named["query.node"] {
+		data, notFound := f.closingAnswer(v.Owner, v.Name, v.ID)
+		errs = append(errs, notFound...)
+		return reply(data)
 	}
 	if named["mutation"] {
 		data, failed := f.pinIssue(req.Variables.ID)

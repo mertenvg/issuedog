@@ -72,9 +72,9 @@ type issueTypeRevertEvent struct {
 	// PrevIssueType is the type an issue_type_changed or issue_type_removed
 	// event replaced, or nil.
 	PrevIssueType *gogithub.IssueType `json:"prev_issue_type,omitempty"`
-	// StateReason is a closed event's state_reason, which go-github's
-	// Timeline leaves out too, or nil (Closing).
-	StateReason *string `json:"state_reason,omitempty"`
+	// NodeID is the event's GraphQL node ID, which go-github's Timeline
+	// leaves out too, or "" (Closing).
+	NodeID string `json:"node_id,omitempty"`
 }
 
 // issueTypeRevertTimeline is TimelineSince, with each event's issue types.

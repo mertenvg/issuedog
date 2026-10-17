@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -62,34 +63,40 @@ func TestClosingWhat(t *testing.T) {
 	}
 }
 
-// Whether a commit is a merged pull request's is asked once per commit,
-// and a failed answer isn't kept.
-func TestClosingMergedAsksOnce(t *testing.T) {
+// How a close was made is asked once per event, an event with no node ID
+// isn't asked about, and a failed answer isn't kept.
+func TestClosingCloserAsksOnce(t *testing.T) {
 	f := githubtest.New(t, "o/r", "issuedog")
-	f.CloseByCommit(f.AddIssue("owner", "A", ""), "mallory", "abc", true)
+	merged := f.CloseByPullRequest(f.AddIssue("owner", "A", ""), "mallory", githubtest.ClosingPR{Merged: true})
+	byHand := f.CloseBy(f.AddIssue("owner", "B", ""), "mallory")
 	a := &Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}
 	asked := func() (n int) {
 		for _, r := range f.Requests() {
-			if r.Path == "/commits/abc/pulls" || r.Path == "/commits/def/pulls" {
+			if r.Path == "/graphql" {
 				n++
 			}
 		}
 		return n
 	}
-	f.AnswerOnce(func(r githubtest.Request) bool { return r.Path == "/commits/abc/pulls" }, 500)
-	if _, err := a.closingMerged(context.Background(), "abc"); err == nil {
-		t.Fatal("closingMerged = nil error; want the failed read's")
+	pr := github.Closing{ID: merged, NodeID: fmt.Sprintf("CE_%d", merged)}
+	hand := github.Closing{ID: byHand, NodeID: fmt.Sprintf("CE_%d", byHand)}
+	f.FailGraphQL("boom")
+	if _, err := a.closingCloser(context.Background(), pr); err == nil {
+		t.Fatal("closingCloser = nil error; want the failed question's")
 	}
 	for range 3 {
-		if merged, err := a.closingMerged(context.Background(), "abc"); err != nil || !merged {
-			t.Fatalf("closingMerged(abc) = %t, %v; want true", merged, err)
+		if by, err := a.closingCloser(context.Background(), pr); err != nil || !by.Merge {
+			t.Fatalf("closingCloser(the pull request's) = %+v, %v; want a merge", by, err)
 		}
-		if merged, err := a.closingMerged(context.Background(), "def"); err != nil || merged {
-			t.Fatalf("closingMerged(def) = %t, %v; want false", merged, err)
+		if by, err := a.closingCloser(context.Background(), hand); err != nil || by.Merge || by.StateReason != "completed" {
+			t.Fatalf("closingCloser(by hand) = %+v, %v; want no merge, completed", by, err)
+		}
+		if by, err := a.closingCloser(context.Background(), github.Closing{ID: 1}); err != nil || by != (github.ClosingCloser{}) {
+			t.Fatalf("closingCloser(no node ID) = %+v, %v; want nothing", by, err)
 		}
 	}
 	if got := asked(); got != 3 {
-		t.Errorf("asked %d times; want 3: the failure, then once for each commit", got)
+		t.Errorf("asked %d times; want 3: the failure, then once for each event", got)
 	}
 }
 
@@ -109,12 +116,13 @@ func (c closingAsks) DiscAccess(_ context.Context, login string) (bool, bool, er
 
 // closingCounts judges a close in discFind's order: a reopen, or a close
 // before the floor, is none, and a recorded one is, both with no question;
-// then only a write collaborator's close counts, and not one a merged pull
-// request made.
+// then only a write collaborator's close counts, and not a merge's into
+// the default branch.
 func TestClosingCounts(t *testing.T) {
 	ctx := context.Background()
 	f := githubtest.New(t, "o/r", "issuedog")
-	f.CloseByCommit(f.AddIssue("owner", "A", ""), "mallory", "merged", true)
+	merged := f.CloseByPullRequest(f.AddIssue("owner", "A", ""), "mallory", githubtest.ClosingPR{Merged: true})
+	unmerged := f.CloseByPullRequest(f.AddIssue("owner", "B", ""), "mallory", githubtest.ClosingPR{})
 	a := &Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}
 	s := &github.Snapshot{Number: 1}
 	open := func(key string, _ time.Time, _ int64) (bool, bool) { return key != "1", key == "2" }
@@ -133,8 +141,8 @@ func TestClosingCounts(t *testing.T) {
 		want bool
 	}{
 		{github.Closing{ID: 4, By: github.Author{Login: "mallory"}}, true},
-		{github.Closing{ID: 5, By: github.Author{Login: "mallory"}, CommitID: "pushed"}, true},
-		{github.Closing{ID: 6, By: github.Author{Login: "mallory"}, CommitID: "merged"}, false},
+		{github.Closing{ID: 5, By: github.Author{Login: "mallory"}, NodeID: fmt.Sprintf("CE_%d", unmerged)}, true},
+		{github.Closing{ID: 6, By: github.Author{Login: "mallory"}, NodeID: fmt.Sprintf("CE_%d", merged)}, false},
 		{github.Closing{ID: 7, By: github.Author{Login: "eve"}}, false},
 		{github.Closing{ID: 8, By: github.Author{Login: "owner"}}, false},
 		{github.Closing{ID: 9, By: github.Author{Login: "issuedog[bot]", Type: "Bot"}}, false},
@@ -146,9 +154,9 @@ func TestClosingCounts(t *testing.T) {
 	if _, err := a.closingCounts(ctx, github.Closing{ID: 10, By: github.Author{Login: "bob"}}, open, who); !errors.Is(err, errTrustOnce) {
 		t.Errorf("a failed question = %v; want its error, wrapped", err)
 	}
-	f.AnswerOnce(func(r githubtest.Request) bool { return r.Path == "/commits/other/pulls" }, 500)
-	if _, err := a.closingCounts(ctx, github.Closing{ID: 11, By: github.Author{Login: "mallory"}, CommitID: "other"}, open, who); err == nil {
-		t.Error("a failed read of the commit's pull requests = nil; want its error")
+	f.FailGraphQL("boom")
+	if _, err := a.closingCounts(ctx, github.Closing{ID: 11, By: github.Author{Login: "mallory"}, NodeID: "CE_11"}, open, who); err == nil {
+		t.Error("a failed question of how it was closed = nil; want its error")
 	}
 }
 

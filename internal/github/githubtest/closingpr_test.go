@@ -9,8 +9,8 @@ import (
 	gogithub "github.com/google/go-github/v92/github"
 )
 
-// closingServed is issue n's closed events as the timeline serves them, as
-// "<actor> <state_reason> <commit_id>".
+// closingServed is issue n's closed and reopened events as the timeline
+// serves them, as "<event> <actor> <node_id> <state_reason> <commit_id>".
 func closingServed(t *testing.T, f *Fake, n int) []string {
 	t.Helper()
 	c := f.Client(t)
@@ -21,6 +21,7 @@ func closingServed(t *testing.T, f *Fake, n int) []string {
 	var events []struct {
 		Event       string
 		Actor       *gogithub.User
+		NodeID      string `json:"node_id"`
 		StateReason string `json:"state_reason"`
 		CommitID    string `json:"commit_id"`
 	}
@@ -29,59 +30,86 @@ func closingServed(t *testing.T, f *Fake, n int) []string {
 	}
 	var got []string
 	for _, e := range events {
-		if e.Event == "closed" {
-			got = append(got, e.Actor.GetLogin()+" "+e.StateReason+" "+e.CommitID)
+		if e.Event == "closed" || e.Event == "reopened" {
+			got = append(got, fmt.Sprintf("%s %s %s %s %s", e.Event, e.Actor.GetLogin(), e.NodeID, e.StateReason, e.CommitID))
 		}
 	}
 	return got
 }
 
-// Each closed event carries its close's state_reason, by a user or by the
-// App's PATCH, and a commit's close names its commit; the commit's pull
-// requests list a merged one only for a merged pull request's commit.
+// closingAsk asks the fake the closer query for node id in owner/name, and
+// returns its answer as JSON-decoded data and its errors' types.
+func closingAsk(t *testing.T, f *Fake, owner, name, id string) (map[string]any, []string) {
+	t.Helper()
+	c := f.Client(t)
+	req, err := c.NewRequest(context.Background(), "POST", "graphql", map[string]any{"query": answeredCloser,
+		"variables": map[string]any{"id": id, "owner": owner, "name": name}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Data   map[string]any
+		Errors []struct{ Type, Message string }
+	}
+	if _, err := c.Do(req, &out); err != nil {
+		t.Fatal(err)
+	}
+	var types []string
+	for _, e := range out.Errors {
+		types = append(types, e.Type)
+	}
+	return out.Data, types
+}
+
+// As on GitHub, every closed and reopened event names its node, no closed
+// event carries a state_reason, and only a commit's close names a commit.
+// GraphQL's ClosedEvent gives each close's state reason and closer: a pull
+// request with its merge, base and repo, a commit with its repo, or none.
 func TestClosingServed(t *testing.T) {
 	f := New(t, "o/r", "issuedog")
 	n := f.AddIssue("owner", "Issue", "")
-	f.CloseAs(n, "owner", "duplicate")
+	byHand := f.CloseAs(n, "owner", "duplicate")
 	f.ReopenBy(n, "owner")
-	f.CloseByCommit(n, "mallory", "abc", true)
+	pr := f.CloseByPullRequest(n, "mallory", ClosingPR{Merged: true})
 	f.ReopenBy(n, "owner")
-	if f.CloseByCommit(n, "eve", "def", false) == 0 || f.CloseByCommit(n, "eve", "ghi", false) != 0 {
-		t.Error("CloseByCommit gave no event, or a second one for a closed issue")
+	if f.CloseByCommit(n, "eve", "def", "x/y") == 0 || f.CloseByCommit(n, "eve", "ghi", "") != 0 || f.CloseByPullRequest(n, "eve", ClosingPR{}) != 0 {
+		t.Error("a close gave no event, or a second one for a closed issue")
 	}
 	f.ReopenBy(n, "owner")
 	ctx, c := context.Background(), f.Client(t)
 	if _, _, err := c.Issues.Update(ctx, "o", "r", n, gogithub.UpdateIssueRequest{State: new("closed"), StateReason: new("not_planned")}); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"owner duplicate ", "mallory completed abc", "eve completed def", "issuedog[bot] not_planned "}
+	want := []string{"closed owner CE_9001  ", "reopened owner REE_9002  ", "closed mallory CE_9003  ", "reopened owner REE_9004  ",
+		"closed eve CE_9005  def", "reopened owner REE_9006  ", "closed issuedog[bot] CE_9007  "}
 	if got := closingServed(t, f, n); !reflect.DeepEqual(got, want) {
-		t.Errorf("closed events %q; want %q", got, want)
+		t.Errorf("events %q; want %q", got, want)
 	}
+	repo := map[string]any{"nameWithOwner": "o/r", "defaultBranchRef": map[string]any{"name": "main"}}
 	for _, tc := range []struct {
-		sha         string
-		prs         int
-		merged      bool
-		description string
+		id    string
+		node  any
+		types []string
 	}{
-		{"abc", 1, true, "a merged one"},
-		{"def", 1, false, "an open one"},
-		{"ghi", 1, false, "an open one"},
-		{"unknown", 0, false, "none"},
+		{fmt.Sprintf("CE_%d", byHand), map[string]any{"stateReason": "DUPLICATE", "closer": nil}, nil},
+		{fmt.Sprintf("CE_%d", pr), map[string]any{"stateReason": "COMPLETED", "closer": map[string]any{"__typename": "PullRequest", "merged": true,
+			"baseRefName": "main", "baseRepository": map[string]any{"nameWithOwner": "o/r"}}}, nil},
+		{"CE_9005", map[string]any{"stateReason": "COMPLETED", "closer": map[string]any{"__typename": "Commit", "repository": map[string]any{"nameWithOwner": "x/y"}}}, nil},
+		{"CE_9007", map[string]any{"stateReason": "NOT_PLANNED", "closer": nil}, nil},
+		{"REE_9002", map[string]any{}, nil},
+		{"CE_9002", nil, []string{"NOT_FOUND"}},
+		{"X_1", nil, []string{"NOT_FOUND"}},
 	} {
-		prs, _, err := c.PullRequests.ListPullRequestsWithCommit(ctx, "o", "r", tc.sha, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(prs) != tc.prs || tc.prs == 1 && (prs[0].MergedAt != nil) != tc.merged {
-			t.Errorf("pull requests of %s: %+v; want %s", tc.sha, prs, tc.description)
-		}
-		if tc.merged && prs[0].GetMergeCommitSHA() != tc.sha {
-			t.Errorf("pull request of %s merged as %s", tc.sha, prs[0].GetMergeCommitSHA())
+		data, types := closingAsk(t, f, "o", "r", tc.id)
+		if !reflect.DeepEqual(data, map[string]any{"repository": repo, "node": tc.node}) || !reflect.DeepEqual(types, tc.types) {
+			t.Errorf("%s: data %v, errors %q; want node %v, errors %q", tc.id, data, types, tc.node, tc.types)
 		}
 	}
-	f.ForgetStateReasons(n)
-	if got := closingServed(t, f, n); !reflect.DeepEqual(got, []string{"owner  ", "mallory  abc", "eve  def", "issuedog[bot]  "}) {
-		t.Errorf("closed events %q once their state reasons are forgotten; want none with one", got)
+	f.ForgetCloser(n, pr)
+	if data, _ := closingAsk(t, f, "o", "r", fmt.Sprintf("CE_%d", pr)); !reflect.DeepEqual(data["node"], map[string]any{}) {
+		t.Errorf("a forgotten closer's node is %v; want no ClosedEvent's fields", data["node"])
+	}
+	if data, types := closingAsk(t, f, "o", "other", "CE_9001"); data["repository"] != nil || !reflect.DeepEqual(types, []string{"NOT_FOUND"}) {
+		t.Errorf("another repo: %v, %q; want a null repository, NOT_FOUND", data, types)
 	}
 }

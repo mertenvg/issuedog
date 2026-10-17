@@ -133,9 +133,14 @@ func TestClosingAccepted(t *testing.T) {
 		{"the owner's as a duplicate", func(f *githubtest.Fake) { f.CloseAs(1, "owner", "duplicate") }, "stage:discarded"},
 		{"the App's", func(f *githubtest.Fake) { f.CloseBy(1, app) }, "stage:completed"},
 		{"the App's as not planned", func(f *githubtest.Fake) { f.CloseAs(1, app, "not_planned") }, "stage:discarded"},
-		{"a merged pull request's, merged by a writer", func(f *githubtest.Fake) { f.CloseByCommit(1, "mallory", "c0ffee", true) }, "stage:completed"},
-		{"a merged pull request's, merged by eve", func(f *githubtest.Fake) { f.CloseByCommit(1, "eve", "c0ffee", true) }, "stage:completed"},
-		{"the owner's push of a commit", func(f *githubtest.Fake) { f.CloseByCommit(1, "owner", "c0ffee", false) }, "stage:completed"},
+		{"a merged pull request's, merged by a writer", func(f *githubtest.Fake) {
+			f.CloseByPullRequest(1, "mallory", githubtest.ClosingPR{Merged: true})
+		}, "stage:completed"},
+		{"a merged pull request's, merged by eve", func(f *githubtest.Fake) {
+			f.CloseByPullRequest(1, "eve", githubtest.ClosingPR{Merged: true})
+		}, "stage:completed"},
+		{"the owner's push of a commit", func(f *githubtest.Fake) { f.CloseByCommit(1, "owner", "c0ffee", "") }, "stage:completed"},
+		{"a writer's push of a commit to this repo", func(f *githubtest.Fake) { f.CloseByCommit(1, "mallory", "c0ffee", "") }, "stage:completed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			closingCheck(t, closingWith(tc.close), func(*githubtest.Fake) closingWant {
@@ -159,7 +164,14 @@ func TestClosingUntrusted(t *testing.T) {
 		{"eve's as not planned", func(f *githubtest.Fake) int64 { return f.CloseAs(1, "eve", "not_planned") }, "`eve`"},
 		{"a ghost's", func(f *githubtest.Fake) int64 { return f.CloseBy(1, "") }, "someone GitHub doesn't name"},
 		{"another bot's", func(f *githubtest.Fake) int64 { return f.CloseBy(1, "other[bot]") }, "`other[bot]`"},
-		{"eve's push of a commit", func(f *githubtest.Fake) int64 { return f.CloseByCommit(1, "eve", "c0ffee", false) }, "`eve`"},
+		{"eve's commit in another repo", func(f *githubtest.Fake) int64 { return f.CloseByCommit(1, "eve", "c0ffee", "x/y") }, "`eve`"},
+		{"eve's unmerged pull request", func(f *githubtest.Fake) int64 { return f.CloseByPullRequest(1, "eve", githubtest.ClosingPR{}) }, "`eve`"},
+		{"eve's pull request merged into another branch", func(f *githubtest.Fake) int64 {
+			return f.CloseByPullRequest(1, "eve", githubtest.ClosingPR{Merged: true, Base: "dev"})
+		}, "`eve`"},
+		{"eve's pull request merged in another repo", func(f *githubtest.Fake) int64 {
+			return f.CloseByPullRequest(1, "eve", githubtest.ClosingPR{Merged: true, Repo: "x/y"})
+		}, "`eve`"},
 		{"a mention in the login", func(f *githubtest.Fake) int64 { return f.CloseBy(1, "eve<!--@owner") }, "`eve&lt;!--@​owner`"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -181,7 +193,8 @@ func TestClosingWriter(t *testing.T) {
 		close func(f *githubtest.Fake) int64
 	}{
 		{"mallory's", func(f *githubtest.Fake) int64 { return f.CloseBy(1, "mallory") }},
-		{"mallory's push of a commit", func(f *githubtest.Fake) int64 { return f.CloseByCommit(1, "mallory", "c0ffee", false) }},
+		{"mallory's commit in another repo", func(f *githubtest.Fake) int64 { return f.CloseByCommit(1, "mallory", "c0ffee", "x/y") }},
+		{"mallory's unmerged pull request", func(f *githubtest.Fake) int64 { return f.CloseByPullRequest(1, "mallory", githubtest.ClosingPR{}) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var event int64
@@ -787,13 +800,12 @@ func TestClosingChildWritesNothingToParent(t *testing.T) {
 	}
 }
 
-// A closed event with no state_reason, as from before GitHub had them, is
-// judged by the issue's own, and a close again after an untrusted reopen
-// takes the closed stage's when no close before it has one.
+// A close is judged by the issue's own state_reason, as REST's closed event
+// has none, and a close again after an untrusted reopen takes the closed
+// stage's when GraphQL gives the close it undid no state reason either.
 func TestClosingNoStateReason(t *testing.T) {
 	f, o := closingFake(t), digestNotifyOrigin(t)
-	f.CloseAs(1, "owner", "not_planned")
-	f.ForgetStateReasons(1)
+	f.ForgetCloser(1, f.CloseAs(1, "owner", "duplicate"))
 	d := newDaemon(t, f, o, nil)
 	iterate(t, d)
 	if is := f.State().Issues[0]; !slices.Equal(is.Labels, []string{"stage:discarded"}) {
@@ -894,6 +906,76 @@ func TestClosingTrustedReopenUnknownType(t *testing.T) {
 	if got := closingComments(f, 1, 1); is.Closed || !slices.Equal(is.Labels, []string{"stage:pr-open"}) || len(got) == 0 ||
 		strings.Contains(strings.Join(got, "\n"), "to=held") {
 		t.Errorf("closed %t, labels %q, comments %q; want no hold, and stage:pr-open back", is.Closed, is.Labels, got)
+	}
+}
+
+// While a daemon runs: a close by a commit pushed to another repo that
+// names this issue is reverted once, and the next pass asks nothing more;
+// a write collaborator's merge of a pull request stands, asked about once.
+func TestClosingMergesWhileRunning(t *testing.T) {
+	f, o := closingFake(t), digestNotifyOrigin(t)
+	d := newDaemon(t, f, o, nil)
+	iterate(t, d)
+	quiet := func(name string) {
+		t.Helper()
+		writes, reqs := len(f.Writes()), len(f.Requests())
+		iterate(t, d)
+		var asked []githubtest.Request
+		for _, r := range f.Requests()[reqs:] {
+			if r.Path == "/graphql" || strings.HasPrefix(r.Path, "/issues/1/") {
+				asked = append(asked, r)
+			}
+		}
+		if w := f.Writes()[writes:]; len(w) != 0 || len(asked) != 0 {
+			t.Fatalf("%s: writes %+v, requests %+v; want none", name, w, asked)
+		}
+	}
+	event := f.CloseByCommit(1, "eve", "c0ffee", "x/y")
+	iterate(t, d)
+	if is := f.State().Issues[0]; is.Closed || !slices.Equal(closingComments(f, 1, 1), []string{closingReverted("`eve`", event)}) {
+		t.Fatalf("closed %t, comments %q; want eve's close reverted, with its comment", is.Closed, closingComments(f, 1, 1))
+	}
+	quiet("the pass after the revert")
+	f.CloseByPullRequest(1, "mallory", githubtest.ClosingPR{Merged: true})
+	iterate(t, d)
+	if is := f.State().Issues[0]; !is.Closed || !slices.Equal(is.Labels, []string{"stage:completed"}) {
+		t.Fatalf("closed %t, labels %q; want mallory's merge to stand, at stage:completed", is.Closed, is.Labels)
+	}
+	quiet("the pass after the merge")
+}
+
+// A close whose event is late, on an issue the poll's cursor has passed,
+// stays due, and is judged once its event shows.
+func TestClosingLateEventOlderIssue(t *testing.T) {
+	f, o := newFake(t), digestNotifyOrigin(t)
+	fileAt(f, "pr-open", "one")
+	fileAt(f, "pr-open", "two")
+	d := newDaemon(t, f, o, nil)
+	iterate(t, d)
+	f.LagEvents(5 * time.Second)
+	f.CloseBy(1, "eve")
+	f.AddComment(2, "owner", "a comment") // the newest, at the cursor
+	iterate(t, d)
+	f.LagEvents(0)
+	f.Advance(10 * time.Second)
+	f.AddComment(2, "owner", "another")
+	iterate(t, d)
+	if f.State().Issues[0].Closed {
+		t.Error("issue 1 is closed; want eve's close reverted once its event shows")
+	}
+}
+
+// eve takes the closed stage off a judged issue while the daemon runs: it's
+// judged again, and put back.
+func TestClosingStageRemoved(t *testing.T) {
+	f, o := closingFake(t), digestNotifyOrigin(t)
+	f.CloseBy(1, "owner")
+	d := newDaemon(t, f, o, nil)
+	iterate(t, d)
+	f.RemoveLabel(1, "eve", "stage:completed")
+	iterate(t, d)
+	if is := f.State().Issues[0]; !slices.Equal(is.Labels, []string{"stage:completed"}) || len(is.Comments) != 1 {
+		t.Errorf("labels %q, comments %q; want stage:completed back, with no comment", is.Labels, is.Comments)
 	}
 }
 

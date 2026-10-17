@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	gogithub "github.com/google/go-github/v92/github"
@@ -11,21 +12,21 @@ import (
 // Closing is one closed or reopened event on an issue's timeline (SPEC
 // §6.4, §7.2, plan #87 rev 2, T6). The daemon judges an issue's newest one:
 // who closed it and how, or who reopened it.
+//
+// As GitHub's REST timeline gives a close (checked live on this repo, #190's
+// verify): its actor is whoever closed it, the merger for a pull request's
+// merge, and its state_reason and commit_id are null, even for a merge, whose
+// commit shows only on a separate referenced event. So the REST event can't
+// say how an issue was closed: ClosingCloser asks GraphQL, by NodeID.
 type Closing struct {
 	ID     int64 // the timeline event's ID
 	Reopen bool  // a reopened event, else a closed one
 	By     Author
 	At     time.Time
-	// StateReason is a closed event's state_reason, such as "completed",
-	// "not_planned" or "duplicate", as GitHub's REST timeline gives it, or
-	// "" where it gives none, as on events from before GitHub had state
-	// reasons (SPEC §16).
-	StateReason string
-	// CommitID is the commit a closed event names, as when a pull request
-	// that says "Closes #N", or a commit pushed with it, closed the issue;
-	// "" for none. Only a merged pull request's close stands for it
-	// (ClosingMerged).
-	CommitID string
+	// NodeID is the event's GraphQL node ID, node_id on REST, which
+	// go-github's Timeline leaves out, for ClosingCloser; "" if GitHub gave
+	// none.
+	NodeID string
 }
 
 // closingOf is e as a Closing, and whether it is a closed or reopened
@@ -36,19 +37,14 @@ func closingOf(e *issueTypeRevertEvent) (Closing, bool) {
 	default:
 		return Closing{}, false
 	}
-	c := Closing{ID: e.GetID(), Reopen: e.GetEvent() == "reopened", By: authorOf(e.GetActor()), At: e.GetCreatedAt().Time,
-		CommitID: e.GetCommitID()}
-	if e.StateReason != nil {
-		c.StateReason = *e.StateReason
-	}
-	return c, true
+	return Closing{ID: e.GetID(), Reopen: e.GetEvent() == "reopened", By: authorOf(e.GetActor()), At: e.GetCreatedAt().Time,
+		NodeID: e.NodeID}, true
 }
 
 // ClosingTimeline reads an issue's whole timeline once, for a closed
 // issue's close (T6): it returns the timeline, for the label rules'
 // judgement of a closed stage's label (StandingLabelChange), and its
-// closed and reopened events, oldest first, with their state_reason and
-// commit_id, which go-github's Timeline leaves out.
+// closed and reopened events, oldest first.
 func (c *Client) ClosingTimeline(ctx context.Context, owner, repo string, number int) ([]*gogithub.Timeline, []Closing, error) {
 	events, err := c.issueTypeRevertTimeline(ctx, owner, repo, number, time.Time{})
 	if err != nil {
@@ -65,21 +61,99 @@ func (c *Client) ClosingTimeline(ctx context.Context, owner, repo string, number
 	return timeline, closings, nil
 }
 
-// ClosingMerged reports whether commit sha is a merged pull request's, in
-// owner/repo: whether GitHub lists a merged pull request with it (GET
-// /repos/{owner}/{repo}/commits/{sha}/pulls). That is how a close by a
-// merged pull request is told from one by a commit pushed with "Closes
-// #N" and no pull request: the closed event names the commit either way
-// (SPEC §16). It is one request, which the caller remembers.
-func (c *Client) ClosingMerged(ctx context.Context, owner, repo, sha string) (bool, error) {
-	prs, err := collect(c.PullRequests.ListPullRequestsWithCommitIter(ctx, owner, repo, sha, &gogithub.ListOptions{PerPage: 100}))
-	if err != nil {
-		return false, fmt.Errorf("pull requests of commit %s in %s/%s: %w", sha, owner, repo, err)
-	}
-	for _, pr := range prs {
-		if pr.MergedAt != nil && !pr.GetMergedAt().IsZero() {
-			return true, nil
+// ClosingCloser is how a close was made, as GraphQL's ClosedEvent tells it.
+type ClosingCloser struct {
+	// Merge is set for a close by a merge into this repo's default branch:
+	// a merged pull request whose base is this repo's default branch, or a
+	// commit in this repo, which closes an issue it names only once it is
+	// on the default branch. A pull request or a commit in another repo
+	// that names this repo's issue, an unmerged pull request, and a close
+	// by hand (closer null) are none.
+	Merge bool
+	// StateReason is the close's state reason in lower case, such as
+	// "completed", "not_planned" or "duplicate", or "" for none.
+	StateReason string
+}
+
+// closingCloserQuery reads a closed event's closer and state reason, by
+// its node ID, and this repo's name and default branch, to judge the
+// closer by.
+const closingCloserQuery = `query($id: ID!, $owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) { nameWithOwner defaultBranchRef { name } }
+  node(id: $id) {
+    ... on ClosedEvent {
+      stateReason
+      closer {
+        __typename
+        ... on PullRequest { merged baseRefName baseRepository { nameWithOwner } }
+        ... on Commit { repository { nameWithOwner } }
+      }
+    }
+  }
+}`
+
+// closingCloserResponse is closingCloserQuery's answer.
+type closingCloserResponse struct {
+	Data struct {
+		Repository *struct {
+			NameWithOwner    string
+			DefaultBranchRef *struct{ Name string }
+		}
+		Node *struct {
+			StateReason string
+			Closer      *struct {
+				Typename       string `json:"__typename"`
+				Merged         bool
+				BaseRefName    string
+				BaseRepository *struct{ NameWithOwner string }
+				Repository     *struct{ NameWithOwner string }
+			}
 		}
 	}
-	return false, nil
+	Errors []struct{ Type, Message string }
+}
+
+// ClosingCloser reads how the closed event with node ID nodeID, on an
+// issue in owner/repo, was made, with one GraphQL query (closingCloserQuery,
+// SPEC §16). An event GitHub can't resolve, NOT_FOUND, is a close by
+// nobody named, no merge, so it's no error and needn't be asked about
+// again; any other error is one, wrapping ErrGraphQL for GitHub's.
+func (c *Client) ClosingCloser(ctx context.Context, owner, repo, nodeID string) (ClosingCloser, error) {
+	wrap := func(err error) error { return fmt.Errorf("closer of event %s in %s/%s: %w", nodeID, owner, repo, err) }
+	req, err := c.NewRequest(ctx, "POST", "graphql", map[string]any{"query": closingCloserQuery,
+		"variables": map[string]any{"id": nodeID, "owner": owner, "name": repo}})
+	if err != nil {
+		return ClosingCloser{}, wrap(err)
+	}
+	var out closingCloserResponse
+	if _, err := c.Do(req, &out); err != nil {
+		return ClosingCloser{}, wrap(err)
+	}
+	var msgs []string
+	for _, e := range out.Errors {
+		if e.Type != "NOT_FOUND" {
+			msgs = append(msgs, e.Message)
+		}
+	}
+	if len(msgs) > 0 {
+		return ClosingCloser{}, wrap(fmt.Errorf("%w: %s", ErrGraphQL, strings.Join(msgs, "; ")))
+	}
+	r, n := out.Data.Repository, out.Data.Node
+	if r == nil || r.DefaultBranchRef == nil {
+		return ClosingCloser{}, wrap(errNoIssue)
+	}
+	if n == nil {
+		return ClosingCloser{}, nil
+	}
+	by := ClosingCloser{StateReason: strings.ToLower(n.StateReason)}
+	if cl := n.Closer; cl != nil {
+		switch cl.Typename {
+		case "PullRequest":
+			by.Merge = cl.Merged && cl.BaseRepository != nil && strings.EqualFold(cl.BaseRepository.NameWithOwner, r.NameWithOwner) &&
+				cl.BaseRefName == r.DefaultBranchRef.Name
+		case "Commit":
+			by.Merge = cl.Repository != nil && strings.EqualFold(cl.Repository.NameWithOwner, r.NameWithOwner)
+		}
+	}
+	return by, nil
 }

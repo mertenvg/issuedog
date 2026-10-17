@@ -35,16 +35,26 @@ import (
 //   - An untrusted reopen of an issue with a closed stage is reverted: the
 //     App closes it again with the same state_reason, with a revert
 //     comment, and the label stays (closingReopen).
-//
-// A merged pull request's close is a closed event that names a commit
-// (commit_id), whose actor is whoever merged it, and that commit's pull
-// requests list a merged one (github.ClosingMerged): one request, asked
-// only for a close nobody trusted made, and remembered per commit
-// (closingMerged). The fake serves both (githubtest.CloseByCommit), and
-// SPEC §16 gets the live check of that shape (T10).
 //   - A trusted reopen moves the issue to held, closed → held, at the stage
 //     the latest transition marker shows, as an owner hold that /resume
 //     here ends, and the closed stage goes (closingReopen).
+//
+// How GitHub records a close (checked live on this repo, #185, #187 and
+// #191, in #190's verify): the REST closed event names its actor, the
+// merger for a pull request's merge, and its state_reason and commit_id
+// are null, even for a merge, whose squash commit shows only on a separate
+// referenced event. So a merge is told by GraphQL's ClosedEvent.closer
+// (github.ClosingCloser), asked by the event's node_id: a merged pull
+// request whose base is this repo's default branch, or a commit in this
+// repo, as a push to the default branch that says "Fixes #N" makes. A
+// commit or a pull request in another repo that names the issue is no
+// merge, so it's reverted like any untrusted close. It's one GraphQL query,
+// asked only for a close nobody trusted made, and remembered per event
+// while the daemon runs (closingCloser); an event GitHub can't resolve is
+// no merge, and isn't asked about again. The close's state reason is
+// the issue's state_reason as listed, which is the newest close's, and,
+// for a close again after an untrusted reopen, the ClosedEvent's
+// stateReason of the close it undid (closingCloseAgain).
 //
 // Which closed issues are read. The poll lists every issue, closed ones
 // too, and keeps a closed issue whose close is still to judge
@@ -248,9 +258,6 @@ func (d *Daemon) closingJudge(ctx context.Context, is *gogithub.Issue) (done, re
 		return false, false, nil
 	}
 	cl := closings[k]
-	if cl.StateReason == "" {
-		cl.StateReason = is.GetStateReason()
-	}
 	accepted, merged, err := a.closingAccepted(ctx, d.Step.Trust, cl)
 	if err != nil {
 		return false, false, wrap(err)
@@ -271,7 +278,7 @@ func (d *Daemon) closingJudge(ctx context.Context, is *gogithub.Issue) (done, re
 		return false, false, wrap(err)
 	}
 	if !explained {
-		want := state.ClosingStage(cl.StateReason, merged)
+		want := state.ClosingStage(is.GetStateReason(), merged)
 		if err := a.setStage(ctx, s, want); err != nil {
 			return false, false, wrap(err)
 		}
@@ -297,9 +304,8 @@ func closingExplained(ctx context.Context, timeline []*gogithub.Timeline, labels
 }
 
 // closingAccepted reports whether cl, a close, stands: the App's, a trusted
-// user's (closingTrusted), or a merged pull request's, merged, which names
-// its commit (closingMerged). Only a close nobody trusted made asks about
-// its commit.
+// user's (closingTrusted), or a merge's into the default branch, merged
+// (closingCloser). Only a close nobody trusted made asks how it was made.
 func (a *Applier) closingAccepted(ctx context.Context, trust github.Trust, cl github.Closing) (accepted, merged bool, err error) {
 	if state.IsApp(cl.By, a.AppSlug) {
 		return true, false, nil
@@ -308,13 +314,14 @@ func (a *Applier) closingAccepted(ctx context.Context, trust github.Trust, cl gi
 	if err != nil {
 		return false, false, fmt.Errorf("close %d: %w", cl.ID, err)
 	}
-	if ok || cl.CommitID == "" {
-		return ok, false, nil
+	if ok {
+		return true, false, nil
 	}
-	if merged, err = a.closingMerged(ctx, cl.CommitID); err != nil {
+	by, err := a.closingCloser(ctx, cl)
+	if err != nil {
 		return false, false, fmt.Errorf("close %d: %w", cl.ID, err)
 	}
-	return merged, merged, nil
+	return by.Merge, by.Merge, nil
 }
 
 // closingTrusted reports whether a close or reopen by by stands for being
@@ -332,30 +339,35 @@ func closingTrusted(ctx context.Context, trust github.Trust, by github.Author) (
 	return ok, nil
 }
 
-// closingMerged reports whether commit sha is a merged pull request's
-// (github.ClosingMerged), asked once per commit while the daemon runs: a
-// commit's merged pull request never changes, so a held issue visited on
-// every pass, with an old close that names a commit, asks nothing again.
-func (a *Applier) closingMerged(ctx context.Context, sha string) (bool, error) {
-	if merged, ok := a.closingPRs[sha]; ok {
-		return merged, nil
+// closingCloser is how cl, a close, was made (github.ClosingCloser), asked
+// once per event while the daemon runs: how a close was made never changes,
+// so a held issue visited on every pass, with an old close by a write
+// collaborator, asks nothing again. An event with no node ID, which GitHub
+// gives every event, is no merge, with no question. A failed question is
+// an error, and isn't kept, so the next pass asks again.
+func (a *Applier) closingCloser(ctx context.Context, cl github.Closing) (github.ClosingCloser, error) {
+	if cl.NodeID == "" {
+		return github.ClosingCloser{}, nil
 	}
-	merged, err := a.Client.ClosingMerged(ctx, a.Owner, a.Repo, sha)
+	if by, ok := a.closingBy[cl.NodeID]; ok {
+		return by, nil
+	}
+	by, err := a.Client.ClosingCloser(ctx, a.Owner, a.Repo, cl.NodeID)
 	if err != nil {
-		return false, fmt.Errorf("merged pull request: %w", err)
+		return github.ClosingCloser{}, fmt.Errorf("how it was closed: %w", err)
 	}
-	if a.closingPRs == nil {
-		a.closingPRs = map[string]bool{}
+	if a.closingBy == nil {
+		a.closingBy = map[string]github.ClosingCloser{}
 	}
-	a.closingPRs[sha] = merged
-	return merged, nil
+	a.closingBy[cl.NodeID] = by
+	return by, nil
 }
 
 // closingCounts reports whether cl is a discussion trigger, as discFind
 // judges one, in its order: a close, open after the floor (open), then
 // recorded, with no question, or else by a write collaborator who isn't
 // trusted (who.writer, with its memory of logins GitHub has no permission
-// record of), and not a merged pull request's.
+// record of), and not a merge's into the default branch (closingCloser).
 func (a *Applier) closingCounts(ctx context.Context, cl github.Closing, open discOpen, who discWho) (bool, error) {
 	o, recorded := open(strconv.FormatInt(cl.ID, 10), cl.At, 0)
 	switch {
@@ -371,14 +383,11 @@ func (a *Applier) closingCounts(ctx context.Context, cl github.Closing, open dis
 		}
 		return false, nil
 	}
-	if cl.CommitID == "" {
-		return true, nil
-	}
-	merged, err := a.closingMerged(ctx, cl.CommitID)
+	by, err := a.closingCloser(ctx, cl)
 	if err != nil {
 		return false, fmt.Errorf("close %d: %w", cl.ID, err)
 	}
-	return !merged, nil
+	return !by.Merge, nil
 }
 
 // closingTriggers returns the close triggers on s, from s.Closings, which
@@ -581,7 +590,8 @@ func (a *Applier) closingReopen(ctx context.Context, s *github.Snapshot, trust g
 // closingCloseAgain reverts reopen, s.Closings[r], an untrusted reopen of
 // s, which has the closed stage label: a revert comment keyed by its
 // event, posted once (closingRevertComment), then a close with the
-// state_reason of the newest close before it, or label's, and s is closed.
+// state reason of the newest close before it, as its ClosedEvent gives it
+// (closingCloser), or else label's, and s is closed.
 // Its error wraps closingErrClosedAgain once it's closed.
 func (a *Applier) closingCloseAgain(ctx context.Context, s *github.Snapshot, dirty func(int64) bool, reopen github.Closing, r int, label string) error {
 	reason := "completed"
@@ -590,8 +600,12 @@ func (a *Applier) closingCloseAgain(ctx context.Context, s *github.Snapshot, dir
 	}
 	for j := r - 1; j >= 0; j-- {
 		if cl := s.Closings[j]; !cl.Reopen {
-			if cl.StateReason != "" {
-				reason = cl.StateReason
+			by, err := a.closingCloser(ctx, cl)
+			if err != nil {
+				return fmt.Errorf("reopen %d: the close it undid: %w", reopen.ID, err)
+			}
+			if by.StateReason != "" {
+				reason = by.StateReason
 			}
 			break
 		}
