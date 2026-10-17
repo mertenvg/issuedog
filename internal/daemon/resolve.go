@@ -358,8 +358,9 @@ func resolveEndedAt(m github.Marker) (time.Time, bool) {
 type resolvePeriod struct {
 	start int64     // the comment holding the move that began it; 0 if not held
 	at    time.Time // when that comment was posted
-	// ended is set once an "ended reason=discussion" record is in it, and
-	// endedAt is the latest such record's resolved time.
+	// ended is set once an "ended reason=discussion" record that says a
+	// discussion ended is in it (resolvePeriodOf), and endedAt is the
+	// latest such record's resolved time.
 	ended   bool
 	endedAt time.Time
 	// owners are the keys (resolveHoldKey) of the owner holds that a
@@ -395,9 +396,17 @@ func resolvePeriodOf(s *github.Snapshot, appSlug string, dirty func(int64) bool)
 		}
 		switch m.Fields["reason"] {
 		case "discussion":
-			p.ended = true
-			if t, ok := resolveEndedAt(m); ok && t.After(p.endedAt) {
-				p.endedAt = t
+			// A discussion ended in it if a trigger's resolution did it,
+			// with a resolved time, and not a /resume's own record (cmd)
+			// that kept the issue held for a later trigger, unless that
+			// /resume would itself have gone to clarifying (after=1).
+			// One that only names ancestors' /holds (held=) ended none.
+			t, timed := resolveEndedAt(m)
+			if timed && (m.Fields["cmd"] == "" || m.Fields["after"] == "1") {
+				p.ended = true
+				if t.After(p.endedAt) {
+					p.endedAt = t
+				}
 			}
 			for _, v := range strings.Split(m.Fields["held"], ",") {
 				if id, err := strconv.ParseInt(v, 10, 64); err == nil && id > 0 && !slices.Contains(p.held, id) {
@@ -819,10 +828,18 @@ func (a *Applier) resolveLeave(ctx context.Context, s *github.Snapshot, d Dirt, 
 // latest of those resolutions, and its held field names the ancestors'
 // /holds, so no later pass reads them again: their /resume ends them
 // (resolveHeld). An ancestor's /hold is read only once the discussion is
-// resolved with no other hold left, so a new resolution comes with it.
+// resolved with no other hold left. A record for a /hold no record names
+// yet is written even with no new resolution, as when the last trigger
+// went with no act to resolve it, a comment its author deleted: then it
+// has no resolved time, and says no discussion ended (resolvePeriodOf).
+// If the /hold it names is deleted, the ancestor's /resume finds no
+// comment to end, so the issue stays held until /resume here.
 func (a *Applier) resolveEnded(ctx context.Context, s *github.Snapshot, rs *resolver, p resolvePeriod, intake bool, above []github.Marker) error {
 	var held []string
+	news := false // above names a /hold no record names yet
 	for _, m := range above {
+		id, _ := state.Key{Field: "cmd", ID: m.Fields["cmd"]}.Comment()
+		news = news || !slices.Contains(p.held, id)
 		held = append(held, m.Fields["cmd"])
 	}
 	var last time.Time
@@ -845,10 +862,13 @@ func (a *Applier) resolveEnded(ctx context.Context, s *github.Snapshot, rs *reso
 			by = append(by, l)
 		}
 	}
-	if last.IsZero() {
+	if last.IsZero() && !news {
 		return nil
 	}
-	fields := map[string]string{"reason": "discussion", resolveField: strconv.FormatInt(last.Unix(), 10)}
+	fields := map[string]string{"reason": "discussion"}
+	if !last.IsZero() {
+		fields[resolveField] = strconv.FormatInt(last.Unix(), 10)
+	}
 	if len(held) > 0 {
 		fields["held"] = strings.Join(held, ",")
 	}
@@ -861,6 +881,10 @@ func (a *Applier) resolveEnded(ctx context.Context, s *github.Snapshot, rs *reso
 	if len(held) > 0 {
 		text = fmt.Sprintf("The discussion is resolved, but this issue stays on hold: a `/hold` on an issue above it, in comment %s, hasn't ended. "+
 			"`/resume` there, or here, ends that, and then it goes to `clarifying`.", list(held))
+		if last.IsZero() {
+			text = fmt.Sprintf("No discussion trigger is open on this issue, but it stays on hold: a `/hold` on an issue above it, in comment %s, "+
+				"hasn't ended. `/resume` there, or here, ends that.", list(held))
+		}
 	}
 	if intake {
 		text = fmt.Sprintf("The discussion is resolved, by %s, but this issue stays on hold: it was at `intake` before the hold, "+
@@ -880,14 +904,16 @@ func (a *Applier) resolveEnded(ctx context.Context, s *github.Snapshot, rs *reso
 // key=<resolveHoldKey> cmd=<c's id>" marker (resolveKind) for each owner
 // hold c ends, as heldStackEnds says, and on c's own issue, also an "ended
 // reason=discussion resolved=<c's time> cmd=<c's id>" marker, as c
-// accepts every trigger made before it, which it bounds (discFloor). So on
+// accepts every trigger made before it, which it bounds (discFloor). It
+// says a discussion ended, for the next /resume (resolveHeld), only with
+// after=1, if c itself would have gone to clarifying (after). So on
 // a descendant, once the discussion is resolved, no owner hold is left,
 // and the issue goes to clarifying (resolveLeave), with no other /resume
 // (#187's verify note). On c's own issue, it stays held for the triggers
 // made at or after c (resolveStays), and only for those. Its cmd makes it
 // c's marker on n, so it's written once, and a replay of c counts it as
 // begun.
-func (a *Applier) resolveResumed(ctx context.Context, c Cmd, n node, is state.Issue, above map[int64]bool) error {
+func (a *Applier) resolveResumed(ctx context.Context, c Cmd, n node, is state.Issue, above map[int64]bool, after bool) error {
 	self := n.s == c.S
 	_, ended, left := heldStackResume(is, self, above)
 	if ended == 0 || len(left) == 0 || resolveOwnerHeld(left) || state.Derive(n.s, a.AppSlug, n.d.Has).Keys[state.CmdKey(c.Comment.ID)] {
@@ -903,8 +929,11 @@ func (a *Applier) resolveResumed(ctx context.Context, c Cmd, n node, is state.Is
 	text := fmt.Sprintf("`/resume` on #%d ended the owner hold on this issue, but it stays on hold for discussion "+
 		"until a code owner resolves that, or posts `/resume` here.", c.S.Number)
 	if self {
-		records = append(records, github.Marker{Kind: resolveKind, Fields: map[string]string{"reason": "discussion",
-			resolveField: strconv.FormatInt(c.Comment.CreatedAt.Unix(), 10), "cmd": cmd}})
+		fields := map[string]string{"reason": "discussion", resolveField: strconv.FormatInt(c.Comment.CreatedAt.Unix(), 10), "cmd": cmd}
+		if after {
+			fields["after"] = "1"
+		}
+		records = append(records, github.Marker{Kind: resolveKind, Fields: fields})
 		text = "This `/resume` ended the holds on this issue from before it, but it stays on hold for discussion: " +
 			"a write collaborator acted after the `/resume` was posted. A code owner's response to that, or another `/resume` here, ends it."
 	}

@@ -158,8 +158,8 @@ func Commands(trust github.Trust) map[string]Handler {
 			}
 			// A descendant whose owner hold it ends while a discussion stays
 			// gets a record of that (resolveResumed).
-			record := func(ctx context.Context, n node, is state.Issue) error {
-				return a.resolveResumed(ctx, c, n, is, above)
+			record := func(ctx context.Context, n node, is state.Issue, after bool) error {
+				return a.resolveResumed(ctx, c, n, is, above, after)
 			}
 			// The descendants it ends a hold on that stay held: by hand, or
 			// for discussion (resolveHeld), which /resume on an ancestor
@@ -471,7 +471,7 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 // With record, as for /resume, plan gets the open discussion triggers of a
 // held issue among its holds, its owner holds no marker records, and its
 // after (resolveHeld), and record runs first on each issue, for its writes.
-func (a *Applier) moveFamily(ctx context.Context, c Cmd, trust github.Trust, record func(ctx context.Context, n node, is state.Issue) error, plan planner) error {
+func (a *Applier) moveFamily(ctx context.Context, c Cmd, trust github.Trust, record func(ctx context.Context, n node, is state.Issue, after bool) error, plan planner) error {
 	family, err := a.family(ctx, c)
 	if err != nil {
 		return fmt.Errorf("move: %w", err)
@@ -501,7 +501,7 @@ func (a *Applier) moveFamily(ctx context.Context, c Cmd, trust github.Trust, rec
 			if is, after, err = a.resolveHeld(ctx, n.s, n.d, trust, is, c.Comment, n.s == c.S, extra); err != nil {
 				return fmt.Errorf("move: %w", err)
 			}
-			if err := record(ctx, n, is); err != nil {
+			if err := record(ctx, n, is, after); err != nil {
 				return fmt.Errorf("move: %w", err)
 			}
 		}

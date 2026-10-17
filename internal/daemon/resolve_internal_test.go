@@ -135,6 +135,29 @@ func TestResolveEndedOnce(t *testing.T) {
 	}
 }
 
+// A trigger in the same second as the /resume counts as after it, failing
+// closed: the /resume doesn't end its hold, and the issue stays held.
+func TestResolveHeldSameSecond(t *testing.T) {
+	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
+	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
+	mallory := github.Author{Login: "mallory", Type: "User"}
+	s := &github.Snapshot{Number: 1, Comments: []github.Comment{
+		{ID: 8, Author: app, Body: "<!-- issuedog:transition from=intake to=ready run=a -->", CreatedAt: at(8)},
+		{ID: 9, Author: mallory, Association: "COLLABORATOR", Body: "Wait.", CreatedAt: at(9)},
+		{ID: 10, Author: app, Body: "<!-- issuedog:transition from=ready to=held at=ready origin=ready reason=discussion event=c9 seen=8 -->", CreatedAt: at(10)},
+		{ID: 11, Author: github.Author{Login: "owner", Type: "User"}, Body: "/resume", CreatedAt: at(12)},
+		{ID: 12, Author: mallory, Association: "COLLABORATOR", Body: "Again.", CreatedAt: at(12)},
+	}}
+	a := &Applier{Client: noReactions(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}
+	is, _, err := a.resolveHeld(context.Background(), s, Dirt{}, newDiscCounting(), state.Derive(s, "issuedog", func(int64) bool { return false }), s.Comments[3], true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ended, left := heldStackResume(is, true, map[int64]bool{}); ended != 1 || len(left) != 1 || left[0].Fields["event"] != "c12" {
+		t.Errorf("ended %d, left %v; want the hold for comment 9 ended, and comment 12's left", ended, left)
+	}
+}
+
 // Only a move out of held is bounded by the time of the comment its cmd
 // names: a first marker keyed by a command, as /track's, is bounded by its
 // own comment, by ID.
