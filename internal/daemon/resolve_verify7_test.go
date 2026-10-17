@@ -9,10 +9,11 @@ import (
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
 
-// #188's verify, round 2, attempt 2: a parent's /resume ends a child's own
-// /hold that wrote no marker (#87's Q2b), with a discussion hold on the
-// child or not; and a /hold counts by the App's record that it applied
-// it, whatever a write collaborator made of its comment since.
+// #188's verify, round 2, attempt 2: a child's own /hold that wrote no
+// marker (#87's Q2b) counts, with a discussion hold on the child or not,
+// and ends only by /resume on the child (#188's decision, round 3); and a
+// /hold counts by the App's record that it applied it, whatever a write
+// collaborator made of its comment since.
 
 // resolveOwnHoldUnder is #1 at ready with #2 under it, both held by the
 // owner's /hold on #1, then mallory's comment on #2, which holds nothing
@@ -37,11 +38,14 @@ func resolveOwnHoldUnder(t testing.TB) (*githubtest.Fake, int64) {
 	return f, w
 }
 
-// The parent's /resume ends the hold its /hold made on the child, and the
-// child's own /hold too, which wrote no marker (Q2b), so the child stays
-// held only for mallory's comment, with the record of the /holds ended;
-// once the owner's 👍 resolves it, the child goes to clarifying.
-func TestResolveParentResumeEndsOwnHoldUnderDiscussion(t *testing.T) {
+// The parent's /resume ends the hold its /hold made on the child, but not
+// the child's own /hold, which wrote no marker (Q2b) and was posted below
+// it (#188's decision, round 3), so the child stays held by both, and the
+// parent's move names it for each, with no record on the child, as no
+// owner hold there ended alone. Once the owner's 👍 resolves mallory's
+// comment, the child stays held by its own /hold, and the record says so;
+// its own /resume then sends it to clarifying.
+func TestResolveParentResumeLeavesOwnHoldUnderDiscussion(t *testing.T) {
 	var w int64
 	setup := func(t testing.TB) *githubtest.Fake {
 		var f *githubtest.Fake
@@ -52,17 +56,24 @@ func TestResolveParentResumeEndsOwnHoldUnderDiscussion(t *testing.T) {
 	}
 	githubtest.Replay(t, setup, resolvePass(t, 1))
 	f := run(t, setup, resolvePass(t, 1))
-	if l := f.State().Issues[0].Labels; !slices.Equal(l, []string{"stage:ready"}) {
-		t.Errorf("#1: labels %q; want it back at ready", l)
+	if l, body := f.State().Issues[0].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:ready"}) ||
+		!strings.Contains(body, "Still on hold: #2, by a hold this `/resume` doesn't end") || !strings.Contains(body, "Still on hold for discussion: #2.") {
+		t.Errorf("#1: labels %q, newest comment %q; want it back at ready, naming #2 as still on hold, by an owner hold and for discussion", l, body)
 	}
 	if l, body := f.State().Issues[1].Labels, newestComment(f, 2); !slices.Equal(l, []string{"stage:held"}) ||
-		strings.Count(body, "<!-- issuedog:ended reason=owner key=c") != 2 {
-		t.Fatalf("#2: labels %q, newest comment %q; want it held for discussion only, with the record that both /holds ended", l, body)
+		strings.Contains(body, "issuedog:ended") {
+		t.Fatalf("#2: labels %q, newest comment %q; want it held, with no record of an owner hold ended", l, body)
 	}
 	f.AddReaction(w, "owner", "+1")
 	resolveSteps(t, f, 2)
+	if l, body := f.State().Issues[1].Labels, newestComment(f, 2); !slices.Equal(l, []string{"stage:held"}) ||
+		!strings.Contains(body, "an owner hold on it hasn't ended") {
+		t.Fatalf("#2: labels %q, newest comment %q; want it held by its own /hold once mallory's comment is resolved, with the record that says so", l, body)
+	}
+	f.AddComment(2, "owner", "/resume")
+	resolveSteps(t, f, 2)
 	if l := f.State().Issues[1].Labels; !slices.Equal(l, []string{"stage:clarifying"}) {
-		t.Errorf("#2: labels %q, newest comment %q; want it at clarifying once mallory's comment is resolved", l, newestComment(f, 2))
+		t.Errorf("#2: labels %q, newest comment %q; want its own /resume to send it to clarifying", l, newestComment(f, 2))
 	}
 }
 

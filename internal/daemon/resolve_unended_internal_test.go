@@ -60,7 +60,7 @@ func TestResolveUnendedFarthestMarker(t *testing.T) {
 			a := &Applier{Client: noReactions(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}
 			clean := func(int64) bool { return false }
 			is := state.Derive(self.s, a.AppSlug, clean)
-			left, _, err := a.resolveUnended(context.Background(), self, tt.path, is, resolvePeriodOf(self.s, a.AppSlug, clean), newDiscCounting(), nil)
+			left, err := a.resolveUnended(context.Background(), self, tt.path, is, resolvePeriodOf(self.s, a.AppSlug, clean), newDiscCounting(), nil)
 			if err != nil {
 				t.Fatal(err)
 			}

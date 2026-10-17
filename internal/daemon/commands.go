@@ -159,18 +159,21 @@ func Commands(trust github.Trust) map[string]Handler {
 			// A descendant whose owner hold it ends while a discussion stays
 			// gets a record of that (resolveResumed).
 			record := func(ctx context.Context, n node, is state.Issue, after bool) error {
-				return a.resolveResumed(ctx, c, n, is, above.ids, after)
+				return a.resolveResumed(ctx, c, n, is, above, after)
 			}
 			// The descendants it ends a hold on that stay held: by hand, or
 			// for discussion (resolveHeld), which /resume on an ancestor
 			// doesn't end.
 			var rest, discussed []string
 			return a.moveFamily(ctx, c, trust, &resumeRecord{above: above, record: record}, func(is state.Issue, self bool, n int, by string, after bool) (Move, bool) {
-				m, ok := resume(is, self, above.ids, by, after)
-				if _, ended, left := heldStackResume(is, self, above.ids); ended > 0 && len(left) > 0 {
+				m, ok := resume(is, self, above, by, after)
+				if _, ended, left := heldStackResume(is, self, above); ended > 0 && len(left) > 0 {
+					// Held for discussion, by an owner hold, or both, as by a
+					// /hold of its own (resolveOwnHolds).
 					if slices.ContainsFunc(left, func(m github.Marker) bool { return m.Fields["reason"] == "discussion" }) {
 						discussed = append(discussed, fmt.Sprintf("#%d", n))
-					} else {
+					}
+					if resolveOwnerHeld(left) {
 						rest = append(rest, fmt.Sprintf("#%d", n))
 					}
 				}
@@ -218,7 +221,7 @@ func hold(is state.Issue, _ bool, _ int, by string, _ bool) (Move, bool) {
 // after, as when a discussion hold ended on the issue while an owner hold
 // stayed (resolveHeld), it goes to clarifying instead (SPEC §6.4), with at
 // and origin too (resolveFields).
-func resume(is state.Issue, self bool, above map[int64]bool, by string, after bool) (Move, bool) {
+func resume(is state.Issue, self bool, above madeAboveSet, by string, after bool) (Move, bool) {
 	at, ended, left := heldStackResume(is, self, above)
 	fields := map[string]string{}
 	if o, ok := resolveHeldAfterHold(is); ok {
@@ -241,7 +244,7 @@ func resume(is state.Issue, self bool, above map[int64]bool, by string, after bo
 // (heldStackEnds); and left are the holds that stay. The issue leaves held
 // only when none is left. An issue that isn't held, or whose at isn't a
 // stage to go back to, has no hold the command ends or leaves.
-func heldStackResume(is state.Issue, self bool, above map[int64]bool) (at state.Stage, ended int, left []github.Marker) {
+func heldStackResume(is state.Issue, self bool, above madeAboveSet) (at state.Stage, ended int, left []github.Marker) {
 	h := is.HeldStack
 	if is.Stage != state.Held || !h.At.Open() || h.At == state.Held {
 		return h.At, 0, nil
@@ -260,35 +263,31 @@ func heldStackResume(is state.Issue, self bool, above map[int64]bool) (at state.
 // marker m records on an issue in its family. On the issue itself, if
 // self, it ends any owner or discussion hold: a discussion hold's
 // triggers, all of them, are accepted by its move out of held (SPEC §6.4,
-// T4). On a descendant it ends only an owner hold that a /hold on the
-// issue or an ancestor of it made: a marker whose cmd names a comment in
-// above, or a /hold that a marker on the issue or an ancestor names, its
-// comment deleted since, which was posted there or above (see madeAbove).
-// A /hold on a descendant names a comment below, a hold set by hand has no
-// cmd (by= and event=), and a deleted /hold comment that no marker there
-// names is found nowhere, so those stay until /resume there, as does a
-// discussion hold. The first hold wins (plan #87 rev 2, Q2b), so a /hold
-// below after one above writes no marker, and /resume above still ends it,
-// stacked on the hold it ends: resolveHeld marks such a /hold, posted
-// before the /resume, resolveStacked, as it does any other owner hold no
-// marker records that the /resume ends (resolveUnended). One stacked only
-// on a discussion hold or a hold set by hand isn't marked, so it stays.
-// Nor does /resume on the issue end a discussion hold whose trigger came
-// after it (resolveStays).
-func heldStackEnds(m github.Marker, self bool, above map[int64]bool) bool {
+// T4). On a descendant it ends only an owner hold whose /hold was posted
+// on the /resume's issue or above it, before the /resume, or a comment
+// deleted there before it that may have been one (resolveGone), by SPEC
+// §6.4's one rule (resolveEndsHold, madeAboveSet.made): a marker whose cmd
+// names a comment in above, or a /hold that a marker on the issue or an
+// ancestor names, its comment deleted since, which was posted there or
+// above (see madeAbove). A /hold on a descendant names a comment below,
+// whether it wrote a marker or, as the issue was held already, none (Q2b,
+// resolveOwnHolds, resolveHeldBy), so it stays until /resume there or
+// between ends it; so do a hold set by hand, which has no cmd (by= and
+// event=), a deleted /hold comment that no marker there names, which is
+// found nowhere, and a discussion hold. Nor does /resume on the issue end
+// a discussion hold whose trigger came after it (resolveStays).
+func heldStackEnds(m github.Marker, self bool, above madeAboveSet) bool {
 	if m.Fields["reason"] == "discussion" {
 		return self && m.Fields[resolveStays] == ""
 	}
 	if m.Fields["reason"] != "owner" {
 		return false
 	}
-	if m.Fields[resolveStacked] != "" {
-		// An owner hold no marker records, stacked on a hold the /resume
-		// ends, or made on its issue or above (resolveUnended, Q2b).
+	if self {
 		return true
 	}
-	id, ok := state.Key{Field: "cmd", ID: m.Fields["cmd"]}.Comment()
-	return self || ok && above[id]
+	h, ok := above.made(m)
+	return ok && resolveEndsHold(h, above.resume)
 }
 
 // madeAboveSet is what madeAbove finds on a /resume's issue and its
@@ -303,11 +302,34 @@ type madeAboveSet struct {
 	// issues are their numbers: a comment deleted on one of them, which
 	// may have been a /hold (resolveGone), is the /resume's to end too.
 	issues map[int]bool
-	// over are those of ids that are above the /resume's issue: the
-	// comments on its ancestors, and the /holds that markers on them name.
-	// A /hold the /resume ends that's one of them is no hold a /hold below
-	// is stacked on, for that /resume (resolveEnds).
-	over map[int64]bool
+	// resume is the /resume, as resolveEndsHold judges by it: its comment,
+	// when it was posted, and its level, 0, which made gives the holds
+	// made on its issue or above too.
+	resume resolveResume
+}
+
+// made returns the owner hold that marker m records on a descendant of
+// the /resume's issue, as resolveEndsHold judges it for above.resume: the
+// /hold its cmd names, or the comment deleted that its resolveGone field
+// names, at level 0, the /resume's, if it was posted on the /resume's
+// issue or above it (ids, issues), else at -1, below it. A hold set by
+// hand, which names neither, isn't one, nor is a marker whose field is ill
+// formed.
+func (above madeAboveSet) made(m github.Marker) (resolveMade, bool) {
+	if v := m.Fields[resolveGone]; v != "" {
+		number, at, ok := resolveGoneParse(v)
+		h := resolveMade{at: at, level: -1}
+		if above.issues[number] {
+			h.level = 0
+		}
+		return h, ok
+	}
+	id, ok := state.Key{Field: "cmd", ID: m.Fields["cmd"]}.Comment()
+	h := resolveMade{id: id, level: -1}
+	if above.ids[id] {
+		h.level = 0
+	}
+	return h, ok
 }
 
 // madeAbove returns what is on c's issue and its ancestors (madeAboveSet),
@@ -316,19 +338,17 @@ type madeAboveSet struct {
 // read (SPEC §5.1), so it reads each ancestor's edits as Dirty does, which
 // costs no request when nothing on it was edited.
 func (a *Applier) madeAbove(ctx context.Context, c Cmd) (madeAboveSet, error) {
-	above := madeAboveSet{ids: map[int64]bool{}, issues: map[int]bool{}, over: map[int64]bool{}}
+	above := madeAboveSet{ids: map[int64]bool{}, issues: map[int]bool{}, resume: resolveResume{id: c.Comment.ID, at: c.Comment.CreatedAt}}
 	seen := map[int]bool{}
 	for s, d := c.S, c.Dirt; ; {
 		seen[s.Number] = true
 		above.issues[s.Number] = true
 		for _, cm := range s.Comments {
 			above.ids[cm.ID] = true
-			above.over[cm.ID] = s != c.S
 		}
 		for _, m := range state.Derive(s, a.AppSlug, d.Has).Markers {
 			if id, ok := resolveHoldMarked(m); ok {
 				above.ids[id] = true
-				above.over[id] = above.over[id] || s != c.S
 			}
 		}
 		if s.Parent == 0 || seen[s.Parent] {
@@ -438,17 +458,16 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 		// Not a label the label rules left out, or would (Applier.hidden).
 		s := a.hidden(n.s)
 		var extra []github.Marker
-		var stacked func(github.Marker) bool
 		if n.s != c.S {
-			if extra, stacked, err = a.resolveHeldBy(ctx, family, c, n, c.Trust, above); err != nil {
+			if extra, err = a.resolveHeldBy(ctx, family, c, n, c.Trust, above); err != nil {
 				return fmt.Errorf("check /resume: %w", err)
 			}
 		}
-		is, _, err := a.resolveHeld(ctx, s, n.d, c.Trust, state.Derive(s, a.AppSlug, n.d.Has), c.Comment, n.s == c.S, extra, stacked)
+		is, _, err := a.resolveHeld(ctx, s, n.d, c.Trust, state.Derive(s, a.AppSlug, n.d.Has), c.Comment, n.s == c.S, extra)
 		if err != nil {
 			return fmt.Errorf("check /resume: %w", err)
 		}
-		_, ended, left := heldStackResume(is, n.s == c.S, above.ids)
+		_, ended, left := heldStackResume(is, n.s == c.S, above)
 		// It leaves held, or stays held for discussion only, which Apply
 		// records (resolveResumed).
 		held = held || ended > 0 && !resolveOwnerHeld(left)
@@ -486,11 +505,11 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 	}
 	// The issue's own move: back to its at, or to clarifying after a
 	// discussion (resolveHeld).
-	is, after, err := a.resolveHeld(ctx, c.S, c.Dirt, c.Trust, state.Derive(c.S, a.AppSlug, c.Dirt.Has), c.Comment, true, nil, nil)
+	is, after, err := a.resolveHeld(ctx, c.S, c.Dirt, c.Trust, state.Derive(c.S, a.AppSlug, c.Dirt.Has), c.Comment, true, nil)
 	if err != nil {
 		return fmt.Errorf("check /resume: %w", err)
 	}
-	if at, ended, left := heldStackResume(is, true, above.ids); ended > 0 && len(left) == 0 {
+	if at, ended, left := heldStackResume(is, true, above); ended > 0 && len(left) == 0 {
 		to, trigger := at, state.TriggerResume
 		if after {
 			to, trigger = state.Clarifying, state.TriggerResumeAfterDiscussion
@@ -548,13 +567,12 @@ func (a *Applier) moveFamily(ctx context.Context, c Cmd, trust github.Trust, r *
 		is, after := state.Derive(n.s, a.AppSlug, n.d.Has), false
 		if r != nil {
 			var extra []github.Marker
-			var stacked func(github.Marker) bool
 			if n.s != c.S {
-				if extra, stacked, err = a.resolveHeldBy(ctx, family, c, n, trust, r.above); err != nil {
+				if extra, err = a.resolveHeldBy(ctx, family, c, n, trust, r.above); err != nil {
 					return fmt.Errorf("move: %w", err)
 				}
 			}
-			if is, after, err = a.resolveHeld(ctx, n.s, n.d, trust, is, c.Comment, n.s == c.S, extra, stacked); err != nil {
+			if is, after, err = a.resolveHeld(ctx, n.s, n.d, trust, is, c.Comment, n.s == c.S, extra); err != nil {
 				return fmt.Errorf("move: %w", err)
 			}
 			if err := r.record(ctx, n, is, after); err != nil {

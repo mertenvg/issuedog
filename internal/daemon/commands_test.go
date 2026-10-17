@@ -421,7 +421,9 @@ func TestHoldAcksLast(t *testing.T) {
 
 // A /resume ends only the holds below that a /hold on its issue or above
 // made: a child's own hold, by its /hold or by hand, and the holds its /hold
-// made below it, stay until /resume on the child.
+// made below it, stay until /resume on the child, whether its /hold wrote a
+// marker or, as the child was held already, none (#188's decision, round
+// 3).
 func TestOwnHolds(t *testing.T) {
 	type step struct {
 		on   int
@@ -475,9 +477,18 @@ func TestOwnHolds(t *testing.T) {
 		{name: "a parent's /resume ends the holds its /hold made",
 			steps:  []step{{1, "/hold"}, {1, "/resume"}},
 			labels: [3]string{"stage:ready", "stage:in-progress", "stage:verifying"}, react: "+1"},
-		{name: "a child's own /hold under its parent's writes no marker, so the parent's /resume ends it (#87's Q2b)",
+		{name: "a child's own /hold under its parent's writes no marker, but stays when its parent resumes, as does the hold it made below (#188's decision, round 3)",
 			steps:  []step{{1, "/hold"}, {2, "/hold"}, {1, "/resume"}},
+			labels: [3]string{"stage:ready", "stage:held", "stage:held"}, react: "+1"},
+		{name: "then the child's /resume ends its own /hold, and the one it made below",
+			steps:  []step{{1, "/hold"}, {2, "/hold"}, {1, "/resume"}, {2, "/resume"}},
 			labels: [3]string{"stage:ready", "stage:in-progress", "stage:verifying"}, react: "+1"},
+		{name: "a grandchild's /resume ends every hold on itself, the child's /hold too, but the child stays held",
+			steps:  []step{{1, "/hold"}, {2, "/hold"}, {1, "/resume"}, {3, "/resume"}},
+			labels: [3]string{"stage:ready", "stage:held", "stage:verifying"}, react: "+1"},
+		{name: "a second /resume on the parent is rejected, naming the child",
+			steps:  []step{{1, "/hold"}, {2, "/hold"}, {1, "/resume"}, {1, "/resume"}},
+			labels: [3]string{"stage:ready", "stage:held", "stage:held"}, react: "-1", reply: madeOn("#2")},
 		{name: "a child's /resume ends its own hold and the one it made below",
 			steps:  []step{{2, "/hold"}, {1, "/hold"}, {2, "/resume"}},
 			labels: [3]string{"stage:held", "stage:in-progress", "stage:verifying"}, react: "+1"},

@@ -318,10 +318,12 @@ func TestResolveParentHoldThenResume(t *testing.T) {
 }
 
 // A /hold on an issue between a grandparent and its grandchild, posted
-// while both were held, writes no marker (Q2b): the grandparent's /resume,
-// with the grandparent out of held by an override, ends its own /hold
-// below, and the one between too, stacked on it, there and on the
-// grandchild (#87's Q2b, #188's verify, round 2), so both go back.
+// while both were held, writes no marker (Q2b), but still ends only by
+// /resume on that issue or below it (#188's decision, round 3): the
+// grandparent's /resume, with the grandparent out of held by an override,
+// would end only its own /hold below, which leaves both held by the one
+// between, so it's rejected, naming that issue. Its /resume there then
+// takes both back.
 func TestResolveHoldBetween(t *testing.T) {
 	f := discFake(t)
 	file(f, 1, ready) // #2, under #1
@@ -343,20 +345,32 @@ func TestResolveHoldBetween(t *testing.T) {
 	if err := resolvePass(t, 1)(f); err != nil {
 		t.Fatal(err)
 	}
-	if body := newestComment(f, 1); !slices.ContainsFunc(f.State().Issues[0].Comments, func(c githubtest.CommentState) bool {
-		return c.Body == "/resume" && slices.Contains(c.Reactions, slug+"[bot] +1")
-	}) {
-		t.Errorf("newest comment on #1 %q; want the /resume applied, 👍'd", body)
+	st := f.State()
+	if body := newestComment(f, 1); !slices.ContainsFunc(st.Issues[0].Comments, func(c githubtest.CommentState) bool {
+		return c.Body == "/resume" && slices.Contains(c.Reactions, slug+"[bot] -1")
+	}) || !strings.Contains(body, madeOn("#2")) {
+		t.Errorf("newest comment on #1 %q; want the /resume rejected, 👎'd, naming #2", body)
+	}
+	for i := 1; i < 3; i++ {
+		if l := st.Issues[i].Labels; !slices.Equal(l, []string{"stage:held"}) {
+			t.Errorf("#%d: labels %q; want it still held", i+1, l)
+		}
+	}
+	f.AddComment(2, "owner", "/resume")
+	if err := resolvePass(t, 2)(f); err != nil {
+		t.Fatal(err)
 	}
 	for i := 1; i < 3; i++ {
 		if l := f.State().Issues[i].Labels; !slices.Equal(l, []string{"stage:ready"}) {
-			t.Errorf("#%d: labels %q; want it back at ready", i+1, l)
+			t.Errorf("after /resume on #2: #%d: labels %q; want it back at ready", i+1, l)
 		}
 	}
 }
 
-// With the grandparent still held, its /resume applies, and ends the
-// /hold between too, stacked on its own (Q2b): all three go back.
+// With the grandparent still held, its /resume applies, but ends neither
+// the /hold between nor the grandchild's hold by it (#188's decision,
+// round 3): the grandparent goes back, and its move names the issues
+// still on hold. /resume on the issue between then takes both back.
 func TestResolveHoldBetweenApplied(t *testing.T) {
 	f := discFake(t)
 	file(f, 1, ready) // #2, under #1
@@ -374,9 +388,22 @@ func TestResolveHoldBetweenApplied(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := f.State()
-	for i, want := range []string{"stage:ready", "stage:ready", "stage:ready"} {
+	for i, want := range []string{"stage:ready", "stage:held", "stage:held"} {
 		if l := st.Issues[i].Labels; !slices.Equal(l, []string{want}) {
 			t.Errorf("#%d: labels %q; want %s", i+1, l, want)
+		}
+	}
+	if body := newestComment(f, 1); !strings.Contains(body, "Still on hold: #2 and #3, by a hold this `/resume` doesn't end") {
+		t.Errorf("newest comment on #1 %q; want it to name #2 and #3 as still on hold", body)
+	}
+	f.AddComment(2, "owner", "/resume")
+	if err := resolvePass(t, 2)(f); err != nil {
+		t.Fatal(err)
+	}
+	st = f.State()
+	for i, want := range []string{"stage:ready", "stage:ready", "stage:ready"} {
+		if l := st.Issues[i].Labels; !slices.Equal(l, []string{want}) {
+			t.Errorf("after /resume on #2: #%d: labels %q; want %s", i+1, l, want)
 		}
 	}
 }

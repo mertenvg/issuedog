@@ -13,9 +13,9 @@ import (
 // #188's verify, round 2, attempt 3: a comment a write collaborator
 // deletes on an ancestor during a hold may have been a /hold that wrote no
 // marker, so it keeps the issue held until a /resume there, between or on
-// the issue ends it; and a /resume above ends an issue's own /hold that
-// wrote no marker only when that /hold is stacked on a hold the /resume
-// ends, not one on a discussion hold alone (#87's Q2b, SPEC §6.4).
+// the issue ends it; and a /resume above never ends an issue's own /hold
+// that wrote no marker, whatever holds the issue was in when it was posted
+// (#87's Q2b, SPEC §6.4, #188's decision, round 3).
 
 // resolveSettle runs passes over ns, in order, until one writes nothing.
 func resolveSettle(t testing.TB, f *githubtest.Fake, ns ...int) {
@@ -326,13 +326,14 @@ func TestResolveOwnHoldOnDiscussionThreeLevels(t *testing.T) {
 
 // #1, held for mallory's comment, then by the owner's /hold on #2, which
 // writes a marker on #2 but none on #1, then by its own /hold, which
-// writes none either: it's stacked on #2's /hold, so #2's /resume ends
-// both on #1 (Q2b), which stays held for mallory's comment only, with the
-// record that its own /hold ended (#2's is #2's /resume's own to end, so
-// #1 never counts it); once the owner's 👍 resolves that, it goes to
+// writes none either. #2's /resume ends #2's /hold on #1 (#2's is its own
+// to end, so #1 never counts it), but not #1's own /hold, posted below it
+// (#188's decision, round 3), so #1 stays held, with no record of an
+// owner hold ended; once the owner's 👍 resolves mallory's comment, #1
+// stays held by its own /hold, until its own /resume sends it to
 // clarifying.
-func TestResolveOwnHoldStackedOnParentHoldWithoutMarker(t *testing.T) {
-	var w, own int64
+func TestResolveOwnHoldUnderParentHoldWithoutMarker(t *testing.T) {
+	var w int64
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := discFake(t)
 		file(f, 0, ready) // #2
@@ -341,7 +342,7 @@ func TestResolveOwnHoldStackedOnParentHoldWithoutMarker(t *testing.T) {
 		resolveSteps(t, f, 1)
 		f.AddComment(2, "owner", "/hold")
 		resolveSteps(t, f, 2, 1)
-		own = f.AddComment(1, "owner", "/hold")
+		f.AddComment(1, "owner", "/hold")
 		resolveSteps(t, f, 1)
 		f.AddComment(2, "owner", "/resume")
 		f.ForgetWrites()
@@ -350,21 +351,30 @@ func TestResolveOwnHoldStackedOnParentHoldWithoutMarker(t *testing.T) {
 	githubtest.Replay(t, setup, resolvePass(t, 2))
 	f := run(t, setup, resolvePass(t, 2))
 	resolveLabels(t, f, "after #2's /resume", "held", "ready")
-	if body := newestComment(f, 1); !strings.Contains(body, fmt.Sprintf("<!-- issuedog:ended reason=owner key=c%d cmd=", own)) {
-		t.Errorf("#1: newest comment %q; want the record that its own /hold, in comment %d, ended", body, own)
+	if body := newestComment(f, 1); strings.Contains(body, "issuedog:ended") {
+		t.Errorf("#1: newest comment %q; want no record that an owner hold ended", body)
 	}
 	f.AddReaction(w, "owner", "+1")
 	resolveSettle(t, f, 2, 1)
-	resolveLabels(t, f, "after the 👍", "clarifying", "ready")
+	resolveLabels(t, f, "after the 👍", "held", "ready")
+	if body := newestComment(f, 1); !strings.Contains(body, "an owner hold on it hasn't ended") {
+		t.Errorf("#1: newest comment %q; want the record that its own /hold stays", body)
+	}
+	f.AddComment(1, "owner", "/resume")
+	resolveSettle(t, f, 2, 1)
+	resolveLabels(t, f, "after #1's /resume", "clarifying", "ready")
 }
 
 // #3 > #2 > #1: #3's /hold held all three; #1's own /resume took #1 out;
 // then #2's /hold, which writes no marker on #2, held by #3's, but one on
-// #1; then mallory's comment on #1. #3's /resume ends #2's /hold, stacked
-// on its own, on #2 and on #1 alike (Q2b): #2 goes back, and #1 stays held
-// for mallory's comment only, with one record that the /hold ended.
-func TestResolveStackedHoldMarkedBelow(t *testing.T) {
-	var w, between, resume int64
+// #1; then mallory's comment on #1. #3's /resume ends #3's hold on #2, but
+// not #2's /hold, posted below it, on #2 or on #1 (#188's decision, round
+// 3): #2 stays held by its own /hold, and #1 by #2's and for mallory's
+// comment, with no record of an owner hold ended. Once the owner's 👍
+// resolves that, #1 still stays held, until #2's /resume, which takes #2
+// back and sends #1 to clarifying.
+func TestResolveHoldMarkedBelowNotEndedFromAbove(t *testing.T) {
+	var w, between int64
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := discFake(t)
 		file(f, 0, ready) // #2
@@ -382,21 +392,24 @@ func TestResolveStackedHoldMarkedBelow(t *testing.T) {
 		}
 		w = f.AddComment(1, "mallory", "Wait.")
 		resolveSteps(t, f, 1)
-		resume = f.AddComment(3, "owner", "/resume")
+		f.AddComment(3, "owner", "/resume")
 		f.ForgetWrites()
 		return f
 	}
 	githubtest.Replay(t, setup, resolvePass(t, 3))
 	f := run(t, setup, resolvePass(t, 3))
-	resolveLabels(t, f, "after #3's /resume", "held", "ready", "ready")
-	want := fmt.Sprintf("`/resume` on #3 ended the owner hold on this issue, but it stays on hold for discussion until a code owner resolves that, "+
-		"or posts `/resume` here.\n\n<!-- issuedog:ended reason=owner key=c%d cmd=%d -->", between, resume)
-	if body := newestComment(f, 1); body != want {
-		t.Errorf("#1: newest comment %q; want %q", body, want)
+	resolveLabels(t, f, "after #3's /resume", "held", "held", "ready")
+	for n := 1; n <= 2; n++ {
+		if body := newestComment(f, n); strings.Contains(body, "issuedog:ended") {
+			t.Errorf("#%d: newest comment %q; want no record that an owner hold ended", n, body)
+		}
 	}
 	f.AddReaction(w, "owner", "+1")
 	resolveSettle(t, f, 3, 2, 1)
-	resolveLabels(t, f, "after the 👍", "clarifying", "ready", "ready")
+	resolveLabels(t, f, "after the 👍", "held", "held", "ready")
+	f.AddComment(2, "owner", "/resume")
+	resolveSettle(t, f, 3, 2, 1)
+	resolveLabels(t, f, "after #2's /resume", "clarifying", "ready", "ready")
 }
 
 // resolveDeletedAbove is #4 > #3 > #2 > #1, mallory's comments holding
@@ -632,9 +645,9 @@ func TestResolveGoneWhich(t *testing.T) {
 
 // #3 > #2 > #1. The owner's /hold on #3 is posted before the one on #2,
 // but #2's pass comes first, so #2's /hold moves #2 and #1 into held, its
-// marker on both, and #3's then writes none on them. #2's /hold isn't
-// stacked on #3's, so #3's /resume ends #3's hold alone, and #2 and #1
-// stay held by #2's.
+// marker on both, and #3's then writes none on them. #2's /hold was posted
+// below #3, so #3's /resume ends #3's hold alone, and #2 and #1 stay held
+// by #2's.
 func TestResolveMarkedHoldNotStacked(t *testing.T) {
 	f := discFake(t)
 	file(f, 0, ready) // #2
@@ -652,9 +665,9 @@ func TestResolveMarkedHoldNotStacked(t *testing.T) {
 }
 
 // #1's own /hold, posted while it was held for mallory's comment, comes
-// before the owner's /hold on #2, which writes no marker on #1, so it
-// isn't stacked on that: #2's /resume ends #2's hold, and #1 stays held by
-// its own /hold once mallory's comment is resolved.
+// before the owner's /hold on #2, which writes no marker on #1: #2's
+// /resume ends #2's hold, and #1 stays held by its own /hold once
+// mallory's comment is resolved, as it was posted below #2.
 func TestResolveOwnHoldBeforeParentHold(t *testing.T) {
 	f, w, _ := resolveOwnOnDiscussion(t)
 	f.AddComment(2, "owner", "/hold")
@@ -669,9 +682,9 @@ func TestResolveOwnHoldBeforeParentHold(t *testing.T) {
 
 // #3 > #2 > #1. An earlier hold on #2, by #3's /hold, ended with #3's
 // /resume; then mallory's comment held #2, and #2's own /hold, which
-// writes no marker on #2, sits on that discussion hold alone, not on the
-// earlier one, and writes a marker on #1. A later /hold and /resume on #3
-// end neither, on #2 or on #1.
+// writes no marker on #2, held for discussion, and writes a marker on #1.
+// A later /hold and /resume on #3 end neither, on #2 or on #1, as #2's
+// /hold was posted below #3.
 func TestResolveOwnHoldNotStackedOnEarlierHold(t *testing.T) {
 	f := discFake(t)
 	file(f, 0, ready) // #2
@@ -699,9 +712,9 @@ func TestResolveOwnHoldNotStackedOnEarlierHold(t *testing.T) {
 // #3 > #2 > #1, #1 held for mallory's comment throughout. #3's /hold,
 // which writes no marker on #2, held for discussion then, nor on #1, held
 // #2 in a hold that #2's /resume ended. Then mallory's comment held #2
-// again, and #2's own /hold, which writes no marker, sits on that alone,
-// not on #3's earlier /hold, so #3's /resume doesn't end it, on #2 or on
-// #1, and both stay held by it once the discussions are resolved.
+// again, and #2's own /hold, which writes no marker, was posted below #3,
+// so #3's /resume doesn't end it, on #2 or on #1, and both stay held by it
+// once the discussions are resolved.
 func TestResolveOwnHoldNotStackedOnEndedHoldAbove(t *testing.T) {
 	f := discFake(t)
 	file(f, 0, ready) // #2
@@ -728,10 +741,9 @@ func TestResolveOwnHoldNotStackedOnEndedHoldAbove(t *testing.T) {
 	resolveLabels(t, f, "at the end", "held", "held", "ready")
 }
 
-// #188's verify, attempt 4: a /hold that wrote no marker ends with a
-// /resume above it only when the hold it's stacked on was made by a /hold
-// posted on the /resume's issue or below it; the /resume path and the
-// leave path both leave out one posted above, so they agree.
+// #188's verify, attempt 4: a /hold that wrote no marker never ends with a
+// /resume above it (#188's decision, round 3); the /resume path and the
+// leave path agree, whichever /holds above the /resume's issue they read.
 
 // resolveLoop is the daemon over f, from origin o, which settle iterates
 // until a pass writes nothing, and restart replaces with a new one.
@@ -775,9 +787,8 @@ func (l *resolveLoop) task(parent int) int {
 
 // #1 > #2 > #3 > #4, mallory's comments holding #3 and #4. The owner's
 // /hold on #1 writes markers on #1 and #2, none on #3 or #4; the owner's
-// /hold on #3 writes none either, stacked on #1's /hold and on #3's
-// discussion. #2's /resume ends #1's hold below it, but not #3's /hold:
-// the hold that's stacked on is #1's /hold, posted above #2. So once the
+// /hold on #3 writes none either, as #3 is held already. #2's /resume ends
+// #1's hold below it, but not #3's /hold, posted below #2. So once the
 // owner's 👍s resolve mallory's comments, #3 and #4 both stay held by #3's
 // /hold, whether the 👍s come before #2's /resume or after it, with a
 // restart between, until #3's /resume, which sends both to clarifying.
@@ -836,10 +847,10 @@ func TestResolveHoldAboveResumeNotABase(t *testing.T) {
 
 // #4 > #3 > #2: the owner's /hold on #4 writes markers on #3 and #2, held
 // by none, and on #4 unless the owner held it by hand first; #2's own
-// /hold, none, stacked on #4's, which its marker on #2 records. #3's
-// /resume ends #4's hold on #3 and #2, but not #2's /hold: #4's /hold is
-// above #3, whether its comment is there, with a marker on #4 or not, or
-// deleted, known by its markers, the farthest on #4. #1 under #2, held by
+// /hold, none, as #2 is held by #4's. #3's /resume ends #4's hold on #3
+// and #2, but not #2's /hold, posted below #3, whether #4's /hold's
+// comment is there, with a marker on #4 or not, or deleted, known by its
+// markers, the farthest on #4. #1 under #2, held by
 // #4's /hold, and by #2's, which wrote no marker there, and for mallory's
 // comment, agrees once that is resolved: both stay held, until #2's
 // /resume.
@@ -894,10 +905,12 @@ func TestResolveMarkedHoldAboveResumeNotABase(t *testing.T) {
 // mallory's comment, ended there with #1's /resume; then mallory's next
 // comment held #1 again, and the owner's /hold on #2, which writes no
 // marker on #2, held by #3's, nor on #1, and #1's own /hold, which writes
-// none either. #1's /hold is stacked on #2's alone, as #3's ended on #1
-// before #1's hold began, and #2's on #3's, so #3's /resume ends all
-// three, and #1 goes to clarifying once mallory's comment is resolved.
-func TestResolveStackedThroughHoldBetween(t *testing.T) {
+// none either. #3's /resume ends #3's hold on #2 alone: #2's /hold and
+// #1's were posted below #3 (#188's decision, round 3), so #2 and #1 stay
+// held, #1 still once mallory's comment is resolved. #1's /resume then
+// sends #1 to clarifying, and #2 stays held by its own /hold until #2's
+// /resume.
+func TestResolveHoldsBetweenNotEndedFromAbove(t *testing.T) {
 	f := discFake(t)  // #1
 	file(f, 0, ready) // #2
 	file(f, 0, ready) // #3
@@ -918,8 +931,14 @@ func TestResolveStackedThroughHoldBetween(t *testing.T) {
 	resolveSettle(t, f, 1)
 	f.AddComment(3, "owner", "/resume")
 	resolveSettle(t, f, 3, 2, 1)
-	resolveLabels(t, f, "after #3's /resume", "held", "ready", "ready")
+	resolveLabels(t, f, "after #3's /resume", "held", "held", "ready")
 	f.AddReaction(w, "owner", "+1")
 	resolveSettle(t, f, 3, 2, 1)
-	resolveLabels(t, f, "after the 👍", "clarifying", "ready", "ready")
+	resolveLabels(t, f, "after the 👍", "held", "held", "ready")
+	f.AddComment(1, "owner", "/resume")
+	resolveSettle(t, f, 3, 2, 1)
+	resolveLabels(t, f, "after #1's /resume", "clarifying", "held", "ready")
+	f.AddComment(2, "owner", "/resume")
+	resolveSettle(t, f, 3, 2, 1)
+	resolveLabels(t, f, "after #2's /resume", "clarifying", "ready", "ready")
 }

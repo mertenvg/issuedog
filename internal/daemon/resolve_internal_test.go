@@ -158,11 +158,11 @@ func TestResolveHeldSameSecond(t *testing.T) {
 		{ID: 12, Author: mallory, Association: "COLLABORATOR", Body: "Again.", CreatedAt: at(12)},
 	}}
 	a := &Applier{Client: noReactions(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}
-	is, _, err := a.resolveHeld(context.Background(), s, Dirt{}, newDiscCounting(), state.Derive(s, "issuedog", func(int64) bool { return false }), s.Comments[3], true, nil, nil)
+	is, _, err := a.resolveHeld(context.Background(), s, Dirt{}, newDiscCounting(), state.Derive(s, "issuedog", func(int64) bool { return false }), s.Comments[3], true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ended, left := heldStackResume(is, true, map[int64]bool{}); ended != 1 || len(left) != 1 || left[0].Fields["event"] != "c12" {
+	if _, ended, left := heldStackResume(is, true, madeAboveSet{}); ended != 1 || len(left) != 1 || left[0].Fields["event"] != "c12" {
 		t.Errorf("ended %d, left %v; want the hold for comment 9 ended, and comment 12's left", ended, left)
 	}
 }
