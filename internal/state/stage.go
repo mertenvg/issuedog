@@ -25,8 +25,21 @@ const (
 	PROpen     Stage = "pr-open"
 	NeedsHuman Stage = "needs-human"
 	Held       Stage = "held"
-	// Closed is a closed issue. It has no label.
+	// Closed is a closed issue. It has no label of its own: a closed
+	// issue's stage label is one of the closed stages below, once its close
+	// is judged (ClosingStage).
 	Closed Stage = "closed"
+	// Completed and Discarded are the closed stages (plan #87 rev 2, Q5 and
+	// assumption 12): the label an accepted close sets, stage:completed for
+	// an issue closed as completed, a merged pull request's close included,
+	// and stage:discarded for one closed as not planned or as a duplicate.
+	// They're valid only on a closed issue, so they're no §7.1 stage: Open
+	// is false for them, ParseLabel doesn't take their labels, and no
+	// transition marker names them. A closed issue with one, that the App
+	// or a trusted user set, has had its close judged, so it isn't read
+	// again (T6).
+	Completed Stage = "completed"
+	Discarded Stage = "discarded"
 )
 
 // openStages are the stages that have a stage:* label.
@@ -44,13 +57,43 @@ func (s Stage) Open() bool {
 	return false
 }
 
-// Label returns the stage:* label for s. Closed and anything that isn't a
-// §7.1 stage have none.
+// Label returns the stage:* label for s: a §7.1 stage's, or a closed
+// stage's (Closing). Closed and anything else have none.
 func (s Stage) Label() (string, bool) {
-	if !s.Open() {
+	if !s.Open() && !s.Closing() {
 		return "", false
 	}
 	return labelPrefix + string(s), true
+}
+
+// Closing reports whether s is a closed stage, Completed or Discarded,
+// valid only on a closed issue (assumption 12).
+func (s Stage) Closing() bool { return s == Completed || s == Discarded }
+
+// ParseClosingLabel returns the closed stage a stage:* label names,
+// ignoring case, as ParseLabel does: stage:completed or stage:discarded.
+// It reports false for any other label.
+func ParseClosingLabel(label string) (Stage, bool) {
+	if len(label) < len(labelPrefix) || !strings.EqualFold(label[:len(labelPrefix)], labelPrefix) {
+		return "", false
+	}
+	s := Stage(strings.ToLower(label[len(labelPrefix):]))
+	return s, s.Closing()
+}
+
+// ClosingStage is the closed stage for an accepted close: Discarded for a
+// close as not planned or as a duplicate, by its state_reason, and
+// Completed for any other, a merged pull request's, merged, whatever its
+// state_reason, and one with none, as from before GitHub had state
+// reasons, included.
+func ClosingStage(stateReason string, merged bool) Stage {
+	switch strings.ToLower(stateReason) {
+	case "not_planned", "duplicate":
+		if !merged {
+			return Discarded
+		}
+	}
+	return Completed
 }
 
 // ParseLabel returns the stage a stage:* label names. Like GitHub, it ignores

@@ -32,6 +32,8 @@ var fixedLabels = []labelSpec{
 	{"stage:pr-open", "5319e7", "PR waiting for human review"},
 	{"stage:needs-human", "d93f0b", "Task only the owner can do"},
 	{"stage:held", "000000", "Paused by the owner"},
+	{"stage:completed", "0e8a16", "Closed as completed, or by a merged PR"},
+	{"stage:discarded", "cfd3d7", "Closed as not planned, or as a duplicate"},
 	{"priority:p0", "b60205", "Drop everything"},
 	{"priority:p1", "d93f0b", "High"},
 	{"priority:p2", "fbca04", "Normal (default)"},

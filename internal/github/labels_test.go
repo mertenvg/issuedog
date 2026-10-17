@@ -131,7 +131,7 @@ func TestEnsureLabelsSPECNames(t *testing.T) {
 	want := []string{
 		"stage:intake", "stage:clarifying", "stage:spec-review", "stage:planning",
 		"stage:plan-review", "stage:planned", "stage:ready", "stage:in-progress",
-		"stage:verifying", "stage:pr-open", "stage:needs-human", "stage:held",
+		"stage:verifying", "stage:pr-open", "stage:needs-human", "stage:held", "stage:completed", "stage:discarded",
 		"priority:p0", "priority:p1", "priority:p2", "priority:p3",
 		"approved", "review:high-risk", "scope:infra",
 		"type:epic", "type:story", "type:task", "type:bug",

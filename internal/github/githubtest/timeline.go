@@ -136,7 +136,7 @@ func (f *Fake) timeline(c *call) (int, any) {
 	slices.SortStableFunc(events, func(a, b *gogithub.Timeline) int { return a.GetCreatedAt().Compare(b.GetCreatedAt().Time) })
 	served := make([]any, 0, len(events))
 	for _, e := range events {
-		served = append(served, c.issue.issueTypeRevertServe(e))
+		served = append(served, c.issue.closingServe(e))
 	}
 	return page(c, served)
 }

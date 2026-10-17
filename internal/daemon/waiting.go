@@ -18,25 +18,32 @@ import (
 // given and do no I/O:
 //   - waitFind lists one issue's items. Iterate calls it on each issue
 //     right after step 1 succeeds on it (digestCacheSet, T8 #160), with
-//     the snapshot as step 1 left it, the Inputs it returned and the
-//     issue's Dirt, and caches the items by issue, whether or not the
-//     digest is on. An issue whose step 1 fails keeps the items it had.
+//     the snapshot as step 1 left it, the Inputs it returned, the
+//     issue's Dirt and, if it's held, its open discussion triggers
+//     (Step.holdItemFind, #192), and caches the items by issue, whether
+//     or not the digest is on. An issue whose step 1 fails keeps the
+//     items it had.
 //   - waitRank orders every issue's items, once per pass: it counts each
 //     item's open descendants from the parents in all the snapshots held.
 //
 // Assignment (§9.6, #191) takes the same items, from the same cache, and
-// assigns for any kind (assign.go).
+// assigns for any kind (assign.go), a hold among them (#192).
 //
 // Which text is whose (assumption 12): an item's Title is raw, and T6
-// escapes it. No line is raw: each is the App's, either this file's own
-// words or copied from the App's own clean comment (waitLine.Copied).
+// escapes it. No line's Text is raw: each is the App's, either this
+// file's own words or copied from the App's own clean comment
+// (waitLine.Copied). A hold's trigger line (waitLine.Hold) has no Text:
+// its trigger's logins and title are raw, and digestRenderHold escapes
+// them.
 
 // waitKind is a kind of item. Its order is Q3a's tie-break after the
-// unblock count: state errors, then approvals, then questions, then flags.
+// unblock count: state errors, then discussion holds (#192), then
+// approvals, then questions, then flags.
 type waitKind int
 
 const (
 	waitError waitKind = iota
+	waitHold
 	waitApproval
 	waitQuestion
 	waitFlag
@@ -46,6 +53,8 @@ func (k waitKind) String() string {
 	switch k {
 	case waitError:
 		return "error"
+	case waitHold:
+		return "hold"
 	case waitApproval:
 		return "approval"
 	case waitQuestion:
@@ -62,8 +71,9 @@ type waitItem struct {
 	Kind  waitKind
 	// Key names the item across passes and restarts (assumption 5), so T8
 	// can tell a new one: q-<n>-<round>, rev-<n>-<rev> (rev-<n>-0 when
-	// there's no revision yet), flag-<n>-<comment id> or
-	// err-<n>-<kind>-<key>.
+	// there's no revision yet), flag-<n>-<comment id>,
+	// err-<n>-<kind>-<key> or hold-<n>-<hold marker id> (holdItemOf). A
+	// hold is announced by other keys than this one (waitItem.news).
 	Key string
 	// Title is the issue's title. It's raw: anyone may have written it, so
 	// T6 runs it through inline and github.Escape.
@@ -108,6 +118,10 @@ type waitLine struct {
 	// Recommended marks the recommended option, which is always "a". Its
 	// Text still says "(recommended)", and why, as the comment does.
 	Recommended bool
+	// Hold is a hold item's open trigger, or nil for any other line. Its
+	// Text is "": digestRenderHold renders the trigger, whose By, Of and
+	// Title are raw, and escapes them.
+	Hold *holdItemTrigger
 }
 
 // waitInput is what waitFind reads of one issue.
@@ -120,11 +134,18 @@ type waitInput struct {
 	Dirt Dirt
 	// Inputs are what step 1 returned on S (Step.Run).
 	Inputs []github.Comment
+	// Holds are the open discussion triggers on S after its visit, if S is
+	// held, and nil otherwise (Step.holdItemFind).
+	Holds []discTrigger
 }
 
 // waitFind returns what on in.S waits on the owner (assumption 5), in no
 // set order (waitRank orders them). A closed issue has nothing. Otherwise:
 //   - a state error for each open one (openErrors), linked to its comment;
+//   - while held, a discussion hold, when in.Holds has an open trigger
+//     (holdItemOf). An issue held only by owner holds has none: a /hold,
+//     or a stage:held set by hand, is the owner's own, and waits on
+//     nobody else (#87's assumption 13 lists discussion holds alone);
 //   - at spec-review, an approval: of the latest revision, or, with none,
 //     of no revision. One that can't be approved yet, for a dirty body, a
 //     Hidden revision, a body that no longer has its hash or a type with
@@ -159,6 +180,9 @@ func waitFind(in waitInput) ([]waitItem, error) {
 		add(waitError, e.Kind+"-"+e.Key, e.Comment, waitErrorLines(s, e))
 	}
 	switch {
+	case is.Stage == state.Held && len(in.Holds) > 0:
+		id, lines := holdItemOf(in, is)
+		add(waitHold, id, state.BodyID, lines)
 	case is.Stage == state.SpecReview:
 		rev, comment, lines := waitApprovalLines(in, is)
 		add(waitApproval, strconv.Itoa(rev), comment, lines)
@@ -187,7 +211,7 @@ func waitFind(in waitInput) ([]waitItem, error) {
 }
 
 // waitKeyPrefix starts each kind's key.
-var waitKeyPrefix = map[waitKind]string{waitError: "err", waitApproval: "rev", waitQuestion: "q", waitFlag: "flag"}
+var waitKeyPrefix = map[waitKind]string{waitError: "err", waitHold: "hold", waitApproval: "rev", waitQuestion: "q", waitFlag: "flag"}
 
 // waitLink is the link to comment id on issue n, or to the issue itself
 // when id is state.BodyID: an error in the body (#155's verify).
@@ -280,6 +304,161 @@ func waitApprovalLines(in waitInput, is state.Issue) (int, int64, []waitLine) {
 		lines = append(lines, waitLine{Text: "React 👍 to the revision comment, or post `/approve`, to approve it."})
 	}
 	return latest.Rev, comment, append(lines, waitLine{Text: "Post `/revise <notes>`, or any other comment, to send it back."})
+}
+
+// holdItemTrigger is one open discussion trigger on a hold item's issue
+// (waitLine.Hold). Its Trigger's By, Of and Title are raw, and
+// digestRenderHold escapes them. Link and How are the App's.
+type holdItemTrigger struct {
+	Trigger discTrigger
+	// Link is where to see the trigger and resolve it: its notice, if a
+	// clean one names it; else the comment it is; else the comment that
+	// records it (discRecords), as for a trigger known from its record
+	// alone (discTrigger.FromRecord); else the content it edited; else the
+	// issue.
+	Link string
+	// How says how a code owner resolves it (holdItemOf).
+	How string
+	// Mentioned is set when an App comment that mentions notify names it
+	// (#7's Q2a): a clean App marker records its key (discRecords), the
+	// hold's transition or a notice, in a comment with a cc line
+	// (holdItemCCRE), as the hold's comment and each notice end in one
+	// (#87's assumption 5). A comment trigger on an issue held already has
+	// no record (Q2b), nor has a trigger whose notice discLost held back on
+	// an issue held already, nor one whose record is in content made dirty
+	// or deleted since, so none of those is mentioned. The trigger whose
+	// hold moved the issue into held is mentioned, notice or not: the
+	// hold's transition marker records it, as event=, in a comment with a
+	// cc line. Nor is one recorded while notify was empty mentioned, whose
+	// comment has no cc line: that mentioned nobody.
+	Mentioned bool
+}
+
+// holdItemCCRE finds a cc line that mentions someone, as ccLines writes
+// it: "cc @" at the start of a line, then a login. Text the App didn't
+// write can't make one: it's inline'd onto the line of the App's own words
+// (discWhat), and a mention in it is defused, with a zero-width space
+// after its "@".
+var holdItemCCRE = regexp.MustCompile(`(?m)^cc @[^\s\x{200b}]`)
+
+// holdItemOf returns the hold item of in.S, which is held with in.Holds
+// open, oldest first (#192): the id its key ends in, and its lines.
+//
+// The key is hold-<n>-<hold marker id>, where the id names the transition
+// marker that moved the issue into held, whatever hold it was
+// (holdItemMarkerID): the first hold wins (Q2b), so that marker stands
+// while the issue is held, and a discussion hold on an issue held already
+// writes none. So the key stays the same from pass to pass, and while
+// triggers come and go under one hold, as when the oldest is resolved or
+// a comment trigger is deleted, and a hold after a move out of held has a
+// key of its own, as its marker has a key of its own (SPEC §5.2). Only a
+// marker with no key, which the App doesn't write, falls back to the
+// oldest open trigger's key, which changes as that trigger goes. Which
+// triggers to announce isn't the key's job: see waitItem.news.
+//
+// The lines say the issue is held for discussion, from where, and how
+// many triggers are open; then one line for each (waitLine.Hold), with a
+// link and how it's resolved; then, with an owner hold too, that the issue
+// stays held after them until that ends; and last, that /resume accepts
+// every trigger. How each is resolved follows SPEC §6.4 and #87's
+// assumptions 4 and 6, which T4 (#188) builds; until it lands, only a
+// stage label set by hand resolves a trigger (discFloor):
+//   - a comment: a code owner's 👍 on it approves it, and their later
+//     comment counters it. One known from its record alone is gone, so
+//     only a counter is left;
+//   - any other kind: a code owner's 👍 on its notice, the clean App
+//     comment with its notice marker, which may be the hold's own;
+//   - one with no clean notice, deleted, made dirty or held back
+//     (discLost): only /resume on the issue.
+func holdItemOf(in waitInput, is state.Issue) (string, []waitLine) {
+	s := in.S
+	id := in.Holds[0].Key
+	if hs := is.HeldStack.Holds; len(hs) > 0 && holdItemMarkerID(hs[0]) != "" {
+		id = holdItemMarkerID(hs[0])
+	}
+	records := discRecords(s, in.AppSlug, in.Dirt.Has)
+	notices := map[string]int64{}
+	discMarkers(s, in.AppSlug, in.Dirt.Has, func(c int64, _ time.Time, m github.Marker) {
+		if k := m.Fields["key"]; m.Kind == "notice" && k != "" {
+			if _, seen := notices[k]; !seen {
+				notices[k] = c
+			}
+		}
+	})
+	link := func(c int64) string { return waitLink(in.Owner, in.Repo, s.Number, c) }
+	from := ""
+	if at := is.HeldStack.At; at.Open() && at != state.Held {
+		from = fmt.Sprintf(", from `%s`", at)
+	}
+	lines := []waitLine{{Text: fmt.Sprintf("On hold for discussion%s, with %s that only a code owner can resolve.", from,
+		waitCount(len(in.Holds), "open trigger"))}}
+	for _, tr := range in.Holds {
+		h := &holdItemTrigger{Trigger: tr}
+		rec, recorded := records[tr.Key]
+		h.Mentioned = recorded && holdItemCCRE.MatchString(waitBody(s, rec))
+		notice, noticed := notices[tr.Key]
+		switch {
+		case tr.Kind == discComment && !tr.FromRecord:
+			h.Link, h.How = link(tr.ID), "A code owner's 👍 on the comment approves it, and any later comment of theirs here counters it."
+		case tr.Kind == discComment:
+			h.Link, h.How = link(rec), "A later comment by a code owner here counters it."
+		case noticed:
+			h.Link, h.How = link(notice), "A code owner's 👍 on its notice accepts it."
+		default:
+			h.Link, h.How = link(state.BodyID), "It has no clean notice, as one may have been deleted or edited, so only `/resume` here accepts it."
+			switch {
+			case recorded:
+				h.Link = link(rec)
+			case tr.Kind == discEdit || tr.Kind == discOwnEdit:
+				h.Link = link(tr.ID)
+			}
+		}
+		lines = append(lines, waitLine{Hold: h})
+	}
+	if slices.ContainsFunc(is.HeldStack.Holds, func(m github.Marker) bool { return m.Fields["reason"] != "discussion" }) {
+		lines = append(lines, waitLine{Text: "It's on an owner hold too, so it stays held after these until `/resume` ends that."})
+	}
+	return id, append(lines, waitLine{Text: "Post `/resume` here to accept every open trigger at once."})
+}
+
+// holdItemMarkerID names m, the transition marker that moved an issue into
+// held, by the key that makes it unique (SPEC §5.2), or "" for none:
+//   - event= as it is: a discussion hold's trigger key (#87's assumption
+//     3), such as c<comment id>, or a hand-set hold's label event ID;
+//   - else cmd= after "cmd": a /hold's comment, or r<reaction id>, as
+//     cmd502, which no trigger key looks like;
+//   - else run= after "run".
+func holdItemMarkerID(m github.Marker) string {
+	switch {
+	case m.Fields["event"] != "":
+		return m.Fields["event"]
+	case m.Fields["cmd"] != "":
+		return "cmd" + m.Fields["cmd"]
+	case m.Fields["run"] != "":
+		return "run" + m.Fields["run"]
+	}
+	return ""
+}
+
+// news returns the keys that announce it (digestRenderNew): its Key, or,
+// for a hold, hold-<n>-<trigger key> for each open trigger that no App
+// comment mentioning notify names (holdItemTrigger.Mentioned), which may
+// be none (#7's Q2a). Each such trigger is a discussion hold of its own
+// that nothing else mentioned (Q2b, discHeldStack), so each is announced
+// once, whatever order they're found in, and one resolved doesn't make
+// the rest new again. A hold whose triggers are all mentioned is never
+// new.
+func (it waitItem) news() []string {
+	if it.Kind != waitHold {
+		return []string{it.Key}
+	}
+	var keys []string
+	for _, l := range it.Lines {
+		if l.Hold != nil && !l.Hold.Mentioned {
+			keys = append(keys, fmt.Sprintf("%s-%d-%s", waitKeyPrefix[waitHold], it.Issue, l.Hold.Trigger.Key))
+		}
+	}
+	return keys
 }
 
 // The lines of a question in the SPEC §9.1 format, as renderQuestions and

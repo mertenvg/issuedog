@@ -13,6 +13,7 @@ import (
 	"github.com/mertenvg/logr/v2"
 
 	"github.com/mertenvg/issuedog/internal/github"
+	"github.com/mertenvg/issuedog/internal/state"
 )
 
 // The digest (SPEC §9.4, plan #7 T7) is the App's issue that lists what
@@ -529,14 +530,12 @@ func (d *Daemon) digestSetState(ctx context.Context, n int, state string) error 
 // digestTrusted reports whether a close or reopen by actor stands: a
 // trusted user's (SPEC §6.1), not a bot's or a ghost's. The App's own
 // closes and reopens only revert someone else's, so they never change what
-// stands, and count as no one's.
+// stands, and count as no one's. A pipeline issue's close judges its actor
+// the same way (closingTrusted), but accepts the App's close too.
 func (d *Daemon) digestTrusted(ctx context.Context, actor *gogithub.User) (bool, error) {
-	if actor.GetLogin() == "" || actor.GetType() == "Bot" {
-		return false, nil
-	}
-	ok, err := d.Step.Trust.Trusted(ctx, actor.GetLogin())
+	ok, err := closingTrusted(ctx, d.Step.Trust, github.Author{Login: actor.GetLogin(), Type: actor.GetType()})
 	if err != nil {
-		return false, fmt.Errorf("trust %s: %w", actor.GetLogin(), err)
+		return false, fmt.Errorf("the digest's closer: %w", err)
 	}
 	return ok, nil
 }
@@ -638,13 +637,15 @@ func digestSameBody(a, b string) bool {
 
 // digestCacheSet caches what waits on the owner on s (waitFind), which
 // step 1 just succeeded on and returned inputs for, as step 1 left it,
-// with its dirty content dirt. Iterate calls it whether or not the digest
-// is on, since assignment takes the same items (assign.go). An issue with
-// nothing waiting has no entry. If waitFind fails, that's logged, and the
-// issue keeps the items it had, as one whose step 1 failed does.
-func (d *Daemon) digestCacheSet(s *github.Snapshot, inputs []github.Comment, dirt Dirt) {
+// with its dirty content dirt and, if it's held, its open discussion
+// triggers holds (holdItemFind). Iterate calls it whether or not the
+// digest is on, since assignment takes the same items (assign.go). An
+// issue with nothing waiting has no entry. If waitFind fails, that's
+// logged, and the issue keeps the items it had, as one whose step 1
+// failed does.
+func (d *Daemon) digestCacheSet(s *github.Snapshot, inputs []github.Comment, dirt Dirt, holds []discTrigger) {
 	st := d.Step
-	items, err := waitFind(waitInput{Owner: st.Owner, Repo: st.Repo, AppSlug: st.AppSlug, S: s, Dirt: dirt, Inputs: inputs})
+	items, err := waitFind(waitInput{Owner: st.Owner, Repo: st.Repo, AppSlug: st.AppSlug, S: s, Dirt: dirt, Inputs: inputs, Holds: holds})
 	if err != nil {
 		logr.Errorf("%s/%s#%d keeps the items it had on the digest: %v", st.Owner, st.Repo, s.Number, err)
 		return
@@ -657,6 +658,31 @@ func (d *Daemon) digestCacheSet(s *github.Snapshot, inputs []github.Comment, dir
 		d.digestCache = map[int][]waitItem{}
 	}
 	d.digestCache[s.Number] = items
+}
+
+// holdItemFind returns the open discussion triggers on s, as its visit
+// left it, with its dirty content dirt, for its hold item (waitFind,
+// #192), if s is held, and nil otherwise, with no request. Iterate calls
+// it at the end of the visit, after step 1 and the other visits, so the
+// item shows what's open once step 1 has resolved what it could, and the
+// records its hold and notices just wrote (discRecords): T4's (#188)
+// resolutions in step 1 come before it. It asks the visit's trust
+// (trustOnceTrust), which step 1's own look for triggers (Step.discussion)
+// asked already, so it makes no permission request of its own. Edit
+// histories are kept by the Applier, so it reads none either. The one
+// read it may repeat is the reactions of a writer's own edited comment
+// that no marker records (discOwnEdits), as for an own edit whose notice
+// discLost held back: that read is conditional, so on an unchanged pass
+// it costs no rate limit.
+func (st *Step) holdItemFind(ctx context.Context, s *github.Snapshot, dirt Dirt) ([]discTrigger, error) {
+	if s.Closed || state.Derive(s, st.AppSlug, dirt.Has).Stage != state.Held {
+		return nil, nil
+	}
+	found, err := st.discFind(ctx, s, dirt, st.trustOnceTrust())
+	if err != nil {
+		return nil, fmt.Errorf("the digest's hold item: %w", err)
+	}
+	return found, nil
 }
 
 // digestCacheRanked returns every issue's cached items, ranked by Q3a

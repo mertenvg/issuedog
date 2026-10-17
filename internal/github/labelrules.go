@@ -112,6 +112,10 @@ type LabelCheck struct {
 	// discussion trigger after a stage label set by hand is bounded by
 	// that event's time, not by the App's record of it, which comes later.
 	DiscLabelTimes map[int64]time.Time
+	// Closings are the issue's closed and reopened events, oldest first,
+	// from the same timeline, so judging a close or a reopen of an open
+	// issue costs no request (T6). CheckLabels acts on none of them.
+	Closings []Closing
 }
 
 // TypeEvent is the ID of the type change that stands, the state-error key
@@ -276,6 +280,10 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 				case m.Kind == "revert":
 					reverted[m.Fields["key"]] = true
 				}
+			}
+		case "closed", "reopened":
+			if cl, ok := closingOf(events[i]); ok {
+				found.Closings = append(found.Closings, cl)
 			}
 		case "renamed":
 			found.DiscRenames = append(found.DiscRenames, DiscRename{ID: e.GetID(), By: Author{Login: e.GetActor().GetLogin(), Type: e.GetActor().GetType()},

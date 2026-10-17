@@ -43,8 +43,8 @@ import (
 // at before, before the label rules would put the label back to the stage
 // the markers left show.
 //
-// T6 (#190) adds closes as a kind of its own, and restores through
-// discRestore what a close hides too. T8 (#192) lists the open triggers of
+// T6 (#190) adds closes as a kind of its own (closing.go). A close hides no
+// marker, so discRestore has nothing to restore for one. T8 (#192) lists the open triggers of
 // a held issue in the digest and assignment.
 
 // discKind is what kind of act a discussion trigger is.
@@ -86,6 +86,9 @@ type discTrigger struct {
 // defused, the title is defused and its tags escaped (inline), and the
 // caller escapes the whole (github.Escape).
 func discWhat(tr discTrigger) string {
+	if tr.Kind == discClose {
+		return closingWhat(tr)
+	}
 	if tr.FromRecord {
 		return discWhatRecorded(tr)
 	}
@@ -509,7 +512,9 @@ func discOpenAfter(b discBound, records map[string]int64) discOpen {
 //     user's, changes nothing anyone trusted wrote, so it's none;
 //   - their rename of the issue, from s.DiscRenames, which CheckLabels set
 //     from the timeline it reads, so this costs no request; it acts on
-//     none of them itself. A snapshot CheckLabels hasn't checked has none.
+//     none of them itself. A snapshot CheckLabels hasn't checked has none;
+//   - their close of the issue, from s.Closings, read the same way, which
+//     the App reverted when it judged the close (closingTriggers).
 //
 // An open act a marker records is one, with no question: it was judged
 // when the marker was written. Each such key is a trigger from its record,
@@ -624,6 +629,11 @@ func (a *Applier) discFindResolved(ctx context.Context, s *github.Snapshot, d Di
 			found = append(found, discTrigger{Kind: discRename, Key: key, By: e.By.Login, At: e.At, Title: e.Title})
 		}
 	}
+	closes, err := a.closingTriggers(ctx, s, open, who) // T6 (closing.go)
+	if err != nil {
+		return nil, wrap(err)
+	}
+	found = append(found, closes...)
 	found = append(found, discRecorded(s, records, open, found)...)
 	// A key a marker can't hold, as from an event ID GitHub changed the
 	// shape of, could hold nothing, and would fail every pass.
@@ -684,7 +694,7 @@ func discRecorded(s *github.Snapshot, records map[string]int64, open discOpen, f
 		if o, _ := open(key, at, 0); have[key] || !o {
 			continue
 		}
-		more = append(more, tr)
+		more = append(more, closingFromKey(s, tr))
 	}
 	return more
 }
@@ -699,8 +709,9 @@ func discRecorded(s *github.Snapshot, records map[string]int64, open discOpen, f
 // none of these has, which is still a trigger, failing closed: a marker
 // the App wrote recorded it.
 //
-// T6 (#190): a close is keyed by its timeline event ID too, so a recorded
-// one is a rename here until T6 tells them apart.
+// A close is keyed by its timeline event ID too, so a recorded one is a
+// rename here; discRecorded tells the two apart by the timeline
+// (closingFromKey).
 func discFromKey(key string, recordedAt time.Time) discTrigger {
 	tr := discTrigger{Key: key, At: recordedAt, FromRecord: true}
 	switch {

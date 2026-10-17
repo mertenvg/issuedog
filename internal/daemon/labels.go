@@ -94,7 +94,10 @@ var ErrLabelsHeld = errors.New("labels held back until their events explain them
 // writes are added to s, and s.SettingsEvent and s.TypeEvent are set, the
 // latter from the issue types or the type:* labels, as a.IssueTypes says,
 // and so are s.DiscRenames and s.DiscLabelTimes, for the discussion
-// triggers (discussion.go).
+// triggers (discussion.go), and s.Closings. Before an override or a
+// disagreement is acted on, a reopen of an issue with a closed stage is
+// judged (closingReopen), which acts on neither once it holds or closes
+// the issue.
 // On a repo that uses issue types, the issue type is guarded too
 // (issueTypeRevertGuard): an untrusted change of it is reverted, and s.Type
 // set back with it, and a type no event explains yet is held back, as such
@@ -163,8 +166,17 @@ func (a *Applier) checkLabels(ctx context.Context, s *github.Snapshot, trust git
 		s.Type, s.TypeFromLabels = strings.ToLower(rv.To), rv.To == ""
 		s.SetLabels(s.Labels)
 	}
+	s.Closings = found.Closings
 	if len(held) > 0 {
 		return fmt.Errorf("labels of %s/%s#%d: %v: %w", a.Owner, a.Repo, s.Number, held, ErrLabelsHeld)
+	}
+	// A reopen of an issue with a closed stage is judged before the label
+	// rules put the closed stage back to the latest marker's (closing.go).
+	if done, err := a.closingReopen(ctx, s, trust, dirty, events); done || err != nil {
+		if err != nil {
+			return fmt.Errorf("labels of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
+		}
+		return nil
 	}
 	if restore != nil {
 		restored, err := restore(events)
@@ -270,6 +282,13 @@ func (a *Applier) disagreement(ctx context.Context, s *github.Snapshot, dirty fu
 	if ev.Marker == "" {
 		desc = fmt.Sprintf("%s on %s/%s#%d names no stage", ev.Label, a.Owner, a.Repo, s.Number)
 		text = fmt.Sprintf("`%s` isn't a pipeline stage, so I've removed it.", ev.Label)
+	}
+	// A closed stage is valid only on a closed issue (closing.go).
+	switch {
+	case ev.Marker == "" && closingLabel(ev.Label):
+		text = fmt.Sprintf("`%s` is only for a closed issue, so I've removed it.", ev.Label)
+	case slices.ContainsFunc(ev.Stages, closingLabel):
+		text += " `stage:completed` and `stage:discarded` are only for a closed issue."
 	}
 	switch {
 	case ev.Unfinished:

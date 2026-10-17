@@ -43,6 +43,9 @@ type Applier struct {
 	histories     histories                // see Dirty
 	discNoRecords map[string]*discNoRecord // logins with no permission record, in lower case (discNoRecord)
 	unexplained   github.Unexplained
+
+	closingBy    map[string]github.ClosingCloser // how each close was made, by its event's node ID (closingCloser)
+	closingAgain map[int]closingListed           // issues the App closed again, after an untrusted reopen, as it left them (closingCloseAgain)
 }
 
 // Move is one transition to apply.
