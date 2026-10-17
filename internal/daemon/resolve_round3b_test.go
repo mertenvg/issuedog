@@ -355,3 +355,113 @@ func TestResolveRound3EditedBeforeHoldOnPath(t *testing.T) {
 		t.Errorf("#%d: labels %q, newest comment %q; want it at clarifying", low, got, newestComment(l.f, low))
 	}
 }
+
+// Mutants #22 and #40 again, with #1 held only by #3's /hold: #3's /resume
+// ends that on #1, but not #2's /hold, posted below it and after it, whose
+// pass came first, so #1 stays held by it, as #2 does, until #2's
+// /resume.
+func TestResolveRound3PathHoldPostedAfterResumeAlone(t *testing.T) {
+	f := discFake(t)  // #1
+	file(f, 0, ready) // #2
+	file(f, 0, ready) // #3
+	f.SetParent(1, 2)
+	f.SetParent(2, 3)
+	f.AddComment(3, "owner", "/hold")
+	resolveSettle(t, f, 3, 2, 1)
+	f.AddComment(3, "owner", "/resume")
+	f.AddComment(2, "owner", "/hold")
+	resolveSettle(t, f, 2)
+	resolveSettle(t, f, 3, 2, 1)
+	resolveLabels(t, f, "after #3's /resume", "held", "held", "ready")
+	f.AddComment(2, "owner", "/resume")
+	resolveSettle(t, f, 3, 2, 1)
+	resolveLabels(t, f, "after #2's /resume", "ready", "ready", "ready")
+}
+
+// A /hold on a descendant posted after the /resume, that the App hasn't
+// handled yet, isn't one the /resume judges: #2's /resume takes #1 back,
+// and #1's /hold, handled next, holds it again with a marker of its own.
+func TestResolveRound3OwnHoldAfterResumeUnhandled(t *testing.T) {
+	f := discFake(t)  // #1
+	file(f, 0, ready) // #2
+	f.SetParent(1, 2)
+	f.AddComment(2, "owner", "/hold")
+	resolveSettle(t, f, 2, 1)
+	f.AddComment(2, "owner", "/resume")
+	own := f.AddComment(1, "owner", "/hold")
+	resolveSettle(t, f, 2)
+	resolveLabels(t, f, "after #2's /resume", "ready", "ready")
+	resolveSettle(t, f, 1)
+	resolveLabels(t, f, "after #1's /hold", "held", "ready")
+	if body := newestComment(f, 1); !strings.Contains(body, fmt.Sprintf("reason=owner cmd=%d", own)) {
+		t.Errorf("#1: newest comment %q; want the marker of its own /hold", body)
+	}
+}
+
+// #3 > #2 > #1, #3 held by hand and #1 for mallory's comment, so the
+// owner's /hold on #3 writes its marker on #2 alone. Once the 👍 resolves
+// mallory's comment, #1's record names that /hold as posted on #3. The
+// owner deletes it: for #2, it now counts as posted on #2, the farthest
+// issue with its marker, so #3's /resume leaves #2 held; but #1's record
+// still says #3, so the same /resume sends #1 to clarifying, judged by the
+// record alone, not again as posted on #2, which would leave #1 held for
+// the /resume's move to name.
+func TestResolveRound3HeldRecordMarkedBelow(t *testing.T) {
+	f := discFake(t)  // #1
+	file(f, 0, ready) // #2
+	file(f, 0, ready) // #3
+	f.SetParent(1, 2)
+	f.SetParent(2, 3)
+	f.RemoveLabel(3, "owner", "stage:ready")
+	f.AddLabel(3, "owner", "stage:held")
+	resolveSettle(t, f, 3)
+	w := f.AddComment(1, "mallory", "Wait.")
+	resolveSettle(t, f, 1)
+	hold := f.AddComment(3, "owner", "/hold")
+	resolveSettle(t, f, 3, 2, 1)
+	f.AddReaction(w, "owner", "+1")
+	resolveSettle(t, f, 3, 2, 1)
+	if body := newestComment(f, 1); !strings.Contains(body, fmt.Sprintf("held=%d heldon=3 ", hold)) {
+		t.Fatalf("#1: newest comment %q; want the record naming #3's /hold, posted on #3", body)
+	}
+	f.DeleteComment(hold)
+	f.AddComment(3, "owner", "/resume")
+	resolveSettle(t, f, 3, 2, 1)
+	resolveLabels(t, f, "after #3's /resume", "clarifying", "held", "ready")
+	if body := newestComment(f, 3); strings.Contains(body, "Still on hold") {
+		t.Errorf("#3: newest comment %q; want #1 out of held by the /resume itself, named by none", body)
+	}
+}
+
+// The record of a comment deleted above, that may have been a /hold, and
+// the deletion itself, are one hold to a /resume that ends it: #1 > #2,
+// #2 held for mallory's comment, and the deletion on #1 recorded once the
+// 👍 resolves it; then mallory comments on #2 again, and #1's /resume
+// records the end of that one hold once, as #2 stays held for her new
+// comment.
+func TestResolveRound3GoneRecordedOnce(t *testing.T) {
+	l := newResolveLoop(t, newFake(t))
+	top := l.task(0)
+	low := l.task(top)
+	l.settle("start")
+	w := l.f.AddComment(low, "mallory", "Wait.")
+	l.settle("mallory's comment")
+	c := l.f.AddComment(top, "owner", "A note.")
+	l.delete(top, c)
+	l.settle("mallory's deletion")
+	l.thumbNotice(top)
+	l.f.AddReaction(w, "owner", "+1")
+	l.settle("the 👍s")
+	if !anyComment(l.f, low, fmt.Sprintf("a write collaborator deleted a comment on #%d during this hold", top)) {
+		t.Fatalf("#%d: newest comment %q; want the record of the deletion", low, newestComment(l.f, low))
+	}
+	l.f.AddComment(low, "mallory", "Wait again.")
+	l.settle("mallory's next comment")
+	l.f.AddComment(top, "owner", "/resume")
+	l.settle("the /resume")
+	body := newestComment(l.f, low)
+	if n := strings.Count(body, fmt.Sprintf("<!-- issuedog:ended reason=owner key=g%d-", top)); n != 1 {
+		t.Errorf("#%d: newest comment %q; want one record that the deletion's hold ended, not %d", low, body, n)
+	}
+	l.stages("after the /resume", []int{top, low}, "clarifying", "held")
+}
