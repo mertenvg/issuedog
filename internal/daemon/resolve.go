@@ -1280,7 +1280,7 @@ func ResolveByReaction(trust github.Trust) func(ctx context.Context, a *Applier,
 // clarifying here, saying the discussion is resolved; but where an
 // ancestor's /hold keeps it held, its record says no discussion ended, and
 // that ancestor's /resume sends it back to at (resolveEnded,
-// resolvePeriodOf). T10 (#194) settles which rule SPEC keeps.
+// resolvePeriodOf). SPEC §6.4 states both ("With no act").
 func (a *Applier) resolveLeave(ctx context.Context, s *github.Snapshot, d Dirt, trust github.Trust) error {
 	is := state.Derive(s, a.AppSlug, d.Has)
 	if is.Stage != state.Held {
@@ -1359,9 +1359,10 @@ func (a *Applier) resolveLeave(ctx context.Context, s *github.Snapshot, d Dirt, 
 // even with no new resolution, as when the last trigger went with no act
 // to resolve it, a comment its author deleted: then it has no resolved
 // time, and says no discussion ended (resolvePeriodOf). If the /hold it
-// names is deleted, the ancestor's /resume ends it only where a marker on
-// that ancestor, or above it, names it (madeAbove); else the issue stays
-// held until /resume here. Nor does
+// names is deleted, its heldon= entry still names the issue it counted as
+// posted on, so /resume there, or between, ends it (madeAboveSet.made); a
+// record from before heldon=, with none, leaves it to where a marker on
+// that ancestor, or above it, names it (madeAbove), else to /resume here. Nor does
 // "`/resume` there" reach the issue once it's unlinked from that ancestor
 // since: the record's words are as they stood when it was written, and
 // /resume here still ends the /hold.
