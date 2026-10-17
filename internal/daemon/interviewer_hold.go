@@ -95,12 +95,11 @@ func ivHoldSpanOf(s *github.Snapshot, appSlug string, dirty func(int64) bool) iv
 		to := state.Stage(m.Fields["to"])
 		switch {
 		case to == state.Held && (!held || state.Stage(m.Fields["from"]) != state.Held):
-			held, start, at = true, id, state.Stage(m.Fields["at"])
-			if !sp.Period {
-				from = bound
-				if v, err := strconv.ParseInt(m.Fields[state.FieldSeen], 10, 64); err == nil && v > 0 {
-					from = v
-				}
+			// Its bound is From only if the move out of it begins a period:
+			// a hold from inside one doesn't change From.
+			held, start, at, from = true, id, state.Stage(m.Fields["at"]), bound
+			if v, err := strconv.ParseInt(m.Fields[state.FieldSeen], 10, 64); err == nil && v > 0 {
+				from = v
 			}
 		case to == state.Held:
 		default:
@@ -270,22 +269,22 @@ func ivHoldMove(outcome string, origin state.Stage) (state.Stage, state.Trigger)
 // clarifying after a hold (#189), and what it does after the move.
 type ivHoldFields struct {
 	origin state.Stage // the stage the issue came from (ivHoldOrigin), or ""
-	to     state.Stage // where the run's move went, once it's written
 	revise int64       // the /revise the move names (ivHoldRevise), or 0
 }
 
 // holdFields returns what Apply adds to r's move on an issue in state is:
 // once the move is written (moved), what its marker says, so a replay
-// names the same /revise, and goes where it went, whatever was read
-// since; else the origin of the clarifying after a hold it's at, if it's
-// at one, and from spec-review, the /revise that waited through the hold
-// that the run read, bounded by its seen (ivHoldRevise).
+// names the same /revise, and an unchanged outcome goes back to the same
+// origin, whatever was read since; else the origin of the clarifying
+// after a hold it's at, if it's at one, and from spec-review, the /revise
+// that waited through the hold that the run read, bounded by its seen
+// (ivHoldRevise).
 func (iv *Interviewer) holdFields(ctx context.Context, a *Applier, r Result, is state.Issue, moved bool) (ivHoldFields, error) {
 	if moved {
 		for _, m := range is.Markers {
 			if m.Kind == "transition" && m.Fields["run"] == r.RunID {
 				id, _ := state.Key{Field: "cmd", ID: m.Fields["cmd"]}.Comment() // 0 for none
-				return ivHoldFields{origin: state.Stage(m.Fields["origin"]), to: state.Stage(m.Fields["to"]), revise: id}, nil
+				return ivHoldFields{origin: state.Stage(m.Fields["origin"]), revise: id}, nil
 			}
 		}
 	}

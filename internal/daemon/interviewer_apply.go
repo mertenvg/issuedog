@@ -242,9 +242,6 @@ func (iv *Interviewer) Apply(ctx context.Context, a *Applier, r Result) error {
 	notify := iv.Daemon.Config.Notify
 	to, trigger := ivHoldMove(out.Outcome, hold.origin)
 	if out.Outcome == outcomeUnchanged {
-		if hold.to != "" {
-			to = hold.to // written already: where it went
-		}
 		m := hold.set(r.Move(to, trigger))
 		m.Text = renderUnchanged(out, to, ivHoldStanding(r.S, a.AppSlug, r.Dirt, to), notify)
 		if err := a.Transition(ctx, r.S, r.Dirt.Has, m); err != nil {

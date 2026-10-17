@@ -306,8 +306,8 @@ func TestIvHoldContext(t *testing.T) {
 			t.Errorf("issue.md lacks\n%s\nin\n%s", w, files["issue.md"])
 		}
 	}
-	if strings.Contains(files["issue.md"], "<!-- issuedog:transition from=clarifying to=planning") {
-		t.Errorf("issue.md has mallory's marker unescaped:\n%s", files["issue.md"])
+	if strings.Contains(files["issue.md"], "<!-- issuedog:transition from=clarifying to=planning") || strings.Contains(files["issue.md"], "None:") {
+		t.Errorf("issue.md has mallory's marker unescaped, or says there's no owner input:\n%s", files["issue.md"])
 	}
 	if w := "Before the hold it was at `spec-review`. If nothing in the discussion changes the issue, return `unchanged`"; !strings.Contains(files["system.md"], w) {
 		t.Errorf("system.md lacks %q:\n%s", w, files["system.md"])
@@ -522,4 +522,49 @@ func TestIvHoldResumeAgrees(t *testing.T) {
 			}
 		})
 	}
+}
+
+// #185's verify note: after /resume back to clarifying, input.md labels
+// the answers to the round asked before the hold as answers to it, one
+// posted while held included. And after the owner sets clarifying by hand
+// on an issue held at planning, a comment posted at planning before the
+// hold says so, apart from one posted while held.
+func TestIvHoldInputLabels(t *testing.T) {
+	t.Run("a /resume back to a round", func(t *testing.T) {
+		f := newFake(t)
+		n, entry := ivFiled(f, "epic", false, "from=intake to=clarifying event=5")
+		ivAsked(f, n, 1, 3, entry)
+		before := f.AddComment(n, "owner", "1a")
+		f.AddComment(n, app, fmt.Sprintf("On hold.\n\n<!-- issuedog:transition from=clarifying to=held at=clarifying reason=owner cmd=90 seen=%d -->", entry))
+		during := f.AddComment(n, "owner", "2b")
+		f.AddComment(n, app, fmt.Sprintf("Resumed.\n\n<!-- issuedog:transition from=held to=clarifying cmd=91 seen=%d -->", entry))
+		after := f.AddComment(n, "owner", "3c")
+		files := ivContext(t, ivDaemon(t, f, newOrigin(t)), n)
+		for _, w := range []string{
+			fmt.Sprintf("## Comment %d by owner: an answer to round 1\n\n```text\n1a\n```", before),
+			fmt.Sprintf("## Comment %d by owner: an answer to round 1, posted while the issue was on hold\n\n```text\n2b\n```", during),
+			fmt.Sprintf("## Comment %d by owner: an answer to round 1\n\n```text\n3c\n```", after),
+		} {
+			if !strings.Contains(files["input.md"], w) {
+				t.Errorf("input.md lacks\n%s\nin\n%s", w, files["input.md"])
+			}
+		}
+	})
+	t.Run("an override out of a hold at planning", func(t *testing.T) {
+		f := newFake(t)
+		n, entry := ivFiled(f, "epic", false, "from=spec-review to=planning event=7 by=owner")
+		before := f.AddComment(n, "owner", "Plan it in two phases.")
+		f.AddComment(n, app, fmt.Sprintf("On hold.\n\n<!-- issuedog:transition from=planning to=held at=planning reason=owner cmd=90 seen=%d -->", entry))
+		during := f.AddComment(n, "owner", "And keep it small.")
+		f.AddComment(n, app, fmt.Sprintf("Overridden.\n\n<!-- issuedog:transition from=held to=clarifying event=92 by=owner seen=%d -->", entry))
+		files := ivContext(t, ivDaemon(t, f, newOrigin(t)), n)
+		for _, w := range []string{
+			fmt.Sprintf("## Comment %d by owner: posted at `planning`, before the hold\n\n```text\nPlan it in two phases.\n```", before),
+			fmt.Sprintf("## Comment %d by owner: posted while the issue was on hold\n\n```text\nAnd keep it small.\n```", during),
+		} {
+			if !strings.Contains(files["input.md"], w) {
+				t.Errorf("input.md lacks\n%s\nin\n%s", w, files["input.md"])
+			}
+		}
+	})
 }

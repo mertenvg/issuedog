@@ -131,6 +131,7 @@ func TestIvHoldCheckUnchanged(t *testing.T) {
 		"with a type":                    {typed, state.SpecReview, ruleOutcome},
 		"with questions":                 {asked, state.SpecReview, ruleOutcome},
 		"a spec after a hold, as before": {agentOutput(t, "spec"), state.SpecReview, ""},
+		"with a message too long":        {interviewOutput{Outcome: outcomeUnchanged, Message: strings.Repeat("a", maxText)}, state.SpecReview, ruleLength},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := specFacts()
@@ -232,6 +233,13 @@ func TestIvHoldSpanOf(t *testing.T) {
 			t.Errorf("after %d markers: %+v, want %+v", c.upto, got, c.want)
 		}
 	}
+	// A hold with no seen takes the bound the transition before it set.
+	s := waitSnap(7, nil, "<!-- issuedog:transition from=clarifying to=spec-review run=r1 seen=5 -->",
+		"<!-- issuedog:transition from=spec-review to=held at=spec-review origin=spec-review reason=discussion event=c9 -->",
+		"<!-- issuedog:transition from=held to=clarifying at=spec-review origin=spec-review event=h702 -->")
+	if got := ivHoldSpanOf(s, waitSlug, func(int64) bool { return false }); got.From != 5 || !got.Period {
+		t.Errorf("a hold with no seen: %+v, want From 5", got)
+	}
 }
 
 // #185's verify note: after /resume back to clarifying, the digest still
@@ -290,5 +298,43 @@ func TestIvHoldLatest(t *testing.T) {
 	}
 	if m := ivHoldLatest(state.Issue{Markers: []github.Marker{hold}}, true); m.Fields["to"] != "held" {
 		t.Errorf("a hold alone = %+v, want the hold", m)
+	}
+}
+
+// With no owner input, issue.md's "After a hold" says so, and with no hold
+// left, it doesn't name one.
+func TestIvHoldSectionNone(t *testing.T) {
+	got := ivHoldSection(waitSnap(7, nil, "A note."), state.Planning, ivHoldSpan{}, ivHoldInput{Approved: map[int64]string{}})
+	if !strings.HasSuffix(got, "\n\nNone: nobody approved or countered a comment.\n") || strings.Contains(got, "latest hold") ||
+		!strings.Contains(got, "Before its first discussion hold it was at `planning`.") {
+		t.Errorf("ivHoldSection =\n%s", got)
+	}
+}
+
+// ivHoldStanding names the latest revision only at spec-review, while the
+// body isn't dirty, still has its hash, and nothing hides the revision.
+func TestIvHoldStanding(t *testing.T) {
+	none := Dirt{}
+	s := waitSnap(7, nil, waitRevision(1, "The spec."))
+	want := "Revision 1 of the spec, `" + state.BodyHash("The spec.") + "`, still stands: to approve it, react 👍 to it, or post `/approve`."
+	if got := ivHoldStanding(s, waitSlug, none, state.SpecReview); got != want {
+		t.Errorf("at spec-review = %q, want %q", got, want)
+	}
+	if got := ivHoldStanding(s, waitSlug, none, state.Planning); got != "" {
+		t.Errorf("at planning = %q, want none", got)
+	}
+	if got := ivHoldStanding(s, waitSlug, Dirt{state.BodyID: "eve"}, state.SpecReview); got != "" {
+		t.Errorf("with a dirty body = %q, want none", got)
+	}
+	hidden := waitSnap(7, nil, waitRevision(1, "The spec."), "A note.")
+	if got := ivHoldStanding(hidden, waitSlug, Dirt{702: "eve"}, state.SpecReview); got != "" {
+		t.Errorf("with a dirty App comment after it = %q, want none", got)
+	}
+	s.Body = "The spec, edited."
+	if got := ivHoldStanding(s, waitSlug, none, state.SpecReview); got != "" {
+		t.Errorf("with another body = %q, want none", got)
+	}
+	if got := ivHoldStanding(waitSnap(7, nil), waitSlug, none, state.SpecReview); got != "" {
+		t.Errorf("with no revision = %q, want none", got)
 	}
 }
