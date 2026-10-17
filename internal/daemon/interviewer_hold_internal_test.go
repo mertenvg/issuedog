@@ -37,6 +37,8 @@ func TestIvHoldInputOf(t *testing.T) {
 	eve := f.AddComment(n, "eve", "me too")
 	f.AddReaction(eve, "eve", "+1")
 	f.AddReaction(eve, "owner", "-1")
+	hearted := f.AddComment(n, "mallory", "heart me")
+	f.AddReaction(hearted, "owner", "heart")
 	bot := f.AddComment(n, "renovate[bot]", "bump")
 	f.AddReaction(bot, "owner", "+1")
 	dirty := f.AddComment(n, "mallory", "dirty")
@@ -67,9 +69,91 @@ func TestIvHoldInputOf(t *testing.T) {
 			read = append(read, r.Path)
 		}
 	}
-	want := []string{fmt.Sprintf("/issues/comments/%d/reactions", approved), fmt.Sprintf("/issues/comments/%d/reactions", eve)}
+	want := []string{fmt.Sprintf("/issues/comments/%d/reactions", approved), fmt.Sprintf("/issues/comments/%d/reactions", eve),
+		fmt.Sprintf("/issues/comments/%d/reactions", hearted)}
 	if !slices.Equal(read, want) {
 		t.Errorf("read %q, want %q", read, want)
+	}
+	// The bound itself is out: a comment at from isn't the discussion's.
+	at, err := ivHoldInputOf(t.Context(), a, tc, s, Dirt{dirty: "eve"}, before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := at.Approved[before]; ok || at.Approved[approved] != "owner" {
+		t.Errorf("from comment %d: approved %v, want only %d", before, at.Approved, approved)
+	}
+}
+
+// A 👍 in the second of the comment's last edit came before it, so it
+// approves nothing; and a write collaborator's edit is accepted only by
+// the record of that last edit, not of an earlier one.
+func TestIvHoldInputOfEdits(t *testing.T) {
+	f := githubtest.New(t, "o/r", "issuedog")
+	n := f.AddIssue("owner", "Quotes", "body")
+	from := f.AddComment(n, "issuedog[bot]", "<!-- issuedog:transition from=spec-review to=held at=spec-review reason=discussion event=c1 -->")
+	same := f.AddComment(n, "mallory", "same second")
+	f.AddReaction(same, "owner", "+1")
+	f.EditComment(same, "mallory", "same second, edited")
+	twice := f.AddComment(n, "mallory", "edited twice")
+	f.AddReaction(twice, "owner", "+1")
+	f.EditComment(twice, "mallory", "edited once")
+	c := f.Client(t)
+	s, err := c.Snapshot(t.Context(), "o", "r", n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := s.Comments[len(s.Comments)-1].Edit.At
+	f.AddComment(n, "issuedog[bot]", "A notice.\n\n<!-- issuedog:notice key="+discEditKey(twice, first)+" -->")
+	f.AddComment(n, "issuedog[bot]", "<!-- issuedog:transition from=held to=clarifying at=spec-review origin=spec-review cmd=99 seen=1 -->")
+	f.EditComment(twice, "mallory", "edited twice")
+	a := &Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog"}
+	if s, err = c.Snapshot(t.Context(), "o", "r", n); err != nil {
+		t.Fatal(err)
+	}
+	rs, err := c.Reactions(t.Context(), "o", "r", same)
+	if err != nil || len(rs) != 1 {
+		t.Fatalf("reactions on %d: %v, %v", same, rs, err)
+	}
+	for i := range s.Comments {
+		if s.Comments[i].ID == same {
+			s.Comments[i].Edit.At = rs[0].CreatedAt // in the 👍's second
+		}
+	}
+	tc := trustCache{st: &Step{Applier: a, Trust: ivHoldTestTrust{"owner": true}}, verdicts: map[string]bool{}}
+	in, err := ivHoldInputOf(t.Context(), a, tc, s, Dirt{}, from)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(in.Approved) != 0 {
+		t.Errorf("approved %v, want neither %d nor %d", in.Approved, same, twice)
+	}
+}
+
+// ivHoldAccepted takes the first move out of held after the record: one
+// keyed by a command or a discussion's end accepted the trigger; a stage
+// set by hand or a close didn't, nor does a later move after one.
+func TestIvHoldAccepted(t *testing.T) {
+	const notice = "<!-- issuedog:notice key=e5-9 -->"
+	for name, c := range map[string]struct {
+		after []string
+		want  bool
+	}{
+		"a /resume":                {[]string{"<!-- issuedog:transition from=held to=spec-review cmd=9 seen=1 -->"}, true},
+		"a discussion's end":       {[]string{"<!-- issuedog:transition from=held to=clarifying at=spec-review origin=spec-review event=h700 seen=1 -->"}, true},
+		"a stage set by hand":      {[]string{"<!-- issuedog:transition from=held to=spec-review by=owner event=12 seen=1 -->"}, false},
+		"a close":                  {[]string{"<!-- issuedog:transition from=held to=closed event=13 -->"}, false},
+		"still held":               {[]string{"<!-- issuedog:transition from=held to=held at=spec-review reason=owner by=owner event=14 seen=1 -->"}, false},
+		"by hand, then a /resume":  {[]string{"<!-- issuedog:transition from=held to=spec-review by=owner event=12 seen=1 -->", "<!-- issuedog:transition from=spec-review to=held at=spec-review reason=owner cmd=8 seen=1 -->", "<!-- issuedog:transition from=held to=spec-review cmd=9 seen=1 -->"}, false},
+		"held again, then resumed": {[]string{"<!-- issuedog:transition from=held to=held at=spec-review reason=owner by=owner event=14 seen=1 -->", "<!-- issuedog:transition from=held to=spec-review cmd=9 seen=1 -->"}, true},
+	} {
+		s := waitSnap(7, nil, append([]string{"<!-- issuedog:transition from=spec-review to=held at=spec-review reason=discussion event=c5 seen=1 -->", notice}, c.after...)...)
+		if got := ivHoldAccepted(s, waitSlug, func(int64) bool { return false }, 702); got != c.want {
+			t.Errorf("%s: accepted %v, want %v", name, got, c.want)
+		}
+	}
+	s := waitSnap(7, nil, notice, "<!-- issuedog:transition from=held to=spec-review cmd=9 seen=1 -->")
+	if ivHoldAccepted(s, waitSlug, func(int64) bool { return false }, 702) {
+		t.Error("a record after the move out of held is accepted, want not")
 	}
 }
 

@@ -18,9 +18,9 @@ import (
 // the discussion gave, the /revise that waited through it, and what the
 // move into that clarifying says of what comes next (Q3b).
 
-// ivHoldOrigin returns the stage is was at before its first discussion
-// hold, while it's at the clarifying after one (state.Issue.AfterHold),
-// or "". Every marker the interviewer writes there carries it (SPEC §6.4),
+// ivHoldOrigin returns the stage the issue in state is was at before its
+// first discussion hold, while it's at the clarifying after one
+// (state.Issue.AfterHold), or "". Every marker the interviewer writes there carries it (SPEC §6.4),
 // and its unchanged outcome goes back there.
 func ivHoldOrigin(is state.Issue) state.Stage {
 	if !is.AfterHold() {
@@ -134,17 +134,17 @@ type ivHoldInput struct {
 //     with a 👍 by a trusted user, no bot and not the App, who is named.
 //     It reads the reactions of those comments only, so the 👍 is read
 //     whenever it came, before the hold ended or after. An approval
-//     approves what the approver read, not what the author writes later
-//     (SPEC §6.2), so the 👍 counts only if it came after the comment's
-//     last edit: the author's own edit is sanctioned, so it leaves the
-//     comment clean, and by someone without write access it's no trigger
-//     either (#189's verify). Times are to the second, so a 👍 in the
-//     edit's second came before it, as for the trigger (discOwnEdits).
-//     The one exception is a write collaborator's edit after the 👍 that
-//     the App recorded as a trigger, keyed by that last edit
-//     (discRecords): it's called only at the clarifying after a hold,
-//     out of held, so the hold's end accepted it, by its notice's 👍 or
-//     a /resume (SPEC §6.4). One whose record is lost stays untrusted;
+//     approves what the approver read, not what the author writes later,
+//     as SPEC §6.2 says of an untrusted author's edits after admission,
+//     so the 👍 counts only if it came after the comment's last edit: the
+//     author's own edit is sanctioned, so it leaves the comment clean,
+//     and by someone without write access it's no trigger either (#189's
+//     verify). Times are to the second, so a 👍 in the edit's second came
+//     before it, as for the trigger (discOwnEdits). The one exception is
+//     a write collaborator's edit after the 👍 that the App recorded as a
+//     trigger, keyed by that last edit (discRecords), and that a code
+//     owner accepted (ivHoldAccepted). One whose record is lost, or whose
+//     hold ended without accepting it, stays untrusted;
 //   - countered: each clean comment by a trusted user, other than a
 //     /hold or a /resume, which resolve nothing (resolveHoldCommand),
 //     after at least one comment by someone who isn't trusted.
@@ -174,9 +174,11 @@ func ivHoldInputOf(ctx context.Context, a *Applier, tc trustCache, s *github.Sna
 			if err != nil {
 				return ivHoldInput{}, fmt.Errorf("the 👍s on the discussion's comment %d: %w", c.ID, err)
 			}
-			accepted := false // a write collaborator's last edit, accepted as a trigger
-			if !c.Edit.At.IsZero() {
-				_, accepted = records[discEditKey(c.ID, c.Edit.At)]
+			// A write collaborator's last edit, accepted as a trigger. No
+			// record has an unedited comment's key.
+			accepted := false
+			if record, ok := records[discEditKey(c.ID, c.Edit.At)]; ok {
+				accepted = ivHoldAccepted(s, a.AppSlug, d.Has, record)
 			}
 			for _, r := range reactions {
 				if r.Content != "+1" || !accepted && !r.CreatedAt.After(c.Edit.At) {
@@ -194,6 +196,37 @@ func ivHoldInputOf(ctx context.Context, a *Applier, tc trustCache, s *github.Sna
 		}
 	}
 	return in, nil
+}
+
+// ivHoldAccepted reports whether a code owner accepted the discussion
+// trigger whose first record is in comment record (discRecords): whether
+// the first move out of held after it ended that trigger's hold by
+// accepting it. That's a move keyed by a command, cmd=, or by the end of a
+// discussion, event=h<the hold's comment> (resolveLeave). Neither key is
+// an override's or a close's, which are event=<timeline event id>.
+// It's sound because a trigger that isn't a comment, such as an edit, is
+// closed only by its notice's 👍 (resolver.notice), by a /resume on the
+// issue, which accepts every trigger made before it (heldStackEnds), or
+// by a move out of held that ends it without accepting it: a stage label
+// set by hand, an override with by= (SPEC §6.4), or a close. The end of a
+// discussion is written only once no trigger is open, so after each was
+// accepted. A command's move out of held is /resume's: on the issue, it
+// accepts the triggers before it, and keeps the issue held for any made
+// at or after it (resolveStays), so the move comes only after those are
+// accepted too; on an ancestor, it ends no discussion hold, so it moves the
+// issue only once none is left open. A record whose hold hasn't ended has
+// no such move, and isn't accepted yet.
+func ivHoldAccepted(s *github.Snapshot, appSlug string, dirty func(int64) bool, record int64) bool {
+	accepted, found := false, false
+	discMarkers(s, appSlug, dirty, func(id int64, _ time.Time, m github.Marker) {
+		if _, bounds := state.RoundBound(m, id); found || id <= record || !bounds ||
+			state.Stage(m.Fields["from"]) != state.Held || state.Stage(m.Fields["to"]) == state.Held {
+			return
+		}
+		found = true
+		accepted = m.Fields["cmd"] != "" || strings.HasPrefix(m.Fields["event"], "h")
+	})
+	return accepted
 }
 
 // ivHoldSection is issue.md's "After a hold" section (SPEC §6.4): the stage
