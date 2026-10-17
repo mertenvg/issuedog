@@ -237,6 +237,11 @@ func (a *Applier) override(ctx context.Context, s *github.Snapshot, dirty func(i
 			state.HeldStackFields(fields, h.Seen)
 		case to == state.Held:
 			fields["at"], fields["reason"] = string(is.Stage), "owner"
+			if is.AfterHold() {
+				// The clarifying after a hold carries its origin forward,
+				// a later hold of either kind included (SPEC §6.4).
+				fields["origin"] = string(discOrigin(is, is.Stage))
+			}
 			state.HeldStackFields(fields, is.Round)
 		case is.Stage == state.Held:
 			// Every hold ends (SPEC §6.4).

@@ -86,8 +86,9 @@ func holdItemTriggers(it waitItem) []holdItemTrigger {
 
 // holdItemKinds are a held issue 5 for each kind of trigger, each held by
 // it with the App's comment 503 (and its notice, but for a comment), and
-// the trigger itself. The last is a comment trigger known from its record
-// alone: comment 502 is gone.
+// the trigger itself. The "recorded" one is a comment trigger known from
+// its record alone: comment 502 is gone. The last is a write
+// collaborator's close (#190), which the App reopened.
 func holdItemKinds() []struct {
 	name string
 	s    *github.Snapshot
@@ -113,23 +114,29 @@ func holdItemKinds() []struct {
 			discTrigger{Kind: discRename, Key: "9001", By: "mallory", At: holdItemAt(2), Title: "Wait [x](https://evil.example) @eve <b>"}},
 		{"recorded", holdItemSnap(holdItemHeld(503, "c502", true, false)), nil,
 			discTrigger{Kind: discComment, Key: "c502", At: holdItemAt(3), ID: 502, FromRecord: true}},
+		{"close", holdItemSnap(holdItemHeld(503, "9002", true, true)), nil,
+			discTrigger{Kind: discClose, Key: "9002", By: "mallory", At: holdItemAt(2)}},
 	}
 }
 
 // Each kind of trigger on an issue a discussion hold holds is one hold
 // item, keyed by the hold marker's event, linked to the issue, with a
-// line for the trigger that links it and says how it's resolved. The
-// hold's comment ends in a cc line, so each is mentioned already.
+// line for the trigger that links it and says how it's resolved, as T4
+// resolves it (resolve.go): the App's deleted comment only by /resume
+// (resolveHitsApp), and a comment by any later comment but /hold or
+// /resume. The hold's comment ends in a cc line, so each is mentioned
+// already.
 func TestHoldItemKinds(t *testing.T) {
 	issue := "https://github.com/o/r/issues/5"
 	want := map[string]holdItemTrigger{
-		"comment": {Link: issue + "#issuecomment-502", How: "A code owner's 👍 on the comment approves it, and any later comment of theirs here counters it."},
+		"comment": {Link: issue + "#issuecomment-502", How: "A code owner's 👍 on the comment approves it, and any later comment of theirs here, other than `/hold` or `/resume`, counters it."},
 		"edit":    {Link: issue + "#issuecomment-503", How: "A code owner's 👍 on its notice accepts it."},
 		"own-edit": {Link: issue + "#issuecomment-503",
 			How: "A code owner's 👍 on its notice accepts it."},
-		"deletion": {Link: issue + "#issuecomment-503", How: "A code owner's 👍 on its notice accepts it."},
+		"deletion": {Link: issue + "#issuecomment-503", How: "It edited or deleted what may have been the App's record or a code owner's `/hold`, so only `/resume` here accepts it, not a 👍 on a notice."},
 		"rename":   {Link: issue + "#issuecomment-503", How: "A code owner's 👍 on its notice accepts it."},
-		"recorded": {Link: issue + "#issuecomment-503", How: "A later comment by a code owner here counters it."},
+		"recorded": {Link: issue + "#issuecomment-503", How: "A later comment by a code owner here, other than `/hold` or `/resume`, counters it."},
+		"close":    {Link: issue + "#issuecomment-503", How: "A code owner's 👍 on its notice accepts it."},
 	}
 	for _, c := range holdItemKinds() {
 		t.Run(c.name, func(t *testing.T) {
@@ -173,8 +180,10 @@ func holdItemStacked() (*github.Snapshot, []discTrigger) {
 // Under an owner hold, the key names the /hold's marker, cmd=502, which no
 // trigger changes. The comment and the deletion with no notice aren't
 // mentioned, so they announce the hold; the rename's and the recorded
-// edit's notices mentioned them. The deletion is resolved only by
-// /resume, and the owner hold is named.
+// edit's notices mentioned them. The deletion, made during the hold, which
+// may have hidden a /hold, and the body's edit, which may have hidden the
+// App's record (resolveHitsApp), are resolved only by /resume, and the
+// owner hold is named.
 func TestHoldItemStacked(t *testing.T) {
 	s, holds := holdItemStacked()
 	it := holdItemFindOne(t, s, nil, holds...)
@@ -183,10 +192,10 @@ func TestHoldItemStacked(t *testing.T) {
 		t.Errorf("key %s; want the /hold marker's, hold-5-cmd502", it.Key)
 	}
 	want := []holdItemTrigger{
-		{Trigger: holds[0], Link: issue + "#issuecomment-506", How: "A code owner's 👍 on its notice accepts it.", Mentioned: true},
-		{Trigger: holds[1], Link: issue + "#issuecomment-504", How: "A code owner's 👍 on the comment approves it, and any later comment of theirs here counters it."},
+		{Trigger: holds[0], Link: issue + "#issuecomment-506", How: "It edited or deleted what may have been the App's record or a code owner's `/hold`, so only `/resume` here accepts it, not a 👍 on a notice.", Mentioned: true},
+		{Trigger: holds[1], Link: issue + "#issuecomment-504", How: "A code owner's 👍 on the comment approves it, and any later comment of theirs here, other than `/hold` or `/resume`, counters it."},
 		{Trigger: holds[2], Link: issue + "#issuecomment-505", How: "A code owner's 👍 on its notice accepts it.", Mentioned: true},
-		{Trigger: holds[3], Link: issue, How: "It has no clean notice, as one may have been deleted or edited, so only `/resume` here accepts it."},
+		{Trigger: holds[3], Link: issue, How: "It edited or deleted what may have been the App's record or a code owner's `/hold`, so only `/resume` here accepts it, not a 👍 on a notice."},
 	}
 	if got := holdItemTriggers(it); !slices.Equal(got, want) {
 		t.Errorf("triggers\n%+v\nwant\n%+v", got, want)
@@ -228,6 +237,27 @@ func TestHoldItemKeyUnderHandSetHold(t *testing.T) {
 	}
 	if texts := waitTexts(it.Lines); !slices.Contains(texts, "It's on an owner hold too, so it stays held after these until `/resume` ends that.") {
 		t.Errorf("lines %q; want the hand-set hold named as an owner hold", texts)
+	}
+}
+
+// An owner hold that a /resume ended while the issue stayed held for a
+// later trigger (resolveResumed) is no longer named (resolveLeft): here
+// the issue's own /resume 504 ended the /hold 502, and mallory's comment
+// 505 keeps it held. One that only a request finds, as a /hold no marker
+// records, is named when waitInput.OwnerHeld says so.
+func TestHoldItemOwnerHoldEnded(t *testing.T) {
+	s := holdItemSnap(append(holdItemOwnerHeld(), holdItemComment(504, waitOwner, "/resume"), holdItemComment(505, holdItemMallory, "Wait."),
+		holdItemComment(506, waitApp, "This `/resume` ended the holds on this issue from before it, but it stays on hold for discussion.\n\n"+
+			"<!-- issuedog:ended reason=owner key=c502 cmd=504 -->\n<!-- issuedog:ended reason=discussion resolved=1767225840 cmd=504 -->"))...)
+	tr := discTrigger{Kind: discComment, Key: "c505", By: "mallory", At: holdItemAt(5), ID: 505}
+	owner := "It's on an owner hold too, so it stays held after these until `/resume` ends that."
+	if texts := waitTexts(holdItemFindOne(t, s, nil, tr).Lines); slices.Contains(texts, owner) {
+		t.Errorf("lines %q; want no owner hold named, as the /resume ended it", texts)
+	}
+	in := waitIn(s, nil)
+	in.Holds, in.OwnerHeld = []discTrigger{tr}, true
+	if texts := waitTexts(waitFindOne(t, in).Lines); !slices.Contains(texts, owner) {
+		t.Errorf("lines %q; want the owner hold named, as OwnerHeld says", texts)
 	}
 }
 
@@ -499,5 +529,36 @@ func TestHoldItemRank(t *testing.T) {
 	}
 	if fmt.Sprint(waitHold) != "hold" || waitKeyPrefix[waitHold] != "hold" {
 		t.Errorf("the hold kind is %q, prefixed %q; want hold for both", waitHold, waitKeyPrefix[waitHold])
+	}
+}
+
+// A trigger of a kind resolveByNotice doesn't know, as one recorded under a
+// key of no known shape, isn't accepted by a 👍 on its notice, so its line
+// says only /resume accepts it, and links the notice, 504, rather than the
+// hold's comment 503 that records it with no notice.
+func TestHoldItemUnknownKindNoticed(t *testing.T) {
+	s := holdItemSnap(holdItemHeld(503, "x1", true, false), holdItemNotice(504, "x1"))
+	hs := holdItemTriggers(holdItemFindOne(t, s, nil, discTrigger{Key: "x1", At: holdItemAt(4), FromRecord: true}))
+	if len(hs) != 1 || hs[0].How != "Only `/resume` here accepts it." || hs[0].Link != "https://github.com/o/r/issues/5#issuecomment-504" {
+		t.Errorf("triggers %+v; want one accepted only by /resume, linked to its notice", hs)
+	}
+}
+
+// A deletion made during the hold, of the owner's comment, with its
+// notice, is accepted only by /resume, as it may have hidden a /hold
+// (resolveHitsApp): one made before the hold began, which held the issue,
+// is accepted by a 👍 on its notice.
+func TestHoldItemDeletionDuringHold(t *testing.T) {
+	s := holdItemSnap(holdItemHeld(503, "c502", true, false), holdItemNotice(505, "dCDE_d1"))
+	during := discTrigger{Kind: discDeletion, Key: "dCDE_d1", By: "mallory", At: holdItemAt(4), Of: "owner"}
+	hs := holdItemTriggers(holdItemFindOne(t, s, nil, during))
+	if len(hs) != 1 || !strings.Contains(hs[0].How, "only `/resume` here accepts it") || hs[0].Link != "https://github.com/o/r/issues/5#issuecomment-505" {
+		t.Errorf("triggers %+v; want the deletion during the hold accepted only by /resume, linked to its notice", hs)
+	}
+	before := during
+	before.At = holdItemAt(2)
+	hs = holdItemTriggers(holdItemFindOne(t, s, nil, before))
+	if len(hs) != 1 || hs[0].How != "A code owner's 👍 on its notice accepts it." {
+		t.Errorf("triggers %+v; want the deletion before the hold accepted by its notice", hs)
 	}
 }

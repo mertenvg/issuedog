@@ -184,6 +184,14 @@ func TestInterviewerPending(t *testing.T) {
 			f.EditComment(f.AddComment(n, "owner", "1a"), "mallory", "1b")
 			return n
 		}, false},
+		// Until T5 (#189), no class runs at the clarifying after a hold, with
+		// answers or without (T4).
+		{"at the clarifying after a hold", entered("epic", false, "from=held to=clarifying at=spec-review origin=spec-review event=h9 seen=7"), false},
+		{"at the clarifying after a hold, with a trusted comment", func(f *githubtest.Fake) int {
+			n, _ := ivFiled(f, "story", false, "from=held to=clarifying at=spec-review origin=spec-review cmd=9 seen=7")
+			f.AddComment(n, "owner", "Go on.")
+			return n
+		}, false},
 		{"after a typed bug", func(f *githubtest.Fake) int {
 			n, entry := ivFiled(f, "bug", false, intake)
 			f.AddComment(n, app, fmt.Sprintf("Type: bug.\n\n<!-- issuedog:transition from=clarifying to=clarifying run=iv1 seen=%d -->", entry))

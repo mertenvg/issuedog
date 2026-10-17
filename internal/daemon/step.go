@@ -8,6 +8,7 @@ import (
 
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
+	"github.com/mertenvg/logr/v2"
 )
 
 // Step is loop step 1 (SPEC §8.1) for one issue at a time: it acts on label
@@ -28,7 +29,8 @@ type Step struct {
 // content (MarkDirty), the type (typeCheck), the discussion triggers
 // (discussion), trusted comments oldest first,
 // from the first again each time one takes the issue out of held, then
-// Reactions. Dirty
+// Reactions, and the comments again if a reaction trigger took the issue
+// out of held, as when a discussion hold ends (ResolveByReaction). Dirty
 // is read before CheckLabels, which needs it. Writes are added to s, and each
 // is checked first, so a pass that crashed part way can run again (SPEC
 // §5.2). It returns s's Inputs, which are only right after a Run that
@@ -89,21 +91,35 @@ func (st *Step) Run(ctx context.Context, s *github.Snapshot) ([]github.Comment, 
 	// this one after a crash does. A processed command is never applied
 	// again, so each restart needs a move out of held by a command not
 	// applied before, and there are no more of those than comments read.
-	for restarts := 0; ; restarts++ {
-		left, err := sweep()
-		if err != nil {
-			return nil, wrap(err)
-		}
-		if !left {
-			break
-		}
-		if restarts >= len(read) {
-			return nil, wrap(fmt.Errorf("the comments took the issue out of held more than %d times", len(read)))
+	sweeps := func() error {
+		for restarts := 0; ; restarts++ {
+			left, err := sweep()
+			if err != nil {
+				return err
+			}
+			if !left {
+				return nil
+			}
+			if restarts >= len(read) {
+				return fmt.Errorf("the comments took the issue out of held more than %d times", len(read))
+			}
 		}
 	}
+	if err := sweeps(); err != nil {
+		return nil, wrap(err)
+	}
 	if st.Reactions != nil {
+		held := state.Derive(s, st.AppSlug, d.Has).Stage == state.Held
 		if err := st.Reactions(ctx, st.Applier, s, d); err != nil {
 			return nil, wrap(err)
+		}
+		// A reaction trigger that took the issue out of held is a move out
+		// of held too, so the comments are handled again, as the next pass
+		// would, so it has nothing left to write.
+		if held && state.Derive(s, st.AppSlug, d.Has).Stage != state.Held {
+			if err := sweeps(); err != nil {
+				return nil, wrap(err)
+			}
 		}
 	}
 	return state.Derive(s, st.AppSlug, d.Has).Inputs(s, func(c github.Comment) bool { return counts[c.ID] }), nil
@@ -120,7 +136,7 @@ func (st *Step) counted(ctx context.Context, s *github.Snapshot, d Dirt) (map[in
 		t, seen := trusted[c.Author.Login]
 		if !seen {
 			var err error
-			if t, err = st.Trust.Trusted(ctx, c.Author.Login); err != nil {
+			if t, err = st.trustOnceTrust().Trusted(ctx, c.Author.Login); err != nil {
 				return nil, fmt.Errorf("trust %s: %w", c.Author.Login, err)
 			}
 			trusted[c.Author.Login] = t
@@ -141,7 +157,8 @@ func (st *Step) counted(ctx context.Context, s *github.Snapshot, d Dirt) (map[in
 // has moved on, one is only a 👎'd request whose reply was lost, which gets
 // it (reword). One the App never reacted to is left alone, such as one from
 // before #83, one by a user trusted only since, or one posted just before
-// the owner set the stage by hand.
+// the owner set the stage by hand. A command that would move the issue
+// waits while it's held or at the clarifying after a hold (state.Command.Waits).
 func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment) error {
 	is := state.Derive(s, st.AppSlug, d.Has)
 	named := is.Keys[state.CmdKey(c.ID)] // any reply marker included
@@ -191,6 +208,13 @@ func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github
 	case answer:
 		return st.react(ctx, c.ID, "+1")
 	case !isCmd:
+		return nil
+	case cmd.Waits(is):
+		// A command that would move the issue waits while it's held, or at
+		// the clarifying after a hold (#87's assumption 8): it's checked
+		// once the issue is at another stage, on a later pass, or in this
+		// one once a command takes the issue out of held (Run).
+		logr.Debugf("%s/%s#%d: /%s in comment %d waits: the issue is held, or at the clarifying after a hold", st.Owner, st.Repo, s.Number, cmd.Name, c.ID)
 		return nil
 	}
 	return st.command(ctx, s, d, c, cmd, is.Stage)

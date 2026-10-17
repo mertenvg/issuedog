@@ -137,6 +137,10 @@ type waitInput struct {
 	// Holds are the open discussion triggers on S after its visit, if S is
 	// held, and nil otherwise (Step.holdItemFind).
 	Holds []discTrigger
+	// OwnerHeld is set when S, held with Holds open, also has an owner hold
+	// that stays once they're resolved, as resolveLeave judges it
+	// (Applier.resolveHoldsLeft, Step.holdItemFind).
+	OwnerHeld bool
 }
 
 // waitFind returns what on in.S waits on the owner (assumption 5), in no
@@ -358,18 +362,22 @@ var holdItemCCRE = regexp.MustCompile(`(?m)^cc @[^\s\x{200b}]`)
 //
 // The lines say the issue is held for discussion, from where, and how
 // many triggers are open; then one line for each (waitLine.Hold), with a
-// link and how it's resolved; then, with an owner hold too, that the issue
-// stays held after them until that ends; and last, that /resume accepts
-// every trigger. How each is resolved follows SPEC §6.4 and #87's
-// assumptions 4 and 6, which T4 (#188) builds; until it lands, only a
-// stage label set by hand resolves a trigger (discFloor):
+// link and how it's resolved; then, with an owner hold that stays
+// (in.OwnerHeld), that the issue stays held after them until that ends;
+// and last, that /resume accepts every trigger. How each is resolved
+// follows SPEC §6.4 and #87's assumptions 4 and 6, as T4 (#188) resolves
+// them (resolve.go):
 //   - a comment: a code owner's 👍 on it approves it, and their later
-//     comment counters it. One known from its record alone is gone, so
-//     only a counter is left;
-//   - any other kind: a code owner's 👍 on its notice, the clean App
-//     comment with its notice marker, which may be the hold's own;
-//   - one with no clean notice, deleted, made dirty or held back
-//     (discLost): only /resume on the issue.
+//     comment counters it, but a /hold or a /resume, which counter nothing
+//     (resolver.comment). One known from its record alone is gone, so only
+//     a counter is left;
+//   - any other kind resolveByNotice allows: a code owner's 👍 on its
+//     notice, the clean App comment with its notice marker, which may be
+//     the hold's own;
+//   - one that edited or deleted what may have been the App's content
+//     (resolveHitsApp), notice or not, or one with no clean notice,
+//     deleted, made dirty or held back (discLost): only /resume on the
+//     issue.
 func holdItemOf(in waitInput, is state.Issue) (string, []waitLine) {
 	s := in.S
 	id := in.Holds[0].Key
@@ -377,6 +385,7 @@ func holdItemOf(in waitInput, is state.Issue) (string, []waitLine) {
 		id = holdItemMarkerID(hs[0])
 	}
 	records := discRecords(s, in.AppSlug, in.Dirt.Has)
+	period := resolvePeriodOf(s, in.AppSlug, in.Dirt.Has)
 	notices := map[string]int64{}
 	discMarkers(s, in.AppSlug, in.Dirt.Has, func(c int64, _ time.Time, m github.Marker) {
 		if k := m.Fields["key"]; m.Kind == "notice" && k != "" {
@@ -399,14 +408,22 @@ func holdItemOf(in waitInput, is state.Issue) (string, []waitLine) {
 		notice, noticed := notices[tr.Key]
 		switch {
 		case tr.Kind == discComment && !tr.FromRecord:
-			h.Link, h.How = link(tr.ID), "A code owner's 👍 on the comment approves it, and any later comment of theirs here counters it."
+			h.Link, h.How = link(tr.ID), "A code owner's 👍 on the comment approves it, and any later comment of theirs here, other than `/hold` or `/resume`, counters it."
 		case tr.Kind == discComment:
-			h.Link, h.How = link(rec), "A later comment by a code owner here counters it."
-		case noticed:
+			h.Link, h.How = link(rec), "A later comment by a code owner here, other than `/hold` or `/resume`, counters it."
+		case noticed && resolveByNotice(tr, s, in.AppSlug, period.at):
 			h.Link, h.How = link(notice), "A code owner's 👍 on its notice accepts it."
 		default:
 			h.Link, h.How = link(state.BodyID), "It has no clean notice, as one may have been deleted or edited, so only `/resume` here accepts it."
 			switch {
+			case resolveHitsApp(tr, s, in.AppSlug, period.at):
+				h.How = "It edited or deleted what may have been the App's record or a code owner's `/hold`, so only `/resume` here accepts it, not a 👍 on a notice."
+			case noticed:
+				h.How = "Only `/resume` here accepts it."
+			}
+			switch {
+			case noticed:
+				h.Link = link(notice)
 			case recorded:
 				h.Link = link(rec)
 			case tr.Kind == discEdit || tr.Kind == discOwnEdit:
@@ -415,7 +432,9 @@ func holdItemOf(in waitInput, is state.Issue) (string, []waitLine) {
 		}
 		lines = append(lines, waitLine{Hold: h})
 	}
-	if slices.ContainsFunc(is.HeldStack.Holds, func(m github.Marker) bool { return m.Fields["reason"] != "discussion" }) {
+	// An owner hold that stays: in.OwnerHeld, from what only a request can
+	// tell, or one a marker records that no /resume ended (resolveLeft).
+	if in.OwnerHeld || resolveOwnerHeld(resolveLeft(is.HeldStack.Holds, period, 0)) {
 		lines = append(lines, waitLine{Text: "It's on an owner hold too, so it stays held after these until `/resume` ends that."})
 	}
 	return id, append(lines, waitLine{Text: "Post `/resume` here to accept every open trigger at once."})

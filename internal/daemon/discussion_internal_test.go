@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	gogithub "github.com/google/go-github/v92/github"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/issuedog/internal/trust"
@@ -478,7 +481,7 @@ func TestDiscFindByID(t *testing.T) {
 		{ID: 10, Author: app, Body: "<!-- issuedog:transition from=intake to=ready run=a -->", CreatedAt: at},
 		{ID: 11, Author: mallory, Body: "after", CreatedAt: at},
 	}}
-	a := &Applier{Owner: "o", Repo: "r", AppSlug: "issuedog"}
+	a := &Applier{Client: noReactions(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}
 	found, err := a.discFind(context.Background(), s, Dirt{}, newDiscCounting())
 	if err != nil {
 		t.Fatal(err)
@@ -551,4 +554,27 @@ func TestDiscEditKey(t *testing.T) {
 	if got := discEditKey(42, time.Unix(1767225606, 0)); got != "e42-1767225606" {
 		t.Errorf("discEditKey = %q", got)
 	}
+}
+
+// noReactions is a client on which every comment has no reactions, for the
+// resolver's reads (resolve.go, T4) in a test of a snapshot made by hand.
+// It counts the requests it gets in *reads, if reads is given.
+func noReactions(t testing.TB, reads ...*int) *github.Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		for _, n := range reads {
+			*n++
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := w.Write([]byte("[]")); err != nil {
+			t.Error(err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	base := srv.URL + "/"
+	gh, err := gogithub.NewClient(gogithub.WithURLs(&base, &base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &github.Client{Client: gh}
 }

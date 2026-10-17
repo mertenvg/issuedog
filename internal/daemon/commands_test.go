@@ -52,6 +52,7 @@ func file(f *githubtest.Fake, parent int, fields string) int {
 func tree(fields []string, parents []int, on int, cmd int64, body string, more func(f *githubtest.Fake)) func(testing.TB) *githubtest.Fake {
 	return func(t testing.TB) *githubtest.Fake {
 		f := githubtest.New(t, "o/r", slug)
+		f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, round 2)
 		for i, fl := range fields {
 			file(f, parents[i], fl)
 		}
@@ -210,7 +211,7 @@ func TestHoldResumePriority(t *testing.T) {
 				3: {[]string{"stage:planning"}, []string{moved("Resumed by `/resume` on #1, back to `planning`.", "from=held to=planning cmd=1004")}},
 			},
 			react: "+1"},
-		{name: "/resume with nothing open on an owner hold is rejected",
+		{name: "/resume with nothing open on an owner hold is rejected, a child's discussion hold with no open trigger holding nothing",
 			setup: tree([]string{ready, held("ready", "discussion"), held("ready", "owner")}, []int{0, 1, 1}, 1, 1004, "/resume",
 				func(f *githubtest.Fake) { f.Close(3) }),
 			on: 1,
@@ -420,7 +421,9 @@ func TestHoldAcksLast(t *testing.T) {
 
 // A /resume ends only the holds below that a /hold on its issue or above
 // made: a child's own hold, by its /hold or by hand, and the holds its /hold
-// made below it, stay until /resume on the child.
+// made below it, stay until /resume on the child, whether its /hold wrote a
+// marker or, as the child was held already, none (#188's decision, round
+// 3).
 func TestOwnHolds(t *testing.T) {
 	type step struct {
 		on   int
@@ -432,6 +435,7 @@ func TestOwnHolds(t *testing.T) {
 	setup := func(hand, gone bool, steps []step) func(testing.TB) *githubtest.Fake {
 		return func(t testing.TB) *githubtest.Fake {
 			f := githubtest.New(t, "o/r", slug)
+			f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, round 2)
 			file(f, 0, ready)
 			file(f, 1, "from=ready to=in-progress run=a")
 			file(f, 2, "from=in-progress to=verifying run=a")
@@ -473,9 +477,18 @@ func TestOwnHolds(t *testing.T) {
 		{name: "a parent's /resume ends the holds its /hold made",
 			steps:  []step{{1, "/hold"}, {1, "/resume"}},
 			labels: [3]string{"stage:ready", "stage:in-progress", "stage:verifying"}, react: "+1"},
-		{name: "a child's own /hold under its parent's writes no marker, so the parent's /resume ends it (#87's Q2b)",
+		{name: "a child's own /hold under its parent's writes no marker, but stays when its parent resumes, as does the hold it made below (#188's decision, round 3)",
 			steps:  []step{{1, "/hold"}, {2, "/hold"}, {1, "/resume"}},
+			labels: [3]string{"stage:ready", "stage:held", "stage:held"}, react: "+1"},
+		{name: "then the child's /resume ends its own /hold, and the one it made below",
+			steps:  []step{{1, "/hold"}, {2, "/hold"}, {1, "/resume"}, {2, "/resume"}},
 			labels: [3]string{"stage:ready", "stage:in-progress", "stage:verifying"}, react: "+1"},
+		{name: "a grandchild's /resume ends every hold on itself, the child's /hold too, but the child stays held",
+			steps:  []step{{1, "/hold"}, {2, "/hold"}, {1, "/resume"}, {3, "/resume"}},
+			labels: [3]string{"stage:ready", "stage:held", "stage:verifying"}, react: "+1"},
+		{name: "a second /resume on the parent is rejected, naming the child",
+			steps:  []step{{1, "/hold"}, {2, "/hold"}, {1, "/resume"}, {1, "/resume"}},
+			labels: [3]string{"stage:ready", "stage:held", "stage:held"}, react: "-1", reply: madeOn("#2")},
 		{name: "a child's /resume ends its own hold and the one it made below",
 			steps:  []step{{2, "/hold"}, {1, "/hold"}, {2, "/resume"}},
 			labels: [3]string{"stage:held", "stage:in-progress", "stage:verifying"}, react: "+1"},
@@ -489,10 +502,10 @@ func TestOwnHolds(t *testing.T) {
 			gone:   true,
 			steps:  []step{{2, "/hold"}, {1, "/resume"}},
 			labels: [3]string{"stage:ready", "stage:held", "stage:held"}, react: "-1", reply: madeOn("#2, #3")},
-		{name: "a /resume on the issue itself ends its hold whose /hold comment is gone",
+		{name: "a /resume on the issue itself ends its hold whose /hold comment is gone, and the one below, as its marker there names it (#188's verify, attempt 3)",
 			gone:   true,
 			steps:  []step{{2, "/hold"}, {2, "/resume"}},
-			labels: [3]string{"stage:ready", "stage:in-progress", "stage:held"}, react: "+1"},
+			labels: [3]string{"stage:ready", "stage:in-progress", "stage:verifying"}, react: "+1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -535,6 +548,7 @@ func TestOwnHolds(t *testing.T) {
 func TestHoldMixedCaseRepo(t *testing.T) {
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := githubtest.New(t, "O/r", slug)
+		f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, round 2)
 		file(f, 0, ready)
 		file(f, 1, ready)
 		f.AddComment(1, "owner", "/hold")

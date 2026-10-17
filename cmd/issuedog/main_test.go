@@ -431,6 +431,57 @@ func TestNewStepErrAckLast(t *testing.T) {
 	}
 }
 
+// discSet trusts the logins set true, and knows mallory as a write
+// collaborator who isn't trusted.
+type discSet map[string]bool
+
+func (ds discSet) Trusted(_ context.Context, login string) (bool, error) { return ds[login], nil }
+
+func (ds discSet) DiscAccess(_ context.Context, login string) (bool, bool, error) {
+	return ds[login], login == "mallory", nil
+}
+
+// newStep's hold trigger runs too: once the owner's 👍 approves the comment
+// that held an issue, it goes to clarifying. Its error comes back wrapped.
+func TestNewStepResolved(t *testing.T) {
+	const app = "issuedog-dev[bot]"
+	f := githubtest.New(t, "o/r", "issuedog-dev")
+	f.SetPermission("owner", "admin")
+	f.SetPermission("mallory", "write")
+	var comments []int64
+	for range 2 {
+		n := f.AddIssue("owner", "Task", "body")
+		f.SetType(n, "Task")
+		f.AddLabel(n, app, "stage:held")
+		f.AddComment(n, app, "<!-- issuedog:transition from=intake to=ready run=a -->")
+		c := f.AddComment(n, "mallory", "Wait.")
+		f.AddComment(n, app, fmt.Sprintf("<!-- issuedog:transition from=ready to=held at=ready origin=ready reason=discussion event=c%d -->", c))
+		comments = append(comments, c)
+	}
+	f.AddReaction(comments[0], "owner", "+1")
+	c := f.Client(t)
+	st := newStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, discSet{"owner": true}, noModels)
+	s, err := c.Snapshot(context.Background(), "o", "r", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Run(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.State().Issues[0].Labels; !slices.Equal(got, []string{"stage:clarifying"}) {
+		t.Errorf("#1's labels = %v, want stage:clarifying", got)
+	}
+	// Its error: mallory's comment is gone after the read, so its reactions
+	// can't be listed.
+	if s, err = c.Snapshot(context.Background(), "o", "r", 2); err != nil {
+		t.Fatal(err)
+	}
+	f.DeleteComment(comments[1])
+	if err := st.Reactions(context.Background(), st.Applier, s, daemon.Dirt{}); err == nil || !strings.HasPrefix(err.Error(), "discussion hold resolved: ") {
+		t.Errorf("Reactions = %v, want an error starting %q", err, "discussion hold resolved: ")
+	}
+}
+
 // noModels is a models.allowed that's empty.
 func noModels() config.Models { return config.Models{} }
 

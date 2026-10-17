@@ -28,7 +28,8 @@ func discRecordedSnapshot(at func(int) time.Time, more ...string) *github.Snapsh
 }
 
 // Every key a marker records from the floor on is a trigger from its
-// record alone, with no question and no read (the Applier has no client):
+// record alone, with no question, and no read but the reactions of the
+// notice in comment 11, which may accept it (resolver.notice, T4):
 // the edit the floor's own marker records, which is from before the floor,
 // of content gone since; and a recorded comment, deletion and rename the
 // snapshot no longer shows. A move out of held after them
@@ -37,7 +38,8 @@ func TestDiscFindRecordedFromTheFloor(t *testing.T) {
 	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
 	s := discRecordedSnapshot(at, "c7", "dCDE_x", "77")
 	d := Dirt{}
-	a := &Applier{Owner: "o", Repo: "r", AppSlug: "issuedog"}
+	reads := 0
+	a := &Applier{Client: noReactions(t, &reads), Owner: "o", Repo: "r", AppSlug: "issuedog"}
 	tr := newDiscCounting()
 	found, err := a.discFind(context.Background(), s, d, tr)
 	if err != nil {
@@ -52,8 +54,9 @@ func TestDiscFindRecordedFromTheFloor(t *testing.T) {
 	if !slices.Equal(found, want) {
 		t.Errorf("found %+v;\nwant %+v", found, want)
 	}
-	if len(tr.asked) != 0 || len(tr.access) != 0 {
-		t.Errorf("asked %v and %v; want nobody asked about a recorded act", tr.asked, tr.access)
+	if len(tr.asked) != 0 || len(tr.access) != 0 || reads != 1 {
+		t.Errorf("asked %v and %v, with %d reads; want nobody asked about a recorded act, and one read of the notice's reactions",
+			tr.asked, tr.access, reads)
 	}
 	s.Comments = append(s.Comments, github.Comment{ID: 12, Author: s.Comments[0].Author, CreatedAt: at(40),
 		Body: "<!-- issuedog:transition from=held to=ready by=owner event=99 -->"})
@@ -69,7 +72,7 @@ func TestDiscRecordedOnce(t *testing.T) {
 	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
 	s := discRecordedSnapshot(at, "c12")
 	s.Comments = append(s.Comments, github.Comment{ID: 12, Author: github.Author{Login: "mallory", Type: "User"}, Body: "Wait.", CreatedAt: at(25)})
-	a := &Applier{Owner: "o", Repo: "r", AppSlug: "issuedog"}
+	a := &Applier{Client: noReactions(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}
 	found, err := a.discFind(context.Background(), s, Dirt{}, newDiscCounting())
 	if err != nil {
 		t.Fatal(err)

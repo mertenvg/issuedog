@@ -23,11 +23,12 @@ import (
 //   - found by discFind, from the snapshot, its dirty content and the
 //     renamed events CheckLabels read, each keyed by its event= key (#87's
 //     assumption 3);
-//   - open from then until something resolves it. In this task only a move
-//     out of held does (discFloor): a stage label set by hand, which ends
-//     every hold (SPEC §6.4). T4 (#188) adds a trusted 👍, a counter
-//     comment and /resume on the issue, by leaving out of discFind's
-//     result each trigger it finds resolved;
+//   - open from then until something resolves it: a move out of held
+//     (discFloor), such as a stage label set by hand, which ends every hold
+//     (SPEC §6.4), or /resume on the issue; or, from T4 (#188, resolve.go),
+//     a trusted 👍 or a counter comment, which leave it out of discFind's
+//     result, and the record of a discussion that ended while an owner
+//     hold stayed (discFloor);
 //   - handled once a marker records its key: the hold's transition marker,
 //     keyed event=<key> with reason=discussion, or a notice's marker,
 //     notice key=<key> (discRecords). So a second pass writes nothing, and
@@ -186,6 +187,10 @@ type discBound struct {
 //     owner brings an issue into the pipeline by label. With the event's
 //     time unknown, as on a snapshot CheckLabels hasn't checked, it's the
 //     record's.
+//   - Any other move out of held, and the record of a discussion that
+//     ended while an owner hold stayed, is bounded the same way by when
+//     the act that resolved it happened, where that's known (resolveActAt,
+//     T4): a later act still counts.
 //
 // The markers are read as state.Derive reads them (discMarkers). With none,
 // ok is false, as on an issue that isn't in the pipeline, which nothing
@@ -194,6 +199,10 @@ type discBound struct {
 // holds, so every act counts, failing closed.
 func discFloor(s *github.Snapshot, appSlug string, dirty func(int64) bool) (b discBound, ok bool) {
 	discMarkers(s, appSlug, dirty, func(id int64, at time.Time, m github.Marker) {
+		if t, ended := resolveEndedAt(m); ended && ok {
+			b = discBound{ID: id, At: t, ByTime: true}
+			return
+		}
 		if _, bounds := state.RoundBound(m, id); !bounds {
 			return
 		}
@@ -206,6 +215,8 @@ func discFloor(s *github.Snapshot, appSlug string, dirty func(int64) bool) (b di
 			if t, known := s.DiscLabelTimes[ev]; known {
 				b.At, b.ByTime = t, true
 			}
+		} else if t, known := resolveActAt(s, m); out && known {
+			b.At, b.ByTime = t, true
 		}
 	})
 	if !ok && slices.ContainsFunc(s.Labels, func(l string) bool {
@@ -467,13 +478,18 @@ func (a *Applier) discNoRecordDue(now time.Time) []int {
 // bound b, and whether a marker records it: recorded by a marker in b's
 // comment or a later one, or, with no record, made at or after b's time,
 // failing closed in its second, or for a comment id, unless b is by time,
-// above b's comment.
+// above b's comment. A recorded act is open too when b is by time and the
+// act, its time known, is at or after b's time (T4): a record written
+// after the act that resolved the triggers, as a notice posted in the
+// pass that applies a /resume posted before the act, doesn't close it. An
+// act known from its record alone, at the zero time, is judged by its
+// record (discRecorded), but for an edit, whose key gives its time.
 type discOpen func(key string, at time.Time, id int64) (open, recorded bool)
 
 func discOpenAfter(b discBound, records map[string]int64) discOpen {
 	return func(key string, at time.Time, id int64) (bool, bool) {
 		if r, recorded := records[key]; recorded {
-			return r >= b.ID, true
+			return r >= b.ID || b.ByTime && !at.Before(b.At), true
 		}
 		if id != 0 && !b.ByTime {
 			return id > b.ID, false
@@ -512,9 +528,23 @@ func discOpenAfter(b discBound, records map[string]int64) discOpen {
 // else rules it out, so an act before the floor, or by a login known to be
 // nobody (discWho.nobody), costs no request. It reads the reactions only
 // of a writer's comment they edited after the floor.
+//
+// A trigger resolved by a trusted 👍 or a counter comment (resolver, T4)
+// is left out: a comment is judged so before anyone is asked whether its
+// author is a writer, so a resolved one costs no question.
 func (a *Applier) discFind(ctx context.Context, s *github.Snapshot, d Dirt, trust github.Trust) ([]discTrigger, error) {
+	return a.discFindResolved(ctx, s, d, trust, nil)
+}
+
+// discFindResolved is discFind, which also sets *out, if out isn't nil, to
+// the resolver that left out the triggers it found resolved, and knows
+// what resolved them (resolver.acts): one with none when it finds none.
+func (a *Applier) discFindResolved(ctx context.Context, s *github.Snapshot, d Dirt, trust github.Trust, out **resolver) ([]discTrigger, error) {
 	wrap := func(err error) error {
 		return fmt.Errorf("discussion triggers on %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
+	}
+	if out != nil {
+		*out = &resolver{}
 	}
 	b, ok := discFloor(s, a.AppSlug, d.Has)
 	if !ok || !discKnowsWriters(trust) {
@@ -522,6 +552,10 @@ func (a *Applier) discFind(ctx context.Context, s *github.Snapshot, d Dirt, trus
 	}
 	records := discRecords(s, a.AppSlug, d.Has)
 	open, who := discOpenAfter(b, records), a.discWhoOf(s, trust)
+	rs := a.resolverOf(s, d, who, records)
+	if out != nil {
+		*out = rs
+	}
 	// counts reports whether an act by by, keyed key, is a trigger: open,
 	// and recorded or by a writer.
 	counts := func(key string, at time.Time, id int64, by github.Author) (bool, error) {
@@ -534,12 +568,23 @@ func (a *Applier) discFind(ctx context.Context, s *github.Snapshot, d Dirt, trus
 	var found []discTrigger
 	for _, c := range s.Comments {
 		key := "c" + strconv.FormatInt(c.ID, 10)
+		tr := discTrigger{Kind: discComment, Key: key, By: c.Author.Login, At: c.CreatedAt, ID: c.ID}
+		if o, recorded := open(key, c.CreatedAt, c.ID); o {
+			// Resolved, or surely no trigger, before the writer question.
+			skip, err := rs.early(ctx, tr, recorded, c.Author)
+			if err != nil {
+				return nil, wrap(err)
+			}
+			if skip {
+				continue
+			}
+		}
 		ok, err := counts(key, c.CreatedAt, c.ID, c.Author)
 		if err != nil {
 			return nil, wrap(err)
 		}
 		if ok {
-			found = append(found, discTrigger{Kind: discComment, Key: key, By: c.Author.Login, At: c.CreatedAt, ID: c.ID})
+			found = append(found, tr)
 		}
 	}
 	edits, err := a.discEdits(ctx, s, d, who, b, open)
@@ -599,7 +644,13 @@ func (a *Applier) discFind(ctx context.Context, s *github.Snapshot, d Dirt, trus
 		logr.Warnf("%s/%s#%d: skipping the discussion trigger keyed %q, which a marker can't hold", a.Owner, a.Repo, s.Number, tr.Key)
 		return true
 	})
+	// Resolved, by a 👍 on a notice, or a comment by a counter comment
+	// or a 👍 judged above already (resolver.drop, T4).
+	if found, err = rs.drop(ctx, found); err != nil {
+		return nil, wrap(err)
+	}
 	slices.SortStableFunc(found, func(x, y discTrigger) int { return x.At.Compare(y.At) })
+	rs.open = found
 	return found, nil
 }
 
@@ -617,11 +668,12 @@ func discEditKey(id int64, at time.Time) string { return fmt.Sprintf("e%d-%d", i
 // deleted; and a recorded deletion or rename when the snapshot no longer
 // lists it, as one CheckLabels hasn't checked has no renames.
 //
-// For T4 (#188): two notices can now be open on the same content at once,
-// as when a writer edits a comment, gets its notice, and edits it again:
-// each edit is a trigger of its own, keyed by its time, with a notice of
-// its own, and only the newest is the content as it is now. Each is
-// resolved by its own notice's 👍, or by /resume on the issue.
+// Two notices can be open on the same content at once, as when a writer
+// edits a comment, gets its notice, and edits it again: each edit is a
+// trigger of its own, keyed by its time, with a notice of its own, and
+// only the newest is the content as it is now. Each is resolved by its own
+// notice's 👍, or by /resume on the issue: a 👍 on the newer notice
+// doesn't accept the older edit (resolver.notice, T4).
 func discRecorded(s *github.Snapshot, records map[string]int64, open discOpen, found []discTrigger) []discTrigger {
 	have := map[string]bool{}
 	for _, tr := range found {
@@ -633,11 +685,16 @@ func discRecorded(s *github.Snapshot, records map[string]int64, open discOpen, f
 	}
 	var more []discTrigger
 	for _, key := range slices.Sorted(maps.Keys(records)) {
-		// Each key here is recorded, so open judges it by its record alone.
-		if o, _ := open(key, time.Time{}, 0); have[key] || !o {
+		// Each key here is recorded, so open judges it by its record, and
+		// an edit by its time too, which its key gives.
+		tr, at := discFromKey(key, when[records[key]]), time.Time{}
+		if tr.Kind == discEdit {
+			at = tr.At
+		}
+		if o, _ := open(key, at, 0); have[key] || !o {
 			continue
 		}
-		more = append(more, closingFromKey(s, discFromKey(key, when[records[key]])))
+		more = append(more, closingFromKey(s, tr))
 	}
 	return more
 }
@@ -1058,19 +1115,21 @@ func discCC(text string, notify []string) string {
 // trigger on s (discFind) that no hold marker records added to its
 // HeldStack's Holds as a discussion hold, while s is held. A discussion
 // hold on an issue held already writes no marker (Q2b), so this is how
-// /resume knows of it: it ends only owner holds (heldStackEnds), so the
-// issue stays held while one is open, as the criterion says. T4 makes
-// /resume on the issue itself accept them. The renames are known only
-// once CheckLabels has checked s, so an unchecked snapshot misses those,
-// as one not yet visited misses any trigger: the next pass holds the
-// issue for it again.
-func (a *Applier) discHeldStack(ctx context.Context, s *github.Snapshot, d Dirt, trust github.Trust, is state.Issue) (state.Issue, error) {
+// /resume knows of it: /resume on an ancestor ends only owner holds
+// (heldStackEnds), so the issue stays held while one is open, and /resume
+// on the issue itself accepts them (T4). The renames are known only once
+// CheckLabels has checked s, so an unchecked snapshot misses those, as one
+// not yet visited misses any trigger: the next pass holds the issue for it
+// again. It also returns the resolver that found them (discFindResolved),
+// or nil when s isn't held.
+func (a *Applier) discHeldStack(ctx context.Context, s *github.Snapshot, d Dirt, trust github.Trust, is state.Issue) (state.Issue, *resolver, error) {
 	if is.Stage != state.Held {
-		return is, nil
+		return is, nil, nil
 	}
-	found, err := a.discFind(ctx, s, d, trust)
+	var rs *resolver
+	found, err := a.discFindResolved(ctx, s, d, trust, &rs)
 	if err != nil {
-		return is, fmt.Errorf("held stack: %w", err)
+		return is, nil, fmt.Errorf("held stack: %w", err)
 	}
 	held := map[string]bool{}
 	for _, m := range is.HeldStack.Holds {
@@ -1086,7 +1145,7 @@ func (a *Applier) discHeldStack(ctx context.Context, s *github.Snapshot, d Dirt,
 		}
 	}
 	is.HeldStack.Holds = holds
-	return is, nil
+	return is, rs, nil
 }
 
 // discHeldLabel reports whether label is stage:held: such an issue is

@@ -2,8 +2,58 @@ package state
 
 import (
 	"errors"
+	"slices"
 	"testing"
+
+	"github.com/mertenvg/issuedog/internal/github"
 )
+
+// The commands that would move the issue wait while it's held, or at the
+// clarifying after a hold, whose latest transition carries an origin
+// (#87's assumption 8). /resume, and the commands that move nothing,
+// never wait, nor does anything at any other stage, or at a clarifying
+// reached otherwise.
+func TestCommandWaits(t *testing.T) {
+	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
+	at := func(markers ...string) Issue {
+		s := &github.Snapshot{}
+		for i, m := range markers {
+			s.Comments = append(s.Comments, github.Comment{ID: int64(10 + i), Author: app, Body: "<!-- issuedog:transition " + m + " -->"})
+		}
+		return Derive(s, "issuedog", func(int64) bool { return false })
+	}
+	const review = "from=clarifying to=spec-review run=a"
+	all := []string{"approve", "revise", "done", "track", "ignore"}
+	for _, tc := range []struct {
+		name  string
+		is    Issue
+		waits []string
+	}{
+		{"held", at(review, "from=spec-review to=held at=spec-review origin=spec-review reason=discussion event=c9"), all},
+		{"at the clarifying after a hold", at(review, "from=spec-review to=held at=spec-review reason=owner cmd=5",
+			"from=held to=clarifying at=spec-review origin=spec-review cmd=6"), all},
+		{"after a question round there, which carries the origin", at(review, "from=held to=clarifying at=spec-review origin=spec-review event=h11",
+			"from=clarifying to=clarifying round=1 run=b origin=spec-review questions=2"), all},
+		{"at spec-review", at(review), nil},
+		{"at a clarifying /revise reached", at(review, "from=spec-review to=clarifying cmd=7 seen=7"), nil},
+		{"at a clarifying whose origin is no stage to go back to", at(review, "from=held to=clarifying at=spec-review origin=held event=h11"), nil},
+		{"after a question round there that lost the origin", at(review, "from=held to=clarifying at=spec-review origin=spec-review event=h11",
+			"from=clarifying to=clarifying round=1 run=b questions=2"), nil},
+	} {
+		var got []string
+		for _, name := range []string{"approve", "revise", "done", "track", "ignore", "resume", "hold", "priority", "model", "effort"} {
+			if (Command{Name: name}).Waits(tc.is) {
+				got = append(got, name)
+			}
+		}
+		if !slices.Equal(got, tc.waits) {
+			t.Errorf("%s: %q wait; want %q", tc.name, got, tc.waits)
+		}
+		if want := tc.is.Stage == Clarifying && len(tc.waits) > 0; tc.is.AfterHold() != want {
+			t.Errorf("%s: AfterHold = %t; want %t", tc.name, !want, want)
+		}
+	}
+}
 
 func TestParseCommand(t *testing.T) {
 	for _, tc := range []struct {

@@ -28,17 +28,32 @@ func discNoticeKeys(f *githubtest.Fake, n int) []string {
 	return keys
 }
 
-// discResumeRejected checks that issue n is still held after a /resume,
-// rejected for the discussion, with the notices want, and that another
-// pass writes nothing, and costs no rate limit: each of its requests is
-// answered 304.
+// discUnderHold files #1, a task at ready, and n, a task under it at
+// ready, and posts /hold on #1, which holds both. A /resume on #1 ends n's
+// owner hold, but not a discussion hold on it (SPEC §6.4), which the
+// record it writes on n then says (T4): so an act that's still open keeps
+// n held, and one that isn't lets it go back to ready.
+func discUnderHold(f *githubtest.Fake) (parent, n int) {
+	parent = fileAt(f, "ready", "do it")
+	f.SetType(parent, "task")
+	n = fileAt(f, "ready", "do it")
+	f.SetType(n, "task")
+	f.SetParent(n, parent)
+	f.AddComment(parent, "owner", "/hold")
+	return parent, n
+}
+
+// discResumeRejected checks that issue n is still held after a /resume on
+// its parent (discUnderHold), with the record that the discussion keeps
+// it held, and the notices want, and that another pass writes nothing, and
+// costs no rate limit: each of its requests is answered 304.
 func discResumeRejected(t *testing.T, f *githubtest.Fake, d *daemon.Daemon, n int, want []string) {
 	t.Helper()
 	is := f.State().Issues[n-1]
 	if !slices.Equal(is.Labels, []string{"stage:held"}) || !slices.ContainsFunc(is.Comments, func(c githubtest.CommentState) bool {
-		return strings.Contains(c.Body, "also on hold for discussion")
+		return strings.Contains(c.Body, "stays on hold for discussion")
 	}) {
-		t.Errorf("labels %q, comments %q; want the issue still held for the recorded act, the /resume rejected", is.Labels, is.Comments)
+		t.Errorf("labels %q, comments %q; want the issue still held for the recorded act after its parent's /resume", is.Labels, is.Comments)
 	}
 	if got := discNoticeKeys(f, n); !slices.Equal(got, want) {
 		t.Errorf("notices %q; want %q, none posted again", got, want)
@@ -58,16 +73,14 @@ func discResumeRejected(t *testing.T, f *githubtest.Fake, d *daemon.Daemon, n in
 // An edit a notice records stays a trigger after the same writer edits
 // the same comment again and loses access before the next pass: the
 // content's newest edit is no longer the recorded one, and nobody would be
-// asked about the new one, but the record still holds the issue, so the
-// owner's /resume is rejected. With or without an earlier comment of
-// theirs, which shows them as a collaborator.
+// asked about the new one, but the record still holds the issue, so a
+// /resume on its parent doesn't take it out of held. With or without an
+// earlier comment of theirs, which shows them as a collaborator.
 func TestDiscRecordedEditOutlivesChange(t *testing.T) {
 	for _, mode := range []string{"", " after her comment"} {
 		t.Run("edited twice"+mode, func(t *testing.T) {
 			f := newFake(t)
-			n := fileAt(f, "ready", "do it")
-			f.SetType(n, "task")
-			f.AddComment(n, "owner", "/hold")
+			parent, n := discUnderHold(f)
 			d := newDaemon(t, f, newOrigin(t), nil)
 			iterate(t, d)
 			if mode != "" {
@@ -84,7 +97,9 @@ func TestDiscRecordedEditOutlivesChange(t *testing.T) {
 			}
 			f.EditComment(x, "mallory", "Really don't.")
 			f.RemovePermission("mallory")
-			f.AddComment(n, "owner", "/resume")
+			f.AddComment(parent, "owner", "/resume")
+			// The parent's visit, then the child's, which its /resume touched.
+			iterate(t, d)
 			iterate(t, d)
 			iterate(t, d)
 			discResumeRejected(t, f, d, n, []string{first})
@@ -93,7 +108,7 @@ func TestDiscRecordedEditOutlivesChange(t *testing.T) {
 }
 
 // An act a notice records stays a trigger whatever changes its content
-// after it, and the owner's /resume is rejected:
+// after it, and a /resume on the issue's parent leaves it held:
 //   - mallory's own approved comment, edited again, as she loses access;
 //   - the owner's comment she edited, edited again by another writer who
 //     then loses access;
@@ -105,9 +120,7 @@ func TestDiscRecordedActOutlivesChange(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := newFake(t)
 			f.SetPermission("trudy", "write")
-			n := fileAt(f, "ready", "do it")
-			f.SetType(n, "task")
-			f.AddComment(n, "owner", "/hold")
+			parent, n := discUnderHold(f)
 			d := newDaemon(t, f, newOrigin(t), nil)
 			iterate(t, d)
 			var x int64
@@ -140,7 +153,9 @@ func TestDiscRecordedActOutlivesChange(t *testing.T) {
 				f.DeleteCommentBy("mallory", x)
 				f.RemovePermission("mallory")
 			}
-			f.AddComment(n, "owner", "/resume")
+			f.AddComment(parent, "owner", "/resume")
+			// The parent's visit, then the child's, which its /resume touched.
+			iterate(t, d)
 			iterate(t, d)
 			iterate(t, d)
 			discResumeRejected(t, f, d, n, []string{first})
@@ -150,12 +165,11 @@ func TestDiscRecordedActOutlivesChange(t *testing.T) {
 
 // A new edit of content whose earlier edit a notice records is a trigger
 // of its own, with its own notice: two notices are then open on the same
-// comment, and neither is posted again.
+// comment, and neither is posted again, nor does a /resume on the
+// issue's parent take it out of held.
 func TestDiscRecordedEditThenNewEdit(t *testing.T) {
 	f := newFake(t)
-	n := fileAt(f, "ready", "do it")
-	f.SetType(n, "task")
-	f.AddComment(n, "owner", "/hold")
+	parent, n := discUnderHold(f)
 	d := newDaemon(t, f, newOrigin(t), nil)
 	iterate(t, d)
 	x := f.AddComment(n, "owner", "Ship it.")
@@ -170,7 +184,9 @@ func TestDiscRecordedEditThenNewEdit(t *testing.T) {
 	}
 	iterate(t, d)
 	iterate(t, d)
-	f.AddComment(n, "owner", "/resume")
+	f.AddComment(parent, "owner", "/resume")
+	// The parent's visit, then the child's, which its /resume touched.
+	iterate(t, d)
 	iterate(t, d)
 	iterate(t, d)
 	discResumeRejected(t, f, d, n, []string{first, second})

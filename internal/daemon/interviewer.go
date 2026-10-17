@@ -58,9 +58,12 @@ func (*Interviewer) Schema() []byte {
 //     holds no commands, App comments or dirty comments.
 //
 // A bug or task, which the interviewer typed or the owner filed, waits at
-// clarifying with no runs until phase 3.
+// clarifying with no runs until phase 3. So does every class at the
+// clarifying after a discussion hold (state.Issue.AfterHold, #87's
+// assumption 9), until T5 (#189) gives the interviewer what it needs
+// there: the post-hold context and an outcome that returns to origin.
 func (*Interviewer) Pending(in Input) bool {
-	if in.Issue.Stage != state.Clarifying || !interviewerClass(in.Issue.Item) {
+	if in.Issue.Stage != state.Clarifying || !interviewerClass(in.Issue.Item) || in.Issue.AfterHold() {
 		return false
 	}
 	if !ivRoundMove(ivLatestMove(in.Issue)) {
