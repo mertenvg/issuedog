@@ -133,7 +133,18 @@ type ivHoldInput struct {
 //   - approved: each clean comment by someone who isn't trusted, no bot,
 //     with a 👍 by a trusted user, no bot and not the App, who is named.
 //     It reads the reactions of those comments only, so the 👍 is read
-//     whenever it came, before the hold ended or after;
+//     whenever it came, before the hold ended or after. An approval
+//     approves what the approver read, not what the author writes later
+//     (SPEC §6.2), so the 👍 counts only if it came after the comment's
+//     last edit: the author's own edit is sanctioned, so it leaves the
+//     comment clean, and by someone without write access it's no trigger
+//     either (#189's verify). Times are to the second, so a 👍 in the
+//     edit's second came before it, as for the trigger (discOwnEdits).
+//     The one exception is a write collaborator's edit after the 👍 that
+//     the App recorded as a trigger, keyed by that last edit
+//     (discRecords): it's called only at the clarifying after a hold,
+//     out of held, so the hold's end accepted it, by its notice's 👍 or
+//     a /resume (SPEC §6.4). One whose record is lost stays untrusted;
 //   - countered: each clean comment by a trusted user, other than a
 //     /hold or a /resume, which resolve nothing (resolveHoldCommand),
 //     after at least one comment by someone who isn't trusted.
@@ -143,6 +154,7 @@ type ivHoldInput struct {
 func ivHoldInputOf(ctx context.Context, a *Applier, tc trustCache, s *github.Snapshot, d Dirt, from int64) (ivHoldInput, error) {
 	in := ivHoldInput{Approved: map[int64]string{}}
 	untrusted := false
+	records := discRecords(s, a.AppSlug, d.Has)
 	for _, c := range s.Comments {
 		if c.ID <= from || d.Has(c.ID) || state.IsApp(c.Author, a.AppSlug) {
 			continue
@@ -162,8 +174,12 @@ func ivHoldInputOf(ctx context.Context, a *Applier, tc trustCache, s *github.Sna
 			if err != nil {
 				return ivHoldInput{}, fmt.Errorf("the 👍s on the discussion's comment %d: %w", c.ID, err)
 			}
+			accepted := false // a write collaborator's last edit, accepted as a trigger
+			if !c.Edit.At.IsZero() {
+				_, accepted = records[discEditKey(c.ID, c.Edit.At)]
+			}
 			for _, r := range reactions {
-				if r.Content != "+1" {
+				if r.Content != "+1" || !accepted && !r.CreatedAt.After(c.Edit.At) {
 					continue
 				}
 				ok, err := tc.trusted(ctx, r.User)
