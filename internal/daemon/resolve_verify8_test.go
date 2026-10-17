@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
 
@@ -725,4 +726,200 @@ func TestResolveOwnHoldNotStackedOnEndedHoldAbove(t *testing.T) {
 	f.AddReaction(w3, "owner", "+1")
 	resolveSettle(t, f, 3, 2, 1)
 	resolveLabels(t, f, "at the end", "held", "held", "ready")
+}
+
+// #188's verify, attempt 4: a /hold that wrote no marker ends with a
+// /resume above it only when the hold it's stacked on was made by a /hold
+// posted on the /resume's issue or below it; the /resume path and the
+// leave path both leave out one posted above, so they agree.
+
+// resolveLoop is the daemon over f, from origin o, which settle iterates
+// until a pass writes nothing, and restart replaces with a new one.
+type resolveLoop struct {
+	t *testing.T
+	f *githubtest.Fake
+	o *origin
+	d *daemon.Daemon
+}
+
+func newResolveLoop(t *testing.T, f *githubtest.Fake) *resolveLoop {
+	o := newOrigin(t)
+	return &resolveLoop{t: t, f: f, o: o, d: resolveDaemon(t, f, o)}
+}
+
+func (l *resolveLoop) restart() { l.d = resolveDaemon(l.t, l.f, l.o) }
+
+func (l *resolveLoop) settle(when string) {
+	l.t.Helper()
+	for i := 0; ; i++ {
+		w := len(l.f.Writes())
+		iterate(l.t, l.d)
+		if len(l.f.Writes()) == w {
+			return
+		}
+		if i > 6 {
+			l.t.Fatalf("%s: still writing after %d passes: %+v", when, i, l.f.Writes()[w:])
+		}
+	}
+}
+
+// task files a task at ready under parent, if any, and returns its number.
+func (l *resolveLoop) task(parent int) int {
+	n := fileAt(l.f, "ready", "do it")
+	l.f.SetType(n, "task")
+	if parent != 0 {
+		l.f.SetParent(n, parent)
+	}
+	return n
+}
+
+// #1 > #2 > #3 > #4, mallory's comments holding #3 and #4. The owner's
+// /hold on #1 writes markers on #1 and #2, none on #3 or #4; the owner's
+// /hold on #3 writes none either, stacked on #1's /hold and on #3's
+// discussion. #2's /resume ends #1's hold below it, but not #3's /hold:
+// the hold that's stacked on is #1's /hold, posted above #2. So once the
+// owner's 👍s resolve mallory's comments, #3 and #4 both stay held by #3's
+// /hold, whether the 👍s come before #2's /resume or after it, with a
+// restart between, until #3's /resume, which sends both to clarifying.
+func TestResolveHoldAboveResumeNotABase(t *testing.T) {
+	for _, thumbsFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("thumbs first %v", thumbsFirst), func(t *testing.T) {
+			l := newResolveLoop(t, newFake(t))
+			top := l.task(0)
+			mid := l.task(top)
+			x := l.task(mid)
+			c := l.task(x)
+			l.settle("start")
+			wx := l.f.AddComment(x, "mallory", "Wait X.")
+			wc := l.f.AddComment(c, "mallory", "Wait C.")
+			l.settle("comments")
+			l.f.AddComment(top, "owner", "/hold")
+			l.settle("#1's /hold")
+			for _, n := range []int{x, c} {
+				if body := newestComment(l.f, n); strings.Contains(body, "reason=owner") {
+					t.Fatalf("#%d: newest comment %q; want no marker of #1's /hold", n, body)
+				}
+			}
+			l.f.AddComment(x, "owner", "/hold")
+			l.settle("#3's /hold")
+			thumbs := func() {
+				l.f.AddReaction(wx, "owner", "+1")
+				l.f.AddReaction(wc, "owner", "+1")
+				l.settle("the 👍s")
+			}
+			if thumbsFirst {
+				thumbs()
+				l.restart()
+				l.f.AddComment(mid, "owner", "/resume")
+				l.settle("#2's /resume")
+			} else {
+				l.f.AddComment(mid, "owner", "/resume")
+				l.settle("#2's /resume")
+				l.restart()
+				thumbs()
+			}
+			resolveLabels(t, l.f, "after both", "held", "ready", "held", "held")
+			for _, n := range []int{x, c} {
+				if body := newestComment(l.f, n); !strings.Contains(body, "hasn't ended") {
+					t.Errorf("#%d: newest comment %q; want the record that a hold on it hasn't ended", n, body)
+				}
+			}
+			l.restart()
+			l.settle("a restart")
+			resolveLabels(t, l.f, "after a restart", "held", "ready", "held", "held")
+			l.f.AddComment(x, "owner", "/resume")
+			l.settle("#3's /resume")
+			resolveLabels(t, l.f, "after #3's /resume", "held", "ready", "clarifying", "clarifying")
+		})
+	}
+}
+
+// #4 > #3 > #2: the owner's /hold on #4 writes markers on #3 and #2, held
+// by none, and on #4 unless the owner held it by hand first; #2's own
+// /hold, none, stacked on #4's, which its marker on #2 records. #3's
+// /resume ends #4's hold on #3 and #2, but not #2's /hold: #4's /hold is
+// above #3, whether its comment is there, with a marker on #4 or not, or
+// deleted, known by its markers, the farthest on #4. #1 under #2, held by
+// #4's /hold, and by #2's, which wrote no marker there, and for mallory's
+// comment, agrees once that is resolved: both stay held, until #2's
+// /resume.
+func TestResolveMarkedHoldAboveResumeNotABase(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		byHand, gone bool
+	}{
+		{"#4's /hold with its marker", false, false},
+		{"#4 held by hand first, so #4's /hold writes no marker there", true, false},
+		{"#4's /hold deleted", false, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := discFake(t)  // #1
+			file(f, 0, ready) // #2
+			file(f, 0, ready) // #3
+			if tt.byHand {
+				file(f, 0, "from=ready to=held at=ready reason=owner by=owner event=77") // #4
+			} else {
+				file(f, 0, ready) // #4
+			}
+			f.SetParent(1, 2)
+			f.SetParent(2, 3)
+			f.SetParent(3, 4)
+			hold := f.AddComment(4, "owner", "/hold")
+			resolveSettle(t, f, 4)
+			resolveLabels(t, f, "after #4's /hold", "held", "held", "held", "held")
+			if marked := strings.Contains(newestComment(f, 4), "reason=owner cmd="); marked == tt.byHand {
+				t.Fatalf("#4: newest comment %q; want a marker of its /hold unless it was held by hand", newestComment(f, 4))
+			}
+			f.AddComment(2, "owner", "/hold")
+			resolveSettle(t, f, 2)
+			if tt.gone {
+				f.DeleteComment(hold)
+			}
+			w := f.AddComment(1, "mallory", "Wait.")
+			resolveSettle(t, f, 1)
+			f.AddComment(3, "owner", "/resume")
+			resolveSettle(t, f, 4, 3, 2, 1)
+			resolveLabels(t, f, "after #3's /resume", "held", "held", "ready", "held")
+			f.AddReaction(w, "owner", "+1")
+			resolveSettle(t, f, 4, 3, 2, 1)
+			resolveLabels(t, f, "after the 👍", "held", "held", "ready", "held")
+			f.AddComment(2, "owner", "/resume")
+			resolveSettle(t, f, 4, 3, 2, 1)
+			resolveLabels(t, f, "after #2's /resume", "clarifying", "ready", "ready", "held")
+		})
+	}
+}
+
+// #3 > #2 > #1. #3's /hold, which writes no marker on #1, held for
+// mallory's comment, ended there with #1's /resume; then mallory's next
+// comment held #1 again, and the owner's /hold on #2, which writes no
+// marker on #2, held by #3's, nor on #1, and #1's own /hold, which writes
+// none either. #1's /hold is stacked on #2's alone, as #3's ended on #1
+// before #1's hold began, and #2's on #3's, so #3's /resume ends all
+// three, and #1 goes to clarifying once mallory's comment is resolved.
+func TestResolveStackedThroughHoldBetween(t *testing.T) {
+	f := discFake(t)  // #1
+	file(f, 0, ready) // #2
+	file(f, 0, ready) // #3
+	f.SetParent(1, 2)
+	f.SetParent(2, 3)
+	f.AddComment(1, "mallory", "Wait.")
+	resolveSettle(t, f, 1)
+	f.AddComment(3, "owner", "/hold")
+	resolveSettle(t, f, 3, 2, 1)
+	f.AddComment(1, "owner", "/resume")
+	resolveSettle(t, f, 3, 2, 1)
+	resolveLabels(t, f, "after #1's /resume", "ready", "held", "held")
+	w := f.AddComment(1, "mallory", "Wait again.")
+	resolveSettle(t, f, 1)
+	f.AddComment(2, "owner", "/hold")
+	resolveSettle(t, f, 2, 1)
+	f.AddComment(1, "owner", "/hold")
+	resolveSettle(t, f, 1)
+	f.AddComment(3, "owner", "/resume")
+	resolveSettle(t, f, 3, 2, 1)
+	resolveLabels(t, f, "after #3's /resume", "held", "ready", "ready")
+	f.AddReaction(w, "owner", "+1")
+	resolveSettle(t, f, 3, 2, 1)
+	resolveLabels(t, f, "after the 👍", "clarifying", "ready", "ready")
 }

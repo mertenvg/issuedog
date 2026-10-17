@@ -645,7 +645,8 @@ func (a *Applier) resolveOwnHolds(ctx context.Context, s *github.Snapshot, d Dir
 // an ancestor, ends (resolveUnended): a /hold posted on an issue held
 // already, on the issue itself or between it and the /resume's, which
 // wrote no marker there, so it's stacked on the holds made by /hold above
-// that held that issue when it was posted, and ends with them (Q2b); or a
+// that held that issue when it was posted, and ends with those whose
+// /hold is on the /resume's issue or below it (Q2b, resolveEnds); or a
 // hold the /resume ends by SPEC §6.4's rule, as one whose /hold, or the
 // deleted comment that may have been one, is on the /resume's issue or
 // above it. A /hold stacked only on a discussion hold or a hold set by
@@ -752,8 +753,10 @@ type resolveJudged struct {
 // (SPEC §6.4). A /hold that wrote no marker on its own issue, as that was
 // held already, is stacked on the holds made by /hold above it that held
 // that issue then (resolveEnds), as the first hold wins (Q2b): it ends too
-// with any of them, by a /resume that ends that one. One stacked only on a
-// discussion hold or a hold set by hand ends only by the rule above. A
+// with one of them whose /hold is on the /resume's issue or below it, by a
+// /resume that ends that one. One stacked only on a discussion hold, a
+// hold set by hand, or a /hold above the /resume's issue ends only by the
+// rule above. A
 // deleted comment that may have been a /hold ends only by a /resume the App
 // applied, posted after the deletion, on its issue, a nearer one or self:
 // what it was stacked on isn't known, so it fails closed. Last, it leaves
@@ -841,13 +844,19 @@ func (a *Applier) resolveUnended(ctx context.Context, self node, path []node, is
 	// levelOf is the level of the issue the /hold in comment id was posted
 	// on. One whose comment isn't on self or the path, deleted or on an
 	// issue above it, as j's own, is known by its marker alone: it's taken
-	// as posted on j's issue or above, if madeAbove found it there, else
-	// on the farthest issue on the path that has its marker, failing
-	// closed, so /resume there, or nearer, or on self ends it; else on
-	// self, so only /resume there does.
+	// as posted above j's issue, top+1, if madeAbove found it or a marker
+	// of it there, else on j's issue, if it found it there, else on the
+	// farthest issue on the path that has its marker, failing closed, so
+	// /resume there, or nearer, or on self ends it; else on self, so only
+	// /resume there does. So it's the level the leave path, which reads
+	// the ancestors to the top, gives it, as posted there or as the
+	// farthest with its marker, told apart only as far as j needs it.
 	levelOf := func(id int64) int {
 		if level, ok := posted[id]; ok {
 			return level
+		}
+		if j != nil && j.above.over[id] {
+			return top + 1
 		}
 		if j != nil && j.above.ids[id] {
 			return top
@@ -917,8 +926,10 @@ func (a *Applier) resolveUnended(ctx context.Context, self node, path []node, is
 	// The holds a /hold that wrote no marker may be stacked on: those made
 	// on the path, and, for j, the /holds on j's issue the App applied,
 	// before j, which j ends. Those above j's issue aren't read, so a /hold
-	// stacked only on one of them stays, failing closed, until /resume on
-	// its own issue, or between, ends it.
+	// stacked only on one of them, that wrote no marker where it's stacked,
+	// stays, failing closed, until /resume on its own issue, or between,
+	// ends it; and the leave path, which reads them, leaves them out the
+	// same way (resolveEnds).
 	bases := slices.Clip(holds)
 	if j != nil {
 		h, err := a.resolveCommands(ctx, j.on.s, j.on.d, trust, "hold", p.prev, before)
@@ -1003,13 +1014,20 @@ type resolveResume struct {
 // /resume judged for, and resolveUnended's levelOf and unmarked. A /resume
 // ends a /hold posted before it on its own issue, a nearer one or self
 // (SPEC §6.4); and one that wrote no marker on its issue, as that was held
-// already, if it ends a hold that one is stacked on (Q2b): a hold made by /hold above that held that issue when it was
-// handled (resolveHeldWhen), which a marker there records, as its first
-// hold, or a /hold above that wrote none there, posted since that hold
-// began and before h. Each level up is judged the same way, so the answer
-// is the same whichever issue's hold is judged, and whether or not the
-// /resume has moved that issue out of held by then, as moveFamily moves
-// each issue before the ones below it.
+// already, if it ends a hold that one is stacked on (Q2b): a hold made by
+// /hold above that held that issue when it was handled (resolveHeldWhen),
+// which a marker there records, as its first hold, or a /hold above that
+// wrote none there, posted since that hold began and before h; either one
+// posted on the /resume's issue or below it, as the farthest issue with
+// its marker if its comment is gone (levelOf). One above the /resume's
+// issue isn't: judged for a /resume above the path (resolveHeldBy), the
+// /holds above its issue that wrote no marker on the path aren't read, so
+// the leave path, which reads the ancestors to the top (resolveAbove),
+// leaves those above out too, marked or not, and both give the same
+// answer, failing closed (#188's verify, attempt 4). Each level up is judged the same way, so the answer is the
+// same whichever issue's hold is judged, and whether or not the /resume
+// has moved that issue out of held by then, as moveFamily moves each issue
+// before the ones below it.
 func resolveEnds(appSlug string, self node, path []node, holds []resolveMade,
 	levelOf func(int64) int, unmarked func(int64, int) bool) func(h resolveMade, r int64, by resolveResume) bool {
 	type pair struct{ hold, resume int64 }
@@ -1036,12 +1054,12 @@ func resolveEnds(appSlug string, self node, path []node, holds []resolveMade,
 		first, prev := resolveHeldWhen(on.s, appSlug, on.d.Has, h.id)
 		var bases []resolveMade
 		for _, m := range first {
-			if id, ok := resolveHoldMarked(m); ok && id < h.id && levelOf(id) > h.level {
+			if id, ok := resolveHoldMarked(m); ok && id < h.id && levelOf(id) > h.level && levelOf(id) <= by.level {
 				bases = append(bases, resolveMade{id, levelOf(id)})
 			}
 		}
 		for _, b := range holds {
-			if b.level > h.level && b.id < h.id && b.id > prev && unmarked(b.id, h.level) {
+			if b.level > h.level && b.level <= by.level && b.id < h.id && b.id > prev && unmarked(b.id, h.level) {
 				bases = append(bases, b)
 			}
 		}

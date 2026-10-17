@@ -303,6 +303,11 @@ type madeAboveSet struct {
 	// issues are their numbers: a comment deleted on one of them, which
 	// may have been a /hold (resolveGone), is the /resume's to end too.
 	issues map[int]bool
+	// over are those of ids that are above the /resume's issue: the
+	// comments on its ancestors, and the /holds that markers on them name.
+	// A /hold the /resume ends that's one of them is no hold a /hold below
+	// is stacked on, for that /resume (resolveEnds).
+	over map[int64]bool
 }
 
 // madeAbove returns what is on c's issue and its ancestors (madeAboveSet),
@@ -311,16 +316,19 @@ type madeAboveSet struct {
 // read (SPEC §5.1), so it reads each ancestor's edits as Dirty does, which
 // costs no request when nothing on it was edited.
 func (a *Applier) madeAbove(ctx context.Context, c Cmd) (madeAboveSet, error) {
-	above, seen := madeAboveSet{ids: map[int64]bool{}, issues: map[int]bool{}}, map[int]bool{}
+	above := madeAboveSet{ids: map[int64]bool{}, issues: map[int]bool{}, over: map[int64]bool{}}
+	seen := map[int]bool{}
 	for s, d := c.S, c.Dirt; ; {
 		seen[s.Number] = true
 		above.issues[s.Number] = true
 		for _, cm := range s.Comments {
 			above.ids[cm.ID] = true
+			above.over[cm.ID] = s != c.S
 		}
 		for _, m := range state.Derive(s, a.AppSlug, d.Has).Markers {
 			if id, ok := resolveHoldMarked(m); ok {
 				above.ids[id] = true
+				above.over[id] = above.over[id] || s != c.S
 			}
 		}
 		if s.Parent == 0 || seen[s.Parent] {
