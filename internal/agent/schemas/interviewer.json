@@ -1,13 +1,13 @@
 {
   "title": "interviewer",
-  "description": "One interviewer run: a question round, a spec, or a type for a bug or task. Set outcome, then only the fields that go with it.",
+  "description": "One interviewer run: a question round, a spec, a type for a bug or task, or, after a discussion hold, unchanged. Set outcome, then only the fields that go with it.",
   "type": "object",
   "required": ["outcome"],
   "additionalProperties": false,
   "properties": {
     "outcome": {
-      "description": "questions: ask a round. spec: write the spec. typed: the issue is a bug or task; set type and nothing else.",
-      "enum": ["questions", "spec", "typed"]
+      "description": "questions: ask a round. spec: write the spec. typed: the issue is a bug or task; set type and nothing else. unchanged: only where the preamble allows it, after a discussion hold, when nothing in the discussion changes the issue, so it goes back to the stage it came from; set message at most.",
+      "enum": ["questions", "spec", "typed", "unchanged"]
     },
     "type": {
       "description": "The type you set on the issue. Only where you may set one.",
@@ -24,7 +24,7 @@
       }
     },
     "message": {
-      "description": "A few lines for the owner, with a spec after revision notes: the answer to each note, or what changed.",
+      "description": "A few lines for the owner: with a spec after revision notes, the answer to each note, or what changed; with unchanged, why the discussion changes nothing.",
       "type": "string",
       "pattern": "\\S"
     },

@@ -64,10 +64,11 @@ import (
 // either kind, carry its origin forward (SPEC §6.4), so the commands that
 // wait there keep waiting (resume, hold). An issue held from intake isn't in
 // the pipeline yet, so it stays held, and /resume takes it back to intake
-// (resolveIntake). Until T5 (#189) runs the
-// interviewer there, every class waits at that clarifying until a code
-// owner sets its stage by hand (Interviewer.Pending), and the commands
-// that would move it wait too (state.Command.Waits).
+// (resolveIntake). The interviewer reads the discussion at that clarifying
+// on an epic, a story with no parent or an untyped issue (T5, #189); every
+// other class waits there until a code owner sets its stage by hand (Q3b,
+// Interviewer.Pending, ivHoldWait). The commands that would move the issue
+// wait there too (state.Command.Waits).
 
 // resolveKind is the kind of the marker that records the end of one hold
 // while another stays (SPEC §6.4), so the issue stays held:
@@ -1116,10 +1117,14 @@ func resolveOwnerHeld(holds []github.Marker) bool {
 // once c ends every hold on it: a discussion ended
 // on it while an owner hold stayed (SPEC §6.4). That's so once the App
 // recorded it (resolveLeave), or else when, during the hold and before
-// the /resume, a writer's trigger was resolved while an owner hold stays,
-// as when the /resume came before the App's pass that would record it. An
-// act at or after the /resume doesn't count: the triggers still open
-// then, it accepts itself, and restores at. Nor does an
+// the /resume, a writer's trigger was resolved, as when the /resume came
+// before the App's pass that would record it, or while another trigger
+// was still open, whatever holds the issue besides (#188's note for #189):
+// an owner hold that shows on it, a /hold on an ancestor that writes no
+// marker here (Q2b), or none. So the interviewer reads what a code owner
+// approved or countered (T5). An act at or after the /resume doesn't
+// count: the triggers still open then, it accepts itself, and with no act
+// before it restores at. Nor does an
 // issue held from intake go to clarifying, which would bring it into the
 // pipeline without the approval SPEC §6.2 asks for (resolveIntake).
 func (a *Applier) resolveHeld(ctx context.Context, s *github.Snapshot, d Dirt, trust github.Trust, is state.Issue, c github.Comment, self bool,
@@ -1157,7 +1162,11 @@ func (a *Applier) resolveHeld(ctx context.Context, s *github.Snapshot, d Dirt, t
 		}
 	}
 	is.HeldStack.Holds = resolveLeft(holds, p, c.ID)
-	if resolveIntake(is.HeldStack) || p.ended || !resolveOwnerHeld(is.HeldStack.Holds) {
+	// Whether an owner hold shows on the issue doesn't matter (#188's note
+	// for #189): a /hold on an ancestor, which writes no marker here (Q2b),
+	// looks the same as none, so both go to clarifying once a trigger was
+	// resolved during the hold, and the interviewer reads what it approved.
+	if resolveIntake(is.HeldStack) || p.ended {
 		return is, p.ended && !resolveIntake(is.HeldStack), nil
 	}
 	for _, act := range rs.acts {
@@ -1229,7 +1238,8 @@ func resolveHeldAfterHold(is state.Issue) (state.Stage, bool) {
 func resolveIntake(h state.HeldStack) bool { return h.At == state.Intake }
 
 // resolveWait is what the move to clarifying after a hold says of what
-// comes next: until T5 (#189), every class waits there (Q3b).
+// comes next on an issue the interviewer doesn't run on yet: it waits
+// there (Q3b, ivHoldWait).
 const resolveWait = "It waits at `clarifying` until a code owner sets its stage by hand."
 
 // ResolveByReaction returns the reaction trigger for Step.Reactions that
@@ -1251,8 +1261,8 @@ func ResolveByReaction(trust github.Trust) func(ctx context.Context, a *Applier,
 //     held → clarifying (#87's assumption 9), keyed event=h<the comment of
 //     the move that began the hold>, unique to the hold, with
 //     resolveFields: resolved is the latest act's time, which bounds the
-//     triggers from then on (discFloor). The comment ends in cc @<notify>,
-//     as the issue waits on a code owner (resolveWait).
+//     triggers from then on (discFloor). The comment says what comes next
+//     (ivHoldWait), and ends in cc @<notify>.
 //   - While an owner hold stays, or when the hold began at intake
 //     (resolveIntake), it records, once for each resolution, that the
 //     discussion ended: an App comment with an "ended reason=discussion
@@ -1306,7 +1316,7 @@ func (a *Applier) resolveLeave(ctx context.Context, s *github.Snapshot, d Dirt, 
 		text += ", by " + list(by)
 	}
 	h := is.HeldStack
-	text += fmt.Sprintf(", so this issue leaves its hold from `%s` for `clarifying`. %s", h.At, resolveWait)
+	text += fmt.Sprintf(", so this issue leaves its hold from `%s` for `clarifying`. %s", h.At, ivHoldWait(is.Item))
 	m := Move{To: state.Clarifying, Trigger: state.TriggerDiscussionResolved, Key: state.Key{Field: "event", ID: "h" + strconv.FormatInt(p.start, 10)},
 		Fields: resolveFields(h, last), Text: discCC(text, a.Notify)}
 	// About to leave: a /hold on an ancestor posted while it was held, which

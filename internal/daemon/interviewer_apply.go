@@ -51,7 +51,7 @@ func (iv *Interviewer) Check(ctx context.Context, r Result) error {
 	if err := checkInterview(out, f); err != nil {
 		return err
 	}
-	if err := ivMoveFits(it, out); err != nil {
+	if err := ivMoveFits(it, out, f.Origin); err != nil {
 		return fmt.Errorf("the interviewer's %s on #%d: %w", out.Outcome, r.S.Number, err)
 	}
 	return nil
@@ -72,12 +72,14 @@ func ivStillRuns(it state.Item, out interviewOutput, may bool) bool {
 
 // ivMoveFits returns an error unless out's move fits an issue like it once
 // out's type, if it sets one, is set: the table has the move for its class
-// (SPEC §7.2), clarifying → spec-review on spec-written for a spec, and
-// clarifying → clarifying on more-questions otherwise. A question round
-// must also leave the issue one the interviewer runs on, or no run would
-// read its answers: a story with a parent waits at clarifying for good.
-// out has passed checkInterview, so its type is a known one.
-func ivMoveFits(it state.Item, out interviewOutput) error {
+// (SPEC §7.2), clarifying → spec-review on spec-written for a spec, or on
+// spec-rewritten at the clarifying after a hold, whose origin is set
+// (ivHoldOrigin); clarifying → origin on discussion-no-change for
+// unchanged; and clarifying → clarifying on more-questions otherwise. A
+// question round must also leave the issue one the interviewer runs on, or
+// no run would read its answers: a story with a parent waits at clarifying
+// for good. out has passed checkInterview, so its type is a known one.
+func ivMoveFits(it state.Item, out interviewOutput, origin state.Stage) error {
 	if out.Type != nil {
 		it.Type = out.Type.Value
 	}
@@ -85,10 +87,7 @@ func ivMoveFits(it state.Item, out interviewOutput) error {
 	if err != nil {
 		return fmt.Errorf("the issue's class once typed: %w", err)
 	}
-	to, trigger := state.Clarifying, state.TriggerMoreQuestions
-	if out.Outcome == outcomeSpec {
-		to, trigger = state.SpecReview, state.TriggerSpecWritten
-	}
+	to, trigger := ivHoldMove(out.Outcome, origin)
 	if _, err := state.Lookup(state.Clarifying, to, class, trigger); err != nil {
 		return fmt.Errorf("an issue of type %q with a parent %t can't move: %w", it.Type, it.HasParent, err)
 	}
@@ -105,7 +104,9 @@ func ivMoveFits(it state.Item, out interviewOutput) error {
 //   - whether the interviewer may set the type, from the timeline
 //     (typing), and whether the issue has one;
 //   - the logins a spec's decision may name;
-//   - loop.max_questions_per_round, and notify for the cc line.
+//   - loop.max_questions_per_round, and notify for the cc line;
+//   - the stage the issue came from, at the clarifying after a hold
+//     (ivHoldOrigin), which an unchanged outcome needs.
 func (iv *Interviewer) facts(ctx context.Context, r Result) (interviewFacts, error) {
 	d := iv.Daemon
 	a := d.Step.Applier
@@ -125,6 +126,7 @@ func (iv *Interviewer) facts(ctx context.Context, r Result) (interviewFacts, err
 		Rounds:       ivRoundCounts(interviewerRounds(r.S, a.AppSlug, r.Dirt.Has)),
 		Trusted:      logins,
 		Notify:       d.Config.Notify,
+		Origin:       ivHoldOrigin(state.Derive(r.S, a.AppSlug, r.Dirt.Has)),
 	}, nil
 }
 
@@ -193,6 +195,20 @@ func ivRoundCounts(rounds []interviewerRound) []int {
 //     message (the answers to the revision notes, or what changed), the
 //     decisions added without asking, and the cc line (renderSpecNote).
 //     The body is clean after step 2, so it is a normal revision.
+//     - At the clarifying after a discussion hold (#189), an unchanged
+//     outcome's is clarifying → origin on discussion-no-change, with no
+//     revision: the latest one, if the body still has its hash, still
+//     stands, and says so (ivHoldStanding), so a 👍 or /approve on it
+//     approves it (SPEC §7.4). Its text is renderUnchanged's. A spec's
+//     there is on spec-rewritten.
+//  4. At the clarifying after a hold, every move carries origin
+//     (ivHoldOrigin, SPEC §6.4), and one after a hold from spec-review
+//     names the /revise that waited through it, if the run read one
+//     (ivHoldRevise, as the run's seen bounds it), with cmd= beside run=
+//     (Move.check), then 👍s it, so it's processed and isn't applied
+//     again. Once the move is written, its marker says where it went and
+//     which /revise it named, so a replay only finishes the labels and the
+//     👍, and nothing it reads since can change them.
 //
 // A type:* label can be left without its type line: when the comment after
 // it fails, and a trusted comment comes before the retry, the result is
@@ -209,21 +225,38 @@ func (iv *Interviewer) Apply(ctx context.Context, a *Applier, r Result) error {
 	if err != nil {
 		return wrap(err)
 	}
-	if !slices.Contains([]string{outcomeQuestions, outcomeTyped, outcomeSpec}, out.Outcome) {
+	if !slices.Contains([]string{outcomeQuestions, outcomeTyped, outcomeSpec, outcomeUnchanged}, out.Outcome) {
 		return wrap(fmt.Errorf("unknown outcome %q", out.Outcome))
 	}
-	moved := state.Derive(r.S, a.AppSlug, r.Dirt.Has).Moved(state.Key{Field: "run", ID: r.RunID})
+	is := state.Derive(r.S, a.AppSlug, r.Dirt.Has)
+	moved := is.Moved(state.Key{Field: "run", ID: r.RunID})
+	hold, err := iv.holdFields(ctx, a, r, is, moved)
+	if err != nil {
+		return wrap(err)
+	}
 	if out.Type != nil && !moved {
 		if err := ivSetType(ctx, a, r.S, out.Type.Value); err != nil {
 			return wrap(err)
 		}
 	}
 	notify := iv.Daemon.Config.Notify
+	to, trigger := ivHoldMove(out.Outcome, hold.origin)
+	if out.Outcome == outcomeUnchanged {
+		if hold.to != "" {
+			to = hold.to // written already: where it went
+		}
+		m := hold.set(r.Move(to, trigger))
+		m.Text = renderUnchanged(out, to, ivHoldStanding(r.S, a.AppSlug, r.Dirt, to), notify)
+		if err := a.Transition(ctx, r.S, r.Dirt.Has, m); err != nil {
+			return wrap(err)
+		}
+		return hold.ack(ctx, a, wrap)
+	}
 	if out.Outcome == outcomeSpec {
 		if out.Spec == nil {
 			return wrap(errors.New("the spec outcome has no spec"))
 		}
-		m := r.Move(state.SpecReview, state.TriggerSpecWritten)
+		m := hold.set(r.Move(to, trigger))
 		m.Text = renderSpecNote(out, notify)
 		dirt := r.Dirt
 		if !moved {
@@ -242,12 +275,12 @@ func (iv *Interviewer) Apply(ctx context.Context, a *Applier, r Result) error {
 		if err := a.PostRevision(ctx, r.S, dirt.Has, m); err != nil {
 			return wrap(err)
 		}
-		return nil
+		return hold.ack(ctx, a, wrap)
 	}
 	// Once the move is written, its round is among these, so the number is
 	// one too high, but Transition then writes no text or fields.
 	round := len(ivRoundCounts(interviewerRounds(r.S, a.AppSlug, r.Dirt.Has))) + 1
-	m := r.Move(state.Clarifying, state.TriggerMoreQuestions)
+	m := hold.set(r.Move(to, trigger))
 	m.Text = renderQuestions(out, r.S.Number, round, notify)
 	if out.Outcome == outcomeTyped {
 		m.Text = strings.Join(append([]string{renderQuestions(out, r.S.Number, round, nil), ivTypedWaits}, ccLines(notify)...), "\n\n")
@@ -260,7 +293,7 @@ func (iv *Interviewer) Apply(ctx context.Context, a *Applier, r Result) error {
 	if err := a.Transition(ctx, r.S, r.Dirt.Has, m); err != nil {
 		return wrap(err)
 	}
-	return nil
+	return hold.ack(ctx, a, wrap)
 }
 
 // specWriteBody makes spec, the rendered spec, s's whole body, with s's
