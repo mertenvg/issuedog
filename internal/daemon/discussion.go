@@ -475,13 +475,18 @@ func (a *Applier) discNoRecordDue(now time.Time) []int {
 // bound b, and whether a marker records it: recorded by a marker in b's
 // comment or a later one, or, with no record, made at or after b's time,
 // failing closed in its second, or for a comment id, unless b is by time,
-// above b's comment.
+// above b's comment. A recorded act is open too when b is by time and the
+// act, its time known, is at or after b's time (T4): a record written
+// after the act that resolved the triggers, as a notice posted in the
+// pass that applies a /resume posted before the act, doesn't close it. An
+// act known from its record alone, at the zero time, is judged by its
+// record (discRecorded), but for an edit, whose key gives its time.
 type discOpen func(key string, at time.Time, id int64) (open, recorded bool)
 
 func discOpenAfter(b discBound, records map[string]int64) discOpen {
 	return func(key string, at time.Time, id int64) (bool, bool) {
 		if r, recorded := records[key]; recorded {
-			return r >= b.ID, true
+			return r >= b.ID || b.ByTime && !at.IsZero() && !at.Before(b.At), true
 		}
 		if id != 0 && !b.ByTime {
 			return id > b.ID, false
@@ -635,6 +640,7 @@ func (a *Applier) discFindResolved(ctx context.Context, s *github.Snapshot, d Di
 		return nil, wrap(err)
 	}
 	slices.SortStableFunc(found, func(x, y discTrigger) int { return x.At.Compare(y.At) })
+	rs.open = found
 	return found, nil
 }
 
@@ -669,11 +675,16 @@ func discRecorded(s *github.Snapshot, records map[string]int64, open discOpen, f
 	}
 	var more []discTrigger
 	for _, key := range slices.Sorted(maps.Keys(records)) {
-		// Each key here is recorded, so open judges it by its record alone.
-		if o, _ := open(key, time.Time{}, 0); have[key] || !o {
+		// Each key here is recorded, so open judges it by its record, and
+		// an edit by its time too, which its key gives.
+		tr, at := discFromKey(key, when[records[key]]), time.Time{}
+		if tr.Kind == discEdit {
+			at = tr.At
+		}
+		if o, _ := open(key, at, 0); have[key] || !o {
 			continue
 		}
-		more = append(more, discFromKey(key, when[records[key]]))
+		more = append(more, tr)
 	}
 	return more
 }

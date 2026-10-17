@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -18,15 +19,20 @@ import (
 // user's response (#87's assumption 6):
 //   - a comment trigger is resolved by a trusted user's 👍 on it, which
 //     approves it, or by any later clean comment of a trusted user, which
-//     counters every comment before it (resolver.comment);
+//     counters every comment before it, but for a /hold or a /resume
+//     (resolver.comment);
 //   - any other trigger is resolved by a trusted user's 👍 on its clean
 //     notice, which accepts it (resolver.notice), the hold's own comment
 //     included, which carries the first trigger's notice. Not one that
 //     edited or deleted the App's content, though (resolveHitsApp): only
 //     /resume on the issue accepts that, as it may have hidden another
 //     trigger's record (#87's assumption 4);
-//   - every open trigger is accepted by /resume on the issue itself
-//     (heldStackEnds), which takes the issue out of held.
+//   - every open trigger made before it is accepted by /resume on the
+//     issue itself (heldStackEnds), which takes the issue out of held. A
+//     trigger made at or after the /resume, as one between it and the
+//     App's pass, keeps the issue held (resolveStays): the /resume then
+//     records that it ended the holds before it (resolveResumed), and the
+//     issue leaves once the later trigger is resolved too.
 //
 // A resolution is known from what resolved it, on GitHub, so a restart
 // reads it again, and a later change of the trigger's content doesn't
@@ -47,7 +53,13 @@ import (
 // held → clarifying (resolveLeave, #87's assumption 9), with at and origin,
 // and the round's bound from before the hold in seen (HeldStack.Seen).
 // While an owner hold stays, the issue stays held, and its last /resume
-// sends it to clarifying (resolveHeld). An issue held from intake isn't in
+// sends it to clarifying (resolveHeld). An owner hold is a hold marker, or,
+// as a /hold on an issue held already writes none (Q2b), the /hold's own
+// comment, on the issue (resolveOwnHolds) or an ancestor (resolveAbove,
+// resolveHeldBy), until a /resume that heldStackEnds lets end it does. A
+// /resume back to the clarifying after a hold, and a hold from it of
+// either kind, carry its origin forward (SPEC §6.4), so the commands that
+// wait there keep waiting (resume, hold). An issue held from intake isn't in
 // the pipeline yet, so it stays held, and /resume takes it back to intake
 // (resolveIntake). Until T5 (#189) runs the
 // interviewer there, every class waits at that clarifying until a code
@@ -60,11 +72,15 @@ import (
 //     on the issue is resolved, while an owner hold stays, or on an issue
 //     held from intake (resolveLeave). It bounds the triggers as a move out
 //     of held does (discFloor), and makes the issue's last /resume send it
-//     to clarifying (resolveHeld), but from intake.
-//   - "ended reason=owner key=<the /hold's comment id> cmd=<the /resume's
-//     comment id>": a /resume on an ancestor ended the owner hold its /hold
-//     made, while the issue stays held for discussion (resolveResumed), so
-//     that hold counts no more (resolveLeft).
+//     to clarifying (resolveHeld), but from intake. With held=<comment
+//     ids>, the /holds on ancestors that keep the issue held (resolveAbove).
+//     With cmd=<the /resume's comment id>, a /resume on the issue accepted
+//     the triggers before it, while a later one keeps it held
+//     (resolveResumed).
+//   - "ended reason=owner key=<resolveHoldKey> cmd=<the /resume's comment
+//     id>": a /resume ended that owner hold, while the issue stays held for
+//     discussion (resolveResumed), so that hold counts no more
+//     (resolveLeft).
 const resolveKind = "ended"
 
 // resolveField is the marker field resolved=<Unix seconds>, on a move out
@@ -108,6 +124,7 @@ type resolver struct {
 	reactions map[int64][]github.Reaction // read, by comment
 	done      map[string]bool             // judged, by key: whether resolved
 	acts      []resolveAct                // what resolved those that are, in the order judged
+	open      []discTrigger               // the triggers discFind found open, once it's done
 }
 
 // resolverOf is a resolver for s, its triggers' records, and who.
@@ -190,9 +207,15 @@ func (r *resolver) resolved(ctx context.Context, tr discTrigger) (bool, error) {
 // approves it. A comment gone is known by its key alone (FromRecord), so
 // only a counter comment resolves it. The counter is found from the
 // snapshot alone, so a countered comment's reactions aren't read.
+//
+// Any trusted comment counters, a command too, whose command applies as
+// usual (SPEC §6.4): an /approve is a response to the discussion, and
+// waits (state.Command.Waits). But not a /hold, which holds the issue
+// more, nor a /resume, which accepts the triggers by its own rule, only
+// those made before it (resolveHeld) (resolveHoldCommand).
 func (r *resolver) comment(ctx context.Context, tr discTrigger) (*resolveAct, error) {
 	for _, c := range r.s.Comments {
-		if c.ID <= tr.ID || r.d.Has(c.ID) {
+		if c.ID <= tr.ID || r.d.Has(c.ID) || resolveHoldCommand(c.Body) {
 			continue
 		}
 		t, err := r.who.trusted(ctx, c.Author)
@@ -339,24 +362,31 @@ type resolvePeriod struct {
 	// endedAt is the latest such record's resolved time.
 	ended   bool
 	endedAt time.Time
-	// owners are the cmd values of the owner holds that an ancestor's
+	// owners are the keys (resolveHoldKey) of the owner holds that a
 	// /resume ended while a discussion stayed, "ended reason=owner key=",
 	// each with the cmd of that /resume.
 	owners map[string]string
+	// held are the /hold comments on ancestors that kept the issue held
+	// when its discussion ended, "ended reason=discussion held=" (resolveAbove).
+	held []int64
+	// prev is the comment holding the transition before the hold, or 0:
+	// a /hold posted since, that no marker on the issue names, is one more
+	// owner hold on it (resolveOwnHolds).
+	prev int64
 }
 
 // resolvePeriodOf returns the hold s is in, or the zero resolvePeriod if
 // it isn't held.
 func resolvePeriodOf(s *github.Snapshot, appSlug string, dirty func(int64) bool) resolvePeriod {
 	var p resolvePeriod
-	held := false
+	held, prev := false, int64(0)
 	discMarkers(s, appSlug, dirty, func(id int64, at time.Time, m github.Marker) {
 		if _, bounds := state.RoundBound(m, id); bounds {
 			switch {
 			case state.Stage(m.Fields["to"]) != state.Held:
-				p, held = resolvePeriod{}, false
+				p, held, prev = resolvePeriod{}, false, id
 			case !held || state.Stage(m.Fields["from"]) != state.Held:
-				p, held = resolvePeriod{start: id, at: at, owners: map[string]string{}}, true
+				p, held = resolvePeriod{start: id, at: at, owners: map[string]string{}, prev: prev}, true
 			}
 			return
 		}
@@ -369,6 +399,11 @@ func resolvePeriodOf(s *github.Snapshot, appSlug string, dirty func(int64) bool)
 			if t, ok := resolveEndedAt(m); ok && t.After(p.endedAt) {
 				p.endedAt = t
 			}
+			for _, v := range strings.Split(m.Fields["held"], ",") {
+				if id, err := strconv.ParseInt(v, 10, 64); err == nil && id > 0 && !slices.Contains(p.held, id) {
+					p.held = append(p.held, id)
+				}
+			}
 		case "owner":
 			p.owners[m.Fields["key"]] = m.Fields["cmd"]
 		}
@@ -376,15 +411,177 @@ func resolvePeriodOf(s *github.Snapshot, appSlug string, dirty func(int64) bool)
 	return p
 }
 
-// resolveLeft returns holds without the owner holds that p says an
-// ancestor's /resume ended (resolveResumed), but for those that the
-// /resume in comment except ended, which a replay of it still counts as
-// its own to end.
+// resolveLeft returns holds without the owner holds that p says a /resume
+// ended while the issue stayed held (resolveResumed), but for those that
+// the /resume in comment except ended, which a replay of it still counts
+// as its own to end.
 func resolveLeft(holds []github.Marker, p resolvePeriod, except int64) []github.Marker {
 	return slices.DeleteFunc(slices.Clone(holds), func(m github.Marker) bool {
-		by, ended := p.owners[m.Fields["cmd"]]
-		return m.Fields["reason"] == "owner" && m.Fields["cmd"] != "" && ended && by != state.CmdKey(except).ID
+		by, ended := p.owners[resolveHoldKey(m)]
+		return m.Fields["reason"] == "owner" && resolveHoldKey(m) != "" && ended && by != state.CmdKey(except).ID
 	})
+}
+
+// resolveHoldKey names the owner hold that marker m records, for an
+// "ended reason=owner" record: c<comment id> for a /hold, by its cmd, or
+// e<event> for a hold set by hand, or one discRestore reposted, by its
+// event. It's "" for any other marker.
+func resolveHoldKey(m github.Marker) string {
+	switch {
+	case m.Fields["cmd"] != "":
+		return "c" + m.Fields["cmd"]
+	case m.Fields["event"] != "":
+		return "e" + m.Fields["event"]
+	}
+	return ""
+}
+
+// resolveStays is a field resolveHeld sets, in memory only, on a
+// discussion hold whose trigger was made at or after the /resume it
+// judges for: that /resume doesn't end it (heldStackEnds). The App never
+// writes it.
+const resolveStays = "stays"
+
+// resolveHoldCommand reports whether body is a /hold or a /resume, which
+// counters no comment (resolver.comment).
+func resolveHoldCommand(body string) bool {
+	c, ok := state.ParseCommand(body)
+	return ok && (c.Name == "hold" || c.Name == "resume")
+}
+
+// resolveCommands returns the IDs of the clean comments on s, above after
+// and, unless before is 0, below before, that are a valid command named
+// name, by a user trust trusts, no bot.
+func (a *Applier) resolveCommands(ctx context.Context, s *github.Snapshot, d Dirt, trust github.Trust, name string, after, before int64) ([]int64, error) {
+	who := a.discWhoOf(s, trust)
+	var ids []int64
+	for _, c := range s.Comments {
+		cmd, ok := state.ParseCommand(c.Body)
+		if c.ID <= after || before != 0 && c.ID >= before || d.Has(c.ID) || !ok || cmd.Name != name || cmd.Check(state.Held) != nil {
+			continue
+		}
+		t, err := who.trusted(ctx, c.Author)
+		if err != nil {
+			return nil, fmt.Errorf("/%s in comment %d: %w", name, c.ID, err)
+		}
+		if t {
+			ids = append(ids, c.ID)
+		}
+	}
+	return ids, nil
+}
+
+// resolveOwnHolds returns the owner holds on s, in state is, held, p,
+// that no transition marker records (Q2b), as owner hold markers keyed by
+// their /hold's cmd: each /hold posted on s since the transition before the
+// hold that no marker names, as one posted while s was held, its comment
+// the record of that hold; and each /hold on an ancestor that the record of
+// the discussion's end names (resolveAbove). For a /resume, before is its
+// comment: a /hold posted after it is no hold it could end, and holds the
+// issue itself once handled (hold).
+func (a *Applier) resolveOwnHolds(ctx context.Context, s *github.Snapshot, d Dirt, trust github.Trust, is state.Issue, p resolvePeriod, before int64) ([]github.Marker, error) {
+	ids, err := a.resolveCommands(ctx, s, d, trust, "hold", p.prev, before)
+	if err != nil {
+		return nil, fmt.Errorf("owner holds: %w", err)
+	}
+	var holds []github.Marker
+	for _, id := range append(ids, p.held...) {
+		if !is.Moved(state.CmdKey(id)) {
+			holds = append(holds, resolveOwnerHold(id))
+		}
+	}
+	return holds, nil
+}
+
+// resolveOwnerHold is the owner hold marker that the /hold in comment id
+// stands for, in memory.
+func resolveOwnerHold(id int64) github.Marker {
+	return github.Marker{Kind: "transition", Fields: map[string]string{"from": string(state.Held), "to": string(state.Held),
+		"reason": "owner", "cmd": state.CmdKey(id).ID}}
+}
+
+// resolveHeldBy returns the /holds on the path from n, a descendant of c's
+// issue in family, up to c's issue, between them, that keep n held: each
+// valid trusted /hold posted on one of those issues since the transition
+// before n's hold, that no marker on n names, and that no /resume after it
+// on its issue, or on one below it on the path, ended. A /hold on c's
+// issue, or above it, is c's to end. Each is an owner hold marker on n.
+func (a *Applier) resolveHeldBy(ctx context.Context, family []node, c Cmd, n node, trust github.Trust) ([]github.Marker, error) {
+	byNumber := map[int]node{}
+	for _, x := range family {
+		byNumber[x.s.Number] = x
+	}
+	is := state.Derive(n.s, a.AppSlug, n.d.Has)
+	p := resolvePeriodOf(n.s, a.AppSlug, n.d.Has)
+	var path []node // nearest first
+	for x, ok := byNumber[n.s.Parent]; ok && x.s != c.S && len(path) < len(family); x, ok = byNumber[x.s.Parent] {
+		path = append(path, x)
+	}
+	return a.resolveUnended(ctx, path, is, p, trust, c.Comment.ID)
+}
+
+// resolveUnended returns, as owner hold markers on an issue in state is,
+// held, p, the valid trusted /holds on the issues in path, its ancestors
+// nearest first, posted since the transition before its hold and named by
+// no marker on it, that no later /resume on their issue or a nearer one
+// ended (heldStackEnds), and, unless before is 0, posted before before.
+func (a *Applier) resolveUnended(ctx context.Context, path []node, is state.Issue, p resolvePeriod, trust github.Trust, before int64) ([]github.Marker, error) {
+	resumes := map[int64]int{} // each /resume, by its level on the path
+	var holds []github.Marker
+	for level, x := range path {
+		r, err := a.resolveCommands(ctx, x.s, x.d, trust, "resume", p.prev, 0)
+		if err != nil {
+			return nil, fmt.Errorf("held from above: %w", err)
+		}
+		for _, id := range r {
+			resumes[id] = level
+		}
+	}
+	for level, x := range path {
+		h, err := a.resolveCommands(ctx, x.s, x.d, trust, "hold", p.prev, before)
+		if err != nil {
+			return nil, fmt.Errorf("held from above: %w", err)
+		}
+		for _, id := range h {
+			ended := false
+			for r, at := range resumes {
+				ended = ended || r > id && at <= level
+			}
+			if !ended && !is.Moved(state.CmdKey(id)) {
+				holds = append(holds, resolveOwnerHold(id))
+			}
+		}
+	}
+	return holds, nil
+}
+
+// resolveAbove returns the /holds on s's ancestors in this repo that keep
+// s, in state is, held, p, (resolveUnended), read up through each parent
+// as madeAbove reads them. It reads only when s's discussion is resolved
+// with no other hold left, and the record of the discussion's end names
+// what it finds, so no other pass reads them again (resolveLeave).
+func (a *Applier) resolveAbove(ctx context.Context, s *github.Snapshot, trust github.Trust, is state.Issue, p resolvePeriod) ([]github.Marker, error) {
+	var path []node
+	seen := map[int]bool{s.Number: true}
+	for x := s; x.Parent != 0 && !seen[x.Parent]; {
+		seen[x.Parent] = true
+		parent, _, err := a.Client.SubIssue.GetParentIssue(ctx, a.Owner, a.Repo, int64(x.Number))
+		if err != nil {
+			return nil, fmt.Errorf("parent of %s/%s#%d: %w", a.Owner, a.Repo, x.Number, err)
+		}
+		if !a.inRepo(parent.GetRepositoryURL()) {
+			break
+		}
+		if x, err = a.Client.Snapshot(ctx, a.Owner, a.Repo, parent.GetNumber()); err != nil {
+			return nil, fmt.Errorf("ancestor of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
+		}
+		d, err := a.Dirty(ctx, x, trust)
+		if err != nil {
+			return nil, fmt.Errorf("ancestor of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
+		}
+		path = append(path, node{s: x, d: d, open: true})
+	}
+	return a.resolveUnended(ctx, path, is, p, trust, 0)
 }
 
 // resolveOwnerHeld reports whether any of holds isn't a discussion hold:
@@ -394,20 +591,26 @@ func resolveOwnerHeld(holds []github.Marker) bool {
 }
 
 // resolveHeld is discHeldStack for /resume (commands.go): is, the state of
-// s, with its open discussion triggers among its holds, and without the
-// owner holds an ancestor's /resume ended while a discussion stayed
-// (resolveLeft), but for those the /resume in comment c ended itself. after
-// reports whether the issue goes to clarifying once c ends every hold on
-// it: a discussion ended
+// s, with its open discussion triggers among its holds, and the owner
+// holds no marker records, its own (resolveOwnHolds) and extra, those from
+// the issues between it and c's (resolveHeldBy); without the owner holds a
+// /resume ended while the issue stayed held (resolveLeft), but for those
+// the /resume in comment c ended itself; on a descendant, not self,
+// without the discussion holds whose triggers are resolved. A discussion
+// hold whose trigger
+// was made at or after c stays (resolveStays): c accepts only the
+// triggers made before it, so a later one keeps the issue held, or holds
+// it again once out. after reports whether the issue goes to clarifying
+// once c ends every hold on it: a discussion ended
 // on it while an owner hold stayed (SPEC §6.4). That's so once the App
 // recorded it (resolveLeave), or else when, during the hold and before
 // the /resume, a writer's trigger was resolved while an owner hold stays,
-// as when the /resume came before the App's pass that would record it. A
-// /resume's own comment, which counters every comment before it, doesn't
-// count, as /resume accepts those itself, and restores at. Nor does an
+// as when the /resume came before the App's pass that would record it. An
+// act at or after the /resume doesn't count: the triggers still open
+// then, it accepts itself, and restores at. Nor does an
 // issue held from intake go to clarifying, which would bring it into the
 // pipeline without the approval SPEC §6.2 asks for (resolveIntake).
-func (a *Applier) resolveHeld(ctx context.Context, s *github.Snapshot, d Dirt, trust github.Trust, is state.Issue, c github.Comment) (state.Issue, bool, error) {
+func (a *Applier) resolveHeld(ctx context.Context, s *github.Snapshot, d Dirt, trust github.Trust, is state.Issue, c github.Comment, self bool, extra []github.Marker) (state.Issue, bool, error) {
 	is, rs, err := a.discHeldStack(ctx, s, d, trust, is)
 	if err != nil {
 		return is, false, fmt.Errorf("resolved: %w", err)
@@ -416,7 +619,31 @@ func (a *Applier) resolveHeld(ctx context.Context, s *github.Snapshot, d Dirt, t
 		return is, false, nil
 	}
 	p := resolvePeriodOf(s, a.AppSlug, d.Has)
-	is.HeldStack.Holds = resolveLeft(is.HeldStack.Holds, p, c.ID)
+	own, err := a.resolveOwnHolds(ctx, s, d, trust, is, p, c.ID)
+	if err != nil {
+		return is, false, fmt.Errorf("resolved: %w", err)
+	}
+	after := map[string]bool{} // the open triggers, true for one made at or after c
+	for _, tr := range rs.open {
+		after[tr.Key] = after[tr.Key] || !tr.At.Before(c.CreatedAt)
+	}
+	// On a descendant, a discussion hold whose trigger is resolved holds
+	// nothing any more, so an ancestor's /resume that ends the rest takes
+	// the issue out, to clarifying (after). On c's own issue it's one more
+	// hold c ends, back to at, as /resume restores at.
+	holds := slices.DeleteFunc(slices.Clone(is.HeldStack.Holds), func(m github.Marker) bool {
+		_, open := after[m.Fields["event"]]
+		return !self && m.Fields["reason"] == "discussion" && !open
+	})
+	holds = append(append(holds, own...), extra...)
+	for i, m := range holds {
+		if m.Fields["reason"] == "discussion" && after[m.Fields["event"]] {
+			f := maps.Clone(m.Fields)
+			f[resolveStays] = "1"
+			holds[i] = github.Marker{Kind: m.Kind, Fields: f}
+		}
+	}
+	is.HeldStack.Holds = resolveLeft(holds, p, c.ID)
 	if resolveIntake(is.HeldStack) || p.ended || !resolveOwnerHeld(is.HeldStack.Holds) {
 		return is, p.ended && !resolveIntake(is.HeldStack), nil
 	}
@@ -459,6 +686,27 @@ func resolveFields(h state.HeldStack, resolved time.Time) map[string]string {
 		fields[resolveField] = strconv.FormatInt(resolved.Unix(), 10)
 	}
 	return state.HeldStackFields(fields, h.Seen)
+}
+
+// resolveHeldAfterHold returns the origin of the clarifying after a hold
+// that is, held, was at when its hold began, if it was at one: the origin
+// the transition before the move into held carries (state.Issue.AfterHold).
+// A /resume back there carries it forward (resume).
+func resolveHeldAfterHold(is state.Issue) (state.Stage, bool) {
+	var before, last github.Marker
+	for _, m := range is.Markers {
+		if _, bounds := state.RoundBound(m, 0); !bounds {
+			continue
+		}
+		switch {
+		case state.Stage(m.Fields["to"]) != state.Held:
+			last = m
+		case state.Stage(m.Fields["from"]) != state.Held:
+			before = last
+		}
+	}
+	o := state.Stage(before.Fields["origin"])
+	return o, is.Stage == state.Held && state.Stage(before.Fields["to"]) == state.Clarifying && o.Open() && o != state.Held
 }
 
 // resolveIntake reports whether h, the holds on an issue, began at intake:
@@ -505,7 +753,7 @@ func ResolveByReaction(trust github.Trust) func(ctx context.Context, a *Applier,
 // Transition, then only logged.
 func (a *Applier) resolveLeave(ctx context.Context, s *github.Snapshot, d Dirt, trust github.Trust) error {
 	is := state.Derive(s, a.AppSlug, d.Has)
-	if is.Stage != state.Held || len(is.HeldStack.Holds) == 0 {
+	if is.Stage != state.Held {
 		return nil
 	}
 	var rs *resolver
@@ -517,8 +765,22 @@ func (a *Applier) resolveLeave(ctx context.Context, s *github.Snapshot, d Dirt, 
 		return nil
 	}
 	p := resolvePeriodOf(s, a.AppSlug, d.Has)
-	if resolveIntake(is.HeldStack) || resolveOwnerHeld(resolveLeft(is.HeldStack.Holds, p, 0)) {
-		return a.resolveEnded(ctx, s, rs, p, resolveIntake(is.HeldStack))
+	own, err := a.resolveOwnHolds(ctx, s, d, trust, is, p, 0)
+	if err != nil {
+		return fmt.Errorf("leave: %w", err)
+	}
+	holds := resolveLeft(append(slices.Clone(is.HeldStack.Holds), own...), p, 0)
+	if resolveIntake(is.HeldStack) || resolveOwnerHeld(holds) {
+		return a.resolveEnded(ctx, s, rs, p, resolveIntake(is.HeldStack), nil)
+	}
+	// About to leave: a /hold on an ancestor posted while it was held, which
+	// no marker here records (Q2b), keeps it held (SPEC §6.4).
+	above, err := a.resolveAbove(ctx, s, trust, is, p)
+	if err != nil {
+		return fmt.Errorf("leave: %w", err)
+	}
+	if len(resolveLeft(above, p, 0)) > 0 {
+		return a.resolveEnded(ctx, s, rs, p, false, resolveLeft(above, p, 0))
 	}
 	var last time.Time
 	var by []string
@@ -552,13 +814,23 @@ func (a *Applier) resolveLeave(ctx context.Context, s *github.Snapshot, d Dirt, 
 
 // resolveEnded writes the "ended reason=discussion" record on s, held by
 // an owner hold that stays, or from intake, if a writer's trigger was
-// resolved during the hold, p, since the latest such record
-// (resolveLeave). Its time is the latest of those resolutions.
-func (a *Applier) resolveEnded(ctx context.Context, s *github.Snapshot, rs *resolver, p resolvePeriod, intake bool) error {
+// resolved during the hold, p, since the latest such record, or if above,
+// /holds on ancestors that keep it held (resolveAbove), name one no record
+// names yet (resolveLeave). Its time is the latest of those resolutions,
+// and its held field names the ancestors' /holds, so no later pass reads
+// them again: their /resume ends them (resolveHeld).
+func (a *Applier) resolveEnded(ctx context.Context, s *github.Snapshot, rs *resolver, p resolvePeriod, intake bool, above []github.Marker) error {
+	var held []string
+	news := false
+	for _, m := range above {
+		id, _ := state.Key{Field: "cmd", ID: m.Fields["cmd"]}.Comment()
+		news = news || !slices.Contains(p.held, id)
+		held = append(held, m.Fields["cmd"])
+	}
 	var last time.Time
 	var by []string
 	for _, act := range rs.acts {
-		if act.At.Before(p.at) || p.ended && !act.At.After(p.endedAt) {
+		if act.At.Before(p.at) || p.ended && !act.At.After(p.endedAt) && !news {
 			continue
 		}
 		ok, err := rs.verified(ctx, act)
@@ -575,16 +847,26 @@ func (a *Applier) resolveEnded(ctx context.Context, s *github.Snapshot, rs *reso
 			by = append(by, l)
 		}
 	}
-	if last.IsZero() {
+	if last.IsZero() && !news {
 		return nil
 	}
-	marker, err := github.FormatMarker(github.Marker{Kind: resolveKind, Fields: map[string]string{"reason": "discussion",
-		resolveField: strconv.FormatInt(last.Unix(), 10)}})
+	fields := map[string]string{"reason": "discussion"}
+	if !last.IsZero() {
+		fields[resolveField] = strconv.FormatInt(last.Unix(), 10)
+	}
+	if len(held) > 0 {
+		fields["held"] = strings.Join(held, ",")
+	}
+	marker, err := github.FormatMarker(github.Marker{Kind: resolveKind, Fields: fields})
 	if err != nil {
 		return fmt.Errorf("record the end: %w", err)
 	}
 	text := fmt.Sprintf("The discussion is resolved, by %s, but this issue stays on hold: an owner hold on it hasn't ended. "+
 		"`/resume` here ends that, and then it goes to `clarifying`.", list(by))
+	if len(held) > 0 {
+		text = fmt.Sprintf("The discussion is resolved, but this issue stays on hold: a `/hold` on an issue above it, in comment %s, hasn't ended. "+
+			"`/resume` there, or here, ends that, and then it goes to `clarifying`.", list(held))
+	}
 	if intake {
 		text = fmt.Sprintf("The discussion is resolved, by %s, but this issue stays on hold: it was at `intake` before the hold, "+
 			"so `clarifying` would bring it into the pipeline. `/resume` here takes it back to `intake`.", list(by))
@@ -596,37 +878,52 @@ func (a *Applier) resolveEnded(ctx context.Context, s *github.Snapshot, rs *reso
 	return nil
 }
 
-// resolveResumed records on n, a descendant of c's issue in state is
-// (resolveHeld), that c, a /resume, ended the owner holds that a /hold on
-// c's issue or above made on it, above as for heldStackEnds, while it
-// stays held, for discussion only: an App comment with one "ended
-// reason=owner key=<the hold's cmd> cmd=<c's id>" marker for each such
-// hold (resolveKind). So once the discussion is resolved, no owner hold is
-// left (resolveLeft), and the issue goes to clarifying (resolveLeave),
-// with no other /resume (#187's verify note). Its cmd makes it c's marker
-// on n, so it's written once, and a replay of c counts it as begun.
+// resolveResumed records on n, an issue in c's family in state is
+// (resolveHeld), self if it's c's own, that c, a /resume, ended holds on it
+// while it stays held, for discussion only, so that no later pass counts
+// them (resolveLeft): an App comment with one "ended reason=owner
+// key=<resolveHoldKey> cmd=<c's id>" marker (resolveKind) for each owner
+// hold c ends, as heldStackEnds says, and on c's own issue, also an "ended
+// reason=discussion resolved=<c's time> cmd=<c's id>" marker, as c
+// accepts every trigger made before it, which it bounds (discFloor). So on
+// a descendant, once the discussion is resolved, no owner hold is left,
+// and the issue goes to clarifying (resolveLeave), with no other /resume
+// (#187's verify note). On c's own issue, it stays held for the triggers
+// made at or after c (resolveStays), and only for those. Its cmd makes it
+// c's marker on n, so it's written once, and a replay of c counts it as
+// begun.
 func (a *Applier) resolveResumed(ctx context.Context, c Cmd, n node, is state.Issue, above map[int64]bool) error {
-	_, ended, left := heldStackResume(is, false, above)
+	self := n.s == c.S
+	_, ended, left := heldStackResume(is, self, above)
 	if ended == 0 || len(left) == 0 || resolveOwnerHeld(left) || state.Derive(n.s, a.AppSlug, n.d.Has).Keys[state.CmdKey(c.Comment.ID)] {
 		return nil
 	}
-	var markers []string
+	cmd := state.CmdKey(c.Comment.ID).ID
+	var records []github.Marker
 	for _, m := range is.HeldStack.Holds {
-		if !heldStackEnds(m, false, above) {
-			continue
+		if key := resolveHoldKey(m); m.Fields["reason"] == "owner" && key != "" && heldStackEnds(m, self, above) {
+			records = append(records, github.Marker{Kind: resolveKind, Fields: map[string]string{"reason": "owner", "key": key, "cmd": cmd}})
 		}
-		f, err := github.FormatMarker(github.Marker{Kind: resolveKind, Fields: map[string]string{"reason": "owner", "key": m.Fields["cmd"],
-			"cmd": state.CmdKey(c.Comment.ID).ID}})
+	}
+	text := fmt.Sprintf("`/resume` on #%d ended the owner hold on this issue, but it stays on hold for discussion "+
+		"until a code owner resolves that, or posts `/resume` here.", c.S.Number)
+	if self {
+		records = append(records, github.Marker{Kind: resolveKind, Fields: map[string]string{"reason": "discussion",
+			resolveField: strconv.FormatInt(c.Comment.CreatedAt.Unix(), 10), "cmd": cmd}})
+		text = "This `/resume` ended the holds on this issue from before it, but it stays on hold for discussion: " +
+			"a write collaborator acted after the `/resume` was posted. A code owner's response to that, or another `/resume` here, ends it."
+	}
+	var markers []string
+	for _, m := range records {
+		f, err := github.FormatMarker(m)
 		if err != nil {
 			return fmt.Errorf("record the end of a hold on #%d: %w", n.s.Number, err)
 		}
 		markers = append(markers, f)
 	}
-	text := fmt.Sprintf("`/resume` on #%d ended the owner hold on this issue, but it stays on hold for discussion "+
-		"until a code owner resolves that, or posts `/resume` here.", c.S.Number)
 	if err := a.comment(ctx, n.s, join(github.Escape(text), strings.Join(markers, "\n"))); err != nil {
 		return fmt.Errorf("record the end of a hold on #%d: %w", n.s.Number, err)
 	}
-	logr.Infof("%s/%s#%d: /resume in comment %d ended the owner hold on #%d, which stays held for discussion", a.Owner, a.Repo, c.S.Number, c.Comment.ID, n.s.Number)
+	logr.Infof("%s/%s#%d: /resume in comment %d ended the holds before it on #%d, which stays held for discussion", a.Owner, a.Repo, c.S.Number, c.Comment.ID, n.s.Number)
 	return nil
 }

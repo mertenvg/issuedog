@@ -88,7 +88,7 @@ func TestResolverComment(t *testing.T) {
 	}
 }
 
-// The earliest trusted 👍 resolves, by its time: not a 👎, nor a 👍 by
+// The earliest trusted 👍 resolves, by its time: not a ❤️ or a 👎, nor a 👍 by
 // someone untrusted or a bot, however early.
 func TestResolverThumbsUp(t *testing.T) {
 	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
@@ -99,6 +99,7 @@ func TestResolverThumbsUp(t *testing.T) {
 	a := &Applier{Owner: "o", Repo: "r", AppSlug: "issuedog"}
 	r := a.resolverOf(s, Dirt{}, a.discWhoOf(s, tr), map[string]int64{})
 	r.reactions[7] = []github.Reaction{
+		{ID: 0, User: user("owner2"), Content: "heart", CreatedAt: at(0)},
 		{ID: 1, User: user("owner"), Content: "-1", CreatedAt: at(1)},
 		{ID: 2, User: user("mallory"), Content: "+1", CreatedAt: at(2)},
 		{ID: 3, User: github.Author{Login: "helper[bot]", Type: "Bot"}, Content: "+1", CreatedAt: at(3)},
@@ -129,8 +130,23 @@ func TestResolveEndedOnce(t *testing.T) {
 		{Key: "c4", By: "owner", At: at(2), How: resolveCountered, Recorded: true},
 	}
 	p := resolvePeriod{start: 3, at: at(3), ended: true, endedAt: at(9)}
-	if err := a.resolveEnded(context.Background(), s, r, p, false); err != nil || reads != 0 || len(s.Comments) != 0 {
+	if err := a.resolveEnded(context.Background(), s, r, p, false, nil); err != nil || reads != 0 || len(s.Comments) != 0 {
 		t.Errorf("err %v, %d requests, comments %v; want nothing written", err, reads, s.Comments)
+	}
+}
+
+// Only a move out of held is bounded by the time of the comment its cmd
+// names: a first marker keyed by a command, as /track's, is bounded by its
+// own comment, by ID.
+func TestResolveFloorFirstCommand(t *testing.T) {
+	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
+	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
+	s := &github.Snapshot{Comments: []github.Comment{
+		{ID: 5, Author: github.Author{Login: "owner", Type: "User"}, Body: "/track", CreatedAt: at(3)},
+		{ID: 10, Author: app, Body: "<!-- issuedog:transition from=intake to=clarifying cmd=5 -->", CreatedAt: at(10)},
+	}}
+	if b, ok := discFloor(s, "issuedog", func(int64) bool { return false }); !ok || b != (discBound{ID: 10, At: at(10)}) {
+		t.Errorf("floor = %+v, %v; want the marker's own comment, by ID", b, ok)
 	}
 }
 
@@ -225,8 +241,9 @@ func TestResolvePeriodOf(t *testing.T) {
 	}
 }
 
-// An owner hold an ancestor's /resume ended counts no more, but for the
-// /resume itself; a hold by hand, or one no record names, stays.
+// An owner hold a /resume's record names counts no more, by its /hold's
+// cmd or its event, but for the /resume itself; one no record names, or
+// one with neither, stays.
 func TestResolveLeftAndOwnerHeld(t *testing.T) {
 	m := func(reason, cmd string) github.Marker {
 		f := map[string]string{"reason": reason}
@@ -235,12 +252,13 @@ func TestResolveLeftAndOwnerHeld(t *testing.T) {
 		}
 		return github.Marker{Kind: "transition", Fields: f}
 	}
-	holds := []github.Marker{m("discussion", ""), m("owner", "5"), m("owner", "6"), m("owner", "")}
-	p := resolvePeriod{owners: map[string]string{"5": "9", "": "9"}}
+	hand := github.Marker{Kind: "transition", Fields: map[string]string{"reason": "owner", "by": "owner", "event": "7"}}
+	holds := []github.Marker{m("discussion", ""), m("owner", "5"), m("owner", "6"), m("owner", ""), hand}
+	p := resolvePeriod{owners: map[string]string{"c5": "9", "e7": "9", "": "9", "5": "9"}}
 	if got := resolveLeft(holds, p, 0); !slices.EqualFunc(got, []github.Marker{holds[0], holds[2], holds[3]}, resolveSameMarker) {
-		t.Errorf("left %v; want all but the hold /hold 5 made", got)
+		t.Errorf("left %v; want all but the hold /hold 5 made and the one by hand", got)
 	}
-	if got := resolveLeft(holds, p, 9); len(got) != 4 {
+	if got := resolveLeft(holds, p, 9); len(got) != 5 {
 		t.Errorf("left for /resume 9 itself %v; want every hold", got)
 	}
 	if !resolveOwnerHeld(holds) || resolveOwnerHeld(holds[:1]) || resolveOwnerHeld(nil) {

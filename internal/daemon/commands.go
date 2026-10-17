@@ -200,7 +200,13 @@ func hold(is state.Issue, _ bool, _ int, by string, _ bool) (Move, bool) {
 	if is.Stage == state.Held {
 		return Move{}, false
 	}
-	return Move{To: state.Held, Trigger: state.TriggerHold, Fields: state.HeldStackFields(map[string]string{"at": string(is.Stage), "reason": "owner"}, is.Round),
+	fields := map[string]string{"at": string(is.Stage), "reason": "owner"}
+	if is.AfterHold() {
+		// Every marker at the clarifying after a hold carries its origin
+		// forward, a later hold of either kind included (SPEC §6.4).
+		fields["origin"] = string(discOrigin(is, is.Stage))
+	}
+	return Move{To: state.Held, Trigger: state.TriggerHold, Fields: state.HeldStackFields(fields, is.Round),
 		Text: fmt.Sprintf("On hold by %s, from `%s`.", by, is.Stage)}, true
 }
 
@@ -213,7 +219,13 @@ func hold(is state.Issue, _ bool, _ int, by string, _ bool) (Move, bool) {
 // and origin too (resolveFields).
 func resume(is state.Issue, self bool, above map[int64]bool, by string, after bool) (Move, bool) {
 	at, ended, left := heldStackResume(is, self, above)
-	m := Move{To: at, Trigger: state.TriggerResume, Fields: state.HeldStackFields(nil, is.HeldStack.Seen),
+	fields := map[string]string{}
+	if o, ok := resolveHeldAfterHold(is); at == state.Clarifying && ok {
+		// Back to the clarifying after a hold, which carries its origin
+		// forward (SPEC §6.4), so the commands there keep waiting.
+		fields["origin"] = string(o)
+	}
+	m := Move{To: at, Trigger: state.TriggerResume, Fields: state.HeldStackFields(fields, is.HeldStack.Seen),
 		Text: fmt.Sprintf("Resumed by %s, back to `%s`.", by, at)}
 	if after {
 		m = Move{To: state.Clarifying, Trigger: state.TriggerResumeAfterDiscussion, Fields: resolveFields(is.HeldStack, time.Time{}),
@@ -254,9 +266,11 @@ func heldStackResume(is state.Issue, self bool, above map[int64]bool) (at state.
 // comment is found nowhere, so those stay until /resume there, as does a
 // discussion hold. The first hold wins (plan #87 rev 2, Q2b), so a /hold
 // below after one above writes no marker, and /resume above still ends it.
+// Nor does /resume on the issue end a discussion hold whose trigger came
+// after it (resolveStays).
 func heldStackEnds(m github.Marker, self bool, above map[int64]bool) bool {
 	if m.Fields["reason"] == "discussion" {
-		return self
+		return self && m.Fields[resolveStays] == ""
 	}
 	if m.Fields["reason"] != "owner" {
 		return false
@@ -377,7 +391,13 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 		}
 		// Not a label the label rules left out, or would (Applier.hidden).
 		s := a.hidden(n.s)
-		is, _, err := a.resolveHeld(ctx, s, n.d, c.Trust, state.Derive(s, a.AppSlug, n.d.Has), c.Comment)
+		var extra []github.Marker
+		if n.s != c.S {
+			if extra, err = a.resolveHeldBy(ctx, family, c, n, c.Trust); err != nil {
+				return fmt.Errorf("check /resume: %w", err)
+			}
+		}
+		is, _, err := a.resolveHeld(ctx, s, n.d, c.Trust, state.Derive(s, a.AppSlug, n.d.Has), c.Comment, n.s == c.S, extra)
 		if err != nil {
 			return fmt.Errorf("check /resume: %w", err)
 		}
@@ -412,7 +432,7 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 	}
 	// The issue's own move: back to its at, or to clarifying after a
 	// discussion (resolveHeld).
-	is, after, err := a.resolveHeld(ctx, c.S, c.Dirt, c.Trust, state.Derive(c.S, a.AppSlug, c.Dirt.Has), c.Comment)
+	is, after, err := a.resolveHeld(ctx, c.S, c.Dirt, c.Trust, state.Derive(c.S, a.AppSlug, c.Dirt.Has), c.Comment, true, nil)
 	if err != nil {
 		return fmt.Errorf("check /resume: %w", err)
 	}
@@ -449,8 +469,8 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 // marker (see Handler). A move that's a state error, which Transition
 // reports once, is logged and skipped, so one issue can't stall the rest.
 // With record, as for /resume, plan gets the open discussion triggers of a
-// held issue among its holds, and its after (resolveHeld), and record runs
-// first on each descendant, for its writes.
+// held issue among its holds, its owner holds no marker records, and its
+// after (resolveHeld), and record runs first on each issue, for its writes.
 func (a *Applier) moveFamily(ctx context.Context, c Cmd, trust github.Trust, record func(ctx context.Context, n node, is state.Issue) error, plan planner) error {
 	family, err := a.family(ctx, c)
 	if err != nil {
@@ -472,13 +492,17 @@ func (a *Applier) moveFamily(ctx context.Context, c Cmd, trust github.Trust, rec
 		}
 		is, after := state.Derive(n.s, a.AppSlug, n.d.Has), false
 		if record != nil {
-			if is, after, err = a.resolveHeld(ctx, n.s, n.d, trust, is, c.Comment); err != nil {
-				return fmt.Errorf("move: %w", err)
-			}
+			var extra []github.Marker
 			if n.s != c.S {
-				if err := record(ctx, n, is); err != nil {
+				if extra, err = a.resolveHeldBy(ctx, family, c, n, trust); err != nil {
 					return fmt.Errorf("move: %w", err)
 				}
+			}
+			if is, after, err = a.resolveHeld(ctx, n.s, n.d, trust, is, c.Comment, n.s == c.S, extra); err != nil {
+				return fmt.Errorf("move: %w", err)
+			}
+			if err := record(ctx, n, is); err != nil {
+				return fmt.Errorf("move: %w", err)
 			}
 		}
 		m, ok := plan(is, n.s == c.S, n.s.Number, by, after)

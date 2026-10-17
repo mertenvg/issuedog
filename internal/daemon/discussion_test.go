@@ -712,7 +712,7 @@ func TestDiscResumeOnParentHeldForDiscussion(t *testing.T) {
 		t.Errorf("newest comment on #1 %q; want %q", cs[len(cs)-1].Body, want)
 	}
 	record := fmt.Sprintf("`/resume` on #1 ended the owner hold on this issue, but it stays on hold for discussion until a code owner resolves that, "+
-		"or posts `/resume` here.\n\n<!-- issuedog:ended reason=owner key=1001 cmd=%d -->", resume)
+		"or posts `/resume` here.\n\n<!-- issuedog:ended reason=owner key=c1001 cmd=%d -->", resume)
 	if cs := st.Issues[1].Comments; cs[len(cs)-1].Body != record {
 		t.Errorf("newest comment on #2 %q; want %q", cs[len(cs)-1].Body, record)
 	}

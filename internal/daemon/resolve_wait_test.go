@@ -125,7 +125,7 @@ func TestResolveParentResumeThenResolved(t *testing.T) {
 		t.Fatalf("labels %q and %q; want #1 back at ready, #2 still held for discussion", st.Issues[0].Labels, st.Issues[1].Labels)
 	}
 	if body := newestComment(f, 2); !strings.HasPrefix(body, "`/resume` on #1 ended the owner hold on this issue") ||
-		!strings.Contains(body, fmt.Sprintf("<!-- issuedog:ended reason=owner key=1003 cmd=%d -->", resume)) {
+		!strings.Contains(body, fmt.Sprintf("<!-- issuedog:ended reason=owner key=c1003 cmd=%d -->", resume)) {
 		t.Errorf("newest comment on #2 %q; want the record that #1's /resume ended its /hold, made by comment 1003", body)
 	}
 	resolved := func(t testing.TB) *githubtest.Fake {
@@ -163,7 +163,7 @@ func TestResolveParentResumeEndsOnlyARecord(t *testing.T) {
 	if r := cs[len(cs)-1].Reactions; cs[len(cs)-1].Body != "/resume" || !slices.Equal(r, []string{app + " +1"}) {
 		t.Errorf("newest comment on #1 %q with %q; want the /resume, 👍'd", cs[len(cs)-1].Body, r)
 	}
-	if body := newestComment(f, 2); !strings.Contains(body, fmt.Sprintf("<!-- issuedog:ended reason=owner key=1003 cmd=%d -->", resume)) ||
+	if body := newestComment(f, 2); !strings.Contains(body, fmt.Sprintf("<!-- issuedog:ended reason=owner key=c1003 cmd=%d -->", resume)) ||
 		!slices.Equal(st.Issues[1].Labels, []string{"stage:held"}) {
 		t.Errorf("#2: labels %q, newest comment %q; want it still held, with the record", st.Issues[1].Labels, body)
 	}
