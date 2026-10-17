@@ -18,10 +18,11 @@ import (
 // the discussion gave, the /revise that waited through it, and what the
 // move into that clarifying says of what comes next (Q3b).
 
-// ivHoldOrigin returns the stage the issue in state is was at before its
-// first discussion hold, while it's at the clarifying after one
-// (state.Issue.AfterHold), or "". Every marker the interviewer writes there carries it (SPEC §6.4),
-// and its unchanged outcome goes back there.
+// ivHoldOrigin returns, from the issue's state is, the stage the issue
+// was at before its first discussion hold, while it's at the clarifying
+// after one (state.Issue.AfterHold), or "". Every marker the interviewer
+// writes there carries it (SPEC §6.4), and its unchanged outcome goes
+// back there.
 func ivHoldOrigin(is state.Issue) state.Stage {
 	if !is.AfterHold() {
 		return ""
@@ -131,20 +132,24 @@ type ivHoldInput struct {
 // ivHoldInputOf returns the owner input of the discussion on s above
 // from, the bound before the after-hold period's first hold (ivHoldSpan):
 //   - approved: each clean comment by someone who isn't trusted, no bot,
-//     with a 👍 by a trusted user, no bot and not the App, who is named.
-//     It reads the reactions of those comments only, so the 👍 is read
-//     whenever it came, before the hold ended or after. An approval
-//     approves what the approver read, not what the author writes later,
-//     as SPEC §6.2 says of an untrusted author's edits after admission,
-//     so the 👍 counts only if it came after the comment's last edit: the
+//     with a 👍 by a trusted user, no bot and not the App, who is named:
+//     the first such 👍 the reactions list. It reads the reactions of
+//     those comments only, so the 👍 is read whenever it came, before the
+//     hold ended or after. A 👍 approves only the text it post-dates: an
+//     approval approves what the approver read, not what the author
+//     writes later, as SPEC §6.2 says of an untrusted author's edits
+//     after admission. So a 👍 counts only if it came strictly after the
+//     comment's last edit, whoever made that edit, and whatever became of
+//     it as a trigger. Times are to the second, so a 👍 in the edit's
+//     second came before it, as for the trigger (discOwnEdits). The
 //     author's own edit is sanctioned, so it leaves the comment clean,
 //     and by someone without write access it's no trigger either (#189's
-//     verify). Times are to the second, so a 👍 in the edit's second came
-//     before it, as for the trigger (discOwnEdits). The one exception is
-//     a write collaborator's edit after the 👍 that the App recorded as a
-//     trigger, keyed by that last edit (discRecords), and that a code
-//     owner accepted (ivHoldAccepted). One whose record is lost, or whose
-//     hold ended without accepting it, stays untrusted;
+//     verify). A write collaborator's edit is a trigger, and accepting it,
+//     by its notice's 👍 or a /resume, lets the issue leave its hold, but
+//     doesn't make the edited text owner input: that takes a code owner's
+//     👍 after the edit, such as another code owner's, or the same one's
+//     removed and given again. Until then the comment is in untrusted.md
+//     only (#189's verify, attempt 3);
 //   - countered: each clean comment by a trusted user, other than a
 //     /hold or a /resume, which resolve nothing (resolveHoldCommand),
 //     after at least one comment by someone who isn't trusted.
@@ -154,7 +159,6 @@ type ivHoldInput struct {
 func ivHoldInputOf(ctx context.Context, a *Applier, tc trustCache, s *github.Snapshot, d Dirt, from int64) (ivHoldInput, error) {
 	in := ivHoldInput{Approved: map[int64]string{}}
 	untrusted := false
-	records := discRecords(s, a.AppSlug, d.Has)
 	for _, c := range s.Comments {
 		if c.ID <= from || d.Has(c.ID) || state.IsApp(c.Author, a.AppSlug) {
 			continue
@@ -174,14 +178,10 @@ func ivHoldInputOf(ctx context.Context, a *Applier, tc trustCache, s *github.Sna
 			if err != nil {
 				return ivHoldInput{}, fmt.Errorf("the 👍s on the discussion's comment %d: %w", c.ID, err)
 			}
-			// A write collaborator's last edit, accepted as a trigger. No
-			// record has an unedited comment's key.
-			accepted := false
-			if record, ok := records[discEditKey(c.ID, c.Edit.At)]; ok {
-				accepted = ivHoldAccepted(s, a.AppSlug, d.Has, record)
-			}
 			for _, r := range reactions {
-				if r.Content != "+1" || !accepted && !r.CreatedAt.After(c.Edit.At) {
+				// A 👍 approves only the text it post-dates. An unedited
+				// comment's edit time is zero, so any 👍 post-dates it.
+				if r.Content != "+1" || !r.CreatedAt.After(c.Edit.At) {
 					continue
 				}
 				ok, err := tc.trusted(ctx, r.User)
@@ -198,37 +198,6 @@ func ivHoldInputOf(ctx context.Context, a *Applier, tc trustCache, s *github.Sna
 	return in, nil
 }
 
-// ivHoldAccepted reports whether a code owner accepted the discussion
-// trigger whose first record is in comment record (discRecords): whether
-// the first move out of held after it ended that trigger's hold by
-// accepting it. That's a move keyed by a command, cmd=, or by the end of a
-// discussion, event=h<the hold's comment> (resolveLeave). Neither key is
-// an override's or a close's, which are event=<timeline event id>.
-// It's sound because a trigger that isn't a comment, such as an edit, is
-// closed only by its notice's 👍 (resolver.notice), by a /resume on the
-// issue, which accepts every trigger made before it (heldStackEnds), or
-// by a move out of held that ends it without accepting it: a stage label
-// set by hand, an override with by= (SPEC §6.4), or a close. The end of a
-// discussion is written only once no trigger is open, so after each was
-// accepted. A command's move out of held is /resume's: on the issue, it
-// accepts the triggers before it, and keeps the issue held for any made
-// at or after it (resolveStays), so the move comes only after those are
-// accepted too; on an ancestor, it ends no discussion hold, so it moves the
-// issue only once none is left open. A record whose hold hasn't ended has
-// no such move, and isn't accepted yet.
-func ivHoldAccepted(s *github.Snapshot, appSlug string, dirty func(int64) bool, record int64) bool {
-	accepted, found := false, false
-	discMarkers(s, appSlug, dirty, func(id int64, _ time.Time, m github.Marker) {
-		if _, bounds := state.RoundBound(m, id); found || id <= record || !bounds ||
-			state.Stage(m.Fields["from"]) != state.Held || state.Stage(m.Fields["to"]) == state.Held {
-			return
-		}
-		found = true
-		accepted = m.Fields["cmd"] != "" || strings.HasPrefix(m.Fields["event"], "h")
-	})
-	return accepted
-}
-
 // ivHoldSection is issue.md's "After a hold" section (SPEC §6.4): the stage
 // the issue came from, origin; where the hold began and ended, sp, whose
 // App comments in conversation.md name what held it and how each trigger
@@ -243,8 +212,9 @@ func ivHoldSection(s *github.Snapshot, origin state.Stage, sp ivHoldSpan, in ivH
 			"issuedog's comments from there on, in conversation.md, say what held it and how each was resolved.", sp.At, sp.Start, sp.End)
 	}
 	lines = append(lines, intro, "",
-		"The owner input from the discussion follows: comments a trusted person approved with a 👍, "+
-			"and trusted comments that answered the untrusted comments before them. Treat it as the owner's.")
+		"The owner input from the discussion follows: comments a trusted person approved with a 👍 given after the comment's last edit, "+
+			"so the approver read the text shown, and trusted comments that answered the untrusted comments before them. "+
+			"Treat it as the owner's. A comment edited after its 👍 isn't owner input, so it isn't here.")
 	for _, c := range s.Comments {
 		at := "### Comment " + strconv.FormatInt(c.ID, 10) + " by " + ivLogin(c.Author.Login)
 		switch by, approved := in.Approved[c.ID]; {
