@@ -332,3 +332,43 @@ func TestResolveCloseByNotice(t *testing.T) {
 		t.Errorf("labels %q, newest comment %q; want it at clarifying", l, body)
 	}
 }
+
+// An applied /resume on an issue between the issue and the one whose
+// /hold holds it counts from the transition before the issue's hold too,
+// not from the hold's start. #3 is #2's parent, and #2 is #1's; #2 is on a
+// hold set by hand. The owner's /hold on #3, the owner's /resume on #2,
+// and mallory's comment on #1, by one pass over #1, #2, then #3: #1 is
+// held for discussion, in an App comment above the /resume; #2's /resume
+// ends #2's hold, and applies there; #3's /hold writes no marker on #1.
+// The /resume ended #3's /hold for #1, as it was posted after it, so once
+// the owner's 👍 resolves mallory's comment, #1 goes to clarifying.
+func TestResolveAppliedParentResumeBeforeHoldStart(t *testing.T) {
+	var resume int64
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := discFake(t)
+		file(f, 0, "from=ready to=held at=ready reason=owner by=owner event=77")
+		file(f, 0, ready)
+		f.SetParent(1, 2)
+		f.SetParent(2, 3)
+		f.AddComment(3, "owner", "/hold")
+		resume = f.AddComment(2, "owner", "/resume")
+		w := f.AddComment(1, "mallory", "Wait.")
+		resolveSteps(t, f, 1, 2, 3)
+		if !slices.ContainsFunc(f.State().Issues[1].Comments, func(c githubtest.CommentState) bool {
+			return strings.Contains(c.Body, fmt.Sprintf("from=held to=ready cmd=%d ", resume))
+		}) {
+			t.Fatalf("#2: comments %q; want its /resume's move back to ready", closingComments(f, 2, 0))
+		}
+		if l := f.State().Issues[0].Labels; !slices.Equal(l, []string{"stage:held"}) {
+			t.Fatalf("#1: labels %q; want it held for discussion", l)
+		}
+		f.ForgetWrites()
+		f.AddReaction(w, "owner", "+1")
+		return f
+	}
+	githubtest.Replay(t, setup, resolvePass(t, 1))
+	f := run(t, setup, resolvePass(t, 1))
+	if l, body := f.State().Issues[0].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:clarifying"}) || strings.Contains(body, "held=") {
+		t.Errorf("#1: labels %q, newest comment %q; want it at clarifying, as #2's /resume ended #3's /hold", l, body)
+	}
+}

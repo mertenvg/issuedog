@@ -530,3 +530,15 @@ func TestHoldItemRank(t *testing.T) {
 		t.Errorf("the hold kind is %q, prefixed %q; want hold for both", waitHold, waitKeyPrefix[waitHold])
 	}
 }
+
+// A trigger of a kind resolveByNotice doesn't know, as one recorded under a
+// key of no known shape, isn't accepted by a 👍 on its notice, so its line
+// says only /resume accepts it, and links the notice, 504, rather than the
+// hold's comment 503 that records it with no notice.
+func TestHoldItemUnknownKindNoticed(t *testing.T) {
+	s := holdItemSnap(holdItemHeld(503, "x1", true, false), holdItemNotice(504, "x1"))
+	hs := holdItemTriggers(holdItemFindOne(t, s, nil, discTrigger{Key: "x1", At: holdItemAt(4), FromRecord: true}))
+	if len(hs) != 1 || hs[0].How != "Only `/resume` here accepts it." || hs[0].Link != "https://github.com/o/r/issues/5#issuecomment-504" {
+		t.Errorf("triggers %+v; want one accepted only by /resume, linked to its notice", hs)
+	}
+}
