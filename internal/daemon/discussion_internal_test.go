@@ -572,7 +572,9 @@ func noReactions(t testing.TB, reads ...*int) *github.Client {
 	}))
 	t.Cleanup(srv.Close)
 	base := srv.URL + "/"
-	gh, err := gogithub.NewClient(gogithub.WithURLs(&base, &base))
+	// The server's own client, not http.DefaultTransport, which another
+	// test's server would close the idle connections of.
+	gh, err := gogithub.NewClient(gogithub.WithHTTPClient(srv.Client()), gogithub.WithURLs(&base, &base))
 	if err != nil {
 		t.Fatal(err)
 	}

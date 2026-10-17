@@ -523,6 +523,7 @@ func digestRunMove(t *testing.T, f *githubtest.Fake) (*digestRunMover, *github.C
 	}
 	m := &digestRunMover{f: f}
 	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.Transport = f.Transport() // not http.DefaultTransport, which other tests' servers close
 	proxy.ModifyResponse = m.list
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		issue := fmt.Sprintf("/repos/o/r/issues/%d", m.issue())
@@ -547,7 +548,7 @@ func digestRunMove(t *testing.T, f *githubtest.Fake) (*digestRunMover, *github.C
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := github.New(github.Config{AppID: 1, InstallationID: 1, Key: key, BaseURL: srv.URL})
+	c, err := github.New(github.Config{AppID: 1, InstallationID: 1, Key: key, BaseURL: srv.URL, Transport: srv.Client().Transport})
 	if err != nil {
 		t.Fatal(err)
 	}

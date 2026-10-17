@@ -177,13 +177,14 @@ var testKey = sync.OnceValues(func() ([]byte, error) {
 })
 
 // Client returns a new client of the fake, with its own token and ETag cache.
+// It talks to the fake over the fake's own Transport.
 func (f *Fake) Client(t testing.TB) *github.Client {
 	t.Helper()
 	key, err := testKey()
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := github.New(github.Config{AppID: 1, InstallationID: 1, Key: key, BaseURL: f.srv.URL})
+	c, err := github.New(github.Config{AppID: 1, InstallationID: 1, Key: key, BaseURL: f.srv.URL, Transport: f.Transport()})
 	if err != nil {
 		t.Fatal(err)
 	}
