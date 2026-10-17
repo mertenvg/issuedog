@@ -39,6 +39,7 @@ func readsOf(f *githubtest.Fake, from, n int) []githubtest.Request {
 }
 
 func TestIterateReadsChangedHeldIssues(t *testing.T) {
+	t.Parallel()
 	f := quiet(t)
 	d := newDaemon(t, f, newOrigin(t), nil)
 	iterate(t, d)
@@ -55,6 +56,7 @@ func TestIterateReadsChangedHeldIssues(t *testing.T) {
 }
 
 func TestIterateDropsClosedIssues(t *testing.T) {
+	t.Parallel()
 	f := quiet(t)
 	f.AddComment(1, "owner", "/hold")
 	var visits []int
@@ -89,6 +91,7 @@ func TestIterateDropsClosedIssues(t *testing.T) {
 }
 
 func TestIterateIgnoresCommentsOnUntrackedIssues(t *testing.T) {
+	t.Parallel()
 	f := quiet(t)
 	d := newDaemon(t, f, newOrigin(t), nil)
 	iterate(t, d)
@@ -102,6 +105,7 @@ func TestIterateIgnoresCommentsOnUntrackedIssues(t *testing.T) {
 }
 
 func TestIterateSkipsIssuesWhoseReadOrVisitFails(t *testing.T) {
+	t.Parallel()
 	f := quiet(t)
 	var visits []int
 	d := newDaemon(t, f, newOrigin(t), &visits)
@@ -131,6 +135,7 @@ func TestIterateSkipsIssuesWhoseReadOrVisitFails(t *testing.T) {
 }
 
 func TestIterateDropsDeletedIssues(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	fileAt(f, "ready", "a")
 	fileAt(f, "spec-review", "b")
@@ -161,6 +166,7 @@ func TestIterateDropsDeletedIssues(t *testing.T) {
 // finds it, and it's visited and given to Work again. Two with no good read
 // between do.
 func TestIterateDropsAnIssueOnlyAfterTwo404s(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	fileAt(f, "spec-review", "a")
 	fileAt(f, "ready", "b")
@@ -247,6 +253,7 @@ func TestIterateDropsAnIssueOnlyAfterTwo404s(t *testing.T) {
 // A visit that fails, even with a 404, as on a deleted comment, doesn't drop
 // the issue: it's read again and given to Work.
 func TestIterateKeepsAnIssueWhoseVisit404s(t *testing.T) {
+	t.Parallel()
 	f := quiet(t)
 	d := newDaemon(t, f, newOrigin(t), nil)
 	work := recordWork(d)
@@ -275,6 +282,7 @@ func TestIterateKeepsAnIssueWhoseVisit404s(t *testing.T) {
 // A comment edited while the comment poll pages moves to the front of a
 // newest-first list, so a later page repeats a comment and skips none.
 func TestIteratePollSkipsNoComment(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	fileAt(f, "ready", "a")
 	var many []int64
@@ -302,6 +310,7 @@ func TestIteratePollSkipsNoComment(t *testing.T) {
 // The Dirty cache is keyed on lastEditedAt as well as the body, so an edit
 // that restores the body is read: here mallory's, behind owner's.
 func TestDirtyCacheMissesARestoredBody(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	f.AddIssue("owner", "Issue", "body")
 	id := f.AddComment(1, "owner", "x")
@@ -327,6 +336,7 @@ func TestDirtyCacheMissesARestoredBody(t *testing.T) {
 // A history that fails closed isn't kept, so it's read again once GitHub
 // has caught up.
 func TestDirtyCacheSkipsAShortHistory(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	f.AddIssue("owner", "Issue", "body")
 	id := f.AddComment(1, "owner", "x")

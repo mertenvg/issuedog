@@ -12,6 +12,7 @@ import (
 // TestIvRoundMove: only an interviewer run's move from clarifying to
 // clarifying is a round's.
 func TestIvRoundMove(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		fields string
 		kind   string
@@ -36,6 +37,7 @@ func TestIvRoundMove(t *testing.T) {
 
 // TestIvLogin: a heading names only a login GitHub allows.
 func TestIvLogin(t *testing.T) {
+	t.Parallel()
 	long := strings.Repeat("a", 39)
 	for login, want := range map[string]string{
 		"owner":                       "owner",
@@ -81,6 +83,7 @@ func TestIvLogin(t *testing.T) {
 // TestIvEditor: the name Dirt gives is used only when GitHub names that
 // editor, or the App's note gives it.
 func TestIvEditor(t *testing.T) {
+	t.Parallel()
 	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
 	tests := []struct {
 		by   string
@@ -104,6 +107,7 @@ func TestIvEditor(t *testing.T) {
 // TestInterviewerRoundsOnly: a round is an interviewer move's round=
 // and questions=, never another marker's.
 func TestInterviewerRoundsOnly(t *testing.T) {
+	t.Parallel()
 	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
 	s := &github.Snapshot{Comments: []github.Comment{
 		{ID: 10, Author: app, Body: "<!-- issuedog:error kind=x key=y from=clarifying to=clarifying run=a round=1 questions=2 -->"},
@@ -118,6 +122,7 @@ func TestInterviewerRoundsOnly(t *testing.T) {
 // TestIvRoundCounts: the counts are by round number, a round with no
 // clean comment counting 0.
 func TestIvRoundCounts(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		rounds []interviewerRound
 		want   []int
@@ -135,6 +140,7 @@ func TestIvRoundCounts(t *testing.T) {
 // TestIvSetTypeRefuses: a type that isn't one of the four, or an issue
 // with an issue type, fails before any write: the Applier has no client.
 func TestIvSetTypeRefuses(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		typ  string
 		s    *github.Snapshot

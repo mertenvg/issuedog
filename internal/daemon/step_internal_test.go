@@ -10,6 +10,7 @@ import (
 // The fake's clock moves a second per change, so it can't put an edit in
 // the 👍's second; this pins that rule.
 func TestEditedSince(t *testing.T) {
+	t.Parallel()
 	acted := time.Date(2026, 1, 1, 0, 0, 10, 0, time.UTC)
 	for _, tc := range []struct {
 		name string

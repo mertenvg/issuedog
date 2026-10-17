@@ -74,6 +74,7 @@ func newestBody(f *githubtest.Fake) string {
 
 // A run gets its stage's defaults from config, and none when they're unset.
 func TestRunGetsStageDefaults(t *testing.T) {
+	t.Parallel()
 	for name, tt := range map[string]struct {
 		model, effort string
 		fallback      []string
@@ -111,6 +112,7 @@ func TestRunGetsStageDefaults(t *testing.T) {
 // model:opus applies to the interviewer's run, but not to the verifier's
 // on the same issue, which uses its own default.
 func TestModelLabelSkipsVerifier(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	interview(f)
 	f.AddLabel(1, "owner", "model:opus")
@@ -136,6 +138,7 @@ func TestModelLabelSkipsVerifier(t *testing.T) {
 
 // Each implementer attempt after the first runs one effort level higher.
 func TestRetryRaisesEffort(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	interview(f)
 	g := newRig(t, f, newOrigin(t), t.TempDir())
@@ -165,6 +168,7 @@ func TestRetryRaisesEffort(t *testing.T) {
 // A label changed during a run changes only the next run's flags: the run
 // and its marker keep the settings it started with.
 func TestLabelChangedDuringRun(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	answer := interview(f)
 	f.AddLabel(1, "owner", "model:opus")
@@ -199,6 +203,7 @@ func TestLabelChangedDuringRun(t *testing.T) {
 // ran, a fallback among them; a modelUsage key a marker can't hold is left
 // out, and the result still applies.
 func TestRunMarkerRecordsSettings(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	answer := interview(f)
 	g := newRig(t, f, newOrigin(t), t.TempDir())
@@ -223,6 +228,7 @@ func TestRunMarkerRecordsSettings(t *testing.T) {
 // After a restart, a saved result is applied with the settings in the
 // lease, not those the labels give by then.
 func TestResumeUsesLeaseSettings(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	answer := interview(f)
 	f.AddLabel(1, "owner", "model:sonnet")
@@ -299,6 +305,7 @@ func (g *rig) workN(passes int) {
 // one state error, its text escaped, and another when they change and are
 // still wrong.
 func TestBadLabelsReportOnce(t *testing.T) {
+	t.Parallel()
 	f, g := badLabels(t, "model:<!--x")
 	g.workN(2)
 	errs := labelErrors(f, 1)
@@ -350,6 +357,7 @@ func TestBadLabelsReportOnce(t *testing.T) {
 // new state error, as is any change to labels of the four kinds, a
 // verifier-effort label among them, that leaves them wrong.
 func TestBadLabelsAgainAfterFix(t *testing.T) {
+	t.Parallel()
 	f, g := badLabels(t, "model:sonnet")
 	g.stage.moreQuestions = true // stays at clarifying
 	g.workN(2)
@@ -377,6 +385,7 @@ func TestBadLabelsAgainAfterFix(t *testing.T) {
 // that leaves the labels wrong is one, a removal among them, but a change
 // to another kind of label isn't.
 func TestBadLabelsWhoseChangeCounts(t *testing.T) {
+	t.Parallel()
 	f, g := badLabels(t, "model:sonnet")
 	f.AddLabel(1, "owner", "model:haiku")
 	g.workN(2)
@@ -414,6 +423,7 @@ func TestBadLabelsWhoseChangeCounts(t *testing.T) {
 // that finds it closed, held, with its labels fixed, or with no work
 // pending once its inputs' authors are checked again.
 func TestBadLabelsCheckedAgain(t *testing.T) {
+	t.Parallel()
 	for name, change := range map[string]func(f *githubtest.Fake, g *rig){
 		"closed":      func(f *githubtest.Fake, _ *rig) { f.Close(1) },
 		"held":        func(f *githubtest.Fake, _ *rig) { f.AddLabel(1, "owner", "stage:held") },
@@ -446,6 +456,7 @@ func TestBadLabelsCheckedAgain(t *testing.T) {
 
 // An issue blocked by its labels doesn't hold up the next one in the pass.
 func TestBadLabelsSkipToNextIssue(t *testing.T) {
+	t.Parallel()
 	f, g := badLabels(t, "model:sonnet")
 	f.AddLabel(1, app, "priority:p1")
 	answer := interview(f)
@@ -475,6 +486,7 @@ func TestBadLabelsSkipToNextIssue(t *testing.T) {
 // An issue blocked by its labels, its error posted, doesn't hold up the
 // next one in later passes either.
 func TestBadLabelsReportedSkipToNextIssue(t *testing.T) {
+	t.Parallel()
 	f, g := badLabels(t, "model:sonnet")
 	f.AddLabel(1, app, "priority:p1")
 	g.workN(1)
@@ -493,6 +505,7 @@ func TestBadLabelsReportedSkipToNextIssue(t *testing.T) {
 
 // A failure to post the error fails the pass, and the next pass posts it.
 func TestBadLabelsPostFails(t *testing.T) {
+	t.Parallel()
 	f, g := badLabels(t, "model:sonnet")
 	ctx := context.Background()
 	s, err := g.d.Step.Client.Snapshot(ctx, "o", "r", 1)
@@ -515,6 +528,7 @@ func TestBadLabelsPostFails(t *testing.T) {
 }
 
 func TestBadLabelsReplay(t *testing.T) {
+	t.Parallel()
 	setup := func(_ testing.TB, f *githubtest.Fake, _ string) {
 		interview(f)
 		f.AddLabel(1, "owner", "model:opus")

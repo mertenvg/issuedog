@@ -11,6 +11,7 @@ import (
 // issue type that stands, or with none, the type:* label's, which then
 // follows the labels as for an issue read with no issue type (#182).
 func TestIssueTypeRevertSnapshot(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		file       func(f *githubtest.Fake)

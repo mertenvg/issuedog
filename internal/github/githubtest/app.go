@@ -29,6 +29,12 @@ func (f *Fake) Requests() []Request {
 // URL is the API root, for github.Config.BaseURL.
 func (f *Fake) URL() string { return f.srv.URL }
 
+// Transport carries requests to the fake, for github.Config.Transport. It is
+// the fake's own, not http.DefaultTransport, so that closing one fake's
+// server, which closes its transport's idle connections, can't break
+// another test's requests when tests run in parallel.
+func (f *Fake) Transport() http.RoundTripper { return f.srv.Client().Transport }
+
 // SetPermission gives login a role on the repo, such as "admin", "write" or
 // "read", for the permission endpoint. A login with none gets a 404.
 func (f *Fake) SetPermission(login, role string) {

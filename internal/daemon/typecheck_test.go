@@ -100,6 +100,7 @@ func typeErrQuiet(t *testing.T, f *githubtest.Fake, pass func(*githubtest.Fake) 
 // stays where it is. A second pass writes nothing. The type isn't the
 // App's text, so it's escaped and defused.
 func TestTypeErrCheck(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		setup  func(testing.TB) *githubtest.Fake
@@ -153,6 +154,7 @@ func TestTypeErrCheck(t *testing.T) {
 // type on a repo that uses labels, a story that gained a parent (plan #7,
 // #153's note), closed, or has no transition marker.
 func TestTypeErrNone(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		setup func(testing.TB) *githubtest.Fake
@@ -196,6 +198,7 @@ func TestTypeErrNone(t *testing.T) {
 // and a 👍 on its revision asks for a move the table lacks: that is a
 // transition error, keyed by the 👍, as before.
 func TestTypeErrParentIsTransition(t *testing.T) {
+	t.Parallel()
 	setup := typeErrEpic(func(t testing.TB, f *githubtest.Fake) {
 		typeErrRetype(f, 1, "epic", "story")
 		f.AddIssue("owner", "Parent", "")
@@ -215,6 +218,7 @@ func TestTypeErrParentIsTransition(t *testing.T) {
 // error back, and /approve gets a rejection. The issue stays at
 // spec-review.
 func TestTypeErrApproval(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		more func(t testing.TB, f *githubtest.Fake)
@@ -255,6 +259,7 @@ func TestTypeErrApproval(t *testing.T) {
 // and no read, and setting type:bug after that posts a new one, keyed by
 // its own event.
 func TestTypeErrRetypedAgain(t *testing.T) {
+	t.Parallel()
 	f := typeErrEpic(func(t testing.TB, f *githubtest.Fake) { flagWant(t, typeErrRetype(f, 1, "epic", "task"), 9004) })(t)
 	pass := typeErrPass(t, false)
 	errAckRun(t, f, pass)
@@ -281,6 +286,7 @@ func TestTypeErrRetypedAgain(t *testing.T) {
 // A trusted 👍 on an open type error acknowledges it, and the error is
 // never posted again, nor is a transition error for the same cause.
 func TestTypeErrAck(t *testing.T) {
+	t.Parallel()
 	f := typeErrEpic(func(t testing.TB, f *githubtest.Fake) { flagWant(t, typeErrRetype(f, 1, "epic", "task"), 9004) })(t)
 	pass := typeErrPass(t, false)
 	errAckRun(t, f, pass)
@@ -299,6 +305,7 @@ func TestTypeErrAck(t *testing.T) {
 // during a run, and only logs the move's error. Once the type error is
 // acknowledged, it posts nothing.
 func TestTypeErrTransition(t *testing.T) {
+	t.Parallel()
 	m := daemon.Move{To: state.Planning, Trigger: state.TriggerSpecApproved, Key: state.Key{Field: "run", ID: "x"}}
 	pass := func(f *githubtest.Fake) error {
 		a, s, err := applier(t, f)
@@ -333,6 +340,7 @@ func TestTypeErrTransition(t *testing.T) {
 // type error is posted, and at debug level on every pass after, as a
 // reported error is (#156's verify).
 func TestTypeErrHoldBackLog(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
 	var logs bytes.Buffer
 	stop := logr.AddWriter(&logs, logr.WithFilter(logr.I))
 	defer stop()
@@ -364,6 +372,7 @@ func TestTypeErrHoldBackLog(t *testing.T) {
 // nothing and starts nothing. A repo that uses labels ignores the
 // issue-type events.
 func TestTypeErrIssueTypes(t *testing.T) {
+	t.Parallel()
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := newFake(t)
 		f.AddIssue("owner", "Epic", "body")
@@ -418,6 +427,7 @@ func TestTypeErrIssueTypes(t *testing.T) {
 // The loop takes the type change from the issue types or the labels, as
 // the config's types says, through each reload.
 func TestTypeErrConfigTypes(t *testing.T) {
+	t.Parallel()
 	for _, types := range []string{"labels", "issue-types"} {
 		t.Run(types, func(t *testing.T) {
 			f := newFake(t)
@@ -447,6 +457,7 @@ func TestTypeErrConfigTypes(t *testing.T) {
 // ack of that lets no run start. A change to a type the
 // pipeline knows lets triage run again.
 func TestTypeErrTriageUnknownType(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	f.AddIssue("owner", "Idea", "An idea.", "type:feature")
 	g := triageRig(t, f, triageOrigin(t), t.TempDir())
@@ -492,6 +503,7 @@ func TestTypeErrTriageUnknownType(t *testing.T) {
 // the run, is blocked by the type error, posted in that pass, not by a
 // transition error, and no run starts while it stands.
 func TestTypeErrBlockedRun(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	f.AddIssue("owner", "Idea", "the idea", "type:epic")
 	f.AddLabel(1, app, "stage:clarifying")
@@ -542,6 +554,7 @@ func (e typeErrLoginTrust) Trusted(ctx context.Context, login string) (bool, err
 // every pass: an attempts error and a run's transition error, each keyed
 // on a trusted user's comment, so a 👍 on it in a later pass is acked.
 func TestTypeErrLoopKeyedOnInputs(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ kind, key string }{
 		{"attempts", "clarifying-1002"},
 		{"transition", "clarifying-1002-" + state.BodyHash(fmt.Sprintf("%+v", state.Item{}))},
@@ -580,6 +593,7 @@ func TestTypeErrLoopKeyedOnInputs(t *testing.T) {
 // openErrInputs' failure to check a commenter's trust comes back wrapped,
 // so errors.Is finds it.
 func TestTypeErrInputsTrustError(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	fileAt(f, "clarifying", "body")
 	flagWant(t, f.AddComment(1, app, "Failed.\n\n<!-- issuedog:error kind=attempts key=clarifying-1001 -->"), 1002)
@@ -605,6 +619,7 @@ func TestTypeErrInputsTrustError(t *testing.T) {
 // kind, which is older than type errors: triage runs, and its move reports
 // the type error.
 func TestTypeHoldAnyKey(t *testing.T) {
+	t.Parallel()
 	labels := "Labels.\n\n<!-- issuedog:error kind=labels key=1 -->"
 	kindless := "Acknowledged, by `owner`'s 👍.\n\n<!-- issuedog:error key=9001 ack=r5 -->" // from before acks named a kind
 	for name, tc := range map[string]struct {
@@ -646,6 +661,7 @@ func TestTypeHoldAnyKey(t *testing.T) {
 // (#179's Q2a): setting type:epic again moves the issue to planning on
 // that 👍, as the revision it approves still matches the body (SPEC §7.4).
 func TestTypeHoldApprovalCountsLater(t *testing.T) {
+	t.Parallel()
 	f := typeErrEpic(func(t testing.TB, f *githubtest.Fake) {
 		flagWant(t, typeErrRetype(f, 1, "epic", "task"), 9004)
 		flagWant(t, f.AddReaction(1001, "owner", "+1"), 1002)

@@ -11,6 +11,7 @@ import (
 // leases record intake, and names both. Any other registration passes
 // (#130's verify).
 func TestRegisterCheck(t *testing.T) {
+	t.Parallel()
 	intake := &fakeStage{agent: "intaker"}
 	for _, tt := range []struct {
 		name      string

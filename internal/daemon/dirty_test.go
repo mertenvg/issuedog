@@ -57,6 +57,7 @@ func noteOn(by, text string) string {
 // user's own comment, and the owner's body: whose edits make each dirty,
 // and which of them need the history read.
 func TestDirtyRule(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		author  string // the comment's
@@ -127,6 +128,7 @@ func dirtyIssue(t testing.TB) *githubtest.Fake {
 // crash point, and the writes are added to the snapshot. The App's note
 // doesn't change what's dirty, and a note that's removed comes back.
 func TestMarkDirty(t *testing.T) {
+	t.Parallel()
 	githubtest.Replay(t, dirtyIssue, markPass(t))
 
 	f := dirtyIssue(t)
@@ -220,6 +222,7 @@ func forgedNote(then ...string) func(testing.TB) *githubtest.Fake {
 // mallory, with her marker escaped, and then left alone. That holds whether
 // she made the last edit or the owner did after her.
 func TestMarkDirtyForgedNote(t *testing.T) {
+	t.Parallel()
 	for _, then := range [][]string{nil, {"owner"}} {
 		t.Run(fmt.Sprintf("then %v", then), func(t *testing.T) {
 			githubtest.Replay(t, forgedNote(then...), markPass(t))
@@ -240,6 +243,7 @@ func TestMarkDirtyForgedNote(t *testing.T) {
 // A history that can't show the last edit fails closed: dirty by the last
 // editor, with a warning.
 func TestDirtyFailsClosed(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
 	for _, tc := range []struct {
 		name   string
 		cap    int
@@ -294,6 +298,7 @@ func TestDirtyFailsClosed(t *testing.T) {
 // GitHub keeps the original post and the 99 newest edits, so mallory's edit
 // drops out of the history. The note keeps the comment dirty.
 func TestDirtyHistoryError(t *testing.T) {
+	t.Parallel()
 	f := githubtest.New(t, "o/r", slug)
 	f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, round 2)
 	n := f.AddIssue("owner", "Title", "body")
@@ -310,6 +315,7 @@ func TestDirtyHistoryError(t *testing.T) {
 }
 
 func TestDirtyNoteOutlivesCappedHistory(t *testing.T) {
+	t.Parallel()
 	f := githubtest.New(t, "o/r", slug)
 	f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, round 2)
 	f.AddComment(f.AddIssue("owner", "Title", "body"), "owner", "/hold")

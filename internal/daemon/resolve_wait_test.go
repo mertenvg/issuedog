@@ -36,6 +36,7 @@ func resolveReview(do func(t testing.TB, f *githubtest.Fake)) func(testing.TB) *
 // it would counter mallory's comment, which sends the issue to clarifying
 // instead (#188's note for #189, TestResolveCounterThenResume).
 func TestResolveApproveAfterResume(t *testing.T) {
+	t.Parallel()
 	resumed := moved("Resumed by `/resume`, back to `spec-review`.", "from=held to=spec-review cmd=1004 seen=1001")
 	h := state.BodyHash("body")
 	t.Run("the hash matches", func(t *testing.T) {
@@ -67,6 +68,7 @@ func TestResolveApproveAfterResume(t *testing.T) {
 // owner hold shows on it: the interviewer reads what was countered. The
 // /approve still waits there.
 func TestResolveCounterThenResume(t *testing.T) {
+	t.Parallel()
 	setup := resolveReview(func(t testing.TB, f *githubtest.Fake) {
 		post(t, f, 1004, "owner", "/approve")
 		post(t, f, 1005, "owner", "/resume")
@@ -83,6 +85,7 @@ func TestResolveCounterThenResume(t *testing.T) {
 // reaction and no reply, while the interviewer reads the discussion
 // (#189). Once the owner sets spec-review by hand, it's applied.
 func TestResolveApproveWaitsAtClarifying(t *testing.T) {
+	t.Parallel()
 	setup := resolveReview(func(t testing.TB, f *githubtest.Fake) { post(t, f, 1004, "owner", "/approve") })
 	resolveCheck(t, setup, 1, func(f *githubtest.Fake) issueWant {
 		return issueWant{[]string{"stage:clarifying"}, []string{ivHoldLeaveText("`owner`", "spec-review",
@@ -130,6 +133,7 @@ func resolveFamily(t testing.TB) (*githubtest.Fake, int64) {
 // resolved, no owner hold is left, so the child goes to clarifying, with
 // no other /resume (#187's verify note).
 func TestResolveParentResumeThenResolved(t *testing.T) {
+	t.Parallel()
 	var resume, c int64
 	resumed := func(t testing.TB) *githubtest.Fake {
 		var f *githubtest.Fake
@@ -167,6 +171,7 @@ func TestResolveParentResumeThenResolved(t *testing.T) {
 // a child that stays held for discussion, applies: it gets its 👍, and the
 // child the record.
 func TestResolveParentResumeEndsOnlyARecord(t *testing.T) {
+	t.Parallel()
 	f, _ := resolveFamily(t)
 	f.RemoveLabel(1, "owner", "stage:held")
 	f.AddLabel(1, "owner", "stage:ready")
@@ -192,6 +197,7 @@ func TestResolveParentResumeEndsOnlyARecord(t *testing.T) {
 // same pass as the owner's /resume, goes back to intake, not to
 // clarifying.
 func TestResolveResumeFromIntake(t *testing.T) {
+	t.Parallel()
 	f := githubtest.New(t, "o/r", slug)
 	f.SetPermission("owner", "admin")
 	f.SetPermission("mallory", "write")
@@ -219,6 +225,7 @@ func TestResolveResumeFromIntake(t *testing.T) {
 // A discussion resolved before an owner hold began didn't end during it:
 // the owner's /resume restores at.
 func TestResolveBeforeTheHold(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	f.AddComment(1, "mallory", "Wait.")
 	f.AddComment(1, "owner", "Noted.")
@@ -240,6 +247,7 @@ func TestResolveBeforeTheHold(t *testing.T) {
 // writer, as trudy, who can only read: while the owner's hold stays, no
 // record is written that a discussion ended.
 func TestResolveNoRecordForNonWriter(t *testing.T) {
+	t.Parallel()
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := discFake(t)
 		f.SetPermission("trudy", "read")
@@ -262,6 +270,7 @@ func TestResolveNoRecordForNonWriter(t *testing.T) {
 // mallory's comment, the comment holds nothing, and a /resume on the parent
 // sends the child to clarifying.
 func TestResolveRecordCloses(t *testing.T) {
+	t.Parallel()
 	f, c := resolveFamily(t)
 	r := f.AddReaction(c, "owner", "+1")
 	if err := resolvePass(t, 2)(f); err != nil {
@@ -288,6 +297,7 @@ func TestResolveRecordCloses(t *testing.T) {
 // between the 👍, or the /resume, and the App's move holds the issue
 // again, from clarifying or ready, keeping the hold's origin.
 func TestResolveBoundByAct(t *testing.T) {
+	t.Parallel()
 	for name, do := range map[string]func(f *githubtest.Fake){
 		"a 👍":       func(f *githubtest.Fake) { f.AddReaction(1002, "owner", "+1") },
 		"a /resume": func(f *githubtest.Fake) { f.AddComment(1, "owner", "/resume") },
@@ -318,6 +328,7 @@ func TestResolveBoundByAct(t *testing.T) {
 // At the clarifying after a hold, until T5, the issue waits: more passes
 // write nothing, and the interviewer isn't pending (Pending).
 func TestResolveWaitsAtClarifying(t *testing.T) {
+	t.Parallel()
 	f := run(t, resolveHeldWith(func(_ testing.TB, f *githubtest.Fake) { f.AddReaction(1002, "owner", "+1") }), resolvePass(t, 1))
 	writes := len(f.Writes())
 	for range 2 {
@@ -335,6 +346,7 @@ func TestResolveWaitsAtClarifying(t *testing.T) {
 // stays held, with the record saying so, and /resume takes it back to
 // intake.
 func TestResolveFromIntake(t *testing.T) {
+	t.Parallel()
 	var c int64
 	held := func(t testing.TB) *githubtest.Fake {
 		f := githubtest.New(t, "o/r", slug)

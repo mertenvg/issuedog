@@ -43,6 +43,7 @@ func newDiscCounting() *discCounting {
 // and not at all about one it knows is trusted, keeps no error, and wraps
 // it. Its Trusted answers from what DiscAccess found.
 func TestDiscTrustOnceVisit(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	inner := newDiscCounting()
 	v := &trustOnceVisit{trust: inner, verdicts: map[string]bool{}}
@@ -74,6 +75,7 @@ func TestDiscTrustOnceVisit(t *testing.T) {
 // Over a Trust that isn't a DiscTrust, a visit's DiscAccess knows no
 // write collaborator, and asks Trusted, once.
 func TestDiscTrustOnceVisitPlainTrust(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	inner := &trustOnceCounting{trusted: map[string]bool{"owner": true}, fail: map[string]bool{"bob": true}, asked: map[string]int{}}
 	v := &trustOnceVisit{trust: inner, verdicts: map[string]bool{}}
@@ -96,6 +98,7 @@ func TestDiscTrustOnceVisitPlainTrust(t *testing.T) {
 // and with a Trust that isn't a DiscTrust knows no write collaborator.
 // Both wrap an error.
 func TestDiscCurrentTrust(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := &Step{Trust: newDiscCounting()}
 	cur, ok := st.CurrentTrust().(github.DiscTrust)
@@ -129,6 +132,7 @@ func (n discNoWriters) DiscNoWriters() bool { return n.none }
 // Only a DiscTrust, or the visit's or the current trust over one, knows
 // writers, and not one that says nobody can be one.
 func TestDiscKnowsWriters(t *testing.T) {
+	t.Parallel()
 	disc, plain := newDiscCounting(), &trustOnceCounting{}
 	for _, tt := range []struct {
 		tr   github.Trust
@@ -150,6 +154,7 @@ func TestDiscKnowsWriters(t *testing.T) {
 // What a hold or a notice says of each kind of trigger, with every login
 // and title defused, and nobody GitHub doesn't name in words.
 func TestDiscWhat(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		tr   discTrigger
 		want string
@@ -171,6 +176,7 @@ func TestDiscWhat(t *testing.T) {
 // The origin is the latest transition's in the clarifying after a hold,
 // and the hold's from stage anywhere else, or with no origin to carry.
 func TestDiscOrigin(t *testing.T) {
+	t.Parallel()
 	tr := func(fields map[string]string) github.Marker { return github.Marker{Kind: "transition", Fields: fields} }
 	for _, tt := range []struct {
 		name  string
@@ -203,6 +209,7 @@ func TestDiscOrigin(t *testing.T) {
 // label event's time, by time, once the label rules give it; with no
 // marker, a stage label past intake bounds nothing.
 func TestDiscFloor(t *testing.T) {
+	t.Parallel()
 	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
 	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
 	mark := func(fields string) string { return "<!-- issuedog:transition " + fields + " -->" }
@@ -244,6 +251,7 @@ func TestDiscFloor(t *testing.T) {
 // later one; an unrecorded one at or after the bound's time, in its
 // second too, or for a comment above its ID, unless the bound is by time.
 func TestDiscOpenAfter(t *testing.T) {
+	t.Parallel()
 	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
 	records := map[string]int64{"c5": 9, "c6": 10, "r": 11}
 	for _, tt := range []struct {
@@ -277,6 +285,7 @@ func TestDiscOpenAfter(t *testing.T) {
 // The records are the first comment of each key, of a discussion hold or a
 // notice, read as Derive reads markers.
 func TestDiscRecords(t *testing.T) {
+	t.Parallel()
 	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
 	s := &github.Snapshot{Comments: []github.Comment{
 		{ID: 1, Author: app, Body: "<!-- issuedog:transition from=ready to=held at=ready reason=discussion event=c9 -->\n<!-- issuedog:notice key=x -->"},
@@ -294,6 +303,7 @@ func TestDiscRecords(t *testing.T) {
 // discHitsApp: an edit of the App's content, or a deletion of the App's or
 // an unnamed author's comment.
 func TestDiscHitsApp(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		tr   discTrigger
 		want bool
@@ -317,6 +327,7 @@ func TestDiscHitsApp(t *testing.T) {
 // says so, whatever its case: one that says COLLABORATOR, or one not
 // known, is asked about.
 func TestDiscWhoOf(t *testing.T) {
+	t.Parallel()
 	s := &github.Snapshot{Author: github.Author{Login: "Eve"}, AuthorAssociation: "NONE", Comments: []github.Comment{
 		{Author: github.Author{Login: "eve"}, Association: "FIRST_TIMER"},
 		{Author: github.Author{Login: "mallory"}, Association: "NONE"},
@@ -340,6 +351,7 @@ func TestDiscWhoOf(t *testing.T) {
 // A discWho asks about each login once per call, whatever its case, and
 // never about a bot, nobody, or anyone with no Trust: none is a writer.
 func TestDiscWhoAsksOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	inner := newDiscCounting()
 	inner.writers["helper[bot]"], inner.writers["robo"] = true, true
@@ -366,6 +378,7 @@ func TestDiscWhoAsksOnce(t *testing.T) {
 // and login, whatever its case, and uses DiscAccess's answer when writer
 // asked already. A bot, nobody, an outsider and no Trust ask nothing.
 func TestDiscWhoTrustedAsksTrusted(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	inner := newDiscCounting()
 	who := (&Applier{}).discWhoOf(&github.Snapshot{Comments: []github.Comment{{Author: github.Author{Login: "eve"}, Association: "NONE"}}}, inner)
@@ -406,6 +419,7 @@ func (c discNoRecordTrust) DiscAccess(ctx context.Context, login string) (bool, 
 // issue asked about, until its wait is up, when Due gives those issues to
 // read again; a snapshot that shows the login as a collaborator forgets it.
 func TestDiscNoRecord(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	inner := discNoRecordTrust{newDiscCounting()}
 	a := &Applier{}
@@ -453,6 +467,7 @@ func TestDiscNoRecord(t *testing.T) {
 // A first marker that records a stage label set by hand, as when the owner
 // brings an issue in by label, is bounded by the label's time, by time.
 func TestDiscFloorFirstOverride(t *testing.T) {
+	t.Parallel()
 	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
 	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
 	s := &github.Snapshot{Comments: []github.Comment{
@@ -473,6 +488,7 @@ func TestDiscFloorFirstOverride(t *testing.T) {
 // floor's comment: one posted just before the marker, in its second,
 // doesn't.
 func TestDiscFindByID(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 1, 1, 0, 0, 5, 0, time.UTC)
 	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
 	mallory := github.Author{Login: "mallory", Type: "User"}
@@ -495,6 +511,7 @@ func TestDiscFindByID(t *testing.T) {
 // or after its trigger: a dirty App comment or a deletion from before it
 // isn't its notice, nor is the trigger's own content.
 func TestDiscLostTimes(t *testing.T) {
+	t.Parallel()
 	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
 	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
 	tr := discTrigger{Kind: discRename, Key: "77", At: at(5)}
@@ -530,6 +547,7 @@ func TestDiscLostTimes(t *testing.T) {
 // A trigger whose key no marker can hold is left out, as it would fail
 // every pass.
 func TestDiscFindSkipsBadKeys(t *testing.T) {
+	t.Parallel()
 	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
 	at := time.Date(2026, 1, 1, 0, 0, 9, 0, time.UTC)
 	s := &github.Snapshot{Comments: []github.Comment{
@@ -551,6 +569,7 @@ func TestDiscFindSkipsBadKeys(t *testing.T) {
 
 // An edit's key names its content and time in Unix seconds.
 func TestDiscEditKey(t *testing.T) {
+	t.Parallel()
 	if got := discEditKey(42, time.Unix(1767225606, 0)); got != "e42-1767225606" {
 		t.Errorf("discEditKey = %q", got)
 	}
@@ -572,7 +591,9 @@ func noReactions(t testing.TB, reads ...*int) *github.Client {
 	}))
 	t.Cleanup(srv.Close)
 	base := srv.URL + "/"
-	gh, err := gogithub.NewClient(gogithub.WithURLs(&base, &base))
+	// The server's own client, not http.DefaultTransport, which another
+	// test's server would close the idle connections of.
+	gh, err := gogithub.NewClient(gogithub.WithHTTPClient(srv.Client()), gogithub.WithURLs(&base, &base))
 	if err != nil {
 		t.Fatal(err)
 	}

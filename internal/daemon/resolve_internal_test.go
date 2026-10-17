@@ -20,6 +20,7 @@ import (
 // during the hold, which may have hidden an applied /hold (#188's verify,
 // round 2), though one that held the issue, made before, is accepted.
 func TestResolveByNotice(t *testing.T) {
+	t.Parallel()
 	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
 	s := &github.Snapshot{Comments: []github.Comment{
 		{ID: 5, Author: github.Author{Login: "owner", Type: "User"}},
@@ -63,6 +64,7 @@ func TestResolveByNotice(t *testing.T) {
 // a dirty one; with none, the earliest trusted 👍 on it approves it, but
 // not on a dirty or gone comment, whose reactions aren't read.
 func TestResolverComment(t *testing.T) {
+	t.Parallel()
 	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
 	owner := github.Author{Login: "owner", Type: "User"}
 	s := &github.Snapshot{Comments: []github.Comment{
@@ -100,6 +102,7 @@ func TestResolverComment(t *testing.T) {
 // The earliest trusted 👍 resolves, by its time: not a ❤️ or a 👎, nor a 👍 by
 // someone untrusted or a bot, however early.
 func TestResolverThumbsUp(t *testing.T) {
+	t.Parallel()
 	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
 	user := func(l string) github.Author { return github.Author{Login: l, Type: "User"} }
 	tr := newDiscCounting()
@@ -129,6 +132,7 @@ func TestResolverThumbsUp(t *testing.T) {
 // comparison by time finds again, or one from before the hold, writes
 // nothing, and costs no request.
 func TestResolveEndedOnce(t *testing.T) {
+	t.Parallel()
 	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
 	reads := 0
 	a := &Applier{Client: noReactions(t, &reads), Owner: "o", Repo: "r", AppSlug: "issuedog"}
@@ -147,6 +151,7 @@ func TestResolveEndedOnce(t *testing.T) {
 // A trigger in the same second as the /resume counts as after it, failing
 // closed: the /resume doesn't end its hold, and the issue stays held.
 func TestResolveHeldSameSecond(t *testing.T) {
+	t.Parallel()
 	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
 	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
 	mallory := github.Author{Login: "mallory", Type: "User"}
@@ -172,6 +177,7 @@ func TestResolveHeldSameSecond(t *testing.T) {
 // time, its own second included; one known only from its record, at the
 // zero time, is judged by its record.
 func TestResolveOpenRecordedByTime(t *testing.T) {
+	t.Parallel()
 	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
 	open := discOpenAfter(discBound{ID: 20, At: at(12), ByTime: true}, map[string]int64{"77": 10, "78": 20})
 	for _, tt := range []struct {
@@ -196,6 +202,7 @@ func TestResolveOpenRecordedByTime(t *testing.T) {
 // before it is to clarifying and carries an open origin but held: one to
 // any other stage, even with an origin, didn't.
 func TestResolveHeldAfterHold(t *testing.T) {
+	t.Parallel()
 	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
 	at := func(markers ...string) state.Issue {
 		s := &github.Snapshot{}
@@ -226,6 +233,7 @@ func TestResolveHeldAfterHold(t *testing.T) {
 // names: a first marker keyed by a command, as /track's, is bounded by its
 // own comment, by ID.
 func TestResolveFloorFirstCommand(t *testing.T) {
+	t.Parallel()
 	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
 	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
 	s := &github.Snapshot{Comments: []github.Comment{
@@ -241,6 +249,7 @@ func TestResolveFloorFirstCommand(t *testing.T) {
 // the comment on the issue its cmd names; an "ended reason=discussion"
 // record by its resolved time alone.
 func TestResolveActAt(t *testing.T) {
+	t.Parallel()
 	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
 	s := &github.Snapshot{Comments: []github.Comment{{ID: 5, CreatedAt: at(5)}}}
 	for _, tt := range []struct {
@@ -283,6 +292,7 @@ func TestResolveActAt(t *testing.T) {
 // held marker with no hold before it in clean content, and ends at a move
 // out; only the records in it count.
 func TestResolvePeriodOf(t *testing.T) {
+	t.Parallel()
 	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }
 	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
 	snap := func(bodies ...string) *github.Snapshot {
@@ -333,6 +343,7 @@ func TestResolvePeriodOf(t *testing.T) {
 // from before heldon=, or an ill-formed one, has none, and counts as it
 // did (resolveHeldOn).
 func TestResolvePeriodOfHeldOn(t *testing.T) {
+	t.Parallel()
 	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
 	for _, tt := range []struct {
 		name   string
@@ -362,6 +373,7 @@ func TestResolvePeriodOfHeldOn(t *testing.T) {
 // cmd or its event, but for the /resume itself; one no record names, or
 // one with neither, stays.
 func TestResolveLeftAndOwnerHeld(t *testing.T) {
+	t.Parallel()
 	m := func(reason, cmd string) github.Marker {
 		f := map[string]string{"reason": reason}
 		if cmd != "" {
@@ -394,6 +406,7 @@ func resolveSameMarker(a, b github.Marker) bool {
 // hold's, falling back to at, each only when it's an open stage but held,
 // the bound from before the hold, and resolved when known.
 func TestResolveFields(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 1, 1, 0, 0, 9, 0, time.UTC)
 	for _, tt := range []struct {
 		name     string
@@ -419,6 +432,7 @@ func TestResolveFields(t *testing.T) {
 // rejection's reply, nor an "edited" one, nor a marker naming another
 // comment. Only the rejection's reply says it was rejected.
 func TestResolveApplied(t *testing.T) {
+	t.Parallel()
 	is := func(markers ...string) state.Issue {
 		s := &github.Snapshot{Comments: []github.Comment{{ID: 900, Author: github.Author{Login: "issuedog[bot]", Type: "Bot"}, Body: ""}}}
 		for _, m := range markers {
@@ -451,6 +465,7 @@ func TestResolveApplied(t *testing.T) {
 // begun counts a command as begun only by a marker of its own that isn't a
 // reply, on any issue in the family: a rejection's reply begins nothing.
 func TestBegunNotByReply(t *testing.T) {
+	t.Parallel()
 	a := &Applier{AppSlug: "issuedog"}
 	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
 	with := func(body string) node {
@@ -470,6 +485,7 @@ func TestBegunNotByReply(t *testing.T) {
 // held, as a /hold with an argument, nor another command, a dirty one, an
 // untrusted user's, or one out of range.
 func TestResolveCommands(t *testing.T) {
+	t.Parallel()
 	owner := github.Author{Login: "owner", Type: "User"}
 	s := &github.Snapshot{Number: 1, Comments: []github.Comment{
 		{ID: 10, Author: owner, Association: "OWNER", Body: "/hold"},

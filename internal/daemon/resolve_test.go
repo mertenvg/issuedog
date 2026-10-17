@@ -126,6 +126,7 @@ func resolveEndedText(by string, resolved int64) string {
 // A trusted 👍 on the comment that held the issue approves it, and the
 // issue goes held → clarifying, with at, origin, seen and the 👍's time.
 func TestResolveByThumbsUp(t *testing.T) {
+	t.Parallel()
 	setup := resolveHeldWith(func(_ testing.TB, f *githubtest.Fake) { f.AddReaction(1002, "owner", "+1") })
 	resolveCheck(t, setup, 1, func(f *githubtest.Fake) issueWant {
 		return issueWant{[]string{"stage:clarifying"}, []string{resolveLeaveText("`owner`", "ready",
@@ -137,6 +138,7 @@ func TestResolveByThumbsUp(t *testing.T) {
 // before it, here two of mallory's, one on the held issue, which has no
 // record (Q2b): the issue leaves, bounded by the counter's time.
 func TestResolveByCounterComment(t *testing.T) {
+	t.Parallel()
 	var counter int64
 	setup := resolveHeldWith(func(_ testing.TB, f *githubtest.Fake) {
 		f.AddComment(1, "mallory", "And another thing.")
@@ -151,6 +153,7 @@ func TestResolveByCounterComment(t *testing.T) {
 // A comment after the counter is open: the issue stays held, and nothing
 // is written. Nor does a dirty comment of the owner's counter anything.
 func TestResolveCounterOnlyBefore(t *testing.T) {
+	t.Parallel()
 	for name, do := range map[string]func(f *githubtest.Fake){
 		"a later comment": func(f *githubtest.Fake) {
 			f.AddComment(1, "owner", "Noted.")
@@ -177,6 +180,7 @@ func TestResolveCounterOnlyBefore(t *testing.T) {
 // A 👍 resolves nothing when it isn't a trusted user's: mallory's, eve's,
 // another bot's or the App's own.
 func TestResolveUntrustedThumbsUp(t *testing.T) {
+	t.Parallel()
 	for _, login := range []string{"mallory", "eve", "helper[bot]", app} {
 		t.Run(login, func(t *testing.T) {
 			f := run(t, resolveHeldWith(func(_ testing.TB, f *githubtest.Fake) { f.AddReaction(1002, login, "+1") }), resolvePass(t, 1))
@@ -191,6 +195,7 @@ func TestResolveUntrustedThumbsUp(t *testing.T) {
 // it carries, a rename, and the issue leaves the hold. Only a 👍 counts:
 // the owner's 👎 accepts nothing.
 func TestResolveByNoticeOnHold(t *testing.T) {
+	t.Parallel()
 	var ev int64
 	setup := func(content string) func(testing.TB) *githubtest.Fake {
 		return func(t testing.TB) *githubtest.Fake {
@@ -244,6 +249,7 @@ func resolveOwnerHeldFake(t testing.TB) (f *githubtest.Fake, comment, notice int
 // then sends it to clarifying, with at, origin and seen. A trigger
 // resolved only partly writes nothing.
 func TestResolveOwnerHoldStays(t *testing.T) {
+	t.Parallel()
 	var comment, notice int64
 	partly := func(t testing.TB) *githubtest.Fake {
 		var f *githubtest.Fake
@@ -282,6 +288,7 @@ func TestResolveOwnerHoldStays(t *testing.T) {
 // A /resume that comes before the App's record of the discussion's end,
 // in the same pass as the 👍s, sends the issue to clarifying too.
 func TestResolveResumeBeforeRecord(t *testing.T) {
+	t.Parallel()
 	var resume int64
 	setup := func(t testing.TB) *githubtest.Fake {
 		f, comment, notice := resolveOwnerHeldFake(t)
@@ -302,6 +309,7 @@ func TestResolveResumeBeforeRecord(t *testing.T) {
 // Its own comment counters mallory's, which doesn't count as an earlier
 // end of the discussion.
 func TestResolveResumeAcceptsAll(t *testing.T) {
+	t.Parallel()
 	var resume int64
 	setup := func(t testing.TB) *githubtest.Fake {
 		f, _, _ := resolveOwnerHeldFake(t)
@@ -317,6 +325,7 @@ func TestResolveResumeAcceptsAll(t *testing.T) {
 // opened a trigger again before it, as the owner taking back a 👍, writes
 // nothing: the record bounds the triggers.
 func TestResolveRecordHolds(t *testing.T) {
+	t.Parallel()
 	f, comment, notice := resolveOwnerHeldFake(t)
 	f.AddReaction(comment, "owner", "+1")
 	r := f.AddReaction(notice, "owner", "+1")
@@ -344,6 +353,7 @@ func TestResolveRecordHolds(t *testing.T) {
 // as the comment may have held another trigger's record: a 👍 on its
 // notice, the hold's comment, accepts nothing.
 func TestResolveHitsAppOnlyByResume(t *testing.T) {
+	t.Parallel()
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := discFake(t)
 		f.DeleteCommentBy("mallory", f.AddComment(1, app, "A note.")) // 1002
@@ -375,6 +385,7 @@ func TestResolveHitsAppOnlyByResume(t *testing.T) {
 // newer leaves the older open, and the issue held. Both accepted, it
 // leaves, bounded by the later 👍.
 func TestResolveTwoNotices(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	x := f.AddComment(1, "owner", "Ship it.") // 1002
 	f.EditComment(x, "mallory", "Don't.")
@@ -417,6 +428,7 @@ func TestResolveTwoNotices(t *testing.T) {
 // still keeps open, is resolved by a counter comment alone: its 👍s are
 // gone with it, so nothing reads them.
 func TestResolveGoneCommentCountered(t *testing.T) {
+	t.Parallel()
 	var counter int64
 	setup := resolveHeldWith(func(_ testing.TB, f *githubtest.Fake) {
 		f.DeleteCommentBy("mallory", 1002)
@@ -434,6 +446,7 @@ func TestResolveGoneCommentCountered(t *testing.T) {
 // Only a candidate trigger's reactions are read: those of a writer's open
 // comment, not the owner's comment nor that of eve, who has no access.
 func TestResolveReadsOnlyCandidates(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	f.RemoveLabel(1, app, "stage:ready")
 	f.AddLabel(1, app, "stage:held")
@@ -477,6 +490,7 @@ func resolveDaemon(t testing.TB, f *githubtest.Fake, o *origin) *daemon.Daemon {
 // pass, but an unchanged pass costs no rate limit: each reaction read is
 // answered 304, and nothing is written.
 func TestResolveUnchangedPass(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	n := fileAt(f, "ready", "do it")
 	f.SetType(n, "task")
@@ -511,6 +525,7 @@ func TestResolveUnchangedPass(t *testing.T) {
 // its author is never asked about: a resolved trigger drops out before the
 // writer question, so it costs no permission request.
 func TestResolveCounteredBeforeHold(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	n := fileAt(f, "ready", "do it")
 	f.SetType(n, "task")

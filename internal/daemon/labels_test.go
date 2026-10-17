@@ -101,6 +101,7 @@ func atReady(more func(t testing.TB, f *githubtest.Fake)) func(testing.TB) *gith
 }
 
 func TestCheckLabels(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
 	overridden := func(label, marker string) string {
 		return "owner set `" + label + "` by hand, so I've recorded it as an owner override.\n\n<!-- issuedog:transition " + marker + " -->"
 	}

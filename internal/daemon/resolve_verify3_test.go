@@ -14,6 +14,7 @@ import (
 // doesn't know, the ancestors aren't read (#188's verify, attempt 3): the
 // error is reported once, and an unchanged pass costs no rate limit.
 func TestResolveNoAncestorReadsOnStateError(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	for n := 1; n <= 3; n++ {
 		fileAt(f, "ready", "do it")
@@ -52,6 +53,7 @@ func TestResolveNoAncestorReadsOnStateError(t *testing.T) {
 // as a discussion that ended while the owner's hold stayed: the /resume
 // accepts the trigger itself, and restores at.
 func TestResolveThumbAfterResume(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	f.AddComment(1, "owner", "/hold")
 	if err := resolvePass(t, 1)(f); err != nil {
@@ -75,6 +77,7 @@ func TestResolveThumbAfterResume(t *testing.T) {
 // Replay over the record of a /resume that would have gone to clarifying,
 // kept held by a later trigger: after=1.
 func TestResolveAfterRecordReplay(t *testing.T) {
+	t.Parallel()
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := discFake(t)
 		f.AddComment(1, "owner", "/hold")
@@ -101,6 +104,7 @@ func TestResolveAfterRecordReplay(t *testing.T) {
 // Replay over the record that names an ancestor's /hold with no act to
 // resolve the last trigger, as mallory deleting her own comment.
 func TestResolveHeldRecordReplay(t *testing.T) {
+	t.Parallel()
 	var hold int64
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := newFake(t)
@@ -173,6 +177,7 @@ func resolveParentHoldChildResume(t testing.TB, first bool) (*githubtest.Fake, i
 // it (#188's verify, attempt 4): once the late trigger is resolved, the
 // issue goes to clarifying, with no record naming the parent's /hold.
 func TestResolveOwnResumeEndsParentHold(t *testing.T) {
+	t.Parallel()
 	setup := func(t testing.TB) *githubtest.Fake {
 		f, _, late := resolveParentHoldChildResume(t, true)
 		f.ForgetWrites()
@@ -190,6 +195,7 @@ func TestResolveOwnResumeEndsParentHold(t *testing.T) {
 // A /hold on the parent posted after the issue's own /resume still keeps
 // it held once the late trigger is resolved, with the record naming it.
 func TestResolveParentHoldAfterOwnResume(t *testing.T) {
+	t.Parallel()
 	f, hold, late := resolveParentHoldChildResume(t, false)
 	f.AddReaction(late, "owner", "+1")
 	if err := resolvePass(t, 2)(f); err != nil {
@@ -206,6 +212,7 @@ func TestResolveParentHoldAfterOwnResume(t *testing.T) {
 // the row to clarifying, which it has, not the one back to ready, which
 // it lacks.
 func TestResolveResumeRowToClarifying(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	f.AddComment(1, "owner", "/hold")
 	if err := resolvePass(t, 1)(f); err != nil {

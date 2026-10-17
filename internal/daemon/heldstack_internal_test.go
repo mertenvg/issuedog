@@ -12,6 +12,7 @@ import (
 // round of attempts (SPEC §8.3: a round starts when the issue moves), so an
 // attempts error from before the hold ends, and the stage runs again.
 func TestHeldStackAttemptKey(t *testing.T) {
+	t.Parallel()
 	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
 	owner := github.Author{Login: "owner", Type: "User"}
 	at := func(markers ...string) state.Issue {
@@ -56,6 +57,7 @@ func TestHeldStackAttemptKey(t *testing.T) {
 // only when no hold is left. A discussion hold ends only on the issue
 // itself (T4).
 func TestHeldStackResume(t *testing.T) {
+	t.Parallel()
 	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
 	at := func(markers ...string) state.Issue {
 		s := &github.Snapshot{Number: 1}

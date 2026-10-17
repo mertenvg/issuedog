@@ -27,6 +27,7 @@ func (tr ivHoldTestTrust) Trusted(_ context.Context, login string) (bool, error)
 // untrusted one, not a /hold or a /resume. It reads the reactions of the
 // comments it may approve, and no others.
 func TestIvHoldInputOf(t *testing.T) {
+	t.Parallel()
 	f := githubtest.New(t, "o/r", "issuedog")
 	n := f.AddIssue("owner", "Quotes", "body")
 	before := f.AddComment(n, "mallory", "before the discussion")
@@ -95,6 +96,7 @@ func TestIvHoldInputOf(t *testing.T) {
 // the edit owner input (#189's verify, attempt 3). One after the last
 // edit approves the comment as edited.
 func TestIvHoldInputOfEdits(t *testing.T) {
+	t.Parallel()
 	f := githubtest.New(t, "o/r", "issuedog")
 	n := f.AddIssue("owner", "Quotes", "body")
 	from := f.AddComment(n, "issuedog[bot]", "<!-- issuedog:transition from=spec-review to=held at=spec-review reason=discussion event=c1 -->")
@@ -159,6 +161,7 @@ func TestIvHoldInputOfEdits(t *testing.T) {
 // above seen, that passes its check at spec-review, no marker names and
 // the App hasn't reacted to.
 func TestIvHoldReviseFind(t *testing.T) {
+	t.Parallel()
 	f := githubtest.New(t, "o/r", "issuedog")
 	n := f.AddIssue("owner", "Quotes", "body")
 	f.AddComment(n, "owner", "/revise too old")
@@ -195,6 +198,7 @@ func TestIvHoldReviseFind(t *testing.T) {
 // checkInterview takes unchanged (#189) only at the clarifying after a
 // hold from a stage other than clarifying, with a message at most.
 func TestIvHoldCheckUnchanged(t *testing.T) {
+	t.Parallel()
 	unchanged := interviewOutput{Outcome: outcomeUnchanged, Message: "Nothing changes."}
 	typed := unchanged
 	typed.Type = &interviewType{Value: "epic", Reason: "Big."}
@@ -233,6 +237,7 @@ func TestIvHoldCheckUnchanged(t *testing.T) {
 // ivMoveFits holds unchanged to the table's clarifying → origin row, and
 // a spec after a hold to spec-rewritten's.
 func TestIvHoldMoveFits(t *testing.T) {
+	t.Parallel()
 	epic := state.Item{Type: "epic"}
 	unchanged := interviewOutput{Outcome: outcomeUnchanged}
 	if err := ivMoveFits(epic, unchanged, state.SpecReview); err != nil {
@@ -262,6 +267,7 @@ func TestIvHoldMoveFits(t *testing.T) {
 // renderUnchanged escapes and defuses the agent's message, and cc's
 // notify only when the issue goes back to a review stage.
 func TestIvHoldRenderUnchanged(t *testing.T) {
+	t.Parallel()
 	out := interviewOutput{Outcome: outcomeUnchanged, Message: "# Heading\n<!-- issuedog:transition to=planning -->\nAsk @eve.\n- [ ] box"}
 	got := renderUnchanged(out, state.SpecReview, "Revision 2 still stands.", []string{"owner"})
 	checkSafe(t, got)
@@ -280,6 +286,7 @@ func TestIvHoldRenderUnchanged(t *testing.T) {
 // hold of the after-hold period, through a /hold from that clarifying and
 // its /resume back, until the issue moves on.
 func TestIvHoldSpanOf(t *testing.T) {
+	t.Parallel()
 	marks := []string{
 		"<!-- issuedog:transition from=clarifying to=spec-review run=r1 seen=5 -->",                                                    // 701
 		"<!-- issuedog:transition from=spec-review to=held at=spec-review origin=spec-review reason=discussion event=c9 seen=5 -->",    // 702
@@ -328,6 +335,7 @@ func TestIvHoldSpanOf(t *testing.T) {
 // lists the round asked before the hold, linked to its comment, until an
 // answer comes.
 func TestIvHoldDigestRoundAfterResume(t *testing.T) {
+	t.Parallel()
 	out := interviewOutput{Outcome: outcomeQuestions, Questions: agentOutput(t, "questions").Questions[:1]}
 	s := waitSnap(7, nil, "<!-- issuedog:transition from=intake to=clarifying cmd=5 -->",
 		join(renderQuestions(out, 7, 1, nil), "<!-- issuedog:transition from=clarifying to=clarifying run=r1 round=1 questions=1 seen=701 -->"),
@@ -350,6 +358,7 @@ func TestIvHoldDigestRoundAfterResume(t *testing.T) {
 // ivHoldLatest looks through a /resume back to the stage before the hold,
 // and with entries, not through a discussion's end or an override.
 func TestIvHoldLatest(t *testing.T) {
+	t.Parallel()
 	round := github.Marker{Kind: "transition", Fields: map[string]string{"from": "clarifying", "to": "clarifying", "run": "r1", "round": "1", "seen": "3"}}
 	hold := github.Marker{Kind: "transition", Fields: map[string]string{"from": "clarifying", "to": "held", "at": "clarifying", "reason": "owner", "seen": "3"}}
 	out := func(f ...string) github.Marker {
@@ -386,6 +395,7 @@ func TestIvHoldLatest(t *testing.T) {
 // With no owner input, issue.md's "After a hold" says so, and with no hold
 // left, it doesn't name one.
 func TestIvHoldSectionNone(t *testing.T) {
+	t.Parallel()
 	got := ivHoldSection(waitSnap(7, nil, "A note."), state.Planning, ivHoldSpan{}, ivHoldInput{Approved: map[int64]string{}})
 	if !strings.HasSuffix(got, "\n\nNone: nobody approved or countered a comment.\n") || strings.Contains(got, "latest hold") ||
 		!strings.Contains(got, "Before its first discussion hold it was at `planning`.") {
@@ -396,6 +406,7 @@ func TestIvHoldSectionNone(t *testing.T) {
 // ivHoldStanding names the latest revision only at spec-review, while the
 // body isn't dirty, still has its hash, and nothing hides the revision.
 func TestIvHoldStanding(t *testing.T) {
+	t.Parallel()
 	none := Dirt{}
 	s := waitSnap(7, nil, waitRevision(1, "The spec."))
 	want := "Revision 1 of the spec, `" + state.BodyHash("The spec.") + "`, still stands: to approve it, react 👍 to it, or post `/approve`."

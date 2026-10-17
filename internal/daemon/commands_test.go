@@ -97,6 +97,7 @@ func madeOn(issues string) string {
 type issueWant struct{ labels, comments []string }
 
 func TestHoldResumePriority(t *testing.T) {
+	t.Parallel()
 	held := func(at, reason string) string {
 		return "from=" + at + " to=held at=" + at + " reason=" + reason + " run=h"
 	}
@@ -403,6 +404,7 @@ func TestHoldResumePriority(t *testing.T) {
 // A crash after a descendant's marker doesn't leave /hold 👍'd with the
 // issue not held: at every crash point, a 👍'd /hold has its marker on #1.
 func TestHoldAcksLast(t *testing.T) {
+	t.Parallel()
 	setup := tree([]string{"from=intake to=ready run=a", "from=intake to=ready run=a", "from=intake to=ready run=a"}, []int{0, 1, 2}, 1, 1004, "/hold", nil)
 	w := len(run(t, setup, commandsPass(t, 1)).Writes())
 	for n := 1; n <= w; n++ {
@@ -425,6 +427,7 @@ func TestHoldAcksLast(t *testing.T) {
 // marker or, as the child was held already, none (#188's decision, round
 // 3).
 func TestOwnHolds(t *testing.T) {
+	t.Parallel()
 	type step struct {
 		on   int
 		body string
@@ -546,6 +549,7 @@ func TestOwnHolds(t *testing.T) {
 
 // The Applier's repo, in any case, matches its sub-issues' repository_url.
 func TestHoldMixedCaseRepo(t *testing.T) {
+	t.Parallel()
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := githubtest.New(t, "O/r", slug)
 		f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, round 2)
@@ -564,6 +568,7 @@ func TestHoldMixedCaseRepo(t *testing.T) {
 // Apply, fails the pass, which writes nothing, so no hold ends. The pass
 // reads #2's parent once first, for its snapshot.
 func TestResumeParentReadFails(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, path string
 		nth        int

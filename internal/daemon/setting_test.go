@@ -87,6 +87,7 @@ func labeledBy(login string, labels ...string) func(f *githubtest.Fake) {
 }
 
 func TestModelEffortCommands(t *testing.T) {
+	t.Parallel()
 	const (
 		react  = "POST /issues/comments/1002/reactions"
 		label  = "POST /issues/1/labels"
@@ -318,6 +319,7 @@ func TestModelEffortCommands(t *testing.T) {
 // old one, isn't rejected on the next pass after a reload dropped its model:
 // the issue ends with one model:* label, and the command 👍'd.
 func TestModelRetryAfterReloadDropsIt(t *testing.T) {
+	t.Parallel()
 	before := models(t, "[sonnet, {name: claude-opus-5-5, label: opus5}]")
 	for _, crash := range []struct {
 		name  string
@@ -411,6 +413,7 @@ var crashes = []struct {
 // Apply's, not a revert: the command ends 👍'd, with model:opus5 alone
 // (#116, item 1).
 func TestModelRetryAfterUntrustedAddAndRemove(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		setup func(testing.TB) *githubtest.Fake
@@ -452,6 +455,7 @@ func TestModelRetryAfterUntrustedAddAndRemove(t *testing.T) {
 // the reload drops sonnet too, and when Apply removed one label and not
 // yet the allowed model:sonnet, which it then removes.
 func TestModelRetryAfterNoOpAdd(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		labels []string // the App's, before the command
@@ -485,6 +489,7 @@ func TestModelRetryAfterNoOpAdd(t *testing.T) {
 // model:aaa after a crash like TestModelRetryAfterNoOpAdd's, so the command
 // is rejected, the known limit, and both labels stay.
 func TestModelNoOpAddTwoStrays(t *testing.T) {
+	t.Parallel()
 	f := taskWith("owner", "/model claude-opus-5-5", app+" model:opus5", app+" model:sonnet")(t)
 	f.FailWriteAfter(1)
 	if err := settingPass(t, models(t, beforeReload))(f); err == nil {
@@ -511,6 +516,7 @@ func TestModelNoOpAddTwoStrays(t *testing.T) {
 // deleted it; the App's removal before the command; the owner's, not the
 // App's, since; and the App's removals of labels of other kinds since.
 func TestModelRemovalNotApply(t *testing.T) {
+	t.Parallel()
 	const reason = "`gpt` isn't on `models.allowed`, which has `sonnet`"
 	for _, tc := range []struct {
 		name   string
@@ -565,6 +571,7 @@ func TestModelRemovalNotApply(t *testing.T) {
 // the one from its removal of model:sonnet, which the owner added, asks
 // about the owner.
 func TestModelTrustFails(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		setup func(testing.TB) *githubtest.Fake
@@ -596,6 +603,7 @@ func TestModelTrustFails(t *testing.T) {
 // That removal is the App's own, so trust isn't asked about it, here
 // failing if it is, and the add is the begun Apply's.
 func TestModelAppRemovalTrustNotAsked(t *testing.T) {
+	t.Parallel()
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := newFake(t)
 		file(f, 0, ready)
@@ -625,6 +633,7 @@ func TestModelAppRemovalTrustNotAsked(t *testing.T) {
 // is the revert, not a begun Apply, so /model gpt is still rejected, and the
 // allowed label stays (the verifier's attack on attempt 3).
 func TestModelRevertIsNotApply(t *testing.T) {
+	t.Parallel()
 	const reason = "`gpt` isn't on `models.allowed`, which has `sonnet`"
 	for _, tc := range []struct {
 		name   string
@@ -674,6 +683,7 @@ func TestModelRevertIsNotApply(t *testing.T) {
 // untrusted actor, so the next pass rejects /model gpt, and model:sonnet
 // stays (the verifier's probe on attempt 4).
 func TestModelRevertMarkerGone(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		hide func(f *githubtest.Fake, id int64, body string)
@@ -742,6 +752,7 @@ func markerSetup(t testing.TB, editor string) (*githubtest.Fake, string, int64) 
 // rejected. In a comment mallory edited, MarkDirty escapes it before
 // commands run, so the add is the begun Apply.
 func TestModelRevertMarker(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		editor string
 		labels []string
@@ -773,6 +784,7 @@ func TestModelRevertMarker(t *testing.T) {
 // raw marker back in her dirty comment after MarkDirty escaped it, before
 // the command's timeline read, and the begun Apply still stands.
 func TestModelRevertMarkerDirtySkipped(t *testing.T) {
+	t.Parallel()
 	f, marker, note := markerSetup(t, "mallory")
 	timeline := func(r githubtest.Request) bool { return r.Method == "GET" && r.Path == "/issues/1/timeline" }
 	// The label rules read the timeline first, after the dirty content is
@@ -798,6 +810,7 @@ func TestModelRevertMarkerDirtySkipped(t *testing.T) {
 // The command's comment gone from the timeline, as when it's deleted after
 // the issue was read, fails the pass rather than rejecting the command.
 func TestModelCommandNotOnTimeline(t *testing.T) {
+	t.Parallel()
 	f := taskWith("owner", "/model gpt", app+" model:retired")(t)
 	timeline := func(r githubtest.Request) bool { return r.Method == "GET" && r.Path == "/issues/1/timeline" }
 	// The label rules read the timeline first; before Check's read, the
@@ -815,6 +828,7 @@ func TestModelCommandNotOnTimeline(t *testing.T) {
 // Apply reads the timeline again, and a failure there fails the pass, after
 // Check's read succeeded: nothing is written, not even a 👎.
 func TestModelApplyTimelineFails(t *testing.T) {
+	t.Parallel()
 	f := then(taskWith("owner", "/model fable", app+" model:sonnet"), labeledBy(app, "model:fable"))(t)
 	timeline := func(r githubtest.Request) bool { return r.Method == "GET" && r.Path == "/issues/1/timeline" }
 	// The label rules' read, then Check's, then Apply's, which fails.
@@ -842,6 +856,7 @@ func TestModelApplyTimelineFails(t *testing.T) {
 // A failed timeline read, on the path that looks for a begun Apply, fails
 // the pass rather than rejecting the command, and nothing is written.
 func TestModelTimelineFails(t *testing.T) {
+	t.Parallel()
 	f := taskWith("owner", "/model gpt", app+" model:retired")(t)
 	timeline := func(r githubtest.Request) bool { return r.Method == "GET" && r.Path == "/issues/1/timeline" }
 	// The label rules read the timeline first; the command's read fails.
@@ -858,6 +873,7 @@ func TestModelTimelineFails(t *testing.T) {
 // A stray label whose latest event is an unlabeled one, as when it went
 // after the issue was read, isn't taken, even when the App removed it.
 func TestModelStrayLabelGoneSince(t *testing.T) {
+	t.Parallel()
 	f := then(taskWith("owner", "/model fable", app+" model:sonnet"), labeledBy(app, "model:fable"))(t)
 	timeline := func(r githubtest.Request) bool { return r.Method == "GET" && r.Path == "/issues/1/timeline" }
 	// The label rules read the timeline first; before the command's read,
@@ -881,6 +897,7 @@ func TestModelStrayLabelGoneSince(t *testing.T) {
 // the command isn't 👍'd with its labels half set: the label's add, the old
 // label's removal and the 👍, for each command that sets a label.
 func TestSettingWriteFails(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ body, old string }{
 		{"/model opus", "model:sonnet"},
 		{"/effort verifier high", "verifier-effort:low"},
@@ -902,6 +919,7 @@ func TestSettingWriteFails(t *testing.T) {
 // The handlers ask Daemon.CurrentModels on each call, so a reload that
 // changes models.allowed on main changes what /model accepts, both ways.
 func TestIterateModelsReload(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	fileAt(f, "ready", "do it")
 	o := newOrigin(t)
@@ -942,6 +960,7 @@ func TestIterateModelsReload(t *testing.T) {
 
 // CurrentModels is empty before a config loads.
 func TestCurrentModelsNoConfig(t *testing.T) {
+	t.Parallel()
 	if got := (&daemon.Daemon{}).CurrentModels(); got.Allowed != nil {
 		t.Errorf("CurrentModels() = %+v, want none", got)
 	}

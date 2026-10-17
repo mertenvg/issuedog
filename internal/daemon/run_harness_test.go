@@ -143,6 +143,7 @@ func resumeWrites(t *testing.T, setup func(t testing.TB, f *githubtest.Fake, roo
 
 // Pending gets the issue's dirt and state, read before it's asked.
 func TestInputHasDirtAndIssue(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	interview(f)
 	f.EditBody(1, "mallory", "the idea, rewritten")
@@ -160,6 +161,7 @@ func TestInputHasDirtAndIssue(t *testing.T) {
 // A Checker's error writes nothing and is one failed attempt, and after
 // loop.max_attempts of them the attempts state error is posted.
 func TestCheckerErrorIsFailedAttempt(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	answer := interview(f)
 	g := newRig(t, f, newOrigin(t), t.TempDir())
@@ -186,6 +188,7 @@ func TestCheckerErrorIsFailedAttempt(t *testing.T) {
 }
 
 func TestCheckerErrorWritesNothing(t *testing.T) {
+	t.Parallel()
 	resumeWrites(t, func(t testing.TB, f *githubtest.Fake, root string) {
 		saveRun(t, root, "saved", okOut, interview(f))
 	}, func(g *rig) {
@@ -196,6 +199,7 @@ func TestCheckerErrorWritesNothing(t *testing.T) {
 // A saved result whose move is written isn't checked again on resume, but
 // only finished. One whose move isn't written is checked.
 func TestCheckerSkipsWrittenMove(t *testing.T) {
+	t.Parallel()
 	for _, written := range []bool{true, false} {
 		t.Run(fmt.Sprintf("written %t", written), func(t *testing.T) {
 			f := newFake(t)
@@ -225,6 +229,7 @@ func TestCheckerSkipsWrittenMove(t *testing.T) {
 // An owner's body edit during the run drops the result, with no attempt
 // counted, and the stage runs again.
 func TestBodyEditDuringRunDrops(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	answer := interview(f)
 	o := newOrigin(t)
@@ -248,6 +253,7 @@ func TestBodyEditDuringRunDrops(t *testing.T) {
 // On resume, a body edit since the run read it drops the result, unless
 // it's the App's, such as one the result made before a crash.
 func TestBodyEditOnResume(t *testing.T) {
+	t.Parallel()
 	for _, editor := range []string{app, "owner"} {
 		t.Run(editor, func(t *testing.T) {
 			f := newFake(t)
@@ -267,6 +273,7 @@ func TestBodyEditOnResume(t *testing.T) {
 }
 
 func TestBodyEditDropWritesNothing(t *testing.T) {
+	t.Parallel()
 	resumeWrites(t, func(t testing.TB, f *githubtest.Fake, root string) {
 		saveRun(t, root, "saved", okOut, interview(f))
 		f.EditBody(1, "owner", "the idea, edited")
@@ -278,6 +285,7 @@ func TestBodyEditDropWritesNothing(t *testing.T) {
 // dirty comment don't, when the untrusted user has no write access: a
 // write collaborator's holds the issue (TestDiscDuringRunDrops).
 func TestCommentDuringRun(t *testing.T) {
+	t.Parallel()
 	for name, tt := range map[string]struct {
 		post func(f *githubtest.Fake)
 		drop bool
@@ -315,6 +323,7 @@ func TestCommentDuringRun(t *testing.T) {
 }
 
 func TestNewInputDropWritesNothing(t *testing.T) {
+	t.Parallel()
 	resumeWrites(t, func(t testing.TB, f *githubtest.Fake, root string) {
 		saveRun(t, root, "saved", okOut, interview(f))
 		f.AddReaction(f.AddComment(1, "owner", "1b too"), app, "+1")
@@ -324,6 +333,7 @@ func TestNewInputDropWritesNothing(t *testing.T) {
 // After a failed apply, step 1 👍s an answer, and the resumed apply drops
 // the result rather than lose it: the next run has it.
 func TestAnswerAfterFailedApply(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	interview(f)
 	g := newRig(t, f, newOrigin(t), t.TempDir())
@@ -348,6 +358,7 @@ func TestAnswerAfterFailedApply(t *testing.T) {
 // The Unlabeled stage runs only in a pass where no registered stage ran,
 // on the newest issue with no stage label first, one a pass.
 func TestUnlabeledRunsWhenNoStageRan(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	answer := interview(f)
 	f.AddIssue("owner", "Older", "no labels")
@@ -380,6 +391,7 @@ func TestUnlabeledRunsWhenNoStageRan(t *testing.T) {
 // A pass where a registered stage ran starts no Unlabeled run, even with
 // Unlabeled work pending.
 func TestUnlabeledOneRunPerPass(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	interview(f)
 	f.AddIssue("owner", "Idea", "no labels")
@@ -395,6 +407,7 @@ func TestUnlabeledOneRunPerPass(t *testing.T) {
 // An issue a trusted user approved with no stage label is moved in by step
 // 1 (IntakeVisit), before Work, so it's no Unlabeled work.
 func TestUnlabeledLeavesApprovedToIntake(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	f.AddIssue("mallory", "Idea", "no labels")
 	f.AddLabel(1, "owner", "approved")
@@ -410,6 +423,7 @@ func TestUnlabeledLeavesApprovedToIntake(t *testing.T) {
 // The issue a resume just handled gets no Unlabeled run in that pass, as
 // its snapshot predates the resume, even when the result was dropped.
 func TestUnlabeledSkipsResumedIssue(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	f.AddIssue("owner", "Idea", "no labels")
 	f.AddComment(1, "owner", "More detail.") // after the run's seen, so its result is dropped
@@ -436,6 +450,7 @@ func TestUnlabeledSkipsResumedIssue(t *testing.T) {
 // apply back, then, once it's left out, drops the result: it's no
 // Unlabeled work while it's there.
 func TestUnlabeledDropsOnLeftOutStageLabel(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	f.AddIssue("owner", "Idea", "no labels")
 	f.AddLabel(1, "mallory", "foo") // unguarded, so it stands
@@ -471,6 +486,7 @@ func (e loginErrTrust) Trusted(ctx context.Context, login string) (bool, error) 
 // A failure to check whether a new commenter is trusted is a failure to
 // apply: the lease stays, counting it, and nothing is written.
 func TestNewInputTrustErrorIsApplyFailure(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	answer := interview(f)
 	g := newRig(t, f, newOrigin(t), t.TempDir())
@@ -487,6 +503,7 @@ func TestNewInputTrustErrorIsApplyFailure(t *testing.T) {
 }
 
 func TestNewInputTrustErrorWritesNothing(t *testing.T) {
+	t.Parallel()
 	o := newOrigin(t)
 	roots := map[*githubtest.Fake]string{}
 	githubtest.Replay(t, func(tb testing.TB) *githubtest.Fake {
@@ -515,6 +532,7 @@ func TestNewInputTrustErrorWritesNothing(t *testing.T) {
 
 // No Unlabeled run starts while the usage gate is closed.
 func TestUnlabeledWaitsForTheGate(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	f.AddIssue("owner", "Idea", "no labels")
 	g := newRig(t, f, newOrigin(t), t.TempDir())
@@ -538,6 +556,7 @@ func TestUnlabeledWaitsForTheGate(t *testing.T) {
 // A stage label a trusted user adds during an Unlabeled run drops its
 // result, whether CheckLabels records it with a marker or not.
 func TestUnlabeledDropsOnStageLabel(t *testing.T) {
+	t.Parallel()
 	for _, label := range []string{"stage:clarifying", "stage:intake"} {
 		t.Run(label, func(t *testing.T) {
 			f := newFake(t)
@@ -558,6 +577,7 @@ func TestUnlabeledDropsOnStageLabel(t *testing.T) {
 }
 
 func TestUnlabeledDropWritesNothing(t *testing.T) {
+	t.Parallel()
 	resumeWrites(t, func(t testing.TB, f *githubtest.Fake, root string) {
 		f.AddIssue("owner", "Idea", "no labels")
 		f.AddLabel(1, "owner", "stage:intake")
@@ -568,6 +588,7 @@ func TestUnlabeledDropWritesNothing(t *testing.T) {
 // A saved Unlabeled result is applied on resume, through Unlabeled, whose
 // lease records intake, even after a crash part way.
 func TestUnlabeledResume(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	f.AddIssue("owner", "Idea", "no labels")
 	root := t.TempDir()
@@ -583,6 +604,7 @@ func TestUnlabeledResume(t *testing.T) {
 }
 
 func TestUnlabeledResumeReplay(t *testing.T) {
+	t.Parallel()
 	o := newOrigin(t)
 	roots := map[*githubtest.Fake]string{}
 	githubtest.Replay(t, func(tb testing.TB) *githubtest.Fake {
@@ -601,6 +623,7 @@ func TestUnlabeledResumeReplay(t *testing.T) {
 
 // Its runs get the interviewer's model, effort, turns and timeout.
 func TestUnlabeledGetsInterviewerSettings(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	f.AddIssue("owner", "Idea", "no labels")
 	f.AddIssue("owner", "Idea", "no labels")
@@ -635,6 +658,7 @@ func TestUnlabeledGetsInterviewerSettings(t *testing.T) {
 // An issue with a stage label left out, or held back, is no Unlabeled
 // work, until the label is removed.
 func TestUnlabeledSkipsHeldLabels(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	f.AddIssue("owner", "Idea", "no labels")
 	f.AddLabel(1, "mallory", "foo") // unguarded, so it stands
@@ -662,6 +686,7 @@ func TestUnlabeledSkipsHeldLabels(t *testing.T) {
 // stage label, or with a stage label set since step 1 read it, gets no
 // Unlabeled run.
 func TestUnlabeledSkipsPipelineIssues(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	fileAt(f, "planning", "a plan")
 	f.AddIssue("owner", "Moved", "no labels")
@@ -688,6 +713,7 @@ func TestUnlabeledSkipsPipelineIssues(t *testing.T) {
 // failed runs the issue gets the attempts state error, and the next issue
 // gets its turn. An ended lease's count carries over.
 func TestUnlabeledAttemptCap(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	f.AddIssue("owner", "Older", "no labels")
 	f.AddIssue("owner", "Newer", "no labels")
@@ -722,6 +748,7 @@ func TestUnlabeledAttemptCap(t *testing.T) {
 // issue the Unlabeled stage has no work for, whose edited body needs a
 // history read for its dirt, sends only conditional GETs answered 304.
 func TestUnlabeledUnchangedPass(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	f.AddIssue("owner", "Idea", "no labels")
 	f.EditBody(1, "owner", "no labels, edited")

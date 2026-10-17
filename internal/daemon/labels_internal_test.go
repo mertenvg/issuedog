@@ -51,6 +51,7 @@ func (a *Applier) snapshot(t *testing.T, n int) *github.Snapshot {
 // so a check soon after, before the App's own events show, doesn't remove
 // it, though the old time would have it due.
 func TestAddLabelForgetsUnexplained(t *testing.T) {
+	t.Parallel()
 	f, a, _ := leftOutApplier(t, "priority:p1")
 	f.Advance(github.UnexplainedWait - github.HoldBound - time.Second)
 	s := a.snapshot(t, 1)
@@ -75,6 +76,7 @@ func TestAddLabelForgetsUnexplained(t *testing.T) {
 // The App's write of a label left out still adds it when its removal finds
 // it gone already.
 func TestAddLabelLeftOutGoneMeanwhile(t *testing.T) {
+	t.Parallel()
 	f, a, s := leftOutApplier(t, "priority:p1")
 	f.AnswerOnce(func(r githubtest.Request) bool { return r.Method == http.MethodDelete }, http.StatusNotFound)
 	if err := a.addLabel(context.Background(), s, "priority:p1"); err != nil {
@@ -88,6 +90,7 @@ func TestAddLabelLeftOutGoneMeanwhile(t *testing.T) {
 // A second check of the same snapshot checks its left-out labels again, so
 // they stay left out and remembered.
 func TestCheckLabelsAgainKeepsLeftOut(t *testing.T) {
+	t.Parallel()
 	_, a, s := leftOutApplier(t, "priority:p1")
 	if err := a.CheckLabels(context.Background(), s, ownerOnly{}, func(int64) bool { return false }); err != nil {
 		t.Fatal(err)
@@ -99,6 +102,7 @@ func TestCheckLabelsAgainKeepsLeftOut(t *testing.T) {
 
 // removeLabel keeps the type up to date with the labels.
 func TestRemoveLabelUpdatesType(t *testing.T) {
+	t.Parallel()
 	f := githubtest.New(t, "o/r", "issuedog")
 	f.AddIssue("owner", "Issue", "body")
 	f.AddLabel(1, "issuedog[bot]", "type:task")

@@ -88,6 +88,7 @@ func holdItemQuietWith(t *testing.T, f *githubtest.Fake, d *daemon.Daemon, step 
 // a restart, write nothing. Once the owner sets a stage by hand, which
 // resolves every trigger, the item goes, and so does the assignee.
 func TestHoldItemListedAndAssigned(t *testing.T) {
+	t.Parallel()
 	f, o := holdItemFake(t), digestNotifyOrigin(t)
 	c := f.AddComment(2, "mallory", "Wait, is this right?")
 	d := holdItemDaemon(t, f, o)
@@ -133,6 +134,7 @@ func TestHoldItemListedAndAssigned(t *testing.T) {
 // not announced, and a later comment announces it again, mentioning the
 // owner once more: its marker names every trigger no App comment named.
 func TestHoldItemAnnouncesUnmentioned(t *testing.T) {
+	t.Parallel()
 	f, o := holdItemOwnerHeld(t), digestNotifyOrigin(t)
 	d := holdItemDaemon(t, f, o)
 	iterate(t, d)
@@ -178,6 +180,7 @@ func TestHoldItemAnnouncesUnmentioned(t *testing.T) {
 // second notice (discLost), so the digest names it, says only /resume
 // accepts it, and announces it.
 func TestHoldItemLostNotice(t *testing.T) {
+	t.Parallel()
 	f, o := holdItemOwnerHeld(t), digestNotifyOrigin(t)
 	ev := f.RenameIssue(2, "mallory", "Wait")
 	d := holdItemDaemon(t, f, o)
@@ -205,6 +208,7 @@ func TestHoldItemLostNotice(t *testing.T) {
 // Replay passes for a hold's announcement, its body edit and its assignee,
 // whatever write a crash comes at.
 func TestHoldItemReplay(t *testing.T) {
+	t.Parallel()
 	o := digestNotifyOrigin(t)
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := holdItemOwnerHeld(t)

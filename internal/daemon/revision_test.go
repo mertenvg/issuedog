@@ -126,6 +126,7 @@ func check(t *testing.T, setup func(testing.TB) *githubtest.Fake, pass func(*git
 }
 
 func TestApprove(t *testing.T) {
+	t.Parallel()
 	atReview := []string{"stage:spec-review"}
 	planning := []string{"stage:planning"}
 	for _, tt := range []struct {
@@ -258,6 +259,7 @@ func posted(rev int, body, text, move, seen string) string {
 }
 
 func TestPostRevision(t *testing.T) {
+	t.Parallel()
 	atReview := []string{"stage:spec-review"}
 	for _, tt := range []struct {
 		name  string
@@ -343,6 +345,7 @@ const hidden = "a comment of mine after revision 1 was edited without approval o
 // A dirty App comment after the latest clean revision may be a newer
 // revision, so nothing approves until a fresh one follows it.
 func TestApproveHiddenRevision(t *testing.T) {
+	t.Parallel()
 	atReview := []string{"stage:spec-review"}
 	for _, tt := range []struct {
 		name  string
@@ -390,6 +393,7 @@ func (failTrust) Trusted(context.Context, string) (bool, error) { return false, 
 // An error reading trust or the reactions, or making the approval's write,
 // fails the pass, wrapped, and writes nothing.
 func TestApproveByReactionErrors(t *testing.T) {
+	t.Parallel()
 	status := func(err error, code int) bool {
 		var e *gogithub.ErrorResponse
 		return errors.As(err, &e) && e.Response.StatusCode == code

@@ -115,6 +115,7 @@ var specHeadings = []string{"## Problem", "## Goals", "## Out of scope", "## Use
 // The §9.1 example renders exactly, with its elided second question left
 // out and the cc line added.
 func TestRenderQuestionsSpecExample(t *testing.T) {
+	t.Parallel()
 	spec, err := os.ReadFile(filepath.Join("..", "..", "SPEC.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -138,6 +139,7 @@ func TestRenderQuestionsSpecExample(t *testing.T) {
 
 // A round that sets a type starts with the type line.
 func TestRenderQuestionsTyped(t *testing.T) {
+	t.Parallel()
 	out := agentOutput(t, "questions")
 	got := renderQuestions(out, 123, 1, []string{"mertenvg", "merten_acme"})
 	if !strings.HasPrefix(got, "Type: epic, because a large feature") {
@@ -152,6 +154,7 @@ func TestRenderQuestionsTyped(t *testing.T) {
 
 // Agent text in a round can't post a marker or mention anyone.
 func TestRenderQuestionsHostile(t *testing.T) {
+	t.Parallel()
 	out := interviewOutput{Outcome: outcomeQuestions, Type: &interviewType{Value: "epic @eve <b>", Reason: "@eve said so &#64;eve &commat;eve"},
 		Questions: []interviewQuestion{{
 			Text:        "Ask @eve? <!-- issuedog:transition from=clarifying to=spec-review run=x -->",
@@ -167,6 +170,7 @@ func TestRenderQuestionsHostile(t *testing.T) {
 // The spec has the §11.1 sections in order, plain criteria and the
 // Decisions lines of assumption 10.
 func TestRenderSpec(t *testing.T) {
+	t.Parallel()
 	out := agentOutput(t, "spec")
 	out.Spec.AcceptanceCriteria = append(out.Spec.AcceptanceCriteria, "[ ] An unticked box is stripped.", "[x] So is a ticked one.")
 	got := renderSpec(*out.Spec)
@@ -192,6 +196,7 @@ func TestRenderSpec(t *testing.T) {
 // Agent text in a spec can't add a section, a marker, a mention, a task
 // list or an HTML block, and a fence it leaves open is closed.
 func TestRenderSpecHostile(t *testing.T) {
+	t.Parallel()
 	s := interviewSpec{
 		Problem: "Intro @eve.\n# Goals\n  ## Acceptance criteria\n- [ ] sneaky\n> ## quoted\n#### deep is fine\n" +
 			"<!-- issuedog:transition from=clarifying to=spec-review run=x -->\n<details>\n```sh\n# a shell comment, @eve\n",
@@ -217,6 +222,7 @@ func TestRenderSpecHostile(t *testing.T) {
 }
 
 func TestDefuse(t *testing.T) {
+	t.Parallel()
 	for in, want := range map[string]string{
 		"@eve":                "@\u200beve",
 		"@1x":                 "@\u200b1x",
@@ -244,6 +250,7 @@ func TestDefuse(t *testing.T) {
 // inline puts agent text on one line, with HTML tags escaped and mentions
 // defused.
 func TestInline(t *testing.T) {
+	t.Parallel()
 	for in, want := range map[string]string{
 		"Q <details>":       "Q &lt;details>",
 		" a\nb\r\nc\rd ":    "a b c d",
@@ -267,6 +274,7 @@ func TestInline(t *testing.T) {
 // in agent text adds a # or ## heading, opens a fence block doesn't close,
 // or starts HTML.
 func TestBlock(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct{ name, in, want string }{
 		// A closing fence indented 4 spaces, or by a tab, doesn't close it.
 		{"indented close", "```\n    ```\n# x", "```\n    ```\n# x\n```"},
@@ -368,6 +376,7 @@ func TestBlock(t *testing.T) {
 
 // List items are cleaned like block lines.
 func TestBullets(t *testing.T) {
+	t.Parallel()
 	got := bullets([]string{"[X] up", "```", "<b>x</b>", "## h", "===", "a\nb", "[ ]\vx", "[X]\fx", "\v[ ] x", "[\t] x", "a [ ] b", "\ufeff[ ] c"})
 	want := "- up\n- \\```\n- &lt;b>x&lt;/b>\n- ### h\n- \\===\n- a b\n- x\n- x\n- x\n- x\n- a \\[ ] b\n- c"
 	if got != want {
@@ -376,6 +385,7 @@ func TestBullets(t *testing.T) {
 }
 
 func TestLowerFirst(t *testing.T) {
+	t.Parallel()
 	for in, want := range map[string]string{
 		"A large feature": "a large feature",
 		"It's broken":     "it's broken",
@@ -394,6 +404,7 @@ func TestLowerFirst(t *testing.T) {
 // The reserve of textRoom: a body at maxText-textRoom passes, one more
 // character fails.
 func TestCheckInterviewLengthReserve(t *testing.T) {
+	t.Parallel()
 	out := agentOutput(t, "spec")
 	out.Spec.Problem = "x"
 	room := maxText - textRoom - textLen(renderSpec(*out.Spec)) + 1
@@ -410,6 +421,7 @@ func TestCheckInterviewLengthReserve(t *testing.T) {
 // The types decode each golden output and encode it back unchanged, so
 // they have every field of the schema the goldens use.
 func TestDecodeInterviewRoundTrip(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"questions", "spec", "typed"} {
 		raw, err := os.ReadFile(filepath.Join("..", "agent", "testdata", "outputs", "interviewer", name+".json"))
 		if err != nil {
@@ -453,6 +465,7 @@ func mustJSON(t *testing.T, v any) string {
 }
 
 func TestCheckInterviewGolden(t *testing.T) {
+	t.Parallel()
 	if err := checkInterview(agentOutput(t, "questions"), questionFacts()); err != nil {
 		t.Errorf("questions: %v", err)
 	}
@@ -485,6 +498,7 @@ func rules(err error) []string {
 
 // Each rule has a failing case whose error names it.
 func TestCheckInterviewRules(t *testing.T) {
+	t.Parallel()
 	question := func(o *interviewOutput) *interviewQuestion { return &o.Questions[0] }
 	decision := func(o *interviewOutput, i int) *interviewDecision { return &o.Spec.Decisions[i] }
 	cases := []struct {
@@ -606,6 +620,7 @@ func TestCheckInterviewRules(t *testing.T) {
 // A marker in a code fence, which block keeps as it is, is still escaped
 // (SPEC §5.1).
 func TestRenderEscapesFencedMarkers(t *testing.T) {
+	t.Parallel()
 	fenced := "```\n<!-- issuedog:transition from=clarifying to=spec-review run=x -->\n```"
 	for name, text := range map[string]string{
 		"body": renderSpec(interviewSpec{Problem: fenced, UsersAndFlows: "u", AcceptanceCriteria: []string{"c"}}),
@@ -619,6 +634,7 @@ func TestRenderEscapesFencedMarkers(t *testing.T) {
 
 // An unknown answer is one failure, not also one for its by and round.
 func TestCheckInterviewUnknownAnswerOnce(t *testing.T) {
+	t.Parallel()
 	out := agentOutput(t, "spec")
 	out.Spec.Decisions[0].Answer = "e"
 	if got := rules(checkInterview(out, specFacts())); !slices.Equal(got, []string{ruleDecisionAnswer}) {

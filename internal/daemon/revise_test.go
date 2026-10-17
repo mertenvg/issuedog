@@ -111,6 +111,7 @@ func authored(author string, more func(t testing.TB, f *githubtest.Fake)) func(t
 }
 
 func TestReviseAndEdits(t *testing.T) {
+	t.Parallel()
 	atReview, clarifying := []string{"stage:spec-review"}, []string{"stage:clarifying"}
 	changed := "the issue description changed after revision 1, so it no longer matches that revision's hash, `" + state.BodyHash("body") + "`"
 	for _, tt := range []struct {
@@ -424,6 +425,7 @@ func TestReviseAndEdits(t *testing.T) {
 // posts the reply, worded for the stage now. The setup runs the failed pass,
 // so Replay covers the repost.
 func TestLostReplyAfterStageChange(t *testing.T) {
+	t.Parallel()
 	var in []string
 	setup := func(tb testing.TB) *githubtest.Fake {
 		f := review(func(t testing.TB, f *githubtest.Fake) {
@@ -455,6 +457,7 @@ func TestLostReplyAfterStageChange(t *testing.T) {
 // reactions to a plain comment only if it's a request, so not to a comment
 // posted at another stage, an answer at clarifying included.
 func TestRequestReadsNoReactions(t *testing.T) {
+	t.Parallel()
 	f := review(func(t testing.TB, f *githubtest.Fake) {
 		post(t, f, 1002, "owner", "/revise too long")
 		post(t, f, 1003, app, sentBack("1002"))
@@ -491,6 +494,7 @@ func TestRequestReadsNoReactions(t *testing.T) {
 // can't cover these, as a crash lets the next pass read the comment first,
 // which changes what it does; the writes are under Replay above.
 func TestCommentDuringPass(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name     string
 		setup    func(testing.TB) *githubtest.Fake
@@ -549,6 +553,7 @@ func TestCommentDuringPass(t *testing.T) {
 
 // ReviewVisit fails, wrapped, when it can't read trust, and writes nothing.
 func TestReviewVisitTrustError(t *testing.T) {
+	t.Parallel()
 	f := review(func(t testing.TB, f *githubtest.Fake) { f.EditBody(1, "owner", "body v2") })(t)
 	a, s, err := applier(t, f)
 	if err != nil {

@@ -86,6 +86,7 @@ func overriddenTo(label, marker string) string {
 }
 
 func TestIntakeVisit(t *testing.T) {
+	t.Parallel()
 	intake := []string{"stage:intake"}
 	clarifying := []string{"stage:clarifying"}
 	for _, tt := range []struct {
@@ -237,6 +238,7 @@ func TestIntakeVisit(t *testing.T) {
 // An override made after the label rules ran, but before IntakeVisit read
 // the timeline, holds the move until the next visit records it.
 func TestIntakeWaitsForAnOverrideAfterTheLabelRules(t *testing.T) {
+	t.Parallel()
 	f := issueBy("owner", []string{"stage:intake"}, nil)(t)
 	timelines := 0
 	f.BeforeRequest(func(r githubtest.Request) bool {
@@ -270,6 +272,7 @@ func TestIntakeWaitsForAnOverrideAfterTheLabelRules(t *testing.T) {
 // marker went out, is recorded by the next visit: the marker records the
 // labeled event of stage:intake, and the override came after it.
 func TestIntakeOverrideDuringTheMove(t *testing.T) {
+	t.Parallel()
 	f := issueBy("owner", []string{"stage:intake"}, nil)(t)
 	f.BeforeRequest(func(r githubtest.Request) bool {
 		return r.Method == "POST" && strings.HasSuffix(r.Path, "/issues/1/comments")
@@ -326,6 +329,7 @@ func visitAlone(t *testing.T, f *githubtest.Fake, tr github.Trust, before func(f
 // IntakeVisit on its own checks what step 1 would have put right, and
 // returns every error it meets.
 func TestIntakeVisitAlone(t *testing.T) {
+	t.Parallel()
 	intake := []string{"stage:intake"}
 	timeline500 := func(f *githubtest.Fake) {
 		f.AnswerOnce(func(r githubtest.Request) bool { return r.Method == "GET" && strings.HasSuffix(r.Path, "/timeline") }, 500)
@@ -434,6 +438,7 @@ func TestIntakeVisitAlone(t *testing.T) {
 // IntakeVisit asks Trust about each login once, and reads no timeline for
 // an issue that can't move.
 func TestIntakeVisitReads(t *testing.T) {
+	t.Parallel()
 	asked := 0
 	if err := visitAlone(t, issueBy("owner", []string{"stage:intake"}, nil)(t), flakyTrust{&asked}, nil); err != nil {
 		t.Fatal(err)
@@ -464,6 +469,7 @@ func TestIntakeVisitReads(t *testing.T) {
 // Once its event shows, the issue is read again when the label falls due,
 // with no change to it, and moves, keyed by that event.
 func TestIntakeMovesOnceALateEventShows(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	d := newDaemon(t, f, newOrigin(t), nil)
 	iterate(t, d)
@@ -500,6 +506,7 @@ func TestIntakeMovesOnceALateEventShows(t *testing.T) {
 // from intake nor is removed by it: the label rules remove it once it's
 // due, with no override recorded for it.
 func TestIntakeMoveLeavesALeftOutStageLabel(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	f.AddIssue("owner", "Idea", "body", "stage:intake")
 	f.AddLabel(1, "mallory", "foo")
@@ -534,6 +541,7 @@ func TestIntakeMoveLeavesALeftOutStageLabel(t *testing.T) {
 // Iterate moves the owner's issue at intake, and leaves an untrusted
 // author's and an unlabelled one.
 func TestIterateMovesIntake(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	f.AddIssue("owner", "Idea", "body", "stage:intake")
 	f.AddIssue("mallory", "Idea", "body")

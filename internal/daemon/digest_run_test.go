@@ -277,6 +277,7 @@ const digestRunAnnounced = "\n\ncc @mertenvg\n\n<!-- issuedog:digest-new items=e
 // same fake writes nothing. Eve's title is escaped and mentions nobody,
 // in the body and the announcement. The digest never reaches Work.
 func TestDigestRunWhole(t *testing.T) {
+	t.Parallel()
 	f, o := digestRunFake(t), digestRunOrigin(t)
 	var worked []int
 	d := digestRunDaemon(t, f, o, nil, &worked)
@@ -354,6 +355,7 @@ func TestDigestRunWhole(t *testing.T) {
 // is created and announced without them. The next pass posts the type
 // error once, lists both of 5's items, and announces the type error alone.
 func TestDigestRunTypeErrPostFails(t *testing.T) {
+	t.Parallel()
 	f := digestRunFake(t)
 	var worked []int
 	d := digestRunDaemon(t, f, digestRunOrigin(t), nil, &worked)
@@ -381,6 +383,7 @@ func TestDigestRunTypeErrPostFails(t *testing.T) {
 // pass's error, and its lease stays: the next pass applies it again, posts
 // the type error once, and starts no run while it stands.
 func TestDigestRunBlockedPostFails(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	f.AddIssue("owner", "Idea", "the idea", "type:epic")
 	f.AddLabel(1, app, "stage:clarifying")
@@ -419,6 +422,7 @@ func TestDigestRunBlockedPostFails(t *testing.T) {
 // (#156's verify): both have new input at clarifying, the first is skipped
 // for its type error, and the second runs.
 func TestDigestRunTypeErrHoldsOne(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	for _, typ := range []string{"feature", "epic"} {
 		n := f.AddIssue("owner", "Idea", "the idea", "type:epic")
@@ -444,6 +448,7 @@ func TestDigestRunTypeErrHoldsOne(t *testing.T) {
 // verify): its pin is checked again, and it's pinned and loses the note,
 // but nothing is announced again, and no other digest is created.
 func TestDigestRunRefound(t *testing.T) {
+	t.Parallel()
 	f := digestRunFake(t)
 	d := digestRunDaemon(t, f, digestRunOrigin(t), nil, nil)
 	f.FailPin("Forbidden")
@@ -470,6 +475,7 @@ func TestDigestRunRefound(t *testing.T) {
 // corrects itself on the next pass, which reads it again: the body is
 // what it was, with no announcement, and the pass after writes nothing.
 func TestDigestRunCountFlicker(t *testing.T) {
+	t.Parallel()
 	f := digestRunFake(t)
 	d := digestRunDaemon(t, f, digestRunOrigin(t), nil, nil)
 	digestRunStep(t, f, d, "the first pass", digestRunFirst...)
@@ -523,6 +529,7 @@ func digestRunMove(t *testing.T, f *githubtest.Fake) (*digestRunMover, *github.C
 	}
 	m := &digestRunMover{f: f}
 	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.Transport = f.Transport() // not http.DefaultTransport, which other tests' servers close
 	proxy.ModifyResponse = m.list
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		issue := fmt.Sprintf("/repos/o/r/issues/%d", m.issue())
@@ -547,7 +554,7 @@ func digestRunMove(t *testing.T, f *githubtest.Fake) (*digestRunMover, *github.C
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := github.New(github.Config{AppID: 1, InstallationID: 1, Key: key, BaseURL: srv.URL})
+	c, err := github.New(github.Config{AppID: 1, InstallationID: 1, Key: key, BaseURL: srv.URL, Transport: srv.Client().Transport})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -654,6 +661,7 @@ func digestRunReplaced(t *testing.T, f *githubtest.Fake, d *daemon.Daemon, m *di
 // issue again, where the transferred one isn't, so it creates one other
 // digest, which announces once, and the pass after writes nothing.
 func TestDigestRunTransferred(t *testing.T) {
+	t.Parallel()
 	f := digestRunFake(t)
 	m, c := digestRunMove(t, f)
 	d := digestRunDaemon(t, f, digestRunOrigin(t), c, nil)
@@ -673,6 +681,7 @@ func TestDigestRunTransferred(t *testing.T) {
 // the digest is dropped, and the next pass replaces it, rather than
 // failing the revert on every pass.
 func TestDigestRunTransferredRevert(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		change func(t *testing.T, f *githubtest.Fake, d *daemon.Daemon)

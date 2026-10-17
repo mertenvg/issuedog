@@ -81,6 +81,7 @@ func waitTexts(lines []waitLine) []string {
 // Each kind is found with its key, its link, its issue's title and
 // priority, and the lines that say what's decided and how to answer.
 func TestWaitFindKinds(t *testing.T) {
+	t.Parallel()
 	round := interviewOutput{Outcome: outcomeQuestions, Questions: []interviewQuestion{
 		{Text: "Where?", Blocks: []int{3}, Recommended: interviewOption{Text: "Server", Why: "one place"}, Others: []string{"Client"}},
 	}}
@@ -139,6 +140,7 @@ func TestWaitFindKinds(t *testing.T) {
 // An open state error and a question on one issue are both found, and an
 // error that has ended is not.
 func TestWaitFindErrorsAndQuestion(t *testing.T) {
+	t.Parallel()
 	round := interviewOutput{Outcome: outcomeQuestions, Questions: []interviewQuestion{
 		{Text: "Q", Blocks: []int{5}, Recommended: interviewOption{Text: "A", Why: "w"}, Others: []string{"B"}},
 	}}
@@ -168,6 +170,7 @@ func TestWaitFindErrorsAndQuestion(t *testing.T) {
 // comment is dirty, a round move with no round or questions, and another
 // move that carries them.
 func TestWaitFindNothing(t *testing.T) {
+	t.Parallel()
 	round := interviewOutput{Outcome: outcomeQuestions, Questions: []interviewQuestion{
 		{Text: "Q", Blocks: []int{6}, Recommended: interviewOption{Text: "A", Why: "w"}, Others: []string{"B"}},
 	}}
@@ -221,6 +224,7 @@ func TestWaitFindNothing(t *testing.T) {
 // first and marked, copied as the App posted them: agent text inline'd and
 // escaped, with a type line before them and the cc line after.
 func TestWaitFindRoundQuestions(t *testing.T) {
+	t.Parallel()
 	q1 := interviewQuestion{Text: "Ask @eve? **x** Blocks: #9 <!-- issuedog:transition to=planning -->", Blocks: []int{7, 8},
 		Recommended: interviewOption{Text: "# Yes", Why: "@org/team agrees (recommended): really"},
 		Others:      []string{"[ ] No", "Maybe (recommended): no", "<b>bold</b>"}}
@@ -257,6 +261,7 @@ func TestWaitFindRoundQuestions(t *testing.T) {
 
 // A flag recommending leave lists "Leave it" first.
 func TestWaitFindFlagLeave(t *testing.T) {
+	t.Parallel()
 	out := triageOutput{Verdict: triageLeave, Reason: "@eve asked <b>", Summary: "A question"}
 	s := waitSnap(8, nil, join(triageFlagText(out, 8, nil), waitFlagMarker("leave")))
 	got := waitFindOne(t, waitIn(s, Dirt{}))
@@ -271,6 +276,7 @@ func TestWaitFindFlagLeave(t *testing.T) {
 // A round or flag whose comment can't be read back still gives its item,
 // with one line saying so in place of the questions.
 func TestWaitFindUnreadable(t *testing.T) {
+	t.Parallel()
 	round := interviewOutput{Outcome: outcomeQuestions, Questions: []interviewQuestion{
 		{Text: "Q", Blocks: []int{9}, Recommended: interviewOption{Text: "A", Why: "w"}, Others: []string{"B"}},
 	}}
@@ -295,6 +301,7 @@ func TestWaitFindUnreadable(t *testing.T) {
 // waitQuestions takes only the exact format, and anything else gives the
 // fallback line.
 func TestWaitQuestions(t *testing.T) {
+	t.Parallel()
 	const h = "### H"
 	ok := "**1. Q** Blocks: #1\n   a. A (recommended): w\n   b. B"
 	cases := []struct {
@@ -334,6 +341,7 @@ func TestWaitQuestions(t *testing.T) {
 // An approval that can't be approved yet says why, without the login of
 // whoever made the body dirty, and doesn't say how to approve it.
 func TestWaitFindApprovalBlocked(t *testing.T) {
+	t.Parallel()
 	hidden := waitSnap(10, nil, waitRevision(1, "The spec."), "Edited by someone.")
 	untyped := waitSnap(10, nil, waitRevision(1, "The spec."))
 	untyped.Type = ""
@@ -397,6 +405,7 @@ func TestWaitFindApprovalBlocked(t *testing.T) {
 // A clean spec-review issue with no revision yet gives the approval of no
 // revision, linked to the transition, which waits for the next pass's.
 func TestWaitFindApprovalNoRevision(t *testing.T) {
+	t.Parallel()
 	s := waitSnap(11, nil, "<!-- issuedog:transition from=clarifying to=spec-review run=s1 -->")
 	got := waitFindOne(t, waitIn(s, Dirt{}))
 	want := []string{"The spec waits for review, with no revision to approve yet.", "Post `/revise <notes>`, or any other comment, to send it back."}
@@ -408,6 +417,7 @@ func TestWaitFindApprovalNoRevision(t *testing.T) {
 // A revision posted on its own, after the move to spec-review, is the one
 // to approve, and its comment is the link.
 func TestWaitFindApprovalLatest(t *testing.T) {
+	t.Parallel()
 	s := waitSnap(13, nil, waitRevision(1, "An older spec."),
 		"**Revision 2**\n\n<!-- issuedog:revision rev=2 body="+state.BodyHash("The spec.")+" seen=5 -->")
 	got := waitFindOne(t, waitIn(s, Dirt{}))
@@ -419,6 +429,7 @@ func TestWaitFindApprovalLatest(t *testing.T) {
 // An error in the body links to the issue itself, has none of the body's
 // text, and says a 👍 can't acknowledge it (#155's verify).
 func TestWaitFindErrorInBody(t *testing.T) {
+	t.Parallel()
 	s := waitSnap(12, nil)
 	s.Author, s.Body = waitApp, "Body text.\n\n<!-- issuedog:error kind=type key=70 -->"
 	// Its cause stands: a type the pipeline doesn't know, set by event 70.
@@ -433,6 +444,7 @@ func TestWaitFindErrorInBody(t *testing.T) {
 // waitLink falls back to the issue for the body, and waitBody finds no
 // comment for it.
 func TestWaitLinkAndBody(t *testing.T) {
+	t.Parallel()
 	if got := waitLink("o", "r", 3, 0); got != "https://github.com/o/r/issues/3" {
 		t.Errorf("waitLink(body) = %q", got)
 	}
@@ -528,6 +540,7 @@ func waitGolden(t *testing.T, name, got string) {
 // Ranking (Q3a) counts open descendants from the parents held and breaks
 // each tie in turn, and any order of the same items ranks the same.
 func TestWaitRankGolden(t *testing.T) {
+	t.Parallel()
 	items := waitRankItems()
 	waitRank(items, waitRankSnaps())
 	waitGolden(t, "rank", waitRankText(items))
@@ -542,6 +555,7 @@ func TestWaitRankGolden(t *testing.T) {
 // Items found on real snapshots rank by their issues' tree: a parent's
 // question beats its child's error, which beats nothing.
 func TestWaitFindThenRank(t *testing.T) {
+	t.Parallel()
 	round := interviewOutput{Outcome: outcomeQuestions, Questions: []interviewQuestion{
 		{Text: "Q", Blocks: []int{70}, Recommended: interviewOption{Text: "A", Why: "w"}, Others: []string{"B"}},
 	}}

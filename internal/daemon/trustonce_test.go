@@ -54,6 +54,7 @@ func trustOnceAsked(reqs []githubtest.Request) map[string]int {
 // edit comes before the App's full rewrite (#174). It asks again on the
 // next pass, unchanged as it is.
 func TestIterateTrustOnceUnchanged(t *testing.T) {
+	t.Parallel()
 	f, o := trustOnceSpec(t)
 	d := newDaemon(t, f, o, nil)
 	want := map[string]int{"owner": 1, "owner2": 1}
@@ -72,6 +73,7 @@ func TestIterateTrustOnceUnchanged(t *testing.T) {
 // Trust isn't kept from one pass to the next: once owner2 leaves CODEOWNERS
 // on main, the next pass finds owner2's edit dirty and notes it.
 func TestIterateTrustOnceChangeBetweenPasses(t *testing.T) {
+	t.Parallel()
 	f, o := trustOnceSpec(t)
 	d := newDaemon(t, f, o, nil)
 	iterate(t, d)
@@ -94,6 +96,7 @@ func TestIterateTrustOnceChangeBetweenPasses(t *testing.T) {
 // No verdict outlives Iterate's visit: step 1 run outside one, as a caller
 // other than Iterate runs it, asks Step.Trust as it is then.
 func TestIterateTrustOnceEndsWithTheVisit(t *testing.T) {
+	t.Parallel()
 	f, o := trustOnceSpec(t)
 	d := newDaemon(t, f, o, nil)
 	iterate(t, d)
@@ -113,6 +116,7 @@ func TestIterateTrustOnceEndsWithTheVisit(t *testing.T) {
 // A failed lookup fails the visit, wrapped, and counts as no verdict: the
 // next pass reads the issue again and asks again.
 func TestIterateTrustOnceLookupFails(t *testing.T) {
+	t.Parallel()
 	f, o := trustOnceSpec(t)
 	d := newDaemon(t, f, o, nil)
 	iterate(t, d)
@@ -136,6 +140,7 @@ func TestIterateTrustOnceLookupFails(t *testing.T) {
 // last full rewrite: their trust decides nothing, so a lookup that would
 // fail doesn't fail the call (#174).
 func TestDirtyTrustOnceSkipsReplacedEditors(t *testing.T) {
+	t.Parallel()
 	f := githubtest.New(t, "o/r", slug)
 	n := f.AddIssue("filer", "Title", "an idea")
 	f.EditBody(n, "mallory", "evil")

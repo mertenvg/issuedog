@@ -72,6 +72,7 @@ func run(t *testing.T, setup func(testing.TB) *githubtest.Fake, pass func(*githu
 }
 
 func TestTransitionInTable(t *testing.T) {
+	t.Parallel()
 	setup := cmdIssue("priority:p2", "stage:intake")
 	m := daemon.Move{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.CmdKey(cmdID), Text: "Picked up."}
 	githubtest.Replay(t, setup, move(t, m, clean))
@@ -101,6 +102,7 @@ func TestTransitionInTable(t *testing.T) {
 }
 
 func TestTransitionNotInTable(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
 	setup := cmdIssue("stage:intake")
 	m := daemon.Move{To: state.Planning, Trigger: state.TriggerSpecApproved, Key: state.ReactionKey(55)}
 	pass := func(f *githubtest.Fake) error {
@@ -137,6 +139,7 @@ func TestTransitionNotInTable(t *testing.T) {
 }
 
 func TestTransitionLabelGoneMeanwhile(t *testing.T) {
+	t.Parallel()
 	// The new label is there already, so no add refreshes the snapshot's labels.
 	f := cmdIssue("stage:clarifying", "stage:intake")(t)
 	a, s, err := applier(t, f)
@@ -165,6 +168,7 @@ func TestTransitionLabelGoneMeanwhile(t *testing.T) {
 // With the new label there already, each removal changes the snapshot's
 // labels, which mustn't cut short the list of those to remove.
 func TestTransitionRemovesEveryOtherStageLabel(t *testing.T) {
+	t.Parallel()
 	m := daemon.Move{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.ReactionKey(9)}
 	f := run(t, cmdIssue("stage:clarifying", "stage:intake", "stage:planning"), move(t, m, clean))
 	if got := f.State().Issues[0].Labels; !reflect.DeepEqual(got, []string{"stage:clarifying"}) {
@@ -173,6 +177,7 @@ func TestTransitionRemovesEveryOtherStageLabel(t *testing.T) {
 }
 
 func TestTransitionOlderKeySetsLatestStage(t *testing.T) {
+	t.Parallel()
 	// The command's move is done, but its label and 👍 aren't, and a later
 	// move has happened since. A replay finishes them at the latest stage.
 	setup := func(t testing.TB) *githubtest.Fake {
@@ -194,6 +199,7 @@ func TestTransitionOlderKeySetsLatestStage(t *testing.T) {
 }
 
 func TestTransitionEscapesText(t *testing.T) {
+	t.Parallel()
 	setup := cmdIssue("stage:intake")
 	m := daemon.Move{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.ReactionKey(9),
 		Text: "Notes: <!-- issuedog:transition to=planning -->"}
@@ -214,6 +220,7 @@ func TestTransitionEscapesText(t *testing.T) {
 }
 
 func TestTransitionSkipsDirtyMarkers(t *testing.T) {
+	t.Parallel()
 	const edited = 1002 // the second App comment
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := githubtest.New(t, "o/r", slug)
@@ -256,6 +263,7 @@ func TestTransitionSkipsDirtyMarkers(t *testing.T) {
 }
 
 func TestTransitionRefusesBadMoves(t *testing.T) {
+	t.Parallel()
 	for _, m := range []daemon.Move{
 		{To: state.Clarifying, Trigger: state.TriggerTrusted},
 		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.Key{Field: "rev", ID: "1"}},
@@ -284,6 +292,7 @@ func TestTransitionRefusesBadMoves(t *testing.T) {
 // as the interviewer does for a /revise that waited through a hold (#87's
 // assumption 8): the marker carries both, and the command is processed.
 func TestTransitionRunWithCmd(t *testing.T) {
+	t.Parallel()
 	setup := cmdIssue("stage:intake")
 	m := daemon.Move{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.Key{Field: "run", ID: "a"},
 		Fields: map[string]string{"cmd": strconv.Itoa(cmdID)}, Text: "Picked up."}
@@ -303,6 +312,7 @@ func TestTransitionRunWithCmd(t *testing.T) {
 }
 
 func TestAck(t *testing.T) {
+	t.Parallel()
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := cmdIssue()(t)
 		f.AddReaction(cmdID, "owner", "+1")

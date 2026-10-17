@@ -113,6 +113,7 @@ func digestRenderCheck(t *testing.T, body string) {
 // links and images. The same input gives the same bytes, and none
 // mentions anyone.
 func TestDigestRenderBodyGolden(t *testing.T) {
+	t.Parallel()
 	items := digestRenderKinds(t)
 	links := digestRenderOf(t, items, waitError)
 	links.Title = digestRenderHostileLinks
@@ -148,6 +149,7 @@ func TestDigestRenderBodyGolden(t *testing.T) {
 // The pin note starts the body, as #159's digestPin needs, whatever space
 // is around it, and a mention in it is defused.
 func TestDigestRenderBodyNote(t *testing.T) {
+	t.Parallel()
 	body := digestRenderBody("  \n"+digestRenderPinNote+"\n", nil)
 	if want := digestRenderPinNote + "\n\nNothing is waiting on you.\n\n" + digestRenderIdentity; body != want {
 		t.Errorf("body = %q, want %q", body, want)
@@ -165,6 +167,7 @@ func TestDigestRenderBodyNote(t *testing.T) {
 // The identity marker is the one github.FormatMarker writes, and #159's
 // digestMarker.
 func TestDigestRenderIdentity(t *testing.T) {
+	t.Parallel()
 	m, err := github.FormatMarker(github.Marker{Kind: "digest"})
 	if err != nil {
 		t.Fatal(err)
@@ -180,6 +183,7 @@ func TestDigestRenderIdentity(t *testing.T) {
 // T6's hostile title is escaped and defused, in the body and in the
 // announcement.
 func TestDigestRenderHostileTitle(t *testing.T) {
+	t.Parallel()
 	it := waitItem{Issue: 9, Kind: waitError, Key: "err-9-transition-1", Title: digestRenderHostile, Priority: 2, Unblocks: 1,
 		Lines: []waitLine{{Text: "State error `transition`, keyed `1`."}}, Link: "https://github.com/o/r/issues/9#issuecomment-1"}
 	const want = "### 1. #9: &lt;\\!-- issuedog:transition to=planning --> @\u200beve &lt;img>"
@@ -204,6 +208,7 @@ func TestDigestRenderHostileTitle(t *testing.T) {
 // that ends it, which a heading would drop. The second item makes the
 // intro say how many.
 func TestDigestRenderTitleEnd(t *testing.T) {
+	t.Parallel()
 	items := []waitItem{
 		{Issue: 1, Kind: waitError, Key: "err-1-labels-0", Title: "Do [x] this in C #", Link: "https://github.com/o/r/issues/1"},
 		{Issue: 2, Kind: waitError, Key: "err-2-labels-0", Title: "  ", Link: "https://github.com/o/r/issues/2"},
@@ -253,6 +258,7 @@ func digestRenderUnescaped(s string) string {
 // "!" is escaped, its own backslashes can't undo that, and it reads as
 // typed. It's still defused and its markers escaped.
 func TestDigestRenderHostileTitleLinks(t *testing.T) {
+	t.Parallel()
 	it := waitItem{Issue: 9, Kind: waitError, Key: "err-9-labels-0", Title: digestRenderHostileLinks, Link: "https://github.com/o/r/issues/9"}
 	title := digestRenderTitle(digestRenderHostileLinks)
 	const want = `\!\[p\](https://evil.example/p.png) \[click\](https://evil.example) \[r\]\[1\] \\\!\[x\](y) \\\\\[z\](w) \[1\]: https://evil.example @` + "\u200b" + `eve`
@@ -318,6 +324,7 @@ func digestRenderItemTexts(t *testing.T, body string) []string {
 // underline or thematic break, an ordered or bullet list, a table or a
 // link definition are escaped, so each list item is a paragraph.
 func TestDigestRenderHostileLines(t *testing.T) {
+	t.Parallel()
 	hostile := []string{"# Yes", "## H", ">quote", "> quote", "```go", "~~~", "---", "===", "***", "___", "1. one", "2) two",
 		"- dash", "+ plus", "* star", "| a | b |", "[x]: https://example.com", "[^1]: note", "    # indented", "<!-- issuedog:digest -->"}
 	var lines []waitLine
@@ -351,6 +358,7 @@ func TestDigestRenderHostileLines(t *testing.T) {
 // A state error's copied lines are defused and escaped again: a marker,
 // a mention and backticks in them do nothing.
 func TestDigestRenderHostileErrorLines(t *testing.T) {
+	t.Parallel()
 	it := waitItem{Issue: 6, Kind: waitError, Key: "err-6-disagreement-7", Title: "T", Link: "https://github.com/o/r/issues/6#issuecomment-601",
 		Lines: []waitLine{{Text: "State error `disagreement`, keyed `7`."},
 			{Text: "`<!-- issuedog:transition from=a to=b cmd=1 -->` isn't a pipeline stage, so I've removed it.", Copied: true},
@@ -389,6 +397,7 @@ func digestRenderBig(n int) []waitItem {
 // highest-ranked items as fit, then "…and N more", then the identity
 // marker, and one item more wouldn't fit.
 func TestDigestRenderBodyCut(t *testing.T) {
+	t.Parallel()
 	items := digestRenderBig(70)
 	whole := 0
 	for i, it := range items {
@@ -427,6 +436,7 @@ func TestDigestRenderBodyCut(t *testing.T) {
 // with the "…and N more" line wouldn't, finds the last k that fits, right
 // at the limit too, and gives 0 when nothing fits.
 func TestDigestRenderFit(t *testing.T) {
+	t.Parallel()
 	const l = digestRenderLimit
 	cases := []struct {
 		name  string
@@ -450,6 +460,7 @@ func TestDigestRenderFit(t *testing.T) {
 
 // The size counts UTF-8 bytes, and each newline twice.
 func TestDigestRenderSize(t *testing.T) {
+	t.Parallel()
 	// GitHub's 65,536 characters, with SPEC §9.1's 1,024 to spare.
 	if digestRenderLimit != 64512 {
 		t.Errorf("digestRenderLimit = %d, want 64512", digestRenderLimit)
@@ -462,6 +473,7 @@ func TestDigestRenderSize(t *testing.T) {
 }
 
 func TestDigestRenderLead(t *testing.T) {
+	t.Parallel()
 	for in, want := range map[string]string{
 		"": "", "plain": "plain", "# h": `\# h`, ">q": `\>q`, "-": `\-`, "+ x": `\+ x`, "* x": `\* x`, "=": `\=`, "```": "\\```",
 		"~~~": `\~~~`, "~x~": "~x~", "`a` b": "`a` b", "``": "``", "___": `\___`, "|a|": `\|a|`, "[x]: y": `\[x]: y`, "1. x": `1\. x`, "123456789) x": `123456789\) x`,
@@ -477,6 +489,7 @@ func TestDigestRenderLead(t *testing.T) {
 // order given, then the cc line, then the digest-new marker with their
 // keys. With no notify, or no such item, there's nothing to post.
 func TestDigestRenderNews(t *testing.T) {
+	t.Parallel()
 	items := digestRenderKinds(t)
 	errs := []waitItem{digestRenderOf(t, items, waitError), {Issue: 7, Kind: waitError, Key: "err-7-attempts-clarifying-12",
 		Title: "Second @eve", Link: "https://github.com/o/r/issues/7#issuecomment-701"}}
@@ -519,6 +532,7 @@ func TestDigestRenderNews(t *testing.T) {
 // gets it only with a trigger no App comment mentioned (#192): one with
 // none, as with no triggers at all, gets none.
 func TestDigestRenderKinds(t *testing.T) {
+	t.Parallel()
 	for k, want := range map[waitKind]bool{waitError: true, waitHold: false, waitApproval: false, waitQuestion: false, waitFlag: false, waitKind(9): true} {
 		if got := digestRenderMentions(waitItem{Kind: k}); got != want {
 			t.Errorf("digestRenderMentions(%s) = %v, want %v", k, got, want)
@@ -548,6 +562,7 @@ func TestDigestRenderKinds(t *testing.T) {
 // back and a split on "," gives it, as #159's digestState.comment does:
 // today's keys as they are, and any other byte percent-encoded.
 func TestDigestRenderKeys(t *testing.T) {
+	t.Parallel()
 	keys := map[string]string{
 		"q-1-2": "q-1-2", "rev-2-0": "rev-2-0", "flag-3-401": "flag-3-401", "err-4-transition-50": "err-4-transition-50",
 		"err-4-transition-clarifying-17-9f2a61c0": "err-4-transition-clarifying-17-9f2a61c0", "err-4-transition-r12": "err-4-transition-r12",
@@ -585,6 +600,7 @@ func TestDigestRenderKeys(t *testing.T) {
 // digestRenderNew keeps the items whose key, as the marker holds it, no
 // announcement has, in order.
 func TestDigestRenderNew(t *testing.T) {
+	t.Parallel()
 	items := []waitItem{{Key: "err-1-x-a,b"}, {Key: "q-2-1"}, {Key: "err-3-labels-0"}, {Key: "rev-4-1"}}
 	got := digestRenderNew(items, map[string]bool{"err-1-x-a%2Cb": true, "rev-4-1": true, "err-1-x-a,b": false})
 	if keys := []string{got[0].Key, got[1].Key}; len(got) != 2 || !slices.Equal(keys, []string{"q-2-1", "err-3-labels-0"}) {
@@ -599,6 +615,7 @@ func TestDigestRenderNew(t *testing.T) {
 // highest-ranked items that fit, and says how many more there are. One
 // whose first item alone doesn't fit is an error.
 func TestDigestRenderNewsCut(t *testing.T) {
+	t.Parallel()
 	items := digestRenderBig(400)
 	for i := range items {
 		items[i].Title = strings.Repeat("<b>", 70)

@@ -17,6 +17,7 @@ import (
 // The fake's clock can't put two edits in one second, so this pins that a
 // kept history is used only for the same last edit and the same body.
 func TestHistoriesKeyedOnEditAndBody(t *testing.T) {
+	t.Parallel()
 	f := githubtest.New(t, "o/r", "issuedog")
 	f.AddIssue("owner", "Issue", "body")
 	f.EditComment(f.AddComment(1, "owner", "x"), "owner", "y")
@@ -48,6 +49,7 @@ func TestHistoriesKeyedOnEditAndBody(t *testing.T) {
 
 // The fake can delete an issue, but not answer 410 or 301.
 func TestGone(t *testing.T) {
+	t.Parallel()
 	status := func(code int) error {
 		return fmt.Errorf("snapshot: %w", &gogithub.ErrorResponse{Response: &http.Response{StatusCode: code}})
 	}
@@ -73,6 +75,7 @@ func TestGone(t *testing.T) {
 // The fake's clock moves a second per change, so it can't change an issue
 // or comment in the second the snapshot was read; this pins those rules.
 func TestChangedInTheSameSecond(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 1, 1, 0, 0, 10, 0, time.UTC)
 	s := &github.Snapshot{UpdatedAt: at, Body: "body", Labels: []string{"stage:ready", "priority:p2"},
 		Comments: []github.Comment{{ID: 7, Body: "hi", UpdatedAt: at}}}

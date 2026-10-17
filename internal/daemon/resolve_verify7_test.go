@@ -46,6 +46,7 @@ func resolveOwnHoldUnder(t testing.TB) (*githubtest.Fake, int64) {
 // comment, the child stays held by its own /hold, and the record says so;
 // its own /resume then sends it to clarifying.
 func TestResolveParentResumeLeavesOwnHoldUnderDiscussion(t *testing.T) {
+	t.Parallel()
 	var w int64
 	setup := func(t testing.TB) *githubtest.Fake {
 		var f *githubtest.Fake
@@ -80,6 +81,7 @@ func TestResolveParentResumeLeavesOwnHoldUnderDiscussion(t *testing.T) {
 // Without the parent's /resume, the child's own /hold keeps it held once
 // mallory's comment is resolved, and the record says an owner hold stays.
 func TestResolveOwnHoldUnderDiscussionStays(t *testing.T) {
+	t.Parallel()
 	f, w := resolveOwnHoldUnder(t)
 	f.AddReaction(w, "owner", "+1")
 	resolveSteps(t, f, 2)
@@ -122,6 +124,7 @@ func resolveAncestorHoldTouched(t testing.TB, touch func(f *githubtest.Fake, hol
 // record that it applied it, so #1 stays held, its record naming it, as
 // #2 and #3 do.
 func TestResolveAncestorHoldTouched(t *testing.T) {
+	t.Parallel()
 	for name, touch := range map[string]func(f *githubtest.Fake, hold int64){
 		"edited":  func(f *githubtest.Fake, hold int64) { f.EditComment(hold, "mallory", "Never mind.") },
 		"deleted": func(f *githubtest.Fake, hold int64) { f.DeleteCommentBy("mallory", hold) },
@@ -148,6 +151,7 @@ func TestResolveAncestorHoldTouched(t *testing.T) {
 // the App's 👍 on it during the child's hold (resolveHoldWitnessed): #2,
 // held by hand, is #1's parent, and #1 is held for mallory's comment.
 func TestResolveAncestorHoldEditedNoMarker(t *testing.T) {
+	t.Parallel()
 	var hold int64
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := discFake(t)
@@ -181,6 +185,7 @@ func TestResolveAncestorHoldEditedNoMarker(t *testing.T) {
 // the App 👍'd it during the hold, so once the owner accepts the edit and
 // resolves mallory's comment, the issue stays held for it.
 func TestResolveOwnHoldEdited(t *testing.T) {
+	t.Parallel()
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := discFake(t)
 		w := f.AddComment(1, "mallory", "Wait.")
@@ -211,6 +216,7 @@ func TestResolveOwnHoldEdited(t *testing.T) {
 // deletion is accepted only by /resume (resolveHitsApp): a 👍 on its
 // notice leaves the issue held.
 func TestResolveOwnHoldDeleted(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	w := f.AddComment(1, "mallory", "Wait.")
 	resolveSteps(t, f, 1)
@@ -240,6 +246,7 @@ func TestResolveOwnHoldDeleted(t *testing.T) {
 // it's applied in the same pass, after the discussion hold, with no
 // marker, so once her comment is resolved the issue stays held for it.
 func TestResolveOwnHoldBeforeHoldStart(t *testing.T) {
+	t.Parallel()
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := discFake(t)
 		w := f.AddComment(1, "mallory", "Wait.")
@@ -267,6 +274,7 @@ func TestResolveOwnHoldBeforeHoldStart(t *testing.T) {
 // /resume after goes to clarifying. Through Iterate, whose trust asks the
 // fake's permissions.
 func TestResolveRecordedTriggerVerified(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	fileAt(f, "ready", "do it")
 	f.SetType(1, "task")
@@ -297,6 +305,7 @@ func TestResolveRecordedTriggerVerified(t *testing.T) {
 // the hold's marker, then edited by a write collaborator, still counts:
 // the App 👍'd it once the discussion hold began, in the same pass.
 func TestResolveOwnHoldBeforeHoldStartEdited(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	w := f.AddComment(1, "mallory", "Wait.")
 	hold := f.AddComment(1, "owner", "/hold")
@@ -322,6 +331,7 @@ func TestResolveOwnHoldBeforeHoldStartEdited(t *testing.T) {
 // since, holds nothing, so once the later comment and the edit are
 // accepted, the issue goes to clarifying.
 func TestResolveEditedResumeHoldsNothing(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	f.AddComment(1, "mallory", "Wait.")
 	resume := f.AddComment(1, "owner", "/resume")
@@ -348,6 +358,7 @@ func TestResolveEditedResumeHoldsNothing(t *testing.T) {
 // clarifying, is no /hold: once mallory's comment and her edit of the
 // owner's answer are accepted, the issue goes to clarifying.
 func TestResolveEditedAnswerHoldsNothing(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	n := file(f, 0, "from=intake to=clarifying run=a")
 	answer := f.AddComment(n, "owner", "1a")
@@ -382,6 +393,7 @@ func TestResolveEditedAnswerHoldsNothing(t *testing.T) {
 // set to ready by hand first, it's the same: the /resume applies for #1
 // alone, as #3, out of held, would have no marker of it.
 func TestResolveResumeEndsOwnIssueHoldBelow(t *testing.T) {
+	t.Parallel()
 	for _, override := range []bool{false, true} {
 		t.Run(fmt.Sprintf("override=%t", override), func(t *testing.T) {
 			var hold, resume int64
@@ -431,6 +443,7 @@ func TestResolveResumeEndsOwnIssueHoldBelow(t *testing.T) {
 // for mallory's comment. The /hold is older than #1's move, so once her
 // comment is resolved, #1 goes to clarifying.
 func TestResolveGoneHoldFromAnEarlierHold(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	file(f, 0, ready)
 	hold := f.AddComment(2, "owner", "/hold")

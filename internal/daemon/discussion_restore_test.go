@@ -75,6 +75,7 @@ func discDeleted(t testing.TB, f *githubtest.Fake) string {
 // label shows: no label moves but held's, and no disagreement is posted.
 // An owner hold it hid is reposted, and the first hold's at kept.
 func TestDiscRestore(t *testing.T) {
+	t.Parallel()
 	type act struct {
 		name string
 		do   func(f *githubtest.Fake, id int64)
@@ -143,6 +144,7 @@ func TestDiscRestore(t *testing.T) {
 // agree, as on a held issue whose App note was edited, which gets only its
 // notice.
 func TestDiscRestoreLeftAlone(t *testing.T) {
+	t.Parallel()
 	t.Run("an override", func(t *testing.T) {
 		f := run(t, discWith(func(_ testing.TB, f *githubtest.Fake) {
 			f.EditComment(1001, "mallory", "nothing here")
@@ -200,6 +202,7 @@ func TestDiscRestoreLeftAlone(t *testing.T) {
 // comment nor her 👍 on mallory's comment, which mallory edits later,
 // makes an unchanged pass ask about her.
 func TestDiscStrangerAsksNothingThroughTheLoop(t *testing.T) {
+	t.Parallel()
 	for name, act := range map[string]func(f *githubtest.Fake, n int){
 		"a deletion of her comment": func(f *githubtest.Fake, n int) { f.DeleteCommentBy("mallory", f.AddComment(n, "eve", "Spam.")) },
 		"her 👍 on an edited comment": func(f *githubtest.Fake, n int) {
@@ -252,6 +255,7 @@ func discUnchanged(t *testing.T, f *githubtest.Fake, d *daemon.Daemon) []githubt
 // asked about no more, a 404 is remembered (discNoRecord), and an edit
 // from before the issue's first marker is never asked about.
 func TestDiscNoRecordThroughTheLoop(t *testing.T) {
+	t.Parallel()
 	type act func(f *githubtest.Fake, n int, login string)
 	rename := func(f *githubtest.Fake, n int, login string) { f.RenameIssue(n, login, "Renamed") }
 	deletion := func(f *githubtest.Fake, n int, login string) {
@@ -323,6 +327,7 @@ func TestDiscNoRecordThroughTheLoop(t *testing.T) {
 // shows them with no access, or a 404 on another issue is remembered of
 // them (discNoRecord).
 func TestDiscRecordedOutlivesAccess(t *testing.T) {
+	t.Parallel()
 	acts := map[string]func(f *githubtest.Fake, n int){
 		"a rename":   func(f *githubtest.Fake, n int) { f.RenameIssue(n, "mallory", "Renamed") },
 		"a deletion": func(f *githubtest.Fake, n int) { f.DeleteCommentBy("mallory", f.AddComment(n, app, "A note.")) },
@@ -377,6 +382,7 @@ func TestDiscRecordedOutlivesAccess(t *testing.T) {
 // A deletion from before the issue's first marker holds nothing, and its
 // maker is never asked about.
 func TestDiscDeletionBeforeTheFloor(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	n := f.AddIssue("owner", "Issue", "do it")
 	f.SetType(n, "task")
@@ -400,6 +406,7 @@ func TestDiscDeletionBeforeTheFloor(t *testing.T) {
 // /resume on a parent that ends its children's /hold names the child
 // that stays held for discussion, when the parent itself goes back.
 func TestDiscResumeNamesHeldChild(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	parent := fileAt(f, "ready", "do it")
 	f.SetType(parent, "task")
@@ -431,6 +438,7 @@ func TestDiscResumeNamesHeldChild(t *testing.T) {
 // Content an outsider made dirty, or one noted dirty before the issue's
 // first marker, costs no history read: nothing could make it a trigger.
 func TestDiscEditsReadNoHistory(t *testing.T) {
+	t.Parallel()
 	for name, setup := range map[string]func(f *githubtest.Fake) int{
 		"an outsider's edit": func(f *githubtest.Fake) int {
 			n := fileAt(f, "ready", "do it")
@@ -467,6 +475,7 @@ func TestDiscEditsReadNoHistory(t *testing.T) {
 // login as a collaborator again, on any issue: a re-added writer's rename
 // elsewhere then holds that issue, before the wait is up.
 func TestDiscNoRecordEndsForCollaborator(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	first := fileAt(f, "ready", "do it")
 	second := fileAt(f, "ready", "do that")
@@ -488,6 +497,7 @@ func TestDiscNoRecordEndsForCollaborator(t *testing.T) {
 // was asked for is read again, and the login asked about once more, so a
 // writer added back holds the issue by an act made meanwhile.
 func TestDiscNoRecordEnds(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	n := fileAt(f, "ready", "do it")
 	d := newDaemon(t, f, newOrigin(t), nil)
@@ -521,6 +531,7 @@ func TestDiscNoRecordEnds(t *testing.T) {
 // content: a run's apply holds the issue at the stage an edit of the App's
 // move hid during the run, with no disagreement, and drops the result.
 func TestDiscRestoreAtApply(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	answer := interview(f) // the move to clarifying is comment 1001
 	g := newRig(t, f, newOrigin(t), t.TempDir())
@@ -546,6 +557,7 @@ func TestDiscRestoreAtApply(t *testing.T) {
 // parent finds its child held at the stage an edit of the child's App move
 // hid, and doesn't hold it again from the stage the markers left.
 func TestDiscRestoreOnFamily(t *testing.T) {
+	t.Parallel()
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := githubtest.New(t, "o/r", slug)
 		f.SetPermission("owner", "admin")
@@ -571,6 +583,7 @@ func TestDiscRestoreOnFamily(t *testing.T) {
 // An issue the owner brought in by label is bounded by the label's time:
 // a comment between the label and the App's record of it holds the issue.
 func TestDiscAfterAdoptingLabel(t *testing.T) {
+	t.Parallel()
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := githubtest.New(t, "o/r", slug)
 		f.SetPermission("owner", "admin")
@@ -593,6 +606,7 @@ func TestDiscAfterAdoptingLabel(t *testing.T) {
 // that hold and accepts the act that hid it (T4), back to the stage before
 // the hold, with no disagreement.
 func TestDiscRestoredHoldStays(t *testing.T) {
+	t.Parallel()
 	f := discHeldBy(true)(t)
 	f.EditComment(1003, "mallory", "nothing here")
 	if err := discPass(t, 1)(f); err != nil {
@@ -619,6 +633,7 @@ func TestDiscRestoredHoldStays(t *testing.T) {
 // bounded by the label's event, not the record, comparing comments by
 // when they were posted. The act that held it before stays resolved.
 func TestDiscAfterHandSetLabel(t *testing.T) {
+	t.Parallel()
 	for name, act := range map[string]func(f *githubtest.Fake) string{
 		"a comment": func(f *githubtest.Fake) string { return fmt.Sprintf("c%d", f.AddComment(1, "mallory", "Wait again.")) },
 		"a rename":  func(f *githubtest.Fake) string { return fmt.Sprint(f.RenameIssue(1, "mallory", "Wait again")) },
@@ -647,6 +662,7 @@ func TestDiscAfterHandSetLabel(t *testing.T) {
 // A deletion of a comment GitHub names no author of holds the issue,
 // failing closed, and gets its notice.
 func TestDiscDeletionOfUnnamed(t *testing.T) {
+	t.Parallel()
 	var node string
 	setup := discWith(func(_ testing.TB, f *githubtest.Fake) {
 		node = f.DeleteCommentBy("mallory", f.AddComment(1, "", "A ghost's note."))
@@ -661,6 +677,7 @@ func TestDiscDeletionOfUnnamed(t *testing.T) {
 // isn't posted again, and a deletion of a comment GitHub names no author
 // of, after a trigger, may have been its notice, so it isn't posted.
 func TestDiscLostStandaloneNotice(t *testing.T) {
+	t.Parallel()
 	for name, lose := range map[string]func(f *githubtest.Fake, id int64){
 		"deleted": func(f *githubtest.Fake, id int64) { f.DeleteCommentBy("owner", id) },
 		"dirty":   func(f *githubtest.Fake, id int64) { f.EditComment(id, "eve", "nothing here") },
@@ -711,6 +728,7 @@ func TestDiscLostStandaloneNotice(t *testing.T) {
 // A move the table lacks, as for a type the pipeline doesn't know, holds
 // nothing: the type error stands for it, and a second pass writes nothing.
 func TestDiscStateErrorHoldsNothing(t *testing.T) {
+	t.Parallel()
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := githubtest.New(t, "o/r", slug)
 		f.SetPermission("owner", "admin")

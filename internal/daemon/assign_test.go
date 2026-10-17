@@ -93,6 +93,7 @@ var assignIssueRead = regexp.MustCompile(`^/issues/[0-9]+$`)
 // the revision, a 👍 on the flag and a 👍 on the error, and its issue is
 // unassigned the same pass. Work gets every open issue all along.
 func TestAssignWhole(t *testing.T) {
+	t.Parallel()
 	f, o := digestRunFake(t), digestRunOrigin(t)
 	f.SetAssignees(7, "bob")
 	f.SetAssignees(11, "bob")
@@ -156,6 +157,7 @@ func assignNoNotifyOrigin(t testing.TB) *origin {
 // With notify empty, nobody is assigned: an issue with an item that has
 // mertenvg assigned by hand loses him, and so does one without.
 func TestAssignNotifyEmpty(t *testing.T) {
+	t.Parallel()
 	f, o := digestRunFake(t), assignNoNotifyOrigin(t)
 	f.SetAssignees(1, digestRunOwner)
 	f.SetAssignees(8, digestRunOwner)
@@ -169,6 +171,7 @@ func TestAssignNotifyEmpty(t *testing.T) {
 // assignee added beside mertenvg goes, and mertenvg, removed, comes back.
 // Logins compare in any case, so MERTENVG for mertenvg is no change.
 func TestAssignRevertsManual(t *testing.T) {
+	t.Parallel()
 	f, o := digestRunFake(t), digestRunOrigin(t)
 	d := assignDaemon(t, f, o, nil)
 	iterate(t, d)
@@ -186,6 +189,7 @@ func TestAssignRevertsManual(t *testing.T) {
 // right on the next. A failed assignee write is the pass's error, and the
 // rest of the issues, and Work, carry on; the next pass writes it again.
 func TestAssignFailures(t *testing.T) {
+	t.Parallel()
 	f, o := digestRunFake(t), digestRunOrigin(t)
 	var worked []int
 	d := assignDaemon(t, f, o, &worked)
@@ -226,6 +230,7 @@ func TestAssignFailures(t *testing.T) {
 // a change to notify. Assigned by hand all the same, he stays where an
 // item wants him. The first pass warns of him once, and of no other add.
 func TestAssignDropped(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
 	f, o := digestRunFake(t), newOrigin(t)
 	o.commit(".github/CODEOWNERS", "* @"+digestRunOwner+"\n")
 	o.commit(config.Path, "types: labels\nnotify: ["+digestRunOwner+", ghost]\n")
@@ -259,6 +264,7 @@ func TestAssignDropped(t *testing.T) {
 // notify users it was assigned, once: an assignee added by hand stays,
 // and a later change is left alone.
 func TestAssignLeavesPipeline(t *testing.T) {
+	t.Parallel()
 	f, o := digestRunFake(t), digestRunOrigin(t)
 	d := assignDaemon(t, f, o, nil)
 	iterate(t, d)
@@ -299,6 +305,7 @@ func assignReplayPass(t *testing.T, o *origin) func(*githubtest.Fake) error {
 // crash comes at: the round's issue gets owner, and the ready issue loses
 // owner, or, both, the round's issue loses mallory too.
 func TestAssignReplay(t *testing.T) {
+	t.Parallel()
 	o := digestNotifyOrigin(t)
 	for _, tc := range []struct {
 		name         string
@@ -326,6 +333,7 @@ func TestAssignReplay(t *testing.T) {
 // An issue read as closed, closed between the poll and its read, is left
 // alone that pass, though it's at a stage, and the next poll drops it.
 func TestAssignClosedInThePass(t *testing.T) {
+	t.Parallel()
 	f, o := digestRunFake(t), digestRunOrigin(t)
 	d := assignDaemon(t, f, o, nil)
 	iterate(t, d)
@@ -360,6 +368,7 @@ func assignGoneFake(t *testing.T) (*githubtest.Fake, *daemon.Daemon) {
 // the dropped one's memory doesn't follow: outside the pipeline, it keeps
 // mertenvg, assigned by hand.
 func TestAssignGone(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		gone func(f *githubtest.Fake)
@@ -420,6 +429,7 @@ func TestAssignGone(t *testing.T) {
 // A delete between an issue's read and its assignee write, in one pass,
 // is no error either, and the next pass drops the issue with no write.
 func TestAssignGoneInThePass(t *testing.T) {
+	t.Parallel()
 	f, d := assignGoneFake(t)
 	f.BeforeRequest(func(r githubtest.Request) bool {
 		return r.Method == http.MethodDelete && r.Path == "/issues/12/assignees"
@@ -433,6 +443,7 @@ func TestAssignGoneInThePass(t *testing.T) {
 // assignment kept: the close forgets that, so it keeps what was assigned
 // by hand meanwhile, mertenvg too.
 func TestAssignClosedForgets(t *testing.T) {
+	t.Parallel()
 	f, o := digestRunFake(t), digestRunOrigin(t)
 	d := assignDaemon(t, f, o, nil)
 	iterate(t, d)

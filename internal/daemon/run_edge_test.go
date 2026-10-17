@@ -26,6 +26,7 @@ func newestComment(f *githubtest.Fake, n int) string {
 // A failure to end a run whose move the table lacks is returned, not lost
 // with the state error.
 func TestBlockedRunCleanupFailureIsReturned(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	interview(f)
 	f.SetType(1, "Weird")
@@ -55,6 +56,7 @@ func TestBlockedRunCleanupFailureIsReturned(t *testing.T) {
 
 // A run whose result can't be saved has run claude, so it's an attempt.
 func TestSaveFailureIsAnAttempt(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	answer := interview(f)
 	g := newRig(t, f, newOrigin(t), t.TempDir())
@@ -82,6 +84,7 @@ func TestSaveFailureIsAnAttempt(t *testing.T) {
 // When posting the cap's state error fails, the next pass posts it and
 // runs nothing.
 func TestCapPostRetriedWithoutARun(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	answer := interview(f)
 	g := newRig(t, f, newOrigin(t), t.TempDir())
@@ -110,6 +113,7 @@ func TestCapPostRetriedWithoutARun(t *testing.T) {
 // The cap's state error is posted on the issue as it is after the run:
 // none on one held, by label or marker, closed or gone meanwhile.
 func TestCapSkipsAnIssueChangedDuringTheRun(t *testing.T) {
+	t.Parallel()
 	for name, change := range map[string]func(f *githubtest.Fake){
 		"held by label": func(f *githubtest.Fake) { f.AddLabel(1, "owner", "stage:held") },
 		"held by marker": func(f *githubtest.Fake) {
@@ -142,6 +146,7 @@ func TestCapSkipsAnIssueChangedDuringTheRun(t *testing.T) {
 // Replay over a resumed result whose move the table lacks: the one state
 // error is posted once, keyed by the move, never by the run.
 func TestBlockedResumeReplay(t *testing.T) {
+	t.Parallel()
 	replayRuns(t, func(t testing.TB, f *githubtest.Fake, root string) {
 		saveRun(t, root, "saved", okOut, interview(f))
 		f.SetType(1, "Weird")
@@ -151,6 +156,7 @@ func TestBlockedResumeReplay(t *testing.T) {
 // A Stage whose Apply returns a state error without Result.Move's key is
 // blocked the same way: one state error, and one run.
 func TestBlockedWithoutMoveKey(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	answer := interview(f)
 	g := newRig(t, f, newOrigin(t), t.TempDir())
@@ -170,6 +176,7 @@ func TestBlockedWithoutMoveKey(t *testing.T) {
 
 // A change of parent changes the issue's class, so it lifts the block.
 func TestParentChangeLiftsTheBlock(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	interview(f)
 	f.SetType(1, "Weird")
@@ -193,6 +200,7 @@ func TestParentChangeLiftsTheBlock(t *testing.T) {
 // a run that was applied: a restart counts no failure, and the next round
 // runs.
 func TestCrashInFinishIsNoFailure(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	answer := interview(f)
 	o, root := newOrigin(t), t.TempDir()
@@ -217,6 +225,7 @@ func TestCrashInFinishIsNoFailure(t *testing.T) {
 
 // An input deleted during the run drops its result, as an edited one does.
 func TestDeletedInputDropsResult(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	answer := interview(f)
 	g := newRig(t, f, newOrigin(t), t.TempDir())
@@ -233,6 +242,7 @@ func TestDeletedInputDropsResult(t *testing.T) {
 // The run's seen is the newest comment it was given, not just its newest
 // input.
 func TestSeenIsTheNewestComment(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	interview(f)
 	late := f.AddComment(1, "mallory", "a late remark")
@@ -271,6 +281,7 @@ func (w stopWriter) Write(p []byte) (int, error) {
 // A run that finishes as the daemon stops keeps its lease and result, and
 // the restart applies the result without running claude again.
 func TestResultFinishedDuringShutdownIsKept(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	answer := interview(f)
 	o, root := newOrigin(t), t.TempDir()
@@ -301,6 +312,7 @@ func TestResultFinishedDuringShutdownIsKept(t *testing.T) {
 
 // A success starts a new count, even when the next round has the same key.
 func TestSuccessResetsTheCount(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	interview(f)
 	g := newRig(t, f, newOrigin(t), t.TempDir())
@@ -323,6 +335,7 @@ func TestSuccessResetsTheCount(t *testing.T) {
 
 // priority:p3 comes after an issue with no priority, which is p2.
 func TestWorkRunsP3Last(t *testing.T) {
+	t.Parallel()
 	f := newFake(t)
 	interview(f)
 	interview(f)

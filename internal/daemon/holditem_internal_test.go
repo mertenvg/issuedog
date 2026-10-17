@@ -127,6 +127,7 @@ func holdItemKinds() []struct {
 // /resume. The hold's comment ends in a cc line, so each is mentioned
 // already.
 func TestHoldItemKinds(t *testing.T) {
+	t.Parallel()
 	issue := "https://github.com/o/r/issues/5"
 	want := map[string]holdItemTrigger{
 		"comment": {Link: issue + "#issuecomment-502", How: "A code owner's 👍 on the comment approves it, and any later comment of theirs here, other than `/hold` or `/resume`, counters it."},
@@ -185,6 +186,7 @@ func holdItemStacked() (*github.Snapshot, []discTrigger) {
 // App's record (resolveHitsApp), are resolved only by /resume, and the
 // owner hold is named.
 func TestHoldItemStacked(t *testing.T) {
+	t.Parallel()
 	s, holds := holdItemStacked()
 	it := holdItemFindOne(t, s, nil, holds...)
 	issue := "https://github.com/o/r/issues/5"
@@ -214,6 +216,7 @@ func TestHoldItemStacked(t *testing.T) {
 // though an older trigger is open: one found after the hold, as a
 // deletion GitHub's event lag showed late.
 func TestHoldItemKeyFromTheMarker(t *testing.T) {
+	t.Parallel()
 	s := holdItemSnap(holdItemComment(502, holdItemMallory, "Wait."), holdItemHeld(503, "c502", true, false))
 	it := holdItemFindOne(t, s, nil, discTrigger{Kind: discDeletion, Key: "dCDE_z", By: "mallory", At: holdItemAt(1), Of: "owner"},
 		discTrigger{Kind: discComment, Key: "c502", By: "mallory", At: holdItemAt(2), ID: 502})
@@ -229,6 +232,7 @@ func TestHoldItemKeyFromTheMarker(t *testing.T) {
 // event, not by the trigger, and the hand-set hold is named as an owner
 // hold.
 func TestHoldItemKeyUnderHandSetHold(t *testing.T) {
+	t.Parallel()
 	s := holdItemSnap(holdItemComment(502, waitApp, "<!-- issuedog:transition from=ready to=held at=ready reason=owner by=owner event=77 seen=501 -->"),
 		holdItemComment(503, holdItemMallory, "Wait."))
 	it := holdItemFindOne(t, s, nil, discTrigger{Kind: discComment, Key: "c503", By: "mallory", At: holdItemAt(3), ID: 503})
@@ -246,6 +250,7 @@ func TestHoldItemKeyUnderHandSetHold(t *testing.T) {
 // 505 keeps it held. One that only a request finds, as a /hold no marker
 // records, is named when waitInput.OwnerHeld says so.
 func TestHoldItemOwnerHoldEnded(t *testing.T) {
+	t.Parallel()
 	s := holdItemSnap(append(holdItemOwnerHeld(), holdItemComment(504, waitOwner, "/resume"), holdItemComment(505, holdItemMallory, "Wait."),
 		holdItemComment(506, waitApp, "This `/resume` ended the holds on this issue from before it, but it stays on hold for discussion.\n\n"+
 			"<!-- issuedog:ended reason=owner key=c502 cmd=504 -->\n<!-- issuedog:ended reason=discussion resolved=1767225840 cmd=504 -->"))...)
@@ -265,6 +270,7 @@ func TestHoldItemOwnerHoldEnded(t *testing.T) {
 // first hold still keys the item: the key doesn't move while the issue
 // stays held.
 func TestHoldItemKeyFirstHoldWins(t *testing.T) {
+	t.Parallel()
 	s := holdItemSnap(append(holdItemOwnerHeld(),
 		holdItemComment(504, waitApp, "<!-- issuedog:transition from=held to=held at=ready reason=owner by=owner event=77 seen=501 -->"),
 		holdItemComment(505, holdItemMallory, "Wait."))...)
@@ -279,6 +285,7 @@ func TestHoldItemKeyFirstHoldWins(t *testing.T) {
 // owner hold. A /hold by 👍 keys it by its reaction, and a run's by its
 // run.
 func TestHoldItemKeyFallback(t *testing.T) {
+	t.Parallel()
 	tr := discTrigger{Kind: discComment, Key: "c503", By: "mallory", At: holdItemAt(3), ID: 503}
 	for fields, key := range map[string]string{"": "hold-5-c503", "cmd=r42 ": "hold-5-cmdr42", "run=h1 ": "hold-5-runh1"} {
 		s := holdItemSnap(holdItemComment(502, waitApp, "<!-- issuedog:transition from=ready to=held at=ready "+fields+"seen=501 -->"),
@@ -296,6 +303,7 @@ func TestHoldItemKeyFallback(t *testing.T) {
 // Only a notice marker links a trigger's notice: another App marker with
 // a key= field, such as a revert's, is none.
 func TestHoldItemNoticeOnly(t *testing.T) {
+	t.Parallel()
 	s := holdItemSnap(holdItemComment(502, waitApp, "Put back.\n\ncc @owner\n\n<!-- issuedog:revert key=9001 -->"), holdItemHeld(503, "9001", true, false))
 	hs := holdItemTriggers(holdItemFindOne(t, s, nil, discTrigger{Kind: discRename, Key: "9001", By: "mallory", At: holdItemAt(2), Title: "Wait"}))
 	if len(hs) != 1 || hs[0].Link != "https://github.com/o/r/issues/5#issuecomment-503" ||
@@ -308,6 +316,7 @@ func TestHoldItemNoticeOnly(t *testing.T) {
 // someone records it: not when the hold was written with notify empty,
 // nor when its comment is dirty now, and then it has no clean notice.
 func TestHoldItemMentioned(t *testing.T) {
+	t.Parallel()
 	tr := discTrigger{Kind: discRename, Key: "9001", By: "mallory", At: holdItemAt(2), Title: "Wait"}
 	for name, c := range map[string]struct {
 		s       *github.Snapshot
@@ -335,6 +344,7 @@ func TestHoldItemMentioned(t *testing.T) {
 // A rename known from its record alone says so, with no login or title,
 // and links its notice: the first, should a key have two.
 func TestHoldItemRecordedNoNotice(t *testing.T) {
+	t.Parallel()
 	s := holdItemSnap(holdItemHeld(503, "9001", true, false), holdItemNotice(504, "9002"), holdItemNotice(505, "9002"))
 	it := holdItemFindOne(t, s, nil, discTrigger{Kind: discRename, Key: "9001", By: "mallory", At: holdItemAt(2), Title: "Wait"},
 		discTrigger{Kind: discRename, Key: "9002", At: holdItemAt(4), FromRecord: true})
@@ -354,6 +364,7 @@ func TestHoldItemRecordedNoNotice(t *testing.T) {
 // An edit of either kind with no clean notice and no record links the
 // content it edited: a comment, or the issue for the body.
 func TestHoldItemUnrecordedEditLink(t *testing.T) {
+	t.Parallel()
 	s := holdItemSnap(holdItemOwnerHeld()...)
 	hs := holdItemTriggers(holdItemFindOne(t, s, nil, discTrigger{Kind: discEdit, Key: "e502-9", By: "mallory", At: holdItemAt(9), ID: 502, Of: "owner"},
 		discTrigger{Kind: discEdit, Key: "e0-9", By: "mallory", At: holdItemAt(9), ID: state.BodyID, Of: "owner"},
@@ -369,6 +380,7 @@ func TestHoldItemUnrecordedEditLink(t *testing.T) {
 // under an owner hold alone, which is the owner's own; and on a closed
 // issue.
 func TestHoldItemNone(t *testing.T) {
+	t.Parallel()
 	tr := discTrigger{Kind: discComment, Key: "c502", By: "mallory", At: holdItemAt(2), ID: 502}
 	notHeld := holdItemSnap(holdItemComment(502, holdItemMallory, "Wait."))
 	notHeld.Labels = []string{"stage:ready"}
@@ -399,6 +411,7 @@ func TestHoldItemNone(t *testing.T) {
 // A hold and a state error on one issue are both listed, and the error
 // ranks first, by kind, though the hold's issue is the older.
 func TestHoldItemWithError(t *testing.T) {
+	t.Parallel()
 	s := holdItemSnap(holdItemComment(502, holdItemMallory, "Wait."), holdItemHeld(503, "c502", true, false),
 		holdItemComment(504, waitApp, "Something's off.\n\n<!-- issuedog:error kind=transition key=77 -->"))
 	in := waitIn(s, nil)
@@ -418,6 +431,7 @@ func TestHoldItemWithError(t *testing.T) {
 // or has a marker but the identity marker, and the same input gives the
 // same bytes.
 func TestHoldItemGolden(t *testing.T) {
+	t.Parallel()
 	type golden struct {
 		name string
 		it   waitItem
@@ -447,6 +461,7 @@ func TestHoldItemGolden(t *testing.T) {
 // login is code, defused, with its markers escaped, though GitHub allows
 // none of those in a login.
 func TestHoldItemHostile(t *testing.T) {
+	t.Parallel()
 	title := digestRenderHostile + " " + digestRenderHostileLinks
 	s := holdItemSnap(holdItemHeld(503, "9001", true, true))
 	it := holdItemFindOne(t, s, nil, discTrigger{Kind: discRename, Key: "9001", By: "mal@lory", At: holdItemAt(2), Title: title},
@@ -468,6 +483,7 @@ func TestHoldItemHostile(t *testing.T) {
 // once, whatever order they're found in, and one resolved doesn't make
 // the rest new again. A hold with none is never new, nor announced.
 func TestHoldItemNews(t *testing.T) {
+	t.Parallel()
 	line := func(key string, mentioned bool) waitLine {
 		return waitLine{Hold: &holdItemTrigger{Trigger: discTrigger{Key: key}, Mentioned: mentioned}}
 	}
@@ -513,6 +529,7 @@ func TestHoldItemNews(t *testing.T) {
 // priority: a p0 hold after a p2 error, and a p3 hold before a p2
 // approval.
 func TestHoldItemRank(t *testing.T) {
+	t.Parallel()
 	items := []waitItem{
 		{Issue: 2, Kind: waitApproval, Key: "rev-2-1", Priority: 2, Created: holdItemAt(1)},
 		{Issue: 3, Kind: waitHold, Key: "hold-3-c1", Priority: 3, Created: holdItemAt(2)},
@@ -537,6 +554,7 @@ func TestHoldItemRank(t *testing.T) {
 // says only /resume accepts it, and links the notice, 504, rather than the
 // hold's comment 503 that records it with no notice.
 func TestHoldItemUnknownKindNoticed(t *testing.T) {
+	t.Parallel()
 	s := holdItemSnap(holdItemHeld(503, "x1", true, false), holdItemNotice(504, "x1"))
 	hs := holdItemTriggers(holdItemFindOne(t, s, nil, discTrigger{Key: "x1", At: holdItemAt(4), FromRecord: true}))
 	if len(hs) != 1 || hs[0].How != "Only `/resume` here accepts it." || hs[0].Link != "https://github.com/o/r/issues/5#issuecomment-504" {
@@ -549,6 +567,7 @@ func TestHoldItemUnknownKindNoticed(t *testing.T) {
 // (resolveHitsApp): one made before the hold began, which held the issue,
 // is accepted by a 👍 on its notice.
 func TestHoldItemDeletionDuringHold(t *testing.T) {
+	t.Parallel()
 	s := holdItemSnap(holdItemHeld(503, "c502", true, false), holdItemNotice(505, "dCDE_d1"))
 	during := discTrigger{Kind: discDeletion, Key: "dCDE_d1", By: "mallory", At: holdItemAt(4), Of: "owner"}
 	hs := holdItemTriggers(holdItemFindOne(t, s, nil, during))

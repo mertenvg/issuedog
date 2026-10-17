@@ -62,6 +62,7 @@ func resolveRejectedResume(t testing.TB) (*githubtest.Fake, int64, int64, int64)
 // #1 stays held, its record naming #2's /hold, while #2 is still held by
 // it. Without the rejected /resume, it's the same.
 func TestResolveRejectedResumeKeepsParentHold(t *testing.T) {
+	t.Parallel()
 	var hold int64
 	setup := func(t testing.TB) *githubtest.Fake {
 		f, h, _, w := resolveRejectedResume(t)
@@ -85,6 +86,7 @@ func TestResolveRejectedResumeKeepsParentHold(t *testing.T) {
 // #2: with the rejected /resume, and without it, #1 stays held once the
 // owner's 👍 resolves mallory's comment.
 func TestResolveRejectedResumeThroughIterate(t *testing.T) {
+	t.Parallel()
 	for _, withResume := range []bool{false, true} {
 		t.Run(fmt.Sprintf("resume=%t", withResume), func(t *testing.T) {
 			f := newFake(t)
@@ -122,6 +124,7 @@ func TestResolveRejectedResumeThroughIterate(t *testing.T) {
 // /resume, goes to clarifying, as its discussion was resolved during the
 // hold.
 func TestResolveRejectedResumeParentResumes(t *testing.T) {
+	t.Parallel()
 	f, _, _, w := resolveRejectedResume(t)
 	f.AddReaction(w, "owner", "+1")
 	resolveSteps(t, f, 1)
@@ -168,6 +171,7 @@ func resolveResumeBeforeStart(t testing.TB) (*githubtest.Fake, int64) {
 // hold, below the hold's marker, ends a /hold on the parent posted before
 // it, so once the late comment is resolved, #1 goes to clarifying.
 func TestResolveAppliedResumeBeforeHoldStart(t *testing.T) {
+	t.Parallel()
 	setup := func(t testing.TB) *githubtest.Fake {
 		f, late := resolveResumeBeforeStart(t)
 		f.ForgetWrites()
@@ -189,6 +193,7 @@ func TestResolveAppliedResumeBeforeHoldStart(t *testing.T) {
 // and #2, but writes no marker on #1. Once the owner's 👍 resolves
 // mallory's comment, #1 stays held, its record naming #3's /hold.
 func TestResolveRejectedParentResumeKeepsHold(t *testing.T) {
+	t.Parallel()
 	var hold int64
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := discFake(t)
@@ -226,6 +231,7 @@ func TestResolveRejectedParentResumeKeepsHold(t *testing.T) {
 // one the pipeline doesn't know, so it can't go on hold, and once the
 // owner's 👍 resolves mallory's comment, #1 goes to clarifying.
 func TestResolveRejectedParentHoldHoldsNothing(t *testing.T) {
+	t.Parallel()
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := discFake(t)
 		file(f, 0, ready)
@@ -256,6 +262,7 @@ func TestResolveRejectedParentHoldHoldsNothing(t *testing.T) {
 // 👍 resolves mallory's comment, #1 goes to clarifying, and the /hold,
 // handled then, holds it again by a marker of its own.
 func TestResolvePendingParentHold(t *testing.T) {
+	t.Parallel()
 	f := discFake(t)
 	file(f, 0, ready)
 	f.SetParent(1, 2)
@@ -279,6 +286,7 @@ func TestResolvePendingParentHold(t *testing.T) {
 // it: once the owner's 👍 resolves mallory's comment, it goes to
 // clarifying.
 func TestResolveRejectedOwnHoldHoldsNothing(t *testing.T) {
+	t.Parallel()
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := discFake(t)
 		f.SetType(1, "Weird")
@@ -308,6 +316,7 @@ func TestResolveRejectedOwnHoldHoldsNothing(t *testing.T) {
 // notice, the hold's own comment: a close hides no App content (#87's
 // assumption 4), so the issue leaves its hold for clarifying.
 func TestResolveCloseByNotice(t *testing.T) {
+	t.Parallel()
 	o := digestNotifyOrigin(t)
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := closingFake(t)
@@ -343,6 +352,7 @@ func TestResolveCloseByNotice(t *testing.T) {
 // The /resume ended #3's /hold for #1, as it was posted after it, so once
 // the owner's 👍 resolves mallory's comment, #1 goes to clarifying.
 func TestResolveAppliedParentResumeBeforeHoldStart(t *testing.T) {
+	t.Parallel()
 	var resume int64
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := discFake(t)
