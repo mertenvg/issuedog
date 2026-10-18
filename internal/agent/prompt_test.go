@@ -50,19 +50,21 @@ func shippedPrompt(t *testing.T, name string) []byte {
 }
 
 func TestPromptOverride(t *testing.T) {
-	want := []byte("# Our interviewer\n\nAsk about the API first.\n")
-	r := &fakeMain{files: map[string][]byte{".issuedog/prompts/interviewer.md": want}}
-	got, override, err := Prompt(context.Background(), r, "interviewer")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, want) || !override {
-		t.Errorf("Prompt = %q, override %v; want main's file, override true", got, override)
+	for _, name := range []string{"interviewer", "planner"} {
+		want := []byte("# Our " + name + "\n\nAsk about the API first.\n")
+		r := &fakeMain{files: map[string][]byte{".issuedog/prompts/" + name + ".md": want}}
+		got, override, err := Prompt(context.Background(), r, name)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !bytes.Equal(got, want) || !override {
+			t.Errorf("%s: Prompt = %q, override %v; want main's file, override true", name, got, override)
+		}
 	}
 }
 
 func TestPromptMissingUsesDefault(t *testing.T) {
-	for _, name := range []string{"interviewer", "triage"} {
+	for _, name := range []string{"interviewer", "planner", "triage"} {
 		r := &fakeMain{}
 		got, override, err := Prompt(context.Background(), r, name)
 		if err != nil {
@@ -78,22 +80,24 @@ func TestPromptMissingUsesDefault(t *testing.T) {
 }
 
 func TestPromptBlankUsesDefaultAndWarns(t *testing.T) {
-	for _, blank := range []string{"", " \n\t\r\n"} {
-		r := &fakeMain{files: map[string][]byte{".issuedog/prompts/triage.md": []byte(blank)}}
-		// The writer takes only warnings, so another level fails.
-		var logs bytes.Buffer
-		stop := logr.AddWriter(&logs, logr.WithFilter(logr.W))
-		got, override, err := Prompt(context.Background(), r, "triage")
-		logr.Wait()
-		stop()
-		if err != nil {
-			t.Fatalf("%q: %v", blank, err)
-		}
-		if !bytes.Equal(got, shippedPrompt(t, "triage")) || override {
-			t.Errorf("%q: Prompt = %q, override %v; want the shipped default, override false", blank, got, override)
-		}
-		if !strings.Contains(logs.String(), ".issuedog/prompts/triage.md on main is blank") {
-			t.Errorf("%q: logs %q, want a warning naming the blank file", blank, logs.String())
+	for _, name := range []string{"triage", "planner"} {
+		for _, blank := range []string{"", " \n\t\r\n"} {
+			r := &fakeMain{files: map[string][]byte{".issuedog/prompts/" + name + ".md": []byte(blank)}}
+			// The writer takes only warnings, so another level fails.
+			var logs bytes.Buffer
+			stop := logr.AddWriter(&logs, logr.WithFilter(logr.W))
+			got, override, err := Prompt(context.Background(), r, name)
+			logr.Wait()
+			stop()
+			if err != nil {
+				t.Fatalf("%s %q: %v", name, blank, err)
+			}
+			if !bytes.Equal(got, shippedPrompt(t, name)) || override {
+				t.Errorf("%s %q: Prompt = %q, override %v; want the shipped default, override false", name, blank, got, override)
+			}
+			if want := ".issuedog/prompts/" + name + ".md on main is blank; using the default " + name + " prompt"; !strings.Contains(logs.String(), want) {
+				t.Errorf("%s %q: logs %q, want a warning naming the blank file", name, blank, logs.String())
+			}
 		}
 	}
 }
@@ -110,7 +114,7 @@ func TestPromptReadError(t *testing.T) {
 }
 
 func TestPromptUnknownName(t *testing.T) {
-	for _, name := range []string{"planner", "", "../schemas/triage", "prompts/triage", "Triage"} {
+	for _, name := range []string{"implementer", "", "../schemas/triage", "prompts/triage", "Triage", "../schemas/planner"} {
 		r := &fakeMain{files: map[string][]byte{".issuedog/prompts/" + name + ".md": []byte("x")}}
 		got, _, err := Prompt(context.Background(), r, name)
 		if err == nil || !strings.Contains(err.Error(), "no shipped prompt") {
@@ -137,7 +141,7 @@ func TestPromptSizeLimit(t *testing.T) {
 }
 
 func TestStageSchema(t *testing.T) {
-	for _, name := range []string{"interviewer", "triage"} {
+	for _, name := range []string{"interviewer", "planner", "triage"} {
 		raw, err := StageSchema(name)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
@@ -146,8 +150,8 @@ func TestStageSchema(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if raw, err := StageSchema("planner"); err == nil || !strings.Contains(err.Error(), `no schema for stage "planner"`) {
-		t.Errorf("StageSchema(planner) = %q, err %v; want an error", raw, err)
+	if raw, err := StageSchema("implementer"); err == nil || !strings.Contains(err.Error(), `no schema for stage "implementer"`) {
+		t.Errorf("StageSchema(implementer) = %q, err %v; want an error", raw, err)
 	}
 }
 
@@ -166,7 +170,7 @@ func TestShippedPromptsAndSchemasPair(t *testing.T) {
 		return n
 	}
 	prompts, schemas := names("prompts/*.md"), names("schemas/*.json")
-	if want := []string{"interviewer", "triage"}; !slices.Equal(prompts, want) || !slices.Equal(schemas, want) {
+	if want := []string{"interviewer", "planner", "triage"}; !slices.Equal(prompts, want) || !slices.Equal(schemas, want) {
 		t.Errorf("prompts %q, schemas %q; want %q for both", prompts, schemas, want)
 	}
 	for _, name := range prompts {
@@ -188,7 +192,8 @@ var unsupported = []string{
 }
 
 // Each schema stays flat: no unions, conditionals or references, and every
-// object lists its properties, all of them known.
+// object lists its properties, all of them known. The planner's schema
+// needs conditionals, so TestPlannerSchemaShape checks it instead.
 func TestSchemasStayFlat(t *testing.T) {
 	for _, name := range []string{"interviewer", "triage"} {
 		raw, err := StageSchema(name)

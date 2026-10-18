@@ -1,0 +1,323 @@
+{
+  "title": "planner",
+  "description": "One planner run: a plan, or a question round. Set outcome, then only the field that goes with it.",
+  "type": "object",
+  "required": ["outcome"],
+  "additionalProperties": false,
+  "properties": {
+    "outcome": {
+      "description": "plan: write the plan; set plan. questions: ask a round; set questions.",
+      "enum": ["plan", "questions"]
+    },
+    "questions": {
+      "description": "With outcome questions: this round's questions, most blocking first.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["text", "blocks", "recommended", "others"],
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "description": "The question, in one line that stands alone.",
+            "type": "string",
+            "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+          },
+          "blocks": {
+            "description": "The issue numbers the question blocks.",
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "integer", "minimum": 1 }
+          },
+          "recommended": {
+            "description": "The option you recommend, listed first.",
+            "type": "object",
+            "required": ["text", "why"],
+            "additionalProperties": false,
+            "properties": {
+              "text": {
+                "description": "The option, in one line.",
+                "type": "string",
+                "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+              },
+              "why": {
+                "description": "Why you recommend it, in one line.",
+                "type": "string",
+                "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+              }
+            }
+          },
+          "others": {
+            "description": "The other options, one line each.",
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+            }
+          }
+        }
+      }
+    },
+    "plan": {
+      "description": "With outcome plan: the plan. Every field here is shown in the plan comment, so none of them names a file, except the task bodies: task, and human_task but for its done_when text.",
+      "type": "object",
+      "required": ["kind", "why", "summary", "order", "items"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "description": "stories: the items are stories, S1, S2…, only in an epic's plan. tasks: the items are tasks, T1, T2….",
+          "enum": ["stories", "tasks"]
+        },
+        "why": {
+          "description": "Why this plan has stories or tasks, in one line.",
+          "type": "string",
+          "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+        },
+        "summary": {
+          "description": "A few lines of Markdown, without headings: what exists today, what is missing, and what the plan adds.",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "message": {
+          "description": "After revision notes, the answer to each note, or what changed; after a question round, how the answers were used.",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "assumptions": {
+          "description": "What the plan assumes and the owner confirms by approving it, one line each.",
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$" }
+        },
+        "order": {
+          "description": "The order to do the items in, in one line, such as: T1 and T2 in parallel, then T3.",
+          "type": "string",
+          "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+        },
+        "items": {
+          "description": "The stories or tasks, in plan order.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["id", "title", "outcome", "criteria", "depends_on"],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "description": "S<n> for a story, T<n> for a task, numbered from 1.",
+                "type": "string",
+                "pattern": "^[ST][1-9][0-9]*$"
+              },
+              "title": {
+                "description": "The title, in one line, without the ID.",
+                "type": "string",
+                "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+              },
+              "outcome": {
+                "description": "What is true once it's done, in one sentence.",
+                "type": "string",
+                "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+              },
+              "criteria": {
+                "description": "Observable, testable acceptance criteria, one line each.",
+                "type": "array",
+                "minItems": 1,
+                "items": { "type": "string", "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$" }
+              },
+              "depends_on": {
+                "description": "The IDs of the items in this plan that must be done first. Empty for none.",
+                "type": "array",
+                "uniqueItems": true,
+                "items": { "type": "string", "pattern": "^[ST][1-9][0-9]*$" }
+              },
+              "priority": {
+                "description": "The priority, when it isn't the issue's.",
+                "enum": ["p0", "p1", "p2", "p3"]
+              },
+              "model": {
+                "description": "A model from the preamble's list, when the item needs one.",
+                "type": "string",
+                "pattern": "^[^\\s,]+$"
+              },
+              "effort": {
+                "description": "An effort level, when the item needs one.",
+                "enum": ["low", "medium", "high", "xhigh", "max"]
+              },
+              "scope": {
+                "description": "Tasks only: one scope from the preamble's list, without the scope: prefix.",
+                "type": "string",
+                "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+              },
+              "human": {
+                "description": "Tasks only: true for work only the owner can do, which has human_task; false for a task with task.",
+                "type": "boolean"
+              },
+              "task": {
+                "description": "A task that isn't human: its issue body. This is where the files go.",
+                "type": "object",
+                "required": ["context", "change", "definition_of_done", "test_plan"],
+                "additionalProperties": false,
+                "properties": {
+                  "context": {
+                    "description": "Markdown: what exists today, and which files matter.",
+                    "type": "string",
+                    "pattern": "\\S"
+                  },
+                  "change": {
+                    "description": "Markdown: what to build, and the files it touches.",
+                    "type": "string",
+                    "pattern": "\\S"
+                  },
+                  "definition_of_done": {
+                    "description": "One line each.",
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "type": "string", "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$" }
+                  },
+                  "test_plan": {
+                    "description": "Markdown: which tests prove each criterion.",
+                    "type": "string",
+                    "pattern": "\\S"
+                  }
+                }
+              },
+              "human_task": {
+                "description": "A human task: its issue body, every field filled. Its steps, links and check may name files. Its done_when text is also shown in the plan comment, so it names none.",
+                "type": "object",
+                "required": ["goal", "why_blocks", "steps", "links", "estimated_time", "done_when"],
+                "additionalProperties": false,
+                "properties": {
+                  "goal": {
+                    "description": "One sentence.",
+                    "type": "string",
+                    "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+                  },
+                  "why_blocks": {
+                    "description": "Which items of this plan can't proceed until it's done, by ID, and why, in one line.",
+                    "type": "string",
+                    "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+                  },
+                  "steps": {
+                    "description": "Exact actions, with exact values, commands or settings, one line each, in order.",
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "type": "string", "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$" }
+                  },
+                  "links": {
+                    "description": "Direct links to the console page, file or doc, one line each.",
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "type": "string", "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$" }
+                  },
+                  "estimated_time": {
+                    "description": "Such as 5 min.",
+                    "type": "string",
+                    "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+                  },
+                  "done_when": {
+                    "type": "object",
+                    "required": ["text"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "text": {
+                        "description": "The observable result the owner can check, in one line. The plan comment shows it, so it names no file; a path goes only in check.",
+                        "type": "string",
+                        "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+                      },
+                      "check": {
+                        "description": "When text is one of the five checks, that check: a kind and exactly that kind's fields.",
+                        "type": "object",
+                        "required": ["kind"],
+                        "additionalProperties": false,
+                        "properties": {
+                          "kind": {
+                            "description": "label: a label exists. issue-type: an issue type exists. file: a file is on main, optionally containing some text. ruleset: a ruleset on main requires a check. installation: the App is installed on an owner.",
+                            "enum": ["label", "issue-type", "file", "ruleset", "installation"]
+                          },
+                          "label": {
+                            "description": "label: the label's name.",
+                            "type": "string",
+                            "maxLength": 50,
+                            "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+                          },
+                          "issue_type": {
+                            "description": "issue-type: the issue type's name.",
+                            "type": "string",
+                            "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+                          },
+                          "path": {
+                            "description": "file: the file's path from the repo root, with no leading / and no backslash.",
+                            "type": "string",
+                            "pattern": "^[^/\\\\\\s][^\\\\\\r\\n]*$"
+                          },
+                          "contains": {
+                            "description": "file, optional: text the file contains, in one line.",
+                            "type": "string",
+                            "maxLength": 256,
+                            "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+                          },
+                          "check": {
+                            "description": "ruleset: the name of the check the ruleset requires.",
+                            "type": "string",
+                            "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+                          },
+                          "owner": {
+                            "description": "installation: the user or organization login.",
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$"
+                          }
+                        },
+                        "oneOf": [
+                          { "properties": { "kind": { "const": "label" } }, "required": ["label"], "propertyNames": { "enum": ["kind", "label"] } },
+                          { "properties": { "kind": { "const": "issue-type" } }, "required": ["issue_type"], "propertyNames": { "enum": ["kind", "issue_type"] } },
+                          { "properties": { "kind": { "const": "file" } }, "required": ["path"], "propertyNames": { "enum": ["kind", "path", "contains"] } },
+                          { "properties": { "kind": { "const": "ruleset" } }, "required": ["check"], "propertyNames": { "enum": ["kind", "check"] } },
+                          { "properties": { "kind": { "const": "installation" } }, "required": ["owner"], "propertyNames": { "enum": ["kind", "owner"] } }
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "if": { "properties": { "kind": { "const": "stories" } }, "required": ["kind"] },
+      "then": {
+        "properties": {
+          "items": {
+            "items": {
+              "properties": {
+                "id": { "pattern": "^S" },
+                "depends_on": { "items": { "pattern": "^S" } },
+                "scope": false,
+                "human": false,
+                "task": false,
+                "human_task": false
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "items": {
+            "items": {
+              "required": ["scope", "human"],
+              "properties": {
+                "id": { "pattern": "^T" },
+                "depends_on": { "items": { "pattern": "^T" } }
+              },
+              "if": { "properties": { "human": { "const": true } }, "required": ["human"] },
+              "then": { "required": ["human_task"], "properties": { "task": false } },
+              "else": { "required": ["task"], "properties": { "human_task": false } }
+            }
+          }
+        }
+      }
+    }
+  }
+}

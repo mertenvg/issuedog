@@ -1,0 +1,32 @@
+{
+  "outcome": "questions",
+  "questions": [
+    {
+      "text": "The MCP server's changes need a scope, and mcp isn't on the scopes list. Which scope should they use?",
+      "blocks": [
+        124
+      ],
+      "recommended": {
+        "text": "booking",
+        "why": "the MCP server only calls the booking API, so its change is a test there"
+      },
+      "others": [
+        "Add mcp to the scopes list in the config first",
+        "tooling"
+      ]
+    },
+    {
+      "text": "Should the quote lifetime be fixed at 24 hours in code, or a setting per deployment?",
+      "blocks": [
+        124
+      ],
+      "recommended": {
+        "text": "A setting, 24 hours in production",
+        "why": "staging can test expiry in minutes, and changing it needs no release"
+      },
+      "others": [
+        "Fixed at 24 hours in code"
+      ]
+    }
+  ]
+}
