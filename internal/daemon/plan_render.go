@@ -40,6 +40,11 @@ type planView struct {
 	// the plan against these before it renders it.
 	MaxTasks  int // plan.max_tasks
 	SubIssues int // the issue's sub-issues before the plan's are created
+	// Revised is set for a revision of an issue planned before (#195's
+	// T6), whose items have statuses, and Earlier is the approved
+	// revision's items, whose dependencies a kept item keeps.
+	Revised bool
+	Earlier []planItem
 }
 
 // renderPlan renders p as plan revision f.Rev's comment on issue f.Issue
@@ -71,7 +76,7 @@ func renderPlan(p planBody, f planView) string {
 		parts = append(parts, lead+"\n"+bullets(p.Assumptions))
 	}
 	for _, it := range p.Items {
-		parts = append(parts, renderPlanItem(it, p.Kind == planTasks, f.Priority))
+		parts = append(parts, renderPlanItem(it, p.Kind == planTasks, f.Priority, f.Revised))
 	}
 	parts = append(parts, "**Order:** "+inline(p.Order), planValidation(p, f))
 	if f.NoReview {
@@ -87,9 +92,17 @@ func renderPlan(p planBody, f planView) string {
 // when set. A task, when task is set, also shows its scope first, and
 // "human" after the priority for a human task. Then the outcome, the
 // criteria as plain bullets, a human task's "Done when", and what it
-// depends on.
-func renderPlanItem(it planItem, task bool, priority string) string {
+// depends on. In a revision, when revised is set, the item's status comes
+// first after the title (SPEC §11.4), and a kept or dropped item, which
+// has its ID and title only, is that one line.
+func renderPlanItem(it planItem, task bool, priority string, revised bool) string {
 	head := "**" + inline(it.ID) + ". " + inline(it.Title) + "**"
+	if revised {
+		head += " · " + inline(it.Status)
+		if planBare(it.Status) {
+			return head
+		}
+	}
 	var attrs []string
 	if task && it.Scope != "" {
 		attrs = append(attrs, "scope:"+inline(it.Scope))
@@ -135,25 +148,46 @@ func renderPlanItem(it planItem, task bool, priority string) string {
 // written from the daemon's own counts and f's facts, not the planner's
 // words: the items and what they are, the dependency graph, the
 // sub-issues the issue will have, and the most dependency links of one
-// type any item will have, blocked by or blocking.
+// type any item will have, blocked by or blocking. In a revision, the
+// items counted are those that aren't dropped, the sub-issues added are
+// the new items, a kept item's links are its approved item's
+// (planPrior.keptDeps), and the line says every child is listed once,
+// with the closed ones kept (checkStatuses).
 func planValidation(p planBody, f planView) string {
-	n := len(p.Items)
+	n, added := 0, 0
+	for _, it := range p.Items {
+		if !f.Revised || it.Status != planDropped {
+			n++
+		}
+		if !f.Revised || it.Status == planNew {
+			added++
+		}
+	}
 	what := fmt.Sprintf("%d %s, with no tasks", n, plural(n, "story", "stories"))
 	if p.Kind == planTasks {
 		what = fmt.Sprintf("%d %s, within `plan.max_tasks` of %d, each with one scope from the list", n, plural(n, "task", "tasks"), f.MaxTasks)
 	}
+	if f.Revised {
+		what += "; every child listed once, kept, changed or dropped, and each closed one kept"
+	}
+	var prior *planPrior
+	if f.Revised {
+		prior = &planPrior{Items: f.Earlier}
+	}
+	depsOf := planDepsOf(p, prior.keptDeps(p))
 	links := 0
 	blocking := map[string]int{}
 	for _, it := range p.Items {
-		links = max(links, len(it.DependsOn))
-		for _, d := range it.DependsOn {
+		deps := depsOf(it)
+		links = max(links, len(deps))
+		for _, d := range deps {
 			blocking[d]++
 		}
 	}
 	for _, b := range blocking {
 		links = max(links, b)
 	}
-	subs := f.SubIssues + n
+	subs := f.SubIssues + added
 	return fmt.Sprintf("Validation (11.3): %s; no dependency cycles; %d %s in all, within %d; at most %d dependency %s of one type per issue, within %d.",
 		what, subs, plural(subs, "sub-issue", "sub-issues"), planMaxSubIssues, links, plural(links, "link", "links"), planMaxLinks)
 }

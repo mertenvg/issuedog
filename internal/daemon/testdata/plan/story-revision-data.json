@@ -1,0 +1,80 @@
+{
+  "kind": "tasks",
+  "why": "A story plan has tasks: the booking change grows, and the production setting is no longer needed.",
+  "summary": "**Today** each quote records its expiry time (T1, done), and the setting for its lifetime waits in production (T3).\n\nThis revision:\n- keeps T1, which is done;\n- changes T2, so an expired quote's error also says when it expired;\n- drops T3, since the lifetime now has a default in the service;\n- adds T4, the default lifetime of 24 hours.",
+  "message": "The discussion settled on a default lifetime, so production needs no setting, and the expired error names the time it expired.",
+  "assumptions": [
+    "A default of 24 hours is right for every environment that sets none."
+  ],
+  "order": "T4, then T2",
+  "items": [
+    {
+      "id": "T1",
+      "title": "Record when each quote expires",
+      "status": "kept",
+      "outcome": "",
+      "criteria": null,
+      "depends_on": null
+    },
+    {
+      "id": "T2",
+      "title": "Refuse an expired quote at booking, saying when it expired",
+      "status": "changed",
+      "outcome": "Booking an expired quote returns an expired error that says when it expired, with a link to a new quote, and books nothing.",
+      "criteria": [
+        "Booking a quote before its expiry time works as it does today.",
+        "Booking a quote at or after its expiry time returns 410 with the code quote_expired and the expiry time, and books nothing.",
+        "The error's body links to a new quote for the same trip.",
+        "The MCP server's book tool returns the same error."
+      ],
+      "depends_on": [
+        "T1",
+        "T4"
+      ],
+      "priority": "p1",
+      "scope": "booking",
+      "task": {
+        "context": "- `internal/booking/book.go`: `Book` checks the quote's status and creates the booking in one transaction.\n- `internal/api/errors.go`: `writeError` maps a booking error to a status and a code.",
+        "change": "- `internal/booking/book.go`: return `ErrQuoteExpired`, with the expiry time, when now is at or after `ExpiresAt`, before anything is written.\n- `internal/api/errors.go`: map `ErrQuoteExpired` to 410 and `quote_expired`, with `expired_at` and a `new_quote` link.",
+        "definition_of_done": [
+          "Tests added or updated for every changed behavior",
+          "verify.commands pass",
+          "No new skip markers"
+        ],
+        "test_plan": "- `internal/booking/book_test.go`: booking one second before the expiry time works; at it, and after it, gives `ErrQuoteExpired` with the expiry time.\n- `internal/api/book_test.go`: the 410 body has `quote_expired`, `expired_at` and the `new_quote` link."
+      }
+    },
+    {
+      "id": "T3",
+      "title": "Set the quote lifetime in production",
+      "status": "dropped",
+      "outcome": "",
+      "criteria": null,
+      "depends_on": null
+    },
+    {
+      "id": "T4",
+      "title": "Give the quote lifetime a default",
+      "status": "new",
+      "outcome": "The booking service runs with a quote lifetime of 24 hours unless its settings give another.",
+      "criteria": [
+        "With no lifetime in its settings, the booking service starts, and quotes expire after 24 hours.",
+        "A lifetime in its settings that isn't a positive duration still stops the service from starting."
+      ],
+      "depends_on": [
+        "T1"
+      ],
+      "scope": "booking",
+      "task": {
+        "context": "- `internal/booking/config.go`: `LoadConfig` fails when `QUOTE_TTL` is missing.",
+        "change": "- `internal/booking/config.go`: default `QuoteTTL` to 24 hours when `QUOTE_TTL` is missing; keep refusing a zero, negative or malformed one.",
+        "definition_of_done": [
+          "Tests added or updated for every changed behavior",
+          "verify.commands pass",
+          "No new skip markers"
+        ],
+        "test_plan": "- `internal/booking/config_test.go`: a missing `QUOTE_TTL` gives 24 hours; a zero, negative or malformed one fails `LoadConfig`."
+      }
+    }
+  ]
+}

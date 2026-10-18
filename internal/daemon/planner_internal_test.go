@@ -59,7 +59,10 @@ const (
 // TestPlannerPending: the planner runs at once on an epic or a story that
 // came to planning by anything but its own round, and after its round only
 // once a trusted answer came in, looking through a hold, but never on a
-// task, an untyped issue, an issue at another stage, or one planned before.
+// task, an untyped issue, an issue at another stage, or one planned before
+// whose approved plan can't be read back. One planned before with an
+// approved plan runs again, as a revision (T6 of #195), however it came
+// back to planning.
 func TestPlannerPending(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -97,14 +100,28 @@ func TestPlannerPending(t *testing.T) {
 		{"an unknown type", planTestIssue(7, "chore", false, "app: from=intake to=planning event=5"), false},
 		{"at clarifying", planTestIssue(7, "epic", false, "app: from=intake to=clarifying event=5"), false},
 		{"at plan-review", planTestIssue(7, "epic", false, planTestApproval, "app: from=planning to=plan-review run=pl1 seen=101 rev=1"), false},
-		{"planned before, set back to planning by hand", planTestIssue(7, "epic", false, planTestApproval,
+		{"planned before, set back by hand, with no approved plan to revise", planTestIssue(7, "epic", false, planTestApproval,
 			"app: from=planning to=plan-review run=pl1 seen=101 rev=1",
 			"app: from=plan-review to=planned cmd=r9 rev=1 body=abcd1234",
 			"app: from=planned to=planning event=11 by=owner"), false},
-		{"a story planned before, with no review, set back with input", planTestIssue(7, "story", true, planTestApproval,
+		{"a story planned before, with no review, set back with input, with no approved plan to revise", planTestIssue(7, "story", true, planTestApproval,
 			"app: from=planning to=planned run=pl1 seen=101 rev=1",
 			"app: from=planned to=planning event=11 by=owner seen=102",
 			"owner: Plan it again."), false},
+		{"planned before, set back to planning by hand", planTestPlanned(t, 7, "epic", false,
+			"app: from=planned to=planning event=11 by=owner"), true},
+		{"a story planned before, sent back by the interviewer's plan outcome", planTestPlanned(t, 7, "story", true,
+			"app: from=planned to=held at=planned reason=discussion event=12 seen=103",
+			"app: from=held to=clarifying origin=planned event=13 seen=103",
+			"app: from=clarifying to=planning run=iv9 origin=planned seen=106"), true},
+		{"planned before, then a revision's round, nothing", planTestPlanned(t, 7, "epic", false,
+			"app: from=planned to=planning event=11 by=owner",
+			"app: from=planning to=planning run=pl2 seen=104 round=3 questions=2"), false},
+		{"planned before, then a revision's round, an answer", planTestPlanned(t, 7, "epic", false,
+			"app: from=planned to=planning event=11 by=owner",
+			"app: from=planning to=planning run=pl2 seen=104 round=3 questions=2",
+			"owner: 1a 2b"), true},
+		{"planned before, at planned", planTestPlanned(t, 7, "epic", false), false},
 		{"a to=planned in an error marker isn't a move", func() *github.Snapshot {
 			s := planTestIssue(7, "epic", false, planTestApproval)
 			s.Comments = append(s.Comments, github.Comment{ID: 150, Author: planTestApp,
@@ -128,8 +145,9 @@ func TestPlannerPending(t *testing.T) {
 	}
 }
 
-// TestPlannerSkipLoggedOnce: an issue planned before is logged once, at
-// info, however often Pending is asked, and each such issue is logged.
+// TestPlannerSkipLoggedOnce: an issue planned before whose approved plan
+// can't be read back is logged once, at info, however often Pending is
+// asked, and each such issue is logged.
 func TestPlannerSkipLoggedOnce(t *testing.T) {
 	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
 	var logs bytes.Buffer
@@ -152,7 +170,8 @@ func TestPlannerSkipLoggedOnce(t *testing.T) {
 	}
 	logr.Wait()
 	for _, n := range []int{7, 8} {
-		want := fmt.Sprintf("o/r#%d: no planner run: it was planned before, and planning it again isn't built yet", n)
+		want := fmt.Sprintf("o/r#%d: no planner run: it was planned before, but it has no approved plan revision whose data reads back, "+
+			"so it can't be revised", n)
 		if got := strings.Count(logs.String(), want); got != 1 {
 			t.Errorf("logged %q %d times, want once:\n%s", want, got, logs.String())
 		}
@@ -223,7 +242,7 @@ func TestPlannerPreamble(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := plannerPreamble(c, tt.s, tt.children, tt.all, tt.planned)
+			got := plannerPreamble(c, tt.s, tt.children, nil, tt.all, tt.planned)
 			for _, want := range append(common, tt.want...) {
 				if !strings.Contains(got, want) {
 					t.Errorf("the preamble lacks\n%s\nin\n%s", want, got)
@@ -233,7 +252,7 @@ func TestPlannerPreamble(t *testing.T) {
 	}
 
 	// With the defaults: no scopes and no models.
-	got := plannerPreamble(config.Defaults(), &github.Snapshot{Number: 7, Type: "epic"}, 0, nil, nil)
+	got := plannerPreamble(config.Defaults(), &github.Snapshot{Number: 7, Type: "epic"}, 0, nil, nil, nil)
 	for _, want := range []string{
 		"- This repo lists no scopes, so no task has a scope it may use: ask the owner which scope to add, as a question.",
 		"- At most 10 tasks in a plan (`plan.max_tasks`). Each task other than a human task is one PR within 400 changed lines",

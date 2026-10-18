@@ -52,10 +52,15 @@ type planBody struct {
 
 // planItem is one story or task of a plan. Scope, Human and one of Task
 // and HumanTask are a task's only. Priority, Model and Effort are "" when
-// the item leaves them to the issue's and the defaults.
+// the item leaves them to the issue's and the defaults. Status is a
+// revision's only (plan_revision.go): planKept, planChanged, planNew or
+// planDropped, and a kept or dropped item has its ID and title alone, its
+// other fields empty or nil, as its data keeps them. A first plan's items
+// have none, so their data is as it was before revisions (omitempty).
 type planItem struct {
 	ID        string         `json:"id"`
 	Title     string         `json:"title"`
+	Status    string         `json:"status,omitempty"`
 	Outcome   string         `json:"outcome"`
 	Criteria  []string       `json:"criteria"`
 	DependsOn []string       `json:"depends_on"`

@@ -42,12 +42,19 @@ type planFacts struct {
 	// as Result.Move sets them: seen=, model=, effort= and ran=. They're
 	// in the comment too, so the length rule counts them.
 	Fields map[string]string
+	// Prior is the approved plan and its children, read, when the plan is
+	// a revision of an issue planned before, or nil for a first plan.
+	Prior *planPrior
 }
 
 // view is the planView a plan is rendered with under f.
 func (f planFacts) view() planView {
-	return planView{Issue: f.Issue, Rev: f.Rev, Priority: f.Priority, Notify: f.Notify, NoReview: f.NoReview,
+	v := planView{Issue: f.Issue, Rev: f.Rev, Priority: f.Priority, Notify: f.Notify, NoReview: f.NoReview,
 		MaxTasks: f.MaxTasks, SubIssues: f.SubIssues}
+	if f.Prior != nil {
+		v.Revised, v.Earlier = true, f.Prior.Items
+	}
+	return v
 }
 
 // The rules checkPlan enforces beside the interviewer's question rules,
@@ -82,6 +89,7 @@ const planLengthRunID = "00000000"
 // checkPlan checks out against f after the schema, which it doesn't
 // trust: the daemon fails closed, so every bound the schema has is
 // checked again here, with those it leaves out (SPEC §11.3, plan #247's
+// T6), and for a revision, the revised-plan rules (checkStatuses, #195's
 // T6). Its error joins a *ruleError for every rule broken, each naming the
 // item and field. Nothing may be written from an output that fails.
 func checkPlan(out planOutput, f planFacts) error {
@@ -116,6 +124,11 @@ func checkPlan(out planOutput, f planFacts) error {
 }
 
 // checkPlanBody checks a plan's rules, calling fail for each one broken.
+// A revision's kept and dropped items carry an ID and a title only, so of
+// the item rules they're held to the ID's, the title's and the links':
+// a kept item's links are its approved item's (planPrior.keptDeps), and a
+// dropped one has none. max-tasks counts the tasks that aren't dropped,
+// and sub-issues only the new items, as the rest are sub-issues already.
 func checkPlanBody(p planBody, f planFacts, fail func(string, string, ...any)) {
 	switch {
 	case p.Kind != planStories && p.Kind != planTasks:
@@ -152,13 +165,15 @@ func checkPlanBody(p planBody, f planFacts, fail func(string, string, ...any)) {
 	}
 
 	ids := map[string]bool{}
+	kept := f.Prior.keptDeps(p)
+	depsOf := planDepsOf(p, kept)
 	blocking := map[string]int{}
 	for _, it := range p.Items {
-		for _, d := range it.DependsOn {
+		for _, d := range depsOf(it) {
 			blocking[d]++
 		}
 	}
-	tasks := 0
+	tasks, added := 0, 0
 	for i, it := range p.Items {
 		at := it.ID
 		if !planItemIDRE.MatchString(it.ID) {
@@ -177,6 +192,24 @@ func checkPlanBody(p planBody, f planFacts, fail func(string, string, ...any)) {
 		ids[it.ID] = true
 
 		line(at+"'s title", it.Title)
+		if n := blocking[it.ID]; n > planMaxLinks {
+			fail(ruleLinks, "%s blocks %d items, over %d", at, n, planMaxLinks)
+		}
+		if f.Prior == nil || it.Status == planNew {
+			added++
+		}
+		if planBare(it.Status) && f.Prior != nil {
+			// A kept or dropped item: checkStatuses checks it has nothing
+			// else, and a kept one's links are counted below.
+			visible = append(visible, rendered{at + "'s title", it.Title})
+			if n := len(depsOf(it)); n > planMaxLinks {
+				fail(ruleLinks, "%s is blocked by %d items, over %d", at, n, planMaxLinks)
+			}
+			if p.Kind == planTasks && it.Status == planKept {
+				tasks++
+			}
+			continue
+		}
 		line(at+"'s outcome", it.Outcome)
 		if len(it.Criteria) == 0 {
 			fail(ruleStructure, "%s has no criteria", at)
@@ -199,9 +232,6 @@ func checkPlanBody(p planBody, f planFacts, fail func(string, string, ...any)) {
 		}
 		if n := len(it.DependsOn); n > planMaxLinks {
 			fail(ruleLinks, "%s is blocked by %d items, over %d", at, n, planMaxLinks)
-		}
-		if n := blocking[it.ID]; n > planMaxLinks {
-			fail(ruleLinks, "%s blocks %d items, over %d", at, n, planMaxLinks)
 		}
 
 		if p.Kind == planStories {
@@ -244,10 +274,15 @@ func checkPlanBody(p planBody, f planFacts, fail func(string, string, ...any)) {
 	if p.Kind == planTasks && tasks > f.MaxTasks {
 		fail(ruleMaxTasks, "%d tasks, over plan.max_tasks of %d", tasks, f.MaxTasks)
 	}
-	if n := f.SubIssues + len(p.Items); n > planMaxSubIssues {
-		fail(ruleSubIssues, "%d sub-issues already and %d items make %d, over %d", f.SubIssues, len(p.Items), n, planMaxSubIssues)
+	if n := f.SubIssues + added; n > planMaxSubIssues {
+		what := plural(added, "item", "items")
+		if f.Prior != nil {
+			what = "new " + what
+		}
+		fail(ruleSubIssues, "%d sub-issues already and %d %s make %d, over %d", f.SubIssues, added, what, n, planMaxSubIssues)
 	}
-	checkPlanDeps(p, ids, fail)
+	checkStatuses(p, f.Prior, fail)
+	checkPlanDeps(p, ids, f.Prior, fail)
 	for _, v := range visible {
 		if path := planFilePath(v.text); path != "" {
 			fail(ruleFilePaths, "%s names the file path %q", v.what, path)
@@ -404,11 +439,22 @@ func badCheckPath(path string) string {
 }
 
 // checkPlanDeps checks each item's dependencies: no unknown ID, no item
-// depending on itself or naming an item twice, and no cycle. ids is the
-// plan's item IDs.
-func checkPlanDeps(p planBody, ids map[string]bool, fail func(string, string, ...any)) {
+// depending on itself, naming an item twice or, in a revision, naming a
+// dropped item, and no cycle. ids is the plan's item IDs. For a revision,
+// against pr, the cycle check counts the kept items' dependencies
+// (planPrior.keptDeps) with the others: a kept item names none of its own,
+// and a dropped one has none. For a first plan, pr is nil.
+func checkPlanDeps(p planBody, ids map[string]bool, pr *planPrior, fail func(string, string, ...any)) {
+	kept := pr.keptDeps(p)
+	dropped := map[string]bool{}
+	for _, it := range p.Items {
+		dropped[it.ID] = dropped[it.ID] || pr != nil && it.Status == planDropped
+	}
 	deps := map[string][]string{}
 	for _, it := range p.Items {
+		if pr != nil && it.Status == planKept {
+			deps[it.ID] = append(deps[it.ID], kept[it.ID]...)
+		}
 		seen := map[string]bool{}
 		for _, d := range it.DependsOn {
 			switch {
@@ -416,6 +462,8 @@ func checkPlanDeps(p planBody, ids map[string]bool, fail func(string, string, ..
 				fail(ruleDependsOn, "%s depends on itself", it.ID)
 			case !ids[d]:
 				fail(ruleDependsOn, "%s depends on %q, which isn't an item of this plan", it.ID, d)
+			case dropped[d]:
+				fail(ruleDependsOn, "%s depends on %s, which is dropped", it.ID, d)
 			case seen[d]:
 				fail(ruleDependsOn, "%s depends on %s more than once", it.ID, d)
 			default:
