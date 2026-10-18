@@ -149,6 +149,12 @@ func fakeGitHub(t *testing.T, files map[string]string) *githubtest.Fake {
 	oldState, oldRun := stateDir, runDir
 	t.Cleanup(func() { stateDir, runDir = oldState, oldRun })
 	stateDir, runDir = t.TempDir(), t.TempDir()
+	// A claude that isn't there, so a stage run a test reaches fails to
+	// start rather than running whatever claude is on PATH. A test that
+	// needs a run sets its own.
+	oldClaude := claudePath
+	t.Cleanup(func() { claudePath = oldClaude })
+	claudePath = filepath.Join(t.TempDir(), "no-claude")
 	f := githubtest.New(t, "mertenvg/issuedog", "issuedog-dev")
 	f.SetPermission("mertenvg", "admin")
 	f.SetPermission("mallory", "write")
