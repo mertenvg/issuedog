@@ -210,7 +210,6 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			delete(d.openErrs, n)
 			delete(d.digestCache, n)
 			delete(d.assignManaged, n)
-			delete(d.digest.titled, n) // so a failed history read doesn't wait on it
 			d.Step.forgetLabels(n)
 		case gone(err):
 			// One answer may be wrong, so it's read again next pass.

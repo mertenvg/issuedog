@@ -237,8 +237,11 @@ func (g *digestState) has(n int) bool {
 // the digest, with or without a reposted origin, while a digest whose
 // marker was taken out is still found by its title. One query reads every
 // history needed, and an unchanged poll, which lists nothing, needs none.
-// A failed read is logged, and none is taken on the pass: each held issue
-// is judged again after the next poll, unless that poll lists it again.
+// A failed read is logged, and none is taken on the pass. Each held issue
+// is then an issue like any other till a poll lists it again, as the next
+// start's does, and judges it again: so an issue the read failed for, as
+// for one deleted since the listing, isn't read again on every pass. A
+// poll that fails before digestTake keeps what it held for the next one.
 func (d *Daemon) digestTake(ctx context.Context) {
 	a, g := d.Step.Applier, &d.digest
 	if len(g.titled) == 0 {
@@ -257,8 +260,9 @@ func (d *Daemon) digestTake(ctx context.Context) {
 	if len(need) > 0 {
 		read, err := a.Client.History(ctx, slices.Sorted(maps.Keys(need)))
 		if err != nil {
-			logr.Errorf("the edit histories of %s/%s's issues titled %q failed to read, so none is taken for the digest this pass: %v",
+			logr.Errorf("the edit histories of %s/%s's issues titled %q failed to read, so none is taken for the digest till a poll lists it again: %v",
 				a.Owner, a.Repo, digestTitle, err)
+			clear(g.titled)
 			return
 		}
 		if g.firsts == nil {
