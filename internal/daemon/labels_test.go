@@ -100,6 +100,43 @@ func atReady(more func(t testing.TB, f *githubtest.Fake)) func(testing.TB) *gith
 	})
 }
 
+// The App's move to closed cut short after its marker is finished by the
+// label rules with the state reason the marker records, completed or
+// not_planned, or GitHub's default for a marker with none, and posts no
+// disagreement. A closed issue isn't closed again.
+func TestCheckLabelsFinishesClose(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, marker, want string }{
+		{"completed", " reason=completed", "completed"},
+		{"not planned", " reason=not_planned", "not_planned"},
+		{"no reason", "", "completed"},
+		{"a reason no close has", " reason=owner", "completed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			setup := atReady(func(_ testing.TB, f *githubtest.Fake) {
+				f.AddComment(1, app, "<!-- issuedog:transition from=ready to=closed"+tc.marker+" cmd=1001 -->")
+			})
+			githubtest.Replay(t, setup, labelsPass(t, clean, nil))
+			f := run(t, setup, labelsPass(t, clean, nil))
+			if got := f.State().Issues[0]; !got.Closed || len(got.Comments) != 2 {
+				t.Errorf("closed %t, comments %+v; want closed, with no comment added", got.Closed, got.Comments)
+			}
+			if r := stateReason(t, f, 1); r != tc.want {
+				t.Errorf("state_reason = %q, want %q", r, tc.want)
+			}
+		})
+	}
+	setup := atReady(func(_ testing.TB, f *githubtest.Fake) {
+		f.AddComment(1, app, "<!-- issuedog:transition from=ready to=closed reason=completed cmd=1001 -->")
+		f.CloseAs(1, "owner", "not_planned")
+	})
+	f := run(t, setup, labelsPass(t, clean, nil))
+	if w := f.Writes(); len(w) != 0 {
+		t.Errorf("on a closed issue: writes %+v, want none", w)
+	}
+}
+
 func TestCheckLabels(t *testing.T) {
 	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
 	overridden := func(label, marker string) string {
@@ -277,6 +314,12 @@ func TestCheckLabels(t *testing.T) {
 			}),
 			writes: []string{"DELETE /issues/1/labels/stage:ready"},
 			labels: []string{"stage:in-progress"}},
+		{name: "a move to closed cut short before its close is finished by the close, with no label write",
+			setup: atReady(func(_ testing.TB, f *githubtest.Fake) {
+				f.AddComment(1, app, "<!-- issuedog:transition from=ready to=closed reason=not_planned run=b -->")
+			}),
+			writes: []string{"PATCH /issues/1"},
+			labels: []string{"stage:ready"}},
 		{name: "a marker in a dirty comment doesn't count",
 			setup: atReady(func(t testing.TB, f *githubtest.Fake) {
 				f.AddComment(1, app, "<!-- issuedog:transition from=ready to=in-progress run=b -->")

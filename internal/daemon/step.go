@@ -16,8 +16,8 @@ import (
 type Step struct {
 	*Applier
 	Trust github.Trust
-	// Commands are the handlers, by name. A valid command with none waits,
-	// except /done, rejected as not handled yet. See Handler for the contract.
+	// Commands are the handlers, by name. A valid command with none waits.
+	// See Handler for the contract.
 	Commands map[string]Handler
 	// Reactions, if set, runs after the comments: the reaction triggers.
 	Reactions func(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt) error
