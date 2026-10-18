@@ -223,6 +223,8 @@ func digestRenderKindName(k waitKind) string {
 		return "Triage flag"
 	case waitHuman:
 		return "Human task"
+	case waitDone:
+		return "Finished story"
 	}
 	return "Item (" + k.String() + ")"
 }
@@ -237,8 +239,9 @@ func digestRenderKindName(k waitKind) string {
 // an issue held already (Q2b), or a trigger whose notice discLost held
 // back, unless the hold's own transition marker records it. A hold's
 // other triggers, named by the hold's comment or a notice, each ending in
-// a cc line (#87's assumption 5), give it none. A kind added later gets
-// the mention unless it's listed here.
+// a cc line (#87's assumption 5), give it none. A finished story (#278)
+// gets it, as it isn't listed here: no comment says its children have
+// all closed. A kind added later gets the mention unless it's listed here.
 func digestRenderMentions(it waitItem) bool {
 	switch it.Kind {
 	case waitApproval, waitPlanApproval, waitQuestion, waitFlag, waitHuman:

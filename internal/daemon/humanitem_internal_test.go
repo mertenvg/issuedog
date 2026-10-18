@@ -189,11 +189,11 @@ func TestWaitHumanLines(t *testing.T) {
 }
 
 // Q3a's order of kinds: a human task comes after a question and before a
-// flag, a plan's approval with an approval, and a kind not mapped after
-// flags (#287, #270).
+// flag, a plan's approval with an approval, a finished story after flags,
+// and a kind not mapped after that (#287, #270, #278).
 func TestWaitKindRank(t *testing.T) {
 	t.Parallel()
-	order := []waitKind{waitError, waitHold, waitApproval, waitQuestion, waitHuman, waitFlag, waitKind(9)}
+	order := []waitKind{waitError, waitHold, waitApproval, waitQuestion, waitHuman, waitFlag, waitDone, waitKind(9)}
 	for i := 1; i < len(order); i++ {
 		if a, b := order[i-1], order[i]; a.rank() >= b.rank() {
 			t.Errorf("%s ranks %d, %s ranks %d; want %s first", a, a.rank(), b, b.rank(), a)
