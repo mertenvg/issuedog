@@ -441,7 +441,14 @@ func changed(s *github.Snapshot, is *gogithub.Issue) bool {
 	if typ == "" {
 		typ = github.TypeOfLabels(names)
 	}
-	if is.GetTitle() != s.Title || typ != s.Type {
+	typeChanged := typ != s.Type
+	if lo := s.TypeLeftOut; lo != nil {
+		// Nor is an issue type left out of s, for the type that stands: its
+		// issue is read again once it's due too. A change of the type label
+		// an issue with no issue type takes its type from is a label change.
+		typeChanged = !github.SameIssueType(is.GetType().GetName(), is.GetType().GetID(), lo.Name, lo.ID)
+	}
+	if is.GetTitle() != s.Title || typeChanged {
 		return true
 	}
 	if is.ParentIssueURL != nil && parentOf(is.GetParentIssueURL()) != s.Parent {

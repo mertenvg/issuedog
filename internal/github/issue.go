@@ -65,10 +65,49 @@ type Snapshot struct {
 	// TypeFromLabels is set when Type comes from the labels, as the issue has
 	// no issue type, so SetLabels keeps it up to date with them.
 	TypeFromLabels bool
+	// TypeName is the issue type's name as GitHub shows it, such as "Epic",
+	// and TypeID its ID, or "" and 0 when the issue has none (TypeFromLabels).
+	// Type is TypeName in lower case. SetIssueType sets all three.
+	TypeName string
+	TypeID   int64
 	// LeftOut are the labels, in lower case, on the issue but left out of
 	// Labels, as the label rules can't explain them yet (CheckLabels), so
 	// nothing acts on them. SetLabels keeps them out.
 	LeftOut map[string]bool
+	// TypeLeftOut is the issue type on the issue that the label rules left
+	// out, as they can't explain it yet, with the type that stands, which
+	// Type, TypeName and TypeID are instead (LeaveOutType), or nil.
+	TypeLeftOut *IssueTypeLeftOut
+}
+
+// SetIssueType sets s's issue type to name, as GitHub shows it, with its
+// ID: Type, TypeName, TypeID and TypeFromLabels. With no name, the issue has
+// no issue type, so Type comes from the labels, as SetLabels keeps it.
+func (s *Snapshot) SetIssueType(name string, id int64) {
+	s.TypeName, s.TypeID, s.TypeFromLabels = name, id, name == ""
+	s.Type = strings.ToLower(name)
+	if s.TypeFromLabels {
+		s.Type = TypeOfLabels(s.Labels)
+	}
+}
+
+// LeaveOutType leaves out of s the issue type lo, which the label rules
+// can't explain yet (LabelCheck.IssueTypeLeftOut): s takes the type that
+// stands instead, and keeps lo in TypeLeftOut, so RestoreType can give s
+// its own type back. A type left out already is given back first.
+func (s *Snapshot) LeaveOutType(lo IssueTypeLeftOut) {
+	s.RestoreType()
+	s.TypeLeftOut = &lo
+	s.SetIssueType(lo.To, lo.ToID)
+}
+
+// RestoreType gives s back the issue type LeaveOutType left out, if any:
+// the issue's own.
+func (s *Snapshot) RestoreType() {
+	if lo := s.TypeLeftOut; lo != nil {
+		s.TypeLeftOut = nil
+		s.SetIssueType(lo.Name, lo.ID)
+	}
 }
 
 // Comment is one issue comment.
@@ -139,6 +178,7 @@ func (c *Client) Snapshot(ctx context.Context, owner, repo string, number int) (
 		Author: authorOf(issue.GetUser()), AuthorAssociation: issue.GetAuthorAssociation(),
 		CreatedAt: issue.GetCreatedAt().Time, UpdatedAt: issue.GetUpdatedAt().Time,
 		Type: TypeOf(issue), TypeFromLabels: issue.GetType().GetName() == "",
+		TypeName: issue.GetType().GetName(), TypeID: issue.GetType().GetID(),
 	}
 	for _, l := range issue.Labels {
 		s.Labels = append(s.Labels, l.GetName())

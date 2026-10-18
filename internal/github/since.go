@@ -78,8 +78,11 @@ type issueTypeRevertEvent struct {
 }
 
 // issueTypeRevertTimeline is TimelineSince, with each event's issue types.
-// It pages the endpoint as go-github's ListIssueTimelineIter does, with the
-// same Accept header, so its answers are the ones TimelineSince read before.
+// It pages the endpoint as go-github's ListIssueTimelineIter does. Its
+// Accept header isn't go-github's, though: both ask for the timeline's
+// mockingbird-preview, but this sends the projects' inertia-preview where
+// go-github sends the project cards' starfox-preview. Either touches only
+// the project fields of the timeline's events, which nothing here reads.
 func (c *Client) issueTypeRevertTimeline(ctx context.Context, owner, repo string, number int, since time.Time) ([]*issueTypeRevertEvent, error) {
 	wrap := func(err error) error { return fmt.Errorf("list timeline of %s/%s#%d: %w", owner, repo, number, err) }
 	var all []*issueTypeRevertEvent

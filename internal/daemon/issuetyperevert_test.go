@@ -324,8 +324,10 @@ func TestIssueTypeRevertLateEvent(t *testing.T) {
 }
 
 // An untrusted change whose event never lands is held back for
-// github.HoldBound, then reverted all the same, keyed by the type and the
-// newest event, with no type error and no mention.
+// github.HoldBound, then left out, with nothing written, until
+// github.UnexplainedWait (#183), then reverted all the same, keyed by the
+// type and the newest event, with no type error and no mention. The
+// comment names the type as GitHub shows it.
 func TestIssueTypeRevertEventNeverLands(t *testing.T) {
 	t.Parallel()
 	f := issueTypeRevertReady(nil)(t)
@@ -340,10 +342,15 @@ func TestIssueTypeRevertEventNeverLands(t *testing.T) {
 		}
 	}
 	f.Advance(github.HoldBound/2 + time.Second) // past the bound, by GitHub's clock
-	if w := d.pass(t); !slices.Equal(w, []string{"POST /issues/1/comments", "PATCH /issues/1"}) {
-		t.Errorf("at the bound: writes %q; want the revert alone", w)
+	if w := d.pass(t); len(w) != 0 {
+		t.Errorf("at the bound: writes %q; want none, the type left out", w)
 	}
-	issueTypeRevertCheck(t, f, "Task", "I restored the issue type `Task`: no change by a trusted user or the App explains `epic`, "+
+	issueTypeRevertCheck(t, f, "Epic")
+	f.Advance(github.UnexplainedWait - github.HoldBound) // past the wait
+	if w := d.pass(t); !slices.Equal(w, []string{"POST /issues/1/comments", "PATCH /issues/1"}) {
+		t.Errorf("at the wait: writes %q; want the revert alone", w)
+	}
+	issueTypeRevertCheck(t, f, "Task", "I restored the issue type `Task`: no change by a trusted user or the App explains `Epic`, "+
 		"and only trusted users can change the issue type.\n\n<!-- issuedog:revert key=issue-type:epic@9001 -->")
 	if w := d.pass(t); len(w) != 0 {
 		t.Errorf("after the revert: writes %q; want none", w)

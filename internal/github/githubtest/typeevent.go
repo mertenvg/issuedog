@@ -14,12 +14,73 @@ import (
 // ID: issue_type_added for an issue with no type, issue_type_removed for an
 // empty name, which removes it, or else issue_type_changed. The event
 // carries the types as GitHub's REST timeline does: issue_type, the type
-// set, and prev_issue_type, the type replaced. SetType sets a type with no
-// event.
+// set, and prev_issue_type, the type replaced, each with its ID in the org
+// (IssueTypeID). SetType sets a type with no event.
 func (f *Fake) SetTypeBy(number int, login, name string) int64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.issueTypeRevertSet(f.issues[number-1], login, name)
+}
+
+// firstIssueType is one less than the first ID an org issue type gets: the
+// org's types have IDs of their own, apart from comments' and events'.
+const firstIssueType = 500
+
+// issueTypeNamed is the org's issue type named name, ignoring case, as a
+// new value with name as given and the type's ID, which a name the org
+// hasn't seen yet gets now. "" gets no ID. f is locked.
+func (f *Fake) issueTypeNamed(name string) *gogithub.IssueType {
+	t := &gogithub.IssueType{Name: &name}
+	if name == "" {
+		return t
+	}
+	key := strings.ToLower(name)
+	id, ok := f.orgTypes[key]
+	if !ok {
+		f.lastIssueType++
+		id = firstIssueType + f.lastIssueType
+		if f.orgTypes == nil {
+			f.orgTypes = map[string]int64{}
+		}
+		f.orgTypes[key] = id
+		delete(f.goneTypes, key)
+	}
+	t.ID = &id
+	return t
+}
+
+// IssueTypeID is the ID of the org's issue type named name, ignoring case,
+// which it gets now if the org hasn't seen it yet, as SetType and SetTypeBy
+// give it.
+func (f *Fake) IssueTypeID(name string) int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.issueTypeNamed(name).GetID()
+}
+
+// RenameOrgIssueType renames the org's issue type from to to, ignoring
+// case, keeping its ID, as an org owner may. Every issue of that type shows
+// the new name, while the events on their timelines keep the name they were
+// written with. It changes no issue's updated_at, as GitHub isn't known to.
+// The old name is no type any more, so setting it through the API is
+// refused.
+func (f *Fake) RenameOrgIssueType(from, to string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := f.issueTypeNamed(from).GetID()
+	delete(f.orgTypes, strings.ToLower(from))
+	f.orgTypes[strings.ToLower(to)] = id
+	if f.goneTypes == nil {
+		f.goneTypes = map[string]bool{}
+	}
+	f.goneTypes[strings.ToLower(from)] = true
+	delete(f.goneTypes, strings.ToLower(to))
+	for _, is := range f.issues {
+		if is.GetType().GetID() == id {
+			// A new value: the events' types keep the old name.
+			is.Type = &gogithub.IssueType{ID: &id, Name: &to}
+		}
+	}
 }
 
 // DropTypeChanges makes the fake drop every later change of an issue's type
@@ -54,9 +115,9 @@ func (f *Fake) issueTypeRevertSet(is *issue, login, name string) int64 {
 	case name == "":
 		event, is.Type = "issue_type_removed", nil
 	case is.Type == nil:
-		event, is.Type = "issue_type_added", &gogithub.IssueType{Name: &name}
+		event, is.Type = "issue_type_added", f.issueTypeNamed(name)
 	default:
-		is.Type = &gogithub.IssueType{Name: &name}
+		is.Type = f.issueTypeNamed(name)
 	}
 	ch.to = is.Type
 	is.UpdatedAt = f.tick()
@@ -84,7 +145,8 @@ func (is *issue) issueTypeRevertServe(e *gogithub.Timeline) any {
 // issueTypeRevertEdit sets the issue's type as the App, as the update of
 // an issue does for its type field: a name sets that type, and null removes
 // it. A type the issue has already, matched ignoring case, or none for an
-// issue with none, is no change and writes no event. Under DropTypeChanges,
+// issue with none, is no change and writes no event. A name the org renamed
+// away (RenameOrgIssueType) is refused with a 422. Under DropTypeChanges,
 // nothing changes. f is locked.
 func (f *Fake) issueTypeRevertEdit(is *issue, raw json.RawMessage) (int, any) {
 	var name *string
@@ -93,6 +155,9 @@ func (f *Fake) issueTypeRevertEdit(is *issue, raw json.RawMessage) (int, any) {
 	}
 	if name != nil && *name == "" {
 		return http.StatusUnprocessableEntity, message("githubtest: type must be a name or null, not empty")
+	}
+	if name != nil && f.goneTypes[strings.ToLower(*name)] {
+		return http.StatusUnprocessableEntity, message(fmt.Sprintf("githubtest: the org has no issue type %q", *name))
 	}
 	switch {
 	case f.dropTypes:

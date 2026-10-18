@@ -24,9 +24,10 @@ func (a *Applier) seen() *github.Unexplained {
 }
 
 // unexplainedDue reports whether one of issue n's unexplained labels, left
-// out until then, is due for removal by now, GitHub's clock: then the issue
-// must be read again, for CheckLabels to remove it. Nothing acts on such a
-// label before then, so the issue needn't be read again for it sooner.
+// out until then, is due for removal by now, GitHub's clock, or its
+// unexplained issue type for its revert: then the issue must be read again,
+// for CheckLabels to remove or revert it. Nothing acts on such a label or
+// type before then, so the issue needn't be read again for it sooner.
 func (a *Applier) unexplainedDue(n int, now time.Time) bool {
 	due, ok := a.seen().Due(a.Owner, a.Repo, n)
 	return ok && !now.Before(due)
@@ -34,10 +35,12 @@ func (a *Applier) unexplainedDue(n int, now time.Time) bool {
 
 // hide leaves out of s, the issue read again by a path that doesn't run
 // CheckLabels on it, the labels CheckLabels last held back or left out on
-// it, so nothing acts on them there either.
+// it, and the issue type it last left out (hideType), so nothing acts on
+// them there either.
 func (a *Applier) hide(s *github.Snapshot) {
 	s.LeftOut = a.seen().Labels(a.Owner, a.Repo, s.Number)
 	s.SetLabels(s.Labels)
+	a.hideType(s)
 }
 
 // hidden is a copy of s with hide applied, for a check on a snapshot that
@@ -52,7 +55,36 @@ func (a *Applier) hidden(s *github.Snapshot) *github.Snapshot {
 		c.LeftOut[l] = true
 	}
 	c.SetLabels(s.Labels)
+	a.hideType(&c)
 	return &c
+}
+
+// hideType leaves out of s, on a repo that uses issue types, the issue
+// type CheckLabels last left out on it, if s still has that type: s takes
+// the type that stands instead (Snapshot.LeaveOutType). A type s has
+// left out already counts as s's own.
+func (a *Applier) hideType(s *github.Snapshot) {
+	lo, ok := a.seen().IssueTypeLeftOut(a.Owner, a.Repo, s.Number)
+	if !a.IssueTypes || !ok {
+		return
+	}
+	s.RestoreType()
+	if name, id := issueTypeOf(s); github.SameIssueType(name, id, lo.Name, lo.ID) {
+		s.LeaveOutType(lo)
+	}
+}
+
+// issueTypeOf is s's own issue type, as GitHub shows its name, and its ID,
+// or "" and 0 for none. A snapshot with a Type but no TypeName, as one a
+// test builds, gives its Type, and no ID.
+func issueTypeOf(s *github.Snapshot) (string, int64) {
+	switch {
+	case s.TypeFromLabels:
+		return "", 0
+	case s.TypeName == "":
+		return s.Type, 0
+	}
+	return s.TypeName, s.TypeID
 }
 
 // forgetLabels forgets issue n's unexplained labels, once it's closed or
@@ -100,8 +132,10 @@ var ErrLabelsHeld = errors.New("labels held back until their events explain them
 // the issue.
 // On a repo that uses issue types, the issue type is guarded too
 // (issueTypeRevertGuard): an untrusted change of it is reverted, and s.Type
-// set back with it, and a type no event explains yet is held back, as such
-// a label is. dirty is as for state.Derive.
+// set back with it, and a type no event explains yet is held back, then
+// left out, as such a label is: s takes the type that stands instead
+// (Snapshot.LeaveOutType), until the type is explained or reverted. dirty
+// is as for state.Derive.
 //
 // A pipeline label that nothing on the timeline explains yet, whose events
 // may be late or which a repo label rename may have put on, is held back
@@ -158,13 +192,21 @@ func (a *Applier) checkLabels(ctx context.Context, s *github.Snapshot, trust git
 	s.SetLabels(labels)
 	s.SettingsEvent, s.TypeEvent = settings, found.TypeEvent(a.IssueTypes)
 	s.DiscRenames, s.DiscLabelTimes = found.DiscRenames, found.DiscLabelTimes
-	if rv := found.IssueTypeRevert; rv != nil {
+	switch rv, lo := found.IssueTypeRevert, found.IssueTypeLeftOut; {
+	case rv != nil:
 		// Nothing after this in the pass acts on the type set back from: not
 		// the type check, a type error's end, a move, a stage run or the
 		// digest. With no issue type, s.Type comes from the labels, as for
 		// an issue read with none.
-		s.Type, s.TypeFromLabels = strings.ToLower(rv.To), rv.To == ""
-		s.SetLabels(s.Labels)
+		s.TypeLeftOut = nil
+		s.SetIssueType(rv.To, rv.ToID)
+	case lo != nil:
+		// Nor on a type left out: until it's explained or reverted, the
+		// pass acts on the type that stands, as if the issue had it, and
+		// Iterate reads the issue again once it's due (unexplainedDue).
+		s.LeaveOutType(*lo)
+	default:
+		s.RestoreType()
 	}
 	s.Closings = found.Closings
 	if len(held) > 0 {
@@ -210,11 +252,13 @@ func (a *Applier) issueTypeRevertGuard(s *github.Snapshot) *github.IssueTypeGuar
 	if !a.IssueTypes {
 		return nil
 	}
-	guard := &github.IssueTypeGuard{}
-	if !s.TypeFromLabels {
-		guard.Type = s.Type
+	// The issue's own type, as GitHub shows it, with its ID: not the type
+	// that stands in for one left out on an earlier check of s.
+	if lo := s.TypeLeftOut; lo != nil {
+		return &github.IssueTypeGuard{Type: lo.Name, ID: lo.ID}
 	}
-	return guard
+	name, id := issueTypeOf(s)
+	return &github.IssueTypeGuard{Type: name, ID: id}
 }
 
 // override records ev, a trusted user's move to stage to, then sets the
