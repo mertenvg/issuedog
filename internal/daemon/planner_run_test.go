@@ -271,8 +271,11 @@ func (p *planRun) settle(step string, want ...string) {
 // round 3, numbered after the interviewer's two, which waits in the digest
 // with notify assigned. Your answer gets a 👍, and the planner's second run
 // gets it as its input and posts the epic's plan, as revision 1 of the
-// plan, at plan-review. A 👍 on the plan comment moves nothing, the spec's
-// revision and approval are as they were, and a restart writes nothing.
+// plan, at plan-review, where it waits in the digest with notify assigned.
+// Your 👍 on the plan comment approves the plan, not the spec: the epic
+// moves to planned with plan revision 1, the plan's item and the assignment
+// go, the spec's revision and approval are as they were, and a restart
+// writes nothing.
 func TestPlannerWholeRunEpic(t *testing.T) {
 	t.Parallel()
 	p := newPlanRun(t)
@@ -300,7 +303,7 @@ func TestPlannerWholeRunEpic(t *testing.T) {
 	react := func(id int64) string { return fmt.Sprintf("POST /issues/comments/%d/reactions", id) }
 	// The digest is #2, which the first pass creates and pins, and each
 	// change to what waits on you edits. #1 is assigned to notify while a
-	// round or the spec waits on you.
+	// round, the spec or the plan waits on you.
 	const (
 		digestEdit = "PATCH /issues/2"
 		assign     = "POST /issues/1/assignees"
@@ -366,7 +369,8 @@ func TestPlannerWholeRunEpic(t *testing.T) {
 
 	// 3. Your answer gets a 👍, which takes round 3 out of the digest and
 	// unassigns you, and the planner's second run, with the answer as its
-	// input, posts the plan at plan-review.
+	// input, posts the plan at plan-review. The plan waits in the digest,
+	// with you assigned, from the pass after.
 	a3 := f.AddComment(p.n, wholeRunOwner, "1a 2a")
 	p.iterate("the plan", 5, react(a3), digestEdit, unassign,
 		"POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:planning")
@@ -382,28 +386,51 @@ func TestPlannerWholeRunEpic(t *testing.T) {
 	planned := p.planComment("the plan", "epic", 123,
 		fmt.Sprintf("<!-- issuedog:transition from=planning to=plan-review rev=1 run=run5 model=sonnet seen=%d -->", a3), plan)
 	p.labels("the plan", labels("plan-review")...)
-	p.settle("the plan")
-	p.waiting("the plan", nil)
+	p.settle("the plan", digestEdit, assign)
+	p.waiting("the plan", []string{"#1 Plan approval p1 1"}, wholeRunOwner)
 
-	// 4. A 👍 on the plan comment moves nothing: it approves no spec. The
-	// restart reads it, and writes nothing either.
-	f.AddReaction(planned.ID, wholeRunOwner, "+1")
-	p.unchanged("a 👍 on the plan")
+	// 4. Your 👍 on the plan comment approves the plan, and no spec: step 1
+	// moves the epic to planned, with plan revision 1 and the 👍 as its
+	// command, which takes the plan out of the digest and unassigns you.
+	// The restart reads it, and writes nothing.
+	thumb := f.AddReaction(planned.ID, wholeRunOwner, "+1")
+	p.iterate("a 👍 on the plan", 5, "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:plan-review",
+		digestEdit, unassign)
+	p.labels("a 👍 on the plan", labels("planned")...)
+	p.waiting("a 👍 on the plan", nil)
+	cs = p.comments()
+	planHash, ok := state.PlanHash(planned.Body)
+	if !ok {
+		t.Fatalf("a 👍 on the plan: the plan comment has no plan hash:\n%s", planned.Body)
+	}
+	if want := fmt.Sprintf("<!-- issuedog:transition from=plan-review to=planned rev=1 body=%s cmd=r%d ", planHash, thumb); cs[len(cs)-1].Author.Login != app || !strings.Contains(cs[len(cs)-1].Body, want) {
+		t.Errorf("a 👍 on the plan: the newest comment, by %s, =\n%s\nwant the App's approval, with %q", cs[len(cs)-1].Author.Login, cs[len(cs)-1].Body, want)
+	}
+	// The approval's own writes settle the digest and assignment, so the
+	// pass after it only reads the epic again, and writes nothing.
+	p.settle("a 👍 on the plan")
 	p.restart("a 👍 on the plan")
-	p.labels("the end", labels("plan-review")...)
+	p.labels("the end", labels("planned")...)
 	s := p.snapshot(p.n)
 	got, ok := state.LatestRevision(s, slug, state.SpecRevision, func(int64) bool { return false })
 	if !ok || got != specRev || !got.Matches(s) {
 		t.Errorf("the end: the latest spec revision = %+v (found %t, matches %t); want it as it was, %+v", got, ok, got.Matches(s), specRev)
 	}
-	approvals := 0
+	if approved, c, ok := state.ApprovedPlan(s, slug, func(int64) bool { return false }); !ok || approved.Rev != 1 || c.ID != planned.ID {
+		t.Errorf("the end: the approved plan = %+v in comment %d (found %t); want plan revision 1, in comment %d", approved, c.ID, ok, planned.ID)
+	}
+	approvals, planApprovals := 0, 0
 	for _, c := range p.comments() {
 		if strings.Contains(c.Body, " to=planning rev=1 ") {
 			approvals++
 		}
+		if strings.Contains(c.Body, " to=planned rev=1 ") {
+			planApprovals++
+		}
 	}
-	if approvals != 1 || p.plans() != 1 {
-		t.Errorf("the end: %d approvals and %d plans; want the one approval, by /approve, and one plan", approvals, p.plans())
+	if approvals != 1 || planApprovals != 1 || p.plans() != 1 {
+		t.Errorf("the end: %d spec approvals, %d plan approvals and %d plans; want the one spec approval, by /approve, the one plan approval, by your 👍, and one plan",
+			approvals, planApprovals, p.plans())
 	}
 	f.Advance(time.Hour)
 	p.unchanged("the end, an hour on")
@@ -412,9 +439,10 @@ func TestPlannerWholeRunEpic(t *testing.T) {
 // TestPlannerWholeRunStory: a code owner sets stage:planning on a story
 // with a parent. The planner runs at once, and with plan.review false, the
 // story goes straight to planned, with one plan comment that ends with the
-// skip line, not the review lines. A story back at planning from a
-// discussion hold, whose move there carries origin, goes to plan-review
-// instead, whatever plan.review says: its plan asks for review.
+// skip line, not the review lines, and nothing waits in the digest. A
+// story back at planning from a discussion hold, whose move there carries
+// origin, goes to plan-review instead, whatever plan.review says: its plan
+// asks for review, and waits in the digest with notify assigned.
 func TestPlannerWholeRunStory(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -424,9 +452,12 @@ func TestPlannerWholeRunStory(t *testing.T) {
 		hold   bool
 		golden string // in testdata/plan
 		to     string
+		// waits is the digest's items once the plan settles: the plan's
+		// approval, at plan-review, which assigns notify.
+		waits []string
 	}{
-		{"set by a code owner", false, "story-no-review", "planned"},
-		{"back from a discussion hold", true, "story", "plan-review"},
+		{"set by a code owner", false, "story-no-review", "planned", nil},
+		{"back from a discussion hold", true, "story", "plan-review", []string{"#2 Plan approval p2 1"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -475,8 +506,15 @@ func TestPlannerWholeRunStory(t *testing.T) {
 				t.Errorf("the plan =\n%s\nwant it to ask for review only back from a discussion hold, and to say it skips review otherwise", body)
 			}
 			p.labels("the plan", "stage:"+tc.to, "type:story")
-			p.settle("the plan")
-			p.waiting("the plan", nil)
+			// A plan at plan-review is a digest item, with notify assigned,
+			// from the pass after; a planned story waits on no one.
+			if tc.waits != nil {
+				p.settle("the plan", "PATCH /issues/3", "POST /issues/2/assignees")
+				p.waiting("the plan", tc.waits, wholeRunOwner)
+			} else {
+				p.settle("the plan")
+				p.waiting("the plan", nil)
+			}
 			p.restart("the plan")
 		})
 	}
@@ -487,7 +525,7 @@ func TestPlannerWholeRunStory(t *testing.T) {
 // run. After loop.max_attempts runs, 3, there's one kind=attempts error,
 // naming the scope rule, and no run follows: not on the next pass, not
 // after a restart, and not for eve's comment. Your comment starts a new
-// run, whose plan is posted.
+// run, whose plan is posted, and waits in the digest with you assigned.
 func TestPlannerWholeRunFails(t *testing.T) {
 	t.Parallel()
 	p := newPlanRun(t)
@@ -527,7 +565,8 @@ func TestPlannerWholeRunFails(t *testing.T) {
 	p.unchanged("eve's comment")
 
 	// Your comment gets a 👍, takes the error out of the digest, and starts
-	// a new count: its run's plan is posted.
+	// a new count: its run's plan is posted, and the pass after lists it in
+	// the digest and assigns you.
 	again := f.AddComment(p.n, wholeRunOwner, "Please try again: T3's scope is infra.")
 	p.iterate("your comment", 4, fmt.Sprintf("POST /issues/comments/%d/reactions", again), "PATCH /issues/2", "DELETE /issues/1/assignees",
 		"POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:planning")
@@ -536,5 +575,6 @@ func TestPlannerWholeRunFails(t *testing.T) {
 	if want := fmt.Sprintf("\n\n<!-- issuedog:transition from=planning to=plan-review rev=1 run=run4 model=sonnet seen=%d -->\n", again); !strings.Contains(cs[len(cs)-1].Body, want) {
 		t.Errorf("your comment: the newest comment =\n%s\nwant run 4's plan, with %q", cs[len(cs)-1].Body, want)
 	}
-	p.settle("your comment")
+	p.settle("your comment", "PATCH /issues/2", "POST /issues/1/assignees")
+	p.waiting("your comment", []string{"#1 Plan approval p2 1"}, wholeRunOwner)
 }
