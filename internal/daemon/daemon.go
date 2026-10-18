@@ -64,6 +64,9 @@ type Daemon struct {
 
 	closingSeen map[int]closingListed   // closed issues whose close is judged, as they were listed then (closing.go)
 	closingDue  map[int]*gogithub.Issue // closed issues with a close to judge, as last listed (closingList)
+	// closedListed are the issues the poll last listed closed, never a
+	// pull request, for a finished story's children (digestDoneStands).
+	closedListed map[int]bool
 }
 
 // CurrentTrust is a github.Trust that asks st.Trust on each call. Iterate's
@@ -373,6 +376,11 @@ func (d *Daemon) reload(ctx context.Context) {
 // (digest.go). One only the digest's title rule would take is judged after
 // the comments (digestTake). A closed issue whose close is still to judge
 // is kept for closingPass (closingList), and an open one forgets its close.
+// Which issues it last listed closed it keeps too (closedListed), adding
+// each one listed closed and dropping each one listed open, for a finished
+// story's children (#278): a start's first poll lists every issue, and
+// each later one every issue that changed, so a close or reopen is never
+// missed.
 func (d *Daemon) poll(ctx context.Context) error {
 	a := d.Step.Applier
 	start := d.issuesSince.IsZero() // a start's first poll, which lists every issue
@@ -385,6 +393,16 @@ func (d *Daemon) poll(ctx context.Context) error {
 		for _, is := range issues {
 			d.issuesSince = latest(d.issuesSince, is.GetUpdatedAt().Time)
 			n := is.GetNumber()
+			switch {
+			case is.IsPullRequest():
+			case is.GetState() == "open":
+				delete(d.closedListed, n)
+			default:
+				if d.closedListed == nil {
+					d.closedListed = map[int]bool{}
+				}
+				d.closedListed[n] = true
+			}
 			switch {
 			case is.IsPullRequest():
 			case d.digest.listed(a.AppSlug, is) || is.GetState() != "open": // a digest is never in the pipeline

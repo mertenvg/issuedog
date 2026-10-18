@@ -20,7 +20,9 @@ import (
 // list (Daemon.digestCache), which Iterate fills whether or not the digest
 // is on, so the two never disagree. It holds no item kind of its own:
 // any item on an issue assigns it, so a kind the list gains, such as
-// #192's holds, assigns with no change here.
+// #192's holds, assigns with no change here. It takes the items that
+// stand on the pass, as the digest does (Daemon.digestCacheOf), which
+// leaves out a finished story's while a child is open (#278).
 //
 // A pipeline issue, here (assignPipeline), is an open issue the daemon
 // holds a snapshot of (never the digest, which has none) with a stage
@@ -109,7 +111,7 @@ func (d *Daemon) assignNotify() []string {
 // assignIssue writes the difference between s's assignees and what they
 // should be (see the top of this file), and records whether s is managed.
 func (d *Daemon) assignIssue(ctx context.Context, s *github.Snapshot, notify []string) error {
-	n, items := s.Number, len(d.digestCache[s.Number]) > 0
+	n, items := s.Number, len(d.digestCacheOf(s.Number)) > 0
 	pipeline := assignPipeline(s, d.Step.AppSlug, items)
 	var add, remove []string
 	switch {
