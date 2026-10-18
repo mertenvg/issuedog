@@ -140,7 +140,7 @@ func DiscOutsider(association string) bool {
 	return false
 }
 
-// Reaction is one reaction to a comment.
+// Reaction is one reaction to a comment or to an issue itself.
 type Reaction struct {
 	ID int64
 	// User is who reacted.
@@ -242,13 +242,31 @@ func (c *Client) Reactions(ctx context.Context, owner, repo string, commentID in
 	if err != nil {
 		return nil, fmt.Errorf("list reactions to comment %d in %s/%s: %w", commentID, owner, repo, err)
 	}
+	return reactionsOf(all), nil
+}
+
+// IssueReactions lists the reactions to issue number itself, not to its
+// comments, oldest first, as Reactions does for a comment. A repeat of an
+// unchanged listing is a 304, which costs no rate limit. A reaction doesn't
+// move the issue's updated_at, so only this read sees a new one.
+func (c *Client) IssueReactions(ctx context.Context, owner, repo string, number int) ([]Reaction, error) {
+	opts := &gogithub.ListReactionOptions{ListOptions: gogithub.ListOptions{PerPage: 100}}
+	all, err := collect(c.Client.Reactions.ListIssueReactionsIter(ctx, owner, repo, number, opts))
+	if err != nil {
+		return nil, fmt.Errorf("list reactions to %s/%s#%d: %w", owner, repo, number, err)
+	}
+	return reactionsOf(all), nil
+}
+
+// reactionsOf turns GitHub's reactions into Reactions, in the same order.
+func reactionsOf(all []*gogithub.Reaction) []Reaction {
 	reactions := make([]Reaction, 0, len(all))
 	for _, r := range all {
 		reactions = append(reactions, Reaction{
 			ID: r.GetID(), User: authorOf(r.GetUser()), Content: r.GetContent(), CreatedAt: r.GetCreatedAt().Time,
 		})
 	}
-	return reactions, nil
+	return reactions
 }
 
 func authorOf(u *gogithub.User) Author {
