@@ -575,7 +575,8 @@ func interviewerIssue(s *github.Snapshot, appSlug, titleNote, bodyNote string) s
 
 // ivAppLabel is the heading of the App's clean comment c in
 // conversation.md: a question round's number and question IDs, or a
-// revision's number.
+// revision's number and kind, "of the spec" or "of the plan". A revision
+// marker of a kind it doesn't know labels nothing.
 func ivAppLabel(c github.Comment, rounds []interviewerRound, appSlug string) string {
 	at := "comment " + strconv.FormatInt(c.ID, 10) + " by issuedog"
 	for _, r := range rounds {
@@ -583,9 +584,11 @@ func ivAppLabel(c github.Comment, rounds []interviewerRound, appSlug string) str
 			return at + ": Round " + strconv.Itoa(r.Number) + ", " + ivQuestionRange(r)
 		}
 	}
+	of := map[state.RevisionKind]string{state.SpecRevision: "spec", state.PlanRevision: "plan"}
 	for _, m := range github.TrustedMarkers(c.Author, c.Body, appSlug) {
-		if rev, err := strconv.Atoi(m.Fields["rev"]); m.Kind == "revision" && err == nil && rev > 0 {
-			return at + ": revision " + strconv.Itoa(rev) + " of the spec"
+		rev, err := strconv.Atoi(m.Fields["rev"])
+		if what, ok := of[state.RevisionKind(m.Fields["kind"])]; m.Kind == "revision" && ok && err == nil && rev > 0 {
+			return at + ": revision " + strconv.Itoa(rev) + " of the " + what
 		}
 	}
 	return at

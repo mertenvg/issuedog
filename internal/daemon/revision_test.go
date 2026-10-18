@@ -436,3 +436,70 @@ func TestApproveByReactionErrors(t *testing.T) {
 		})
 	}
 }
+
+// planRev is a plan comment, plan revision rev of text, its last line the
+// plan revision marker with the hash of the text above it, as a move with
+// PlanRev writes it. It has no transition marker, so the issue stays where
+// it is: only a stage set by hand after planning brings a plan comment to
+// spec-review, and the readers below read only revision markers.
+func planRev(rev int, text string) string {
+	return fmt.Sprintf("%s\n<!-- issuedog:revision kind=plan rev=%d body=%s -->", text, rev, state.BodyHash(text))
+}
+
+// At spec-review, a plan revision after the latest spec revision is never
+// taken for it (plan #247, assumption 2): approval by 👍 or /approve, a
+// revision request and ReviewVisit read the spec revision only, and a spec
+// revision posted after a plan revision is numbered from the spec revisions
+// alone.
+func TestSpecReadersIgnorePlanRevision(t *testing.T) {
+	t.Parallel()
+	atReview, planning, clarifying := []string{"stage:spec-review"}, []string{"stage:planning"}, []string{"stage:clarifying"}
+	plan := planRev(1, "### Plan for #1 (rev 1)\n\nT1. Do it.")
+	for _, tt := range []struct {
+		name  string
+		setup func(testing.TB) *githubtest.Fake
+		want  outcome
+	}{
+		{"a 👍 on the spec revision approves it, not the plan revision after it",
+			review(func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, app, plan)
+				f.AddReaction(1001, "owner", "+1")
+			}),
+			outcome{comments: []string{approvedRev(1, "owner's 👍", "r1003", "1001")}, labels: planning}},
+		{"a 👍 on the plan revision approves no spec, and no spec revision is posted",
+			review(func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, app, plan)
+				f.AddReaction(1002, "owner", "+1")
+			}),
+			outcome{labels: atReview}},
+		{"an /approve after the plan revision approves the spec revision",
+			review(func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, app, plan)
+				post(t, f, 1003, "owner", "/approve")
+			}),
+			outcome{comments: []string{approvedRev(1, "owner's `/approve`", "1003", "1003")}, labels: planning, acks: []string{"/approve"}}},
+		{"an /approve before the plan revision is after the latest spec revision, so it approves",
+			review(func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, "owner", "/approve")
+				post(t, f, 1003, app, plan)
+			}),
+			outcome{comments: []string{approvedRev(1, "owner's `/approve`", "1002", "1002")}, labels: planning, acks: []string{"/approve"}}},
+		{"a comment before the plan revision is a revision request on the spec revision",
+			review(func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, "owner", "too long")
+				post(t, f, 1003, app, plan)
+			}),
+			outcome{comments: []string{sentBack("1002")}, labels: clarifying, acks: []string{"too long"}}},
+		{"once the body changes, the next spec revision is numbered from the spec revisions alone",
+			review(func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, app, planRev(3, "A plan."))
+				f.EditBody(1, "owner", "body v2")
+			}),
+			outcome{comments: []string{posted(2, "body v2", "", "", "1001")}, labels: atReview}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var in []string
+			check(t, tt.setup, visit(t, owners, &in), tt.want)
+		})
+	}
+}
