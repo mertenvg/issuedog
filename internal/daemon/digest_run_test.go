@@ -611,8 +611,9 @@ func TestDigestRunTransferredRevert(t *testing.T) {
 // 2026-10-15 note, and returns the edit history queries each step sent.
 // Once the first pass created the digest as 12, the App files task 13 at
 // ready, with an origin marker, and a pass reads it. Then mertenvg edits
-// the origin out of its body and, if renamed is set, renames it issuedog
-// digest. The steps are:
+// the origin out of its body, the original post's text is deleted from
+// its history, so there's no origin to repost, and, if renamed is set,
+// mertenvg renames it issuedog digest. The steps are:
 //  1. the pass that lists the change;
 //  2. an unchanged pass, which sends only conditional GETs, answered 304,
 //     and writes nothing;
@@ -631,6 +632,10 @@ func digestRunTitleRule(t *testing.T, renamed bool) []int {
 	f.AddComment(n, app, "<!-- issuedog:transition from=intake to=ready run=rready -->")
 	iterate(t, d)
 	f.EditBody(n, digestRunOwner, digestTaskEdited)
+	// With the original post's text gone from the history, the App has no
+	// version with the origin to repost (#291), so no App comment carries
+	// one, and the title rule still needs the history to keep 13 out.
+	f.DeleteRevision(n, 0)
 	if renamed {
 		f.RenameIssue(n, digestRunOwner, "issuedog digest")
 	}
