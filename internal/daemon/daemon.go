@@ -139,8 +139,8 @@ func (d *Daemon) Run(ctx context.Context) {
 // Iterate runs one iteration, all but the sleep. It syncs the clone and
 // reloads config and trust, polls for changes, judges the closes still to
 // judge (closingPass), reads changed issues again, those it reopened
-// included, then runs step 1 on them and on every issue at spec-review, whose 👍s
-// change no updated_at (plan #5, assumption 7), on every issue with
+// included, then runs step 1 on them and on every issue at spec-review or
+// plan-review, whose 👍s change no updated_at (plan #5, assumption 7), on every issue with
 // triage:ask, a flag waiting on a 👍 (FlagByReaction), and on every issue
 // that had an open state error after its last step 1, waiting on a 👍 too
 // (ErrorByReaction), and on every held issue, for its discussion
@@ -231,7 +231,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	defer func() { d.Step.Touched = nil }()
 	for _, n := range slices.Sorted(maps.Keys(d.snaps)) {
 		s := d.snaps[n]
-		if touched[n] || (!read[n] && !slices.ContainsFunc(s.Labels, isSpecReview) && !slices.ContainsFunc(s.Labels, flagAsked) &&
+		if touched[n] || (!read[n] && !slices.ContainsFunc(s.Labels, isReview) && !slices.ContainsFunc(s.Labels, flagAsked) &&
 			!slices.ContainsFunc(s.Labels, discHeldLabel) && !d.openErrs[n]) {
 			continue
 		}
@@ -499,9 +499,11 @@ func gone(err error) bool {
 	return errors.Is(err, github.ErrTransferred) || errors.As(err, &r) && r.StatusCode == http.StatusMovedPermanently
 }
 
-func isSpecReview(label string) bool {
+// isReview reports whether label is the stage label of spec-review or
+// plan-review, where a 👍 on a revision approves it (ApproveByReaction).
+func isReview(label string) bool {
 	stage, ok := state.ParseLabel(label)
-	return ok && stage == state.SpecReview
+	return ok && (stage == state.SpecReview || stage == state.PlanReview)
 }
 
 func latest(a, b time.Time) time.Time {

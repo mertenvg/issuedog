@@ -84,17 +84,28 @@ func (a *Applier) PostRevision(ctx context.Context, s *github.Snapshot, dirty fu
 // revision while the body still has its hash and isn't dirty (SPEC §7.4):
 // Apply moves the issue to planning with cmd=<comment id>, rev, body and
 // seen=<comment id>, so a comment posted after the /approve is planning's
-// input (state.Inputs), then the 👍. Check rejects it otherwise, when the
-// table has no such move for the issue's class (SPEC §7.2), and at
-// plan-review, which isn't handled yet.
+// input (state.Inputs), then the 👍. At plan-review, one posted after the
+// latest plan revision comment approves that plan revision while
+// state.PlanApproval gives no reason it can't be (plan #248, Q1a and Q2a):
+// Apply moves the issue to planned the same way, with the plan's hash as
+// body. Check rejects it otherwise, with the reason, and when the table has
+// no such move for the issue's class (SPEC §7.2).
 func ApproveCommand() Handler {
 	return Handler{
 		Check: func(_ context.Context, a *Applier, c Cmd) error {
-			// Once Apply's marker exists, the stage is planning, so Step
-			// rejects or finishes the command before it asks Check.
+			// Once Apply's marker exists, the stage is planning or planned,
+			// so Step rejects or finishes the command before it asks Check.
 			is := state.Derive(c.S, a.AppSlug, c.Dirt.Has)
 			if is.Stage == state.PlanReview {
-				return Rejection{Reason: "approving a plan isn't handled yet"}
+				latest, why := state.PlanApproval(c.S, a.AppSlug, c.Dirt.Has)
+				switch {
+				case len(why) > 0:
+					return planRejection(latest, why[0], c.Dirt)
+				case c.Comment.ID < latest.Comment:
+					return Rejection{Reason: fmt.Sprintf("it was posted before plan revision %d, the latest. "+
+						"To approve that, react 👍 to it, or post `/approve` again", latest.Rev), Final: true}
+				}
+				return inTable(is, state.Planned, state.TriggerPlanApproved, "on approval")
 			}
 			latest, ok := state.LatestRevision(c.S, a.AppSlug, state.SpecRevision, c.Dirt.Has)
 			switch {
@@ -113,25 +124,66 @@ func ApproveCommand() Handler {
 			return inTable(is, state.Planning, state.TriggerSpecApproved, "on approval")
 		},
 		Apply: func(ctx context.Context, a *Applier, c Cmd) error {
-			return a.approve(ctx, c.S, c.Dirt, state.CmdKey(c.Comment.ID), c.Comment.Author.Login+"'s `/approve`")
+			stage := state.Derive(c.S, a.AppSlug, c.Dirt.Has).Stage
+			return a.approve(ctx, c.S, c.Dirt, stage, state.CmdKey(c.Comment.ID), c.Comment.Author.Login+"'s `/approve`")
 		},
 	}
 }
 
+// planRejection is /approve's Rejection at plan-review for why, a reason
+// state.PlanApproval gives that latest can't be approved, worded like the
+// spec's. The daemon posts no plan revision of its own (plan #248, Q1a), so
+// where only a new plan helps, the reason says how to get one, and is Final.
+// PlanNoRevision may mean the only plan comment was made dirty or deleted,
+// not that no plan was ever posted, so it doesn't say "yet".
+func planRejection(latest state.Revision, why state.PlanReason, d Dirt) Rejection {
+	const replan = "To get a new plan, post `/revise`, or any other comment"
+	switch why {
+	case state.PlanNoRevision:
+		return Rejection{Reason: "there's no clean plan revision to approve. " + replan, Final: true}
+	case state.PlanHidden:
+		return Rejection{Reason: fmt.Sprintf("a comment of mine after plan revision %d was edited without approval or deleted, "+
+			"so it may hide a newer plan revision. %s", latest.Rev, replan), Final: true}
+	case state.PlanChanged:
+		return Rejection{Reason: fmt.Sprintf("the comment of plan revision %d was edited after I posted it, "+
+			"so it no longer matches that revision's hash, `%s`. %s", latest.Rev, latest.Hash, replan), Final: true}
+	case state.PlanBodyDirty:
+		return Rejection{Reason: fmt.Sprintf("the issue description has an edit by %s that wasn't approved, so I can't approve the plan", d[state.BodyID])}
+	}
+	return Rejection{Reason: fmt.Sprintf("plan revision %d can't be approved (reason %d)", latest.Rev, why)}
+}
+
 // ApproveByReaction returns the reaction trigger for Step.Reactions that
-// approves a spec by 👍 (SPEC §7.4). At spec-review, the earliest 👍 on the
-// latest spec revision comment from a user trust trusts, not a bot, approves
-// it while the body still has its hash: the issue moves to planning with
-// cmd=r<reaction id>, rev and body. Other 👍s, the App's included, are
-// ignored. At any other stage it reads nothing, so removing the 👍 once the
-// approval is applied changes nothing. A 👍 the table can't apply is
-// reported once by Transition (SPEC §5.3), then only logged. An issue of a
-// type ClassOf doesn't know is only logged: the §4 type error will report it.
+// approves a spec or a plan by 👍 (SPEC §7.4). At spec-review, the earliest
+// 👍 on the latest spec revision comment from a user trust trusts, not a
+// bot, approves it while the body still has its hash: the issue moves to
+// planning with cmd=r<reaction id>, rev and body. At plan-review, the same
+// on the latest plan revision comment approves it while state.PlanApproval
+// gives no reason it can't be: the issue moves to planned, with the plan's
+// hash as body. Until then, its reactions aren't read. Other 👍s, the App's,
+// those on an earlier revision and those on a revision of the other kind
+// included, are ignored. At any other stage it reads nothing, so removing
+// the 👍 once the approval is applied changes nothing. A 👍 the table can't
+// apply is reported once by Transition (SPEC §5.3), then only logged. An
+// issue of a type ClassOf doesn't know is only logged: the §4 type error
+// will report it.
 func ApproveByReaction(trust github.Trust) func(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt) error {
 	return func(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt) error {
-		latest, ok := state.LatestRevision(s, a.AppSlug, state.SpecRevision, d.Has)
 		is := state.Derive(s, a.AppSlug, d.Has)
-		if is.Stage != state.SpecReview || !ok {
+		var latest state.Revision
+		switch is.Stage {
+		case state.SpecReview:
+			var ok bool
+			if latest, ok = state.LatestRevision(s, a.AppSlug, state.SpecRevision, d.Has); !ok {
+				return nil
+			}
+		case state.PlanReview:
+			var why []state.PlanReason
+			if latest, why = state.PlanApproval(s, a.AppSlug, d.Has); len(why) > 0 {
+				logr.Debugf("%s/%s#%d: no approval of the plan by 👍: %s", a.Owner, a.Repo, s.Number, planRejection(latest, why[0], d).Reason)
+				return nil
+			}
+		default:
 			return nil
 		}
 		if _, err := state.ClassOf(is.Item); err != nil {
@@ -158,39 +210,58 @@ func ApproveByReaction(trust github.Trust) func(ctx context.Context, a *Applier,
 		if first == nil {
 			return nil
 		}
-		err = a.approve(ctx, s, d, state.ReactionKey(first.ID), first.User.Login+"'s 👍")
+		err = a.approve(ctx, s, d, is.Stage, state.ReactionKey(first.ID), first.User.Login+"'s 👍")
 		if errors.Is(err, state.ErrNoTransition) {
-			logr.Debugf("%s/%s#%d: ignoring the 👍 on revision %d: %v", a.Owner, a.Repo, s.Number, latest.Rev, err)
+			logr.Debugf("%s/%s#%d: ignoring the 👍 on %s revision %d: %v", a.Owner, a.Repo, s.Number, is.Stage, latest.Rev, err)
 			return nil
 		}
 		return err
 	}
 }
 
-// approve moves s from spec-review to planning on key, approving the latest
-// revision, if the body isn't dirty and still has its hash, and the revision
-// isn't Hidden. by says whose approval it is. Its seen is a comment key's
-// ID, else, for a 👍, the newest comment read (newestRead), so a comment
-// posted after s was read is planning's input. That swallows no revision
+// approve moves s on key from stage, spec-review or plan-review, approving
+// the latest revision of the stage's kind. by says whose approval it is.
+//   - From spec-review, to planning, if the body isn't dirty and still has
+//     the revision's hash, and the revision isn't Hidden.
+//   - From plan-review, to planned, if state.PlanApproval gives no reason
+//     it can't be.
+//
+// The move's rev and body are the revision's number and hash, which
+// state.ApprovedPlan reads back for a plan. Its seen is a comment key's ID,
+// else, for a 👍, the newest comment read (newestRead), so a comment posted
+// after s was read is the next stage's input. That swallows no revision
 // request: Step handled every comment in s first, and one it rejected for
 // the table or the type would make the approval fail the same way.
-func (a *Applier) approve(ctx context.Context, s *github.Snapshot, d Dirt, key state.Key, by string) error {
-	if d.Has(state.BodyID) {
-		logr.Debugf("%s/%s#%d: not approving by %s: the body has an edit by %s that wasn't approved", a.Owner, a.Repo, s.Number, by, d[state.BodyID])
-		return nil
+func (a *Applier) approve(ctx context.Context, s *github.Snapshot, d Dirt, stage state.Stage, key state.Key, by string) error {
+	var latest state.Revision
+	var m Move
+	if stage == state.PlanReview {
+		var why []state.PlanReason
+		if latest, why = state.PlanApproval(s, a.AppSlug, d.Has); len(why) > 0 {
+			logr.Debugf("%s/%s#%d: not approving the plan by %s: %s", a.Owner, a.Repo, s.Number, by, planRejection(latest, why[0], d).Reason)
+			return nil
+		}
+		m = Move{To: state.Planned, Trigger: state.TriggerPlanApproved, Key: key,
+			Fields: map[string]string{"rev": strconv.Itoa(latest.Rev), "body": latest.Hash},
+			Text:   fmt.Sprintf("Revision %d of the plan is approved, by %s.", latest.Rev, by)}
+	} else {
+		if d.Has(state.BodyID) {
+			logr.Debugf("%s/%s#%d: not approving by %s: the body has an edit by %s that wasn't approved", a.Owner, a.Repo, s.Number, by, d[state.BodyID])
+			return nil
+		}
+		latest, _ = state.LatestRevision(s, a.AppSlug, state.SpecRevision, d.Has)
+		if latest.Hidden {
+			logr.Debugf("%s/%s#%d: not approving revision %d by %s: a dirty or deleted comment of the App's after it may hide a newer one", a.Owner, a.Repo, s.Number, latest.Rev, by)
+			return nil
+		}
+		if hash := state.BodyHash(s.Body); hash != latest.Hash {
+			logr.Debugf("%s/%s#%d: not approving revision %d by %s: the body's hash is %s, not %s", a.Owner, a.Repo, s.Number, latest.Rev, by, hash, latest.Hash)
+			return nil
+		}
+		m = Move{To: state.Planning, Trigger: state.TriggerSpecApproved, Key: key,
+			Fields: map[string]string{"rev": strconv.Itoa(latest.Rev), "body": latest.Hash},
+			Text:   fmt.Sprintf("Revision %d of the spec is approved, by %s.", latest.Rev, by)}
 	}
-	latest, _ := state.LatestRevision(s, a.AppSlug, state.SpecRevision, d.Has)
-	if latest.Hidden {
-		logr.Debugf("%s/%s#%d: not approving revision %d by %s: a dirty or deleted comment of the App's after it may hide a newer one", a.Owner, a.Repo, s.Number, latest.Rev, by)
-		return nil
-	}
-	if hash := state.BodyHash(s.Body); hash != latest.Hash {
-		logr.Debugf("%s/%s#%d: not approving revision %d by %s: the body's hash is %s, not %s", a.Owner, a.Repo, s.Number, latest.Rev, by, hash, latest.Hash)
-		return nil
-	}
-	m := Move{To: state.Planning, Trigger: state.TriggerSpecApproved, Key: key,
-		Fields: map[string]string{"rev": strconv.Itoa(latest.Rev), "body": latest.Hash},
-		Text:   fmt.Sprintf("Revision %d of the spec is approved, by %s.", latest.Rev, by)}
 	m.Fields[state.FieldSeen] = key.ID
 	if _, ok := key.Comment(); !ok {
 		m.Fields[state.FieldSeen] = strconv.FormatInt(newestRead(s, a.AppSlug, latest.Comment), 10)
@@ -201,15 +272,61 @@ func (a *Applier) approve(ctx context.Context, s *github.Snapshot, d Dirt, key s
 	return nil
 }
 
+// classWords words the classes of a §7.2 row for inTable's reason, in this
+// order. A set is worded as one when the row has all of it.
+var classWords = []struct {
+	c    state.Class
+	word string
+}{
+	{state.ClassEpic, "an epic"},
+	{state.AnyStory, "a story"},
+	{state.ClassStory, "a story with a parent"},
+	{state.ClassOwnerStory, "a story with no parent"},
+	{state.ClassTask, "a task from a plan"},
+	{state.ClassOwnerTask, "a task filed by the owner"},
+	{state.ClassHumanTask, "a human task"},
+	{state.ClassBug, "a bug"},
+	{state.ClassUntyped, "an issue with no type"},
+	{state.ClassNewBug, "a bug before `ready`"},
+	{state.ClassNewOwnerTask, "a task filed by the owner before `ready`"},
+}
+
+// rowClasses words the classes the table moves from from to to on trigger
+// (SPEC §7.2), as the subject of inTable's reason: "only an epic", "only an
+// epic, or a story with no parent,", or "no issue" if it moves none.
+func rowClasses(from, to state.Stage, trigger state.Trigger) string {
+	var allowed state.Class
+	for c := state.Class(1); c&state.All != 0; c <<= 1 {
+		if _, err := state.Lookup(from, to, c, trigger); err == nil {
+			allowed |= c
+		}
+	}
+	var words []string
+	for _, w := range classWords {
+		if allowed&w.c == w.c {
+			words, allowed = append(words, w.word), allowed&^w.c
+		}
+	}
+	switch len(words) {
+	case 0:
+		return "no issue"
+	case 1:
+		return "only " + words[0]
+	}
+	return "only " + strings.Join(words[:len(words)-1], ", ") + ", or " + words[len(words)-1] + ","
+}
+
 // inTable returns a Final Rejection unless the table moves an issue like is
-// to stage to on trigger (SPEC §7.2). on says when, for the reason.
+// to stage to on trigger (SPEC §7.2). on says when, for the reason, which
+// names the classes the table does move so (rowClasses).
 func inTable(is state.Issue, to state.Stage, trigger state.Trigger, on string) error {
 	class, err := state.ClassOf(is.Item)
 	if err != nil {
 		return Rejection{Reason: fmt.Sprintf("I can't tell what kind of issue this is: %v", err), Final: true}
 	}
 	if _, err := state.Lookup(is.Stage, to, class, trigger); errors.Is(err, state.ErrNoTransition) {
-		return Rejection{Reason: fmt.Sprintf("only an epic, or a story with no parent, goes from `%s` to `%s` %s, and this is a %s issue", is.Stage, to, on, class), Final: true}
+		return Rejection{Reason: fmt.Sprintf("%s goes from `%s` to `%s` %s, and this is a %s issue",
+			rowClasses(is.Stage, to, trigger), is.Stage, to, on, class), Final: true}
 	} else if err != nil {
 		return fmt.Errorf("move to %s %s: %w", to, on, err)
 	}
