@@ -91,11 +91,8 @@ func (st *Step) why(ctx context.Context, s *github.Snapshot, d Dirt, c github.Co
 	if err := cmd.Check(stage); err != nil {
 		return Rejection{Reason: err.Error()}, Handler{}, nil
 	}
-	h, ok := st.Commands[cmd.Name]
-	switch {
-	case !ok && cmd.Name == "done":
-		return Rejection{Reason: "`/done` isn't handled yet"}, h, nil
-	case h.Check == nil:
+	h := st.Commands[cmd.Name]
+	if h.Check == nil {
 		return Rejection{}, h, nil
 	}
 	err := h.Check(ctx, st.Applier, Cmd{Command: cmd, Comment: c, S: s, Dirt: d, Trust: st.Trust})
@@ -247,8 +244,10 @@ func resume(is state.Issue, self bool, above madeAboveSet, by string, after bool
 	m := Move{To: at, Trigger: state.TriggerResume, Fields: state.HeldStackFields(fields, is.HeldStack.Seen),
 		Text: fmt.Sprintf("Resumed by %s, back to `%s`.", by, at)}
 	if after {
-		m = Move{To: state.Clarifying, Trigger: state.TriggerResumeAfterDiscussion, Fields: resolveFields(is.HeldStack, time.Time{}),
-			Text: fmt.Sprintf("Resumed by %s. A discussion on this issue was resolved during its hold from `%s`, so it goes to `clarifying`. %s", by, at, ivHoldWait(is.Item))}
+		fields := resolveFields(is.HeldStack, time.Time{})
+		m = Move{To: state.Clarifying, Trigger: state.TriggerResumeAfterDiscussion, Fields: fields,
+			Text: fmt.Sprintf("Resumed by %s. A discussion on this issue was resolved during its hold from `%s`, so it goes to `clarifying`. %s",
+				by, at, ivHoldWait(is.Item, state.Stage(fields["origin"])))}
 	}
 	return m, ended > 0 && len(left) == 0
 }

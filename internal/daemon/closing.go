@@ -521,7 +521,8 @@ func (a *Applier) closingRevertComment(ctx context.Context, s *github.Snapshot, 
 // ever reverts an untrusted close, and whose move no marker records:
 //   - A trusted user's moves s to held (closed → held), keyed by its event,
 //     at the stage the latest transition marker shows, which an accepted
-//     close leaves as it was, as an owner hold with no cmd, which /resume
+//     close leaves as it was, or for the App's own move to closed, the
+//     stage it moved from, as an owner hold with no cmd, which /resume
 //     here ends (heldStackEnds); the move's labels take the closed stage
 //     off. On a held issue, the first hold's at and origin stay. A move the
 //     table lacks, as for a type the pipeline doesn't know, holds nothing:
@@ -572,8 +573,14 @@ func (a *Applier) closingReopen(ctx context.Context, s *github.Snapshot, trust g
 		return true, a.closingCloseAgain(ctx, s, dirty, reopen, r, label)
 	}
 	at, origin, seen := is.Stage, state.Stage(""), is.Round
-	if is.Stage == state.Held {
+	switch is.Stage {
+	case state.Held:
 		at, origin, seen = is.HeldStack.At, is.HeldStack.Origin, is.HeldStack.Seen
+	case state.Closed:
+		// The App's own move to closed (Transition), as for a human task
+		// on /done: the stage it was closed from.
+		m, _ := latestTransition(is)
+		at = state.Stage(m.Fields["from"])
 	}
 	if !at.Open() || at == state.Held {
 		at = state.Clarifying // no stage /resume could restore

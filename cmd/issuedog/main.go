@@ -258,6 +258,7 @@ func newStep(a *daemon.Applier, tr github.Trust, models func() config.Models) *d
 	st.Commands = daemon.Commands(st.CurrentTrust())
 	st.Commands["approve"] = daemon.ApproveCommand()
 	st.Commands["revise"] = daemon.ReviseCommand()
+	st.Commands["done"] = daemon.DoneCommand()
 	maps.Copy(st.Commands, daemon.SettingCommands(st.CurrentTrust(), models))
 	maps.Copy(st.Commands, daemon.FlagCommands())
 	approve, answer := daemon.ApproveByReaction(st.CurrentTrust()), daemon.FlagByReaction(st.CurrentTrust())

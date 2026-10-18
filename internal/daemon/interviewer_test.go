@@ -195,7 +195,18 @@ func TestInterviewerPending(t *testing.T) {
 			return n
 		}, true},
 		{"a task at the clarifying after a hold", entered("task", false, "from=held to=clarifying at=ready origin=ready event=h9 seen=7"), false},
-		{"a story with a parent at the clarifying after a hold", entered("story", true, "from=held to=clarifying at=planning origin=planning event=h9 seen=7"), false},
+		// #195's Q1a: a story with a parent gets a run at the clarifying
+		// after a hold from a stage of its plan, and only there.
+		{"a story with a parent at the clarifying after a hold from planning", entered("story", true, "from=held to=clarifying at=planning origin=planning event=h9 seen=7"), true},
+		{"a story with a parent at the clarifying after a hold from plan-review", entered("story", true, "from=held to=clarifying at=plan-review origin=plan-review event=h9 seen=7"), true},
+		{"a story with a parent at the clarifying after a hold from planned", entered("story", true, "from=held to=clarifying at=planned origin=planned event=h9 seen=7"), true},
+		{"a story with a parent at the clarifying after a hold from clarifying", entered("story", true, "from=held to=clarifying at=clarifying origin=clarifying event=h9 seen=7"), false},
+		{"a story with a parent at clarifying by hand", entered("story", true, "from=planning to=clarifying by=owner"), false},
+		{"after a round on a story with a parent at the clarifying after a hold, nothing", func(f *githubtest.Fake) int {
+			n, entry := ivFiled(f, "story", true, "from=held to=clarifying at=planned origin=planned event=h9 seen=7")
+			f.AddComment(n, app, fmt.Sprintf("Round.\n\n<!-- issuedog:transition from=clarifying to=clarifying round=1 run=iv1 origin=planned questions=1 seen=%d -->", entry))
+			return n
+		}, false},
 		{"after a round at the clarifying after a hold, nothing", func(f *githubtest.Fake) int {
 			n, entry := ivFiled(f, "epic", false, "from=held to=clarifying at=spec-review origin=spec-review event=h9 seen=7")
 			f.AddComment(n, app, fmt.Sprintf("Round.\n\n<!-- issuedog:transition from=clarifying to=clarifying round=1 run=iv1 origin=spec-review questions=1 seen=%d -->", entry))

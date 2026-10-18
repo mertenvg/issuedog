@@ -16,8 +16,8 @@ import (
 type Step struct {
 	*Applier
 	Trust github.Trust
-	// Commands are the handlers, by name. A valid command with none waits,
-	// except /done, rejected as not handled yet. See Handler for the contract.
+	// Commands are the handlers, by name. A valid command with none waits.
+	// See Handler for the contract.
 	Commands map[string]Handler
 	// Reactions, if set, runs after the comments: the reaction triggers.
 	Reactions func(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt) error
@@ -38,7 +38,7 @@ type Step struct {
 // When CheckLabels holds labels back, Run stops there, and its error wraps
 // ErrLabelsHeld.
 // After a Run that succeeds, the loop calls ReviewVisit, then IntakeVisit,
-// then FlagVisit.
+// then FlagVisit, then ChildrenVisit.
 func (st *Step) Run(ctx context.Context, s *github.Snapshot) ([]github.Comment, error) {
 	wrap := func(err error) error { return fmt.Errorf("step 1 on %s/%s#%d: %w", st.Owner, st.Repo, s.Number, err) }
 	d, err := st.Dirty(ctx, s, st.trustOnceTrust())
