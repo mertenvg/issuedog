@@ -1554,3 +1554,149 @@ func TestDiscRunReplay(t *testing.T) {
 		})
 	})
 }
+
+// discRunRaceFamily is the pinned digest, #1, then owner's three tasks,
+// #2, #3 and #4, at ready, with A, J and K among them, J under A and K
+// under J: with aLow, A is #2, J #3 and K #4; else J is #2, A #3 and K #4.
+func discRunRaceFamily(aLow bool) func(testing.TB) *githubtest.Fake {
+	return func(t testing.TB) *githubtest.Fake {
+		t.Helper()
+		f := digestPinned(t)
+		for range 3 {
+			n := f.AddIssue("owner", "Part", "A part.")
+			f.AddLabel(n, "owner", "type:task")
+			f.AddLabel(n, app, "stage:ready")
+			f.AddComment(n, app, "<!-- issuedog:transition from=intake to=ready run=rready -->")
+		}
+		a, j, k := discRunRaceIssues(aLow)
+		f.SetParent(j, a)
+		f.SetParent(k, j)
+		return f
+	}
+}
+
+// discRunRaceIssues are A, J and K of discRunRaceFamily(aLow).
+func discRunRaceIssues(aLow bool) (a, j, k int) {
+	if aLow {
+		return 2, 3, 4
+	}
+	return 3, 2, 4
+}
+
+// discRunRaceHeld posts the owner's /hold on J of l's discRunRaceFamily,
+// which holds J and K, applied and checked. It returns the /hold's ID.
+func discRunRaceHeld(t *testing.T, l *discRunLoop, aLow bool) int64 {
+	t.Helper()
+	_, j, k := discRunRaceIssues(aLow)
+	own := l.f.AddComment(j, "owner", "/hold")
+	l.step("J's /hold", fmt.Sprintf("POST /issues/%d/comments", k), fmt.Sprintf("POST /issues/%d/labels", k), fmt.Sprintf("DELETE /issues/%d/labels/stage:ready", k),
+		fmt.Sprintf("POST /issues/%d/comments", j), fmt.Sprintf("POST /issues/%d/labels", j), fmt.Sprintf("DELETE /issues/%d/labels/stage:ready", j), discRunReact(own))
+	return own
+}
+
+// #205, which #193 left out: the owner's /resume on J, then a /hold on its
+// ancestor A, in one poll, J and K held by J's own /hold. With A's number
+// lower, A's /hold is handled first, and writes no marker on J and K, held
+// already (Q2b); J's /resume, handled next, ends J's own /hold on each, and
+// records that, but not A's /hold, posted after it, so both stay held,
+// and the record of the discussion's end names A's /hold (resolveAbove),
+// all in the race's own pass. With J's lower, J's /resume takes J and K
+// back to ready first, and A's /hold then holds them with its markers.
+// Either way A's later /resume takes all three back to ready. Every pass
+// after the race's, and after the /resume's, is unchanged, as is a
+// restart's.
+func TestDiscRunHoldResumeRace(t *testing.T) {
+	t.Parallel()
+	for _, aLow := range []bool{true, false} {
+		t.Run(fmt.Sprintf("A lower %v", aLow), func(t *testing.T) {
+			t.Parallel()
+			f := discRunRaceFamily(aLow)(t)
+			a, j, k := discRunRaceIssues(aLow)
+			l := newDiscRunLoop(t, f)
+			entries := map[int]int64{}
+			for _, n := range []int{a, j, k} {
+				entries[n] = discRunFind(t, f, n, "issuedog:transition")
+			}
+			own := discRunRaceHeld(t, l, aLow)
+			l.quiet("J and K held")
+
+			resume := f.AddComment(j, "owner", "/resume")
+			hold := f.AddComment(a, "owner", "/hold")
+			post := func(n int) string { return fmt.Sprintf("POST /issues/%d/comments", n) }
+			// moves is the writes of #n's move out of stage from.
+			moves := func(n int, from string) []string {
+				return []string{post(n), fmt.Sprintf("POST /issues/%d/labels", n), fmt.Sprintf("DELETE /issues/%d/labels/stage:%s", n, from)}
+			}
+			// The record that A's /hold keeps an issue held (resolveEnded).
+			heldRecord := fmt.Sprintf("No discussion trigger is open on this issue, but it stays on hold: a `/hold` on an issue above it, in comment %d, hasn't ended. "+
+				"`/resume` there, or here, ends that.\n\ncc @owner\n\n<!-- issuedog:ended reason=discussion held=%d heldon=%d -->", hold, hold, a)
+			if aLow {
+				// A's /hold touches J and K (Applier.Touched), so they wait
+				// for the next pass, which handles J's /resume, and touches
+				// K, which then waits for the pass after.
+				l.step("the race, A's pass first", slices.Concat(moves(a, "ready"), []string{discRunReact(hold)})...)
+				l.step("J's /resume, after A's /hold", post(k), post(j), discRunReact(resume), post(j))
+				if got := l.added(j); len(got) != 2 || got[1] != heldRecord ||
+					!strings.HasPrefix(got[0], "This `/resume` ended the holds on this issue from before it, but it stays on hold by a `/hold` posted after it, "+
+						"which it doesn't end. `/resume` where that `/hold` was posted, or here, ends that.\n\n"+
+						fmt.Sprintf("<!-- issuedog:ended reason=owner key=c%d cmd=%d -->\n<!-- issuedog:ended reason=discussion cmd=%d resolved=", own, resume, resume)) {
+					t.Errorf("#%d's new comments %q; want the record of J's /resume, then the record of A's /hold", j, got)
+				}
+				wantK := fmt.Sprintf("`/resume` on #%d ended an owner hold on this issue, but it stays on hold by one that `/resume` doesn't end: "+
+					"one set by hand, a `/hold` below #%d, a `/hold` posted after this `/resume`, or a deleted comment that was, or may have been, a `/hold`. "+
+					"`/resume` here ends it.\n\n<!-- issuedog:ended reason=owner key=c%d cmd=%d -->", j, j, own, resume)
+				if got := l.added(k); !slices.Equal(got, []string{wantK}) {
+					t.Errorf("#%d's new comments\n%q\nwant\n%q", k, got, []string{wantK})
+				}
+				l.step("K's pass", post(k))
+				if got := l.added(k); !slices.Equal(got, []string{heldRecord}) {
+					t.Errorf("#%d's new comments\n%q\nwant\n%q", k, got, []string{heldRecord})
+				}
+			} else {
+				l.step("the race, J's pass first", slices.Concat(moves(k, "held"), moves(j, "held"), []string{discRunReact(resume)},
+					moves(j, "ready"), moves(k, "ready"), moves(a, "ready"), []string{discRunReact(hold)})...)
+				for _, n := range []int{j, k} {
+					if got := l.added(n); len(got) != 2 || !strings.Contains(got[1], fmt.Sprintf("reason=owner cmd=%d ", hold)) {
+						t.Errorf("#%d's new comments %q; want J's /resume's move, then A's /hold's", n, got)
+					}
+				}
+			}
+			for _, n := range []int{a, j, k} {
+				if got := ivLabels(f, n); !slices.Equal(got, []string{"stage:held", "type:task"}) {
+					t.Errorf("#%d: labels %q, newest comment %q; want it held", n, got, newestComment(f, n))
+				}
+			}
+			l.quiet("after the race")
+			l.restart("after the race")
+
+			again := f.AddComment(a, "owner", "/resume")
+			l.step("A's /resume", slices.Concat(moves(j, "held"), moves(k, "held"), moves(a, "held"), []string{discRunReact(again)})...)
+			for _, n := range []int{a, j, k} {
+				if got := ivLabels(f, n); !slices.Equal(got, []string{"stage:ready", "type:task"}) {
+					t.Errorf("#%d: labels %q, newest comment %q; want it back at ready", n, got, newestComment(f, n))
+				}
+				if body := newestComment(f, n); !strings.Contains(body, fmt.Sprintf("from=held to=ready cmd=%d seen=%d", again, entries[n])) {
+					t.Errorf("#%d: newest comment %q; want A's /resume's move", n, body)
+				}
+			}
+			l.quiet("resumed")
+		})
+	}
+}
+
+// #205's race, with A's number lower, is safe to replay after a crash at
+// any write: A's /hold, then J's /resume, handled after it though posted
+// before it, which records the end of J's own /hold on J and K, and the
+// records of A's /hold that follow. (With J's number lower, a crash in
+// J's /resume's writes lets A's /hold, in the same pass, come first, so
+// the replay ends as with A's lower: all three held by A's /hold, but by
+// other comments than the clean run's.)
+func TestDiscRunHoldResumeRaceReplay(t *testing.T) {
+	t.Parallel()
+	discRunReplay(t, discRunRaceFamily(true), nil, func(l *discRunLoop) {
+		a, j, _ := discRunRaceIssues(true)
+		discRunRaceHeld(t, l, true)
+		l.f.AddComment(j, "owner", "/resume")
+		l.f.AddComment(a, "owner", "/hold")
+	})
+}

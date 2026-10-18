@@ -244,8 +244,8 @@ func TestResolveRound3HeldRecordAfterDeletion(t *testing.T) {
 // Mutant #14: #3 > #2 > #1. The owner's /resume on #2, then a /hold on
 // #1, posted after it, whose pass comes first, so it holds all three with
 // markers. The /resume doesn't end that /hold on #3, posted after it
-// (SPEC §6.4), so #3 stays held, as #1 does. (#2's own /resume ends every
-// hold on #2, a race of its own: #188's verify, round 3, note 3.)
+// (SPEC §6.4), so #3 stays held, as #1 does, and nor on #2 (#205, once
+// #188's verify, round 3, note 3), so #2 stays held too.
 func TestResolveRound3MarkerPostedAfterResume(t *testing.T) {
 	t.Parallel()
 	f := discFake(t)  // #1
@@ -261,6 +261,9 @@ func TestResolveRound3MarkerPostedAfterResume(t *testing.T) {
 	}
 	if got := f.State().Issues[0].Labels; len(got) != 1 || got[0] != "stage:held" {
 		t.Errorf("#1: labels %q; want it still held", got)
+	}
+	if got := f.State().Issues[1].Labels; len(got) != 1 || got[0] != "stage:held" {
+		t.Errorf("#2: labels %q, newest comment %q; want it still held by #1's /hold", got, newestComment(f, 2))
 	}
 }
 

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -74,6 +75,7 @@ func TestHeldStackResume(t *testing.T) {
 		onHeld     = "from=held to=held at=ready reason=owner by=owner event=8 seen=10"
 		discussion = "from=ready to=held at=ready origin=ready reason=discussion event=9 seen=10"
 		later      = "from=ready to=held at=ready reason=owner cmd=200 seen=10"
+		laterHeld  = "from=held to=held at=ready reason=owner cmd=200 seen=10"
 		goneAbove  = "from=held to=held reason=owner gone=3-50"
 		goneLater  = "from=held to=held reason=owner gone=3-150"
 		goneBelow  = "from=held to=held reason=owner gone=4-50"
@@ -102,6 +104,8 @@ func TestHeldStackResume(t *testing.T) {
 		{"nor has one that isn't open", at(ready, "from=ready to=held at=closed reason=owner cmd=5"), true, 0, 0},
 		{"an issue that isn't held has none", at(ready), true, 0, 0},
 		{"a /hold made above but posted after the /resume doesn't end from above", at(ready, later), false, 0, 1},
+		{"nor on the issue itself (#205)", at(ready, later), true, 0, 1},
+		{"which ends the holds before it there, but not that one", at(ready, above, onHeld, laterHeld), true, 2, 1},
 		{"a comment deleted above before the /resume, which may have been a /hold, ends from above", at(ready, above, goneAbove), false, 2, 0},
 		{"one deleted after the /resume doesn't", at(ready, above, goneLater), false, 1, 1},
 		{"nor does one deleted below", at(ready, above, goneBelow), false, 1, 1},
@@ -110,6 +114,12 @@ func TestHeldStackResume(t *testing.T) {
 		_, ended, left := heldStackResume(tt.is, tt.self, made)
 		if ended != tt.ended || len(left) != tt.left {
 			t.Errorf("%s: ended %d, %d left; want %d and %d", tt.name, ended, len(left), tt.ended, tt.left)
+		}
+		// Only the /hold posted after the /resume, comment 200, is a later
+		// one (#205).
+		wantLater := slices.ContainsFunc(left, func(m github.Marker) bool { return m.Fields["cmd"] == "200" })
+		if got := heldStackLater(left, made); got != wantLater {
+			t.Errorf("%s: heldStackLater = %t, want %t", tt.name, got, wantLater)
 		}
 		if _, ok := resume(tt.is, tt.self, made, "`/resume`", false); ok != (tt.ended > 0 && tt.left == 0) {
 			t.Errorf("%s: resume moves it = %t, want %t", tt.name, ok, !ok)
