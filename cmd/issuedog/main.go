@@ -202,10 +202,14 @@ func startDaemon(ctx context.Context, set settings, key []byte) (*daemon.Daemon,
 }
 
 // registerStages returns the Stages to register on d, by stage, and the
-// Unlabeled stage: the interviewer at clarifying, and triage for open
-// issues with no stage label (plan #6, T8). Tests replace it.
+// Unlabeled stage: the interviewer at clarifying, the planner at planning
+// (#247's T8), and triage for open issues with no stage label (plan #6,
+// T8). Tests replace it.
 var registerStages = func(d *daemon.Daemon) (map[state.Stage]daemon.Stage, daemon.Stage) {
-	return map[state.Stage]daemon.Stage{state.Clarifying: &daemon.Interviewer{Daemon: d}}, &daemon.Triage{Daemon: d}
+	return map[state.Stage]daemon.Stage{
+		state.Clarifying: &daemon.Interviewer{Daemon: d},
+		state.Planning:   &daemon.Planner{Daemon: d},
+	}, &daemon.Triage{Daemon: d}
 }
 
 // stageWork is the stage-run harness for d's stage work, with the Stages

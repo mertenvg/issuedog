@@ -334,27 +334,39 @@ func inTable(is state.Issue, to state.Stage, trigger state.Trigger, on string) e
 }
 
 // ReviseCommand is the /revise handler (SPEC §9.2), and Step sends it each
-// revision request too (requested). At spec-review, Apply sends the spec
-// back: it moves the issue to clarifying with cmd=<comment id> and
-// seen=<comment id>, then the 👍. The comment is the notes in state.Inputs,
-// and a comment posted after it is the next round's answer. Check rejects it
-// when the table has no such move for the issue's class (SPEC §7.2), and at
-// plan-review, which isn't handled yet.
+// revision request too (requested). Apply moves the issue with
+// cmd=<comment id> and seen=<comment id>, then the 👍:
+//   - At spec-review, it sends the spec back, to clarifying. The comment is
+//     the notes in state.Inputs, and a comment posted after it is the next
+//     round's answer.
+//   - At plan-review, it sends the plan back, to planning (plan #248, T3).
+//     The comment is the next planner run's notes in state.Inputs, and a
+//     comment posted after it is planning's input too.
+//
+// Check rejects it when the table has no such move for the issue's class
+// (SPEC §7.2).
 func ReviseCommand() Handler {
 	return Handler{
 		Check: func(_ context.Context, a *Applier, c Cmd) error {
-			// Once Apply's marker exists, the stage is clarifying, so Step
-			// rejects or finishes the command before it asks Check.
+			// Once Apply's marker exists, the stage is clarifying or
+			// planning, so Step rejects or finishes the command before it
+			// asks Check.
 			is := state.Derive(c.S, a.AppSlug, c.Dirt.Has)
-			if is.Stage == state.PlanReview {
-				return Rejection{Reason: "revising a plan isn't handled yet"}
+			if is.Stage != state.PlanReview {
+				return inTable(is, state.Clarifying, state.TriggerSpecRevise, "on a revision request")
 			}
-			return inTable(is, state.Clarifying, state.TriggerSpecRevise, "on a revision request")
+			return inTable(is, state.Planning, state.TriggerPlanRevise, "on a revision request")
 		},
 		Apply: func(ctx context.Context, a *Applier, c Cmd) error {
+			// Apply runs only until its marker exists, so the stage is
+			// still the review stage Check passed.
 			m := Move{To: state.Clarifying, Trigger: state.TriggerSpecRevise, Key: state.CmdKey(c.Comment.ID),
 				Fields: map[string]string{state.FieldSeen: strconv.FormatInt(c.Comment.ID, 10)},
 				Text:   fmt.Sprintf("The spec is sent back for revision, with %s's comment as the notes.", c.Comment.Author.Login)}
+			if state.Derive(c.S, a.AppSlug, c.Dirt.Has).Stage == state.PlanReview {
+				m.To, m.Trigger = state.Planning, state.TriggerPlanRevise
+				m.Text = fmt.Sprintf("The plan is sent back for revision, with %s's comment as the notes.", c.Comment.Author.Login)
+			}
 			if err := a.Transition(ctx, c.S, c.Dirt.Has, m); err != nil {
 				return fmt.Errorf("revise: %w", err)
 			}
@@ -364,35 +376,45 @@ func ReviseCommand() Handler {
 }
 
 // requested returns the /revise that comment c, trusted input, stands for
-// if it is a revision request (SPEC §7.4): a comment that isn't a command
-// and that no marker names, posted at spec-review after the latest revision,
-// whatever the stage is now. The stage c was posted at is its round's
-// (postedAt), so a remark left at another stage never counts. After the
-// revision is after its Seen, if it has one, as a comment posted after the
-// App read the issue may come before the revision comment; else after its
-// comment.
+// if it is a revision request (SPEC §7.4), and the review stage it was
+// posted at: a comment that isn't a command and that no marker names,
+// posted at spec-review after the latest spec revision, or at plan-review
+// after the latest plan revision (plan #248, T3), whatever the stage is
+// now. The stage c was posted at is its round's (postedAt), so a remark
+// left at another stage never counts. After the revision is after its
+// Seen, if it has one, as a comment posted after the App read the issue
+// may come before the revision comment; else after its comment. A plan
+// revision's Seen is that of the move in its comment.
 //
-// So a request rejected at spec-review whose reply was lost still gets it
-// after the stage moves on (Step.handle). The latest revision is then still
-// the one c was posted after: only the App posts one, and only after a pass
-// whose Run succeeded, so had the reply. This reads only the markers in s,
-// and Step reads the App's reactions only to a request, not to every plain
-// comment. At spec-review it handles a request in the pass that finds it,
-// after which a reply or a move names it. Once the stage has moved on, the
-// requests left are those posted after the latest revision that the App
-// never handled, such as one by a user trusted only since: the leftovers
-// of the last spec-review visit, which the next revision ends.
-func requested(s *github.Snapshot, appSlug string, d Dirt, is state.Issue, c github.Comment) (state.Command, bool) {
-	if _, cmd := state.ParseCommand(c.Body); cmd || is.Keys[state.CmdKey(c.ID)] || postedAt(s, appSlug, d, c.ID) != state.SpecReview {
-		return state.Command{}, false
+// So a request rejected at a review stage whose reply was lost still gets
+// it after the stage moves on (Step.handle). The latest revision is then
+// still the one c was posted after: only the App posts one, and only after
+// a pass whose Run succeeded, so had the reply. This reads only the markers
+// in s, and Step reads the App's reactions only to a request, not to every
+// plain comment. At a review stage it handles a request in the pass that
+// finds it, after which a reply or a move names it. Once the stage has
+// moved on, the requests left are those posted after the latest revision
+// that the App never handled, such as one by a user trusted only since: the
+// leftovers of the last review visit, which the next revision ends.
+func requested(s *github.Snapshot, appSlug string, d Dirt, is state.Issue, c github.Comment) (state.Command, state.Stage, bool) {
+	if _, cmd := state.ParseCommand(c.Body); cmd || is.Keys[state.CmdKey(c.ID)] {
+		return state.Command{}, "", false
 	}
-	latest, _ := state.LatestRevision(s, appSlug, state.SpecRevision, d.Has)
+	posted, kind := postedAt(s, appSlug, d, c.ID), state.SpecRevision
+	switch posted {
+	case state.SpecReview:
+	case state.PlanReview:
+		kind = state.PlanRevision
+	default:
+		return state.Command{}, "", false
+	}
+	latest, _ := state.LatestRevision(s, appSlug, kind, d.Has)
 	if c.ID <= cmp.Or(latest.Seen, latest.Comment) {
-		return state.Command{}, false
+		return state.Command{}, "", false
 	}
 	text := strings.TrimSpace(c.Body)
 	line, _, _ := strings.Cut(text, "\n")
-	return state.Command{Name: "revise", Arg: strings.TrimSpace(line), Text: text}, true
+	return state.Command{Name: "revise", Arg: strings.TrimSpace(line), Text: text}, posted, true
 }
 
 // postedAt returns the stage of the round comment id is in (state.RoundBound),

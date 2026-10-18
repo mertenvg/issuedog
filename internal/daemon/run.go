@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mertenvg/issuedog/internal/agent"
 	"github.com/mertenvg/issuedog/internal/config"
@@ -143,6 +144,10 @@ type Lease struct {
 	FallbackModels []string `json:"fallback_models,omitempty"`
 	// ApplyFailures counts the failed applies of the run's result.
 	ApplyFailures int `json:"apply_failures,omitempty"`
+	// LastFailure is why the run failed, as failed records it, at most
+	// maxLastFailure characters (lastFailure), for the attempt cap's error
+	// (#247's assumption 10), so a restart still names it.
+	LastFailure string `json:"last_failure,omitempty"`
 	// Failed marks a run that has ended, failed or not counted (end):
 	// Attempt is then the count of failed attempts in a row it leaves, which
 	// may be 0, so a restart doesn't reset the count. It's written before
@@ -159,6 +164,20 @@ func (l Lease) settings() state.Settings {
 // kindAttempts is the state error for a stage that failed loop.max_attempts
 // times in a row.
 const kindAttempts = "attempts"
+
+// maxLastFailure is the most characters of a failed attempt's cause the
+// lease keeps, and the attempt cap's error quotes (Lease.LastFailure).
+const maxLastFailure = 1000
+
+// lastFailure is cause's text as Lease.LastFailure keeps it: at most
+// maxLastFailure characters, its end cut and marked with "…" when longer.
+func lastFailure(cause error) string {
+	text := cause.Error()
+	if utf8.RuneCountInString(text) <= maxLastFailure {
+		return text
+	}
+	return string([]rune(text)[:maxLastFailure-1]) + "…"
+}
 
 // kindLabels is the state error for an issue whose model and effort labels
 // give no run settings (state.ErrLabels).
@@ -187,6 +206,10 @@ type Runs struct {
 	swept      bool            // leftover temp leases are removed
 	ended      string          // the ended run (a Failed lease) whose files are removed
 	badSchemas map[string]bool // the agents whose Stage's schema doesn't compile, reported
+
+	// failures holds why the last of the failed runs failed
+	// (Lease.LastFailure), by countKey, for the attempt cap's error.
+	failures map[string]string
 }
 
 // Work is Daemon.Work. It first finishes a lease a run left, after a
@@ -357,7 +380,8 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 	if r.attempts[countKey(n, errKey)] >= r.limit() {
 		// The cap was reached, but posting its state error failed: post it.
 		// A post that keeps failing mustn't hold up the other issues.
-		if err := r.reportCap(ctx, nil, st, Lease{Issue: n, Stage: is.Stage, AttemptKey: errKey}); err != nil {
+		last := Lease{Issue: n, Stage: is.Stage, AttemptKey: errKey, LastFailure: r.failures[countKey(n, errKey)]}
+		if err := r.reportCap(ctx, nil, st, last); err != nil {
 			logr.Errorf("%s/%s#%d: no %s run, as it failed loop.max_attempts times, but posting that failed again: %v",
 				a.Owner, a.Repo, n, st.Agent(), err)
 		}
@@ -687,6 +711,7 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 	}
 	logr.Infof("%s/%s#%d: applied run %s", a.Owner, a.Repo, l.Issue, l.RunID)
 	delete(r.attempts, countKey(l.Issue, l.AttemptKey))
+	delete(r.failures, countKey(l.Issue, l.AttemptKey))
 	return r.finish(ctx, l)
 }
 
@@ -827,10 +852,12 @@ func (r *Runs) endedLease(ctx context.Context, l Lease) error {
 }
 
 // failed records l's run as a failed attempt: it ends the run (end),
-// keeping the lease, as Failed, for the count. The last attempt allowed
-// posts one state error (reportCap), after which RunStage runs no more. If
-// posting it fails, RunStage posts it instead of starting a run.
+// keeping the lease, as Failed, for the count, with cause as its
+// LastFailure (lastFailure). The last attempt allowed posts one state
+// error (reportCap), naming that cause, after which RunStage runs no more.
+// If posting it fails, RunStage posts it instead of starting a run.
 func (r *Runs) failed(ctx context.Context, st Stage, l Lease, cause error) error {
+	l.LastFailure = lastFailure(cause)
 	n := r.count(l)
 	logr.Warnf("%s run %s on #%d failed, attempt %d of %d: %v", st.Agent(), l.RunID, l.Issue, n, r.limit(), cause)
 	if err := r.end(ctx, l, n); err != nil {
@@ -842,12 +869,16 @@ func (r *Runs) failed(ctx context.Context, st Stage, l Lease, cause error) error
 	return r.reportCap(ctx, nil, st, l)
 }
 
-// count adds l's attempt to the count of its attempts, which it returns.
+// count adds l's attempt to the count of its attempts, which it returns,
+// and keeps its LastFailure, if it has one, as the last of their failures.
 func (r *Runs) count(l Lease) int {
 	if r.attempts == nil {
-		r.attempts = map[string]int{}
+		r.attempts, r.failures = map[string]int{}, map[string]string{}
 	}
 	key := countKey(l.Issue, l.AttemptKey)
+	if l.LastFailure != "" && l.Attempt >= r.attempts[key] {
+		r.failures[key] = l.LastFailure
+	}
 	r.attempts[key] = max(r.attempts[key], l.Attempt)
 	return r.attempts[key]
 }
@@ -857,7 +888,9 @@ func (r *Runs) count(l Lease) int {
 // issue that has it, has moved on, by a marker or a stage label not yet
 // recorded, or is closed or gone gets none. For the Unlabeled stage, whose
 // round of input never changes, the text names the ways into the pipeline
-// instead of new input.
+// instead of new input. For every stage, it then quotes l.LastFailure, if
+// set: why the last attempt failed (#247's assumption 10), fenced and
+// escaped, as it may quote the agent's output (SPEC §5.1).
 func (r *Runs) reportCap(ctx context.Context, s *github.Snapshot, st Stage, l Lease) error {
 	a := r.Daemon.Step.Applier
 	wrap := func(err error) error { return fmt.Errorf("report the attempt cap on #%d: %w", l.Issue, err) }
@@ -891,6 +924,9 @@ func (r *Runs) reportCap(ctx context.Context, s *github.Snapshot, st Stage, l Le
 		// into the pipeline (plan for #6, assumption 1) moves the issue on.
 		text = fmt.Sprintf("The %s run failed %d times in a row, so I've stopped running it here, and a comment won't start it again. "+
 			"A code owner can bring this issue into the pipeline with a stage label, the `approved` label or `/track`.", st.Agent(), r.limit())
+	}
+	if l.LastFailure != "" {
+		text += "\n\nThe last attempt failed:\n\n" + ivFenced(l.LastFailure)
 	}
 	if err := a.comment(ctx, s, join(github.Escape(text), marker)); err != nil {
 		return wrap(err)
