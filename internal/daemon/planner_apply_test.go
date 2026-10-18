@@ -103,8 +103,21 @@ func plGolden(t testing.TB, name string) map[string]any {
 }
 
 // plItem is item i of out's plan.
-func plItem(out map[string]any, i int) map[string]any {
-	return out["plan"].(map[string]any)["items"].([]any)[i].(map[string]any)
+func plItem(t testing.TB, out map[string]any, i int) map[string]any {
+	t.Helper()
+	plan, ok := out["plan"].(map[string]any)
+	if !ok {
+		t.Fatalf("output %v has no plan", out)
+	}
+	items, ok := plan["items"].([]any)
+	if !ok || i >= len(items) {
+		t.Fatalf("plan %v has no item %d", plan, i)
+	}
+	it, ok := items[i].(map[string]any)
+	if !ok {
+		t.Fatalf("item %d is %v, not an object", i, items[i])
+	}
+	return it
 }
 
 // plComment splits issue n's newest comment into its text and its markers,
@@ -194,6 +207,17 @@ func TestPlannerEpicPlan(t *testing.T) {
 			}
 			if got := len(f.State().Issues[n-1].Comments); got != comments+1 {
 				t.Errorf("%d comments posted, want 1", got-comments)
+			}
+			// The sub-issues are read once for the context, and once for the
+			// check, whose count Apply takes.
+			reads := 0
+			for _, r := range f.Requests() {
+				if r.Method == http.MethodGet && r.Path == fmt.Sprintf("/issues/%d/sub_issues", n) {
+					reads++
+				}
+			}
+			if reads != 2 {
+				t.Errorf("the sub-issues were read %d times, want 2: the context's and the check's", reads)
 			}
 			text, markers := plComment(t, f, n)
 			for _, want := range []string{
@@ -362,18 +386,23 @@ func TestPlannerCheckFailsAttempt(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
 		name, golden, typ, rule string
-		change                  func(out map[string]any)
+		change                  func(t testing.TB, out map[string]any)
 	}{
 		{"a scope not on the list", "story-plan", "story", `rule scope: T3's scope "web" isn't on the list`,
-			func(out map[string]any) { plItem(out, 2)["scope"] = "web" }},
+			func(t testing.TB, out map[string]any) { plItem(t, out, 2)["scope"] = "web" }},
 		{"a plan of stories for a story", "epic-plan", "story", "rule structure: a story's plan has tasks, not stories", nil},
 		{"a cycle", "story-plan", "story", "rule cycle: T1 → T2 → T1",
-			func(out map[string]any) { plItem(out, 0)["depends_on"] = []string{"T2"} }},
+			func(t testing.TB, out map[string]any) { plItem(t, out, 0)["depends_on"] = []string{"T2"} }},
 		{"a file path in a title", "epic-plan", "epic", `rule file-paths: S1's title names the file path "internal/quote.go"`,
-			func(out map[string]any) { plItem(out, 0)["title"] = "Expire quotes in internal/quote.go" }},
+			func(t testing.TB, out map[string]any) {
+				plItem(t, out, 0)["title"] = "Expire quotes in internal/quote.go"
+			}},
 		{"a question round of 8", "questions", "epic", "rule question-count: 8 questions, over the limit of 7",
-			func(out map[string]any) {
-				qs := out["questions"].([]any)
+			func(t testing.TB, out map[string]any) {
+				qs, ok := out["questions"].([]any)
+				if !ok || len(qs) == 0 {
+					t.Fatalf("output %v has no questions", out)
+				}
 				for len(qs) < 8 {
 					qs = append(qs, qs[0])
 				}
@@ -388,7 +417,7 @@ func TestPlannerCheckFailsAttempt(t *testing.T) {
 			g.d.Config.Loop.MaxAttempts = 1
 			out := plGolden(t, tt.golden)
 			if tt.change != nil {
-				tt.change(out)
+				tt.change(t, out)
 			}
 			g.claude(ivResult(t, out), 0)
 			before := commentBodies(f, n)
