@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -282,6 +283,81 @@ func childWrites(parent int, ns ...int) []string {
 	return w
 }
 
+// blockWrites are the writes that add blocked-by links to issues ns, one
+// each, in order (#277): the links follow plan order, one for each item a
+// child's item depends on.
+func blockWrites(ns ...int) []string {
+	var w []string
+	for _, n := range ns {
+		w = append(w, fmt.Sprintf("POST /issues/%d/dependencies/blocked_by", n))
+	}
+	return w
+}
+
+// recordWrite is the write that posts the record of the children on
+// issue parent (#277), the creating pass's last for creation.
+func recordWrite(parent int) string { return fmt.Sprintf("POST /issues/%d/comments", parent) }
+
+// runRecord checks, at step, that the children of issue parent's plan
+// revision rev, want, filed as issues first on, are each blocked by the
+// issues blockedBy names for it, and by nothing else, and that parent has
+// the one record of them (#277).
+func runRecord(t *testing.T, f *githubtest.Fake, step string, parent, rev, first int, want []wantChild, blockedBy map[int][]int) {
+	t.Helper()
+	st := f.State()
+	for i := range want {
+		n := first + i
+		if got := st.Issues[n-1].BlockedBy; !slices.Equal(got, blockedBy[n]) {
+			t.Errorf("%s: #%d is blocked by %v; want %v", step, n, got, blockedBy[n])
+		}
+	}
+	if got, want := records(st.Issues[parent-1]), []string{recordOf(rev, first, want)}; !slices.Equal(got, want) {
+		t.Errorf("%s: #%d's records are\n%q\nwant\n%q", step, parent, got, want)
+	}
+}
+
+// childrenLooked reports whether a request f had from from on is the
+// issue list a creating visit reads its children from (childrenFind),
+// since at, when its parent moved into planned: no other request lists
+// issues since then, as the poll's cursor is past it by then.
+func childrenLooked(f *githubtest.Fake, from int, at time.Time) bool {
+	since := "since=" + url.QueryEscape(at.UTC().Format(time.RFC3339))
+	return slices.ContainsFunc(f.Requests()[from:], func(r githubtest.Request) bool {
+		return r.Method == http.MethodGet && r.Path == "/issues" && strings.Contains(r.Query, since)
+	})
+}
+
+// recordStands checks, at step, that the requests f had from from on made
+// none for the creation of issue parent's children, which it moved into
+// planned at at (#277): once its record stands, a visit to parent doesn't
+// look for its children (childrenLooked), nor reads what blocks the
+// children dependents, which depend on others, nor files, links or blocks
+// any. Other work may still list sub-issues, as the planner's context
+// does, or what blocks a human task, as its digest item does. With reread,
+// the requests must also visit parent again, as the record, its last
+// write, changed it: a visit reads its timeline, for its labels. A GET of
+// parent itself tells nothing: it may be a 304, and the planner's context
+// reads a story's parent too.
+func recordStands(t *testing.T, f *githubtest.Fake, step string, from, parent int, at time.Time, dependents []int, reread bool) {
+	t.Helper()
+	if childrenLooked(f, from, at) {
+		t.Errorf("%s: a pass with #%d's record standing looked for its children again", step, parent)
+	}
+	read := false
+	for _, r := range f.Requests()[from:] {
+		blocks := slices.ContainsFunc(dependents, func(n int) bool { return r.Path == fmt.Sprintf("/issues/%d/dependencies/blocked_by", n) })
+		if r.Method == http.MethodPost && (r.Path == "/issues" || strings.HasSuffix(r.Path, "/sub_issues") || strings.Contains(r.Path, "/dependencies/")) || blocks {
+			t.Errorf("%s: a pass with #%d's record standing sent %+v; want no request for creation", step, parent, r)
+		}
+		if r.Method == http.MethodGet && r.Path == fmt.Sprintf("/issues/%d/timeline", parent) {
+			read = true
+		}
+	}
+	if reread && !read {
+		t.Errorf("%s: #%d wasn't read again after its record", step, parent)
+	}
+}
+
 // planRunStories are the children of the golden epic plan (T4's
 // epic-plan.json) under an epic at p1, on a repo that types by label: its
 // three stories, each at planning, S2 at the epic's priority, as it names
@@ -524,12 +600,15 @@ func TestPlannerWholeRunEpic(t *testing.T) {
 	// moves the epic to planned, with plan revision 1 and the 👍 as its
 	// command. In the same pass, the plan's three stories are filed as #3
 	// to #5, in plan order, each created, linked under the epic and moved
-	// to planning, keyed by the approval (#276). Then the plan leaves the
-	// digest and you're unassigned.
+	// to planning, keyed by the approval (#276). Then S2 and S3, which
+	// depend on S1, are blocked by it, and the record of the stories is
+	// posted on the epic, last (#277). Then the plan leaves the digest and
+	// you're unassigned.
+	thumbFrom := len(f.Requests())
 	thumb := f.AddReaction(planned.ID, wholeRunOwner, "+1")
 	p.iterate("a 👍 on the plan", 5, slices.Concat(
 		[]string{"POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:plan-review"},
-		childWrites(p.n, 3, 4, 5),
+		childWrites(p.n, 3, 4, 5), blockWrites(4, 5), []string{recordWrite(p.n)},
 		[]string{digestEdit, unassign})...)
 	p.labels("a 👍 on the plan", labels("planned")...)
 	p.waiting("a 👍 on the plan", nil)
@@ -538,11 +617,19 @@ func TestPlannerWholeRunEpic(t *testing.T) {
 	if !ok {
 		t.Fatalf("a 👍 on the plan: the plan comment has no plan hash:\n%s", planned.Body)
 	}
-	approvedBy := cs[len(cs)-1]
+	// The newest comment is the record, and the approval is just before it.
+	approvedBy := cs[len(cs)-2]
 	if want := fmt.Sprintf("<!-- issuedog:transition from=plan-review to=planned rev=1 body=%s cmd=r%d ", planHash, thumb); approvedBy.Author.Login != app || !strings.Contains(approvedBy.Body, want) {
-		t.Errorf("a 👍 on the plan: the newest comment, by %s, =\n%s\nwant the App's approval, with %q", approvedBy.Author.Login, approvedBy.Body, want)
+		t.Errorf("a 👍 on the plan: the comment before the record, by %s, =\n%s\nwant the App's approval, with %q", approvedBy.Author.Login, approvedBy.Body, want)
+	}
+	if record := cs[len(cs)-1]; record.Author.Login != app || record.Body != recordOf(1, 3, planRunStories) {
+		t.Errorf("a 👍 on the plan: the newest comment, by %s, =\n%s\nwant the App's record\n%s", record.Author.Login, record.Body, recordOf(1, 3, planRunStories))
 	}
 	runChildren(t, f, "a 👍 on the plan", p.n, 1, approvedBy.ID, 3, planRunStories)
+	runRecord(t, f, "a 👍 on the plan", p.n, 1, 3, planRunStories, map[int][]int{4: {3}, 5: {3}})
+	if !childrenLooked(f, thumbFrom, approvedBy.CreatedAt) {
+		t.Errorf("a 👍 on the plan: the pass didn't look for the epic's children in the issues listed since its approval")
+	}
 
 	// 5. The planner runs on each new story in turn, one a pass, in plan
 	// order: the stories skipped the rest of the pass that filed them. A
@@ -551,10 +638,13 @@ func TestPlannerWholeRunEpic(t *testing.T) {
 	// sonnet and no effort, and S3's medium, with sonnet. Each run asks the
 	// story's round 1, which the pass after lists in the
 	// digest, assigning you on the story. The epic, read again as the
-	// approval changed it, gets no second child, link or move.
+	// approval and its record changed it, makes no request for creation:
+	// its record stands (#277).
 	ask := plGolden(t, "questions")
 	p.outputs(ask, ask, ask)
+	from := len(f.Requests())
 	p.iterate("S1's round", 6, "POST /issues/3/comments")
+	recordStands(t, f, "S1's round", from, p.n, approvedBy.CreatedAt, []int{4, 5}, true)
 	p.storyRound("S1's round", 3, 6, "opus", "high")
 	p.iterate("S2's round", 7, digestEdit, "POST /issues/3/assignees", "POST /issues/4/comments")
 	p.storyRound("S2's round", 4, 7, "sonnet", "")
@@ -568,7 +658,10 @@ func TestPlannerWholeRunEpic(t *testing.T) {
 	p.waiting("the stories' rounds", rounds)
 	owner := []string{wholeRunOwner}
 	assignWant(t, f, "the stories' rounds", map[int][]string{3: owner, 4: owner, 5: owner})
+	recordStands(t, f, "the stories' rounds", from, p.n, approvedBy.CreatedAt, []int{4, 5}, true)
+	from = len(f.Requests())
 	p.restart("the stories' rounds")
+	recordStands(t, f, "the restart", from, p.n, approvedBy.CreatedAt, []int{4, 5}, true)
 	p.labels("the end", labels("planned")...)
 	s := p.snapshot(p.n)
 	got, ok := state.LatestRevision(s, slug, state.SpecRevision, func(int64) bool { return false })
@@ -592,6 +685,7 @@ func TestPlannerWholeRunEpic(t *testing.T) {
 			approvals, planApprovals, p.plans())
 	}
 	runChildren(t, f, "the end", p.n, 1, approvedBy.ID, 3, planRunStories)
+	runRecord(t, f, "the end", p.n, 1, 3, planRunStories, map[int][]int{4: {3}, 5: {3}})
 	p.waiting("the end", rounds)
 	f.Advance(time.Hour)
 	p.unchanged("the end, an hour on")
@@ -676,24 +770,38 @@ func TestPlannerWholeRunStory(t *testing.T) {
 			// files its three tasks, #4 to #6, in plan order, each created,
 			// linked under the story and moved to its first stage, keyed by
 			// the plan comment's move into planned (#276). That's in the pass
-			// after, as the planner's move came after the pass's visits. The
-			// pass after that lists the human task, #6, which nothing blocks,
-			// in the digest, and assigns notify on it (#336), and the pass
-			// after its writes reads them back. No task has a stage that
-			// runs.
+			// after, as the planner's move came after the pass's visits. Then
+			// T2, which depends on T1 and T3, the human task, is blocked by
+			// both, and the record of the tasks is posted on the story, last
+			// (#277). The pass after that reads the story again, as the
+			// record changed it, and makes no request for creation, as the
+			// record stands. It lists the human task, #6, which nothing
+			// blocks, in the digest, and assigns notify on it (#336), and the
+			// pass after its writes reads them back. No task has a stage
+			// that runs.
+			from := len(f.Requests())
 			if tc.waits != nil {
 				p.settle("the plan", "PATCH /issues/3", "POST /issues/2/assignees")
 				p.waiting("the plan", tc.waits, wholeRunOwner)
 			} else {
-				p.iterate("the plan, the pass after", 1, childWrites(p.n, 4, 5, 6)...)
+				p.iterate("the plan, the pass after", 1, slices.Concat(childWrites(p.n, 4, 5, 6), blockWrites(5, 5), []string{recordWrite(p.n)})...)
 				runChildren(t, f, "the plan", p.n, 1, planned.ID, 4, planRunTasks)
+				runRecord(t, f, "the plan", p.n, 1, 4, planRunTasks, map[int][]int{5: {4, 6}})
+				if !childrenLooked(f, from, planned.CreatedAt) {
+					t.Errorf("the plan: the pass didn't look for the story's children in the issues listed since its move into planned")
+				}
+				from = len(f.Requests())
 				p.settle("the tasks", "PATCH /issues/3", "POST /issues/6/assignees")
 				p.waiting("the tasks", []string{"#6 Human task p2 1"})
 				assignWant(t, f, "the tasks", map[int][]string{6: {wholeRunOwner}})
+				recordStands(t, f, "the tasks", from, p.n, planned.CreatedAt, []int{5}, true)
+				from = len(f.Requests())
 			}
 			p.restart("the plan")
 			if !tc.hold {
+				recordStands(t, f, "the restart", from, p.n, planned.CreatedAt, []int{5}, true)
 				runChildren(t, f, "the restart", p.n, 1, planned.ID, 4, planRunTasks)
+				runRecord(t, f, "the restart", p.n, 1, 4, planRunTasks, map[int][]int{5: {4, 6}})
 				p.waiting("the restart", []string{"#6 Human task p2 1"})
 			} else if n := len(f.State().Issues); n != 3 {
 				t.Errorf("the restart: %d issues; want the epic, the story and the digest, as a plan at review files nothing", n)

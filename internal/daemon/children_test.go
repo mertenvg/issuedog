@@ -309,14 +309,19 @@ func wantBlockedBy(k childPlan) map[int][]int {
 // wantRecord is the record of k's children on issue 1, filed as issues 2
 // on in plan order: one line for each, with its item's title, then the
 // created marker.
-func wantRecord(k childPlan) string {
-	lines := []string{"I've created the children of plan rev 1:"}
+func wantRecord(k childPlan) string { return recordOf(1, 2, wantChildren(k)) }
+
+// recordOf is the record of plan revision rev's children want, filed as
+// issues first on in plan order: one line for each, with its item's
+// title, then the created marker.
+func recordOf(rev, first int, want []wantChild) string {
+	lines := []string{fmt.Sprintf("I've created the children of plan rev %d:", rev)}
 	var nums []string
-	for i, w := range wantChildren(k) {
-		lines = append(lines, fmt.Sprintf("- %s #%d: %s", w.item, i+2, strings.TrimPrefix(w.title, w.item+". ")))
-		nums = append(nums, strconv.Itoa(i+2))
+	for i, w := range want {
+		lines = append(lines, fmt.Sprintf("- %s #%d: %s", w.item, first+i, strings.TrimPrefix(w.title, w.item+". ")))
+		nums = append(nums, strconv.Itoa(first+i))
 	}
-	return strings.Join(lines, "\n") + "\n\n<!-- issuedog:created rev=1 children=" + strings.Join(nums, ",") + " -->"
+	return strings.Join(lines, "\n") + fmt.Sprintf("\n\n<!-- issuedog:created rev=%d children=%s -->", rev, strings.Join(nums, ","))
 }
 
 // creationRequest reports whether r is one ChildrenVisit makes for
