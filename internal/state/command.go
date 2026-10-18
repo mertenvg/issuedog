@@ -206,7 +206,7 @@ func (is Issue) Notes() int64 {
 	}
 	key := last.Fields["cmd"]
 	id, ok := Key{"cmd", key}.Comment()
-	if !ok || Stage(last.Fields["to"]) != is.Stage || !sendsBack(Stage(last.Fields["from"]), is.Stage) {
+	if !ok || Stage(last.Fields["to"]) != is.Stage || !sendsBack(Stage(last.Fields["from"]), Stage(last.Fields["to"])) {
 		return 0
 	}
 	for _, m := range is.Markers {
