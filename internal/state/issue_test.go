@@ -142,6 +142,52 @@ func TestDeriveItem(t *testing.T) {
 	}
 }
 
+// Derive reads Origin from the App's whole origin marker in a clean body
+// (#270): plan, rev, item and the body as its comment, whatever other
+// fields the marker has. A body someone else edited last, a dirty body, a
+// marker that isn't the App's, one in a comment or an escaped one, and one
+// that lacks a field or has a bad one, give the zero Origin.
+func TestDeriveOrigin(t *testing.T) {
+	t.Parallel()
+	const origin = "<!-- issuedog:origin plan=#248 rev=1 item=T4 -->"
+	want := Origin{Plan: 248, Rev: 1, Item: "T4", Comment: BodyID}
+	byApp := snap("The task.\n\n"+origin, nil)
+	byApp.BodyEdit = github.Edit{By: appBot, At: time.Unix(5, 0)}
+	byOwner := snap("The task.\n\n"+origin, nil)
+	byOwner.BodyEdit = github.Edit{By: owner, At: time.Unix(5, 0)}
+	byMallory := snap("The task.\n\n"+origin, nil)
+	byMallory.Author = mallory
+	for _, tt := range []struct {
+		name  string
+		s     *github.Snapshot
+		dirty func(int64) bool
+		want  Origin
+	}{
+		{"a clean App marker", snap("The task.\n\n"+origin, nil), clean, want},
+		{"other fields", snap("<!-- issuedog:origin check=label human=1 plan=#248 rev=1 item=T4 value=a%20b -->", nil), clean, want},
+		{"a body the App edited last", byApp, clean, want},
+		{"the first whole marker", snap("<!-- issuedog:origin plan=#248 rev=0 item=T1 -->"+origin+"<!-- issuedog:origin plan=#9 rev=2 item=S1 -->", nil), clean, want},
+		{"a body someone else edited last", byOwner, clean, Origin{}},
+		{"a dirty body", snap(origin, nil), dirtyIDs(BodyID), Origin{}},
+		{"a marker that isn't the App's", byMallory, clean, Origin{}},
+		{"an escaped marker", snap(github.Escape(origin), nil), clean, Origin{}},
+		{"a marker in a comment", snap("", []github.Author{appBot}, origin), clean, Origin{}},
+		{"no marker", snap("The task.", nil), clean, Origin{}},
+		{"no #", snap("<!-- issuedog:origin plan=248 rev=1 item=T4 -->", nil), clean, Origin{}},
+		{"plan 0", snap("<!-- issuedog:origin plan=#0 rev=1 item=T4 -->", nil), clean, Origin{}},
+		{"a plan that isn't a number", snap("<!-- issuedog:origin plan=#x rev=1 item=T4 -->", nil), clean, Origin{}},
+		{"no plan", snap("<!-- issuedog:origin rev=1 item=T4 -->", nil), clean, Origin{}},
+		{"rev 0", snap("<!-- issuedog:origin plan=#248 rev=0 item=T4 -->", nil), clean, Origin{}},
+		{"a rev that isn't a number", snap("<!-- issuedog:origin plan=#248 rev=r1 item=T4 -->", nil), clean, Origin{}},
+		{"no item", snap("<!-- issuedog:origin plan=#248 rev=1 -->", nil), clean, Origin{}},
+		{"another kind", snap("<!-- issuedog:revision plan=#248 rev=1 item=T4 -->", nil), clean, Origin{}},
+	} {
+		if got := Derive(tt.s, slug, tt.dirty).Origin; got != tt.want {
+			t.Errorf("%s: origin = %+v, want %+v", tt.name, got, tt.want)
+		}
+	}
+}
+
 // Derive reads the latest triage marker that counts, and its comment: not
 // a dirty one, nor one in the body or by anyone but the App.
 func TestDeriveTriage(t *testing.T) {
