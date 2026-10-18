@@ -202,10 +202,14 @@ func startDaemon(ctx context.Context, set settings, key []byte) (*daemon.Daemon,
 }
 
 // registerStages returns the Stages to register on d, by stage, and the
-// Unlabeled stage: the interviewer at clarifying, and triage for open
-// issues with no stage label (plan #6, T8). Tests replace it.
+// Unlabeled stage: the interviewer at clarifying, the planner at planning
+// (#247's T8), and triage for open issues with no stage label (plan #6,
+// T8). Tests replace it.
 var registerStages = func(d *daemon.Daemon) (map[state.Stage]daemon.Stage, daemon.Stage) {
-	return map[state.Stage]daemon.Stage{state.Clarifying: &daemon.Interviewer{Daemon: d}}, &daemon.Triage{Daemon: d}
+	return map[state.Stage]daemon.Stage{
+		state.Clarifying: &daemon.Interviewer{Daemon: d},
+		state.Planning:   &daemon.Planner{Daemon: d},
+	}, &daemon.Triage{Daemon: d}
 }
 
 // stageWork is the stage-run harness for d's stage work, with the Stages
@@ -243,7 +247,8 @@ func stageWork(d *daemon.Daemon, name string, cred agent.Cred) (*daemon.Runs, er
 // /track and /ignore among them, and the reaction triggers: first the end
 // of a discussion hold once a 👍 or a counter comment resolves it, on a
 // held issue; then a 👍 on a revision and a 👍 on a flag, each at its own
-// stage, spec-review or intake, so at most one of them acts on an issue,
+// stages, spec-review or plan-review for a spec or plan revision, and
+// intake for a flag, so at most one of them acts on an issue,
 // then a 👍 on a state error, at any stage. The loop's reloads
 // replace its Trust and the daemon's Config, so the handlers and the
 // triggers ask for the current trust, and models for the current
