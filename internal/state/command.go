@@ -167,7 +167,9 @@ func (c Command) setting() bool {
 // commands, and that no cmd or reply marker names. At clarifying, those are
 // this round's answers (plan #5, amended assumption 5), after the revision
 // request that sent the spec back, if one did, as the notes (SPEC §7.4). At
-// planning, they are comments posted after the approval. A hold keeps the
+// planning, they are comments posted after the approval, or after the
+// revision request that sent the plan back, if one did, as the notes, first
+// (plan #248, T3), and the answers to the planner's round. A hold keeps the
 // round it came in (HeldStack.Seen), so after one they include what was
 // posted while the issue was held, and the notes (Notes). It's only right
 // after a successful daemon Step.Run on s, which posts a lost reply again:
@@ -187,12 +189,14 @@ func (is Issue) Inputs(s *github.Snapshot, counts func(github.Comment) bool) []g
 }
 
 // Notes returns the ID of the comment whose revision request sent the spec
-// back, if the latest transition did so: from spec-review to clarifying,
-// keyed by the comment. It looks through a hold at clarifying (#83's note):
-// through the move into held, any held → held marker, and the move back to
-// clarifying that keeps the round (heldStackThrough). A reply marker naming
-// the comment, as for an edit made after it was used, drops it. Otherwise,
-// or while the issue isn't at clarifying, as while held, it returns 0.
+// or the plan back, if the latest transition did so, keyed by the comment:
+// from spec-review to clarifying, read at clarifying, or from plan-review to
+// planning, read at planning (plan #248, T3). It looks through a hold at
+// that stage (#83's note): through the move into held, any held → held
+// marker, and the move back to the stage that keeps the round
+// (heldStackThrough). A reply marker naming the comment, as for an edit
+// made after it was used, drops it. Otherwise, or while the issue is at
+// any other stage, as while held, it returns 0.
 func (is Issue) Notes() int64 {
 	var last github.Marker
 	for _, m := range is.Markers {
@@ -202,7 +206,7 @@ func (is Issue) Notes() int64 {
 	}
 	key := last.Fields["cmd"]
 	id, ok := Key{"cmd", key}.Comment()
-	if !ok || is.Stage != Clarifying || Stage(last.Fields["from"]) != SpecReview || Stage(last.Fields["to"]) != Clarifying {
+	if !ok || Stage(last.Fields["to"]) != is.Stage || !sendsBack(Stage(last.Fields["from"]), is.Stage) {
 		return 0
 	}
 	for _, m := range is.Markers {
@@ -211,4 +215,11 @@ func (is Issue) Notes() int64 {
 		}
 	}
 	return id
+}
+
+// sendsBack reports whether a move from from to to sends a revision back
+// (SPEC §7.4): the spec from spec-review to clarifying, or the plan from
+// plan-review to planning.
+func sendsBack(from, to Stage) bool {
+	return (from == SpecReview && to == Clarifying) || (from == PlanReview && to == Planning)
 }

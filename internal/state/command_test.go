@@ -154,3 +154,96 @@ func TestCommandSetting(t *testing.T) {
 		}
 	}
 }
+
+// At planning, the comment whose revision request sent the plan back, from
+// plan-review, is the notes (plan #248, T3), as a spec's request is at
+// clarifying. A hold at planning keeps them once the issue is back at
+// planning, as at clarifying.
+func TestNotesAtPlanning(t *testing.T) {
+	t.Parallel()
+	const (
+		back   = "from=plan-review to=planning cmd=5 seen=5"
+		hold   = "from=planning to=held at=planning reason=owner cmd=6 seen=5"
+		resume = "from=held to=planning cmd=7 seen=5"
+	)
+	for _, tt := range []struct {
+		name    string
+		markers []string
+		reply   bool // a reply marker names the request
+		want    int64
+	}{
+		{"sent back", []string{back}, false, 5},
+		{"through a hold", []string{back, hold, resume}, false, 5},
+		{"through a hold by hand on it too", []string{back, hold, "from=held to=held at=planning reason=owner by=owner event=8 seen=5", resume}, false, 5},
+		{"through a hand-set planning, which keeps the round too", []string{back, hold, "from=held to=planning by=owner event=8 seen=5"}, false, 5},
+		{"held, no notes yet", []string{back, hold}, false, 0},
+		{"a resume to another stage than the hold's", []string{back, hold, "from=held to=plan-review by=owner event=8 seen=5"}, false, 0},
+		{"a resume to clarifying", []string{back, hold, "from=held to=clarifying by=owner event=8 seen=5"}, false, 0},
+		{"after the planner's round, they're gone", []string{back, "from=planning to=planning round=1 questions=2 run=b seen=5"}, false, 0},
+		{"an edit after they were used drops them", []string{back}, true, 0},
+		{"a spec approval sends no notes", []string{"from=spec-review to=planning rev=1 body=aaaaaaaa cmd=5 seen=5"}, false, 0},
+		{"nor does a move from plan-review anywhere else", []string{"from=plan-review to=clarifying cmd=5 seen=5"}, false, 0},
+		{"nor a move to planning set by hand, keyed by no comment", []string{"from=plan-review to=planning by=owner event=8"}, false, 0},
+	} {
+		s := heldStackSnap(tt.markers...)
+		if tt.reply {
+			s.Comments = append(s.Comments, github.Comment{ID: int64(len(s.Comments) + 1), Author: appBot, Body: "<!-- issuedog:reply reason=edited cmd=5 -->"})
+		}
+		if got := Derive(s, slug, clean).Notes(); got != tt.want {
+			t.Errorf("%s: notes = %d, want %d", tt.name, got, tt.want)
+		}
+	}
+}
+
+// At planning after the plan was sent back, the request is the first of
+// Inputs, a /revise though it may be, then what came after it, and so after
+// a hold at planning too, with what came while held (plan #248, T3).
+func TestInputsAtPlanning(t *testing.T) {
+	t.Parallel()
+	const (
+		plan   = "from=planning to=plan-review rev=1 run=p1 seen=1"
+		back   = "from=plan-review to=planning cmd=2 seen=2"
+		hold   = "from=planning to=held at=planning reason=owner cmd=4 seen=2"
+		resume = "from=held to=planning cmd=7 seen=2"
+	)
+	inputs := func(s *github.Snapshot) []int64 {
+		var ids []int64
+		is := Derive(s, slug, clean)
+		for _, c := range is.Inputs(s, func(c github.Comment) bool { return c.Author == owner }) {
+			ids = append(ids, c.ID)
+		}
+		return ids
+	}
+	// Unheld, 1: the plan comment's move; 2: the request; 3: its move; 4: a
+	// comment after it. Held, 4 is /hold; 5: the hold; 6: a comment while
+	// held; 7: /resume. Then markers.
+	snap := func(request string, held bool, markers ...string) *github.Snapshot {
+		s := heldStackSnap(plan, "", back, "")
+		s.Comments[1].Body, s.Comments[3].Body = request, "and add X"
+		if held {
+			s = heldStackSnap(plan, "", back, "", hold, "", "")
+			s.Comments[1].Body, s.Comments[3].Body, s.Comments[6].Body = request, "/hold", "/resume"
+		}
+		for _, m := range markers {
+			s.Comments = append(s.Comments, github.Comment{ID: int64(len(s.Comments) + 1), Author: appBot, Body: "<!-- issuedog:transition " + m + " -->"})
+		}
+		return s
+	}
+	for _, tt := range []struct {
+		name string
+		s    *github.Snapshot
+		want []int64
+	}{
+		{"the request, then what came after it", snap("too long", false), []int64{2, 4}},
+		{"a /revise is the notes too", snap("/revise shorter", false), []int64{2, 4}},
+		{"while held, there's none", snap("too long", true), nil},
+		{"after /resume, the notes and what came while held", snap("too long", true, resume), []int64{2, 6}},
+		{"a /revise is the notes after a hold too", snap("/revise shorter", true, resume), []int64{2, 6}},
+		{"after a move out of held to plan-review, there's none", snap("too long", true, "from=held to=plan-review by=owner event=9 seen=2"), nil},
+		{"after the planner's round, the notes are gone", snap("too long", false, "from=planning to=planning round=1 questions=2 run=b seen=4"), nil},
+	} {
+		if got := inputs(tt.s); !slices.Equal(got, tt.want) {
+			t.Errorf("%s: inputs = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
