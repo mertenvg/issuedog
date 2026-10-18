@@ -254,7 +254,7 @@ func stageWork(d *daemon.Daemon, name string, cred agent.Cred) (*daemon.Runs, er
 // triggers ask for the current trust, and models for the current
 // models.allowed, rather than keeping what they had at the start.
 func newStep(a *daemon.Applier, tr github.Trust, models func() config.Models) *daemon.Step {
-	st := &daemon.Step{Applier: a, Trust: tr}
+	st := &daemon.Step{Applier: a, Trust: tr, Models: models}
 	st.Commands = daemon.Commands(st.CurrentTrust())
 	st.Commands["approve"] = daemon.ApproveCommand()
 	st.Commands["revise"] = daemon.ReviseCommand()

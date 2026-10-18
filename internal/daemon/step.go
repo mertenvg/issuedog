@@ -6,6 +6,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/logr/v2"
@@ -21,6 +22,11 @@ type Step struct {
 	Commands map[string]Handler
 	// Reactions, if set, runs after the comments: the reaction triggers.
 	Reactions func(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt) error
+	// Models, if set, returns models.allowed as of the call, which a plan
+	// item's model is resolved against when ChildrenVisit files its child.
+	// The loop's reloads replace the daemon's Config, so it asks each time,
+	// as SettingCommands does. Unset, no model resolves.
+	Models func() config.Models
 
 	trustOnce *trustOnceVisit // the trust of Iterate's visit under way, if any (#174)
 }
