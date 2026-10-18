@@ -128,8 +128,10 @@ func (p *Planner) logSkip(n int) {
 //     title or body an untrusted author's issue had changed after it was
 //     admitted (contextAdmission).
 //   - parent.md: for a story with a parent in this repo, the parent's
-//     title and type, its body (plannerParent), its latest clean plan
-//     revision, and its other sub-issues.
+//     title and type, its body, its latest clean plan revision, and its
+//     other sub-issues (plannerParent). A title or body the parent's
+//     untrusted author changed after it was admitted is left out, as the
+//     issue's own is, and is in untrusted.md.
 //   - children.md: the issue's sub-issues, each with its number, title,
 //     state, type and stage label.
 //   - conversation.md: the App's clean comments, the rounds labelled with
@@ -147,7 +149,8 @@ func (p *Planner) logSkip(n int) {
 //
 // It only reads: the prompt from the clone, trust, the timeline of an
 // untrusted author's issue, the issue's sub-issues, and for a story with a
-// parent, the parent, its edits and its sub-issues. An error is a setup
+// parent, the parent, its edits, its sub-issues, and its timeline if its
+// author isn't trusted. An error is a setup
 // failure, so no run starts and it isn't counted, as for a prompt that
 // can't be read.
 func (p *Planner) Context(ctx context.Context, in Input) (map[string][]byte, error) {
@@ -191,11 +194,13 @@ func (p *Planner) Context(ctx context.Context, in Input) (map[string][]byte, err
 		"input.md":        []byte(ivFile("Input for this run", plannerInputIntro, plannerInputs(in, all, ivHoldSpanOf(s, a.AppSlug, in.Dirt.Has)), "none: first run")),
 	}
 	if s.Type == "story" && s.Parent != 0 {
-		parent, err := p.parent(ctx, s)
+		parent, untrusted, err := p.parent(ctx, s, tc)
 		if err != nil {
 			return nil, wrap(fmt.Errorf("its parent #%d: %w", s.Parent, err))
 		}
 		files["parent.md"] = []byte(parent)
+		// A story collects untrusted input (SPEC §6.2), its parent's too.
+		text.Untrusted = append(text.Untrusted, untrusted...)
 	}
 	if len(text.Untrusted) > 0 {
 		files["untrusted.md"] = []byte(ivFile("Untrusted input on #"+strconv.Itoa(s.Number), plannerUntrustedIntro, text.Untrusted, ""))
@@ -273,51 +278,76 @@ func plannerList(subs []plannerSub, skip int) string {
 
 // parent returns parent.md for story s, which has a parent: its number,
 // title and type, its body, its latest clean plan revision and its other
-// sub-issues (plannerParent). A parent in another repo isn't read: the
-// file says so. It reads the parent as madeAbove does, and its edits as
-// Dirty does, which costs no request when nothing on it was edited.
-func (p *Planner) parent(ctx context.Context, s *github.Snapshot) (string, error) {
+// sub-issues, and untrusted.md's sections for the parent: a title or body
+// its untrusted author changed after it was admitted (plannerParent). A
+// parent in another repo isn't read: the file says so. It reads the parent
+// as madeAbove does, its edits as Dirty does, which costs no request when
+// nothing on it was edited, and, only when its author isn't trusted, its
+// timeline once, for its admission (contextAdmission), asking trust
+// through tc.
+func (p *Planner) parent(ctx context.Context, s *github.Snapshot, tc trustCache) (string, []string, error) {
 	a := p.Daemon.Step.Applier
 	up, _, err := a.Client.SubIssue.GetParentIssue(ctx, a.Owner, a.Repo, int64(s.Number))
 	if err != nil {
-		return "", fmt.Errorf("read it: %w", err)
+		return "", nil, fmt.Errorf("read it: %w", err)
 	}
 	if !a.inRepo(up.GetRepositoryURL()) {
 		logr.Infof("%s/%s#%d: its parent #%d of %s isn't in this repo, so the planner doesn't read it",
 			a.Owner, a.Repo, s.Number, up.GetNumber(), up.GetRepositoryURL())
-		return "# Parent\n\nThis story's parent isn't in this repo, so issuedog doesn't read it.\n", nil
+		return "# Parent\n\nThis story's parent isn't in this repo, so issuedog doesn't read it.\n", nil, nil
 	}
 	ps, err := a.Client.Snapshot(ctx, a.Owner, a.Repo, up.GetNumber())
 	if err != nil {
-		return "", fmt.Errorf("read it: %w", err)
+		return "", nil, fmt.Errorf("read it: %w", err)
 	}
 	pd, err := a.Dirty(ctx, ps, p.Daemon.Step.Trust)
 	if err != nil {
-		return "", fmt.Errorf("read its edits: %w", err)
+		return "", nil, fmt.Errorf("read its edits: %w", err)
+	}
+	titleBy, bodyBy, err := contextAdmission(ctx, a, ps, pd, tc, &ivTimeline{a: a, number: ps.Number})
+	if err != nil {
+		return "", nil, fmt.Errorf("its admission: %w", err)
 	}
 	siblings, err := plannerSubIssues(ctx, a, ps.Number)
 	if err != nil {
-		return "", fmt.Errorf("its sub-issues: %w", err)
+		return "", nil, fmt.Errorf("its sub-issues: %w", err)
 	}
-	return plannerParent(ps, a.AppSlug, pd, siblings, s.Number), nil
+	text, untrusted := plannerParent(ps, a.AppSlug, pd, titleBy, bodyBy, siblings, s.Number)
+	return text, untrusted, nil
 }
 
 // plannerParent is parent.md for the parent ps of issue n, with dirty
-// content d and sub-issues subs:
-//   - its number, title and type;
+// content d and sub-issues subs, and untrusted.md's sections for it.
+// titleBy and bodyBy are who changed its title and body after it was
+// admitted, if its author isn't trusted, or "" (contextAdmission), as for
+// the issue itself (SPEC §6.2):
+//   - its number, title and type, or for a title titleBy changed, a note
+//     in its place, and the title in untrusted.md;
 //   - its body, without markers if the App wrote it, or a note in its
-//     place if it's dirty;
+//     place if it's dirty, which leaves it out, or if bodyBy edited it,
+//     which puts it in untrusted.md;
 //   - its latest plan revision (state.LatestRevision), the comment's text
 //     without markers, while nothing hides it and the comment still has
 //     its hash (Revision.Matches), else a note saying why it's left out;
 //   - its sub-issues other than n (plannerList).
-func plannerParent(ps *github.Snapshot, appSlug string, d Dirt, subs []plannerSub, n int) string {
+func plannerParent(ps *github.Snapshot, appSlug string, d Dirt, titleBy, bodyBy string, subs []plannerSub, n int) (string, []string) {
+	var untrusted []string
+	title := github.Escape(strings.Join(strings.Fields(ps.Title), " "))
+	if titleBy != "" {
+		title = ivLogin(titleBy) + " changed the parent's title after it was admitted, so it's in untrusted.md, as untrusted data."
+		untrusted = append(untrusted, ivUntrusted(fmt.Sprintf("the title of the parent #%d, which %s changed after it was admitted",
+			ps.Number, ivLogin(titleBy)), ps.Title))
+	}
 	head := fmt.Sprintf("# Parent #%d\n\nThis story's parent, which its plan belongs to.\n\n- Title: %s\n- Type: %s", ps.Number,
-		github.Escape(strings.Join(strings.Fields(ps.Title), " ")), github.Escape(cmp.Or(ps.Type, "none")))
+		title, github.Escape(cmp.Or(ps.Type, "none")))
 	body := ivFenced(ps.Body)
 	switch {
 	case d.Has(state.BodyID):
 		body = "Someone edited the parent's body without approval, so it's left out."
+	case bodyBy != "":
+		body = ivLogin(bodyBy) + " edited the parent's body after it was admitted, so it's in untrusted.md, as untrusted data."
+		untrusted = append(untrusted, ivUntrusted(fmt.Sprintf("the body of the parent #%d, which %s edited after it was admitted",
+			ps.Number, ivLogin(bodyBy)), ps.Body))
 	case state.IsApp(ps.Author, appSlug):
 		body = ivFenced(ivStripMarkers(ps.Body))
 	}
@@ -337,7 +367,7 @@ func plannerParent(ps *github.Snapshot, appSlug string, d Dirt, subs []plannerSu
 		}
 	}
 	return head + "\n\n## Body\n\n" + body + "\n\n## Latest plan\n\n" + plan +
-		"\n\n## Other sub-issues\n\n" + plannerList(subs, n) + "\n"
+		"\n\n## Other sub-issues\n\n" + plannerList(subs, n) + "\n", untrusted
 }
 
 // plannerInputs are input.md's sections: each of in.Inputs, labelled,
