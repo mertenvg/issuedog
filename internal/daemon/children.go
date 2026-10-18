@@ -27,10 +27,13 @@ import (
 // plan #249, T4), it returns before any read or write: the children are
 // all written, so a visit costs nothing.
 //
-// Until then, it describes each item of R (childSpecs), finds the children
-// filed already (childrenFind), with no search request, then, for each
-// item in creation order, which childSpecs gives: plan order with the
-// human tasks last (childOrder):
+// Until then, it describes each item of R that it files (childSpecs):
+// every item of a first plan, and only the new items of a revision
+// (#195's T6), whose kept, changed and dropped items it leaves alone until
+// T7 and T8 (#296, #297). It finds the children filed already
+// (childrenFind), with no search request, then, for each item in creation
+// order, which childSpecs gives: plan order with the human tasks last
+// (childOrder):
 //   - files its child if none is found (CreateChild), with its title, body,
 //     labels and issue type. Its model and effort labels are resolved
 //     against Models as of this visit, and a warning names the item for
@@ -99,9 +102,15 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 	key := state.Key{Field: "event", ID: "p" + strconv.FormatInt(move.ID, 10)}
 	// numbers is each child's number so far, by item, found or filed, for
 	// "Why it blocks": the items a human task blocks come before it.
-	// children is each child, by item, for its links and the record.
+	// children is each child, by item, for its links and the record. A
+	// revision's children that aren't filed again (planFiles), such as a
+	// kept item a new one depends on, or a changed item a new human task
+	// blocks, are known from the start.
 	numbers := map[string]int{}
-	children := make(map[string]childFound, len(specs))
+	children := make(map[string]childFound, len(found))
+	for item, f := range found {
+		numbers[item], children[item] = f.Number, f
+	}
 	for _, c := range specs {
 		f, err := st.childWrite(ctx, s, rev.Rev, key, c, found[c.Item], numbers)
 		if err != nil {
@@ -110,9 +119,25 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 		numbers[c.Item], children[c.Item] = f.Number, f
 	}
 	// plan.Items is plan order, which the links and the record follow,
-	// whatever order the children were created in.
-	if err := st.childrenLink(ctx, plan.Items, children); err != nil {
+	// whatever order the children were created in. Of a revision, only
+	// the new items' children get their links here: a kept child keeps
+	// its links, and a changed one's follow the revision only once T8
+	// handles it. Nor is the revision's record posted until then (#195's
+	// assumption 7), so T7 and T8 can still apply its changed and dropped
+	// items; until they do, a visit reads the children again, and writes
+	// nothing once the new ones are filed and linked.
+	revised := slices.ContainsFunc(plan.Items, func(it planItem) bool { return it.Status != "" })
+	linked := plan.Items
+	if revised {
+		linked = slices.DeleteFunc(slices.Clone(plan.Items), func(it planItem) bool { return !planFiles(it.Status) })
+	}
+	if err := st.childrenLink(ctx, linked, children); err != nil {
 		return wrap(err)
+	}
+	if revised {
+		logr.Debugf("%s/%s#%d: revision %d's new children are filed, and its record waits for its changed and dropped ones",
+			st.Owner, st.Repo, s.Number, rev.Rev)
+		return nil
 	}
 	if err := st.childrenRecord(ctx, s, rev.Rev, plan.Items, children); err != nil {
 		return wrap(err)

@@ -56,7 +56,7 @@ func TestPlannerApplyPostsCheckedBody(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			facts := p.facts(r, is, class, 0)
+			facts := p.facts(r, is, class, planChecked{})
 			if facts.NoReview != (tt.to == state.Planned) || facts.Rev != 1 {
 				t.Fatalf("facts %+v, want rev 1, skipping review %t", facts, tt.to == state.Planned)
 			}

@@ -30,8 +30,8 @@ type Planner struct {
 	Daemon *Daemon
 
 	mu      sync.Mutex
-	skipped map[int]bool // issues Pending logged as planned before
-	checked planChecked  // the sub-issue count Check last read
+	skipped map[int]bool // issues Pending logged as planned before, with no approved plan to revise
+	checked planChecked  // the facts Check last read: the sub-issue count, and a revision's children
 }
 
 // Agent is "planner".
@@ -51,8 +51,7 @@ func (*Planner) Schema() []byte {
 }
 
 // Pending reports whether the planner has work on the issue: it's at
-// planning, it's an epic or a story, with a parent or without, it was never
-// planned before, and either
+// planning, it's an epic or a story, with a parent or without, and either
 //   - the latest transition entered planning by anything but a planner
 //     run, such as the spec's approval or an override: it runs at once,
 //     with or without input; or
@@ -67,14 +66,16 @@ func (*Planner) Schema() []byte {
 // its answer.
 //
 // An issue that was planned before, as any clean transition marker with
-// to=planned says, is S5's to plan again, with the revised-plan rule
-// (#247's assumption 5). Until then it gets no run, logged once per issue.
+// to=planned says, is planned again as a revision of its approved plan
+// (T6 of #195, planPriorOf), however it came back to planning. One whose
+// approved plan revision can't be read back gets no run, as a revision
+// couldn't be checked against its children: that's logged once per issue.
 func (p *Planner) Pending(in Input) bool {
 	if in.Issue.Stage != state.Planning || !plannerClass(in.Issue.Item) {
 		return false
 	}
-	if plannedBefore(in.Issue) {
-		p.logSkip(in.S.Number)
+	if _, err := planPriorOf(in.S, p.Daemon.Step.Applier.AppSlug, in.Issue, in.Dirt.Has); err != nil {
+		p.logSkip(in.S.Number, err)
 		return false
 	}
 	if !planRoundMove(ivHoldLatest(in.Issue, true)) {
@@ -99,9 +100,10 @@ func plannedBefore(is state.Issue) bool {
 }
 
 // logSkip logs, once per issue while the daemon runs, that issue n gets no
-// planner run as it was planned before. Pending is asked on every pass,
-// twice for an issue with work, so it isn't logged each time.
-func (p *Planner) logSkip(n int) {
+// planner run as it was planned before, and why it can't be revised.
+// Pending is asked on every pass, twice for an issue with work, so it
+// isn't logged each time.
+func (p *Planner) logSkip(n int, why error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.skipped[n] {
@@ -112,7 +114,7 @@ func (p *Planner) logSkip(n int) {
 	}
 	p.skipped[n] = true
 	a := p.Daemon.Step.Applier
-	logr.Infof("%s/%s#%d: no planner run: it was planned before, and planning it again isn't built yet", a.Owner, a.Repo, n)
+	logr.Infof("%s/%s#%d: no planner run: it was planned before, but %v", a.Owner, a.Repo, n, why)
 }
 
 // Context returns the planner's context files (#247's assumption 6), each
@@ -129,7 +131,10 @@ func (p *Planner) logSkip(n int) {
 //     untrusted author changed after it was admitted is left out, as the
 //     issue's own is, and is in untrusted.md.
 //   - children.md: the issue's sub-issues, each with its number, title,
-//     state, type and stage label.
+//     state, type and stage label. For a revision, of an issue planned
+//     before (planPriorOf), the children of its approved plan instead, each
+//     with its item ID, then that revision's items, then the other
+//     sub-issues, as context only (plannerChildrenFile).
 //   - conversation.md: the App's clean comments, the rounds labelled with
 //     their numbers and questions and the revisions as of the spec or of
 //     the plan, and the trusted, clean comments, with author, ID and round,
@@ -150,7 +155,8 @@ func (p *Planner) logSkip(n int) {
 //   - prompt.md: the task, naming in.ContextDir.
 //
 // It only reads: the prompt from the clone, trust, the timeline of an
-// untrusted author's issue, the issue's sub-issues, and for a story with a
+// untrusted author's issue, the issue's sub-issues, for a revision the
+// repo's issues since the move into planned, and for a story with a
 // parent, the parent, its edits, its sub-issues, and its timeline if its
 // author isn't trusted. After the interviewer's plan outcome, it also reads
 // the reactions of the discussion's untrusted comments. An error is a setup
@@ -190,15 +196,32 @@ func (p *Planner) Context(ctx context.Context, in Input) (map[string][]byte, err
 	if err != nil {
 		return nil, wrap(err)
 	}
-	children, err := plannerSubIssues(ctx, a, s.Number)
+	prior, err := planPriorOf(s, a.AppSlug, in.Issue, in.Dirt.Has)
 	if err != nil {
-		return nil, wrap(fmt.Errorf("its sub-issues: %w", err))
+		return nil, wrap(err)
+	}
+	var subs int
+	var childrenFile string
+	if prior != nil {
+		if err := prior.read(ctx, d.Step, s); err != nil {
+			return nil, wrap(err)
+		}
+		if childrenFile, err = plannerChildrenFile(s.Number, prior); err != nil {
+			return nil, wrap(err)
+		}
+		subs = prior.Subs
+	} else {
+		children, err := plannerSubIssues(ctx, a, s.Number)
+		if err != nil {
+			return nil, wrap(fmt.Errorf("its sub-issues: %w", err))
+		}
+		childrenFile = ivFile("Sub-issues of #"+strconv.Itoa(s.Number), plannerChildrenIntro, []string{plannerList(children, 0)}, "")
+		subs = len(children)
 	}
 	files := map[string][]byte{
 		"issue.md": []byte(contextIssue(s, a.AppSlug, text.TitleNote, text.BodyNote,
 			"- Priority: p"+strconv.Itoa(priority(s)))),
-		"children.md": []byte(ivFile("Sub-issues of #"+strconv.Itoa(s.Number), plannerChildrenIntro,
-			[]string{plannerList(children, 0)}, "")),
+		"children.md":     []byte(childrenFile),
 		"conversation.md": []byte(ivFile("Conversation on #"+strconv.Itoa(s.Number), plannerConversationIntro, text.Conversation, "None yet.")),
 		"input.md": []byte(ivFile("Input for this run", plannerInputIntro,
 			append(plannerInputs(in, all, ivHoldSpanOf(s, a.AppSlug, in.Dirt.Has)), hold.sections()...), "none: first run")),
@@ -216,7 +239,7 @@ func (p *Planner) Context(ctx context.Context, in Input) (map[string][]byte, err
 		files["untrusted.md"] = []byte(ivFile("Untrusted input on #"+strconv.Itoa(s.Number), plannerUntrustedIntro, text.Untrusted, ""))
 	}
 	files["prompt.md"] = []byte(plannerTask(s.Number, in.ContextDir, files))
-	files["system.md"] = []byte(plannerPreamble(d.Config, s, len(children), all, planRounds(s, a.AppSlug, in.Dirt.Has)) + "\n\n" + string(prompt))
+	files["system.md"] = []byte(plannerPreamble(d.Config, s, subs, prior, all, planRounds(s, a.AppSlug, in.Dirt.Has)) + "\n\n" + string(prompt))
 	return files, nil
 }
 
@@ -241,21 +264,21 @@ func plannerSubIssues(ctx context.Context, a *Applier, n int) ([]plannerSub, err
 		if err != nil {
 			return nil, fmt.Errorf("sub-issues of %s/%s#%d: %w", a.Owner, a.Repo, n, err)
 		}
-		is := (*gogithub.Issue)(sub)
-		ps := plannerSub{Number: is.GetNumber(), Title: is.GetTitle(), State: is.GetState(), Type: github.TypeOf(is)}
-		if u := is.GetRepositoryURL(); !a.inRepo(u) {
-			_, repo, _ := strings.Cut(u, "/repos/")
-			ps.Repo = cmp.Or(repo, "an unknown repo")
-		}
-		for _, l := range is.Labels {
-			if st, ok := state.ParseLabel(l.GetName()); ok {
-				ps.Stage = st
-				break
-			}
-		}
-		subs = append(subs, ps)
+		subs = append(subs, plannerSubOf(a, (*gogithub.Issue)(sub)))
 	}
 	return subs, nil
+}
+
+// plannerSubOf is sub-issue is as the listing gives it: its number, its
+// repo if it isn't this one, its title, state and type, and its first
+// stage label's stage.
+func plannerSubOf(a *Applier, is *gogithub.Issue) plannerSub {
+	ps := plannerSub{Number: is.GetNumber(), Title: is.GetTitle(), State: is.GetState(), Type: github.TypeOf(is), Stage: labelStage(is)}
+	if u := is.GetRepositoryURL(); !a.inRepo(u) {
+		_, repo, _ := strings.Cut(u, "/repos/")
+		ps.Repo = cmp.Or(repo, "an unknown repo")
+	}
+	return ps
 }
 
 // plannerList is a Markdown list of subs, each with its number, title,
@@ -450,7 +473,12 @@ func plannerTask(number int, dir string, files map[string][]byte) string {
 //   - the scopes, plan.max_tasks and verify.max_diff_lines;
 //   - models.allowed with their label suffixes, and the effort levels;
 //   - the default priority, s's own (p2 with none);
-//   - the sub-issues still free: 100 less the existing children;
+//   - the sub-issues still free: 100 less the existing children, which
+//     bound a first plan's items and a revision's new ones;
+//   - whether the plan is a first plan, whose items have no status, or a
+//     revision of approved plan revision prior.Rev, and the revision's
+//     rules (checkStatuses), its dependencies on kept items, and its
+//     review, which plan.review doesn't skip (#195's Q2a);
 //   - the rounds so far, every stage's (all), of them the planner's
 //     (planned), the next round's number (nextRound), and
 //     loop.max_questions_per_round;
@@ -464,7 +492,7 @@ func plannerTask(number int, dir string, files map[string][]byte) string {
 //     as checkPlan counts them.
 //
 // Each bound is the constant checkPlan enforces, so the two can't differ.
-func plannerPreamble(c *config.Config, s *github.Snapshot, children int, all, planned []interviewerRound) string {
+func plannerPreamble(c *config.Config, s *github.Snapshot, children int, prior *planPrior, all, planned []interviewerRound) string {
 	kinds := "This issue is an epic, so its plan is `stories`, or `tasks` when the epic has a single user-facing outcome."
 	if s.Type != "epic" {
 		kinds = "This issue is a story, so its plan is `tasks`, never `stories`."
@@ -490,6 +518,22 @@ func plannerPreamble(c *config.Config, s *github.Snapshot, children int, all, pl
 		efforts[i] = "`" + e + "`"
 	}
 	free := max(0, planMaxSubIssues-children)
+	subIssues := fmt.Sprintf("- This issue has %d sub-issues, of the %d GitHub allows, so a plan has at most %d items.", children, planMaxSubIssues, free)
+	revision := []string{"- This is the issue's first plan, so no item has a `status`."}
+	if prior != nil {
+		subIssues = fmt.Sprintf("- This issue has %d sub-issues, of the %d GitHub allows, so a revision has at most %d `new` items.", children, planMaxSubIssues, free)
+		revision = []string{
+			fmt.Sprintf("- This issue was planned before, and revision %d of its plan is approved, so this plan is a revision of it. "+
+				"Every item has a `status`: `kept`, `changed`, `new` or `dropped`.", prior.Rev),
+			"- Every child in children.md appears exactly once, by its item ID, marked `kept`, `changed` or `dropped`, never `new`. " +
+				"A closed child can only be `kept`: to change its work, add a `new` item.",
+			"- A `kept` or `dropped` item has its `id`, `title` and `status` only. A `changed` item is written in full, as a `new` one is, and keeps its ID.",
+			"- A `new` item's ID is no child's, and no item's of the approved revision.",
+			"- `depends_on` may name `kept`, `changed` and `new` items, never a `dropped` one. " +
+				"A `kept` item keeps its dependencies from the approved revision, and the cycle check and the link limits count them.",
+			"- `plan.max_tasks` counts the tasks that aren't `dropped`. A revision always waits for the owner's review, whatever `plan.review` says.",
+		}
+	}
 	asked := fmt.Sprintf("No questions have been asked on this issue yet, so a question round now is round %d.", nextRound(all))
 	if len(all) > 0 {
 		asked = fmt.Sprintf("Questions so far on this issue: %s. A question round now is round %d.", ivRoundList(all), nextRound(all))
@@ -521,7 +565,8 @@ func plannerPreamble(c *config.Config, s *github.Snapshot, children int, all, pl
 		"- " + models,
 		"- An item's `effort`, if set, is one of: " + strings.Join(efforts, ", ") + ".",
 		fmt.Sprintf("- An item's `priority`, if set, is `p0` to `p3`. With none, it gets this issue's priority, p%d.", priority(s)),
-		fmt.Sprintf("- This issue has %d sub-issues, of the %d GitHub allows, so a plan has at most %d items.", children, planMaxSubIssues, free),
+		subIssues,
+		strings.Join(revision, "\n\n"),
 		"- " + asked + fmt.Sprintf(" At most %d questions in a round, each with 2 to 4 options.", c.Loop.MaxQuestionsPerRound),
 		"- Each item's `id` is its own: `S1`, `S2` and so on in a plan of `stories`, `T1`, `T2` and so on in a plan of `tasks`, with no leading zero.",
 		"- A human task's `done_when.check`, if set, is one of five kinds, with exactly that kind's fields: " +

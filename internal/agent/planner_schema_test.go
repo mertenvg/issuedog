@@ -53,7 +53,7 @@ func planItems(t *testing.T, name string) []map[string]any {
 
 func TestPlannerGolden(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"epic-plan", "story-plan", "questions"} {
+	for _, name := range []string{"epic-plan", "story-plan", "story-revision", "questions"} {
 		if err := validateOutput(t, "planner", golden(t, "planner", name)); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
@@ -92,6 +92,34 @@ func TestPlannerGoldenShape(t *testing.T) {
 	}
 	if humans != 1 || fileChecks != 1 {
 		t.Errorf("story-plan: %d human tasks, %d with a file check and contains; want 1 and 1", humans, fileChecks)
+	}
+}
+
+// The golden revision has what it stands for: an item of each status, a
+// kept and a dropped one with their ID, title and status only, and a
+// changed and a new one written in full.
+func TestPlannerGoldenRevisionShape(t *testing.T) {
+	t.Parallel()
+	statuses := map[any]bool{}
+	for _, item := range planItems(t, "story-revision") {
+		statuses[item["status"]] = true
+		switch item["status"] {
+		case "kept", "dropped":
+			if len(item) != 3 {
+				t.Errorf("story-revision: %s item %v has %d fields, want id, title and status", item["status"], item["id"], len(item))
+			}
+		case "changed", "new":
+			for _, k := range []string{"outcome", "criteria", "depends_on", "scope", "human", "task"} {
+				if _, ok := item[k]; !ok {
+					t.Errorf("story-revision: %s item %v has no %s", item["status"], item["id"], k)
+				}
+			}
+		default:
+			t.Errorf("story-revision: item %v has status %v", item["id"], item["status"])
+		}
+	}
+	if len(statuses) != 4 {
+		t.Errorf("story-revision: statuses %v, want one item of each", statuses)
 	}
 }
 
@@ -157,6 +185,9 @@ func TestPlannerPrompt(t *testing.T) {
 		// The item fields' limits come from the preamble.
 		"`plan.max_tasks`", "`verify.max_diff_lines`", "preamble's list of allowed models", "`low`, `medium`, `high`, `xhigh` and `max`", "`p0` to `p3`",
 		"`recommended` first",
+		// A revision's statuses, and their rules.
+		"`children.md`", "## Revised plans", "- `kept`:", "- `changed`:", "- `new`:", "- `dropped`:",
+		"List every child exactly once, never as `new`", "A closed child can only be `kept`", "On a first plan, leave `status` out of every item.",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("planner.md doesn't contain %q", want)
@@ -377,7 +408,17 @@ func TestPlannerBadOutputs(t *testing.T) {
 		"multi-line title":     {"epic-plan", "Quotes expire\n### Injected", []any{"plan", "items", 0, "title"}, "at '/plan/items/0/title'"},
 		"multi-line outcome":   {"epic-plan", "Refused.\nReally.", []any{"plan", "items", 0, "outcome"}, "at '/plan/items/0/outcome'"},
 		"multi-line criterion": {"epic-plan", "Works.\n- another", []any{"plan", "items", 0, "criteria", 0}, "at '/plan/items/0/criteria/0'"},
-		"item extra field":     {"epic-plan", "kept", []any{"plan", "items", 0, "status"}, "additional properties 'status' not allowed"},
+		"item extra field":     {"epic-plan", "x", []any{"plan", "items", 0, "notes"}, "additional properties 'notes' not allowed"},
+
+		// A revision's statuses: a kept or dropped item has its ID, title and
+		// status only, and a changed or new one is written in full.
+		"unknown status":            {"story-revision", "renamed", []any{"plan", "items", 0, "status"}, "at '/plan/items/0/status': value must be one of"},
+		"kept item with an outcome": {"story-revision", "Still done.", []any{"plan", "items", 0, "outcome"}, "invalid propertyName 'outcome'"},
+		"dropped item with a scope": {"story-revision", "infra", []any{"plan", "items", 2, "scope"}, "invalid propertyName 'scope'"},
+		"kept story with criteria":  {"epic-plan", "kept", []any{"plan", "items", 0, "status"}, "invalid propertyName 'criteria'"},
+		"changed item, no outcome":  {"story-revision", remove, []any{"plan", "items", 1, "outcome"}, "missing property 'outcome'"},
+		"new task with no scope":    {"story-revision", remove, []any{"plan", "items", 3, "scope"}, "missing property 'scope'"},
+		"new task with no body":     {"story-revision", remove, []any{"plan", "items", 3, "task"}, "missing property 'task'"},
 
 		// The plan.
 		"kind epics":            {"epic-plan", "epics", []any{"plan", "kind"}, "at '/plan/kind': value must be one of"},

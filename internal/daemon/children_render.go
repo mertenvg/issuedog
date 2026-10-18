@@ -106,6 +106,13 @@ const childWidestNumber = math.MaxInt32
 //     §3.3). One left off, as a model a reload has dropped, is in leftOff,
 //     and the child is still described.
 //
+// Of a revision's items (#195's T6), only the new ones are described
+// (planFiles): a kept, changed or dropped item has its child already, and
+// a kept or dropped one carries its ID and title alone. Rewriting a
+// changed child and closing a dropped one are T7's and T8's (#296, #297).
+// A new human task's "Why it blocks" still names a changed item that
+// depends on it, from all of items.
+//
 // An item it can't describe is an error naming it: a task with no scope
 // or no body of its kind, a check the plan's validation would refuse, or a
 // body over childMaxBody, which a human task's is checked for with the
@@ -114,6 +121,9 @@ func childSpecs(parent *github.Snapshot, rev int, items []planItem, issueTypes b
 	ordered := childOrder(items)
 	specs := make([]childSpec, 0, len(ordered))
 	for _, it := range ordered {
+		if !planFiles(it.Status) {
+			continue
+		}
 		c, err := childSpecOf(parent, rev, it, childDependents(items, it.ID), issueTypes, notify, models)
 		if err != nil {
 			return nil, fmt.Errorf("describe the child of plan #%d rev %d item %s: %w", parent.Number, rev, it.ID, err)
