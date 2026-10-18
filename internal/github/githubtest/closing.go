@@ -23,6 +23,9 @@ type closingCloser struct {
 	merged           bool
 	base, repo       string
 	forbidden        bool // see ForbidCloser
+	// fail is the error GraphQL gives under node, with a null node, for
+	// each question of this event (FailCloser); nil for none.
+	fail map[string]any
 }
 
 // ClosingPR is a pull request that closes an issue as it merges
@@ -122,6 +125,31 @@ func (f *Fake) ForbidCloser(number int, id int64) {
 	})
 }
 
+// FailCloser makes GraphQL fail every question of closed event id's
+// closer, until MendCloser: the node is null, with an error at ["node"]
+// with message, of type typ, or with no type for typ "", as a passing
+// fault GitHub doesn't name might show (#204).
+func (f *Fake) FailCloser(number int, id int64, typ, message string) {
+	f.edit(number, func(is *issue) {
+		cl := is.closingClosers[id]
+		cl.fail = map[string]any{"path": []any{"node"}, "message": message}
+		if typ != "" {
+			cl.fail["type"] = typ
+		}
+		is.closingClosers[id] = cl
+	})
+}
+
+// MendCloser ends FailCloser's errors for closed event id: GraphQL answers
+// how it was made again.
+func (f *Fake) MendCloser(number int, id int64) {
+	f.edit(number, func(is *issue) {
+		cl := is.closingClosers[id]
+		cl.fail = nil
+		is.closingClosers[id] = cl
+	})
+}
+
 // FailGraphQLAt makes the next GraphQL answer list an error of type typ,
 // with message, at path, such as ["repository", "defaultBranchRef"],
 // beside its data.
@@ -213,7 +241,8 @@ func (is *issue) closingServe(e *gogithub.Timeline) any {
 // the repo's name and default branch, main, and the ClosedEvent it names,
 // with its stateReason and closer, or, as on GitHub, a null node with a
 // NOT_FOUND error for an ID it doesn't know. A reopened event's node, and
-// a closed event's ForgetCloser forgot, has no ClosedEvent's fields. A repo
+// a closed event's ForgetCloser forgot, has no ClosedEvent's fields. A
+// closed event FailCloser fails is a null node, with its error. A repo
 // that isn't the fake's, owner/name, is null, with a NOT_FOUND error. f is
 // locked.
 func (f *Fake) closingAnswer(owner, name, id string) (any, []map[string]any) {
@@ -238,6 +267,9 @@ func (f *Fake) closingAnswer(owner, name, id string) (any, []map[string]any) {
 				return map[string]any{"repository": repo, "node": map[string]any{}}, nil
 			}
 			var closer any
+			if cl.fail != nil {
+				return map[string]any{"repository": repo, "node": nil}, []map[string]any{cl.fail}
+			}
 			if cl.forbidden {
 				return map[string]any{"repository": repo, "node": map[string]any{"stateReason": strings.ToUpper(cl.reason), "closer": nil}},
 					[]map[string]any{{"type": "FORBIDDEN", "path": []any{"node", "closer"}, "message": "Resource not accessible by integration"}}
