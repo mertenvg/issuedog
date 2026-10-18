@@ -533,7 +533,7 @@ func TestDigestRenderNews(t *testing.T) {
 // none, as with no triggers at all, gets none.
 func TestDigestRenderKinds(t *testing.T) {
 	t.Parallel()
-	for k, want := range map[waitKind]bool{waitError: true, waitHold: false, waitApproval: false, waitQuestion: false, waitFlag: false, waitKind(9): true} {
+	for k, want := range map[waitKind]bool{waitError: true, waitHold: false, waitApproval: false, waitPlanApproval: false, waitQuestion: false, waitFlag: false, waitKind(9): true} {
 		if got := digestRenderMentions(waitItem{Kind: k}); got != want {
 			t.Errorf("digestRenderMentions(%s) = %v, want %v", k, got, want)
 		}
@@ -547,7 +547,7 @@ func TestDigestRenderKinds(t *testing.T) {
 	if !digestRenderMentions(loud) {
 		t.Errorf("a hold with a trigger no App comment mentioned gets no mention; want one")
 	}
-	for k, want := range map[waitKind]string{waitError: "State error", waitHold: "Discussion hold", waitApproval: "Approval", waitQuestion: "Question round",
+	for k, want := range map[waitKind]string{waitError: "State error", waitHold: "Discussion hold", waitApproval: "Approval", waitPlanApproval: "Plan approval", waitQuestion: "Question round",
 		waitFlag: "Triage flag", waitKind(9): "Item (kind9)"} {
 		if got := digestRenderKindName(k); got != want {
 			t.Errorf("digestRenderKindName(%d) = %q, want %q", k, got, want)
