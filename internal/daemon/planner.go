@@ -22,20 +22,16 @@ import (
 // and its schema.
 const plannerAgent = "planner"
 
-// plannerMaxSubIssues is how many sub-issues GitHub allows an issue
-// (SPEC §11.3): a plan's items count with the issue's existing ones.
-const plannerMaxSubIssues = 100
-
-// Planner is the Stage at planning (T7 of #247, assumptions 4 to 6). It
-// breaks an approved epic or story into a plan, or asks a question round
-// first. Its Daemon gives the config, trust and clone of the moment. It
-// isn't registered at planning until its result is checked and applied
-// (T8).
+// Planner is the Stage at planning (T7 and T8 of #247, assumptions 4 to
+// 6). It breaks an approved epic or story into a plan, or asks a question
+// round first. Its Daemon gives the config, trust and clone of the moment.
+// Its result is checked (Check) and applied (Apply) in planner_apply.go.
 type Planner struct {
 	Daemon *Daemon
 
 	mu      sync.Mutex
 	skipped map[int]bool // issues Pending logged as planned before
+	checked planChecked  // the sub-issue count Check last read
 }
 
 // Agent is "planner".
@@ -370,17 +366,24 @@ func plannerParent(ps *github.Snapshot, appSlug string, d Dirt, titleBy, bodyBy 
 		"\n\n## Other sub-issues\n\n" + plannerList(subs, n) + "\n", untrusted
 }
 
-// plannerInputs are input.md's sections: each of in.Inputs, labelled,
+// plannerInputs are input.md's sections: each of in.Inputs, labelled: as
+// the revision notes that sent the plan back, for the comment
+// state.Issue.Notes names, as for the interviewer (ivInputs); else,
 // looking through a hold the issue went back from (ivHoldLatest), as an
 // answer to the round it's in when the latest move is the planner's round,
 // even if posted while the issue was held; else by whether it was posted
 // during sp, the latest hold the issue left; else as new since the issue
-// came to planning. all are every stage's rounds.
+// came to planning. all are every stage's rounds. Notes names a plan's
+// revision request at planning only once #269 (S2) reads one there; until
+// then it's 0 at planning, which no comment is.
 func plannerInputs(in Input, all []interviewerRound, sp ivHoldSpan) []string {
 	asked := planRoundMove(ivHoldLatest(in.Issue, false))
+	notes := in.Issue.Notes()
 	return contextInputs(in.Inputs, func(c github.Comment) string {
 		during := sp.Start > 0 && c.ID > sp.Start && c.ID < sp.End
 		switch n := ivRoundOf(all, c.ID); {
+		case c.ID == notes:
+			return "the revision notes that sent the plan back"
 		case asked && n > 0 && during:
 			return "an answer to round " + strconv.Itoa(n) + ", posted while the issue was on hold"
 		case asked && n > 0:
@@ -437,10 +440,16 @@ func plannerTask(number int, dir string, files map[string][]byte) string {
 //   - the rounds so far, every stage's (all), of them the planner's
 //     (planned), the next round's number (nextRound), and
 //     loop.max_questions_per_round;
+//   - the item ID format (planItemIDRE);
 //   - the five "Done when" check kinds and their fields (the cross-story
-//     decision 5), with their bounds;
+//     decision 5), with their bounds (planMaxLabel, planMaxContains);
 //   - that the visible fields name no file paths, and that "Depends on"
-//     names items of this plan.
+//     names items of this plan;
+//   - the dependency links of one type per item (planMaxLinks), the
+//     one-line fields, and the comment's length (maxText less textRoom),
+//     as checkPlan counts them.
+//
+// Each bound is the constant checkPlan enforces, so the two can't differ.
 func plannerPreamble(c *config.Config, s *github.Snapshot, children int, all, planned []interviewerRound) string {
 	kinds := "This issue is an epic, so its plan is `stories`, or `tasks` when the epic has a single user-facing outcome."
 	if s.Type != "epic" {
@@ -466,7 +475,7 @@ func plannerPreamble(c *config.Config, s *github.Snapshot, children int, all, pl
 	for i, e := range efforts {
 		efforts[i] = "`" + e + "`"
 	}
-	free := max(0, plannerMaxSubIssues-children)
+	free := max(0, planMaxSubIssues-children)
 	asked := fmt.Sprintf("No questions have been asked on this issue yet, so a question round now is round %d.", nextRound(all))
 	if len(all) > 0 {
 		asked = fmt.Sprintf("Questions so far on this issue: %s. A question round now is round %d.", ivRoundList(all), nextRound(all))
@@ -498,16 +507,24 @@ func plannerPreamble(c *config.Config, s *github.Snapshot, children int, all, pl
 		"- " + models,
 		"- An item's `effort`, if set, is one of: " + strings.Join(efforts, ", ") + ".",
 		fmt.Sprintf("- An item's `priority`, if set, is `p0` to `p3`. With none, it gets this issue's priority, p%d.", priority(s)),
-		fmt.Sprintf("- This issue has %d sub-issues, of the %d GitHub allows, so a plan has at most %d items.", children, plannerMaxSubIssues, free),
+		fmt.Sprintf("- This issue has %d sub-issues, of the %d GitHub allows, so a plan has at most %d items.", children, planMaxSubIssues, free),
 		"- " + asked + fmt.Sprintf(" At most %d questions in a round, each with 2 to 4 options.", c.Loop.MaxQuestionsPerRound),
+		"- Each item's `id` is its own: `S1`, `S2` and so on in a plan of `stories`, `T1`, `T2` and so on in a plan of `tasks`, with no leading zero.",
 		"- A human task's `done_when.check`, if set, is one of five kinds, with exactly that kind's fields: " +
-			"`label`, with `label`, a label's name of at most 50 characters; " +
+			fmt.Sprintf("`label`, with `label`, a label's name of at most %d characters; ", planMaxLabel) +
 			"`issue-type`, with `issue_type`, an issue type's name; " +
-			"`file`, with `path`, a path from the repo root with no leading `/`, no `..` and no backslash, and optionally `contains`, one line of at most 256 bytes; " +
+			fmt.Sprintf("`file`, with `path`, a path from the repo root with no leading `/`, no `..` and no backslash, and optionally `contains`, one line of at most %d bytes; ", planMaxContains) +
 			"`ruleset`, with `check`, a check's name on one line; " +
 			"`installation`, with `owner`, a GitHub login. Anything else is `done_when.text` alone.",
 		"- The plan's visible fields, everything but a task's body and a human task's `steps`, `links` and `check`, name no file paths: " +
 			"no `dir/file.ext`, in code or not. A plan whose visible text names one fails the run.",
 		"- An item's `depends_on` names only items of this plan, by their IDs: never an issue number, an item of another plan, or the item itself, and never a cycle.",
+		fmt.Sprintf("- An item depends on at most %d items, and at most %d items depend on it: GitHub's limit of dependency links of one type per issue.",
+			planMaxLinks, planMaxLinks),
+		"- These fields are one line each, with no line break: `why`, `order`, each assumption, each item's `title`, `outcome` and criteria, " +
+			"each entry of a task body's `definition_of_done`, and a human task's `goal`, `why_blocks`, each step and link, `done_when.text` and `estimated_time`.",
+		fmt.Sprintf("- The plan comment issuedog posts, the plan's visible fields with the whole plan kept inside it, compressed, task bodies included, "+
+			"is at most %d characters, and so is a question round's comment. Output over that fails the run, so keep each task body to what its task needs.",
+			maxText-textRoom),
 	}, "\n\n")
 }

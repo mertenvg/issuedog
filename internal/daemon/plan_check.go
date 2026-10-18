@@ -3,6 +3,7 @@ package daemon
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strconv"
@@ -37,6 +38,10 @@ type planFacts struct {
 	// comment's text, which the length rule counts.
 	Rev      int
 	NoReview bool
+	// Fields are the move's marker fields beside from, to, rev and run,
+	// as Result.Move sets them: seen=, model=, effort= and ran=. They're
+	// in the comment too, so the length rule counts them.
+	Fields map[string]string
 }
 
 // view is the planView a plan is rendered with under f.
@@ -485,15 +490,20 @@ func checkPlanLength(p planBody, f planFacts, fail func(string, string, ...any))
 
 // planCommentBody is the plan comment p is posted as under f, as
 // Applier.Transition writes it: the rendered plan, the move's transition
-// marker, the plan-data marker, and the plan revision marker. Only the
-// run's ID stands in, planLengthRunID, as long as the real one.
+// marker, with f.Fields, the plan-data marker, and the plan revision
+// marker. Only the run's ID stands in, planLengthRunID, as long as the
+// real one.
 func planCommentBody(p planBody, f planFacts) (string, error) {
 	to := state.PlanReview
 	if f.NoReview {
 		to = state.Planned
 	}
-	transition, err := github.FormatMarker(github.Marker{Kind: "transition", Fields: map[string]string{
-		"from": string(state.Planning), "to": string(to), "rev": strconv.Itoa(f.Rev), "run": planLengthRunID}})
+	fields := maps.Clone(f.Fields)
+	if fields == nil {
+		fields = map[string]string{}
+	}
+	fields["from"], fields["to"], fields["rev"], fields["run"] = string(state.Planning), string(to), strconv.Itoa(f.Rev), planLengthRunID
+	transition, err := github.FormatMarker(github.Marker{Kind: "transition", Fields: fields})
 	if err != nil {
 		return "", fmt.Errorf("the plan comment's transition marker: %w", err)
 	}
