@@ -875,18 +875,22 @@ func ivPlanHeldPlanned(t testing.TB, f *githubtest.Fake) {
 // from a fake interviewer, in the same pass the discussion ends. It moves
 // clarifying → planning, with origin and no revision, and its comment says
 // the plan changes, with the message, its mention defused, that the
-// planner posts a new plan, and the cc line. The pass after writes nothing
-// and runs nothing, and the plan pass is safe to replay.
+// planner posts a new plan, and the cc line. After a hold from plan-review,
+// it names the /revise that waited through the hold, and 👍s it in the
+// same pass. The pass after writes nothing and runs nothing, and the plan
+// pass is safe to replay.
 func TestIvHoldPlan(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		origin string
-		setup  func(t testing.TB, f *githubtest.Fake)
+		name, origin string
+		setup        func(t testing.TB, f *githubtest.Fake)
+		revise       bool
 	}{
-		{"plan-review", func(t testing.TB, f *githubtest.Fake) { planHoldDisc(t, f, nil) }},
-		{"planned", ivPlanHeldPlanned},
+		{"plan-review", "plan-review", func(t testing.TB, f *githubtest.Fake) { planHoldDisc(t, f, nil) }, false},
+		{"plan-review with a /revise", "plan-review", planHoldRevised, true},
+		{"planned", "planned", ivPlanHeldPlanned, false},
 	} {
-		t.Run(tt.origin, func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			f := newFake(t)
 			tt.setup(t, f)
@@ -898,8 +902,12 @@ func TestIvHoldPlan(t *testing.T) {
 			if !strings.HasPrefix(body, ivPlanText) {
 				t.Errorf("the plan move =\n%s\nwant it to start\n%s", body, ivPlanText)
 			}
-			ivHoldFields(t, ivHoldMove(t, body), map[string]string{"from": "clarifying", "to": "planning", "run": "run1", "origin": tt.origin,
-				"rev": "", "body": "", "cmd": ""})
+			want := map[string]string{"from": "clarifying", "to": "planning", "run": "run1", "origin": tt.origin, "rev": "", "body": "", "cmd": ""}
+			if tt.revise {
+				want["cmd"] = strconv.FormatInt(ivHoldFind(t, f, planHoldRevise), 10)
+				planHoldAcked(t, f)
+			}
+			ivHoldFields(t, ivHoldMove(t, body), want)
 			if l := ivLabels(f, 1); !slices.Equal(l, []string{"stage:planning", "type:epic"}) || g.runs() != 1 {
 				t.Errorf("labels %q after %d runs; want planning after one", l, g.runs())
 			}
@@ -1137,5 +1145,54 @@ func TestIvHoldParentStory(t *testing.T) {
 			}
 			ivHoldFields(t, ivHoldMove(t, newestComment(f, 1)), map[string]string{"from": "clarifying", "to": tt.to, "run": "run1", "origin": "planning"})
 		})
+	}
+}
+
+// #195's Q1a on a story with a parent whose type the App set, as on a child
+// created from a plan, where typing would let the run change the type: at
+// the clarifying after a hold from planning, its preamble still says to
+// leave the type out, lists no typed outcome, and a round that sets a type
+// is a failed attempt, with nothing written.
+func TestIvHoldParentStoryTyped(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	n := f.AddIssue("owner", "Quotes", "The spec.")
+	f.AddLabel(n, app, "type:story")
+	p := f.AddIssue("owner", "The epic", "")
+	f.AddLabel(p, "owner", "type:epic")
+	f.SetParent(n, p)
+	f.AddLabel(n, app, "stage:planning")
+	f.AddComment(n, app, "Moved.\n\n<!-- issuedog:transition "+plEntry+" -->")
+	m := f.AddComment(n, "mallory", planHoldMallory)
+	if err := resolvePass(t, n)(f); err != nil {
+		t.Fatal(err)
+	}
+	f.AddReaction(m, "owner", "+1")
+	if err := resolvePass(t, n)(f); err != nil {
+		t.Fatal(err)
+	}
+	if l := ivLabels(f, n); !slices.Equal(l, []string{"stage:clarifying", "type:story"}) {
+		t.Fatalf("labels %q; want clarifying after the hold", l)
+	}
+	f.ForgetWrites()
+	sys := ivContext(t, ivDaemon(t, f, newOrigin(t)), n)["system.md"]
+	for w, want := range map[string]bool{
+		"- This story has a parent, whose plan gave it its type, so leave `type` out.":                     true,
+		"- The outcomes you may return here: `questions`, `unchanged` and `plan`. Any other outcome fails": true,
+		"so you may change it": false,
+	} {
+		if strings.Contains(sys, w) != want {
+			t.Errorf("system.md has %q: %t, want %t:\n%s", w, !want, want, sys)
+		}
+	}
+	g := ivHoldNew(t, f, ivRound(1, "epic"))
+	if err := g.work(n); err != nil {
+		t.Fatal(err)
+	}
+	if w := f.Writes(); len(w) != 0 {
+		t.Errorf("wrote %+v, want nothing", w)
+	}
+	if l := g.lease(); g.runs() != 1 || !l.Failed || l.Attempt != 1 || l.ApplyFailures != 0 {
+		t.Errorf("after %d runs, lease %+v; want one failed attempt", g.runs(), l)
 	}
 }
