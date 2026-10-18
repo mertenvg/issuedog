@@ -355,8 +355,9 @@ func (d *Daemon) reload(ctx context.Context) {
 // more from there, so the next poll of an unchanged repo repeats that
 // request and gets a 304. Closed issues and pull requests are dropped, and
 // so are digests, which it records, with the App's digest-new comments
-// (digest.go). A closed issue whose close is still to judge is kept for
-// closingPass (closingList), and an open one forgets its close.
+// (digest.go). One only the digest's title rule would take is judged after
+// the comments (digestTake). A closed issue whose close is still to judge
+// is kept for closingPass (closingList), and an open one forgets its close.
 func (d *Daemon) poll(ctx context.Context) error {
 	a := d.Step.Applier
 	start := d.issuesSince.IsZero() // a start's first poll, which lists every issue
@@ -376,14 +377,7 @@ func (d *Daemon) poll(ctx context.Context) error {
 					// A close still to judge is kept (closing.go).
 					d.closingList(is, start, d.snaps[n] != nil && slices.ContainsFunc(d.snaps[n].Labels, isStageLabel))
 				}
-				delete(d.snaps, n)
-				delete(d.inputs, n)
-				delete(d.stale, n)
-				delete(d.missing, n) // so a reopened issue starts with no strike
-				delete(d.openErrs, n)
-				delete(d.digestCache, n) // a closed issue has nothing waiting
-				delete(d.assignManaged, n)
-				a.forgetLabels(n)
+				d.leave(n)
 			case changed(d.snaps[n], is):
 				d.closingForget(n)
 				d.stale[n] = true
@@ -415,7 +409,24 @@ func (d *Daemon) poll(ctx context.Context) error {
 			break
 		}
 	}
+	// Only now that the comments are in, as every one is on a start, can an
+	// issue only the digest's title rule would take be judged (digestTake).
+	d.digestTake(ctx)
 	return nil
+}
+
+// leave drops what the daemon holds of issue n, its snapshot and all it
+// derived from it, for an issue that left the pipeline: a closed one, or a
+// digest, which is never in it.
+func (d *Daemon) leave(n int) {
+	delete(d.snaps, n)
+	delete(d.inputs, n)
+	delete(d.stale, n)
+	delete(d.missing, n) // so a reopened issue starts with no strike
+	delete(d.openErrs, n)
+	delete(d.digestCache, n) // a closed issue has nothing waiting
+	delete(d.assignManaged, n)
+	d.Step.forgetLabels(n)
 }
 
 // changed reports whether the listed issue is newer than s, or s is nil.
