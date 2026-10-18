@@ -503,3 +503,22 @@ func TestSpecReadersIgnorePlanRevision(t *testing.T) {
 		})
 	}
 }
+
+// ReviewVisit reads the spec revision, not a plan revision after it: while
+// the spec revision still has the body's hash, it's current, so ReviewVisit
+// asks no one's trust, and writes nothing. A plan revision's hash never has
+// the body's, so read as the spec's it would be stale every visit.
+func TestReviewVisitIgnoresPlanRevision(t *testing.T) {
+	t.Parallel()
+	f := review(func(t testing.TB, f *githubtest.Fake) { post(t, f, 1002, app, planRev(1, "A plan.")) })(t)
+	a, s, err := applier(t, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (&daemon.Step{Applier: a, Trust: failTrust{}}).ReviewVisit(context.Background(), s); err != nil {
+		t.Errorf("ReviewVisit = %v, want no trust asked", err)
+	}
+	if w := f.Writes(); len(w) != 0 {
+		t.Errorf("writes %+v, want none", w)
+	}
+}
