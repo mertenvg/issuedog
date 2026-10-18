@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -13,29 +14,47 @@ import (
 )
 
 // A human task in the digest and in assignment against the fakes (#287,
-// plan #250's T7), with step 1 wired as main wires it. S3 doesn't create
-// human tasks yet, so each is filed as the App's issue, with the body
-// childHumanTaskBody writes and the first move S3 posts on it.
+// plan #250's T7), with step 1 wired as main wires it. Most file each as
+// the App's issue, with the body humanBody writes (#284) and the first
+// move S3 posts on it; TestHumanItemFromChildren has ChildrenVisit create
+// them.
 
-// humanItemBody is a human task's body as the App creates it, from plan
-// #9 rev 1's item T3, with a cc line for cc.
-func humanItemBody(cc string) string {
-	return "**Parent:** #9   **Scope:** scope:infra   **Priority:** p2\n\n" +
-		"**Goal:** Set the quote lifetime in production.\n" +
-		"**Why it blocks:** T2 can't be deployed until production has a lifetime.\n" +
-		"**Steps:**\n1. Open `deploy/production.env`.\n2. Add `QUOTE_TTL=24h`.\n\n" +
-		"**Links:**\n- https://github.com/o/r/blob/main/deploy/production.env\n\n" +
-		"**Done when:** Production's settings on `main` set `QUOTE_TTL=24h`.\n" +
-		"**Estimated time:** 5 min\n\n" +
-		"cc @" + cc + "\n\n" +
-		"<!-- issuedog:origin plan=#9 rev=1 item=T3 human=1 -->"
+// humanItemGolden is the body humanBody writes for plan #124 rev 1's item
+// T3, a human task with a file check, as TestChildSpecsGolden keeps it,
+// with its cc line for mertenvg.
+const humanItemGolden = "testdata/children/human-task.md"
+
+// humanItemBody is a human task's body as the App creates it: the golden
+// humanBody wrote (humanItemGolden), with a cc line for cc.
+func humanItemBody(t testing.TB, cc string) string {
+	t.Helper()
+	b, err := os.ReadFile(humanItemGolden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := strings.TrimSuffix(string(b), "\n")
+	if strings.Count(body, "\ncc @mertenvg\n") != 1 {
+		t.Fatalf("%s has no one cc line for mertenvg:\n%s", humanItemGolden, body)
+	}
+	return strings.Replace(body, "\ncc @mertenvg\n", "\ncc @"+cc+"\n", 1)
 }
+
+// humanItemGoal and humanItemDone are the Goal and "Done when" lines the
+// digest copies from humanItemBody: "Done when" is the daemon's sentence
+// for the file check, without the sentence on how to finish, which the
+// digest's next line says in its own words.
+const (
+	humanItemGoal = "- Goal: Set the quote lifetime to 24 hours in production's settings.\n"
+	humanItemDone = "- Done when: The file `deploy/production.env` on `main` contains `QUOTE_TTL=24h`.\n" +
+		"- When it's done, reply `/done` or react 👍 to the issue.\n"
+)
 
 // humanItemFile files a human task at needs-human, as the App creates it,
 // with cc in its body's cc line, blocked by each of blockers, and returns
 // its number.
-func humanItemFile(f *githubtest.Fake, cc string, blockers ...int) int {
-	n := f.AddIssue(app, "Set the quote lifetime", humanItemBody(cc))
+func humanItemFile(t testing.TB, f *githubtest.Fake, cc string, blockers ...int) int {
+	t.Helper()
+	n := f.AddIssue(app, "Set the quote lifetime", humanItemBody(t, cc))
 	for _, l := range []string{"type:task", "scope:infra", "priority:p2", "stage:needs-human"} {
 		f.AddLabel(n, app, l)
 	}
@@ -89,7 +108,7 @@ func TestHumanItemDigest(t *testing.T) {
 	t.Parallel()
 	f, o := newFake(t), digestNotifyOrigin(t)
 	blocker := humanItemBlocker(f)
-	task := humanItemFile(f, "owner", blocker)
+	task := humanItemFile(t, f, "owner", blocker)
 	d := digestDaemon(t, f, o, nil)
 	iterate(t, d)
 	digestN := len(f.State().Issues)
@@ -110,7 +129,7 @@ func TestHumanItemDigest(t *testing.T) {
 		t.Errorf("after its blocker closed, the digest lists %q; want %q", got, want)
 	}
 	body := f.State().Issues[digestN-1].Body
-	for _, line := range []string{"- Goal: Set the quote lifetime in production.", "- Done when: Production's settings on `main` set `QUOTE_TTL=24h`.",
+	for _, line := range []string{humanItemGoal, humanItemDone,
 		fmt.Sprintf("- Answer here: https://github.com/o/r/issues/%d\n", task)} {
 		if !strings.Contains(body, line) {
 			t.Errorf("the digest has no line %q:\n%s", line, body)
@@ -149,8 +168,8 @@ func TestHumanItemUnblocked(t *testing.T) {
 	f, o := newFake(t), digestNotifyOrigin(t)
 	blocker := humanItemBlocker(f)
 	f.CloseBy(blocker, "owner")
-	free := humanItemFile(f, "owner")
-	cleared := humanItemFile(f, "owner", blocker)
+	free := humanItemFile(t, f, "owner")
+	cleared := humanItemFile(t, f, "owner", blocker)
 	d := digestDaemon(t, f, o, nil)
 	iterate(t, d)
 	digestN := len(f.State().Issues)
@@ -168,7 +187,7 @@ func TestHumanItemReadsOnlyHumanTasks(t *testing.T) {
 	f, o := newFake(t), digestNotifyOrigin(t)
 	plain := fileAt(f, "needs-human", "Do it by hand.", "type:task")
 	ready := humanItemBlocker(f)
-	task := humanItemFile(f, "owner")
+	task := humanItemFile(t, f, "owner")
 	var visits []int
 	d := newDaemon(t, f, o, &visits)
 	for range 3 {
@@ -196,7 +215,7 @@ func TestHumanItemBlockersFail(t *testing.T) {
 	f, o := newFake(t), digestNotifyOrigin(t)
 	blocker := humanItemBlocker(f)
 	f.CloseBy(blocker, "owner")
-	task := humanItemFile(f, "owner", blocker)
+	task := humanItemFile(t, f, "owner", blocker)
 	d := digestDaemon(t, f, o, nil)
 	d.Assign = true
 	iterate(t, d)
@@ -235,7 +254,7 @@ func TestHumanItemAssign(t *testing.T) {
 	t.Parallel()
 	f, o := newFake(t), digestNotifyOrigin(t)
 	first, second := humanItemBlocker(f), humanItemBlocker(f)
-	task := humanItemFile(f, "owner", first, second)
+	task := humanItemFile(t, f, "owner", first, second)
 	d := newDaemon(t, f, o, nil)
 	d.Assign = true
 	assignStep(t, f, d, "the first pass")
@@ -284,7 +303,7 @@ func humanItemReplayFake(blockerClosed bool, assigned []string) func(testing.TB)
 		if blockerClosed {
 			f.CloseBy(blocker, "owner")
 		}
-		f.SetAssignees(humanItemFile(f, "owner", blocker), assigned...)
+		f.SetAssignees(humanItemFile(t, f, "owner", blocker), assigned...)
 		return f
 	}
 }
@@ -315,5 +334,56 @@ func TestHumanItemAssignReplay(t *testing.T) {
 			}
 			githubtest.Replay(t, setup, assignReplayPass(t, o))
 		})
+	}
+}
+
+// End to end (#284, #287 and #277): the human tasks ChildrenVisit creates
+// from an approved plan, T3 #4 and T2 #5 of humanPlan, are at
+// needs-human, and T3, which depends on T2, is blocked by it. So the
+// digest's first pass lists T2 alone, linking the issue, with the Goal and
+// "Done when" copied from the body humanBody wrote: "Done when" the
+// daemon's sentence for its check, then how to finish. T3 isn't listed
+// while its blocker is open; TestHumanItemDigest covers the pass after a
+// blocker closes.
+func TestHumanItemFromChildren(t *testing.T) {
+	t.Parallel()
+	f := run(t, humanAtReview, childrenPass(t, humanKind))
+	for _, n := range []int{4, 5} {
+		if got := f.State().Issues[n-1].Labels; !slices.Contains(got, "stage:needs-human") {
+			t.Fatalf("#%d's labels are %q; want it at needs-human", n, got)
+		}
+	}
+	if got := f.State().Issues[3].BlockedBy; !slices.Equal(got, []int{5}) {
+		t.Fatalf("#4 is blocked by %v; want T2's #5", got)
+	}
+	d := digestDaemon(t, f, digestNotifyOrigin(t), nil)
+	iterate(t, d)
+	digestN := len(f.State().Issues)
+	body := f.State().Issues[digestN-1].Body
+	if !strings.Contains(body, "<!-- issuedog:digest -->") {
+		t.Fatalf("issue %d isn't the digest:\n%s", digestN, body)
+	}
+	t3 := "- A human task waits for you.\n" +
+		"- Goal: Name the owner as the code owner of everything.\n" +
+		// The digest defuses a copied mention, in code or not.
+		"- Done when: The file `.github/CODEOWNERS` on `main` contains `* @​owner`.\n" +
+		"- When it's done, reply `/done` or react 👍 to the issue.\n" +
+		"- Answer here: https://github.com/o/r/issues/4\n"
+	t2 := "- A human task waits for you.\n" +
+		"- Goal: Require the verify check on main.\n" +
+		"- Done when: An active ruleset on `main` requires the check `issuedog/verify`.\n" +
+		"- When it's done, reply `/done` or react 👍 to the issue.\n" +
+		"- Answer here: https://github.com/o/r/issues/5\n"
+	got := humanItemListed(f, digestN)
+	if len(got) != 1 || !strings.HasPrefix(got[0], "#5 Human task ") {
+		t.Errorf("the digest lists %q; want #5 alone, a human task, as #5 blocks #4", got)
+	}
+	if !strings.Contains(body, t2) || strings.Contains(body, t3) {
+		t.Errorf("the digest =\n%s\nwant the item\n%s\nand not\n%s", body, t2, t3)
+	}
+	// The body's sentence on how to finish says to react on "this issue",
+	// which in the digest is the digest.
+	if strings.Contains(body, "See the issue for what to do.") || strings.Contains(body, "I check this when you reply") {
+		t.Errorf("the digest falls back, or keeps the body's sentence on how to finish:\n%s", body)
 	}
 }

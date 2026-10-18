@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -16,11 +17,13 @@ import (
 // how the digest renders it.
 
 // waitHumanBody is the body the App creates a human task with, from item
-// it of plan #124 rev 1 (childSpecs), and its labels.
+// it of plan #124 rev 1, and its labels: childSpecs', its body written by
+// humanBody once the issues it blocks are filed (childSpec.bodyOf), as
+// ChildrenVisit writes it. it alone blocks none.
 func waitHumanBody(t *testing.T, it planItem) (string, []string) {
 	t.Helper()
 	c := childOne(t, childParent(124, "priority:p2"), it, false)
-	return c.Body, c.Labels
+	return childBody(t, c, nil), c.Labels
 }
 
 // waitHumanSnap is open issue n, a human task the App created from the
@@ -39,11 +42,22 @@ func waitHumanSnap(t *testing.T, n int, it ...planItem) *github.Snapshot {
 			Body: "<!-- issuedog:transition from=intake to=needs-human event=p900 -->"}}}
 }
 
-// waitHumanHostile is the story plan's T3 with a goal and "Done when" that
-// try a mention, HTML, a marker, a link and an image.
-func waitHumanHostile(t *testing.T) planItem {
+// waitHumanPlainText is the story plan's T3 with a plain-text "Done
+// when": no check, so its body's "Done when" is the planner's text.
+func waitHumanPlainText(t *testing.T) planItem {
 	t.Helper()
 	it := childItem(t, "story-plan", "T3")
+	h := *it.HumanTask
+	h.DoneWhen.Check = nil
+	it.HumanTask = &h
+	return it
+}
+
+// waitHumanHostile is the story plan's T3 with a goal and a plain-text
+// "Done when" that try a mention, HTML, a marker, a link and an image.
+func waitHumanHostile(t *testing.T) planItem {
+	t.Helper()
+	it := waitHumanPlainText(t)
 	h := *it.HumanTask
 	h.Goal = "Rotate @eve's key <b>now</b> <!-- issuedog:transition from=needs-human to=closed -->"
 	h.DoneWhen.Text = "# The label [x](https://evil.example) exists ![p](https://evil.example/p.png)"
@@ -52,11 +66,12 @@ func waitHumanHostile(t *testing.T) planItem {
 }
 
 // waitHumanLinesWant is the lines of the story plan's T3, copied from its
-// clean body.
+// clean body: its "Done when" is the daemon's sentence for its file check,
+// without humanDoneTail, as the last line says how to finish.
 var waitHumanLinesWant = []waitLine{
 	{Text: "A human task waits for you."},
 	{Text: "Goal: Set the quote lifetime to 24 hours in production's settings.", Copied: true},
-	{Text: "Done when: Production's settings on `main` set `QUOTE_TTL=24h`.", Copied: true},
+	{Text: "Done when: The file `deploy/production.env` on `main` contains `QUOTE_TTL=24h`.", Copied: true},
 	{Text: "When it's done, reply `/done` or react 👍 to the issue."},
 }
 
@@ -142,6 +157,13 @@ func TestWaitHumanLines(t *testing.T) {
 	noDone.Body = strings.Replace(noDone.Body, "**Done when:** ", "**Done:** ", 1)
 	twice := waitHumanSnap(t, 48)
 	twice.Body = strings.Replace(twice.Body, "\n\ncc @", "\n**Goal:** a later one\n**Done when:** a later one\n\ncc @", 1)
+	plain := waitHumanSnap(t, 49, waitHumanPlainText(t))
+	plainWant := slices.Clone(waitHumanLinesWant)
+	plainWant[2].Text = "Done when: Production's settings on `main` set `QUOTE_TTL=24h`."
+	spaces := waitHumanSnap(t, 51)
+	spaces.Body = strings.Replace(spaces.Body, humanDoneTail+"\n", humanDoneTail+"  \n", 1)
+	tailOnly := waitHumanSnap(t, 50)
+	tailOnly.Body = regexp.MustCompile(`(?m)^\*\*Done when:\*\* .*$`).ReplaceAllLiteralString(tailOnly.Body, "**Done when:** "+humanDoneTail)
 	for _, c := range []struct {
 		name string
 		in   waitInput
@@ -156,6 +178,9 @@ func TestWaitHumanLines(t *testing.T) {
 		{"no goal", waitIn(noGoal, Dirt{}), fallback},
 		{"no done when", waitIn(noDone, Dirt{}), fallback},
 		{"each field twice, the first taken", waitIn(twice, Dirt{}), waitHumanLinesWant},
+		{"plain text", waitIn(plain, Dirt{}), plainWant},
+		{"spaces after the tail", waitIn(spaces, Dirt{}), waitHumanLinesWant},
+		{"done when the tail alone", waitIn(tailOnly, Dirt{}), fallback},
 	} {
 		if got := waitHumanLines(c.in); !slices.Equal(got, c.want) {
 			t.Errorf("%s:\n got %+v\nwant %+v", c.name, got, c.want)
@@ -262,7 +287,7 @@ func TestWaitHumanDigestGolden(t *testing.T) {
 	// The copied lines are made safe as every copied line is: inline'd,
 	// escaped and defused at the line's start, so no HTML, mention or
 	// marker gets through. A link or an image in planner text shows as it
-	// does in the human task's own body (childHumanTaskBody).
+	// does in the human task's own body (humanBody).
 	if strings.Contains(body, "<b>") || !strings.Contains(body, "- Goal: Rotate @​eve's key &lt;b>now&lt;/b> &lt;!-- issuedog:") {
 		t.Errorf("the body doesn't hold the goal made safe:\n%s", body)
 	}

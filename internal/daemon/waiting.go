@@ -498,9 +498,11 @@ func waitHumanTask(is state.Issue) bool {
 // (#224's reconcile decision 3, S5), a body someone else edited isn't the
 // App's text. Then, or with either field not found, as for a format that
 // has changed, a line says to see the issue instead. Each field is the
-// first line that starts with its bold name, as childHumanTaskBody writes
-// them: no line above "Done when" starts so, as steps are numbered and
-// links are bullets.
+// first line that starts with its bold name, as humanBody writes them
+// (#284): no line above "Done when" starts so, as each field is one line,
+// steps are numbered and links are bullets. A check's "Done when" is
+// copied without humanDoneTail, which says to react on "this issue": in
+// the digest that's the digest, and the last line says how to finish.
 func waitHumanLines(in waitInput) []waitLine {
 	s := in.S
 	lines := []waitLine{{Text: "A human task waits for you."}}
@@ -511,7 +513,7 @@ func waitHumanLines(in waitInput) []waitLine {
 				goal = strings.TrimSpace(v)
 			}
 			if v, ok := strings.CutPrefix(l, "**Done when:** "); ok && done == "" {
-				done = strings.TrimSpace(v)
+				done = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(v), humanDoneTail))
 			}
 		}
 	}
