@@ -34,8 +34,8 @@ func planContext(t *testing.T, d *daemon.Daemon, n int) map[string]string {
 
 // planEpicIDs are planEpic's issue and comments.
 type planEpicIDs struct {
-	n                                            int
-	round1, answer1, spec, plan, round2, answer2 int64
+	n                                                      int
+	round1, answer1, spec, approval, plan, round2, answer2 int64
 }
 
 // planEpic files owner's epic "Quotes API", at priority p1, through
@@ -54,9 +54,9 @@ func planEpic(f *githubtest.Fake) planEpicIDs {
 	e.answer1 = f.AddComment(e.n, "owner", "1a 2b")
 	e.spec = f.AddComment(e.n, app, fmt.Sprintf("Revision 1 of the spec.\n\n<!-- issuedog:transition from=clarifying to=spec-review run=iv2 seen=%d -->\n"+
 		"<!-- issuedog:revision rev=1 body=abcd1234 -->", e.answer1))
-	approval := f.AddComment(e.n, app, "Approved.\n\n<!-- issuedog:transition from=spec-review to=planning cmd=r7 rev=1 body=abcd1234 -->")
+	e.approval = f.AddComment(e.n, app, "Approved.\n\n<!-- issuedog:transition from=spec-review to=planning cmd=r7 rev=1 body=abcd1234 -->")
 	e.plan = f.AddComment(e.n, app, "An old plan.\n\n<!-- issuedog:revision kind=plan rev=1 body=deadbeef -->")
-	e.round2 = planAsked(f, e.n, 2, 1, approval)
+	e.round2 = planAsked(f, e.n, 2, 1, e.approval)
 	e.answer2 = f.AddComment(e.n, "alice", "1a, and keep it small")
 	c1 := f.AddIssue("owner", "First  child", "")
 	f.AddLabel(c1, "owner", "type:story")
@@ -191,6 +191,85 @@ func TestPlannerContextStory(t *testing.T) {
 		if !strings.Contains(files["system.md"], w) {
 			t.Errorf("system.md lacks\n%s\nin\n%s", w, files["system.md"])
 		}
+	}
+}
+
+// TestPlannerContextElsewhere: a story whose parent is in another repo
+// gets a parent.md saying so, and nothing of the issue its number names in
+// this repo. A sub-issue in another repo is listed with its repo, and
+// counts towards the 100.
+func TestPlannerContextElsewhere(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	p := f.AddIssue("owner", "SAME-NUMBER-HERE", "SAME-NUMBER-BODY")
+	f.AddLabel(p, "owner", "type:epic")
+	n := f.AddIssue("owner", "The story", "")
+	f.AddLabel(n, "owner", "type:story")
+	f.SetParent(n, p)
+	f.AddComment(n, app, "Approved.\n\n<!-- issuedog:transition from=spec-review to=planning cmd=r7 rev=1 body=abcd1234 -->")
+	c := f.AddIssue("owner", "Moved child", "")
+	f.SetParent(c, n)
+	d := ivDaemon(t, f, newOrigin(t))
+	in := ivInput(t, d, n)
+	f.Transfer(p, "o/other")
+	f.Transfer(c, "o/other")
+	got, err := (&daemon.Planner{Daemon: d}).Context(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := "# Parent\n\nThis story's parent isn't in this repo, so issuedog doesn't read it.\n"; string(got["parent.md"]) != w {
+		t.Errorf("parent.md =\n%s\nwant\n%s", got["parent.md"], w)
+	}
+	for name, text := range got {
+		if strings.Contains(string(text), "SAME-NUMBER") {
+			t.Errorf("%s has the issue of this repo that the parent's number names:\n%s", name, text)
+		}
+	}
+	if w := "\n\n- o/other#3, in another repo: Moved child (open, type none, no stage label)\n"; !strings.HasSuffix(string(got["children.md"]), w) {
+		t.Errorf("children.md doesn't end with %q:\n%s", w, got["children.md"])
+	}
+	if w := "- This issue has 1 sub-issues, of the 100 GitHub allows, so a plan has at most 99 items."; !strings.Contains(string(got["system.md"]), w) {
+		t.Errorf("system.md lacks %q:\n%s", w, got["system.md"])
+	}
+}
+
+// TestPlannerContextNoParentFile: only a story with a parent gets
+// parent.md: an epic with a parent doesn't.
+func TestPlannerContextNoParentFile(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	e := planEpic(f)
+	f.SetParent(e.n, f.AddIssue("owner", "Above", "ABOVE-BODY"))
+	files := planContext(t, ivDaemon(t, f, newOrigin(t)), e.n)
+	if _, ok := files["parent.md"]; ok {
+		t.Errorf("an epic with a parent has parent.md:\n%s", files["parent.md"])
+	}
+	if !strings.Contains(files["issue.md"], "- Parent: #") || strings.Contains(files["prompt.md"], "parent.md") {
+		t.Errorf("issue.md doesn't name the parent, or prompt.md names parent.md:\n%s\n%s", files["issue.md"], files["prompt.md"])
+	}
+}
+
+// TestPlannerContextInputAfterEntry: input after an override to planning
+// is new since the issue came there, not an answer to the round before it,
+// and input after a hold the round waited through is an answer.
+func TestPlannerContextInputAfterEntry(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	e := planEpic(f)
+	f.AddComment(e.n, app, fmt.Sprintf("Overridden.\n\n<!-- issuedog:transition from=planning to=planning event=91 by=owner seen=%d -->", e.answer2))
+	later := f.AddComment(e.n, "owner", "Plan it now.")
+	files := planContext(t, ivDaemon(t, f, newOrigin(t)), e.n)
+	if w := fmt.Sprintf("## Comment %d by owner: new since the issue came to planning\n\n", later); !strings.Contains(files["input.md"], w) {
+		t.Errorf("input.md lacks %q:\n%s", w, files["input.md"])
+	}
+
+	f = newFake(t)
+	e = planEpic(f)
+	hold := f.AddComment(e.n, app, fmt.Sprintf("On hold.\n\n<!-- issuedog:transition from=planning to=held at=planning reason=owner cmd=90 seen=%d -->", e.approval))
+	f.AddComment(e.n, app, fmt.Sprintf("Resumed.\n\n<!-- issuedog:transition from=held to=planning cmd=91 seen=%d -->", e.approval))
+	files = planContext(t, ivDaemon(t, f, newOrigin(t)), e.n)
+	if w := fmt.Sprintf("## Comment %d by alice: an answer to round 2\n\n", e.answer2); !strings.Contains(files["input.md"], w) {
+		t.Errorf("after the hold (comment %d), input.md lacks %q:\n%s", hold, w, files["input.md"])
 	}
 }
 
