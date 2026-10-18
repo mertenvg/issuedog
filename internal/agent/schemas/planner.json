@@ -195,7 +195,7 @@
                     "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
                   },
                   "why_blocks": {
-                    "description": "Which items of this plan can't proceed until it's done, by ID, and why, in one line.",
+                    "description": "What the items that list this human task in depends_on wait for, and why, in one line that reads on after \"can't proceed until\". Name no items: the daemon puts their issue numbers first, or the parent's when none depends on it.",
                     "type": "string",
                     "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
                   },

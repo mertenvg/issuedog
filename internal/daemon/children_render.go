@@ -171,7 +171,7 @@ func childSpecOf(parent *github.Snapshot, rev int, it planItem, blocks []string,
 		typ, c.Stage, c.Blocks = "task", state.NeedsHuman, blocks
 		var err error
 		if check, err = checkFromPlan(it.HumanTask.DoneWhen); err != nil {
-			return childSpec{}, err
+			return childSpec{}, fmt.Errorf("its check: %w", err)
 		}
 	case it.Task == nil:
 		return childSpec{}, errors.New("a task with no task body")
@@ -200,7 +200,7 @@ func childSpecOf(parent *github.Snapshot, rev int, it planItem, blocks []string,
 		c.human = func(nums []int) (string, error) {
 			text, err := humanBody(it, check, nums, parent.Number, pri, notify)
 			if err != nil {
-				return "", err
+				return "", fmt.Errorf("write its human task body: %w", err)
 			}
 			return withMarker(text)
 		}
@@ -209,10 +209,10 @@ func childSpecOf(parent *github.Snapshot, rev int, it planItem, blocks []string,
 			widest[i] = childWidestNumber
 		}
 		if _, err := c.human(widest); err != nil {
-			return childSpec{}, err
+			return childSpec{}, fmt.Errorf("check its body with the widest issue numbers: %w", err)
 		}
 	} else if c.Body, err = withMarker(text); err != nil {
-		return childSpec{}, err
+		return childSpec{}, fmt.Errorf("write its body: %w", err)
 	}
 	if issueTypes {
 		c.IssueType = strings.ToUpper(typ[:1]) + typ[1:]
