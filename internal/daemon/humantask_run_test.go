@@ -290,9 +290,9 @@ func (l *humanRunLoop) digest(step string, items []string, assigned ...int) {
 // pass creates the digest, 2, and the planner posts the story's plan
 // (humanRunPlan), which mertenvg's 👍 approves. That files T4 at ready and
 // the three human tasks at needs-human, #3 to #6, each with the body
-// humanBody writes and its check on its origin marker. mertenvg links T3,
-// #6, as blocked by T4, #3, as its plan says, since nothing links a plan's
-// dependencies yet. Then:
+// humanBody writes and its check on its origin marker. The same pass links
+// T3, #6, as blocked by T4, #3, as its plan says, and records the children
+// on the story (#277). Then:
 //   - T1's check fails on mertenvg's /done, with one reply; the file lands
 //     on main, and his 👍 on the issue closes it as completed;
 //   - T2's check passes on his first /done;
@@ -329,26 +329,39 @@ func TestHumanTaskRun(t *testing.T) {
 
 	// 2. mertenvg's 👍 on the plan approves it, and the same pass files
 	// its children, T4 first, then the human tasks, each linked under the
-	// story and given its first move, keyed by the approval. Then the
-	// story's item and its assignment end.
+	// story and given its first move, keyed by the approval. Then it links
+	// T3 as blocked by T4, as T3's depends_on says, the plan's one
+	// dependency, and records the children on the story, by item (#277).
+	// Then the story's item and its assignment end.
 	up := f.AddReaction(plan.ID, humanRunOwner, "+1")
 	l.step("the approval", 1, slices.Concat(
 		[]string{"POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:plan-review"},
 		humanRunChildWrites(3, 4, 5, 6),
-		[]string{"PATCH /issues/2", "DELETE /issues/1/assignees"})...)
+		[]string{"POST /issues/6/dependencies/blocked_by", "POST /issues/1/comments", "PATCH /issues/2", "DELETE /issues/1/assignees"})...)
 	approval := fmt.Sprintf("Revision 1 of the plan is approved, by %s's 👍.\n\n"+
 		"<!-- issuedog:transition from=plan-review to=planned rev=1 body=%s cmd=r%d seen=%d -->",
 		humanRunOwner, state.BodyHash(plan.Body[:strings.LastIndex(plan.Body, "\n")]), up, plan.ID)
-	if added := l.added(story); !slices.Equal(added, []string{approval}) {
-		t.Errorf("the approval: added %q; want\n%s", added, approval)
+	record := "I've created the children of plan rev 1:\n" +
+		"- T1 #4: Set the quote lifetime in production\n" +
+		"- T2 #5: Add the label for expired quotes\n" +
+		"- T3 #6: Explain quote expiry in the FAQ\n" +
+		"- T4 #3: Refuse an expired quote at booking\n\n" +
+		"<!-- issuedog:created rev=1 children=4,5,6,3 -->"
+	if added := l.added(story); !slices.Equal(added, []string{approval, record}) {
+		t.Errorf("the approval: added %q; want the approval\n%s\nthen the record\n%s", added, approval, record)
 	}
 	l.state("the approval", story, false, "stage:planned", "type:story")
-	l.children("the approval", l.newest(story).ID)
+	cs := l.comments(story)
+	l.children("the approval", cs[len(cs)-2].ID)
+	if got := f.State().Issues[5].BlockedBy; !slices.Equal(got, []int{3}) {
+		t.Errorf("the approval: T3, #6, is blocked by %v; want T4, #3", got)
+	}
+	for _, n := range []int{3, 4, 5} {
+		if got := f.State().Issues[n-1].BlockedBy; len(got) != 0 {
+			t.Errorf("the approval: #%d is blocked by %v; want nothing", n, got)
+		}
+	}
 	l.digest("the approval", nil)
-
-	// mertenvg links T3 as blocked by T4, as its plan says: nothing links
-	// a plan's dependencies yet (SPEC §7.2's row into planned).
-	f.SetBlockedBy(6, 3)
 
 	// 3. The pass after lists T1 and T2, which nothing blocks, and assigns
 	// mertenvg on each. T3 waits for T4.
