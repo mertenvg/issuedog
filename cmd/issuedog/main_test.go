@@ -32,6 +32,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/egress"
+	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 	"github.com/mertenvg/issuedog/internal/state"
 )
@@ -261,6 +262,52 @@ func TestNewStepUsesCurrentTrust(t *testing.T) {
 	st.Trust = trustSet{"owner2": true}
 	if got := step(); !slices.Equal(got, []string{"stage:planning"}) {
 		t.Errorf("labels = %v, want stage:planning once owner2 is trusted again", got)
+	}
+}
+
+// newStep approves a plan at plan-review, by a 👍 on the plan revision on
+// one epic and by /approve on another. Each plan comment is posted as the
+// planner's run posts it, by a move with PlanRev.
+func TestNewStepApprovesPlan(t *testing.T) {
+	const app = "issuedog-dev[bot]"
+	f := githubtest.New(t, "o/r", "issuedog-dev")
+	c := f.Client(t)
+	a := &daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}
+	snap := func(n int) *github.Snapshot {
+		t.Helper()
+		s, err := c.Snapshot(context.Background(), "o", "r", n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	var plans []int64
+	for range 2 {
+		n := f.AddIssue("owner", "Epic", "body")
+		f.SetType(n, "Epic")
+		f.AddLabel(n, app, "stage:planning")
+		f.AddComment(n, app, "<!-- issuedog:transition from=spec-review to=planning rev=1 body="+state.BodyHash("body")+" cmd=r9 -->")
+		s := snap(n)
+		m := daemon.Move{To: state.PlanReview, Trigger: state.TriggerPlanValid, Key: state.Key{Field: "run", ID: "p1"}, PlanRev: 1, Text: "Plan."}
+		if err := a.Transition(context.Background(), s, func(int64) bool { return false }, m); err != nil {
+			t.Fatal(err)
+		}
+		plans = append(plans, s.Comments[len(s.Comments)-1].ID)
+	}
+	f.AddReaction(plans[0], "owner", "+1")
+	f.AddComment(2, "owner", "/approve")
+	st := newStep(a, trustSet{"owner": true}, noModels)
+	for n := 1; n <= 2; n++ {
+		if _, err := st.Run(context.Background(), snap(n)); err != nil {
+			t.Fatal(err)
+		}
+		is := f.State().Issues[n-1]
+		if !slices.Equal(is.Labels, []string{"stage:planned"}) {
+			t.Errorf("#%d's labels = %v, want stage:planned", n, is.Labels)
+		}
+		if last := is.Comments[len(is.Comments)-1].Body; !strings.Contains(last, "Revision 1 of the plan is approved") {
+			t.Errorf("#%d's last comment = %q, want the plan's approval", n, last)
+		}
 	}
 }
 
