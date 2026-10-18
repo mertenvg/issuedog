@@ -430,4 +430,13 @@ func TestIvHoldStanding(t *testing.T) {
 	if got := ivHoldStanding(waitSnap(7, nil), waitSlug, none, state.SpecReview); got != "" {
 		t.Errorf("with no revision = %q, want none", got)
 	}
+	// A plan revision is never the spec revision that stands (plan #247,
+	// assumption 2), after it or alone.
+	plan := waitPlanRevision(t, 2, "### Plan for #7 (rev 2)")
+	if got := ivHoldStanding(waitSnap(7, nil, waitRevision(1, "The spec."), plan), waitSlug, none, state.SpecReview); got != want {
+		t.Errorf("with a plan revision after it = %q, want %q", got, want)
+	}
+	if got := ivHoldStanding(waitSnap(7, nil, plan), waitSlug, none, state.SpecReview); got != "" {
+		t.Errorf("with only a plan revision = %q, want none", got)
+	}
 }

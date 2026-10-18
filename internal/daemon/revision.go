@@ -15,9 +15,10 @@ import (
 )
 
 // PostRevision posts the next revision comment for s's spec, its body (SPEC
-// §7.4): one more than the latest revision (state.LatestRevision), with the
-// body's hash, how to approve it, and a revision marker. m.Text, escaped,
-// goes first. dirty is as for state.Derive.
+// §7.4): one more than the latest spec revision (state.LatestRevision), with
+// the body's hash, how to approve it, and a revision marker. Plan revisions
+// number on their own, so they don't count. m.Text, escaped, goes first.
+// dirty is as for state.Derive.
 //   - With m.To set, the revision comes with that move, in one comment
 //     through Transition, whose marker also gets rev and body. It is posted
 //     whatever the hash: a question answered is a new revision even if
@@ -44,7 +45,7 @@ func (a *Applier) PostRevision(ctx context.Context, s *github.Snapshot, dirty fu
 		m.Text = join(m.Text, "There's no revision to approve: the issue description was edited without approval (see the note on it).")
 		return a.Transition(ctx, s, dirty, m)
 	}
-	latest, _ := state.LatestRevision(s, a.AppSlug, dirty)
+	latest, _ := state.LatestRevision(s, a.AppSlug, state.SpecRevision, dirty)
 	hash := state.BodyHash(s.Body)
 	if m.To == "" && latest.Rev > 0 && latest.Hash == hash && !latest.Hidden {
 		return nil
@@ -95,7 +96,7 @@ func ApproveCommand() Handler {
 			if is.Stage == state.PlanReview {
 				return Rejection{Reason: "approving a plan isn't handled yet"}
 			}
-			latest, ok := state.LatestRevision(c.S, a.AppSlug, c.Dirt.Has)
+			latest, ok := state.LatestRevision(c.S, a.AppSlug, state.SpecRevision, c.Dirt.Has)
 			switch {
 			case c.Dirt.Has(state.BodyID):
 				return Rejection{Reason: fmt.Sprintf("the issue description has an edit by %s that wasn't approved, so I can't approve it", c.Dirt[state.BodyID])}
@@ -119,8 +120,8 @@ func ApproveCommand() Handler {
 
 // ApproveByReaction returns the reaction trigger for Step.Reactions that
 // approves a spec by 👍 (SPEC §7.4). At spec-review, the earliest 👍 on the
-// latest revision comment from a user trust trusts, not a bot, approves it
-// while the body still has its hash: the issue moves to planning with
+// latest spec revision comment from a user trust trusts, not a bot, approves
+// it while the body still has its hash: the issue moves to planning with
 // cmd=r<reaction id>, rev and body. Other 👍s, the App's included, are
 // ignored. At any other stage it reads nothing, so removing the 👍 once the
 // approval is applied changes nothing. A 👍 the table can't apply is
@@ -128,7 +129,7 @@ func ApproveCommand() Handler {
 // type ClassOf doesn't know is only logged: the §4 type error will report it.
 func ApproveByReaction(trust github.Trust) func(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt) error {
 	return func(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt) error {
-		latest, ok := state.LatestRevision(s, a.AppSlug, d.Has)
+		latest, ok := state.LatestRevision(s, a.AppSlug, state.SpecRevision, d.Has)
 		is := state.Derive(s, a.AppSlug, d.Has)
 		if is.Stage != state.SpecReview || !ok {
 			return nil
@@ -178,7 +179,7 @@ func (a *Applier) approve(ctx context.Context, s *github.Snapshot, d Dirt, key s
 		logr.Debugf("%s/%s#%d: not approving by %s: the body has an edit by %s that wasn't approved", a.Owner, a.Repo, s.Number, by, d[state.BodyID])
 		return nil
 	}
-	latest, _ := state.LatestRevision(s, a.AppSlug, d.Has)
+	latest, _ := state.LatestRevision(s, a.AppSlug, state.SpecRevision, d.Has)
 	if latest.Hidden {
 		logr.Debugf("%s/%s#%d: not approving revision %d by %s: a dirty or deleted comment of the App's after it may hide a newer one", a.Owner, a.Repo, s.Number, latest.Rev, by)
 		return nil
@@ -268,7 +269,7 @@ func requested(s *github.Snapshot, appSlug string, d Dirt, is state.Issue, c git
 	if _, cmd := state.ParseCommand(c.Body); cmd || is.Keys[state.CmdKey(c.ID)] || postedAt(s, appSlug, d, c.ID) != state.SpecReview {
 		return state.Command{}, false
 	}
-	latest, _ := state.LatestRevision(s, appSlug, d.Has)
+	latest, _ := state.LatestRevision(s, appSlug, state.SpecRevision, d.Has)
 	if c.ID <= cmp.Or(latest.Seen, latest.Comment) {
 		return state.Command{}, false
 	}
@@ -312,7 +313,7 @@ func newestRead(s *github.Snapshot, appSlug string, floor int64) int64 {
 
 // ReviewVisit ends a visit to an issue at spec-review: the loop calls it
 // after Run succeeds on the issue, and at any other stage it does nothing.
-// While the latest revision is stale, Hidden or missing (SPEC §7.4), it
+// While the latest spec revision is stale, Hidden or missing (SPEC §7.4), it
 // posts the next one (PostRevision), as after the owner edits the body,
 // which voids any pending approval: that binds to the latest revision. A
 // dirty body, or one last edited by a user Trust doesn't trust, gets none,
@@ -326,7 +327,7 @@ func (st *Step) ReviewVisit(ctx context.Context, s *github.Snapshot) error {
 	if state.Derive(s, st.AppSlug, d.Has).Stage != state.SpecReview {
 		return nil
 	}
-	latest, ok := state.LatestRevision(s, st.AppSlug, d.Has)
+	latest, ok := state.LatestRevision(s, st.AppSlug, state.SpecRevision, d.Has)
 	if stale := !ok || latest.Hidden || latest.Hash != state.BodyHash(s.Body); stale && !d.Has(state.BodyID) {
 		by := s.Author
 		if !s.BodyEdit.At.IsZero() {

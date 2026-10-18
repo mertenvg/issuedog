@@ -9,6 +9,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 
 	gogithub "github.com/google/go-github/v92/github"
@@ -68,6 +69,13 @@ type Move struct {
 	// Markers go after the transition marker, in the same comment, such as
 	// a revision marker.
 	Markers []github.Marker
+	// PlanRev, if set, makes the move's comment plan revision PlanRev, its
+	// plan comment (plan #247, assumption 1). The transition marker gets
+	// rev, but not body, and the comment's last line, after Markers, is the
+	// plan revision marker, revision kind=plan rev=<PlanRev> body=<hash>,
+	// with state.PlanHash of the comment: the hash of exactly the text above
+	// that line. Fields can't then have rev or body, nor Markers a revision.
+	PlanRev int
 	// ErrorKey, if set, keys the state error for a move the table lacks,
 	// instead of Key's ID.
 	ErrorKey string
@@ -109,6 +117,30 @@ func (m Move) check() error {
 	}
 	if !m.To.Open() {
 		return fmt.Errorf("can't move to %s: nothing closes issues yet", m.To)
+	}
+	return m.checkPlanRev()
+}
+
+// checkPlanRev refuses a PlanRev that isn't a revision number, or that
+// comes with a rev or body field or a revision marker of its own: the plan
+// revision sets rev, its marker carries the hash, and a comment is one
+// revision.
+func (m Move) checkPlanRev() error {
+	if m.PlanRev < 0 {
+		return fmt.Errorf("bad plan revision %d", m.PlanRev)
+	}
+	if m.PlanRev == 0 {
+		return nil
+	}
+	for _, f := range []string{"rev", "body"} {
+		if _, ok := m.Fields[f]; ok {
+			return fmt.Errorf("field %s is set by plan revision %d", f, m.PlanRev)
+		}
+	}
+	for _, x := range m.Markers {
+		if x.Kind == "revision" {
+			return fmt.Errorf("a revision marker beside plan revision %d", m.PlanRev)
+		}
 	}
 	return nil
 }
@@ -183,6 +215,9 @@ func (a *Applier) Transition(ctx context.Context, s *github.Snapshot, dirty func
 			fields = map[string]string{}
 		}
 		fields["from"], fields["to"], fields[m.Key.Field] = string(is.Stage), string(m.To), m.Key.ID
+		if m.PlanRev > 0 {
+			fields["rev"] = strconv.Itoa(m.PlanRev)
+		}
 		marker, err := github.FormatMarker(github.Marker{Kind: "transition", Fields: fields})
 		if err != nil {
 			return wrap(err)
@@ -194,7 +229,13 @@ func (a *Applier) Transition(ctx context.Context, s *github.Snapshot, dirty func
 			}
 			marker += "\n" + more
 		}
-		if err := a.comment(ctx, s, join(github.Escape(m.Text), marker)); err != nil {
+		body := join(github.Escape(m.Text), marker)
+		if m.PlanRev > 0 {
+			if body, err = planRevision(body, m.PlanRev); err != nil {
+				return wrap(err)
+			}
+		}
+		if err := a.comment(ctx, s, body); err != nil {
 			return wrap(err)
 		}
 		is = state.Derive(s, a.AppSlug, dirty)
@@ -208,6 +249,18 @@ func (a *Applier) Transition(ctx context.Context, s *github.Snapshot, dirty func
 		}
 	}
 	return nil
+}
+
+// planRevision appends plan revision rev's marker to body, the plan comment
+// as written, as its last line, with the hash of exactly that body, so
+// state.PlanHash of the result is the marker's body.
+func planRevision(body string, rev int) (string, error) {
+	marker, err := github.FormatMarker(github.Marker{Kind: "revision", Fields: map[string]string{
+		"kind": string(state.PlanRevision), "rev": strconv.Itoa(rev), "body": state.BodyHash(body)}})
+	if err != nil {
+		return "", fmt.Errorf("plan revision %d: %w", rev, err)
+	}
+	return body + "\n" + marker, nil
 }
 
 // Ack adds the App's 👍 to a comment, unless it has one already.
