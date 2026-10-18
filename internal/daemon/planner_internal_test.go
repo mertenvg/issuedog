@@ -185,6 +185,14 @@ func TestPlannerPreamble(t *testing.T) {
 			"`installation`, with `owner`, a GitHub login. Anything else is `done_when.text` alone.",
 		"name no file paths: no `dir/file.ext`, in code or not.",
 		"- An item's `depends_on` names only items of this plan, by their IDs",
+		// The limits #258's verify found missing: the item IDs, the links,
+		// the one-line fields and the comment's length, from checkPlan's
+		// own constants.
+		"- Each item's `id` is its own: `S1`, `S2` and so on in a plan of `stories`, `T1`, `T2` and so on in a plan of `tasks`, with no leading zero.",
+		"- An item depends on at most 50 items, and at most 50 items depend on it: GitHub's limit of dependency links of one type per issue.",
+		"- These fields are one line each, with no line break: `why`, `order`, each assumption, each item's `title`, `outcome` and criteria, " +
+			"each entry of a task body's `definition_of_done`, and a human task's `goal`, `why_blocks`, each step and link, `done_when.text` and `estimated_time`.",
+		"is at most 64512 characters, and so is a question round's comment. Output over that fails the run",
 	}
 	tests := []struct {
 		name     string

@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"maps"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mertenvg/issuedog/internal/agent"
 	"github.com/mertenvg/issuedog/internal/config"
@@ -130,6 +132,24 @@ func TestPick(t *testing.T) {
 	}
 	if got, ok := pick(p, "librarian"); got != 0 || ok {
 		t.Errorf("pick(librarian) = %d, %t; want none", got, ok)
+	}
+}
+
+// lastFailure keeps a cause of up to 1,000 characters whole, counting
+// runes, not bytes, and cuts a longer one to 1,000, its last an ellipsis.
+func TestLastFailure(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, cause, want string
+	}{
+		{"short", "rule scope: T3", "rule scope: T3"},
+		{"exactly 1000", strings.Repeat("é", 1000), strings.Repeat("é", 1000)},
+		{"1001", strings.Repeat("é", 1001), strings.Repeat("é", 999) + "…"},
+		{"long", strings.Repeat("ab", 5000), strings.Repeat("ab", 499) + "a…"},
+	} {
+		if got := lastFailure(errors.New(tt.cause)); got != tt.want {
+			t.Errorf("%s: lastFailure = %q (%d runes), want %q", tt.name, got, utf8.RuneCountInString(got), tt.want)
+		}
 	}
 }
 
