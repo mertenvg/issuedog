@@ -164,7 +164,9 @@ func TestDeriveOrigin(t *testing.T) {
 		want  Origin
 	}{
 		{"a clean App marker", snap("The task.\n\n"+origin, nil), clean, want},
-		{"other fields", snap("<!-- issuedog:origin check=label plan=#248 rev=1 item=T4 value=a%20b -->", nil), clean, want},
+		{"other fields", snap("<!-- issuedog:origin extra=x plan=#248 rev=1 item=T4 v=2 -->", nil), clean, want},
+		{"check fields", snap("<!-- issuedog:origin check=label plan=#248 rev=1 item=T4 value=a%20b -->", nil), clean,
+			Origin{Plan: 248, Rev: 1, Item: "T4", Comment: BodyID, Check: Check{Kind: CheckLabel, Value: "a b"}}},
 		{"a body the App edited last", byApp, clean, want},
 		{"the first whole marker", snap("<!-- issuedog:origin plan=#248 rev=0 item=T1 -->"+origin+"<!-- issuedog:origin plan=#9 rev=2 item=S1 -->", nil), clean, want},
 		{"a body someone else edited last", byOwner, clean, Origin{}},
@@ -236,6 +238,60 @@ func TestDeriveOriginHuman(t *testing.T) {
 	is := Derive(snap("The task.\n\n"+human, nil), slug, clean)
 	if want := (Origin{Plan: 249, Rev: 1, Item: "T3", Comment: BodyID, Human: true}); is.Origin != want {
 		t.Errorf("origin = %+v, want %+v", is.Origin, want)
+	}
+}
+
+// Derive reads Origin.Check from the check fields of the App's whole
+// origin marker in a clean body (#283), with Human beside it. A plain-text
+// task's marker has none, and a check on a marker that isn't read gives
+// none: in a dirty body, a body someone else edited last, someone else's
+// marker, one in a comment, an escaped one, or one that isn't whole. Nor
+// do fields that don't record a whole check (checkOf).
+func TestDeriveOriginCheck(t *testing.T) {
+	t.Parallel()
+	const file = "<!-- issuedog:origin plan=#250 rev=1 item=T3 human=1 check=file value=docs/a%20b.md contains=%3C!--%25 -->"
+	want := Check{Kind: CheckFile, Value: "docs/a b.md", Contains: "<!--%"}
+	byApp := snap("The task.\n\n"+file, nil)
+	byApp.BodyEdit = github.Edit{By: appBot, At: time.Unix(5, 0)}
+	byOwner := snap("The task.\n\n"+file, nil)
+	byOwner.BodyEdit = github.Edit{By: owner, At: time.Unix(5, 0)}
+	byMallory := snap("The task.\n\n"+file, nil)
+	byMallory.Author = mallory
+	origin := func(fields string) *github.Snapshot {
+		return snap("<!-- issuedog:origin plan=#250 rev=1 item=T3 human=1 "+fields+" -->", nil)
+	}
+	for _, tt := range []struct {
+		name  string
+		s     *github.Snapshot
+		dirty func(int64) bool
+		want  Check
+	}{
+		{"a file check", snap("The task.\n\n"+file, nil), clean, want},
+		{"a body the App edited last", byApp, clean, want},
+		{"each kind", origin("check=ruleset value=ci%2Ftest"), clean, Check{Kind: CheckRuleset, Value: "ci/test"}},
+		{"a file check with no contains", origin("check=file value=go.mod"), clean, Check{Kind: CheckFile, Value: "go.mod"}},
+		{"plain text", origin(""), clean, Check{}},
+		{"a dirty body", snap(file, nil), dirtyIDs(BodyID), Check{}},
+		{"a body someone else edited last", byOwner, clean, Check{}},
+		{"a marker that isn't the App's", byMallory, clean, Check{}},
+		{"a marker in a comment", snap("", []github.Author{appBot}, file), clean, Check{}},
+		{"an escaped marker", snap(github.Escape(file), nil), clean, Check{}},
+		{"a marker with no item", snap("<!-- issuedog:origin plan=#250 rev=1 check=label value=x -->", nil), clean, Check{}},
+		{"an unknown kind", origin("check=app-installed value=o"), clean, Check{}},
+		{"no value", origin("check=label"), clean, Check{}},
+		{"a value that doesn't decode", origin("check=label value=50%"), clean, Check{}},
+		{"a value cut short", origin("check=label value=a%2"), clean, Check{}},
+		{"contains on a label check", origin("check=label value=x contains=y"), clean, Check{}},
+		{"contains that doesn't decode", origin("check=file value=x contains=%zz"), clean, Check{}},
+		{"a value with no check", origin("value=x"), clean, Check{}},
+	} {
+		is := Derive(tt.s, slug, tt.dirty)
+		if is.Origin.Check != tt.want {
+			t.Errorf("%s: Origin.Check = %+v, want %+v", tt.name, is.Origin.Check, tt.want)
+		}
+		if tt.want != (Check{}) && (!is.Origin.Human || !is.Item.Human) {
+			t.Errorf("%s: Origin.Human = %v, Item.Human = %v, want true", tt.name, is.Origin.Human, is.Item.Human)
+		}
 	}
 }
 

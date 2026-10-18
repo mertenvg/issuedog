@@ -578,8 +578,8 @@ func TestDigestRenderKeys(t *testing.T) {
 			}
 		}
 	}) {
-		if got := digestRenderKey(k); got != keys[k] {
-			t.Errorf("digestRenderKey(%q) = %q, want %q", k, got, keys[k])
+		if got := github.EncodeValue(k); got != keys[k] {
+			t.Errorf("github.EncodeValue(%q) = %q, want %q", k, got, keys[k])
 		}
 		items = append(items, waitItem{Issue: 1, Kind: waitError, Key: k, Title: "T", Link: "https://github.com/o/r/issues/1"})
 		want = append(want, keys[k])

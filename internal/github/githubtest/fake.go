@@ -80,6 +80,8 @@ type Fake struct {
 
 	repoIDs map[string]int64 // the repos issues were transferred to, in lower case, by ID (transfer.go)
 
+	checks checkState // what the check reads answer (checks.go)
+
 	// The App, permission and repo label endpoints, and the request log (app.go).
 	perms      map[string]string
 	labels     []*gogithub.Label
@@ -181,6 +183,7 @@ func New(t testing.TB, repo, slug string) *Fake {
 	f.handle("GET /issues/{n}/timeline", f.timeline)
 	f.mux.HandleFunc("POST /graphql", f.serveGraphQL)
 	f.handleApp()
+	f.handleChecks()
 	f.handleAssign()
 	f.handleTransfer()
 	f.srv = httptest.NewServer(f.logged(f.mux))
