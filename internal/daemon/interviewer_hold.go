@@ -230,21 +230,44 @@ func ivHoldSection(s *github.Snapshot, origin state.Stage, sp ivHoldSpan, in ivH
 	return strings.Join(lines, "\n") + "\n"
 }
 
+// ivHoldRevises reports whether the interviewer handles a /revise that
+// waited through a hold from origin (ivHoldRevise): one from a review
+// stage, spec-review (#87's assumption 8) or plan-review (#294), where a
+// /revise applies.
+func ivHoldRevises(origin state.Stage) bool {
+	return origin == state.SpecReview || origin == state.PlanReview
+}
+
+// ivPlanOrigin reports whether the interviewer may return plan at the
+// clarifying after a hold from origin (#294): planning, plan-review or
+// planned, the stages of an issue's plan.
+func ivPlanOrigin(origin state.Stage) bool {
+	return origin == state.Planning || origin == state.PlanReview || origin == state.Planned
+}
+
 // ivHoldRevise returns the /revise the interviewer handles at the
-// clarifying after a hold from spec-review (#87's assumption 8, SPEC
-// §6.4), or nil: the oldest clean comment above from, the bound before the
-// after-hold period's first hold (ivHoldSpan), and not above seen, if
-// seen is set, by a trusted user, whose /revise passes its own check at
-// spec-review, that no marker names, and that the App hasn't reacted to.
-// Such a /revise waits (state.Command.Waits), so nothing else handles it.
-// The interviewer's move names it with cmd= (Move.check), so it's
-// processed, and isn't applied again. Only one is handled at a time, as a
-// marker names one cmd: another one waits for the next run, or applies
-// once the issue is at spec-review again.
+// clarifying after a hold from a review stage (ivHoldRevises, #87's
+// assumption 8, #294, SPEC §6.4), or nil: the oldest clean comment above
+// from, the bound before the after-hold period's first hold (ivHoldSpan),
+// and not above seen, if seen is set, by a trusted user, whose /revise
+// passes its own check at the stage the issue came from, that no marker
+// names, and that the App hasn't reacted to. Such a /revise waits
+// (state.Command.Waits), so nothing else handles it. The interviewer's
+// move names it with cmd= (Move.check), so it's processed, and isn't
+// applied again: it's the interviewer's revision notes, whatever the
+// outcome. After a hold from plan-review, one that a spec move names is
+// used up there too, answered in the spec's message, and one that a plan
+// move names is the planner's (plannerHoldOf). Only one is handled at a
+// time, as a marker names one cmd: another one waits for the next run, or
+// applies once the issue is at the review stage again.
 func ivHoldRevise(ctx context.Context, a *Applier, tc trustCache, s *github.Snapshot, d Dirt, is state.Issue, from, seen int64) (*github.Comment, error) {
+	origin := ivHoldOrigin(is)
+	if !ivHoldRevises(origin) {
+		return nil, nil
+	}
 	for i, c := range s.Comments {
 		cmd, ok := state.ParseCommand(c.Body)
-		if c.ID <= from || seen > 0 && c.ID > seen || !ok || cmd.Name != "revise" || cmd.Check(state.SpecReview) != nil ||
+		if c.ID <= from || seen > 0 && c.ID > seen || !ok || cmd.Name != "revise" || cmd.Check(origin) != nil ||
 			d.Has(c.ID) || is.Keys[state.CmdKey(c.ID)] {
 			continue
 		}
@@ -270,8 +293,8 @@ func ivHoldRevise(ctx context.Context, a *Applier, tc trustCache, s *github.Snap
 // which trigger (SPEC §7.2), with origin the stage it came from to the
 // clarifying after a hold (ivHoldOrigin), or "": a spec to spec-review, on
 // spec-rewritten after a hold, else spec-written; unchanged to origin, on
-// discussion-no-change; anything else stays at clarifying, on
-// more-questions.
+// discussion-no-change; plan to planning, on plan-changed (#294); anything
+// else stays at clarifying, on more-questions.
 func ivHoldMove(outcome string, origin state.Stage) (state.Stage, state.Trigger) {
 	switch {
 	case outcome == outcomeSpec && origin != "":
@@ -280,6 +303,8 @@ func ivHoldMove(outcome string, origin state.Stage) (state.Stage, state.Trigger)
 		return state.SpecReview, state.TriggerSpecWritten
 	case outcome == outcomeUnchanged:
 		return origin, state.TriggerDiscussionNoChange
+	case outcome == outcomePlan:
+		return state.Planning, state.TriggerPlanChanged
 	}
 	return state.Clarifying, state.TriggerMoreQuestions
 }
@@ -287,13 +312,15 @@ func ivHoldMove(outcome string, origin state.Stage) (state.Stage, state.Trigger)
 // ivHoldFields is what Apply adds to the interviewer's move at the
 // clarifying after a hold (#189), and what it does after the move.
 //
-// It names a /revise that waited through the hold only after a hold from
-// spec-review. That rule is interim for a hold from plan-review (#248's
-// assumption 9, #271): the interviewer has no plan outcome yet, so it
-// leaves such a /revise alone, and the /revise sends the plan back once
-// the interviewer's unchanged move takes the issue back to plan-review.
-// S5's T5 adds the plan outcome, and makes that /revise the interviewer's
-// revision notes there, as for spec-review, which replaces this rule.
+// It names a /revise that waited through the hold after a hold from either
+// review stage, spec-review or plan-review (ivHoldRevises): the /revise is
+// the interviewer's revision notes, whatever it returns (#294, which
+// replaced #271's interim rule that left one from plan-review to apply
+// back there). After unchanged, it's used up, and the revision that stood
+// still stands; after plan, the planner gets it (plannerHoldOf). After a
+// hold from planning, or any other stage, where no /revise applies, it
+// names none, and the /revise waits until the issue is at a stage where it
+// is applied or rejected as usual.
 type ivHoldFields struct {
 	origin state.Stage // the stage the issue came from (ivHoldOrigin), or ""
 	revise int64       // the /revise the move names (ivHoldRevise), or 0
@@ -303,9 +330,9 @@ type ivHoldFields struct {
 // once the move is written (moved), what its marker says, so a replay
 // names the same /revise, and an unchanged outcome goes back to the same
 // origin, whatever was read since; else the origin of the clarifying
-// after a hold it's at, if it's at one, and from spec-review, the /revise
-// that waited through the hold that the run read, bounded by its seen
-// (ivHoldRevise).
+// after a hold it's at, if it's at one, and from a review stage
+// (ivHoldRevises), the /revise that waited through the hold that the run
+// read, bounded by its seen (ivHoldRevise).
 func (iv *Interviewer) holdFields(ctx context.Context, a *Applier, r Result, is state.Issue, moved bool) (ivHoldFields, error) {
 	if moved {
 		for _, m := range is.Markers {
@@ -316,7 +343,7 @@ func (iv *Interviewer) holdFields(ctx context.Context, a *Applier, r Result, is 
 		}
 	}
 	h := ivHoldFields{origin: ivHoldOrigin(is)}
-	if h.origin != state.SpecReview {
+	if !ivHoldRevises(h.origin) {
 		return h, nil
 	}
 	sp := ivHoldSpanOf(r.S, a.AppSlug, r.Dirt.Has)
@@ -392,12 +419,13 @@ func ivHoldStanding(s *github.Snapshot, appSlug string, d Dirt, to state.Stage) 
 	return ""
 }
 
-// ivHoldWait is what a move to the clarifying after a hold says of what
-// comes next (Q3b): the interviewer reads the discussion on an issue of a
-// class it runs on (interviewerClass); any other issue waits there until a
-// code owner sets its stage by hand (resolveWait).
-func ivHoldWait(it state.Item) string {
-	if interviewerClass(it) {
+// ivHoldWait is what a move to the clarifying after a hold from origin
+// says of what comes next (Q3b): the interviewer reads the discussion on
+// an issue it runs on there (ivRunsOn), a story with a parent included
+// after a hold from a stage of its plan (#195's Q1a); any other issue
+// waits there until a code owner sets its stage by hand (resolveWait).
+func ivHoldWait(it state.Item, origin state.Stage) string {
+	if ivRunsOn(it, origin) {
 		return "The interviewer reads the discussion next, and picks where it goes from there."
 	}
 	return resolveWait

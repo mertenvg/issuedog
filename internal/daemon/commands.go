@@ -244,8 +244,10 @@ func resume(is state.Issue, self bool, above madeAboveSet, by string, after bool
 	m := Move{To: at, Trigger: state.TriggerResume, Fields: state.HeldStackFields(fields, is.HeldStack.Seen),
 		Text: fmt.Sprintf("Resumed by %s, back to `%s`.", by, at)}
 	if after {
-		m = Move{To: state.Clarifying, Trigger: state.TriggerResumeAfterDiscussion, Fields: resolveFields(is.HeldStack, time.Time{}),
-			Text: fmt.Sprintf("Resumed by %s. A discussion on this issue was resolved during its hold from `%s`, so it goes to `clarifying`. %s", by, at, ivHoldWait(is.Item))}
+		fields := resolveFields(is.HeldStack, time.Time{})
+		m = Move{To: state.Clarifying, Trigger: state.TriggerResumeAfterDiscussion, Fields: fields,
+			Text: fmt.Sprintf("Resumed by %s. A discussion on this issue was resolved during its hold from `%s`, so it goes to `clarifying`. %s",
+				by, at, ivHoldWait(is.Item, state.Stage(fields["origin"])))}
 	}
 	return m, ended > 0 && len(left) == 0
 }

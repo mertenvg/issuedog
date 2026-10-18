@@ -3,6 +3,7 @@ package daemon_test
 import (
 	"context"
 	"fmt"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -325,15 +326,20 @@ func TestIvHoldContext(t *testing.T) {
 	}
 }
 
-// Elsewhere the preamble says the run never returns unchanged, and
-// issue.md has no "After a hold".
+// Elsewhere the preamble says the run never returns unchanged or plan, and
+// lists the outcomes it may return, and issue.md has no "After a hold".
 func TestIvHoldContextNoHold(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
 	n, _ := ivFiled(f, "epic", false, "from=intake to=clarifying event=5")
 	files := ivContext(t, ivDaemon(t, f, newOrigin(t)), n)
-	if w := "- This issue isn't back from a discussion hold, so never return `unchanged`."; !strings.Contains(files["system.md"], w) {
-		t.Errorf("system.md lacks %q", w)
+	for _, w := range []string{
+		"- This issue isn't back from a discussion hold, so never return `unchanged` or `plan`.",
+		"- The outcomes you may return here: `questions` and `spec`. Any other outcome fails the run.",
+	} {
+		if !strings.Contains(files["system.md"], w) {
+			t.Errorf("system.md lacks %q", w)
+		}
 	}
 	if strings.Contains(files["issue.md"], "After a hold") {
 		t.Errorf("issue.md has an after-hold section:\n%s", files["issue.md"])
@@ -837,6 +843,354 @@ func TestIvHoldUnchangedOutsideHold(t *testing.T) {
 	}
 	if w := f.Writes(); len(w) != writes {
 		t.Errorf("wrote %+v, want nothing", w[writes:])
+	}
+	if l := g.lease(); g.runs() != 1 || !l.Failed || l.Attempt != 1 || l.ApplyFailures != 0 {
+		t.Errorf("after %d runs, lease %+v; want one failed attempt", g.runs(), l)
+	}
+}
+
+// ivPlanNotes is the interviewer's plan message (#294), with a mention
+// that's defused when it's posted.
+const ivPlanNotes = "Move T1 after T2, as @owner agreed: the cache needs the expiry job first."
+
+// ivPlanOut is the interviewer's plan outcome, with ivPlanNotes.
+var ivPlanOut = map[string]any{"outcome": "plan", "message": ivPlanNotes}
+
+// ivPlanText is the start of the plan move's comment, up to its marker.
+const ivPlanText = "The discussion during the hold changes this issue's plan, but not its spec, so it goes to `planning`.\n\n" +
+	"Move T1 after T2, as @​owner agreed: the cache needs the expiry job first.\n\n" +
+	"The planner reads these notes and the discussion, and posts a new plan for your 👍.\n\ncc @owner\n\n<!-- issuedog:transition "
+
+// ivPlanHeldPlanned files issue 1, an epic held for discussion from
+// planned by mallory's comment, which the owner's 👍 approves, with the
+// writes forgotten.
+func ivPlanHeldPlanned(t testing.TB, f *githubtest.Fake) {
+	t.Helper()
+	m := ivHoldHeld(t, f, "epic", "planned", "<!-- issuedog:transition from=plan-review to=planned rev=1 cmd=r5 seen=2 -->")
+	f.AddReaction(m, "owner", "+1")
+	f.ForgetWrites()
+}
+
+// #294: an epic held for discussion from plan-review or planned gets plan
+// from a fake interviewer, in the same pass the discussion ends. It moves
+// clarifying → planning, with origin and no revision, and its comment says
+// the plan changes, with the message, its mention defused, that the
+// planner posts a new plan, and the cc line. After a hold from plan-review,
+// it names the /revise that waited through the hold, and 👍s it in the
+// same pass. The pass after writes nothing and runs nothing, and the plan
+// pass is safe to replay.
+func TestIvHoldPlan(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, origin string
+		setup        func(t testing.TB, f *githubtest.Fake)
+		revise       bool
+	}{
+		{"plan-review", "plan-review", func(t testing.TB, f *githubtest.Fake) { planHoldDisc(t, f, nil) }, false},
+		{"plan-review with a /revise", "plan-review", planHoldRevised, true},
+		{"planned", "planned", ivPlanHeldPlanned, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFake(t)
+			tt.setup(t, f)
+			g := ivHoldNew(t, f, ivPlanOut)
+			if err := g.work(1); err != nil {
+				t.Fatal(err)
+			}
+			body := newestComment(f, 1)
+			if !strings.HasPrefix(body, ivPlanText) {
+				t.Errorf("the plan move =\n%s\nwant it to start\n%s", body, ivPlanText)
+			}
+			want := map[string]string{"from": "clarifying", "to": "planning", "run": "run1", "origin": tt.origin, "rev": "", "body": "", "cmd": ""}
+			if tt.revise {
+				want["cmd"] = strconv.FormatInt(ivHoldFind(t, f, planHoldRevise), 10)
+				planHoldAcked(t, f)
+			}
+			ivHoldFields(t, ivHoldMove(t, body), want)
+			if l := ivLabels(f, 1); !slices.Equal(l, []string{"stage:planning", "type:epic"}) || g.runs() != 1 {
+				t.Errorf("labels %q after %d runs; want planning after one", l, g.runs())
+			}
+			writes := len(f.Writes())
+			if err := g.work(1); err != nil {
+				t.Fatal(err)
+			}
+			if w := f.Writes(); len(w) != writes || g.runs() != 1 {
+				t.Errorf("a second pass wrote %+v with %d runs; want nothing, after one run", w[writes:], g.runs())
+			}
+			replayRuns(t, func(tb testing.TB, f *githubtest.Fake, _ string) { tt.setup(tb, f) }, func(g *rig) {
+				ivHoldRig(g)
+				g.claude(ivResult(t, ivPlanOut), 0)
+			})
+		})
+	}
+}
+
+// #294: plan anywhere but the clarifying after a hold from a stage of the
+// plan is a failed attempt, with nothing written: after a hold from
+// spec-review or from clarifying, and not after a hold. So is plan with no
+// message, and plan with a type, even after a hold from plan-review.
+func TestIvHoldPlanRefused(t *testing.T) {
+	t.Parallel()
+	held := func(setup func(t testing.TB, f *githubtest.Fake)) func(t testing.TB, f *githubtest.Fake) {
+		return func(t testing.TB, f *githubtest.Fake) {
+			setup(t, f)
+			if err := resolvePass(t, 1)(f); err != nil {
+				t.Fatal(err)
+			}
+			if l := ivLabels(f, 1); !slices.Contains(l, "stage:clarifying") {
+				t.Fatalf("labels %q; want clarifying after the hold", l)
+			}
+			f.ForgetWrites()
+		}
+	}
+	atClarifying := func(t testing.TB, f *githubtest.Fake) {
+		m := ivHoldHeld(t, f, "epic", "clarifying", "<!-- issuedog:transition from=intake to=clarifying event=5 -->")
+		f.AddReaction(m, "owner", "+1")
+	}
+	for _, tt := range []struct {
+		name  string
+		setup func(t testing.TB, f *githubtest.Fake)
+		out   map[string]any
+	}{
+		{"after a hold from spec-review", held(func(t testing.TB, f *githubtest.Fake) { ivHoldEpic(t, f, nil) }), ivPlanOut},
+		{"after a hold from clarifying", held(atClarifying), ivPlanOut},
+		{"not after a hold", func(_ testing.TB, f *githubtest.Fake) { ivFiled(f, "epic", false, "from=intake to=clarifying event=5") }, ivPlanOut},
+		{"with no message", held(func(t testing.TB, f *githubtest.Fake) { planHoldDisc(t, f, nil) }), map[string]any{"outcome": "plan"}},
+		{"with a type", held(func(t testing.TB, f *githubtest.Fake) { planHoldDisc(t, f, nil) }),
+			map[string]any{"outcome": "plan", "message": "x", "type": map[string]any{"value": "epic", "reason": "It is."}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFake(t)
+			tt.setup(t, f)
+			g := ivHoldNew(t, f, tt.out)
+			writes := len(f.Writes())
+			if err := g.work(1); err != nil {
+				t.Fatal(err)
+			}
+			if w := f.Writes(); len(w) != writes {
+				t.Errorf("wrote %+v, want nothing", w[writes:])
+			}
+			if l := g.lease(); g.runs() != 1 || !l.Failed || l.Attempt != 1 || l.ApplyFailures != 0 {
+				t.Errorf("after %d runs, lease %+v; want one failed attempt", g.runs(), l)
+			}
+		})
+	}
+}
+
+// ivPlanCounter is the owner's comment that counters mallory's during the
+// hold: #271's verify's dropped counter comment.
+const ivPlanCounter = "Yes, move T1 after T2."
+
+// ivPlanStory files issue 1 on f, owner's story "Quotes" with a parent, at
+// planning (plFiled), and with review, at plan-review with plan revision
+// 1. Mallory's comment holds it for discussion (resolvePass), the owner's
+// 👍 approves her comment, and the owner's counter comment follows, then
+// with review, the owner's /revise, all with the writes forgotten.
+func ivPlanStory(t testing.TB, f *githubtest.Fake, review bool) {
+	t.Helper()
+	n, entry := plFiled(f, "story", true, plEntry)
+	if review {
+		postPlan(t, f, n, 1, entry+1)
+	}
+	m := f.AddComment(n, "mallory", planHoldMallory)
+	if err := resolvePass(t, n)(f); err != nil {
+		t.Fatal(err)
+	}
+	if c := newestComment(f, n); !strings.Contains(c, "to=held") {
+		t.Fatalf("newest comment %q; want the hold", c)
+	}
+	f.AddReaction(m, "owner", "+1")
+	f.AddComment(n, "owner", ivPlanCounter)
+	if review {
+		f.AddComment(n, "owner", planHoldRevise)
+	}
+	f.ForgetWrites()
+}
+
+// #294 and #261's note: a story with a parent held for discussion from
+// planning, or from plan-review with a /revise, goes to clarifying when
+// the discussion ends, where the interviewer runs on it (#195's Q1a). Its
+// plan outcome moves it to planning with origin, so the planner's run that
+// follows has the interviewer's message, the discussion's owner input, the
+// owner's 👍'd comment by mallory and the owner's counter comment, and the
+// /revise as its notes, and its plan goes to plan-review, though
+// plan.review is false: a stage set by hand from there would have skipped
+// review. The /revise is named by the interviewer's move and 👍'd, so it
+// isn't applied again.
+func TestIvHoldPlanPlanner(t *testing.T) {
+	t.Parallel()
+	for _, review := range []bool{false, true} {
+		origin := map[bool]string{false: "planning", true: "plan-review"}[review]
+		t.Run(origin, func(t *testing.T) {
+			t.Parallel()
+			f := newFake(t)
+			ivPlanStory(t, f, review)
+			g := newRig(t, f, newOrigin(t), t.TempDir())
+			g.planner(false)
+			ivHoldRig(g)
+			if err := os.WriteFile(g.path("claude", "claude"), []byte(wholeRunClaude), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			for i, out := range []map[string]any{ivPlanOut, plGolden(t, "story-plan")} {
+				if err := os.WriteFile(g.path("claude", "out."+strconv.Itoa(i+1)), []byte(ivResult(t, out)), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for range 3 {
+				if err := g.work(1); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if l := ivLabels(f, 1); !slices.Equal(l, []string{"stage:plan-review", "type:story"}) || g.runs() != 2 {
+				t.Fatalf("labels %q after %d runs; want plan-review after the interviewer's run and the planner's", l, g.runs())
+			}
+			move := ivHoldFind(t, f, "from=clarifying to=planning")
+			m, counter := ivHoldFind(t, f, planHoldMallory), ivHoldFind(t, f, ivPlanCounter)
+			want := map[string]string{"run": "run1", "origin": origin, "cmd": ""}
+			if review {
+				want["cmd"] = strconv.FormatInt(ivHoldFind(t, f, planHoldRevise), 10)
+				planHoldAcked(t, f)
+			}
+			var moveBody string
+			for _, c := range ivHoldComments(t, f) {
+				if c.ID == move {
+					moveBody = c.Body
+				}
+			}
+			ivHoldFields(t, ivHoldMove(t, moveBody), want)
+			in := g.file("ctx.2/input.md")
+			notes := []string{
+				fmt.Sprintf("## Comment %d by issuedog[bot]: the interviewer's move to planning after a discussion hold", move),
+				"Move T1 after T2, as @​owner agreed",
+				fmt.Sprintf("## Comment %d by mallory, during the discussion hold, approved by owner's 👍, so it's owner input\n\n```text\n%s\n```", m, planHoldMallory),
+				fmt.Sprintf("## Comment %d by owner, during the discussion hold, a trusted comment that counters the untrusted comments before it, "+
+					"so it's owner input\n\n```text\n%s\n```", counter, ivPlanCounter),
+			}
+			if review {
+				notes = append(notes, fmt.Sprintf("## Comment %s by owner: a `/revise` that waited through the hold, whose text is revision notes for the plan"+
+					"\n\n```text\n%s\n```", want["cmd"], planHoldRevise))
+			}
+			for _, w := range notes {
+				if !strings.Contains(in, w) {
+					t.Errorf("the planner's input.md lacks\n%s\nin\n%s", w, in)
+				}
+			}
+			if text, markers := plComment(t, f, 1); len(markers) != 3 || !strings.Contains(markers[0], "from=planning to=plan-review") ||
+				!strings.Contains(text, "To approve this plan") {
+				t.Errorf("the plan comment's markers %q; want the move to plan-review, awaiting approval", markers)
+			}
+			writes := len(f.Writes())
+			if err := g.work(1); err != nil {
+				t.Fatal(err)
+			}
+			if w := f.Writes(); len(w) != writes || g.runs() != 2 {
+				t.Errorf("a pass at plan-review wrote %+v with %d runs; want nothing", w[writes:], g.runs())
+			}
+		})
+	}
+}
+
+// #195's Q1a: at the clarifying after a hold from a stage of its plan, a
+// story with a parent gets only questions, unchanged and plan. A spec, a
+// typed outcome and a type on a round are failed attempts, with nothing
+// written. A round stays at clarifying with origin, and unchanged goes back
+// where it came from.
+func TestIvHoldParentStory(t *testing.T) {
+	t.Parallel()
+	setup := func(t testing.TB, f *githubtest.Fake) {
+		ivPlanStory(t, f, false)
+		if err := resolvePass(t, 1)(f); err != nil {
+			t.Fatal(err)
+		}
+		f.ForgetWrites()
+	}
+	typed := map[string]any{"outcome": "typed", "type": map[string]any{"value": "task", "reason": "It's one PR."}}
+	for _, tt := range []struct {
+		name   string
+		out    map[string]any
+		labels []string // after the run, or nil for a failed attempt
+		to     string
+	}{
+		{"spec", ivSpec(), nil, ""},
+		{"typed", typed, nil, ""},
+		{"a round with a type", ivRound(1, "epic"), nil, ""},
+		{"a round", ivRound(1, ""), []string{"stage:clarifying", "type:story"}, "clarifying"},
+		{"unchanged", map[string]any{"outcome": "unchanged"}, []string{"stage:planning", "type:story"}, "planning"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFake(t)
+			setup(t, f)
+			if l := ivLabels(f, 1); !slices.Equal(l, []string{"stage:clarifying", "type:story"}) {
+				t.Fatalf("labels %q; want clarifying after the hold", l)
+			}
+			g := ivHoldNew(t, f, tt.out)
+			writes := len(f.Writes())
+			if err := g.work(1); err != nil {
+				t.Fatal(err)
+			}
+			if tt.labels == nil {
+				if w := f.Writes(); len(w) != writes {
+					t.Errorf("wrote %+v, want nothing", w[writes:])
+				}
+				if l := g.lease(); g.runs() != 1 || !l.Failed || l.Attempt != 1 || l.ApplyFailures != 0 {
+					t.Errorf("after %d runs, lease %+v; want one failed attempt", g.runs(), l)
+				}
+				return
+			}
+			if l := ivLabels(f, 1); !slices.Equal(l, tt.labels) || g.runs() != 1 {
+				t.Errorf("labels %q after %d runs; want %q after one", l, g.runs(), tt.labels)
+			}
+			ivHoldFields(t, ivHoldMove(t, newestComment(f, 1)), map[string]string{"from": "clarifying", "to": tt.to, "run": "run1", "origin": "planning"})
+		})
+	}
+}
+
+// #195's Q1a on a story with a parent whose type the App set, as on a child
+// created from a plan, where typing would let the run change the type: at
+// the clarifying after a hold from planning, its preamble still says to
+// leave the type out, lists no typed outcome, and a round that sets a type
+// is a failed attempt, with nothing written.
+func TestIvHoldParentStoryTyped(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	n := f.AddIssue("owner", "Quotes", "The spec.")
+	f.AddLabel(n, app, "type:story")
+	p := f.AddIssue("owner", "The epic", "")
+	f.AddLabel(p, "owner", "type:epic")
+	f.SetParent(n, p)
+	f.AddLabel(n, app, "stage:planning")
+	f.AddComment(n, app, "Moved.\n\n<!-- issuedog:transition "+plEntry+" -->")
+	m := f.AddComment(n, "mallory", planHoldMallory)
+	if err := resolvePass(t, n)(f); err != nil {
+		t.Fatal(err)
+	}
+	f.AddReaction(m, "owner", "+1")
+	if err := resolvePass(t, n)(f); err != nil {
+		t.Fatal(err)
+	}
+	if l := ivLabels(f, n); !slices.Equal(l, []string{"stage:clarifying", "type:story"}) {
+		t.Fatalf("labels %q; want clarifying after the hold", l)
+	}
+	f.ForgetWrites()
+	sys := ivContext(t, ivDaemon(t, f, newOrigin(t)), n)["system.md"]
+	for w, want := range map[string]bool{
+		"- This story has a parent, whose plan gave it its type, so leave `type` out.":                     true,
+		"- The outcomes you may return here: `questions`, `unchanged` and `plan`. Any other outcome fails": true,
+		"so you may change it": false,
+	} {
+		if strings.Contains(sys, w) != want {
+			t.Errorf("system.md has %q: %t, want %t:\n%s", w, !want, want, sys)
+		}
+	}
+	g := ivHoldNew(t, f, ivRound(1, "epic"))
+	if err := g.work(n); err != nil {
+		t.Fatal(err)
+	}
+	if w := f.Writes(); len(w) != 0 {
+		t.Errorf("wrote %+v, want nothing", w)
 	}
 	if l := g.lease(); g.runs() != 1 || !l.Failed || l.Attempt != 1 || l.ApplyFailures != 0 {
 		t.Errorf("after %d runs, lease %+v; want one failed attempt", g.runs(), l)

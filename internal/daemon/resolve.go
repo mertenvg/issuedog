@@ -1330,9 +1330,10 @@ func (a *Applier) resolveLeave(ctx context.Context, s *github.Snapshot, d Dirt, 
 		text += ", by " + list(by)
 	}
 	h := is.HeldStack
-	text += fmt.Sprintf(", so this issue leaves its hold from `%s` for `clarifying`. %s", h.At, ivHoldWait(is.Item))
+	fields := resolveFields(h, last)
+	text += fmt.Sprintf(", so this issue leaves its hold from `%s` for `clarifying`. %s", h.At, ivHoldWait(is.Item, state.Stage(fields["origin"])))
 	m := Move{To: state.Clarifying, Trigger: state.TriggerDiscussionResolved, Key: state.Key{Field: "event", ID: "h" + strconv.FormatInt(p.start, 10)},
-		Fields: resolveFields(h, last), Text: discCC(text, a.Notify)}
+		Fields: fields, Text: discCC(text, a.Notify)}
 	// About to leave: a /hold on an ancestor posted while it was held, which
 	// no marker here records (Q2b), keeps it held (SPEC §6.4). The ancestors
 	// are read only when the move can be made: one the table lacks, as for a
