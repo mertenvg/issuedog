@@ -265,8 +265,10 @@ func TestDeriveOriginAnywhere(t *testing.T) {
 // origin marker in a clean body (#283), with Human beside it. A plain-text
 // task's marker has none, and a check on a marker that isn't read gives
 // none: in a dirty body, a body someone else edited last, someone else's
-// marker, one in a comment, an escaped one, or one that isn't whole. Nor
-// do fields that don't record a whole check (checkOf).
+// marker, one in someone else's comment, an escaped one, or one that isn't
+// whole. Nor do fields that don't record a whole check (checkOf). Since
+// #290, a marker in the App's clean comment is read when the body has
+// none, as a reposted origin (#291) is, check fields and all.
 func TestDeriveOriginCheck(t *testing.T) {
 	t.Parallel()
 	const file = "<!-- issuedog:origin plan=#250 rev=1 item=T3 human=1 check=file value=docs/a%20b.md contains=%3C!--%25 -->"
@@ -294,7 +296,8 @@ func TestDeriveOriginCheck(t *testing.T) {
 		{"a dirty body", snap(file, nil), dirtyIDs(BodyID), Check{}},
 		{"a body someone else edited last", byOwner, clean, Check{}},
 		{"a marker that isn't the App's", byMallory, clean, Check{}},
-		{"a marker in a comment", snap("", []github.Author{appBot}, file), clean, Check{}},
+		{"a marker in the App's comment, the body having none", snap("", []github.Author{appBot}, file), clean, want},
+		{"a marker in someone else's comment", snap("", []github.Author{mallory}, file), clean, Check{}},
 		{"an escaped marker", snap(github.Escape(file), nil), clean, Check{}},
 		{"a marker with no item", snap("<!-- issuedog:origin plan=#250 rev=1 check=label value=x -->", nil), clean, Check{}},
 		{"an unknown kind", origin("check=app-installed value=o"), clean, Check{}},
