@@ -36,11 +36,11 @@ import (
 // its trigger's logins and title are raw, and digestRenderHold escapes
 // them.
 
-// waitKind is a kind of item. Its order is Q3a's tie-break after the
-// unblock count: state errors, then discussion holds (#192), then
-// approvals, then questions, then flags. A plan's approval (#270) ranks as
-// an approval (waitKind.rank): it's a kind of its own only for its key and
-// its name.
+// waitKind is a kind of item. Q3a's tie-break after the unblock count
+// goes by waitKind.rank: state errors, then discussion holds (#192), then
+// approvals, then questions, then human tasks (#287), then flags. A plan's
+// approval (#270) ranks as an approval: it's a kind of its own only for
+// its key and its name.
 type waitKind int
 
 const (
@@ -50,15 +50,24 @@ const (
 	waitQuestion
 	waitFlag
 	waitPlanApproval
+	waitHuman
 )
 
-// rank is k's place in Q3a's order of kinds: a plan's approval is an
-// approval's, and any other kind its own.
-func (k waitKind) rank() waitKind {
-	if k == waitPlanApproval {
-		return waitApproval
+// rank is k's place in Q3a's order of kinds, lowest first: a plan's
+// approval is an approval's, a human task's comes after a question's and
+// before a flag's (#287), and a flag's after that. Any other kind ranks by
+// its own value, so a kind appended later, unless it's mapped here, ranks
+// after flags: each from waitHuman on is above waitFlag's rank.
+func (k waitKind) rank() int {
+	switch k {
+	case waitPlanApproval:
+		return int(waitApproval)
+	case waitHuman:
+		return int(waitQuestion) + 1
+	case waitFlag:
+		return int(waitQuestion) + 2
 	}
-	return k
+	return int(k)
 }
 
 func (k waitKind) String() string {
@@ -75,6 +84,8 @@ func (k waitKind) String() string {
 		return "flag"
 	case waitPlanApproval:
 		return "plan-approval"
+	case waitHuman:
+		return "human"
 	}
 	return "kind" + strconv.Itoa(int(k))
 }
@@ -87,8 +98,10 @@ type waitItem struct {
 	// can tell a new one: q-<n>-<round>, rev-<n>-<rev> (rev-<n>-0 when
 	// there's no revision yet), plan-<n>-<rev> for a plan's (plan-<n>-0
 	// with no clean plan revision, #270), flag-<n>-<comment id>,
-	// err-<n>-<kind>-<key> or hold-<n>-<hold marker id> (holdItemOf). A
-	// hold is announced by other keys than this one (waitItem.news).
+	// err-<n>-<kind>-<key>, hold-<n>-<hold marker id> (holdItemOf) or
+	// human-<n> for a human task's (#287), of which an issue has one at
+	// most. A hold is announced by other keys than this one
+	// (waitItem.news).
 	Key string
 	// Title is the issue's title. It's raw: anyone may have written it, so
 	// T6 runs it through inline and github.Escape.
@@ -164,6 +177,10 @@ type waitInput struct {
 	// that stays once they're resolved, as resolveLeave judges it
 	// (Applier.resolveHoldsLeft, Step.holdItemFind).
 	OwnerHeld bool
+	// Blocked is set when S is a human task at needs-human (waitHumanTask)
+	// that an open issue blocks, as its visit read them (Daemon.humanBlocked,
+	// #287), and unset for any other issue.
+	Blocked bool
 }
 
 // waitFind returns what on in.S waits on the owner (assumption 5), in no
@@ -189,6 +206,9 @@ type waitInput struct {
 //     revision, or, with no clean one, of none. One that can't be approved
 //     yet says why, a reason a line (waitPlanApprovalLines). It's placed
 //     in its plan's order (waitPlanOrder);
+//   - at needs-human, a human task (#287, SPEC §9.6's row), when it is
+//     one (waitHumanTask) and no open issue blocks it (in.Blocked). It
+//     links the issue, whose body says what to do (waitHumanLines);
 //   - at intake with no stage label, a flag: when the latest triage
 //     marker has verdict=ask, as FlagByReaction answers it.
 //
@@ -252,6 +272,10 @@ func waitFind(in waitInput) ([]waitItem, error) {
 		rev, comment, lines := waitPlanApprovalLines(in, is)
 		add(waitPlanApproval, strconv.Itoa(rev), comment, lines)
 		items[len(items)-1].Plan, items[len(items)-1].Index = waitPlanOrder(is.Origin)
+	case waitHumanTask(is) && !in.Blocked:
+		// An issue has one human task at most: its key is human-<n>.
+		add(waitHuman, "", state.BodyID, waitHumanLines(in))
+		items[len(items)-1].Key = fmt.Sprintf("%s-%d", waitKeyPrefix[waitHuman], s.Number)
 	case is.Stage == state.Intake && stageOf(s) == "" && is.Triage.Verdict == triageAsk:
 		lines := []waitLine{{Text: "Triage flagged this issue: should issuedog handle it?"}}
 		heading := fmt.Sprintf("### Should issuedog handle #%d?", s.Number)
@@ -265,7 +289,7 @@ func waitFind(in waitInput) ([]waitItem, error) {
 
 // waitKeyPrefix starts each kind's key.
 var waitKeyPrefix = map[waitKind]string{waitError: "err", waitHold: "hold", waitApproval: "rev", waitQuestion: "q", waitFlag: "flag",
-	waitPlanApproval: "plan"}
+	waitPlanApproval: "plan", waitHuman: "human"}
 
 // waitLink is the link to comment id on issue n, or to the issue itself
 // when id is state.BodyID: an error in the body (#155's verify).
@@ -420,6 +444,49 @@ func waitPlanApprovalLines(in waitInput, is state.Issue) (int, int64, []waitLine
 		back = "Post `/revise <notes>`, or any other comment, to send it back and get a new plan."
 	}
 	return latest.Rev, comment, append(lines, waitLine{Text: back})
+}
+
+// waitHumanTask reports whether is is a human task at needs-human (SPEC
+// §9.3): a task from a plan whose clean origin marker has human=1
+// (state.ClassHumanTask). A task at needs-human after a hand-off, which
+// phase 3 adds, isn't one.
+func waitHumanTask(is state.Issue) bool {
+	class, err := state.ClassOf(is.Item)
+	return is.Stage == state.NeedsHuman && err == nil && class == state.ClassHumanTask
+}
+
+// waitHumanLines returns a human task's lines (#287): that it waits, then
+// its Goal and "Done when", copied from its body (waitLine.Copied), and
+// last how to finish it. They're copied only from the App's clean body:
+// the App's, not dirty, and edited last by the App or by nobody. That's
+// the body Derive reads the origin marker from, so today a human task's
+// body is always one, but once the marker can be read from a comment
+// (#224's reconcile decision 3, S5), a body someone else edited isn't the
+// App's text. Then, or with either field not found, as for a format that
+// has changed, a line says to see the issue instead. Each field is the
+// first line that starts with its bold name, as childHumanTaskBody writes
+// them: no line above "Done when" starts so, as steps are numbered and
+// links are bullets.
+func waitHumanLines(in waitInput) []waitLine {
+	s := in.S
+	lines := []waitLine{{Text: "A human task waits for you."}}
+	var goal, done string
+	if e := s.BodyEdit; state.IsApp(s.Author, in.AppSlug) && !in.Dirt.Has(state.BodyID) && (e.At.IsZero() || state.IsApp(e.By, in.AppSlug)) {
+		for _, l := range strings.Split(strings.ReplaceAll(s.Body, "\r\n", "\n"), "\n") {
+			if v, ok := strings.CutPrefix(l, "**Goal:** "); ok && goal == "" {
+				goal = strings.TrimSpace(v)
+			}
+			if v, ok := strings.CutPrefix(l, "**Done when:** "); ok && done == "" {
+				done = strings.TrimSpace(v)
+			}
+		}
+	}
+	if goal != "" && done != "" {
+		lines = append(lines, waitLine{Text: "Goal: " + goal, Copied: true}, waitLine{Text: "Done when: " + done, Copied: true})
+	} else {
+		lines = append(lines, waitLine{Text: "See the issue for what to do."})
+	}
+	return append(lines, waitLine{Text: "When it's done, reply `/done` or react 👍 to the issue."})
 }
 
 // waitPlanItemRE is a plan item's ID, as the planner's schema has it: S

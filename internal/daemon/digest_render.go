@@ -221,6 +221,8 @@ func digestRenderKindName(k waitKind) string {
 		return "Question round"
 	case waitFlag:
 		return "Triage flag"
+	case waitHuman:
+		return "Human task"
 	}
 	return "Item (" + k.String() + ")"
 }
@@ -228,7 +230,8 @@ func digestRenderKindName(k waitKind) string {
 // digestRenderMentions reports whether new item it gets the digest's
 // mention (Q2a): only one whose own comment doesn't mention notify
 // already. A question round, a spec's revision, a plan's revision (the
-// plan comment ends in one, #270) and a triage flag end in a cc line, so
+// plan comment ends in one, #270) and a triage flag end in a cc line, and
+// so does a human task's body (#287, SPEC §9.4), so
 // that leaves state errors, and a discussion hold with a trigger that no
 // App comment mentioning notify names (waitItem.news, #192): a comment on
 // an issue held already (Q2b), or a trigger whose notice discLost held
@@ -238,7 +241,7 @@ func digestRenderKindName(k waitKind) string {
 // the mention unless it's listed here.
 func digestRenderMentions(it waitItem) bool {
 	switch it.Kind {
-	case waitApproval, waitPlanApproval, waitQuestion, waitFlag:
+	case waitApproval, waitPlanApproval, waitQuestion, waitFlag, waitHuman:
 		return false
 	case waitHold:
 		return len(it.news()) > 0
