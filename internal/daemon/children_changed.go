@@ -68,7 +68,8 @@ func childPlanRun(plan github.Comment, appSlug string) (string, bool) {
 // childChanged writes what's missing of c's change to child number n,
 // under parent s, read fresh, in order, each write checked first:
 //   - its title and body, rewritten whole (childRewrite), unless its
-//     origin names rev already;
+//     origin names rev already, or, for an adopted child, its body is the
+//     App's rewrite whose origin does (adoptedRewrite);
 //   - its type label, on a labels repo, and its scope, priority, model
 //     and effort labels, set to c's (childSetLabels);
 //   - its move, keyed by key: to c's first stage on the trigger for its
@@ -76,6 +77,14 @@ func childPlanRun(plan github.Comment, appSlug string) (string, bool) {
 //     and origin, which is no hold of its own (state.HeldStack), with the
 //     hold's seen and no reason. Its comment names the revision and links
 //     the plan comment, plan.
+//
+// An adopted child, one a person filed whose origin lives in a clean App
+// comment (#372), is rewritten whole like any other: its body becomes the
+// App's, from the revision, with none of the person's text, which stays
+// in its edit history. Derive still reads no marker from a body a person
+// filed, so the rewrite's origin marker, naming rev, goes in the move's
+// comment too, which is then the newest clean App comment with one, and
+// the comment says why.
 //
 // The move is the last write, so once it stands the child is done, and a
 // later pass reads it and writes nothing. Before it, the child is reported
@@ -115,7 +124,8 @@ func (st *Step) childChanged(ctx context.Context, parent *github.Snapshot, rev i
 	if err := st.discCheckLabels(ctx, s, st.Trust, d); err != nil {
 		return fmt.Errorf("check #%d: %w", n, err)
 	}
-	if o := state.Derive(s, st.AppSlug, d.Has).Origin; o.Plan != parent.Number || o.Item != c.Item || o.Rev < rev {
+	names := func(o state.Origin) bool { return o.Plan == parent.Number && o.Item == c.Item && o.Rev >= rev }
+	if _, o, _ := adoptedRewrite(s, st.AppSlug, d.Has); !names(state.Derive(s, st.AppSlug, d.Has).Origin) && !names(o) {
 		body, err := c.bodyOf(numbers)
 		if err != nil {
 			return fmt.Errorf("write #%d's body: %w", n, err)
@@ -132,6 +142,17 @@ func (st *Step) childChanged(ctx context.Context, parent *github.Snapshot, rev i
 	text := fmt.Sprintf("Rewritten from #%d's plan, rev %d, as %s, since [the plan](%s) changed it.",
 		parent.Number, rev, c.Item, waitLink(st.Owner, st.Repo, parent.Number, plan.ID))
 	is := state.Derive(s, st.AppSlug, d.Has)
+	var markers []github.Marker
+	if !state.IsApp(s.Author, st.AppSlug) && !names(is.Origin) {
+		// An adopted child: its body's marker isn't read, so the move's
+		// comment carries it, naming rev.
+		m, o, ok := adoptedRewrite(s, st.AppSlug, d.Has)
+		if !ok || !names(o) {
+			return fmt.Errorf("#%d, which a person filed, has no rewrite of the App's whose origin names item %s of revision %d, for its move to carry", n, c.Item, rev)
+		}
+		markers = []github.Marker{m}
+		text += " " + adoptedMoveText
+	}
 	var m Move
 	if is.Stage == state.Held {
 		fields := map[string]string{"at": string(c.Stage), "origin": string(c.Stage)}
@@ -139,7 +160,7 @@ func (st *Step) childChanged(ctx context.Context, parent *github.Snapshot, rev i
 		// any open → held: the marker names no trigger, and its lack of a
 		// reason is what tells it from a hold.
 		m = Move{To: state.Held, Trigger: state.TriggerHold, Key: key, Fields: state.HeldStackFields(fields, is.HeldStack.Seen),
-			Text: text + fmt.Sprintf(" It stays on hold, and `/resume` takes it to `%s`.", stage)}
+			Text: text + fmt.Sprintf(" It stays on hold, and `/resume` takes it to `%s`.", stage), Markers: markers}
 	} else {
 		trigger := map[state.Stage]state.Trigger{state.Planning: state.TriggerParentChangedStory,
 			state.NeedsHuman: state.TriggerParentChangedHumanTask, state.Ready: state.TriggerParentChangedTask}[c.Stage]
@@ -147,7 +168,7 @@ func (st *Step) childChanged(ctx context.Context, parent *github.Snapshot, rev i
 		if c.Stage == state.Planning {
 			text += ", where the planner plans it again"
 		}
-		m = Move{To: c.Stage, Trigger: trigger, Key: key, Text: text + "."}
+		m = Move{To: c.Stage, Trigger: trigger, Key: key, Text: text + ".", Markers: markers}
 	}
 	if err := st.Transition(ctx, s, d.Has, m); err != nil {
 		return fmt.Errorf("move #%d: %w", n, err)
@@ -155,6 +176,32 @@ func (st *Step) childChanged(ctx context.Context, parent *github.Snapshot, rev i
 	logr.Infof("%s/%s#%d: sent #%d, the child of item %s of its plan, back to %s for revision %d, from %s",
 		st.Owner, st.Repo, parent.Number, n, c.Item, c.Stage, rev, is.Stage)
 	return nil
+}
+
+// adoptedMoveText is the line in an adopted child's move comment, after
+// the revision's, saying why the comment carries its origin marker.
+const adoptedMoveText = "It was filed by hand, so this comment carries its `origin` marker, which its description can't: " +
+	"I've rewritten the description whole from the plan, and the earlier one stays in its edit history."
+
+// adoptedRewrite returns the origin marker of s's body, whole, and the
+// Origin it gives, while s is an adopted child, one a person filed (#372),
+// whose body is the App's full rewrite (state.Rewrote) and isn't dirty:
+// the body's text is then all the App's (SPEC §5.1), though Derive reads
+// no marker from it, as it reads only the App's bodies. It reads the
+// body's markers as Derive would read the App's, from a snapshot of the
+// body alone with the App, its last editor, as its author. It's false for
+// an issue the App filed, whose body Derive reads itself, and for any
+// other body.
+func adoptedRewrite(s *github.Snapshot, appSlug string, dirty func(int64) bool) (github.Marker, state.Origin, bool) {
+	if state.IsApp(s.Author, appSlug) || dirty(state.BodyID) || !state.Rewrote(github.Edit{By: s.BodyEdit.By, Text: s.Body}, appSlug) {
+		return github.Marker{}, state.Origin{}, false
+	}
+	m, ok := state.OriginMarker(s.Body)
+	if !ok {
+		return github.Marker{}, state.Origin{}, false
+	}
+	o := state.Derive(&github.Snapshot{Number: s.Number, Author: s.BodyEdit.By, Body: s.Body}, appSlug, func(int64) bool { return false }).Origin
+	return m, o, o.Plan != 0
 }
 
 // childStageShown reports whether stage's label is the only stage label

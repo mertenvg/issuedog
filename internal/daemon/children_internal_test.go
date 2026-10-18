@@ -94,3 +94,51 @@ func TestChildMatch(t *testing.T) {
 		t.Errorf("childMatch of the sub-issues alone = %+v, want S1, #2, and S6, #10", got)
 	}
 }
+
+// childMatch takes an issue a person filed as a child only through
+// origins, what its snapshot gives (childOrigins), as for an adopted
+// issue whose clean App comment carries its origin (#372): #2, linked
+// first, is S1's child, and wins over the App's #5, linked after it. A
+// person's body never gives an origin, so #4, a sub-issue with no entry
+// in origins, isn't one, nor is #3, which isn't a sub-issue, whatever its
+// body says.
+func TestAdoptedChildMatch(t *testing.T) {
+	t.Parallel()
+	const app = childSlug + "[bot]"
+	origin := func(item string) string {
+		return "A child.\n\n<!-- issuedog:origin plan=#1 rev=1 item=" + item + " -->"
+	}
+	f := githubtest.New(t, "o/r", childSlug)
+	f.AddIssue("owner", "Parent", "body")      // 1
+	f.AddIssue("owner", "S1", "Owner's words") // 2: adopted, linked
+	f.AddIssue("owner", "S2", origin("S2"))    // 3: not linked
+	f.AddIssue("owner", "S3", origin("S3"))    // 4: linked, no entry in origins
+	f.AddIssue(app, "S1 again", origin("S1"))  // 5: linked after #2
+	f.SetParent(2, 1)
+	f.SetParent(4, 1)
+	f.SetParent(5, 1)
+	c := f.Client(t)
+	ctx := context.Background()
+	subs, err := c.SubIssues(ctx, "o", "r", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := c.IssuesSince(ctx, "o", "r", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := map[int]int64{}
+	for _, is := range listed {
+		ids[is.GetNumber()] = is.GetID()
+	}
+	a := &Applier{Owner: "o", Repo: "r"}
+	origins := map[int]state.Origin{2: {Plan: 1, Rev: 1, Item: "S1", Comment: 7}}
+	if got, want := childMatch(1, childSlug, subs, listed, a.inRepo, origins), map[string]childFound{
+		"S1": {Number: 2, ID: ids[2], Linked: true}}; !reflect.DeepEqual(got, want) {
+		t.Errorf("childMatch = %+v\nwant %+v", got, want)
+	}
+	if got, want := childMatch(1, childSlug, subs, listed, a.inRepo, nil), map[string]childFound{
+		"S1": {Number: 5, ID: ids[5], Linked: true}}; !reflect.DeepEqual(got, want) {
+		t.Errorf("childMatch with no origins = %+v\nwant %+v, the App's alone", got, want)
+	}
+}
