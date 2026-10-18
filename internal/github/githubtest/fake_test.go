@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	gogithub "github.com/google/go-github/v92/github"
 	"github.com/mertenvg/issuedog/internal/github"
@@ -284,5 +285,74 @@ func TestBeforeGraphQLRunsOnce(t *testing.T) {
 	}
 	if n := runs.Load(); n != 1 {
 		t.Errorf("the hook ran %d times, want once", n)
+	}
+}
+
+// A created issue gets its labels and its type, each the App's change with
+// its event on the timeline: a labeled event for each label, then
+// issue_type_added with the org's type, matched ignoring case. A type the
+// org hasn't got, one renamed away or an empty one is refused with a 422,
+// and nothing is filed. Under DropTypeChanges, the issue is filed with no
+// type.
+func TestCreateIssueWithLabelsAndType(t *testing.T) {
+	t.Parallel()
+	f := New(t, "o/r", "issuedog")
+	f.AddIssue("owner", "First", "")
+	task := f.IssueTypeID("Task")
+	f.IssueTypeID("Bug")
+	f.RenameOrgIssueType("Bug", "Defect")
+	ctx, c := context.Background(), f.Client(t)
+	is, resp, err := c.Issues.Create(ctx, "o", "r", gogithub.CreateIssueRequest{Title: "Child", Body: new("body"),
+		Labels: []string{"scope:github", "priority:p1"}, Type: new("Task")})
+	if err != nil || resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %v", err)
+	}
+	if is.GetNumber() != 2 || is.GetID() == 0 || is.GetType().GetID() != task || len(is.Labels) != 2 {
+		t.Errorf("answer = %+v, want #2 with an ID, the Task type and both labels", is)
+	}
+	st := f.State().Issues[1]
+	if st.Author != "issuedog[bot]" || st.Type != "Task" || !reflect.DeepEqual(st.Labels, []string{"priority:p1", "scope:github"}) {
+		t.Errorf("issue = %+v, want the App's, with the Task type and both labels", st)
+	}
+	timeline, err := c.TimelineSince(ctx, "o", "r", 2, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range timeline {
+		got = append(got, fmt.Sprintf("%s %s %s", e.GetEvent(), e.GetLabel().GetName(), e.GetActor().GetLogin()))
+	}
+	want := []string{"labeled scope:github issuedog[bot]", "labeled priority:p1 issuedog[bot]", "issue_type_added  issuedog[bot]"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("events = %q, want %q", got, want)
+	}
+	// Matched ignoring case, the type is the org's Task.
+	is, _, err = c.Issues.Create(ctx, "o", "r", gogithub.CreateIssueRequest{Title: "Lower", Type: new("task")})
+	if err != nil || is.GetType().GetID() != task {
+		t.Errorf("create with task = %+v, %v; want the Task type", is.GetType(), err)
+	}
+	// With no type, none is set and no issue-type event written.
+	is, _, err = c.Issues.Create(ctx, "o", "r", gogithub.CreateIssueRequest{Title: "Untyped", Labels: []string{"a"}})
+	if err != nil || is.Type != nil {
+		t.Errorf("create with no type = %+v, %v; want no type", is.GetType(), err)
+	}
+	if timeline, err := c.TimelineSince(ctx, "o", "r", is.GetNumber(), time.Time{}); err != nil || len(timeline) != 1 || timeline[0].GetEvent() != "labeled" {
+		t.Errorf("timeline of an untyped issue = %+v, %v; want its one labeled event", timeline, err)
+	}
+	filed := len(f.State().Issues)
+	for _, name := range []string{"Epic", "Bug", ""} {
+		_, _, err := c.Issues.Create(ctx, "o", "r", gogithub.CreateIssueRequest{Title: "Refused", Type: new(name)})
+		var er *gogithub.ErrorResponse
+		if !errors.As(err, &er) || er.Response.StatusCode != http.StatusUnprocessableEntity {
+			t.Errorf("type %q: err = %v, want a 422", name, err)
+		}
+	}
+	if got := len(f.State().Issues); got != filed {
+		t.Errorf("%d issues after the refusals, want %d", got, filed)
+	}
+	f.DropTypeChanges()
+	is, _, err = c.Issues.Create(ctx, "o", "r", gogithub.CreateIssueRequest{Title: "Dropped", Type: new("Task")})
+	if err != nil || is.Type != nil || f.State().Issues[is.GetNumber()-1].Type != "" {
+		t.Errorf("create under DropTypeChanges = %+v, %v; want no type", is.GetType(), err)
 	}
 }
