@@ -270,6 +270,13 @@ func digestRenderHold(h holdItemTrigger) string {
 // or for a hold, one for each trigger no App comment mentioned (#192). An
 // item announced before isn't new, even if it went away and came back
 // with the same key (assumption 11).
+//
+// A key is one of a comma-separated list that github.ParseMarkers reads
+// back and #159's digestState.comment splits on ",". The encoding leaves
+// every key waitFind makes today as it is, since an error's kind and key
+// come from a marker, which holds no space, "<" or ">", and the App's
+// keys hold no "," or "%". It's never split on "-", which an error's key
+// may hold.
 func digestRenderNew(items []waitItem, announced map[string]bool) []waitItem {
 	var fresh []waitItem
 	for _, it := range items {
