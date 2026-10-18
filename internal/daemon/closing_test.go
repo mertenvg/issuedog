@@ -1,6 +1,7 @@
 package daemon_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"reflect"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mertenvg/logr/v2"
 
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
@@ -1050,6 +1053,125 @@ func TestClosingCloserForbiddenStep1(t *testing.T) {
 	iterate(t, d)
 	if n := closingGraphQL(f, reqs); n != 1 {
 		t.Errorf("%d GraphQL requests on the next pass; want 1, the snapshot's, and no closer question", n)
+	}
+}
+
+// closingFailure is the message of the error FailCloser puts under node.
+const closingFailure = "Something went wrong while executing your query."
+
+// An error under node that is neither FORBIDDEN nor NOT_FOUND, an untyped
+// one or one of another type, says nothing of how the issue was closed
+// (#204): a writer's merge is neither reverted nor held, the pass fails,
+// and nothing is remembered, so each pass asks again, and the first one
+// after the error has gone sees the merge, which then stands.
+func TestClosingCloserNodeErrorRetried(t *testing.T) {
+	t.Parallel()
+	for name, typ := range map[string]string{"untyped": "", "INTERNAL": "INTERNAL"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f, o := closingFake(t), digestNotifyOrigin(t)
+			d := newDaemon(t, f, o, nil)
+			iterate(t, d)
+			event := f.CloseByPullRequest(1, "mallory", githubtest.ClosingPR{Merged: true})
+			f.FailCloser(1, event, typ, closingFailure)
+			for pass := range 2 {
+				writes, reqs := len(f.Writes()), len(f.Requests())
+				if err := d.Iterate(context.Background()); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("closer of event CE_%d", event)) ||
+					!strings.Contains(err.Error(), closingFailure) {
+					t.Fatalf("pass %d: Iterate = %v; want the closer question's error", pass+1, err)
+				}
+				if w := f.Writes()[writes:]; len(w) != 0 {
+					t.Fatalf("pass %d wrote %+v; want nothing while how it closed is unknown", pass+1, w)
+				}
+				if n := closingGraphQL(f, reqs); n == 0 {
+					t.Fatalf("pass %d asked no GraphQL question; want the closer asked again", pass+1)
+				}
+			}
+			f.MendCloser(1, event)
+			iterate(t, d)
+			if is := f.State().Issues[0]; !is.Closed || !slices.Equal(is.Labels, []string{"stage:completed"}) || len(is.Comments) != 1 {
+				t.Fatalf("closed %t, labels %q, comments %q; want mallory's merge to stand, at stage:completed, with no comment",
+					is.Closed, is.Labels, closingComments(f, 1, 1))
+			}
+			writes := len(f.Writes())
+			iterate(t, d)
+			if w := f.Writes()[writes:]; len(w) != 0 {
+				t.Errorf("the pass after the merge wrote %+v; want nothing", w)
+			}
+		})
+	}
+}
+
+// closingReopenCloserFails is closingFake's issue 1 closed by the owner as
+// a duplicate and judged discarded, with every question of how that close
+// was made failing with an untyped error under node, then reopened by eve
+// as event.
+func closingReopenCloserFails(event *int64) func(testing.TB) *githubtest.Fake {
+	setup := closingJudged("discarded", func(f *githubtest.Fake) {
+		f.FailCloser(1, f.CloseAs(1, "owner", "duplicate"), "", closingFailure)
+	})
+	return then(setup, func(f *githubtest.Fake) { *event = f.ReopenBy(1, "eve") })
+}
+
+// When the question of how the close an untrusted reopen undid was made
+// fails on every pass, the issue is closed again all the same, once, with
+// the closed stage's reason, not_planned for stage:discarded, in place of
+// the close's own, duplicate, rather than left open for as long as the
+// question fails (#204). The close is safe to replay, and the next pass
+// writes nothing.
+func TestClosingUntrustedReopenCloserFails(t *testing.T) {
+	t.Parallel()
+	var event int64
+	setup := closingReopenCloserFails(&event)
+	closingCheck(t, setup, func(*githubtest.Fake) closingWant {
+		return closingWant{labels: []string{"stage:discarded"}, closed: true, comments: []string{closingClosedAgain("`eve`", event)}}
+	})
+	f := run(t, setup, closingPass(t, digestNotifyOrigin(t)))
+	is, _, err := f.Client(t).Issues.Get(context.Background(), "o", "r", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if is.GetStateReason() != "not_planned" {
+		t.Errorf("state_reason %q; want not_planned, the closed stage's", is.GetStateReason())
+	}
+}
+
+// The closed stage's reason stands in for the newest close's when that
+// question fails, not an older close's, which may be stale.
+func TestClosingUntrustedReopenCloserFailsNotOlder(t *testing.T) {
+	t.Parallel()
+	f := closingJudged("discarded", func(f *githubtest.Fake) {
+		f.CloseAs(1, "owner", "duplicate")
+		f.ReopenBy(1, "owner")
+		f.FailCloser(1, f.CloseAs(1, "owner", "not_planned"), "", closingFailure)
+	})(t)
+	f.ReopenBy(1, "eve")
+	iterate(t, newDaemon(t, f, digestNotifyOrigin(t), nil))
+	is, _, err := f.Client(t).Issues.Get(context.Background(), "o", "r", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if is.GetState() != "closed" || is.GetStateReason() != "not_planned" {
+		t.Errorf("%s as %s; want closed again as not_planned, the closed stage's, not as the older close's duplicate", is.GetState(), is.GetStateReason())
+	}
+}
+
+// The close again on the closed stage's reason logs why, once, naming the
+// failed question.
+func TestClosingUntrustedReopenCloserFailsLogged(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	var event int64
+	f := closingReopenCloserFails(&event)(t)
+	d := newDaemon(t, f, digestNotifyOrigin(t), nil)
+	var warnings bytes.Buffer
+	stop := logr.AddWriter(&warnings, logr.WithFilter(logr.W))
+	iterate(t, d)
+	iterate(t, d)
+	logr.Wait()
+	stop()
+	want := fmt.Sprintf("o/r#1: closing it again as not_planned, the label's reason, as the reason of the close its reopen %d undid is unknown", event)
+	if got := warnings.String(); strings.Count(got, "the label's reason") != 1 || !strings.Contains(got, want) || !strings.Contains(got, closingFailure) {
+		t.Errorf("warnings = %q; want one, %q, with the question's error", got, want)
 	}
 }
 
