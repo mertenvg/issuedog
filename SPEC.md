@@ -504,6 +504,9 @@ The lifecycle of each type:
 | From | To | Applies to | Trigger |
 |---|---|---|---|
 | intake | clarifying | all | Issue is trusted (6.2) |
+| intake | planning | story | The daemon created the story from its parent's approved plan (5.2); its first move, in an App comment keyed `event=p<the parent's move to planned>`. Not built until phase 2 |
+| intake | ready | task | The daemon created the task from its parent's approved plan (5.2); its first move, keyed as for a story. Not built until phase 2 |
+| intake | needs-human | task | The daemon created a human task, its `origin` marker carrying `human=1`, from its parent's approved plan (5.2, 9.3); its first move, keyed as for a story. Not built until phase 2 |
 | clarifying | clarifying | all | The interviewer asks a question round: the first on entering clarifying, or the next once the owner answered (9.1). Also the interviewer's `typed` outcome, which types an untyped issue as a bug or task (9.1) |
 | clarifying | spec-review | epic, or story with no parent | No open questions; spec written into the body |
 | clarifying | ready | bug, or task filed by the owner | No open questions; daemon rewrites the body as a task (11.2). Not built until phase 3: until then the issue waits at clarifying with no interviewer runs |

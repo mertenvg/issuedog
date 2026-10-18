@@ -164,7 +164,7 @@ func TestDeriveOrigin(t *testing.T) {
 		want  Origin
 	}{
 		{"a clean App marker", snap("The task.\n\n"+origin, nil), clean, want},
-		{"other fields", snap("<!-- issuedog:origin check=label human=1 plan=#248 rev=1 item=T4 value=a%20b -->", nil), clean, want},
+		{"other fields", snap("<!-- issuedog:origin check=label plan=#248 rev=1 item=T4 value=a%20b -->", nil), clean, want},
 		{"a body the App edited last", byApp, clean, want},
 		{"the first whole marker", snap("<!-- issuedog:origin plan=#248 rev=0 item=T1 -->"+origin+"<!-- issuedog:origin plan=#9 rev=2 item=S1 -->", nil), clean, want},
 		{"a body someone else edited last", byOwner, clean, Origin{}},
@@ -185,6 +185,57 @@ func TestDeriveOrigin(t *testing.T) {
 		if got := Derive(tt.s, slug, tt.dirty).Origin; got != tt.want {
 			t.Errorf("%s: origin = %+v, want %+v", tt.name, got, tt.want)
 		}
+	}
+}
+
+// Derive reads Origin.Human, and so Item.Human, from human=1 on the App's
+// whole origin marker in a clean body (#275), and a task with a parent
+// that has it is a human task. Any other value, or none, isn't human; nor
+// is human=1 on a marker that isn't read: in a dirty body, a body someone
+// else edited last, someone else's marker, one in a comment, or one that
+// isn't whole.
+func TestDeriveOriginHuman(t *testing.T) {
+	t.Parallel()
+	const human = "<!-- issuedog:origin plan=#249 rev=1 item=T3 human=1 -->"
+	byOwner := snap("The task.\n\n"+human, nil)
+	byOwner.BodyEdit = github.Edit{By: owner, At: time.Unix(5, 0)}
+	byMallory := snap("The task.\n\n"+human, nil)
+	byMallory.Author = mallory
+	for _, tt := range []struct {
+		name  string
+		s     *github.Snapshot
+		dirty func(int64) bool
+		want  bool
+	}{
+		{"human=1", snap("The task.\n\n"+human, nil), clean, true},
+		{"human=1 among check fields", snap("<!-- issuedog:origin plan=#249 rev=1 item=T3 human=1 check=label value=a%20b -->", nil), clean, true},
+		{"no human", snap("<!-- issuedog:origin plan=#249 rev=1 item=T3 -->", nil), clean, false},
+		{"human=0", snap("<!-- issuedog:origin plan=#249 rev=1 item=T3 human=0 -->", nil), clean, false},
+		{"human=true", snap("<!-- issuedog:origin plan=#249 rev=1 item=T3 human=true -->", nil), clean, false},
+		{"a dirty body", snap(human, nil), dirtyIDs(BodyID), false},
+		{"a body someone else edited last", byOwner, clean, false},
+		{"a marker that isn't the App's", byMallory, clean, false},
+		{"a marker in a comment", snap("", []github.Author{appBot}, human), clean, false},
+		{"an escaped marker", snap(github.Escape(human), nil), clean, false},
+		{"a marker with no item", snap("<!-- issuedog:origin plan=#249 rev=1 human=1 -->", nil), clean, false},
+		{"a later marker's human=1", snap("<!-- issuedog:origin plan=#249 rev=1 item=T3 -->"+human, nil), clean, false},
+	} {
+		tt.s.Type, tt.s.Parent = "task", 249
+		is := Derive(tt.s, slug, tt.dirty)
+		if is.Origin.Human != tt.want || is.Item.Human != tt.want {
+			t.Errorf("%s: Origin.Human = %v, Item.Human = %v, want %v", tt.name, is.Origin.Human, is.Item.Human, tt.want)
+		}
+		want := ClassTask
+		if tt.want {
+			want = ClassHumanTask
+		}
+		if c, err := ClassOf(is.Item); is.Item.FromPlan && (err != nil || c != want) {
+			t.Errorf("%s: class = %s, %v; want %s", tt.name, c, err, want)
+		}
+	}
+	is := Derive(snap("The task.\n\n"+human, nil), slug, clean)
+	if want := (Origin{Plan: 249, Rev: 1, Item: "T3", Comment: BodyID, Human: true}); is.Origin != want {
+		t.Errorf("origin = %+v, want %+v", is.Origin, want)
 	}
 }
 
