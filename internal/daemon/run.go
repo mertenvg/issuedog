@@ -609,6 +609,11 @@ func (r *Runs) applyLease(ctx context.Context, l Lease, st Stage, raw []byte, ou
 //     untrusted user's to their own, don't count, and nor does the App's
 //     own edit, such as one a result applied part way made before a
 //     restart.
+//   - when a transition sits above the run's seen (runMovedSince), even
+//     one back to the stage it ran at: a move to the same stage, such as
+//     a changed child's when its parent's newly approved revision rewrote
+//     it (#195's T7), or a hold that ended back there, so the stage runs
+//     again on what's there now.
 //   - when it has new trusted input since the run's seen (newInput), which
 //     the stage runs again with.
 //
@@ -684,6 +689,9 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 		if e := s.BodyEdit; e.At.After(l.BodyEdit) && !state.IsApp(e.By, a.AppSlug) {
 			return drop("%s edited the issue's body since the run read it, so the stage runs again", login(e.By))
 		}
+		if id := runMovedSince(s, a.AppSlug, d.Has, l.Seen); id != 0 {
+			return drop("comment %d moved the issue since the run started, so the stage runs again", id)
+		}
 		id, err := r.newInput(ctx, s, d, l.Seen)
 		if err != nil {
 			return fmt.Errorf("apply run %s: %w", l.RunID, err)
@@ -730,6 +738,25 @@ type checkReadError struct{ err error }
 
 func (e *checkReadError) Error() string { return e.err.Error() }
 func (e *checkReadError) Unwrap() error { return e.err }
+
+// runMovedSince returns the ID of the first comment on s above seen, the
+// newest comment a run was given, that carries a transition marker of the
+// App's that counts, in clean content (SPEC §5.1), or 0 if none does
+// (#195's T7). The run's own move isn't one apply asks about: a result
+// whose move is written is only finished.
+func runMovedSince(s *github.Snapshot, appSlug string, dirty func(int64) bool, seen int64) int64 {
+	for _, c := range s.Comments {
+		if c.ID <= seen || dirty(c.ID) {
+			continue
+		}
+		for _, m := range github.TrustedMarkers(c.Author, c.Body, appSlug) {
+			if m.Kind == "transition" {
+				return c.ID
+			}
+		}
+	}
+	return 0
+}
 
 // newInput returns the ID of the first comment on s that's new trusted
 // input since seen, the newest comment a run was given, or 0 if there's

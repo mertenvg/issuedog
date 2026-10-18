@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	gogithub "github.com/google/go-github/v92/github"
 	"github.com/mertenvg/issuedog/internal/github"
 )
 
@@ -138,6 +139,38 @@ func TestRenameIssue(t *testing.T) {
 		}
 	}
 	if want := []string{fmt.Sprintf("%d eve Old to Middle", first), fmt.Sprintf("%d owner Middle to New", second)}; !reflect.DeepEqual(got, want) {
+		t.Errorf("renamed events = %q, want %q", got, want)
+	}
+}
+
+// A PATCH with a new title, as the App's rewrite of a changed child sends
+// with its body (#195's T7), renames the issue as the App, with its
+// renamed event; one with the same title writes no event.
+func TestEditIssueTitle(t *testing.T) {
+	t.Parallel()
+	f := New(t, "o/r", "issuedog")
+	n := f.AddIssue("issuedog[bot]", "Old", "body")
+	ctx, c := context.Background(), f.Client(t)
+	if _, _, err := c.Issues.Update(ctx, "o", "r", n, gogithub.UpdateIssueRequest{Title: new("New"), Body: new("new body")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := c.Issues.Update(ctx, "o", "r", n, gogithub.UpdateIssueRequest{Title: new("New")}); err != nil {
+		t.Fatal(err)
+	}
+	if is := f.State().Issues[0]; is.Title != "New" || is.Body != "new body" || is.BodyEditedBy != "issuedog[bot]" {
+		t.Errorf("issue = %+v, want the App's new title and body", is)
+	}
+	events, err := c.TimelineSince(ctx, "o", "r", n, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range events {
+		if e.GetEvent() == "renamed" {
+			got = append(got, fmt.Sprintf("%s %s to %s", e.GetActor().GetLogin(), e.GetRename().GetFrom(), e.GetRename().GetTo()))
+		}
+	}
+	if want := []string{"issuedog[bot] Old to New"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("renamed events = %q, want %q", got, want)
 	}
 }

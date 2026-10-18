@@ -527,17 +527,18 @@ func TestChildrenOfRevisionHumanBlocksChanged(t *testing.T) {
 // revisionPlan is the golden revision, all four items, on a labels repo.
 var revisionPlan = childPlan{"Story", "story-revision", 4, false}
 
-// TestChildrenOfRevision: until T7 and T8 (#296, #297), creating the
-// children of an approved revision files only its new items' children.
-// The owner's 👍 on a revision with one item of each status files exactly
-// one child, for the new T4, linked and at ready, with its origin naming
-// revision 2, and blocked by the kept T1's child, as its item depends on
-// T1 (#339's links). The kept, changed and dropped children get no write,
-// not even the changed T2's links to T1 and T4, and nothing errors on
-// their items, which carry no body to describe. No record of revision 2
-// is posted, so T7 and T8 can still apply it, and revision 1's stays the
-// only one. A pass that crashes at any write leaves the same, and a later
-// pass writes nothing.
+// TestChildrenOfRevision: until T8 (#297), creating the children of an
+// approved revision files only its new items' children, and rewrites its
+// changed ones (T7, #296). The owner's 👍 on a revision with one item of
+// each status files exactly one child, for the new T4, linked and at
+// ready, with its origin naming revision 2, and blocked by the kept T1's
+// child, as its item depends on T1 (#339's links). The changed T2's child
+// is rewritten from revision 2 (TestChildrenChanged has the details), but
+// gets no links to T1 and T4 yet. The kept and dropped children get no
+// write, and nothing errors on their items, which carry no body to
+// describe. No record of revision 2 is posted, so T8 can still apply it,
+// and revision 1's stays the only one. A pass that crashes at any write
+// leaves the same, and a later pass writes nothing.
 func TestChildrenOfRevision(t *testing.T) {
 	t.Parallel()
 	githubtest.Replay(t, revApproved, childrenPass(t, revisionPlan))
@@ -571,12 +572,16 @@ func TestChildrenOfRevision(t *testing.T) {
 			t.Errorf("issue 1 has a record of its children, want none for revision 2 yet: %q", c.Body)
 		}
 	}
-	for _, n := range []int{2, 3, 4} {
+	for _, n := range []int{2, 4} {
 		for _, w := range f.Writes() {
 			if strings.HasPrefix(w.Path, fmt.Sprintf("/issues/%d/", n)) || w.Path == fmt.Sprintf("/issues/%d", n) {
-				t.Errorf("child #%d, kept, changed or dropped, got the write %+v", n, w)
+				t.Errorf("child #%d, kept or dropped, got the write %+v", n, w)
 			}
 		}
+	}
+	if t2 := issues[2]; t2.Title != "Refuse an expired quote at booking, saying when it expired" ||
+		!strings.Contains(t2.Body, "<!-- issuedog:origin plan=#1 rev=2 item=T2 -->") || len(t2.BlockedBy) != 0 {
+		t.Errorf("the changed child is %q, blocked by %v, with body\n%s\nwant T2's from revision 2, with no links yet", t2.Title, t2.BlockedBy, t2.Body)
 	}
 	noSearch(t, f)
 }
