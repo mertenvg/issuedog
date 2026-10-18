@@ -57,19 +57,19 @@ A human task is work only the owner can do, such as creating a GitHub App, chang
 Set `human` to true and fill every field of `human_task`. If you can't fill one, such as an exact value you don't know, ask a question instead.
 
 - `goal`: one sentence.
-- `why_blocks`: which items of this plan can't proceed until it's done, by ID, and why, in one line. Those items list the human task in `depends_on`.
+- `why_blocks`: what the items that list the human task in `depends_on` wait for, and why, in one line that reads on after "can't proceed until", such as "production has a quote lifetime, because the service won't start without one". Don't name the items: the daemon puts the issue numbers of those items first, or the parent issue's when none depends on it.
 - `steps`: exact actions, with exact values, commands or settings, one line each, in order.
 - `links`: direct links to the console page, file or doc.
 - `estimated_time`: such as "5 min".
-- `done_when`: `text`, the observable result the owner can check, in one line, and, when it is one of the five checks below, `check`. The plan comment shows `text`, so it names no file: write "Production's settings on `main` set `QUOTE_TTL=24h`", not the file's path. The daemon runs the check when the owner says it's done, and shows only its kind in the plan comment.
+- `done_when`: `text`, the observable result the owner can check, in one line, and, when it is one of the five checks below, `check`. The plan comment shows `text`, so it names no file: write "Production's settings on `main` set `QUOTE_TTL=24h`", not the file's path. The daemon runs the check when the owner says it's done, and shows only its kind in the plan comment. With a `check`, the issue's "Done when" is the daemon's own sentence saying exactly what it checks, in place of `text`.
 
-A `check` has a `kind` and exactly that kind's fields:
+A `check` has a `kind` and exactly that kind's fields. Each passes exactly when:
 
-- `label`: a label exists. `label` is its name.
-- `issue-type`: an issue type exists. `issue_type` is its name.
-- `file`: a file is on `main`. `path` is its path from the repo root, with no leading `/`, no `..` and no backslash, and `contains`, optional, is one line of text it contains.
-- `ruleset`: a ruleset on `main` requires a check. `check` is the check's name.
-- `installation`: the App is installed on an owner. `owner` is the user or organization login.
+- `label`: the repo has a label named `label`, ignoring case. `label` is at most 50 characters.
+- `issue-type`: the repo's owner is an organization with an enabled issue type named `issue_type`, ignoring case. A personal account has no issue types, so this check never passes there.
+- `file`: `main` has a file, not a directory, at `path`, its path from the repo root, with no leading `/`, no `..` and no backslash. If `contains` is set, the file also holds it as exact text, matching case and spaces: one line of at most 256 bytes.
+- `ruleset`: an active ruleset on `main`, the repo's or its organization's, requires a status check whose name is exactly `check`. Classic branch protection doesn't count.
+- `installation`: the App is installed, and not suspended, on the user or organization whose login is `owner`, ignoring case.
 
 Anything a check can't express stays as `text` alone, with no `check`. Never invent another kind.
 
