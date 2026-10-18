@@ -104,10 +104,13 @@ func planPriorOf(s *github.Snapshot, appSlug string, is state.Issue, dirty func(
 // read reads the children of the plan on issue s, as S3 finds them
 // (childrenFind, plan #249): its sub-issues, then the repo's issues
 // updated since the move into planned, two listings, so each child's state
-// and close reason come with it. A sub-issue the App filed whose listed
-// body gives no origin is read on its own, for an origin the App reposted
-// in a comment (childOrigins, #291), so it's still the plan's child. It
-// fills in Children, Others and Subs.
+// and close reason come with it. A sub-issue whose listed body gives no
+// origin is read on its own (childOrigins): one the App filed, for an
+// origin the App reposted in a comment (#291), so it's still the plan's
+// child, and one a person filed, for an origin in a clean App comment, so
+// an adopted issue is its item's child, never one of Others, and a
+// revision keeps, changes or drops it like any child (#372). It fills in
+// Children, Others and Subs.
 func (pr *planPrior) read(ctx context.Context, st *Step, s *github.Snapshot) error {
 	a := st.Applier
 	subs, err := a.Client.SubIssues(ctx, a.Owner, a.Repo, s.Number)

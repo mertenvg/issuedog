@@ -199,7 +199,7 @@ type childFound struct {
 // consistent, unlike search, which lags behind writes (plan #249, "Finding
 // a child again, without search"). It returns them by item (childMatch),
 // with the Origin of each sub-issue whose listed body gives none
-// (childOrigins).
+// (childOrigins), a person's adopted issue's included (#372).
 func (st *Step) childrenFind(ctx context.Context, s *github.Snapshot, since time.Time) (map[string]childFound, error) {
 	subs, err := st.Client.SubIssues(ctx, st.Owner, st.Repo, s.Number)
 	if err != nil {
@@ -216,22 +216,31 @@ func (st *Step) childrenFind(ctx context.Context, s *github.Snapshot, since time
 	return childMatch(s.Number, st.AppSlug, subs, listed, st.inRepo, origins), nil
 }
 
-// childOrigins returns the Origin of each of subs, a parent's sub-issues,
-// that the App filed in this repo but whose listed body gives none
-// (childListedOrigin), by number, as state.Derive reads it from the
-// issue's snapshot, comments and dirty content included: an origin the
-// App reposted in a comment once the body lost it (originRepost, S5's T2,
-// #291). Each such issue costs a snapshot. Only sub-issues are read: a
-// child loses its body's marker to an edit after it's filed, and it's
-// linked in the pass that files it, so one that isn't linked yet was filed
-// just now, and its body is still the App's.
+// childOrigins returns the Origin of each of subs, a parent's sub-issues
+// in this repo, whose listed body gives none (childListedOrigin), by
+// number, as state.Derive reads it from the issue's snapshot, comments
+// and dirty content included. That's one of two kinds of sub-issue:
+//   - one the App filed, whose origin the App reposted in a comment once
+//     the body lost it (originRepost, S5's T2, #291);
+//   - one a person filed, whose body never gives an origin, as Derive
+//     reads markers only from the App (github.TrustedMarkers), but whose
+//     clean App comment may carry one: an adopted issue, such as #195,
+//     which #224's plan adopted as S5 (#195's assumption 3, #372). A
+//     marker in a dirty App comment, or in a person's comment, gives
+//     none, by Derive's rules.
+//
+// Each such issue costs a snapshot, and the callers read them only before
+// the record stands (ChildrenVisit) or while a revision is planned and
+// checked (planPrior.read), so an unchanged pass reads none. Only
+// sub-issues are read: a child loses its body's marker to an edit after
+// it's filed, and it's linked in the pass that files it, so one that isn't
+// linked yet was filed just now, and its body is still the App's. An
+// adopted issue that isn't a sub-issue of the parent isn't its child.
 func (st *Step) childOrigins(ctx context.Context, subs []*gogithub.Issue) (map[int]state.Origin, error) {
 	origins := map[int]state.Origin{}
 	for _, is := range subs {
 		n := is.GetNumber()
-		author := github.Author{Login: is.GetUser().GetLogin(), Type: is.GetUser().GetType()}
-		if !st.inRepo(is.GetRepositoryURL()) || is.IsPullRequest() || !state.IsApp(author, st.AppSlug) ||
-			childListedOrigin(is, st.AppSlug).Plan != 0 {
+		if !st.inRepo(is.GetRepositoryURL()) || is.IsPullRequest() || childListedOrigin(is, st.AppSlug).Plan != 0 {
 			continue
 		}
 		s, err := st.Client.Snapshot(ctx, st.Owner, st.Repo, n)
@@ -258,15 +267,19 @@ func childListedOrigin(is *gogithub.Issue, appSlug string) state.Origin {
 
 // childMatch returns the children of parent's plan items among subs, the
 // parent's sub-issues, and listed, issues of this repo, by item. A child
-// is an issue the App filed whose origin names plan=#<parent>, read by
-// Derive from a snapshot of what the listing gives, its author and body,
-// whatever its rev (SPEC §5.2): the listing has no edit history, so a body
-// someone edited still matches, as long as it keeps the App's marker (plan
-// #249, assumption 8). One whose listed body gives no Origin takes it from
-// origins, what its snapshot gives (childOrigins), so a child whose origin
-// the App reposted in a comment matches too (#291). A sub-issue in another
-// repo, as inRepo tells by its repository_url, and a pull request are
-// skipped. One that's a sub-issue is Linked. Should two issues name the same item, the first wins: the
+// is an issue whose origin names plan=#<parent>, whatever its rev (SPEC
+// §5.2). For an issue the App filed, it's read by Derive from a snapshot
+// of what the listing gives, its author and body: the listing has no edit
+// history, so a body someone edited still matches, as long as it keeps the
+// App's marker (plan #249, assumption 8). One whose listed body gives no
+// Origin takes it from origins, what its snapshot gives (childOrigins), so
+// a child whose origin the App reposted in a comment matches too (#291),
+// and so does an issue a person filed, adopted by the plan, whose clean
+// App comment carries its origin (#372): its listed body never gives one,
+// as Derive reads no marker a person wrote, and only a sub-issue's
+// snapshot is read. A sub-issue in another repo, as inRepo tells by its
+// repository_url, and a pull request are skipped. One that's a sub-issue
+// is Linked. Should two issues name the same item, the first wins: the
 // sub-issues in link order, then the rest by number, so the one linked, or
 // else the one filed first.
 func childMatch(parent int, appSlug string, subs, listed []*gogithub.Issue, inRepo func(string) bool, origins map[int]state.Origin) map[string]childFound {
@@ -278,10 +291,8 @@ func childMatch(parent int, appSlug string, subs, listed []*gogithub.Issue, inRe
 			return
 		}
 		seen[n] = true
-		author := github.Author{Login: is.GetUser().GetLogin(), Type: is.GetUser().GetType()}
-		if !state.IsApp(author, appSlug) {
-			return
-		}
+		// A person's body gives no Origin (github.TrustedMarkers), so a
+		// person's issue matches only through origins, by its snapshot.
 		o := childListedOrigin(is, appSlug)
 		if o.Plan == 0 {
 			o = origins[n]
