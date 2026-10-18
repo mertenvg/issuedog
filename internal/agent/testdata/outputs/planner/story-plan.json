@@ -1,0 +1,98 @@
+{
+  "outcome": "plan",
+  "plan": {
+    "kind": "tasks",
+    "why": "A story plan has tasks: two PRs in booking, and a production setting only the owner can change.",
+    "summary": "**Today** a quote records when it was issued, but nothing reads that at booking.\n\nThis plan adds:\n- each quote's expiry time, from a lifetime the booking service reads from its settings (T1);\n- the expired error at booking, with a link to a new quote (T2);\n- the lifetime set in production, which only the owner can change (T3).",
+    "message": "Your answers are used: the lifetime is a setting, 24 hours in production, and the MCP server's changes stay in `booking`, since it calls the same booking API.",
+    "assumptions": [
+      "The lifetime has no default, so the service refuses to start without it and production can't run without expiry by mistake.",
+      "An expired quote is refused only at booking, so quotes already booked are unaffected."
+    ],
+    "order": "T1 and T3 in parallel, then T2",
+    "items": [
+      {
+        "id": "T1",
+        "title": "Record when each quote expires",
+        "outcome": "Every quote knows its expiry time, from the lifetime in the booking service's settings.",
+        "criteria": [
+          "A quote's expiry time is its issue time plus the configured lifetime.",
+          "The booking service refuses to start when the lifetime is missing or isn't a positive duration.",
+          "The quote API returns each quote's expiry time."
+        ],
+        "depends_on": [],
+        "scope": "booking",
+        "human": false,
+        "model": "sonnet",
+        "effort": "medium",
+        "task": {
+          "context": "- `internal/booking/quote.go`: `Quote` has `IssuedAt`, set when the quote is created.\n- `internal/booking/config.go`: `Config` holds the service's settings, read from the environment by `LoadConfig`.\n- `internal/api/quotes.go`: `GET /quotes/{id}` returns a quote as JSON.",
+          "change": "- `internal/booking/config.go`: add `QuoteTTL`, read from `QUOTE_TTL` with `time.ParseDuration`. `LoadConfig` fails when it's missing, zero or negative.\n- `internal/booking/quote.go`: add `Quote.ExpiresAt(ttl time.Duration) time.Time`.\n- `internal/api/quotes.go`: add `expires_at` (RFC 3339, UTC) to the quote JSON.",
+          "definition_of_done": [
+            "Tests added or updated for every changed behavior",
+            "verify.commands pass",
+            "No new skip markers"
+          ],
+          "test_plan": "- `internal/booking/config_test.go`: a missing, zero, negative or malformed `QUOTE_TTL` fails `LoadConfig`; `24h` gives 24 hours.\n- `internal/booking/quote_test.go`: `ExpiresAt` is `IssuedAt` plus the lifetime.\n- `internal/api/quotes_test.go`: the JSON has `expires_at`."
+        }
+      },
+      {
+        "id": "T2",
+        "title": "Refuse an expired quote at booking",
+        "outcome": "Booking an expired quote returns an expired error with a link to a new quote, and books nothing.",
+        "criteria": [
+          "Booking a quote before its expiry time works as it does today.",
+          "Booking a quote at or after its expiry time returns 410 with the code quote_expired, and books nothing.",
+          "The error's body links to a new quote for the same trip.",
+          "The MCP server's book tool returns the same error."
+        ],
+        "depends_on": ["T1", "T3"],
+        "scope": "booking",
+        "human": false,
+        "priority": "p1",
+        "task": {
+          "context": "- `internal/booking/book.go`: `Book` checks the quote's status and creates the booking in one transaction.\n- `internal/api/errors.go`: `writeError` maps a booking error to a status and a code.\n- `internal/mcp/tools.go`: the `book` tool calls `Book` and returns its error's code.",
+          "change": "- `internal/booking/book.go`: in the transaction, return `ErrQuoteExpired` when now is at or after `ExpiresAt`, before anything is written.\n- `internal/api/errors.go`: map `ErrQuoteExpired` to 410 and `quote_expired`, with a `new_quote` link built from the quote's trip.\n- `internal/mcp/tools.go`: no change beyond a test, since it passes the code through.",
+          "definition_of_done": [
+            "Tests added or updated for every changed behavior",
+            "verify.commands pass",
+            "No new skip markers"
+          ],
+          "test_plan": "- `internal/booking/book_test.go`: booking one second before the expiry time works; at it, and after it, gives `ErrQuoteExpired` and writes no booking.\n- `internal/api/book_test.go`: the 410 body has `quote_expired` and the `new_quote` link.\n- `internal/mcp/tools_test.go`: the `book` tool returns `quote_expired`."
+        }
+      },
+      {
+        "id": "T3",
+        "title": "Set the quote lifetime in production",
+        "outcome": "Production runs with a quote lifetime of 24 hours.",
+        "criteria": [
+          "Production's settings on main set the quote lifetime to 24 hours."
+        ],
+        "depends_on": [],
+        "scope": "infra",
+        "human": true,
+        "human_task": {
+          "goal": "Set the quote lifetime to 24 hours in production's settings.",
+          "why_blocks": "T2 can't be deployed until production has a lifetime, because the booking service won't start without one, and the deploy settings are a path only the owner can change.",
+          "steps": [
+            "On a new branch, open `deploy/production.env`.",
+            "Add the line `QUOTE_TTL=24h`.",
+            "Open a PR, check its diff is only that line, and merge it into `main`."
+          ],
+          "links": [
+            "https://github.com/acme/booking/blob/main/deploy/production.env"
+          ],
+          "estimated_time": "5 min",
+          "done_when": {
+            "text": "`deploy/production.env` on `main` contains `QUOTE_TTL=24h`.",
+            "check": {
+              "kind": "file",
+              "path": "deploy/production.env",
+              "contains": "QUOTE_TTL=24h"
+            }
+          }
+        }
+      }
+    ]
+  }
+}
