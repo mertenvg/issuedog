@@ -229,13 +229,18 @@ func wantChildren(k childPlan) []wantChild {
 
 // firstMove is the comment carrying a child's first move, keyed by the
 // parent's move into planned, comment p.
-func firstMove(w wantChild, p int64) string {
+func firstMove(w wantChild, p int64) string { return firstMoveUnder(1, 1, w, p) }
+
+// firstMoveUnder is the comment carrying the first move of a child of
+// issue parent's plan revision rev, keyed by the parent's move into
+// planned, comment p.
+func firstMoveUnder(parent, rev int, w wantChild, p int64) string {
 	where := ""
 	if w.stage == state.Planning {
 		where = ", where the planner writes its task plan"
 	}
-	return fmt.Sprintf("Created from #1's plan, rev 1, as %s. It starts at `stage:%s`%s.\n\n"+
-		"<!-- issuedog:transition from=intake to=%s event=p%d -->", w.item, w.stage, where, w.stage, p)
+	return fmt.Sprintf("Created from #%d's plan, rev %d, as %s. It starts at `stage:%s`%s.\n\n"+
+		"<!-- issuedog:transition from=intake to=%s event=p%d -->", parent, rev, w.item, w.stage, where, w.stage, p)
 }
 
 // checkChildren fails t unless f has exactly k's children, issues 2 on, in
