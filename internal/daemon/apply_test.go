@@ -269,7 +269,13 @@ func TestTransitionRefusesBadMoves(t *testing.T) {
 		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.Key{Field: "rev", ID: "1"}},
 		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.CmdKey(1), Fields: map[string]string{"from": "held"}},
 		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.CmdKey(1), Fields: map[string]string{"run": "x"}},
+		// A move to closed needs a state reason, and writes reason= itself;
+		// no other move has one, and a closed stage is no move's.
 		{To: state.Closed, Trigger: state.TriggerClosed, Key: state.CmdKey(1)},
+		{To: state.Closed, StateReason: "duplicate", Trigger: state.TriggerClosed, Key: state.CmdKey(1)},
+		{To: state.Closed, StateReason: "completed", Trigger: state.TriggerClosed, Key: state.CmdKey(1), Fields: map[string]string{"reason": "completed"}},
+		{To: state.Clarifying, StateReason: "completed", Trigger: state.TriggerTrusted, Key: state.CmdKey(1)},
+		{To: state.Completed, StateReason: "completed", Trigger: state.TriggerClosed, Key: state.CmdKey(1)},
 		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.CmdKey(1), Fields: map[string]string{"rev": "two words"}},
 		// cmd only beside a run key, and only naming a comment (T4).
 		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.CmdKey(1), Fields: map[string]string{"cmd": "2"}},
@@ -415,5 +421,111 @@ func TestAck(t *testing.T) {
 	got := run(t, setup, ack).State().Issues[0].Comments[0].Reactions
 	if want := []string{app + " +1", app + " eyes", "owner +1"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("reactions = %v, want %v", got, want)
+	}
+}
+
+// stateReason is issue n's state_reason, as GitHub answers it on f.
+func stateReason(t *testing.T, f *githubtest.Fake, n int) string {
+	t.Helper()
+	is, _, err := f.Client(t).Issues.Get(context.Background(), "o", "r", n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return is.GetStateReason()
+}
+
+// writesOf is f's writes, as method and path.
+func writesOf(f *githubtest.Fake) []string {
+	var writes []string
+	for _, w := range f.Writes() {
+		writes = append(writes, w.Method+" "+w.Path)
+	}
+	return writes
+}
+
+// A move to closed writes its marker, with the state reason as reason=,
+// 👍s the command, then closes the issue with that state_reason, and writes
+// no stage label: the close judge sets the closed stage. Each reason replays
+// safely.
+func TestTransitionClose(t *testing.T) {
+	t.Parallel()
+	for _, reason := range []string{"completed", "not_planned"} {
+		t.Run(reason, func(t *testing.T) {
+			t.Parallel()
+			setup := cmdIssue("priority:p2", "stage:intake")
+			m := daemon.Move{To: state.Closed, StateReason: reason, Trigger: state.TriggerClosed, Key: state.CmdKey(cmdID), Text: "Closed."}
+			githubtest.Replay(t, setup, move(t, m, clean))
+
+			f := run(t, setup, move(t, m, clean))
+			wantWrites := []string{"POST /issues/1/comments", "POST /issues/comments/1001/reactions", "PATCH /issues/1"}
+			if writes := writesOf(f); !reflect.DeepEqual(writes, wantWrites) {
+				t.Errorf("writes = %q, want %q", writes, wantWrites)
+			}
+			got := f.State().Issues[0]
+			if want := []string{"priority:p2", "stage:intake"}; !got.Closed || !reflect.DeepEqual(got.Labels, want) {
+				t.Errorf("closed %t, labels %v; want closed, and %v", got.Closed, got.Labels, want)
+			}
+			want := []githubtest.CommentState{
+				{Author: "owner", Body: "/go", Reactions: []string{app + " +1"}},
+				{Author: app, Body: "Closed.\n\n<!-- issuedog:transition from=intake to=closed reason=" + reason + " cmd=1001 -->"},
+			}
+			if !reflect.DeepEqual(got.Comments, want) {
+				t.Errorf("comments = %+v, want %+v", got.Comments, want)
+			}
+			if r := stateReason(t, f, 1); r != reason {
+				t.Errorf("state_reason = %q, want %q", r, reason)
+			}
+			// The snapshot shows the close, so the rest of the pass sees
+			// a closed issue.
+			f = setup(t)
+			a, s, err := applier(t, f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := a.Transition(context.Background(), s, clean, m); err != nil || !s.Closed {
+				t.Errorf("Transition: %v, and the snapshot closed %t; want no error, and closed", err, s.Closed)
+			}
+		})
+	}
+}
+
+// A move to closed on an issue closed already writes its marker and the
+// 👍, and doesn't close it again.
+func TestTransitionCloseClosedAlready(t *testing.T) {
+	t.Parallel()
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := cmdIssue("stage:intake")(t)
+		f.CloseAs(1, "owner", "not_planned")
+		return f
+	}
+	m := daemon.Move{To: state.Closed, StateReason: "completed", Trigger: state.TriggerClosed, Key: state.CmdKey(cmdID)}
+	githubtest.Replay(t, setup, move(t, m, clean))
+	f := run(t, setup, move(t, m, clean))
+	if writes, want := writesOf(f), []string{"POST /issues/1/comments", "POST /issues/comments/1001/reactions"}; !reflect.DeepEqual(writes, want) {
+		t.Errorf("writes = %q, want %q", writes, want)
+	}
+	if r := stateReason(t, f, 1); r != "not_planned" {
+		t.Errorf("state_reason = %q, want the owner's not_planned", r)
+	}
+}
+
+// A move to closed whose marker a later move followed, such as a trusted
+// reopen's hold, isn't closed again on a replay: only its 👍 is finished.
+func TestTransitionCloseOlderKey(t *testing.T) {
+	t.Parallel()
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := cmdIssue("stage:held")(t)
+		f.AddComment(1, app, "<!-- issuedog:transition from=intake to=closed reason=completed cmd=1001 -->")
+		f.AddComment(1, app, "<!-- issuedog:transition from=closed to=held at=intake reason=owner event=5 -->")
+		return f
+	}
+	m := daemon.Move{To: state.Closed, StateReason: "completed", Trigger: state.TriggerClosed, Key: state.CmdKey(cmdID)}
+	githubtest.Replay(t, setup, move(t, m, clean))
+	f := run(t, setup, move(t, m, clean))
+	if writes, want := writesOf(f), []string{"POST /issues/comments/1001/reactions"}; !reflect.DeepEqual(writes, want) {
+		t.Errorf("writes = %q, want %q", writes, want)
+	}
+	if got := f.State().Issues[0]; got.Closed || !reflect.DeepEqual(got.Labels, []string{"stage:held"}) {
+		t.Errorf("closed %t, labels %v; want open, at stage:held", got.Closed, got.Labels)
 	}
 }

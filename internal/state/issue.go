@@ -63,7 +63,8 @@ type Issue struct {
 	// HeldStack.
 	HeldStack HeldStack
 	// Origin is the plan item the App filed the issue from, from the
-	// origin marker in its body, or the zero Origin with none (originOf).
+	// origin marker in its body or else in the newest clean App comment
+	// that has one, or the zero Origin with none (originOf).
 	Origin Origin
 }
 
@@ -75,14 +76,22 @@ type Issue struct {
 //     together, in the plan's item order (waitRank);
 //   - matching created children to their plan items, and Item.Human, from
 //     a human task's human=1 (S3, Human);
-//   - reading it from the newest clean App comment when the body's markers
-//     aren't read, as when someone else edited the body and the daemon
-//     reposted the marker in a comment (S5).
+//   - the class: Item.FromPlan is true exactly when there's one (#290).
 //
-// Derive reads it from the body only, under the same rules as every other
-// marker there: the App's, in a body that isn't dirty and that nobody but
-// the App edited last. So a marker someone else wrote, or a body someone
-// else edited, gives none.
+// Derive reads it where SPEC §5 has it, "in the body … or reposted in a
+// comment once that body is dirty" (#290, plan #195's assumption 3):
+//   - the body's first whole marker, under the same rules as every other
+//     marker there: the App's, in a body that isn't dirty and that nobody
+//     but the App edited last;
+//   - else, the newest clean App comment's: one that isn't dirty, so
+//     nobody but the App edited it. That holds whoever wrote or edited the
+//     body, so it covers a body someone else edited, whose marker the
+//     daemon reposts in a comment (S5's T2, #291), and an adopted issue,
+//     whose body a person wrote and whose App comment carries the marker.
+//
+// So a marker someone else wrote, in the body or a comment, gives none,
+// and the body's marker wins while it's read. Of several clean App
+// comments with a whole marker, the newest counts.
 //
 // Plan is above 0 whenever there is one: the zero Origin is none, so
 // callers check Plan. Fields the marker has besides plan, rev, item, human
@@ -98,7 +107,7 @@ type Origin struct {
 	// Item is the item's ID in the plan, such as S2 or T4, from item=.
 	Item string
 	// Comment is the ID of the comment that holds the marker, or BodyID
-	// for the body, which is the only place Derive reads it from today.
+	// for the body.
 	Comment int64
 	// Human is true for a human task (SPEC §9.3), from human=1, which the
 	// App writes on a human task's marker when it creates it from a plan
@@ -201,7 +210,9 @@ func (is Issue) Moved(k Key) bool {
 // trusted user's edit leaves the body clean (Sanctioned) but isn't the
 // App's text (#169, Q2a). The App's own body edits either write the whole
 // body or escape the text they keep (SPEC §5.1), so after one, every
-// marker in the body is the App's.
+// marker in the body is the App's. Origin comes from the body's markers
+// while they're read, and else from the newest clean App comment's, and
+// Item.FromPlan follows it (see Origin).
 func Derive(s *github.Snapshot, appSlug string, dirty func(id int64) bool) Issue {
 	is := Issue{Stage: Intake, Keys: map[Key]bool{}, Errors: map[ErrorKey]int64{}, Acks: map[ErrorKey]bool{},
 		Item: Item{Type: s.Type, HasParent: s.Parent != 0}}
@@ -219,11 +230,11 @@ func Derive(s *github.Snapshot, appSlug string, dirty func(id int64) bool) Issue
 				is.Round, is.TransitionComment = b, id
 			}
 			is.readError(m, id)
-			if m.Kind == "origin" && id == BodyID && m.Fields["plan"] != "" {
-				is.Item.FromPlan = true
-			}
-			// The body's first whole origin marker: the App writes one.
-			if o, ok := originOf(m, id); ok && id == BodyID && is.Origin.Plan == 0 {
+			// The body's first whole origin marker, the one the App
+			// writes, while the body's markers are read. Without one, the
+			// newest clean App comment's: the body is read first, so a
+			// comment's replaces any but the body's.
+			if o, ok := originOf(m, id); ok && (is.Origin.Plan == 0 || is.Origin.Comment != BodyID) {
 				is.Origin = o
 			}
 			if m.Kind == "triage" && id != BodyID {
@@ -235,8 +246,11 @@ func Derive(s *github.Snapshot, appSlug string, dirty func(id int64) bool) Issue
 	for _, c := range s.Comments {
 		read(c.ID, c.Author, c.Body)
 	}
-	// A human task is known by its origin marker alone, so a clean App
-	// body's whole marker: one that isn't read leaves the issue a task.
+	// FromPlan follows Origin, so the two always agree (#290): a marker
+	// that isn't a whole one gives neither.
+	is.Item.FromPlan = is.Origin.Plan != 0
+	// A human task is known by its origin marker alone, read wherever
+	// Origin is read (#275, #290).
 	is.Item.Human = is.Origin.Human
 	for _, m := range is.Markers {
 		for _, f := range []string{"cmd", "run", "event"} {

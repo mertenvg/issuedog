@@ -18,14 +18,16 @@ import (
 
 // This file applies the interviewer's results (plan #6, T5 and T6): a
 // question round, under Q1a the typing of a bug or task, and the spec
-// (assumption 9), which is written into the body and posted as a revision.
+// (assumption 9), which is written into the body and posted as a revision,
+// and at the clarifying after a hold, unchanged (#189) and plan (#294).
 
 // Check checks r's output after its schema (checkInterview, plan #6,
 // assumptions 7 and 10) against the facts of r.S, the issue read again
 // (ivFacts). A broken rule is a failed attempt, with nothing written. So is
 //   - an issue the interviewer no longer runs on (ivStillRuns), such as one
-//     the owner retyped to a task or bug, or gave a parent, during the run:
-//     Pending is false for it from then on, so no run follows;
+//     the owner retyped to a task or bug, or gave a parent, during the run,
+//     away from the clarifying after a hold from a stage of its plan
+//     (ivRunsOn): Pending is false for it from then on, so no run follows;
 //   - output whose move doesn't fit the issue once the output's type is set
 //     (ivMoveFits), such as a spec typing an issue with a parent a story,
 //     which the table moves to spec-review only with no parent. Checked
@@ -44,9 +46,10 @@ func (iv *Interviewer) Check(ctx context.Context, r Result) error {
 		return &checkReadError{fmt.Errorf("the interviewer's facts on #%d: %w", r.S.Number, err)}
 	}
 	it := state.Derive(r.S, iv.Daemon.Step.AppSlug, r.Dirt.Has).Item
-	if !ivStillRuns(it, out, f.MayType) {
+	if !ivStillRuns(it, f.Origin, out, f.MayType) {
 		return fmt.Errorf("the interviewer no longer runs on #%d, with type %q and a parent %t: "+
-			"it runs only on an epic, a story with no parent or an untyped issue", r.S.Number, it.Type, it.HasParent)
+			"it runs only on an epic, a story with no parent or an untyped issue, "+
+			"and after a hold from planning, plan-review or planned on a story with a parent", r.S.Number, it.Type, it.HasParent)
 	}
 	if err := checkInterview(out, f); err != nil {
 		return err
@@ -58,15 +61,16 @@ func (iv *Interviewer) Check(ctx context.Context, r Result) error {
 }
 
 // ivStillRuns reports whether the interviewer still runs on an issue like
-// it, read again after a run whose output is out (interviewerClass), or
+// it, read again after a run whose output is out, with origin the stage it
+// came from to the clarifying after a hold, or "" (ivRunsOn), or
 // whether out, a typed outcome, made it the task or bug it is with its own
 // type, set before a crash: the type is out's, and the App set it (may, as
 // typing says), so it isn't the owner's retype. Pending is false for such
 // an issue, so the only run on it is the one that typed it. Only a typed
 // outcome sets a type the interviewer doesn't run on, so a story with a
 // parent never passes, whoever typed it.
-func ivStillRuns(it state.Item, out interviewOutput, may bool) bool {
-	return interviewerClass(it) ||
+func ivStillRuns(it state.Item, origin state.Stage, out interviewOutput, may bool) bool {
+	return ivRunsOn(it, origin) ||
 		out.Outcome == outcomeTyped && out.Type != nil && may && strings.EqualFold(it.Type, out.Type.Value)
 }
 
@@ -75,10 +79,13 @@ func ivStillRuns(it state.Item, out interviewOutput, may bool) bool {
 // (SPEC §7.2), clarifying → spec-review on spec-written for a spec, or on
 // spec-rewritten at the clarifying after a hold, whose origin is set
 // (ivHoldOrigin); clarifying → origin on discussion-no-change for
-// unchanged; and clarifying → clarifying on more-questions otherwise. A
-// question round must also leave the issue one the interviewer runs on, or
-// no run would read its answers: a story with a parent waits at clarifying
-// for good. out has passed checkInterview, so its type is a known one.
+// unchanged; clarifying → planning on plan-changed for plan, which only an
+// epic or a story has (#294); and clarifying → clarifying on
+// more-questions otherwise. A question round must also leave the issue one
+// the interviewer runs on (ivRunsOn), or no run would read its answers: a
+// story with a parent waits at clarifying for good, but at the clarifying
+// after a hold from a stage of its plan (#195's Q1a). out has passed
+// checkInterview, so its type is a known one.
 func ivMoveFits(it state.Item, out interviewOutput, origin state.Stage) error {
 	if out.Type != nil {
 		it.Type = out.Type.Value
@@ -91,7 +98,7 @@ func ivMoveFits(it state.Item, out interviewOutput, origin state.Stage) error {
 	if _, err := state.Lookup(state.Clarifying, to, class, trigger); err != nil {
 		return fmt.Errorf("an issue of type %q with a parent %t can't move: %w", it.Type, it.HasParent, err)
 	}
-	if out.Outcome == outcomeQuestions && !interviewerClass(it) {
+	if out.Outcome == outcomeQuestions && !ivRunsOn(it, origin) {
 		return fmt.Errorf("a round would leave an issue of type %q with a parent %t, which the interviewer doesn't run on, "+
 			"so nothing would read its answers", it.Type, it.HasParent)
 	}
@@ -109,13 +116,24 @@ func ivMoveFits(it state.Item, out interviewOutput, origin state.Stage) error {
 //   - the logins a spec's decision may name;
 //   - loop.max_questions_per_round, and notify for the cc line;
 //   - the stage the issue came from, at the clarifying after a hold
-//     (ivHoldOrigin), which an unchanged outcome needs.
+//     (ivHoldOrigin), which an unchanged or plan outcome needs;
+//   - the issue's class, which a plan outcome needs, and on a story with
+//     a parent (#195's Q1a) refuses a spec, typed and any type: whatever
+//     typing says, it may not set the type there.
 func (iv *Interviewer) facts(ctx context.Context, r Result) (interviewFacts, error) {
 	d := iv.Daemon
 	a := d.Step.Applier
 	_, may, err := iv.typing(ctx, r.S, &ivTimeline{a: a, number: r.S.Number})
 	if err != nil {
 		return interviewFacts{}, err
+	}
+	is := state.Derive(r.S, a.AppSlug, r.Dirt.Has)
+	class, err := state.ClassOf(is.Item)
+	if err != nil {
+		class = 0 // a type the table doesn't know: plan is refused, and Check refuses the run
+	}
+	if class == state.ClassStory {
+		may = false
 	}
 	logins, err := ivTrustedLogins(ctx, r.S, r.Dirt.Has, a.AppSlug, trustCache{st: d.Step, verdicts: map[string]bool{}})
 	if err != nil {
@@ -129,7 +147,8 @@ func (iv *Interviewer) facts(ctx context.Context, r Result) (interviewFacts, err
 		Rounds:       ivFactRounds(r.S, a.AppSlug, r.Dirt.Has),
 		Trusted:      logins,
 		Notify:       d.Config.Notify,
-		Origin:       ivHoldOrigin(state.Derive(r.S, a.AppSlug, r.Dirt.Has)),
+		Origin:       ivHoldOrigin(is),
+		Class:        class,
 	}, nil
 }
 
@@ -219,9 +238,15 @@ func ivFactRounds(s *github.Snapshot, appSlug string, dirty func(int64) bool) []
 //     stands, and says so (ivHoldStanding), so a 👍 or /approve on it
 //     approves it (SPEC §7.4). Its text is renderUnchanged's. A spec's
 //     there is on spec-rewritten.
+//     - There, after a hold from planning, plan-review or planned, a plan
+//     outcome's is clarifying → planning on plan-changed (#294), with no
+//     revision: the planner posts the next plan revision from the move's
+//     message, the discussion's owner input and the /revise it names
+//     (plannerHoldOf). Its text is renderPlanChange's.
 //  4. At the clarifying after a hold, every move carries origin
-//     (ivHoldOrigin, SPEC §6.4), and one after a hold from spec-review
-//     names the /revise that waited through it, if the run read one
+//     (ivHoldOrigin, SPEC §6.4), and one after a hold from spec-review or
+//     plan-review names the /revise that waited through it, if the run
+//     read one
 //     (ivHoldRevise, as the run's seen bounds it), with cmd= beside run=
 //     (Move.check), then 👍s it, so it's processed and isn't applied
 //     again. Once the move is written, its marker says where it went and
@@ -243,7 +268,7 @@ func (iv *Interviewer) Apply(ctx context.Context, a *Applier, r Result) error {
 	if err != nil {
 		return wrap(err)
 	}
-	if !slices.Contains([]string{outcomeQuestions, outcomeTyped, outcomeSpec, outcomeUnchanged}, out.Outcome) {
+	if !slices.Contains([]string{outcomeQuestions, outcomeTyped, outcomeSpec, outcomeUnchanged, outcomePlan}, out.Outcome) {
 		return wrap(fmt.Errorf("unknown outcome %q", out.Outcome))
 	}
 	is := state.Derive(r.S, a.AppSlug, r.Dirt.Has)
@@ -262,6 +287,17 @@ func (iv *Interviewer) Apply(ctx context.Context, a *Applier, r Result) error {
 	if out.Outcome == outcomeUnchanged {
 		m := hold.set(r.Move(to, trigger))
 		m.Text = renderUnchanged(out, to, ivHoldStanding(r.S, a.AppSlug, r.Dirt, to), notify)
+		if err := a.Transition(ctx, r.S, r.Dirt.Has, m); err != nil {
+			return wrap(err)
+		}
+		return hold.ack(ctx, a, wrap)
+	}
+	if out.Outcome == outcomePlan {
+		m := hold.set(r.Move(to, trigger))
+		m.Text = renderPlanChange(out, notify)
+		if !moved {
+			logr.Infof("%s/%s#%d: the discussion changes the plan, so it goes to planning", a.Owner, a.Repo, r.S.Number)
+		}
 		if err := a.Transition(ctx, r.S, r.Dirt.Has, m); err != nil {
 			return wrap(err)
 		}

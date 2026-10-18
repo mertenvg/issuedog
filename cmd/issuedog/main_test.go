@@ -336,7 +336,7 @@ func TestNewStepCommands(t *testing.T) {
 	f.AddComment(1, "owner", "/hold")
 	c := f.Client(t)
 	st := newStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{}, noModels)
-	for _, name := range []string{"approve", "hold", "resume", "priority", "model", "effort", "track", "ignore"} {
+	for _, name := range []string{"approve", "done", "hold", "resume", "priority", "model", "effort", "track", "ignore"} {
 		if _, ok := st.Commands[name]; !ok {
 			t.Errorf("newStep has no /%s handler", name)
 		}

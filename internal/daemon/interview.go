@@ -26,6 +26,12 @@ const (
 	// (#189, SPEC §6.4): nothing in the discussion changes the issue, so it
 	// goes back to its origin.
 	outcomeUnchanged = "unchanged"
+	// The interviewer's plan outcome is outcomePlan, the planner's name
+	// for a plan, as outcomeQuestions is both stages' question round. It's
+	// only for the clarifying after a discussion hold from planning,
+	// plan-review or planned (ivPlanOrigin), on an epic or a story (#294):
+	// the spec stands, but its plan changes, so the issue goes to
+	// planning, with the message as the planner's notes.
 )
 
 // interviewOutput is the interviewer's structured output, as
@@ -111,8 +117,14 @@ type interviewFacts struct {
 	// Origin is the stage the issue was at before its first discussion
 	// hold, while it's at the clarifying after one (ivHoldOrigin), or "".
 	// Only then may the interviewer return unchanged, and not when it's
-	// clarifying itself: the issue is there already.
+	// clarifying itself: the issue is there already. Only after a hold
+	// from planning, plan-review or planned may it return plan.
 	Origin state.Stage
+	// Class is the issue's class (state.ClassOf), or 0 if it has none the
+	// table knows. Only an epic or a story may get plan, and a story with
+	// a parent (ClassStory) gets no spec and no typed outcome (#195's
+	// Q1a): its body is its parent's plan item.
+	Class state.Class
 }
 
 // The rules checkInterview enforces. Each failure names one.
@@ -135,6 +147,8 @@ const (
 	ruleDecisionCoverage   = "decision-coverage"
 	ruleLength             = "length"
 	ruleUnchanged          = "unchanged"
+	rulePlan               = "plan"
+	ruleParentStory        = "parent-story"
 )
 
 // ruleError is an output that breaks a rule.
@@ -187,8 +201,18 @@ func checkInterview(out interviewOutput, f interviewFacts) error {
 		if f.Origin == "" || f.Origin == state.Clarifying {
 			fail(ruleUnchanged, "unchanged is only for the clarifying after a discussion hold from another stage")
 		}
+	case outcomePlan:
+		if out.Type != nil || out.Spec != nil || len(out.Questions) > 0 || strings.TrimSpace(out.Message) == "" {
+			fail(ruleOutcome, "plan has a message and nothing else")
+		}
+		if !ivPlanOrigin(f.Origin) || f.Class&(state.ClassEpic|state.AnyStory) == 0 {
+			fail(rulePlan, "plan is only for an epic or a story at the clarifying after a discussion hold from planning, plan-review or planned")
+		}
 	default:
 		fail(ruleOutcome, "unknown outcome %q", out.Outcome)
+	}
+	if f.Class == state.ClassStory && (out.Outcome == outcomeSpec || out.Outcome == outcomeTyped) {
+		fail(ruleParentStory, "a story with a parent gets only questions, unchanged or plan, never %s", out.Outcome)
 	}
 	if t := out.Type; t != nil {
 		if !f.MayType {
@@ -313,6 +337,9 @@ type rendered struct{ what, text string }
 func renderedTexts(out interviewOutput, f interviewFacts) []rendered {
 	if out.Outcome == outcomeUnchanged {
 		return []rendered{{"comment", renderUnchanged(out, f.Origin, "", f.Notify)}}
+	}
+	if out.Outcome == outcomePlan {
+		return []rendered{{"comment", renderPlanChange(out, f.Notify)}}
 	}
 	if out.Outcome != outcomeSpec {
 		return []rendered{{"comment", renderQuestions(out, f.Issue, len(f.Rounds)+1, f.Notify)}}
@@ -472,6 +499,19 @@ func renderUnchanged(out interviewOutput, origin state.Stage, standing string, n
 		parts = append(parts, ccLines(notify)...)
 	}
 	return github.Escape(strings.Join(parts, "\n\n"))
+}
+
+// renderPlanChange renders a plan outcome's comment (#294): that the
+// discussion changes the plan, so the issue goes to planning, then out's
+// message, then that the planner posts a new plan for the owner's 👍,
+// then the cc line for notify.
+func renderPlanChange(out interviewOutput, notify []string) string {
+	parts := []string{
+		"The discussion during the hold changes this issue's plan, but not its spec, so it goes to `planning`.",
+		block(out.Message),
+		"The planner reads these notes and the discussion, and posts a new plan for your 👍.",
+	}
+	return github.Escape(strings.Join(append(parts, ccLines(notify)...), "\n\n"))
 }
 
 func ccLines(notify []string) []string {

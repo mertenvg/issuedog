@@ -117,7 +117,8 @@ var ErrLabelsHeld = errors.New("labels held back until their events explain them
 //     An override to a label that names no stage is one too. With no marker,
 //     only that label is removed.
 //   - An Unfinished disagreement, the App's own write cut short, only gets
-//     its labels set.
+//     its labels set; or, on an open issue whose latest marker is a move to
+//     closed, the close that move didn't make (closeFinish).
 //
 // The writes go in plan #5's assumption 4 order, the comment first, so a
 // pass that crashed part way can run again: once an override's marker is
@@ -313,7 +314,8 @@ func (a *Applier) override(ctx context.Context, s *github.Snapshot, dirty func(i
 
 // disagreement reports ev once, unless it's Unfinished, then sets the stage
 // labels to match the latest marker. With no marker, ev is a label that names
-// no stage, and only that label is removed.
+// no stage, and only that label is removed. An Unfinished one on an open
+// issue whose latest marker is a move to closed closes the issue instead.
 func (a *Applier) disagreement(ctx context.Context, s *github.Snapshot, dirty func(int64) bool, ev github.LabelEvent) error {
 	is := state.Derive(s, a.AppSlug, dirty)
 	key := strconv.FormatInt(ev.Key, 10)
@@ -351,9 +353,16 @@ func (a *Applier) disagreement(ctx context.Context, s *github.Snapshot, dirty fu
 		logr.Errorf("state error: %s", desc)
 	}
 	var err error
-	if ev.Marker == "" {
+	switch {
+	case ev.Marker == "":
 		err = a.removeLabel(ctx, s, ev.Label)
-	} else {
+	case ev.Unfinished && is.Stage == state.Closed && !s.Closed:
+		// The App's move to closed, cut short after its marker: a closed
+		// stage has no label to set, so it's finished by the close, with
+		// the reason the marker records (Transition), and the close judge
+		// sets the closed stage after.
+		err = a.closeFinish(ctx, s, is)
+	default:
 		err = a.setStage(ctx, s, is.Stage)
 	}
 	if err != nil {

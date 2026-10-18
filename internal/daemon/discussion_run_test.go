@@ -1138,18 +1138,20 @@ func discRunFour(t testing.TB) *githubtest.Fake {
 // every /hold, ends none, so it's rejected, naming where /resume would.
 // The /resume on #3 takes it back to planned; #5 stays held by its own
 // /hold, with one "ended reason=owner" record; and #4, a story with a
-// parent, goes to clarifying, where it waits, once the owner's 👍 on
-// mallory's comment resolves its discussion, in either order: with the 👍
-// first, the discussion's end is recorded while #3's /hold keeps #4, and
-// the /resume moves it; with the /resume first, #4 records the /resume's
-// end of the owner hold, and the 👍 moves it. Only #5's own /resume ends
+// parent, goes to clarifying once the owner's 👍 on mallory's comment
+// resolves its discussion, in either order: with the 👍 first, the
+// discussion's end is recorded while #3's /hold keeps #4, and the /resume
+// moves it; with the /resume first, #4 records the /resume's end of the
+// owner hold, and the 👍 moves it. Its hold was from planned, a stage of
+// its plan, so the interviewer reads the discussion there (#195's Q1a),
+// and its unchanged takes #4 back to planned. Only #5's own /resume ends
 // its /hold.
 func TestDiscRunFourLevels(t *testing.T) {
 	t.Parallel()
 	for _, thumbsFirst := range []bool{true, false} {
 		t.Run(fmt.Sprintf("the 👍 first: %t", thumbsFirst), func(t *testing.T) {
 			f := discRunFour(t)
-			l := newDiscRunLoop(t, f)
+			l := newDiscRunLoop(t, f, map[string]any{"outcome": "unchanged"})
 			entries := map[int]int64{}
 			for _, n := range []int{2, 3, 4, 5} {
 				entries[n] = discRunFind(t, f, n, "issuedog:transition")
@@ -1171,6 +1173,15 @@ func TestDiscRunFourLevels(t *testing.T) {
 			if r := f.State().Issues[1].Comments; !slices.Equal(r[len(r)-2].Reactions, []string{app + " -1"}) {
 				t.Errorf("the epic's /resume has reactions %q; want the App's 👎", r[len(r)-2].Reactions)
 			}
+			// unchanged checks the interviewer's move on #4, a story with a
+			// parent held from planned (#195's Q1a): unchanged, back there.
+			unchanged := func(c string) {
+				t.Helper()
+				if !strings.HasPrefix(c, "Nothing in the discussion during the hold changes this issue, so it goes back to `planned`.") {
+					t.Errorf("#4's newest comment %q; want the interviewer's unchanged", c)
+				}
+				ivHoldFields(t, ivHoldMove(t, c), map[string]string{"from": "clarifying", "to": "planned", "origin": "planned", "run": "run1"})
+			}
 			thumbs := func() {
 				t.Helper()
 				f.AddReaction(m, "owner", "+1")
@@ -1181,10 +1192,13 @@ func TestDiscRunFourLevels(t *testing.T) {
 					}
 					return
 				}
-				l.step("the 👍", "POST /issues/4/comments", "POST /issues/4/labels", "DELETE /issues/4/labels/stage:held", "PATCH /issues/1", "DELETE /issues/4/assignees")
-				if got := l.added(4); len(got) != 1 || !strings.HasPrefix(got[0], "The discussion is resolved, by `owner`, so this issue leaves its hold from `planned` for `clarifying`. "+
-					"It waits at `clarifying` until a code owner sets its stage by hand.") {
-					t.Errorf("#4's new comments %q; want the move to clarifying", got)
+				l.step("the 👍", "POST /issues/4/comments", "POST /issues/4/labels", "DELETE /issues/4/labels/stage:held", "PATCH /issues/1", "DELETE /issues/4/assignees",
+					"POST /issues/4/comments", "POST /issues/4/labels", "DELETE /issues/4/labels/stage:clarifying")
+				if got := l.added(4); len(got) != 2 || !strings.HasPrefix(got[0], "The discussion is resolved, by `owner`, so this issue leaves its hold from `planned` for `clarifying`. "+
+					"The interviewer reads the discussion next, and picks where it goes from there.") {
+					t.Errorf("#4's new comments %q; want the move to clarifying, then the interviewer's", got)
+				} else {
+					unchanged(got[1])
 				}
 			}
 			if thumbsFirst {
@@ -1198,7 +1212,7 @@ func TestDiscRunFourLevels(t *testing.T) {
 				l.step("#3's /resume", "POST /issues/4/comments", "POST /issues/4/labels", "DELETE /issues/4/labels/stage:held", "POST /issues/5/comments",
 					"POST /issues/3/comments", "POST /issues/3/labels", "DELETE /issues/3/labels/stage:held", discRunReact(resume))
 				if got, want := l.added(4), []string{moved("Resumed by `/resume` on #3. A discussion on this issue was resolved during its hold from `planned`, so it goes to `clarifying`. "+
-					"It waits at `clarifying` until a code owner sets its stage by hand.", fmt.Sprintf("from=held to=clarifying at=planned origin=planned cmd=%d seen=%d", resume, entries[4]))}; !slices.Equal(got, want) {
+					"The interviewer reads the discussion next, and picks where it goes from there.", fmt.Sprintf("from=held to=clarifying at=planned origin=planned cmd=%d seen=%d", resume, entries[4]))}; !slices.Equal(got, want) {
 					t.Errorf("#4's new comments\n%q\nwant\n%q", got, want)
 				}
 			} else {
@@ -1225,8 +1239,18 @@ func TestDiscRunFourLevels(t *testing.T) {
 				l.quiet("#4 held for discussion alone")
 				thumbs()
 			}
+			if thumbsFirst {
+				// The /resume wrote to #4, so its step 1, and the
+				// interviewer's run, wait for the next pass.
+				l.step("#4's interviewer run", "POST /issues/4/comments", "POST /issues/4/labels", "DELETE /issues/4/labels/stage:clarifying")
+				if got := l.added(4); len(got) != 1 {
+					t.Errorf("#4's new comments %q; want the interviewer's move", got)
+				} else {
+					unchanged(got[0])
+				}
+			}
 			l.quiet("#5 held by its own /hold")
-			for n, want := range map[int][]string{2: {"stage:planned", "type:epic"}, 3: {"stage:planned", "type:story"}, 4: {"stage:clarifying", "type:story"}, 5: {"stage:held", "type:task"}} {
+			for n, want := range map[int][]string{2: {"stage:planned", "type:epic"}, 3: {"stage:planned", "type:story"}, 4: {"stage:planned", "type:story"}, 5: {"stage:held", "type:task"}} {
 				if got := ivLabels(f, n); !slices.Equal(got, want) {
 					t.Errorf("#%d: labels %q; want %q", n, got, want)
 				}

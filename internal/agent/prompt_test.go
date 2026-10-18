@@ -354,7 +354,7 @@ func checkBad(t *testing.T, stage string, cases map[string]badOutput) {
 }
 
 func TestInterviewerGolden(t *testing.T) {
-	for _, name := range []string{"questions", "spec", "typed", "unchanged"} {
+	for _, name := range []string{"questions", "spec", "typed", "unchanged", "plan"} {
 		if err := validateOutput(t, "interviewer", golden(t, "interviewer", name)); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
@@ -400,6 +400,10 @@ func TestInterviewerGolden(t *testing.T) {
 		// holds it to the issue; the schema only knows its fields.
 		"blank unchanged message": {"unchanged", " ", []any{"message"}, "at '/message'"},
 		"unchanged with a field":  {"unchanged", "x", []any{"notes"}, "additional properties 'notes' not allowed"},
+		// plan (#294): only a message goes with it, and checkInterview
+		// requires the message and holds the outcome to the issue.
+		"blank plan message": {"plan", " ", []any{"message"}, "at '/message'"},
+		"plan with a field":  {"plan", "x", []any{"notes"}, "additional properties 'notes' not allowed"},
 	})
 }
 
