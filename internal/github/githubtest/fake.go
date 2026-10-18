@@ -31,6 +31,9 @@ var Start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // Fake serves one repo's issues, comments, labels, timelines, reactions,
 // parents and sub-issues, a closed event's closer (closing.go), a
+// sub-issue's link and an issue's blocked-by dependencies, listed and added
+// by the issue's ID, which every issue has apart from its number
+// (children.go, dependencies.go), a created issue's labels and type, a
 // transferred issue's 301s and new home (transfer.go), the
 // GraphQL queries for their edits, deleted
 // comments and pins, and the pinIssue mutation. Its API writes, comment edits, created issues and
@@ -63,6 +66,7 @@ type Fake struct {
 	historyCap  int              // see HistoryCap
 	linked      map[int][]linked // see LinkSubIssue
 	dropTypes   bool             // see DropTypeChanges
+	lastLink    int64            // the last sub-issue link made (linkUnder)
 
 	// The org's issue types (typeevent.go): their IDs by lowercase name,
 	// the names renamed away (RenameOrgIssueType), and the last ID given.
@@ -95,6 +99,8 @@ func (discard) Write(b []byte) (int, error) { return len(b), nil }
 type issue struct {
 	gogithub.Issue // labels sorted by name
 	parent         int
+	linkSeq        int64 // when it was linked under parent, for the sub-issues' order (linkUnder)
+	blockedBy      []int // the issues blocking it, by number, in the order added (dependencies.go)
 	lastEdit       lastEdit
 	history        []lastEdit
 	labelEvents    []*gogithub.Timeline            // labeled, unlabeled, renamed, closed, reopened and issue-type events, oldest first
@@ -159,6 +165,9 @@ func New(t testing.TB, repo, slug string) *Fake {
 	f.handle("GET /issues/{n}", f.getIssue)
 	f.handle("GET /issues/{n}/parent", f.getParent)
 	f.handle("GET /issues/{n}/sub_issues", f.subIssues)
+	f.handle("POST /issues/{n}/sub_issues", f.addSubIssue)
+	f.handle("GET /issues/{n}/dependencies/blocked_by", f.blockedBy)
+	f.handle("POST /issues/{n}/dependencies/blocked_by", f.addBlockedBy)
 	f.handle("GET /issues/{n}/comments", f.listComments)
 	f.handle("GET /issues/comments", f.listComments)
 	f.handle("POST /issues/{n}/comments", f.addComment)
@@ -210,11 +219,12 @@ func (f *Fake) AddIssue(author, title, body string, labels ...string) int {
 }
 
 // fileIssue files an issue by author, with its labels added by author, and
-// returns it. Its node ID is the one GraphQL knows it by (issueNode).
+// returns it. Its node ID is the one GraphQL knows it by (issueNode), and
+// its ID the one sub-issue and dependency writes name it by (issueID).
 func (f *Fake) fileIssue(author, title, body string, labels []string) *issue {
 	now := f.tick()
 	n := len(f.issues) + 1
-	is := &issue{Issue: gogithub.Issue{Number: &n, NodeID: new(issueNode(n)), Title: &title, Body: &body, State: new("open"),
+	is := &issue{Issue: gogithub.Issue{Number: &n, ID: new(issueID(n)), NodeID: new(issueNode(n)), Title: &title, Body: &body, State: new("open"),
 		User: user(author), CreatedAt: now, UpdatedAt: now}}
 	for _, l := range labels {
 		if is.addLabel(l) {
@@ -238,8 +248,11 @@ func (f *Fake) SetPullRequest(number int) {
 	})
 }
 
-// SetParent makes number a sub-issue of parent.
-func (f *Fake) SetParent(number, parent int) { f.edit(number, func(is *issue) { is.parent = parent }) }
+// SetParent makes number a sub-issue of parent, listed after its other
+// sub-issues, or of none for 0. It moves no updated_at.
+func (f *Fake) SetParent(number, parent int) {
+	f.edit(number, func(is *issue) { f.linkUnder(is, parent) })
+}
 
 func (f *Fake) edit(number int, change func(*issue)) {
 	f.mu.Lock()
