@@ -38,7 +38,9 @@ import (
 
 // waitKind is a kind of item. Its order is Q3a's tie-break after the
 // unblock count: state errors, then discussion holds (#192), then
-// approvals, then questions, then flags.
+// approvals, then questions, then flags. A plan's approval (#270) ranks as
+// an approval (waitKind.rank): it's a kind of its own only for its key and
+// its name.
 type waitKind int
 
 const (
@@ -47,7 +49,17 @@ const (
 	waitApproval
 	waitQuestion
 	waitFlag
+	waitPlanApproval
 )
+
+// rank is k's place in Q3a's order of kinds: a plan's approval is an
+// approval's, and any other kind its own.
+func (k waitKind) rank() waitKind {
+	if k == waitPlanApproval {
+		return waitApproval
+	}
+	return k
+}
 
 func (k waitKind) String() string {
 	switch k {
@@ -61,6 +73,8 @@ func (k waitKind) String() string {
 		return "question"
 	case waitFlag:
 		return "flag"
+	case waitPlanApproval:
+		return "plan-approval"
 	}
 	return "kind" + strconv.Itoa(int(k))
 }
@@ -71,7 +85,8 @@ type waitItem struct {
 	Kind  waitKind
 	// Key names the item across passes and restarts (assumption 5), so T8
 	// can tell a new one: q-<n>-<round>, rev-<n>-<rev> (rev-<n>-0 when
-	// there's no revision yet), flag-<n>-<comment id>,
+	// there's no revision yet), plan-<n>-<rev> for a plan's (plan-<n>-0
+	// with no clean plan revision, #270), flag-<n>-<comment id>,
 	// err-<n>-<kind>-<key> or hold-<n>-<hold marker id> (holdItemOf). A
 	// hold is announced by other keys than this one (waitItem.news).
 	Key string
@@ -94,6 +109,14 @@ type waitItem struct {
 	// state.BodyID, which orders two items of one kind on one issue.
 	Created time.Time
 	Comment int64
+	// Plan and Index place a plan's approval in the plan its issue was
+	// filed from (#270, plan #248's assumption 8): Plan is that plan's
+	// issue number and Index the item's number in it, as 2 for S2, both
+	// from the issue's origin marker (state.Issue.Origin, waitPlanOrder).
+	// waitRank lists the approvals of one plan together, in item order.
+	// They're 0 for every other item, and for an issue with no origin
+	// marker, such as an epic, which ranks alone.
+	Plan, Index int
 }
 
 // waitLine is one line of an item. Its Text is the App's, never raw:
@@ -162,6 +185,10 @@ type waitInput struct {
 //   - at planning, a question round in the same way, when that latest
 //     transition is a planner round (planRoundMove, #253). Its key and
 //     rank are an interviewer round's, as the rounds share one numbering;
+//   - at plan-review, a plan's approval (#270): of the latest plan
+//     revision, or, with no clean one, of none. One that can't be approved
+//     yet says why, a reason a line (waitPlanApprovalLines). It's placed
+//     in its plan's order (waitPlanOrder);
 //   - at intake with no stage label, a flag: when the latest triage
 //     marker has verdict=ask, as FlagByReaction answers it.
 //
@@ -221,6 +248,10 @@ func waitFind(in waitInput) ([]waitItem, error) {
 			"I couldn't read them back from the round comment, so see it there.")...)
 		lines = append(lines, waitLine{Text: "Reply in one comment, e.g. `1a 2c 3: free text`."})
 		add(waitQuestion, strconv.Itoa(round), comment, lines)
+	case is.Stage == state.PlanReview:
+		rev, comment, lines := waitPlanApprovalLines(in, is)
+		add(waitPlanApproval, strconv.Itoa(rev), comment, lines)
+		items[len(items)-1].Plan, items[len(items)-1].Index = waitPlanOrder(is.Origin)
 	case is.Stage == state.Intake && stageOf(s) == "" && is.Triage.Verdict == triageAsk:
 		lines := []waitLine{{Text: "Triage flagged this issue: should issuedog handle it?"}}
 		heading := fmt.Sprintf("### Should issuedog handle #%d?", s.Number)
@@ -233,7 +264,8 @@ func waitFind(in waitInput) ([]waitItem, error) {
 }
 
 // waitKeyPrefix starts each kind's key.
-var waitKeyPrefix = map[waitKind]string{waitError: "err", waitHold: "hold", waitApproval: "rev", waitQuestion: "q", waitFlag: "flag"}
+var waitKeyPrefix = map[waitKind]string{waitError: "err", waitHold: "hold", waitApproval: "rev", waitQuestion: "q", waitFlag: "flag",
+	waitPlanApproval: "plan"}
 
 // waitLink is the link to comment id on issue n, or to the issue itself
 // when id is state.BodyID: an error in the body (#155's verify).
@@ -309,16 +341,7 @@ func waitApprovalLines(in waitInput, is state.Issue) (int, int64, []waitLine) {
 	case state.BodyHash(s.Body) != latest.Hash:
 		why = append(why, fmt.Sprintf("the issue description changed after revision %d, so it no longer matches `%s`", latest.Rev, latest.Hash))
 	}
-	// A type change that stands is the cause (typeErrStands): Transition
-	// holds the 👍's move back, and the type error, listed beside this,
-	// says what to do (#156's verify).
-	if typeErrStands(s, is) {
-		why = append(why, "its type doesn't fit `spec-review`, so a 👍 is held back until the type changes (see the type error)")
-	} else if class, err := state.ClassOf(is.Item); err != nil {
-		why = append(why, "I can't tell what kind of issue this is from its type")
-	} else if _, err := state.Lookup(state.SpecReview, state.Planning, class, state.TriggerSpecApproved); err != nil {
-		why = append(why, "an issue of its type doesn't go on to `planning` on approval")
-	}
+	why = append(why, waitTypeWhy(s, is, state.Planning, state.TriggerSpecApproved)...)
 	for _, w := range why {
 		lines = append(lines, waitLine{Text: "It can't be approved yet: " + w + "."})
 	}
@@ -326,6 +349,98 @@ func waitApprovalLines(in waitInput, is state.Issue) (int, int64, []waitLine) {
 		lines = append(lines, waitLine{Text: "React 👍 to the revision comment, or post `/approve`, to approve it."})
 	}
 	return latest.Rev, comment, append(lines, waitLine{Text: "Post `/revise <notes>`, or any other comment, to send it back."})
+}
+
+// waitTypeWhy says why is's type keeps an approval at its stage, a review
+// stage, from moving it on to next on trigger, or nothing. A type change
+// that stands is the cause (typeErrStands): Transition holds the 👍's move
+// back, and the type error, listed beside the approval, says what to do
+// (#156's verify). Else the type may not say what kind of issue it is, or
+// its kind may have no move on to next.
+func waitTypeWhy(s *github.Snapshot, is state.Issue, next state.Stage, trigger state.Trigger) []string {
+	if typeErrStands(s, is) {
+		return []string{fmt.Sprintf("its type doesn't fit `%s`, so a 👍 is held back until the type changes (see the type error)", is.Stage)}
+	}
+	class, err := state.ClassOf(is.Item)
+	if err != nil {
+		return []string{"I can't tell what kind of issue this is from its type"}
+	}
+	if _, err := state.Lookup(is.Stage, next, class, trigger); err != nil {
+		return []string{fmt.Sprintf("an issue of its type doesn't go on to `%s` on approval", next)}
+	}
+	return nil
+}
+
+// waitPlanApprovalLines returns the plan's approval at plan-review (#270):
+// the latest plan revision's number, or 0 with no clean one, the comment
+// to link (the plan comment, or else the transition's), and its lines.
+// The reasons it can't be approved yet are state.PlanApproval's, in its
+// order, then the type's, as at spec-review (waitTypeWhy). A plan that
+// can't be approved as it stands, with no clean revision, a hidden one or
+// one whose comment changed, needs a new plan, which only a planner run
+// posts: the daemon doesn't repost one (plan #248, Q1a). So the last line
+// says that sending it back gets one.
+func waitPlanApprovalLines(in waitInput, is state.Issue) (int, int64, []waitLine) {
+	s := in.S
+	latest, reasons := state.PlanApproval(s, in.AppSlug, in.Dirt.Has)
+	lines := []waitLine{{Text: "The plan waits for review, with no clean revision to approve."}}
+	comment := is.TransitionComment
+	if latest.Comment != 0 {
+		lines[0].Text = fmt.Sprintf("Revision %d of the plan, `%s`, waits for approval.", latest.Rev, latest.Hash)
+		comment = latest.Comment
+	}
+	var why []string
+	renew := false // only a new plan can be approved
+	for _, r := range reasons {
+		switch r {
+		case state.PlanNoRevision:
+			// The only plan comment may have been made dirty or deleted,
+			// not just never posted (#267's verify).
+			why = append(why, "there's no clean plan revision to approve: none was posted, or it was edited without approval or deleted")
+			renew = true
+		case state.PlanHidden:
+			why = append(why, fmt.Sprintf("a comment of mine after plan revision %d was edited without approval or deleted, so it may hide a newer revision", latest.Rev))
+			renew = true
+		case state.PlanChanged:
+			why = append(why, fmt.Sprintf("the comment of plan revision %d changed after it was posted, so it no longer matches `%s`", latest.Rev, latest.Hash))
+			renew = true
+		case state.PlanBodyDirty:
+			why = append(why, "the issue description has an edit that wasn't approved (see the note on it)")
+		}
+	}
+	why = append(why, waitTypeWhy(s, is, state.Planned, state.TriggerPlanApproved)...)
+	for _, w := range why {
+		lines = append(lines, waitLine{Text: "It can't be approved yet: " + w + "."})
+	}
+	if len(why) == 0 {
+		lines = append(lines, waitLine{Text: "React 👍 to the plan comment, or post `/approve`, to approve it."})
+	}
+	back := "Post `/revise <notes>`, or any other comment, to send it back."
+	if renew {
+		back = "Post `/revise <notes>`, or any other comment, to send it back and get a new plan."
+	}
+	return latest.Rev, comment, append(lines, waitLine{Text: back})
+}
+
+// waitPlanItemRE is a plan item's ID, as the planner's schema has it: S
+// for a story or T for a task, then its number in the plan, from 1.
+var waitPlanItemRE = regexp.MustCompile(`^[ST]([1-9][0-9]{0,8})$`)
+
+// waitPlanOrder returns the plan and item index of a plan's approval on
+// an issue with origin o (waitItem.Plan, waitItem.Index): o's plan, and
+// its item's number. With no origin, or an item ID that isn't a plan
+// item's, it's 0 and 0, and the item ranks alone.
+func waitPlanOrder(o state.Origin) (int, int) {
+	m := waitPlanItemRE.FindStringSubmatch(o.Item)
+	if o.Plan == 0 || m == nil {
+		return 0, 0
+	}
+	// At most 9 digits, so it always fits.
+	index, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0, 0
+	}
+	return o.Plan, index
 }
 
 // holdItemTrigger is one open discussion trigger on a hold item's issue
@@ -566,6 +681,14 @@ func waitQuestions(body, heading string, n int, missing string) []waitLine {
 // Each issue has one parent, so the walk down from an issue meets each
 // issue below it once, unless the parents loop back to the issue itself,
 // which GitHub shouldn't allow: the walk stops there.
+//
+// A plan's approvals with the same Plan form a group (#270, plan #248's
+// assumption 8): the stories one plan filed are listed together, in the
+// plan's item order (Index), whatever their priorities. The group sits
+// where its best member would rank on its own by the rules above, and
+// within it, members go by Index, then by those rules, so the order stays
+// total. Every item outside a group ranks as it did, and an approval with
+// no Plan, such as an epic's, ranks on its own.
 func waitRank(items []waitItem, snaps map[int]*github.Snapshot) {
 	children := map[int][]int{}
 	for n, s := range snaps {
@@ -593,8 +716,25 @@ func waitRank(items []waitItem, snaps map[int]*github.Snapshot) {
 	for i := range items {
 		items[i].Unblocks = 1 + count(items[i].Issue)
 	}
-	slices.SortFunc(items, func(a, b waitItem) int {
-		return cmp.Or(cmp.Compare(b.Unblocks, a.Unblocks), cmp.Compare(a.Kind, b.Kind), cmp.Compare(a.Priority, b.Priority),
+	// Q3a's order of two items on their own.
+	q3a := func(a, b waitItem) int {
+		return cmp.Or(cmp.Compare(b.Unblocks, a.Unblocks), cmp.Compare(a.Kind.rank(), b.Kind.rank()), cmp.Compare(a.Priority, b.Priority),
 			a.Created.Compare(b.Created), cmp.Compare(a.Issue, b.Issue), cmp.Compare(a.Comment, b.Comment), cmp.Compare(a.Key, b.Key))
+	}
+	best := map[int]waitItem{} // each group's best member, by Plan
+	for _, it := range items {
+		if b, ok := best[it.Plan]; it.Plan != 0 && (!ok || q3a(it, b) < 0) {
+			best[it.Plan] = it
+		}
+	}
+	// place is where it ranks: as its group's best member, or as itself.
+	place := func(it waitItem) waitItem {
+		if it.Plan != 0 {
+			return best[it.Plan]
+		}
+		return it
+	}
+	slices.SortFunc(items, func(a, b waitItem) int {
+		return cmp.Or(q3a(place(a), place(b)), cmp.Compare(a.Plan, b.Plan), cmp.Compare(a.Index, b.Index), q3a(a, b))
 	})
 }

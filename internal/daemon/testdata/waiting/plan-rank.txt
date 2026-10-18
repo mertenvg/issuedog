@@ -1,0 +1,11 @@
+plan-71-1       unblocks=1 kind=plan-approval p3 created=2026-01-03T23:00:00Z plan=70 index=1
+plan-72-1       unblocks=1 kind=plan-approval p2 created=2026-01-04T00:00:00Z plan=70 index=2
+plan-73-1       unblocks=2 kind=plan-approval p3 created=2026-01-01T05:00:00Z plan=70 index=3
+err-30-labels-0 unblocks=1 kind=error         p2 created=2026-01-02T06:00:00Z plan=0 index=0
+rev-31-1        unblocks=1 kind=approval      p0 created=2026-01-02T07:00:00Z plan=0 index=0
+rev-32-1        unblocks=1 kind=approval      p1 created=2026-01-02T08:00:00Z plan=0 index=0
+plan-42-1       unblocks=1 kind=plan-approval p2 created=2026-01-02T18:00:00Z plan=40 index=1
+plan-41-1       unblocks=1 kind=plan-approval p1 created=2026-01-02T17:00:00Z plan=40 index=2
+rev-33-1        unblocks=1 kind=approval      p1 created=2026-01-03T02:00:00Z plan=0 index=0
+plan-60-1       unblocks=1 kind=plan-approval p2 created=2026-01-01T01:00:00Z plan=0 index=0
+q-34-1          unblocks=1 kind=question      p0 created=2026-01-02T10:00:00Z plan=0 index=0
