@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/mertenvg/issuedog/internal/github"
+	"github.com/mertenvg/issuedog/internal/state"
 )
 
 // TestIvRoundMove: only an interviewer run's move from clarifying to
@@ -330,7 +331,7 @@ func TestInterviewerPreambleRounds(t *testing.T) {
 			"- Questions so far: round 1 (Q1.1–1.2), round 2 (Q2.1), round 4 (Q4.1). A question round now is round 5, and every question asked so far needs a decision in a spec. " +
 				"The planner asked round 3 (Q3.1–3.2): those questions aren't yours, so no decision in a spec names them.\n"},
 	} {
-		got := interviewerPreamble(4, tt.rounds, tt.plans, nil, "This issue has no type, so you may set it.", "")
+		got := interviewerPreamble(4, tt.rounds, tt.plans, nil, "This issue has no type, so you may set it.", ivOutcomes("", state.ClassUntyped, true))
 		if !strings.Contains(got, "\n\n"+tt.want) {
 			t.Errorf("%s: the preamble has no line\n%s\nin\n%s", tt.name, tt.want, got)
 		}

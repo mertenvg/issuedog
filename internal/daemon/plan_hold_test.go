@@ -14,7 +14,9 @@ import (
 // on a plan revision, given while the issue is held from plan-review,
 // wait (state.Command.Waits), and go through their normal checks once the
 // issue is back at plan-review, by /resume or by the interviewer's
-// unchanged move.
+// unchanged move. After a discussion hold, a /revise that waited is the
+// interviewer's revision notes instead (#294), as after a hold from
+// spec-review: its move names it, whatever the outcome.
 
 // planHoldMallory is mallory's comment that holds the issue for
 // discussion.
@@ -430,13 +432,10 @@ func planHoldBack(t *testing.T, body string, more func(f *githubtest.Fake)) func
 //   - an /approve approves plan revision 1 while it matches its hash, and
 //     is rejected with the reason once it doesn't;
 //   - a trusted 👍 on plan revision 1 approves it while it matches its
-//     hash, and approves nothing once it doesn't;
-//   - a /revise sends the plan back with its notes. Until S5's T5 gives the
-//     interviewer a plan outcome, it leaves such a /revise alone at the
-//     clarifying after a hold from plan-review (#248's assumption 9), so
-//     only here does it apply. S5's T5 replaces this case: the
-//     interviewer's move then names it, as after a hold from spec-review
-//     (TestIvHoldRevise).
+//     hash, and approves nothing once it doesn't.
+//
+// A /revise isn't among them: the interviewer's move names it, so it never
+// applies back at plan-review (TestPlanHoldReviseUnchanged, #294).
 func TestPlanHoldAfterUnchanged(t *testing.T) {
 	t.Parallel()
 	atReview, planned := []string{"stage:plan-review", "type:epic"}, []string{"stage:planned", "type:epic"}
@@ -459,9 +458,6 @@ func TestPlanHoldAfterUnchanged(t *testing.T) {
 			return issueWant{planned, []string{planApproved(1, "owner's 👍", fmt.Sprintf("r%d", thumb), "1004")}}
 		}},
 		{"a 👍 on a changed plan", "", true, func(int64, int64) issueWant { return issueWant{labels: atReview} }},
-		{"/revise, for now (S5's T5 replaces this)", "/revise split T1", false, func(cmd, _ int64) issueWant {
-			return issueWant{[]string{"stage:planning", "type:epic"}, []string{planSentBack(strconv.FormatInt(cmd, 10))}}
-		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -481,23 +477,125 @@ func TestPlanHoldAfterUnchanged(t *testing.T) {
 	}
 }
 
-// Until S5's T5, the interviewer at the clarifying after a hold from
-// plan-review doesn't read a /revise that waited through the hold as its
-// revision notes (#248's assumption 9): input.md doesn't call it that, as
-// it does after a hold from spec-review (TestIvHoldReviseContext). S5's T5
-// replaces this test.
-func TestPlanHoldReviseNotNotes(t *testing.T) {
+// planHoldRevise is the owner's /revise posted during the discussion hold
+// from plan-review.
+const planHoldRevise = "/revise split T1"
+
+// planHoldRevised is planHoldDisc with the owner's /revise during the
+// hold.
+func planHoldRevised(t testing.TB, f *githubtest.Fake) {
+	t.Helper()
+	planHoldDisc(t, f, func(f *githubtest.Fake) { f.AddComment(1, "owner", planHoldRevise) })
+}
+
+// planHoldAcked fails t unless the /revise has the App's 👍 alone.
+func planHoldAcked(t testing.TB, f *githubtest.Fake) {
+	t.Helper()
+	for _, c := range f.State().Issues[0].Comments {
+		if c.Body == planHoldRevise && !slices.Equal(c.Reactions, []string{app + " +1"}) {
+			t.Errorf("reactions on the /revise %q; want the App's 👍", c.Reactions)
+		}
+	}
+}
+
+// #294, replacing #271's interim rule: the interviewer at the clarifying
+// after a hold from plan-review reads a /revise that waited through the
+// hold as its revision notes, as after a hold from spec-review
+// (TestIvHoldReviseContext).
+func TestPlanHoldReviseNotes(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
-	planHoldDisc(t, f, func(f *githubtest.Fake) { f.AddComment(1, "owner", "/revise split T1") })
+	planHoldRevised(t, f)
 	if err := resolvePass(t, 1)(f); err != nil {
 		t.Fatal(err)
 	}
 	if l := ivLabels(f, 1); !slices.Equal(l, []string{"stage:clarifying", "type:epic"}) {
 		t.Fatalf("labels %q; want clarifying after the hold", l)
 	}
+	id := ivHoldFind(t, f, planHoldRevise)
 	files := ivContext(t, ivDaemon(t, f, newOrigin(t)), 1)
-	if strings.Contains(files["input.md"], "whose text is the revision notes") {
-		t.Errorf("input.md has the /revise as the revision notes:\n%s", files["input.md"])
+	if w := fmt.Sprintf("## Comment %d by owner: a `/revise` that waited through the hold, whose text is the revision notes\n\n```text\n%s\n```", id, planHoldRevise); !strings.Contains(files["input.md"], w) {
+		t.Errorf("input.md lacks\n%s\nin\n%s", w, files["input.md"])
 	}
+}
+
+// After unchanged, the /revise that waited through the hold from
+// plan-review is used up (#294): the move names it with cmd= beside run=,
+// and 👍s it, so it isn't applied again at plan-review, and plan revision
+// 1, which still stands, approves by a 👍 while its hash matches. The
+// unchanged pass is safe to replay.
+func TestPlanHoldReviseUnchanged(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	planHoldRevised(t, f)
+	g := ivHoldNew(t, f, map[string]any{"outcome": "unchanged", "message": "T1 is as small as it gets."})
+	if err := g.work(1); err != nil {
+		t.Fatal(err)
+	}
+	id := ivHoldFind(t, f, planHoldRevise)
+	body := newestComment(f, 1)
+	if want := "Nothing in the discussion during the hold changes this issue, so it goes back to `plan-review`.\n\n" + planHoldStands +
+		"\n\nT1 is as small as it gets.\n\ncc @owner\n\n<!-- issuedog:transition "; !strings.HasPrefix(body, want) {
+		t.Errorf("the unchanged move =\n%s\nwant it to start\n%s", body, want)
+	}
+	ivHoldFields(t, ivHoldMove(t, body), map[string]string{"from": "clarifying", "to": "plan-review", "run": "run1", "origin": "plan-review",
+		"cmd": strconv.FormatInt(id, 10)})
+	planHoldAcked(t, f)
+	writes := len(f.Writes())
+	if err := g.work(1); err != nil {
+		t.Fatal(err)
+	}
+	if w := f.Writes(); len(w) != writes || g.runs() != 1 {
+		t.Errorf("a pass at plan-review wrote %+v with %d runs; want nothing: the /revise isn't applied again", w[writes:], g.runs())
+	}
+	if l := ivLabels(f, 1); !slices.Equal(l, []string{"stage:plan-review", "type:epic"}) {
+		t.Errorf("labels %q; want plan-review", l)
+	}
+	thumb := f.AddReaction(1003, "owner", "+1")
+	if err := g.work(1); err != nil {
+		t.Fatal(err)
+	}
+	if l, c := ivLabels(f, 1), newestComment(f, 1); !slices.Equal(l, []string{"stage:planned", "type:epic"}) ||
+		!strings.Contains(c, fmt.Sprintf("from=plan-review to=planned rev=1 body=%s cmd=r%d", planHash(1, 1), thumb)) {
+		t.Errorf("labels %q, newest comment %q; want plan revision 1 approved by the 👍", l, c)
+	}
+	replayRuns(t, func(tb testing.TB, f *githubtest.Fake, _ string) { planHoldRevised(tb, f) }, func(g *rig) {
+		ivHoldRig(g)
+		g.claude(ivResult(t, map[string]any{"outcome": "unchanged"}), 0)
+	})
+}
+
+// #271's verify, second gap, decided by #294: a /revise that waited
+// through a hold from plan-review was meant for the plan, but when the
+// interviewer rewrites the spec instead, its spec move names the /revise
+// and 👍s it, so it's used up there, answered in the spec's message, and
+// never lands at spec-review as a revision request for the new spec.
+func TestPlanHoldReviseSpec(t *testing.T) {
+	t.Parallel()
+	out := ivSpec()
+	out["message"] = "The split you asked for needs a spec change first: quotes expire now."
+	f := newFake(t)
+	planHoldRevised(t, f)
+	g := ivHoldNew(t, f, out)
+	if err := g.work(1); err != nil {
+		t.Fatal(err)
+	}
+	id := ivHoldFind(t, f, planHoldRevise)
+	ivHoldFields(t, ivHoldMove(t, newestComment(f, 1)), map[string]string{"from": "clarifying", "to": "spec-review", "run": "run1",
+		"origin": "plan-review", "cmd": strconv.FormatInt(id, 10)})
+	planHoldAcked(t, f)
+	writes := len(f.Writes())
+	if err := g.work(1); err != nil {
+		t.Fatal(err)
+	}
+	if w := f.Writes(); len(w) != writes || g.runs() != 1 {
+		t.Errorf("a pass at spec-review wrote %+v with %d runs; want nothing: the /revise doesn't send the new spec back", w[writes:], g.runs())
+	}
+	if l := ivLabels(f, 1); !slices.Equal(l, []string{"stage:spec-review", "type:epic"}) {
+		t.Errorf("labels %q; want spec-review", l)
+	}
+	replayRuns(t, func(tb testing.TB, f *githubtest.Fake, _ string) { planHoldRevised(tb, f) }, func(g *rig) {
+		ivHoldRig(g)
+		g.claude(ivResult(t, out), 0)
+	})
 }

@@ -575,3 +575,113 @@ func TestPlannerSetupFailure(t *testing.T) {
 		})
 	}
 }
+
+// planChangedIDs are planChanged's issue and comments.
+type planChangedIDs struct {
+	n                                int
+	mallory, counter, revise, answer int64
+	move                             int64
+}
+
+// planChangedNotes is the interviewer's message in its plan move.
+const planChangedNotes = "PLAN-NOTES: move T1 after T2."
+
+// planChanged files owner's story "Quotes", with no parent, at planning
+// after the interviewer's plan outcome (#294): plan revision 1 at
+// plan-review, mallory's comment, which holds it for discussion, the
+// owner's 👍 on it, eve's comment, which nobody approves, the owner's
+// counter comment and /revise, the end of the hold, and the interviewer's
+// move to planning, which names the /revise. With round, an interviewer
+// round names the /revise instead, the owner answers it, and the move
+// after names none.
+func planChanged(f *githubtest.Fake, round bool) planChangedIDs {
+	var p planChangedIDs
+	p.n = f.AddIssue("owner", "Quotes", "The spec.")
+	f.AddLabel(p.n, "owner", "type:story")
+	f.AddLabel(p.n, app, "stage:planning")
+	entry := f.AddComment(p.n, app, "Plan.\n\n<!-- issuedog:transition from=planning to=plan-review run=p1 rev=1 -->\n"+
+		"<!-- issuedog:revision kind=plan rev=1 body=deadbeef -->")
+	p.mallory = f.AddComment(p.n, "mallory", "Should T1 come later?")
+	held := f.AddComment(p.n, app, fmt.Sprintf("Held.\n\n<!-- issuedog:transition from=plan-review to=held at=plan-review origin=plan-review "+
+		"reason=discussion event=c%d seen=%d -->", p.mallory, entry))
+	f.AddReaction(p.mallory, "owner", "+1")
+	f.AddComment(p.n, "eve", "EVE-WORDS")
+	p.counter = f.AddComment(p.n, "owner", "Yes, move T1 after T2.")
+	p.revise = f.AddComment(p.n, "owner", "/revise split T1")
+	f.AddComment(p.n, app, fmt.Sprintf("Resolved.\n\n<!-- issuedog:transition from=held to=clarifying at=plan-review origin=plan-review "+
+		"event=h%d seen=%d -->", held, entry))
+	cmd, seen := fmt.Sprintf(" cmd=%d", p.revise), p.revise
+	if round {
+		f.AddComment(p.n, app, fmt.Sprintf("### Questions for #%d (round 1)\n\nASKED\n\n<!-- issuedog:transition from=clarifying to=clarifying "+
+			"run=iv1 origin=plan-review round=1 questions=1%s seen=%d -->", p.n, cmd, p.revise))
+		p.answer = f.AddComment(p.n, "owner", "1a")
+		cmd, seen = "", p.answer
+	}
+	p.move = f.AddComment(p.n, app, fmt.Sprintf("The discussion during the hold changes this issue's plan, but not its spec, so it goes to `planning`.\n\n"+
+		"%s\n\ncc @owner\n\n<!-- issuedog:transition from=clarifying to=planning run=iv2 origin=plan-review%s seen=%d -->", planChangedNotes, cmd, seen))
+	return p
+}
+
+// TestPlannerContextAfterPlanChange: after the interviewer's plan outcome
+// (#294), the planner's input.md holds its notes, after the inputs: the
+// move's comment with the interviewer's message, the discussion's owner
+// input, mallory's approved comment and the owner's counter comment, and
+// the /revise the interviewer's moves named, as revision notes for the
+// plan, listed once. A /revise named by an interviewer round before the
+// plan outcome is there too. They stay through a planner round. Mallory's
+// approved comment is owner input, so it's not in untrusted.md, and eve's,
+// which nobody approved, is only there. Before the plan outcome, with a
+// plain entry to planning, there are none (TestPlannerContextEpic).
+func TestPlannerContextAfterPlanChange(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name         string
+		round, asked bool // an interviewer round names the /revise; the planner asked a round since
+	}{
+		{"the move names the /revise", false, false},
+		{"a round before names the /revise", true, false},
+		{"after a planner round", false, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFake(t)
+			p := planChanged(f, tt.round)
+			var answer int64
+			if tt.asked {
+				planAsked(f, p.n, 1, 1, p.move)
+				answer = f.AddComment(p.n, "alice", "1b")
+			}
+			files := planContext(t, ivDaemon(t, f, newOrigin(t)), p.n)
+			in := files["input.md"]
+			want := []string{
+				fmt.Sprintf("## Comment %d by issuedog[bot]: the interviewer's move to planning after a discussion hold, "+
+					"whose message is its notes on what the discussion changes in the plan\n\n```text\n"+
+					"The discussion during the hold changes this issue's plan, but not its spec, so it goes to `planning`.\n\n%s\n\ncc @owner\n```",
+					p.move, planChangedNotes),
+				fmt.Sprintf("## Comment %d by mallory, during the discussion hold, approved by owner's 👍, so it's owner input\n\n"+
+					"```text\nShould T1 come later?\n```", p.mallory),
+				fmt.Sprintf("## Comment %d by owner, during the discussion hold, a trusted comment that counters the untrusted comments before it, "+
+					"so it's owner input\n\n```text\nYes, move T1 after T2.\n```", p.counter),
+				fmt.Sprintf("## Comment %d by owner: a `/revise` that waited through the hold, whose text is revision notes for the plan\n\n"+
+					"```text\n/revise split T1\n```", p.revise),
+			}
+			if tt.asked {
+				want = append([]string{fmt.Sprintf("## Comment %d by alice: an answer to round 1\n\n```text\n1b\n```", answer)}, want...)
+			}
+			at := 0
+			for _, w := range want {
+				i := strings.Index(in[at:], w)
+				if i < 0 {
+					t.Errorf("input.md lacks, in order,\n%s\nin\n%s", w, in)
+					continue
+				}
+				at += i + len(w)
+			}
+			if n := strings.Count(in, fmt.Sprintf("Comment %d by owner", p.revise)); n != 1 {
+				t.Errorf("input.md lists the /revise %d times, want once:\n%s", n, in)
+			}
+			ivOnlyIn(t, files, "Should T1 come later?", "input.md")
+			ivOnlyIn(t, files, "EVE-WORDS", "untrusted.md")
+		})
+	}
+}

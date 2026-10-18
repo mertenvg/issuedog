@@ -136,8 +136,14 @@ func (p *Planner) logSkip(n int) {
 //     oldest first. The rounds are every stage's (allRounds).
 //   - input.md: in.Inputs, the answers to the planner's latest round or
 //     what's new since the issue came to planning, or "none: first run".
+//     While the move that put the issue at planning is the interviewer's
+//     plan outcome after a discussion hold (#294), its notes follow
+//     (plannerHoldOf): the move's comment, with the interviewer's message,
+//     the discussion's owner input, and the /revise the interviewer's moves
+//     named.
 //   - untrusted.md: only on an epic or a story (SPEC §6.2), and only when
-//     there's something in it, as for the interviewer (contextSort).
+//     there's something in it, as for the interviewer (contextSort). A
+//     comment the discussion's owner input approved isn't in it.
 //   - system.md: the preamble (plannerPreamble), then
 //     .issuedog/prompts/planner.md from main or the shipped default
 //     (agent.Prompt).
@@ -146,7 +152,8 @@ func (p *Planner) logSkip(n int) {
 // It only reads: the prompt from the clone, trust, the timeline of an
 // untrusted author's issue, the issue's sub-issues, and for a story with a
 // parent, the parent, its edits, its sub-issues, and its timeline if its
-// author isn't trusted. An error is a setup
+// author isn't trusted. After the interviewer's plan outcome, it also reads
+// the reactions of the discussion's untrusted comments. An error is a setup
 // failure, so no run starts and it isn't counted, as for a prompt that
 // can't be read.
 func (p *Planner) Context(ctx context.Context, in Input) (map[string][]byte, error) {
@@ -168,11 +175,17 @@ func (p *Planner) Context(ctx context.Context, in Input) (map[string][]byte, err
 		return nil, wrap(err)
 	}
 	all := allRounds(s, a.AppSlug, in.Dirt.Has)
+	hold, err := plannerHoldOf(ctx, a, tc, s, in.Dirt, in.Issue)
+	if err != nil {
+		return nil, wrap(err)
+	}
 	text, err := contextSort(ctx, s, a.AppSlug, in.Dirt, tc, titleBy, bodyBy, contextStage{
 		App:     func(c github.Comment) string { return ivAppLabel(c, all, a.AppSlug) },
 		Trusted: func(c github.Comment) string { return ivRoundLabel(ivRoundOf(all, c.ID)) },
 		// SPEC §6.2: untrusted input only on an epic or a story.
 		Untrusted: s.Type == "epic" || s.Type == "story",
+		// Owner input, in input.md (plannerHold.sections).
+		LeftOut: func(id int64) bool { return hold.Input.Approved[id] != "" },
 	})
 	if err != nil {
 		return nil, wrap(err)
@@ -187,7 +200,8 @@ func (p *Planner) Context(ctx context.Context, in Input) (map[string][]byte, err
 		"children.md": []byte(ivFile("Sub-issues of #"+strconv.Itoa(s.Number), plannerChildrenIntro,
 			[]string{plannerList(children, 0)}, "")),
 		"conversation.md": []byte(ivFile("Conversation on #"+strconv.Itoa(s.Number), plannerConversationIntro, text.Conversation, "None yet.")),
-		"input.md":        []byte(ivFile("Input for this run", plannerInputIntro, plannerInputs(in, all, ivHoldSpanOf(s, a.AppSlug, in.Dirt.Has)), "none: first run")),
+		"input.md": []byte(ivFile("Input for this run", plannerInputIntro,
+			append(plannerInputs(in, all, ivHoldSpanOf(s, a.AppSlug, in.Dirt.Has)), hold.sections()...), "none: first run")),
 	}
 	if s.Type == "story" && s.Parent != 0 {
 		parent, untrusted, err := p.parent(ctx, s, tc)
