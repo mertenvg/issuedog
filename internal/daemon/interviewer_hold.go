@@ -286,6 +286,14 @@ func ivHoldMove(outcome string, origin state.Stage) (state.Stage, state.Trigger)
 
 // ivHoldFields is what Apply adds to the interviewer's move at the
 // clarifying after a hold (#189), and what it does after the move.
+//
+// It names a /revise that waited through the hold only after a hold from
+// spec-review. That rule is interim for a hold from plan-review (#248's
+// assumption 9, #271): the interviewer has no plan outcome yet, so it
+// leaves such a /revise alone, and the /revise sends the plan back once
+// the interviewer's unchanged move takes the issue back to plan-review.
+// S5's T5 adds the plan outcome, and makes that /revise the interviewer's
+// revision notes there, as for spec-review, which replaces this rule.
 type ivHoldFields struct {
 	origin state.Stage // the stage the issue came from (ivHoldOrigin), or ""
 	revise int64       // the /revise the move names (ivHoldRevise), or 0
@@ -354,17 +362,34 @@ func (h ivHoldFields) ack(ctx context.Context, a *Applier, wrap func(error) erro
 }
 
 // ivHoldStanding is the line of an unchanged outcome's comment on the
-// revision that still stands at to, its origin (renderUnchanged): at
-// spec-review, the latest revision (state.LatestRevision), while the body
-// isn't dirty and still has its hash, and nothing hides it, as only then
-// does a 👍 or /approve on it approve it (SPEC §7.4). Otherwise it's "",
-// and ReviewVisit posts a new revision once the issue is at spec-review.
+// revision that still stands at to, its origin (renderUnchanged):
+//   - at spec-review, the latest spec revision (state.LatestRevision),
+//     while the body isn't dirty and still has its hash, and nothing hides
+//     it, as only then does a 👍 or /approve on it approve it (SPEC §7.4).
+//     Otherwise ReviewVisit posts a new revision once the issue is at
+//     spec-review;
+//   - at plan-review, the latest plan revision, while state.PlanApproval
+//     gives no reason it can't be approved (#271). Otherwise nothing
+//     approves it until a new plan, which /revise or any comment gets
+//     there (#248's Q1a).
+//
+// Anywhere else, or when nothing stands, it's "".
 func ivHoldStanding(s *github.Snapshot, appSlug string, d Dirt, to state.Stage) string {
-	latest, ok := state.LatestRevision(s, appSlug, state.SpecRevision, d.Has)
-	if to != state.SpecReview || !ok || latest.Hidden || d.Has(state.BodyID) || latest.Hash != state.BodyHash(s.Body) {
-		return ""
+	switch to {
+	case state.SpecReview:
+		latest, ok := state.LatestRevision(s, appSlug, state.SpecRevision, d.Has)
+		if !ok || latest.Hidden || d.Has(state.BodyID) || latest.Hash != state.BodyHash(s.Body) {
+			return ""
+		}
+		return fmt.Sprintf("Revision %d of the spec, `%s`, still stands: to approve it, react 👍 to it, or post `/approve`.", latest.Rev, latest.Hash)
+	case state.PlanReview:
+		latest, why := state.PlanApproval(s, appSlug, d.Has)
+		if len(why) > 0 {
+			return ""
+		}
+		return fmt.Sprintf("Revision %d of the plan, `%s`, still stands: to approve it, react 👍 to it, or post `/approve`.", latest.Rev, latest.Hash)
 	}
-	return fmt.Sprintf("Revision %d of the spec, `%s`, still stands: to approve it, react 👍 to it, or post `/approve`.", latest.Rev, latest.Hash)
+	return ""
 }
 
 // ivHoldWait is what a move to the clarifying after a hold says of what

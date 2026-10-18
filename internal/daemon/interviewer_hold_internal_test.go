@@ -403,8 +403,8 @@ func TestIvHoldSectionNone(t *testing.T) {
 	}
 }
 
-// ivHoldStanding names the latest revision only at spec-review, while the
-// body isn't dirty, still has its hash, and nothing hides the revision.
+// ivHoldStanding names the latest spec revision only at spec-review, while
+// the body isn't dirty, still has its hash, and nothing hides the revision.
 func TestIvHoldStanding(t *testing.T) {
 	t.Parallel()
 	none := Dirt{}
@@ -438,5 +438,43 @@ func TestIvHoldStanding(t *testing.T) {
 	}
 	if got := ivHoldStanding(waitSnap(7, nil, plan), waitSlug, none, state.SpecReview); got != "" {
 		t.Errorf("with only a plan revision = %q, want none", got)
+	}
+}
+
+// At plan-review, ivHoldStanding names the latest plan revision while
+// state.PlanApproval gives no reason it can't be approved (#271): never
+// the spec revision, and nothing once the plan is hidden, its comment no
+// longer matches its hash, or the body is dirty.
+func TestIvHoldStandingPlan(t *testing.T) {
+	t.Parallel()
+	none := Dirt{}
+	plan := waitPlanRevision(t, 2, "### Plan for #7 (rev 2)")
+	h, ok := state.PlanHash(plan)
+	if !ok {
+		t.Fatalf("no plan hash in %q", plan)
+	}
+	s := waitSnap(7, nil, waitRevision(1, "The spec."), plan)
+	want := "Revision 2 of the plan, `" + h + "`, still stands: to approve it, react 👍 to it, or post `/approve`."
+	if got := ivHoldStanding(s, waitSlug, none, state.PlanReview); got != want {
+		t.Errorf("at plan-review = %q, want %q", got, want)
+	}
+	// A trusted edit to the body leaves the plan standing (#248's Q2a).
+	s.Body = "The spec, edited."
+	if got := ivHoldStanding(s, waitSlug, none, state.PlanReview); got != want {
+		t.Errorf("with another body = %q, want %q", got, want)
+	}
+	if got := ivHoldStanding(s, waitSlug, Dirt{state.BodyID: "eve"}, state.PlanReview); got != "" {
+		t.Errorf("with a dirty body = %q, want none", got)
+	}
+	hidden := waitSnap(7, nil, waitRevision(1, "The spec."), plan, "A note.")
+	if got := ivHoldStanding(hidden, waitSlug, Dirt{703: "eve"}, state.PlanReview); got != "" {
+		t.Errorf("with a dirty App comment after it = %q, want none", got)
+	}
+	changed := waitSnap(7, nil, waitRevision(1, "The spec."), strings.Replace(plan, "(rev 2)", "(rev 2, edited)", 1))
+	if got := ivHoldStanding(changed, waitSlug, none, state.PlanReview); got != "" {
+		t.Errorf("with the plan comment edited = %q, want none", got)
+	}
+	if got := ivHoldStanding(waitSnap(7, nil, waitRevision(1, "The spec.")), waitSlug, none, state.PlanReview); got != "" {
+		t.Errorf("with only a spec revision = %q, want none", got)
 	}
 }

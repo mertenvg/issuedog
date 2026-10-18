@@ -31,8 +31,8 @@ var Start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // Fake serves one repo's issues, comments, labels, timelines, reactions,
 // parents and sub-issues, a closed event's closer (closing.go), a
-// sub-issue's link and an issue's blocked-by dependencies, listed and added
-// by the issue's ID, which every issue has apart from its number
+// sub-issue's link and an issue's dependencies, listed both ways, and
+// blocked-by links added and removed by the issue's ID, which every issue has apart from its number
 // (children.go, dependencies.go), a created issue's labels and type, a
 // transferred issue's 301s and new home (transfer.go), the
 // GraphQL queries for their edits, deleted
@@ -171,6 +171,8 @@ func New(t testing.TB, repo, slug string) *Fake {
 	f.handle("POST /issues/{n}/sub_issues", f.addSubIssue)
 	f.handle("GET /issues/{n}/dependencies/blocked_by", f.blockedBy)
 	f.handle("POST /issues/{n}/dependencies/blocked_by", f.addBlockedBy)
+	f.handle("DELETE /issues/{n}/dependencies/blocked_by/{issue_id}", f.removeBlockedBy)
+	f.handle("GET /issues/{n}/dependencies/blocking", f.blocking)
 	f.handle("GET /issues/{n}/comments", f.listComments)
 	f.handle("GET /issues/comments", f.listComments)
 	f.handle("POST /issues/{n}/comments", f.addComment)

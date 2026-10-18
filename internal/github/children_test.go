@@ -351,3 +351,168 @@ func TestChildrenReplay(t *testing.T) {
 		})
 	}
 }
+
+// is404 reports whether err wraps GitHub's 404.
+func is404(err error) bool {
+	var er *gogithub.ErrorResponse
+	return errors.As(err, &er) && er.Response.StatusCode == http.StatusNotFound
+}
+
+// Blocking reads the issues an issue blocks, open and closed, across pages
+// of 100, and a repeat of an unchanged listing is a 304 for each page. A
+// missing issue's listing is an error naming it.
+func TestBlockingPages(t *testing.T) {
+	t.Parallel()
+	f := githubtest.New(t, "o/r", "issuedog")
+	top := f.AddIssue("owner", "Top", "")
+	const n = 103
+	for i := range n {
+		dep := f.AddIssue("owner", fmt.Sprintf("Blocked %d", i), "")
+		f.SetBlockedBy(dep, top)
+		if i%2 == 0 {
+			f.Close(dep)
+		}
+	}
+	ctx, c := context.Background(), f.Client(t)
+	got, err := c.Blocking(ctx, "o", "r", top)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := 0
+	for i, is := range got {
+		if is.GetNumber() != i+2 {
+			t.Errorf("item %d is #%d, want #%d", i, is.GetNumber(), i+2)
+			break
+		}
+		if is.GetState() == "closed" {
+			closed++
+		}
+	}
+	if len(got) != n || closed != (n+1)/2 {
+		t.Errorf("%d issues, %d closed; want %d, %d closed", len(got), closed, n, (n+1)/2)
+	}
+	before := f.NotModified()
+	if again, err := c.Blocking(ctx, "o", "r", top); err != nil || len(again) != n {
+		t.Errorf("again: %d issues, %v; want %d", len(again), err, n)
+	}
+	if got := f.NotModified() - before; got != 2 {
+		t.Errorf("again: %d 304s, want 2, one for each page", got)
+	}
+	if _, err := c.Blocking(ctx, "o", "r", 999); err == nil || !strings.Contains(err.Error(), "list issues blocked by o/r#999: ") {
+		t.Errorf("blocking of a missing issue: err = %v, want one naming o/r#999", err)
+	}
+}
+
+// RemoveBlockedBy removes a link by the blocker's ID, and both BlockedBy and
+// Blocking show it gone, while the issue's other links stay. A second
+// removal of the same link is a wrapped 404 naming the ID and the issue.
+func TestRemoveBlockedBy(t *testing.T) {
+	t.Parallel()
+	f := githubtest.New(t, "o/r", "issuedog")
+	blocked := f.AddIssue("owner", "Blocked", "")
+	blocker := f.AddIssue("owner", "Blocker", "")
+	other := f.AddIssue("owner", "Other blocker", "")
+	f.SetBlockedBy(blocked, blocker)
+	f.SetBlockedBy(blocked, other)
+	ctx, c := context.Background(), f.Client(t)
+	before, err := c.Blocking(ctx, "o", "r", blocker)
+	if err != nil || len(before) != 1 || before[0].GetNumber() != blocked {
+		t.Fatalf("blocking before = %v, %v; want #%d", before, err, blocked)
+	}
+	blockers, err := c.BlockedBy(ctx, "o", "r", blocked)
+	if err != nil || len(blockers) != 2 || blockers[0].GetNumber() != blocker {
+		t.Fatalf("blocked-by before = %v, %v; want #%d first of 2", blockers, err, blocker)
+	}
+	if err := c.RemoveBlockedBy(ctx, "o", "r", blocked, blockers[0].GetID()); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := c.BlockedBy(ctx, "o", "r", blocked); err != nil || len(got) != 1 || got[0].GetNumber() != other {
+		t.Errorf("blocked-by after = %v, %v; want only #%d", got, err, other)
+	}
+	if got, err := c.Blocking(ctx, "o", "r", blocker); err != nil || len(got) != 0 {
+		t.Errorf("blocking after = %v, %v; want none", got, err)
+	}
+	if got, err := c.Blocking(ctx, "o", "r", other); err != nil || len(got) != 1 || got[0].GetNumber() != blocked {
+		t.Errorf("blocking by the other blocker = %v, %v; want #%d", got, err, blocked)
+	}
+	err = c.RemoveBlockedBy(ctx, "o", "r", blocked, blockers[0].GetID())
+	if !is404(err) || !strings.Contains(err.Error(), fmt.Sprintf("remove issue ID %d as blocking o/r#1: ", blockers[0].GetID())) {
+		t.Errorf("a second removal: err = %v, want a wrapped 404 naming the ID and the issue", err)
+	}
+	if got := f.State().Issues[blocked-1].BlockedBy; !reflect.DeepEqual(got, []int{other}) {
+		t.Errorf("State blocked-by = %v, want [%d]", got, other)
+	}
+}
+
+// unlinkPass removes every dependency link to or from issue dropped,
+// reading before each write, as S5 does for a dropped child: the issues it
+// blocks (Blocking), then the issues blocking it (BlockedBy).
+func unlinkPass(t *testing.T, dropped int) func(*githubtest.Fake) error {
+	return func(f *githubtest.Fake) error {
+		ctx, c := context.Background(), f.Client(t)
+		is, _, err := c.Issues.Get(ctx, "o", "r", dropped)
+		if err != nil {
+			return err
+		}
+		blocked, err := c.Blocking(ctx, "o", "r", dropped)
+		if err != nil {
+			return err
+		}
+		for _, b := range blocked {
+			if err := c.RemoveBlockedBy(ctx, "o", "r", b.GetNumber(), is.GetID()); err != nil {
+				return err
+			}
+		}
+		blockers, err := c.BlockedBy(ctx, "o", "r", dropped)
+		if err != nil {
+			return err
+		}
+		for _, b := range blockers {
+			if err := c.RemoveBlockedBy(ctx, "o", "r", dropped, b.GetID()); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
+
+// Replay passes for a pass that reads before it removes: a crash at any
+// removal leaves the rest to the next pass, which removes nothing twice. The
+// dropped #2 blocks #1 and #3 and is blocked by #4, and #4's link to #1
+// stays. A second pass over the clean result writes nothing.
+func TestRemoveBlockedByReplay(t *testing.T) {
+	t.Parallel()
+	setup := func(tb testing.TB) *githubtest.Fake {
+		f := githubtest.New(tb, "o/r", "issuedog")
+		for _, title := range []string{"Kept", "Dropped", "Kept too", "Outside"} {
+			f.AddIssue("owner", title, "")
+		}
+		f.SetBlockedBy(1, 2)
+		f.SetBlockedBy(1, 4)
+		f.SetBlockedBy(3, 2)
+		f.SetBlockedBy(2, 4)
+		return f
+	}
+	pass := unlinkPass(t, 2)
+	clean := setup(t)
+	if err := pass(clean); err != nil {
+		t.Fatal(err)
+	}
+	if w := clean.Writes(); len(w) != 3 {
+		t.Fatalf("clean run writes = %+v, want 3", w)
+	}
+	s := clean.State()
+	for i, want := range [][]int{{4}, nil, nil, nil} {
+		if got := s.Issues[i].BlockedBy; !reflect.DeepEqual(got, want) {
+			t.Errorf("#%d blocked by %v, want %v", i+1, got, want)
+		}
+	}
+	clean.ForgetWrites()
+	if err := pass(clean); err != nil {
+		t.Fatal(err)
+	}
+	if w := clean.Writes(); len(w) != 0 {
+		t.Errorf("a second pass writes %+v, want none", w)
+	}
+	githubtest.Replay(t, setup, pass)
+}
