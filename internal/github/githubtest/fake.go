@@ -31,6 +31,9 @@ var Start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // Fake serves one repo's issues, comments, labels, timelines, reactions,
 // parents and sub-issues, a closed event's closer (closing.go), a
+// sub-issue's link and an issue's blocked-by dependencies, listed and added
+// by the issue's ID, which every issue has apart from its number
+// (children.go, dependencies.go), a created issue's labels and type, a
 // transferred issue's 301s and new home (transfer.go), the
 // GraphQL queries for their edits, deleted
 // comments and pins, and the pinIssue mutation. Its API writes, comment edits, created issues and
@@ -63,6 +66,7 @@ type Fake struct {
 	historyCap  int              // see HistoryCap
 	linked      map[int][]linked // see LinkSubIssue
 	dropTypes   bool             // see DropTypeChanges
+	lastLink    int64            // the last sub-issue link made (linkUnder)
 
 	// The org's issue types (typeevent.go): their IDs by lowercase name,
 	// the names renamed away (RenameOrgIssueType), and the last ID given.
@@ -75,6 +79,8 @@ type Fake struct {
 	closingErrs []map[string]any // for the next GraphQL answer, with their paths (FailGraphQLAt)
 
 	repoIDs map[string]int64 // the repos issues were transferred to, in lower case, by ID (transfer.go)
+
+	checks checkState // what the check reads answer (checks.go)
 
 	// The App, permission and repo label endpoints, and the request log (app.go).
 	perms      map[string]string
@@ -95,6 +101,8 @@ func (discard) Write(b []byte) (int, error) { return len(b), nil }
 type issue struct {
 	gogithub.Issue // labels sorted by name
 	parent         int
+	linkSeq        int64 // when it was linked under parent, for the sub-issues' order (linkUnder)
+	blockedBy      []int // the issues blocking it, by number, in the order added (dependencies.go)
 	lastEdit       lastEdit
 	history        []lastEdit
 	labelEvents    []*gogithub.Timeline            // labeled, unlabeled, renamed, closed, reopened and issue-type events, oldest first
@@ -103,6 +111,7 @@ type issue struct {
 	deletions      []deletedEvent                  // CommentDeletedEvents, oldest first (DeleteCommentBy)
 	closingClosers map[int64]closingCloser         // how each closed event was made, by its ID (closingAnswer)
 	movedTo        string                          // the repo Transfer moved it to, in lower case, or "" (transfer.go)
+	reactions      []*gogithub.Reaction            // to the issue itself, oldest first (reactions_issue.go)
 }
 
 type comment struct {
@@ -159,6 +168,9 @@ func New(t testing.TB, repo, slug string) *Fake {
 	f.handle("GET /issues/{n}", f.getIssue)
 	f.handle("GET /issues/{n}/parent", f.getParent)
 	f.handle("GET /issues/{n}/sub_issues", f.subIssues)
+	f.handle("POST /issues/{n}/sub_issues", f.addSubIssue)
+	f.handle("GET /issues/{n}/dependencies/blocked_by", f.blockedBy)
+	f.handle("POST /issues/{n}/dependencies/blocked_by", f.addBlockedBy)
 	f.handle("GET /issues/{n}/comments", f.listComments)
 	f.handle("GET /issues/comments", f.listComments)
 	f.handle("POST /issues/{n}/comments", f.addComment)
@@ -167,11 +179,13 @@ func New(t testing.TB, repo, slug string) *Fake {
 	f.handle("PATCH /issues/comments/{id}", f.editComment)
 	f.handle("GET /issues/comments/{id}/reactions", f.listReactions)
 	f.handle("POST /issues/comments/{id}/reactions", f.addReaction)
+	f.handle("GET /issues/{n}/reactions", f.listIssueReactions)
 	f.handle("POST /issues/{n}/labels", f.addLabels)
 	f.handle("DELETE /issues/{n}/labels/{name}", f.removeLabel)
 	f.handle("GET /issues/{n}/timeline", f.timeline)
 	f.mux.HandleFunc("POST /graphql", f.serveGraphQL)
 	f.handleApp()
+	f.handleChecks()
 	f.handleAssign()
 	f.handleTransfer()
 	f.srv = httptest.NewServer(f.logged(f.mux))
@@ -210,11 +224,12 @@ func (f *Fake) AddIssue(author, title, body string, labels ...string) int {
 }
 
 // fileIssue files an issue by author, with its labels added by author, and
-// returns it. Its node ID is the one GraphQL knows it by (issueNode).
+// returns it. Its node ID is the one GraphQL knows it by (issueNode), and
+// its ID the one sub-issue and dependency writes name it by (issueID).
 func (f *Fake) fileIssue(author, title, body string, labels []string) *issue {
 	now := f.tick()
 	n := len(f.issues) + 1
-	is := &issue{Issue: gogithub.Issue{Number: &n, NodeID: new(issueNode(n)), Title: &title, Body: &body, State: new("open"),
+	is := &issue{Issue: gogithub.Issue{Number: &n, ID: new(issueID(n)), NodeID: new(issueNode(n)), Title: &title, Body: &body, State: new("open"),
 		User: user(author), CreatedAt: now, UpdatedAt: now}}
 	for _, l := range labels {
 		if is.addLabel(l) {
@@ -238,8 +253,11 @@ func (f *Fake) SetPullRequest(number int) {
 	})
 }
 
-// SetParent makes number a sub-issue of parent.
-func (f *Fake) SetParent(number, parent int) { f.edit(number, func(is *issue) { is.parent = parent }) }
+// SetParent makes number a sub-issue of parent, listed after its other
+// sub-issues, or of none for 0. It moves no updated_at.
+func (f *Fake) SetParent(number, parent int) {
+	f.edit(number, func(is *issue) { f.linkUnder(is, parent) })
+}
 
 func (f *Fake) edit(number int, change func(*issue)) {
 	f.mu.Lock()
@@ -287,7 +305,7 @@ func (f *Fake) DeleteComment(id int64) {
 func (f *Fake) AddReaction(commentID int64, author, content string) int64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	r, _ := f.react(f.findComment(commentID), author, content)
+	r, _ := f.react(&f.findComment(commentID).reactions, author, content)
 	return r.GetID()
 }
 
@@ -447,15 +465,16 @@ func (f *Fake) addCommentBy(is *issue, author, body string) *comment {
 	return c
 }
 
-// react adds a reaction unless author has it already, and reports whether it did.
-func (f *Fake) react(c *comment, author, content string) (*gogithub.Reaction, bool) {
-	for _, r := range c.reactions {
+// react adds a reaction to a comment's or an issue's reactions unless author
+// has it already, and reports whether it did.
+func (f *Fake) react(reactions *[]*gogithub.Reaction, author, content string) (*gogithub.Reaction, bool) {
+	for _, r := range *reactions {
 		if r.GetUser().GetLogin() == author && r.GetContent() == content {
 			return r, false
 		}
 	}
 	r := &gogithub.Reaction{ID: new(f.nextID()), User: user(author), Content: &content, CreatedAt: f.tick()}
-	c.reactions = append(c.reactions, r)
+	*reactions = append(*reactions, r)
 	return r, true
 }
 
@@ -626,7 +645,7 @@ func (f *Fake) addReaction(c *call) (int, any) {
 	if status, msg := c.decode(&req); msg != nil {
 		return status, msg
 	}
-	r, created := f.react(c.comment, f.slug+"[bot]", req.Content)
+	r, created := f.react(&c.comment.reactions, f.slug+"[bot]", req.Content)
 	if created {
 		return http.StatusCreated, r
 	}

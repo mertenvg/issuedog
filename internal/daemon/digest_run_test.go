@@ -606,3 +606,77 @@ func TestDigestRunTransferredRevert(t *testing.T) {
 		})
 	}
 }
+
+// digestRunTitleRule runs the whole run's repo through the probe of #87's
+// 2026-10-15 note, and returns the edit history queries each step sent.
+// Once the first pass created the digest as 12, the App files task 13 at
+// ready, with an origin marker, and a pass reads it. Then mertenvg edits
+// the origin out of its body and, if renamed is set, renames it issuedog
+// digest. The steps are:
+//  1. the pass that lists the change;
+//  2. an unchanged pass, which sends only conditional GETs, answered 304,
+//     and writes nothing;
+//  3. a pass after a comment of mertenvg's on 13, which lists it again;
+//  4. a new daemon's first pass, on a restart;
+//  5. its unchanged pass, as for 2.
+//
+// 13 stays as mertenvg left it, and 12 stays the digest, all the while.
+func digestRunTitleRule(t *testing.T, renamed bool) []int {
+	t.Helper()
+	f, o := digestRunFake(t), digestRunOrigin(t)
+	d := digestRunDaemon(t, f, o, nil, nil)
+	digestRunStep(t, f, d, "the first pass", digestRunFirst...)
+	n := f.AddIssue(app, "A task", digestTaskBody)
+	f.AddLabel(n, app, "stage:ready")
+	f.AddComment(n, app, "<!-- issuedog:transition from=intake to=ready run=rready -->")
+	iterate(t, d)
+	f.EditBody(n, digestRunOwner, digestTaskEdited)
+	if renamed {
+		f.RenameIssue(n, digestRunOwner, "issuedog digest")
+	}
+	var got []int
+	step := func(d *daemon.Daemon, unchanged bool) {
+		t.Helper()
+		histories, writes, from := f.HistoryQueries(), len(f.Writes()), len(f.Requests())
+		iterate(t, d)
+		got = append(got, f.HistoryQueries()-histories)
+		if !unchanged {
+			return
+		}
+		for _, r := range f.Requests()[from:] {
+			if r.Method != http.MethodGet || !r.Conditional || r.Status != http.StatusNotModified {
+				t.Errorf("the unchanged pass sent %+v; want only conditional GETs answered 304", r)
+			}
+		}
+		if w := f.Writes()[writes:]; len(w) != 0 {
+			t.Errorf("the unchanged pass wrote %+v; want nothing", w)
+		}
+	}
+	step(d, false)
+	step(d, true)
+	f.AddComment(n, digestRunOwner, "Still a task.")
+	step(d, false)
+	d = digestRunDaemon(t, f, o, nil, nil)
+	step(d, false)
+	step(d, true)
+	if is := f.State().Issues; len(is) != n || is[n-1].Body != digestTaskEdited || !strings.HasPrefix(is[11].Body, "7 items wait on you") {
+		t.Errorf("issues = %+v; want 13 as mertenvg left it, and 12 still the digest", is)
+	}
+	return got
+}
+
+// The title rule costs one edit history query, for task 13's first
+// version, on the pass that lists its rename, and one on the restart's
+// first poll: at most one per start for each issue only the title rule
+// would take. It costs none on an unchanged pass, nor on a pass that lists
+// 13 again. Every other query is the same as without the rename.
+func TestDigestRunTitleRuleRequests(t *testing.T) {
+	t.Parallel()
+	base, got := digestRunTitleRule(t, false), digestRunTitleRule(t, true)
+	want := []int{1, 0, 0, 1, 0}
+	for i := range want {
+		if got[i]-base[i] != want[i] || (i == 1 || i == 4) && got[i] != 0 {
+			t.Fatalf("history queries per step = %v, and %v without the rename; want %v more, and none on an unchanged pass", got, base, want)
+		}
+	}
+}
