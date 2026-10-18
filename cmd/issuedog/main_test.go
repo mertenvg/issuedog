@@ -272,6 +272,25 @@ func TestNewStepUsesCurrentTrust(t *testing.T) {
 	}
 }
 
+// newStep's Models is the models it got, asked on each call, so a plan
+// item's model is resolved against models.allowed as of the latest reload
+// when ChildrenVisit files its child (#126).
+func TestNewStepModels(t *testing.T) {
+	t.Parallel()
+	current := config.Models{Allowed: []config.Model{{Name: "opus"}}}
+	st := newStep(&daemon.Applier{Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{}, func() config.Models { return current })
+	if st.Models == nil {
+		t.Fatal("newStep's step has no Models")
+	}
+	if got := st.Models(); !reflect.DeepEqual(got, current) {
+		t.Errorf("Models() = %+v, want %+v", got, current)
+	}
+	current = config.Models{Allowed: []config.Model{{Name: "claude-sonnet-5-5-20261001", Label: "sonnet"}}} // a reload
+	if got := st.Models(); !reflect.DeepEqual(got, current) {
+		t.Errorf("Models() after a reload = %+v, want %+v", got, current)
+	}
+}
+
 // newStep approves a plan at plan-review, by a 👍 on the plan revision on
 // one epic and by /approve on another. Each plan comment is posted as the
 // planner's run posts it, by a move with PlanRev.

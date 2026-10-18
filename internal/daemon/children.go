@@ -9,6 +9,7 @@ import (
 	"time"
 
 	gogithub "github.com/google/go-github/v92/github"
+	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/logr/v2"
@@ -29,8 +30,11 @@ import (
 // the order childSpecs gives, plan order with the human tasks last
 // (childOrder):
 //   - files its child if none is found (CreateChild), with its title, body,
-//     labels and issue type. A human task's body names the issues of the
-//     items that depend on it, filed before it (childSpec.bodyOf);
+//     labels and issue type. Its model and effort labels are resolved
+//     against Models as of this visit, and a warning names the item for
+//     each one left off (childOverrides). A human task's body names the
+//     issues of the items that depend on it, filed before it
+//     (childSpec.bodyOf);
 //   - links it under the parent if it isn't a sub-issue of it yet
 //     (AddSubIssue);
 //   - gives it its first move, intake → its first stage on TriggerCreated,
@@ -64,7 +68,11 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 		logr.Debugf("%s/%s#%d: at planned with no approved plan revision that has its data, so no children are created", st.Owner, st.Repo, s.Number)
 		return nil
 	}
-	specs, err := childSpecs(s, rev.Rev, plan.Items, st.IssueTypes, st.Notify)
+	var models config.Models // none, if the step has no Models
+	if st.Models != nil {
+		models = st.Models()
+	}
+	specs, err := childSpecs(s, rev.Rev, plan.Items, st.IssueTypes, st.Notify, models)
 	if err != nil {
 		return wrap(err)
 	}
@@ -179,6 +187,9 @@ func (st *Step) childWrite(ctx context.Context, s *github.Snapshot, rev int, key
 		}
 		f = childFound{Number: is.GetNumber(), ID: is.GetID()}
 		logr.Infof("%s/%s#%d: filed #%d for item %s of its plan, rev %d", st.Owner, st.Repo, s.Number, f.Number, c.Item, rev)
+		for _, why := range c.leftOff {
+			logr.Warnf("%s/%s#%d: filed #%d for item %s of its plan, rev %d, without the label for %s", st.Owner, st.Repo, s.Number, f.Number, c.Item, rev, why)
+		}
 		child = childCreated(is, s.Number)
 	}
 	if !f.Linked { // as one filed just now is, which is touched here

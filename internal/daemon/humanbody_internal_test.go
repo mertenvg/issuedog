@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
 )
@@ -77,7 +78,7 @@ func TestHumanBodyGolden(t *testing.T) {
 			items = append([]planItem{dep}, items...)
 			why, numbers = "#126", map[string]int{"T2": 126}
 		}
-		specs, err := childSpecs(childParent(124, "priority:p2"), 1, items, false, []string{"mertenvg"})
+		specs, err := childSpecs(childParent(124, "priority:p2"), 1, items, false, []string{"mertenvg"}, config.Models{})
 		if err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
@@ -235,7 +236,7 @@ func TestChildBodyOfBlocks(t *testing.T) {
 	second.ID, second.DependsOn = "T3", []string{"T2"}
 	dep := childItem(t, "story-plan", "T1")
 	dep.ID, dep.DependsOn = "T4", []string{"T3"}
-	specs, err := childSpecs(childParent(10), 1, []planItem{first, second, dep}, false, nil)
+	specs, err := childSpecs(childParent(10), 1, []planItem{first, second, dep}, false, nil, config.Models{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +273,7 @@ func TestChildHumanSize(t *testing.T) {
 	dep := childItem(t, "story-plan", "T2")
 	dep.DependsOn = []string{"T3"}
 	describe := func() ([]childSpec, error) {
-		return childSpecs(childParent(5), 1, []planItem{dep, it}, false, nil)
+		return childSpecs(childParent(5), 1, []planItem{dep, it}, false, nil, config.Models{})
 	}
 	specs, err := describe()
 	if err != nil {

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
 )
@@ -56,7 +57,7 @@ func childItem(t *testing.T, plan, id string) planItem {
 // childOne is childSpecs for it alone, which must succeed.
 func childOne(t *testing.T, parent *github.Snapshot, it planItem, issueTypes bool) childSpec {
 	t.Helper()
-	specs, err := childSpecs(parent, 1, []planItem{it}, issueTypes, []string{"mertenvg"})
+	specs, err := childSpecs(parent, 1, []planItem{it}, issueTypes, []string{"mertenvg"}, config.Models{})
 	if err != nil {
 		t.Fatalf("childSpecs(%s): %v", it.ID, err)
 	}
@@ -215,7 +216,9 @@ func TestChildTitle(t *testing.T) {
 
 // Labels: type, scope for a task, priority and stage on a labels repo; on
 // an issue-types repo no type label, and the issue type instead. The stage
-// is each kind's first, and the created row for its class enters it.
+// is each kind's first, and the created row for its class enters it. The
+// task's item sets effort medium, which comes last, and model sonnet,
+// which resolves against no models here (TestChildOverrides).
 func TestChildLabelsAndStage(t *testing.T) {
 	t.Parallel()
 	parent := childParent(124, "priority:p2")
@@ -231,15 +234,71 @@ func TestChildLabelsAndStage(t *testing.T) {
 		stage      state.Stage
 	}{
 		{"story, labels", story, false, []string{"type:story", "priority:p2", "stage:planning"}, "", state.Planning},
-		{"task, labels", task, false, []string{"type:task", "scope:booking", "priority:p2", "stage:ready"}, "", state.Ready},
+		{"task, labels", task, false, []string{"type:task", "scope:booking", "priority:p2", "stage:ready", "effort:medium"}, "", state.Ready},
 		{"human task, labels", human, false, []string{"type:task", "scope:infra", "priority:p2", "stage:needs-human"}, "", state.NeedsHuman},
 		{"story, issue types", story, true, []string{"priority:p2", "stage:planning"}, "Story", state.Planning},
-		{"task, issue types", task, true, []string{"scope:booking", "priority:p2", "stage:ready"}, "Task", state.Ready},
+		{"task, issue types", task, true, []string{"scope:booking", "priority:p2", "stage:ready", "effort:medium"}, "Task", state.Ready},
 		{"human task, issue types", human, true, []string{"scope:infra", "priority:p2", "stage:needs-human"}, "Task", state.NeedsHuman},
 	} {
 		c := childOne(t, parent, tc.it, tc.issueTypes)
 		if !slices.Equal(c.Labels, tc.labels) || c.IssueType != tc.issueType || c.Stage != tc.stage {
 			t.Errorf("%s: labels %q, type %q, stage %s; want %q, %q, %s", tc.name, c.Labels, c.IssueType, c.Stage, tc.labels, tc.issueType, tc.stage)
+		}
+	}
+}
+
+// Override labels (#126): an item's model becomes model:<suffix>, resolved
+// against models.allowed by full name or by label suffix, and its effort
+// effort:<level>, in lower case, after every other label, for any kind of
+// child. An item with neither gets none. A model that no longer resolves,
+// as after a reload dropped it, or an effort ValidEffort refuses, is left
+// off and named in leftOff, and the child is still described.
+func TestChildOverrides(t *testing.T) {
+	t.Parallel()
+	models := config.Models{Allowed: []config.Model{{Name: "opus"},
+		{Name: "claude-haiku-5-5-20261001", Label: "haiku-dated"}, {Name: "claude-sonnet-5-5-20261001", Label: "sonnet"}}}
+	parent := childParent(124, "priority:p2")
+	story := childItem(t, "epic-plan", "S2")
+	task := childItem(t, "story-plan", "T1")
+	human := childItem(t, "story-plan", "T3")
+	for _, tc := range []struct {
+		name, model, effort string
+		it                  planItem
+		overrides, leftOff  []string
+	}{
+		{"model and effort", "opus", "high", task, []string{"model:opus", "effort:high"}, nil},
+		{"an entry's own label suffix", "claude-haiku-5-5-20261001", "", task, []string{"model:haiku-dated"}, nil},
+		{"a model by its label suffix", "sonnet", "", task, []string{"model:sonnet"}, nil},
+		{"a label suffix in another case", "Opus", "", task, []string{"model:opus"}, nil},
+		{"an effort in upper case", "", "High", task, []string{"effort:high"}, nil},
+		{"neither", "", "", task, nil, nil},
+		{"a story", "opus", "max", story, []string{"model:opus", "effort:max"}, nil},
+		{"a human task", "claude-haiku-5-5-20261001", "low", human, []string{"model:haiku-dated", "effort:low"}, nil},
+		{"a model a reload dropped", "claude-gpt-9", "medium", task, []string{"effort:medium"},
+			[]string{`its model "claude-gpt-9", which models.allowed doesn't have any more`}},
+		{"an effort ValidEffort refuses", "opus", "extreme", task, []string{"model:opus"},
+			[]string{`its effort "extreme", which isn't one of low, medium, high, xhigh, max`}},
+		{"both left off", "claude-gpt-9", "extreme", task, nil,
+			[]string{`its model "claude-gpt-9", which models.allowed doesn't have any more`, `its effort "extreme", which isn't one of low, medium, high, xhigh, max`}},
+	} {
+		plain := tc.it
+		plain.Model, plain.Effort = "", ""
+		base := childOne(t, parent, plain, false)
+		it := tc.it
+		it.Model, it.Effort = tc.model, tc.effort
+		specs, err := childSpecs(parent, 1, []planItem{it}, false, []string{"mertenvg"}, models)
+		if err != nil || len(specs) != 1 {
+			t.Fatalf("%s: childSpecs = %d specs, %v; want one", tc.name, len(specs), err)
+		}
+		c := specs[0]
+		if want := append(slices.Clone(base.Labels), tc.overrides...); !slices.Equal(c.Labels, want) {
+			t.Errorf("%s: labels %q, want %q", tc.name, c.Labels, want)
+		}
+		if !slices.Equal(c.leftOff, tc.leftOff) {
+			t.Errorf("%s: left off %q, want %q", tc.name, c.leftOff, tc.leftOff)
+		}
+		if got, want := childBody(t, c, nil), childBody(t, base, nil); got != want {
+			t.Errorf("%s: body\n%s\nwant the same as without model or effort\n%s", tc.name, got, want)
 		}
 	}
 }
@@ -333,7 +392,7 @@ func TestChildEscaping(t *testing.T) {
 	empty := planItem{ID: "T3", Title: "E", Outcome: "", Criteria: nil, Scope: "booking",
 		Task: &planTaskBody{Context: " ", Change: "", DefinitionOfDone: nil, TestPlan: ""}}
 	emptyHuman := planItem{ID: "T4", Title: "EH", Scope: "infra", Human: true, HumanTask: &planHumanTask{}}
-	specs, err := childSpecs(childParent(9), 2, []planItem{story, task, human, empty, emptyHuman}, false, []string{"mertenvg"})
+	specs, err := childSpecs(childParent(9), 2, []planItem{story, task, human, empty, emptyHuman}, false, []string{"mertenvg"}, config.Models{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +464,7 @@ func TestChildSize(t *testing.T) {
 	}
 	task.Task.Change += "€" // one more, so one over
 	first := childItem(t, "story-plan", "T2")
-	specs, err := childSpecs(childParent(5), 1, []planItem{first, task}, false, nil)
+	specs, err := childSpecs(childParent(5), 1, []planItem{first, task}, false, nil, config.Models{})
 	if err == nil || !strings.Contains(err.Error(), "item T7") || !strings.Contains(err.Error(), "over 64512") || specs != nil {
 		t.Errorf("childSpecs = %d specs, %v; want an error naming T7", len(specs), err)
 	}
@@ -431,7 +490,7 @@ func TestChildSpecsErrors(t *testing.T) {
 		{"no human task body", noHuman, "no human task body"},
 		{"no task body", noTask, "no task body"},
 	} {
-		specs, err := childSpecs(childParent(5), 1, []planItem{tc.it}, false, nil)
+		specs, err := childSpecs(childParent(5), 1, []planItem{tc.it}, false, nil, config.Models{})
 		if err == nil || !strings.Contains(err.Error(), "item "+tc.it.ID+": ") || !strings.Contains(err.Error(), tc.want) || specs != nil {
 			t.Errorf("%s: %v, %v; want an error naming %s", tc.name, specs, err, tc.it.ID)
 		}
@@ -443,7 +502,7 @@ func TestChildSpecsErrors(t *testing.T) {
 func TestChildSpecsOrder(t *testing.T) {
 	t.Parallel()
 	p := goldenPlan(t, "story-plan")
-	specs, err := childSpecs(childParent(124), 3, p.Items, true, nil)
+	specs, err := childSpecs(childParent(124), 3, p.Items, true, nil, config.Models{})
 	if err != nil {
 		t.Fatal(err)
 	}
