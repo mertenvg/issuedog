@@ -527,18 +527,24 @@ func TestChildrenOfRevisionHumanBlocksChanged(t *testing.T) {
 // revisionPlan is the golden revision, all four items, on a labels repo.
 var revisionPlan = childPlan{"Story", "story-revision", 4, false}
 
-// TestChildrenOfRevision: until T8 (#297), creating the children of an
-// approved revision files only its new items' children, and rewrites its
-// changed ones (T7, #296). The owner's 👍 on a revision with one item of
-// each status files exactly one child, for the new T4, linked and at
-// ready, with its origin naming revision 2, and blocked by the kept T1's
-// child, as its item depends on T1 (#339's links). The changed T2's child
-// is rewritten from revision 2 (TestChildrenChanged has the details), but
-// gets no links to T1 and T4 yet. The kept and dropped children get no
-// write, and nothing errors on their items, which carry no body to
-// describe. No record of revision 2 is posted, so T8 can still apply it,
-// and revision 1's stays the only one. A pass that crashes at any write
-// leaves the same, and a later pass writes nothing.
+// TestChildrenOfRevision: creating the children of an approved revision
+// files only its new items' children, and rewrites its changed ones (T7,
+// #296). The owner's 👍 on a revision with one item of each status files
+// exactly one child, for the new T4, linked and at ready, with its origin
+// naming revision 2, and blocked by the kept T1's child, as its item
+// depends on T1 (#339's links). The changed T2's child is rewritten from
+// revision 2 (TestChildrenChanged has the details), and its links follow
+// the revision: blocked by T1's and T4's children (#297). The kept child
+// gets no write, and nothing errors on the kept and dropped items, which
+// carry no body to describe.
+//
+// The dropped T3's child was never linked under the story, and hasn't
+// been updated since revision 2's approval, so it isn't found, as for a
+// child someone unlinked by hand (#297's decision, and #362): it gets no
+// write, and the record of revision 2, the fixture's only record, stands
+// anyway, listing T1's, T2's and T4's children and naming T3 as left as
+// it was. So no later pass looks for T3's child again. A pass that
+// crashes at any write leaves the same, and a later pass writes nothing.
 func TestChildrenOfRevision(t *testing.T) {
 	t.Parallel()
 	githubtest.Replay(t, revApproved, childrenPass(t, revisionPlan))
@@ -567,21 +573,31 @@ func TestChildrenOfRevision(t *testing.T) {
 	if got := t4.BlockedBy; !slices.Equal(got, []int{2}) {
 		t.Errorf("the new child is blocked by %v, want T1's #2 alone", got)
 	}
+	var records []string
 	for _, c := range issues[0].Comments {
 		if strings.Contains(c.Body, "<!-- issuedog:created ") {
-			t.Errorf("issue 1 has a record of its children, want none for revision 2 yet: %q", c.Body)
+			records = append(records, c.Body)
 		}
+	}
+	want := "I've applied plan rev 2 to the children, which are now:\n- T1 #2: Record when each quote expires\n" +
+		"- T2 #3: Refuse an expired quote at booking, saying when it expired\n- T4 #6: Give the quote lifetime a default\n\n" +
+		"I found no child of T3, so this revision left it as it was.\n\n<!-- issuedog:created rev=2 children=2,3,6 -->"
+	if len(records) != 1 || records[0] != want {
+		t.Errorf("issue 1's records of its children are %q, want only\n%q", records, want)
+	}
+	if issues[3].Closed {
+		t.Error("T3's child, not found, is closed; want it left as it was")
 	}
 	for _, n := range []int{2, 4} {
 		for _, w := range f.Writes() {
 			if strings.HasPrefix(w.Path, fmt.Sprintf("/issues/%d/", n)) || w.Path == fmt.Sprintf("/issues/%d", n) {
-				t.Errorf("child #%d, kept or dropped, got the write %+v", n, w)
+				t.Errorf("child #%d, kept or not found, got the write %+v", n, w)
 			}
 		}
 	}
 	if t2 := issues[2]; t2.Title != "Refuse an expired quote at booking, saying when it expired" ||
-		!strings.Contains(t2.Body, "<!-- issuedog:origin plan=#1 rev=2 item=T2 -->") || len(t2.BlockedBy) != 0 {
-		t.Errorf("the changed child is %q, blocked by %v, with body\n%s\nwant T2's from revision 2, with no links yet", t2.Title, t2.BlockedBy, t2.Body)
+		!strings.Contains(t2.Body, "<!-- issuedog:origin plan=#1 rev=2 item=T2 -->") || !slices.Equal(t2.BlockedBy, []int{2, 6}) {
+		t.Errorf("the changed child is %q, blocked by %v, with body\n%s\nwant T2's from revision 2, blocked by T1's #2 and T4's #6", t2.Title, t2.BlockedBy, t2.Body)
 	}
 	noSearch(t, f)
 }

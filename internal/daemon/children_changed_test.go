@@ -101,6 +101,13 @@ type changedIDs struct {
 // the owner's 👍 on it, and the writes forgotten.
 func changedStory(t testing.TB, f *githubtest.Fake, held bool, edit func(*githubtest.Fake, changedIDs)) changedIDs {
 	t.Helper()
+	return changedStoryWith(t, f, held, edit, changedPlanData(t, changedStoryRevision(t)))
+}
+
+// changedStoryWith is changedStory with data as plan revision 2's
+// plan-data marker, such as a revision that drops T3 (#297).
+func changedStoryWith(t testing.TB, f *githubtest.Fake, held bool, edit func(*githubtest.Fake, changedIDs), data github.Marker) changedIDs {
+	t.Helper()
 	r := changedIDs{revIDs: revStory(t, f, revByOwner)}
 	first := func(n int, stage string) {
 		f.AddComment(n, app, fmt.Sprintf("Created.\n\n<!-- issuedog:transition from=intake to=%s event=p%d -->", stage, r.approve))
@@ -131,7 +138,7 @@ func changedStory(t testing.TB, f *githubtest.Fake, held bool, edit func(*github
 		edit(f, r)
 	}
 	r.plan = revMove(t, f, r.n, daemon.Move{To: state.PlanReview, Trigger: state.TriggerPlanValid, Key: state.Key{Field: "run", ID: "p2"},
-		PlanRev: 2, Text: planText(r.n, 2), Markers: []github.Marker{changedPlanData(t, changedStoryRevision(t))}})
+		PlanRev: 2, Text: planText(r.n, 2), Markers: []github.Marker{data}})
 	f.AddReaction(r.plan, "owner", "+1")
 	f.ForgetWrites()
 	return r
@@ -508,9 +515,9 @@ func changedSaveLease(t testing.TB, root string, n int, seen int64, out string) 
 }
 
 // Through the loop, the pass that approves the revision rewrites the
-// changed children; the next pass reads them back and writes nothing, and
-// the one after, unchanged, sends only conditional GETs that GitHub
-// answers 304, though no record of revision 2 stands until T8 (#297).
+// changed children, and posts the record of revision 2 (#297); the next
+// pass reads them back and writes nothing, and the one after, unchanged,
+// sends only conditional GETs that GitHub answers 304.
 func TestChildrenChangedQuiet(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)

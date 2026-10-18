@@ -562,15 +562,20 @@ func waitDoneChildren(in waitInput, is state.Issue) ([]int, error) {
 }
 
 // waitDoneLines are a finished story's lines (#278): that it waits for
-// story verification, then the children its record names.
+// story verification, then the children its record names, or that its
+// record names none, as after a revision that drops every child.
 func waitDoneLines(children []int) []waitLine {
 	refs := make([]string, len(children))
 	for i, c := range children {
 		refs[i] = "#" + strconv.Itoa(c)
 	}
+	those := "Its children: " + strings.Join(refs, ", ") + "."
+	if len(children) == 0 { // a revision left none (state.CreatedNone, #297)
+		those = "Its plan's latest revision left it no children."
+	}
 	return []waitLine{
 		{Text: "Every child of this story is closed, so it waits for story verification, which runs by hand for now. Close it once that passes."},
-		{Text: "Its children: " + strings.Join(refs, ", ") + "."},
+		{Text: those},
 	}
 }
 

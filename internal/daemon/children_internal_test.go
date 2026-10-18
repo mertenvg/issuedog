@@ -67,7 +67,7 @@ func TestChildMatch(t *testing.T) {
 		"S1": {Number: 2, ID: ids[2], Linked: true},
 		"S2": {Number: 3, ID: ids[3]},
 		"S4": {Number: 6, ID: ids[6]},
-		"S5": {Number: 7, ID: ids[7]},
+		"S5": {Number: 7, ID: ids[7], Closed: true}, // closed, as the listing says
 		"S6": {Number: 10, ID: ids[10], Linked: true},
 	}
 	if !reflect.DeepEqual(got, want) {
