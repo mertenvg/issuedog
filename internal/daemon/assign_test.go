@@ -405,10 +405,7 @@ func TestAssignGone(t *testing.T) {
 					again = append(again, r.Path)
 				}
 			}
-			// The fake still lists a transferred issue, as GitHub doesn't, and
-			// applies the write to it, so the poll finds it again: only a
-			// deleted one shows the one read.
-			if tc.name == "deleted" && len(again) != 1 {
+			if len(again) != 1 {
 				t.Errorf("12 was read %d times after the write found it gone; want once, which drops it", len(again))
 			}
 			if got, want := assignWrites(f, from), []string{assignRemove(12, "bob"), assignRemove(12, "bob")}; !slices.Equal(got, want) {

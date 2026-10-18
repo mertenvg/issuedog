@@ -1,25 +1,14 @@
 package daemon_test
 
 import (
-	"bytes"
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/json"
-	"encoding/pem"
 	"fmt"
-	"io"
 	"maps"
 	"net/http"
-	"net/http/httptest"
-	"net/http/httputil"
-	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/mertenvg/issuedog/internal/config"
@@ -498,126 +487,34 @@ func TestDigestRunCountFlicker(t *testing.T) {
 	digestRunStep(t, f, d, "an extra pass")
 }
 
-// digestRunMover stands between a client and the fake as GitHub does once
-// an issue is transferred to another repo. Every request about the issue
-// gets a 301 to its new home, /repositories/9/issues/<n>, which the fake
-// serves as the issue's own path, so a redirected write, which Go follows
-// with a GET, reads the transferred issue. The issue list leaves it out.
+// digestRunMover transfers an issue to elsewhere/r on the fake, which
+// then answers as GitHub does (githubtest's Transfer): every request about
+// the issue gets a 301 to its new home, /repositories/2/issues/<n>, so a
+// redirected write, which Go follows with a GET, reads the transferred
+// issue, and the issue list leaves it out.
 type digestRunMover struct {
-	f          *githubtest.Fake
-	mu         sync.Mutex
-	moved      int      // the issue transferred, or 0 for none
-	redirected []string // the writes about it given a 301, as "METHOD /path"
+	f *githubtest.Fake
 }
 
-// digestRunKey is a key for the App's JWT, which the fake doesn't check.
-var digestRunKey = sync.OnceValues(func() ([]byte, error) {
-	k, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return nil, fmt.Errorf("generate a key: %w", err)
-	}
-	return pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(k)}), nil
-})
-
-// digestRunMove starts a digestRunMover in front of f, and returns it with
-// a client that talks to f through it.
-func digestRunMove(t *testing.T, f *githubtest.Fake) (*digestRunMover, *github.Client) {
-	t.Helper()
-	target, err := url.Parse(f.URL())
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := &digestRunMover{f: f}
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	proxy.Transport = f.Transport() // not http.DefaultTransport, which other tests' servers close
-	proxy.ModifyResponse = m.list
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		issue := fmt.Sprintf("/repos/o/r/issues/%d", m.issue())
-		switch p := r.URL.Path; {
-		case strings.HasPrefix(p, "/repositories/9/"):
-			r.URL.Path = "/repos/o/r/" + strings.TrimPrefix(p, "/repositories/9/")
-		case m.issue() != 0 && (p == issue || strings.HasPrefix(p, issue+"/")):
-			if r.Method != http.MethodGet {
-				m.mu.Lock()
-				m.redirected = append(m.redirected, r.Method+" "+p)
-				m.mu.Unlock()
-			}
-			http.Redirect(w, r, "/repositories/9/"+strings.TrimPrefix(p, "/repos/o/r/"), http.StatusMovedPermanently)
-			return
-		case m.issue() != 0 && p == "/repos/o/r/issues":
-			r.Header.Del("If-None-Match") // a 304 would give the list cached with the issue in it
-		}
-		proxy.ServeHTTP(w, r)
-	}))
-	t.Cleanup(srv.Close)
-	key, err := digestRunKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-	c, err := github.New(github.Config{AppID: 1, InstallationID: 1, Key: key, BaseURL: srv.URL, Transport: srv.Client().Transport})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return m, c
-}
-
-// issue is the issue transferred, or 0 for none.
-func (m *digestRunMover) issue() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.moved
+// digestRunMove returns a digestRunMover for f.
+func digestRunMove(f *githubtest.Fake) *digestRunMover {
+	return &digestRunMover{f: f}
 }
 
 // move transfers issue n to elsewhere/r.
 func (m *digestRunMover) move(n int) {
 	m.f.Transfer(n, "elsewhere/r")
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.moved = n
 }
 
-// writes is the writes given a 301 so far.
+// writes is the writes given a 301 so far, as "METHOD /path".
 func (m *digestRunMover) writes() []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return slices.Clone(m.redirected)
-}
-
-// list takes the transferred issue out of an answer to an issue list.
-func (m *digestRunMover) list(resp *http.Response) error {
-	n := m.issue()
-	if n == 0 || resp.Request.Method != http.MethodGet || resp.Request.URL.Path != "/repos/o/r/issues" || resp.StatusCode != http.StatusOK {
-		return nil
-	}
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("read the issue list: %w", err)
-	}
-	if err := resp.Body.Close(); err != nil {
-		return fmt.Errorf("close the issue list: %w", err)
-	}
-	var issues []json.RawMessage
-	if err := json.Unmarshal(raw, &issues); err != nil {
-		return fmt.Errorf("decode the issue list: %w", err)
-	}
-	kept := []json.RawMessage{}
-	for _, is := range issues {
-		var number struct{ Number int }
-		if err := json.Unmarshal(is, &number); err != nil {
-			return fmt.Errorf("decode an issue: %w", err)
-		}
-		if number.Number != n {
-			kept = append(kept, is)
+	var got []string
+	for _, r := range m.f.Requests() {
+		if r.Method != http.MethodGet && r.Status == http.StatusMovedPermanently {
+			got = append(got, r.Method+" "+r.Path)
 		}
 	}
-	out, err := json.Marshal(kept)
-	if err != nil {
-		return fmt.Errorf("encode the issue list: %w", err)
-	}
-	resp.Body, resp.ContentLength = io.NopCloser(bytes.NewReader(out)), int64(len(out))
-	resp.Header.Set("Content-Length", strconv.Itoa(len(out)))
-	resp.Header.Del("ETag")
-	return nil
+	return got
 }
 
 // digestRunRelisted reports whether a request from the from'th on lists
@@ -657,22 +554,22 @@ func digestRunReplaced(t *testing.T, f *githubtest.Fake, d *daemon.Daemon, m *di
 
 // A transferred digest, end to end (#160's verify): its body edit gets a
 // 301 to another repo, which the client follows with a GET, so the edit
-// wrote nothing, and the digest is dropped. The next pass lists every
+// wrote nothing, though the fake logs it, and the digest is dropped. The next pass lists every
 // issue again, where the transferred one isn't, so it creates one other
 // digest, which announces once, and the pass after writes nothing.
 func TestDigestRunTransferred(t *testing.T) {
 	t.Parallel()
 	f := digestRunFake(t)
-	m, c := digestRunMove(t, f)
-	d := digestRunDaemon(t, f, digestRunOrigin(t), c, nil)
+	m := digestRunMove(f)
+	d := digestRunDaemon(t, f, digestRunOrigin(t), nil, nil)
 	digestRunStep(t, f, d, "the first pass", digestRunFirst...)
 	m.move(12)
 	answer := f.AddComment(1, digestRunOwner, "1a 2b") // the round goes, so the digest is edited
-	if got := digestRunFail(t, f, d, "the digest is gone", "edit the body of the digest", "answered by GET /repositories/9/issues/12"); !slices.Equal(got,
-		[]string{fmt.Sprintf("POST /issues/comments/%d/reactions", answer)}) {
-		t.Errorf("writes = %q; want step 1's 👍 alone", got)
+	if got := digestRunFail(t, f, d, "the digest is gone", "edit the body of the digest", "answered by GET /repositories/2/issues/12"); !slices.Equal(got,
+		[]string{fmt.Sprintf("POST /issues/comments/%d/reactions", answer), "PATCH /issues/12"}) {
+		t.Errorf("writes = %q; want step 1's 👍, and the redirected edit", got)
 	}
-	digestRunReplaced(t, f, d, m, "PATCH /repos/o/r/issues/12", digestRunWithout(1, ""))
+	digestRunReplaced(t, f, d, m, "PATCH /issues/12", digestRunWithout(1, ""))
 }
 
 // The revert of an untrusted close, or of an untrusted reopen after a
@@ -696,16 +593,16 @@ func TestDigestRunTransferredRevert(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := digestRunFake(t)
-			m, c := digestRunMove(t, f)
-			d := digestRunDaemon(t, f, digestRunOrigin(t), c, nil)
+			m := digestRunMove(f)
+			d := digestRunDaemon(t, f, digestRunOrigin(t), nil, nil)
 			digestRunStep(t, f, d, "the first pass", digestRunFirst...)
 			tc.change(t, f, d)
 			// The poll lists the change; the digest is transferred before the revert.
 			f.BeforeRequest(func(r githubtest.Request) bool { return r.Method == http.MethodGet && r.Path == "/issues/12/timeline" }, func() { m.move(12) })
-			if got := digestRunFail(t, f, d, "the digest is gone", "the close of the digest, o/r#12: "+tc.err); len(got) != 0 {
-				t.Errorf("writes = %q; want none", got)
+			if got := digestRunFail(t, f, d, "the digest is gone", "the close of the digest, o/r#12: "+tc.err); !slices.Equal(got, []string{"PATCH /issues/12"}) {
+				t.Errorf("writes = %q; want the redirected PATCH alone", got)
 			}
-			digestRunReplaced(t, f, d, m, "PATCH /repos/o/r/issues/12", digestRunRanked)
+			digestRunReplaced(t, f, d, m, "PATCH /issues/12", digestRunRanked)
 		})
 	}
 }

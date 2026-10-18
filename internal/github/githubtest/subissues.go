@@ -34,7 +34,9 @@ func (f *Fake) subIssues(c *call) (int, any) {
 	for _, is := range f.issues {
 		if is.parent == c.issue.GetNumber() {
 			sub := is.Issue
-			sub.RepositoryURL = new(fmt.Sprintf("%s/repos/%s", f.srv.URL, f.repo))
+			if is.listed() { // a transferred one names its new repo (Transfer)
+				sub.RepositoryURL = new(fmt.Sprintf("%s/repos/%s", f.srv.URL, f.repo))
+			}
 			subs = append(subs, sub)
 		}
 	}

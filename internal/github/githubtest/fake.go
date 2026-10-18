@@ -30,7 +30,8 @@ import (
 var Start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // Fake serves one repo's issues, comments, labels, timelines, reactions,
-// parents and sub-issues, a closed event's closer (closing.go), the
+// parents and sub-issues, a closed event's closer (closing.go), a
+// transferred issue's 301s and new home (transfer.go), the
 // GraphQL queries for their edits, deleted
 // comments and pins, and the pinIssue mutation. Its API writes, comment edits, created issues and
 // pins included, are made by the App, "<slug>[bot]" of type Bot. A GET whose
@@ -67,6 +68,8 @@ type Fake struct {
 
 	closingErrs []map[string]any // for the next GraphQL answer, with their paths (FailGraphQLAt)
 
+	repoIDs map[string]int64 // the repos issues were transferred to, in lower case, by ID (transfer.go)
+
 	// The App, permission and repo label endpoints, and the request log (app.go).
 	perms      map[string]string
 	labels     []*gogithub.Label
@@ -93,6 +96,7 @@ type issue struct {
 	typeEvents     map[int64]issueTypeRevertChange // the types of each issue-type event, by its ID
 	deletions      []deletedEvent                  // CommentDeletedEvents, oldest first (DeleteCommentBy)
 	closingClosers map[int64]closingCloser         // how each closed event was made, by its ID (closingAnswer)
+	movedTo        string                          // the repo Transfer moved it to, in lower case, or "" (transfer.go)
 }
 
 type comment struct {
@@ -163,6 +167,7 @@ func New(t testing.TB, repo, slug string) *Fake {
 	f.mux.HandleFunc("POST /graphql", f.serveGraphQL)
 	f.handleApp()
 	f.handleAssign()
+	f.handleTransfer()
 	f.srv = httptest.NewServer(f.logged(f.mux))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -326,7 +331,9 @@ func (f *Fake) handle(pattern string, h handler) {
 }
 
 // serve runs h with the fake locked. A write is logged and may be failed. A
-// path naming a missing issue or comment gets a 404. A read gets an ETag over
+// path naming a missing issue or comment gets a 404, and one naming a
+// transferred issue or its comment a 301 to its new home (moved, which also
+// serves the new home). A read gets an ETag over
 // its body and Link header, and a 304 if that matches If-None-Match. Every
 // answer is dated by the fake clock, as GitHub dates its own.
 func (f *Fake) serve(w http.ResponseWriter, r *http.Request, write bool, h handler) {
@@ -361,6 +368,9 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request, write bool, h handl
 	}
 	if (r.PathValue("n") != "" && c.issue == nil) || (r.PathValue("id") != "" && c.comment == nil) {
 		send(w, http.StatusNotFound, message("Not Found"))
+		return
+	}
+	if f.moved(c) {
 		return
 	}
 	status, v := h(c)
@@ -467,7 +477,8 @@ func user(login string) *gogithub.User {
 	return &gogithub.User{Login: &login, Type: new("User")}
 }
 
-// page returns the page of items that per_page and page ask for, and links the next.
+// page returns the page of items that per_page and page ask for, and links
+// the next, at the path the request came with (homePath).
 func page[T any](c *call, items []T) (int, any) {
 	q := c.r.URL.Query()
 	per, err := strconv.Atoi(q.Get("per_page"))
@@ -480,7 +491,7 @@ func page[T any](c *call, items []T) (int, any) {
 	}
 	if n*per < len(items) {
 		q.Set("page", strconv.Itoa(n+1))
-		c.w.Header().Set("Link", fmt.Sprintf(`<http://%s%s?%s>; rel="next"`, c.r.Host, c.r.URL.Path, q.Encode()))
+		c.w.Header().Set("Link", fmt.Sprintf(`<http://%s%s?%s>; rel="next"`, c.r.Host, homePath(c.r), q.Encode()))
 	}
 	return http.StatusOK, append([]T{}, items[min((n-1)*per, len(items)):min(n*per, len(items))]...)
 }
@@ -508,7 +519,8 @@ func (f *Fake) getParent(c *call) (int, any) {
 }
 
 // listComments serves one issue's comments oldest first, or the repo's,
-// sorted by update in direction= for sort=updated, from since= on.
+// sorted by update in direction= for sort=updated, from since= on. The
+// repo's leave out those of a transferred issue.
 func (f *Fake) listComments(c *call) (int, any) {
 	var from time.Time
 	if s := c.r.URL.Query().Get("since"); s != "" {
@@ -518,7 +530,8 @@ func (f *Fake) listComments(c *call) (int, any) {
 		}
 	}
 	list := slices.DeleteFunc(slices.Clone(f.comments), func(cm *comment) bool {
-		return (c.issue != nil && cm.issue != c.issue.GetNumber()) || cm.GetUpdatedAt().Before(from)
+		return (c.issue != nil && cm.issue != c.issue.GetNumber()) || (c.issue == nil && !f.issues[cm.issue-1].listed()) ||
+			cm.GetUpdatedAt().Before(from)
 	})
 	if c.issue == nil && c.r.URL.Query().Get("sort") == "updated" {
 		slices.SortStableFunc(list, func(a, b *comment) int { return a.GetUpdatedAt().Compare(b.GetUpdatedAt().Time) })
