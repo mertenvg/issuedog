@@ -129,7 +129,13 @@ func TestDeriveItem(t *testing.T) {
 	}{
 		{"origin in the body", snap(origin, nil), clean, Item{FromPlan: true}},
 		{"origin in a dirty body", snap(origin, nil), dirtyIDs(BodyID), Item{}},
-		{"origin in a comment", snap("", []github.Author{appBot}, origin), clean, Item{}},
+		{"origin in a comment", snap("", []github.Author{appBot}, origin), clean, Item{FromPlan: true}},
+		{"origin in a dirty comment", snap("", []github.Author{appBot}, origin), dirtyIDs(1), Item{}},
+		{"origin in someone else's comment", snap("", []github.Author{owner}, origin), clean, Item{}},
+		// FromPlan follows Origin (#290): a marker with a plan but no rev
+		// isn't a whole one, so it gives neither.
+		{"a broken origin in the body", snap("<!-- issuedog:origin plan=#5 item=T4 -->", nil), clean, Item{}},
+		{"a broken origin in a comment", snap("", []github.Author{appBot}, "<!-- issuedog:origin plan=#5 item=T4 -->"), clean, Item{}},
 		{"a held task reached ready", snap("", []github.Author{appBot}, held), clean, Item{ReachedReady: true}},
 		{"a dirty marker doesn't reach ready", snap("", []github.Author{appBot}, held), dirtyIDs(1), Item{}},
 		{"leaving a hold carries at", snap("", []github.Author{appBot}, "<!-- issuedog:transition from=held to=clarifying at=in-progress cmd=4 -->"), clean, Item{ReachedReady: true}},
@@ -145,8 +151,9 @@ func TestDeriveItem(t *testing.T) {
 // Derive reads Origin from the App's whole origin marker in a clean body
 // (#270): plan, rev, item and the body as its comment, whatever other
 // fields the marker has. A body someone else edited last, a dirty body, a
-// marker that isn't the App's, one in a comment or an escaped one, and one
-// that lacks a field or has a bad one, give the zero Origin.
+// marker that isn't the App's or an escaped one, and one that lacks a
+// field or has a bad one, give the zero Origin. One in a clean App comment
+// counts (#290): TestDeriveOriginAnywhere has where it's read from.
 func TestDeriveOrigin(t *testing.T) {
 	t.Parallel()
 	const origin = "<!-- issuedog:origin plan=#248 rev=1 item=T4 -->"
@@ -171,7 +178,7 @@ func TestDeriveOrigin(t *testing.T) {
 		{"a dirty body", snap(origin, nil), dirtyIDs(BodyID), Origin{}},
 		{"a marker that isn't the App's", byMallory, clean, Origin{}},
 		{"an escaped marker", snap(github.Escape(origin), nil), clean, Origin{}},
-		{"a marker in a comment", snap("", []github.Author{appBot}, origin), clean, Origin{}},
+		{"a marker in a comment", snap("", []github.Author{appBot}, origin), clean, Origin{Plan: 248, Rev: 1, Item: "T4", Comment: 1}},
 		{"no marker", snap("The task.", nil), clean, Origin{}},
 		{"no #", snap("<!-- issuedog:origin plan=248 rev=1 item=T4 -->", nil), clean, Origin{}},
 		{"plan 0", snap("<!-- issuedog:origin plan=#0 rev=1 item=T4 -->", nil), clean, Origin{}},
@@ -188,54 +195,67 @@ func TestDeriveOrigin(t *testing.T) {
 	}
 }
 
-// Derive reads Origin.Human, and so Item.Human, from human=1 on the App's
-// whole origin marker in a clean body (#275), and a task with a parent
-// that has it is a human task. Any other value, or none, isn't human; nor
-// is human=1 on a marker that isn't read: in a dirty body, a body someone
-// else edited last, someone else's marker, one in a comment, or one that
-// isn't whole.
-func TestDeriveOriginHuman(t *testing.T) {
+// Derive reads Origin from the body while its markers are read, and else
+// from the newest clean App comment with a whole marker, whoever wrote or
+// edited the body (#290); FromPlan follows it. The body's marker wins over
+// a comment's. A marker in a dirty App comment, in a comment that isn't
+// the App's, or an escaped one, counts for nothing, and neither does one
+// that isn't whole, so an older comment's whole one counts instead. A
+// human task's marker, with human=1, is read as any other.
+func TestDeriveOriginAnywhere(t *testing.T) {
 	t.Parallel()
-	const human = "<!-- issuedog:origin plan=#249 rev=1 item=T3 human=1 -->"
-	byOwner := snap("The task.\n\n"+human, nil)
-	byOwner.BodyEdit = github.Edit{By: owner, At: time.Unix(5, 0)}
-	byMallory := snap("The task.\n\n"+human, nil)
-	byMallory.Author = mallory
+	const (
+		origin  = "<!-- issuedog:origin plan=#195 rev=1 item=T1 -->"
+		human   = "<!-- issuedog:origin plan=#195 rev=1 item=T9 human=1 -->"
+		revised = "<!-- issuedog:origin plan=#195 rev=2 item=T1 -->"
+	)
+	body := Origin{Plan: 195, Rev: 1, Item: "T1", Comment: BodyID}
+	in := func(o Origin, id int64) Origin { o.Comment = id; return o }
+	// An App-filed task whose body someone else edited last, after comments.
+	editedBy := func(by github.Author, bodyText string, authors []github.Author, comments ...string) *github.Snapshot {
+		s := snap(bodyText, authors, comments...)
+		s.BodyEdit = github.Edit{By: by, At: time.Unix(5, 0)}
+		return s
+	}
+	// An issue whose body a person wrote, after comments.
+	personal := func(authors []github.Author, comments ...string) *github.Snapshot {
+		s := snap("The story, by a person.", authors, comments...)
+		s.Author = owner
+		return s
+	}
+	app, app2 := []github.Author{appBot}, []github.Author{appBot, appBot}
 	for _, tt := range []struct {
 		name  string
 		s     *github.Snapshot
 		dirty func(int64) bool
-		want  bool
+		want  Origin
 	}{
-		{"human=1", snap("The task.\n\n"+human, nil), clean, true},
-		{"human=1 among check fields", snap("<!-- issuedog:origin plan=#249 rev=1 item=T3 human=1 check=label value=a%20b -->", nil), clean, true},
-		{"no human", snap("<!-- issuedog:origin plan=#249 rev=1 item=T3 -->", nil), clean, false},
-		{"human=0", snap("<!-- issuedog:origin plan=#249 rev=1 item=T3 human=0 -->", nil), clean, false},
-		{"human=true", snap("<!-- issuedog:origin plan=#249 rev=1 item=T3 human=true -->", nil), clean, false},
-		{"a dirty body", snap(human, nil), dirtyIDs(BodyID), false},
-		{"a body someone else edited last", byOwner, clean, false},
-		{"a marker that isn't the App's", byMallory, clean, false},
-		{"a marker in a comment", snap("", []github.Author{appBot}, human), clean, false},
-		{"an escaped marker", snap(github.Escape(human), nil), clean, false},
-		{"a marker with no item", snap("<!-- issuedog:origin plan=#249 rev=1 human=1 -->", nil), clean, false},
-		{"a later marker's human=1", snap("<!-- issuedog:origin plan=#249 rev=1 item=T3 -->"+human, nil), clean, false},
+		{"a clean body", snap("The task.\n\n"+origin, nil), clean, body},
+		{"a body a trusted user edited, with an App comment", editedBy(owner, "The task, edited.", app, origin), clean, in(body, 1)},
+		{"a body the trusted user edited that keeps the marker", editedBy(owner, "The task, edited.\n\n"+origin, app, revised),
+			clean, Origin{Plan: 195, Rev: 2, Item: "T1", Comment: 1}},
+		{"a dirty body, with an App comment", snap("The task.\n\n"+revised, app, origin), dirtyIDs(BodyID), in(body, 1)},
+		{"a body a person wrote, with an App comment", personal(app, "Adopted.\n\n"+origin), clean, in(body, 1)},
+		{"a human task's comment with human=1", editedBy(owner, "The task, edited.", app, human), clean,
+			Origin{Plan: 195, Rev: 1, Item: "T9", Comment: 1, Human: true}},
+		{"a dirty App comment", editedBy(owner, "The task, edited.", app, origin), dirtyIDs(1), Origin{}},
+		{"a comment that isn't the App's", personal([]github.Author{owner}, origin), clean, Origin{}},
+		{"an untrusted user's comment", editedBy(owner, "The task, edited.", []github.Author{mallory}, origin), clean, Origin{}},
+		{"an escaped marker in an App comment", personal(app, github.Escape(origin)), clean, Origin{}},
+		{"two App comments", personal(app2, origin, revised), clean, Origin{Plan: 195, Rev: 2, Item: "T1", Comment: 2}},
+		{"two App comments, the newer dirty", personal(app2, origin, revised), dirtyIDs(2), in(body, 1)},
+		{"two App comments, the newer not whole", personal(app2, origin, "<!-- issuedog:origin plan=#195 item=T1 -->"), clean, in(body, 1)},
+		{"a body and a comment that are both read", snap("The task.\n\n"+origin, app, revised), clean, body},
+		{"a body the App edited last and a comment", editedBy(appBot, "The task.\n\n"+origin, app, revised), clean, body},
+		{"no marker anywhere", personal(app, "A comment."), clean, Origin{}},
 	} {
-		tt.s.Type, tt.s.Parent = "task", 249
 		is := Derive(tt.s, slug, tt.dirty)
-		if is.Origin.Human != tt.want || is.Item.Human != tt.want {
-			t.Errorf("%s: Origin.Human = %v, Item.Human = %v, want %v", tt.name, is.Origin.Human, is.Item.Human, tt.want)
+		if is.Origin != tt.want {
+			t.Errorf("%s: origin = %+v, want %+v", tt.name, is.Origin, tt.want)
 		}
-		want := ClassTask
-		if tt.want {
-			want = ClassHumanTask
+		if is.Item.FromPlan != (tt.want.Plan != 0) {
+			t.Errorf("%s: FromPlan = %v, want %v", tt.name, is.Item.FromPlan, tt.want.Plan != 0)
 		}
-		if c, err := ClassOf(is.Item); is.Item.FromPlan && (err != nil || c != want) {
-			t.Errorf("%s: class = %s, %v; want %s", tt.name, c, err, want)
-		}
-	}
-	is := Derive(snap("The task.\n\n"+human, nil), slug, clean)
-	if want := (Origin{Plan: 249, Rev: 1, Item: "T3", Comment: BodyID, Human: true}); is.Origin != want {
-		t.Errorf("origin = %+v, want %+v", is.Origin, want)
 	}
 }
 
@@ -408,5 +428,56 @@ func TestErrAckReported(t *testing.T) {
 		if got := is.Reported(tt.kind, tt.key); got != tt.want {
 			t.Errorf("Reported(%s, %s) = %v, want %v", tt.kind, tt.key, got, tt.want)
 		}
+	}
+}
+
+// Derive reads Origin.Human, and so Item.Human, from human=1 on the App's
+// whole origin marker in a clean body (#275), and a task with a parent
+// that has it is a human task. Any other value, or none, isn't human; nor
+// is human=1 on a marker that isn't read: in a dirty body, a body someone
+// else edited last, someone else's marker, or one that isn't whole. Since
+// #290, a marker in a clean App comment is read when the body has none.
+func TestDeriveOriginHuman(t *testing.T) {
+	t.Parallel()
+	const human = "<!-- issuedog:origin plan=#249 rev=1 item=T3 human=1 -->"
+	byOwner := snap("The task.\n\n"+human, nil)
+	byOwner.BodyEdit = github.Edit{By: owner, At: time.Unix(5, 0)}
+	byMallory := snap("The task.\n\n"+human, nil)
+	byMallory.Author = mallory
+	for _, tt := range []struct {
+		name  string
+		s     *github.Snapshot
+		dirty func(int64) bool
+		want  bool
+	}{
+		{"human=1", snap("The task.\n\n"+human, nil), clean, true},
+		{"human=1 among check fields", snap("<!-- issuedog:origin plan=#249 rev=1 item=T3 human=1 check=label value=a%20b -->", nil), clean, true},
+		{"no human", snap("<!-- issuedog:origin plan=#249 rev=1 item=T3 -->", nil), clean, false},
+		{"human=0", snap("<!-- issuedog:origin plan=#249 rev=1 item=T3 human=0 -->", nil), clean, false},
+		{"human=true", snap("<!-- issuedog:origin plan=#249 rev=1 item=T3 human=true -->", nil), clean, false},
+		{"a dirty body", snap(human, nil), dirtyIDs(BodyID), false},
+		{"a body someone else edited last", byOwner, clean, false},
+		{"a marker that isn't the App's", byMallory, clean, false},
+		{"a marker in an App comment, with none in the body (#290)", snap("", []github.Author{appBot}, human), clean, true},
+		{"an escaped marker", snap(github.Escape(human), nil), clean, false},
+		{"a marker with no item", snap("<!-- issuedog:origin plan=#249 rev=1 human=1 -->", nil), clean, false},
+		{"a later marker's human=1", snap("<!-- issuedog:origin plan=#249 rev=1 item=T3 -->"+human, nil), clean, false},
+	} {
+		tt.s.Type, tt.s.Parent = "task", 249
+		is := Derive(tt.s, slug, tt.dirty)
+		if is.Origin.Human != tt.want || is.Item.Human != tt.want {
+			t.Errorf("%s: Origin.Human = %v, Item.Human = %v, want %v", tt.name, is.Origin.Human, is.Item.Human, tt.want)
+		}
+		want := ClassTask
+		if tt.want {
+			want = ClassHumanTask
+		}
+		if c, err := ClassOf(is.Item); is.Item.FromPlan && (err != nil || c != want) {
+			t.Errorf("%s: class = %s, %v; want %s", tt.name, c, err, want)
+		}
+	}
+	is := Derive(snap("The task.\n\n"+human, nil), slug, clean)
+	if want := (Origin{Plan: 249, Rev: 1, Item: "T3", Comment: BodyID, Human: true}); is.Origin != want {
+		t.Errorf("origin = %+v, want %+v", is.Origin, want)
 	}
 }
