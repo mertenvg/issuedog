@@ -47,7 +47,6 @@ type Applier struct {
 	ReadMain func(ctx context.Context, path string) ([]byte, error)
 
 	histories     histories                // see Dirty
-	originNone    map[int]string           // the body, by issue, in which originRepost found no origin to repost
 	discNoRecords map[string]*discNoRecord // logins with no permission record, in lower case (discNoRecord)
 	unexplained   github.Unexplained
 

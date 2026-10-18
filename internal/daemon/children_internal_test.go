@@ -62,7 +62,7 @@ func TestChildMatch(t *testing.T) {
 		ids[is.GetNumber()] = is.GetID()
 	}
 	a := &Applier{Owner: "o", Repo: "r"}
-	got := childMatch(1, childSlug, subs, listed, a.inRepo, nil)
+	got := childMatch(1, childSlug, subs, listed, a.inRepo)
 	want := map[string]childFound{
 		"S1": {Number: 2, ID: ids[2], Linked: true},
 		"S2": {Number: 3, ID: ids[3]},
@@ -85,11 +85,11 @@ func TestChildMatch(t *testing.T) {
 	}
 
 	// Another plan's children are those of its own parent.
-	if got := childMatch(9, childSlug, nil, listed, a.inRepo, nil); !reflect.DeepEqual(got, map[string]childFound{"S3": {Number: 4, ID: ids[4]}}) {
+	if got := childMatch(9, childSlug, nil, listed, a.inRepo); !reflect.DeepEqual(got, map[string]childFound{"S3": {Number: 4, ID: ids[4]}}) {
 		t.Errorf("childMatch for #9 = %+v, want S3, #4", got)
 	}
 	// With no listing, only the sub-issues in this repo count.
-	if got := childMatch(1, childSlug, subs, nil, a.inRepo, nil); !reflect.DeepEqual(got, map[string]childFound{
+	if got := childMatch(1, childSlug, subs, nil, a.inRepo); !reflect.DeepEqual(got, map[string]childFound{
 		"S1": {Number: 2, ID: ids[2], Linked: true}, "S6": {Number: 10, ID: ids[10], Linked: true}}) {
 		t.Errorf("childMatch of the sub-issues alone = %+v, want S1, #2, and S6, #10", got)
 	}

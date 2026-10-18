@@ -107,9 +107,7 @@ type childFound struct {
 // repo's issues updated since the move into planned, at since, which also
 // hold one filed but not yet linked when a pass stopped. Both lists are
 // consistent, unlike search, which lags behind writes (plan #249, "Finding
-// a child again, without search"). It returns them by item (childMatch),
-// with the Origin of each sub-issue whose listed body gives none
-// (childOrigins).
+// a child again, without search"). It returns them by item (childMatch).
 func (st *Step) childrenFind(ctx context.Context, s *github.Snapshot, since time.Time) (map[string]childFound, error) {
 	subs, err := st.Client.SubIssues(ctx, st.Owner, st.Repo, s.Number)
 	if err != nil {
@@ -119,51 +117,7 @@ func (st *Step) childrenFind(ctx context.Context, s *github.Snapshot, since time
 	if err != nil {
 		return nil, fmt.Errorf("find children: %w", err)
 	}
-	origins, err := st.childOrigins(ctx, subs)
-	if err != nil {
-		return nil, fmt.Errorf("find children: %w", err)
-	}
-	return childMatch(s.Number, st.AppSlug, subs, listed, st.inRepo, origins), nil
-}
-
-// childOrigins returns the Origin of each of subs, a parent's sub-issues,
-// that the App filed in this repo but whose listed body gives none
-// (childListedOrigin), by number, as state.Derive reads it from the
-// issue's snapshot, comments and dirty content included: an origin the
-// App reposted in a comment once the body lost it (originRepost, S5's T2,
-// #291). Each such issue costs a snapshot. Only sub-issues are read: a
-// child loses its body's marker to an edit after it's filed, and it's
-// linked in the pass that files it, so one that isn't linked yet was filed
-// just now, and its body is still the App's.
-func (st *Step) childOrigins(ctx context.Context, subs []*gogithub.Issue) (map[int]state.Origin, error) {
-	origins := map[int]state.Origin{}
-	for _, is := range subs {
-		n := is.GetNumber()
-		author := github.Author{Login: is.GetUser().GetLogin(), Type: is.GetUser().GetType()}
-		if !st.inRepo(is.GetRepositoryURL()) || is.IsPullRequest() || !state.IsApp(author, st.AppSlug) ||
-			childListedOrigin(is, st.AppSlug).Plan != 0 {
-			continue
-		}
-		s, err := st.Client.Snapshot(ctx, st.Owner, st.Repo, n)
-		if err != nil {
-			return nil, fmt.Errorf("read #%d's origin: %w", n, err)
-		}
-		d, err := st.Dirty(ctx, s, st.trustOnceTrust())
-		if err != nil {
-			return nil, fmt.Errorf("read #%d's origin: %w", n, err)
-		}
-		if o := state.Derive(s, st.AppSlug, d.Has).Origin; o.Plan != 0 {
-			origins[n] = o
-		}
-	}
-	return origins, nil
-}
-
-// childListedOrigin is the Origin that Derive reads from is, as a listing
-// gives it: from its author and body alone.
-func childListedOrigin(is *gogithub.Issue, appSlug string) state.Origin {
-	author := github.Author{Login: is.GetUser().GetLogin(), Type: is.GetUser().GetType()}
-	return state.Derive(&github.Snapshot{Number: is.GetNumber(), Author: author, Body: is.GetBody()}, appSlug, func(int64) bool { return false }).Origin
+	return childMatch(s.Number, st.AppSlug, subs, listed, st.inRepo), nil
 }
 
 // childMatch returns the children of parent's plan items among subs, the
@@ -172,14 +126,12 @@ func childListedOrigin(is *gogithub.Issue, appSlug string) state.Origin {
 // Derive from a snapshot of what the listing gives, its author and body,
 // whatever its rev (SPEC §5.2): the listing has no edit history, so a body
 // someone edited still matches, as long as it keeps the App's marker (plan
-// #249, assumption 8). One whose listed body gives no Origin takes it from
-// origins, what its snapshot gives (childOrigins), so a child whose origin
-// the App reposted in a comment matches too (#291). A sub-issue in another
-// repo, as inRepo tells by its repository_url, and a pull request are
-// skipped. One that's a sub-issue is Linked. Should two issues name the same item, the first wins: the
+// #249, assumption 8). A sub-issue in another repo, as inRepo tells by its
+// repository_url, and a pull request are skipped. One that's a sub-issue
+// is Linked. Should two issues name the same item, the first wins: the
 // sub-issues in link order, then the rest by number, so the one linked, or
 // else the one filed first.
-func childMatch(parent int, appSlug string, subs, listed []*gogithub.Issue, inRepo func(string) bool, origins map[int]state.Origin) map[string]childFound {
+func childMatch(parent int, appSlug string, subs, listed []*gogithub.Issue, inRepo func(string) bool) map[string]childFound {
 	found := map[string]childFound{}
 	seen := map[int]bool{}
 	add := func(is *gogithub.Issue, linked bool) {
@@ -192,10 +144,7 @@ func childMatch(parent int, appSlug string, subs, listed []*gogithub.Issue, inRe
 		if !state.IsApp(author, appSlug) {
 			return
 		}
-		o := childListedOrigin(is, appSlug)
-		if o.Plan == 0 {
-			o = origins[n]
-		}
+		o := state.Derive(&github.Snapshot{Number: n, Author: author, Body: is.GetBody()}, appSlug, func(int64) bool { return false }).Origin
 		if o.Plan != parent {
 			return
 		}

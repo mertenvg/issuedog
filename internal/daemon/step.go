@@ -32,8 +32,7 @@ type Step struct {
 }
 
 // Run runs step 1 on s, in this order: the label rules (CheckLabels), dirty
-// content (MarkDirty), a lost origin marker (originRepost), the type
-// (typeCheck), the discussion triggers
+// content (MarkDirty), the type (typeCheck), the discussion triggers
 // (discussion), trusted comments oldest first,
 // from the first again each time one takes the issue out of held, then
 // Reactions, and the comments again if a reaction trigger took the issue
@@ -56,9 +55,6 @@ func (st *Step) Run(ctx context.Context, s *github.Snapshot) ([]github.Comment, 
 		return nil, wrap(err)
 	}
 	if err := st.MarkDirty(ctx, s, d); err != nil {
-		return nil, wrap(err)
-	}
-	if err := st.originRepost(ctx, s, d); err != nil {
 		return nil, wrap(err)
 	}
 	if err := st.typeCheck(ctx, s, d); err != nil {
