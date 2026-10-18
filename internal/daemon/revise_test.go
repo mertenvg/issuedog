@@ -328,20 +328,22 @@ func TestReviseAndEdits(t *testing.T) {
 					"<!-- issuedog:revision rev=1 body="+h+" -->")
 			}), owners,
 			outcome{comments: []string{sentBack("1003")}, labels: clarifying, acks: []string{"also X"}}, []string{"also X"}},
-		{"a comment after an /approve is planning's input, with no reply",
+		// At planning, a plain trusted comment is the planner's answer, so it
+		// gets a 👍 as at clarifying (#253).
+		{"a comment after an /approve is planning's input, 👍'd with no reply",
 			review(func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1002, "owner", "/approve")
 				post(t, f, 1003, "owner", "also Y")
 			}), owners,
-			outcome{comments: []string{approvedRev(1, "owner's `/approve`", "1002", "1002")}, labels: []string{"stage:planning"}, acks: []string{"/approve"}},
+			outcome{comments: []string{approvedRev(1, "owner's `/approve`", "1002", "1002")}, labels: []string{"stage:planning"}, acks: []string{"/approve", "also Y"}},
 			[]string{"also Y"}},
-		{"after an approval, comments are planning's input, not earlier ones, and an edit posts no revision",
+		{"after an approval, comments are planning's input, 👍'd, not earlier ones, and an edit posts no revision",
 			approved(func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1006, "owner", "also Y")
 				post(t, f, 1007, "mallory", "also Z")
 				post(t, f, 1008, "owner", "/hold") // nothing handles it, so it waits
 				f.EditBody(1, "owner", "body v2")
-			}), owners, outcome{labels: []string{"stage:planning"}}, []string{"also Y"}},
+			}), owners, outcome{labels: []string{"stage:planning"}, acks: []string{"also Y"}}, []string{"also Y"}},
 		{"a command that resumed clarifying isn't notes",
 			at(state.Clarifying, func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1002, "owner", "/hold")

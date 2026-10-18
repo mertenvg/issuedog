@@ -30,6 +30,7 @@ const (
 	TriggerAnswered               Trigger = "answered"
 	TriggerSpecRevise             Trigger = "spec-revise"
 	TriggerSpecApproved           Trigger = "spec-approved"
+	TriggerPlanQuestions          Trigger = "plan-questions"
 	TriggerPlanValid              Trigger = "plan-valid"
 	TriggerPlanNoReview           Trigger = "plan-no-review"
 	TriggerPlanRevise             Trigger = "plan-revise"
@@ -108,6 +109,7 @@ var table = []Row{
 	{Clarifying, Ready, AnyTask, TriggerAnswered},
 	{SpecReview, Clarifying, epicOrOwnerStory, TriggerSpecRevise},
 	{SpecReview, Planning, epicOrOwnerStory, TriggerSpecApproved},
+	{Planning, Planning, ClassEpic | AnyStory, TriggerPlanQuestions},
 	{Planning, PlanReview, ClassEpic | AnyStory, TriggerPlanValid},
 	{Planning, Planned, AnyStory, TriggerPlanNoReview},
 	{PlanReview, Planning, ClassEpic | AnyStory, TriggerPlanRevise},

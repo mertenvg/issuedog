@@ -100,7 +100,10 @@ func ivMoveFits(it state.Item, out interviewOutput, origin state.Stage) error {
 
 // facts are what Check holds r's output to, from r.S:
 //   - the rounds so far, from the round= and questions= of the
-//     interviewer's clean round moves (interviewerRounds);
+//     interviewer's clean round moves (interviewerRounds), up to the
+//     latest round of every stage: a planner round's number counts 0
+//     there, so a decision names none of its questions, and the next
+//     round's number follows it (ivFactRounds, #253);
 //   - whether the interviewer may set the type, from the timeline
 //     (typing), and whether the issue has one;
 //   - the logins a spec's decision may name;
@@ -123,7 +126,7 @@ func (iv *Interviewer) facts(ctx context.Context, r Result) (interviewFacts, err
 		MaxQuestions: int(d.Config.Loop.MaxQuestionsPerRound),
 		MayType:      may,
 		Untyped:      r.S.Type == "",
-		Rounds:       ivRoundCounts(interviewerRounds(r.S, a.AppSlug, r.Dirt.Has)),
+		Rounds:       ivFactRounds(r.S, a.AppSlug, r.Dirt.Has),
 		Trusted:      logins,
 		Notify:       d.Config.Notify,
 		Origin:       ivHoldOrigin(state.Derive(r.S, a.AppSlug, r.Dirt.Has)),
@@ -163,6 +166,21 @@ func ivRoundCounts(rounds []interviewerRound) []int {
 			counts = append(counts, 0)
 		}
 		counts[r.Number-1] = r.Questions
+	}
+	return counts
+}
+
+// ivFactRounds is interviewFacts.Rounds for s: the question count of each
+// interviewer round by its number (ivRoundCounts), with a 0 for each
+// round of another stage's, the planner's, up to the latest round of
+// every stage (allRounds). So the interviewer's decisions cover only its
+// own questions, and its next round, len(counts)+1, is the next of every
+// stage's (nextRound, #247's assumption 3). With no planner rounds, it's
+// ivRoundCounts of the interviewer's alone.
+func ivFactRounds(s *github.Snapshot, appSlug string, dirty func(int64) bool) []int {
+	counts := ivRoundCounts(interviewerRounds(s, appSlug, dirty))
+	for next := nextRound(allRounds(s, appSlug, dirty)); len(counts) < next-1; {
+		counts = append(counts, 0)
 	}
 	return counts
 }
@@ -275,8 +293,9 @@ func (iv *Interviewer) Apply(ctx context.Context, a *Applier, r Result) error {
 		return hold.ack(ctx, a, wrap)
 	}
 	// Once the move is written, its round is among these, so the number is
-	// one too high, but Transition then writes no text or fields.
-	round := len(ivRoundCounts(interviewerRounds(r.S, a.AppSlug, r.Dirt.Has))) + 1
+	// one too high, but Transition then writes no text or fields. The
+	// planner's rounds share the numbering (#253).
+	round := nextRound(allRounds(r.S, a.AppSlug, r.Dirt.Has))
 	m := hold.set(r.Move(to, trigger))
 	m.Text = renderQuestions(out, r.S.Number, round, notify)
 	if out.Outcome == outcomeTyped {
