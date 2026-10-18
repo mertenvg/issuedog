@@ -2,6 +2,7 @@ package state
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/mertenvg/issuedog/internal/github"
 )
@@ -60,6 +61,59 @@ type Issue struct {
 	// HeldStack is what holds the issue while Stage is Held, else the zero
 	// HeldStack.
 	HeldStack HeldStack
+	// Origin is the plan item the App filed the issue from, from the
+	// origin marker in its body, or the zero Origin with none (originOf).
+	Origin Origin
+}
+
+// Origin is an issue's origin marker (SPEC §16, "Created issues"): the
+// plan item the App filed it from, as origin plan=#N rev=R item=ID. It's
+// the one place the marker is read (#224's reconcile decision 3, plan #248,
+// assumption 8), and what every later reader builds on:
+//   - the digest's plan order (S2), which lists the stories one plan filed
+//     together, in the plan's item order (waitRank);
+//   - matching created children to their plan items, and Item.Human, from
+//     a human task's human=1 (S3), which extends Origin with the field;
+//   - reading it from the newest clean App comment when the body's markers
+//     aren't read, as when someone else edited the body and the daemon
+//     reposted the marker in a comment (S5).
+//
+// Derive reads it from the body only, under the same rules as every other
+// marker there: the App's, in a body that isn't dirty and that nobody but
+// the App edited last. So a marker someone else wrote, or a body someone
+// else edited, gives none.
+//
+// Plan is above 0 whenever there is one: the zero Origin is none, so
+// callers check Plan. Fields the marker has besides plan, rev and item,
+// such as S3's human=1 or S4's check fields, aren't kept here, and don't
+// stop it from being read.
+type Origin struct {
+	// Plan is the number of the issue whose plan the item is from, from
+	// plan=#N.
+	Plan int
+	// Rev is the plan revision the item was filed from, from rev=. A kept
+	// item keeps the rev it was filed at after a re-plan (SPEC §16).
+	Rev int
+	// Item is the item's ID in the plan, such as S2 or T4, from item=.
+	Item string
+	// Comment is the ID of the comment that holds the marker, or BodyID
+	// for the body, which is the only place Derive reads it from today.
+	Comment int64
+}
+
+// originOf returns the Origin that marker m, read in comment id (or
+// BodyID), records, or false if it isn't a whole one: an origin marker
+// with plan=#N and rev=R, each above 0, and a non-empty item. Its other
+// fields are ignored.
+func originOf(m github.Marker, id int64) (Origin, bool) {
+	num, hash := strings.CutPrefix(m.Fields["plan"], "#")
+	plan, perr := strconv.Atoi(num)
+	rev, rerr := strconv.Atoi(m.Fields["rev"])
+	item := m.Fields["item"]
+	if m.Kind != "origin" || !hash || perr != nil || plan <= 0 || rerr != nil || rev <= 0 || item == "" {
+		return Origin{}, false
+	}
+	return Origin{Plan: plan, Rev: rev, Item: item, Comment: id}, true
 }
 
 // TriageVerdict is a triage marker (plan #6, assumption 3): a decision on
@@ -155,6 +209,10 @@ func Derive(s *github.Snapshot, appSlug string, dirty func(id int64) bool) Issue
 			is.readError(m, id)
 			if m.Kind == "origin" && id == BodyID && m.Fields["plan"] != "" {
 				is.Item.FromPlan = true
+			}
+			// The body's first whole origin marker: the App writes one.
+			if o, ok := originOf(m, id); ok && id == BodyID && is.Origin.Plan == 0 {
+				is.Origin = o
 			}
 			if m.Kind == "triage" && id != BodyID {
 				is.Triage = TriageVerdict{Verdict: m.Fields["verdict"], Recommend: m.Fields["recommend"], Comment: id}

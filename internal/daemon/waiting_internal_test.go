@@ -165,7 +165,7 @@ func TestWaitFindErrorsAndQuestion(t *testing.T) {
 }
 
 // These wait on nobody: an answered round, an issue at planning, a typed
-// bug waiting for phase 3, a closed issue, plan-review, a flag answered, a
+// bug waiting for phase 3, a closed issue, a flag answered, a
 // flag on an issue with a stage label or past intake, a round whose
 // comment is dirty, a round move with no round or questions, and another
 // move that carries them.
@@ -201,7 +201,6 @@ func TestWaitFindNothing(t *testing.T) {
 		{"not a round move", waitSnap(6, nil, join(renderQuestions(round, 6, 1, nil),
 			"<!-- issuedog:transition from=spec-review to=clarifying cmd=5 round=1 questions=1 -->")), Dirt{}, nil},
 		{"flag past intake", flagged, Dirt{}, nil},
-		{"plan-review", waitSnap(6, nil, "<!-- issuedog:transition from=planning to=plan-review run=p1 -->"), Dirt{}, nil},
 		{"flag left", waitSnap(6, nil, "<!-- issuedog:triage verdict=leave cmd=5 -->"), Dirt{}, nil},
 		{"flag with a stage label", waitSnap(6, []string{"stage:clarifying"}, join(triageFlagText(triageOutput{Verdict: triageHandle}, 6, nil), waitFlagMarker("handle"))), Dirt{}, nil},
 		{"dirty round", waitSnap(6, nil, "<!-- issuedog:transition from=intake to=clarifying cmd=5 -->", roundComment), Dirt{602: "eve"}, nil},
@@ -322,7 +321,9 @@ func TestWaitFindPlanRound(t *testing.T) {
 // These wait on nobody at planning: the stage entered with no round, a
 // planner round move with no round, no questions or no run, a dirty round
 // comment, a planner round that a later move left, and an override back
-// into planning after a round, which is an entry (#253).
+// into planning after a round, which is an entry (#253). The move to
+// plan-review leaves no question, only the plan's approval, which
+// TestWaitFindPlanApproval covers (#270).
 func TestWaitFindPlanRoundNothing(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -348,6 +349,7 @@ func TestWaitFindPlanRoundNothing(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			items = slices.DeleteFunc(items, func(it waitItem) bool { return it.Kind == waitPlanApproval })
 			if len(items) != 0 {
 				t.Errorf("got %+v, want no item", items)
 			}
@@ -615,7 +617,7 @@ func TestWaitLinkAndBody(t *testing.T) {
 	if got := waitBody(s, 5); got != "five" {
 		t.Errorf("waitBody(5) = %q, want five", got)
 	}
-	for k, want := range map[waitKind]string{waitError: "error", waitApproval: "approval", waitQuestion: "question", waitFlag: "flag", 9: "kind9"} {
+	for k, want := range map[waitKind]string{waitError: "error", waitApproval: "approval", waitQuestion: "question", waitFlag: "flag", waitPlanApproval: "plan-approval", 9: "kind9"} {
 		if k.String() != want {
 			t.Errorf("waitKind(%d) = %s, want %s", k, k, want)
 		}
@@ -730,5 +732,396 @@ func TestWaitFindThenRank(t *testing.T) {
 	waitRank(items, map[int]*github.Snapshot{70: parent, 71: child})
 	if len(items) != 2 || items[0].Key != "q-70-1" || items[0].Unblocks != 2 || items[1].Key != "err-71-transition-50" || items[1].Unblocks != 1 {
 		t.Errorf("got %s, want q-70-1 (2) then err-71-transition-50 (1)", waitRankText(items))
+	}
+}
+
+// waitPlanText is the text of the plan comment for plan revision rev, as
+// S1's planner run posts it: the plan, a cc line, and the move from
+// planning into plan-review, all above the revision marker.
+func waitPlanText(rev int) string {
+	return fmt.Sprintf("### Plan for the issue (rev %d)\n\nThe plan.\n\ncc @owner\n\n<!-- issuedog:transition from=planning to=plan-review run=p%d -->", rev, rev)
+}
+
+// waitPlanComment is the plan comment for plan revision rev, with its
+// revision marker on the last line (planRevision).
+func waitPlanComment(t *testing.T, rev int) string {
+	t.Helper()
+	return waitPlanRevision(t, rev, waitPlanText(rev))
+}
+
+// waitPlanHash is the hash plan revision rev's comment records.
+func waitPlanHash(t *testing.T, rev int) string {
+	t.Helper()
+	h, ok := state.PlanHash(waitPlanComment(t, rev))
+	if !ok {
+		t.Fatalf("plan revision %d has no hash", rev)
+	}
+	return h
+}
+
+// waitStory is story n, item S<item> of the plan on #40, filed by the App
+// with its origin marker in the body, after comments: as waitSnap, with
+// type story, parent 40 and labels.
+func waitStory(n, item int, labels []string, comments ...string) *github.Snapshot {
+	s := waitSnap(n, labels, comments...)
+	s.Type, s.Parent, s.Author = "story", 40, waitApp
+	s.Body = fmt.Sprintf("The story.\n\n<!-- issuedog:origin plan=#40 rev=1 item=S%d -->", item)
+	return s
+}
+
+// The plan approval lines every approvable plan ends with (#270).
+const (
+	waitPlanApprove = "React 👍 to the plan comment, or post `/approve`, to approve it."
+	waitPlanBack    = "Post `/revise <notes>`, or any other comment, to send it back."
+	waitPlanRenew   = "Post `/revise <notes>`, or any other comment, to send it back and get a new plan."
+)
+
+// A story at plan-review with a clean plan revision is a plan's approval
+// (#270): keyed plan-<n>-<rev>, linked to the plan comment, at its
+// priority, with the revision and its hash, how to approve it and how to
+// send it back. It's placed in its plan, from its origin marker: #40,
+// item 2.
+func TestWaitFindPlanApproval(t *testing.T) {
+	t.Parallel()
+	s := waitStory(41, 2, []string{"priority:p1"}, waitPlanComment(t, 1))
+	got := waitFindOne(t, waitIn(s, Dirt{}))
+	want := []string{"Revision 1 of the plan, `" + waitPlanHash(t, 1) + "`, waits for approval.", waitPlanApprove, waitPlanBack}
+	if got.Kind != waitPlanApproval || got.Key != "plan-41-1" || got.Link != "https://github.com/o/r/issues/41#issuecomment-4101" ||
+		got.Comment != 4101 || got.Priority != 1 || got.Plan != 40 || got.Index != 2 {
+		t.Errorf("got %s %s %s comment %d p%d plan %d index %d; want a plan approval plan-41-1 on comment 4101 at p1, plan 40, index 2",
+			got.Kind, got.Key, got.Link, got.Comment, got.Priority, got.Plan, got.Index)
+	}
+	if !slices.Equal(waitTexts(got.Lines), want) || slices.ContainsFunc(got.Lines, func(l waitLine) bool { return l.Copied }) {
+		t.Errorf("lines = %+v, want %q, none copied", got.Lines, want)
+	}
+	// A later plan revision, posted with the move back from planning after
+	// a revision request, is the one to approve.
+	revised := waitStory(41, 2, nil, waitPlanComment(t, 1), "<!-- issuedog:transition from=plan-review to=planning cmd=9 seen=9 -->",
+		waitPlanComment(t, 2))
+	got = waitFindOne(t, waitIn(revised, Dirt{}))
+	if got.Key != "plan-41-2" || got.Comment != 4103 || got.Lines[0].Text != "Revision 2 of the plan, `"+waitPlanHash(t, 2)+"`, waits for approval." {
+		t.Errorf("after a revision, got %s on comment %d, %q; want plan-41-2 on comment 4103", got.Key, got.Comment, waitTexts(got.Lines))
+	}
+	// Back from a hold, it still links the plan comment, not the move back.
+	resumed := waitStory(41, 2, nil, waitPlanComment(t, 1), "<!-- issuedog:transition from=plan-review to=held at=plan-review reason=owner cmd=5 -->",
+		"<!-- issuedog:transition from=held to=plan-review cmd=6 seen=5 -->")
+	got = waitFindOne(t, waitIn(resumed, Dirt{}))
+	if got.Key != "plan-41-1" || got.Comment != 4101 || got.Link != "https://github.com/o/r/issues/41#issuecomment-4101" || !slices.Equal(waitTexts(got.Lines), want) {
+		t.Errorf("back from a hold, got %s on comment %d, %s, %q; want plan-41-1 on comment 4101, approvable", got.Key, got.Comment, got.Link, waitTexts(got.Lines))
+	}
+	// An epic, with no origin marker, isn't placed in any plan.
+	epic := waitSnap(42, nil, waitPlanComment(t, 1))
+	got = waitFindOne(t, waitIn(epic, Dirt{}))
+	if got.Kind != waitPlanApproval || got.Key != "plan-42-1" || got.Plan != 0 || got.Index != 0 || !slices.Equal(waitTexts(got.Lines), want) {
+		t.Errorf("the epic's item = %+v; want plan-42-1 in no plan, approvable", got)
+	}
+}
+
+// A plan that can't be approved yet says why, a reason a line, in
+// state.PlanApproval's order and then the type's, without the login of
+// whoever made something dirty, and doesn't say how to approve it. One
+// with no clean revision, a hidden one or one whose comment changed says
+// that sending it back gets a new plan (plan #248, Q1a), and one with no
+// clean revision links the transition, as it says "no clean revision",
+// not "no plan yet" (#267's verify).
+func TestWaitFindPlanApprovalBlocked(t *testing.T) {
+	t.Parallel()
+	plan := waitPlanComment(t, 1)
+	hash := waitPlanHash(t, 1)
+	// A plan comment whose revision marker records another hash.
+	changed := waitPlanText(1) + "\n<!-- issuedog:revision kind=plan rev=1 body=0badbeef -->"
+	// Held from plan-review, then back: the plan comment's later dirt
+	// leaves no clean revision, and the stage from the later moves.
+	heldBack := waitStory(43, 1, nil, plan, "<!-- issuedog:transition from=plan-review to=held at=plan-review reason=owner cmd=5 -->",
+		"<!-- issuedog:transition from=held to=plan-review cmd=6 seen=5 -->")
+	set := waitStory(43, 1, nil, "<!-- issuedog:transition from=planning to=plan-review by=owner event=7 -->")
+	untyped := waitStory(43, 1, nil, plan)
+	untyped.Type = ""
+	unknown := waitStory(43, 1, nil, plan)
+	unknown.Type = "feature"
+	retyped := waitStory(43, 1, nil, plan)
+	retyped.Type, retyped.TypeEvent = "task", 70
+	const (
+		none   = "there's no clean plan revision to approve: none was posted, or it was edited without approval or deleted"
+		hidden = "a comment of mine after plan revision 1 was edited without approval or deleted, so it may hide a newer revision"
+		dirty  = "the issue description has an edit that wasn't approved (see the note on it)"
+	)
+	cases := []struct {
+		name    string
+		s       *github.Snapshot
+		dirt    Dirt
+		key     string
+		comment int64
+		first   string
+		why     []string
+		last    string
+	}{
+		{"set by hand, with no plan", set, Dirt{}, "plan-43-0", 4301, "The plan waits for review, with no clean revision to approve.", []string{none}, waitPlanRenew},
+		{"the plan comment made dirty", heldBack, Dirt{4301: "eve"}, "plan-43-0", 4303, "The plan waits for review, with no clean revision to approve.",
+			[]string{none}, waitPlanRenew},
+		{"hidden", waitStory(43, 1, nil, plan, "Edited by someone."), Dirt{4302: "eve"}, "plan-43-1", 4301,
+			"Revision 1 of the plan, `" + hash + "`, waits for approval.", []string{hidden}, waitPlanRenew},
+		{"changed", waitStory(43, 1, nil, changed), Dirt{}, "plan-43-1", 4301, "Revision 1 of the plan, `0badbeef`, waits for approval.",
+			[]string{"the comment of plan revision 1 changed after it was posted, so it no longer matches `0badbeef`"}, waitPlanRenew},
+		{"dirty body", waitStory(43, 1, nil, plan), Dirt{state.BodyID: "eve"}, "plan-43-1", 4301,
+			"Revision 1 of the plan, `" + hash + "`, waits for approval.", []string{dirty}, waitPlanBack},
+		{"hidden and a dirty body", waitStory(43, 1, nil, plan, "Edited by someone."), Dirt{state.BodyID: "eve", 4302: "eve"}, "plan-43-1", 4301,
+			"Revision 1 of the plan, `" + hash + "`, waits for approval.", []string{hidden, dirty}, waitPlanRenew},
+		{"untyped", untyped, Dirt{}, "plan-43-1", 4301, "Revision 1 of the plan, `" + hash + "`, waits for approval.",
+			[]string{"an issue of its type doesn't go on to `planned` on approval"}, waitPlanBack},
+		{"unknown type", unknown, Dirt{}, "plan-43-1", 4301, "Revision 1 of the plan, `" + hash + "`, waits for approval.",
+			[]string{"I can't tell what kind of issue this is from its type"}, waitPlanBack},
+		{"retyped", retyped, Dirt{}, "plan-43-1", 4301, "Revision 1 of the plan, `" + hash + "`, waits for approval.",
+			[]string{"its type doesn't fit `plan-review`, so a 👍 is held back until the type changes (see the type error)"}, waitPlanBack},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			items, err := waitFind(waitIn(c.s, c.dirt))
+			if err != nil {
+				t.Fatal(err)
+			}
+			// A retyped issue has its type error too, which isn't this test's.
+			items = slices.DeleteFunc(items, func(it waitItem) bool { return it.Kind == waitError })
+			if len(items) != 1 {
+				t.Fatalf("got %+v, want one plan approval", items)
+			}
+			got := items[0]
+			if got.Kind != waitPlanApproval || got.Key != c.key || got.Comment != c.comment || got.Link != waitLink("o", "r", 43, c.comment) {
+				t.Errorf("got %s %s on comment %d, %s; want a plan approval %s on comment %d", got.Kind, got.Key, got.Comment, got.Link, c.key, c.comment)
+			}
+			var why []string
+			for _, l := range got.Lines {
+				if w, ok := strings.CutPrefix(l.Text, "It can't be approved yet: "); ok {
+					why = append(why, strings.TrimSuffix(w, "."))
+				}
+				if strings.Contains(l.Text, "eve") || strings.Contains(l.Text, "/approve") || l.Copied {
+					t.Errorf("line %+v names the login, says how to approve, or is copied", l)
+				}
+			}
+			if !slices.Equal(why, c.why) {
+				t.Errorf("why = %q, want %q", why, c.why)
+			}
+			if texts := waitTexts(got.Lines); len(texts) != len(c.why)+2 || texts[0] != c.first || texts[len(texts)-1] != c.last {
+				t.Errorf("lines = %q, want %q, the reasons, then %q", texts, c.first, c.last)
+			}
+		})
+	}
+}
+
+// The plan's approval goes when the issue moves to planned, by an
+// approval, or to planning, by a revision request, and the move to
+// planning leaves no question either (#270).
+func TestWaitFindPlanApprovalGoes(t *testing.T) {
+	t.Parallel()
+	plan := waitPlanComment(t, 1)
+	approved := fmt.Sprintf("<!-- issuedog:transition from=plan-review to=planned rev=1 body=%s cmd=r9 seen=4401 -->", waitPlanHash(t, 1))
+	for name, s := range map[string]*github.Snapshot{
+		"approved":  waitStory(44, 1, nil, plan, approved),
+		"sent back": waitStory(44, 1, nil, plan, "<!-- issuedog:transition from=plan-review to=planning cmd=4403 seen=4403 -->", "Not like this."),
+	} {
+		if items, err := waitFind(waitIn(s, Dirt{})); err != nil || len(items) != 0 {
+			t.Errorf("%s: waitFind = %+v, %v; want no item", name, items, err)
+		}
+	}
+}
+
+// At plan-review, the item is the plan's, never the spec's (plan #247,
+// assumption 2): a spec revision 2 before plan revision 1 gives plan-<n>-1
+// on the plan comment, whose key isn't the spec approval's rev-<n>-<rev>,
+// even for the same revision number. At spec-review, the same comments
+// give the spec's.
+func TestWaitFindPlanApprovalKey(t *testing.T) {
+	t.Parallel()
+	spec := "**Revision 2**\n\n<!-- issuedog:revision rev=2 body=" + state.BodyHash("The spec.") + " seen=5 -->"
+	s := waitSnap(45, nil, waitRevision(1, "The spec."), spec, waitPlanComment(t, 1))
+	got := waitFindOne(t, waitIn(s, Dirt{}))
+	if got.Kind != waitPlanApproval || got.Key != "plan-45-1" || got.Comment != 4503 || got.Lines[0].Text != "Revision 1 of the plan, `"+waitPlanHash(t, 1)+"`, waits for approval." {
+		t.Errorf("got %s %s on comment %d, %q; want the plan's plan-45-1 on comment 4503", got.Kind, got.Key, got.Comment, waitTexts(got.Lines))
+	}
+	atSpec := waitSnap(45, nil, waitRevision(1, "The spec."), waitPlanRevision(t, 1, "### Plan"))
+	spe := waitFindOne(t, waitIn(atSpec, Dirt{}))
+	if spe.Kind != waitApproval || spe.Key != "rev-45-1" || spe.Key == "plan-45-1" {
+		t.Errorf("at spec-review got %s %s; want the spec's rev-45-1", spe.Kind, spe.Key)
+	}
+}
+
+// waitPlanOrder places an item by its origin: its plan and its number,
+// for a story's or a task's ID, and nothing for no origin or another ID.
+func TestWaitPlanOrder(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		o           state.Origin
+		plan, index int
+	}{
+		{state.Origin{}, 0, 0},
+		{state.Origin{Plan: 40, Rev: 1, Item: "S2"}, 40, 2},
+		{state.Origin{Plan: 40, Rev: 3, Item: "T10"}, 40, 10},
+		{state.Origin{Plan: 40, Rev: 1, Item: "T999999999"}, 40, 999999999},
+		{state.Origin{Plan: 0, Rev: 1, Item: "S2"}, 0, 0},
+		{state.Origin{Plan: 40, Rev: 1, Item: "X2"}, 0, 0},
+		{state.Origin{Plan: 40, Rev: 1, Item: "s2"}, 0, 0},
+		{state.Origin{Plan: 40, Rev: 1, Item: "S0"}, 0, 0},
+		{state.Origin{Plan: 40, Rev: 1, Item: "S02"}, 0, 0},
+		{state.Origin{Plan: 40, Rev: 1, Item: "S2a"}, 0, 0},
+		{state.Origin{Plan: 40, Rev: 1, Item: "S"}, 0, 0},
+		{state.Origin{Plan: 40, Rev: 1, Item: "S1234567890"}, 0, 0},
+	} {
+		if plan, index := waitPlanOrder(c.o); plan != c.plan || index != c.index {
+			t.Errorf("waitPlanOrder(%+v) = %d, %d; want %d, %d", c.o, plan, index, c.plan, c.index)
+		}
+	}
+}
+
+// waitPlanRankSnaps are the issues the plan ranking test holds: 73 has 74
+// below it, open, so it unblocks 2. Every other issue has nothing below.
+func waitPlanRankSnaps() map[int]*github.Snapshot {
+	return map[int]*github.Snapshot{73: {Number: 73, Parent: 70}, 74: {Number: 74, Parent: 73}}
+}
+
+// waitPlanRankItems are the items the plan ranking test ranks:
+//   - plan #40's S2 at p1 and S1 at p2: the group ranks as S2 would, at
+//     p1, and lists S1 first;
+//   - plan #70's S1 at p3, S2 at p2 and S3 at p3, which unblocks 2: the
+//     group ranks as S3, first of all, and lists S1, S2, S3;
+//   - an epic's plan approval with no plan, at p2 on the oldest issue: it
+//     ranks alone, after the p1 approvals and before the question;
+//   - a state error, spec approvals at p0 and p1 around plan #40's place,
+//     and a question at p0, each where it ranked before.
+func waitPlanRankItems() []waitItem {
+	at := func(h int) time.Time { return waitT0.Add(time.Duration(h) * time.Hour) }
+	return []waitItem{
+		{Issue: 41, Kind: waitPlanApproval, Key: "plan-41-1", Priority: 1, Created: at(41), Comment: 1, Plan: 40, Index: 2},
+		{Issue: 42, Kind: waitPlanApproval, Key: "plan-42-1", Priority: 2, Created: at(42), Comment: 1, Plan: 40, Index: 1},
+		{Issue: 71, Kind: waitPlanApproval, Key: "plan-71-1", Priority: 3, Created: at(71), Comment: 1, Plan: 70, Index: 1},
+		{Issue: 72, Kind: waitPlanApproval, Key: "plan-72-1", Priority: 2, Created: at(72), Comment: 1, Plan: 70, Index: 2},
+		{Issue: 73, Kind: waitPlanApproval, Key: "plan-73-1", Priority: 3, Created: at(5), Comment: 1, Plan: 70, Index: 3},
+		{Issue: 60, Kind: waitPlanApproval, Key: "plan-60-1", Priority: 2, Created: at(1), Comment: 1},
+		{Issue: 30, Kind: waitError, Key: "err-30-labels-0", Priority: 2, Created: at(30), Comment: 1},
+		{Issue: 31, Kind: waitApproval, Key: "rev-31-1", Priority: 0, Created: at(31), Comment: 1},
+		{Issue: 32, Kind: waitApproval, Key: "rev-32-1", Priority: 1, Created: at(32), Comment: 1},
+		{Issue: 33, Kind: waitApproval, Key: "rev-33-1", Priority: 1, Created: at(50), Comment: 1},
+		{Issue: 34, Kind: waitQuestion, Key: "q-34-1", Priority: 0, Created: at(34), Comment: 1},
+	}
+}
+
+// waitPlanRankText is waitRankText with each item's plan and index.
+func waitPlanRankText(items []waitItem) string {
+	var lines []string
+	for _, it := range items {
+		lines = append(lines, fmt.Sprintf("%-15s unblocks=%d kind=%-13s p%d created=%s plan=%d index=%d",
+			it.Key, it.Unblocks, it.Kind, it.Priority, it.Created.Format(time.RFC3339), it.Plan, it.Index))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// A plan's approvals rank in groups by plan (#270): each group where its
+// best member would rank alone, its members in item order, whatever their
+// priorities; an approval with no plan, and every other item, by Q3a. Any
+// order of the same items ranks the same.
+func TestWaitRankPlanGolden(t *testing.T) {
+	t.Parallel()
+	items := waitPlanRankItems()
+	waitRank(items, waitPlanRankSnaps())
+	waitGolden(t, "plan-rank", waitPlanRankText(items))
+	reversed := waitPlanRankItems()
+	slices.Reverse(reversed)
+	waitRank(reversed, waitPlanRankSnaps())
+	if got, want := waitPlanRankText(reversed), waitPlanRankText(items); got != want {
+		t.Errorf("reversed input ranks\n%s\nwant\n%s", got, want)
+	}
+	// Plan #40's S1 and S2 are next to each other, where S2 alone ranks.
+	alone := slices.DeleteFunc(waitPlanRankItems(), func(it waitItem) bool { return it.Key == "plan-42-1" })
+	waitRank(alone, waitPlanRankSnaps())
+	where := slices.IndexFunc(alone, func(it waitItem) bool { return it.Key == "plan-41-1" })
+	s1 := slices.IndexFunc(items, func(it waitItem) bool { return it.Key == "plan-42-1" })
+	if where < 0 || s1 != where || items[s1+1].Key != "plan-41-1" {
+		t.Errorf("S1 at %d, S2 alone at %d, in\n%s\nwant S1 then S2 where S2 alone ranks", s1, where, waitPlanRankText(items))
+	}
+	// With no plans, the same items rank by Q3a alone, as before #270.
+	plain := waitPlanRankItems()
+	for i := range plain {
+		plain[i].Plan, plain[i].Index = 0, 0
+	}
+	waitRank(plain, waitPlanRankSnaps())
+	var keys []string
+	for _, it := range plain {
+		keys = append(keys, it.Key)
+	}
+	if want := []string{"plan-73-1", "err-30-labels-0", "rev-31-1", "rev-32-1", "plan-41-1", "rev-33-1", "plan-60-1", "plan-42-1", "plan-72-1", "plan-71-1", "q-34-1"}; !slices.Equal(keys, want) {
+		t.Errorf("with no plans, ranked %q; want %q", keys, want)
+	}
+}
+
+// Two groups whose best members tie on every one of Q3a's keys, which
+// only items alike in issue, comment and key can, still don't mix: the
+// lower plan's group goes first, whole, so the order stays total.
+func TestWaitRankPlanTie(t *testing.T) {
+	t.Parallel()
+	tied := waitItem{Issue: 9, Kind: waitPlanApproval, Key: "plan-9-1", Priority: 1, Created: waitT0, Comment: 1}
+	items := []waitItem{
+		{Issue: 91, Kind: waitPlanApproval, Key: "plan-91-1", Priority: 2, Created: waitT0, Comment: 1, Plan: 50, Index: 1},
+		{Issue: 92, Kind: waitPlanApproval, Key: "plan-92-1", Priority: 2, Created: waitT0, Comment: 1, Plan: 40, Index: 1},
+		tied, tied,
+	}
+	items[2].Plan, items[2].Index = 50, 2
+	items[3].Plan, items[3].Index = 40, 2
+	waitRank(items, nil)
+	var got []string
+	for _, it := range items {
+		got = append(got, fmt.Sprintf("%s/%d", it.Key, it.Plan))
+	}
+	if want := []string{"plan-92-1/40", "plan-9-1/40", "plan-91-1/50", "plan-9-1/50"}; !slices.Equal(got, want) {
+		t.Errorf("ranked %q, want %q", got, want)
+	}
+}
+
+// waitPlanRankFound finds the plan approvals of plan #40's S1 at p2 and
+// S2 at p1, from real snapshots, with a spec approval at p1 on an older
+// issue and S2's hidden plan revision.
+func waitPlanRankFound(t *testing.T) ([]waitItem, map[int]*github.Snapshot) {
+	t.Helper()
+	plan := waitPlanComment(t, 1)
+	snaps := map[int]*github.Snapshot{
+		46: waitStory(46, 1, nil, plan),
+		47: waitStory(47, 2, []string{"priority:p1"}, plan, "Edited by someone."),
+		8:  waitSnap(8, []string{"priority:p1"}, waitRevision(1, "The spec.")),
+	}
+	dirt := map[int]Dirt{47: {4702: "eve"}}
+	var items []waitItem
+	for _, n := range []int{8, 46, 47} {
+		found, err := waitFind(waitIn(snaps[n], dirt[n]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		items = append(items, found...)
+	}
+	waitRank(items, snaps)
+	return items, snaps
+}
+
+// Found on real snapshots, plan #40's stories rank S1 then S2, after the
+// older p1 spec approval, and the digest lists them so (#270): the golden
+// is the digest's body, with an approvable plan and a hidden one, which
+// mentions nobody, has no marker but its own, and names each "Plan
+// approval".
+func TestWaitPlanApprovalDigestGolden(t *testing.T) {
+	t.Parallel()
+	items, _ := waitPlanRankFound(t)
+	var keys []string
+	for _, it := range items {
+		keys = append(keys, it.Key)
+	}
+	if want := []string{"rev-8-1", "plan-46-1", "plan-47-1"}; !slices.Equal(keys, want) {
+		t.Fatalf("ranked %q, want %q", keys, want)
+	}
+	body := digestRenderBody("", items)
+	digestRenderGolden(t, "plan-approval", body)
+	digestRenderCheck(t, body)
+	if n := strings.Count(body, "**Plan approval**, priority p"); n != 2 {
+		t.Errorf("the body names %d plan approvals, want 2:\n%s", n, body)
+	}
+	// It gets no mention, so it alone posts no announcement.
+	if news, err := digestRenderNews(items[1:], []string{"owner"}); news != "" || err != nil {
+		t.Errorf("announcing the plan approvals gave %q, %v; want nothing to post", news, err)
 	}
 }

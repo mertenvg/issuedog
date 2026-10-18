@@ -215,6 +215,8 @@ func digestRenderKindName(k waitKind) string {
 		return "Discussion hold"
 	case waitApproval:
 		return "Approval"
+	case waitPlanApproval:
+		return "Plan approval"
 	case waitQuestion:
 		return "Question round"
 	case waitFlag:
@@ -225,18 +227,18 @@ func digestRenderKindName(k waitKind) string {
 
 // digestRenderMentions reports whether new item it gets the digest's
 // mention (Q2a): only one whose own comment doesn't mention notify
-// already. A question round, a spec's revision and a triage flag end in a
-// cc line, so in phase 1 that leaves state errors, and a discussion hold
-// with a trigger that no App comment mentioning notify names
-// (waitItem.news, #192): a comment on an issue held already (Q2b), or a
-// trigger whose notice discLost held back, unless the hold's own
-// transition marker records it. A hold's other triggers, named by the
-// hold's comment or a notice, each ending in a cc line (#87's assumption
-// 5), give it none. A kind added later gets the mention unless
-// it's listed here.
+// already. A question round, a spec's revision, a plan's revision (the
+// plan comment ends in one, #270) and a triage flag end in a cc line, so
+// that leaves state errors, and a discussion hold with a trigger that no
+// App comment mentioning notify names (waitItem.news, #192): a comment on
+// an issue held already (Q2b), or a trigger whose notice discLost held
+// back, unless the hold's own transition marker records it. A hold's
+// other triggers, named by the hold's comment or a notice, each ending in
+// a cc line (#87's assumption 5), give it none. A kind added later gets
+// the mention unless it's listed here.
 func digestRenderMentions(it waitItem) bool {
 	switch it.Kind {
-	case waitApproval, waitQuestion, waitFlag:
+	case waitApproval, waitPlanApproval, waitQuestion, waitFlag:
 		return false
 	case waitHold:
 		return len(it.news()) > 0
