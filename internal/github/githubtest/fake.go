@@ -111,6 +111,7 @@ type issue struct {
 	deletions      []deletedEvent                  // CommentDeletedEvents, oldest first (DeleteCommentBy)
 	closingClosers map[int64]closingCloser         // how each closed event was made, by its ID (closingAnswer)
 	movedTo        string                          // the repo Transfer moved it to, in lower case, or "" (transfer.go)
+	reactions      []*gogithub.Reaction            // to the issue itself, oldest first (reactions_issue.go)
 }
 
 type comment struct {
@@ -178,6 +179,7 @@ func New(t testing.TB, repo, slug string) *Fake {
 	f.handle("PATCH /issues/comments/{id}", f.editComment)
 	f.handle("GET /issues/comments/{id}/reactions", f.listReactions)
 	f.handle("POST /issues/comments/{id}/reactions", f.addReaction)
+	f.handle("GET /issues/{n}/reactions", f.listIssueReactions)
 	f.handle("POST /issues/{n}/labels", f.addLabels)
 	f.handle("DELETE /issues/{n}/labels/{name}", f.removeLabel)
 	f.handle("GET /issues/{n}/timeline", f.timeline)
@@ -303,7 +305,7 @@ func (f *Fake) DeleteComment(id int64) {
 func (f *Fake) AddReaction(commentID int64, author, content string) int64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	r, _ := f.react(f.findComment(commentID), author, content)
+	r, _ := f.react(&f.findComment(commentID).reactions, author, content)
 	return r.GetID()
 }
 
@@ -463,15 +465,16 @@ func (f *Fake) addCommentBy(is *issue, author, body string) *comment {
 	return c
 }
 
-// react adds a reaction unless author has it already, and reports whether it did.
-func (f *Fake) react(c *comment, author, content string) (*gogithub.Reaction, bool) {
-	for _, r := range c.reactions {
+// react adds a reaction to a comment's or an issue's reactions unless author
+// has it already, and reports whether it did.
+func (f *Fake) react(reactions *[]*gogithub.Reaction, author, content string) (*gogithub.Reaction, bool) {
+	for _, r := range *reactions {
 		if r.GetUser().GetLogin() == author && r.GetContent() == content {
 			return r, false
 		}
 	}
 	r := &gogithub.Reaction{ID: new(f.nextID()), User: user(author), Content: &content, CreatedAt: f.tick()}
-	c.reactions = append(c.reactions, r)
+	*reactions = append(*reactions, r)
 	return r, true
 }
 
@@ -642,7 +645,7 @@ func (f *Fake) addReaction(c *call) (int, any) {
 	if status, msg := c.decode(&req); msg != nil {
 		return status, msg
 	}
-	r, created := f.react(c.comment, f.slug+"[bot]", req.Content)
+	r, created := f.react(&c.comment.reactions, f.slug+"[bot]", req.Content)
 	if created {
 		return http.StatusCreated, r
 	}
