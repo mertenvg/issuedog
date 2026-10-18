@@ -6,6 +6,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/mertenvg/issuedog/internal/github"
 )
 
 func TestLookupFindsEveryRow(t *testing.T) {
@@ -16,6 +19,9 @@ func TestLookupFindsEveryRow(t *testing.T) {
 		trigger  Trigger
 	}{
 		{Intake, Clarifying, ClassUntyped, TriggerTrusted},
+		{Intake, Planning, ClassStory, TriggerCreated},
+		{Intake, Ready, ClassTask, TriggerCreated},
+		{Intake, NeedsHuman, ClassHumanTask, TriggerCreated},
 		{Clarifying, Clarifying, ClassBug, TriggerMoreQuestions},
 		{Clarifying, SpecReview, ClassOwnerStory, TriggerSpecWritten},
 		{Clarifying, Ready, ClassNewOwnerTask, TriggerTaskWritten},
@@ -65,14 +71,16 @@ func TestLookupFindsEveryRow(t *testing.T) {
 	if len(cases) != len(table) {
 		t.Fatalf("%d cases for %d table rows", len(cases), len(table))
 	}
-	found := map[Trigger]bool{}
+	// A row is its from, to, classes and trigger: the created rows share a
+	// trigger.
+	found := map[Row]bool{}
 	for _, c := range cases {
 		r, err := Lookup(c.from, c.to, c.class, c.trigger)
 		if err != nil {
 			t.Errorf("Lookup(%s, %s, %s, %s): %v", c.from, c.to, c.class, c.trigger, err)
 			continue
 		}
-		found[r.Trigger()] = true
+		found[r] = true
 	}
 	if len(found) != len(table) {
 		t.Errorf("found %d distinct rows of %d", len(found), len(table))
@@ -148,6 +156,47 @@ func TestLookupPlanQuestions(t *testing.T) {
 	}
 	if _, err := Lookup(Clarifying, Clarifying, ClassEpic, TriggerPlanQuestions); !errors.Is(err, ErrNoTransition) {
 		t.Errorf("plan-questions at clarifying: got %v, want ErrNoTransition", err)
+	}
+}
+
+// TestLookupCreated: a created child's first move (plan #249, Q1a) is
+// intake → planning for a story with a parent, intake → ready for a task
+// from a plan, and intake → needs-human for a human task, each only for
+// its class. An owner's story or task, an epic, a bug and an untyped issue
+// get none of them, nor does a class get another's first stage.
+func TestLookupCreated(t *testing.T) {
+	t.Parallel()
+	first := map[Class]Stage{ClassStory: Planning, ClassTask: Ready, ClassHumanTask: NeedsHuman}
+	classes := []Class{ClassEpic, ClassStory, ClassOwnerStory, ClassTask, ClassOwnerTask, ClassHumanTask,
+		ClassBug, ClassUntyped, ClassNewBug, ClassNewOwnerTask}
+	if len(classes) != len(classNames) {
+		t.Fatalf("%d classes for %d class names", len(classes), len(classNames))
+	}
+	for _, c := range classes {
+		for _, to := range append(slices.Clone(openStages), Closed) {
+			r, err := Lookup(Intake, to, c, TriggerCreated)
+			want, ok := first[c]
+			switch {
+			case ok && to == want && err != nil:
+				t.Errorf("%s: Lookup(intake, %s) = %v, want the created row", c, to, err)
+			case ok && to == want && (r.From() != Intake || r.To() != want || r.Trigger() != TriggerCreated || r.Classes() != c):
+				t.Errorf("%s: Lookup(intake, %s) = %s → %s for %s on %s, want the created row for %s alone", c, to, r.From(), r.To(), r.Classes(), r.Trigger(), c)
+			case (!ok || to != want) && !errors.Is(err, ErrNoTransition):
+				t.Errorf("%s: Lookup(intake, %s) = %v, want ErrNoTransition", c, to, err)
+			}
+		}
+		// The first move is only from intake.
+		if want, ok := first[c]; ok {
+			if _, err := Lookup(Clarifying, want, c, TriggerCreated); !errors.Is(err, ErrNoTransition) {
+				t.Errorf("%s: Lookup(clarifying, %s) = %v, want ErrNoTransition", c, want, err)
+			}
+		}
+	}
+	// No other trigger moves a child out of intake to its first stage.
+	for c, to := range first {
+		if _, err := Lookup(Intake, to, c, TriggerTrusted); !errors.Is(err, ErrNoTransition) {
+			t.Errorf("%s: trusted to %s = %v, want ErrNoTransition", c, to, err)
+		}
 	}
 }
 
@@ -369,6 +418,71 @@ func TestFitsRulesBesideTheTable(t *testing.T) {
 	for _, s := range []Stage{Ready, Closed} {
 		if Fits(s, fitsItems["epic"]) {
 			t.Errorf("with only rows from any open, an epic fits %s", s)
+		}
+	}
+}
+
+// A plan task whose body someone else edited keeps its class when a clean
+// App comment carries its origin (#290), so it still fits the task stages;
+// with the comment dirty, it's an owner task. A human task's comment, with
+// human=1, keeps ClassHumanTask, which fits needs-human and never
+// in-progress.
+func TestOriginInACommentKeepsTheClass(t *testing.T) {
+	t.Parallel()
+	const (
+		task  = "<!-- issuedog:origin plan=#195 rev=1 item=T1 -->"
+		human = "<!-- issuedog:origin plan=#195 rev=1 item=T9 human=1 -->"
+		moved = "<!-- issuedog:transition from=planned to=ready event=p9 -->"
+	)
+	edited := func(origin string) *github.Snapshot {
+		s := snap("The task, edited by the owner.", []github.Author{appBot, appBot}, origin, moved)
+		s.Type, s.Parent = "task", 195
+		s.BodyEdit = github.Edit{By: owner, At: time.Unix(5, 0)}
+		return s
+	}
+	for _, tt := range []struct {
+		name      string
+		s         *github.Snapshot
+		dirty     func(int64) bool
+		want      Class
+		fits, not Stage
+	}{
+		{"a plan task", edited(task), clean, ClassTask, InProgress, SpecReview},
+		{"a human task", edited(human), clean, ClassHumanTask, NeedsHuman, InProgress},
+		{"a plan task whose comment is dirty", edited(task), dirtyIDs(1), ClassOwnerTask, InProgress, Planning},
+	} {
+		it := Derive(tt.s, slug, tt.dirty).Item
+		if c, err := ClassOf(it); err != nil || c != tt.want {
+			t.Errorf("%s: class = %s, %v; want %s", tt.name, c, err, tt.want)
+		}
+		if !Fits(tt.fits, it) || Fits(tt.not, it) {
+			t.Errorf("%s: fits %s = %v and %s = %v, want true and false", tt.name, tt.fits, Fits(tt.fits, it), tt.not, Fits(tt.not, it))
+		}
+	}
+}
+
+// The created rows change Fits for no stage and no class (#275): each
+// class already fits its first stage through its other rows, and intake
+// fits every class. Fits with and without them agrees everywhere.
+func TestFitsUnchangedByCreatedRows(t *testing.T) {
+	stages := append(slices.Clone(openStages), Closed)
+	with := map[string]bool{}
+	for name, it := range fitsItems {
+		for _, s := range stages {
+			with[name+" at "+string(s)] = Fits(s, it)
+		}
+	}
+	saved := table
+	t.Cleanup(func() { table = saved })
+	table = slices.DeleteFunc(slices.Clone(saved), func(r Row) bool { return r.Trigger() == TriggerCreated })
+	if len(table) != len(saved)-3 {
+		t.Fatalf("%d created rows, want 3", len(saved)-len(table))
+	}
+	for name, it := range fitsItems {
+		for _, s := range stages {
+			if got, want := Fits(s, it), with[name+" at "+string(s)]; got != want {
+				t.Errorf("Fits(%s, %s) = %v without the created rows, %v with them", s, name, got, want)
+			}
 		}
 	}
 }

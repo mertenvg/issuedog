@@ -270,7 +270,8 @@ func (iv *Interviewer) Context(ctx context.Context, in Input) (map[string][]byte
 	}
 	// At the clarifying after a discussion hold (#189): the discussion's
 	// owner input, and the /revise that waited through a hold from
-	// spec-review.
+	// spec-review. One that waited through a hold from plan-review is left
+	// alone for now, an interim rule that S5's T5 replaces (ivHoldFields).
 	origin, span := ivHoldOrigin(in.Issue), ivHoldSpanOf(s, a.AppSlug, in.Dirt.Has)
 	var held ivHoldInput
 	var revise *github.Comment
