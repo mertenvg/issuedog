@@ -34,7 +34,8 @@ var (
 // fieldOrder is FormatMarker's order for the fields SPEC names, as in its
 // examples. Any other field follows them, sorted.
 var fieldOrder = []string{"from", "to", "at", "origin", "reason", "by", "kind", "key", "ack",
-	"plan", "rev", "body", "item", "verdict", "attempt", "round", "sha", "url", "run", "event", "cmd"}
+	"plan", "rev", "body", "item", "verdict", "attempt", "round", "sha", "url", "run", "event", "cmd",
+	"v", "data"}
 
 // FormatMarker writes m as a hidden marker, its fields in a fixed order
 // (fieldOrder). A kind, key or value ParseMarkers wouldn't read back is an
