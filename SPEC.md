@@ -151,12 +151,12 @@ GitHub is the single source of truth. The daemon keeps only an in-memory cache, 
 | Scope | `scope:<name>` from the repo's allowed list |
 | Model and effort | At most one each of `model:<suffix>`, `effort:<level>`, `verifier-model:<suffix>` and `verifier-effort:<level>` (3.3, section 13) |
 | Transition history | Bot comments carrying a `transition` marker, e.g. `<!-- issuedog:transition from=clarifying to=spec-review rev=3 body=9f2a61c0 run=8f2c effort=high model=opus ran=claude-opus-5-5 seen=2214587 -->` |
-| Attempt count | Hidden marker on the latest bot verifier comment for a task. For other stage runs, the daemon's memory and the lease (8.2, 8.3), so a restart resets every count but the latest run's |
+| Attempt count | Hidden marker on the latest bot verifier comment for a task. For other stage runs, the daemon's memory and the lease (8.2, 8.3), so a restart resets every count but the latest run's. The lease also keeps why that run failed (5.3) |
 | State errors | Bot comments carrying an `error` marker with a stable key, and the bot's `ack` replies to them (5.3) |
 | Label reverts | Bot comments carrying a `revert` marker keyed by the reverted timeline event, a label's, an issue type's, or a close's or reopen's (6.4), so a replay doesn't comment twice (5.1, 5.2). A label or issue type that no event explains has no event to key by, so its key is its name and the newest event: `<label>@<id>` for a label, `issue-type:<type>@<id>` for an issue type (5.1) |
 | Discussion holds | The hold's transition marker and the bot's notices, each keyed by its trigger, and the bot's `ended` records (6.4) |
 | Processed commands | The bot's 👍 on an applied command comment or 👎 on a rejected one, plus `cmd=<comment id>` in the transition marker or a `reply` marker (9.2). A reaction command (section 9.2) is recorded as `cmd=r<reaction id>` |
-| Spec and plan revisions | One revision comment per revision, carrying a `revision` marker with `rev` and the body's hash. A transition posted with a revision, or approving one, carries both too (section 7.4); for plans, see section 16 |
+| Spec and plan revisions | One revision comment per revision, carrying a `revision` marker with `rev` and the hash. A spec's hashes the body. A plan's is `kind=plan`, on the plan comment's last line, and hashes the comment above it. A transition posted with a revision, or approving one, carries both too, except that one posting a plan revision carries only `rev` (section 7.4) |
 | Triage decisions | Bot comments carrying a `triage` marker: a flag waiting on a code owner, or an issue left to people (6.2) |
 | Dirty content | A visible note carrying a `dirty` marker at the top of the comment or body (5.1) |
 | Origin of bot-created issues | Hidden `origin` marker in the issue body (section 6.2) |
@@ -169,12 +169,14 @@ Every marker is an HTML comment, `<!-- issuedog:<kind> key=value ... -->`, with 
   - A hold set by hand on an issue that is already held writes a `held → held` marker with `reason=owner`, `by` and `event`, which keeps the first hold's `at` and `origin` (5.1). So does the owner hold that 6.4 records again when an edit or a deletion hid a hold's marker, keyed `event=<the trigger's key>`, with no `by` and no `cmd`.
   - A move out of `held` to `clarifying` after a discussion carries `at` and `origin` (6.4). When the last trigger's resolution makes it, it is keyed `event=h<the ID of the comment holding the move that began the hold>`, and carries `resolved=<Unix seconds>`, when the act that resolved the last trigger happened.
   - Every transition marker written at the `clarifying` after a discussion hold carries `origin` (6.4). An interviewer run's move there may carry `cmd=<comment id>` beside its `run`, naming the `/revise` it handled (6.4).
-  - A move that posts or approves a revision carries `rev` and `body`, the body's hash (7.4).
+  - A move that posts or approves a revision carries `rev` and `body`, the revision's hash (7.4). The exception is a move that posts a plan revision: it carries `rev` but not `body`, since it sits inside the text the plan's hash covers, so the hash is only in the plan revision marker.
   - `seen=<comment id>` is the newest comment read before the move. It bounds the next round's input (9.2). On a stage run's move it is the newest comment on the issue when the run started. On a move by `/revise`, a revision request or `/approve`, it is that comment. On an approval by 👍 it is the newest comment the daemon had read. On a move into, within or out of `held`, it is the bound from before the hold, so comments posted while held are input in the stage the issue lands in (6.4).
   - A stage run's move carries `model` and `effort`, the settings the run started with, each only when set, and `ran`, the full names of the models that ran, comma-separated, from the result's `modelUsage` (3.3). A value a marker can't hold, such as one with a space, is left out and logged.
-  - An interviewer question round's move, `clarifying → clarifying`, carries `round=<n>` and `questions=<count>` (9.1), for example `<!-- issuedog:transition from=clarifying to=clarifying round=2 run=8f2c effort=high model=opus questions=3 ran=claude-opus-5-5 seen=2214587 -->`. The interviewer's `typed` move (9.1) is the same move and carries neither.
+  - An interviewer question round's move, `clarifying → clarifying`, carries `round=<n>` and `questions=<count>` (9.1), for example `<!-- issuedog:transition from=clarifying to=clarifying round=2 run=8f2c effort=high model=opus questions=3 ran=claude-opus-5-5 seen=2214587 -->`. The interviewer's `typed` move (9.1) is the same move and carries neither. A planner question round's move, `planning → planning`, carries both too, numbered with the interviewer's rounds (9.1).
   - A move into the pipeline is keyed by how the issue got in (6.2): `event=` for `stage:intake` or `approved`, `run=` for triage, `cmd=` for `/track` and `cmd=r` for a 👍 on a flag.
-- `revision rev=<n> body=<hash>`: in each revision comment (7.4). Posted without a transition, it also carries `seen`.
+- `revision rev=<n> body=<hash>`: in each spec revision comment (7.4). Posted without a transition, it also carries `seen`.
+- `revision kind=plan rev=<n> body=<hash>`: the last line of each plan comment, which is its plan revision (7.4, 11.4). Its hash covers everything above it.
+- `plan-data v=1 data=<data>`: in each plan comment, between the move's transition marker and the plan revision marker. It keeps the validated plan, task bodies and checks included, which the comment's text never shows (11.4). `data` is the plan's JSON, compressed with raw DEFLATE and encoded as unpadded base64url. A reader refuses any other `v`, a second marker in one comment, and data that doesn't decode to exactly the plan's fields.
 - `reply reason=<rejected|edited> cmd=<comment id>`: on the App's reply to a rejected command, or to an edit made after the App used the comment (9.2). It marks the comment as processed. A command the App 👎'd gets no edited reply.
 - `error kind=<kind> key=<key>`: a state error (5.3). The ack reply to it carries `error kind=<kind> key=<key> ack=r<reaction id>`, and covers only that kind and key. An ack from before acks named a kind has no `kind`, and covers its key for every kind.
 - `revert key=<event id>`: an untrusted label change the daemon reverted (5.1), or an untrusted close or reopen, keyed by its `closed` or `reopened` event (6.4). For an unexplained label it removed, the key is `<label>@<event id>`: the label in lower case, URL-escaped, and the ID of its latest event, or 0. One comment may carry several.
@@ -247,6 +249,7 @@ Every transition goes through one table in code (section 7). Each write is check
 A state error is something the daemon reports to the owner instead of acting on: a transition missing from the table (7.2) other than a rejected command, a stage label that disagreed with its marker (5.1), a type that can't be at the issue's stage (4), a stage run that failed `loop.max_attempts` times in a row (8.3), or model and effort labels that give a run no settings (3.3).
 
 - The daemon posts one comment per error, carrying `<!-- issuedog:error kind=<transition|disagreement|type|attempts|labels> key=<key> -->`. The key is the ID of what triggered it: the comment, reaction or timeline event (such as a `labeled` or issue-type event). For a stage run, the key names the stage and its round of input (8.3), so the stage doesn't run again until the issue moves or gets new input. A run's missing transition also keys on the issue's type and parent. For model and effort labels, the key is the timeline event of the newest change to any of the four kinds that stands (5.1): the App's or a trusted user's, but not an untrusted change or the App's revert of one. So the same bad labels set again after a fix are reported again, and an untrusted change posts nothing. For a type, the key is the type change that stands (see Types). Before posting, the daemon looks for a comment with that key and kind and reuses it, so the same cause is posted once across polls and restarts, and a new occurrence gets a new key.
+- For a stage run's attempt cap, the comment also says why the last attempt failed, for every stage (8.3). The cause is fenced and escaped, since it may quote the agent's output, such as `rule scope: T3's scope "web" isn't on the list` (11.3), and cut to 1,000 characters. The lease keeps it (8.2), so the comment still names it after a restart.
 - For a disagreement, the comment is posted before the label is put back, so a crash between the two can't lose the report.
 - For model and effort labels, the daemon reads the issue again first. It posts nothing if the issue closed, changed stage, has no stage work pending, or has other model and effort labels than it had in step 1 (8.1), since the change may fix them.
 - A trusted 👍 on the comment acknowledges the error. The daemon records it by replying with `<!-- issuedog:error kind=<kind> key=<key> ack=r<reaction id> -->`, never posts that kind and key again, and the error stops counting toward assignment (9.6) and leaves the digest (9.4). Removing the 👍 later changes nothing.
@@ -350,7 +353,7 @@ Only these move it on: a trusted 👍 on a `kind=transition` error, which lets t
 
 Dirtying or deleting the move or the command falls back to the label's time. With no admission found, every edit counts as after it. Times are to the second, so a change in the admission's second counts as after it.
 
-**Edits after admission.** An approval approves what the approver read, not what the author writes later. On an untrusted author's issue, a title or body the author changed after the admission is untrusted input for the interviewer: it goes in `untrusted.md` under a heading that says so, and `issue.md` says it's there instead of showing it.
+**Edits after admission.** An approval approves what the approver read, not what the author writes later. On an untrusted author's issue, a title or body the author changed after the admission is untrusted input for the interviewer and the planner: it goes in `untrusted.md` under a heading that says so, and `issue.md` says it's there instead of showing it.
 
 - The body counts as changed after admission when its last edit is at or after the admission, by anyone but the App. GitHub dates only the last edit, so any later edit counts.
 - The title counts as changed after admission when its latest rename is at or after the admission and by someone untrusted. A trusted user's later rename makes the title theirs.
@@ -359,12 +362,12 @@ Dirtying or deleting the move or the command falls back to the label's time. Wit
 
 - comments by untrusted users and other bots;
 - dirty comments by anyone, and a dirty body (5.1);
-- for the interviewer, an untrusted author's title or body changed after admission;
+- for the interviewer and the planner, an untrusted author's title or body changed after admission, and for the planner, its parent's too;
 - for triage, an untrusted author's whole title and body.
 
-The interviewer gets `untrusted.md` only on epics and stories. On an untyped issue, a bug or a task, that text is in no file. Triage is the exception: a triage run gets `untrusted.md` on any issue, so it can classify an untrusted author's issue. Its result can only flag such an issue or leave it, never admit it.
+The interviewer and the planner get `untrusted.md` only on epics and stories. On an untyped issue, a bug or a task, that text is in no file. Triage is the exception: a triage run gets `untrusted.md` on any issue, so it can classify an untrusted author's issue. Its result can only flag such an issue or leave it, never admit it.
 
-A command counts once. If its comment is edited after the daemon applied it (its 👍), the edit is ignored and the bot replies asking for a new comment, except as 9.2 says for answers: an applied command that wrote no marker, such as `/priority`, edited into plain text at `clarifying`, in the current round, becomes an answer, with no reply. A rejected command (its 👎) gets no new reply when edited. If it is edited before the daemon processes it, the daemon reads the latest text. Section 9.2 has the details, including edited answers.
+A command counts once. If its comment is edited after the daemon applied it (its 👍), the edit is ignored and the bot replies asking for a new comment, except as 9.2 says for answers: an applied command that wrote no marker, such as `/priority`, edited into plain text at `clarifying` or `planning`, in the current round, becomes an answer, with no reply. A rejected command (its 👎) gets no new reply when edited. If it is edited before the daemon processes it, the daemon reads the latest text. Section 9.2 has the details, including edited answers.
 
 ### 6.3 Protecting the trust inputs
 
@@ -506,9 +509,9 @@ The lifecycle of each type:
 | clarifying | ready | task | Owner answered the implementer's or verifier's question |
 | spec-review | clarifying | epic, or story with no parent | Owner `/revise <text>`, or any other trusted comment (7.4) |
 | spec-review | planning | epic, or story with no parent | Owner approves the current revision with 👍 or `/approve` (7.4) |
-| planning | planning | epic, story | The planner asks a question round: on entering planning, or the next once the owner answered (9.1). Not built until phase 2 |
-| planning | plan-review | epic, story | Planner output passes validation (11.3) |
-| planning | planned | story | Output passes validation and `plan.review` is false, unless the planning follows a discussion hold (6.4); daemon creates tasks |
+| planning | planning | epic, story | The planner asks a question round: on entering planning, or the next once the owner answered (9.1) |
+| planning | plan-review | epic, story | Planner output passes validation (11.3); the plan comment is a plan revision (7.4) |
+| planning | planned | story | Output passes validation and `plan.review` is false, unless the move that put the issue at `planning` carries `origin`, as the interviewer's move from the `clarifying` after a discussion hold does (6.4); daemon creates tasks, not built yet |
 | plan-review | planning | epic, story | Owner `/revise <text>`, or any other trusted comment (7.4) |
 | plan-review | planned | epic, story | Owner approves the current revision with 👍 or `/approve` (7.4); daemon creates sub-issues, human tasks and dependencies, or after a discussion hold updates them (6.4) |
 | any open | ready | task | The parent's newly approved revision changed it (6.4); any run is dropped |
@@ -548,6 +551,8 @@ The lifecycle of each type:
 
 From `ready` on, a `bug` follows the rows for `task`.
 
+**Skipping plan review.** With `plan.review` false, a story's plan skips review unless the move that put the issue at `planning` carries `origin`. Looking through the planner's own rounds and the holds the issue went back from, that's only the interviewer's move out of the `clarifying` after a discussion hold (6.4). A discussion hold at `planning` that `/resume` ends with no trusted response goes straight back to `planning`, with no `origin`, so that plan still skips review. This affects only a first plan: #195's Q2a makes every revised plan wait for review.
+
 Until build phase 3, the interviewer runs only on an epic, a story with no parent and an untyped issue (9.1). A bug or a task, whether filed so or typed so by the interviewer, waits at `clarifying` with no more runs until the implementer stage adds the 11.2 rewrite. So does a story with a parent. Every move into the pipeline says so (6.2). Each of these also waits at the `clarifying` after a discussion hold, until a code owner sets its stage by hand, and the move there says so (6.4).
 
 Any transition missing from this table is an error, except a trusted user's manual label change (5.1) or a rejected command (9.2). The daemon logs the error, leaves the issue unchanged and reports a state error (5.3).
@@ -563,10 +568,12 @@ Any transition missing from this table is an error, except a trusted user's manu
 
 ### 7.4 Approvals bind to a revision
 
-- **Revision numbers.** Each time the daemon writes a spec or plan, it increments `rev` and posts a revision comment naming the revision. For a spec, the comment carries `<!-- issuedog:revision rev=<n> body=<hash> -->`. For a plan, the plan comment is the revision comment (section 16).
+- **Revision numbers.** Each time the daemon writes a spec or plan, it increments `rev` and posts a revision comment naming the revision. For a spec, the comment carries `<!-- issuedog:revision rev=<n> body=<hash> -->`. For a plan, the plan comment is the revision comment (11.4), and its last line is `<!-- issuedog:revision kind=plan rev=<n> body=<hash> -->` (#247's Q1a).
+  - **Two kinds.** A `revision` marker with no `kind` is a spec revision, and one with `kind=plan` is a plan revision. Each kind numbers its revisions on its own, from 1, and is read on its own: every rule for specs reads only spec revisions, and a plan revision is never the latest spec revision, nor a spec revision a plan revision. So a 👍 on a plan comment approves no spec, and `/approve`, revision requests, reposting a stale revision at `spec-review`, the digest's approval item (9.4) and the interviewer's line that a revision still stands (9.1) ignore plan revisions.
   - The hash is the first 8 hex digits of the SHA-256 of the body, with CRLF and CR line endings normalised to LF. Nothing else is normalised, so markers and a dirty note (5.1) are part of it.
-  - A revision posted with a transition goes in the transition's comment, and the transition marker carries `rev` and `body` too. It is posted even when the hash is unchanged, since an answered question is a new revision and 👍s on the earlier one mustn't approve it. A revision posted without a transition, such as after a body edit, is skipped when the latest revision already has the body's hash.
-  - The latest revision is the last revision comment that counts. A dirty revision comment (5.1) is no revision. A dirty App comment after the latest revision may hide a newer one, and so may an App comment deleted after it was posted (a `CommentDeletedEvent`, section 16), so nothing approves until the daemon posts a clean revision after it.
+  - **A plan's hash.** For a plan revision, the "body" is the plan comment's text above its last line: the plan, the move's transition marker and the `plan-data` marker (section 5), with line endings normalised the same way. The last line must be the plan revision marker alone. A plan revision matches while its comment still has that hash, so an approval binds to the plan's data as well as its text.
+  - A spec revision posted with a transition goes in the transition's comment, and the transition marker carries `rev` and `body` too. A plan revision's transition marker carries `rev` only, since it's inside the hashed text. A revision is posted even when the hash is unchanged, since an answered question is a new revision and 👍s on the earlier one mustn't approve it. A revision posted without a transition, such as after a body edit, is skipped when the latest revision already has the body's hash. Plan revisions are posted only with the planner's move.
+  - The latest revision of a kind is the last revision comment of that kind that counts. A dirty revision comment (5.1) is no revision. A dirty App comment after the latest revision may hide a newer one, and so may an App comment deleted after it was posted (a `CommentDeletedEvent`, section 16), so nothing approves until the daemon posts a clean revision after it.
 - **Approving.** A trusted 👍 on the latest revision comment, or a trusted `/approve` posted after it, approves that revision, and only while the current body or plan still matches the recorded hash and the body isn't dirty. The approval's transition marker carries `rev`, `body` and the approving `cmd`. With several trusted 👍s, the earliest is recorded.
   - 👍s on earlier revision comments, and 👍s from untrusted users or from the App, are ignored.
   - Removing a 👍 after the daemon applied the approval changes nothing.
@@ -575,7 +582,8 @@ Any transition missing from this table is an error, except a trusted user's manu
   - A comment beats a pending 👍, since comments are handled before reactions.
   - A question counts as a revision request: the agent answers it and posts the next revision, even if nothing else changed.
   - A comment posted after the approval was applied goes to the next stage as owner input. The transition's `seen` (section 5) decides which comments come after it, so one posted in the same poll isn't lost.
-- **The body is edited.** The hash no longer matches. After an edit by the body's author, if trusted, by another trusted user (6.1), or by the App, the daemon increments `rev` and posts a new revision comment with the new hash (for plans, see section 16), which voids any pending approval. So the owner's edit to the spec of an issue someone else filed gets a new revision. An edit by anyone else makes the body dirty (5.1): it gets no revision, and nothing can approve it. An untrusted author's own edit gets no revision either: before the App's first full rewrite of the body (5.1) the mismatch keeps approval blocked, and after it the edit makes the body dirty, until the history no longer shows the rewrite (5.1). Then the mismatch alone keeps approval blocked, as before the rewrite.
+- **The body is edited.** The hash no longer matches. After an edit by the body's author, if trusted, by another trusted user (6.1), or by the App, the daemon increments `rev` and posts a new revision comment with the new hash, which voids any pending approval. So the owner's edit to the spec of an issue someone else filed gets a new revision. An edit by anyone else makes the body dirty (5.1): it gets no revision, and nothing can approve it. An untrusted author's own edit gets no revision either: before the App's first full rewrite of the body (5.1) the mismatch keeps approval blocked, and after it the edit makes the body dirty, until the history no longer shows the rewrite (5.1). Then the mismatch alone keeps approval blocked, as before the rewrite.
+  - **An edited plan comment.** A plan comment is the App's, so anyone else's edit makes it dirty (5.1), and it's no revision.
   - **Leaving `spec-review` with a dirty body.** The interviewer's spec is the App's full rewrite of the body (5.1, 11.1), so it cleans the body. The untrusted text is gone from the body, and the interviewer saw it only in `untrusted.md` (6.2). So a `/revise` or a revision request sends the issue back to `clarifying`, and the next spec gets a normal revision, which a trusted 👍 or `/approve` approves. The spec's move names whose edit it replaced. Until then nothing approves the dirty body. An override also leaves: a trusted user sets the next stage label by hand (5.1).
 - **PR approval.** This relies on GitHub. The ruleset dismisses stale approvals when new commits are pushed, and `issuedog/verify` is posted for an exact head SHA.
 
@@ -606,12 +614,12 @@ Each loop iteration:
 ### 8.2 Leases and restart
 
 - **On pickup.** The daemon writes `/state/lease.json` (write to a temp file, then rename) with the issue number, stage, run ID, clone path, start time, and the time of the last poll before pickup (6.4). It also records what the run read: the newest comment on the issue (the run's `seen`, section 5), the last edit time of each input and of the body (`body_edit`), and the run's resolved model, effort and fallback models (3.3). A triage run's lease records the stage `intake`, which is what the daemon reads for an issue with no stage label. For a task, the `stage:in-progress` label and the transition marker show the lease on GitHub. A non-task run doesn't move its issue, so the lease's stage is the one a reset returns to.
-- **Attempts.** The lease names the round of attempts the run belongs to and its number in it (8.3). When a run ends, failed or not counted, the lease is first marked ended with the count of failed attempts in a row it leaves; then the run's files are deleted, and the lease too if that count is 0. A restart that finds an ended lease only takes its count and deletes what's left. The lease holds only the latest run, so every other count, such as another issue's, is held in memory and resets on any restart.
+- **Attempts.** The lease names the round of attempts the run belongs to and its number in it (8.3). When a run ends, failed or not counted, the lease is first marked ended with the count of failed attempts in a row it leaves, and for a failed run, why it failed, for the attempt cap's error (5.3); then the run's files are deleted, and the lease too if that count is 0. A restart that finds an ended lease only takes its count and deletes what's left. The lease holds only the latest run, so every other count, such as another issue's, is held in memory and resets on any restart.
 - **On apply.** The daemon reads the issue again and applies the result through its `run=<run id>` key (5.2). It drops the result, writing nothing and counting no attempt, when the issue is closed or gone, even if the run's move is written already. Unless the move is written already, it also drops the result in these cases, and every stage follows the same rules:
   - The issue's stage changed during the run, since the owner's change wins. A triage result is also dropped once the issue has a stage label or a transition marker.
   - An input was edited or deleted since the run read it, or the body has a later edit by anyone but the App. The stage runs again on what's there. The App's own edit, such as one a result applied part way made before a restart, doesn't drop it.
   - The issue has new trusted input since the run's `seen`: a comment above it by a trusted user that isn't a command and isn't dirty. The stage runs again with that comment as input. Without this, an answer step 1 👍'd before a delayed apply would be lost.
-- **Checks.** A stage may check its result past what the schema can say, on the issue read again, before anything is written. The interviewer and triage do (9.1, 6.2). A broken rule is a failed attempt (8.3), with nothing written. A result whose move is written already isn't checked again. A GitHub read that fails during the check says nothing about the result, so it isn't a failed attempt: it is a failure to apply.
+- **Checks.** A stage may check its result past what the schema can say, on the issue read again, before anything is written. The interviewer, the planner and triage do (9.1, 11.3, 6.2). A broken rule is a failed attempt (8.3), with nothing written. A result whose move is written already isn't checked again. A GitHub read that fails during the check says nothing about the result, so it isn't a failed attempt: it is a failure to apply.
 - **Failing to apply.** A result that fails to apply keeps its lease, and the next pass tries again. After `loop.max_attempts` failures, the run is a failed attempt (8.3). While the issue has unexplained labels held back (5.1), the result waits with its lease, uncounted, and no other run starts; once they're left out, it applies without them. The read before a run and the attempt cap's check leave them out too.
 - **On startup.** The daemon reads the lease.
   - First it checks the issue for discussion triggers since the last poll before the run was picked up (6.4). If the issue is held or closed, it deletes the clone and leaves the issue as it is. A valid saved result is dropped. Without one, the run counts as a failed attempt, unless it hit a usage limit or a marker shows the result was applied. The lease is deleted, unless it holds a count of failed attempts in a row (see Attempts): then it stays, marked ended, with that count.
@@ -623,7 +631,7 @@ Each loop iteration:
 - The verify loop allows `max_attempts` (default 3) implementer runs per round. A round starts when a task becomes `ready`, or when a review with comments sends it back (7.2).
 - Each retry prompt includes the previous verifier findings verbatim, and each retry runs one effort level higher, up to `stages.max_effort` (3.3).
 - After the last failed attempt, the task moves to `stage:needs-human` with the findings attached.
-- **Other stage runs.** A failed triage, interviewer, planner or story-verifier run is tried again, up to `loop.max_attempts` (default 3) runs in a row per round. A round starts when the issue moves, or when it gets new input. For triage, only a way into the pipeline (6.2) ends it, since triage's input never starts a new round. After the last failed attempt, the issue gets one state error, `kind=attempts` (5.3), and the stage doesn't run again until the round changes.
+- **Other stage runs.** A failed triage, interviewer, planner or story-verifier run is tried again, up to `loop.max_attempts` (default 3) runs in a row per round. A round starts when the issue moves, or when it gets new input. For triage, only a way into the pipeline (6.2) ends it, since triage's input never starts a new round. After the last failed attempt, the issue gets one state error, `kind=attempts` (5.3), naming why the last attempt failed, and the stage doesn't run again until the round changes.
   - A run fails when its result isn't a `success` or is an error (3.3), when its output fails validation or the stage's check (8.2), when it times out, when it leaves no valid result across a restart (8.2), or when its result fails to apply `loop.max_attempts` times. A GitHub read that fails inside a stage's check is a failure to apply, so it counts only toward that limit.
   - A usage limit (3.3), a failure to start the run, a shutdown and a dropped result (8.2) don't count, nor an apply held back by unexplained labels (5.1).
   - A result asking for a transition the table lacks isn't an attempt either. It gets one state error, `kind=transition`, and the stage doesn't run again until the issue moves, gets new input, or changes type or parent. When the type is the cause, the type error (5.3) stands for it instead, and the stage waits while a type error has been reported on the issue and the type is still the cause, as 5.3 says under Holding back.
@@ -661,7 +669,7 @@ Rules:
 - Each question stands alone, lists what it blocks, and offers 2 to 4 options with the recommended option first and marked.
 - Free-text answers are always allowed.
 - Questions wait for an answer indefinitely. There is no default-on-silence.
-- The interviewer asks at most `max_questions_per_round` (default 7) per round, most blocking first.
+- The interviewer and the planner each ask at most `max_questions_per_round` (default 7) per round, most blocking first.
 - **The type line.** Every comment that sets a type starts with `Type: <type>, because <reason>`: a question round, a typed comment or a spec's revision comment (11.1). On an issue with no type, the interviewer's first comment starts with it, or with its questions when it can't tell yet (section 4).
 
 **When the interviewer runs.** It runs at `clarifying` on an epic, a story with no parent, or an untyped issue, in two cases:
@@ -674,8 +682,8 @@ Any answer starts the next run, including a partial one. That run sees every ans
 **Rounds.**
 
 - A round's transition marker carries `round=<n>` and `questions=<count>` (section 5), so round numbers and question IDs come from markers, not from comment text. Question `<k>` of round `<n>` has the ID `Q<n>.<k>`.
-- A round is numbered one more than the highest round on a clean round marker.
-- A round whose comment is dirty (5.1) isn't read, so it counts as 0 questions. If it was the latest round, its marker no longer counts and the next round takes its number: the round is cancelled, and the interviewer runs again. Under CODEOWNERS trust (6.1), a write collaborator who isn't trusted can edit an App comment, so they can do this.
+- A round is numbered one more than the highest round on a clean round marker, the interviewer's or the planner's. The two stages share one numbering per issue, so question IDs and the digest's keys never repeat: after interviewer rounds 1 and 2, the planner asks round 3, and an interviewer round after that is round 4. The interviewer's checks and decisions (11.1) count only its own rounds, and its preamble says the planner's questions aren't its own (section 12).
+- A round whose comment is dirty (5.1) isn't read, so it counts as 0 questions. If it was the latest round, its marker no longer counts and the next round takes its number: the round is cancelled, and its stage runs again. Under CODEOWNERS trust (6.1), a write collaborator who isn't trusted can edit an App comment, so they can do this.
 
 **The interviewer's outcomes.** Its output is one object whose `outcome` is `questions`, `spec`, `typed` or, after a discussion hold, `unchanged`:
 
@@ -693,6 +701,20 @@ Any answer starts the next run, including a partial one. That run sees every ans
 - Every text it renders fits GitHub's 65,536-character limit, with 1,024 to spare.
 - The move fits the issue once its type is set, and the issue is still one the interviewer runs on (8.3).
 - `unchanged` only at the `clarifying` after a discussion hold, and not when `origin` is `clarifying`.
+
+**When the planner runs.** It runs at `planning` on an epic or a story, with or without a parent, in two cases:
+
+- **On entry.** The latest transition entered `planning` by anything other than a planner run, such as the spec's approval or an override. It runs at once, with no input needed.
+- **After a round.** The latest transition is a planner run's `planning → planning` round, and there is at least one trusted answer since (9.2). As for the interviewer, a hold the issue went back from by `/resume` doesn't count as a transition here, so its round still waits for an answer.
+
+It never runs on an issue that was `planned` before, as any clean transition marker to `planned` shows. Until #195 adds re-planning, with the revised-plan rule (11.3), only a stage set by hand brings such an issue back to `planning`: the daemon logs it once and runs nothing.
+
+**The planner's outcomes.** Its output is one object whose `outcome` is `questions` or `plan`:
+
+- `questions`: a round in the format above, at `planning`. Its move is `planning → planning`, with `round` and `questions`. Its questions use the interviewer's shape, so they block issue numbers, usually the issue being planned.
+- `plan`: the plan comment (11.4), which is a plan revision (7.4). The issue moves to `plan-review`, or for a story with `plan.review` false, to `planned` (7.2).
+
+Its checks are 11.3's.
 
 ### 9.2 Commands
 
@@ -722,13 +744,13 @@ A comment is a command when its first line is a slash and a word, such as `/prio
 - **Rejected.** A command that doesn't apply, because it is unknown, has a bad argument, doesn't fit the issue's stage or fails its own check, gets the App's 👎, then a reply with the reason carrying `<!-- issuedog:reply reason=rejected cmd=<comment id> -->`. The 👎 is the record that it was processed: a reply can be edited or deleted, but only the App can remove its own reaction. A command with the App's 👎 but no clean reply gets its reply posted again. A rejection isn't a state error (5.3). The reply to an unknown command lists the commands, `/track` and `/ignore` included.
 - **Processed.** A comment is processed once a `cmd` or `reply` marker names it, or it has the App's 👍 or 👎. It is never applied again.
 - **Edited.** A comment edited after the App used it gets one reply asking for a new comment, carrying `reply reason=edited cmd=...`, and the edit is ignored. That covers a command edited after its 👍, even into plain text except as below, and an answer edited after a later transition's `seen` covered it. A rejected command edited later gets no new reply, and never counts as an answer.
-- **Answers.** At `clarifying`, a trusted comment that is not a command, posted after the round bound, is an answer to the current round, and gets a 👍. The bound is the latest transition marker's `seen` (section 5), or, if it has none, the ID of the App comment holding that transition. Comment IDs only increase, so a comment posted during a run belongs to the next round. Only transition markers move the bound: a reply, error, revision or dirty marker doesn't, so a rejection posted at `clarifying` keeps that round's answers. A command or answer edited before the App uses it is read with its latest text.
+- **Answers.** At `clarifying` or `planning`, a trusted comment that is not a command, posted after the round bound, is an answer to the current round, and gets a 👍. The bound is the latest transition marker's `seen` (section 5), or, if it has none, the ID of the App comment holding that transition. Comment IDs only increase, so a comment posted during a run belongs to the next round. Only transition markers move the bound: a reply, error, revision or dirty marker doesn't, so a rejection posted at `clarifying` or `planning` keeps that round's answers. A command or answer edited before the App uses it is read with its latest text.
 - **Model and effort.** `/model` and `/effort` work like `/priority`: each adds one label, `model:*`, `effort:*`, `verifier-model:*` or `verifier-effort:*`, removes the others of that kind, then 👍s the comment, with no marker (5.2). `verifier` matches in any case.
   - `/model` takes a full name on `models.allowed` or an entry's label suffix (section 13), ignoring case, and sets the label with that entry's suffix. A name that matches more than one full name only when case is ignored must be given in its exact case.
   - `/effort` takes `low`, `medium`, `high`, `xhigh` or `max`, ignoring case.
   - A missing or extra argument, a model not on `models.allowed`, or an unknown level is rejected (see Rejected). For a model or level that isn't allowed, the reply lists the allowed label suffixes, or says the config allows no model, or lists the levels.
   - Each write is checked first, so a replay after a crash redoes only what's missing. If a reload dropped the model from `models.allowed` after the label was added, the replay still finishes rather than rejecting the command.
-- **Commands edited into answers.** The App 👍s both applied commands, such as `/priority`, which writes no marker, and answers, so GitHub can't tell them apart. An applied command edited into plain text at `clarifying`, in the current round, therefore becomes an answer, and the interviewer reads the edited text. A command that a marker names, or that the App 👎'd, isn't.
+- **Commands edited into answers.** The App 👍s both applied commands, such as `/priority`, which writes no marker, and answers, so GitHub can't tell them apart. An applied command edited into plain text at `clarifying` or `planning`, in the current round, therefore becomes an answer, and the interviewer or planner reads the edited text. A command that a marker names, or that the App 👎'd, isn't.
 
 PR reviews use GitHub's own review flow.
 
@@ -807,7 +829,7 @@ One pinned issue per repo, `issuedog digest`. It uses one of the repo's three pi
 
   It names an owner hold on the issue that stays once its triggers are resolved: one a marker records, or a `/hold` on the issue that writes none because the issue was held already, but not one that a `/resume` the App applied ended while the issue stayed held for another reason, as an `ended reason=owner` record says (6.4). A `/hold` on an issue above it that writes no marker on it is named once the App's record of the discussion's end names it, and so is a comment deleted above it during the hold that may have been one (6.4). It ends with `/resume`, which accepts every trigger. Logins are code and defused, and a rename's title is escaped as a heading's title is (below). A trigger known from its record alone says it was "recorded earlier".
 - **Pending approval.** The issue is at `spec-review`. Key: `rev-<n>-<rev>`, the latest revision, or `rev-<n>-0` with none yet. If the revision can't be approved yet, the item says why: a dirty body, a dirty App comment after the revision that may hide a newer one, a body that no longer matches its hash, a type error that holds the approval back (5.3), a type that doesn't say what kind of issue it is, or a type that doesn't go on to `planning`. Nothing approves a plan yet, so `plan-review` gives no item, although 9.6 assigns it.
-- **Open question.** The issue is at `clarifying`, its latest transition is an interviewer round with `round` and `questions` of 1 or more (9.1), and no trusted answer has come since. Key: `q-<n>-<round>`. A typed bug or task's move carries neither field, so it gives no item while it waits for phase 3.
+- **Open question.** The issue is at `clarifying`, its latest transition is an interviewer round with `round` and `questions` of 1 or more (9.1), and no trusted answer has come since. Or it's at `planning`, and its latest transition is a planner round in the same way. Either looks through a hold the issue went back from by `/resume`. Key: `q-<n>-<round>`, and a planner round ranks as an interviewer round does: the rounds share one numbering, so the keys never clash. A typed bug or task's move carries neither field, so it gives no item while it waits for phase 3.
 - **Triage flag.** The issue is at intake with no stage label, and its latest triage marker that counts is a flag, `verdict=ask` (6.2). Key: `flag-<n>-<comment id>`.
 - A round's or a flag's questions and options are copied from the App's own clean comment, whose `**N. …** Blocks:` and `a. … (recommended):` lines have a fixed format. If they can't be read back, the item says to see the comment.
 - Each item links to where to answer: `https://github.com/<owner>/<repo>/issues/<n>#issuecomment-<id>`, or the issue itself for an error in the body.
@@ -856,7 +878,7 @@ The owner finds everything waiting on them in GitHub's own "assigned to me" view
 
 | Item | Assigned while |
 |---|---|
-| Question round | The issue is at `clarifying` with an unanswered round (9.1) |
+| Question round | The issue is at `clarifying` or `planning` with an unanswered round (9.1) |
 | Spec or plan | The issue is at `spec-review` or `plan-review` |
 | Hand-off | The task is at `needs-human` after a hand-off comment (9.3) |
 | Human task | The task is at `needs-human` and every issue blocking it is closed |
@@ -982,51 +1004,100 @@ A task that writes comments or issue bodies adds `- Text the daemon didn't write
 ### 11.3 Planning rules
 
 - An epic plan contains either stories, with acceptance criteria and no tasks, or tasks, when the epic has a single user-facing outcome. A story plan contains tasks.
-- At most `plan.max_tasks` (default 10) tasks per plan. Larger work becomes more stories.
+- At most `plan.max_tasks` (default 10) tasks per plan. This is a hard limit (#247's Q2a): larger work becomes more stories, or the planner asks. Raising `plan.max_tasks` allows more.
 - Each task maps to one scope label from the allowed list, and each task other than a human task maps to one PR.
 - Each task should fit within `verify.max_diff_lines`.
-- Prefer extending existing code over adding new modules; the plan names the existing files each task touches.
+- Prefer extending existing code over adding new modules. Each task's body names the existing files it touches. The plan comment names none (11.4).
 - A scope outside the allowed list becomes a question to the owner.
 - Work only the owner can do is a task marked `human`, written in the template from section 9.3 rather than 11.2.
-- A revised plan for an epic or story that is already `planned` keeps the ID of every kept or changed item and marks each item kept, changed, new or dropped (5.2, 6.4). A child whose issue is closed can only be kept; changing it means a new item with a new ID.
-- Phase 2, not built yet: the planner proposes a model and an effort for each plan item, from `models.allowed` and the effort levels (section 13). A value outside them fails validation. When the daemon creates the tasks, it sets their `model:*` and `effort:*` labels from those values (3.3). Until then, tasks get these labels only from `/model` and `/effort` (9.2) or by hand.
+- "Depends on" names items of the same plan, by ID. Links to issues outside the plan, and `depends-on` links to other repos (section 14), wait for later work. So the link limits below count within the plan.
+- Each item may set a priority, `p0` to `p3`, and a model and an effort from `models.allowed` and the effort levels (section 13). An item with no priority shows the issue's. Not built yet: when the daemon creates the tasks, it sets their `model:*` and `effort:*` labels from those values (3.3). Until then, tasks get these labels only from `/model` and `/effort` (9.2) or by hand.
+- Not built yet (#195): a revised plan for an epic or story that is already `planned` keeps the ID of every kept or changed item and marks each item kept, changed, new or dropped (5.2, 6.4). A child whose issue is closed can only be kept; changing it means a new item with a new ID. Until then the planner doesn't run on an issue that was `planned` before (9.1).
 
-The daemon validates the plan before it moves to plan-review:
+**Items.** Every item has an ID, a title, an outcome, acceptance criteria and its dependencies, and may have a priority, a model and an effort. A task also has a scope, and one of two bodies, which becomes its issue body: an 11.2 body (context, change, definition of done and test plan), or for a human task, the 9.3 fields. A story has neither.
 
-- schema
-- the scope list
-- task counts
-- the dependency graph has no cycles, including `depends-on` links to other repos
-- no parent would exceed 100 sub-issues, and no issue would exceed 50 links of one dependency type
-- for a revised plan of an issue that is already `planned`: every existing child appears exactly once, marked kept, changed or dropped, and no closed child is marked changed
+**A human task's check.** Its **Done when** is text, and may add a check the daemon runs first (9.3). A check is one of five kinds, with exactly that kind's fields:
+
+- `label`: a label exists. `label` is a name of at most 50 characters, on one line, and not `.` or `..`.
+- `issue-type`: an issue type exists. `issue_type` is a name on one line.
+- `file`: a file is on `main`. `path` is a path from the repo root, on one line, with no leading `/` or space, no backslash, and no empty, `.` or `..` segment. `contains`, if set, is text the file must contain, one line of at most 256 bytes.
+- `ruleset`: a ruleset on `main` requires a check. `check` is the check's name, on one line.
+- `installation`: the App is installed on an owner. `owner` is a user's or organization's login.
+
+Running a check isn't built yet (section 16). When it is, it uses this same validation, so the two can't differ.
+
+**Validation.** The daemon checks the planner's output after its schema, which it doesn't trust, so every bound the schema has is checked again. It fails closed: a broken rule is a failed attempt (8.3), with nothing written. The failure names every rule broken, each as `rule <name>: <detail>` with the item and field, and the attempt cap's error quotes the last one (5.3). The rules:
+
+- `outcome`: a plan has a plan and no questions, and a question round has questions and no plan.
+- A question round follows the interviewer's question rules (9.1): `question-count`, at most `loop.max_questions_per_round`; `blocks`; `options`, 2 to 4; and `one-line`. Its comment fits `length`.
+- `structure`: the plan is `stories` or `tasks`, and a story's is `tasks`. It has at least one item and a summary, and each item has criteria. A story has no scope, `human` or body. A task has exactly one body, the human task's when it's marked `human`. A task body has its context, change, definition of done and test plan.
+- `item-id`: `S1`, `S2` and so on in a plan of stories, `T1`, `T2` and so on in a plan of tasks, with no leading zero, each used once.
+- `scope`: each task has a scope from the list.
+- `max-tasks`: at most `plan.max_tasks` tasks.
+- `depends-on`: each dependency is another item of this plan, named once.
+- `cycle`: no dependency cycles. Each one is named, such as `T1 → T2 → T1`.
+- `sub-issues`: the issue's existing sub-issues and the plan's items come to at most 100.
+- `links`: no item is blocked by, or blocks, more than 50 items.
+- `model`: a full name on `models.allowed`, or an entry's label suffix.
+- `effort`: one of the five effort levels.
+- `priority`: `p0` to `p3`.
+- `human-task`: a human task fills every 9.3 field: a goal, why it blocks, at least one step and one link, the **Done when** text and the estimated time.
+- `done-when`: a human task's check is valid, as above.
+- `file-paths`: the plan comment's visible text names no file path (#247's assumption 8). A file path is a word with a directory and a file extension, such as `dir/file.ext`, outside a link. A bare file name is allowed. The visible fields are the why, the summary, the message, the assumptions and the order, each item's title, outcome and criteria, and a human task's **Done when** text.
+- `one-line`: the why, the order, each assumption, each item's title, outcome and criteria, each definition-of-done entry, and a human task's goal, why it blocks, steps, links, **Done when** text and estimated time.
+- `length`: the plan comment as it's posted, markers and plan data included, fits GitHub's 65,536-character limit with 1,024 to spare.
+
+The check also fails a result on an issue the planner no longer runs on, read again: one that isn't an epic or a story, such as one the owner retyped during the run, or one `planned` before. A sub-issue read that fails during the check is a failure to apply (8.2). The revised-plan rule, that every existing child appears exactly once, marked kept, changed or dropped, and no closed child is marked changed, is #195's, not built yet.
 
 ### 11.4 Plan
 
-One comment, which is also the revision comment (section 7.4):
+One comment, which is also the plan revision (section 7.4):
 
 ```
 ### Plan for #N (rev 1)
 
 One line on why this plan has stories or tasks.
 
-**S1. Title**
+A few lines on what exists today, what's missing, and what the plan adds.
+
+**Assumptions to confirm with your 👍:**
+- one line each
+
+**S1. Title** · p2 · model:<name> · effort:<level>
 Outcome: one sentence
 - acceptance criterion
+
 Depends on: nothing
 
-**T1. Title** · scope:<name> · human (only for a human task) · kept, changed, new or dropped (only when revising a `planned` issue, 11.3)
-- Change: what to build, and the existing files it touches
-- Acceptance: observable, testable statements
-Depends on: S1, or nothing
+**T1. Title** · scope:<name> · p2 · human · model:<name> · effort:<level>
+Outcome: one sentence
+- acceptance criterion
+
+Done when: observable result (checked automatically: file)
+Depends on: T2, or nothing
 
 **Order:** S1 → S2 and S3 in parallel → S4
 
-Validation (11.3): item count, structure, scopes, no cycles.
+Validation (11.3): 3 tasks, within `plan.max_tasks` of 10, each with one scope from the list; no dependency cycles; 3 sub-issues in all, within 100; at most 2 dependency links of one type per issue, within 50.
+
+cc @mertenvg
 
 **To approve this plan, react 👍 to this comment.** Any other comment sends it back for revision.
+
+<!-- issuedog:transition from=planning to=plan-review rev=1 run=8f2c seen=2214587 -->
+<!-- issuedog:plan-data v=1 data=… -->
+<!-- issuedog:revision kind=plan rev=1 body=d2dd7be2 -->
 ```
 
 A plan contains either stories or tasks (11.3); the template shows both forms. Item IDs (`S1`, `T1`) are the stable IDs used in `origin` markers (section 5.2).
+
+- **Levels of detail.** The comment shows each item's fields above and no more. Of a task's body it shows only a human task's **Done when** text, and its check by kind, never its path or other values. So the comment names no file paths (11.3), and a task's files are only in its body, which the `plan-data` marker keeps.
+- **The parts.** Priority is the item's, or else the issue's. `human`, model and effort show only when set. A message on what changed goes after the summary, headed "Changes since rev <previous>" from rev 2 on. Assumptions show only when there are any.
+- **Agent text** is escaped as a spec's is (11.1): headings demoted, `[ ]` boxes stripped, mentions defused, and tags and markers escaped. Criteria are plain `-` bullets.
+- **The validation line** is the daemon's own, from its counts: the items and what they are, the sub-issues the issue will have, and the most dependency links of one type an item will have. An epic's plan of stories reads "N stories, with no tasks".
+- **Skipping review.** A plan that skips review (7.2) heads its assumptions "Assumptions:", and has no `cc` line or approval line. Its last line says the plan skips review, as `plan.review` is false, and the issue moves straight to `planned`.
+- **The markers.** After the text come the move's transition marker, with `rev` but no `body`, the `plan-data` marker, and the plan revision marker as the last line (section 5, 7.4).
+- Not built yet (#195): a revised plan of a `planned` issue marks each item kept, changed, new or dropped (11.3).
 
 ### 11.5 Pull request
 
@@ -1051,17 +1122,26 @@ Closes #N
 ## 12. Agents and skills
 
 - **Stage prompts.** These live in `.issuedog/prompts/{triage,interviewer,planner,implementer,verifier}.md`. issuedog ships defaults, and a file on `main` overrides the default (section 3.4).
-  - The defaults and the schemas are embedded in the binary, so the image needs no extra files. `triage.md` and `interviewer.md` ship now. The planner, implementer and verifier prompts ship with their stages. Schemas can't be overridden.
-  - A blank file on `main` falls back to the default, with a warning. A file over 64 KiB, or a read error other than not-found, is a setup error: the run doesn't start and isn't counted.
-- **Context files.** Each run gets its files in `/run/issuedog/<run-id>/` (3.1). Text in `untrusted.md`, and every comment and body in the interviewer's files, sits in a code fence it can't close, under a heading the daemon writes.
-  - `system.md` is a fixed preamble the daemon writes, then the stage prompt. The preamble covers the trust rules, the output contract and this repo's limits, and a prompt on `main` can't remove it. The interviewer's limits are the questions per round, the rounds so far and the next round's number, the logins a decision may name, and whether it may set the type (section 4). Its preamble always says, too, that an issue with a parent is never typed `story`, and whether the issue is back from a discussion hold: if so, the stage it came from, and whether it may return `unchanged` (9.1).
-  - `prompt.md` is the daemon's short task text, saying where the context files are. Triage's names each one by its full path. The interviewer's names the context directory once, then each file by name.
+  - The defaults and the schemas are embedded in the binary, so the image needs no extra files. `triage.md`, `interviewer.md` and `planner.md` ship now. The implementer and verifier prompts ship with their stages. Schemas can't be overridden.
+  - The planner's prompt covers the levels of detail and item IDs; scopes, sizing, priority, model and effort; dependencies, and human tasks with their checks; and asking a question for a scope that isn't on the list, or a choice it can't settle. Its schema allows a plan or a question round, with the five check kinds (11.3).
+  - A blank file on `main` falls back to the default, with a warning. A file over 64 KiB, or a read error other than not-found, is a setup error: the run doesn't start and isn't counted. So is a failure to read what the planner's files need: the parent or a sub-issue list.
+- **Context files.** Each run gets its files in `/run/issuedog/<run-id>/` (3.1). Text in `untrusted.md`, and every comment and body in the interviewer's and the planner's files, sits in a code fence it can't close, under a heading the daemon writes.
+  - `system.md` is a fixed preamble the daemon writes, then the stage prompt. The preamble covers the trust rules, the output contract and this repo's limits, and a prompt on `main` can't remove it. The interviewer's limits are the questions per round, the rounds so far and the next round's number, which follows the planner's rounds too, the logins a decision may name, and whether it may set the type (section 4). When the planner asked rounds, the preamble also says those questions aren't the interviewer's, so no decision names them (9.1). Its preamble always says, too, that an issue with a parent is never typed `story`, and whether the issue is back from a discussion hold: if so, the stage it came from, and whether it may return `unchanged` (9.1).
+  - The planner's preamble gives every limit its check enforces (11.3), with this repo's values: the plan kinds the issue allows; the scopes, `plan.max_tasks` and `verify.max_diff_lines`; `models.allowed`, with their label suffixes, and the effort levels; the default priority, the issue's own; how many more sub-issues fit; the rounds so far, which of them are the planner's, and the next round's number, with the questions per round; the item ID format; the check kinds, their fields and bounds; that the visible fields name no file paths; that "Depends on" names only items of this plan, within the link limit; the one-line fields; and the comment's length.
+  - `prompt.md` is the daemon's short task text, saying where the context files are. Triage's names each one by its full path. The interviewer's and the planner's name the context directory once, then each file by name.
   - `untrusted.md`, when there is anything for it, holds the untrusted input of 6.2.
 - **The interviewer's files.**
   - `issue.md`: the number, title, type or "none", parent (`#N` or "none"), author, and the body. A dirty body, or a title or body an untrusted author changed after admission (6.2), is replaced by a line saying where it is, if anywhere. At the `clarifying` after a discussion hold, it also has an "After a hold" section: the stage the issue came from, where its latest hold began and ended, and the discussion's owner input (6.4), each comment fenced under a heading the daemon writes.
-  - `conversation.md`: the App's clean comments, with markers left out, earlier rounds labelled "Round N, QN.1–N.k" and revisions labelled; and trusted, clean comments, with author, ID and the round they answer. Oldest first.
+  - `conversation.md`: the App's clean comments, with markers left out, earlier rounds labelled "Round N, QN.1–N.k", the planner's too, and revisions labelled as of the spec or of the plan; and trusted, clean comments, with author, ID and the round they answer. Oldest first.
   - `input.md`: this run's input (9.2): each input labelled as an answer to the latest round, as the revision notes that sent the spec back, or as new since the issue came to `clarifying`, as after an override. At the `clarifying` after a hold from `spec-review`, a `/revise` that waited through the hold is there as revision notes (6.4). With no input, it says "none: first run".
   - A login in these files' headings, in `issue.md`'s Author line, and in the notes that stand in for the title or body, is named only when it is a valid GitHub login: letters, digits and single hyphens, with an optional Enterprise Managed User `_shortcode` suffix, 39 characters at most, or an App's `[bot]` login. Anything else shows as "someone unnamed".
+- **The planner's files.** It runs in a fresh checkout of `main` (3.4). Its files are read when a run starts, so a pass where nothing changed makes no request for them.
+  - `issue.md`: as the interviewer's, with the issue's priority, `p2` with none. It has no "After a hold" section.
+  - `parent.md`, for a story with a parent: the parent's number, title, type and body, its latest plan revision, and its other sub-issues, each as `children.md` lists them. The plan revision is the comment's text with markers left out, and only while it's clean, not hidden and still matches its hash (7.4); else a line says why it's left out. A parent's title or body its untrusted author changed after admission goes in `untrusted.md`, as the issue's does (6.2). A parent in another repo isn't read, and the file says so.
+  - `children.md`: the issue's sub-issues, open and closed, each with its number, title, state, type and stage label. One in another repo is named with its repo, as it counts towards the 100.
+  - `conversation.md`: as the interviewer's.
+  - `input.md`: this run's input: each labelled as an answer to the latest planner round, as posted while the issue was on hold, or as new since the issue came to `planning`. With no input, it says "none: first run".
+  - `untrusted.md`: as the interviewer's, on epics and stories (6.2), with the parent's untrusted title or body too.
 - **The triage agent's files.**
   - `issue.md`: the number, the author and whether they're trusted, and the type. For a trusted author, it also has the title and, unless it's dirty, the body.
   - `comments.md`, if there are any: trusted people's clean comments. The App's comments are left out.
@@ -1211,9 +1291,10 @@ Changes to this file go through a human-authored PR (section 6.3).
 - **The digest as a sub-issue.** Someone may make the digest a sub-issue. If the owner then holds its parent, `/hold` gives the digest `stage:held` and a transition comment. It still stays out of the pipeline.
 - **Links in titles.** The digest escapes `[`, `]`, `!` and `\` in titles (9.4), but GitHub still autolinks a bare `https://…` or `www.…`, which shows its whole target and loads nothing, and `owner/repo#1` still makes a cross-reference. Decide whether to escape those too.
 - **Hiding an announcement.** Whether hiding a comment changes its `updated_at` isn't known. If it does, a hidden `digest-new` comment counts as edited, and its items are announced once more.
+- **Unions in the planner's schema.** The planner's schema nests `oneOf`, for a check's kinds, and `if/then/else`, for a plan's kind and a task's `human`. Claude Code sends `--json-schema` as a non-strict `StructuredOutput` tool, and the API is reported to refuse unions only at the top level. Confirm this on the first live planner run. If it answers 400, flatten the schema and leave those rules to the daemon's check (11.3), which enforces them already.
 - **`--json-schema` in long runs.** It must work together with `--dangerously-skip-permissions` and long tool loops. Also confirm how many structured-output retries are allowed.
 - **Where a reposted `origin` lives.** Section 6.4 reposts an `origin` marker in an App comment, since markers in a dirty body are never read. #195 now confirms this, and that the class derivation and the de-duplication search (5.2) read it there: phase 1 files no issues with an `origin` marker, so #87 moved it there.
-- **Where a plan's hash lives.** A plan comment is also its revision comment (section 7.4), so its hash can't be written inside it without changing it. Decide whether it goes in a separate transition comment or is derived from the comment's edit history. If plan revisions reuse the `revision` marker, it needs a field that tells spec revisions from plan revisions.
+- **Where a plan's hash lives.** Settled by #247's Q1a: the plan comment's last line is the plan revision marker, `revision kind=plan`, whose hash covers everything above that line, the `plan-data` marker included. The move's transition marker, inside that text, carries `rev` but not `body` (section 5, 7.4).
 - **Running a Done-when check.** The **Done when** text of a human task is written by an agent. Decide how the daemon runs an automatable check (which uid, which credential) without breaking sections 3.1 and 3.2.
 - **Approving PR reviews with comments.** Section 7.2 covers reviews with comments and approving reviews with none. An approving review that has comments is not yet covered.
 - **Usage-limit text.** The text `-p` prints when a subscription limit is hit is undocumented, so `usage_limit.pattern` must be checked against a real occurrence.

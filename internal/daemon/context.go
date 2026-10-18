@@ -7,6 +7,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
+
+	gogithub "github.com/google/go-github/v92/github"
 
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
@@ -62,7 +65,7 @@ type contextText struct {
 // contextSort returns s's title, body and comments sorted for the context
 // files, for stage st. titleBy and bodyBy are who changed the title and
 // body of an untrusted author's issue after it was admitted, or ""
-// (Interviewer.admission); d is the dirty content. It reads trust only,
+// (contextAdmission); d is the dirty content. It reads trust only,
 // through tc.
 func contextSort(ctx context.Context, s *github.Snapshot, appSlug string, d Dirt, tc trustCache, titleBy, bodyBy string, st contextStage) (contextText, error) {
 	var t contextText
@@ -122,6 +125,66 @@ func contextSort(ctx context.Context, s *github.Snapshot, appSlug string, d Dirt
 	return t, nil
 }
 
+// contextAdmission returns who changed s's title and body after the issue
+// was admitted, if its author isn't trusted (the owner's option (a) on #6):
+// an approval approves what the approver read, not what the author writes
+// later. Each is the login of the change that taints it, or "" if it's
+// trusted as it stands. The App's issues, and trusted authors', are.
+//   - The body is tainted by an edit at or after the admission
+//     (ivAdmitted), unless the App made it, as when it wrote the spec. The
+//     last edit is the only one GitHub dates, but any later one taints it,
+//     whoever made it: someone else's makes it dirty too.
+//   - The title is tainted by its latest rename, if that's at or after the
+//     admission and by someone untrusted: a trusted user's later rename
+//     makes it theirs.
+//
+// Times are to the second, so a change in the admission's second counts
+// as after it. With no admission found, every change counts as after.
+func contextAdmission(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt, tc trustCache, tl *ivTimeline) (titleBy, bodyBy string, err error) {
+	if state.IsApp(s.Author, a.AppSlug) {
+		return "", "", nil
+	}
+	trusted, err := tc.trusted(ctx, s.Author)
+	if err != nil {
+		return "", "", fmt.Errorf("the issue's author: %w", err)
+	}
+	if trusted {
+		return "", "", nil
+	}
+	timeline, err := tl.get(ctx)
+	if err != nil {
+		return "", "", fmt.Errorf("the admission of an untrusted author's issue: %w", err)
+	}
+	at, admitted, err := ivAdmitted(ctx, a, s, d, timeline, tc)
+	if err != nil {
+		return "", "", fmt.Errorf("the admission of an untrusted author's issue: %w", err)
+	}
+	after := func(t time.Time) bool { return !admitted || !t.Before(at) }
+	if e := s.BodyEdit; !e.At.IsZero() && !state.IsApp(e.By, a.AppSlug) && after(e.At) {
+		bodyBy = login(e.By)
+	}
+	var rename *gogithub.Timeline
+	for _, e := range timeline {
+		if e.GetEvent() == "renamed" {
+			rename = e
+		}
+	}
+	if rename == nil || !after(rename.GetCreatedAt().Time) {
+		return "", bodyBy, nil
+	}
+	actor := github.Author{Login: rename.GetActor().GetLogin(), Type: rename.GetActor().GetType()}
+	if state.IsApp(actor, a.AppSlug) {
+		return "", bodyBy, nil
+	}
+	if trusted, err = tc.trusted(ctx, actor); err != nil {
+		return "", "", fmt.Errorf("who renamed the issue: %w", err)
+	}
+	if !trusted {
+		titleBy = login(actor)
+	}
+	return titleBy, bodyBy, nil
+}
+
 // contextAt names comment c in a heading: its ID and its author's login
 // (ivLogin).
 func contextAt(c github.Comment) string {
@@ -144,8 +207,9 @@ func contextInputs(inputs []github.Comment, label func(c github.Comment) string)
 // left out (contextText), saying why and where it is, if anywhere. It
 // names the parent, so a run knows the issue has one: the interviewer's,
 // for one, knows not to type the issue a story (#135's verify, and its
-// preamble's rule).
-func contextIssue(s *github.Snapshot, appSlug, titleNote, bodyNote string) string {
+// preamble's rule). more are header lines a stage adds after the Author
+// line, such as the planner's priority.
+func contextIssue(s *github.Snapshot, appSlug, titleNote, bodyNote string, more ...string) string {
 	title := github.Escape(strings.Join(strings.Fields(s.Title), " "))
 	if titleNote != "" {
 		title = titleNote
@@ -156,6 +220,9 @@ func contextIssue(s *github.Snapshot, appSlug, titleNote, bodyNote string) strin
 	}
 	head := fmt.Sprintf("# Issue #%d\n\n- Title: %s\n- Type: %s\n- Parent: %s\n- Author: %s", s.Number, title,
 		github.Escape(cmp.Or(s.Type, "none")), parent, ivLogin(s.Author.Login))
+	for _, l := range more {
+		head += "\n" + l
+	}
 	body := ivFenced(s.Body)
 	if state.IsApp(s.Author, appSlug) {
 		body = ivFenced(ivStripMarkers(s.Body))

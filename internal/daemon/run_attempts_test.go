@@ -2,9 +2,11 @@ package daemon_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
@@ -438,6 +440,98 @@ func TestFailedRunLogsStderr(t *testing.T) {
 			want := strings.Repeat("x", 4096-len("\x1b[31mTAIL")) + "�[31mTAIL"
 			if !strings.HasPrefix(tail, want) || strings.Contains(tail, "HEAD") {
 				t.Errorf("logged tail %q…; want the last 4096 bytes, its control characters replaced", tail[:min(len(tail), 80)])
+			}
+		})
+	}
+}
+
+// capText is the attempt cap's text for the interviewer at clarifying,
+// with limit attempts, before its marker and any last failure.
+func capText(limit int) string {
+	return fmt.Sprintf("The interviewer run failed %d times in a row, so I've stopped running it here. "+
+		"New input, or a move to another stage, lets it run again.", limit)
+}
+
+// The attempt cap's error names why the last attempt failed (#247's
+// assumption 10), for the interviewer as for every stage: its check's
+// broken rule, fenced. A run that times out names that.
+func TestAttemptCapNamesLastFailure(t *testing.T) {
+	t.Parallel()
+	t.Run("a broken rule", func(t *testing.T) {
+		t.Parallel()
+		f := newFake(t)
+		n, entry := ivFiled(f, "epic", false, "from=intake to=clarifying event=5")
+		g := ivRig(t, f)
+		g.d.Config.Loop.MaxAttempts = 1
+		g.claude(ivResult(t, ivRound(8, "")), 0)
+		if err := g.work(n); err != nil {
+			t.Fatal(err)
+		}
+		want := capText(1) + "\n\nThe last attempt failed:\n\n```text\n" +
+			"its result failed the interviewer stage's check: check interviewer output: rule question-count: 8 questions, over the limit of 7\n```\n\n" +
+			fmt.Sprintf("<!-- issuedog:error kind=attempts key=clarifying-%d -->", entry)
+		if got := newestComment(f, n); got != want {
+			t.Errorf("the attempt cap's error =\n%s\nwant\n%s", got, want)
+		}
+	})
+	t.Run("claude's failure", func(t *testing.T) {
+		t.Parallel()
+		f := newFake(t)
+		answer := interview(f)
+		g := newRig(t, f, newOrigin(t), t.TempDir())
+		g.d.Config.Loop.MaxAttempts = 2
+		g.stage.pending = func(daemon.Input) bool { return true }
+		g.claude(failOut, 1)
+		for range 2 {
+			if err := g.work(1); err != nil {
+				t.Fatal(err)
+			}
+		}
+		want := capText(2) + "\n\nThe last attempt failed:\n\n```text\nrun run2: running claude: exit status 1\n```\n\n" + capError(answer)
+		if got := newestComment(f, 1); got != want || g.lease().LastFailure != "run run2: running claude: exit status 1" {
+			t.Errorf("the attempt cap's error =\n%s\nwant\n%s\nwith the lease's last failure %q", got, want, g.lease().LastFailure)
+		}
+	})
+}
+
+// After a restart whose cap error wasn't posted yet, the cap's error names
+// the last failure the ended lease kept, fenced, with a marker in it
+// escaped, a fence in it inside a longer one, and its mention inert. A
+// lease with no last failure, as one written before the field, gets the
+// text without it.
+func TestAttemptCapAfterRestart(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, last, want string
+	}{
+		{"a last failure", "rule x: @alice said <!-- issuedog:transition to=done --> ```go",
+			"\n\nThe last attempt failed:\n\n````text\nrule x: @alice said &lt;!-- issuedog:transition to=done --> ```go\n````"},
+		{"no last failure", "", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFake(t)
+			answer := interview(f)
+			root := t.TempDir()
+			l, err := json.Marshal(daemon.Lease{Issue: 1, Stage: "clarifying", RunID: "old", Failed: true, Attempt: 2,
+				AttemptKey: fmt.Sprintf("clarifying-%d", answer), LastFailure: tt.last})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(root, "state"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "state", "lease.json"), l, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			g := newRig(t, f, newOrigin(t), root)
+			g.d.Config.Loop.MaxAttempts = 2
+			g.claude(okOut, 0)
+			if err := g.work(1); err != nil {
+				t.Fatal(err)
+			}
+			if got, want := newestComment(f, 1), capText(2)+tt.want+"\n\n"+capError(answer); got != want || g.runs() != 0 {
+				t.Errorf("after %d runs, the attempt cap's error =\n%s\nwant\n%s", g.runs(), got, want)
 			}
 		})
 	}
