@@ -337,11 +337,14 @@ func TestHumanItemAssignReplay(t *testing.T) {
 	}
 }
 
-// End to end (#284 and #287): the human tasks ChildrenVisit creates from
-// an approved plan, T3 #4 and T2 #5 of humanPlan, at needs-human with no
-// blockers, are each listed on the digest's first pass, linking the issue,
-// with the Goal and "Done when" copied from the body humanBody wrote:
-// "Done when" the daemon's sentence for its check, then how to finish.
+// End to end (#284, #287 and #277): the human tasks ChildrenVisit creates
+// from an approved plan, T3 #4 and T2 #5 of humanPlan, are at
+// needs-human, and T3, which depends on T2, is blocked by it. So the
+// digest's first pass lists T2 alone, linking the issue, with the Goal and
+// "Done when" copied from the body humanBody wrote: "Done when" the
+// daemon's sentence for its check, then how to finish. T3 isn't listed
+// while its blocker is open; TestHumanItemDigest covers the pass after a
+// blocker closes.
 func TestHumanItemFromChildren(t *testing.T) {
 	t.Parallel()
 	f := run(t, humanAtReview, childrenPass(t, humanKind))
@@ -350,6 +353,9 @@ func TestHumanItemFromChildren(t *testing.T) {
 			t.Fatalf("#%d's labels are %q; want it at needs-human", n, got)
 		}
 	}
+	if got := f.State().Issues[3].BlockedBy; !slices.Equal(got, []int{5}) {
+		t.Fatalf("#4 is blocked by %v; want T2's #5", got)
+	}
 	d := digestDaemon(t, f, digestNotifyOrigin(t), nil)
 	iterate(t, d)
 	digestN := len(f.State().Issues)
@@ -357,26 +363,23 @@ func TestHumanItemFromChildren(t *testing.T) {
 	if !strings.Contains(body, "<!-- issuedog:digest -->") {
 		t.Fatalf("issue %d isn't the digest:\n%s", digestN, body)
 	}
+	t3 := "- A human task waits for you.\n" +
+		"- Goal: Name the owner as the code owner of everything.\n" +
+		// The digest defuses a copied mention, in code or not.
+		"- Done when: The file `.github/CODEOWNERS` on `main` contains `* @​owner`.\n" +
+		"- When it's done, reply `/done` or react 👍 to the issue.\n" +
+		"- Answer here: https://github.com/o/r/issues/4\n"
+	t2 := "- A human task waits for you.\n" +
+		"- Goal: Require the verify check on main.\n" +
+		"- Done when: An active ruleset on `main` requires the check `issuedog/verify`.\n" +
+		"- When it's done, reply `/done` or react 👍 to the issue.\n" +
+		"- Answer here: https://github.com/o/r/issues/5\n"
 	got := humanItemListed(f, digestN)
-	if len(got) != 2 || !strings.HasPrefix(got[0], "#4 Human task ") || !strings.HasPrefix(got[1], "#5 Human task ") {
-		t.Errorf("the digest lists %q; want #4 and #5, each a human task", got)
+	if len(got) != 1 || !strings.HasPrefix(got[0], "#5 Human task ") {
+		t.Errorf("the digest lists %q; want #5 alone, a human task, as #5 blocks #4", got)
 	}
-	for _, item := range []string{
-		"- A human task waits for you.\n" +
-			"- Goal: Name the owner as the code owner of everything.\n" +
-			// The digest defuses a copied mention, in code or not.
-			"- Done when: The file `.github/CODEOWNERS` on `main` contains `* @​owner`.\n" +
-			"- When it's done, reply `/done` or react 👍 to the issue.\n" +
-			"- Answer here: https://github.com/o/r/issues/4\n",
-		"- A human task waits for you.\n" +
-			"- Goal: Require the verify check on main.\n" +
-			"- Done when: An active ruleset on `main` requires the check `issuedog/verify`.\n" +
-			"- When it's done, reply `/done` or react 👍 to the issue.\n" +
-			"- Answer here: https://github.com/o/r/issues/5\n",
-	} {
-		if !strings.Contains(body, item) {
-			t.Errorf("the digest has no item\n%s\nin\n%s", item, body)
-		}
+	if !strings.Contains(body, t2) || strings.Contains(body, t3) {
+		t.Errorf("the digest =\n%s\nwant the item\n%s\nand not\n%s", body, t2, t3)
 	}
 	// The body's sentence on how to finish says to react on "this issue",
 	// which in the digest is the digest.

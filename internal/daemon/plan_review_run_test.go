@@ -570,17 +570,30 @@ func TestPlanReviewRun(t *testing.T) {
 	// 7. mertenvg's 👍 on revision 2 moves the epic to planned, with
 	// rev=2, and the same pass files revision 2's three stories as #6 to
 	// #8, in plan order, each created, linked under the epic and moved to
-	// planning, keyed by the approval (#276). Then the epic's item and its
-	// assignment end.
+	// planning, keyed by the approval (#276). Then S2 and S3, which depend
+	// on S1, are blocked by it, and the record of the stories is posted on
+	// the epic, last (#277). Then the epic's item and its assignment end.
+	//
+	// The stories are revision 2's, S1 with its new title, at the
+	// priority each item names, else the epic's p2, and with the effort:*
+	// label of each item's effort (#344), S1's high and S3's medium. The
+	// items name no model (planReviewRunOutput), so none has a model:*
+	// label.
+	epicStories := []wantChild{
+		{"S1", "S1. The booking API refuses expired quotes", "", []string{"effort:high", "priority:p1", "stage:planning", "type:story"}, state.Planning},
+		{"S2", "S2. Customers see when a quote expires", "", []string{"priority:p2", "stage:planning", "type:story"}, state.Planning},
+		{"S3", "S3. Expired quotes in the monthly report", "", []string{"effort:medium", "priority:p2", "stage:planning", "type:story"}, state.Planning},
+	}
 	up := f.AddReaction(rev2.ID, planReviewRunOwner, "+1")
+	upFrom := len(f.Requests())
 	l.step("the approval", 2, slices.Concat(
 		[]string{"POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:plan-review"},
-		childWrites(epic, 6, 7, 8),
+		childWrites(epic, 6, 7, 8), blockWrites(7, 8), []string{recordWrite(epic)},
 		[]string{"PATCH /issues/5", "DELETE /issues/1/assignees"})...)
 	approval := fmt.Sprintf("Revision 2 of the plan is approved, by %s's 👍.\n\n"+
 		"<!-- issuedog:transition from=plan-review to=planned rev=2 body=%s cmd=r%d seen=%d -->", planReviewRunOwner, hash2, up, rev2.ID)
-	if added := l.added(epic); !slices.Equal(added, []string{approval}) {
-		t.Errorf("the approval: added %q; want\n%s", added, approval)
+	if added, want := l.added(epic), []string{approval, recordOf(2, 6, epicStories)}; !slices.Equal(added, want) {
+		t.Errorf("the approval: added %q; want the approval, then the record:\n%q", added, want)
 	}
 	l.labels("the approval", epic, "stage:planned", "type:epic")
 	if got := l.digest(5); !slices.Equal(got, stories) {
@@ -596,29 +609,29 @@ func TestPlanReviewRun(t *testing.T) {
 	if plan := planReviewRunData(t, c); !reflect.DeepEqual(plan, rev2Out["plan"]) || reflect.DeepEqual(plan, rev1Out["plan"]) {
 		t.Errorf("the approved plan's data =\n%v\nwant the planner's second\n%v", plan, rev2Out["plan"])
 	}
-	// The stories are revision 2's, S1 with its new title, at the
-	// priority each item names, else the epic's p2, and with the effort:*
-	// label of each item's effort (#344), S1's high and S3's medium. The
-	// items name no model (planReviewRunOutput), so none has a model:*
-	// label.
-	approvedBy := l.newest("the approval", epic)
-	epicStories := []wantChild{
-		{"S1", "S1. The booking API refuses expired quotes", "", []string{"effort:high", "priority:p1", "stage:planning", "type:story"}, state.Planning},
-		{"S2", "S2. Customers see when a quote expires", "", []string{"priority:p2", "stage:planning", "type:story"}, state.Planning},
-		{"S3", "S3. Expired quotes in the monthly report", "", []string{"effort:medium", "priority:p2", "stage:planning", "type:story"}, state.Planning},
-	}
+	// The newest comment is the record, and the approval, which keys the
+	// stories' first moves, is just before it.
+	l.newest("the approval", epic)
+	cs = l.comments(epic)
+	approvedBy := cs[len(cs)-2]
 	runChildren(t, f, "the approval", epic, 2, approvedBy.ID, 6, epicStories)
+	runRecord(t, f, "the approval", epic, 2, 6, epicStories, map[int][]int{7: {6}, 8: {6}})
+	if !childrenLooked(f, upFrom, approvedBy.CreatedAt) {
+		t.Errorf("the approval: the pass didn't look for the epic's children in the issues listed since its approval")
+	}
 
 	// 8. The planner runs on each new story in turn, one a pass, in plan
 	// order, as the stories skipped the rest of the pass that filed them.
 	// A story's effort:* label sets its run's --effort (SPEC §3.3): S1's
 	// high, S2's none and S3's medium. Each run asks the story's round 1, which the pass after lists in the
 	// digest, after the stories of 2's plan, assigning mertenvg on the
-	// story. The epic, read again as the approval changed it, gets no
-	// second child, link or move.
+	// story. The epic, read again as the approval and its record changed
+	// it, makes no request for creation: its record stands (#277).
 	ask := plGolden(t, "questions")
 	l.outs(ask, ask, ask)
+	from := len(f.Requests())
 	l.step("S1's round", 3, "POST /issues/6/comments")
+	recordStands(t, f, "S1's round", from, epic, approvedBy.CreatedAt, []int{7, 8}, true)
 	l.storyRound("S1's round", 6, 3, "high")
 	l.step("S2's round", 4, "PATCH /issues/5", "POST /issues/6/assignees", "POST /issues/7/comments")
 	l.storyRound("S2's round", 7, 4, "")
@@ -631,6 +644,7 @@ func TestPlanReviewRun(t *testing.T) {
 	}
 	assignWant(t, f, "the stories' rounds", map[int][]string{3: owner, 4: owner, 6: owner, 7: owner, 8: owner})
 	l.quiet("planned")
+	recordStands(t, f, "the stories' rounds", from, epic, approvedBy.CreatedAt, []int{7, 8}, true)
 
 	// 9. mertenvg's /hold on S1 holds it from plan-review, which ends its
 	// item and its assignment.
@@ -680,11 +694,14 @@ func TestPlanReviewRun(t *testing.T) {
 
 	// 12. A restart writes nothing, starts no run, announces nothing,
 	// creates no other digest and files no story again.
+	from = len(f.Requests())
 	l.restart("the end")
 	if n, news := len(f.State().Issues), digestComments(f, 5); n != 8 || len(news) != 0 || l.g.runs() != 5 {
 		t.Errorf("%d issues, announcements %q, %d runs; want 8, none, and the planner's 2 on the epic and 3 on its stories", n, news, l.g.runs())
 	}
+	recordStands(t, f, "the end", from, epic, approvedBy.CreatedAt, []int{7, 8}, true)
 	runChildren(t, f, "the end", epic, 2, approvedBy.ID, 6, epicStories)
+	runRecord(t, f, "the end", epic, 2, 6, epicStories, map[int][]int{7: {6}, 8: {6}})
 }
 
 // planReviewRunAlone is a loop on a fake holding only mertenvg's epic, 1,

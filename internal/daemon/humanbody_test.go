@@ -87,8 +87,9 @@ var humanAtReview = atPlanning(humanKind, func(t testing.TB, f *githubtest.Fake)
 // T1 #2, T4 #3, T3 #4 and T2 #5, linked in that order, each with its first
 // move. T3's "Why it blocks" names #3, T4's issue, and T2's names #4,
 // T3's; each one's "Done when" is the daemon's sentence for its check,
-// which its origin marker records and reads back. A crash at any write
-// replays to the same issues, bodies and first moves, with no second
+// which its origin marker records and reads back. The blocked-by links and
+// the record on #1 then follow plan order. A crash at any write replays to
+// the same issues, bodies, first moves, links and record, with no second
 // issue.
 func TestHumanTasksCreated(t *testing.T) {
 	t.Parallel()
@@ -155,6 +156,33 @@ func TestHumanTasksCreated(t *testing.T) {
 	}
 	if want := "\n**Done when:** An active ruleset on `main` requires the check `issuedog/verify`. I check this when you reply `/done` or react 👍 to this issue.\n"; !strings.Contains(st.Issues[4].Body, want) {
 		t.Errorf("T2's body has no %q:\n%s", want, st.Issues[4].Body)
+	}
+	// The blocked-by links and the record (#277) follow plan order, not
+	// creation order: T3, #4, is blocked by T2, #5, then T4, #3, by T3. A
+	// human task blocks its dependents like any child, and T2, which
+	// depends on nothing, is blocked by nothing. The record lists T1 to T4.
+	for n, want := range map[int][]int{2: nil, 3: {4}, 4: {5}, 5: nil} {
+		if got := st.Issues[n-1].BlockedBy; !reflect.DeepEqual(got, want) {
+			t.Errorf("#%d is blocked by %v, want %v", n, got, want)
+		}
+	}
+	var blocks []string
+	for _, w := range f.Writes() {
+		if isBlock(w) {
+			blocks = append(blocks, w.Path)
+		}
+	}
+	if want := []string{"/issues/4/dependencies/blocked_by", "/issues/3/dependencies/blocked_by"}; !reflect.DeepEqual(blocks, want) {
+		t.Errorf("the links were added at %v, want %v, in plan order", blocks, want)
+	}
+	want := "I've created the children of plan rev 1:\n" +
+		"- T1 #2: Add the verify check\n" +
+		"- T2 #5: Require the verify check\n" +
+		"- T3 #4: Name the code owners\n" +
+		"- T4 #3: Ask the code owners in the PR template\n\n" +
+		"<!-- issuedog:created rev=1 children=2,5,4,3 -->"
+	if got := records(st.Issues[0]); len(got) != 1 || got[0] != want {
+		t.Errorf("issue 1's records are\n%q\nwant\n%q", got, want)
 	}
 	noSearch(t, f)
 }

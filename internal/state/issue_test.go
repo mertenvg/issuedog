@@ -318,6 +318,46 @@ func TestDeriveOriginCheck(t *testing.T) {
 	}
 }
 
+// CreatedRecord reads the record of a plan revision's children (#277):
+// the latest clean created marker of the App's for that revision, with
+// its children in order. A dirty record, another revision's, one that
+// isn't the App's or is escaped, and one whose children don't all read
+// back as numbers above 0, count for nothing.
+func TestCreatedRecord(t *testing.T) {
+	t.Parallel()
+	const rec = "I've created the children of plan rev 1:\n- T1 #12: One\n- T2 #13: Two\n\n<!-- issuedog:created rev=1 children=12,13 -->"
+	app := []github.Author{appBot}
+	for _, tt := range []struct {
+		name   string
+		s      *github.Snapshot
+		dirty  func(int64) bool
+		rev    int
+		want   []int
+		wantOK bool
+	}{
+		{"a clean record", snap("", app, rec), clean, 1, []int{12, 13}, true},
+		{"one child", snap("", app, "<!-- issuedog:created rev=1 children=7 -->"), clean, 1, []int{7}, true},
+		{"a dirty record", snap("", app, rec), dirtyIDs(1), 1, nil, false},
+		{"another revision's", snap("", app, rec), clean, 2, nil, false},
+		{"the latest of two", snap("", []github.Author{appBot, appBot}, rec, "<!-- issuedog:created rev=1 children=12,13,14 -->"), clean, 1, []int{12, 13, 14}, true},
+		{"a clean one before a dirty one", snap("", []github.Author{appBot, appBot}, rec, "<!-- issuedog:created rev=1 children=9 -->"), dirtyIDs(2), 1, []int{12, 13}, true},
+		{"the one for its revision", snap("", []github.Author{appBot, appBot}, rec, "<!-- issuedog:created rev=2 children=20 -->"), clean, 1, []int{12, 13}, true},
+		{"someone else's", snap("", []github.Author{mallory}, rec), clean, 1, nil, false},
+		{"an escaped one", snap("", app, github.Escape(rec)), clean, 1, nil, false},
+		{"no children", snap("", app, "<!-- issuedog:created rev=1 -->"), clean, 1, nil, false},
+		{"a child that isn't a number", snap("", app, "<!-- issuedog:created rev=1 children=12,x -->"), clean, 1, nil, false},
+		{"child 0", snap("", app, "<!-- issuedog:created rev=1 children=12,0 -->"), clean, 1, nil, false},
+		{"an empty child", snap("", app, "<!-- issuedog:created rev=1 children=12,,13 -->"), clean, 1, nil, false},
+		{"another kind", snap("", app, "<!-- issuedog:origin rev=1 children=12 -->"), clean, 1, nil, false},
+		{"none", snap("", app, "Hello."), clean, 1, nil, false},
+	} {
+		got, ok := CreatedRecord(Derive(tt.s, slug, tt.dirty), tt.rev)
+		if ok != tt.wantOK || !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("%s: CreatedRecord = %v, %v; want %v, %v", tt.name, got, ok, tt.want, tt.wantOK)
+		}
+	}
+}
+
 // Derive reads the latest triage marker that counts, and its comment: not
 // a dirty one, nor one in the body or by anyone but the App.
 func TestDeriveTriage(t *testing.T) {
