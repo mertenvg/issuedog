@@ -360,7 +360,7 @@ func (h ivHoldFields) ack(ctx context.Context, a *Applier, wrap func(error) erro
 // does a 👍 or /approve on it approve it (SPEC §7.4). Otherwise it's "",
 // and ReviewVisit posts a new revision once the issue is at spec-review.
 func ivHoldStanding(s *github.Snapshot, appSlug string, d Dirt, to state.Stage) string {
-	latest, ok := state.LatestRevision(s, appSlug, d.Has)
+	latest, ok := state.LatestRevision(s, appSlug, state.SpecRevision, d.Has)
 	if to != state.SpecReview || !ok || latest.Hidden || d.Has(state.BodyID) || latest.Hash != state.BodyHash(s.Body) {
 		return ""
 	}

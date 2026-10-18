@@ -284,14 +284,14 @@ func waitErrorLines(s *github.Snapshot, e openErr) []waitLine {
 }
 
 // waitApprovalLines returns the spec's approval at spec-review: the latest
-// revision's number, or 0 with none, the comment to link (the revision's,
+// spec revision's number, or 0 with none, the comment to link (the revision's,
 // or else the transition's), and its lines. The reasons it can't be
 // approved yet are ApproveCommand's and approve's, in their order, without
 // the login of who made the body dirty, which isn't the App's text, and,
 // for a type that can't be at spec-review, Transition's hold-back.
 func waitApprovalLines(in waitInput, is state.Issue) (int, int64, []waitLine) {
 	s := in.S
-	latest, ok := state.LatestRevision(s, in.AppSlug, in.Dirt.Has)
+	latest, ok := state.LatestRevision(s, in.AppSlug, state.SpecRevision, in.Dirt.Has)
 	lines := []waitLine{{Text: "The spec waits for review, with no revision to approve yet."}}
 	comment := is.TransitionComment
 	var why []string

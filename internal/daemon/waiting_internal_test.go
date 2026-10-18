@@ -552,6 +552,37 @@ func TestWaitFindApprovalLatest(t *testing.T) {
 	}
 }
 
+// waitPlanRevision is a plan comment, plan revision rev after text, as a
+// move with PlanRev writes it, but with no transition marker, so the
+// issue stays at its stage.
+func waitPlanRevision(t *testing.T, rev int, text string) string {
+	t.Helper()
+	body, err := planRevision(text, rev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+// The approval item is the latest spec revision's, never a plan revision's
+// after it (plan #247, assumption 2): its key, its link and its hash.
+func TestWaitFindApprovalIgnoresPlanRevision(t *testing.T) {
+	t.Parallel()
+	plan := waitPlanRevision(t, 2, "### Plan for #14 (rev 2)")
+	s := waitSnap(14, nil, waitRevision(1, "The spec."), plan)
+	got := waitFindOne(t, waitIn(s, Dirt{}))
+	want := "Revision 1 of the spec, `" + state.BodyHash("The spec.") + "`, waits for approval."
+	if got.Key != "rev-14-1" || got.Link != "https://github.com/o/r/issues/14#issuecomment-1401" || len(got.Lines) != 3 || got.Lines[0].Text != want {
+		t.Errorf("got %s %s %q, want rev-14-1 on comment 1401, approvable, starting %q", got.Key, got.Link, waitTexts(got.Lines), want)
+	}
+	// With only a plan revision, there's no spec revision to approve.
+	none := waitSnap(15, nil, "<!-- issuedog:transition from=clarifying to=spec-review run=s1 -->", plan)
+	got = waitFindOne(t, waitIn(none, Dirt{}))
+	if got.Key != "rev-15-0" || got.Link != "https://github.com/o/r/issues/15#issuecomment-1501" {
+		t.Errorf("got %s %s %q, want rev-15-0 on comment 1501", got.Key, got.Link, waitTexts(got.Lines))
+	}
+}
+
 // An error in the body links to the issue itself, has none of the body's
 // text, and says a 👍 can't acknowledge it (#155's verify).
 func TestWaitFindErrorInBody(t *testing.T) {

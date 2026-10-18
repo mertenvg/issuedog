@@ -156,6 +156,29 @@ func TestIvSetTypeRefuses(t *testing.T) {
 	}
 }
 
+// TestIvAppLabel: a revision is labelled by its kind, a plan revision "of
+// the plan" (plan #247), and a revision marker of a kind it doesn't know
+// labels nothing.
+func TestIvAppLabel(t *testing.T) {
+	t.Parallel()
+	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
+	for body, want := range map[string]string{
+		"Spec.\n\n<!-- issuedog:revision rev=2 body=aaaaaaaa -->":           "comment 5 by issuedog: revision 2 of the spec",
+		"Plan.\n<!-- issuedog:revision kind=plan rev=3 body=aaaaaaaa -->":   "comment 5 by issuedog: revision 3 of the plan",
+		"Other.\n<!-- issuedog:revision kind=other rev=4 body=aaaaaaaa -->": "comment 5 by issuedog",
+		"Broken.\n<!-- issuedog:revision kind=plan rev=x body=aaaaaaaa -->": "comment 5 by issuedog",
+		"A move.\n\n<!-- issuedog:transition from=a to=b rev=1 run=x -->":   "comment 5 by issuedog",
+	} {
+		if got := ivAppLabel(github.Comment{ID: 5, Author: app, Body: body}, nil, "issuedog"); got != want {
+			t.Errorf("ivAppLabel(%q) = %q, want %q", body, got, want)
+		}
+	}
+	plan := github.Comment{ID: 5, Author: app, Body: "Plan.\n<!-- issuedog:revision kind=plan rev=3 body=aaaaaaaa -->"}
+	if got := ivAppLabel(plan, []interviewerRound{{Number: 2, Questions: 1, Comment: 5}}, "issuedog"); got != "comment 5 by issuedog: Round 2, Q2.1" {
+		t.Errorf("ivAppLabel of a round = %q, want the round", got)
+	}
+}
+
 // TestPlanRoundMove: only a planner run's move from planning to planning
 // is a planner round's, and roundMove is either stage's round move
 // (#253).

@@ -40,7 +40,7 @@ func TestDeletedHidesRevision(t *testing.T) {
 		s := snap("", []github.Author{appBot, owner}, rev, "hi")
 		s.Comments[0].CreatedAt, s.Comments[1].CreatedAt = posted, posted.Add(time.Hour)
 		s.Deleted = tc.deleted
-		got, ok := LatestRevision(s, slug, clean)
+		got, ok := LatestRevision(s, slug, SpecRevision, clean)
 		if want := (Revision{Rev: 1, Hash: "aaaaaaaa", Comment: 1, Hidden: tc.hidden}); got != want || !ok {
 			t.Errorf("%s: LatestRevision = %+v, %v, want %+v, true", tc.name, got, ok, want)
 		}
@@ -50,10 +50,10 @@ func TestDeletedHidesRevision(t *testing.T) {
 	s := snap("", []github.Author{appBot, appBot}, rev, "<!-- issuedog:revision rev=2 body=bbbbbbbb -->")
 	s.Comments[0].CreatedAt, s.Comments[1].CreatedAt = posted, posted.Add(time.Hour)
 	s.Deleted = []github.DeletedComment{del(owner, appBot, posted.Add(time.Minute))}
-	if got, _ := LatestRevision(s, slug, clean); got.Rev != 2 || got.Hidden {
+	if got, _ := LatestRevision(s, slug, SpecRevision, clean); got.Rev != 2 || got.Hidden {
 		t.Errorf("LatestRevision = %+v, want revision 2, not hidden", got)
 	}
-	if got, _ := LatestRevision(s, slug, dirtyIDs(2)); got.Rev != 1 || !got.Hidden {
+	if got, _ := LatestRevision(s, slug, SpecRevision, dirtyIDs(2)); got.Rev != 1 || !got.Hidden {
 		t.Errorf("LatestRevision with revision 2 dirty = %+v, want revision 1, hidden", got)
 	}
 }
