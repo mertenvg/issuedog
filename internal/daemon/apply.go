@@ -40,6 +40,11 @@ type Applier struct {
 	// hold and its notices (discussion.go). Daemon.reload keeps it up to
 	// date with the config.
 	Notify []string
+	// ReadMain reads a file on main from the daemon's bare clone, as
+	// repo.Repo.ReadFile does, for a human task's file check (humanCheck).
+	// A missing file is an error matching repo.ErrNotFound, and a
+	// directory one matching repo.ErrNotFile.
+	ReadMain func(ctx context.Context, path string) ([]byte, error)
 
 	histories     histories                // see Dirty
 	discNoRecords map[string]*discNoRecord // logins with no permission record, in lower case (discNoRecord)
