@@ -140,6 +140,8 @@ func TestWaitHumanLines(t *testing.T) {
 	noGoal.Body = strings.Replace(noGoal.Body, "**Goal:** ", "Goal: ", 1)
 	noDone := waitHumanSnap(t, 45)
 	noDone.Body = strings.Replace(noDone.Body, "**Done when:** ", "**Done:** ", 1)
+	twice := waitHumanSnap(t, 48)
+	twice.Body = strings.Replace(twice.Body, "\n\ncc @", "\n**Goal:** a later one\n**Done when:** a later one\n\ncc @", 1)
 	for _, c := range []struct {
 		name string
 		in   waitInput
@@ -153,6 +155,7 @@ func TestWaitHumanLines(t *testing.T) {
 		{"not the App's", waitIn(notApp, Dirt{}), fallback},
 		{"no goal", waitIn(noGoal, Dirt{}), fallback},
 		{"no done when", waitIn(noDone, Dirt{}), fallback},
+		{"each field twice, the first taken", waitIn(twice, Dirt{}), waitHumanLinesWant},
 	} {
 		if got := waitHumanLines(c.in); !slices.Equal(got, c.want) {
 			t.Errorf("%s:\n got %+v\nwant %+v", c.name, got, c.want)

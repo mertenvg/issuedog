@@ -2,6 +2,7 @@ package daemon_test
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -156,6 +157,34 @@ func TestHumanItemUnblocked(t *testing.T) {
 	want := []string{fmt.Sprintf("#%d Human task p2 1", free), fmt.Sprintf("#%d Human task p2 1", cleared)}
 	if got := humanItemListed(f, digestN); !slices.Equal(got, want) {
 		t.Errorf("the digest lists %q; want %q", got, want)
+	}
+}
+
+// Every issue at needs-human is visited on each pass, but only a human
+// task's blockers are read: not those of a task at needs-human with no
+// human=1, nor of any other issue a pass visits.
+func TestHumanItemReadsOnlyHumanTasks(t *testing.T) {
+	t.Parallel()
+	f, o := newFake(t), digestNotifyOrigin(t)
+	plain := fileAt(f, "needs-human", "Do it by hand.", "type:task")
+	ready := humanItemBlocker(f)
+	task := humanItemFile(f, "owner")
+	var visits []int
+	d := newDaemon(t, f, o, &visits)
+	for range 3 {
+		iterate(t, d)
+	}
+	if n := slices.Index(visits, plain); n < 0 || slices.Index(visits[n+1:], plain) < 0 || !slices.Contains(visits, ready) {
+		t.Errorf("visits %v; want %d on more than one pass, and %d", visits, plain, ready)
+	}
+	read := map[string]bool{}
+	for _, r := range f.Requests() {
+		if strings.HasSuffix(r.Path, "/dependencies/blocked_by") {
+			read[r.Path] = true
+		}
+	}
+	if want := fmt.Sprintf("/issues/%d/dependencies/blocked_by", task); len(read) != 1 || !read[want] {
+		t.Errorf("blockers read at %v; want %s alone", slices.Sorted(maps.Keys(read)), want)
 	}
 }
 
