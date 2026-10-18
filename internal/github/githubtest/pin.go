@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 )
 
 // FailPin makes every later pinIssue mutation fail as GitHub refuses one,
@@ -42,12 +43,18 @@ func (f *Fake) pinIssue(id string) (any, []map[string]any) {
 }
 
 // createIssue files an issue as the App, with the labels it names, which the
-// App adds. Only the title is required, as on GitHub.
+// App adds, and the issue type it names, which the App sets with an
+// issue_type_added event (issueTypeRevertSet). Only the title is required,
+// as on GitHub. A type name the org has no type of, ignoring case, gets a
+// 422 and files nothing: the org has the types SetType, SetTypeBy and
+// IssueTypeID gave an ID, less those RenameOrgIssueType renamed away. Under
+// DropTypeChanges, the issue is filed with no type.
 func (f *Fake) createIssue(c *call) (int, any) {
 	var req struct {
 		Title  string
 		Body   string
 		Labels []string
+		Type   *string
 	}
 	if status, msg := c.decode(&req); msg != nil {
 		return status, msg
@@ -55,5 +62,14 @@ func (f *Fake) createIssue(c *call) (int, any) {
 	if req.Title == "" {
 		return http.StatusUnprocessableEntity, message("Validation Failed: title is missing")
 	}
-	return http.StatusCreated, f.fileIssue(f.slug+"[bot]", req.Title, req.Body, req.Labels).Issue
+	if req.Type != nil {
+		if _, ok := f.orgTypes[strings.ToLower(*req.Type)]; !ok {
+			return http.StatusUnprocessableEntity, message(fmt.Sprintf("Validation Failed: the org has no issue type %q", *req.Type))
+		}
+	}
+	is := f.fileIssue(f.slug+"[bot]", req.Title, req.Body, req.Labels)
+	if req.Type != nil && !f.dropTypes {
+		f.issueTypeRevertSet(is, f.slug+"[bot]", *req.Type)
+	}
+	return http.StatusCreated, is.Issue
 }
