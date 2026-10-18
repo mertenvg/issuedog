@@ -815,13 +815,46 @@ func (st *Step) holdItemFind(ctx context.Context, s *github.Snapshot, dirt Dirt)
 	return found, resolveOwnerHeld(holds), nil
 }
 
-// digestCacheRanked returns every issue's cached items, ranked by Q3a
-// against every snapshot held (waitRank).
+// digestCacheRanked returns every issue's cached items that stand
+// (digestCacheOf), ranked by Q3a against every snapshot held (waitRank).
 func (d *Daemon) digestCacheRanked() []waitItem {
 	var items []waitItem
 	for _, n := range slices.Sorted(maps.Keys(d.digestCache)) {
-		items = append(items, d.digestCache[n]...)
+		items = append(items, d.digestCacheOf(n)...)
 	}
 	waitRank(items, d.snaps)
 	return items
+}
+
+// digestCacheOf returns issue n's cached items that stand on this pass:
+// every one but a finished story's that digestDoneStands doesn't keep.
+// The digest and assignment both take them from here, so they never
+// disagree.
+func (d *Daemon) digestCacheOf(n int) []waitItem {
+	return slices.DeleteFunc(slices.Clone(d.digestCache[n]), func(it waitItem) bool {
+		return it.Kind == waitDone && !d.digestDoneStands(it)
+	})
+}
+
+// digestDoneStands reports whether it, a finished story's item (#278),
+// stands on this pass: every child its record names is one the poll last
+// listed closed (Daemon.closedListed), and no open snapshot names the
+// story as its parent, such as an issue added below it by hand. It's
+// judged only from what the poll listed and the snapshots it read, and
+// makes no request: so a child filed this pass, which no poll listed yet,
+// or one last listed open, keeps it out. A child's close changes nothing
+// on the story, so the item is found on the story's last visit (waitFind)
+// and judged again here on each pass.
+func (d *Daemon) digestDoneStands(it waitItem) bool {
+	for _, c := range it.Children {
+		if !d.closedListed[c] {
+			return false
+		}
+	}
+	for _, s := range d.snaps {
+		if !s.Closed && s.Parent == it.Issue {
+			return false
+		}
+	}
+	return true
 }

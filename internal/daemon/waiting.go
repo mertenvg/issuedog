@@ -27,7 +27,10 @@ import (
 //     item's open descendants from the parents in all the snapshots held.
 //
 // Assignment (§9.6, #191) takes the same items, from the same cache, and
-// assigns for any kind (assign.go), a hold among them (#192).
+// assigns for any kind (assign.go), a hold among them (#192). A finished
+// story's item (#278) is the one both keep only while it stands, which
+// they judge on each pass from what the poll listed
+// (Daemon.digestDoneStands).
 //
 // Which text is whose (assumption 12): an item's Title is raw, and T6
 // escapes it. No line's Text is raw: each is the App's, either this
@@ -38,9 +41,9 @@ import (
 
 // waitKind is a kind of item. Q3a's tie-break after the unblock count
 // goes by waitKind.rank: state errors, then discussion holds (#192), then
-// approvals, then questions, then human tasks (#287), then flags. A plan's
-// approval (#270) ranks as an approval: it's a kind of its own only for
-// its key and its name.
+// approvals, then questions, then human tasks (#287), then flags, then
+// finished stories (#278). A plan's approval (#270) ranks as an approval:
+// it's a kind of its own only for its key and its name.
 type waitKind int
 
 const (
@@ -51,13 +54,16 @@ const (
 	waitFlag
 	waitPlanApproval
 	waitHuman
+	waitDone
 )
 
 // rank is k's place in Q3a's order of kinds, lowest first: a plan's
 // approval is an approval's, a human task's comes after a question's and
-// before a flag's (#287), and a flag's after that. Any other kind ranks by
-// its own value, so a kind appended later, unless it's mapped here, ranks
-// after flags: each from waitHuman on is above waitFlag's rank.
+// before a flag's (#287), a flag's after that, and a finished story's
+// after every other kind's (#278), as story verification unblocks no
+// other issue. Any other kind ranks by its own value, so a kind appended
+// later, unless it's mapped here, ranks after finished stories: each
+// after waitDone is above waitDone's rank.
 func (k waitKind) rank() int {
 	switch k {
 	case waitPlanApproval:
@@ -66,6 +72,8 @@ func (k waitKind) rank() int {
 		return int(waitQuestion) + 1
 	case waitFlag:
 		return int(waitQuestion) + 2
+	case waitDone:
+		return int(waitQuestion) + 3
 	}
 	return int(k)
 }
@@ -86,6 +94,8 @@ func (k waitKind) String() string {
 		return "plan-approval"
 	case waitHuman:
 		return "human"
+	case waitDone:
+		return "done"
 	}
 	return "kind" + strconv.Itoa(int(k))
 }
@@ -98,10 +108,10 @@ type waitItem struct {
 	// can tell a new one: q-<n>-<round>, rev-<n>-<rev> (rev-<n>-0 when
 	// there's no revision yet), plan-<n>-<rev> for a plan's (plan-<n>-0
 	// with no clean plan revision, #270), flag-<n>-<comment id>,
-	// err-<n>-<kind>-<key>, hold-<n>-<hold marker id> (holdItemOf) or
-	// human-<n> for a human task's (#287), of which an issue has one at
-	// most. A hold is announced by other keys than this one
-	// (waitItem.news).
+	// err-<n>-<kind>-<key>, hold-<n>-<hold marker id> (holdItemOf),
+	// human-<n> for a human task's (#287) or done-<n> for a finished
+	// story's (#278), of each of which an issue has one at most. A hold is
+	// announced by other keys than this one (waitItem.news).
 	Key string
 	// Title is the issue's title. It's raw: anyone may have written it, so
 	// T6 runs it through inline and github.Escape.
@@ -130,6 +140,13 @@ type waitItem struct {
 	// They're 0 for every other item, and for an issue with no origin
 	// marker, such as an epic, which ranks alone.
 	Plan, Index int
+	// Children are the children a finished story's record names (waitDone,
+	// #278), in its order, and nil for every other item. waitFind doesn't
+	// know whether they're closed, so it finds the item whatever they are,
+	// and the digest and assignment keep it only while every one is listed
+	// closed and no open issue is left below the story
+	// (Daemon.digestDoneStands).
+	Children []int
 }
 
 // waitLine is one line of an item. Its Text is the App's, never raw:
@@ -209,12 +226,17 @@ type waitInput struct {
 //   - at needs-human, a human task (#287, SPEC §9.6's row), when it is
 //     one (waitHumanTask) and no open issue blocks it (in.Blocked). It
 //     links the issue, whose body says what to do (waitHumanLines);
+//   - at planned, a finished story (#278), when the record of its approved
+//     plan revision's children stands (waitDoneChildren), whether or not
+//     they're closed: the digest and assignment judge that on each pass
+//     (Daemon.digestDoneStands). It links the issue;
 //   - at intake with no stage label, a flag: when the latest triage
 //     marker has verdict=ask, as FlagByReaction answers it.
 //
 // A round's or flag's questions and options are copied from its comment
 // (waitQuestions). Its error is openErrors', which with Inputs given has
-// none to give today.
+// none to give today, or a finished epic's plan data that doesn't read
+// back (waitDoneChildren).
 func waitFind(in waitInput) ([]waitItem, error) {
 	s := in.S
 	if s.Closed {
@@ -276,6 +298,18 @@ func waitFind(in waitInput) ([]waitItem, error) {
 		// An issue has one human task at most: its key is human-<n>.
 		add(waitHuman, "", state.BodyID, waitHumanLines(in))
 		items[len(items)-1].Key = fmt.Sprintf("%s-%d", waitKeyPrefix[waitHuman], s.Number)
+	case is.Stage == state.Planned:
+		children, err := waitDoneChildren(in, is)
+		if err != nil {
+			return nil, fmt.Errorf("what waits on %s/%s#%d: %w", in.Owner, in.Repo, s.Number, err)
+		}
+		if children == nil {
+			break
+		}
+		// An issue is one story at most: its key is done-<n>.
+		add(waitDone, "", state.BodyID, waitDoneLines(children))
+		items[len(items)-1].Key = fmt.Sprintf("%s-%d", waitKeyPrefix[waitDone], s.Number)
+		items[len(items)-1].Children = children
 	case is.Stage == state.Intake && stageOf(s) == "" && is.Triage.Verdict == triageAsk:
 		lines := []waitLine{{Text: "Triage flagged this issue: should issuedog handle it?"}}
 		heading := fmt.Sprintf("### Should issuedog handle #%d?", s.Number)
@@ -289,7 +323,7 @@ func waitFind(in waitInput) ([]waitItem, error) {
 
 // waitKeyPrefix starts each kind's key.
 var waitKeyPrefix = map[waitKind]string{waitError: "err", waitHold: "hold", waitApproval: "rev", waitQuestion: "q", waitFlag: "flag",
-	waitPlanApproval: "plan", waitHuman: "human"}
+	waitPlanApproval: "plan", waitHuman: "human", waitDone: "done"}
 
 // waitLink is the link to comment id on issue n, or to the issue itself
 // when id is state.BodyID: an error in the body (#155's verify).
@@ -489,6 +523,55 @@ func waitHumanLines(in waitInput) []waitLine {
 		lines = append(lines, waitLine{Text: "See the issue for what to do."})
 	}
 	return append(lines, waitLine{Text: "When it's done, reply `/done` or react 👍 to the issue."})
+}
+
+// waitDoneChildren returns the children of in.S, an issue at planned
+// with state is, for its finished story's item (#278, plan #249's
+// assumption 12): those the clean record of its approved plan revision's
+// children names (state.CreatedRecord, #277), in its order. That's for a
+// story, or an epic whose approved plan is a plan of tasks, which acts as
+// its own story (SPEC §4). It's nil for an epic planned into stories, an
+// issue of any other type, or one with no approved plan revision or no
+// record of it yet, as while its children are still being created. Only
+// an epic's plan data is read back, and data that doesn't read back is an
+// error.
+func waitDoneChildren(in waitInput, is state.Issue) ([]int, error) {
+	rev, _, ok := state.ApprovedPlan(in.S, in.AppSlug, in.Dirt.Has)
+	if !ok {
+		return nil, nil
+	}
+	children, ok := state.CreatedRecord(is, rev.Rev)
+	if !ok {
+		return nil, nil
+	}
+	class, err := state.ClassOf(is.Item)
+	switch {
+	case err != nil: // a type that names no kind of issue is no story
+	case class&state.AnyStory != 0:
+		return children, nil
+	case class == state.ClassEpic:
+		_, plan, ok, err := approvedPlanData(in.S, in.AppSlug, in.Dirt.Has)
+		if err != nil {
+			return nil, fmt.Errorf("a finished epic's plan: %w", err)
+		}
+		if ok && plan.Kind == planTasks {
+			return children, nil
+		}
+	}
+	return nil, nil
+}
+
+// waitDoneLines are a finished story's lines (#278): that it waits for
+// story verification, then the children its record names.
+func waitDoneLines(children []int) []waitLine {
+	refs := make([]string, len(children))
+	for i, c := range children {
+		refs[i] = "#" + strconv.Itoa(c)
+	}
+	return []waitLine{
+		{Text: "Every child of this story is closed, so it waits for story verification, which runs by hand for now. Close it once that passes."},
+		{Text: "Its children: " + strings.Join(refs, ", ") + "."},
+	}
 }
 
 // waitPlanItemRE is a plan item's ID, as the planner's schema has it: S
