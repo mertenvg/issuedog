@@ -45,8 +45,9 @@ type Issue struct {
 	// names the error's kind (plan #7, Q5a). One from before it did has an
 	// empty Kind and covers its key for every kind: see Acked.
 	Acks map[ErrorKey]bool
-	// Item is what Derive knows of the class. Human is never set: no marker
-	// records it yet.
+	// Item is what Derive knows of the class. Its Human is Origin.Human: a
+	// human task's origin marker carries human=1 (#224's reconcile decision
+	// 4).
 	Item Item
 	// Round is the latest transition's RoundBound: comments with a higher
 	// ID are this round's input. 0 if there is no transition.
@@ -73,7 +74,7 @@ type Issue struct {
 //   - the digest's plan order (S2), which lists the stories one plan filed
 //     together, in the plan's item order (waitRank);
 //   - matching created children to their plan items, and Item.Human, from
-//     a human task's human=1 (S3), which extends Origin with the field;
+//     a human task's human=1 (S3, Human);
 //   - reading it from the newest clean App comment when the body's markers
 //     aren't read, as when someone else edited the body and the daemon
 //     reposted the marker in a comment (S5).
@@ -84,9 +85,9 @@ type Issue struct {
 // else edited, gives none.
 //
 // Plan is above 0 whenever there is one: the zero Origin is none, so
-// callers check Plan. Fields the marker has besides plan, rev and item,
-// such as S3's human=1 or S4's check fields, aren't kept here, and don't
-// stop it from being read.
+// callers check Plan. Fields the marker has besides plan, rev, item and
+// human, such as S4's check fields, aren't kept here, and don't stop it
+// from being read.
 type Origin struct {
 	// Plan is the number of the issue whose plan the item is from, from
 	// plan=#N.
@@ -99,6 +100,11 @@ type Origin struct {
 	// Comment is the ID of the comment that holds the marker, or BodyID
 	// for the body, which is the only place Derive reads it from today.
 	Comment int64
+	// Human is true for a human task (SPEC §9.3), from human=1, which the
+	// App writes on a human task's marker when it creates it from a plan
+	// (plan #249, assumption 9). Any other value of human, or none, is
+	// false.
+	Human bool
 }
 
 // originOf returns the Origin that marker m, read in comment id (or
@@ -113,7 +119,7 @@ func originOf(m github.Marker, id int64) (Origin, bool) {
 	if m.Kind != "origin" || !hash || perr != nil || plan <= 0 || rerr != nil || rev <= 0 || item == "" {
 		return Origin{}, false
 	}
-	return Origin{Plan: plan, Rev: rev, Item: item, Comment: id}, true
+	return Origin{Plan: plan, Rev: rev, Item: item, Comment: id, Human: m.Fields["human"] == "1"}, true
 }
 
 // TriageVerdict is a triage marker (plan #6, assumption 3): a decision on
@@ -223,6 +229,9 @@ func Derive(s *github.Snapshot, appSlug string, dirty func(id int64) bool) Issue
 	for _, c := range s.Comments {
 		read(c.ID, c.Author, c.Body)
 	}
+	// A human task is known by its origin marker alone, so a clean App
+	// body's whole marker: one that isn't read leaves the issue a task.
+	is.Item.Human = is.Origin.Human
 	for _, m := range is.Markers {
 		for _, f := range []string{"cmd", "run", "event"} {
 			if id := m.Fields[f]; id != "" {
