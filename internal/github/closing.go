@@ -120,15 +120,17 @@ type closingCloserResponse struct {
 
 // ClosingCloser reads how the closed event with node ID nodeID, on an
 // issue in owner/repo, was made, with one GraphQL query (closingCloserQuery,
-// SPEC §16). An event GitHub can't resolve, NOT_FOUND, is a close by
-// nobody named, no merge, so it's no error and needn't be asked about
-// again. So is any error GitHub gives under node, logged: one the App may
-// not read, FORBIDDEN, as a closer in a private repo it can't see, or a
-// project's (ProjectV2) on a personal account, which can't grant Projects
-// access. It's no merge the App can tell, so the close is judged as one by
-// hand, and asking again would get the same answer. A ProjectV2 closer the
-// App can read is no merge either. Any other error is one, wrapping
-// ErrGraphQL for GitHub's, as for the repository, and so is a failed
+// SPEC §16). An event GitHub can't resolve, NOT_FOUND under node, is a
+// close by nobody named, no merge, so it's no error and needn't be asked
+// about again. So is a closer the App may not read, FORBIDDEN under node,
+// logged, as a closer in a private repo it can't see, or a project's
+// (ProjectV2) on a personal account, which can't grant Projects access.
+// It's no merge the App can tell, so the close is judged as one by hand,
+// and asking again would get the same answer. A ProjectV2 closer the App
+// can read is no merge either. Any other error is one, wrapping ErrGraphQL
+// for GitHub's: one of another type or of none under node too (#204), as
+// it may be passing, and a merge judged as a close by hand would be
+// reverted and held. So is an error on the repository, and a failed
 // request, which the caller asks again.
 func (c *Client) ClosingCloser(ctx context.Context, owner, repo, nodeID string) (ClosingCloser, error) {
 	wrap := func(err error) error { return fmt.Errorf("closer of event %s in %s/%s: %w", nodeID, owner, repo, err) }
@@ -144,7 +146,7 @@ func (c *Client) ClosingCloser(ctx context.Context, owner, repo, nodeID string) 
 	var msgs []string
 	for _, e := range out.Errors {
 		switch {
-		case len(e.Path) > 0 && e.Path[0] == "node":
+		case len(e.Path) > 0 && e.Path[0] == "node" && (e.Type == "FORBIDDEN" || e.Type == "NOT_FOUND"):
 			logr.Warnf("%s/%s: GitHub won't say how event %s closed its issue (%s: %s at %v), so it's judged as a close by hand",
 				owner, repo, nodeID, e.Type, e.Message, e.Path)
 		case e.Type != "NOT_FOUND":

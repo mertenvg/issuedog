@@ -1,6 +1,7 @@
 package github_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"reflect"
@@ -8,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/mertenvg/logr/v2"
 
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
@@ -124,6 +127,82 @@ func TestClosingCloser(t *testing.T) {
 		if got, err := c.ClosingCloser(context.Background(), "o", "r", id); err != nil || got != (github.ClosingCloser{}) {
 			t.Errorf("ClosingCloser(%s) = %+v, %v; want nothing, no error", id, got, err)
 		}
+	}
+}
+
+// Only a FORBIDDEN or NOT_FOUND error under node says a close is no merge
+// the App can tell, with no error. One of another type under node, or of
+// none, is GitHub's error, which the caller asks again (#204), and once it
+// has gone, the same question sees the merge.
+func TestClosingCloserNodeErrors(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := githubtest.New(t, "o/r", "issuedog")
+	n := f.AddIssue("owner", "A", "")
+	event := f.CloseByPullRequest(n, "mallory", githubtest.ClosingPR{Merged: true})
+	id := "CE_" + strconv.FormatInt(event, 10)
+	merge := github.ClosingCloser{Merge: true, StateReason: "completed"}
+	c := f.Client(t)
+	for _, tc := range []struct{ typ, name string }{{"", "an untyped error"}, {"INTERNAL", "an INTERNAL error"}} {
+		f.FailCloser(n, event, tc.typ, "Something went wrong while executing your query.")
+		for range 2 {
+			if got, err := c.ClosingCloser(ctx, "o", "r", id); !errors.Is(err, github.ErrGraphQL) || got != (github.ClosingCloser{}) {
+				t.Errorf("%s under node: ClosingCloser = %+v, %v; want GitHub's error, asked again", tc.name, got, err)
+			}
+		}
+		f.MendCloser(n, event)
+		if got, err := c.ClosingCloser(ctx, "o", "r", id); err != nil || got != merge {
+			t.Errorf("once %s has gone: ClosingCloser = %+v, %v; want %+v", tc.name, got, err, merge)
+		}
+	}
+	for _, typ := range []string{"FORBIDDEN", "NOT_FOUND"} {
+		f.FailCloser(n, event, typ, "Resource not accessible by integration")
+		if got, err := c.ClosingCloser(ctx, "o", "r", id); err != nil || got != (github.ClosingCloser{}) {
+			t.Errorf("%s under node: ClosingCloser = %+v, %v; want no merge, no error", typ, got, err)
+		}
+		f.MendCloser(n, event)
+	}
+	f.FailGraphQLAt("", "Something went wrong while executing your query.", "node", "closer")
+	if got, err := c.ClosingCloser(ctx, "o", "r", id); !errors.Is(err, github.ErrGraphQL) || got.Merge {
+		t.Errorf("an untyped error at node.closer, beside the data: ClosingCloser = %+v, %v; want GitHub's error", got, err)
+	}
+	f.FailGraphQLAt("FORBIDDEN", "Resource not accessible by integration", "repository", "nameWithOwner")
+	if got, err := c.ClosingCloser(ctx, "o", "r", id); !errors.Is(err, github.ErrGraphQL) || got.Merge {
+		t.Errorf("FORBIDDEN on the repository: ClosingCloser = %+v, %v; want GitHub's error", got, err)
+	}
+	if got, err := c.ClosingCloser(ctx, "o", "r", id); err != nil || got != merge {
+		t.Errorf("after the errors: ClosingCloser = %+v, %v; want %+v", got, err, merge)
+	}
+}
+
+// A FORBIDDEN or NOT_FOUND error under node is logged as a close judged by
+// hand, once each; an untyped one, an error, is not.
+func TestClosingCloserNodeErrorsLogged(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	ctx := context.Background()
+	f := githubtest.New(t, "o/r", "issuedog")
+	n := f.AddIssue("owner", "A", "")
+	event := f.CloseByPullRequest(n, "mallory", githubtest.ClosingPR{Merged: true})
+	id := "CE_" + strconv.FormatInt(event, 10)
+	c := f.Client(t)
+	var warnings bytes.Buffer
+	stop := logr.AddWriter(&warnings, logr.WithFilter(logr.W))
+	for _, typ := range []string{"FORBIDDEN", "NOT_FOUND", ""} {
+		f.FailCloser(n, event, typ, "message "+typ)
+		if _, err := c.ClosingCloser(ctx, "o", "r", id); (err != nil) != (typ == "") {
+			t.Errorf("%q under node: ClosingCloser error %v", typ, err)
+		}
+	}
+	logr.Wait()
+	stop()
+	got := warnings.String()
+	for _, want := range []string{"(FORBIDDEN: message FORBIDDEN at [node])", "(NOT_FOUND: message NOT_FOUND at [node])"} {
+		if strings.Count(got, want) != 1 {
+			t.Errorf("warnings %q; want %q once", got, want)
+		}
+	}
+	if strings.Count(got, "judged as a close by hand") != 2 {
+		t.Errorf("warnings %q; want two closes judged by hand, and none for the untyped error", got)
 	}
 }
 
