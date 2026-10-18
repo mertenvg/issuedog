@@ -195,17 +195,21 @@ func startDaemon(ctx context.Context, set settings, key []byte) (*daemon.Daemon,
 		logr.Infof("created the labels %s", strings.Join(created, ", "))
 	}
 	logr.Infof("running as %s[bot] on %s/%s", slug, set.owner, set.name)
-	a := &daemon.Applier{Client: client, Owner: set.owner, Repo: set.name, AppSlug: slug}
+	a := &daemon.Applier{Client: client, Owner: set.owner, Repo: set.name, AppSlug: slug, ReadMain: clone.ReadFile}
 	d := &daemon.Daemon{Clone: clone, Config: cfg, Digest: true, Assign: true}
 	d.Step = newStep(a, tr, d.CurrentModels)
 	return d, nil
 }
 
 // registerStages returns the Stages to register on d, by stage, and the
-// Unlabeled stage: the interviewer at clarifying, and triage for open
-// issues with no stage label (plan #6, T8). Tests replace it.
+// Unlabeled stage: the interviewer at clarifying, the planner at planning
+// (#247's T8), and triage for open issues with no stage label (plan #6,
+// T8). Tests replace it.
 var registerStages = func(d *daemon.Daemon) (map[state.Stage]daemon.Stage, daemon.Stage) {
-	return map[state.Stage]daemon.Stage{state.Clarifying: &daemon.Interviewer{Daemon: d}}, &daemon.Triage{Daemon: d}
+	return map[state.Stage]daemon.Stage{
+		state.Clarifying: &daemon.Interviewer{Daemon: d},
+		state.Planning:   &daemon.Planner{Daemon: d},
+	}, &daemon.Triage{Daemon: d}
 }
 
 // stageWork is the stage-run harness for d's stage work, with the Stages
@@ -244,20 +248,23 @@ func stageWork(d *daemon.Daemon, name string, cred agent.Cred) (*daemon.Runs, er
 // of a discussion hold once a 👍 or a counter comment resolves it, on a
 // held issue; then a 👍 on a revision and a 👍 on a flag, each at its own
 // stages, spec-review or plan-review for a spec or plan revision, and
-// intake for a flag, so at most one of them acts on an issue,
-// then a 👍 on a state error, at any stage. The loop's reloads
-// replace its Trust and the daemon's Config, so the handlers and the
-// triggers ask for the current trust, and models for the current
-// models.allowed, rather than keeping what they had at the start.
+// intake for a flag, so at most one of them acts on an issue; then a 👍 on
+// a human task itself, at needs-human, which a hold the first ended may
+// have returned it to; then a 👍 on a state error, at any stage. The
+// loop's reloads replace its Trust and the daemon's Config, so the
+// handlers and the triggers ask for the current trust, and models for the
+// current models.allowed, rather than keeping what they had at the start.
 func newStep(a *daemon.Applier, tr github.Trust, models func() config.Models) *daemon.Step {
-	st := &daemon.Step{Applier: a, Trust: tr}
+	st := &daemon.Step{Applier: a, Trust: tr, Models: models}
 	st.Commands = daemon.Commands(st.CurrentTrust())
 	st.Commands["approve"] = daemon.ApproveCommand()
 	st.Commands["revise"] = daemon.ReviseCommand()
+	st.Commands["done"] = daemon.DoneCommand()
 	maps.Copy(st.Commands, daemon.SettingCommands(st.CurrentTrust(), models))
 	maps.Copy(st.Commands, daemon.FlagCommands())
 	approve, answer := daemon.ApproveByReaction(st.CurrentTrust()), daemon.FlagByReaction(st.CurrentTrust())
 	errAck, resolved := daemon.ErrorByReaction(st.CurrentTrust()), daemon.ResolveByReaction(st.CurrentTrust())
+	done := daemon.DoneByReaction(st.CurrentTrust())
 	st.Reactions = func(ctx context.Context, a *daemon.Applier, s *github.Snapshot, d daemon.Dirt) error {
 		if err := resolved(ctx, a, s, d); err != nil {
 			return fmt.Errorf("discussion hold resolved: %w", err)
@@ -267,6 +274,9 @@ func newStep(a *daemon.Applier, tr github.Trust, models func() config.Models) *d
 		}
 		if err := answer(ctx, a, s, d); err != nil {
 			return fmt.Errorf("flag answer by 👍: %w", err)
+		}
+		if err := done(ctx, a, s, d); err != nil {
+			return fmt.Errorf("human task done by 👍: %w", err)
 		}
 		// Last, so an error a move above ended gets no read.
 		if err := errAck(ctx, a, s, d); err != nil {

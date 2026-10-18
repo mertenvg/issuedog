@@ -66,6 +66,62 @@ func FormatMarker(m Marker) (string, error) {
 	return b.String(), nil
 }
 
+// EncodeValue is s as a marker value holds it, one that ParseMarkers
+// reads back and DecodeValue undoes: every byte but a printable ASCII one
+// other than "%", ",", "<" and ">" is percent-encoded as %XX. That keeps
+// every space, "<" and ">", which a value can't hold, and every "," out of
+// it, so a value can also be one of a comma-separated list, as a
+// digest-new marker's keys are. Any other text is left as it is. An empty
+// s is an empty value, which FormatMarker refuses.
+func EncodeValue(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c <= ' ' || c >= 0x7f || strings.IndexByte("%,<>", c) >= 0 {
+			fmt.Fprintf(&b, "%%%02X", c)
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+// DecodeValue undoes EncodeValue: each %XX, with two hex digits in either
+// case, is the byte XX, and any other byte is itself. A "%" without two
+// hex digits after it is an error.
+func DecodeValue(s string) (string, error) {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] != '%' {
+			b.WriteByte(s[i])
+			continue
+		}
+		hi, lo := -1, -1
+		if i+2 < len(s) {
+			hi, lo = unhex(s[i+1]), unhex(s[i+2])
+		}
+		if hi < 0 || lo < 0 {
+			return "", fmt.Errorf("decode marker value %q: %% at %d without two hex digits", s, i)
+		}
+		b.WriteByte(byte(hi<<4 | lo))
+		i += 2
+	}
+	return b.String(), nil
+}
+
+// unhex is hex digit c's value, or -1 if it isn't one.
+func unhex(c byte) int {
+	switch {
+	case '0' <= c && c <= '9':
+		return int(c - '0')
+	case 'a' <= c && c <= 'f':
+		return int(c-'a') + 10
+	case 'A' <= c && c <= 'F':
+		return int(c-'A') + 10
+	}
+	return -1
+}
+
 // Escape escapes "<!--" as "&lt;!--", for text the App posts but didn't
 // write, so no marker in it is ever read (SPEC §5.1).
 func Escape(text string) string {

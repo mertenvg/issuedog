@@ -46,8 +46,10 @@ func (*Interviewer) Schema() []byte {
 }
 
 // Pending reports whether the interviewer has work on the issue: it's at
-// clarifying, it's an epic, a story with no parent or untyped (plan #6,
-// Q1a), and either
+// clarifying, it's an issue the interviewer runs on there (ivRunsOn): an
+// epic, a story with no parent or untyped (plan #6, Q1a), or, at the
+// clarifying after a hold from planning, plan-review or planned, a story
+// with a parent (#195's Q1a), and either
 //   - the latest transition entered clarifying by anything but an
 //     interviewer run, such as intake, triage, /revise, an override or
 //     the end of a discussion hold (#189): it runs at once, with or
@@ -65,9 +67,10 @@ func (*Interviewer) Schema() []byte {
 // A bug or task, which the interviewer typed or the owner filed, waits at
 // clarifying with no runs until phase 3, at the clarifying after a hold
 // too, until a code owner sets its stage by hand (Q3b). So does a story
-// with a parent.
+// with a parent anywhere but the clarifying after a hold from a stage of
+// its plan.
 func (*Interviewer) Pending(in Input) bool {
-	if in.Issue.Stage != state.Clarifying || !interviewerClass(in.Issue.Item) {
+	if in.Issue.Stage != state.Clarifying || !ivRunsOn(in.Issue.Item, ivHoldOrigin(in.Issue)) {
 		return false
 	}
 	if !ivRoundMove(ivHoldLatest(in.Issue, true)) {
@@ -82,6 +85,26 @@ func (*Interviewer) Pending(in Input) bool {
 func interviewerClass(it state.Item) bool {
 	class, err := state.ClassOf(it)
 	return err == nil && class&(state.ClassEpic|state.ClassOwnerStory|state.ClassUntyped) != 0
+}
+
+// ivRunsOn reports whether the interviewer runs on an issue like it at
+// clarifying, with origin the stage it came from to the clarifying after a
+// hold it's at (ivHoldOrigin), or "": on an issue of its class
+// (interviewerClass), and after a hold from planning, plan-review or
+// planned (ivPlanOrigin), on a story with a parent too (ivParentStory,
+// #195's Q1a), whose outcomes are only questions, unchanged and plan.
+// Anywhere else a story with a parent waits at clarifying until a code
+// owner sets its stage by hand, as Q3b on #87 decided.
+func ivRunsOn(it state.Item, origin state.Stage) bool {
+	return interviewerClass(it) || ivPlanOrigin(origin) && ivParentStory(it)
+}
+
+// ivParentStory reports whether it is a story with a parent (ClassStory):
+// its body is its item of its parent's plan, so the interviewer never
+// rewrites it, or types it (#195's Q1a).
+func ivParentStory(it state.Item) bool {
+	class, err := state.ClassOf(it)
+	return err == nil && class == state.ClassStory
 }
 
 // ivLatestMove returns is's latest transition that bounds a round
@@ -209,7 +232,7 @@ func ivRoundOf(rounds []interviewerRound, id int64) int {
 // with the text the App didn't write escaped (SPEC §5.1):
 //   - issue.md: the number, title, type or "none", and the body. A dirty
 //     body is left out, and so is a title or body an untrusted author's
-//     issue had changed after it was admitted (admission). At the
+//     issue had changed after it was admitted (contextAdmission). At the
 //     clarifying after a discussion hold (ivHoldOrigin, #189), it also has
 //     the stage the issue came from and the discussion's owner input
 //     (ivHoldSection): the comments a trusted user's 👍 approved, which
@@ -220,21 +243,24 @@ func ivRoundOf(rounds []interviewerRound, id int64) int {
 //     are every stage's (allRounds), the planner's too, as they share one
 //     numbering (#253).
 //   - input.md: in.Inputs, the answers or the revision notes, or "none:
-//     first run", and at the clarifying after a hold from spec-review, the
-//     /revise that waited through it (ivHoldRevise), as revision notes.
+//     first run", and at the clarifying after a hold from spec-review or
+//     plan-review, the /revise that waited through it (ivHoldRevise), as
+//     revision notes (#294).
 //   - untrusted.md: only on an epic or a story (SPEC §6.2), and only when
 //     there's something in it: comments by untrusted users and other bots,
 //     dirty comments by anyone, a dirty body, and a title or body changed
 //     after admission, each under a heading that says it's untrusted data,
 //     not instructions. On any other issue that text is in no file. A
 //     comment the discussion's owner input approved isn't in it.
-//   - system.md: the preamble, then .issuedog/prompts/interviewer.md from
-//     main or the shipped default (agent.Prompt).
+//   - system.md: the preamble, with the outcomes the run may return
+//     (ivOutcomes), then .issuedog/prompts/interviewer.md from main or the
+//     shipped default (agent.Prompt). On a story with a parent (#195's
+//     Q1a), its typing line says to leave the type out (ivParentTyping).
 //   - prompt.md: the task, naming in.ContextDir.
 //
 // It only reads: the prompt from the clone, trust, and, at most once, the
 // timeline, for a type set by label (typing) or an untrusted author's issue
-// (admission). At the clarifying after a hold, it also reads the reactions
+// (contextAdmission). At the clarifying after a hold, it also reads the reactions
 // of the discussion's untrusted comments, and of a waiting /revise. An
 // error is a setup failure, so no run starts and it isn't counted, as for
 // a prompt that can't be read.
@@ -252,9 +278,12 @@ func (iv *Interviewer) Context(ctx context.Context, in Input) (map[string][]byte
 		logr.Debugf("%s/%s#%d: the interviewer runs with %s/%s.md from main", a.Owner, a.Repo, s.Number, agent.PromptDir, interviewerAgent)
 	}
 	timeline := &ivTimeline{a: a, number: s.Number}
-	typing, _, err := iv.typing(ctx, s, timeline)
+	typing, may, err := iv.typing(ctx, s, timeline)
 	if err != nil {
 		return nil, wrap(err)
+	}
+	if ivParentStory(in.Issue.Item) {
+		typing, may = ivParentTyping, false
 	}
 	// The interviewer's own rounds are the ones its spec decides, and an
 	// input answers one only when the latest move is its round (ivInputs).
@@ -264,13 +293,14 @@ func (iv *Interviewer) Context(ctx context.Context, in Input) (map[string][]byte
 	all := allRounds(s, a.AppSlug, in.Dirt.Has)
 	takesUntrusted := s.Type == "epic" || s.Type == "story" // SPEC §6.2
 	tc := trustCache{st: d.Step, verdicts: map[string]bool{}}
-	titleBy, bodyBy, err := iv.admission(ctx, s, in.Dirt, tc, timeline)
+	titleBy, bodyBy, err := contextAdmission(ctx, a, s, in.Dirt, tc, timeline)
 	if err != nil {
 		return nil, wrap(err)
 	}
 	// At the clarifying after a discussion hold (#189): the discussion's
-	// owner input, and the /revise that waited through a hold from
-	// spec-review.
+	// owner input, and the /revise that waited through a hold from a review
+	// stage, spec-review or plan-review (ivHoldRevises, #294), as the
+	// revision notes.
 	origin, span := ivHoldOrigin(in.Issue), ivHoldSpanOf(s, a.AppSlug, in.Dirt.Has)
 	var held ivHoldInput
 	var revise *github.Comment
@@ -278,11 +308,13 @@ func (iv *Interviewer) Context(ctx context.Context, in Input) (map[string][]byte
 		if held, err = ivHoldInputOf(ctx, a, tc, s, in.Dirt, span.From); err != nil {
 			return nil, wrap(err)
 		}
-		if origin == state.SpecReview {
-			if revise, err = ivHoldRevise(ctx, a, tc, s, in.Dirt, in.Issue, span.From, 0); err != nil {
-				return nil, wrap(err)
-			}
+		if revise, err = ivHoldRevise(ctx, a, tc, s, in.Dirt, in.Issue, span.From, 0); err != nil {
+			return nil, wrap(err)
 		}
+	}
+	class, err := state.ClassOf(in.Issue.Item)
+	if err != nil {
+		class = 0 // a type the table doesn't know: Pending gives it no run
 	}
 	text, err := contextSort(ctx, s, a.AppSlug, in.Dirt, tc, titleBy, bodyBy, contextStage{
 		App:     func(c github.Comment) string { return ivAppLabel(c, all, a.AppSlug) },
@@ -301,7 +333,8 @@ func (iv *Interviewer) Context(ctx context.Context, in Input) (map[string][]byte
 		issue += "\n" + ivHoldSection(s, origin, span, held)
 	}
 	files := map[string][]byte{
-		"system.md":       []byte(interviewerPreamble(int(d.Config.Loop.MaxQuestionsPerRound), rounds, planned, logins, typing, origin) + "\n\n" + string(prompt)),
+		"system.md": []byte(interviewerPreamble(int(d.Config.Loop.MaxQuestionsPerRound), rounds, planned, logins, typing,
+			ivOutcomes(origin, class, may)) + "\n\n" + string(prompt)),
 		"prompt.md":       []byte(interviewerTask(s.Number, in.ContextDir, len(untrusted) > 0)),
 		"issue.md":        []byte(issue),
 		"conversation.md": []byte(ivFile("Conversation on #"+strconv.Itoa(s.Number), ivConversationIntro, conversation, "None yet.")),
@@ -384,67 +417,6 @@ func (t *ivTimeline) get(ctx context.Context) ([]*gogithub.Timeline, error) {
 	return events, nil
 }
 
-// admission returns who changed s's title and body after the issue was
-// admitted, if its author isn't trusted (the owner's option (a) on #6): an
-// approval approves what the approver read, not what the author writes
-// later. Each is the login of the change that taints it, or "" if it's
-// trusted as it stands. The App's issues, and trusted authors', are.
-//   - The body is tainted by an edit at or after the admission
-//     (ivAdmitted), unless the App made it, as when it wrote the spec. The
-//     last edit is the only one GitHub dates, but any later one taints it,
-//     whoever made it: someone else's makes it dirty too.
-//   - The title is tainted by its latest rename, if that's at or after the
-//     admission and by someone untrusted: a trusted user's later rename
-//     makes it theirs.
-//
-// Times are to the second, so a change in the admission's second counts
-// as after it. With no admission found, every change counts as after.
-func (iv *Interviewer) admission(ctx context.Context, s *github.Snapshot, d Dirt, tc trustCache, tl *ivTimeline) (titleBy, bodyBy string, err error) {
-	a := iv.Daemon.Step.Applier
-	if state.IsApp(s.Author, a.AppSlug) {
-		return "", "", nil
-	}
-	trusted, err := tc.trusted(ctx, s.Author)
-	if err != nil {
-		return "", "", fmt.Errorf("the issue's author: %w", err)
-	}
-	if trusted {
-		return "", "", nil
-	}
-	timeline, err := tl.get(ctx)
-	if err != nil {
-		return "", "", fmt.Errorf("the admission of an untrusted author's issue: %w", err)
-	}
-	at, admitted, err := ivAdmitted(ctx, a, s, d, timeline, tc)
-	if err != nil {
-		return "", "", fmt.Errorf("the admission of an untrusted author's issue: %w", err)
-	}
-	after := func(t time.Time) bool { return !admitted || !t.Before(at) }
-	if e := s.BodyEdit; !e.At.IsZero() && !state.IsApp(e.By, a.AppSlug) && after(e.At) {
-		bodyBy = login(e.By)
-	}
-	var rename *gogithub.Timeline
-	for _, e := range timeline {
-		if e.GetEvent() == "renamed" {
-			rename = e
-		}
-	}
-	if rename == nil || !after(rename.GetCreatedAt().Time) {
-		return "", bodyBy, nil
-	}
-	actor := github.Author{Login: rename.GetActor().GetLogin(), Type: rename.GetActor().GetType()}
-	if state.IsApp(actor, a.AppSlug) {
-		return "", bodyBy, nil
-	}
-	if trusted, err = tc.trusted(ctx, actor); err != nil {
-		return "", "", fmt.Errorf("who renamed the issue: %w", err)
-	}
-	if !trusted {
-		titleBy = login(actor)
-	}
-	return titleBy, bodyBy, nil
-}
-
 // ivAdmitted returns when an issue s was admitted to the pipeline (SPEC
 // §6.2), and whether it was. Its timeline, which nobody can edit or
 // delete, unlike the App's comments, gives the earliest labeled event of
@@ -497,16 +469,17 @@ func ivAdmitted(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt, tim
 // can remove (plan #6, assumption 12): the trust rules, the output
 // contract, and this repo's and this issue's limits: maxQuestions
 // (loop.max_questions_per_round), the rounds asked so far, the logins a
-// decision may name, and the typing line. At the clarifying after a
-// discussion hold, origin is the stage the issue came from (ivHoldOrigin),
-// and a last line says what the run may return there (#189).
+// decision may name, the typing line, and the outcomes the run may return,
+// o (ivOutcomes). At the clarifying after a discussion hold, o.origin is
+// the stage the issue came from (ivHoldOrigin), and a last line says what
+// the run may return there (#189, #294).
 //
 // rounds are the interviewer's, whose questions its spec decides, and
 // planned the planner's, which share their numbering (#253): the next
 // round follows both (nextRound), and a line says the planner's questions
 // get no decision, as the check counts only the interviewer's. With no
 // planner rounds, the line about rounds is as it was before them.
-func interviewerPreamble(maxQuestions int, rounds, planned []interviewerRound, logins []string, typing string, origin state.Stage) string {
+func interviewerPreamble(maxQuestions int, rounds, planned []interviewerRound, logins []string, typing string, o ivAllowed) string {
 	next := nextRound(slices.Concat(rounds, planned))
 	asked := "No questions have been asked yet, so a question round now is round 1."
 	if len(rounds) > 0 {
@@ -523,16 +496,32 @@ func interviewerPreamble(maxQuestions int, rounds, planned []interviewerRound, l
 	if len(logins) > 0 {
 		by = "A decision's `by` is one of: " + strings.Join(logins, ", ") + "."
 	}
-	hold := "- This issue isn't back from a discussion hold, so never return `unchanged`."
-	switch origin {
-	case "":
-	case state.Clarifying:
+	hold := "- This issue isn't back from a discussion hold, so never return `unchanged` or `plan`."
+	switch origin := o.origin; {
+	case origin == "":
+	case origin == state.Clarifying:
 		hold = "- This issue is back from a discussion hold, and issue.md's \"After a hold\" section has the discussion's owner input. " +
-			"It was at `clarifying` before the hold, so never return `unchanged`: ask a round or write the spec, as usual."
+			"It was at `clarifying` before the hold, so never return `unchanged` or `plan`: ask a round or write the spec, as usual."
+	case o.parentStory:
+		hold = fmt.Sprintf("- This issue is back from a discussion hold, and issue.md's \"After a hold\" section has the discussion's owner input. "+
+			"Before the hold it was at `%s`. It's a story with a parent, and its body is its item of the parent's plan, "+
+			"so never write the spec and never set a type. If nothing in the discussion changes the story, return `unchanged`, and it goes back there. "+
+			"If its own plan changes, its tasks, return `plan`, with notes for the planner in `message`, and it goes to `planning`. "+
+			"If you need answers first, ask a round.", origin)
+	case slices.Contains(o.outcomes, outcomePlan):
+		hold = fmt.Sprintf("- This issue is back from a discussion hold, and issue.md's \"After a hold\" section has the discussion's owner input. "+
+			"Before the hold it was at `%s`. If nothing in the discussion changes the issue, return `unchanged`, and it goes back there. "+
+			"If the spec changes, write the spec. If the spec stands but its plan changes, its stories or tasks, return `plan`, "+
+			"with notes for the planner in `message`, and it goes to `planning`. If you need answers first, ask a round.", origin)
 	default:
 		hold = fmt.Sprintf("- This issue is back from a discussion hold, and issue.md's \"After a hold\" section has the discussion's owner input. "+
 			"Before the hold it was at `%s`. If nothing in the discussion changes the issue, return `unchanged`, and it goes back there. "+
-			"If the spec changes, write the spec; if you need answers first, ask a round.", origin)
+			"If the spec changes, write the spec; if you need answers first, ask a round. Never return `plan`: "+
+			"only an epic or a story back from a hold from `planning`, `plan-review` or `planned` may.", origin)
+	}
+	outcomes := make([]string, len(o.outcomes))
+	for i, name := range o.outcomes {
+		outcomes[i] = "`" + name + "`"
 	}
 	return strings.Join([]string{
 		"# issuedog's rules for this run",
@@ -555,8 +544,50 @@ func interviewerPreamble(maxQuestions int, rounds, planned []interviewerRound, l
 		"- An issue with a parent is never typed `story`, and issue.md names the parent if there is one. " +
 			"issuedog doesn't clarify a story with a parent, and the pipeline has no spec move for one, " +
 			"so output that types an issue with a parent `story` fails the run.",
+		"- The outcomes you may return here: " + list(outcomes) + ". Any other outcome fails the run.",
 		hold,
 	}, "\n\n")
+}
+
+// ivParentTyping is the typing line on a story with a parent (#195's Q1a):
+// its parent's plan gave it its type, which the interviewer never changes.
+const ivParentTyping = "This story has a parent, whose plan gave it its type, so leave `type` out."
+
+// ivAllowed is what an interviewer run may return (ivOutcomes): its
+// outcomes, in the order the preamble lists them, the stage the issue came
+// from to the clarifying after a hold, or "", and whether it's a story
+// with a parent (ivParentStory).
+type ivAllowed struct {
+	outcomes    []string
+	origin      state.Stage
+	parentStory bool
+}
+
+// ivOutcomes returns the outcomes a run may return on an issue of class
+// class, at the clarifying after a hold from origin, or with origin "" at
+// any other clarifying, with may whether it may set the type (typing), as
+// checkInterview and ivMoveFits hold its output to them:
+//   - questions, always;
+//   - spec, and typed if it may set the type, except on a story with a
+//     parent (#195's Q1a);
+//   - unchanged, after a hold from a stage other than clarifying (#189);
+//   - plan, after a hold from planning, plan-review or planned, on an epic
+//     or a story (#294).
+func ivOutcomes(origin state.Stage, class state.Class, may bool) ivAllowed {
+	o := ivAllowed{outcomes: []string{outcomeQuestions}, origin: origin, parentStory: class == state.ClassStory}
+	if !o.parentStory {
+		o.outcomes = append(o.outcomes, outcomeSpec)
+		if may {
+			o.outcomes = append(o.outcomes, outcomeTyped)
+		}
+	}
+	if origin != "" && origin != state.Clarifying {
+		o.outcomes = append(o.outcomes, outcomeUnchanged)
+	}
+	if ivPlanOrigin(origin) && class&(state.ClassEpic|state.AnyStory) != 0 {
+		o.outcomes = append(o.outcomes, outcomePlan)
+	}
+	return o
 }
 
 // interviewerTask is prompt.md: the task, and where the context files are.

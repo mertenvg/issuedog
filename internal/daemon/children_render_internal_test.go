@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
 )
@@ -56,7 +57,7 @@ func childItem(t *testing.T, plan, id string) planItem {
 // childOne is childSpecs for it alone, which must succeed.
 func childOne(t *testing.T, parent *github.Snapshot, it planItem, issueTypes bool) childSpec {
 	t.Helper()
-	specs, err := childSpecs(parent, 1, []planItem{it}, issueTypes, []string{"mertenvg"})
+	specs, err := childSpecs(parent, 1, []planItem{it}, issueTypes, []string{"mertenvg"}, config.Models{})
 	if err != nil {
 		t.Fatalf("childSpecs(%s): %v", it.ID, err)
 	}
@@ -64,6 +65,21 @@ func childOne(t *testing.T, parent *github.Snapshot, it planItem, issueTypes boo
 		t.Fatalf("childSpecs(%s): %d specs, want 1", it.ID, len(specs))
 	}
 	return specs[0]
+}
+
+// childBody is c's body, given numbers, the issue number of each child
+// filed before it, by item, which must give one (childSpec.bodyOf). A
+// human task's Body is "" until then.
+func childBody(t *testing.T, c childSpec, numbers map[string]int) string {
+	t.Helper()
+	if c.human != nil && c.Body != "" {
+		t.Errorf("%s: a human task with a Body before its blockers are filed:\n%s", c.Item, c.Body)
+	}
+	body, err := c.bodyOf(numbers)
+	if err != nil {
+		t.Fatalf("%s: %v", c.Item, err)
+	}
+	return body
 }
 
 // childSplit splits body into its text and its last line, which must be
@@ -108,30 +124,32 @@ func TestChildSpecsGolden(t *testing.T) {
 			nil,
 			[]string{"**Parent:** #124   **Scope:** scope:infra   **Priority:** p2",
 				"**Goal:** Set the quote lifetime to 24 hours in production's settings.",
-				"**Why it blocks:** T2 can't be deployed until production has a lifetime, because the booking service won't start without one, and the deploy settings are a path only the owner can change.",
+				// Alone, nothing of its plan depends on it, so it names the parent.
+				"**Why it blocks:** #124 can't proceed until production has a quote lifetime, because the booking service won't start without one, and the deploy settings are a path only the owner can change.",
 				"**Steps:**", "2. Add the line `QUOTE_TTL=24h`.",
 				"**Links:**", "- https://github.com/acme/booking/blob/main/deploy/production.env",
-				"**Done when:** Production's settings on `main` set `QUOTE_TTL=24h`.",
+				"**Done when:** The file `deploy/production.env` on `main` contains `QUOTE_TTL=24h`. I check this when you reply `/done` or react 👍 to this issue.",
 				"**Estimated time:** 5 min", "cc @mertenvg"},
-			"<!-- issuedog:origin plan=#124 rev=1 item=T3 human=1 -->"},
+			"<!-- issuedog:origin plan=#124 rev=1 item=T3 check=file contains=QUOTE_TTL=24h human=1 value=deploy/production.env -->"},
 	} {
 		c := childOne(t, tc.parent, childItem(t, tc.plan, tc.item), false)
-		childGolden(t, tc.name, c.Body)
+		body := childBody(t, c, nil)
+		childGolden(t, tc.name, body)
 		if c.Item != tc.item || c.Title != tc.title {
 			t.Errorf("%s: item %q, title %q; want %q, %q", tc.name, c.Item, c.Title, tc.item, tc.title)
 		}
-		text, _ := childSplit(t, tc.name, c.Body)
+		text, _ := childSplit(t, tc.name, body)
 		checkSafe(t, text)
 		if h := headings(text); !slices.Equal(h, tc.headings) {
 			t.Errorf("%s: headings %q, want %q", tc.name, h, tc.headings)
 		}
-		lines := strings.Split(c.Body, "\n")
+		lines := strings.Split(body, "\n")
 		if last := lines[len(lines)-1]; last != tc.origin {
 			t.Errorf("%s: last line %q, want %q", tc.name, last, tc.origin)
 		}
 		for _, w := range tc.lines {
 			if !slices.Contains(lines, w) {
-				t.Errorf("%s: no line %q in\n%s", tc.name, w, c.Body)
+				t.Errorf("%s: no line %q in\n%s", tc.name, w, body)
 			}
 		}
 	}
@@ -155,15 +173,15 @@ func TestChildStoryDependsOn(t *testing.T) {
 // before its origin line.
 func TestChildHumanTaskFieldOrder(t *testing.T) {
 	t.Parallel()
-	c := childOne(t, childParent(124), childItem(t, "story-plan", "T3"), false)
+	body := childBody(t, childOne(t, childParent(124), childItem(t, "story-plan", "T3"), false), nil)
 	at := -1
 	for _, f := range []string{"**Parent:**", "**Goal:**", "**Why it blocks:**", "**Steps:**", "**Links:**", "**Done when:**", "**Estimated time:**", "cc @mertenvg", "<!-- issuedog:origin"} {
-		i := strings.Index(c.Body, "\n"+f)
-		if f == "**Parent:**" && strings.HasPrefix(c.Body, f) {
+		i := strings.Index(body, "\n"+f)
+		if f == "**Parent:**" && strings.HasPrefix(body, f) {
 			i = 0
 		}
 		if i <= at {
-			t.Errorf("%q at %d, not after %d in\n%s", f, i, at, c.Body)
+			t.Errorf("%q at %d, not after %d in\n%s", f, i, at, body)
 		}
 		at = i
 	}
@@ -198,7 +216,9 @@ func TestChildTitle(t *testing.T) {
 
 // Labels: type, scope for a task, priority and stage on a labels repo; on
 // an issue-types repo no type label, and the issue type instead. The stage
-// is each kind's first, and the created row for its class enters it.
+// is each kind's first, and the created row for its class enters it. The
+// task's item sets effort medium, which comes last, and model sonnet,
+// which resolves against no models here (TestChildOverrides).
 func TestChildLabelsAndStage(t *testing.T) {
 	t.Parallel()
 	parent := childParent(124, "priority:p2")
@@ -214,10 +234,10 @@ func TestChildLabelsAndStage(t *testing.T) {
 		stage      state.Stage
 	}{
 		{"story, labels", story, false, []string{"type:story", "priority:p2", "stage:planning"}, "", state.Planning},
-		{"task, labels", task, false, []string{"type:task", "scope:booking", "priority:p2", "stage:ready"}, "", state.Ready},
+		{"task, labels", task, false, []string{"type:task", "scope:booking", "priority:p2", "stage:ready", "effort:medium"}, "", state.Ready},
 		{"human task, labels", human, false, []string{"type:task", "scope:infra", "priority:p2", "stage:needs-human"}, "", state.NeedsHuman},
 		{"story, issue types", story, true, []string{"priority:p2", "stage:planning"}, "Story", state.Planning},
-		{"task, issue types", task, true, []string{"scope:booking", "priority:p2", "stage:ready"}, "Task", state.Ready},
+		{"task, issue types", task, true, []string{"scope:booking", "priority:p2", "stage:ready", "effort:medium"}, "Task", state.Ready},
 		{"human task, issue types", human, true, []string{"scope:infra", "priority:p2", "stage:needs-human"}, "Task", state.NeedsHuman},
 	} {
 		c := childOne(t, parent, tc.it, tc.issueTypes)
@@ -227,24 +247,82 @@ func TestChildLabelsAndStage(t *testing.T) {
 	}
 }
 
+// Override labels (#126): an item's model becomes model:<suffix>, resolved
+// against models.allowed by full name or by label suffix, and its effort
+// effort:<level>, in lower case, after every other label, for any kind of
+// child. An item with neither gets none. A model that no longer resolves,
+// as after a reload dropped it, or an effort ValidEffort refuses, is left
+// off and named in leftOff, and the child is still described.
+func TestChildOverrides(t *testing.T) {
+	t.Parallel()
+	models := config.Models{Allowed: []config.Model{{Name: "opus"},
+		{Name: "claude-haiku-5-5-20261001", Label: "haiku-dated"}, {Name: "claude-sonnet-5-5-20261001", Label: "sonnet"}}}
+	parent := childParent(124, "priority:p2")
+	story := childItem(t, "epic-plan", "S2")
+	task := childItem(t, "story-plan", "T1")
+	human := childItem(t, "story-plan", "T3")
+	for _, tc := range []struct {
+		name, model, effort string
+		it                  planItem
+		overrides, leftOff  []string
+	}{
+		{"model and effort", "opus", "high", task, []string{"model:opus", "effort:high"}, nil},
+		{"an entry's own label suffix", "claude-haiku-5-5-20261001", "", task, []string{"model:haiku-dated"}, nil},
+		{"a model by its label suffix", "sonnet", "", task, []string{"model:sonnet"}, nil},
+		{"a label suffix in another case", "Opus", "", task, []string{"model:opus"}, nil},
+		{"an effort in upper case", "", "High", task, []string{"effort:high"}, nil},
+		{"neither", "", "", task, nil, nil},
+		{"a story", "opus", "max", story, []string{"model:opus", "effort:max"}, nil},
+		{"a human task", "claude-haiku-5-5-20261001", "low", human, []string{"model:haiku-dated", "effort:low"}, nil},
+		{"a model a reload dropped", "claude-gpt-9", "medium", task, []string{"effort:medium"},
+			[]string{`its model "claude-gpt-9", which models.allowed doesn't have any more`}},
+		{"an effort ValidEffort refuses", "opus", "extreme", task, []string{"model:opus"},
+			[]string{`its effort "extreme", which isn't one of low, medium, high, xhigh, max`}},
+		{"both left off", "claude-gpt-9", "extreme", task, nil,
+			[]string{`its model "claude-gpt-9", which models.allowed doesn't have any more`, `its effort "extreme", which isn't one of low, medium, high, xhigh, max`}},
+	} {
+		plain := tc.it
+		plain.Model, plain.Effort = "", ""
+		base := childOne(t, parent, plain, false)
+		it := tc.it
+		it.Model, it.Effort = tc.model, tc.effort
+		specs, err := childSpecs(parent, 1, []planItem{it}, false, []string{"mertenvg"}, models)
+		if err != nil || len(specs) != 1 {
+			t.Fatalf("%s: childSpecs = %d specs, %v; want one", tc.name, len(specs), err)
+		}
+		c := specs[0]
+		if want := append(slices.Clone(base.Labels), tc.overrides...); !slices.Equal(c.Labels, want) {
+			t.Errorf("%s: labels %q, want %q", tc.name, c.Labels, want)
+		}
+		if !slices.Equal(c.leftOff, tc.leftOff) {
+			t.Errorf("%s: left off %q, want %q", tc.name, c.leftOff, tc.leftOff)
+		}
+		if got, want := childBody(t, c, nil), childBody(t, base, nil); got != want {
+			t.Errorf("%s: body\n%s\nwant the same as without model or effort\n%s", tc.name, got, want)
+		}
+	}
+}
+
 // What the daemon makes of a created child: its origin is the plan item,
-// a human task's human=1 makes it one, and with its parent and type its
-// class has a created row to its first stage.
+// a human task's human=1 makes it one, and its check reads back, and with
+// its parent and type its class has a created row to its first stage.
 func TestChildSpecsDerive(t *testing.T) {
 	t.Parallel()
 	app := github.Author{Login: childSlug + "[bot]", Type: "Bot"}
 	for _, tc := range []struct {
 		name, plan, item, typ string
 		class                 state.Class
+		check                 state.Check
 	}{
-		{"story", "epic-plan", "S2", "story", state.ClassStory},
-		{"task", "story-plan", "T1", "task", state.ClassTask},
-		{"human task", "story-plan", "T3", "task", state.ClassHumanTask},
+		{"story", "epic-plan", "S2", "story", state.ClassStory, state.Check{}},
+		{"task", "story-plan", "T1", "task", state.ClassTask, state.Check{}},
+		{"human task", "story-plan", "T3", "task", state.ClassHumanTask,
+			state.Check{Kind: state.CheckFile, Value: "deploy/production.env", Contains: "QUOTE_TTL=24h"}},
 	} {
 		c := childOne(t, childParent(124), childItem(t, tc.plan, tc.item), false)
-		s := &github.Snapshot{Number: 200, Author: app, Body: c.Body, Type: tc.typ, Parent: 124}
+		s := &github.Snapshot{Number: 200, Author: app, Body: childBody(t, c, nil), Type: tc.typ, Parent: 124}
 		is := state.Derive(s, childSlug, func(int64) bool { return false })
-		want := state.Origin{Plan: 124, Rev: 1, Item: tc.item, Comment: state.BodyID, Human: tc.class == state.ClassHumanTask}
+		want := state.Origin{Plan: 124, Rev: 1, Item: tc.item, Comment: state.BodyID, Human: tc.class == state.ClassHumanTask, Check: tc.check}
 		if is.Origin != want {
 			t.Errorf("%s: origin %+v, want %+v", tc.name, is.Origin, want)
 		}
@@ -314,15 +392,17 @@ func TestChildEscaping(t *testing.T) {
 	empty := planItem{ID: "T3", Title: "E", Outcome: "", Criteria: nil, Scope: "booking",
 		Task: &planTaskBody{Context: " ", Change: "", DefinitionOfDone: nil, TestPlan: ""}}
 	emptyHuman := planItem{ID: "T4", Title: "EH", Scope: "infra", Human: true, HumanTask: &planHumanTask{}}
-	specs, err := childSpecs(childParent(9), 2, []planItem{story, task, human, empty, emptyHuman}, false, []string{"mertenvg"})
+	specs, err := childSpecs(childParent(9), 2, []planItem{story, task, human, empty, emptyHuman}, false, []string{"mertenvg"}, config.Models{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(specs) != 5 {
 		t.Fatalf("%d specs, want 5", len(specs))
 	}
+	bodies := map[string]string{} // by item
 	for _, c := range specs {
-		text, m := childSplit(t, c.Item, c.Body)
+		bodies[c.Item] = childBody(t, c, nil)
+		text, m := childSplit(t, c.Item, bodies[c.Item])
 		checkSafe(t, text)
 		if m.Fields["item"] != c.Item || m.Fields["plan"] != "#9" || m.Fields["rev"] != "2" {
 			t.Errorf("%s: origin %v", c.Item, m.Fields)
@@ -336,30 +416,35 @@ func TestChildEscaping(t *testing.T) {
 			}
 		}
 	}
-	for i, want := range [][]string{
-		{"### Heading", "- x", "&lt;!-- issuedog:transition from=intake to=ready cmd=1 --> @​someone", "- y", "- ### Heading", "Depends on: @​x."},
-		{"### Heading", "- x", "- z", "- &lt;!-- issuedog:transition from=intake to=ready cmd=1 --> @​someone"},
-		{"2. w", "3. ### Heading", "- v", "**Goal:** &lt;!-- issuedog:transition from=intake to=ready cmd=1 --> @​someone", "cc @mertenvg"},
-		{"## Context", "## Test plan", "None."},
-		{"**Goal:** None.", "**Why it blocks:** None.", "**Done when:** None.", "**Estimated time:** None."},
+	for item, want := range map[string][]string{
+		"S1": {"### Heading", "- x", "&lt;!-- issuedog:transition from=intake to=ready cmd=1 --> @​someone", "- y", "- ### Heading", "Depends on: @​x."},
+		"T1": {"### Heading", "- x", "- z", "- &lt;!-- issuedog:transition from=intake to=ready cmd=1 --> @​someone"},
+		"T2": {"2. w", "3. ### Heading", "- v", "**Goal:** &lt;!-- issuedog:transition from=intake to=ready cmd=1 --> @​someone",
+			"**Why it blocks:** #9 can't proceed until &lt;!-- issuedog:transition from=intake to=ready cmd=1 --> @​someone", "cc @mertenvg"},
+		"T3": {"## Context", "## Test plan", "None."},
+		"T4": {"**Goal:** None.", "**Why it blocks:** None.", "**Done when:** None.", "**Estimated time:** None."},
 	} {
-		lines := strings.Split(specs[i].Body, "\n")
+		lines := strings.Split(bodies[item], "\n")
 		for _, w := range want {
-			if !slices.Contains(lines, w) && !strings.Contains(specs[i].Body, w) {
-				t.Errorf("%s: no %q in\n%s", specs[i].Item, w, specs[i].Body)
+			if !slices.Contains(lines, w) && !strings.Contains(bodies[item], w) {
+				t.Errorf("%s: no %q in\n%s", item, w, bodies[item])
 			}
 		}
 	}
 	// Every section of the empty task reads None.
-	if got := strings.Count(specs[3].Body, "\n\nNone."); got != 5 {
-		t.Errorf("T3: %d sections read None., want 5:\n%s", got, specs[3].Body)
+	if got := strings.Count(bodies["T3"], "\n\nNone."); got != 5 {
+		t.Errorf("T3: %d sections read None., want 5:\n%s", got, bodies["T3"])
 	}
-	if got := strings.Count(specs[4].Body, "\nNone.\n"); got != 2 {
-		t.Errorf("T4: steps and links read None. %d times, want 2:\n%s", got, specs[4].Body)
+	if got := strings.Count(bodies["T4"], "\nNone.\n"); got != 2 {
+		t.Errorf("T4: steps and links read None. %d times, want 2:\n%s", got, bodies["T4"])
 	}
-	// The human task's check isn't rendered, so its value never is.
-	if strings.Contains(specs[2].Body, "issuedog:origin plan=#9 rev=2 item=T2 human=1 check") || strings.Contains(specs[2].Body, "l --") {
-		t.Errorf("T2: the check is rendered:\n%s", specs[2].Body)
+	// The human task's check is its "Done when", with the value escaped in
+	// inline code, and it's on the origin marker, percent-encoded.
+	if want := "\n**Done when:** The label `&lt;!-- l -->` exists in this repo. " + humanDoneTail + "\n"; !strings.Contains(bodies["T2"], want) {
+		t.Errorf("T2: no %q in\n%s", want, bodies["T2"])
+	}
+	if want := "<!-- issuedog:origin plan=#9 rev=2 item=T2 check=label human=1 value=%3C!--%20l%20--%3E -->"; !strings.HasSuffix(bodies["T2"], "\n"+want) {
+		t.Errorf("T2: the body doesn't end in %q:\n%s", want, bodies["T2"])
 	}
 }
 
@@ -379,7 +464,7 @@ func TestChildSize(t *testing.T) {
 	}
 	task.Task.Change += "€" // one more, so one over
 	first := childItem(t, "story-plan", "T2")
-	specs, err := childSpecs(childParent(5), 1, []planItem{first, task}, false, nil)
+	specs, err := childSpecs(childParent(5), 1, []planItem{first, task}, false, nil, config.Models{})
 	if err == nil || !strings.Contains(err.Error(), "item T7") || !strings.Contains(err.Error(), "over 64512") || specs != nil {
 		t.Errorf("childSpecs = %d specs, %v; want an error naming T7", len(specs), err)
 	}
@@ -405,18 +490,19 @@ func TestChildSpecsErrors(t *testing.T) {
 		{"no human task body", noHuman, "no human task body"},
 		{"no task body", noTask, "no task body"},
 	} {
-		specs, err := childSpecs(childParent(5), 1, []planItem{tc.it}, false, nil)
+		specs, err := childSpecs(childParent(5), 1, []planItem{tc.it}, false, nil, config.Models{})
 		if err == nil || !strings.Contains(err.Error(), "item "+tc.it.ID+": ") || !strings.Contains(err.Error(), tc.want) || specs != nil {
 			t.Errorf("%s: %v, %v; want an error naming %s", tc.name, specs, err, tc.it.ID)
 		}
 	}
 }
 
-// childSpecs keeps plan order, and describes every item.
+// childSpecs keeps plan order, with the human task last, as it is here,
+// and describes every item.
 func TestChildSpecsOrder(t *testing.T) {
 	t.Parallel()
 	p := goldenPlan(t, "story-plan")
-	specs, err := childSpecs(childParent(124), 3, p.Items, true, nil)
+	specs, err := childSpecs(childParent(124), 3, p.Items, true, nil, config.Models{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -428,7 +514,7 @@ func TestChildSpecsOrder(t *testing.T) {
 		t.Errorf("items %q, want %q", got, want)
 	}
 	// With no notify, a human task has no cc line.
-	if strings.Contains(specs[2].Body, "cc @") {
-		t.Errorf("a cc line with no notify:\n%s", specs[2].Body)
+	if body := childBody(t, specs[2], map[string]int{"T1": 125, "T2": 126}); strings.Contains(body, "cc @") {
+		t.Errorf("a cc line with no notify:\n%s", body)
 	}
 }

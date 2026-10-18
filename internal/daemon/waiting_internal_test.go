@@ -617,7 +617,7 @@ func TestWaitLinkAndBody(t *testing.T) {
 	if got := waitBody(s, 5); got != "five" {
 		t.Errorf("waitBody(5) = %q, want five", got)
 	}
-	for k, want := range map[waitKind]string{waitError: "error", waitApproval: "approval", waitQuestion: "question", waitFlag: "flag", waitPlanApproval: "plan-approval", 9: "kind9"} {
+	for k, want := range map[waitKind]string{waitError: "error", waitApproval: "approval", waitQuestion: "question", waitFlag: "flag", waitPlanApproval: "plan-approval", waitHuman: "human", 9: "kind9"} {
 		if k.String() != want {
 			t.Errorf("waitKind(%d) = %s, want %s", k, k, want)
 		}
@@ -808,6 +808,14 @@ func TestWaitFindPlanApproval(t *testing.T) {
 	got = waitFindOne(t, waitIn(resumed, Dirt{}))
 	if got.Key != "plan-41-1" || got.Comment != 4101 || got.Link != "https://github.com/o/r/issues/41#issuecomment-4101" || !slices.Equal(waitTexts(got.Lines), want) {
 		t.Errorf("back from a hold, got %s on comment %d, %s, %q; want plan-41-1 on comment 4101, approvable", got.Key, got.Comment, got.Link, waitTexts(got.Lines))
+	}
+	// A story whose body the owner edited is placed by the origin marker
+	// in an App comment instead (#290).
+	edited := waitStory(41, 2, nil, waitPlanComment(t, 1), "<!-- issuedog:origin plan=#40 rev=1 item=S2 -->")
+	edited.Body, edited.BodyEdit = "The story, edited.", github.Edit{By: waitOwner, At: waitT0}
+	got = waitFindOne(t, waitIn(edited, Dirt{}))
+	if got.Kind != waitPlanApproval || got.Key != "plan-41-1" || got.Plan != 40 || got.Index != 2 {
+		t.Errorf("with its origin in a comment, got %s %s plan %d index %d; want plan-41-1 in plan 40, index 2", got.Kind, got.Key, got.Plan, got.Index)
 	}
 	// An epic, with no origin marker, isn't placed in any plan.
 	epic := waitSnap(42, nil, waitPlanComment(t, 1))

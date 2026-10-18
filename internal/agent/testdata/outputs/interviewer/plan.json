@@ -1,0 +1,4 @@
+{
+  "outcome": "plan",
+  "message": "The owner agreed in the discussion that T1 should come after T2: the quote cache needs the expiry job first. The spec stands; reorder the tasks so T1 depends on T2."
+}

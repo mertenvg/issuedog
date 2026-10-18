@@ -18,10 +18,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 	"github.com/mertenvg/issuedog/internal/state"
+	"github.com/mertenvg/logr/v2"
 )
 
 // Creating each child of an approved plan once, linked under its parent
@@ -150,12 +152,19 @@ func planAtReview(k childPlan, more func(t testing.TB, f *githubtest.Fake)) func
 // thumbsUp is the owner's 👍 on plan comment 1002.
 func thumbsUp(_ testing.TB, f *githubtest.Fake) { f.AddReaction(1002, "owner", "+1") }
 
+// childModels is models.allowed for the golden plans' items: opus by its
+// full name, as epic-plan's S1 names it, and a dated sonnet whose label
+// suffix, sonnet, is what story-plan's T1 names (#126).
+var childModels = config.Models{Allowed: []config.Model{{Name: "opus"}, {Name: "claude-sonnet-5-5-20261001", Label: "sonnet"}}}
+
 // childrenStep is step 1 with the approval handlers, /hold and /resume,
-// and the owner trusted, from a fresh client of f, as the loop's is.
+// and the owner trusted, from a fresh client of f, as the loop's is, with
+// childModels.
 func childrenStep(t *testing.T, f *githubtest.Fake, k childPlan) *daemon.Step {
 	tr := trusted{"owner": true}
 	a := &daemon.Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: slug, IssueTypes: k.issueTypes, Notify: []string{"owner"}}
-	st := &daemon.Step{Applier: a, Trust: tr, Commands: daemon.Commands(tr), Reactions: daemon.ApproveByReaction(tr)}
+	st := &daemon.Step{Applier: a, Trust: tr, Commands: daemon.Commands(tr), Reactions: daemon.ApproveByReaction(tr),
+		Models: func() config.Models { return childModels }}
 	st.Commands["approve"] = daemon.ApproveCommand()
 	return st
 }
@@ -201,15 +210,16 @@ type wantChild struct {
 	stage            state.Stage
 }
 
-// wantChildren are the children of k's plan, in plan order.
+// wantChildren are the children of k's plan, in plan order. S1 and T1
+// have their items' model and effort labels, through childModels.
 func wantChildren(k childPlan) []wantChild {
 	all := map[string][]wantChild{
 		"epic-plan": {
-			{"S1", "S1. Quotes expire after 24 hours", "", []string{"priority:p1", "stage:planning", "type:story"}, state.Planning},
+			{"S1", "S1. Quotes expire after 24 hours", "", []string{"effort:high", "model:opus", "priority:p1", "stage:planning", "type:story"}, state.Planning},
 			{"S2", "S2. Customers see when a quote expires", "", []string{"priority:p2", "stage:planning", "type:story"}, state.Planning},
 		},
 		"story-plan": {
-			{"T1", "Record when each quote expires", "Task", []string{"priority:p2", "scope:booking", "stage:ready"}, state.Ready},
+			{"T1", "Record when each quote expires", "Task", []string{"effort:medium", "model:sonnet", "priority:p2", "scope:booking", "stage:ready"}, state.Ready},
 			{"T2", "Refuse an expired quote at booking", "Task", []string{"priority:p1", "scope:booking", "stage:ready"}, state.Ready},
 			{"T3", "Set the quote lifetime in production", "Task", []string{"priority:p2", "scope:infra", "stage:needs-human"}, state.NeedsHuman},
 		},
@@ -354,6 +364,61 @@ func TestChildrenCreated(t *testing.T) {
 				t.Errorf("issue 1 is labelled %v, want stage:planned", got)
 			}
 			noSearch(t, f)
+		})
+	}
+}
+
+// A plan item's model that a reload has since dropped from models.allowed,
+// or that resolves against no models at all, as for a step with no
+// Models, is left off its child, and the warning names the item, once, as
+// the child is filed. The child is still filed, with its effort label, and
+// the other children with theirs (#126).
+func TestChildrenModelDropped(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	afterReload := config.Models{Allowed: childModels.Allowed[:1]} // sonnet dropped
+	for _, tt := range []struct {
+		name   string
+		models func() config.Models
+	}{
+		{"a reload dropped sonnet", func() config.Models { return afterReload }},
+		{"a step with no Models", nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			setup := planAtReview(threeTasks, thumbsUp)
+			pass := func(f *githubtest.Fake) error {
+				st := childrenStep(t, f, threeTasks)
+				st.Models = tt.models
+				s, err := st.Client.Snapshot(context.Background(), "o", "r", 1)
+				if err != nil {
+					return err
+				}
+				if _, err := st.Run(context.Background(), s); err != nil {
+					return err
+				}
+				return st.ChildrenVisit(context.Background(), s)
+			}
+			githubtest.Replay(t, setup, pass)
+			var logs bytes.Buffer
+			stop := logr.AddWriter(&logs, logr.WithFilter(logr.W))
+			defer stop()
+			f := run(t, setup, pass)
+			logr.Wait()
+			st := f.State()
+			if len(st.Issues) != 4 {
+				t.Fatalf("%d issues, want the parent and its three children", len(st.Issues))
+			}
+			if got, want := st.Issues[1].Labels, []string{"effort:medium", "priority:p2", "scope:booking", "stage:ready"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("T1 is labelled %v, want %v, with no model:*", got, want)
+			}
+			for i, w := range wantChildren(threeTasks)[1:] {
+				if got := st.Issues[i+2].Labels; !reflect.DeepEqual(got, w.labels) {
+					t.Errorf("%s is labelled %v, want %v", w.item, got, w.labels)
+				}
+			}
+			want := `o/r#1: filed #2 for item T1 of its plan, rev 1, without the label for its model "sonnet", which models.allowed doesn't have any more`
+			if got := strings.Count(logs.String(), want); got != 1 {
+				t.Errorf("logged %q %d times, want once:\n%s", want, got, logs.String())
+			}
 		})
 	}
 }
@@ -539,6 +604,7 @@ func TestChildrenOverride(t *testing.T) {
 	f.FailWrite(0)
 	f.RemoveLabel(2, "owner", "stage:ready")
 	f.AddLabel(2, "owner", "stage:in-progress")
+	f.RemoveLabel(2, "owner", "effort:medium") // the effort T1 was created with
 	f.AddLabel(2, "owner", "effort:high")
 	if err := pass(f); err != nil {
 		t.Fatal(err)
@@ -557,7 +623,7 @@ func TestChildrenOverride(t *testing.T) {
 	if !reflect.DeepEqual(comments, want) {
 		t.Errorf("T1's comments are\n%q\nwant only the override\n%q", comments, want)
 	}
-	if want := []string{"effort:high", "priority:p2", "scope:booking", "stage:in-progress"}; !reflect.DeepEqual(child.Labels, want) {
+	if want := []string{"effort:high", "model:sonnet", "priority:p2", "scope:booking", "stage:in-progress"}; !reflect.DeepEqual(child.Labels, want) {
 		t.Errorf("T1 is labelled %v, want %v, the labels it had", child.Labels, want)
 	}
 	n := len(f.Writes())
@@ -606,7 +672,13 @@ func TestIterateCreatesChildren(t *testing.T) {
 	f.ForgetWrites()
 
 	var visits, worked []int
-	d := newDaemon(t, f, newOrigin(t), nil)
+	// The config the pass loads allows childModels, which S1's model
+	// resolves against through the daemon's current config, as newStep in
+	// cmd/issuedog has it.
+	o := newOrigin(t)
+	o.commit(config.Path, "types: labels\nloop:\n  idle_sleep: 7s\nmodels:\n  allowed: [opus, {name: claude-sonnet-5-5-20261001, label: sonnet}]\n")
+	d := newDaemon(t, f, o, nil)
+	d.Step.Models = d.CurrentModels
 	approve := daemon.ApproveByReaction(d.Step.CurrentTrust())
 	d.Step.Reactions = func(ctx context.Context, a *daemon.Applier, s *github.Snapshot, dirt daemon.Dirt) error {
 		visits = append(visits, s.Number)

@@ -40,10 +40,17 @@ type Applier struct {
 	// hold and its notices (discussion.go). Daemon.reload keeps it up to
 	// date with the config.
 	Notify []string
+	// ReadMain reads a file on main from the daemon's bare clone, as
+	// repo.Repo.ReadFile does, for a human task's file check (humanCheck).
+	// A missing file is an error matching repo.ErrNotFound, and a
+	// directory one matching repo.ErrNotFile.
+	ReadMain func(ctx context.Context, path string) ([]byte, error)
 
 	histories     histories                // see Dirty
 	discNoRecords map[string]*discNoRecord // logins with no permission record, in lower case (discNoRecord)
 	unexplained   github.Unexplained
+
+	doneChecked doneChecked // the /done check last found passing (DoneCommand)
 
 	closingBy    map[string]github.ClosingCloser // how each close was made, by its event's node ID (closingCloser)
 	closingAgain map[int]closingListed           // issues the App closed again, after an untrusted reopen, as it left them (closingCloseAgain)
@@ -84,7 +91,15 @@ type Move struct {
 	// that restores the stage a write collaborator's edit or deletion of
 	// the App's marker hid (discRestore).
 	DiscFrom state.Stage
+	// StateReason is the state_reason a move to closed closes the issue
+	// with, completed or not_planned, and only such a move has one. Its
+	// marker records it as reason=, so a close cut short is finished with
+	// it (closeFinish).
+	StateReason string
 }
+
+// closeReasons are the state reasons a move to closed can close with.
+var closeReasons = []string{"completed", "not_planned"}
 
 // errorKey keys the state error for m, if the table lacks it.
 func (m Move) errorKey() string {
@@ -115,8 +130,18 @@ func (m Move) check() error {
 			return fmt.Errorf("field %s is set by the move", f)
 		}
 	}
-	if !m.To.Open() {
-		return fmt.Errorf("can't move to %s: nothing closes issues yet", m.To)
+	switch {
+	case m.To == state.Closed:
+		if !slices.Contains(closeReasons, m.StateReason) {
+			return fmt.Errorf("can't close with state reason %q: it's completed or not_planned", m.StateReason)
+		}
+		if _, ok := m.Fields["reason"]; ok {
+			return errors.New("field reason is set by the move to closed")
+		}
+	case !m.To.Open():
+		return fmt.Errorf("can't move to %s: it's no stage", m.To)
+	case m.StateReason != "":
+		return fmt.Errorf("state reason %s on a move to %s, which closes nothing", m.StateReason, m.To)
 	}
 	return m.checkPlanRev()
 }
@@ -149,6 +174,17 @@ func (m Move) checkPlanRev() error {
 // plan #5's assumption 4 order, skipping each step already done: the marker
 // comment, the new stage label, removing the old ones, then the 👍, unless
 // m.NoAck. Its writes are added to s. dirty is as for state.Derive.
+//
+// A move to closed is the only way the App closes an issue through the
+// table: a human task on /done (DoneCommand), and in S5 a dropped child,
+// as not planned. Its marker records m.StateReason as reason=; then, in
+// place of the label writes, comes the 👍, and last the close with that
+// state_reason, unless the issue is closed already. The 👍 goes before the
+// close, as step 1 never visits a closed issue again to finish it. It
+// writes no stage label: the close judge sets the closed stage on a later
+// pass (closingJudge). A crash after the marker is finished by the label
+// rules, which close the issue as the marker says (closeFinish), and by
+// step 1, which 👍s the command its marker names.
 //
 // The stage labels are set to match the latest marker, so a stage label a
 // trusted user set by hand would be overwritten. That's safe only because
@@ -215,6 +251,9 @@ func (a *Applier) Transition(ctx context.Context, s *github.Snapshot, dirty func
 			fields = map[string]string{}
 		}
 		fields["from"], fields["to"], fields[m.Key.Field] = string(is.Stage), string(m.To), m.Key.ID
+		if m.To == state.Closed {
+			fields["reason"] = m.StateReason
+		}
 		if m.PlanRev > 0 {
 			fields["rev"] = strconv.Itoa(m.PlanRev)
 		}
@@ -240,14 +279,61 @@ func (a *Applier) Transition(ctx context.Context, s *github.Snapshot, dirty func
 		}
 		is = state.Derive(s, a.AppSlug, dirty)
 	}
-	if err := a.setStage(ctx, s, is.Stage); err != nil {
-		return wrap(err)
+	// The latest marker's stage: a move written before, and since followed
+	// by another, isn't redone.
+	if is.Stage != state.Closed {
+		if err := a.setStage(ctx, s, is.Stage); err != nil {
+			return wrap(err)
+		}
 	}
 	if id, ok := m.Key.Comment(); ok && !m.NoAck {
 		if err := a.Ack(ctx, id); err != nil {
 			return wrap(err)
 		}
 	}
+	if is.Stage == state.Closed {
+		if err := a.closeFinish(ctx, s, is); err != nil {
+			return wrap(err)
+		}
+	}
+	return nil
+}
+
+// latestTransition returns the transition marker of is that sets its Stage,
+// the latest whose to is a stage or closed, as state.Derive reads it, or
+// false if there's none.
+func latestTransition(is state.Issue) (github.Marker, bool) {
+	for i := len(is.Markers) - 1; i >= 0; i-- {
+		m := is.Markers[i]
+		if to := state.Stage(m.Fields["to"]); m.Kind == "transition" && (to.Open() || to == state.Closed) {
+			return m, true
+		}
+	}
+	return github.Marker{}, false
+}
+
+// closeFinish closes s, whose latest transition marker in is is a move to
+// closed, with the state reason that marker records (Move.StateReason),
+// unless s is closed already, and marks s closed. A marker with no valid
+// reason, which the App never writes, closes with GitHub's default,
+// completed. The closed stage is the close judge's (closingJudge).
+func (a *Applier) closeFinish(ctx context.Context, s *github.Snapshot, is state.Issue) error {
+	if s.Closed {
+		return nil
+	}
+	req := gogithub.UpdateIssueRequest{State: new("closed")}
+	m, _ := latestTransition(is)
+	reason := m.Fields["reason"]
+	if slices.Contains(closeReasons, reason) {
+		req.StateReason = &reason
+	} else {
+		reason = "completed, GitHub's default"
+	}
+	if _, _, err := a.Client.Issues.Update(ctx, a.Owner, a.Repo, s.Number, req); err != nil {
+		return fmt.Errorf("close %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
+	}
+	s.Closed = true
+	logr.Infof("%s/%s#%d: closed it, as %s, as its latest marker says", a.Owner, a.Repo, s.Number, reason)
 	return nil
 }
 

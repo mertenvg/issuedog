@@ -165,3 +165,52 @@ func TestEscape(t *testing.T) {
 		t.Errorf("markers in escaped text = %+v, want none", m)
 	}
 }
+
+// EncodeValue leaves printable ASCII as it is but for "%", ",", "<" and
+// ">", and percent-encodes every other byte, so FormatMarker takes the
+// value and ParseMarkers and DecodeValue give back exactly what went in.
+func TestEncodeValueRoundTrip(t *testing.T) {
+	t.Parallel()
+	for in, want := range map[string]string{
+		"docs/a.md": "docs/a.md", "a=b?c&d#e@f": "a=b?c&d#e@f",
+		"a b": "a%20b", "100%": "100%25", "%41": "%2541", "<!-- x -->": "%3C!--%20x%20--%3E", "a,b": "a%2Cb",
+		"é": "%C3%A9", "\x00\t\n\x7f": "%00%09%0A%7F", "\u00a0\u2028": "%C2%A0%E2%80%A8",
+	} {
+		got := EncodeValue(in)
+		if got != want {
+			t.Errorf("EncodeValue(%q) = %q, want %q", in, got, want)
+		}
+		marker, err := FormatMarker(Marker{Kind: "origin", Fields: map[string]string{"value": got}})
+		if err != nil {
+			t.Errorf("FormatMarker of %q: %v", got, err)
+			continue
+		}
+		ms := ParseMarkers(marker)
+		if len(ms) != 1 {
+			t.Errorf("%s: parsed %+v, want one marker", marker, ms)
+			continue
+		}
+		if back, err := DecodeValue(ms[0].Fields["value"]); err != nil || back != in {
+			t.Errorf("DecodeValue(%q) = %q, %v; want %q", ms[0].Fields["value"], back, err, in)
+		}
+	}
+}
+
+// DecodeValue reads %XX in either case, and leaves other bytes as they
+// are, encoded or not. A "%" without two hex digits after it is an error.
+func TestDecodeValue(t *testing.T) {
+	t.Parallel()
+	for in, want := range map[string]string{
+		"": "", "plain": "plain", "%2c%2C": ",,", "%e2%80%a8": "\u2028", "a b": "a b", "%25%32%30": "%20", "é": "é",
+		"%09%0a": "\t\n", "%Ff": "\xff",
+	} {
+		if got, err := DecodeValue(in); err != nil || got != want {
+			t.Errorf("DecodeValue(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"%", "50%", "%2", "a%2", "%zz", "%2g", "%g2", "%%41", "% 41"} {
+		if got, err := DecodeValue(in); err == nil {
+			t.Errorf("DecodeValue(%q) = %q, nil; want an error", in, got)
+		}
+	}
+}

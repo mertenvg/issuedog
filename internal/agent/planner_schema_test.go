@@ -199,6 +199,43 @@ func TestPlannerSchemaShape(t *testing.T) {
 	checkPlannerSchema(t, "#", doc)
 }
 
+// A human task's why_blocks is the reason alone: the daemon writes "#12
+// and #13 can't proceed until <why_blocks>" (#284). The schema, which every
+// planner run is sent, and planner.md both say so in the same words, and
+// neither asks for the items by ID, so a planner following either writes
+// no "T2 can't …" after the daemon's "can't proceed until".
+func TestPlannerWhyBlocks(t *testing.T) {
+	t.Parallel()
+	raw, err := StageSchema("planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	schema, ok := valueAt(t, doc, "properties", "plan", "properties", "items", "items", "properties",
+		"human_task", "properties", "why_blocks", "description").(string)
+	if !ok {
+		t.Fatal("why_blocks has no description")
+	}
+	_, prompt, ok := strings.Cut(string(shippedPrompt(t, "planner")), "\n- `why_blocks`: ")
+	if !ok {
+		t.Fatal("planner.md has no why_blocks bullet")
+	}
+	prompt, _, _ = strings.Cut(prompt, "\n")
+	const phrase = `in one line that reads on after "can't proceed until"`
+	byID := regexp.MustCompile(`(?i)\bby ID\b|\bwhich items\b`)
+	for _, d := range []struct{ name, text string }{{"the schema", schema}, {"planner.md", prompt}} {
+		if !strings.Contains(d.text, phrase) {
+			t.Errorf("%s's why_blocks doesn't say %q: %q", d.name, phrase, d.text)
+		}
+		if m := byID.FindString(d.text); m != "" {
+			t.Errorf("%s's why_blocks asks for the items (%q): %q", d.name, m, d.text)
+		}
+	}
+}
+
 func checkPlannerSchema(t *testing.T, at string, s map[string]any) {
 	t.Helper()
 	for _, k := range plannerUnsupported {

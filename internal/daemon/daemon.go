@@ -143,11 +143,15 @@ func (d *Daemon) Run(ctx context.Context) {
 // plan-review, whose 👍s change no updated_at (plan #5, assumption 7), on every issue with
 // triage:ask, a flag waiting on a 👍 (FlagByReaction), and on every issue
 // that had an open state error after its last step 1, waiting on a 👍 too
-// (ErrorByReaction), and on every held issue, for its discussion
-// triggers (discHeldLabel). Each visit ends with ChildrenVisit, which
-// creates the children of a plan approved on the issue (children.go); the
-// children it writes to are touched. On each issue step 1 succeeds on, it caches what
-// waits on the owner (digestCacheSet), with the issue's dirty content, which
+// (ErrorByReaction), on every held issue, for its discussion
+// triggers (discHeldLabel), and on every issue at needs-human, for a human
+// task's blockers, whose close changes no updated_at of its own
+// (humanBlocked, #287), and for the 👍s on a human task itself, which
+// change none either (DoneByReaction, #286). Each visit ends with
+// ChildrenVisit, which creates the children of a plan approved on the
+// issue (children.go); the children it writes to are touched. On each
+// issue step 1 succeeds on, it caches what waits on the owner
+// (digestCacheSet), with the issue's dirty content, which
 // openErrAny takes too; an issue whose read or step 1 fails keeps its last
 // items, and one that closes or leaves the listing loses them. Then it
 // keeps the digest (digestPass), and then the assignees (assignPass), whose
@@ -234,7 +238,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	for _, n := range slices.Sorted(maps.Keys(d.snaps)) {
 		s := d.snaps[n]
 		if touched[n] || (!read[n] && !slices.ContainsFunc(s.Labels, isReview) && !slices.ContainsFunc(s.Labels, flagAsked) &&
-			!slices.ContainsFunc(s.Labels, discHeldLabel) && !d.openErrs[n]) {
+			!slices.ContainsFunc(s.Labels, discHeldLabel) && !slices.ContainsFunc(s.Labels, isNeedsHuman) && !d.openErrs[n]) {
 			continue
 		}
 		// ReviewVisit, on an issue read again too, posts a revision for a body
@@ -261,7 +265,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		// snapshot as the visits left it, with one look at its dirty content.
 		var dirt Dirt
 		var holds []discTrigger
-		ownerHeld := false
+		ownerHeld, blocked := false, false
 		if err == nil {
 			dirt, err = d.Step.Dirty(ctx, s, d.Step.trustOnceTrust())
 		}
@@ -270,6 +274,9 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		}
 		if err == nil { // a held issue's open triggers, for its hold item (#192)
 			holds, ownerHeld, err = d.Step.holdItemFind(ctx, s, dirt)
+		}
+		if err == nil { // a human task's blockers, for its item (#287)
+			blocked, err = d.humanBlocked(ctx, s, dirt)
 		}
 		d.Step.trustOnceEnd()
 		if errors.Is(err, ErrLabelsHeld) || errors.Is(err, closingErrClosedAgain) {
@@ -285,7 +292,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			continue
 		}
 		d.inputs[n] = in
-		d.digestCacheSet(s, in, dirt, holds, ownerHeld) // for assignment too, so with the digest off as well
+		d.digestCacheSet(s, in, dirt, holds, ownerHeld, blocked) // for assignment too, so with the digest off as well
 	}
 	for n := range touched {
 		delete(d.inputs, n)
@@ -363,8 +370,9 @@ func (d *Daemon) reload(ctx context.Context) {
 // more from there, so the next poll of an unchanged repo repeats that
 // request and gets a 304. Closed issues and pull requests are dropped, and
 // so are digests, which it records, with the App's digest-new comments
-// (digest.go). A closed issue whose close is still to judge is kept for
-// closingPass (closingList), and an open one forgets its close.
+// (digest.go). One only the digest's title rule would take is judged after
+// the comments (digestTake). A closed issue whose close is still to judge
+// is kept for closingPass (closingList), and an open one forgets its close.
 func (d *Daemon) poll(ctx context.Context) error {
 	a := d.Step.Applier
 	start := d.issuesSince.IsZero() // a start's first poll, which lists every issue
@@ -384,14 +392,7 @@ func (d *Daemon) poll(ctx context.Context) error {
 					// A close still to judge is kept (closing.go).
 					d.closingList(is, start, d.snaps[n] != nil && slices.ContainsFunc(d.snaps[n].Labels, isStageLabel))
 				}
-				delete(d.snaps, n)
-				delete(d.inputs, n)
-				delete(d.stale, n)
-				delete(d.missing, n) // so a reopened issue starts with no strike
-				delete(d.openErrs, n)
-				delete(d.digestCache, n) // a closed issue has nothing waiting
-				delete(d.assignManaged, n)
-				a.forgetLabels(n)
+				d.leave(n)
 			case changed(d.snaps[n], is):
 				d.closingForget(n)
 				d.stale[n] = true
@@ -423,7 +424,24 @@ func (d *Daemon) poll(ctx context.Context) error {
 			break
 		}
 	}
+	// Only now that the comments are in, as every one is on a start, can an
+	// issue only the digest's title rule would take be judged (digestTake).
+	d.digestTake(ctx)
 	return nil
+}
+
+// leave drops what the daemon holds of issue n, its snapshot and all it
+// derived from it, for an issue that left the pipeline: a closed one, or a
+// digest, which is never in it.
+func (d *Daemon) leave(n int) {
+	delete(d.snaps, n)
+	delete(d.inputs, n)
+	delete(d.stale, n)
+	delete(d.missing, n) // so a reopened issue starts with no strike
+	delete(d.openErrs, n)
+	delete(d.digestCache, n) // a closed issue has nothing waiting
+	delete(d.assignManaged, n)
+	d.Step.forgetLabels(n)
 }
 
 // changed reports whether the listed issue is newer than s, or s is nil.
@@ -505,6 +523,30 @@ func gone(err error) bool {
 	}
 	var r *gogithub.RedirectionError
 	return errors.Is(err, github.ErrTransferred) || errors.As(err, &r) && r.StatusCode == http.StatusMovedPermanently
+}
+
+// humanBlocked reports whether s, as its visit left it with its dirty
+// content dirt, is a human task at needs-human (waitHumanTask) that an
+// open issue blocks, for its item (waitInput.Blocked, SPEC §9.6, #287). It
+// reads the blockers of such a task alone, with a conditional request, so
+// an unchanged pass costs a 304, and any other issue costs none. A failed
+// read is an error, and Iterate keeps the issue's last items, as for a
+// failed step 1.
+func (d *Daemon) humanBlocked(ctx context.Context, s *github.Snapshot, dirt Dirt) (bool, error) {
+	st := d.Step
+	if !waitHumanTask(state.Derive(s, st.AppSlug, dirt.Has)) {
+		return false, nil
+	}
+	blockers, err := st.Client.Blockers(ctx, st.Owner, st.Repo, s.Number)
+	if err != nil {
+		return false, fmt.Errorf("the blockers of human task %s/%s#%d: %w", st.Owner, st.Repo, s.Number, err)
+	}
+	return slices.ContainsFunc(blockers, func(b github.Blocker) bool { return !b.Closed }), nil
+}
+
+func isNeedsHuman(label string) bool {
+	stage, ok := state.ParseLabel(label)
+	return ok && stage == state.NeedsHuman
 }
 
 // isReview reports whether label is the stage label of spec-review or

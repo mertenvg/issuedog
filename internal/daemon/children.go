@@ -10,6 +10,7 @@ import (
 	"time"
 
 	gogithub "github.com/google/go-github/v92/github"
+	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/logr/v2"
@@ -28,19 +29,25 @@ import (
 //
 // Until then, it describes each item of R (childSpecs), finds the children
 // filed already (childrenFind), with no search request, then, for each
-// item in plan order:
+// item in creation order, which childSpecs gives: plan order with the
+// human tasks last (childOrder):
 //   - files its child if none is found (CreateChild), with its title, body,
-//     labels and issue type;
+//     labels and issue type. Its model and effort labels are resolved
+//     against Models as of this visit, and a warning names the item for
+//     each one left off (childOverrides). A human task's body names the
+//     issues of the items that depend on it, filed before it
+//     (childSpec.bodyOf);
 //   - links it under the parent if it isn't a sub-issue of it yet
 //     (AddSubIssue);
 //   - gives it its first move, intake → its first stage on TriggerCreated,
 //     keyed event=p<P> (#224's reconcile decision 6), unless it has a
 //     transition marker of the App's already (childFirstMove).
 //
-// Then it gives each child the blocked-by links its item's "Depends on"
-// names (childrenLink), and last posts the record on the parent
-// (childrenRecord), so the record stands only once every write before it
-// is made.
+// Then, going through R's items in plan order, not creation order, it
+// gives each child the blocked-by links its item's "Depends on" names
+// (childrenLink), and last posts the record on the parent, which lists
+// the children in plan order too (childrenRecord), so the record stands
+// only once every write before it is made.
 //
 // Each child it may write to is reported to Touched first, or, for one it
 // files, once it has its number, so it skips the rest of the pass and is
@@ -77,7 +84,11 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 		logr.Debugf("%s/%s#%d: at planned with no approved plan revision that has its data, so no children are created", st.Owner, st.Repo, s.Number)
 		return nil
 	}
-	specs, err := childSpecs(s, rev.Rev, plan.Items, st.IssueTypes, st.Notify)
+	var models config.Models // none, if the step has no Models
+	if st.Models != nil {
+		models = st.Models()
+	}
+	specs, err := childSpecs(s, rev.Rev, plan.Items, st.IssueTypes, st.Notify, models)
 	if err != nil {
 		return wrap(err)
 	}
@@ -86,14 +97,20 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 		return wrap(err)
 	}
 	key := state.Key{Field: "event", ID: "p" + strconv.FormatInt(move.ID, 10)}
+	// numbers is each child's number so far, by item, found or filed, for
+	// "Why it blocks": the items a human task blocks come before it.
+	// children is each child, by item, for its links and the record.
+	numbers := map[string]int{}
 	children := make(map[string]childFound, len(specs))
 	for _, c := range specs {
-		f, err := st.childWrite(ctx, s, rev.Rev, key, c, found[c.Item])
+		f, err := st.childWrite(ctx, s, rev.Rev, key, c, found[c.Item], numbers)
 		if err != nil {
 			return wrap(fmt.Errorf("item %s: %w", c.Item, err))
 		}
-		children[c.Item] = f
+		numbers[c.Item], children[c.Item] = f.Number, f
 	}
+	// plan.Items is plan order, which the links and the record follow,
+	// whatever order the children were created in.
 	if err := st.childrenLink(ctx, plan.Items, children); err != nil {
 		return wrap(err)
 	}
@@ -179,18 +196,28 @@ func childMatch(parent int, appSlug string, subs, listed []*gogithub.Issue, inRe
 }
 
 // childWrite writes what's missing of c's child, under parent s, in order:
-// the issue, its link under s, then its first move, keyed by key. f is the
-// child found already, if any (Number 0 for none). It returns the child,
-// for its blocked-by links and the record.
-func (st *Step) childWrite(ctx context.Context, s *github.Snapshot, rev int, key state.Key, c childSpec, f childFound) (childFound, error) {
+// the issue, its link under s, then its first move, keyed by key, and
+// returns the child, whose number names it in a later human task's body,
+// and which its blocked-by links and the record take. f is the child
+// found already, if any (Number 0 for none). numbers is the number of
+// each child filed so far, by item, which a human task's body names
+// (childSpec.bodyOf).
+func (st *Step) childWrite(ctx context.Context, s *github.Snapshot, rev int, key state.Key, c childSpec, f childFound, numbers map[string]int) (childFound, error) {
 	var child *github.Snapshot // a child filed in this pass, as the create answered
 	if f.Number == 0 {
-		is, err := st.Client.CreateChild(ctx, st.Owner, st.Repo, github.NewChild{Title: c.Title, Body: c.Body, Labels: c.Labels, Type: c.IssueType})
+		body, err := c.bodyOf(numbers)
+		if err != nil {
+			return childFound{}, fmt.Errorf("write its child's body: %w", err)
+		}
+		is, err := st.Client.CreateChild(ctx, st.Owner, st.Repo, github.NewChild{Title: c.Title, Body: body, Labels: c.Labels, Type: c.IssueType})
 		if err != nil {
 			return childFound{}, fmt.Errorf("create its child: %w", err)
 		}
 		f = childFound{Number: is.GetNumber(), ID: is.GetID()}
 		logr.Infof("%s/%s#%d: filed #%d for item %s of its plan, rev %d", st.Owner, st.Repo, s.Number, f.Number, c.Item, rev)
+		for _, why := range c.leftOff {
+			logr.Warnf("%s/%s#%d: filed #%d for item %s of its plan, rev %d, without the label for %s", st.Owner, st.Repo, s.Number, f.Number, c.Item, rev, why)
+		}
 		child = childCreated(is, s.Number)
 	}
 	if !f.Linked { // as one filed just now is, which is touched here
@@ -212,9 +239,11 @@ func (st *Step) childWrite(ctx context.Context, s *github.Snapshot, rev int, key
 // and the planner's schema check, so a dependency with no child is an
 // error. It reads each such child's blocked-by links first (BlockedBy),
 // and adds only the ones it lacks, matched by issue ID, so a replay adds
-// none twice. It removes none:
-// links someone else added stay. A child it adds a link to is reported to
-// Touched first, as the add moves its updated_at.
+// none twice. It removes none: links someone else added stay. A child it
+// adds a link to is reported to Touched first, as the add moves its
+// updated_at. A human task, created last, is blocked by what its own item
+// depends on, and the children of items that depend on it are blocked by
+// it, like any other child's.
 func (st *Step) childrenLink(ctx context.Context, items []planItem, children map[string]childFound) error {
 	for _, it := range items {
 		if len(it.DependsOn) == 0 {

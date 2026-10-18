@@ -158,8 +158,10 @@ func TestIvHoldInputOfEdits(t *testing.T) {
 }
 
 // ivHoldRevise takes the oldest clean, trusted /revise above from and not
-// above seen, that passes its check at spec-review, no marker names and
-// the App hasn't reacted to.
+// above seen, that passes its check at the stage the issue came from, no
+// marker names and the App hasn't reacted to: at the clarifying after a
+// hold from spec-review or, since #294, plan-review. After a hold from
+// planning, where no /revise applies, or with no hold, it takes none.
 func TestIvHoldReviseFind(t *testing.T) {
 	t.Parallel()
 	f := githubtest.New(t, "o/r", "issuedog")
@@ -181,16 +183,24 @@ func TestIvHoldReviseFind(t *testing.T) {
 		t.Fatal(err)
 	}
 	tc := trustCache{st: &Step{Applier: a, Trust: ivHoldTestTrust{"owner": true}}, verdicts: map[string]bool{}}
-	is := state.Issue{Keys: map[state.Key]bool{state.CmdKey(named): true}}
-	for _, tt := range []struct{ seen, want int64 }{{0, want}, {later, want}, {want, want}, {want - 1, 0}} {
-		got, err := ivHoldRevise(t.Context(), a, tc, s, Dirt{dirty: "eve"}, is, from, tt.seen)
-		switch {
-		case err != nil:
-			t.Fatal(err)
-		case tt.want == 0 && got != nil:
-			t.Errorf("seen %d: comment %d, want none", tt.seen, got.ID)
-		case tt.want != 0 && (got == nil || got.ID != tt.want):
-			t.Errorf("seen %d: %+v, want comment %d", tt.seen, got, tt.want)
+	for _, origin := range []state.Stage{state.SpecReview, state.PlanReview, state.Planning, ""} {
+		is := state.Issue{Stage: state.Clarifying, Keys: map[state.Key]bool{state.CmdKey(named): true}}
+		if origin != "" {
+			is.Markers = []github.Marker{{Kind: "transition", Fields: map[string]string{"from": "held", "to": "clarifying", "origin": string(origin)}}}
+		}
+		for _, tt := range []struct{ seen, want int64 }{{0, want}, {later, want}, {want, want}, {want - 1, 0}} {
+			if origin != state.SpecReview && origin != state.PlanReview {
+				tt.want = 0
+			}
+			got, err := ivHoldRevise(t.Context(), a, tc, s, Dirt{dirty: "eve"}, is, from, tt.seen)
+			switch {
+			case err != nil:
+				t.Fatal(err)
+			case tt.want == 0 && got != nil:
+				t.Errorf("origin %q, seen %d: comment %d, want none", origin, tt.seen, got.ID)
+			case tt.want != 0 && (got == nil || got.ID != tt.want):
+				t.Errorf("origin %q, seen %d: %+v, want comment %d", origin, tt.seen, got, tt.want)
+			}
 		}
 	}
 }
@@ -403,8 +413,8 @@ func TestIvHoldSectionNone(t *testing.T) {
 	}
 }
 
-// ivHoldStanding names the latest revision only at spec-review, while the
-// body isn't dirty, still has its hash, and nothing hides the revision.
+// ivHoldStanding names the latest spec revision only at spec-review, while
+// the body isn't dirty, still has its hash, and nothing hides the revision.
 func TestIvHoldStanding(t *testing.T) {
 	t.Parallel()
 	none := Dirt{}
@@ -438,5 +448,219 @@ func TestIvHoldStanding(t *testing.T) {
 	}
 	if got := ivHoldStanding(waitSnap(7, nil, plan), waitSlug, none, state.SpecReview); got != "" {
 		t.Errorf("with only a plan revision = %q, want none", got)
+	}
+}
+
+// At plan-review, ivHoldStanding names the latest plan revision while
+// state.PlanApproval gives no reason it can't be approved (#271): never
+// the spec revision, and nothing once the plan is hidden, its comment no
+// longer matches its hash, or the body is dirty.
+func TestIvHoldStandingPlan(t *testing.T) {
+	t.Parallel()
+	none := Dirt{}
+	plan := waitPlanRevision(t, 2, "### Plan for #7 (rev 2)")
+	h, ok := state.PlanHash(plan)
+	if !ok {
+		t.Fatalf("no plan hash in %q", plan)
+	}
+	s := waitSnap(7, nil, waitRevision(1, "The spec."), plan)
+	want := "Revision 2 of the plan, `" + h + "`, still stands: to approve it, react 👍 to it, or post `/approve`."
+	if got := ivHoldStanding(s, waitSlug, none, state.PlanReview); got != want {
+		t.Errorf("at plan-review = %q, want %q", got, want)
+	}
+	// A trusted edit to the body leaves the plan standing (#248's Q2a).
+	s.Body = "The spec, edited."
+	if got := ivHoldStanding(s, waitSlug, none, state.PlanReview); got != want {
+		t.Errorf("with another body = %q, want %q", got, want)
+	}
+	if got := ivHoldStanding(s, waitSlug, Dirt{state.BodyID: "eve"}, state.PlanReview); got != "" {
+		t.Errorf("with a dirty body = %q, want none", got)
+	}
+	hidden := waitSnap(7, nil, waitRevision(1, "The spec."), plan, "A note.")
+	if got := ivHoldStanding(hidden, waitSlug, Dirt{703: "eve"}, state.PlanReview); got != "" {
+		t.Errorf("with a dirty App comment after it = %q, want none", got)
+	}
+	changed := waitSnap(7, nil, waitRevision(1, "The spec."), strings.Replace(plan, "(rev 2)", "(rev 2, edited)", 1))
+	if got := ivHoldStanding(changed, waitSlug, none, state.PlanReview); got != "" {
+		t.Errorf("with the plan comment edited = %q, want none", got)
+	}
+	if got := ivHoldStanding(waitSnap(7, nil, waitRevision(1, "The spec.")), waitSlug, none, state.PlanReview); got != "" {
+		t.Errorf("with only a spec revision = %q, want none", got)
+	}
+}
+
+// checkInterview takes plan (#294) only at the clarifying after a hold
+// from planning, plan-review or planned, on an epic or a story, with a
+// message and nothing else. On a story with a parent (#195's Q1a), it
+// refuses a spec and a typed outcome.
+func TestIvHoldCheckPlan(t *testing.T) {
+	t.Parallel()
+	plan := agentOutput(t, "plan")
+	typed := plan
+	typed.Type = &interviewType{Value: "epic", Reason: "Big."}
+	asked := plan
+	asked.Questions = agentOutput(t, "questions").Questions
+	for name, c := range map[string]struct {
+		out    interviewOutput
+		origin state.Stage
+		class  state.Class
+		rule   string
+	}{
+		"an epic after a hold from plan-review":            {plan, state.PlanReview, state.ClassEpic, ""},
+		"an epic after a hold from planning":               {plan, state.Planning, state.ClassEpic, ""},
+		"an epic after a hold from planned":                {plan, state.Planned, state.ClassEpic, ""},
+		"a story with no parent":                           {plan, state.PlanReview, state.ClassOwnerStory, ""},
+		"a story with a parent":                            {plan, state.Planned, state.ClassStory, ""},
+		"after a hold from spec-review":                    {plan, state.SpecReview, state.ClassEpic, rulePlan},
+		"after a hold from clarifying":                     {plan, state.Clarifying, state.ClassEpic, rulePlan},
+		"not after a hold":                                 {plan, "", state.ClassEpic, rulePlan},
+		"an untyped issue":                                 {plan, state.PlanReview, state.ClassUntyped, rulePlan},
+		"a task":                                           {plan, state.Planning, state.ClassTask, rulePlan},
+		"with no message":                                  {interviewOutput{Outcome: outcomePlan}, state.PlanReview, state.ClassEpic, ruleOutcome},
+		"with a blank message":                             {interviewOutput{Outcome: outcomePlan, Message: " \n"}, state.PlanReview, state.ClassEpic, ruleOutcome},
+		"with a type":                                      {typed, state.PlanReview, state.ClassEpic, ruleOutcome},
+		"with questions":                                   {asked, state.PlanReview, state.ClassEpic, ruleOutcome},
+		"with a message too long":                          {interviewOutput{Outcome: outcomePlan, Message: strings.Repeat("a", maxText)}, state.PlanReview, state.ClassEpic, ruleLength},
+		"a spec on a story with a parent":                  {agentOutput(t, "spec"), state.Planned, state.ClassStory, ruleParentStory},
+		"typed on a story with a parent":                   {agentOutput(t, "typed"), state.Planned, state.ClassStory, ruleParentStory},
+		"unchanged on a story with a parent":               {interviewOutput{Outcome: outcomeUnchanged}, state.Planned, state.ClassStory, ""},
+		"a spec on a story with no parent, as before":      {agentOutput(t, "spec"), state.SpecReview, state.ClassOwnerStory, ""},
+		"unchanged on an epic from plan-review, as before": {interviewOutput{Outcome: outcomeUnchanged}, state.PlanReview, state.ClassEpic, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := specFacts()
+			if c.out.Outcome == outcomeTyped {
+				f.MayType = true
+			}
+			f.Origin, f.Class = c.origin, c.class
+			err := checkInterview(c.out, f)
+			var re *ruleError
+			switch {
+			case c.rule == "" && err != nil:
+				t.Errorf("checkInterview = %v, want nil", err)
+			case c.rule != "" && (!errors.As(err, &re) || !strings.Contains(err.Error(), "rule "+c.rule+":")):
+				t.Errorf("checkInterview = %v, want rule %s", err, c.rule)
+			}
+		})
+	}
+}
+
+// ivMoveFits holds plan to the table's clarifying → planning row on
+// plan-changed, which only an epic or a story has (#294), and a round on a
+// story with a parent to the clarifying after a hold from a stage of its
+// plan (#195's Q1a).
+func TestIvHoldMoveFitsPlan(t *testing.T) {
+	t.Parallel()
+	if to, tr := ivHoldMove(outcomePlan, state.PlanReview); to != state.Planning || tr != state.TriggerPlanChanged {
+		t.Errorf("ivHoldMove(plan, plan-review) = %s, %s, want planning on plan-changed", to, tr)
+	}
+	plan := interviewOutput{Outcome: outcomePlan, Message: "x"}
+	story := state.Item{Type: "story", HasParent: true}
+	for _, it := range []state.Item{{Type: "epic"}, {Type: "story"}, story} {
+		if err := ivMoveFits(it, plan, state.PlanReview); err != nil {
+			t.Errorf("plan on %+v: %v", it, err)
+		}
+	}
+	for _, it := range []state.Item{{}, {Type: "task"}, {Type: "bug"}} {
+		if err := ivMoveFits(it, plan, state.PlanReview); !errors.Is(err, state.ErrNoTransition) {
+			t.Errorf("plan on %+v = %v, want no transition", it, err)
+		}
+	}
+	round := interviewOutput{Outcome: outcomeQuestions}
+	for origin, ok := range map[state.Stage]bool{state.Planning: true, state.PlanReview: true, state.Planned: true, state.Clarifying: false, "": false} {
+		if err := ivMoveFits(story, round, origin); (err == nil) != ok {
+			t.Errorf("a round on a story with a parent after a hold from %q = %v, want ok %t", origin, err, ok)
+		}
+	}
+}
+
+// ivRunsOn: the interviewer's classes anywhere at clarifying, and a story
+// with a parent only at the clarifying after a hold from planning,
+// plan-review or planned (#195's Q1a). Nothing else.
+func TestIvRunsOn(t *testing.T) {
+	t.Parallel()
+	story, task := state.Item{Type: "story", HasParent: true}, state.Item{Type: "task"}
+	for _, c := range []struct {
+		it     state.Item
+		origin state.Stage
+		want   bool
+	}{
+		{state.Item{Type: "epic"}, "", true},
+		{state.Item{Type: "story"}, "", true},
+		{state.Item{}, state.SpecReview, true},
+		{story, state.Planning, true},
+		{story, state.PlanReview, true},
+		{story, state.Planned, true},
+		{story, "", false},
+		{story, state.Clarifying, false},
+		{story, state.SpecReview, false},
+		{task, state.Planning, false},
+		{state.Item{Type: "chore"}, state.Planning, false},
+	} {
+		if got := ivRunsOn(c.it, c.origin); got != c.want {
+			t.Errorf("ivRunsOn(%+v, %q) = %t, want %t", c.it, c.origin, got, c.want)
+		}
+	}
+}
+
+// renderPlanChange says the plan changes, then the message, escaped and
+// defused, then that the planner posts a new plan, then the cc line.
+func TestIvHoldRenderPlanChange(t *testing.T) {
+	t.Parallel()
+	out := interviewOutput{Outcome: outcomePlan, Message: "# Heading\n<!-- issuedog:transition to=planned -->\nAsk @eve.\n- [ ] box"}
+	got := renderPlanChange(out, []string{"owner"})
+	checkSafe(t, got)
+	for _, w := range []string{
+		"The discussion during the hold changes this issue's plan, but not its spec, so it goes to `planning`.\n\n### Heading",
+		"\n\nThe planner reads these notes and the discussion, and posts a new plan for your 👍.\n\ncc @owner",
+	} {
+		if !strings.Contains(got, w) {
+			t.Errorf("renderPlanChange =\n%s\nwant %q", got, w)
+		}
+	}
+	if got := renderPlanChange(interviewOutput{Outcome: outcomePlan, Message: "Reorder."}, nil); strings.Contains(got, "cc") {
+		t.Errorf("renderPlanChange with no notify = %q, want no cc line", got)
+	}
+}
+
+// ivOutcomes lists what a run may return, and the preamble names them and
+// says when plan is the outcome: questions always; spec, and typed where
+// the run may type, but on a story with a parent; unchanged after a hold
+// from a stage other than clarifying; plan after a hold from a stage of
+// the plan, on an epic or a story (#294, #195's Q1a).
+func TestIvOutcomes(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		origin state.Stage
+		class  state.Class
+		may    bool
+		want   []string
+		line   string // in the preamble's hold line
+	}{
+		{"", state.ClassEpic, false, []string{"questions", "spec"}, "never return `unchanged` or `plan`"},
+		{"", state.ClassUntyped, true, []string{"questions", "spec", "typed"}, "never return `unchanged` or `plan`"},
+		{state.Clarifying, state.ClassEpic, false, []string{"questions", "spec"}, "so never return `unchanged` or `plan`"},
+		{state.SpecReview, state.ClassEpic, false, []string{"questions", "spec", "unchanged"}, "Never return `plan`"},
+		{state.PlanReview, state.ClassEpic, false, []string{"questions", "spec", "unchanged", "plan"},
+			"If the spec stands but its plan changes, its stories or tasks, return `plan`"},
+		{state.Planned, state.ClassOwnerStory, false, []string{"questions", "spec", "unchanged", "plan"}, "return `plan`"},
+		{state.Planning, state.ClassStory, false, []string{"questions", "unchanged", "plan"},
+			"It's a story with a parent, and its body is its item of the parent's plan, so never write the spec and never set a type."},
+		{state.PlanReview, state.ClassUntyped, true, []string{"questions", "spec", "typed", "unchanged"}, "Never return `plan`"},
+	} {
+		o := ivOutcomes(c.origin, c.class, c.may)
+		if !slices.Equal(o.outcomes, c.want) {
+			t.Errorf("ivOutcomes(%q, %s, %t) = %q, want %q", c.origin, c.class, c.may, o.outcomes, c.want)
+		}
+		quoted := make([]string, len(c.want))
+		for i, w := range c.want {
+			quoted[i] = "`" + w + "`"
+		}
+		p := interviewerPreamble(4, nil, nil, nil, "typing", o)
+		for _, w := range []string{"- The outcomes you may return here: " + list(quoted) + ". Any other outcome fails the run.", c.line} {
+			if !strings.Contains(p, w) {
+				t.Errorf("origin %q, class %s: the preamble lacks %q:\n%s", c.origin, c.class, w, p)
+			}
+		}
 	}
 }
