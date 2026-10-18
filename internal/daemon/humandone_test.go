@@ -267,6 +267,38 @@ func TestDoneCrashAfterMarker(t *testing.T) {
 	}
 }
 
+// Apply without Check just before it, for the same /done, runs the check
+// itself: one that fails is an error, with nothing written, and one that
+// passes closes the task.
+func TestDoneApplyChecksAgain(t *testing.T) {
+	t.Parallel()
+	setup := humanTask(doneLabelCheck, doneBy("owner", 1002))
+	apply := func(f *githubtest.Fake) error {
+		a := &daemon.Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: slug}
+		s, err := a.Client.Snapshot(context.Background(), "o", "r", 1)
+		if err != nil {
+			return err
+		}
+		cmd, ok := state.ParseCommand("/done")
+		if !ok {
+			t.Fatal("/done doesn't parse")
+		}
+		return daemon.DoneCommand().Apply(context.Background(), a, daemon.Cmd{Command: cmd, Comment: s.Comments[1], S: s})
+	}
+	f := setup(t)
+	if err := apply(f); err == nil || !strings.Contains(err.Error(), "no longer passes") {
+		t.Errorf("Apply on a failing check: %v, want an error saying it no longer passes", err)
+	}
+	if w := f.Writes(); len(w) != 0 {
+		t.Errorf("writes %+v, want none", w)
+	}
+	f.AddRepoLabel("needs-design")
+	if err := apply(f); err != nil {
+		t.Fatal(err)
+	}
+	doneState(t, f, []string{"stage:needs-human"}, true, []string{"/done", doneClosed("The label `needs-design` exists.", 1002)})
+}
+
 // A move to closed as not planned, as S5 closes a dropped child, closes
 // the issue as not planned, and the next pass sets stage:discarded.
 func TestCloseNotPlannedDiscarded(t *testing.T) {

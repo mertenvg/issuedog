@@ -475,6 +475,16 @@ func TestTransitionClose(t *testing.T) {
 			if r := stateReason(t, f, 1); r != reason {
 				t.Errorf("state_reason = %q, want %q", r, reason)
 			}
+			// The snapshot shows the close, so the rest of the pass sees
+			// a closed issue.
+			f = setup(t)
+			a, s, err := applier(t, f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := a.Transition(context.Background(), s, clean, m); err != nil || !s.Closed {
+				t.Errorf("Transition: %v, and the snapshot closed %t; want no error, and closed", err, s.Closed)
+			}
 		})
 	}
 }

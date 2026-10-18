@@ -320,6 +320,18 @@ func TestCheckLabels(t *testing.T) {
 			}),
 			writes: []string{"PATCH /issues/1"},
 			labels: []string{"stage:ready"}},
+		// Only the App's own move cut short is finished by the close: a
+		// stage label added after the move to closed, away from it, is a
+		// disagreement, reported once, and closes nothing (T5).
+		{name: "a stage label added after a move to closed is a disagreement, reported, and closes nothing",
+			setup: atReady(func(t testing.TB, f *githubtest.Fake) {
+				f.AddComment(1, app, "<!-- issuedog:transition from=ready to=closed reason=completed run=b -->")
+				labelEvent(t, f.AddLabel(1, app, "stage:in-progress"), 9002)
+			}),
+			writes: []string{"POST /issues/1/comments"},
+			comments: []string{"The stage labels didn't match this issue's latest transition, to `closed`, so I've set them to match. " +
+				"They were: `stage:ready`, `stage:in-progress`.\n\n<!-- issuedog:error kind=disagreement key=9002 -->"},
+			labels: []string{"stage:in-progress", "stage:ready"}, errors: 1},
 		{name: "a marker in a dirty comment doesn't count",
 			setup: atReady(func(t testing.TB, f *githubtest.Fake) {
 				f.AddComment(1, app, "<!-- issuedog:transition from=ready to=in-progress run=b -->")
