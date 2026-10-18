@@ -215,9 +215,10 @@ func TestApprove(t *testing.T) {
 			outcome{comments: []string{"I can't move this issue from `spec-review` to `planning` on spec-approved: " +
 				"the transition table (SPEC §7.2) has no such row for a story issue. It stays at `spec-review`.\n\n" +
 				"<!-- issuedog:error kind=transition key=r1002 -->"}, labels: atReview}},
-		{"an /approve at plan-review is rejected",
+		{"an /approve at plan-review with no plan revision is rejected, as a plan's",
 			at(state.PlanReview, func(t testing.TB, f *githubtest.Fake) { post(t, f, 1002, "owner", "/approve") }),
-			outcome{comments: []string{rejected("/approve", "approving a plan isn't handled yet", "1002")},
+			outcome{comments: []string{final("/approve", "I didn't apply this command", "there's no clean plan revision to approve. "+
+				"To get a new plan, post `/revise`, or any other comment", "1002")},
 				labels: []string{"stage:plan-review"}, downs: []string{"/approve"}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) { check(t, tt.setup, approvePass(t), tt.want) })

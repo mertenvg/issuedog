@@ -7,6 +7,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -32,6 +33,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/egress"
+	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 	"github.com/mertenvg/issuedog/internal/state"
 )
@@ -148,6 +150,12 @@ func fakeGitHub(t *testing.T, files map[string]string) *githubtest.Fake {
 	oldState, oldRun := stateDir, runDir
 	t.Cleanup(func() { stateDir, runDir = oldState, oldRun })
 	stateDir, runDir = t.TempDir(), t.TempDir()
+	// A claude that isn't there, so a stage run a test reaches fails to
+	// start rather than running whatever claude is on PATH. A test that
+	// needs a run sets its own.
+	oldClaude := claudePath
+	t.Cleanup(func() { claudePath = oldClaude })
+	claudePath = filepath.Join(t.TempDir(), "no-claude")
 	f := githubtest.New(t, "mertenvg/issuedog", "issuedog-dev")
 	f.SetPermission("mertenvg", "admin")
 	f.SetPermission("mallory", "write")
@@ -261,6 +269,52 @@ func TestNewStepUsesCurrentTrust(t *testing.T) {
 	st.Trust = trustSet{"owner2": true}
 	if got := step(); !slices.Equal(got, []string{"stage:planning"}) {
 		t.Errorf("labels = %v, want stage:planning once owner2 is trusted again", got)
+	}
+}
+
+// newStep approves a plan at plan-review, by a 👍 on the plan revision on
+// one epic and by /approve on another. Each plan comment is posted as the
+// planner's run posts it, by a move with PlanRev.
+func TestNewStepApprovesPlan(t *testing.T) {
+	const app = "issuedog-dev[bot]"
+	f := githubtest.New(t, "o/r", "issuedog-dev")
+	c := f.Client(t)
+	a := &daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}
+	snap := func(n int) *github.Snapshot {
+		t.Helper()
+		s, err := c.Snapshot(context.Background(), "o", "r", n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	var plans []int64
+	for range 2 {
+		n := f.AddIssue("owner", "Epic", "body")
+		f.SetType(n, "Epic")
+		f.AddLabel(n, app, "stage:planning")
+		f.AddComment(n, app, "<!-- issuedog:transition from=spec-review to=planning rev=1 body="+state.BodyHash("body")+" cmd=r9 -->")
+		s := snap(n)
+		m := daemon.Move{To: state.PlanReview, Trigger: state.TriggerPlanValid, Key: state.Key{Field: "run", ID: "p1"}, PlanRev: 1, Text: "Plan."}
+		if err := a.Transition(context.Background(), s, func(int64) bool { return false }, m); err != nil {
+			t.Fatal(err)
+		}
+		plans = append(plans, s.Comments[len(s.Comments)-1].ID)
+	}
+	f.AddReaction(plans[0], "owner", "+1")
+	f.AddComment(2, "owner", "/approve")
+	st := newStep(a, trustSet{"owner": true}, noModels)
+	for n := 1; n <= 2; n++ {
+		if _, err := st.Run(context.Background(), snap(n)); err != nil {
+			t.Fatal(err)
+		}
+		is := f.State().Issues[n-1]
+		if !slices.Equal(is.Labels, []string{"stage:planned"}) {
+			t.Errorf("#%d's labels = %v, want stage:planned", n, is.Labels)
+		}
+		if last := is.Comments[len(is.Comments)-1].Body; !strings.Contains(last, "Revision 1 of the plan is approved") {
+			t.Errorf("#%d's last comment = %q, want the plan's approval", n, last)
+		}
 	}
 }
 
@@ -649,10 +703,22 @@ func TestRunDaemon(t *testing.T) {
 		f.AddLabel(m, "issuedog-dev[bot]", "stage:spec-review")
 		approve(m, f.AddComment(m, "issuedog-dev[bot]", revisionOf("body")))
 	}
-	// A lease for a stage with no Stage registered, planning, which stage
-	// work drops. clarifying has the interviewer, and intake triage.
+	// A lease for a stage with no Stage registered, plan-review, which stage
+	// work drops. clarifying has the interviewer, planning the planner, and
+	// intake triage.
 	lease := filepath.Join(stateDir, "lease.json")
-	if err := os.WriteFile(lease, []byte(`{"issue":1,"stage":"planning","run_id":"r1"}`), 0o600); err != nil {
+	if err := os.WriteFile(lease, []byte(`{"issue":1,"stage":"plan-review","run_id":"r1"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The planner's claude, which says it started and runs until it's
+	// killed, so the run is in progress when the daemon stops, and no claude
+	// on PATH runs.
+	bin := t.TempDir()
+	started := filepath.Join(bin, "started")
+	oldClaude := claudePath
+	t.Cleanup(func() { claudePath = oldClaude })
+	claudePath = filepath.Join(bin, "claude")
+	if err := os.WriteFile(claudePath, []byte("#!/bin/sh\n: > '"+started+"'\nexec /bin/sleep 600\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	calls := fakeEgress(t, nil, nil)
@@ -664,22 +730,29 @@ func TestRunDaemon(t *testing.T) {
 	go func() { done <- run(nil, daemonEnv, nil, io.Discard) }()
 
 	// The first iteration rejects mertenvg's /frob, as CODEOWNERS on main
-	// trusts only mertenvg, approves both specs, and drops the lease, then
-	// sleeps the config's 60s.
+	// trusts only mertenvg, approves both specs, and drops the lease. Then
+	// it starts a planner run on #2, the first spec at planning, which
+	// runs until the daemon stops.
 	planning := []string{"stage:planning"}
 	iterated := func() bool {
 		is := f.State().Issues
-		_, err := os.Stat(lease)
-		return len(is[0].Comments) >= 4 && slices.Equal(is[1].Labels, planning) && slices.Equal(is[2].Labels, planning) && err != nil
+		_, err := os.Stat(started)
+		return len(is[0].Comments) >= 4 && slices.Equal(is[1].Labels, planning) && slices.Equal(is[2].Labels, planning) && err == nil
 	}
 	for deadline := time.Now().Add(10 * time.Second); !iterated() && time.Now().Before(deadline); {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if !iterated() {
-		t.Error("the first iteration didn't finish in 10s")
+		t.Error("the first iteration didn't start the planner run in 10s")
 	}
-	if _, err := os.Stat(lease); !os.IsNotExist(err) {
-		t.Errorf("the lease is still there: %v", err)
+	// r1's lease is gone, and the planner run's is in its place.
+	raw, err := os.ReadFile(lease)
+	var l daemon.Lease
+	if err == nil {
+		err = json.Unmarshal(raw, &l)
+	}
+	if err != nil || l.Issue != 2 || l.Stage != state.Planning || l.RunID == "r1" {
+		t.Errorf("lease = %s, %v; want the planner run's on #2 in place of r1's", raw, err)
 	}
 	cancel()
 	select {
@@ -691,6 +764,10 @@ func TestRunDaemon(t *testing.T) {
 		t.Fatal("the daemon didn't stop when its context was canceled")
 	}
 	logr.Wait()
+	// Stopping ended the planner run uncounted, so it left no lease.
+	if _, err := os.Stat(lease); !os.IsNotExist(err) {
+		t.Errorf("the lease is still there: %v", err)
+	}
 
 	if !reflect.DeepEqual(*signals, []os.Signal{os.Interrupt, syscall.SIGTERM}) {
 		t.Errorf("stops on %v, want SIGINT and SIGTERM", *signals)
@@ -735,7 +812,7 @@ func TestRunDaemon(t *testing.T) {
 	}
 	for _, want := range []string{"egress proxy listening on http://127.0.0.1:", "allowing example.com, api.anthropic.com",
 		"running as issuedog-dev[bot] on mertenvg/issuedog", "stopping on a signal",
-		"dropping the lease of run r1 on #1: no Stage is registered for planning"} {
+		"dropping the lease of run r1 on #1: no Stage is registered for plan-review"} {
 		if !strings.Contains(logs.String(), want) {
 			t.Errorf("logs = %q, want %q", logs.String(), want)
 		}
@@ -1137,10 +1214,14 @@ func TestStageWork(t *testing.T) {
 		runs.Runner.StateDir != stateDir || runs.Runner.Claude != "claude" {
 		t.Errorf("workspace %+v, runner %+v; want the clone, runs and context dirs, and the state dir", ws, runs.Runner)
 	}
-	// The interviewer at clarifying and triage as Unlabeled, both on d, and
-	// nothing else: a Stage at intake beside triage fails CheckRegistered.
-	if iv, ok := runs.Stages[state.Clarifying].(*daemon.Interviewer); len(runs.Stages) != 1 || !ok || iv.Daemon != d {
-		t.Errorf("stages = %v, want only the interviewer on d at clarifying", runs.Stages)
+	// The interviewer at clarifying, the planner at planning and triage as
+	// Unlabeled, all on d, and nothing else: a Stage at intake beside
+	// triage fails CheckRegistered.
+	if iv, ok := runs.Stages[state.Clarifying].(*daemon.Interviewer); len(runs.Stages) != 2 || !ok || iv.Daemon != d {
+		t.Errorf("stages = %v, want the interviewer on d at clarifying and the planner at planning", runs.Stages)
+	}
+	if pl, ok := runs.Stages[state.Planning].(*daemon.Planner); !ok || pl.Daemon != d {
+		t.Errorf("the stage at planning = %#v, want the planner on d", runs.Stages[state.Planning])
 	}
 	if tr, ok := runs.Unlabeled.(*daemon.Triage); !ok || tr.Daemon != d {
 		t.Errorf("Unlabeled = %#v, want triage on d", runs.Unlabeled)
@@ -1167,8 +1248,12 @@ func TestRegisterStagesChecked(t *testing.T) {
 	calls := fakeEgress(t, nil, nil)
 	old := registerStages
 	t.Cleanup(func() { registerStages = old })
+	// The real stages, the planner at planning among them, pass; the
+	// interviewer added at intake is what fails.
+	planner := false
 	registerStages = func(d *daemon.Daemon) (map[state.Stage]daemon.Stage, daemon.Stage) {
 		stages, unlabeled := old(d)
+		_, planner = stages[state.Planning].(*daemon.Planner)
 		stages[state.Intake] = &daemon.Interviewer{Daemon: d}
 		return stages, unlabeled
 	}
@@ -1192,6 +1277,9 @@ func TestRegisterStagesChecked(t *testing.T) {
 	logs := buf.String()
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
+	}
+	if !planner {
+		t.Error("registerStages has no planner at planning")
 	}
 	if want := "setting up stage runs: registering the stages: a Stage (*daemon.Interviewer) is registered at intake while Unlabeled (*daemon.Triage) is set: " +
 		"Unlabeled's leases record intake, so every result of the Stage at intake would be dropped"; !strings.Contains(logs, want) {

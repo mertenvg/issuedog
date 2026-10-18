@@ -786,3 +786,89 @@ func TestDigestCloseReplay(t *testing.T) {
 		})
 	}
 }
+
+// digestTask is the App task #87's probe took for the digest: its body,
+// with its origin marker, and the body an edit leaves it without one.
+const (
+	digestTaskOrigin = "<!-- issuedog:origin plan=#9 rev=1 item=T1 -->"
+	digestTaskBody   = "Do it.\n\n" + digestTaskOrigin
+	digestTaskEdited = "Do it."
+)
+
+// The probe of #87's 2026-10-15 note: an App task whose body lost its
+// origin to the owner's edit, and that was renamed issuedog digest, isn't
+// the digest. That holds with the origin reposted in an App comment or
+// not, on a later pass and when both changes happened while no daemon ran,
+// on the restart's first poll. Its body is never written, step 1 still
+// visits it, a digest of its own is created beside it, and an extra pass
+// changes none of that.
+func TestDigestTitleRuleProbe(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name              string
+		repost, restarted bool
+	}{
+		{"on a later pass", false, false},
+		{"reposted, on a later pass", true, false},
+		{"on a restart", false, true},
+		{"reposted, on a restart", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f, o := newFake(t), newOrigin(t)
+			n := f.AddIssue(app, "A task", digestTaskBody)
+			f.AddLabel(n, app, "stage:ready")
+			f.AddComment(n, app, "<!-- issuedog:transition from=intake to=ready run=rready -->")
+			var visits []int
+			d := digestDaemon(t, f, o, &visits)
+			if !tc.restarted {
+				iterate(t, d)
+			}
+			f.EditBody(n, "owner", digestTaskEdited)
+			f.RenameIssue(n, "owner", "issuedog digest")
+			if tc.repost {
+				f.AddComment(n, app, "The origin, reposted.\n\n"+digestTaskOrigin)
+			}
+			from := len(f.Writes())
+			visits = nil
+			iterate(t, d)
+			iterate(t, d)
+			for _, w := range digestWrites(f, from) {
+				if w == "PATCH /issues/1" {
+					t.Errorf("writes = %q; want none to the task's body", digestWrites(f, from))
+				}
+			}
+			is := f.State().Issues
+			if len(is) != 2 || is[0].Body != digestTaskEdited || is[0].Title != "issuedog digest" {
+				t.Fatalf("issues = %+v; want the task, its body as the owner left it, and a digest of its own", is)
+			}
+			if is[1].Title != "issuedog digest" || is[1].Author != app || !strings.HasSuffix(is[1].Body, "<!-- issuedog:digest -->") {
+				t.Errorf("issue 2 = %+v; want the digest, created beside the task", is[1])
+			}
+			if !slices.Contains(visits, n) {
+				t.Errorf("step 1 visited %v; want the task among them, still in the pipeline", visits)
+			}
+		})
+	}
+}
+
+// A digest whose identity marker the owner took out while no daemon ran,
+// and whose title stayed, is still found by its title on the restart's
+// first poll, with no new digest, and its body is written back.
+func TestDigestTitleRuleFindsDigest(t *testing.T) {
+	t.Parallel()
+	f, o := newFake(t), newOrigin(t)
+	iterate(t, digestDaemon(t, f, o, nil))
+	want := f.State().Issues[0].Body
+	f.EditBody(1, "owner", "gone")
+	var visits []int
+	d := digestDaemon(t, f, o, &visits)
+	from := len(f.Writes())
+	iterate(t, d)
+	if got := digestWrites(f, from); !reflect.DeepEqual(got, []string{"PATCH /issues/1"}) {
+		t.Errorf("writes = %q; want the edit that puts the marker back", got)
+	}
+	if is := f.State().Issues; len(is) != 1 || is[0].Body != want || len(visits) != 0 {
+		t.Errorf("issues %+v, step 1 visited %v; want the one digest, its body put back as %q, and no visit", is, visits, want)
+	}
+}
