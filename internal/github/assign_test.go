@@ -10,7 +10,6 @@ import (
 
 	gogithub "github.com/google/go-github/v92/github"
 
-	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
 
@@ -90,7 +89,8 @@ func TestAssignWrites(t *testing.T) {
 }
 
 // A failed write, a missing issue and a transferred one are errors that
-// name the write and the issue, and wrap GitHub's error or ErrTransferred.
+// name the write and the issue, and wrap GitHub's error: for a transferred
+// one, the 404 of the GET its 301 is followed with.
 func TestAssignErrors(t *testing.T) {
 	f := githubtest.New(t, "o/r", "issuedog")
 	n := f.AddIssue("owner", "Issue", "")
@@ -109,12 +109,32 @@ func TestAssignErrors(t *testing.T) {
 	if _, err := c.AddAssignees(ctx, "o", "r", 9, []string{"owner"}); !errors.As(err, &ge) || ge.Response.StatusCode != 404 {
 		t.Errorf("AddAssignees on a missing issue = %v; want the 404", err)
 	}
+	// A transferred issue's write gets a 301, which Go follows with a GET
+	// of the same path in the new repo, where there is no GET of the
+	// assignees: so the write wrote nothing, and its error is that GET's
+	// 404, which the daemon takes as gone. An answer from another repo,
+	// were GitHub to send the write on to the issue itself, is
+	// ErrTransferred (TestAssignAnswerMoved).
 	f.Transfer(n, "o/elsewhere")
-	if _, err := c.AddAssignees(ctx, "o", "r", n, []string{"owner"}); !errors.Is(err, github.ErrTransferred) {
-		t.Errorf("AddAssignees on a transferred issue = %v; want ErrTransferred", err)
+	from := len(f.Requests())
+	if _, err := c.AddAssignees(ctx, "o", "r", n, []string{"owner"}); !errors.As(err, &ge) || ge.Response.StatusCode != 404 ||
+		ge.Response.Request.Method != "GET" || ge.Response.Request.URL.Path != "/repositories/2/issues/1/assignees" {
+		t.Errorf("AddAssignees on a transferred issue = %v; want the 404 of the redirected GET", err)
 	}
-	if _, err := c.RemoveAssignees(ctx, "o", "r", n, []string{"owner"}); !errors.Is(err, github.ErrTransferred) {
-		t.Errorf("RemoveAssignees on a transferred issue = %v; want ErrTransferred", err)
+	if _, err := c.RemoveAssignees(ctx, "o", "r", n, []string{"owner"}); !errors.As(err, &ge) || ge.Response.StatusCode != 404 ||
+		!strings.Contains(err.Error(), "unassign owner from o/r#1") {
+		t.Errorf("RemoveAssignees on a transferred issue = %v; want the 404 of the redirected GET, naming the write", err)
+	}
+	var got []string
+	for _, r := range f.Requests()[from:] {
+		got = append(got, fmt.Sprintf("%s %s %d", r.Method, r.Path, r.Status))
+	}
+	if want := []string{"POST /issues/1/assignees 301", "GET /repositories/2/issues/1/assignees 404",
+		"DELETE /issues/1/assignees 301", "GET /repositories/2/issues/1/assignees 404"}; !slices.Equal(got, want) {
+		t.Errorf("requests on the transferred issue = %q; want %q", got, want)
+	}
+	if a := f.State().Issues[0].Assignees; a != nil {
+		t.Errorf("assignees after the writes to the transferred issue = %q; want none written", a)
 	}
 }
 

@@ -504,18 +504,24 @@ func TestDigestRewriteRefoundKeepsAnnouncements(t *testing.T) {
 	}
 }
 
-// A transferred digest, whose edit GitHub answers from the other repo, is
-// gone, not written: the edit's error says so (#160's verify).
+// A transferred digest, whose edit GitHub answers with a 301 that Go
+// follows with a GET of the other repo, is gone, not written: the edit's
+// error says so (#160's verify), and the body is as it was.
 func TestDigestRewriteTransferred(t *testing.T) {
 	t.Parallel()
 	f := digestPinned(t)
 	d := digestDaemon(t, f, newOrigin(t), nil)
 	iterate(t, d)
+	body := f.State().Issues[0].Body
 	f.Transfer(1, "elsewhere/r")
 	digestError(f, "A", "5")
 	err := d.Iterate(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "the digest is gone") || !strings.Contains(err.Error(), "transferred to ") {
+	if err == nil || !strings.Contains(err.Error(), "the digest is gone") ||
+		!strings.Contains(err.Error(), "transferred: answered by GET /repositories/2/issues/1") {
 		t.Errorf("Iterate = %v; want the digest gone, transferred", err)
+	}
+	if got := f.State().Issues[0].Body; got != body {
+		t.Errorf("the digest's body = %q; want it as it was, %q", got, body)
 	}
 }
 

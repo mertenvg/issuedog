@@ -187,7 +187,8 @@ func TestAssignRevertsManual(t *testing.T) {
 
 // An issue whose read fails keeps its assignees that pass, and is put
 // right on the next. A failed assignee write is the pass's error, and the
-// rest of the issues, and Work, carry on; the next pass writes it again.
+// rest of the issues, and Work, carry on without its issue; the next pass
+// reads it again, and writes it again (#199).
 func TestAssignFailures(t *testing.T) {
 	t.Parallel()
 	f, o := digestRunFake(t), digestRunOrigin(t)
@@ -217,10 +218,14 @@ func TestAssignFailures(t *testing.T) {
 	if got, want := assignWrites(f, from), []string{assignAdd(2, digestRunOwner), assignAdd(3, digestRunOwner)}; !slices.Equal(got, want) {
 		t.Errorf("assignee writes = %q; want %q, the first failed", got, want)
 	}
-	if !slices.Contains(worked, 2) || !slices.Contains(worked, 3) {
-		t.Errorf("Work got %v; want 2 and 3 among them", worked)
+	if slices.Contains(worked, 2) || !slices.Contains(worked, 3) {
+		t.Errorf("Work got %v; want 3 among them, and not 2, whose write failed", worked)
 	}
+	from = len(f.Requests())
 	assignStep(t, f, d, "the pass after the failure", assignAdd(2, digestRunOwner))
+	if !slices.ContainsFunc(f.Requests()[from:], func(r githubtest.Request) bool { return r.Method == http.MethodGet && r.Path == "/issues/2" }) {
+		t.Errorf("the pass after the failure didn't read 2 again: %+v", f.Requests()[from:])
+	}
 	assignStep(t, f, d, "a pass after")
 }
 
@@ -303,27 +308,45 @@ func assignReplayPass(t *testing.T, o *origin) func(*githubtest.Fake) error {
 
 // Replay passes for an assign, an unassign and both, whatever write a
 // crash comes at: the round's issue gets owner, and the ready issue loses
-// owner, or, both, the round's issue loses mallory too.
+// owner, or, both, the round's issue loses mallory too. In the last, the
+// round's issue may be transferred just as owner is added to it: the add
+// gets a 301, which writes nothing, and is no error, and the issue isn't
+// listed again (#199).
 func TestAssignReplay(t *testing.T) {
 	t.Parallel()
 	o := digestNotifyOrigin(t)
 	for _, tc := range []struct {
 		name         string
 		round, ready []string
+		moved        bool // the round's issue is transferred at owner's add
 		want         []string
 	}{
-		{"an assign", nil, nil, []string{assignAdd(1, "owner")}},
-		{"an unassign", []string{"owner"}, []string{"owner"}, []string{assignRemove(2, "owner")}},
-		{"both", []string{"mallory"}, []string{"owner"}, []string{assignRemove(1, "mallory"), assignAdd(1, "owner"), assignRemove(2, "owner")}},
+		{"an assign", nil, nil, false, []string{assignAdd(1, "owner")}},
+		{"an unassign", []string{"owner"}, []string{"owner"}, false, []string{assignRemove(2, "owner")}},
+		{"both", []string{"mallory"}, []string{"owner"}, false, []string{assignRemove(1, "mallory"), assignAdd(1, "owner"), assignRemove(2, "owner")}},
+		{"both, transferred at the add", []string{"mallory"}, []string{"owner"}, true,
+			[]string{assignRemove(1, "mallory"), assignAdd(1, "owner"), assignRemove(2, "owner")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			setup := assignReplayFake(tc.round, tc.ready)
+			if tc.moved {
+				fill := setup
+				setup = func(t testing.TB) *githubtest.Fake {
+					f := fill(t)
+					f.BeforeRequest(func(r githubtest.Request) bool { return r.Method == http.MethodPost && r.Path == "/issues/1/assignees" },
+						func() { f.Transfer(1, "o/elsewhere") })
+					return f
+				}
+			}
 			clean := setup(t)
 			if err := assignReplayPass(t, o)(clean); err != nil {
 				t.Fatal(err)
 			}
 			if got := assignWrites(clean, 0); !slices.Equal(got, tc.want) {
 				t.Errorf("the clean pass's assignee writes = %q; want %q", got, tc.want)
+			}
+			if a := clean.State().Issues[0].Assignees; tc.moved && (a != nil || !slices.Contains(assignAbout(clean, 0, 1), "POST /issues/1/assignees 301")) {
+				t.Errorf("the clean pass left the transferred issue with %q, requests %q; want none assigned, and the add redirected", a, assignAbout(clean, 0, 1))
 			}
 			githubtest.Replay(t, setup, assignReplayPass(t, o))
 		})
@@ -361,60 +384,124 @@ func assignGoneFake(t *testing.T) (*githubtest.Fake, *daemon.Daemon) {
 	return f, d
 }
 
-// A write that finds the issue gone, deleted or transferred after a write
-// to it failed, is no error, and makes no write again: the issue isn't
-// given to Work that pass, and the next pass reads it again and drops it.
-// A deleted issue's number filed again is an issue like any other, which
-// the dropped one's memory doesn't follow: outside the pipeline, it keeps
-// mertenvg, assigned by hand.
+// assignAbout is the requests from the from'th on that name issue n, at
+// its own path or at the new home of a transfer, as "METHOD /path status".
+func assignAbout(f *githubtest.Fake, from, n int) []string {
+	about := regexp.MustCompile(fmt.Sprintf(`^(/repositories/[0-9]+)?/issues/%d(/|$)`, n))
+	var got []string
+	for _, r := range f.Requests()[from:] {
+		if about.MatchString(r.Path) {
+			got = append(got, fmt.Sprintf("%s %s %d", r.Method, r.Path, r.Status))
+		}
+	}
+	return got
+}
+
+// assignGoneRead is the requests of a snapshot read that finds issue 12
+// gone: deleted, a 404; transferred, a 301 and the GET of the new home,
+// where the issue names another repo.
+var assignGoneRead = map[string][]string{
+	"deleted":     {"GET /issues/12 404"},
+	"transferred": {"GET /issues/12 301", "GET /repositories/2/issues/12 200"},
+}
+
+// assignGoneReread is assignGoneRead's second read: the new home's
+// answer hasn't changed, so the ETag saves it.
+var assignGoneReread = map[string][]string{
+	"deleted":     {"GET /issues/12 404"},
+	"transferred": {"GET /issues/12 301", "GET /repositories/2/issues/12 304"},
+}
+
+// assignGoneHow makes issue 12 of f gone, by name, as assignGoneRead
+// names them.
+var assignGoneHow = map[string]func(f *githubtest.Fake){
+	"deleted":     func(f *githubtest.Fake) { f.DeleteIssue() },
+	"transferred": func(f *githubtest.Fake) { f.Transfer(12, "o/elsewhere") },
+}
+
+// assignWorked makes d's Work record the issues it gets in worked.
+func assignWorked(d *daemon.Daemon, worked *[]int) {
+	d.Work = func(_ context.Context, ready []daemon.Ready) error {
+		for _, r := range ready {
+			*worked = append(*worked, r.S.Number)
+		}
+		return nil
+	}
+}
+
+// assignGonePasses runs the passes after issue 12 of f is found gone, or
+// may be: each pass's requests about 12 must be the matching want, Work
+// must never get 12, and nothing may be written about it, by assignment
+// or anything else.
+func assignGonePasses(t *testing.T, f *githubtest.Fake, d *daemon.Daemon, want ...[]string) {
+	t.Helper()
+	var worked []int
+	assignWorked(d, &worked)
+	writes := len(f.Writes())
+	for i, w := range want {
+		from := len(f.Requests())
+		iterate(t, d)
+		if got := assignAbout(f, from, 12); !slices.Equal(got, w) {
+			t.Errorf("pass %d after: requests about 12 = %q; want %q", i+1, got, w)
+		}
+	}
+	if slices.Contains(worked, 12) {
+		t.Errorf("Work got %v; want 12 left out", worked)
+	}
+	for _, w := range f.Writes()[writes:] {
+		if strings.HasPrefix(w.Path, "/issues/12") {
+			t.Errorf("wrote %s %s after 12 was found gone; want nothing", w.Method, w.Path)
+		}
+	}
+}
+
+// The snapshot read's own path: an issue gone, deleted or transferred,
+// just before the poll's read of it, is read once more, then dropped.
+// Work never gets it, nothing is written to it, its manual assignee
+// included, and no later pass reads it (#199). A transferred issue's GET
+// gets a 301, which Go follows to the new home, where the issue names
+// another repo.
+func TestAssignGoneRead(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"deleted", "transferred"} {
+		t.Run(name, func(t *testing.T) {
+			f, d := assignGoneFake(t) // bob's assignment makes the poll list 12
+			f.BeforeRequest(func(r githubtest.Request) bool { return r.Method == http.MethodGet && r.Path == "/issues/12" },
+				func() { assignGoneHow[name](f) })
+			assignGonePasses(t, f, d, assignGoneRead[name], assignGoneReread[name], nil, nil)
+		})
+	}
+}
+
+// A failed write, with an answer gone doesn't take as gone (a 500), makes
+// the next pass read the issue again rather than write again (#199). If
+// the issue is gone by then, deleted or transferred, that read finds it
+// so, and the read after drops it: Work never gets it, and the write
+// isn't made again, on that pass or later ones. A deleted issue's number
+// filed again is an issue like any other, which the dropped one's memory
+// doesn't follow: outside the pipeline, it keeps mertenvg, assigned by
+// hand.
 func TestAssignGone(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct {
-		name string
-		gone func(f *githubtest.Fake)
-	}{
-		{"deleted", func(f *githubtest.Fake) { f.DeleteIssue() }},
-		{"transferred", func(f *githubtest.Fake) { f.Transfer(12, "o/elsewhere") }},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, name := range []string{"deleted", "transferred"} {
+		t.Run(name, func(t *testing.T) {
 			f, d := assignGoneFake(t)
 			var worked []int
-			d.Work = func(_ context.Context, ready []daemon.Ready) error {
-				for _, r := range ready {
-					worked = append(worked, r.S.Number)
-				}
-				return nil
-			}
+			assignWorked(d, &worked)
 			f.FailWrite(len(f.Writes()) + 1)
 			from := len(f.Writes())
-			if err := d.Iterate(t.Context()); err == nil || !strings.Contains(err.Error(), "the assignees of o/r#12") {
+			if err := d.Iterate(t.Context()); err == nil || !strings.Contains(err.Error(), "the assignees of o/r#12, read again next pass") {
 				t.Errorf("Iterate with a failed write = %v; want its error", err)
 			}
-			tc.gone(f)
-			worked = nil
-			iterate(t, d)
 			if slices.Contains(worked, 12) {
-				t.Errorf("Work got %v in the pass that found 12 gone; want it left out", worked)
+				t.Errorf("Work got %v in the pass whose write failed; want 12 left out", worked)
 			}
-			reads := len(f.Requests())
-			iterate(t, d)
-			iterate(t, d)
-			var again []string
-			for _, r := range f.Requests()[reads:] {
-				if r.Method == http.MethodGet && r.Path == "/issues/12" {
-					again = append(again, r.Path)
-				}
+			assignGoneHow[name](f)
+			assignGonePasses(t, f, d, assignGoneRead[name], assignGoneReread[name], nil, nil)
+			if got, want := assignWrites(f, from), []string{assignRemove(12, "bob")}; !slices.Equal(got, want) {
+				t.Errorf("assignee writes = %q; want %q, the failed one alone", got, want)
 			}
-			// The fake still lists a transferred issue, as GitHub doesn't, and
-			// applies the write to it, so the poll finds it again: only a
-			// deleted one shows the one read.
-			if tc.name == "deleted" && len(again) != 1 {
-				t.Errorf("12 was read %d times after the write found it gone; want once, which drops it", len(again))
-			}
-			if got, want := assignWrites(f, from), []string{assignRemove(12, "bob"), assignRemove(12, "bob")}; !slices.Equal(got, want) {
-				t.Errorf("assignee writes = %q; want %q, the failed one and one that finds 12 gone", got, want)
-			}
-			if tc.name != "deleted" {
+			if name != "deleted" {
 				return
 			}
 			if n := f.AddIssue(digestRunEve, "Filed again", "An idea."); n != 12 {
@@ -423,6 +510,97 @@ func TestAssignGone(t *testing.T) {
 			f.SetAssignees(12, digestRunOwner)
 			assignStep(t, f, d, "a new issue 12, outside the pipeline")
 		})
+	}
+}
+
+// A failed write to an issue that isn't gone is read again next pass,
+// once, and written again; the read, which its ETag may save, is all it
+// costs.
+func TestAssignFailedRead(t *testing.T) {
+	t.Parallel()
+	f, d := assignGoneFake(t)
+	f.FailWrite(len(f.Writes()) + 1)
+	if err := d.Iterate(t.Context()); err == nil {
+		t.Errorf("Iterate with a failed write = nil; want its error")
+	}
+	from := len(f.Requests())
+	assignStep(t, f, d, "the pass after the failure", assignRemove(12, "bob"))
+	reads := 0
+	for _, r := range assignAbout(f, from, 12) {
+		if strings.HasPrefix(r, "GET /issues/12 ") {
+			reads++
+		}
+	}
+	if reads != 1 {
+		t.Errorf("the pass after the failure read 12 %d times: %q; want once", reads, assignAbout(f, from, 12))
+	}
+	assignStep(t, f, d, "a pass after")
+}
+
+// assignAddFake is digestRunFake with issue 12 at clarifying with an
+// unanswered round, after the first pass assigned mertenvg to it, then
+// unassigned by hand, so the next pass adds him again.
+func assignAddFake(t *testing.T) (*githubtest.Fake, *daemon.Daemon) {
+	t.Helper()
+	f, o := digestRunFake(t), digestRunOrigin(t)
+	d := assignDaemon(t, f, o, nil)
+	if n := digestRound(f); n != 12 {
+		t.Fatalf("the issue with a round is %d; want 12", n)
+	}
+	iterate(t, d)
+	if got := assignees(f, 12); !slices.Equal(got, []string{digestRunOwner}) {
+		t.Fatalf("issue 12's assignees after the first pass = %q; want mertenvg", got)
+	}
+	f.SetAssignees(12)
+	return f, d
+}
+
+// An assignee write that finds the issue gone, deleted or transferred
+// between its read and the write, is no error, whether it's an add or a
+// remove: the write is made once, the issue isn't given to Work, the next
+// pass reads it once more, which drops it, and no later pass reads it or
+// writes to it again (#199). A transferred issue's write gets a 301,
+// which Go follows with a GET of the new home's assignee path, a 404.
+func TestAssignGoneWrite(t *testing.T) {
+	t.Parallel()
+	for _, write := range []struct {
+		name   string
+		fake   func(t *testing.T) (*githubtest.Fake, *daemon.Daemon)
+		method string
+		want   string
+	}{
+		{"remove", assignGoneFake, http.MethodDelete, assignRemove(12, "bob")},
+		{"add", assignAddFake, http.MethodPost, assignAdd(12, digestRunOwner)},
+	} {
+		for _, how := range []string{"deleted", "transferred"} {
+			t.Run(write.name+" "+how, func(t *testing.T) {
+				f, d := write.fake(t)
+				var worked []int
+				assignWorked(d, &worked)
+				at := -1
+				f.BeforeRequest(func(r githubtest.Request) bool {
+					return r.Method == write.method && r.Path == "/issues/12/assignees"
+				}, func() {
+					at = len(f.Requests())
+					assignGoneHow[how](f)
+				})
+				assignStep(t, f, d, "the pass that finds 12 gone", write.want)
+				if slices.Contains(worked, 12) {
+					t.Errorf("Work got %v in the pass that found 12 gone; want it left out", worked)
+				}
+				answer := map[string][]string{
+					"deleted":     {write.method + " /issues/12/assignees 404"},
+					"transferred": {write.method + " /issues/12/assignees 301", "GET /repositories/2/issues/12/assignees 404"},
+				}[how]
+				if at < 0 {
+					t.Fatalf("the write never came")
+				}
+				if got := assignAbout(f, at, 12); !slices.Equal(got, answer) {
+					t.Errorf("requests about 12 from the write on = %q; want %q", got, answer)
+				}
+				assignGonePasses(t, f, d, assignGoneRead[how], nil, nil)
+			})
+		}
 	}
 }
 

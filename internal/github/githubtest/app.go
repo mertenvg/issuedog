@@ -91,12 +91,6 @@ func (f *Fake) DeleteIssue() {
 	f.comments = slices.DeleteFunc(f.comments, func(c *comment) bool { return c.issue == n })
 }
 
-// Transfer gives an issue the repository URL of repo ("owner/name"), as a
-// read of an issue transferred there does once its 301 is followed.
-func (f *Fake) Transfer(number int, repo string) {
-	f.edit(number, func(is *issue) { is.RepositoryURL = new(f.srv.URL + "/repos/" + repo) })
-}
-
 // AnswerOnce answers the next request that match accepts with status alone,
 // as a proxy or a glitch might, without serving it.
 func (f *Fake) AnswerOnce(match func(Request) bool, status int) {
@@ -199,7 +193,7 @@ func (r *recorder) Write(b []byte) (int, error) {
 
 // listIssues serves the repo's issues and pull requests, open ones unless
 // state= says otherwise, from since= on, by number or, for sort=updated, by
-// update in direction=.
+// update in direction=. A transferred issue isn't listed (transfer.go).
 func (f *Fake) listIssues(c *call) (int, any) {
 	q := c.r.URL.Query()
 	var from time.Time
@@ -215,7 +209,7 @@ func (f *Fake) listIssues(c *call) (int, any) {
 	}
 	out := []gogithub.Issue{}
 	for _, is := range f.issues {
-		if (state == "all" || is.GetState() == state) && !is.GetUpdatedAt().Before(from) {
+		if is.listed() && (state == "all" || is.GetState() == state) && !is.GetUpdatedAt().Before(from) {
 			out = append(out, is.Issue)
 		}
 	}
