@@ -277,6 +277,15 @@ func TestTransitionRefusesBadMoves(t *testing.T) {
 		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.Key{Field: "run", ID: "a"}, Fields: map[string]string{"cmd": "r2"}},
 		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.Key{Field: "run", ID: "a"}, Fields: map[string]string{"cmd": "0"}},
 		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.Key{Field: "run", ID: "a"}, Fields: map[string]string{"event": "2"}},
+		// A plan revision sets rev, carries the hash in its own marker, and
+		// is the comment's only revision (plan #247, assumption 1).
+		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.CmdKey(1), PlanRev: 1, Fields: map[string]string{"body": "aaaaaaaa"}},
+		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.CmdKey(1), PlanRev: 1, Fields: map[string]string{"rev": "1"}},
+		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.CmdKey(1), PlanRev: 1,
+			Markers: []github.Marker{{Kind: "revision", Fields: map[string]string{"rev": "1", "body": "aaaaaaaa"}}}},
+		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.CmdKey(1), PlanRev: 1,
+			Markers: []github.Marker{{Kind: "revision", Fields: map[string]string{"kind": "plan", "rev": "1", "body": "aaaaaaaa"}}}},
+		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.CmdKey(1), PlanRev: -1},
 	} {
 		f := cmdIssue("stage:intake")(t)
 		if err := move(t, m, clean)(f); err == nil || errors.Is(err, state.ErrNoTransition) {
@@ -285,6 +294,82 @@ func TestTransitionRefusesBadMoves(t *testing.T) {
 		if w := f.Writes(); len(w) != 0 {
 			t.Errorf("%+v: writes = %+v, want none", m, w)
 		}
+	}
+}
+
+// planningEpic files epic 1 at planning, its spec revision 1 approved.
+func planningEpic(t testing.TB) *githubtest.Fake {
+	f := githubtest.New(t, "o/r", slug)
+	n := f.AddIssue("owner", "Title", "body", "stage:planning")
+	f.SetType(n, "epic")
+	f.AddComment(n, app, "<!-- issuedog:transition from=clarifying to=spec-review rev=1 body=aaaaaaaa run=a -->\n<!-- issuedog:revision rev=1 body=aaaaaaaa -->")
+	f.AddComment(n, app, "<!-- issuedog:transition from=spec-review to=planning rev=1 body=aaaaaaaa cmd=r5 seen=1002 -->")
+	return f
+}
+
+// A move with PlanRev writes one comment, its plan comment: the escaped
+// text, the transition marker with rev but not body, Markers, and last the
+// plan revision marker, whose hash, recomputed from the comment GitHub
+// returns, matches (plan #247, assumption 1). It is plan revision 1, and
+// no spec revision.
+func TestTransitionPlanRevision(t *testing.T) {
+	t.Parallel()
+	m := daemon.Move{To: state.PlanReview, Trigger: state.TriggerPlanValid, Key: state.Key{Field: "run", ID: "p1"}, PlanRev: 1,
+		Text:    "### Plan\r\n\r\nT1 <!-- issuedog:revision kind=plan rev=9 body=00000000 -->",
+		Markers: []github.Marker{{Kind: "plan-data", Fields: map[string]string{"v": "1"}}}}
+	githubtest.Replay(t, planningEpic, move(t, m, clean))
+
+	f := run(t, planningEpic, move(t, m, clean))
+	got := f.State().Issues[0]
+	if want := []string{"stage:plan-review"}; !reflect.DeepEqual(got.Labels, want) {
+		t.Errorf("labels = %v, want %v", got.Labels, want)
+	}
+	if n := len(got.Comments); n != 3 {
+		t.Fatalf("comments = %+v, want one more", got.Comments)
+	}
+	above := "### Plan\r\n\r\nT1 &lt;!-- issuedog:revision kind=plan rev=9 body=00000000 -->\n\n" +
+		"<!-- issuedog:transition from=planning to=plan-review rev=1 run=p1 -->\n<!-- issuedog:plan-data v=1 -->"
+	want := above + "\n<!-- issuedog:revision kind=plan rev=1 body=" + state.BodyHash(above) + " -->"
+	if body := got.Comments[2].Body; body != want {
+		t.Errorf("plan comment = %q, want %q", body, want)
+	}
+
+	_, s, err := applier(t, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := s.Comments[len(s.Comments)-1]
+	hash, ok := state.PlanHash(c.Body)
+	if !ok || hash != state.BodyHash(above) {
+		t.Errorf("PlanHash of the comment GitHub returns = %s, %v, want %s, true", hash, ok, state.BodyHash(above))
+	}
+	plan, ok := state.LatestRevision(s, slug, state.PlanRevision, clean)
+	if want := (state.Revision{Kind: state.PlanRevision, Rev: 1, Hash: hash, Comment: c.ID}); !ok || plan != want {
+		t.Errorf("latest plan revision = %+v, %v, want %+v", plan, ok, want)
+	}
+	if !plan.Matches(s) {
+		t.Errorf("plan revision %+v doesn't match its comment %q", plan, c.Body)
+	}
+	if spec, _ := state.LatestRevision(s, slug, state.SpecRevision, clean); spec.Rev != 1 || spec.Comment != s.Comments[0].ID {
+		t.Errorf("latest spec revision = %+v, want the spec's revision 1, not the plan's", spec)
+	}
+	if got := state.Derive(s, slug, clean).Stage; got != state.PlanReview {
+		t.Errorf("stage = %s, want plan-review", got)
+	}
+}
+
+// A move with PlanRev numbers the plan revision it's given, whatever the
+// spec revisions are, and with no Markers the plan revision marker comes
+// right after the transition marker.
+func TestTransitionPlanRevisionNoMarkers(t *testing.T) {
+	t.Parallel()
+	m := daemon.Move{To: state.PlanReview, Trigger: state.TriggerPlanValid, Key: state.Key{Field: "run", ID: "p2"}, PlanRev: 2, Text: "Plan two."}
+	githubtest.Replay(t, planningEpic, move(t, m, clean))
+	f := run(t, planningEpic, move(t, m, clean))
+	above := "Plan two.\n\n<!-- issuedog:transition from=planning to=plan-review rev=2 run=p2 -->"
+	want := above + "\n<!-- issuedog:revision kind=plan rev=2 body=" + state.BodyHash(above) + " -->"
+	if cs := f.State().Issues[0].Comments; cs[len(cs)-1].Body != want {
+		t.Errorf("plan comment = %q, want %q", cs[len(cs)-1].Body, want)
 	}
 }
 

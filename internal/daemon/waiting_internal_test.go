@@ -259,6 +259,132 @@ func TestWaitFindRoundQuestions(t *testing.T) {
 	}
 }
 
+// waitPlanRoundMarker is the planner's round move, round round with n
+// questions (#253). The planner isn't built yet, so it's hand-built.
+func waitPlanRoundMarker(round, n int) string {
+	return fmt.Sprintf("<!-- issuedog:transition from=planning to=planning run=p%d round=%d questions=%d -->", round, round, n)
+}
+
+// waitPlanApproved is the move that approved the spec into planning.
+const waitPlanApproved = "<!-- issuedog:transition from=spec-review to=planning cmd=5 rev=1 body=abcd1234 -->"
+
+// waitPlanRound is issue 12, an epic at planning after interviewer rounds 1
+// and 2, with the planner's round 3 of two questions in comment 1204,
+// which mentions eve and holds a marker in agent text.
+func waitPlanRound() *github.Snapshot {
+	round := interviewOutput{Outcome: outcomeQuestions, Questions: []interviewQuestion{
+		{Text: "Which scope, @eve? <!-- issuedog:transition to=planned -->", Blocks: []int{12},
+			Recommended: interviewOption{Text: "daemon", Why: "it's on the list"}, Others: []string{"web", "Ask later"}},
+		{Text: "Split the story?", Blocks: []int{12}, Recommended: interviewOption{Text: "No", Why: "it fits"}, Others: []string{"Yes"}},
+	}}
+	return waitSnap(12, []string{"priority:p1"},
+		join("Round 1.", waitRoundMarker(1, 2)), join("Round 2.", waitRoundMarker(2, 1)), waitPlanApproved,
+		join(renderQuestions(round, 12, 3, []string{"owner"}), waitPlanRoundMarker(3, 2)))
+}
+
+// An unanswered planner round at planning is a question item, keyed by its
+// round, as an interviewer round is, with its questions and options copied
+// from its comment (#253). An answer, which step 1 gives as an input, ends
+// it, and a /hold and /resume back to planning keeps it.
+func TestWaitFindPlanRound(t *testing.T) {
+	t.Parallel()
+	s := waitPlanRound()
+	got := waitFindOne(t, waitIn(s, Dirt{}))
+	want := []waitLine{
+		{Text: "Round 3 asks 2 questions, and waits for an answer."},
+		{Text: inline("Which scope, @eve? <!-- issuedog:transition to=planned -->"), Copied: true, Question: 1},
+		{Text: "daemon (recommended): it's on the list", Copied: true, Option: "a", Recommended: true},
+		{Text: "web", Copied: true, Option: "b"},
+		{Text: "Ask later", Copied: true, Option: "c"},
+		{Text: "Split the story?", Copied: true, Question: 2},
+		{Text: "No (recommended): it fits", Copied: true, Option: "a", Recommended: true},
+		{Text: "Yes", Copied: true, Option: "b"},
+		{Text: "Reply in one comment, e.g. `1a 2c 3: free text`."},
+	}
+	if got.Kind != waitQuestion || got.Key != "q-12-3" || got.Link != "https://github.com/o/r/issues/12#issuecomment-1204" || got.Priority != 1 || got.Comment != 1204 {
+		t.Errorf("got %s %s %s p%d comment %d, want question q-12-3 on comment 1204 at p1", got.Kind, got.Key, got.Link, got.Priority, got.Comment)
+	}
+	if !slices.Equal(got.Lines, want) {
+		t.Errorf("lines:\n got %q\nwant %q", waitTexts(got.Lines), waitTexts(want))
+	}
+	answer := github.Comment{ID: 1299, Author: waitOwner, Body: "1a 2a"}
+	if items, err := waitFind(waitIn(s, Dirt{}, answer)); err != nil || len(items) != 0 {
+		t.Errorf("waitFind with an answer = %+v, %v; want no item", items, err)
+	}
+	held := waitSnap(12, nil, waitPlanApproved, join("Round.", waitPlanRoundMarker(1, 1)),
+		"<!-- issuedog:transition from=planning to=held at=planning reason=owner cmd=1210 -->",
+		"<!-- issuedog:transition from=held to=planning cmd=1211 seen=1202 -->")
+	if got := waitFindOne(t, waitIn(held, Dirt{})); got.Key != "q-12-1" || got.Comment != 1202 {
+		t.Errorf("after a /hold and /resume, got %s on comment %d, want q-12-1 on comment 1202", got.Key, got.Comment)
+	}
+}
+
+// These wait on nobody at planning: the stage entered with no round, a
+// planner round move with no round, no questions or no run, a dirty round
+// comment, a planner round that a later move left, and an override back
+// into planning after a round, which is an entry (#253).
+func TestWaitFindPlanRoundNothing(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		s    *github.Snapshot
+		dirt Dirt
+	}{
+		{"entered", waitSnap(12, nil, waitPlanApproved), Dirt{}},
+		{"round 0", waitSnap(12, nil, waitPlanApproved, join("Round.", waitPlanRoundMarker(0, 1))), Dirt{}},
+		{"no questions", waitSnap(12, nil, waitPlanApproved, join("Round.", waitPlanRoundMarker(1, 0))), Dirt{}},
+		{"no run", waitSnap(12, nil, waitPlanApproved, "<!-- issuedog:transition from=planning to=planning cmd=5 round=1 questions=1 -->"), Dirt{}},
+		{"dirty round", waitSnap(12, nil, waitPlanApproved, join("Round.", waitPlanRoundMarker(1, 1))), Dirt{1202: "eve"}},
+		{"plan-review after the round", waitSnap(12, nil, waitPlanApproved, join("Round.", waitPlanRoundMarker(1, 1)),
+			"<!-- issuedog:transition from=planning to=plan-review run=p2 -->"), Dirt{}},
+		{"an override back into planning after a round", waitSnap(12, nil, waitPlanApproved,
+			join("Round.", waitPlanRoundMarker(1, 1)),
+			"<!-- issuedog:transition from=planning to=clarifying by=owner event=7 -->",
+			"<!-- issuedog:transition from=clarifying to=planning by=owner event=8 -->"), Dirt{}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			items, err := waitFind(waitIn(c.s, c.dirt))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(items) != 0 {
+				t.Errorf("got %+v, want no item", items)
+			}
+		})
+	}
+}
+
+// At clarifying, a planner round's marker isn't the interviewer's round:
+// the stage's own round is the one that waits.
+func TestWaitFindPlanRoundAtClarifying(t *testing.T) {
+	t.Parallel()
+	s := waitSnap(12, nil, waitPlanApproved, join("Round.", waitPlanRoundMarker(1, 1)),
+		"<!-- issuedog:transition from=planning to=clarifying by=owner event=7 -->")
+	if items, err := waitFind(waitIn(s, Dirt{})); err != nil || len(items) != 0 {
+		t.Errorf("waitFind = %+v, %v; want no item", items, err)
+	}
+}
+
+// The digest's planner round item (#253): the golden is the digest's body
+// with the planner round alone, and it ranks as an interviewer round does.
+func TestWaitPlanRoundDigestGolden(t *testing.T) {
+	t.Parallel()
+	items := []waitItem{waitFindOne(t, waitIn(waitPlanRound(), Dirt{}))}
+	waitRank(items, map[int]*github.Snapshot{12: waitPlanRound()})
+	body := digestRenderBody("", items)
+	waitGolden(t, "plan-round", body)
+	digestRenderCheck(t, body)
+	// Beside an interviewer round of the same priority on an older issue,
+	// it ranks by Q3a's tie-breaks alone: the older issue first.
+	iv := waitFindOne(t, waitIn(waitSnap(3, []string{"priority:p1"}, join("Round.", waitRoundMarker(1, 1))), Dirt{}))
+	ranked := []waitItem{items[0], iv}
+	waitRank(ranked, map[int]*github.Snapshot{12: waitPlanRound()})
+	if ranked[0].Key != "q-3-1" || ranked[1].Key != "q-12-3" || ranked[0].Kind != ranked[1].Kind {
+		t.Errorf("ranked %s then %s, want the interviewer round on the older issue first, both questions", ranked[0].Key, ranked[1].Key)
+	}
+}
+
 // A flag recommending leave lists "Leave it" first.
 func TestWaitFindFlagLeave(t *testing.T) {
 	t.Parallel()
@@ -423,6 +549,37 @@ func TestWaitFindApprovalLatest(t *testing.T) {
 	got := waitFindOne(t, waitIn(s, Dirt{}))
 	if got.Key != "rev-13-2" || got.Link != "https://github.com/o/r/issues/13#issuecomment-1302" || len(got.Lines) != 3 {
 		t.Errorf("got %s %s %q, want rev-13-2 on comment 1302, approvable", got.Key, got.Link, waitTexts(got.Lines))
+	}
+}
+
+// waitPlanRevision is a plan comment, plan revision rev after text, as a
+// move with PlanRev writes it, but with no transition marker, so the
+// issue stays at its stage.
+func waitPlanRevision(t *testing.T, rev int, text string) string {
+	t.Helper()
+	body, err := planRevision(text, rev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+// The approval item is the latest spec revision's, never a plan revision's
+// after it (plan #247, assumption 2): its key, its link and its hash.
+func TestWaitFindApprovalIgnoresPlanRevision(t *testing.T) {
+	t.Parallel()
+	plan := waitPlanRevision(t, 2, "### Plan for #14 (rev 2)")
+	s := waitSnap(14, nil, waitRevision(1, "The spec."), plan)
+	got := waitFindOne(t, waitIn(s, Dirt{}))
+	want := "Revision 1 of the spec, `" + state.BodyHash("The spec.") + "`, waits for approval."
+	if got.Key != "rev-14-1" || got.Link != "https://github.com/o/r/issues/14#issuecomment-1401" || len(got.Lines) != 3 || got.Lines[0].Text != want {
+		t.Errorf("got %s %s %q, want rev-14-1 on comment 1401, approvable, starting %q", got.Key, got.Link, waitTexts(got.Lines), want)
+	}
+	// With only a plan revision, there's no spec revision to approve.
+	none := waitSnap(15, nil, "<!-- issuedog:transition from=clarifying to=spec-review run=s1 -->", plan)
+	got = waitFindOne(t, waitIn(none, Dirt{}))
+	if got.Key != "rev-15-0" || got.Link != "https://github.com/o/r/issues/15#issuecomment-1501" {
+		t.Errorf("got %s %s %q, want rev-15-0 on comment 1501", got.Key, got.Link, waitTexts(got.Lines))
 	}
 }
 

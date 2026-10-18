@@ -151,8 +151,9 @@ func (st *Step) counted(ctx context.Context, s *github.Snapshot, d Dirt) (map[in
 // Only the App can remove its reaction, so a rejection is 👎, then the reply,
 // and a 👎'd command with no clean reply gets it again (reword). A processed
 // comment missing its 👍 gets it (SPEC §5.2), and one edited since it was
-// used gets one edited reply (SPEC §6.2). At clarifying, a plain comment in
-// the round is an answer, and gets a 👍. A revision request, a plain comment
+// used gets one edited reply (SPEC §6.2). At clarifying, and at planning
+// (#253), a plain comment in the round is an answer, and gets a 👍
+// (roundStage). A revision request, a plain comment
 // posted at spec-review, is handled as /revise (requested). Once the stage
 // has moved on, one is only a 👎'd request whose reply was lost, which gets
 // it (reword). One the App never reacted to is left alone, such as one from
@@ -167,7 +168,7 @@ func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github
 	if r, ok := requested(s, st.AppSlug, d, is, c); ok {
 		cmd, isCmd, late = r, true, is.Stage != state.SpecReview
 	}
-	answer := !isCmd && !named && is.Stage == state.Clarifying && c.ID > is.Round
+	answer := !isCmd && !named && roundStage(is.Stage) && c.ID > is.Round
 	reason := replied(is, c.ID)
 	if !isCmd && !answer && !named && c.Edit.At.IsZero() {
 		return nil
@@ -201,7 +202,7 @@ func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github
 		return nil
 	case used && acked && editedSince(c, at):
 		return st.reply(ctx, s, c, "edited", editedText)
-	case acked && !named && (isCmd || posted != state.Clarifying) && editedSince(c, up.CreatedAt):
+	case acked && !named && (isCmd || !roundStage(posted)) && editedSince(c, up.CreatedAt):
 		return st.reply(ctx, s, c, "edited", editedText)
 	case acked:
 		return nil
@@ -218,6 +219,14 @@ func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github
 		return nil
 	}
 	return st.command(ctx, s, d, c, cmd, is.Stage)
+}
+
+// roundStage reports whether a plain trusted comment posted in the round
+// at stage is an answer: at clarifying, to the interviewer, and at
+// planning, to the planner (#253). An answer's 👍 isn't its use, so an
+// edit after the 👍 gets no reply until a move's seen covers it (usedAt).
+func roundStage(stage state.Stage) bool {
+	return stage == state.Clarifying || stage == state.Planning
 }
 
 // reword posts again the reply to c, a 👎'd command with no clean reply. It
@@ -247,7 +256,8 @@ func editedSince(c github.Comment, t time.Time) bool {
 }
 
 // usedAt returns when the App first used comment id, and the stage of the
-// round id is in (state.RoundBound), at which a plain comment was an answer.
+// round id is in (state.RoundBound), at which a plain comment was an
+// answer if it's a round stage (roundStage).
 // A marker uses id if it names id in cmd or, unless id is a command, if it's
 // a transition whose seen covers id: one with no seen read no answers. A
 // move into, within or out of held carries the bound from before the hold
