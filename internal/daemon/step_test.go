@@ -302,6 +302,45 @@ func TestStep(t *testing.T) {
 				f.EditComment(1002, "owner", "1b")
 			}),
 			acks: []string{"1b"}, inputs: []string{"1b"}},
+		// At planning, a plain comment in the planner's round is an answer,
+		// as at clarifying (#253). The planner isn't built yet, so its
+		// round is a hand-built marker.
+		{name: "at planning, an answer to the planner's round is 👍'd once, and its latest text counts until its round ends",
+			setup: at(state.Planning, func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, app, "<!-- issuedog:transition from=planning to=planning run=p seen=1001 round=3 questions=2 -->")
+				post(t, f, 1003, "owner", "1a")
+				f.AddReaction(1003, app, "+1")
+				f.EditComment(1003, "owner", "1b")
+				post(t, f, 1005, "owner", "2: free text")
+			}),
+			acks: []string{"1b", "2: free text"}, inputs: []string{"1b", "2: free text"}},
+		{name: "at planning, an answer edited after a planner move's seen covered it gets one reply, and one edited before gets none",
+			setup: at(state.Planning, func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, "owner", "1a")
+				post(t, f, 1003, "owner", "2a")
+				f.AddReaction(1002, app, "+1")
+				f.AddReaction(1003, app, "+1")
+				f.EditComment(1002, "owner", "1b")
+				post(t, f, 1006, app, "<!-- issuedog:transition from=planning to=planning run=p seen=1003 round=1 questions=1 -->")
+				f.EditComment(1003, "owner", "2b")
+			}),
+			comments: []string{edited("2b", "1003")}, acks: []string{"1b", "2b"}},
+		{name: "at planning, seen uses up a comment before the planner's round, and only one after it is the round's answer",
+			setup: at(state.Planning, func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, "owner", "a note")
+				post(t, f, 1003, app, "<!-- issuedog:transition from=planning to=planning run=p seen=1002 round=1 questions=1 -->")
+				post(t, f, 1004, "owner", "1a")
+			}),
+			acks: []string{"1a"}, inputs: []string{"1a"}},
+		{name: "at planning, untrusted, App and dirty comments get no 👍 and no reply",
+			setup: at(state.Planning, func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, app, "<!-- issuedog:transition from=planning to=planning run=p seen=1001 round=1 questions=1 -->")
+				post(t, f, 1003, "mallory", "1a")
+				post(t, f, 1004, app, "1a")
+				post(t, f, 1005, "owner", "1b")
+				f.EditComment(1005, "mallory", "1c")
+				f.EditComment(1005, "owner", "1d")
+			})},
 		{name: "untrusted and App comments don't count",
 			setup: at(state.Clarifying, func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1002, "mallory", "/frob")

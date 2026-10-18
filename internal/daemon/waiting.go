@@ -159,6 +159,9 @@ type waitInput struct {
 //     interviewer round with round= and questions= above 0, and no
 //     trusted answer has come since (no Inputs). A typed bug or task's
 //     move carries neither, so it waits for phase 3 with no item;
+//   - at planning, a question round in the same way, when that latest
+//     transition is a planner round (planRoundMove, #253). Its key and
+//     rank are an interviewer round's, as the rounds share one numbering;
 //   - at intake with no stage label, a flag: when the latest triage
 //     marker has verdict=ask, as FlagByReaction answers it.
 //
@@ -191,17 +194,23 @@ func waitFind(in waitInput) ([]waitItem, error) {
 	case is.Stage == state.SpecReview:
 		rev, comment, lines := waitApprovalLines(in, is)
 		add(waitApproval, strconv.Itoa(rev), comment, lines)
-	case is.Stage == state.Clarifying && len(in.Inputs) == 0:
+	case (is.Stage == state.Clarifying || is.Stage == state.Planning) && len(in.Inputs) == 0:
 		// Through a hold the issue went back from (#185's verify note):
-		// after /resume back to clarifying, the round still waits.
+		// after /resume back to clarifying or planning, the round still
+		// waits. The round is the stage's own: the interviewer's at
+		// clarifying, the planner's at planning (#253).
+		isRound := ivRoundMove
+		if is.Stage == state.Planning {
+			isRound = planRoundMove
+		}
 		m := ivHoldLatest(is, true)
 		round, rerr := strconv.Atoi(m.Fields["round"])
 		n, nerr := strconv.Atoi(m.Fields["questions"])
-		if !ivRoundMove(m) || rerr != nil || nerr != nil || round < 1 || n < 1 {
+		if !isRound(m) || rerr != nil || nerr != nil || round < 1 || n < 1 {
 			break
 		}
 		comment := is.TransitionComment
-		for _, r := range interviewerRounds(s, in.AppSlug, in.Dirt.Has) {
+		for _, r := range questionRounds(s, in.AppSlug, in.Dirt.Has, isRound) {
 			if r.Number == round {
 				comment = r.Comment
 			}
@@ -275,14 +284,14 @@ func waitErrorLines(s *github.Snapshot, e openErr) []waitLine {
 }
 
 // waitApprovalLines returns the spec's approval at spec-review: the latest
-// revision's number, or 0 with none, the comment to link (the revision's,
+// spec revision's number, or 0 with none, the comment to link (the revision's,
 // or else the transition's), and its lines. The reasons it can't be
 // approved yet are ApproveCommand's and approve's, in their order, without
 // the login of who made the body dirty, which isn't the App's text, and,
 // for a type that can't be at spec-review, Transition's hold-back.
 func waitApprovalLines(in waitInput, is state.Issue) (int, int64, []waitLine) {
 	s := in.S
-	latest, ok := state.LatestRevision(s, in.AppSlug, in.Dirt.Has)
+	latest, ok := state.LatestRevision(s, in.AppSlug, state.SpecRevision, in.Dirt.Has)
 	lines := []waitLine{{Text: "The spec waits for review, with no revision to approve yet."}}
 	comment := is.TransitionComment
 	var why []string

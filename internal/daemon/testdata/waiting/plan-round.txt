@@ -1,0 +1,18 @@
+1 item waits on you.
+
+### 1. #12: Issue 12 @​eve &lt;b>
+
+**Question round**, priority p1, unblocks 1 open issue (itself included)
+
+- Round 3 asks 2 questions, and waits for an answer.
+- **Question 1:** Which scope, @​eve? &lt;!-- issuedog:transition to=planned -->
+  - **a.** daemon (recommended): it's on the list
+  - b. web
+  - c. Ask later
+- **Question 2:** Split the story?
+  - **a.** No (recommended): it fits
+  - b. Yes
+- Reply in one comment, e.g. `1a 2c 3: free text`.
+- Answer here: https://github.com/o/r/issues/12#issuecomment-1204
+
+<!-- issuedog:digest -->

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -101,11 +102,32 @@ func ivLatestMove(is state.Issue) github.Marker {
 // the typing of a bug or task. Nothing else moves an issue from clarifying
 // to clarifying: an override to the stage it's at writes no marker.
 func ivRoundMove(m github.Marker) bool {
-	return m.Kind == "transition" && m.Fields["run"] != "" &&
-		state.Stage(m.Fields["from"]) == state.Clarifying && state.Stage(m.Fields["to"]) == state.Clarifying
+	return roundMoveAt(m, state.Clarifying)
 }
 
-// interviewerRound is a question round the interviewer asked, as its
+// planRoundMove reports whether m is a planner run's move, keyed by run=,
+// from planning to planning: a question round (#253). Nothing else moves
+// an issue from planning to planning.
+func planRoundMove(m github.Marker) bool {
+	return roundMoveAt(m, state.Planning)
+}
+
+// roundMove reports whether m is a stage run's move from a stage to itself
+// that may carry a question round: the interviewer's (ivRoundMove) or the
+// planner's (planRoundMove). Their rounds share one numbering per issue
+// (#247's assumption 3).
+func roundMove(m github.Marker) bool {
+	return ivRoundMove(m) || planRoundMove(m)
+}
+
+// roundMoveAt reports whether m is a run's move, keyed by run=, from stage
+// to stage.
+func roundMoveAt(m github.Marker, stage state.Stage) bool {
+	return m.Kind == "transition" && m.Fields["run"] != "" &&
+		state.Stage(m.Fields["from"]) == stage && state.Stage(m.Fields["to"]) == stage
+}
+
+// interviewerRound is a question round a stage run asked, as its
 // transition records it (plan #6, assumption 8): round=<Number> and
 // questions=<Questions>, in comment Comment. Comments above Bound
 // (state.RoundBound) came after it, so they answer it.
@@ -114,10 +136,31 @@ type interviewerRound struct {
 	Comment, Bound    int64
 }
 
-// interviewerRounds returns the question rounds on s, in order: the clean
-// App comments whose interviewer move (ivRoundMove) carries a round and a
-// question count, both above 0. A typed outcome carries neither.
+// interviewerRounds returns the interviewer's question rounds on s, in
+// order: the clean App comments whose interviewer move (ivRoundMove)
+// carries a round and a question count, both above 0. A typed outcome
+// carries neither.
 func interviewerRounds(s *github.Snapshot, appSlug string, dirty func(int64) bool) []interviewerRound {
+	return questionRounds(s, appSlug, dirty, ivRoundMove)
+}
+
+// planRounds returns the planner's question rounds on s, in order, read as
+// interviewerRounds reads the interviewer's, from its moves
+// (planRoundMove).
+func planRounds(s *github.Snapshot, appSlug string, dirty func(int64) bool) []interviewerRound {
+	return questionRounds(s, appSlug, dirty, planRoundMove)
+}
+
+// allRounds returns every question round on s, the interviewer's and the
+// planner's (roundMove), in order.
+func allRounds(s *github.Snapshot, appSlug string, dirty func(int64) bool) []interviewerRound {
+	return questionRounds(s, appSlug, dirty, roundMove)
+}
+
+// questionRounds returns the question rounds on s, in order: the clean App
+// comments whose move, as isRound reports it, carries a round and a
+// question count, both above 0.
+func questionRounds(s *github.Snapshot, appSlug string, dirty func(int64) bool, isRound func(github.Marker) bool) []interviewerRound {
 	var rounds []interviewerRound
 	for _, c := range s.Comments {
 		if dirty(c.ID) {
@@ -126,7 +169,7 @@ func interviewerRounds(s *github.Snapshot, appSlug string, dirty func(int64) boo
 		for _, m := range github.TrustedMarkers(c.Author, c.Body, appSlug) {
 			n, nerr := strconv.Atoi(m.Fields["round"])
 			q, qerr := strconv.Atoi(m.Fields["questions"])
-			if !ivRoundMove(m) || nerr != nil || qerr != nil || n < 1 || q < 1 {
+			if !isRound(m) || nerr != nil || qerr != nil || n < 1 || q < 1 {
 				continue
 			}
 			bound, _ := state.RoundBound(m, c.ID) // a round move always sets one
@@ -134,6 +177,19 @@ func interviewerRounds(s *github.Snapshot, appSlug string, dirty func(int64) boo
 		}
 	}
 	return rounds
+}
+
+// nextRound is the number of the next question round on an issue whose
+// rounds, of every stage (allRounds), are rounds: one more than the
+// highest, so after interviewer rounds 1 and 2 the planner asks round 3,
+// and the interviewer round after that is 4 (#247's assumption 3). With no
+// rounds, it's 1.
+func nextRound(rounds []interviewerRound) int {
+	n := 0
+	for _, r := range rounds {
+		n = max(n, r.Number)
+	}
+	return n + 1
 }
 
 // ivRoundOf returns the number of the round comment id answers: the latest
@@ -160,7 +216,9 @@ func ivRoundOf(rounds []interviewerRound, id int64) int {
 //     are in no other file, and the counter comments (ivHoldInputOf).
 //   - conversation.md: the App's clean comments, its markers left out, the
 //     rounds labelled with their numbers and questions, and the trusted,
-//     clean comments, with author, ID and round, oldest first.
+//     clean comments, with author, ID and round, oldest first. The rounds
+//     are every stage's (allRounds), the planner's too, as they share one
+//     numbering (#253).
 //   - input.md: in.Inputs, the answers or the revision notes, or "none:
 //     first run", and at the clarifying after a hold from spec-review, the
 //     /revise that waited through it (ivHoldRevise), as revision notes.
@@ -198,7 +256,12 @@ func (iv *Interviewer) Context(ctx context.Context, in Input) (map[string][]byte
 	if err != nil {
 		return nil, wrap(err)
 	}
-	rounds := interviewerRounds(s, a.AppSlug, in.Dirt.Has)
+	// The interviewer's own rounds are the ones its spec decides, and an
+	// input answers one only when the latest move is its round (ivInputs).
+	// Every stage's are what a comment in the conversation answers, and
+	// what the next round's number follows (#253).
+	rounds, planned := interviewerRounds(s, a.AppSlug, in.Dirt.Has), planRounds(s, a.AppSlug, in.Dirt.Has)
+	all := allRounds(s, a.AppSlug, in.Dirt.Has)
 	takesUntrusted := s.Type == "epic" || s.Type == "story" // SPEC §6.2
 	tc := trustCache{st: d.Step, verdicts: map[string]bool{}}
 	titleBy, bodyBy, err := iv.admission(ctx, s, in.Dirt, tc, timeline)
@@ -222,8 +285,8 @@ func (iv *Interviewer) Context(ctx context.Context, in Input) (map[string][]byte
 		}
 	}
 	text, err := contextSort(ctx, s, a.AppSlug, in.Dirt, tc, titleBy, bodyBy, contextStage{
-		App:     func(c github.Comment) string { return ivAppLabel(c, rounds, a.AppSlug) },
-		Trusted: func(c github.Comment) string { return ivRoundLabel(ivRoundOf(rounds, c.ID)) },
+		App:     func(c github.Comment) string { return ivAppLabel(c, all, a.AppSlug) },
+		Trusted: func(c github.Comment) string { return ivRoundLabel(ivRoundOf(all, c.ID)) },
 		// SPEC §6.2: untrusted input only on an epic or a story.
 		Untrusted: takesUntrusted,
 		// Owner input, in issue.md (ivHoldSection).
@@ -238,7 +301,7 @@ func (iv *Interviewer) Context(ctx context.Context, in Input) (map[string][]byte
 		issue += "\n" + ivHoldSection(s, origin, span, held)
 	}
 	files := map[string][]byte{
-		"system.md":       []byte(interviewerPreamble(int(d.Config.Loop.MaxQuestionsPerRound), rounds, logins, typing, origin) + "\n\n" + string(prompt)),
+		"system.md":       []byte(interviewerPreamble(int(d.Config.Loop.MaxQuestionsPerRound), rounds, planned, logins, typing, origin) + "\n\n" + string(prompt)),
 		"prompt.md":       []byte(interviewerTask(s.Number, in.ContextDir, len(untrusted) > 0)),
 		"issue.md":        []byte(issue),
 		"conversation.md": []byte(ivFile("Conversation on #"+strconv.Itoa(s.Number), ivConversationIntro, conversation, "None yet.")),
@@ -437,15 +500,24 @@ func ivAdmitted(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt, tim
 // decision may name, and the typing line. At the clarifying after a
 // discussion hold, origin is the stage the issue came from (ivHoldOrigin),
 // and a last line says what the run may return there (#189).
-func interviewerPreamble(maxQuestions int, rounds []interviewerRound, logins []string, typing string, origin state.Stage) string {
+//
+// rounds are the interviewer's, whose questions its spec decides, and
+// planned the planner's, which share their numbering (#253): the next
+// round follows both (nextRound), and a line says the planner's questions
+// get no decision, as the check counts only the interviewer's. With no
+// planner rounds, the line about rounds is as it was before them.
+func interviewerPreamble(maxQuestions int, rounds, planned []interviewerRound, logins []string, typing string, origin state.Stage) string {
+	next := nextRound(slices.Concat(rounds, planned))
 	asked := "No questions have been asked yet, so a question round now is round 1."
 	if len(rounds) > 0 {
-		var each []string
-		for _, r := range rounds {
-			each = append(each, fmt.Sprintf("round %d (%s)", r.Number, ivQuestionRange(r)))
-		}
 		asked = fmt.Sprintf("Questions so far: %s. A question round now is round %d, and every question asked so far needs a decision in a spec.",
-			strings.Join(each, ", "), rounds[len(rounds)-1].Number+1)
+			ivRoundList(rounds), next)
+	}
+	if len(planned) > 0 {
+		if len(rounds) == 0 {
+			asked = fmt.Sprintf("You haven't asked any questions yet, so a question round now is round %d.", next)
+		}
+		asked += fmt.Sprintf(" The planner asked %s: those questions aren't yours, so no decision in a spec names them.", ivRoundList(planned))
 	}
 	by := "Nobody trusted has commented yet, so no decision has a `by`."
 	if len(logins) > 0 {
@@ -503,7 +575,8 @@ func interviewerTask(number int, dir string, untrusted bool) string {
 
 // ivAppLabel is the heading of the App's clean comment c in
 // conversation.md: a question round's number and question IDs, or a
-// revision's number.
+// revision's number and kind, "of the spec" or "of the plan". A revision
+// marker of a kind it doesn't know labels nothing.
 func ivAppLabel(c github.Comment, rounds []interviewerRound, appSlug string) string {
 	at := "comment " + strconv.FormatInt(c.ID, 10) + " by issuedog"
 	for _, r := range rounds {
@@ -511,12 +584,24 @@ func ivAppLabel(c github.Comment, rounds []interviewerRound, appSlug string) str
 			return at + ": Round " + strconv.Itoa(r.Number) + ", " + ivQuestionRange(r)
 		}
 	}
+	of := map[state.RevisionKind]string{state.SpecRevision: "spec", state.PlanRevision: "plan"}
 	for _, m := range github.TrustedMarkers(c.Author, c.Body, appSlug) {
-		if rev, err := strconv.Atoi(m.Fields["rev"]); m.Kind == "revision" && err == nil && rev > 0 {
-			return at + ": revision " + strconv.Itoa(rev) + " of the spec"
+		rev, err := strconv.Atoi(m.Fields["rev"])
+		if what, ok := of[state.RevisionKind(m.Fields["kind"])]; m.Kind == "revision" && ok && err == nil && rev > 0 {
+			return at + ": revision " + strconv.Itoa(rev) + " of the " + what
 		}
 	}
 	return at
+}
+
+// ivRoundList names rounds and their questions, such as "round 1
+// (Q1.1–1.2), round 2 (Q2.1)".
+func ivRoundList(rounds []interviewerRound) string {
+	each := make([]string, len(rounds))
+	for i, r := range rounds {
+		each[i] = fmt.Sprintf("round %d (%s)", r.Number, ivQuestionRange(r))
+	}
+	return strings.Join(each, ", ")
 }
 
 // ivQuestionRange names r's questions, such as "Q2.1–2.3", or "Q2.1".
