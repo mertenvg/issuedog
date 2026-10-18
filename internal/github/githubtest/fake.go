@@ -32,7 +32,8 @@ var Start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 // Fake serves one repo's issues, comments, labels, timelines, reactions,
 // parents and sub-issues, a closed event's closer (closing.go), a
 // sub-issue's link and an issue's blocked-by dependencies, listed and added
-// by issue ID (children.go, dependencies.go), a
+// by the issue's ID, which every issue has apart from its number
+// (children.go, dependencies.go), a created issue's labels and type, a
 // transferred issue's 301s and new home (transfer.go), the
 // GraphQL queries for their edits, deleted
 // comments and pins, and the pinIssue mutation. Its API writes, comment edits, created issues and
