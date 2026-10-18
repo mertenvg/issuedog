@@ -118,6 +118,7 @@ func TestFormatMarker(t *testing.T) {
 		{Marker{"origin", map[string]string{"item": "T4", "rev": "1", "plan": "#2"}}, "<!-- issuedog:origin plan=#2 rev=1 item=T4 -->"},
 		{Marker{"x", map[string]string{"zz": "1", "aa": "2", "to": "ready"}}, "<!-- issuedog:x to=ready aa=2 zz=1 -->"},
 		{Marker{"revert", nil}, "<!-- issuedog:revert -->"},
+		{Marker{"plan-data", map[string]string{"data": "q1YqSSxSslIqSy1SqgUA", "v": "1"}}, "<!-- issuedog:plan-data v=1 data=q1YqSSxSslIqSy1SqgUA -->"},
 	} {
 		got, err := FormatMarker(tt.m)
 		if err != nil {
