@@ -748,15 +748,16 @@ func digestSameBody(a, b string) bool {
 // step 1 just succeeded on and returned inputs for, as step 1 left it,
 // with its dirty content dirt and, if it's held, its open discussion
 // triggers holds, and whether an owner hold stays too, ownerHeld
-// (holdItemFind). Iterate calls it whether or not the
+// (holdItemFind), and whether an open issue blocks it, if it's a human
+// task, blocked (humanBlocked). Iterate calls it whether or not the
 // digest is on, since assignment takes the same items (assign.go). An
 // issue with nothing waiting has no entry. If waitFind fails, that's
 // logged, and the issue keeps the items it had, as one whose step 1
 // failed does.
-func (d *Daemon) digestCacheSet(s *github.Snapshot, inputs []github.Comment, dirt Dirt, holds []discTrigger, ownerHeld bool) {
+func (d *Daemon) digestCacheSet(s *github.Snapshot, inputs []github.Comment, dirt Dirt, holds []discTrigger, ownerHeld, blocked bool) {
 	st := d.Step
 	items, err := waitFind(waitInput{Owner: st.Owner, Repo: st.Repo, AppSlug: st.AppSlug, S: s, Dirt: dirt, Inputs: inputs, Holds: holds,
-		OwnerHeld: ownerHeld})
+		OwnerHeld: ownerHeld, Blocked: blocked})
 	if err != nil {
 		logr.Errorf("%s/%s#%d keeps the items it had on the digest: %v", st.Owner, st.Repo, s.Number, err)
 		return
