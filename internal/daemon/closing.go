@@ -50,18 +50,21 @@ import (
 // commit or a pull request in another repo that names the issue is no
 // merge, so it's reverted like any untrusted close. It's one GraphQL query,
 // asked only for a close nobody trusted made, and remembered per event
-// while the daemon runs (closingCloser). An event GitHub can't resolve, or
-// whose closer it won't show the App (an error under node, as FORBIDDEN
-// for a project's workflow on a personal account, or a commit in a private
-// repo), is no merge, logged, and isn't asked about again, so its close is
-// reverted. A project's workflow's closer (ProjectV2) is no merge either.
-// Any other failure, a failed request, a rate limit or an error on the
-// repository, is the pass's error, and the next pass asks again, without
-// bound: none of those says how the issue was closed, and a merge
-// reverted on a guess would reopen and hold a finished issue. The close's state reason is
-// the issue's state_reason as listed, which is the newest close's, and,
-// for a close again after an untrusted reopen, the ClosedEvent's
-// stateReason of the close it undid (closingCloseAgain).
+// while the daemon runs (closingCloser). An event GitHub can't resolve
+// (NOT_FOUND under node), or whose closer it won't show the App (FORBIDDEN
+// under node, as for a project's workflow on a personal account, or a
+// commit in a private repo), is no merge, logged, and isn't asked about
+// again, so its close is reverted. A project's workflow's closer
+// (ProjectV2) is no merge either. Any other failure, a failed request, a
+// rate limit, an error on the repository, or one of another type or of
+// none under node (#204), is the pass's error, and the next pass asks
+// again, without bound: none of those says how the issue was closed, and a
+// merge reverted on a guess would reopen and hold a finished issue. The
+// close's state reason is the issue's state_reason as listed, which is the
+// newest close's, and, for a close again after an untrusted reopen, the
+// ClosedEvent's stateReason of the close it undid, or the closed stage's
+// if that question fails, logged, so the close again never waits on it
+// (closingCloseAgain).
 //
 // Which closed issues are read. The poll lists every issue, closed ones
 // too, and keeps a closed issue whose close is still to judge
@@ -598,7 +601,9 @@ func (a *Applier) closingReopen(ctx context.Context, s *github.Snapshot, trust g
 // s, which has the closed stage label: a revert comment keyed by its
 // event, posted once (closingRevertComment), then a close with the
 // state reason of the newest close before it, as its ClosedEvent gives it
-// (closingCloser), or else label's, and s is closed.
+// (closingCloser), or else label's, and s is closed. A failed question of
+// that close is logged, and label's reason used, so a lasting failure
+// doesn't keep s open (#204).
 // Its error wraps closingErrClosedAgain once it's closed.
 func (a *Applier) closingCloseAgain(ctx context.Context, s *github.Snapshot, dirty func(int64) bool, reopen github.Closing, r int, label string) error {
 	reason := "completed"
@@ -609,7 +614,12 @@ func (a *Applier) closingCloseAgain(ctx context.Context, s *github.Snapshot, dir
 		if cl := s.Closings[j]; !cl.Reopen {
 			by, err := a.closingCloser(ctx, cl)
 			if err != nil {
-				return fmt.Errorf("reopen %d: the close it undid: %w", reopen.ID, err)
+				// The label's reason does no harm, where waiting for the
+				// answer would leave the issue open for as long as the
+				// question fails (#204).
+				logr.Warnf("%s/%s#%d: closing it again as %s, the label's reason, as the reason of the close its reopen %d undid is unknown: %v",
+					a.Owner, a.Repo, s.Number, reason, reopen.ID, err)
+				break
 			}
 			if by.StateReason != "" {
 				reason = by.StateReason
