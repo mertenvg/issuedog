@@ -163,6 +163,7 @@ type Item struct {
 	// plan item (SPEC §5.2).
 	FromPlan bool
 	// Human is true for a plan item the planner marked human (SPEC §11.3).
+	// Derive sets it from the origin marker's human=1 (Origin.Human).
 	Human bool
 	// ReachedReady is true once the issue has been at ready: any counted
 	// marker names ready or a later task stage (in-progress, verifying,
