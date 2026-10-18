@@ -50,7 +50,7 @@ func TestSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantEpic := &github.Snapshot{Number: epic, Title: "Epic", Body: "an idea", BodyNode: "I_1", Author: owner, AuthorAssociation: "COLLABORATOR",
-		CreatedAt: at(1), UpdatedAt: at(1), Type: "epic"}
+		CreatedAt: at(1), UpdatedAt: at(1), Type: "epic", TypeName: "Epic", TypeID: f.IssueTypeID("Epic")}
 	if !reflect.DeepEqual(got, wantEpic) {
 		t.Errorf("snapshot without a parent =\n%+v\nwant\n%+v", got, wantEpic)
 	}

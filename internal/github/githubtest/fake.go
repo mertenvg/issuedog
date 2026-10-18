@@ -63,6 +63,12 @@ type Fake struct {
 	linked      map[int][]linked // see LinkSubIssue
 	dropTypes   bool             // see DropTypeChanges
 
+	// The org's issue types (typeevent.go): their IDs by lowercase name,
+	// the names renamed away (RenameOrgIssueType), and the last ID given.
+	orgTypes      map[string]int64
+	goneTypes     map[string]bool
+	lastIssueType int64
+
 	unassignable map[string]bool // logins in lower case, see Unassignable (assign.go)
 
 	closingErrs []map[string]any // for the next GraphQL answer, with their paths (FailGraphQLAt)
@@ -214,9 +220,10 @@ func (f *Fake) fileIssue(author, title, body string, labels []string) *issue {
 	return is
 }
 
-// SetType sets an issue's type, as on org repos.
+// SetType sets an issue's type, as on org repos, with the type's ID in the
+// org (IssueTypeID), and no event.
 func (f *Fake) SetType(number int, name string) {
-	f.edit(number, func(is *issue) { is.Type = &gogithub.IssueType{Name: &name} })
+	f.edit(number, func(is *issue) { is.Type = f.issueTypeNamed(name) })
 }
 
 // SetPullRequest makes number a pull request, which REST lists with the issues.

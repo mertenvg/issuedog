@@ -309,9 +309,14 @@ func TestRevertIssueType(t *testing.T) {
 		{"remove", IssueTypeRevert{Key: "9", By: "mallory", From: "Bug"},
 			[]string{comment("I removed the issue type `Bug`: only trusted users can change the issue type, and mallory isn't one.", "9"),
 				`PATCH /issues/7 {"type":null}`}},
-		{"restore an unexplained type", IssueTypeRevert{Key: "issue-type:epic@4", From: "epic", To: "Task"},
-			[]string{comment("I restored the issue type `Task`: no change by a trusted user or the App explains `epic`, "+
+		{"restore an unexplained type", IssueTypeRevert{Key: "issue-type:epic@4", From: "Epic", To: "Task"},
+			[]string{comment("I restored the issue type `Task`: no change by a trusted user or the App explains `Epic`, "+
 				"and only trusted users can change the issue type.", "issue-type:epic@4"),
+				`PATCH /issues/7 {"type":"Task"}`}},
+		// #183: a removal no event explains says so, with no empty backticks.
+		{"restore after an unexplained removal", IssueTypeRevert{Key: "issue-type:@4", To: "Task"},
+			[]string{comment("I restored the issue type `Task`: no change by a trusted user or the App explains the issue having no type, "+
+				"and only trusted users can change the issue type.", "issue-type:@4"),
 				`PATCH /issues/7 {"type":"Task"}`}},
 		{"remove an unexplained type", IssueTypeRevert{Key: "issue-type:bug@0", From: "bug"},
 			[]string{comment("I removed the issue type `bug`: no change by a trusted user or the App explains `bug`, "+
@@ -325,6 +330,14 @@ func TestRevertIssueType(t *testing.T) {
 		{"a mention in a type's name is defused", IssueTypeRevert{Key: "9", By: "mallory", From: "x` @owner `y"},
 			[]string{comment("I removed the issue type `x` @\u200bowner `y`: only trusted users can change the issue type, and mallory isn't one.", "9"),
 				`PATCH /issues/7 {"type":null}`}},
+		{"a mention in the restored type's name is defused", IssueTypeRevert{Key: "9", By: "mallory", From: "Epic", To: "x` @owner `y"},
+			[]string{comment("I restored the issue type `x` @​owner `y`: only trusted users can change the issue type, and mallory isn't one.", "9"),
+				`PATCH /issues/7 {"type":"x` + "` @owner `" + `y"}`}},
+		{"a mention in the restored type's name is defused after an unexplained type", IssueTypeRevert{Key: "issue-type:epic@0", From: "Epic",
+			To: "x&#64;owner"},
+			[]string{comment("I restored the issue type `x@​owner`: no change by a trusted user or the App explains `Epic`, "+
+				"and only trusted users can change the issue type.", "issue-type:epic@0"),
+				`PATCH /issues/7 {"type":"x&#64;owner"}`}},
 		{"a mention in an unexplained type's name is defused", IssueTypeRevert{Key: "issue-type:x@0", From: "x` @owner `y", To: "Task"},
 			[]string{comment("I restored the issue type `Task`: no change by a trusted user or the App explains `x` @\u200bowner `y`, "+
 				"and only trusted users can change the issue type.", "issue-type:x@0"),

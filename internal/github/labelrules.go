@@ -99,6 +99,11 @@ type LabelCheck struct {
 	// IssueTypeRevert is the revert of the issue type CheckLabels made, or
 	// nil: To is the type the issue has now.
 	IssueTypeRevert *IssueTypeRevert
+	// IssueTypeLeftOut is the issue type CheckLabels leaves out, as no event
+	// has explained it for HoldBound, or nil: the caller acts on its To, the
+	// type that stands, as if the issue had it, until the type is explained
+	// or reverted.
+	IssueTypeLeftOut *IssueTypeLeftOut
 	// Held are the labels held back as unexplained, and the issue type, if
 	// no event explains it yet: the caller must not act on the issue until a
 	// later call holds nothing back.
@@ -143,22 +148,25 @@ type labelState struct {
 	events []*gogithub.Timeline // labeled and unlabeled, or issue-type events, oldest first
 	ats    []int                // each event's timeline position
 	// issueTypes is set for the issue type's history, and types are then
-	// the type each event left, "" for none (issueTypeRevertLeft).
+	// the type each event left, "" for none (issueTypeRevertLeft), and ids
+	// their IDs, 0 for none or none given (issueTypeRevertLeftID).
 	issueTypes bool
 	types      []string
+	ids        []int64
 }
 
 // value is what event i left: for a label, "on", or "" for off; for the
-// issue type, the type's name in lower case, or "" for none. So "" is how
-// either is before any event.
-func (l *labelState) value(i int) string {
+// issue type, the type's name, or "" for none, and its ID, or 0. So "" and
+// 0 is how either is before any event. Two values are compared as
+// SameIssueType compares types: a label's have no ID.
+func (l *labelState) value(i int) (string, int64) {
 	if l.issueTypes {
-		return strings.ToLower(l.types[i])
+		return l.types[i], l.ids[i]
 	}
 	if l.events[i].GetEvent() == "labeled" {
-		return "on"
+		return "on", 0
 	}
-	return ""
+	return "", 0
 }
 
 // latest returns the newest change to l, or nil if l is nil.
@@ -207,9 +215,10 @@ func OverrideLabel(name string) bool {
 // With guard, as on a repo that uses issue types, the issue type is judged
 // as a type:* label is, against the type the caller read, guard.Type, and
 // an untrusted change of it is reverted the same way, through
-// RevertIssueType. A type no event explains yet is held back, as such a
-// label is, then reverted (see issueTypeRevertGuard). With no guard, issue
-// types are left alone.
+// RevertIssueType. Types are compared by ID where both have one
+// (SameIssueType). A type no event explains yet is held back, then left
+// out, and returned in IssueTypeLeftOut, then reverted, as such a label is
+// (see issueTypeRevertGuard). With no guard, issue types are left alone.
 //
 // A pipeline label on the issue that no standing change explains, as from a
 // repo label rename, is removed the same way once it has stayed unexplained
@@ -222,7 +231,8 @@ func OverrideLabel(name string) bool {
 //
 // It also returns the newest change that stands to the settings labels
 // (Settings) and to the type (TypeLabel and IssueType; see TypeEvent), and
-// the revert of the issue type it made (IssueTypeRevert).
+// the revert of the issue type it made (IssueTypeRevert), or the issue type
+// it leaves out (IssueTypeLeftOut).
 //
 // Markers in a comment that dirty reports, by its ID, are skipped, as
 // state.Derive skips them. The body isn't on the timeline, so dirty is never
@@ -293,6 +303,7 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 				issueType.events = append(issueType.events, e)
 				issueType.ats = append(issueType.ats, i)
 				issueType.types = append(issueType.types, issueTypeRevertLeft(events[i]))
+				issueType.ids = append(issueType.ids, issueTypeRevertLeftID(events[i]))
 			}
 		}
 	}
@@ -365,7 +376,7 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 		}
 	}
 	var heldType string
-	if found.IssueType, found.IssueTypeRevert, heldType, err = r.issueTypeRevertGuard(ctx, issueType, reverted, guard, seen); err != nil {
+	if found.IssueType, found.IssueTypeRevert, found.IssueTypeLeftOut, heldType, err = r.issueTypeRevertGuard(ctx, issueType, reverted, guard, seen); err != nil {
 		return LabelCheck{}, wrap(err)
 	}
 	if found.Labels, found.Held, err = r.unexplained(ctx, labels, given, states, settled, reverted, marker, seen); err != nil {
@@ -451,18 +462,19 @@ func (r *labelRules) isApp(e *gogithub.Timeline) bool {
 // restores reports whether event i, by the App, leaves l as the accepted change
 // before it left it (off, or no type, if there was none), as a revert does.
 func (r *labelRules) restores(ctx context.Context, l *labelState, i int) (bool, error) {
-	before := ""
+	before, beforeID := "", int64(0)
 	for j := i - 1; j >= 0; j-- {
 		ok, err := r.accepted(ctx, l.events[j])
 		if err != nil {
 			return false, fmt.Errorf("restores %s at %d: %w", l.name, i, err)
 		}
 		if ok {
-			before = l.value(j)
+			before, beforeID = l.value(j)
 			break
 		}
 	}
-	return before == l.value(i), nil
+	after, afterID := l.value(i)
+	return SameIssueType(before, beforeID, after, afterID), nil
 }
 
 // standing returns the latest change to l that stands, and its timeline
@@ -673,18 +685,22 @@ func (h heldIssue) due(fs firstSeen) time.Time {
 }
 
 // Due returns when the first unexplained label of owner/repo#number is to
-// be removed, by GitHub's clock, if it stays so, and false if u keeps none
-// of it. Until then, a caller that left its labels out needn't read the
-// issue again for them.
+// be removed, or its unexplained issue type reverted, by GitHub's clock, if
+// it stays so, and false if u keeps none of it. Until then, a caller that
+// left its labels or its type out needn't read the issue again for them.
 func (u *Unexplained) Due(owner, repo string, number int) (time.Time, bool) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	h := u.issues[unexplainedKey(owner, repo, number)]
+	issue := unexplainedKey(owner, repo, number)
+	h := u.issues[issue]
 	var first time.Time
 	for _, fs := range h.labels {
 		if at := h.due(fs); first.IsZero() || at.Before(first) {
 			first = at
 		}
+	}
+	if at, ok := u.issueTypeRevertDue(issue); ok && (first.IsZero() || at.Before(first)) {
+		first = at
 	}
 	return first, !first.IsZero()
 }

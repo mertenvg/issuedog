@@ -38,7 +38,7 @@ func TestSetTypeByRevert(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := &github.IssueTypeRevert{Key: strconv.FormatInt(flip, 10), By: "mallory", From: "Epic", To: "Task"}
+	want := &github.IssueTypeRevert{Key: strconv.FormatInt(flip, 10), By: "mallory", From: "Epic", To: "Task", ToID: f.IssueTypeID("Task")}
 	if found.IssueType != owner || found.IssueTypeRevert == nil || *found.IssueTypeRevert != *want {
 		t.Fatalf("IssueType %d and revert %+v; want %d and %+v", found.IssueType, found.IssueTypeRevert, owner, want)
 	}
@@ -60,9 +60,10 @@ func TestSetTypeByRevert(t *testing.T) {
 
 // An untrusted change whose event GitHub hasn't written yet (LagEvents) is
 // held back, for HoldBound from when it was first found, by seen's memory,
-// then reverted all the same, keyed by the type and the newest event. Then
-// the type is the one that stands, so nothing more is written, though the
-// App's own event isn't written yet either.
+// then left out, for the type that stands, until it has stayed unexplained
+// for UnexplainedWait, then reverted all the same, keyed by the type and
+// the newest event. Then the type is the one that stands, so nothing more
+// is written, though the App's own event isn't written yet either.
 func TestSetTypeByRevertLate(t *testing.T) {
 	f := New(t, "o/r", "app")
 	n := f.AddIssue("owner", "Issue", "")
@@ -87,13 +88,31 @@ func TestSetTypeByRevertLate(t *testing.T) {
 				wait, found.Held, found.IssueType, found.IssueTypeRevert, f.Writes())
 		}
 	}
-	f.Advance(3 * time.Second) // past the bound
-	want := github.IssueTypeRevert{Key: "issue-type:epic@" + strconv.FormatInt(owner, 10), From: "epic", To: "Task"}
-	if found := check("epic"); len(found.Held) != 0 || found.IssueTypeRevert == nil || *found.IssueTypeRevert != want {
+	leftOut := github.IssueTypeLeftOut{Name: "epic", To: "Task", ToID: f.IssueTypeID("Task")}
+	for _, wait := range []time.Duration{3 * time.Second, github.UnexplainedWait - github.HoldBound - 2*time.Second} {
+		f.Advance(wait) // past the bound, then just short of the wait
+		found := check("epic")
+		if len(found.Held) != 0 || found.IssueType != owner || found.IssueTypeRevert != nil || len(f.Writes()) != 0 {
+			t.Fatalf("left out: held %q, IssueType %d, revert %+v, writes %+v; want nothing held, the owner's change, and nothing written",
+				found.Held, found.IssueType, found.IssueTypeRevert, f.Writes())
+		}
+		if found.IssueTypeLeftOut == nil || *found.IssueTypeLeftOut != leftOut {
+			t.Fatalf("left out %+v; want %+v", found.IssueTypeLeftOut, leftOut)
+		}
+		if got, ok := seen.IssueTypeLeftOut("o", "r", n); !ok || got != leftOut {
+			t.Errorf("seen's left out %+v, %t; want %+v", got, ok, leftOut)
+		}
+	}
+	f.Advance(3 * time.Second) // past the wait
+	want := github.IssueTypeRevert{Key: "issue-type:epic@" + strconv.FormatInt(owner, 10), From: "epic", To: "Task", ToID: f.IssueTypeID("Task")}
+	if found := check("epic"); len(found.Held) != 0 || found.IssueTypeLeftOut != nil || found.IssueTypeRevert == nil || *found.IssueTypeRevert != want {
 		t.Fatalf("held %q and revert %+v; want %+v", found.Held, found.IssueTypeRevert, want)
 	}
 	if got := f.State().Issues[0].Type; got != "Task" || len(f.Writes()) != 2 {
 		t.Errorf("type %q, writes %+v; want Task back, with the comment and the type", got, f.Writes())
+	}
+	if _, ok := seen.IssueTypeLeftOut("o", "r", n); ok {
+		t.Error("after the revert, seen still leaves the type out")
 	}
 	if found := check("task"); len(found.Held) != 0 || found.IssueTypeRevert != nil || len(f.Writes()) != 2 {
 		t.Errorf("after the revert: held %q, revert %+v, writes %d; want nothing", found.Held, found.IssueTypeRevert, len(f.Writes()))
@@ -177,7 +196,7 @@ func TestSetTypeByRevertHoldForgets(t *testing.T) {
 		}},
 		{"reverted", func(t *testing.T, f *Fake, n int, check func(string) github.LabelCheck) {
 			if found := check("epic"); found.IssueTypeRevert == nil {
-				t.Fatalf("revert %+v; want epic reverted at the bound", found.IssueTypeRevert)
+				t.Fatalf("revert %+v; want epic reverted at the wait", found.IssueTypeRevert)
 			}
 		}},
 	} {
@@ -191,7 +210,7 @@ func TestSetTypeByRevertHoldForgets(t *testing.T) {
 			if found := check("epic"); len(found.Held) != 1 {
 				t.Fatalf("held %q; want epic held back", found.Held)
 			}
-			f.Advance(github.HoldBound + time.Second)
+			f.Advance(github.UnexplainedWait + time.Second)
 			tc.clear(t, f, n, check)
 			f.SetType(n, "Epic") // no event
 			if found := check("epic"); len(found.Held) != 1 || found.IssueTypeRevert != nil {
@@ -331,4 +350,90 @@ func TestSetTypeByRevertRefused(t *testing.T) {
 			t.Errorf("type %q; want none", got)
 		}
 	})
+}
+
+// The fake gives each org issue type an ID, the same for every issue and
+// event, and SetType's too. RenameOrgIssueType keeps the ID and shows the
+// new name on the issues, and the old name is no type any more, so the API
+// refuses it (#183).
+func TestRenameOrgIssueType(t *testing.T) {
+	t.Parallel()
+	f := New(t, "o/r", "app")
+	n := f.AddIssue("owner", "Issue", "")
+	other := f.AddIssue("owner", "Other", "")
+	f.SetTypeBy(n, "owner", "Task")
+	f.SetType(other, "task")
+	c := f.Client(t)
+	read := func(n int) *gogithub.IssueType {
+		t.Helper()
+		issue, _, err := c.Issues.Get(context.Background(), "o", "r", n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return issue.GetType()
+	}
+	id := f.IssueTypeID("Task")
+	if id == 0 || read(n).GetID() != id || read(other).GetID() != id || f.IssueTypeID("Epic") == id {
+		t.Fatalf("IDs %d, %d and %d; want Task's, %d, on both, and Epic's another", read(n).GetID(), read(other).GetID(), f.IssueTypeID("Epic"), id)
+	}
+	f.RenameOrgIssueType("Task", "Chore")
+	for _, i := range []int{n, other} {
+		if got := read(i); got.GetName() != "Chore" || got.GetID() != id {
+			t.Errorf("#%d after the rename: type %q, %d; want Chore, %d", i, got.GetName(), got.GetID(), id)
+		}
+	}
+	if f.IssueTypeID("chore") != id {
+		t.Errorf("Chore's ID %d; want Task's, %d", f.IssueTypeID("chore"), id)
+	}
+	patch := func(name string) error {
+		t.Helper()
+		req, err := c.NewRequest(context.Background(), http.MethodPatch, "repos/o/r/issues/2", map[string]any{"type": name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = c.Do(req, nil)
+		return err
+	}
+	var gh *gogithub.ErrorResponse
+	if err := patch("Task"); !errors.As(err, &gh) || gh.Response.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("PATCH the old name = %v; want a 422", err)
+	}
+	if err := patch("Epic"); err != nil || read(other).GetName() != "Epic" {
+		t.Errorf("PATCH Epic = %v, type %q; want Epic", err, read(other).GetName())
+	}
+}
+
+// After the org renames Task to Chore, the owner's issue-type event still
+// names Task, with the same ID as the issue's Chore. CheckLabels, given
+// the issue's type with its ID, finds it is the type that stands: nothing
+// is held back, left out or reverted, then or later. Without the ID, the
+// names can't tell, so the type is held back as unexplained.
+func TestSetTypeByRenamedInOrg(t *testing.T) {
+	t.Parallel()
+	f := New(t, "o/r", "app")
+	n := f.AddIssue("owner", "Issue", "")
+	owner := f.SetTypeBy(n, "owner", "Task")
+	f.RenameOrgIssueType("Task", "Chore")
+	id := f.IssueTypeID("Chore")
+	seen := &github.Unexplained{}
+	c := f.Client(t)
+	check := func(guard *github.IssueTypeGuard) github.LabelCheck {
+		t.Helper()
+		found, err := c.CheckLabels(context.Background(), "o", "r", n, nil, "app", typeByTrust{}, func(int64) bool { return false }, seen, guard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return found
+	}
+	for _, wait := range []time.Duration{0, github.HoldBound + time.Second, github.UnexplainedWait} {
+		f.Advance(wait)
+		found := check(&github.IssueTypeGuard{Type: "Chore", ID: id})
+		if len(found.Held) != 0 || found.IssueTypeLeftOut != nil || found.IssueTypeRevert != nil || found.IssueType != owner || len(f.Writes()) != 0 {
+			t.Errorf("%v on: held %q, left out %+v, revert %+v, IssueType %d, writes %+v; want nothing, and the owner's change, %d",
+				wait, found.Held, found.IssueTypeLeftOut, found.IssueTypeRevert, found.IssueType, f.Writes(), owner)
+		}
+	}
+	if found := check(&github.IssueTypeGuard{Type: "Chore"}); len(found.Held) != 1 {
+		t.Errorf("with no ID: held %q; want Chore held back, by name", found.Held)
+	}
 }
