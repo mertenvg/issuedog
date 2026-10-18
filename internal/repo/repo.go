@@ -20,6 +20,10 @@ import (
 // ErrNotFound is returned by ReadFile when main has no file at the path.
 var ErrNotFound = errors.New("not found")
 
+// ErrNotFile is returned by ReadFile when what main has at the path isn't
+// a file, such as a directory.
+var ErrNotFile = errors.New("not a file")
+
 // refspec mirrors every remote branch, main included, into refs/heads.
 // Together with --prune, the bare repo's branches match the remote's after
 // each Sync. Refs outside refs/heads, such as refs/issuedog/runs/*, are left
@@ -69,7 +73,8 @@ func (r *Repo) Sync(ctx context.Context, token string) error {
 
 // ReadFile returns the contents of path on main. It reads the blob with
 // cat-file, so no textconv or other driver runs, and a directory is an
-// error. A path main doesn't have gives an error matching ErrNotFound.
+// error, matching ErrNotFile. A path main doesn't have gives an error
+// matching ErrNotFound.
 func (r *Repo) ReadFile(ctx context.Context, path string) ([]byte, error) {
 	if path == "" {
 		return nil, errors.New("read main: empty path")
@@ -78,6 +83,9 @@ func (r *Repo) ReadFile(ctx context.Context, path string) ([]byte, error) {
 	if err != nil {
 		if strings.Contains(err.Error(), "does not exist in 'main'") {
 			return nil, fmt.Errorf("read main:%s: %w", path, ErrNotFound)
+		}
+		if strings.HasSuffix(err.Error(), ": bad file") {
+			return nil, fmt.Errorf("read main:%s: %w: %w", path, ErrNotFile, err)
 		}
 		return nil, fmt.Errorf("read main:%s: %w", path, err)
 	}

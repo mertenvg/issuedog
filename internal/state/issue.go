@@ -85,9 +85,9 @@ type Issue struct {
 // else edited, gives none.
 //
 // Plan is above 0 whenever there is one: the zero Origin is none, so
-// callers check Plan. Fields the marker has besides plan, rev, item and
-// human, such as S4's check fields, aren't kept here, and don't stop it
-// from being read.
+// callers check Plan. Fields the marker has besides plan, rev, item, human
+// and a human task's check fields aren't kept here, and don't stop it from
+// being read.
 type Origin struct {
 	// Plan is the number of the issue whose plan the item is from, from
 	// plan=#N.
@@ -105,12 +105,18 @@ type Origin struct {
 	// (plan #249, assumption 9). Any other value of human, or none, is
 	// false.
 	Human bool
+	// Check is a human task's "Done when" check, from the marker's check,
+	// value and contains (CheckFields, plan #250, Q1a), or the zero Check
+	// for a plain-text one, and for fields that don't record a whole check
+	// (checkOf). It's read with the rest of the marker, so wherever Origin
+	// is read from, it is too.
+	Check Check
 }
 
 // originOf returns the Origin that marker m, read in comment id (or
 // BodyID), records, or false if it isn't a whole one: an origin marker
-// with plan=#N and rev=R, each above 0, and a non-empty item. Its other
-// fields are ignored.
+// with plan=#N and rev=R, each above 0, and a non-empty item. Its human
+// and check fields are read too, and its other fields ignored.
 func originOf(m github.Marker, id int64) (Origin, bool) {
 	num, hash := strings.CutPrefix(m.Fields["plan"], "#")
 	plan, perr := strconv.Atoi(num)
@@ -119,7 +125,7 @@ func originOf(m github.Marker, id int64) (Origin, bool) {
 	if m.Kind != "origin" || !hash || perr != nil || plan <= 0 || rerr != nil || rev <= 0 || item == "" {
 		return Origin{}, false
 	}
-	return Origin{Plan: plan, Rev: rev, Item: item, Comment: id, Human: m.Fields["human"] == "1"}, true
+	return Origin{Plan: plan, Rev: rev, Item: item, Comment: id, Human: m.Fields["human"] == "1", Check: checkOf(m.Fields)}, true
 }
 
 // TriageVerdict is a triage marker (plan #6, assumption 3): a decision on

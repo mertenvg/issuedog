@@ -195,7 +195,7 @@ func startDaemon(ctx context.Context, set settings, key []byte) (*daemon.Daemon,
 		logr.Infof("created the labels %s", strings.Join(created, ", "))
 	}
 	logr.Infof("running as %s[bot] on %s/%s", slug, set.owner, set.name)
-	a := &daemon.Applier{Client: client, Owner: set.owner, Repo: set.name, AppSlug: slug}
+	a := &daemon.Applier{Client: client, Owner: set.owner, Repo: set.name, AppSlug: slug, ReadMain: clone.ReadFile}
 	d := &daemon.Daemon{Clone: clone, Config: cfg, Digest: true, Assign: true}
 	d.Step = newStep(a, tr, d.CurrentModels)
 	return d, nil

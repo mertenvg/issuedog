@@ -142,13 +142,15 @@ func TestReadFile(t *testing.T) {
 		path     string
 		want     string
 		notFound bool
+		notFile  bool
 		wantErr  bool
 	}{
 		{name: "top level", path: "README.md", want: "hello\n"},
 		{name: "nested", path: ".issuedog/config.yaml", want: "types: labels\n"},
 		{name: "missing", path: "CODEOWNERS", notFound: true, wantErr: true},
 		{name: "missing nested", path: ".issuedog/prompts/planner.md", notFound: true, wantErr: true},
-		{name: "directory", path: ".issuedog", wantErr: true},
+		{name: "directory", path: ".issuedog", notFile: true, wantErr: true},
+		{name: "under a file", path: "README.md/x", notFound: true, wantErr: true},
 		{name: "empty path", path: "", wantErr: true},
 	}
 	for _, tt := range tests {
@@ -159,6 +161,9 @@ func TestReadFile(t *testing.T) {
 			}
 			if errors.Is(err, ErrNotFound) != tt.notFound {
 				t.Errorf("ReadFile(%q) err = %v, want ErrNotFound %v", tt.path, err, tt.notFound)
+			}
+			if errors.Is(err, ErrNotFile) != tt.notFile {
+				t.Errorf("ReadFile(%q) err = %v, want ErrNotFile %v", tt.path, err, tt.notFile)
 			}
 			if string(got) != tt.want {
 				t.Errorf("ReadFile(%q) = %q, want %q", tt.path, got, tt.want)

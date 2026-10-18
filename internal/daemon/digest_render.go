@@ -263,29 +263,8 @@ func digestRenderHold(h holdItemTrigger) string {
 	return fmt.Sprintf("**Trigger:** %s. %s See %s", github.Escape(what), h.How, h.Link)
 }
 
-// digestRenderKey is key as a digest-new marker holds it, one of a
-// comma-separated list that github.ParseMarkers reads back and #159's
-// digestState.comment splits on ",". Every byte but a printable ASCII one
-// other than "%", ",", "<" and ">" is percent-encoded as %XX. That leaves
-// every key waitFind makes today as it is, since an error's kind and key
-// come from a marker, which holds no space, "<" or ">", and the App's
-// keys hold no "," or "%". It's never split on "-", which an error's key
-// may hold.
-func digestRenderKey(key string) string {
-	var b strings.Builder
-	for i := 0; i < len(key); i++ {
-		c := key[i]
-		if c <= ' ' || c >= 0x7f || strings.IndexByte("%,<>", c) >= 0 {
-			fmt.Fprintf(&b, "%%%02X", c)
-			continue
-		}
-		b.WriteByte(c)
-	}
-	return b.String()
-}
-
 // digestRenderNew returns the items, in order, with a key that announces
-// them (waitItem.news), as digestRenderKey writes it, that isn't in
+// them (waitItem.news), as github.EncodeValue writes it, that isn't in
 // announced: the keys the App's digest-new comments that were never
 // edited hold (#159's digestState.announced). That's an item's own key,
 // or for a hold, one for each trigger no App comment mentioned (#192). An
@@ -294,7 +273,7 @@ func digestRenderKey(key string) string {
 func digestRenderNew(items []waitItem, announced map[string]bool) []waitItem {
 	var fresh []waitItem
 	for _, it := range items {
-		if slices.ContainsFunc(it.news(), func(k string) bool { return !announced[digestRenderKey(k)] }) {
+		if slices.ContainsFunc(it.news(), func(k string) bool { return !announced[github.EncodeValue(k)] }) {
 			fresh = append(fresh, it)
 		}
 	}
@@ -312,7 +291,7 @@ func digestRenderNew(items []waitItem, announced map[string]bool) []waitItem {
 // The comment lists each item it announces on one line, with its issue,
 // escaped title, kind and link, then the cc line for notify, then a
 // digest-new marker with the keys that announce them (waitItem.news,
-// digestRenderKey): a hold's keys name each trigger no App comment
+// github.EncodeValue): a hold's keys name each trigger no App comment
 // mentioned, so a later one makes the hold new again, and one resolved
 // doesn't (#192). If it would go over digestRenderLimit, the
 // lowest-ranked items are left out of the list and
@@ -338,7 +317,7 @@ func digestRenderNews(items []waitItem, notify []string) (string, error) {
 		lines[i] = fmt.Sprintf("- **%s** on #%d%s. Answer here: %s", digestRenderKindName(it.Kind), it.Issue, title, it.Link)
 		var news []string
 		for _, k := range it.news() {
-			news = append(news, digestRenderKey(k))
+			news = append(news, github.EncodeValue(k))
 		}
 		keys[i] = strings.Join(news, ",")
 	}
@@ -362,7 +341,7 @@ func digestRenderNews(items []waitItem, notify []string) (string, error) {
 	text := render(k)
 	switch {
 	case ferr != nil:
-		// A key digestRenderKey wrote is never one the marker can't hold, but
+		// A key github.EncodeValue wrote is never one the marker can't hold, but
 		// for an empty one: none is ever given.
 		return "", fmt.Errorf("announce %s on the digest: %w", waitCount(len(mention), "new item"), ferr)
 	case k == 0:
