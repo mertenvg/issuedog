@@ -91,11 +91,8 @@ func (st *Step) why(ctx context.Context, s *github.Snapshot, d Dirt, c github.Co
 	if err := cmd.Check(stage); err != nil {
 		return Rejection{Reason: err.Error()}, Handler{}, nil
 	}
-	h, ok := st.Commands[cmd.Name]
-	switch {
-	case !ok && cmd.Name == "done":
-		return Rejection{Reason: "`/done` isn't handled yet"}, h, nil
-	case h.Check == nil:
+	h := st.Commands[cmd.Name]
+	if h.Check == nil {
 		return Rejection{}, h, nil
 	}
 	err := h.Check(ctx, st.Applier, Cmd{Command: cmd, Comment: c, S: s, Dirt: d, Trust: st.Trust})

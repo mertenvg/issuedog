@@ -325,6 +325,35 @@ func TestClosingTrustedReopen(t *testing.T) {
 	}
 }
 
+// A trusted reopen of a human task the App closed on /done (Transition, to
+// closed) holds it at needs-human, the stage it was closed from, not at
+// clarifying; /resume puts it back there.
+func TestClosingTrustedReopenAppClose(t *testing.T) {
+	t.Parallel()
+	var event int64
+	setup := humanTask("", func(t testing.TB, f *githubtest.Fake) {
+		doneBy("owner", 1002)(t, f)
+		f.AddReaction(1002, app, "+1")
+		f.AddComment(1, app, doneClosed(`The "Done when" has no check for me to run.`, 1002))
+		f.CloseAs(1, app, "completed")
+		f.AddLabel(1, app, "stage:completed")
+		f.RemoveLabel(1, app, "stage:needs-human")
+		event = f.ReopenBy(1, "owner")
+	})
+	closingCheck(t, setup, func(*githubtest.Fake) closingWant {
+		return closingWant{labels: []string{"stage:held"}, comments: []string{"/done", doneClosed(`The "Done when" has no check for me to run.`, 1002),
+			closingHeld("`owner`", event, "needs-human", 1002)}}
+	})
+	f, o := setup(t), digestNotifyOrigin(t)
+	d := newDaemon(t, f, o, nil)
+	iterate(t, d)
+	f.AddComment(1, "owner", "/resume")
+	iterate(t, d)
+	if is := f.State().Issues[0]; !slices.Equal(is.Labels, []string{"stage:needs-human"}) || is.Closed {
+		t.Errorf("after /resume: labels %q, closed %t; want stage:needs-human, open", is.Labels, is.Closed)
+	}
+}
+
 // A trusted reopen of an issue closed while held keeps the first hold's at
 // and origin.
 func TestClosingTrustedReopenHeld(t *testing.T) {

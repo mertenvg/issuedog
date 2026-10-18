@@ -133,7 +133,7 @@ func TestStep(t *testing.T) {
 				rejected("/approve.", "bad argument: put a space between `/approve` and what follows it", "1004"),
 				rejected("/approve", "the spec changed", "1005")},
 			downs: []string{"/frob <!-- issuedog:transition to=planning -->", "/priority p9\nit's urgent", "/approve.", "/approve"}},
-		{name: "label events come before commands",
+		{name: "label events come before commands, and /done with no handler waits",
 			setup: at(state.Ready, func(t testing.TB, f *githubtest.Fake) {
 				labelEvent(t, f.AddLabel(1, "owner", "stage:needs-human"), 9002)
 				post(t, f, 1002, "owner", "/done")
@@ -141,10 +141,9 @@ func TestStep(t *testing.T) {
 			}),
 			comments: []string{"owner set `stage:needs-human` by hand, so I've recorded it as an owner override.\n\n" +
 				"<!-- issuedog:transition from=ready to=needs-human by=owner event=9002 -->",
-				rejected("/done", "`/done` isn't handled yet", "1002"),
 				rejected("/approve", "wrong stage: `/approve` applies only at `spec-review` or `plan-review`, "+
 					"and this issue is at `needs-human`", "1003")},
-			downs: []string{"/done", "/approve"}},
+			downs: []string{"/approve"}},
 		{name: "a rejection is a 👎, then one reply, and a later /hold doesn't apply it",
 			setup: at(state.Ready, func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1002, "owner", "/resume")
