@@ -282,3 +282,29 @@ func TestTransferBack(t *testing.T) {
 		t.Errorf("GET of the old new home = %d; want 404", status)
 	}
 }
+
+// A transferred sub-issue stays listed among its parent's sub-issues, as
+// GitHub allows one in another repo, naming its new repo there, beside
+// one that stays, which names this repo.
+func TestTransferSubIssue(t *testing.T) {
+	t.Parallel()
+	f, _ := transferFake(t)
+	f.AddIssue("owner", "Stays", "") // 3
+	f.SetParent(1, 2)
+	f.SetParent(3, 2)
+	status, _, body := rawDo(t, noFollow(f), http.MethodGet, f.URL()+"/repos/o/r/issues/2/sub_issues")
+	var subs []struct {
+		Number        int
+		RepositoryURL string `json:"repository_url"`
+	}
+	if err := json.Unmarshal([]byte(body), &subs); err != nil {
+		t.Fatalf("the sub-issues %q: %v", body, err)
+	}
+	want := []struct {
+		Number        int
+		RepositoryURL string `json:"repository_url"`
+	}{{1, f.URL() + "/repos/o/elsewhere"}, {3, f.URL() + "/repos/o/r"}}
+	if status != http.StatusOK || !reflect.DeepEqual(subs, want) {
+		t.Errorf("#2's sub-issues = %d, %+v; want %+v", status, subs, want)
+	}
+}
