@@ -137,6 +137,21 @@ func originOf(m github.Marker, id int64) (Origin, bool) {
 	return Origin{Plan: plan, Rev: rev, Item: item, Comment: id, Human: m.Fields["human"] == "1", Check: checkOf(m.Fields)}, true
 }
 
+// OriginMarker returns the origin marker Derive would read from text as a
+// clean body of the App's: the first whole one (originOf), with every
+// field it has, its values as written, so still percent-encoded. It's
+// false if text has none. It doesn't check who wrote text: the caller
+// knows it's the App's, as a version of the body the App wrote is (S5's
+// T2, #291).
+func OriginMarker(text string) (github.Marker, bool) {
+	for _, m := range github.ParseMarkers(text) {
+		if _, ok := originOf(m, BodyID); ok {
+			return m, true
+		}
+	}
+	return github.Marker{}, false
+}
+
 // TriageVerdict is a triage marker (plan #6, assumption 3): a decision on
 // an issue with no stage label, by a triage run or a code owner's answer.
 type TriageVerdict struct {
