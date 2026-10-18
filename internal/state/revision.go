@@ -235,7 +235,26 @@ func PlanApproval(s *github.Snapshot, appSlug string, dirty func(int64) bool) (R
 // returned. The revision isn't marked Hidden: once approved, a later dirty
 // comment doesn't unapprove it.
 func ApprovedPlan(s *github.Snapshot, appSlug string, dirty func(int64) bool) (Revision, github.Comment, bool) {
+	r, c, _, ok := approvedPlan(s, appSlug, dirty)
+	return r, c, ok
+}
+
+// ApprovedPlanMove returns the comment holding the move into planned whose
+// revision ApprovedPlan returns, for S3 (plan #249, T3): its ID keys each
+// created child's first move, event=p<ID> (#224's reconcile decision 6),
+// and the children are filed after it was posted. For a move from planning
+// that skips review, it's the plan comment itself. A move back from a hold
+// names no revision, so it's never that one: the move that approved the
+// plan stays it. It reports false whenever ApprovedPlan does.
+func ApprovedPlanMove(s *github.Snapshot, appSlug string, dirty func(int64) bool) (github.Comment, bool) {
+	_, _, move, ok := approvedPlan(s, appSlug, dirty)
+	return move, ok
+}
+
+// approvedPlan is ApprovedPlan, with the comment holding the move.
+func approvedPlan(s *github.Snapshot, appSlug string, dirty func(int64) bool) (Revision, github.Comment, github.Comment, bool) {
 	rev, hash := 0, ""
+	var move github.Comment
 	for _, c := range s.Comments {
 		if dirty(c.ID) {
 			continue
@@ -250,12 +269,12 @@ func ApprovedPlan(s *github.Snapshot, appSlug string, dirty func(int64) bool) (R
 				h = pr.Hash
 			}
 			if h != "" {
-				rev, hash = r, h
+				rev, hash, move = r, h, c
 			}
 		}
 	}
 	if rev == 0 {
-		return Revision{}, github.Comment{}, false
+		return Revision{}, github.Comment{}, github.Comment{}, false
 	}
 	var found Revision
 	var comment github.Comment
@@ -267,7 +286,10 @@ func ApprovedPlan(s *github.Snapshot, appSlug string, dirty func(int64) bool) (R
 			found, comment = r, c
 		}
 	}
-	return found, comment, found.Comment != 0
+	if found.Comment == 0 {
+		return Revision{}, github.Comment{}, github.Comment{}, false
+	}
+	return found, comment, move, true
 }
 
 // deletedHides reports whether a comment the App may have written was

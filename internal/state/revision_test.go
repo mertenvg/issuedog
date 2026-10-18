@@ -459,3 +459,40 @@ func TestApprovedPlanSeen(t *testing.T) {
 		t.Errorf("ApprovedPlan = %+v, %v; want seen 4, as LatestRevision's %+v, %v", got, ok, latest, lok)
 	}
 }
+
+// ApprovedPlanMove names the comment holding the move into planned whose
+// revision ApprovedPlan returns, for the first moves of the children it
+// creates (#276): the approval from plan-review, or the plan comment that
+// skips review. It stays that move through a hold, whose move back names
+// no revision, and is nothing whenever ApprovedPlan finds nothing.
+func TestApprovedPlanMove(t *testing.T) {
+	t.Parallel()
+	const (
+		hold   = "<!-- issuedog:transition from=planned to=held at=planned reason=owner cmd=20 -->"
+		resume = "<!-- issuedog:transition from=held to=planned cmd=21 -->"
+	)
+	plan1, plan2 := planComment("Plan one.", 1), planComment("Plan two.", 2)
+	skip1 := planMove("Plan one.", 1, Planned)
+	for _, tt := range []struct {
+		name  string
+		s     *github.Snapshot
+		dirty func(int64) bool
+		id    int64 // the move's comment, or 0 for none
+	}{
+		{"an approval from plan-review", snap("", apps(2), plan1, approval(t, plan1, 1)), clean, 2},
+		{"a move from planning that skips review", snap("", apps(1), skip1), clean, 1},
+		{"through a hold and back", snap("", apps(4), plan1, approval(t, plan1, 1), hold, resume), clean, 2},
+		{"the latest approval", snap("", apps(4), plan1, approval(t, plan1, 1), plan2, approval(t, plan2, 2)), clean, 4},
+		{"no move into planned", snap("", apps(1), plan1), clean, 0},
+		{"a dirty approval", snap("", apps(2), plan1, approval(t, plan1, 1)), dirtyIDs(2), 0},
+		{"the approved comment is dirty", snap("", apps(2), plan1, approval(t, plan1, 1)), dirtyIDs(1), 0},
+	} {
+		got, ok := ApprovedPlanMove(tt.s, slug, tt.dirty)
+		if ok != (tt.id != 0) || got.ID != tt.id {
+			t.Errorf("%s: ApprovedPlanMove = comment %d, %v; want comment %d, %v", tt.name, got.ID, ok, tt.id, tt.id != 0)
+		}
+		if rev, _, rok := ApprovedPlan(tt.s, slug, tt.dirty); rok != ok {
+			t.Errorf("%s: ApprovedPlan = %+v, %v; want found just when ApprovedPlanMove is", tt.name, rev, rok)
+		}
+	}
+}

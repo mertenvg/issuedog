@@ -144,7 +144,9 @@ func (d *Daemon) Run(ctx context.Context) {
 // triage:ask, a flag waiting on a 👍 (FlagByReaction), and on every issue
 // that had an open state error after its last step 1, waiting on a 👍 too
 // (ErrorByReaction), and on every held issue, for its discussion
-// triggers (discHeldLabel). On each issue step 1 succeeds on, it caches what
+// triggers (discHeldLabel). Each visit ends with ChildrenVisit, which
+// creates the children of a plan approved on the issue (children.go); the
+// children it writes to are touched. On each issue step 1 succeeds on, it caches what
 // waits on the owner (digestCacheSet), with the issue's dirty content, which
 // openErrAny takes too; an issue whose read or step 1 fails keeps its last
 // items, and one that closes or leaves the listing loses them. Then it
@@ -248,6 +250,12 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		}
 		if err == nil {
 			err = d.Step.FlagVisit(ctx, s)
+		}
+		// ChildrenVisit, last, creates the children of a plan the visits
+		// above may just have approved, so they land in the same pass. The
+		// children it writes to are Touched.
+		if err == nil {
+			err = d.Step.ChildrenVisit(ctx, s)
 		}
 		// The open errors and what waits on the owner are read from the
 		// snapshot as the visits left it, with one look at its dirty content.
