@@ -159,8 +159,9 @@ type Item struct {
 	Type string
 	// HasParent is true when the issue is a sub-issue.
 	HasParent bool
-	// FromPlan is true when the body has the App's origin marker naming a
-	// plan item (SPEC §5.2).
+	// FromPlan is true when the issue has the App's origin marker naming a
+	// plan item (SPEC §5.2): Derive sets it exactly when Issue.Origin has a
+	// plan, read from the body or else from a clean App comment (#290).
 	FromPlan bool
 	// Human is true for a plan item the planner marked human (SPEC §11.3).
 	Human bool

@@ -6,6 +6,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/mertenvg/issuedog/internal/github"
 )
 
 func TestLookupFindsEveryRow(t *testing.T) {
@@ -369,6 +372,51 @@ func TestFitsRulesBesideTheTable(t *testing.T) {
 	for _, s := range []Stage{Ready, Closed} {
 		if Fits(s, fitsItems["epic"]) {
 			t.Errorf("with only rows from any open, an epic fits %s", s)
+		}
+	}
+}
+
+// A plan task whose body someone else edited keeps its class when a clean
+// App comment carries its origin (#290), so it still fits the task stages;
+// with the comment dirty, it's an owner task. A human task's comment, with
+// human=1, keeps ClassHumanTask, which fits needs-human and never
+// in-progress.
+func TestOriginInACommentKeepsTheClass(t *testing.T) {
+	t.Parallel()
+	const (
+		task  = "<!-- issuedog:origin plan=#195 rev=1 item=T1 -->"
+		human = "<!-- issuedog:origin plan=#195 rev=1 item=T9 human=1 -->"
+		moved = "<!-- issuedog:transition from=planned to=ready event=p9 -->"
+	)
+	edited := func(origin string) *github.Snapshot {
+		s := snap("The task, edited by the owner.", []github.Author{appBot, appBot}, origin, moved)
+		s.Type, s.Parent = "task", 195
+		s.BodyEdit = github.Edit{By: owner, At: time.Unix(5, 0)}
+		return s
+	}
+	for _, tt := range []struct {
+		name  string
+		s     *github.Snapshot
+		dirty func(int64) bool
+		// human sets Item.Human as S3's Derive sets it from the marker's
+		// human=1 through Origin (#275), which this branch doesn't have:
+		// the case checks that FromPlan, read from the comment, gives the
+		// human task's class with it.
+		human     bool
+		want      Class
+		fits, not Stage
+	}{
+		{"a plan task", edited(task), clean, false, ClassTask, InProgress, SpecReview},
+		{"a human task", edited(human), clean, true, ClassHumanTask, NeedsHuman, InProgress},
+		{"a plan task whose comment is dirty", edited(task), dirtyIDs(1), false, ClassOwnerTask, InProgress, Planning},
+	} {
+		it := Derive(tt.s, slug, tt.dirty).Item
+		it.Human = tt.human
+		if c, err := ClassOf(it); err != nil || c != tt.want {
+			t.Errorf("%s: class = %s, %v; want %s", tt.name, c, err, tt.want)
+		}
+		if !Fits(tt.fits, it) || Fits(tt.not, it) {
+			t.Errorf("%s: fits %s = %v and %s = %v, want true and false", tt.name, tt.fits, Fits(tt.fits, it), tt.not, Fits(tt.not, it))
 		}
 	}
 }
