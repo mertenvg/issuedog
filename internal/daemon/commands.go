@@ -66,8 +66,7 @@ func (st *Step) command(ctx context.Context, s *github.Snapshot, d Dirt, c githu
 		if err := st.react(ctx, c.ID, "-1"); err != nil {
 			return fmt.Errorf("reject: %w", err)
 		}
-		_, parsed := state.ParseCommand(c.Body)
-		return st.rejected(ctx, s, c, r, !parsed)
+		return st.rejected(ctx, s, c, r, st.requestAt(s, d, c))
 	case h.Apply == nil:
 		logr.Debugf("%s/%s#%d: /%s in comment %d waits: nothing handles it yet", st.Owner, st.Repo, s.Number, cmd.Name, c.ID)
 		return nil
@@ -80,13 +79,14 @@ func (st *Step) command(ctx context.Context, s *github.Snapshot, d Dirt, c githu
 
 // why returns why cmd, from comment c, doesn't apply at stage, or a
 // Rejection with no Reason and its handler. It doesn't write. A revision
-// request (requested) at any stage but spec-review was posted there, and
-// the stage has moved on since, so its reason says that, whatever /revise
-// would say at the stage now. It's Final: a new comment now wouldn't send
-// the spec back.
+// request (requested) at any stage but the review stage it was posted at
+// (requestAt) finds the stage moved on since, so its reason says that,
+// whatever /revise would say at the stage now. It's Final: a new comment
+// now wouldn't send the spec or the plan back.
 func (st *Step) why(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment, cmd state.Command, stage state.Stage) (Rejection, Handler, error) {
-	if _, parsed := state.ParseCommand(c.Body); !parsed && stage != state.SpecReview {
-		return Rejection{Reason: fmt.Sprintf("this issue is at `%s` now, and a comment sends the spec back only at `%s`", stage, state.SpecReview), Final: true}, Handler{}, nil
+	if at := st.requestAt(s, d, c); at != "" && at != stage {
+		return Rejection{Reason: fmt.Sprintf("it was posted at `%s`, and this issue is at `%s` now. A comment sends the spec back only at `%s`, and the plan only at `%s`",
+			at, stage, state.SpecReview, state.PlanReview), Final: true}, Handler{}, nil
 	}
 	if err := cmd.Check(stage); err != nil {
 		return Rejection{Reason: err.Error()}, Handler{}, nil
@@ -111,13 +111,28 @@ func (st *Step) why(ctx context.Context, s *github.Snapshot, d Dirt, c github.Co
 // lost is a lost reply's reason when it can't be worded again.
 const lost = "my reply saying why was lost"
 
+// requestAt returns the stage comment c was posted at (postedAt) if it
+// isn't a command, so it reaches why only as a revision request
+// (requested): spec-review or plan-review. For a command, it returns "".
+func (st *Step) requestAt(s *github.Snapshot, d Dirt, c github.Comment) state.Stage {
+	if _, parsed := state.ParseCommand(c.Body); parsed {
+		return ""
+	}
+	return postedAt(s, st.AppSlug, d, c.ID)
+}
+
 // rejected posts the reply to c, a command the App 👎'd first (plan #5,
-// amended assumption 5), saying why it doesn't apply, worded for a revision
-// request if request is set.
-func (st *Step) rejected(ctx context.Context, s *github.Snapshot, c github.Comment, r Rejection, request bool) error {
+// amended assumption 5), saying why it doesn't apply. A revision request,
+// posted at request (requestAt), is worded for the plan if that's
+// plan-review, and else for the spec. For a command, request is "".
+func (st *Step) rejected(ctx context.Context, s *github.Snapshot, c github.Comment, r Rejection, request state.Stage) error {
 	logr.Infof("%s/%s#%d: rejected comment %d: %s", st.Owner, st.Repo, s.Number, c.ID, r.Reason)
 	text := "I didn't apply this command: " + r.Reason + "."
-	if request {
+	switch request {
+	case "":
+	case state.PlanReview:
+		text = "I didn't send the plan back for revision: " + r.Reason + "."
+	default:
 		text = "I didn't send the spec back for revision: " + r.Reason + "."
 	}
 	if !r.Final {

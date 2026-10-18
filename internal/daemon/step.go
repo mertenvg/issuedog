@@ -153,20 +153,20 @@ func (st *Step) counted(ctx context.Context, s *github.Snapshot, d Dirt) (map[in
 // comment missing its 👍 gets it (SPEC §5.2), and one edited since it was
 // used gets one edited reply (SPEC §6.2). At clarifying, and at planning
 // (#253), a plain comment in the round is an answer, and gets a 👍
-// (roundStage). A revision request, a plain comment
-// posted at spec-review, is handled as /revise (requested). Once the stage
-// has moved on, one is only a 👎'd request whose reply was lost, which gets
-// it (reword). One the App never reacted to is left alone, such as one from
-// before #83, one by a user trusted only since, or one posted just before
-// the owner set the stage by hand. A command that would move the issue
+// (roundStage). A revision request, a plain comment posted at spec-review
+// or plan-review, is handled as /revise (requested). Once the stage has
+// moved on from the one it was posted at, one is only a 👎'd request whose
+// reply was lost, which gets it (reword). One the App never reacted to is
+// left alone, such as one from before #83, one by a user trusted only
+// since, or one posted just before the owner set the stage by hand. A command that would move the issue
 // waits while it's held or at the clarifying after a hold (state.Command.Waits).
 func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment) error {
 	is := state.Derive(s, st.AppSlug, d.Has)
 	named := is.Keys[state.CmdKey(c.ID)] // any reply marker included
 	cmd, isCmd := state.ParseCommand(c.Body)
 	late := false // a request at a stage since moved on
-	if r, ok := requested(s, st.AppSlug, d, is, c); ok {
-		cmd, isCmd, late = r, true, is.Stage != state.SpecReview
+	if r, posted, ok := requested(s, st.AppSlug, d, is, c); ok {
+		cmd, isCmd, late = r, true, is.Stage != posted
 	}
 	answer := !isCmd && !named && roundStage(is.Stage) && c.ID > is.Round
 	reason := replied(is, c.ID)
@@ -243,8 +243,11 @@ func (st *Step) reword(ctx context.Context, s *github.Snapshot, d Dirt, c github
 			r = why
 		}
 	}
-	_, parsed := state.ParseCommand(c.Body)
-	return st.rejected(ctx, s, c, r, ok && !parsed)
+	var request state.Stage
+	if ok {
+		request = st.requestAt(s, d, c)
+	}
+	return st.rejected(ctx, s, c, r, request)
 }
 
 const editedText = "This was edited after I acted on it, so I've ignored the edit. Post a new comment instead."

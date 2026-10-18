@@ -15,6 +15,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/state"
 )
 
 // Assignment (#191, plan #87's T7) against the fakes, with step 1 wired
@@ -189,6 +190,105 @@ func TestAssignPlanRound(t *testing.T) {
 	}
 	assignStep(t, f, d, "a pass after the answer")
 	assignStep(t, f, assignDaemon(t, f, o, nil), "a restart after the answer")
+}
+
+// assignPlanReview files an epic by author at plan-review, as the App set
+// it, with plan revision 1 in the App's plan comment, as S1's planner run
+// posts it: the plan, a cc line for cc and the move from planning, above
+// the revision marker. It returns the epic's number and the plan's hash.
+func assignPlanReview(f *githubtest.Fake, author, cc string) (int, string) {
+	n := f.AddIssue(author, "Quote expiry", "Quotes should expire.", "type:epic")
+	f.AddLabel(n, app, "stage:plan-review")
+	f.AddComment(n, app, "<!-- issuedog:transition from=spec-review to=planning cmd=r7 rev=1 body=abcd1234 -->")
+	plan := fmt.Sprintf("### Plan for #%d (rev 1)\n\nThe plan.\n\ncc @%s\n\n<!-- issuedog:transition from=planning to=plan-review run=p1 -->", n, cc)
+	hash := state.BodyHash(plan)
+	f.AddComment(n, app, plan+"\n<!-- issuedog:revision kind=plan rev=1 body="+hash+" -->")
+	return n, hash
+}
+
+// assignPlanApproved is the App's move from plan-review to planned that
+// approves plan revision 1 with hash, by reaction 9, as #268 writes it.
+func assignPlanApproved(hash string) string {
+	return "<!-- issuedog:transition from=plan-review to=planned rev=1 body=" + hash + " cmd=r9 -->"
+}
+
+// An epic at plan-review assigns notify while its plan waits, and a pass
+// where nothing changed makes no request: no read of the issue, no
+// assignee write (#270). An approval, the move to planned, ends the item,
+// and so does a revision request, the move back to planning, so each
+// issue is unassigned the same pass, and a restart writes nothing. The
+// approval and the revision request aren't built yet (#268, #269), so
+// their moves are hand-built markers.
+func TestAssignPlanReview(t *testing.T) {
+	t.Parallel()
+	f, o := newFake(t), digestRunOrigin(t)
+	f.SetPermission(digestRunOwner, "admin")
+	approved, hash := assignPlanReview(f, digestRunOwner, digestRunOwner)
+	sentBack, _ := assignPlanReview(f, digestRunOwner, digestRunOwner)
+	d := assignDaemon(t, f, o, nil)
+	assignStep(t, f, d, "the first pass", assignAdd(approved, digestRunOwner), assignAdd(sentBack, digestRunOwner))
+	assignWant(t, f, "the first pass", map[int][]string{approved: {digestRunOwner}, sentBack: {digestRunOwner}})
+	assignStep(t, f, d, "a pass that reads the issues written to again")
+	from := len(f.Requests())
+	assignStep(t, f, d, "a pass where nothing changed")
+	for _, r := range f.Requests()[from:] {
+		if strings.HasSuffix(r.Path, "/assignees") || r.Method == http.MethodGet && assignIssueRead.MatchString(r.Path) {
+			t.Errorf("a pass where nothing changed requested %s %s; want no read of an issue and no assignee write", r.Method, r.Path)
+		}
+	}
+	assignStep(t, f, assignDaemon(t, f, o, nil), "a restart")
+	f.AddComment(approved, app, assignPlanApproved(hash))
+	assignStep(t, f, d, "the approval", assignRemove(approved, digestRunOwner))
+	f.AddComment(sentBack, app, "<!-- issuedog:transition from=plan-review to=planning cmd=99 seen=99 -->")
+	assignStep(t, f, d, "the revision request", assignRemove(sentBack, digestRunOwner))
+	assignWant(t, f, "after both", nil)
+	assignStep(t, f, d, "a pass after both")
+	assignStep(t, f, assignDaemon(t, f, o, nil), "a restart after both")
+}
+
+// assignPlanReplayFake returns a setup for Replay: o/r with owner's epic
+// 1 at plan-review, assigned to waiting, and epic 2 approved to planned
+// from plan-review, assigned to approved.
+func assignPlanReplayFake(waiting, approved []string) func(testing.TB) *githubtest.Fake {
+	return func(t testing.TB) *githubtest.Fake {
+		t.Helper()
+		f := newFake(t)
+		n, _ := assignPlanReview(f, "owner", "owner")
+		f.SetAssignees(n, waiting...)
+		m, hash := assignPlanReview(f, "owner", "owner")
+		f.AddComment(m, app, assignPlanApproved(hash))
+		f.SetAssignees(m, approved...)
+		return f
+	}
+}
+
+// Replay passes for the assign of a plan waiting at plan-review and the
+// unassign of one approved, alone and together, whatever write a crash
+// comes at (#270).
+func TestAssignPlanReviewReplay(t *testing.T) {
+	t.Parallel()
+	o := digestNotifyOrigin(t)
+	for _, tc := range []struct {
+		name              string
+		waiting, approved []string
+		want              []string
+	}{
+		{"an assign", nil, nil, []string{assignAdd(1, "owner")}},
+		{"an unassign", []string{"owner"}, []string{"owner"}, []string{assignRemove(2, "owner")}},
+		{"both", nil, []string{"owner"}, []string{assignAdd(1, "owner"), assignRemove(2, "owner")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setup := assignPlanReplayFake(tc.waiting, tc.approved)
+			clean := setup(t)
+			if err := assignReplayPass(t, o)(clean); err != nil {
+				t.Fatal(err)
+			}
+			if got := assignWrites(clean, 0); !slices.Equal(got, tc.want) {
+				t.Errorf("the clean pass's assignee writes = %q; want %q", got, tc.want)
+			}
+			githubtest.Replay(t, setup, assignReplayPass(t, o))
+		})
+	}
 }
 
 // assignNoNotifyOrigin is digestRunOrigin with notify empty.

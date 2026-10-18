@@ -247,7 +247,8 @@ func stageWork(d *daemon.Daemon, name string, cred agent.Cred) (*daemon.Runs, er
 // /track and /ignore among them, and the reaction triggers: first the end
 // of a discussion hold once a 👍 or a counter comment resolves it, on a
 // held issue; then a 👍 on a revision and a 👍 on a flag, each at its own
-// stage, spec-review or intake, so at most one of them acts on an issue,
+// stages, spec-review or plan-review for a spec or plan revision, and
+// intake for a flag, so at most one of them acts on an issue,
 // then a 👍 on a state error, at any stage. The loop's reloads
 // replace its Trust and the daemon's Config, so the handlers and the
 // triggers ask for the current trust, and models for the current

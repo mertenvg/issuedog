@@ -23,7 +23,12 @@ type IssueState struct {
 	BodyEditedBy string
 	Labels       []string // sorted
 	Parent       int
-	Comments     []CommentState // oldest first
+	// SubIssues are the numbers of its sub-issues in this repo, in the
+	// order they were linked, which GitHub lists them in. BlockedBy are
+	// the numbers of the issues blocking it, sorted, since GitHub treats
+	// them as a set (dependencies.go).
+	SubIssues, BlockedBy []int
+	Comments             []CommentState // oldest first
 	// Assignees are the logins assigned, sorted, since GitHub treats them
 	// as a set (assign.go).
 	Assignees []string
@@ -51,7 +56,8 @@ func (f *Fake) State() State {
 	for _, is := range f.issues {
 		st := IssueState{Number: is.GetNumber(), Title: is.GetTitle(), Body: is.GetBody(), Author: is.GetUser().GetLogin(),
 			Type: is.GetType().GetName(), BodyEditedBy: is.lastEdit.by, Parent: is.parent,
-			Closed: is.GetState() == "closed", Pinned: is.pinned}
+			Closed: is.GetState() == "closed", Pinned: is.pinned,
+			SubIssues: f.subIssueNumbers(is.GetNumber()), BlockedBy: slices.Sorted(slices.Values(is.blockedBy))}
 		for _, l := range is.Labels {
 			st.Labels = append(st.Labels, l.GetName())
 		}
@@ -93,9 +99,10 @@ func (f *Fake) State() State {
 //     clean result, a crash after the last write.
 //  4. Each run's final State must equal the clean run's. State leaves out IDs
 //     and times. Labels and reactions are sets, so those may be redone in
-//     another order, and so are assignees; comments are compared in
-//     order, with their bodies. A run may not leave an extra comment,
-//     reaction, label or assignee, or miss one.
+//     another order, and so are assignees and blocked-by links; comments
+//     are compared in order, with their bodies, and sub-issues in the
+//     order they were linked. A run may not leave an extra comment,
+//     reaction, label, assignee, sub-issue or blocked-by link, or miss one.
 //
 // pass must build its own client and in-memory state from the fake it gets,
 // as the daemon does on restart, and must decide its writes only from what
