@@ -249,3 +249,213 @@ func TestRevisionMatches(t *testing.T) {
 		}
 	}
 }
+
+// planMove is a plan comment, plan revision rev, whose move goes from
+// planning to to, as the planner's Transition writes it with Move.PlanRev
+// and a plan-data marker: text, the transition marker with rev but no
+// body, the plan-data marker, then the plan revision marker with the hash
+// of everything above it. to is plan-review, or planned for a story whose
+// plan skips review.
+func planMove(text string, rev int, to Stage) string {
+	n := strconv.Itoa(rev)
+	above := text + "\n\n<!-- issuedog:transition from=planning to=" + string(to) + " rev=" + n + " run=p" + n + " -->" +
+		"\n<!-- issuedog:plan-data v=1 data=AAAA -->"
+	return above + "\n<!-- issuedog:revision kind=plan rev=" + n + " body=" + BodyHash(above) + " -->"
+}
+
+// approval is the move into planned that approves plan revision rev, of
+// plan comment plan, from plan-review (#248's T2): rev, body, cmd and seen.
+func approval(t *testing.T, plan string, rev int) string {
+	t.Helper()
+	hash, ok := PlanHash(plan)
+	if !ok {
+		t.Fatalf("approval of no plan comment: %q", plan)
+	}
+	return "Plan revision " + strconv.Itoa(rev) + " is approved.\n\n<!-- issuedog:transition from=plan-review to=planned rev=" +
+		strconv.Itoa(rev) + " body=" + hash + " cmd=r5 seen=9 -->"
+}
+
+// apps is n authors, each the App.
+func apps(n int) []github.Author {
+	by := make([]github.Author, n)
+	for i := range by {
+		by[i] = appBot
+	}
+	return by
+}
+
+// planRev is plan revision rev, with hash, in comment id.
+func planRev(t *testing.T, body string, id int64, rev int) Revision {
+	t.Helper()
+	hash, ok := PlanHash(body)
+	if !ok {
+		t.Fatalf("comment %d isn't a plan comment: %q", id, body)
+	}
+	return Revision{Kind: PlanRevision, Rev: rev, Hash: hash, Comment: id}
+}
+
+// PlanApproval gives the latest plan revision, and each reason it can't be
+// approved, in a fixed order (#248's T1): hidden, changed, a dirty body.
+// With no plan revision, that's the only reason.
+func TestPlanApproval(t *testing.T) {
+	t.Parallel()
+	const spec1 = "<!-- issuedog:revision rev=1 body=aaaaaaaa -->"
+	plan1, plan2 := planComment("Plan one.", 1), planComment("Plan two.", 2)
+	edited := strings.Replace(plan1, "Plan one.", "Plan one, edited.", 1)
+	withComment := func(s *github.Snapshot, id int64, body string) *github.Snapshot {
+		s.Comments[id-1].Body = body
+		return s
+	}
+	deleted := func(s *github.Snapshot) *github.Snapshot {
+		posted := time.Date(2026, 10, 18, 1, 0, 0, 0, time.UTC)
+		for i := range s.Comments {
+			s.Comments[i].CreatedAt = posted.Add(time.Duration(i) * time.Minute)
+		}
+		s.Deleted = []github.DeletedComment{{ID: "CDE_1", By: owner, Author: appBot, At: posted.Add(time.Hour)}}
+		return s
+	}
+	for _, tt := range []struct {
+		name  string
+		s     *github.Snapshot
+		dirty func(int64) bool
+		plan  string // the latest plan revision's comment as posted, or "" for none
+		id    int64  // its ID
+		rev   int
+		hide  bool
+		why   []PlanReason
+	}{
+		{"an approvable plan", snap("the spec", apps(2), spec1, plan1), clean, plan1, 2, 1, false, nil},
+		{"the latest of two", snap("the spec", apps(3), spec1, plan1, plan2), clean, plan2, 3, 2, false, nil},
+		{"a trusted edit to the body changes nothing (Q2a)", snap("an edited spec", apps(2), spec1, plan1), clean, plan1, 2, 1, false, nil},
+		{"a dirty plan comment is no revision, and hides the one before it", snap("", apps(2), plan1, plan2), dirtyIDs(2),
+			plan1, 1, 1, true, []PlanReason{PlanHidden}},
+		{"a dirty App comment after the plan hides it", snap("", apps(2), plan1, "a reply"), dirtyIDs(2),
+			plan1, 1, 1, true, []PlanReason{PlanHidden}},
+		{"an App comment deleted after the plan hides it", deleted(snap("", apps(2), spec1, plan1)), clean,
+			plan1, 2, 1, true, []PlanReason{PlanHidden}},
+		{"a dirty comment by anyone else doesn't hide it", snap("", []github.Author{appBot, owner}, plan1, "a reply"), dirtyIDs(2),
+			plan1, 1, 1, false, nil},
+		{"a plan comment that no longer matches its hash", withComment(snap("", apps(2), spec1, plan1), 2, edited), clean,
+			plan1, 2, 1, false, []PlanReason{PlanChanged}},
+		{"a plan comment that lost its last line", withComment(snap("", apps(2), spec1, plan1), 2, plan1+"\nmore"), clean,
+			plan1, 2, 1, false, []PlanReason{PlanChanged}},
+		{"a dirty body", snap("the spec", apps(2), spec1, plan1), dirtyIDs(BodyID), plan1, 2, 1, false, []PlanReason{PlanBodyDirty}},
+		{"every reason, in order", withComment(snap("", apps(3), spec1, plan1, "a reply"), 2, edited), dirtyIDs(BodyID, 3),
+			plan1, 2, 1, true, []PlanReason{PlanHidden, PlanChanged, PlanBodyDirty}},
+		{"no plan revision", snap("the spec", apps(2), spec1, "a reply"), clean, "", 0, 0, false, []PlanReason{PlanNoRevision}},
+		{"no plan revision is the only reason, with a dirty body", snap("", apps(1), spec1), dirtyIDs(BodyID),
+			"", 0, 0, false, []PlanReason{PlanNoRevision}},
+		// LatestRevision reports this one Hidden, with no revision before it.
+		{"a dirty plan comment with none before it: no plan revision", snap("", apps(2), spec1, plan1), dirtyIDs(2),
+			"", 0, 0, false, []PlanReason{PlanNoRevision}},
+		{"a plan revision by anyone else is none", snap("", []github.Author{appBot, owner}, spec1, plan1), clean,
+			"", 0, 0, false, []PlanReason{PlanNoRevision}},
+		{"spec and plan revisions interleaved: a spec revision after the plan isn't it",
+			snap("", apps(3), spec1, plan1, "<!-- issuedog:revision rev=2 body=bbbbbbbb -->"), clean,
+			plan1, 2, 1, false, nil},
+		{"only spec revisions: no plan revision",
+			snap("", apps(2), spec1, "<!-- issuedog:revision rev=2 body=bbbbbbbb -->"), clean,
+			"", 0, 0, false, []PlanReason{PlanNoRevision}},
+	} {
+		want := Revision{Kind: PlanRevision}
+		if tt.plan != "" {
+			want = planRev(t, tt.plan, tt.id, tt.rev)
+			want.Hidden = tt.hide
+		}
+		got, why := PlanApproval(tt.s, slug, tt.dirty)
+		if got != want || !slices.Equal(why, tt.why) {
+			t.Errorf("%s: PlanApproval = %+v, %v, want %+v, %v", tt.name, got, why, want, tt.why)
+		}
+	}
+}
+
+// ApprovedPlan names the plan revision the latest move into planned
+// carries, from plan-review or, for a plan that skips review, from
+// planning, with its comment; and nothing once that comment is gone,
+// dirty or edited (#248's T1).
+func TestApprovedPlan(t *testing.T) {
+	t.Parallel()
+	const (
+		spec1     = "<!-- issuedog:revision rev=1 body=aaaaaaaa -->"
+		spec2     = "<!-- issuedog:revision rev=2 body=bbbbbbbb -->"
+		toPlan    = "<!-- issuedog:transition from=spec-review to=planning rev=1 body=aaaaaaaa cmd=r3 seen=1 -->"
+		hold      = "<!-- issuedog:transition from=planned to=held at=planned reason=owner cmd=20 -->"
+		resume    = "<!-- issuedog:transition from=held to=planned cmd=21 -->"
+		noBody    = "<!-- issuedog:transition from=plan-review to=planned rev=1 cmd=r6 -->"
+		otherRev  = "<!-- issuedog:transition from=plan-review to=planned rev=3 body=cccccccc cmd=r6 -->"
+		specMatch = "<!-- issuedog:transition from=plan-review to=planned rev=1 body=aaaaaaaa cmd=r6 -->"
+	)
+	plan1, plan2 := planComment("Plan one.", 1), planComment("Plan two.", 2)
+	skip1 := planMove("Plan one.", 1, Planned)
+	edited := strings.Replace(plan1, "Plan one.", "Plan one, edited.", 1)
+	gone := func(s *github.Snapshot, id int64) *github.Snapshot {
+		s.Comments = slices.DeleteFunc(s.Comments, func(c github.Comment) bool { return c.ID == id })
+		return s
+	}
+	withComment := func(s *github.Snapshot, id int64, body string) *github.Snapshot {
+		s.Comments[id-1].Body = body
+		return s
+	}
+	for _, tt := range []struct {
+		name  string
+		s     *github.Snapshot
+		dirty func(int64) bool
+		id    int64 // the approved plan comment, or 0 for none
+		rev   int
+	}{
+		{"a move from plan-review", snap("", apps(4), spec1, toPlan, plan1, approval(t, plan1, 1)), clean, 3, 1},
+		{"a move from planning, skipping review", snap("", apps(3), spec1, toPlan, skip1), clean, 3, 1},
+		{"the revision the move names, not the latest", snap("", apps(4), spec1, plan1, plan2, approval(t, plan1, 1)), clean, 2, 1},
+		{"the latest move counts", snap("", apps(4), plan1, approval(t, plan1, 1), plan2, approval(t, plan2, 2)), clean, 3, 2},
+		{"a dirty comment after it doesn't unapprove it", snap("", apps(3), plan1, approval(t, plan1, 1), "a reply"), dirtyIDs(3), 1, 1},
+		{"a trusted edit to the body doesn't unapprove it", snap("an edited spec", apps(2), plan1, approval(t, plan1, 1)), clean, 1, 1},
+		{"a move back from a hold names nothing, so the move before it counts",
+			snap("", apps(4), plan1, approval(t, plan1, 1), hold, resume), clean, 1, 1},
+		{"a later move with rev but no body names nothing", snap("", apps(3), plan1, approval(t, plan1, 1), noBody), clean, 1, 1},
+		{"spec and plan revisions interleaved", snap("", apps(5), spec1, plan1, spec2, plan2, approval(t, plan2, 2)), clean, 4, 2},
+		{"no move into planned", snap("", apps(3), spec1, toPlan, plan1), clean, 0, 0},
+		{"a move into planned with rev but no body, from plan-review", snap("", apps(2), plan1, noBody), clean, 0, 0},
+		{"a move naming no plan revision there is", snap("", apps(2), plan1, otherRev), clean, 0, 0},
+		{"a move naming a spec revision's hash", snap("", apps(2), spec1, specMatch), clean, 0, 0},
+		{"a spec approval is no move into planned", snap("", apps(2), spec1, toPlan), clean, 0, 0},
+		{"a dirty move", snap("", apps(2), plan1, approval(t, plan1, 1)), dirtyIDs(2), 0, 0},
+		{"a move by anyone else", snap("", []github.Author{appBot, owner}, plan1, approval(t, plan1, 1)), clean, 0, 0},
+		{"the approved comment is gone", gone(snap("", apps(2), plan1, approval(t, plan1, 1)), 1), clean, 0, 0},
+		{"the approved comment is dirty", snap("", apps(2), plan1, approval(t, plan1, 1)), dirtyIDs(1), 0, 0},
+		{"the approved comment no longer matches", withComment(snap("", apps(2), plan1, approval(t, plan1, 1)), 1, edited), clean, 0, 0},
+		{"the approved comment, a move from planning, is dirty", snap("", apps(2), spec1, skip1), dirtyIDs(2), 0, 0},
+		{"the approved comment, a move from planning, no longer matches",
+			withComment(snap("", apps(2), spec1, skip1), 2, strings.Replace(skip1, "Plan one.", "Plan one, edited.", 1)), clean, 0, 0},
+		{"a move from planning whose plan revision has another rev names nothing",
+			snap("", apps(1), strings.Replace(skip1, "to=planned rev=1", "to=planned rev=2", 1)), clean, 0, 0},
+		{"so the move before it counts",
+			snap("", apps(3), plan1, approval(t, plan1, 1), strings.Replace(skip1, "to=planned rev=1", "to=planned rev=2", 1)), clean, 1, 1},
+		{"the approved comment by anyone else is no plan revision", snap("", []github.Author{owner, appBot}, plan1, approval(t, plan1, 1)), clean, 0, 0},
+		{"the last clean comment with the revision counts", snap("", apps(3), plan1, approval(t, plan1, 1), plan1), clean, 3, 1},
+	} {
+		want := Revision{}
+		var wantComment github.Comment
+		if tt.id != 0 {
+			wantComment = tt.s.Comments[slices.IndexFunc(tt.s.Comments, func(c github.Comment) bool { return c.ID == tt.id })]
+			want = planRev(t, wantComment.Body, tt.id, tt.rev)
+		}
+		got, c, ok := ApprovedPlan(tt.s, slug, tt.dirty)
+		if got != want || c.ID != wantComment.ID || c.Body != wantComment.Body || ok != (tt.id != 0) {
+			t.Errorf("%s: ApprovedPlan = %+v, comment %d, %v; want %+v, comment %d, %v", tt.name, got, c.ID, ok, want, wantComment.ID, tt.id != 0)
+		}
+	}
+}
+
+// ApprovedPlan's revision has the Seen LatestRevision gives it: the plan
+// revision marker's seen, else its comment's transition's.
+func TestApprovedPlanSeen(t *testing.T) {
+	t.Parallel()
+	above := "Plan one.\n\n<!-- issuedog:transition from=planning to=plan-review rev=1 run=p1 seen=4 -->"
+	plan := above + "\n<!-- issuedog:revision kind=plan rev=1 body=" + BodyHash(above) + " -->"
+	s := snap("", apps(2), plan, approval(t, plan, 1))
+	got, _, ok := ApprovedPlan(s, slug, clean)
+	latest, lok := LatestRevision(s, slug, PlanRevision, clean)
+	if !ok || !lok || got.Seen != 4 || got != latest {
+		t.Errorf("ApprovedPlan = %+v, %v; want seen 4, as LatestRevision's %+v, %v", got, ok, latest, lok)
+	}
+}
