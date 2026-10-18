@@ -298,12 +298,14 @@ func (l *humanRunLoop) digest(step string, items []string, assigned ...int) {
 //   - T2's check passes on his first /done;
 //   - eve's /done and 👍s write nothing;
 //   - T3 enters the digest and assignment once T4 closes, and his 👍
-//     closes it.
+//     closes it;
+//   - with every child closed, the story is listed as finished and
+//     assigned (#278), till mertenvg closes it.
 //
 // Each close ends the task's item in the same pass, and the pass after
 // sets stage:completed. The writes are checked after every pass, every
 // unchanged pass costs no rate limit, and a restart, after T1's failed
-// check and at the end, writes nothing.
+// check, once the story is finished and at the end, writes nothing.
 func TestHumanTaskRun(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
@@ -475,22 +477,58 @@ func TestHumanTaskRun(t *testing.T) {
 		t.Errorf("T3's 👍: added %q; want\n%s", added, closed3)
 	}
 	l.digest("T3's 👍", nil, 4, 5, 6)
-	l.step("T3 completed", 1, "POST /issues/6/labels", "DELETE /issues/6/labels/stage:needs-human")
+
+	// 11. The pass after sets T3's stage:completed, and, as every child of
+	// the story has now closed, lists the story as finished, after its
+	// record's children, announces it once, keyed done-1, and assigns
+	// mertenvg on it (#278).
+	l.step("T3 completed", 1, "POST /issues/6/labels", "DELETE /issues/6/labels/stage:needs-human",
+		"POST /issues/2/comments", "PATCH /issues/2", "POST /issues/1/assignees")
 	l.state("T3 completed", 6, true, "priority:p2", "scope:docs", "stage:completed", "type:task")
+	news := "New on the digest, waiting on you:\n\n" +
+		"- **Finished story** on #1: Quote lifetime. Answer here: https://github.com/o/r/issues/1\n\n" +
+		"cc @" + humanRunOwner + "\n\n<!-- issuedog:digest-new items=done-1 -->"
+	if added := l.added(2); !slices.Equal(added, []string{news}) {
+		t.Errorf("T3 completed: the digest's new comments %q; want the announcement\n%s", added, news)
+	}
+	finished := "### 1. #1: Quote lifetime\n\n**Finished story**, priority p2, unblocks 1 open issue (itself included)\n\n" +
+		"- Every child of this story is closed, so it waits for story verification, which runs by hand for now. Close it once that passes.\n" +
+		"- Its children: #4, #5, #6, #3.\n" +
+		"- Answer here: https://github.com/o/r/issues/1\n"
+	if body := f.State().Issues[1].Body; !strings.Contains(body, finished) {
+		t.Errorf("T3 completed: the digest =\n%s\nwant the story's item\n%s", body, finished)
+	}
+	l.digest("T3 completed", []string{"#1 Finished story p2 1"}, story, 4, 5, 6)
 	l.quiet("T3 completed")
 
-	// 11. A restart writes nothing, and starts no run. Each human task was
-	// closed as completed, and the story waits at planned.
-	l.restart("the end")
-	l.digest("the end", nil, 4, 5, 6)
+	// 12. A restart writes nothing, and starts no run. Each human task was
+	// closed as completed, and the story waits at planned, listed and
+	// assigned.
+	l.restart("the story finished")
+	l.digest("the story finished", []string{"#1 Finished story p2 1"}, story, 4, 5, 6)
 	for _, n := range []int{4, 5, 6} {
 		if r := stateReason(t, f, n); r != "completed" {
-			t.Errorf("the end: #%d's state_reason = %q; want completed", n, r)
+			t.Errorf("the story finished: #%d's state_reason = %q; want completed", n, r)
 		}
 	}
-	l.state("the end", story, false, "stage:planned", "type:story")
+	l.state("the story finished", story, false, "stage:planned", "type:story")
+
+	// 13. mertenvg closes the story, as #278's item asks once its
+	// verification passes. The close judge sets stage:completed, and the
+	// story's item ends; its assignee stays, as on any closed issue (SPEC
+	// §9.6). A restart writes nothing.
+	f.CloseBy(story, humanRunOwner)
+	l.step("the story closed", 1, "POST /issues/1/labels", "DELETE /issues/1/labels/stage:planned", "PATCH /issues/2")
+	l.state("the story closed", story, true, "stage:completed", "type:story")
+	l.digest("the story closed", nil, story, 4, 5, 6)
+	l.quiet("the story closed")
+	l.restart("the end")
+	l.digest("the end", nil, story, 4, 5, 6)
 	if n := len(f.State().Issues); n != 6 {
 		t.Errorf("the end: %d issues; want the story, the digest and the plan's 4 children", n)
+	}
+	if n := len(digestComments(f, 2)); n != 1 {
+		t.Errorf("the end: the digest has %d comments; want the one announcement", n)
 	}
 }
 
