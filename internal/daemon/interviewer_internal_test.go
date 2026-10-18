@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -175,5 +176,163 @@ func TestIvAppLabel(t *testing.T) {
 	plan := github.Comment{ID: 5, Author: app, Body: "Plan.\n<!-- issuedog:revision kind=plan rev=3 body=aaaaaaaa -->"}
 	if got := ivAppLabel(plan, []interviewerRound{{Number: 2, Questions: 1, Comment: 5}}, "issuedog"); got != "comment 5 by issuedog: Round 2, Q2.1" {
 		t.Errorf("ivAppLabel of a round = %q, want the round", got)
+	}
+}
+
+// TestPlanRoundMove: only a planner run's move from planning to planning
+// is a planner round's, and roundMove is either stage's round move
+// (#253).
+func TestPlanRoundMove(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		fields      string
+		kind        string
+		plan, round bool
+	}{
+		{"from=planning to=planning run=p", "transition", true, true},
+		{"from=clarifying to=clarifying run=a", "transition", false, true},
+		{"from=planning to=planning cmd=5", "transition", false, false},
+		{"from=planning to=planning run=p", "error", false, false},
+		{"from=spec-review to=planning run=p", "transition", false, false},
+		{"from=planning to=plan-review run=p", "transition", false, false},
+		{"from=planning to=clarifying run=p", "transition", false, false},
+		{"from=pr-open to=pr-open run=p", "transition", false, false},
+	}
+	for _, tt := range tests {
+		m := github.ParseMarkers("<!-- issuedog:" + tt.kind + " " + tt.fields + " -->")
+		if len(m) != 1 {
+			t.Fatalf("%s %s parses to %v", tt.kind, tt.fields, m)
+		}
+		if got := planRoundMove(m[0]); got != tt.plan {
+			t.Errorf("planRoundMove(%s %s) = %v, want %v", tt.kind, tt.fields, got, tt.plan)
+		}
+		if got := roundMove(m[0]); got != tt.round {
+			t.Errorf("roundMove(%s %s) = %v, want %v", tt.kind, tt.fields, got, tt.round)
+		}
+	}
+}
+
+// roundsSnap is an issue with the App's comments bodies, as IDs 10, 11,
+// and so on.
+func roundsSnap(bodies ...string) *github.Snapshot {
+	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
+	s := &github.Snapshot{}
+	for i, b := range bodies {
+		s.Comments = append(s.Comments, github.Comment{ID: int64(10 + i), Author: app, Body: b})
+	}
+	return s
+}
+
+// TestRoundsAcrossStages: interviewer and planner rounds share one
+// numbering (#247's assumption 3). After interviewer rounds 1 and 2, the
+// planner's round is 3, and an interviewer round after it is 4. Each
+// stage's reader reads only its own rounds, a dirty round counts for
+// neither, and the interviewer's coverage counts (ivFactRounds) have a 0
+// for each planner round.
+func TestRoundsAcrossStages(t *testing.T) {
+	t.Parallel()
+	const (
+		iv1   = "<!-- issuedog:transition from=clarifying to=clarifying run=a seen=9 round=1 questions=2 -->"
+		iv2   = "<!-- issuedog:transition from=clarifying to=clarifying run=b seen=10 round=2 questions=1 -->"
+		spec  = "<!-- issuedog:transition from=clarifying to=spec-review run=c rev=1 body=abcd1234 -->"
+		plan3 = "<!-- issuedog:transition from=planning to=planning run=p seen=12 round=3 questions=2 -->"
+		iv4   = "<!-- issuedog:transition from=clarifying to=clarifying run=d seen=13 round=4 questions=1 -->"
+		plan5 = "<!-- issuedog:transition from=planning to=planning run=q seen=14 round=5 questions=3 -->"
+	)
+	clean := func(int64) bool { return false }
+	s := roundsSnap(iv1, iv2, spec)
+	if got, want := interviewerRounds(s, "issuedog", clean), []interviewerRound{
+		{Number: 1, Questions: 2, Comment: 10, Bound: 9}, {Number: 2, Questions: 1, Comment: 11, Bound: 10}}; !reflect.DeepEqual(got, want) {
+		t.Errorf("interviewerRounds = %+v, want %+v", got, want)
+	}
+	if got := planRounds(s, "issuedog", clean); got != nil {
+		t.Errorf("planRounds with no planner round = %+v, want none", got)
+	}
+	if got := nextRound(allRounds(s, "issuedog", clean)); got != 3 {
+		t.Errorf("after interviewer rounds 1 and 2, the next round is %d, want 3", got)
+	}
+	if got := nextRound(nil); got != 1 {
+		t.Errorf("with no rounds, the next round is %d, want 1", got)
+	}
+	// With no planner round, the coverage counts are the interviewer's.
+	if got, want := ivFactRounds(s, "issuedog", clean), ivRoundCounts(interviewerRounds(s, "issuedog", clean)); !reflect.DeepEqual(got, want) {
+		t.Errorf("ivFactRounds with no planner round = %v, want ivRoundCounts' %v", got, want)
+	}
+
+	s = roundsSnap(iv1, iv2, spec, plan3)
+	if got, want := planRounds(s, "issuedog", clean), []interviewerRound{{Number: 3, Questions: 2, Comment: 13, Bound: 12}}; !reflect.DeepEqual(got, want) {
+		t.Errorf("planRounds = %+v, want %+v", got, want)
+	}
+	if got := len(interviewerRounds(s, "issuedog", clean)); got != 2 {
+		t.Errorf("interviewerRounds read %d rounds, want the interviewer's 2", got)
+	}
+	if got := nextRound(allRounds(s, "issuedog", clean)); got != 4 {
+		t.Errorf("after planner round 3, the next round is %d, want 4", got)
+	}
+	if got, want := ivFactRounds(s, "issuedog", clean), []int{2, 1, 0}; !reflect.DeepEqual(got, want) {
+		t.Errorf("ivFactRounds after planner round 3 = %v, want %v", got, want)
+	}
+
+	s = roundsSnap(iv1, iv2, spec, plan3, iv4, plan5)
+	if got := allRounds(s, "issuedog", clean); len(got) != 5 || got[2].Number != 3 || got[3].Number != 4 || got[4].Number != 5 {
+		t.Errorf("allRounds = %+v, want rounds 1 to 5 in order", got)
+	}
+	if got := nextRound(allRounds(s, "issuedog", clean)); got != 6 {
+		t.Errorf("after planner round 5, the next round is %d, want 6", got)
+	}
+	if got, want := ivFactRounds(s, "issuedog", clean), []int{2, 1, 0, 1, 0}; !reflect.DeepEqual(got, want) {
+		t.Errorf("ivFactRounds after rounds 1 to 5 = %v, want %v", got, want)
+	}
+	// A comment answers the latest round of either stage.
+	if got := ivRoundOf(allRounds(s, "issuedog", clean), 14); got != 4 {
+		t.Errorf("comment 14, after interviewer round 4's bound, answers round %d, want 4", got)
+	}
+	if got := ivRoundOf(allRounds(s, "issuedog", clean), 13); got != 3 {
+		t.Errorf("comment 13, after planner round 3's bound, answers round %d, want 3", got)
+	}
+
+	// A dirty planner round counts for no stage.
+	dirty := func(id int64) bool { return id == 15 }
+	if got := planRounds(s, "issuedog", dirty); len(got) != 1 || got[0].Number != 3 {
+		t.Errorf("planRounds with round 5 dirty = %+v, want round 3 alone", got)
+	}
+	if got := nextRound(allRounds(s, "issuedog", dirty)); got != 5 {
+		t.Errorf("with round 5 dirty, the next round is %d, want 5", got)
+	}
+	if got, want := ivFactRounds(s, "issuedog", dirty), []int{2, 1, 0, 1}; !reflect.DeepEqual(got, want) {
+		t.Errorf("ivFactRounds with round 5 dirty = %v, want %v", got, want)
+	}
+}
+
+// TestInterviewerPreambleRounds: with no planner rounds, the preamble's
+// line about rounds is as it was before them. With planner rounds, the
+// next round follows theirs, and a line says their questions get no
+// decision in a spec (#253).
+func TestInterviewerPreambleRounds(t *testing.T) {
+	t.Parallel()
+	iv := []interviewerRound{{Number: 1, Questions: 2}, {Number: 2, Questions: 1}}
+	plan := []interviewerRound{{Number: 3, Questions: 2}}
+	for _, tt := range []struct {
+		name          string
+		rounds, plans []interviewerRound
+		want          string
+	}{
+		{"none", nil, nil, "- No questions have been asked yet, so a question round now is round 1.\n"},
+		{"the interviewer's", iv, nil,
+			"- Questions so far: round 1 (Q1.1–1.2), round 2 (Q2.1). A question round now is round 3, and every question asked so far needs a decision in a spec.\n"},
+		{"both", iv, plan,
+			"- Questions so far: round 1 (Q1.1–1.2), round 2 (Q2.1). A question round now is round 4, and every question asked so far needs a decision in a spec. " +
+				"The planner asked round 3 (Q3.1–3.2): those questions aren't yours, so no decision in a spec names them.\n"},
+		{"the planner's alone", nil, plan,
+			"- You haven't asked any questions yet, so a question round now is round 4. " +
+				"The planner asked round 3 (Q3.1–3.2): those questions aren't yours, so no decision in a spec names them.\n"},
+		{"an interviewer round after the planner's", append(slices.Clone(iv), interviewerRound{Number: 4, Questions: 1}), plan,
+			"- Questions so far: round 1 (Q1.1–1.2), round 2 (Q2.1), round 4 (Q4.1). A question round now is round 5, and every question asked so far needs a decision in a spec. " +
+				"The planner asked round 3 (Q3.1–3.2): those questions aren't yours, so no decision in a spec names them.\n"},
+	} {
+		got := interviewerPreamble(4, tt.rounds, tt.plans, nil, "This issue has no type, so you may set it.", "")
+		if !strings.Contains(got, "\n\n"+tt.want) {
+			t.Errorf("%s: the preamble has no line\n%s\nin\n%s", tt.name, tt.want, got)
+		}
 	}
 }

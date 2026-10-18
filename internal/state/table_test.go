@@ -22,6 +22,7 @@ func TestLookupFindsEveryRow(t *testing.T) {
 		{Clarifying, Ready, ClassTask, TriggerAnswered},
 		{SpecReview, Clarifying, ClassEpic, TriggerSpecRevise},
 		{SpecReview, Planning, ClassEpic, TriggerSpecApproved},
+		{Planning, Planning, ClassOwnerStory, TriggerPlanQuestions},
 		{Planning, PlanReview, ClassStory, TriggerPlanValid},
 		{Planning, Planned, ClassStory, TriggerPlanNoReview},
 		{PlanReview, Planning, ClassEpic, TriggerPlanRevise},
@@ -106,6 +107,47 @@ func TestLookupMissing(t *testing.T) {
 		if _, err := Lookup(c.from, c.to, c.class, c.trigger); !errors.Is(err, ErrNoTransition) {
 			t.Errorf("%s: got %v, want ErrNoTransition", c.name, err)
 		}
+	}
+}
+
+// TestLookupPlanQuestions: the planner's question round, planning →
+// planning, is for an epic and a story with or without a parent, and for
+// no task, bug or untyped issue (#253). It's only a planner round's: the
+// interviewer's trigger doesn't move planning to planning, and the
+// planner's doesn't move clarifying to clarifying.
+func TestLookupPlanQuestions(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name  string
+		class Class
+		ok    bool
+	}{
+		{"epic", ClassEpic, true},
+		{"story with a parent", ClassStory, true},
+		{"story with no parent", ClassOwnerStory, true},
+		{"task", ClassTask, false},
+		{"owner task", ClassOwnerTask, false},
+		{"human task", ClassHumanTask, false},
+		{"bug", ClassBug, false},
+		{"new bug", ClassNewBug, false},
+		{"new owner task", ClassNewOwnerTask, false},
+		{"untyped", ClassUntyped, false},
+	} {
+		r, err := Lookup(Planning, Planning, c.class, TriggerPlanQuestions)
+		switch {
+		case c.ok && err != nil:
+			t.Errorf("%s: Lookup = %v, want the row", c.name, err)
+		case c.ok && (r.From() != Planning || r.To() != Planning || r.Trigger() != TriggerPlanQuestions):
+			t.Errorf("%s: Lookup = %s → %s on %s, want planning → planning on %s", c.name, r.From(), r.To(), r.Trigger(), TriggerPlanQuestions)
+		case !c.ok && !errors.Is(err, ErrNoTransition):
+			t.Errorf("%s: Lookup = %v, want ErrNoTransition", c.name, err)
+		}
+	}
+	if _, err := Lookup(Planning, Planning, ClassEpic, TriggerMoreQuestions); !errors.Is(err, ErrNoTransition) {
+		t.Errorf("more-questions at planning: got %v, want ErrNoTransition", err)
+	}
+	if _, err := Lookup(Clarifying, Clarifying, ClassEpic, TriggerPlanQuestions); !errors.Is(err, ErrNoTransition) {
+		t.Errorf("plan-questions at clarifying: got %v, want ErrNoTransition", err)
 	}
 }
 

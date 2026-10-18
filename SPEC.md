@@ -503,6 +503,7 @@ The lifecycle of each type:
 | clarifying | ready | task | Owner answered the implementer's or verifier's question |
 | spec-review | clarifying | epic, or story with no parent | Owner `/revise <text>`, or any other trusted comment (7.4) |
 | spec-review | planning | epic, or story with no parent | Owner approves the current revision with 👍 or `/approve` (7.4) |
+| planning | planning | epic, story | The planner asks a question round: on entering planning, or the next once the owner answered (9.1). Not built until phase 2 |
 | planning | plan-review | epic, story | Planner output passes validation (11.3) |
 | planning | planned | story | Output passes validation and `plan.review` is false, unless the planning follows a discussion hold (6.4); daemon creates tasks |
 | plan-review | planning | epic, story | Owner `/revise <text>`, or any other trusted comment (7.4) |

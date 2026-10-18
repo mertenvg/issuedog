@@ -145,6 +145,52 @@ func TestAssignWhole(t *testing.T) {
 	}
 }
 
+// An unanswered planner round at planning assigns notify, as an
+// interviewer round does, and a pass where nothing changed makes no
+// request: no read of the issue, no assignee write. A trusted answer gets
+// the App's 👍 and ends the item, so the issue is unassigned the same
+// pass, and an untrusted comment does neither (#253). The planner isn't
+// built yet, so its round is a hand-built marker.
+func TestAssignPlanRound(t *testing.T) {
+	t.Parallel()
+	f, o := newFake(t), digestRunOrigin(t)
+	f.SetPermission(digestRunOwner, "admin")
+	n := f.AddIssue(digestRunOwner, "Quote expiry", "Quotes should expire.", "type:epic")
+	f.AddLabel(n, app, "stage:planning")
+	f.AddComment(n, app, "<!-- issuedog:transition from=spec-review to=planning cmd=r7 rev=1 body=abcd1234 -->")
+	f.AddComment(n, app, fmt.Sprintf("### Questions for #%d (round 3)\n\n**1. Which scope?** Blocks: #%d\n   a. daemon (recommended): it's listed\n   b. web\n\n"+
+		"Reply in one comment, e.g. `1a 2c 3: free text`.\n\ncc @%s\n\n"+
+		"<!-- issuedog:transition from=planning to=planning run=p1 round=3 questions=1 -->", n, n, digestRunOwner))
+	d := assignDaemon(t, f, o, nil)
+	assignStep(t, f, d, "the first pass", assignAdd(n, digestRunOwner))
+	assignWant(t, f, "the first pass", map[int][]string{n: {digestRunOwner}})
+	assignStep(t, f, d, "a pass that reads the issue written to again")
+	from := len(f.Requests())
+	assignStep(t, f, d, "a pass where nothing changed")
+	for _, r := range f.Requests()[from:] {
+		if strings.HasSuffix(r.Path, "/assignees") || r.Method == http.MethodGet && assignIssueRead.MatchString(r.Path) {
+			t.Errorf("a pass where nothing changed requested %s %s; want no read of an issue and no assignee write", r.Method, r.Path)
+		}
+	}
+	f.AddComment(n, digestRunEve, "1b")
+	assignStep(t, f, d, "an untrusted comment")
+	assignWant(t, f, "an untrusted comment", map[int][]string{n: {digestRunOwner}})
+	f.AddComment(n, digestRunOwner, "1a")
+	assignStep(t, f, d, "the answer", assignRemove(n, digestRunOwner))
+	assignWant(t, f, "the answer", nil)
+	var acked []string
+	for _, c := range f.State().Issues[n-1].Comments {
+		if slices.Contains(c.Reactions, app+" +1") {
+			acked = append(acked, c.Body)
+		}
+	}
+	if !slices.Equal(acked, []string{"1a"}) {
+		t.Errorf("the App 👍'd %q; want the answer alone", acked)
+	}
+	assignStep(t, f, d, "a pass after the answer")
+	assignStep(t, f, assignDaemon(t, f, o, nil), "a restart after the answer")
+}
+
 // assignNoNotifyOrigin is digestRunOrigin with notify empty.
 func assignNoNotifyOrigin(t testing.TB) *origin {
 	t.Helper()
