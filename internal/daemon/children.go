@@ -73,10 +73,9 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 		return wrap(err)
 	}
 	key := state.Key{Field: "event", ID: "p" + strconv.FormatInt(move.ID, 10)}
-	numbers := map[string]int{} // each child's number, by item, for "Why it blocks"
-	for item, f := range found {
-		numbers[item] = f.Number
-	}
+	// numbers is each child's number so far, by item, found or filed, for
+	// "Why it blocks": the items a human task blocks come before it.
+	numbers := map[string]int{}
 	for _, c := range specs {
 		n, err := st.childWrite(ctx, s, rev.Rev, key, c, found[c.Item], numbers)
 		if err != nil {
