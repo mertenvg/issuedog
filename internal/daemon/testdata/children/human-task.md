@@ -1,7 +1,7 @@
 **Parent:** #124   **Scope:** scope:infra   **Priority:** p2
 
 **Goal:** Set the quote lifetime to 24 hours in production's settings.
-**Why it blocks:** T2 can't be deployed until production has a lifetime, because the booking service won't start without one, and the deploy settings are a path only the owner can change.
+**Why it blocks:** #124 can't proceed until production has a quote lifetime, because the booking service won't start without one, and the deploy settings are a path only the owner can change.
 **Steps:**
 1. On a new branch, open `deploy/production.env`.
 2. Add the line `QUOTE_TTL=24h`.
@@ -10,9 +10,9 @@
 **Links:**
 - https://github.com/acme/booking/blob/main/deploy/production.env
 
-**Done when:** Production's settings on `main` set `QUOTE_TTL=24h`.
+**Done when:** The file `deploy/production.env` on `main` contains `QUOTE_TTL=24h`. I check this when you reply `/done` or react 👍 to this issue.
 **Estimated time:** 5 min
 
 cc @mertenvg
 
-<!-- issuedog:origin plan=#124 rev=1 item=T3 human=1 -->
+<!-- issuedog:origin plan=#124 rev=1 item=T3 check=file contains=QUOTE_TTL=24h human=1 value=deploy/production.env -->

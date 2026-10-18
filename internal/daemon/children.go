@@ -26,9 +26,11 @@ import (
 //
 // It describes each item of R (childSpecs), finds the children filed
 // already (childrenFind), with no search request, then, for each item in
-// plan order:
+// the order childSpecs gives, plan order with the human tasks last
+// (childOrder):
 //   - files its child if none is found (CreateChild), with its title, body,
-//     labels and issue type;
+//     labels and issue type. A human task's body names the issues of the
+//     items that depend on it, filed before it (childSpec.bodyOf);
 //   - links it under the parent if it isn't a sub-issue of it yet
 //     (AddSubIssue);
 //   - gives it its first move, intake → its first stage on TriggerCreated,
@@ -71,10 +73,15 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 		return wrap(err)
 	}
 	key := state.Key{Field: "event", ID: "p" + strconv.FormatInt(move.ID, 10)}
+	// numbers is each child's number so far, by item, found or filed, for
+	// "Why it blocks": the items a human task blocks come before it.
+	numbers := map[string]int{}
 	for _, c := range specs {
-		if err := st.childWrite(ctx, s, rev.Rev, key, c, found[c.Item]); err != nil {
+		n, err := st.childWrite(ctx, s, rev.Rev, key, c, found[c.Item], numbers)
+		if err != nil {
 			return wrap(fmt.Errorf("item %s: %w", c.Item, err))
 		}
+		numbers[c.Item] = n
 	}
 	return nil
 }
@@ -155,14 +162,20 @@ func childMatch(parent int, appSlug string, subs, listed []*gogithub.Issue, inRe
 }
 
 // childWrite writes what's missing of c's child, under parent s, in order:
-// the issue, its link under s, then its first move, keyed by key. f is the
-// child found already, if any (Number 0 for none).
-func (st *Step) childWrite(ctx context.Context, s *github.Snapshot, rev int, key state.Key, c childSpec, f childFound) error {
+// the issue, its link under s, then its first move, keyed by key, and
+// returns its number. f is the child found already, if any (Number 0 for
+// none). numbers is the number of each child filed so far, by item, which
+// a human task's body names (childSpec.bodyOf).
+func (st *Step) childWrite(ctx context.Context, s *github.Snapshot, rev int, key state.Key, c childSpec, f childFound, numbers map[string]int) (int, error) {
 	var child *github.Snapshot // a child filed in this pass, as the create answered
 	if f.Number == 0 {
-		is, err := st.Client.CreateChild(ctx, st.Owner, st.Repo, github.NewChild{Title: c.Title, Body: c.Body, Labels: c.Labels, Type: c.IssueType})
+		body, err := c.bodyOf(numbers)
 		if err != nil {
-			return fmt.Errorf("create its child: %w", err)
+			return 0, fmt.Errorf("write its child's body: %w", err)
+		}
+		is, err := st.Client.CreateChild(ctx, st.Owner, st.Repo, github.NewChild{Title: c.Title, Body: body, Labels: c.Labels, Type: c.IssueType})
+		if err != nil {
+			return 0, fmt.Errorf("create its child: %w", err)
 		}
 		f = childFound{Number: is.GetNumber(), ID: is.GetID()}
 		logr.Infof("%s/%s#%d: filed #%d for item %s of its plan, rev %d", st.Owner, st.Repo, s.Number, f.Number, c.Item, rev)
@@ -171,11 +184,11 @@ func (st *Step) childWrite(ctx context.Context, s *github.Snapshot, rev int, key
 	if !f.Linked { // as one filed just now is, which is touched here
 		st.touch(f.Number)
 		if err := st.Client.AddSubIssue(ctx, st.Owner, st.Repo, s.Number, f.ID); err != nil {
-			return fmt.Errorf("link #%d: %w", f.Number, err)
+			return 0, fmt.Errorf("link #%d: %w", f.Number, err)
 		}
 		logr.Infof("%s/%s#%d: linked #%d under it, for item %s of its plan", st.Owner, st.Repo, s.Number, f.Number, c.Item)
 	}
-	return st.childFirstMove(ctx, s.Number, rev, key, c, f.Number, child)
+	return f.Number, st.childFirstMove(ctx, s.Number, rev, key, c, f.Number, child)
 }
 
 // childFirstMove gives child number n its first move (Q1a), intake → c's

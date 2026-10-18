@@ -73,7 +73,7 @@
         "human": true,
         "human_task": {
           "goal": "Set the quote lifetime to 24 hours in production's settings.",
-          "why_blocks": "T2 can't be deployed until production has a lifetime, because the booking service won't start without one, and the deploy settings are a path only the owner can change.",
+          "why_blocks": "production has a quote lifetime, because the booking service won't start without one, and the deploy settings are a path only the owner can change.",
           "steps": [
             "On a new branch, open `deploy/production.env`.",
             "Add the line `QUOTE_TTL=24h`.",
