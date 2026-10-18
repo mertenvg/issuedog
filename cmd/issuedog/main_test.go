@@ -446,6 +446,44 @@ func TestNewStepErrAck(t *testing.T) {
 	}
 }
 
+// newStep's human task trigger runs too: a trusted 👍 on a human task
+// itself, at needs-human, closes it, its plain-text "Done when" having no
+// check to run. Its error comes back wrapped.
+func TestNewStepHumanTask(t *testing.T) {
+	t.Parallel()
+	const app = "issuedog-dev[bot]"
+	f := githubtest.New(t, "o/r", "issuedog-dev")
+	for range 2 {
+		n := f.AddIssue(app, "Add the label", "Add it.\n\n<!-- issuedog:origin plan=#9 rev=1 item=T2 human=1 -->")
+		f.SetType(n, "task")
+		f.AddLabel(n, app, "stage:needs-human")
+		f.AddComment(n, app, "<!-- issuedog:transition from=intake to=needs-human event=p5 -->")
+	}
+	r := f.AddIssueReaction(1, "owner", "+1")
+	c := f.Client(t)
+	st := newStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{"owner": true}, noModels)
+	s, err := c.Snapshot(context.Background(), "o", "r", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Run(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	is := f.State().Issues[0]
+	want := fmt.Sprintf("from=needs-human to=closed reason=completed cmd=r%d ", r)
+	if last := is.Comments[len(is.Comments)-1].Body; !is.Closed || !strings.Contains(last, want) {
+		t.Errorf("#1 closed %t, last comment %q; want it closed by a marker holding %q", is.Closed, last, want)
+	}
+	// Its error: the read of #2's reactions fails.
+	if s, err = c.Snapshot(context.Background(), "o", "r", 2); err != nil {
+		t.Fatal(err)
+	}
+	f.AnswerOnce(func(r githubtest.Request) bool { return r.Path == "/issues/2/reactions" }, http.StatusBadGateway)
+	if err := st.Reactions(context.Background(), st.Applier, s, daemon.Dirt{}); err == nil || !strings.HasPrefix(err.Error(), "human task done by 👍: ") {
+		t.Errorf("Reactions = %v, want an error starting %q", err, "human task done by 👍: ")
+	}
+}
+
 // newStep runs the state error trigger after the others: an approval by
 // 👍 in the same pass moves the issue, which ends a disagreement posted
 // after the revision, so the error gets no ack and no read of its

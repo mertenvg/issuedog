@@ -146,10 +146,12 @@ func (d *Daemon) Run(ctx context.Context) {
 // (ErrorByReaction), on every held issue, for its discussion
 // triggers (discHeldLabel), and on every issue at needs-human, for a human
 // task's blockers, whose close changes no updated_at of its own
-// (humanBlocked, #287). Each visit ends with ChildrenVisit, which
-// creates the children of a plan approved on the issue (children.go); the
-// children it writes to are touched. On each issue step 1 succeeds on, it caches what
-// waits on the owner (digestCacheSet), with the issue's dirty content, which
+// (humanBlocked, #287), and for the 👍s on a human task itself, which
+// change none either (DoneByReaction, #286). Each visit ends with
+// ChildrenVisit, which creates the children of a plan approved on the
+// issue (children.go); the children it writes to are touched. On each
+// issue step 1 succeeds on, it caches what waits on the owner
+// (digestCacheSet), with the issue's dirty content, which
 // openErrAny takes too; an issue whose read or step 1 fails keeps its last
 // items, and one that closes or leaves the listing loses them. Then it
 // keeps the digest (digestPass), and then the assignees (assignPass), whose
