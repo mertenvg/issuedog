@@ -271,13 +271,18 @@ func heldStackResume(is state.Issue, self bool, above madeAboveSet) (at state.St
 // marker m records on an issue in its family. On the issue itself, if
 // self, it ends any owner or discussion hold: a discussion hold's
 // triggers, all of them, are accepted by its move out of held (SPEC §6.4,
-// T4). On a descendant it ends only an owner hold whose /hold was posted
-// on the /resume's issue or above it, before the /resume, or a comment
-// deleted there before it that may have been one (resolveGone), by SPEC
-// §6.4's one rule (resolveEndsHold, madeAboveSet.made): a marker whose cmd
-// names a comment in above, or a /hold that a marker on the issue or an
-// ancestor names, its comment deleted since, which was posted there or
-// above (see madeAbove). A /hold on a descendant names a comment below,
+// T4). But not an owner hold whose /hold was posted after it, by the same
+// rule (resolveEndsHold): one on an ancestor whose pass came first, as
+// commands run in issue-number order, which holds the issue by a marker
+// if it wasn't held, or else by none (resolveHeldBy, #205). A hold by
+// hand, or a comment deleted that may have been a /hold (resolveGone),
+// which names no /hold, it ends. On a descendant it ends only an owner
+// hold whose /hold was posted on the /resume's issue or above it, before
+// the /resume, or a comment deleted there before it that may have been
+// one (resolveGone), by SPEC §6.4's one rule (resolveEndsHold,
+// madeAboveSet.made): a marker whose cmd names a comment in above, or a
+// /hold that a marker on the issue or an ancestor names, its comment
+// deleted since, which was posted there or above (see madeAbove). A /hold on a descendant names a comment below,
 // whether it wrote a marker or, as the issue was held already, none (Q2b,
 // resolveOwnHolds, resolveHeldBy), so it stays until /resume there or
 // between ends it; so do a hold set by hand, which has no cmd (by= and
@@ -292,10 +297,28 @@ func heldStackEnds(m github.Marker, self bool, above madeAboveSet) bool {
 		return false
 	}
 	if self {
-		return true
+		// Every hold on the issue was made on it or above it, so at the
+		// /resume's level, and only when it came after the /resume does
+		// it stay.
+		id, ok := state.Key{Field: "cmd", ID: m.Fields["cmd"]}.Comment()
+		return !ok || resolveEndsHold(resolveMade{id: id, level: above.resume.level}, above.resume)
 	}
 	h, ok := above.made(m)
 	return ok && resolveEndsHold(h, above.resume)
+}
+
+// heldStackLater reports whether any of left, the holds a /resume leaves
+// on an issue in its family (heldStackResume), is an owner hold by a /hold
+// posted after the /resume, above's: one the App applied first, as on an
+// ancestor whose pass came first in the same pass (#205). The /resume
+// still ends the holds before it there, as resumeCheck lets it, and
+// resolveResumed records that, so a /resume posted after that /hold, which
+// may not end those, needn't.
+func heldStackLater(left []github.Marker, above madeAboveSet) bool {
+	return slices.ContainsFunc(left, func(m github.Marker) bool {
+		id, ok := state.Key{Field: "cmd", ID: m.Fields["cmd"]}.Comment()
+		return m.Fields["reason"] == "owner" && ok && id > above.resume.id
+	})
 }
 
 // madeAboveSet is what madeAbove finds on a /resume's issue and its
@@ -343,6 +366,17 @@ func (above madeAboveSet) made(m github.Marker) (resolveMade, bool) {
 		h.level = 0
 	}
 	return h, ok
+}
+
+// on returns the number of the issue, c's or an ancestor, that comment id
+// is on, if it's on one of them.
+func (above madeAboveSet) on(id int64) (int, bool) {
+	for _, n := range above.nodes {
+		if slices.ContainsFunc(n.s.Comments, func(c github.Comment) bool { return c.ID == id }) {
+			return n.s.Number, true
+		}
+	}
+	return 0, false
 }
 
 // madeAbove returns what is on c's issue and its ancestors (madeAboveSet),
@@ -465,6 +499,7 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 	below := madeBelow(family)
 	held := false
 	var makers, discussed []string
+	var selfExtra []github.Marker // c's issue's holds from above that c doesn't end (resolveHeldBy)
 	for _, n := range family {
 		if !n.open {
 			continue
@@ -475,14 +510,20 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 		if err != nil {
 			return fmt.Errorf("check /resume: %w", err)
 		}
+		if n.s == c.S {
+			selfExtra = extra
+		}
 		is, _, err := a.resolveHeld(ctx, s, n.d, c.Trust, state.Derive(s, a.AppSlug, n.d.Has), c.Comment, n.s == c.S, extra)
 		if err != nil {
 			return fmt.Errorf("check /resume: %w", err)
 		}
 		_, ended, left := heldStackResume(is, n.s == c.S, above)
 		// It leaves held, or stays held for discussion only, which Apply
-		// records (resolveResumed).
-		held = held || ended > 0 && !resolveOwnerHeld(left)
+		// records (resolveResumed), or by a /hold posted after c, which
+		// the App applied first, as an ancestor's pass came first (#205):
+		// Apply records the holds c ends there too, so a /resume posted
+		// after that /hold, which may not end them, needn't.
+		held = held || ended > 0 && (!resolveOwnerHeld(left) || heldStackLater(left, above))
 		// A descendant held for discussion only, which this doesn't end; if
 		// it ends an owner hold there too, the /resume applies (held).
 		if len(left) > 0 && !resolveOwnerHeld(left) {
@@ -502,6 +543,11 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 			id, _ := state.Key{Field: "cmd", ID: m.Fields["cmd"]}.Comment()
 			made, ok := below[id]
 			if !ok {
+				// A /hold on c's issue or above, posted after c, that the
+				// App applied first (#205): the issue its comment is on.
+				made, ok = above.on(id)
+			}
+			if !ok {
 				made = n.s.Number
 			}
 			by = append(by, made)
@@ -517,7 +563,7 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 	}
 	// The issue's own move: back to its at, or to clarifying after a
 	// discussion (resolveHeld).
-	is, after, err := a.resolveHeld(ctx, c.S, c.Dirt, c.Trust, state.Derive(c.S, a.AppSlug, c.Dirt.Has), c.Comment, true, nil)
+	is, after, err := a.resolveHeld(ctx, c.S, c.Dirt, c.Trust, state.Derive(c.S, a.AppSlug, c.Dirt.Has), c.Comment, true, selfExtra)
 	if err != nil {
 		return fmt.Errorf("check /resume: %w", err)
 	}
