@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -50,6 +51,13 @@ var (
 // (planDataMarker in internal/daemon).
 func planData(t testing.TB, k childPlan) github.Marker {
 	t.Helper()
+	return planDataEdited(t, k, nil)
+}
+
+// planDataEdited is planData, with each of k's items, as a JSON object,
+// changed by edit first, if it isn't nil.
+func planDataEdited(t testing.TB, k childPlan, edit func(item map[string]any)) github.Marker {
+	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("..", "agent", "testdata", "outputs", "planner", k.golden+".json"))
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +72,21 @@ func planData(t testing.TB, k childPlan) github.Marker {
 	if err := json.Unmarshal(out.Plan["items"], &items); err != nil {
 		t.Fatal(err)
 	}
-	if out.Plan["items"], err = json.Marshal(items[:k.items]); err != nil {
+	items = items[:k.items]
+	for i := range items {
+		if edit == nil {
+			break
+		}
+		var item map[string]any
+		if err := json.Unmarshal(items[i], &item); err != nil {
+			t.Fatal(err)
+		}
+		edit(item)
+		if items[i], err = json.Marshal(item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if out.Plan["items"], err = json.Marshal(items); err != nil {
 		t.Fatal(err)
 	}
 	plan, err := json.Marshal(out.Plan)
@@ -209,8 +231,10 @@ func firstMove(w wantChild, p int64) string {
 // checkChildren fails t unless f has exactly k's children, issues 2 on, in
 // plan order: each the App's, with its title, type, labels and origin,
 // linked under issue 1 in that order, and with its one first move, keyed
-// by issue 1's move into planned. The children were looked for in the
-// issues listed since that move.
+// by issue 1's move into planned. Each is blocked by the children of the
+// items it depends on, and by nothing else, and issue 1 has one record of
+// them (wantRecord). The children were looked for in the issues listed
+// since that move.
 func checkChildren(t *testing.T, f *githubtest.Fake, k childPlan) {
 	t.Helper()
 	p, at := planMoveID(t, f)
@@ -246,6 +270,47 @@ func checkChildren(t *testing.T, f *githubtest.Fake, k childPlan) {
 	if got := st.Issues[0].SubIssues; !reflect.DeepEqual(got, subs) {
 		t.Errorf("issue 1's sub-issues are %v, want %v, in plan order", got, subs)
 	}
+	for _, is := range st.Issues {
+		if want := wantBlockedBy(k)[is.Number]; !reflect.DeepEqual(is.BlockedBy, want) {
+			t.Errorf("#%d is blocked by %v, want %v", is.Number, is.BlockedBy, want)
+		}
+	}
+	if got, want := records(st.Issues[0]), []string{wantRecord(k)}; !reflect.DeepEqual(got, want) {
+		t.Errorf("issue 1's records are\n%q\nwant\n%q", got, want)
+	}
+}
+
+// wantBlockedBy are the issues blocking each of k's children, by number,
+// sorted, as its items' "Depends on" give them: in the epic's plan, S2
+// depends on S1, and in the story's, T2 depends on T1 and T3. Any other
+// issue has none.
+func wantBlockedBy(k childPlan) map[int][]int {
+	return map[string]map[int][]int{
+		"epic-plan":  {3: {2}},
+		"story-plan": {3: {2, 4}},
+	}[k.golden]
+}
+
+// wantRecord is the record of k's children on issue 1, filed as issues 2
+// on in plan order: one line for each, with its item's title, then the
+// created marker.
+func wantRecord(k childPlan) string {
+	lines := []string{"I've created the children of plan rev 1:"}
+	var nums []string
+	for i, w := range wantChildren(k) {
+		lines = append(lines, fmt.Sprintf("- %s #%d: %s", w.item, i+2, strings.TrimPrefix(w.title, w.item+". ")))
+		nums = append(nums, strconv.Itoa(i+2))
+	}
+	return strings.Join(lines, "\n") + "\n\n<!-- issuedog:created rev=1 children=" + strings.Join(nums, ",") + " -->"
+}
+
+// creationRequest reports whether r is one ChildrenVisit makes for
+// creation, past its reads of the parent: every visit that creates starts
+// by listing the parent's sub-issues, and then may file, link and block
+// issues, and list what blocks them.
+func creationRequest(r githubtest.Request) bool {
+	return strings.HasSuffix(r.Path, "/sub_issues") || strings.Contains(r.Path, "/dependencies/") ||
+		r.Method == http.MethodPost && r.Path == "/issues"
 }
 
 // noSearch fails t if f was asked anything of the search API.
@@ -526,8 +591,10 @@ func overrideEvent(t *testing.T, f *githubtest.Fake) string {
 // step 1 and Work, even one the poll listed and read this pass, and is
 // read again on the next; one it only reads doesn't. Here the first pass
 // stops at S2's first move, so the second finds S1 done, which it visits,
-// and S2, which it moves and doesn't visit until the third. Then a pass
-// writes nothing.
+// and S2, which it moves and doesn't visit until the third. The second
+// also blocks S2 by S1 and posts the record on the parent, so the third
+// reads the parent again too, and its visit makes no request for
+// creation. Then a pass writes nothing, and costs no rate limit.
 func TestIterateCreatesChildren(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
@@ -576,21 +643,33 @@ func TestIterateCreatesChildren(t *testing.T) {
 	}
 	checkChildren(t, f, twoStories)
 
+	from := len(f.Requests())
 	pass(false)
-	if !reflect.DeepEqual(visits, []int{3}) || !reflect.DeepEqual(worked, []int{1, 2, 3}) {
-		t.Errorf("the third pass visited %v and handed Work %v; want S2 read again and visited, [3], and Work given every issue, [1 2 3]", visits, worked)
+	if !reflect.DeepEqual(visits, []int{1, 3}) || !reflect.DeepEqual(worked, []int{1, 2, 3}) {
+		t.Errorf("the third pass visited %v and handed Work %v; want the parent read again for its record and S2 read again, both visited, [1 3], and Work given every issue, [1 2 3]", visits, worked)
+	}
+	for _, r := range f.Requests()[from:] {
+		if creationRequest(r) {
+			t.Errorf("the third pass's visit to the parent, with its record, sent %+v; want no request for creation", r)
+		}
 	}
 	n := len(f.Writes())
+	from = len(f.Requests())
 	pass(false)
 	if w := f.Writes(); len(w) != n {
 		t.Errorf("a pass once every child is filed wrote %+v, want nothing", w[n:])
 	}
+	for _, r := range f.Requests()[from:] {
+		if r.Method != http.MethodGet || !r.Conditional || r.Status != http.StatusNotModified {
+			t.Errorf("an unchanged pass sent %+v; want only conditional GETs answered 304", r)
+		}
+	}
 	noSearch(t, f)
 }
 
-// Every child the visit files, links or moves is reported to Touched, and
-// one it only reads isn't: here T1 was filed, linked and moved before a
-// crash, and T2 filed but not linked.
+// Every child the visit files, links, moves or blocks is reported to
+// Touched, and one it only reads isn't: here T1 was filed, linked and
+// moved before a crash, and T2 filed but not linked.
 func TestChildrenTouched(t *testing.T) {
 	t.Parallel()
 	setup := planAtReview(threeTasks, thumbsUp)
@@ -617,6 +696,33 @@ func TestChildrenTouched(t *testing.T) {
 	}
 	if want := []int{3, 4}; !reflect.DeepEqual(touched, want) {
 		t.Errorf("touched %v, want %v: T2, linked and moved, and T3, filed", touched, want)
+	}
+	checkChildren(t, f, threeTasks)
+
+	// A child that only gets a blocked-by link is touched too, as the add
+	// moves its updated_at: here every child was filed, linked and moved
+	// before a crash at T2's first link.
+	f = setup(t)
+	f.FailWrite(writeAt(t, setup, pass, 1, isBlock))
+	if err := pass(f); err == nil {
+		t.Fatal("the first pass made every write; want it stopped at T2's first link")
+	}
+	f.FailWrite(0)
+	st = childrenStep(t, f, threeTasks)
+	touched = nil
+	st.Touched = func(n int) {
+		if !slices.Contains(touched, n) {
+			touched = append(touched, n)
+		}
+	}
+	if s, err = st.Client.Snapshot(context.Background(), "o", "r", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ChildrenVisit(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	if want := []int{3}; !reflect.DeepEqual(touched, want) {
+		t.Errorf("touched %v, want %v: T2, blocked", touched, want)
 	}
 	checkChildren(t, f, threeTasks)
 }
@@ -674,6 +780,212 @@ func TestChildrenClosed(t *testing.T) {
 		is := st.Issues[i+2]
 		if len(is.Comments) != 1 || is.Comments[0].Body != firstMove(w, p) {
 			t.Errorf("child #%d's comments are %+v, want its first move", is.Number, is.Comments)
+		}
+	}
+}
+
+// isBlock reports whether w adds a blocked-by link.
+func isBlock(w githubtest.Write) bool {
+	return w.Method == "POST" && strings.HasSuffix(w.Path, "/dependencies/blocked_by")
+}
+
+// isRecord reports whether w posts the record of a plan's children on
+// issue 1.
+func isRecord(w githubtest.Write) bool {
+	return w.Method == "POST" && w.Path == "/issues/1/comments" && strings.Contains(w.Body, "issuedog:created")
+}
+
+// records are the bodies of is's comments that hold a created marker,
+// oldest first.
+func records(is githubtest.IssueState) []string {
+	var bodies []string
+	for _, c := range is.Comments {
+		if strings.Contains(c.Body, "issuedog:created") {
+			bodies = append(bodies, c.Body)
+		}
+	}
+	return bodies
+}
+
+// Each child is blocked by the children of the items its item depends on:
+// in the story's plan, T2 by T1 and T3, which comes after it. The record
+// comes after the last link, as the pass's last write. A link a child has
+// already isn't added again, and one someone added by hand stays.
+func TestChildrenLinks(t *testing.T) {
+	t.Parallel()
+	setup := planAtReview(threeTasks, thumbsUp)
+	pass := childrenPass(t, threeTasks)
+
+	f := setup(t)
+	if err := pass(f); err != nil {
+		t.Fatal(err)
+	}
+	var blocks []string
+	last, record := 0, 0
+	for i, w := range f.Writes() {
+		if isBlock(w) {
+			blocks, last = append(blocks, w.Path), i+1
+		}
+		if isRecord(w) {
+			record = i + 1
+		}
+	}
+	if want := []string{"/issues/3/dependencies/blocked_by", "/issues/3/dependencies/blocked_by"}; !reflect.DeepEqual(blocks, want) {
+		t.Errorf("the pass added blocked-by links at %v, want %v: T2's two", blocks, want)
+	}
+	if n := len(f.Writes()); record != n || last == 0 || last > record {
+		t.Errorf("the record is write %d, and the last link write %d, of %d; want the record last, after the links", record, last, n)
+	}
+	checkChildren(t, f, threeTasks)
+
+	// A pass that stops at T2's first link. Then T2 gets its link to T3 by
+	// hand, as if the add took effect with its answer lost, and a link to
+	// an issue filed by hand, #5.
+	f = setup(t)
+	f.FailWrite(writeAt(t, setup, pass, 1, isBlock))
+	if err := pass(f); err == nil {
+		t.Fatal("the first pass made every write; want it stopped at T2's first link")
+	}
+	f.FailWrite(0)
+	if got := records(f.State().Issues[0]); len(got) != 0 {
+		t.Errorf("a pass stopped at a link posted records %q; want none before the last link", got)
+	}
+	f.SetBlockedBy(3, 4)
+	f.SetBlockedBy(3, f.AddIssue("owner", "Infra", "body"))
+	n := len(f.Writes())
+	if err := pass(f); err != nil {
+		t.Fatal(err)
+	}
+	var added []githubtest.Write
+	for _, w := range f.Writes()[n:] {
+		if isBlock(w) {
+			added = append(added, w)
+		}
+	}
+	if len(added) != 1 || added[0].Path != "/issues/3/dependencies/blocked_by" {
+		t.Errorf("the second pass added links %+v; want only T2's to T1", added)
+	}
+	st := f.State()
+	if got := st.Issues[2].BlockedBy; !reflect.DeepEqual(got, []int{2, 4, 5}) {
+		t.Errorf("T2 is blocked by %v, want [2 4 5]: T1 and T3, and #5, by hand", got)
+	}
+	if got, want := records(st.Issues[0]), []string{wantRecord(threeTasks)}; !reflect.DeepEqual(got, want) {
+		t.Errorf("issue 1's records are\n%q\nwant\n%q", got, want)
+	}
+}
+
+// The record's item IDs and titles are the planner's, so they're escaped
+// as text the App didn't write (SPEC §5.1): a marker in a title isn't
+// read, a mention is defused and a box is escaped. A story's title is its
+// item's, without the "S2. " its issue's title starts with.
+func TestChildrenRecordEscaped(t *testing.T) {
+	t.Parallel()
+	titles := map[string]string{
+		"S1": "Warn @alice <!-- issuedog:created rev=1 children=9 -->",
+		"S2": "S2. Tick [ ] for @bob",
+	}
+	setup := atPlanning(twoStories, func(t testing.TB, f *githubtest.Fake) {
+		data := planDataEdited(t, twoStories, func(item map[string]any) { item["title"] = titles[fmt.Sprint(item["id"])] })
+		moveOn(t, f, 1, daemon.Move{To: state.PlanReview, Trigger: state.TriggerPlanValid, Key: state.Key{Field: "run", ID: "p1"}, PlanRev: 1,
+			Text: planText(1, 1), Markers: []github.Marker{data}}, 1002)
+		thumbsUp(t, f)
+	})
+	f := run(t, setup, childrenPass(t, twoStories))
+	st := f.State()
+	want := "I've created the children of plan rev 1:\n" +
+		"- S1 #2: Warn @​alice &lt;!-- issuedog:created rev=1 children=9 -->\n" +
+		"- S2 #3: Tick \\[ ] for @​bob\n\n" +
+		"<!-- issuedog:created rev=1 children=2,3 -->"
+	if got := records(st.Issues[0]); len(got) != 1 || got[0] != want {
+		t.Errorf("the records are\n%q\nwant\n%q", got, want)
+	}
+	if got := st.Issues[2].Title; got != titles["S2"] {
+		t.Errorf("S2's title is %q, want %q", got, titles["S2"])
+	}
+	s, err := f.Client(t).Snapshot(context.Background(), "o", "r", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := state.CreatedRecord(state.Derive(s, slug, clean), 1); !ok || !reflect.DeepEqual(got, []int{2, 3}) {
+		t.Errorf("the record names %v, %v; want [2 3], true", got, ok)
+	}
+}
+
+// A visit to a parent with its record makes no request at all, so none
+// for creation: it reads no child, nor what blocks one.
+func TestChildrenRecordStands(t *testing.T) {
+	t.Parallel()
+	for _, k := range []childPlan{twoStories, threeTasks} {
+		f := run(t, planAtReview(k, thumbsUp), childrenPass(t, k))
+		st := childrenStep(t, f, k)
+		s, err := st.Client.Snapshot(context.Background(), "o", "r", 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		from := len(f.Requests())
+		if err := st.ChildrenVisit(context.Background(), s); err != nil {
+			t.Fatal(err)
+		}
+		if r := f.Requests()[from:]; len(r) != 0 {
+			t.Errorf("%s: a visit to the parent with its record sent %+v; want nothing", k.golden, r)
+		}
+	}
+}
+
+// A record someone else edited is dirty, so it counts for nothing: the
+// next pass finds every child again, files, links and blocks none twice,
+// and posts one new record, which the visit after that stops at. A crash
+// before or after any write replays cleanly.
+func TestChildrenRecordDirty(t *testing.T) {
+	t.Parallel()
+	pass := childrenPass(t, threeTasks)
+	setup := func(tb testing.TB) *githubtest.Fake {
+		f := planAtReview(threeTasks, thumbsUp)(tb)
+		if err := pass(f); err != nil {
+			tb.Fatal(err)
+		}
+		s, err := f.Client(tb).Snapshot(context.Background(), "o", "r", 1)
+		if err != nil {
+			tb.Fatal(err)
+		}
+		for _, c := range s.Comments {
+			if strings.Contains(c.Body, "issuedog:created") {
+				f.EditComment(c.ID, "mallory", c.Body+"\n\nAlso #9.")
+			}
+		}
+		f.ForgetWrites()
+		return f
+	}
+	githubtest.Replay(t, setup, pass)
+
+	f := setup(t)
+	if err := pass(f); err != nil {
+		t.Fatal(err)
+	}
+	// Step 1 notes the edited record as dirty (MarkDirty), then the visit
+	// posts the new one.
+	if w := f.Writes(); len(w) != 2 || w[0].Method != "PATCH" || !strings.Contains(w[0].Body, "issuedog:dirty by=mallory") || !isRecord(w[1]) {
+		t.Errorf("the pass after the record went dirty wrote %+v; want only its dirty note, then a new record", w)
+	}
+	st := f.State()
+	if len(st.Issues) != 4 || !reflect.DeepEqual(st.Issues[2].BlockedBy, []int{2, 4}) {
+		t.Errorf("%+v; want the parent and its three children, T2 blocked by T1 and T3 once each", st.Issues)
+	}
+	if got := records(st.Issues[0]); len(got) != 2 || got[1] != wantRecord(threeTasks) {
+		t.Errorf("issue 1's records are\n%q\nwant the edited one, then\n%q", got, wantRecord(threeTasks))
+	}
+	again := childrenStep(t, f, threeTasks)
+	s, err := again.Client.Snapshot(context.Background(), "o", "r", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := len(f.Requests())
+	if err := again.ChildrenVisit(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range f.Requests()[from:] {
+		if creationRequest(r) {
+			t.Errorf("a visit once the new record stands sent %+v; want no request for creation", r)
 		}
 	}
 }

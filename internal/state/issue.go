@@ -188,6 +188,45 @@ func (is Issue) Moved(k Key) bool {
 	return false
 }
 
+// CreatedRecord returns the children that the record of plan revision
+// rev's children names (plan #249, assumption 7), by number in plan
+// order, and true, or false if there's none: the latest created marker
+// among is's markers that count, with rev=<rev> and children=<n>,<n>, each
+// a number above 0. The App posts it on a parent once each child of rev is
+// created, linked and moved, with its blocked-by links. A record in a
+// dirty comment, as when someone else edited it, doesn't count, since
+// Derive skips it, nor does one of another revision, or one whose
+// children don't all read back.
+func CreatedRecord(is Issue, rev int) ([]int, bool) {
+	var found []int
+	for _, m := range is.Markers {
+		if m.Kind != "created" || m.Fields["rev"] != strconv.Itoa(rev) {
+			continue
+		}
+		if children, ok := createdChildren(m.Fields["children"]); ok {
+			found = children
+		}
+	}
+	return found, found != nil
+}
+
+// createdChildren reads a created marker's children=<n>,<n>, or reports
+// false if it's empty or any of them isn't a number above 0.
+func createdChildren(field string) ([]int, bool) {
+	if field == "" {
+		return nil, false
+	}
+	var children []int
+	for _, f := range strings.Split(field, ",") {
+		n, err := strconv.Atoi(f)
+		if err != nil || n <= 0 {
+			return nil, false
+		}
+		children = append(children, n)
+	}
+	return children, true
+}
+
 // Derive reads s's state from the markers the App wrote (SPEC §5.1). Markers
 // in content that dirty reports, by comment ID or BodyID, are skipped:
 // dirty decides what an edit taints, not Derive. The body's are also
