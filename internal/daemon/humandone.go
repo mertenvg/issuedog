@@ -80,7 +80,7 @@ func (a *Applier) doneFound(ctx context.Context, c Cmd) (string, error) {
 	}
 	pass, found, err := a.humanCheck(ctx, state.Derive(c.S, a.AppSlug, c.Dirt.Has).Origin.Check)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("re-run the check: %w", err)
 	}
 	if !pass {
 		return "", fmt.Errorf("the check no longer passes: %s", found)
