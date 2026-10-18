@@ -802,6 +802,13 @@ func TestWaitFindPlanApproval(t *testing.T) {
 	if got.Key != "plan-41-2" || got.Comment != 4103 || got.Lines[0].Text != "Revision 2 of the plan, `"+waitPlanHash(t, 2)+"`, waits for approval." {
 		t.Errorf("after a revision, got %s on comment %d, %q; want plan-41-2 on comment 4103", got.Key, got.Comment, waitTexts(got.Lines))
 	}
+	// Back from a hold, it still links the plan comment, not the move back.
+	resumed := waitStory(41, 2, nil, waitPlanComment(t, 1), "<!-- issuedog:transition from=plan-review to=held at=plan-review reason=owner cmd=5 -->",
+		"<!-- issuedog:transition from=held to=plan-review cmd=6 seen=5 -->")
+	got = waitFindOne(t, waitIn(resumed, Dirt{}))
+	if got.Key != "plan-41-1" || got.Comment != 4101 || got.Link != "https://github.com/o/r/issues/41#issuecomment-4101" || !slices.Equal(waitTexts(got.Lines), want) {
+		t.Errorf("back from a hold, got %s on comment %d, %s, %q; want plan-41-1 on comment 4101, approvable", got.Key, got.Comment, got.Link, waitTexts(got.Lines))
+	}
 	// An epic, with no origin marker, isn't placed in any plan.
 	epic := waitSnap(42, nil, waitPlanComment(t, 1))
 	got = waitFindOne(t, waitIn(epic, Dirt{}))
@@ -1042,6 +1049,29 @@ func TestWaitRankPlanGolden(t *testing.T) {
 	}
 	if want := []string{"plan-73-1", "err-30-labels-0", "rev-31-1", "rev-32-1", "plan-41-1", "rev-33-1", "plan-60-1", "plan-42-1", "plan-72-1", "plan-71-1", "q-34-1"}; !slices.Equal(keys, want) {
 		t.Errorf("with no plans, ranked %q; want %q", keys, want)
+	}
+}
+
+// Two groups whose best members tie on every one of Q3a's keys, which
+// only items alike in issue, comment and key can, still don't mix: the
+// lower plan's group goes first, whole, so the order stays total.
+func TestWaitRankPlanTie(t *testing.T) {
+	t.Parallel()
+	tied := waitItem{Issue: 9, Kind: waitPlanApproval, Key: "plan-9-1", Priority: 1, Created: waitT0, Comment: 1}
+	items := []waitItem{
+		{Issue: 91, Kind: waitPlanApproval, Key: "plan-91-1", Priority: 2, Created: waitT0, Comment: 1, Plan: 50, Index: 1},
+		{Issue: 92, Kind: waitPlanApproval, Key: "plan-92-1", Priority: 2, Created: waitT0, Comment: 1, Plan: 40, Index: 1},
+		tied, tied,
+	}
+	items[2].Plan, items[2].Index = 50, 2
+	items[3].Plan, items[3].Index = 40, 2
+	waitRank(items, nil)
+	var got []string
+	for _, it := range items {
+		got = append(got, fmt.Sprintf("%s/%d", it.Key, it.Plan))
+	}
+	if want := []string{"plan-92-1/40", "plan-9-1/40", "plan-91-1/50", "plan-9-1/50"}; !slices.Equal(got, want) {
+		t.Errorf("ranked %q, want %q", got, want)
 	}
 }
 
