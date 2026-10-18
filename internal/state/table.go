@@ -18,12 +18,20 @@ const (
 	PreviousOrigin Stage = "previous-origin"
 )
 
-// Trigger names what caused a transition. Each §7.2 row has its own.
+// Trigger names what caused a transition. Each §7.2 row has its own, but
+// for TriggerCreated, whose three rows differ by class.
 type Trigger string
 
-// The §7.2 triggers, one per row and in table order.
+// The §7.2 triggers, one per row and in table order, TriggerCreated once
+// for its three rows.
 const (
-	TriggerTrusted                Trigger = "trusted"
+	TriggerTrusted Trigger = "trusted"
+	// TriggerCreated is a created child's first move, intake → its first
+	// stage (plan #249, Q1a): planning for a story with a parent, ready for
+	// a task from a plan, needs-human for a human task. The daemon writes
+	// it in an App comment on the child, keyed by the parent's move to
+	// planned (#224's reconcile decision 6).
+	TriggerCreated                Trigger = "created"
 	TriggerMoreQuestions          Trigger = "more-questions"
 	TriggerSpecWritten            Trigger = "spec-written"
 	TriggerTaskWritten            Trigger = "task-written"
@@ -103,6 +111,9 @@ const epicOrOwnerStory = ClassEpic | ClassOwnerStory
 // table is every §7.2 row, phases 2 and 3 included, in SPEC order.
 var table = []Row{
 	{Intake, Clarifying, All, TriggerTrusted},
+	{Intake, Planning, ClassStory, TriggerCreated},
+	{Intake, Ready, ClassTask, TriggerCreated},
+	{Intake, NeedsHuman, ClassHumanTask, TriggerCreated},
 	{Clarifying, Clarifying, All, TriggerMoreQuestions},
 	{Clarifying, SpecReview, epicOrOwnerStory, TriggerSpecWritten},
 	{Clarifying, Ready, NewBugOrOwnerTask, TriggerTaskWritten},
