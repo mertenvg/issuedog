@@ -62,7 +62,7 @@
       }
     },
     "plan": {
-      "description": "With outcome plan: the plan. Every field here but the task bodies (task and human_task) is shown in the plan comment, so none of them names a file.",
+      "description": "With outcome plan: the plan. Every field here is shown in the plan comment, so none of them names a file, except the task bodies: task, and human_task but for its done_when text.",
       "type": "object",
       "required": ["kind", "why", "summary", "order", "items"],
       "additionalProperties": false,
@@ -184,7 +184,7 @@
                 }
               },
               "human_task": {
-                "description": "A human task: its issue body, every field filled.",
+                "description": "A human task: its issue body, every field filled. Its steps, links and check may name files. Its done_when text is also shown in the plan comment, so it names none.",
                 "type": "object",
                 "required": ["goal", "why_blocks", "steps", "links", "estimated_time", "done_when"],
                 "additionalProperties": false,
@@ -222,7 +222,7 @@
                     "additionalProperties": false,
                     "properties": {
                       "text": {
-                        "description": "The observable result the owner can check, in one line.",
+                        "description": "The observable result the owner can check, in one line. The plan comment shows it, so it names no file; a path goes only in check.",
                         "type": "string",
                         "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
                       },

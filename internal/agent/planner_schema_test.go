@@ -99,8 +99,9 @@ func TestPlannerGoldenShape(t *testing.T) {
 // file-path rule reads one.
 var filePath = regexp.MustCompile(`[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]*\.[A-Za-z0-9]+`)
 
-// No golden plan names a file in a field the plan comment shows, and the
-// story plan's task bodies do name the files they touch.
+// No golden plan names a file in a field the plan comment shows, a human
+// task's "Done when" text among them, and the story plan's task bodies do
+// name the files they touch.
 func TestPlannerGoldenVisibleFieldsNameNoFiles(t *testing.T) {
 	t.Parallel()
 	for _, name := range []string{"epic-plan", "story-plan"} {
@@ -111,6 +112,14 @@ func TestPlannerGoldenVisibleFieldsNameNoFiles(t *testing.T) {
 		}
 		for _, item := range planItems(t, name) {
 			visible = append(visible, item["title"], item["outcome"], item["criteria"], item["scope"])
+			if item["human"] == true {
+				// done_when.text is shown; the other fields here aren't, but
+				// only steps, links and the check may name a file.
+				for _, k := range []string{"goal", "why_blocks", "estimated_time"} {
+					visible = append(visible, valueAt(t, item, "human_task", k))
+				}
+				visible = append(visible, valueAt(t, item, "human_task", "done_when", "text"))
+			}
 		}
 		raw, err := json.Marshal(visible)
 		if err != nil {
@@ -143,6 +152,8 @@ func TestPlannerPrompt(t *testing.T) {
 		"`label`", "`issue-type`", "`issue_type`", "`file`", "`path`", "`contains`", "`ruleset`", "`check`", "`installation`", "`owner`",
 		// The levels of detail.
 		"An epic's plan** is stories", "no file-level detail", "name no file paths", "`task.context`", "`task.change`",
+		// A human task's "Done when" text is shown, so it names no file either.
+		"and a human task's `done_when.text`. These visible fields name no file paths", "The plan comment shows `text`, so it names no file",
 		// The item fields' limits come from the preamble.
 		"`plan.max_tasks`", "`verify.max_diff_lines`", "preamble's list of allowed models", "`low`, `medium`, `high`, `xhigh` and `max`", "`p0` to `p3`",
 		"`recommended` first",
@@ -271,6 +282,7 @@ func TestPlannerBadOutputs(t *testing.T) {
 		"ruleset check with a label":   {"story-plan", map[string]any{"kind": "ruleset", "check": "issuedog/verify", "label": "x"}, check, "at '/plan/items/2/human_task/done_when/check': 'oneOf' failed, none matched"},
 		"issue-type check with owner":  {"story-plan", map[string]any{"kind": "issue-type", "issue_type": "Epic", "owner": "acme"}, check, "at '/plan/items/2/human_task/done_when/check': 'oneOf' failed, none matched"},
 		"installation with a contains": {"story-plan", map[string]any{"kind": "installation", "owner": "acme", "contains": "x"}, check, "at '/plan/items/2/human_task/done_when/check': 'oneOf' failed, none matched"},
+		"installation with a label":    {"story-plan", map[string]any{"kind": "installation", "owner": "acme", "label": "x"}, check, "at '/plan/items/2/human_task/done_when/check': 'oneOf' failed, none matched"},
 		"check with no kind":           {"story-plan", remove, checkAt("kind"), "at '/plan/items/2/human_task/done_when/check': missing property 'kind'"},
 		"unknown check field":          {"story-plan", "x", checkAt("value"), "additional properties 'value' not allowed"},
 		"absolute path":                {"story-plan", "/etc/passwd", checkAt("path"), "at '/plan/items/2/human_task/done_when/check/path'"},

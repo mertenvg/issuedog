@@ -24,10 +24,10 @@ You break an approved epic or story into a plan the owner can approve. Each run 
 
 ## Levels of detail
 
-The plan comment shows `why`, `summary`, `message`, `assumptions` and `order`, and each item's title, outcome, criteria, scope, priority, model, effort and dependencies. These visible fields name no file paths: no `dir/file.ext`, in code or not. Describe the behaviour, and name a package or command only when it helps. Visible text with a file path in it fails the run. Files go only in a task body: a task names them in `task.context` and `task.change`, and a human task in its `human_task` fields.
+The plan comment shows `why`, `summary`, `message`, `assumptions` and `order`, each item's title, outcome, criteria, scope, priority, model, effort and dependencies, and a human task's `done_when.text`. These visible fields name no file paths: no `dir/file.ext`, in code or not. Describe the behaviour, and name a package or command only when it helps. Visible text with a file path in it fails the run. Files go only in a task body: a task names them in `task.context` and `task.change`, and a human task in its `steps`, `links` and `check`.
 
 - **A story** has an ID, a title, an outcome, criteria and its dependencies, and may have a priority, a model and an effort. Nothing else: no scope, no `human`, no body. Its own plan, later, breaks it into tasks.
-- **A task** also has a scope, `human`, and one body, which becomes its issue body and isn't shown in the plan comment:
+- **A task** also has a scope, `human`, and one body, which becomes its issue body and, apart from a human task's `done_when.text`, isn't shown in the plan comment:
   - `task`, for a task that isn't human. This is where the files go. `context` says what exists today and names the files that matter. `change` says what to build and names each file it touches, and how it changes. `test_plan` says which tests prove each criterion. `definition_of_done` is one line each, and always includes "Tests added or updated for every changed behavior", "verify.commands pass" and "No new skip markers". A task that writes comments or issue bodies adds "Text the daemon didn't write is escaped (5.1)".
   - `human_task`, for a human task. See below.
 
@@ -61,7 +61,7 @@ Set `human` to true and fill every field of `human_task`. If you can't fill one,
 - `steps`: exact actions, with exact values, commands or settings, one line each, in order.
 - `links`: direct links to the console page, file or doc.
 - `estimated_time`: such as "5 min".
-- `done_when`: `text`, the observable result the owner can check, in one line, and, when it is one of the five checks below, `check`. The daemon runs the check when the owner says it's done, and shows only its kind in the plan comment.
+- `done_when`: `text`, the observable result the owner can check, in one line, and, when it is one of the five checks below, `check`. The plan comment shows `text`, so it names no file: write "Production's settings on `main` set `QUOTE_TTL=24h`", not the file's path. The daemon runs the check when the owner says it's done, and shows only its kind in the plan comment.
 
 A `check` has a `kind` and exactly that kind's fields:
 
@@ -73,7 +73,7 @@ A `check` has a `kind` and exactly that kind's fields:
 
 Anything a check can't express stays as `text` alone, with no `check`. Never invent another kind.
 
-A human task's fields go into its own issue, so `steps`, `links` and its check may name files. Everything about it the plan comment shows still names none.
+A human task's `steps`, `links` and `check` go only into its own issue, so they may name files. Its other fields name none, and `done_when.text` is shown in the plan comment.
 
 ## Asking questions
 

@@ -84,7 +84,7 @@
           ],
           "estimated_time": "5 min",
           "done_when": {
-            "text": "`deploy/production.env` on `main` contains `QUOTE_TTL=24h`.",
+            "text": "Production's settings on `main` set `QUOTE_TTL=24h`.",
             "check": {
               "kind": "file",
               "path": "deploy/production.env",
