@@ -31,8 +31,8 @@ var Start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // Fake serves one repo's issues, comments, labels, timelines, reactions,
 // parents and sub-issues, a closed event's closer (closing.go), a
-// sub-issue's link and an issue's blocked-by dependencies, listed and added
-// by the issue's ID, which every issue has apart from its number
+// sub-issue's link and an issue's dependencies, listed both ways, and
+// blocked-by links added and removed by the issue's ID, which every issue has apart from its number
 // (children.go, dependencies.go), a created issue's labels and type, a
 // transferred issue's 301s and new home (transfer.go), the
 // GraphQL queries for their edits, deleted
@@ -80,6 +80,8 @@ type Fake struct {
 
 	repoIDs map[string]int64 // the repos issues were transferred to, in lower case, by ID (transfer.go)
 
+	checks checkState // what the check reads answer (checks.go)
+
 	// The App, permission and repo label endpoints, and the request log (app.go).
 	perms      map[string]string
 	labels     []*gogithub.Label
@@ -109,6 +111,7 @@ type issue struct {
 	deletions      []deletedEvent                  // CommentDeletedEvents, oldest first (DeleteCommentBy)
 	closingClosers map[int64]closingCloser         // how each closed event was made, by its ID (closingAnswer)
 	movedTo        string                          // the repo Transfer moved it to, in lower case, or "" (transfer.go)
+	reactions      []*gogithub.Reaction            // to the issue itself, oldest first (reactions_issue.go)
 }
 
 type comment struct {
@@ -168,6 +171,8 @@ func New(t testing.TB, repo, slug string) *Fake {
 	f.handle("POST /issues/{n}/sub_issues", f.addSubIssue)
 	f.handle("GET /issues/{n}/dependencies/blocked_by", f.blockedBy)
 	f.handle("POST /issues/{n}/dependencies/blocked_by", f.addBlockedBy)
+	f.handle("DELETE /issues/{n}/dependencies/blocked_by/{issue_id}", f.removeBlockedBy)
+	f.handle("GET /issues/{n}/dependencies/blocking", f.blocking)
 	f.handle("GET /issues/{n}/comments", f.listComments)
 	f.handle("GET /issues/comments", f.listComments)
 	f.handle("POST /issues/{n}/comments", f.addComment)
@@ -176,11 +181,13 @@ func New(t testing.TB, repo, slug string) *Fake {
 	f.handle("PATCH /issues/comments/{id}", f.editComment)
 	f.handle("GET /issues/comments/{id}/reactions", f.listReactions)
 	f.handle("POST /issues/comments/{id}/reactions", f.addReaction)
+	f.handle("GET /issues/{n}/reactions", f.listIssueReactions)
 	f.handle("POST /issues/{n}/labels", f.addLabels)
 	f.handle("DELETE /issues/{n}/labels/{name}", f.removeLabel)
 	f.handle("GET /issues/{n}/timeline", f.timeline)
 	f.mux.HandleFunc("POST /graphql", f.serveGraphQL)
 	f.handleApp()
+	f.handleChecks()
 	f.handleAssign()
 	f.handleTransfer()
 	f.srv = httptest.NewServer(f.logged(f.mux))
@@ -300,7 +307,7 @@ func (f *Fake) DeleteComment(id int64) {
 func (f *Fake) AddReaction(commentID int64, author, content string) int64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	r, _ := f.react(f.findComment(commentID), author, content)
+	r, _ := f.react(&f.findComment(commentID).reactions, author, content)
 	return r.GetID()
 }
 
@@ -460,15 +467,16 @@ func (f *Fake) addCommentBy(is *issue, author, body string) *comment {
 	return c
 }
 
-// react adds a reaction unless author has it already, and reports whether it did.
-func (f *Fake) react(c *comment, author, content string) (*gogithub.Reaction, bool) {
-	for _, r := range c.reactions {
+// react adds a reaction to a comment's or an issue's reactions unless author
+// has it already, and reports whether it did.
+func (f *Fake) react(reactions *[]*gogithub.Reaction, author, content string) (*gogithub.Reaction, bool) {
+	for _, r := range *reactions {
 		if r.GetUser().GetLogin() == author && r.GetContent() == content {
 			return r, false
 		}
 	}
 	r := &gogithub.Reaction{ID: new(f.nextID()), User: user(author), Content: &content, CreatedAt: f.tick()}
-	c.reactions = append(c.reactions, r)
+	*reactions = append(*reactions, r)
 	return r, true
 }
 
@@ -639,7 +647,7 @@ func (f *Fake) addReaction(c *call) (int, any) {
 	if status, msg := c.decode(&req); msg != nil {
 		return status, msg
 	}
-	r, created := f.react(c.comment, f.slug+"[bot]", req.Content)
+	r, created := f.react(&c.comment.reactions, f.slug+"[bot]", req.Content)
 	if created {
 		return http.StatusCreated, r
 	}

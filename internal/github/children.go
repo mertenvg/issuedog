@@ -93,3 +93,29 @@ func (c *Client) AddBlockedBy(ctx context.Context, owner, repo string, number in
 	}
 	return nil
 }
+
+// Blocking lists the issues that issue number blocks, the ones it's a
+// blocked-by dependency of, open and closed, reading every page: BlockedBy
+// the other way round. A blocked issue may be in another repo: its
+// repository_url names it, and its number is that repo's. A repeat of an
+// unchanged listing is a 304, which costs no rate limit.
+func (c *Client) Blocking(ctx context.Context, owner, repo string, number int) ([]*gogithub.Issue, error) {
+	opts := &gogithub.ListOptions{PerPage: 100}
+	blocked, err := collect(c.Issues.ListBlockingIter(ctx, owner, repo, int64(number), opts))
+	if err != nil {
+		return nil, fmt.Errorf("list issues blocked by %s/%s#%d: %w", owner, repo, number, err)
+	}
+	return blocked, nil
+}
+
+// RemoveBlockedBy removes the link that makes issue number blocked by the
+// issue whose ID is blockerID (not its number), so it's gone from both
+// listings. It isn't idempotent: GitHub refuses a link that's gone, with a
+// 404 in the fake, which the error wraps as a *gogithub.ErrorResponse, so a
+// caller that may replay reads BlockedBy, or the blocker's Blocking, first.
+func (c *Client) RemoveBlockedBy(ctx context.Context, owner, repo string, number int, blockerID int64) error {
+	if _, _, err := c.Issues.RemoveBlockedBy(ctx, owner, repo, int64(number), blockerID); err != nil {
+		return fmt.Errorf("remove issue ID %d as blocking %s/%s#%d: %w", blockerID, owner, repo, number, err)
+	}
+	return nil
+}
