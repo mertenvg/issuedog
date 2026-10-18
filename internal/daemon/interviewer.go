@@ -1,11 +1,9 @@
 package daemon
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -223,63 +221,19 @@ func (iv *Interviewer) Context(ctx context.Context, in Input) (map[string][]byte
 			}
 		}
 	}
-	var conversation, untrusted, logins []string
-	where := "so it's left out"
-	if takesUntrusted {
-		where = "so it's in untrusted.md, as untrusted data"
+	text, err := contextSort(ctx, s, a.AppSlug, in.Dirt, tc, titleBy, bodyBy, contextStage{
+		App:     func(c github.Comment) string { return ivAppLabel(c, rounds, a.AppSlug) },
+		Trusted: func(c github.Comment) string { return ivRoundLabel(ivRoundOf(rounds, c.ID)) },
+		// SPEC §6.2: untrusted input only on an epic or a story.
+		Untrusted: takesUntrusted,
+		// Owner input, in issue.md (ivHoldSection).
+		LeftOut: func(id int64) bool { return held.Approved[id] != "" },
+	})
+	if err != nil {
+		return nil, wrap(err)
 	}
-	var titleNote, bodyNote string
-	if titleBy != "" {
-		titleNote = ivLogin(titleBy) + " changed the title after the issue was admitted, " + where + "."
-		if takesUntrusted {
-			untrusted = append(untrusted, ivUntrusted("the issue's title, which "+ivLogin(titleBy)+" changed after the issue was admitted", s.Title))
-		}
-	}
-	switch by, dirty := in.Dirt[state.BodyID]; {
-	case dirty:
-		bodyNote = "Someone edited the body without approval, " + where + "."
-		if takesUntrusted {
-			_, rest := noted(s.Body)
-			untrusted = append(untrusted, ivUntrusted("the issue's body, edited by "+ivEditor(by, s.BodyEdit, a.AppSlug)+" without approval", rest))
-		}
-	case bodyBy != "":
-		bodyNote = ivLogin(bodyBy) + " edited the body after the issue was admitted, " + where + "."
-		if takesUntrusted {
-			untrusted = append(untrusted, ivUntrusted("the issue's body, which "+ivLogin(bodyBy)+" edited after the issue was admitted", s.Body))
-		}
-	}
-	for _, c := range s.Comments {
-		at := "comment " + strconv.FormatInt(c.ID, 10) + " by " + ivLogin(c.Author.Login)
-		if by, dirty := in.Dirt[c.ID]; dirty {
-			if takesUntrusted {
-				_, rest := noted(c.Body)
-				untrusted = append(untrusted, ivUntrusted(at+", edited by "+ivEditor(by, c.Edit, a.AppSlug)+" without approval", rest))
-			}
-			continue
-		}
-		if state.IsApp(c.Author, a.AppSlug) {
-			conversation = append(conversation, ivSection(ivAppLabel(c, rounds, a.AppSlug), ivStripMarkers(c.Body)))
-			continue
-		}
-		trusted, err := tc.trusted(ctx, c.Author)
-		switch {
-		case err != nil:
-			return nil, wrap(err)
-		case trusted:
-			conversation = append(conversation, ivSection(at+", "+ivRoundLabel(ivRoundOf(rounds, c.ID)), c.Body))
-			if !slices.ContainsFunc(logins, func(l string) bool { return strings.EqualFold(l, c.Author.Login) }) {
-				logins = append(logins, c.Author.Login)
-			}
-		case !takesUntrusted:
-		case held.Approved[c.ID] != "":
-			// Owner input, in issue.md (ivHoldSection).
-		case c.Author.Type == "Bot":
-			untrusted = append(untrusted, ivUntrusted(at+", a bot", c.Body))
-		default:
-			untrusted = append(untrusted, ivUntrusted(at+", who isn't trusted", c.Body))
-		}
-	}
-	issue := interviewerIssue(s, a.AppSlug, titleNote, bodyNote)
+	conversation, untrusted, logins := text.Conversation, text.Untrusted, text.Logins
+	issue := contextIssue(s, a.AppSlug, text.TitleNote, text.BodyNote)
 	if origin != "" {
 		issue += "\n" + ivHoldSection(s, origin, span, held)
 	}
@@ -547,32 +501,6 @@ func interviewerTask(number int, dir string, untrusted bool) string {
 		"then return a question round, or the spec once nothing that blocks it is open, as the system prompt says.\n", number, where, files)
 }
 
-// interviewerIssue is issue.md, its body without markers if the App wrote
-// it. titleNote and bodyNote, if set, stand in for a title or body left
-// out, saying why and where it is, if anywhere. It names the parent, so
-// the run knows not to type the issue a story (#135's verify, and the
-// preamble's rule).
-func interviewerIssue(s *github.Snapshot, appSlug, titleNote, bodyNote string) string {
-	title := github.Escape(strings.Join(strings.Fields(s.Title), " "))
-	if titleNote != "" {
-		title = titleNote
-	}
-	parent := "none"
-	if s.Parent != 0 {
-		parent = "#" + strconv.Itoa(s.Parent)
-	}
-	head := fmt.Sprintf("# Issue #%d\n\n- Title: %s\n- Type: %s\n- Parent: %s\n- Author: %s", s.Number, title,
-		github.Escape(cmp.Or(s.Type, "none")), parent, ivLogin(s.Author.Login))
-	body := ivFenced(s.Body)
-	if state.IsApp(s.Author, appSlug) {
-		body = ivFenced(ivStripMarkers(s.Body))
-	}
-	if bodyNote != "" {
-		body = bodyNote
-	}
-	return head + "\n\n## Body\n\n" + body + "\n"
-}
-
 // ivAppLabel is the heading of the App's clean comment c in
 // conversation.md: a question round's number and question IDs, or a
 // revision's number.
@@ -624,28 +552,25 @@ func ivRoundLabel(n int) string {
 func ivInputs(in Input, rounds []interviewerRound, sp ivHoldSpan, revise *github.Comment) []string {
 	last := ivHoldLatest(in.Issue, false)
 	notes := in.Issue.Notes()
-	var sections []string
-	for _, c := range in.Inputs {
-		at := "comment " + strconv.FormatInt(c.ID, 10) + " by " + ivLogin(c.Author.Login)
+	sections := contextInputs(in.Inputs, func(c github.Comment) string {
 		during := sp.Start > 0 && c.ID > sp.Start && c.ID < sp.End
 		switch n := ivRoundOf(rounds, c.ID); {
 		case c.ID == notes:
-			at += ": the revision notes that sent the spec back"
+			return "the revision notes that sent the spec back"
 		case ivRoundMove(last) && n > 0 && during:
-			at += ": an answer to round " + strconv.Itoa(n) + ", posted while the issue was on hold"
+			return "an answer to round " + strconv.Itoa(n) + ", posted while the issue was on hold"
 		case ivRoundMove(last) && n > 0:
-			at += ": an answer to round " + strconv.Itoa(n)
+			return "an answer to round " + strconv.Itoa(n)
 		case during:
-			at += ": posted while the issue was on hold"
+			return "posted while the issue was on hold"
 		case sp.Start > 0 && c.ID < sp.Start && sp.At != "":
-			at += fmt.Sprintf(": posted at `%s`, before the hold", sp.At)
+			return fmt.Sprintf("posted at `%s`, before the hold", sp.At)
 		default:
-			at += ": new since the issue came to clarifying"
+			return "new since the issue came to clarifying"
 		}
-		sections = append(sections, ivSection(at, c.Body))
-	}
+	})
 	if revise != nil {
-		sections = append(sections, ivSection("comment "+strconv.FormatInt(revise.ID, 10)+" by "+ivLogin(revise.Author.Login)+
+		sections = append(sections, ivSection(contextAt(*revise)+
 			": a `/revise` that waited through the hold, whose text is the revision notes", revise.Body))
 	}
 	return sections
