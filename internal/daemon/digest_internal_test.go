@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	gogithub "github.com/google/go-github/v92/github"
+	"github.com/mertenvg/logr/v2"
 
 	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/github"
@@ -76,6 +78,140 @@ func TestDigestPollRecords(t *testing.T) {
 	poll(d)
 	if got := slices.Sorted(maps.Keys(d.digest.issues)); !slices.Equal(got, []int{4, 7}) {
 		t.Errorf("a new daemon's digests = %v; want issues 4 and 7", got)
+	}
+}
+
+// The App's issues titled as the digest, with no origin marker in the
+// body, are judged after the poll's comments (digestTake), from one edit
+// history query. Only those whose first version had no origin marker, and
+// with no App comment that has one, edited or not, are digests: 3, whose
+// marker an edit took out, and 5, closed, whose close is then never judged.
+// 1's original post had one, 4's original text was deleted, and 2 and 6
+// have an App comment with one, so their histories aren't read. An
+// unchanged poll, and one that lists 1 again, reads no history; a new
+// daemon's first poll reads it once more. Once 2's comment loses its
+// origin, 2 is judged by its history, and taken.
+func TestDigestTake(t *testing.T) {
+	t.Parallel()
+	const app, origin = "issuedog[bot]", "<!-- issuedog:origin plan=#9 rev=1 item=T1 -->"
+	f := githubtest.New(t, "o/r", "issuedog")
+	f.EditBody(f.AddIssue(app, "issuedog digest", "A task. "+origin), "owner", "A task.") // 1
+	f.AddIssue(app, "issuedog digest", "No origin.")                                      // 2
+	repost := f.AddComment(2, app, "Reposted. "+origin)
+	f.EditBody(f.AddIssue(app, "issuedog digest", "<!-- issuedog:digest -->"), "owner", "gone") // 3
+	f.EditBody(f.AddIssue(app, "issuedog digest", "A task. "+origin), "owner", "A task.")       // 4
+	f.DeleteRevision(4, 0)
+	f.CloseBy(f.AddIssue(app, "issuedog digest", "Closed.", "stage:ready"), "owner")            // 5: a close to judge, were it not a digest
+	f.EditBody(f.AddIssue(app, "issuedog digest", "<!-- issuedog:digest -->"), "owner", "gone") // 6
+	f.EditComment(f.AddComment(6, app, origin), "owner", "Edited. "+origin)
+	newDaemon := func() *Daemon {
+		return &Daemon{Step: &Step{Applier: &Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}}, stale: map[int]bool{}}
+	}
+	poll := func(d *Daemon, histories int) {
+		t.Helper()
+		if err := d.poll(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if got := f.HistoryQueries(); got != histories {
+			t.Errorf("history queries = %d; want %d", got, histories)
+		}
+		if len(d.digest.titled) != 0 {
+			t.Errorf("titled = %v; want every issue judged", d.digest.titled)
+		}
+	}
+	d := newDaemon()
+	poll(d, 1)
+	if got := slices.Sorted(maps.Keys(d.digest.issues)); !slices.Equal(got, []int{3, 5}) {
+		t.Errorf("digests = %v; want issues 3 and 5", got)
+	}
+	if got := slices.Sorted(maps.Keys(d.stale)); !slices.Equal(got, []int{1, 2, 4, 6}) {
+		t.Errorf("stale = %v; want issues 1, 2, 4 and 6, in the pipeline", got)
+	}
+	if _, due := d.closingDue[5]; due {
+		t.Errorf("closes due = %v; want none for 5, a digest", d.closingDue)
+	}
+	if got := slices.Sorted(maps.Keys(d.digest.firsts)); !slices.Equal(got, []int{1, 3, 4, 5}) {
+		t.Errorf("first versions read for %v; want 1, 3, 4 and 5, but not 2 or 6", got)
+	}
+	poll(d, 1)
+	f.AddComment(1, "owner", "Still a task.")
+	poll(d, 1)
+	if d.digest.has(1) || !d.stale[1] {
+		t.Errorf("digests %v, stale %v; want 1 listed again, and still not a digest", d.digest.issues, d.stale)
+	}
+	d = newDaemon()
+	poll(d, 2)
+	if got := slices.Sorted(maps.Keys(d.digest.issues)); !slices.Equal(got, []int{3, 5}) {
+		t.Errorf("a new daemon's digests = %v; want issues 3 and 5", got)
+	}
+	// The App's comment on 2 loses its origin to an edit, so it's
+	// forgotten, and 2, listed again, is judged by its history.
+	f.EditComment(repost, app, "Reposted.")
+	f.AddComment(2, "owner", "Hello.")
+	poll(d, 3)
+	if got := slices.Sorted(maps.Keys(d.digest.issues)); !slices.Equal(got, []int{2, 3, 5}) {
+		t.Errorf("digests = %v; want issues 2, 3 and 5", got)
+	}
+}
+
+// A failed edit history read is logged, and the issue it was for isn't
+// taken as the digest: it stays in the pipeline, and an unchanged poll
+// reads nothing more. A poll that lists it again reads its history, and
+// takes it, out of the pipeline. The poll after that reads nothing.
+func TestDigestTakeHistoryFails(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	var logs bytes.Buffer
+	stop := logr.AddWriter(&logs, logr.WithFilter(logr.E))
+	defer stop()
+	f := githubtest.New(t, "o/r", "issuedog")
+	f.EditBody(f.AddIssue("issuedog[bot]", "issuedog digest", "<!-- issuedog:digest -->"), "owner", "gone")
+	f.AddIssue("owner", "Newer", "So 1 isn't at the cursor, which every poll lists again.")
+	d := &Daemon{Step: &Step{Applier: &Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}}, stale: map[int]bool{}}
+	poll := func(histories int) {
+		t.Helper()
+		if err := d.poll(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if got := f.HistoryQueries(); got != histories {
+			t.Errorf("history queries = %d; want %d", got, histories)
+		}
+	}
+	f.FailGraphQL("Something went wrong")
+	poll(1)
+	logr.Wait()
+	if d.digest.has(1) || !d.stale[1] || !strings.Contains(logs.String(), "o/r's issues titled \"issuedog digest\" failed to read") {
+		t.Errorf("digests %v, stale %v, logs %q; want no digest, 1 stale, and the failure logged", d.digest.issues, d.stale, logs.String())
+	}
+	poll(1)
+	if d.digest.has(1) {
+		t.Errorf("digests %v; want none", d.digest.issues)
+	}
+	f.AddComment(1, "owner", "Hello.")
+	poll(2)
+	if !d.digest.has(1) || d.stale[1] {
+		t.Errorf("digests %v, stale %v; want 1 the digest, out of the pipeline", d.digest.issues, d.stale)
+	}
+	poll(2)
+}
+
+// A poll whose comment listing fails, after its issue listing held issues
+// only the title rule would take, keeps them: the next poll judges 1,
+// which it doesn't list again, and takes it. 2, renamed in between, is
+// judged on the next poll's listing alone, so it isn't taken.
+func TestDigestTakeAfterFailedPoll(t *testing.T) {
+	t.Parallel()
+	f := githubtest.New(t, "o/r", "issuedog")
+	f.EditBody(f.AddIssue("issuedog[bot]", "issuedog digest", "<!-- issuedog:digest -->"), "owner", "gone")
+	f.EditBody(f.AddIssue("issuedog[bot]", "issuedog digest", "<!-- issuedog:digest -->"), "owner", "gone")
+	f.AddIssue("owner", "Newer", "So 1 isn't at the cursor.")
+	d := &Daemon{Step: &Step{Applier: &Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}}, stale: map[int]bool{}}
+	f.AnswerOnce(func(r githubtest.Request) bool { return r.Path == "/issues/comments" }, http.StatusInternalServerError)
+	if err := d.poll(context.Background()); err == nil || d.digest.has(1) || d.digest.has(2) {
+		t.Fatalf("poll = %v, digests %v; want the comment listing's error, and no digest yet", err, d.digest.issues)
+	}
+	f.RenameIssue(2, "owner", "Renamed")
+	if err := d.poll(context.Background()); err != nil || !d.digest.has(1) || d.digest.has(2) || f.HistoryQueries() != 1 {
+		t.Errorf("poll = %v, digests %v, history queries %d; want 1 the digest, from one query, and 2 not", err, d.digest.issues, f.HistoryQueries())
 	}
 }
 

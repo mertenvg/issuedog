@@ -130,28 +130,144 @@ func LatestRevision(s *github.Snapshot, appSlug string, kind RevisionKind, dirty
 			}
 			continue
 		}
-		var found *Revision
-		var moved int64 // a transition's seen
-		for _, m := range github.TrustedMarkers(c.Author, c.Body, appSlug) {
-			rev, err := strconv.Atoi(m.Fields["rev"])
-			seen, serr := strconv.ParseInt(m.Fields[FieldSeen], 10, 64)
-			if serr != nil || seen < 0 {
-				seen = 0
-			}
-			switch {
-			case m.Kind == "revision" && RevisionKind(m.Fields["kind"]) == kind && err == nil && rev > 0 && m.Fields["body"] != "":
-				found = &Revision{Kind: kind, Rev: rev, Hash: m.Fields["body"], Comment: c.ID, Seen: seen}
-			case m.Kind == "transition":
-				moved = seen
-			}
-		}
-		if found != nil {
-			latest, latestAt = *found, c.CreatedAt
-			latest.Seen = cmp.Or(latest.Seen, moved)
+		if found, ok := commentRevision(c, appSlug, kind); ok {
+			latest, latestAt = found, c.CreatedAt
 		}
 	}
 	latest.Hidden = lastDirty > latest.Comment || deletedHides(s.Deleted, appSlug, latestAt)
 	return latest, latest.Comment != 0
+}
+
+// commentRevision returns the revision of kind that comment c holds: its
+// last revision marker of kind the App wrote, with a rev above 0 and a
+// body. Its Seen is the marker's seen, else that of the last transition in
+// c, else 0. It reports false if c holds none. It doesn't check whether c
+// is dirty: the caller does.
+func commentRevision(c github.Comment, appSlug string, kind RevisionKind) (Revision, bool) {
+	var found *Revision
+	var moved int64 // a transition's seen
+	for _, m := range github.TrustedMarkers(c.Author, c.Body, appSlug) {
+		rev, err := strconv.Atoi(m.Fields["rev"])
+		seen, serr := strconv.ParseInt(m.Fields[FieldSeen], 10, 64)
+		if serr != nil || seen < 0 {
+			seen = 0
+		}
+		switch {
+		case m.Kind == "revision" && RevisionKind(m.Fields["kind"]) == kind && err == nil && rev > 0 && m.Fields["body"] != "":
+			found = &Revision{Kind: kind, Rev: rev, Hash: m.Fields["body"], Comment: c.ID, Seen: seen}
+		case m.Kind == "transition":
+			moved = seen
+		}
+	}
+	if found == nil {
+		return Revision{}, false
+	}
+	r := *found
+	r.Seen = cmp.Or(r.Seen, moved)
+	return r, true
+}
+
+// PlanReason is a reason the latest plan revision can't be approved
+// (PlanApproval). Each caller words it itself: /approve's rejection, the
+// digest's waiting item.
+type PlanReason int
+
+const (
+	// PlanNoRevision is that there's no plan revision yet. It's then the
+	// only reason.
+	PlanNoRevision PlanReason = iota + 1
+	// PlanHidden is that the latest plan revision is Hidden: a dirty or
+	// deleted App comment after it may hide a newer one (SPEC §7.4). A
+	// dirty plan comment is no revision, so it hides the one before it.
+	PlanHidden
+	// PlanChanged is that the plan comment no longer matches its hash
+	// (Revision.Matches).
+	PlanChanged
+	// PlanBodyDirty is that the issue body has an edit that wasn't
+	// approved (plan #248, Q2a). A trusted edit to the body leaves the plan
+	// approvable: the plan's hash is of its own comment.
+	PlanBodyDirty
+)
+
+// PlanApproval returns the latest plan revision (LatestRevision), and the
+// reasons it can't be approved, in this order: PlanHidden, PlanChanged and
+// PlanBodyDirty, each when it holds. With none, it can be approved. With no
+// plan revision, it returns the zero plan revision and PlanNoRevision,
+// alone. dirty is as for Derive, BodyID included. It doesn't check who
+// approves, when, or the stage: the callers do. A spec revision is never
+// read.
+func PlanApproval(s *github.Snapshot, appSlug string, dirty func(int64) bool) (Revision, []PlanReason) {
+	latest, ok := LatestRevision(s, appSlug, PlanRevision, dirty)
+	if !ok {
+		// LatestRevision may report one Hidden with none before it.
+		return Revision{Kind: PlanRevision}, []PlanReason{PlanNoRevision}
+	}
+	var why []PlanReason
+	if latest.Hidden {
+		why = append(why, PlanHidden)
+	}
+	if !latest.Matches(s) {
+		why = append(why, PlanChanged)
+	}
+	if dirty(BodyID) {
+		why = append(why, PlanBodyDirty)
+	}
+	return latest, why
+}
+
+// ApprovedPlan returns the plan revision the latest move into planned
+// approved, with its comment, for S3 to read the plan's data from
+// (readPlanData, in internal/daemon). That move is the last transition
+// marker with to=planned and a rev, in a clean comment the App wrote, that
+// names the revision's hash:
+//   - by its body field, as an approval from plan-review does;
+//   - or else, for a move from planning that skips review, by its own
+//     comment's plan revision marker of the same rev: that move is the
+//     plan comment (Move.PlanRev), whose transition marker has rev but no
+//     body.
+//
+// A move with neither, such as one back from a hold, names none, so the
+// move before it counts. The revision is the last clean App comment whose
+// plan revision marker has that rev and hash, and that still matches it
+// (Revision.Matches). It reports false if there's no such move, or no such
+// comment: the comment is gone, dirty, or edited since. The body's markers
+// aren't read: a move is always a comment. A spec revision is never
+// returned. The revision isn't marked Hidden: once approved, a later dirty
+// comment doesn't unapprove it.
+func ApprovedPlan(s *github.Snapshot, appSlug string, dirty func(int64) bool) (Revision, github.Comment, bool) {
+	rev, hash := 0, ""
+	for _, c := range s.Comments {
+		if dirty(c.ID) {
+			continue
+		}
+		for _, m := range github.TrustedMarkers(c.Author, c.Body, appSlug) {
+			r, err := strconv.Atoi(m.Fields["rev"])
+			if m.Kind != "transition" || Stage(m.Fields["to"]) != Planned || err != nil || r <= 0 {
+				continue
+			}
+			h := m.Fields["body"]
+			if pr, ok := commentRevision(c, appSlug, PlanRevision); h == "" && ok && pr.Rev == r {
+				h = pr.Hash
+			}
+			if h != "" {
+				rev, hash = r, h
+			}
+		}
+	}
+	if rev == 0 {
+		return Revision{}, github.Comment{}, false
+	}
+	var found Revision
+	var comment github.Comment
+	for _, c := range s.Comments {
+		if dirty(c.ID) {
+			continue
+		}
+		if r, ok := commentRevision(c, appSlug, PlanRevision); ok && r.Rev == rev && r.Hash == hash && r.Matches(s) {
+			found, comment = r, c
+		}
+	}
+	return found, comment, found.Comment != 0
 }
 
 // deletedHides reports whether a comment the App may have written was

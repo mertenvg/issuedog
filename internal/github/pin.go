@@ -11,14 +11,12 @@ import (
 // CreateIssue files an issue as the App and returns its number. Its body is
 // written as given, so text the App didn't write must be escaped first
 // (SPEC §5.1). It isn't idempotent: a caller that may replay looks for the
-// issue before it creates one (SPEC §5.2).
+// issue before it creates one (SPEC §5.2). It is CreateChild with no labels
+// and no type.
 func (c *Client) CreateIssue(ctx context.Context, owner, repo, title, body string) (int, error) {
-	is, _, err := c.Issues.Create(ctx, owner, repo, gogithub.CreateIssueRequest{Title: title, Body: &body})
+	is, err := c.CreateChild(ctx, owner, repo, NewChild{Title: title, Body: body})
 	if err != nil {
-		return 0, fmt.Errorf("create issue %q in %s/%s: %w", title, owner, repo, err)
-	}
-	if is.GetNumber() == 0 {
-		return 0, fmt.Errorf("create issue %q in %s/%s: %w", title, owner, repo, errNoNumber)
+		return 0, err
 	}
 	return is.GetNumber(), nil
 }
