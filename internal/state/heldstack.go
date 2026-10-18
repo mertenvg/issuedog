@@ -38,19 +38,42 @@ type HeldStack struct {
 // stage but held ends every hold. A move into held starts h afresh, and a
 // held → held marker adds its hold to h. One with no hold before it, as when
 // the first hold's comment is dirty, starts h afresh too.
+//
+// A held → held marker with no reason is no hold of its own (#195's
+// assumption 6, T7): the parent's newly approved revision changed the
+// held issue, so the stage it would have gone to becomes its At and
+// Origin, which /resume and the interviewer's unchanged take it to. It
+// sets those and adds nothing to Holds. With no hold before it, as when
+// the first hold's comment is dirty, it sets Seen too, from its own seen
+// or else before, and Holds stays empty, so /resume on the issue ends the
+// hold (heldStackResume).
 func (h HeldStack) heldStackNext(m github.Marker, before int64) HeldStack {
+	seen := before
+	if s, err := strconv.ParseInt(m.Fields[FieldSeen], 10, 64); err == nil && s > 0 {
+		seen = s
+	}
 	switch {
 	case Stage(m.Fields["to"]) != Held:
 		return HeldStack{}
-	case len(h.Holds) == 0 || Stage(m.Fields["from"]) != Held:
-		seen := before
-		if s, err := strconv.ParseInt(m.Fields[FieldSeen], 10, 64); err == nil && s > 0 {
-			seen = s
+	case heldStackChanged(m):
+		if len(h.Holds) == 0 {
+			h.Seen = seen
 		}
+		h.At, h.Origin = Stage(m.Fields["at"]), Stage(m.Fields["origin"])
+		return h
+	case len(h.Holds) == 0 || Stage(m.Fields["from"]) != Held:
 		return HeldStack{At: Stage(m.Fields["at"]), Origin: Stage(m.Fields["origin"]), Seen: seen, Holds: []github.Marker{m}}
 	}
 	h.Holds = append(slices.Clone(h.Holds), m)
 	return h
+}
+
+// heldStackChanged reports whether m is the held → held marker of a held
+// issue that its parent's newly approved revision changed: one with no
+// reason, which every hold's marker carries.
+func heldStackChanged(m github.Marker) bool {
+	_, reason := m.Fields["reason"]
+	return Stage(m.Fields["from"]) == Held && Stage(m.Fields["to"]) == Held && !reason
 }
 
 // HeldStackFields sets seen=<bound> in fields, unless bound is 0, and

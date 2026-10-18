@@ -29,8 +29,9 @@ import (
 //
 // Until then, it describes each item of R that it files (childSpecs):
 // every item of a first plan, and only the new items of a revision
-// (#195's T6), whose kept, changed and dropped items it leaves alone until
-// T7 and T8 (#296, #297). It finds the children filed already
+// (#195's T6), and each changed item of a revision, which it rewrites in
+// place (childSpecsWhere, #195's T7). A kept item gets no write, and a
+// dropped one is left alone until T8 (#297). It finds the children filed already
 // (childrenFind), with no search request, then, for each item in creation
 // order, which childSpecs gives: plan order with the human tasks last
 // (childOrder):
@@ -45,6 +46,10 @@ import (
 //   - gives it its first move, intake → its first stage on TriggerCreated,
 //     keyed event=p<P> (#224's reconcile decision 6), unless it has a
 //     transition marker of the App's already (childFirstMove).
+//
+// Then it rewrites each changed item's child from R and sends it back to
+// its first stage, or for a held one, makes that stage its hold's at and
+// origin (childrenChanged).
 //
 // Then, going through R's items in plan order, not creation order, it
 // gives each child the blocked-by links its item's "Depends on" names
@@ -73,7 +78,8 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 	}
 	// The record is checked before the plan's data is read back, which
 	// it doesn't need.
-	if r, _, ok := state.ApprovedPlan(s, st.AppSlug, d.Has); ok {
+	r, planComment, ok := state.ApprovedPlan(s, st.AppSlug, d.Has)
+	if ok {
 		if _, done := state.CreatedRecord(is, r.Rev); done {
 			return nil
 		}
@@ -92,6 +98,14 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 		models = st.Models()
 	}
 	specs, err := childSpecs(s, rev.Rev, plan.Items, st.IssueTypes, st.Notify, models)
+	if err != nil {
+		return wrap(err)
+	}
+	// A revision's changed items, each rewritten in place (#195's T7),
+	// are described before any write too, so an item that can't be stops
+	// the visit with nothing written.
+	changed, err := childSpecsWhere(s, rev.Rev, plan.Items, func(status string) bool { return status == planChanged },
+		st.IssueTypes, st.Notify, models)
 	if err != nil {
 		return wrap(err)
 	}
@@ -118,14 +132,21 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 		}
 		numbers[c.Item], children[c.Item] = f.Number, f
 	}
+	// Once the new children are filed, so a changed human task's "Why it
+	// blocks" can name a new item's issue, the changed children are
+	// rewritten and moved (#195's T7).
+	if err := st.childrenChanged(ctx, s, rev.Rev, planComment, key, changed, children, numbers); err != nil {
+		return wrap(err)
+	}
 	// plan.Items is plan order, which the links and the record follow,
 	// whatever order the children were created in. Of a revision, only
 	// the new items' children get their links here: a kept child keeps
 	// its links, and a changed one's follow the revision only once T8
 	// handles it. Nor is the revision's record posted until then (#195's
-	// assumption 7), so T7 and T8 can still apply its changed and dropped
-	// items; until they do, a visit reads the children again, and writes
-	// nothing once the new ones are filed and linked.
+	// assumption 7), so T8 can still apply its dropped items, after the
+	// new and changed children's writes; until it does, a visit reads the
+	// children again, and writes nothing once the new ones are filed and
+	// linked and the changed ones moved.
 	revised := slices.ContainsFunc(plan.Items, func(it planItem) bool { return it.Status != "" })
 	linked := plan.Items
 	if revised {

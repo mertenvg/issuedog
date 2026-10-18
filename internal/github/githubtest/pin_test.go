@@ -165,8 +165,8 @@ func TestPinGraphQLErrors(t *testing.T) {
 	}
 }
 
-// PATCH edits only the body and the state, which must be open or closed, and
-// POST needs a title, as on GitHub.
+// PATCH edits only the title, the body, the state, which must be open or
+// closed, and the type, and POST needs a title, as on GitHub.
 func TestCreateAndEditIssueRefusals(t *testing.T) {
 	f := New(t, "o/r", "issuedog")
 	n := f.AddIssue("owner", "Title", "body")
@@ -183,8 +183,8 @@ func TestCreateAndEditIssueRefusals(t *testing.T) {
 			_, _, err := c.Issues.Update(ctx, "o", "r", n, gogithub.UpdateIssueRequest{State: new("gone")})
 			return err
 		}},
-		{"only a title", func() error {
-			_, _, err := c.Issues.Update(ctx, "o", "r", n, gogithub.UpdateIssueRequest{Title: new("New")})
+		{"only a milestone", func() error {
+			_, _, err := c.Issues.Update(ctx, "o", "r", n, gogithub.UpdateIssueRequest{Milestone: new(1)})
 			return err
 		}},
 	} {
