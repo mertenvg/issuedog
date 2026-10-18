@@ -355,19 +355,7 @@ func ReviseCommand() Handler {
 			if is.Stage != state.PlanReview {
 				return inTable(is, state.Clarifying, state.TriggerSpecRevise, "on a revision request")
 			}
-			// The table sends any story's plan back, not only an owner
-			// story's, so inTable's reason wouldn't fit.
-			class, err := state.ClassOf(is.Item)
-			if err != nil {
-				return Rejection{Reason: fmt.Sprintf("I can't tell what kind of issue this is: %v", err), Final: true}
-			}
-			if _, err := state.Lookup(is.Stage, state.Planning, class, state.TriggerPlanRevise); errors.Is(err, state.ErrNoTransition) {
-				return Rejection{Reason: fmt.Sprintf("only an epic or a story goes from `%s` to `%s` on a revision request, and this is a %s issue",
-					is.Stage, state.Planning, class), Final: true}
-			} else if err != nil {
-				return fmt.Errorf("move to %s on a revision request: %w", state.Planning, err)
-			}
-			return nil
+			return inTable(is, state.Planning, state.TriggerPlanRevise, "on a revision request")
 		},
 		Apply: func(ctx context.Context, a *Applier, c Cmd) error {
 			// Apply runs only until its marker exists, so the stage is

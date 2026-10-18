@@ -576,7 +576,7 @@ func TestReviewVisitTrustError(t *testing.T) {
 // planComment is plan revision rev's comment as the planner's move writes
 // it, with the move to plan-review whose run read up to comment seen, and
 // the plan revision marker last.
-func planComment(rev int, seen string) string {
+func revisePlanComment(rev int, seen string) string {
 	return planRev(rev, fmt.Sprintf("### Plan for #1 (rev %d)\n\nS1. Do it.\n\n"+
 		"<!-- issuedog:transition from=planning to=plan-review rev=%d run=p%d seen=%s -->", rev, rev, rev, seen))
 }
@@ -604,7 +604,7 @@ func planReviewRun(during, more func(t testing.TB, f *githubtest.Fake)) func(tes
 		f.AddLabel(1, app, "stage:planning")
 		f.RemoveLabel(1, app, "stage:spec-review")
 		during(t, f)
-		f.AddComment(1, app, planComment(1, "1001"))
+		f.AddComment(1, app, revisePlanComment(1, "1001"))
 		f.AddLabel(1, app, "stage:plan-review")
 		f.RemoveLabel(1, app, "stage:planning")
 		more(t, f)
@@ -613,7 +613,7 @@ func planReviewRun(during, more func(t testing.TB, f *githubtest.Fake)) func(tes
 
 // planReview is planReviewRun with nothing during the run, so the plan
 // comment is 1004.
-func planReview(more func(t testing.TB, f *githubtest.Fake)) func(testing.TB) *githubtest.Fake {
+func revisePlanReview(more func(t testing.TB, f *githubtest.Fake)) func(testing.TB) *githubtest.Fake {
 	return planReviewRun(func(testing.TB, *githubtest.Fake) {}, more)
 }
 
@@ -621,7 +621,7 @@ func planReview(more func(t testing.TB, f *githubtest.Fake)) func(testing.TB) *g
 // sent the plan back (marker 1006), and has the App's 👍 (reaction 1007).
 // Then it runs more.
 func planBack(body string, more func(t testing.TB, f *githubtest.Fake)) func(testing.TB) *githubtest.Fake {
-	return planReview(func(t testing.TB, f *githubtest.Fake) {
+	return revisePlanReview(func(t testing.TB, f *githubtest.Fake) {
 		post(t, f, 1005, "owner", body)
 		post(t, f, 1006, app, planSentBack("1005"))
 		f.AddLabel(1, app, "stage:planning")
@@ -648,22 +648,22 @@ func TestRevisePlan(t *testing.T) {
 		inputs []string
 	}{
 		{"a plain comment after the latest plan revision sends the plan back, as the notes",
-			planReview(func(t testing.TB, f *githubtest.Fake) { post(t, f, 1005, "owner", "too long") }),
+			revisePlanReview(func(t testing.TB, f *githubtest.Fake) { post(t, f, 1005, "owner", "too long") }),
 			outcome{comments: []string{planSentBack("1005")}, labels: planning, acks: []string{"too long"}},
 			[]string{"too long"}},
 		{"so does /revise",
-			planReview(func(t testing.TB, f *githubtest.Fake) { post(t, f, 1005, "owner", "/revise shorter\nand split S1") }),
+			revisePlanReview(func(t testing.TB, f *githubtest.Fake) { post(t, f, 1005, "owner", "/revise shorter\nand split S1") }),
 			outcome{comments: []string{planSentBack("1005")}, labels: planning, acks: []string{"/revise shorter\nand split S1"}},
 			[]string{"/revise shorter\nand split S1"}},
 		{"a comment after the request is planning's input too, after the notes",
-			planReview(func(t testing.TB, f *githubtest.Fake) {
+			revisePlanReview(func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1005, "owner", "too long")
 				post(t, f, 1006, "owner2", "and add X")
 			}),
 			outcome{comments: []string{planSentBack("1005")}, labels: planning, acks: []string{"too long", "and add X"}},
 			[]string{"too long", "and add X"}},
 		{"a comment beats a pending 👍 on the plan in the same pass, which approves nothing",
-			planReview(func(t testing.TB, f *githubtest.Fake) {
+			revisePlanReview(func(t testing.TB, f *githubtest.Fake) {
 				if id := f.AddReaction(1004, "owner", "+1"); id != 1005 {
 					t.Fatalf("reaction ID = %d, want 1005", id)
 				}
@@ -677,14 +677,14 @@ func TestRevisePlan(t *testing.T) {
 			outcome{comments: []string{planSentBack("1004")}, labels: planning, acks: []string{"also X"}},
 			[]string{"also X"}},
 		{"a spec revision after the plan revision is never taken for it",
-			planReview(func(t testing.TB, f *githubtest.Fake) {
+			revisePlanReview(func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1005, "owner", "too long")
 				post(t, f, 1006, app, "<!-- issuedog:revision rev=2 body="+state.BodyHash("body")+" seen=1005 -->")
 			}),
 			outcome{comments: []string{planSentBack("1005")}, labels: planning, acks: []string{"too long"}},
 			[]string{"too long"}},
 		{"a story with a parent sends its plan back too",
-			planReview(func(t testing.TB, f *githubtest.Fake) {
+			revisePlanReview(func(t testing.TB, f *githubtest.Fake) {
 				f.SetType(1, "Story")
 				f.SetParent(1, f.AddIssue("owner", "Epic", "epic"))
 				post(t, f, 1005, "owner", "too long")
@@ -695,13 +695,13 @@ func TestRevisePlan(t *testing.T) {
 			planBack("/revise shorter", func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1008, "owner", "also X")
 				f.AddReaction(1008, app, "+1")
-				f.AddComment(1, app, planComment(2, "1008"))
+				f.AddComment(1, app, revisePlanComment(2, "1008"))
 				f.AddLabel(1, app, "stage:plan-review")
 				f.RemoveLabel(1, app, "stage:planning")
 			}),
 			outcome{labels: atReview, acks: []string{"/revise shorter", "also X"}}, nil},
 		{"untrusted, App and dirty comments send nothing back",
-			planReview(func(t testing.TB, f *githubtest.Fake) {
+			revisePlanReview(func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1005, "mallory", "too long")
 				post(t, f, 1006, app, "too long")
 				post(t, f, 1007, "owner", "too long")
@@ -715,23 +715,23 @@ func TestRevisePlan(t *testing.T) {
 			planBack("too long", func(t testing.TB, f *githubtest.Fake) { post(t, f, 1008, "owner", "and add X") }),
 			outcome{labels: planning, acks: []string{"too long", "and add X"}}, []string{"too long", "and add X"}},
 		{"a request the table can't apply gets a reply saying the plan wasn't sent back",
-			planReview(func(t testing.TB, f *githubtest.Fake) {
+			revisePlanReview(func(t testing.TB, f *githubtest.Fake) {
 				f.SetType(1, "Task")
 				post(t, f, 1005, "owner", "too long")
 			}),
 			outcome{comments: []string{final("too long", "I didn't send the plan back for revision",
-				"only an epic or a story goes from `plan-review` to `planning` on a revision request, and this is a new-owner-task issue", "1005")},
+				"only an epic, or a story, goes from `plan-review` to `planning` on a revision request, and this is a new-owner-task issue", "1005")},
 				labels: atReview, downs: []string{"too long"}}, nil},
 		{"so does /revise, as a command",
-			planReview(func(t testing.TB, f *githubtest.Fake) {
+			revisePlanReview(func(t testing.TB, f *githubtest.Fake) {
 				f.SetType(1, "Task")
 				post(t, f, 1005, "owner", "/revise shorter")
 			}),
 			outcome{comments: []string{final("/revise shorter", "I didn't apply this command",
-				"only an epic or a story goes from `plan-review` to `planning` on a revision request, and this is a new-owner-task issue", "1005")},
+				"only an epic, or a story, goes from `plan-review` to `planning` on a revision request, and this is a new-owner-task issue", "1005")},
 				labels: atReview, downs: []string{"/revise shorter"}}, nil},
 		{"a 👎'd request whose reply was lost gets it after a stage change, worded for the plan",
-			planReview(func(t testing.TB, f *githubtest.Fake) {
+			revisePlanReview(func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1005, "owner", "too long")
 				f.AddReaction(1005, app, "-1")
 				handSet(t, f, state.PlanReview, state.Planning, 9007)
