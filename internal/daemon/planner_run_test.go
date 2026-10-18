@@ -97,13 +97,16 @@ func (p *planRun) start(t *testing.T, f *githubtest.Fake) {
 	g.r.Unlabeled = &daemon.Triage{Daemon: g.d}
 	// As newStep wires step 1.
 	st := g.d.Step
+	st.Models = g.d.CurrentModels
 	st.Commands = daemon.Commands(st.CurrentTrust())
 	st.Commands["approve"] = daemon.ApproveCommand()
 	st.Commands["revise"] = daemon.ReviseCommand()
+	st.Commands["done"] = daemon.DoneCommand()
 	maps.Copy(st.Commands, daemon.SettingCommands(st.CurrentTrust(), g.d.CurrentModels))
 	maps.Copy(st.Commands, daemon.FlagCommands())
 	approve, answer := daemon.ApproveByReaction(st.CurrentTrust()), daemon.FlagByReaction(st.CurrentTrust())
 	errAck, resolved := daemon.ErrorByReaction(st.CurrentTrust()), daemon.ResolveByReaction(st.CurrentTrust())
+	done := daemon.DoneByReaction(st.CurrentTrust())
 	st.Reactions = func(ctx context.Context, a *daemon.Applier, s *github.Snapshot, d daemon.Dirt) error {
 		if err := resolved(ctx, a, s, d); err != nil {
 			return fmt.Errorf("discussion hold resolved: %w", err)
@@ -113,6 +116,9 @@ func (p *planRun) start(t *testing.T, f *githubtest.Fake) {
 		}
 		if err := answer(ctx, a, s, d); err != nil {
 			return fmt.Errorf("flag answer by 👍: %w", err)
+		}
+		if err := done(ctx, a, s, d); err != nil {
+			return fmt.Errorf("human task done by 👍: %w", err)
 		}
 		if err := errAck(ctx, a, s, d); err != nil {
 			return fmt.Errorf("state error ack by 👍: %w", err)
@@ -265,6 +271,127 @@ func (p *planRun) settle(step string, want ...string) {
 	p.unchanged(step)
 }
 
+// childWrites are the writes that file the children of issue parent's
+// approved plan, issues ns, in plan order (#276): for each, its create,
+// its link under parent and its first move.
+func childWrites(parent int, ns ...int) []string {
+	var w []string
+	for _, n := range ns {
+		w = append(w, "POST /issues", fmt.Sprintf("POST /issues/%d/sub_issues", parent), fmt.Sprintf("POST /issues/%d/comments", n))
+	}
+	return w
+}
+
+// planRunStories are the children of the golden epic plan (T4's
+// epic-plan.json) under an epic at p1, on a repo that types by label: its
+// three stories, each at planning, S2 at the epic's priority, as it names
+// none, and each with the model:* and effort:* labels of its item's model
+// and effort (#344): S1's opus and high, and S3's medium.
+var planRunStories = []wantChild{
+	{"S1", "S1. Quotes expire after 24 hours", "", []string{"effort:high", "model:opus", "priority:p1", "stage:planning", "type:story"}, state.Planning},
+	{"S2", "S2. Customers see when a quote expires", "", []string{"priority:p1", "stage:planning", "type:story"}, state.Planning},
+	{"S3", "S3. Expired quotes in the monthly report", "", []string{"effort:medium", "priority:p2", "stage:planning", "type:story"}, state.Planning},
+}
+
+// planRunTasks are the children of the golden story plan (T4's
+// story-plan.json) under a story with no priority, on a repo that types by
+// label: T1 and T2 at ready, T1 with its item's sonnet and medium as its
+// model:* and effort:* labels (#344), T2 at its own p1, and T3, a human
+// task, at needs-human.
+var planRunTasks = []wantChild{
+	{"T1", "Record when each quote expires", "", []string{"effort:medium", "model:sonnet", "priority:p2", "scope:booking", "stage:ready", "type:task"}, state.Ready},
+	{"T2", "Refuse an expired quote at booking", "", []string{"priority:p1", "scope:booking", "stage:ready", "type:task"}, state.Ready},
+	{"T3", "Set the quote lifetime in production", "", []string{"priority:p2", "scope:infra", "stage:needs-human", "type:task"}, state.NeedsHuman},
+}
+
+// planRunHumanOrigin is what the origin marker of the golden story plan's
+// human task, T3, holds after its item: its check, that production's
+// settings file holds the lifetime, and that it's human.
+const planRunHumanOrigin = " check=file contains=QUOTE_TTL=24h human=1 value=deploy/production.env"
+
+// runChildren checks, at step, that the approved plan revision rev of issue
+// parent filed want's children on f, as issues first on, in plan order,
+// and nothing after them (#276): each the App's, with its title, type,
+// labels and origin, linked under parent in that order, and with its first
+// move, keyed by p, the parent's move into planned, as its first comment
+// and its only move out of intake.
+func runChildren(t *testing.T, f *githubtest.Fake, step string, parent, rev int, p int64, first int, want []wantChild) {
+	t.Helper()
+	st := f.State()
+	if got := len(st.Issues) - (first - 1); got != len(want) {
+		t.Fatalf("%s: %d issues from #%d on; want the plan's %d children", step, got, first, len(want))
+	}
+	var subs []int
+	for i, w := range want {
+		is := st.Issues[first-1+i]
+		subs = append(subs, is.Number)
+		human := "" // a human task's origin holds its check (#327) and says it's human
+		if w.stage == state.NeedsHuman {
+			human = planRunHumanOrigin
+		}
+		origin := fmt.Sprintf("<!-- issuedog:origin plan=#%d rev=%d item=%s%s -->", parent, rev, w.item, human)
+		if labels := ivLabels(f, is.Number); is.Author != app || is.Title != w.title || is.Type != w.typ || !slices.Equal(labels, w.labels) ||
+			is.Parent != parent || !strings.HasSuffix(is.Body, "\n\n"+origin) {
+			t.Errorf("%s: child #%d is by %s, %q, of type %q, labelled %v, under #%d, with body\n%s\nwant the App's %q, of type %q, labelled %v, under #%d, ending in %s",
+				step, is.Number, is.Author, is.Title, is.Type, labels, is.Parent, is.Body, w.title, w.typ, w.labels, parent, origin)
+		}
+		moves := 0
+		for _, c := range is.Comments {
+			if strings.Contains(c.Body, "<!-- issuedog:transition from=intake ") {
+				moves++
+			}
+		}
+		if move := firstMoveUnder(parent, rev, w, p); len(is.Comments) == 0 || is.Comments[0].Author != app || is.Comments[0].Body != move || moves != 1 {
+			t.Errorf("%s: child #%d's comments are %+v; want the App's first move first, and no other move out of intake:\n%s", step, is.Number, is.Comments, move)
+		}
+	}
+	if got := st.Issues[parent-1].SubIssues; !slices.Equal(got, subs) {
+		t.Errorf("%s: #%d's sub-issues are %v; want %v, in plan order", step, parent, got, subs)
+	}
+}
+
+// storyRoundMarker is the transition marker of the round 1 that claude
+// run k asked on a story, with the run's effort and model, "" for none,
+// having seen comment seen, the story's first move.
+func storyRoundMarker(k int, effort, model string, seen int64) string {
+	flags := ""
+	if effort != "" {
+		flags += " effort=" + effort
+	}
+	if model != "" {
+		flags += " model=" + model
+	}
+	return fmt.Sprintf("<!-- issuedog:transition from=planning to=planning round=1 run=run%d%s questions=2 seen=%d -->", k, flags, seen)
+}
+
+// storyRound checks that claude run k was the planner's on story n, a
+// child of issue p.n, at planning, with the planner's 60 turns, and model
+// and effort as its --model and --effort, "" for no flag: the story's
+// model:* and effort:* labels, else the planner's sonnet and no effort
+// (SPEC §3.3). The story's newest comment must be the round 1 it asked,
+// having seen the story's first move.
+func (p *planRun) storyRound(step string, n, k int, model, effort string) {
+	p.t.Helper()
+	files := (&wholeRun{rig: p.rig, n: n}).context(k, state.Planning)
+	if !strings.HasPrefix(files["parent.md"], fmt.Sprintf("# Parent #%d\n", p.n)) {
+		p.t.Errorf("%s: planner run %d: parent.md =\n%s\nwant the parent #%d", step, k, files["parent.md"], p.n)
+	}
+	cs := p.snapshot(n).Comments
+	if len(cs) != 2 {
+		p.t.Fatalf("%s: #%d has %d comments; want its first move, then the planner's round", step, n, len(cs))
+	}
+	round := cs[1]
+	want := storyRoundMarker(k, effort, model, cs[0].ID)
+	if round.Author.Login != app || !strings.HasPrefix(round.Body, fmt.Sprintf("### Questions for #%d (round 1)\n\n**1. ", n)) ||
+		!strings.HasSuffix(round.Body, "\n\ncc @"+wholeRunOwner+"\n\n"+want) {
+		p.t.Errorf("%s: #%d's newest comment, by %s, =\n%s\nwant the App's round 1 of 2 questions, then the cc line and %s", step, n, round.Author.Login, round.Body, want)
+	}
+	if turns := p.flags(k)["--max-turns"]; turns != "60" {
+		p.t.Errorf("%s: planner run %d: --max-turns %q; want the planner's 60", step, k, turns)
+	}
+	p.checkFlags(k, model, effort, "")
+}
+
 // TestPlannerWholeRunEpic: you file an epic with stage:intake, eve
 // comments, and the interviewer asks two rounds and writes the spec, which
 // you approve with /approve. The planner runs at planning at once, and asks
@@ -274,7 +401,11 @@ func (p *planRun) settle(step string, want ...string) {
 // plan, at plan-review, where it waits in the digest with notify assigned.
 // Your 👍 on the plan comment approves the plan, not the spec: the epic
 // moves to planned with plan revision 1, the plan's item and the assignment
-// go, the spec's revision and approval are as they were, and a restart
+// go, and the same pass files the plan's three stories, each linked under
+// the epic and moved to planning (#276). The planner then runs on each
+// story in turn, one a pass, and asks its round 1, which waits in the
+// digest with notify assigned on the story. The spec's revision and
+// approval are as they were, each story was filed once, and a restart
 // writes nothing.
 func TestPlannerWholeRunEpic(t *testing.T) {
 	t.Parallel()
@@ -391,11 +522,15 @@ func TestPlannerWholeRunEpic(t *testing.T) {
 
 	// 4. Your 👍 on the plan comment approves the plan, and no spec: step 1
 	// moves the epic to planned, with plan revision 1 and the 👍 as its
-	// command, which takes the plan out of the digest and unassigns you.
-	// The restart reads it, and writes nothing.
+	// command. In the same pass, the plan's three stories are filed as #3
+	// to #5, in plan order, each created, linked under the epic and moved
+	// to planning, keyed by the approval (#276). Then the plan leaves the
+	// digest and you're unassigned.
 	thumb := f.AddReaction(planned.ID, wholeRunOwner, "+1")
-	p.iterate("a 👍 on the plan", 5, "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:plan-review",
-		digestEdit, unassign)
+	p.iterate("a 👍 on the plan", 5, slices.Concat(
+		[]string{"POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:plan-review"},
+		childWrites(p.n, 3, 4, 5),
+		[]string{digestEdit, unassign})...)
 	p.labels("a 👍 on the plan", labels("planned")...)
 	p.waiting("a 👍 on the plan", nil)
 	cs = p.comments()
@@ -403,13 +538,37 @@ func TestPlannerWholeRunEpic(t *testing.T) {
 	if !ok {
 		t.Fatalf("a 👍 on the plan: the plan comment has no plan hash:\n%s", planned.Body)
 	}
-	if want := fmt.Sprintf("<!-- issuedog:transition from=plan-review to=planned rev=1 body=%s cmd=r%d ", planHash, thumb); cs[len(cs)-1].Author.Login != app || !strings.Contains(cs[len(cs)-1].Body, want) {
-		t.Errorf("a 👍 on the plan: the newest comment, by %s, =\n%s\nwant the App's approval, with %q", cs[len(cs)-1].Author.Login, cs[len(cs)-1].Body, want)
+	approvedBy := cs[len(cs)-1]
+	if want := fmt.Sprintf("<!-- issuedog:transition from=plan-review to=planned rev=1 body=%s cmd=r%d ", planHash, thumb); approvedBy.Author.Login != app || !strings.Contains(approvedBy.Body, want) {
+		t.Errorf("a 👍 on the plan: the newest comment, by %s, =\n%s\nwant the App's approval, with %q", approvedBy.Author.Login, approvedBy.Body, want)
 	}
-	// The approval's own writes settle the digest and assignment, so the
-	// pass after it only reads the epic again, and writes nothing.
-	p.settle("a 👍 on the plan")
-	p.restart("a 👍 on the plan")
+	runChildren(t, f, "a 👍 on the plan", p.n, 1, approvedBy.ID, 3, planRunStories)
+
+	// 5. The planner runs on each new story in turn, one a pass, in plan
+	// order: the stories skipped the rest of the pass that filed them. A
+	// story's model:* and effort:* labels set its run's --model and
+	// --effort (SPEC §3.3): S1's opus and high, S2's none, so the planner's
+	// sonnet and no effort, and S3's medium, with sonnet. Each run asks the
+	// story's round 1, which the pass after lists in the
+	// digest, assigning you on the story. The epic, read again as the
+	// approval changed it, gets no second child, link or move.
+	ask := plGolden(t, "questions")
+	p.outputs(ask, ask, ask)
+	p.iterate("S1's round", 6, "POST /issues/3/comments")
+	p.storyRound("S1's round", 3, 6, "opus", "high")
+	p.iterate("S2's round", 7, digestEdit, "POST /issues/3/assignees", "POST /issues/4/comments")
+	p.storyRound("S2's round", 4, 7, "sonnet", "")
+	p.iterate("S3's round", 8, digestEdit, "POST /issues/4/assignees", "POST /issues/5/comments")
+	p.storyRound("S3's round", 5, 8, "sonnet", "medium")
+	// The pass after S3's round lists it, and the pass after that reads
+	// back its own writes; then a pass where nothing changed makes no
+	// request beyond the poll.
+	p.settle("the stories' rounds", digestEdit, "POST /issues/5/assignees")
+	rounds := []string{"#3 Question round p1 1", "#4 Question round p1 1", "#5 Question round p2 1"}
+	p.waiting("the stories' rounds", rounds)
+	owner := []string{wholeRunOwner}
+	assignWant(t, f, "the stories' rounds", map[int][]string{3: owner, 4: owner, 5: owner})
+	p.restart("the stories' rounds")
 	p.labels("the end", labels("planned")...)
 	s := p.snapshot(p.n)
 	got, ok := state.LatestRevision(s, slug, state.SpecRevision, func(int64) bool { return false })
@@ -432,6 +591,8 @@ func TestPlannerWholeRunEpic(t *testing.T) {
 		t.Errorf("the end: %d spec approvals, %d plan approvals and %d plans; want the one spec approval, by /approve, the one plan approval, by your 👍, and one plan",
 			approvals, planApprovals, p.plans())
 	}
+	runChildren(t, f, "the end", p.n, 1, approvedBy.ID, 3, planRunStories)
+	p.waiting("the end", rounds)
 	f.Advance(time.Hour)
 	p.unchanged("the end, an hour on")
 }
@@ -439,10 +600,14 @@ func TestPlannerWholeRunEpic(t *testing.T) {
 // TestPlannerWholeRunStory: a code owner sets stage:planning on a story
 // with a parent. The planner runs at once, and with plan.review false, the
 // story goes straight to planned, with one plan comment that ends with the
-// skip line, not the review lines, and nothing waits in the digest. A
-// story back at planning from a discussion hold, whose move there carries
-// origin, goes to plan-review instead, whatever plan.review says: its plan
-// asks for review, and waits in the digest with notify assigned.
+// skip line, not the review lines, and the story waits in the digest for
+// no one. The pass after files the plan's three tasks, once each, linked
+// under the story and at their first stages (#276), and the pass after
+// that lists the human task, which nothing blocks, in the digest, with
+// notify assigned on it (#336). A story back at planning from a discussion
+// hold, whose move there carries origin, goes to plan-review instead,
+// whatever plan.review says: its plan asks for review, and waits in the
+// digest with notify assigned.
 func TestPlannerWholeRunStory(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -497,7 +662,7 @@ func TestPlannerWholeRunStory(t *testing.T) {
 			if want := fmt.Sprintf(" to=planning by=%s ", wholeRunOwner); !tc.hold && (entry.Author.Login != app || !strings.Contains(entry.Body, want)) {
 				t.Errorf("the owner's stage, recorded by %s, =\n%s\nwant the App's, with %q", entry.Author.Login, entry.Body, want)
 			}
-			p.planComment("the plan", tc.golden, 124,
+			planned := p.planComment("the plan", tc.golden, 124,
 				fmt.Sprintf("<!-- issuedog:transition from=planning to=%s rev=1 run=run1 model=sonnet seen=%d -->", tc.to, entry.ID), plan)
 			if p.plans() != 1 {
 				t.Errorf("%d plan comments; want 1", p.plans())
@@ -507,15 +672,32 @@ func TestPlannerWholeRunStory(t *testing.T) {
 			}
 			p.labels("the plan", "stage:"+tc.to, "type:story")
 			// A plan at plan-review is a digest item, with notify assigned,
-			// from the pass after; a planned story waits on no one.
+			// from the pass after; a planned story waits on no one. Its plan
+			// files its three tasks, #4 to #6, in plan order, each created,
+			// linked under the story and moved to its first stage, keyed by
+			// the plan comment's move into planned (#276). That's in the pass
+			// after, as the planner's move came after the pass's visits. The
+			// pass after that lists the human task, #6, which nothing blocks,
+			// in the digest, and assigns notify on it (#336), and the pass
+			// after its writes reads them back. No task has a stage that
+			// runs.
 			if tc.waits != nil {
 				p.settle("the plan", "PATCH /issues/3", "POST /issues/2/assignees")
 				p.waiting("the plan", tc.waits, wholeRunOwner)
 			} else {
-				p.settle("the plan")
-				p.waiting("the plan", nil)
+				p.iterate("the plan, the pass after", 1, childWrites(p.n, 4, 5, 6)...)
+				runChildren(t, f, "the plan", p.n, 1, planned.ID, 4, planRunTasks)
+				p.settle("the tasks", "PATCH /issues/3", "POST /issues/6/assignees")
+				p.waiting("the tasks", []string{"#6 Human task p2 1"})
+				assignWant(t, f, "the tasks", map[int][]string{6: {wholeRunOwner}})
 			}
 			p.restart("the plan")
+			if !tc.hold {
+				runChildren(t, f, "the restart", p.n, 1, planned.ID, 4, planRunTasks)
+				p.waiting("the restart", []string{"#6 Human task p2 1"})
+			} else if n := len(f.State().Issues); n != 3 {
+				t.Errorf("the restart: %d issues; want the epic, the story and the digest, as a plan at review files nothing", n)
+			}
 		})
 	}
 }
