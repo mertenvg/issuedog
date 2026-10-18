@@ -209,7 +209,7 @@ func ivRoundOf(rounds []interviewerRound, id int64) int {
 // with the text the App didn't write escaped (SPEC §5.1):
 //   - issue.md: the number, title, type or "none", and the body. A dirty
 //     body is left out, and so is a title or body an untrusted author's
-//     issue had changed after it was admitted (admission). At the
+//     issue had changed after it was admitted (contextAdmission). At the
 //     clarifying after a discussion hold (ivHoldOrigin, #189), it also has
 //     the stage the issue came from and the discussion's owner input
 //     (ivHoldSection): the comments a trusted user's 👍 approved, which
@@ -234,7 +234,7 @@ func ivRoundOf(rounds []interviewerRound, id int64) int {
 //
 // It only reads: the prompt from the clone, trust, and, at most once, the
 // timeline, for a type set by label (typing) or an untrusted author's issue
-// (admission). At the clarifying after a hold, it also reads the reactions
+// (contextAdmission). At the clarifying after a hold, it also reads the reactions
 // of the discussion's untrusted comments, and of a waiting /revise. An
 // error is a setup failure, so no run starts and it isn't counted, as for
 // a prompt that can't be read.
@@ -264,7 +264,7 @@ func (iv *Interviewer) Context(ctx context.Context, in Input) (map[string][]byte
 	all := allRounds(s, a.AppSlug, in.Dirt.Has)
 	takesUntrusted := s.Type == "epic" || s.Type == "story" // SPEC §6.2
 	tc := trustCache{st: d.Step, verdicts: map[string]bool{}}
-	titleBy, bodyBy, err := iv.admission(ctx, s, in.Dirt, tc, timeline)
+	titleBy, bodyBy, err := contextAdmission(ctx, a, s, in.Dirt, tc, timeline)
 	if err != nil {
 		return nil, wrap(err)
 	}
@@ -382,67 +382,6 @@ func (t *ivTimeline) get(ctx context.Context) ([]*gogithub.Timeline, error) {
 	}
 	t.events, t.read = events, true
 	return events, nil
-}
-
-// admission returns who changed s's title and body after the issue was
-// admitted, if its author isn't trusted (the owner's option (a) on #6): an
-// approval approves what the approver read, not what the author writes
-// later. Each is the login of the change that taints it, or "" if it's
-// trusted as it stands. The App's issues, and trusted authors', are.
-//   - The body is tainted by an edit at or after the admission
-//     (ivAdmitted), unless the App made it, as when it wrote the spec. The
-//     last edit is the only one GitHub dates, but any later one taints it,
-//     whoever made it: someone else's makes it dirty too.
-//   - The title is tainted by its latest rename, if that's at or after the
-//     admission and by someone untrusted: a trusted user's later rename
-//     makes it theirs.
-//
-// Times are to the second, so a change in the admission's second counts
-// as after it. With no admission found, every change counts as after.
-func (iv *Interviewer) admission(ctx context.Context, s *github.Snapshot, d Dirt, tc trustCache, tl *ivTimeline) (titleBy, bodyBy string, err error) {
-	a := iv.Daemon.Step.Applier
-	if state.IsApp(s.Author, a.AppSlug) {
-		return "", "", nil
-	}
-	trusted, err := tc.trusted(ctx, s.Author)
-	if err != nil {
-		return "", "", fmt.Errorf("the issue's author: %w", err)
-	}
-	if trusted {
-		return "", "", nil
-	}
-	timeline, err := tl.get(ctx)
-	if err != nil {
-		return "", "", fmt.Errorf("the admission of an untrusted author's issue: %w", err)
-	}
-	at, admitted, err := ivAdmitted(ctx, a, s, d, timeline, tc)
-	if err != nil {
-		return "", "", fmt.Errorf("the admission of an untrusted author's issue: %w", err)
-	}
-	after := func(t time.Time) bool { return !admitted || !t.Before(at) }
-	if e := s.BodyEdit; !e.At.IsZero() && !state.IsApp(e.By, a.AppSlug) && after(e.At) {
-		bodyBy = login(e.By)
-	}
-	var rename *gogithub.Timeline
-	for _, e := range timeline {
-		if e.GetEvent() == "renamed" {
-			rename = e
-		}
-	}
-	if rename == nil || !after(rename.GetCreatedAt().Time) {
-		return "", bodyBy, nil
-	}
-	actor := github.Author{Login: rename.GetActor().GetLogin(), Type: rename.GetActor().GetType()}
-	if state.IsApp(actor, a.AppSlug) {
-		return "", bodyBy, nil
-	}
-	if trusted, err = tc.trusted(ctx, actor); err != nil {
-		return "", "", fmt.Errorf("who renamed the issue: %w", err)
-	}
-	if !trusted {
-		titleBy = login(actor)
-	}
-	return titleBy, bodyBy, nil
 }
 
 // ivAdmitted returns when an issue s was admitted to the pipeline (SPEC
