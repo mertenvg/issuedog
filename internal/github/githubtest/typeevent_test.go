@@ -437,3 +437,28 @@ func TestSetTypeByRenamedInOrg(t *testing.T) {
 		t.Errorf("with no ID: held %q; want Chore held back, by name", found.Held)
 	}
 }
+
+// mallory's change to Epic, which the org then renames Huge, is still
+// explained by mallory's event, which names Epic with Huge's ID: it's
+// reverted at once, keyed by that event, not held back as unexplained.
+func TestSetTypeByRenamedInOrgUntrusted(t *testing.T) {
+	t.Parallel()
+	f := New(t, "o/r", "app")
+	n := f.AddIssue("owner", "Issue", "")
+	owner := f.SetTypeBy(n, "owner", "Task")
+	flip := f.SetTypeBy(n, "mallory", "Epic")
+	f.RenameOrgIssueType("Epic", "Huge")
+	c := f.Client(t)
+	found, err := c.CheckLabels(context.Background(), "o", "r", n, nil, "app", typeByTrust{}, func(int64) bool { return false }, nil,
+		&github.IssueTypeGuard{Type: "Huge", ID: f.IssueTypeID("Huge")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := &github.IssueTypeRevert{Key: strconv.FormatInt(flip, 10), By: "mallory", From: "Epic", To: "Task", ToID: f.IssueTypeID("Task")}
+	if len(found.Held) != 0 || found.IssueType != owner || found.IssueTypeRevert == nil || *found.IssueTypeRevert != *want {
+		t.Fatalf("held %q, IssueType %d, revert %+v; want nothing held, %d, and %+v", found.Held, found.IssueType, found.IssueTypeRevert, owner, want)
+	}
+	if got := f.State().Issues[0].Type; got != "Task" {
+		t.Errorf("type %q; want Task back", got)
+	}
+}

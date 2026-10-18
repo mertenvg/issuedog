@@ -2,6 +2,9 @@ package github
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -174,5 +177,40 @@ func TestSnapshotLeaveOutType(t *testing.T) {
 	s.RestoreType() // nothing left out: no change
 	if s.Type != "story" {
 		t.Errorf("RestoreType with nothing left out: %q; want story", s.Type)
+	}
+}
+
+// RevertIssueType compares the type GitHub answers with by ID where both
+// have one: the type it set, renamed since, took; another type of the
+// same name didn't.
+func TestRevertIssueTypeAnswerByID(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		answer  map[string]any
+		dropped bool
+	}{
+		{"the same ID, renamed", map[string]any{"id": 5, "name": "Chore"}, false},
+		{"the same name and ID", map[string]any{"id": 5, "name": "Task"}, false},
+		{"another ID of the same name", map[string]any{"id": 6, "name": "Task"}, true},
+		{"no ID, the same name", map[string]any{"name": "task"}, false},
+		{"no ID, another name", map[string]any{"name": "Chore"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newClientWith(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPatch {
+					t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				if err := json.NewEncoder(w).Encode(map[string]any{"number": 7, "type": tc.answer}); err != nil {
+					t.Errorf("answer: %v", err)
+				}
+			}))
+			err := c.RevertIssueType(context.Background(), "o", "r", 7, IssueTypeRevert{Key: "9", By: "mallory", From: "Epic", To: "Task", ToID: 5, Posted: true})
+			if got := errors.Is(err, ErrIssueTypeRevertDropped); got != tc.dropped || (err != nil && !tc.dropped) {
+				t.Errorf("RevertIssueType = %v; want dropped %t", err, tc.dropped)
+			}
+		})
 	}
 }
