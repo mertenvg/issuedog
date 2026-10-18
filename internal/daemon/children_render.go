@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
 )
@@ -26,8 +27,14 @@ type childSpec struct {
 	// (bodyOf).
 	Body string
 	// Labels are the type label on a labels repo, then scope:<x> for a
-	// task, priority:pN and the stage label, in that order.
+	// task, priority:pN and the stage label, then model:<suffix> and
+	// effort:<level> when the item sets them (childOverrides), in that
+	// order.
 	Labels []string
+	// leftOff is why each override label the item asks for is left off
+	// Labels, such as its model, when a reload has since dropped it from
+	// models.allowed. ChildrenVisit logs each when it files the child.
+	leftOff []string
 	// IssueType is "Story" or "Task" on a repo that uses issue types
 	// (types: issue-types), where Labels has no type label, else "".
 	IssueType string
@@ -76,7 +83,9 @@ const childWidestNumber = math.MaxInt32
 // (childOrder): human tasks last. A story is an item whose ID is S<n>, and
 // a task one whose ID is T<n>, as the planner's schema gives them; a task
 // is human when its item says so. issueTypes is set on a repo that uses
-// issue types, and notify is config's notify, for a human task's cc line.
+// issue types, notify is config's notify, for a human task's cc line, and
+// models is models.allowed as of now, which an item's model is resolved
+// against (childOverrides).
 //
 //   - A story's title starts with its ID, "S2. Title", unless the planner
 //     already wrote it so. A task's is as planned.
@@ -92,16 +101,20 @@ const childWidestNumber = math.MaxInt32
 //     demoted, task list boxes stripped, mentions defused and markers
 //     escaped, and an empty section reads "None.".
 //   - The priority is the item's, else parent's priority:pN, else p2.
+//   - An item's model and effort become its child's model:* and effort:*
+//     labels, which set the runs on it, and a story's planner run (SPEC
+//     §3.3). One left off, as a model a reload has dropped, is in leftOff,
+//     and the child is still described.
 //
 // An item it can't describe is an error naming it: a task with no scope
 // or no body of its kind, a check the plan's validation would refuse, or a
 // body over childMaxBody, which a human task's is checked for with the
 // widest number for each issue it blocks. Nothing is described then.
-func childSpecs(parent *github.Snapshot, rev int, items []planItem, issueTypes bool, notify []string) ([]childSpec, error) {
+func childSpecs(parent *github.Snapshot, rev int, items []planItem, issueTypes bool, notify []string, models config.Models) ([]childSpec, error) {
 	ordered := childOrder(items)
 	specs := make([]childSpec, 0, len(ordered))
 	for _, it := range ordered {
-		c, err := childSpecOf(parent, rev, it, childDependents(items, it.ID), issueTypes, notify)
+		c, err := childSpecOf(parent, rev, it, childDependents(items, it.ID), issueTypes, notify, models)
 		if err != nil {
 			return nil, fmt.Errorf("describe the child of plan #%d rev %d item %s: %w", parent.Number, rev, it.ID, err)
 		}
@@ -153,7 +166,7 @@ func childDependents(items []planItem, id string) []string {
 
 // childSpecOf is childSpecs for one item, with blocks, the items that
 // depend on it.
-func childSpecOf(parent *github.Snapshot, rev int, it planItem, blocks []string, issueTypes bool, notify []string) (childSpec, error) {
+func childSpecOf(parent *github.Snapshot, rev int, it planItem, blocks []string, issueTypes bool, notify []string, models config.Models) (childSpec, error) {
 	story := strings.HasPrefix(it.ID, "S")
 	pri := cmp.Or(it.Priority, "p"+strconv.Itoa(priority(parent)))
 	c := childSpec{Item: it.ID, Title: childTitle(it, story)}
@@ -224,7 +237,36 @@ func childSpecOf(parent *github.Snapshot, rev int, it planItem, blocks []string,
 	}
 	stage, _ := c.Stage.Label()
 	c.Labels = append(c.Labels, "priority:"+pri, stage)
+	overrides, leftOff := childOverrides(it, models)
+	c.Labels, c.leftOff = append(c.Labels, overrides...), leftOff
 	return c, nil
+}
+
+// childOverrides are the override labels of it's child (plan #249, T5,
+// #126): its model as model:<suffix>, resolved against models, as /model
+// resolves a full name or a label suffix (config.Models.Resolve, then
+// LabelSuffix), and its effort as effort:<level>, in lower case. The
+// plan's validation refused a model that didn't resolve and an effort
+// config.ValidEffort refuses, but a reload since can drop a model. So one
+// that's no good now isn't in labels, and leftOff says why, naming it.
+func childOverrides(it planItem, models config.Models) (labels, leftOff []string) {
+	if it.Model != "" {
+		name, ok := models.Resolve(it.Model)
+		suffix, labelled := models.LabelSuffix(name)
+		if ok && labelled {
+			labels = append(labels, github.ModelPrefix+suffix)
+		} else {
+			leftOff = append(leftOff, fmt.Sprintf("its model %q, which models.allowed doesn't have any more", it.Model))
+		}
+	}
+	if it.Effort != "" {
+		if level := strings.ToLower(it.Effort); config.ValidEffort(level) {
+			labels = append(labels, github.EffortPrefix+level)
+		} else {
+			leftOff = append(leftOff, fmt.Sprintf("its effort %q, which isn't one of %s", it.Effort, strings.Join(config.EffortLevels(), ", ")))
+		}
+	}
+	return labels, leftOff
 }
 
 // childTitle is it's title on one line: a story's starts with its ID,
