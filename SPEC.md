@@ -15,7 +15,7 @@ Status: draft 3, 2026-10-11
 
 - Running on GitHub-hosted runners or consuming GitHub Actions minutes.
 - Parallel tasks within one repo.
-- Merging PRs. Merging is always a human action.
+- Merging PRs into `main`. Merging into `main` is always a human action. The App merges only into a story's branch: a verified task's PR, and `main` itself (7.5).
 - Answering on the owner's behalf. A question waits for an answer indefinitely.
 
 ## 3. Architecture
@@ -54,11 +54,15 @@ This keeps prompt-injected text from reaching GitHub directly and makes every wr
 The daemon never runs git, or any other repo command, as `issuedog` inside a directory the agent can write. Hooks and config in an agent-writable repo (`pre-push`, `core.sshCommand`, `core.fsmonitor` and so on) would otherwise run with the daemon's privileges.
 
 - The daemon owns a bare clone, `/work/<repo>.git`. It is the only repo the daemon pushes from, and the only place it reads trusted files from (section 3.4).
-- For each run the daemon creates `/work/runs/<run-id>` by cloning the bare repo as `agent`. Implementer runs start from the task branch head, or from `main` on the first attempt.
+- For each run the daemon creates `/work/runs/<run-id>` by cloning the bare repo as `agent`. Not built yet: the clone holds only the commits the daemon names for the run, with their history, and has no remote (3.4). Today's clone keeps `origin` and every branch. Implementer runs start from the task branch head, or on the first attempt from the task's base: its story branch's tip for a task in a story, or `main` for a task with no parent (7.5). Either way the daemon names the SHA, under the rule in 3.4.
 - After an implementer run, the daemon runs `git bundle create` as `agent` for `base..HEAD`, then fetches the bundle as `issuedog` into `refs/issuedog/runs/<run-id>` in the bare repo. A bundle is plain data, so nothing from the agent's repo config or hooks executes.
 - All diff inspection (section 10.1, rules 2 to 7) happens in the bare repo. The daemon's own git config defines no diff or filter drivers, so `.gitattributes` in the branch cannot trigger commands.
 - Verify commands and the LLM verifier run in fresh `agent`-owned checkouts of the exact head SHA, never in the implementer's clone. Untracked files the implementer left behind (for example `.claude/settings.local.json`) never reach them.
-- Task branches are named `issuedog/<issue>-<slug>` and always branch from `main`. A task is blocked until its dependencies merge, so stacked branches are never needed.
+- **Branches.** Section 7.5 has the design. Not built yet: the daemon opens and merges no PRs until phase 3 (section 17).
+  - A story, or an epic planned into tasks, has one story branch, `issuedog/<story>-<slug>`, cut from `main` when its first task starts. An epic planned into stories has none.
+  - Task branches are named `issuedog/<issue>-<slug>`. A task in a story branches from its story branch's tip, and its PR targets that branch. A task with no parent branches from `main`, and its PR targets `main`.
+  - A task is blocked until its dependencies merge, into the story branch for a task in a story, so stacked branches are never needed.
+  - Every `issuedog/*` branch, story or task, is under the `issuedog branches` ruleset (section 15): only a repository admin or the App can force-push or delete one. Anyone with write access can still push commits to one, so its history only moves forward. A write collaborator who isn't an admin can't force-push or delete any `issuedog/*` branch, their own task branches included.
 
 ### 3.3 Claude invocation
 
@@ -93,16 +97,24 @@ claude -p "$(cat /run/issuedog/<run-id>/prompt.md)" \
 
 ### 3.4 Trusted inputs come from `main`
 
-The daemon reads these from `main` in its bare clone, never from a task branch:
+The daemon reads these from `main` in its bare clone, never from a task branch or a story branch (7.5):
 
 - `CODEOWNERS`
 - `.issuedog/config.yaml`, including `verify.commands`
 - `.issuedog/prompts/*.md`; a missing file falls back to the default that ships with issuedog
 - JSON schemas, which ship with issuedog and are not overridable
 
-The triage agent, interviewer, planner and story verifier run in a fresh checkout of `main`.
+The triage agent, interviewer and planner run in a fresh checkout of `main`.
 
-The task verifier runs in a fresh checkout of the head SHA, but only after rule 2 of section 10.1 has passed. Every agent-config path (section 6.3) in that checkout therefore matches `main`.
+The task verifier runs in a fresh checkout of the head SHA, but only after rule 2 of section 10.1 has passed. Every agent-config path (section 6.3) in that checkout therefore matches its version on `main` at the run's baseline, a `main` commit that rule 2 takes from git (10.1). For a task in a story, that's the story's baseline, the merge base of `main` and the story branch's tip the task is named against, not anything in the task's own history (10.1, 7.5). The story verifier runs in a fresh checkout of its story branch's tip (10.3), only once that tip's checks pass, rule 2 included (7.5), so the same holds for it.
+
+**Named commits.** Not built yet: the PR flow, phase 3's (section 17). An implementer or verifier only ever runs in a checkout of commits the daemon named. Every commit the daemon names has each protected path (section 6.3) equal to its version at the run's baseline, one `main` commit (rule 2 of section 10.1). An implementer never fetches or merges a branch head itself. The rules that follow from it hold for every task, with a parent or none, on any attempt and whatever triggered the run:
+
+- **What the daemon names.** It gives each run its starting SHA. When the run must merge its target, as a conflict bug does (7.5) or a task whose target moved, it also names the exact target SHA to merge. The clone holds nothing else to fetch (3.2).
+- **Only tips that passed rule 2.** The daemon names a head or a target tip only once it has passed rule 2. When the target has moved to a tip that hasn't passed rule 2 yet, or failed it, the run doesn't start, or is stopped with its result dropped (8.2), and the task waits where it is until a tip passes.
+- **Rule 7** is judged against the named target SHA, not against wherever the branch has moved since.
+- **A head that fails rule 2.** A head a person pushed to a task branch that fails rule 2 sends the task to `needs-human` with a hand-off (9.3, 7.2), never back to `pr-open`. Any head that fails rule 2 when a run would start, as after `/done`, or the App's own head once a merge of `main` into its story has changed a protected path, is never named: the daemon names the task's base instead, as on a first attempt, and the old head is dropped. The App then pushes the new run's result over it, a reset its bypass of the `issuedog branches` ruleset allows (section 15). So when a merge of `main` the App makes into a story changes agent config, or any other protected path, an open task in the story that needs another run restarts from the story's tip, and its earlier work is dropped. That's the owner's decision: the daemon doesn't build the merge of the new tip into the old head itself.
+- **A story's waits.** A task in a story also starts no implementer run, and makes no move into `in-progress`, while its story branch's tip has no passing check, or a failure on the branch is open (7.5). That holds for a pick from `ready`, a retry after findings, and a review or a moved target branch at `pr-open` alike. A failure's own bug is excused from both, and its own open failure never blocks it. Once the branch moves past the tip it was cut from, it waits only for a tip that passes rule 2, then targets it even if other rules fail there (7.5).
 
 ### 3.5 Daemon settings
 
@@ -116,6 +128,8 @@ The App's slug is read from `GET /app` at startup, so it can't be misconfigured.
 
 Startup checks the Claude credential, the settings and the App key, then reads the slug, mints a token, syncs the bare clone, loads config and trust from `main`, and creates missing labels (section 15). It also checks the stages registered in code: none may run at `intake` while triage is set, since a triage run's lease records `intake` (8.2), so that stage's results would all be dropped. Only then does it apply the agent firewall and start the loop. A missing or malformed setting, or a failed step, stops the daemon with exit code 1 and the reason logged.
 
+Not built yet, with the PR flow (section 17): startup also checks the `issuedog branches` ruleset (section 15). It reads the active rules for a branch name under `issuedog/` with `GET /repos/{owner}/{repo}/rules/branches/{branch}`, which lists org rulesets too, and stops the daemon, as a failed step does, unless they include `deletion` and `non_fast_forward`. Story branches rely on both (7.5). The App can't read a ruleset's bypass list with Metadata read, so the check can't confirm it (section 16).
+
 `network.allow` and `usage_limit.pattern` (section 13) are read once at startup, so a change to either takes effect on restart. The rest of the config, and trust, are reloaded on every loop iteration (8.1).
 
 ## 4. Work item types
@@ -124,8 +138,8 @@ Startup checks the Claude credential, the settings and the App key, then reads t
 |---|---|---|
 | `epic` | A rough idea or large feature | Owner |
 | `story` | One user-visible outcome with acceptance criteria | Planner (epic plan), or owner |
-| `task` | One PR, one scope; a human task has no PR (section 9.3) | Planner (epic or story plan), or owner for a small change |
-| `bug` | Something broken | Owner, or story verifier |
+| `task` | One PR, one scope; a human task has no PR (section 9.3) | Planner (epic or story plan), owner for a small change, or the daemon, as a human task, for a story branch that fails rule 2 (7.5) |
+| `bug` | Something broken | Owner, story verifier, or a failure on a story branch (7.5) |
 
 - Repos owned by an organization use GitHub issue types. The org's defaults are Task, Bug and Feature, so an org owner must create `Epic` and `Story` first. Repos owned by a personal account have no issue types and use `type:epic`, `type:story`, `type:task`, `type:bug` labels instead. Config selects which.
 - For now, issuedog chooses a type only by label (`types: labels`). On a `types: issue-types` repo the App sets an issue type only to revert an untrusted change (5.1), or on a child it creates from a plan, `Story` or `Task` (5.2), and the interviewer can't set one: on an untyped issue there, one of its questions asks the owner to set the type on the issue.
@@ -161,11 +175,12 @@ GitHub is the single source of truth. The daemon keeps only an in-memory cache, 
 | Dirty content | A visible note carrying a `dirty` marker at the top of the comment or body (5.1) |
 | Origin of bot-created issues | Hidden `origin` marker in the issue body (section 6.2), or reposted in an App comment once the body's markers aren't read (6.4), with `human=1` on a human task's, and its **Done when** check, if it has one (9.3) |
 | Created children | The bot's `created` record on the parent, naming the children of its approved plan revision, or for a revision, the children it leaves (5.2) |
+| Story branches | Each story's `issuedog/<story>-` branch, found by that prefix, and its history, which only moves forward under the `issuedog branches` ruleset (section 15). The App's `issuedog/verify` check runs, each naming the branch, mark the `main` commit it cut the branch from, and the tips it checked and their results (7.5, 10.4). There's no record of the branch on the story. Not built yet |
 | Digest | The bot's issue carrying a `digest` marker, and its `digest-new` comments, which record the items already announced (9.4) |
 
 Every marker is an HTML comment, `<!-- issuedog:<kind> key=value ... -->`, with its fields in a fixed order. The order is a fixed list in code, such as `from`, `to`, `round`, `run`, `event`, `cmd`. Any field not on the list, such as `effort`, `model`, `questions`, `ran`, `recommend` or `seen`, follows them, sorted by name. The kinds so far:
 
-- `transition`: `from`, `to`, and the key that makes it idempotent (5.2). The key is `cmd=<comment id>`, or `cmd=r<reaction id>`, for a command; `run=<run id>` for a stage run's result; `event=<timeline event id>`; or `event=p<comment id>` for a created child's first move, naming the parent's comment that holds its move to `planned` (5.2). The moves an approved revision makes on a child, a changed child's move and a dropped child's close, are keyed the same way, by the parent's comment that holds the revision's move to `planned` (6.4). An event key carries `by=<login>` for a stage label a trusted user changed by hand (5.1), and no `by` for a move into the pipeline by a label (6.2). Some transitions carry more:
+- `transition`: `from`, `to`, and the key that makes it idempotent (5.2). The key is `cmd=<comment id>`, or `cmd=r<reaction id>`, for a command; `run=<run id>` for a stage run's result; `event=<timeline event id>`; or `event=p<comment id>` for a created child's first move, naming the parent's comment that holds its move to `planned` (5.2). The moves an approved revision makes on a child, a changed child's move and a dropped child's close, are keyed the same way, by the parent's comment that holds the revision's move to `planned` (6.4). The first move of a human task filed for a story branch's failure is keyed `event=t<SHA>`, naming the failing tip (7.5); not built yet. An event key carries `by=<login>` for a stage label a trusted user changed by hand (5.1), and no `by` for a move into the pipeline by a label (6.2). Some transitions carry more:
   - A move to `held` carries `at`, the stage the issue was at, and `reason`: `owner` for `/hold`, a hold set by hand or a trusted reopen, or `discussion` or `dropped` (6.4). A discussion hold also carries `origin`, and is keyed `event=<its trigger's key>` (6.4). A trusted reopen's move is `closed → held`, keyed `event=<the reopened event's ID>`, such as `<!-- issuedog:transition from=closed to=held at=spec-review reason=owner event=21877741 seen=2214587 -->`.
   - A hold set by hand on an issue that is already held writes a `held → held` marker with `reason=owner`, `by` and `event`, which keeps the first hold's `at` and `origin` (5.1). So does the owner hold that 6.4 records again when an edit or a deletion hid a hold's marker, keyed `event=<the trigger's key>`, with no `by` and no `cmd`.
   - A held child that its parent's newly approved revision changed gets a `held → held` marker with no `reason`, keyed `event=p<comment id>` as above, carrying `at` and `origin`, both the stage the change would send it to, and the hold's `seen` (6.4), such as `<!-- issuedog:transition from=held to=held at=ready origin=ready event=p6245648446 seen=2214587 -->`. Having no `reason` is what tells it from a hold: it isn't a hold of its own, so it adds nothing that a `/resume` must end. It sets the hold's `at` and `origin`, which `/resume` and the interviewer's `unchanged` then take the issue to. When no hold before it is read, as when the first hold's comment is dirty, it sets the hold's `seen` too, and `/resume` on the issue ends the hold.
@@ -200,6 +215,7 @@ Every marker is an HTML comment, `<!-- issuedog:<kind> key=value ... -->`, with 
   - **The body's last line.** The daemon writes the marker as the last line of each child's body, `origin plan=#<n> rev=<r> item=<id>` (5.2, 11.2).
   - **Human tasks.** A human task's marker also carries `human=1`. It's how the daemon knows a human task: a task with an `origin` marker is a human task (7.2) exactly when the marker has `human=1`.
   - **The check.** A human task whose **Done when** has a check (9.3, 11.3) records it on the same marker (#250's Q1a): `check=<kind>`, by the kind's name, and `value`, the label, the issue type, the file's path, the required check's name or the owner, and for a `file` check with text, `contains`. `value` and `contains` are percent-encoded as a `digest-new` marker's keys are (9.4), so a space, `<`, `>` or `%` reads back exactly, such as `<!-- issuedog:origin plan=#12 rev=1 item=T4 check=file contains=go%201.25 human=1 value=go.mod -->`. A plain-text **Done when** adds none of these. The check is read with the rest of the marker, so only from a marker the daemon reads (5.1). Fields that don't make a whole check read as no check: a whole one has a known kind, a `value` that decodes and isn't empty, and `contains` only on a `file` check. The App never writes any other.
+  - **Story branch failures.** Not built yet: an issue filed for a failure on a story branch (7.5) carries `origin story=#<n> tip=<SHA>`, naming the story and the failing tip, with `human=1` on the human task filed for rule 2. On that human task, `story` and `tip` are its own **Done when** check (9.3), not plain text. Before filing, the daemon looks for an issue whose `origin` names the same story and tip, open or closed, and reuses it, as for a plan's children (5.2). So each failing tip is filed once.
 - `created rev=<n> children=<n>,<n>`: the App's record on a parent that every child of its approved plan revision `rev` is created, linked, given its first move and its blocked-by links (5.2). It names the children by issue number, in plan order, and its comment lists each one, such as `- S1 #247: title`. Only a clean one of the approved revision counts, and only when every child it names reads back as a number above 0.
   - **A revision's record** is written once every change the revision makes to the children is made, and names every child it leaves: each kept, changed and new item's, but no dropped one's (5.2, 6.4). One that leaves none has `children=none`, which reads back as no children, and stands like any other.
 - `depends-on url=<issue url>`: a dependency across owners (section 14).
@@ -327,7 +343,7 @@ The issuedog App, and any other bot account, is never trusted.
 
 ### 6.2 What the daemon acts on
 
-The App creates an issue in the pipeline when its `origin` marker points to an approved plan revision, or to a story-verifier run. Issues the App creates in another repo (section 14) carry no such marker, so they need `approved`.
+The App creates an issue in the pipeline when its `origin` marker points to an approved plan revision, to a story-verifier run, or to a failure on a story branch (7.5). Issues the App creates in another repo (section 14) carry no such marker, so they need `approved`.
 
 A child created from a plan enters the pipeline by its first move, `intake →` its first stage, in an App comment on the child keyed `event=p<comment id>`, the ID of the parent's comment that holds its move to `planned` (7.2, 5.2). An issue's stage comes from its transition markers, so without that move a new child would read as at `intake` whatever its label. With it, the label rules, the replay checks and the stages' "on entry" rules read the child as they read any issue.
 
@@ -452,6 +468,7 @@ Each of these is a trigger. Comments from people without write access hold nothi
 - An untrusted reopen of an issue with a closed stage is reverted too, and holds nothing: a `revert` comment keyed by its event, then a close with the state reason of the close it undid, as GraphQL's `ClosedEvent.stateReason` gives it, or else the closed stage's. If that question fails, the close uses the closed stage's reason, and the failure is logged, so the close never waits on it. The label stays.
 - A trusted reopen moves the issue to `held`, `closed → held`, at the stage the latest transition marker shows, which an accepted close left as it was, and the closed stage goes. When that marker is the App's own move to `closed` (7.2), the hold is at the stage the move came from, `needs-human` for a human task. It's an owner hold with no `cmd` (section 5), which `/resume` on the issue ends. On an issue that was held when it closed, the first hold's `at` and `origin` stay.
 - A merge is told by GraphQL's `ClosedEvent.closer`, asked by the `closed` event's node ID: a merged pull request whose base is this repo's default branch, or a commit in this repo. A closer in another repo is no merge. The REST `closed` event of a merge names the merger as its actor, and gives no `state_reason` or `commit_id` (section 16). The closer is asked only for a close nobody trusted made, once per event while the daemon runs. A closer GitHub won't show the App, such as a project's workflow on a personal account or a commit in a private repo, is no merge, so the close counts as its actor's, and is reverted unless they're trusted. Only a `FORBIDDEN` or `NOT_FOUND` error under `node` says so. Any other failure of that query, an error of another type or of none under `node` included, fails the pass, and the next pass asks again.
+- **Merges into a story branch.** A merged pull request whose base is any other branch, such as a task's PR into its story branch (7.5), is no merge here. Such a merge closes nothing: GitHub's closing keywords act only on a merge into the default branch, and such a PR names its task without one (11.5). So the App closes the task itself, by its move to `closed` (7.2), after its own merge or a trusted merger's (7.5). That close is the App's, so it's accepted without asking for a closer. A story's PR targets `main`, so the merge that closes the story is told as above. Section 16 has the live check.
 - `stage:completed` and `stage:discarded` are valid only on a closed issue. On an open issue, a trusted user's is a disagreement (5.3), and the label is put back.
 
 The digest isn't in the pipeline and is never held by its own close or reopen: 9.4 says how they are handled.
@@ -463,7 +480,7 @@ The digest isn't in the pipeline and is never held by its own close or reopen: 9
 - Holds stack. Any hold on an issue that is already held, whether by `/hold`, by hand (5.1) or for discussion, keeps the stage recorded by the first hold. Only the parent's revision changes that stage, by a marker that isn't a hold (see Leaving the hold). The issue leaves `held` only when every hold on it has ended. A discussion hold ends when resolved, or by `/resume` on the issue itself. An owner hold ends by a `/resume` posted after its `/hold`, on the issue itself, on the issue where its `/hold` was posted, or on any issue between the two, and by no other `/resume` (the owner's choice (b) on #188). A `/hold` on an issue that is already held writes no marker there, but still holds it until that rule ends it, whatever held the issue when the `/hold` was posted: a parent's `/resume` never ends a `/hold` posted on its child, so only `/resume` on the child ends the child's own `/hold`. A `/hold` counts by the App's record that it applied it, so a write collaborator's edit of its comment doesn't end it. A `/hold` whose comment is deleted counts as posted on the issue that an `ended` record's `heldon=` names for it (see Leaving the hold), or else on the farthest issue with its marker. A hold a `/resume` ended stays ended, whatever happens to its comment after: when the issue stays held for another reason, the App records the end with `ended reason=owner` (section 5). A comment that an untrusted write collaborator deletes on an ancestor during the hold, written by a trusted user or by someone GitHub doesn't name, may have been a `/hold` that wrote no marker, so it counts as one posted on that ancestor, which only a `/resume` posted after the deletion ends. A hold set by hand ends by `/resume` on the issue itself. Every hold on the issue also ends at once when a trusted user sets another stage label by hand, which 5.1 records as an override. Removing `stage:held` alone is a disagreement (5.3) and is put back. If a discussion trigger was resolved by a trusted response during the hold, the final `/resume` sends the issue to `clarifying` as below, whatever else held it.
 - Content edited by an untrusted write collaborator is dirty (5.1), so it never counts as a command or an answer, even after the edit is accepted. In loop step 1 (8.1) the daemon looks for triggers before it processes commands.
 - Before applying any run result, the daemon checks the issue for triggers since the last poll before the run was picked up. If it finds one, it holds the issue and drops the result.
-- Comments and pushes made while the issue is held are handled once it leaves `held`, in the stage it lands in. A PR review made while held is handled when the task next reaches `pr-open`, through the usual `pr-open` rows (7.2).
+- Comments and pushes made while the issue is held are handled once it leaves `held`, in the stage it lands in. A PR review made while held is handled when the task, or for a story's PR the story, next reaches `pr-open`, through the usual `pr-open` rows (7.2, 7.5).
 - Any run for the issue is stopped and its result dropped. Nothing is pushed, no PR is opened or updated, and the issue makes no other transition until the hold ends. Other issues, including its parent and children, carry on.
 - A held issue is visited on every pass, since a 👍 that resolves a trigger doesn't change its `updated_at` (8.1).
 - The digest lists the issue while a discussion trigger on it is open, with each open trigger, a link to it and how to resolve it, and assignment (9.6) assigns `notify` to it for as long (9.4). A hold that only owner holds make is the owner's own, so it gives no item.
@@ -525,7 +542,7 @@ The digest isn't in the pipeline and is never held by its own close or reopen: 9
 | `stage:ready` | none | Task waiting for the scheduler |
 | `stage:in-progress` | implementer | Commits in the run clone |
 | `stage:verifying` | verifier | Pass, or findings |
-| `stage:pr-open` | none | PR waiting for human review |
+| `stage:pr-open` | none | PR waiting to merge: a PR to `main` waits for human review, and a task's PR into its story branch for the App's merge (7.5) |
 | `stage:needs-human` | none | Task only the owner can do (section 9.3) |
 | `stage:held` | none | Paused by the owner, or held for discussion (6.4) |
 | `stage:completed` | none | Closed as completed, or by a merged PR. Only on a closed issue (6.4) |
@@ -535,10 +552,10 @@ The last two are the closed stages. They're valid only on a closed issue, so the
 
 The lifecycle of each type:
 
-- **Epic.** intake → clarifying → spec-review → planning → plan-review → planned → closed.
-- **Story.** Created from an approved epic plan, with its acceptance criteria in its body (11.6), and moved intake → planning by its first move (7.2). Then planning → plan-review (or straight to planned, see `plan.review`) → planned → closed.
+- **Epic.** intake → clarifying → spec-review → planning → plan-review → planned → closed. An epic planned into tasks acts as its own story (section 4), so it ends as a story does, story branch included (7.5).
+- **Story.** Created from an approved epic plan, with its acceptance criteria in its body (11.6), and moved intake → planning by its first move (7.2). Then planning → plan-review (or straight to planned, see `plan.review`) → planned → closed. Not built yet: once the daemon opens PRs, a story with changes on its branch goes planned → pr-open → closed, closed by its PR's squash-merge into `main` (7.3, 7.5).
 - **Story filed by the owner.** intake → clarifying → spec-review → planning, then as a story.
-- **Task.** A task from the planner is created and moved intake → ready by its first move, or intake → needs-human for a human task (7.2, 11.3). Then ready → in-progress → verifying → pr-open → closed, with loops back through clarifying, in-progress or needs-human. A human task from the planner goes needs-human → closed.
+- **Task.** A task from the planner is created and moved intake → ready by its first move, or intake → needs-human for a human task (7.2, 11.3). Then ready → in-progress → verifying → pr-open → closed, with loops back through clarifying, in-progress or needs-human. A task in a story closes when the App merges its PR into the story branch, and a task with no parent when its PR merges into `main` (7.5). A human task from the planner goes needs-human → closed.
 - **Bug, or task filed by the owner.** intake → clarifying → ready, then as a task. Until build phase 3 it waits at clarifying (7.2).
 
 ### 7.2 Transitions
@@ -548,7 +565,7 @@ The lifecycle of each type:
 | intake | clarifying | all | Issue is trusted (6.2) |
 | intake | planning | story | The daemon created the story from its parent's approved plan (5.2); its first move, in an App comment on the story keyed `event=p<comment id>`, the parent's comment holding its move to `planned` |
 | intake | ready | task | The daemon created the task from its parent's approved plan (5.2); its first move, keyed as for a story |
-| intake | needs-human | task | The daemon created a human task, its `origin` marker carrying `human=1`, from its parent's approved plan (5.2, 9.3); its first move, keyed as for a story |
+| intake | needs-human | task | The daemon created a human task, its `origin` marker carrying `human=1`, from its parent's approved plan (5.2, 9.3); its first move, keyed as for a story. Or, once story branches are built, for a story branch that failed rule 2 (7.5); its first move then keyed `event=t<SHA>`, the failing tip |
 | clarifying | clarifying | all | The interviewer asks a question round: the first on entering clarifying, or the next once the owner answered (9.1). Also the interviewer's `typed` outcome, which types an untyped issue as a bug or task (9.1) |
 | clarifying | spec-review | epic, or story with no parent | No open questions; spec written into the body |
 | clarifying | ready | bug, or task filed by the owner | No open questions; daemon rewrites the body as a task (11.2). Not built until phase 3: until then the issue waits at clarifying with no interviewer runs |
@@ -564,24 +581,24 @@ The lifecycle of each type:
 | any open | needs-human | task | The parent's newly approved revision changed this human task (6.4), keyed as for a task |
 | any open | planning | story | The parent's newly approved revision changed it (6.4), keyed as for a task |
 | any open | held | all | Dropped from the parent's newly approved revision while it has an open PR (6.4, `reason=dropped`). Not built until phase 3 (#234) |
-| planned | closed | story, or epic planned into tasks | Every child closed and story verification passes (7.3) |
+| planned | closed | story, or epic planned into tasks | Every child closed and story verification passes (7.3). Once the daemon opens PRs, only for a story with no change to merge: no story branch, or none with a commit `main` lacks. Otherwise the story's PR closes it (7.5) |
 | planned | closed | epic planned into stories | Every child closed |
 | ready | in-progress | task | Scheduler picks the task (8.1) |
 | in-progress | clarifying | task | Implementer needs an answer; worker is released |
 | in-progress | verifying | task | Implementer exits with commits and valid output |
 | in-progress | needs-human | task | Implementer reports the work needs an owner action |
 | verifying | in-progress | task | Findings, attempt < cap |
-| verifying | needs-human | task | Findings, attempt = cap |
+| verifying | needs-human | task | Findings, attempt = cap; or a head a person pushed fails rule 2, with a hand-off (3.4, 9.3) |
 | verifying | clarifying | task | Verifier reports an acceptance criterion is ambiguous |
-| verifying | pr-open | task | Pass; daemon pushes, opens or updates the PR, posts the `issuedog/verify` check |
-| verifying | pr-open | task | The verified head was pushed by a person: daemon posts the check (success or failure) and any findings as a comment |
-| pr-open | in-progress | task | A trusted reviewer submits a review with comments, whether its state is "request changes" or "comment"; or `main` no longer merges cleanly with the branch. An approving review with no comments does not count |
+| verifying | pr-open | task | Pass; daemon pushes, opens or updates the PR, posts the `issuedog/verify` check. A task in a story's PR targets its story branch, and the App then squash-merges it (7.5) |
+| verifying | pr-open | task | The verified head was pushed by a person: daemon posts the check (success or failure) and any findings as a comment. A head that fails rule 2 goes to needs-human instead (3.4) |
+| pr-open | in-progress | task | A trusted reviewer submits a review with comments, whether its state is "request changes" or "comment"; or its target branch, `main` or its story branch, no longer merges cleanly with the branch. An approving review with no comments does not count |
 | pr-open | verifying | task | A new head SHA that the daemon did not push |
-| pr-open | pr-open | task | `main` moved; daemon re-runs section 10.1 on the merge result and updates the check |
-| pr-open | closed | task | PR merged (`Closes #N`) |
-| pr-open | needs-human | task | PR closed without merging; daemon asks the owner to reopen it, `/done` to start over, or close the issue |
-| needs-human | ready | task | Owner `/done`, or a 👍 on the latest hand-off comment (9.3), on a task that was waiting on the owner; attempt count resets to 0 |
-| needs-human | closed | task | A trusted `/done`, or a trusted 👍 on the issue itself that no marker names, on a human task from the planner, when its **Done when** check passes, or at once for a plain-text one (9.3); the App closes the issue as completed (see The App's move to `closed`) |
+| pr-open | pr-open | task | Its target branch moved; daemon re-runs section 10.1 on the merge result and updates the check |
+| pr-open | closed | task | PR merged: into `main`, which closes the task by its `Closes #N` (11.5); or into its story branch, by the App's squash-merge or a trusted user's merge, after which the App closes the task as completed (see The App's move to `closed`, 7.5) |
+| pr-open | needs-human | task | PR closed without merging; daemon asks the owner to reopen it, `/done` to start over, or close the issue. Also a PR merged into its story branch by someone untrusted, which closes nothing: the hand-off names the merger, and the owner closes the task or posts `/done` (7.5) |
+| needs-human | ready | task | Owner `/done`, or a 👍 on the latest hand-off comment (9.3), on a task that was waiting on the owner; attempt count resets to 0. Never a human task, which `/done` closes instead |
+| needs-human | closed | task | A trusted `/done`, or a trusted 👍 on the issue itself that no marker names, on a human task from the planner, or one filed for a story branch's failure (7.5), when its **Done when** check passes, or at once for a plain-text one (9.3); the App closes the issue as completed (see The App's move to `closed`) |
 | any open | held | all | Owner `/hold` on the issue or an ancestor. Also a held child that its parent's newly approved revision changed: a `held → held` marker with no `reason`, keyed as for a changed task, which isn't a hold of its own and sets the hold's `at` and `origin` (section 5, 6.4) |
 | any open | held | all | An untrusted write collaborator comments, edits or deletes trusted content, renames the issue or closes it (6.4); the marker carries `reason=discussion`, `at`, `origin` and the trigger's key. An issue that is already held gets no marker |
 | held | clarifying | all | Every trigger of a discussion hold is resolved and no owner hold remains, by `/hold`, by hand or by a trusted reopen (6.4); the marker is keyed `event=h<comment id>` and carries `at`, `origin` and `resolved`. Not for a hold from `intake` (6.4) |
@@ -597,13 +614,21 @@ The lifecycle of each type:
 
 From `ready` on, a `bug` follows the rows for `task`.
 
-**The App's move to `closed`.** The App closes an issue through the table only by a move to `closed`: the `needs-human → closed` row, for a human task (9.3), as completed, and the `any open → closed` row, for a child its parent's newly approved revision drops and each open issue below it (6.4), as not planned.
+**The App's move to `closed`.** The App closes an issue through the table only by a move to `closed`: the `needs-human → closed` row, for a human task (9.3), as completed, and the `any open → closed` row, for a child its parent's newly approved revision drops and each open issue below it (6.4), as not planned. Not built yet: a task in a story is to close through the same move, as completed, by the `pr-open → closed` row once the App, or a trusted merger, has merged its PR into the story branch (7.5), since GitHub's `Closes #N` acts only on a merge into the default branch.
 
 - Its transition marker carries `reason`, the state reason, `completed` or `not_planned` (section 5).
 - It writes the marker, then the 👍 for a command comment, then the close with that state reason, unless the issue is closed already. The 👍 goes before the close, since step 1 doesn't visit a closed issue to finish it.
 - It sets no stage label. The close is the App's, so it's accepted (6.4), and the close judge (8.1) sets `stage:completed` or `stage:discarded` from the state reason on a later pass.
 - A crash after the marker leaves an unfinished write, which the label rules finish by closing the issue (5.1).
 - A trusted reopen holds the issue at the stage the move came from (6.4).
+
+**A story's PR.** Not built yet, and not in the table yet: these rows join it, and the table in code, with the PR flow (section 17). Until then no story reaches `pr-open`. Each applies to a story, or an epic planned into tasks (7.3, 7.5):
+
+- `planned → pr-open`: every child closed, the story branch has a commit `main` lacks, its tip's checks pass and story verification passes there. The App opens or updates the story's PR to `main` and posts the `issuedog/verify` check.
+- `pr-open → pr-open`: the story branch has a new tip, from a merge of `main` or a push the App didn't make, and section 10.1 passes on it. The App posts the check on the new tip.
+- `pr-open → planned`: a failure on the story branch (7.5) filed a `bug` under the story, or for rule 2 a human task. The App posts the check as `failure`, and the story waits for its children again.
+- `pr-open → planning`: a trusted reviewer submits a review with comments on the story's PR, as for a task (above). The review is the next planner run's notes, and its plan is a revision of the story's children (11.3, 6.4), whose new tasks are worked on the story branch.
+- The story's close is the "any open → closed" row: its PR's squash-merge into `main` closes it, by its `Closes #N` (11.5).
 
 **Skipping plan review.** With `plan.review` false, a story's plan skips review unless the move that put the issue at `planning` carries `origin`. Looking through the planner's own rounds and the holds the issue went back from, that's only the interviewer's move out of the `clarifying` after a discussion hold (6.4). A discussion hold at `planning` that `/resume` ends with no trusted response goes straight back to `planning`, with no `origin`, so that plan still skips review. This affects only a first plan: every revised plan, of an issue `planned` before (11.3), waits for review, however the issue got back to `planning`, as a revision can close issues (#195's Q2a).
 
@@ -615,10 +640,13 @@ Any transition missing from this table is an error, except a trusted user's manu
 
 ### 7.3 Story and epic completion
 
-- When every child of a story, or of an epic planned directly into tasks, is closed, the daemon runs story verification on `main` (section 10.3), unless the story itself was dropped from its parent's plan (6.4). The verifier sees each child's close reason, so tasks closed as not planned are not mistaken for delivered work.
-  - Failures create `bug` sub-issues under the story.
-  - Passing closes the story.
-- An epic planned into stories closes when every child is closed.
+- When every child of a story, or of an epic planned directly into tasks, is closed, the daemon runs story verification on the story branch (section 10.3, 7.5), unless the story itself was dropped from its parent's plan (6.4). The verifier sees each child's close reason, so tasks closed as not planned are not mistaken for delivered work.
+  - It runs only on a tip whose checks pass (7.5). A story with no story branch, as when its only tasks were human tasks, is verified on `main`.
+  - Failures create `bug` sub-issues under the story, worked on the story branch.
+  - On a pass, a story branch with a commit `main` lacks gets the story's PR: the App opens it to `main`, or updates it, and the story moves to `pr-open` (7.2). The owner reviews it and squash-merges it, and the merge closes the story. Review comments become tasks on the story branch (7.5).
+  - A pass with nothing to merge closes the story, as story verification does today.
+  - Not built yet: story branches and the App's task merges are phase 3's, and story verification and the story's PR phase 4's (section 17). Until phase 3 all of it runs by hand, and from phase 3 to phase 4 story verification and the story's PR still do, on the branch the daemon keeps.
+- An epic planned into stories closes when every child is closed. It has no story branch of its own: each of its stories has one.
 
 ### 7.4 Approvals bind to a revision
 
@@ -646,6 +674,60 @@ Any transition missing from this table is an error, except a trusted user's manu
   - **Leaving `spec-review` with a dirty body.** The interviewer's spec is the App's full rewrite of the body (5.1, 11.1), so it cleans the body. The untrusted text is gone from the body, and the interviewer saw it only in `untrusted.md` (6.2). So a `/revise` or a revision request sends the issue back to `clarifying`, and the next spec gets a normal revision, which a trusted 👍 or `/approve` approves. The spec's move names whose edit it replaced. Until then nothing approves the dirty body. An override also leaves: a trusted user sets the next stage label by hand (5.1).
 - **PR approval.** This relies on GitHub. The ruleset dismisses stale approvals when new commits are pushed, and `issuedog/verify` is posted for an exact head SHA.
 
+### 7.5 Story branches
+
+Each story gets one branch. The pipeline merges each verified task into it, and the owner reviews the story's PR, which squash-merges into `main`. So tasks never wait for the owner's merge, and sibling tasks never stack. Not built yet: the daemon opens and merges no PRs until phase 3, and story verification is phase 4's (section 17). Until then the dispatcher works this way by hand, from S5 (#195) on.
+
+- **Which branch.**
+  - A story, or an epic planned into tasks (section 4), has one story branch, `issuedog/<story>-<slug>`. The App cuts it from `main` when the story's first task starts (8.1).
+  - An epic planned into stories has none: each of its stories has its own.
+  - A task or a bug whose parent is an open story, or an open epic planned into tasks, is in that story, and works on its branch. That covers the story's planned tasks, bugs from its story verification or from a failure on its branch (below), tasks planned from a review of its PR, and a task or bug the owner files under it.
+  - A task or a bug with no parent works as before: a branch from `main` and a PR to `main`, which the owner reviews and merges, its `Closes #N` closing the issue.
+  - A branch is found by its `issuedog/<issue>-` prefix, so a retitled issue keeps its branch.
+- **History only moves forward.** Story and task branches share `issuedog/<n>-<slug>`, so one ruleset, `issuedog branches`, covers `issuedog/*` (section 15). It blocks force-pushes and deletion for everyone but a repository admin and the App. Anyone with write access can still push commits to such a branch, or merge into one. A write collaborator who isn't an admin can't force-push or delete any `issuedog/*` branch, their own task branches included.
+  - So once the App has cut a story branch, every later tip descends from the `main` commit it was cut from, and from every tip before it. Nothing pushed to the branch can take its history back to an older commit.
+  - That's what lets rule 2 take a story's baseline from git, as the merge base of its tip and `main` (10.1), with no record of the branch on the story. It also lets the App's checks on the branch's tips stand as the record of which tips it checked (below).
+  - The App's bypass covers what the design has it do itself: delete a branch once its PR has merged, and push a new run's result over a task head it dropped (3.4).
+- **The App's cut.** The ruleset doesn't restrict creation, so anyone with write access can create an `issuedog/*` branch, from any commit, before the App cuts the story's. Its history then proves nothing about its baseline. So:
+  - When the App cuts a story branch, it posts `issuedog/verify` as `success` on the `main` commit it cut from, naming the branch (see Which check counts). That check is the cut's record.
+  - The daemon uses a story branch only once it has found that check on a `main` commit in the tip's history. It looks along `main` from the merge base of the tip and `main`, newest first, back to the last commit before the story was created, since no cut is older, and remembers the result until a restart. Every merge base after that is at least as new as the cut.
+  - A branch with the story's prefix and no such cut, as when someone else created it first, is used for nothing, and the story's tasks aren't picked. The daemon reports a state error naming the branch (5.3), and the owner deletes it, after which the App cuts its own on the next pick.
+- **Task PRs.**
+  - A task's PR is one the App opened, from the task's branch in this repo. A PR from a fork, or one the App didn't open, is never a task's PR.
+  - A task in a story branches from its story branch's tip, and its PR targets the story branch. It's blocked until its dependencies merge, now into the story branch (8.1).
+  - **A checked base.** The PR is verified, and merged, only while the tip it's based on is checked with `success` (see The story branch's checks). A failure's bug is the one exception: it's verified and merged against a tip that passed rule 2, even if other rules fail there, and its own open failure never blocks it (below). Rule 2 compares the head with the story's baseline too, the merge base of `main` and that tip (10.1), so wherever a task's checks or verifier run, every agent-config path is `main`'s version at that commit (3.4), whatever was pushed to the branch.
+  - When verify passes (10.1, 10.2), the App posts the check, squash-merges the PR into the story branch and closes the task as completed (7.2). No owner merge is needed. The PR names its task without a closing keyword (11.5), since GitHub's act only on a merge into the default branch, so the App closes it.
+  - **The merge's guards.** The App merges with the merge API's `sha` set to the head it verified, so GitHub refuses the merge if the head moved. It merges only while the PR is based on the story branch's tip (10.1 rule 7). If the branch moved, the PR is checked again first, on its merge result with the new tip (7.2), and merged only if that passes. Only a merge onto the tip the task was verified against carries the check over (below).
+  - **Carrying the check over.** The squash commit's tree is the verified head's. So when the new tip's parent is the tip the task was verified against, and that tip was checked with `success`, the App posts `issuedog/verify` as `success` on the new tip, naming the branch, and linking the task's verifier comment. Any other new tip gets no such check, and is checked as a push the App didn't make (below): one whose parent is another commit, as when someone pushed between the check and the merge, and one a failure's bug made.
+  - **Someone else's merge.** A task's PR merged into the story branch by anyone but the App counts only if the merger, the PR's `merged_by`, is trusted (6.1). Then the App closes the task as completed, as a trusted close stands (6.4). An untrusted merge closes nothing: the task moves to `needs-human` with a hand-off naming who merged it (9.3), and the owner closes the task if the work is right, or posts `/done` to start it over. Either way the merged tip is a push the App didn't make, and is checked again.
+  - **Branches after a merge.** Once a task's PR has merged into the story branch, the App deletes the task's branch, and once the story's PR has merged into `main`, the story branch. GitHub's own "Automatically delete head branches" may get there first, if the repo has it on (section 16).
+- **The story branch's checks.**
+  - **Which check counts.** A tip is checked only by a check the App posted for that commit as this story branch's tip: its check run's `external_id` names the branch. A check from elsewhere, such as one on the same commit as another branch's tip, doesn't count. Story verification, the story's PR and new task branches use only a tip whose check is `success`. When the App cuts the branch, it posts the check as `success` on the `main` commit it cut from, naming the branch, so a newly cut branch needs no check of its own. Any other tip needs one, even one that is an older commit on `main`.
+  - **Why the check is the record.** Only a GitHub App can write a check run, only the App that wrote one can change it, and nobody can delete one (section 16). And the branch's tip can't go back to a commit it held before. So, unlike an App comment, the mark can't be taken away or rolled back, and the daemon reads which tips it checked, and with what result, from GitHub after a restart. It keeps no other record of the branch.
+  - On a story branch, section 10.1 runs rules 1, 2, 3 and 7, on the diff against `main`. Rule 2 compares every protected path with its version at the story's baseline, the merge base of the tip and `main` (10.1). Rules 4 to 6 are about one task's diff, so they run on each task's PR, not on the whole story, whose diff may pass `verify.max_diff_lines`.
+- **When `main` moves.**
+  - The App merges `main` into each open story branch with a real merge commit, never a rebase or a squash, and re-runs section 10.1 on the new tip. The merge makes that `main` commit the story's baseline, as the merge base.
+  - It merges only into a tip whose check is `success`. A tip with no check yet is checked first (8.1), and while a failure on the branch is open, no more of `main` is merged in.
+  - A task's open PR into that branch then has a moved target branch, and is checked again (7.2).
+  - A conflict, or a failing check, is a failure on the story branch (below), the daemon's to handle at the story level.
+- **Pushes the App didn't make.** The `issuedog branches` ruleset blocks only force-pushes and deletion (section 15). Anyone with write access can push commits to a story branch or merge into one, so an engineer can add a commit directly.
+  - Such a commit leaves a tip with no check of the App's naming the branch, which is how the daemon tells it (section 16). It doesn't need to know who made the tip: the App's own merge of `main` leaves one too, and both are checked the same way. The bare clone's sync (8.1) shows the new tip, and the daemon re-runs section 10.1 on it, as after a merge of `main`.
+  - A failure is handled like a failed merge of `main`.
+  - Story verification, and the story PR's `issuedog/verify`, are posted only for a tip whose checks pass.
+- **A failure on the story branch.** The App posts the tip's check as `failure`. While a failure is open, no other task in the story is picked (8.1), and a story at `pr-open` moves back to `planned`, its PR's check posted as `failure` (7.2). What follows depends on the failure:
+  - **Rule 2.** A protected path that differs from its version at the story's baseline needs a human-authored change (6.3), which no agent can make. So the App files a human task under the story (9.3), in the hand-off template, its `origin` marker naming the story and the failing tip, with `human=1` (section 5). A tip that fails rule 2 gets only this human task, never a bug, whatever other rules it fails too. Its steps say to revert the change on the story branch with a new commit, and to land it on `main` in a PR of its own if it's wanted. The story's tasks wait until a later tip passes, whatever happens to the human task.
+  - **Any other rule.** Only for a tip that passed rule 2, the App files a `bug` sub-issue under the story naming each rule that failed and its output. Its branch is cut from the failed tip, and its PR is verified and merged against the story branch's tip as long as that tip passed rule 2, the exception to a checked base. Its own open failure never blocks it.
+  - **When the branch moves under a failure's bug.** Once the story branch's tip moves past the tip a failure's bug was cut from, the bug waits until a tip passes rule 2, and its runs then name that tip as the target to merge (3.4), even if other rules fail there, since the bug is their fix. While a failure's bug is open, a later tip that passes rule 2 but fails another rule files no second bug: the App comments that tip's failing rules and their output on the open bug, which its next run reads as input.
+  - **A conflict.** The App files a `bug` naming the `main` commit that didn't merge and the conflicting files. Its branch is cut from the story tip the merge failed on, which had a `success` check, since `main` is merged only into such a tip. Its implementer merges that commit and resolves the conflicts, so its head is a merge commit whose parents are the tip and that commit, or it fails rule 7. Its rules other than rules 1 and 2 judge the head's diff against the conflicted merge of the two, as `merge-tree --write-tree` writes it, markers included, so they judge only the resolution, not `main`'s changes. Rule 1 runs on the head. For rule 2, the bug's baseline is the `main` commit it names, which is also the merge base of its head and `main`, so a `main` that changed a protected path doesn't block the resolution. A squash would drop `main` from the branch's history, so once verify passes the App fast-forwards the story branch to exactly the head SHA it verified, without force, a push GitHub records as the PR's merge (section 16). The push fails if the branch moved. Once it lands, that `main` commit is the story's baseline, as the merge base. If the push fails, the bug waits, as when the branch moves under a failure's bug (above), and its next run merges the named new tip.
+  - Each filed issue's `origin` marker names the story and the failing tip, so a replay files it once (section 5). The new tip a bug's merge makes is checked afresh.
+- **The story's PR.**
+  - When story verification passes on the branch (7.3), the App opens the story's PR from the story branch to `main`, or updates it, and posts `issuedog/verify` on its head. The `main` ruleset requires it (10.4).
+  - The owner reviews it and squash-merges it, and its `Closes #N` closes the story (6.4).
+  - A trusted review with comments sends the story to `planning`, with the review as the planner's notes (7.2). The story was `planned` before, so its plan is a revision of its children (11.3, 6.4), and the revision's new tasks are worked on the story branch. Revisions are built (#195); the story's PR, and so this move, are not yet.
+  - A new tip while the PR is open, from a merge of `main` or a push the App didn't make, re-runs section 10.1 only. Story verification runs again only after the story's next children close.
+  - A story PR closed without merging leaves the story at `pr-open`, and the digest lists it for the owner, who reopens the PR or closes the story (9.4, 9.6). Not built yet, like every PR item.
+- **Stories that depend on stories.** A story branch is cut from `main`, so a task isn't picked while its story is blocked (8.1): a story waits for the stories it depends on to merge into `main`.
+
 ## 8. Scheduling
 
 ### 8.1 Picking work
@@ -653,11 +735,12 @@ Any transition missing from this table is an error, except a trusted user's manu
 Each loop iteration:
 
 1. Process new trusted comments, reactions and label changes on open issues: answers, `/approve`, `/revise`, `/done`, `/hold`, `/resume`, `/priority`, `/model`, `/effort`, `/track`, `/ignore`, 👍 on revision comments, triage flags (6.2), hand-off comments, state-error comments, human-task issues, untrusted comments and hold notices (6.4), and other comments in review stages (7.4). Revert untrusted label changes, record overrides and note dirty content first (5.1), then repost a lost `origin` (6.4), then check the type (5.3). Then move admitted issues from intake to clarifying (6.2), and bring the `triage:*` labels in line. Last, on an open issue at `planned`, create the children of its approved plan revision, or for a revision, apply it to them (5.2), after its commands and reactions, so an approval by 👍 or `/approve` and its children land in the same pass. A story's plan that skips review gets its children in the next pass's step 1, as the planner runs in step 3. A held or closed parent gets nothing, and creation carries on once a hold ends back at `planned`. One whose approved revision doesn't read back with its data gets nothing either, and that is logged. An issue with `triage:ask` is visited on every pass, since a 👍 on its flag doesn't change the issue's `updated_at`. So is an issue at `spec-review` or `plan-review`, for a 👍 on its spec or plan revision (7.4), and one that had an open state error after its last step 1, for a 👍 on the error (5.3), and a held issue, for a 👍 that resolves a discussion trigger (6.4), and an issue with `stage:needs-human`, for a 👍 on a human task itself (9.3) and for the closes of the issues blocking it (9.4). Their reaction reads, and a human task's read of its blockers, are conditional, so an unchanged pass costs no rate limit.
-2. Reconcile PRs: merges, closes, reviews with comments (7.2), new head SHAs, and `main` moving under open PRs.
+2. Reconcile PRs: merges, closes, reviews with comments (7.2), new head SHAs, and `main` or a story branch moving under open PRs. Reconcile story branches too: first check each tip that has no check of the App's naming its branch, then merge `main` into each open one whose tip's check is `success` (7.5).
 3. Run any pending non-task stage work for the highest-priority issue that has it: clarifying, spec, planning, story verification. If no stage ran, run triage (6.2) on the newest open issue that needs it.
 4. Otherwise pick the next task:
    - It is `stage:ready`.
    - It is not blocked, judged by advanced search `is:blocked` plus any open `depends-on` markers. Search results lag behind dependency writes, so the daemon confirms a candidate through the issue dependencies API before picking it.
+   - A task in a story (7.5) is picked only when its story branch exists and its dependencies have merged there, which for a sibling task is its close. The pick of the story's first task cuts the branch from `main`, and no task is picked while the branch has no cut of the App's (7.5). It also waits while its story is blocked, while the branch's tip has no passing check, and while a failure on the branch is open. A failure's bug is excused from both: its own open failure never blocks it, and once the branch moves it waits only for a tip that passes rule 2, then targets it even if other rules fail there (7.5). These waits hold for every implementer run in a story, not only a pick (3.4).
    - Ties are ordered by priority, then the parent's priority, then issue number.
 5. If nothing is available, sleep `idle_sleep` (default 60s).
 
@@ -672,10 +755,11 @@ Each loop iteration:
 
 ### 8.2 Leases and restart
 
-- **On pickup.** The daemon writes `/state/lease.json` (write to a temp file, then rename) with the issue number, stage, run ID, clone path, start time, and the time of the last poll before pickup (6.4). It also records what the run read: the newest comment on the issue (the run's `seen`, section 5), the last edit time of each input and of the body (`body_edit`), and the run's resolved model, effort and fallback models (3.3). A triage run's lease records the stage `intake`, which is what the daemon reads for an issue with no stage label. For a task, the `stage:in-progress` label and the transition marker show the lease on GitHub. A non-task run doesn't move its issue, so the lease's stage is the one a reset returns to.
+- **On pickup.** The daemon writes `/state/lease.json` (write to a temp file, then rename) with the issue number, stage, run ID, clone path, start time, and the time of the last poll before pickup (6.4). It also records what the run read: the newest comment on the issue (the run's `seen`, section 5), the last edit time of each input and of the body (`body_edit`), and the run's resolved model, effort and fallback models (3.3), and for an implementer run the named starting SHA and any named target SHA (3.4, not built yet). A triage run's lease records the stage `intake`, which is what the daemon reads for an issue with no stage label. For a task, the `stage:in-progress` label and the transition marker show the lease on GitHub. A non-task run doesn't move its issue, so the lease's stage is the one a reset returns to.
 - **Attempts.** The lease names the round of attempts the run belongs to and its number in it (8.3). When a run ends, failed or not counted, the lease is first marked ended with the count of failed attempts in a row it leaves, and for a failed run, why it failed, for the attempt cap's error (5.3); then the run's files are deleted, and the lease too if that count is 0. A restart that finds an ended lease only takes its count and deletes what's left. The lease holds only the latest run, so every other count, such as another issue's, is held in memory and resets on any restart.
 - **On apply.** The daemon reads the issue again and applies the result through its `run=<run id>` key (5.2). It drops the result, writing nothing and counting no attempt, when the issue is closed or gone, even if the run's move is written already. Unless the move is written already, it also drops the result in these cases, and every stage follows the same rules:
   - The issue's stage changed during the run, since the owner's change wins. A triage result is also dropped once the issue has a stage label or a transition marker.
+  - The named target moved to a tip the daemon doesn't name (3.4). Not built yet.
   - An input was edited or deleted since the run read it, or the body has a later edit by anyone but the App. The stage runs again on what's there. The App's own edit, such as one a result applied part way made before a restart, doesn't drop it.
   - A clean App transition marker sits in a comment above the run's `seen`, even a move back to the stage the run ran at, such as a changed child's move (6.4), or a hold that ended back there. The stage runs again on what's there now.
   - The issue has new trusted input since the run's `seen`: a comment above it by a trusted user that isn't a command and isn't dirty. The stage runs again with that comment as input. Without this, an answer step 1 👍'd before a delayed apply would be lost.
@@ -790,7 +874,7 @@ Its checks are 11.3's.
 | `/approve` | Issue | Approves the current spec or plan revision |
 | Any comment that is not a command | Issue in `spec-review` or `plan-review` | Sends the spec or plan back, with the comment as the notes (7.4) |
 | `/revise <text>` | Issue | Sends the spec or plan back with the owner's notes |
-| 👍 on the issue | Human task from the planner, at `needs-human` | Same as `/done` on it: runs its **Done when** check, once for each 👍 (9.3) |
+| 👍 on the issue | Human task, from the planner or for a story branch's failure (9.3), at `needs-human` | Same as `/done` on it: runs its **Done when** check, once for each 👍 (9.3) |
 | 👍 on the latest hand-off comment | Blocked task at `needs-human` | Same as `/done` (9.3) |
 | 👍 on a state-error comment | Any issue | Acknowledges the error (5.3). The stage doesn't change |
 | 👍 on the latest triage flag | Issue at `intake` | Takes the flag's recommendation: admits the issue, or leaves it to people (6.2) |
@@ -821,10 +905,11 @@ PR reviews use GitHub's own review flow.
 
 ### 9.3 Human tasks
 
-A task reaches `stage:needs-human` in one of two ways:
+A task reaches `stage:needs-human` in one of three ways:
 
-- **Blocked work.** A task needs an owner action: the implementer reports it, the retry cap is reached (8.3), or its PR was closed without merging. The daemon posts a hand-off comment using the template below. On `/done`, or a trusted 👍 on the latest hand-off comment, the task returns to `stage:ready`. A 👍 on an earlier hand-off comment, or on the issue itself, doesn't resume blocked work. Not built yet: hand-offs are phase 3's, and until then `/done` on a task that isn't a human task is rejected as not handled yet.
+- **Blocked work.** A task needs an owner action: the implementer reports it, the retry cap is reached (8.3), or its PR was closed without merging, or merged into its story branch by someone untrusted (7.5). The daemon posts a hand-off comment using the template below. On `/done`, or a trusted 👍 on the latest hand-off comment, the task returns to `stage:ready`. A 👍 on an earlier hand-off comment, or on the issue itself, doesn't resume blocked work. Not built yet: hand-offs are phase 3's, and until then `/done` on a task that isn't a human task is rejected as not handled yet.
 - **Planned work.** The planner emits a task marked `human`, such as creating an App or a ruleset (section 11.3). The daemon creates it after its plan's other children (5.2) and moves it to `stage:needs-human` by its first move (7.2). The owner signals done with a trusted `/done` or a trusted 👍 on the issue itself. When **Done when** has a check (11.3), the daemon runs it first (see Running the check): if it fails, the daemon replies once with what it found and leaves the issue open. Otherwise it closes the issue as completed (7.2).
+- **A story branch's failure.** Not built yet (7.5). When a story branch's tip fails rule 2, the daemon files a human task under the story, with `human=1` on its `origin` marker, which names the failing tip (section 5), and moves it to `stage:needs-human` by its first move (7.2). Its body is this template. It's a human task, so a trusted `/done` or 👍 on the issue closes it, as for planned work, and never sends it to `ready`. Its **Done when** is the daemon's own check, not one of the planner's five kinds: the story branch's tip is no longer the failing tip its `origin` names. While it still is, a `/done` or 👍 is rejected with a reply saying so, as a failed check is (see Running the check), and the issue stays open, so the owner always has it to act on. Closing it doesn't release the story's tasks: only a passing tip does.
 
 A `stage:needs-human` issue uses this template. The agent must fill every field; an empty field is a validation failure, and the agent asks a question instead.
 
@@ -929,6 +1014,7 @@ One pinned issue per repo, `issuedog digest`. It uses one of the repo's three pi
 - A round's or a flag's questions and options are copied from the App's own clean comment, whose `**N. …** Blocks:` and `a. … (recommended):` lines have a fixed format. If they can't be read back, the item says to see the comment.
 - Each item links to where to answer: `https://github.com/<owner>/<repo>/issues/<n>#issuecomment-<id>`, or the issue itself for an error in the body.
 - Not built yet: hand-offs (9.3, phase 3), PRs (phase 3), and dropped children with an open PR (6.4, phase 3, #234). Each adds its own kind to the same list.
+  - **Closed story PR**, with PRs: a story at `pr-open` whose PR closed without merging (7.5). Key: `story-pr-<n>-<PR number>`. The item links the PR, and says to reopen it or close the story. Reopening the PR or closing the story ends the item.
 - **Keeping the list.** The items are cached per issue, and updated each time step 1 succeeds on it (8.1). An issue whose read or step 1 fails keeps its last items. One that closes or is dropped loses them.
 
 **The order.**
@@ -966,7 +1052,7 @@ One pinned issue per repo, `issuedog digest`. It uses one of the repo's three pi
 
 Deterministic rules decide what needs the owner. An LLM may add items to the escalation list. It never removes one.
 
-Escalation triggers come from config (`escalate` in section 13), for example changes to dependency manifests, migrations, deployment files or payment code. A triggered PR gets the `review:high-risk` label and a "Look at these first" section listing the matched files and rules.
+Escalation triggers come from config (`escalate` in section 13), for example changes to dependency manifests, migrations, deployment files or payment code. A triggered PR gets the `review:high-risk` label and a "Look at these first" section listing the matched files and rules. Only a PR to `main` is reviewed, so a story's PR is triggered by any change on its branch that matches, and a task's PR into a story branch is merged by the App as usual (7.5).
 
 ### 9.6 Assignment
 
@@ -978,19 +1064,20 @@ The owner finds everything waiting on them in GitHub's own "assigned to me" view
 | Spec or plan | The issue is at `spec-review` or `plan-review` |
 | Hand-off | The task is at `needs-human` after a hand-off comment (9.3) |
 | Human task | The human task is at `needs-human` and every issue blocking it is closed (9.4). The first pass after the last blocker closes assigns `notify`, and one that reads a new open blocker unassigns them. Closing the task ends the item, but `notify` stays assigned to the closed issue (see Pipeline issues) |
-| Pull request | The PR is open and its task is at `pr-open`. It is unassigned when the PR merges or closes, or when the task leaves `pr-open` |
+| Pull request | The PR targets `main`, is open, and its task or story is at `pr-open`. It is unassigned when the PR merges or closes, or when the issue leaves `pr-open`. A task's PR into its story branch waits on the App, not the owner (7.5) |
 | State error | From the daemon's state-error comment until a trusted user reacts 👍 to it, or its cause is gone (5.3) |
 | Discussion hold | The issue is held for discussion and a trigger is unresolved (6.4) |
 | Dropped with an open PR | The issue is held with `reason=dropped` (6.4), until its PR merges or closes |
 | Triage flag | The issue's latest triage marker is a flag (6.2), until a code owner answers it |
 | Finished story | The story, or an epic planned into tasks, is at `planned`, every child its `created` record names is closed, and no open issue is below it (9.4). Closing the story ends the item, but `notify` stays assigned to the closed issue (see Pipeline issues) |
+| Closed story PR | The story is at `pr-open` and its PR closed without merging (7.5), until the PR reopens or the story closes. Not built yet (phase 3) |
 
-- These are the same items the digest lists (9.4). Assignment is built for the items that list has today, on issues (#191, #192): a question round, a spec at `spec-review`, a plan at `plan-review`, a state error, a triage flag, a discussion hold, a finished story and a human task. It takes its items from the same list the digest builds, which is filled whether or not the digest is on, so the two never disagree, and each story that adds a kind of item adds it to that list. The hand-off row waits for phase 3 (9.3), the pull request row for phase 3, and the dropped row for phase 3 too, as it needs PRs (#234).
+- These are the same items the digest lists (9.4). Assignment is built for the items that list has today, on issues (#191, #192): a question round, a spec at `spec-review`, a plan at `plan-review`, a state error, a triage flag, a discussion hold, a finished story and a human task. It takes its items from the same list the digest builds, which is filled whether or not the digest is on, so the two never disagree, and each story that adds a kind of item adds it to that list. The hand-off row waits for phase 3 (9.3), the pull request and closed story PR rows for phase 3, and the dropped row for phase 3 too, as it needs PRs (#234).
 - **Pipeline issues.** Assignment covers an open issue the daemon holds a snapshot of, never the digest, that has a stage label, a transition marker of the App's, or an item on the list. The last takes in a triage flag, which waits at intake with no stage label, and a state error on an issue outside the stages. A stage label left out (5.1) doesn't count here, although 6.2 counts it: such an issue is held back from the pass anyway. An issue with none of these, such as one triage left to people or one not triaged yet, is left alone, and so is a closed issue.
 - **What it writes.** A pipeline issue's assignees should be exactly the `notify` users while it has an item, and nobody while it hasn't. Only the difference is written, removals first, so an add doesn't meet GitHub's cap of ten assignees with ones that are going. Logins compare in any case. Each pass looks only at the issues step 1 succeeded on (8.1), so an issue whose read or step 1 failed keeps its assignees that pass. A finished story's item is judged again on every pass from what the poll listed (9.4), so a child's close assigns `notify` to the story, and a child reopened unassigns them, with no visit to the story. Assignees come from the issue GET the snapshot makes anyway, so an unchanged pass makes no request.
 - **A login GitHub won't assign.** GitHub leaves out a login it can't assign, such as a `notify` user with no access to the repo. The daemon remembers such a login, logs it once, and doesn't add it again, so it can't cause a write on every pass. A change to `notify`, or a restart, forgets it, and the first issue that wants it then tries once more. A remembered login that is assigned all the same, as by hand once it has access, stays where an item wants it.
 - **Leaving the pipeline.** An issue that leaves the pipeline while it's open, as a flag that `/ignore` answers does, loses the `notify` users it was assigned, once. Its other assignees, and any later change to them, are left alone. That memory is lost on a restart, so an issue that left while no daemon ran keeps them.
-- Each PR carries the `priority:*` label of the task it closes. The task's label is the priority: the daemon copies it to the PR and reverts any other change to the PR's label. Not built yet: PRs are phase 3's (#234).
+- Each PR carries the `priority:*` label of the task it closes, or a story's PR the story's (7.5). The issue's label is the priority: the daemon copies it to the PR and reverts any other change to the PR's label. Not built yet: PRs are phase 3's (#234).
 - The owner sees what's waiting with `is:open assignee:@me sort:created-asc`, and the most urgent items by adding `label:priority:p0` or `label:priority:p1`. The digest orders the same items by how much each one unblocks (9.4).
 - Only the App changes assignees on pipeline issues and PRs. Assignees are never read as state (section 5): a manual change is reverted on the next poll and changes nothing else.
 
@@ -1005,14 +1092,14 @@ The daemon decides these itself, outside Claude, from exit codes and its own git
 1. Every command in `verify.commands` (tests, lint, vet, build) passes.
    - The commands run as `agent` in a fresh checkout of the head SHA.
    - They get no GitHub credentials, the `network.allow` egress list and `verify.command_timeout`.
-2. The diff touches no protected path (section 6.3).
+2. The diff touches no protected path (section 6.3). Every protected path must also be as it is at the baseline, one `main` commit. On a story branch, and for a task in a story, that's the story's baseline: the merge base of `main` and the story branch's tip, the tip the task is named against (3.4). `main` is linear, as section 15 allows only squash merges, so that's the newest `main` commit in the tip's history; if git finds more than one merge base, the rule fails. For a task with no parent, it's `main` as it is now. For a conflict bug, it's the `main` commit the bug names, which is also the merge base of its head and `main` (7.5). A task's own history never chooses its baseline. A story's history does, and nothing pushed to the branch can make that an older commit: only an admin or the App can force-push it, and the daemon uses it only once the App's cut is in its history, so its baseline is never older than the `main` commit it was cut from (7.5, section 15). So no older version on `main` counts, and nothing pushed to a branch can bring in agent config (3.4). A story's head that's only behind `main` still passes, since its baseline moves only when `main` is merged into the branch.
 3. No file matching `verify.test_globs` is deleted, and no new `verify.skip_markers` are added.
    - Markers are checked only on added lines, and only in files matching `verify.test_globs`.
    - Markers are plain strings. A marker that starts with a letter matches only where it is not preceded by a letter, digit or `_`. So `xit(` matches `xit("works", …)` but not `os.Exit(`, and `.skip(` still matches `describe.skip(`.
 4. Files in `verify.config_paths` are unchanged, unless the task's scope is `verify.tooling_scope`.
 5. When the diff modifies files matching `verify.source_globs` that are not tests, it also adds or modifies files matching `verify.test_globs`. Changes to other files, such as docs, are exempt.
 6. The diff is at most `verify.max_diff_lines`, counted by the daemon. Binary files are allowed only if they match `verify.binary_allow`.
-7. The branch is based on current `main` and merges cleanly.
+7. The branch is based on its target branch and merges cleanly: its story branch for a task in a story, else `main` (7.5).
 
 Rule 2 is checked before rule 1, so no command ever runs on a diff that changes agent config.
 
@@ -1033,15 +1120,17 @@ The run fails closed: an unparseable or missing verdict counts as `request_chang
 ### 10.3 Story verification
 
 - **When it runs.** The trigger is in section 7.3.
-- **What it runs.** The daemon runs `verify.story_commands` (e2e suites) on `main`, under the same rules as 10.1 rule 1.
+- **What it runs.** The daemon runs `verify.story_commands` (e2e suites) on the story branch's tip, under the same rules as 10.1 rule 1, and only on a tip whose checks pass (7.5). A story with no story branch is verified on `main`.
 - **What the LLM checks.** The LLM verifier checks the story's acceptance criteria against the e2e results.
-- **On failure.** Failures become `bug` sub-issues with an `origin` marker.
+- **On failure.** Failures become `bug` sub-issues with an `origin` marker, worked on the story branch (7.5).
+- **On a pass.** The App opens or updates the story's PR to `main` (7.3), or closes a story with nothing to merge.
 
 ### 10.4 The `issuedog/verify` check
 
 - **On pass.** The daemon posts a check run named `issuedog/verify` with conclusion `success` for the head SHA. It includes a short summary and a link to the verifier comment.
-- **Ruleset.** The `main` ruleset requires this check, with the issuedog App pinned as its source. Nobody else, including anyone with write access, can satisfy it.
-- **When `main` moves.** The daemon re-runs section 10.1 on the merge result of `main` and the PR head. If that fails, it updates the check to `failure`. The ruleset does not require branches to be up to date, so a merge to `main` doesn't force every open PR to update and be re-approved. The daemon's merge-result check stands in for that.
+- **Where.** It's posted on task PRs, whatever their target, and on a story's PR (7.5). On a story branch's tip, and on the `main` commit the App cut the branch from, its `external_id` names the branch, which is how the daemon marks the tip as checked, and the cut as the App's (7.5). The check run is the only record of either. So the story's PR, whose head is that tip, carries it.
+- **Ruleset.** The `main` ruleset requires this check, with the issuedog App pinned as its source. Nobody else, including anyone with write access, can satisfy it. The `issuedog branches` ruleset on story and task branches requires no check (section 15): the App merges task PRs into a story branch only on a passing check, and a push it didn't make is checked again (7.5).
+- **When `main` moves.** For a PR to `main` from a task with no parent, the daemon re-runs section 10.1 on the merge result of `main` and the PR head. If that fails, it updates the check to `failure`. The ruleset does not require branches to be up to date, so a merge to `main` doesn't force every open PR to update and be re-approved. The daemon's merge-result check stands in for that. A story branch instead gets `main` merged in with a real merge commit, and its new tip is checked (7.5).
 
 ## 11. Templates
 
@@ -1222,6 +1311,11 @@ Closes #N
 ## Look at these first   (only when escalated)
 ```
 
+Story branches change the first line (7.5):
+
+- **A task's PR into its story branch** starts with `Task #N, in story #S` instead of `Closes #N`. GitHub's closing keywords act only on a merge into the default branch, so the App closes the task itself once it has merged the PR.
+- **A story's PR** to `main` starts with `Closes #S`, and lists the story's closed children under "What changed". The story verifier names its title's type, from the same list. Its squash-merge makes it the one commit the story adds to `main`.
+
 ### 11.6 Created children
 
 The daemon writes each child of an approved plan from its plan item (5.2):
@@ -1361,7 +1455,7 @@ Changes to this file go through a human-authored PR (section 6.3).
    - No admin permissions.
    - Import its private key into the state volume once: `docker run --rm -i --cap-add NET_ADMIN -v issuedog-state:/state issuedog key import < app-key.pem`. Then delete the downloaded file. To rotate the key, generate a new one on GitHub and import it the same way.
 2. **Plan.** Rulesets work on public repos on GitHub Free, and on private repos only with Pro, Team or Enterprise. Code owners on private repos also need Pro.
-3. **Ruleset on `main`:**
+3. **Ruleset on `main`.** It targets `main` only. Story and task branches have their own (step 4). The ruleset:
    - require a pull request
    - require code-owner review, and dismiss stale approvals on new commits
    - require the `issuedog/verify` check with the issuedog App as the pinned source; leave "require branches to be up to date" off (section 10.4)
@@ -1373,11 +1467,25 @@ Changes to this file go through a human-authored PR (section 6.3).
 
    **Interim.** While the pipeline is run by hand with the owner's token, the owner authors every PR and cannot approve it. Until the App runs, the ruleset requires only a pull request with squash merging and blocks force pushes; code-owner review and the check are added then.
 
-4. **CODEOWNERS** including `/.github/CODEOWNERS`. The App is never a code owner.
-5. **Labels.** `stage:*`, the closed stages `stage:completed` and `stage:discarded` (6.4) included, `priority:*`, `scope:*`, `approved`, `review:high-risk`, and `type:*` for personal-account repos. `model:<suffix>` and `verifier-model:<suffix>` for each entry in `models.allowed`, and `effort:<level>` and `verifier-effort:<level>` for each effort level (section 13). The daemon creates any that are missing on startup, and a new model's after a reload (8.1). It never edits or deletes a label, so a model dropped from the list keeps its labels.
+4. **Ruleset on `issuedog/*`**, named `issuedog branches`. Its target is the branch pattern `issuedog/*`, so it covers story and task branches alike, since they share `issuedog/<n>-<slug>` (3.2, 7.5). The ruleset:
+   - restrict deletions
+   - block force pushes
+   - nothing else: no pull request and no required checks, so anyone with write access can push commits to a story branch, or merge into one (7.5)
+   - bypass list: Repository admin, "Always allow", and the issuedog App, "Always allow"
+
+   So a write collaborator who isn't an admin can't force-push or delete any `issuedog/*` branch, their own task branches included. Ordinary pushes still work. History on a story branch only moves forward, which is what lets rule 2 take a story's baseline from git (10.1, 7.5).
+
+   Unlike the `main` ruleset's, this bypass list includes the App. The App is trusted to move these branches: it merges task PRs and `main` into story branches, as anyone with write access can, and beyond that pushes a new run's result over a task head it dropped and deletes a branch once its PR has merged, which need the bypass (3.4, 7.5). `main` still needs the owner's review, which a bypass there would let the App skip. The App's token stays with the daemon, never with an agent (3.1), so no agent can use the bypass. An admin can change the rulesets anyway, so their bypass gives them nothing new.
+
+   The ruleset doesn't restrict creation, so the daemon confirms a story branch's cut itself (7.5).
+
+   **Interim.** While the pipeline is run by hand with the owner's token, the admin bypass covers the dispatcher's resets and deletes of task branches, so the ruleset can go in at once.
+
+5. **CODEOWNERS** including `/.github/CODEOWNERS`. The App is never a code owner.
+6. **Labels.** `stage:*`, the closed stages `stage:completed` and `stage:discarded` (6.4) included, `priority:*`, `scope:*`, `approved`, `review:high-risk`, and `type:*` for personal-account repos. `model:<suffix>` and `verifier-model:<suffix>` for each entry in `models.allowed`, and `effort:<level>` and `verifier-effort:<level>` for each effort level (section 13). The daemon creates any that are missing on startup, and a new model's after a reload (8.1). It never edits or deletes a label, so a model dropped from the list keeps its labels.
 
    `triage:ask` and `triage:left` (6.2) aren't created on startup: GitHub creates each the first time the App adds it.
-6. **Org repos.** An org owner creates the `Epic` and `Story` issue types.
+7. **Org repos.** An org owner creates the `Epic` and `Story` issue types.
 
 ## 16. Open items to confirm
 
@@ -1394,6 +1502,21 @@ Changes to this file go through a human-authored PR (section 6.3).
   - that `stateReason` is filled in;
   - that GitHub answers `FORBIDDEN`, with a null `closer`, under `node.closer`, for a project's closer on a personal account and for a closer in a private repo;
   - that a PATCH that closes an issue again with `state_reason=duplicate` and no `duplicate_issue_id` works.
+- **Story branches.** The design in 7.5 relies on GitHub behaviour the docs don't state, or state only in passing. Confirm on real GitHub, with the App's token:
+  - that a squash-merge into a non-default branch writes none of the events the daemon reads for a merge (6.4): no `closed` event on an issue its PR names, even with a closing keyword, so nothing reaches the closer check, and that the PR then reads `merged`, with `baseRefName` the story branch;
+  - that if GitHub ever does close an issue on such a merge, the closer is that PR, with the story branch as its base, which 6.4 counts as no merge, and the `closed` event names the App as actor when the App merged it, so the close is accepted as the App's;
+  - that the squash commit of a PR whose head is based on the base's tip has the head's tree, so the App's check can be posted on the new tip (7.5);
+  - how the daemon tells a push it didn't make. The design reads it from the App's checks: a tip with no `issuedog/verify` check run of the App's naming the branch is unchecked, whoever made it (7.5). Confirm that a check run's `external_id` reads back from `GET /repos/{owner}/{repo}/commits/{ref}/check-runs` filtered by the App's `app_id`, that only the App that wrote a check run can update it and nobody can delete one, so the check stands as the record of a checked tip and of the App's cut, and that the bare clone's fetch sees every new tip. If that falls short, the branch's push events, from `GET /repos/{owner}/{repo}/activity` with `ref`, which names each push's actor and kind, or the commit's committer, are the alternatives to try;
+  - how many requests finding the App's cut costs (7.5): one check-run read for each `main` commit from the merge base back to the cut, after each restart. If a long-lived story makes that too many, the cut's SHA can go in the `external_id` of every later check on the branch, so the newest checked tip names it;
+  - that `POST /repos/{owner}/{repo}/merges` makes a real merge commit of `main` into a story branch, and answers 409 on a conflict, while the repo allows only squash merging of PRs (section 15);
+  - that the PR merge API's `sha` refuses the merge, with a 409, once the head has moved past the verified SHA;
+  - that a fast-forward push of a conflict bug's head to the story branch makes GitHub mark the bug's PR merged, with the App as `merged_by` (7.5);
+  - whether a merge of `main` into a story branch dismisses the owner's approval of the story's PR under "dismiss stale approvals" (section 15). If it does, every move of `main` costs an open story PR its approval, and merging `main` in only on a conflict or before the PR opens is the alternative to decide on.
+- **The `issuedog branches` ruleset** (section 15). Confirm on real GitHub:
+  - whether GitHub's "Automatically delete head branches" removes an `issuedog/*` branch under the ruleset's deletion rule when the PR's merger isn't on the bypass list, as when a trusted write collaborator merges a task's PR into its story branch (7.5). If it doesn't, the App's own delete covers it;
+  - that `GET /repos/{owner}/{repo}/rules/branches/{branch}` answers for an `issuedog/` branch name that doesn't exist, as the startup check's doesn't (3.5), and lists the `deletion` and `non_fast_forward` rules. The App, with Metadata read, can't see a ruleset's bypass list, so setup alone makes sure the App is on it;
+  - that the App's bypass lets it force-update a task branch with `PATCH /repos/{owner}/{repo}/git/refs/heads/{branch}` and `force=true`, and delete one, with its installation token.
+- **A story branch deleted and created again.** The App deletes a story branch once the story's PR has merged (7.5). If a trusted reopen brings the story back, anyone with write access can create the branch again from an old cut commit, whose cut check still names it, and the daemon would take its cut as the App's. That needs a reopened, merged story. A cut check counted only when posted after the story's latest reopen would close it.
 - **Gaps in judging closes** (6.4, 8.1):
   - A change made while no daemon runs to a judged closed issue that has one closed stage isn't seen, as a start can't tell who set the label, nor whether the issue was reopened and closed again meanwhile. So a closed stage set by someone untrusted stands, and so does an untrusted close after a trusted reopen.
   - A reopen whose event is more than 30 seconds late isn't held.
@@ -1458,8 +1581,8 @@ Rumi Black first; DMCN after phase 3.
 
 1. GitHub App setup, daemon skeleton, Go GitHub client, sandbox uids and egress rule, trust checks, label and marker reading rules, transition table, leases, intake → clarifying → spec-review, digest. GitHub interactions are tested against `httptest` fakes only, and passing them is the acceptance bar.
 2. Planning, plan review, human tasks from the planner, idempotent sub-issue creation, dependencies, scopes, priority, model and effort for each plan item (11.3).
-3. Implement, bundle-based git handoff, deterministic checks, LLM verifier, retries, PR, `issuedog/verify` check, PR reconciliation.
-4. Story verification, escalation rules, cross-repo issues, DMCN onboarding, domain agents.
+3. Implement, bundle-based git handoff, deterministic checks, LLM verifier, retries, PR, story branches and the App's task merges into them (7.5), `issuedog/verify` check, PR reconciliation.
+4. Story verification, the story's PR (7.5), escalation rules, cross-repo issues, DMCN onboarding, domain agents.
 
 ## 18. Prior art
 
