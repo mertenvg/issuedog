@@ -322,7 +322,8 @@ func TestDeriveOriginCheck(t *testing.T) {
 // the latest clean created marker of the App's for that revision, with
 // its children in order. A dirty record, another revision's, one that
 // isn't the App's or is escaped, and one whose children don't all read
-// back as numbers above 0, count for nothing.
+// back as numbers above 0, count for nothing. children=none, alone, is a
+// record with no children.
 func TestCreatedRecord(t *testing.T) {
 	t.Parallel()
 	const rec = "I've created the children of plan rev 1:\n- T1 #12: One\n- T2 #13: Two\n\n<!-- issuedog:created rev=1 children=12,13 -->"
@@ -350,6 +351,10 @@ func TestCreatedRecord(t *testing.T) {
 		{"an empty child", snap("", app, "<!-- issuedog:created rev=1 children=12,,13 -->"), clean, 1, nil, false},
 		{"another kind", snap("", app, "<!-- issuedog:origin rev=1 children=12 -->"), clean, 1, nil, false},
 		{"none", snap("", app, "Hello."), clean, 1, nil, false},
+		// A revision that leaves no child to list (#297) stands, with none.
+		{"children=none", snap("", app, "<!-- issuedog:created rev=2 children=none -->"), clean, 2, []int{}, true},
+		{"none among numbers", snap("", app, "<!-- issuedog:created rev=2 children=12,none -->"), clean, 2, nil, false},
+		{"a dirty children=none", snap("", app, "<!-- issuedog:created rev=2 children=none -->"), dirtyIDs(1), 2, nil, false},
 	} {
 		got, ok := CreatedRecord(Derive(tt.s, slug, tt.dirty), tt.rev)
 		if ok != tt.wantOK || !reflect.DeepEqual(got, tt.want) {

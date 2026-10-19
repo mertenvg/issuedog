@@ -226,7 +226,9 @@ func (is Issue) Moved(k Key) bool {
 // created, linked and moved, with its blocked-by links. A record in a
 // dirty comment, as when someone else edited it, doesn't count, since
 // Derive skips it, nor does one of another revision, or one whose
-// children don't all read back.
+// children don't all read back. A revision that leaves no child to list,
+// as when it drops every item, records children=none (CreatedNone): that
+// record stands too, with no children, as an empty, non-nil slice.
 func CreatedRecord(is Issue, rev int) ([]int, bool) {
 	var found []int
 	for _, m := range is.Markers {
@@ -240,11 +242,19 @@ func CreatedRecord(is Issue, rev int) ([]int, bool) {
 	return found, found != nil
 }
 
+// CreatedNone is a created marker's children= when its revision leaves
+// no child to list (#297).
+const CreatedNone = "none"
+
 // createdChildren reads a created marker's children=<n>,<n>, or reports
-// false if it's empty or any of them isn't a number above 0.
+// false if it's empty or any of them isn't a number above 0. CreatedNone
+// reads as no children, an empty, non-nil slice.
 func createdChildren(field string) ([]int, bool) {
 	if field == "" {
 		return nil, false
+	}
+	if field == CreatedNone {
+		return []int{}, true
 	}
 	var children []int
 	for _, f := range strings.Split(field, ",") {

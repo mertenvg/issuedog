@@ -456,7 +456,8 @@ func TestPlannerCheckFailsAttempt(t *testing.T) {
 
 // TestPlannerCheckIssue: Check fails output on an issue the planner no
 // longer runs on, read again after the run: one retyped to a task, or one
-// planned before. A valid plan on an issue it runs on passes.
+// planned before whose approved plan can't be read back, so a revision
+// can't be checked. A valid plan on an issue it runs on passes.
 func TestPlannerCheckIssue(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -465,9 +466,9 @@ func TestPlannerCheckIssue(t *testing.T) {
 		want      string
 	}{
 		{"a story", "story", []string{plEntry}, ""},
-		{"a task", "task", []string{plEntry}, `the planner no longer runs on #1, with type "task", a parent false and planned before false`},
-		{"planned before", "story", []string{plEntry, "from=planning to=planned rev=1 run=p0", "from=planned to=planning by=owner event=8"},
-			`the planner no longer runs on #1, with type "story", a parent false and planned before true`},
+		{"a task", "task", []string{plEntry}, `the planner no longer runs on #1, with type "task" and a parent false: it runs only on an epic or a story`},
+		{"planned before, with no approved plan to revise", "story", []string{plEntry, "from=planning to=planned rev=1 run=p0", "from=planned to=planning by=owner event=8"},
+			"the planner no longer runs on #1: it was planned before, but it has no approved plan revision whose data reads back, so it can't be revised"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()

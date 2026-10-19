@@ -106,14 +106,34 @@ const childWidestNumber = math.MaxInt32
 //     §3.3). One left off, as a model a reload has dropped, is in leftOff,
 //     and the child is still described.
 //
+// Of a revision's items (#195's T6), only the new ones are described
+// (planFiles): a kept, changed or dropped item has its child already, and
+// a kept or dropped one carries its ID and title alone. A changed child is
+// described by childSpecsWhere, for its rewrite (#195's T7, #296), and
+// closing a dropped one is T8's (#297). A new human task's "Why it blocks"
+// still names a changed item that depends on it, from all of items.
+//
 // An item it can't describe is an error naming it: a task with no scope
 // or no body of its kind, a check the plan's validation would refuse, or a
 // body over childMaxBody, which a human task's is checked for with the
 // widest number for each issue it blocks. Nothing is described then.
 func childSpecs(parent *github.Snapshot, rev int, items []planItem, issueTypes bool, notify []string, models config.Models) ([]childSpec, error) {
+	return childSpecsWhere(parent, rev, items, planFiles, issueTypes, notify, models)
+}
+
+// childSpecsWhere is childSpecs for the items whose status want reports
+// true, such as a revision's changed items, which are rewritten in place
+// (#195's T7): each is described as a new child of its kind would be, its
+// origin naming rev, a human task's with human=1 and its check, so the
+// rewrite renders every field as S3 and S4 render a new child's.
+func childSpecsWhere(parent *github.Snapshot, rev int, items []planItem, want func(status string) bool, issueTypes bool, notify []string,
+	models config.Models) ([]childSpec, error) {
 	ordered := childOrder(items)
 	specs := make([]childSpec, 0, len(ordered))
 	for _, it := range ordered {
+		if !want(it.Status) {
+			continue
+		}
 		c, err := childSpecOf(parent, rev, it, childDependents(items, it.ID), issueTypes, notify, models)
 		if err != nil {
 			return nil, fmt.Errorf("describe the child of plan #%d rev %d item %s: %w", parent.Number, rev, it.ID, err)

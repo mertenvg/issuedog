@@ -582,22 +582,31 @@ func (f *Fake) addComment(c *call) (int, any) {
 	return http.StatusCreated, f.addCommentBy(c.issue, f.slug+"[bot]", req.Body).IssueComment
 }
 
-// editIssue edits an issue's body, its state (open or closed), its type, or
-// any of them, as the App. A state change is setState's, with state_reason
-// if given, and a type change is issueTypeRevertEdit's. Nothing else of an
-// issue is edited yet.
+// editIssue edits an issue's title, its body, its state (open or closed),
+// its type, or any of them, as the App. A state change is setState's, with
+// state_reason if given, and a type change is issueTypeRevertEdit's. A new
+// title adds the App's renamed event to the timeline, as RenameIssue does.
+// Nothing else of an issue is edited yet.
 func (f *Fake) editIssue(c *call) (int, any) {
 	var req struct {
-		Body, State *string
-		StateReason string `json:"state_reason"`
+		Title, Body, State *string
+		StateReason        string `json:"state_reason"`
 		// Type is the type field as sent, null included, or nil if absent.
 		Type json.RawMessage
 	}
 	if status, msg := c.decode(&req); msg != nil {
 		return status, msg
 	}
-	if req.Body == nil && req.State == nil && req.Type == nil {
-		return http.StatusUnprocessableEntity, message("githubtest: only the body, the state and the type can be edited")
+	if req.Title == nil && req.Body == nil && req.State == nil && req.Type == nil {
+		return http.StatusUnprocessableEntity, message("githubtest: only the title, the body, the state and the type can be edited")
+	}
+	if req.Title != nil && *req.Title != c.issue.GetTitle() {
+		from, title := c.issue.GetTitle(), *req.Title
+		c.issue.Title, c.issue.UpdatedAt = &title, f.tick()
+		f.lastEvent++
+		id := firstEvent + f.lastEvent
+		c.issue.labelEvents = append(c.issue.labelEvents, &gogithub.Timeline{ID: &id, Event: new("renamed"), Actor: user(f.slug + "[bot]"),
+			Rename: &gogithub.Rename{From: &from, To: &title}, CreatedAt: &gogithub.Timestamp{Time: c.issue.UpdatedAt.Time}})
 	}
 	if req.State != nil && *req.State != "open" && *req.State != "closed" {
 		return http.StatusUnprocessableEntity, message(fmt.Sprintf("Validation Failed: state %q is not open or closed", *req.State))

@@ -27,10 +27,14 @@ import (
 // plan #249, T4), it returns before any read or write: the children are
 // all written, so a visit costs nothing.
 //
-// Until then, it describes each item of R (childSpecs), finds the children
-// filed already (childrenFind), with no search request, then, for each
-// item in creation order, which childSpecs gives: plan order with the
-// human tasks last (childOrder):
+// Until then, it describes each item of R that it files (childSpecs):
+// every item of a first plan, and only the new items of a revision
+// (#195's T6), and each changed item of a revision, which it rewrites in
+// place (childSpecsWhere, #195's T7). A kept item gets no write, and a
+// dropped one's child is closed (#195's T8, #297). It finds the children filed already
+// (childrenFind), with no search request, then, for each item in creation
+// order, which childSpecs gives: plan order with the human tasks last
+// (childOrder):
 //   - files its child if none is found (CreateChild), with its title, body,
 //     labels and issue type. Its model and effort labels are resolved
 //     against Models as of this visit, and a warning names the item for
@@ -43,11 +47,27 @@ import (
 //     keyed event=p<P> (#224's reconcile decision 6), unless it has a
 //     transition marker of the App's already (childFirstMove).
 //
+// Then it rewrites each changed item's child from R and sends it back to
+// its first stage, or for a held one, makes that stage its hold's at and
+// origin (childrenChanged).
+//
 // Then, going through R's items in plan order, not creation order, it
 // gives each child the blocked-by links its item's "Depends on" names
-// (childrenLink), and last posts the record on the parent, which lists
-// the children in plan order too (childrenRecord), so the record stands
-// only once every write before it is made.
+// (childrenLink): of a revision, each new item's child. For a revision,
+// it then makes each changed child's links to its siblings follow the
+// revision (revisedLink), and closes each dropped item's child, with
+// every open issue below it, deepest first, and removes their links
+// (droppedClose, #297). Last it posts the record on the parent, which
+// lists the children in plan order too, a revision's dropped ones left
+// out (childrenRecord), so the record stands only once every write
+// before it is made.
+//
+// A kept, changed or dropped item of a revision whose child isn't found,
+// as when someone unlinked it from the parent by hand before the
+// approval, and it hasn't been updated since, gets no write, and no link
+// is made to it: a warning names it, and the record says so, and leaves
+// it out. So it can't keep the record from standing, and once the record
+// stands no pass looks for it again (#297; #362 would find it).
 //
 // Each child it may write to is reported to Touched first, or, for one it
 // files, once it has its number, so it skips the rest of the pass and is
@@ -70,7 +90,8 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 	}
 	// The record is checked before the plan's data is read back, which
 	// it doesn't need.
-	if r, _, ok := state.ApprovedPlan(s, st.AppSlug, d.Has); ok {
+	r, planComment, ok := state.ApprovedPlan(s, st.AppSlug, d.Has)
+	if ok {
 		if _, done := state.CreatedRecord(is, r.Rev); done {
 			return nil
 		}
@@ -92,6 +113,14 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 	if err != nil {
 		return wrap(err)
 	}
+	// A revision's changed items, each rewritten in place (#195's T7),
+	// are described before any write too, so an item that can't be stops
+	// the visit with nothing written.
+	changed, err := childSpecsWhere(s, rev.Rev, plan.Items, func(status string) bool { return status == planChanged },
+		st.IssueTypes, st.Notify, models)
+	if err != nil {
+		return wrap(err)
+	}
 	found, err := st.childrenFind(ctx, s, move.CreatedAt)
 	if err != nil {
 		return wrap(err)
@@ -99,9 +128,15 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 	key := state.Key{Field: "event", ID: "p" + strconv.FormatInt(move.ID, 10)}
 	// numbers is each child's number so far, by item, found or filed, for
 	// "Why it blocks": the items a human task blocks come before it.
-	// children is each child, by item, for its links and the record.
+	// children is each child, by item, for its links and the record. A
+	// revision's children that aren't filed again (planFiles), such as a
+	// kept item a new one depends on, or a changed item a new human task
+	// blocks, are known from the start.
 	numbers := map[string]int{}
-	children := make(map[string]childFound, len(specs))
+	children := make(map[string]childFound, len(found))
+	for item, f := range found {
+		numbers[item], children[item] = f.Number, f
+	}
 	for _, c := range specs {
 		f, err := st.childWrite(ctx, s, rev.Rev, key, c, found[c.Item], numbers)
 		if err != nil {
@@ -109,10 +144,37 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 		}
 		numbers[c.Item], children[c.Item] = f.Number, f
 	}
-	// plan.Items is plan order, which the links and the record follow,
-	// whatever order the children were created in.
-	if err := st.childrenLink(ctx, plan.Items, children); err != nil {
+	// Once the new children are filed, so a changed human task's "Why it
+	// blocks" can name a new item's issue, the changed children are
+	// rewritten and moved (#195's T7).
+	if err := st.childrenChanged(ctx, s, rev.Rev, planComment, key, changed, children, numbers); err != nil {
 		return wrap(err)
+	}
+	// plan.Items is plan order, which the links and the record follow,
+	// whatever order the children were created in. Of a revision, the new
+	// items' children get their links here, and a kept child keeps its
+	// links. A dependency on a kept or changed item whose child isn't
+	// found is skipped, not an error, so it can't stop the record (#297).
+	revised := slices.ContainsFunc(plan.Items, func(it planItem) bool { return it.Status != "" })
+	linked := plan.Items
+	if revised {
+		linked = slices.DeleteFunc(slices.Clone(plan.Items), func(it planItem) bool { return !planFiles(it.Status) })
+	}
+	if err := st.childrenLink(ctx, linked, children, revised); err != nil {
+		return wrap(err)
+	}
+	if revised {
+		// Then a changed child's links to its siblings follow the
+		// revision, and each dropped item's child is closed, with every
+		// open issue below it, deepest first, and unlinked (#195's
+		// assumption 7, #297). The record comes only after them, so once
+		// it stands every write of the revision is made.
+		if err := st.revisedLink(ctx, plan.Items, children); err != nil {
+			return wrap(err)
+		}
+		if err := st.droppedClose(ctx, s, rev.Rev, planComment, key, plan.Items, children); err != nil {
+			return wrap(err)
+		}
 	}
 	if err := st.childrenRecord(ctx, s, rev.Rev, plan.Items, children); err != nil {
 		return wrap(err)
@@ -121,11 +183,13 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 }
 
 // childFound is a child of a plan item filed already, as a listing gives
-// it: its number and ID, and whether it's a sub-issue of the parent.
+// it: its number and ID, whether it's a sub-issue of the parent, and
+// whether it's closed, which a revision's links skip (revisedLink).
 type childFound struct {
 	Number int
 	ID     int64
 	Linked bool
+	Closed bool
 }
 
 // childrenFind reads the children of parent s filed already: its
@@ -135,7 +199,7 @@ type childFound struct {
 // consistent, unlike search, which lags behind writes (plan #249, "Finding
 // a child again, without search"). It returns them by item (childMatch),
 // with the Origin of each sub-issue whose listed body gives none
-// (childOrigins).
+// (childOrigins), a person's adopted issue's included (#372).
 func (st *Step) childrenFind(ctx context.Context, s *github.Snapshot, since time.Time) (map[string]childFound, error) {
 	subs, err := st.Client.SubIssues(ctx, st.Owner, st.Repo, s.Number)
 	if err != nil {
@@ -152,22 +216,31 @@ func (st *Step) childrenFind(ctx context.Context, s *github.Snapshot, since time
 	return childMatch(s.Number, st.AppSlug, subs, listed, st.inRepo, origins), nil
 }
 
-// childOrigins returns the Origin of each of subs, a parent's sub-issues,
-// that the App filed in this repo but whose listed body gives none
-// (childListedOrigin), by number, as state.Derive reads it from the
-// issue's snapshot, comments and dirty content included: an origin the
-// App reposted in a comment once the body lost it (originRepost, S5's T2,
-// #291). Each such issue costs a snapshot. Only sub-issues are read: a
-// child loses its body's marker to an edit after it's filed, and it's
-// linked in the pass that files it, so one that isn't linked yet was filed
-// just now, and its body is still the App's.
+// childOrigins returns the Origin of each of subs, a parent's sub-issues
+// in this repo, whose listed body gives none (childListedOrigin), by
+// number, as state.Derive reads it from the issue's snapshot, comments
+// and dirty content included. That's one of two kinds of sub-issue:
+//   - one the App filed, whose origin the App reposted in a comment once
+//     the body lost it (originRepost, S5's T2, #291);
+//   - one a person filed, whose body never gives an origin, as Derive
+//     reads markers only from the App (github.TrustedMarkers), but whose
+//     clean App comment may carry one: an adopted issue, such as #195,
+//     which #224's plan adopted as S5 (#195's assumption 3, #372). A
+//     marker in a dirty App comment, or in a person's comment, gives
+//     none, by Derive's rules.
+//
+// Each such issue costs a snapshot, and the callers read them only before
+// the record stands (ChildrenVisit) or while a revision is planned and
+// checked (planPrior.read), so an unchanged pass reads none. Only
+// sub-issues are read: a child loses its body's marker to an edit after
+// it's filed, and it's linked in the pass that files it, so one that isn't
+// linked yet was filed just now, and its body is still the App's. An
+// adopted issue that isn't a sub-issue of the parent isn't its child.
 func (st *Step) childOrigins(ctx context.Context, subs []*gogithub.Issue) (map[int]state.Origin, error) {
 	origins := map[int]state.Origin{}
 	for _, is := range subs {
 		n := is.GetNumber()
-		author := github.Author{Login: is.GetUser().GetLogin(), Type: is.GetUser().GetType()}
-		if !st.inRepo(is.GetRepositoryURL()) || is.IsPullRequest() || !state.IsApp(author, st.AppSlug) ||
-			childListedOrigin(is, st.AppSlug).Plan != 0 {
+		if !st.inRepo(is.GetRepositoryURL()) || is.IsPullRequest() || childListedOrigin(is, st.AppSlug).Plan != 0 {
 			continue
 		}
 		s, err := st.Client.Snapshot(ctx, st.Owner, st.Repo, n)
@@ -194,15 +267,19 @@ func childListedOrigin(is *gogithub.Issue, appSlug string) state.Origin {
 
 // childMatch returns the children of parent's plan items among subs, the
 // parent's sub-issues, and listed, issues of this repo, by item. A child
-// is an issue the App filed whose origin names plan=#<parent>, read by
-// Derive from a snapshot of what the listing gives, its author and body,
-// whatever its rev (SPEC §5.2): the listing has no edit history, so a body
-// someone edited still matches, as long as it keeps the App's marker (plan
-// #249, assumption 8). One whose listed body gives no Origin takes it from
-// origins, what its snapshot gives (childOrigins), so a child whose origin
-// the App reposted in a comment matches too (#291). A sub-issue in another
-// repo, as inRepo tells by its repository_url, and a pull request are
-// skipped. One that's a sub-issue is Linked. Should two issues name the same item, the first wins: the
+// is an issue whose origin names plan=#<parent>, whatever its rev (SPEC
+// §5.2). For an issue the App filed, it's read by Derive from a snapshot
+// of what the listing gives, its author and body: the listing has no edit
+// history, so a body someone edited still matches, as long as it keeps the
+// App's marker (plan #249, assumption 8). One whose listed body gives no
+// Origin takes it from origins, what its snapshot gives (childOrigins), so
+// a child whose origin the App reposted in a comment matches too (#291),
+// and so does an issue a person filed, adopted by the plan, whose clean
+// App comment carries its origin (#372): its listed body never gives one,
+// as Derive reads no marker a person wrote, and only a sub-issue's
+// snapshot is read. A sub-issue in another repo, as inRepo tells by its
+// repository_url, and a pull request are skipped. One that's a sub-issue
+// is Linked. Should two issues name the same item, the first wins: the
 // sub-issues in link order, then the rest by number, so the one linked, or
 // else the one filed first.
 func childMatch(parent int, appSlug string, subs, listed []*gogithub.Issue, inRepo func(string) bool, origins map[int]state.Origin) map[string]childFound {
@@ -214,10 +291,8 @@ func childMatch(parent int, appSlug string, subs, listed []*gogithub.Issue, inRe
 			return
 		}
 		seen[n] = true
-		author := github.Author{Login: is.GetUser().GetLogin(), Type: is.GetUser().GetType()}
-		if !state.IsApp(author, appSlug) {
-			return
-		}
+		// A person's body gives no Origin (github.TrustedMarkers), so a
+		// person's issue matches only through origins, by its snapshot.
 		o := childListedOrigin(is, appSlug)
 		if o.Plan == 0 {
 			o = origins[n]
@@ -229,7 +304,7 @@ func childMatch(parent int, appSlug string, subs, listed []*gogithub.Issue, inRe
 			logr.Warnf("#%d and #%d are both the child of item %s of #%d's plan, so #%d is the one kept", had.Number, n, o.Item, parent, had.Number)
 			return
 		}
-		found[o.Item] = childFound{Number: n, ID: is.GetID(), Linked: linked}
+		found[o.Item] = childFound{Number: n, ID: is.GetID(), Linked: linked, Closed: is.GetState() == "closed"}
 	}
 	for _, is := range subs {
 		if !inRepo(is.GetRepositoryURL()) {
@@ -287,15 +362,18 @@ func (st *Step) childWrite(ctx context.Context, s *github.Snapshot, rev int, key
 // childrenLink makes each child in children, by item, blocked by the
 // children of the items its item's "Depends on" names, in plan order
 // (plan #249, T4). Those name items of the same plan, each once, as S1
-// and the planner's schema check, so a dependency with no child is an
-// error. It reads each such child's blocked-by links first (BlockedBy),
+// and the planner's schema check, so in a first plan a dependency with no
+// child is an error. In a revision, revised, it may name a kept or
+// changed item whose child isn't found (ChildrenVisit): that link is
+// logged and skipped, and the record names the item (childrenRecord).
+// It reads each such child's blocked-by links first (BlockedBy),
 // and adds only the ones it lacks, matched by issue ID, so a replay adds
 // none twice. It removes none: links someone else added stay. A child it
 // adds a link to is reported to Touched first, as the add moves its
 // updated_at. A human task, created last, is blocked by what its own item
 // depends on, and the children of items that depend on it are blocked by
 // it, like any other child's.
-func (st *Step) childrenLink(ctx context.Context, items []planItem, children map[string]childFound) error {
+func (st *Step) childrenLink(ctx context.Context, items []planItem, children map[string]childFound, revised bool) error {
 	for _, it := range items {
 		if len(it.DependsOn) == 0 {
 			continue
@@ -311,6 +389,11 @@ func (st *Step) childrenLink(ctx context.Context, items []planItem, children map
 		}
 		for _, dep := range it.DependsOn {
 			b, ok := children[dep]
+			if !ok && revised {
+				logr.Warnf("%s/%s#%d: item %s of a plan depends on item %s, whose child isn't found, so it isn't blocked by it",
+					st.Owner, st.Repo, c.Number, it.ID, dep)
+				continue
+			}
 			if !ok {
 				return fmt.Errorf("item %s: it depends on %s, which has no child", it.ID, dep)
 			}
@@ -335,24 +418,59 @@ func (st *Step) childrenLink(ctx context.Context, items []planItem, children map
 // escaped as text the App didn't write (SPEC §5.1). A title is the
 // item's, without the "S1. " a story's issue title may start with, as the
 // line names the item already.
+//
+// For a revision (#297), it lists every child but a dropped item's, a
+// kept one by the number it was found under. An item of a revision
+// whose child isn't found, kept, changed or dropped, isn't listed: a line
+// after the list names it, as one the revision left as it is. With no
+// child left to list, the marker has children=none (state.CreatedNone).
 func (st *Step) childrenRecord(ctx context.Context, s *github.Snapshot, rev int, items []planItem, children map[string]childFound) error {
-	lines := []string{fmt.Sprintf("I've created the children of plan rev %d:", rev)}
+	head := "I've created the children of plan rev %d:"
+	if slices.ContainsFunc(items, func(it planItem) bool { return it.Status != "" }) {
+		head = "I've applied plan rev %d to the children, which are now:"
+	}
+	lines := []string{fmt.Sprintf(head, rev)}
 	nums := make([]string, 0, len(items))
+	var missing []string
 	for _, it := range items {
-		n := children[it.ID].Number
+		f, ok := children[it.ID]
+		if !ok && it.Status != "" {
+			missing = append(missing, inline(it.ID))
+			continue
+		}
+		if it.Status == planDropped {
+			continue
+		}
 		title := strings.TrimPrefix(strings.TrimSpace(normalize(it.Title, "")), it.ID+". ")
-		lines = append(lines, fmt.Sprintf("- %s #%d: %s", inline(it.ID), n, inline(title)))
-		nums = append(nums, strconv.Itoa(n))
+		lines = append(lines, fmt.Sprintf("- %s #%d: %s", inline(it.ID), f.Number, inline(title)))
+		nums = append(nums, strconv.Itoa(f.Number))
+	}
+	if len(nums) == 0 {
+		lines = append(lines, "- none")
+	}
+	if len(missing) > 0 {
+		them := "it as it was"
+		if len(missing) > 1 {
+			them = "them as they were"
+		}
+		lines = append(lines, "", fmt.Sprintf("I found no child of %s, so this revision left %s.", list(missing), them))
+	}
+	listed := strings.Join(nums, ",")
+	if listed == "" {
+		listed = state.CreatedNone
 	}
 	marker, err := github.FormatMarker(github.Marker{Kind: "created", Fields: map[string]string{
-		"rev": strconv.Itoa(rev), "children": strings.Join(nums, ",")}})
+		"rev": strconv.Itoa(rev), "children": listed}})
 	if err != nil {
 		return fmt.Errorf("record the children: %w", err)
 	}
 	if err := st.comment(ctx, s, github.Escape(strings.Join(lines, "\n"))+"\n\n"+marker); err != nil {
 		return fmt.Errorf("record the children: %w", err)
 	}
-	logr.Infof("%s/%s#%d: recorded the children of its plan, rev %d: %s", st.Owner, st.Repo, s.Number, rev, strings.Join(nums, ", "))
+	logr.Infof("%s/%s#%d: recorded the children of its plan, rev %d: %s", st.Owner, st.Repo, s.Number, rev, strings.ReplaceAll(listed, ",", ", "))
+	for _, id := range missing {
+		logr.Warnf("%s/%s#%d: no child of item %s of its plan, rev %d, is found, so the revision left it as it is", st.Owner, st.Repo, s.Number, id, rev)
+	}
 	return nil
 }
 

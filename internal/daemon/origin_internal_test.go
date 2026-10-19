@@ -106,11 +106,13 @@ func TestOriginRepostCheckRuns(t *testing.T) {
 	}
 }
 
-// childOrigins reads, from the snapshot, the Origin of each sub-issue the
-// App filed whose listed body gives none: from a clean App comment, as a
-// repost is (#291), and never from one someone else edited, which is
-// dirty. A sub-issue whose listed body gives an Origin, or that isn't the
-// App's, isn't read, so it isn't in the map.
+// childOrigins reads, from the snapshot, the Origin of each sub-issue
+// whose listed body gives none: from a clean App comment, as a repost is
+// (#291), and never from one someone else edited, which is dirty. That
+// holds for a sub-issue a person filed too, adopted by the plan, whose
+// App comment carries its origin (#372): it's read, and #5 gives T4. A
+// sub-issue whose listed body gives an Origin isn't read, so it isn't in
+// the map.
 func TestChildOrigins(t *testing.T) {
 	t.Parallel()
 	const app = "issuedog[bot]"
@@ -120,7 +122,7 @@ func TestChildOrigins(t *testing.T) {
 	f.AddIssue(app, "T1", "Edited.")                  // 2: its origin reposted
 	f.AddIssue(app, "T2", "Edited.")                  // 3: its repost edited by mallory
 	f.AddIssue(app, "T3", "The task.\n\n"+item("T3")) // 4: the body's own
-	f.AddIssue("owner", "T4", "Edited.")              // 5: not the App's
+	f.AddIssue("owner", "T4", "Edited.")              // 5: not the App's, adopted
 	f.AddComment(2, app, item("T1"))                  // a clean repost
 	f.EditComment(f.AddComment(3, app, item("T2")), "mallory", item("T9"))
 	f.AddComment(5, app, item("T4"))
@@ -137,7 +139,8 @@ func TestChildOrigins(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[2].Plan != 1 || got[2].Item != "T1" || got[2].Comment == state.BodyID {
-		t.Errorf("childOrigins = %+v; want #2 alone, item T1 of #1's plan, from its comment", got)
+	if len(got) != 2 || got[2].Plan != 1 || got[2].Item != "T1" || got[2].Comment == state.BodyID ||
+		got[5].Plan != 1 || got[5].Item != "T4" || got[5].Comment == state.BodyID {
+		t.Errorf("childOrigins = %+v; want #2, item T1 of #1's plan, and the adopted #5, item T4, each from its comment", got)
 	}
 }
