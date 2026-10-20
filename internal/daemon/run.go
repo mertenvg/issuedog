@@ -654,8 +654,8 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 		// nothing pushed or posted from it (SPEC §6.4, §8.2). Step 1 held
 		// the issue for every trigger before the run's poll, l.Polled, as
 		// no run starts on a held issue, so any it finds here is one since,
-		// or one step 1 couldn't see, such as a deletion that changed no
-		// updated_at: either holds the issue all the same. A hold the
+		// or one step 1 couldn't see, such as a deletion seen before its
+		// updated_at moved (SPEC §16): either holds the issue all the same. A hold the
 		// table lacks holds nothing (Step.discussion), so then the result
 		// is judged as before.
 		found, err := r.Daemon.Step.discussion(ctx, s, d)
