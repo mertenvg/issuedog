@@ -726,7 +726,8 @@ func TestDiscRunParentResume(t *testing.T) {
 // The epic, at spec-review, is held for mallory's comment. The owner 👍s
 // it, and also eve's comment, but each then edits theirs. Mallory's edit,
 // a write collaborator's of her approved comment, is a trigger, with a
-// notice, and keeps the epic held; eve's, without write access, holds
+// notice saying that accepting it doesn't approve the new text, and how to
+// approve it (editNoticeSentence), and keeps the epic held; eve's, without write access, holds
 // nothing. The owner's 👍 on the notice accepts the edit, and the epic goes
 // to clarifying, but neither edit is owner input: both are only in
 // untrusted.md for the interviewer's run, which asks a round. Once the
@@ -757,7 +758,7 @@ func TestDiscRunApprovalEdited(t *testing.T) {
 	f.EditComment(e, "eve", eve)
 	edit := discEditKey(t, f, 2, m)
 	l.step("the edits after the 👍s", "POST /issues/2/comments", "PATCH /issues/1")
-	if got, want := l.added(2), []string{discNotice(fmt.Sprintf("`mallory` edited their comment %d after a code owner approved it", m), edit)}; !slices.Equal(got, want) {
+	if got, want := l.added(2), []string{editNoticeWith(discNotice(fmt.Sprintf("`mallory` edited their comment %d after a code owner approved it", m), edit), m)}; !slices.Equal(got, want) {
 		t.Errorf("#2's new comments %q; want only the notice of mallory's edit, as eve's holds nothing: %q", got, want)
 	}
 	l.quiet("held for the edit")
