@@ -109,6 +109,51 @@ func discWhat(tr discTrigger) string {
 	return fmt.Sprintf("%s renamed this issue to “%s”", by, inline(tr.Title))
 }
 
+// editNoticeApproval is the sentence that follows what tr is (discWhat)
+// in its hold's comment and its notice, when tr is a write collaborator's
+// edit of their own comment after a code owner's 👍 approved it, and ""
+// for any other trigger. A 👍 approves only the text it post-dates, so
+// accepting the edit, by a 👍 on its notice or by /resume, releases the
+// hold but doesn't approve the new text: a trusted 👍 after the edit does,
+// and as GitHub keeps one 👍 a user, a code owner who approved the old
+// text removes theirs and adds it again (SPEC §6.4). One known from its
+// record alone is never an own edit (discFromKey makes it an edit), but
+// says nothing either way. It's the App's text only. The digest says it
+// shorter (editNoticeDigest).
+func editNoticeApproval(tr discTrigger) string {
+	if !editNoticeOwn(tr) {
+		return ""
+	}
+	return fmt.Sprintf("Accepting the edit releases the hold but doesn't approve the new text: to approve it, %s.", editNoticeHow(tr))
+}
+
+// editNoticeDigest is editNoticeApproval for tr's line in the digest,
+// after how it's accepted, which says the hold ends: only that accepting
+// it doesn't approve the new text, and how to approve it.
+func editNoticeDigest(tr discTrigger) string {
+	if !editNoticeOwn(tr) {
+		return ""
+	}
+	return fmt.Sprintf("Accepting it doesn't approve the new text: %s.", editNoticeHow(tr))
+}
+
+// editNoticeOwn reports whether tr is an own edit of an approved comment
+// that the snapshot shows, which editNoticeApproval speaks of.
+func editNoticeOwn(tr discTrigger) bool { return tr.Kind == discOwnEdit && !tr.FromRecord }
+
+// editNoticeHow says how a code owner approves an own edit's new text.
+func editNoticeHow(tr discTrigger) string {
+	return fmt.Sprintf("remove your 👍 from comment %d and add it again", tr.ID)
+}
+
+// editNoticeAppend is text, then sentence, if any, after a space.
+func editNoticeAppend(text, sentence string) string {
+	if sentence != "" {
+		return text + " " + sentence
+	}
+	return text
+}
+
 // discWhatRecorded says what tr, a trigger built from its record alone
 // (discRecorded), is, from what its key tells: its kind, its comment or
 // content, and an edit's time. Only an edit's time isn't fixed text, and
@@ -933,8 +978,8 @@ func discHitsApp(tr discTrigger, appSlug string) bool {
 
 // discHoldMove is the discussion hold for tr on s, at at with origin,
 // from from if set (Move.DiscFrom), with the round bound seen (#87's
-// assumption 7), the sentence also, if any, after its own, and more
-// markers after its own. A hold for a trigger that isn't a comment is also
+// assumption 7), an own edit's sentence (editNoticeApproval) after its
+// own, then the sentence also, if any, and more markers after its own. A hold for a trigger that isn't a comment is also
 // its notice, carrying its notice marker, unless a marker records tr or it
 // may have had a notice already (discLost). The hold's comment ends in cc
 // @<notify> (assumption 5).
@@ -942,6 +987,7 @@ func (a *Applier) discHoldMove(s *github.Snapshot, d Dirt, tr discTrigger, from,
 	fields := map[string]string{"at": string(at), "origin": string(origin), "reason": "discussion"}
 	text := fmt.Sprintf("On hold for discussion, from `%s`: %s. Only a code owner can move this issue, "+
 		"so it stays on hold until they resolve this.", at, discWhat(tr))
+	text = editNoticeAppend(text, editNoticeApproval(tr))
 	if also != "" {
 		text += " " + also
 	}
@@ -1097,7 +1143,7 @@ func (st *Step) discussion(ctx context.Context, s *github.Snapshot, d Dirt) ([]d
 		if err != nil {
 			return nil, wrap(err)
 		}
-		text := fmt.Sprintf("Also on hold for discussion: %s. This issue stays on hold until a code owner accepts it.", discWhat(tr))
+		text := editNoticeAppend(fmt.Sprintf("Also on hold for discussion: %s. This issue stays on hold until a code owner accepts it.", discWhat(tr)), editNoticeApproval(tr))
 		if err := st.comment(ctx, s, join(github.Escape(discCC(text, st.Notify)), marker)); err != nil {
 			return nil, wrap(err)
 		}
