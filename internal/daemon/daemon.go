@@ -62,6 +62,11 @@ type Daemon struct {
 	polled        time.Time // when the last poll began
 	relabel       bool      // a reload added models whose labels aren't created yet
 
+	// epicCloseDue are the epics planned into stories, by number, with the
+	// children each waits on to close, after its last good step 1
+	// (epicclose.go).
+	epicCloseDue map[int][]int
+
 	closingSeen map[int]closingListed   // closed issues whose close is judged, as they were listed then (closing.go)
 	closingDue  map[int]*gogithub.Issue // closed issues with a close to judge, as last listed (closingList)
 	// closedListed are the issues the poll last listed closed, never a
@@ -157,7 +162,9 @@ func (d *Daemon) Run(ctx context.Context) {
 // (digestCacheSet), with the issue's dirty content, which
 // openErrAny takes too; an issue whose read or step 1 fails keeps its last
 // items, and one that closes or leaves the listing loses them. Then it
-// keeps the digest (digestPass), and then the assignees (assignPass), whose
+// closes each epic planned into stories whose children have all closed
+// (epicClosePass, #251), keeps the digest (digestPass), and then the
+// assignees (assignPass), whose
 // failures stop nothing. Last it hands Work the issues ready for it. It returns the errors of the issues it couldn't read
 // or run step 1 on, which the next Iterate reads again. An issue whose
 // labels CheckLabels holds back (ErrLabelsHeld), or that it closed again
@@ -296,10 +303,14 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		}
 		d.inputs[n] = in
 		d.digestCacheSet(s, in, dirt, holds, ownerHeld, blocked) // for assignment too, so with the digest off as well
+		d.epicCloseSet(s, dirt)
 	}
 	for n := range touched {
 		delete(d.inputs, n)
 		d.stale[n] = true
+	}
+	if err := d.epicClosePass(ctx); err != nil { // an epic whose stories have all closed (epicclose.go)
+		errs = append(errs, err)
 	}
 	if err := d.digestPass(ctx); err != nil {
 		errs = append(errs, err)
