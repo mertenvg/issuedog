@@ -121,7 +121,7 @@ func TestResolveAncestorHoldWithNoAct(t *testing.T) {
 	for range 3 {
 		iterate(t, d)
 	}
-	want := fmt.Sprintf("No discussion trigger is open on this issue, but it stays on hold: a `/hold` on an issue above it, in comment %d, "+
+	want := fmt.Sprintf("No discussion trigger is open on this issue, but it stays on hold: a `/hold` on an issue above it, in comment %d on #1, "+
 		"hasn't ended. `/resume` there, or here, ends that.\n\n<!-- issuedog:ended reason=discussion held=%d heldon=1 -->", hold, hold)
 	if l, body := f.State().Issues[2].Labels, newestComment(f, 3); !slices.Equal(l, []string{"stage:held"}) || body != want {
 		t.Fatalf("#3: labels %q, newest comment %q; want it held, with %q", l, body, want)
