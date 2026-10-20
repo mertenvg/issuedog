@@ -526,7 +526,12 @@ func TestLabelOptionsLogsTheFallback(t *testing.T) {
 func TestRunStopsWhenCanceled(t *testing.T) {
 	t.Parallel()
 	f := quiet(t)
-	d := newDaemon(t, f, newOrigin(t), nil)
+	o := newOrigin(t)
+	// An hour's sleep, so only the cancellation can stop Run within the
+	// bound below, which is generous so a loaded machine doesn't fail it.
+	o.commit(config.Path, "types: labels\nloop:\n  idle_sleep: 1h\n")
+	const bound = time.Minute
+	d := newDaemon(t, f, o, nil)
 	iterations := 0
 	iterated := make(chan struct{}, 1)
 	d.Work = func(context.Context, []daemon.Ready) error {
@@ -542,18 +547,18 @@ func TestRunStopsWhenCanceled(t *testing.T) {
 	}()
 	select {
 	case <-iterated:
-	case <-time.After(5 * time.Second):
+	case <-time.After(bound):
 		t.Fatal("Run didn't iterate")
 	}
-	// The config on main sleeps 7s, so Run is asleep.
+	// The config on main sleeps 1h, so Run is asleep.
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(bound):
 		t.Fatal("Run didn't stop when its context was canceled")
 	}
 	if iterations != 1 {
-		t.Errorf("Run iterated %d times, want once before its 7s sleep", iterations)
+		t.Errorf("Run iterated %d times, want once before its 1h sleep", iterations)
 	}
 }
 

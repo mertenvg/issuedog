@@ -1,6 +1,7 @@
 package githubtest
 
 import (
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -18,6 +19,7 @@ import (
 type checkState struct {
 	personal      bool                 // see SetPersonalAccount
 	issueTypes    []OrgIssueType       // see SetOrgIssueTypes
+	typesSet      bool                 // SetOrgIssueTypes was called, so issueTypes replaces the default
 	rulesets      map[string][]ruleset // by branch, see SetRequiredChecks
 	lastRuleset   int64
 	installations []Installation // see SetInstallations
@@ -83,12 +85,14 @@ func (f *Fake) SetPersonalAccount() {
 }
 
 // SetOrgIssueTypes sets the issue types the org lists, in order, each with
-// the ID IssueTypeID gives its name. RenameOrgIssueType doesn't change
-// the list.
+// the ID IssueTypeID gives its name, replacing the default: every type the
+// org has given an ID, enabled. RenameOrgIssueType renames a type in the
+// list too. A type left out of the list is one the org no longer has, as
+// once it deleted it, though the fake still sets it on an issue.
 func (f *Fake) SetOrgIssueTypes(types ...OrgIssueType) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.checks.issueTypes = slices.Clone(types)
+	f.checks.issueTypes, f.checks.typesSet = slices.Clone(types), true
 	for _, t := range types {
 		f.issueTypeNamed(t.Name) // gives the name its ID now
 	}
@@ -130,15 +134,23 @@ func (f *Fake) getLabel(c *call) (int, any) {
 	return http.StatusOK, f.labels[i]
 }
 
-// orgIssueTypes serves the org's issue types (SetOrgIssueTypes), or a 404
-// for any account but the repo's owner, and for the owner once
-// SetPersonalAccount made it a personal account.
+// orgIssueTypes serves the org's issue types (SetOrgIssueTypes), or by
+// default every type the org has given an ID (IssueTypeID), in the order it
+// gave them, enabled, by the name it shows now (RenameOrgIssueType). It
+// answers a 404 for any account but the repo's owner, and for the owner
+// once SetPersonalAccount made it a personal account.
 func (f *Fake) orgIssueTypes(c *call) (int, any) {
 	owner, _, _ := strings.Cut(f.repo, "/")
 	if f.checks.personal || !strings.EqualFold(c.r.PathValue("org"), owner) {
 		return http.StatusNotFound, message("Not Found")
 	}
 	out := []gogithub.IssueType{}
+	if !f.checks.typesSet {
+		for _, id := range slices.Sorted(maps.Keys(f.orgTypeNames)) {
+			out = append(out, gogithub.IssueType{ID: new(id), Name: new(f.orgTypeNames[id]), IsEnabled: new(true)})
+		}
+		return http.StatusOK, out
+	}
 	for _, t := range f.checks.issueTypes {
 		named := f.issueTypeNamed(t.Name)
 		out = append(out, gogithub.IssueType{ID: named.ID, Name: new(t.Name), IsEnabled: new(!t.Disabled)})

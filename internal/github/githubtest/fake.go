@@ -61,6 +61,8 @@ type Fake struct {
 	notModified int
 	gqlErrors   []string         // for the next GraphQL answer
 	pinFailure  string           // see FailPin
+	pinStatus   int              // see FailPinStatus
+	pinnedFail  int              // see FailIsPinned
 	beforeGQL   func()           // runs before the next GraphQL answer
 	histories   int              // edit history queries answered
 	historyCap  int              // see HistoryCap
@@ -69,8 +71,10 @@ type Fake struct {
 	lastLink    int64            // the last sub-issue link made (linkUnder)
 
 	// The org's issue types (typeevent.go): their IDs by lowercase name,
-	// the names renamed away (RenameOrgIssueType), and the last ID given.
+	// their names as the org shows them, by ID, the names renamed away
+	// (RenameOrgIssueType), and the last ID given.
 	orgTypes      map[string]int64
+	orgTypeNames  map[int64]string
 	goneTypes     map[string]bool
 	lastIssueType int64
 

@@ -3,6 +3,7 @@ package daemon_test
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/mertenvg/issuedog/internal/daemon"
@@ -103,7 +104,7 @@ func authorEditReview(rewrite bool, more func(t testing.TB, f *githubtest.Fake))
 func TestAuthorEditApproval(t *testing.T) {
 	t.Parallel()
 	atReview := []string{"stage:spec-review"}
-	byFiler := "the issue description has an edit by filer that wasn't approved, so I can't approve it"
+	byFiler := strings.Replace(dirtyBody, "mallory", "filer", 1)
 	noted := "<!-- issuedog:dirty by=filer -->\n> ⚠️ issuedog ignores this issue description: " +
 		"**filer** edited it without approval.\n\n" + github.Escape(rewriteSpec)
 	for _, tt := range []struct {
@@ -117,7 +118,7 @@ func TestAuthorEditApproval(t *testing.T) {
 			outcome{labels: atReview}, noted},
 		{"after a rewrite an /approve is rejected",
 			authorEditReview(true, func(t testing.TB, f *githubtest.Fake) { post(t, f, 1003, "owner", "/approve") }),
-			outcome{comments: []string{rejected("/approve", byFiler, "1003")}, labels: atReview, downs: []string{"/approve"}}, noted},
+			outcome{comments: []string{ivWordingApproveFinal(byFiler, "1003")}, labels: atReview, downs: []string{"/approve"}}, noted},
 		{"before any rewrite the 👍 approves",
 			authorEditReview(false, func(testing.TB, *githubtest.Fake) {}),
 			outcome{comments: []string{approvedRev(1, "owner's 👍", "r1002", "1001")}, labels: []string{"stage:planning"}}, "body"},

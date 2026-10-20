@@ -333,8 +333,8 @@ func TestAssignRevertsManual(t *testing.T) {
 
 // An issue whose read fails keeps its assignees that pass, and is put
 // right on the next. A failed assignee write is the pass's error, and the
-// rest of the issues, and Work, carry on without its issue; the next pass
-// reads it again, and writes it again (#199).
+// rest of the issues, and Work, carry on, its issue included (#238); the
+// next pass reads it again, and writes it again (#199).
 func TestAssignFailures(t *testing.T) {
 	t.Parallel()
 	f, o := digestRunFake(t), digestRunOrigin(t)
@@ -364,8 +364,8 @@ func TestAssignFailures(t *testing.T) {
 	if got, want := assignWrites(f, from), []string{assignAdd(2, digestRunOwner), assignAdd(3, digestRunOwner)}; !slices.Equal(got, want) {
 		t.Errorf("assignee writes = %q; want %q, the first failed", got, want)
 	}
-	if slices.Contains(worked, 2) || !slices.Contains(worked, 3) {
-		t.Errorf("Work got %v; want 3 among them, and not 2, whose write failed", worked)
+	if !slices.Contains(worked, 2) || !slices.Contains(worked, 3) {
+		t.Errorf("Work got %v; want 3 among them, and 2, whose write failed", worked)
 	}
 	from = len(f.Requests())
 	assignStep(t, f, d, "the pass after the failure", assignAdd(2, digestRunOwner))
@@ -620,10 +620,11 @@ func TestAssignGoneRead(t *testing.T) {
 }
 
 // A failed write, with an answer gone doesn't take as gone (a 500), makes
-// the next pass read the issue again rather than write again (#199). If
-// the issue is gone by then, deleted or transferred, that read finds it
-// so, and the read after drops it: Work never gets it, and the write
-// isn't made again, on that pass or later ones. A deleted issue's number
+// the next pass read the issue again rather than write again (#199), and
+// leaves Work the issue in the pass that failed (#238). If the issue is
+// gone by then, deleted or transferred, that read finds it so, and the
+// read after drops it: Work never gets it after, and the write isn't
+// made again, on that pass or later ones. A deleted issue's number
 // filed again is an issue like any other, which the dropped one's memory
 // doesn't follow: outside the pipeline, it keeps mertenvg, assigned by
 // hand.
@@ -639,8 +640,8 @@ func TestAssignGone(t *testing.T) {
 			if err := d.Iterate(t.Context()); err == nil || !strings.Contains(err.Error(), "the assignees of o/r#12, read again next pass") {
 				t.Errorf("Iterate with a failed write = %v; want its error", err)
 			}
-			if slices.Contains(worked, 12) {
-				t.Errorf("Work got %v in the pass whose write failed; want 12 left out", worked)
+			if !slices.Contains(worked, 12) {
+				t.Errorf("Work got %v in the pass whose write failed; want 12 among them, not yet gone", worked)
 			}
 			assignGoneHow[name](f)
 			assignGonePasses(t, f, d, assignGoneRead[name], assignGoneReread[name], nil, nil)

@@ -50,6 +50,16 @@ func echoServer(t *testing.T) string {
 // upstream. dials counts the dial attempts.
 func startProxy(t *testing.T, upstream string) (addr string, dials *atomic.Int32) {
 	t.Helper()
+	return startProxyDialing(t, func(ctx context.Context, network string) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, network, upstream)
+	})
+}
+
+// startProxyDialing runs a proxy that allows allowedHost and makes every
+// dial with dial. dials counts the dial attempts.
+func startProxyDialing(t *testing.T, dial func(ctx context.Context, network string) (net.Conn, error)) (addr string, dials *atomic.Int32) {
+	t.Helper()
 	var n atomic.Int32
 	p := New([]string{allowedHost, "pkg.example"})
 	p.dial = func(ctx context.Context, network, target string) (net.Conn, error) {
@@ -58,8 +68,7 @@ func startProxy(t *testing.T, upstream string) (addr string, dials *atomic.Int32
 		if host != allowedHost && host != "pkg.example" {
 			t.Errorf("dialed %q, want a canonical listed host", target)
 		}
-		var d net.Dialer
-		return d.DialContext(ctx, network, upstream)
+		return dial(ctx, network)
 	}
 	srv := httptest.NewServer(p)
 	t.Cleanup(srv.Close)
@@ -154,17 +163,20 @@ func TestPlainRequestsDenied(t *testing.T) {
 	}
 }
 
+// TestConnectUpstreamDown checks that a failed dial to the upstream is a
+// 502. The dial is refused on purpose: a closed listener's port could be
+// taken by another test binary, which would answer and make it a 200.
 func TestConnectUpstreamDown(t *testing.T) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	down := l.Addr().String()
-	l.Close()
-	proxy, _ := startProxy(t, down)
+	refused := &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED}}
+	proxy, dials := startProxyDialing(t, func(context.Context, string) (net.Conn, error) {
+		return nil, refused
+	})
 	resp, _, _ := connect(t, proxy, allowedHost+":443")
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Errorf("status %d, want 502", resp.StatusCode)
+	}
+	if dials.Load() != 1 {
+		t.Errorf("dialed %d times, want 1", dials.Load())
 	}
 }
 

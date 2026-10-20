@@ -3,7 +3,9 @@ package githubtest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"slices"
 	"testing"
 
 	gogithub "github.com/google/go-github/v92/github"
@@ -36,6 +38,51 @@ func TestInstallationsNeedJWT(t *testing.T) {
 	}
 	if got, err := f.Client(t).Installations(context.Background()); err != nil || len(got) != 1 || got[0].Login != "o" {
 		t.Errorf("Installations with the JWT = %+v, %v; want the repo owner's", got, err)
+	}
+}
+
+// typeRenameListed is the org's issue types as the fake lists them, each
+// "name id", with " off" for a disabled one.
+func typeRenameListed(t *testing.T, f *Fake) []string {
+	t.Helper()
+	types, _, err := f.Client(t).Organizations.ListIssueTypes(context.Background(), "o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, typ := range types {
+		s := fmt.Sprintf("%s %d", typ.GetName(), typ.GetID())
+		if !typ.GetIsEnabled() {
+			s += " off"
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// With no SetOrgIssueTypes, the org lists every type it has given an ID,
+// in that order, enabled, by the name it gave first. A rename (#245) keeps
+// the type's ID and lists the new name, there and in a list
+// SetOrgIssueTypes set, and the old name, which is no type any more, isn't
+// listed, nor given a new ID.
+func TestOrgIssueTypesRenamed(t *testing.T) {
+	t.Parallel()
+	f := New(t, "o/r", "issuedog")
+	n := f.AddIssue("owner", "Issue", "")
+	f.SetTypeBy(n, "owner", "Task")
+	f.SetType(n, "bug")
+	task, bug := f.IssueTypeID("task"), f.IssueTypeID("Bug")
+	if got, want := typeRenameListed(t, f), []string{fmt.Sprintf("Task %d", task), fmt.Sprintf("bug %d", bug)}; !slices.Equal(got, want) {
+		t.Errorf("listed %q; want %q", got, want)
+	}
+	f.RenameOrgIssueType("Task", "Chore")
+	if got, want := typeRenameListed(t, f), []string{fmt.Sprintf("Chore %d", task), fmt.Sprintf("bug %d", bug)}; !slices.Equal(got, want) {
+		t.Errorf("after the rename, listed %q; want %q", got, want)
+	}
+	f.SetOrgIssueTypes(OrgIssueType{Name: "Chore"}, OrgIssueType{Name: "Bug", Disabled: true})
+	f.RenameOrgIssueType("bug", "Defect")
+	if got, want := typeRenameListed(t, f), []string{fmt.Sprintf("Chore %d", task), fmt.Sprintf("Defect %d off", bug)}; !slices.Equal(got, want) {
+		t.Errorf("a set list after a rename: listed %q; want %q", got, want)
 	}
 }
 

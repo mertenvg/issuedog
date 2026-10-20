@@ -52,6 +52,7 @@ type Applier struct {
 	originNone    map[int]string           // the body, by issue, in which originRepost found no origin to repost
 	discNoRecords map[string]*discNoRecord // logins with no permission record, in lower case (discNoRecord)
 	unexplained   github.Unexplained
+	typeRenames   *github.IssueTypeNames // the org's issue types' names for this pass's reverts, or nil (typeRenamePass)
 
 	doneChecked doneChecked // the /done check last found passing (DoneCommand)
 

@@ -193,11 +193,11 @@ func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github
 		return fmt.Errorf("read the App's reactions to comment %d: %w", c.ID, err)
 	}
 	up, acked := mine["+1"]
-	if _, downed := mine["-1"]; downed {
+	if down, downed := mine["-1"]; downed {
 		if reason == "rejected" {
 			return nil
 		}
-		return st.reword(ctx, s, d, c, cmd, isCmd, is.Stage)
+		return st.reword(ctx, s, d, c, cmd, isCmd, is.Stage, editedSince(c, down.CreatedAt))
 	}
 	if late && !acked {
 		return nil
@@ -256,7 +256,18 @@ func roundStage(stage state.Stage) bool {
 // reword posts again the reply to c, a 👎'd command with no clean reply. It
 // words the reason again through checks that don't write, so after a crash
 // the reply is the same, or else says it was lost. It never applies c.
-func (st *Step) reword(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment, cmd state.Command, ok bool, stage state.Stage) error {
+// Once c was edited after its 👎 (edited), its text isn't what the 👎
+// rejected, and a rejected command's edit is ignored (SPEC §9.2), so it
+// isn't worded again from that text: the reply says the reply was lost,
+// and that the edit is ignored (#229).
+func (st *Step) reword(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment, cmd state.Command, ok bool, stage state.Stage, edited bool) error {
+	if edited {
+		logr.Infof("%s/%s#%d: rejected comment %d: %s", st.Owner, st.Repo, s.Number, c.ID, ivWordingLostEdited)
+		if err := st.reply(ctx, s, c, "rejected", ivWordingLostEdited); err != nil {
+			return fmt.Errorf("reword: %w", err)
+		}
+		return nil
+	}
 	r := Rejection{Reason: lost}
 	if ok {
 		why, _, err := st.why(ctx, s, d, c, cmd, stage)
@@ -275,6 +286,12 @@ func (st *Step) reword(ctx context.Context, s *github.Snapshot, d Dirt, c github
 }
 
 const editedText = "This was edited after I acted on it, so I've ignored the edit. Post a new comment instead."
+
+// ivWordingLostEdited is the reply posted again to a 👎'd comment, edited
+// after the 👎, whose reply was lost (reword). It may have been a command
+// or a revision request, so it says neither.
+const ivWordingLostEdited = "I didn't act on this comment, and my reply saying why was lost. " +
+	"It was edited after I rejected it, so I've ignored the edit. Post a new comment to try again."
 
 // editedSince reports whether c was edited at or after t. GitHub's times are
 // to the second, so an edit in t's second counts as after it.
