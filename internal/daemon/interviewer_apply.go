@@ -119,7 +119,9 @@ func ivMoveFits(it state.Item, out interviewOutput, origin state.Stage) error {
 //     (ivHoldOrigin), which an unchanged or plan outcome needs;
 //   - the issue's class, which a plan outcome needs, and on a story with
 //     a parent (#195's Q1a) refuses a spec, typed and any type: whatever
-//     typing says, it may not set the type there.
+//     typing says, it may not set the type there;
+//   - the option count of each question its round comments read back
+//     with, which a decision's letter must name one of (ivWordingOptions).
 func (iv *Interviewer) facts(ctx context.Context, r Result) (interviewFacts, error) {
 	d := iv.Daemon
 	a := d.Step.Applier
@@ -149,7 +151,33 @@ func (iv *Interviewer) facts(ctx context.Context, r Result) (interviewFacts, err
 		Notify:       d.Config.Notify,
 		Origin:       ivHoldOrigin(is),
 		Class:        class,
+		Options:      ivWordingOptions(r.S, a.AppSlug, r.Dirt.Has),
 	}, nil
+}
+
+// ivWordingOptions returns the option count of each question of the
+// interviewer's rounds on s (interviewerRounds), by its ID, as its clean
+// round comment reads back in the SPEC §9.1 format (waitQuestions), which
+// the digest copies its questions from too (#229). A round whose comment
+// doesn't read back, such as one whose format has changed, adds nothing,
+// so its questions' letters go unchecked, as they did before. dirty is as
+// for state.Derive.
+func ivWordingOptions(s *github.Snapshot, appSlug string, dirty func(int64) bool) map[questionID]int {
+	opts := map[questionID]int{}
+	for _, r := range interviewerRounds(s, appSlug, dirty) {
+		heading := fmt.Sprintf("### Questions for #%d (round %d)", s.Number, r.Number)
+		round, n := map[questionID]int{}, 0
+		for _, l := range waitQuestions(waitBody(s, r.Comment), heading, r.Questions, "") {
+			switch {
+			case l.Question > 0:
+				n = l.Question
+			case l.Option != "" && n > 0:
+				round[questionID{r.Number, n}]++
+			}
+		}
+		maps.Copy(opts, round)
+	}
+	return opts
 }
 
 // ivTrustedLogins returns the logins, each once, ignoring case, with a

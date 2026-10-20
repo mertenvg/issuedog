@@ -89,10 +89,13 @@ func (a *Applier) PostRevision(ctx context.Context, s *github.Snapshot, dirty fu
 // state.PlanApproval gives no reason it can't be (plan #248, Q1a and Q2a):
 // Apply moves the issue to planned the same way, with the plan's hash as
 // body. Check rejects it otherwise, with the reason, and when the table has
-// no such move for the issue's class (SPEC §7.2).
+// no such move for the issue's class (SPEC §7.2). At spec-review, a
+// rejection for a dirty body or a stale revision says whether a revision
+// follows, and what the owner can do (ivWordingStale, #229), so none of
+// them asks for a new comment.
 func ApproveCommand() Handler {
 	return Handler{
-		Check: func(_ context.Context, a *Applier, c Cmd) error {
+		Check: func(ctx context.Context, a *Applier, c Cmd) error {
 			// Once Apply's marker exists, the stage is planning or planned,
 			// so Step rejects or finishes the command before it asks Check.
 			is := state.Derive(c.S, a.AppSlug, c.Dirt.Has)
@@ -108,18 +111,27 @@ func ApproveCommand() Handler {
 				return inTable(is, state.Planned, state.TriggerPlanApproved, "on approval")
 			}
 			latest, ok := state.LatestRevision(c.S, a.AppSlug, state.SpecRevision, c.Dirt.Has)
+			if c.Dirt.Has(state.BodyID) {
+				return Rejection{Reason: fmt.Sprintf("the issue description has an edit by %s that wasn't approved, so I can't approve it, "+
+					"and I won't post a revision of it. %s", c.Dirt[state.BodyID], ivWordingRespec), Final: true}
+			}
+			// ReviewVisit posts the next revision of a stale spec after this,
+			// unless the body's last editor isn't trusted (SPEC §7.4), so a
+			// stale spec's reason says which (#229).
+			stale := func() error {
+				by, follows, err := ivWordingBodyEditor(ctx, c.S, a.AppSlug, c.Trust)
+				if err != nil {
+					return fmt.Errorf("approve: %w", err)
+				}
+				return ivWordingStale(latest, ok, by, follows)
+			}
 			switch {
-			case c.Dirt.Has(state.BodyID):
-				return Rejection{Reason: fmt.Sprintf("the issue description has an edit by %s that wasn't approved, so I can't approve it", c.Dirt[state.BodyID])}
-			case !ok:
-				return Rejection{Reason: "there's no revision to approve yet"}
-			case latest.Hidden:
-				return Rejection{Reason: fmt.Sprintf("a comment of mine after revision %d was edited without approval or deleted, "+
-					"so it may hide a newer revision. Approve the next revision I post instead", latest.Rev), Final: true}
+			case !ok, latest.Hidden:
+				return stale()
 			case c.Comment.ID < latest.Comment:
 				return Rejection{Reason: fmt.Sprintf("it was posted before revision %d, the latest. To approve that, react 👍 to it, or post `/approve` again", latest.Rev), Final: true}
 			case state.BodyHash(c.S.Body) != latest.Hash:
-				return Rejection{Reason: fmt.Sprintf("the issue description changed after revision %d, so it no longer matches that revision's hash, `%s`", latest.Rev, latest.Hash)}
+				return stale()
 			}
 			return inTable(is, state.Planning, state.TriggerSpecApproved, "on approval")
 		},
@@ -130,12 +142,49 @@ func ApproveCommand() Handler {
 	}
 }
 
+// ivWordingRespec is how to get a spec that replaces an edit no revision
+// follows (#229): a revision request sends the spec back (SPEC §7.4), and
+// the interviewer's next spec rewrites the body whole.
+const ivWordingRespec = "To get a new spec, which replaces the edit, post `/revise <notes>`, or any other comment"
+
+// ivWordingStale is /approve's Rejection at spec-review when the latest
+// spec revision, latest, is stale: missing (ok false), Hidden, or no
+// longer matching the body's hash. by last wrote the body, and follows
+// says whether ReviewVisit posts the next revision (ivWordingBodyEditor).
+// It says so either way (#229), and is Final: a new /approve now would be
+// rejected the same way. Where a revision follows, the owner approves
+// that; where none does, the owner edits the description, which posts
+// one, or sends the spec back.
+func ivWordingStale(latest state.Revision, ok bool, by github.Author, follows bool) Rejection {
+	var why string
+	switch {
+	case !ok && follows:
+		why = "there's no revision to approve yet"
+	case !ok:
+		why = "there's no revision to approve"
+	case latest.Hidden:
+		why = fmt.Sprintf("a comment of mine after revision %d was edited without approval or deleted, so it may hide a newer revision", latest.Rev)
+		if follows {
+			return Rejection{Reason: why + ". Approve the next revision I post instead", Final: true}
+		}
+	default:
+		why = fmt.Sprintf("the issue description changed after revision %d, so it no longer matches that revision's hash, `%s`", latest.Rev, latest.Hash)
+	}
+	if follows {
+		return Rejection{Reason: why + ". I'll post a new revision next. To approve it, react 👍 to it, or post `/approve` after it", Final: true}
+	}
+	return Rejection{Reason: fmt.Sprintf("%s. The description was last edited by %s, who isn't trusted, so I won't post a revision of it. "+
+		"To get one, edit the description yourself, or post `/revise <notes>`, or any other comment, for a new spec", why, login(by)), Final: true}
+}
+
 // planRejection is /approve's Rejection at plan-review for why, a reason
 // state.PlanApproval gives that latest can't be approved, worded like the
 // spec's. The daemon posts no plan revision of its own (plan #248, Q1a), so
 // where only a new plan helps, the reason says how to get one, and is Final.
 // PlanNoRevision may mean the only plan comment was made dirty or deleted,
-// not that no plan was ever posted, so it doesn't say "yet".
+// not that no plan was ever posted, so it doesn't say "yet". A dirty body
+// stays dirty through a new plan, so its reason is Final too, and says
+// that a new plan won't help (#229).
 func planRejection(latest state.Revision, why state.PlanReason, d Dirt) Rejection {
 	const replan = "To get a new plan, post `/revise`, or any other comment"
 	switch why {
@@ -148,7 +197,11 @@ func planRejection(latest state.Revision, why state.PlanReason, d Dirt) Rejectio
 		return Rejection{Reason: fmt.Sprintf("the comment of plan revision %d was edited after I posted it, "+
 			"so it no longer matches that revision's hash, `%s`. %s", latest.Rev, latest.Hash, replan), Final: true}
 	case state.PlanBodyDirty:
-		return Rejection{Reason: fmt.Sprintf("the issue description has an edit by %s that wasn't approved, so I can't approve the plan", d[state.BodyID])}
+		// Nothing at planning or plan-review rewrites the body (SPEC §7.4),
+		// so a new comment, or a new plan, wouldn't help (#229).
+		return Rejection{Reason: fmt.Sprintf("the issue description has an edit by %s that wasn't approved, so I can't approve the plan. "+
+			"Nothing at `planning` or `plan-review` rewrites the description, so sending the plan back won't clear the edit. "+
+			"To move on, set the stage by hand", d[state.BodyID]), Final: true}
 	}
 	return Rejection{Reason: fmt.Sprintf("plan revision %d can't be approved (reason %d)", latest.Rev, why)}
 }
@@ -468,15 +521,9 @@ func (st *Step) ReviewVisit(ctx context.Context, s *github.Snapshot) error {
 	}
 	latest, ok := state.LatestRevision(s, st.AppSlug, state.SpecRevision, d.Has)
 	if stale := !ok || latest.Hidden || latest.Hash != state.BodyHash(s.Body); stale && !d.Has(state.BodyID) {
-		by := s.Author
-		if !s.BodyEdit.At.IsZero() {
-			by = s.BodyEdit.By
-		}
-		t := state.IsApp(by, st.AppSlug)
-		if !t && by.Type != "Bot" && by.Login != "" {
-			if t, err = st.Trust.Trusted(ctx, by.Login); err != nil {
-				return wrap(fmt.Errorf("trust %s: %w", by.Login, err))
-			}
+		by, t, err := ivWordingBodyEditor(ctx, s, st.AppSlug, st.Trust)
+		if err != nil {
+			return wrap(err)
 		}
 		if !t {
 			logr.Debugf("%s/%s#%d: no revision: the body was last edited by %s, who isn't trusted", st.Owner, st.Repo, s.Number, login(by))
@@ -487,4 +534,27 @@ func (st *Step) ReviewVisit(ctx context.Context, s *github.Snapshot) error {
 		return wrap(err)
 	}
 	return nil
+}
+
+// ivWordingBodyEditor returns who last wrote s's body, its last editor or
+// else its author, and whether ReviewVisit posts a revision for a stale
+// spec on it, a body that isn't dirty: only when that's the App, or a user
+// trust trusts who isn't a bot (SPEC §7.4). /approve's reply says which
+// (#229), so it never promises a revision that won't come.
+func ivWordingBodyEditor(ctx context.Context, s *github.Snapshot, appSlug string, trust github.Trust) (github.Author, bool, error) {
+	by := s.Author
+	if !s.BodyEdit.At.IsZero() {
+		by = s.BodyEdit.By
+	}
+	if state.IsApp(by, appSlug) {
+		return by, true, nil
+	}
+	if by.Type == "Bot" || by.Login == "" {
+		return by, false, nil
+	}
+	t, err := trust.Trusted(ctx, by.Login)
+	if err != nil {
+		return by, false, fmt.Errorf("trust %s: %w", by.Login, err)
+	}
+	return by, t, nil
 }

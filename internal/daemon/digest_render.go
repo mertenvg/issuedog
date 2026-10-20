@@ -260,13 +260,16 @@ func digestRenderMentions(it waitItem) bool {
 // makes no link, image, mention or marker. One known from its record alone
 // says it was recorded earlier (discWhatRecorded), in the App's words
 // only, and links the comment that holds the record (holdItemTrigger.Link).
+// An own edit of an approved comment also says, after how it's resolved,
+// that accepting it doesn't approve the new text, and how to approve it,
+// as its notice does but shorter (editNoticeDigest).
 func digestRenderHold(h holdItemTrigger) string {
 	tr := h.Trigger
 	what := discWhat(tr) // discWhatRecorded for one known from its record alone
 	if tr.Kind == discRename && !tr.FromRecord {
 		what = fmt.Sprintf("%s renamed this issue to “%s”", discLogin(tr.By), digestRenderTitle(tr.Title))
 	}
-	return fmt.Sprintf("**Trigger:** %s. %s See %s", github.Escape(what), h.How, h.Link)
+	return fmt.Sprintf("**Trigger:** %s. %s See %s", github.Escape(what), editNoticeAppend(h.How, editNoticeDigest(tr)), h.Link)
 }
 
 // digestRenderNew returns the items, in order, with a key that announces

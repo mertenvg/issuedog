@@ -424,7 +424,8 @@ func triageLeftText(out triageOutput) string {
 
 // triageFlagText is a flag's text in the §9.1 style (plan for #6,
 // assumption 3), escaped (SPEC §5.1): one question, with out's verdict as
-// the recommended option, and the cc line for notify.
+// the recommended option, and the cc line for notify. The summary goes
+// inside the App's bold, as a question's text does (ivWordingStrong).
 func triageFlagText(out triageOutput, issue int, notify []string) string {
 	handle, leave := "Handle it", "Leave it"
 	first, second := handle, leave
@@ -432,7 +433,7 @@ func triageFlagText(out triageOutput, issue int, notify []string) string {
 		first, second = leave, handle
 	}
 	lines := []string{fmt.Sprintf("### Should issuedog handle #%d?", issue), "",
-		fmt.Sprintf("**1. %s** Blocks: #%d", inline(out.Summary), issue),
+		fmt.Sprintf("**1. %s** Blocks: #%d", inline(ivWordingStrong(out.Summary)), issue),
 		"   a. " + first + " (recommended): " + inline(out.Reason),
 		"   b. " + second, "",
 		"React 👍 to take the recommendation, or post `/track` or `/ignore`."}

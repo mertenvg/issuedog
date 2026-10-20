@@ -599,12 +599,30 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 		return nil
 	case len(discussed) > 0:
 		// /resume on an ancestor doesn't end a discussion hold (SPEC §6.4).
-		return Rejection{Reason: fmt.Sprintf("%s on hold for discussion, which only a code owner's response there, "+
-			"or `/resume` there, ends", strings.Join(discussed, ", ")), Final: true}
+		return Rejection{Reason: heldWordingDiscussed(discussed, fmt.Sprintf("#%d", c.S.Number)), Final: true}
 	case len(makers) > 0:
 		return Rejection{Reason: fmt.Sprintf("the holds below were made on %s, by `/hold` or by hand, so `/resume` there ends them", strings.Join(makers, ", ")), Final: true}
 	}
 	return Rejection{Reason: "nothing here or in its open sub-issues is on an owner hold"}
+}
+
+// heldWordingDiscussed is resumeCheck's reason for a /resume that ends no
+// hold while issues in its family stay on hold for discussion, discussed,
+// each named as "#3": only a code owner's response, or /resume, on each
+// ends its own. The reply is posted on self, c's issue, so self is "this
+// issue", and "here", and the rest "there" (#222); with both, the rest
+// come first.
+func heldWordingDiscussed(discussed []string, self string) string {
+	others := slices.DeleteFunc(slices.Clone(discussed), func(n string) bool { return n == self })
+	var why []string
+	if len(others) > 0 {
+		why = append(why, fmt.Sprintf("%s on hold for discussion, which only a code owner's response there, "+
+			"or `/resume` there, ends", strings.Join(others, ", ")))
+	}
+	if len(others) < len(discussed) {
+		why = append(why, "this issue is on hold for discussion, which only a code owner's response here, or `/resume` here, ends")
+	}
+	return strings.Join(why, "; and ")
 }
 
 // moveFamily makes the move plan returns, if any, on each open descendant of

@@ -14,6 +14,8 @@ import (
 	"time"
 
 	gogithub "github.com/google/go-github/v92/github"
+
+	"github.com/mertenvg/issuedog/internal/github"
 )
 
 // transferFake is o/r with issue 1, moved, which has a label, two
@@ -252,6 +254,18 @@ func TestTransferHome(t *testing.T) {
 		h.Get("Location") != f.URL()+"/repositories/3/issues/2" {
 		t.Errorf("GET of #2 moved to a second repo = %d, Location %q; want a 301 to /repositories/3/issues/2", status, h.Get("Location"))
 	}
+	// Each home serves only what moved there (#239): #2, moved to the second
+	// repo, isn't at the first's, and #1 isn't at the second's.
+	if status, _, body := rawDo(t, raw, http.MethodGet, f.URL()+"/repositories/3/issues/2"); status != http.StatusOK ||
+		!strings.Contains(body, `"repository_url":"`+f.URL()+`/repos/other/repo"`) {
+		t.Errorf("GET of #2 at the second repo's home = %d, %q; want 200, the issue in other/repo", status, body)
+	}
+	for _, url := range []string{home + "/issues/2", home + "/issues/2/comments", f.URL() + "/repositories/3/issues/1",
+		f.URL() + "/repositories/3/issues/1/comments", fmt.Sprintf("%s/repositories/3/issues/comments/%d/reactions", f.URL(), first)} {
+		if status, _, body := rawDo(t, raw, http.MethodGet, url); status != http.StatusNotFound {
+			t.Errorf("GET %s, moved to the other repo = %d, %q; want 404", url, status, body)
+		}
+	}
 	f.Transfer(1, "o/elsewhere") // again: the same ID
 	if status, h, _ := rawDo(t, raw, http.MethodGet, f.URL()+"/repos/o/r/issues/1"); h.Get("Location") != home+"/issues/1" {
 		t.Errorf("GET of #1 moved there again = %d, Location %q; want a 301 to %s/issues/1", status, h.Get("Location"), home)
@@ -306,5 +320,136 @@ func TestTransferSubIssue(t *testing.T) {
 	}{{1, f.URL() + "/repos/o/elsewhere"}, {3, f.URL() + "/repos/o/r"}}
 	if status != http.StatusOK || !reflect.DeepEqual(subs, want) {
 		t.Errorf("#2's sub-issues = %d, %+v; want %+v", status, subs, want)
+	}
+}
+
+// transferGraphQLFake is o/r with issue 1, moved, and issue 2, which
+// stays, each with a comment and closed by a merged pull request, then
+// reopened. Issue 1 is then transferred to o/elsewhere. It returns the
+// comments' and the closed events' IDs, the moved issue's first.
+func transferGraphQLFake(t *testing.T) (f *Fake, comments, closes [2]int64) {
+	t.Helper()
+	f = New(t, "o/r", "issuedog")
+	for n := range 2 {
+		f.AddIssue("owner", fmt.Sprintf("Issue %d", n+1), "body")
+		comments[n] = f.AddComment(n+1, "owner", "hi")
+		closes[n] = f.CloseByPullRequest(n+1, "owner", ClosingPR{Merged: true})
+		f.ReopenBy(n+1, "owner")
+	}
+	f.Transfer(1, "o/elsewhere")
+	return f, comments, closes
+}
+
+// transferGraphQLHistory asks f the history query for ids, and returns
+// whether each node was answered, and the errors as "TYPE [path] message".
+func transferGraphQLHistory(t *testing.T, f *Fake, ids ...string) ([]bool, []string) {
+	t.Helper()
+	c := f.Client(t)
+	req, err := c.NewRequest(context.Background(), "POST", "graphql", map[string]any{"query": answeredHistory,
+		"variables": map[string]any{"ids": ids}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Data   struct{ Nodes []*struct{ ID string } }
+		Errors []struct {
+			Type, Message string
+			Path          []any
+		}
+	}
+	if _, err := c.Do(req, &out); err != nil {
+		t.Fatal(err)
+	}
+	var answered []bool
+	for i, n := range out.Data.Nodes {
+		answered = append(answered, n != nil && i < len(ids) && n.ID == ids[i])
+	}
+	var errs []string
+	for _, e := range out.Errors {
+		errs = append(errs, fmt.Sprintf("%s %v %s", e.Type, e.Path, e.Message))
+	}
+	return answered, errs
+}
+
+// GraphQL treats a transferred issue as not this repo's (#239), as GitHub
+// treats one it can't find: the comments and isPinned queries answer
+// NOT_FOUND for its number, the history query a null node with NOT_FOUND
+// for its node and its comment's, the closer query a null node with
+// NOT_FOUND for its closed event, and the pinIssue mutation NOT_FOUND,
+// pinning nothing. The issue that stays is answered as before.
+func TestTransferGraphQL(t *testing.T) {
+	t.Parallel()
+	f, comments, closes := transferGraphQLFake(t)
+	ctx, c := context.Background(), f.Client(t)
+	moved := gqlQuery(t, f, answered, 1, nil)
+	if moved.Data.Repository == nil || moved.Data.Repository.Issue != nil || len(moved.Errors) != 1 ||
+		moved.Errors[0].Type+" "+moved.Errors[0].Message != "NOT_FOUND Could not resolve to an Issue with the number of 1." {
+		t.Errorf("the comments query for the moved issue = %+v; want a null issue and NOT_FOUND", moved)
+	}
+	if here := gqlQuery(t, f, answered, 2, nil); here.Data.Repository == nil || here.Data.Repository.Issue == nil ||
+		len(here.Data.Repository.Issue.Comments.Nodes) != 1 || len(here.Errors) != 0 {
+		t.Errorf("the comments query for the issue that stays = %+v; want it, with its comment", here)
+	}
+	if pinned, err := c.IsPinned(ctx, "o", "r", 1); err == nil || !strings.Contains(err.Error(), "Could not resolve to an Issue with the number of 1.") {
+		t.Errorf("IsPinned of the moved issue = %t, %v; want NOT_FOUND", pinned, err)
+	}
+	if pinned, err := c.IsPinned(ctx, "o", "r", 2); err != nil || pinned {
+		t.Errorf("IsPinned of the issue that stays = %t, %v; want false", pinned, err)
+	}
+	ids := []string{issueNode(1), commentNode(comments[0]), issueNode(2), commentNode(comments[1])}
+	nodes, errs := transferGraphQLHistory(t, f, ids...)
+	wantErrs := []string{
+		"NOT_FOUND [nodes 0] Could not resolve to a node with the global id of '" + ids[0] + "'",
+		"NOT_FOUND [nodes 1] Could not resolve to a node with the global id of '" + ids[1] + "'",
+	}
+	if !slices.Equal(nodes, []bool{false, false, true, true}) || !slices.Equal(errs, wantErrs) {
+		t.Errorf("the history of %q answers %v, errors %q; want the moved issue's two null, with %q", ids, nodes, errs, wantErrs)
+	}
+	repo := map[string]any{"nameWithOwner": "o/r", "defaultBranchRef": map[string]any{"name": "main"}}
+	if data, types := closingAsk(t, f, "o", "r", fmt.Sprintf("CE_%d", closes[0])); !reflect.DeepEqual(data, map[string]any{"repository": repo, "node": nil}) ||
+		!slices.Equal(types, []string{"NOT_FOUND"}) {
+		t.Errorf("the closer of the moved issue's close = %v, %q; want a null node and NOT_FOUND", data, types)
+	}
+	if data, types := closingAsk(t, f, "o", "r", fmt.Sprintf("CE_%d", closes[1])); data["node"] == nil || types != nil {
+		t.Errorf("the closer of the staying issue's close = %v, %q; want its node", data, types)
+	}
+	if by, err := c.ClosingCloser(ctx, "o", "r", fmt.Sprintf("CE_%d", closes[0])); err != nil || by.Merge {
+		t.Errorf("ClosingCloser of the moved issue's close = %+v, %v; want no merge, as for a close it can't read", by, err)
+	}
+	writes := len(f.Writes())
+	if err := c.PinIssue(ctx, "o", "r", 1); !errors.Is(err, github.ErrGraphQL) ||
+		!strings.Contains(err.Error(), "Could not resolve to a node with the global id of '"+issueNode(1)+"'") {
+		t.Errorf("PinIssue of the moved issue = %v; want NOT_FOUND", err)
+	}
+	if got := f.Writes()[writes:]; len(got) != 1 || got[0].Path != "/graphql" || got[0].Failed {
+		t.Errorf("writes = %+v; want the pinIssue mutation, logged", got)
+	}
+	if err := c.PinIssue(ctx, "o", "r", 2); err != nil {
+		t.Errorf("PinIssue of the issue that stays: %v", err)
+	}
+	if is := f.State().Issues; is[0].Pinned || !is[1].Pinned {
+		t.Errorf("pinned = %t, %t; want the issue that stays alone", is[0].Pinned, is[1].Pinned)
+	}
+}
+
+// A transfer back makes GraphQL answer for the issue again.
+func TestTransferGraphQLBack(t *testing.T) {
+	t.Parallel()
+	f, comments, closes := transferGraphQLFake(t)
+	f.Transfer(1, "o/r")
+	if back := gqlQuery(t, f, answered, 1, nil); back.Data.Repository == nil || back.Data.Repository.Issue == nil || len(back.Errors) != 0 {
+		t.Errorf("the comments query for the issue brought back = %+v; want it", back)
+	}
+	if nodes, errs := transferGraphQLHistory(t, f, issueNode(1), commentNode(comments[0])); !slices.Equal(nodes, []bool{true, true}) || errs != nil {
+		t.Errorf("the history of the issue brought back answers %v, errors %q; want both nodes", nodes, errs)
+	}
+	if data, types := closingAsk(t, f, "o", "r", fmt.Sprintf("CE_%d", closes[0])); data["node"] == nil || types != nil {
+		t.Errorf("the closer of its close = %v, %q; want its node", data, types)
+	}
+	if err := f.Client(t).PinIssue(context.Background(), "o", "r", 1); err != nil {
+		t.Errorf("PinIssue of the issue brought back: %v", err)
+	}
+	if !f.State().Issues[0].Pinned {
+		t.Error("the issue brought back isn't pinned; want it pinned")
 	}
 }

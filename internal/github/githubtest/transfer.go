@@ -28,8 +28,16 @@ import (
 // comments, by the paths this repo's handlers serve, with the issue's
 // repository_url naming the other repo. It serves nothing else of the
 // other repo: any other path there, or any other method, gets a 404. The
-// moved issue keeps its number there, which GitHub doesn't promise, and
-// GraphQL still answers for it as before.
+// moved issue keeps its number there, which GitHub doesn't promise.
+//
+// GraphQL treats a transferred issue as not this repo's (#239), with
+// GitHub's answers for one it can't find: the comments and isPinned
+// queries, by its number, answer a null issue with a NOT_FOUND error; the
+// history query, for its node or one of its comments', and the closer
+// query, for one of its closed events, answer a null node with a NOT_FOUND
+// error; and the pinIssue mutation answers a null pinIssue with a
+// NOT_FOUND error, and pins nothing. GitHub might instead answer some of
+// these from the issue's new repo, but no answer finds the issue here.
 
 // Transfer moves issue number to repo ("owner/name"), as GitHub's
 // transfer does (see the top of this file). A transfer to this repo, in

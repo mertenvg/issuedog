@@ -125,3 +125,30 @@ func TestAssignTakesAnswer(t *testing.T) {
 		t.Errorf("the dropped logins = %v; want ghost alone, in lower case", d.assignDropped)
 	}
 }
+
+// A failed assignee write that isn't the issue gone leaves the issue's
+// inputs for Work and marks it to be read again, not as gone, on a daemon
+// with no issue marked to be read again before (#238).
+func TestAssignFailKeepsInputs(t *testing.T) {
+	t.Parallel()
+	f := githubtest.New(t, "o/r", "issuedog")
+	n := f.AddIssue("owner", "Waits", "")
+	c := f.Client(t)
+	d := &Daemon{Step: &Step{Applier: &Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog"}},
+		Config: &config.Config{Notify: []string{"owner"}}, Assign: true,
+		digestCache: map[int][]waitItem{n: {{Issue: n, Kind: waitFlag}}},
+		snaps:       map[int]*github.Snapshot{}, inputs: map[int][]github.Comment{}}
+	s, err := c.Snapshot(t.Context(), "o", "r", n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.snaps[n], d.inputs[n] = s, []github.Comment{{Body: "an input"}}
+	f.FailWrite(1)
+	if err := d.assignPass(t.Context()); err == nil {
+		t.Errorf("assignPass with a failed write = nil; want its error")
+	}
+	if in, ok := d.inputs[n]; !ok || len(in) != 1 || !d.stale[n] || d.missing[n] {
+		t.Errorf("after the failed write: inputs %v (held %t), stale %t, missing %t; want the input kept, and read again, not as gone",
+			in, ok, d.stale[n], d.missing[n])
+	}
+}
