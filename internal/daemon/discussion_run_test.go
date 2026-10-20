@@ -1305,8 +1305,8 @@ func TestDiscRunParentDeletion(t *testing.T) {
 			want := []string{discHeld("planned", "`mallory` deleted a comment by `owner`",
 				fmt.Sprintf("from=planned to=held at=planned origin=planned reason=discussion event=d%s seen=%d", del, entries[2]), discNoticeMarker("d"+del))}
 			if early {
-				want = append(want, fmt.Sprintf("> /resume\n\nI didn't apply this command: #2 on hold for discussion, which only a code owner's response there, "+
-					"or `/resume` there, ends.\n\n<!-- issuedog:reply reason=rejected cmd=%d -->", first))
+				want = append(want, fmt.Sprintf("> /resume\n\nI didn't apply this command: this issue is on hold for discussion, which only a code owner's response here, "+
+					"or `/resume` here, ends.\n\n<!-- issuedog:reply reason=rejected cmd=%d -->", first))
 			}
 			if got := l.added(2); !slices.Equal(got, want) {
 				t.Errorf("#2's new comments\n%q\nwant\n%q", got, want)
@@ -1652,8 +1652,8 @@ func TestDiscRunHoldResumeRace(t *testing.T) {
 				return []string{post(n), fmt.Sprintf("POST /issues/%d/labels", n), fmt.Sprintf("DELETE /issues/%d/labels/stage:%s", n, from)}
 			}
 			// The record that A's /hold keeps an issue held (resolveEnded).
-			heldRecord := fmt.Sprintf("No discussion trigger is open on this issue, but it stays on hold: a `/hold` on an issue above it, in comment %d, hasn't ended. "+
-				"`/resume` there, or here, ends that.\n\ncc @owner\n\n<!-- issuedog:ended reason=discussion held=%d heldon=%d -->", hold, hold, a)
+			heldRecord := fmt.Sprintf("No discussion trigger is open on this issue, but it stays on hold: a `/hold` on an issue above it, in comment %d on #%d, hasn't ended. "+
+				"`/resume` there, or here, ends that.\n\ncc @owner\n\n<!-- issuedog:ended reason=discussion held=%d heldon=%d -->", hold, a, hold, a)
 			if aLow {
 				// A's /hold touches J and K (Applier.Touched), so they wait
 				// for the next pass, which handles J's /resume, and touches
