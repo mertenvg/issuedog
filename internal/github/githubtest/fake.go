@@ -61,6 +61,8 @@ type Fake struct {
 	notModified int
 	gqlErrors   []string         // for the next GraphQL answer
 	pinFailure  string           // see FailPin
+	pinStatus   int              // see FailPinStatus
+	pinnedFail  int              // see FailIsPinned
 	beforeGQL   func()           // runs before the next GraphQL answer
 	histories   int              // edit history queries answered
 	historyCap  int              // see HistoryCap

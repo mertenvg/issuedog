@@ -18,6 +18,26 @@ func (f *Fake) FailPin(message string) {
 	f.pinFailure = message
 }
 
+// FailPinStatus makes every later pinIssue mutation answer HTTP status
+// alone, with its status text as the message and no pin, as GitHub might
+// for bad credentials (401) or a missing permission (403), or as a glitch
+// might (5xx). The mutation is still a write, logged as any other.
+// FailPinStatus(0) lets pins work again.
+func (f *Fake) FailPinStatus(status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pinStatus = status
+}
+
+// FailIsPinned makes every later isPinned query answer HTTP status alone,
+// with its status text as the message, as a glitch might. FailIsPinned(0)
+// lets them work again.
+func (f *Fake) FailIsPinned(status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pinnedFail = status
+}
+
 // SetPinned pins or unpins an issue by hand, as the owner can on GitHub.
 func (f *Fake) SetPinned(number int, pinned bool) {
 	f.edit(number, func(is *issue) { is.pinned = pinned })
