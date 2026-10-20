@@ -81,7 +81,8 @@ func (f *Fake) HistoryQueries() int {
 // graphql answers internal/github's comments query for the fake's repo,
 // paging comments by 100 and, as its timelineItems, CommentDeletedEvents
 // by 100 (deletedPage), its history query (see history), its isPinned
-// query and its pinIssue mutation (see pinIssue). It refuses a query that
+// query and its pinIssue mutation (see pinIssue), each of which answers
+// an HTTP status alone under FailIsPinned or FailPinStatus. It refuses a query that
 // doesn't name every field in answered, or answeredHistory for a query of
 // nodes, answeredPinned for one of isPinned, or answeredPin for a mutation.
 // As on GitHub, a Bot's login has no "[bot]", IDs are BigInt strings, a
@@ -166,6 +167,12 @@ func (f *Fake) graphql(c *call) (int, any) {
 		data, notFound := f.closingAnswer(v.Owner, v.Name, v.ID)
 		errs = append(errs, notFound...)
 		return reply(data)
+	}
+	if named["mutation"] && f.pinStatus != 0 {
+		return f.pinStatus, message(http.StatusText(f.pinStatus))
+	}
+	if named["query.repository.issue.isPinned"] && f.pinnedFail != 0 {
+		return f.pinnedFail, message(http.StatusText(f.pinnedFail))
 	}
 	if named["mutation"] {
 		data, failed := f.pinIssue(req.Variables.ID)

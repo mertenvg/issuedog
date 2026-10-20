@@ -543,9 +543,11 @@ func TestDigestRewriteRanked(t *testing.T) {
 	}
 }
 
-// A failed check of the pin is the pass's error: the digest isn't pinned on
-// a read that failed, nor its note dropped, and Work runs. The next pass
-// checks again and pins it (#159's verify, survivor N11).
+// A failed check of the pin stops nothing (#226): the digest isn't pinned
+// on a read that failed, nor its note dropped, but the note names the
+// failure, and Work runs. An unchanged pass doesn't check again; the next
+// pass that changes the body does, and pins it (#159's verify, survivor
+// N11).
 func TestDigestRewritePinCheckFails(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
@@ -554,15 +556,22 @@ func TestDigestRewritePinCheckFails(t *testing.T) {
 	worked := 0
 	d.Work = func(context.Context, []daemon.Ready) error { worked++; return nil }
 	f.AnswerOnce(func(r githubtest.Request) bool { return r.Path == "/graphql" }, http.StatusInternalServerError)
-	if err := d.Iterate(context.Background()); err == nil || !strings.Contains(err.Error(), "the pin of the digest, o/r#1: ") || worked != 1 {
-		t.Fatalf("Iterate = %v, Work ran %d times; want the check's error, and Work run", err, worked)
+	if err := d.Iterate(context.Background()); err != nil || worked != 1 {
+		t.Fatalf("Iterate = %v, Work ran %d times; want no error, and Work run", err, worked)
 	}
-	if w := f.Writes(); len(w) != 0 || f.State().Issues[0].Pinned || f.State().Issues[0].Body != digestPending {
-		t.Fatalf("writes %+v, issue %+v; want nothing pinned or edited", w, f.State().Issues[0])
+	note := "I couldn't pin this issue yet: checking whether it's pinned failed (HTTP 500). I'll try again when the list changes, or pin it by hand.\n\n"
+	if w := digestWrites(f, 0); !reflect.DeepEqual(w, []string{"PATCH /issues/1"}) || f.State().Issues[0].Pinned || f.State().Issues[0].Body != note+digestList {
+		t.Fatalf("writes %q, issue %+v; want nothing pinned, and the note naming the failure", w, f.State().Issues[0])
 	}
+	reqs := len(f.Requests())
+	iterate(t, d)
+	if got := digestRequests(f, reqs); len(got) != 0 {
+		t.Errorf("an unchanged pass sent %+v about the digest; want none", got)
+	}
+	digestError(f, "A", "5")
 	if got := digestPass(t, f, d); !reflect.DeepEqual(got, []string{"POST /graphql", "PATCH /issues/1"}) || !f.State().Issues[0].Pinned ||
-		f.State().Issues[0].Body != digestList {
-		t.Errorf("writes %q, issue %+v; want it pinned, and the note gone", got, f.State().Issues[0])
+		strings.HasPrefix(f.State().Issues[0].Body, "I couldn't pin") {
+		t.Errorf("writes %q, issue %+v; want it pinned once the list changed, and the note gone", got, f.State().Issues[0])
 	}
 }
 
