@@ -120,8 +120,9 @@ func TestEpicCloseFindBadData(t *testing.T) {
 // epicClosePassDaemon files issue 1 on a fake, an epic at planned, as the
 // App leaves it once it has created the stories of its plan, #2 and #3,
 // closed, with the comments doneSnap gives it, and returns a daemon on the
-// fake whose snapshot of it and the poll's listing are as of then, and
-// whose cache waits on children for it.
+// fake whose snapshot of it and the poll's listing are as of then, with
+// the stories' closes judged and accepted (closingSeen), and whose cache
+// waits on children for it.
 func epicClosePassDaemon(t *testing.T, children ...int) (*githubtest.Fake, *Daemon) {
 	t.Helper()
 	f := githubtest.New(t, "o/r", waitSlug)
@@ -142,7 +143,7 @@ func epicClosePassDaemon(t *testing.T, children ...int) (*githubtest.Fake, *Daem
 		t.Fatal(err)
 	}
 	d := &Daemon{Step: st, snaps: map[int]*github.Snapshot{n: s}, inputs: map[int][]github.Comment{n: nil}, stale: map[int]bool{},
-		closedListed: map[int]bool{2: true, 3: true}, epicCloseDue: map[int][]int{n: children}}
+		closedListed: map[int]bool{2: true, 3: true}, closingSeen: map[int]closingListed{2: {}, 3: {}}, epicCloseDue: map[int][]int{n: children}}
 	f.ForgetWrites()
 	return f, d
 }

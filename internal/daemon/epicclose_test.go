@@ -256,7 +256,8 @@ func TestEpicCloseDropped(t *testing.T) {
 
 // epicCloseReplayFake is a setup for Replay: o/r with issue 1 an epic at
 // planned with twoStories' plan, and its stories, #2 and #3, filed and
-// linked under it, closed, with the App's record of them on issue 1, as
+// linked under it, closed, each with stage:completed, as the close judge
+// leaves an accepted close, with the App's record of them on issue 1, as
 // comment 1005.
 func epicCloseReplayFake(t testing.TB) *githubtest.Fake {
 	t.Helper()
@@ -266,6 +267,7 @@ func epicCloseReplayFake(t testing.TB) *githubtest.Fake {
 		n := f.AddIssue(app, w.title, fmt.Sprintf("A story.\n\n<!-- issuedog:origin plan=#1 rev=1 item=S%d -->", i+1), "type:story")
 		f.SetParent(n, 1)
 		f.CloseBy(n, "owner")
+		f.AddLabel(n, app, "stage:completed")
 	}
 	post(t, f, 1005, app, wantRecord(twoStories))
 	f.ForgetWrites()
@@ -489,5 +491,133 @@ func TestEpicCloseDigestUntrusted(t *testing.T) {
 	doneStep(t, f, d, "the owner's close of #4", assignAdd(1, "owner"))
 	if got, want := doneListed(f, digestN), []string{"#1 Finished story p2 1"}; !slices.Equal(got, want) {
 		t.Errorf("after the owner's close of #4, the digest lists %q; want %q", got, want)
+	}
+}
+
+// epicCloseUnlabelled takes each stage label off issues ns as login, then
+// closes each as login, as between the pass that files them and the next
+// poll, so no visit has read them yet.
+func epicCloseUnlabelled(f *githubtest.Fake, login string, ns ...int) {
+	for _, n := range ns {
+		for _, l := range slices.Clone(f.State().Issues[n-1].Labels) {
+			if strings.HasPrefix(l, "stage:") {
+				f.RemoveLabel(n, login, l)
+			}
+		}
+		f.CloseBy(n, login)
+	}
+}
+
+// A close of a story with no stage label, which no visit read with one,
+// isn't judged (SPEC §16), so it never closes the epic (SPEC §7.3): here
+// mallory, a write collaborator, takes the stage label off each story the
+// first pass filed, #2 and #3, before the next poll, and closes it. The
+// epic stays open, with no write. The owner's close made so keeps it open
+// too, till the owner adds stage:completed to each story: that has the
+// close judge judge its close, and the pass closes the epic. On
+// mallory's, the close judge reopens each story instead, and the epic
+// stays open.
+func TestEpicCloseUnlabelled(t *testing.T) {
+	t.Parallel()
+	for _, by := range []string{"mallory", "owner"} {
+		t.Run(by, func(t *testing.T) {
+			t.Parallel()
+			f, o := newFake(t), newOrigin(t)
+			doneParent(t, f, "epic", twoStories)
+			d := newDaemon(t, f, o, nil)
+			iterate(t, d)
+			if got := f.State().Issues[0].SubIssues; !slices.Equal(got, []int{2, 3}) {
+				t.Fatalf("the epic's sub-issues are %v; want its stories, 2 and 3", got)
+			}
+			from := len(f.Writes())
+			epicCloseUnlabelled(f, by, 2, 3)
+			for _, step := range []string{"the pass after the stories closed", "the pass after", "the pass after that"} {
+				epicCloseIterate(t, d, false, step)
+				epicCloseOpen(t, f, from, step)
+			}
+			comments := len(f.State().Issues[0].Comments)
+			f.AddLabel(2, "owner", "stage:completed")
+			f.AddLabel(3, "owner", "stage:completed")
+			iterate(t, d)
+			if by == "owner" {
+				epicCloseChecked(t, f, comments, "Every child of this epic is closed, so I've closed it as completed. Its children: #2, #3.", 1004)
+				return
+			}
+			epicCloseOpen(t, f, from, "the pass after the owner's stage:completed")
+			if f.State().Issues[1].Closed || f.State().Issues[2].Closed {
+				t.Errorf("#2 closed %t, #3 closed %t; want mallory's closes reverted", f.State().Issues[1].Closed, f.State().Issues[2].Closed)
+			}
+		})
+	}
+}
+
+// A finished story's item (#278) takes the same judgement
+// (digestDoneStands): mallory's closes of a story's children, #2 to #4,
+// with their stage labels taken off before the next poll, neither list
+// the story in the digest nor assign notify.
+func TestEpicCloseDigestUnlabelled(t *testing.T) {
+	t.Parallel()
+	f, o := newFake(t), digestNotifyOrigin(t)
+	doneParent(t, f, "story", storyTasks)
+	d := doneStoryDaemon(t, f, o)
+	doneStep(t, f, d, "the pass that creates the children")
+	digestN := doneDigest(t, f)
+	epicCloseUnlabelled(f, "mallory", 2, 3, 4)
+	for _, step := range []string{"the pass after mallory's closes", "the pass after", "the pass after that"} {
+		doneStep(t, f, d, step)
+		if got := doneListed(f, digestN); len(got) != 0 {
+			t.Errorf("%s: the digest lists %q; want no finished story", step, got)
+		}
+	}
+}
+
+// A story closed again after its close was judged and accepted is judged
+// again before it counts (SPEC §6.4): here the owner's close of #3 is
+// judged, then, before the next poll, mallory reopens #3 and closes it
+// again, and the owner closes #2, the last story open. The pass that
+// lists them doesn't close the epic: while GitHub hasn't written
+// mallory's close's event, nor when it's judged and reverted, but the
+// story's read after its reopen fails.
+func TestEpicCloseClosedAgain(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		// close closes #3 again as mallory, with the fault, and reports
+		// whether the pass fails on it.
+		close func(f *githubtest.Fake) bool
+	}{
+		{"its event late", func(f *githubtest.Fake) bool {
+			f.LagEvents(5 * time.Second)
+			f.CloseBy(3, "mallory")
+			f.LagEvents(0)
+			return false
+		}},
+		{"its re-read failing", func(f *githubtest.Fake) bool {
+			f.CloseBy(3, "mallory")
+			f.BeforeRequest(func(r githubtest.Request) bool { return r.Method == http.MethodPatch && r.Path == "/issues/3" }, func() {
+				f.AnswerOnce(func(r githubtest.Request) bool { return r.Method == http.MethodGet && r.Path == "/issues/3" }, http.StatusInternalServerError)
+			})
+			return true
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f, o := newFake(t), newOrigin(t)
+			doneParent(t, f, "epic", twoStories)
+			d := newDaemon(t, f, o, nil)
+			iterate(t, d)
+			iterate(t, d)
+			f.CloseBy(3, "owner")
+			iterate(t, d)
+			if got := f.State().Issues[2].Labels; !slices.Contains(got, "stage:completed") {
+				t.Fatalf("#3's labels are %q; want the owner's close judged, at stage:completed", got)
+			}
+			from := len(f.Writes())
+			f.ReopenBy(3, "mallory")
+			fails := tc.close(f)
+			f.CloseBy(2, "owner")
+			epicCloseIterate(t, d, fails, "the pass after mallory's close")
+			epicCloseOpen(t, f, from, "the pass after mallory's close")
+		})
 	}
 }

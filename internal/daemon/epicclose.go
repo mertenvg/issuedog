@@ -26,8 +26,9 @@ import (
 // dropped (SPEC §6.4) counts for nothing. A child's close changes nothing
 // on the epic, so, as for a finished story, they're read on the epic's
 // last visit (Daemon.epicCloseSet), and judged on each pass from what the
-// poll listed (digestDoneStands), with no request. Only once every one is
-// listed closed is the epic read again and closed (Daemon.epicCloseOne).
+// poll listed and the closes judged (digestDoneStands), with no request.
+// Only once every one is listed closed, its close judged and accepted, is
+// the epic read again and closed (Daemon.epicCloseOne).
 
 // epicCloseChildren returns the children of s, an issue at planned with
 // state is, that the clean record of its approved plan revision's
@@ -123,14 +124,16 @@ func (d *Daemon) epicCloseSet(s *github.Snapshot, dirt Dirt) {
 // epicClosePass closes each epic epicCloseSet keeps whose children have
 // all closed (epicCloseOne). Iterate calls it after the visits. Each one
 // is judged as a finished story's item is (digestDoneStands): every child
-// its record names is one the poll last listed closed, and no open
-// snapshot names the epic as its parent. That makes no request, so a pass
-// with none to close costs nothing. A child whose close is still to
-// judge, which may be untrusted, keeps the epic open (SPEC §6.4). An epic
-// that left the pipeline is forgotten, and one to be read again, as when
-// its visit failed or a command touched it, waits for its next good
-// visit: step 1 may hold it then, as for a discussion trigger, which
-// epicCloseOne's fresh read doesn't look for.
+// its record names is one the poll last listed closed, whose close was
+// judged and accepted, and no open snapshot names the epic as its parent.
+// That makes no request, so a pass with none to close costs nothing. A
+// child whose close is still to judge, which may be untrusted, keeps the
+// epic open (SPEC §6.4), and so does one whose close is never judged, as
+// for a child with no stage label (SPEC §16). An epic that left the
+// pipeline is forgotten, and one to be read again, as when its visit
+// failed or a command touched it, waits for its next good visit: step 1
+// may hold it then, as for a discussion trigger, which epicCloseOne's
+// fresh read doesn't look for.
 func (d *Daemon) epicClosePass(ctx context.Context) error {
 	var errs []error
 	for _, n := range slices.Sorted(maps.Keys(d.epicCloseDue)) {
