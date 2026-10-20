@@ -28,7 +28,8 @@ const firstIssueType = 500
 
 // issueTypeNamed is the org's issue type named name, ignoring case, as a
 // new value with name as given and the type's ID, which a name the org
-// hasn't seen yet gets now. "" gets no ID. f is locked.
+// hasn't seen yet gets now, with name as the org shows it from then on
+// (orgIssueTypes). "" gets no ID. f is locked.
 func (f *Fake) issueTypeNamed(name string) *gogithub.IssueType {
 	t := &gogithub.IssueType{Name: &name}
 	if name == "" {
@@ -43,6 +44,10 @@ func (f *Fake) issueTypeNamed(name string) *gogithub.IssueType {
 			f.orgTypes = map[string]int64{}
 		}
 		f.orgTypes[key] = id
+		if f.orgTypeNames == nil {
+			f.orgTypeNames = map[int64]string{}
+		}
+		f.orgTypeNames[id] = name
 		delete(f.goneTypes, key)
 	}
 	t.ID = &id
@@ -60,10 +65,11 @@ func (f *Fake) IssueTypeID(name string) int64 {
 
 // RenameOrgIssueType renames the org's issue type from to to, ignoring
 // case, keeping its ID, as an org owner may. Every issue of that type shows
-// the new name, while the events on their timelines keep the name they were
-// written with. It changes no issue's updated_at, as GitHub isn't known to.
-// The old name is no type any more, so setting it through the API is
-// refused.
+// the new name, and so does the org's list of its types (orgIssueTypes),
+// while the events on their timelines keep the name they were written
+// with. It changes no issue's updated_at, as GitHub isn't known to. The old
+// name is no type any more, so setting it through the API is refused with
+// a 422.
 func (f *Fake) RenameOrgIssueType(from, to string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -75,6 +81,12 @@ func (f *Fake) RenameOrgIssueType(from, to string) {
 	}
 	f.goneTypes[strings.ToLower(from)] = true
 	delete(f.goneTypes, strings.ToLower(to))
+	f.orgTypeNames[id] = to
+	for i, t := range f.checks.issueTypes {
+		if strings.EqualFold(t.Name, from) {
+			f.checks.issueTypes[i].Name = to
+		}
+	}
 	for _, is := range f.issues {
 		if is.GetType().GetID() == id {
 			// A new value: the events' types keep the old name.
