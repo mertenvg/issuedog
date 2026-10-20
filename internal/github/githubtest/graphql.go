@@ -179,7 +179,8 @@ func (f *Fake) graphql(c *call) (int, any) {
 		errs = append(errs, failed...)
 		return reply(data)
 	}
-	if v.Number < 1 || v.Number > len(f.issues) || f.issues[v.Number-1].IsPullRequest() {
+	// A transferred issue isn't this repo's to answer for (transfer.go).
+	if v.Number < 1 || v.Number > len(f.issues) || f.issues[v.Number-1].IsPullRequest() || !f.issues[v.Number-1].listed() {
 		errs = append(errs, map[string]any{"type": "NOT_FOUND", "message": fmt.Sprintf("Could not resolve to an Issue with the number of %d.", v.Number)})
 		return reply(map[string]any{"repository": map[string]any{"issue": nil}})
 	}
@@ -251,14 +252,19 @@ func (f *Fake) HistoryCap(n int) {
 // per page, capped as HistoryCap says, with an issue body's text after each
 // edit as its diff. A cursor is the number of older
 // entries. As on GitHub, an unknown ID's node is null, with a NOT_FOUND
-// error whose path names it. A bad cursor is the only other error.
+// error whose path names it, as is a transferred issue's node and its
+// comments' (transfer.go). A bad cursor is the only other error.
 func (f *Fake) history(ids []string, cursor *string) ([]any, []map[string]any, string) {
 	histories, bodies := map[string][]lastEdit{}, map[string]bool{}
 	for _, is := range f.issues {
-		histories[issueNode(is.GetNumber())], bodies[issueNode(is.GetNumber())] = is.history, true
+		if is.listed() {
+			histories[issueNode(is.GetNumber())], bodies[issueNode(is.GetNumber())] = is.history, true
+		}
 	}
 	for _, c := range f.comments {
-		histories[commentNode(c.GetID())] = c.history
+		if f.issues[c.issue-1].listed() {
+			histories[commentNode(c.GetID())] = c.history
+		}
 	}
 	nodes, errs := []any{}, []map[string]any{}
 	for i, id := range ids {

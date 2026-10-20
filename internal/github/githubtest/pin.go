@@ -45,13 +45,13 @@ func (f *Fake) SetPinned(number int, pinned bool) {
 
 // pinIssue answers the pinIssue mutation for the issue whose node ID is id,
 // returning the data and the errors. As on GitHub, an unknown node is a
-// NOT_FOUND error. Pinning a pinned issue changes nothing and succeeds. A pin
-// doesn't change the issue's updated_at, but moves the clock on, as every
-// change does.
+// NOT_FOUND error, as is a transferred issue (transfer.go). Pinning a
+// pinned issue changes nothing and succeeds. A pin doesn't change the
+// issue's updated_at, but moves the clock on, as every change does.
 func (f *Fake) pinIssue(id string) (any, []map[string]any) {
 	i := slices.IndexFunc(f.issues, func(is *issue) bool { return is.GetNodeID() == id })
 	switch {
-	case i < 0 || f.issues[i].IsPullRequest():
+	case i < 0 || f.issues[i].IsPullRequest() || !f.issues[i].listed():
 		return map[string]any{"pinIssue": nil}, []map[string]any{{"type": "NOT_FOUND", "path": []any{"pinIssue"},
 			"message": fmt.Sprintf("Could not resolve to a node with the global id of '%s'", id)}}
 	case f.pinFailure != "":

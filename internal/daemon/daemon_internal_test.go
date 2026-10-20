@@ -47,7 +47,11 @@ func TestHistoriesKeyedOnEditAndBody(t *testing.T) {
 	}
 }
 
-// The fake can delete an issue, but not answer 410 or 301.
+// The fake can delete an issue, but not answer 410. A transfer shows as
+// github.ErrTransferred, or as the 404 of the GET our client follows
+// GitHub's 301 with. A RedirectionError, even a 301's, never reaches gone
+// from our client, so it's no sign of a gone issue, and is read again
+// (#239).
 func TestGone(t *testing.T) {
 	t.Parallel()
 	status := func(code int) error {
@@ -59,7 +63,7 @@ func TestGone(t *testing.T) {
 	}{
 		{status(http.StatusNotFound), true},
 		{status(http.StatusGone), true},
-		{fmt.Errorf("snapshot: %w", &gogithub.RedirectionError{StatusCode: http.StatusMovedPermanently}), true},
+		{fmt.Errorf("snapshot: %w", &gogithub.RedirectionError{StatusCode: http.StatusMovedPermanently}), false},
 		{fmt.Errorf("snapshot: %w", github.ErrTransferred), true},
 		{status(http.StatusInternalServerError), false},
 		{fmt.Errorf("snapshot: %w", &gogithub.RedirectionError{StatusCode: http.StatusFound}), false},
