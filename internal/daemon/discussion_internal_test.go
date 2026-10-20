@@ -173,6 +173,53 @@ func TestDiscWhat(t *testing.T) {
 	}
 }
 
+// Only a write collaborator's edit of their own comment after a code
+// owner approved it gets the sentence that accepting the edit doesn't
+// approve the new text, and how to approve it, naming its comment, in its
+// notice and, shorter, in the digest: no other kind does, nor a trigger
+// known from its record alone. Its text is the App's only, so a login in
+// the trigger doesn't reach it.
+func TestEditNoticeApproval(t *testing.T) {
+	t.Parallel()
+	const (
+		notice = "Accepting the edit releases the hold but doesn't approve the new text: " +
+			"to approve it, remove your 👍 from comment 7 and add it again."
+		digest = "Accepting it doesn't approve the new text: remove your 👍 from comment 7 and add it again."
+	)
+	for _, tt := range []struct {
+		name           string
+		tr             discTrigger
+		notice, digest string
+	}{
+		{"an own edit", discTrigger{Kind: discOwnEdit, By: "@mallory", ID: 7}, notice, digest},
+		{"an own edit known from its record", discTrigger{Kind: discOwnEdit, ID: 7, FromRecord: true}, "", ""},
+		{"a comment", discTrigger{Kind: discComment, By: "mallory", ID: 7}, "", ""},
+		{"an edit of a comment", discTrigger{Kind: discEdit, By: "mallory", ID: 7, Of: "owner"}, "", ""},
+		{"an edit of the description", discTrigger{Kind: discEdit, By: "mallory", ID: state.BodyID, Of: "owner"}, "", ""},
+		{"a deletion", discTrigger{Kind: discDeletion, By: "mallory", Of: "owner"}, "", ""},
+		{"a rename", discTrigger{Kind: discRename, By: "mallory", Title: "x"}, "", ""},
+		{"a close", discTrigger{Kind: discClose, By: "mallory"}, "", ""},
+	} {
+		if got := editNoticeApproval(tt.tr); got != tt.notice {
+			t.Errorf("%s: editNoticeApproval(%+v) = %q, want %q", tt.name, tt.tr, got, tt.notice)
+		}
+		if got := editNoticeDigest(tt.tr); got != tt.digest {
+			t.Errorf("%s: editNoticeDigest(%+v) = %q, want %q", tt.name, tt.tr, got, tt.digest)
+		}
+	}
+}
+
+// editNoticeAppend adds a sentence after a space, and nothing for none.
+func TestEditNoticeAppend(t *testing.T) {
+	t.Parallel()
+	if got, want := editNoticeAppend("Text.", "More."), "Text. More."; got != want {
+		t.Errorf("editNoticeAppend = %q, want %q", got, want)
+	}
+	if got, want := editNoticeAppend("Text.", ""), "Text."; got != want {
+		t.Errorf("editNoticeAppend with no sentence = %q, want %q", got, want)
+	}
+}
+
 // The origin is the latest transition's in the clarifying after a hold,
 // and the hold's from stage anywhere else, or with no origin to carry.
 func TestDiscOrigin(t *testing.T) {

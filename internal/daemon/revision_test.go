@@ -85,7 +85,21 @@ func approveBoth(t testing.TB, f *githubtest.Fake) {
 	f.AddReaction(1002, "owner", "+1")
 }
 
-const dirtyBody = "the issue description has an edit by mallory that wasn't approved, so I can't approve it"
+// dirtyBody is /approve's reason at spec-review for mallory's edit to the
+// body. It says no revision follows, and how to get a new spec (#229), so
+// its reply is final.
+const dirtyBody = "the issue description has an edit by mallory that wasn't approved, so I can't approve it, " +
+	"and I won't post a revision of it. To get a new spec, which replaces the edit, post `/revise <notes>`, or any other comment"
+
+// ivWordingFollows ends /approve's reason at spec-review for a stale
+// revision when ReviewVisit posts the next one (#229).
+const ivWordingFollows = ". I'll post a new revision next. To approve it, react 👍 to it, or post `/approve` after it"
+
+// ivWordingApproveFinal is the final reply to /approve, comment id, for
+// reason.
+func ivWordingApproveFinal(reason, id string) string {
+	return final("/approve", "I didn't apply this command", reason, id)
+}
 
 // approvedRev is the comment approving revision rev of "body" by key, with
 // seen.
@@ -173,8 +187,8 @@ func TestApprove(t *testing.T) {
 				post(t, f, 1002, "owner", "/approve")
 				f.AddReaction(1001, "owner", "+1")
 			}),
-			outcome{comments: []string{rejected("/approve", "the issue description changed after revision 1, "+
-				"so it no longer matches that revision's hash, `"+state.BodyHash("body")+"`", "1002")},
+			outcome{comments: []string{ivWordingApproveFinal("the issue description changed after revision 1, "+
+				"so it no longer matches that revision's hash, `"+state.BodyHash("body")+"`"+ivWordingFollows, "1002")},
 				labels: atReview, downs: []string{"/approve"}}},
 		{"an /approve before the latest revision is rejected",
 			review(func(t testing.TB, f *githubtest.Fake) {
@@ -185,11 +199,11 @@ func TestApprove(t *testing.T) {
 				"To approve that, react 👍 to it, or post `/approve` again", "1002")}, labels: atReview, downs: []string{"/approve"}}},
 		{"an /approve with no revision is rejected",
 			at(state.SpecReview, func(t testing.TB, f *githubtest.Fake) { post(t, f, 1002, "owner", "/approve") }),
-			outcome{comments: []string{rejected("/approve", "there's no revision to approve yet", "1002")}, labels: atReview, downs: []string{"/approve"}}},
+			outcome{comments: []string{ivWordingApproveFinal("there's no revision to approve yet"+ivWordingFollows, "1002")}, labels: atReview, downs: []string{"/approve"}}},
 		{"while the body is dirty, under a note mallory wrote herself, a 👍 approves nothing and /approve is rejected",
-			dirtyReview(false, approveBoth), outcome{comments: []string{rejected("/approve", dirtyBody, "1003")}, labels: atReview, downs: []string{"/approve"}}},
+			dirtyReview(false, approveBoth), outcome{comments: []string{ivWordingApproveFinal(dirtyBody, "1003")}, labels: atReview, downs: []string{"/approve"}}},
 		{"likewise even after the owner edits the body",
-			dirtyReview(true, approveBoth), outcome{comments: []string{rejected("/approve", dirtyBody, "1003")}, labels: atReview, downs: []string{"/approve"}}},
+			dirtyReview(true, approveBoth), outcome{comments: []string{ivWordingApproveFinal(dirtyBody, "1003")}, labels: atReview, downs: []string{"/approve"}}},
 		{"an /approve the table can't apply is rejected, and a later command is still processed",
 			review(func(t testing.TB, f *githubtest.Fake) {
 				f.SetParent(1, f.AddIssue("owner", "Epic", "epic"))

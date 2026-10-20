@@ -256,10 +256,22 @@ func (a *Applier) issueTypeRevertGuard(s *github.Snapshot) *github.IssueTypeGuar
 	// The issue's own type, as GitHub shows it, with its ID: not the type
 	// that stands in for one left out on an earlier check of s.
 	if lo := s.TypeLeftOut; lo != nil {
-		return &github.IssueTypeGuard{Type: lo.Name, ID: lo.ID}
+		return &github.IssueTypeGuard{Type: lo.Name, ID: lo.ID, Names: a.typeRenames}
 	}
 	name, id := issueTypeOf(s)
-	return &github.IssueTypeGuard{Type: name, ID: id}
+	return &github.IssueTypeGuard{Type: name, ID: id, Names: a.typeRenames}
+}
+
+// typeRenamePass starts or ends a pass's memory of the org's issue types'
+// names, which a revert of the issue type reads by the type's ID (#245):
+// on, a new one, which reads the org's list at most once, the first time
+// a revert needs it, and off, none, so each revert reads it afresh, as a
+// stage run's long apply does, which a pass's memory would leave stale.
+func (a *Applier) typeRenamePass(on bool) {
+	a.typeRenames = nil
+	if on {
+		a.typeRenames = &github.IssueTypeNames{}
+	}
 }
 
 // override records ev, a trusted user's move to stage to, then sets the

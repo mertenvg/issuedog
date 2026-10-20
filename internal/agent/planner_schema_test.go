@@ -198,6 +198,109 @@ func TestPlannerPrompt(t *testing.T) {
 			t.Errorf("planner.md names the old check kind %q", old)
 		}
 	}
+
+	// A human task's "Done when" text is shown in the plan comment, so only
+	// its steps, links and check may name files (#266). Each place the
+	// prompt says where a human task's files go says so too.
+	detail := plannerPromptSection(t, p, "Levels of detail")
+	var filesGo string
+	for _, para := range strings.Split(detail, "\n\n") {
+		for _, s := range strings.Split(para, ". ") {
+			if strings.Contains(s, "`task.context`") && filesGo == "" {
+				filesGo = s
+			}
+		}
+	}
+	for _, field := range []string{"`steps`", "`links`", "`check`"} {
+		if !strings.Contains(filesGo, field) {
+			t.Errorf("planner.md's sentence on where files go doesn't name a human task's %s: %q", field, filesGo)
+		}
+	}
+	var taskBody string
+	for _, line := range strings.Split(detail, "\n") {
+		if strings.HasPrefix(line, "- **A task**") {
+			taskBody = line
+			break
+		}
+	}
+	if !strings.Contains(taskBody, "`done_when.text`") || !doneWhenShown.MatchString(taskBody) {
+		t.Errorf("planner.md's task bullet doesn't say a human task's `done_when.text` is shown: %q", taskBody)
+	}
+	humans := strings.Split(strings.TrimSpace(plannerPromptSection(t, p, "Human tasks")), "\n\n")
+	last := humans[len(humans)-1]
+	for _, field := range []string{"`steps`", "`links`", "`check`", "`done_when.text`"} {
+		if !strings.Contains(last, field) {
+			t.Errorf("planner.md's last paragraph on human tasks doesn't name %s: %q", field, last)
+		}
+	}
+	if !doneWhenShown.MatchString(last) || !namesNoFile.MatchString(last) {
+		t.Errorf("planner.md's last paragraph on human tasks doesn't say `done_when.text` is shown and the other fields name no file: %q", last)
+	}
+}
+
+// doneWhenShown and namesNoFile are how the prompt and the schema say a
+// human task's "Done when" text is shown in the plan comment, and names no
+// file.
+var (
+	doneWhenShown = regexp.MustCompile(`(?i)\bshow(n|s)\b`)
+	namesNoFile   = regexp.MustCompile(`(?i)\bnames? (none|no files?)\b`)
+)
+
+// plannerPromptSection returns the text of planner.md's "## heading"
+// section, up to the next heading. A missing section fails the test.
+func plannerPromptSection(t *testing.T, p, heading string) string {
+	t.Helper()
+	_, section, ok := strings.Cut(p, "\n## "+heading+"\n")
+	if !ok {
+		t.Fatalf("planner.md has no %q section", heading)
+	}
+	section, _, _ = strings.Cut(section, "\n## ")
+	return section
+}
+
+// The schema, which every planner run is sent, says as the prompt does that
+// a human task's "Done when" text is shown in the plan comment and names no
+// file (#266): on the text itself, on the human task, and on the plan,
+// whose fields are all shown but the task bodies.
+func TestPlannerSchemaDoneWhenShown(t *testing.T) {
+	t.Parallel()
+	raw, err := StageSchema("planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	plan := []any{"properties", "plan"}
+	humanTask := append(append([]any{}, plan...), "properties", "items", "items", "properties", "human_task")
+	text := append(append([]any{}, humanTask...), "properties", "done_when", "properties", "text")
+	for _, d := range []struct {
+		name     string
+		path     []any
+		doneWhen bool // names done_when, as the shown part of a wider field
+		noFile   bool // says the text names no file
+	}{
+		{"done_when.text", text, false, true},
+		{"human_task", humanTask, true, true},
+		// The plan says none of its shown fields names a file.
+		{"plan", plan, true, false},
+	} {
+		desc, ok := valueAt(t, doc, append(append([]any{}, d.path...), "description")...).(string)
+		if !ok {
+			t.Errorf("%s has no description", d.name)
+			continue
+		}
+		if !doneWhenShown.MatchString(desc) {
+			t.Errorf("%s's description doesn't say the plan comment shows the \"Done when\" text: %q", d.name, desc)
+		}
+		if d.doneWhen && !strings.Contains(desc, "done_when") {
+			t.Errorf("%s's description doesn't name done_when: %q", d.name, desc)
+		}
+		if d.noFile && !namesNoFile.MatchString(desc) {
+			t.Errorf("%s's description doesn't say the \"Done when\" text names no file: %q", d.name, desc)
+		}
+	}
 }
 
 // plannerUnsupported are the keywords the planner's schema still never

@@ -18,6 +18,26 @@ func (f *Fake) FailPin(message string) {
 	f.pinFailure = message
 }
 
+// FailPinStatus makes every later pinIssue mutation answer HTTP status
+// alone, with its status text as the message and no pin, as GitHub might
+// for bad credentials (401) or a missing permission (403), or as a glitch
+// might (5xx). The mutation is still a write, logged as any other.
+// FailPinStatus(0) lets pins work again.
+func (f *Fake) FailPinStatus(status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pinStatus = status
+}
+
+// FailIsPinned makes every later isPinned query answer HTTP status alone,
+// with its status text as the message, as a glitch might. FailIsPinned(0)
+// lets them work again.
+func (f *Fake) FailIsPinned(status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pinnedFail = status
+}
+
 // SetPinned pins or unpins an issue by hand, as the owner can on GitHub.
 func (f *Fake) SetPinned(number int, pinned bool) {
 	f.edit(number, func(is *issue) { is.pinned = pinned })
@@ -25,13 +45,13 @@ func (f *Fake) SetPinned(number int, pinned bool) {
 
 // pinIssue answers the pinIssue mutation for the issue whose node ID is id,
 // returning the data and the errors. As on GitHub, an unknown node is a
-// NOT_FOUND error. Pinning a pinned issue changes nothing and succeeds. A pin
-// doesn't change the issue's updated_at, but moves the clock on, as every
-// change does.
+// NOT_FOUND error, as is a transferred issue (transfer.go). Pinning a
+// pinned issue changes nothing and succeeds. A pin doesn't change the
+// issue's updated_at, but moves the clock on, as every change does.
 func (f *Fake) pinIssue(id string) (any, []map[string]any) {
 	i := slices.IndexFunc(f.issues, func(is *issue) bool { return is.GetNodeID() == id })
 	switch {
-	case i < 0 || f.issues[i].IsPullRequest():
+	case i < 0 || f.issues[i].IsPullRequest() || !f.issues[i].listed():
 		return map[string]any{"pinIssue": nil}, []map[string]any{{"type": "NOT_FOUND", "path": []any{"pinIssue"},
 			"message": fmt.Sprintf("Could not resolve to a node with the global id of '%s'", id)}}
 	case f.pinFailure != "":

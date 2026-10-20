@@ -103,6 +103,23 @@ func discNotice(what, key string) string {
 		"<!-- issuedog:notice key=%s -->", what, key)
 }
 
+// editNoticeSentence is the sentence a write collaborator's edit of their
+// own comment id, after a code owner approved it, adds after its hold's or
+// its notice's own: accepting the edit doesn't approve the new text, and
+// how to approve it (SPEC §6.4).
+func editNoticeSentence(id int64) string {
+	return fmt.Sprintf("Accepting the edit releases the hold but doesn't approve the new text: "+
+		"to approve it, remove your 👍 from comment %d and add it again.", id)
+}
+
+// editNoticeWith is body, the App's comment as discHeld or discNotice
+// makes it, with editNoticeSentence(id) at the end of its first paragraph,
+// before its cc line.
+func editNoticeWith(body string, id int64) string {
+	head, rest, _ := strings.Cut(body, "\n\n")
+	return head + " " + editNoticeSentence(id) + "\n\n" + rest
+}
+
 // discNoticeMarker is a notice marker keyed key.
 func discNoticeMarker(key string) string { return "<!-- issuedog:notice key=" + key + " -->" }
 
@@ -317,7 +334,10 @@ func TestDiscEditHolds(t *testing.T) {
 }
 
 // A write collaborator's edit of their own comment after a trusted 👍
-// approved it is a trigger of its own, with one notice. An edit before
+// approved it is a trigger of its own, with one notice, which says that
+// accepting the edit doesn't approve the new text, and how to approve it
+// (editNoticeSentence), both as a notice of its own and as the hold's
+// comment. Each runs under Replay (discCheck). An edit before
 // the 👍, or after an untrusted 👍, isn't. On an issue the owner held,
 // neither their comment nor their edit writes a hold marker.
 func TestDiscOwnApprovedEdit(t *testing.T) {
@@ -338,7 +358,7 @@ func TestDiscOwnApprovedEdit(t *testing.T) {
 		discCheck(t, setup, 1, func(f *githubtest.Fake) map[int]issueWant {
 			key := discEditKey(t, f, 1, 1003)
 			return map[int]issueWant{1: {[]string{"stage:held"}, []string{
-				discNotice("`mallory` edited their comment 1003 after a code owner approved it", key)}}}
+				editNoticeWith(discNotice("`mallory` edited their comment 1003 after a code owner approved it", key), 1003)}}}
 		})
 	})
 	// Their comment from before the first transition marker holds nothing,
@@ -359,9 +379,9 @@ func TestDiscOwnApprovedEdit(t *testing.T) {
 		}
 		discCheck(t, setup, 1, func(f *githubtest.Fake) map[int]issueWant {
 			key := discEditKey(t, f, 1, 1001)
-			return map[int]issueWant{1: {[]string{"stage:held"}, []string{discHeld("ready",
+			return map[int]issueWant{1: {[]string{"stage:held"}, []string{editNoticeWith(discHeld("ready",
 				"`mallory` edited their comment 1001 after a code owner approved it",
-				"from=ready to=held at=ready origin=ready reason=discussion event="+key+" seen=1002", discNoticeMarker(key))}}}
+				"from=ready to=held at=ready origin=ready reason=discussion event="+key+" seen=1002", discNoticeMarker(key)), 1001)}}}
 		})
 	})
 	for name, do := range map[string]func(f *githubtest.Fake, id int64){

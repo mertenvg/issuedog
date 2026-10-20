@@ -30,6 +30,10 @@ type IssueTypeGuard struct {
 	// ID is the issue type's ID, as GitHub gives it with the issue, or 0
 	// for none, or if it isn't known (SameIssueType).
 	ID int64
+	// Names, if set, is what the org's issue types are named now, which a
+	// revert reads once for the pass it's kept for (IssueTypeNames). If
+	// nil, each revert that needs a name reads the org's list.
+	Names *IssueTypeNames
 }
 
 // IssueTypeRevert is a revert of the issue type that CheckLabels made
@@ -44,7 +48,9 @@ type IssueTypeRevert struct {
 	// event explains.
 	By string
 	// From is the type on the issue, and To the type that stands, which the
-	// revert sets, each as GitHub names it, or "" for none.
+	// revert sets, each as GitHub names it, or "" for none. CheckLabels
+	// gives To as the org names the type now, by ToID, which may not be
+	// the name on the timeline, if the org renamed it (typeRenameCurrent).
 	From, To string
 	// ToID is To's ID, as the issue-type event that stands gives it, or 0
 	// for none, or if it doesn't give one.
@@ -139,7 +145,8 @@ func (r *labelRules) issueTypeRevertStanding(ctx context.Context, l *labelState)
 //     have no event yet;
 //   - is the type the newest event left, an untrusted change: it's
 //     reverted, keyed by that event, with a comment posted once (reverted
-//     holds the keys posted already);
+//     holds the keys posted already), to the type that stands by the name
+//     the org gives it now (typeRenameCurrent);
 //   - else, no event explains it yet. GitHub writes issue-type events a
 //     second or more late, as it does label events, so it's dealt with as
 //     an unexplained label is, from when it was first found so, by seen's
@@ -195,6 +202,11 @@ func (r *labelRules) issueTypeRevertGuard(ctx context.Context, l *labelState, re
 			latest = l.events[last].GetID()
 		}
 		rv.Key = "issue-type:" + url.QueryEscape(strings.ToLower(guard.Type)) + "@" + strconv.FormatInt(latest, 10)
+	}
+	// The type that stands is set back by the name the org gives it now,
+	// as GitHub refuses one the org renamed away (#245).
+	if err := r.typeRenameCurrent(ctx, &rv, guard.Names); err != nil {
+		return 0, nil, nil, "", fmt.Errorf("check the issue type: %w", err)
 	}
 	rv.Posted = reverted[rv.Key]
 	if err := r.c.RevertIssueType(ctx, r.owner, r.repo, r.number, rv); err != nil {

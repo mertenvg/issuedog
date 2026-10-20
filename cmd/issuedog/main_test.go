@@ -890,9 +890,14 @@ func TestRunStartupFailures(t *testing.T) {
 	}{
 		"no repo": {environ: without("ISSUEDOG_REPO"), code: 1, want: `reading the settings: ISSUEDOG_REPO is "", not owner/name`},
 		"slug": {setup: func(t *testing.T, _ *githubtest.Fake) {
-			dead := httptest.NewServer(http.NotFoundHandler())
-			dead.Close()
-			apiURL = dead.URL
+			// A GitHub that stays up and fails every request, so the slug
+			// read fails on purpose. A closed server's port could be taken
+			// by another test binary's fake, which would answer GET /app.
+			down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, `{"message":"down on purpose"}`, http.StatusServiceUnavailable)
+			}))
+			t.Cleanup(down.Close)
+			apiURL = down.URL
 		}, code: 1, want: "starting the daemon: reading the App's slug: github app: "},
 		"token": {setup: func(t *testing.T, f *githubtest.Fake) {
 			target, err := url.Parse(f.URL())

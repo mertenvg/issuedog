@@ -246,3 +246,71 @@ func TestUserCredential(t *testing.T) {
 		t.Error("an unknown user should fail")
 	}
 }
+
+// TestSaveResultDirSyncAfterRename syncs the runs dir once, after the
+// result is renamed into place.
+func TestSaveResultDirSyncAfterRename(t *testing.T) {
+	t.Parallel()
+	r := &Runner{StateDir: t.TempDir()}
+	dir := filepath.Join(r.StateDir, "runs")
+	path := filepath.Join(dir, "run-1.json")
+	var synced []string
+	r.dirSyncFunc = func(d string) error {
+		synced = append(synced, d)
+		if got, err := os.ReadFile(path); err != nil || string(got) != fakeOutput {
+			t.Errorf("at the sync, the result file = %q, %v; want the output in place", got, err)
+		}
+		return nil
+	}
+	if err := r.saveResult("run-1", []byte(fakeOutput)); err != nil {
+		t.Fatal(err)
+	}
+	if len(synced) != 1 || synced[0] != dir {
+		t.Errorf("synced %q, want [%q]", synced, dir)
+	}
+}
+
+// TestSaveResultDirSyncErrorReturned returns a failed sync's error, wrapped
+// and naming the result, and leaves no temp file. The renamed result
+// stays: the data in it is synced already, and a run whose result wasn't
+// saved fails, so the daemon's cleanup removes it.
+func TestSaveResultDirSyncErrorReturned(t *testing.T) {
+	t.Parallel()
+	r := &Runner{StateDir: t.TempDir()}
+	errSync := errors.New("sync failed")
+	r.dirSyncFunc = func(string) error { return errSync }
+	err := r.saveResult("run-1", []byte(fakeOutput))
+	if !errors.Is(err, errSync) {
+		t.Fatalf("err = %v, want the sync error", err)
+	}
+	if !strings.Contains(err.Error(), "run-1.json") {
+		t.Errorf("err = %v, want it to name run-1.json", err)
+	}
+	entries, rerr := os.ReadDir(filepath.Join(r.StateDir, "runs"))
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if len(entries) != 1 || entries[0].Name() != "run-1.json" {
+		t.Errorf("runs has %v, want only run-1.json", entries)
+	}
+}
+
+// TestRunDirSyncErrorFailsTheRun fails a run whose result's sync fails,
+// as one whose result can't be saved, and still returns its output.
+func TestRunDirSyncErrorFailsTheRun(t *testing.T) {
+	t.Parallel()
+	r, s := fakeRun(t, "success", nil)
+	errSync := errors.New("sync failed")
+	r.dirSyncFunc = func(string) error { return errSync }
+	out, err := r.Run(context.Background(), s)
+	if !errors.Is(err, errSync) || !strings.Contains(err.Error(), "saving the result") {
+		t.Fatalf("err = %v, want the sync error, as a failure to save the result", err)
+	}
+	var setup *SetupError
+	if errors.As(err, &setup) {
+		t.Errorf("err = %v is a *SetupError, want it not to be", err)
+	}
+	if string(out) != fakeOutput {
+		t.Errorf("output = %q, want %q", out, fakeOutput)
+	}
+}
