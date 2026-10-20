@@ -362,14 +362,14 @@ func TestReviseAndEdits(t *testing.T) {
 				post(t, f, 1003, "owner", "/approve")
 				f.EditBody(1, "owner", "body v2")
 			}), owners,
-			outcome{comments: []string{rejected("/approve", changed, "1003"), posted(2, "body v2", "", "", "1003")}, labels: atReview, downs: []string{"/approve"}}, nil},
+			outcome{comments: []string{ivWordingApproveFinal(changed+ivWordingFollows, "1003"), posted(2, "body v2", "", "", "1003")}, labels: atReview, downs: []string{"/approve"}}, nil},
 		{"an untrusted edit posts no revision, and approves nothing",
 			review(func(t testing.TB, f *githubtest.Fake) {
 				f.AddReaction(1001, "owner", "+1")
 				post(t, f, 1003, "owner", "/approve")
 				f.EditBody(1, "mallory", "body v2")
 			}), owners,
-			outcome{comments: []string{rejected("/approve", dirtyBody, "1003")}, labels: atReview, downs: []string{"/approve"}}, nil},
+			outcome{comments: []string{ivWordingApproveFinal(dirtyBody, "1003")}, labels: atReview, downs: []string{"/approve"}}, nil},
 		{"an untrusted author's own edit posts no revision, and approves nothing",
 			authored("mallory", func(t testing.TB, f *githubtest.Fake) {
 				f.AddReaction(1001, "owner", "+1")
@@ -398,7 +398,7 @@ func TestReviseAndEdits(t *testing.T) {
 				f.EditBody(1, "owner", "body v3")
 				post(t, f, 1002, "owner", "/approve")
 			}), trusted{"owner": true},
-			outcome{comments: []string{rejected("/approve", strings.Replace(dirtyBody, "mallory", "owner2", 1), "1002")}, labels: atReview, downs: []string{"/approve"}}, nil},
+			outcome{comments: []string{ivWordingApproveFinal(strings.Replace(dirtyBody, "mallory", "owner2", 1), "1002")}, labels: atReview, downs: []string{"/approve"}}, nil},
 		{"the App's edit of an untrusted author's body posts the next revision",
 			authored("mallory", func(t testing.TB, f *githubtest.Fake) { f.EditBody(1, app, "body v2") }), owners,
 			outcome{comments: []string{posted(2, "body v2", "", "", "1001")}, labels: atReview}, nil},
