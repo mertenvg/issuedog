@@ -67,7 +67,8 @@ func (c *Client) TimelineSince(ctx context.Context, owner, repo string, number i
 type issueTypeRevertEvent struct {
 	gogithub.Timeline
 	// IssueType is the type an issue_type_added or issue_type_changed event
-	// set, or nil.
+	// set, or nil. GitHub gives an issue_type_removed event the type it
+	// removed here too, though it leaves none (issueTypeRevertLeft).
 	IssueType *gogithub.IssueType `json:"issue_type,omitempty"`
 	// PrevIssueType is the type an issue_type_changed or issue_type_removed
 	// event replaced, or nil.

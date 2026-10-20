@@ -15,7 +15,9 @@ import (
 // empty name, which removes it, or else issue_type_changed. The event
 // carries the types as GitHub's REST timeline does: issue_type, the type
 // set, and prev_issue_type, the type replaced, each with its ID in the org
-// (IssueTypeID). SetType sets a type with no event.
+// (IssueTypeID). An issue_type_removed event gives the type it removed as
+// its issue_type too, with its ID, as GitHub's do (#246), though it set no
+// type. SetType sets a type with no event.
 func (f *Fake) SetTypeBy(number int, login, name string) int64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -145,13 +147,18 @@ func (f *Fake) issueTypeRevertSet(is *issue, login, name string) int64 {
 }
 
 // issueTypeRevertServe is e as the timeline serves it: with its types, for
-// an issue-type event of is.
+// an issue-type event of is. A removal's issue_type is the type it removed,
+// as GitHub gives it, so a client must not take it for the type it left.
 func (is *issue) issueTypeRevertServe(e *gogithub.Timeline) any {
 	ch, ok := is.typeEvents[e.GetID()]
 	if !ok {
 		return e
 	}
-	return issueTypeRevertEvent{Timeline: e, IssueType: ch.to, PrevIssueType: ch.from}
+	set := ch.to
+	if e.GetEvent() == "issue_type_removed" {
+		set = ch.from
+	}
+	return issueTypeRevertEvent{Timeline: e, IssueType: set, PrevIssueType: ch.from}
 }
 
 // issueTypeRevertEdit sets the issue's type as the App, as the update of
