@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
@@ -195,6 +196,23 @@ func TestEpicClosePassFresh(t *testing.T) {
 	}
 	if len(f.Writes()) != 0 || !d.stale[1] {
 		t.Errorf("writes %+v, stale %t; want none, with #3 not listed closed, and the epic read again", f.Writes(), d.stale[1])
+	}
+}
+
+// A pipeline label on the epic that nothing on the timeline explains yet,
+// as while its event is late, holds the label rules back (ErrLabelsHeld):
+// the epic isn't closed on that read, with no error, and is read again on
+// the next pass.
+func TestEpicClosePassLabelsHeld(t *testing.T) {
+	t.Parallel()
+	f, d := epicClosePassDaemon(t, 2, 3)
+	f.LagEvents(5 * time.Second)
+	f.AddLabel(1, waitOwner.Login, "priority:p1")
+	if err := d.epicClosePass(context.Background()); err != nil {
+		t.Fatalf("epicClosePass = %v; want no error while the label is held back", err)
+	}
+	if epicClosePassClosed(f) || len(f.Writes()) != 0 || !d.stale[1] {
+		t.Errorf("closed %t, writes %+v, stale %t; want it open, with no write, to be read again", epicClosePassClosed(f), f.Writes(), d.stale[1])
 	}
 }
 

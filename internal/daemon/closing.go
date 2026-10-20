@@ -230,6 +230,10 @@ func (d *Daemon) closingPass(ctx context.Context) error {
 		if gone(err) {
 			logr.Infof("%s/%s#%d is gone, deleted or transferred, so its close is forgotten: %v", d.Step.Owner, d.Step.Repo, n, err)
 			d.closingForget(n)
+			// Its close is never judged now, so a parent that waits on it
+			// doesn't take it for closed (digestDoneStands): it waits for
+			// good, as after a restart, which lists it no more.
+			delete(d.closedListed, n)
 			continue
 		}
 		if err != nil {

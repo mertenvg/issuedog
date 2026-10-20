@@ -340,33 +340,56 @@ func epicCloseIterate(t *testing.T, d *daemon.Daemon, wantErr bool, step string)
 // GitHub hasn't written the close's event, while the question of how it
 // was made fails, or when it's judged and reverted, but the story's read
 // after its reopen fails. Once it's judged, it's reverted, and the epic
-// stays open; the owner's close of #3 then closes it.
+// stays open; the owner's close of #3 then closes it. A close that's
+// never judged, forgotten as gone, as when the story is transferred
+// before its event shows, or its timeline answers 404 once, keeps the
+// epic open for good.
 func TestEpicCloseUntrusted(t *testing.T) {
 	t.Parallel()
+	lagged := func(f *githubtest.Fake) {
+		f.LagEvents(5 * time.Second)
+		f.CloseBy(3, "mallory")
+		f.LagEvents(0)
+	}
 	for _, tc := range []struct {
 		name string
 		// close closes #3 as mallory, with the fault, and returns how many
 		// passes fail on it, and mend, which ends the fault, if any.
 		close func(f *githubtest.Fake) (fails int, mend func())
+		// forgotten is set when the close is forgotten as gone, and never
+		// judged: the epic then stays open.
+		forgotten bool
 	}{
 		{"its event late", func(f *githubtest.Fake) (int, func()) {
-			f.LagEvents(5 * time.Second)
-			f.CloseBy(3, "mallory")
-			f.LagEvents(0)
+			lagged(f)
 			return 0, func() { f.Advance(10 * time.Second) }
-		}},
+		}, false},
 		{"its closer unknown", func(f *githubtest.Fake) (int, func()) {
 			event := f.CloseBy(3, "mallory")
 			f.FailCloser(3, event, "", closingFailure)
 			return 2, func() { f.MendCloser(3, event) }
-		}},
+		}, false},
 		{"its re-read failing", func(f *githubtest.Fake) (int, func()) {
 			f.CloseBy(3, "mallory")
 			f.BeforeRequest(func(r githubtest.Request) bool { return r.Method == http.MethodPatch && r.Path == "/issues/3" }, func() {
 				f.AnswerOnce(func(r githubtest.Request) bool { return r.Method == http.MethodGet && r.Path == "/issues/3" }, http.StatusInternalServerError)
 			})
 			return 1, nil
-		}},
+		}, false},
+		{"its story transferred", func(f *githubtest.Fake) (int, func()) {
+			lagged(f)
+			return 0, func() {
+				f.Transfer(3, "o/other")
+				f.Advance(10 * time.Second)
+			}
+		}, true},
+		{"its timeline answering 404 once", func(f *githubtest.Fake) (int, func()) {
+			lagged(f)
+			return 0, func() {
+				f.Advance(10 * time.Second)
+				f.AnswerOnce(func(r githubtest.Request) bool { return r.Method == http.MethodGet && r.Path == "/issues/3/timeline" }, http.StatusNotFound)
+			}
+		}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -381,9 +404,12 @@ func TestEpicCloseUntrusted(t *testing.T) {
 			if mend != nil {
 				mend()
 			}
-			for _, step := range []string{"the pass that judges her close", "the pass after"} {
+			for _, step := range []string{"the pass that judges her close", "the pass after", "the pass after that"} {
 				epicCloseIterate(t, d, false, step)
 				epicCloseOpen(t, f, from, step)
+			}
+			if tc.forgotten {
+				return
 			}
 			if is := f.State().Issues[2]; is.Closed {
 				t.Fatalf("#3 is closed, labelled %q; want mallory's close reverted", is.Labels)
