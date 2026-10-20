@@ -64,6 +64,58 @@ func TestImportReportsTempFileCleanupError(t *testing.T) {
 	}
 }
 
+// TestImportDirSyncAfterRename syncs the key's directory once, after the
+// key is renamed into place. It replaces dirSync, so it isn't parallel.
+func TestImportDirSyncAfterRename(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app-key.pem")
+	data := newKey(t, false)
+	var synced []string
+	defer func(old func(string) error) { dirSync = old }(dirSync)
+	dirSync = func(d string) error {
+		synced = append(synced, d)
+		if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, data) {
+			t.Errorf("at the sync, the key file has %d bytes, err %v; want the new key in place", len(got), err)
+		}
+		return nil
+	}
+	if err := Import(path, bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	if len(synced) != 1 || synced[0] != dir {
+		t.Errorf("synced %q, want [%q]", synced, dir)
+	}
+}
+
+// TestImportDirSyncErrorReturned returns a failed sync's error, wrapped and
+// naming the key, and leaves the renamed key and no temp file. It replaces
+// dirSync, so it isn't parallel.
+func TestImportDirSyncErrorReturned(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app-key.pem")
+	data := newKey(t, false)
+	errSync := errors.New("sync failed")
+	defer func(old func(string) error) { dirSync = old }(dirSync)
+	dirSync = func(string) error { return errSync }
+	err := Import(path, bytes.NewReader(data))
+	if !errors.Is(err, errSync) {
+		t.Fatalf("err = %v, want the sync error", err)
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("err = %v, want it to name %s", err, path)
+	}
+	if got, rerr := os.ReadFile(path); rerr != nil || !bytes.Equal(got, data) {
+		t.Errorf("key file has %d bytes, err %v; want the new key", len(got), rerr)
+	}
+	entries, rerr := os.ReadDir(dir)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if len(entries) != 1 {
+		t.Errorf("dir has %d entries, want only the key", len(entries))
+	}
+}
+
 func TestImportRefusesBadInput(t *testing.T) {
 	ec, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	ecDER, _ := x509.MarshalPKCS8PrivateKey(ec)

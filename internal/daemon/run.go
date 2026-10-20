@@ -20,6 +20,7 @@ import (
 
 	"github.com/mertenvg/issuedog/internal/agent"
 	"github.com/mertenvg/issuedog/internal/config"
+	"github.com/mertenvg/issuedog/internal/dirsync"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/issuedog/internal/workspace"
@@ -1260,7 +1261,7 @@ func (r *Runs) writeLease(l Lease) error {
 		err = os.Rename(f.Name(), r.leasePath())
 	}
 	if err == nil {
-		err = syncDir(r.Runner.StateDir)
+		err = dirsync.Sync(r.Runner.StateDir)
 	}
 	if err != nil {
 		return fmt.Errorf("write the lease: %w", err)
@@ -1320,23 +1321,7 @@ func (r *Runs) remove(path string) error {
 	} else if err != nil {
 		return fmt.Errorf("remove %s: %w", path, err)
 	}
-	return syncDir(filepath.Dir(path))
-}
-
-// syncDir flushes dir's entries to disk.
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return fmt.Errorf("sync %s: %w", dir, err)
-	}
-	err = d.Sync()
-	if cerr := d.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		return fmt.Errorf("sync %s: %w", dir, err)
-	}
-	return nil
+	return dirsync.Sync(filepath.Dir(path))
 }
 
 func (r *Runs) limit() int { return int(r.Daemon.Config.Loop.MaxAttempts) }
