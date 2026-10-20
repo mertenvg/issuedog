@@ -209,3 +209,53 @@ func TestDigestPinFailNoteEditedOut(t *testing.T) {
 		t.Errorf("the next pass wrote %q; want nothing", got)
 	}
 }
+
+// Replay passes for the rewrite when pinIssue fails with a 5xx, which
+// isn't a refusal: the pin, the announcement, then the edit that lists the
+// item under the failure's note.
+func TestDigestPinFail5xxReplay(t *testing.T) {
+	t.Parallel()
+	o := digestNotifyOrigin(t)
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := newFake(t)
+		f.AddIssue(app, "issuedog digest", digestPending)
+		digestError(f, "A", "5")
+		f.FailPinStatus(http.StatusInternalServerError)
+		return f
+	}
+	pass := func(f *githubtest.Fake) error { return digestDaemon(t, f, o, nil).Iterate(context.Background()) }
+	f := setup(t)
+	if err := pass(f); err != nil {
+		t.Fatal(err)
+	}
+	note := "I couldn't pin this issue yet: pinning it failed (HTTP 500). I'll try again when the list changes, or pin it by hand.\n\n"
+	if got := digestWrites(f, 0); !reflect.DeepEqual(got, []string{"POST /graphql", "POST /issues/1/comments", "PATCH /issues/1"}) ||
+		!strings.HasPrefix(f.State().Issues[0].Body, note) || f.State().Issues[0].Pinned {
+		t.Fatalf("writes %q, body %q; want the pin, the announcement, then the edit under the note, and no pin", got, f.State().Issues[0].Body)
+	}
+	githubtest.Replay(t, setup, pass)
+}
+
+// Replay passes for a digest created while the isPinned check fails: the
+// create, the announcement, then the edit that swaps the create's note for
+// the failure's, with no pin.
+func TestDigestPinFailCheckCreateReplay(t *testing.T) {
+	t.Parallel()
+	o := digestNotifyOrigin(t)
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := newFake(t)
+		digestError(f, "A", "5")
+		f.FailIsPinned(http.StatusBadGateway)
+		return f
+	}
+	pass := func(f *githubtest.Fake) error { return digestDaemon(t, f, o, nil).Iterate(context.Background()) }
+	f := setup(t)
+	if err := pass(f); err != nil {
+		t.Fatal(err)
+	}
+	if got := digestWrites(f, 0); !reflect.DeepEqual(got, []string{"POST /issues", "POST /issues/2/comments", "PATCH /issues/2"}) ||
+		!strings.HasPrefix(f.State().Issues[1].Body, digestPinFailCheckNote) || f.State().Issues[1].Pinned {
+		t.Fatalf("writes %q, body %q; want the create, the announcement, then the edit under the note, and no pin", got, f.State().Issues[1].Body)
+	}
+	githubtest.Replay(t, setup, pass)
+}

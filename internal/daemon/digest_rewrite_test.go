@@ -546,8 +546,8 @@ func TestDigestRewriteRanked(t *testing.T) {
 // A failed check of the pin stops nothing (#226): the digest isn't pinned
 // on a read that failed, nor its note dropped, but the note names the
 // failure, and Work runs. An unchanged pass doesn't check again; the next
-// pass that changes the body does, and pins it (#159's verify, survivor
-// N11).
+// pass that changes the body does, and pins it, and its body is the list
+// alone (#159's verify, survivor N11).
 func TestDigestRewritePinCheckFails(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
@@ -568,10 +568,14 @@ func TestDigestRewritePinCheckFails(t *testing.T) {
 	if got := digestRequests(f, reqs); len(got) != 0 {
 		t.Errorf("an unchanged pass sent %+v about the digest; want none", got)
 	}
-	digestError(f, "A", "5")
+	n := digestError(f, "A", "5")
+	want := fmt.Sprintf("1 item waits on you.\n\n### 1. #%d: A\n\n**State error**, priority p2, unblocks 1 open issue (itself included)\n\n"+
+		"- State error `disagreement`, keyed `5`.\n- The stage label disagreed with the marker, so I put it back.\n"+
+		"- React 👍 to the error comment to acknowledge it.\n- Answer here: https://github.com/o/r/issues/%d#issuecomment-1002\n\n"+
+		"<!-- issuedog:digest -->", n, n)
 	if got := digestPass(t, f, d); !reflect.DeepEqual(got, []string{"POST /graphql", "PATCH /issues/1"}) || !f.State().Issues[0].Pinned ||
-		strings.HasPrefix(f.State().Issues[0].Body, "I couldn't pin") {
-		t.Errorf("writes %q, issue %+v; want it pinned once the list changed, and the note gone", got, f.State().Issues[0])
+		f.State().Issues[0].Body != want {
+		t.Errorf("writes %q, issue %+v; want it pinned once the list changed, and the body %q, without the note", got, f.State().Issues[0], want)
 	}
 }
 
