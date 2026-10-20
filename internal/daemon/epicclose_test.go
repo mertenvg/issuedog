@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github"
@@ -294,4 +296,172 @@ func TestEpicCloseReplay(t *testing.T) {
 		t.Errorf("the clean pass's writes to the epic = %q; want %q", epicCloseWritesTo(clean, 0, 1), want)
 	}
 	epicCloseChecked(t, clean, 4, "Every child of this epic is closed, so I've closed it as completed. Its children: #2, #3.", 1004)
+}
+
+// epicCloseUntrustedFake files the epic planned into twoStories and runs
+// a daemon on it till its stories, #2 and #3, are filed and read again,
+// then closes #2 as the owner, and runs a pass, which judges that close.
+func epicCloseUntrustedFake(t *testing.T) (*githubtest.Fake, *daemon.Daemon) {
+	t.Helper()
+	f, o := newFake(t), newOrigin(t)
+	doneParent(t, f, "epic", twoStories)
+	d := newDaemon(t, f, o, nil)
+	iterate(t, d)
+	iterate(t, d)
+	f.CloseBy(2, "owner")
+	iterate(t, d)
+	return f, d
+}
+
+// epicCloseOpen fails t unless the epic, issue 1, is open and got no
+// write from the from'th on.
+func epicCloseOpen(t *testing.T, f *githubtest.Fake, from int, step string) {
+	t.Helper()
+	if st, _ := epicCloseReason(t, f, 1); st != "open" {
+		t.Errorf("%s: the epic is %s; want it open", step, st)
+	}
+	if w := epicCloseWritesTo(f, from, 1); len(w) != 0 {
+		t.Errorf("%s: the epic got %q; want nothing", step, w)
+	}
+}
+
+// epicCloseIterate runs one Iterate of d and fails t unless it fails just
+// when wantErr says.
+func epicCloseIterate(t *testing.T, d *daemon.Daemon, wantErr bool, step string) {
+	t.Helper()
+	if err := d.Iterate(context.Background()); (err != nil) != wantErr {
+		t.Fatalf("%s: Iterate = %v; want an error %t", step, err, wantErr)
+	}
+}
+
+// An untrusted close of the last story never closes the epic (SPEC
+// §6.4): mallory, a write collaborator, closes #3 after the owner closed
+// #2, and the pass doesn't judge her close, so the epic stays open: while
+// GitHub hasn't written the close's event, while the question of how it
+// was made fails, or when it's judged and reverted, but the story's read
+// after its reopen fails. Once it's judged, it's reverted, and the epic
+// stays open; the owner's close of #3 then closes it.
+func TestEpicCloseUntrusted(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		// close closes #3 as mallory, with the fault, and returns how many
+		// passes fail on it, and mend, which ends the fault, if any.
+		close func(f *githubtest.Fake) (fails int, mend func())
+	}{
+		{"its event late", func(f *githubtest.Fake) (int, func()) {
+			f.LagEvents(5 * time.Second)
+			f.CloseBy(3, "mallory")
+			f.LagEvents(0)
+			return 0, func() { f.Advance(10 * time.Second) }
+		}},
+		{"its closer unknown", func(f *githubtest.Fake) (int, func()) {
+			event := f.CloseBy(3, "mallory")
+			f.FailCloser(3, event, "", closingFailure)
+			return 2, func() { f.MendCloser(3, event) }
+		}},
+		{"its re-read failing", func(f *githubtest.Fake) (int, func()) {
+			f.CloseBy(3, "mallory")
+			f.BeforeRequest(func(r githubtest.Request) bool { return r.Method == http.MethodPatch && r.Path == "/issues/3" }, func() {
+				f.AnswerOnce(func(r githubtest.Request) bool { return r.Method == http.MethodGet && r.Path == "/issues/3" }, http.StatusInternalServerError)
+			})
+			return 1, nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f, d := epicCloseUntrustedFake(t)
+			from := len(f.Writes())
+			fails, mend := tc.close(f)
+			epicCloseIterate(t, d, fails > 0, "the pass after mallory's close")
+			epicCloseOpen(t, f, from, "the pass after mallory's close")
+			for pass := 1; pass < fails; pass++ {
+				epicCloseIterate(t, d, true, "a pass while the fault lasts")
+			}
+			if mend != nil {
+				mend()
+			}
+			for _, step := range []string{"the pass that judges her close", "the pass after"} {
+				epicCloseIterate(t, d, false, step)
+				epicCloseOpen(t, f, from, step)
+			}
+			if is := f.State().Issues[2]; is.Closed {
+				t.Fatalf("#3 is closed, labelled %q; want mallory's close reverted", is.Labels)
+			}
+			comments := len(f.State().Issues[0].Comments)
+			f.CloseBy(3, "owner")
+			iterate(t, d)
+			epicCloseChecked(t, f, comments, "Every child of this epic is closed, so I've closed it as completed. Its children: #2, #3.", 1004)
+		})
+	}
+}
+
+// An epic whose step 1 fails, in the pass its last story closes, isn't
+// closed by that pass: here on mallory's comment on it, whose permission
+// read fails. The next pass's step 1 holds it for her comment (SPEC
+// §6.4), so it stays open.
+func TestEpicCloseVisitFails(t *testing.T) {
+	t.Parallel()
+	f, d := epicCloseUntrustedFake(t)
+	from := len(f.Writes())
+	f.CloseBy(3, "owner")
+	f.AddComment(1, "mallory", "Wait, S2 isn't done.")
+	f.AnswerOnce(func(r githubtest.Request) bool { return r.Path == "/collaborators/mallory/permission" }, http.StatusInternalServerError)
+	epicCloseIterate(t, d, true, "the pass whose visit to the epic fails")
+	if st, _ := epicCloseReason(t, f, 1); st != "open" {
+		t.Fatalf("the pass whose visit to the epic fails left it %s; want it open", st)
+	}
+	for _, step := range []string{"the pass after", "the pass after that"} {
+		epicCloseIterate(t, d, false, step)
+		if st, _ := epicCloseReason(t, f, 1); st != "open" {
+			t.Errorf("%s: the epic is %s; want it open, held", step, st)
+		}
+	}
+	if got := f.State().Issues[0].Labels; !slices.Contains(got, "stage:held") {
+		t.Errorf("the epic's labels are %q; want it held for mallory's comment", got)
+	}
+	if w := epicCloseWritesTo(f, from, 1); slices.Contains(w, "PATCH /issues/1") {
+		t.Errorf("the epic got %q; want no close", w)
+	}
+}
+
+// A finished story (#278) shares the judgement the epic's close takes
+// (digestDoneStands), so an untrusted close of its last child, still to
+// judge, doesn't list it in the digest or assign notify either: here
+// mallory's close of #4, whose event is late. Once it's judged it's
+// reverted, and the story still isn't listed; the owner's close of #4
+// lists it and assigns notify.
+func TestEpicCloseDigestUntrusted(t *testing.T) {
+	t.Parallel()
+	f, o := newFake(t), digestNotifyOrigin(t)
+	doneParent(t, f, "story", storyTasks)
+	d := doneStoryDaemon(t, f, o)
+	doneStep(t, f, d, "the pass that creates the children")
+	digestN := doneDigest(t, f)
+	doneStep(t, f, d, "the pass that reads the issues written to again")
+	f.CloseBy(2, "owner")
+	f.CloseBy(3, "owner")
+	doneStep(t, f, d, "two children closed")
+	f.LagEvents(5 * time.Second)
+	f.CloseBy(4, "mallory")
+	f.LagEvents(0)
+	doneStep(t, f, d, "mallory's close, its event late")
+	if got := doneListed(f, digestN); len(got) != 0 {
+		t.Errorf("with mallory's close of #4 to judge, the digest lists %q; want no finished story", got)
+	}
+	f.Advance(10 * time.Second)
+	for _, step := range []string{"the pass that judges her close", "the pass after"} {
+		doneStep(t, f, d, step)
+		if got := doneListed(f, digestN); len(got) != 0 {
+			t.Errorf("%s: the digest lists %q; want no finished story", step, got)
+		}
+	}
+	if f.State().Issues[3].Closed {
+		t.Fatal("#4 is closed; want mallory's close reverted")
+	}
+	f.CloseBy(4, "owner")
+	doneStep(t, f, d, "the owner's close of #4", assignAdd(1, "owner"))
+	if got, want := doneListed(f, digestN), []string{"#1 Finished story p2 1"}; !slices.Equal(got, want) {
+		t.Errorf("after the owner's close of #4, the digest lists %q; want %q", got, want)
+	}
 }

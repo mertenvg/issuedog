@@ -125,15 +125,20 @@ func (d *Daemon) epicCloseSet(s *github.Snapshot, dirt Dirt) {
 // is judged as a finished story's item is (digestDoneStands): every child
 // its record names is one the poll last listed closed, and no open
 // snapshot names the epic as its parent. That makes no request, so a pass
-// with none to close costs nothing. An epic that left the pipeline is
-// forgotten. One whose snapshot is out of date, as when its visit failed
-// or it's to be read again, needs no wait for its next visit, as
-// epicCloseOne reads it fresh and judges it again.
+// with none to close costs nothing. A child whose close is still to
+// judge, which may be untrusted, keeps the epic open (SPEC §6.4). An epic
+// that left the pipeline is forgotten, and one to be read again, as when
+// its visit failed or a command touched it, waits for its next good
+// visit: step 1 may hold it then, as for a discussion trigger, which
+// epicCloseOne's fresh read doesn't look for.
 func (d *Daemon) epicClosePass(ctx context.Context) error {
 	var errs []error
 	for _, n := range slices.Sorted(maps.Keys(d.epicCloseDue)) {
 		if d.snaps[n] == nil {
 			delete(d.epicCloseDue, n)
+			continue
+		}
+		if d.stale[n] {
 			continue
 		}
 		if !d.digestDoneStands(waitItem{Issue: n, Children: d.epicCloseDue[n]}) {
