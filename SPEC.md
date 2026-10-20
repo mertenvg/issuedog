@@ -250,6 +250,9 @@ Apart from the App key (section 3.1), the only local files are the lease (sectio
   - **Issue types.** On a `types: issue-types` repo, an untrusted change of the issue type is reverted the same way, keyed by its issue-type event. The type goes back to the one the newest standing issue-type event left, or is removed if none stands. The standing event is chosen as for a `type:*` label: the newest from the App or a trusted user, but not the App's revert, which only restores the type before it.
     - The timeline gives each issue-type event the type it set and the one it replaced. The App sets the type with REST's update of an issue, `type` set to the type's name, or `null` to remove it.
     - **Types by ID.** Two types are the same if their IDs match, where both the issue and the event give one, and else if their names match, ignoring case. An org can rename a type, and the timeline keeps the name its events were written with, but the type keeps its ID. So a renamed type doesn't count as a change.
+    - **A renamed type's revert** (#245). GitHub refuses a type by a name the org renamed away, with a 422, so a revert that restores a type names it as the org does now, found by its ID in `GET /orgs/{org}/issue-types` (section 15). Both the comment and the update use that name, and the comment escapes and defuses it, as the org's text. A type whose event gives no ID keeps the timeline's name, and a removal needs no name.
+      - **The cost.** The org's types are read only for a revert that restores a type, and then once a pass, for every such revert in it. So a pass with none reads nothing, and the next pass reads them again, so it sees a later rename. Stage work's applies read them for themselves, as a run can outlast a rename.
+      - **A failed read**, or a type the org no longer lists, as once it deleted it, writes nothing, so no comment names a type the App can't set, and the untrusted type stays. The issue fails its pass, and the next pass tries again, with one more read. A failed read is kept for the rest of the pass, so it isn't retried there. A deleted type fails every pass until a trusted user changes the type, which then stands.
     - GitHub drops a type change from anyone without push access, with no error. So the daemon checks the type GitHub answers with, and a revert that didn't take fails the pass, like any failed revert. The next pass tries again, and doesn't post the comment twice.
     - Everything after the label rules in that pass reads the type set back. So an untrusted change starts and ends no type error (5.3), and puts nothing in the digest.
     - **Late events.** GitHub writes issue-type events a few seconds late too. A type on the issue that is the one that stands needs nothing, even before the App's own event shows. Any other type that no issue-type event explains yet, anyone's, is unexplained, and is treated as an unexplained label is, timed from when the daemon first finds it, or since the type or the issue-type events last changed:
@@ -1450,7 +1453,7 @@ Changes to this file go through a human-authored PR (section 6.3).
 
 1. **GitHub App.**
    - Repository permissions: Contents read/write, Issues read/write, Pull requests read/write, Checks read/write, Commit statuses read/write, Metadata read.
-   - Organization permissions: Members read (for CODEOWNERS teams) and Issue Types read.
+   - Organization permissions: Members read (for CODEOWNERS teams) and Issue Types read (for a human task's `issue-type` check, and the current name of a type a revert restores, 5.1).
    - Install it on each owner: the personal account and each org. Each installation has its own hourly token, and the daemon refreshes them.
    - No admin permissions.
    - Import its private key into the state volume once: `docker run --rm -i --cap-add NET_ADMIN -v issuedog-state:/state issuedog key import < app-key.pem`. Then delete the downloaded file. To rotate the key, generate a new one on GitHub and import it the same way.
@@ -1538,6 +1541,10 @@ Changes to this file go through a human-authored PR (section 6.3).
   - whether removing a link moves the `updated_at` of either issue, or writes a timeline event;
   - that the parent's sub-issue list gives each closed child's `state_reason`, which the planner's `children.md` shows;
   - that one PATCH sets an issue's title and body together, and its `userContentEdits` entry names the App, so a changed child's rewrite (6.4) reads as the App's full rewrite (5.1).
+- **Renamed and deleted issue types.** A revert restores a type by the name the org gives it now (5.1), as the fakes model GitHub. Confirm on real GitHub:
+  - that a renamed type keeps its ID on the issues, on the timeline's issue-type events and in `GET /orgs/{org}/issue-types`, while the events keep the old name;
+  - that setting a type by a name the org renamed away is refused with a 422;
+  - what deleting a type leaves: whether the issues lose it, and whether its events still give its name and ID. A revert to a type the org no longer lists fails that issue's pass on every pass until a trusted user changes the type.
 - **Cross-owner dependencies.** Do native blocked-by links work across owners? One report says GitHub returns 422. If they do work, they could replace the `depends-on` marker.
 - **Pinning the check source.** The ruleset can only pin the App as the source of `issuedog/verify` once the App "has recently submitted a check run". Setup must post one bootstrap check run before adding the rule.
 - **Pinning the digest.** The daemon pins the digest with GraphQL `pinIssue` (9.4), but the permission `pinIssue` needs from an App is not documented. Test it with Issues write on a real run. A refusal there is logged and named in the digest's pin note, and becomes a `type:bug` issue. Checked live (#154): pinning doesn't change an issue's `updated_at`.

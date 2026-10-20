@@ -175,6 +175,10 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	if d.Step.Trust == nil {
 		return errors.New("no trust has loaded from main yet")
 	}
+	// A revert of an issue type reads the org's types' names once in the
+	// steps below, and only if it needs them; Work's applies read their own.
+	d.Step.typeRenamePass(true)
+	defer d.Step.typeRenamePass(false)
 	d.polled = time.Now()
 	if err := d.poll(ctx); err != nil {
 		return fmt.Errorf("poll %s/%s: %w", d.Step.Owner, d.Step.Repo, err)
@@ -307,6 +311,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	if err := d.assignPass(ctx); err != nil {
 		errs = append(errs, err)
 	}
+	d.Step.typeRenamePass(false)
 	if d.Work != nil {
 		var ready []Ready
 		for _, n := range slices.Sorted(maps.Keys(d.inputs)) {
