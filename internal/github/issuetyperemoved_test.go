@@ -10,10 +10,11 @@ import (
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
 
-// This file is #246's second part: GitHub's issue_type_removed event gives
-// the type it removed as its issue_type, with that type's ID, as the fake's
-// does now. A removal leaves no type, so neither its name nor its ID may be
-// taken for the type it left.
+// This file is #246's second part: a removal of the issue type leaves no
+// type, so an untrusted change after one, or an untrusted removal, is
+// reverted. The fake gives a removal only a prev_issue_type, as GitHub's
+// REST description does. TestTypeRemovedLeftID checks that an issue_type
+// on a removal, if GitHub ever gives one, isn't taken for the type it left.
 
 // typeRemovedCheck runs CheckLabels on issue n of f, guarding the type it
 // has now, with its ID, as the daemon passes them.
@@ -32,14 +33,11 @@ func typeRemovedCheck(t testing.TB, f *githubtest.Fake, n int) (github.LabelChec
 	return found, nil
 }
 
-// A removal stands for no type, though its event names the type removed:
-// after the owner removes Task, mallory's Task added back is an untrusted
+// A removal stands for no type: after the owner removes Task, mallory's Task added back is an untrusted
 // change, reverted by removing it, and mallory's removal of the owner's
 // Task is one too, reverted by setting Task back. Each is one comment and
 // one PATCH, safe to replay, with no read of the org's types for the
-// removal. Taking the removal's ID, or its name, for the type it left
-// would let mallory's Task stand, or hold mallory's removal back as
-// unexplained.
+// removal.
 func TestTypeRemovedRevert(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

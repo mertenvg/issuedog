@@ -16,9 +16,9 @@ type typeRemovedType struct {
 }
 
 // An issue_type_removed event, the owner's or the App's, gives the type it
-// removed as both its issue_type and its prev_issue_type, with that type's
-// ID, as GitHub's do (#246). An added or changed event's issue_type is the
-// type it set.
+// removed as its prev_issue_type, with that type's ID, and no issue_type,
+// as GitHub's REST description gives it (#246). An added or changed
+// event's issue_type is the type it set.
 func TestTypeRemovedServed(t *testing.T) {
 	t.Parallel()
 	f := New(t, "o/r", "app")
@@ -60,9 +60,9 @@ func TestTypeRemovedServed(t *testing.T) {
 	task, bug := f.IssueTypeID("Task"), f.IssueTypeID("Bug")
 	want := []string{
 		fmt.Sprintf("issue_type_added: Task %d, from none", task),
-		fmt.Sprintf("issue_type_removed: Task %d, from Task %d", task, task),
+		fmt.Sprintf("issue_type_removed: none, from Task %d", task),
 		fmt.Sprintf("issue_type_added: Bug %d, from none", bug),
-		fmt.Sprintf("issue_type_removed: Bug %d, from Bug %d", bug, bug),
+		fmt.Sprintf("issue_type_removed: none, from Bug %d", bug),
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("events %q; want %q", got, want)

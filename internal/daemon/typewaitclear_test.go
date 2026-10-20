@@ -49,7 +49,8 @@ func typeWaitDaemon(t *testing.T, f *githubtest.Fake, o *origin, cfg string, wor
 
 // mallory's Bug, whose event never lands, is held back, then left out for
 // the owner's Task, which stands. Then the config switches to types:
-// labels, while the daemon runs or across a restart. Either way issue 1 is
+// labels, while the daemon runs or across a restart, or while it runs with
+// Bug still held back. Either way issue 1 is
 // read at most once more, for its own type, Bug, which Work then gets, as
 // a repo that uses labels reads it, and not again on any pass after, well
 // past when its type would have fallen due, with nothing written. Bug fits
@@ -59,9 +60,15 @@ func TestTypeWaitClear(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		restart bool
+		// waits are the passes before the switch, after the first; the
+		// type is held back on the first, and left out after HoldBound.
+		waits []time.Duration
+		// worked is what Work got of issue 1 before the switch.
+		worked typeWaitWorked
 	}{
-		{"while it runs", false},
-		{"across a restart", true},
+		{"while it runs", false, []time.Duration{github.HoldBound + time.Second}, typeWaitWorked{typ: "task", leftOut: true}},
+		{"across a restart", true, []time.Duration{github.HoldBound + time.Second}, typeWaitWorked{typ: "task", leftOut: true}},
+		{"held back, while it runs", false, []time.Duration{github.HoldBound / 2}, typeWaitWorked{typ: "none"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -71,14 +78,14 @@ func TestTypeWaitClear(t *testing.T) {
 			d := typeWaitDaemon(t, f, o, typeWaitIssueTypes, &worked)
 			f.LagEvents(time.Hour)
 			f.SetTypeBy(1, "mallory", "Bug")
-			for _, wait := range []time.Duration{0, github.HoldBound + time.Second} {
+			for _, wait := range append([]time.Duration{0}, tc.waits...) {
 				f.Advance(wait)
 				if w := d.pass(t); len(w) != 0 {
 					t.Fatalf("waiting, %v on: writes %q; want none", wait, w)
 				}
 			}
-			if want := (typeWaitWorked{typ: "task", leftOut: true}); worked != want {
-				t.Fatalf("left out: Work got %+v; want %+v", worked, want)
+			if worked != tc.worked {
+				t.Fatalf("before the switch: Work got %+v; want %+v", worked, tc.worked)
 			}
 			before := issueTypeWaitReads(f)
 			if tc.restart {
