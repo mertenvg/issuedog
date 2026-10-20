@@ -56,8 +56,8 @@ func TestResolveApproveAfterResume(t *testing.T) {
 			post(t, f, 1005, "owner", "/approve")
 		})
 		resolveCheck(t, setup, 1, func(*githubtest.Fake) issueWant {
-			return issueWant{[]string{"stage:spec-review"}, []string{resumed, rejected("/approve",
-				"the issue description changed after revision 1, so it no longer matches that revision's hash, `"+h+"`", "1005")}}
+			return issueWant{[]string{"stage:spec-review"}, []string{resumed, ivWordingApproveFinal(
+				"the issue description changed after revision 1, so it no longer matches that revision's hash, `"+h+"`"+ivWordingFollows, "1005")}}
 		})
 	})
 }

@@ -1448,7 +1448,7 @@ func (a *Applier) resolveEnded(ctx context.Context, s *github.Snapshot, rs *reso
 		// the hold that may have been /holds (resolveGone).
 		var what []string
 		if len(held) > 0 {
-			what = append(what, fmt.Sprintf("a `/hold` on an issue above it, in comment %s, hasn't ended", list(held)))
+			what = append(what, fmt.Sprintf("a `/hold` on an issue above it, in comment %s, hasn't ended", heldWordingHolds(held, heldOn)))
 		}
 		if len(gone) > 0 {
 			what = append(what, fmt.Sprintf("a write collaborator deleted a comment on %s during this hold, which may have been a `/hold`, "+
@@ -1470,6 +1470,26 @@ func (a *Applier) resolveEnded(ctx context.Context, s *github.Snapshot, rs *reso
 	}
 	logr.Infof("%s/%s#%d: the discussion is resolved, but an owner hold stays", a.Owner, a.Repo, s.Number)
 	return nil
+}
+
+// heldWordingHolds names the /holds that the held= record's text names
+// (resolveEnded): each by its comment, in held, and the issue it counted
+// as posted on, in heldOn, in the same order, as "11 on #2", so that
+// "`/resume` there" names an issue a reader can find once the comment is
+// deleted (#222). One whose issue isn't known, or isn't a number, is named
+// by its comment alone, as before heldon=.
+func heldWordingHolds(held, heldOn []string) string {
+	names := make([]string, len(held))
+	for i, id := range held {
+		names[i] = id
+		if i >= len(heldOn) {
+			continue
+		}
+		if on, err := strconv.Atoi(heldOn[i]); err == nil && on > 0 {
+			names[i] = fmt.Sprintf("%s on #%d", id, on)
+		}
+	}
+	return list(names)
 }
 
 // resolveResumed records on n, an issue in c's family in state is

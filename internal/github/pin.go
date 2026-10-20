@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 
 	gogithub "github.com/google/go-github/v92/github"
 )
@@ -60,7 +61,12 @@ type pinIssueResponse struct {
 // PinIssue pins an issue to the repo's issue list, with GraphQL's pinIssue.
 // GitHub allows three pinned issues per repo, and the permission an App
 // needs for it isn't documented (SPEC §16). When GitHub refuses, the error
-// wraps ErrGraphQL and names GitHub's message.
+// wraps ErrGraphQL and names GitHub's message. An HTTP 401 or 403 answer to
+// the mutation is a refusal too (#226), as a missing permission may come
+// that way rather than as a GraphQL error: its error wraps ErrGraphQL and
+// GitHub's *gogithub.ErrorResponse, which holds the message. A rate limit,
+// which go-github gives its own error types, isn't one, nor is any answer
+// to the GET before the mutation.
 //
 // The mutation takes the issue's node ID, which it reads first with a REST
 // GET of the issue. That GET is conditional (etagCache), so a repeat costs
@@ -81,6 +87,9 @@ func (c *Client) PinIssue(ctx context.Context, owner, repo string, number int) e
 	}
 	var out pinIssueResponse
 	if _, err := c.Do(req, &out); err != nil {
+		if pinRefused(err) {
+			return wrap(fmt.Errorf("%w: %w", ErrGraphQL, err))
+		}
 		return wrap(err)
 	}
 	if err := out.err(); err != nil {
@@ -90,6 +99,17 @@ func (c *Client) PinIssue(ctx context.Context, owner, repo string, number int) e
 		return wrap(ErrNotPinned)
 	}
 	return nil
+}
+
+// pinRefused reports whether err, the pinIssue mutation's, is GitHub's
+// HTTP 401 or 403, a refusal (PinIssue). go-github gives a rate limit's
+// 403 its own types, so that's never one.
+func pinRefused(err error) bool {
+	var er *gogithub.ErrorResponse
+	if !errors.As(err, &er) || er.Response == nil {
+		return false
+	}
+	return er.Response.StatusCode == http.StatusUnauthorized || er.Response.StatusCode == http.StatusForbidden
 }
 
 // isPinnedQuery reads whether an issue is pinned, by its number.

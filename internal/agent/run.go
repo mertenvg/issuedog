@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mertenvg/issuedog/internal/dirsync"
 	"github.com/mertenvg/logr/v2"
 )
 
@@ -45,6 +46,16 @@ type Runner struct {
 	StateDir   string              // /state; results go to StateDir/runs/<run-id>.json
 	Credential *syscall.Credential // agent's, from UserCredential; nil (tests only) runs as the daemon
 	Stderr     io.Writer           // claude's stderr; nil discards it
+
+	dirSyncFunc func(dir string) error // syncs the runs dir after a result's rename; nil (all but tests) uses dirsync.Sync
+}
+
+// dirSync flushes dir's entries to disk, through r.dirSyncFunc if it's set.
+func (r *Runner) dirSync(dir string) error {
+	if r.dirSyncFunc != nil {
+		return r.dirSyncFunc(dir)
+	}
+	return dirsync.Sync(dir)
 }
 
 // UserCredential looks up a user's uid and gid, with no supplementary groups.
@@ -194,7 +205,8 @@ func (r *Runner) asAgent(script string, args ...string) error {
 }
 
 // saveResult writes runs/<run-id>.json via a temp file and a rename, so restart
-// recovery (SPEC §8.2) never reads half a result.
+// recovery (SPEC §8.2) never reads half a result, then syncs the runs dir, so
+// the rename survives a crash.
 func (r *Runner) saveResult(runID string, raw []byte) error {
 	dir := filepath.Join(r.StateDir, "runs")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -222,6 +234,9 @@ func (r *Runner) saveResult(runID string, raw []byte) error {
 	}
 	if err != nil {
 		return fmt.Errorf("writing %s: %w", f.Name(), err)
+	}
+	if err := r.dirSync(dir); err != nil {
+		return fmt.Errorf("after writing %s.json: %w", runID, err)
 	}
 	return nil
 }

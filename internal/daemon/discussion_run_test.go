@@ -726,7 +726,8 @@ func TestDiscRunParentResume(t *testing.T) {
 // The epic, at spec-review, is held for mallory's comment. The owner 👍s
 // it, and also eve's comment, but each then edits theirs. Mallory's edit,
 // a write collaborator's of her approved comment, is a trigger, with a
-// notice, and keeps the epic held; eve's, without write access, holds
+// notice saying that accepting it doesn't approve the new text, and how to
+// approve it (editNoticeSentence), and keeps the epic held; eve's, without write access, holds
 // nothing. The owner's 👍 on the notice accepts the edit, and the epic goes
 // to clarifying, but neither edit is owner input: both are only in
 // untrusted.md for the interviewer's run, which asks a round. Once the
@@ -757,7 +758,7 @@ func TestDiscRunApprovalEdited(t *testing.T) {
 	f.EditComment(e, "eve", eve)
 	edit := discEditKey(t, f, 2, m)
 	l.step("the edits after the 👍s", "POST /issues/2/comments", "PATCH /issues/1")
-	if got, want := l.added(2), []string{discNotice(fmt.Sprintf("`mallory` edited their comment %d after a code owner approved it", m), edit)}; !slices.Equal(got, want) {
+	if got, want := l.added(2), []string{editNoticeWith(discNotice(fmt.Sprintf("`mallory` edited their comment %d after a code owner approved it", m), edit), m)}; !slices.Equal(got, want) {
 		t.Errorf("#2's new comments %q; want only the notice of mallory's edit, as eve's holds nothing: %q", got, want)
 	}
 	l.quiet("held for the edit")
@@ -1305,8 +1306,8 @@ func TestDiscRunParentDeletion(t *testing.T) {
 			want := []string{discHeld("planned", "`mallory` deleted a comment by `owner`",
 				fmt.Sprintf("from=planned to=held at=planned origin=planned reason=discussion event=d%s seen=%d", del, entries[2]), discNoticeMarker("d"+del))}
 			if early {
-				want = append(want, fmt.Sprintf("> /resume\n\nI didn't apply this command: #2 on hold for discussion, which only a code owner's response there, "+
-					"or `/resume` there, ends.\n\n<!-- issuedog:reply reason=rejected cmd=%d -->", first))
+				want = append(want, fmt.Sprintf("> /resume\n\nI didn't apply this command: this issue is on hold for discussion, which only a code owner's response here, "+
+					"or `/resume` here, ends.\n\n<!-- issuedog:reply reason=rejected cmd=%d -->", first))
 			}
 			if got := l.added(2); !slices.Equal(got, want) {
 				t.Errorf("#2's new comments\n%q\nwant\n%q", got, want)
@@ -1652,8 +1653,8 @@ func TestDiscRunHoldResumeRace(t *testing.T) {
 				return []string{post(n), fmt.Sprintf("POST /issues/%d/labels", n), fmt.Sprintf("DELETE /issues/%d/labels/stage:%s", n, from)}
 			}
 			// The record that A's /hold keeps an issue held (resolveEnded).
-			heldRecord := fmt.Sprintf("No discussion trigger is open on this issue, but it stays on hold: a `/hold` on an issue above it, in comment %d, hasn't ended. "+
-				"`/resume` there, or here, ends that.\n\ncc @owner\n\n<!-- issuedog:ended reason=discussion held=%d heldon=%d -->", hold, hold, a)
+			heldRecord := fmt.Sprintf("No discussion trigger is open on this issue, but it stays on hold: a `/hold` on an issue above it, in comment %d on #%d, hasn't ended. "+
+				"`/resume` there, or here, ends that.\n\ncc @owner\n\n<!-- issuedog:ended reason=discussion held=%d heldon=%d -->", hold, a, hold, a)
 			if aLow {
 				// A's /hold touches J and K (Applier.Touched), so they wait
 				// for the next pass, which handles J's /resume, and touches

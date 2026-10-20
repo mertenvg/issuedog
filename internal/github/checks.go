@@ -17,10 +17,12 @@ import (
 // label, a personal account with no issue types, and a branch with no
 // rules. Any other failure, such as a 403 or a 500, is an error.
 
-// IssueTypeInfo is one of an org's issue types: its name, and whether the
-// org has it enabled. GitHub lists disabled ones too.
+// IssueTypeInfo is one of an org's issue types: its name, its ID, which
+// stays the same through a rename, and whether the org has it enabled.
+// GitHub lists disabled ones too.
 type IssueTypeInfo struct {
 	Name    string
+	ID      int64
 	Enabled bool
 }
 
@@ -68,7 +70,7 @@ func (c *Client) OrgIssueTypes(ctx context.Context, org string) (types []IssueTy
 		return nil, false, fmt.Errorf("issue types of %s: %w", org, err)
 	}
 	for _, t := range list {
-		types = append(types, IssueTypeInfo{Name: t.GetName(), Enabled: t.GetIsEnabled()})
+		types = append(types, IssueTypeInfo{Name: t.GetName(), ID: t.GetID(), Enabled: t.GetIsEnabled()})
 	}
 	return types, true, nil
 }
