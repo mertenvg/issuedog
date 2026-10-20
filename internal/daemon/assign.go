@@ -68,10 +68,11 @@ import (
 
 // assignPass sets each pipeline issue's assignees, if Daemon.Assign is
 // set, after the digest pass and before Work. A failed write is the pass's
-// error, which Run logs, and the rest of the issues, and Work, carry on
-// without its issue. The next pass reads the issue again, and writes
+// error, which Run logs, and the rest of the issues, and Work, carry on,
+// its issue included. The next pass reads the issue again, and writes
 // again if it still differs. A write that finds the issue gone is no
-// error, and counts as one of the two reads that drop it (assignFailed).
+// error, keeps the issue from Work, and counts as one of the two reads
+// that drop it (assignFailed).
 func (d *Daemon) assignPass(ctx context.Context) error {
 	if !d.Assign {
 		return nil
@@ -157,14 +158,23 @@ func (d *Daemon) assignIssue(ctx context.Context, s *github.Snapshot, notify []s
 // assignFailed returns the error of a failed assignee write to issue n,
 // err, for the pass. The poll never lists a gone issue again, deleted or
 // transferred, so its snapshot would stay, and every pass would write
-// again. So after any failed write the issue is read again next pass, and
-// Work doesn't get it this pass (Daemon.reread), as a stage run does when
-// its fresh read finds the issue gone. Whether it's gone is then the
-// snapshot read's to say, whatever answer the write got (#199). A write
-// that gone recognises as finding the issue gone, deleted (404 or 410) or
-// transferred (a 301, which Go follows with a GET that 404s on an
-// assignee path, or an answer from another repo), is no error, and is the
-// first of the two reads that drop it.
+// again. So after any failed write the issue is read again next pass.
+// Whether it's gone is then the snapshot read's to say, whatever answer
+// the write got (#199). A write that gone recognises as finding the issue
+// gone, deleted (404 or 410) or transferred (a 301, which Go follows with
+// a GET that 404s on an assignee path, or an answer from another repo),
+// is no error, and is the first of the two reads that drop it: Work
+// doesn't get the issue this pass (Daemon.reread), as a stage run does
+// when its fresh read finds the issue gone.
+//
+// Any other failure leaves Work the issue this pass, since a failed write
+// says nothing of the snapshot step 1 took: only the next pass's read is
+// made sure of (Daemon.stale). So a write that fails on every pass, such
+// as with a 422 for a login GitHub can't assign, costs that read and the
+// write on each pass, and never keeps the issue from its stage work
+// (#238). A gone issue whose write got such an answer still meets the
+// read before a stage run, which finds it gone, and the next pass's read,
+// the first of the two that drop it.
 func (d *Daemon) assignFailed(n int, err error) error {
 	a := d.Step.Applier
 	if gone(err) {
@@ -172,7 +182,10 @@ func (d *Daemon) assignFailed(n int, err error) error {
 		d.reread(n, true)
 		return nil
 	}
-	d.reread(n, false)
+	if d.stale == nil {
+		d.stale = map[int]bool{}
+	}
+	d.stale[n] = true
 	return fmt.Errorf("the assignees of %s/%s#%d, read again next pass: %w", a.Owner, a.Repo, n, err)
 }
 
