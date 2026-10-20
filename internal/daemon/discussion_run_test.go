@@ -1075,7 +1075,7 @@ func TestDiscRunRestore(t *testing.T) {
 	l.step("mallory's deletion of the hold's comment", "POST /issues/2/comments", "POST /issues/1/comments", "PATCH /issues/1")
 	fields := fmt.Sprintf("at=spec-review origin=spec-review reason=discussion event=d%s seen=%d", del, rev)
 	if got, want := l.added(2), []string{discHeldAgain("spec-review", "`mallory` deleted a comment by `issuedog[bot]`", "from=held to=held "+fields,
-		fmt.Sprintf("from=held to=held at=spec-review reason=owner event=d%s seen=%d", del, rev), "d"+del)}; !slices.Equal(got, want) {
+		fmt.Sprintf("from=held to=held at=spec-review origin=spec-review reason=owner event=d%s seen=%d", del, rev), "d"+del)}; !slices.Equal(got, want) {
 		t.Errorf("#2's new comments\n%q\nwant\n%q", got, want)
 	}
 	if news := digestComments(f, 1); len(news) != 1 || !strings.HasSuffix(news[0], fmt.Sprintf("<!-- issuedog:digest-new items=hold-2-c%d -->", m)) {

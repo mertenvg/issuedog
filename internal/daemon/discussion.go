@@ -975,9 +975,10 @@ func (a *Applier) discHoldMove(s *github.Snapshot, d Dirt, tr discTrigger, from,
 //   - from held, is at the stage the markers left show, the one before the
 //     hidden move into held, and also records the hidden hold again as an
 //     owner hold with no cmd, which only /resume on the issue itself ends
-//     (heldStackEnds). Whether it was the owner's or a discussion's isn't
-//     known, so it fails closed: an open trigger keeps the issue held as
-//     before, and an owner hold made on an ancestor needs /resume here.
+//     (heldStackEnds), with the same at and origin. Whether it was the
+//     owner's or a discussion's isn't known, so it fails closed: an open
+//     trigger keeps the issue held as before, and an owner hold made on an
+//     ancestor needs /resume here.
 //
 // Either way no label moves but held's, and no disagreement is posted.
 // Markers in the edited or deleted content are never read again: the hold
@@ -1019,9 +1020,12 @@ func (a *Applier) discRestore(ctx context.Context, s *github.Snapshot, trust git
 	tr := found[i]
 	m := a.discHoldMove(s, d, tr, before, before, discOrigin(is, before), is.Round, "")
 	if before == state.Held {
+		// The owner hold keeps the first hold's at and origin, as one set by
+		// hand on a held issue does (SPEC §5).
+		origin := discOrigin(is, is.Stage)
 		owner := state.HeldStackFields(map[string]string{"from": string(state.Held), "to": string(state.Held), "at": string(is.Stage),
-			"reason": "owner", "event": tr.Key}, is.Round)
-		m = a.discHoldMove(s, d, tr, before, is.Stage, discOrigin(is, is.Stage), is.Round,
+			"origin": string(origin), "reason": "owner", "event": tr.Key}, is.Round)
+		m = a.discHoldMove(s, d, tr, before, is.Stage, origin, is.Round,
 			"It was on hold already, so it also stays on hold until `/resume` here.", github.Marker{Kind: "transition", Fields: owner})
 	}
 	err = a.Transition(ctx, s, d.Has, m)
