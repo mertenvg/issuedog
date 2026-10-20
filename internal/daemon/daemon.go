@@ -67,6 +67,9 @@ type Daemon struct {
 	// closedListed are the issues the poll last listed closed, never a
 	// pull request, for a finished story's children (digestDoneStands).
 	closedListed map[int]bool
+	// closerErrOn are the closed issues whose close stays unjudged while a
+	// closer state error stands on them, for the digest (closererr.go).
+	closerErrOn map[int]closerErrClosedOn
 }
 
 // CurrentTrust is a github.Trust that asks st.Trust on each call. Iterate's
@@ -172,6 +175,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		d.openErrs = map[int]bool{}
 	}
 	d.reload(ctx)
+	d.closerErrBegin() // a pass, for the closer questions' counts (closererr.go)
 	if d.Step.Trust == nil {
 		return errors.New("no trust has loaded from main yet")
 	}
@@ -271,6 +275,9 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		ownerHeld, blocked := false, false
 		if err == nil {
 			dirt, err = d.Step.Dirty(ctx, s, d.Step.trustOnceTrust())
+		}
+		if err == nil { // a closer state error step 1 found due (closererr.go)
+			err = d.Step.closerErrPost(ctx, s, dirt)
 		}
 		if err == nil {
 			d.openErrs[n], err = d.Step.openErrAny(s, in, dirt)

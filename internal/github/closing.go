@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -118,6 +119,22 @@ type closingCloserResponse struct {
 	}
 }
 
+// closerErrNode is ClosingCloser's error when GitHub lists an error under
+// node, other than FORBIDDEN or NOT_FOUND: its text is err's.
+type closerErrNode struct{ error }
+
+func (e closerErrNode) Unwrap() error { return e.error }
+
+// CloserErrUnderNode reports whether err is or wraps ClosingCloser's error
+// for an error under node that is neither FORBIDDEN nor NOT_FOUND (#204):
+// one about that event, which may last, as the daemon bounds (#232). A
+// failed request, an error on the repository, or one GitHub lists with no
+// path, as when GraphQL fails as a whole, isn't one.
+func CloserErrUnderNode(err error) bool {
+	var e closerErrNode
+	return errors.As(err, &e)
+}
+
 // ClosingCloser reads how the closed event with node ID nodeID, on an
 // issue in owner/repo, was made, with one GraphQL query (closingCloserQuery,
 // SPEC §16). An event GitHub can't resolve, NOT_FOUND under node, is a
@@ -131,7 +148,8 @@ type closingCloserResponse struct {
 // for GitHub's: one of another type or of none under node too (#204), as
 // it may be passing, and a merge judged as a close by hand would be
 // reverted and held. So is an error on the repository, and a failed
-// request, which the caller asks again.
+// request, which the caller asks again. CloserErrUnderNode tells an error
+// under node from the rest.
 func (c *Client) ClosingCloser(ctx context.Context, owner, repo, nodeID string) (ClosingCloser, error) {
 	wrap := func(err error) error { return fmt.Errorf("closer of event %s in %s/%s: %w", nodeID, owner, repo, err) }
 	req, err := c.NewRequest(ctx, "POST", "graphql", map[string]any{"query": closingCloserQuery,
@@ -144,17 +162,24 @@ func (c *Client) ClosingCloser(ctx context.Context, owner, repo, nodeID string) 
 		return ClosingCloser{}, wrap(err)
 	}
 	var msgs []string
+	node := false // an error listed is under node (CloserErrUnderNode)
 	for _, e := range out.Errors {
+		under := len(e.Path) > 0 && e.Path[0] == "node"
 		switch {
-		case len(e.Path) > 0 && e.Path[0] == "node" && (e.Type == "FORBIDDEN" || e.Type == "NOT_FOUND"):
+		case under && (e.Type == "FORBIDDEN" || e.Type == "NOT_FOUND"):
 			logr.Warnf("%s/%s: GitHub won't say how event %s closed its issue (%s: %s at %v), so it's judged as a close by hand",
 				owner, repo, nodeID, e.Type, e.Message, e.Path)
 		case e.Type != "NOT_FOUND":
 			msgs = append(msgs, e.Message)
+			node = node || under
 		}
 	}
 	if len(msgs) > 0 {
-		return ClosingCloser{}, wrap(fmt.Errorf("%w: %s", ErrGraphQL, strings.Join(msgs, "; ")))
+		err := fmt.Errorf("%w: %s", ErrGraphQL, strings.Join(msgs, "; "))
+		if node {
+			err = closerErrNode{err}
+		}
+		return ClosingCloser{}, wrap(err)
 	}
 	r, n := out.Data.Repository, out.Data.Node
 	if r == nil || r.DefaultBranchRef == nil {

@@ -629,7 +629,7 @@ func (a *Applier) discFindResolved(ctx context.Context, s *github.Snapshot, d Di
 			found = append(found, discTrigger{Kind: discRename, Key: key, By: e.By.Login, At: e.At, Title: e.Title})
 		}
 	}
-	closes, err := a.closingTriggers(ctx, s, open, who) // T6 (closing.go)
+	closes, err := a.closingTriggers(ctx, s, d.Has, open, who) // T6 (closing.go)
 	if err != nil {
 		return nil, wrap(err)
 	}
