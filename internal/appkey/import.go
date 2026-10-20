@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/mertenvg/issuedog/internal/dirsync"
 )
 
 // DefaultPath is where the daemon keeps the key, on the state volume (§3.1).
@@ -20,8 +22,12 @@ const maxKeySize = 64 << 10
 // remove deletes the temp file after a failed import. Tests replace it.
 var remove = os.Remove
 
+// dirSync flushes the key's directory after the rename. Tests replace it.
+var dirSync = dirsync.Sync
+
 // Import writes the RSA private key (PEM) read from r to path with mode 0600,
 // through a temp file renamed over path, so bad input leaves any old key.
+// It then syncs path's directory, so the rename survives a crash.
 func Import(path string, r io.Reader) error {
 	data, err := io.ReadAll(io.LimitReader(r, maxKeySize+1))
 	if err != nil {
@@ -53,6 +59,10 @@ func Import(path string, r io.Reader) error {
 		if rerr := remove(tmp); rerr != nil {
 			err = errors.Join(err, fmt.Errorf("removing the temp file: %w", rerr))
 		}
+		return fmt.Errorf("app key %s: %w", path, err)
+	}
+	// The temp file is renamed already, so there's nothing to remove.
+	if err := dirSync(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("app key %s: %w", path, err)
 	}
 	return nil
