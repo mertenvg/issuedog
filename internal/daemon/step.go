@@ -29,6 +29,10 @@ type Step struct {
 	Models func() config.Models
 
 	trustOnce *trustOnceVisit // the trust of Iterate's visit under way, if any (#174)
+	// holdOrderReread, if set, is told of each ancestor whose /hold or
+	// /resume another waits for (holdOrderWaits), so Iterate reads it again
+	// next pass, and visits it, without skipping its visit in this one.
+	holdOrderReread func(number int)
 }
 
 // Run runs step 1 on s, in this order: the label rules (CheckLabels), dirty

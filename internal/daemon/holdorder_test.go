@@ -215,3 +215,79 @@ func TestHoldOrderRunReplay(t *testing.T) {
 		})
 	}
 }
+
+// The epic's /hold, then a /resume on a task two levels below it, in one
+// poll, the common shape in this pipeline: K's /resume waits for A's
+// /hold, its grandparent's, so in every order of their numbers A's /hold
+// holds all three, and K's /resume, handled after it, ends it on K alone.
+// A and J stay held.
+func TestHoldOrderGrandparent(t *testing.T) {
+	t.Parallel()
+	for _, order := range raceOrders {
+		t.Run(fmt.Sprintf("A J K %v", order), func(t *testing.T) {
+			t.Parallel()
+			f, a, j, k, _ := raceFamily(t, order, false)
+			f.AddComment(a, "owner", "/hold")
+			resume := f.AddComment(k, "owner", "/resume")
+			resolveSettle(t, f, 1, 2, 3)
+			raceStages(t, f, "after both", map[int]string{a: "held", j: "held", k: "ready"})
+			if anyComment(f, k, fmt.Sprintf("reason=rejected cmd=%d ", resume)) {
+				t.Errorf("#%d: newest comment %q; want K's /resume applied", k, newestComment(f, k))
+			}
+		})
+	}
+}
+
+// A closed parent doesn't stop the walk up: with J closed, K's /resume
+// still waits for the /hold on A, its open grandparent, so in every order
+// of their numbers A's /hold holds A and K, and K's /resume, handled after
+// it, ends it on K.
+func TestHoldOrderClosedParent(t *testing.T) {
+	t.Parallel()
+	for _, order := range raceOrders {
+		t.Run(fmt.Sprintf("A J K %v", order), func(t *testing.T) {
+			t.Parallel()
+			f, a, j, k, _ := raceFamily(t, order, false)
+			f.CloseBy(j, "owner")
+			f.AddComment(a, "owner", "/hold")
+			resume := f.AddComment(k, "owner", "/resume")
+			resolveSettle(t, f, min(a, k), max(a, k))
+			raceStages(t, f, "after both", map[int]string{a: "held", k: "ready"})
+			if anyComment(f, k, fmt.Sprintf("reason=rejected cmd=%d ", resume)) {
+				t.Errorf("#%d: newest comment %q; want K's /resume applied", k, newestComment(f, k))
+			}
+		})
+	}
+}
+
+// The verifier's probe of #243's wait: eve, with no access, posts /hold on
+// A, which holds nothing. Then she's given write access and named in
+// CODEOWNERS, so her /hold counts, though A never changes, and the owner's
+// /resume on J, numbered below A, waits for it. The wait reads A again on
+// the next pass, which handles eve's /hold: A goes on hold, and J and K,
+// held already by J's own /hold, get no marker. Then J's /resume ends both
+// /holds on J and K, which go back to ready. Every pass after is
+// unchanged, so the extra reads last only while J's /resume waits.
+func TestHoldOrderRunTrustedSince(t *testing.T) {
+	t.Parallel()
+	f := discRunRaceFamily(false)(t)
+	a, j, k := discRunRaceIssues(false)
+	l := newDiscRunLoop(t, f)
+	discRunRaceHeld(t, l, false)
+	l.quiet("J and K held")
+	eve := f.AddComment(a, "eve", "/hold")
+	l.quiet("eve's /hold, which holds nothing")
+
+	f.SetPermission("eve", "write")
+	l.o.commit(".github/CODEOWNERS", "* @owner @eve\n")
+	resume := f.AddComment(j, "owner", "/resume")
+	l.step("J's /resume waits")
+	l.step("eve's /hold", slices.Concat(holdOrderMoves(a, "ready"), []string{discRunReact(eve)})...)
+	l.step("J's /resume", slices.Concat(holdOrderMoves(k, "held"), holdOrderMoves(j, "held"), []string{discRunReact(resume)})...)
+	for n, want := range map[int]string{a: "stage:held", j: "stage:ready", k: "stage:ready"} {
+		if got := ivLabels(f, n); !slices.Equal(got, []string{want, "type:task"}) {
+			t.Errorf("#%d: labels %q, newest comment %q; want %s", n, got, newestComment(f, n), want)
+		}
+	}
+	l.quiet("after J's /resume")
+}

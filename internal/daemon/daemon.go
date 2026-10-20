@@ -238,6 +238,10 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	touched := map[int]bool{}
 	d.Step.Touched = func(n int) { touched[n] = true }
 	defer func() { d.Step.Touched = nil }()
+	// An ancestor a /hold or /resume waits for is read again next pass, so
+	// it's visited then, though nothing on it changed (#243).
+	d.Step.holdOrderReread = func(n int) { d.stale[n] = true }
+	defer func() { d.Step.holdOrderReread = nil }()
 	for _, n := range slices.Sorted(maps.Keys(d.snaps)) {
 		s := d.snaps[n]
 		if touched[n] || (!read[n] && !slices.ContainsFunc(s.Labels, isReview) && !slices.ContainsFunc(s.Labels, flagAsked) &&
