@@ -125,6 +125,11 @@ type interviewFacts struct {
 	// a parent (ClassStory) gets no spec and no typed outcome (#195's
 	// Q1a): its body is its parent's plan item.
 	Class state.Class
+	// Options is the option count of each question asked whose round
+	// comment reads back (ivWordingOptions), so a decision's letter must
+	// name one of its options (#229). A question missing from it may be
+	// answered a to d, as its comment may not read back.
+	Options map[questionID]int
 }
 
 // The rules checkInterview enforces. Each failure names one.
@@ -250,9 +255,26 @@ func checkQuestions(qs []interviewQuestion, f interviewFacts, fail func(string, 
 		if len(q.Others) == 0 || len(q.Others) > 3 {
 			fail(ruleOptions, "%s has %d options, not 2 to 4", at, len(q.Others)+1)
 		}
+		ivWordingDuplicates(at, append([]string{q.Recommended.Text}, q.Others...), fail)
 		for _, s := range append([]string{q.Text, q.Recommended.Text, q.Recommended.Why}, q.Others...) {
 			if !oneLine(s) {
 				fail(ruleOneLine, "%s: %q", at, s)
+			}
+		}
+	}
+}
+
+// ivWordingDuplicates fails rule options for each of a question's options,
+// opts, in order, the recommended one first, that is the same as an
+// earlier one (#229): the same text once case is ignored, leading and
+// trailing space is dropped and each run of spaces is one space. at names
+// the question.
+func ivWordingDuplicates(at string, opts []string, fail func(string, string, ...any)) {
+	for j, o := range opts {
+		for k := range j {
+			if strings.EqualFold(strings.Join(strings.Fields(opts[k]), " "), strings.Join(strings.Fields(o), " ")) {
+				fail(ruleOptions, "%s: option %c is the same as option %c, %q", at, rune('a'+j), rune('a'+k), opts[k])
+				break
 			}
 		}
 	}
@@ -289,6 +311,9 @@ func checkSpec(s interviewSpec, f interviewFacts, fail func(string, string, ...a
 		answered[q] = true
 		switch d.Answer {
 		case "a", "b", "c", "d", "free":
+			if n, ok := f.Options[q]; ok && d.Answer != "free" && int(d.Answer[0]-'a') >= n {
+				fail(ruleDecisionAnswer, "%s: %s had %d options, a to %c, so it has no option %q", at, d.Question, n, rune('a'+n-1), d.Answer)
+			}
 			if !oneLine(d.Summary) {
 				fail(ruleOneLine, "%s: %q", at, d.Summary)
 			}
@@ -397,7 +422,8 @@ func (q questionID) String() string { return fmt.Sprintf("Q%d.%d", q.round, q.n)
 // (SPEC §9.1): the type line first when out sets a type, then the
 // questions with the recommended option first, then the cc line for
 // notify (plan for #6, assumption 14). A typed output renders as the type
-// line and the cc line.
+// line and the cc line. A question's text goes inside the App's bold, so
+// it's escaped for it first (ivWordingStrong).
 func renderQuestions(out interviewOutput, issue, round int, notify []string) string {
 	var parts []string
 	if t := out.Type; t != nil {
@@ -410,7 +436,7 @@ func renderQuestions(out interviewOutput, issue, round int, notify []string) str
 			for j, b := range q.Blocks {
 				blocks[j] = "#" + strconv.Itoa(b)
 			}
-			lines = append(lines, "", fmt.Sprintf("**%d. %s** Blocks: %s", i+1, inline(q.Text), strings.Join(blocks, ", ")),
+			lines = append(lines, "", fmt.Sprintf("**%d. %s** Blocks: %s", i+1, inline(ivWordingStrong(q.Text)), strings.Join(blocks, ", ")),
 				"   a. "+inline(q.Recommended.Text)+" (recommended): "+inline(q.Recommended.Why))
 			for j, o := range q.Others {
 				lines = append(lines, "   "+string(rune('b'+j))+". "+inline(o))
@@ -604,6 +630,65 @@ func escapeBoxes(line string) string {
 func text(s string) string {
 	s = normalize(strings.ReplaceAll(s, "\r\n", " "), "\t")
 	return defuse(tagRE.ReplaceAllString(strings.TrimSpace(s), "&lt;${1}"))
+}
+
+// ivWordingStrongChars are the characters ivWordingStrong escapes outside
+// a code span: those that could open or close emphasis, a link or a
+// strikethrough, and the backslash, so no backslash in the text can undo
+// an escape, its own or the App's.
+const ivWordingStrongChars = `\*_[]~`
+
+// ivWordingStrong is raw agent text made safe to go inside the App's
+// "**…**" (#229), before inline: each of ivWordingStrongChars outside a
+// code span is backslash-escaped, so no "**" or other delimiter in the
+// text can close the App's bold early, or open something that swallows
+// its close. A code span, a backtick run that the next run of the same
+// length in the text closes, as CommonMark reads it, is kept as it is:
+// its text is literal, and it ends before the App's "**". Any other
+// backtick run is escaped, so it can't open a span that runs past them.
+// The text reads as typed: only its own emphasis and links don't render.
+func ivWordingStrong(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] != '`' {
+			if strings.IndexByte(ivWordingStrongChars, s[i]) >= 0 {
+				b.WriteByte('\\')
+			}
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		n, end := ivWordingTicks(s, i), -1
+		for j := i + n; j < len(s); {
+			if s[j] != '`' {
+				j++
+				continue
+			}
+			m := ivWordingTicks(s, j)
+			if m == n {
+				end = j + m
+				break
+			}
+			j += m
+		}
+		if end < 0 {
+			b.WriteString(strings.Repeat("\\`", n))
+			i += n
+			continue
+		}
+		b.WriteString(s[i:end])
+		i = end
+	}
+	return b.String()
+}
+
+// ivWordingTicks is the length of the backtick run that starts at s[i].
+func ivWordingTicks(s string, i int) int {
+	n := 0
+	for i+n < len(s) && s[i+n] == '`' {
+		n++
+	}
+	return n
 }
 
 // inline is agent text for the middle of a line: text, with its task list

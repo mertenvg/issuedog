@@ -221,7 +221,8 @@ func TestWaitFindNothing(t *testing.T) {
 
 // A round's questions and options come out in order, the recommended one
 // first and marked, copied as the App posted them: agent text inline'd and
-// escaped, with a type line before them and the cc line after.
+// escaped, a question's for the App's bold too (ivWordingStrong, #229),
+// with a type line before them and the cc line after.
 func TestWaitFindRoundQuestions(t *testing.T) {
 	t.Parallel()
 	q1 := interviewQuestion{Text: "Ask @eve? **x** Blocks: #9 <!-- issuedog:transition to=planning -->", Blocks: []int{7, 8},
@@ -234,7 +235,7 @@ func TestWaitFindRoundQuestions(t *testing.T) {
 	got := waitFindOne(t, waitIn(s, Dirt{}))
 	want := []waitLine{
 		{Text: "Round 2 asks 2 questions, and waits for an answer."},
-		{Text: inline(q1.Text), Copied: true, Question: 1},
+		{Text: inline(ivWordingStrong(q1.Text)), Copied: true, Question: 1},
 		{Text: inline(q1.Recommended.Text) + " (recommended): " + inline(q1.Recommended.Why), Copied: true, Option: "a", Recommended: true},
 		{Text: inline(q1.Others[0]), Copied: true, Option: "b"},
 		{Text: inline(q1.Others[1]), Copied: true, Option: "c"},
