@@ -17,9 +17,10 @@ import (
 // set, and prev_issue_type, the type replaced, each with its ID in the org
 // (IssueTypeID). SetType sets a type with no event.
 func (f *Fake) SetTypeBy(number int, login, name string) int64 {
+	f.t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.issueTypeRevertSet(f.issues[number-1], login, name)
+	return f.issueTypeRevertSet(f.fakeNumberIssue(number), login, name)
 }
 
 // firstIssueType is one less than the first ID an org issue type gets: the
@@ -27,8 +28,9 @@ func (f *Fake) SetTypeBy(number int, login, name string) int64 {
 const firstIssueType = 500
 
 // issueTypeNamed is the org's issue type named name, ignoring case, as a
-// new value with name as given and the type's ID, which a name the org
-// hasn't seen yet gets now, with name as the org shows it from then on
+// new value with the type's ID and its name as the org shows it, as GitHub
+// serves a type set as "task" as the org's Task. A name the org hasn't
+// seen yet gets its ID now, with name as the org shows it from then on
 // (orgIssueTypes). "" gets no ID. f is locked.
 func (f *Fake) issueTypeNamed(name string) *gogithub.IssueType {
 	t := &gogithub.IssueType{Name: &name}
@@ -50,7 +52,7 @@ func (f *Fake) issueTypeNamed(name string) *gogithub.IssueType {
 		f.orgTypeNames[id] = name
 		delete(f.goneTypes, key)
 	}
-	t.ID = &id
+	t.ID, t.Name = &id, new(f.orgTypeNames[id])
 	return t
 }
 
@@ -155,11 +157,13 @@ func (is *issue) issueTypeRevertServe(e *gogithub.Timeline) any {
 }
 
 // issueTypeRevertEdit sets the issue's type as the App, as the update of
-// an issue does for its type field: a name sets that type, and null removes
+// an issue does for its type field: a name sets that type, by the name the
+// org shows (issueTypeNamed), and null removes
 // it. A type the issue has already, matched ignoring case, or none for an
 // issue with none, is no change and writes no event. A name the org renamed
-// away (RenameOrgIssueType) is refused with a 422. Under DropTypeChanges,
-// nothing changes. f is locked.
+// away (RenameOrgIssueType) is refused with a 422, and so is one
+// fakeTypeRefusal refuses. Under DropTypeChanges, nothing changes. f is
+// locked.
 func (f *Fake) issueTypeRevertEdit(is *issue, raw json.RawMessage) (int, any) {
 	var name *string
 	if err := json.Unmarshal(raw, &name); err != nil {
@@ -170,6 +174,11 @@ func (f *Fake) issueTypeRevertEdit(is *issue, raw json.RawMessage) (int, any) {
 	}
 	if name != nil && f.goneTypes[strings.ToLower(*name)] {
 		return http.StatusUnprocessableEntity, message(fmt.Sprintf("githubtest: the org has no issue type %q", *name))
+	}
+	if name != nil {
+		if status, msg := f.fakeTypeRefusal(*name); msg != nil {
+			return status, msg
+		}
 	}
 	switch {
 	case f.dropTypes:

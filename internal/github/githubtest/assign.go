@@ -25,6 +25,7 @@ func (f *Fake) handleAssign() {
 // hand, and moves updated_at. Unassignable logins are assigned anyway, as
 // if they could be when the person assigned them.
 func (f *Fake) SetAssignees(number int, logins ...string) {
+	f.t.Helper()
 	f.edit(number, func(is *issue) {
 		is.Assignees = nil
 		for _, l := range logins {

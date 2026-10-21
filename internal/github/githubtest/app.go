@@ -75,11 +75,17 @@ func (f *Fake) RepoLabels() []string {
 
 // Close closes an issue, with a closed event that names no actor (CloseBy).
 // It stays listed among its parent's sub-issues, as on GitHub.
-func (f *Fake) Close(number int) { f.CloseBy(number, "") }
+func (f *Fake) Close(number int) {
+	f.t.Helper()
+	f.CloseBy(number, "")
+}
 
 // Reopen reopens a closed issue, with a reopened event that names no actor
 // (ReopenBy).
-func (f *Fake) Reopen(number int) { f.ReopenBy(number, "") }
+func (f *Fake) Reopen(number int) {
+	f.t.Helper()
+	f.ReopenBy(number, "")
+}
 
 // DeleteIssue deletes the newest issue and its comments, after which its
 // paths answer 404. Issues are kept by number, so only the newest can go.
