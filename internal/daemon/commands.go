@@ -292,14 +292,15 @@ func heldStackResume(is state.Issue, self bool, above madeAboveSet) (at state.St
 // hand, which names no /hold, it ends, and so a comment deleted before
 // the /resume that may have been a /hold (resolveGone); but not one
 // deleted at or after it, which may have been a /hold posted after it,
-// by the same rule (heldDeletionLater, #244). On a descendant it ends only an owner
-// hold whose /hold was posted on the /resume's issue or above it, before
-// the /resume, or a comment deleted there before it that may have been
-// one (resolveGone), by SPEC §6.4's one rule (resolveEndsHold,
-// madeAboveSet.made): a marker whose cmd names a comment in above, or a
-// /hold that a marker on the issue or an ancestor names, its comment
-// deleted since, which was posted there or above (see madeAbove). A /hold on a descendant names a comment below,
-// whether it wrote a marker or, as the issue was held already, none (Q2b,
+// by the same rule (heldDeletionLater, #244). On a descendant it ends
+// only an owner hold whose /hold was posted on the /resume's issue or
+// above it, before the /resume, or a comment deleted there before it
+// that may have been one (resolveGone), by SPEC §6.4's one rule
+// (resolveEndsHold, madeAboveSet.made): a marker whose cmd names a
+// comment in above, or a /hold that a marker on the issue or an ancestor
+// names, its comment deleted since, which was posted there or above (see
+// madeAbove). A /hold on a descendant names a comment below, whether it
+// wrote a marker or, as the issue was held already, none (Q2b,
 // resolveOwnHolds, resolveHeldBy), so it stays until /resume there or
 // between ends it; so do a hold set by hand, which has no cmd (by= and
 // event=), a deleted /hold comment that no marker there names, which is
