@@ -1,6 +1,7 @@
 package githubtest
 
 import (
+	"fmt"
 	"maps"
 	"net/http"
 	"slices"
@@ -78,7 +79,8 @@ func (f *Fake) handleChecks() {
 }
 
 // SetPersonalAccount makes the repo's owner a personal account, which has
-// no issue types: GET /orgs/{owner}/issue-types answers 404, as GitHub does.
+// no issue types: GET /orgs/{owner}/issue-types answers 404, as GitHub does,
+// and a create or an edit that sets any type gets a 422 (fakeTypeRefusal).
 func (f *Fake) SetPersonalAccount() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -87,16 +89,37 @@ func (f *Fake) SetPersonalAccount() {
 
 // SetOrgIssueTypes sets the issue types the org lists, in order, each with
 // the ID IssueTypeID gives its name, replacing the default: every type the
-// org has given an ID, enabled. RenameOrgIssueType renames a type in the
-// list too. A type left out of the list is one the org no longer has, as
-// once it deleted it, though the fake still sets it on an issue.
+// org has given an ID, enabled. Each name is the one the org shows from
+// then on, so a type set by its name in another case is served by this
+// one. RenameOrgIssueType renames a type in the list too. A type left out
+// of the list is one the org no longer has, as once it deleted it, though
+// the fake still sets it on an issue. A disabled one is refused on a
+// create or an edit (fakeTypeRefusal).
 func (f *Fake) SetOrgIssueTypes(types ...OrgIssueType) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.checks.issueTypes, f.checks.typesSet = slices.Clone(types), true
 	for _, t := range types {
-		f.issueTypeNamed(t.Name) // gives the name its ID now
+		if id := f.issueTypeNamed(t.Name).GetID(); id != 0 { // gives the name its ID now
+			f.orgTypeNames[id] = t.Name
+		}
 	}
+}
+
+// fakeTypeRefusal is the 422 GitHub answers a create or an edit that sets
+// the issue type named name, or 0 and nil if it may: any type on a personal
+// account (SetPersonalAccount), which has none, and one the org's list
+// (SetOrgIssueTypes) marks disabled, matched ignoring case. f is locked.
+func (f *Fake) fakeTypeRefusal(name string) (int, any) {
+	if f.checks.personal {
+		return http.StatusUnprocessableEntity, message(fmt.Sprintf("Validation Failed: issue type %q: a personal account's repository has no issue types", name))
+	}
+	for _, t := range f.checks.issueTypes {
+		if t.Disabled && strings.EqualFold(t.Name, name) {
+			return http.StatusUnprocessableEntity, message(fmt.Sprintf("Validation Failed: the org's issue type %q is disabled", t.Name))
+		}
+	}
+	return 0, nil
 }
 
 // TypeGoneRefuseList makes GET /orgs/{org}/issue-types answer status, such

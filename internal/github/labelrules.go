@@ -38,6 +38,7 @@ type DiscRename struct {
 	By    Author
 	At    time.Time
 	Title string // the title it set
+	From  string // the title it replaced
 }
 
 // LabelEventKind is what CheckLabels found that S4 has to act on.
@@ -301,7 +302,7 @@ func (c *Client) CheckLabels(ctx context.Context, owner, repo string, number int
 			}
 		case "renamed":
 			found.DiscRenames = append(found.DiscRenames, DiscRename{ID: e.GetID(), By: Author{Login: e.GetActor().GetLogin(), Type: e.GetActor().GetType()},
-				At: e.GetCreatedAt().Time, Title: e.GetRename().GetTo()})
+				At: e.GetCreatedAt().Time, Title: e.GetRename().GetTo(), From: e.GetRename().GetFrom()})
 		default:
 			if issueTypeEvent(e) {
 				issueType.events = append(issueType.events, e)

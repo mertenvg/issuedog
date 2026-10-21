@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -354,5 +356,148 @@ func TestCreateIssueWithLabelsAndType(t *testing.T) {
 	is, _, err = c.Issues.Create(ctx, "o", "r", gogithub.CreateIssueRequest{Title: "Dropped", Type: new("Task")})
 	if err != nil || is.Type != nil || f.State().Issues[is.GetNumber()-1].Type != "" {
 		t.Errorf("create under DropTypeChanges = %+v, %v; want no type", is.GetType(), err)
+	}
+}
+
+// fakeNumberTB is the test a fake is given, which records each Fatalf and
+// ends the goroutine that called it, as testing's own does, so a test can
+// check that a helper fails it.
+type fakeNumberTB struct {
+	testing.TB
+	mu    sync.Mutex
+	fatal []string
+}
+
+func (tb *fakeNumberTB) Fatalf(format string, args ...any) {
+	tb.mu.Lock()
+	tb.fatal = append(tb.fatal, fmt.Sprintf(format, args...))
+	tb.mu.Unlock()
+	runtime.Goexit()
+}
+
+// fakeNumberFatal runs do in a goroutine of its own, as a test does, and
+// returns the Fatalf messages it failed tb with, and what it panicked
+// with, if it did.
+func fakeNumberFatal(tb *fakeNumberTB, do func()) (fatal []string, panicked any) {
+	tb.mu.Lock()
+	tb.fatal = nil
+	tb.mu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() { panicked = recover() }()
+		do()
+	}()
+	<-done
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	return tb.fatal, panicked
+}
+
+// fakeNumberAnswer sends method to path below the repo, and returns the
+// answer's status and message, failing t on anything but an API error.
+func fakeNumberAnswer(t *testing.T, c *github.Client, method, path string, body any) (int, string) {
+	t.Helper()
+	ctx := context.Background()
+	req, err := c.Client.NewRequest(ctx, method, "repos/o/r"+path, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.Client.Do(req, nil)
+	var er *gogithub.ErrorResponse
+	if err != nil && !errors.As(err, &er) {
+		t.Fatal(err)
+	}
+	if er != nil {
+		return resp.StatusCode, er.Message
+	}
+	return resp.StatusCode, ""
+}
+
+// A helper given an issue number the fake hasn't got, as the issue or as
+// the parent or blocker it links, fails the test with a message naming
+// the number, and changes nothing, rather than panicking. So does a number
+// that was an issue until DeleteIssue deleted it.
+func TestFakeNumberUnknown(t *testing.T) {
+	t.Parallel()
+	tb := &fakeNumberTB{TB: t}
+	f := New(tb, "o/r", "issuedog")
+	n := f.AddIssue("owner", "Issue", "body")
+	f.AddIssue("owner", "Other", "body")
+	before := f.State()
+	for _, tc := range []struct {
+		name string
+		do   func()
+	}{
+		{"SetParent of an unknown issue", func() { f.SetParent(9, n) }},
+		{"SetParent to an unknown parent", func() { f.SetParent(n, 9) }},
+		{"SetBlockedBy of an unknown issue", func() { f.SetBlockedBy(9, n) }},
+		{"SetBlockedBy by an unknown blocker", func() { f.SetBlockedBy(n, 9) }},
+		{"SetType", func() { f.SetType(9, "Task") }},
+		{"SetTypeBy", func() { f.SetTypeBy(9, "owner", "Task") }},
+		{"SetPullRequest", func() { f.SetPullRequest(9) }},
+		{"SetAssignees", func() { f.SetAssignees(9, "owner") }},
+		{"SetPinned", func() { f.SetPinned(9, true) }},
+		{"EditBody", func() { f.EditBody(9, "owner", "new") }},
+		{"AddComment", func() { f.AddComment(9, "owner", "hi") }},
+		{"DeleteRevision", func() { f.DeleteRevision(9, 0) }},
+		{"AddLabel", func() { f.AddLabel(9, "owner", "bug") }},
+		{"RemoveLabel", func() { f.RemoveLabel(9, "owner", "bug") }},
+		{"RenameIssue", func() { f.RenameIssue(9, "owner", "New") }},
+		{"Close", func() { f.Close(9) }},
+		{"CloseBy", func() { f.CloseBy(9, "owner") }},
+		{"CloseAs", func() { f.CloseAs(9, "owner", "not_planned") }},
+		{"CloseByPullRequest", func() { f.CloseByPullRequest(9, "owner", ClosingPR{}) }},
+		{"CloseByCommit", func() { f.CloseByCommit(9, "owner", "abc", "") }},
+		{"CloseByProject", func() { f.CloseByProject(9, "owner") }},
+		{"Reopen", func() { f.Reopen(9) }},
+		{"ReopenBy", func() { f.ReopenBy(9, "owner") }},
+		{"ForbidCloser", func() { f.ForbidCloser(9, 1) }},
+		{"FailCloser", func() { f.FailCloser(9, 1, "", "boom") }},
+		{"MendCloser", func() { f.MendCloser(9, 1) }},
+		{"ForgetCloser", func() { f.ForgetCloser(9, 1) }},
+		{"AddIssueReaction", func() { f.AddIssueReaction(9, "owner", "+1") }},
+		{"DeleteIssueReaction", func() { f.DeleteIssueReaction(9, 1) }},
+		{"Transfer", func() { f.Transfer(9, "o/elsewhere") }},
+	} {
+		fatal, panicked := fakeNumberFatal(tb, tc.do)
+		if panicked != nil {
+			t.Errorf("%s: panicked with %v; want the test failed", tc.name, panicked)
+		}
+		if want := []string{"githubtest: no issue #9: the fake has 2"}; !slices.Equal(fatal, want) {
+			t.Errorf("%s: Fatalf %q; want %q", tc.name, fatal, want)
+		}
+	}
+	// Numbers start at 1, so 0 is no issue either.
+	fatal, panicked := fakeNumberFatal(tb, func() { f.Close(0) })
+	if want := []string{"githubtest: no issue #0: the fake has 2"}; panicked != nil || !slices.Equal(fatal, want) {
+		t.Errorf("Close(0): Fatalf %q, panicked with %v; want Fatalf %q", fatal, panicked, want)
+	}
+	if got := f.State(); !reflect.DeepEqual(got, before) {
+		t.Errorf("state after the unknown numbers:\n%+v\nwant it unchanged:\n%+v", got, before)
+	}
+
+	// A parent and a blocker DeleteIssue deleted: the answers that name
+	// them are a 500 naming the number, the parents above an issue
+	// included, which a sub-issue link checks.
+	g := New(t, "o/r", "issuedog")
+	blocked, child := g.AddIssue("owner", "Blocked", "body"), g.AddIssue("owner", "Child", "body")
+	gone := g.AddIssue("owner", "Gone", "body")
+	g.SetParent(child, gone)
+	g.SetBlockedBy(blocked, gone)
+	g.DeleteIssue()
+	c := g.Client(t)
+	for _, tc := range []struct {
+		name, method, path string
+		body               any
+	}{
+		{"the parent", http.MethodGet, fmt.Sprintf("/issues/%d/parent", child), nil},
+		{"the blockers", http.MethodGet, fmt.Sprintf("/issues/%d/dependencies/blocked_by", blocked), nil},
+		{"a sub-issue link", http.MethodPost, fmt.Sprintf("/issues/%d/sub_issues", child), gogithub.SubIssueRequest{SubIssueID: issueID(blocked)}},
+	} {
+		status, msg := fakeNumberAnswer(t, c, tc.method, tc.path, tc.body)
+		if status != http.StatusInternalServerError || !strings.Contains(msg, fmt.Sprintf("no issue #%d: the fake has 2", gone)) {
+			t.Errorf("%s: %d %q; want a 500 naming #%d", tc.name, status, msg, gone)
+		}
 	}
 }

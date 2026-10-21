@@ -293,7 +293,7 @@ func (iv *Interviewer) Context(ctx context.Context, in Input) (map[string][]byte
 	all := allRounds(s, a.AppSlug, in.Dirt.Has)
 	takesUntrusted := s.Type == "epic" || s.Type == "story" // SPEC §6.2
 	tc := trustCache{st: d.Step, verdicts: map[string]bool{}}
-	titleBy, bodyBy, err := contextAdmission(ctx, a, s, in.Dirt, tc, timeline)
+	titleBy, bodyBy, _, err := contextAdmission(ctx, a, s, in.Dirt, tc, timeline)
 	if err != nil {
 		return nil, wrap(err)
 	}

@@ -27,6 +27,10 @@ func typeGoneComment(span string, key int64) string {
 // before #245, under Replay: one comment and one PATCH. That holds even
 // though the org no longer lists Task, as a 404 can't say so, so no type
 // is left out as gone. A second revert in the pass reads nothing more.
+//
+// A personal account answers the read with the same 404
+// (TestOrgIssueTypes), but has no issue types to revert: GitHub refuses
+// any type there, and since #302 so does the fake, so it's no case here.
 func TestTypeGoneRefused(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -35,7 +39,6 @@ func TestTypeGoneRefused(t *testing.T) {
 	}{
 		{"a 403", func(f *githubtest.Fake) { f.TypeGoneRefuseList(http.StatusForbidden) }},
 		{"a 404", func(f *githubtest.Fake) { f.TypeGoneRefuseList(http.StatusNotFound) }},
-		{"a personal account's 404", func(f *githubtest.Fake) { f.SetPersonalAccount() }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

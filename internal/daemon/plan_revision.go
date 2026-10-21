@@ -68,7 +68,7 @@ type planChild struct {
 	Number int
 	Title  string
 	Type   string      // github.TypeOf's, or ""
-	Stage  state.Stage // its first stage label's, or "", while it's open
+	Stage  state.Stage // while it's open, as its markers set it, once the planner's Context reads it (plannerTrustedStage), or ""
 	Closed bool
 	// Reason is a closed child's state_reason, such as "completed" or
 	// "not_planned", or "".
@@ -134,11 +134,10 @@ func (pr *planPrior) read(ctx context.Context, st *Step, s *github.Snapshot) err
 	children := map[int]bool{}
 	for item, f := range found {
 		is := byNumber[f.Number]
+		// Its stage isn't the listing's to give, as its labels may be
+		// untrusted: the planner's Context reads it (plannerTrustedStage).
 		c := planChild{Item: item, Number: f.Number, Title: is.GetTitle(), Type: github.TypeOf(is),
 			Closed: is.GetState() == "closed", Reason: is.GetStateReason()}
-		if !c.Closed {
-			c.Stage = labelStage(is)
-		}
 		pr.Children = append(pr.Children, c)
 		children[f.Number] = true
 	}
@@ -159,16 +158,6 @@ func (pr *planPrior) read(ctx context.Context, st *Step, s *github.Snapshot) err
 		pr.Others = append(pr.Others, sub)
 	}
 	return nil
-}
-
-// labelStage is the stage of is's first stage label, or "".
-func labelStage(is *gogithub.Issue) state.Stage {
-	for _, l := range is.Labels {
-		if st, ok := state.ParseLabel(l.GetName()); ok {
-			return st
-		}
-	}
-	return ""
 }
 
 // child returns the child of item id, if any.
@@ -342,13 +331,14 @@ const plannerChildrenIntroRevision = "This issue was planned before, so your pla
 
 // plannerChildrenFile is children.md for a revision on issue n, after pr
 // is read: the children, each with its item ID, number, title, type, and
-// stage or close reason; the approved revision's items, as its plan data,
-// fenced; and the other sub-issues, as context only. Titles, types and
-// the data are escaped (SPEC §5.1).
+// stage, as its markers set it (plannerTrustedStage), or close reason; the
+// approved revision's items, as its plan data, fenced; and the other
+// sub-issues, as context only. Titles, types and the data are escaped
+// (SPEC §5.1).
 func plannerChildrenFile(n int, pr *planPrior) (string, error) {
 	var lines []string
 	for _, c := range pr.Children {
-		where := "no stage label"
+		where := "not in the pipeline"
 		switch {
 		case c.Closed && c.Reason != "":
 			where = "closed as " + github.Escape(strings.ReplaceAll(c.Reason, "_", " "))

@@ -145,3 +145,68 @@ func TestBlockedByLiveState(t *testing.T) {
 		t.Errorf("ETags = %q, want a new one after each change only", etags)
 	}
 }
+
+// fakeReactionList reads a reaction listing with opts, as both of go-github's
+// reaction listings do.
+type fakeReactionList func(opts *gogithub.ListReactionOptions) ([]*gogithub.Reaction, *gogithub.Response, error)
+
+// fakeReactionRead lists the reactions read serves for content, two to a
+// page, every page, as "login content".
+func fakeReactionRead(t *testing.T, read fakeReactionList, content string) []string {
+	t.Helper()
+	got := []string{}
+	opts := &gogithub.ListReactionOptions{Content: content, ListOptions: gogithub.ListOptions{PerPage: 2}}
+	for {
+		rs, resp, err := read(opts)
+		if err != nil {
+			t.Fatalf("content %q: %v", content, err)
+		}
+		for _, r := range rs {
+			got = append(got, r.GetUser().GetLogin()+" "+r.GetContent())
+		}
+		if resp.NextPage == 0 {
+			return got
+		}
+		opts.Page = resp.NextPage
+	}
+}
+
+// Both reaction listings, an issue's and a comment's, serve only the
+// reactions with the content= asked for, such as +1, oldest first and
+// across pages, and every reaction for none. A content nothing has is an
+// empty list.
+func TestFakeReactionContent(t *testing.T) {
+	t.Parallel()
+	f := New(t, "o/r", "issuedog")
+	n := f.AddIssue("owner", "Title", "body")
+	cm := f.AddComment(n, "owner", "hi")
+	for _, r := range []struct{ author, content string }{
+		{"owner", "+1"}, {"mallory", "eyes"}, {"issuedog[bot]", "+1"}, {"mallory", "-1"}, {"mallory", "+1"},
+	} {
+		f.AddIssueReaction(n, r.author, r.content)
+		f.AddReaction(cm, r.author, r.content)
+	}
+	ctx, c := context.Background(), f.Client(t)
+	for _, tc := range []struct {
+		name string
+		read fakeReactionList
+	}{
+		{"the issue's", func(opts *gogithub.ListReactionOptions) ([]*gogithub.Reaction, *gogithub.Response, error) {
+			return c.Client.Reactions.ListIssueReactions(ctx, "o", "r", n, opts)
+		}},
+		{"the comment's", func(opts *gogithub.ListReactionOptions) ([]*gogithub.Reaction, *gogithub.Response, error) {
+			return c.Client.Reactions.ListIssueCommentReactions(ctx, "o", "r", cm, opts)
+		}},
+	} {
+		for content, want := range map[string][]string{
+			"+1":    {"owner +1", "issuedog[bot] +1", "mallory +1"},
+			"-1":    {"mallory -1"},
+			"heart": {},
+			"":      {"owner +1", "mallory eyes", "issuedog[bot] +1", "mallory -1", "mallory +1"},
+		} {
+			if got := fakeReactionRead(t, tc.read, content); !reflect.DeepEqual(got, want) {
+				t.Errorf("%s reactions with content %q = %q, want %q", tc.name, content, got, want)
+			}
+		}
+	}
+}
