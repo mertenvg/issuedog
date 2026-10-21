@@ -289,15 +289,18 @@ func heldStackResume(is state.Issue, self bool, above madeAboveSet) (at state.St
 // rule (resolveEndsHold): one on an ancestor whose pass came first, as
 // commands run in issue-number order, which holds the issue by a marker
 // if it wasn't held, or else by none (resolveHeldBy, #205). A hold by
-// hand, or a comment deleted that may have been a /hold (resolveGone),
-// which names no /hold, it ends. On a descendant it ends only an owner
-// hold whose /hold was posted on the /resume's issue or above it, before
-// the /resume, or a comment deleted there before it that may have been
-// one (resolveGone), by SPEC §6.4's one rule (resolveEndsHold,
-// madeAboveSet.made): a marker whose cmd names a comment in above, or a
-// /hold that a marker on the issue or an ancestor names, its comment
-// deleted since, which was posted there or above (see madeAbove). A /hold on a descendant names a comment below,
-// whether it wrote a marker or, as the issue was held already, none (Q2b,
+// hand, which names no /hold, it ends, and so a comment deleted before
+// the /resume that may have been a /hold (resolveGone); but not one
+// deleted at or after it, which may have been a /hold posted after it,
+// by the same rule (heldDeletionLater, #244). On a descendant it ends
+// only an owner hold whose /hold was posted on the /resume's issue or
+// above it, before the /resume, or a comment deleted there before it
+// that may have been one (resolveGone), by SPEC §6.4's one rule
+// (resolveEndsHold, madeAboveSet.made): a marker whose cmd names a
+// comment in above, or a /hold that a marker on the issue or an ancestor
+// names, its comment deleted since, which was posted there or above (see
+// madeAbove). A /hold on a descendant names a comment below, whether it
+// wrote a marker or, as the issue was held already, none (Q2b,
 // resolveOwnHolds, resolveHeldBy), so it stays until /resume there or
 // between ends it; so do a hold set by hand, which has no cmd (by= and
 // event=), a deleted /hold comment that no marker there names, which is
@@ -314,6 +317,9 @@ func heldStackEnds(m github.Marker, self bool, above madeAboveSet) bool {
 		// Every hold on the issue was made on it or above it, so at the
 		// /resume's level, and only when it came after the /resume does
 		// it stay.
+		if heldDeletionLater(m, above.resume) {
+			return false
+		}
 		id, ok := state.Key{Field: "cmd", ID: m.Fields["cmd"]}.Comment()
 		return !ok || resolveEndsHold(resolveMade{id: id, level: above.resume.level}, above.resume)
 	}
@@ -324,15 +330,27 @@ func heldStackEnds(m github.Marker, self bool, above madeAboveSet) bool {
 // heldStackLater reports whether any of left, the holds a /resume leaves
 // on an issue in its family (heldStackResume), is an owner hold by a /hold
 // posted after the /resume, above's: one the App applied first, as on an
-// ancestor whose pass came first in the same pass (#205). The /resume
-// still ends the holds before it there, as resumeCheck lets it, and
-// resolveResumed records that, so a /resume posted after that /hold, which
-// may not end those, needn't.
+// ancestor whose pass came first in the same pass (#205), or a comment
+// deleted at or after the /resume that may have been one
+// (heldDeletionLater, #244). The /resume still ends the holds before it
+// there, as resumeCheck lets it, and resolveResumed records that, so a
+// /resume posted after that /hold, which may not end those, needn't.
 func heldStackLater(left []github.Marker, above madeAboveSet) bool {
 	return slices.ContainsFunc(left, func(m github.Marker) bool {
 		id, ok := state.Key{Field: "cmd", ID: m.Fields["cmd"]}.Comment()
-		return m.Fields["reason"] == "owner" && ok && id > above.resume.id
+		return m.Fields["reason"] == "owner" && ok && id > above.resume.id || heldDeletionLater(m, above.resume)
 	})
+}
+
+// heldDeletionLater reports whether m is the owner hold that a comment
+// deleted at or after the /resume r may have made (resolveGone): GitHub
+// doesn't say when a deleted comment was posted, so it may have been a
+// /hold posted after r, which r doesn't end, on its own issue either, by
+// SPEC §6.4's one rule (resolveEndsHold, #244). A marker whose field is
+// ill formed isn't one.
+func heldDeletionLater(m github.Marker, r resolveResume) bool {
+	_, at, ok := resolveGoneParse(m.Fields[resolveGone])
+	return ok && !at.Before(r.at)
 }
 
 // madeAboveSet is what madeAbove finds on a /resume's issue and its

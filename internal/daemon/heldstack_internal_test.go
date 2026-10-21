@@ -51,9 +51,11 @@ func TestHeldStackAttemptKey(t *testing.T) {
 }
 
 // Which holds /resume ends (SPEC §6.4, plan #87 rev 2, Q2b, and #188's
-// decision, round 3): on the issue itself, every owner hold; below, only a
-// /hold made on the issue or above it, posted before the /resume, or a
-// comment deleted there before it that may have been one (resolveGone). A
+// decision, round 3): on the issue itself, every owner hold but one posted
+// after the /resume, or a comment deleted after it that may have been one
+// (#205, #244); below, only a /hold made on the issue or above it, posted
+// before the /resume, or a comment deleted there before it that may have
+// been one (resolveGone). A
 // hold by hand ends only on the issue itself, and the issue leaves held
 // only when no hold is left. A discussion hold ends only on the issue
 // itself (T4).
@@ -109,15 +111,21 @@ func TestHeldStackResume(t *testing.T) {
 		{"a comment deleted above before the /resume, which may have been a /hold, ends from above", at(ready, above, goneAbove), false, 2, 0},
 		{"one deleted after the /resume doesn't", at(ready, above, goneLater), false, 1, 1},
 		{"nor does one deleted below", at(ready, above, goneBelow), false, 1, 1},
-		{"but each ends on the issue itself", at(ready, above, goneLater, goneBelow), true, 3, 0},
+		// On the issue itself, a comment deleted before the /resume ends,
+		// wherever it was deleted, but not one deleted after it: it may have
+		// been a /hold posted after the /resume, which §6.4 says only a
+		// /resume posted after the deletion ends (#244).
+		{"on the issue itself, one deleted before the /resume ends, but not one deleted after it", at(ready, above, goneLater, goneBelow), true, 2, 1},
+		{"one deleted before it ends there, wherever it was", at(ready, above, goneAbove, goneBelow), true, 3, 0},
 	} {
 		_, ended, left := heldStackResume(tt.is, tt.self, made)
 		if ended != tt.ended || len(left) != tt.left {
 			t.Errorf("%s: ended %d, %d left; want %d and %d", tt.name, ended, len(left), tt.ended, tt.left)
 		}
 		// Only the /hold posted after the /resume, comment 200, is a later
-		// one (#205).
-		wantLater := slices.ContainsFunc(left, func(m github.Marker) bool { return m.Fields["cmd"] == "200" })
+		// one (#205), and the comment deleted after it, at 150 s, which may
+		// have been one (#244).
+		wantLater := slices.ContainsFunc(left, func(m github.Marker) bool { return m.Fields["cmd"] == "200" || m.Fields["gone"] == "3-150" })
 		if got := heldStackLater(left, made); got != wantLater {
 			t.Errorf("%s: heldStackLater = %t, want %t", tt.name, got, wantLater)
 		}

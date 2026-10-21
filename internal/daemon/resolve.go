@@ -751,7 +751,9 @@ func resolveOwnerHold(id int64) github.Marker {
 // after c that the App applied first, with no marker on it, as it was held
 // already (Q2b): an ancestor whose pass came first in the same pass, as
 // commands run in issue-number order (#205). c doesn't end those, so its
-// issue stays held by them, as it would had c been handled first.
+// issue stays held by them, as it would had c been handled first. And so
+// the comments deleted there at or after c that may have been such
+// /holds (resolveGone, #244), read from what madeAbove read already.
 func (a *Applier) resolveHeldBy(ctx context.Context, family []node, c Cmd, n node, trust github.Trust, above madeAboveSet) ([]github.Marker, error) {
 	byNumber := map[int]node{}
 	for _, x := range family {
@@ -793,8 +795,11 @@ type resolveJudged struct {
 //     an issue on the path during self's hold, written by a trusted user
 //     or by someone GitHub doesn't name: it may have been such a /hold,
 //     one that wrote no marker as the issues were held already (Q2b), and
-//     GitHub doesn't say which comment it was (resolveGone). Not with
-//     j.self, as j ends each on self (heldStackEnds).
+//     GitHub doesn't say which comment it was (resolveGone). With j.self,
+//     only those deleted at or after j was posted: j ends each before it
+//     on self, so those aren't read, but one after it may have been a
+//     /hold posted after j, which j doesn't end (heldStackEnds,
+//     heldDeletionLater, #244).
 //
 // Each ends by SPEC §6.4's one rule (resolveEndsHold), which heldStackEnds
 // judges by too: by a /resume the App applied, posted after the /hold, or
@@ -837,10 +842,11 @@ type resolveJudged struct {
 // triggers before it while a later one kept the issue held, is below the
 // hold's marker.
 func (a *Applier) resolveUnended(ctx context.Context, self node, path []node, is state.Issue, p resolvePeriod, trust github.Trust, j *resolveJudged) ([]github.Marker, error) {
-	var except int64 // j's comment, if any
-	onSelf := false  // j was posted on self, so only /holds after it are read
+	var except int64    // j's comment, if any
+	onSelf := false     // j was posted on self, so only /holds and deletions after it are read
+	var since time.Time // when j was posted, if any
 	if j != nil {
-		except, onSelf = j.c.ID, j.self
+		except, onSelf, since = j.c.ID, j.self, j.c.CreatedAt
 	}
 	// in reports whether the /hold in comment id is one to read: since the
 	// transition before the hold, and, with j on self, after j.
@@ -951,11 +957,11 @@ func (a *Applier) resolveUnended(ctx context.Context, self node, path []node, is
 		left = append(left, m)
 	}
 	for level, x := range path {
-		if onSelf {
-			break // j ends each on self (heldStackEnds)
-		}
 		who := a.discWhoOf(x.s, trust)
 		for _, e := range x.s.Deleted {
+			if onSelf && e.At.Before(since) {
+				continue // j ends it on self (heldStackEnds)
+			}
 			may, err := a.resolveGoneMay(ctx, who, e, p.at)
 			if err != nil {
 				return nil, fmt.Errorf("held from above: comment deleted on #%d: %w", x.s.Number, err)
@@ -1560,9 +1566,22 @@ func (a *Applier) resolveResumed(ctx context.Context, c Cmd, n node, is state.Is
 		if resolveOwnerHeld(left) {
 			// Only a /hold posted after c stays (heldStackEnds), one the
 			// App applied first, as on an ancestor whose pass came first
-			// (#205).
-			text = "This `/resume` ended the holds on this issue from before it, but it stays on hold by a `/hold` posted after it, " +
-				"which it doesn't end. `/resume` where that `/hold` was posted, or here, ends that."
+			// (#205), or a comment deleted above after c that may have
+			// been one (heldDeletionLater, #244).
+			later := slices.ContainsFunc(left, func(m github.Marker) bool { return m.Fields["cmd"] != "" })
+			gone := slices.ContainsFunc(left, func(m github.Marker) bool { return heldDeletionLater(m, above.resume) })
+			switch {
+			case gone && later:
+				text = "This `/resume` ended the holds on this issue from before it, but it stays on hold by a `/hold` posted after it, " +
+					"which it doesn't end, and a comment deleted after it, on an issue above, may have been another. " +
+					"`/resume` where each was posted or deleted, or here, ends that."
+			case gone:
+				text = "This `/resume` ended the holds on this issue from before it, but it stays on hold: a comment deleted after it, " +
+					"on an issue above, may have been a `/hold`, which it doesn't end. `/resume` where that comment was deleted, or here, ends that."
+			default:
+				text = "This `/resume` ended the holds on this issue from before it, but it stays on hold by a `/hold` posted after it, " +
+					"which it doesn't end. `/resume` where that `/hold` was posted, or here, ends that."
+			}
 			if discussed {
 				text += " It's on hold for discussion too: a write collaborator acted after the `/resume` was posted."
 			}
