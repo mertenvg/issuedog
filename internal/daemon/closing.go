@@ -548,9 +548,10 @@ func (a *Applier) closingRevertComment(ctx context.Context, s *github.Snapshot, 
 //     close leaves as it was, or for the App's own move to closed, the
 //     stage it moved from, as an owner hold with no cmd, which /resume
 //     here ends (heldStackEnds); the move's labels take the closed stage
-//     off. On a held issue, the first hold's at and origin stay. A move the
-//     table lacks, as for a type the pipeline doesn't know, holds nothing:
-//     the label rules then put the label back, as for any disagreement.
+//     off. On a held issue, the first hold's at and origin stay, and at the
+//     clarifying after a hold, its origin (discOrigin). A move the table
+//     lacks, as for a type the pipeline doesn't know, holds nothing: the
+//     label rules then put the label back, as for any disagreement.
 //   - Anyone else's is reverted: a revert comment keyed by its event,
 //     posted once, then a close with the state_reason of the close it
 //     undid, or the closed stage's, and the error wraps
@@ -605,6 +606,12 @@ func (a *Applier) closingReopen(ctx context.Context, s *github.Snapshot, trust g
 		// on /done: the stage it was closed from.
 		m, _ := latestTransition(is)
 		at = state.Stage(m.Fields["from"])
+	default:
+		if is.AfterHold() {
+			// The clarifying after a hold carries its origin forward, a
+			// later hold of either kind included (SPEC §6.4).
+			origin = discOrigin(is, is.Stage)
+		}
 	}
 	if !at.Open() || at == state.Held {
 		at = state.Clarifying // no stage /resume could restore
