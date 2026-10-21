@@ -1227,18 +1227,21 @@ func resolveFields(h state.HeldStack, resolved time.Time) map[string]string {
 // resolveHeldAfterHold returns the origin of the clarifying after a hold
 // that is, held, was at when its hold began, if it was at one: the origin
 // the transition before the move into held carries (state.Issue.AfterHold).
-// A /resume back there carries it forward (resume).
+// A /resume back there carries it forward (resume). A held → held marker
+// with no hold before it, as discRestore's when an edit or a deletion hid
+// the move into held, is that move.
 func resolveHeldAfterHold(is state.Issue) (state.Stage, bool) {
 	var before, last github.Marker
+	held := false
 	for _, m := range is.Markers {
 		if _, bounds := state.RoundBound(m, 0); !bounds {
 			continue
 		}
 		switch {
 		case state.Stage(m.Fields["to"]) != state.Held:
-			last = m
-		case state.Stage(m.Fields["from"]) != state.Held:
-			before = last
+			last, held = m, false
+		case !held || state.Stage(m.Fields["from"]) != state.Held:
+			before, held = last, true
 		}
 	}
 	o := state.Stage(before.Fields["origin"])

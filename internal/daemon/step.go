@@ -29,6 +29,10 @@ type Step struct {
 	Models func() config.Models
 
 	trustOnce *trustOnceVisit // the trust of Iterate's visit under way, if any (#174)
+	// holdOrderReread, if set, is told of each ancestor whose /hold or
+	// /resume another waits for (holdOrderWaits), so Iterate reads it again
+	// next pass, and visits it, without skipping its visit in this one.
+	holdOrderReread func(number int)
 }
 
 // Run runs step 1 on s, in this order: the label rules (CheckLabels), dirty
@@ -169,7 +173,8 @@ func (st *Step) counted(ctx context.Context, s *github.Snapshot, d Dirt) (map[in
 // reply was lost, which gets it (reword). One the App never reacted to is
 // left alone, such as one from before #83, one by a user trusted only
 // since, or one posted just before the owner set the stage by hand. A command that would move the issue
-// waits while it's held or at the clarifying after a hold (state.Command.Waits).
+// waits while it's held or at the clarifying after a hold (state.Command.Waits), and a /hold or
+// /resume while one posted before it on an ancestor isn't processed (holdOrderWaits).
 func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment) error {
 	is := state.Derive(s, st.AppSlug, d.Has)
 	named := is.Keys[state.CmdKey(c.ID)] // any reply marker included
@@ -226,6 +231,15 @@ func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github
 		// once the issue is at another stage, on a later pass, or in this
 		// one once a command takes the issue out of held (Run).
 		logr.Debugf("%s/%s#%d: /%s in comment %d waits: the issue is held, or at the clarifying after a hold", st.Owner, st.Repo, s.Number, cmd.Name, c.ID)
+		return nil
+	}
+	// A /hold or /resume waits for one posted before it on an ancestor, so
+	// they apply in the order posted (#243).
+	wait, err := st.holdOrderWaits(ctx, s, d, c, cmd)
+	if err != nil {
+		return fmt.Errorf("/%s: %w", cmd.Name, err)
+	}
+	if wait {
 		return nil
 	}
 	return st.command(ctx, s, d, c, cmd, is.Stage)

@@ -187,6 +187,10 @@ type waitInput struct {
 	Dirt Dirt
 	// Inputs are what step 1 returned on S (Step.Run).
 	Inputs []github.Comment
+	// CloserErrAnswered, if set, reports whether the closer question of the
+	// close keyed key was answered while the daemon runs, which ends its
+	// closer state error (Applier.closerErrAnswered). Unset, none ends so.
+	CloserErrAnswered func(key string) bool
 	// Holds are the open discussion triggers on S after its visit, if S is
 	// held, and nil otherwise (Step.holdItemFind).
 	Holds []discTrigger
@@ -249,7 +253,7 @@ func waitFind(in waitInput) ([]waitItem, error) {
 			Title: s.Title, Lines: lines, Link: waitLink(in.Owner, in.Repo, s.Number, comment),
 			Priority: priority(s), Created: s.CreatedAt, Comment: comment})
 	}
-	open, err := openErrors(s, is, func() ([]github.Comment, error) { return in.Inputs, nil })
+	open, err := openErrors(s, is, func() ([]github.Comment, error) { return in.Inputs, nil }, in.CloserErrAnswered)
 	if err != nil {
 		return nil, fmt.Errorf("what waits on %s/%s#%d: %w", in.Owner, in.Repo, s.Number, err)
 	}
@@ -534,31 +538,17 @@ func waitHumanLines(in waitInput) []waitLine {
 // issue of any other type, or one with no approved plan revision or no
 // record of it yet, as while its children are still being created. Only
 // an epic's plan data is read back, and data that doesn't read back is an
-// error.
+// error. The reading is epicCloseChildren's, which an epic planned into
+// stories closes by (#251).
 func waitDoneChildren(in waitInput, is state.Issue) ([]int, error) {
-	rev, _, ok := state.ApprovedPlan(in.S, in.AppSlug, in.Dirt.Has)
-	if !ok {
+	children, stories, err := epicCloseChildren(in.S, in.AppSlug, in.Dirt.Has, is)
+	if err != nil {
+		return nil, fmt.Errorf("a finished epic's plan: %w", err)
+	}
+	if stories {
 		return nil, nil
 	}
-	children, ok := state.CreatedRecord(is, rev.Rev)
-	if !ok {
-		return nil, nil
-	}
-	class, err := state.ClassOf(is.Item)
-	switch {
-	case err != nil: // a type that names no kind of issue is no story
-	case class&state.AnyStory != 0:
-		return children, nil
-	case class == state.ClassEpic:
-		_, plan, ok, err := approvedPlanData(in.S, in.AppSlug, in.Dirt.Has)
-		if err != nil {
-			return nil, fmt.Errorf("a finished epic's plan: %w", err)
-		}
-		if ok && plan.Kind == planTasks {
-			return children, nil
-		}
-	}
-	return nil, nil
+	return children, nil
 }
 
 // waitDoneLines are a finished story's lines (#278): that it waits for

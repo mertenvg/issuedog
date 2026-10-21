@@ -130,7 +130,7 @@ func TestDiscRestore(t *testing.T) {
 					key := a.key(t, f, 1003)
 					return map[int]issueWant{1: {[]string{"stage:held"}, []string{discHeldAgain("ready", what(1003),
 						"from=held to=held at=ready origin=ready reason=discussion event="+key+" seen=1001",
-						"from=held to=held at=ready reason=owner event="+key+" seen=1001", key)}}}
+						"from=held to=held at=ready origin=ready reason=owner event="+key+" seen=1001", key)}}}
 				})
 			})
 		}

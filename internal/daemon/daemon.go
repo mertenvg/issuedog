@@ -66,11 +66,19 @@ type Daemon struct {
 	polled        time.Time // when the last poll began
 	relabel       bool      // a reload added models whose labels aren't created yet
 
+	// epicCloseDue are the epics planned into stories, by number, with the
+	// children each waits on to close, after its last good step 1
+	// (epicclose.go).
+	epicCloseDue map[int][]int
+
 	closingSeen map[int]closingListed   // closed issues whose close is judged, as they were listed then (closing.go)
 	closingDue  map[int]*gogithub.Issue // closed issues with a close to judge, as last listed (closingList)
 	// closedListed are the issues the poll last listed closed, never a
 	// pull request, for a finished story's children (digestDoneStands).
 	closedListed map[int]bool
+	// closerErrOn are the closed issues whose close stays unjudged while a
+	// closer state error stands on them, for the digest (closererr.go).
+	closerErrOn map[int]closerErrClosedOn
 }
 
 // CurrentTrust is a github.Trust that asks st.Trust on each call. Iterate's
@@ -161,7 +169,9 @@ func (d *Daemon) Run(ctx context.Context) {
 // (digestCacheSet), with the issue's dirty content, which
 // openErrAny takes too; an issue whose read or step 1 fails keeps its last
 // items, and one that closes or leaves the listing loses them. Then it
-// keeps the digest (digestPass), and then the assignees (assignPass), whose
+// closes each epic planned into stories whose children have all closed
+// (epicClosePass, #251), keeps the digest (digestPass), and then the
+// assignees (assignPass), whose
 // failures stop nothing. Last it hands Work the issues ready for it. It returns the errors of the issues it couldn't read
 // or run step 1 on, which the next Iterate reads again. An issue whose
 // labels CheckLabels holds back (ErrLabelsHeld), or that it closed again
@@ -176,6 +186,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		d.openErrs = map[int]bool{}
 	}
 	d.reload(ctx)
+	d.closerErrBegin() // a pass, for the closer questions' counts (closererr.go)
 	if d.Step.Trust == nil {
 		return errors.New("no trust has loaded from main yet")
 	}
@@ -251,6 +262,10 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	touched := map[int]bool{}
 	d.Step.Touched = func(n int) { touched[n] = true }
 	defer func() { d.Step.Touched = nil }()
+	// An ancestor a /hold or /resume waits for is read again next pass, so
+	// it's visited then, though nothing on it changed (#243).
+	d.Step.holdOrderReread = func(n int) { d.stale[n] = true }
+	defer func() { d.Step.holdOrderReread = nil }()
 	for _, n := range slices.Sorted(maps.Keys(d.snaps)) {
 		s := d.snaps[n]
 		if touched[n] || (!read[n] && !slices.ContainsFunc(s.Labels, isReview) && !slices.ContainsFunc(s.Labels, flagAsked) &&
@@ -285,6 +300,9 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		if err == nil {
 			dirt, err = d.Step.Dirty(ctx, s, d.Step.trustOnceTrust())
 		}
+		if err == nil { // a closer state error step 1 found due (closererr.go)
+			err = d.Step.closerErrPost(ctx, s, dirt)
+		}
 		if err == nil {
 			d.openErrs[n], err = d.Step.openErrAny(s, in, dirt)
 		}
@@ -309,10 +327,14 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		}
 		d.inputs[n] = in
 		d.digestCacheSet(s, in, dirt, holds, ownerHeld, blocked) // for assignment too, so with the digest off as well
+		d.epicCloseSet(s, dirt)
 	}
 	for n := range touched {
 		delete(d.inputs, n)
 		d.stale[n] = true
+	}
+	if err := d.epicClosePass(ctx); err != nil { // an epic whose stories have all closed (epicclose.go)
+		errs = append(errs, err)
 	}
 	if err := d.digestPass(ctx); err != nil {
 		errs = append(errs, err)
@@ -349,7 +371,8 @@ func (d *Daemon) reread(n int, gone bool) {
 
 // reload syncs the clone, then loads config and trust from main. A failure
 // keeps the last good ones, and is logged. The Applier's IssueTypes follows
-// the config's types. A config that allows a new model
+// the config's types, and on a repo that uses labels, no issue type waits
+// (typeWaitClear). A config that allows a new model
 // gets its labels created, until that succeeds.
 func (d *Daemon) reload(ctx context.Context) {
 	a := d.Step.Applier
@@ -371,6 +394,8 @@ func (d *Daemon) reload(ctx context.Context) {
 		a.IssueTypes = d.Config.Types == "issue-types"
 		d.Step.Notify = d.Config.Notify
 	}
+	// A switch to types: labels leaves no issue type waiting (#246).
+	d.typeWaitClear()
 	if d.relabel {
 		d.relabel = !d.ensureLabels(ctx)
 	}
