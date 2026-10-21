@@ -26,7 +26,9 @@ type Applier struct {
 	// AppSlug is the App's slug. Its comments are by "<slug>[bot]".
 	AppSlug string
 	// Touched, if set, is told of each issue that a command on another
-	// issue may write to, such as a descendant of a /hold, before it does.
+	// issue may write to, such as a descendant of a /hold, before it does,
+	// and of each issue whose /hold or /resume waits for one on an
+	// ancestor (holdOrderWaits), so it's read again next pass.
 	Touched func(number int)
 	// Unexplained, if set, is the memory of unexplained labels CheckLabels
 	// keeps between passes. If nil, the Applier keeps its own.
@@ -56,6 +58,7 @@ type Applier struct {
 
 	closingBy    map[string]github.ClosingCloser // how each close was made, by its event's node ID (closingCloser)
 	closingAgain map[int]closingListed           // issues the App closed again, after an untrusted reopen, as it left them (closingCloseAgain)
+	closerErr    closerErrState                  // closer questions that failed, and the pass (closererr.go)
 }
 
 // Move is one transition to apply.
@@ -178,8 +181,9 @@ func (m Move) checkPlanRev() error {
 // m.NoAck. Its writes are added to s. dirty is as for state.Derive.
 //
 // A move to closed is the only way the App closes an issue through the
-// table: a human task on /done (DoneCommand), and in S5 a dropped child,
-// as not planned. Its marker records m.StateReason as reason=; then, in
+// table: a human task on /done (DoneCommand), an epic planned into
+// stories once its children have closed (epicCloseOne, #251), and in S5
+// a dropped child, as not planned. Its marker records m.StateReason as reason=; then, in
 // place of the label writes, comes the 👍, and last the close with that
 // state_reason, unless the issue is closed already. The 👍 goes before the
 // close, as step 1 never visits a closed issue again to finish it. It

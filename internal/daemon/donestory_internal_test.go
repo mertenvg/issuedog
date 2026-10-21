@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	gogithub "github.com/google/go-github/v92/github"
+
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 	"github.com/mertenvg/issuedog/internal/state"
@@ -197,11 +199,12 @@ func TestWaitFindDoneBadData(t *testing.T) {
 
 // doneStoryDaemon is a daemon whose cache holds a finished story's item on
 // issue 30, with children 12 and 13, and an error on issue 31, with snaps
-// for both, and the closed issues listed.
+// for both, and the closed issues listed, their closes judged and
+// accepted (closingSeen).
 func doneStoryDaemon(closed ...int) *Daemon {
-	listed := map[int]bool{}
+	listed, seen := map[int]bool{}, map[int]closingListed{}
 	for _, n := range closed {
-		listed[n] = true
+		listed[n], seen[n] = true, closingListed{}
 	}
 	return &Daemon{
 		digestCache: map[int][]waitItem{
@@ -210,6 +213,7 @@ func doneStoryDaemon(closed ...int) *Daemon {
 		},
 		snaps:        map[int]*github.Snapshot{30: {Number: 30}, 31: {Number: 31}},
 		closedListed: listed,
+		closingSeen:  seen,
 	}
 }
 
@@ -226,9 +230,11 @@ func doneKeys(items []waitItem) []string {
 // child its record names is one the poll last listed closed, and no open
 // snapshot names the story as its parent: a child not listed closed, such
 // as one listed open, one filed this pass and not listed yet, or one
-// whose read failed, keeps it out, and so does an open issue below the
-// story that the record doesn't name, such as one added by hand. A
-// snapshot below it read as closed, which the next poll drops, doesn't.
+// whose read failed, keeps it out, and so does one listed closed whose
+// close wasn't judged and accepted (closingSeen), or is due to be judged
+// again (closingDue), and an open issue below the story that the record
+// doesn't name, such as one added by hand. A snapshot below it read as
+// closed, which the next poll drops, doesn't.
 // Every other item stands whatever the snapshots hold.
 func TestDigestDoneStands(t *testing.T) {
 	t.Parallel()
@@ -245,6 +251,8 @@ func TestDigestDoneStands(t *testing.T) {
 		{"and other issues closed", []int{12, 13, 99}, nil, true},
 		{"one child not listed closed", []int{12}, nil, false},
 		{"none listed closed", nil, nil, false},
+		{"one child's close not judged", []int{12, 13}, func(d *Daemon) { delete(d.closingSeen, 13) }, false},
+		{"one child's close due again", []int{12, 13}, func(d *Daemon) { d.closingDue = map[int]*gogithub.Issue{13: {}} }, false},
 		{"a named child open below it", []int{12}, below(13, false), false},
 		{"an open issue below it the record doesn't name", []int{12, 13}, below(14, false), false},
 		{"an issue below it read as closed", []int{12, 13}, below(14, true), true},
@@ -452,7 +460,7 @@ func TestDigestDoneNoVisit(t *testing.T) {
 	if got := doneKeys(d.digestCacheRanked()); slices.Contains(got, "done-30") {
 		t.Fatalf("with 13 open, the digest lists %q; want no done-30", got)
 	}
-	d.closedListed[13] = true
+	d.closedListed[13], d.closingSeen[13] = true, closingListed{}
 	if got := doneKeys(d.digestCacheRanked()); !slices.Contains(got, "done-30") {
 		t.Errorf("with 13 listed closed, the digest lists %q; want done-30", got)
 	}

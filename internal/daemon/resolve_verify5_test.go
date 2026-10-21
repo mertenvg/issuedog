@@ -29,11 +29,12 @@ func resolveSteps(t testing.TB, f *githubtest.Fake, ns ...int) {
 
 // resolveRejectedResume is #1 at ready under #2 at ready, then the owner's
 // /hold on #2, the owner's /resume on #1, while it isn't held, and
-// mallory's comment on #1, by one pass over #1, then #2: #1 is held for
-// discussion, its /resume is rejected, as mallory's comment came after it,
-// and #2's /hold, the first hold being #1's own, writes no marker on #1
-// (Q2b). It returns the fake, the /hold's ID, the /resume's and mallory's
-// comment's.
+// mallory's comment on #1, by one pass over #1, then #2, then #1 again: #1
+// is held for discussion, its /resume waits for #2's /hold, posted before
+// it (#243), and #2's /hold, the first hold being #1's own, writes no
+// marker on #1 (Q2b); then #1's /resume is rejected, as mallory's comment
+// came after it. It returns the fake, the /hold's ID, the /resume's and
+// mallory's comment's.
 func resolveRejectedResume(t testing.TB) (*githubtest.Fake, int64, int64, int64) {
 	t.Helper()
 	f := discFake(t)
@@ -42,7 +43,7 @@ func resolveRejectedResume(t testing.TB) (*githubtest.Fake, int64, int64, int64)
 	hold := f.AddComment(2, "owner", "/hold")
 	resume := f.AddComment(1, "owner", "/resume")
 	w := f.AddComment(1, "mallory", "Wait.")
-	resolveSteps(t, f, 1, 2)
+	resolveSteps(t, f, 1, 2, 1)
 	if l := f.State().Issues[1].Labels; !slices.Equal(l, []string{"stage:held"}) {
 		t.Fatalf("#2: labels %q; want it held by its /hold", l)
 	}
@@ -140,10 +141,11 @@ func TestResolveRejectedResumeParentResumes(t *testing.T) {
 
 // resolveResumeBeforeStart is #1 at ready under #2 at ready, then the
 // owner's /hold on #2, mallory's comment on #1, the owner's /resume on #1
-// and mallory's second comment on #1, by one pass over #1, then #2: #1 is
-// held for the first comment, in an App comment above the /resume, which
-// the /resume accepts, while the second keeps #1 held, so the /resume
-// applies, with its record on #1; and #2's /hold writes no marker on #1.
+// and mallory's second comment on #1, by one pass over #1, then #2, then
+// #1 again: #1 is held for the first comment, in an App comment above the
+// /resume, which waits for #2's /hold, posted before it (#243); #2's /hold
+// writes no marker on #1; then the /resume accepts the first comment, while
+// the second keeps #1 held, so the /resume applies, with its record on #1.
 // The /resume is between the transition before #1's hold and the hold's
 // marker. It returns the fake and the second comment's ID.
 func resolveResumeBeforeStart(t testing.TB) (*githubtest.Fake, int64) {
@@ -155,7 +157,7 @@ func resolveResumeBeforeStart(t testing.TB) (*githubtest.Fake, int64) {
 	f.AddComment(1, "mallory", "Wait.")
 	resume := f.AddComment(1, "owner", "/resume")
 	late := f.AddComment(1, "mallory", "One more thing.")
-	resolveSteps(t, f, 1, 2)
+	resolveSteps(t, f, 1, 2, 1)
 	if l, body := f.State().Issues[0].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:held"}) ||
 		!strings.Contains(body, fmt.Sprintf("cmd=%d", resume)) {
 		t.Fatalf("#1: labels %q, newest comment %q; want it held, with its /resume's record", l, body)
@@ -187,11 +189,14 @@ func TestResolveAppliedResumeBeforeHoldStart(t *testing.T) {
 
 // A /resume on a parent that the App rejected doesn't end a /hold on the
 // grandparent for #1 either. #3 is #2's parent, and #2 is #1's; the
-// owner's /hold on #3, the owner's /resume on #2, and mallory's comment
+// owner's comment on #3, the owner's /resume on #2, and mallory's comment
 // on #1, by one pass over #1, #2, then #3: #1 is held for discussion, so
-// #2's /resume, which ends no hold, is rejected, and #3's /hold holds #3
-// and #2, but writes no marker on #1. Once the owner's 👍 resolves
-// mallory's comment, #1 stays held, its record naming #3's /hold.
+// #2's /resume, which ends no hold, is rejected. Then the owner edits the
+// comment on #3 into a /hold, so a /hold posted before the /resume is
+// handled after it, as one posted as a /hold no longer is (#243), and
+// #3's pass holds #3 and #2, but writes no marker on #1. Once the owner's
+// 👍 resolves mallory's comment, #1 stays held, its record naming #3's
+// /hold.
 func TestResolveRejectedParentResumeKeepsHold(t *testing.T) {
 	t.Parallel()
 	var hold int64
@@ -201,10 +206,12 @@ func TestResolveRejectedParentResumeKeepsHold(t *testing.T) {
 		file(f, 0, ready)
 		f.SetParent(1, 2)
 		f.SetParent(2, 3)
-		hold = f.AddComment(3, "owner", "/hold")
+		hold = f.AddComment(3, "owner", "A note.")
 		resume := f.AddComment(2, "owner", "/resume")
 		w := f.AddComment(1, "mallory", "Wait.")
 		resolveSteps(t, f, 1, 2, 3)
+		f.EditComment(hold, "owner", "/hold")
+		resolveSteps(t, f, 3)
 		for n, want := range map[int]string{1: "stage:held", 2: "stage:held", 3: "stage:held"} {
 			if l := f.State().Issues[n-1].Labels; !slices.Equal(l, []string{want}) {
 				t.Fatalf("#%d: labels %q; want %s", n, l, want)
@@ -346,9 +353,11 @@ func TestResolveCloseByNotice(t *testing.T) {
 // /hold holds it counts from the transition before the issue's hold too,
 // not from the hold's start. #3 is #2's parent, and #2 is #1's; #2 is on a
 // hold set by hand. The owner's /hold on #3, the owner's /resume on #2,
-// and mallory's comment on #1, by one pass over #1, #2, then #3: #1 is
-// held for discussion, in an App comment above the /resume; #2's /resume
-// ends #2's hold, and applies there; #3's /hold writes no marker on #1.
+// and mallory's comment on #1, by one pass over #1, #2, #3, then #2 again:
+// #1 is held for discussion, in an App comment above the /resume; #2's
+// /resume waits for #3's /hold, posted before it (#243); #3's /hold writes
+// no marker on #1, nor on #2; then #2's /resume ends #2's holds, and
+// applies there.
 // The /resume ended #3's /hold for #1, as it was posted after it, so once
 // the owner's 👍 resolves mallory's comment, #1 goes to clarifying.
 func TestResolveAppliedParentResumeBeforeHoldStart(t *testing.T) {
@@ -363,7 +372,7 @@ func TestResolveAppliedParentResumeBeforeHoldStart(t *testing.T) {
 		f.AddComment(3, "owner", "/hold")
 		resume = f.AddComment(2, "owner", "/resume")
 		w := f.AddComment(1, "mallory", "Wait.")
-		resolveSteps(t, f, 1, 2, 3)
+		resolveSteps(t, f, 1, 2, 3, 2)
 		if !slices.ContainsFunc(f.State().Issues[1].Comments, func(c githubtest.CommentState) bool {
 			return strings.Contains(c.Body, fmt.Sprintf("from=held to=ready cmd=%d ", resume))
 		}) {
