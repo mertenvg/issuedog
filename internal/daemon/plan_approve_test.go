@@ -174,7 +174,8 @@ func TestApprovePlan(t *testing.T) {
 			outcome{labels: atReview}},
 		// A dirty plan comment hides its own move to plan-review, so the
 		// issue is at plan-review again only by a later move, here the
-		// owner's override (SPEC §5.1).
+		// owner's override (SPEC §5.1), which wins over the App's record
+		// of the hidden move (#315, plan_dirty_test.go).
 		{"a dirty plan comment is no revision: with no other, /approve is rejected",
 			planReview(func(t testing.TB, f *githubtest.Fake) {
 				f.EditComment(1003, "mallory", forged(planComment(1, 1)))
