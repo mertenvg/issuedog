@@ -543,7 +543,8 @@ func TestPlannerWholeRunEpic(t *testing.T) {
 	p.settle("round 3", digestEdit, assign)
 	p.waiting("round 3", []string{"#1 Question round p1 1"}, wholeRunOwner)
 	f.Advance(time.Hour)
-	p.unchanged("round 3, an hour on")
+	p.transferUnlistedUnchanged("round 3, an hour on") // it lists the open issues (#237)
+	p.unchanged("round 3, an hour on, the pass after")
 
 	// 3. Your answer gets a 👍, which takes round 3 out of the digest and
 	// unassigns you, and the planner's second run, with the answer as its
@@ -659,7 +660,8 @@ func TestPlannerWholeRunEpic(t *testing.T) {
 	runRecord(t, f, "the end", p.n, 1, 3, planRunStories, map[int][]int{4: {3}, 5: {3}})
 	p.waiting("the end", rounds)
 	f.Advance(time.Hour)
-	p.unchanged("the end, an hour on")
+	p.transferUnlistedUnchanged("the end, an hour on") // it lists the open issues (#237)
+	p.unchanged("the end, an hour on, the pass after")
 }
 
 // TestPlannerWholeRunStory: a code owner sets stage:planning on a story
