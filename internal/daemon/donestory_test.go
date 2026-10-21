@@ -243,9 +243,10 @@ func TestDoneStoryEpic(t *testing.T) {
 
 // doneReplayFake returns a setup for Replay: o/r with issue 1 a story at
 // planned with storyTasks' plan, assigned to assigned, and children 2 to
-// 4, filed and linked under it, closed but for open, with the App's
-// record of them on issue 1, as comment 1005, which a visit then takes as
-// every child written.
+// 4, filed and linked under it, closed but for open, each closed one with
+// stage:completed, as the close judge leaves an accepted close, with the
+// App's record of them on issue 1, as comment 1005, which a visit then
+// takes as every child written.
 func doneReplayFake(open int, assigned []string) func(testing.TB) *githubtest.Fake {
 	return func(t testing.TB) *githubtest.Fake {
 		t.Helper()
@@ -256,6 +257,7 @@ func doneReplayFake(open int, assigned []string) func(testing.TB) *githubtest.Fa
 			f.SetParent(n, 1)
 			if n != open {
 				f.CloseBy(n, "owner")
+				f.AddLabel(n, app, "stage:completed")
 			}
 		}
 		post(t, f, 1005, app, wantRecord(storyTasks))

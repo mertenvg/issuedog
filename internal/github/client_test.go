@@ -214,7 +214,8 @@ func TestRedirectsStayOnHost(t *testing.T) {
 }
 
 func TestAppSlugFailures(t *testing.T) {
-	for reply, want := range map[string]string{`{"id":7}`: "GET /app gave no slug", "": "github app: "} {
+	// The 500's status and message come after the server's URL, which varies.
+	for reply, wants := range map[string][]string{`{"id":7}`: {"GET /app gave no slug"}, "": {"github app: GET ", "/app: 500 boom"}} {
 		c := newClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if reply == "" || r.URL.Path != "/app" {
 				http.Error(w, `{"message":"boom"}`, http.StatusInternalServerError)
@@ -222,9 +223,26 @@ func TestAppSlugFailures(t *testing.T) {
 			}
 			_, _ = w.Write([]byte(reply))
 		}))
-		if slug, err := c.AppSlug(context.Background()); err == nil || !strings.Contains(err.Error(), want) {
-			t.Errorf("reply %q: AppSlug = %q, %v; want an error with %q", reply, slug, err, want)
+		slug, err := c.AppSlug(context.Background())
+		for _, want := range wants {
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("reply %q: AppSlug = %q, %v; want an error with %q", reply, slug, err, want)
+			}
 		}
+	}
+}
+
+// A GET /app that fails before any response surfaces that failure too.
+func TestSlugErrAtConnection(t *testing.T) {
+	t.Parallel()
+	refused := errors.New("refused on purpose")
+	c, err := New(Config{AppID: 7, InstallationID: 42, Key: testKey(t), BaseURL: "http://github.invalid",
+		Transport: rtFunc(func(*http.Request) (*http.Response, error) { return nil, refused })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slug, err := c.AppSlug(context.Background()); !errors.Is(err, refused) || !strings.HasPrefix(err.Error(), "github app: ") {
+		t.Errorf("AppSlug = %q, %v; want the transport's error, annotated", slug, err)
 	}
 }
 
