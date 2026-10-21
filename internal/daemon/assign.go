@@ -174,8 +174,9 @@ func (d *Daemon) assignIssue(ctx context.Context, s *github.Snapshot, notify []s
 // write on each pass, and never keeps the issue from its stage work
 // (#238). A gone issue whose write got such an answer is found gone by
 // its next read, the first of the two that drop it: the read before a
-// stage run (Runs.runStage) or the apply read of a run under way
-// (Runs.apply), if Work makes one this pass, or else the next pass's.
+// stage run (Runs.runStage) or the read of a run's lease, on applying
+// its saved result or after a restart (Runs.apply, Runs.resume), if Work
+// makes one this pass, or else the next pass's.
 func (d *Daemon) assignFailed(n int, err error) error {
 	a := d.Step.Applier
 	if gone(err) {
