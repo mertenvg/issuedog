@@ -161,7 +161,10 @@ func (st *Step) counted(ctx context.Context, s *github.Snapshot, d Dirt) (map[in
 }
 
 // handle processes c, a comment that counts as trusted input. It is
-// processed once a cmd or reply marker names it, or the App 👍'd or 👎'd it.
+// processed once a cmd or reply marker names it, or the App 👍'd or 👎'd it,
+// but for a revision request the App 👍'd as an answer before the move to
+// the review stage, whose seen it comes after: no run read it, so it's
+// handled as a request (#318).
 // Only the App can remove its reaction, so a rejection is 👎, then the reply,
 // and a 👎'd command with no clean reply gets it again (reword). A processed
 // comment missing its 👍 gets it (SPEC §5.2), and one edited since it was
@@ -179,9 +182,9 @@ func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github
 	is := state.Derive(s, st.AppSlug, d.Has)
 	named := is.Keys[state.CmdKey(c.ID)] // any reply marker included
 	cmd, isCmd := state.ParseCommand(c.Body)
-	late := false // a request at a stage since moved on
+	request, late := false, false // a revision request, and one at a stage since moved on
 	if r, posted, ok := requested(s, st.AppSlug, d, is, c); ok {
-		cmd, isCmd, late = r, true, is.Stage != posted
+		cmd, isCmd, request, late = r, true, true, is.Stage != posted
 	}
 	answer := !isCmd && !named && roundStage(is.Stage) && c.ID > is.Round
 	reason := replied(is, c.ID)
@@ -219,7 +222,13 @@ func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github
 		return st.reply(ctx, s, c, "edited", editedText)
 	case acked && !named && (isCmd || !roundStage(posted)) && editedSince(c, up.CreatedAt):
 		return st.reply(ctx, s, c, "edited", editedText)
-	case acked:
+	case acked && (!request || late):
+		// The 👍 processed it, but for a request at the stage it was posted
+		// at. No marker names that one, so the App 👍'd it as an answer at
+		// clarifying or planning, before the run's move came to the review
+		// stage with a seen below it. That 👍 wasn't its use (roundStage),
+		// and no run read it, so it goes on to be handled as a request, or
+		// it would be neither (#318).
 		return nil
 	case answer:
 		return st.react(ctx, c.ID, "+1")
