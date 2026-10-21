@@ -3,7 +3,6 @@ package daemon_test
 import (
 	"context"
 	"fmt"
-	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -77,30 +76,8 @@ func (l *discRunLoop) start() {
 	}
 	g.r.Stages = map[state.Stage]daemon.Stage{state.Clarifying: &daemon.Interviewer{Daemon: g.d}}
 	g.d.Digest, g.d.Assign = true, true // as startDaemon sets them
-	st := g.d.Step
-	st.Trust = nil // Iterate loads it from main
-	st.Commands = daemon.Commands(st.CurrentTrust())
-	st.Commands["approve"] = daemon.ApproveCommand()
-	st.Commands["revise"] = daemon.ReviseCommand()
-	maps.Copy(st.Commands, daemon.SettingCommands(st.CurrentTrust(), g.d.CurrentModels))
-	maps.Copy(st.Commands, daemon.FlagCommands())
-	approve, answer := daemon.ApproveByReaction(st.CurrentTrust()), daemon.FlagByReaction(st.CurrentTrust())
-	errAck, resolved := daemon.ErrorByReaction(st.CurrentTrust()), daemon.ResolveByReaction(st.CurrentTrust())
-	st.Reactions = func(ctx context.Context, a *daemon.Applier, s *github.Snapshot, d daemon.Dirt) error {
-		if err := resolved(ctx, a, s, d); err != nil {
-			return fmt.Errorf("discussion hold resolved: %w", err)
-		}
-		if err := approve(ctx, a, s, d); err != nil {
-			return fmt.Errorf("approval by 👍: %w", err)
-		}
-		if err := answer(ctx, a, s, d); err != nil {
-			return fmt.Errorf("flag answer by 👍: %w", err)
-		}
-		if err := errAck(ctx, a, s, d); err != nil {
-			return fmt.Errorf("state error ack by 👍: %w", err)
-		}
-		return nil
-	}
+	// No trust: Iterate loads it from main.
+	g.d.Step = daemon.NewStep(g.d.Step.Applier, nil, g.d.CurrentModels)
 	l.g = g
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"testing"
 	"time"
 
@@ -57,16 +58,22 @@ func TestGone(t *testing.T) {
 	status := func(code int) error {
 		return fmt.Errorf("snapshot: %w", &gogithub.ErrorResponse{Response: &http.Response{StatusCode: code}})
 	}
+	// A RedirectionError's Error needs its Response's Request, so a failure
+	// message can print it (#413).
+	redirect := func(code int) error {
+		req := &http.Request{Method: http.MethodGet, URL: &url.URL{Scheme: "https", Host: "api.github.com", Path: "/repos/o/r/issues/1"}}
+		return fmt.Errorf("snapshot: %w", &gogithub.RedirectionError{Response: &http.Response{StatusCode: code, Request: req}, StatusCode: code})
+	}
 	for _, tc := range []struct {
 		err  error
 		want bool
 	}{
 		{status(http.StatusNotFound), true},
 		{status(http.StatusGone), true},
-		{fmt.Errorf("snapshot: %w", &gogithub.RedirectionError{StatusCode: http.StatusMovedPermanently}), false},
+		{redirect(http.StatusMovedPermanently), false},
 		{fmt.Errorf("snapshot: %w", github.ErrTransferred), true},
 		{status(http.StatusInternalServerError), false},
-		{fmt.Errorf("snapshot: %w", &gogithub.RedirectionError{StatusCode: http.StatusFound}), false},
+		{redirect(http.StatusFound), false},
 		{errors.New("boom"), false},
 		{nil, false},
 	} {

@@ -30,14 +30,16 @@ import (
 // other repo: any other path there, or any other method, gets a 404. The
 // moved issue keeps its number there, which GitHub doesn't promise.
 //
-// GraphQL treats a transferred issue as not this repo's (#239), with
-// GitHub's answers for one it can't find: the comments and isPinned
-// queries, by its number, answer a null issue with a NOT_FOUND error; the
-// history query, for its node or one of its comments', and the closer
-// query, for one of its closed events, answer a null node with a NOT_FOUND
-// error; and the pinIssue mutation answers a null pinIssue with a
-// NOT_FOUND error, and pins nothing. GitHub might instead answer some of
-// these from the issue's new repo, but no answer finds the issue here.
+// GraphQL treats a transferred issue's number as not this repo's (#239),
+// with GitHub's answer for one it can't find: the comments and isPinned
+// queries, by its number, answer a null issue with a NOT_FOUND error.
+// Node IDs are global, so a lookup by node answers from the issue's new
+// repo (#413), as GitHub most likely does when the installation covers
+// that repo (SPEC §16): the history query, for its node or one of its
+// comments', and the closer query, for one of its closed events, answer
+// as for any issue, and the pinIssue mutation pins it there. So a caller
+// that pins by a node ID it read must first check the issue is still
+// this repo's, as PinIssue does.
 
 // Transfer moves issue number to repo ("owner/name"), as GitHub's
 // transfer does (see the top of this file). A transfer to this repo, in

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"net/http"
 	"os"
 	"slices"
@@ -134,8 +133,8 @@ func newHumanRunLoop(t *testing.T, f *githubtest.Fake) *humanRunLoop {
 // which outlives a restart. The stages are registered as registerStages
 // registers them: the Interviewer at clarifying, the Planner at planning,
 // and Triage as the Unlabeled stage. The Applier reads main from the
-// daemon's clone, as startDaemon's does, for a file check. Step 1 is wired
-// as newStep wires it (humanRunWire). Iterate loads the trust from main.
+// daemon's clone, as startDaemon's does, for a file check. Step 1 is
+// newStep's, daemon.NewStep. Iterate loads the trust from main.
 func (l *humanRunLoop) start() {
 	l.t.Helper()
 	g := newRig(l.t, l.f, l.o, l.root)
@@ -149,47 +148,11 @@ func (l *humanRunLoop) start() {
 		state.Planning:   &daemon.Planner{Daemon: g.d},
 	}
 	g.r.Unlabeled = &daemon.Triage{Daemon: g.d}
-	g.d.Digest, g.d.Assign = true, true // as startDaemon sets them
-	st := g.d.Step
-	st.ReadMain = g.d.Clone.ReadFile // as startDaemon sets it
-	st.Trust = nil                   // Iterate loads it from main
-	humanRunWire(st, g.d.CurrentModels)
+	g.d.Digest, g.d.Assign = true, true    // as startDaemon sets them
+	g.d.Step.ReadMain = g.d.Clone.ReadFile // as startDaemon sets it
+	// No trust: Iterate loads it from main.
+	g.d.Step = daemon.NewStep(g.d.Step.Applier, nil, g.d.CurrentModels)
 	l.g = g
-}
-
-// humanRunWire wires st as main's newStep does: every command handler,
-// /done among them, and the reaction triggers in its order, the end of a
-// discussion hold first, and a 👍 on a human task before a 👍 on a state
-// error.
-func humanRunWire(st *daemon.Step, models func() config.Models) {
-	st.Models = models
-	st.Commands = daemon.Commands(st.CurrentTrust())
-	st.Commands["approve"] = daemon.ApproveCommand()
-	st.Commands["revise"] = daemon.ReviseCommand()
-	st.Commands["done"] = daemon.DoneCommand()
-	maps.Copy(st.Commands, daemon.SettingCommands(st.CurrentTrust(), models))
-	maps.Copy(st.Commands, daemon.FlagCommands())
-	approve, answer := daemon.ApproveByReaction(st.CurrentTrust()), daemon.FlagByReaction(st.CurrentTrust())
-	errAck, resolved := daemon.ErrorByReaction(st.CurrentTrust()), daemon.ResolveByReaction(st.CurrentTrust())
-	done := daemon.DoneByReaction(st.CurrentTrust())
-	st.Reactions = func(ctx context.Context, a *daemon.Applier, s *github.Snapshot, d daemon.Dirt) error {
-		if err := resolved(ctx, a, s, d); err != nil {
-			return fmt.Errorf("discussion hold resolved: %w", err)
-		}
-		if err := approve(ctx, a, s, d); err != nil {
-			return fmt.Errorf("approval by 👍: %w", err)
-		}
-		if err := answer(ctx, a, s, d); err != nil {
-			return fmt.Errorf("flag answer by 👍: %w", err)
-		}
-		if err := done(ctx, a, s, d); err != nil {
-			return fmt.Errorf("human task done by 👍: %w", err)
-		}
-		if err := errAck(ctx, a, s, d); err != nil {
-			return fmt.Errorf("state error ack by 👍: %w", err)
-		}
-		return nil
-	}
 }
 
 // step runs one Iterate, which must succeed, and checks that it wrote

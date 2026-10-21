@@ -3,7 +3,6 @@ package daemon_test
 import (
 	"context"
 	"fmt"
-	"maps"
 	"net/http"
 	"os"
 	"reflect"
@@ -90,42 +89,9 @@ func (l *planReviewRunLoop) start() {
 	}
 	g.r.Unlabeled = &daemon.Triage{Daemon: g.d}
 	g.d.Digest, g.d.Assign = true, true // as startDaemon sets them
-	st := g.d.Step
-	st.Trust = nil // Iterate loads it from main
-	planReviewRunWire(st, g.d.CurrentModels)
+	// No trust: Iterate loads it from main.
+	g.d.Step = daemon.NewStep(g.d.Step.Applier, nil, g.d.CurrentModels)
 	l.g = g
-}
-
-// planReviewRunWire wires st as main's newStep does.
-func planReviewRunWire(st *daemon.Step, models func() config.Models) {
-	st.Models = models
-	st.Commands = daemon.Commands(st.CurrentTrust())
-	st.Commands["approve"] = daemon.ApproveCommand()
-	st.Commands["revise"] = daemon.ReviseCommand()
-	st.Commands["done"] = daemon.DoneCommand()
-	maps.Copy(st.Commands, daemon.SettingCommands(st.CurrentTrust(), models))
-	maps.Copy(st.Commands, daemon.FlagCommands())
-	approve, answer := daemon.ApproveByReaction(st.CurrentTrust()), daemon.FlagByReaction(st.CurrentTrust())
-	errAck, resolved := daemon.ErrorByReaction(st.CurrentTrust()), daemon.ResolveByReaction(st.CurrentTrust())
-	done := daemon.DoneByReaction(st.CurrentTrust())
-	st.Reactions = func(ctx context.Context, a *daemon.Applier, s *github.Snapshot, d daemon.Dirt) error {
-		if err := resolved(ctx, a, s, d); err != nil {
-			return fmt.Errorf("discussion hold resolved: %w", err)
-		}
-		if err := approve(ctx, a, s, d); err != nil {
-			return fmt.Errorf("approval by 👍: %w", err)
-		}
-		if err := answer(ctx, a, s, d); err != nil {
-			return fmt.Errorf("flag answer by 👍: %w", err)
-		}
-		if err := done(ctx, a, s, d); err != nil {
-			return fmt.Errorf("human task done by 👍: %w", err)
-		}
-		if err := errAck(ctx, a, s, d); err != nil {
-			return fmt.Errorf("state error ack by 👍: %w", err)
-		}
-		return nil
-	}
 }
 
 // outs sets what the fake claude prints on its next runs, one each, from
@@ -890,8 +856,7 @@ func TestPlanReviewRunBotThumb(t *testing.T) {
 	epic, _ := planReviewRunEpic(f)
 	plan := planReviewRunPlan(t, f, epic)
 	d := newDaemon(t, f, newOrigin(t), nil)
-	d.Step.Trust = trusted{planReviewRunOwner: true, planReviewRunBot: true}
-	planReviewRunWire(d.Step, d.CurrentModels)
+	d.Step = daemon.NewStep(d.Step.Applier, trusted{planReviewRunOwner: true, planReviewRunBot: true}, d.CurrentModels)
 	pass := func(step string) []string {
 		t.Helper()
 		s, err := f.Client(t).Snapshot(context.Background(), "o", "r", epic)

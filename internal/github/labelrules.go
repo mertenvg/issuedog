@@ -102,7 +102,9 @@ type LabelCheck struct {
 	// IssueTypeLeftOut is the issue type CheckLabels leaves out, as no event
 	// has explained it for HoldBound, or nil: the caller acts on its To, the
 	// type that stands, as if the issue had it, until the type is explained
-	// or reverted.
+	// or reverted. Or it's a type whose revert can't be made, as the org no
+	// longer lists the type that stands, with that revert in Gone (#409):
+	// the caller acts on To the same way, until a trusted user changes it.
 	IssueTypeLeftOut *IssueTypeLeftOut
 	// Held are the labels held back as unexplained, and the issue type, if
 	// no event explains it yet: the caller must not act on the issue until a
@@ -218,7 +220,9 @@ func OverrideLabel(name string) bool {
 // RevertIssueType. Types are compared by ID where both have one
 // (SameIssueType). A type no event explains yet is held back, then left
 // out, and returned in IssueTypeLeftOut, then reverted, as such a label is
-// (see issueTypeRevertGuard). With no guard, issue types are left alone.
+// (see issueTypeRevertGuard). A type whose revert would set back a type the
+// org no longer lists is left out too, with nothing written
+// (IssueTypeLeftOut.Gone). With no guard, issue types are left alone.
 //
 // A pipeline label on the issue that no standing change explains, as from a
 // repo label rename, is removed the same way once it has stayed unexplained

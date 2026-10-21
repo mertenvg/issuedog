@@ -110,26 +110,7 @@ func newWholeRun(t *testing.T, c wholeRunCase) *wholeRun {
 	g.r.Stages = map[state.Stage]daemon.Stage{state.Clarifying: &daemon.Interviewer{Daemon: g.d}}
 	g.r.Unlabeled = &daemon.Triage{Daemon: g.d}
 	// As newStep wires step 1.
-	st := g.d.Step
-	st.Commands = daemon.Commands(st.CurrentTrust())
-	st.Commands["approve"] = daemon.ApproveCommand()
-	st.Commands["revise"] = daemon.ReviseCommand()
-	maps.Copy(st.Commands, daemon.SettingCommands(st.CurrentTrust(), g.d.CurrentModels))
-	maps.Copy(st.Commands, daemon.FlagCommands())
-	approve, answer := daemon.ApproveByReaction(st.CurrentTrust()), daemon.FlagByReaction(st.CurrentTrust())
-	errAck := daemon.ErrorByReaction(st.CurrentTrust())
-	st.Reactions = func(ctx context.Context, a *daemon.Applier, s *github.Snapshot, d daemon.Dirt) error {
-		if err := approve(ctx, a, s, d); err != nil {
-			return fmt.Errorf("approval by 👍: %w", err)
-		}
-		if err := answer(ctx, a, s, d); err != nil {
-			return fmt.Errorf("flag answer by 👍: %w", err)
-		}
-		if err := errAck(ctx, a, s, d); err != nil {
-			return fmt.Errorf("state error ack by 👍: %w", err)
-		}
-		return nil
-	}
+	g.d.Step = daemon.NewStep(g.d.Step.Applier, g.d.Step.Trust, g.d.CurrentModels)
 	w := &wholeRun{rig: g, c: c}
 	var outs []string
 	if c.triaged {

@@ -2,9 +2,9 @@ package github_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -182,18 +182,29 @@ func TestTypeRenameReadFails(t *testing.T) {
 }
 
 // A type that stands but that the org no longer lists, as once it deleted
-// it, can't be set back: the check fails with ErrIssueTypeGone, every
-// pass, reading the list once each, and writes nothing, so the untrusted
-// type stays, with no comment. The owner's own change of the type ends it,
-// with no read.
+// it, can't be set back (ErrIssueTypeGone): every pass, the check leaves
+// mallory's type out for the type that stands, with the revert it blocks
+// in Gone (#409), reading the list once each, and writes nothing, so the
+// untrusted type stays, with no comment. The owner's own change of the
+// type ends it, with no read.
 func TestTypeRenameGone(t *testing.T) {
 	t.Parallel()
 	f := githubtest.New(t, "o/r", "issuedog")
-	n, _ := typeRenameIssue(f)
+	n, flip := typeRenameIssue(f)
+	task, epic := f.IssueTypeID("Task"), f.IssueTypeID("Epic")
 	f.SetOrgIssueTypes(githubtest.OrgIssueType{Name: "Epic"}, githubtest.OrgIssueType{Name: "Bug"})
 	for pass := range 2 {
-		if _, err := typeRenameCheck(t, f, n, &github.IssueTypeNames{}); !errors.Is(err, github.ErrIssueTypeGone) {
-			t.Errorf("pass %d: CheckLabels = %v; want ErrIssueTypeGone", pass, err)
+		found, err := typeRenameCheck(t, f, n, &github.IssueTypeNames{})
+		if err != nil {
+			t.Fatalf("pass %d: CheckLabels = %v; want the type left out", pass, err)
+		}
+		want := &github.IssueTypeLeftOut{Name: "Epic", ID: epic, To: "Task", ToID: task,
+			Gone: &github.IssueTypeRevert{Key: fmt.Sprint(flip), By: "mallory", From: "Epic", To: "Task", ToID: task}}
+		if lo := found.IssueTypeLeftOut; !reflect.DeepEqual(lo, want) {
+			t.Errorf("pass %d: left out %+v; want %+v, with the revert %+v gone", pass, lo, want, want.Gone)
+		}
+		if found.IssueTypeRevert != nil || len(found.Held) != 0 {
+			t.Errorf("pass %d: revert %+v, held %q; want neither", pass, found.IssueTypeRevert, found.Held)
 		}
 		if got := typeRenameReads(f, 0); got != pass+1 {
 			t.Errorf("pass %d: %d reads in all; want %d", pass, got, pass+1)
@@ -206,5 +217,7 @@ func TestTypeRenameGone(t *testing.T) {
 	from := len(f.Requests())
 	if found, err := typeRenameCheck(t, f, n, &github.IssueTypeNames{}); err != nil || found.IssueTypeRevert != nil || typeRenameReads(f, from) != 0 {
 		t.Errorf("after the owner's change: %+v, %v, %d reads; want nothing to revert, and no read", found.IssueTypeRevert, err, typeRenameReads(f, from))
+	} else if found.IssueTypeLeftOut != nil {
+		t.Errorf("after the owner's change: left out %+v; want none", found.IssueTypeLeftOut)
 	}
 }

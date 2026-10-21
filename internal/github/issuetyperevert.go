@@ -65,7 +65,9 @@ type IssueTypeRevert struct {
 // it leaves out a pipeline label no event explains: once it has held the
 // issue back for HoldBound, until the type is explained, or reverted once
 // it has stayed unexplained for UnexplainedWait. The caller acts on the
-// type that stands instead, as if the issue had it.
+// type that stands instead, as if the issue had it. So is a type that a
+// revert can't set back, as the org no longer lists the type that stands
+// (Gone).
 type IssueTypeLeftOut struct {
 	// Name and ID are the type left out, the issue's own, as the caller
 	// passed it in IssueTypeGuard: "" and 0 for none.
@@ -75,6 +77,13 @@ type IssueTypeLeftOut struct {
 	// as IssueTypeRevert's are: "" and 0 for none.
 	To   string
 	ToID int64
+	// Gone, if set, is the revert of the type that CheckLabels couldn't
+	// make, as the org no longer lists the type it would set back, by
+	// ToID, as once it deleted it (ErrIssueTypeGone, #409): an event may
+	// explain the type, but it's left out all the same, until a trusted
+	// user changes it. Its Key keys the state error the daemon reports,
+	// and its To is the timeline's name.
+	Gone *IssueTypeRevert
 }
 
 // SameIssueType reports whether two issue types, each a name and an ID,
@@ -146,7 +155,9 @@ func (r *labelRules) issueTypeRevertStanding(ctx context.Context, l *labelState)
 //   - is the type the newest event left, an untrusted change: it's
 //     reverted, keyed by that event, with a comment posted once (reverted
 //     holds the keys posted already), to the type that stands by the name
-//     the org gives it now (typeRenameCurrent);
+//     the org gives it now (typeRenameCurrent). If the org no longer lists
+//     that type, nothing is written, and the type is left out for it
+//     instead, with the revert it blocks (IssueTypeLeftOut.Gone, #409);
 //   - else, no event explains it yet. GitHub writes issue-type events a
 //     second or more late, as it does label events, so it's dealt with as
 //     an unexplained label is, from when it was first found so, by seen's
@@ -155,8 +166,9 @@ func (r *labelRules) issueTypeRevertStanding(ctx context.Context, l *labelState)
 //     on the type that stands instead, and reads the issue again once it
 //     falls due (Unexplained.Due). Once it has stayed unexplained for
 //     UnexplainedWait, it's reverted all the same, keyed by the type and the
-//     newest event. A trusted change whose event lands before then is
-//     judged as any change is, and stands.
+//     newest event, or left out still if the org no longer lists the type
+//     that stands, as above. A trusted change whose event lands before
+//     then is judged as any change is, and stands.
 //
 // Times are by GitHub's clock, as the client last saw it (Client.Now). A
 // nil seen remembers nothing, so such a type is held back for good.
@@ -204,8 +216,18 @@ func (r *labelRules) issueTypeRevertGuard(ctx context.Context, l *labelState, re
 		rv.Key = "issue-type:" + url.QueryEscape(strings.ToLower(guard.Type)) + "@" + strconv.FormatInt(latest, 10)
 	}
 	// The type that stands is set back by the name the org gives it now,
-	// as GitHub refuses one the org renamed away (#245).
-	if err := r.typeRenameCurrent(ctx, &rv, guard.Names); err != nil {
+	// as GitHub refuses one the org renamed away (#245). One the org no
+	// longer lists can't be set back: the type is left out for it, with
+	// nothing written, and the revert it blocks, which the daemon reports
+	// (#409). The memory of a type no event explains stays, so it stays
+	// due, and the next check finds it gone again.
+	switch err := r.typeRenameCurrent(ctx, &rv, guard.Names); {
+	case errors.Is(err, ErrIssueTypeGone):
+		lo := IssueTypeLeftOut{Name: guard.Type, ID: guard.ID, To: to, ToID: toID, Gone: &rv}
+		logr.Infof("the issue type %q on %s/%s#%d can't be reverted, so it's left out for the type that stands, %q: %v",
+			guard.Type, r.owner, r.repo, r.number, to, err)
+		return id, nil, &lo, "", nil
+	case err != nil:
 		return 0, nil, nil, "", fmt.Errorf("check the issue type: %w", err)
 	}
 	rv.Posted = reverted[rv.Key]
@@ -325,10 +347,11 @@ func (c *Client) RevertIssueType(ctx context.Context, owner, repo string, number
 	}
 	if !rv.Posted {
 		// The types' names and the login are someone else's text, so they're
-		// defused, and a marker in them is escaped (§5.1).
-		did := fmt.Sprintf("I restored the issue type `%s`", issueTypeRevertDefuse(rv.To))
+		// defused, and a marker in them is escaped (§5.1). A type's name is
+		// fenced as code that reads as it is, backticks and all (#409).
+		did := fmt.Sprintf("I restored the issue type %s", TypeGoneCodeSpan(issueTypeRevertDefuse(rv.To)))
 		if rv.To == "" {
-			did = fmt.Sprintf("I removed the issue type `%s`", issueTypeRevertDefuse(rv.From))
+			did = fmt.Sprintf("I removed the issue type %s", TypeGoneCodeSpan(issueTypeRevertDefuse(rv.From)))
 		}
 		why := fmt.Sprintf("only trusted users can change the issue type, and %s isn't one.", issueTypeRevertDefuse(rv.By))
 		switch {
@@ -337,8 +360,8 @@ func (c *Client) RevertIssueType(ctx context.Context, owner, repo string, number
 			// A removal no event explains: no type, not empty backticks.
 			why = "no change by a trusted user or the App explains the issue having no type, and only trusted users can change the issue type."
 		default:
-			why = fmt.Sprintf("no change by a trusted user or the App explains `%s`, and only trusted users can change the issue type.",
-				issueTypeRevertDefuse(rv.From))
+			why = fmt.Sprintf("no change by a trusted user or the App explains %s, and only trusted users can change the issue type.",
+				TypeGoneCodeSpan(issueTypeRevertDefuse(rv.From)))
 		}
 		marker, err := FormatMarker(Marker{Kind: "revert", Fields: map[string]string{"key": rv.Key}})
 		if err != nil {

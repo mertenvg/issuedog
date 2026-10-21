@@ -3,7 +3,6 @@ package daemon_test
 import (
 	"context"
 	"fmt"
-	"maps"
 	"net/http"
 	"os"
 	"slices"
@@ -71,8 +70,8 @@ func newChildrenRunLoop(t *testing.T, f *githubtest.Fake, types string) *childre
 // the same state directory, which outlives a restart. As startDaemon does,
 // it loads the config and creates its labels before the loop, sets the
 // Applier's ReadMain to the clone's, and turns the digest and assignment
-// on. The Stages are registerStages', and step 1 is wired as newStep
-// wires it (childrenRunWire). Iterate loads the trust from main.
+// on. The Stages are registerStages', and step 1 is newStep's,
+// daemon.NewStep. Iterate loads the trust from main.
 func (l *childrenRunLoop) start() {
 	l.t.Helper()
 	g := newRig(l.t, l.f, l.o, l.root)
@@ -98,44 +97,9 @@ func (l *childrenRunLoop) start() {
 	}
 	g.r.Unlabeled = &daemon.Triage{Daemon: g.d}
 	g.d.Digest, g.d.Assign = true, true
-	st := g.d.Step
-	st.ReadMain = g.d.Clone.ReadFile
-	st.Trust = nil
-	childrenRunWire(st, g.d.CurrentModels)
+	g.d.Step.ReadMain = g.d.Clone.ReadFile
+	g.d.Step = daemon.NewStep(g.d.Step.Applier, nil, g.d.CurrentModels)
 	l.g = g
-}
-
-// childrenRunWire wires st as main's newStep does: every command handler,
-// and the reaction triggers in its order.
-func childrenRunWire(st *daemon.Step, models func() config.Models) {
-	st.Models = models
-	st.Commands = daemon.Commands(st.CurrentTrust())
-	st.Commands["approve"] = daemon.ApproveCommand()
-	st.Commands["revise"] = daemon.ReviseCommand()
-	st.Commands["done"] = daemon.DoneCommand()
-	maps.Copy(st.Commands, daemon.SettingCommands(st.CurrentTrust(), models))
-	maps.Copy(st.Commands, daemon.FlagCommands())
-	approve, answer := daemon.ApproveByReaction(st.CurrentTrust()), daemon.FlagByReaction(st.CurrentTrust())
-	errAck, resolved := daemon.ErrorByReaction(st.CurrentTrust()), daemon.ResolveByReaction(st.CurrentTrust())
-	done := daemon.DoneByReaction(st.CurrentTrust())
-	st.Reactions = func(ctx context.Context, a *daemon.Applier, s *github.Snapshot, d daemon.Dirt) error {
-		if err := resolved(ctx, a, s, d); err != nil {
-			return fmt.Errorf("discussion hold resolved: %w", err)
-		}
-		if err := approve(ctx, a, s, d); err != nil {
-			return fmt.Errorf("approval by 👍: %w", err)
-		}
-		if err := answer(ctx, a, s, d); err != nil {
-			return fmt.Errorf("flag answer by 👍: %w", err)
-		}
-		if err := done(ctx, a, s, d); err != nil {
-			return fmt.Errorf("human task done by 👍: %w", err)
-		}
-		if err := errAck(ctx, a, s, d); err != nil {
-			return fmt.Errorf("state error ack by 👍: %w", err)
-		}
-		return nil
-	}
 }
 
 // outs sets what the fake claude prints on its next runs, one each, from

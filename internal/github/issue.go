@@ -75,8 +75,10 @@ type Snapshot struct {
 	// nothing acts on them. SetLabels keeps them out.
 	LeftOut map[string]bool
 	// TypeLeftOut is the issue type on the issue that the label rules left
-	// out, as they can't explain it yet, with the type that stands, which
-	// Type, TypeName and TypeID are instead (LeaveOutType), or nil.
+	// out, as they can't explain it yet, or can't revert it, as the org no
+	// longer lists the type that stands (IssueTypeLeftOut.Gone), with the
+	// type that stands, which Type, TypeName and TypeID are instead
+	// (LeaveOutType), or nil.
 	TypeLeftOut *IssueTypeLeftOut
 }
 
@@ -153,8 +155,9 @@ type Reaction struct {
 // ErrPullRequest is wrapped by Snapshot's error for a pull request.
 var ErrPullRequest = errors.New("a pull request, not an issue")
 
-// ErrTransferred is wrapped by Snapshot's error for an issue moved to
-// another repo.
+// ErrTransferred is wrapped by the error of Snapshot, of the assignee
+// writes (assignAnswer) and of PinIssue, for an issue moved to another
+// repo. The daemon's digest edits wrap it too (digestMoved).
 var ErrTransferred = errors.New("transferred")
 
 // Snapshot reads one issue, not a pull request: its title, author, labels,

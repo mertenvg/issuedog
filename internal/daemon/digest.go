@@ -681,6 +681,12 @@ func (g *digestState) noteOf(n int) string {
 // unchanged pass, and at most one check and one pin to a changed one, with
 // no body edit of its own: a note that changes goes in that pass's edit. The
 // next start tries again too, as the note is still there.
+//
+// A check or pin that finds the digest gone, deleted or transferred, is the
+// pass's error, marked gone (digestGone), so the digest is dropped
+// (digestPass) and nothing more is written to it. PinIssue pins nothing
+// whose read GitHub answered from another repo, so a digest transferred
+// mid-pass is never pinned in its new repo (#413).
 func (d *Daemon) digestPin(ctx context.Context, n int, items []waitItem) error {
 	a, g := d.Step.Applier, &d.digest
 	body := g.issues[n].body
@@ -697,7 +703,10 @@ func (d *Daemon) digestPin(ctx context.Context, n int, items []waitItem) error {
 		return nil
 	}
 	pinned, err := a.Client.IsPinned(ctx, a.Owner, a.Repo, n)
-	if err != nil {
+	switch {
+	case gone(err):
+		return digestGone(fmt.Errorf("check the pin of the digest: %w", err))
+	case err != nil:
 		d.digestPinFailed(n, err, "checking whether it's pinned failed")
 		return nil
 	}
@@ -705,6 +714,8 @@ func (d *Daemon) digestPin(ctx context.Context, n int, items []waitItem) error {
 	if !pinned {
 		err := a.Client.PinIssue(ctx, a.Owner, a.Repo, n)
 		switch {
+		case gone(err):
+			return digestGone(fmt.Errorf("pin the digest: %w", err))
 		case errors.Is(err, github.ErrGraphQL) || errors.Is(err, github.ErrNotPinned):
 			logr.Errorf("pinning %s/%s#%d, the digest, failed, so its body says so, and the next start tries again: %v", a.Owner, a.Repo, n, err)
 			note = digestPinNote(err)

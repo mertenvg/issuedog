@@ -47,6 +47,10 @@ type Daemon struct {
 	// (assign.go). Set or not, what waits is listed for every issue.
 	Assign bool
 
+	// transferUnlistedAt is when every open issue was last listed, for
+	// the held ones no longer there, by GitHub's clock (transferunlisted.go).
+	transferUnlistedAt time.Time
+
 	digest        digestState
 	digestCache   map[int][]waitItem // what waits on the owner, by issue, after its last good step 1, for the digest and assignment
 	assignManaged map[int]bool       // issues whose assignees assignment keeps, as of their last pass (assign.go)
@@ -198,6 +202,11 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	// and visited this pass (closing.go).
 	var errs []error
 	if err := d.closingPass(ctx); err != nil {
+		errs = append(errs, err)
+	}
+	// A held issue the open issues, listed once in a while, leave out, as
+	// a transfer does, is read again, once (transferunlisted.go).
+	if err := d.transferUnlistedCheck(ctx); err != nil {
 		errs = append(errs, err)
 	}
 	// A label left out, which a rename changes no updated_at for, is
@@ -569,8 +578,9 @@ func parentOf(u string) int {
 //
 // GitHub answers a transferred issue with a 301, which our client follows
 // to the same host (github's sameHost), with a GET. So a transfer shows as
-// the moved issue, which Snapshot, assignAnswer and digestMoved turn into
-// github.ErrTransferred, or as the 404 of a path with no GET there. No
+// the moved issue, which Snapshot, assignAnswer, digestMoved and
+// github's PinIssue turn into github.ErrTransferred, or as the 404 of a
+// path with no GET there. No
 // go-github RedirectionError reaches here: go-github returns one only from
 // its calls that don't follow redirects (archive and log downloads), which
 // we don't use, or for a 3xx with no Location, which net/http doesn't
