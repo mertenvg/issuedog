@@ -433,7 +433,9 @@ func TestPlannerCheckFailsAttempt(t *testing.T) {
 			}
 			cap := after[len(after)-1]
 			if !strings.HasPrefix(cap, "The planner run failed 1 times in a row, so I've stopped running it here. ") ||
-				!strings.Contains(cap, "\n\nThe last attempt failed:\n\n```text\nits result failed the planner stage's check: ") ||
+				// It quotes the broken rules alone, not the check's wording
+				// around them, as the comment quotes only a *ruleError (#320).
+				!strings.Contains(cap, "\n\nThe last attempt failed:\n\n```text\nrule ") ||
 				!strings.Contains(cap, tt.rule) ||
 				!strings.HasSuffix(cap, fmt.Sprintf("\n```\n\n<!-- issuedog:error kind=attempts key=planning-%d -->", entry)) ||
 				strings.Contains(cap, "### ") {

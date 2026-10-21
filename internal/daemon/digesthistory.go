@@ -161,8 +161,9 @@ func (d *Daemon) digestHistoryReport(ctx context.Context, is *gogithub.Issue) {
 // digestHistoryText says that h's issue can't be judged the digest or not,
 // as its edit history failed to read on h.fails passes, so it's kept out
 // of the pipeline and no digest is created, and what ends that. The last
-// read's error is GitHub's text: it's fenced and escaped (ivFenced), and
-// cut as an attempt's cause is (lastFailure). The rest is the App's own,
+// read's error is GitHub's text, so it says only that the daemon's log
+// has it, as the title rule logged it (digestTake), since it quotes no
+// cause the daemon didn't write (publicCause). The rest is the App's own,
 // with no marker, so it's escaped once, there.
 func digestHistoryText(h digestHistoryFail) string {
 	text := fmt.Sprintf("I can't tell whether this issue is the digest. It's mine, titled `%s`, and its body has no `origin` marker: "+
@@ -174,7 +175,7 @@ func digestHistoryText(h digestHistoryFail) string {
 		"if it is, putting the digest's identity marker back in its body makes it the digest again. "+
 		"A 👍 on this comment changes nothing: the error ends once I can tell.", digestTitle, h.fails)
 	if h.cause != nil {
-		text += "\n\nThe last read failed:\n\n" + ivFenced(lastFailure(h.cause))
+		text += publicCauseText("read", publicCause(h.cause))
 	}
 	return text
 }

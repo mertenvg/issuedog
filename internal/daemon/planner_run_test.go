@@ -814,7 +814,9 @@ func TestPlannerWholeRunFails(t *testing.T) {
 	}
 	stopped := cs[len(cs)-1].Body
 	if errs != 1 || !strings.HasPrefix(stopped, "The planner run failed 3 times in a row, so I've stopped running it here. ") ||
-		!strings.Contains(stopped, "\n\nThe last attempt failed:\n\n```text\nits result failed the planner stage's check: ") ||
+		// It quotes the broken rules alone, not the check's wording around
+		// them, as the comment quotes only a *ruleError (#320).
+		!strings.Contains(stopped, "\n\nThe last attempt failed:\n\n```text\nrule ") ||
 		!strings.Contains(stopped, `rule scope: T3's scope "web" isn't on the list`) ||
 		!strings.HasSuffix(stopped, fmt.Sprintf("\n```\n\n<!-- issuedog:error kind=attempts key=planning-%d -->", cs[0].ID)) {
 		t.Errorf("%d attempts errors, the newest comment =\n%s\nwant one, naming the scope rule, fenced", errs, stopped)

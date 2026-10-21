@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -130,6 +131,32 @@ func TestCompileSchemaRejectsInvalidSchema(t *testing.T) {
 	} {
 		if _, err := CompileSchema([]byte(raw)); err == nil {
 			t.Errorf("%s: compiled, want an error", name)
+		}
+	}
+}
+
+// A failure of the result's own fields is a *PublicCauseError, in the
+// daemon's words, which a public comment may quote (SPEC §5.3). One that
+// wraps the parser's or the schema's error isn't: the schema's names the
+// daemon's working directory.
+func TestValidatePublicCause(t *testing.T) {
+	t.Parallel()
+	schema := loadSchema(t)
+	for name, public := range map[string]bool{
+		"error_max_turns": true,
+		"unknown_subtype": true,
+		"is_error":        true,
+		"missing_output":  true,
+		"null_output":     true,
+		"wrong_type":      true,
+		"schema_mismatch": false,
+		"extra_field":     false,
+		"malformed":       false,
+	} {
+		_, err := Validate(loadResult(t, name), schema)
+		var pc *PublicCauseError
+		if got := errors.As(err, &pc); got != public {
+			t.Errorf("%s: err = %v, a *PublicCauseError: %t, want %t", name, err, got, public)
 		}
 	}
 }
