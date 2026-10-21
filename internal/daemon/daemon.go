@@ -347,7 +347,8 @@ func (d *Daemon) reread(n int, gone bool) {
 
 // reload syncs the clone, then loads config and trust from main. A failure
 // keeps the last good ones, and is logged. The Applier's IssueTypes follows
-// the config's types. A config that allows a new model
+// the config's types, and on a repo that uses labels, no issue type waits
+// (typeWaitClear). A config that allows a new model
 // gets its labels created, until that succeeds.
 func (d *Daemon) reload(ctx context.Context) {
 	a := d.Step.Applier
@@ -369,6 +370,8 @@ func (d *Daemon) reload(ctx context.Context) {
 		a.IssueTypes = d.Config.Types == "issue-types"
 		d.Step.Notify = d.Config.Notify
 	}
+	// A switch to types: labels leaves no issue type waiting (#246).
+	d.typeWaitClear()
 	if d.relabel {
 		d.relabel = !d.ensureLabels(ctx)
 	}
