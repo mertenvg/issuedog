@@ -23,19 +23,20 @@ import (
 // failure does:
 //   - Judging a close nobody trusted made (closingAccepted, on a closed
 //     issue, or closingCounts, for step 1's close triggers on an open one)
-//     fails the pass, as before, until the question has failed with an
-//     error under node (github.CloserErrUnderNode) on loop.max_attempts
-//     passes. Then the issue gets one state error, kind=closer, keyed by
-//     the closed event's ID, naming the error (closerErrReport), and that
-//     failure stops being the pass's error: a closed issue's close stays
-//     unjudged, with its stage label as it is (closerErrClosed), and an
-//     open issue's close holds nothing (closerErrStep1), its error posted
-//     by step 1's visit of the issue (closerErrPost). The question is
-//     still asked once a pass, so the close is judged as soon as GitHub
-//     answers, which ends the error. Any other failure, a failed request
-//     or GraphQL failing as a whole, says nothing of the close itself, as
-//     an outage would, so it stays the pass's error, without bound, and
-//     counts no pass towards the state error.
+//     is the pass's error, as before, though it fails only that issue for
+//     the pass, until the question has failed with an error under node
+//     (github.CloserErrUnderNode) on loop.max_attempts passes. Then the
+//     issue gets one state error, kind=closer, keyed by the closed event's
+//     ID, naming the error (closerErrReport), and that failure stops
+//     being the pass's error: a closed issue's close stays unjudged, with
+//     its stage label as it is (closerErrClosed), and an open issue's close
+//     holds nothing (closerErrStep1), its error posted by step 1's visit
+//     of the issue (closerErrPost). The question is still asked once a
+//     pass, so the close is judged as soon as GitHub answers, which ends
+//     the error. Any other failure, a failed request or GraphQL failing as
+//     a whole, says nothing of the close itself, as an outage would, so it
+//     stays the pass's error, without bound, and counts no pass towards
+//     the state error.
 //   - Closing an issue again after an untrusted reopen (closingCloseAgain)
 //     waits for the question of the close the reopen undid until it has
 //     failed, in any way, on closerErrRetries passes, writing nothing

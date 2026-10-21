@@ -49,31 +49,37 @@ import (
 // repo, as a push to the default branch that says "Fixes #N" makes. A
 // commit or a pull request in another repo that names the issue is no
 // merge, so it's reverted like any untrusted close. It's one GraphQL query,
-// asked only for a close nobody trusted made, and remembered per event
-// while the daemon runs (closingCloser). An event GitHub can't resolve
-// (NOT_FOUND under node), or whose closer it won't show the App (FORBIDDEN
-// under node, as for a project's workflow on a personal account, or a
-// commit in a private repo), is no merge, logged, and isn't asked about
-// again, so its close is reverted. A project's workflow's closer
+// asked for a close nobody trusted made, and for the close an untrusted
+// reopen undid, for its state reason (closingCloseAgain), and remembered
+// per event while the daemon runs (closingCloser). An event GitHub can't
+// resolve (NOT_FOUND under node), or whose closer it won't show the App
+// (FORBIDDEN under node, as for a project's workflow on a personal
+// account, or a commit in a private repo), is no merge, logged, and isn't
+// asked about again, so its close is reverted. A project's workflow's closer
 // (ProjectV2) is no merge either. Any other failure, a failed request, a
 // rate limit, an error on the repository, or one of another type or of
-// none under node (#204), is the pass's error, and the next pass asks
+// none under node (#204), is logged as the pass's error, but fails only
+// that issue for the pass, its close's judging (closingPass) or its step 1
+// (closingCounts), while other issues carry on, and the next pass asks
 // again: none of those says how the issue was closed, and a merge reverted
 // on a guess would reopen and hold a finished issue. Once the question has
 // failed with an error under node on loop.max_attempts passes, the issue
-// gets a state error instead, and the close stays unjudged, still asked
-// about once a pass (#232, closererr.go). The close's state reason is the
-// issue's state_reason as listed, which is the newest close's, and, for a
-// close again after an untrusted reopen, the ClosedEvent's stateReason of
-// the close it undid, or the closed stage's if that question fails on
-// closerErrRetries passes, logged, so the close again waits on it only
-// that long (closingCloseAgain, #233).
+// gets a state error instead, and that failure is no longer the pass's
+// error: the close stays unjudged, or holds nothing on an open issue,
+// still asked about once a pass (#232, closererr.go). The close's state
+// reason is the issue's state_reason as listed, which is the newest
+// close's, and, for a close again after an untrusted reopen, the
+// ClosedEvent's stateReason of the close it undid, or the closed stage's
+// if that question fails on closerErrRetries passes, logged, so the close
+// again waits on it only that long (closingCloseAgain, #233).
 //
 // Which closed issues are read. The poll lists every issue, closed ones
 // too, and keeps a closed issue whose close is still to judge
 // (closingList): one in the pipeline, with a stage label, or one this
-// daemon held with a stage label before it closed, whose close isn't
-// explained by a trusted or App event. A close is explained when:
+// daemon held with a stage label before it closed, judged or closed
+// again, whose close isn't explained by a trusted or App event. One found
+// still to judge stays so, even once its stage labels go, until it is
+// judged or explained. A close is explained when:
 //   - this daemon judged it, and the listing still shows the closed_at and
 //     the stage labels it left (closingSeen): a comment or any other change
 //     to a closed issue reads nothing;
@@ -81,7 +87,7 @@ import (
 //     (closingAgain);
 //   - or, on a start's first poll, the issue has exactly one stage label,
 //     a closed stage: only an accepted close leaves one, which an earlier
-//     run judged.
+//     run judged, so it counts as this daemon's judging of it.
 //
 // Judging reads the timeline once (github.ClosingTimeline). A closed stage
 // on the issue stands when the newest close is accepted and the stage's
