@@ -371,12 +371,41 @@ func transferGraphQLHistory(t *testing.T, f *Fake, ids ...string) ([]bool, []str
 	return answered, errs
 }
 
-// GraphQL treats a transferred issue as not this repo's (#239), as GitHub
-// treats one it can't find: the comments and isPinned queries answer
-// NOT_FOUND for its number, the history query a null node with NOT_FOUND
-// for its node and its comment's, the closer query a null node with
-// NOT_FOUND for its closed event, and the pinIssue mutation NOT_FOUND,
-// pinning nothing. The issue that stays is answered as before.
+// pinMovedMutation sends f the pinIssue mutation for the node id, and
+// returns whether the answer says it's pinned, and the errors as "TYPE
+// message".
+func pinMovedMutation(t *testing.T, f *Fake, id string) (bool, []string) {
+	t.Helper()
+	c := f.Client(t)
+	req, err := c.NewRequest(context.Background(), "POST", "graphql", map[string]any{"query": answeredPin,
+		"variables": map[string]any{"id": id}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Data struct {
+			PinIssue *struct{ Issue *struct{ IsPinned bool } }
+		}
+		Errors []struct{ Type, Message string }
+	}
+	if _, err := c.Do(req, &out); err != nil {
+		t.Fatal(err)
+	}
+	var errs []string
+	for _, e := range out.Errors {
+		errs = append(errs, e.Type+" "+e.Message)
+	}
+	p := out.Data.PinIssue
+	return p != nil && p.Issue != nil && p.Issue.IsPinned, errs
+}
+
+// GraphQL treats a transferred issue's number as not this repo's (#239),
+// as GitHub treats one it can't find: the comments and isPinned queries
+// answer NOT_FOUND for it. Lookups by node answer from its new repo
+// (#413), as node IDs are global: the history query answers its node and
+// its comment's, the closer query its closed event, and the pinIssue
+// mutation pins it there. PinIssue, which reads the issue first, finds it
+// moved and pins nothing. The issue that stays is answered as before.
 func TestTransferGraphQL(t *testing.T) {
 	t.Parallel()
 	f, comments, closes := transferGraphQLFake(t)
@@ -398,28 +427,33 @@ func TestTransferGraphQL(t *testing.T) {
 	}
 	ids := []string{issueNode(1), commentNode(comments[0]), issueNode(2), commentNode(comments[1])}
 	nodes, errs := transferGraphQLHistory(t, f, ids...)
-	wantErrs := []string{
-		"NOT_FOUND [nodes 0] Could not resolve to a node with the global id of '" + ids[0] + "'",
-		"NOT_FOUND [nodes 1] Could not resolve to a node with the global id of '" + ids[1] + "'",
-	}
-	if !slices.Equal(nodes, []bool{false, false, true, true}) || !slices.Equal(errs, wantErrs) {
-		t.Errorf("the history of %q answers %v, errors %q; want the moved issue's two null, with %q", ids, nodes, errs, wantErrs)
+	if !slices.Equal(nodes, []bool{true, true, true, true}) || errs != nil {
+		t.Errorf("the history of %q answers %v, errors %q; want every node, the moved issue's from its new repo, and no error", ids, nodes, errs)
 	}
 	repo := map[string]any{"nameWithOwner": "o/r", "defaultBranchRef": map[string]any{"name": "main"}}
-	if data, types := closingAsk(t, f, "o", "r", fmt.Sprintf("CE_%d", closes[0])); !reflect.DeepEqual(data, map[string]any{"repository": repo, "node": nil}) ||
-		!slices.Equal(types, []string{"NOT_FOUND"}) {
-		t.Errorf("the closer of the moved issue's close = %v, %q; want a null node and NOT_FOUND", data, types)
+	if data, types := closingAsk(t, f, "o", "r", fmt.Sprintf("CE_%d", closes[0])); !reflect.DeepEqual(data["repository"], repo) ||
+		data["node"] == nil || types != nil {
+		t.Errorf("the closer of the moved issue's close = %v, %q; want its node, from its new repo", data, types)
 	}
 	if data, types := closingAsk(t, f, "o", "r", fmt.Sprintf("CE_%d", closes[1])); data["node"] == nil || types != nil {
 		t.Errorf("the closer of the staying issue's close = %v, %q; want its node", data, types)
 	}
-	if by, err := c.ClosingCloser(ctx, "o", "r", fmt.Sprintf("CE_%d", closes[0])); err != nil || by.Merge {
-		t.Errorf("ClosingCloser of the moved issue's close = %+v, %v; want no merge, as for a close it can't read", by, err)
+	if by, err := c.ClosingCloser(ctx, "o", "r", fmt.Sprintf("CE_%d", closes[0])); err != nil || !by.Merge {
+		t.Errorf("ClosingCloser of the moved issue's close = %+v, %v; want the merge, read by its node", by, err)
 	}
-	writes := len(f.Writes())
-	if err := c.PinIssue(ctx, "o", "r", 1); !errors.Is(err, github.ErrGraphQL) ||
-		!strings.Contains(err.Error(), "Could not resolve to a node with the global id of '"+issueNode(1)+"'") {
-		t.Errorf("PinIssue of the moved issue = %v; want NOT_FOUND", err)
+	writes, from := len(f.Writes()), len(f.Requests())
+	if err := c.PinIssue(ctx, "o", "r", 1); !errors.Is(err, github.ErrTransferred) ||
+		!strings.Contains(err.Error(), "pin o/r#1: transferred: answered by GET /repositories/2/issues/1") {
+		t.Errorf("PinIssue of the moved issue = %v; want it transferred, found by its read", err)
+	}
+	if got := statuses(f, from); !slices.Equal(got, []string{"GET /issues/1 301", "GET /repositories/2/issues/1 200"}) {
+		t.Errorf("PinIssue of the moved issue sent %q; want its read alone, redirected, and no mutation", got)
+	}
+	if got := f.Writes()[writes:]; len(got) != 0 || f.State().Issues[0].Pinned {
+		t.Errorf("writes = %+v, pinned %t; want none, and no pin", got, f.State().Issues[0].Pinned)
+	}
+	if pinned, errs := pinMovedMutation(t, f, issueNode(1)); !pinned || errs != nil {
+		t.Errorf("the pinIssue mutation for the moved issue's node = %t, %q; want it pinned in its new repo", pinned, errs)
 	}
 	if got := f.Writes()[writes:]; len(got) != 1 || got[0].Path != "/graphql" || got[0].Failed {
 		t.Errorf("writes = %+v; want the pinIssue mutation, logged", got)
@@ -427,8 +461,8 @@ func TestTransferGraphQL(t *testing.T) {
 	if err := c.PinIssue(ctx, "o", "r", 2); err != nil {
 		t.Errorf("PinIssue of the issue that stays: %v", err)
 	}
-	if is := f.State().Issues; is[0].Pinned || !is[1].Pinned {
-		t.Errorf("pinned = %t, %t; want the issue that stays alone", is[0].Pinned, is[1].Pinned)
+	if is := f.State().Issues; !is[0].Pinned || !is[1].Pinned {
+		t.Errorf("pinned = %t, %t; want both, the moved issue in its new repo", is[0].Pinned, is[1].Pinned)
 	}
 }
 

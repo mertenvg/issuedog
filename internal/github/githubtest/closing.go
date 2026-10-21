@@ -240,8 +240,9 @@ func (is *issue) closingServe(e *gogithub.Timeline) any {
 // closingAnswer answers the closer query (answeredCloser) for the node id:
 // the repo's name and default branch, main, and the ClosedEvent it names,
 // with its stateReason and closer, or, as on GitHub, a null node with a
-// NOT_FOUND error for an ID it doesn't know, or one of a transferred
-// issue's (transfer.go). A reopened event's node, and a closed event's
+// NOT_FOUND error for an ID it doesn't know. A transferred issue's event is
+// answered as any other's, from its new repo (transfer.go). A reopened
+// event's node, and a closed event's
 // ForgetCloser forgot, has no ClosedEvent's fields. A
 // closed event FailCloser fails is a null node, with its error. A repo
 // that isn't the fake's, owner/name, is null, with a NOT_FOUND error. f is
@@ -260,7 +261,7 @@ func (f *Fake) closingAnswer(owner, name, id string) (any, []map[string]any) {
 	}
 	for _, is := range f.issues {
 		for _, e := range is.labelEvents {
-			if e.GetID() != n || closingNode(e) != id || !is.listed() {
+			if e.GetID() != n || closingNode(e) != id {
 				continue
 			}
 			cl, ok := is.closingClosers[n]
