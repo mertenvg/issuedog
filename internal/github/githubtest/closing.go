@@ -242,9 +242,9 @@ func (is *issue) closingServe(e *gogithub.Timeline) any {
 // with its stateReason and closer, or, as on GitHub, a null node with a
 // NOT_FOUND error for an ID it doesn't know. A transferred issue's event is
 // answered as any other's, from its new repo (transfer.go). A reopened
-// event's node, and a closed event's
-// ForgetCloser forgot, has no ClosedEvent's fields. A
-// closed event FailCloser fails is a null node, with its error. A repo
+// event's node, and a closed event's ForgetCloser forgot, has no
+// ClosedEvent's fields. A closed event FailCloser fails is a null node,
+// with its error. A repo
 // that isn't the fake's, owner/name, is null, with a NOT_FOUND error. f is
 // locked.
 func (f *Fake) closingAnswer(owner, name, id string) (any, []map[string]any) {
