@@ -139,25 +139,28 @@ func contextSort(ctx context.Context, s *github.Snapshot, appSlug string, d Dirt
 //     makes it theirs.
 //
 // Times are to the second, so a change in the admission's second counts
-// as after it. With no admission found, every change counts as after.
-func contextAdmission(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt, tc trustCache, tl *ivTimeline) (titleBy, bodyBy string, err error) {
+// as after it. With no admission found, every change counts as after, and
+// never is set: an untrusted author's issue that never entered the
+// pipeline, such as an epic the owner put a story under, whose whole
+// title and body the planner leaves out of parent.md (#312).
+func contextAdmission(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt, tc trustCache, tl *ivTimeline) (titleBy, bodyBy string, never bool, err error) {
 	if state.IsApp(s.Author, a.AppSlug) {
-		return "", "", nil
+		return "", "", false, nil
 	}
 	trusted, err := tc.trusted(ctx, s.Author)
 	if err != nil {
-		return "", "", fmt.Errorf("the issue's author: %w", err)
+		return "", "", false, fmt.Errorf("the issue's author: %w", err)
 	}
 	if trusted {
-		return "", "", nil
+		return "", "", false, nil
 	}
 	timeline, err := tl.get(ctx)
 	if err != nil {
-		return "", "", fmt.Errorf("the admission of an untrusted author's issue: %w", err)
+		return "", "", false, fmt.Errorf("the admission of an untrusted author's issue: %w", err)
 	}
 	at, admitted, err := ivAdmitted(ctx, a, s, d, timeline, tc)
 	if err != nil {
-		return "", "", fmt.Errorf("the admission of an untrusted author's issue: %w", err)
+		return "", "", false, fmt.Errorf("the admission of an untrusted author's issue: %w", err)
 	}
 	after := func(t time.Time) bool { return !admitted || !t.Before(at) }
 	if e := s.BodyEdit; !e.At.IsZero() && !state.IsApp(e.By, a.AppSlug) && after(e.At) {
@@ -170,19 +173,19 @@ func contextAdmission(ctx context.Context, a *Applier, s *github.Snapshot, d Dir
 		}
 	}
 	if rename == nil || !after(rename.GetCreatedAt().Time) {
-		return "", bodyBy, nil
+		return "", bodyBy, !admitted, nil
 	}
 	actor := github.Author{Login: rename.GetActor().GetLogin(), Type: rename.GetActor().GetType()}
 	if state.IsApp(actor, a.AppSlug) {
-		return "", bodyBy, nil
+		return "", bodyBy, !admitted, nil
 	}
 	if trusted, err = tc.trusted(ctx, actor); err != nil {
-		return "", "", fmt.Errorf("who renamed the issue: %w", err)
+		return "", "", false, fmt.Errorf("who renamed the issue: %w", err)
 	}
 	if !trusted {
 		titleBy = login(actor)
 	}
-	return titleBy, bodyBy, nil
+	return titleBy, bodyBy, !admitted, nil
 }
 
 // contextAt names comment c in a heading: its ID and its author's login
@@ -203,12 +206,15 @@ func contextInputs(inputs []github.Comment, label func(c github.Comment) string)
 }
 
 // contextIssue is issue.md's start, its body without markers if the App
-// wrote it. titleNote and bodyNote, if set, stand in for a title or body
-// left out (contextText), saying why and where it is, if anywhere. It
-// names the parent, so a run knows the issue has one: the interviewer's,
-// for one, knows not to type the issue a story (#135's verify, and its
-// preamble's rule). more are header lines a stage adds after the Author
-// line, such as the planner's priority.
+// made its last edit, else escaped (plannerTrustedAppBody): a body the App
+// rewrote as a spec is the App's, whoever filed it, and one a trusted user
+// edited isn't (SPEC §5.1). titleNote and bodyNote, if set, stand in for a
+// title or body left out (contextText), saying why and where it is, if
+// anywhere, or for the planner, a title as of its last trusted change
+// (plannerTrustedTitle). It names the parent, so a run knows the issue has
+// one: the interviewer's, for one, knows not to type the issue a story
+// (#135's verify, and its preamble's rule). more are header lines a stage
+// adds after the Author line, such as the planner's priority.
 func contextIssue(s *github.Snapshot, appSlug, titleNote, bodyNote string, more ...string) string {
 	title := github.Escape(strings.Join(strings.Fields(s.Title), " "))
 	if titleNote != "" {
@@ -224,7 +230,7 @@ func contextIssue(s *github.Snapshot, appSlug, titleNote, bodyNote string, more 
 		head += "\n" + l
 	}
 	body := ivFenced(s.Body)
-	if state.IsApp(s.Author, appSlug) {
+	if plannerTrustedAppBody(s, appSlug) {
 		body = ivFenced(ivStripMarkers(s.Body))
 	}
 	if bodyNote != "" {

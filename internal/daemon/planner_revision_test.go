@@ -59,9 +59,11 @@ func revMove(t testing.TB, f *githubtest.Fake, n int, m daemon.Move) int64 {
 }
 
 // revChild files the App's child of item id of issue n's plan revision 1,
-// titled title, with stage label stage, linked under n if linked is set.
+// titled title, with stage label stage and its first move there, linked
+// under n if linked is set.
 func revChild(f *githubtest.Fake, n int, id, title, stage string, linked bool) int {
 	c := f.AddIssue(app, title, fmt.Sprintf("The task.\n\n<!-- issuedog:origin plan=#%d rev=1 item=%s -->", n, id), "type:task", stage)
+	f.AddComment(c, app, "Created.\n\n<!-- issuedog:transition from=intake to="+strings.TrimPrefix(stage, "stage:")+" event=p1 -->")
 	if linked {
 		f.SetParent(c, n)
 	}
@@ -116,7 +118,7 @@ func TestPlannerContextRevision(t *testing.T) {
 		"## Items of plan revision 1, as approved, with their task bodies",
 		`"id": "T3"`, `"human": true`, `"test_plan": `,
 		fmt.Sprintf("## Other sub-issues\n\nLinked under this issue, but not created from its plan: context only. Never list them as items.\n\n"+
-			"- #%d: A bug found on the way (open, type bug, no stage label)\n", r.other),
+			"- #%d: A bug found on the way (open, type bug, not in the pipeline)\n", r.other),
 	} {
 		if !strings.Contains(files["children.md"], want) {
 			t.Errorf("children.md lacks\n%s\nin\n%s", want, files["children.md"])

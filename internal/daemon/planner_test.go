@@ -60,6 +60,7 @@ func planEpic(f *githubtest.Fake) planEpicIDs {
 	c1 := f.AddIssue("owner", "First  child", "")
 	f.AddLabel(c1, "owner", "type:story")
 	f.AddLabel(c1, app, "stage:planning")
+	f.AddComment(c1, app, "Approved.\n\n<!-- issuedog:transition from=spec-review to=planning cmd=r8 rev=1 body=abcd1234 -->")
 	f.SetParent(c1, e.n)
 	c2 := f.AddIssue("owner", "Second child <!-- x -->", "")
 	f.SetParent(c2, e.n)
@@ -84,9 +85,9 @@ func TestPlannerContextEpic(t *testing.T) {
 		"issue.md": "# Issue #1\n\n- Title: Quotes API\n- Type: epic\n- Parent: none\n- Author: owner\n- Priority: p1\n\n" +
 			"## Body\n\n```text\nThe spec.\n\n&lt;!-- issuedog:origin plan=#9 rev=1 item=S1 -->\n```\n",
 		"children.md": "# Sub-issues of #1\n\nThe issues already linked under this one, which count towards the sub-issues it can have. " +
-			"Each has its number, title, state, type and stage label.\n\n" +
+			"Each has its number, title, state, type and, while it's open, its stage.\n\n" +
 			"- #2: First child (open, type story, `stage:planning`)\n" +
-			"- #3: Second child &lt;!-- x --> (closed, type none, no stage label)\n",
+			"- #3: Second child &lt;!-- x --> (closed as completed, type none)\n",
 		"input.md": "# Input for this run\n\nWhat's new since the planner last ran, or since the issue came to planning: " +
 			"answers to the latest round, or anything trusted people posted since.\n\n" +
 			fmt.Sprintf("## Comment %d by alice: an answer to round 2\n\n```text\n1a, and keep it small\n```\n", e.answer2),
@@ -157,6 +158,7 @@ func TestPlannerContextStory(t *testing.T) {
 	sib := f.AddIssue(app, "S2. Another story", "")
 	f.AddLabel(sib, app, "type:story")
 	f.AddLabel(sib, app, "stage:clarifying")
+	f.AddComment(sib, app, fmt.Sprintf("Created.\n\n<!-- issuedog:transition from=intake to=clarifying event=p%d -->", plan))
 	f.SetParent(sib, p)
 	d := ivDaemon(t, f, newOrigin(t))
 	files := planContext(t, d, n)
@@ -170,7 +172,7 @@ func TestPlannerContextStory(t *testing.T) {
 			"```text\n### Plan for #1 (rev 1)\n\nS1. The story.\nS2. Another story.\n```\n\n" +
 			"## Other sub-issues\n\n- #3: S2. Another story (open, type story, `stage:clarifying`)\n",
 		"children.md": "# Sub-issues of #2\n\nThe issues already linked under this one, which count towards the sub-issues it can have. " +
-			"Each has its number, title, state, type and stage label.\n\nNone.\n",
+			"Each has its number, title, state, type and, while it's open, its stage.\n\nNone.\n",
 		"input.md": "# Input for this run\n\nWhat's new since the planner last ran, or since the issue came to planning: " +
 			"answers to the latest round, or anything trusted people posted since.\n\nnone: first run\n",
 		"prompt.md": "Plan issue #2. Your context files are in /run/issuedog/run1: issue.md, parent.md, children.md, conversation.md and input.md. " +
@@ -224,7 +226,7 @@ func TestPlannerContextElsewhere(t *testing.T) {
 			t.Errorf("%s has the issue of this repo that the parent's number names:\n%s", name, text)
 		}
 	}
-	if w := "\n\n- o/other#3, in another repo: Moved child (open, type none, no stage label)\n"; !strings.HasSuffix(string(got["children.md"]), w) {
+	if w := "\n\n- o/other#3, in another repo: Moved child (open, type none)\n"; !strings.HasSuffix(string(got["children.md"]), w) {
 		t.Errorf("children.md doesn't end with %q:\n%s", w, got["children.md"])
 	}
 	if w := "- This issue has 1 sub-issues, of the 100 GitHub allows, so a plan has at most 99 items."; !strings.Contains(string(got["system.md"]), w) {
@@ -291,7 +293,8 @@ func planUnderEve(f *githubtest.Fake, change func(p int)) (p, n int) {
 // untrusted author changed after it was admitted is a note in parent.md,
 // and is in untrusted.md, as for the issue's own (SPEC §6.2), even when
 // the body was never rewritten as a spec. A parent by a trusted author
-// that a trusted user edited is shown, and costs no timeline read.
+// that a trusted user edited is shown, and costs one timeline read, the
+// parent's, for its renames (#312).
 func TestPlannerContextParentAdmission(t *testing.T) {
 	t.Parallel()
 	const (
@@ -380,10 +383,16 @@ func TestPlannerContextParentAdmission(t *testing.T) {
 		}
 		ivOnlyIn(t, files, "ALICE-EDITED", "parent.md")
 		ivOnlyIn(t, files, "ALICE-RENAMED", "parent.md")
+		// Only the parent's timeline, once, for its renames (#312): the
+		// story's own come with step 1's read (Snapshot.DiscRenames).
+		var timelines []string
 		for _, r := range f.Requests()[before:] {
 			if strings.HasSuffix(r.Path, "/timeline") {
-				t.Errorf("Context read a timeline, %s, with no untrusted author", r.Path)
+				timelines = append(timelines, r.Path)
 			}
+		}
+		if want := fmt.Sprintf("/issues/%d/timeline", p); len(timelines) != 1 || timelines[0] != want {
+			t.Errorf("Context read the timelines %q, with no untrusted author; want only %s, once", timelines, want)
 		}
 	})
 }

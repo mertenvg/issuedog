@@ -530,7 +530,7 @@ func TestPlannerChildrenFile(t *testing.T) {
 		"## Items of plan revision 1, as approved, with their task bodies: a kept item keeps these, and its dependencies are counted from here\n\n```text\n[\n  {\n    \"id\": \"T1\",",
 		"\"test_plan\": ",
 		"## Other sub-issues\n\nLinked under this issue, but not created from its plan: context only. Never list them as items.\n\n" +
-			"- #300: Filed by hand (open, type bug, no stage label)\n",
+			"- #300: Filed by hand (open, type bug, not in the pipeline)\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("children.md lacks\n%s\nin\n%s", want, got)
