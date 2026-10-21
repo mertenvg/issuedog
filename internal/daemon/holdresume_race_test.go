@@ -114,12 +114,12 @@ func TestHoldResumeRaceAncestorHeldAlready(t *testing.T) {
 	}
 }
 
-// The reverse order, A's /hold, then J's /resume, is as before #205. With
-// A's number lower, A's /hold is handled first, and J's /resume, posted
-// after it, ends it on J and K, so both leave held, and A stays held by
-// its own /hold. With J's lower, J's /resume is handled before A's /hold
-// applies, so J and K leave held first, and A's /hold, handled next,
-// holds them with its markers: a race the other way, which fails closed.
+// The reverse order, A's /hold, then J's /resume. A's /hold is handled
+// first, and J's /resume, posted after it, ends it on J and K, so both
+// leave held, and A stays held by its own /hold. With J's number lower,
+// J's /resume waits for A's /hold, posted before it (#243), so the race
+// the other way, where A's /hold, handled after it, held J and K again
+// with its markers, is gone too, and neither gets one.
 func TestHoldResumeRaceAncestorHoldBefore(t *testing.T) {
 	t.Parallel()
 	for _, order := range raceOrders {
@@ -129,14 +129,10 @@ func TestHoldResumeRaceAncestorHoldBefore(t *testing.T) {
 			hold := f.AddComment(a, "owner", "/hold")
 			f.AddComment(j, "owner", "/resume")
 			resolveSettle(t, f, 1, 2, 3)
-			if a < j {
-				raceStages(t, f, "after both", map[int]string{a: "held", j: "ready", k: "ready"})
-			} else {
-				raceStages(t, f, "after both", map[int]string{a: "held", j: "held", k: "held"})
-				for _, n := range []int{j, k} {
-					if body := newestComment(f, n); !strings.Contains(body, fmt.Sprintf("reason=owner cmd=%d ", hold)) {
-						t.Errorf("#%d: newest comment %q; want A's /hold's marker", n, body)
-					}
+			raceStages(t, f, "after both", map[int]string{a: "held", j: "ready", k: "ready"})
+			for _, n := range []int{j, k} {
+				if anyComment(f, n, fmt.Sprintf("reason=owner cmd=%d ", hold)) {
+					t.Errorf("#%d: newest comment %q; want no marker of A's /hold", n, newestComment(f, n))
 				}
 			}
 			if anyComment(f, j, "rejected") {
@@ -236,7 +232,9 @@ func TestHoldResumeRaceNoRowBack(t *testing.T) {
 // so neither J's /hold, nor A's /hold after it, writes a marker on A, nor
 // the latter on J, held by its own already; then mallory deletes the
 // owner's note on A. J's pass on its /resume takes J back to ready,
-// asking neither for the reactions on A's /hold nor about mallory.
+// asking about mallory never, and for the reactions on A's /hold only
+// once: to see that the App handled it, as J's /resume, posted after it,
+// would otherwise wait for it (#243), not for whether J stays held.
 func TestHoldResumeRaceOwnReadsOnlyLater(t *testing.T) {
 	t.Parallel()
 	f := discFake(t)  // #1, A
@@ -257,10 +255,14 @@ func TestHoldResumeRaceOwnReadsOnlyLater(t *testing.T) {
 	tr := &raceCounting{asked: map[string]int{}}
 	racePass(t, f, 2, tr)
 	raceStages(t, f, "after J's /resume", map[int]string{1: "held", 2: "ready"})
+	var reads []githubtest.Request
 	for _, r := range f.Requests()[from:] {
 		if r.Path == fmt.Sprintf("/issues/comments/%d/reactions", early) {
-			t.Errorf("J's pass sent %+v; want no read of the /hold before J's /resume, which it ends on J anyway", r)
+			reads = append(reads, r)
 		}
+	}
+	if len(reads) != 1 {
+		t.Errorf("J's pass sent %+v; want one read of the /hold before J's /resume, whether the App handled it, but none of whether it holds J, as J's /resume ends it on J anyway", reads)
 	}
 	if n := tr.asked["mallory"]; n != 0 {
 		t.Errorf("J's pass asked about mallory %d times; want none, as J's /resume ends her deletion's hold on J anyway", n)

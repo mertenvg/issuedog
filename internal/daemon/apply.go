@@ -26,7 +26,9 @@ type Applier struct {
 	// AppSlug is the App's slug. Its comments are by "<slug>[bot]".
 	AppSlug string
 	// Touched, if set, is told of each issue that a command on another
-	// issue may write to, such as a descendant of a /hold, before it does.
+	// issue may write to, such as a descendant of a /hold, before it does,
+	// and of each issue whose /hold or /resume waits for one on an
+	// ancestor (holdOrderWaits), so it's read again next pass.
 	Touched func(number int)
 	// Unexplained, if set, is the memory of unexplained labels CheckLabels
 	// keeps between passes. If nil, the Applier keeps its own.
