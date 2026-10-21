@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -243,48 +242,11 @@ func stageWork(d *daemon.Daemon, name string, cred agent.Cred) (*daemon.Runs, er
 	return runs, nil
 }
 
-// newStep is step 1 with the command and reaction handlers merged so far,
-// /track and /ignore among them, and the reaction triggers: first the end
-// of a discussion hold once a 👍 or a counter comment resolves it, on a
-// held issue; then a 👍 on a revision and a 👍 on a flag, each at its own
-// stages, spec-review or plan-review for a spec or plan revision, and
-// intake for a flag, so at most one of them acts on an issue; then a 👍 on
-// a human task itself, at needs-human, which a hold the first ended may
-// have returned it to; then a 👍 on a state error, at any stage. The
-// loop's reloads replace its Trust and the daemon's Config, so the
-// handlers and the triggers ask for the current trust, and models for the
-// current models.allowed, rather than keeping what they had at the start.
+// newStep is step 1 as the daemon runs it, daemon.NewStep, which the
+// whole-run tests in internal/daemon build too, since they can't import
+// this package (#218). The tests below check its wiring.
 func newStep(a *daemon.Applier, tr github.Trust, models func() config.Models) *daemon.Step {
-	st := &daemon.Step{Applier: a, Trust: tr, Models: models}
-	st.Commands = daemon.Commands(st.CurrentTrust())
-	st.Commands["approve"] = daemon.ApproveCommand()
-	st.Commands["revise"] = daemon.ReviseCommand()
-	st.Commands["done"] = daemon.DoneCommand()
-	maps.Copy(st.Commands, daemon.SettingCommands(st.CurrentTrust(), models))
-	maps.Copy(st.Commands, daemon.FlagCommands())
-	approve, answer := daemon.ApproveByReaction(st.CurrentTrust()), daemon.FlagByReaction(st.CurrentTrust())
-	errAck, resolved := daemon.ErrorByReaction(st.CurrentTrust()), daemon.ResolveByReaction(st.CurrentTrust())
-	done := daemon.DoneByReaction(st.CurrentTrust())
-	st.Reactions = func(ctx context.Context, a *daemon.Applier, s *github.Snapshot, d daemon.Dirt) error {
-		if err := resolved(ctx, a, s, d); err != nil {
-			return fmt.Errorf("discussion hold resolved: %w", err)
-		}
-		if err := approve(ctx, a, s, d); err != nil {
-			return fmt.Errorf("approval by 👍: %w", err)
-		}
-		if err := answer(ctx, a, s, d); err != nil {
-			return fmt.Errorf("flag answer by 👍: %w", err)
-		}
-		if err := done(ctx, a, s, d); err != nil {
-			return fmt.Errorf("human task done by 👍: %w", err)
-		}
-		// Last, so an error a move above ended gets no read.
-		if err := errAck(ctx, a, s, d); err != nil {
-			return fmt.Errorf("state error ack by 👍: %w", err)
-		}
-		return nil
-	}
-	return st
+	return daemon.NewStep(a, tr, models)
 }
 
 // printOut writes the program's own plain output, the version or help, and

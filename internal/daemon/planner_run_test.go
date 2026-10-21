@@ -3,7 +3,6 @@ package daemon_test
 import (
 	"context"
 	"fmt"
-	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -97,35 +96,7 @@ func (p *planRun) start(t *testing.T, f *githubtest.Fake) {
 	}
 	g.r.Unlabeled = &daemon.Triage{Daemon: g.d}
 	// As newStep wires step 1.
-	st := g.d.Step
-	st.Models = g.d.CurrentModels
-	st.Commands = daemon.Commands(st.CurrentTrust())
-	st.Commands["approve"] = daemon.ApproveCommand()
-	st.Commands["revise"] = daemon.ReviseCommand()
-	st.Commands["done"] = daemon.DoneCommand()
-	maps.Copy(st.Commands, daemon.SettingCommands(st.CurrentTrust(), g.d.CurrentModels))
-	maps.Copy(st.Commands, daemon.FlagCommands())
-	approve, answer := daemon.ApproveByReaction(st.CurrentTrust()), daemon.FlagByReaction(st.CurrentTrust())
-	errAck, resolved := daemon.ErrorByReaction(st.CurrentTrust()), daemon.ResolveByReaction(st.CurrentTrust())
-	done := daemon.DoneByReaction(st.CurrentTrust())
-	st.Reactions = func(ctx context.Context, a *daemon.Applier, s *github.Snapshot, d daemon.Dirt) error {
-		if err := resolved(ctx, a, s, d); err != nil {
-			return fmt.Errorf("discussion hold resolved: %w", err)
-		}
-		if err := approve(ctx, a, s, d); err != nil {
-			return fmt.Errorf("approval by 👍: %w", err)
-		}
-		if err := answer(ctx, a, s, d); err != nil {
-			return fmt.Errorf("flag answer by 👍: %w", err)
-		}
-		if err := done(ctx, a, s, d); err != nil {
-			return fmt.Errorf("human task done by 👍: %w", err)
-		}
-		if err := errAck(ctx, a, s, d); err != nil {
-			return fmt.Errorf("state error ack by 👍: %w", err)
-		}
-		return nil
-	}
+	g.d.Step = daemon.NewStep(g.d.Step.Applier, g.d.Step.Trust, g.d.CurrentModels)
 	// As startDaemon sets them.
 	g.d.Digest, g.d.Assign = true, true
 	p.rig = g
