@@ -56,6 +56,7 @@ type Applier struct {
 
 	closingBy    map[string]github.ClosingCloser // how each close was made, by its event's node ID (closingCloser)
 	closingAgain map[int]closingListed           // issues the App closed again, after an untrusted reopen, as it left them (closingCloseAgain)
+	closerErr    closerErrState                  // closer questions that failed, and the pass (closererr.go)
 }
 
 // Move is one transition to apply.

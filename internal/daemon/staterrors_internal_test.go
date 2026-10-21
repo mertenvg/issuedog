@@ -141,7 +141,7 @@ func TestOpenErrors(t *testing.T) {
 	} {
 		calls := 0
 		inputs := func() ([]github.Comment, error) { calls++; return tc.inputs, nil }
-		open, err := openErrors(tc.s, state.Derive(tc.s, openErrSlug, tc.dirty), inputs)
+		open, err := openErrors(tc.s, state.Derive(tc.s, openErrSlug, tc.dirty), inputs, nil)
 		if err != nil {
 			t.Errorf("%s: %v", tc.name, err)
 			continue
@@ -190,20 +190,20 @@ func TestOpenErrorsInputs(t *testing.T) {
 	failing := func() ([]github.Comment, error) { calls++; return nil, boom }
 	none := func(int64) bool { return false }
 	keyless := openErrSnap("", toClarifying, openErrMarker("transition", "50", "")+openErrMarker(kindLabels, "40", "")+openErrMarker("disagreement", "9", ""))
-	if open, err := openErrors(keyless, state.Derive(keyless, openErrSlug, none), failing); err != nil || len(open) != 3 || calls != 0 {
+	if open, err := openErrors(keyless, state.Derive(keyless, openErrSlug, none), failing, nil); err != nil || len(open) != 3 || calls != 0 {
 		t.Errorf("errors keyed on no input: %v, %v, with %d calls; want 3 open errors, no call", open, err, calls)
 	}
 	for _, key := range []string{"attempts/clarifying-1", "transition/" + moveKey("clarifying-1", state.Item{})} {
 		kind, k, _ := strings.Cut(key, "/")
 		s := openErrSnap("", toClarifying, openErrMarker(kind, k, ""))
-		if _, err := openErrors(s, state.Derive(s, openErrSlug, none), failing); !errors.Is(err, boom) || !strings.Contains(err.Error(), "#7") {
+		if _, err := openErrors(s, state.Derive(s, openErrSlug, none), failing, nil); !errors.Is(err, boom) || !strings.Contains(err.Error(), "#7") {
 			t.Errorf("%s: err = %v, want boom, naming #7", key, err)
 		}
 	}
 	calls = 0
 	both := openErrSnap("", toClarifying, openErrMarker(kindAttempts, "clarifying-1", "")+openErrMarker("transition", moveKey("clarifying-1", state.Item{}), ""))
 	counted := func() ([]github.Comment, error) { calls++; return nil, nil }
-	if open, err := openErrors(both, state.Derive(both, openErrSlug, none), counted); err != nil || len(open) != 2 || calls != 1 {
+	if open, err := openErrors(both, state.Derive(both, openErrSlug, none), counted, nil); err != nil || len(open) != 2 || calls != 1 {
 		t.Errorf("two errors keyed on input: %v, %v, with %d calls; want both open, with one call", open, err, calls)
 	}
 }

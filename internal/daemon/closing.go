@@ -58,13 +58,16 @@ import (
 // (ProjectV2) is no merge either. Any other failure, a failed request, a
 // rate limit, an error on the repository, or one of another type or of
 // none under node (#204), is the pass's error, and the next pass asks
-// again, without bound: none of those says how the issue was closed, and a
-// merge reverted on a guess would reopen and hold a finished issue. The
-// close's state reason is the issue's state_reason as listed, which is the
-// newest close's, and, for a close again after an untrusted reopen, the
-// ClosedEvent's stateReason of the close it undid, or the closed stage's
-// if that question fails, logged, so the close again never waits on it
-// (closingCloseAgain).
+// again: none of those says how the issue was closed, and a merge reverted
+// on a guess would reopen and hold a finished issue. Once the question has
+// failed with an error under node on loop.max_attempts passes, the issue
+// gets a state error instead, and the close stays unjudged, still asked
+// about once a pass (#232, closererr.go). The close's state reason is the
+// issue's state_reason as listed, which is the newest close's, and, for a
+// close again after an untrusted reopen, the ClosedEvent's stateReason of
+// the close it undid, or the closed stage's if that question fails on
+// closerErrRetries passes, logged, so the close again waits on it only
+// that long (closingCloseAgain, #233).
 //
 // Which closed issues are read. The poll lists every issue, closed ones
 // too, and keeps a closed issue whose close is still to judge
@@ -201,6 +204,7 @@ func (d *Daemon) closingForget(n int) {
 	delete(d.closingSeen, n)
 	delete(d.Step.closingAgain, n)
 	delete(d.closingDue, n)
+	d.closerErrJudged(n, nil)
 }
 
 // closingPass judges the closes due (closingList), at most closingBatch,
@@ -268,10 +272,21 @@ func (d *Daemon) closingJudge(ctx context.Context, is *gogithub.Issue) (done, re
 		return false, false, nil
 	}
 	cl := closings[k]
+	d.closerErrJudged(n, &cl) // a closer state error on an older close has ended
 	accepted, merged, err := a.closingAccepted(ctx, d.Step.Trust, cl)
 	if err != nil {
+		// A question of how it was closed that keeps failing gets a state
+		// error, and the close stays unjudged with no error (closererr.go).
+		stands, rerr := d.closerErrClosed(ctx, n, cl, err)
+		if rerr != nil {
+			return false, false, wrap(fmt.Errorf("%w; %w", err, rerr))
+		}
+		if stands {
+			return false, false, nil
+		}
 		return false, false, wrap(err)
 	}
+	d.closerErrJudged(n, nil)
 	if !accepted {
 		reverted, err := d.closingRevertClose(ctx, n, cl)
 		if err != nil {
@@ -354,7 +369,8 @@ func closingTrusted(ctx context.Context, trust github.Trust, by github.Author) (
 // so a held issue visited on every pass, with an old close by a write
 // collaborator, asks nothing again. An event with no node ID, which GitHub
 // gives every event, is no merge, with no question. A failed question is
-// an error, and isn't kept, so the next pass asks again.
+// an error, and isn't kept, so the next pass asks again; the passes it
+// failed on are counted, and an answer ends the count (closererr.go).
 func (a *Applier) closingCloser(ctx context.Context, cl github.Closing) (github.ClosingCloser, error) {
 	if cl.NodeID == "" {
 		return github.ClosingCloser{}, nil
@@ -364,12 +380,14 @@ func (a *Applier) closingCloser(ctx context.Context, cl github.Closing) (github.
 	}
 	by, err := a.Client.ClosingCloser(ctx, a.Owner, a.Repo, cl.NodeID)
 	if err != nil {
+		a.closerErrFail(cl, err)
 		return github.ClosingCloser{}, fmt.Errorf("how it was closed: %w", err)
 	}
 	if a.closingBy == nil {
 		a.closingBy = map[string]github.ClosingCloser{}
 	}
 	a.closingBy[cl.NodeID] = by
+	a.closerErrAnswer(cl)
 	return by, nil
 }
 
@@ -403,12 +421,18 @@ func (a *Applier) closingCounts(ctx context.Context, cl github.Closing, open dis
 // closingTriggers returns the close triggers on s, from s.Closings, which
 // CheckLabels read with the timeline it reads anyway, so they cost no
 // request (discFind): each close closingCounts counts. The App reverted
-// each of them when it judged the close (closingRevertClose).
-func (a *Applier) closingTriggers(ctx context.Context, s *github.Snapshot, open discOpen, who discWho) ([]discTrigger, error) {
+// each of them when it judged the close (closingRevertClose). A close
+// whose question of how it was made keeps failing counts as none once its
+// state error stands (closerErrStep1), with dirty as for state.Derive,
+// which the visit posts (closerErrPost).
+func (a *Applier) closingTriggers(ctx context.Context, s *github.Snapshot, dirty func(int64) bool, open discOpen, who discWho) ([]discTrigger, error) {
 	var found []discTrigger
 	for _, cl := range s.Closings {
 		ok, err := a.closingCounts(ctx, cl, open, who)
 		if err != nil {
+			if a.closerErrStep1(s, dirty, cl, err) {
+				continue
+			}
 			return nil, err
 		}
 		if ok {
@@ -609,8 +633,10 @@ func (a *Applier) closingReopen(ctx context.Context, s *github.Snapshot, trust g
 // event, posted once (closingRevertComment), then a close with the
 // state reason of the newest close before it, as its ClosedEvent gives it
 // (closingCloser), or else label's, and s is closed. A failed question of
-// that close is logged, and label's reason used, so a lasting failure
-// doesn't keep s open (#204).
+// that close writes nothing, and is the error, until it has failed on
+// closerErrRetries passes, so one transient failure doesn't change the
+// reason (#233). Then it's logged, and label's reason used, so a lasting
+// failure doesn't keep s open (#204).
 // Its error wraps closingErrClosedAgain once it's closed.
 func (a *Applier) closingCloseAgain(ctx context.Context, s *github.Snapshot, dirty func(int64) bool, reopen github.Closing, r int, label string) error {
 	reason := "completed"
@@ -620,6 +646,10 @@ func (a *Applier) closingCloseAgain(ctx context.Context, s *github.Snapshot, dir
 	for j := r - 1; j >= 0; j-- {
 		if cl := s.Closings[j]; !cl.Reopen {
 			by, err := a.closingCloser(ctx, cl)
+			if err != nil && a.closerErrPasses(cl) < closerErrRetries {
+				// Asked again next pass, with nothing written yet (#233).
+				return fmt.Errorf("reopen %d: the reason of the close it undid, %d, is asked again next pass: %w", reopen.ID, cl.ID, err)
+			}
 			if err != nil {
 				// The label's reason does no harm, where waiting for the
 				// answer would leave the issue open for as long as the

@@ -1146,16 +1146,17 @@ func closingReopenCloserFails(event *int64) func(testing.TB) *githubtest.Fake {
 // fails on every pass, the issue is closed again all the same, once, with
 // the closed stage's reason, not_planned for stage:discarded, in place of
 // the close's own, duplicate, rather than left open for as long as the
-// question fails (#204). The close is safe to replay, and the next pass
-// writes nothing.
+// question fails (#204). The first failure writes nothing and is asked
+// again, so the close again comes on the second pass (#233). The close is
+// safe to replay, and the next pass writes nothing.
 func TestClosingUntrustedReopenCloserFails(t *testing.T) {
 	t.Parallel()
 	var event int64
 	setup := closingReopenCloserFails(&event)
-	closingCheck(t, setup, func(*githubtest.Fake) closingWant {
+	closerErrCheck(t, setup, 2, func(*githubtest.Fake) closingWant {
 		return closingWant{labels: []string{"stage:discarded"}, closed: true, comments: []string{closingClosedAgain("`eve`", event)}}
 	})
-	f := run(t, setup, closingPass(t, digestNotifyOrigin(t)))
+	f := run(t, setup, closerErrRun(t, digestNotifyOrigin(t), 2, false))
 	is, _, err := f.Client(t).Issues.Get(context.Background(), "o", "r", 1)
 	if err != nil {
 		t.Fatal(err)
@@ -1166,7 +1167,8 @@ func TestClosingUntrustedReopenCloserFails(t *testing.T) {
 }
 
 // The closed stage's reason stands in for the newest close's when that
-// question fails, not an older close's, which may be stale.
+// question fails, on its second pass (#233), not an older close's, which
+// may be stale.
 func TestClosingUntrustedReopenCloserFailsNotOlder(t *testing.T) {
 	t.Parallel()
 	f := closingJudged("discarded", func(f *githubtest.Fake) {
@@ -1175,7 +1177,9 @@ func TestClosingUntrustedReopenCloserFailsNotOlder(t *testing.T) {
 		f.FailCloser(1, f.CloseAs(1, "owner", "not_planned"), "", closingFailure)
 	})(t)
 	f.ReopenBy(1, "eve")
-	iterate(t, newDaemon(t, f, digestNotifyOrigin(t), nil))
+	d := newDaemon(t, f, digestNotifyOrigin(t), nil)
+	closerErrFailing(t, f, d, "the first pass")
+	iterate(t, d)
 	is, _, err := f.Client(t).Issues.Get(context.Background(), "o", "r", 1)
 	if err != nil {
 		t.Fatal(err)
@@ -1186,7 +1190,8 @@ func TestClosingUntrustedReopenCloserFailsNotOlder(t *testing.T) {
 }
 
 // The close again on the closed stage's reason logs why, once, naming the
-// failed question.
+// failed question: on the second failing pass, as the first only fails the
+// pass (#233), and not again on the pass after.
 func TestClosingUntrustedReopenCloserFailsLogged(t *testing.T) {
 	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
 	var event int64
@@ -1194,6 +1199,7 @@ func TestClosingUntrustedReopenCloserFailsLogged(t *testing.T) {
 	d := newDaemon(t, f, digestNotifyOrigin(t), nil)
 	var warnings bytes.Buffer
 	stop := logr.AddWriter(&warnings, logr.WithFilter(logr.W))
+	closerErrFailing(t, f, d, "the first pass")
 	iterate(t, d)
 	iterate(t, d)
 	logr.Wait()

@@ -820,7 +820,7 @@ func digestSameBody(a, b string) bool {
 // failed does.
 func (d *Daemon) digestCacheSet(s *github.Snapshot, inputs []github.Comment, dirt Dirt, holds []discTrigger, ownerHeld, blocked bool) {
 	st := d.Step
-	items, err := waitFind(waitInput{Owner: st.Owner, Repo: st.Repo, AppSlug: st.AppSlug, S: s, Dirt: dirt, Inputs: inputs, Holds: holds,
+	items, err := waitFind(waitInput{Owner: st.Owner, Repo: st.Repo, AppSlug: st.AppSlug, S: s, Dirt: dirt, Inputs: inputs, CloserErrAnswered: st.closerErrAnswered, Holds: holds,
 		OwnerHeld: ownerHeld, Blocked: blocked})
 	if err != nil {
 		logr.Errorf("%s/%s#%d keeps the items it had on the digest: %v", st.Owner, st.Repo, s.Number, err)
@@ -880,12 +880,15 @@ func (st *Step) holdItemFind(ctx context.Context, s *github.Snapshot, dirt Dirt)
 }
 
 // digestCacheRanked returns every issue's cached items that stand
-// (digestCacheOf), ranked by Q3a against every snapshot held (waitRank).
+// (digestCacheOf), and the closed issues' closer state errors
+// (closerErrDigest), which assignment doesn't take, ranked by Q3a against
+// every snapshot held (waitRank).
 func (d *Daemon) digestCacheRanked() []waitItem {
 	var items []waitItem
 	for _, n := range slices.Sorted(maps.Keys(d.digestCache)) {
 		items = append(items, d.digestCacheOf(n)...)
 	}
+	items = append(items, d.closerErrDigest()...)
 	waitRank(items, d.snaps)
 	return items
 }
