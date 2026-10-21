@@ -887,6 +887,7 @@ func TestRunStartupFailures(t *testing.T) {
 		failWrite int // the write to fail
 		code      int
 		want      string
+		cause     string // also in the logs, past the part of want's error that varies
 	}{
 		"no repo": {environ: without("ISSUEDOG_REPO"), code: 1, want: `reading the settings: ISSUEDOG_REPO is "", not owner/name`},
 		"slug": {setup: func(t *testing.T, _ *githubtest.Fake) {
@@ -898,7 +899,7 @@ func TestRunStartupFailures(t *testing.T) {
 			}))
 			t.Cleanup(down.Close)
 			apiURL = down.URL
-		}, code: 1, want: "starting the daemon: reading the App's slug: github app: "},
+		}, code: 1, want: "starting the daemon: reading the App's slug: github app: GET ", cause: "/app: 503 down on purpose"},
 		"token": {setup: func(t *testing.T, f *githubtest.Fake) {
 			target, err := url.Parse(f.URL())
 			if err != nil {
@@ -941,8 +942,8 @@ func TestRunStartupFailures(t *testing.T) {
 				environ = daemonEnv
 			}
 			code, logs := runBounded(t, environ)
-			if code != tt.code || !strings.Contains(logs, tt.want) {
-				t.Errorf("exit code %d, logs %q; want %d and %q", code, logs, tt.code, tt.want)
+			if code != tt.code || !strings.Contains(logs, tt.want) || !strings.Contains(logs, tt.cause) {
+				t.Errorf("exit code %d, logs %q; want %d, %q and %q", code, logs, tt.code, tt.want, tt.cause)
 			}
 			if len(*calls) != 0 {
 				t.Errorf("startup steps = %q, want none of egress", *calls)
