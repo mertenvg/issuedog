@@ -23,9 +23,9 @@ import (
 // failure does:
 //   - Judging a close nobody trusted made (closingAccepted, on a closed
 //     issue, or closingCounts, for step 1's close triggers on an open one)
-//     fails the pass, as before, until the question has failed with an
-//     error under node (github.CloserErrUnderNode) on loop.max_attempts
-//     passes. Then the issue gets one state error, kind=closer, keyed by
+//     is the pass's error, as before, though it fails only that issue for
+//     the pass, until the question has failed with an error under node
+//     (github.CloserErrUnderNode) on loop.max_attempts passes. Then the issue gets one state error, kind=closer, keyed by
 //     the closed event's ID, naming the error (closerErrReport), and that
 //     failure stops being the pass's error: a closed issue's close stays
 //     unjudged, with its stage label as it is (closerErrClosed), and an
