@@ -155,9 +155,11 @@ func TestDigestTake(t *testing.T) {
 }
 
 // A failed edit history read is logged, and the issue it was for isn't
-// taken as the digest: it stays in the pipeline, and an unchanged poll
-// reads nothing more. A poll that lists it again reads its history, and
-// takes it, out of the pipeline. The poll after that reads nothing.
+// taken as the digest: it stays held, unjudged, and marked to be read once
+// judged, which Iterate doesn't do before (digestHistoryHold). An unchanged
+// poll reads its history again, and so does a poll that lists it again,
+// once each. The first read that works takes it, out of the pipeline, and
+// the poll after that reads nothing.
 func TestDigestTakeHistoryFails(t *testing.T) {
 	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
 	var logs bytes.Buffer
@@ -179,19 +181,54 @@ func TestDigestTakeHistoryFails(t *testing.T) {
 	f.FailGraphQL("Something went wrong")
 	poll(1)
 	logr.Wait()
-	if d.digest.has(1) || !d.stale[1] || !strings.Contains(logs.String(), "o/r's issues titled \"issuedog digest\" failed to read") {
-		t.Errorf("digests %v, stale %v, logs %q; want no digest, 1 stale, and the failure logged", d.digest.issues, d.stale, logs.String())
+	if d.digest.has(1) || !d.stale[1] || d.digest.titled[1] == nil ||
+		!strings.Contains(logs.String(), "o/r's issues [1], titled \"issuedog digest\", failed to read, so they stay out of the pipeline, and no digest is created") {
+		t.Errorf("digests %v, stale %v, held %v, logs %q; want no digest, 1 stale and held, and the failure logged",
+			d.digest.issues, d.stale, d.digest.titled, logs.String())
 	}
-	poll(1)
-	if d.digest.has(1) {
-		t.Errorf("digests %v; want none", d.digest.issues)
+	f.FailGraphQL("Something went wrong")
+	poll(2)
+	if d.digest.has(1) || d.digest.titled[1] == nil || d.digest.history[1].fails != 2 {
+		t.Errorf("digests %v, held %v, failures %v; want none, 1 held, with two failed reads", d.digest.issues, d.digest.titled, d.digest.history)
 	}
 	f.AddComment(1, "owner", "Hello.")
-	poll(2)
-	if !d.digest.has(1) || d.stale[1] {
-		t.Errorf("digests %v, stale %v; want 1 the digest, out of the pipeline", d.digest.issues, d.stale)
+	poll(3)
+	if !d.digest.has(1) || d.stale[1] || len(d.digest.titled) != 0 || len(d.digest.history) != 0 {
+		t.Errorf("digests %v, stale %v, held %v, failures %v; want 1 the digest, out of the pipeline, and nothing held",
+			d.digest.issues, d.stale, d.digest.titled, d.digest.history)
 	}
-	poll(2)
+	poll(3)
+}
+
+// An issue whose edit history read failed digestHistoryStrikes times is
+// read no more, but once a rename lets it go, and another renames it back,
+// its failures are forgotten: the next poll reads it again, and takes it.
+func TestDigestHistoryRenamedBack(t *testing.T) {
+	t.Parallel()
+	f := githubtest.New(t, "o/r", "issuedog")
+	f.EditBody(f.AddIssue("issuedog[bot]", "issuedog digest", "<!-- issuedog:digest -->"), "owner", "gone")
+	d := &Daemon{Step: &Step{Applier: &Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}}, stale: map[int]bool{}}
+	poll := func() {
+		t.Helper()
+		if err := d.poll(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range digestHistoryStrikes {
+		f.FailGraphQL("Something went wrong")
+		poll()
+	}
+	poll()
+	if got := f.HistoryQueries(); got != digestHistoryStrikes || d.digest.titled[1] == nil {
+		t.Fatalf("history queries = %d, held %v; want %d, and 1 held", got, d.digest.titled, digestHistoryStrikes)
+	}
+	f.RenameIssue(1, "owner", "Renamed")
+	poll()
+	f.RenameIssue(1, "owner", "issuedog digest")
+	poll()
+	if got := f.HistoryQueries(); got != digestHistoryStrikes+1 || !d.digest.has(1) {
+		t.Errorf("history queries = %d, digests %v; want one more, and 1 the digest", got, d.digest.issues)
+	}
 }
 
 // A poll whose comment listing fails, after its issue listing held issues

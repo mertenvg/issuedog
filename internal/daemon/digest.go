@@ -69,12 +69,21 @@ type digestState struct {
 	// digest by its title (digestTake).
 	origins map[int64]int
 	// titled are the issues only the title rule would take, as last
-	// listed, till digestTake judges them after the poll's comments.
+	// listed, till digestTake judges them after the poll's comments, or,
+	// for one whose edit history failed to read, till a pass reads it
+	// (digestHistoryHold).
 	titled map[int]*gogithub.Issue
 	// firsts records, by issue number, whether the App's first version of
 	// the issue's body has an origin marker, from its edit history, which
 	// is read once per start for each issue titled holds (digestTake).
 	firsts map[int]bool
+	// history is what this start knows of the failed reads of the edit
+	// histories of issues titled holds, by issue number (digestTake).
+	history map[int]digestHistoryFail
+	// historyErrs are the App's comments with a digesthistory state error,
+	// edited or not, by ID, as the issue and key each is for
+	// (digestHistoryReport).
+	historyErrs map[int64]digestHistoryPosted
 }
 
 // lateReopenSeen is a reopen of the digest being waited for (lateReopen):
@@ -164,13 +173,15 @@ func digestOrigin(m github.Marker) bool { return m.Kind == "origin" }
 
 // comment records a listed comment on issue n if it is an App comment with
 // a digest-new marker, and forgets it otherwise. The same goes for an App
-// comment with an origin marker, edited or not, for digestTake.
+// comment with an origin marker, edited or not, for digestTake, and one
+// with a digesthistory state error (digestHistoryReport).
 func (g *digestState) comment(slug string, n int, c *gogithub.IssueComment) {
 	author := github.Author{Login: c.GetUser().GetLogin(), Type: c.GetUser().GetType()}
 	markers := github.TrustedMarkers(author, c.GetBody(), slug)
 	if !g.record(c.GetID(), n, markers, c.GetUpdatedAt().After(c.GetCreatedAt().Time)) {
 		delete(g.news, c.GetID())
 	}
+	g.historyComment(c.GetID(), n, markers)
 	if !slices.ContainsFunc(markers, digestOrigin) {
 		delete(g.origins, c.GetID())
 		return
@@ -240,14 +251,34 @@ func (g *digestState) has(n int) bool {
 // So an App task whose body lost its origin and that was renamed is never
 // the digest, with or without a reposted origin, while a digest whose
 // marker was taken out is still found by its title. One query reads every
-// history needed, and an unchanged poll, which lists nothing, needs none.
-// A failed read is logged, and none is taken on the pass. Each held issue
-// is then an issue like any other till a poll lists it again, as the next
-// start's does, and judges it again: so an issue the read failed for, as
-// for one deleted since the listing, isn't read again on every pass. A
-// poll that fails before digestTake keeps what it held for the next one.
+// history needed, and an unchanged poll, which lists nothing new, needs
+// none while no issue is held (below): one it lists again, at the cursor,
+// was judged already. A poll that fails before digestTake keeps what it
+// held for the next one.
+//
+// A failed read is logged, and each issue it was for stays held, unjudged:
+// it's kept out of step 1 and Work (digestHistoryHold), and digestPass
+// creates no digest while one is held, since it may be the digest, whose
+// marker was taken out, and a new one would be a second (#305). Each later
+// pass reads again, in one query, the histories of the issues still held,
+// and judges each one read, so the first pass whose read works takes the
+// old digest back. An issue a poll lists again is judged on that listing,
+// as ever: renamed, or with its marker back, it's held no more. But a read
+// that keeps failing would cost a request and an error log on every pass,
+// and hold back the pipeline's work on the issue for good, so after
+// digestHistoryStrikes failures the issue gets a state error (SPEC §5.3,
+// digestHistoryReport), and its history isn't read again on this start. It
+// stays held, with no digest created, till the owner acts: a restart reads
+// it again, a rename lets the pipeline take it as any other issue, and the
+// identity marker put back makes it the digest.
 func (d *Daemon) digestTake(ctx context.Context) {
 	a, g := d.Step.Applier, &d.digest
+	// An issue a listing let go of, renamed or a digest by its marker, has
+	// its failures forgotten, so a rename back starts with no strike.
+	maps.DeleteFunc(g.history, func(n int, _ digestHistoryFail) bool {
+		_, held := g.titled[n]
+		return !held
+	})
 	if len(g.titled) == 0 {
 		return
 	}
@@ -257,30 +288,35 @@ func (d *Daemon) digestTake(ctx context.Context) {
 	}
 	need := map[string]int{} // by node ID
 	for n, is := range g.titled {
-		if _, ok := g.firsts[n]; !ok && !reposted[n] {
+		if _, ok := g.firsts[n]; !ok && !reposted[n] && g.history[n].fails < digestHistoryStrikes {
 			need[is.GetNodeID()] = n
 		}
 	}
 	if len(need) > 0 {
 		read, err := a.Client.History(ctx, slices.Sorted(maps.Keys(need)))
 		if err != nil {
-			logr.Errorf("the edit histories of %s/%s's issues titled %q failed to read, so none is taken for the digest till a poll lists it again: %v",
-				a.Owner, a.Repo, digestTitle, err)
-			clear(g.titled)
-			return
-		}
-		if g.firsts == nil {
-			g.firsts = map[int]bool{}
-		}
-		for node, n := range need {
-			h := read[node]
-			// With no edit, the body as listed, which has none, is the first.
-			g.firsts[n] = len(h) > 0 && (h[0].Text == "" || slices.ContainsFunc(github.ParseMarkers(h[0].Text), digestOrigin))
+			logr.Errorf("the edit histories of %s/%s's issues %v, titled %q, failed to read, so they stay out of the pipeline, and no digest is created, till they're read: %v",
+				a.Owner, a.Repo, slices.Sorted(maps.Values(need)), digestTitle, err)
+			g.historyFailed(slices.Collect(maps.Values(need)), err)
+		} else {
+			if g.firsts == nil {
+				g.firsts = map[int]bool{}
+			}
+			for node, n := range need {
+				h := read[node]
+				// With no edit, the body as listed, which has none, is the first.
+				g.firsts[n] = len(h) > 0 && (h[0].Text == "" || slices.ContainsFunc(github.ParseMarkers(h[0].Text), digestOrigin))
+			}
 		}
 	}
 	for _, n := range slices.Sorted(maps.Keys(g.titled)) {
 		is := g.titled[n]
+		if _, ok := g.firsts[n]; !ok && !reposted[n] {
+			d.digestHistoryHold(ctx, is)
+			continue
+		}
 		delete(g.titled, n)
+		delete(g.history, n)
 		if reposted[n] || g.firsts[n] {
 			continue
 		}
@@ -298,7 +334,9 @@ func (d *Daemon) digestTake(ctx context.Context) {
 //   - With no digest, it creates one with them listed (assumption 2).
 //     That's in the loop, not at startup, so a failure doesn't stop the
 //     daemon (SPEC §3.5); after a crash that follows the create, the next
-//     poll finds it.
+//     poll finds it. While the title rule holds an issue whose edit
+//     history is still to read, which may be the digest, it creates none
+//     (digestTake).
 //   - It resolves a close or reopen (digestOpen, Q4a). A digest a trusted
 //     user closed is off: nothing more is done to it.
 //   - It handles the pin note (digestPin).
@@ -316,6 +354,12 @@ func (d *Daemon) digestPass(ctx context.Context) error {
 	a, g := d.Step.Applier, &d.digest
 	items := d.digestCacheRanked()
 	nums := slices.Sorted(maps.Keys(g.issues))
+	if len(nums) == 0 && len(g.titled) > 0 {
+		// One may be the digest, its marker taken out (digestTake).
+		logr.Debugf("%s/%s has no digest, and none is created while the edit histories of its issues %v, titled %q, are still to read",
+			a.Owner, a.Repo, slices.Sorted(maps.Keys(g.titled)), digestTitle)
+		return nil
+	}
 	if len(nums) == 0 {
 		body := digestBody(digestPinPending, items)
 		n, err := a.Client.CreateIssue(ctx, a.Owner, a.Repo, digestTitle, body)
