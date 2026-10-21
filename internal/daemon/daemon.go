@@ -66,6 +66,12 @@ type Daemon struct {
 	polled        time.Time // when the last poll began
 	relabel       bool      // a reload added models whose labels aren't created yet
 
+	// digestRestartUnknown are the issues the digest may list items for
+	// that digestCache doesn't hold: each the start's first poll listed
+	// open, and each a poll listed closed with items cached, till step 1
+	// succeeds on it (digestrestart.go).
+	digestRestartUnknown map[int]bool
+
 	// epicCloseDue are the epics planned into stories, by number, with the
 	// children each waits on to close, after its last good step 1
 	// (epicclose.go).
@@ -261,20 +267,26 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	}
 	// A command may write to other issues, such as a /hold's descendants,
 	// whose snapshots are then out of date: those skip step 1 and Work, and
-	// are read again next pass.
-	touched := map[int]bool{}
-	d.Step.Touched = func(n int) { touched[n] = true }
+	// are read again next pass. But one whose items the digest may list
+	// while none is cached, as on a restart's first pass, is read again at
+	// its turn, and visited for them, so the digest doesn't drop them, but
+	// still skips Work, unless a visit that failed wrote to it
+	// (digestRestartRead).
+	touched, touches := map[int]bool{}, digestRestartTouches{}
+	d.Step.Touched = func(n int) { touched[n] = true; touches.touch(n) }
 	defer func() { d.Step.Touched = nil }()
 	// An ancestor a /hold or /resume waits for is read again next pass, so
 	// it's visited then, though nothing on it changed (#243).
 	d.Step.holdOrderReread = func(n int) { d.stale[n] = true }
 	defer func() { d.Step.holdOrderReread = nil }()
 	for _, n := range slices.Sorted(maps.Keys(d.snaps)) {
+		again := touched[n] && d.digestRestartRead(ctx, n, &touches) // as on a restart's first pass
 		s := d.snaps[n]
-		if touched[n] || (!read[n] && !slices.ContainsFunc(s.Labels, isReview) && !slices.ContainsFunc(s.Labels, flagAsked) &&
-			!slices.ContainsFunc(s.Labels, discHeldLabel) && !slices.ContainsFunc(s.Labels, isNeedsHuman) && !d.openErrs[n]) {
+		if !again && (touched[n] || (!read[n] && !slices.ContainsFunc(s.Labels, isReview) && !slices.ContainsFunc(s.Labels, flagAsked) &&
+			!slices.ContainsFunc(s.Labels, discHeldLabel) && !slices.ContainsFunc(s.Labels, isNeedsHuman) && !d.openErrs[n])) {
 			continue
 		}
+		touches.begin()
 		// ReviewVisit, on an issue read again too, posts a revision for a body
 		// edit; it does nothing at any other stage than spec-review. The
 		// visit's Dirty calls ask trust about each editor once (#174).
@@ -316,6 +328,9 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			blocked, err = d.humanBlocked(ctx, s, dirt)
 		}
 		d.Step.trustOnceEnd()
+		if err != nil { // its commands may be half done (digestRestartRead)
+			touches.fail()
+		}
 		if errors.Is(err, ErrLabelsHeld) || errors.Is(err, closingErrClosedAgain) {
 			// Like a touched issue: nothing more this pass, and read again.
 			logr.Infof("%s/%s#%d waits for its next pass: %v", d.Step.Owner, d.Step.Repo, n, err)
@@ -330,6 +345,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		}
 		d.inputs[n] = in
 		d.digestCacheSet(s, in, dirt, holds, ownerHeld, blocked) // for assignment too, so with the digest off as well
+		d.digestRestartKnow(n)
 		d.epicCloseSet(s, dirt)
 	}
 	for n := range touched {
@@ -456,6 +472,7 @@ func (d *Daemon) poll(ctx context.Context) error {
 			case changed(d.snaps[n], is):
 				d.closingForget(n)
 				d.stale[n] = true
+				d.digestRestartList(n, start)
 			}
 		}
 		if d.issuesSince.Equal(since) {
@@ -499,6 +516,7 @@ func (d *Daemon) leave(n int) {
 	delete(d.stale, n)
 	delete(d.missing, n) // so a reopened issue starts with no strike
 	delete(d.openErrs, n)
+	d.digestRestartLeave(n)
 	delete(d.digestCache, n) // a closed issue has nothing waiting
 	delete(d.assignManaged, n)
 	d.Step.forgetLabels(n)
