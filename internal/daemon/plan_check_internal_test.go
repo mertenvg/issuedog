@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"slices"
@@ -389,13 +390,52 @@ func TestCheckPlanLinkLimits(t *testing.T) {
 
 // A file path is a word with a directory and an extension, outside a link.
 // A bare file name, a URL to a file, a link's destination and words with
-// a slash but no extension are none.
+// a slash but no extension are none. Nor, so prose passes (#311), is a
+// word whose extension doesn't start with a lowercase letter or is a
+// module's version, whose directory has no letter or is only versions, or
+// that is capitalized names ending in ".js" or ".io". Capitalized paths,
+// extensions with digits and directories named "x" or "v2" are paths.
 func TestPlanFilePath(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ text, want string }{
 		{"Edit internal/daemon/plan.go today.", "internal/daemon/plan.go"},
+		{"Edit internal/daemon/plan.go.", "internal/daemon/plan.go"},
 		{"`deploy/production.env`", "deploy/production.env"},
 		{"Change ./web/app.tsx.", "./web/app.tsx"},
+		{"See cmd/main.go, then deploy/.env.", "cmd/main.go"},
+		{"Set it in deploy/.env.", "deploy/.env"},
+		{"In a/b.go.", "a/b.go"},
+		{"pkg/x.v2.go", "pkg/x.v2.go"},
+		{"src/components/Button.js", "src/components/Button.js"},
+		{"Sources/App/main.swift", "Sources/App/main.swift"},
+		{"Assets/Scripts/Player.cs", "Assets/Scripts/Player.cs"},
+		{"Controllers/HomeController.cs", "Controllers/HomeController.cs"},
+		{"MyApp/Views/HomeView.swift", "MyApp/Views/HomeView.swift"},
+		{"Sources/App/Main.swift", "Sources/App/Main.swift"},
+		{"Run scripts/install.ps1.", "scripts/install.ps1"},
+		{"media/intro.mp4", "media/intro.mp4"},
+		{"dist/x.tar.bz2", "dist/x.tar.bz2"},
+		{"rtl/top.v", "rtl/top.v"},
+		{"x/main.go", "x/main.go"},
+		{"v2/main.go", "v2/main.go"},
+		{"api/v1.2/routes.go", "api/v1.2/routes.go"},
+		{"/etc/hosts.conf", "/etc/hosts.conf"},
+		{"React/Next.js, and web/app.tsx", "web/app.tsx"},
+		{"Supports TLS 1.2/1.3.", ""},
+		{"Go 1.22/1.23", ""},
+		{"Python 3.11/3.12, or 2.7/3.x.", ""},
+		{"Node 18/20.x", ""},
+		{"Speaks HTTP/1.1.", ""},
+		{"An Express/Node.js or React/Next.js app.", ""},
+		{"A Vue/Nuxt.js or Express/Socket.io app.", ""},
+		{"Python 2.x/3.x", ""},
+		{"Vue 2.x/3.x", ""},
+		{"Node 18.x/20.x", ""},
+		{"Webpack 4.x/5.x.", ""},
+		{"Node v18.x/v20.x", ""},
+		{"Go 1.x/2.x/3.x", ""},
+		{"Parses with gopkg.in/yaml.v3.", ""},
+		{"A net/http.Handler, as internal/appkey.Load reads it.", ""},
 		{"The [settings file](deploy/production.env) ...", ""},
 		{"[cmd/main.go](https://github.com/acme/booking/blob/main/cmd/main.go)", "cmd/main.go"},
 		{"See https://github.com/acme/booking/blob/main/deploy/production.env for it.", ""},
@@ -410,6 +450,21 @@ func TestPlanFilePath(t *testing.T) {
 		if got := planFilePath(tc.text); got != tc.want {
 			t.Errorf("planFilePath(%q) = %q, want %q", tc.text, got, tc.want)
 		}
+	}
+}
+
+// A plan whose visible fields hold prose with a slash, such as versions,
+// protocols, framework names and Go module paths, passes (#311).
+func TestCheckPlanSlashedProse(t *testing.T) {
+	t.Parallel()
+	out := plannerOutput(t, "story-plan")
+	out.Plan.Why += " It speaks HTTP/1.1, over TLS 1.2/1.3."
+	out.Plan.Summary += "\n\nIt builds on Go 1.22/1.23 and Python 3.11/3.12."
+	out.Plan.Items[0].Outcome += " Express/Node.js, React/Next.js and Express/Socket.io apps get it too."
+	out.Plan.Order += ", on Node 18.x/20.x"
+	out.Plan.Items[1].Criteria[0] += " The config parses with gopkg.in/yaml.v3."
+	if err := checkPlan(out, storyFacts()); err != nil {
+		t.Errorf("a plan of prose with slashes: %v", err)
 	}
 }
 
@@ -505,6 +560,41 @@ func bigPlan(t *testing.T, n, extra int) planOutput {
 	}
 	out.Plan.Items, out.Plan.Order = items, "All in parallel"
 	return out
+}
+
+// A plan comment that can't be built is an error, not a broken length
+// rule: its error keeps the chain of what failed (#311), and the other
+// rules' failures stay beside it.
+func TestCheckPlanLengthError(t *testing.T) {
+	t.Parallel()
+	out := plannerOutput(t, "story-plan")
+	out.Plan.Items[0].Effort = "extreme"
+	f := storyFacts()
+	f.Fields = map[string]string{"model": "a b"}
+	err := checkPlan(out, f)
+	if err == nil {
+		t.Fatal("a plan comment that can't be built passes")
+	}
+	if got := rules(err); !slices.Equal(got, []string{ruleEffort}) {
+		t.Errorf("rules %q, want only effort (%v)", got, err)
+	}
+	joined, ok := errors.Unwrap(err).(interface{ Unwrap() []error })
+	if !ok {
+		t.Fatalf("error %q joins no errors", err)
+	}
+	var internal error
+	for _, x := range joined.Unwrap() {
+		if _, ok := x.(*ruleError); !ok {
+			internal = x
+		}
+	}
+	const cause = `the plan comment's transition marker: format transition marker: bad field "model=a b"`
+	if internal == nil || internal.Error() != "check the plan comment's length: "+cause {
+		t.Fatalf("error %q has no error checking the length", err)
+	}
+	if got := errors.Unwrap(internal); got == nil || got.Error() != cause {
+		t.Errorf("the length error %q wraps %v, want %q", internal, got, cause)
+	}
 }
 
 // The length rule counts the whole posted comment, not only its text: a
