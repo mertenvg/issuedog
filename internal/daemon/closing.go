@@ -49,12 +49,13 @@ import (
 // repo, as a push to the default branch that says "Fixes #N" makes. A
 // commit or a pull request in another repo that names the issue is no
 // merge, so it's reverted like any untrusted close. It's one GraphQL query,
-// asked only for a close nobody trusted made, and remembered per event
-// while the daemon runs (closingCloser). An event GitHub can't resolve
-// (NOT_FOUND under node), or whose closer it won't show the App (FORBIDDEN
-// under node, as for a project's workflow on a personal account, or a
-// commit in a private repo), is no merge, logged, and isn't asked about
-// again, so its close is reverted. A project's workflow's closer
+// asked for a close nobody trusted made, and for the close an untrusted
+// reopen undid, for its state reason (closingCloseAgain), and remembered
+// per event while the daemon runs (closingCloser). An event GitHub can't
+// resolve (NOT_FOUND under node), or whose closer it won't show the App
+// (FORBIDDEN under node, as for a project's workflow on a personal
+// account, or a commit in a private repo), is no merge, logged, and isn't
+// asked about again, so its close is reverted. A project's workflow's closer
 // (ProjectV2) is no merge either. Any other failure, a failed request, a
 // rate limit, an error on the repository, or one of another type or of
 // none under node (#204), fails only that issue for the pass, its close's
