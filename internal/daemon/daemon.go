@@ -233,6 +233,9 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		}
 		delete(d.snaps, n)
 		delete(d.inputs, n)
+		if _, held := d.digest.titled[n]; held { // maybe the digest: read once judged (digestHistoryHold)
+			continue
+		}
 		s, err := d.Step.Client.Snapshot(ctx, d.Step.Owner, d.Step.Repo, n)
 		switch {
 		case gone(err) && d.missing[n]:

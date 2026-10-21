@@ -49,6 +49,8 @@ type openErr struct {
 //   - closer: when answered, if set, reports that the question of how the
 //     close keyed by the error's key was made has been answered while the
 //     daemon runs (Applier.closerErrAnswered).
+//   - digesthistory: at once, as step 1 visits only an issue the digest's
+//     title rule has judged (digestHistoryHold).
 //   - any other kind: only an ack ends it.
 //
 // inputs gives step 1's Inputs for s. It's called at most once, and only
@@ -93,6 +95,8 @@ func openErrors(s *github.Snapshot, is state.Issue, inputs func() ([]github.Comm
 			ended = k.Key != typeGoneKey(s)
 		case k.Kind == closerErrKind:
 			ended = answered != nil && answered(k.Key)
+		case k.Kind == digestHistoryErrKind:
+			ended = true
 		}
 		if !ended {
 			open = append(open, openErr{ErrorKey: k, Comment: id})
