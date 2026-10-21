@@ -40,6 +40,7 @@ func (f *Fake) FailIsPinned(status int) {
 
 // SetPinned pins or unpins an issue by hand, as the owner can on GitHub.
 func (f *Fake) SetPinned(number int, pinned bool) {
+	f.t.Helper()
 	f.edit(number, func(is *issue) { is.pinned = pinned })
 }
 
@@ -68,8 +69,11 @@ func (f *Fake) pinIssue(id string) (any, []map[string]any) {
 // issue_type_added event (issueTypeRevertSet). Only the title is required,
 // as on GitHub. A type name the org has no type of, ignoring case, gets a
 // 422 and files nothing: the org has the types SetType, SetTypeBy and
-// IssueTypeID gave an ID, less those RenameOrgIssueType renamed away. Under
-// DropTypeChanges, the issue is filed with no type.
+// IssueTypeID gave an ID, less those RenameOrgIssueType renamed away. So
+// does a type fakeTypeRefusal refuses: any on a personal account, and one
+// the org disabled. The type is set by the name the org shows, so "task"
+// is the org's Task. Under DropTypeChanges, the issue is filed with no
+// type.
 func (f *Fake) createIssue(c *call) (int, any) {
 	var req struct {
 		Title  string
@@ -86,6 +90,9 @@ func (f *Fake) createIssue(c *call) (int, any) {
 	if req.Type != nil {
 		if _, ok := f.orgTypes[strings.ToLower(*req.Type)]; !ok {
 			return http.StatusUnprocessableEntity, message(fmt.Sprintf("Validation Failed: the org has no issue type %q", *req.Type))
+		}
+		if status, msg := f.fakeTypeRefusal(*req.Type); msg != nil {
+			return status, msg
 		}
 	}
 	is := f.fileIssue(f.slug+"[bot]", req.Title, req.Body, req.Labels)

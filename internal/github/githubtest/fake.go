@@ -45,6 +45,7 @@ var Start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 // with serve for a POST that only reads, as GraphQL does.
 type Fake struct {
 	repo, slug string
+	t          testing.TB // New's, which a helper given an issue number the fake hasn't got fails (fakeNumberIssue)
 	srv        *httptest.Server
 	mux        *http.ServeMux
 
@@ -167,7 +168,7 @@ type handler func(c *call) (int, any)
 // New starts a fake of repo ("owner/name") for the App with this slug.
 func New(t testing.TB, repo, slug string) *Fake {
 	t.Helper()
-	f := &Fake{repo: repo, slug: slug, mux: http.NewServeMux(), now: Start, lastID: 1000, historyCap: 100}
+	f := &Fake{repo: repo, slug: slug, t: t, mux: http.NewServeMux(), now: Start, lastID: 1000, historyCap: 100}
 	f.mux.HandleFunc("POST /app/installations/{id}/access_tokens", mintToken)
 	f.handle("GET /issues/{n}", f.getIssue)
 	f.handle("GET /issues/{n}/parent", f.getParent)
@@ -249,37 +250,75 @@ func (f *Fake) fileIssue(author, title, body string, labels []string) *issue {
 // SetType sets an issue's type, as on org repos, with the type's ID in the
 // org (IssueTypeID), and no event.
 func (f *Fake) SetType(number int, name string) {
+	f.t.Helper()
 	f.edit(number, func(is *issue) { is.Type = f.issueTypeNamed(name) })
 }
 
 // SetPullRequest makes number a pull request, which REST lists with the issues.
 func (f *Fake) SetPullRequest(number int) {
+	f.t.Helper()
 	f.edit(number, func(is *issue) {
 		is.PullRequestLinks = &gogithub.PullRequestLinks{URL: new(fmt.Sprintf("%s/repos/%s/pulls/%d", f.srv.URL, f.repo, number))}
 	})
 }
 
 // SetParent makes number a sub-issue of parent, listed after its other
-// sub-issues, or of none for 0. It moves no updated_at.
+// sub-issues, or of none for 0. It moves no updated_at. A parent the fake
+// hasn't got fails the test, as a number does (edit).
 func (f *Fake) SetParent(number, parent int) {
-	f.edit(number, func(is *issue) { f.linkUnder(is, parent) })
-}
-
-func (f *Fake) edit(number int, change func(*issue)) {
+	f.t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	change(f.issues[number-1])
+	is := f.fakeNumberIssue(number)
+	if parent != 0 {
+		f.fakeNumberIssue(parent)
+	}
+	f.linkUnder(is, parent)
+}
+
+// edit runs change on issue number with the fake locked, or fails the test
+// if the fake hasn't got that issue (fakeNumberIssue).
+func (f *Fake) edit(number int, change func(*issue)) {
+	f.t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	change(f.fakeNumberIssue(number))
+}
+
+// fakeNumberIssue returns issue number for a helper a test called with it,
+// or fails the test New was given, naming the number, if the fake hasn't
+// got it: one never filed, or one DeleteIssue deleted. f is locked.
+func (f *Fake) fakeNumberIssue(number int) *issue {
+	f.t.Helper()
+	is, err := f.fakeNumberFind(number)
+	if err != nil {
+		f.t.Fatalf("githubtest: %v", err)
+	}
+	return is
+}
+
+// fakeNumberFind returns issue number, or an error naming it if the fake
+// hasn't got it, for an answer that names an issue by the number a parent
+// or a blocked-by link holds, which DeleteIssue may have deleted since.
+// f is locked.
+func (f *Fake) fakeNumberFind(number int) (*issue, error) {
+	if number < 1 || number > len(f.issues) {
+		return nil, fmt.Errorf("no issue #%d: the fake has %d", number, len(f.issues))
+	}
+	return f.issues[number-1], nil
 }
 
 // AddComment posts a comment by author and returns its ID.
 func (f *Fake) AddComment(number int, author, body string) int64 {
+	f.t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.addCommentBy(f.issues[number-1], author, body).GetID()
+	return f.addCommentBy(f.fakeNumberIssue(number), author, body).GetID()
 }
 
 // EditBody edits an issue's body as login. An empty login means GitHub names no editor.
 func (f *Fake) EditBody(number int, login, body string) {
+	f.t.Helper()
 	f.edit(number, func(is *issue) { is.editBy(login, body, f.tick()) })
 }
 
@@ -287,9 +326,10 @@ func (f *Fake) EditBody(number int, login, body string) {
 // body's edit history, as someone with write access can on GitHub: the
 // entry keeps its editor and time, and its diff is null.
 func (f *Fake) DeleteRevision(number, i int) {
+	f.t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.issues[number-1].history[i].text = ""
+	f.fakeNumberIssue(number).history[i].text = ""
 }
 
 // EditComment edits a comment as login. An empty login means GitHub names no editor.
@@ -538,12 +578,17 @@ func (f *Fake) getIssue(c *call) (int, any) {
 }
 
 // getParent serves an issue's parent with its repository_url, this repo's
-// unless Transfer set another.
+// unless Transfer set another. A parent the fake hasn't got, as once
+// DeleteIssue deleted it, is a 500 naming it.
 func (f *Fake) getParent(c *call) (int, any) {
 	if c.issue.parent == 0 {
 		return http.StatusNotFound, message("Not Found")
 	}
-	parent := f.issues[c.issue.parent-1].Issue
+	is, err := f.fakeNumberFind(c.issue.parent)
+	if err != nil {
+		return http.StatusInternalServerError, message(fmt.Sprintf("githubtest: the parent of #%d: %v", c.issue.GetNumber(), err))
+	}
+	parent := is.Issue
 	if parent.RepositoryURL == nil {
 		parent.RepositoryURL = new(fmt.Sprintf("%s/repos/%s", f.srv.URL, f.repo))
 	}
@@ -650,8 +695,23 @@ func (c *comment) editBy(login, body string, now *gogithub.Timestamp) {
 	record(&c.history, &c.lastEdit, c.GetUser().GetLogin(), c.GetCreatedAt().Time, was, lastEdit{login, now.Time, body})
 }
 
+// listReactions serves the reactions to a comment, oldest first, only
+// those with the content= asked for, if any (fakeReactionFiltered), paged
+// by per_page and page
+// (GET /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions).
 func (f *Fake) listReactions(c *call) (int, any) {
-	return page(c, c.comment.reactions)
+	return page(c, fakeReactionFiltered(c, c.comment.reactions))
+}
+
+// fakeReactionFiltered is reactions, or for a request with content=, such
+// as +1, only those with that content, as GitHub filters both reaction
+// listings, a comment's and an issue's.
+func fakeReactionFiltered(c *call, reactions []*gogithub.Reaction) []*gogithub.Reaction {
+	content := c.r.URL.Query().Get("content")
+	if content == "" {
+		return reactions
+	}
+	return slices.DeleteFunc(slices.Clone(reactions), func(r *gogithub.Reaction) bool { return r.GetContent() != content })
 }
 
 // addReaction answers 201 for a new reaction, and 200 for one the App has already.

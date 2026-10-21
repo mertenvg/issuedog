@@ -368,3 +368,27 @@ func TestReplayComparesRemovedBlockedBy(t *testing.T) {
 		t.Errorf("problems = %q, want a 404 on the second pass after write 1 applied", problems)
 	}
 }
+
+// As on GitHub, one issue may block 50 issues: a link that would make it
+// block a 51st gets a 422 and changes nothing. One fewer, and the 50th goes
+// in.
+func TestFakeBlockingLimit(t *testing.T) {
+	t.Parallel()
+	f := New(t, "o/r", "issuedog")
+	blocker := f.AddIssue("owner", "Blocker", "body")
+	for range maxBlockedBy - 1 {
+		f.SetBlockedBy(f.AddIssue("owner", "Blocked", "body"), blocker)
+	}
+	fiftieth, next := f.AddIssue("owner", "Fiftieth", "body"), f.AddIssue("owner", "Next", "body")
+	c := f.Client(t)
+	if got := addBlocker(t, c, fiftieth, issueID(blocker)); got != http.StatusCreated {
+		t.Errorf("a 50th blocked issue: status %d, want 201", got)
+	}
+	before := f.State()
+	if got := addBlocker(t, c, next, issueID(blocker)); got != http.StatusUnprocessableEntity {
+		t.Errorf("a 51st blocked issue: status %d, want 422", got)
+	}
+	if got := f.State(); !reflect.DeepEqual(got, before) {
+		t.Errorf("state after the refusal:\n%+v\nwant it unchanged:\n%+v", got, before)
+	}
+}

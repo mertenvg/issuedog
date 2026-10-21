@@ -15,9 +15,10 @@ const firstEvent = 9000
 // AddLabel adds a label to an issue as login, and returns the labeled
 // event's ID, or 0 if the issue had the label already and nothing changed.
 func (f *Fake) AddLabel(number int, login, name string) int64 {
+	f.t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	is := f.issues[number-1]
+	is := f.fakeNumberIssue(number)
 	if !is.addLabel(name) {
 		return 0
 	}
@@ -28,9 +29,10 @@ func (f *Fake) AddLabel(number int, login, name string) int64 {
 // RemoveLabel removes a label from an issue as login, and returns the
 // unlabeled event's ID, or 0 if the issue didn't have it.
 func (f *Fake) RemoveLabel(number int, login, name string) int64 {
+	f.t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	is := f.issues[number-1]
+	is := f.fakeNumberIssue(number)
 	i := slices.IndexFunc(is.Labels, func(l *gogithub.Label) bool { return strings.EqualFold(l.GetName(), name) })
 	if i < 0 {
 		return 0
@@ -96,9 +98,10 @@ func (f *Fake) Advance(d time.Duration) {
 // RenameIssue changes an issue's title as login, with a renamed event on its
 // timeline, as GitHub writes one, and returns the event's ID.
 func (f *Fake) RenameIssue(number int, login, title string) int64 {
+	f.t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	is := f.issues[number-1]
+	is := f.fakeNumberIssue(number)
 	from := is.GetTitle()
 	is.Title, is.UpdatedAt = &title, f.tick()
 	f.lastEvent++

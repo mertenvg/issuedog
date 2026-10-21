@@ -48,9 +48,10 @@ import (
 // transfer. Repos are given IDs from 2 on, in the order they're first
 // transferred to (this repo is 1).
 func (f *Fake) Transfer(number int, repo string) {
+	f.t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	is := f.issues[number-1]
+	is := f.fakeNumberIssue(number)
 	is.RepositoryURL, is.movedTo = new(f.srv.URL+"/repos/"+repo), ""
 	if strings.EqualFold(repo, f.repo) {
 		return

@@ -42,7 +42,9 @@ func (f *Fake) linkUnder(is *issue, parent int) {
 // issue that has a parent already, for the parent itself or one of its
 // ancestors, for a pull request, and for a parent with 100 sub-issues, those
 // LinkSubIssue listed included, and 404 for an ID no issue has. after_id,
-// before_id and replace_parent aren't served, and get a 422.
+// before_id and replace_parent aren't served, and get a 422. A parent above
+// the path's issue that the fake hasn't got is a 500 naming it
+// (isAncestor).
 func (f *Fake) addSubIssue(c *call) (int, any) {
 	var req struct {
 		SubIssueID    int64  `json:"sub_issue_id"`
@@ -61,10 +63,14 @@ func (f *Fake) addSubIssue(c *call) (int, any) {
 		return http.StatusNotFound, message("Not Found")
 	}
 	parent := c.issue.GetNumber()
+	above, err := f.isAncestor(sub.GetNumber(), parent)
+	if err != nil {
+		return http.StatusInternalServerError, message(fmt.Sprintf("githubtest: the parents above #%d: %v", parent, err))
+	}
 	switch {
 	case sub.parent != 0:
 		return http.StatusUnprocessableEntity, message(fmt.Sprintf("Validation Failed: issue #%d already has a parent, #%d", sub.GetNumber(), sub.parent))
-	case f.isAncestor(sub.GetNumber(), parent):
+	case above:
 		return http.StatusUnprocessableEntity, message(fmt.Sprintf("Validation Failed: issue #%d can't be a sub-issue of itself or of its own sub-issue", sub.GetNumber()))
 	case sub.IsPullRequest():
 		return http.StatusUnprocessableEntity, message(fmt.Sprintf("Validation Failed: #%d is a pull request", sub.GetNumber()))
@@ -77,15 +83,21 @@ func (f *Fake) addSubIssue(c *call) (int, any) {
 }
 
 // isAncestor reports whether issue a is issue n or above it, through the
-// parents SetParent and addSubIssue set. f is locked.
-func (f *Fake) isAncestor(a, n int) bool {
+// parents SetParent and addSubIssue set, or an error naming a parent on
+// the way that the fake hasn't got, as once DeleteIssue deleted it. f is
+// locked.
+func (f *Fake) isAncestor(a, n int) (bool, error) {
 	for seen := 0; n != 0 && seen <= len(f.issues); seen++ {
 		if n == a {
-			return true
+			return true, nil
 		}
-		n = f.issues[n-1].parent
+		is, err := f.fakeNumberFind(n)
+		if err != nil {
+			return false, err
+		}
+		n = is.parent
 	}
-	return false
+	return false, nil
 }
 
 // subIssueCount counts parent's sub-issues, those LinkSubIssue listed

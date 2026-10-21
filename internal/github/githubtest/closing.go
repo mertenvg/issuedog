@@ -40,17 +40,19 @@ type ClosingPR struct {
 // event's ID, or 0 if the issue was closed already and nothing changed. An
 // empty login means GitHub names no actor.
 func (f *Fake) CloseBy(number int, login string) int64 {
+	f.t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.setState(f.issues[number-1], "closed", "", login)
+	return f.setState(f.fakeNumberIssue(number), "closed", "", login)
 }
 
 // CloseAs is CloseBy with a state_reason, such as "not_planned" or
 // "duplicate", which the issue and its ClosedEvent carry (T6).
 func (f *Fake) CloseAs(number int, login, reason string) int64 {
+	f.t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.setState(f.issues[number-1], "closed", reason, login)
+	return f.setState(f.fakeNumberIssue(number), "closed", reason, login)
 }
 
 // CloseByPullRequest closes an issue as login, as completed, the way a pull
@@ -59,9 +61,10 @@ func (f *Fake) CloseAs(number int, login, reason string) int64 {
 // request pr. It returns the event's ID, or 0 if the issue was closed
 // already.
 func (f *Fake) CloseByPullRequest(number int, login string, pr ClosingPR) int64 {
+	f.t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	is := f.issues[number-1]
+	is := f.fakeNumberIssue(number)
 	id := f.setState(is, "closed", "", login)
 	if id != 0 {
 		base, repo := pr.Base, pr.Repo
@@ -83,12 +86,13 @@ func (f *Fake) CloseByPullRequest(number int, login string, pr ClosingPR) int64 
 // ClosedEvent's closer is the commit. It returns the event's ID, or 0 if
 // the issue was closed already.
 func (f *Fake) CloseByCommit(number int, login, sha, repo string) int64 {
+	f.t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if repo == "" {
 		repo = f.repo
 	}
-	is := f.issues[number-1]
+	is := f.fakeNumberIssue(number)
 	id := f.setState(is, "closed", "", login)
 	if id != 0 {
 		e := is.labelEvents[len(is.labelEvents)-1]
@@ -103,9 +107,10 @@ func (f *Fake) CloseByCommit(number int, login, sha, repo string) int64 {
 // ClosedEvent's closer is a ProjectV2. It returns the event's ID, or 0 if
 // the issue was closed already.
 func (f *Fake) CloseByProject(number int, login string) int64 {
+	f.t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	is := f.issues[number-1]
+	is := f.fakeNumberIssue(number)
 	id := f.setState(is, "closed", "", login)
 	if id != 0 {
 		is.closingClosers[id] = closingCloser{reason: "completed", typename: "ProjectV2"}
@@ -118,6 +123,7 @@ func (f *Fake) CloseByProject(number int, login string) int64 {
 // personal account or a commit in a private repo it can't see: the closer
 // is null, with a FORBIDDEN error at ["node", "closer"].
 func (f *Fake) ForbidCloser(number int, id int64) {
+	f.t.Helper()
 	f.edit(number, func(is *issue) {
 		cl := is.closingClosers[id]
 		cl.forbidden = true
@@ -130,6 +136,7 @@ func (f *Fake) ForbidCloser(number int, id int64) {
 // with message, of type typ, or with no type for typ "", as a passing
 // fault GitHub doesn't name might show (#204).
 func (f *Fake) FailCloser(number int, id int64, typ, message string) {
+	f.t.Helper()
 	f.edit(number, func(is *issue) {
 		cl := is.closingClosers[id]
 		cl.fail = map[string]any{"path": []any{"node"}, "message": message}
@@ -143,6 +150,7 @@ func (f *Fake) FailCloser(number int, id int64, typ, message string) {
 // MendCloser ends FailCloser's errors for closed event id: GraphQL answers
 // how it was made again.
 func (f *Fake) MendCloser(number int, id int64) {
+	f.t.Helper()
 	f.edit(number, func(is *issue) {
 		cl := is.closingClosers[id]
 		cl.fail = nil
@@ -162,6 +170,7 @@ func (f *Fake) FailGraphQLAt(typ, message string, path ...any) {
 // ForgetCloser makes closed event id of issue number a node with no
 // ClosedEvent's fields, so GraphQL gives it no state reason and no closer.
 func (f *Fake) ForgetCloser(number int, id int64) {
+	f.t.Helper()
 	f.edit(number, func(is *issue) { delete(is.closingClosers, id) })
 }
 
@@ -169,9 +178,10 @@ func (f *Fake) ForgetCloser(number int, id int64) {
 // or 0 if the issue was open already and nothing changed. An empty login
 // means GitHub names no actor.
 func (f *Fake) ReopenBy(number int, login string) int64 {
+	f.t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.setState(f.issues[number-1], "open", "", login)
+	return f.setState(f.fakeNumberIssue(number), "open", "", login)
 }
 
 // setState opens or closes an issue as login, as GitHub is believed to: a
