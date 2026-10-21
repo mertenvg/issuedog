@@ -157,6 +157,61 @@ func TestIvHoldInputOfEdits(t *testing.T) {
 	}
 }
 
+// Any edit un-approves a comment, the approving code owner's own too: once
+// the code owner who 👍'd an untrusted comment edits it, their 👍 predates
+// the edit, so the comment isn't owner input, and their 👍 removed and
+// given again after the edit approves the new text (the owner's choice A
+// on #210, SPEC §6.4). TestIvHoldInputOfEdits pins the author's own edits.
+func TestOwnerEditUnapproves(t *testing.T) {
+	t.Parallel()
+	f := githubtest.New(t, "o/r", "issuedog")
+	n := f.AddIssue("owner", "Quotes", "body")
+	from := f.AddComment(n, "issuedog[bot]", "<!-- issuedog:transition from=spec-review to=held at=spec-review reason=discussion event=c1 -->")
+	cm := f.AddComment(n, "mallory", "approve me")
+	thumb := f.AddReaction(cm, "owner", "+1")
+	c := f.Client(t)
+	a := &Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog"}
+	// approved returns who approved cm as the fake stands, if anyone, and
+	// cm's last editor.
+	approved := func() (string, string) {
+		t.Helper()
+		s, err := c.Snapshot(t.Context(), "o", "r", n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		editor := ""
+		for _, sc := range s.Comments {
+			if sc.ID == cm {
+				editor = sc.Edit.By.Login
+			}
+		}
+		tc := trustCache{st: &Step{Applier: a, Trust: ivHoldTestTrust{"owner": true}}, verdicts: map[string]bool{}}
+		in, err := ivHoldInputOf(t.Context(), a, tc, s, Dirt{}, from)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return in.Approved[cm], editor
+	}
+	if by, _ := approved(); by != "owner" {
+		t.Fatalf("before the edit: approved by %q, want owner", by)
+	}
+	f.EditComment(cm, "owner", "approve me, formatted")
+	by, editor := approved()
+	if editor != "owner" {
+		t.Fatalf("comment %d last edited by %q, want owner", cm, editor)
+	}
+	if by != "" {
+		t.Errorf("after owner's own edit: approved by %q, want nobody, as owner's 👍 predates the edit", by)
+	}
+	if !f.RemoveReaction(cm, thumb) {
+		t.Fatalf("owner's 👍 %d isn't on comment %d", thumb, cm)
+	}
+	f.AddReaction(cm, "owner", "+1")
+	if by, _ := approved(); by != "owner" {
+		t.Errorf("after owner's 👍 again: approved by %q, want owner", by)
+	}
+}
+
 // ivHoldRevise takes the oldest clean, trusted /revise above from and not
 // above seen, that passes its check at the stage the issue came from, no
 // marker names and the App hasn't reacted to: at the clarifying after a
