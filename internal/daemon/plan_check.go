@@ -91,7 +91,8 @@ const planLengthRunID = "00000000"
 // checked again here, with those it leaves out (SPEC §11.3, plan #247's
 // T6), and for a revision, the revised-plan rules (checkStatuses, #195's
 // T6). Its error joins a *ruleError for every rule broken, each naming the
-// item and field. Nothing may be written from an output that fails.
+// item and field, and any error checking a rule, which is no *ruleError
+// (#311). Nothing may be written from an output that fails.
 func checkPlan(out planOutput, f planFacts) error {
 	var errs []error
 	fail := func(rule, format string, args ...any) {
@@ -103,7 +104,9 @@ func checkPlan(out planOutput, f planFacts) error {
 			fail(ruleOutcome, "a plan has a plan, and no questions")
 		}
 		if out.Plan != nil {
-			checkPlanBody(*out.Plan, f, fail)
+			if err := checkPlanBody(*out.Plan, f, fail); err != nil {
+				errs = append(errs, err)
+			}
 		}
 	case outcomeQuestions:
 		if out.Plan != nil || len(out.Questions) == 0 {
@@ -123,13 +126,14 @@ func checkPlan(out planOutput, f planFacts) error {
 	return fmt.Errorf("check planner output: %w", errors.Join(errs...))
 }
 
-// checkPlanBody checks a plan's rules, calling fail for each one broken.
-// A revision's kept and dropped items carry an ID and a title only, so of
+// checkPlanBody checks a plan's rules, calling fail for each one broken,
+// and returns an error only when a rule can't be checked. A revision's
+// kept and dropped items carry an ID and a title only, so of
 // the item rules they're held to the ID's, the title's and the links':
 // a kept item's links are its approved item's (planPrior.keptDeps), and a
 // dropped one has none. max-tasks counts the tasks that aren't dropped,
 // and sub-issues only the new items, as the rest are sub-issues already.
-func checkPlanBody(p planBody, f planFacts, fail func(string, string, ...any)) {
+func checkPlanBody(p planBody, f planFacts, fail func(string, string, ...any)) error {
 	switch {
 	case p.Kind != planStories && p.Kind != planTasks:
 		fail(ruleStructure, "unknown plan kind %q", p.Kind)
@@ -288,7 +292,7 @@ func checkPlanBody(p planBody, f planFacts, fail func(string, string, ...any)) {
 			fail(ruleFilePaths, "%s names the file path %q", v.what, path)
 		}
 	}
-	checkPlanLength(p, f, fail)
+	return checkPlanLength(p, f, fail)
 }
 
 // planBodies names which of task and human_task it has, for a detail.
@@ -510,30 +514,54 @@ var (
 	// planLinkRE is a URL, bare, in an autolink or as a link's or link
 	// reference definition's destination. A link's text stays.
 	planLinkRE = regexp.MustCompile(`(?i)\]\([^)]*\)|\]:[ \t]*\S+|<[a-z][a-z0-9+.-]*:[^>\s]*>|\b(?:[a-z][a-z0-9+.-]*://|www\.)\S+`)
-	// planPathRE is a word with a directory and a file extension, as plan
-	// #247's assumption 8 defines a file path. A bare file name, with no
-	// directory, isn't one.
-	planPathRE = regexp.MustCompile(`[\w.-]+/[\w./-]*\.[A-Za-z0-9]+\b`)
+	// planPathWordRE is a whole word with a slash in it: a run of letters,
+	// digits, "_", ".", "-" and "/". planFilePath tells a file path from
+	// prose by its parts.
+	planPathWordRE = regexp.MustCompile(`[\w./-]*/[\w./-]*`)
+	// planPathExtRE is a file name's extension: lowercase letters, as a
+	// file's almost always is. A version, such as the "3" of "1.3" or the
+	// "v3" of "yaml.v3", and a Go name, such as "http.Handler", have none.
+	planPathExtRE = regexp.MustCompile(`\.[a-z]+$`)
+	// planPathLetterRE is a letter, which a file path's directory has: the
+	// "1.2" of "1.2/1.3", or the "2.7" of "2.7/3.x", is a version.
+	planPathLetterRE = regexp.MustCompile(`[A-Za-z]`)
+	// planPathNamesRE is a word whose every part starts with a capital,
+	// such as "Express/Node.js" or "React/Next.js": names, not a path.
+	planPathNamesRE = regexp.MustCompile(`^[A-Z][\w.-]*(?:/[A-Z][\w.-]*)+$`)
 )
 
-// planFilePath is the first file path in text outside a link, or "".
+// planFilePath is the first file path in text outside a link, or "". A
+// file path, as plan #247's assumption 8 defines one, is a word with a
+// directory and a file extension. A bare file name, with no directory,
+// isn't one. So that prose with a slash passes (#311), the extension is
+// lowercase letters, the directory has a letter, and the word's parts
+// aren't all capitalized names. A dot that ends a sentence isn't the
+// word's.
 func planFilePath(text string) string {
-	return planPathRE.FindString(planLinkRE.ReplaceAllString(text, " "))
+	for _, w := range planPathWordRE.FindAllString(planLinkRE.ReplaceAllString(text, " "), -1) {
+		w = strings.TrimRight(w, ".")
+		i := strings.LastIndex(w, "/")
+		if planPathExtRE.MatchString(w[i+1:]) && planPathLetterRE.MatchString(w[:i]) && !planPathNamesRE.MatchString(w) {
+			return w
+		}
+	}
+	return ""
 }
 
 // checkPlanLength checks that the whole plan comment, planCommentBody, fits
 // GitHub's limit with textRoom to spare (#256's verify). The data is about
 // 40% of the plan's JSON, so the text alone could fit a comment GitHub
-// then refuses on every attempt.
-func checkPlanLength(p planBody, f planFacts, fail func(string, string, ...any)) {
+// then refuses on every attempt. A comment that can't be built is its
+// error, not a broken rule (#311).
+func checkPlanLength(p planBody, f planFacts, fail func(string, string, ...any)) error {
 	body, err := planCommentBody(p, f)
 	if err != nil {
-		fail(ruleLength, "%v", err)
-		return
+		return fmt.Errorf("check the plan comment's length: %w", err)
 	}
 	if n := textLen(body); n > maxText-textRoom {
 		fail(ruleLength, "the plan comment is %d characters, with its markers, over %d", n, maxText-textRoom)
 	}
+	return nil
 }
 
 // planCommentBody is the plan comment p is posted as under f, as

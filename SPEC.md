@@ -1264,7 +1264,7 @@ The daemon runs a check as 9.3 says, and records it on the task's `origin` marke
 - `priority`: `p0` to `p3`.
 - `human-task`: a human task fills every 9.3 field: a goal, why it blocks, at least one step and one link, the **Done when** text and the estimated time.
 - `done-when`: a human task's check is valid, as above.
-- `file-paths`: the plan comment's visible text names no file path (#247's assumption 8). A file path is a word with a directory and a file extension, such as `dir/file.ext`, outside a link. A bare file name is allowed. The visible fields are the why, the summary, the message, the assumptions and the order, each item's title, outcome and criteria, and a human task's **Done when** text.
+- `file-paths`: the plan comment's visible text names no file path (#247's assumption 8). A file path is a word with a directory and a file extension, such as `dir/file.ext`, outside a link. A bare file name is allowed. So that prose with a slash passes, the extension is lowercase letters, the directory has a letter, and not every part of the word starts with a capital: "TLS 1.2/1.3", "HTTP/1.1", "Express/Node.js", `gopkg.in/yaml.v3` and `net/http.Handler` are no file paths. The visible fields are the why, the summary, the message, the assumptions and the order, each item's title, outcome and criteria, and a human task's **Done when** text.
 - `one-line`: the why, the order, each assumption, each item's title, outcome and criteria, each definition-of-done entry, and a human task's goal, why it blocks, steps, links, **Done when** text and estimated time.
 - `length`: the plan comment as it's posted, markers and plan data included, fits GitHub's 65,536-character limit with 1,024 to spare.
 
