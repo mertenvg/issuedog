@@ -3,7 +3,6 @@ package daemon_test
 import (
 	"context"
 	"fmt"
-	"maps"
 	"net/http"
 	"regexp"
 	"slices"
@@ -146,26 +145,7 @@ func digestRunDaemon(t testing.TB, f *githubtest.Fake, o *origin, c *github.Clie
 		return nil
 	}
 	// As newStep wires step 1.
-	st := d.Step
-	st.Commands = daemon.Commands(st.CurrentTrust())
-	st.Commands["approve"] = daemon.ApproveCommand()
-	st.Commands["revise"] = daemon.ReviseCommand()
-	maps.Copy(st.Commands, daemon.SettingCommands(st.CurrentTrust(), d.CurrentModels))
-	maps.Copy(st.Commands, daemon.FlagCommands())
-	approve, answer := daemon.ApproveByReaction(st.CurrentTrust()), daemon.FlagByReaction(st.CurrentTrust())
-	errAck := daemon.ErrorByReaction(st.CurrentTrust())
-	st.Reactions = func(ctx context.Context, a *daemon.Applier, s *github.Snapshot, dirt daemon.Dirt) error {
-		if err := approve(ctx, a, s, dirt); err != nil {
-			return fmt.Errorf("approval by 👍: %w", err)
-		}
-		if err := answer(ctx, a, s, dirt); err != nil {
-			return fmt.Errorf("flag answer by 👍: %w", err)
-		}
-		if err := errAck(ctx, a, s, dirt); err != nil {
-			return fmt.Errorf("state error ack by 👍: %w", err)
-		}
-		return nil
-	}
+	d.Step = daemon.NewStep(d.Step.Applier, d.Step.Trust, d.CurrentModels)
 	return d
 }
 
