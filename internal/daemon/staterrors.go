@@ -43,6 +43,9 @@ type openErr struct {
 //   - type: when the type is no longer the cause (typeErrStands), or the
 //     type change that stands changes (typeErrKey), which CheckLabels must
 //     have set on s too.
+//   - typegone: when the revert of the issue type that the org's deleted
+//     type blocks changes, or none does (typeGoneKey), which CheckLabels
+//     must have set on s too.
 //   - closer: when answered, if set, reports that the question of how the
 //     close keyed by the error's key was made has been answered while the
 //     daemon runs (Applier.closerErrAnswered).
@@ -86,6 +89,8 @@ func openErrors(s *github.Snapshot, is state.Issue, inputs func() ([]github.Comm
 			ended = k.Key != labelsKey(s)
 		case k.Kind == typeErrKind:
 			ended = k.Key != typeErrKey(s) || !typeErrStands(s, is)
+		case k.Kind == typeGoneErrKind:
+			ended = k.Key != typeGoneKey(s)
 		case k.Kind == closerErrKind:
 			ended = answered != nil && answered(k.Key)
 		}

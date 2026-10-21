@@ -179,24 +179,9 @@ func (a *Applier) humanCheckInstallation(ctx context.Context, owner string) (boo
 // fenced by one more backtick than its longest run of them, with a space
 // inside each fence if s starts or ends with a backtick or a space, which
 // CommonMark strips, so it reads as it is. A code span links no mention
-// and makes no HTML. An empty s is one space.
+// and makes no HTML. An empty s is one space. The fence is
+// github.TypeGoneCodeSpan's, which a revert of the issue type's comment
+// uses too (#409).
 func checkCode(s string) string {
-	s = github.Escape(normalize(s, ""))
-	if s == "" {
-		return "` `"
-	}
-	longest, run := 0, 0
-	for _, r := range s {
-		if r != '`' {
-			run = 0
-			continue
-		}
-		run++
-		longest = max(longest, run)
-	}
-	fence, pad := strings.Repeat("`", longest+1), ""
-	if strings.ContainsAny(s[:1], "` ") || strings.ContainsAny(s[len(s)-1:], "` ") {
-		pad = " "
-	}
-	return fence + pad + s + pad + fence
+	return github.TypeGoneCodeSpan(github.Escape(normalize(s, "")))
 }

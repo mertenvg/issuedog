@@ -75,8 +75,10 @@ type Snapshot struct {
 	// nothing acts on them. SetLabels keeps them out.
 	LeftOut map[string]bool
 	// TypeLeftOut is the issue type on the issue that the label rules left
-	// out, as they can't explain it yet, with the type that stands, which
-	// Type, TypeName and TypeID are instead (LeaveOutType), or nil.
+	// out, as they can't explain it yet, or can't revert it, as the org no
+	// longer lists the type that stands (IssueTypeLeftOut.Gone), with the
+	// type that stands, which Type, TypeName and TypeID are instead
+	// (LeaveOutType), or nil.
 	TypeLeftOut *IssueTypeLeftOut
 }
 

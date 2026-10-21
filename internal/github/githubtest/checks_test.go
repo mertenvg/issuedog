@@ -107,3 +107,22 @@ func TestOrgIssueTypesFake(t *testing.T) {
 		t.Errorf("issue types of another account: %v; want a 404", err)
 	}
 }
+
+// TypeGoneRefuseList refuses every read of the org's issue types with its
+// status, until it's called with 0, when the list is served again (#409).
+func TestTypeGoneRefuseList(t *testing.T) {
+	t.Parallel()
+	f := New(t, "o/r", "issuedog")
+	f.SetOrgIssueTypes(OrgIssueType{Name: "Bug"})
+	c := f.Client(t)
+	f.TypeGoneRefuseList(http.StatusForbidden)
+	for read := range 2 {
+		if _, resp, err := c.Organizations.ListIssueTypes(context.Background(), "o"); err == nil || resp.StatusCode != http.StatusForbidden {
+			t.Errorf("read %d: issue types: %v; want a 403", read, err)
+		}
+	}
+	f.TypeGoneRefuseList(0)
+	if types, _, err := c.Organizations.ListIssueTypes(context.Background(), "o"); err != nil || len(types) != 1 {
+		t.Errorf("after the refusal: issue types = %v, %v; want Bug", types, err)
+	}
+}
