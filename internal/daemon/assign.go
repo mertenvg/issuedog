@@ -172,9 +172,11 @@ func (d *Daemon) assignIssue(ctx context.Context, s *github.Snapshot, notify []s
 // made sure of (Daemon.stale). So a write that fails on every pass, such
 // as with a 422 for a login GitHub can't assign, costs that read and the
 // write on each pass, and never keeps the issue from its stage work
-// (#238). A gone issue whose write got such an answer still meets the
-// read before a stage run, which finds it gone, and the next pass's read,
-// the first of the two that drop it.
+// (#238). A gone issue whose write got such an answer is found gone by
+// its next read, the first of the two that drop it: the read before a
+// stage run (Runs.runStage) or the read of a run's lease, on applying
+// its saved result or after a restart (Runs.apply, Runs.resume), if Work
+// makes one this pass, or else the next pass's.
 func (d *Daemon) assignFailed(n int, err error) error {
 	a := d.Step.Applier
 	if gone(err) {
