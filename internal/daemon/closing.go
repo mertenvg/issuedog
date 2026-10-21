@@ -72,8 +72,10 @@ import (
 // Which closed issues are read. The poll lists every issue, closed ones
 // too, and keeps a closed issue whose close is still to judge
 // (closingList): one in the pipeline, with a stage label, or one this
-// daemon held with a stage label before it closed, whose close isn't
-// explained by a trusted or App event. A close is explained when:
+// daemon held with a stage label before it closed, judged or closed
+// again, whose close isn't explained by a trusted or App event. One found
+// still to judge stays so, even once its stage labels go, until it is
+// judged or explained. A close is explained when:
 //   - this daemon judged it, and the listing still shows the closed_at and
 //     the stage labels it left (closingSeen): a comment or any other change
 //     to a closed issue reads nothing;
@@ -81,7 +83,7 @@ import (
 //     (closingAgain);
 //   - or, on a start's first poll, the issue has exactly one stage label,
 //     a closed stage: only an accepted close leaves one, which an earlier
-//     run judged.
+//     run judged, so it counts as this daemon's judging of it.
 //
 // Judging reads the timeline once (github.ClosingTimeline). A closed stage
 // on the issue stands when the newest close is accepted and the stage's
