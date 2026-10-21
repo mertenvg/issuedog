@@ -55,6 +55,10 @@ type digestState struct {
 	pinned int                  // the digest whose pin note this start has handled
 	note   string               // the pin note the body should start with, "" for none
 	others string               // the other digests last logged
+	// pinFailed is the digest whose pin check or pin failed on this start,
+	// other than by GitHub's refusal, with note naming the failure: it's
+	// tried again only on a pass that writes the body anyway (digestPin).
+	pinFailed int
 	// wrote is the digest's updated_at after the App's last write to it,
 	// a body edit or a comment, as GitHub answered it (digestOpen).
 	wrote time.Time
@@ -375,8 +379,8 @@ func (d *Daemon) digestDrop(n int, err error) {
 	if g.late.number == n {
 		g.late = lateReopenSeen{}
 	}
-	if g.pinned == n {
-		g.pinned, g.note = 0, ""
+	if g.pinned == n || g.pinFailed == n {
+		g.pinned, g.pinFailed, g.note = 0, 0, ""
 	}
 	g.wrote = time.Time{}
 	d.issuesSince = time.Time{}
@@ -421,8 +425,9 @@ func digestMoved(a *Applier, resp *gogithub.Response, is *gogithub.Issue) error 
 //     announce them again before the poll lists the comment. A new item
 //     with no comment, such as a round, stays new, and never gets one.
 //   - Then the body is written, if it isn't already (digestEdit), with
-//     the pin note this start's check left (digestPin), or none: when the
-//     check didn't run, the body had none.
+//     the pin note this start's check left (digestPin), a failed check's
+//     included (noteOf), or none: when the check didn't run, the body had
+//     none.
 //
 // The comment comes first, so a crash between the two leaves it, and the
 // next pass finds its keys. A failed announcement, or a comment that
@@ -447,11 +452,7 @@ func (d *Daemon) digestRewrite(ctx context.Context, n int, items []waitItem) err
 			errs = append(errs, err)
 		}
 	}
-	note := ""
-	if g.pinned == n {
-		note = g.note
-	}
-	if err := d.digestEdit(ctx, n, digestBody(note, items)); err != nil {
+	if err := d.digestEdit(ctx, n, digestBody(g.noteOf(n), items)); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
@@ -649,6 +650,16 @@ func (d *Daemon) digestTrusted(ctx context.Context, actor *gogithub.User) (bool,
 	return ok, nil
 }
 
+// noteOf is the pin note digest n's body should start with: the one this
+// start's check left (digestPin), a failed check's included, or none when
+// the check was for another digest or didn't run.
+func (g *digestState) noteOf(n int) string {
+	if g.pinned == n || g.pinFailed == n {
+		return g.note
+	}
+	return ""
+}
+
 // digestPin handles the pin note (assumption 3). While the digest's body
 // starts with it, the first pass of each start that finds the digest on
 // checks whether it's pinned, and if not, pins it. Once the digest is
@@ -656,21 +667,39 @@ func (d *Daemon) digestTrusted(ctx context.Context, actor *gogithub.User) (bool,
 // owner stands. If GitHub refuses the pin, such as for a missing permission
 // or three pinned issues already, or answers with no error but no pin,
 // that's logged, the note names GitHub's message, and the loop carries on.
-// Any other failure, the check's included, is the pass's error, which Run
-// logs, and the next pass tries again. So does a failed edit of the note:
-// the check counts as done only once the body says what it found. The body
-// it writes lists items, so the rewrite that follows has nothing to change.
+// A failed edit of the note is the pass's error, and the next pass checks
+// again: the check counts as done only once the body says what it found.
+// The body it writes lists items, so the rewrite that follows has nothing
+// to change.
+//
+// Any other failure, the check's included, is logged and named in the note
+// (digestPinFailNote), and stops nothing (#226): the rewrite that follows
+// announces new items and writes the body with that note. It's tried again
+// only on a later pass that writes the body anyway, as the items or the
+// body changed, even by an edit that took the note out, which the rewrite
+// puts back. So a check that fails on every pass adds no request to an
+// unchanged pass, and at most one check and one pin to a changed one, with
+// no body edit of its own: a note that changes goes in that pass's edit. The
+// next start tries again too, as the note is still there.
 func (d *Daemon) digestPin(ctx context.Context, n int, items []waitItem) error {
 	a, g := d.Step.Applier, &d.digest
-	if g.pinned == n || !strings.HasPrefix(strings.TrimSpace(g.issues[n].body), digestPinPrefix) {
+	body := g.issues[n].body
+	switch {
+	case g.pinned == n:
 		return nil
-	}
-	wrap := func(err error) error {
-		return fmt.Errorf("the pin of the digest, %s/%s#%d: %w", a.Owner, a.Repo, n, err)
+	case g.pinFailed == n:
+		// The note is this start's own, so it's tried again on any pass
+		// that writes the body, even one that puts back a note edited out.
+		if digestSameBody(body, digestBody(g.note, items)) {
+			return nil
+		}
+	case !strings.HasPrefix(strings.TrimSpace(body), digestPinPrefix):
+		return nil
 	}
 	pinned, err := a.Client.IsPinned(ctx, a.Owner, a.Repo, n)
 	if err != nil {
-		return wrap(err)
+		d.digestPinFailed(n, err, "checking whether it's pinned failed")
+		return nil
 	}
 	note := ""
 	if !pinned {
@@ -680,24 +709,59 @@ func (d *Daemon) digestPin(ctx context.Context, n int, items []waitItem) error {
 			logr.Errorf("pinning %s/%s#%d, the digest, failed, so its body says so, and the next start tries again: %v", a.Owner, a.Repo, n, err)
 			note = digestPinNote(err)
 		case err != nil:
-			return wrap(err)
+			d.digestPinFailed(n, err, "pinning it failed")
+			return nil
 		}
 	}
 	if err := d.digestEdit(ctx, n, digestBody(note, items)); err != nil {
 		return err
 	}
-	g.pinned, g.note = n, note
+	g.pinned, g.pinFailed, g.note = n, 0, note
 	return nil
+}
+
+// digestPinFailed records that digest n's pin check or pin failed with
+// err, other than by GitHub's refusal, as what says: it's logged, and the
+// note names it (digestPinFailNote), for the rewrite to write and for
+// digestPin to try again on a pass that writes the body anyway.
+func (d *Daemon) digestPinFailed(n int, err error, what string) {
+	a, g := d.Step.Applier, &d.digest
+	logr.Errorf("pinning %s/%s#%d, the digest, failed, so its body says so, and a pass that changes it tries again: %s: %v",
+		a.Owner, a.Repo, n, what, err)
+	g.pinFailed, g.note = n, digestPinFailNote(err, what)
+}
+
+// digestPinFailNote is the pin note for a pin check or pin that failed
+// with err, other than by GitHub's refusal, as what says. It names the
+// HTTP status GitHub answered, if any, but not the rest of err, which may
+// name a URL or change from one try to the next: the log has it. So it's
+// all the App's text but for a number, and the same failure again leaves
+// the body as it is.
+func digestPinFailNote(err error, what string) string {
+	var er *gogithub.ErrorResponse
+	if errors.As(err, &er) && er.Response != nil {
+		what += fmt.Sprintf(" (HTTP %d)", er.Response.StatusCode)
+	}
+	return digestPinPrefix + " yet: " + what + ". I'll try again when the list changes, or pin it by hand."
 }
 
 // digestPinNote is the pin note naming GitHub's message in err, a pin's
 // error that wraps github.ErrGraphQL, or github.ErrNotPinned's text for one
 // that wraps that. GitHub wrote the message, not the App, so it's escaped
-// (SPEC §5.1), and kept to one code span.
+// (SPEC §5.1), and kept to one code span. For an HTTP 401 or 403, which
+// PinIssue takes as a refusal too (#226), it's the status and GitHub's
+// message from its answer, without the URL go-github's error names.
 func digestPinNote(err error) string {
 	msg := err.Error()
 	if _, after, ok := strings.Cut(msg, github.ErrGraphQL.Error()+": "); ok {
 		msg = after
+	}
+	var er *gogithub.ErrorResponse
+	if errors.As(err, &er) && er.Response != nil {
+		msg = fmt.Sprintf("HTTP %d", er.Response.StatusCode)
+		if er.Message != "" {
+			msg += ": " + er.Message
+		}
 	}
 	if errors.Is(err, github.ErrNotPinned) {
 		msg = github.ErrNotPinned.Error()

@@ -249,7 +249,7 @@ func TestResolveParentHoldKeepsChild(t *testing.T) {
 	}
 	resolveCheck(t, setup, 2, func(f *githubtest.Fake) issueWant {
 		return issueWant{[]string{"stage:held"}, []string{fmt.Sprintf("The discussion is resolved, but this issue stays on hold: "+
-			"a `/hold` on an issue above it, in comment %d, hasn't ended. `/resume` there, or here, ends that, and then it goes to `clarifying`."+
+			"a `/hold` on an issue above it, in comment %d on #1, hasn't ended. `/resume` there, or here, ends that, and then it goes to `clarifying`."+
 			"\n\ncc @owner\n\n<!-- issuedog:ended reason=discussion held=%d heldon=1 resolved=%d -->", hold, hold, resolveReactionAt(t, f, c))}}
 	})
 	f := run(t, setup, resolvePass(t, 2))

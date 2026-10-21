@@ -514,6 +514,7 @@ func TestTriageCheckLength(t *testing.T) {
 
 // Agent text in a flag is cleaned: its marker is escaped, its mention
 // defused and its task box escaped, so the flag's only marker is the App's.
+// The summary is escaped for the App's bold, so its box's "]" is too (#229).
 func TestTriageFlagCleansAgentText(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
@@ -529,7 +530,7 @@ func TestTriageFlagCleansAgentText(t *testing.T) {
 	if m := github.ParseMarkers(got[0]); !reflect.DeepEqual(m, want) {
 		t.Errorf("the flag's markers = %+v, want only %+v", m, want)
 	}
-	for _, s := range []string{"@​eve", "&lt;!-- issuedog:transition", `**1. \[ ] Do it &lt;b>now&lt;/b>**`} {
+	for _, s := range []string{"@​eve", "&lt;!-- issuedog:transition", `**1. \[ \] Do it &lt;b>now&lt;/b>**`} {
 		if !strings.Contains(got[0], s) {
 			t.Errorf("flag %q lacks %q", got[0], s)
 		}

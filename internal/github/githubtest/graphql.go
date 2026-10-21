@@ -81,7 +81,8 @@ func (f *Fake) HistoryQueries() int {
 // graphql answers internal/github's comments query for the fake's repo,
 // paging comments by 100 and, as its timelineItems, CommentDeletedEvents
 // by 100 (deletedPage), its history query (see history), its isPinned
-// query and its pinIssue mutation (see pinIssue). It refuses a query that
+// query and its pinIssue mutation (see pinIssue), each of which answers
+// an HTTP status alone under FailIsPinned or FailPinStatus. It refuses a query that
 // doesn't name every field in answered, or answeredHistory for a query of
 // nodes, answeredPinned for one of isPinned, or answeredPin for a mutation.
 // As on GitHub, a Bot's login has no "[bot]", IDs are BigInt strings, a
@@ -167,12 +168,19 @@ func (f *Fake) graphql(c *call) (int, any) {
 		errs = append(errs, notFound...)
 		return reply(data)
 	}
+	if named["mutation"] && f.pinStatus != 0 {
+		return f.pinStatus, message(http.StatusText(f.pinStatus))
+	}
+	if named["query.repository.issue.isPinned"] && f.pinnedFail != 0 {
+		return f.pinnedFail, message(http.StatusText(f.pinnedFail))
+	}
 	if named["mutation"] {
 		data, failed := f.pinIssue(req.Variables.ID)
 		errs = append(errs, failed...)
 		return reply(data)
 	}
-	if v.Number < 1 || v.Number > len(f.issues) || f.issues[v.Number-1].IsPullRequest() {
+	// A transferred issue isn't this repo's to answer for (transfer.go).
+	if v.Number < 1 || v.Number > len(f.issues) || f.issues[v.Number-1].IsPullRequest() || !f.issues[v.Number-1].listed() {
 		errs = append(errs, map[string]any{"type": "NOT_FOUND", "message": fmt.Sprintf("Could not resolve to an Issue with the number of %d.", v.Number)})
 		return reply(map[string]any{"repository": map[string]any{"issue": nil}})
 	}
@@ -244,14 +252,19 @@ func (f *Fake) HistoryCap(n int) {
 // per page, capped as HistoryCap says, with an issue body's text after each
 // edit as its diff. A cursor is the number of older
 // entries. As on GitHub, an unknown ID's node is null, with a NOT_FOUND
-// error whose path names it. A bad cursor is the only other error.
+// error whose path names it, as is a transferred issue's node and its
+// comments' (transfer.go). A bad cursor is the only other error.
 func (f *Fake) history(ids []string, cursor *string) ([]any, []map[string]any, string) {
 	histories, bodies := map[string][]lastEdit{}, map[string]bool{}
 	for _, is := range f.issues {
-		histories[issueNode(is.GetNumber())], bodies[issueNode(is.GetNumber())] = is.history, true
+		if is.listed() {
+			histories[issueNode(is.GetNumber())], bodies[issueNode(is.GetNumber())] = is.history, true
+		}
 	}
 	for _, c := range f.comments {
-		histories[commentNode(c.GetID())] = c.history
+		if f.issues[c.issue-1].listed() {
+			histories[commentNode(c.GetID())] = c.history
+		}
 	}
 	nodes, errs := []any{}, []map[string]any{}
 	for i, id := range ids {

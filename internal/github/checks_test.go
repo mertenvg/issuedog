@@ -59,7 +59,7 @@ func TestLabelExists(t *testing.T) {
 	}
 }
 
-// An org's issue types are listed with their enabled flags. A personal
+// An org's issue types are listed with their IDs and enabled flags. A personal
 // account, or an account that isn't the repo's owner, is no org, with no
 // error. Any other status is an error.
 func TestOrgIssueTypes(t *testing.T) {
@@ -72,7 +72,8 @@ func TestOrgIssueTypes(t *testing.T) {
 	}
 	f.SetOrgIssueTypes(githubtest.OrgIssueType{Name: "Bug"}, githubtest.OrgIssueType{Name: "Epic", Disabled: true},
 		githubtest.OrgIssueType{Name: "Task"})
-	want := []github.IssueTypeInfo{{Name: "Bug", Enabled: true}, {Name: "Epic"}, {Name: "Task", Enabled: true}}
+	want := []github.IssueTypeInfo{{Name: "Bug", ID: f.IssueTypeID("Bug"), Enabled: true}, {Name: "Epic", ID: f.IssueTypeID("Epic")},
+		{Name: "Task", ID: f.IssueTypeID("Task"), Enabled: true}}
 	if types, isOrg, err := c.OrgIssueTypes(ctx, "o"); err != nil || !isOrg || !reflect.DeepEqual(types, want) {
 		t.Errorf("OrgIssueTypes = %+v, %t, %v; want %+v, an org", types, isOrg, err, want)
 	}

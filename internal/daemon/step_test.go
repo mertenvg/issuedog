@@ -96,6 +96,14 @@ const unknownFrob = "unknown command `/frob`: the commands are " +
 
 const lost = "my reply saying why was lost"
 
+// ivWordingLostEdited is the reply posted again to a 👎'd comment, quoted,
+// edited after the 👎, whose reply was lost (#229).
+func ivWordingLostEdited(quote, id string) string {
+	return "> " + quote + "\n\nI didn't act on this comment, and my reply saying why was lost. " +
+		"It was edited after I rejected it, so I've ignored the edit. Post a new comment to try again." +
+		"\n\n<!-- issuedog:reply reason=rejected cmd=" + id + " -->"
+}
+
 // forged is an App comment's text as mallory rewrites it: under a copy of
 // the note MarkDirty would write, which it then leaves alone, so the marker
 // stays readable.
@@ -176,7 +184,8 @@ func TestStep(t *testing.T) {
 				f.AddReaction(1004, app, "-1")
 				f.EditComment(1004, "owner", "2b")
 			}),
-			comments: []string{rejected("2b", lost, "1004")}, downs: []string{"1a", "2b"}},
+			// Edited after its 👎, so the reply isn't worded from "2b" (#229).
+			comments: []string{ivWordingLostEdited("2b", "1004")}, downs: []string{"1a", "2b"}},
 		{name: "a valid command nothing handles waits",
 			setup: at(state.SpecReview, func(t testing.TB, f *githubtest.Fake) { post(t, f, 1002, "owner", "/revise shorter") })},
 		{name: "commands are applied oldest first, with their latest text, and once",

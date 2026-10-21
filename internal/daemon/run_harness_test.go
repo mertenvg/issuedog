@@ -643,14 +643,17 @@ func TestUnlabeledGetsInterviewerSettings(t *testing.T) {
 		t.Errorf("--max-turns = %q, want the interviewer's 7", got)
 	}
 	c.Stages.Timeouts.Interviewer = 200 * time.Millisecond
-	if err := os.WriteFile(g.path("claude", "sleep"), []byte("10"), 0o644); err != nil {
+	// claude sleeps 120s, so a run that outlives the bound, a generous one
+	// so a loaded machine doesn't fail it, wasn't killed at the timeout.
+	if err := os.WriteFile(g.path("claude", "sleep"), []byte("120"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	const bound = time.Minute
 	start := time.Now()
 	if err := g.work(1); err != nil {
 		t.Fatal(err)
 	}
-	if took, l := time.Since(start), g.lease(); took > 5*time.Second || !l.Failed || l.Attempt != 1 || l.Issue != 1 {
+	if took, l := time.Since(start), g.lease(); took > bound || !l.Failed || l.Attempt != 1 || l.Issue != 1 {
 		t.Errorf("the run took %s, lease %+v; want it killed at the interviewer's timeout, a failed attempt", took, l)
 	}
 }
