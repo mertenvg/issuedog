@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
@@ -202,6 +203,150 @@ func TestDigestRestartTouchedFailedVisit(t *testing.T) {
 	l.step("the restart's second pass", "POST /issues/3/comments", "POST /issues/3/labels", "DELETE /issues/3/labels/stage:held", discRunReact(r3),
 		"DELETE /issues/3/assignees")
 	l.quiet("#3 resumed")
+}
+
+// digestRestartTransitions is the bodies of issue n's App comments that
+// carry a transition marker whose fields hold fields.
+func digestRestartTransitions(f *githubtest.Fake, n int, fields string) []string {
+	var got []string
+	for _, c := range f.State().Issues[n-1].Comments {
+		if c.Author == app && strings.Contains(c.Body, "<!-- issuedog:transition ") && strings.Contains(c.Body, fields) {
+			got = append(got, c.Body)
+		}
+	}
+	return got
+}
+
+// The epic's /hold, then #3's own, both for a restart's first pass. The
+// epic's holds #3, before #3's turn, so #3 is read again then, and its
+// own /hold is handled on that snapshot, which shows it held: it writes no
+// marker, only its 👍 (6.4). Visited on the snapshot from before the
+// epic's /hold, #3 would look at ready, and get a second hold marker.
+func TestDigestRestartTouchedHolds(t *testing.T) {
+	t.Parallel()
+	f := discRunFamily(t)
+	l := newDiscRunLoop(t, f)
+	l.quiet("the family")
+	hold, own := f.AddComment(2, "owner", "/hold"), f.AddComment(3, "owner", "/hold")
+	l.start()
+	l.step("both /holds on a restart's first pass", "POST /issues/3/comments", "POST /issues/3/labels", "DELETE /issues/3/labels/stage:ready",
+		"POST /issues/4/comments", "POST /issues/4/labels", "DELETE /issues/4/labels/stage:ready",
+		"POST /issues/2/comments", "POST /issues/2/labels", "DELETE /issues/2/labels/stage:planned", discRunReact(hold), discRunReact(own))
+	if got := digestRestartTransitions(f, 3, "to=held"); len(got) != 1 || !strings.Contains(got[0], fmt.Sprintf("cmd=%d ", hold)) {
+		t.Errorf("#3's hold markers %q; want the epic's /hold's alone", got)
+	}
+	if got := ivLabels(f, 3); !slices.Equal(got, []string{"stage:held", "type:task"}) {
+		t.Errorf("#3: labels %q; want it held", got)
+	}
+	l.quiet("both held")
+	l.restart("both held")
+}
+
+// The epic held by its /hold, with mallory's comment holding #4 for
+// discussion too, so the digest lists #4's hold, on the epic's owner hold
+// too. Then the owner's /resume on the epic, and a later /hold on #3, both
+// for a restart's first pass. The /resume takes the epic and #3 back to
+// their stages, and ends its hold on #4, which stays held for discussion
+// alone, so its item no longer names an owner hold. #3, read again at its
+// turn, at ready, is held again by its own /hold, with one marker for it.
+// Visited on the snapshot from before the /resume, #3 would look held, and
+// its /hold would write no marker, so the /resume would leave it at ready.
+func TestDigestRestartTouchedResumeThenHold(t *testing.T) {
+	t.Parallel()
+	f := discRunFamily(t)
+	l := newDiscRunLoop(t, f)
+	l.quiet("the family")
+	hold := f.AddComment(2, "owner", "/hold")
+	l.step("the epic's /hold", "POST /issues/3/comments", "POST /issues/3/labels", "DELETE /issues/3/labels/stage:ready",
+		"POST /issues/4/comments", "POST /issues/4/labels", "DELETE /issues/4/labels/stage:ready",
+		"POST /issues/2/comments", "POST /issues/2/labels", "DELETE /issues/2/labels/stage:planned", discRunReact(hold))
+	m := f.AddComment(4, "mallory", "Wait.")
+	l.step("mallory's comment on #4", "POST /issues/1/comments", "PATCH /issues/1", "POST /issues/4/assignees")
+	if body := l.digest(); !strings.Contains(body, fmt.Sprintf("`mallory` posted comment %d", m)) || !strings.Contains(body, "It's on an owner hold too") {
+		t.Fatalf("digest %q; want #4's hold listed, on the owner hold too", body)
+	}
+	l.quiet("#4 held for discussion")
+	resume, own := f.AddComment(2, "owner", "/resume"), f.AddComment(3, "owner", "/hold")
+	l.start()
+	l.step("the /resume and #3's /hold on a restart's first pass", "POST /issues/3/comments", "POST /issues/3/labels", "DELETE /issues/3/labels/stage:held",
+		"POST /issues/4/comments", "POST /issues/2/comments", "POST /issues/2/labels", "DELETE /issues/2/labels/stage:held", discRunReact(resume),
+		"POST /issues/3/comments", "POST /issues/3/labels", "DELETE /issues/3/labels/stage:ready", discRunReact(own), "PATCH /issues/1")
+	if got := digestRestartTransitions(f, 3, fmt.Sprintf("cmd=%d ", own)); len(got) != 1 || !strings.Contains(got[0], "from=ready to=held ") {
+		t.Errorf("#3's markers for its own /hold %q; want one hold from ready", got)
+	}
+	for n, want := range map[int][]string{2: {"stage:planned", "type:epic"}, 3: {"stage:held", "type:task"}, 4: {"stage:held", "type:task"}} {
+		if got := ivLabels(f, n); !slices.Equal(got, want) {
+			t.Errorf("#%d: labels %q; want %q", n, got, want)
+		}
+	}
+	if body := l.digest(); !strings.Contains(body, "1 item waits on you.") || !strings.Contains(body, fmt.Sprintf("`mallory` posted comment %d", m)) ||
+		strings.Contains(body, "owner hold too") {
+		t.Errorf("digest %q; want #4's hold alone listed, with no owner hold", body)
+	}
+	l.quiet("#3 held by its own /hold")
+	l.restart("#3 held by its own /hold")
+}
+
+// An issue read again whose visit then fails is still one whose items
+// aren't cached. The epic's /resume, and #3's own /hold after it, which
+// #3, held already, answers with a 👍 alone, for a restart's first pass:
+// #3's visit, read again, fails at that 👍, so the digest drops #3's item
+// (#360). On the next pass, the epic's new /hold writes to #3 before its
+// turn again, so #3 is read again again, and visited: its 👍 is posted,
+// and its item is back.
+func TestDigestRestartTouchedFailedThenTouched(t *testing.T) {
+	t.Parallel()
+	f := discRunFamily(t)
+	l := newDiscRunLoop(t, f)
+	m := digestRestartHeld(t, l)
+	resume, own := f.AddComment(2, "owner", "/resume"), f.AddComment(3, "owner", "/hold")
+	l.start()
+	f.FailWrite(len(f.Writes()) + 7) // #3's 👍, after the epic's six
+	l.fail("the /resume and #3's /hold on a restart's first pass, #3's 👍 failing", []string{"step 1 on o/r#3"},
+		"POST /issues/3/comments", "POST /issues/4/comments", "POST /issues/2/comments", "POST /issues/2/labels", "DELETE /issues/2/labels/stage:held",
+		discRunReact(resume), discRunReact(own), "PATCH /issues/1")
+	f.FailWrite(0)
+	hold := f.AddComment(2, "owner", "/hold")
+	l.step("the epic's /hold, and #3 read again", "POST /issues/2/comments", "POST /issues/2/labels", "DELETE /issues/2/labels/stage:planned",
+		discRunReact(hold), discRunReact(own), "PATCH /issues/1")
+	if body := l.digest(); !strings.Contains(body, fmt.Sprintf("`mallory` posted comment %d", m)) {
+		t.Errorf("digest %q; want #3's hold listed again", body)
+	}
+	l.quiet("all held")
+}
+
+// A visit that waits for its next pass after its command wrote to an issue
+// holds the issue back too. The owner's label on #3, whose event GitHub
+// hasn't written yet, and the epic's /resume, for a restart's first pass:
+// the /resume's walk reaches #3, and checks its labels, which are held
+// back (ErrLabelsHeld), so the epic's visit waits, and #3 isn't read again.
+// Once the event is written, the next pass handles the /resume.
+func TestDigestRestartTouchedLabelsHeld(t *testing.T) {
+	t.Parallel()
+	f := discRunFamily(t)
+	l := newDiscRunLoop(t, f)
+	l.quiet("the family")
+	hold := f.AddComment(2, "owner", "/hold")
+	l.step("the epic's /hold", "POST /issues/3/comments", "POST /issues/3/labels", "DELETE /issues/3/labels/stage:ready",
+		"POST /issues/4/comments", "POST /issues/4/labels", "DELETE /issues/4/labels/stage:ready",
+		"POST /issues/2/comments", "POST /issues/2/labels", "DELETE /issues/2/labels/stage:planned", discRunReact(hold))
+	l.quiet("the family held")
+	f.LagEvents(5 * time.Second)
+	f.AddLabel(3, "owner", "priority:p1")
+	f.LagEvents(0)
+	resume := f.AddComment(2, "owner", "/resume")
+	l.start()
+	from := len(f.Requests())
+	l.step("the /resume on a restart's first pass")
+	// #3: the pass's read and the /resume's three, and no read again.
+	if got := digestRestartGets(f, from); got[3] != 4 {
+		t.Errorf("the restart's first pass read the issues %v times; want #3 four times", got)
+	}
+	f.Advance(10 * time.Second)
+	l.step("the /resume, once the event is written", "POST /issues/3/comments", "POST /issues/3/labels", "DELETE /issues/3/labels/stage:held",
+		"POST /issues/4/comments", "POST /issues/4/labels", "DELETE /issues/4/labels/stage:held",
+		"POST /issues/2/comments", "POST /issues/2/labels", "DELETE /issues/2/labels/stage:held", discRunReact(resume))
+	l.quiet("resumed")
 }
 
 // A crash at any write of TestDigestRestartTouchedOwnResume's restart's

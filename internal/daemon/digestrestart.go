@@ -25,10 +25,12 @@ import (
 // pass, as an issue a command wrote to after its visit is, which is what
 // a child numbered before its parent gets anyway. So the next pass's read
 // finds what this one did, mostly in 304s. The read again costs one
-// snapshot read on such a pass. A later pass's issue has items cached, or
-// was first listed after the start, so the digest never listed it, as a
-// child a plan just filed, so it's read no more often than before, and an
-// unchanged pass touches nothing.
+// snapshot read on such a pass. On a later pass, an issue has items
+// cached, or was first listed after the start, so the digest never listed
+// it, as a child a plan just filed, and it's read no more often than
+// before, but for one whose visits have failed since the start, and every
+// issue after digestDrop, whose poll lists every issue again, as a
+// start's first does. An unchanged pass touches nothing.
 //
 // A close the poll lists drops the issue's items too (Daemon.leave),
 // though the digest's body, as last written, lists them. So an issue the
