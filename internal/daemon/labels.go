@@ -135,8 +135,10 @@ var ErrLabelsHeld = errors.New("labels held back until their events explain them
 // (issueTypeRevertGuard): an untrusted change of it is reverted, and s.Type
 // set back with it, and a type no event explains yet is held back, then
 // left out, as such a label is: s takes the type that stands instead
-// (Snapshot.LeaveOutType), until the type is explained or reverted. dirty
-// is as for state.Derive.
+// (Snapshot.LeaveOutType), until the type is explained or reverted. A type
+// whose revert would set back one the org no longer lists is left out the
+// same way, and reported once as a typegone state error (typeGoneReport,
+// #409). dirty is as for state.Derive.
 //
 // A pipeline label that nothing on the timeline explains yet, whose events
 // may be late or which a repo label rename may have put on, is held back
@@ -205,6 +207,9 @@ func (a *Applier) checkLabels(ctx context.Context, s *github.Snapshot, trust git
 		// Nor on a type left out: until it's explained or reverted, the
 		// pass acts on the type that stands, as if the issue had it, and
 		// Iterate reads the issue again once it's due (unexplainedDue).
+		// One left out as the org no longer lists the type that stands
+		// waits for a trusted user's change, with its state error, below
+		// (typeGoneReport, #409).
 		s.LeaveOutType(*lo)
 	default:
 		s.RestoreType()
@@ -212,6 +217,9 @@ func (a *Applier) checkLabels(ctx context.Context, s *github.Snapshot, trust git
 	s.Closings = found.Closings
 	if len(held) > 0 {
 		return fmt.Errorf("labels of %s/%s#%d: %v: %w", a.Owner, a.Repo, s.Number, held, ErrLabelsHeld)
+	}
+	if err := a.typeGoneReport(ctx, s, dirty); err != nil {
+		return fmt.Errorf("labels of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
 	}
 	// A reopen of an issue with a closed stage is judged before the label
 	// rules put the closed stage back to the latest marker's (closing.go).

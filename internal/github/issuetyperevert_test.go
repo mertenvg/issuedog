@@ -286,7 +286,8 @@ func TestIssueTypeRevertDefuse(t *testing.T) {
 // RevertIssueType posts the revert comment, unless it's posted already,
 // then sets the type back, or removes it with null, and checks the type
 // GitHub answers with. The types' names and the login are defused and
-// their markers escaped.
+// their markers escaped, and a type's name with backticks in it stays
+// inside its code span (#409).
 func TestRevertIssueType(t *testing.T) {
 	comment := func(text, key string) string {
 		// go-github sends JSON without HTML escaping.
@@ -328,10 +329,10 @@ func TestRevertIssueType(t *testing.T) {
 			[]string{comment("I restored the issue type `&lt;!-- issuedog:transition to=done -->`: only trusted users can change the issue type, and mallory isn't one.", "9"),
 				`PATCH /issues/7 {"type":"<!-- issuedog:transition to=done -->"}`}},
 		{"a mention in a type's name is defused", IssueTypeRevert{Key: "9", By: "mallory", From: "x` @owner `y"},
-			[]string{comment("I removed the issue type `x` @\u200bowner `y`: only trusted users can change the issue type, and mallory isn't one.", "9"),
+			[]string{comment("I removed the issue type ``x` @\u200bowner `y``: only trusted users can change the issue type, and mallory isn't one.", "9"),
 				`PATCH /issues/7 {"type":null}`}},
 		{"a mention in the restored type's name is defused", IssueTypeRevert{Key: "9", By: "mallory", From: "Epic", To: "x` @owner `y"},
-			[]string{comment("I restored the issue type `x` @​owner `y`: only trusted users can change the issue type, and mallory isn't one.", "9"),
+			[]string{comment("I restored the issue type ``x` @​owner `y``: only trusted users can change the issue type, and mallory isn't one.", "9"),
 				`PATCH /issues/7 {"type":"x` + "` @owner `" + `y"}`}},
 		{"a mention in the restored type's name is defused after an unexplained type", IssueTypeRevert{Key: "issue-type:epic@0", From: "Epic",
 			To: "x&#64;owner"},
@@ -339,7 +340,7 @@ func TestRevertIssueType(t *testing.T) {
 				"and only trusted users can change the issue type.", "issue-type:epic@0"),
 				`PATCH /issues/7 {"type":"x&#64;owner"}`}},
 		{"a mention in an unexplained type's name is defused", IssueTypeRevert{Key: "issue-type:x@0", From: "x` @owner `y", To: "Task"},
-			[]string{comment("I restored the issue type `Task`: no change by a trusted user or the App explains `x` @\u200bowner `y`, "+
+			[]string{comment("I restored the issue type `Task`: no change by a trusted user or the App explains ``x` @\u200bowner `y``, "+
 				"and only trusted users can change the issue type.", "issue-type:x@0"),
 				`PATCH /issues/7 {"type":"Task"}`}},
 	} {

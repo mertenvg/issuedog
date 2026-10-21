@@ -24,6 +24,7 @@ type checkState struct {
 	lastRuleset   int64
 	installations []Installation // see SetInstallations
 	installsSet   bool           // SetInstallations was called, so installations replaces the default
+	typesRefused  int            // see TypeGoneRefuseList
 }
 
 // OrgIssueType is one of the org's issue types, for SetOrgIssueTypes: its
@@ -98,6 +99,15 @@ func (f *Fake) SetOrgIssueTypes(types ...OrgIssueType) {
 	}
 }
 
+// TypeGoneRefuseList makes GET /orgs/{org}/issue-types answer status, such
+// as a 403 for an App without the organization permission Issue Types
+// read, on every read until it's called with 0 (#409).
+func (f *Fake) TypeGoneRefuseList(status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.checks.typesRefused = status
+}
+
 // SetRequiredChecks sets the rulesets that target branch, by its exact
 // name, replacing any set before. Each gets a new ID. A branch with none
 // has no rules.
@@ -138,8 +148,12 @@ func (f *Fake) getLabel(c *call) (int, any) {
 // default every type the org has given an ID (IssueTypeID), in the order it
 // gave them, enabled, by the name it shows now (RenameOrgIssueType). It
 // answers a 404 for any account but the repo's owner, and for the owner
-// once SetPersonalAccount made it a personal account.
+// once SetPersonalAccount made it a personal account, and the status
+// TypeGoneRefuseList gave, if any, for every account.
 func (f *Fake) orgIssueTypes(c *call) (int, any) {
+	if f.checks.typesRefused != 0 {
+		return f.checks.typesRefused, message("Resource not accessible by integration")
+	}
 	owner, _, _ := strings.Cut(f.repo, "/")
 	if f.checks.personal || !strings.EqualFold(c.r.PathValue("org"), owner) {
 		return http.StatusNotFound, message("Not Found")
