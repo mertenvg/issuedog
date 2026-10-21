@@ -905,16 +905,27 @@ func (d *Daemon) digestCacheOf(n int) []waitItem {
 
 // digestDoneStands reports whether it, a finished story's item (#278),
 // stands on this pass: every child its record names is one the poll last
-// listed closed (Daemon.closedListed), and no open snapshot names the
-// story as its parent, such as an issue added below it by hand. It's
-// judged only from what the poll listed and the snapshots it read, and
-// makes no request: so a child filed this pass, which no poll listed yet,
-// or one last listed open, keeps it out. A child's close changes nothing
-// on the story, so the item is found on the story's last visit (waitFind)
-// and judged again here on each pass.
+// listed closed (Daemon.closedListed), whose close was judged and
+// accepted (closingSeen) with no judging left to do (closingDue), and no
+// open snapshot names the story as its parent, such as an issue added
+// below it by hand. It's judged only from what the poll listed and the
+// snapshots it read, and makes no request: so a child filed this pass,
+// which no poll listed yet, or one last listed open, keeps it out, and so
+// does one whose close may be untrusted, as while its event is late or
+// its closer can't be asked, till that close is judged, accepted or
+// reverted (SPEC §6.4). A close that's never judged keeps it out: for
+// good once it's forgotten as gone, and for a child with no stage label,
+// which closingList doesn't make due unless this daemon held it with one,
+// as when an untrusted user took the label off a child no visit has read
+// yet and closed it, till a closed stage added to it has its close judged
+// (SPEC §16). A child's close changes nothing on the story, so the item
+// is found on the story's last visit (waitFind) and judged again here on
+// each pass. An epic planned into stories closes by the same judgement
+// (epicClosePass, #251).
 func (d *Daemon) digestDoneStands(it waitItem) bool {
 	for _, c := range it.Children {
-		if !d.closedListed[c] {
+		_, judged := d.closingSeen[c]
+		if _, due := d.closingDue[c]; !d.closedListed[c] || !judged || due {
 			return false
 		}
 	}

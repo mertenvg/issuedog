@@ -181,8 +181,9 @@ func (m Move) checkPlanRev() error {
 // m.NoAck. Its writes are added to s. dirty is as for state.Derive.
 //
 // A move to closed is the only way the App closes an issue through the
-// table: a human task on /done (DoneCommand), and in S5 a dropped child,
-// as not planned. Its marker records m.StateReason as reason=; then, in
+// table: a human task on /done (DoneCommand), an epic planned into
+// stories once its children have closed (epicCloseOne, #251), and in S5
+// a dropped child, as not planned. Its marker records m.StateReason as reason=; then, in
 // place of the label writes, comes the 👍, and last the close with that
 // state_reason, unless the issue is closed already. The 👍 goes before the
 // close, as step 1 never visits a closed issue again to finish it. It
