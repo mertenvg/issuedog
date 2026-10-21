@@ -115,7 +115,12 @@ func (d *Daemon) digestHistoryHold(ctx context.Context, is *gogithub.Issue) {
 // every comment on a start, found it. It's logged as an error when posted,
 // and at debug level after, so a pass that finds it writes nothing. A failed
 // post is logged, and tried again on the next pass; one that finds is gone,
-// deleted or transferred, drops it, so a digest can be created.
+// deleted or transferred, drops it, so a digest can be created. GitHub
+// answers a POST about a transferred issue with a 301, which Go follows
+// with a GET of the comments in the issue's new repo: a post answered from
+// anywhere but this repo's path posted nothing, and is a transfer
+// (digestMoved), as for the digest's own comments (digestAnnounce). A held
+// issue has no snapshot, so transferUnlistedCheck never finds it moved.
 func (d *Daemon) digestHistoryReport(ctx context.Context, is *gogithub.Issue) {
 	a, g := d.Step.Applier, &d.digest
 	n := is.GetNumber()
@@ -132,8 +137,13 @@ func (d *Daemon) digestHistoryReport(ctx context.Context, is *gogithub.Issue) {
 		logr.Errorf("report %s/%s#%d's edit history that failed to read: %v", a.Owner, a.Repo, n, err)
 		return
 	}
-	s := &github.Snapshot{Number: n}
-	err = a.comment(ctx, s, join(github.Escape(digestHistoryText(h)), marker))
+	c, resp, err := a.Client.Issues.CreateComment(ctx, a.Owner, a.Repo, n, gogithub.IssueCommentRequest{Body: join(digestHistoryText(h), marker)})
+	if moved := digestMoved(a, resp, nil); moved != nil {
+		err = moved // a redirected POST, a GET of the comments, posted nothing, whether that decoded or not
+	}
+	if err != nil {
+		err = fmt.Errorf("comment on %s/%s#%d: %w", a.Owner, a.Repo, n, err)
+	}
 	switch {
 	case gone(err):
 		logr.Infof("%s/%s#%d, whose edit history failed to read, is gone, deleted or transferred, so it's held no more: %v", a.Owner, a.Repo, n, err)
@@ -143,7 +153,7 @@ func (d *Daemon) digestHistoryReport(ctx context.Context, is *gogithub.Issue) {
 	case err != nil:
 		logr.Errorf("report %s/%s#%d's edit history that failed to read, which is tried again next pass: %v", a.Owner, a.Repo, n, err)
 	default:
-		g.historyComment(s.Comments[len(s.Comments)-1].ID, n, []github.Marker{{Kind: "error", Fields: map[string]string{"kind": digestHistoryErrKind, "key": key}}})
+		g.historyComment(c.GetID(), n, []github.Marker{{Kind: "error", Fields: map[string]string{"kind": digestHistoryErrKind, "key": key}}})
 		logr.Errorf("state error: %s", desc)
 	}
 }
@@ -151,8 +161,9 @@ func (d *Daemon) digestHistoryReport(ctx context.Context, is *gogithub.Issue) {
 // digestHistoryText says that h's issue can't be judged the digest or not,
 // as its edit history failed to read on h.fails passes, so it's kept out
 // of the pipeline and no digest is created, and what ends that. The last
-// read's error is GitHub's text: it's fenced and escaped, and cut as an
-// attempt's cause is (lastFailure).
+// read's error is GitHub's text: it's fenced and escaped (ivFenced), and
+// cut as an attempt's cause is (lastFailure). The rest is the App's own,
+// with no marker, so it's escaped once, there.
 func digestHistoryText(h digestHistoryFail) string {
 	text := fmt.Sprintf("I can't tell whether this issue is the digest. It's mine, titled `%s`, and its body has no `origin` marker: "+
 		"it may be the digest with its identity marker taken out, or a task of mine that lost its `origin` and was renamed. "+

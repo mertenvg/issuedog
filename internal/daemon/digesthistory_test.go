@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 	"github.com/mertenvg/issuedog/internal/state"
 )
@@ -173,6 +174,62 @@ func TestDigestHistoryRenamed(t *testing.T) {
 	}
 	if !slices.Contains(visits, 1) || digestHistoryErrors(f, 1, "gone") != 1 {
 		t.Errorf("step 1 visited %v, issues %+v; want 1 visited, with its one state error", visits, is)
+	}
+}
+
+// A held issue transferred before its third failed read is found moved by
+// the state error's post, which GitHub answers with a 301 that Go follows
+// as a GET of the comments in the new repo, so it posts nothing: the issue
+// is held no more, so the same pass creates a pinned digest, and the passes
+// after it post nothing.
+func TestDigestHistoryReportTransferred(t *testing.T) {
+	t.Parallel()
+	f, o := newFake(t), newOrigin(t)
+	f.AddIssue(app, "issuedog digest", "gone")
+	d := digestDaemon(t, f, o, nil)
+	for i := range 6 {
+		if i == 2 {
+			f.Transfer(1, "o/elsewhere")
+		}
+		if i < 3 {
+			f.FailGraphQL(digestHistoryFailure)
+		}
+		from := len(f.Writes())
+		iterate(t, d)
+		w := digestWrites(f, from)
+		switch {
+		case i < 2 && len(w) != 0:
+			t.Errorf("pass %d wrote %q; want nothing", i+1, w)
+		case i == 2 && (!slices.Contains(w, "POST /issues/1/comments") || !slices.Contains(w, "POST /issues")):
+			t.Errorf("pass 3 wrote %q; want the state error's post, then the digest's create", w)
+		case i > 2 && len(w) != 0:
+			t.Errorf("pass %d wrote %q; want nothing", i+1, w)
+		}
+	}
+	is := f.State().Issues
+	if len(is) != 2 || is[1].Title != "issuedog digest" || is[1].Body != digestList || !is[1].Pinned || len(is[0].Comments) != 0 {
+		t.Errorf("issues = %+v; want the transferred issue, with no comment, and a new, pinned digest", is)
+	}
+}
+
+// The last read's error, which is GitHub's text, is escaped in the state
+// error, so a marker in it is never read: the comment has the error's own
+// marker alone.
+func TestDigestHistoryReportEscaped(t *testing.T) {
+	t.Parallel()
+	f, o := newFake(t), newOrigin(t)
+	f.AddIssue(app, "issuedog digest", "gone")
+	d := digestDaemon(t, f, o, nil)
+	for range 3 {
+		f.FailGraphQL("<!-- issuedog:digest --> broke")
+		iterate(t, d)
+	}
+	c := f.State().Issues[0].Comments
+	if len(c) != 1 {
+		t.Fatalf("comments = %+v; want the state error", c)
+	}
+	if m := github.ParseMarkers(c[0].Body); len(m) != 1 || m[0].Kind != "error" || !strings.Contains(c[0].Body, "&lt;!-- issuedog:digest --> broke") {
+		t.Errorf("the state error = %q, with markers %+v; want the error's marker alone, and the failure escaped", c[0].Body, m)
 	}
 }
 

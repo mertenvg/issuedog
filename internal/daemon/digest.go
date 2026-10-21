@@ -251,8 +251,10 @@ func (g *digestState) has(n int) bool {
 // So an App task whose body lost its origin and that was renamed is never
 // the digest, with or without a reposted origin, while a digest whose
 // marker was taken out is still found by its title. One query reads every
-// history needed, and an unchanged poll, which lists nothing, needs none.
-// A poll that fails before digestTake keeps what it held for the next one.
+// history needed, and an unchanged poll, which lists nothing new, needs
+// none while no issue is held (below): one it lists again, at the cursor,
+// was judged already. A poll that fails before digestTake keeps what it
+// held for the next one.
 //
 // A failed read is logged, and each issue it was for stays held, unjudged:
 // it's kept out of step 1 and Work (digestHistoryHold), and digestPass
