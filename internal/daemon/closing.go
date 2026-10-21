@@ -57,9 +57,11 @@ import (
 // again, so its close is reverted. A project's workflow's closer
 // (ProjectV2) is no merge either. Any other failure, a failed request, a
 // rate limit, an error on the repository, or one of another type or of
-// none under node (#204), is the pass's error, and the next pass asks
-// again, without bound: none of those says how the issue was closed, and a
-// merge reverted on a guess would reopen and hold a finished issue. The
+// none under node (#204), fails only that issue for the pass, its close's
+// judging (closingPass) or its step 1 (closingCounts), while other issues
+// carry on, and the next pass asks again, without bound: none of those
+// says how the issue was closed, and a merge reverted on a guess would
+// reopen and hold a finished issue. The
 // close's state reason is the issue's state_reason as listed, which is the
 // newest close's, and, for a close again after an untrusted reopen, the
 // ClosedEvent's stateReason of the close it undid, or the closed stage's
