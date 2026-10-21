@@ -391,8 +391,10 @@ func TestCheckPlanLinkLimits(t *testing.T) {
 // A file path is a word with a directory and an extension, outside a link.
 // A bare file name, a URL to a file, a link's destination and words with
 // a slash but no extension are none. Nor, so prose passes (#311), is a
-// word whose extension isn't lowercase letters, whose directory has no
-// letter, or whose every part is a capitalized name.
+// word whose extension doesn't start with a lowercase letter or is a
+// module's version, whose directory has no letter or is only versions, or
+// that is capitalized names ending in ".js" or ".io". Capitalized paths,
+// extensions with digits and directories named "x" or "v2" are paths.
 func TestPlanFilePath(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ text, want string }{
@@ -406,6 +408,17 @@ func TestPlanFilePath(t *testing.T) {
 		{"pkg/x.v2.go", "pkg/x.v2.go"},
 		{"src/components/Button.js", "src/components/Button.js"},
 		{"Sources/App/main.swift", "Sources/App/main.swift"},
+		{"Assets/Scripts/Player.cs", "Assets/Scripts/Player.cs"},
+		{"Controllers/HomeController.cs", "Controllers/HomeController.cs"},
+		{"MyApp/Views/HomeView.swift", "MyApp/Views/HomeView.swift"},
+		{"Sources/App/Main.swift", "Sources/App/Main.swift"},
+		{"Run scripts/install.ps1.", "scripts/install.ps1"},
+		{"media/intro.mp4", "media/intro.mp4"},
+		{"dist/x.tar.bz2", "dist/x.tar.bz2"},
+		{"rtl/top.v", "rtl/top.v"},
+		{"x/main.go", "x/main.go"},
+		{"v2/main.go", "v2/main.go"},
+		{"api/v1.2/routes.go", "api/v1.2/routes.go"},
 		{"/etc/hosts.conf", "/etc/hosts.conf"},
 		{"React/Next.js, and web/app.tsx", "web/app.tsx"},
 		{"Supports TLS 1.2/1.3.", ""},
@@ -414,6 +427,13 @@ func TestPlanFilePath(t *testing.T) {
 		{"Node 18/20.x", ""},
 		{"Speaks HTTP/1.1.", ""},
 		{"An Express/Node.js or React/Next.js app.", ""},
+		{"A Vue/Nuxt.js or Express/Socket.io app.", ""},
+		{"Python 2.x/3.x", ""},
+		{"Vue 2.x/3.x", ""},
+		{"Node 18.x/20.x", ""},
+		{"Webpack 4.x/5.x.", ""},
+		{"Node v18.x/v20.x", ""},
+		{"Go 1.x/2.x/3.x", ""},
 		{"Parses with gopkg.in/yaml.v3.", ""},
 		{"A net/http.Handler, as internal/appkey.Load reads it.", ""},
 		{"The [settings file](deploy/production.env) ...", ""},
@@ -440,7 +460,8 @@ func TestCheckPlanSlashedProse(t *testing.T) {
 	out := plannerOutput(t, "story-plan")
 	out.Plan.Why += " It speaks HTTP/1.1, over TLS 1.2/1.3."
 	out.Plan.Summary += "\n\nIt builds on Go 1.22/1.23 and Python 3.11/3.12."
-	out.Plan.Items[0].Outcome += " Express/Node.js and React/Next.js apps get it too."
+	out.Plan.Items[0].Outcome += " Express/Node.js, React/Next.js and Express/Socket.io apps get it too."
+	out.Plan.Order += ", on Node 18.x/20.x"
 	out.Plan.Items[1].Criteria[0] += " The config parses with gopkg.in/yaml.v3."
 	if err := checkPlan(out, storyFacts()); err != nil {
 		t.Errorf("a plan of prose with slashes: %v", err)

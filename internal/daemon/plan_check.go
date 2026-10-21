@@ -518,30 +518,46 @@ var (
 	// digits, "_", ".", "-" and "/". planFilePath tells a file path from
 	// prose by its parts.
 	planPathWordRE = regexp.MustCompile(`[\w./-]*/[\w./-]*`)
-	// planPathExtRE is a file name's extension: lowercase letters, as a
-	// file's almost always is. A version, such as the "3" of "1.3" or the
-	// "v3" of "yaml.v3", and a Go name, such as "http.Handler", have none.
-	planPathExtRE = regexp.MustCompile(`\.[a-z]+$`)
+	// planPathExtRE is a file name's extension: a lowercase letter, then
+	// lowercase letters and digits, as a file's almost always is, such as
+	// "go", "ps1" or "mp4". A version, such as the "3" of "1.3", and a Go
+	// name, such as "http.Handler", have none.
+	planPathExtRE = regexp.MustCompile(`\.[a-z][a-z0-9]*$`)
+	// planPathModuleRE is a Go module's major version, such as the "v3" of
+	// "gopkg.in/yaml.v3", which looks like an extension but isn't one.
+	planPathModuleRE = regexp.MustCompile(`\.v[0-9]+$`)
 	// planPathLetterRE is a letter, which a file path's directory has: the
 	// "1.2" of "1.2/1.3", or the "2.7" of "2.7/3.x", is a version.
 	planPathLetterRE = regexp.MustCompile(`[A-Za-z]`)
-	// planPathNamesRE is a word whose every part starts with a capital,
-	// such as "Express/Node.js" or "React/Next.js": names, not a path.
-	planPathNamesRE = regexp.MustCompile(`^[A-Z][\w.-]*(?:/[A-Z][\w.-]*)+$`)
+	// planPathVersionRE is a directory made only of versions with a dot,
+	// such as the "2.x" of "2.x/3.x" or the "v18.x" of "v18.x/v20.x", whose
+	// letters don't count. A directory "x" or "v2" isn't one.
+	planPathVersionRE = regexp.MustCompile(`^v?[0-9]+(?:\.(?:[0-9]+|x))+(?:/v?[0-9]+(?:\.(?:[0-9]+|x))+)*$`)
+	// planPathNamesRE is a word of capitalized names ending in a framework's
+	// suffix, ".js" or ".io", such as "Express/Node.js" or
+	// "Express/Socket.io": names, not a path. "Assets/Scripts/Player.cs"
+	// is a path.
+	planPathNamesRE = regexp.MustCompile(`^[A-Z][\w.-]*(?:/[A-Z][\w.-]*)+\.(?:js|io)$`)
 )
 
 // planFilePath is the first file path in text outside a link, or "". A
 // file path, as plan #247's assumption 8 defines one, is a word with a
 // directory and a file extension. A bare file name, with no directory,
-// isn't one. So that prose with a slash passes (#311), the extension is
-// lowercase letters, the directory has a letter, and the word's parts
-// aren't all capitalized names. A dot that ends a sentence isn't the
-// word's.
+// isn't one. So that prose with a slash passes (#311):
+//   - the extension starts with a lowercase letter, and isn't a module's
+//     version;
+//   - the directory has a letter, outside a directory of versions;
+//   - the word isn't capitalized names ending in ".js" or ".io".
+//
+// A dot that ends a sentence isn't the word's.
 func planFilePath(text string) string {
 	for _, w := range planPathWordRE.FindAllString(planLinkRE.ReplaceAllString(text, " "), -1) {
 		w = strings.TrimRight(w, ".")
 		i := strings.LastIndex(w, "/")
-		if planPathExtRE.MatchString(w[i+1:]) && planPathLetterRE.MatchString(w[:i]) && !planPathNamesRE.MatchString(w) {
+		dir, file := w[:i], w[i+1:]
+		if planPathExtRE.MatchString(file) && !planPathModuleRE.MatchString(file) &&
+			planPathLetterRE.MatchString(dir) && !planPathVersionRE.MatchString(dir) &&
+			!planPathNamesRE.MatchString(w) {
 			return w
 		}
 	}
