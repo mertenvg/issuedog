@@ -153,8 +153,9 @@ type Reaction struct {
 // ErrPullRequest is wrapped by Snapshot's error for a pull request.
 var ErrPullRequest = errors.New("a pull request, not an issue")
 
-// ErrTransferred is wrapped by Snapshot's error for an issue moved to
-// another repo.
+// ErrTransferred is wrapped by the error of Snapshot, of the assignee
+// writes (assignAnswer) and of PinIssue, for an issue moved to another
+// repo. The daemon's digest edits wrap it too (digestMoved).
 var ErrTransferred = errors.New("transferred")
 
 // Snapshot reads one issue, not a pull request: its title, author, labels,

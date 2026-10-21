@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	gogithub "github.com/google/go-github/v92/github"
 )
@@ -70,11 +71,16 @@ type pinIssueResponse struct {
 //
 // The mutation takes the issue's node ID, which it reads first with a REST
 // GET of the issue. That GET is conditional (etagCache), so a repeat costs
-// no rate limit, where a GraphQL lookup would cost a point each time.
+// no rate limit, where a GraphQL lookup would cost a point each time. A
+// GET that finds the issue moved to another repo pins nothing, and its
+// error wraps ErrTransferred (pinMoved, #413).
 func (c *Client) PinIssue(ctx context.Context, owner, repo string, number int) error {
 	wrap := func(err error) error { return fmt.Errorf("pin %s/%s#%d: %w", owner, repo, number, err) }
-	is, _, err := c.Issues.Get(ctx, owner, repo, number)
+	is, resp, err := c.Issues.Get(ctx, owner, repo, number)
 	if err != nil {
+		return wrap(err)
+	}
+	if err := pinMoved(owner, repo, resp, is); err != nil {
 		return wrap(err)
 	}
 	if is.GetNodeID() == "" {
@@ -97,6 +103,26 @@ func (c *Client) PinIssue(ctx context.Context, owner, repo string, number int) e
 	}
 	if p := out.Data.PinIssue; p == nil || p.Issue == nil || !p.Issue.IsPinned {
 		return wrap(ErrNotPinned)
+	}
+	return nil
+}
+
+// pinMoved returns an error that wraps ErrTransferred if resp, GitHub's
+// answer to PinIssue's GET of the issue, or is, the issue it read, shows
+// the issue is no longer in owner's repo, and nil otherwise. GitHub
+// answers a GET of a transferred issue with a 301, which the client
+// follows (sameHost) to the issue in its new repo. Node IDs are global, so
+// pinIssue would pin it there, using one of that repo's three pins. As the
+// daemon's digestMoved does, it takes an answer from anywhere but this
+// repo's path as moved, and, as Snapshot does, an issue whose
+// repository_url names another repo.
+func pinMoved(owner, repo string, resp *gogithub.Response, is *gogithub.Issue) error {
+	if resp != nil && resp.Response != nil && resp.Request != nil && resp.Request.URL != nil &&
+		!strings.Contains(strings.ToLower(resp.Request.URL.Path), strings.ToLower("/repos/"+owner+"/"+repo+"/")) {
+		return fmt.Errorf("%w: answered by %s %s", ErrTransferred, resp.Request.Method, resp.Request.URL.Path)
+	}
+	if u := is.GetRepositoryURL(); u != "" && !strings.HasSuffix(strings.ToLower(u), strings.ToLower("/repos/"+owner+"/"+repo)) {
+		return fmt.Errorf("%w to %s", ErrTransferred, u)
 	}
 	return nil
 }

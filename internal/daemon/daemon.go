@@ -578,8 +578,9 @@ func parentOf(u string) int {
 //
 // GitHub answers a transferred issue with a 301, which our client follows
 // to the same host (github's sameHost), with a GET. So a transfer shows as
-// the moved issue, which Snapshot, assignAnswer and digestMoved turn into
-// github.ErrTransferred, or as the 404 of a path with no GET there. No
+// the moved issue, which Snapshot, assignAnswer, digestMoved and
+// github's PinIssue turn into github.ErrTransferred, or as the 404 of a
+// path with no GET there. No
 // go-github RedirectionError reaches here: go-github returns one only from
 // its calls that don't follow redirects (archive and log downloads), which
 // we don't use, or for a 3xx with no Location, which net/http doesn't
