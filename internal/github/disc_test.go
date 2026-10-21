@@ -54,6 +54,11 @@ func TestDiscSnapshotAndRenames(t *testing.T) {
 		!found.DiscRenames[0].At.Before(found.DiscRenames[1].At) {
 		t.Errorf("renames %+v; want eve's, then mallory's", found.DiscRenames)
 	}
+	// Each names the title it replaced too, for the planner's title as of
+	// the last trusted change (#312).
+	if len(found.DiscRenames) == 2 && (found.DiscRenames[0].From != "Title" || found.DiscRenames[1].From != "Title 2") {
+		t.Errorf("renames %+v; want them from Title, then Title 2", found.DiscRenames)
+	}
 	if len(found.Events) != 0 || len(f.Writes()) != 0 {
 		t.Errorf("events %+v, writes %+v; want none for renames", found.Events, f.Writes())
 	}
