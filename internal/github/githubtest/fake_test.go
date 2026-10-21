@@ -77,7 +77,7 @@ func TestFailWrite(t *testing.T) {
 }
 
 // moveStage posts a marker, moves the stage label from intake to clarifying
-// and 👍s the command, in the order of plan #5 assumption 4. Unless check is
+// and 👍s the command, in the write order of SPEC §5.2. Unless check is
 // set, it posts the marker without looking for one first.
 func moveStage(t *testing.T, check bool) func(*Fake) error {
 	const marker = "<!-- issuedog:transition to=clarifying cmd=1001 -->"

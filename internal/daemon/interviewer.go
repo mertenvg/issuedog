@@ -21,8 +21,7 @@ import (
 // prompt and its schema.
 const interviewerAgent = "interviewer"
 
-// Interviewer is the Stage at clarifying (plan #6, assumptions 4, 11 and
-// 12). It asks question rounds on an epic, a story with no parent or an
+// Interviewer is the Stage at clarifying (SPEC §9.1, §12). It asks question rounds on an epic, a story with no parent or an
 // untyped issue, until it can write the spec. Its Daemon gives the config,
 // trust and clone of the moment.
 type Interviewer struct {
@@ -47,9 +46,9 @@ func (*Interviewer) Schema() []byte {
 
 // Pending reports whether the interviewer has work on the issue: it's at
 // clarifying, it's an issue the interviewer runs on there (ivRunsOn): an
-// epic, a story with no parent or untyped (plan #6, Q1a), or, at the
+// epic, a story with no parent or untyped (SPEC §7.2), or, at the
 // clarifying after a hold from planning, plan-review or planned, a story
-// with a parent (#195's Q1a), and either
+// with a parent (SPEC §9.1), and either
 //   - the latest transition entered clarifying by anything but an
 //     interviewer run, such as intake, triage, /revise, an override or
 //     the end of a discussion hold (#189): it runs at once, with or
@@ -66,7 +65,7 @@ func (*Interviewer) Schema() []byte {
 //
 // A bug or task, which the interviewer typed or the owner filed, waits at
 // clarifying with no runs until phase 3, at the clarifying after a hold
-// too, until a code owner sets its stage by hand (Q3b). So does a story
+// too, until a code owner sets its stage by hand (SPEC §7.2). So does a story
 // with a parent anywhere but the clarifying after a hold from a stage of
 // its plan.
 func (*Interviewer) Pending(in Input) bool {
@@ -92,16 +91,16 @@ func interviewerClass(it state.Item) bool {
 // hold it's at (ivHoldOrigin), or "": on an issue of its class
 // (interviewerClass), and after a hold from planning, plan-review or
 // planned (ivPlanOrigin), on a story with a parent too (ivParentStory,
-// #195's Q1a), whose outcomes are only questions, unchanged and plan.
+// SPEC §9.1), whose outcomes are only questions, unchanged and plan.
 // Anywhere else a story with a parent waits at clarifying until a code
-// owner sets its stage by hand, as Q3b on #87 decided.
+// owner sets its stage by hand, as SPEC §7.2 says.
 func ivRunsOn(it state.Item, origin state.Stage) bool {
 	return interviewerClass(it) || ivPlanOrigin(origin) && ivParentStory(it)
 }
 
 // ivParentStory reports whether it is a story with a parent (ClassStory):
 // its body is its item of its parent's plan, so the interviewer never
-// rewrites it, or types it (#195's Q1a).
+// rewrites it, or types it (SPEC §9.1).
 func ivParentStory(it state.Item) bool {
 	class, err := state.ClassOf(it)
 	return err == nil && class == state.ClassStory
@@ -121,8 +120,8 @@ func ivLatestMove(is state.Issue) github.Marker {
 }
 
 // ivRoundMove reports whether m is an interviewer run's move, keyed by
-// run=, from clarifying to clarifying: a question round, or (plan #6, Q1a)
-// the typing of a bug or task. Nothing else moves an issue from clarifying
+// run=, from clarifying to clarifying: a question round, or (SPEC §9.1's
+// typed) the typing of a bug or task. Nothing else moves an issue from clarifying
 // to clarifying: an override to the stage it's at writes no marker.
 func ivRoundMove(m github.Marker) bool {
 	return roundMoveAt(m, state.Clarifying)
@@ -138,7 +137,7 @@ func planRoundMove(m github.Marker) bool {
 // roundMove reports whether m is a stage run's move from a stage to itself
 // that may carry a question round: the interviewer's (ivRoundMove) or the
 // planner's (planRoundMove). Their rounds share one numbering per issue
-// (#247's assumption 3).
+// (SPEC §9.1).
 func roundMove(m github.Marker) bool {
 	return ivRoundMove(m) || planRoundMove(m)
 }
@@ -151,7 +150,7 @@ func roundMoveAt(m github.Marker, stage state.Stage) bool {
 }
 
 // interviewerRound is a question round a stage run asked, as its
-// transition records it (plan #6, assumption 8): round=<Number> and
+// transition records it (SPEC §9.1): round=<Number> and
 // questions=<Questions>, in comment Comment. Comments above Bound
 // (state.RoundBound) came after it, so they answer it.
 type interviewerRound struct {
@@ -205,7 +204,7 @@ func questionRounds(s *github.Snapshot, appSlug string, dirty func(int64) bool, 
 // nextRound is the number of the next question round on an issue whose
 // rounds, of every stage (allRounds), are rounds: one more than the
 // highest, so after interviewer rounds 1 and 2 the planner asks round 3,
-// and the interviewer round after that is 4 (#247's assumption 3). With no
+// and the interviewer round after that is 4 (SPEC §9.1). With no
 // rounds, it's 1.
 func nextRound(rounds []interviewerRound) int {
 	n := 0
@@ -227,8 +226,7 @@ func ivRoundOf(rounds []interviewerRound, id int64) int {
 	return n
 }
 
-// Context returns the interviewer's context files (plan #6, assumptions 11
-// and 12), each comment in them fenced under a heading the daemon writes,
+// Context returns the interviewer's context files (SPEC §12), each comment in them fenced under a heading the daemon writes,
 // with the text the App didn't write escaped (SPEC §5.1):
 //   - issue.md: the number, title, type or "none", and the body. A dirty
 //     body is left out, and so is a title or body an untrusted author's
@@ -254,8 +252,8 @@ func ivRoundOf(rounds []interviewerRound, id int64) int {
 //     comment the discussion's owner input approved isn't in it.
 //   - system.md: the preamble, with the outcomes the run may return
 //     (ivOutcomes), then .issuedog/prompts/interviewer.md from main or the
-//     shipped default (agent.Prompt). On a story with a parent (#195's
-//     Q1a), its typing line says to leave the type out (ivParentTyping).
+//     shipped default (agent.Prompt). On a story with a parent (SPEC
+//     §9.1), its typing line says to leave the type out (ivParentTyping).
 //   - prompt.md: the task, naming in.ContextDir.
 //
 // It only reads: the prompt from the clone, trust, and, at most once, the
@@ -347,7 +345,7 @@ func (iv *Interviewer) Context(ctx context.Context, in Input) (map[string][]byte
 }
 
 // typing returns the preamble's line on whether the interviewer may set
-// s's type (plan #6, assumption 13), and whether it may: only on a repo
+// s's type (SPEC §4), and whether it may: only on a repo
 // that types issues by label (types: labels), and there only on an untyped
 // issue, or one each of whose type:* labels stands as the App's add, as the
 // timeline shows. The App's restore of a change someone untrusted reverted
@@ -466,7 +464,7 @@ func ivAdmitted(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt, tim
 }
 
 // interviewerPreamble is the start of system.md, which no prompt on main
-// can remove (plan #6, assumption 12): the trust rules, the output
+// can remove (SPEC §12): the trust rules, the output
 // contract, and this repo's and this issue's limits: maxQuestions
 // (loop.max_questions_per_round), the rounds asked so far, the logins a
 // decision may name, the typing line, and the outcomes the run may return,
@@ -549,7 +547,7 @@ func interviewerPreamble(maxQuestions int, rounds, planned []interviewerRound, l
 	}, "\n\n")
 }
 
-// ivParentTyping is the typing line on a story with a parent (#195's Q1a):
+// ivParentTyping is the typing line on a story with a parent (SPEC §9.1):
 // its parent's plan gave it its type, which the interviewer never changes.
 const ivParentTyping = "This story has a parent, whose plan gave it its type, so leave `type` out."
 
@@ -569,7 +567,7 @@ type ivAllowed struct {
 // checkInterview and ivMoveFits hold its output to them:
 //   - questions, always;
 //   - spec, and typed if it may set the type, except on a story with a
-//     parent (#195's Q1a);
+//     parent (SPEC §9.1);
 //   - unchanged, after a hold from a stage other than clarifying (#189);
 //   - plan, after a hold from planning, plan-review or planned, on an epic
 //     or a story (#294).

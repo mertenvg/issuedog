@@ -17,7 +17,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// This file is plan #249's T7 (#279): a whole run against the fakes, from
+// This file is #249's whole run (#279): a run against the fakes, from
 // an epic's plan to its stories, a story's plan to its tasks, and the
 // story finished once its tasks close. The stages are registered as
 // registerStages registers them, step 1 is wired as main's newStep wires

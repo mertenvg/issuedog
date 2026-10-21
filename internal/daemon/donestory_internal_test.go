@@ -15,8 +15,8 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// A finished story in the digest and in assignment (#278, plan #249's
-// T6): what waitFind finds on a story at planned, how it ranks against
+// A finished story in the digest and in assignment (#278, SPEC §9.4):
+// what waitFind finds on a story at planned, how it ranks against
 // the other kinds, how the digest and assignment judge it against what
 // the poll listed, and how the digest renders it.
 
@@ -336,7 +336,7 @@ func TestPollClosedListed(t *testing.T) {
 	}
 }
 
-// Q3a's order of kinds puts a finished story after every other kind,
+// SPEC §9.4's order of kinds puts a finished story after every other kind,
 // a flag and a human task included, and a kind not mapped after it.
 func TestWaitDoneRank(t *testing.T) {
 	t.Parallel()
@@ -383,9 +383,9 @@ func doneRankSnaps() map[int]*github.Snapshot {
 	return snaps
 }
 
-// A finished story ranks against the other kinds by Q3a, after a flag and
-// before a kind not mapped, and any order of the same items ranks the
-// same. Only the unblock count ranks one higher, which the digest never
+// A finished story ranks against the other kinds by SPEC §9.4's order, after
+// a flag and before a kind not mapped, and any order of the same items ranks
+// the same. Only the unblock count ranks one higher, which the digest never
 // shows, as an open issue below a story keeps it out (digestDoneStands).
 func TestWaitDoneRankGolden(t *testing.T) {
 	t.Parallel()

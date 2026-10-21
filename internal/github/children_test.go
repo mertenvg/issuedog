@@ -221,9 +221,9 @@ func childMarker(id string) string { return "<!-- issuedog:origin plan=#1 rev=1 
 // childrenPass creates the parent #1's children T1 and T2, typed Task on a
 // repo with issue types, links each under #1 in that order, and makes T2
 // blocked by T1, reading before each write: the App's issues with their
-// markers, #1's sub-issues, and T2's blockers. It's the order of writes S3
-// makes, cut down to this package's calls. writes limits it to those
-// writes, as "create", "link" and "block".
+// markers, #1's sub-issues, and T2's blockers. It's the order of writes
+// creating the children makes (SPEC §5.2), cut down to this package's calls.
+// writes limits it to those writes, as "create", "link" and "block".
 func childrenPass(t *testing.T, typed bool, writes ...string) func(*githubtest.Fake) error {
 	does := map[string]bool{}
 	for _, w := range writes {
@@ -444,9 +444,9 @@ func TestRemoveBlockedBy(t *testing.T) {
 	}
 }
 
-// unlinkPass removes every dependency link to or from issue dropped,
-// reading before each write, as S5 does for a dropped child: the issues it
-// blocks (Blocking), then the issues blocking it (BlockedBy).
+// unlinkPass removes every dependency link to or from issue dropped, reading
+// before each write, as a revision does for a dropped child (SPEC §5.2): the
+// issues it blocks (Blocking), then the issues blocking it (BlockedBy).
 func unlinkPass(t *testing.T, dropped int) func(*githubtest.Fake) error {
 	return func(f *githubtest.Fake) error {
 		ctx, c := context.Background(), f.Client(t)

@@ -8,7 +8,7 @@ import (
 )
 
 // An App comment deleted after the latest revision's comment was posted
-// hides it, as a dirty one does, whoever deleted it (#87's assumption 11),
+// hides it, as a dirty one does, whoever deleted it (SPEC §5.1, §7.4),
 // and so does a deleted comment whose author GitHub doesn't name. One
 // deleted at or before that time, or anyone else's, doesn't.
 func TestDeletedHidesRevision(t *testing.T) {

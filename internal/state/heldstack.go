@@ -7,7 +7,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/github"
 )
 
-// HeldStack is what holds a held issue (SPEC §6.4, plan #87 rev 2, Q2b).
+// HeldStack is what holds a held issue (SPEC §6.4): holds stack.
 // The first hold wins: it records where the issue goes back to. A /hold or
 // a discussion hold on an issue that's held already writes no marker. Only
 // a hold set by hand on a held issue does: a held → held transition marker
@@ -20,8 +20,8 @@ type HeldStack struct {
 	// /resume restores the issue to, and where it was before its first
 	// discussion hold. Origin is "" if the first hold has none.
 	At, Origin Stage
-	// Seen is the round bound from before the first hold (#87's assumption
-	// 7): the hold's seen, or for a hold written without one, the bound the
+	// Seen is the round bound from before the first hold (SPEC §5, §6.4):
+	// the hold's seen, or for a hold written without one, the bound the
 	// transition before it set (RoundBound). Every move into, within or out
 	// of held carries it as seen, so a comment posted while held is input
 	// in the stage the issue lands in, and the round the hold came in goes
@@ -39,8 +39,8 @@ type HeldStack struct {
 // held → held marker adds its hold to h. One with no hold before it, as when
 // the first hold's comment is dirty, starts h afresh too.
 //
-// A held → held marker with no reason is no hold of its own (#195's
-// assumption 6, T7): the parent's newly approved revision changed the
+// A held → held marker with no reason is no hold of its own (SPEC §5,
+// §6.4): the parent's newly approved revision changed the
 // held issue, so the stage it would have gone to becomes its At and
 // Origin, which /resume and the interviewer's unchanged take it to. It
 // sets those and adds nothing to Holds. With no hold before it, as when
@@ -91,7 +91,8 @@ func HeldStackFields(fields map[string]string, bound int64) map[string]string {
 
 // heldStackThrough reports whether m, a transition after last, both setting
 // the round bound (RoundBound), leaves a round that last began as it was, so
-// a reader of last's round looks through m (#83's note): a move into held,
+// a reader of last's round looks through m, as a hold keeps the round it
+// came in (SPEC §5): a move into held,
 // or one out of held back to last's stage that carries the bound from
 // before the hold (HeldStack.Seen). A move out of held from before #87, with
 // no seen, began a new round.

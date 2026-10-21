@@ -39,7 +39,8 @@ func factsFor(name string) planFacts {
 	return storyFacts()
 }
 
-// T4's golden epic and story plans pass, and so does its question round.
+// internal/agent's golden epic and story plans pass, and so does its
+// question round.
 // So do a story plan for an epic, a story without a parent, and a plan
 // that skips review.
 func TestCheckPlanGolden(t *testing.T) {
@@ -152,7 +153,7 @@ func TestCheckPlanRules(t *testing.T) {
 		{"no scope", "story-plan", ruleScope, "T1 has no scope", func(o *planOutput, _ *planFacts) { item(o, 0).Scope = "" }},
 		{"scope in another case", "story-plan", ruleScope, `T1's scope "Booking"`, func(o *planOutput, _ *planFacts) { item(o, 0).Scope = "Booking" }},
 
-		// max-tasks: a hard limit (#247's Q2a)
+		// max-tasks: a hard limit (SPEC §11.3)
 		{"over max tasks", "story-plan", ruleMaxTasks, "3 tasks, over plan.max_tasks of 2", func(_ *planOutput, f *planFacts) { f.MaxTasks = 2 }},
 
 		// depends-on and cycle

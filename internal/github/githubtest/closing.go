@@ -47,7 +47,7 @@ func (f *Fake) CloseBy(number int, login string) int64 {
 }
 
 // CloseAs is CloseBy with a state_reason, such as "not_planned" or
-// "duplicate", which the issue and its ClosedEvent carry (T6).
+// "duplicate", which the issue and its ClosedEvent carry (SPEC §6.4).
 func (f *Fake) CloseAs(number int, login, reason string) int64 {
 	f.t.Helper()
 	f.mu.Lock()

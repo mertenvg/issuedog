@@ -12,7 +12,7 @@ import (
 )
 
 // Closing is one closed or reopened event on an issue's timeline (SPEC
-// §6.4, §7.2, plan #87 rev 2, T6). The daemon judges an issue's newest one:
+// §6.4, §7.2). The daemon judges an issue's newest one:
 // who closed it and how, or who reopened it.
 //
 // As GitHub's REST timeline gives a close (checked live on this repo, #190's
@@ -44,7 +44,7 @@ func closingOf(e *issueTypeRevertEvent) (Closing, bool) {
 }
 
 // ClosingTimeline reads an issue's whole timeline once, for a closed
-// issue's close (T6): it returns the timeline, for the label rules'
+// issue's close (SPEC §6.4): it returns the timeline, for the label rules'
 // judgement of a closed stage's label (StandingLabelChange), and its
 // closed and reopened events, oldest first.
 func (c *Client) ClosingTimeline(ctx context.Context, owner, repo string, number int) ([]*gogithub.Timeline, []Closing, error) {

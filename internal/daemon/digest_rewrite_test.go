@@ -15,7 +15,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
 
-// The digest's rewrite and its announcements (plan #7, T8, #160).
+// The digest's rewrite and its announcements (SPEC §9.4, #160).
 
 // digestNotifyOrigin is newOrigin with notify set to owner, on main.
 func digestNotifyOrigin(t testing.TB) *origin {
@@ -108,7 +108,7 @@ func TestDigestRewriteNewError(t *testing.T) {
 }
 
 // An answered round gives a body edit and no comment. So does a new round,
-// as the round's own comment mentions the owner already (Q2a), and it's
+// as the round's own comment mentions the owner already (SPEC §9.4), and it's
 // never announced however many passes it stays new.
 func TestDigestRewriteRound(t *testing.T) {
 	t.Parallel()
@@ -136,8 +136,9 @@ func TestDigestRewriteRound(t *testing.T) {
 	}
 }
 
-// Two new items in one pass give one comment that announces both (Q1a).
-// A round new in the same pass is listed, and not announced (Q2a).
+// Two new items in one pass give one comment that announces both (SPEC
+// §9.4: one comment per pass). A round new in the same pass is listed, and
+// not announced, as its own comment mentions the owner (SPEC §9.4).
 func TestDigestRewriteTwoNew(t *testing.T) {
 	t.Parallel()
 	f := digestPinned(t)
@@ -525,7 +526,7 @@ func TestDigestRewriteTransferred(t *testing.T) {
 	}
 }
 
-// The digest lists items in Q3a's order, which waitRank gives: an issue
+// The digest lists items in SPEC §9.4's order, which waitRank gives: an issue
 // with an open sub-issue first, though it's newer, with its count.
 func TestDigestRewriteRanked(t *testing.T) {
 	t.Parallel()
@@ -597,7 +598,7 @@ func TestDigestRewriteCache(t *testing.T) {
 	if got := digestWrites(f, from); len(got) != 0 || f.State().Issues[0].Body != listed {
 		t.Errorf("writes %q after the failed read; want none, and the item kept", got)
 	}
-	f.CloseBy(n, "owner") // the owner's close stands, so it gets its closed stage (T6)
+	f.CloseBy(n, "owner") // the owner's close stands, so it gets its closed stage (#190)
 	if got := digestPass(t, f, d); !reflect.DeepEqual(got, []string{fmt.Sprintf("POST /issues/%d/labels", n),
 		fmt.Sprintf("DELETE /issues/%d/labels/stage:ready", n), "PATCH /issues/1"}) || f.State().Issues[0].Body != digestList {
 		t.Errorf("writes %q, body %q once it closed; want the edit that lists nothing", got, f.State().Issues[0].Body)

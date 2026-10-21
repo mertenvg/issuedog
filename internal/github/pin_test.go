@@ -95,7 +95,7 @@ func TestCreateAndReopenIssue(t *testing.T) {
 
 // digestPass finds the App's issue with the digest marker, creating it if
 // there is none, reopens it if it's closed, and pins it unless it's pinned:
-// the writes T7's digest makes, each checked before it's made.
+// the writes the digest makes (SPEC §9.4), each checked before it's made.
 func digestPass(t *testing.T) func(*githubtest.Fake) error {
 	return func(f *githubtest.Fake) error {
 		ctx, c := context.Background(), f.Client(t)

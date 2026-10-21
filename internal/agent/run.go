@@ -159,7 +159,7 @@ func (r *Runner) sysProcAttr() *syscall.SysProcAttr {
 }
 
 // SysProcAttr starts a process in its own process group as cred, with no
-// AmbientCaps, so it starts with no capabilities (plan rev 2 on #3).
+// AmbientCaps, so it starts with no capabilities (SPEC §3).
 func SysProcAttr(cred *syscall.Credential) *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{Setpgid: true, Credential: cred}
 }

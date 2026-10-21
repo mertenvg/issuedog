@@ -10,7 +10,7 @@ import (
 
 // The commands that would move the issue wait while it's held, or at the
 // clarifying after a hold, whose latest transition carries an origin
-// (#87's assumption 8). /resume, and the commands that move nothing,
+// (SPEC §6.4). /resume, and the commands that move nothing,
 // never wait, nor does anything at any other stage, or at a clarifying
 // reached otherwise.
 func TestCommandWaits(t *testing.T) {
@@ -156,7 +156,7 @@ func TestCommandSetting(t *testing.T) {
 }
 
 // At planning, the comment whose revision request sent the plan back, from
-// plan-review, is the notes (plan #248, T3), as a spec's request is at
+// plan-review, is the notes (SPEC §7.4), as a spec's request is at
 // clarifying. A hold at planning keeps them once the issue is back at
 // planning, as at clarifying.
 func TestNotesAtPlanning(t *testing.T) {
@@ -197,7 +197,7 @@ func TestNotesAtPlanning(t *testing.T) {
 
 // At planning after the plan was sent back, the request is the first of
 // Inputs, a /revise though it may be, then what came after it, and so after
-// a hold at planning too, with what came while held (plan #248, T3).
+// a hold at planning too, with what came while held (SPEC §9.2, §6.4).
 func TestInputsAtPlanning(t *testing.T) {
 	t.Parallel()
 	const (

@@ -185,9 +185,9 @@ func TestInterviewerPending(t *testing.T) {
 			f.EditComment(f.AddComment(n, "owner", "1a"), "mallory", "1b")
 			return n
 		}, false},
-		// T5 (#189): the interviewer runs at once at the clarifying after a
+		// #189: the interviewer runs at once at the clarifying after a
 		// discussion hold, with answers or without, on the classes it runs
-		// on, but no other (Q3b).
+		// on, but no other (SPEC §7.2).
 		{"at the clarifying after a hold", entered("epic", false, "from=held to=clarifying at=spec-review origin=spec-review event=h9 seen=7"), true},
 		{"at the clarifying after a hold, with a trusted comment", func(f *githubtest.Fake) int {
 			n, _ := ivFiled(f, "story", false, "from=held to=clarifying at=spec-review origin=spec-review cmd=9 seen=7")
@@ -195,7 +195,7 @@ func TestInterviewerPending(t *testing.T) {
 			return n
 		}, true},
 		{"a task at the clarifying after a hold", entered("task", false, "from=held to=clarifying at=ready origin=ready event=h9 seen=7"), false},
-		// #195's Q1a: a story with a parent gets a run at the clarifying
+		// SPEC §9.1: a story with a parent gets a run at the clarifying
 		// after a hold from a stage of its plan, and only there.
 		{"a story with a parent at the clarifying after a hold from planning", entered("story", true, "from=held to=clarifying at=planning origin=planning event=h9 seen=7"), true},
 		{"a story with a parent at the clarifying after a hold from plan-review", entered("story", true, "from=held to=clarifying at=plan-review origin=plan-review event=h9 seen=7"), true},

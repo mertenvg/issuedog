@@ -59,16 +59,16 @@ var (
 var commands = map[string][]Stage{
 	"approve": {SpecReview, PlanReview}, "revise": {SpecReview, PlanReview}, "done": {NeedsHuman},
 	"hold": nil, "resume": nil, "priority": nil, "model": nil, "effort": nil,
-	// A code owner's answer to a flag, or a way past triage (plan #6, Q2a
-	// and Q6a): /track admits the issue, and /ignore leaves it to people.
+	// A code owner's answer to a flag, or a way past triage (SPEC §6.2,
+	// §9.2): /track admits the issue, and /ignore leaves it to people.
 	"track": {Intake}, "ignore": {Intake},
 }
 
-// waits are the commands that would move the issue (#87's assumption 8,
-// SPEC §6.4). Posted while the issue is held, they wait (Waits). /resume
-// isn't one: it applies at once, and so do /hold, which moves only an
-// issue that isn't held, and the commands that set a label. A 👍 on a
-// revision waits too, as only an issue at spec-review reads it.
+// waits are the commands that would move the issue (SPEC §6.4). Posted while
+// the issue is held, they wait (Waits). /resume isn't one: it applies at
+// once, and so do /hold, which moves only an issue that isn't held, and the
+// commands that set a label. A 👍 on a revision waits too, as only an issue at
+// spec-review reads it.
 var waits = []string{"approve", "revise", "done", "track", "ignore"}
 
 // Waits reports whether c waits on an issue in state is: it would move the
@@ -78,7 +78,7 @@ var waits = []string{"approve", "revise", "done", "track", "ignore"}
 // a revision's hash (SPEC §7.4). One posted before the hold waits too, as
 // step 1 holds the issue before it handles commands. A command the
 // interviewer handled at the clarifying after a hold is named by its
-// marker's cmd (T5, #189), so it's processed, and never reaches this.
+// marker's cmd (#189), so it's processed, and never reaches this.
 func (c Command) Waits(is Issue) bool {
 	return slices.Contains(waits, c.Name) && (is.Stage == Held || is.AfterHold())
 }
@@ -86,8 +86,8 @@ func (c Command) Waits(is Issue) bool {
 // AfterHold reports whether is is at the clarifying after a hold (SPEC
 // §6.4): its latest transition, the one that put it at clarifying, carries
 // an origin, an open stage other than held. The move out of the hold
-// carries it, and so does every marker written at that clarifying (#87's
-// assumption 9), so it holds until the issue moves on. A move to
+// carries it, and so does every marker written at that clarifying (SPEC
+// §5), so it holds until the issue moves on. A move to
 // clarifying for any other reason, such as /revise, carries none.
 func (is Issue) AfterHold() bool {
 	if is.Stage != Clarifying {
@@ -142,7 +142,7 @@ func (c Command) Check(stage Stage) error {
 
 // Setting returns the value a /model or /effort command sets, and whether it
 // sets it for the verifier's runs: "/model verifier opus" sets opus for them,
-// and "/model opus" for the others (plan #93, assumption 4). "verifier" is
+// and "/model opus" for the others (SPEC §9.2). "verifier" is
 // matched in any case. For an argument of any other shape, which Check
 // rejects, value is "".
 func (c Command) Setting() (value string, verifier bool) {
@@ -165,11 +165,11 @@ func (c Command) setting() bool {
 // Inputs are s's input to the next stage run, oldest first: comments that
 // counts accepts as trusted input, posted above is.Round, that aren't
 // commands, and that no cmd or reply marker names. At clarifying, those are
-// this round's answers (plan #5, amended assumption 5), after the revision
+// this round's answers (SPEC §9.2), after the revision
 // request that sent the spec back, if one did, as the notes (SPEC §7.4). At
 // planning, they are comments posted after the approval, or after the
 // revision request that sent the plan back, if one did, as the notes, first
-// (plan #248, T3), and the answers to the planner's round. A hold keeps the
+// (SPEC §7.4), and the answers to the planner's round. A hold keeps the
 // round it came in (HeldStack.Seen), so after one they include what was
 // posted while the issue was held, and the notes (Notes). It's only right
 // after a successful daemon Step.Run on s, which posts a lost reply again:
@@ -188,15 +188,15 @@ func (is Issue) Inputs(s *github.Snapshot, counts func(github.Comment) bool) []g
 	return in
 }
 
-// Notes returns the ID of the comment whose revision request sent the spec
-// or the plan back, if the latest transition did so, keyed by the comment:
-// from spec-review to clarifying, read at clarifying, or from plan-review to
-// planning, read at planning (plan #248, T3). It looks through a hold at
-// that stage (#83's note): through the move into held, any held → held
-// marker, and the move back to the stage that keeps the round
-// (heldStackThrough). A reply marker naming the comment, as for an edit
-// made after it was used, drops it. Otherwise, or while the issue is at
-// any other stage, as while held, it returns 0.
+// Notes returns the ID of the comment whose revision request sent the spec or
+// the plan back, if the latest transition did so, keyed by the comment: from
+// spec-review to clarifying, read at clarifying, or from plan-review to
+// planning, read at planning (SPEC §7.4). It looks through a hold at that
+// stage, which keeps the round (SPEC §5): through the move into held, any
+// held → held marker, and the move back to the stage that keeps the round
+// (heldStackThrough). A reply marker naming the comment, as for an edit made
+// after it was used, drops it. Otherwise, or while the issue is at any other
+// stage, as while held, it returns 0.
 func (is Issue) Notes() int64 {
 	var last github.Marker
 	for _, m := range is.Markers {

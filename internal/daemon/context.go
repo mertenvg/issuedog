@@ -16,7 +16,7 @@ import (
 )
 
 // This file is the context-file code a stage that runs an agent on an
-// issue's conversation shares (T3 of #247): the issue's header and body
+// issue's conversation shares (#254): the issue's header and body
 // (issue.md), its title, body and comments sorted into the conversation
 // and untrusted input (conversation.md and untrusted.md), and the input
 // sections (input.md). What's a stage's own, such as its round and

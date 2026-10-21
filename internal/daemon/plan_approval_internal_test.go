@@ -42,7 +42,7 @@ func approvedPlanSnap(t *testing.T, to state.Stage, data string) *github.Snapsho
 // move into planned approved, from plan-review or from planning, and
 // reports false with no approved comment, or with no data in it. Data
 // that won't read back is an error that names the revision and the
-// comment (#248's T1).
+// comment (SPEC §7.4).
 func TestApprovedPlanData(t *testing.T) {
 	t.Parallel()
 	p := goldenPlan(t, "story-plan")

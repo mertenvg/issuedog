@@ -72,7 +72,7 @@ func TestHeldStack(t *testing.T) {
 		{"a held → held marker after a dirty first hold starts the stack", heldStackSnap(toReady, "from=ready to=held at=ready reason=owner cmd=5",
 			"from=held to=held at=ready reason=owner by=owner event=6 seen=1"), dirtyIDs(2),
 			heldStackWant{At: Ready, Seen: 1, Keys: []string{"6"}}},
-		// #195's T7: a held child its parent's revision changed.
+		// A held child its parent's revision changed (SPEC §6.4).
 		{"a changed child's held → held, with no reason, sets at and origin, and isn't a hold", heldStackSnap(toReady,
 			"from=ready to=held at=ready origin=ready reason=discussion event=3 seen=1",
 			"from=held to=held at=spec-review origin=intake reason=owner by=owner event=4 seen=1",
@@ -108,7 +108,7 @@ func TestHeldStackFields(t *testing.T) {
 	}
 }
 
-// #83's note and #80's note 2: a hold at clarifying keeps the round. A
+// A hold at clarifying keeps the round (SPEC §5, §9.2). A
 // revision request's notes, and comments posted while held, are input
 // after the hold.
 func TestInputsAcrossAHold(t *testing.T) {

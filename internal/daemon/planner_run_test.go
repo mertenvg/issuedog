@@ -21,7 +21,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// This file is #247's T9 (#260): whole runs of the planner against the
+// This file is #260: whole runs of the planner against the
 // fakes, on the rig of the interviewer's whole run (interviewer_run_test.go):
 // the real Interviewer at clarifying and the real Planner at planning, as
 // registerStages registers them, triage as the Unlabeled stage, step 1
@@ -35,8 +35,8 @@ import (
 // false, so a story's plan skips review, and the planner's model is
 // sonnet, while the interviewer has none.
 //
-// The planner's outputs are internal/agent's golden planner outputs (T4),
-// and its plan comments are checked against T5's golden files in
+// The planner's outputs are internal/agent's golden planner outputs,
+// and its plan comments are checked against renderPlan's golden files in
 // testdata/plan.
 
 // planRunConfig is .issuedog/config.yml on main for the planner's whole run.
@@ -89,7 +89,7 @@ func (p *planRun) start(t *testing.T, f *githubtest.Fake) {
 	// Run IDs go on across a restart, as the daemon's random ones never
 	// repeat: run<k> is the fake claude's run k.
 	g.r.NewID = func() string { return "run" + strconv.Itoa(g.runs()+1) }
-	// As registerStages registers them (#247's T8).
+	// As registerStages registers them.
 	g.r.Stages = map[state.Stage]daemon.Stage{
 		state.Clarifying: &daemon.Interviewer{Daemon: g.d},
 		state.Planning:   &daemon.Planner{Daemon: g.d},
@@ -179,7 +179,7 @@ func (p *planRun) plannerFlags(k int) {
 }
 
 // planComment checks that issue n's newest comment is a plan comment by
-// the App: golden, T5's testdata/plan/<golden>.md with #<from> as #n, then
+// the App: golden, renderPlan's testdata/plan/<golden>.md with #<from> as #n, then
 // the transition marker want, the plan-data marker and the plan revision
 // marker rev 1, last, whose hash is PlanHash's of the comment and which
 // LatestRevision reads as the latest plan revision, matching. Its data
@@ -329,7 +329,7 @@ func recordStands(t *testing.T, f *githubtest.Fake, step string, from, parent in
 	}
 }
 
-// planRunStories are the children of the golden epic plan (T4's
+// planRunStories are the children of the golden epic plan (internal/agent's
 // epic-plan.json) under an epic at p1, on a repo that types by label: its
 // three stories, each at planning, S2 at the epic's priority, as it names
 // none, and each with the model:* and effort:* labels of its item's model
@@ -340,7 +340,7 @@ var planRunStories = []wantChild{
 	{"S3", "S3. Expired quotes in the monthly report", "", []string{"effort:medium", "priority:p2", "stage:planning", "type:story"}, state.Planning},
 }
 
-// planRunTasks are the children of the golden story plan (T4's
+// planRunTasks are the children of the golden story plan (internal/agent's
 // story-plan.json) under a story with no priority, on a repo that types by
 // label: T1 and T2 at ready, T1 with its item's sonnet and medium as its
 // model:* and effort:* labels (#344), T2 at its own p1, and T3, a human

@@ -10,7 +10,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
 
-// Hold items (#192) once T4 (#188) resolves triggers: through Iterate with
+// Hold items (#192) once #188 resolves triggers: through Iterate with
 // the digest, assignment and the reaction trigger that ends a discussion
 // hold (ResolveByReaction) on, and owner to notify. #1 is the pinned
 // digest, and #2 the owner's issue at ready.
@@ -71,7 +71,7 @@ func TestHoldItemGoneAfterThumbsUp(t *testing.T) {
 // assignment on, though step 1, the reaction trigger and the hold item
 // each look for its triggers (discFind), and read the reactions of the
 // comments that may resolve them: #2 is held for discussion, under the
-// owner's /hold that writes no marker (Q2b), with mallory's comment the
+// owner's /hold that writes no marker (SPEC §6.4), with mallory's comment the
 // owner 👍'd, her open comment, and her rename, with its notice. The item
 // lists the open comment and the rename, and names the owner hold.
 func TestHoldItemResolvedUnchangedPass(t *testing.T) {
@@ -99,7 +99,7 @@ func TestHoldItemResolvedUnchangedPass(t *testing.T) {
 }
 
 // A /hold on the issue that writes no marker, as on an issue held for
-// discussion already (Q2b), is named on the hold item as an owner hold;
+// discussion already (SPEC §6.4), is named on the hold item as an owner hold;
 // once the issue's own /resume ends it, while a trigger after the /resume
 // keeps it held, it's no longer named.
 func TestHoldItemOwnHoldEndedByResume(t *testing.T) {

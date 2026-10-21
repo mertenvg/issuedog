@@ -168,7 +168,7 @@ func TestRenderQuestionsHostile(t *testing.T) {
 }
 
 // The spec has the §11.1 sections in order, plain criteria and the
-// Decisions lines of assumption 10.
+// Decisions lines §11.1 lists.
 func TestRenderSpec(t *testing.T) {
 	t.Parallel()
 	out := agentOutput(t, "spec")

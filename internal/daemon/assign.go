@@ -14,7 +14,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/github"
 )
 
-// Assignment (SPEC §9.6; plan #87, assumption 13, T7 #191) assigns every
+// Assignment (SPEC §9.6, #191) assigns every
 // user in notify to a pipeline issue while something on it waits on the
 // owner, and nobody otherwise. It takes the items from the digest's own
 // list (Daemon.digestCache), which Iterate fills whether or not the digest

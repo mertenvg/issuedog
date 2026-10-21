@@ -14,11 +14,11 @@ import (
 )
 
 // This file applies an approved revision's changed items to their
-// children (#195's T7, #296; SPEC §6.4): each is rewritten in place from
+// children (#296; SPEC §6.4): each is rewritten in place from
 // the revision and sent back to its first stage. Kept items get no write
 // at all, and new ones are filed as any child is (childWrite). Dropped
-// items and the changed children's links to their siblings are T8's
-// (#297, children_dropped.go), which follow these writes, and the
+// items and the changed children's links to their siblings are handled
+// in children_dropped.go (#297), which follows these writes, and the
 // revision's record follows them all (childrenRecord).
 
 // childrenChanged rewrites the child of each of specs, the changed items
@@ -28,7 +28,7 @@ import (
 // "Why it blocks" names (childSpec.bodyOf). plan is the plan comment,
 // which the move links to and whose run= names the rewrite (childPlanRun),
 // and key the parent's move into planned, event=p<its comment ID>, which
-// keys each move as S3 keys a child's first move. A changed item whose
+// keys each move as a child's first move is keyed (SPEC §5.2). A changed item whose
 // child isn't found, as when its body lost its origin to an edit that the
 // App hasn't reposted yet, is logged and skipped, and a later pass tries
 // again.

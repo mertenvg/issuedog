@@ -16,9 +16,9 @@ const (
 	planTasks   = "tasks"
 )
 
-// The kinds of a human task's "Done when" check (#224's Q2.7), one set of
+// The kinds of a human task's "Done when" check (SPEC §11.3), one set of
 // names everywhere: the planner's schema, the plan data, and the checks
-// S4 runs.
+// the daemon runs on a human task (SPEC §9.3).
 const (
 	planCheckLabel        = "label"        // a label exists
 	planCheckIssueType    = "issue-type"   // an issue type exists

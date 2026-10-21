@@ -322,7 +322,7 @@ func TestCheckLabels(t *testing.T) {
 			labels: []string{"stage:ready"}},
 		// Only the App's own move cut short is finished by the close: a
 		// stage label added after the move to closed, away from it, is a
-		// disagreement, reported once, and closes nothing (T5).
+		// disagreement, reported once, and closes nothing (SPEC §5.1).
 		{name: "a stage label added after a move to closed is a disagreement, reported, and closes nothing",
 			setup: atReady(func(t testing.TB, f *githubtest.Fake) {
 				f.AddComment(1, app, "<!-- issuedog:transition from=ready to=closed reason=completed run=b -->")

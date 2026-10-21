@@ -10,7 +10,8 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// deletedProbe is #87's note 3: revision 1 of "body" with the owner's 👍
+// deletedProbe is the case where deleting the App's newer revision comments
+// brings back an older 👍 (SPEC §7.4): revision 1 of "body" with the owner's 👍
 // (1002), revision 2 of "body v2" (1003), and revision 3 of "body" again
 // (1004), which mallory and then the owner delete, so the latest revision
 // left is revision 1, whose hash the body has again. Then it runs more.
@@ -28,7 +29,7 @@ func deletedProbe(more func(t testing.TB, f *githubtest.Fake)) func(testing.TB) 
 }
 
 // An App comment deleted after the latest revision hides it, as a dirty
-// one does (#87's assumption 11): the old 👍 approves nothing, and a fresh
+// one does (SPEC §5.1, §7.4): the old 👍 approves nothing, and a fresh
 // revision is posted, after which a 👍 approves again. Who deleted it
 // doesn't matter, and nothing is held. A deletion of anyone else's comment,
 // or of an App comment before the revision was posted, hides nothing.

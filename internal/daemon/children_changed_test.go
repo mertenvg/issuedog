@@ -21,7 +21,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// An approved revision's changed children (#195's T7, #296): each is
+// An approved revision's changed children (SPEC §6.4, #296): each is
 // rewritten in place from the revision, its labels set to the item's, and
 // sent back to its first stage, or kept held with that stage as its
 // hold's at and origin. Kept children get no write.
@@ -91,14 +91,14 @@ type changedIDs struct {
 }
 
 // changedStory is revStory brought back to planning by the owner, with its
-// children as S3 left them, each with its first move, keyed by revision
-// 1's approval: T2's child, picked up and at in-progress, with a priority
-// set by hand and the model revision 1 gave it, and T3's, the human task,
-// at needs-human, with human=1, linked now. If held, owner's /hold holds
-// T2's child from in-progress, and T3's from needs-human; r.hold is the
-// latter /hold. Then edit, if set, changes the children, and
-// changedStoryRevision is posted as plan revision 2 at plan-review, with
-// the owner's 👍 on it, and the writes forgotten.
+// children as creating them left them (SPEC §5.2), each with its first
+// move, keyed by revision 1's approval: T2's child, picked up and at
+// in-progress, with a priority set by hand and the model revision 1 gave
+// it, and T3's, the human task, at needs-human, with human=1, linked now.
+// If held, owner's /hold holds T2's child from in-progress, and T3's from
+// needs-human; r.hold is the latter /hold. Then edit, if set, changes the
+// children, and changedStoryRevision is posted as plan revision 2 at
+// plan-review, with the owner's 👍 on it, and the writes forgotten.
 func changedStory(t testing.TB, f *githubtest.Fake, held bool, edit func(*githubtest.Fake, changedIDs)) changedIDs {
 	t.Helper()
 	return changedStoryWith(t, f, held, edit, changedPlanData(t, changedStoryRevision(t)))
@@ -129,7 +129,7 @@ func changedStoryWith(t testing.TB, f *githubtest.Fake, held bool, edit func(*gi
 		hold(r.t2, "in-progress")
 	}
 	f.EditBody(r.t3, app, "The human task.\n\n<!-- issuedog:origin plan=#1 rev=1 item=T3 human=1 -->")
-	f.SetParent(r.t3, r.n) // S3 links each child in the pass that files it
+	f.SetParent(r.t3, r.n) // creation links each child in the pass that files it
 	first(r.t3, "needs-human")
 	if held {
 		hold(r.t3, "needs-human")

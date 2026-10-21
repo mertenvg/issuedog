@@ -105,7 +105,7 @@ func decodeInterview(raw json.RawMessage) (interviewOutput, error) {
 type interviewFacts struct {
 	Issue        int
 	MaxQuestions int  // loop.max_questions_per_round
-	MayType      bool // the interviewer may set the type (plan for #6, assumption 13)
+	MayType      bool // the interviewer may set the type (SPEC §4)
 	Untyped      bool // the issue has no type, so a spec must set one
 	// Rounds is the question count of each round so far: Rounds[0] is
 	// round 1's. A round is asked as round len(Rounds)+1.
@@ -122,8 +122,8 @@ type interviewFacts struct {
 	Origin state.Stage
 	// Class is the issue's class (state.ClassOf), or 0 if it has none the
 	// table knows. Only an epic or a story may get plan, and a story with
-	// a parent (ClassStory) gets no spec and no typed outcome (#195's
-	// Q1a): its body is its parent's plan item.
+	// a parent (ClassStory) gets no spec and no typed outcome (SPEC §4,
+	// §9.1): its body is its parent's plan item.
 	Class state.Class
 	// Options is the option count of each question asked whose round
 	// comment reads back (ivWordingOptions), so a decision's letter must
@@ -171,8 +171,8 @@ const (
 	textRoom = 1024
 )
 
-// checkInterview checks out against f after the schema (plan for #6,
-// assumptions 6, 7 and 10). Its error joins a *ruleError for every rule
+// checkInterview checks out against f after the schema (SPEC §9.1's
+// Checks, and §11.1's Decisions rules). Its error joins a *ruleError for every rule
 // broken. Nothing may be written from an output that fails.
 func checkInterview(out interviewOutput, f interviewFacts) error {
 	var errs []error
@@ -421,7 +421,7 @@ func (q questionID) String() string { return fmt.Sprintf("Q%d.%d", q.round, q.n)
 // renderQuestions renders a question round of out, as round round on issue
 // (SPEC §9.1): the type line first when out sets a type, then the
 // questions with the recommended option first, then the cc line for
-// notify (plan for #6, assumption 14). A typed output renders as the type
+// notify (SPEC §9). A typed output renders as the type
 // line and the cc line. A question's text goes inside the App's bold, so
 // it's escaped for it first (ivWordingStrong).
 func renderQuestions(out interviewOutput, issue, round int, notify []string) string {
@@ -581,7 +581,7 @@ var (
 
 // defuse puts a zero-width space after each "@", or HTML entity for one,
 // that isn't followed by a space or the end of text, so agent text can't
-// mention anyone (plan for #6, assumption 14).
+// mention anyone (SPEC §9).
 func defuse(text string) string {
 	parts := strings.Split(atEntityRE.ReplaceAllString(text, "@"), "@")
 	for i := 1; i < len(parts); i++ {

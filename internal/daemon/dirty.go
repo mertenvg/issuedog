@@ -56,8 +56,8 @@ func contents(s *github.Snapshot) []content {
 // made it (state.Sanctioned), and for the body only the history after the
 // App's last full rewrite counts (state.Rewrote), with the App as its
 // author (state.AuthorEditWriter), so an untrusted issue author's own edit
-// after a rewrite makes the body dirty (#87, Q4a). It reads histories only
-// where the snapshot can't decide, all in one query:
+// after a rewrite makes the body dirty (#87, SPEC §5.1). It reads histories
+// only where the snapshot can't decide, all in one query:
 //   - Content last edited by anyone whose edit isn't sanctioned is dirty,
 //     by its last editor, whatever note it carries: its history isn't read
 //     to find an older editor.
@@ -141,7 +141,7 @@ func (a *Applier) Dirty(ctx context.Context, s *github.Snapshot, trust github.Tr
 		// failed lookup would fail the call for nothing (#174). Each edit
 		// is asked about with the author state.Dirty judges it with: after
 		// a rewrite the App is the body's author, so the issue's author is
-		// asked about like anyone else (#87, Q4a).
+		// asked about like anyone else (#87, SPEC §5.1).
 		since := state.SinceRewrite(c.id, h, a.AppSlug)
 		for i, e := range since {
 			w := c
@@ -219,7 +219,7 @@ func (t dirtyTrust) trusted(login string) bool {
 // step 1's look for discussion triggers, its count of trusted comments
 // (Step.counted), the hold item's look (Step.holdItemFind), and anything
 // that asks Step.CurrentTrust during the visit, as the reaction triggers
-// do, since a held issue's are looked for there again (T4, #188). The
+// do, since a held issue's are looked for there again (#188). The
 // visit's other trust lookups, a command's (Cmd.Trust), and stage work's,
 // which comes after the visits, ask Step.Trust as before.
 type trustOnceVisit struct {

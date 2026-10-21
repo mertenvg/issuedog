@@ -14,8 +14,8 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// A code owner answers a flag, the triage run's question (plan #6,
-// assumption 3 and Q6a), or skips triage altogether (Q2a):
+// A code owner answers a flag, the triage run's question (SPEC §6.2,
+// Answering a flag), or skips triage altogether with /track (SPEC §6.2):
 //   - /track admits the issue: a move to clarifying on §7.2's "issue is
 //     trusted" row, keyed cmd=<comment id>.
 //   - /ignore records "left": a triage marker, verdict=leave, keyed
@@ -153,9 +153,10 @@ func flagInPipeline(s *github.Snapshot, is state.Issue) string {
 }
 
 // FlagByReaction returns the reaction trigger for Step.Reactions that
-// answers a flag by 👍 (plan #6, Q6a). At intake, while the latest triage
-// marker is a flag, the earliest 👍 on the flag from a user trust trusts,
-// not a bot, takes the flag's recommendation, from its marker's recommend:
+// answers a flag by 👍 (SPEC §6.2, Answering a flag). At intake, while the
+// latest triage marker is a flag, the earliest 👍 on the flag from a user
+// trust trusts, not a bot, takes the flag's recommendation, from its
+// marker's recommend:
 //   - handle admits the issue, an untrusted author's too, keyed
 //     cmd=r<reaction id>. A move the table lacks is reported once by
 //     Transition (SPEC §5.3), then only logged.
@@ -243,11 +244,11 @@ func FlagByReaction(trust github.Trust) func(ctx context.Context, a *Applier, s 
 
 // FlagVisit ends a visit to an open issue: the loop calls it after
 // IntakeVisit. It brings the triage:* labels in line with the latest
-// triage marker (plan #6, assumption 3), as assignees follow state: none
-// once the issue is in the pipeline (flagInPipeline), else triage:ask for
-// a flag, triage:left for "left", and none with no marker. So it puts back
-// a label someone else removed, and removes one someone else added, with
-// no comment: the labels are never read as state.
+// triage marker (SPEC §6.2, The triage:* labels), as assignees follow
+// state: none once the issue is in the pipeline (flagInPipeline), else
+// triage:ask for a flag, triage:left for "left", and none with no marker.
+// So it puts back a label someone else removed, and removes one someone
+// else added, with no comment: the labels are never read as state.
 func (st *Step) FlagVisit(ctx context.Context, s *github.Snapshot) error {
 	if s.Closed {
 		return nil

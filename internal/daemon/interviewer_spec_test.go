@@ -66,7 +66,7 @@ func specRendered(goal, decisions string) string {
 }
 
 // specBody is the whole body run writes for spec: its rewrite marker, then
-// spec (#169, Q1a).
+// spec (#169, SPEC §5.1).
 func specBody(run, spec string) string {
 	return "<!-- issuedog:rewrite run=" + run + " -->\n" + spec
 }
@@ -152,7 +152,7 @@ func TestInterviewerSpec(t *testing.T) {
 // spec at spec-review, which makes the body dirty, so nothing approves it.
 // After the owner's /revise, the interviewer sees mallory's text only in
 // untrusted.md, and its spec is the App's full rewrite, which drops
-// mallory's text and cleans the body (#169, Q1a). Its move names whose
+// mallory's text and cleans the body (#169, SPEC §5.1). Its move names whose
 // edit it replaced and posts a normal revision 2, which the owner's 👍
 // approves, so the issue moves to planning.
 func TestInterviewerSpecRewriteCleans(t *testing.T) {
@@ -274,7 +274,7 @@ func TestInterviewerSpecTypes(t *testing.T) {
 
 // TestInterviewerSpecDirtyBody: on a body mallory made dirty, the spec is
 // the App's full rewrite, with no dirty note, so the body is clean again
-// (#169, Q1a), and the move to spec-review posts a normal revision. Its
+// (#169, SPEC §5.1), and the move to spec-review posts a normal revision. Its
 // text first names whose edit the spec replaced, and the rewrite marker
 // does too, so a replay says the same.
 func TestInterviewerSpecDirtyBody(t *testing.T) {
@@ -353,7 +353,7 @@ func TestInterviewerSpecForgedRewrite(t *testing.T) {
 }
 
 // TestInterviewerSpecTrustedEdit: alice, who is trusted, edited the
-// owner's body, which leaves it clean (#169, Q2a), so the spec replaced
+// owner's body, which leaves it clean (#169, SPEC §5.1), so the spec replaced
 // no one's edit, and its revision is a normal one.
 func TestInterviewerSpecTrustedEdit(t *testing.T) {
 	t.Parallel()

@@ -18,7 +18,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// This file is plan #248's T6 (#272): a whole run of plan review against
+// This file is #272: a whole run of plan review against
 // the fakes, through the real Planner at planning, with the stages
 // registered as registerStages registers them, step 1 wired as main's
 // newStep wires it, the digest and assignment on, as startDaemon sets
@@ -260,7 +260,7 @@ func planReviewRunParent(f *githubtest.Fake) int {
 // planReviewRunStory files the App's story "Story <item>" under parent,
 // which item of parent's plan revision 1 is, as its origin marker says,
 // with priority, if set, at planning, then posts its plan revision 1
-// (planText) with the planner's move to plan-review, as S1's planner
+// (planText) with the planner's move to plan-review, as the planner
 // posts it. It returns the story's number and its plan comment's ID.
 func planReviewRunStory(t testing.TB, f *githubtest.Fake, parent int, item, priority string) (int, int64) {
 	t.Helper()

@@ -15,8 +15,8 @@ import (
 // This file is #205: a /resume on an issue J, then a /hold on its
 // ancestor A, both before the next pass. Commands run in issue-number
 // order, so when A has the lower number, the /hold is handled first: it
-// writes no marker on J and the issues below it, held already (Q2b), and
-// the /resume handled next mustn't release them from a /hold posted after
+// writes no marker on J and the issues below it, held already (SPEC §6.4),
+// and the /resume handled next mustn't release them from a /hold posted after
 // it (SPEC §6.4's one rule).
 
 // raceOrders are the numbers of A, J under A, and K under J, in every

@@ -77,8 +77,8 @@ func storyView() planView {
 	return planView{Issue: 124, Rev: 1, Priority: "p2", Notify: []string{"mertenvg"}, MaxTasks: 10}
 }
 
-// filePathRE is a word with a directory and a file extension, as plan
-// #247's assumption 8 defines a file path.
+// filePathRE is a word with a directory and a file extension, as SPEC
+// §11.3's file-paths rule defines a file path.
 var filePathRE = regexp.MustCompile(`[\w.-]+/[\w./-]*\.[A-Za-z0-9]+\b`)
 
 // The goldens: the epic plan, and the story plan with its human task,

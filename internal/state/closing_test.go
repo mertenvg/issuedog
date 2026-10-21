@@ -4,7 +4,7 @@ import "testing"
 
 // The closed stages have labels, which ParseClosingLabel takes, ignoring
 // case, and ParseLabel doesn't: they're no §7.1 stage, valid only on a
-// closed issue (plan #87 rev 2, assumption 12).
+// closed issue (SPEC §7.1).
 func TestClosingStages(t *testing.T) {
 	for s, want := range map[Stage]string{Completed: "stage:completed", Discarded: "stage:discarded"} {
 		if l, ok := s.Label(); !ok || l != want {

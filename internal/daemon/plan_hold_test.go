@@ -10,7 +10,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
 
-// Plan review across a hold (#271, T5 of #248): /approve, /revise and a 👍
+// Plan review across a hold (#271, SPEC §6.4): /approve, /revise and a 👍
 // on a plan revision, given while the issue is held from plan-review,
 // wait (state.Command.Waits), and go through their normal checks once the
 // issue is back at plan-review, by /resume or by the interviewer's

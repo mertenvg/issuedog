@@ -6,9 +6,9 @@ import (
 	"github.com/mertenvg/issuedog/internal/github"
 )
 
-// The kinds of a human task's "Done when" check (#224's reconcile,
-// decision 5): one set of names everywhere, the planner's schema, the plan
-// data, the origin marker and the checks the daemon runs.
+// The kinds of a human task's "Done when" check (SPEC §11.3): one set of
+// names everywhere, the planner's schema, the plan data, the origin marker
+// and the checks the daemon runs.
 const (
 	CheckLabel        = "label"        // a label exists
 	CheckIssueType    = "issue-type"   // an enabled issue type exists
@@ -21,18 +21,18 @@ const (
 var checkKinds = []string{CheckLabel, CheckIssueType, CheckFile, CheckRuleset, CheckInstallation}
 
 // Check is a human task's "Done when" check (SPEC §9.3), as its origin
-// marker records it (plan #250, Q1a): a kind, and its one value, which is
+// marker records it (SPEC §5): a kind, and its one value, which is
 // the label, the issue type, the file's path, the required check's name or
 // the owner. Contains is a file check's optional text, and "" for every
 // other kind. The zero Check is a plain-text "Done when", which the daemon
 // doesn't run.
 //
 // It holds values that were valid when the plan was, so it adds no
-// validation of its own: the daemon converts the plan's check after S1's
-// validation accepted it (#224's reconcile, decision 5).
+// validation of its own: the daemon converts the plan's check after plan
+// validation accepted it (SPEC §11.3).
 type Check struct{ Kind, Value, Contains string }
 
-// CheckFields are the origin marker fields that record c (plan #250, Q1a):
+// CheckFields are the origin marker fields that record c (SPEC §5):
 // check=<kind> and value=, and for a file check with text, contains=, each
 // value percent-encoded (github.EncodeValue), so a space, "<", ">" or "%"
 // reads back exactly. A plain-text Check has none, so its marker is as it

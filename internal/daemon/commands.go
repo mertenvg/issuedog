@@ -118,8 +118,8 @@ func (st *Step) requestAt(s *github.Snapshot, d Dirt, c github.Comment) state.St
 	return postedAt(s, st.AppSlug, d, c.ID)
 }
 
-// rejected posts the reply to c, a command the App 👎'd first (plan #5,
-// amended assumption 5), saying why it doesn't apply. A revision request,
+// rejected posts the reply to c, a command the App 👎'd first (SPEC §9.2,
+// §5.2), saying why it doesn't apply. A revision request,
 // posted at request (requestAt), is worded for the plan if that's
 // plan-review, and else for the spec. For a command, request is "".
 func (st *Step) rejected(ctx context.Context, s *github.Snapshot, c github.Comment, r Rejection, request state.Stage) error {
@@ -209,7 +209,7 @@ func Commands(trust github.Trust) map[string]Handler {
 type planner func(is state.Issue, self bool, n int, by string, after bool) (Move, bool)
 
 // hold is /hold's move for an issue, by the command by (SPEC §6.4). Holds
-// stack, and the first hold wins (plan #87 rev 2, Q2b), so an issue that's
+// stack, and the first hold wins (SPEC §6.4), so an issue that's
 // held already keeps its first at, and isn't moved. The move carries the
 // round's bound, which the hold keeps (state.HeldStack.Seen).
 func hold(is state.Issue, _ bool, _ int, by string, _ bool) (Move, bool) {
@@ -285,7 +285,7 @@ func heldStackResume(is state.Issue, self bool, above madeAboveSet) (at state.St
 // marker m records on an issue in its family. On the issue itself, if
 // self, it ends any owner or discussion hold: a discussion hold's
 // triggers, all of them, are accepted by its move out of held (SPEC §6.4,
-// T4). But not an owner hold whose /hold was posted after it, by the same
+// #188). But not an owner hold whose /hold was posted after it, by the same
 // rule (resolveEndsHold): one on an ancestor whose pass came first, as
 // commands run in issue-number order, which holds the issue by a marker
 // if it wasn't held, or else by none (resolveHeldBy, #205). A hold by
@@ -300,7 +300,7 @@ func heldStackResume(is state.Issue, self bool, above madeAboveSet) (at state.St
 // comment in above, or a /hold that a marker on the issue or an ancestor
 // names, its comment deleted since, which was posted there or above (see
 // madeAbove). A /hold on a descendant names a comment below, whether it
-// wrote a marker or, as the issue was held already, none (Q2b,
+// wrote a marker or, as the issue was held already, none (SPEC §6.4,
 // resolveOwnHolds, resolveHeldBy), so it stays until /resume there or
 // between ends it; so do a hold set by hand, which has no cmd (by= and
 // event=), a deleted /hold comment that no marker there names, which is
@@ -794,8 +794,8 @@ func (a *Applier) setLabel(ctx context.Context, c Cmd, want string) error {
 	return nil
 }
 
-// SettingCommands returns the handlers of /model and /effort (plan #93,
-// T5), for Step.Commands. Each sets one label of its kind, as /priority
+// SettingCommands returns the handlers of /model and /effort (SPEC §9.2,
+// #107), for Step.Commands. Each sets one label of its kind, as /priority
 // does: model:*, effort:*, or for the verifier's runs, verifier-model:* or
 // verifier-effort:*. models returns models.allowed as of the call, such as
 // Daemon.CurrentModels, so a config reload that changes it takes effect.

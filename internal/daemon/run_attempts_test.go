@@ -452,9 +452,9 @@ func capText(limit int) string {
 		"New input, or a move to another stage, lets it run again.", limit)
 }
 
-// The attempt cap's error names why the last attempt failed (#247's
-// assumption 10), for the interviewer as for every stage: its check's
-// broken rule, fenced. A run that times out names that.
+// The attempt cap's error names why the last attempt failed (SPEC §5.3),
+// for the interviewer as for every stage: its check's broken rule, fenced.
+// A run that times out names that.
 func TestAttemptCapNamesLastFailure(t *testing.T) {
 	t.Parallel()
 	t.Run("a broken rule", func(t *testing.T) {

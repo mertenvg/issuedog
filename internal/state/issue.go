@@ -10,7 +10,7 @@ import (
 // BodyID stands for the issue body where dirty takes a comment ID.
 const BodyID int64 = 0
 
-// Key is an idempotency key (plan #5, assumption 4): marker field Field, one
+// Key is an idempotency key (SPEC §5.2): marker field Field, one
 // of "cmd", "run" or "event", with value ID.
 type Key struct{ Field, ID string }
 
@@ -42,12 +42,11 @@ type Issue struct {
 	// reply isn't one: it's in Acks.
 	Errors map[ErrorKey]int64
 	// Acks are the acknowledged state errors, by kind and key. An ack reply
-	// names the error's kind (plan #7, Q5a). One from before it did has an
+	// names the error's kind (SPEC §5). One from before it did has an
 	// empty Kind and covers its key for every kind: see Acked.
 	Acks map[ErrorKey]bool
 	// Item is what Derive knows of the class. Its Human is Origin.Human: a
-	// human task's origin marker carries human=1 (#224's reconcile decision
-	// 4).
+	// human task's origin marker carries human=1 (SPEC §5).
 	Item Item
 	// Round is the latest transition's RoundBound: comments with a higher
 	// ID are this round's input. 0 if there is no transition.
@@ -70,23 +69,23 @@ type Issue struct {
 
 // Origin is an issue's origin marker (SPEC §16, "Created issues"): the
 // plan item the App filed it from, as origin plan=#N rev=R item=ID. It's
-// the one place the marker is read (#224's reconcile decision 3, plan #248,
-// assumption 8), and what every later reader builds on:
-//   - the digest's plan order (S2), which lists the stories one plan filed
-//     together, in the plan's item order (waitRank);
-//   - matching created children to their plan items, and Item.Human, from
-//     a human task's human=1 (S3, Human);
+// the one place the marker is read, and what every later reader builds on
+// (SPEC §5):
+//   - the digest's plan order (SPEC §9.4), which lists the stories one plan
+//     filed together, in the plan's item order (waitRank);
+//   - matching created children to their plan items (SPEC §5.2), and
+//     Item.Human, from a human task's human=1 (SPEC §9.3, Human);
 //   - the class: Item.FromPlan is true exactly when there's one (#290).
 //
 // Derive reads it where SPEC §5 has it, "in the body … or reposted in a
-// comment once that body is dirty" (#290, plan #195's assumption 3):
+// comment once that body is dirty" (#290):
 //   - the body's first whole marker, under the same rules as every other
 //     marker there: the App's, in a body that isn't dirty and that nobody
 //     but the App edited last;
 //   - else, the newest clean App comment's: one that isn't dirty, so
 //     nobody but the App edited it. That holds whoever wrote or edited the
 //     body, so it covers a body someone else edited, whose marker the
-//     daemon reposts in a comment (S5's T2, #291), and an adopted issue,
+//     daemon reposts in a comment (SPEC §6.4, #291), and an adopted issue,
 //     whose body a person wrote and whose App comment carries the marker.
 //
 // So a marker someone else wrote, in the body or a comment, gives none,
@@ -111,11 +110,11 @@ type Origin struct {
 	Comment int64
 	// Human is true for a human task (SPEC §9.3), from human=1, which the
 	// App writes on a human task's marker when it creates it from a plan
-	// (plan #249, assumption 9). Any other value of human, or none, is
+	// (SPEC §5.2). Any other value of human, or none, is
 	// false.
 	Human bool
 	// Check is a human task's "Done when" check, from the marker's check,
-	// value and contains (CheckFields, plan #250, Q1a), or the zero Check
+	// value and contains (CheckFields, SPEC §5), or the zero Check
 	// for a plain-text one, and for fields that don't record a whole check
 	// (checkOf). It's read with the rest of the marker, so wherever Origin
 	// is read from, it is too.
@@ -141,8 +140,8 @@ func originOf(m github.Marker, id int64) (Origin, bool) {
 // clean body of the App's: the first whole one (originOf), with every
 // field it has, its values as written, so still percent-encoded. It's
 // false if text has none. It doesn't check who wrote text: the caller
-// knows it's the App's, as a version of the body the App wrote is (S5's
-// T2, #291).
+// knows it's the App's, as a version of the body the App wrote is (SPEC
+// §6.4, #291).
 func OriginMarker(text string) (github.Marker, bool) {
 	for _, m := range github.ParseMarkers(text) {
 		if _, ok := originOf(m, BodyID); ok {
@@ -152,7 +151,7 @@ func OriginMarker(text string) (github.Marker, bool) {
 	return github.Marker{}, false
 }
 
-// TriageVerdict is a triage marker (plan #6, assumption 3): a decision on
+// TriageVerdict is a triage marker (SPEC §5, §6.2): a decision on
 // an issue with no stage label, by a triage run or a code owner's answer.
 type TriageVerdict struct {
 	// Verdict is "ask" for a flag, which waits for a code owner, or "leave"
@@ -167,7 +166,7 @@ type TriageVerdict struct {
 
 // FieldSeen is the marker field seen=<the newest comment ID read>, for
 // what came before a write: on the transition that ends an interviewer run,
-// the newest comment the run was given (plan #5, amended assumption 5); on
+// the newest comment the run was given (SPEC §5, §9.2); on
 // a move by /revise, a revision request or /approve, that comment; on an
 // approval by 👍, and on a revision posted without a move, the newest
 // comment the pass read; on a move into, within or out of held, the round
@@ -202,7 +201,7 @@ func (is Issue) Reported(kind, key string) bool {
 
 // Acked reports whether an ack reply covers the state error of this kind
 // and key: one that names the kind and key, or one with no kind that names
-// the key, which covers it for every kind (plan #7, Q5a).
+// the key, which covers it for every kind (SPEC §5).
 func (is Issue) Acked(kind, key string) bool {
 	return is.Acks[ErrorKey{kind, key}] || is.Acks[ErrorKey{"", key}]
 }
@@ -219,7 +218,7 @@ func (is Issue) Moved(k Key) bool {
 }
 
 // CreatedRecord returns the children that the record of plan revision
-// rev's children names (plan #249, assumption 7), by number in plan
+// rev's children names (SPEC §5, §5.2), by number in plan
 // order, and true, or false if there's none: the latest created marker
 // among is's markers that count, with rev=<rev> and children=<n>,<n>, each
 // a number above 0. The App posts it on a parent once each child of rev is
@@ -272,7 +271,7 @@ func createdChildren(field string) ([]int, bool) {
 // dirty decides what an edit taints, not Derive. The body's are also
 // skipped unless the App made its last edit, or nobody edited it: a
 // trusted user's edit leaves the body clean (Sanctioned) but isn't the
-// App's text (#169, Q2a). The App's own body edits either write the whole
+// App's text (#169). The App's own body edits either write the whole
 // body or escape the text they keep (SPEC §5.1), so after one, every
 // marker in the body is the App's. Origin comes from the body's markers
 // while they're read, and else from the newest clean App comment's, and

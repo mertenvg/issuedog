@@ -236,7 +236,7 @@ func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github
 		return nil
 	case cmd.Waits(is):
 		// A command that would move the issue waits while it's held, or at
-		// the clarifying after a hold (#87's assumption 8): it's checked
+		// the clarifying after a hold (SPEC §6.4): it's checked
 		// once the issue is at another stage, on a later pass, or in this
 		// one once a command takes the issue out of held (Run).
 		logr.Debugf("%s/%s#%d: /%s in comment %d waits: the issue is held, or at the clarifying after a hold", st.Owner, st.Repo, s.Number, cmd.Name, c.ID)

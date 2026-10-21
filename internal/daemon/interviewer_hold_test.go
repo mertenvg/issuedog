@@ -15,7 +15,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// This file tests T5 of #87 (#189): the interviewer at the clarifying
+// This file tests #189 (SPEC §6.4): the interviewer at the clarifying
 // after a discussion hold, against the fakes, through step 1 as
 // resolvePass wires it and the real Interviewer, with a fake claude for
 // each outcome.
@@ -403,7 +403,7 @@ func TestIvHoldReviseContext(t *testing.T) {
 	}
 }
 
-// Q3b: a task held at ready goes to clarifying once the discussion is
+// SPEC §7.2: a task held at ready goes to clarifying once the discussion is
 // resolved, and the move says it waits there for a stage set by hand. The
 // interviewer doesn't run on it, and nothing more is written until the
 // owner sets ready by hand.
@@ -1011,7 +1011,7 @@ func ivPlanStory(t testing.TB, f *githubtest.Fake, review bool) {
 
 // #294 and #261's note: a story with a parent held for discussion from
 // planning, or from plan-review with a /revise, goes to clarifying when
-// the discussion ends, where the interviewer runs on it (#195's Q1a). Its
+// the discussion ends, where the interviewer runs on it (SPEC §9.1). Its
 // plan outcome moves it to planning with origin, so the planner's run that
 // follows has the interviewer's message, the discussion's owner input, the
 // owner's 👍'd comment by mallory and the owner's counter comment, and the
@@ -1092,7 +1092,7 @@ func TestIvHoldPlanPlanner(t *testing.T) {
 	}
 }
 
-// #195's Q1a: at the clarifying after a hold from a stage of its plan, a
+// SPEC §9.1: at the clarifying after a hold from a stage of its plan, a
 // story with a parent gets only questions, unchanged and plan. A spec, a
 // typed outcome and a type on a round are failed attempts, with nothing
 // written. A round stays at clarifying with origin, and unchanged goes back
@@ -1148,7 +1148,7 @@ func TestIvHoldParentStory(t *testing.T) {
 	}
 }
 
-// #195's Q1a on a story with a parent whose type the App set, as on a child
+// SPEC §9.1 on a story with a parent whose type the App set, as on a child
 // created from a plan, where typing would let the run change the type: at
 // the clarifying after a hold from planning, its preamble still says to
 // leave the type out, lists no typed outcome, and a round that sets a type

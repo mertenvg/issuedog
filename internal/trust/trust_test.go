@@ -196,7 +196,7 @@ func discCheck(t *testing.T, files fakeFiles, api *gogithub.Client, want map[str
 }
 
 // Under CODEOWNERS, a writer, maintainer or admin it doesn't trust is a
-// write collaborator who isn't trusted (#87's assumption 1). A trusted
+// write collaborator who isn't trusted (SPEC §6.4). A trusted
 // owner isn't, nor is an owner without write access, anyone with a lesser
 // role, a stranger or a bot.
 func TestDiscAccessUnderCodeowners(t *testing.T) {

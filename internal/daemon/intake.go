@@ -22,7 +22,7 @@ const approvedLabel = "approved"
 // IntakeVisit ends a visit to an issue at intake: the loop calls it after
 // ReviewVisit, and at any other stage it does nothing. It moves the issue
 // to clarifying on §7.2's "issue is trusted" row, by the first two ways in
-// of plan #6's assumption 1:
+// that SPEC §6.2 lists:
 //
 //   - The issue has stage:intake and a trusted author. The move is keyed
 //     event=<the labeled event of stage:intake that stands>.
@@ -31,7 +31,7 @@ const approvedLabel = "approved"
 //
 // Otherwise the issue stays: an untrusted author's issue waits for approved,
 // and one with no stage label and no approved is left to triage. Its
-// comment says why the issue is in and, under plan #6's Q1a, tells a bug or
+// comment says why the issue is in and, as SPEC §4 and §6.2 say, tells a bug or
 // a task that it waits at clarifying until phase 3, and a story with a
 // parent that it waits there too, since the interviewer doesn't run on it.
 //
@@ -123,7 +123,7 @@ func (st *Step) IntakeVisit(ctx context.Context, s *github.Snapshot) error {
 }
 
 // intakeNote is what a move into the pipeline tells an issue that waits at
-// clarifying, under plan #6's Q1a, after a space, or "": a bug or a task
+// clarifying (SPEC §4, §6.2), after a space, or "": a bug or a task
 // waits until phase 3, and a story with a parent waits too, since the
 // interviewer doesn't run on it.
 func intakeNote(s *github.Snapshot) string {

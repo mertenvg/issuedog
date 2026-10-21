@@ -141,10 +141,12 @@ func heldStackCheck(t *testing.T, base func(testing.TB) *githubtest.Fake, steps 
 	}
 }
 
-// #87's note 1 and Q2b: a hold by hand on an issue under an owner /hold
-// writes one marker. Its parent's /resume ends the /hold, but not the hold
-// by hand, and names the issue, which records that the /hold ended; the
-// issue leaves held only on its own /resume. Each move carries the round bound from before the hold.
+// A hold set by hand on a held issue is recorded (SPEC §5.1, §6.4), though
+// the first hold wins: a hold by hand on an issue under an owner /hold writes
+// one marker. Its parent's /resume ends the /hold, but not the hold by hand,
+// and names the issue, which records that the /hold ended; the issue leaves
+// held only on its own /resume. Each move carries the round bound from before
+// the hold.
 func TestHeldStackHandSetHold(t *testing.T) {
 	t.Parallel()
 	var hold, resume1, resume2, ev int64
@@ -374,9 +376,9 @@ func TestHeldStackHoldsInOnePass(t *testing.T) {
 	}
 }
 
-// #80's note 2 and #83's note: a hold at clarifying keeps the round, so a
-// comment posted while held is an answer after it, and the revision
-// request's notes are still input.
+// The notes from #80 and #83 (SPEC §6.4, "While held"): a hold at clarifying
+// keeps the round, so a comment posted while held is an answer after it, and
+// the revision request's notes are still input.
 func TestHeldStackKeepsTheRound(t *testing.T) {
 	t.Parallel()
 	var request, hold, during, resume int64

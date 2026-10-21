@@ -9,7 +9,7 @@ import (
 
 // approvedPlanData returns the plan revision the latest move into planned
 // approved (state.ApprovedPlan), with the plan's data read back from its
-// comment (readPlanData), for S3 to create the children from. It reports
+// comment (readPlanData), to create the children from (SPEC §5.2). It reports
 // false, with no error, when ApprovedPlan finds none, or when the comment
 // has no plan-data marker the App wrote. Data that doesn't read back is an
 // error. dirty is as for state.Derive.

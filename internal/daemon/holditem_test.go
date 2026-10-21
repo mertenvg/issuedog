@@ -11,11 +11,11 @@ import (
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
 
-// Hold items (#192, plan #87's T8) against the fakes, through Iterate with
+// Hold items (#192, SPEC §9.4) against the fakes, through Iterate with
 // the digest and assignment on, and owner to notify. #1 is the pinned
 // digest, and #2 the owner's issue at ready. The daemon holdItemDaemon
 // makes has no reaction triggers, so only a move out of held resolves a
-// trigger there: a stage label the owner sets by hand. T4's (#188)
+// trigger there: a stage label the owner sets by hand. #188's
 // resolutions are tested with them on in holditem_resolve_test.go.
 
 // holdItemDaemon is digestDaemon with assignment on too.
@@ -84,7 +84,7 @@ func holdItemQuietWith(t *testing.T, f *githubtest.Fake, d *daemon.Daemon, step 
 
 // A write collaborator's comment holds #2, which the digest lists with its
 // trigger, and whose notify users are assigned. The hold's comment
-// mentions them, so the digest doesn't (#7's Q2a). An unchanged pass, and
+// mentions them, so the digest doesn't (SPEC §9.4). An unchanged pass, and
 // a restart, write nothing. Once the owner sets a stage by hand, which
 // resolves every trigger, the item goes, and so does the assignee.
 func TestHoldItemListedAndAssigned(t *testing.T) {
@@ -129,10 +129,10 @@ func TestHoldItemListedAndAssigned(t *testing.T) {
 
 // Under an owner hold alone, nothing is listed or assigned. A write
 // collaborator's comment then holds #2 with no App comment of its own
-// (Q2b), so the digest announces the hold, mentioning the owner, keyed by
-// that comment. A rename, whose notice mentions the owner, is listed but
-// not announced, and a later comment announces it again, mentioning the
-// owner once more: its marker names every trigger no App comment named.
+// (SPEC §6.4), so the digest announces the hold, mentioning the owner, keyed
+// by that comment. A rename, whose notice mentions the owner, is listed but
+// not announced, and a later comment announces it again, mentioning the owner
+// once more: its marker names every trigger no App comment named.
 func TestHoldItemAnnouncesUnmentioned(t *testing.T) {
 	t.Parallel()
 	f, o := holdItemOwnerHeld(t), digestNotifyOrigin(t)

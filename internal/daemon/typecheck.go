@@ -13,14 +13,14 @@ import (
 )
 
 // A type that doesn't fit the issue's stage is a state error, kind=type
-// (SPEC §4, §5.3; plan #7, assumption 9). The owner may change the type at
-// any time; the daemon then leaves the issue where it is and says so, once
-// per type change. Step 1 checks the type (typeCheck), and Transition
-// reports it when the type is why the table lacks a move. openErrors keeps
-// it open until the type is no longer the cause, or a newer type change
-// stands. While any type error on the issue has been reported and the
-// type is still the cause, no stage runs on it, triage included
-// (typeHoldReported, #179's Q1a).
+// (SPEC §4, §5.3). The owner may change the type at any time; the daemon
+// then leaves the issue where it is and says so, once per type change.
+// Step 1 checks the type (typeCheck), and Transition reports it when the
+// type is why the table lacks a move. openErrors keeps it open until the
+// type is no longer the cause, or a newer type change stands. While any
+// type error on the issue has been reported and the type is still the
+// cause, no stage runs on it, triage included (typeHoldReported, SPEC
+// §5.3, Holding back).
 
 // typeErrKind is the kind of the state error for a type that doesn't fit
 // the issue's stage.
@@ -41,9 +41,9 @@ func typeErrKey(s *github.Snapshot) string { return strconv.FormatInt(s.TypeEven
 //
 // So only the type counts, not the rest of what Fits reads: an owner's
 // story at spec-review that gains a parent no longer fits, but no type
-// change is behind that, and the table's "any open" rows move it on
-// (plan #7, #153's note). A move the table lacks there is a transition
-// error, as before.
+// change is behind that, and the table's "any open" rows move it on (SPEC
+// §5.3, The cause; #153's note). A move the table lacks there is a
+// transition error, as before.
 func typeErrCause(stage state.Stage, typ string) bool {
 	if _, err := state.ClassOf(state.Item{Type: typ}); err != nil {
 		return true // ClassOf's only error is an unknown type
@@ -68,8 +68,8 @@ func typeErrStands(s *github.Snapshot, is state.Issue) bool {
 	return s.TypeEvent != 0 && typeErrCause(is.Stage, is.Item.Type)
 }
 
-// typeCheck is step 1's check of the type (plan #7, assumption 9): on an
-// open issue whose type, set by a type change that stands, can't be at its
+// typeCheck is step 1's check of the type (SPEC §5.3, When): on an open
+// issue whose type, set by a type change that stands, can't be at its
 // stage (typeErrStands), it posts the type error, once per key
 // (typeErrReport), if the issue has a transition marker, or an earlier
 // type error has been reported on it (typeHoldReported).
@@ -79,10 +79,10 @@ func typeErrStands(s *github.Snapshot, is state.Issue) bool {
 // pipeline knows fits. An unknown type there is reported by the move out
 // of it (Transition): triage's, or IntakeVisit's for an approved issue or
 // a trusted author's stage:intake. Once a type error has been reported on
-// it, triage doesn't run while the type is the cause (runStage, #179's
-// Q1a), so a change to another unknown type would go unreported till
-// something else tried to move it: this check reports it instead, before
-// IntakeVisit's move, which then finds it reported.
+// it, triage doesn't run while the type is the cause (runStage, SPEC §5.3,
+// Holding back), so a change to another unknown type would go unreported
+// till something else tried to move it: this check reports it instead,
+// before IntakeVisit's move, which then finds it reported.
 func (st *Step) typeCheck(ctx context.Context, s *github.Snapshot, d Dirt) error {
 	if s.Closed {
 		return nil
@@ -113,8 +113,9 @@ func typeErrMoved(is state.Issue) bool {
 // that names its kind (state.Issue.Reported). While one has, and the type
 // is still the cause (typeErrStands), no stage runs on the issue, triage
 // included, even when the type change that stands, a newer one, keys an
-// error not posted yet (#179's Q1a): its move would only fail again. An
-// ack with no kind is older than type errors, so it's no type error's.
+// error not posted yet (SPEC §5.3, Holding back): its move would only fail
+// again. An ack with no kind is older than type errors, so it's no type
+// error's.
 func typeHoldReported(is state.Issue) bool {
 	for k := range is.Errors {
 		if k.Kind == typeErrKind {

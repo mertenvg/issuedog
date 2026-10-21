@@ -56,7 +56,7 @@ func afterHoldInput(t *testing.T, f *githubtest.Fake, n int, from int64, tr gith
 
 // The App's comments are no one's input: an App comment alone before a
 // trusted comment doesn't make it a counter comment, as the App's
-// notices and records in a discussion counter nothing (M03).
+// notices and records in a discussion counter nothing (SPEC §6.4).
 func TestAfterHoldInputAppNoCounter(t *testing.T) {
 	t.Parallel()
 	f := githubtest.New(t, "o/r", "issuedog")
@@ -75,8 +75,8 @@ func TestAfterHoldInputAppNoCounter(t *testing.T) {
 
 // A bot's comment, unlike the App's, is untrusted, as for untrusted.md
 // (SPEC §6.2), so a trusted comment after a bot's alone counters it: SPEC
-// §6.4 has a trusted comment counter every untrusted comment before it
-// (M07). The bot's comment approves nothing, and its reactions aren't read.
+// §6.4 has a trusted comment counter every untrusted comment before it,
+// a bot's included. The bot's comment approves nothing, and its reactions aren't read.
 func TestAfterHoldInputBotCounter(t *testing.T) {
 	t.Parallel()
 	f := githubtest.New(t, "o/r", "issuedog")
@@ -100,7 +100,7 @@ func TestAfterHoldInputBotCounter(t *testing.T) {
 // A bot's 👍 approves nothing, the App's included, even from a trust that
 // would say yes to it: the approver must be a trusted user, no bot and not
 // the App. A bot's 👍 before a trusted user's is passed over, so the
-// trusted user is named (M19). In production trust.Set refuses every
+// trusted user is named as the approver. In production trust.Set refuses every
 // "[bot]" login too, so here the trust says yes to the bots to pin the
 // check trustCache makes, the one ivHoldInputOf relies on.
 func TestAfterHoldInputBotThumbs(t *testing.T) {
@@ -126,7 +126,8 @@ func TestAfterHoldInputBotThumbs(t *testing.T) {
 }
 
 // A failed trust read of a discussion comment's author stops the build
-// with its error, naming the comment, and returns no input (M17).
+// with its error, naming the comment, and returns no input, so no run
+// starts on a partial discussion.
 func TestAfterHoldInputAuthorTrustError(t *testing.T) {
 	t.Parallel()
 	f := githubtest.New(t, "o/r", "issuedog")
@@ -148,7 +149,8 @@ func TestAfterHoldInputAuthorTrustError(t *testing.T) {
 }
 
 // A failed read of an untrusted comment's reactions stops the build with
-// its error, naming the comment, and returns no input (M18). The comment
+// its error, naming the comment, and returns no input, as a failed trust
+// read does. The comment
 // is deleted between the snapshot and the read, so the read gets a 404.
 func TestAfterHoldInputReactionsError(t *testing.T) {
 	t.Parallel()
@@ -195,7 +197,7 @@ func TestAfterHoldInputReactorTrustError(t *testing.T) {
 }
 
 // issue.md's "After a hold" has its "None" line only with no owner input:
-// counter comments alone (M23), or approved comments alone, are input, and
+// counter comments alone, or approved comments alone, are input, and
 // shown under their headings instead.
 func TestAfterHoldSectionNoNone(t *testing.T) {
 	t.Parallel()

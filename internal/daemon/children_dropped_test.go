@@ -15,7 +15,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// The rest of an approved revision (#195's T8, #297): its new children
+// The rest of an approved revision (SPEC §6.4, #297): its new children
 // filed with their links, each dropped item's child closed as not
 // planned with everything below it, deepest first, and unlinked, a
 // changed child's links to its siblings following the revision, and last

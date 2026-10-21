@@ -169,8 +169,8 @@ func (s *Set) DiscNoWriters() bool { return s.owners == nil }
 
 // DiscAccess answers, from one permission request, whether login is trusted,
 // as Trusted says, and whether they are a write collaborator who isn't
-// trusted, who can hold an issue for discussion but not move it (SPEC §6.4,
-// #87's assumption 1): their role_name is write, maintain or admin, and
+// trusted, who can hold an issue for discussion but not move it (SPEC
+// §6.4): their role_name is write, maintain or admin, and
 // CODEOWNERS doesn't trust them. With no CODEOWNERS file every such role is
 // trusted, so nobody is the second. Bots, the App included, are neither, so
 // a bot's comments hold nothing. Unlike Trusted, it asks the API about a

@@ -623,7 +623,7 @@ func TestDiscEditKey(t *testing.T) {
 }
 
 // noReactions is a client on which every comment has no reactions, for the
-// resolver's reads (resolve.go, T4) in a test of a snapshot made by hand.
+// resolver's reads (resolve.go, #188) in a test of a snapshot made by hand.
 // It counts the requests it gets in *reads, if reads is given.
 func noReactions(t testing.TB, reads ...*int) *github.Client {
 	t.Helper()

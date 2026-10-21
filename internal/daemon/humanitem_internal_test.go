@@ -12,7 +12,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// A human task in the digest and in assignment (#287, plan #250's T7):
+// A human task in the digest and in assignment (#287, SPEC §9.4):
 // what waitFind finds on one, how it ranks against the other kinds, and
 // how the digest renders it.
 
@@ -102,7 +102,7 @@ func TestWaitFindHuman(t *testing.T) {
 // stage, held or closed. Nor does a task at needs-human that isn't a human
 // task: one with no human=1, an untyped one, or one whose body someone
 // else edited or that's dirty, whose origin marker Derive doesn't read
-// today (#224's reconcile decision 3).
+// today (SPEC §5, "Where it's read").
 func TestWaitFindHumanNothing(t *testing.T) {
 	t.Parallel()
 	edited := waitHumanSnap(t, 31)
@@ -139,7 +139,7 @@ func TestWaitFindHumanNothing(t *testing.T) {
 // The lines are copied only from the App's clean body, which the App made
 // the last edit of, or nobody did, and only with both fields found.
 // Otherwise a line says to see the issue. A human task's body is always
-// that clean body today, but S5 reads the origin marker from a comment.
+// that clean body today, but #195 reads the origin marker from a comment.
 func TestWaitHumanLines(t *testing.T) {
 	t.Parallel()
 	fallback := []waitLine{waitHumanLinesWant[0], {Text: "See the issue for what to do."}, waitHumanLinesWant[3]}
@@ -188,8 +188,8 @@ func TestWaitHumanLines(t *testing.T) {
 	}
 }
 
-// Q3a's order of kinds: a human task comes after a question and before a
-// flag, a plan's approval with an approval, a finished story after flags,
+// SPEC §9.4's order of kinds: a human task comes after a question and before
+// a flag, a plan's approval with an approval, a finished story after flags,
 // and a kind not mapped after that (#287, #270, #278).
 func TestWaitKindRank(t *testing.T) {
 	t.Parallel()
@@ -232,8 +232,8 @@ func waitHumanRankSnaps() map[int]*github.Snapshot {
 	return snaps
 }
 
-// A human task ranks against the other kinds by Q3a, and any order of the
-// same items ranks the same.
+// A human task ranks against the other kinds by SPEC §9.4's order, and any
+// order of the same items ranks the same.
 func TestWaitHumanRankGolden(t *testing.T) {
 	t.Parallel()
 	items := waitHumanRankItems()
@@ -250,7 +250,7 @@ func TestWaitHumanRankGolden(t *testing.T) {
 // The digest's goldens: a human task found on its snapshot, whose goal and
 // "Done when" try a mention, HTML, a marker, a heading, a link and an
 // image, ranked between a question and a flag; and one whose body someone else edited,
-// as once S5 reads the origin marker from a comment, which says to see the
+// as once #195 reads the origin marker from a comment, which says to see the
 // issue. Neither mentions anyone or holds a marker but the identity
 // marker, and a human task gets no announcement: its body's cc line
 // mentioned notify (SPEC §9.4).

@@ -40,8 +40,8 @@ type planView struct {
 	// the plan against these before it renders it.
 	MaxTasks  int // plan.max_tasks
 	SubIssues int // the issue's sub-issues before the plan's are created
-	// Revised is set for a revision of an issue planned before (#195's
-	// T6), whose items have statuses, and Earlier is the approved
+	// Revised is set for a revision of an issue planned before (SPEC
+	// §11.3), whose items have statuses, and Earlier is the approved
 	// revision's items, whose dependencies a kept item keeps.
 	Revised bool
 	Earlier []planItem
@@ -55,7 +55,7 @@ type planView struct {
 // counts; then the cc line and how to approve, or, when the plan skips
 // review, a line saying so instead.
 //
-// It shows no file paths (#224's Q2.4a): of a task's body, only a human
+// It shows no file paths (SPEC §11.4): of a task's body, only a human
 // task's "Done when" text, and its check by kind, never its path, label,
 // owner or other value. Agent text is escaped as a spec is (SPEC §11.1):
 // headings demoted, task list boxes stripped, mentions defused, and HTML
@@ -200,11 +200,12 @@ func plural(n int, one, many string) string {
 	return many
 }
 
-// The plan-data marker keeps a plan's data in its plan comment (#247's
-// Q1a), for what is done with the plan once it's approved: S3 creates
-// the children from the approved revision's data, task bodies and checks
-// included, which the comment's text never shows, and S5 reads an
-// earlier revision's items from it to revise a plan. Run results are
+// The plan-data marker keeps a plan's data in its plan comment (SPEC §5,
+// §11.4), for what is done with the plan once it's approved: the
+// children are created from the approved revision's data (SPEC §5.2),
+// task bodies and checks included, which the comment's text never shows,
+// and a revision reads an earlier revision's items from it to revise a
+// plan (SPEC §11.3). Run results are
 // scratch, so this is the only copy:
 //
 //	<!-- issuedog:plan-data v=1 data=<base64url(deflate(JSON))> -->

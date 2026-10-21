@@ -11,9 +11,10 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// Hold items (#192, plan #87's T8): what waitFind lists for a held issue
+// Hold items (#192, SPEC §9.4): what waitFind lists for a held issue
 // with open discussion triggers, how each trigger reads, the key, which
-// triggers are mentioned already (#7's Q2a), and the goldens.
+// triggers are mentioned already (SPEC §9.4, "Announcing new items"), and
+// the goldens.
 
 var holdItemMallory = github.Author{Login: "mallory", Type: "User"}
 
@@ -121,7 +122,7 @@ func holdItemKinds() []struct {
 
 // Each kind of trigger on an issue a discussion hold holds is one hold
 // item, keyed by the hold marker's event, linked to the issue, with a
-// line for the trigger that links it and says how it's resolved, as T4
+// line for the trigger that links it and says how it's resolved, as #188
 // resolves it (resolve.go): the App's deleted comment only by /resume
 // (resolveHitsApp), and a comment by any later comment but /hold or
 // /resume. The hold's comment ends in a cc line, so each is mentioned
@@ -162,10 +163,10 @@ func TestHoldItemKinds(t *testing.T) {
 }
 
 // holdItemStacked is issue 5 under the owner's /hold, with open
-// discussion triggers that write no hold marker (Q2b): mallory's comment
-// 504, which has no App comment; a rename with its notice 505; a deletion
-// whose notice discLost held back; and an edit of the body known from its
-// record alone, in notice 506.
+// discussion triggers that write no hold marker (SPEC §6.4): mallory's
+// comment 504, which has no App comment; a rename with its notice 505; a
+// deletion whose notice discLost held back; and an edit of the body known
+// from its record alone, in notice 506.
 func holdItemStacked() (*github.Snapshot, []discTrigger) {
 	edit := discEditKey(state.BodyID, holdItemAt(1))
 	s := holdItemSnap(append(holdItemOwnerHeld(), holdItemComment(504, holdItemMallory, "Wait."), holdItemNotice(505, "9001"),

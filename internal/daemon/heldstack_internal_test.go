@@ -50,7 +50,7 @@ func TestHeldStackAttemptKey(t *testing.T) {
 	}
 }
 
-// Which holds /resume ends (SPEC §6.4, plan #87 rev 2, Q2b, and #188's
+// Which holds /resume ends (SPEC §6.4, where the first hold wins, and #188's
 // decision, round 3): on the issue itself, every owner hold but one posted
 // after the /resume, or a comment deleted after it that may have been one
 // (#205, #244); below, only a /hold made on the issue or above it, posted
@@ -58,7 +58,7 @@ func TestHeldStackAttemptKey(t *testing.T) {
 // been one (resolveGone). A
 // hold by hand ends only on the issue itself, and the issue leaves held
 // only when no hold is left. A discussion hold ends only on the issue
-// itself (T4).
+// itself (#188).
 func TestHeldStackResume(t *testing.T) {
 	t.Parallel()
 	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}

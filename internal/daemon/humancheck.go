@@ -13,12 +13,13 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// checkFromPlan is the check that a human task's "Done when" d records on
-// its origin marker (state.CheckFields, plan #250, Q1a): the zero Check
-// for plain text, or else d's check, by the same kind names, with its one
-// value and a file check's contains. It reuses S1's validation (validCheck)
+// checkFromPlan is the check that a human task's "Done when" d records on its
+// origin marker (state.CheckFields, SPEC §5, "The check"): the zero Check for
+// plain text, or else d's check, by the same kind names, with its one value
+// and a file check's contains. It reuses #247's validation (validCheck)
 // rather than adding its own, so a check the plan's validation would refuse
-// is an error here too, and never recorded (#224's reconcile, decision 5).
+// is an error here too, and never recorded (SPEC §11.3, "A human task's
+// check": only a check the validation accepted is recorded).
 func checkFromPlan(d planDoneWhen) (state.Check, error) {
 	c := d.Check
 	if c == nil {
@@ -34,12 +35,11 @@ func checkFromPlan(d planDoneWhen) (state.Check, error) {
 	return state.Check{Kind: c.Kind, Value: value, Contains: c.Contains}, nil
 }
 
-// humanCheck runs a human task's check c (SPEC §9.3, plan #250,
-// assumption 2), and reports whether it passes, and found, the App's
-// sentence saying what it saw, for the reply to a failure. Every value in
-// found is inline code, escaped (checkCode). It never quotes a file's
-// contents. A plain-text "Done when", the zero Check, has nothing to run,
-// and passes.
+// humanCheck runs a human task's check c (SPEC §9.3, "The checks"), and
+// reports whether it passes, and found, the App's sentence saying what it
+// saw, for the reply to a failure. Every value in found is inline code,
+// escaped (checkCode). It never quotes a file's contents. A plain-text "Done
+// when", the zero Check, has nothing to run, and passes.
 //
 //   - label: the repo has the label, matched ignoring case (LabelExists);
 //   - issue-type: the repo's owner has an enabled issue type of that name,

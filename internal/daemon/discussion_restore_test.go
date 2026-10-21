@@ -603,7 +603,7 @@ func TestDiscAfterAdoptingLabel(t *testing.T) {
 }
 
 // After the owner's hold is restored, a /resume on the issue itself ends
-// that hold and accepts the act that hid it (T4), back to the stage before
+// that hold and accepts the act that hid it (#188), back to the stage before
 // the hold, with no disagreement.
 func TestDiscRestoredHoldStays(t *testing.T) {
 	t.Parallel()

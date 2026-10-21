@@ -22,8 +22,7 @@ import (
 // and its schema.
 const plannerAgent = "planner"
 
-// Planner is the Stage at planning (T7 and T8 of #247, assumptions 4 to
-// 6). It breaks an approved epic or story into a plan, or asks a question
+// Planner is the Stage at planning (#247, SPEC §9.1, §12). It breaks an approved epic or story into a plan, or asks a question
 // round first. Its Daemon gives the config, trust and clone of the moment.
 // Its result is checked (Check) and applied (Apply) in planner_apply.go.
 type Planner struct {
@@ -67,7 +66,7 @@ func (*Planner) Schema() []byte {
 //
 // An issue that was planned before, as any clean transition marker with
 // to=planned says, is planned again as a revision of its approved plan
-// (T6 of #195, planPriorOf), however it came back to planning. One whose
+// (SPEC §11.3, planPriorOf), however it came back to planning. One whose
 // approved plan revision can't be read back gets no run, as a revision
 // couldn't be checked against its children: that's logged once per issue.
 func (p *Planner) Pending(in Input) bool {
@@ -117,7 +116,7 @@ func (p *Planner) logSkip(n int, why error) {
 	logr.Infof("%s/%s#%d: no planner run: it was planned before, but %v", a.Owner, a.Repo, n, why)
 }
 
-// Context returns the planner's context files (#247's assumption 6), each
+// Context returns the planner's context files (SPEC §12), each
 // comment and body in them fenced under a heading the daemon writes, with
 // the text the App didn't write escaped (SPEC §5.1), and the App's markers
 // left out:
@@ -493,7 +492,7 @@ func plannerParent(ps *github.Snapshot, appSlug string, d Dirt, t plannerTrusted
 // even if posted while the issue was held; else by whether it was posted
 // during sp, the latest hold the issue left; else as new since the issue
 // came to planning. all are every stage's rounds. Notes names a plan's
-// revision request at planning only once #269 (S2) reads one there; until
+// revision request at planning only once #269 reads one there; until
 // then it's 0 at planning, which no comment is.
 func plannerInputs(in Input, all []interviewerRound, sp ivHoldSpan) []string {
 	asked := planRoundMove(ivHoldLatest(in.Issue, false))
@@ -548,7 +547,7 @@ func plannerTask(number int, dir string, files map[string][]byte) string {
 }
 
 // plannerPreamble is the start of system.md, which no prompt on main can
-// remove (#247's assumption 6): the trust rules, which make the titles of
+// remove (SPEC §12): the trust rules, which make the titles of
 // the sub-issues children.md and parent.md list data (#312), as an
 // untrusted writer can rename any of them, the output contract, and the
 // limits the planner's output is checked against, with c's values:
@@ -562,13 +561,13 @@ func plannerTask(number int, dir string, files map[string][]byte) string {
 //   - whether the plan is a first plan, whose items have no status, or a
 //     revision of approved plan revision prior.Rev, and the revision's
 //     rules (checkStatuses), its dependencies on kept items, and its
-//     review, which plan.review doesn't skip (#195's Q2a);
+//     review, which plan.review doesn't skip (SPEC §7.2);
 //   - the rounds so far, every stage's (all), of them the planner's
 //     (planned), the next round's number (nextRound), and
 //     loop.max_questions_per_round;
 //   - the item ID format (planItemIDRE);
-//   - the five "Done when" check kinds and their fields (the cross-story
-//     decision 5), with their bounds (planMaxLabel, planMaxContains);
+//   - the five "Done when" check kinds and their fields (SPEC §11.3), with
+//     their bounds (planMaxLabel, planMaxContains);
 //   - that the visible fields name no file paths, and that "Depends on"
 //     names items of this plan;
 //   - the dependency links of one type per item (planMaxLinks), the

@@ -12,7 +12,7 @@ import (
 	gogithub "github.com/google/go-github/v92/github"
 )
 
-// Snapshot is one issue as the daemon holds it in memory (plan #5, assumption 2).
+// Snapshot is one issue as the daemon holds it in memory (SPEC §5).
 type Snapshot struct {
 	Number   int
 	Closed   bool
@@ -59,7 +59,7 @@ type Snapshot struct {
 	DiscLabelTimes map[int64]time.Time
 	// Closings are LabelCheck.Closings, the issue's closed and reopened
 	// events, set with DiscRenames: for a close's discussion trigger, and
-	// for the judgement of a reopen (T6). Nil until then.
+	// for the judgement of a reopen (SPEC §6.4). Nil until then.
 	Closings []Closing
 
 	// TypeFromLabels is set when Type comes from the labels, as the issue has

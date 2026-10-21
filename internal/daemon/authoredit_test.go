@@ -14,7 +14,7 @@ import (
 
 // After the App's full rewrite the App is the body's author, so the issue
 // author's own edit after it is sanctioned only if they are trusted (#87,
-// Q4a). Before any rewrite it still is. An App edit whose text someone
+// SPEC §5.1). Before any rewrite it still is. An App edit whose text someone
 // deleted may have been a rewrite, so it counts as one. Trust is asked
 // about the author only where it decides, once.
 func TestAuthorEditAfterRewrite(t *testing.T) {
