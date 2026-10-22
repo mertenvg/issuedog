@@ -20,12 +20,12 @@ import (
 )
 
 // Triage is the Unlabeled stage (Runs.Unlabeled): a short triage run that
-// classifies an open issue with no stage label (plan for #6, assumptions 2
-// and 3). Its result admits the issue to clarifying, flags it for a code
-// owner, or records that issuedog leaves it to people. An untrusted
-// author's issue is never admitted on a triage verdict: its run reads all
-// of its text in untrusted.md, and its result can only flag it or leave it
-// (Q4a).
+// classifies an open issue with no stage label (SPEC §6.2, Triage). Its
+// result admits the issue to clarifying, flags it for a code owner, or
+// records that issuedog leaves it to people. An untrusted author's issue
+// is never admitted on a triage verdict: its run reads all of its text in
+// untrusted.md, and its result can only flag it or leave it (SPEC §6.2,
+// Untrusted input).
 type Triage struct {
 	// Daemon gives the trust, config and clone of the moment.
 	Daemon *Daemon
@@ -152,7 +152,7 @@ The stage prompt follows.
 //     type, and, for a trusted author, the title and the body, unless the
 //     body is dirty.
 //   - comments.md: trusted people's clean comments, if there are any.
-//   - untrusted.md, if there's anything for it (plan for #6, Q4a): an
+//   - untrusted.md, if there's anything for it (SPEC §6.2): an
 //     untrusted author's title and body, a dirty body, and the comments of
 //     untrusted people and other bots, and dirty comments by anyone. Each
 //     is fenced under a heading saying it's untrusted data.
@@ -278,7 +278,7 @@ func (t *Triage) Check(_ context.Context, r Result) error {
 	return nil
 }
 
-// Apply applies a triage result (plan for #6, assumption 2), one decision
+// Apply applies a triage result (SPEC §6.2, Triage), one decision
 // per run:
 //   - A sure handle on a trusted author's issue admits it: a move to
 //     clarifying on §7.2's "issue is trusted" row, keyed run=<id>.
@@ -422,10 +422,10 @@ func triageLeftText(out triageOutput) string {
 		" A code owner can post `/track` to bring it into the pipeline.")
 }
 
-// triageFlagText is a flag's text in the §9.1 style (plan for #6,
-// assumption 3), escaped (SPEC §5.1): one question, with out's verdict as
-// the recommended option, and the cc line for notify. The summary goes
-// inside the App's bold, as a question's text does (ivWordingStrong).
+// triageFlagText is a flag's text in the §9.1 style (SPEC §6.2, A flag),
+// escaped (SPEC §5.1): one question, with out's verdict as the recommended
+// option, and the cc line for notify. The summary goes inside the App's
+// bold, as a question's text does (ivWordingStrong).
 func triageFlagText(out triageOutput, issue int, notify []string) string {
 	handle, leave := "Handle it", "Leave it"
 	first, second := handle, leave

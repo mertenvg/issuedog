@@ -17,12 +17,11 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// This file is plan #7's T9 (#161): a whole run of the digest against the
-// fakes, with step 1 wired as main's newStep wires it, and Daemon.Iterate
-// as the loop. Config and trust come from main on the origin: mertenvg
-// owns CODEOWNERS and is notify, and eve has no access at all. Then the
-// notes from the verifies of #156, #159 and #160 that no test on main
-// covers yet, on the same fake.
+// This file is #161: a whole run of the digest against the fakes, with step 1
+// wired as main's newStep wires it, and Daemon.Iterate as the loop. Config
+// and trust come from main on the origin: mertenvg owns CODEOWNERS and is
+// notify, and eve has no access at all. Then the notes from the verifies of
+// #156, #159 and #160 that no test on main covers yet, on the same fake.
 
 // The whole run's people.
 const (
@@ -95,7 +94,7 @@ func digestRunFake(t testing.TB) *githubtest.Fake {
 		f.SetParent(n, parent)
 	}
 	// 11 is closed, and its close judged, as the App leaves an accepted
-	// close (T6): a start reads nothing of it.
+	// close (#190): a start reads nothing of it.
 	f.RemoveLabel(11, app, "stage:ready")
 	f.AddLabel(11, app, "stage:completed")
 	f.CloseBy(11, digestRunOwner)
@@ -236,15 +235,15 @@ func digestRunWithout(n int, kind string) []string {
 // and the keys of the three state errors, in rank order.
 const digestRunAnnounced = "\n\ncc @mertenvg\n\n<!-- issuedog:digest-new items=err-4-disagreement-1,err-6-disagreement-2,err-5-type-9010 -->"
 
-// A whole run against the fakes (T9's acceptance criteria). The first pass
-// creates and pins the digest, lists every item in Q3a's order and
-// announces the new state errors in one comment, with one mention. An
-// extra pass writes nothing. An answer, which step 1 takes with its 👍,
-// removes its round without a mention, and a new round is listed, with
-// none (Q2a). A 👍 on the type error posts its ack, and only its item goes:
-// the retyped epic's approval stays (#156's verify). A new daemon on the
-// same fake writes nothing. Eve's title is escaped and mentions nobody,
-// in the body and the announcement. The digest never reaches Work.
+// A whole run against the fakes (#161's acceptance criteria). The first pass
+// creates and pins the digest, lists every item in SPEC §9.4's order and
+// announces the new state errors in one comment, with one mention. An extra
+// pass writes nothing. An answer, which step 1 takes with its 👍, removes its
+// round without a mention, and a new round is listed, with none (SPEC §9.4).
+// A 👍 on the type error posts its ack, and only its item goes: the retyped
+// epic's approval stays (#156's verify). A new daemon on the same fake writes
+// nothing. Eve's title is escaped and mentions nobody, in the body and the
+// announcement. The digest never reaches Work.
 func TestDigestRunWhole(t *testing.T) {
 	t.Parallel()
 	f, o := digestRunFake(t), digestRunOrigin(t)
@@ -588,12 +587,12 @@ func TestDigestRunTransferredRevert(t *testing.T) {
 }
 
 // digestRunTitleRule runs the whole run's repo through the probe of #87's
-// 2026-10-15 note, and returns the edit history queries each step sent.
-// Once the first pass created the digest as 12, the App files task 13 at
-// ready, with an origin marker, and a pass reads it. Then mertenvg edits
-// the origin out of its body, the original post's text is deleted from
-// its history, so there's no origin to repost, and, if renamed is set,
-// mertenvg renames it issuedog digest. The steps are:
+// 2026-10-15 note on the title rule (SPEC §9.4), and returns the edit history
+// queries each step sent. Once the first pass created the digest as 12, the
+// App files task 13 at ready, with an origin marker, and a pass reads it.
+// Then mertenvg edits the origin out of its body, the original post's text is
+// deleted from its history, so there's no origin to repost, and, if renamed
+// is set, mertenvg renames it issuedog digest. The steps are:
 //  1. the pass that lists the change;
 //  2. an unchanged pass, which sends only conditional GETs, answered 304,
 //     and writes nothing;

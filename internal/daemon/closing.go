@@ -18,16 +18,16 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// Closes, reopens and the closed stages (SPEC §6.4, §7.2, plan #87 rev 2,
-// Q5 and assumption 12, T6). Only a trusted user, the App or a merged pull
-// request may close an issue in the pipeline, and only a trusted user may
-// reopen one. The newest closed or reopened event decides:
+// Closes, reopens and the closed stages (SPEC §6.4, §7.1, §7.2). Only a
+// trusted user, the App or a merged pull request may close an issue in the
+// pipeline, and only a trusted user may reopen one. The newest closed or
+// reopened event decides:
 //   - An accepted close stands: the issue gets the closed stage its close
 //     names, stage:completed or stage:discarded (state.ClosingStage), in
 //     place of its other stage labels, with no comment (closingJudge).
 //   - An untrusted close is reverted: the App reopens the issue, leaving its
 //     stage label alone. A write collaborator's close is a discussion
-//     trigger, keyed event=<its timeline event id> (#87's assumption 3), so
+//     trigger, keyed event=<its timeline event id> (SPEC §6.4), so
 //     step 1 holds the reopened issue for it, with its notice, as for any
 //     trigger (discFind, closingTriggers). Anyone else's close gets a short
 //     comment with a revert marker, keyed by the close's event, as a label
@@ -95,23 +95,23 @@ import (
 // (github.StandingLabelChange), so a trusted user's choice of the other
 // closed stage by hand stands too. So a closed issue with a closed stage is
 // never read again, on a pass or a start, until its closed_at or its stage
-// labels change within a run. Gap, for SPEC §16 (T10, #194): what happens
+// labels change within a run. Gap, for SPEC §16 (#194): what happens
 // while no daemon runs to a closed issue that has one closed stage isn't
 // found, as the first poll of a start can't tell who set it, nor whether
 // the issue was reopened and closed again meanwhile. So a closed stage set
 // by someone untrusted stands, with or without their close, and so does
 // an untrusted close after a trusted reopen of a judged issue.
 //
-// The first start relabels the closed issues from before T6, most of them
-// at stage:pr-open: each is judged once, with one timeline read and at
-// most two label writes, the closed stage added and the old stage
-// removed, as setStage writes them. A pass judges at most closingBatch,
-// the newest closes first, so a fresh close isn't stuck behind the
-// backlog, and the label writes stay well under GitHub's secondary rate
-// limits. Each write is checked first, and the due issues are found from
-// the listing again on each start, so a crash part way resumes: an issue
-// with its closed stage is judged, and one left with two stage labels is
-// judged again, which removes the old one.
+// The first start relabels the closed issues from before the closed stages
+// existed, most of them at stage:pr-open: each is judged once, with one
+// timeline read and at most two label writes, the closed stage added and
+// the old stage removed, as setStage writes them. A pass judges at most
+// closingBatch, the newest closes first, so a fresh close isn't stuck
+// behind the backlog, and the label writes stay well under GitHub's
+// secondary rate limits. Each write is checked first, and the due issues
+// are found from the listing again on each start, so a crash part way
+// resumes: an issue with its closed stage is judged, and one left with two
+// stage labels is judged again, which removes the old one.
 //
 // The digest isn't in the pipeline: the poll records it before any of
 // this, and digestOpen judges its close and reopen, where the App's own
@@ -467,7 +467,7 @@ func closingWhat(tr discTrigger) string {
 
 // closingFromKey is tr, a trigger built from its key alone (discFromKey),
 // as a close if its key is a closed event's ID on s: a close and a rename
-// are both keyed by their timeline event ID (#87's assumption 3), so only
+// are both keyed by their timeline event ID (SPEC §6.4), so only
 // the timeline tells them apart, and it only grows. A snapshot CheckLabels
 // hasn't checked has no closes, so its keys stay renames, which only words
 // the trigger. Only a rename's key is a timeline event ID, so no other
@@ -552,7 +552,7 @@ func (a *Applier) closingRevertComment(ctx context.Context, s *github.Snapshot, 
 }
 
 // closingReopen judges the reopen of s, an open issue with a closed stage
-// on it (assumption 12), before the label rules act on the disagreement
+// on it (SPEC §6.4, §7.2), before the label rules act on the disagreement
 // the closed stage makes with the latest transition marker. It reports
 // whether it handled s, so the label rules' events are left alone. The
 // reopen to judge is the newest one that isn't the App's own, which only

@@ -14,9 +14,9 @@ import (
 )
 
 // A human task in the digest and in assignment against the fakes (#287,
-// plan #250's T7), with step 1 wired as main wires it. Most file each as
+// SPEC §9.4), with step 1 wired as main wires it. Most file each as
 // the App's issue, with the body humanBody writes (#284) and the first
-// move S3 posts on it; TestHumanItemFromChildren has ChildrenVisit create
+// move #249 posts on it; TestHumanItemFromChildren has ChildrenVisit create
 // them.
 
 // humanItemGolden is the body humanBody writes for plan #124 rev 1's item

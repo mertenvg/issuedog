@@ -151,8 +151,8 @@ func TestTypeErrCheck(t *testing.T) {
 
 // No type error where no type change is behind where the issue is, or the
 // type fits: the issue is untyped with no type event, typed with an issue
-// type on a repo that uses labels, a story that gained a parent (plan #7,
-// #153's note), closed, or has no transition marker.
+// type on a repo that uses labels, a story that gained a parent (SPEC
+// §5.3, The cause; #153's note), closed, or has no transition marker.
 func TestTypeErrNone(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -451,11 +451,11 @@ func TestTypeErrConfigTypes(t *testing.T) {
 
 // Triage on an issue of a type the pipeline doesn't know, set by a type
 // change, runs once: its move's state error is the type error, with no
-// transition error beside it, and no run starts again while it stands,
-// not even on new input. A change to another unknown type gives triage
-// no run either (#179's Q1a): step 1 posts its type error, once, and an
-// ack of that lets no run start. A change to a type the
-// pipeline knows lets triage run again.
+// transition error beside it, and no run starts again while it stands, not
+// even on new input. A change to another unknown type gives triage no run
+// either (SPEC §5.3, Holding back): step 1 posts its type error, once, and
+// an ack of that lets no run start. A change to a type the pipeline knows
+// lets triage run again.
 func TestTypeErrTriageUnknownType(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
@@ -610,14 +610,14 @@ func TestTypeErrInputsTrustError(t *testing.T) {
 
 // runStage holds a run back while any type error reported on the issue is
 // still the cause, not only the one keyed by the type change that stands
-// (#179's Q1a): on an issue at intake whose type error for type:feature
-// was posted, changed to type:idea, triage doesn't run even where step 1
-// hasn't posted the new key's error, as when Work is given the issue
-// straight after the label rules. An ack reply alone, as after the error's
-// comment was deleted, counts as reported too, but a state error of
-// another kind, posted or acknowledged, doesn't, nor does an ack with no
-// kind, which is older than type errors: triage runs, and its move reports
-// the type error.
+// (SPEC §5.3, Holding back): on an issue at intake whose type error for
+// type:feature was posted, changed to type:idea, triage doesn't run even
+// where step 1 hasn't posted the new key's error, as when Work is given
+// the issue straight after the label rules. An ack reply alone, as after
+// the error's comment was deleted, counts as reported too, but a state
+// error of another kind, posted or acknowledged, doesn't, nor does an ack
+// with no kind, which is older than type errors: triage runs, and its move
+// reports the type error.
 func TestTypeHoldAnyKey(t *testing.T) {
 	t.Parallel()
 	labels := "Labels.\n\n<!-- issuedog:error kind=labels key=1 -->"
@@ -657,9 +657,10 @@ func TestTypeHoldAnyKey(t *testing.T) {
 }
 
 // A 👍 on the revision of an epic retyped as a task, given while the type
-// error holds the approval back, still counts once the type is fixed
-// (#179's Q2a): setting type:epic again moves the issue to planning on
-// that 👍, as the revision it approves still matches the body (SPEC §7.4).
+// error holds the approval back, still counts once the type is fixed (SPEC
+// §5.3, Holding back): setting type:epic again moves the issue to planning
+// on that 👍, as the revision it approves still matches the body (SPEC
+// §7.4).
 func TestTypeHoldApprovalCountsLater(t *testing.T) {
 	t.Parallel()
 	f := typeErrEpic(func(t testing.TB, f *githubtest.Fake) {

@@ -10,19 +10,19 @@ import (
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
 
-// This file is plan #195's T9 (#298): a whole re-plan against the fakes,
-// from an epic planned through S3's path, with its stories and their
-// tasks, to a discussion hold, the interviewer's plan outcome, a revision
-// applied to the stories, and a changed story's own revision applied to
-// its tasks. It runs on childrenRunLoop (#279), so the stages are
-// registered as registerStages registers them, step 1 is wired as main's
-// newStep wires it, the Applier reads main from the daemon's clone and
-// the config's labels exist, as startDaemon sets them, the digest and
-// assignment are on, and Daemon.Iterate is the loop. Config and trust come
-// from main on the origin: mertenvg owns CODEOWNERS and is notify, and
-// wendy is a write collaborator CODEOWNERS doesn't trust. plan.review is
-// false, so a story's first plan skips review, while a revision, and the
-// epic's plan, wait for it.
+// This file is #298: a whole re-plan against the fakes, from an epic
+// planned through the path that creates the children (#249), with its
+// stories and their tasks, to a discussion hold, the interviewer's plan
+// outcome, a revision applied to the stories, and a changed story's own
+// revision applied to its tasks. It runs on childrenRunLoop (#279), so the
+// stages are registered as registerStages registers them, step 1 is wired
+// as main's newStep wires it, the Applier reads main from the daemon's
+// clone and the config's labels exist, as startDaemon sets them, the
+// digest and assignment are on, and Daemon.Iterate is the loop. Config and
+// trust come from main on the origin: mertenvg owns CODEOWNERS and is
+// notify, and wendy is a write collaborator CODEOWNERS doesn't trust.
+// plan.review is false, so a story's first plan skips review, while a
+// revision, and the epic's plan, wait for it.
 
 // The run's untrusted collaborator and her comment, the interviewer's
 // notes, and mertenvg's edit of a human task's body, which drops its
@@ -175,10 +175,10 @@ func replanRunApproval(l *childrenRunLoop, step string, n int, plan, up int64) i
 
 // TestReplanRun is the whole re-plan (#298's acceptance criteria, in
 // order). The fake holds mertenvg's epic, #1, at planning, its spec
-// approved. Through S3's path, the epic's plan files S1 to S3 as #3 to
-// #5, and each story's plan, which skips review, files its tasks: S1's T1
-// as #6, S2's T1 to T3 as #7 to #9, T3 a human task, and S3's T1 as #10.
-// Then:
+// approved. Through the path that creates the children (#249), the epic's
+// plan files S1 to S3 as #3 to #5, and each story's plan, which skips
+// review, files its tasks: S1's T1 as #6, S2's T1 to T3 as #7 to #9, T3 a
+// human task, and S3's T1 as #10. Then:
 //   - wendy's comment holds the epic from planned, and mertenvg's 👍 on it
 //     resolves the hold;
 //   - the interviewer's plan outcome sends it to planning, and the
@@ -203,9 +203,10 @@ func TestReplanRun(t *testing.T) {
 	l := newReplanRunLoop(t, f)
 	l.outs(plGolden(t, "epic-plan"))
 
-	// 1. The setup, through S3's path. The first pass creates the digest,
-	// #2, and the planner posts the epic's plan of three stories at
-	// plan-review, as an epic's plan always waits for review.
+	// 1. The setup, through the path that creates the children (#249). The
+	// first pass creates the digest, #2, and the planner posts the epic's
+	// plan of three stories at plan-review, as an epic's plan always waits
+	// for review.
 	l.step("the epic's plan", 1, "POST /issues", "POST /graphql", "PATCH /issues/2",
 		"POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:planning")
 	plan := l.planned("the epic's plan", epic, 1)

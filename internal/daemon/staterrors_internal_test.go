@@ -40,7 +40,7 @@ func openErrMarker(kind, key, ack string) string {
 }
 
 // Each kind of state error is open until it's acknowledged or its cause is
-// gone (plan #7, assumption 7), and each way it ends ends it.
+// gone (SPEC §5.3, Open), and each way it ends ends it.
 func TestOpenErrors(t *testing.T) {
 	t.Parallel()
 	const (

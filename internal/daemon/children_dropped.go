@@ -10,7 +10,7 @@ import (
 )
 
 // This file applies the rest of an approved revision to its children
-// (#195's T8, #297; SPEC §6.4), after its new children are filed and
+// (#297; SPEC §6.4), after its new children are filed and
 // linked and its changed ones rewritten (childWrite, childrenChanged): a
 // changed child's links to its siblings follow the revision
 // (revisedLink), and each dropped item's child is closed as not planned,

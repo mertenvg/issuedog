@@ -15,7 +15,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
 
-// Closes, reopens and the closed stages (plan #87 rev 2, T6, #190).
+// Closes, reopens and the closed stages (SPEC §6.4, §7.1, §7.2, #190).
 
 // closingFake is newFake, owner an admin and mallory a writer whom
 // CODEOWNERS doesn't trust, with owner's task 1 at pr-open, as the App set
@@ -124,7 +124,8 @@ func closingHeld(by string, event int64, at string, seen int64) string {
 // merged it: the issue gets stage:completed, or stage:discarded for a close
 // as not planned or as a duplicate, in place of its stage label, with no
 // comment. Each was closed while no daemon ran, as the closes from before
-// T6 are, so the first start judges each, and relabels it once.
+// the closed stages existed are, so the first start judges each, and
+// relabels it once.
 func TestClosingAccepted(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -422,10 +423,10 @@ func TestClosingWhileRunning(t *testing.T) {
 	}
 }
 
-// The closed issues from before T6 are each judged once, on the first
-// start: one timeline read and the label writes each. A pass judges at
-// most 20, the newest closes first; the rest wait for the next pass. Then
-// nothing is read again, on a pass or a restart.
+// The closed issues from before the closed stages existed are each judged
+// once, on the first start: one timeline read and the label writes each. A
+// pass judges at most 20, the newest closes first; the rest wait for the
+// next pass. Then nothing is read again, on a pass or a restart.
 func TestClosingFirstStart(t *testing.T) {
 	t.Parallel()
 	f, o := newFake(t), digestNotifyOrigin(t)
@@ -682,7 +683,7 @@ func TestClosingWriterAfterTrustedReopen(t *testing.T) {
 	}
 }
 
-// Gap, for SPEC §16 (T10, #194): a start takes a closed issue with one
+// Gap, for SPEC §16 (#194): a start takes a closed issue with one
 // closed stage as judged, so a trusted reopen and an untrusted close that
 // both come while no daemon runs, after an accepted close, aren't found.
 func TestClosingGapWhileStopped(t *testing.T) {

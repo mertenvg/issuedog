@@ -503,7 +503,7 @@ func TestDiscOldestKeysTheHold(t *testing.T) {
 }
 
 // /resume on an issue held only for discussion ends the hold, accepting
-// its triggers, and restores at (SPEC §6.4, T4).
+// its triggers, and restores at (SPEC §6.4, #188).
 func TestDiscResumeOnDiscussionHold(t *testing.T) {
 	t.Parallel()
 	f := discFake(t)
@@ -522,9 +522,9 @@ func TestDiscResumeOnDiscussionHold(t *testing.T) {
 	}
 }
 
-// On an issue already held, a trigger writes no hold marker (Q2b): a
+// On an issue already held, a trigger writes no hold marker (SPEC §6.4): a
 // comment writes nothing, and anything else only its notice, once. /resume
-// on the issue ends the owner's hold and accepts the triggers (T4), back
+// on the issue ends the owner's hold and accepts the triggers (#188), back
 // to ready.
 func TestDiscOnHeldIssue(t *testing.T) {
 	t.Parallel()

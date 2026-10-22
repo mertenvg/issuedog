@@ -136,7 +136,7 @@ func TestResolveByThumbsUp(t *testing.T) {
 
 // Any later clean comment by a trusted user counters every comment
 // before it, here two of mallory's, one on the held issue, which has no
-// record (Q2b): the issue leaves, bounded by the counter's time.
+// record (SPEC §6.4): the issue leaves, bounded by the counter's time.
 func TestResolveByCounterComment(t *testing.T) {
 	t.Parallel()
 	var counter int64
@@ -223,7 +223,7 @@ func TestResolveByNoticeOnHold(t *testing.T) {
 
 // resolveOwnerHeldFake is discFake with the owner's /hold on #1, then
 // mallory's comment and her rename, with its notice, by passes: the
-// comment has no record (Q2b). It returns the comment's ID and the
+// comment has no record (SPEC §6.4). It returns the comment's ID and the
 // notice's.
 func resolveOwnerHeldFake(t testing.TB) (f *githubtest.Fake, comment, notice int64) {
 	f = discFake(t)
@@ -544,5 +544,69 @@ func TestResolveCounteredBeforeHold(t *testing.T) {
 	}
 	if l := f.State().Issues[n-1].Labels; !slices.Equal(l, []string{"stage:ready"}) {
 		t.Errorf("labels %q; want the issue still at ready", l)
+	}
+}
+
+// A write collaborator's close is resolved by a code owner's 👍 on its
+// notice, the hold's own comment: a close hides no App content (SPEC
+// §6.4), so the issue leaves its hold for clarifying.
+func TestResolveCloseByNotice(t *testing.T) {
+	t.Parallel()
+	o := digestNotifyOrigin(t)
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := closingFake(t)
+		f.CloseBy(1, "mallory")
+		if err := resolveDaemon(t, f, o).Iterate(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		ids := commentIDs(t, f, 1)
+		if l, body := f.State().Issues[0].Labels, newestComment(f, 1); f.State().Issues[0].Closed || !slices.Equal(l, []string{"stage:held"}) ||
+			!strings.Contains(body, "<!-- issuedog:notice key=") {
+			t.Fatalf("labels %q, newest comment %q; want it reopened and held, with the hold's notice", l, body)
+		}
+		f.ForgetWrites()
+		f.AddReaction(ids[len(ids)-1], "owner", "+1")
+		return f
+	}
+	pass := func(f *githubtest.Fake) error { return resolveDaemon(t, f, o).Iterate(context.Background()) }
+	githubtest.Replay(t, setup, pass)
+	f := run(t, setup, pass)
+	if l, body := f.State().Issues[0].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:clarifying"}) ||
+		!strings.HasPrefix(body, "The discussion is resolved, by `owner`, so this issue leaves its hold from `pr-open` for `clarifying`.") {
+		t.Errorf("labels %q, newest comment %q; want it at clarifying", l, body)
+	}
+}
+
+// A trigger a marker records is resolved for sure, whoever made it now
+// is (resolver.verified): mallory's rename on an issue under the owner's
+// hold has its notice, and once she's no longer a writer, the owner's 👍
+// on the notice still writes the record that the discussion ended, so the
+// /resume after goes to clarifying. Through Iterate, whose trust asks the
+// fake's permissions.
+func TestResolveRecordedTriggerVerified(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	fileAt(f, "ready", "do it")
+	f.SetType(1, "task")
+	d := resolveDaemon(t, f, newOrigin(t))
+	f.AddComment(1, "owner", "/hold")
+	iterate(t, d)
+	f.RenameIssue(1, "mallory", "Renamed")
+	iterate(t, d)
+	ids := commentIDs(t, f, 1)
+	if !strings.Contains(newestComment(f, 1), "<!-- issuedog:notice key=") {
+		t.Fatalf("newest comment %q; want the rename's notice", newestComment(f, 1))
+	}
+	f.SetPermission("mallory", "read")
+	f.AddReaction(ids[len(ids)-1], "owner", "+1")
+	iterate(t, d)
+	if l, body := f.State().Issues[0].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:held"}) ||
+		!strings.Contains(body, "<!-- issuedog:ended reason=discussion resolved=") {
+		t.Fatalf("labels %q, newest comment %q; want it held, with the record that the discussion ended", l, body)
+	}
+	f.AddComment(1, "owner", "/resume")
+	iterate(t, d)
+	if l := f.State().Issues[0].Labels; !slices.Equal(l, []string{"stage:clarifying"}) {
+		t.Errorf("labels %q, newest comment %q; want the /resume to go to clarifying", l, newestComment(f, 1))
 	}
 }

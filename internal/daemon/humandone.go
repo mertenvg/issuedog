@@ -21,7 +21,7 @@ type doneChecked struct {
 	found string
 }
 
-// DoneCommand is the /done handler (SPEC §9.2, §9.3, plan #250, T5).
+// DoneCommand is the /done handler (SPEC §9.2, §9.3, #285).
 // state.Command.Check lets /done apply only at needs-human, and Waits makes
 // it wait while the issue is held.
 //
@@ -94,7 +94,7 @@ func (a *Applier) doneFound(ctx context.Context, c Cmd) (string, error) {
 
 // DoneByReaction returns the reaction trigger for Step.Reactions that does
 // what /done does on a trusted 👍 on a human task itself (SPEC §9.2, §9.3,
-// plan #250, T6). It acts only on an open human task at needs-human, so a
+// #286). It acts only on an open human task at needs-human, so a
 // 👍 given while the task is held waits until the hold ends, and an issue
 // that isn't a human task costs no read. It reads the issue's own
 // reactions (IssueReactions), never a comment's, with a conditional

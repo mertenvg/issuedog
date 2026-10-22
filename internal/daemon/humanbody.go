@@ -12,10 +12,10 @@ import (
 )
 
 // humanDoneTail follows the daemon's sentence for a "Done when" check: when
-// it runs the check (plan #250, assumption 3).
+// it runs the check (SPEC §9.3, "Running the check").
 const humanDoneTail = "I check this when you reply `/done` or react 👍 to this issue."
 
-// humanBody is a human task's body (SPEC §9.3, plan #250, T4), without its
+// humanBody is a human task's body (SPEC §9.3, #284), without its
 // origin marker, escaped: the task's Parent line, then the §9.3 fields in
 // order, each filled, then the cc line for notify. pri is the task's
 // priority, it its plan item, and check its "Done when" check
@@ -29,7 +29,7 @@ const humanDoneTail = "I check this when you reply `/done` or react 👍 to this
 //     isn't read as part of its last item.
 //   - "Why it blocks" names the issues of blocks, the children whose plan
 //     items depend on this one, or the parent when there are none, then
-//     the planner's reason (humanWhyBlocks, Q2a).
+//     the planner's reason (humanWhyBlocks, SPEC §9.3).
 //   - "Done when" is what the daemon checks, in its own words, for a check,
 //     or the planner's text for plain text (humanDoneWhen).
 //
@@ -61,7 +61,7 @@ func humanBody(it planItem, check state.Check, blocks []int, parent int, pri str
 	return github.Escape(strings.Join(append([]string{childParentLine(it, parent, pri), fields}, ccLines(notify)...), "\n\n")), nil
 }
 
-// humanWhyBlocks is "Why it blocks" (Q2a): "#12 and #13 can't proceed
+// humanWhyBlocks is "Why it blocks" (SPEC §9.3): "#12 and #13 can't proceed
 // until <reason>", naming the issues of blocks in number order, or
 // "#<parent> can't proceed until <reason>" when blocks is empty. reason is
 // the planner's, escaped (inline), its first word lowercased if it's one

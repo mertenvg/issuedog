@@ -61,7 +61,7 @@ const (
 // once a trusted answer came in, looking through a hold, but never on a
 // task, an untyped issue, an issue at another stage, or one planned before
 // whose approved plan can't be read back. One planned before with an
-// approved plan runs again, as a revision (T6 of #195), however it came
+// approved plan runs again, as a revision (SPEC §11.3), however it came
 // back to planning.
 func TestPlannerPending(t *testing.T) {
 	t.Parallel()

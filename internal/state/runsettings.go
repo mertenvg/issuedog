@@ -20,7 +20,7 @@ const (
 	Planner     Agent = "planner"
 	Implementer Agent = "implementer"
 	Verifier    Agent = "verifier"
-	// Triage classifies issues with no stage label (plan #6). It has the
+	// Triage classifies issues with no stage label (SPEC §6.2). It has the
 	// interviewer's settings, so config has no keys of its own for it.
 	Triage Agent = "triage"
 )
@@ -39,7 +39,7 @@ type Settings struct {
 var ErrLabels = errors.New("override labels")
 
 // RunSettings resolves the settings of a run of agent a on an issue with
-// labels, on implementer attempt attempt, counted from 1 (#93's plan, T3).
+// labels, on implementer attempt attempt, counted from 1 (SPEC §3.3).
 // It starts from the stage's defaults in cfg, then applies the issue's
 // model:* and effort:* labels, or for the verifier its verifier-model:* and
 // verifier-effort:* labels instead. Labels match ignoring case, as GitHub
@@ -51,7 +51,7 @@ var ErrLabels = errors.New("override labels")
 // Every run checks all four kinds, not only the two it uses: two labels of
 // one kind, or one that names no allowed model's label suffix or no effort
 // level, is an error matching ErrLabels, and no run on the issue starts
-// rather than guess (assumption 3).
+// rather than guess (SPEC §3.3).
 func RunSettings(a Agent, labels []string, cfg *config.Config, attempt int) (Settings, error) {
 	model, mok := forAgent(cfg.Stages.Model, a)
 	effort, eok := forAgent(cfg.Stages.Effort, a)

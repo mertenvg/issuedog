@@ -11,7 +11,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/github"
 )
 
-// RevisionKind is a revision marker's kind field (plan #247, assumption 2):
+// RevisionKind is a revision marker's kind field (SPEC §5, §7.4):
 // SpecRevision, with no kind, or PlanRevision. Each kind numbers its
 // revisions on its own, from 1, and a reader of one kind never reads the
 // other's markers, so a plan revision is never taken for a spec revision,
@@ -28,7 +28,7 @@ const (
 )
 
 // Revision is a spec or plan revision (SPEC §7.4), from the App's revision
-// marker in its revision comment (plan #5, assumption 5): revision rev=N
+// marker in its revision comment (SPEC §5): revision rev=N
 // body=<hash> for a spec, revision kind=plan rev=N body=<hash> for a plan.
 type Revision struct {
 	Kind RevisionKind
@@ -83,8 +83,8 @@ func normaliseLineEndings(text string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n")
 }
 
-// PlanHash is the hash a plan revision records of its comment (plan #247,
-// assumption 1): BodyHash of the comment's text above its last line. That
+// PlanHash is the hash a plan revision records of its comment (SPEC §5,
+// §7.4): BodyHash of the comment's text above its last line. That
 // covers the plan, the move's transition marker and any marker after it,
 // such as the plan's data. Line endings are normalised first, as for
 // BodyHash, so the last line is the text after the last line ending. It
@@ -117,7 +117,7 @@ func PlanHash(body string) (string, bool) {
 // revision markers, so a dirty comment by anyone else can't hide one. So
 // does an App comment deleted after it was posted (deletedHides), which may
 // have been a newer revision: else deleting the newer revisions would bring
-// back an older one, and a 👍 left on it earlier (#87's note 3). It reports
+// back an older one, and a 👍 left on it earlier (SPEC §7.4). It reports
 // false if there is none.
 func LatestRevision(s *github.Snapshot, appSlug string, kind RevisionKind, dirty func(int64) bool) (Revision, bool) {
 	latest := Revision{Kind: kind}
@@ -184,7 +184,7 @@ const (
 	// (Revision.Matches).
 	PlanChanged
 	// PlanBodyDirty is that the issue body has an edit that wasn't
-	// approved (plan #248, Q2a). A trusted edit to the body leaves the plan
+	// approved (SPEC §7.4). A trusted edit to the body leaves the plan
 	// approvable: the plan's hash is of its own comment.
 	PlanBodyDirty
 )
@@ -216,10 +216,10 @@ func PlanApproval(s *github.Snapshot, appSlug string, dirty func(int64) bool) (R
 }
 
 // ApprovedPlan returns the plan revision the latest move into planned
-// approved, with its comment, for S3 to read the plan's data from
-// (readPlanData, in internal/daemon). That move is the last transition
-// marker with to=planned and a rev, in a clean comment the App wrote, that
-// names the revision's hash:
+// approved, with its comment, for creating the children (SPEC §5.2) to read
+// the plan's data from (readPlanData, in internal/daemon). That move is the
+// last transition marker with to=planned and a rev, in a clean comment the
+// App wrote, that names the revision's hash:
 //   - by its body field, as an approval from plan-review does;
 //   - or else, for a move from planning that skips review, by its own
 //     comment's plan revision marker of the same rev: that move is the
@@ -240,8 +240,8 @@ func ApprovedPlan(s *github.Snapshot, appSlug string, dirty func(int64) bool) (R
 }
 
 // ApprovedPlanMove returns the comment holding the move into planned whose
-// revision ApprovedPlan returns, for S3 (plan #249, T3): its ID keys each
-// created child's first move, event=p<ID> (#224's reconcile decision 6),
+// revision ApprovedPlan returns, for creating the children (SPEC §5.2): its
+// ID keys each created child's first move, event=p<ID> (SPEC §5),
 // and the children are filed after it was posted. For a move from planning
 // that skips review, it's the plan comment itself. A move back from a hold
 // names no revision, so it's never that one: the move that approved the

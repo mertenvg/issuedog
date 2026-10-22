@@ -82,7 +82,7 @@ type Move struct {
 	// a revision marker.
 	Markers []github.Marker
 	// PlanRev, if set, makes the move's comment plan revision PlanRev, its
-	// plan comment (plan #247, assumption 1). The transition marker gets
+	// plan comment (SPEC §7.4, §11.4). The transition marker gets
 	// rev, but not body, and the comment's last line, after Markers, is the
 	// plan revision marker, revision kind=plan rev=<PlanRev> body=<hash>,
 	// with state.PlanHash of the comment: the hash of exactly the text above
@@ -124,7 +124,7 @@ func (m Move) check() error {
 	for f, v := range m.Fields {
 		// A run's move may also name a command it handled, by cmd=<comment
 		// id>, as the interviewer does for a /revise that waited through a
-		// hold (#87's assumption 8, T5): the command is then processed.
+		// hold (SPEC §6.4, Commands that wait): the command is then processed.
 		if f == "cmd" && m.Key.Field == "run" {
 			if _, ok := (state.Key{Field: "cmd", ID: v}).Comment(); !ok {
 				return fmt.Errorf("field cmd=%s names no comment", v)
@@ -176,14 +176,14 @@ func (m Move) checkPlanRev() error {
 }
 
 // Transition moves the issue s to m.To through the §7.2 table. It writes in
-// plan #5's assumption 4 order, skipping each step already done: the marker
+// the §5.2 order, skipping each step already done: the marker
 // comment, the new stage label, removing the old ones, then the 👍, unless
 // m.NoAck. Its writes are added to s. dirty is as for state.Derive.
 //
 // A move to closed is the only way the App closes an issue through the
 // table: a human task on /done (DoneCommand), an epic planned into
-// stories once its children have closed (epicCloseOne, #251), and in S5
-// a dropped child, as not planned. Its marker records m.StateReason as reason=; then, in
+// stories once its children have closed (epicCloseOne, #251), and, on
+// re-planning (SPEC §6.4), a dropped child, as not planned. Its marker records m.StateReason as reason=; then, in
 // place of the label writes, comes the 👍, and last the close with that
 // state_reason, unless the issue is closed already. The 👍 goes before the
 // close, as step 1 never visits a closed issue again to finish it. It
@@ -195,8 +195,8 @@ func (m Move) checkPlanRev() error {
 // The stage labels are set to match the latest marker, so a stage label a
 // trusted user set by hand would be overwritten. That's safe only because
 // Applier.CheckLabels runs first and records such a change as an override
-// (SPEC §5.1): callers run it on a fresh snapshot just before Transition (T11
-// will). A change made after that check, while no other marker lands, is
+// (SPEC §5.1): callers run it on a fresh snapshot just before Transition (the
+// stage-run harness does). A change made after that check, while no other marker lands, is
 // still caught: the next CheckLabels records it as an override, as it isn't
 // in the marker this writes. A snapshot older than the latest marker isn't
 // safe, so a run's result must re-read the issue before its Transition.

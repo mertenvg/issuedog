@@ -29,7 +29,7 @@ func resolveReview(do func(t testing.TB, f *githubtest.Fake)) func(testing.TB) *
 	})
 }
 
-// An /approve posted while held waits (#87's assumption 8), and once
+// An /approve posted while held waits (SPEC §6.4), and once
 // /resume takes the issue back to spec-review, in the same pass, it's
 // applied while the body still has revision 1's hash, and rejected with
 // the reason once it doesn't. The /resume comes first: an /approve before
@@ -108,7 +108,7 @@ func TestResolveApproveWaitsAtClarifying(t *testing.T) {
 
 // resolveFamily files #1, a task at ready, and #2, a task under it at
 // ready, holds both by /hold on #1, and posts mallory's comment on #2,
-// which has no record (Q2b), by passes. It returns that comment's ID.
+// which has no record (SPEC §6.4), by passes. It returns that comment's ID.
 func resolveFamily(t testing.TB) (*githubtest.Fake, int64) {
 	f := discFake(t)
 	file(f, 1, ready)
@@ -325,8 +325,9 @@ func TestResolveBoundByAct(t *testing.T) {
 	}
 }
 
-// At the clarifying after a hold, until T5, the issue waits: more passes
-// write nothing, and the interviewer isn't pending (Pending).
+// At the clarifying after a hold, a task waits, as the interviewer doesn't
+// run on one yet (SPEC §4, §7.2): more passes write nothing, and the
+// interviewer isn't pending (Pending).
 func TestResolveWaitsAtClarifying(t *testing.T) {
 	t.Parallel()
 	f := run(t, resolveHeldWith(func(_ testing.TB, f *githubtest.Fake) { f.AddReaction(1002, "owner", "+1") }), resolvePass(t, 1))

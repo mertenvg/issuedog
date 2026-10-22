@@ -495,8 +495,8 @@ func TestIvHoldStanding(t *testing.T) {
 	if got := ivHoldStanding(waitSnap(7, nil), waitSlug, none, state.SpecReview); got != "" {
 		t.Errorf("with no revision = %q, want none", got)
 	}
-	// A plan revision is never the spec revision that stands (plan #247,
-	// assumption 2), after it or alone.
+	// A plan revision is never the spec revision that stands (SPEC §7.4),
+	// after it or alone.
 	plan := waitPlanRevision(t, 2, "### Plan for #7 (rev 2)")
 	if got := ivHoldStanding(waitSnap(7, nil, waitRevision(1, "The spec."), plan), waitSlug, none, state.SpecReview); got != want {
 		t.Errorf("with a plan revision after it = %q, want %q", got, want)
@@ -523,7 +523,7 @@ func TestIvHoldStandingPlan(t *testing.T) {
 	if got := ivHoldStanding(s, waitSlug, none, state.PlanReview); got != want {
 		t.Errorf("at plan-review = %q, want %q", got, want)
 	}
-	// A trusted edit to the body leaves the plan standing (#248's Q2a).
+	// A trusted edit to the body leaves the plan standing (SPEC §7.4).
 	s.Body = "The spec, edited."
 	if got := ivHoldStanding(s, waitSlug, none, state.PlanReview); got != want {
 		t.Errorf("with another body = %q, want %q", got, want)
@@ -546,7 +546,7 @@ func TestIvHoldStandingPlan(t *testing.T) {
 
 // checkInterview takes plan (#294) only at the clarifying after a hold
 // from planning, plan-review or planned, on an epic or a story, with a
-// message and nothing else. On a story with a parent (#195's Q1a), it
+// message and nothing else. On a story with a parent (SPEC §9.1), it
 // refuses a spec and a typed outcome.
 func TestIvHoldCheckPlan(t *testing.T) {
 	t.Parallel()
@@ -603,7 +603,7 @@ func TestIvHoldCheckPlan(t *testing.T) {
 // ivMoveFits holds plan to the table's clarifying → planning row on
 // plan-changed, which only an epic or a story has (#294), and a round on a
 // story with a parent to the clarifying after a hold from a stage of its
-// plan (#195's Q1a).
+// plan (SPEC §9.1).
 func TestIvHoldMoveFitsPlan(t *testing.T) {
 	t.Parallel()
 	if to, tr := ivHoldMove(outcomePlan, state.PlanReview); to != state.Planning || tr != state.TriggerPlanChanged {
@@ -631,7 +631,7 @@ func TestIvHoldMoveFitsPlan(t *testing.T) {
 
 // ivRunsOn: the interviewer's classes anywhere at clarifying, and a story
 // with a parent only at the clarifying after a hold from planning,
-// plan-review or planned (#195's Q1a). Nothing else.
+// plan-review or planned (SPEC §9.1). Nothing else.
 func TestIvRunsOn(t *testing.T) {
 	t.Parallel()
 	story, task := state.Item{Type: "story", HasParent: true}, state.Item{Type: "task"}
@@ -682,7 +682,7 @@ func TestIvHoldRenderPlanChange(t *testing.T) {
 // says when plan is the outcome: questions always; spec, and typed where
 // the run may type, but on a story with a parent; unchanged after a hold
 // from a stage other than clarifying; plan after a hold from a stage of
-// the plan, on an epic or a story (#294, #195's Q1a).
+// the plan, on an epic or a story (#294, SPEC §9.1).
 func TestIvOutcomes(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {

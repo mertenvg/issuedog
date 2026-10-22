@@ -634,10 +634,11 @@ func planBack(body string, more func(t testing.TB, f *githubtest.Fake)) func(tes
 }
 
 // At plan-review, a trusted comment that isn't a command, posted after the
-// latest plan revision, or a /revise, sends the plan back to planning, with
-// cmd and seen set to it, and the App's 👍 (plan #248, T3). It's the first
-// of planning's Inputs, so it's the next planner run's notes. Each pass is
-// under Replay, and a second pass writes nothing.
+// latest plan revision, or a /revise, sends the plan back to planning,
+// with cmd and seen set to it, and the App's 👍 (SPEC §7.4, Sending a plan
+// back). It's the first of planning's Inputs, so it's the next planner
+// run's notes. Each pass is under Replay, and a second pass writes
+// nothing.
 func TestRevisePlan(t *testing.T) {
 	t.Parallel()
 	atReview, planning := []string{"stage:plan-review"}, []string{"stage:planning"}
@@ -750,10 +751,11 @@ func TestRevisePlan(t *testing.T) {
 	}
 }
 
-// A request that sent the plan back is still the notes, first of planning's
-// Inputs, after the issue is held at planning and resumed, and so is a
-// comment posted while it was held (plan #248, T3). The pass applies the
-// /hold and the /resume, under Replay, and a second pass writes nothing.
+// A request that sent the plan back is still the notes, first of
+// planning's Inputs, after the issue is held at planning and resumed, and
+// so is a comment posted while it was held (SPEC §7.4, Sending a plan
+// back). The pass applies the /hold and the /resume, under Replay, and a
+// second pass writes nothing.
 func TestRevisePlanAcrossAHold(t *testing.T) {
 	t.Parallel()
 	setup := planBack("too long", func(t testing.TB, f *githubtest.Fake) {

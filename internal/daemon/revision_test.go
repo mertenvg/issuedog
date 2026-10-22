@@ -462,7 +462,7 @@ func planRev(rev int, text string) string {
 }
 
 // At spec-review, a plan revision after the latest spec revision is never
-// taken for it (plan #247, assumption 2): approval by 👍 or /approve, a
+// taken for it (SPEC §7.4, Two kinds): approval by 👍 or /approve, a
 // revision request and ReviewVisit read the spec revision only, and a spec
 // revision posted after a plan revision is numbered from the spec revisions
 // alone.

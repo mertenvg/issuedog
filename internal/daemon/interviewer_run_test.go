@@ -20,7 +20,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// This file is plan #6's T9: a whole run against the fakes, from an epic
+// This file is the interviewer's whole run against the fakes, from an epic
 // filed at intake to planning, through the real Interviewer at clarifying
 // and the real Triage as the Unlabeled stage, wired as stageWork will wire
 // them, with step 1 wired as main's newStep, and Daemon.Iterate as the

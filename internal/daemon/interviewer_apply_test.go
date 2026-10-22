@@ -201,7 +201,7 @@ func TestInterviewerSetsType(t *testing.T) {
 	}
 }
 
-// TestInterviewerTyped: a typed outcome (plan #6, Q1a) sets the bug's
+// TestInterviewerTyped: a typed outcome (SPEC §9.1) sets the bug's
 // label, and its move, with no round, says the issue waits, after which
 // the interviewer doesn't run on it.
 func TestInterviewerTyped(t *testing.T) {

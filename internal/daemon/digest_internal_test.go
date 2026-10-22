@@ -281,7 +281,7 @@ func TestDigestNeverReadAgain(t *testing.T) {
 }
 
 // digestEdit writes a body once: the body it wrote is the one it compares
-// with until the poll lists the digest again, as T8 relies on.
+// with until the poll lists the digest again, as #160 relies on.
 func TestDigestEditOnce(t *testing.T) {
 	t.Parallel()
 	f := githubtest.New(t, "o/r", "issuedog")

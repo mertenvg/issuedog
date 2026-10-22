@@ -16,11 +16,11 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// This file is the revised plan (T6 of #195, SPEC §11.3): a plan for an
+// This file is the revised plan (#195, SPEC §11.3): a plan for an
 // issue that was planned before, which marks every item kept, changed, new
 // or dropped against the children of its approved plan.
 
-// The statuses of a revised plan's items (#195's assumption 5). A first
+// The statuses of a revised plan's items (SPEC §11.3). A first
 // plan has none.
 const (
 	planKept    = "kept"    // a child left as it is
@@ -101,8 +101,8 @@ func planPriorOf(s *github.Snapshot, appSlug string, is state.Issue, dirty func(
 	return &planPrior{Rev: rev.Rev, Items: plan.Items, move: move}, nil
 }
 
-// read reads the children of the plan on issue s, as S3 finds them
-// (childrenFind, plan #249): its sub-issues, then the repo's issues
+// read reads the children of the plan on issue s, as creating the
+// children finds them (childrenFind, SPEC §5.2): its sub-issues, then the repo's issues
 // updated since the move into planned, two listings, so each child's state
 // and close reason come with it. A sub-issue whose listed body gives no
 // origin is read on its own (childOrigins): one the App filed, for an
@@ -171,7 +171,8 @@ func (pr *planPrior) child(id string) (planChild, bool) {
 
 // keptDeps are the dependencies of each kept item of revision p, which
 // carries none of its own: its item's in the approved revision, less any
-// that name an item p drops or doesn't list, as those links go (T8). The
+// that name an item p drops or doesn't list, as those links go (SPEC
+// §5.2). The
 // cycle check and the link limits count them (SPEC §11.3). For a first
 // plan, pr is nil, and there are none.
 func (pr *planPrior) keptDeps(p planBody) map[string][]string {
@@ -216,7 +217,7 @@ func planDepsOf(p planBody, kept map[string][]string) func(planItem) []string {
 }
 
 // The rules a revision is checked by beside checkPlan's others (SPEC
-// §11.3, #195's T6). Each failure names one.
+// §11.3). Each failure names one.
 const (
 	ruleStatus      = "status"       // a revision's items each have a status, and a first plan's none
 	ruleChildren    = "children"     // every child appears exactly once, kept, changed or dropped

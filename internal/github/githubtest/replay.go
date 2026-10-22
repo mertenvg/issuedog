@@ -83,7 +83,7 @@ func (f *Fake) State() State {
 }
 
 // Replay checks that pass is safe to run again after a crash at any write
-// (plan #5, assumption 4). The contract:
+// (SPEC §5.2). The contract:
 //
 //  1. setup builds a fake and fills it. Replay calls it once per run, so it
 //     must build the same fake every time. It may call t.Fatal.

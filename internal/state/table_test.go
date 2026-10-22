@@ -159,7 +159,7 @@ func TestLookupPlanQuestions(t *testing.T) {
 	}
 }
 
-// TestLookupCreated: a created child's first move (plan #249, Q1a) is
+// TestLookupCreated: a created child's first move (SPEC §7.2) is
 // intake → planning for a story with a parent, intake → ready for a task
 // from a plan, and intake → needs-human for a human task, each only for
 // its class. An owner's story or task, an epic, a bug and an untyped issue
@@ -304,7 +304,7 @@ var fitsItems = map[string]Item{
 	"feature":        {Type: "feature"},
 }
 
-// Fits, in the acceptance criteria's cases and a few more (plan #7, T1).
+// Fits, in the cases SPEC §4 and §7.2 give and a few more.
 func TestFits(t *testing.T) {
 	for _, tt := range []struct {
 		name string

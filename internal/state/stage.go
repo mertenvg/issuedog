@@ -29,15 +29,15 @@ const (
 	// issue's stage label is one of the closed stages below, once its close
 	// is judged (ClosingStage).
 	Closed Stage = "closed"
-	// Completed and Discarded are the closed stages (plan #87 rev 2, Q5 and
-	// assumption 12): the label an accepted close sets, stage:completed for
+	// Completed and Discarded are the closed stages (SPEC §6.4, §7.1): the
+	// label an accepted close sets, stage:completed for
 	// an issue closed as completed, a merged pull request's close included,
 	// and stage:discarded for one closed as not planned or as a duplicate.
 	// They're valid only on a closed issue, so they're no §7.1 stage: Open
 	// is false for them, ParseLabel doesn't take their labels, and no
 	// transition marker names them. A closed issue with one, that the App
 	// or a trusted user set, has had its close judged, so it isn't read
-	// again (T6).
+	// again (SPEC §6.4).
 	Completed Stage = "completed"
 	Discarded Stage = "discarded"
 )
@@ -67,7 +67,7 @@ func (s Stage) Label() (string, bool) {
 }
 
 // Closing reports whether s is a closed stage, Completed or Discarded,
-// valid only on a closed issue (assumption 12).
+// valid only on a closed issue (SPEC §7.1).
 func (s Stage) Closing() bool { return s == Completed || s == Discarded }
 
 // ParseClosingLabel returns the closed stage a stage:* label names,

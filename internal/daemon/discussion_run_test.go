@@ -18,14 +18,14 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// This file is plan #87's T9 (#193): a whole run of discussion holds and
-// assignment against the fakes, through the real Interviewer at
-// clarifying, with step 1 wired as main's newStep wires it, the digest and
-// assignment on, as startDaemon sets them, and Daemon.Iterate as the loop.
-// Config and trust come from main on the origin: owner owns CODEOWNERS
-// and is notify, mallory is a write collaborator CODEOWNERS doesn't
-// trust, and eve can only read. Then the notes from the verifies of #188,
-// #189, #190 and #192 (on #193), each on a loop of its own.
+// This file is #193: a whole run of discussion holds and assignment against
+// the fakes, through the real Interviewer at clarifying, with step 1 wired as
+// main's newStep wires it, the digest and assignment on, as startDaemon sets
+// them, and Daemon.Iterate as the loop. Config and trust come from main on
+// the origin: owner owns CODEOWNERS and is notify, mallory is a write
+// collaborator CODEOWNERS doesn't trust, and eve can only read. Then the
+// notes from the verifies of #188, #189, #190 and #192 (on #193), each on a
+// loop of its own.
 
 // discRunLoop is a whole run's loop on f: a rig on the state directory
 // root, rebuilt by start as a restart builds the daemon, with the wiring
@@ -271,9 +271,9 @@ func discRunHeld(t *testing.T, l *discRunLoop) int64 {
 	return hold
 }
 
-// The whole run (T9's acceptance criteria). The epic is on the owner's
+// The whole run (#193's acceptance criteria). The epic is on the owner's
 // /hold. Mallory's comment holds it for discussion too, which writes no
-// marker on an issue held already (Q2b): the digest lists it and
+// marker on an issue held already (SPEC §6.4): the digest lists it and
 // announces it, as no App comment mentions it, and notify is assigned.
 // Eve's comments, on the epic and on the task, hold nothing. Mallory's
 // rename and her deletion of the owner's answer each add a notice. The
@@ -603,16 +603,17 @@ func discRunFamily(t testing.TB) *githubtest.Fake {
 	return f
 }
 
-// #188's verify note, under the owner rule that replaced Q2b's stacking: a
-// parent's /resume over children that have their own /holds. The epic's
-// /hold holds both tasks, then each task gets a /hold of its own, which
-// writes no marker on a held issue, and mallory's comment holds #3 for
-// discussion too. The epic's /resume takes it back to planned, and ends
-// its /hold on each task, but neither leaves held: a parent's /resume never
-// ends a /hold posted on the child. So each task gets one "ended
-// reason=owner" record, which no later pass, nor a restart, writes again.
-// Each task's own /resume then takes it back to ready, mallory's comment
-// accepted with it, as nothing else resolved it.
+// #188's verify note, under the owner rule that a hold on an issue held
+// already keeps the first hold's stage (SPEC §6.4, "Holds stack"): a parent's
+// /resume over children that have their own /holds. The epic's /hold holds
+// both tasks, then each task gets a /hold of its own, which writes no marker
+// on a held issue, and mallory's comment holds #3 for discussion too. The
+// epic's /resume takes it back to planned, and ends its /hold on each task,
+// but neither leaves held: a parent's /resume never ends a /hold posted on
+// the child. So each task gets one "ended reason=owner" record, which no
+// later pass, nor a restart, writes again. Each task's own /resume then takes
+// it back to ready, mallory's comment accepted with it, as nothing else
+// resolved it.
 func TestDiscRunParentResume(t *testing.T) {
 	t.Parallel()
 	f := discRunFamily(t)
@@ -1121,9 +1122,9 @@ func discRunFour(t testing.TB) *githubtest.Fake {
 // discussion's end is recorded while #3's /hold keeps #4, and the /resume
 // moves it; with the /resume first, #4 records the /resume's end of the
 // owner hold, and the 👍 moves it. Its hold was from planned, a stage of
-// its plan, so the interviewer reads the discussion there (#195's Q1a),
-// and its unchanged takes #4 back to planned. Only #5's own /resume ends
-// its /hold.
+// its plan, so the interviewer reads the discussion there (SPEC §6.4,
+// "Leaving the hold"), and its unchanged takes #4 back to planned. Only #5's
+// own /resume ends its /hold.
 func TestDiscRunFourLevels(t *testing.T) {
 	t.Parallel()
 	for _, thumbsFirst := range []bool{true, false} {
@@ -1152,7 +1153,7 @@ func TestDiscRunFourLevels(t *testing.T) {
 				t.Errorf("the epic's /resume has reactions %q; want the App's 👎", r[len(r)-2].Reactions)
 			}
 			// unchanged checks the interviewer's move on #4, a story with a
-			// parent held from planned (#195's Q1a): unchanged, back there.
+			// parent held from planned (SPEC §6.4): unchanged, back there.
 			unchanged := func(c string) {
 				t.Helper()
 				if !strings.HasPrefix(c, "Nothing in the discussion during the hold changes this issue, so it goes back to `planned`.") {
@@ -1599,14 +1600,13 @@ func discRunRaceHeld(t *testing.T, l *discRunLoop, aLow bool) int64 {
 // #205, which #193 left out: the owner's /resume on J, then a /hold on its
 // ancestor A, in one poll, J and K held by J's own /hold. With A's number
 // lower, A's /hold is handled first, and writes no marker on J and K, held
-// already (Q2b); J's /resume, handled next, ends J's own /hold on each, and
-// records that, but not A's /hold, posted after it, so both stay held,
-// and the record of the discussion's end names A's /hold (resolveAbove),
-// all in the race's own pass. With J's lower, J's /resume takes J and K
-// back to ready first, and A's /hold then holds them with its markers.
-// Either way A's later /resume takes all three back to ready. Every pass
-// after the race's, and after the /resume's, is unchanged, as is a
-// restart's.
+// already (SPEC §6.4); J's /resume, handled next, ends J's own /hold on each,
+// and records that, but not A's /hold, posted after it, so both stay held,
+// and the record of the discussion's end names A's /hold (resolveAbove), all
+// in the race's own pass. With J's lower, J's /resume takes J and K back to
+// ready first, and A's /hold then holds them with its markers. Either way A's
+// later /resume takes all three back to ready. Every pass after the race's,
+// and after the /resume's, is unchanged, as is a restart's.
 func TestDiscRunHoldResumeRace(t *testing.T) {
 	t.Parallel()
 	for _, aLow := range []bool{true, false} {

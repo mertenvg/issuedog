@@ -76,8 +76,8 @@ func planComment(text string, rev int) string {
 	return above + "\n<!-- issuedog:revision kind=plan rev=" + n + " body=" + BodyHash(above) + " -->"
 }
 
-// Each kind is read, numbered, dirty and hidden on its own (plan #247,
-// assumption 2): a reader of one kind never sees the other's markers.
+// Each kind is read, numbered, dirty and hidden on its own (SPEC §7.4): a
+// reader of one kind never sees the other's markers.
 func TestLatestRevisionByKind(t *testing.T) {
 	t.Parallel()
 	const (
@@ -264,7 +264,8 @@ func planMove(text string, rev int, to Stage) string {
 }
 
 // approval is the move into planned that approves plan revision rev, of
-// plan comment plan, from plan-review (#248's T2): rev, body, cmd and seen.
+// plan comment plan, from plan-review (SPEC §5, §7.4): rev, body, cmd and
+// seen.
 func approval(t *testing.T, plan string, rev int) string {
 	t.Helper()
 	hash, ok := PlanHash(plan)
@@ -295,7 +296,7 @@ func planRev(t *testing.T, body string, id int64, rev int) Revision {
 }
 
 // PlanApproval gives the latest plan revision, and each reason it can't be
-// approved, in a fixed order (#248's T1): hidden, changed, a dirty body.
+// approved, in a fixed order (SPEC §7.4): hidden, changed, a dirty body.
 // With no plan revision, that's the only reason.
 func TestPlanApproval(t *testing.T) {
 	t.Parallel()
@@ -372,7 +373,7 @@ func TestPlanApproval(t *testing.T) {
 // ApprovedPlan names the plan revision the latest move into planned
 // carries, from plan-review or, for a plan that skips review, from
 // planning, with its comment; and nothing once that comment is gone,
-// dirty or edited (#248's T1).
+// dirty or edited (SPEC §7.4).
 func TestApprovedPlan(t *testing.T) {
 	t.Parallel()
 	const (

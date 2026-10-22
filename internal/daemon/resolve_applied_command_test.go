@@ -1,7 +1,6 @@
 package daemon_test
 
 import (
-	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -16,14 +15,31 @@ import (
 // hold anything, and an owner hold ends only by a /resume that applies
 // (SPEC §6.4).
 
-// resolveSteps runs resolvePass on each of ns in turn, as one Iterate
-// visits them, failing t on an error.
-func resolveSteps(t testing.TB, f *githubtest.Fake, ns ...int) {
-	t.Helper()
-	for _, n := range ns {
-		if err := resolvePass(t, n)(f); err != nil {
-			t.Fatal(err)
-		}
+// A /resume counters no comment, even one rejected, as for a bad
+// argument: mallory's comment stays open, and the issue held.
+func TestResolveRejectedResumeCountersNothing(t *testing.T) {
+	t.Parallel()
+	f := run(t, resolveHeldWith(func(_ testing.TB, f *githubtest.Fake) { f.AddComment(1, "owner", "/resume now") }), resolvePass(t, 1))
+	if l, body := f.State().Issues[0].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:held"}) || !strings.Contains(body, "reason=rejected") {
+		t.Errorf("labels %q, newest comment %q; want the issue held, the /resume rejected", l, body)
+	}
+}
+
+// A /hold rejected for a bad argument holds nothing: once the discussion
+// is resolved, the issue goes to clarifying.
+func TestResolveRejectedHoldHoldsNothing(t *testing.T) {
+	t.Parallel()
+	f := resolveHeldWith(func(_ testing.TB, f *githubtest.Fake) {})(t)
+	f.AddComment(1, "owner", "/hold now")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	f.AddReaction(1002, "owner", "+1")
+	if err := resolvePass(t, 1)(f); err != nil {
+		t.Fatal(err)
+	}
+	if l := f.State().Issues[0].Labels; !slices.Equal(l, []string{"stage:clarifying"}) {
+		t.Errorf("labels %q, newest comment %q; want clarifying, the rejected /hold no hold", l, newestComment(f, 1))
 	}
 }
 
@@ -32,7 +48,7 @@ func resolveSteps(t testing.TB, f *githubtest.Fake, ns ...int) {
 // mallory's comment on #1, by one pass over #1, then #2, then #1 again: #1
 // is held for discussion, its /resume waits for #2's /hold, posted before
 // it (#243), and #2's /hold, the first hold being #1's own, writes no
-// marker on #1 (Q2b); then #1's /resume is rejected, as mallory's comment
+// marker on #1 (SPEC §6.4); then #1's /resume is rejected, as mallory's comment
 // came after it. It returns the fake, the /hold's ID, the /resume's and
 // mallory's comment's.
 func resolveRejectedResume(t testing.TB) (*githubtest.Fake, int64, int64, int64) {
@@ -319,36 +335,6 @@ func TestResolveRejectedOwnHoldHoldsNothing(t *testing.T) {
 	}
 }
 
-// A write collaborator's close is resolved by a code owner's 👍 on its
-// notice, the hold's own comment: a close hides no App content (#87's
-// assumption 4), so the issue leaves its hold for clarifying.
-func TestResolveCloseByNotice(t *testing.T) {
-	t.Parallel()
-	o := digestNotifyOrigin(t)
-	setup := func(t testing.TB) *githubtest.Fake {
-		f := closingFake(t)
-		f.CloseBy(1, "mallory")
-		if err := resolveDaemon(t, f, o).Iterate(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		ids := commentIDs(t, f, 1)
-		if l, body := f.State().Issues[0].Labels, newestComment(f, 1); f.State().Issues[0].Closed || !slices.Equal(l, []string{"stage:held"}) ||
-			!strings.Contains(body, "<!-- issuedog:notice key=") {
-			t.Fatalf("labels %q, newest comment %q; want it reopened and held, with the hold's notice", l, body)
-		}
-		f.ForgetWrites()
-		f.AddReaction(ids[len(ids)-1], "owner", "+1")
-		return f
-	}
-	pass := func(f *githubtest.Fake) error { return resolveDaemon(t, f, o).Iterate(context.Background()) }
-	githubtest.Replay(t, setup, pass)
-	f := run(t, setup, pass)
-	if l, body := f.State().Issues[0].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:clarifying"}) ||
-		!strings.HasPrefix(body, "The discussion is resolved, by `owner`, so this issue leaves its hold from `pr-open` for `clarifying`.") {
-		t.Errorf("labels %q, newest comment %q; want it at clarifying", l, body)
-	}
-}
-
 // An applied /resume on an issue between the issue and the one whose
 // /hold holds it counts from the transition before the issue's hold too,
 // not from the hold's start. #3 is #2's parent, and #2 is #1's; #2 is on a
@@ -389,5 +375,26 @@ func TestResolveAppliedParentResumeBeforeHoldStart(t *testing.T) {
 	f := run(t, setup, resolvePass(t, 1))
 	if l, body := f.State().Issues[0].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:clarifying"}) || strings.Contains(body, "held=") {
 		t.Errorf("#1: labels %q, newest comment %q; want it at clarifying, as #2's /resume ended #3's /hold", l, body)
+	}
+}
+
+// A /hold on a descendant posted after the /resume, that the App hasn't
+// handled yet, isn't one the /resume judges: #2's /resume takes #1 back,
+// and #1's /hold, handled next, holds it again with a marker of its own.
+func TestResolveRound3OwnHoldAfterResumeUnhandled(t *testing.T) {
+	t.Parallel()
+	f := discFake(t)  // #1
+	file(f, 0, ready) // #2
+	f.SetParent(1, 2)
+	f.AddComment(2, "owner", "/hold")
+	resolveSettle(t, f, 2, 1)
+	f.AddComment(2, "owner", "/resume")
+	own := f.AddComment(1, "owner", "/hold")
+	resolveSettle(t, f, 2)
+	resolveLabels(t, f, "after #2's /resume", "ready", "ready")
+	resolveSettle(t, f, 1)
+	resolveLabels(t, f, "after #1's /hold", "held", "ready")
+	if body := newestComment(f, 1); !strings.Contains(body, fmt.Sprintf("reason=owner cmd=%d", own)) {
+		t.Errorf("#1: newest comment %q; want the marker of its own /hold", body)
 	}
 }

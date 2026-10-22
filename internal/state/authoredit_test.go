@@ -8,7 +8,7 @@ import (
 
 // After the App's full rewrite of the body, the App is its author, so the
 // issue's author's own edit after it is judged like anyone else's: by
-// trust (#87, Q4a). Their edits before it still are theirs, and so are a
+// trust (SPEC §5.1). Their edits before it still are theirs, and so are a
 // comment's, which the App never rewrites whole. An App entry whose text
 // someone deleted counts as a rewrite.
 func TestAuthorEditWriter(t *testing.T) {

@@ -24,10 +24,10 @@ const planDirtyKeyPrefix = "plan-dirty-"
 // planDirtyRestore records again, in an App comment of its own, the App's
 // move to plan-review that a dirty plan comment hid (#315), before the
 // label rules act on events: a plan comment carries its own move to
-// plan-review (plan #247, assumption 1), and once anyone but the App edits
+// plan-review (SPEC §11.4), and once anyone but the App edits
 // it, it's dirty, and its markers no longer count (SPEC §5.1). The label
 // rules would then put the label back to planning, with a disagreement,
-// and the planner would run again, where plan #248's Q1a has the daemon
+// and the planner would run again, where SPEC §7.4 has the daemon
 // post nothing. It reports whether it recorded the move, so the events are
 // left alone: the label shows plan-review already.
 //

@@ -77,7 +77,7 @@ func TestIterateDropsClosedIssues(t *testing.T) {
 		t.Errorf("after the closes, step 1 ran on %v and Work got %v; want neither issue", visits, (*work)[1])
 	}
 	// The owner's close stands: it's judged from the timeline alone, and
-	// the issue isn't read again (T6).
+	// the issue isn't read again (#190).
 	for _, r := range readsOf(f, from, 1) {
 		if r.Method == "GET" && r.Path != "/issues/1/timeline" {
 			t.Errorf("read closed issue 1 again: %+v", r)
@@ -224,10 +224,10 @@ func TestIterateDropsAnIssueOnlyAfterTwo404s(t *testing.T) {
 	touch()
 	notFound()
 	pass("a 404 before a close", []int{2}, false)
-	f.CloseBy(1, "owner") // judged, and given its closed stage (T6)
+	f.CloseBy(1, "owner") // judged, and given its closed stage (#190)
 	f.AddComment(2, "owner", "a comment")
 	pass("the close", []int{2}, false)
-	f.ReopenBy(1, "owner") // a trusted reopen, which holds it (T6)
+	f.ReopenBy(1, "owner") // a trusted reopen, which holds it (#190)
 	touch()
 	notFound()
 	pass("a 404 once reopened", []int{2}, false)

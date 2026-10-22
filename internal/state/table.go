@@ -27,10 +27,10 @@ type Trigger string
 const (
 	TriggerTrusted Trigger = "trusted"
 	// TriggerCreated is a created child's first move, intake → its first
-	// stage (plan #249, Q1a): planning for a story with a parent, ready for
+	// stage (SPEC §7.2): planning for a story with a parent, ready for
 	// a task from a plan, needs-human for a human task. The daemon writes
 	// it in an App comment on the child, keyed by the parent's move to
-	// planned (#224's reconcile decision 6).
+	// planned (SPEC §5).
 	TriggerCreated                Trigger = "created"
 	TriggerMoreQuestions          Trigger = "more-questions"
 	TriggerSpecWritten            Trigger = "spec-written"
@@ -198,8 +198,8 @@ func (r Row) matchTo(s Stage, class Class) bool {
 	return r.to == s
 }
 
-// Fits reports whether an issue like it can be at stage s (SPEC §4, plan
-// #7, assumption 9). If not, a type change left the issue where it doesn't
+// Fits reports whether an issue like it can be at stage s (SPEC §4,
+// §7.2). If not, a type change left the issue where it doesn't
 // belong, and that is a kind=type state error (SPEC §5.3).
 //   - An unknown type, which ClassOf rejects, fits only intake: the
 //     pipeline never takes it in.

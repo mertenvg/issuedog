@@ -147,7 +147,7 @@ type Lease struct {
 	ApplyFailures int `json:"apply_failures,omitempty"`
 	// LastFailure is why the run failed, as failed records it, at most
 	// maxLastFailure characters (lastFailure), for the attempt cap's error
-	// (#247's assumption 10), so a restart still names it. It holds only
+	// (SPEC §5.3, §8.2), so a restart still names it. It holds only
 	// what that public comment may quote of the cause (publicCause), or
 	// publicCauseLogged when that's nothing: failed logs the whole cause,
 	// and nothing else reads it. Its key is new with that (#320), so a
@@ -379,7 +379,7 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		// would fail too: the type error stands for it (blocked). Any type
 		// error reported holds the run back, not only the one keyed by the
 		// type change that stands, so a change from one unknown type to
-		// another at intake gives triage no run (#179's Q1a): step 1 posts
+		// another at intake gives triage no run (SPEC §5.3): step 1 posts
 		// the new key's error (typeCheck).
 		logr.Debugf("%s/%s#%d: no %s run: its type doesn't fit its stage, as reported", a.Owner, a.Repo, n, st.Agent())
 		return false, nil
@@ -619,7 +619,7 @@ func (r *Runs) applyLease(ctx context.Context, l Lease, st Stage, raw []byte, ou
 //   - when a transition sits above the run's seen (runMovedSince), even
 //     one back to the stage it ran at: a move to the same stage, such as
 //     a changed child's when its parent's newly approved revision rewrote
-//     it (#195's T7), or a hold that ended back there, so the stage runs
+//     it (SPEC §6.4), or a hold that ended back there, so the stage runs
 //     again on what's there now.
 //   - when it has new trusted input since the run's seen (newInput), which
 //     the stage runs again with.
@@ -749,7 +749,7 @@ func (e *checkReadError) Unwrap() error { return e.err }
 // runMovedSince returns the ID of the first comment on s above seen, the
 // newest comment a run was given, that carries a transition marker of the
 // App's that counts, in clean content (SPEC §5.1), or 0 if none does
-// (#195's T7). The run's own move isn't one apply asks about: a result
+// (SPEC §8.2). The run's own move isn't one apply asks about: a result
 // whose move is written is only finished.
 func runMovedSince(s *github.Snapshot, appSlug string, dirty func(int64) bool, seen int64) int64 {
 	for _, c := range s.Comments {
@@ -767,7 +767,7 @@ func runMovedSince(s *github.Snapshot, appSlug string, dirty func(int64) bool, s
 
 // newInput returns the ID of the first comment on s that's new trusted
 // input since seen, the newest comment a run was given, or 0 if there's
-// none (plan #6, assumption 5): one above seen, by a trusted user, that
+// none (SPEC §8.2): one above seen, by a trusted user, that
 // isn't a command and isn't dirty. The App's comments, and other bots',
 // aren't, as no bot is trusted. A result applied without it would lose
 // it, such as an answer step 1 👍'd before a delayed apply.
@@ -925,8 +925,8 @@ func (r *Runs) count(l Lease) int {
 // recorded, or is closed or gone gets none. For the Unlabeled stage, whose
 // round of input never changes, the text names the ways into the pipeline
 // instead of new input. For every stage, it then quotes l.LastFailure, if
-// set: why the last attempt failed (#247's assumption 10), fenced and
-// escaped, as it may quote the agent's output (SPEC §5.1), or, for
+// set: why the last attempt failed (SPEC §5.3), fenced and escaped,
+// as it may quote the agent's output (SPEC §5.1), or, for
 // publicCauseLogged, says the daemon's log has it (publicCauseText).
 func (r *Runs) reportCap(ctx context.Context, s *github.Snapshot, st Stage, l Lease) error {
 	a := r.Daemon.Step.Applier
@@ -958,7 +958,7 @@ func (r *Runs) reportCap(ctx context.Context, s *github.Snapshot, st Stage, l Le
 		"New input, or a move to another stage, lets it run again.", st.Agent(), r.limit())
 	if _, isUnlabeled, _ := r.leaseStage(l); isUnlabeled {
 		// No input counts at intake, so nothing runs it again: only a way
-		// into the pipeline (plan for #6, assumption 1) moves the issue on.
+		// into the pipeline (SPEC §6.2) moves the issue on.
 		text = fmt.Sprintf("The %s run failed %d times in a row, so I've stopped running it here, and a comment won't start it again. "+
 			"A code owner can bring this issue into the pipeline with a stage label, the `approved` label or `/track`.", st.Agent(), r.limit())
 	}
@@ -1353,7 +1353,7 @@ func (r *Runs) newID() string {
 }
 
 // pick is a PerStage's value for agent name. The triage agent has the
-// interviewer's (plan #6, assumption 2), so config needn't change.
+// interviewer's (SPEC §6.2), so config needn't change.
 func pick[T any](p config.PerStage[T], name string) (T, bool) {
 	switch name {
 	case "interviewer", "triage":

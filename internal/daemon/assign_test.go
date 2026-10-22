@@ -18,7 +18,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// Assignment (#191, plan #87's T7) against the fakes, with step 1 wired
+// Assignment (#191, SPEC §9.6) against the fakes, with step 1 wired
 // as main wires it and the digest off, so the items come from the cache
 // that Iterate fills either way. The repo is the digest's whole run's
 // (digestRunFake): mertenvg is notify, and issues 1 to 6 have items,
@@ -193,7 +193,7 @@ func TestAssignPlanRound(t *testing.T) {
 }
 
 // assignPlanReview files an epic by author at plan-review, as the App set
-// it, with plan revision 1 in the App's plan comment, as S1's planner run
+// it, with plan revision 1 in the App's plan comment, as the planner's run
 // posts it: the plan, a cc line for cc and the move from planning, above
 // the revision marker. It returns the epic's number and the plan's hash.
 func assignPlanReview(f *githubtest.Fake, author, cc string) (int, string) {

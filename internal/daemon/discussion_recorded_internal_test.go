@@ -29,7 +29,7 @@ func discRecordedSnapshot(at func(int) time.Time, more ...string) *github.Snapsh
 
 // Every key a marker records from the floor on is a trigger from its
 // record alone, with no question, and no read but the reactions of the
-// notice in comment 11, which may accept it (resolver.notice, T4):
+// notice in comment 11, which may accept it (resolver.notice, #188):
 // the edit the floor's own marker records, which is from before the floor,
 // of content gone since; and a recorded comment, deletion and rename the
 // snapshot no longer shows. A move out of held after them

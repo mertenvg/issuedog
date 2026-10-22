@@ -11,11 +11,11 @@ import (
 	"github.com/mertenvg/issuedog/internal/github"
 )
 
-// Rendering the digest (SPEC §9.4; plan #7, T6, and assumptions 6, 10, 11
-// and 12, Q1a and Q2a). It's pure, with no I/O:
+// Rendering the digest (SPEC §9.4, "The body" and "Announcing new
+// items"). It's pure, with no I/O:
 //   - digestRenderBody is the digest's body: the pin note if there is one,
 //     then every item in the order given, then the identity marker last.
-//     The digest's pass (T8, #160) ranks the items with waitRank first.
+//     The digest's pass (#160) ranks the items with waitRank first.
 //   - digestRenderNews is the comment that announces new items, with the
 //     cc line and a digest-new marker naming their keys.
 //   - digestRenderNew picks the items no digest-new comment announced yet.
@@ -23,7 +23,7 @@ import (
 // Both texts are the same bytes for the same input: they hold no times,
 // relative or not.
 //
-// Whose text is what (assumption 12):
+// Whose text is what (SPEC §5.1, "Embedded text"):
 //   - an item's Title is raw, so it goes through text and github.Escape,
 //     with its "[", "]", "!" and "\" escaped too, so it makes no Markdown
 //     link, image or tracking pixel (digestRenderTitle, the owner's call
@@ -63,12 +63,12 @@ func digestRenderSize(s string) int {
 	return len(s) + strings.Count(s, "\n")
 }
 
-// digestRenderBody renders the digest's body (assumption 10): note, the
-// pin note, at the top if it isn't "", as digestPin (#159) needs the body
-// to start with it; then how many items wait, and each of items in the
-// order given; then the identity marker. With no items it says "Nothing
-// is waiting on you." If the body would go over digestRenderLimit, the
-// items at the end, the lowest ranked, are cut, and a line says how many.
+// digestRenderBody renders the digest's body (SPEC §9.4, "The body"): note,
+// the pin note, at the top if it isn't "", as digestPin (#159) needs the body
+// to start with it; then how many items wait, and each of items in the order
+// given; then the identity marker. With no items it says "Nothing is waiting
+// on you." If the body would go over digestRenderLimit, the items at the end,
+// the lowest ranked, are cut, and a line says how many.
 func digestRenderBody(note string, items []waitItem) string {
 	var head []string
 	if note = strings.TrimSpace(note); note != "" {
@@ -230,18 +230,19 @@ func digestRenderKindName(k waitKind) string {
 }
 
 // digestRenderMentions reports whether new item it gets the digest's
-// mention (Q2a): only one whose own comment doesn't mention notify
-// already. A question round, a spec's revision, a plan's revision (the
-// plan comment ends in one, #270) and a triage flag end in a cc line, and
-// so does a human task's body (#287, SPEC §9.4), so
-// that leaves state errors, and a discussion hold with a trigger that no
-// App comment mentioning notify names (waitItem.news, #192): a comment on
-// an issue held already (Q2b), or a trigger whose notice discLost held
-// back, unless the hold's own transition marker records it. A hold's
-// other triggers, named by the hold's comment or a notice, each ending in
-// a cc line (#87's assumption 5), give it none. A finished story (#278)
-// gets it, as it isn't listed here: no comment says its children have
-// all closed. A kind added later gets the mention unless it's listed here.
+// mention (SPEC §9.4, "Announcing new items"): only one whose own comment
+// doesn't mention notify already. A question round, a spec's revision, a
+// plan's revision (the plan comment ends in one, #270) and a triage flag end
+// in a cc line, and so does a human task's body (#287, SPEC §9.4), so that
+// leaves state errors, and a discussion hold with a trigger that no App
+// comment mentioning notify names (waitItem.news, #192): a comment on an
+// issue held already, which writes no hold marker (SPEC §6.4), or a trigger
+// whose notice discLost held back, unless the hold's own transition marker
+// records it. A hold's other triggers, named by the hold's comment or a
+// notice, each ending in a cc line (SPEC §6.4), give it none. A finished
+// story (#278) gets it, as it isn't listed here: no comment says its children
+// have all closed. A kind added later gets the mention unless it's listed
+// here.
 func digestRenderMentions(it waitItem) bool {
 	switch it.Kind {
 	case waitApproval, waitPlanApproval, waitQuestion, waitFlag, waitHuman:
@@ -278,7 +279,7 @@ func digestRenderHold(h holdItemTrigger) string {
 // edited hold (#159's digestState.announced). That's an item's own key,
 // or for a hold, one for each trigger no App comment mentioned (#192). An
 // item announced before isn't new, even if it went away and came back
-// with the same key (assumption 11).
+// with the same key (SPEC §9.4, "Announcing new items").
 //
 // A key is one of a comma-separated list that github.ParseMarkers reads
 // back and #159's digestState.comment splits on ",". The encoding leaves
@@ -297,12 +298,12 @@ func digestRenderNew(items []waitItem, announced map[string]bool) []waitItem {
 }
 
 // digestRenderNews renders the comment that announces the new items
-// (Q1a), or "" if there's nothing to post. items are the new ones in rank
-// order (digestRenderNew), and it chooses the ones that get the mention
-// itself (digestRenderMentions, Q2a), so the caller passes every new
-// item. With notify empty, or no item that gets the mention, it's "", and
-// nothing is posted: an item it leaves out stays unannounced, which costs
-// nothing, as it never gets a mention.
+// (one comment per pass, SPEC §9.4), or "" if there's nothing to post. items
+// are the new ones in rank order (digestRenderNew), and it chooses the ones
+// that get the mention itself (digestRenderMentions), so the caller passes
+// every new item. With notify empty, or no item that gets the mention, it's
+// "", and nothing is posted: an item it leaves out stays unannounced, which
+// costs nothing, as it never gets a mention.
 //
 // The comment lists each item it announces on one line, with its issue,
 // escaped title, kind and link, then the cc line for notify, then a

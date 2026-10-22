@@ -13,7 +13,7 @@ import (
 )
 
 // A finished story in the digest and in assignment against the fakes
-// (#278, plan #249's T6), with step 1 wired as main wires it: the daemon
+// (#278, SPEC §9.4), with step 1 wired as main wires it: the daemon
 // creates the children of a plan the owner approved, and the story waits
 // on the owner once they've all closed.
 

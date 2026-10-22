@@ -138,7 +138,7 @@ func holdOrderMoves(n int, from string) []string {
 // #243 through the whole run: the owner's /hold on A, then a /resume on
 // J, in one poll, J and K held by J's own /hold. With A's number lower,
 // A's /hold is handled first, writes no marker on J and K, held already
-// (Q2b), and touches them, so J's /resume is handled on the next pass.
+// (SPEC §6.4), and touches them, so J's /resume is handled on the next pass.
 // With J's lower, J's /resume waits for A's /hold, and J is read again,
 // so it's handled on the next pass too. Either way it ends A's /hold and
 // J's own on J and K, which go back to ready, while A stays held. Every

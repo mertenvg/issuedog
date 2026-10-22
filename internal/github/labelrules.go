@@ -22,10 +22,10 @@ type Trust interface {
 }
 
 // DiscTrust is a Trust that also says, from the same permission request,
-// whether a login is a write collaborator who isn't trusted: one who can
-// hold an issue for discussion, but not move it (SPEC §6.4, #87's
-// assumption 1). *trust.Set satisfies it. A Trust without it knows no such
-// collaborator, so nothing it judges holds an issue.
+// whether a login is a write collaborator who isn't trusted: one who can hold
+// an issue for discussion, but not move it (SPEC §6.4). *trust.Set satisfies
+// it. A Trust without it knows no such collaborator, so nothing it judges
+// holds an issue.
 type DiscTrust interface {
 	Trust
 	DiscAccess(ctx context.Context, login string) (trusted, writer bool, err error)
@@ -41,16 +41,17 @@ type DiscRename struct {
 	From  string // the title it replaced
 }
 
-// LabelEventKind is what CheckLabels found that S4 has to act on.
+// LabelEventKind is what CheckLabels found that the daemon has to act on.
 type LabelEventKind string
 
 const (
 	// LabelOverride is a trusted user's manual stage change, made after the
-	// latest transition marker. S4 records it with by=<login> (SPEC §5.1).
+	// latest transition marker. The daemon records it with by=<login> (SPEC
+	// §5.1).
 	LabelOverride LabelEventKind = "override"
 	// LabelDisagreement is a stage label that disagrees with the latest
-	// transition marker. S4 puts the label back and, unless it's Unfinished,
-	// reports it (SPEC §5.3).
+	// transition marker. The daemon puts the label back and, unless it's
+	// Unfinished, reports it (SPEC §5.3).
 	LabelDisagreement LabelEventKind = "disagreement"
 )
 
@@ -68,7 +69,7 @@ type LabelEvent struct {
 	// Key is the ID of the timeline event behind it: the state-error key.
 	Key int64
 	// Unfinished marks a disagreement that is the App's own write cut short
-	// (plan #5, assumption 4): no stage label has changed since the latest
+	// (SPEC §5.1): no stage label has changed since the latest
 	// marker, except by the App bringing the labels toward it. It is to be
 	// finished, not reported.
 	Unfinished bool
@@ -80,7 +81,8 @@ type LabelCheck struct {
 	// pipeline labels brought up to date with the timeline and its reverts,
 	// and without those left out as unexplained.
 	Labels []string
-	// Events are the override or disagreement S4 has to act on, if any.
+	// Events are the override or disagreement the daemon has to act on, if
+	// any.
 	Events []LabelEvent
 	// Settings is the ID of the newest change to a model or effort label
 	// (OverrideLabel) that stands, as standing judges it, or 0 if there is
@@ -113,7 +115,7 @@ type LabelCheck struct {
 	Held []string
 	// DiscRenames are the issue's renamed events, oldest first, from the
 	// timeline CheckLabels reads anyway, so a rename's discussion trigger
-	// costs no request (#87's assumption 2). CheckLabels acts on none.
+	// costs no request (SPEC §6.4). CheckLabels acts on none.
 	DiscRenames []DiscRename
 	// DiscLabelTimes are when each labeled or unlabeled event of a
 	// pipeline label was made, by its ID, from the same timeline: a
@@ -122,7 +124,7 @@ type LabelCheck struct {
 	DiscLabelTimes map[int64]time.Time
 	// Closings are the issue's closed and reopened events, oldest first,
 	// from the same timeline, so judging a close or a reopen of an open
-	// issue costs no request (T6). CheckLabels acts on none of them.
+	// issue costs no request (SPEC §6.4). CheckLabels acts on none of them.
 	Closings []Closing
 }
 
@@ -181,7 +183,7 @@ func (l *labelState) latest() *gogithub.Timeline {
 }
 
 // pipelineLabel reports whether name is a label SPEC §5.1 guards, or a model
-// or effort override label (#93's plan, T4).
+// or effort override label (SPEC §3.3, §5.1).
 func pipelineLabel(name string) bool {
 	n := strings.ToLower(name)
 	for _, p := range []string{"stage:", "priority:", "scope:", "type:"} {
@@ -419,7 +421,7 @@ type transition struct {
 // change before it is a removal by the same user, made after t moved the
 // issue to held (heldStackRemovedBy). Holds stack
 // (SPEC §6.4), so a hold set by hand on a held issue is a hold of its own
-// (plan #87 rev 2, Q2b), which S4 records in a held → held marker. An add
+// (SPEC §5.1), which the daemon records in a held → held marker. An add
 // of stage:held that wasn't on since t, as after the App's own write was cut
 // short or after someone else removed it last, agrees with t, as does an
 // add made while t was in flight. Once recorded, the removal is older than

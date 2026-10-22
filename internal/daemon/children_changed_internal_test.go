@@ -8,7 +8,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/github"
 )
 
-// A changed child's labels (#195's T7): the type, scope, priority, model
+// A changed child's labels (SPEC §6.4): the type, scope, priority, model
 // and effort kinds on a labels repo, and all but the type on a repo that
 // uses issue types, where the type is the issue's.
 func TestChildLabelKindsOf(t *testing.T) {

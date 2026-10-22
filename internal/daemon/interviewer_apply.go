@@ -16,13 +16,13 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// This file applies the interviewer's results (plan #6, T5 and T6): a
-// question round, under Q1a the typing of a bug or task, and the spec
-// (assumption 9), which is written into the body and posted as a revision,
+// This file applies the interviewer's results (SPEC §9.1): a question
+// round, the typing of a bug or task, and the spec (§11.1), which is
+// written into the body and posted as a revision,
 // and at the clarifying after a hold, unchanged (#189) and plan (#294).
 
-// Check checks r's output after its schema (checkInterview, plan #6,
-// assumptions 7 and 10) against the facts of r.S, the issue read again
+// Check checks r's output after its schema (checkInterview, SPEC §9.1's
+// Checks) against the facts of r.S, the issue read again
 // (ivFacts). A broken rule is a failed attempt, with nothing written. So is
 //   - an issue the interviewer no longer runs on (ivStillRuns), such as one
 //     the owner retyped to a task or bug, or gave a parent, during the run,
@@ -84,7 +84,7 @@ func ivStillRuns(it state.Item, origin state.Stage, out interviewOutput, may boo
 // more-questions otherwise. A question round must also leave the issue one
 // the interviewer runs on (ivRunsOn), or no run would read its answers: a
 // story with a parent waits at clarifying for good, but at the clarifying
-// after a hold from a stage of its plan (#195's Q1a). out has passed
+// after a hold from a stage of its plan (SPEC §9.1). out has passed
 // checkInterview, so its type is a known one.
 func ivMoveFits(it state.Item, out interviewOutput, origin state.Stage) error {
 	if out.Type != nil {
@@ -118,7 +118,7 @@ func ivMoveFits(it state.Item, out interviewOutput, origin state.Stage) error {
 //   - the stage the issue came from, at the clarifying after a hold
 //     (ivHoldOrigin), which an unchanged or plan outcome needs;
 //   - the issue's class, which a plan outcome needs, and on a story with
-//     a parent (#195's Q1a) refuses a spec, typed and any type: whatever
+//     a parent (SPEC §9.1) refuses a spec, typed and any type: whatever
 //     typing says, it may not set the type there;
 //   - the option count of each question its round comments read back
 //     with, which a decision's letter must name one of (ivWordingOptions).
@@ -222,7 +222,7 @@ func ivRoundCounts(rounds []interviewerRound) []int {
 // round of another stage's, the planner's, up to the latest round of
 // every stage (allRounds). So the interviewer's decisions cover only its
 // own questions, and its next round, len(counts)+1, is the next of every
-// stage's (nextRound, #247's assumption 3). With no planner rounds, it's
+// stage's (nextRound, SPEC §9.1). With no planner rounds, it's
 // ivRoundCounts of the interviewer's alone.
 func ivFactRounds(s *github.Snapshot, appSlug string, dirty func(int64) bool) []int {
 	counts := ivRoundCounts(interviewerRounds(s, appSlug, dirty))
@@ -232,8 +232,8 @@ func ivFactRounds(s *github.Snapshot, appSlug string, dirty func(int64) bool) []
 	return counts
 }
 
-// Apply writes r's question round, its typed outcome (plan #6, Q1a) or its
-// spec (assumption 9), which Check passed, on r.S. Each write is checked
+// Apply writes r's question round, its typed outcome (SPEC §9.1) or its
+// spec (§11.1), which Check passed, on r.S. Each write is checked
 // first, so it can run again after a crash part way (SPEC §5.2):
 //  1. If the output sets a type, the App adds its type:* label and removes
 //     the issue's other type:* labels (ivSetType), which updates r.S.Type,
@@ -242,11 +242,12 @@ func ivFactRounds(s *github.Snapshot, appSlug string, dirty func(int64) bool) []
 //     owner set since stands.
 //  2. A spec is written into the body (specWriteBody), unless the move is
 //     written already, so an edit made since stands. It is the App's full
-//     rewrite, so a body that was dirty is clean from then on (#169, Q1a).
+//     rewrite, so a body that was dirty is clean from then on (#169,
+//     SPEC §5.1).
 //  3. The move, keyed by the run, with seen= and the run's model= and
 //     effort= (Result.Move):
 //     - A question round's is clarifying → clarifying on more-questions.
-//     It carries round= and questions= (plan #6, assumption 8), and its
+//     It carries round= and questions= (SPEC §5, §9.1), and its
 //     text is the round in the SPEC §9.1 format, the type line first when
 //     it sets one, then the cc line (renderQuestions).
 //     - A typed outcome's is the same move with neither, and its text is
@@ -377,9 +378,9 @@ func (iv *Interviewer) Apply(ctx context.Context, a *Applier, r Result) error {
 }
 
 // specWriteBody makes spec, the rendered spec, s's whole body, with s's
-// title left as it is (plan #6, assumption 9), and returns who made the
+// title left as it is (SPEC §11.1), and returns who made the
 // body it replaced dirty, if anyone did, from d. The App's full rewrite
-// replaces all text in the body, so it cleans it (#169, Q1a): the body
+// replaces all text in the body, so it cleans it (#169, SPEC §5.1): the body
 // starts with the rewrite marker (state.RewriteKind), with run= and, on a
 // dirty body, replaced=, naming who made it dirty, and has no dirty note.
 // A body that is the spec already, as the App's last edit, isn't edited
@@ -452,7 +453,7 @@ func specSameText(a, b string) bool {
 }
 
 // ivTypedWaits follows the type line of a bug or task the interviewer
-// typed (plan #6, Q1a), as IntakeVisit says it for one filed so.
+// typed (SPEC §9.1), as IntakeVisit says it for one filed so.
 const ivTypedWaits = "Bugs and tasks wait at `clarifying` for now, until issuedog can implement them (build phase 3), so I won't ask anything more here."
 
 // ivTypes are the types the interviewer sets, as type:<type> labels.

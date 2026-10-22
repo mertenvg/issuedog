@@ -13,7 +13,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// A human task closed on /done (plan #250, T5).
+// A human task closed on /done (#285).
 
 // doneLabelCheck is a human task's origin marker fields for a check that
 // the repo has the label needs-design.
@@ -299,7 +299,7 @@ func TestDoneApplyChecksAgain(t *testing.T) {
 	doneState(t, f, []string{"stage:needs-human"}, true, []string{"/done", doneClosed("The label `needs-design` exists.", 1002)})
 }
 
-// A move to closed as not planned, as S5 closes a dropped child, closes
+// A move to closed as not planned, as #195 closes a dropped child, closes
 // the issue as not planned, and the next pass sets stage:discarded.
 func TestCloseNotPlannedDiscarded(t *testing.T) {
 	t.Parallel()
@@ -330,7 +330,7 @@ func TestCloseNotPlannedDiscarded(t *testing.T) {
 	}
 }
 
-// A human task closed on a 👍 on the issue itself (plan #250, T6).
+// A human task closed on a 👍 on the issue itself (#286).
 
 // thumbTrust trusts owner and owner2, a login no user can have, to show
 // it's escaped and defused, and, to show they're ignored whatever trust

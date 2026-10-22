@@ -105,13 +105,13 @@ var ErrLabelsHeld = errors.New("labels held back until their events explain them
 //     isn't looked up in the table. A move to held is an owner hold (SPEC §6.4), so it also gets
 //     at=<previous> and reason=owner. Holds stack, so stage:held removed and
 //     added back by hand on a held issue, which github.CheckLabels reports
-//     as an override, is an owner hold of its own (plan #87 rev 2, Q2b): a
+//     as an override, is an owner hold of its own (SPEC §5.1, §6.4): a
 //     held → held marker with reason=owner that keeps the first hold's at
 //     and origin. Each move into, within or out of held also carries the
 //     round bound from before the hold in seen. An override to any other
 //     stage the issue is at already gets no marker. An issue whose
 //     labels were set by hand, with no marker of the App's, is adopted this
-//     way (plan #5, assumption 6).
+//     way, with no special case.
 //   - A disagreement gets one error comment keyed by its timeline event
 //     (SPEC §5.3), then its stage labels are set to match the latest marker.
 //     An override to a label that names no stage is one too. With no marker,
@@ -120,7 +120,7 @@ var ErrLabelsHeld = errors.New("labels held back until their events explain them
 //     its labels set; or, on an open issue whose latest marker is a move to
 //     closed, the close that move didn't make (closeFinish).
 //
-// The writes go in plan #5's assumption 4 order, the comment first, so a
+// The writes go in SPEC §5.2's order, the comment first, so a
 // pass that crashed part way can run again: once an override's marker is
 // posted, the override is older than the latest marker, and what's left is
 // an Unfinished disagreement; an error comment is posted once per key. The
@@ -298,7 +298,7 @@ func (a *Applier) override(ctx context.Context, s *github.Snapshot, dirty func(i
 		fields := map[string]string{"from": string(is.Stage), "to": string(to), "by": ev.By, "event": strconv.FormatInt(ev.Key, 10)}
 		switch h := is.HeldStack; {
 		case to == state.Held && is.Stage == state.Held:
-			// A hold by hand on a held issue (plan #87 rev 2, Q2b): the
+			// A hold by hand on a held issue (SPEC §5.1, §6.4): the
 			// first hold's at and origin stay, and this hold is recorded.
 			fields["at"], fields["reason"] = string(h.At), "owner"
 			if h.Origin != "" {

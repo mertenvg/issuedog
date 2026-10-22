@@ -261,9 +261,9 @@ func TestLeftOutLabelsAreNotActedOn(t *testing.T) {
 func TestClosedIssueForgetsUnexplained(t *testing.T) {
 	t.Parallel()
 	for name, tt := range map[string]struct{ away, back func(f *githubtest.Fake) }{
-		// The owner's close and reopen stand (T6): the close's closed stage
-		// is written while it's away, and the hold for the reopen only once
-		// the label rules hold back nothing.
+		// The owner's close and reopen stand (SPEC §6.4): the close's
+		// closed stage is written while it's away, and the hold for the
+		// reopen only once the label rules hold back nothing.
 		"closed": {func(f *githubtest.Fake) { f.CloseBy(1, "owner") }, func(f *githubtest.Fake) { f.ReopenBy(1, "owner") }},
 		"transferred": {func(f *githubtest.Fake) { f.Transfer(1, "x/y") }, func(f *githubtest.Fake) {
 			f.Transfer(1, "o/r")

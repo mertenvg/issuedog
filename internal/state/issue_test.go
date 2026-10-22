@@ -44,7 +44,7 @@ func TestDeriveStage(t *testing.T) {
 		toSpecReview = "<!-- issuedog:transition from=clarifying to=spec-review run=ab -->"
 	)
 	edited := snap("", []github.Author{appBot, appBot}, toClarifying, toSpecReview)
-	// Edits don't decide: dirty does (plan #5, the amendment to assumption 7).
+	// Edits don't decide: dirty does (SPEC §5.1).
 	edited.Comments[1].Edit = github.Edit{By: mallory, At: time.Unix(5, 0)}
 	for _, tt := range []struct {
 		name  string
@@ -397,8 +397,8 @@ func TestDeriveTriage(t *testing.T) {
 }
 
 // An ack names its error's kind and covers only that kind and key. One with
-// no kind, from before acks named one, covers its key for every kind (plan
-// #7, Q5a). An ack reply isn't a posted error, and one that doesn't count
+// no kind, from before acks named one, covers its key for every kind (SPEC
+// §5). An ack reply isn't a posted error, and one that doesn't count
 // covers nothing.
 func TestDeriveAcksByKind(t *testing.T) {
 	s := snap("", []github.Author{appBot, appBot, owner, appBot},
@@ -444,7 +444,7 @@ func TestDeriveAcksByKind(t *testing.T) {
 // Derive records each state error's comment, the earliest that carries it
 // and counts, and the comment holding the latest transition that counts,
 // so a later reader can tell an error posted before a transition from one
-// posted after it (plan #7, assumption 7).
+// posted after it (SPEC §5.3).
 func TestDeriveErrorAndTransitionComments(t *testing.T) {
 	const (
 		toClarifying = "<!-- issuedog:transition from=intake to=clarifying cmd=10 -->"
@@ -512,7 +512,7 @@ func TestDeriveErrorAndTransitionComments(t *testing.T) {
 
 // An ack that names its kind makes Reported true with no clean error
 // posted, as when the error comment went dirty after the ack: the error
-// is never posted again (plan #7, assumption 8). It covers no other kind.
+// is never posted again (SPEC §5.3). It covers no other kind.
 func TestErrAckReported(t *testing.T) {
 	s := snap("", []github.Author{appBot, appBot},
 		"<!-- issuedog:error kind=transition key=5 -->",

@@ -31,7 +31,7 @@ func discNoticeKeys(f *githubtest.Fake, n int) []string {
 // discUnderHold files #1, a task at ready, and n, a task under it at
 // ready, and posts /hold on #1, which holds both. A /resume on #1 ends n's
 // owner hold, but not a discussion hold on it (SPEC §6.4), which the
-// record it writes on n then says (T4): so an act that's still open keeps
+// record it writes on n then says (#188): so an act that's still open keeps
 // n held, and one that isn't lets it go back to ready.
 func discUnderHold(f *githubtest.Fake) (parent, n int) {
 	parent = fileAt(f, "ready", "do it")

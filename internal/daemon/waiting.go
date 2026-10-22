@@ -13,11 +13,11 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// What waits on the owner (SPEC §9.4, §9.6; plan #7, assumptions 5, 6 and
-// 12, and Q3a). It's two pure functions, which read only what they're
-// given and do no I/O:
+// What waits on the owner (SPEC §9.4, §9.6): which items there are, what
+// each says, whose text is whose, and their order. It's two pure
+// functions, which read only what they're given and do no I/O:
 //   - waitFind lists one issue's items. Iterate calls it on each issue
-//     right after step 1 succeeds on it (digestCacheSet, T8 #160), with
+//     right after step 1 succeeds on it (digestCacheSet, #160), with
 //     the snapshot as step 1 left it, the Inputs it returned, the
 //     issue's Dirt and, if it's held, its open discussion triggers
 //     (Step.holdItemFind, #192), and caches the items by issue, whether
@@ -32,18 +32,19 @@ import (
 // they judge on each pass from what the poll listed
 // (Daemon.digestDoneStands).
 //
-// Which text is whose (assumption 12): an item's Title is raw, and T6
-// escapes it. No line's Text is raw: each is the App's, either this
-// file's own words or copied from the App's own clean comment
-// (waitLine.Copied). A hold's trigger line (waitLine.Hold) has no Text:
-// its trigger's logins and title are raw, and digestRenderHold escapes
-// them.
+// Which text is whose (SPEC §9.4): an item's Title is raw, and the
+// digest's renderer (digestRenderTitle) escapes it. No line's Text is raw:
+// each is the App's, either this file's own words or copied from the App's
+// own clean comment (waitLine.Copied). A hold's trigger line
+// (waitLine.Hold) has no Text: its trigger's logins and title are raw, and
+// digestRenderHold escapes them.
 
-// waitKind is a kind of item. Q3a's tie-break after the unblock count
-// goes by waitKind.rank: state errors, then discussion holds (#192), then
-// approvals, then questions, then human tasks (#287), then flags, then
-// finished stories (#278). A plan's approval (#270) ranks as an approval:
-// it's a kind of its own only for its key and its name.
+// waitKind is a kind of item. The order's tie-break after the unblock
+// count (SPEC §9.4, The order) goes by waitKind.rank: state errors, then
+// discussion holds (#192), then approvals, then questions, then human
+// tasks (#287), then flags, then finished stories (#278). A plan's
+// approval (#270) ranks as an approval: it's a kind of its own only for
+// its key and its name.
 type waitKind int
 
 const (
@@ -57,7 +58,7 @@ const (
 	waitDone
 )
 
-// rank is k's place in Q3a's order of kinds, lowest first: a plan's
+// rank is k's place in SPEC §9.4's order of kinds, lowest first: a plan's
 // approval is an approval's, a human task's comes after a question's and
 // before a flag's (#287), a flag's after that, and a finished story's
 // after every other kind's (#278), as story verification unblocks no
@@ -104,17 +105,18 @@ func (k waitKind) String() string {
 type waitItem struct {
 	Issue int
 	Kind  waitKind
-	// Key names the item across passes and restarts (assumption 5), so T8
-	// can tell a new one: q-<n>-<round>, rev-<n>-<rev> (rev-<n>-0 when
-	// there's no revision yet), plan-<n>-<rev> for a plan's (plan-<n>-0
-	// with no clean plan revision, #270), flag-<n>-<comment id>,
+	// Key names the item across passes and restarts (SPEC §9.4), so the
+	// digest can tell a new one (digestRenderNew): q-<n>-<round>,
+	// rev-<n>-<rev> (rev-<n>-0 when there's no revision yet),
+	// plan-<n>-<rev> for a plan's (plan-<n>-0 with no clean plan revision,
+	// #270), flag-<n>-<comment id>,
 	// err-<n>-<kind>-<key>, hold-<n>-<hold marker id> (holdItemOf),
 	// human-<n> for a human task's (#287) or done-<n> for a finished
 	// story's (#278), of each of which an issue has one at most. A hold is
 	// announced by other keys than this one (waitItem.news).
 	Key string
 	// Title is the issue's title. It's raw: anyone may have written it, so
-	// T6 runs it through inline and github.Escape.
+	// the digest's renderer runs it through inline and github.Escape.
 	Title string
 	// Lines say what's being decided, the options with the recommended one
 	// first and marked, and how to answer. None is raw (waitLine).
@@ -127,13 +129,14 @@ type waitItem struct {
 	// Unblocks is 1 plus the issue's open descendants. waitRank sets it,
 	// and waitFind leaves it 0.
 	Unblocks int
-	// Created is when the issue was opened, for Q3a's last tie-break, the
-	// oldest issue. Comment is the ID of the comment Link names, or
-	// state.BodyID, which orders two items of one kind on one issue.
+	// Created is when the issue was opened, for SPEC §9.4's last
+	// tie-break, the oldest issue. Comment is the ID of the comment Link
+	// names, or state.BodyID, which orders two items of one kind on one
+	// issue.
 	Created time.Time
 	Comment int64
 	// Plan and Index place a plan's approval in the plan its issue was
-	// filed from (#270, plan #248's assumption 8): Plan is that plan's
+	// filed from (#270, SPEC §9.4, Plan order): Plan is that plan's
 	// issue number and Index the item's number in it, as 2 for S2, both
 	// from the issue's origin marker (state.Issue.Origin, waitPlanOrder).
 	// waitRank lists the approvals of one plan together, in item order.
@@ -156,8 +159,8 @@ type waitItem struct {
 //   - Copied set: a line copied from the App's own clean comment, as
 //     posted. The App wrote it, but agent text in it was only made safe
 //     for that comment (inline, github.Escape), and a state error's text
-//     may quote a label or an error, so T6 defuses and escapes it again
-//     (assumption 12).
+//     may quote a label or an error, so the digest's renderer
+//     (digestRenderText) defuses and escapes it again (SPEC §9.4).
 type waitLine struct {
 	Text   string
 	Copied bool
@@ -204,13 +207,13 @@ type waitInput struct {
 	Blocked bool
 }
 
-// waitFind returns what on in.S waits on the owner (assumption 5), in no
+// waitFind returns what on in.S waits on the owner (SPEC §9.4), in no
 // set order (waitRank orders them). A closed issue has nothing. Otherwise:
 //   - a state error for each open one (openErrors), linked to its comment;
 //   - while held, a discussion hold, when in.Holds has an open trigger
 //     (holdItemOf). An issue held only by owner holds has none: a /hold,
 //     or a stage:held set by hand, is the owner's own, and waits on
-//     nobody else (#87's assumption 13 lists discussion holds alone);
+//     nobody else (SPEC §9.6 lists discussion holds alone);
 //   - at spec-review, an approval: of the latest revision, or, with none,
 //     of no revision. One that can't be approved yet, for a dirty body, a
 //     Hidden revision, a body that no longer has its hash or a type with
@@ -440,7 +443,7 @@ func waitTypeWhy(s *github.Snapshot, is state.Issue, next state.Stage, trigger s
 // order, then the type's, as at spec-review (waitTypeWhy). A plan that
 // can't be approved as it stands, with no clean revision, a hidden one or
 // one whose comment changed, needs a new plan, which only a planner run
-// posts: the daemon doesn't repost one (plan #248, Q1a). So the last line
+// posts: the daemon doesn't repost one (SPEC §7.4). So the last line
 // says that sending it back gets one.
 func waitPlanApprovalLines(in waitInput, is state.Issue) (int, int64, []waitLine) {
 	s := in.S
@@ -499,7 +502,7 @@ func waitHumanTask(is state.Issue) bool {
 // the App's, not dirty, and edited last by the App or by nobody. That's
 // the body Derive reads the origin marker from, so today a human task's
 // body is always one, but once the marker can be read from a comment
-// (#224's reconcile decision 3, S5), a body someone else edited isn't the
+// (SPEC §5, Where it's read; #195), a body someone else edited isn't the
 // App's text. Then, or with either field not found, as for a format that
 // has changed, a line says to see the issue instead. Each field is the
 // first line that starts with its bold name, as humanBody writes them
@@ -530,16 +533,16 @@ func waitHumanLines(in waitInput) []waitLine {
 }
 
 // waitDoneChildren returns the children of in.S, an issue at planned
-// with state is, for its finished story's item (#278, plan #249's
-// assumption 12): those the clean record of its approved plan revision's
-// children names (state.CreatedRecord, #277), in its order. That's for a
-// story, or an epic whose approved plan is a plan of tasks, which acts as
-// its own story (SPEC §4). It's nil for an epic planned into stories, an
-// issue of any other type, or one with no approved plan revision or no
-// record of it yet, as while its children are still being created. Only
-// an epic's plan data is read back, and data that doesn't read back is an
-// error. The reading is epicCloseChildren's, which an epic planned into
-// stories closes by (#251).
+// with state is, for its finished story's item (#278, SPEC §9.4, Finished
+// story): those the clean record of its approved plan revision's children
+// names (state.CreatedRecord, #277), in its order. That's for a story, or
+// an epic whose approved plan is a plan of tasks, which acts as its own
+// story (SPEC §4). It's nil for an epic planned into stories, an issue of
+// any other type, or one with no approved plan revision or no record of it
+// yet, as while its children are still being created. Only an epic's plan
+// data is read back, and data that doesn't read back is an error. The
+// reading is epicCloseChildren's, which an epic planned into stories
+// closes by (#251).
 func waitDoneChildren(in waitInput, is state.Issue) ([]int, error) {
 	children, stories, err := epicCloseChildren(in.S, in.AppSlug, in.Dirt.Has, is)
 	if err != nil {
@@ -604,17 +607,18 @@ type holdItemTrigger struct {
 	// How says how a code owner resolves it (holdItemOf).
 	How string
 	// Mentioned is set when an App comment that mentions notify names it
-	// (#7's Q2a): a clean App marker records its key (discRecords), the
-	// hold's transition or a notice, in a comment with a cc line
-	// (holdItemCCRE), as the hold's comment and each notice end in one
-	// (#87's assumption 5). A comment trigger on an issue held already has
-	// no record (Q2b), nor has a trigger whose notice discLost held back on
-	// an issue held already, nor one whose record is in content made dirty
-	// or deleted since, so none of those is mentioned. The trigger whose
-	// hold moved the issue into held is mentioned, notice or not: the
-	// hold's transition marker records it, as event=, in a comment with a
-	// cc line. Nor is one recorded while notify was empty mentioned, whose
-	// comment has no cc line: that mentioned nobody.
+	// (SPEC §9.4, Announcing new items): a clean App marker records its
+	// key (discRecords), the hold's transition or a notice, in a comment
+	// with a cc line (holdItemCCRE), as the hold's comment and each notice
+	// end in one (SPEC §6.4). A comment trigger on an issue held already
+	// has no record, as a discussion hold on a held issue writes no hold
+	// marker (SPEC §6.4), nor has a trigger whose notice discLost held
+	// back on an issue held already, nor one whose record is in content
+	// made dirty or deleted since, so none of those is mentioned. The
+	// trigger whose hold moved the issue into held is mentioned, notice or
+	// not: the hold's transition marker records it, as event=, in a
+	// comment with a cc line. Nor is one recorded while notify was empty
+	// mentioned, whose comment has no cc line: that mentioned nobody.
 	Mentioned bool
 }
 
@@ -630,23 +634,23 @@ var holdItemCCRE = regexp.MustCompile(`(?m)^cc @[^\s\x{200b}]`)
 //
 // The key is hold-<n>-<hold marker id>, where the id names the transition
 // marker that moved the issue into held, whatever hold it was
-// (holdItemMarkerID): the first hold wins (Q2b), so that marker stands
-// while the issue is held, and a discussion hold on an issue held already
-// writes none. So the key stays the same from pass to pass, and while
-// triggers come and go under one hold, as when the oldest is resolved or
-// a comment trigger is deleted, and a hold after a move out of held has a
-// key of its own, as its marker has a key of its own (SPEC §5.2). Only a
-// marker with no key, which the App doesn't write, falls back to the
-// oldest open trigger's key, which changes as that trigger goes. Which
-// triggers to announce isn't the key's job: see waitItem.news.
+// (holdItemMarkerID): the first hold wins (SPEC §6.4), so that marker
+// stands while the issue is held, and a discussion hold on an issue held
+// already writes none. So the key stays the same from pass to pass, and
+// while triggers come and go under one hold, as when the oldest is
+// resolved or a comment trigger is deleted, and a hold after a move out of
+// held has a key of its own, as its marker has a key of its own (SPEC
+// §5.2). Only a marker with no key, which the App doesn't write, falls
+// back to the oldest open trigger's key, which changes as that trigger
+// goes. Which triggers to announce isn't the key's job: see waitItem.news.
 //
 // The lines say the issue is held for discussion, from where, and how
 // many triggers are open; then one line for each (waitLine.Hold), with a
 // link and how it's resolved; then, with an owner hold that stays
 // (in.OwnerHeld), that the issue stays held after them until that ends;
 // and last, that /resume accepts every trigger. How each is resolved
-// follows SPEC §6.4 and #87's assumptions 4 and 6, as T4 (#188) resolves
-// them (resolve.go):
+// follows SPEC §6.4's notices and its rules for resolving a hold, as #188
+// resolves them (resolve.go):
 //   - a comment: a code owner's 👍 on it approves it, and their later
 //     comment counters it, but a /hold or a /resume, which counter nothing
 //     (resolver.comment). One known from its record alone is gone, so only
@@ -722,8 +726,8 @@ func holdItemOf(in waitInput, is state.Issue) (string, []waitLine) {
 
 // holdItemMarkerID names m, the transition marker that moved an issue into
 // held, by the key that makes it unique (SPEC §5.2), or "" for none:
-//   - event= as it is: a discussion hold's trigger key (#87's assumption
-//     3), such as c<comment id>, or a hand-set hold's label event ID;
+//   - event= as it is: a discussion hold's trigger key (SPEC §6.4, Keys
+//     and records), such as c<comment id>, or a hand-set hold's label event ID;
 //   - else cmd= after "cmd": a /hold's comment, or r<reaction id>, as
 //     cmd502, which no trigger key looks like;
 //   - else run= after "run".
@@ -742,11 +746,11 @@ func holdItemMarkerID(m github.Marker) string {
 // news returns the keys that announce it (digestRenderNew): its Key, or,
 // for a hold, hold-<n>-<trigger key> for each open trigger that no App
 // comment mentioning notify names (holdItemTrigger.Mentioned), which may
-// be none (#7's Q2a). Each such trigger is a discussion hold of its own
-// that nothing else mentioned (Q2b, discHeldStack), so each is announced
-// once, whatever order they're found in, and one resolved doesn't make
-// the rest new again. A hold whose triggers are all mentioned is never
-// new.
+// be none (SPEC §9.4). Each such trigger is a discussion hold of its own
+// that nothing else mentioned, as a hold on a held issue writes no marker
+// (SPEC §6.4, discHeldStack), so each is announced once, whatever order
+// they're found in, and one resolved doesn't make the rest new again. A
+// hold whose triggers are all mentioned is never new.
 func (it waitItem) news() []string {
 	if it.Kind != waitHold {
 		return []string{it.Key}
@@ -813,24 +817,24 @@ func waitQuestions(body, heading string, n int, missing string) []waitLine {
 }
 
 // waitRank sets each item's Unblocks, 1 plus the open issues below its
-// issue, and sorts items in place by Q3a: the most unblocked first, then
-// by kind (waitKind), then by priority, p0 first, then the oldest issue,
-// and last by issue number, the comment linked and the key, so the order
-// is total and the same input always gives the same order. Descendants
-// are counted from the parents in snaps, every issue the daemon holds, by
-// number. The poll drops a closed issue's snapshot, so the snapshots hold
-// only open issues, and the walk never reaches a closed issue or what's
-// below it: an open issue below a closed one doesn't count toward the
-// closed one's ancestors (SPEC §9.4, "The order"). A snapshot read as its
-// issue closed is closed till the next poll drops it: it's walked
-// through, but not counted.
+// issue, and sorts items in place by SPEC §9.4's order: the most unblocked
+// first, then by kind (waitKind), then by priority, p0 first, then the
+// oldest issue, and last by issue number, the comment linked and the key,
+// so the order is total and the same input always gives the same order.
+// Descendants are counted from the parents in snaps, every issue the
+// daemon holds, by number. The poll drops a closed issue's snapshot, so
+// the snapshots hold only open issues, and the walk never reaches a closed
+// issue or what's below it: an open issue below a closed one doesn't count
+// toward the closed one's ancestors (SPEC §9.4, "The order"). A snapshot
+// read as its issue closed is closed till the next poll drops it: it's
+// walked through, but not counted.
 //
 // Each issue has one parent, so the walk down from an issue meets each
 // issue below it once, unless the parents loop back to the issue itself,
 // which GitHub shouldn't allow: the walk stops there.
 //
-// A plan's approvals with the same Plan form a group (#270, plan #248's
-// assumption 8): the stories one plan filed are listed together, in the
+// A plan's approvals with the same Plan form a group (#270, SPEC §9.4,
+// Plan order): the stories one plan filed are listed together, in the
 // plan's item order (Index), whatever their priorities. The group sits
 // where its best member would rank on its own by the rules above, and
 // within it, members go by Index, then by those rules, so the order stays
@@ -863,7 +867,7 @@ func waitRank(items []waitItem, snaps map[int]*github.Snapshot) {
 	for i := range items {
 		items[i].Unblocks = 1 + count(items[i].Issue)
 	}
-	// Q3a's order of two items on their own.
+	// SPEC §9.4's order of two items on their own.
 	q3a := func(a, b waitItem) int {
 		return cmp.Or(cmp.Compare(b.Unblocks, a.Unblocks), cmp.Compare(a.Kind.rank(), b.Kind.rank()), cmp.Compare(a.Priority, b.Priority),
 			a.Created.Compare(b.Created), cmp.Compare(a.Issue, b.Issue), cmp.Compare(a.Comment, b.Comment), cmp.Compare(a.Key, b.Key))

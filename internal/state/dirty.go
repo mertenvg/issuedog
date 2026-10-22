@@ -7,7 +7,7 @@ import (
 )
 
 // Sanctioned reports whether an edit by editor to content id, a comment ID
-// or BodyID, by author is sanctioned (SPEC §5.1; #169, Q2a). It is if
+// or BodyID, by author is sanctioned (SPEC §5.1; #169). It is if
 //   - the App made it: the App rewrites bodies others wrote, such as a
 //     spec, so its edits always are;
 //   - the author made it: for the body, once the App has rewritten it
@@ -47,7 +47,7 @@ func IsApp(a github.Author, appSlug string) bool {
 // an edit that isn't Sanctioned after the App's last full rewrite of it,
 // and returns the oldest such editor. For a comment, that is any edit: the
 // App never rewrites one whole. For the body, an edit before the newest
-// entry that Rewrote is replaced, so it no longer counts (#169, Q1a). Each
+// entry that Rewrote is replaced, so it no longer counts (SPEC §5.1, #169). Each
 // edit is judged with the author its text had before it
 // (AuthorEditWriter): for the body, the App once it has rewritten it.
 // Dirty content's markers are never read, and it is never a command or an
@@ -67,7 +67,7 @@ func Dirty(id int64, author github.Author, history []github.Edit, appSlug string
 // AuthorEditWriter returns whose text content id by author is after
 // history, its entries so far, for Sanctioned to judge the next edit:
 // author's, unless id is the body and the App has rewritten it whole
-// (Rewrote), after which the text is the App's (#87, Q4a). So the issue's
+// (Rewrote), after which the text is the App's (SPEC §5.1). So the issue's
 // author's own body edit after a rewrite is sanctioned only as anyone
 // else's is, by trust: an untrusted author's makes the body dirty. Their
 // edits before any rewrite still are. history is as for Dirty. An App
@@ -90,8 +90,8 @@ func AuthorEditWriter(id int64, author github.Author, history []github.Edit, app
 
 // SinceRewrite returns the entries of history, the history of content id,
 // that Dirty counts: all of a comment's, and only the body's after its
-// newest entry that Rewrote, which leaves none if that is the last (#169,
-// Q1a). So an editor whose edits all come before it decides nothing, and
+// newest entry that Rewrote, which leaves none if that is the last (SPEC
+// §5.1, #169). So an editor whose edits all come before it decides nothing, and
 // needn't be asked about (#174). history is as for Dirty, and the result
 // shares its array.
 func SinceRewrite(id int64, history []github.Edit, appSlug string) []github.Edit {
@@ -109,7 +109,7 @@ func SinceRewrite(id int64, history []github.Edit, appSlug string) []github.Edit
 // RewriteKind is the kind of the marker on the first line of every whole
 // body the App writes, <!-- issuedog:rewrite run=<run id> -->, with
 // replaced=<login> when the body it replaced was dirty, naming who made it
-// so (#169, Q1a).
+// so (SPEC §5.1, #169).
 const RewriteKind = "rewrite"
 
 // Rewrote reports whether e, an entry of an issue body's history, is the

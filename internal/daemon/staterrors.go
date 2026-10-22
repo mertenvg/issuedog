@@ -14,8 +14,8 @@ import (
 )
 
 // A state error (SPEC §5.3) is open until a trusted 👍 acknowledges it or
-// its cause is gone (plan #7, assumption 7). openErrors says which are
-// open, and ErrorByReaction records each acknowledgment (assumption 8).
+// its cause is gone (SPEC §5.3, Open). openErrors says which are open, and
+// ErrorByReaction records each acknowledgment (SPEC §5.3, Which 👍).
 // Iterate runs step 1 on every pass on an issue with an open error, since
 // a 👍 changes no updated_at.
 
@@ -151,10 +151,10 @@ func openErrInputs(ctx context.Context, trust github.Trust, s *github.Snapshot, 
 }
 
 // ErrorByReaction returns the reaction trigger for Step.Reactions that
-// acknowledges a state error by 👍 (SPEC §5.3; plan #7, assumption 8 and
-// Q5a). For each open error (openErrors), the earliest 👍 from a user trust
-// trusts, not a bot, on any clean comment carrying it gets one reply,
-// "Acknowledged, by `<login>`'s 👍.", with
+// acknowledges a state error by 👍 (SPEC §5.3, Which 👍 and Kind: an ack
+// names the error's kind). For each open error (openErrors), the earliest
+// 👍 from a user trust trusts, not a bot, on any clean comment carrying it
+// gets one reply, "Acknowledged, by `<login>`'s 👍.", with
 // <!-- issuedog:error kind=<kind> key=<key> ack=r<reaction id> -->. The
 // reply is the record: the error is acknowledged, so it's no longer open
 // and is never posted again (state.Issue.Reported), and a replay finds it.

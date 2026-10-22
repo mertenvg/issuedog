@@ -158,7 +158,7 @@ func TestIvSetTypeRefuses(t *testing.T) {
 }
 
 // TestIvAppLabel: a revision is labelled by its kind, a plan revision "of
-// the plan" (plan #247), and a revision marker of a kind it doesn't know
+// the plan" (SPEC §12), and a revision marker of a kind it doesn't know
 // labels nothing.
 func TestIvAppLabel(t *testing.T) {
 	t.Parallel()
@@ -225,7 +225,7 @@ func roundsSnap(bodies ...string) *github.Snapshot {
 }
 
 // TestRoundsAcrossStages: interviewer and planner rounds share one
-// numbering (#247's assumption 3). After interviewer rounds 1 and 2, the
+// numbering (SPEC §9.1). After interviewer rounds 1 and 2, the
 // planner's round is 3, and an interviewer round after it is 4. Each
 // stage's reader reads only its own rounds, a dirty round counts for
 // neither, and the interviewer's coverage counts (ivFactRounds) have a 0

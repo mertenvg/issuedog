@@ -144,7 +144,7 @@ func TestRenameIssue(t *testing.T) {
 }
 
 // A PATCH with a new title, as the App's rewrite of a changed child sends
-// with its body (#195's T7), renames the issue as the App, with its
+// with its body (SPEC §5.2), renames the issue as the App, with its
 // renamed event; one with the same title writes no event.
 func TestEditIssueTitle(t *testing.T) {
 	t.Parallel()

@@ -113,8 +113,8 @@ func TestCheckLabels(t *testing.T) {
 			nil, nil},
 		{"recorded override is not reported again",
 			[]ev{added(1, "owner", "stage:held"), said(2, appBot, marker("held"))}, nil, nil},
-		// #87's note 1: holds stack, so stage:held removed and added back by
-		// hand on a held issue is a hold of its own (plan #87 rev 2, Q2b).
+		// Holds stack, so stage:held removed and added back by hand on a
+		// held issue is a hold of its own (SPEC §5.1, §6.4).
 		{"stage:held removed and added back on a held issue is an override",
 			[]ev{said(1, appBot, marker("held")), added(2, appBot, "stage:held"), removed(3, "owner", "stage:held"), added(4, "owner", "stage:held")},
 			nil, []LabelEvent{{Kind: LabelOverride, Stages: []string{"stage:held"}, Marker: "held", By: "owner", Label: "stage:held", Key: 4}}},

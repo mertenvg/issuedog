@@ -18,14 +18,14 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// This file is plan #250's T8 (#288): a whole run of human tasks against
-// the fakes, from the plan that files them to their close. The stages are
-// registered as registerStages registers them, step 1 is wired as main's
-// newStep wires it, the Applier reads main from the daemon's clone, as
-// startDaemon sets it, the digest and assignment are on, and
-// Daemon.Iterate is the loop. Config and trust come from main on the
-// origin: mertenvg owns CODEOWNERS and is notify, and eve can only read
-// the repo, so CODEOWNERS doesn't trust her and her comments hold nothing.
+// This file is #288: a whole run of human tasks against the fakes, from the
+// plan that files them to their close. The stages are registered as
+// registerStages registers them, step 1 is wired as main's newStep wires it,
+// the Applier reads main from the daemon's clone, as startDaemon sets it, the
+// digest and assignment are on, and Daemon.Iterate is the loop. Config and
+// trust come from main on the origin: mertenvg owns CODEOWNERS and is notify,
+// and eve can only read the repo, so CODEOWNERS doesn't trust her and her
+// comments hold nothing.
 
 // The run's people and text.
 const (

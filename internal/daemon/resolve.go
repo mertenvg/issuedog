@@ -14,9 +14,9 @@ import (
 	"github.com/mertenvg/logr/v2"
 )
 
-// Resolving a discussion hold, and leaving it (SPEC §6.4, plan #87 rev 2,
-// T4, #188). Every discussion trigger (discussion.go) needs a trusted
-// user's response (#87's assumption 6):
+// Resolving a discussion hold, and leaving it (SPEC §6.4, #188). Every
+// discussion trigger (discussion.go) needs a trusted user's response (SPEC
+// §6.4, Resolving):
 //   - a comment trigger is resolved by a trusted user's 👍 on it, which
 //     approves it, or by any later clean comment of a trusted user, which
 //     counters every comment before it, but for a /hold or a /resume
@@ -26,7 +26,7 @@ import (
 //     included, which carries the first trigger's notice. Not one that
 //     edited or deleted the App's content, though (resolveHitsApp): only
 //     /resume on the issue accepts that, as it may have hidden another
-//     trigger's record (#87's assumption 4);
+//     trigger's record (SPEC §6.4, Resolving);
 //   - every open trigger made before it is accepted by /resume on the
 //     issue itself (heldStackEnds), which takes the issue out of held. A
 //     trigger made at or after the /resume, as one between it and the
@@ -50,23 +50,23 @@ import (
 // own, which only /resume accepts, and opens the triggers it closed.
 //
 // Once every trigger is resolved and no owner hold is left, the issue goes
-// held → clarifying (resolveLeave, #87's assumption 9), with at and origin,
-// and the round's bound from before the hold in seen (HeldStack.Seen).
-// While an owner hold stays, the issue stays held, and its last /resume
-// sends it to clarifying (resolveHeld). An owner hold is a hold marker, or,
-// as a /hold on an issue held already writes none (Q2b), the /hold's own
-// comment, on the issue (resolveOwnHolds) or an ancestor (resolveAbove,
-// resolveHeldBy), until a /resume ends it by SPEC §6.4's one rule
-// (resolveEndsHold): one posted after it, on the held issue, on the issue
-// where the /hold was posted, or between, as heldStackEnds and
-// resolveUnended both judge. A
-// /resume back to the clarifying after a hold, and a hold from it of
-// either kind, carry its origin forward (SPEC §6.4), so the commands that
-// wait there keep waiting (resume, hold). An issue held from intake isn't in
-// the pipeline yet, so it stays held, and /resume takes it back to intake
-// (resolveIntake). The interviewer reads the discussion at that clarifying
-// on an epic, a story with no parent or an untyped issue (T5, #189); every
-// other class waits there until a code owner sets its stage by hand (Q3b,
+// held → clarifying (resolveLeave, SPEC §6.4, Leaving the hold), with at
+// and origin, and the round's bound from before the hold in seen
+// (HeldStack.Seen). While an owner hold stays, the issue stays held, and
+// its last /resume sends it to clarifying (resolveHeld). An owner hold is
+// a hold marker, or, as a /hold on an issue held already writes none (SPEC
+// §6.4), the /hold's own comment, on the issue (resolveOwnHolds) or an
+// ancestor (resolveAbove, resolveHeldBy), until a /resume ends it by SPEC
+// §6.4's one rule (resolveEndsHold): one posted after it, on the held
+// issue, on the issue where the /hold was posted, or between, as
+// heldStackEnds and resolveUnended both judge. A /resume back to the
+// clarifying after a hold, and a hold from it of either kind, carry its
+// origin forward (SPEC §6.4), so the commands that wait there keep waiting
+// (resume, hold). An issue held from intake isn't in the pipeline yet, so
+// it stays held, and /resume takes it back to intake (resolveIntake). The
+// interviewer reads the discussion at that clarifying on an epic, a story
+// with no parent or an untyped issue (#189); every other class waits there
+// until a code owner sets its stage by hand (SPEC §6.4, Leaving the hold;
 // Interviewer.Pending, ivHoldWait). The commands that would move the issue
 // wait there too (state.Command.Waits).
 
@@ -304,7 +304,7 @@ func (r *resolver) verified(ctx context.Context, act resolveAct) (bool, error) {
 // edit or delete the App's content, nor delete a comment during the hold
 // that began at heldAt (resolveHitsApp). A close (closing.go) hides no App
 // content, so its notice, the hold's comment or one of its own, accepts it
-// (#87's assumption 4, #190's verify note).
+// (SPEC §6.4, Notices; #190's verify note).
 func resolveByNotice(tr discTrigger, s *github.Snapshot, appSlug string, heldAt time.Time) bool {
 	switch tr.Kind {
 	case discEdit, discOwnEdit, discDeletion, discRename, discClose:
@@ -314,7 +314,7 @@ func resolveByNotice(tr discTrigger, s *github.Snapshot, appSlug string, heldAt 
 }
 
 // resolveHitsApp reports whether tr edited or deleted content that may
-// have been the App's, which only /resume accepts (#87's assumption 4,
+// have been the App's, which only /resume accepts (SPEC §6.4, Resolving;
 // #187's verify note): that content may have held a record of another
 // trigger, which the edit or deletion hid (SPEC §5.1), so accepting it by
 // a 👍 could release a trigger whose record is gone. It's so when
@@ -325,10 +325,10 @@ func resolveByNotice(tr discTrigger, s *github.Snapshot, appSlug string, heldAt 
 // So is a deletion during the hold, at or after heldAt, when it began, if
 // it did (#188's verify, round 2): the comment may have been a code
 // owner's /hold, applied with no marker as the issue was held already
-// (Q2b), which GitHub's deletion event doesn't name, so it fails closed.
-// /resume on the issue, which ends that /hold too, accepts it. A deletion
-// that held the issue came before the hold began, so it hid no /hold
-// applied during it.
+// (SPEC §6.4), which GitHub's deletion event doesn't name, so it fails
+// closed. /resume on the issue, which ends that /hold too, accepts it. A
+// deletion that held the issue came before the hold began, so it hid no
+// /hold applied during it.
 func resolveHitsApp(tr discTrigger, s *github.Snapshot, appSlug string, heldAt time.Time) bool {
 	if discHitsApp(tr, appSlug) || tr.Kind == discDeletion && !heldAt.IsZero() && !tr.At.Before(heldAt) {
 		return true
@@ -504,7 +504,7 @@ func resolveHoldKey(m github.Marker) string {
 // <issue>-<Unix seconds>, the ancestor's number and when the comment was
 // deleted. GitHub's deletion event doesn't say which comment it was, so a
 // code owner's /hold that wrote no marker, as the issues were held already
-// (Q2b), may be gone with it, failing closed (#188's verify, round 2,
+// (SPEC §6.4), may be gone with it, failing closed (#188's verify, round 2,
 // attempt 3). Only /resume on that ancestor, on an issue between, or on
 // the issue itself, posted after the deletion, ends it, as /resume on the
 // ancestor itself is the only thing that accepts the deletion there
@@ -595,15 +595,15 @@ func (a *Applier) resolveCommands(ctx context.Context, s *github.Snapshot, d Dir
 }
 
 // resolveOwnHolds returns the owner holds on s, in state is, held, p,
-// that no transition marker records (Q2b), as owner hold markers: each
-// /hold posted on s since the transition before the hold that no marker
-// names, as one posted while s was held, its comment the record of that
-// hold, keyed by its cmd; and each /hold on an ancestor that the record of
-// the discussion's end names (resolveAbove). For a /resume, before is its
-// comment: a /hold posted after it counts only once the App applied it
-// (resolveHoldApplied), as when s is a descendant whose pass came first,
-// and the /resume doesn't end it; one not handled yet holds the issue
-// itself once handled (hold). A /hold on s that the App rejected
+// that no transition marker records (SPEC §6.4), as owner hold markers:
+// each /hold posted on s since the transition before the hold that no
+// marker names, as one posted while s was held, its comment the record of
+// that hold, keyed by its cmd; and each /hold on an ancestor that the
+// record of the discussion's end names (resolveAbove). For a /resume,
+// before is its comment: a /hold posted after it counts only once the App
+// applied it (resolveHoldApplied), as when s is a descendant whose pass
+// came first, and the /resume doesn't end it; one not handled yet holds
+// the issue itself once handled (hold). A /hold on s that the App rejected
 // holds nothing (resolveRejected), as one posted before the hold began,
 // while s couldn't go on hold; one not handled yet counts, as it holds s
 // once handled, since a /hold on an issue held already is never rejected
@@ -749,10 +749,10 @@ func resolveOwnerHold(id int64) github.Marker {
 // For c's issue itself, held, which c ends every hold on that came before
 // it (heldStackEnds), it returns only the /holds on its ancestors posted
 // after c that the App applied first, with no marker on it, as it was held
-// already (Q2b): an ancestor whose pass came first in the same pass, as
-// commands run in issue-number order (#205). c doesn't end those, so its
-// issue stays held by them, as it would had c been handled first. And so
-// the comments deleted there at or after c that may have been such
+// already (SPEC §6.4): an ancestor whose pass came first in the same pass,
+// as commands run in issue-number order (#205). c doesn't end those, so
+// its issue stays held by them, as it would had c been handled first. And
+// so the comments deleted there at or after c that may have been such
 // /holds (resolveGone, #244), read from what madeAbove read already.
 func (a *Applier) resolveHeldBy(ctx context.Context, family []node, c Cmd, n node, trust github.Trust, above madeAboveSet) ([]github.Marker, error) {
 	byNumber := map[int]node{}
@@ -794,12 +794,12 @@ type resolveJudged struct {
 //   - each comment that a write collaborator who isn't trusted deleted on
 //     an issue on the path during self's hold, written by a trusted user
 //     or by someone GitHub doesn't name: it may have been such a /hold,
-//     one that wrote no marker as the issues were held already (Q2b), and
-//     GitHub doesn't say which comment it was (resolveGone). With j.self,
-//     only those deleted at or after j was posted: j ends each before it
-//     on self, so those aren't read, but one after it may have been a
-//     /hold posted after j, which j doesn't end (heldStackEnds,
-//     heldDeletionLater, #244).
+//     one that wrote no marker as the issues were held already (SPEC
+//     §6.4), and GitHub doesn't say which comment it was (resolveGone).
+//     With j.self, only those deleted at or after j was posted: j ends
+//     each before it on self, so those aren't read, but one after it may
+//     have been a /hold posted after j, which j doesn't end
+//     (heldStackEnds, heldDeletionLater, #244).
 //
 // Each ends by SPEC §6.4's one rule (resolveEndsHold), which heldStackEnds
 // judges by too: by a /resume the App applied, posted after the /hold, or
@@ -808,9 +808,9 @@ type resolveJudged struct {
 // for a trigger made after it (resolveResumed); and by no other. So a
 // /resume never ends a /hold posted below its issue, whether that /hold
 // wrote a marker or, as the issue it was posted on was held already, none
-// (Q2b). Last, it leaves out those a record on self says a /resume ended,
-// but for j (resolveLeft), as every other judgement of the owner holds
-// left does.
+// (SPEC §6.4). Last, it leaves out those a record on self says a /resume
+// ended, but for j (resolveLeft), as every other judgement of the owner
+// holds left does.
 //
 // Judged for j, the holds j ends, on j's issue or above it, are kept, so
 // that heldStackEnds ends them, and resolveResumed records that, which
@@ -1006,7 +1006,7 @@ type resolveResume struct {
 // /resume posted above a /hold never ends it, whichever holds the held
 // issue was in when that /hold was posted (#188's decision, round 3): a
 // child's own /hold, one that wrote no marker as the child was held
-// already (Q2b) included, ends only by /resume on the child. Both the
+// already (SPEC §6.4) included, ends only by /resume on the child. Both the
 // /resume's judgement (heldStackEnds) and the leave path's
 // (resolveUnended) judge by it, so they agree.
 func resolveEndsHold(h resolveMade, r resolveResume) bool {
@@ -1045,8 +1045,8 @@ func (a *Applier) resolveGoneMay(ctx context.Context, who discWho, e github.Dele
 // id on an ancestor in state is: a marker on it names it (resolveApplied),
 // as when it moved that issue into held, or else the App 👍'd it, as it
 // does once it has moved the family (moveFamily), which it also does on
-// an issue held already, where it writes no marker (Q2b). A rejected one,
-// 👎'd, holds nothing, nor does one not handled yet, as on an ancestor
+// an issue held already, where it writes no marker (SPEC §6.4). A rejected
+// one, 👎'd, holds nothing, nor does one not handled yet, as on an ancestor
 // visited after self in the pass: once handled, it holds self by a marker
 // if self has left held by then, and else is read here again. Its
 // reactions are read only for a /hold with no marker, and only when self
@@ -1141,12 +1141,12 @@ func resolveOwnerHeld(holds []github.Marker) bool {
 // before the App's pass that would record it, or while another trigger
 // was still open, whatever holds the issue besides (#188's note for #189):
 // an owner hold that shows on it, a /hold on an ancestor that writes no
-// marker here (Q2b), or none. So the interviewer reads what a code owner
-// approved or countered (T5). An act at or after the /resume doesn't
-// count: the triggers still open then, it accepts itself, and with no act
-// before it restores at. Nor does an
-// issue held from intake go to clarifying, which would bring it into the
-// pipeline without the approval SPEC §6.2 asks for (resolveIntake).
+// marker here (SPEC §6.4), or none. So the interviewer reads what a code
+// owner approved or countered (#189). An act at or after the /resume
+// doesn't count: the triggers still open then, it accepts itself, and with
+// no act before it restores at. Nor does an issue held from intake go to
+// clarifying, which would bring it into the pipeline without the approval
+// SPEC §6.2 asks for (resolveIntake).
 func (a *Applier) resolveHeld(ctx context.Context, s *github.Snapshot, d Dirt, trust github.Trust, is state.Issue, c github.Comment, self bool,
 	extra []github.Marker) (state.Issue, bool, error) {
 	is, rs, err := a.discHeldStack(ctx, s, d, trust, is)
@@ -1183,9 +1183,10 @@ func (a *Applier) resolveHeld(ctx context.Context, s *github.Snapshot, d Dirt, t
 	}
 	is.HeldStack.Holds = resolveLeft(holds, p, c.ID)
 	// Whether an owner hold shows on the issue doesn't matter (#188's note
-	// for #189): a /hold on an ancestor, which writes no marker here (Q2b),
-	// looks the same as none, so both go to clarifying once a trigger was
-	// resolved during the hold, and the interviewer reads what it approved.
+	// for #189): a /hold on an ancestor, which writes no marker here (SPEC
+	// §6.4), looks the same as none, so both go to clarifying once a
+	// trigger was resolved during the hold, and the interviewer reads what
+	// it approved.
 	if resolveIntake(is.HeldStack) || p.ended {
 		return is, p.ended && !resolveIntake(is.HeldStack), nil
 	}
@@ -1205,8 +1206,8 @@ func (a *Applier) resolveHeld(ctx context.Context, s *github.Snapshot, d Dirt, t
 }
 
 // resolveFields are the fields of a move out of held to clarifying after a
-// discussion (#87's assumption 9): at, where the first hold was, and
-// origin, where the issue was before its first discussion hold (SPEC
+// discussion (SPEC §6.4, Leaving the hold): at, where the first hold was,
+// and origin, where the issue was before its first discussion hold (SPEC
 // §6.4), the first hold's, or else its at, each only if it's an open stage
 // but held; the round's bound from before the hold in seen
 // (state.HeldStackFields); and resolved, when the last trigger was
@@ -1262,7 +1263,7 @@ func resolveIntake(h state.HeldStack) bool { return h.At == state.Intake }
 
 // resolveWait is what the move to clarifying after a hold says of what
 // comes next on an issue the interviewer doesn't run on yet: it waits
-// there (Q3b, ivHoldWait).
+// there (SPEC §6.4, Leaving the hold; ivHoldWait).
 const resolveWait = "It waits at `clarifying` until a code owner sets its stage by hand."
 
 // ResolveByReaction returns the reaction trigger for Step.Reactions that
@@ -1281,7 +1282,7 @@ func ResolveByReaction(trust github.Trust) func(ctx context.Context, a *Applier,
 // resolveLeave acts on s, if it's held, once no discussion trigger on it
 // is open (discFind), as each is resolved:
 //   - With no owner hold left (resolveLeft, resolveOwnerHeld), it goes
-//     held → clarifying (#87's assumption 9), keyed event=h<the comment of
+//     held → clarifying (SPEC §6.4), keyed event=h<the comment of
 //     the move that began the hold>, unique to the hold, with
 //     resolveFields: resolved is the latest act's time, which bounds the
 //     triggers from then on (discFloor). The comment says what comes next
@@ -1344,7 +1345,7 @@ func (a *Applier) resolveLeave(ctx context.Context, s *github.Snapshot, d Dirt, 
 	m := Move{To: state.Clarifying, Trigger: state.TriggerDiscussionResolved, Key: state.Key{Field: "event", ID: "h" + strconv.FormatInt(p.start, 10)},
 		Fields: fields, Text: discCC(text, a.Notify)}
 	// About to leave: a /hold on an ancestor posted while it was held, which
-	// no marker here records (Q2b), keeps it held (SPEC §6.4). The ancestors
+	// no marker here records, keeps it held (SPEC §6.4). The ancestors
 	// are read only when the move can be made: one the table lacks, as for a
 	// type the pipeline doesn't know, writes nothing that would stop the
 	// next pass reading them again, so Transition only reports it, once,

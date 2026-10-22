@@ -16,16 +16,16 @@ import (
 	"github.com/mertenvg/logr/v2"
 )
 
-// Discussion holds (SPEC §6.4, plan #87 rev 2, T3). A write collaborator
+// Discussion holds (SPEC §6.4, #187). A write collaborator
 // who isn't trusted can take part in an issue, but not move it, so what
 // they do on an issue in the pipeline holds that issue, and only it: each
 // such act is a trigger. A trigger is
 //   - found by discFind, from the snapshot, its dirty content and the
-//     renamed events CheckLabels read, each keyed by its event= key (#87's
-//     assumption 3);
+//     renamed events CheckLabels read, each keyed by its event= key (SPEC
+//     §6.4, "Keys and records");
 //   - open from then until something resolves it: a move out of held
 //     (discFloor), such as a stage label set by hand, which ends every hold
-//     (SPEC §6.4), or /resume on the issue; or, from T4 (#188, resolve.go),
+//     (SPEC §6.4), or /resume on the issue; or, from #188 (resolve.go),
 //     a trusted 👍 or a counter comment, which leave it out of discFind's
 //     result, and the record of a discussion that ended while an owner
 //     hold stayed (discFloor);
@@ -35,7 +35,7 @@ import (
 //     no key gets a second notice. A recorded trigger is found from its
 //     record from then on (discRecorded), whatever its content shows now.
 //     A comment trigger on an issue held already has no record at all
-//     (Q2b): it is known by being open.
+//     (SPEC §6.4, "Keys and records"): it is known by being open.
 //
 // An edit or a deletion of the App's own content can hide the markers that
 // set the issue's stage, since markers in such content are never read
@@ -43,8 +43,8 @@ import (
 // at before, before the label rules would put the label back to the stage
 // the markers left show.
 //
-// T6 (#190) adds closes as a kind of its own (closing.go). A close hides no
-// marker, so discRestore has nothing to restore for one. T8 (#192) lists the open triggers of
+// #190 adds closes as a kind of its own (closing.go). A close hides no
+// marker, so discRestore has nothing to restore for one. #192 lists the open triggers of
 // a held issue in the digest and assignment.
 
 // discKind is what kind of act a discussion trigger is.
@@ -61,8 +61,8 @@ const (
 // discTrigger is one discussion trigger on an issue.
 type discTrigger struct {
 	Kind discKind
-	// Key is its event= key (#87's assumption 3). An edit's names the
-	// content, a comment ID or state.BodyID, and the edit's time in Unix
+	// Key is its event= key (SPEC §6.4, "Keys and records"). An edit's names
+	// the content, a comment ID or state.BodyID, and the edit's time in Unix
 	// seconds, so each edit is a trigger of its own.
 	Key string
 	By  string    // who did it
@@ -221,7 +221,8 @@ type discBound struct {
 // first transition marker, or else its latest move out of held, whichever
 // is later.
 //   - Nothing before the first transition marker counts, so old comments
-//     don't hold issues on the day this ships (#87's assumption 2).
+//     don't hold issues on the day this ships (SPEC §6.4, "Which acts
+//     count").
 //   - A move out of held resolves every trigger before it. In this task the
 //     only one a discussion hold allows is a stage label set by hand, an
 //     override, which ends every hold (SPEC §6.4). The App records it on
@@ -235,7 +236,7 @@ type discBound struct {
 //   - Any other move out of held, and the record of a discussion that
 //     ended while an owner hold stayed, is bounded the same way by when
 //     the act that resolved it happened, where that's known (resolveActAt,
-//     T4): a later act still counts.
+//     #188): a later act still counts.
 //
 // The markers are read as state.Derive reads them (discMarkers). With none,
 // ok is false, as on an issue that isn't in the pipeline, which nothing
@@ -524,7 +525,7 @@ func (a *Applier) discNoRecordDue(now time.Time) []int {
 // comment or a later one, or, with no record, made at or after b's time,
 // failing closed in its second, or for a comment id, unless b is by time,
 // above b's comment. A recorded act is open too when b is by time and the
-// act, its time known, is at or after b's time (T4): a record written
+// act, its time known, is at or after b's time (#188): a record written
 // after the act that resolved the triggers, as a notice posted in the
 // pass that applies a /resume posted before the act, doesn't close it. An
 // act known from its record alone, at the zero time, is judged by its
@@ -545,7 +546,7 @@ func discOpenAfter(b discBound, records map[string]int64) discOpen {
 
 // discFind returns the open discussion triggers on s, oldest first: each
 // act after its floor (discFloor, discOpen) by a write collaborator who
-// isn't trusted, as trust says (#87's assumptions 1 and 2):
+// isn't trusted, as trust says (SPEC §6.4, "Who holds an issue"):
 //   - a comment of theirs (discComment);
 //   - their edit of content the App or a trusted user wrote, which made it
 //     dirty, d says by them, at their newest edit of it (discEdits);
@@ -574,7 +575,7 @@ func discOpenAfter(b discBound, records map[string]int64) discOpen {
 // nobody (discWho.nobody), costs no request. It reads the reactions only
 // of a writer's comment they edited after the floor.
 //
-// A trigger resolved by a trusted 👍 or a counter comment (resolver, T4)
+// A trigger resolved by a trusted 👍 or a counter comment (resolver, #188)
 // is left out: a comment is judged so before anyone is asked whether its
 // author is a writer, so a resolved one costs no question.
 func (a *Applier) discFind(ctx context.Context, s *github.Snapshot, d Dirt, trust github.Trust) ([]discTrigger, error) {
@@ -674,7 +675,7 @@ func (a *Applier) discFindResolved(ctx context.Context, s *github.Snapshot, d Di
 			found = append(found, discTrigger{Kind: discRename, Key: key, By: e.By.Login, At: e.At, Title: e.Title})
 		}
 	}
-	closes, err := a.closingTriggers(ctx, s, d.Has, open, who) // T6 (closing.go)
+	closes, err := a.closingTriggers(ctx, s, d.Has, open, who) // #190 (closing.go)
 	if err != nil {
 		return nil, wrap(err)
 	}
@@ -690,7 +691,7 @@ func (a *Applier) discFindResolved(ctx context.Context, s *github.Snapshot, d Di
 		return true
 	})
 	// Resolved, by a 👍 on a notice, or a comment by a counter comment
-	// or a 👍 judged above already (resolver.drop, T4).
+	// or a 👍 judged above already (resolver.drop, #188).
 	if found, err = rs.drop(ctx, found); err != nil {
 		return nil, wrap(err)
 	}
@@ -718,7 +719,7 @@ func discEditKey(id int64, at time.Time) string { return fmt.Sprintf("e%d-%d", i
 // trigger of its own, keyed by its time, with a notice of its own, and
 // only the newest is the content as it is now. Each is resolved by its own
 // notice's 👍, or by /resume on the issue: a 👍 on the newer notice
-// doesn't accept the older edit (resolver.notice, T4).
+// doesn't accept the older edit (resolver.notice, #188).
 func discRecorded(s *github.Snapshot, records map[string]int64, open discOpen, found []discTrigger) []discTrigger {
 	have := map[string]bool{}
 	for _, tr := range found {
@@ -745,14 +746,14 @@ func discRecorded(s *github.Snapshot, records map[string]int64, open discOpen, f
 }
 
 // discFromKey is the trigger keyed key, as its key tells it, recorded at
-// recordedAt (discRecorded): its kind by its shape (#87's assumption 3),
-// with c<comment id> a comment, e<id>-<edit time> an edit, its content and
-// time in it, d<event node id> a deletion, and a timeline event ID a
-// rename. An edit of either kind is a discEdit, as the key doesn't say
-// whose content it changed, and nothing that acts on a recorded trigger
-// needs to know. Any other kind is at recordedAt, as is a key of a shape
-// none of these has, which is still a trigger, failing closed: a marker
-// the App wrote recorded it.
+// recordedAt (discRecorded): its kind by its shape (SPEC §6.4, "Keys and
+// records"), with c<comment id> a comment, e<id>-<edit time> an edit, its
+// content and time in it, d<event node id> a deletion, and a timeline event
+// ID a rename. An edit of either kind is a discEdit, as the key doesn't say
+// whose content it changed, and nothing that acts on a recorded trigger needs
+// to know. Any other kind is at recordedAt, as is a key of a shape none of
+// these has, which is still a trigger, failing closed: a marker the App wrote
+// recorded it.
 //
 // A close is keyed by its timeline event ID too, so a recorded one is a
 // rename here; discRecorded tells the two apart by the timeline
@@ -787,8 +788,8 @@ func discFromKey(key string, recordedAt time.Time) discTrigger {
 // content is the App's or a trusted user's as it stood before that edit.
 // The body is the App's after the App rewrote it whole
 // (state.AuthorEditWriter), so the issue author's own edit after that is
-// one (#87, Q4a). Content they wrote themselves, as when they typed a note
-// into their own comment, is none.
+// one (#87, SPEC §5.1). Content they wrote themselves, as when they typed a
+// note into their own comment, is none.
 //
 // The App's note on dirty content (MarkDirty) is the content's last edit
 // from then on, so the edit's time comes from the history, always, so the
@@ -876,7 +877,7 @@ func (a *Applier) discEdits(ctx context.Context, s *github.Snapshot, d Dirt, who
 
 // discOwnEdits returns the triggers of a write collaborator who isn't
 // trusted editing their own clean comment at or after a trusted 👍 on it,
-// which approved it (#87's assumption 6), if open says the edit counts.
+// which approved it (SPEC §6.4, "Resolving"), if open says the edit counts.
 // GitHub dates only the last edit, so it's that one's. One a marker
 // records is one, with no question and no read. Otherwise it reads the
 // reactions only of a comment such a writer edited last, when that counts:
@@ -929,8 +930,8 @@ func (a *Applier) discOwnEdits(ctx context.Context, s *github.Snapshot, d Dirt, 
 // deleted or made dirty, so its marker is gone: an App comment posted at
 // or after tr is dirty, or one by the App, or by someone GitHub doesn't
 // name, was deleted at or after it. Then no notice is posted again, so no
-// key gets a second one; the trigger stays open, and T4's /resume on the
-// issue accepts it (#87's assumption 4). The trigger's own content, an App
+// key gets a second one; the trigger stays open, and #188's /resume on the
+// issue accepts it (SPEC §6.4, "Notices"). The trigger's own content, an App
 // comment it edited or deleted, is no notice of it. A deletion event
 // doesn't say which comment went, nor when it was posted, so any deletion
 // of an App comment after tr counts, even the owner's cleanup of an old
@@ -952,7 +953,7 @@ func discLost(s *github.Snapshot, d Dirt, tr discTrigger, appSlug string) bool {
 // discOrigin is the origin of a discussion hold, from stage, on an issue
 // in state is: where it was before its first discussion hold (SPEC §6.4).
 // In the clarifying after a hold, every marker carries the origin forward
-// (T4 and T5 write it there), so it's the latest transition's; anywhere
+// (#188 and #189 write it there), so it's the latest transition's; anywhere
 // else, and with none, it's stage, as for a first hold.
 func discOrigin(is state.Issue, stage state.Stage) state.Stage {
 	for i := len(is.Markers) - 1; i >= 0; i-- {
@@ -977,12 +978,12 @@ func discHitsApp(tr discTrigger, appSlug string) bool {
 }
 
 // discHoldMove is the discussion hold for tr on s, at at with origin,
-// from from if set (Move.DiscFrom), with the round bound seen (#87's
-// assumption 7), an own edit's sentence (editNoticeApproval) after its
+// from from if set (Move.DiscFrom), with the round bound seen (SPEC §5's
+// seen field), an own edit's sentence (editNoticeApproval) after its
 // own, then the sentence also, if any, and more markers after its own. A hold for a trigger that isn't a comment is also
 // its notice, carrying its notice marker, unless a marker records tr or it
 // may have had a notice already (discLost). The hold's comment ends in cc
-// @<notify> (assumption 5).
+// @<notify>, so the digest doesn't mention it again (SPEC §9.4).
 func (a *Applier) discHoldMove(s *github.Snapshot, d Dirt, tr discTrigger, from, at, origin state.Stage, seen int64, also string, more ...github.Marker) Move {
 	fields := map[string]string{"at": string(at), "origin": string(origin), "reason": "discussion"}
 	text := fmt.Sprintf("On hold for discussion, from `%s`: %s. Only a code owner can move this issue, "+
@@ -1094,14 +1095,15 @@ func (a *Applier) discRestore(ctx context.Context, s *github.Snapshot, trust git
 //     oldest that no transition marker records, at its stage, with its
 //     origin (discOrigin) and the round's bound in seen. One that hid the
 //     issue's stage was held by discRestore already, at the stage before.
-//   - An issue held already gets no hold marker (Q2b): it stays held while
-//     the trigger is open (discHeldStack).
+//   - An issue held already gets no hold marker (SPEC §6.4): it stays held
+//     while the trigger is open (discHeldStack).
 //   - Each trigger that isn't a comment, and that no marker records
 //     (discRecords), gets one notice: an App comment naming it, carrying
-//     notice key=<its key> (#87's assumption 4), unless it may have had
+//     notice key=<its key> (SPEC §6.4, "Notices"), unless it may have had
 //     one already (discLost).
 //
-// The hold's comment and each notice end in cc @<notify> (assumption 5).
+// The hold's comment and each notice end in cc @<notify>, so the digest
+// doesn't mention them again (SPEC §9.4).
 // The writes go hold first, then the notices oldest first, each checked
 // first, so a pass that crashed part way can run again. A move the table
 // lacks, as for a type the pipeline doesn't know, is reported once by
@@ -1164,14 +1166,14 @@ func discCC(text string, notify []string) string {
 // discHeldStack returns is, the state of s, with each open discussion
 // trigger on s (discFind) that no hold marker records added to its
 // HeldStack's Holds as a discussion hold, while s is held. A discussion
-// hold on an issue held already writes no marker (Q2b), so this is how
+// hold on an issue held already writes no marker (SPEC §6.4), so this is how
 // /resume knows of it: /resume on an ancestor ends only owner holds
-// (heldStackEnds), so the issue stays held while one is open, and /resume
-// on the issue itself accepts them (T4). The renames are known only once
+// (heldStackEnds), so the issue stays held while one is open, and /resume on
+// the issue itself accepts them (#188). The renames are known only once
 // CheckLabels has checked s, so an unchecked snapshot misses those, as one
 // not yet visited misses any trigger: the next pass holds the issue for it
-// again. It also returns the resolver that found them (discFindResolved),
-// or nil when s isn't held.
+// again. It also returns the resolver that found them (discFindResolved), or
+// nil when s isn't held.
 func (a *Applier) discHeldStack(ctx context.Context, s *github.Snapshot, d Dirt, trust github.Trust, is state.Issue) (state.Issue, *resolver, error) {
 	if is.Stage != state.Held {
 		return is, nil, nil
@@ -1199,7 +1201,7 @@ func (a *Applier) discHeldStack(ctx context.Context, s *github.Snapshot, d Dirt,
 }
 
 // discHeldLabel reports whether label is stage:held: such an issue is
-// visited on every pass, as a 👍 that resolves a trigger (T4) changes no
+// visited on every pass, as a 👍 that resolves a trigger (#188) changes no
 // updated_at. A deletion does move it, about 2 seconds later, so the
 // snapshot is read again then (SPEC §16).
 func discHeldLabel(label string) bool {

@@ -21,7 +21,7 @@ type planFacts struct {
 	Class state.Class // its class: an epic, or a story with or without a parent
 	// Scopes is config's scopes, the only ones a task may have.
 	Scopes   []string
-	MaxTasks int // plan.max_tasks, a hard limit (#247's Q2a)
+	MaxTasks int // plan.max_tasks, a hard limit (SPEC §11.3)
 	Models   config.Models
 	// MaxQuestions is loop.max_questions_per_round, and Round the round
 	// a question round is asked as.
@@ -88,9 +88,9 @@ const planLengthRunID = "00000000"
 
 // checkPlan checks out against f after the schema, which it doesn't
 // trust: the daemon fails closed, so every bound the schema has is
-// checked again here, with those it leaves out (SPEC §11.3, plan #247's
-// T6), and for a revision, the revised-plan rules (checkStatuses, #195's
-// T6). Its error joins a *ruleError for every rule broken, each naming the
+// checked again here, with those it leaves out (SPEC §11.3's
+// Validation), and for a revision, the revised-plan rules (checkStatuses,
+// SPEC §11.3). Its error joins a *ruleError for every rule broken, each naming the
 // item and field, and any error checking a rule, which is no *ruleError
 // (#311). Nothing may be written from an output that fails.
 func checkPlan(out planOutput, f planFacts) error {
@@ -159,7 +159,7 @@ func checkPlanBody(p planBody, f planFacts, fail func(string, string, ...any)) e
 	line("why", p.Why)
 	line("order", p.Order)
 	// visible is every field the plan comment shows, for the file-paths
-	// rule (plan #247, assumption 8). Of a task's body, only a human task's
+	// rule (SPEC §11.3). Of a task's body, only a human task's
 	// "Done when" text is shown.
 	visible := []rendered{{"the why", p.Why}, {"the summary", p.Summary}, {"the message", p.Message}, {"the order", p.Order}}
 	for i, a := range p.Assumptions {
@@ -343,16 +343,16 @@ func checkHumanTask(at string, h planHumanTask, fail func(string, string, ...any
 	}
 }
 
-// The bounds of a "Done when" check's values (#224's reconcile, decision
-// 5).
+// The bounds of a "Done when" check's values (SPEC §11.3's "A human
+// task's check").
 const (
 	planMaxLabel    = 50  // characters in a label's name, as GitHub caps it
 	planMaxContains = 256 // bytes of a file's contains text
 )
 
 // validCheck reports whether c is a "Done when" check the daemon can run:
-// a known kind, exactly that kind's fields, and values within S4's bounds
-// (#224's reconcile, decision 5):
+// a known kind, exactly that kind's fields, and values within the bounds
+// of SPEC §11.3's "A human task's check":
 //   - label: a label of at most 50 characters, and not "." or "..", which
 //     go-github refuses or reads as the label list;
 //   - issue-type: an issue type that isn't empty, on one line;
@@ -362,8 +362,9 @@ const (
 //   - ruleset: a check name that isn't empty, on one line;
 //   - installation: an owner that's a user's or organization's login.
 //
-// checkPlan checks a plan's checks with it, and S4 checks the check it
-// runs with it, so the two can't differ. Its error names every value out
+// checkPlan checks a plan's checks with it, and checkFromPlan checks the
+// check a human task records and runs with it (SPEC §9.3), so the two
+// can't differ. Its error names every value out
 // of bounds.
 func validCheck(c planCheck) error {
 	var bad []string
@@ -541,7 +542,7 @@ var (
 )
 
 // planFilePath is the first file path in text outside a link, or "". A
-// file path, as plan #247's assumption 8 defines one, is a word with a
+// file path, as SPEC §11.3's file-paths rule defines one, is a word with a
 // directory and a file extension. A bare file name, with no directory,
 // isn't one. So that prose with a slash passes (#311):
 //   - the extension starts with a lowercase letter, and isn't a module's

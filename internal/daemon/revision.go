@@ -86,13 +86,14 @@ func (a *Applier) PostRevision(ctx context.Context, s *github.Snapshot, dirty fu
 // seen=<comment id>, so a comment posted after the /approve is planning's
 // input (state.Inputs), then the 👍. At plan-review, one posted after the
 // latest plan revision comment approves that plan revision while
-// state.PlanApproval gives no reason it can't be (plan #248, Q1a and Q2a):
-// Apply moves the issue to planned the same way, with the plan's hash as
-// body. Check rejects it otherwise, with the reason, and when the table has
-// no such move for the issue's class (SPEC §7.2). At spec-review, a
-// rejection for a dirty body or a stale revision says whether a revision
-// follows, and what the owner can do (ivWordingStale, #229), so none of
-// them asks for a new comment.
+// state.PlanApproval gives no reason it can't be (SPEC §7.4, A plan that
+// nothing approves, and The body is edited at plan-review): Apply moves
+// the issue to planned the same way, with the plan's hash as body. Check
+// rejects it otherwise, with the reason, and when the table has no such
+// move for the issue's class (SPEC §7.2). At spec-review, a rejection for
+// a dirty body or a stale revision says whether a revision follows, and
+// what the owner can do (ivWordingStale, #229), so none of them asks for a
+// new comment.
 func ApproveCommand() Handler {
 	return Handler{
 		Check: func(ctx context.Context, a *Applier, c Cmd) error {
@@ -179,7 +180,7 @@ func ivWordingStale(latest state.Revision, ok bool, by github.Author, follows bo
 
 // planRejection is /approve's Rejection at plan-review for why, a reason
 // state.PlanApproval gives that latest can't be approved, worded like the
-// spec's. The daemon posts no plan revision of its own (plan #248, Q1a), so
+// spec's. The daemon posts no plan revision of its own (SPEC §7.4), so
 // where only a new plan helps, the reason says how to get one, and is Final.
 // PlanNoRevision may mean the only plan comment was made dirty or deleted,
 // not that no plan was ever posted, so it doesn't say "yet". A dirty body
@@ -392,7 +393,7 @@ func inTable(is state.Issue, to state.Stage, trigger state.Trigger, on string) e
 //   - At spec-review, it sends the spec back, to clarifying. The comment is
 //     the notes in state.Inputs, and a comment posted after it is the next
 //     round's answer.
-//   - At plan-review, it sends the plan back, to planning (plan #248, T3).
+//   - At plan-review, it sends the plan back, to planning (SPEC §7.4).
 //     The comment is the next planner run's notes in state.Inputs, and a
 //     comment posted after it is planning's input too.
 //
@@ -432,12 +433,12 @@ func ReviseCommand() Handler {
 // if it is a revision request (SPEC §7.4), and the review stage it was
 // posted at: a comment that isn't a command and that no marker names,
 // posted at spec-review after the latest spec revision, or at plan-review
-// after the latest plan revision (plan #248, T3), whatever the stage is
-// now. The stage c was posted at is its round's (postedAt), so a remark
-// left at another stage never counts. After the revision is after its
-// Seen, if it has one, as a comment posted after the App read the issue
-// may come before the revision comment; else after its comment. A plan
-// revision's Seen is that of the move in its comment.
+// after the latest plan revision, whatever the stage is now. The stage c
+// was posted at is its round's (postedAt), so a remark left at another
+// stage never counts. After the revision is after its Seen, if it has one,
+// as a comment posted after the App read the issue may come before the
+// revision comment; else after its comment. A plan revision's Seen is that
+// of the move in its comment.
 //
 // So a request rejected at a review stage whose reply was lost still gets
 // it after the stage moves on (Step.handle). The latest revision is then

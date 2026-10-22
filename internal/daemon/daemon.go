@@ -22,10 +22,10 @@ import (
 	"github.com/mertenvg/issuedog/internal/trust"
 )
 
-// Daemon runs the loop (SPEC §8.1) on one repo. It keeps what plan #5's
-// assumption 2 lists, in memory only: a snapshot of each open issue, the
-// since= cursors, and, in its client, the ETag cache. Its first Iterate
-// reads them all from GitHub.
+// Daemon runs the loop (SPEC §8.1) on one repo. It keeps only an in-memory
+// cache, rebuilt from GitHub on startup (SPEC §5): a snapshot of each open
+// issue, the since= cursors, and, in its client, the ETag cache. Its first
+// Iterate reads them all from GitHub.
 type Daemon struct {
 	// Step runs step 1. Iterate replaces its Trust with one loaded from main.
 	// Its Commands and Reactions are the command and reaction handlers.
@@ -161,7 +161,7 @@ func (d *Daemon) Run(ctx context.Context) {
 // reloads config and trust, polls for changes, judges the closes still to
 // judge (closingPass), reads changed issues again, those it reopened
 // included, then runs step 1 on them and on every issue at spec-review or
-// plan-review, whose 👍s change no updated_at (plan #5, assumption 7), on every issue with
+// plan-review, whose 👍s change no updated_at (SPEC §8.1), on every issue with
 // triage:ask, a flag waiting on a 👍 (FlagByReaction), and on every issue
 // that had an open state error after its last step 1, waiting on a 👍 too
 // (ErrorByReaction), on every held issue, for its discussion

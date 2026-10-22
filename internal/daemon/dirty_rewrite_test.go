@@ -15,7 +15,7 @@ import (
 const rewriteSpec = "<!-- issuedog:rewrite run=run1 replaced=mallory -->\n## Problem\n..."
 
 // Only the body's history after the App's last full rewrite counts (#169,
-// Q1a), and a full rewrite is the App's edit whose text starts with the
+// SPEC §5.1), and a full rewrite is the App's edit whose text starts with the
 // rewrite marker. A body the App last rewrote needs no history read.
 func TestDirtyRewrite(t *testing.T) {
 	t.Parallel()
@@ -76,8 +76,8 @@ func TestDirtyRewriteNotForComments(t *testing.T) {
 // A trusted user's edit counts like the author's, for the body and for a
 // person's comment, but not for the App's comment, as trust holds now:
 // once the editor loses trust, the edit makes the content dirty again
-// (#169, Q2a). Each editor's trust is asked once per call, and only where
-// it decides.
+// (#169, SPEC §5.1). Each editor's trust is asked once per call, and only
+// where it decides.
 func TestDirtyTrustedEdits(t *testing.T) {
 	t.Parallel()
 	f := githubtest.New(t, "o/r", slug)
@@ -117,7 +117,7 @@ func TestDirtyTrustedEdits(t *testing.T) {
 
 // The body's markers are read only while the App made its last edit: a
 // trusted user's edit of the App's body leaves it clean but not the App's
-// text (#169, Q2a), and the App's own later edit makes it so again.
+// text (#169, SPEC §5.1), and the App's own later edit makes it so again.
 func TestDirtyTrustedBodyMarkers(t *testing.T) {
 	t.Parallel()
 	f := githubtest.New(t, "o/r", slug)

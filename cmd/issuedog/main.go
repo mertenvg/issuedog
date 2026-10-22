@@ -124,7 +124,7 @@ func run(args, environ []string, stdin io.Reader, stdout io.Writer) int {
 	return 0
 }
 
-// settings are the daemon's own, from the environment (plan #5, assumption 8).
+// settings are the daemon's own, from the environment (SPEC §3.5).
 type settings struct {
 	owner, name           string
 	appID, installationID int64
@@ -202,8 +202,8 @@ func startDaemon(ctx context.Context, set settings, key []byte) (*daemon.Daemon,
 
 // registerStages returns the Stages to register on d, by stage, and the
 // Unlabeled stage: the interviewer at clarifying, the planner at planning
-// (#247's T8), and triage for open issues with no stage label (plan #6,
-// T8). Tests replace it.
+// (SPEC §12), and triage for open issues with no stage label (SPEC §6.2).
+// Tests replace it.
 var registerStages = func(d *daemon.Daemon) (map[state.Stage]daemon.Stage, daemon.Stage) {
 	return map[state.Stage]daemon.Stage{
 		state.Clarifying: &daemon.Interviewer{Daemon: d},

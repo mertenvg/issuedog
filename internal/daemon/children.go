@@ -16,7 +16,7 @@ import (
 	"github.com/mertenvg/logr/v2"
 )
 
-// ChildrenVisit creates the children of an approved plan (plan #249, T3):
+// ChildrenVisit creates the children of an approved plan (SPEC §5.2):
 // the loop calls it after FlagVisit, so the pass that approves a plan, by
 // 👍 or /approve, or that skips review, creates its children too. It acts
 // only on an open parent at planned, whose move there approved a plan
@@ -24,14 +24,14 @@ import (
 // posted at T (state.ApprovedPlanMove). A held or closed parent gets
 // nothing, and creation carries on once a hold ends back at planned. Once
 // a clean record of R's children stands on the parent (state.CreatedRecord,
-// plan #249, T4), it returns before any read or write: the children are
+// SPEC §5.2), it returns before any read or write: the children are
 // all written, so a visit costs nothing.
 //
 // Until then, it describes each item of R that it files (childSpecs):
 // every item of a first plan, and only the new items of a revision
-// (#195's T6), and each changed item of a revision, which it rewrites in
-// place (childSpecsWhere, #195's T7). A kept item gets no write, and a
-// dropped one's child is closed (#195's T8, #297). It finds the children filed already
+// (SPEC §11.3), and each changed item of a revision, which it rewrites in
+// place (childSpecsWhere, SPEC §6.4). A kept item gets no write, and a
+// dropped one's child is closed (SPEC §6.4, #297). It finds the children filed already
 // (childrenFind), with no search request, then, for each item in creation
 // order, which childSpecs gives: plan order with the human tasks last
 // (childOrder):
@@ -44,7 +44,7 @@ import (
 //   - links it under the parent if it isn't a sub-issue of it yet
 //     (AddSubIssue);
 //   - gives it its first move, intake → its first stage on TriggerCreated,
-//     keyed event=p<P> (#224's reconcile decision 6), unless it has a
+//     keyed event=p<P> (SPEC §5, §7.2), unless it has a
 //     transition marker of the App's already (childFirstMove).
 //
 // Then it rewrites each changed item's child from R and sends it back to
@@ -113,7 +113,7 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 	if err != nil {
 		return wrap(err)
 	}
-	// A revision's changed items, each rewritten in place (#195's T7),
+	// A revision's changed items, each rewritten in place (SPEC §6.4),
 	// are described before any write too, so an item that can't be stops
 	// the visit with nothing written.
 	changed, err := childSpecsWhere(s, rev.Rev, plan.Items, func(status string) bool { return status == planChanged },
@@ -146,7 +146,7 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 	}
 	// Once the new children are filed, so a changed human task's "Why it
 	// blocks" can name a new item's issue, the changed children are
-	// rewritten and moved (#195's T7).
+	// rewritten and moved (SPEC §6.4).
 	if err := st.childrenChanged(ctx, s, rev.Rev, planComment, key, changed, children, numbers); err != nil {
 		return wrap(err)
 	}
@@ -166,8 +166,8 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 	if revised {
 		// Then a changed child's links to its siblings follow the
 		// revision, and each dropped item's child is closed, with every
-		// open issue below it, deepest first, and unlinked (#195's
-		// assumption 7, #297). The record comes only after them, so once
+		// open issue below it, deepest first, and unlinked (SPEC §6.4,
+		// #297). The record comes only after them, so once
 		// it stands every write of the revision is made.
 		if err := st.revisedLink(ctx, plan.Items, children); err != nil {
 			return wrap(err)
@@ -196,8 +196,8 @@ type childFound struct {
 // sub-issues, which hold every linked child, open or closed, then the
 // repo's issues updated since the move into planned, at since, which also
 // hold one filed but not yet linked when a pass stopped. Both lists are
-// consistent, unlike search, which lags behind writes (plan #249, "Finding
-// a child again, without search"). It returns them by item (childMatch),
+// consistent, unlike search, which lags behind writes (SPEC §5.2, "Finding
+// a child, without search"). It returns them by item (childMatch),
 // with the Origin of each sub-issue whose listed body gives none
 // (childOrigins), a person's adopted issue's included (#372).
 func (st *Step) childrenFind(ctx context.Context, s *github.Snapshot, since time.Time) (map[string]childFound, error) {
@@ -221,11 +221,11 @@ func (st *Step) childrenFind(ctx context.Context, s *github.Snapshot, since time
 // number, as state.Derive reads it from the issue's snapshot, comments
 // and dirty content included. That's one of two kinds of sub-issue:
 //   - one the App filed, whose origin the App reposted in a comment once
-//     the body lost it (originRepost, S5's T2, #291);
+//     the body lost it (originRepost, SPEC §6.4, #291);
 //   - one a person filed, whose body never gives an origin, as Derive
 //     reads markers only from the App (github.TrustedMarkers), but whose
 //     clean App comment may carry one: an adopted issue, such as #195,
-//     which #224's plan adopted as S5 (#195's assumption 3, #372). A
+//     which #224's plan adopted as one of its stories (SPEC §5, #372). A
 //     marker in a dirty App comment, or in a person's comment, gives
 //     none, by Derive's rules.
 //
@@ -271,8 +271,9 @@ func childListedOrigin(is *gogithub.Issue, appSlug string) state.Origin {
 // §5.2). For an issue the App filed, it's read by Derive from a snapshot
 // of what the listing gives, its author and body: the listing has no edit
 // history, so a body someone edited still matches, as long as it keeps the
-// App's marker (plan #249, assumption 8). One whose listed body gives no
-// Origin takes it from origins, what its snapshot gives (childOrigins), so
+// App's marker, since reusing an edited child is safer than filing a
+// duplicate (SPEC §5.2). One whose listed body gives no Origin takes it
+// from origins, what its snapshot gives (childOrigins), so
 // a child whose origin the App reposted in a comment matches too (#291),
 // and so does an issue a person filed, adopted by the plan, whose clean
 // App comment carries its origin (#372): its listed body never gives one,
@@ -361,9 +362,10 @@ func (st *Step) childWrite(ctx context.Context, s *github.Snapshot, rev int, key
 
 // childrenLink makes each child in children, by item, blocked by the
 // children of the items its item's "Depends on" names, in plan order
-// (plan #249, T4). Those name items of the same plan, each once, as S1
-// and the planner's schema check, so in a first plan a dependency with no
-// child is an error. In a revision, revised, it may name a kept or
+// (SPEC §5.2). Those name items of the same plan, each once, as the plan's
+// validation (SPEC §11.3) and the planner's schema check, so in a first
+// plan a dependency with no child is an error. In a revision, revised, it
+// may name a kept or
 // changed item whose child isn't found (ChildrenVisit): that link is
 // logged and skipped, and the record names the item (childrenRecord).
 // It reads each such child's blocked-by links first (BlockedBy),
@@ -411,7 +413,7 @@ func (st *Step) childrenLink(ctx context.Context, items []planItem, children map
 }
 
 // childrenRecord posts the record of revision rev's children on parent s
-// (plan #249, assumption 7): one App comment listing each item of items
+// (SPEC §5, created): one App comment listing each item of items
 // with its child in children, in plan order, as "- S1 #247: title", then
 // the marker created rev=<rev> children=<n>,<n>, which state.CreatedRecord
 // reads back. The item IDs and titles are the planner's, so they're
@@ -474,7 +476,7 @@ func (st *Step) childrenRecord(ctx context.Context, s *github.Snapshot, rev int,
 	return nil
 }
 
-// childFirstMove gives child number n its first move (Q1a), intake → c's
+// childFirstMove gives child number n its first move (SPEC §7.2), intake → c's
 // first stage on TriggerCreated, keyed by key, unless a clean transition
 // marker of the App's is on it already: its own first move, or an owner's
 // stage change recorded as an override. child is the snapshot a create in

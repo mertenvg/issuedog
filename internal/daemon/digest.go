@@ -16,21 +16,20 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// The digest (SPEC §9.4, plan #7 T7) is the App's issue that lists what
-// waits on the owner. It is the issue the App authored whose body has the
-// identity marker (digestRenderIdentity), read even in an edited body (the
-// plan's assumption 1), since the marker holds no state, or one listed
-// finds by other means if an edit took the marker out. If there's more
-// than one, the lowest number wins and the rest are logged. Every one of
-// them is kept out of the pipeline: the poll never marks one stale, so it
-// has no snapshot, and step 1, CheckLabels, intake, stage runs and triage
-// never see it.
+// The digest (SPEC §9.4, #159) is the App's issue that lists what waits on
+// the owner. It is the issue the App authored whose body has the identity
+// marker (digestRenderIdentity), read even in an edited body (SPEC §5.1),
+// since the marker holds no state, or one listed finds by other means if an
+// edit took the marker out. If there's more than one, the lowest number wins
+// and the rest are logged. Every one of them is kept out of the pipeline: the
+// poll never marks one stale, so it has no snapshot, and step 1, CheckLabels,
+// intake, stage runs and triage never see it.
 //
 // The digest's body has no rewrite marker (SPEC §5.1, #169), though it's
 // a whole body the App writes: it is never read for state but for its
 // identity marker, which is read in an edited body anyway, it has no run
 // to name, and the pin note must be its first line (digestPin). It's an
-// exception for #162 (T10) to write into §5.1, beside the identity
+// exception for #162 to write into §5.1, beside the identity
 // marker's.
 const (
 	digestTitle = "issuedog digest"
@@ -108,7 +107,7 @@ type digestSeen struct {
 
 // digestNews is a digest-new comment of the App's: the issue it's on, the
 // item keys it announced, and whether it was edited, which makes it count
-// for nothing (the plan's assumption 11).
+// for nothing (SPEC §9.4, "Announcing new items").
 type digestNews struct {
 	issue  int
 	items  []string
@@ -131,7 +130,7 @@ type digestNews struct {
 // no digest yet: it's held in titled, and digestTake judges it after the
 // poll's comments, and records it if it is one.
 //
-// Gap, for SPEC §16 (T10, #162): a digest whose marker was taken out and
+// Gap, for SPEC §16 (#162): a digest whose marker was taken out and
 // whose title was changed, both before this daemon listed it, isn't found.
 // A new digest is created, and the old one is an issue like any other, so
 // triage runs on it.
@@ -329,16 +328,16 @@ func (d *Daemon) digestTake(ctx context.Context) {
 }
 
 // digestPass keeps the digest, if Daemon.Digest is set: after step 1 and
-// before Work, since a stage run can take minutes (assumption 13). It ranks
+// before Work, since a stage run can take minutes (SPEC §8.1). It ranks
 // the items cached for every issue (digestCacheRanked), then:
-//   - With no digest, it creates one with them listed (assumption 2).
+//   - With no digest, it creates one with them listed (SPEC §9.4).
 //     That's in the loop, not at startup, so a failure doesn't stop the
 //     daemon (SPEC §3.5); after a crash that follows the create, the next
 //     poll finds it. While the title rule holds an issue whose edit
 //     history is still to read, which may be the digest, it creates none
 //     (digestTake).
-//   - It resolves a close or reopen (digestOpen, Q4a). A digest a trusted
-//     user closed is off: nothing more is done to it.
+//   - It resolves a close or reopen (digestOpen, SPEC §9.4). A digest a
+//     trusted user closed is off: nothing more is done to it.
 //   - It handles the pin note (digestPin).
 //   - It announces new items, and writes the body if it changed
 //     (digestRewrite).
@@ -460,7 +459,7 @@ func digestMoved(a *Applier, resp *gogithub.Response, is *gogithub.Issue) error 
 }
 
 // digestRewrite brings digest n up to date with items, ranked
-// (assumptions 10 and 11, Q1a and Q2a):
+// (SPEC §9.4, "The body" and "Announcing new items"):
 //   - The items whose keys no never-edited digest-new comment of the App's
 //     on n holds are new (digestRenderNew). If digestRenderNews gives a
 //     comment for them, as it does for a kind that doesn't mention the
@@ -519,14 +518,14 @@ func (d *Daemon) digestAnnounce(ctx context.Context, n int, text string) error {
 	return nil
 }
 
-// digestOpen resolves the digest's close or reopen (Q4a) and reports whether
-// the digest is on. A close by a trusted user stands, and turns the digest
-// off until a trusted user reopens it (digestTrusted). Any other close or
-// reopen is reverted, as SPEC §6.4 does for any issue. Which stands is
-// read from the timeline, so it holds across restarts. The timeline is read
-// only for a digest that was ever closed (closed, or open with state_reason
-// "reopened"), and only when it changed since the last resolution, so an
-// unchanged pass reads nothing.
+// digestOpen resolves the digest's close or reopen (SPEC §9.4, "Closing it")
+// and reports whether the digest is on. A close by a trusted user stands, and
+// turns the digest off until a trusted user reopens it (digestTrusted). Any
+// other close or reopen is reverted, as SPEC §6.4 does for any issue. Which
+// stands is read from the timeline, so it holds across restarts. The timeline
+// is read only for a digest that was ever closed (closed, or open with
+// state_reason "reopened"), and only when it changed since the last
+// resolution, so an unchanged pass reads nothing.
 //
 // An event GitHub hasn't written yet leaves the state as it is, with
 // nothing reverted, and the next pass looks again. A close's event must
@@ -704,17 +703,17 @@ func (g *digestState) noteOf(n int) string {
 	return ""
 }
 
-// digestPin handles the pin note (assumption 3). While the digest's body
-// starts with it, the first pass of each start that finds the digest on
-// checks whether it's pinned, and if not, pins it. Once the digest is
-// pinned, the note goes, and it's never pinned again, so an unpin by the
-// owner stands. If GitHub refuses the pin, such as for a missing permission
-// or three pinned issues already, or answers with no error but no pin,
-// that's logged, the note names GitHub's message, and the loop carries on.
-// A failed edit of the note is the pass's error, and the next pass checks
-// again: the check counts as done only once the body says what it found.
-// The body it writes lists items, so the rewrite that follows has nothing
-// to change.
+// digestPin handles the pin note (SPEC §9.4, "Creating and pinning it").
+// While the digest's body starts with it, the first pass of each start that
+// finds the digest on checks whether it's pinned, and if not, pins it. Once
+// the digest is pinned, the note goes, and it's never pinned again, so an
+// unpin by the owner stands. If GitHub refuses the pin, such as for a missing
+// permission or three pinned issues already, or answers with no error but no
+// pin, that's logged, the note names GitHub's message, and the loop carries
+// on. A failed edit of the note is the pass's error, and the next pass checks
+// again: the check counts as done only once the body says what it found. The
+// body it writes lists items, so the rewrite that follows has nothing to
+// change.
 //
 // Any other failure, the check's included, is logged and named in the note
 // (digestPinFailNote), and stops nothing (#226): the rewrite that follows
@@ -896,7 +895,7 @@ func (d *Daemon) digestCacheSet(s *github.Snapshot, inputs []github.Comment, dir
 // #192), if s is held, and nil otherwise, with no request. Iterate calls
 // it at the end of the visit, after step 1 and the other visits, so the
 // item shows what's open once step 1 has resolved what it could, and the
-// records its hold and notices just wrote (discRecords): T4's (#188)
+// records its hold and notices just wrote (discRecords): #188's
 // resolutions in step 1 come before it. It asks the visit's trust
 // (trustOnceTrust), which step 1's own look for triggers (Step.discussion)
 // asked already, so it makes no permission request of its own. Edit
@@ -936,8 +935,8 @@ func (st *Step) holdItemFind(ctx context.Context, s *github.Snapshot, dirt Dirt)
 
 // digestCacheRanked returns every issue's cached items that stand
 // (digestCacheOf), and the closed issues' closer state errors
-// (closerErrDigest), which assignment doesn't take, ranked by Q3a against
-// every snapshot held (waitRank).
+// (closerErrDigest), which assignment doesn't take, ranked by SPEC §9.4's
+// order against every snapshot held (waitRank).
 func (d *Daemon) digestCacheRanked() []waitItem {
 	var items []waitItem
 	for _, n := range slices.Sorted(maps.Keys(d.digestCache)) {

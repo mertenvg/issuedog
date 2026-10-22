@@ -14,7 +14,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// Revised plans (T6 of #195): the revision rules, its rendering and its
+// Revised plans (#195, SPEC §11.3): the revision rules, its rendering and its
 // data, against a planPrior built by hand. planner_revision_test.go reads
 // one from a fake and drives the planner through the harness.
 
@@ -340,8 +340,8 @@ func TestCheckRevisionCounts(t *testing.T) {
 		t.Errorf("the validation line = %q, want 52 sub-issues and 51 links", got)
 	}
 
-	// A kept item's dependency on a dropped item goes with it (T8), so it
-	// isn't counted: S1, approved on S2 to S52, keeps 50 once S52 drops.
+	// A kept item's dependency on a dropped item goes with it (SPEC
+	// §5.2), so it isn't counted: S1, approved on S2 to S52, keeps 50 once S52 drops.
 	out, f = keptStories(t, 52)
 	for i := range f.Prior.Items {
 		f.Prior.Items[i].DependsOn = []string{}

@@ -20,7 +20,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// Revised plans (T6 of #195), through the harness with the real Planner:
+// Revised plans (#195, SPEC §11.3), through the harness with the real Planner:
 // an issue planned before gets a planner run again once it's back at
 // planning, its context has the children of its approved plan, and its
 // revision is checked against them and waits at plan-review.
@@ -139,7 +139,7 @@ func TestPlannerContextRevision(t *testing.T) {
 // revision 2: each item's status in its item line, kept and dropped items
 // on one line, the validation line from the revision's counts, and the
 // plan-data marker keeping the statuses. It moves to plan-review, though
-// plan.review is false (#195's Q2a). The children are read once for the
+// plan.review is false (SPEC §7.2). The children are read once for the
 // context, and once for the check, which Apply takes.
 func TestPlannerRevision(t *testing.T) {
 	t.Parallel()
@@ -530,8 +530,8 @@ func TestChildrenOfRevisionHumanBlocksChanged(t *testing.T) {
 var revisionPlan = childPlan{"Story", "story-revision", 4, false}
 
 // TestChildrenOfRevision: creating the children of an approved revision
-// files only its new items' children, and rewrites its changed ones (T7,
-// #296). The owner's 👍 on a revision with one item of each status files
+// files only its new items' children, and rewrites its changed ones (SPEC
+// §5.2, #296). The owner's 👍 on a revision with one item of each status files
 // exactly one child, for the new T4, linked and at ready, with its origin
 // naming revision 2, and blocked by the kept T1's child, as its item
 // depends on T1 (#339's links). The changed T2's child is rewritten from

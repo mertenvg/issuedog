@@ -14,7 +14,8 @@ import (
 	"github.com/mertenvg/logr/v2"
 )
 
-// originHuman is a human task's origin marker (SPEC §16, S3's human=1).
+// originHuman is a human task's origin marker (SPEC §16), whose human=1
+// makes the task a human task (SPEC §5).
 const originHuman = "<!-- issuedog:origin plan=#195 rev=1 item=T9 human=1 -->"
 
 // originRepost is the App's comment that carries origin marker m again,
@@ -123,7 +124,7 @@ func TestOriginPlanOrder(t *testing.T) {
 	originQuiet(t, f, d)
 }
 
-// Reposting a lost origin (S5's T2, #291): step 1 posts the App's origin
+// Reposting a lost origin (#291, SPEC §6.4): step 1 posts the App's origin
 // marker again in a comment once an App-filed issue's body stops giving
 // it, so the issue keeps its class and its place in its plan.
 

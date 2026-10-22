@@ -13,7 +13,7 @@ import (
 const originRepostText = "This issue's description was edited, so I've copied its `origin` marker here to keep tracking it in its plan."
 
 // originRepost posts again, in an App comment, the origin marker an
-// App-filed issue's body no longer gives (S5's T2, #291; SPEC §5: "or
+// App-filed issue's body no longer gives (#291; SPEC §5: "or
 // reposted in a comment once that body is dirty"). Step.Run calls it
 // right after MarkDirty, before the type check, so the issue keeps its
 // class (state.Origin) from the first pass on, held or not. It acts only

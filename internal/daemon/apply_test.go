@@ -78,7 +78,7 @@ func TestTransitionInTable(t *testing.T) {
 	githubtest.Replay(t, setup, move(t, m, clean))
 
 	f := run(t, setup, move(t, m, clean))
-	// Plan #5 assumption 4's order: marker, new label, old label, 👍.
+	// The SPEC §5.2 order: marker, new label, old label, 👍.
 	var writes []string
 	for _, w := range f.Writes() {
 		writes = append(writes, w.Method+" "+w.Path)
@@ -277,14 +277,14 @@ func TestTransitionRefusesBadMoves(t *testing.T) {
 		{To: state.Clarifying, StateReason: "completed", Trigger: state.TriggerTrusted, Key: state.CmdKey(1)},
 		{To: state.Completed, StateReason: "completed", Trigger: state.TriggerClosed, Key: state.CmdKey(1)},
 		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.CmdKey(1), Fields: map[string]string{"rev": "two words"}},
-		// cmd only beside a run key, and only naming a comment (T4).
+		// cmd only beside a run key, and only naming a comment (SPEC §6.4).
 		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.CmdKey(1), Fields: map[string]string{"cmd": "2"}},
 		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.Key{Field: "event", ID: "9"}, Fields: map[string]string{"cmd": "2"}},
 		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.Key{Field: "run", ID: "a"}, Fields: map[string]string{"cmd": "r2"}},
 		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.Key{Field: "run", ID: "a"}, Fields: map[string]string{"cmd": "0"}},
 		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.Key{Field: "run", ID: "a"}, Fields: map[string]string{"event": "2"}},
 		// A plan revision sets rev, carries the hash in its own marker, and
-		// is the comment's only revision (plan #247, assumption 1).
+		// is the comment's only revision (SPEC §7.4, §11.4).
 		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.CmdKey(1), PlanRev: 1, Fields: map[string]string{"body": "aaaaaaaa"}},
 		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.CmdKey(1), PlanRev: 1, Fields: map[string]string{"rev": "1"}},
 		{To: state.Clarifying, Trigger: state.TriggerTrusted, Key: state.CmdKey(1), PlanRev: 1,
@@ -316,7 +316,7 @@ func planningEpic(t testing.TB) *githubtest.Fake {
 // A move with PlanRev writes one comment, its plan comment: the escaped
 // text, the transition marker with rev but not body, Markers, and last the
 // plan revision marker, whose hash, recomputed from the comment GitHub
-// returns, matches (plan #247, assumption 1). It is plan revision 1, and
+// returns, matches (SPEC §7.4, §11.4). It is plan revision 1, and
 // no spec revision.
 func TestTransitionPlanRevision(t *testing.T) {
 	t.Parallel()
@@ -380,8 +380,9 @@ func TestTransitionPlanRevisionNoMarkers(t *testing.T) {
 }
 
 // A run's move may name a command it handled, by cmd= beside its run key,
-// as the interviewer does for a /revise that waited through a hold (#87's
-// assumption 8): the marker carries both, and the command is processed.
+// as the interviewer does for a /revise that waited through a hold (SPEC
+// §6.4, Commands that wait): the marker carries both, and the command is
+// processed.
 func TestTransitionRunWithCmd(t *testing.T) {
 	t.Parallel()
 	setup := cmdIssue("stage:intake")

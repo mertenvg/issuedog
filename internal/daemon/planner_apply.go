@@ -11,9 +11,9 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// This file checks and applies the planner's results (T8 of #247): a
+// This file checks and applies the planner's results (#247, SPEC §9.1): a
 // question round, or a plan, posted as a plan revision that keeps the
-// plan's data (assumption 1, Q1a).
+// plan's data in its plan-data marker (SPEC §5, §11.4).
 
 // planChecked is the sub-issue count Check read for run, and for a
 // revision the children it read, so Apply, which follows it on the same
@@ -26,7 +26,7 @@ type planChecked struct {
 }
 
 // Check checks r's output after its schema against the facts of r.S, the
-// issue read again (facts), with checkPlan (T6): every 11.3 rule, each
+// issue read again (facts), with checkPlan: every 11.3 rule, each
 // broken one named. A broken rule is a failed attempt, with nothing
 // written. So is an issue the planner no longer runs on, read again:
 //   - one that isn't an epic or a story (plannerClass), such as one the
@@ -130,13 +130,13 @@ func (p *Planner) facts(r Result, is state.Issue, class state.Class, read planCh
 }
 
 // planSkipsReview reports whether a plan on an issue in state is, of class
-// class, skips review and goes straight to planned (SPEC §11.3, #247's
-// T8): only a story's, only when review, plan.review, is false, only
+// class, skips review and goes straight to planned (SPEC §11.3, §7.2):
+// only a story's, only when review, plan.review, is false, only
 // when the move that put the issue at planning (planEntry) carries no
 // origin, so the planning doesn't follow a discussion hold (SPEC §6.4),
 // and only for a first plan, of an issue never planned before. After a
 // discussion hold, and for any revision, however the issue came back to
-// planning (#195's Q2a), the owner reviews the plan, whatever plan.review
+// planning (SPEC §7.2), the owner reviews the plan, whatever plan.review
 // says: a revision can close issues.
 func planSkipsReview(review bool, class state.Class, is state.Issue) bool {
 	return !review && class&state.AnyStory != 0 && planEntry(is).Fields["origin"] == "" && !plannedBefore(is)

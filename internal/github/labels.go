@@ -53,7 +53,7 @@ var typeLabels = []labelSpec{
 
 // The prefixes of the model and effort override labels. model:* and effort:*
 // apply to every run on an issue but the verifier's; verifier-model:* and
-// verifier-effort:* apply only to the verifier's (#93's plan, assumption 4).
+// verifier-effort:* apply only to the verifier's (SPEC §3.3).
 const (
 	ModelPrefix          = "model:"
 	EffortPrefix         = "effort:"

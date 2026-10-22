@@ -66,7 +66,7 @@ func TestCheckFromPlan(t *testing.T) {
 	}
 }
 
-// checkFromPlan reuses S1's validation (validCheck): a check it refuses is
+// checkFromPlan reuses #247's validation (validCheck): a check it refuses is
 // an error, which names what's wrong, and no Check.
 func TestCheckFromPlanInvalid(t *testing.T) {
 	t.Parallel()

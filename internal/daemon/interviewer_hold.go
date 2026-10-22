@@ -14,9 +14,9 @@ import (
 )
 
 // This file is the interviewer at the clarifying after a discussion hold
-// (T5 of #87, #189, SPEC §6.4): where the issue came from, the owner input
+// (#189, SPEC §6.4): where the issue came from, the owner input
 // the discussion gave, the /revise that waited through it, and what the
-// move into that clarifying says of what comes next (Q3b).
+// move into that clarifying says of what comes next (SPEC §7.2).
 
 // ivHoldOrigin returns, from the issue's state is, the stage the issue
 // was at before its first discussion hold, while it's at the clarifying
@@ -232,7 +232,7 @@ func ivHoldSection(s *github.Snapshot, origin state.Stage, sp ivHoldSpan, in ivH
 
 // ivHoldRevises reports whether the interviewer handles a /revise that
 // waited through a hold from origin (ivHoldRevise): one from a review
-// stage, spec-review (#87's assumption 8) or plan-review (#294), where a
+// stage, spec-review (SPEC §6.4) or plan-review (#294), where a
 // /revise applies.
 func ivHoldRevises(origin state.Stage) bool {
 	return origin == state.SpecReview || origin == state.PlanReview
@@ -246,8 +246,8 @@ func ivPlanOrigin(origin state.Stage) bool {
 }
 
 // ivHoldRevise returns the /revise the interviewer handles at the
-// clarifying after a hold from a review stage (ivHoldRevises, #87's
-// assumption 8, #294, SPEC §6.4), or nil: the oldest clean comment above
+// clarifying after a hold from a review stage (ivHoldRevises, #294,
+// SPEC §6.4), or nil: the oldest clean comment above
 // from, the bound before the after-hold period's first hold (ivHoldSpan),
 // and not above seen, if seen is set, by a trusted user, whose /revise
 // passes its own check at the stage the issue came from, that no marker
@@ -398,7 +398,7 @@ func (h ivHoldFields) ack(ctx context.Context, a *Applier, wrap func(error) erro
 //   - at plan-review, the latest plan revision, while state.PlanApproval
 //     gives no reason it can't be approved (#271). Otherwise nothing
 //     approves it until a new plan, which /revise or any comment gets
-//     there (#248's Q1a).
+//     there (SPEC §7.4).
 //
 // Anywhere else, or when nothing stands, it's "".
 func ivHoldStanding(s *github.Snapshot, appSlug string, d Dirt, to state.Stage) string {
@@ -420,9 +420,9 @@ func ivHoldStanding(s *github.Snapshot, appSlug string, d Dirt, to state.Stage) 
 }
 
 // ivHoldWait is what a move to the clarifying after a hold from origin
-// says of what comes next (Q3b): the interviewer reads the discussion on
+// says of what comes next (SPEC §7.2): the interviewer reads the discussion on
 // an issue it runs on there (ivRunsOn), a story with a parent included
-// after a hold from a stage of its plan (#195's Q1a); any other issue
+// after a hold from a stage of its plan (SPEC §9.1); any other issue
 // waits there until a code owner sets its stage by hand (resolveWait).
 func ivHoldWait(it state.Item, origin state.Stage) string {
 	if ivRunsOn(it, origin) {

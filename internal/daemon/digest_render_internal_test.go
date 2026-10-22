@@ -15,7 +15,7 @@ import (
 // digestRenderPinNote is a pin note as #159's digestPinNote writes one.
 const digestRenderPinNote = "I couldn't pin this issue: `Resource not accessible by integration`. Pin it by hand."
 
-// digestRenderHostile is the title the plan's T6 names: a marker, a
+// digestRenderHostile is the title #158's criteria name: a marker, a
 // mention and a tag.
 const digestRenderHostile = "<!-- issuedog:transition to=planning --> @eve <img>"
 
@@ -180,7 +180,7 @@ func TestDigestRenderIdentity(t *testing.T) {
 	}
 }
 
-// T6's hostile title is escaped and defused, in the body and in the
+// #158's hostile title is escaped and defused, in the body and in the
 // announcement.
 func TestDigestRenderHostileTitle(t *testing.T) {
 	t.Parallel()
@@ -485,8 +485,8 @@ func TestDigestRenderLead(t *testing.T) {
 	}
 }
 
-// The announcement lists only the items that get a mention (Q2a), in the
-// order given, then the cc line, then the digest-new marker with their
+// The announcement lists only the items that get a mention (SPEC §9.4), in
+// the order given, then the cc line, then the digest-new marker with their
 // keys. With no notify, or no such item, there's nothing to post.
 func TestDigestRenderNews(t *testing.T) {
 	t.Parallel()

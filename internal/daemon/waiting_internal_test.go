@@ -379,7 +379,7 @@ func TestWaitPlanRoundDigestGolden(t *testing.T) {
 	waitGolden(t, "plan-round", body)
 	digestRenderCheck(t, body)
 	// Beside an interviewer round of the same priority on an older issue,
-	// it ranks by Q3a's tie-breaks alone: the older issue first.
+	// it ranks by SPEC §9.4's tie-breaks alone: the older issue first.
 	iv := waitFindOne(t, waitIn(waitSnap(3, []string{"priority:p1"}, join("Round.", waitRoundMarker(1, 1))), Dirt{}))
 	ranked := []waitItem{items[0], iv}
 	waitRank(ranked, map[int]*github.Snapshot{12: waitPlanRound()})
@@ -568,7 +568,7 @@ func waitPlanRevision(t *testing.T, rev int, text string) string {
 }
 
 // The approval item is the latest spec revision's, never a plan revision's
-// after it (plan #247, assumption 2): its key, its link and its hash.
+// after it (SPEC §7.4, Two kinds): its key, its link and its hash.
 func TestWaitFindApprovalIgnoresPlanRevision(t *testing.T) {
 	t.Parallel()
 	plan := waitPlanRevision(t, 2, "### Plan for #14 (rev 2)")
@@ -697,8 +697,9 @@ func waitGolden(t *testing.T, name, got string) {
 	}
 }
 
-// Ranking (Q3a) counts open descendants from the parents held and breaks
-// each tie in turn, and any order of the same items ranks the same.
+// Ranking (SPEC §9.4, The order) counts open descendants from the parents
+// held and breaks each tie in turn, and any order of the same items ranks
+// the same.
 func TestWaitRankGolden(t *testing.T) {
 	t.Parallel()
 	items := waitRankItems()
@@ -737,7 +738,7 @@ func TestWaitFindThenRank(t *testing.T) {
 }
 
 // waitPlanText is the text of the plan comment for plan revision rev, as
-// S1's planner run posts it: the plan, a cc line, and the move from
+// a planner run posts it (#247): the plan, a cc line, and the move from
 // planning into plan-review, all above the revision marker.
 func waitPlanText(rev int) string {
 	return fmt.Sprintf("### Plan for the issue (rev %d)\n\nThe plan.\n\ncc @owner\n\n<!-- issuedog:transition from=planning to=plan-review run=p%d -->", rev, rev)
@@ -830,7 +831,7 @@ func TestWaitFindPlanApproval(t *testing.T) {
 // state.PlanApproval's order and then the type's, without the login of
 // whoever made something dirty, and doesn't say how to approve it. One
 // with no clean revision, a hidden one or one whose comment changed says
-// that sending it back gets a new plan (plan #248, Q1a), and one with no
+// that sending it back gets a new plan (SPEC §7.4), and one with no
 // clean revision links the transition, as it says "no clean revision",
 // not "no plan yet" (#267's verify).
 func TestWaitFindPlanApprovalBlocked(t *testing.T) {
@@ -934,8 +935,8 @@ func TestWaitFindPlanApprovalGoes(t *testing.T) {
 	}
 }
 
-// At plan-review, the item is the plan's, never the spec's (plan #247,
-// assumption 2): a spec revision 2 before plan revision 1 gives plan-<n>-1
+// At plan-review, the item is the plan's, never the spec's (SPEC §7.4,
+// Two kinds): a spec revision 2 before plan revision 1 gives plan-<n>-1
 // on the plan comment, whose key isn't the spec approval's rev-<n>-<rev>,
 // even for the same revision number. At spec-review, the same comments
 // give the spec's.
@@ -1025,8 +1026,8 @@ func waitPlanRankText(items []waitItem) string {
 
 // A plan's approvals rank in groups by plan (#270): each group where its
 // best member would rank alone, its members in item order, whatever their
-// priorities; an approval with no plan, and every other item, by Q3a. Any
-// order of the same items ranks the same.
+// priorities; an approval with no plan, and every other item, by SPEC
+// §9.4's order. Any order of the same items ranks the same.
 func TestWaitRankPlanGolden(t *testing.T) {
 	t.Parallel()
 	items := waitPlanRankItems()
@@ -1046,7 +1047,8 @@ func TestWaitRankPlanGolden(t *testing.T) {
 	if where < 0 || s1 != where || items[s1+1].Key != "plan-41-1" {
 		t.Errorf("S1 at %d, S2 alone at %d, in\n%s\nwant S1 then S2 where S2 alone ranks", s1, where, waitPlanRankText(items))
 	}
-	// With no plans, the same items rank by Q3a alone, as before #270.
+	// With no plans, the same items rank by SPEC §9.4's order alone, as
+	// before #270.
 	plain := waitPlanRankItems()
 	for i := range plain {
 		plain[i].Plan, plain[i].Index = 0, 0
@@ -1061,9 +1063,9 @@ func TestWaitRankPlanGolden(t *testing.T) {
 	}
 }
 
-// Two groups whose best members tie on every one of Q3a's keys, which
-// only items alike in issue, comment and key can, still don't mix: the
-// lower plan's group goes first, whole, so the order stays total.
+// Two groups whose best members tie on every one of SPEC §9.4's keys,
+// which only items alike in issue, comment and key can, still don't mix:
+// the lower plan's group goes first, whole, so the order stays total.
 func TestWaitRankPlanTie(t *testing.T) {
 	t.Parallel()
 	tied := waitItem{Issue: 9, Kind: waitPlanApproval, Key: "plan-9-1", Priority: 1, Created: waitT0, Comment: 1}

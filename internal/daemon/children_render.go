@@ -16,10 +16,10 @@ import (
 )
 
 // childSpec is everything the daemon creates a child with, from one item
-// of an approved plan (plan #249, T2): its title, body and labels, its
+// of an approved plan (SPEC §11.6): its title, body and labels, its
 // issue type on a repo that uses issue types, and the first stage its
-// first move takes it to (Q1a). Item is the plan item's ID, such as S2 or
-// T4.
+// first move takes it to (SPEC §7.2). Item is the plan item's ID, such as
+// S2 or T4.
 type childSpec struct {
 	Item, Title string
 	// Body is the child's body, or "" for a human task, whose body names
@@ -43,7 +43,7 @@ type childSpec struct {
 	// its class enters (state.TriggerCreated).
 	Stage state.Stage
 	// Blocks are the items of a human task's plan that depend on it, in
-	// plan order, whose issues its "Why it blocks" names (plan #250, Q2a).
+	// plan order, whose issues its "Why it blocks" names (SPEC §9.3).
 	Blocks []string
 	// human writes a human task's whole body, given the numbers of the
 	// issues of Blocks, in that order. It's nil for any other child.
@@ -96,7 +96,7 @@ const childWidestNumber = math.MaxInt32
 //   - Every body's last line is its origin marker, plan=#N rev=R item=ID,
 //     with human=1 for a human task, which is how Derive knows one
 //     (state.Origin.Human), and its "Done when" check, if it has one
-//     (state.CheckFields, plan #250, Q1a). It's the body's only marker:
+//     (state.CheckFields, SPEC §5). It's the body's only marker:
 //     planner text is escaped as a spec's is (SPEC §11.1), with headings
 //     demoted, task list boxes stripped, mentions defused and markers
 //     escaped, and an empty section reads "None.".
@@ -106,12 +106,12 @@ const childWidestNumber = math.MaxInt32
 //     §3.3). One left off, as a model a reload has dropped, is in leftOff,
 //     and the child is still described.
 //
-// Of a revision's items (#195's T6), only the new ones are described
+// Of a revision's items (SPEC §11.3), only the new ones are described
 // (planFiles): a kept, changed or dropped item has its child already, and
 // a kept or dropped one carries its ID and title alone. A changed child is
-// described by childSpecsWhere, for its rewrite (#195's T7, #296), and
-// closing a dropped one is T8's (#297). A new human task's "Why it blocks"
-// still names a changed item that depends on it, from all of items.
+// described by childSpecsWhere, for its rewrite (SPEC §6.4, #296), and a
+// dropped one is closed by droppedClose (#297). A new human task's "Why it
+// blocks" still names a changed item that depends on it, from all of items.
 //
 // An item it can't describe is an error naming it: a task with no scope
 // or no body of its kind, a check the plan's validation would refuse, or a
@@ -123,9 +123,9 @@ func childSpecs(parent *github.Snapshot, rev int, items []planItem, issueTypes b
 
 // childSpecsWhere is childSpecs for the items whose status want reports
 // true, such as a revision's changed items, which are rewritten in place
-// (#195's T7): each is described as a new child of its kind would be, its
+// (SPEC §6.4): each is described as a new child of its kind would be, its
 // origin naming rev, a human task's with human=1 and its check, so the
-// rewrite renders every field as S3 and S4 render a new child's.
+// rewrite renders every field as a new child's is rendered (SPEC §11.6).
 func childSpecsWhere(parent *github.Snapshot, rev int, items []planItem, want func(status string) bool, issueTypes bool, notify []string,
 	models config.Models) ([]childSpec, error) {
 	ordered := childOrder(items)
@@ -143,9 +143,10 @@ func childSpecsWhere(parent *github.Snapshot, rev int, items []planItem, want fu
 	return specs, nil
 }
 
-// childOrder is items in the order their children are created (plan #250,
-// Q2a): every item that isn't a human task, in plan order, then the human
-// tasks, each after every human task that depends on it, and otherwise in
+// childOrder is items in the order their children are created (SPEC §5.2,
+// "Creating the children"): every item that isn't a human task, in plan
+// order, then the human tasks, each after every human task that depends on
+// it, and otherwise in
 // plan order. So the issues a human task's "Why it blocks" names are filed
 // before it. A cycle, which the plan's validation refuses, leaves the
 // human tasks on it in plan order, last.
@@ -262,7 +263,7 @@ func childSpecOf(parent *github.Snapshot, rev int, it planItem, blocks []string,
 	return c, nil
 }
 
-// childOverrides are the override labels of it's child (plan #249, T5,
+// childOverrides are the override labels of it's child (SPEC §11.3,
 // #126): its model as model:<suffix>, resolved against models, as /model
 // resolves a full name or a label suffix (config.Models.Resolve, then
 // LabelSuffix), and its effort as effort:<level>, in lower case. The

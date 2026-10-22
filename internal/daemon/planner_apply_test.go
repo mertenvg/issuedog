@@ -378,7 +378,7 @@ func TestPlannerRound(t *testing.T) {
 	}
 }
 
-// TestPlannerCheckFailsAttempt: output that breaks a T6 rule writes
+// TestPlannerCheckFailsAttempt: output that breaks a SPEC §11.3 rule writes
 // nothing, and is never rendered: with loop.max_attempts 1, the only
 // comment is the one kind=attempts error, naming the rule, fenced, and no
 // plan text. No run follows until new input, which starts a new count.
