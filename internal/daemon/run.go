@@ -147,8 +147,13 @@ type Lease struct {
 	ApplyFailures int `json:"apply_failures,omitempty"`
 	// LastFailure is why the run failed, as failed records it, at most
 	// maxLastFailure characters (lastFailure), for the attempt cap's error
-	// (#247's assumption 10), so a restart still names it.
-	LastFailure string `json:"last_failure,omitempty"`
+	// (#247's assumption 10), so a restart still names it. It holds only
+	// what that public comment may quote of the cause (publicCause), or
+	// publicCauseLogged when that's nothing: failed logs the whole cause,
+	// and nothing else reads it. Its key is new with that (#320), so a
+	// lease from before, whose last_failure may hold a host path or
+	// GitHub's text, is read with none.
+	LastFailure string `json:"public_failure,omitempty"`
 	// Failed marks a run that has ended, failed or not counted (end):
 	// Attempt is then the count of failed attempts in a row it leaves, which
 	// may be 0, so a restart doesn't reset the count. It's written before
@@ -167,11 +172,12 @@ func (l Lease) settings() state.Settings {
 const kindAttempts = "attempts"
 
 // maxLastFailure is the most characters of a failed attempt's cause the
-// lease keeps, and the attempt cap's error quotes (Lease.LastFailure).
+// lease keeps, and a state error quotes (Lease.LastFailure, publicCause).
 const maxLastFailure = 1000
 
-// lastFailure is cause's text as Lease.LastFailure keeps it: at most
-// maxLastFailure characters, its end cut and marked with "…" when longer.
+// lastFailure is cause's text as a state error quotes it (publicCause): at
+// most maxLastFailure characters, its end cut and marked with "…" when
+// longer.
 func lastFailure(cause error) string {
 	text := cause.Error()
 	if utf8.RuneCountInString(text) <= maxLastFailure {
@@ -880,12 +886,14 @@ func (r *Runs) endedLease(ctx context.Context, l Lease) error {
 }
 
 // failed records l's run as a failed attempt: it ends the run (end),
-// keeping the lease, as Failed, for the count, with cause as its
-// LastFailure (lastFailure). The last attempt allowed posts one state
-// error (reportCap), naming that cause, after which RunStage runs no more.
-// If posting it fails, RunStage posts it instead of starting a run.
+// keeping the lease, as Failed, for the count, with what a public comment
+// may quote of cause as its LastFailure (publicCause), or, if nothing,
+// publicCauseLogged. It logs cause in full. The last attempt allowed posts
+// one state error (reportCap), naming that cause, after which RunStage
+// runs no more. If posting it fails, RunStage posts it instead of starting
+// a run.
 func (r *Runs) failed(ctx context.Context, st Stage, l Lease, cause error) error {
-	l.LastFailure = lastFailure(cause)
+	l.LastFailure = cmp.Or(publicCause(cause), publicCauseLogged)
 	n := r.count(l)
 	logr.Warnf("%s run %s on #%d failed, attempt %d of %d: %v", st.Agent(), l.RunID, l.Issue, n, r.limit(), cause)
 	if err := r.end(ctx, l, n); err != nil {
@@ -918,7 +926,8 @@ func (r *Runs) count(l Lease) int {
 // round of input never changes, the text names the ways into the pipeline
 // instead of new input. For every stage, it then quotes l.LastFailure, if
 // set: why the last attempt failed (#247's assumption 10), fenced and
-// escaped, as it may quote the agent's output (SPEC §5.1).
+// escaped, as it may quote the agent's output (SPEC §5.1), or, for
+// publicCauseLogged, says the daemon's log has it (publicCauseText).
 func (r *Runs) reportCap(ctx context.Context, s *github.Snapshot, st Stage, l Lease) error {
 	a := r.Daemon.Step.Applier
 	wrap := func(err error) error { return fmt.Errorf("report the attempt cap on #%d: %w", l.Issue, err) }
@@ -953,8 +962,11 @@ func (r *Runs) reportCap(ctx context.Context, s *github.Snapshot, st Stage, l Le
 		text = fmt.Sprintf("The %s run failed %d times in a row, so I've stopped running it here, and a comment won't start it again. "+
 			"A code owner can bring this issue into the pipeline with a stage label, the `approved` label or `/track`.", st.Agent(), r.limit())
 	}
-	if l.LastFailure != "" {
-		text += "\n\nThe last attempt failed:\n\n" + ivFenced(l.LastFailure)
+	if quote := l.LastFailure; quote != "" {
+		if quote == publicCauseLogged {
+			quote = ""
+		}
+		text += publicCauseText("attempt", quote)
 	}
 	if err := a.comment(ctx, s, join(github.Escape(text), marker)); err != nil {
 		return wrap(err)

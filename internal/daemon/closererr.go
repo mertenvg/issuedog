@@ -27,13 +27,14 @@ import (
 //     the pass, until the question has failed with an error under node
 //     (github.CloserErrUnderNode) on loop.max_attempts passes. Then the
 //     issue gets one state error, kind=closer, keyed by the closed event's
-//     ID, naming the error (closerErrReport), and that failure stops
-//     being the pass's error: a closed issue's close stays unjudged, with
-//     its stage label as it is (closerErrClosed), and an open issue's close
-//     holds nothing (closerErrStep1), its error posted by step 1's visit
-//     of the issue (closerErrPost). The question is still asked once a
-//     pass, so the close is judged as soon as GitHub answers, which ends
-//     the error. Any other failure, a failed request or GraphQL failing as
+//     ID, pointing to the log for the error, which is GitHub's text
+//     (closerErrReport, publicCause), and that failure stops being the
+//     pass's error: a closed issue's close stays unjudged, with its stage
+//     label as it is (closerErrClosed), and an open issue's close holds
+//     nothing (closerErrStep1), its error posted by step 1's visit of the
+//     issue (closerErrPost). The question is still asked once a pass, so
+//     the close is judged as soon as GitHub answers, which ends the
+//     error. Any other failure, a failed request or GraphQL failing as
 //     a whole, says nothing of the close itself, as an outage would, so it
 //     stays the pass's error, without bound, and counts no pass towards
 //     the state error.
@@ -148,9 +149,9 @@ func (a *Applier) closerErrAnswered(key string) bool {
 // closerErrReport returns the ID of the comment on s that carries the
 // closer state error for cl, posting it first with text if s has none,
 // and none was acknowledged, and 0 for an acknowledged one whose comment
-// is gone. The question's last error under node isn't the App's text:
-// it's fenced and escaped, and cut as an attempt's cause is
-// (lastFailure).
+// is gone. The question's last error under node is GitHub's text, so the
+// comment says only that the daemon's log has it, as it quotes no cause
+// the daemon didn't write (publicCause), and it's logged in full here.
 func (a *Applier) closerErrReport(ctx context.Context, s *github.Snapshot, dirty func(int64) bool, cl github.Closing, text string) (int64, error) {
 	k := state.ErrorKey{Kind: closerErrKind, Key: strconv.FormatInt(cl.ID, 10)}
 	if is := state.Derive(s, a.AppSlug, dirty); is.Reported(k.Kind, k.Key) {
@@ -162,7 +163,7 @@ func (a *Applier) closerErrReport(ctx context.Context, s *github.Snapshot, dirty
 	}
 	t := a.closerErr.failed[cl.NodeID]
 	if t.cause != nil {
-		text += "\n\nThe last question failed:\n\n" + ivFenced(lastFailure(t.cause))
+		text += publicCauseText("question", publicCause(t.cause))
 	}
 	if err := a.comment(ctx, s, join(github.Escape(text), marker)); err != nil {
 		return 0, fmt.Errorf("report the closer of close %d: %w", cl.ID, err)

@@ -454,7 +454,8 @@ func capText(limit int) string {
 
 // The attempt cap's error names why the last attempt failed (#247's
 // assumption 10), for the interviewer as for every stage: its check's
-// broken rule, fenced. A run that times out names that.
+// broken rule, fenced. A run that fails as claude exits non-zero, the
+// runner's error, only says the daemon's log has it (#320).
 func TestAttemptCapNamesLastFailure(t *testing.T) {
 	t.Parallel()
 	t.Run("a broken rule", func(t *testing.T) {
@@ -467,8 +468,10 @@ func TestAttemptCapNamesLastFailure(t *testing.T) {
 		if err := g.work(n); err != nil {
 			t.Fatal(err)
 		}
+		// Only the rule and its detail are quoted, not the check's wording
+		// around it, as the comment quotes only a *ruleError (#320).
 		want := capText(1) + "\n\nThe last attempt failed:\n\n```text\n" +
-			"its result failed the interviewer stage's check: check interviewer output: rule question-count: 8 questions, over the limit of 7\n```\n\n" +
+			"rule question-count: 8 questions, over the limit of 7\n```\n\n" +
 			fmt.Sprintf("<!-- issuedog:error kind=attempts key=clarifying-%d -->", entry)
 		if got := newestComment(f, n); got != want {
 			t.Errorf("the attempt cap's error =\n%s\nwant\n%s", got, want)
@@ -487,8 +490,11 @@ func TestAttemptCapNamesLastFailure(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		want := capText(2) + "\n\nThe last attempt failed:\n\n```text\nrun run2: running claude: exit status 1\n```\n\n" + capError(answer)
-		if got := newestComment(f, 1); got != want || g.lease().LastFailure != "run run2: running claude: exit status 1" {
+		// The runner's error isn't the daemon's own text, so neither the
+		// comment nor the lease quotes it any more (#320): "run run2:
+		// running claude: exit status 1" is in the log alone.
+		want := capText(2) + "\n\nThe last attempt failed; see the daemon's log for why.\n\n" + capError(answer)
+		if got := newestComment(f, 1); got != want || g.lease().LastFailure != "(in the daemon's log)" {
 			t.Errorf("the attempt cap's error =\n%s\nwant\n%s\nwith the lease's last failure %q", got, want, g.lease().LastFailure)
 		}
 	})
@@ -498,7 +504,8 @@ func TestAttemptCapNamesLastFailure(t *testing.T) {
 // the last failure the ended lease kept, fenced, with a marker in it
 // escaped, a fence in it inside a longer one, and its mention inert. A
 // lease with no last failure, as one written before the field, gets the
-// text without it.
+// text without it. One whose cause the daemon didn't write says the
+// daemon's log has it (#320).
 func TestAttemptCapAfterRestart(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -507,6 +514,7 @@ func TestAttemptCapAfterRestart(t *testing.T) {
 		{"a last failure", "rule x: @alice said <!-- issuedog:transition to=done --> ```go",
 			"\n\nThe last attempt failed:\n\n````text\nrule x: @alice said &lt;!-- issuedog:transition to=done --> ```go\n````"},
 		{"no last failure", "", ""},
+		{"a logged cause", "(in the daemon's log)", "\n\nThe last attempt failed; see the daemon's log for why."},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
