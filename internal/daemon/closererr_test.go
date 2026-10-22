@@ -14,7 +14,8 @@ import (
 // again after an untrusted reopen when that question fails once (#233).
 
 // closerErrCause is the error of a closer question of close event that
-// FailCloser fails, as the closer state error quotes it.
+// FailCloser fails, as the daemon logs it. The closer state error quoted
+// it before #320; now, as GitHub's text, it's only in the log.
 func closerErrCause(event int64) string {
 	return fmt.Sprintf("closer of event CE_%d in o/r: graphql errors: %s", event, closingFailure)
 }
@@ -25,21 +26,24 @@ func closerErrMarker(event int64) string {
 }
 
 // closerErrOnClosed is the closer state error the App posts on a closed
-// issue that by closed, as event, whose question failed on passes.
+// issue that by closed, as event, whose question failed on passes. It
+// says the daemon's log has the question's error, which is GitHub's text,
+// where it once quoted it (closerErrCause, #320).
 func closerErrOnClosed(by string, event int64, passes int) string {
 	return fmt.Sprintf("I can't tell how this issue was closed: asking GitHub whether %s's close was a merge failed on %d passes. "+
 		"So I've neither accepted nor reverted it, and its stage label stays as it is. "+
-		"I ask again on every pass, and judge the close once GitHub answers.\n\nThe last question failed:\n\n```text\n%s\n```\n\n%s",
-		by, passes, closerErrCause(event), closerErrMarker(event))
+		"I ask again on every pass, and judge the close once GitHub answers.\n\nThe last question failed; see the daemon's log for why.\n\n%s",
+		by, passes, closerErrMarker(event))
 }
 
 // closerErrOnOpen is the closer state error the App posts on an open issue
-// that by closed, as event, whose question failed on passes.
+// that by closed, as event, whose question failed on passes, saying the
+// daemon's log has the question's error, as closerErrOnClosed does.
 func closerErrOnOpen(by string, event int64, passes int) string {
 	return fmt.Sprintf("%s closed this issue, and it was reopened, but I can't tell whether that close was a merge: "+
 		"asking GitHub how it was made failed on %d passes. Until GitHub answers, that close holds nothing here. "+
-		"I ask again on every pass, and this error ends once it answers.\n\nThe last question failed:\n\n```text\n%s\n```\n\n%s",
-		by, passes, closerErrCause(event), closerErrMarker(event))
+		"I ask again on every pass, and this error ends once it answers.\n\nThe last question failed; see the daemon's log for why.\n\n%s",
+		by, passes, closerErrMarker(event))
 }
 
 // closerErrDigestLine is the digest's line for the closer state error

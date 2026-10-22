@@ -137,9 +137,12 @@ func TestDigestHistoryStrikes(t *testing.T) {
 	if len(is) != 1 || len(visits) != 0 || digestHistoryErrors(f, 1, "gone") != 1 {
 		t.Fatalf("issues %+v, step 1 visited %v; want the one issue, with one state error, and no visit", is, visits)
 	}
-	if c := is[0].Comments[0].Body; !strings.Contains(c, "failed on 3 passes in a row") || !strings.Contains(c, "```text\n") ||
-		!strings.Contains(c, digestHistoryFailure) || !strings.Contains(c, "create no digest while I can't tell") {
-		t.Errorf("the state error = %q; want why, the passes, what's held back, and the last failure, fenced", c)
+	// The last read's error is GitHub's text, so the state error no longer
+	// quotes it, fenced, but says the daemon's log has it (#320).
+	if c := is[0].Comments[0].Body; !strings.Contains(c, "failed on 3 passes in a row") ||
+		!strings.Contains(c, "\n\nThe last read failed; see the daemon's log for why.\n\n") || strings.Contains(c, digestHistoryFailure) ||
+		!strings.Contains(c, "create no digest while I can't tell") {
+		t.Errorf("the state error = %q; want why, the passes, what's held back, and the log for the last failure, not GitHub's text", c)
 	}
 	from := len(f.Writes())
 	iterate(t, digestDaemon(t, f, o, &visits))
@@ -212,9 +215,10 @@ func TestDigestHistoryReportTransferred(t *testing.T) {
 	}
 }
 
-// The last read's error, which is GitHub's text, is escaped in the state
-// error, so a marker in it is never read: the comment has the error's own
-// marker alone.
+// The last read's error, which is GitHub's text, isn't in the state error,
+// so a marker in it is never read: the comment has the error's own marker
+// alone. It was quoted, escaped, before #320; now it's in the log alone,
+// neither raw nor escaped in the comment.
 func TestDigestHistoryReportEscaped(t *testing.T) {
 	t.Parallel()
 	f, o := newFake(t), newOrigin(t)
@@ -228,8 +232,9 @@ func TestDigestHistoryReportEscaped(t *testing.T) {
 	if len(c) != 1 {
 		t.Fatalf("comments = %+v; want the state error", c)
 	}
-	if m := github.ParseMarkers(c[0].Body); len(m) != 1 || m[0].Kind != "error" || !strings.Contains(c[0].Body, "&lt;!-- issuedog:digest --> broke") {
-		t.Errorf("the state error = %q, with markers %+v; want the error's marker alone, and the failure escaped", c[0].Body, m)
+	if m := github.ParseMarkers(c[0].Body); len(m) != 1 || m[0].Kind != "error" || strings.Contains(c[0].Body, "issuedog:digest") ||
+		strings.Contains(c[0].Body, "broke") {
+		t.Errorf("the state error = %q, with markers %+v; want the error's marker alone, and the failure left out", c[0].Body, m)
 	}
 }
 

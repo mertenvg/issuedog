@@ -586,7 +586,8 @@ func TestTriageAdmitUnknownType(t *testing.T) {
 }
 
 // At the retry cap, triage's state error names the ways into the pipeline,
-// as a comment doesn't start it again.
+// as a comment doesn't start it again. The runner's error isn't the
+// daemon's own text, so it only says the daemon's log has it (#320).
 func TestTriageAttemptCapText(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
@@ -599,7 +600,7 @@ func TestTriageAttemptCapText(t *testing.T) {
 	got := commentBodies(f, 1)
 	want := "The triage run failed 1 times in a row, so I've stopped running it here, and a comment won't start it again. " +
 		"A code owner can bring this issue into the pipeline with a stage label, the `approved` label or `/track`.\n\n" +
-		"The last attempt failed:\n\n```text\nrun run1: running claude: exit status 1\n```\n\n" +
+		"The last attempt failed; see the daemon's log for why.\n\n" +
 		"<!-- issuedog:error kind=attempts key=intake-0 -->"
 	if !slices.Equal(got, []string{want}) {
 		t.Errorf("comments %q, want %q", got, want)
