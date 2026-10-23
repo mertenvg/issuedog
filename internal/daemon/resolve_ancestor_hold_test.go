@@ -224,7 +224,7 @@ func TestResolveResumeOnParentOfDiscussion(t *testing.T) {
 	if err := resolvePass(t, 1)(f); err != nil {
 		t.Fatal(err)
 	}
-	want := final("/resume", "I didn't apply this command", "#2 on hold for discussion, which only a code owner's response there, "+
+	want := final("/resume", "I didn't apply this command", "#2 is on hold for discussion, which only a code owner's response there, "+
 		"or `/resume` there, ends", fmt.Sprint(resume))
 	if body := newestComment(f, 1); body != want || !slices.Equal(f.State().Issues[1].Labels, []string{"stage:held"}) {
 		t.Errorf("newest comment on #1 %q, #2's labels %q; want %q, and #2 held", body, f.State().Issues[1].Labels, want)
