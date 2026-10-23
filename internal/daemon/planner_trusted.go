@@ -92,7 +92,7 @@ func plannerTrustedTitle(ctx context.Context, appSlug string, tc trustCache, s *
 func plannerTrustedTitleNote(ctx context.Context, appSlug string, tc trustCache, s *github.Snapshot, untrusted bool, t *contextText) error {
 	title, by, err := plannerTrustedTitle(ctx, appSlug, tc, s, s.DiscRenames)
 	if err != nil {
-		return err
+		return fmt.Errorf("its last trusted title: %w", err)
 	}
 	if by == nil {
 		return nil
@@ -217,7 +217,7 @@ func plannerTrustedOpen(ctx context.Context, d *Daemon, n int) (state.Stage, str
 	typ := s.Type
 	if !held && s.TypeFromLabels {
 		if typ, err = plannerTrustedType(ctx, a, d.Step.Trust, s.Labels, &ivTimeline{a: a, number: n}); err != nil {
-			return "", "", err
+			return "", "", fmt.Errorf("a snapshot step 1 doesn't hold: %w", err)
 		}
 	}
 	is := state.Derive(s, a.AppSlug, dirt.Has)
@@ -237,14 +237,21 @@ func plannerTrustedOpen(ctx context.Context, d *Daemon, n int) (state.Stage, str
 // plannerTrustedType does, with no stage, as its line gives its state.
 func plannerTrustedSub(ctx context.Context, d *Daemon, n int, open bool, typ string, labels []string) (state.Stage, string, error) {
 	if open {
-		return plannerTrustedOpen(ctx, d, n)
+		stage, typ, err := plannerTrustedOpen(ctx, d, n)
+		if err != nil {
+			return "", "", fmt.Errorf("an open sub-issue: %w", err)
+		}
+		return stage, typ, nil
 	}
 	if labels == nil {
 		return "", typ, nil
 	}
 	a := d.Step.Applier
 	typ, err := plannerTrustedType(ctx, a, d.Step.Trust, labels, &ivTimeline{a: a, number: n})
-	return "", typ, err
+	if err != nil {
+		return "", "", fmt.Errorf("a closed sub-issue's labels: %w", err)
+	}
+	return "", typ, nil
 }
 
 // plannerTrustedSubs sets the Stage and Type of each of subs in this repo,

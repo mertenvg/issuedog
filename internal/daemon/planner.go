@@ -410,7 +410,7 @@ func (p *Planner) parent(ctx context.Context, s *github.Snapshot, tc trustCache)
 	// the one that stands, judged from the timeline read already (#445).
 	if ps.TypeFromLabels {
 		if ps.Type, err = plannerTrustedType(ctx, a, p.Daemon.Step.Trust, ps.Labels, tl); err != nil {
-			return "", nil, err
+			return "", nil, fmt.Errorf("its type labels: %w", err)
 		}
 	}
 	siblings, err := plannerSubIssues(ctx, a, ps.Number)
