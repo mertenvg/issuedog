@@ -17,8 +17,9 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// This file is #161: a whole run of the digest against the fakes, with step 1
-// wired as main's newStep wires it, and Daemon.Iterate as the loop. Config
+// This file is #161: a whole run of the digest against the fakes, with the
+// daemon built as startDaemon builds it, daemon.New, but for assignment,
+// and Daemon.Iterate as the loop. Config
 // and trust come from main on the origin: mertenvg owns CODEOWNERS and is
 // notify, and eve has no access at all. Then the notes from the verifies of
 // #156, #159 and #160 that no test on main covers yet, on the same fake.
@@ -124,17 +125,22 @@ func digestRunOrigin(t testing.TB) *origin {
 	return o
 }
 
-// digestRunDaemon is a daemon of o/r on f that keeps the digest, as
-// startDaemon makes it, with step 1 wired as main's newStep wires it. It
-// talks to GitHub through c if set, and else through a client of f's.
+// digestRunDaemon is a daemon of o/r on f that keeps the digest, built as
+// startDaemon builds it, daemon.New, so step 1 is daemon.NewStep's, but
+// with assignment off. It talks to GitHub through c if set, and else
+// through a client of f's.
 // Its Work adds each issue it's given to *worked, if set.
 func digestRunDaemon(t testing.TB, f *githubtest.Fake, o *origin, c *github.Client, worked *[]int) *daemon.Daemon {
 	t.Helper()
-	d := newDaemon(t, f, o, nil)
+	base := newDaemon(t, f, o, nil)
 	if c != nil {
-		d.Step.Client = c
+		base.Step.Client = c
 	}
-	d.Digest = true
+	d := daemon.New(base.Step.Applier, base.Clone, base.Config, nil)
+	// Assignment off, on purpose: this run predates it (#191), and its
+	// writes are the digest's alone. The later whole runs, from the
+	// discussion's on, check assignment's beside them.
+	d.Assign = false
 	d.Work = func(_ context.Context, ready []daemon.Ready) error {
 		for _, r := range ready {
 			if worked != nil {
@@ -143,8 +149,6 @@ func digestRunDaemon(t testing.TB, f *githubtest.Fake, o *origin, c *github.Clie
 		}
 		return nil
 	}
-	// As newStep wires step 1.
-	d.Step = daemon.NewStep(d.Step.Applier, d.Step.Trust, d.CurrentModels)
 	return d
 }
 

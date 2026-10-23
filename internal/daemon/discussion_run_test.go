@@ -12,16 +12,15 @@ import (
 	"testing"
 
 	"github.com/mertenvg/issuedog/internal/config"
-	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
 // This file is #193: a whole run of discussion holds and assignment against
-// the fakes, through the real Interviewer at clarifying, with step 1 wired as
-// main's newStep wires it, the digest and assignment on, as startDaemon sets
-// them, and Daemon.Iterate as the loop. Config and trust come from main on
+// the fakes, through the real Interviewer at clarifying, with the daemon
+// built as startDaemon builds it, daemon.New, so step 1 is daemon.NewStep's
+// and the digest and assignment are on, and Daemon.Iterate as the loop. Config and trust come from main on
 // the origin: owner owns CODEOWNERS and is notify, mallory is a write
 // collaborator CODEOWNERS doesn't trust, and eve can only read. Then the
 // notes from the verifies of #188, #189, #190 and #192 (on #193), each on a
@@ -62,10 +61,11 @@ func newDiscRunLoop(t *testing.T, f *githubtest.Fake, outs ...map[string]any) *d
 // start starts a daemon on l's fake, as a restart does: a new client, with
 // no ETags, a new daemon, with no snapshots, and the same state directory,
 // which outlives a restart. The stages are registered as stageWork
-// registers them, but for triage, which nothing here needs, and step 1 is
-// wired as newStep wires it: every command handler, and the reaction
-// triggers in its order, the end of a discussion hold first. Iterate
-// loads the trust from main.
+// registers them, daemon.RegisterStages, but for the planner and triage,
+// and the daemon is built as startDaemon builds it, daemon.New
+// (rig.wireAsMain), so step 1 is daemon.NewStep's: every command handler,
+// and the reaction triggers in its order, the end of a discussion hold
+// first. Iterate loads the trust from main.
 func (l *discRunLoop) start() {
 	l.t.Helper()
 	g := newRig(l.t, l.f, l.o, l.root)
@@ -74,10 +74,12 @@ func (l *discRunLoop) start() {
 	if err := os.WriteFile(g.path("claude", "claude"), []byte(wholeRunClaude), 0o755); err != nil {
 		l.t.Fatal(err)
 	}
-	g.r.Stages = map[state.Stage]daemon.Stage{state.Clarifying: &daemon.Interviewer{Daemon: g.d}}
-	g.d.Digest, g.d.Assign = true, true // as startDaemon sets them
-	// No trust: Iterate loads it from main.
-	g.d.Step = daemon.NewStep(g.d.Step.Applier, nil, g.d.CurrentModels)
+	g.wireAsMain(g.d.Config)
+	// Only the interviewer, on purpose: this run's issues stop at
+	// planning, where the planner's own whole runs go on
+	// (planner_run_test.go), and nothing here needs triage.
+	delete(g.r.Stages, state.Planning)
+	g.r.Unlabeled = nil
 	l.g = g
 }
 

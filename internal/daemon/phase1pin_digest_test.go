@@ -17,7 +17,7 @@ import (
 // loop. TestDigestRunWhole lists both kinds' items, but from error comments
 // its fixture plants. Here the loop finds the cause itself, posts the state
 // error, then lists it in the digest and announces it, once, with one
-// mention, as main's newStep wires step 1 (digestRunDaemon). A 👍 on the
+// mention, as daemon.NewStep wires step 1 (digestRunDaemon). A 👍 on the
 // error acknowledges it, and its item goes.
 
 // phase1PinFake is o/r with mertenvg, digestRunOwner, an admin.

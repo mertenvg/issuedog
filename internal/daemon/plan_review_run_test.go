@@ -20,9 +20,9 @@ import (
 
 // This file is #272: a whole run of plan review against
 // the fakes, through the real Planner at planning, with the stages
-// registered as registerStages registers them, step 1 wired as main's
-// newStep wires it, the digest and assignment on, as startDaemon sets
-// them, and Daemon.Iterate as the loop. Config and trust come from main on
+// registered as registerStages registers them, the daemon built as
+// startDaemon builds it, daemon.New, so step 1 is daemon.NewStep's and the
+// digest and assignment are on, and Daemon.Iterate as the loop. Config and trust come from main on
 // the origin: mertenvg owns CODEOWNERS and is notify, mallory is a write
 // collaborator CODEOWNERS doesn't trust, and helper[bot] is another App.
 // Then the cases #268's verify left to this run (on #272), each on a loop
@@ -72,9 +72,11 @@ func newPlanReviewRunLoop(t *testing.T, f *githubtest.Fake, outs ...map[string]a
 // no ETags, a new daemon, with no snapshots, and the same state directory,
 // which outlives a restart. The stages are registered as registerStages
 // registers them: the Interviewer at clarifying, the Planner at planning,
-// and Triage as the Unlabeled stage. Step 1 is wired as newStep wires it:
-// every command handler, and the reaction triggers in its order, the end
-// of a discussion hold first. Iterate loads the trust from main.
+// and Triage as the Unlabeled stage, daemon.RegisterStages'. The daemon is
+// built as startDaemon builds it, daemon.New (rig.wireAsMain), so step 1
+// is daemon.NewStep's: every command handler, and the reaction triggers in
+// its order, the end of a discussion hold first. Iterate loads the trust
+// from main.
 func (l *planReviewRunLoop) start() {
 	l.t.Helper()
 	g := newRig(l.t, l.f, l.o, l.root)
@@ -83,14 +85,7 @@ func (l *planReviewRunLoop) start() {
 	if err := os.WriteFile(g.path("claude", "claude"), []byte(wholeRunClaude), 0o755); err != nil {
 		l.t.Fatal(err)
 	}
-	g.r.Stages = map[state.Stage]daemon.Stage{
-		state.Clarifying: &daemon.Interviewer{Daemon: g.d},
-		state.Planning:   &daemon.Planner{Daemon: g.d},
-	}
-	g.r.Unlabeled = &daemon.Triage{Daemon: g.d}
-	g.d.Digest, g.d.Assign = true, true // as startDaemon sets them
-	// No trust: Iterate loads it from main.
-	g.d.Step = daemon.NewStep(g.d.Step.Applier, nil, g.d.CurrentModels)
+	g.wireAsMain(g.d.Config)
 	l.g = g
 }
 
@@ -846,17 +841,17 @@ func TestPlanReviewRunApproveReasons(t *testing.T) {
 
 // Another bot's 👍 on the latest plan revision is ignored because it's a
 // bot, not only because it isn't trusted (#268's verify, on #272): with
-// step 1 wired as newStep wires it, and a Trust that trusts helper[bot] by
-// name, its 👍, the earliest, approves nothing, and mertenvg's after it
-// approves. The loop's trust, loaded from main, never trusts a bot, so
-// this Trust is set on step 1 alone.
+// the daemon built as startDaemon builds it, daemon.New, and a Trust that
+// trusts helper[bot] by name, its 👍, the earliest, approves nothing, and
+// mertenvg's after it approves. The loop's trust, loaded from main, never
+// trusts a bot, so this Trust is set on step 1 alone.
 func TestPlanReviewRunBotThumb(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
 	epic, _ := planReviewRunEpic(f)
 	plan := planReviewRunPlan(t, f, epic)
-	d := newDaemon(t, f, newOrigin(t), nil)
-	d.Step = daemon.NewStep(d.Step.Applier, trusted{planReviewRunOwner: true, planReviewRunBot: true}, d.CurrentModels)
+	base := newDaemon(t, f, newOrigin(t), nil)
+	d := daemon.New(base.Step.Applier, base.Clone, base.Config, trusted{planReviewRunOwner: true, planReviewRunBot: true})
 	pass := func(step string) []string {
 		t.Helper()
 		s, err := f.Client(t).Snapshot(context.Background(), "o", "r", epic)

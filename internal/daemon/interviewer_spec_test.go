@@ -17,7 +17,7 @@ import (
 )
 
 // specWired gives g's step 1 the /approve and /revise handlers and the
-// approval by 👍, as main wires them (newStep), for the real Step.
+// approval by 👍, as main wires them (NewStep), for the real Step.
 func specWired(g *rig) {
 	g.d.Step.Commands["approve"] = daemon.ApproveCommand()
 	g.d.Step.Commands["revise"] = daemon.ReviseCommand()

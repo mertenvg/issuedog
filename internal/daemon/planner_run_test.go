@@ -24,9 +24,10 @@ import (
 // This file is #260: whole runs of the planner against the
 // fakes, on the rig of the interviewer's whole run (interviewer_run_test.go):
 // the real Interviewer at clarifying and the real Planner at planning, as
-// registerStages registers them, triage as the Unlabeled stage, step 1
-// wired as main's newStep wires it, the digest and assignment on, as
-// startDaemon sets them, and Daemon.Iterate as the loop. Each run ends with
+// registerStages registers them, triage as the Unlabeled stage, the daemon
+// built as startDaemon builds it, daemon.New, so step 1 is
+// daemon.NewStep's and the digest and assignment are on, and
+// Daemon.Iterate as the loop. Each run ends with
 // a restart: a new daemon on the same fake and state.
 //
 // Config and trust come from main on the origin: mertenvg and merten_acme
@@ -68,8 +69,7 @@ func newPlanRun(t *testing.T) *planRun {
 // start puts a new daemon on f, with p's origin and state, as a start of
 // the issuedog binary does: the config from main and the labels it needs,
 // the whole run's fake claude, the Stages as registerStages gives them,
-// step 1 as newStep wires it, and the digest and assignment on, as
-// startDaemon sets them.
+// and the daemon as startDaemon builds it (rig.wireAsMain).
 func (p *planRun) start(t *testing.T, f *githubtest.Fake) {
 	t.Helper()
 	g := newRig(t, f, p.o, p.root)
@@ -79,7 +79,6 @@ func (p *planRun) start(t *testing.T, f *githubtest.Fake) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g.d.Config = cfg
 	if _, err := github.EnsureLabels(context.Background(), f.Client(t), "o", "r", daemon.LabelOptions(cfg)); err != nil {
 		t.Fatal(err)
 	}
@@ -89,16 +88,9 @@ func (p *planRun) start(t *testing.T, f *githubtest.Fake) {
 	// Run IDs go on across a restart, as the daemon's random ones never
 	// repeat: run<k> is the fake claude's run k.
 	g.r.NewID = func() string { return "run" + strconv.Itoa(g.runs()+1) }
-	// As registerStages registers them.
-	g.r.Stages = map[state.Stage]daemon.Stage{
-		state.Clarifying: &daemon.Interviewer{Daemon: g.d},
-		state.Planning:   &daemon.Planner{Daemon: g.d},
-	}
-	g.r.Unlabeled = &daemon.Triage{Daemon: g.d}
-	// As newStep wires step 1.
-	g.d.Step = daemon.NewStep(g.d.Step.Applier, g.d.Step.Trust, g.d.CurrentModels)
-	// As startDaemon sets them.
-	g.d.Digest, g.d.Assign = true, true
+	// As startDaemon builds the daemon, and registerStages registers the
+	// stages.
+	g.wireAsMain(cfg)
 	p.rig = g
 }
 
