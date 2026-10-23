@@ -1244,4 +1244,24 @@ func TestIvHoldUnchangedPlanner(t *testing.T) {
 			t.Errorf("the planner's input.md has %q after unchanged, want no notes from the interviewer:\n%s", w, in)
 		}
 	}
+	// The discussion's owner input reaches the planner all the same: the
+	// move's seen covers the hold, so nothing else gives it.
+	m, counter := ivHoldFind(t, f, planHoldMallory), ivHoldFind(t, f, ivPlanCounter)
+	for _, w := range []string{
+		fmt.Sprintf("## Comment %d by mallory, during the discussion hold, approved by owner's 👍, so it's owner input\n\n```text\n%s\n```", m, planHoldMallory),
+		fmt.Sprintf("## Comment %d by owner, during the discussion hold, a trusted comment that counters the untrusted comments before it, "+
+			"so it's owner input\n\n```text\n%s\n```", counter, ivPlanCounter),
+	} {
+		if !strings.Contains(in, w) {
+			t.Errorf("the planner's input.md lacks\n%s\nin\n%s", w, in)
+		}
+	}
+	// untrusted.md is written only with something in it.
+	u, err := os.ReadFile(g.path("claude", "ctx.2", "untrusted.md"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(u), planHoldMallory) {
+		t.Errorf("the planner's untrusted.md has mallory's 👍'd comment, want it only as owner input:\n%s", u)
+	}
 }

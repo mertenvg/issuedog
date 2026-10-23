@@ -147,10 +147,10 @@ func (p *Planner) logSkip(n int, why error) {
 //   - input.md: in.Inputs, the answers to the planner's latest round or
 //     what's new since the issue came to planning, or "none: first run".
 //     While the move that put the issue at planning is the interviewer's
-//     plan outcome after a discussion hold (#294), its notes follow
-//     (plannerHoldOf): the move's comment, with the interviewer's message,
-//     the discussion's owner input, and the /revise the interviewer's moves
-//     named.
+//     after a discussion hold, by its plan outcome (#294) or its unchanged
+//     one, its notes follow (plannerHoldOf): the move's comment, with the
+//     interviewer's message, only after plan (#340), the discussion's
+//     owner input, and the /revise the interviewer's moves named.
 //   - untrusted.md: only on an epic or a story (SPEC §6.2), and only when
 //     there's something in it, as for the interviewer (contextSort). A
 //     comment the discussion's owner input approved isn't in it.
