@@ -105,9 +105,10 @@ func TestDigestHistoryFailsAtStart(t *testing.T) {
 
 // A read that fails on every pass is made once a pass, in one GraphQL
 // request, till digestHistoryStrikes passes have failed. The last of them
-// posts one state error on the issue, and the passes after it make no
-// GraphQL request and write nothing. All the while no digest is created,
-// and step 1 never visits the issue. A restart reads again, three times
+// posts one state error on the issue, and the two passes after it, before
+// the read once every three passes (#437), make no GraphQL request and
+// write nothing. All the while no digest is created, and step 1 never
+// visits the issue. A restart reads again, three times
 // while it fails, and finds the error posted, so it posts none again; the
 // next restart's read works, and takes the digest back.
 func TestDigestHistoryStrikes(t *testing.T) {

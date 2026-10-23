@@ -114,7 +114,15 @@ type commentsResponse struct {
 
 // gqlErrors is the errors list of a GraphQL answer.
 type gqlErrors struct {
-	Errors []struct{ Message string }
+	Errors []gqlError
+}
+
+// gqlError is one error of a GraphQL answer: its message, and the type
+// and path GitHub may give it, which History reads for a node it can't
+// resolve (historyNotFound).
+type gqlError struct {
+	Type, Message string
+	Path          []any
 }
 
 // err returns the errors as one wrapping ErrGraphQL, or nil if there are none.
@@ -272,35 +280,48 @@ const historyQuery = `query($ids: [ID!]!, $cursor: String) {
 // historyResponse is historyQuery's answer.
 type historyResponse struct {
 	Data struct {
-		Nodes []*struct {
-			ID               string
-			UserContentEdits struct {
-				PageInfo struct {
-					HasNextPage bool
-					EndCursor   string
-				}
-				Nodes []struct {
-					EditedAt time.Time
-					Editor   *actor
-					Diff     *string // null for a comment, or a deleted revision
-				}
-			}
-		}
+		Nodes []*historyNode
 	}
 	gqlErrors
+}
+
+// historyNode is a node of historyQuery's answer, null for an ID GitHub
+// can't resolve.
+type historyNode struct {
+	ID               string
+	UserContentEdits struct {
+		PageInfo struct {
+			HasNextPage bool
+			EndCursor   string
+		}
+		Nodes []struct {
+			EditedAt time.Time
+			Editor   *actor
+			Diff     *string // null for a comment, or a deleted revision
+		}
+	}
 }
 
 // History reads the edit history of each issue body or comment, by node ID
 // (Snapshot.BodyNode, Comment.Node), oldest first. Once there is an edit,
 // the first entry is the original post. A body's entries carry their Text.
 // It asks for up to 100 nodes per query, then pages on its own each node
-// with more than 100 entries.
+// with more than 100 entries. A node GitHub resolves to none, as for an
+// issue deleted since, fails the read only as a *HistoryGoneError, which
+// holds the other nodes' histories.
 func (c *Client) History(ctx context.Context, nodes []string) (map[string][]Edit, error) {
 	all := map[string][]Edit{}
+	var gone []string
+	var goneErrs gqlErrors
 	for ids := range slices.Chunk(nodes, 100) {
-		more, err := c.historyPage(ctx, ids, nil, all)
+		more, missing, err := c.historyPage(ctx, ids, nil, all)
 		if err != nil {
 			return nil, fmt.Errorf("edit history: %w", err)
+		}
+		for _, id := range ids {
+			if e, ok := missing[id]; ok {
+				gone, goneErrs.Errors = append(gone, id), append(goneErrs.Errors, e)
+			}
 		}
 		for _, id := range ids {
 			read := map[string]bool{}
@@ -309,9 +330,14 @@ func (c *Client) History(ctx context.Context, nodes []string) (map[string][]Edit
 					return nil, fmt.Errorf("edit history of %s: %w: %q", id, errCursor, cursor)
 				}
 				read[cursor] = true
-				next, err := c.historyPage(ctx, []string{id}, &cursor, all)
+				next, missing, err := c.historyPage(ctx, []string{id}, &cursor, all)
 				if err != nil {
 					return nil, fmt.Errorf("edit history of %s: %w", id, err)
+				}
+				if e, ok := missing[id]; ok { // gone since its first page
+					delete(all, id)
+					gone, goneErrs.Errors = append(gone, id), append(goneErrs.Errors, e)
+					break
 				}
 				cursor, ok = next[id]
 			}
@@ -320,31 +346,60 @@ func (c *Client) History(ctx context.Context, nodes []string) (map[string][]Edit
 	for _, h := range all {
 		slices.Reverse(h)
 	}
+	if len(gone) > 0 {
+		return nil, &HistoryGoneError{Nodes: gone, Read: all, err: fmt.Errorf("edit history: history query: %w", goneErrs.err())}
+	}
 	return all, nil
 }
 
+// HistoryGoneError is History's error when GitHub resolves some of the
+// nodes asked for to none, and lists no other error: each is null in the
+// answer, with a NOT_FOUND error whose path names it (historyNotFound), as
+// for an issue or comment deleted since. It wraps ErrGraphQL, with
+// GitHub's messages. Read has the other nodes' histories, as History would
+// return them, so one node that's gone doesn't fail the rest.
+type HistoryGoneError struct {
+	Nodes []string          // the nodes GitHub resolved to none, in the order asked
+	Read  map[string][]Edit // the other nodes' histories, by node ID
+	err   error
+}
+
+func (e *HistoryGoneError) Error() string { return e.err.Error() }
+func (e *HistoryGoneError) Unwrap() error { return e.err }
+
 // historyPage adds a page of each node's edits to all, newest first, and
-// returns the cursor of each node with another page.
-func (c *Client) historyPage(ctx context.Context, ids []string, cursor *string, all map[string][]Edit) (map[string]string, error) {
+// returns the cursor of each node with another page, and each node GitHub
+// resolved to none (historyNotFound), with its error. Any other error
+// GitHub lists fails the page.
+func (c *Client) historyPage(ctx context.Context, ids []string, cursor *string, all map[string][]Edit) (map[string]string, map[string]gqlError, error) {
 	req, err := c.NewRequest(ctx, "POST", "graphql", map[string]any{"query": historyQuery,
 		"variables": map[string]any{"ids": ids, "cursor": cursor}})
 	if err != nil {
-		return nil, fmt.Errorf("history request: %w", err)
+		return nil, nil, fmt.Errorf("history request: %w", err)
 	}
 	var out historyResponse
 	if _, err := c.Do(req, &out); err != nil {
-		return nil, fmt.Errorf("history query: %w", err)
+		return nil, nil, fmt.Errorf("history query: %w", err)
 	}
-	if err := out.err(); err != nil {
-		return nil, fmt.Errorf("history query: %w", err)
+	var missing map[string]gqlError
+	if len(out.Data.Nodes) == len(ids) {
+		missing = historyNotFound(out.Errors, out.Data.Nodes, ids)
+	}
+	if len(missing) < len(out.Errors) {
+		if err := out.err(); err != nil {
+			return nil, nil, fmt.Errorf("history query: %w", err)
+		}
 	}
 	if len(out.Data.Nodes) != len(ids) {
-		return nil, fmt.Errorf("%w: %d nodes for %d IDs", errNoNode, len(out.Data.Nodes), len(ids))
+		return nil, nil, fmt.Errorf("%w: %d nodes for %d IDs", errNoNode, len(out.Data.Nodes), len(ids))
 	}
 	more := map[string]string{}
 	for i, n := range out.Data.Nodes {
+		if _, ok := missing[ids[i]]; ok {
+			continue
+		}
 		if n == nil || n.ID != ids[i] {
-			return nil, fmt.Errorf("%w: %s", errNoNode, ids[i])
+			return nil, nil, fmt.Errorf("%w: %s", errNoNode, ids[i])
 		}
 		for _, e := range n.UserContentEdits.Nodes {
 			var text string
@@ -357,5 +412,24 @@ func (c *Client) historyPage(ctx context.Context, ids []string, cursor *string, 
 			more[n.ID] = n.UserContentEdits.PageInfo.EndCursor
 		}
 	}
-	return more, nil
+	return more, missing, nil
+}
+
+// historyNotFound returns, by ID, each of ids that errs and nodes, the
+// history query's answer for them, resolve to none: its node is null, and
+// a NOT_FOUND error's path is ["nodes", its index], as GitHub answers for
+// the ID of an issue or comment that was deleted. Each comes with that
+// error. A NOT_FOUND error with any other path isn't one.
+func historyNotFound(errs []gqlError, nodes []*historyNode, ids []string) map[string]gqlError {
+	missing := map[string]gqlError{}
+	for _, e := range errs {
+		if e.Type != "NOT_FOUND" || len(e.Path) != 2 || e.Path[0] != "nodes" {
+			continue
+		}
+		f, ok := e.Path[1].(float64) // a JSON number
+		if i := int(f); ok && float64(i) == f && i >= 0 && i < len(ids) && nodes[i] == nil {
+			missing[ids[i]] = e
+		}
+	}
+	return missing
 }

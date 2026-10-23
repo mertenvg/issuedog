@@ -7,6 +7,7 @@ import (
 	gogithub "github.com/google/go-github/v92/github"
 	"github.com/mertenvg/logr/v2"
 
+	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
 )
@@ -18,12 +19,14 @@ import (
 // is, as a new one would be a second (#305). Each pass reads its history
 // again, till digestHistoryStrikes reads have failed on this start. Then
 // it's a state error, kind=digesthistory, reported once (SPEC §5.3), and
-// the issue stays held, with no digest created, till the owner acts: a
-// restart reads it again, and a rename, or the identity marker put back,
-// lets it go. No step 1 visits a held issue, so a 👍 on the error isn't
-// read, and the digest, if there's one, doesn't list it. It ends once the
-// issue is judged: step 1 visits only an issue the title rule has judged,
-// so it's never open there (openErrors).
+// the issue stays held, with no digest created, while its history is read
+// once every digestHistoryStrikes passes, so an outage longer than the
+// strikes ends on its own, and each failed read is logged as an error
+// (#437). A restart reads it again at once, and a rename, or the identity
+// marker put back, lets it go. No step 1 visits a held issue, so a 👍 on
+// the error isn't read, and the digest, if there's one, doesn't list it.
+// It ends once the issue is judged: step 1 visits only an issue the title
+// rule has judged, so it's never open there (openErrors).
 
 // digestHistoryErrKind is the kind of the state error for an issue the
 // digest's title rule can't judge, as its edit history failed to read.
@@ -31,15 +34,24 @@ const digestHistoryErrKind = "digesthistory"
 
 // digestHistoryStrikes is how many passes of a start may fail to read an
 // issue's edit history for the title rule before it's a state error, and
-// read no more on that start.
-const digestHistoryStrikes = 3
+// is read only once every that many passes: loop.max_attempts, as for a
+// closer question (closerErrBegin), at least 1.
+func (d *Daemon) digestHistoryStrikes() int {
+	limit := config.Defaults().Loop.MaxAttempts
+	if d.Config != nil {
+		limit = d.Config.Loop.MaxAttempts
+	}
+	return max(1, int(limit))
+}
 
 // digestHistoryFail is what a start knows of the failed reads of an issue's
-// edit history for the title rule: how many passes failed, and the last
-// one's error, for the state error.
+// edit history for the title rule: how many reads failed, in a row, the
+// last one's error, for the state error, and the title rule's pass
+// (digestState.pass) to read it on next.
 type digestHistoryFail struct {
 	fails int
 	cause error
+	next  int
 }
 
 // digestHistoryPosted is an App comment's digesthistory state error: the
@@ -50,14 +62,18 @@ type digestHistoryPosted struct {
 }
 
 // historyFailed counts a failed read, err, of the edit histories of issues
-// nums.
-func (g *digestState) historyFailed(nums []int, err error) {
+// nums, on this pass: each is read again on the next, till strikes reads
+// have failed, and then once every strikes passes.
+func (g *digestState) historyFailed(nums []int, err error, strikes int) {
 	if g.history == nil {
 		g.history = map[int]digestHistoryFail{}
 	}
 	for _, n := range nums {
 		h := g.history[n]
-		h.fails, h.cause = h.fails+1, err
+		h.fails, h.cause, h.next = h.fails+1, err, g.pass+1
+		if h.fails >= strikes {
+			h.next = g.pass + strikes
+		}
 		g.history[n] = h
 	}
 }
@@ -92,19 +108,41 @@ func (g *digestState) historyPostedOn(n int, key string) bool {
 
 // digestHistoryHold keeps is, an issue the title rule holds as listed, whose
 // edit history no pass has read yet, out of step 1 and Work: it drops its
-// snapshot and inputs, if it had any, and an open one is marked to be read
-// again, which Iterate does once it's judged, and not before. Once the read
-// has failed digestHistoryStrikes times, it reports the state error.
+// snapshot and inputs, if it had any, and its items, so the digest doesn't
+// list what its last visit found, and an open one is marked to be read
+// again, which Iterate does once it's judged, and not before. The poll marks it
+// so too, unless its snapshot was read after the change that made the
+// title rule hold it, as when it was renamed between a poll and its read.
+// Once the read has failed digestHistoryStrikes times, it reports the
+// state error.
+//
+// It keeps the issue's assignment state (Daemon.assignManaged): assignment
+// writes only to an issue with a snapshot, so it can't touch a held one,
+// and keeping it lets the first pass after the issue is let go take off
+// the notify users if the issue isn't in the pipeline then.
 func (d *Daemon) digestHistoryHold(ctx context.Context, is *gogithub.Issue) {
 	n := is.GetNumber()
 	delete(d.snaps, n)
 	delete(d.inputs, n)
+	delete(d.digestCache, n)
 	if is.GetState() == "open" {
 		d.stale[n] = true
 	}
-	if d.digest.history[n].fails >= digestHistoryStrikes {
+	if d.digest.history[n].fails >= d.digestHistoryStrikes() {
 		d.digestHistoryReport(ctx, is)
 	}
+}
+
+// digestHistoryGone lets go of issue n, held by the title rule, which err,
+// a request's, found gone, deleted or transferred, so a digest can be
+// created.
+func (d *Daemon) digestHistoryGone(n int, err error) {
+	a, g := d.Step.Applier, &d.digest
+	logr.Infof("%s/%s#%d, held as the digest's title rule couldn't judge it, is gone, deleted or transferred, so it's held no more: %v",
+		a.Owner, a.Repo, n, err)
+	delete(g.titled, n)
+	delete(g.history, n)
+	delete(d.stale, n)
 }
 
 // digestHistoryReport posts the digesthistory state error on is, keyed by
@@ -127,7 +165,8 @@ func (d *Daemon) digestHistoryReport(ctx context.Context, is *gogithub.Issue) {
 	h := g.history[n]
 	key := state.BodyHash(is.GetBody())
 	desc := fmt.Sprintf("%s/%s#%d, titled %q, can't be judged the digest or not, as its edit history failed to read on %d passes: "+
-		"it's held out of the pipeline, and no digest is created, till a restart reads it, keyed %s", a.Owner, a.Repo, n, digestTitle, h.fails, key)
+		"it's held out of the pipeline, and no digest is created, till a read works, tried once every %d passes and on a restart, keyed %s",
+		a.Owner, a.Repo, n, digestTitle, h.fails, d.digestHistoryStrikes(), key)
 	if g.historyPostedOn(n, key) {
 		logr.Debugf("state error, reported already: %s", desc)
 		return
@@ -146,10 +185,7 @@ func (d *Daemon) digestHistoryReport(ctx context.Context, is *gogithub.Issue) {
 	}
 	switch {
 	case gone(err):
-		logr.Infof("%s/%s#%d, whose edit history failed to read, is gone, deleted or transferred, so it's held no more: %v", a.Owner, a.Repo, n, err)
-		delete(g.titled, n)
-		delete(g.history, n)
-		delete(d.stale, n)
+		d.digestHistoryGone(n, err)
 	case err != nil:
 		logr.Errorf("report %s/%s#%d's edit history that failed to read, which is tried again next pass: %v", a.Owner, a.Repo, n, err)
 	default:
@@ -171,7 +207,8 @@ func digestHistoryText(h digestHistoryFail) string {
 		"Only its first version shows which, and reading its edit history failed on %d passes in a row. "+
 		"So I keep it out of the pipeline, and create no digest while I can't tell, so there are never two: "+
 		"with no other digest, this repo has none till then. "+
-		"I read its history again when I restart. If this issue isn't the digest, rename it, and I'll take it as any other issue; "+
+		"I keep reading its history, less often now, so this ends on its own once a read works, and I read it again when I restart. "+
+		"If this issue isn't the digest, rename it, and I'll take it as any other issue; "+
 		"if it is, putting the digest's identity marker back in its body makes it the digest again. "+
 		"A 👍 on this comment changes nothing: the error ends once I can tell.", digestTitle, h.fails)
 	if h.cause != nil {

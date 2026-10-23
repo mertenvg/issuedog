@@ -79,6 +79,9 @@ type digestState struct {
 	// history is what this start knows of the failed reads of the edit
 	// histories of issues titled holds, by issue number (digestTake).
 	history map[int]digestHistoryFail
+	// pass counts digestTake's passes on this start, for when history's
+	// issues are read again.
+	pass int
 	// historyErrs are the App's comments with a digesthistory state error,
 	// edited or not, by ID, as the issue and key each is for
 	// (digestHistoryReport).
@@ -264,14 +267,23 @@ func (g *digestState) has(n int) bool {
 // old digest back. An issue a poll lists again is judged on that listing,
 // as ever: renamed, or with its marker back, it's held no more. But a read
 // that keeps failing would cost a request and an error log on every pass,
-// and hold back the pipeline's work on the issue for good, so after
-// digestHistoryStrikes failures the issue gets a state error (SPEC §5.3,
-// digestHistoryReport), and its history isn't read again on this start. It
-// stays held, with no digest created, till the owner acts: a restart reads
-// it again, a rename lets the pipeline take it as any other issue, and the
-// identity marker put back makes it the digest.
+// so after digestHistoryStrikes failures the issue gets a state error
+// (SPEC §5.3, digestHistoryReport), and its history is read only once
+// every digestHistoryStrikes passes from then on, each failure logged as
+// ever. It stays held, with no digest created, till a read works, so an
+// outage ends it on its own (#437), or the owner acts: a restart reads it
+// again at once, a rename lets the pipeline take it as any other issue,
+// and the identity marker put back makes it the digest.
+//
+// A node GitHub resolves to none (github's HistoryGoneError) is an issue
+// deleted since: it's let go, as when the state error's post finds it gone
+// (digestHistoryGone), so a digest can be created, and the query's other
+// histories are judged, so one gone issue doesn't fail the rest. A
+// transferred issue's node still resolves, from its new repo, so it's
+// judged as any other.
 func (d *Daemon) digestTake(ctx context.Context) {
 	a, g := d.Step.Applier, &d.digest
+	g.pass++
 	// An issue a listing let go of, renamed or a digest by its marker, has
 	// its failures forgotten, so a rename back starts with no strike.
 	maps.DeleteFunc(g.history, func(n int, _ digestHistoryFail) bool {
@@ -287,16 +299,24 @@ func (d *Daemon) digestTake(ctx context.Context) {
 	}
 	need := map[string]int{} // by node ID
 	for n, is := range g.titled {
-		if _, ok := g.firsts[n]; !ok && !reposted[n] && g.history[n].fails < digestHistoryStrikes {
+		if _, ok := g.firsts[n]; !ok && !reposted[n] && g.history[n].next <= g.pass {
 			need[is.GetNodeID()] = n
 		}
 	}
 	if len(need) > 0 {
 		read, err := a.Client.History(ctx, slices.Sorted(maps.Keys(need)))
+		var missing *github.HistoryGoneError
+		if errors.As(err, &missing) {
+			read, err = missing.Read, nil
+			for _, node := range missing.Nodes {
+				d.digestHistoryGone(need[node], missing)
+				delete(need, node)
+			}
+		}
 		if err != nil {
 			logr.Errorf("the edit histories of %s/%s's issues %v, titled %q, failed to read, so they stay out of the pipeline, and no digest is created, till they're read: %v",
 				a.Owner, a.Repo, slices.Sorted(maps.Values(need)), digestTitle, err)
-			g.historyFailed(slices.Collect(maps.Values(need)), err)
+			g.historyFailed(slices.Collect(maps.Values(need)), err, d.digestHistoryStrikes())
 		} else {
 			if g.firsts == nil {
 				g.firsts = map[int]bool{}
