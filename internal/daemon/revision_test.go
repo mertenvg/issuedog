@@ -327,7 +327,7 @@ func TestPostRevision(t *testing.T) {
 	}
 }
 
-// probe is the verifier's: revision 1 of "body" with the owner's 👍 (1002),
+// probe is #97's case: revision 1 of "body" with the owner's 👍 (1002),
 // revision 2 of "body v2" (1003), and revision 3 of "body" again (1004),
 // which mallory makes dirty. Then it runs more.
 func probe(more func(t testing.TB, f *githubtest.Fake)) func(testing.TB) *githubtest.Fake {

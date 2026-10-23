@@ -99,9 +99,9 @@ func TestResolveRejectedResumeKeepsParentHold(t *testing.T) {
 	}
 }
 
-// The verifier's probe as it ran, through Iterate, with #1 visited before
-// #2: with the rejected /resume, and without it, #1 stays held once the
-// owner's 👍 resolves mallory's comment.
+// The same through Iterate (#206), with #1 visited before #2: with the
+// rejected /resume, and without it, #1 stays held once the owner's 👍
+// resolves mallory's comment.
 func TestResolveRejectedResumeThroughIterate(t *testing.T) {
 	t.Parallel()
 	for _, withResume := range []bool{false, true} {

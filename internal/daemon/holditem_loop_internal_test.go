@@ -58,11 +58,11 @@ func holdItemKeyAfter(t *testing.T, d *Daemon) (string, int) {
 	return items[0].Key, len(holdItemTriggers(items[0]))
 }
 
-// The verifier's scenario: the owner /holds the issue, and mallory
-// comments, renames it, and deletes her comment. The key names the
-// /hold's marker throughout, though the oldest trigger goes. After a
-// stage set by hand ends the hold, mallory's next comment holds the issue
-// afresh, with a key of its own: her comment's, which its marker carries.
+// #202's case: the owner /holds the issue, and mallory comments, renames
+// it, and deletes her comment. The key names the /hold's marker
+// throughout, though the oldest trigger goes. After a stage set by hand
+// ends the hold, mallory's next comment holds the issue afresh, with a key
+// of its own: her comment's, which its marker carries.
 func TestHoldItemKeyAcrossTheHold(t *testing.T) {
 	t.Parallel()
 	f, d := holdItemLoop(t, nil)

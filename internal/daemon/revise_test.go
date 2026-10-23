@@ -424,11 +424,11 @@ func TestReviseAndEdits(t *testing.T) {
 	}
 }
 
-// #83's verifier's case: request 1002 is rejected, as the issue is a story
-// with a parent, but the reply's write fails after the 👎. The owner sets
-// the stage by hand, and the next pass records the move to clarifying and
-// posts the reply, worded for the stage now. The setup runs the failed pass,
-// so Replay covers the repost.
+// #83's case: request 1002 is rejected, as the issue is a story with a
+// parent, but the reply's write fails after the 👎. The owner sets the
+// stage by hand, and the next pass records the move to clarifying and
+// posts the reply, worded for the stage now. The setup runs the failed
+// pass, so Replay covers the repost.
 func TestLostReplyAfterStageChange(t *testing.T) {
 	t.Parallel()
 	var in []string

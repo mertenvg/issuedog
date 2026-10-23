@@ -270,9 +270,9 @@ func TestInline(t *testing.T) {
 	}
 }
 
-// block's output for each verifier probe, checked with goldmark: nothing
-// in agent text adds a # or ## heading, opens a fence block doesn't close,
-// or starts HTML.
+// block's output for each case of hostile text (#146), checked with
+// goldmark: nothing in agent text adds a # or ## heading, opens a fence
+// block doesn't close, or starts HTML.
 func TestBlock(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct{ name, in, want string }{
