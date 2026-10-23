@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/mertenvg/issuedog/internal/config"
+	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
 
@@ -93,38 +94,63 @@ func TestDigestHistoryOutageReplay(t *testing.T) {
 	})
 }
 
-// Two issues the title rule holds, the digest whose marker was taken out
-// and an App issue titled as the digest, the second deleted between the
-// start's poll and its history read: GitHub resolves its node to none, so
-// it's let go, while the first's history, read in the same query, takes
-// the digest back on that pass. No pass after reads a history, and no
-// digest is created.
+// digestHistoryGoneTask files the App task of #87's probe, its origin
+// edited out by the owner and renamed as the digest, as
+// TestDigestHistoryFailsAtStart does, and returns its number: only its
+// history, whose first version has the origin, shows it isn't the digest.
+func digestHistoryGoneTask(f *githubtest.Fake) int {
+	task := f.AddIssue(app, "A task", digestTaskBody)
+	f.EditBody(task, "owner", digestTaskEdited)
+	f.RenameIssue(task, "owner", "issuedog digest")
+	return task
+}
+
+// Three issues the title rule holds: the digest whose marker was taken
+// out, an App task that lost its origin and was renamed as the digest, and
+// an App issue titled as the digest, the last deleted between the start's
+// poll and its history read. GitHub resolves that one's node to none, so
+// it's let go, while the other two's histories, read in the same query,
+// are judged on that pass: the digest's takes it back, and the task's,
+// whose first version had an origin, lets it into the pipeline, visited,
+// so there's the one digest. No pass after reads a history, and no digest
+// is created.
 func TestDigestHistoryGoneCandidate(t *testing.T) {
 	t.Parallel()
 	f, o := newFake(t), newOrigin(t)
 	want := digestHistoryRemoved(t, f, o)
+	task := digestHistoryGoneTask(f)
 	f.AddIssue(app, "issuedog digest", "also gone")
 	f.BeforeGraphQL(f.DeleteIssue)
-	d := digestDaemon(t, f, o, nil)
+	var visits []int
+	d := digestDaemon(t, f, o, &visits)
 	from, queries := len(f.Writes()), f.HistoryQueries()
 	iterate(t, d)
 	if w := digestWrites(f, from); !slices.Contains(w, "PATCH /issues/1") || slices.Contains(w, "POST /issues") {
 		t.Errorf("writes = %q; want the edit that puts the marker back, and no digest created", w)
 	}
-	if is := f.State().Issues; len(is) != 1 || is[0].Body != want {
-		t.Errorf("issues = %+v; want the one digest, its body put back as %q", is, want)
+	if is := f.State().Issues; len(is) != 2 || is[0].Body != want || is[1].Body != digestTaskEdited {
+		t.Errorf("issues = %+v; want the one digest, its body put back as %q, and the task as the owner left it", is, want)
 	}
+	if got := daemon.DigestHistoryDigests(d); !reflect.DeepEqual(visits, []int{task}) || !reflect.DeepEqual(got, []int{1}) {
+		t.Errorf("step 1 visited %v, digests %v; want the task visited, in the pipeline, and 1 the one digest", visits, got)
+	}
+	// The pass's other history query is the task's visit's, for its dirty body.
+	if got := f.HistoryQueries() - queries; got != 2 {
+		t.Errorf("%d history queries; want 2, the title rule's and the task's visit's", got)
+	}
+	queries = f.HistoryQueries()
 	for range 2 {
 		iterate(t, d)
 	}
-	if got := f.HistoryQueries() - queries; got != 1 || len(f.State().Issues) != 1 {
-		t.Errorf("%d history queries, issues %+v; want the one, and the one digest", got, f.State().Issues)
+	if got := f.HistoryQueries() - queries; got != 0 || len(f.State().Issues) != 2 || !reflect.DeepEqual(daemon.DigestHistoryDigests(d), []int{1}) {
+		t.Errorf("%d history queries, issues %+v, digests %v; want none, and 1 the one digest",
+			got, f.State().Issues, daemon.DigestHistoryDigests(d))
 	}
 }
 
 // Replay passes for TestDigestHistoryGoneCandidate's pass: the edit that
 // takes the digest back, on the pass whose read found the other issue
-// gone.
+// gone, and the task's visit.
 func TestDigestHistoryGoneCandidateReplay(t *testing.T) {
 	t.Parallel()
 	o := newOrigin(t)
@@ -132,6 +158,7 @@ func TestDigestHistoryGoneCandidateReplay(t *testing.T) {
 		f := newFake(t)
 		f.SetPinned(f.AddIssue(app, "issuedog digest", digestList), true)
 		f.EditBody(1, "owner", "gone")
+		digestHistoryGoneTask(f)
 		f.AddIssue(app, "issuedog digest", "also gone")
 		f.BeforeGraphQL(f.DeleteIssue)
 		return f

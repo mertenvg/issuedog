@@ -130,7 +130,14 @@ func TestHistoryBadAnswers(t *testing.T) {
 			}
 		})
 	}
-	_, err := graphQLAnswers(t, `{"data":{"nodes":[null]},"errors":[`+fmt.Sprintf(notFound, "0")+`]}`).History(context.Background(), []string{"A"})
+	// A NOT_FOUND error at a node that's there, while another node is null,
+	// names neither gone: the error's index must be the null node's.
+	_, err := graphQLAnswers(t, `{"data":{"nodes":[null,{"id":"B"}]},"errors":[`+fmt.Sprintf(notFound, "1")+`]}`).
+		History(context.Background(), []string{"A", "B"})
+	if g := (*HistoryGoneError)(nil); !errors.Is(err, ErrGraphQL) || errors.As(err, &g) {
+		t.Errorf("err = %v; want GitHub's errors, and no node gone, for an error at B, which is there, with A null", err)
+	}
+	_, err = graphQLAnswers(t, `{"data":{"nodes":[null]},"errors":[`+fmt.Sprintf(notFound, "0")+`]}`).History(context.Background(), []string{"A"})
 	if g := (*HistoryGoneError)(nil); !errors.As(err, &g) || !slices.Equal(g.Nodes, []string{"A"}) || len(g.Read) != 0 {
 		t.Errorf("err = %v; want A gone, and nothing else read", err)
 	}
