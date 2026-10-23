@@ -147,6 +147,11 @@ func TestRunFailures(t *testing.T) {
 			r, s := fakeRun(t, tt.mode, tt.cred)
 			if tt.mode == "hang" {
 				s.Timeout = 300 * time.Millisecond
+				// claude's child holds its output open for 300s, and the wait
+				// for that output is an hour. So only the group kill ends the
+				// run within the bound below, which is generous so a loaded
+				// machine doesn't fail it.
+				r.waitDelay = time.Hour
 			}
 			switch tt.wantErr {
 			case "invalid run ID":
@@ -181,11 +186,22 @@ func TestRunFailures(t *testing.T) {
 			if tt.mode != "hang" {
 				return
 			}
-			if d := time.Since(start); d >= waitDelay {
+			if d := time.Since(start); d >= time.Minute {
 				t.Errorf("Run took %v; the group kill should close claude's output at once", d)
 			}
 			waitChildDead(t, s.Dir)
 		})
+	}
+}
+
+// TestRunWaitDelay: claude's WaitDelay is 5s unless a test sets another.
+func TestRunWaitDelay(t *testing.T) {
+	t.Parallel()
+	if got := (&Runner{}).cmdWaitDelay(); got != 5*time.Second {
+		t.Errorf("WaitDelay = %v, want 5s", got)
+	}
+	if got := (&Runner{waitDelay: time.Hour}).cmdWaitDelay(); got != time.Hour {
+		t.Errorf("WaitDelay with an hour set = %v, want 1h", got)
 	}
 }
 
@@ -198,7 +214,9 @@ func TestRunKillsLeftovers(t *testing.T) {
 }
 
 // waitChildDead fails the test unless the child the fake script recorded in
-// dir/child.pid exits (or is a zombie) soon.
+// dir/child.pid exits (or is a zombie) within a minute. The child sleeps 300s,
+// so one that wasn't killed still fails. The minute is generous so a loaded
+// machine doesn't fail it.
 func waitChildDead(t *testing.T, dir string) {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(dir, "child.pid"))
@@ -209,7 +227,7 @@ func waitChildDead(t *testing.T, dir string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(time.Minute); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
 		stat, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
 		if err != nil {
 			return

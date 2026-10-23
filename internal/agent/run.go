@@ -20,8 +20,9 @@ import (
 	"github.com/mertenvg/logr/v2"
 )
 
-// waitDelay bounds the wait for claude's output pipes to close after it exits.
-const waitDelay = 5 * time.Second
+// defaultWaitDelay bounds the wait for claude's output pipes to close after
+// it exits.
+const defaultWaitDelay = 5 * time.Second
 
 // Stage is one stage run of claude -p (SPEC §3.3).
 type Stage struct {
@@ -48,6 +49,16 @@ type Runner struct {
 	Stderr     io.Writer           // claude's stderr; nil discards it
 
 	dirSyncFunc func(dir string) error // syncs the runs dir after a result's rename; nil (all but tests) uses dirsync.Sync
+	waitDelay   time.Duration          // bounds the wait for claude's output pipes; 0 (all but tests) uses defaultWaitDelay
+}
+
+// cmdWaitDelay is claude's exec.Cmd WaitDelay: r.waitDelay if it's set,
+// else defaultWaitDelay.
+func (r *Runner) cmdWaitDelay() time.Duration {
+	if r.waitDelay > 0 {
+		return r.waitDelay
+	}
+	return defaultWaitDelay
 }
 
 // dirSync flushes dir's entries to disk, through r.dirSyncFunc if it's set.
@@ -107,7 +118,7 @@ func (r *Runner) Run(ctx context.Context, s Stage) ([]byte, error) {
 	cmd.Stderr = r.Stderr
 	cmd.SysProcAttr = r.sysProcAttr()
 	cmd.Cancel = func() error { return r.killGroup(cmd.Process.Pid) }
-	cmd.WaitDelay = waitDelay
+	cmd.WaitDelay = r.cmdWaitDelay()
 	if err := cmd.Start(); err != nil {
 		return nil, &SetupError{fmt.Errorf("starting claude: %w", err)}
 	}
