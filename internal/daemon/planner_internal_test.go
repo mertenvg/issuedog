@@ -289,7 +289,7 @@ func TestPlannerParent(t *testing.T) {
 		"## Latest plan\n\nRevision 2 of the parent's plan, in comment 10 by issuedog:\n\n```text\n### Plan for #1 (rev 2)\n\nS1. Build it.\n```\n\n" +
 		"## Other sub-issues\n\n" +
 		"- #8: A sibling split (closed, type story)\n" +
-		"- o/other#3, in another repo: Elsewhere &lt;!-- y --> (open, type none)\n"
+		"- o/other#3, in another repo: Elsewhere &lt;!-- y --> (open, type not read)\n"
 	if got != want || len(untrusted) != 0 {
 		t.Errorf("parent.md =\n%s\nwant\n%s\nand untrusted %q, want none", got, want, untrusted)
 	}

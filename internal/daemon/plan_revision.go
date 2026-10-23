@@ -67,8 +67,13 @@ type planChild struct {
 	Item   string // the plan item its origin names
 	Number int
 	Title  string
-	Type   string      // github.TypeOf's, or ""
-	Stage  state.Stage // while it's open, as its markers set it, once the planner's Context reads it (plannerTrustedStage), or ""
+	// Type is its issue type, as listed, or with none, "" until the
+	// planner's Context judges its type:* labels, from Labels, as the label
+	// rules do (plannerTrustedSub, #445). Labels are nil for one with an
+	// issue type.
+	Type   string
+	Labels []string
+	Stage  state.Stage // while it's open, as its markers set it, once the planner's Context reads it (plannerTrustedSub), or ""
 	Closed bool
 	// Reason is a closed child's state_reason, such as "completed" or
 	// "not_planned", or "".
@@ -134,10 +139,12 @@ func (pr *planPrior) read(ctx context.Context, st *Step, s *github.Snapshot) err
 	children := map[int]bool{}
 	for item, f := range found {
 		is := byNumber[f.Number]
-		// Its stage isn't the listing's to give, as its labels may be
-		// untrusted: the planner's Context reads it (plannerTrustedStage).
-		c := planChild{Item: item, Number: f.Number, Title: is.GetTitle(), Type: github.TypeOf(is),
+		// Its stage, and a type by label, aren't the listing's to give, as
+		// its labels may be untrusted: the planner's Context reads them
+		// (plannerTrustedSub).
+		c := planChild{Item: item, Number: f.Number, Title: is.GetTitle(),
 			Closed: is.GetState() == "closed", Reason: is.GetStateReason()}
+		c.Type, c.Labels = plannerListedType(is)
 		pr.Children = append(pr.Children, c)
 		children[f.Number] = true
 	}
@@ -332,8 +339,8 @@ const plannerChildrenIntroRevision = "This issue was planned before, so your pla
 
 // plannerChildrenFile is children.md for a revision on issue n, after pr
 // is read: the children, each with its item ID, number, title, type, and
-// stage, as its markers set it (plannerTrustedStage), or close reason; the
-// approved revision's items, as its plan data, fenced; and the other
+// stage, as the planner's Context reads them (plannerTrustedSub), or close
+// reason; the approved revision's items, as its plan data, fenced; and the other
 // sub-issues, as context only. Titles, types and the data are escaped
 // (SPEC §5.1).
 func plannerChildrenFile(n int, pr *planPrior) (string, error) {

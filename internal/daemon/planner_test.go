@@ -197,7 +197,8 @@ func TestPlannerContextStory(t *testing.T) {
 
 // TestPlannerContextElsewhere: a story whose parent is in another repo
 // gets a parent.md saying so, and nothing of the issue its number names in
-// this repo. A sub-issue in another repo is listed with its repo, and
+// this repo. A sub-issue in another repo is listed with its repo, with its
+// type not read, as its labels aren't this repo's to judge (#445), and
 // counts towards the 100.
 func TestPlannerContextElsewhere(t *testing.T) {
 	t.Parallel()
@@ -226,7 +227,7 @@ func TestPlannerContextElsewhere(t *testing.T) {
 			t.Errorf("%s has the issue of this repo that the parent's number names:\n%s", name, text)
 		}
 	}
-	if w := "\n\n- o/other#3, in another repo: Moved child (open, type none)\n"; !strings.HasSuffix(string(got["children.md"]), w) {
+	if w := "\n\n- o/other#3, in another repo: Moved child (open, type not read)\n"; !strings.HasSuffix(string(got["children.md"]), w) {
 		t.Errorf("children.md doesn't end with %q:\n%s", w, got["children.md"])
 	}
 	if w := "- This issue has 1 sub-issues, of the 100 GitHub allows, so a plan has at most 99 items."; !strings.Contains(string(got["system.md"]), w) {
