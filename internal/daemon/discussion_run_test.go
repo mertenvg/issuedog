@@ -705,14 +705,14 @@ func TestDiscRunParentResume(t *testing.T) {
 // it, and also eve's comment, but each then edits theirs. Mallory's edit,
 // a write collaborator's of her approved comment, is a trigger, with a
 // notice saying that accepting it doesn't approve the new text, and how to
-// approve it (editNoticeSentence), and keeps the epic held; eve's, without write access, holds
-// nothing. The owner's 👍 on the notice accepts the edit, and the epic goes
-// to clarifying, but neither edit is owner input: both are only in
-// untrusted.md for the interviewer's run, which asks a round. Once the
-// owner reads mallory's edit and 👍s it again, the next run, on the
-// owner's answer, has it in issue.md as approved owner input. Eve's edit,
-// with no 👍 after it, never reaches issue.md. Every step's writes are
-// checked.
+// approve it (editNoticeSentence), and keeps the epic held; eve's, without
+// write access, holds nothing. The owner's 👍 on the notice accepts the
+// edit, and the epic goes to clarifying, but neither edit is owner input:
+// both are only in untrusted.md for the interviewer's run, which asks a
+// round. Once the owner reads mallory's edit and 👍s it again, the next
+// run, on the owner's answer, has it in issue.md as approved owner input.
+// Eve's edit, with no 👍 after it, never reaches issue.md. Every step's
+// writes are checked.
 func TestDiscRunApprovalEdited(t *testing.T) {
 	t.Parallel()
 	const (

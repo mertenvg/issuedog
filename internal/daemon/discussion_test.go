@@ -108,8 +108,8 @@ func discNotice(what, key string) string {
 // its notice's own: accepting the edit doesn't approve the new text, and
 // how to approve it (SPEC §6.4).
 func editNoticeSentence(id int64) string {
-	return fmt.Sprintf("Accepting the edit releases the hold but doesn't approve the new text: "+
-		"to approve it, remove your 👍 from comment %d and add it again.", id)
+	return fmt.Sprintf("Accepting the edit ends its hold but doesn't approve the new text. "+
+		"To approve it, a code owner adds a 👍 to comment %d after the edit, first removing any 👍 they gave it before.", id)
 }
 
 // editNoticeWith is body, the App's comment as discHeld or discNotice
