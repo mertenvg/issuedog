@@ -46,13 +46,14 @@ func (c *Client) RemoveAssignees(ctx context.Context, owner, repo string, number
 // write with error err, or err. GitHub answers a write to a transferred
 // issue with a 301, and Go follows it with a GET, which may succeed with
 // the moved issue: so, as Snapshot does, an issue whose repository_url
-// names another repo is ErrTransferred, and the write wrote nothing.
+// names another repo is ErrTransferred (IssueMoved), and the write wrote
+// nothing.
 func assignAnswer(owner, repo string, is *gogithub.Issue, err error) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if u := is.GetRepositoryURL(); u != "" && !strings.HasSuffix(strings.ToLower(u), strings.ToLower("/repos/"+owner+"/"+repo)) {
-		return nil, fmt.Errorf("%w to %s", ErrTransferred, u)
+	if err := IssueMoved(owner, repo, nil, is); err != nil {
+		return nil, err
 	}
 	return assignLogins(is.Assignees), nil
 }

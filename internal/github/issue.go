@@ -157,8 +157,31 @@ var ErrPullRequest = errors.New("a pull request, not an issue")
 
 // ErrTransferred is wrapped by the error of Snapshot, of the assignee
 // writes (assignAnswer) and of PinIssue, for an issue moved to another
-// repo. The daemon's digest edits wrap it too (digestMoved).
+// repo. The daemon's digest edits wrap it too (digestMoved). Each finds the
+// move with IssueMoved.
 var ErrTransferred = errors.New("transferred")
+
+// IssueMoved returns an error that wraps ErrTransferred if resp, GitHub's
+// answer to a request about an issue of owner's repo, or is, the issue it
+// returned, shows the issue is no longer in that repo, and nil otherwise.
+// Either may be nil, for a caller that has no answer or no issue to check.
+// GitHub answers a request about a transferred issue with a 301, which the
+// client follows (sameHost) to the issue in its new repo, and Go follows
+// one for a PATCH or a POST with a GET, which may well succeed: so an
+// answer from anywhere but this repo's path is moved. So is an issue whose
+// repository_url names another repo. Both compare the repo in any case,
+// as GitHub's names are. It's the one check of Snapshot, assignAnswer,
+// PinIssue and the daemon's digestMoved (#428).
+func IssueMoved(owner, repo string, resp *gogithub.Response, is *gogithub.Issue) error {
+	if resp != nil && resp.Response != nil && resp.Request != nil && resp.Request.URL != nil &&
+		!strings.Contains(strings.ToLower(resp.Request.URL.Path), strings.ToLower("/repos/"+owner+"/"+repo+"/")) {
+		return fmt.Errorf("%w: answered by %s %s", ErrTransferred, resp.Request.Method, resp.Request.URL.Path)
+	}
+	if u := is.GetRepositoryURL(); u != "" && !strings.HasSuffix(strings.ToLower(u), strings.ToLower("/repos/"+owner+"/"+repo)) {
+		return fmt.Errorf("%w to %s", ErrTransferred, u)
+	}
+	return nil
+}
 
 // Snapshot reads one issue, not a pull request: its title, author, labels,
 // type and parent from REST, then its body, every comment, each with who
@@ -172,9 +195,10 @@ func (c *Client) Snapshot(ctx context.Context, owner, repo string, number int) (
 		return nil, fmt.Errorf("snapshot of %s/%s#%d: %w", owner, repo, number, ErrPullRequest)
 	}
 	// GitHub answers for a transferred issue with a 301, which the client
-	// follows to the issue's new repo.
-	if u := issue.GetRepositoryURL(); u != "" && !strings.HasSuffix(strings.ToLower(u), strings.ToLower("/repos/"+owner+"/"+repo)) {
-		return nil, fmt.Errorf("snapshot of %s/%s#%d: %w to %s", owner, repo, number, ErrTransferred, u)
+	// follows to the issue's new repo. Only the issue's repository_url is
+	// checked, not the answer's path.
+	if err := IssueMoved(owner, repo, nil, issue); err != nil {
+		return nil, fmt.Errorf("snapshot of %s/%s#%d: %w", owner, repo, number, err)
 	}
 	s := &Snapshot{
 		Number: issue.GetNumber(), Closed: issue.GetState() == "closed", Title: issue.GetTitle(),

@@ -121,8 +121,9 @@ func TestDigestPinFailCheckReplay(t *testing.T) {
 }
 
 // A 401 or 403 from pinIssue is a refusal, as a GraphQL error is: the note
-// names it, and the same start doesn't try again. A 500 isn't: the note
-// says pinning failed, and a pass that changes the body tries again.
+// names it, and the same start doesn't try again. A 500 or a 404 isn't:
+// the note says pinning failed, and a pass that changes the body tries
+// again.
 func TestDigestPinFailHTTPStatus(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -133,6 +134,9 @@ func TestDigestPinFailHTTPStatus(t *testing.T) {
 		{http.StatusUnauthorized, "I couldn't pin this issue: `HTTP 401: Unauthorized`. Pin it by hand.", []string{"PATCH /issues/1"}},
 		{http.StatusForbidden, "I couldn't pin this issue: `HTTP 403: Forbidden`. Pin it by hand.", []string{"PATCH /issues/1"}},
 		{http.StatusInternalServerError, "I couldn't pin this issue yet: pinning it failed (HTTP 500). I'll try again when the list changes, or pin it by hand.",
+			[]string{"POST /graphql", "PATCH /issues/1"}},
+		// A 404 from /graphql itself isn't the digest gone either (#428).
+		{http.StatusNotFound, "I couldn't pin this issue yet: pinning it failed (HTTP 404). I'll try again when the list changes, or pin it by hand.",
 			[]string{"POST /graphql", "PATCH /issues/1"}},
 	} {
 		t.Run(http.StatusText(tc.status), func(t *testing.T) {
