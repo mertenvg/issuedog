@@ -62,10 +62,10 @@ func triageDecode(raw json.RawMessage) (triageOutput, error) {
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
 	if err := d.Decode(&out); err != nil {
-		return triageOutput{}, fmt.Errorf("decode triage output: %w", err)
+		return triageOutput{}, &daemonCause{fmt.Errorf("decode triage output: %w", err)}
 	}
 	if out.Verdict != triageHandle && out.Verdict != triageLeave {
-		return triageOutput{}, fmt.Errorf("decode triage output: unknown verdict %q", out.Verdict)
+		return triageOutput{}, &daemonCause{fmt.Errorf("decode triage output: unknown verdict %q", out.Verdict)}
 	}
 	return out, nil
 }

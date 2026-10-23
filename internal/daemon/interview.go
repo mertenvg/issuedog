@@ -96,7 +96,7 @@ func decodeInterview(raw json.RawMessage) (interviewOutput, error) {
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
 	if err := d.Decode(&out); err != nil {
-		return interviewOutput{}, fmt.Errorf("decode interviewer output: %w", err)
+		return interviewOutput{}, &daemonCause{fmt.Errorf("decode interviewer output: %w", err)}
 	}
 	return out, nil
 }

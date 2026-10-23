@@ -425,7 +425,7 @@ func TestPlannerCheckFailsAttempt(t *testing.T) {
 				t.Fatal(err)
 			}
 			after := commentBodies(f, n)
-			if l := g.lease(); g.runs() != 1 || !l.Failed || l.Attempt != 1 || !strings.Contains(l.LastFailure, tt.rule) {
+			if l := g.lease(); g.runs() != 1 || !l.Failed || l.Attempt != 1 || !strings.Contains(l.PublicFailure, tt.rule) {
 				t.Errorf("after %d runs, lease %+v; want one failed attempt, its last failure naming %q", g.runs(), l, tt.rule)
 			}
 			if len(after) != len(before)+1 {

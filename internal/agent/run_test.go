@@ -131,10 +131,14 @@ func TestRunFailures(t *testing.T) {
 		wantErr string
 		wantOut string
 		setup   bool // a *SetupError, not the agent's failure
+		// public: a *PublicCauseError, which a public comment may quote
+		// (SPEC §5.3): only the timeout, named from s.Timeout, where the
+		// context's error would only say "context deadline exceeded".
+		public bool
 	}{
 		{name: "non-zero exit", mode: "fail", wantErr: "exit status 1", wantOut: "error_max_turns"},
-		{name: "timeout", mode: "hang", wantErr: "deadline exceeded"},
-		{name: "timeout with credential", mode: "hang", cred: currentUser(), wantErr: "deadline exceeded"},
+		{name: "timeout", mode: "hang", wantErr: "running claude: run timed out after 300ms", public: true},
+		{name: "timeout with credential", mode: "hang", cred: currentUser(), wantErr: "running claude: run timed out after 300ms", public: true},
 		{name: "run ID with a path", mode: "success", runID: "../run-1", wantErr: "invalid run ID", setup: true},
 		{name: "empty run ID", mode: "success", runID: "", wantErr: "invalid run ID", setup: true},
 		{name: "no environment", mode: "success", wantErr: "no agent environment", setup: true},
@@ -168,6 +172,10 @@ func TestRunFailures(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("err = %v, want one containing %q", err, tt.wantErr)
 			}
+			var pc *PublicCauseError
+			if errors.As(err, &pc) != tt.public {
+				t.Errorf("err = %v, a *PublicCauseError: %t, want %t", err, !tt.public, tt.public)
+			}
 			var setup *SetupError
 			if errors.As(err, &setup) != tt.setup {
 				t.Errorf("err = %v, a *SetupError: %t, want %t", err, !tt.setup, tt.setup)
@@ -187,6 +195,22 @@ func TestRunFailures(t *testing.T) {
 			waitChildDead(t, s.Dir)
 		})
 	}
+}
+
+// A run the caller's context ends, as when the daemon stops, fails with the
+// caller's error, not as the stage's timeout, so it's no *PublicCauseError
+// naming one.
+func TestRunCallerDeadlineIsNoTimeout(t *testing.T) {
+	t.Parallel()
+	r, s := fakeRun(t, "hang", nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	_, err := r.Run(ctx, s)
+	var pc *PublicCauseError
+	if !errors.Is(err, context.DeadlineExceeded) || errors.As(err, &pc) {
+		t.Errorf("err = %v; want the caller's deadline, not the stage's timeout", err)
+	}
+	waitChildDead(t, s.Dir)
 }
 
 func TestRunKillsLeftovers(t *testing.T) {

@@ -83,7 +83,8 @@ func (e *SetupError) Unwrap() error { return e.Err }
 // StateDir/runs/<run-id>.json before returning it. A run that times out or
 // exits non-zero fails, and so does one whose result can't be saved; its
 // output is returned with the error, unsaved, so the caller can still match
-// usage limits (SPEC §3.3). A failure before claude starts is a *SetupError.
+// usage limits (SPEC §3.3). A timeout's error wraps a *PublicCauseError
+// naming s.Timeout. A failure before claude starts is a *SetupError.
 func (r *Runner) Run(ctx context.Context, s Stage) ([]byte, error) {
 	if filepath.Base(s.RunID) != s.RunID || strings.HasPrefix(s.RunID, ".") {
 		return nil, &SetupError{fmt.Errorf("invalid run ID %q", s.RunID)}
@@ -96,7 +97,10 @@ func (r *Runner) Run(ctx context.Context, s Stage) ([]byte, error) {
 	if err != nil {
 		return nil, &SetupError{fmt.Errorf("reading the prompt: %w", err)}
 	}
-	ctx, cancel := context.WithTimeout(ctx, s.Timeout)
+	// The timeout's cause names it from config, in the daemon's words, so a
+	// public comment may quote it (SPEC §5.3), where the context's own
+	// error would only say a deadline passed.
+	ctx, cancel := context.WithTimeoutCause(ctx, s.Timeout, &PublicCauseError{fmt.Sprintf("run timed out after %s", s.Timeout)})
 	defer cancel()
 
 	var stdout bytes.Buffer
@@ -113,7 +117,9 @@ func (r *Runner) Run(ctx context.Context, s Stage) ([]byte, error) {
 	}
 	err = cmd.Wait()
 	if err != nil && ctx.Err() != nil {
-		err = ctx.Err() // the timeout, rather than "signal: killed"
+		// The timeout, rather than "signal: killed", or the caller's
+		// cancellation, whose cause is its own.
+		err = context.Cause(ctx)
 	}
 	if cmd.Process != nil {
 		err = errors.Join(err, r.cleanup(cmd.Process.Pid))
