@@ -103,8 +103,8 @@ func phase1PinPagedAPI(t *testing.T, members []string, perPage int) (*gogithub.C
 
 // TestPhase1PinTeamMembersPaged: a CODEOWNERS team of more members than
 // one page holds has each page read, so a member on the second page is
-// trusted as one on the first is. The pages are read in order, and no
-// further once the last has no next link.
+// trusted as one on the first is. The pages are read in order, the first
+// with no page or page 1, and no further once the last has no next link.
 func TestPhase1PinTeamMembersPaged(t *testing.T) {
 	t.Parallel()
 	var members []string
@@ -115,7 +115,9 @@ func TestPhase1PinTeamMembersPaged(t *testing.T) {
 	api, pages := phase1PinPagedAPI(t, members, 100)
 	check(t, fakeFiles{"CODEOWNERS": "/CODEOWNERS @acme/core\n"}, api,
 		map[string]bool{"m000": true, "m099": true, "zed": true, "stranger": false})
-	if got := pages(); len(got) != 2 || got[0] != "" || got[1] != "2" {
+	// The first request may leave page out or ask for page 1: both are
+	// GitHub's first page.
+	if got := pages(); len(got) != 2 || (got[0] != "" && got[0] != "1") || got[1] != "2" {
 		t.Errorf("the members requests asked for the pages %q; want the first, then 2", got)
 	}
 }

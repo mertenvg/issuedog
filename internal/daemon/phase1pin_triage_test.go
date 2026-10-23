@@ -3,6 +3,7 @@ package daemon_test
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
@@ -14,11 +15,16 @@ import (
 // step 1 on the flagged issue to read its flag's reactions. With nothing
 // changed, that pass writes nothing, and every read it makes is a
 // conditional GET that GitHub answers 304, the flag's reactions among them.
-// eve's 👍, untrusted, takes nothing and costs no permission read. Once
-// owner 👍s the flag, the next pass takes the recommendation.
+// eve's 👍, untrusted, takes nothing and costs no permission read, in that
+// pass or any before it. Once owner 👍s the flag, the next pass takes the
+// recommendation.
 func TestPhase1PinUnchangedTriageAsk(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
+	// eve has read access, so a read of her permission would be a 200 that
+	// a later pass repeats as a 304, which the unchanged pass's check of
+	// its reads alone would let through.
+	f.SetPermission("eve", "read")
 	n := f.AddIssue("owner", "Odd export", "The export looks odd.")
 	flag := f.AddComment(n, app, digestRunFlag(n, "Export format"))
 	f.AddLabel(n, app, "triage:ask")
@@ -49,6 +55,14 @@ func TestPhase1PinUnchangedTriageAsk(t *testing.T) {
 	}
 	if got := ivLabels(f, n); !slices.Equal(got, []string{"triage:ask"}) {
 		t.Fatalf("labels %v after eve's 👍; want only triage:ask", got)
+	}
+	// CODEOWNERS names only owner, so eve is untrusted (SPEC §6.1) with no
+	// need to ask GitHub her role: no pass so far, the unchanged one among
+	// them, reads any permission.
+	if i := slices.IndexFunc(f.Requests(), func(r githubtest.Request) bool {
+		return strings.HasPrefix(r.Path, "/collaborators/") && strings.HasSuffix(r.Path, "/permission")
+	}); i >= 0 {
+		t.Errorf("request %+v before owner's 👍; want no permission read, as eve's 👍 costs none", f.Requests()[i])
 	}
 
 	f.AddReaction(flag, "owner", "+1")

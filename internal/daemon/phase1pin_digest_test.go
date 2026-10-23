@@ -103,9 +103,12 @@ func TestPhase1PinDigestDisagreement(t *testing.T) {
 // TestPhase1PinDigestTransition: mertenvg holds a parent and its child,
 // then removes the child's type, and /resumes the parent. The table has no
 // row back for an untyped issue, so the /resume posts the child's state
-// error, keyed by the command, and the child stays held. The child, which
-// the command wrote to, is read again on the next pass, which lists the
-// error in the digest and announces it.
+// error, keyed by the command, and the child stays held. The next pass
+// lists the error in the digest and announces it. That pass reads the
+// child again both because the command touched it and because its new
+// comment puts it in the poll, so this test doesn't show which. The
+// touch's own re-read is pinned by tests whose touched issue the poll
+// doesn't list.
 func TestPhase1PinDigestTransition(t *testing.T) {
 	t.Parallel()
 	f := phase1PinFake(t)
