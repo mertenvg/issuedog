@@ -41,12 +41,12 @@ func TestDigestRestartLeaveCachedOnly(t *testing.T) {
 	}
 }
 
-// The poll after the digest is dropped lists every issue again, and counts
-// as a start's first for the issues it lists as changed alone: one it
-// lists unchanged since its last read keeps its items cached, and isn't
-// marked (SPEC §9.4). The passes after write nothing, and an unchanged one
-// asks only for 304s.
-func TestDigestRestartDropChangedOnly(t *testing.T) {
+// The poll after the digest is dropped lists every issue again, but it
+// isn't a start's first: digestDrop keeps the items cached, so it marks
+// neither the issue it lists as changed nor the one it lists unchanged
+// since its last read (SPEC §9.4). The passes after write nothing, and an
+// unchanged one asks only for 304s.
+func TestDigestRestartDropMarksNone(t *testing.T) {
 	t.Parallel()
 	f := githubtest.New(t, "o/r", "issuedog")
 	f.SetPermission("owner", "admin")
@@ -74,8 +74,9 @@ func TestDigestRestartDropChangedOnly(t *testing.T) {
 	if err := d.poll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !d.digestRestartUnknown[changed] || d.digestRestartUnknown[unchanged] {
-		t.Errorf("unknown %v after the poll that lists every issue again; want #%d alone, which changed", d.digestRestartUnknown, changed)
+	if !d.stale[changed] || d.digestRestartUnknown[changed] || d.digestRestartUnknown[unchanged] {
+		t.Errorf("stale %v, unknown %v after the poll that lists every issue again; want #%d stale, which changed, and neither unknown",
+			d.stale, d.digestRestartUnknown, changed)
 	}
 	writes := len(f.Writes())
 	for range 2 {

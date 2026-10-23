@@ -66,6 +66,12 @@ type Daemon struct {
 	polled        time.Time // when the last poll began
 	relabel       bool      // a reload added models whose labels aren't created yet
 
+	// startPolled is set once the start's first poll has listed the
+	// issues. The poll after digestDrop lists every issue again too, but
+	// isn't the start's: only the start's applies its rules (closingList,
+	// digestRestartList).
+	startPolled bool
+
 	// digestRestartUnknown are the issues the digest may list items for
 	// that digestCache doesn't hold: each the start's first poll listed
 	// open, and each a poll listed closed with items cached, till step 1
@@ -442,13 +448,14 @@ func (d *Daemon) reload(ctx context.Context) {
 // missed.
 func (d *Daemon) poll(ctx context.Context) error {
 	a := d.Step.Applier
-	start := d.issuesSince.IsZero() // a start's first poll, which lists every issue
+	start := !d.startPolled // a start's first poll, which lists every issue
 	for range 2 {
 		since := d.issuesSince
 		issues, err := a.Client.IssuesSince(ctx, a.Owner, a.Repo, since)
 		if err != nil {
 			return fmt.Errorf("poll issues: %w", err)
 		}
+		d.startPolled = true
 		for _, is := range issues {
 			d.issuesSince = latest(d.issuesSince, is.GetUpdatedAt().Time)
 			n := is.GetNumber()

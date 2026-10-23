@@ -28,11 +28,11 @@ import (
 // snapshot read on such a pass. On a later pass, an issue has items
 // cached, or was first listed after the start, so the digest never listed
 // it, as a child a plan just filed, and it's read no more often than
-// before, but for one whose visits have failed since the start, and each
-// issue the poll after digestDrop lists as changed, or new: that poll
-// lists every issue again, so it counts as a start's first for those
-// (digestRestartList). One it lists unchanged since its last read stays
-// as it was, marked or not, as above. An unchanged pass touches nothing.
+// before, but for one whose visits have failed since the start. The poll
+// after digestDrop lists every issue again, but it isn't a start's first:
+// digestDrop keeps digestCache, so the items stay cached, and it marks no
+// issue (digestRestartList), changed or not. Each stays as it was, marked
+// or not, as above. An unchanged pass touches nothing.
 //
 // A close the poll lists drops the issue's items too (Daemon.leave),
 // though the digest's body, as last written, lists them. So an issue the
@@ -99,8 +99,9 @@ func (d *Daemon) digestRestartRead(ctx context.Context, n int, touches *digestRe
 
 // digestRestartList records open issue n, which the poll listed as
 // changed, as one whose items aren't cached, if the poll is the start's
-// first, start, which lists every issue, as the first after digestDrop
-// counts too.
+// first, start, which lists every issue. The poll after digestDrop lists
+// every issue again too, but isn't the start's (Daemon.startPolled): the
+// items it would mark are cached still.
 func (d *Daemon) digestRestartList(n int, start bool) {
 	if !start {
 		return
