@@ -646,12 +646,18 @@ const ivWordingStrongChars = `\*_[]~`
 // length in the text closes, as CommonMark reads it, is kept as it is:
 // its text is literal, and it ends before the App's "**". Any other
 // backtick run is escaped, so it can't open a span that runs past them.
+// A bare URL outside a code span (ivWordingURL) keeps its
+// ivWordingURLChars unescaped, so GitHub links it whole (#399).
 // The text reads as typed: only its own emphasis and links don't render.
 func ivWordingStrong(s string) string {
 	var b strings.Builder
+	url := 0 // the end of the bare URL that s[i] is in, while i is below it
 	for i := 0; i < len(s); {
 		if s[i] != '`' {
-			if strings.IndexByte(ivWordingStrongChars, s[i]) >= 0 {
+			if i >= url {
+				url = ivWordingURL(s, i)
+			}
+			if strings.IndexByte(ivWordingStrongChars, s[i]) >= 0 && (i >= url || strings.IndexByte(ivWordingURLChars, s[i]) < 0) {
 				b.WriteByte('\\')
 			}
 			b.WriteByte(s[i])
@@ -680,6 +686,75 @@ func ivWordingStrong(s string) string {
 		i = end
 	}
 	return b.String()
+}
+
+// ivWordingURLChars are the characters of ivWordingStrongChars that a bare
+// URL keeps unescaped (ivWordingStrong): a backslash before one would cut
+// GitHub's link short, and neither can close the App's "**". An "_" or "~"
+// pairs only with its own kind, and the App's close pairs with its open
+// first, which drops any "_" or "~" left open between them. The URL's "*",
+// "\", "[" and "]" stay escaped, as an issue title's "[", "]" and "\" are
+// (digestRenderTitle): a bare "*" can close the App's bold where a parser
+// ends the link before it, and "[" and "]" can make a link or an image
+// where a parser reads them before the URL, so those still cut it short.
+const ivWordingURLChars = "_~"
+
+// ivWordingURLRE starts a bare URL that GFM links (its "Autolinks
+// (extension)"): "http://" or "https://", in any case, or "www.".
+var ivWordingURLRE = regexp.MustCompile(`^(?:(?i:https?://)|www\.)`)
+
+// ivWordingURL returns the end of the bare URL that starts at s[i], as GFM
+// links it, or 0 if none does. One starts with ivWordingURLRE at the start
+// of s, or after a space, a tab, "*", "_", "~" or "(", and runs to the next
+// space, control character or "<". GFM then leaves trailing punctuation out
+// of the link: each "?", "!", ".", ",", ":", "*", "_", "~", "'" and "\"" at
+// the end, a ")" with more ")" than "(" before it, and a ";", with the
+// entity it ends, if it ends one, such as "&amp;". A URL with nothing left
+// after its start is none.
+func ivWordingURL(s string, i int) int {
+	if i > 0 && strings.IndexByte(" \t*_~(", s[i-1]) < 0 {
+		return 0
+	}
+	m := ivWordingURLRE.FindStringIndex(s[i:])
+	if m == nil {
+		return 0
+	}
+	start, end := i+m[1], i+m[1]
+	for end < len(s) && s[end] > ' ' && s[end] != '<' && s[end] != 0x7f {
+		end++
+	}
+	for end > start {
+		c := s[end-1]
+		switch {
+		case strings.IndexByte(`?!.,:*_~'"`, c) >= 0:
+			end--
+			continue
+		case c == ')' && strings.Count(s[i:end], ")") > strings.Count(s[i:end], "("):
+			end--
+			continue
+		case c == ';':
+			j := end - 1
+			for j > start && ivWordingAlnum(s[j-1]) {
+				j--
+			}
+			if j < end-1 && j > start && s[j-1] == '&' {
+				end = j - 1
+			} else {
+				end--
+			}
+			continue
+		}
+		break
+	}
+	if end == start {
+		return 0
+	}
+	return end
+}
+
+// ivWordingAlnum reports whether c is an ASCII letter or digit.
+func ivWordingAlnum(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
 }
 
 // ivWordingTicks is the length of the backtick run that starts at s[i].
