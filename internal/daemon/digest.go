@@ -777,12 +777,14 @@ func (d *Daemon) digestPin(ctx context.Context, n int, items []waitItem) error {
 // digestPinFailed records that digest n's pin check or pin failed with
 // err, other than by GitHub's refusal, as what says: it's logged, and the
 // note names it (digestPinFailNote), for the rewrite to write and for
-// digestPin to try again on a pass that writes the body anyway.
+// digestPin to try again on a pass that writes the body anyway. The note
+// is digest n's alone, so pinned no longer names another digest, whose
+// body noteOf would give it to.
 func (d *Daemon) digestPinFailed(n int, err error, what string) {
 	a, g := d.Step.Applier, &d.digest
 	logr.Errorf("pinning %s/%s#%d, the digest, failed, so its body says so, and a pass that changes it tries again: %s: %v",
 		a.Owner, a.Repo, n, what, err)
-	g.pinFailed, g.note = n, digestPinFailNote(err, what)
+	g.pinned, g.pinFailed, g.note = 0, n, digestPinFailNote(err, what)
 }
 
 // digestPinFailNote is the pin note for a pin check or pin that failed
@@ -799,12 +801,19 @@ func digestPinFailNote(err error, what string) string {
 	return digestPinPrefix + " yet: " + what + ". I'll try again when the list changes, or pin it by hand."
 }
 
+// digestPinNoteMax is the most characters of GitHub's message the pin note
+// names, its end cut and marked with "…" when longer (SPEC §9.4), so the
+// note stays one short line.
+const digestPinNoteMax = 200
+
 // digestPinNote is the pin note naming GitHub's message in err, a pin's
 // error that wraps github.ErrGraphQL, or github.ErrNotPinned's text for one
-// that wraps that. GitHub wrote the message, not the App, so it's escaped
-// (SPEC §5.1), and kept to one code span. For an HTTP 401 or 403, which
-// PinIssue takes as a refusal too (#226), it's the status and GitHub's
-// message from its answer, without the URL go-github's error names.
+// that wraps that. For an HTTP 401 or 403, which PinIssue takes as a
+// refusal too (#226), it's the status and GitHub's message from its
+// answer, without the URL go-github's error names. The message is cut to
+// digestPinNoteMax characters, on a character's boundary. GitHub wrote it,
+// not the App, so it's escaped (SPEC §5.1), and kept to one code span,
+// after the cut, so the cut can't leave half an escape.
 func digestPinNote(err error) string {
 	msg := err.Error()
 	if _, after, ok := strings.Cut(msg, github.ErrGraphQL.Error()+": "); ok {
@@ -819,6 +828,9 @@ func digestPinNote(err error) string {
 	}
 	if errors.Is(err, github.ErrNotPinned) {
 		msg = github.ErrNotPinned.Error()
+	}
+	if r := []rune(msg); len(r) > digestPinNoteMax {
+		msg = string(r[:digestPinNoteMax-1]) + "…"
 	}
 	msg = strings.ReplaceAll(github.Escape(text(msg)), "`", "'")
 	return digestPinPrefix + ": `" + msg + "`. Pin it by hand."
