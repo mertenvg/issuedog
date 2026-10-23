@@ -194,14 +194,35 @@ func TestRunFailures(t *testing.T) {
 	}
 }
 
-// TestRunWaitDelay: claude's WaitDelay is 5s unless a test sets another.
-func TestRunWaitDelay(t *testing.T) {
+// TestRunCommandSetup: the command Run starts gets the stage's directory and
+// environment, the output and stderr writers, its own process group and a
+// Cancel, and a WaitDelay of 5s, or the one a test sets.
+func TestRunCommandSetup(t *testing.T) {
 	t.Parallel()
-	if got := (&Runner{}).cmdWaitDelay(); got != 5*time.Second {
-		t.Errorf("WaitDelay = %v, want 5s", got)
-	}
-	if got := (&Runner{waitDelay: time.Hour}).cmdWaitDelay(); got != time.Hour {
-		t.Errorf("WaitDelay with an hour set = %v, want 1h", got)
+	s := Stage{Dir: "/work", Env: []string{"A=1"}}
+	var stdout, stderr bytes.Buffer
+	for _, tt := range []struct {
+		name      string
+		waitDelay time.Duration
+		want      time.Duration
+	}{
+		{name: "default", want: 5 * time.Second},
+		{name: "an hour set", waitDelay: time.Hour, want: time.Hour},
+	} {
+		r := &Runner{Claude: "/nonexistent/claude", Stderr: &stderr, waitDelay: tt.waitDelay}
+		cmd := r.command(context.Background(), s, "p", &stdout)
+		if cmd.WaitDelay != tt.want {
+			t.Errorf("%s: WaitDelay = %v, want %v", tt.name, cmd.WaitDelay, tt.want)
+		}
+		if cmd.Cancel == nil {
+			t.Errorf("%s: Cancel is nil, want the group kill", tt.name)
+		}
+		if cmd.Dir != s.Dir || !slices.Equal(cmd.Env, s.Env) || cmd.Stdout != &stdout || cmd.Stderr != &stderr {
+			t.Errorf("%s: Dir %q, Env %q, Stdout %p, Stderr %p; want %q, %q, %p, %p", tt.name, cmd.Dir, cmd.Env, cmd.Stdout, cmd.Stderr, s.Dir, s.Env, &stdout, &stderr)
+		}
+		if a := cmd.SysProcAttr; a == nil || !a.Setpgid {
+			t.Errorf("%s: SysProcAttr = %+v, want its own process group", tt.name, a)
+		}
 	}
 }
 
