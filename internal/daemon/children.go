@@ -46,7 +46,8 @@ import (
 //   - links it under the parent if it isn't a sub-issue of it yet
 //     (AddSubIssue);
 //   - gives it its first move, intake → its first stage on TriggerCreated,
-//     keyed event=p<P> (SPEC §5, §7.2), unless it has a
+//     or for a held one, held → held with that stage as its hold's at and
+//     origin, keyed event=p<P> (SPEC §5, §7.2), unless it has a
 //     transition marker of the App's already (childFirstMove).
 //
 // Then it rewrites each changed item's child from R and sends it back to
