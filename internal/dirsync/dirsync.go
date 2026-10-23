@@ -25,7 +25,7 @@ func Sync(dir string) error {
 func openDir(path string) (dirHandle, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("opening the directory: %w", err)
 	}
 	return f, nil
 }
