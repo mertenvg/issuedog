@@ -1232,27 +1232,38 @@ func resolveFields(h state.HeldStack, resolved time.Time) map[string]string {
 }
 
 // resolveHeldAfterHold returns the origin of the clarifying after a hold
-// that is, held, was at when its hold began, if it was at one: the origin
-// the transition before the move into held carries (state.Issue.AfterHold).
-// A /resume back there carries it forward (resume). A held → held marker
-// with no hold before it, as discRestore's when an edit or a deletion hid
-// the move into held, is that move.
+// that is, held, was at when its hold began, if it was at one, and its
+// hold's at is still that clarifying: the origin the transition before the
+// move into held carries (state.Issue.AfterHold). A /resume back there
+// carries it forward (resume). A held → held marker with no hold before
+// it, as discRestore's when an edit or a deletion hid the move into held,
+// is that move, and each held → held marker after it leaves the move
+// before the hold as it was. A move to closed isn't the one before the
+// hold: a trusted reopen of the App's own close holds the issue at the
+// stage the close came from (closingReopen), so the move before the close
+// is, as for a dropped child closed from the clarifying after a hold
+// (droppedOne). Once a parent's revision has changed the hold's at, by a
+// held → held marker with no reason (SPEC §6.4), /resume goes to that
+// stage, which isn't the clarifying after a hold, and carries no origin:
+// only the interviewer's move out of that clarifying does (SPEC §7.2,
+// Skipping plan review).
 func resolveHeldAfterHold(is state.Issue) (state.Stage, bool) {
 	var before, last github.Marker
-	held := false
 	for _, m := range is.Markers {
 		if _, bounds := state.RoundBound(m, 0); !bounds {
 			continue
 		}
-		switch {
-		case state.Stage(m.Fields["to"]) != state.Held:
-			last, held = m, false
-		case !held || state.Stage(m.Fields["from"]) != state.Held:
-			before, held = last, true
+		switch state.Stage(m.Fields["to"]) {
+		case state.Held:
+			before = last
+		case state.Closed:
+			// The App's own close: the move before it stays the last.
+		default:
+			last = m
 		}
 	}
 	o := state.Stage(before.Fields["origin"])
-	return o, state.Stage(before.Fields["to"]) == state.Clarifying && o.Open() && o != state.Held
+	return o, is.HeldStack.At == state.Clarifying && state.Stage(before.Fields["to"]) == state.Clarifying && o.Open() && o != state.Held
 }
 
 // resolveIntake reports whether h, the holds on an issue, began at intake:
