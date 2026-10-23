@@ -174,7 +174,7 @@ func TestIvHoldUnchanged(t *testing.T) {
 		t.Errorf("the unchanged move =\n%s\nwant it to start\n%s", body, text)
 	}
 	ivHoldFields(t, ivHoldMove(t, body), map[string]string{"from": "clarifying", "to": "spec-review", "run": "run1", "origin": "spec-review",
-		"rev": "", "cmd": "", "round": ""})
+		"rev": "", "cmd": "", "round": "", "replan": ""})
 	if l := ivLabels(f, 1); !slices.Equal(l, []string{"stage:spec-review", "type:epic"}) || g.runs() != 1 {
 		t.Errorf("labels %q after %d runs; want spec-review after one", l, g.runs())
 	}
@@ -815,7 +815,8 @@ func TestIvHoldPlanning(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := newestComment(f, 1)
-	ivHoldFields(t, ivHoldMove(t, body), map[string]string{"from": "clarifying", "to": "planning", "run": "run1", "origin": "planning", "cmd": "", "rev": ""})
+	ivHoldFields(t, ivHoldMove(t, body), map[string]string{"from": "clarifying", "to": "planning", "run": "run1", "origin": "planning", "cmd": "", "rev": "",
+		"replan": ""})
 	if want := "Nothing in the discussion during the hold changes this issue, so it goes back to `planning`.\n\n<!-- issuedog:transition "; !strings.HasPrefix(body, want) {
 		t.Errorf("the move =\n%s\nwant it to start %q", body, want)
 	}
@@ -902,7 +903,8 @@ func TestIvHoldPlan(t *testing.T) {
 			if !strings.HasPrefix(body, ivPlanText) {
 				t.Errorf("the plan move =\n%s\nwant it to start\n%s", body, ivPlanText)
 			}
-			want := map[string]string{"from": "clarifying", "to": "planning", "run": "run1", "origin": tt.origin, "rev": "", "body": "", "cmd": ""}
+			want := map[string]string{"from": "clarifying", "to": "planning", "run": "run1", "origin": tt.origin, "rev": "", "body": "", "cmd": "",
+				"replan": "1"}
 			if tt.revise {
 				want["cmd"] = strconv.FormatInt(ivHoldFind(t, f, planHoldRevise), 10)
 				planHoldAcked(t, f)
@@ -1048,7 +1050,7 @@ func TestIvHoldPlanPlanner(t *testing.T) {
 			}
 			move := ivHoldFind(t, f, "from=clarifying to=planning")
 			m, counter := ivHoldFind(t, f, planHoldMallory), ivHoldFind(t, f, ivPlanCounter)
-			want := map[string]string{"run": "run1", "origin": origin, "cmd": ""}
+			want := map[string]string{"run": "run1", "origin": origin, "cmd": "", "replan": "1"}
 			if review {
 				want["cmd"] = strconv.FormatInt(ivHoldFind(t, f, planHoldRevise), 10)
 				planHoldAcked(t, f)
@@ -1143,7 +1145,8 @@ func TestIvHoldParentStory(t *testing.T) {
 			if l := ivLabels(f, 1); !slices.Equal(l, tt.labels) || g.runs() != 1 {
 				t.Errorf("labels %q after %d runs; want %q after one", l, g.runs(), tt.labels)
 			}
-			ivHoldFields(t, ivHoldMove(t, newestComment(f, 1)), map[string]string{"from": "clarifying", "to": tt.to, "run": "run1", "origin": "planning"})
+			ivHoldFields(t, ivHoldMove(t, newestComment(f, 1)), map[string]string{"from": "clarifying", "to": tt.to, "run": "run1", "origin": "planning",
+				"replan": ""})
 		})
 	}
 }
@@ -1194,5 +1197,51 @@ func TestIvHoldParentStoryTyped(t *testing.T) {
 	}
 	if l := g.lease(); g.runs() != 1 || !l.Failed || l.Attempt != 1 || l.ApplyFailures != 0 {
 		t.Errorf("after %d runs, lease %+v; want one failed attempt", g.runs(), l)
+	}
+}
+
+// #340: a story with a parent held for discussion from planning, whose
+// discussion the interviewer ends with unchanged, goes back to planning
+// with origin, as a plan outcome does, but the planner's run that follows
+// has no notes from the interviewer on what the discussion changes in the
+// plan: only a plan outcome's move gives them (SPEC §12). Its plan goes to
+// plan-review, as the move carries origin.
+func TestIvHoldUnchangedPlanner(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	ivPlanStory(t, f, false)
+	g := newRig(t, f, newOrigin(t), t.TempDir())
+	g.planner(false)
+	ivHoldRig(g)
+	if err := os.WriteFile(g.path("claude", "claude"), []byte(wholeRunClaude), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	unchanged := map[string]any{"outcome": "unchanged", "message": "UNCHANGED-NOTE: the plan stands."}
+	for i, out := range []map[string]any{unchanged, plGolden(t, "story-plan")} {
+		if err := os.WriteFile(g.path("claude", "out."+strconv.Itoa(i+1)), []byte(ivResult(t, out)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 3 {
+		if err := g.work(1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if l := ivLabels(f, 1); !slices.Equal(l, []string{"stage:plan-review", "type:story"}) || g.runs() != 2 {
+		t.Fatalf("labels %q after %d runs; want plan-review after the interviewer's run and the planner's", l, g.runs())
+	}
+	move := ivHoldFind(t, f, "from=clarifying to=planning")
+	var moveBody string
+	for _, c := range ivHoldComments(t, f) {
+		if c.ID == move {
+			moveBody = c.Body
+		}
+	}
+	ivHoldFields(t, ivHoldMove(t, moveBody), map[string]string{"run": "run1", "origin": "planning", "replan": ""})
+	in := g.file("ctx.2/input.md")
+	for _, w := range []string{"the interviewer's move to planning after a discussion hold", "what the discussion changes in the plan", "UNCHANGED-NOTE"} {
+		if strings.Contains(in, w) {
+			t.Errorf("the planner's input.md has %q after unchanged, want no notes from the interviewer:\n%s", w, in)
+		}
 	}
 }

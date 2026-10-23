@@ -602,7 +602,8 @@ const planChangedNotes = "PLAN-NOTES: move T1 after T2."
 // counter comment and /revise, the end of the hold, and the interviewer's
 // move to planning, which names the /revise. With round, an interviewer
 // round names the /revise instead, the owner answers it, and the move
-// after names none.
+// after names none. The move has no replan=1, as one written before the
+// field was added (SPEC §5): its origin, plan-review, shows it's plan.
 func planChanged(f *githubtest.Fake, round bool) planChangedIDs {
 	var p planChangedIDs
 	p.n = f.AddIssue("owner", "Quotes", "The spec.")
@@ -691,6 +692,73 @@ func TestPlannerContextAfterPlanChange(t *testing.T) {
 			}
 			ivOnlyIn(t, files, "Should T1 come later?", "input.md")
 			ivOnlyIn(t, files, "EVE-WORDS", "untrusted.md")
+		})
+	}
+}
+
+// planFromPlanning files owner's story "Quotes", with no parent, at
+// planning after a discussion hold from planning: mallory's comment, which
+// holds it, the owner's 👍 on it, the owner's counter comment, the end of
+// the hold, and the interviewer's move back to planning, with text and
+// the marker's fields after origin. It returns the issue's number and the
+// move's comment.
+func planFromPlanning(f *githubtest.Fake, text, fields string) (int, int64) {
+	n := f.AddIssue("owner", "Quotes", "The spec.")
+	f.AddLabel(n, "owner", "type:story")
+	f.AddLabel(n, app, "stage:planning")
+	entry := f.AddComment(n, app, "Moved.\n\n<!-- issuedog:transition "+plEntry+" -->")
+	mallory := f.AddComment(n, "mallory", "Should T1 come later?")
+	held := f.AddComment(n, app, fmt.Sprintf("Held.\n\n<!-- issuedog:transition from=planning to=held at=planning origin=planning "+
+		"reason=discussion event=c%d seen=%d -->", mallory, entry))
+	f.AddReaction(mallory, "owner", "+1")
+	counter := f.AddComment(n, "owner", "Yes, move T1 after T2.")
+	f.AddComment(n, app, fmt.Sprintf("Resolved.\n\n<!-- issuedog:transition from=held to=clarifying at=planning origin=planning "+
+		"event=h%d seen=%d -->", held, entry))
+	move := f.AddComment(n, app, fmt.Sprintf("%s\n\n<!-- issuedog:transition from=clarifying to=planning run=iv2 origin=planning%s seen=%d -->",
+		text, fields, counter))
+	return n, move
+}
+
+// TestPlannerContextFromPlanning (#340): after a hold from planning, the
+// interviewer's unchanged and plan outcomes both move the issue clarifying
+// → planning with run= and origin=, and only the plan move's replan=1
+// tells them apart (SPEC §5). After plan, input.md has the interviewer's
+// notes on what the discussion changes in the plan and the discussion's
+// owner input; after unchanged, it has neither. A plan move written before
+// replan was added reads as unchanged there, and replan=1 counts only in
+// the App's marker: the owner's copy of the move's marker, replan=1 added,
+// gives no notes.
+func TestPlannerContextFromPlanning(t *testing.T) {
+	t.Parallel()
+	const (
+		unchanged = "Nothing in the discussion during the hold changes this issue, so it goes back to `planning`."
+		plan      = "The discussion during the hold changes this issue's plan, but not its spec, so it goes to `planning`.\n\nPLAN-NOTES"
+		heading   = "the interviewer's move to planning after a discussion hold, whose message is its notes on what the discussion changes in the plan"
+		owned     = "so it's owner input"
+	)
+	for _, tt := range []struct {
+		name, text, fields string
+		copied             bool // the owner posts a copy of the move's marker with replan=1
+		notes              bool
+	}{
+		{"plan", plan, " replan=1", false, true},
+		{"unchanged", unchanged, "", false, false},
+		{"plan written before replan", plan, "", false, false},
+		{"unchanged with the owner's copy of its marker", unchanged, "", true, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFake(t)
+			n, move := planFromPlanning(f, tt.text, tt.fields)
+			if tt.copied {
+				f.AddComment(n, "owner", fmt.Sprintf("<!-- issuedog:transition from=clarifying to=planning run=iv2 origin=planning replan=1 seen=%d -->", move))
+			}
+			in := planContext(t, ivDaemon(t, f, newOrigin(t)), n)["input.md"]
+			for _, w := range []string{fmt.Sprintf("## Comment %d by issuedog[bot]: %s", move, heading), owned} {
+				if strings.Contains(in, w) != tt.notes {
+					t.Errorf("input.md has %q: %t, want %t:\n%s", w, !tt.notes, tt.notes, in)
+				}
+			}
 		})
 	}
 }

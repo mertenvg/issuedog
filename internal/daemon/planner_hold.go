@@ -31,12 +31,28 @@ type plannerHold struct {
 	Revise []github.Comment
 }
 
+// ivReplanField is the field the interviewer's plan outcome's move
+// carries, as replan=1, so it's told from its unchanged outcome's move
+// after a hold from planning, the same clarifying → planning with run= and
+// origin= (SPEC §5).
+const ivReplanField = "replan"
+
 // ivPlanChanged reports whether m is the interviewer's plan outcome's
-// move: a run's clarifying → planning, carrying origin. Nothing else moves
-// an issue from clarifying to planning with run= (SPEC §7.2).
+// move: a run's clarifying → planning, carrying origin, with replan=1 or
+// an origin other than planning. Only the interviewer's plan and unchanged
+// outcomes move an issue from clarifying to planning with run= (SPEC
+// §7.2), and unchanged goes back to origin, so its move goes to planning
+// only after a hold from planning, with no replan. A plan move written
+// before the field was added has none either: after a hold from
+// plan-review or planned, its origin still shows it's plan, but after a
+// hold from planning it reads as unchanged, the only thing a move without
+// replan can mean there, so the planner runs without the interviewer's
+// notes (SPEC §12). m is a marker the App wrote, as planEntry and
+// TrustedMarkers read them, so nobody else's replan counts.
 func ivPlanChanged(m github.Marker) bool {
 	return m.Kind == "transition" && m.Fields["run"] != "" && m.Fields["origin"] != "" &&
-		state.Stage(m.Fields["from"]) == state.Clarifying && state.Stage(m.Fields["to"]) == state.Planning
+		state.Stage(m.Fields["from"]) == state.Clarifying && state.Stage(m.Fields["to"]) == state.Planning &&
+		(m.Fields[ivReplanField] == "1" || state.Stage(m.Fields["origin"]) != state.Planning)
 }
 
 // plannerHoldOf returns, for issue s in state is with dirty content d,

@@ -264,7 +264,7 @@ func TestReplanRun(t *testing.T) {
 	added := l.added(epic)
 	planMove := "The discussion during the hold changes this issue's plan, but not its spec, so it goes to `planning`.\n\n" + replanRunNotes +
 		"\n\nThe planner reads these notes and the discussion, and posts a new plan for your 👍.\n\ncc @" + childrenRunOwner +
-		"\n\n<!-- issuedog:transition from=clarifying to=planning origin=planned run=run5 seen="
+		"\n\n<!-- issuedog:transition from=clarifying to=planning origin=planned run=run5 replan=1 seen="
 	if len(added) != 2 || !strings.Contains(added[0], fmt.Sprintf("\n\n<!-- issuedog:transition from=held to=clarifying at=planned origin=planned event=h%d ", hold)) ||
 		!strings.HasPrefix(added[1], planMove) {
 		t.Errorf("the hold resolved: added %q; want the move to clarifying, then the interviewer's to planning", added)
