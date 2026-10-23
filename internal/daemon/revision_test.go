@@ -239,8 +239,9 @@ func TestApprove(t *testing.T) {
 	}
 }
 
-// revisionPass posts a revision on issue 1 with m.
-func revisionPass(t *testing.T, m daemon.Move) func(*githubtest.Fake) error {
+// revisionPass posts a revision on issue 1 with m, and the cc line for
+// notify.
+func revisionPass(t *testing.T, m daemon.Move, notify []string) func(*githubtest.Fake) error {
 	return func(f *githubtest.Fake) error {
 		a, s, err := applier(t, f)
 		if err != nil {
@@ -250,7 +251,7 @@ func revisionPass(t *testing.T, m daemon.Move) func(*githubtest.Fake) error {
 		if err != nil {
 			return err
 		}
-		return a.PostRevision(context.Background(), s, d.Has, m)
+		return a.PostRevision(context.Background(), s, d.Has, m, notify)
 	}
 }
 
@@ -323,7 +324,58 @@ func TestPostRevision(t *testing.T) {
 			outcome{comments: []string{posted(2, "body", "Answered.",
 				"<!-- issuedog:transition from=clarifying to=spec-review rev=2 body="+state.BodyHash("body")+" run=s -->", "")}, labels: atReview}},
 	} {
-		t.Run(tt.name, func(t *testing.T) { check(t, tt.setup, revisionPass(t, tt.m), tt.want) })
+		t.Run(tt.name, func(t *testing.T) { check(t, tt.setup, revisionPass(t, tt.m, nil), tt.want) })
+	}
+}
+
+// ccPosted is posted, with the cc line cc after the revision, last before
+// the markers.
+func ccPosted(cc string, rev int, body, text, move, seen string) string {
+	return strings.Replace(posted(rev, body, text, move, seen), " or any other comment.\n\n", " or any other comment.\n\n"+cc+"\n\n", 1)
+}
+
+// A revision comment's cc line is last, after the revision, as in the App's
+// other comments (SPEC §9), so one with no other text starts with the
+// revision (#332).
+func TestPostRevisionCCLast(t *testing.T) {
+	t.Parallel()
+	atReview := []string{"stage:spec-review"}
+	backAtClarifying := func(more func(testing.TB, *githubtest.Fake)) func(testing.TB) *githubtest.Fake {
+		return review(func(t testing.TB, f *githubtest.Fake) {
+			post(t, f, 1002, app, "<!-- issuedog:transition from=spec-review to=clarifying run=q -->")
+			f.AddLabel(1, app, "stage:clarifying")
+			f.RemoveLabel(1, app, "stage:spec-review")
+			more(t, f)
+		})
+	}
+	move := func(text string) daemon.Move {
+		return daemon.Move{To: state.SpecReview, Trigger: state.TriggerSpecWritten, Key: state.Key{Field: "run", ID: "s"}, Text: text}
+	}
+	transition := "<!-- issuedog:transition from=clarifying to=spec-review rev=2 body=" + state.BodyHash("body") + " run=s -->"
+	for _, tt := range []struct {
+		name  string
+		setup func(testing.TB) *githubtest.Fake
+		m     daemon.Move
+		want  outcome
+	}{
+		{"with a move and no text, the comment starts with the revision and ends with the cc line",
+			backAtClarifying(func(testing.TB, *githubtest.Fake) {}), move(""),
+			outcome{comments: []string{ccPosted("cc @owner @other", 2, "body", "", transition, "")}, labels: atReview}},
+		{"with a move and text, the text, the revision, then the cc line",
+			backAtClarifying(func(testing.TB, *githubtest.Fake) {}), move("Answered."),
+			outcome{comments: []string{ccPosted("cc @owner @other", 2, "body", "Answered.", transition, "")}, labels: atReview}},
+		{"on its own, the cc line after the revision",
+			review(func(t testing.TB, f *githubtest.Fake) { f.EditBody(1, "owner", "body v2") }), daemon.Move{},
+			outcome{comments: []string{ccPosted("cc @owner @other", 2, "body v2", "", "", "1001")}, labels: atReview}},
+		{"with a move and a dirty body, the cc line after why there's no revision",
+			backAtClarifying(func(t testing.TB, f *githubtest.Fake) { f.EditBody(1, "mallory", "body v2") }), move("Answered."),
+			outcome{comments: []string{"Answered.\n\nThere's no revision to approve: the issue description was edited without approval " +
+				"(see the note on it).\n\ncc @owner @other\n\n<!-- issuedog:transition from=clarifying to=spec-review run=s -->"}, labels: atReview}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			check(t, tt.setup, revisionPass(t, tt.m, []string{"owner", "other"}), tt.want)
+		})
 	}
 }
 
@@ -350,7 +402,7 @@ func visitPass(t *testing.T) func(*githubtest.Fake) error {
 		if err := approvePass(t)(f); err != nil {
 			return err
 		}
-		return revisionPass(t, daemon.Move{})(f)
+		return revisionPass(t, daemon.Move{}, nil)(f)
 	}
 }
 

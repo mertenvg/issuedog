@@ -466,8 +466,9 @@ func (w *wholeRun) run() {
 	rev := w.newest("the spec", wholeRunGolden(t, "spec-note", n)+"\n\n"+fmt.Sprintf("**Revision 1** of the spec, `%s`.\n\n"+
 		"- To approve it, react 👍 to this comment, or post `/approve`.\n"+
 		"- To send it back, post `/revise <notes>`, or any other comment.\n\n"+
+		"cc @%s\n\n"+
 		"<!-- issuedog:transition from=clarifying to=spec-review rev=1 body=%s run=run%d seen=%d -->\n"+
-		"<!-- issuedog:revision rev=1 body=%s -->", hash, hash, w.skip+3, a2, hash))
+		"<!-- issuedog:revision rev=1 body=%s -->", hash, wholeRunOwner, hash, w.skip+3, a2, hash))
 	w.labels("the spec", at("spec-review")...)
 	w.quiet("the spec")
 

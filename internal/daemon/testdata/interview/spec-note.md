@@ -6,5 +6,3 @@ Your notes are answered:
 Added, not asked:
 
 - The expiry time is shown on the quote.
-
-cc @mertenvg

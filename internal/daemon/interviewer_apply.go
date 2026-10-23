@@ -258,8 +258,9 @@ func ivFactRounds(s *github.Snapshot, appSlug string, dirty func(int64) bool) []
 //     body=, the hash of the body GitHub returned. Its text is the line
 //     naming whose edit the spec replaced, if the body was dirty
 //     (rewriteReplacedText), the type line when it sets one, the agent's
-//     message (the answers to the revision notes, or what changed), the
-//     decisions added without asking, and the cc line (renderSpecNote).
+//     message (the answers to the revision notes, or what changed), and
+//     the decisions added without asking (renderSpecNote), then the
+//     revision, and last the cc line.
 //     The body is clean after step 2, so it is a normal revision.
 //     - At the clarifying after a discussion hold (#189), an unchanged
 //     outcome's is clarifying → origin on discussion-no-change, with no
@@ -337,7 +338,7 @@ func (iv *Interviewer) Apply(ctx context.Context, a *Applier, r Result) error {
 			return wrap(errors.New("the spec outcome has no spec"))
 		}
 		m := hold.set(r.Move(to, trigger))
-		m.Text = renderSpecNote(out, notify)
+		m.Text = renderSpecNote(out)
 		dirt := r.Dirt
 		if !moved {
 			replaced, err := specWriteBody(ctx, a, r.S, r.Dirt, r.RunID, renderSpec(*out.Spec))
@@ -352,7 +353,7 @@ func (iv *Interviewer) Apply(ctx context.Context, a *Applier, r Result) error {
 			dirt = maps.Clone(r.Dirt)
 			delete(dirt, state.BodyID)
 		}
-		if err := a.PostRevision(ctx, r.S, dirt.Has, m); err != nil {
+		if err := a.PostRevision(ctx, r.S, dirt.Has, m, notify); err != nil {
 			return wrap(err)
 		}
 		return hold.ack(ctx, a, wrap)

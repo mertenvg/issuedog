@@ -822,7 +822,7 @@ Each loop iteration:
 
 The owner should never have to go and work out what is being asked.
 
-Bot-created issues do not subscribe the owner to notifications. So every question round, typed comment, spec, plan, human task and triage flag @mentions the users in `notify` (section 13), and so does every new digest item that its own comment doesn't, such as a state error (9.4). Each of these comments, and the digest's announcement, carries a `cc @<login> @<login>` line: at the end, or for a spec, just before the revision (11.1).
+Bot-created issues do not subscribe the owner to notifications. So every question round, typed comment, spec, plan, human task and triage flag @mentions the users in `notify` (section 13), and so does every new digest item that its own comment doesn't, such as a state error (9.4). Each of these comments, and the digest's announcement, carries a `cc @<login> @<login>` line: at the end, or for a plan, just before how to approve it (11.4).
 
 Agent text can't mention anyone: the daemon puts a zero-width space after each `@`, or HTML entity for one, that isn't followed by a space. Lines inside a code fence the agent kept are left as they are, since GitHub never mentions anyone in code. It also escapes markers (5.1) and HTML tags in agent text.
 
@@ -1205,7 +1205,7 @@ The interviewer's `spec` output fills these sections, and the daemon renders the
   - Acceptance criteria are plain `- ` bullets, with any `[ ]` the agent wrote stripped. An empty section reads "None.".
   - The body's first line is `<!-- issuedog:rewrite run=<run id> -->`, which makes the write the App's full rewrite (5.1). It has no dirty note. On a dirty body, the marker also carries `replaced=<login>`, the body is clean from then on, and the revision comment starts with a line naming whose edit the spec replaced, with the login defused (7.4).
 - **Write order.** The type label, if the spec sets a type, then the body edit, skipped if the body already matches as the App's last edit. When the run's own rewrite marker is on it, as after a crash just after the edit, its `replaced` keeps the revision comment's first line the same. Then the revision is posted with the move to `spec-review` (7.4), and its hash is taken from the body GitHub returns. Once the move is written, a replay doesn't edit the body or the type again.
-- **The revision comment.** It starts with the line naming whose edit the spec replaced, if the body was dirty, then the type line when the spec sets a type (9.1). Then come the agent's `message`, which answers revision notes or says what changed, a list of the decisions "Added, not asked", and the `cc` line (section 9). Then the revision and how to approve it (7.4).
+- **The revision comment.** It starts with the line naming whose edit the spec replaced, if the body was dirty, then the type line when the spec sets a type (9.1). Then come the agent's `message`, which answers revision notes or says what changed, and a list of the decisions "Added, not asked". Then the revision and how to approve it (7.4), and last the `cc` line (section 9).
 - **Decisions.** Every question asked appears at least once, in one of these forms:
   - answered: `- Q2.1 → c: <summary> (mertenvg, round 2)`, or `- Q2.1 → free text: <summary> (mertenvg, round 2)`
   - superseded: `- Q1.3 → superseded by Q2.1`, by a question asked in a later round
