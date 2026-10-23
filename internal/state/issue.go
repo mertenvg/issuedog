@@ -151,6 +151,15 @@ func OriginMarker(text string) (github.Marker, bool) {
 	return github.Marker{}, false
 }
 
+// OriginOf returns the Origin that m records, as Derive reads it from a
+// clean body of the App's, or false if m isn't a whole origin marker
+// (originOf). Like OriginMarker, it doesn't check who wrote m: the caller
+// knows it's the App's, as the marker of a version of the body the App
+// wrote is (SPEC §5.2, §6.4).
+func OriginOf(m github.Marker) (Origin, bool) {
+	return originOf(m, BodyID)
+}
+
 // TriageVerdict is a triage marker (SPEC §5, §6.2): a decision on
 // an issue with no stage label, by a triage run or a code owner's answer.
 type TriageVerdict struct {

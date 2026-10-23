@@ -339,6 +339,10 @@ func TestPlannerRevisionReposted(t *testing.T) {
 	f = newFake(t)
 	r = revStory(t, f, revByOwner)
 	f.EditBody(r.t2, "owner", "The task, rewritten by hand.")
+	// With no repost, the child would be matched by the marker in the
+	// App's original post (originLost, #347), so that version is deleted
+	// from the history, and only the owner's copy could give one.
+	f.DeleteRevision(r.t2, 0)
 	f.AddComment(r.t2, "owner", "<!-- issuedog:origin plan=#1 rev=1 item=T2 -->")
 	g = plRig(t, f, revPlanReview)
 	g.d.Config.Loop.MaxAttempts = 1

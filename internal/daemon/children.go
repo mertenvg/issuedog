@@ -332,7 +332,12 @@ func childLinkRefused(err error) bool {
 // number, as state.Derive reads it from the issue's snapshot, comments
 // and dirty content included. That's one of two kinds of sub-issue:
 //   - one the App filed, whose origin the App reposted in a comment once
-//     the body lost it (originRepost, SPEC §6.4, #291);
+//     the body lost it (originRepost, SPEC §6.4, #291). Until that repost
+//     exists, as when the parent's visit comes before the child's step 1
+//     in the pass after an edit removed the marker, the origin is the one
+//     the repost would carry (originLost): from a version of the body the
+//     App wrote, never one anyone else did, so the child is still found,
+//     and not filed twice (#347). Only then is its history read;
 //   - one a person filed, whose body never gives an origin, as Derive
 //     reads markers only from the App (github.TrustedMarkers), but whose
 //     clean App comment may carry one: an adopted issue, such as #195,
@@ -340,7 +345,12 @@ func childLinkRefused(err error) bool {
 //     marker in a dirty App comment, or in a person's comment, gives
 //     none, by Derive's rules.
 //
-// Each such issue costs a snapshot, and the callers read them only before
+// Each such issue costs a snapshot, and one the App filed whose origin
+// isn't read costs its body's history too, unless Dirty read it already
+// for the same edit, as it does for a trusted user's (histories), or an
+// earlier call found no marker in any version of the App's for the same
+// body (originNone). One whose origin is read costs no history beyond
+// Dirty's. The callers read them only before
 // the record stands (ChildrenVisit) or while a revision is planned and
 // checked (planPrior.read), so an unchanged pass reads none. Only
 // sub-issues are read: a child loses its body's marker to an edit after
@@ -364,6 +374,16 @@ func (st *Step) childOrigins(ctx context.Context, subs []*gogithub.Issue) (map[i
 		}
 		if o := state.Derive(s, st.AppSlug, d.Has).Origin; o.Plan != 0 {
 			origins[n] = o
+			continue
+		}
+		m, ok, err := st.originLost(ctx, s, d)
+		if err != nil {
+			return nil, fmt.Errorf("read #%d's origin: %w", n, err)
+		}
+		if o, read := state.OriginOf(m); ok && read {
+			logr.Debugf("%s/%s#%d: its origin, item %s of #%d's plan, is read from its description's history, as no comment carries it yet",
+				st.Owner, st.Repo, n, o.Item, o.Plan)
+			origins[n] = o
 		}
 	}
 	return origins, nil
@@ -386,6 +406,7 @@ func childListedOrigin(is *gogithub.Issue, appSlug string) state.Origin {
 // duplicate (SPEC §5.2). One whose listed body gives no Origin takes it
 // from origins, what its snapshot gives (childOrigins), so
 // a child whose origin the App reposted in a comment matches too (#291),
+// as does one whose repost isn't posted yet, by its body's history (#347),
 // and so does an issue a person filed, adopted by the plan, whose clean
 // App comment carries its origin (#372): its listed body never gives one,
 // as Derive reads no marker a person wrote, and only a sub-issue's
