@@ -253,14 +253,16 @@ func TestReplanRun(t *testing.T) {
 	// 3. mertenvg's 👍 on her comment resolves the hold, to clarifying, in
 	// a move keyed by the hold's comment, and the same pass the
 	// interviewer's plan outcome sends the epic to planning, with its notes
-	// and the cc line. The pass after, the planner posts revision 2, which
+	// and the cc line, after which mertenvg is unassigned, as an unassign
+	// at clarifying waits for the pass's stage work (SPEC §9.6), which
+	// leaves the epic at planning. The pass after, the planner posts revision 2, which
 	// waits at plan-review though plan.review is false, and the pass after
 	// that lists it: its approval unblocks the epic and the 8 open issues
 	// below it.
 	f.AddReaction(wendy, childrenRunOwner, "+1")
 	l.outs(map[string]any{"outcome": "plan", "message": replanRunNotes}, replanRunEpicRevision(t))
 	l.step("the hold resolved", 5, "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:held",
-		"PATCH /issues/2", "DELETE /issues/1/assignees", "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:clarifying")
+		"PATCH /issues/2", "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:clarifying", "DELETE /issues/1/assignees")
 	added := l.added(epic)
 	planMove := "The discussion during the hold changes this issue's plan, but not its spec, so it goes to `planning`.\n\n" + replanRunNotes +
 		"\n\nThe planner reads these notes and the discussion, and posts a new plan for your 👍.\n\ncc @" + childrenRunOwner +
