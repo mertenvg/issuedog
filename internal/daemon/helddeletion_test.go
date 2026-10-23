@@ -292,3 +292,32 @@ func TestHeldDeletionRun(t *testing.T) {
 	}
 	l.quiet("resumed")
 }
+
+// A comment deleted on A after J's /resume counts as a /hold J's /resume
+// may not end only when an untrusted write collaborator deleted someone
+// else's comment (resolveGoneMay): not when a trusted user deletes it,
+// nor when its author does, on J's own read as on the issues below it.
+// So in every order of their numbers, J's /resume ends J's own /hold on J
+// and K, which go back to ready, and A stays held by hand.
+func TestHeldDeletionTrustedOnOwnRead(t *testing.T) {
+	t.Parallel()
+	for name, del := range map[string]func(f *githubtest.Fake, a int){
+		"the owner deletes her own note": func(f *githubtest.Fake, a int) { f.DeleteCommentBy("owner", f.AddComment(a, "owner", "A note.")) },
+		"the owner deletes mallory's":    func(f *githubtest.Fake, a int) { f.DeleteCommentBy("owner", f.AddComment(a, "mallory", "A note.")) },
+		"mallory deletes her own":        func(f *githubtest.Fake, a int) { f.DeleteCommentBy("mallory", f.AddComment(a, "mallory", "A note.")) },
+	} {
+		for _, order := range raceOrders {
+			t.Run(fmt.Sprintf("%s, A J K %v", name, order), func(t *testing.T) {
+				t.Parallel()
+				f, a, j, k, _ := heldDeletionFamily(t, order)
+				resume := f.AddComment(j, "owner", "/resume")
+				del(f, a)
+				resolveSettle(t, f, 1, 2, 3)
+				raceStages(t, f, "after J's /resume", map[int]string{a: "held", j: "ready", k: "ready"})
+				if !anyComment(f, j, fmt.Sprintf("from=held to=ready cmd=%d ", resume)) {
+					t.Errorf("#%d: newest comment %q; want J's /resume's move", j, newestComment(f, j))
+				}
+			})
+		}
+	}
+}

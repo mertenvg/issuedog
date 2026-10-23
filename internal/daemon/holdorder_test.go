@@ -270,10 +270,26 @@ func TestHoldOrderClosedParent(t *testing.T) {
 // unchanged, so the extra reads last only while J's /resume waits.
 func TestHoldOrderRunTrustedSince(t *testing.T) {
 	t.Parallel()
-	f := discRunRaceFamily(false)(t)
-	a, j, k := discRunRaceIssues(false)
+	holdOrderRunTrustedSince(t, false)
+}
+
+// TestHoldOrderRunTrustedSince with A's number lower: A comes first in
+// each pass's number order, but nothing on it changed, so no pass visits
+// it till the wait reads it again. So J's /resume waits for eve's /hold
+// all the same, and lands after it, as with J's number lower.
+func TestHoldOrderRunTrustedSinceAncestorLower(t *testing.T) {
+	t.Parallel()
+	holdOrderRunTrustedSince(t, true)
+}
+
+// holdOrderRunTrustedSince is TestHoldOrderRunTrustedSince's run, with A's
+// number lower than J's if aLow.
+func holdOrderRunTrustedSince(t *testing.T, aLow bool) {
+	t.Helper()
+	f := discRunRaceFamily(aLow)(t)
+	a, j, k := discRunRaceIssues(aLow)
 	l := newDiscRunLoop(t, f)
-	discRunRaceHeld(t, l, false)
+	discRunRaceHeld(t, l, aLow)
 	l.quiet("J and K held")
 	eve := f.AddComment(a, "eve", "/hold")
 	l.quiet("eve's /hold, which holds nothing")
@@ -290,4 +306,128 @@ func TestHoldOrderRunTrustedSince(t *testing.T) {
 		}
 	}
 	l.quiet("after J's /resume")
+}
+
+// A /hold on J, then the owner's /resume on its child K, in one poll, with
+// A above J: K's /resume waits for J's /hold, its parent's, though A, its
+// farthest ancestor, has nothing to wait for, so in every order of their
+// numbers J's /hold holds J and K, and K's /resume, handled after it, ends
+// it on K. J stays held, and A was never held.
+func TestHoldOrderMiddleAncestor(t *testing.T) {
+	t.Parallel()
+	for _, order := range raceOrders {
+		t.Run(fmt.Sprintf("A J K %v", order), func(t *testing.T) {
+			t.Parallel()
+			f, a, j, k, _ := raceFamily(t, order, false)
+			f.AddComment(j, "owner", "/hold")
+			resume := f.AddComment(k, "owner", "/resume")
+			resolveSettle(t, f, 1, 2, 3)
+			raceStages(t, f, "after both", map[int]string{a: "ready", j: "held", k: "ready"})
+			if anyComment(f, k, fmt.Sprintf("reason=rejected cmd=%d ", resume)) {
+				t.Errorf("#%d: newest comment %q; want K's /resume applied", k, newestComment(f, k))
+			}
+		})
+	}
+}
+
+// holdOrderDigestParent is discRunRaceFamily(aLow) with the digest, #1,
+// made A's parent, as someone may make it.
+func holdOrderDigestParent(aLow bool) func(testing.TB) *githubtest.Fake {
+	return func(t testing.TB) *githubtest.Fake {
+		t.Helper()
+		f := discRunRaceFamily(aLow)(t)
+		a, _, _ := discRunRaceIssues(aLow)
+		f.SetParent(a, 1)
+		return f
+	}
+}
+
+// The owner's /hold on the digest, made A's parent, then a /resume on J,
+// in one poll, J and K held by J's own /hold. No pass visits the digest
+// (SPEC §9.4), so its /hold is never handled, and J's /resume doesn't
+// wait for it, as for one on a closed ancestor: with either number lower,
+// J's pass takes J and K back to ready, A is never held, and every pass
+// after is unchanged, so nothing is read again for the digest's /hold.
+func TestHoldOrderRunDigest(t *testing.T) {
+	t.Parallel()
+	for _, aLow := range []bool{true, false} {
+		t.Run(fmt.Sprintf("A lower %v", aLow), func(t *testing.T) {
+			t.Parallel()
+			f := holdOrderDigestParent(aLow)(t)
+			a, j, k := discRunRaceIssues(aLow)
+			l := newDiscRunLoop(t, f)
+			discRunRaceHeld(t, l, aLow)
+			l.quiet("J and K held")
+
+			f.AddComment(1, "owner", "/hold")
+			resume := f.AddComment(j, "owner", "/resume")
+			l.step("J's /resume", slices.Concat(holdOrderMoves(k, "held"), holdOrderMoves(j, "held"), []string{discRunReact(resume)})...)
+			for n, want := range map[int]string{a: "stage:ready", j: "stage:ready", k: "stage:ready"} {
+				if got := ivLabels(f, n); !slices.Equal(got, []string{want, "type:task"}) {
+					t.Errorf("#%d: labels %q, newest comment %q; want %s", n, got, newestComment(f, n), want)
+				}
+			}
+			l.quiet("after J's /resume")
+			if cs := f.State().Issues[0].Comments; cs[len(cs)-1].Body != "/hold" || len(cs[len(cs)-1].Reactions) != 0 {
+				t.Errorf("#1: newest comment %+v; want the owner's /hold, which no pass handles", cs[len(cs)-1])
+			}
+		})
+	}
+}
+
+// J's pass on its /resume, under a /hold on the digest made A's parent,
+// is safe to replay after a crash at any write, with either number lower.
+func TestHoldOrderRunDigestReplay(t *testing.T) {
+	t.Parallel()
+	for _, aLow := range []bool{true, false} {
+		t.Run(fmt.Sprintf("A lower %v", aLow), func(t *testing.T) {
+			t.Parallel()
+			discRunReplay(t, holdOrderDigestParent(aLow), nil, func(l *discRunLoop) {
+				_, j, _ := discRunRaceIssues(aLow)
+				discRunRaceHeld(t, l, aLow)
+				l.f.AddComment(1, "owner", "/hold")
+				l.f.AddComment(j, "owner", "/resume")
+			})
+		})
+	}
+}
+
+// Only the App's issue is ever the digest (SPEC §9.4), so an issue eve
+// files with the digest's title and its identity marker in the body is
+// none: it's A, J's parent, numbered above J, and J's /resume, posted
+// after the owner's /hold on A, waits for that /hold as on any ancestor.
+// A's /hold lands first, then J's /resume ends both /holds on J and K,
+// which go back to ready, while A stays held.
+func TestHoldOrderRunNotDigest(t *testing.T) {
+	t.Parallel()
+	f := digestPinned(t)
+	var ns []int
+	for _, eve := range []bool{false, true, false} { // J #2, A #3, K #4
+		author, title, body := "owner", "Part", "A part."
+		if eve {
+			author, title, body = "eve", "issuedog digest", "A part.\n\n<!-- issuedog:digest -->"
+		}
+		n := f.AddIssue(author, title, body)
+		f.AddLabel(n, "owner", "type:task")
+		f.AddLabel(n, app, "stage:ready")
+		f.AddComment(n, app, "<!-- issuedog:transition from=intake to=ready run=rready -->")
+		ns = append(ns, n)
+	}
+	j, a, k := ns[0], ns[1], ns[2]
+	f.SetParent(j, a)
+	f.SetParent(k, j)
+	l := newDiscRunLoop(t, f)
+	discRunRaceHeld(t, l, false)
+	l.quiet("J and K held")
+
+	hold := f.AddComment(a, "owner", "/hold")
+	resume := f.AddComment(j, "owner", "/resume")
+	l.step("A's /hold", slices.Concat(holdOrderMoves(a, "ready"), []string{discRunReact(hold)})...)
+	l.step("J's /resume", slices.Concat(holdOrderMoves(k, "held"), holdOrderMoves(j, "held"), []string{discRunReact(resume)})...)
+	for n, want := range map[int]string{a: "stage:held", j: "stage:ready", k: "stage:ready"} {
+		if got := ivLabels(f, n); !slices.Equal(got, []string{want, "type:task"}) {
+			t.Errorf("#%d: labels %q, newest comment %q; want %s", n, got, newestComment(f, n), want)
+		}
+	}
+	l.quiet("after both")
 }
