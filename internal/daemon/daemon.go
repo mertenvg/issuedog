@@ -251,6 +251,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			delete(d.missing, n)
 			delete(d.openErrs, n)
 			delete(d.digestCache, n)
+			d.digestRestartGone(n)
 			delete(d.assignManaged, n)
 			d.Step.forgetLabels(n)
 		case gone(err):
