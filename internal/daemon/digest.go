@@ -449,7 +449,10 @@ func digestGone(err error) error {
 // repository_url names another repo as moved. It's github's IssueMoved,
 // the check Snapshot and PinIssue make too.
 func digestMoved(a *Applier, resp *gogithub.Response, is *gogithub.Issue) error {
-	return github.IssueMoved(a.Owner, a.Repo, resp, is)
+	if err := github.IssueMoved(a.Owner, a.Repo, resp, is); err != nil {
+		return fmt.Errorf("check the answer's repo: %w", err)
+	}
+	return nil
 }
 
 // digestRewrite brings digest n up to date with items, ranked

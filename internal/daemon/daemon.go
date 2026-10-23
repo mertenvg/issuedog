@@ -593,7 +593,8 @@ func parentOf(u string) int {
 // gone reports whether err, from a request about one issue, says the issue
 // was deleted (404 or 410) or transferred: a Snapshot, an assignee write
 // (assignFailed), a close's judging (closingJudge) or a request about the
-// digest (digestGone). A failed visit, which may 404 on a deleted comment,
+// digest (digestGone, and digestPinGone, which first sets apart the pin
+// check's NOT_FOUND and an HTTP status from /graphql). A failed visit, which may 404 on a deleted comment,
 // marks the issue stale, so only Snapshot decides, and Iterate drops an
 // issue only when two reads say so with no good read between.
 //

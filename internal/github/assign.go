@@ -53,7 +53,7 @@ func assignAnswer(owner, repo string, is *gogithub.Issue, err error) ([]string, 
 		return nil, err
 	}
 	if err := IssueMoved(owner, repo, nil, is); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("check the answer's repo: %w", err)
 	}
 	return assignLogins(is.Assignees), nil
 }
