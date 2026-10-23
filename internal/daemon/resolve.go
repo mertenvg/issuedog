@@ -323,12 +323,11 @@ func resolveByNotice(tr discTrigger, s *github.Snapshot, appSlug string, heldAt 
 // a comment gone or the App's.
 //
 // So is a deletion during the hold, at or after heldAt, when it began, if
-// it did (#188's verify, round 2): the comment may have been a code
-// owner's /hold, applied with no marker as the issue was held already
-// (SPEC §6.4), which GitHub's deletion event doesn't name, so it fails
-// closed. /resume on the issue, which ends that /hold too, accepts it. A
-// deletion that held the issue came before the hold began, so it hid no
-// /hold applied during it.
+// it did: the comment may have been a code owner's /hold, applied with no
+// marker as the issue was held already (SPEC §6.4), which GitHub's
+// deletion event doesn't name, so it fails closed. /resume on the issue,
+// which ends that /hold too, accepts it. A deletion that held the issue
+// came before the hold began, so it hid no /hold applied during it.
 func resolveHitsApp(tr discTrigger, s *github.Snapshot, appSlug string, heldAt time.Time) bool {
 	if discHitsApp(tr, appSlug) || tr.Kind == discDeletion && !heldAt.IsZero() && !tr.At.Before(heldAt) {
 		return true
@@ -474,7 +473,7 @@ func resolvePeriodOf(s *github.Snapshot, appSlug string, dirty func(int64) bool)
 // resolveHeldBy), and the hold item's (holdItemOf). A record that says a
 // /resume ended an ancestor's /hold, which no marker on the issue names,
 // ends it here too, whether or not that /resume applied on its own issue,
-// as when that issue was out of held by then (#188's verify, round 2).
+// as when that issue was out of held by then (SPEC §6.4).
 func resolveLeft(holds []github.Marker, p resolvePeriod, except int64) []github.Marker {
 	return slices.DeleteFunc(slices.Clone(holds), func(m github.Marker) bool {
 		by, ended := p.owners[resolveHoldKey(m)]
@@ -504,12 +503,12 @@ func resolveHoldKey(m github.Marker) string {
 // <issue>-<Unix seconds>, the ancestor's number and when the comment was
 // deleted. GitHub's deletion event doesn't say which comment it was, so a
 // code owner's /hold that wrote no marker, as the issues were held already
-// (SPEC §6.4), may be gone with it, failing closed (#188's verify, round 2,
-// attempt 3). Only /resume on that ancestor, on an issue between, or on
-// the issue itself, posted after the deletion, ends it, as /resume on the
-// ancestor itself is the only thing that accepts the deletion there
-// (resolveHitsApp). Its key is g<value> (resolveHoldKey); the App writes
-// it only in that record, and in "ended reason=owner" records of it.
+// (SPEC §6.4), may be gone with it, failing closed. Only /resume on that
+// ancestor, on an issue between, or on the issue itself, posted after the
+// deletion, ends it, as /resume on the ancestor itself is the only thing
+// that accepts the deletion there (resolveHitsApp). Its key is g<value>
+// (resolveHoldKey); the App writes it only in that record, and in "ended
+// reason=owner" records of it.
 const resolveGone = "gone"
 
 // resolveGoneHold is the owner hold marker, in memory, that a comment
@@ -610,16 +609,16 @@ func (a *Applier) resolveCommands(ctx context.Context, s *github.Snapshot, d Dir
 // (holdCheck).
 //
 // A /hold on s counts by the App's record that it applied it, whatever its
-// comment shows now (#188's verify, round 2): one a write collaborator
-// edited since, so dirty, counts when it's a trusted user's that the App
-// 👍'd during the hold (resolveHoldWitnessed). A comment deleted is known
-// by no ID, so a deletion during the hold, which may have hidden an
-// applied /hold, is accepted only by /resume (resolveHitsApp), which ends
-// the /hold too. Last come the comments deleted on ancestors that the
-// same record names, as holds that may have been /holds (resolveGone).
-// A /resume on an ancestor never ends a /hold on s, which was posted
-// below it, nor one between, only one on its own issue or above, or a
-// comment deleted there before it (heldStackEnds, resolveEndsHold).
+// comment shows now (SPEC §6.4): one a write collaborator edited since, so
+// dirty, counts when it's a trusted user's that the App 👍'd during the
+// hold (resolveHoldWitnessed). A comment deleted is known by no ID, so a
+// deletion during the hold, which may have hidden an applied /hold, is
+// accepted only by /resume (resolveHitsApp), which ends the /hold too.
+// Last come the comments deleted on ancestors that the same record names,
+// as holds that may have been /holds (resolveGone). A /resume on an
+// ancestor never ends a /hold on s, which was posted below it, nor one
+// between, only one on its own issue or above, or a comment deleted there
+// before it (heldStackEnds, resolveEndsHold).
 func (a *Applier) resolveOwnHolds(ctx context.Context, s *github.Snapshot, d Dirt, trust github.Trust, is state.Issue, p resolvePeriod, before int64) ([]github.Marker, error) {
 	all, err := a.resolveCommands(ctx, s, d, trust, "hold", p.prev, 0)
 	if err != nil {
@@ -719,10 +718,10 @@ const resolveOn = "on"
 
 // resolveHeldOn is the field of an "ended reason=discussion" record that
 // names, for each /hold in its held field, in order, the issue that /hold
-// counted as posted on (resolveUnended): so the record's "`/resume`
-// there" stays true once the /hold's comment is deleted, when the issue it
-// was posted on may have no marker of it (#188's verify, round 3, note 1).
-// A record written before it had none, and its /holds count as before.
+// counted as posted on (resolveUnended): so the record's "`/resume` there"
+// stays true once the /hold's comment is deleted, when the issue it was
+// posted on may have no marker of it (SPEC §6.4). A record written before
+// it had none, and its /holds count as before.
 const resolveHeldOn = "heldon"
 
 // resolveOwnerHold is the owner hold marker that the /hold in comment id
@@ -821,13 +820,13 @@ type resolveJudged struct {
 // and j doesn't end it (resolveEndsHold), so heldStackEnds leaves it.
 //
 // A /hold counts by the App's record that it applied it, whatever its
-// comment shows now (#188's verify, round 2): an owner hold marker on an
-// issue on the path that names it (resolveHoldMarked), its comment clean,
-// edited by a write collaborator since, or deleted; else, for one with no
-// marker, the App's 👍, on a clean valid one (resolveHoldApplied) or, on
-// one edited since, during self's hold (resolveHoldWitnessed). One whose
-// comment is gone is taken as posted on the farthest issue on the path
-// with its marker, failing closed.
+// comment shows now (SPEC §6.4): an owner hold marker on an issue on the
+// path that names it (resolveHoldMarked), its comment clean, edited by a
+// write collaborator since, or deleted; else, for one with no marker, the
+// App's 👍, on a clean valid one (resolveHoldApplied) or, on one edited
+// since, during self's hold (resolveHoldWitnessed). One whose comment is
+// gone is taken as posted on the farthest issue on the path with its
+// marker, failing closed.
 //
 // Each /resume counts only once the App applied it on its own issue, as a
 // marker there names it (resolveApplied): a rejected one ends nothing
@@ -1507,11 +1506,11 @@ func heldWordingHolds(held, heldOn []string) string {
 // so that no later pass counts them (resolveLeft): an App comment with
 // one "ended reason=owner key=<resolveHoldKey> cmd=<c's id>" marker
 // (resolveKind) for each owner hold c ends, as heldStackEnds says, once
-// each. An ended hold stays ended so, whatever comes after
-// (#188's verify, round 3, note 1): once its /hold's comment is deleted,
-// it would count as posted on the farthest issue with its marker, which
-// may be below c's issue, and a held= record naming it would say
-// "`/resume` there" of an issue whose /resume no longer ends it. On c's
+// each. An ended hold stays ended so, whatever comes after (SPEC §6.4):
+// once its /hold's comment is deleted, it would count as posted on the
+// farthest issue with its marker, which may be below c's issue, and a
+// held= record naming it would say "`/resume` there" of an issue whose
+// /resume no longer ends it. On c's
 // own issue, it also writes an "ended
 // reason=discussion resolved=<c's time> cmd=<c's id>" marker, as c
 // accepts every trigger made before it, which it bounds (discFloor). It

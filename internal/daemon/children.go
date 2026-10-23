@@ -29,7 +29,7 @@ import (
 //
 // Until then, it describes each item of R that it files (childSpecs):
 // every item of a first plan, and only the new items of a revision
-// (SPEC §11.3), and each changed item of a revision, which it rewrites in
+// (SPEC §5.2), and each changed item of a revision, which it rewrites in
 // place (childSpecsWhere, SPEC §6.4). A kept item gets no write, and a
 // dropped one's child is closed (SPEC §6.4, #297). It finds the children filed already
 // (childrenFind), with no search request, then, for each item in creation

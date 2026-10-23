@@ -9,8 +9,8 @@ import (
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
 
-// #188's verify, attempt 5, and the class it belongs to: a command on the
-// issue or an ancestor counts toward a hold only once the App applied it.
+// A command on the issue or an ancestor counts toward a hold only once
+// the App applied it.
 // A rejected /resume ends nothing (SPEC §9.2), nor does a rejected /hold
 // hold anything, and an owner hold ends only by a /resume that applies
 // (SPEC §6.4).
@@ -381,7 +381,7 @@ func TestResolveAppliedParentResumeBeforeHoldStart(t *testing.T) {
 // A /hold on a descendant posted after the /resume, that the App hasn't
 // handled yet, isn't one the /resume judges: #2's /resume takes #1 back,
 // and #1's /hold, handled next, holds it again with a marker of its own.
-func TestResolveRound3OwnHoldAfterResumeUnhandled(t *testing.T) {
+func TestResolveResumeSkipsUnhandledLaterOwnHold(t *testing.T) {
 	t.Parallel()
 	f := discFake(t)  // #1
 	file(f, 0, ready) // #2
