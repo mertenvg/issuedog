@@ -217,7 +217,7 @@ func plannerTrustedOpen(ctx context.Context, d *Daemon, n int) (state.Stage, str
 	typ := s.Type
 	if !held && s.TypeFromLabels {
 		if typ, err = plannerTrustedType(ctx, a, d.Step.Trust, s.Labels, &ivTimeline{a: a, number: n}); err != nil {
-			return "", "", fmt.Errorf("a snapshot step 1 doesn't hold: %w", err)
+			return "", "", fmt.Errorf("reading its type afresh: %w", err)
 		}
 	}
 	is := state.Derive(s, a.AppSlug, dirt.Has)
@@ -266,7 +266,7 @@ func plannerTrustedSubs(ctx context.Context, d *Daemon, subs []plannerSub, skip 
 		}
 		var err error
 		if subs[i].Stage, subs[i].Type, err = plannerTrustedSub(ctx, d, sub.Number, sub.State == "open", sub.Type, sub.Labels); err != nil {
-			return err
+			return fmt.Errorf("their stages and types: %w", err)
 		}
 	}
 	return nil
