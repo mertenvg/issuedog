@@ -1,7 +1,6 @@
 package github
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -410,13 +409,11 @@ func TestCheckLabelsDateFallback(t *testing.T) {
 		{start.Add(6 * time.Minute).UTC().Format(http.TimeFormat), 2, false},
 	} {
 		date = tt.date
-		var logs bytes.Buffer
-		stop := logr.AddWriter(&logs, logr.WithFilter(logr.D))
+		stop := CaptureLogs(t, logr.D)
 		found, err := c.CheckLabels(context.Background(), "o", "r", 7, []string{"priority:p0"}, "issuedog", fakeTrust{},
 			func(int64) bool { return false }, seen, nil)
 		labels, held := found.Labels, found.Held
-		logr.Wait()
-		stop()
+		logs := stop()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -424,8 +421,8 @@ func TestCheckLabelsDateFallback(t *testing.T) {
 			t.Errorf("pass %d: writes %q, held %q, labels %q; want %d writes, held back %v, and the label returned only if so",
 				i, writes, held, labels, tt.writes, tt.held)
 		}
-		if fell := strings.Contains(logs.String(), "the local clock times"); fell != (tt.date == "") {
-			t.Errorf("pass %d: logs = %q, want the fallback logged only with no Date", i, logs.String())
+		if fell := strings.Contains(logs, "the local clock times"); fell != (tt.date == "") {
+			t.Errorf("pass %d: logs = %q, want the fallback logged only with no Date", i, logs)
 		}
 	}
 }

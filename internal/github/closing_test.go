@@ -1,7 +1,6 @@
 package github_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"reflect"
@@ -178,10 +177,12 @@ func TestClosingCloserNodeErrors(t *testing.T) {
 // A FORBIDDEN or NOT_FOUND error under node is logged as a close judged by
 // hand, once each; an untyped one, an error, is not.
 func TestClosingCloserNodeErrorsLogged(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
-	// That output also carries what other tests logged, such as warnings an
-	// earlier test queued that logr writes only once this capture is on, so
-	// it counts only the lines naming its own errors' message.
+	// Not parallel: it reads the process-wide logr output.
+	// github.CaptureLogs holds only what is logged once it starts, not
+	// warnings an earlier test such as TestClosingCloser queued, so this
+	// counts every warning it holds, and a duplicate one without its error's
+	// message counts too. The marker in each error's message shows the
+	// warning names it.
 	const marker = "closer-node-errors-logged"
 	ctx := context.Background()
 	f := githubtest.New(t, "o/r", "issuedog")
@@ -189,23 +190,14 @@ func TestClosingCloserNodeErrorsLogged(t *testing.T) {
 	event := f.CloseByPullRequest(n, "mallory", githubtest.ClosingPR{Merged: true})
 	id := "CE_" + strconv.FormatInt(event, 10)
 	c := f.Client(t)
-	var warnings bytes.Buffer
-	stop := logr.AddWriter(&warnings, logr.WithFilter(logr.W))
+	stop := github.CaptureLogs(t, logr.W)
 	for _, typ := range []string{"FORBIDDEN", "NOT_FOUND", ""} {
 		f.FailCloser(n, event, typ, marker+" "+typ)
 		if _, err := c.ClosingCloser(ctx, "o", "r", id); (err != nil) != (typ == "") {
 			t.Errorf("%q under node: ClosingCloser error %v", typ, err)
 		}
 	}
-	logr.Wait()
-	stop()
-	var own []string
-	for line := range strings.Lines(warnings.String()) {
-		if strings.Contains(line, marker) {
-			own = append(own, line)
-		}
-	}
-	got := strings.Join(own, "")
+	got := stop()
 	for _, want := range []string{"(FORBIDDEN: " + marker + " FORBIDDEN at [node])", "(NOT_FOUND: " + marker + " NOT_FOUND at [node])"} {
 		if strings.Count(got, want) != 1 {
 			t.Errorf("warnings %q; want %q once", got, want)
@@ -213,6 +205,9 @@ func TestClosingCloserNodeErrorsLogged(t *testing.T) {
 	}
 	if strings.Count(got, "judged as a close by hand") != 2 {
 		t.Errorf("warnings %q; want two closes judged by hand, and none for the untyped error", got)
+	}
+	if strings.Count(got, "\n") != 2 {
+		t.Errorf("warnings %q; want only the two closes judged by hand", got)
 	}
 }
 
