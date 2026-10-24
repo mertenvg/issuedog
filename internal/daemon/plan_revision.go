@@ -210,6 +210,39 @@ func (pr *planPrior) keptDeps(p planBody) map[string][]string {
 	return deps
 }
 
+// keptData is plan p's data, as its plan-data marker keeps it (SPEC §5).
+// For a first plan, where pr is nil, it's p itself, so the data is as it
+// was before revisions. For a revision, each kept item, which carries its
+// ID, title and status only, is its approved item's entry in full, read
+// from the approved revision's own plan data (approvedPlanData), never
+// from the planner's output: its outcome, criteria and task body, with
+// its status kept and the dependencies keptDeps gives it, which are its
+// links once p is applied. So the next revision reads an item kept twice
+// from this revision's data alone: its dependencies count in the cycle
+// check and the link limits, and children.md shows its text (SPEC §11.3).
+// A kept item with no approved entry, as for a child whose item the
+// approved revision doesn't list, stays as it is. p is left as it is.
+func (pr *planPrior) keptData(p planBody) planBody {
+	if pr == nil {
+		return p
+	}
+	kept := pr.keptDeps(p)
+	p.Items = slices.Clone(p.Items)
+	for i, it := range p.Items {
+		if it.Status != planKept {
+			continue
+		}
+		j := slices.IndexFunc(pr.Items, func(e planItem) bool { return e.ID == it.ID })
+		if j < 0 {
+			continue
+		}
+		e := pr.Items[j]
+		e.Status, e.DependsOn = planKept, append([]string{}, kept[it.ID]...)
+		p.Items[i] = e
+	}
+	return p
+}
+
 // planDepsOf returns each item's dependencies as the links will be once
 // plan p is applied: a kept item's from keptDeps, none for a dropped one,
 // and the item's own for any other.
