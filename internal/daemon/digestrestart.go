@@ -45,9 +45,10 @@ import (
 // next pass, so the issue isn't read again: its own commands would come
 // before the rest of that one's, out of the order they're handled in
 // (holdOrderWaits, #205). It skips the pass, as before, and so does one
-// whose read again fails. An issue whose own visit fails after a restart
-// isn't covered: it isn't touched, and drops out of the digest till a
-// visit succeeds (#360).
+// whose read again fails. A read again that finds it gone counts as the
+// first of the two reads that drop it, as any read does. An issue whose
+// own visit fails after a restart isn't covered: it isn't touched, and
+// drops out of the digest till a visit succeeds (#360).
 
 // digestRestartTouches are the issues the commands of one pass's visits
 // wrote to (Step.Touched), for digestRestartRead.
@@ -81,13 +82,21 @@ func (t *digestRestartTouches) fail() {
 // visit, if the digest may list items for n that aren't cached, and no
 // visit that failed wrote to it (touches). It reports whether it did. A
 // failed read is logged, and n then skips the pass, as a touched issue
-// does.
+// does. A read that finds n gone, deleted or transferred, is the first of
+// the two that drop it, as the pass's own read would be (reread), so the
+// next pass's read drops it if it's gone still.
 func (d *Daemon) digestRestartRead(ctx context.Context, n int, touches *digestRestartTouches) bool {
 	if !d.digestRestartUnknown[n] || touches.failed[n] {
 		return false
 	}
 	st := d.Step
 	s, err := st.Client.Snapshot(ctx, st.Owner, st.Repo, n)
+	if gone(err) {
+		logr.Infof("%s/%s#%d, which a command wrote to, looks gone, deleted or transferred, when read again, so it waits for the next pass, which reads it again: %v",
+			st.Owner, st.Repo, n, err)
+		d.reread(n, true)
+		return false
+	}
 	if err != nil {
 		logr.Warnf("%s/%s#%d, which a command wrote to, failed to read again, so it waits for the next pass, and the digest lists none of its items till then: %v",
 			st.Owner, st.Repo, n, err)

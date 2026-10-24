@@ -396,6 +396,44 @@ func TestDigestRestartTouchedReadFails(t *testing.T) {
 	l.quiet("both held")
 }
 
+// #490: a read again that finds the issue gone counts as the first of the
+// two reads that drop it, as the pass's own read would. The epic's /hold,
+// for a restart's first pass, writes to both tasks, and #4, the newest, is
+// deleted after the epic's 👍, the last of its visit's writes, so its read
+// again at its turn answers 404, and it skips the pass. The next pass's
+// read, the second 404, drops it, so the pass after that doesn't read it.
+// Not counted, the next pass's read would be the first, and the one after
+// it would drop it, a pass later than SPEC §8.1's two reads do.
+func TestDigestRestartTouchedGoneReread(t *testing.T) {
+	t.Parallel()
+	f := discRunFamily(t)
+	l := newDiscRunLoop(t, f)
+	l.quiet("the family")
+	hold := f.AddComment(2, "owner", "/hold")
+	l.start()
+	react := discRunReact(hold)
+	f.BeforeRequest(func(r githubtest.Request) bool { return r.Method+" "+r.Path == react }, f.DeleteIssue)
+	from := len(f.Requests())
+	l.step("the epic's /hold on a restart's first pass, #4 deleted before its read again", "POST /issues/3/comments", "POST /issues/3/labels", "DELETE /issues/3/labels/stage:ready",
+		"POST /issues/4/comments", "POST /issues/4/labels", "DELETE /issues/4/labels/stage:ready",
+		"POST /issues/2/comments", "POST /issues/2/labels", "DELETE /issues/2/labels/stage:planned", react)
+	// #4: the pass's read, the /hold's, and the read again, which found it gone.
+	if got := digestRestartGets(f, from); got[4] != 3 {
+		t.Errorf("the restart's first pass read the issues %v times; want #4 three times", got)
+	}
+	from = len(f.Requests())
+	l.step("the restart's second pass")
+	if got := digestRestartGets(f, from); got[4] != 1 {
+		t.Errorf("the restart's second pass read the issues %v times; want #4 once", got)
+	}
+	from = len(f.Requests())
+	l.step("the pass after #4 is dropped")
+	if got := digestRestartGets(f, from); got[4] != 0 {
+		t.Errorf("the pass after the second 404 read the issues %v times; want #4 dropped, and not read", got)
+	}
+	l.quiet("#4 gone")
+}
+
 // A visit that ends closing an issue again (closingErrClosedAgain) after
 // its command wrote to another holds that one back too, as a visit that
 // fails does. Owner's close of #4 stands, at completed, and mallory
