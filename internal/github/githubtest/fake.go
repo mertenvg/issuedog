@@ -349,16 +349,26 @@ func (f *Fake) EditComment(id int64, login, body string) {
 	f.fakeCommentID(id).editBy(login, body, f.tick())
 }
 
-// DeleteComment deletes a comment, as its author or a maintainer can, with
-// no CommentDeletedEvent: DeleteCommentBy records one. A comment the fake
-// hasn't got, one deleted already included, fails the test
-// (fakeCommentID).
+// DeleteComment deletes a comment with no CommentDeletedEvent, as GitHub
+// records none when its author deletes it (SPEC §16): DeleteCommentBy
+// records one for someone else's deletion. As on GitHub, it moves the
+// issue's updated_at. A comment the fake hasn't got, one deleted already
+// included, fails the test (fakeCommentID).
 func (f *Fake) DeleteComment(id int64) {
 	f.t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.fakeCommentID(id)
-	f.comments = slices.DeleteFunc(f.comments, func(c *comment) bool { return c.GetID() == id })
+	f.deleteComment(f.fakeCommentID(id))
+}
+
+// deleteComment drops c and moves its issue's updated_at, which a
+// deletion moves on GitHub (SPEC §16), and returns the time it moved it
+// to. f is locked.
+func (f *Fake) deleteComment(c *comment) *gogithub.Timestamp {
+	f.comments = slices.DeleteFunc(f.comments, func(o *comment) bool { return o == c })
+	is := f.issues[c.issue-1]
+	is.UpdatedAt = f.tick()
+	return is.UpdatedAt
 }
 
 // AddReaction reacts to a comment as author and returns the reaction's ID.

@@ -599,6 +599,9 @@ func (r *Runs) applyLease(ctx context.Context, l Lease, st Stage, raw []byte, ou
 	}
 	if errors.Is(err, ErrLabelsHeld) {
 		logr.Infof("run %s on #%d waits to be applied, which isn't counted as a failure: %v", l.RunID, l.Issue, err)
+		// A later pass applies it, and judges the assignees then (SPEC
+		// §9.6), as for a failed apply.
+		r.Daemon.assignWorked(l.Issue)
 		return err
 	}
 	return r.applyFailed(ctx, l, st, err)
@@ -683,10 +686,10 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 		// nothing pushed or posted from it (SPEC §6.4, §8.2). Step 1 held
 		// the issue for every trigger before the run's poll, l.Polled, as
 		// no run starts on a held issue, so any it finds here is one since,
-		// or one step 1 couldn't see, such as a deletion seen before its
-		// updated_at moved (SPEC §16): either holds the issue all the same. A hold the
-		// table lacks holds nothing (Step.discussion), so then the result
-		// is judged as before.
+		// or one step 1 couldn't see, such as a deletion made just before
+		// the poll, before its updated_at moved (SPEC §16): either holds
+		// the issue all the same. A hold the table lacks holds nothing
+		// (Step.discussion), so then the result is judged as before.
 		found, err := r.Daemon.Step.discussion(ctx, s, d)
 		if err != nil {
 			return fmt.Errorf("apply run %s: %w", l.RunID, err)
@@ -747,9 +750,7 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 		return fmt.Errorf("apply run %s: %w", l.RunID, err)
 	}
 	logr.Infof("%s/%s#%d: applied run %s", a.Owner, a.Repo, l.Issue, l.RunID)
-	if st := stageOf(s); st == state.SpecReview || st == state.PlanReview {
-		r.Daemon.assignWorked(l.Issue) // it waits on the owner again (SPEC §9.6)
-	}
+	r.Daemon.assignApplied(s, d) // a revision or a round waits on the owner again (SPEC §9.6)
 	delete(r.attempts, countKey(l.Issue, l.AttemptKey))
 	delete(r.failures, countKey(l.Issue, l.AttemptKey))
 	return r.finish(ctx, l)
