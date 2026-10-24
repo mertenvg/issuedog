@@ -786,9 +786,10 @@ func ivLogin(login string) string {
 // it, if GitHub names them as the content's last editor, or the App made
 // the last edit, which wrote the note by comes from (Applier.MarkDirty).
 // Otherwise by may be a name the author put in a note of their own, so
-// it's "someone unnamed".
+// it's "someone unnamed". So is "unknown" in the App's note, which is how
+// Dirt names a ghost, an editor GitHub doesn't name.
 func ivEditor(by string, last github.Edit, appSlug string) string {
-	if last.By.Login == by || state.IsApp(last.By, appSlug) {
+	if last.By.Login == by || (state.IsApp(last.By, appSlug) && by != "unknown") {
 		return ivLogin(by)
 	}
 	return "someone unnamed"
