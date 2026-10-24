@@ -240,7 +240,9 @@ type discBound struct {
 //   - Any other move out of held, and the record of a discussion that
 //     ended while an owner hold stayed, is bounded the same way by when
 //     the act that resolved it happened, where that's known (resolveActAt,
-//     #188): a later act still counts.
+//     #188): a later act still counts. So is the record of a /resume's
+//     move that a dirty comment hid, by its resolved time, at or before
+//     the hidden move's (reviewDirtyRestore, #566).
 //
 // The markers are read as state.Derive reads them (discMarkers). With none,
 // ok is false, as on an issue that isn't in the pipeline, which nothing

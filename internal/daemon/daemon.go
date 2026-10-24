@@ -78,6 +78,13 @@ type Daemon struct {
 	// digestRestartList).
 	startPolled bool
 
+	// stepRead are the snapshots step 1 ran on in this pass, by issue,
+	// whether it succeeded or not, or the issue was touched after: for
+	// the apply of a lease Work resumes (Runs.resume), as step 1 may have
+	// 👍'd an answer on one that the apply's own read doesn't list yet.
+	// Nil outside Iterate's step 1 and Work.
+	stepRead map[int]*github.Snapshot
+
 	// digestRestartUnknown are the issues the digest may list items for
 	// that digestCache doesn't hold: each the start's first poll listed
 	// open, and each a poll listed closed with items cached, till step 1
@@ -289,6 +296,8 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			delete(d.missing, n)
 		}
 	}
+	d.stepRead = map[int]*github.Snapshot{} // for a lease Work resumes
+	defer func() { d.stepRead = nil }()
 	// A command may write to other issues, such as a /hold's descendants,
 	// whose snapshots are then out of date: those skip step 1 and Work, and
 	// are read again next pass. But one whose items the digest may list
@@ -315,6 +324,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			continue
 		}
 		touches.begin()
+		d.stepRead[n] = s
 		// ReviewVisit, on an issue read again too, posts a revision for a body
 		// edit; it does nothing at any other stage than spec-review. The
 		// visit's Dirty calls ask trust about each editor once (#174).

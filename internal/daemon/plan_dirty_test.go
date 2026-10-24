@@ -222,11 +222,19 @@ func TestPlanDirtySendsBack(t *testing.T) {
 
 // planResumeDirtyRecorded is the App's comment recording again the move
 // back to plan-review from held that dirty comment id, the one applying a
-// /resume, hid, with seen, the bound from before the hold.
-func planResumeDirtyRecorded(id, seen int64) string {
+// /resume, hid, with seen, the bound from before the hold, and resolved,
+// the Unix time the oldest dirty App comment after the hold was posted.
+func planResumeDirtyRecorded(id, seen, resolved int64) string {
 	return "A comment of mine was edited without approval, and it held this issue's move back to `plan-review` from `held`, so I've recorded the move again here. " +
 		"That comment may have hidden a newer plan revision, so I can't approve the plan. To get a new plan, post `/revise <notes>`, or any other comment.\n\n" +
-		fmt.Sprintf("<!-- issuedog:transition from=held to=plan-review event=plan-dirty-%d seen=%d -->", id, seen)
+		fmt.Sprintf("<!-- issuedog:transition from=held to=plan-review event=plan-dirty-%d resolved=%d seen=%d -->", id, resolved, seen)
+}
+
+// planResumeDirtyOn is planResumeDirtyRecorded for dirty comment id on
+// issue 1 of f, the oldest dirty App comment after the hold.
+func planResumeDirtyOn(t testing.TB, f *githubtest.Fake, id, seen int64) string {
+	t.Helper()
+	return planResumeDirtyRecorded(id, seen, resolveCommentAt(t, f, 1, id))
 }
 
 // planResumeDirty is planHeld by /hold, then the owner's /resume, applied
@@ -260,19 +268,25 @@ func TestPlanDirtyResume(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
 		setup func(testing.TB) *githubtest.Fake
-		want  issueWant
+		want  func(t testing.TB, f *githubtest.Fake) issueWant
 	}{
 		{"the owner's edit to the /resume's move leaves the issue at plan-review",
 			planResumeDirty(func(testing.TB, *githubtest.Fake) {}),
-			issueWant{atReview, []string{planResumeDirtyRecorded(1008, 1003)}}},
+			func(t testing.TB, f *githubtest.Fake) issueWant {
+				return issueWant{atReview, []string{planResumeDirtyOn(t, f, 1008, 1003)}}
+			}},
 		{"then /approve gets the hidden plan revision reply",
 			planResumeDirty(func(t testing.TB, f *githubtest.Fake) { post(t, f, 1010, "owner", "/approve") }),
-			issueWant{atReview, []string{planResumeDirtyRecorded(1008, 1003),
-				final("/approve", "I didn't apply this command", "a comment of mine after plan revision 1 was edited without approval or deleted, "+
-					"so it may hide a newer plan revision. "+replanHint, "1010")}}},
+			func(t testing.TB, f *githubtest.Fake) issueWant {
+				return issueWant{atReview, []string{planResumeDirtyOn(t, f, 1008, 1003),
+					final("/approve", "I didn't apply this command", "a comment of mine after plan revision 1 was edited without approval or deleted, "+
+						"so it may hide a newer plan revision. "+replanHint, "1010")}}
+			}},
 		{"and a comment sends the plan back",
 			planResumeDirty(func(t testing.TB, f *githubtest.Fake) { post(t, f, 1010, "owner", "Split T1.") }),
-			issueWant{[]string{"stage:planning", "type:epic"}, []string{planResumeDirtyRecorded(1008, 1003), planSentBack("1010")}}},
+			func(t testing.TB, f *githubtest.Fake) issueWant {
+				return issueWant{[]string{"stage:planning", "type:epic"}, []string{planResumeDirtyOn(t, f, 1008, 1003), planSentBack("1010")}}
+			}},
 		// A hold written with no seen, as before #87, keeps the bound
 		// from before it, the plan's, which /resume's move carries, not
 		// its own comment's (state.HeldStack.Seen).
@@ -290,14 +304,18 @@ func TestPlanDirtyResume(t *testing.T) {
 				f.RemoveLabel(1, app, "stage:held")
 				f.EditComment(1010, "owner", "Edited.")
 			}),
-			issueWant{[]string{"stage:plan-review"}, []string{planResumeDirtyRecorded(1010, 1001)}}},
+			func(t testing.TB, f *githubtest.Fake) issueWant {
+				return issueWant{[]string{"stage:plan-review"}, []string{planResumeDirtyOn(t, f, 1010, 1001)}}
+			}},
 		{"a /resume back to planning, with the plan after it, still disagrees",
 			planDirtyResumedToPlanning,
-			issueWant{[]string{"stage:held"}, []string{planDirtyDisagreed(state.Held, "`stage:plan-review`", 9008)}}},
+			func(testing.TB, *githubtest.Fake) issueWant {
+				return issueWant{[]string{"stage:held"}, []string{planDirtyDisagreed(state.Held, "`stage:plan-review`", 9008)}}
+			}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			resolveCheck(t, tt.setup, 1, func(*githubtest.Fake) issueWant { return tt.want })
+			resolveCheck(t, tt.setup, 1, func(f *githubtest.Fake) issueWant { return tt.want(t, f) })
 		})
 	}
 }
@@ -336,4 +354,72 @@ func planDirtyResumedToPlanning(t testing.TB) *githubtest.Fake {
 		f.EditComment(1009, "owner", "Edited.")
 		f.EditComment(1010, "owner", "Edited.")
 	})(t)
+}
+
+// The owner's edit of the App's comment applying a /resume, and mallory's
+// comment after it, in one poll (#566): the pass records the move back to
+// plan-review again, with the dirty comment's time as resolved, which
+// bounds the discussion triggers as the hidden move's /resume did
+// (discFloor), so mallory's comment, after the /resume, still holds the
+// issue from plan-review. The bound is in the record, so it stands once
+// the dirty comment is deleted. With two dirty App comments after the
+// hold, it's the oldest's time, at or before the hidden move's, so a
+// comment between them, which a lagging read didn't hold for, holds the
+// issue too, failing closed.
+func TestPlanDirtyResumeTrigger(t *testing.T) {
+	t.Parallel()
+	held := []string{"stage:held", "type:epic"}
+	for _, tt := range []struct {
+		name  string
+		setup func(testing.TB) *githubtest.Fake
+		want  func(t testing.TB, f *githubtest.Fake) issueWant
+	}{
+		{"mallory's comment in the poll of the edit holds the issue",
+			planResumeDirty(func(t testing.TB, f *githubtest.Fake) { post(t, f, 1010, "mallory", planHoldMallory) }),
+			func(t testing.TB, f *githubtest.Fake) issueWant {
+				return issueWant{held, []string{planResumeDirtyOn(t, f, 1008, 1003),
+					discHeld("plan-review", "`mallory` posted comment 1010",
+						"from=plan-review to=held at=plan-review origin=plan-review reason=discussion event=c1010 seen=1003")}}
+			}},
+		// The record's pass read the issue before mallory's comment, as a
+		// lagging read may, and then the owner deletes the dirty comment.
+		{"and one before the record, once the dirty comment is deleted",
+			planResumeDirty(func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1010, "mallory", planHoldMallory)
+				post(t, f, 1011, app, planResumeDirtyOn(t, f, 1008, 1003))
+				f.DeleteCommentBy("owner", 1008)
+			}),
+			func(testing.TB, *githubtest.Fake) issueWant {
+				return issueWant{held, []string{discHeld("plan-review", "`mallory` posted comment 1010",
+					"from=plan-review to=held at=plan-review origin=plan-review reason=discussion event=c1010 seen=1003")}}
+			}},
+		{"a comment between two dirty App comments holds the issue",
+			revisePlanReview(func(t testing.TB, f *githubtest.Fake) {
+				f.SetPermission("mallory", "write")
+				post(t, f, 1005, "owner", "/hold")
+				f.AddReaction(1005, app, "+1")
+				post(t, f, 1007, app, moved("On hold by owner, from `plan-review`.", "from=plan-review to=held at=plan-review reason=owner cmd=1005 seen=1001"))
+				f.AddLabel(1, app, "stage:held")
+				f.RemoveLabel(1, app, "stage:plan-review")
+				post(t, f, 1008, "owner", "/resume")
+				f.AddReaction(1008, app, "+1")
+				post(t, f, 1010, app, moved("Resumed by owner, back to `plan-review`.", "from=held to=plan-review cmd=1008 seen=1001"))
+				f.AddLabel(1, app, "stage:plan-review")
+				f.RemoveLabel(1, app, "stage:held")
+				post(t, f, 1011, "mallory", planHoldMallory)
+				post(t, f, 1012, app, "Noted.")
+				f.EditComment(1010, "owner", "Edited.")
+				f.EditComment(1012, "owner", "Edited.")
+			}),
+			func(t testing.TB, f *githubtest.Fake) issueWant {
+				return issueWant{[]string{"stage:held"}, []string{planResumeDirtyRecorded(1012, 1001, resolveCommentAt(t, f, 1, 1010)),
+					discHeld("plan-review", "`mallory` posted comment 1011",
+						"from=plan-review to=held at=plan-review origin=plan-review reason=discussion event=c1011 seen=1001")}}
+			}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			resolveCheck(t, tt.setup, 1, func(f *githubtest.Fake) issueWant { return tt.want(t, f) })
+		})
+	}
 }
