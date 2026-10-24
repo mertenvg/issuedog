@@ -668,7 +668,7 @@ func TestDiscRunParentResume(t *testing.T) {
 		t.Errorf("#4's new comments\n%q\nwant\n%q", got, want)
 	}
 	if got, want := l.added(2), []string{moved("Resumed by `/resume`, back to `planned`. Still on hold: #3 and #4, by a hold this `/resume` doesn't end: "+
-		"one set by hand, a `/hold` below this issue, or a deleted comment that was, or may have been, a `/hold`. `/resume` there ends it. Still on hold for discussion: #3.",
+		"one set by hand, a `/hold` below this issue, or a deleted comment that was, or may have been, a `/hold`. `/resume` there ends them. Still on hold for discussion: #3.",
 		fmt.Sprintf("from=held to=planned cmd=%d seen=%d", resume, entries[2]))}; !slices.Equal(got, want) {
 		t.Errorf("#2's new comments\n%q\nwant\n%q", got, want)
 	}
@@ -1157,7 +1157,7 @@ func TestDiscRunFourLevels(t *testing.T) {
 			l.quiet("held")
 			top := f.AddComment(2, "owner", "/resume")
 			l.step("the epic's /resume", "POST /issues/comments/"+strconv.FormatInt(top, 10)+"/reactions", "POST /issues/2/comments")
-			if got, want := l.added(2), []string{fmt.Sprintf("> /resume\n\nI didn't apply this command: the holds below were made on #3, #5, by `/hold` or by hand, "+
+			if got, want := l.added(2), []string{fmt.Sprintf("> /resume\n\nI didn't apply this command: the holds left were made on #3, #5, by `/hold` or by hand, "+
 				"so `/resume` there ends them.\n\n<!-- issuedog:reply reason=rejected cmd=%d -->", top)}; !slices.Equal(got, want) {
 				t.Errorf("#2's new comments %q; want %q", got, want)
 			}
