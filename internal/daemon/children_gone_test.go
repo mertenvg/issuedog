@@ -106,6 +106,34 @@ func TestChildrenKeptGone(t *testing.T) {
 	}
 }
 
+// A kept child that's gone stops the revision before a changed human
+// task it depends on is rewritten, whose "Why it blocks" would name it:
+// the state error names the item, the human task gets no write, and the
+// visit returns no error. Here the kept T2, which the changed T3 blocks
+// (changedKeptBlocksRevision), was moved to another repo. A crash at the
+// error's post replays.
+func TestChildrenKeptGoneBlockedByChangedHuman(t *testing.T) {
+	t.Parallel()
+	setup := changedKeptBlocksSetup(3)
+	pass := childrenPass(t, revisionPlan)
+	githubtest.Replay(t, setup, pass)
+
+	f := run(t, setup, pass)
+	st := f.State()
+	want := "I can't create the children of plan rev 2, as no child of T2 is found, though the revision keeps or changes it, " +
+		"as when it was deleted or moved to another repo. I won't try again until this issue moves, as by `/hold` and `/resume`. " +
+		"The daemon's log has the error.\n\n" + childrenCrashError(goneMoveID(t, f))
+	if got := childrenCrashErrors(st.Issues[0]); !reflect.DeepEqual(got, []string{want}) {
+		t.Errorf("issue 1's state errors are\n%q\nwant one\n%q", got, want)
+	}
+	if len(st.Issues) != 5 || len(records(st.Issues[0])) != 0 {
+		t.Errorf("%d issues, and the records %q; want none filed, and no record", len(st.Issues), records(st.Issues[0]))
+	}
+	for _, n := range []int{2, 3, 4, 5} {
+		droppedNoWrite(t, f, n, "a child or the bug, while the revision is stopped")
+	}
+}
+
 // The owner can act on the state error: here they move the kept child
 // back to this repo, then hold and resume the story, and the revision is
 // applied, its record listing T3's child, with the error not posted
