@@ -189,6 +189,10 @@ func Commands(trust github.Trust) map[string]Handler {
 						rest = append(rest, fmt.Sprintf("#%d", n))
 					}
 				}
+				// The issue's own move, which carries these lists, is made
+				// only when it leaves held, so they never name it, and each
+				// "there" is an issue below it: when it stays held,
+				// resolveResumed's record on it says "here" instead.
 				if self && len(rest) > 0 {
 					m.Text += fmt.Sprintf(" Still on hold: %s, by a hold this `/resume` doesn't end: one set by hand, a `/hold` below this issue, "+
 						"or a deleted comment that was, or may have been, a `/hold`. `/resume` there ends it.", list(rest))
@@ -619,7 +623,7 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 		// /resume on an ancestor doesn't end a discussion hold (SPEC §6.4).
 		return Rejection{Reason: heldWordingDiscussed(discussed, fmt.Sprintf("#%d", c.S.Number)), Final: true}
 	case len(makers) > 0:
-		return Rejection{Reason: fmt.Sprintf("the holds below were made on %s, by `/hold` or by hand, so `/resume` there ends them", strings.Join(makers, ", ")), Final: true}
+		return Rejection{Reason: heldWordingMakers(makers, fmt.Sprintf("#%d", c.S.Number)), Final: true}
 	}
 	return Rejection{Reason: "nothing here or in its open sub-issues is on an owner hold"}
 }
@@ -634,13 +638,39 @@ func heldWordingDiscussed(discussed []string, self string) string {
 	others := slices.DeleteFunc(slices.Clone(discussed), func(n string) bool { return n == self })
 	var why []string
 	if len(others) > 0 {
-		why = append(why, fmt.Sprintf("%s on hold for discussion, which only a code owner's response there, "+
-			"or `/resume` there, ends", strings.Join(others, ", ")))
+		verb := "is"
+		if len(others) > 1 {
+			verb = "are"
+		}
+		why = append(why, fmt.Sprintf("%s %s on hold for discussion, which only a code owner's response there, "+
+			"or `/resume` there, ends", strings.Join(others, ", "), verb))
 	}
 	if len(others) < len(discussed) {
 		why = append(why, "this issue is on hold for discussion, which only a code owner's response here, or `/resume` here, ends")
 	}
 	return strings.Join(why, "; and ")
+}
+
+// heldWordingMakers is resumeCheck's reason for a /resume that ends no
+// hold while owner holds it doesn't end are left in its family, makers
+// naming each issue where those holds were made, as "#3": /resume there
+// ends them. The reply is posted on self, c's issue, which may be one of
+// them, as when a comment deleted there after the /resume may have been
+// a /hold that holds an issue below (resolveGone). So self is "this
+// issue", with "here", and the rest "there", as in heldWordingDiscussed;
+// with both, the rest come first. A hold made on self may be on self
+// itself, not below, as by a /hold posted there after c (heldStackEnds),
+// so self's are "the holds left".
+func heldWordingMakers(makers []string, self string) string {
+	others := slices.DeleteFunc(slices.Clone(makers), func(n string) bool { return n == self })
+	there := fmt.Sprintf("the holds below were made on %s, by `/hold` or by hand, so `/resume` there ends them", strings.Join(others, ", "))
+	switch {
+	case len(others) == 0:
+		return "the holds left were made on this issue, by `/hold` or by hand, so `/resume` here ends them"
+	case len(others) < len(makers):
+		return there + "; and the rest were made on this issue, so `/resume` here ends them"
+	}
+	return there
 }
 
 // moveFamily makes the move plan returns, if any, on each open descendant of
