@@ -477,12 +477,13 @@ func TestPlanReviewRun(t *testing.T) {
 	l.labels("untrusted 👍s on revision 1", epic, "stage:plan-review", "type:epic")
 
 	// 4. mertenvg's comment sends the plan back, with a 👍 on it, which
-	// ends the epic's item and assignment for the pass. The planner's
-	// second run gets the comment as its notes, labelled so, and posts
-	// plan revision 2.
+	// ends the epic's item for the pass. The planner's second run gets the
+	// comment as its notes, labelled so, and posts plan revision 2 in the
+	// same pass, which waits on mertenvg again, so he stays assigned with
+	// no write (SPEC §9.6, #333).
 	notes := f.AddComment(epic, planReviewRunOwner, planReviewRunNotes)
 	l.step("the comment", 2, "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:plan-review",
-		discRunReact(notes), "PATCH /issues/5", "DELETE /issues/1/assignees",
+		discRunReact(notes), "PATCH /issues/5",
 		"POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:planning")
 	added := l.added(epic)
 	sentBack := fmt.Sprintf("The plan is sent back for revision, with %s's comment as the notes.\n\n"+
@@ -498,7 +499,7 @@ func TestPlanReviewRun(t *testing.T) {
 	if got := l.digest(5); !slices.Equal(got, stories) {
 		t.Errorf("the comment: items %q; want %q, with the epic's gone", got, stories)
 	}
-	assignWant(t, f, "the comment", map[int][]string{3: owner, 4: owner})
+	assignWant(t, f, "the comment", map[int][]string{1: owner, 3: owner, 4: owner})
 	files = l.context(2, epic, state.Planning)
 	input := files["input.md"]
 	if heading := fmt.Sprintf("## Comment %d by %s: the revision notes that sent the plan back\n", notes, planReviewRunOwner); !strings.Contains(input, heading) ||
@@ -509,8 +510,8 @@ func TestPlanReviewRun(t *testing.T) {
 		t.Errorf("planner run 2: conversation.md =\n%s\nwant plan revision 1 in it", files["conversation.md"])
 	}
 
-	// 5. The next pass lists revision 2 and assigns the epic again.
-	l.step("plan revision 2 listed", 2, "PATCH /issues/5", "POST /issues/1/assignees")
+	// 5. The next pass lists revision 2, and the epic keeps its assignee.
+	l.step("plan revision 2 listed", 2, "PATCH /issues/5")
 	if got := l.digest(5); !slices.Equal(got, withEpic) {
 		t.Errorf("plan revision 2 listed: items %q; want %q", got, withEpic)
 	}
@@ -698,7 +699,9 @@ func planReviewRunAlone(t *testing.T, more ...map[string]any) (*planReviewRunLoo
 // ends the hold for clarifying, where the interviewer writes spec
 // revision 2, at spec-review, in the same pass. There the 👍 on the plan
 // approves nothing, on any pass, and only his 👍 on spec revision 2 moves
-// the epic on, to planning, where the planner posts plan revision 2. A
+// the epic on, to planning, where the planner posts plan revision 2.
+// mertenvg stays assigned throughout, with no write, as each of those
+// passes' stage work leaves the epic waiting on him again (SPEC §9.6). A
 // restart writes nothing.
 func TestPlanReviewRunOldPlanAtSpecReview(t *testing.T) {
 	t.Parallel()
@@ -719,7 +722,7 @@ func TestPlanReviewRunOldPlanAtSpecReview(t *testing.T) {
 
 	f.AddReaction(m, planReviewRunOwner, "+1")
 	l.step("the discussion resolved", 2, "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:held",
-		"PATCH /issues/2", "DELETE /issues/1/assignees", "PATCH /issues/1", "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:clarifying")
+		"PATCH /issues/2", "PATCH /issues/1", "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:clarifying")
 	added := l.added(1)
 	if len(added) != 2 || !strings.HasPrefix(added[0], "The discussion is resolved, by `mertenvg`, so this issue leaves its hold from `plan-review` for `clarifying`.") {
 		t.Fatalf("the discussion resolved: added %q; want the move to clarifying, then spec revision 2", added)
@@ -736,7 +739,7 @@ func TestPlanReviewRunOldPlanAtSpecReview(t *testing.T) {
 		t.Errorf("the hold, %d, isn't before the move out of it, %d", hold.ID, leave.ID)
 	}
 
-	l.step("spec revision 2 listed", 2, "PATCH /issues/2", "POST /issues/1/assignees")
+	l.step("spec revision 2 listed", 2, "PATCH /issues/2")
 	if got, want := l.digest(2), []string{"#1 Approval p2 1"}; !slices.Equal(got, want) {
 		t.Errorf("spec revision 2 listed: items %q; want %q", got, want)
 	}
@@ -745,7 +748,7 @@ func TestPlanReviewRunOldPlanAtSpecReview(t *testing.T) {
 
 	up := f.AddReaction(spec.ID, planReviewRunOwner, "+1")
 	l.step("the spec approved", 3, "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:spec-review",
-		"PATCH /issues/2", "DELETE /issues/1/assignees", "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:planning")
+		"PATCH /issues/2", "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:planning")
 	cs = l.comments(1)
 	approval, rev2 := cs[len(cs)-2], cs[len(cs)-1]
 	if want := fmt.Sprintf("Revision 2 of the spec is approved, by %s's 👍.\n\n"+
@@ -753,7 +756,7 @@ func TestPlanReviewRunOldPlanAtSpecReview(t *testing.T) {
 		t.Errorf("the spec approved: the approval =\n%s\nwant\n%s", approval.Body, want)
 	}
 	hash2 := l.planComment("plan revision 2", rev2, 1, 2, 3, approval.ID, planReviewRunOutput(t, nil))
-	l.step("plan revision 2 listed", 3, "PATCH /issues/2", "POST /issues/1/assignees")
+	l.step("plan revision 2 listed", 3, "PATCH /issues/2")
 	if got, want := l.digest(2), []string{"#1 Plan approval p2 1"}; !slices.Equal(got, want) || !strings.Contains(f.State().Issues[1].Body, "`"+hash2+"`") {
 		t.Errorf("plan revision 2 listed: items %q; want %q, for plan revision 2", got, want)
 	}

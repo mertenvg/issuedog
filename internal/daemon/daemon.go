@@ -56,6 +56,7 @@ type Daemon struct {
 	assignManaged map[int]bool       // issues whose assignees assignment keeps, as of their last pass (assign.go)
 	assignDropped map[string]bool    // logins, in lower case, GitHub wouldn't assign (assignDrop)
 	assignFor     string             // the notify list, in lower case, that assignDropped was found with
+	assignLater   map[int][]string   // this pass's unassigns put off until after its stage work, by issue (assignLaterPass)
 	snaps         map[int]*github.Snapshot
 	inputs        map[int][]github.Comment // only for snapshots step 1 succeeded on
 	openErrs      map[int]bool             // issues with an open state error after their last step 1
@@ -178,7 +179,9 @@ func (d *Daemon) Run(ctx context.Context) {
 // closes each epic planned into stories whose children have all closed
 // (epicClosePass, #251), keeps the digest (digestPass), and then the
 // assignees (assignPass), whose
-// failures stop nothing. Last it hands Work the issues ready for it. It returns the errors of the issues it couldn't read
+// failures stop nothing. Then it hands Work the issues ready for it, and
+// last makes the unassigns assignPass put off until after it
+// (assignLaterPass). It returns the errors of the issues it couldn't read
 // or run step 1 on, which the next Iterate reads again. An issue whose
 // labels CheckLabels holds back (ErrLabelsHeld), or that it closed again
 // (closingErrClosedAgain), is no error: like a touched issue, it gets
@@ -370,6 +373,9 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		if err := d.Work(ctx, ready); err != nil {
 			errs = append(errs, fmt.Errorf("stage work: %w", err))
 		}
+	}
+	if err := d.assignLaterPass(ctx); err != nil {
+		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
 }

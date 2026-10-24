@@ -12,6 +12,7 @@ import (
 	"github.com/mertenvg/logr/v2"
 
 	"github.com/mertenvg/issuedog/internal/github"
+	"github.com/mertenvg/issuedog/internal/state"
 )
 
 // Assignment (SPEC §9.6, #191) assigns every
@@ -40,6 +41,20 @@ import (
 // the add doesn't meet GitHub's cap of ten assignees with ones that are
 // going. Logins compare in any case, as GitHub's do.
 //
+// An unassign of notify users from an issue at clarifying or planning,
+// the stages whose stage work can bring it to spec-review or plan-review,
+// waits until after the pass's stage work (assignLaterPass), with anyone
+// else it takes off, as a send-back's does: step 1 moves the issue back
+// with the owner's notes, and Work's run then posts the next revision.
+// Such work leaves the issue waiting on the owner again, and then the
+// unassign isn't made, so the notify users stay, and the next pass, which
+// finds the revision's item, writes nothing (#333). So does a run whose result fails to apply, and is
+// tried again next pass (Runs.applyLease), as after a crash: that pass
+// judges the assignees with the result applied, so a crash in the apply
+// leaves them as a clean pass does. A run that fails, or work that leaves
+// the issue anywhere else, or none on it, leaves the unassign to be made
+// after Work.
+//
 // Each pass looks only at the issues whose step 1 succeeded on the
 // snapshot held (Daemon.inputs), as Work does: an issue whose read or
 // step 1 failed, or that a command touched, keeps its assignees that
@@ -67,12 +82,13 @@ import (
 // that left while no daemon ran keeps them (a gap for SPEC §16, #194).
 
 // assignPass sets each pipeline issue's assignees, if Daemon.Assign is
-// set, after the digest pass and before Work. A failed write is the pass's
-// error, which Run logs, and the rest of the issues, and Work, carry on,
-// its issue included. The next pass reads the issue again, and writes
-// again if it still differs. A write that finds the issue gone is no
-// error, keeps the issue from Work, and counts as one of the two reads
-// that drop it (assignFailed).
+// set, after the digest pass and before Work, but for the unassigns it
+// puts off until after Work (assignLaterPass). A failed write is the
+// pass's error, which Run logs, and the rest of the issues, and Work,
+// carry on, its issue included. The next pass reads the issue again, and
+// writes again if it still differs. A write that finds the issue gone is
+// no error, keeps the issue from Work, if it comes before it, and counts
+// as one of the two reads that drop it (assignFailed).
 func (d *Daemon) assignPass(ctx context.Context) error {
 	if !d.Assign {
 		return nil
@@ -127,19 +143,22 @@ func (d *Daemon) assignIssue(ctx context.Context, s *github.Snapshot, notify []s
 			add = slices.DeleteFunc(assignMinus(notify, s.Assignees), func(l string) bool { return d.assignDropped[strings.ToLower(l)] })
 		}
 		remove = assignMinus(s.Assignees, want)
+		later := slices.ContainsFunc(remove, func(l string) bool { return assignHas(notify, l) })
+		if st := stageOf(s); !items && later && (st == state.Clarifying || st == state.Planning) {
+			// Stage work may bring it back to the owner (assignLaterPass).
+			if d.assignLater == nil {
+				d.assignLater = map[int][]string{}
+			}
+			d.assignLater[n], remove = remove, nil
+		}
 	case d.assignManaged[n]:
 		// It left the pipeline: only the notify users go, once.
 		remove = slices.DeleteFunc(slices.Clone(s.Assignees), func(l string) bool { return !assignHas(notify, l) })
 	}
-	a := d.Step.Applier
-	if len(remove) > 0 {
-		got, err := a.Client.RemoveAssignees(ctx, a.Owner, a.Repo, n, remove)
-		if err != nil {
-			return d.assignFailed(n, err)
-		}
-		logr.Infof("unassigned %s from %s/%s#%d", strings.Join(remove, ", "), a.Owner, a.Repo, n)
-		s.Assignees = got
+	if err := d.assignRemove(ctx, s, remove); err != nil {
+		return err
 	}
+	a := d.Step.Applier
 	if len(add) > 0 {
 		got, err := a.Client.AddAssignees(ctx, a.Owner, a.Repo, n, add)
 		if err != nil {
@@ -153,6 +172,51 @@ func (d *Daemon) assignIssue(ctx context.Context, s *github.Snapshot, notify []s
 		delete(d.assignManaged, n) // a failed removal returned above, and is tried again next pass
 	}
 	return nil
+}
+
+// assignRemove unassigns remove, if any, from s, and takes the
+// assignees GitHub answers with, or returns assignFailed's error.
+func (d *Daemon) assignRemove(ctx context.Context, s *github.Snapshot, remove []string) error {
+	if len(remove) == 0 {
+		return nil
+	}
+	a := d.Step.Applier
+	got, err := a.Client.RemoveAssignees(ctx, a.Owner, a.Repo, s.Number, remove)
+	if err != nil {
+		return d.assignFailed(s.Number, err)
+	}
+	logr.Infof("unassigned %s from %s/%s#%d", strings.Join(remove, ", "), a.Owner, a.Repo, s.Number)
+	s.Assignees = got
+	return nil
+}
+
+// assignWorked tells assignment that this pass's stage work on issue n
+// leaves it waiting on the owner again: a run's result applied left it at
+// spec-review or plan-review, or failed to apply and is tried again next
+// pass (Runs.applyLease). Its unassign put off until after Work, if any,
+// isn't made (see the top of this file).
+func (d *Daemon) assignWorked(n int) {
+	if _, ok := d.assignLater[n]; ok {
+		logr.Debugf("%s/%s#%d keeps its assignees: this pass's stage work leaves it waiting on the owner, or on its next pass", d.Step.Owner, d.Step.Repo, n)
+		delete(d.assignLater, n)
+	}
+}
+
+// assignLaterPass makes the unassigns assignPass put off until after
+// Work that its stage work didn't call off (assignWorked), by issue, as
+// assignPass makes its writes: a failure is the pass's error, and the
+// rest carry on.
+func (d *Daemon) assignLaterPass(ctx context.Context) error {
+	var errs []error
+	for _, n := range slices.Sorted(maps.Keys(d.assignLater)) {
+		if s := d.snaps[n]; s != nil {
+			if err := d.assignRemove(ctx, s, d.assignLater[n]); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	d.assignLater = nil
+	return errors.Join(errs...)
 }
 
 // assignFailed returns the error of a failed assignee write to issue n,

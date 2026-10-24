@@ -485,13 +485,17 @@ func TestPlannerWholeRunEpic(t *testing.T) {
 		"POST /issues", "POST /graphql", digestEdit, "POST /issues/1/comments")
 	p.settle("round 1", digestEdit, assign)
 	a1 := f.AddComment(p.n, wholeRunOwner, wholeRunAnswer)
-	p.iterate("round 2", 2, react(a1), digestEdit, unassign, "POST /issues/1/comments")
+	// An answered round's unassign waits until after the pass's stage run
+	// (SPEC §9.6): round 2 leaves the issue at clarifying, so it's made
+	// then, but the spec leaves it at spec-review, waiting on you, so you
+	// stay assigned.
+	p.iterate("round 2", 2, react(a1), digestEdit, "POST /issues/1/comments", unassign)
 	p.settle("round 2", digestEdit, assign)
 	a2 := f.AddComment(p.n, wholeRunOther, "1b")
-	p.iterate("the spec", 3, react(a2), digestEdit, unassign,
+	p.iterate("the spec", 3, react(a2), digestEdit,
 		"PATCH /issues/1", "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:clarifying")
 	// At spec-review, step 1 reads the revision's reactions each pass.
-	p.iterate("the spec, the pass after", 3, digestEdit, assign)
+	p.iterate("the spec, the pass after", 3, digestEdit)
 	p.quiet("the spec")
 	p.labels("the spec", labels("spec-review")...)
 	spec := p.comments()[len(p.comments())-1]
@@ -506,7 +510,7 @@ func TestPlannerWholeRunEpic(t *testing.T) {
 	// after.
 	approveCmd := f.AddComment(p.n, wholeRunOwner, "/approve")
 	p.iterate("the approval and round 3", 4, "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:spec-review",
-		react(approveCmd), digestEdit, unassign, "POST /issues/1/comments")
+		react(approveCmd), digestEdit, "POST /issues/1/comments", unassign)
 	p.labels("round 3", labels("planning")...)
 	cs := p.comments()
 	approval := cs[len(cs)-2]
@@ -538,12 +542,12 @@ func TestPlannerWholeRunEpic(t *testing.T) {
 	p.transferUnlistedUnchanged("round 3, an hour on") // it lists the open issues (#237)
 	p.unchanged("round 3, an hour on, the pass after")
 
-	// 3. Your answer gets a 👍, which takes round 3 out of the digest and
-	// unassigns you, and the planner's second run, with the answer as its
-	// input, posts the plan at plan-review. The plan waits in the digest,
-	// with you assigned, from the pass after.
+	// 3. Your answer gets a 👍, which takes round 3 out of the digest, and
+	// the planner's second run, with the answer as its input, posts the
+	// plan at plan-review in the same pass, so you stay assigned (SPEC
+	// §9.6). The plan waits in the digest from the pass after.
 	a3 := f.AddComment(p.n, wholeRunOwner, "1a 2a")
-	p.iterate("the plan", 5, react(a3), digestEdit, unassign,
+	p.iterate("the plan", 5, react(a3), digestEdit,
 		"POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:planning")
 	p.acked("the plan", a1, a2, approveCmd, a3)
 	files = p.context(5, state.Planning)
@@ -557,7 +561,7 @@ func TestPlannerWholeRunEpic(t *testing.T) {
 	planned := p.planComment("the plan", "epic", 123,
 		fmt.Sprintf("<!-- issuedog:transition from=planning to=plan-review rev=1 run=run5 model=sonnet seen=%d -->", a3), plan)
 	p.labels("the plan", labels("plan-review")...)
-	p.settle("the plan", digestEdit, assign)
+	p.settle("the plan", digestEdit)
 	p.waiting("the plan", []string{"#1 Plan approval p1 1"}, wholeRunOwner)
 
 	// 4. Your 👍 on the plan comment approves the plan, and no spec: step 1
@@ -822,16 +826,17 @@ func TestPlannerWholeRunFails(t *testing.T) {
 	p.unchanged("eve's comment")
 
 	// Your comment gets a 👍, takes the error out of the digest, and starts
-	// a new count: its run's plan is posted, and the pass after lists it in
-	// the digest and assigns you.
+	// a new count: its run's plan is posted in the same pass, which keeps
+	// you assigned, as the plan waits on you (SPEC §9.6), and the pass
+	// after lists it in the digest.
 	again := f.AddComment(p.n, wholeRunOwner, "Please try again: T3's scope is infra.")
-	p.iterate("your comment", 4, fmt.Sprintf("POST /issues/comments/%d/reactions", again), "PATCH /issues/2", "DELETE /issues/1/assignees",
+	p.iterate("your comment", 4, fmt.Sprintf("POST /issues/comments/%d/reactions", again), "PATCH /issues/2",
 		"POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:planning")
 	p.labels("your comment", "stage:plan-review", "type:epic")
 	cs = p.comments()
 	if want := fmt.Sprintf("\n\n<!-- issuedog:transition from=planning to=plan-review rev=1 run=run4 model=sonnet seen=%d -->\n", again); !strings.Contains(cs[len(cs)-1].Body, want) {
 		t.Errorf("your comment: the newest comment =\n%s\nwant run 4's plan, with %q", cs[len(cs)-1].Body, want)
 	}
-	p.settle("your comment", "PATCH /issues/2", "POST /issues/1/assignees")
+	p.settle("your comment", "PATCH /issues/2")
 	p.waiting("your comment", []string{"#1 Plan approval p2 1"}, wholeRunOwner)
 }
