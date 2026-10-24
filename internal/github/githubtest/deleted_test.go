@@ -2,8 +2,10 @@ package githubtest
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // deletedQuery sends query to f for issue number with the deletions'
@@ -92,5 +94,53 @@ func TestDeleteCommentBy(t *testing.T) {
 	}
 	if c := f.State().Issues[1].Comments; len(c) != 0 {
 		t.Errorf("issue %d's comments = %+v; want the deleted one gone", two, c)
+	}
+}
+
+// As on GitHub (SPEC §16), an author's deletion of their own comment
+// records no event, whatever the login's case, though a deletion that names
+// no actor of a comment GitHub names no author of does, as either may be
+// someone else. Every deletion, with an event or not, moves the issue's
+// updated_at, to the deletion's time, and an event's time is the same.
+func TestDeleteCommentByAuthor(t *testing.T) {
+	t.Parallel()
+	f := New(t, "o/r", "issuedog")
+	n := f.AddIssue("owner", "Title", "body")
+	c, ctx := f.Client(t), context.Background()
+	updated := func() time.Time {
+		t.Helper()
+		is, _, err := c.Issues.Get(ctx, "o", "r", n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return is.GetUpdatedAt().Time
+	}
+	for name, del := range map[string]func(id int64) string{
+		"DeleteComment":               func(id int64) string { f.DeleteComment(id); return "" },
+		"DeleteCommentBy(its author)": func(id int64) string { return f.DeleteCommentBy("Mallory", id) },
+	} {
+		id := f.AddComment(n, "mallory", "Oops.")
+		before := updated()
+		if node := del(id); node != "" {
+			t.Errorf("%s: event %q; want none", name, node)
+		}
+		if got := updated(); !got.After(before) {
+			t.Errorf("%s: updated_at %v, %v before; want it moved", name, got, before)
+		}
+	}
+	if errs, nodes := deletedQuery(t, f, answered, n, nil); len(errs) != 0 || len(nodes) != 0 {
+		t.Errorf("after the authors' deletions: errors %q and deletions %+v; want neither", errs, nodes)
+	}
+	ghost := f.DeleteCommentBy("", f.AddComment(n, "", "A ghost's note."))
+	other := f.DeleteCommentBy("owner", f.AddComment(n, "mallory", "Spam."))
+	at := updated()
+	if _, nodes := deletedQuery(t, f, answered, n, nil); len(nodes) != 2 || nodes[0].ID != ghost || nodes[1].ID != other {
+		t.Errorf("deletions %+v; want the ghost's %s, then the owner's %s", nodes, ghost, other)
+	}
+	f.mu.Lock()
+	s := slices.Clone(f.issues[n-1].deletions)
+	f.mu.Unlock()
+	if len(s) != 2 || !s[1].at.Equal(at) {
+		t.Errorf("deletions %+v; want the last one at updated_at, %v", s, at)
 	}
 }

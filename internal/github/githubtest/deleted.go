@@ -2,8 +2,8 @@ package githubtest
 
 import (
 	"fmt"
-	"slices"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -15,20 +15,27 @@ type deletedEvent struct {
 }
 
 // DeleteCommentBy deletes a comment as login, as its author or someone with
-// write access can, and records a CommentDeletedEvent on its issue naming
-// login and the comment's author, which the GraphQL comments query serves
-// (deletedPage). It returns the event's node ID, the ID internal/github
-// gives it. An empty login is an event that names no actor. DeleteComment
-// records no event. A comment the fake hasn't got, one deleted already
-// included, fails the test (fakeCommentID).
+// write access can, and moves its issue's updated_at, as DeleteComment
+// does. When login isn't the comment's author, it records a
+// CommentDeletedEvent on its issue naming login and the comment's author,
+// which the GraphQL comments query serves (deletedPage), and returns the
+// event's node ID, the ID internal/github gives it. An empty login is an
+// event that names no actor. As on GitHub, an author's deletion of their
+// own comment records no event (SPEC §16), so it returns "". A comment the
+// fake hasn't got, one deleted already included, fails the test
+// (fakeCommentID).
 func (f *Fake) DeleteCommentBy(login string, id int64) string {
 	f.t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	c := f.fakeCommentID(id)
-	f.comments = slices.DeleteFunc(f.comments, func(c *comment) bool { return c.GetID() == id })
+	at := f.deleteComment(c)
+	author := c.GetUser().GetLogin()
+	if login != "" && strings.EqualFold(login, author) {
+		return ""
+	}
 	f.lastEvent++
-	e := deletedEvent{node: fmt.Sprintf("CDE_%d", firstEvent+f.lastEvent), by: login, author: c.GetUser().GetLogin(), at: f.tick().Time}
+	e := deletedEvent{node: fmt.Sprintf("CDE_%d", firstEvent+f.lastEvent), by: login, author: author, at: at.Time}
 	is := f.issues[c.issue-1]
 	is.deletions = append(is.deletions, e)
 	return e.node

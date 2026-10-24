@@ -511,11 +511,13 @@ func discRunTwoTriggers(t *testing.T, l *discRunLoop) (int64, string) {
 	return m, key
 }
 
-// #188's verify note: a deleted comment that changes no updated_at, as on
-// the fake (SPEC §16 asks whether GitHub's deletion does), stays in the
-// daemon's snapshot of a held issue, which isn't read again. Here mallory
-// deletes the rename's notice, whose reactions step 1 reads on every pass
-// of a held issue, so the next pass gets a 404 for them: that pass fails,
+// #188's verify note: a deleted comment whose updated_at hasn't moved, as
+// on GitHub for about 2 seconds after the delete, or at all if another
+// user's deletion doesn't move it (SPEC §16), stays in the daemon's
+// snapshot of a held issue, which isn't read again. The fake moves it at
+// once, so here mallory deletes the rename's notice during a pass, after
+// its poll, just before step 1 reads the notice's reactions, as it does on
+// every pass of a held issue, so that pass gets a 404 for them: it fails,
 // with nothing written, and marks the issue to read again. The pass after
 // reads it, finds the deletion, and posts its notice, so the 404 comes
 // once, not on every pass. The rename, whose notice is gone, is no longer
@@ -531,8 +533,14 @@ func TestDiscRunDeletedNotice404(t *testing.T) {
 	l := newDiscRunLoop(t, f)
 	m, key := discRunTwoTriggers(t, l)
 	notice := discRunFind(t, f, 2, discNoticeMarker(key))
-	del := f.DeleteCommentBy("mallory", notice)
-	l.fail("the pass after the deletion", []string{fmt.Sprintf("list reactions to comment %d in o/r", notice), "404 Not Found"})
+	reactions := fmt.Sprintf("/issues/comments/%d/reactions", notice)
+	var del string
+	f.BeforeRequest(func(r githubtest.Request) bool { return r.Method == http.MethodGet && r.Path == reactions },
+		func() { del = f.DeleteCommentBy("mallory", notice) })
+	l.fail("the pass of the deletion", []string{fmt.Sprintf("list reactions to comment %d in o/r", notice), "404 Not Found"})
+	if del == "" {
+		t.Fatal("the pass of the deletion read no reactions to the notice, so mallory never deleted it")
+	}
 	l.step("the pass after the 404", "POST /issues/2/comments", "POST /issues/1/comments", "PATCH /issues/1")
 	if got, want := l.added(2), []string{discNotice("`mallory` deleted a comment by `issuedog[bot]`", "d"+del)}; !slices.Equal(got, want) {
 		t.Errorf("#2's new comments %q; want %q", got, want)
