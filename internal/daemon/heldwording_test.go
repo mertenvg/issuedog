@@ -170,6 +170,103 @@ func TestHeldWordingMadeHere(t *testing.T) {
 	}
 }
 
+// heldWordingGoneHere is #1 with no stage label, so not in the pipeline,
+// which no trigger holds, and #2 below it held for mallory's comment; then
+// the owner's /resume on #1, mallory's deletion of the owner's comment on
+// #1 after it, which may have been a /hold that holds #2, and the owner's
+// 👍 on mallory's comment, which resolves #2's discussion, so only that
+// deleted comment keeps #2 held (SPEC §6.4). With recorded, #2's pass then
+// records that, so both the record and the read of #1 find that one hold.
+// It returns the /resume.
+func heldWordingGoneHere(t testing.TB, f *githubtest.Fake, recorded bool) int64 {
+	t.Helper()
+	f.SetPermission("owner", "admin")
+	f.SetPermission("mallory", "write")
+	n := f.AddIssue("owner", "Issue", "body")
+	f.SetType(n, "task")
+	file(f, n, ready) // #2
+	w := f.AddComment(2, "mallory", "Wait.")
+	resolveSteps(t, f, 2)
+	note := f.AddComment(1, "owner", "Note.")
+	resume := f.AddComment(1, "owner", "/resume")
+	f.DeleteCommentBy("mallory", note)
+	f.AddReaction(w, "owner", "+1")
+	if recorded {
+		resolveSteps(t, f, 2)
+		if body := newestComment(f, 2); !strings.Contains(body, "<!-- issuedog:ended reason=discussion gone=1-") {
+			t.Fatalf("#2: newest comment %q; want the record of the comment deleted on #1", body)
+		}
+	}
+	return resume
+}
+
+// #533: a /resume on #1 that ends no hold, while #2 stays held only by the
+// comment deleted on #1 after it, is rejected, naming the one hold left as
+// made on this issue, where it's posted, with "here" and "ends it". Once
+// #2's record of the deletion is posted, the record and the read of #1
+// both name that hold, and it still counts once. Replay passes, and a
+// second pass writes nothing.
+func TestHeldWordingGoneHere(t *testing.T) {
+	t.Parallel()
+	for _, recorded := range []bool{false, true} {
+		t.Run(fmt.Sprintf("recorded %t", recorded), func(t *testing.T) {
+			t.Parallel()
+			var resume int64
+			setup := func(t testing.TB) *githubtest.Fake {
+				f := githubtest.New(t, "o/r", slug)
+				resume = heldWordingGoneHere(t, f, recorded)
+				f.ForgetWrites()
+				return f
+			}
+			githubtest.Replay(t, setup, resolvePass(t, 1))
+			f := run(t, setup, resolvePass(t, 1))
+			want := final("/resume", "I didn't apply this command",
+				"the hold left was made on this issue, by `/hold` or by hand, so `/resume` here ends it", fmt.Sprint(resume))
+			if l, body := f.State().Issues[1].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:held"}) || body != want {
+				t.Errorf("#2's labels %q, #1's newest comment\n%q\nwant #2 held, with\n%q", l, body, want)
+			}
+		})
+	}
+}
+
+// #533: #1 at ready, #2 below it with no stage label, so not in the
+// pipeline, which no trigger holds, and #3 below #2 held for mallory's
+// comment, which the owner's 👍 resolves after mallory deleted the owner's
+// comment on #2, so #3 stays held by that deleted comment, which its
+// record names. #1's /resume, above #2, doesn't end that hold (SPEC §6.4),
+// so it's rejected, naming #2 as where the one hold left was made, with
+// "ends it", though the record and the read of #2 both name it. Replay
+// passes, and a second pass writes nothing.
+func TestHeldWordingGoneAbove(t *testing.T) {
+	t.Parallel()
+	var resume int64
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := discFake(t) // #1
+		n := f.AddIssue("owner", "Issue", "body")
+		f.SetType(n, "task")
+		f.SetParent(n, 1)
+		file(f, n, ready) // #3
+		w := f.AddComment(3, "mallory", "Wait.")
+		resolveSteps(t, f, 3)
+		note := f.AddComment(2, "owner", "Note.")
+		f.DeleteCommentBy("mallory", note)
+		f.AddReaction(w, "owner", "+1")
+		resolveSteps(t, f, 3)
+		if body := newestComment(f, 3); !strings.Contains(body, "<!-- issuedog:ended reason=discussion gone=2-") {
+			t.Fatalf("#3: newest comment %q; want the record of the comment deleted on #2", body)
+		}
+		resume = f.AddComment(1, "owner", "/resume")
+		f.ForgetWrites()
+		return f
+	}
+	githubtest.Replay(t, setup, resolvePass(t, 1))
+	f := run(t, setup, resolvePass(t, 1))
+	want := final("/resume", "I didn't apply this command", madeOn("#2", 1), fmt.Sprint(resume))
+	if l, body := f.State().Issues[2].Labels, newestComment(f, 1); !slices.Equal(l, []string{"stage:held"}) || body != want {
+		t.Errorf("#3's labels %q, #1's newest comment\n%q\nwant #3 held, with\n%q", l, body, want)
+	}
+}
+
 // heldWordingLeftOnSelf is #1 with #2 below it, and with below, #3 below
 // #2, all at ready; then the owner's /resume on #2, and the owner's /hold
 // on #1 after it, in one poll, which #1's pass handles first, so it holds

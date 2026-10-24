@@ -36,7 +36,8 @@ func TestHeldWordingHolds(t *testing.T) {
 // #222: resumeCheck's reason names the issue the reply is posted on as
 // "this issue", with "here", and each other issue by number, with
 // "there"; with both, the others come first. The others take "is" for
-// one and "are" for more (#389).
+// one and "are" for more (#389), and are joined as "#3 and #4", or "#3,
+// #4 and #5", as the reply to a /resume that applies joins them (#533).
 func TestHeldWordingDiscussed(t *testing.T) {
 	t.Parallel()
 	const (
@@ -51,8 +52,9 @@ func TestHeldWordingDiscussed(t *testing.T) {
 	}{
 		{"only self", []string{"#2"}, "#2", here},
 		{"only another", []string{"#2"}, "#1", "#2 is" + there},
-		{"only others", []string{"#3", "#4"}, "#1", "#3, #4 are" + there},
-		{"others and self", []string{"#3", "#4", "#1"}, "#1", "#3, #4 are" + there + "; and " + here},
+		{"only others", []string{"#3", "#4"}, "#1", "#3 and #4 are" + there},
+		{"others and self", []string{"#3", "#4", "#1"}, "#1", "#3 and #4 are" + there + "; and " + here},
+		{"three others", []string{"#3", "#4", "#5"}, "#1", "#3, #4 and #5 are" + there},
 		{"self, then another", []string{"#1", "#3"}, "#1", "#3 is" + there + "; and " + here},
 		{"a number that only starts like self's", []string{"#12"}, "#1", "#12 is" + there},
 	} {
@@ -75,7 +77,8 @@ func TestHeldWordingDiscussed(t *testing.T) {
 // discussion holds does; with both, the others come first. makers names
 // an issue once for each hold made there, and each issue is named once.
 // The holds are "left", not "below", as one may be on self itself, and
-// each clause's words follow the number of holds it counts (#466).
+// each clause's words follow the number of holds it counts (#466). The
+// others are joined as "#2 and #3", or "#2, #3 and #4" (#533).
 func TestHeldWordingMakers(t *testing.T) {
 	t.Parallel()
 	const (
@@ -98,14 +101,16 @@ func TestHeldWordingMakers(t *testing.T) {
 		{"two on self", []string{"#1", "#1"}, "#1", here},
 		{"one on another", []string{"#2"}, "#1", fmt.Sprintf(thereOne, "#2")},
 		{"two on another", []string{"#2", "#2"}, "#1", fmt.Sprintf(there, "#2")},
-		{"one each on others", []string{"#2", "#3"}, "#1", fmt.Sprintf(there, "#2, #3")},
-		{"others, each named once", []string{"#2", "#3", "#2"}, "#1", fmt.Sprintf(there, "#2, #3")},
+		{"one each on others", []string{"#2", "#3"}, "#1", fmt.Sprintf(there, "#2 and #3")},
+		{"others, each named once", []string{"#2", "#3", "#2"}, "#1", fmt.Sprintf(there, "#2 and #3")},
+		{"three others", []string{"#2", "#3", "#4"}, "#1", fmt.Sprintf(there, "#2, #3 and #4")},
+		{"three others and one on self", []string{"#2", "#3", "#1", "#4"}, "#1", fmt.Sprintf(bothSome, "#2, #3 and #4") + restOne},
 		{"one on another and one on self", []string{"#2", "#1"}, "#1", fmt.Sprintf(bothOne, "#2") + restOne},
 		{"self, then another", []string{"#1", "#2"}, "#1", fmt.Sprintf(bothOne, "#2") + restOne},
 		{"one on another and two on self", []string{"#1", "#2", "#1"}, "#1", fmt.Sprintf(bothOne, "#2") + restSome},
-		{"others and one on self", []string{"#2", "#1", "#3"}, "#1", fmt.Sprintf(bothSome, "#2, #3") + restOne},
+		{"others and one on self", []string{"#2", "#1", "#3"}, "#1", fmt.Sprintf(bothSome, "#2 and #3") + restOne},
 		{"two on another and one on self", []string{"#2", "#2", "#1"}, "#1", fmt.Sprintf(bothSome, "#2") + restOne},
-		{"others and two on self", []string{"#2", "#1", "#3", "#1"}, "#1", fmt.Sprintf(bothSome, "#2, #3") + restSome},
+		{"others and two on self", []string{"#2", "#1", "#3", "#1"}, "#1", fmt.Sprintf(bothSome, "#2 and #3") + restSome},
 		{"a number that only starts like self's", []string{"#12"}, "#1", fmt.Sprintf(thereOne, "#12")},
 	} {
 		t.Run(c.name, func(t *testing.T) {

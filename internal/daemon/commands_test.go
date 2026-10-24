@@ -509,7 +509,7 @@ func TestOwnHolds(t *testing.T) {
 		{name: "a hold whose /hold comment is gone isn't ended from above",
 			gone:   true,
 			steps:  []step{{2, "/hold"}, {1, "/resume"}},
-			labels: [3]string{"stage:ready", "stage:held", "stage:held"}, react: "-1", reply: madeOn("#2, #3", 2)},
+			labels: [3]string{"stage:ready", "stage:held", "stage:held"}, react: "-1", reply: madeOn("#2 and #3", 2)},
 		{name: "a /resume on the issue itself ends its hold whose /hold comment is gone, and the one below, as its marker there names it",
 			gone:   true,
 			steps:  []step{{2, "/hold"}, {2, "/resume"}},
