@@ -225,7 +225,9 @@ type Runs struct {
 // has a Stage with work pending. If none ran, it runs Unlabeled, if set, on
 // the newest issue, by number, with no stage label and no transition
 // marker that it has work for. A lease whose issue has labels held back
-// (ErrLabelsHeld) waits, and no run starts until it's applied. An issue
+// (ErrLabelsHeld) waits, and no run starts until it's applied. So does a
+// saved result on an issue whose read or step 1 failed this pass, counted
+// as a failure to apply (resume), whose error is Work's. An issue
 // with labels held back is never ready, so it starts no run either, and
 // one with a stage label left out (Snapshot.LeftOut) is no Unlabeled work.
 //
@@ -599,6 +601,14 @@ func (r *Runs) applyLease(ctx context.Context, l Lease, st Stage, raw []byte, ou
 		logr.Infof("run %s on #%d waits to be applied, which isn't counted as a failure: %v", l.RunID, l.Issue, err)
 		return err
 	}
+	return r.applyFailed(ctx, l, st, err)
+}
+
+// applyFailed counts err, a failure to apply l's result, in ApplyFailures,
+// and keeps the lease, so the next pass tries again; after
+// loop.max_attempts of them, the run is a failed attempt, and only failed's
+// own error is returned, as failed logs the cause.
+func (r *Runs) applyFailed(ctx context.Context, l Lease, st Stage, err error) error {
 	l.ApplyFailures++
 	if l.ApplyFailures < r.limit() {
 		logr.Warnf("applying run %s on #%d failed, %d of %d times, so it's tried again: %v", l.RunID, l.Issue, l.ApplyFailures, r.limit(), err)
@@ -818,7 +828,11 @@ func (r *Runs) newInput(ctx context.Context, s *github.Snapshot, d Dirt, seen in
 // attempt unless it hit a usage limit or was applied; and the lease stays,
 // marked ended, while it holds a count. A Failed lease only gives its
 // count (endedLease). A saved result whose issue has labels held back
-// waits, its lease kept (applyLease).
+// waits, its lease kept (applyLease). So does a valid saved result whose
+// issue's read or step 1 failed this pass, neither applied nor dropped,
+// but counted as a failure to apply (applyFailed), so after
+// loop.max_attempts such passes and failed applies in all, the run is a
+// failed attempt.
 func (r *Runs) resume(ctx context.Context) (int, error) {
 	l, ok, err := r.readLease(ctx)
 	if err != nil || !ok {
@@ -874,6 +888,14 @@ func (r *Runs) resume(ctx context.Context) (int, error) {
 		logr.Infof("run %s on #%d left no valid result, so it's a failed attempt, its clone is deleted, and #%d stays at %s to run again",
 			l.RunID, l.Issue, l.Issue, l.Stage)
 		return 0, r.failed(ctx, st, l, &daemonCause{errors.New("no valid result after a restart")})
+	}
+	if r.Daemon.step1Failed[l.Issue] {
+		// Step 1 may have left a command unhandled, such as a /hold whose
+		// first write failed, which would drop the result (SPEC §8.2). So
+		// the result waits for a pass whose step 1 succeeds on the issue,
+		// and counts as a failure to apply, so one whose step 1 keeps
+		// failing doesn't hold up stage work for ever.
+		return 0, r.applyFailed(ctx, l, st, fmt.Errorf("step 1 failed on #%d this pass, and may have left a command unhandled", l.Issue))
 	}
 	logr.Infof("applying the saved result of run %s on #%d", l.RunID, l.Issue)
 	return l.Issue, r.applyLease(ctx, l, st, raw, out)
