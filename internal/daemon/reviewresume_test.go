@@ -79,7 +79,7 @@ func reviewResumePlanning(f *githubtest.Fake) int64 {
 		"<!-- issuedog:transition from=spec-review to=planning rev=1 body=%s cmd=r9 seen=%d -->", state.BodyHash("the idea"), rev))
 }
 
-// The issue's case, through the loop with step 1 wired as main's newStep
+// The issue's case, through the loop with step 1 wired as daemon.NewStep
 // wires it, for each review stage: the owner's comment posted during the
 // run is 👍'd as an answer by the first pass after a restart, which drops
 // the resumed result rather than lose it (SPEC §8.2). The next pass's run

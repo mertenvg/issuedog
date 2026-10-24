@@ -7,7 +7,36 @@ import (
 
 	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/github"
+	"github.com/mertenvg/issuedog/internal/repo"
+	"github.com/mertenvg/issuedog/internal/state"
 )
+
+// New is the daemon as it runs, on the Applier a, the bare clone clone,
+// the config cfg and the trust tr, all from startup: a reads main from
+// clone, for a human task's file check (humanCheck), the digest and
+// assignment are on, and step 1 is NewStep's, asking the daemon's config
+// of the moment for models.allowed. Its Work is unset: that is stage work,
+// with the Stages RegisterStages gives. main's startDaemon and the
+// whole-run tests both build the daemon with it, so the two can't drift
+// apart (#330).
+func New(a *Applier, clone *repo.Repo, cfg *config.Config, tr github.Trust) *Daemon {
+	a.ReadMain = clone.ReadFile
+	d := &Daemon{Clone: clone, Config: cfg, Digest: true, Assign: true}
+	d.Step = NewStep(a, tr, d.CurrentModels)
+	return d
+}
+
+// RegisterStages returns the Stages to register on d, by stage, and the
+// Unlabeled stage: the interviewer at clarifying, the planner at planning
+// (SPEC §12), and triage for open issues with no stage label (SPEC §6.2).
+// main's stageWork and the whole-run tests both register them with it
+// (#330).
+func RegisterStages(d *Daemon) (map[state.Stage]Stage, Stage) {
+	return map[state.Stage]Stage{
+		state.Clarifying: &Interviewer{Daemon: d},
+		state.Planning:   &Planner{Daemon: d},
+	}, &Triage{Daemon: d}
+}
 
 // NewStep is step 1 as the daemon runs it, on the Applier a, with the
 // trust tr: the command and reaction handlers merged so far, /track and
@@ -21,8 +50,8 @@ import (
 // loop's reloads replace its Trust and the daemon's Config, so the
 // handlers and the triggers ask for the current trust, and models for the
 // current models.allowed, rather than keeping what they had at the start.
-// main's startDaemon and the whole-run tests both build step 1 with it,
-// so the two can't drift apart (#218).
+// New builds step 1 with it, for main's startDaemon and the whole-run
+// tests both, so the two can't drift apart (#218).
 func NewStep(a *Applier, tr github.Trust, models func() config.Models) *Step {
 	st := &Step{Applier: a, Trust: tr, Models: models}
 	st.Commands = Commands(st.CurrentTrust())

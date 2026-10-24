@@ -164,6 +164,18 @@ func newRig(t *testing.T, f *githubtest.Fake, o *origin, root string) *rig {
 	return g
 }
 
+// wireAsMain rebuilds g's daemon as main's startDaemon builds it, with
+// daemon.New, on g's Applier and clone, with the config cfg and no trust,
+// which Iterate loads from main. Its Runs get daemon.RegisterStages'
+// Stages and Unlabeled stage, as main's stageWork registers them. The
+// whole runs start with it, so they run the wiring main runs (#330).
+func (g *rig) wireAsMain(cfg *config.Config) {
+	d := daemon.New(g.d.Step.Applier, g.d.Clone, cfg, nil)
+	d.Work = g.r.Work
+	g.d, g.r.Daemon = d, d
+	g.r.Stages, g.r.Unlabeled = daemon.RegisterStages(d)
+}
+
 func (g *rig) path(elem ...string) string { return filepath.Join(append([]string{g.root}, elem...)...) }
 
 // claude sets what the fake claude prints and its exit code.

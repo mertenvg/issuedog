@@ -15,10 +15,11 @@ import (
 // stories and their tasks, to a discussion hold, the interviewer's plan
 // outcome, a revision applied to the stories, and a changed story's own
 // revision applied to its tasks. It runs on childrenRunLoop (#279), so the
-// stages are registered as registerStages registers them, step 1 is wired
-// as main's newStep wires it, the Applier reads main from the daemon's
-// clone and the config's labels exist, as startDaemon sets them, the
-// digest and assignment are on, and Daemon.Iterate is the loop. Config and
+// stages are registered as registerStages registers them, the daemon is
+// built as startDaemon builds it, daemon.New, so step 1 is
+// daemon.NewStep's, the Applier reads main from the daemon's clone, and
+// the digest and assignment are on, the config's labels exist, as
+// startDaemon creates them, and Daemon.Iterate is the loop. Config and
 // trust come from main on the origin: mertenvg owns CODEOWNERS and is
 // notify, and wendy is a write collaborator CODEOWNERS doesn't trust.
 // plan.review is false, so a story's first plan skips review, while a

@@ -60,7 +60,7 @@ func typeErrRetype(f *githubtest.Fake, n int, from, to string) int64 {
 // typeErrTrust trusts owner, as CODEOWNERS does in newOrigin.
 var typeErrTrust = trusted{"owner": true}
 
-// typeErrPass runs step 1 on issue 1 as newStep does, with the command
+// typeErrPass runs step 1 on issue 1 as NewStep does, with the command
 // handlers, /approve among them, and the reaction triggers for a 👍 on a
 // revision and on a state error. issueTypes is the Applier's IssueTypes.
 func typeErrPass(t testing.TB, issueTypes bool) func(*githubtest.Fake) error {

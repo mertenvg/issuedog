@@ -242,7 +242,7 @@ type trustSet map[string]bool
 func (ts trustSet) Trusted(_ context.Context, login string) (bool, error) { return ts[login], nil }
 
 // The loop's reloads replace the step's Trust, and the 👍 trigger must use
-// the trust of the moment, not the one newStep got.
+// the trust of the moment, not the one NewStep got.
 func TestNewStepUsesCurrentTrust(t *testing.T) {
 	f := githubtest.New(t, "o/r", "issuedog-dev")
 	n := f.AddIssue("owner", "Spec", "body")
@@ -250,7 +250,7 @@ func TestNewStepUsesCurrentTrust(t *testing.T) {
 	f.AddLabel(n, "issuedog-dev[bot]", "stage:spec-review")
 	f.AddReaction(f.AddComment(n, "issuedog-dev[bot]", revisionOf("body")), "owner2", "+1")
 	c := f.Client(t)
-	st := newStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{"owner2": true}, noModels)
+	st := daemon.NewStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{"owner2": true}, noModels)
 	step := func() []string {
 		t.Helper()
 		s, err := c.Snapshot(context.Background(), "o", "r", n)
@@ -272,15 +272,15 @@ func TestNewStepUsesCurrentTrust(t *testing.T) {
 	}
 }
 
-// newStep's Models is the models it got, asked on each call, so a plan
+// NewStep's Models is the models it got, asked on each call, so a plan
 // item's model is resolved against models.allowed as of the latest reload
 // when ChildrenVisit files its child (#126).
 func TestNewStepModels(t *testing.T) {
 	t.Parallel()
 	current := config.Models{Allowed: []config.Model{{Name: "opus"}}}
-	st := newStep(&daemon.Applier{Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{}, func() config.Models { return current })
+	st := daemon.NewStep(&daemon.Applier{Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{}, func() config.Models { return current })
 	if st.Models == nil {
-		t.Fatal("newStep's step has no Models")
+		t.Fatal("NewStep's step has no Models")
 	}
 	if got := st.Models(); !reflect.DeepEqual(got, current) {
 		t.Errorf("Models() = %+v, want %+v", got, current)
@@ -291,7 +291,7 @@ func TestNewStepModels(t *testing.T) {
 	}
 }
 
-// newStep approves a plan at plan-review, by a 👍 on the plan revision on
+// NewStep approves a plan at plan-review, by a 👍 on the plan revision on
 // one epic and by /approve on another. Each plan comment is posted as the
 // planner's run posts it, by a move with PlanRev.
 func TestNewStepApprovesPlan(t *testing.T) {
@@ -322,7 +322,7 @@ func TestNewStepApprovesPlan(t *testing.T) {
 	}
 	f.AddReaction(plans[0], "owner", "+1")
 	f.AddComment(2, "owner", "/approve")
-	st := newStep(a, trustSet{"owner": true}, noModels)
+	st := daemon.NewStep(a, trustSet{"owner": true}, noModels)
 	for n := 1; n <= 2; n++ {
 		if _, err := st.Run(context.Background(), snap(n)); err != nil {
 			t.Fatal(err)
@@ -337,7 +337,7 @@ func TestNewStepApprovesPlan(t *testing.T) {
 	}
 }
 
-// newStep has every command handler, and /hold checks a child's labels with
+// NewStep has every command handler, and /hold checks a child's labels with
 // the trust of the moment: owner2's hand-set stage counts once a reload
 // trusts owner2.
 func TestNewStepCommands(t *testing.T) {
@@ -354,10 +354,10 @@ func TestNewStepCommands(t *testing.T) {
 	f.AddLabel(2, "owner2", "stage:planned")
 	f.AddComment(1, "owner", "/hold")
 	c := f.Client(t)
-	st := newStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{}, noModels)
+	st := daemon.NewStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{}, noModels)
 	for _, name := range []string{"approve", "done", "hold", "resume", "priority", "model", "effort", "track", "ignore"} {
 		if _, ok := st.Commands[name]; !ok {
-			t.Errorf("newStep has no /%s handler", name)
+			t.Errorf("NewStep has no /%s handler", name)
 		}
 	}
 	st.Trust = trustSet{"owner": true, "owner2": true} // a reload
@@ -374,7 +374,7 @@ func TestNewStepCommands(t *testing.T) {
 	}
 }
 
-// newStep's reaction triggers both run: in one Step, a 👍 on a revision
+// NewStep's reaction triggers both run: in one Step, a 👍 on a revision
 // approves it, and a 👍 on a flag admits its issue. A failing trigger's
 // error comes back wrapped.
 func TestNewStepFlagAnswers(t *testing.T) {
@@ -389,7 +389,7 @@ func TestNewStepFlagAnswers(t *testing.T) {
 	flag := f.AddComment(flagged, app, "Flag.\n\n<!-- issuedog:triage verdict=ask run=t1 recommend=handle -->")
 	f.AddReaction(flag, "owner", "+1")
 	c := f.Client(t)
-	st := newStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{"owner": true}, noModels)
+	st := daemon.NewStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{"owner": true}, noModels)
 	for _, n := range []int{spec, flagged} {
 		s, err := c.Snapshot(context.Background(), "o", "r", n)
 		if err != nil {
@@ -428,7 +428,7 @@ func TestNewStepFlagAnswers(t *testing.T) {
 	}
 }
 
-// newStep's state error trigger runs too: a trusted 👍 on a state error
+// NewStep's state error trigger runs too: a trusted 👍 on a state error
 // gets its ack. Its error comes back wrapped.
 func TestNewStepErrAck(t *testing.T) {
 	const app = "issuedog-dev[bot]"
@@ -442,7 +442,7 @@ func TestNewStepErrAck(t *testing.T) {
 	r := f.AddReaction(f.AddComment(1, app, errorText), "owner", "+1")
 	gone := f.AddComment(2, app, errorText)
 	c := f.Client(t)
-	st := newStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{"owner": true}, noModels)
+	st := daemon.NewStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{"owner": true}, noModels)
 	s, err := c.Snapshot(context.Background(), "o", "r", 1)
 	if err != nil {
 		t.Fatal(err)
@@ -465,7 +465,7 @@ func TestNewStepErrAck(t *testing.T) {
 	}
 }
 
-// newStep's human task trigger runs too: a trusted 👍 on a human task
+// NewStep's human task trigger runs too: a trusted 👍 on a human task
 // itself, at needs-human, closes it, its plain-text "Done when" having no
 // check to run. Its error comes back wrapped.
 func TestNewStepHumanTask(t *testing.T) {
@@ -480,7 +480,7 @@ func TestNewStepHumanTask(t *testing.T) {
 	}
 	r := f.AddIssueReaction(1, "owner", "+1")
 	c := f.Client(t)
-	st := newStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{"owner": true}, noModels)
+	st := daemon.NewStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{"owner": true}, noModels)
 	s, err := c.Snapshot(context.Background(), "o", "r", 1)
 	if err != nil {
 		t.Fatal(err)
@@ -503,7 +503,7 @@ func TestNewStepHumanTask(t *testing.T) {
 	}
 }
 
-// newStep runs the state error trigger after the others: an approval by
+// NewStep runs the state error trigger after the others: an approval by
 // 👍 in the same pass moves the issue, which ends a disagreement posted
 // after the revision, so the error gets no ack and no read of its
 // reactions, though it has a trusted 👍 too.
@@ -517,7 +517,7 @@ func TestNewStepErrAckLast(t *testing.T) {
 	errComment := f.AddComment(n, app, "Disagreed.\n\n<!-- issuedog:error kind=disagreement key=9 -->")
 	f.AddReaction(errComment, "owner", "+1")
 	c := f.Client(t)
-	st := newStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{"owner": true}, noModels)
+	st := daemon.NewStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{"owner": true}, noModels)
 	s, err := c.Snapshot(context.Background(), "o", "r", n)
 	if err != nil {
 		t.Fatal(err)
@@ -552,7 +552,7 @@ func (ds discSet) DiscAccess(_ context.Context, login string) (bool, bool, error
 	return ds[login], login == "mallory", nil
 }
 
-// newStep's hold trigger runs too: once the owner's 👍 approves the comment
+// NewStep's hold trigger runs too: once the owner's 👍 approves the comment
 // that held an issue, it goes to clarifying. Its error comes back wrapped.
 func TestNewStepResolved(t *testing.T) {
 	const app = "issuedog-dev[bot]"
@@ -571,7 +571,7 @@ func TestNewStepResolved(t *testing.T) {
 	}
 	f.AddReaction(comments[0], "owner", "+1")
 	c := f.Client(t)
-	st := newStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, discSet{"owner": true}, noModels)
+	st := daemon.NewStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, discSet{"owner": true}, noModels)
 	s, err := c.Snapshot(context.Background(), "o", "r", 1)
 	if err != nil {
 		t.Fatal(err)
@@ -596,7 +596,7 @@ func TestNewStepResolved(t *testing.T) {
 // noModels is a models.allowed that's empty.
 func noModels() config.Models { return config.Models{} }
 
-// /model asks newStep's models func on each call, not once: a reload that
+// /model asks NewStep's models func on each call, not once: a reload that
 // allows opus lets /model opus through.
 func TestNewStepUsesCurrentModels(t *testing.T) {
 	const app = "issuedog-dev[bot]"
@@ -608,7 +608,7 @@ func TestNewStepUsesCurrentModels(t *testing.T) {
 	f.AddComment(n, "owner", "/model opus")
 	c := f.Client(t)
 	var allowed config.Models
-	st := newStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{"owner": true},
+	st := daemon.NewStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{"owner": true},
 		func() config.Models { return allowed })
 	allowed = config.Models{Allowed: []config.Model{{Name: "opus"}}} // a reload
 	s, err := c.Snapshot(context.Background(), "o", "r", n)
@@ -624,7 +624,7 @@ func TestNewStepUsesCurrentModels(t *testing.T) {
 }
 
 // /model tells a begun Apply's add from the label rules' revert with the
-// trust of the moment, not the one newStep got. owner2 removed
+// trust of the moment, not the one NewStep got. owner2 removed
 // model:opus5, then the owner posted /model claude-opus-5-5, whose Apply
 // added it back before a reload dropped the model. Once a reload trusts
 // owner2, that removal was accepted, so the add restores nothing: it's the
@@ -642,7 +642,7 @@ func TestNewStepSettingsUseCurrentTrust(t *testing.T) {
 	f.AddComment(n, "owner", "/model claude-opus-5-5")
 	f.AddLabel(n, app, "model:opus5")
 	c := f.Client(t)
-	st := newStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{"owner": true},
+	st := daemon.NewStep(&daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog-dev"}, trustSet{"owner": true},
 		func() config.Models { return config.Models{Allowed: []config.Model{{Name: "sonnet"}}} })
 	st.Trust = trustSet{"owner": true, "owner2": true} // a reload
 	s, err := c.Snapshot(context.Background(), "o", "r", n)
@@ -700,6 +700,14 @@ func TestStartDaemonUsesCurrentModels(t *testing.T) {
 	if is := f.State().Issues[0]; !d.Assign || is.Assignees != nil {
 		t.Errorf("Assign = %t, the task's assignees = %q; want assignment on, and nobody", d.Assign, is.Assignees)
 	}
+	// Its Applier reads main from the daemon's clone, for a human task's
+	// file check (daemon.New).
+	if d.Step.ReadMain == nil {
+		t.Fatal("startDaemon's Applier has no ReadMain; want the clone's")
+	}
+	if got, err := d.Step.ReadMain(ctx, ".issuedog/config.yaml"); err != nil || string(got) != files[".issuedog/config.yaml"] {
+		t.Errorf("ReadMain(.issuedog/config.yaml) = %q, %v; want main's config, %q", got, err, files[".issuedog/config.yaml"])
+	}
 
 	dir := t.TempDir()
 	work := filepath.Join(dir, "work")
@@ -714,10 +722,10 @@ func TestStartDaemonUsesCurrentModels(t *testing.T) {
 	iterate([]string{"model:sonnet", "stage:ready"})
 }
 
-// newStep handles the phase 1 spec commands, so one left out fails here, not
+// NewStep handles the phase 1 spec commands, so one left out fails here, not
 // through TestRunDaemon's timeout.
 func TestNewStepHandlesSpecCommands(t *testing.T) {
-	st := newStep(&daemon.Applier{}, trustSet{}, noModels)
+	st := daemon.NewStep(&daemon.Applier{}, trustSet{}, noModels)
 	for _, name := range []string{"approve", "revise"} {
 		if h, ok := st.Commands[name]; !ok || h.Check == nil || h.Apply == nil {
 			t.Errorf("Commands[%q] = %+v, %t; want a handler with Check and Apply", name, h, ok)
