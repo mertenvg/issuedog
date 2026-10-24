@@ -586,8 +586,8 @@ func TestPlanReviewRun(t *testing.T) {
 	// order, as the stories skipped the rest of the pass that filed them.
 	// A story's effort:* label sets its run's --effort (SPEC §3.3): S1's
 	// high, S2's none and S3's medium. Each run asks the story's round 1, which the pass after lists in the
-	// digest, after the stories of 2's plan, assigning mertenvg on the
-	// story. The epic, read again as the approval and its record changed
+	// digest, S1's first, as it blocks S2 and S3, and S2's and S3's after
+	// the stories of 2's plan, assigning mertenvg on the story. The epic, read again as the approval and its record changed
 	// it, makes no request for creation: its record stands (#277).
 	ask := plGolden(t, "questions")
 	l.outs(ask, ask, ask)
