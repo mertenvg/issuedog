@@ -31,9 +31,9 @@ type openErr struct {
 // first. None is open on a closed issue, nor one a trusted user
 // acknowledged (state.Issue.Acked). Otherwise each kind ends when its
 // cause is gone:
-//   - transition and disagreement: at a transition marker in a comment
-//     after the error's. One in the same comment isn't after it, nor is
-//     one in the body, which comes before every comment.
+//   - transition, disagreement and children: at a transition marker in a
+//     comment after the error's. One in the same comment isn't after it,
+//     nor is one in the body, which comes before every comment.
 //   - transition, keyed by a run's moveKey rather than by what triggered
 //     the move (triageAdmissionKey): also when the moveKey changes, as on
 //     new input or a change of type or parent.
@@ -74,7 +74,7 @@ func openErrors(s *github.Snapshot, is state.Issue, inputs func() ([]github.Comm
 	var open []openErr
 	for k, id := range is.Errors {
 		ended := is.Acked(k.Kind, k.Key)
-		if k.Kind == "transition" || k.Kind == "disagreement" {
+		if k.Kind == "transition" || k.Kind == "disagreement" || k.Kind == childrenErrKind {
 			ended = ended || id < is.TransitionComment
 		}
 		switch {

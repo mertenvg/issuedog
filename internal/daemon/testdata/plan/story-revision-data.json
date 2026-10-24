@@ -12,9 +12,26 @@
       "id": "T1",
       "title": "Record when each quote expires",
       "status": "kept",
-      "outcome": "",
-      "criteria": null,
-      "depends_on": null
+      "outcome": "Every quote knows its expiry time, from the lifetime in the booking service's settings.",
+      "criteria": [
+        "A quote's expiry time is its issue time plus the configured lifetime.",
+        "The booking service refuses to start when the lifetime is missing or isn't a positive duration.",
+        "The quote API returns each quote's expiry time."
+      ],
+      "depends_on": [],
+      "model": "sonnet",
+      "effort": "medium",
+      "scope": "booking",
+      "task": {
+        "context": "- `internal/booking/quote.go`: `Quote` has `IssuedAt`, set when the quote is created.\n- `internal/booking/config.go`: `Config` holds the service's settings, read from the environment by `LoadConfig`.\n- `internal/api/quotes.go`: `GET /quotes/{id}` returns a quote as JSON.",
+        "change": "- `internal/booking/config.go`: add `QuoteTTL`, read from `QUOTE_TTL` with `time.ParseDuration`. `LoadConfig` fails when it's missing, zero or negative.\n- `internal/booking/quote.go`: add `Quote.ExpiresAt(ttl time.Duration) time.Time`.\n- `internal/api/quotes.go`: add `expires_at` (RFC 3339, UTC) to the quote JSON.",
+        "definition_of_done": [
+          "Tests added or updated for every changed behavior",
+          "verify.commands pass",
+          "No new skip markers"
+        ],
+        "test_plan": "- `internal/booking/config_test.go`: a missing, zero, negative or malformed `QUOTE_TTL` fails `LoadConfig`; `24h` gives 24 hours.\n- `internal/booking/quote_test.go`: `ExpiresAt` is `IssuedAt` plus the lifetime.\n- `internal/api/quotes_test.go`: the JSON has `expires_at`."
+      }
     },
     {
       "id": "T2",

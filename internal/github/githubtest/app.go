@@ -89,12 +89,26 @@ func (f *Fake) Reopen(number int) {
 
 // DeleteIssue deletes the newest issue and its comments, after which its
 // paths answer 404. Issues are kept by number, so only the newest can go.
+// Its links go with it, as GitHub would drop them: its sub-issues have no
+// parent after it, and no blocked-by link or LinkSubIssue listing names
+// it, on either side, so no listing names it. It moves no other issue's
+// updated_at, as GitHub isn't known to.
 func (f *Fake) DeleteIssue() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	n := len(f.issues)
 	f.issues = f.issues[:n-1]
 	f.comments = slices.DeleteFunc(f.comments, func(c *comment) bool { return c.issue == n })
+	for _, is := range f.issues {
+		if is.parent == n {
+			is.parent = 0
+		}
+		is.blockedBy = slices.DeleteFunc(is.blockedBy, func(b int) bool { return b == n })
+	}
+	delete(f.linked, n)
+	for parent, subs := range f.linked {
+		f.linked[parent] = slices.DeleteFunc(subs, func(l linked) bool { return l.number == n && strings.EqualFold(l.repo, f.repo) })
+	}
 }
 
 // AnswerOnce answers the next request that match accepts with status alone,

@@ -1,6 +1,7 @@
 package githubtest
 
 import (
+	"net/http"
 	"slices"
 
 	gogithub "github.com/google/go-github/v92/github"
@@ -36,5 +37,9 @@ func (f *Fake) DeleteIssueReaction(number int, id int64) bool {
 // paged by per_page and page
 // (GET /repos/{owner}/{repo}/issues/{issue_number}/reactions).
 func (f *Fake) listIssueReactions(c *call) (int, any) {
-	return page(c, fakeReactionFiltered(c, c.issue.reactions))
+	reactions, refused := fakeReactionFiltered(c, c.issue.reactions)
+	if refused != "" {
+		return http.StatusUnprocessableEntity, message(refused)
+	}
+	return page(c, reactions)
 }

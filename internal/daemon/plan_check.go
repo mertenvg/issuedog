@@ -534,21 +534,25 @@ var (
 	// such as the "2.x" of "2.x/3.x" or the "v18.x" of "v18.x/v20.x", whose
 	// letters don't count. A directory "x" or "v2" isn't one.
 	planPathVersionRE = regexp.MustCompile(`^v?[0-9]+(?:\.(?:[0-9]+|x))+(?:/v?[0-9]+(?:\.(?:[0-9]+|x))+)*$`)
-	// planPathNamesRE is a word of capitalized names ending in a framework's
-	// suffix, ".js" or ".io", such as "Express/Node.js" or
-	// "Express/Socket.io": names, not a path. "Assets/Scripts/Player.cs"
-	// is a path.
-	planPathNamesRE = regexp.MustCompile(`^[A-Z][\w.-]*(?:/[A-Z][\w.-]*)+\.(?:js|io)$`)
+	// planPathNamesRE is a word of capitalized names, such as
+	// "Express/Node.js". It's names, not a path, only when the last is a
+	// planFrameworks name: "Components/Button.js" and
+	// "Assets/Scripts/Player.cs" are paths.
+	planPathNamesRE = regexp.MustCompile(`^[A-Z][\w.-]*(?:/[A-Z][\w.-]*)+$`)
+	// planFrameworks are the frameworks whose names end like a file's, as
+	// prose writes them.
+	planFrameworks = []string{"Express.js", "Next.js", "Node.js", "Nuxt.js", "React.js", "Socket.io", "Vue.js"}
 )
 
 // planFilePath is the first file path in text outside a link, or "". A
 // file path, as SPEC §11.3's file-paths rule defines one, is a word with a
 // directory and a file extension. A bare file name, with no directory,
 // isn't one. So that prose with a slash passes (#311):
-//   - the extension starts with a lowercase letter, and isn't a module's
-//     version;
+//   - the extension is a lowercase letter, then lowercase letters and
+//     digits, and isn't a module's version;
 //   - the directory has a letter, outside a directory of versions;
-//   - the word isn't capitalized names ending in ".js" or ".io".
+//   - the word isn't capitalized names, the last a known framework's
+//     (#439).
 //
 // A dot that ends a sentence isn't the word's.
 func planFilePath(text string) string {
@@ -558,7 +562,7 @@ func planFilePath(text string) string {
 		dir, file := w[:i], w[i+1:]
 		if planPathExtRE.MatchString(file) && !planPathModuleRE.MatchString(file) &&
 			planPathLetterRE.MatchString(dir) && !planPathVersionRE.MatchString(dir) &&
-			!planPathNamesRE.MatchString(w) {
+			!(planPathNamesRE.MatchString(w) && slices.Contains(planFrameworks, file)) {
 			return w
 		}
 	}
@@ -583,7 +587,8 @@ func checkPlanLength(p planBody, f planFacts, fail func(string, string, ...any))
 
 // planCommentBody is the plan comment p is posted as under f, as
 // Applier.Transition writes it: the rendered plan, the move's transition
-// marker, with f.Fields, the plan-data marker, and the plan revision
+// marker, with f.Fields, the plan-data marker, with a revision's kept
+// items in full (planPrior.keptData), and the plan revision
 // marker. Only the run's ID stands in, planLengthRunID, as long as the
 // real one.
 func planCommentBody(p planBody, f planFacts) (string, error) {
@@ -600,7 +605,7 @@ func planCommentBody(p planBody, f planFacts) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("the plan comment's transition marker: %w", err)
 	}
-	m, err := planDataMarker(p)
+	m, err := planDataMarker(f.Prior.keptData(p))
 	if err != nil {
 		return "", fmt.Errorf("the plan comment's %w", err)
 	}

@@ -588,9 +588,11 @@ func (a *Applier) closingRevertComment(ctx context.Context, s *github.Snapshot, 
 //     stage it moved from, as an owner hold with no cmd, which /resume
 //     here ends (heldStackEnds); the move's labels take the closed stage
 //     off. On a held issue, the first hold's at and origin stay, and at the
-//     clarifying after a hold, its origin (discOrigin). A move the table
-//     lacks, as for a type the pipeline doesn't know, holds nothing: the
-//     label rules then put the label back, as for any disagreement.
+//     clarifying after a hold, its origin (discOrigin), or for the App's
+//     own move to closed from there, the origin before it (closingBefore).
+//     A move the table lacks, as for a type the pipeline doesn't know,
+//     holds nothing: the label rules then put the label back, as for any
+//     disagreement.
 //   - Anyone else's is reverted: a revert comment keyed by its event,
 //     posted once, then a close with the state_reason of the close it
 //     undid, or the closed stage's, and the error wraps
@@ -645,6 +647,13 @@ func (a *Applier) closingReopen(ctx context.Context, s *github.Snapshot, trust g
 		// on /done: the stage it was closed from.
 		m, _ := latestTransition(is)
 		at = state.Stage(m.Fields["from"])
+		if before := closingBefore(is, at); before.AfterHold() {
+			// A close from the clarifying after a hold, as a dropped
+			// child's (droppedOne), is a parent's revision's move, which
+			// carries no origin (SPEC §5), so the hold takes the origin
+			// of the move before it, as for an issue still there.
+			origin = discOrigin(before, at)
+		}
 	default:
 		if is.AfterHold() {
 			// The clarifying after a hold carries its origin forward, a
@@ -672,6 +681,21 @@ func (a *Applier) closingReopen(ctx context.Context, s *github.Snapshot, trust g
 	}
 	logr.Infof("%s/%s#%d: on hold at %s, as %s reopened it", a.Owner, a.Repo, s.Number, at, reopen.By.Login)
 	return true, nil
+}
+
+// closingBefore is is, an issue whose latest transition is the App's own
+// move to closed (latestTransition), as it was before that move: at from,
+// the stage the move came from, with only the markers before it. So
+// AfterHold and discOrigin read it as they read an issue still at from.
+func closingBefore(is state.Issue, from state.Stage) state.Issue {
+	for i := len(is.Markers) - 1; i >= 0; i-- {
+		if _, bounds := state.RoundBound(is.Markers[i], 0); bounds {
+			is.Markers = is.Markers[:i]
+			break
+		}
+	}
+	is.Stage = from
+	return is
 }
 
 // closingCloseAgain reverts reopen, s.Closings[r], an untrusted reopen of

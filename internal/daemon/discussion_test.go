@@ -108,8 +108,8 @@ func discNotice(what, key string) string {
 // its notice's own: accepting the edit doesn't approve the new text, and
 // how to approve it (SPEC §6.4).
 func editNoticeSentence(id int64) string {
-	return fmt.Sprintf("Accepting the edit releases the hold but doesn't approve the new text: "+
-		"to approve it, remove your 👍 from comment %d and add it again.", id)
+	return fmt.Sprintf("Accepting the edit ends its hold but doesn't approve the new text. "+
+		"To approve it, a code owner adds a 👍 to comment %d after the edit, first removing any 👍 they gave it before.", id)
 }
 
 // editNoticeWith is body, the App's comment as discHeld or discNotice
@@ -711,7 +711,7 @@ func TestDiscHoldsOnlyItsIssue(t *testing.T) {
 func TestDiscResumeOnParent(t *testing.T) {
 	t.Parallel()
 	f := githubtest.New(t, "o/r", slug)
-	f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, attempt 3)
+	f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (SPEC §6.4)
 	f.SetPermission("mallory", "write")
 	file(f, 0, above("ready")) // #1, held by its /hold in comment 1001
 	file(f, 1, above("ready")) // #2, held by the same /hold
@@ -737,7 +737,7 @@ func TestDiscResumeOnParent(t *testing.T) {
 func TestDiscResumeOnParentHeldForDiscussion(t *testing.T) {
 	t.Parallel()
 	f := githubtest.New(t, "o/r", slug)
-	f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, attempt 3)
+	f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (SPEC §6.4)
 	f.SetPermission("mallory", "write")
 	file(f, 0, above("ready")) // #1, held by its /hold in comment 1001
 	file(f, 1, above("ready")) // #2, held by the same /hold

@@ -93,7 +93,7 @@ func TestIvHoldInputOf(t *testing.T) {
 // before the last, so neither approves; nor does one before an edit the
 // App recorded as a write collaborator's trigger and a /resume accepted,
 // as accepting a trigger lets the issue leave its hold but doesn't make
-// the edit owner input (#189's verify, attempt 3). One after the last
+// the edit owner input (SPEC §6.4). One after the last
 // edit approves the comment as edited.
 func TestIvHoldInputOfEdits(t *testing.T) {
 	t.Parallel()

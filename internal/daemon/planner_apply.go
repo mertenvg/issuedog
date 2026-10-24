@@ -184,6 +184,7 @@ func planEntry(is state.Issue) github.Marker {
 //     skips review (planSkipsReview), which a revision never does,
 //     planning → planned on plan-no-review. It is one comment: the plan (renderPlan), the move's
 //     transition marker, with rev=, the plan-data marker (planDataMarker),
+//     with a revision's kept items in full (planPrior.keptData),
 //     then the plan revision marker, rev= one more than the latest plan
 //     revision, with the hash of everything above it (Move.PlanRev).
 //
@@ -232,7 +233,7 @@ func (p *Planner) Apply(ctx context.Context, a *Applier, r Result) error {
 		}
 		return nil
 	}
-	data, err := planDataMarker(*out.Plan)
+	data, err := planDataMarker(f.Prior.keptData(*out.Plan))
 	if err != nil {
 		return wrap(err)
 	}
