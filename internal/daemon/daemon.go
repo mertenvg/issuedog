@@ -89,6 +89,10 @@ type Daemon struct {
 	// open, and each a poll listed closed with items cached, till step 1
 	// succeeds on it (digestrestart.go).
 	digestRestartUnknown map[int]bool
+	// digestKept are the items the start read back from the digest's
+	// body, by issue, for the issues in digestRestartUnknown, till each
+	// leaves it (digestkept.go).
+	digestKept map[int][]waitItem
 
 	// epicCloseDue are the epics planned into stories, by number, with the
 	// children each waits on to close, after its last good step 1
@@ -296,8 +300,9 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	// while none is cached, as on a restart's first pass, is read again at
 	// its turn, and visited for them, so the digest doesn't drop them, but
 	// still skips Work, unless a visit that failed wrote to it
-	// (digestRestartRead).
-	touched, touches := map[int]bool{}, digestRestartTouches{}
+	// (digestRestartRead). Its assignees are judged on the items its visit
+	// found, as the digest lists them, all the same (again, assignPass).
+	touched, touches, again := map[int]bool{}, digestRestartTouches{}, map[int]bool{}
 	d.Step.Touched = func(n int) { touched[n] = true; touches.touch(n) }
 	defer func() { d.Step.Touched = nil }()
 	// An ancestor a /hold or /resume waits for is read again next pass, so
@@ -310,9 +315,9 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	d.Step.madeAboveDigest = d.digest.has
 	defer func() { d.Step.madeAboveDigest = nil }()
 	for _, n := range slices.Sorted(maps.Keys(d.snaps)) {
-		again := touched[n] && d.digestRestartRead(ctx, n, &touches) // as on a restart's first pass
+		reread := touched[n] && d.digestRestartRead(ctx, n, &touches) // as on a restart's first pass
 		s := d.snaps[n]
-		if !again && (touched[n] || (!read[n] && !slices.ContainsFunc(s.Labels, isReview) && !slices.ContainsFunc(s.Labels, flagAsked) &&
+		if !reread && (touched[n] || (!read[n] && !slices.ContainsFunc(s.Labels, isReview) && !slices.ContainsFunc(s.Labels, flagAsked) &&
 			!slices.ContainsFunc(s.Labels, discHeldLabel) && !slices.ContainsFunc(s.Labels, isNeedsHuman) && !d.openErrs[n])) {
 			continue
 		}
@@ -377,6 +382,9 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		d.digestCacheSet(s, in, dirt, holds, ownerHeld, blocked) // for assignment too, so with the digest off as well
 		d.digestRestartKnow(n)
 		d.epicCloseSet(s, dirt)
+		if reread {
+			again[n] = true
+		}
 	}
 	for n := range touched {
 		delete(d.inputs, n)
@@ -388,7 +396,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	if err := d.digestPass(ctx); err != nil {
 		errs = append(errs, err)
 	}
-	if err := d.assignPass(ctx); err != nil {
+	if err := d.assignPass(ctx, again); err != nil {
 		errs = append(errs, err)
 	}
 	d.Step.typeRenamePass(false)

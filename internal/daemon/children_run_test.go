@@ -346,23 +346,25 @@ func TestChildrenRun(t *testing.T) {
 
 	// 3. A restart finds S1 in the issues listed since the approval, and
 	// links it, but dies just after the link: S1 is under the epic, with no
-	// first move, and no second issue was filed. The new daemon's digest,
-	// built afresh, drops the epic's item, as the epic waits on no one at
-	// planned, but its assignment stays, as its visit failed (SPEC §9.6).
+	// first move, and no second issue was filed. The epic's visit failed,
+	// so the new daemon's digest keeps the epic's item as its body showed
+	// it, and its assignment stays, so the two agree (SPEC §9.4, After a
+	// restart, #360), though the epic waits on no one at planned.
 	l.start()
-	l.crash("the first restart, crashing after S1's link", 1, 1, "POST /issues/1/sub_issues", "PATCH /issues/2")
-	l.digest("the first restart", 2, nil, epic)
+	l.crash("the first restart, crashing after S1's link", 1, 1, "POST /issues/1/sub_issues")
+	l.digest("the first restart", 2, []string{"#1 Plan approval p2 1"}, epic)
 	if st := f.State(); len(st.Issues) != 3 || st.Issues[2].Parent != epic || len(st.Issues[2].Comments) != 0 {
 		t.Fatalf("the first restart: %d issues, #3 under #%d with comments %+v; want S1 alone, linked, with none", len(st.Issues), st.Issues[2].Parent, st.Issues[2].Comments)
 	}
 
 	// 4. A second restart finds S1 among the epic's sub-issues, and writes
 	// only what's missing: S1's first move, then S2, #4, filed, linked and
-	// moved, S2's blocked-by link to S1 and the record, last. Then
-	// mertenvg is unassigned from the epic.
+	// moved, S2's blocked-by link to S1 and the record, last. Then the
+	// digest drops the epic's item, and mertenvg is unassigned from the
+	// epic, in the same pass.
 	l.start()
 	l.step("the second restart", 1, slices.Concat([]string{"POST /issues/3/comments"}, childWrites(epic, 4), blockWrites(4),
-		[]string{recordWrite(epic), "DELETE /issues/1/assignees"})...)
+		[]string{recordWrite(epic), "PATCH /issues/2", "DELETE /issues/1/assignees"})...)
 	stories := []wantChild{
 		{"S1", "S1. Quotes expire after 24 hours", "", []string{"effort:high", "model:opus", "priority:p1", "stage:planning", "type:story"}, state.Planning},
 		{"S2", "S2. Customers see when a quote expires", "", []string{"priority:p2", "stage:planning", "type:story"}, state.Planning},

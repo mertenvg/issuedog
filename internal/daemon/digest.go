@@ -30,9 +30,11 @@ import (
 // The digest's body has no rewrite marker (SPEC §5.1, #169), though it's
 // a whole body the App writes: it is never read for state but for its
 // identity marker, which is read from the App's versions of the body in
-// its edit history anyway, it has no run to name, and the pin note must be
-// its first line (digestPin). It's an exception for #162 to write into
-// §5.1, beside the identity marker's.
+// its edit history anyway, and, on a start, for the items it lists for the
+// issues with none cached yet (digestkept.go), only from a version the App
+// wrote too. It has no run to name, and the pin note must be its first
+// line (digestPin). It's an exception for #162 to write into §5.1, beside
+// the identity marker's.
 const (
 	digestTitle = "issuedog digest"
 	// digestPinPrefix starts the pin note, the body's first line while the
@@ -353,6 +355,7 @@ func (d *Daemon) digestTake(ctx context.Context) {
 		reposted[n] = true
 	}
 	need := map[string]int{} // by node ID
+	apps := map[int]bool{}   // whose body as listed the App wrote, from the history read (digestKeptApp)
 	for n, is := range g.titled {
 		if _, ok := g.firsts[n]; !ok && !reposted[n] && g.history[n].next <= g.pass {
 			need[is.GetNodeID()] = n
@@ -385,6 +388,7 @@ func (d *Daemon) digestTake(ctx context.Context) {
 				// title rule holds only one that has no origin marker.
 				g.firsts[n] = len(h) > 0 && (h[0].Text == "" || slices.ContainsFunc(github.ParseMarkers(h[0].Text), digestOrigin))
 				g.marked[n] = digestMarkedHistory(h, g.titled[n].GetBody(), a.AppSlug)
+				apps[n] = digestKeptApp(h, g.titled[n].GetBody(), a.AppSlug)
 			}
 		}
 	}
@@ -418,6 +422,9 @@ func (d *Daemon) digestTake(ctx context.Context) {
 		// A start's first poll marked it, listed open, as one whose items
 		// aren't cached (digestRestartList), but a digest has none.
 		delete(d.digestRestartUnknown, n)
+		if apps[n] { // what it lists for issues with none cached (digestkept.go)
+			d.digestKeptRead(n, is.GetBody())
+		}
 		logr.Infof("%s/%s#%d is a digest, found by %s", a.Owner, a.Repo, n, by)
 	}
 }
@@ -1067,14 +1074,17 @@ func (st *Step) holdItemFind(ctx context.Context, s *github.Snapshot, dirt Dirt)
 }
 
 // digestCacheRanked returns every issue's cached items that stand
-// (digestCacheOf), and the closed issues' closer state errors
-// (closerErrDigest), which assignment doesn't take, ranked by SPEC §9.4's
-// order against every snapshot held (waitRank).
+// (digestCacheOf), the items read back from the digest's body for the
+// issues with none cached since a restart (digestKeptRanked), and the
+// closed issues' closer state errors (closerErrDigest), neither of which
+// assignment takes, ranked by SPEC §9.4's order against every snapshot
+// held (waitRank).
 func (d *Daemon) digestCacheRanked() []waitItem {
 	var items []waitItem
 	for _, n := range slices.Sorted(maps.Keys(d.digestCache)) {
 		items = append(items, d.digestCacheOf(n)...)
 	}
+	items = append(items, d.digestKeptRanked()...)
 	items = append(items, d.closerErrDigest()...)
 	waitRank(items, d.snaps)
 	return items
