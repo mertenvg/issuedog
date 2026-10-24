@@ -1208,7 +1208,8 @@ func (a *Applier) discHeldStack(ctx context.Context, s *github.Snapshot, d Dirt,
 // discHeldLabel reports whether label is stage:held: such an issue is
 // visited on every pass, as a 👍 that resolves a trigger (#188) changes no
 // updated_at. A deletion does move it, about 2 seconds later, so the
-// snapshot is read again then (SPEC §16).
+// snapshot is read again then, though only an author's deletion of their
+// own comment is confirmed to move it (SPEC §16).
 func discHeldLabel(label string) bool {
 	stage, ok := state.ParseLabel(label)
 	return ok && stage == state.Held

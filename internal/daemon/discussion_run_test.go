@@ -511,15 +511,18 @@ func discRunTwoTriggers(t *testing.T, l *discRunLoop) (int64, string) {
 	return m, key
 }
 
-// #188's verify note: a deleted comment that changes no updated_at, as on
-// the fake (SPEC §16 asks whether GitHub's deletion does), stays in the
-// daemon's snapshot of a held issue, which isn't read again. Here mallory
-// deletes the rename's notice, whose reactions step 1 reads on every pass
-// of a held issue, so the next pass gets a 404 for them: that pass fails,
-// with nothing written, and marks the issue to read again. The pass after
-// reads it, finds the deletion, and posts its notice, so the 404 comes
-// once, not on every pass. The rename, whose notice is gone, is no longer
-// mentioned, so the digest announces it, and lists mallory's comment,
+// #188's verify note: a deleted comment whose updated_at hasn't moved, as
+// on GitHub for about 2 seconds after the delete, or at all if another
+// user's deletion doesn't move it (SPEC §16), stays in the daemon's
+// snapshot of a held issue, which isn't read again, as no poll lists the
+// issue. Here mallory deletes the rename's notice with updated_at left
+// where it was (DeleteCommentByUnmoved). Step 1 reads the notice's
+// reactions on every pass of a held issue, so the next pass gets a 404 for
+// them: that pass fails, with nothing written, and marks the issue to read
+// again. The pass after reads it, though no poll lists it, finds the
+// deletion, and posts its notice, so the 404 comes once, not on every
+// pass. The rename, whose notice is gone, is no longer mentioned, so the
+// digest announces it, and lists mallory's comment,
 // announced already, again with it, as SPEC §9.4 says (#192's verify note:
 // a second digest-new that lists a key announced already). The /resume,
 // with nothing resolved by a trusted response, takes the epic back to
@@ -531,7 +534,7 @@ func TestDiscRunDeletedNotice404(t *testing.T) {
 	l := newDiscRunLoop(t, f)
 	m, key := discRunTwoTriggers(t, l)
 	notice := discRunFind(t, f, 2, discNoticeMarker(key))
-	del := f.DeleteCommentBy("mallory", notice)
+	del := f.DeleteCommentByUnmoved("mallory", notice)
 	l.fail("the pass after the deletion", []string{fmt.Sprintf("list reactions to comment %d in o/r", notice), "404 Not Found"})
 	l.step("the pass after the 404", "POST /issues/2/comments", "POST /issues/1/comments", "PATCH /issues/1")
 	if got, want := l.added(2), []string{discNotice("`mallory` deleted a comment by `issuedog[bot]`", "d"+del)}; !slices.Equal(got, want) {
