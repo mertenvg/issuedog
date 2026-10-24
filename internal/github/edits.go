@@ -114,7 +114,7 @@ type commentsResponse struct {
 
 // gqlErrors is the errors list of a GraphQL answer.
 type gqlErrors struct {
-	Errors []struct{ Message string }
+	Errors []struct{ Message, Type string }
 }
 
 // err returns the errors as one wrapping ErrGraphQL, or nil if there are none.

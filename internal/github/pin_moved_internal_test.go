@@ -69,6 +69,13 @@ func TestPinMovedNotPinned(t *testing.T) {
 			"GET /repositories/2/issues/7": {http.StatusOK, "", `{"number":7,"node_id":"I_7"}`},
 			"POST /graphql":                pinned,
 		}, "transferred: answered by GET /repositories/2/issues/7", []string{"GET /repos/o/r/issues/7", "GET /repositories/2/issues/7"}},
+		// A 301 to another repo's /repos/ path, though the issue names no
+		// repo (#428).
+		{"redirected to another repo's path", map[string]reply{
+			"GET /repos/o/r/issues/7":     {http.StatusMovedPermanently, "/repos/o/other/issues/7", `{"message":"Moved Permanently"}`},
+			"GET /repos/o/other/issues/7": {http.StatusOK, "", `{"number":7,"node_id":"I_7"}`},
+			"POST /graphql":               pinned,
+		}, "transferred: answered by GET /repos/o/other/issues/7", []string{"GET /repos/o/r/issues/7", "GET /repos/o/other/issues/7"}},
 		{"another repo's issue", map[string]reply{
 			"GET /repos/o/r/issues/7": {http.StatusOK, "", `{"number":7,"node_id":"I_7","repository_url":"https://api.github.com/repos/o/elsewhere"}`},
 			"POST /graphql":           pinned,
