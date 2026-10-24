@@ -107,7 +107,7 @@ func approved(more func(t testing.TB, f *githubtest.Fake)) func(testing.TB) *git
 func authored(author string, more func(t testing.TB, f *githubtest.Fake)) func(testing.TB) *githubtest.Fake {
 	return func(t testing.TB) *githubtest.Fake {
 		f := githubtest.New(t, "o/r", slug)
-		f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, round 2)
+		f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (SPEC §6.4)
 		f.AddIssue(author, "Title", "body")
 		f.SetType(1, "Story")
 		f.AddLabel(1, app, "stage:spec-review")
@@ -424,11 +424,11 @@ func TestReviseAndEdits(t *testing.T) {
 	}
 }
 
-// #83's verifier's case: request 1002 is rejected, as the issue is a story
-// with a parent, but the reply's write fails after the 👎. The owner sets
-// the stage by hand, and the next pass records the move to clarifying and
-// posts the reply, worded for the stage now. The setup runs the failed pass,
-// so Replay covers the repost.
+// #83's case: request 1002 is rejected, as the issue is a story with a
+// parent, but the reply's write fails after the 👎. The owner sets the
+// stage by hand, and the next pass records the move to clarifying and
+// posts the reply, worded for the stage now. The setup runs the failed
+// pass, so Replay covers the repost.
 func TestLostReplyAfterStageChange(t *testing.T) {
 	t.Parallel()
 	var in []string

@@ -433,6 +433,7 @@ func TestFakeNumberUnknown(t *testing.T) {
 		{"SetParent to an unknown parent", func() { f.SetParent(n, 9) }},
 		{"SetBlockedBy of an unknown issue", func() { f.SetBlockedBy(9, n) }},
 		{"SetBlockedBy by an unknown blocker", func() { f.SetBlockedBy(n, 9) }},
+		{"LinkSubIssue to an unknown parent", func() { f.LinkSubIssue(9, "o/other", 1) }},
 		{"SetType", func() { f.SetType(9, "Task") }},
 		{"SetTypeBy", func() { f.SetTypeBy(9, "owner", "Task") }},
 		{"SetPullRequest", func() { f.SetPullRequest(9) }},
@@ -477,15 +478,18 @@ func TestFakeNumberUnknown(t *testing.T) {
 		t.Errorf("state after the unknown numbers:\n%+v\nwant it unchanged:\n%+v", got, before)
 	}
 
-	// A parent and a blocker DeleteIssue deleted: the answers that name
+	// A parent and a blocker the fake hasn't got: the answers that name
 	// them are a 500 naming the number, the parents above an issue
-	// included, which a sub-issue link checks.
+	// included, which a sub-issue link checks. No helper leaves such a
+	// link, as DeleteIssue drops a deleted issue's links
+	// (TestFakeDeleteIssueLinks), so the test makes them itself.
 	g := New(t, "o/r", "issuedog")
 	blocked, child := g.AddIssue("owner", "Blocked", "body"), g.AddIssue("owner", "Child", "body")
-	gone := g.AddIssue("owner", "Gone", "body")
-	g.SetParent(child, gone)
-	g.SetBlockedBy(blocked, gone)
-	g.DeleteIssue()
+	gone := 3
+	g.mu.Lock()
+	g.issues[child-1].parent = gone
+	g.issues[blocked-1].blockedBy = []int{gone}
+	g.mu.Unlock()
 	c := g.Client(t)
 	for _, tc := range []struct {
 		name, method, path string

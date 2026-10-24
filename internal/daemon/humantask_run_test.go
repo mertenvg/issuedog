@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/mertenvg/issuedog/internal/config"
-	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 	"github.com/mertenvg/issuedog/internal/state"
@@ -20,9 +19,10 @@ import (
 
 // This file is #288: a whole run of human tasks against the fakes, from the
 // plan that files them to their close. The stages are registered as
-// registerStages registers them, step 1 is wired as main's newStep wires it,
-// the Applier reads main from the daemon's clone, as startDaemon sets it, the
-// digest and assignment are on, and Daemon.Iterate is the loop. Config and
+// registerStages registers them, the daemon is built as startDaemon builds
+// it, daemon.New, so step 1 is daemon.NewStep's, the Applier reads main
+// from the daemon's clone, and the digest and assignment are on, and
+// Daemon.Iterate is the loop. Config and
 // trust come from main on the origin: mertenvg owns CODEOWNERS and is notify,
 // and eve can only read the repo, so CODEOWNERS doesn't trust her and her
 // comments hold nothing.
@@ -132,9 +132,10 @@ func newHumanRunLoop(t *testing.T, f *githubtest.Fake) *humanRunLoop {
 // no ETags, a new daemon, with no snapshots, and the same state directory,
 // which outlives a restart. The stages are registered as registerStages
 // registers them: the Interviewer at clarifying, the Planner at planning,
-// and Triage as the Unlabeled stage. The Applier reads main from the
-// daemon's clone, as startDaemon's does, for a file check. Step 1 is
-// newStep's, daemon.NewStep. Iterate loads the trust from main.
+// and Triage as the Unlabeled stage, daemon.RegisterStages'. The daemon is
+// daemon.New's, as startDaemon's is (rig.wireAsMain), so its Applier reads
+// main from the daemon's clone, for a file check, and step 1 is
+// daemon.NewStep's. Iterate loads the trust from main.
 func (l *humanRunLoop) start() {
 	l.t.Helper()
 	g := newRig(l.t, l.f, l.o, l.root)
@@ -143,15 +144,7 @@ func (l *humanRunLoop) start() {
 	if err := os.WriteFile(g.path("claude", "claude"), []byte(wholeRunClaude), 0o755); err != nil {
 		l.t.Fatal(err)
 	}
-	g.r.Stages = map[state.Stage]daemon.Stage{
-		state.Clarifying: &daemon.Interviewer{Daemon: g.d},
-		state.Planning:   &daemon.Planner{Daemon: g.d},
-	}
-	g.r.Unlabeled = &daemon.Triage{Daemon: g.d}
-	g.d.Digest, g.d.Assign = true, true    // as startDaemon sets them
-	g.d.Step.ReadMain = g.d.Clone.ReadFile // as startDaemon sets it
-	// No trust: Iterate loads it from main.
-	g.d.Step = daemon.NewStep(g.d.Step.Applier, nil, g.d.CurrentModels)
+	g.wireAsMain(g.d.Config)
 	l.g = g
 }
 

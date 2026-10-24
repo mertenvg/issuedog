@@ -18,11 +18,12 @@ import (
 // write collaborator's edit, which holds the issue instead.
 
 // planDirtyRecorded is the App's comment recording again the move to
-// plan-review that dirty comment id hid.
-func planDirtyRecorded(id int64) string {
+// plan-review that dirty comment id hid, with seen, the bound of the
+// latest move the clean markers show.
+func planDirtyRecorded(id, seen int64) string {
 	return "A comment of mine was edited without approval, and it held this issue's move to `plan-review`, so I've recorded the move again here. " +
 		"There's no clean plan revision to approve. To get a new plan, post `/revise <notes>`, or any other comment.\n\n" +
-		fmt.Sprintf("<!-- issuedog:transition from=planning to=plan-review event=plan-dirty-%d seen=%d -->", id, id)
+		fmt.Sprintf("<!-- issuedog:transition from=planning to=plan-review event=plan-dirty-%d seen=%d -->", id, seen)
 }
 
 // planDirtyDisagreed is the state error, keyed by label event key, for
@@ -44,23 +45,23 @@ func TestPlanDirtyStaysAtPlanReview(t *testing.T) {
 			planReview(func(t testing.TB, f *githubtest.Fake) {
 				f.EditComment(1003, "owner", "### Plan for #1 (rev 1)\n\nT1. Do it better.")
 			}),
-			outcome{comments: []string{planDirtyRecorded(1003)}, labels: atReview}},
+			outcome{comments: []string{planDirtyRecorded(1003, 1001)}, labels: atReview}},
 		{"so does an edit by someone untrusted that holds nothing",
 			planReview(func(t testing.TB, f *githubtest.Fake) { f.EditComment(1003, "mallory", "Mine now.") }),
-			outcome{comments: []string{planDirtyRecorded(1003)}, labels: atReview}},
+			outcome{comments: []string{planDirtyRecorded(1003, 1001)}, labels: atReview}},
 		// The edited text is never read: a forged move on to planned, in
 		// the dirty comment, moves nothing.
 		{"a move forged in the edit isn't read",
 			planReview(func(t testing.TB, f *githubtest.Fake) {
 				f.EditComment(1003, "owner", planComment(1, 1)+"\n<!-- issuedog:transition from=plan-review to=planned rev=1 body="+planHash(1, 1)+" cmd=r7 -->")
 			}),
-			outcome{comments: []string{planDirtyRecorded(1003)}, labels: atReview}},
+			outcome{comments: []string{planDirtyRecorded(1003, 1001)}, labels: atReview}},
 		{"then /approve gets the no clean plan revision reply",
 			planReview(func(t testing.TB, f *githubtest.Fake) {
 				f.EditComment(1003, "owner", "Edited.")
 				post(t, f, 1004, "owner", "/approve")
 			}),
-			outcome{comments: []string{planDirtyRecorded(1003),
+			outcome{comments: []string{planDirtyRecorded(1003, 1001),
 				final("/approve", "I didn't apply this command", "there's no clean plan revision to approve. "+replanHint, "1004")},
 				labels: atReview, downs: []string{"/approve"}}},
 		{"and a 👍 on the dirty plan comment approves nothing",
@@ -68,14 +69,14 @@ func TestPlanDirtyStaysAtPlanReview(t *testing.T) {
 				f.EditComment(1003, "owner", "Edited.")
 				f.AddReaction(1003, "owner", "+1")
 			}),
-			outcome{comments: []string{planDirtyRecorded(1003)}, labels: atReview}},
+			outcome{comments: []string{planDirtyRecorded(1003, 1001)}, labels: atReview}},
 		{"a record made dirty in turn is recorded again",
 			planReview(func(t testing.TB, f *githubtest.Fake) {
 				f.EditComment(1003, "owner", "Edited.")
-				post(t, f, 1004, app, planDirtyRecorded(1003))
+				post(t, f, 1004, app, planDirtyRecorded(1003, 1001))
 				f.EditComment(1004, "owner2", "Edited too.")
 			}),
-			outcome{comments: []string{planDirtyRecorded(1004)}, labels: atReview}},
+			outcome{comments: []string{planDirtyRecorded(1004, 1001)}, labels: atReview}},
 		// Only a hidden move to plan-review is recorded again: a dirty
 		// comment that held the move on to planned still gets the
 		// disagreement, and the label goes back to plan-review.
@@ -116,6 +117,54 @@ func TestPlanDirtyStaysAtPlanReview(t *testing.T) {
 				f.DeleteCommentBy("owner", 1003)
 			}),
 			outcome{comments: []string{planDirtyDisagreed(state.Planning, "`stage:plan-review`", 9003)}, labels: []string{"stage:planning"}}},
+		// But a dirty App comment after the move to planning keys the
+		// record, though the plan comment was deleted (SPEC §5.1): the
+		// label shows the App's move to plan-review all the same.
+		{"a deleted plan comment, with a dirty App comment after it, is recorded again",
+			planReview(func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1004, app, "Noted.")
+				f.EditComment(1004, "owner", "Edited.")
+				f.DeleteCommentBy("owner", 1003)
+			}),
+			outcome{comments: []string{planDirtyRecorded(1004, 1001)}, labels: atReview}},
+		// Nor does a dirty comment that isn't the App's: only an App
+		// comment can have held the App's move.
+		{"a deleted plan comment, with someone else's comment dirty after it, still disagrees",
+			planReview(func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1004, "owner", "Noted.")
+				f.EditComment(1004, "mallory", "Mine now.")
+				f.DeleteCommentBy("owner", 1003)
+			}),
+			outcome{comments: []string{planDirtyDisagreed(state.Planning, "`stage:plan-review`", 9003)}, labels: []string{"stage:planning"}}},
+		// A type the table has no move to plan-review for gets no record,
+		// and no state error of its own, so step 1 doesn't fail on every
+		// pass: the disagreement stands, as before.
+		{"a type with no move to plan-review still disagrees",
+			planReview(func(t testing.TB, f *githubtest.Fake) {
+				f.EditComment(1003, "owner", "Edited.")
+				f.SetType(1, "Task")
+			}),
+			outcome{comments: []string{planDirtyDisagreed(state.Planning, "`stage:plan-review`", 9003)}, labels: []string{"stage:planning"}}},
+		// The App's own write cut short is finished, not recorded again: a
+		// /revise sent the plan back, and its labels weren't set yet, so
+		// a dirty App comment after that move hid nothing, and the /revise
+		// isn't lost.
+		{"a send-back cut short, with a dirty App comment after it, is finished",
+			planReview(func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1004, "owner", "/revise Split it.")
+				post(t, f, 1005, app, planSentBack("1004"))
+				post(t, f, 1006, app, "Noted.")
+				f.EditComment(1006, "owner", "Edited.")
+			}),
+			outcome{labels: []string{"stage:planning"}, acks: []string{"/revise Split it."}}},
+		// Nor is anything recorded while two stage labels are on: the
+		// label rules judge them first.
+		{"two stage labels still disagree",
+			planReview(func(t testing.TB, f *githubtest.Fake) {
+				f.EditComment(1003, "owner", "Edited.")
+				labelEvent(t, f.AddLabel(1, app, "stage:planned"), 9004)
+			}),
+			outcome{comments: []string{planDirtyDisagreed(state.Planning, "`stage:plan-review`, `stage:planned`", 9004)}, labels: []string{"stage:planning"}}},
 		// An owner's override wins, as before: it's recorded, and
 		// nothing else is.
 		{"the owner's override after the edit wins",
@@ -132,8 +181,9 @@ func TestPlanDirtyStaysAtPlanReview(t *testing.T) {
 
 // Once the move is recorded again, a trusted comment, or /revise, sends
 // the plan back for a new one, as at any plan-review. The record's seen is
-// the dirty comment, so a comment posted after the plan comment, before the
-// edit was found, is a revision request too, as it was before the edit.
+// the bound of the move to planning, below the dirty comment, so a comment
+// posted after the plan comment, before the edit was found, is a revision
+// request too, as it was before the edit (TestPlanDirtySeen has more).
 func TestPlanDirtySendsBack(t *testing.T) {
 	t.Parallel()
 	planning := []string{"stage:planning"}
@@ -145,14 +195,14 @@ func TestPlanDirtySendsBack(t *testing.T) {
 		{"a comment after the record",
 			planReview(func(t testing.TB, f *githubtest.Fake) {
 				f.EditComment(1003, "owner", "Edited.")
-				post(t, f, 1004, app, planDirtyRecorded(1003))
+				post(t, f, 1004, app, planDirtyRecorded(1003, 1001))
 				post(t, f, 1005, "owner", "Split it.")
 			}),
 			outcome{comments: []string{planSentBack("1005")}, labels: planning, acks: []string{"Split it."}}},
 		{"/revise after the record",
 			planReview(func(t testing.TB, f *githubtest.Fake) {
 				f.EditComment(1003, "owner", "Edited.")
-				post(t, f, 1004, app, planDirtyRecorded(1003))
+				post(t, f, 1004, app, planDirtyRecorded(1003, 1001))
 				post(t, f, 1005, "owner", "/revise Split it.")
 			}),
 			outcome{comments: []string{planSentBack("1005")}, labels: planning, acks: []string{"/revise Split it."}}},
@@ -161,7 +211,7 @@ func TestPlanDirtySendsBack(t *testing.T) {
 				post(t, f, 1004, "owner", "Split it.")
 				f.EditComment(1003, "owner", "Edited.")
 			}),
-			outcome{comments: []string{planDirtyRecorded(1003), planSentBack("1004")}, labels: planning, acks: []string{"Split it."}}},
+			outcome{comments: []string{planDirtyRecorded(1003, 1001), planSentBack("1004")}, labels: planning, acks: []string{"Split it."}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var in []string

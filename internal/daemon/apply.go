@@ -183,23 +183,25 @@ func (m Move) checkPlanRev() error {
 // A move to closed is the only way the App closes an issue through the
 // table: a human task on /done (DoneCommand), an epic planned into
 // stories once its children have closed (epicCloseOne, #251), and, on
-// re-planning (SPEC §6.4), a dropped child, as not planned. Its marker records m.StateReason as reason=; then, in
-// place of the label writes, comes the 👍, and last the close with that
-// state_reason, unless the issue is closed already. The 👍 goes before the
-// close, as step 1 never visits a closed issue again to finish it. It
-// writes no stage label: the close judge sets the closed stage on a later
-// pass (closingJudge). A crash after the marker is finished by the label
-// rules, which close the issue as the marker says (closeFinish), and by
-// step 1, which 👍s the command its marker names.
+// re-planning (SPEC §6.4), a dropped child, as not planned. Its marker
+// records m.StateReason as reason=; then, in place of the label writes,
+// comes the 👍, and last the close with that state_reason, unless the issue
+// is closed already. The 👍 goes before the close, as step 1 never visits a
+// closed issue again to finish it. It writes no stage label: the close
+// judge sets the closed stage on a later pass (closingJudge). A crash
+// after the marker is finished by the label rules, which close the issue
+// as the marker says (closeFinish), and by step 1, which 👍s the command
+// its marker names.
 //
 // The stage labels are set to match the latest marker, so a stage label a
 // trusted user set by hand would be overwritten. That's safe only because
 // Applier.CheckLabels runs first and records such a change as an override
-// (SPEC §5.1): callers run it on a fresh snapshot just before Transition (the
-// stage-run harness does). A change made after that check, while no other marker lands, is
-// still caught: the next CheckLabels records it as an override, as it isn't
-// in the marker this writes. A snapshot older than the latest marker isn't
-// safe, so a run's result must re-read the issue before its Transition.
+// (SPEC §5.1): callers run it on a fresh snapshot just before Transition
+// (the stage-run harness does). A change made after that check, while no
+// other marker lands, is still caught: the next CheckLabels records it as
+// an override, as it isn't in the marker this writes. A snapshot older
+// than the latest marker isn't safe, so a run's result must re-read the
+// issue before its Transition.
 //
 // A move the table lacks, including one for an issue of unknown type,
 // changes no label. It is reported once with an error comment keyed by

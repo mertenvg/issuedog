@@ -90,7 +90,7 @@ func heldStackHand(fields string) string {
 // at in-progress (comment 1002).
 func heldStackTasks(t testing.TB) *githubtest.Fake {
 	f := githubtest.New(t, "o/r", slug)
-	f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, round 2)
+	f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (SPEC §6.4)
 	file(f, 0, ready)
 	file(f, 1, "from=ready to=in-progress run=a")
 	return f
@@ -181,7 +181,7 @@ func TestHeldStackHandSetHold(t *testing.T) {
 				1: {[]string{"stage:ready"}, []string{moved("Resumed by `/resume`, back to `ready`. Still on hold: #2, by a hold this `/resume` doesn't end: one set by hand, a `/hold` below this issue, or a deleted comment that was, or may have been, a `/hold`. `/resume` there ends it.",
 					fmt.Sprintf("from=held to=ready cmd=%d seen=1001", resume1))}},
 				// The record that the /hold ended, which keeps it ended
-				// (#188's verify, round 3, note 1).
+				// (SPEC §6.4).
 				2: {[]string{"stage:held"}, []string{fmt.Sprintf("`/resume` on #1 ended an owner hold on this issue, but it stays on hold by one that `/resume` doesn't end: "+
 					"one set by hand, a `/hold` below #1, or a deleted comment that was, or may have been, a `/hold`. `/resume` here ends it.\n\n"+
 					"<!-- issuedog:ended reason=owner key=c%d cmd=%d -->", hold, resume1)}},
@@ -278,10 +278,10 @@ func TestHeldStackHoldAndResumeInOnePass(t *testing.T) {
 	}
 }
 
-// #185's verify, attempt 2: holds that start and end more than once in one
-// pass. Each comment is handled in the stage the issue had right after the
-// last move out of held before it, as a replay after a crash anywhere in
-// the pass does, and the next pass writes nothing.
+// Holds that start and end more than once in one pass (#185). Each comment
+// is handled in the stage the issue had right after the last move out of
+// held before it, as a replay after a crash anywhere in the pass does, and
+// the next pass writes nothing.
 func TestHeldStackHoldsInOnePass(t *testing.T) {
 	t.Parallel()
 	var request int64

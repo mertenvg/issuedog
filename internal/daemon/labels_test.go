@@ -236,7 +236,7 @@ func TestCheckLabels(t *testing.T) {
 			writes:   []string{"POST /issues/1/comments", "DELETE /issues/1/labels/stage:verifying"},
 			comments: []string{disagreement("`stage:ready`, `stage:verifying`", "9003")},
 			labels:   []string{"stage:ready"}, errors: 1},
-		{name: "a hand-set issue is adopted (plan #5, assumption 6)",
+		{name: "a hand-set issue is adopted",
 			// The owner's own marker doesn't count; the labels do.
 			setup: filed([]string{"stage:ready", "type:task"}, func(_ testing.TB, f *githubtest.Fake) {
 				f.AddComment(1, "owner", "<!-- issuedog:transition from=ready to=planning -->")

@@ -45,7 +45,7 @@ var Start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 // with serve for a POST that only reads, as GraphQL does.
 type Fake struct {
 	repo, slug string
-	t          testing.TB // New's, which a helper given an issue number the fake hasn't got fails (fakeNumberIssue)
+	t          testing.TB // New's, which a helper given an issue number or a comment ID the fake hasn't got fails (fakeNumberIssue, fakeCommentID)
 	srv        *httptest.Server
 	mux        *http.ServeMux
 
@@ -72,11 +72,10 @@ type Fake struct {
 	lastLink    int64            // the last sub-issue link made (linkUnder)
 
 	// The org's issue types (typeevent.go): their IDs by lowercase name,
-	// their names as the org shows them, by ID, the names renamed away
-	// (RenameOrgIssueType), and the last ID given.
+	// their names as the org shows them, by ID, and the last ID given. A
+	// name renamed away (RenameOrgIssueType) has no ID by it.
 	orgTypes      map[string]int64
 	orgTypeNames  map[int64]string
-	goneTypes     map[string]bool
 	lastIssueType int64
 
 	unassignable map[string]bool // logins in lower case, see Unassignable (assign.go)
@@ -299,8 +298,9 @@ func (f *Fake) fakeNumberIssue(number int) *issue {
 
 // fakeNumberFind returns issue number, or an error naming it if the fake
 // hasn't got it, for an answer that names an issue by the number a parent
-// or a blocked-by link holds, which DeleteIssue may have deleted since.
-// f is locked.
+// or a blocked-by link holds. No helper leaves a link to an issue the fake
+// hasn't got, as DeleteIssue drops a deleted issue's links, but an answer
+// that meets one fails clearly, not with a panic. f is locked.
 func (f *Fake) fakeNumberFind(number int) (*issue, error) {
 	if number < 1 || number > len(f.issues) {
 		return nil, fmt.Errorf("no issue #%d: the fake has %d", number, len(f.issues))
@@ -324,34 +324,50 @@ func (f *Fake) EditBody(number int, login, body string) {
 
 // DeleteRevision deletes the text of entry i, oldest first, of an issue
 // body's edit history, as someone with write access can on GitHub: the
-// entry keeps its editor and time, and its diff is null.
+// entry keeps its editor and time, and its diff is null. An entry the
+// history hasn't got fails the test, naming it and the history's length,
+// as an issue number the fake hasn't got does (fakeNumberIssue). A body
+// never edited has no history, and its first edit adds two entries: the
+// original post, 0, and the edit, 1.
 func (f *Fake) DeleteRevision(number, i int) {
 	f.t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.fakeNumberIssue(number).history[i].text = ""
+	is := f.fakeNumberIssue(number)
+	if i < 0 || i >= len(is.history) {
+		f.t.Fatalf("githubtest: no revision %d of issue #%d: its history has %d", i, number, len(is.history))
+	}
+	is.history[i].text = ""
 }
 
-// EditComment edits a comment as login. An empty login means GitHub names no editor.
+// EditComment edits a comment as login. An empty login means GitHub names
+// no editor. A comment the fake hasn't got fails the test (fakeCommentID).
 func (f *Fake) EditComment(id int64, login, body string) {
+	f.t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.findComment(id).editBy(login, body, f.tick())
+	f.fakeCommentID(id).editBy(login, body, f.tick())
 }
 
 // DeleteComment deletes a comment, as its author or a maintainer can, with
-// no CommentDeletedEvent: DeleteCommentBy records one.
+// no CommentDeletedEvent: DeleteCommentBy records one. A comment the fake
+// hasn't got, one deleted already included, fails the test
+// (fakeCommentID).
 func (f *Fake) DeleteComment(id int64) {
+	f.t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.fakeCommentID(id)
 	f.comments = slices.DeleteFunc(f.comments, func(c *comment) bool { return c.GetID() == id })
 }
 
 // AddReaction reacts to a comment as author and returns the reaction's ID.
+// A comment the fake hasn't got fails the test (fakeCommentID).
 func (f *Fake) AddReaction(commentID int64, author, content string) int64 {
+	f.t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	r, _ := f.react(&f.findComment(commentID).reactions, author, content)
+	r, _ := f.react(&f.fakeCommentID(commentID).reactions, author, content)
 	return r.GetID()
 }
 
@@ -524,6 +540,20 @@ func (f *Fake) react(reactions *[]*gogithub.Reaction, author, content string) (*
 	return r, true
 }
 
+// fakeCommentID returns comment id for a helper a test called with it, or
+// fails the test New was given, naming the ID, if the fake hasn't got it:
+// one never posted, or one deleted, by itself or with its issue
+// (DeleteIssue), as fakeNumberIssue fails one for an issue number. f is
+// locked.
+func (f *Fake) fakeCommentID(id int64) *comment {
+	f.t.Helper()
+	c := f.findComment(id)
+	if c == nil {
+		f.t.Fatalf("githubtest: no comment %d: the fake has %d", id, len(f.comments))
+	}
+	return c
+}
+
 func (f *Fake) findComment(id int64) *comment {
 	i := slices.IndexFunc(f.comments, func(c *comment) bool { return c.GetID() == id })
 	if i < 0 {
@@ -578,8 +608,8 @@ func (f *Fake) getIssue(c *call) (int, any) {
 }
 
 // getParent serves an issue's parent with its repository_url, this repo's
-// unless Transfer set another. A parent the fake hasn't got, as once
-// DeleteIssue deleted it, is a 500 naming it.
+// unless Transfer set another. A parent the fake hasn't got, which no
+// helper leaves (fakeNumberFind), is a 500 naming it.
 func (f *Fake) getParent(c *call) (int, any) {
 	if c.issue.parent == 0 {
 		return http.StatusNotFound, message("Not Found")
@@ -700,18 +730,33 @@ func (c *comment) editBy(login, body string, now *gogithub.Timestamp) {
 // by per_page and page
 // (GET /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions).
 func (f *Fake) listReactions(c *call) (int, any) {
-	return page(c, fakeReactionFiltered(c, c.comment.reactions))
+	reactions, refused := fakeReactionFiltered(c, c.comment.reactions)
+	if refused != "" {
+		return http.StatusUnprocessableEntity, message(refused)
+	}
+	return page(c, reactions)
 }
+
+// fakeReactionContents are the reactions GitHub has, the only values a
+// reaction listing's content= takes.
+var fakeReactionContents = []string{"+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes"}
 
 // fakeReactionFiltered is reactions, or for a request with content=, such
 // as +1, only those with that content, as GitHub filters both reaction
-// listings, a comment's and an issue's.
-func fakeReactionFiltered(c *call, reactions []*gogithub.Reaction) []*gogithub.Reaction {
+// listings, a comment's and an issue's. A content= that is no reaction
+// GitHub has (fakeReactionContents) is refused instead, with the message
+// that the listings answer with a 422, as GitHub likely does for a value
+// its docs' list leaves out. GitHub's real answer is unconfirmed, and the
+// daemon never sends content=.
+func fakeReactionFiltered(c *call, reactions []*gogithub.Reaction) (filtered []*gogithub.Reaction, refused string) {
 	content := c.r.URL.Query().Get("content")
 	if content == "" {
-		return reactions
+		return reactions, ""
 	}
-	return slices.DeleteFunc(slices.Clone(reactions), func(r *gogithub.Reaction) bool { return r.GetContent() != content })
+	if !slices.Contains(fakeReactionContents, content) {
+		return nil, fmt.Sprintf("Validation Failed: content %q is not one of %s", content, strings.Join(fakeReactionContents, ", "))
+	}
+	return slices.DeleteFunc(slices.Clone(reactions), func(r *gogithub.Reaction) bool { return r.GetContent() != content }), ""
 }
 
 // addReaction answers 201 for a new reaction, and 200 for one the App has already.

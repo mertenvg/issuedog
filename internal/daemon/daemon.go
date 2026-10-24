@@ -47,15 +47,21 @@ type Daemon struct {
 	// (assign.go). Set or not, what waits is listed for every issue.
 	Assign bool
 
-	// transferUnlistedAt is when every open issue was last listed, for
-	// the held ones no longer there, by GitHub's clock (transferunlisted.go).
+	// transferUnlistedAt is when every open issue was last listed, or the
+	// listing last failed, for the held ones no longer there, by GitHub's
+	// clock (transferunlisted.go).
 	transferUnlistedAt time.Time
+	// transferUnlistedPolled are the issues this pass's poll listed open,
+	// never a pull request, whose snapshots are from this pass, for that
+	// check (transferunlisted.go).
+	transferUnlistedPolled map[int]bool
 
 	digest        digestState
 	digestCache   map[int][]waitItem // what waits on the owner, by issue, after its last good step 1, for the digest and assignment
 	assignManaged map[int]bool       // issues whose assignees assignment keeps, as of their last pass (assign.go)
 	assignDropped map[string]bool    // logins, in lower case, GitHub wouldn't assign (assignDrop)
 	assignFor     string             // the notify list, in lower case, that assignDropped was found with
+	assignLater   map[int][]string   // this pass's unassigns put off until after its stage work, by issue (assignLaterPass)
 	snaps         map[int]*github.Snapshot
 	inputs        map[int][]github.Comment // only for snapshots step 1 succeeded on
 	openErrs      map[int]bool             // issues with an open state error after their last step 1
@@ -178,7 +184,9 @@ func (d *Daemon) Run(ctx context.Context) {
 // closes each epic planned into stories whose children have all closed
 // (epicClosePass, #251), keeps the digest (digestPass), and then the
 // assignees (assignPass), whose
-// failures stop nothing. Last it hands Work the issues ready for it. It returns the errors of the issues it couldn't read
+// failures stop nothing. Then it hands Work the issues ready for it, and
+// last makes the unassigns assignPass put off until after it
+// (assignLaterPass). It returns the errors of the issues it couldn't read
 // or run step 1 on, which the next Iterate reads again. An issue whose
 // labels CheckLabels holds back (ErrLabelsHeld), or that it closed again
 // (closingErrClosedAgain), is no error: like a touched issue, it gets
@@ -211,7 +219,8 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		errs = append(errs, err)
 	}
 	// A held issue the open issues, listed once in a while, leave out, as
-	// a transfer does, is read again, once (transferunlisted.go).
+	// a transfer does, is read again, once, and one they list that isn't
+	// held, as when wrong answers dropped it, is read (transferunlisted.go).
 	if err := d.transferUnlistedCheck(ctx); err != nil {
 		errs = append(errs, err)
 	}
@@ -251,6 +260,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			delete(d.missing, n)
 			delete(d.openErrs, n)
 			delete(d.digestCache, n)
+			d.digestRestartGone(n)
 			delete(d.assignManaged, n)
 			d.Step.forgetLabels(n)
 		case gone(err):
@@ -371,6 +381,9 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("stage work: %w", err))
 		}
 	}
+	if err := d.assignLaterPass(ctx); err != nil {
+		errs = append(errs, err)
+	}
 	return errors.Join(errs...)
 }
 
@@ -438,10 +451,12 @@ func (d *Daemon) reload(ctx context.Context) {
 // each one listed closed and dropping each one listed open, for a finished
 // story's children (#278): a start's first poll lists every issue, and
 // each later one every issue that changed, so a close or reopen is never
-// missed.
+// missed. The issues it lists open, it keeps for this pass alone
+// (transferUnlistedPolled).
 func (d *Daemon) poll(ctx context.Context) error {
 	a := d.Step.Applier
 	start := d.issuesSince.IsZero() // a start's first poll, which lists every issue
+	d.transferUnlistedPolled = map[int]bool{}
 	for range 2 {
 		since := d.issuesSince
 		issues, err := a.Client.IssuesSince(ctx, a.Owner, a.Repo, since)
@@ -455,6 +470,7 @@ func (d *Daemon) poll(ctx context.Context) error {
 			case is.IsPullRequest():
 			case is.GetState() == "open":
 				delete(d.closedListed, n)
+				d.transferUnlistedPolled[n] = true
 			default:
 				if d.closedListed == nil {
 					d.closedListed = map[int]bool{}

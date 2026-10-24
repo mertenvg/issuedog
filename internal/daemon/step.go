@@ -218,6 +218,12 @@ func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github
 	switch {
 	case reason == "edited":
 		return nil
+	case acked && request && !late && reviewDirtyRead(s, is, c, up.CreatedAt):
+		// The 👍 may be the answer's at clarifying or planning, read by the
+		// run whose move a dirty comment hid: the record of that move can
+		// only bound what came before the run (reviewDirtyRestore), so the
+		// 👍 processed it (SPEC §7.4).
+		return nil
 	case used && acked && editedSince(c, at):
 		return st.reply(ctx, s, c, "edited", editedText)
 	case acked && !named && (isCmd || !roundStage(posted)) && editedSince(c, up.CreatedAt):
@@ -268,11 +274,25 @@ func roundStage(stage state.Stage) bool {
 // Once c was edited after its 👎 (edited), its text isn't what the 👎
 // rejected, and a rejected command's edit is ignored (SPEC §9.2), so it
 // isn't worded again from that text: the reply says the reply was lost,
-// and that the edit is ignored (#229).
+// and that the edit is ignored (#229). It asks for a new comment only when
+// one could apply (SPEC §9.2), as rejected does: when the edited text, a
+// command or a revision request (ok), would get a Final Rejection, a new
+// comment with it would be rejected the same way, so the reply gives that
+// reason instead, which says what to do (#399).
 func (st *Step) reword(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment, cmd state.Command, ok bool, stage state.Stage, edited bool) error {
 	if edited {
-		logr.Infof("%s/%s#%d: rejected comment %d: %s", st.Owner, st.Repo, s.Number, c.ID, ivWordingLostEdited)
-		if err := st.reply(ctx, s, c, "rejected", ivWordingLostEdited); err != nil {
+		text := ivWordingLostEdited + " Post a new comment to try again."
+		if ok {
+			why, _, err := st.why(ctx, s, d, c, cmd, stage)
+			if err != nil {
+				return fmt.Errorf("reword: %w", err)
+			}
+			if why.Final {
+				text = ivWordingLostEdited + " Its new text wouldn't apply either: " + why.Reason + "."
+			}
+		}
+		logr.Infof("%s/%s#%d: rejected comment %d: %s", st.Owner, st.Repo, s.Number, c.ID, text)
+		if err := st.reply(ctx, s, c, "rejected", text); err != nil {
 			return fmt.Errorf("reword: %w", err)
 		}
 		return nil
@@ -298,9 +318,10 @@ const editedText = "This was edited after I acted on it, so I've ignored the edi
 
 // ivWordingLostEdited is the reply posted again to a 👎'd comment, edited
 // after the 👎, whose reply was lost (reword). It may have been a command
-// or a revision request, so it says neither.
+// or a revision request, so it says neither. reword ends it with what the
+// owner can do.
 const ivWordingLostEdited = "I didn't act on this comment, and my reply saying why was lost. " +
-	"It was edited after I rejected it, so I've ignored the edit. Post a new comment to try again."
+	"It was edited after I rejected it, so I've ignored the edit."
 
 // editedSince reports whether c was edited at or after t. GitHub's times are
 // to the second, so an edit in t's second counts as after it.

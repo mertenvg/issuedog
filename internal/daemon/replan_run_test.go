@@ -15,10 +15,11 @@ import (
 // stories and their tasks, to a discussion hold, the interviewer's plan
 // outcome, a revision applied to the stories, and a changed story's own
 // revision applied to its tasks. It runs on childrenRunLoop (#279), so the
-// stages are registered as registerStages registers them, step 1 is wired
-// as main's newStep wires it, the Applier reads main from the daemon's
-// clone and the config's labels exist, as startDaemon sets them, the
-// digest and assignment are on, and Daemon.Iterate is the loop. Config and
+// stages are registered as registerStages registers them, the daemon is
+// built as startDaemon builds it, daemon.New, so step 1 is
+// daemon.NewStep's, the Applier reads main from the daemon's clone, and
+// the digest and assignment are on, the config's labels exist, as
+// startDaemon creates them, and Daemon.Iterate is the loop. Config and
 // trust come from main on the origin: mertenvg owns CODEOWNERS and is
 // notify, and wendy is a write collaborator CODEOWNERS doesn't trust.
 // plan.review is false, so a story's first plan skips review, while a
@@ -253,18 +254,20 @@ func TestReplanRun(t *testing.T) {
 	// 3. mertenvg's 👍 on her comment resolves the hold, to clarifying, in
 	// a move keyed by the hold's comment, and the same pass the
 	// interviewer's plan outcome sends the epic to planning, with its notes
-	// and the cc line. The pass after, the planner posts revision 2, which
+	// and the cc line, after which mertenvg is unassigned, as an unassign
+	// at clarifying waits for the pass's stage work (SPEC §9.6), which
+	// leaves the epic at planning. The pass after, the planner posts revision 2, which
 	// waits at plan-review though plan.review is false, and the pass after
 	// that lists it: its approval unblocks the epic and the 8 open issues
 	// below it.
 	f.AddReaction(wendy, childrenRunOwner, "+1")
 	l.outs(map[string]any{"outcome": "plan", "message": replanRunNotes}, replanRunEpicRevision(t))
 	l.step("the hold resolved", 5, "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:held",
-		"PATCH /issues/2", "DELETE /issues/1/assignees", "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:clarifying")
+		"PATCH /issues/2", "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:clarifying", "DELETE /issues/1/assignees")
 	added := l.added(epic)
 	planMove := "The discussion during the hold changes this issue's plan, but not its spec, so it goes to `planning`.\n\n" + replanRunNotes +
 		"\n\nThe planner reads these notes and the discussion, and posts a new plan for your 👍.\n\ncc @" + childrenRunOwner +
-		"\n\n<!-- issuedog:transition from=clarifying to=planning origin=planned run=run5 seen="
+		"\n\n<!-- issuedog:transition from=clarifying to=planning origin=planned run=run5 replan=1 seen="
 	if len(added) != 2 || !strings.Contains(added[0], fmt.Sprintf("\n\n<!-- issuedog:transition from=held to=clarifying at=planned origin=planned event=h%d ", hold)) ||
 		!strings.HasPrefix(added[1], planMove) {
 		t.Errorf("the hold resolved: added %q; want the move to clarifying, then the interviewer's to planning", added)

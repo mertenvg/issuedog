@@ -113,18 +113,20 @@ func discWhat(tr discTrigger) string {
 // in its hold's comment and its notice, when tr is a write collaborator's
 // edit of their own comment after a code owner's 👍 approved it, and ""
 // for any other trigger. A 👍 approves only the text it post-dates, so
-// accepting the edit, by a 👍 on its notice or by /resume, releases the
-// hold but doesn't approve the new text: a trusted 👍 after the edit does,
-// and as GitHub keeps one 👍 a user, a code owner who approved the old
-// text removes theirs and adds it again (SPEC §6.4). One known from its
-// record alone is never an own edit (discFromKey makes it an edit), but
-// says nothing either way. It's the App's text only. The digest says it
-// shorter (editNoticeDigest).
+// accepting the edit, by a 👍 on its notice or by /resume, ends its hold
+// but doesn't approve the new text. Other triggers or an owner hold may
+// still keep the issue held, so it says the edit's hold ends, not the
+// issue's. Any trusted 👍 after the edit approves it, whoever approved
+// the old text, and as GitHub keeps one 👍 a user, a code owner who gave
+// it a 👍 before removes theirs and adds it again (SPEC §6.4). One known
+// from its record alone is never an own edit (discFromKey makes it an
+// edit), but says nothing either way. It's the App's text only. The
+// digest says it shorter (editNoticeDigest).
 func editNoticeApproval(tr discTrigger) string {
 	if !editNoticeOwn(tr) {
 		return ""
 	}
-	return fmt.Sprintf("Accepting the edit releases the hold but doesn't approve the new text: to approve it, %s.", editNoticeHow(tr))
+	return fmt.Sprintf("Accepting the edit ends its hold but doesn't approve the new text. %s.", editNoticeHow(tr))
 }
 
 // editNoticeDigest is editNoticeApproval for tr's line in the digest,
@@ -134,16 +136,18 @@ func editNoticeDigest(tr discTrigger) string {
 	if !editNoticeOwn(tr) {
 		return ""
 	}
-	return fmt.Sprintf("Accepting it doesn't approve the new text: %s.", editNoticeHow(tr))
+	return fmt.Sprintf("Accepting it doesn't approve the new text. %s.", editNoticeHow(tr))
 }
 
 // editNoticeOwn reports whether tr is an own edit of an approved comment
 // that the snapshot shows, which editNoticeApproval speaks of.
 func editNoticeOwn(tr discTrigger) bool { return tr.Kind == discOwnEdit && !tr.FromRecord }
 
-// editNoticeHow says how a code owner approves an own edit's new text.
+// editNoticeHow says how an own edit's new text is approved, as a
+// sentence without its full stop: any code owner's 👍 after the edit,
+// not only the one cc'd or the one who approved the old text.
 func editNoticeHow(tr discTrigger) string {
-	return fmt.Sprintf("remove your 👍 from comment %d and add it again", tr.ID)
+	return fmt.Sprintf("To approve it, a code owner adds a 👍 to comment %d after the edit, first removing any 👍 they gave it before", tr.ID)
 }
 
 // editNoticeAppend is text, then sentence, if any, after a space.
@@ -980,10 +984,11 @@ func discHitsApp(tr discTrigger, appSlug string) bool {
 // discHoldMove is the discussion hold for tr on s, at at with origin,
 // from from if set (Move.DiscFrom), with the round bound seen (SPEC §5's
 // seen field), an own edit's sentence (editNoticeApproval) after its
-// own, then the sentence also, if any, and more markers after its own. A hold for a trigger that isn't a comment is also
-// its notice, carrying its notice marker, unless a marker records tr or it
-// may have had a notice already (discLost). The hold's comment ends in cc
-// @<notify>, so the digest doesn't mention it again (SPEC §9.4).
+// own, then the sentence also, if any, and more markers after its own. A
+// hold for a trigger that isn't a comment is also its notice, carrying its
+// notice marker, unless a marker records tr or it may have had a notice
+// already (discLost). The hold's comment ends in cc @<notify>, so the
+// digest doesn't mention it again (SPEC §9.4).
 func (a *Applier) discHoldMove(s *github.Snapshot, d Dirt, tr discTrigger, from, at, origin state.Stage, seen int64, also string, more ...github.Marker) Move {
 	fields := map[string]string{"at": string(at), "origin": string(origin), "reason": "discussion"}
 	text := fmt.Sprintf("On hold for discussion, from `%s`: %s. Only a code owner can move this issue, "+
