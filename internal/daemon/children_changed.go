@@ -28,10 +28,12 @@ import (
 // "Why it blocks" names (childSpec.bodyOf). plan is the plan comment,
 // which the move links to and whose run= names the rewrite (childPlanRun),
 // and key the parent's move into planned, event=p<its comment ID>, which
-// keys each move as a child's first move is keyed (SPEC §5.2). A changed item whose
-// child isn't found, as when its body lost its origin to an edit that the
-// App hasn't reposted yet, is logged and skipped, and a later pass tries
-// again.
+// keys each move as a child's first move is keyed (SPEC §5.2). A plan
+// comment that names no run is a failure no later pass gets past
+// (childrenStuck), returned before any changed child is written. A changed
+// item whose child isn't found, as when its body lost its origin to an
+// edit that the App hasn't reposted yet, is logged and skipped, and a
+// later pass tries again.
 func (st *Step) childrenChanged(ctx context.Context, s *github.Snapshot, rev int, plan github.Comment, key state.Key,
 	specs []childSpec, children map[string]childFound, numbers map[string]int) error {
 	if len(specs) == 0 {
@@ -39,7 +41,10 @@ func (st *Step) childrenChanged(ctx context.Context, s *github.Snapshot, rev int
 	}
 	run, ok := childPlanRun(plan, st.AppSlug)
 	if !ok {
-		return fmt.Errorf("revision %d's plan comment %d names no run, which its changed children's rewrite marker would name", rev, plan.ID)
+		// The plan comment is the approved revision's, which only a new
+		// approval replaces, so no later pass reads a run from it either.
+		return &childrenStuck{why: "its plan comment names no run, which the rewrite of its changed children would name",
+			err: fmt.Errorf("revision %d's plan comment %d names no run, which its changed children's rewrite marker would name", rev, plan.ID)}
 	}
 	for _, c := range specs {
 		f, ok := children[c.Item]
