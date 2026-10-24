@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	gogithub "github.com/google/go-github/v92/github"
+
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
@@ -343,8 +345,10 @@ func TestHumanItemAssignReplay(t *testing.T) {
 // digest's first pass lists T2 alone, linking the issue, with the Goal and
 // "Done when" copied from the body humanBody wrote: "Done when" the
 // daemon's sentence for its check, then how to finish. T3 isn't listed
-// while its blocker is open; TestHumanItemDigest covers the pass after a
-// blocker closes.
+// while its blocker is open. Once the owner's /done closes T2, the pass
+// after lists T3, with the mention in its copied "Done when" defused;
+// TestHumanItemDigest covers the rest of the passes after a blocker
+// closes.
 func TestHumanItemFromChildren(t *testing.T) {
 	t.Parallel()
 	f := run(t, humanAtReview, childrenPass(t, humanKind))
@@ -385,5 +389,33 @@ func TestHumanItemFromChildren(t *testing.T) {
 	// which in the digest is the digest.
 	if strings.Contains(body, "See the issue for what to do.") || strings.Contains(body, "I check this when you reply") {
 		t.Errorf("the digest falls back, or keeps the body's sentence on how to finish:\n%s", body)
+	}
+
+	// The owner's /done on T2 (#354) passes its check, as a ruleset on main
+	// now requires the verify check, so the pass closes T2 as completed,
+	// which takes it off the digest. The owner is an admin here, as the
+	// children's run trusted the owner without a read. The pass after
+	// reads T3's blockers again and lists T3, its one blocker closed, with
+	// T3's copied mention defused end to end: the item t3 above, which
+	// scores 2, as T3 blocks T4's #3.
+	f.SetPermission("owner", "admin")
+	f.SetRequiredChecks("main", githubtest.Ruleset{Checks: []gogithub.RuleStatusCheck{{Context: "issuedog/verify"}}})
+	d.Step.Commands["done"] = daemon.DoneCommand()
+	done := f.AddComment(5, "owner", "/done")
+	iterate(t, d)
+	cs := f.State().Issues[4].Comments
+	if closed := doneClosed("A ruleset on `main` requires the check `issuedog/verify`.", done); !f.State().Issues[4].Closed || cs[len(cs)-1].Body != closed {
+		t.Fatalf("after T2's /done, #5 is closed %t, with comments %+v; want it closed, last by\n%s", f.State().Issues[4].Closed, cs, closed)
+	}
+	if got := humanItemListed(f, digestN); len(got) != 0 {
+		t.Errorf("the pass that closed T2, the digest lists %q; want no human task", got)
+	}
+	iterate(t, d)
+	body = f.State().Issues[digestN-1].Body
+	if got, want := humanItemListed(f, digestN), []string{"#4 Human task p2 2"}; !slices.Equal(got, want) {
+		t.Errorf("after T2's /done, the digest lists %q; want %q, its blocker closed", got, want)
+	}
+	if !strings.Contains(body, t3) || strings.Contains(body, t2) {
+		t.Errorf("after T2's /done, the digest =\n%s\nwant the item\n%s\nand not\n%s", body, t3, t2)
 	}
 }
