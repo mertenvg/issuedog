@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	gogithub "github.com/google/go-github/v92/github"
 	"github.com/mertenvg/logr/v2"
 )
 
@@ -60,11 +61,13 @@ const transferUnlistedEvery = 10 * time.Minute
 // when a poll lists it: the next pass judges it, and reads it, and runs
 // step 1 on it, only once it's judged no digest.
 //
-// An issue the listing has and the daemon holds is read no more than
-// before, and a pass between two listings makes no request here. A start's
-// first pass lists nothing, as its poll lists every issue and the daemon
-// holds none before it, and nor does a pass that holds none, unless an
-// issue was dropped since the last listing that worked
+// It brings each listed issue's count of the open issues it blocks up to
+// date too (transferUnlistedBlocking), from the summary the listing gives
+// anyway. An issue the listing has and the daemon holds is read no more
+// than before, and a pass between two listings makes no request here. A
+// start's first pass lists nothing, as its poll lists every issue and the
+// daemon holds none before it, and nor does a pass that holds none, unless
+// an issue was dropped since the last listing that worked
 // (transferUnlistedDrop): so a repo whose only issue wrong answers dropped
 // gets it back too. A failed listing is the pass's error, and the next
 // listing waits transferUnlistedEvery from it, as from a good one, so a
@@ -90,6 +93,7 @@ func (d *Daemon) transferUnlistedCheck(ctx context.Context) error {
 	for _, is := range issues {
 		n := is.GetNumber()
 		listed[n] = true
+		d.transferUnlistedBlocking(is)
 		if d.snaps[n] != nil || d.stale[n] || is.IsPullRequest() || d.digest.has(n) || !is.GetUpdatedAt().Before(d.issuesSince) {
 			continue
 		}
@@ -115,6 +119,22 @@ func (d *Daemon) transferUnlistedCheck(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// transferUnlistedBlocking brings up to date, from listed issue is, how
+// many open issues it blocks, which the digest ranks by (SPEC §9.4, The
+// order): its snapshot's Blocking, if one is held, and what its kept
+// items rank by while none is, as when its read fails (digestKeptList).
+// The listing gives each issue's issue_dependencies_summary, so it costs
+// no request. A link's write, or a blocked issue's close, may not move the
+// blocker's updated_at, so no poll lists the blocker, and its count would
+// stay as its last read had it: this way it catches up by the next
+// listing. A snapshot listed with no summary keeps the count it has.
+func (d *Daemon) transferUnlistedBlocking(is *gogithub.Issue) {
+	if s, sum := d.snaps[is.GetNumber()], is.GetIssueDependenciesSummary(); s != nil && sum != nil {
+		s.Blocking = sum.GetBlocking()
+	}
+	d.digestKeptList(is)
 }
 
 // transferUnlistedDrop records issue n as dropped as gone, so the next

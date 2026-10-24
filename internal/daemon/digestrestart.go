@@ -126,10 +126,12 @@ func (d *Daemon) digestRestartList(n int, start bool) {
 
 // digestRestartLeave records issue n, which left the pipeline, as one
 // whose items aren't cached, if it had any, which leave drops. Any items
-// read back for it from the digest's body go: a closed issue has nothing
-// waiting, and a digest lists nothing of its own.
+// read back for it from the digest's body go, with what a listing showed
+// of it for them (digestKeptList): a closed issue has nothing waiting, and
+// a digest lists nothing of its own.
 func (d *Daemon) digestRestartLeave(n int) {
 	delete(d.digestKept, n)
+	delete(d.digestKeptListed, n)
 	if _, ok := d.digestCache[n]; !ok {
 		return
 	}
@@ -141,16 +143,20 @@ func (d *Daemon) digestRestartLeave(n int) {
 
 // digestRestartGone forgets issue n, dropped as gone, deleted or
 // transferred: GitHub never reuses its number, so no poll lists it again.
-// Any items read back for it from the digest's body go too.
+// Any items read back for it from the digest's body go too, with what a
+// listing showed of it for them (digestKeptList).
 func (d *Daemon) digestRestartGone(n int) {
 	delete(d.digestRestartUnknown, n)
 	delete(d.digestKept, n)
+	delete(d.digestKeptListed, n)
 }
 
 // digestRestartKnow records that step 1 succeeded on issue n, so its items
 // are cached (digestRestartRead), in place of any read back for it from
-// the digest's body (digestkept.go).
+// the digest's body (digestkept.go), and what a listing showed of it for
+// them (digestKeptList).
 func (d *Daemon) digestRestartKnow(n int) {
 	delete(d.digestRestartUnknown, n)
 	delete(d.digestKept, n)
+	delete(d.digestKeptListed, n)
 }

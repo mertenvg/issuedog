@@ -683,7 +683,8 @@ func (f *Fake) addComment(c *call) (int, any) {
 // its type, or any of them, as the App. A state change is setState's, with
 // state_reason if given, and a type change is issueTypeRevertEdit's. A new
 // title adds the App's renamed event to the timeline, as RenameIssue does.
-// Nothing else of an issue is edited yet.
+// Nothing else of an issue is edited yet. The reply gives the issue with
+// its issue_dependencies_summary (withDependencies), as GitHub's does.
 func (f *Fake) editIssue(c *call) (int, any) {
 	var req struct {
 		Title, Body, State *string
@@ -719,7 +720,7 @@ func (f *Fake) editIssue(c *call) (int, any) {
 	if req.State != nil {
 		f.setState(c.issue, *req.State, req.StateReason, f.slug+"[bot]")
 	}
-	return http.StatusOK, c.issue.Issue
+	return http.StatusOK, f.withDependencies(c.issue)
 }
 
 func (is *issue) editBy(login, body string, now *gogithub.Timestamp) {

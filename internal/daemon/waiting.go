@@ -154,7 +154,8 @@ type waitItem struct {
 	// after a restart (digestkept.go), which is rendered as it was, and nil
 	// for every item waitFind finds. A kept item has no Key, Title, Lines,
 	// Plan or Children: only its Issue, Kind, Priority, Link and Comment are
-	// read back, and its issue's Created is added for waitRank.
+	// read back, and its issue's Created, and with no snapshot held its
+	// Kept.Blocking, are added for waitRank (Daemon.digestKeptRanked).
 	Kept *waitKept
 }
 
@@ -843,9 +844,12 @@ func waitQuestions(body, heading string, n int, missing string) []waitLine {
 //
 // The issues it blocks are its snapshot's Blocking, GitHub's count of the
 // open issues its blocked-by links block, in any repo, which the issue's
-// read gives with no request of its own. An issue with no snapshot, such
-// as a closed one's closer state error, blocks none. GitHub's count names
-// no issue, so one both below the issue and blocked by it counts twice.
+// read, and the 10-minute listing of every open issue, give with no
+// request of their own (transferUnlistedCheck). An issue with no
+// snapshot, such as a closed one's closer state error, blocks none, but
+// for a kept item's, which takes its count from the last listing of its
+// issue (waitKept.Blocking). GitHub's count names no issue, so one both
+// below the issue and blocked by it counts twice.
 //
 // Each issue has one parent, so the walk down from an issue meets each
 // issue below it once, unless the parents loop back to the issue itself,
@@ -886,6 +890,8 @@ func waitRank(items []waitItem, snaps map[int]*github.Snapshot) {
 		items[i].Unblocks = 1 + count(items[i].Issue)
 		if s := snaps[items[i].Issue]; s != nil {
 			items[i].Unblocks += s.Blocking
+		} else if k := items[i].Kept; k != nil {
+			items[i].Unblocks += k.Blocking
 		}
 	}
 	// SPEC §9.4's order of two items on their own.
