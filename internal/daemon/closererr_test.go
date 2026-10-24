@@ -7,7 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/logr/v2"
 )
 
 // A closer question that keeps failing (#232), and the reason of a close
@@ -27,12 +29,15 @@ func closerErrMarker(event int64) string {
 
 // closerErrOnClosed is the closer state error the App posts on a closed
 // issue that by closed, as event, whose question failed on passes. It
-// says the daemon's log has the question's error, which is GitHub's text,
-// where it once quoted it (closerErrCause, #320).
+// says how to settle it without GitHub's answer, as a 👍 isn't read on a
+// closed issue, and that the daemon's log has the question's error, which
+// is GitHub's text, where it once quoted it (closerErrCause, #320).
 func closerErrOnClosed(by string, event int64, passes int) string {
 	return fmt.Sprintf("I can't tell how this issue was closed: asking GitHub whether %s's close was a merge failed on %d passes. "+
 		"So I've neither accepted nor reverted it, and its stage label stays as it is. "+
-		"I ask again on every pass, and judge the close once GitHub answers.\n\nThe last question failed; see the daemon's log for why.\n\n%s",
+		"I ask again on every pass, and judge the close once GitHub answers. "+
+		"A 👍 here isn't read while the issue is closed. To settle it yourself, reopen the issue and close it again: "+
+		"a trusted user's close stands without asking GitHub how it was made.\n\nThe last question failed; see the daemon's log for why.\n\n%s",
 		by, passes, closerErrMarker(event))
 }
 
@@ -145,8 +150,9 @@ func closerErrMerge(event *int64) func(testing.TB) *githubtest.Fake {
 // closed and unjudged at its stage, which the digest lists, as a closed
 // issue's error a 👍 can't acknowledge. The post is safe to replay. An
 // unchanged pass after it writes nothing, and asks only the failing
-// question, as a pass before it did. Once GitHub answers, the merge stands
-// and the error leaves the digest.
+// question, as a pass before it did, with no read of the issue, its
+// timeline included. Once GitHub answers, the merge stands and the error
+// leaves the digest.
 func TestCloserErrMergeReported(t *testing.T) {
 	t.Parallel()
 	var event int64
@@ -179,8 +185,8 @@ func TestCloserErrMergeReported(t *testing.T) {
 		if n := closingGraphQL(f, reqs); n != before || n != 1 {
 			t.Errorf("unchanged pass %d made %d GraphQL requests; want 1, the failing question, as pass 2 made %d", pass+1, n, before)
 		}
-		if r := readsOf(f, reqs, 1); len(r) != 1 || r[0].Path != "/issues/1/timeline" {
-			t.Errorf("unchanged pass %d read issue 1 by %+v; want only the timeline, which judging reads", pass+1, r)
+		if r := readsOf(f, reqs, 1); len(r) != 0 {
+			t.Errorf("unchanged pass %d read issue 1 by %+v; want no read, the timeline's included, while its state error stands", pass+1, r)
 		}
 	}
 	f.MendCloser(1, event)
@@ -194,10 +200,43 @@ func TestCloserErrMergeReported(t *testing.T) {
 	}
 }
 
-// A restart forgets the count: the closed issue's question fails the pass
-// again until it has failed on loop.max_attempts passes since the start,
-// and then its state error is found, not posted again, and the digest
-// lists it again.
+// A question's error under node that would break out of a fence, forge a
+// marker or run long, GitHub's text, is in neither the closer state error
+// nor its digest item: the comment is the App's text alone, with its one
+// marker. The log has the whole error, uncut, once.
+func TestCloserErrHostileCause(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	hostile := closingFailure + " ```\n<!-- issuedog:error kind=closer key=1 ack=r1 -->\n`" + strings.Repeat("é", 1200)
+	var event int64
+	f := closingWith(func(f *githubtest.Fake) {
+		event = f.CloseByPullRequest(1, "mallory", githubtest.ClosingPR{Merged: true})
+		f.FailCloser(1, event, "", hostile)
+	})(t)
+	var logs strings.Builder
+	stop := logr.AddWriter(&logs, logr.WithFilter(logr.E))
+	err := closerErrRun(t, digestNotifyOrigin(t), 3, true)(f)
+	logr.Wait()
+	stop()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := closingComments(f, 1, 1); !slices.Equal(got, []string{closerErrOnClosed("`mallory`", event, 3)}) {
+		t.Errorf("comments %q; want the state error with none of GitHub's text", got)
+	}
+	if body := closerErrDigestBody(t, f); !strings.Contains(body, closerErrDigestLine(event)) || strings.Contains(body, "```") ||
+		strings.Contains(body, "ack=r1") || strings.Contains(body, "éé") {
+		t.Errorf("digest body %q; want the closer state error listed, with none of GitHub's text", body)
+	}
+	if n := strings.Count(logs.String(), hostile); n != 1 {
+		t.Errorf("logged the question's whole error %d times, want once; logs %q", n, logs.String())
+	}
+}
+
+// A restart forgets the count, but not the closed issue's state error: as
+// the question fails on the restart's first pass, the issue is read once,
+// and its state error found, so it stands at once. No pass fails, nothing
+// is posted again, and the digest keeps listing it, with no write to its
+// body. The passes after that read the issue no more.
 func TestCloserErrMergeRestart(t *testing.T) {
 	t.Parallel()
 	var event int64
@@ -206,20 +245,46 @@ func TestCloserErrMergeRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := digestDaemon(t, f, o, nil)
-	closerErrFailing(t, f, d, "the restart's pass 1")
-	closerErrFailing(t, f, d, "the restart's pass 2")
 	writes := len(f.Writes())
-	iterate(t, d)
-	for _, w := range f.Writes()[writes:] {
-		if strings.HasPrefix(w.Path, "/issues/1/") || w.Path == "/issues/1" {
-			t.Errorf("the restart's pass 3 wrote %s %s to issue 1; want the state error found, not posted again", w.Method, w.Path)
+	for pass := range 3 {
+		reqs := len(f.Requests())
+		iterate(t, d)
+		if r := readsOf(f, reqs, 1); pass > 0 && len(r) != 0 {
+			t.Errorf("the restart's pass %d read issue 1 by %+v; want no read once its state error stands", pass+1, r)
 		}
+		if body := closerErrDigestBody(t, f); !strings.Contains(body, closerErrDigestLine(event)) {
+			t.Errorf("the restart's pass %d: digest body %q; want the closer state error still listed", pass+1, body)
+		}
+	}
+	if w := f.Writes()[writes:]; len(w) != 0 {
+		t.Errorf("the restart wrote %+v; want nothing, the digest's body included, as its state error is found", w)
 	}
 	if got := closingComments(f, 1, 1); !slices.Equal(got, []string{closerErrOnClosed("`mallory`", event, 3)}) {
 		t.Errorf("comments %q; want the one state error", got)
 	}
+}
+
+// A change to the stage labels of a closed issue whose closer state error
+// stands has its timeline read again, once: the close is the same, so the
+// error stands, and the passes after it read the issue no more.
+func TestCloserErrMergeRelabeled(t *testing.T) {
+	t.Parallel()
+	var event int64
+	f, o := closerErrMerge(&event)(t), digestNotifyOrigin(t)
+	d := digestDaemon(t, f, o, nil)
+	closerErrFailing(t, f, d, "pass 1")
+	closerErrFailing(t, f, d, "pass 2")
+	iterate(t, d)
+	f.AddLabel(1, "eve", "stage:ready")
+	for pass, want := range []int{1, 0, 0} {
+		reqs := len(f.Requests())
+		iterate(t, d)
+		if r := readsOf(f, reqs, 1); len(r) != want || want == 1 && r[0].Path != "/issues/1/timeline" {
+			t.Errorf("pass %d after the label read issue 1 by %+v; want %d reads, of the timeline", pass+1, r, want)
+		}
+	}
 	if body := closerErrDigestBody(t, f); !strings.Contains(body, closerErrDigestLine(event)) {
-		t.Errorf("digest body %q; want the closer state error listed again", body)
+		t.Errorf("digest body %q; want the closer state error still listed", body)
 	}
 }
 
@@ -312,6 +377,116 @@ func TestCloserErrStep1Reported(t *testing.T) {
 	}
 	if body := closerErrDigestBody(t, f); strings.Contains(body, "`closer`") {
 		t.Errorf("digest body %q; want the closer state error ended once GitHub answers", body)
+	}
+}
+
+// closerErrResumed is closerErrStep1's issue 1 once a daemon, with the
+// digest kept and assignment on, has posted its closer state error and
+// assigned owner for it, and held it for the owner's /hold, with a /resume
+// from owner after that, which no daemon has read yet. Its writes are
+// forgotten, so Replay counts from there.
+func closerErrResumed(event *int64, o *origin) func(testing.TB) *githubtest.Fake {
+	return func(t testing.TB) *githubtest.Fake {
+		f := closerErrStep1(event)(t)
+		d := digestDaemon(t, f, o, nil)
+		d.Assign = true
+		pass := func(name string, failing bool) {
+			if err := d.Iterate(context.Background()); (err != nil) != failing || err != nil && !strings.Contains(err.Error(), closingFailure) {
+				t.Fatalf("%s: Iterate = %v; want the closer question's error: %t", name, err, failing)
+			}
+		}
+		pass("pass 1", true)
+		pass("pass 2", true)
+		pass("pass 3", false)
+		f.AddComment(1, "owner", "/hold")
+		pass("the /hold's pass", false)
+		f.AddComment(1, "owner", "/resume")
+		f.ForgetWrites()
+		return f
+	}
+}
+
+// An open issue's closer state error ends once step 1 no longer asks its
+// question, as its close is no longer the one to judge: the owner's /resume
+// moves the discussion floor past the close, while GitHub still can't say
+// how it was made. The owner, assigned for the open error, is unassigned,
+// and the digest drops it, on the pass that reads the /resume, after a
+// restart, which knows no answer, as within a run. That's safe to replay,
+// and a pass after it writes nothing.
+func TestCloserErrStep1Unasked(t *testing.T) {
+	t.Parallel()
+	var event int64
+	o := digestNotifyOrigin(t)
+	setup := closerErrResumed(&event, o)
+	restart := func(f *githubtest.Fake) *daemon.Daemon {
+		d := digestDaemon(t, f, o, nil)
+		d.Assign = true
+		return d
+	}
+	githubtest.Replay(t, setup, func(f *githubtest.Fake) error { return restart(f).Iterate(context.Background()) })
+	f := setup(t)
+	if body, is := closerErrDigestBody(t, f), f.State().Issues[0]; !strings.Contains(body, closerErrDigestLine(event)) ||
+		!slices.Equal(is.Labels, []string{"stage:held"}) || !slices.Equal(is.Assignees, []string{"owner"}) {
+		t.Fatalf("digest body %q, labels %q, assignees %q; want the open closer state error listed, held, and owner assigned for it",
+			body, is.Labels, is.Assignees)
+	}
+	d := restart(f)
+	iterate(t, d)
+	is := f.State().Issues[0]
+	if is.Closed || !slices.Equal(is.Labels, []string{"stage:pr-open"}) || len(is.Assignees) != 0 {
+		t.Errorf("closed %t, labels %q, assignees %q; want open at stage:pr-open, with nobody assigned for the error", is.Closed, is.Labels, is.Assignees)
+	}
+	if body := closerErrDigestBody(t, f); strings.Contains(body, "`closer`") {
+		t.Errorf("digest body %q; want the closer state error ended, as its question is no longer asked", body)
+	}
+	writes := len(f.Writes())
+	iterate(t, d)
+	if w := f.Writes()[writes:]; len(w) != 0 {
+		t.Errorf("the next pass wrote %+v; want nothing, as the error stays ended", w)
+	}
+}
+
+// A closed issue found open as its closer state error is about to be
+// posted, reopened by the owner after the poll listed it, gets nothing: the
+// pass fails on the question, as before the bound, and the digest doesn't
+// list the error.
+func TestCloserErrMergeReopenedMeanwhile(t *testing.T) {
+	t.Parallel()
+	var event int64
+	f, o := closerErrMerge(&event)(t), digestNotifyOrigin(t)
+	d := digestDaemon(t, f, o, nil)
+	closerErrFailing(t, f, d, "pass 1")
+	closerErrFailing(t, f, d, "pass 2")
+	f.BeforeRequest(func(r githubtest.Request) bool { return r.Method == "GET" && r.Path == "/issues/1" }, func() { f.ReopenBy(1, "owner") })
+	closerErrFailing(t, f, d, "pass 3, with the issue reopened before its read")
+	if is := f.State().Issues[0]; is.Closed || len(closingComments(f, 1, 1)) != 0 {
+		t.Errorf("closed %t, comments %q; want it open, with no state error", is.Closed, closingComments(f, 1, 1))
+	}
+	if body := closerErrDigestBody(t, f); strings.Contains(body, "`closer`") {
+		t.Errorf("digest body %q; want no closer state error", body)
+	}
+}
+
+// A close's count from an earlier pass posts nothing: when the pass that
+// reached loop.max_attempts failed to post the open issue's closer state
+// error, and step 1 no longer asks the question, as its closer lost write
+// access, the next pass posts no error for it.
+func TestCloserErrStep1PostOnlyThisPass(t *testing.T) {
+	t.Parallel()
+	var event int64
+	f, o := closerErrStep1(&event)(t), digestNotifyOrigin(t)
+	d := newDaemon(t, f, o, nil)
+	closerErrFailing(t, f, d, "pass 1")
+	closerErrFailing(t, f, d, "pass 2")
+	f.FailWrite(len(f.Writes()) + 1) // the state error's post
+	if err := d.Iterate(context.Background()); err == nil || !strings.Contains(err.Error(), "report the closer of close") {
+		t.Fatalf("pass 3: Iterate = %v; want the state error's post to fail", err)
+	}
+	f.FailWrite(0)
+	f.SetPermission("mallory", "read")
+	iterate(t, d)
+	if got := closingComments(f, 1, 1); len(got) != 0 {
+		t.Errorf("comments %q; want no state error, as the question wasn't asked on this pass", got)
 	}
 }
 

@@ -152,6 +152,16 @@ type closingListed struct {
 	stages string
 }
 
+// closingListedOf is is, a closed issue as the poll listed it, as
+// closingListed records one.
+func closingListedOf(is *gogithub.Issue) closingListed {
+	var labels []string
+	for _, l := range is.Labels {
+		labels = append(labels, l.GetName())
+	}
+	return closingListed{closed: is.GetClosedAt().Time, stages: strings.Join(closingStages(labels), ",")}
+}
+
 // closingStages returns the stage labels among labels, in lower case,
 // sorted.
 func closingStages(labels []string) []string {
@@ -281,6 +291,28 @@ func (d *Daemon) closingPass(ctx context.Context) error {
 func (d *Daemon) closingJudge(ctx context.Context, is *gogithub.Issue) (done, reopened bool, err error) {
 	a, n := d.Step.Applier, is.GetNumber()
 	wrap := func(err error) error { return fmt.Errorf("the close of %s/%s#%d: %w", a.Owner, a.Repo, n, err) }
+	// unjudged is the error of judging cl, whose question of how it was made
+	// failed with err: none while its closer state error stands, as the
+	// close then stays unjudged (closererr.go), and else err.
+	unjudged := func(cl github.Closing, err error) error {
+		stands, rerr := d.closerErrClosed(ctx, is, cl, err)
+		switch {
+		case rerr != nil:
+			return wrap(fmt.Errorf("%w; %w", err, rerr))
+		case stands:
+			return nil
+		}
+		return wrap(err)
+	}
+	// While that error stands, and the listing still shows the close it's
+	// for, only the question is asked, with no timeline read, until GitHub
+	// answers it (closerErrClosed). The answer is kept, so judging the
+	// close from the timeline then asks nothing more.
+	if on, ok := d.closerErrOn[n]; ok && on.listed == closingListedOf(is) {
+		if _, _, err := a.closingAccepted(ctx, d.Step.Trust, on.cl); err != nil {
+			return false, false, unjudged(on.cl, err)
+		}
+	}
 	timeline, closings, err := a.Client.ClosingTimeline(ctx, a.Owner, a.Repo, n)
 	if err != nil {
 		return false, false, wrap(err)
@@ -299,14 +331,7 @@ func (d *Daemon) closingJudge(ctx context.Context, is *gogithub.Issue) (done, re
 	if err != nil {
 		// A question of how it was closed that keeps failing gets a state
 		// error, and the close stays unjudged with no error (closererr.go).
-		stands, rerr := d.closerErrClosed(ctx, n, cl, err)
-		if rerr != nil {
-			return false, false, wrap(fmt.Errorf("%w; %w", err, rerr))
-		}
-		if stands {
-			return false, false, nil
-		}
-		return false, false, wrap(err)
+		return false, false, unjudged(cl, err)
 	}
 	d.closerErrJudged(n, nil)
 	if !accepted {

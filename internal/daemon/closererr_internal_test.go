@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
@@ -54,6 +55,50 @@ func TestCloserErrOpenErrors(t *testing.T) {
 		}
 		if !slices.Equal(open, want) {
 			t.Errorf("%s: open %+v; want %+v", tc.name, open, want)
+		}
+	}
+}
+
+// Step 1 no longer asks the question of a close, which ends its closer
+// state error on an open issue, once the close is before the discussion
+// floor, as after a move out of held, or a marker records it, or the issue
+// has no floor. A close the snapshot doesn't list, as on one CheckLabels
+// hasn't checked, or only a reopen with that ID, is still asked.
+func TestCloserErrUnasked(t *testing.T) {
+	t.Parallel()
+	const (
+		first = "<!-- issuedog:transition from=intake to=pr-open run=r1 -->"
+		held  = "<!-- issuedog:transition from=pr-open to=held at=pr-open reason=owner run=r2 -->"
+		out   = "<!-- issuedog:transition from=held to=pr-open run=r3 -->"
+	)
+	t0 := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	none := func(int64) bool { return false }
+	// snap is open issue 7 with comments, the nth an hour after t0 for
+	// each n, and closings.
+	snap := func(closings []github.Closing, comments ...string) *github.Snapshot {
+		s := openErrSnap("", comments...)
+		for i := range s.Comments {
+			s.Comments[i].CreatedAt = t0.Add(time.Duration(2*i) * time.Hour)
+		}
+		s.Closings = closings
+		return s
+	}
+	closed := []github.Closing{{ID: 900, NodeID: "CE_900", At: t0.Add(time.Hour)}}
+	for _, tc := range []struct {
+		name string
+		s    *github.Snapshot
+		want bool
+	}{
+		{"after the floor", snap(closed, first), false},
+		{"held after it", snap(closed, first, held), false},
+		{"before a move out of held", snap(closed, first, held, out), true},
+		{"recorded", snap(closed, first, "<!-- issuedog:notice key=900 -->"), true},
+		{"no floor", snap(closed), true},
+		{"not listed", snap(nil, first, held, out), false},
+		{"only a reopen", snap([]github.Closing{{ID: 900, NodeID: "RE_900", At: t0.Add(time.Hour), Reopen: true}}, first, held, out), false},
+	} {
+		if got := closerErrUnasked(tc.s, openErrSlug, none, "900"); got != tc.want {
+			t.Errorf("%s: unasked %t; want %t", tc.name, got, tc.want)
 		}
 	}
 }

@@ -33,6 +33,10 @@ type Step struct {
 	// /resume another waits for (holdOrderWaits), so Iterate reads it again
 	// next pass, and visits it, without skipping its visit in this one.
 	holdOrderReread func(number int)
+	// holdOrderDigest, if set, reports whether issue number is a digest,
+	// which step 1 never visits (Daemon.digest), so holdOrderWaits waits
+	// for nothing on it.
+	holdOrderDigest func(number int) bool
 }
 
 // Run runs step 1 on s, in this order: the label rules (CheckLabels), dirty

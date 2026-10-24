@@ -120,7 +120,7 @@ func decodePlan(raw json.RawMessage) (planOutput, error) {
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
 	if err := d.Decode(&out); err != nil {
-		return planOutput{}, fmt.Errorf("decode planner output: %w", err)
+		return planOutput{}, &daemonCause{fmt.Errorf("decode planner output: %w", err)}
 	}
 	return out, nil
 }

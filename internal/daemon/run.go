@@ -145,7 +145,7 @@ type Lease struct {
 	FallbackModels []string `json:"fallback_models,omitempty"`
 	// ApplyFailures counts the failed applies of the run's result.
 	ApplyFailures int `json:"apply_failures,omitempty"`
-	// LastFailure is why the run failed, as failed records it, at most
+	// PublicFailure is why the run failed, as failed records it, at most
 	// maxLastFailure characters (lastFailure), for the attempt cap's error
 	// (SPEC §5.3, §8.2), so a restart still names it. It holds only
 	// what that public comment may quote of the cause (publicCause), or
@@ -153,7 +153,7 @@ type Lease struct {
 	// and nothing else reads it. Its key is new with that (#320), so a
 	// lease from before, whose last_failure may hold a host path or
 	// GitHub's text, is read with none.
-	LastFailure string `json:"public_failure,omitempty"`
+	PublicFailure string `json:"public_failure,omitempty"`
 	// Failed marks a run that has ended, failed or not counted (end):
 	// Attempt is then the count of failed attempts in a row it leaves, which
 	// may be 0, so a restart doesn't reset the count. It's written before
@@ -172,7 +172,7 @@ func (l Lease) settings() state.Settings {
 const kindAttempts = "attempts"
 
 // maxLastFailure is the most characters of a failed attempt's cause the
-// lease keeps, and a state error quotes (Lease.LastFailure, publicCause).
+// lease keeps, and a state error quotes (Lease.PublicFailure, publicCause).
 const maxLastFailure = 1000
 
 // lastFailure is cause's text as a state error quotes it (publicCause): at
@@ -215,7 +215,7 @@ type Runs struct {
 	badSchemas map[string]bool // the agents whose Stage's schema doesn't compile, reported
 
 	// failures holds why the last of the failed runs failed
-	// (Lease.LastFailure), by countKey, for the attempt cap's error.
+	// (Lease.PublicFailure), by countKey, for the attempt cap's error.
 	failures map[string]string
 }
 
@@ -387,7 +387,7 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 	if r.attempts[countKey(n, errKey)] >= r.limit() {
 		// The cap was reached, but posting its state error failed: post it.
 		// A post that keeps failing mustn't hold up the other issues.
-		last := Lease{Issue: n, Stage: is.Stage, AttemptKey: errKey, LastFailure: r.failures[countKey(n, errKey)]}
+		last := Lease{Issue: n, Stage: is.Stage, AttemptKey: errKey, PublicFailure: r.failures[countKey(n, errKey)]}
 		if err := r.reportCap(ctx, nil, st, last); err != nil {
 			logr.Errorf("%s/%s#%d: no %s run, as it failed loop.max_attempts times, but posting that failed again: %v",
 				a.Owner, a.Repo, n, st.Agent(), err)
@@ -488,6 +488,12 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 	if runErr == nil {
 		// Validate fails whatever outcome calls failed, and invalid output.
 		out, runErr = agent.Validate(raw, schema)
+	} else if sub := agent.FailedSubtype(raw); sub != nil {
+		// Claude exited non-zero, so Validate doesn't run, but its result
+		// may still name the subtype, such as error_max_turns, which the
+		// attempt cap's error may quote where the exit status says nothing
+		// (SPEC §5.3).
+		runErr = fmt.Errorf("%w: %w", runErr, sub)
 	}
 	if runErr != nil {
 		logStderr()
@@ -570,7 +576,8 @@ func outcome(raw []byte) (failed bool, text string) {
 // applyLease applies l's result (apply): raw, claude's output, whose
 // structured output out is valid. A failure keeps the lease, counted in
 // ApplyFailures, so the next pass tries again; after loop.max_attempts of
-// them, the run is a failed attempt. A failure to end the run once the
+// them, the run is a failed attempt, and only failed's own error is
+// returned, as failed logs the cause. A failure to end the run once the
 // result is applied, dropped or blocked (an endError) isn't counted, and
 // leaves the lease as end or finish left it, for the next pass. Nor is an
 // issue whose labels CheckLabels holds back: the error wraps
@@ -600,7 +607,9 @@ func (r *Runs) applyLease(ctx context.Context, l Lease, st Stage, raw []byte, ou
 		r.Daemon.assignWorked(l.Issue)
 		return errors.Join(err, r.writeLease(l))
 	}
-	return errors.Join(err, r.failed(ctx, st, l, fmt.Errorf("applying its result failed %d times: %w", l.ApplyFailures, err)))
+	// The run is now a failed attempt, as a run that fails is, and failed
+	// logs its cause, once (SPEC §5.3), so it isn't the pass's error too.
+	return r.failed(ctx, st, l, fmt.Errorf("applying its result failed %d times: %w", l.ApplyFailures, err))
 }
 
 // apply reads the issue again, runs CheckLabels on it, and applies out,
@@ -864,7 +873,7 @@ func (r *Runs) resume(ctx context.Context) (int, error) {
 		}
 		logr.Infof("run %s on #%d left no valid result, so it's a failed attempt, its clone is deleted, and #%d stays at %s to run again",
 			l.RunID, l.Issue, l.Issue, l.Stage)
-		return 0, r.failed(ctx, st, l, errors.New("no valid result after a restart"))
+		return 0, r.failed(ctx, st, l, &daemonCause{errors.New("no valid result after a restart")})
 	}
 	logr.Infof("applying the saved result of run %s on #%d", l.RunID, l.Issue)
 	return l.Issue, r.applyLease(ctx, l, st, raw, out)
@@ -893,13 +902,13 @@ func (r *Runs) endedLease(ctx context.Context, l Lease) error {
 
 // failed records l's run as a failed attempt: it ends the run (end),
 // keeping the lease, as Failed, for the count, with what a public comment
-// may quote of cause as its LastFailure (publicCause), or, if nothing,
+// may quote of cause as its PublicFailure (publicCause), or, if nothing,
 // publicCauseLogged. It logs cause in full. The last attempt allowed posts
 // one state error (reportCap), naming that cause, after which RunStage
 // runs no more. If posting it fails, RunStage posts it instead of starting
 // a run.
 func (r *Runs) failed(ctx context.Context, st Stage, l Lease, cause error) error {
-	l.LastFailure = cmp.Or(publicCause(cause), publicCauseLogged)
+	l.PublicFailure = cmp.Or(publicCause(cause), publicCauseLogged)
 	n := r.count(l)
 	logr.Warnf("%s run %s on #%d failed, attempt %d of %d: %v", st.Agent(), l.RunID, l.Issue, n, r.limit(), cause)
 	if err := r.end(ctx, l, n); err != nil {
@@ -912,14 +921,14 @@ func (r *Runs) failed(ctx context.Context, st Stage, l Lease, cause error) error
 }
 
 // count adds l's attempt to the count of its attempts, which it returns,
-// and keeps its LastFailure, if it has one, as the last of their failures.
+// and keeps its PublicFailure, if it has one, as the last of their failures.
 func (r *Runs) count(l Lease) int {
 	if r.attempts == nil {
 		r.attempts, r.failures = map[string]int{}, map[string]string{}
 	}
 	key := countKey(l.Issue, l.AttemptKey)
-	if l.LastFailure != "" && l.Attempt >= r.attempts[key] {
-		r.failures[key] = l.LastFailure
+	if l.PublicFailure != "" && l.Attempt >= r.attempts[key] {
+		r.failures[key] = l.PublicFailure
 	}
 	r.attempts[key] = max(r.attempts[key], l.Attempt)
 	return r.attempts[key]
@@ -930,7 +939,7 @@ func (r *Runs) count(l Lease) int {
 // issue that has it, has moved on, by a marker or a stage label not yet
 // recorded, or is closed or gone gets none. For the Unlabeled stage, whose
 // round of input never changes, the text names the ways into the pipeline
-// instead of new input. For every stage, it then quotes l.LastFailure, if
+// instead of new input. For every stage, it then quotes l.PublicFailure, if
 // set: why the last attempt failed (SPEC §5.3), fenced and escaped,
 // as it may quote the agent's output (SPEC §5.1), or, for
 // publicCauseLogged, says the daemon's log has it (publicCauseText).
@@ -968,7 +977,7 @@ func (r *Runs) reportCap(ctx context.Context, s *github.Snapshot, st Stage, l Le
 		text = fmt.Sprintf("The %s run failed %d times in a row, so I've stopped running it here, and a comment won't start it again. "+
 			"A code owner can bring this issue into the pipeline with a stage label, the `approved` label or `/track`.", st.Agent(), r.limit())
 	}
-	if quote := l.LastFailure; quote != "" {
+	if quote := l.PublicFailure; quote != "" {
 		if quote == publicCauseLogged {
 			quote = ""
 		}

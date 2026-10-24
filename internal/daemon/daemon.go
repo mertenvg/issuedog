@@ -295,6 +295,10 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	// it's visited then, though nothing on it changed (#243).
 	d.Step.holdOrderReread = func(n int) { d.stale[n] = true }
 	defer func() { d.Step.holdOrderReread = nil }()
+	// A command on the digest is never handled, as no pass visits it, so
+	// none waits for it (#415).
+	d.Step.holdOrderDigest = d.digest.has
+	defer func() { d.Step.holdOrderDigest = nil }()
 	for _, n := range slices.Sorted(maps.Keys(d.snaps)) {
 		again := touched[n] && d.digestRestartRead(ctx, n, &touches) // as on a restart's first pass
 		s := d.snaps[n]
@@ -616,7 +620,8 @@ func parentOf(u string) int {
 // gone reports whether err, from a request about one issue, says the issue
 // was deleted (404 or 410) or transferred: a Snapshot, an assignee write
 // (assignFailed), a close's judging (closingJudge) or a request about the
-// digest (digestGone). A failed visit, which may 404 on a deleted comment,
+// digest (digestGone, and digestPinGone, which first sets apart the pin
+// check's NOT_FOUND and an HTTP status from /graphql). A failed visit, which may 404 on a deleted comment,
 // marks the issue stale, so only Snapshot decides, and Iterate drops an
 // issue only when two reads say so with no good read between.
 //
