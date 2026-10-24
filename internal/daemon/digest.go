@@ -146,6 +146,10 @@ type digestNews struct {
 // had it escaped by MarkDirty, and that was renamed (SPEC §9.4). So it's
 // held in titled too, for digestTake to judge.
 //
+// A listing of one held in titled, its edit history still to read, shows
+// it's there, so an answer before it that found it deleted counts no more
+// (digestHistoryGone): the next such answer is the first of two again.
+//
 // Gap, for SPEC §16 (#162): a digest whose marker was taken out and
 // whose title was changed, both before this daemon listed it, isn't found.
 // A new digest is created, and the old one is an issue like any other, so
@@ -165,6 +169,12 @@ func (g *digestState) listed(slug string, is *gogithub.Issue) bool {
 			g.titled = map[int]*gogithub.Issue{}
 		}
 		g.titled[n] = is
+		// The listing shows it's there, so an answer before it that found
+		// it deleted counts no more (digestHistoryGone, #579).
+		if h, ok := g.history[n]; ok {
+			h.gone = 0
+			g.history[n] = h
+		}
 	}
 	return false
 }

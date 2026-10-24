@@ -170,3 +170,93 @@ func TestDigestHistoryGoneAnswers(t *testing.T) {
 		t.Errorf("issues = %+v; want the one digest, pinned, its body put back as %q, with one state error", is, want)
 	}
 }
+
+// #579: a gone answer has the history read again the next pass, even when
+// the read isn't due. The digest, its marker taken out, is held as its
+// read fails on the start's three passes, loop.max_attempts at the
+// defaults, so its history is read next three passes on, and the third
+// pass posts the state error, which GitHub answers 500, so it's posted
+// again on the next. That pass reads no history, and GitHub answers its
+// post a false 404, which is the first answer that finds the digest
+// deleted, so the pass after reads its history, a pass before it's due,
+// and that read works, and takes the digest back. Read only when due, on
+// the pass after, it would be held a pass longer.
+func TestDigestHistoryRetriedPostGone(t *testing.T) {
+	t.Parallel()
+	f, o := newFake(t), newOrigin(t)
+	want := digestHistoryRemoved(t, f, o)
+	d := digestDaemon(t, f, o, nil)
+	post := func(r githubtest.Request) bool { return r.Method == http.MethodPost && r.Path == "/issues/1/comments" }
+	for i, wantQueries := range []int{1, 1, 1, 0, 1} {
+		switch i {
+		case 0, 1:
+			f.FailGraphQL(digestHistoryFailure)
+		case 2:
+			f.FailGraphQL(digestHistoryFailure)
+			f.AnswerOnce(post, http.StatusInternalServerError)
+		case 3:
+			f.AnswerOnce(post, http.StatusNotFound)
+		}
+		from, queries := len(f.Writes()), f.HistoryQueries()
+		iterate(t, d)
+		w := digestWrites(f, from)
+		if got := f.HistoryQueries() - queries; got != wantQueries || slices.Contains(w, "POST /issues") || slices.Contains(w, "PATCH /issues/1") != (i == 4) {
+			t.Errorf("pass %d: %d history queries, writes %q; want %d, no digest created, and the edit that puts the marker back on pass 5 alone",
+				i+1, got, w, wantQueries)
+		}
+	}
+	if is := f.State().Issues; len(is) != 1 || is[0].Body != want || !is[0].Pinned || digestHistoryErrors(f, 1, "gone") != 0 {
+		t.Errorf("issues = %+v; want the one digest, pinned, its body put back as %q, with no state error, as neither post was made", is, want)
+	}
+}
+
+// #579: a poll that lists a held digest candidate again shows it's there,
+// so a false NOT_FOUND before it counts no more. The digest, its marker
+// taken out, is held as a start's history read answers NOT_FOUND, though
+// it's there, and a closed issue filed after it keeps the poll's cursor
+// past it, so no poll lists it unless it changes. On the next pass, whose
+// read answers NOT_FOUND again, the owner's comment makes the poll list it
+// first: that NOT_FOUND is the first of two again, so the digest is held
+// still, and the pass after takes it back, with no second digest. Not
+// listed, the two NOT_FOUNDs let it go, and that pass creates a second
+// digest, as two answers on two passes do (#500).
+func TestDigestHistoryListedGone(t *testing.T) {
+	t.Parallel()
+	for _, listed := range []bool{true, false} {
+		name := "listed"
+		if !listed {
+			name = "not listed"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f, o := newFake(t), newOrigin(t)
+			want := digestHistoryRemoved(t, f, o)
+			f.Close(f.AddIssue("owner", "Closed", ""))
+			d := digestDaemon(t, f, o, nil)
+			f.HistoryNotFoundOnce(1)
+			iterate(t, d)
+			if listed {
+				f.AddComment(1, "owner", "a note")
+			}
+			f.HistoryNotFoundOnce(1)
+			from, queries := len(f.Writes()), f.HistoryQueries()
+			iterate(t, d)
+			w := digestWrites(f, from)
+			if got := f.HistoryQueries() - queries; got != 1 || slices.Contains(w, "POST /issues") == listed {
+				t.Fatalf("the second NOT_FOUND's pass: %d history queries, writes %q; want 1, and a digest created %v", got, w, !listed)
+			}
+			if !listed {
+				return
+			}
+			from, queries = len(f.Writes()), f.HistoryQueries()
+			iterate(t, d)
+			w = digestWrites(f, from)
+			if got := f.HistoryQueries() - queries; got != 1 || slices.Contains(w, "POST /issues") || !slices.Contains(w, "PATCH /issues/1") {
+				t.Errorf("the pass after: %d history queries, writes %q; want 1, no digest created, and the edit that puts the marker back", got, w)
+			}
+			if is := f.State().Issues; len(is) != 2 || is[0].Body != want || !is[0].Pinned {
+				t.Errorf("issues = %+v; want the one digest, pinned, its body put back as %q, beside the closed issue", is, want)
+			}
+		})
+	}
+}

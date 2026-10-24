@@ -170,11 +170,18 @@ func digestHistoryLikely(is *gogithub.Issue) bool {
 // resolves to none, or transferred. A deletion lets go of it, so a digest
 // can be created, only if an answer on an earlier pass found it deleted
 // too, with none since that found it there: a history read that worked,
-// which judges it, or a post of its state error. One answer may be wrong
-// (SPEC §8.1), and the issue may be the digest, so one false NOT_FOUND
-// would create a second (#500). Till then it stays held, and its history
-// is read again the next pass, as for a snapshot (Daemon.missing). A
-// failed read between shows nothing, so it doesn't count. A transfer lets
+// which judges it, a post of its state error, or a poll that listed it
+// (digestState.listed, #579). One answer may be wrong (SPEC §8.1), and the
+// issue may be the digest, so one false NOT_FOUND would create a second
+// (#500). Till then it stays held, and its history is read again the next
+// pass, as for a snapshot (Daemon.missing). A failed read between shows
+// nothing, so it doesn't count. Two answers on one pass, the read's and
+// then the post's, count as one, though for a snapshot a listing that
+// leaves it out and the read after it count as two (transferUnlistedCheck):
+// they're a moment apart, so a fault at GitHub would likely give both,
+// and a second digest stays, while a snapshot wrongly dropped comes back
+// with the next listing. That listing counts so to drop a transfer at
+// once, which a held issue's transfer does anyway. A transfer lets
 // go of it at once: GitHub's 301 names the issue's new repo, and its node
 // still resolves from there, so no history read would find it gone. One
 // let go is dropped as a snapshot is, so the next listing of every open

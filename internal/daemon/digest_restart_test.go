@@ -454,6 +454,49 @@ func TestDigestRestartTouchedGoneReread(t *testing.T) {
 	l.quiet("#4 gone")
 }
 
+// #579: a read again that fails other than as gone, here a 500, isn't
+// counted as one of the two reads that drop the issue. The epic's /hold,
+// for a restart's first pass, writes to both tasks, and #4's read again,
+// the first GET of #4 after the epic's 👍, answers 500, so it skips the
+// pass. #4 is deleted before the next pass, whose read, a 404, is the
+// first of the two, so the pass after reads it again, and that 404 drops
+// it. Counted as gone, the 500 would let the next pass's 404 drop it, a
+// pass early, with one wrong answer (SPEC §8.1).
+func TestDigestRestartTouchedFailedRereadNotGone(t *testing.T) {
+	t.Parallel()
+	f := discRunFamily(t)
+	l := newDiscRunLoop(t, f)
+	l.quiet("the family")
+	hold := f.AddComment(2, "owner", "/hold")
+	l.start()
+	react := discRunReact(hold)
+	f.BeforeRequest(func(r githubtest.Request) bool { return r.Method+" "+r.Path == react }, func() {
+		f.AnswerOnce(func(r githubtest.Request) bool { return r.Method == http.MethodGet && r.Path == "/issues/4" }, http.StatusInternalServerError)
+	})
+	from := len(f.Requests())
+	l.step("the epic's /hold on a restart's first pass, #4's read again failing", "POST /issues/3/comments", "POST /issues/3/labels", "DELETE /issues/3/labels/stage:ready",
+		"POST /issues/4/comments", "POST /issues/4/labels", "DELETE /issues/4/labels/stage:ready",
+		"POST /issues/2/comments", "POST /issues/2/labels", "DELETE /issues/2/labels/stage:planned", react)
+	// #4: the pass's read, the /hold's, and the read again, which failed.
+	if got := digestRestartGets(f, from); got[4] != 3 {
+		t.Errorf("the restart's first pass read the issues %v times; want #4 three times", got)
+	}
+	f.DeleteIssue()
+	for _, step := range []string{"the restart's second pass, the first 404", "the pass after, the second 404"} {
+		from = len(f.Requests())
+		l.step(step)
+		if got := digestRestartGets(f, from); got[4] != 1 {
+			t.Errorf("%s read the issues %v times; want #4 once", step, got)
+		}
+	}
+	from = len(f.Requests())
+	l.step("the pass after #4 is dropped")
+	if got := digestRestartGets(f, from); got[4] != 0 {
+		t.Errorf("the pass after the second 404 read the issues %v times; want #4 dropped, and not read", got)
+	}
+	l.quiet("#4 gone")
+}
+
 // A visit that ends closing an issue again (closingErrClosedAgain) after
 // its command wrote to another holds that one back too, as a visit that
 // fails does. Owner's close of #4 stands, at completed, and mallory
