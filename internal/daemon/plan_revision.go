@@ -52,7 +52,7 @@ type planPrior struct {
 	Rev   int        // the approved plan revision
 	Items []planItem // its items, as its plan-data marker keeps them
 	move  github.Comment
-	since time.Time // the revision's first approval, which its children are listed since (childrenSince)
+	since time.Time // the plan's first approval, which its children are listed since (childrenSince)
 	// Children are the issues matched to the plan's items by their
 	// origin (childMatch), in plan order, then any other item's by
 	// number.
@@ -105,12 +105,12 @@ func planPriorOf(s *github.Snapshot, appSlug string, is state.Issue, dirty func(
 	if !ok || !moved {
 		return nil, errNoApprovedPlan
 	}
-	return &planPrior{Rev: rev.Rev, Items: plan.Items, move: move, since: childrenSince(s, appSlug, dirty, rev.Rev, move)}, nil
+	return &planPrior{Rev: rev.Rev, Items: plan.Items, move: move, since: childrenSince(s, appSlug, dirty, move)}, nil
 }
 
 // read reads the children of the plan on issue s, as creating the
 // children finds them (childrenFind, SPEC §5.2): its sub-issues, then the repo's issues
-// updated since the approved revision's first approval, two listings, so each child's state
+// updated since the plan's first approval, two listings, so each child's state
 // and close reason come with it. A sub-issue whose listed body gives no
 // origin is read on its own (childOrigins): one the App filed, for an
 // origin the App reposted in a comment (#291), so it's still the plan's
