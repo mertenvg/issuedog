@@ -1,7 +1,6 @@
 package github
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -146,9 +145,7 @@ func TestETagCacheBodyErrors(t *testing.T) {
 	c := newETagCache(rtFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: steps[i].status, Header: http.Header{"Etag": {`"v1"`}}, Body: steps[i].body}, nil
 	}))
-	var logs bytes.Buffer
-	stop := logr.AddWriter(&logs)
-	defer stop()
+	stop := CaptureLogs(t, logr.All)
 	for i = range steps {
 		resp, err := c.RoundTrip(httptest.NewRequest(http.MethodGet, "https://api.github.com/res", nil))
 		if steps[i].wantBody == "" {
@@ -164,9 +161,9 @@ func TestETagCacheBodyErrors(t *testing.T) {
 			t.Errorf("step %d: body %q, want %q", i, body, steps[i].wantBody)
 		}
 	}
-	logr.Wait()
-	if n := strings.Count(logs.String(), "not released cleanly"); n != 2 {
-		t.Errorf("%d body warnings, want 2; logs:\n%s", n, logs.String())
+	logs := stop()
+	if n := strings.Count(logs, "not released cleanly"); n != 2 {
+		t.Errorf("%d body warnings, want 2; logs:\n%s", n, logs)
 	}
 }
 
