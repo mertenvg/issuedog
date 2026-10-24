@@ -2,13 +2,16 @@ package githubtest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"reflect"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	gogithub "github.com/google/go-github/v92/github"
 	"github.com/mertenvg/issuedog/internal/github"
@@ -213,8 +216,72 @@ func TestFakeTypeUnknownOnEdit(t *testing.T) {
 	}
 	_, _, err = c.Issues.Create(ctx, "o", "r", gogithub.CreateIssueRequest{Title: "After", Type: new("epic")})
 	fakeTypeWant422(t, "create with epic after the refused edit", err)
-	if is, _, err := c.Issues.Update(ctx, "o", "r", n, gogithub.UpdateIssueRequest{Type: new("task")}); err != nil || is.GetType().GetID() != task {
-		t.Errorf("edit with task = %+v, %v; want the org's Task, %d", is.GetType(), err, task)
+	if is, _, err := c.Issues.Update(ctx, "o", "r", n, gogithub.UpdateIssueRequest{Type: new("TASK")}); err != nil || is.GetType().GetID() != task {
+		t.Errorf("edit with TASK = %+v, %v; want the org's Task, %d", is.GetType(), err, task)
+	}
+}
+
+// fakeEditRefusedIssue is what an edit can change of issue n that State
+// leaves out: its updated_at and its timeline events, renamed ones
+// included.
+func fakeEditRefusedIssue(f *Fake, n int) (time.Time, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	is := f.issues[n-1]
+	return is.GetUpdatedAt().Time, len(is.labelEvents)
+}
+
+// An edit refused for its state or its type changes nothing, its new
+// title and body included: no renamed event, and no updated_at moved. An
+// edit with the same fields and a state and type the fake takes changes
+// them all.
+func TestFakeEditRefusedChangesNothing(t *testing.T) {
+	t.Parallel()
+	f := New(t, "o/r", "issuedog")
+	f.IssueTypeID("Task")
+	n := f.AddIssue("owner", "Title", "body")
+	c := f.Client(t)
+	before := f.State()
+	updated, events := fakeEditRefusedIssue(f, n)
+	path := fmt.Sprintf("/issues/%d", n)
+	for _, tc := range []struct {
+		name string
+		body map[string]any
+	}{
+		{"an unknown type", map[string]any{"title": "New", "body": "new", "type": "Epic"}},
+		{"an empty type", map[string]any{"title": "New", "body": "new", "type": ""}},
+		{"a type that is no name", map[string]any{"title": "New", "body": "new", "type": 7}},
+		{"an unknown state", map[string]any{"title": "New", "body": "new", "state": "merged"}},
+		{"an unknown state and a known type", map[string]any{"title": "New", "state": "merged", "type": "Task"}},
+	} {
+		if status, msg := fakeNumberAnswer(t, c, http.MethodPatch, path, tc.body); status != http.StatusUnprocessableEntity {
+			t.Errorf("edit with %s: %d %q; want a 422", tc.name, status, msg)
+		}
+		if got := f.State(); !reflect.DeepEqual(got, before) {
+			t.Errorf("state after the edit with %s:\n%+v\nwant it unchanged:\n%+v", tc.name, got, before)
+		}
+		if gotUpdated, gotEvents := fakeEditRefusedIssue(f, n); !gotUpdated.Equal(updated) || gotEvents != events {
+			t.Errorf("after the edit with %s: updated_at %v and %d events; want %v and %d", tc.name, gotUpdated, gotEvents, updated, events)
+		}
+	}
+	f.SetPersonalAccount()
+	if status, msg := fakeNumberAnswer(t, c, http.MethodPatch, path, map[string]any{"title": "New", "type": "Task"}); status != http.StatusUnprocessableEntity {
+		t.Errorf("edit with a type on a personal account: %d %q; want a 422", status, msg)
+	}
+	if got := f.State(); !reflect.DeepEqual(got, before) {
+		t.Errorf("state after the edit with a type on a personal account:\n%+v\nwant it unchanged:\n%+v", got, before)
+	}
+
+	g := New(t, "o/r", "issuedog")
+	g.IssueTypeID("Task")
+	m := g.AddIssue("owner", "Title", "body")
+	body := map[string]any{"title": "New", "body": "new", "state": "closed", "type": "Task"}
+	if status, msg := fakeNumberAnswer(t, g.Client(t), http.MethodPatch, fmt.Sprintf("/issues/%d", m), body); status != http.StatusOK {
+		t.Fatalf("edit with every field taken: %d %q; want a 200", status, msg)
+	}
+	st := g.State().Issues[m-1]
+	if st.Title != "New" || st.Body != "new" || !st.Closed || st.Type != "Task" {
+		t.Errorf("after the edit with every field taken %+v; want the title New, the body new, closed and Task", st)
 	}
 }
 
@@ -239,6 +306,131 @@ func TestFakeReactionContentUnknown(t *testing.T) {
 			if status, msg := fakeNumberAnswer(t, c, http.MethodGet, path+"?content="+url.QueryEscape(content), nil); status != http.StatusOK {
 				t.Errorf("%s with content %q: %d %q; want a 200", path, content, status, msg)
 			}
+		}
+	}
+}
+
+// DeleteIssue on a fake with no issue fails the test, rather than
+// panicking, both on a new fake and on one whose issues are all deleted.
+func TestFakeDeleteIssueEmpty(t *testing.T) {
+	t.Parallel()
+	tb := &fakeNumberTB{TB: t}
+	f := New(tb, "o/r", "issuedog")
+	want := []string{"githubtest: no issue to delete: the fake has 0"}
+	if fatal, panicked := fakeNumberFatal(tb, f.DeleteIssue); panicked != nil || !slices.Equal(fatal, want) {
+		t.Errorf("DeleteIssue on a new fake: Fatalf %q, panicked with %v; want Fatalf %q", fatal, panicked, want)
+	}
+	f.AddIssue("owner", "Issue", "body")
+	if fatal, panicked := fakeNumberFatal(tb, f.DeleteIssue); fatal != nil || panicked != nil {
+		t.Errorf("DeleteIssue of #1: Fatalf %q, panicked with %v; want neither", fatal, panicked)
+	}
+	if fatal, panicked := fakeNumberFatal(tb, f.DeleteIssue); panicked != nil || !slices.Equal(fatal, want) {
+		t.Errorf("DeleteIssue after #1 was deleted: Fatalf %q, panicked with %v; want Fatalf %q", fatal, panicked, want)
+	}
+}
+
+// fakeHookErrors is each Errorf tb has recorded, and each Fatalf since
+// fakeNumberFatal last ran.
+func fakeHookErrors(tb *fakeNumberTB) (errorf, fatal []string) {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	return slices.Clone(tb.errorf), slices.Clone(tb.fatal)
+}
+
+// A helper a BeforeRequest or BeforeGraphQL hook calls with something the
+// fake hasn't got fails the test with Errorf, saying so, as the hook runs
+// off the test's goroutine, where Fatalf mustn't be called. It ends the
+// hook, and the request gets a 500 naming the hook, without being served.
+// A hook whose helpers all succeed lets the request be served, and outside
+// a hook the helper fails the test with Fatalf again.
+func TestFakeHookUnknown(t *testing.T) {
+	t.Parallel()
+	tb := &fakeNumberTB{TB: t}
+	f := New(tb, "o/r", "issuedog")
+	n := f.AddIssue("owner", "Issue", "body")
+	c := f.Client(t)
+	ctx := context.Background()
+	path := fmt.Sprintf("/issues/%d", n)
+	isPath := func(r Request) bool { return r.Path == path }
+
+	var after atomic.Bool
+	f.BeforeRequest(isPath, func() {
+		f.Close(9)
+		after.Store(true)
+	})
+	status, msg := fakeNumberAnswer(t, c, http.MethodGet, path, nil)
+	if status != http.StatusInternalServerError || msg != errFakeHookFailed.Error() {
+		t.Errorf("GET %s after its hook failed: %d %q; want a 500, %q", path, status, msg, errFakeHookFailed)
+	}
+	errorf, fatal := fakeHookErrors(tb)
+	if want := []string{"githubtest: no issue #9: the fake has 1, in a BeforeRequest or BeforeGraphQL hook"}; !slices.Equal(errorf, want) || fatal != nil {
+		t.Errorf("BeforeRequest hook with #9: Errorf %q, Fatalf %q; want Errorf %q and no Fatalf", errorf, fatal, want)
+	}
+	if after.Load() {
+		t.Error("the BeforeRequest hook went on after its helper failed; want it ended")
+	}
+	if got := f.Requests(); len(got) == 0 || got[len(got)-1].Path != path || got[len(got)-1].Status != http.StatusInternalServerError {
+		t.Errorf("requests %+v; want the last the GET of %s, logged with its 500", got, path)
+	}
+
+	f.BeforeGraphQL(func() {
+		f.EditComment(9, "owner", "new")
+		after.Store(true)
+	})
+	req, err := c.NewRequest(ctx, http.MethodPost, "graphql", map[string]any{"query": answered,
+		"variables": map[string]any{"owner": "o", "name": "r", "number": n, "cursor": nil}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var er *gogithub.ErrorResponse
+	if _, err := c.Do(req, nil); !errors.As(err, &er) || er.Response.StatusCode != http.StatusInternalServerError || er.Message != errFakeHookFailed.Error() {
+		t.Errorf("GraphQL query after its hook failed: %v; want a 500, %q", err, errFakeHookFailed)
+	}
+	errorf, fatal = fakeHookErrors(tb)
+	if want := []string{
+		"githubtest: no issue #9: the fake has 1, in a BeforeRequest or BeforeGraphQL hook",
+		"githubtest: no comment 9: the fake has 0, in a BeforeRequest or BeforeGraphQL hook",
+	}; !slices.Equal(errorf, want) || fatal != nil {
+		t.Errorf("BeforeGraphQL hook with comment 9: Errorf %q, Fatalf %q; want Errorf %q and no Fatalf", errorf, fatal, want)
+	}
+	if after.Load() {
+		t.Error("the BeforeGraphQL hook went on after its helper failed; want it ended")
+	}
+
+	f.BeforeRequest(isPath, func() { f.RenameIssue(n, "owner", "Renamed") })
+	is, _, err := c.Issues.Get(ctx, "o", "r", n)
+	if err != nil || is.GetTitle() != "Renamed" {
+		t.Errorf("GET %s after a hook that renamed it = %q, %v; want Renamed", path, is.GetTitle(), err)
+	}
+	if errorf, fatal := fakeHookErrors(tb); len(errorf) != 2 || fatal != nil {
+		t.Errorf("after a hook whose helpers succeed: Errorf %q, Fatalf %q; want no more", errorf, fatal)
+	}
+
+	if fatal, panicked := fakeNumberFatal(tb, func() { f.Close(9) }); panicked != nil || len(fatal) != 1 {
+		t.Errorf("Close(9) after the hooks: Fatalf %q, panicked with %v; want one Fatalf", fatal, panicked)
+	}
+}
+
+// A hook that panics passes the panic on to the server, which drops the
+// request unserved and unanswered, as when the hook ran on the server's
+// own goroutine, rather than a 500 for a failed hook. The request is a
+// PATCH, so the client doesn't retry it.
+func TestFakeHookPanic(t *testing.T) {
+	t.Parallel()
+	f := New(t, "o/r", "issuedog")
+	n := f.AddIssue("owner", "Issue", "body")
+	c := f.Client(t)
+	path := fmt.Sprintf("/issues/%d", n)
+	f.BeforeRequest(func(r Request) bool { return r.Path == path }, func() { panic(http.ErrAbortHandler) })
+	if _, _, err := c.Issues.Update(context.Background(), "o", "r", n, gogithub.UpdateIssueRequest{Title: new("New")}); err == nil {
+		t.Errorf("PATCH %s after its hook panicked: no error; want the request dropped", path)
+	}
+	if got := f.State().Issues[n-1].Title; got != "Issue" {
+		t.Errorf("title after the dropped edit %q; want Issue", got)
+	}
+	for _, r := range f.Requests() {
+		if r.Method == http.MethodPatch {
+			t.Errorf("request %+v logged; want the dropped PATCH unanswered, so unlogged", r)
 		}
 	}
 }

@@ -14,7 +14,10 @@ import (
 
 // BeforeGraphQL runs do, once, just before the fake answers the next GraphQL
 // query, as when the issue changes between Snapshot's REST and GraphQL reads.
-// do may call the fake's other methods.
+// do may call the fake's other methods. As with BeforeRequest, a helper do
+// calls with something the fake hasn't got fails the test with Errorf, as
+// do runs off the test's goroutine, and the query is answered with a 500
+// (fakeFail).
 func (f *Fake) BeforeGraphQL(do func()) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -23,13 +26,17 @@ func (f *Fake) BeforeGraphQL(do func()) {
 
 // serveGraphQL runs the BeforeGraphQL hook, then serves a query as a read
 // and a mutation as a write, which is logged and which FailWrite can fail.
+// A hook a helper's failure ended gets a 500 instead (fakeHookRun).
 func (f *Fake) serveGraphQL(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	do := f.beforeGQL
 	f.beforeGQL = nil
 	f.mu.Unlock()
 	if do != nil {
-		do()
+		if err := f.fakeHookRun(do); err != nil {
+			send(w, http.StatusInternalServerError, message(err.Error()))
+			return
+		}
 	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
