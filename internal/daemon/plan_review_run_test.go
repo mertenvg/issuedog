@@ -600,8 +600,11 @@ func TestPlanReviewRun(t *testing.T) {
 	l.step("S3's round", 5, "PATCH /issues/5", "POST /issues/7/assignees", "POST /issues/8/comments")
 	l.storyRound("S3's round", 8, 5, "medium")
 	l.step("S3's round listed", 5, "PATCH /issues/5", "POST /issues/8/assignees")
-	rounds := []string{"#6 Question round p1 1", "#7 Question round p2 1", "#8 Question round p2 1"}
-	if got, want := l.digest(5), slices.Concat(stories, rounds); !slices.Equal(got, want) {
+	// S1, #6, blocks S2 and S3, so it scores 3 and comes first, above the
+	// plan approvals (SPEC §9.4, The order).
+	first := []string{"#6 Question round p1 3"}
+	rounds := []string{"#7 Question round p2 1", "#8 Question round p2 1"}
+	if got, want := l.digest(5), slices.Concat(first, stories, rounds); !slices.Equal(got, want) {
 		t.Errorf("the stories' rounds: items %q; want %q", got, want)
 	}
 	assignWant(t, f, "the stories' rounds", map[int][]string{3: owner, 4: owner, 6: owner, 7: owner, 8: owner})
@@ -619,7 +622,7 @@ func TestPlanReviewRun(t *testing.T) {
 		t.Errorf("the /hold: added %q; want\n%s", added, held)
 	}
 	l.labels("the /hold", s1, "stage:held", "type:story")
-	if got, want := l.digest(5), slices.Concat(stories[1:], rounds); !slices.Equal(got, want) {
+	if got, want := l.digest(5), slices.Concat(first, stories[1:], rounds); !slices.Equal(got, want) {
 		t.Errorf("the /hold: items %q; want %q", got, want)
 	}
 	assignWant(t, f, "the /hold", map[int][]string{3: owner, 6: owner, 7: owner, 8: owner})
@@ -648,7 +651,7 @@ func TestPlanReviewRun(t *testing.T) {
 	}
 	l.labels("the /resume", s1, "stage:planned", "type:story")
 	l.reactions("the /resume", s1, approve, app+" +1")
-	if got, want := l.digest(5), slices.Concat(stories[1:], rounds); !slices.Equal(got, want) {
+	if got, want := l.digest(5), slices.Concat(first, stories[1:], rounds); !slices.Equal(got, want) {
 		t.Errorf("the /resume: items %q; want %q", got, want)
 	}
 	assignWant(t, f, "the /resume", map[int][]string{3: owner, 6: owner, 7: owner, 8: owner})

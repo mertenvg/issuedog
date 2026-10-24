@@ -213,7 +213,8 @@ func (r *recorder) Write(b []byte) (int, error) {
 
 // listIssues serves the repo's issues and pull requests, open ones unless
 // state= says otherwise, from since= on, by number or, for sort=updated, by
-// update in direction=. A transferred issue isn't listed (transfer.go).
+// update in direction=, each with its issue_dependencies_summary
+// (withDependencies). A transferred issue isn't listed (transfer.go).
 func (f *Fake) listIssues(c *call) (int, any) {
 	q := c.r.URL.Query()
 	var from time.Time
@@ -230,7 +231,7 @@ func (f *Fake) listIssues(c *call) (int, any) {
 	out := []gogithub.Issue{}
 	for _, is := range f.issues {
 		if is.listed() && (state == "all" || is.GetState() == state) && !is.GetUpdatedAt().Before(from) {
-			out = append(out, is.Issue)
+			out = append(out, f.withDependencies(is))
 		}
 	}
 	if q.Get("sort") == "updated" {

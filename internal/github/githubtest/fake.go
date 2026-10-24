@@ -601,12 +601,13 @@ func page[T any](c *call, items []T) (int, any) {
 }
 
 // getIssue serves an issue, with its author's association (discAssociation),
-// which the shallower field puts in the JSON in place of the Issue's own.
+// which the shallower field puts in the JSON in place of the Issue's own,
+// and its issue_dependencies_summary (withDependencies).
 func (f *Fake) getIssue(c *call) (int, any) {
 	return http.StatusOK, struct {
 		gogithub.Issue
 		AuthorAssociation string `json:"author_association"`
-	}{c.issue.Issue, f.discAssociation(c.issue.GetUser().GetLogin())}
+	}{f.withDependencies(c.issue), f.discAssociation(c.issue.GetUser().GetLogin())}
 }
 
 // getParent serves an issue's parent with its repository_url, this repo's
