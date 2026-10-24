@@ -118,7 +118,10 @@ func TestCloserErrUnasked(t *testing.T) {
 // A closer state error posted before the first reopen after its close, so
 // while the issue was closed, assigns nobody once the issue is open. One
 // posted after that reopen, as step 1 posts one, or in the same second, or
-// with no reopen or close listed, or another kind, assigns as before.
+// with no reopen or close listed, or another kind, assigns as before. A
+// reopen before its close doesn't count, and nor does one after the first
+// reopen after it: an error posted between the two reopens after its
+// close, as step 1 posts one, assigns.
 func TestCloserErrPostedClosed(t *testing.T) {
 	t.Parallel()
 	t0 := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
@@ -133,6 +136,12 @@ func TestCloserErrPostedClosed(t *testing.T) {
 	}
 	closed := github.Closing{ID: 900, NodeID: "CE_900", At: t0}
 	reopened := github.Closing{ID: 901, NodeID: "RE_901", At: t0.Add(time.Hour), Reopen: true}
+	// earlier are a close and its reopen before closed.
+	earlier := []github.Closing{{ID: 898, NodeID: "CE_898", At: t0.Add(-3 * time.Hour)},
+		{ID: 899, NodeID: "RE_899", At: t0.Add(-2 * time.Hour), Reopen: true}}
+	// closedAgain and reopenedAgain are a close and its reopen after reopened.
+	closedAgain := github.Closing{ID: 902, NodeID: "CE_902", At: t0.Add(2 * time.Hour)}
+	reopenedAgain := github.Closing{ID: 903, NodeID: "RE_903", At: t0.Add(3 * time.Hour), Reopen: true}
 	for _, tc := range []struct {
 		name string
 		s    *github.Snapshot
@@ -140,8 +149,10 @@ func TestCloserErrPostedClosed(t *testing.T) {
 		want bool
 	}{
 		{"posted while closed", snap(t0.Add(time.Minute), closed, reopened), closer, true},
-		{"posted while closed, closed again since", snap(t0.Add(time.Minute), closed, reopened,
-			github.Closing{ID: 902, NodeID: "CE_902", At: t0.Add(2 * time.Hour)}), closer, true},
+		{"posted while closed, closed again since", snap(t0.Add(time.Minute), closed, reopened, closedAgain), closer, true},
+		{"posted while closed, after a reopen before its close", snap(t0.Add(time.Minute), earlier[0], earlier[1], closed, reopened), closer, true},
+		{"posted while closed, reopened twice since", snap(t0.Add(time.Minute), closed, reopened, closedAgain, reopenedAgain), closer, true},
+		{"posted between the two reopens after its close", snap(t0.Add(90*time.Minute), closed, reopened, closedAgain, reopenedAgain), closer, false},
 		{"posted after the reopen", snap(t0.Add(2*time.Hour), closed, reopened), closer, false},
 		{"posted in the reopen's second", snap(t0.Add(time.Hour), closed, reopened), closer, false},
 		{"no reopen listed", snap(t0.Add(time.Minute), closed), closer, false},
