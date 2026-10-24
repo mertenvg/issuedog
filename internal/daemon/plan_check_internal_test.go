@@ -393,11 +393,11 @@ func TestCheckPlanLinkLimits(t *testing.T) {
 // A bare file name, a URL to a file, a link's destination and words with
 // a slash but no extension are none. Nor, so prose passes (#311), is a
 // word whose extension isn't a lowercase letter, then any lowercase
-// letters and digits, or is a module's version, whose directory has no letter or
-// is only versions, or that is capitalized names, the last a known
-// framework's, such as "Express/Node.js" (#439). Capitalized paths, such as
-// "Components/Button.js", extensions with digits and directories named "x"
-// or "v2" are paths. So are lowercase library names, such as
+// letters and digits, or is a module's version, whose directory has no
+// letter or is only versions, or that is capitalized names, the last a
+// known framework's, such as "Express/Node.js" (#439). Capitalized paths,
+// such as "Components/Button.js", extensions with digits and directories
+// named "x" or "v2" are paths. So are lowercase library names, such as
 // "express/node.js", since a file can be named so, as "src/node.js" is.
 // The rule misses a path whose extension isn't all lowercase letters and
 // digits, whose directory has no letter or whose extension is a module's
