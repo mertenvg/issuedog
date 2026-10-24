@@ -219,3 +219,121 @@ func TestPlanDirtySendsBack(t *testing.T) {
 		})
 	}
 }
+
+// planResumeDirtyRecorded is the App's comment recording again the move
+// back to plan-review from held that dirty comment id, the one applying a
+// /resume, hid, with seen, the bound from before the hold.
+func planResumeDirtyRecorded(id, seen int64) string {
+	return "A comment of mine was edited without approval, and it held this issue's move back to `plan-review` from `held`, so I've recorded the move again here. " +
+		"That comment may have hidden a newer plan revision, so I can't approve the plan. To get a new plan, post `/revise <notes>`, or any other comment.\n\n" +
+		fmt.Sprintf("<!-- issuedog:transition from=held to=plan-review event=plan-dirty-%d seen=%d -->", id, seen)
+}
+
+// planResumeDirty is planHeld by /hold, then the owner's /resume, applied
+// by a pass, in comment 1008, which the owner then edits, so it's dirty,
+// then more.
+func planResumeDirty(more func(t testing.TB, f *githubtest.Fake)) func(testing.TB) *githubtest.Fake {
+	return planHeld(true, func(t testing.TB, f *githubtest.Fake) {
+		f.AddComment(1, "owner", "/resume")
+		if err := resolvePass(t, 1)(f); err != nil {
+			t.Fatal(err)
+		}
+		if id := discRunFind(t, f, 1, "Resumed by"); id != 1008 {
+			t.Fatalf("the /resume's move is in comment %d; want 1008", id)
+		}
+		f.EditComment(1008, "owner", "Resumed, edited.")
+		more(t, f)
+	})
+}
+
+// The App's comment applying a /resume, back to plan-review from held,
+// made dirty (#485): its move no longer counts, but the issue stays at
+// plan-review, as its label shows, with the move recorded again, with the
+// hold's seen, as /resume's move carries, and no state error. The plan
+// revision before the hold is then hidden, so /approve gets that reply,
+// and a comment sends the plan back. A /resume back to planning, before
+// the planner's move to plan-review, isn't recorded again, as the hold's
+// at isn't the stage the label shows.
+func TestPlanDirtyResume(t *testing.T) {
+	t.Parallel()
+	atReview := []string{"stage:plan-review", "type:epic"}
+	for _, tt := range []struct {
+		name  string
+		setup func(testing.TB) *githubtest.Fake
+		want  issueWant
+	}{
+		{"the owner's edit to the /resume's move leaves the issue at plan-review",
+			planResumeDirty(func(testing.TB, *githubtest.Fake) {}),
+			issueWant{atReview, []string{planResumeDirtyRecorded(1008, 1003)}}},
+		{"then /approve gets the hidden plan revision reply",
+			planResumeDirty(func(t testing.TB, f *githubtest.Fake) { post(t, f, 1010, "owner", "/approve") }),
+			issueWant{atReview, []string{planResumeDirtyRecorded(1008, 1003),
+				final("/approve", "I didn't apply this command", "a comment of mine after plan revision 1 was edited without approval or deleted, "+
+					"so it may hide a newer plan revision. "+replanHint, "1010")}}},
+		{"and a comment sends the plan back",
+			planResumeDirty(func(t testing.TB, f *githubtest.Fake) { post(t, f, 1010, "owner", "Split T1.") }),
+			issueWant{[]string{"stage:planning", "type:epic"}, []string{planResumeDirtyRecorded(1008, 1003), planSentBack("1010")}}},
+		// A hold written with no seen, as before #87, keeps the bound
+		// from before it, the plan's, which /resume's move carries, not
+		// its own comment's (state.HeldStack.Seen).
+		{"a hold with no seen gives the record the bound from before it",
+			revisePlanReview(func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1005, "owner", "/hold")
+				f.AddReaction(1005, app, "+1")
+				post(t, f, 1007, app, moved("On hold by owner, from `plan-review`.", "from=plan-review to=held at=plan-review reason=owner cmd=1005"))
+				f.AddLabel(1, app, "stage:held")
+				f.RemoveLabel(1, app, "stage:plan-review")
+				post(t, f, 1008, "owner", "/resume")
+				f.AddReaction(1008, app, "+1")
+				post(t, f, 1010, app, moved("Resumed by owner, back to `plan-review`.", "from=held to=plan-review cmd=1008 seen=1001"))
+				f.AddLabel(1, app, "stage:plan-review")
+				f.RemoveLabel(1, app, "stage:held")
+				f.EditComment(1010, "owner", "Edited.")
+			}),
+			issueWant{[]string{"stage:plan-review"}, []string{planResumeDirtyRecorded(1010, 1001)}}},
+		{"a /resume back to planning, with the plan after it, still disagrees",
+			planDirtyResumedToPlanning,
+			issueWant{[]string{"stage:held"}, []string{planDirtyDisagreed(state.Held, "`stage:plan-review`", 9008)}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			resolveCheck(t, tt.setup, 1, func(*githubtest.Fake) issueWant { return tt.want })
+		})
+	}
+}
+
+// planDirtyResumedToPlanning files issue 1, the owner's epic with body
+// "body", held from planning and resumed back there, then at plan-review
+// by the planner's move: spec revision 1 (comment 1001), approved by the
+// owner's 👍 (reaction 1002, marker 1003), the owner's /hold (1004), 👍'd
+// by the App, and its move (1006), the owner's /resume (1007), 👍'd too,
+// and its move (1009), and plan revision 1 (1010). The App moved the
+// labels with each move, plan-review's in event 9008. Then the owner edits
+// the /resume's move and the plan comment, so the markers left show the
+// hold, from planning.
+func planDirtyResumedToPlanning(t testing.TB) *githubtest.Fake {
+	return filed(nil, func(t testing.TB, f *githubtest.Fake) {
+		f.SetType(1, "Epic")
+		f.AddLabel(1, app, "stage:spec-review")
+		post(t, f, 1001, app, revision(1, "body"))
+		f.AddReaction(1001, "owner", "+1")
+		post(t, f, 1003, app, approvedRev(1, "owner's 👍", "r1002", "1001"))
+		f.AddLabel(1, app, "stage:planning")
+		f.RemoveLabel(1, app, "stage:spec-review")
+		post(t, f, 1004, "owner", "/hold")
+		f.AddReaction(1004, app, "+1")
+		post(t, f, 1006, app, moved("On hold by owner, from `planning`.", "from=planning to=held at=planning reason=owner cmd=1004 seen=1001"))
+		f.AddLabel(1, app, "stage:held")
+		f.RemoveLabel(1, app, "stage:planning")
+		post(t, f, 1007, "owner", "/resume")
+		f.AddReaction(1007, app, "+1")
+		post(t, f, 1009, app, moved("Resumed by owner, back to `planning`.", "from=held to=planning cmd=1007 seen=1001"))
+		f.AddLabel(1, app, "stage:planning")
+		f.RemoveLabel(1, app, "stage:held")
+		post(t, f, 1010, app, revisePlanComment(1, "1009"))
+		labelEvent(t, f.AddLabel(1, app, "stage:plan-review"), 9008)
+		f.RemoveLabel(1, app, "stage:planning")
+		f.EditComment(1009, "owner", "Edited.")
+		f.EditComment(1010, "owner", "Edited.")
+	})(t)
+}

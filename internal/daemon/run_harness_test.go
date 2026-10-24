@@ -355,6 +355,37 @@ func TestAnswerAfterFailedApply(t *testing.T) {
 	}
 }
 
+// After a failed apply, step 1 👍s an answer that the resumed apply's own
+// read doesn't list, as a read that lags behind step 1's wouldn't yet:
+// the fake drops the answer before Work. The apply drops the result all
+// the same, as step 1's read lists the answer, so no move lands with a
+// seen below an answer the App 👍'd before it, which a dirty record of the
+// move couldn't tell from one the run read (SPEC §8.2, #485).
+func TestAnswerAfterLaggedApply(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	answer := interview(f)
+	g := newRig(t, f, newOrigin(t), t.TempDir())
+	g.claude(okOut, 0)
+	g.stage.applyErr = errors.New("502 bad gateway")
+	if err := g.d.Iterate(context.Background()); err == nil || g.lease().ApplyFailures != 1 {
+		t.Fatalf("the first pass = %v, lease %+v; want the apply error, its lease kept", err, g.lease())
+	}
+	g.stage.applyErr = nil
+	id := f.AddComment(1, "owner", "1b too")
+	ready := g.ready(1)
+	if is := f.State().Issues[0]; !slices.Contains(is.Comments[len(is.Comments)-1].Reactions, app+" +1") {
+		t.Fatalf("comments %+v; want the answer 👍'd", is.Comments)
+	}
+	f.DeleteComment(id)
+	if err := g.r.Work(context.Background(), ready); err != nil {
+		t.Fatal(err)
+	}
+	if specApplied(f, 1, "run1", answer) || g.lease().RunID != "" || g.runs() != 1 {
+		t.Errorf("run1 applied %t, lease %+v, %d runs; want run1 dropped, and no run yet", specApplied(f, 1, "run1", answer), g.lease(), g.runs())
+	}
+}
+
 // The Unlabeled stage runs only in a pass where no registered stage ran,
 // on the newest issue with no stage label first, one a pass.
 func TestUnlabeledRunsWhenNoStageRan(t *testing.T) {
