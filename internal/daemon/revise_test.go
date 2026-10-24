@@ -573,6 +573,57 @@ func TestReviewVisitTrustError(t *testing.T) {
 	}
 }
 
+// The revision ReviewVisit posts after a trusted edit to the body ends in
+// the cc line for Notify, as every spec does (SPEC §9), so the owner hears
+// of it when another trusted user made the edit (#452). Once it's posted,
+// a visit to the unchanged issue makes no request.
+func TestReviewVisitRevisionNotifies(t *testing.T) {
+	t.Parallel()
+	notifyVisit := func(t *testing.T, st **daemon.Step) func(*githubtest.Fake) error {
+		return func(f *githubtest.Fake) error {
+			a, s, err := applier(t, f)
+			if err != nil {
+				return err
+			}
+			a.Notify = []string{"owner", "other"}
+			*st = &daemon.Step{Applier: a, Trust: owners}
+			return (*st).ReviewVisit(context.Background(), s)
+		}
+	}
+	for _, tt := range []struct {
+		name   string
+		editor string
+	}{
+		{"another trusted user's edit", "owner2"},
+		{"the owner's edit", "owner"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			setup := review(func(t testing.TB, f *githubtest.Fake) { f.EditBody(1, tt.editor, "body v2") })
+			var st *daemon.Step
+			check(t, setup, notifyVisit(t, &st), outcome{
+				comments: []string{ccPosted("cc @owner @other", 2, "body v2", "", "", "1001")},
+				labels:   []string{"stage:spec-review"}})
+
+			f := setup(t)
+			if err := notifyVisit(t, &st)(f); err != nil {
+				t.Fatal(err)
+			}
+			s, err := f.Client(t).Snapshot(context.Background(), "o", "r", 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			n := len(f.Requests())
+			if err := st.ReviewVisit(context.Background(), s); err != nil {
+				t.Fatal(err)
+			}
+			if r := f.Requests(); len(r) != n {
+				t.Errorf("a visit to the unchanged issue sent %+v, want no request", r[n:])
+			}
+		})
+	}
+}
+
 // planComment is plan revision rev's comment as the planner's move writes
 // it, with the move to plan-review whose run read up to comment seen, and
 // the plan revision marker last.
