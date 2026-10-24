@@ -89,10 +89,16 @@ func childPlanRun(plan github.Comment, appSlug string) (string, bool) {
 // in its edit history. Derive still reads no marker from a body a person
 // filed, so the rewrite's origin marker, naming rev, goes in the move's
 // comment too, which is then the newest clean App comment with one, and
-// the comment says why. Should anyone edit that comment, step 1 posts the
-// body's marker again (adoptedRepost); should step 1 post it between the
-// rewrite and the move, as after a crash, Derive reads rev from it, and
-// the move carries no marker.
+// the comment says why. So it does for a child the App filed whose clean
+// App comments carry an older origin (childCommentOrigin), as its repost
+// after an edit of the body (originRepost): Derive reads the body's
+// marker first, but falls back to the newest clean App comment's once a
+// later edit makes the body's markers unread, and originRepost then
+// reposts nothing, since an origin is read (SPEC §6.4). Should anyone edit
+// an adopted child's move comment, step 1 posts the body's marker again
+// (adoptedRepost); should step 1 post it between the rewrite and the move,
+// as after a crash, Derive reads rev from it, and the move carries no
+// marker.
 //
 // The move is the last write, so once it stands the child is done, and a
 // later pass reads it and writes nothing. Before it, the child is reported
@@ -160,6 +166,17 @@ func (st *Step) childChanged(ctx context.Context, parent *github.Snapshot, rev i
 		}
 		markers = []github.Marker{m}
 		text += " " + adoptedMoveText
+	} else if state.IsApp(s.Author, st.AppSlug) && childCommentOrigin(s, st.AppSlug, d.Has).Plan != 0 {
+		// A child the App filed, whose clean App comment carries an older
+		// origin, as the App's repost of one an edit took from the body
+		// (originRepost) does: a later edit of the body would fall back to
+		// it, so the move's comment carries the new one.
+		m, ok := state.OriginMarker(s.Body)
+		if !ok || !names(is.Origin) {
+			return fmt.Errorf("#%d has no rewrite of the App's whose origin names item %s of revision %d, for its move to carry", n, c.Item, rev)
+		}
+		markers = []github.Marker{m}
+		text += " " + childRepostMoveText
 	}
 	var m Move
 	if is.Stage == state.Held {
@@ -190,6 +207,21 @@ func (st *Step) childChanged(ctx context.Context, parent *github.Snapshot, rev i
 // the revision's, saying why the comment carries its origin marker.
 const adoptedMoveText = "It was filed by hand, so this comment carries its `origin` marker, which its description can't: " +
 	"I've rewritten the description whole from the plan, and the earlier one stays in its edit history."
+
+// childRepostMoveText is the line in the move comment of a changed child
+// the App filed, after the revision's, saying why the comment carries its
+// origin marker: an earlier App comment carries an older one.
+const childRepostMoveText = "An earlier comment of mine carries this issue's `origin` marker from before, " +
+	"so this comment carries the new one, which still counts once the description is edited again."
+
+// childCommentOrigin is the Origin Derive reads for s from its clean App
+// comments alone, as it does once the body's markers aren't read (SPEC
+// §5): from the App's repost of a marker an edit took from the body
+// (originRepost), or from an earlier move's comment that carried one, as
+// childChanged's does. It's the zero Origin with none.
+func childCommentOrigin(s *github.Snapshot, appSlug string, dirty func(int64) bool) state.Origin {
+	return state.Derive(&github.Snapshot{Number: s.Number, Author: s.Author, Comments: s.Comments}, appSlug, dirty).Origin
+}
 
 // adoptedRewrite returns the origin marker of s's body, whole, and the
 // Origin it gives, while s is an adopted child, one a person filed (#372),
