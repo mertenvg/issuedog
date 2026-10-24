@@ -87,7 +87,10 @@ import (
 //     (closingAgain);
 //   - or, on a start's first poll, the issue has exactly one stage label,
 //     a closed stage: only an accepted close leaves one, which an earlier
-//     run judged, so it counts as this daemon's judging of it.
+//     run judged, so it counts as this daemon's judging of it. The poll
+//     after digestDrop lists every issue again too, but it isn't a
+//     start's, so an untrusted close or closed stage it lists is judged,
+//     as on any later poll (#424).
 //
 // Judging reads the timeline once (github.ClosingTimeline). A closed stage
 // on the issue stands when the newest close is accepted and the stage's
@@ -180,9 +183,11 @@ func closingLabel(label string) bool {
 
 // closingList takes a closed issue from the poll's listing: it is due to
 // be judged (closingDue), unless its close is explained (see above). start
-// is set on a start's first poll, and had when this daemon held the issue,
-// open, with a stage label, so one whose closer also took its stage label
-// off is judged too.
+// is set on a start's first poll alone (Daemon.startPolled), and had when
+// this daemon held the issue, open, with a stage label, so one whose closer
+// also took its stage label off is judged too. One due already, listed
+// again, is due as this newer listing shows it, so it's judged from its
+// labels and closed_at now.
 func (d *Daemon) closingList(is *gogithub.Issue, start, had bool) {
 	if d.closingSeen == nil {
 		d.closingSeen, d.closingDue = map[int]closingListed{}, map[int]*gogithub.Issue{}
@@ -206,7 +211,10 @@ func (d *Daemon) closingList(is *gogithub.Issue, start, had bool) {
 	case len(stages) == 0 && !had && !known:
 		// Never in the pipeline. One due already, listed again, as at the
 		// poll's cursor, after the first listing dropped its snapshot,
-		// stays due.
+		// stays due, as newly listed.
+		if _, due := d.closingDue[n]; due {
+			d.closingDue[n] = is
+		}
 	case start && len(stages) == 1 && closingLabel(stages[0]):
 		d.closingSeen[n] = listed // judged on an earlier run
 		delete(d.closingDue, n)

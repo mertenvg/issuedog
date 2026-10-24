@@ -215,6 +215,20 @@ func TestClosingList(t *testing.T) {
 	}
 }
 
+// A due issue listed again with no stage label, after the first listing
+// dropped its snapshot, stays due as the newer listing shows it, so it's
+// judged from its labels and closed_at now, not the first listing's.
+func TestClosingListDueRelisted(t *testing.T) {
+	t.Parallel()
+	d := &Daemon{Step: &Step{Applier: &Applier{}}}
+	d.closingList(closingIssue(5, 1, "stage:pr-open"), false, true)
+	newer := closingIssue(5, 7)
+	d.closingList(newer, false, false)
+	if got := d.closingDue[5]; got != newer {
+		t.Errorf("due #5 as %+v; want the newer listing, %+v", got, newer)
+	}
+}
+
 func equalInts(a, b []int) bool {
 	if len(a) != len(b) {
 		return false
