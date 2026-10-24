@@ -1025,8 +1025,8 @@ func (d *Daemon) digestCacheOf(n int) []waitItem {
 // good once it's forgotten as gone, and for a child with no stage label,
 // which closingList doesn't make due unless this daemon held it with one,
 // as when an untrusted user took the label off a child no visit has read
-// yet and closed it, till a closed stage added to it has its close judged
-// (SPEC §16). A child's close changes nothing on the story, so the item
+// yet and closed it, till a stage label, any one, added to it has its
+// close judged (SPEC §16). A child's close changes nothing on the story, so the item
 // is found on the story's last visit (waitFind) and judged again here on
 // each pass. An epic planned into stories closes by the same judgement
 // (epicClosePass, #251).

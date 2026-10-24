@@ -25,9 +25,11 @@ func epicCloseFindOn(t *testing.T, s *github.Snapshot, d Dirt) ([]int, state.Key
 }
 
 // An epic planned into stories waits on the children its record names,
-// in its order, and closes keyed event=p<id>, by its comment holding the
-// move into planned that approved the plan. A record of none, as after a
-// revision that drops every child, waits on none.
+// in its order, and closes keyed event=p<id>, by its comment holding its
+// latest move into planned: the one that approved the plan, or, after a
+// close, a trusted reopen's hold and /resume, the /resume's (SPEC §7.3).
+// A record of none, as after a revision that drops every child, waits on
+// none.
 func TestEpicCloseFind(t *testing.T) {
 	t.Parallel()
 	children, key, ok, err := epicCloseFindOn(t, doneSnap(t, 60, "epic", "epic-plan", 13, 12), Dirt{})
@@ -40,14 +42,24 @@ func TestEpicCloseFind(t *testing.T) {
 	if err != nil || !ok || children == nil || len(children) != 0 || key.ID != "p6103" {
 		t.Errorf("an epic whose record names none gave %v, %+v, %t, %v; want no children, non-nil, keyed p6103", children, key, ok, err)
 	}
+	again := doneSnap(t, 76, "epic", "epic-plan", 12)
+	for i, body := range []string{
+		"Closed.\n\n<!-- issuedog:transition from=planned to=closed reason=completed event=p7603 -->",
+		"<!-- issuedog:transition from=closed to=held at=planned reason=owner event=31 -->",
+		"<!-- issuedog:transition from=held to=planned cmd=7608 -->",
+	} {
+		again.Comments = append(again.Comments, github.Comment{ID: int64(7605 + i), Author: waitApp, Body: body})
+	}
+	children, key, ok, err = epicCloseFindOn(t, again, Dirt{})
+	if err != nil || !ok || !slices.Equal(children, []int{12}) || key != (state.Key{Field: "event", ID: "p7607"}) {
+		t.Errorf("an epic closed, reopened and resumed gave %v, %+v, %t, %v; want [12], event=p7607", children, key, ok, err)
+	}
 }
 
 // Nothing else waits so: an epic planned into tasks, which waits for
 // story verification as its own story (SPEC §4), a story, a task, an
 // epic with no record yet, a dirty one, no approved revision, or no plan
-// data to tell what it was planned into, one held or closed, and one
-// whose close for this plan is written already, as one a trusted reopen
-// held and /resume brought back to planned.
+// data to tell what it was planned into, and one held or closed.
 func TestEpicCloseFindNothing(t *testing.T) {
 	t.Parallel()
 	norecord := doneSnap(t, 70, "epic", "epic-plan")
@@ -61,14 +73,6 @@ func TestEpicCloseFindNothing(t *testing.T) {
 	held.Comments = append(held.Comments, github.Comment{ID: 7405, Author: waitApp, Body: "<!-- issuedog:transition from=planned to=held at=planned reason=owner cmd=9 -->"})
 	closed := doneSnap(t, 75, "epic", "epic-plan", 12)
 	closed.Closed = true
-	again := doneSnap(t, 76, "epic", "epic-plan", 12)
-	for i, body := range []string{
-		"Closed.\n\n<!-- issuedog:transition from=planned to=closed reason=completed event=p7603 -->",
-		"<!-- issuedog:transition from=closed to=held at=planned reason=owner event=31 -->",
-		"<!-- issuedog:transition from=held to=planned cmd=7608 -->",
-	} {
-		again.Comments = append(again.Comments, github.Comment{ID: int64(7605 + i), Author: waitApp, Body: body})
-	}
 	for name, tc := range map[string]struct {
 		s *github.Snapshot
 		d Dirt
@@ -82,7 +86,6 @@ func TestEpicCloseFindNothing(t *testing.T) {
 		"no plan data":               {nodata, Dirt{}},
 		"held":                       {held, Dirt{}},
 		"closed":                     {closed, Dirt{}},
-		"closed so before":           {again, Dirt{}},
 	} {
 		if children, key, ok, err := epicCloseFindOn(t, tc.s, tc.d); err != nil || ok || children != nil {
 			t.Errorf("%s: got %v, %+v, %t, %v; want nothing", name, children, key, ok, err)
@@ -90,9 +93,10 @@ func TestEpicCloseFindNothing(t *testing.T) {
 	}
 }
 
-// An epic's plan data that doesn't read back is an error, which
-// epicCloseSet logs; a finished story's item is then waitFind's error too
-// (TestWaitFindDoneBadData), as the reading is one.
+// An epic's plan data that doesn't read back is an error; a finished
+// story's item is then waitFind's error too (TestWaitFindDoneBadData), as
+// the reading is one, so digestCacheSet logs it, and epicCloseSet doesn't
+// log it again.
 func TestEpicCloseFindBadData(t *testing.T) {
 	t.Parallel()
 	s := doneSnap(t, 80, "epic", "epic-plan", 12)
@@ -121,7 +125,8 @@ func TestEpicCloseFindBadData(t *testing.T) {
 // App leaves it once it has created the stories of its plan, #2 and #3,
 // closed, with the comments doneSnap gives it, and returns a daemon on the
 // fake whose snapshot of it and the poll's listing are as of then, with
-// the stories' closes judged and accepted (closingSeen), and whose cache
+// the stories' closes judged and accepted, at stage:completed
+// (closingSeen), and whose cache
 // waits on children for it.
 func epicClosePassDaemon(t *testing.T, children ...int) (*githubtest.Fake, *Daemon) {
 	t.Helper()
@@ -143,7 +148,7 @@ func epicClosePassDaemon(t *testing.T, children ...int) (*githubtest.Fake, *Daem
 		t.Fatal(err)
 	}
 	d := &Daemon{Step: st, snaps: map[int]*github.Snapshot{n: s}, inputs: map[int][]github.Comment{n: nil}, stale: map[int]bool{},
-		closedListed: map[int]bool{2: true, 3: true}, closingSeen: map[int]closingListed{2: {}, 3: {}}, epicCloseDue: map[int][]int{n: children}}
+		closedListed: map[int]bool{2: true, 3: true}, closingSeen: map[int]closingListed{2: {stages: "stage:completed"}, 3: {stages: "stage:completed"}}, epicCloseDue: map[int][]int{n: children}}
 	f.ForgetWrites()
 	return f, d
 }
@@ -238,13 +243,60 @@ func TestEpicCloseText(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		children []int
+		reason   string
 		want     string
 	}{
-		{[]int{3, 2}, "Every child of this epic is closed, so I've closed it as completed. Its children: #3, #2."},
-		{[]int{}, "Its plan's latest revision left this epic no children, so I've closed it as completed."},
+		{[]int{3, 2}, "completed", "Every child of this epic is closed, so I've closed it as completed. Its children: #3, #2."},
+		{[]int{3, 2}, "not_planned", "Every child of this epic is closed, none as completed, so I've closed it as not planned. Its children: #3, #2."},
+		{[]int{}, "not_planned", "Its plan's latest revision left this epic no children, so I've closed it as not planned."},
 	} {
-		if got := epicCloseText(tc.children); got != tc.want {
-			t.Errorf("epicCloseText(%v) = %q, want %q", tc.children, got, tc.want)
+		if got := epicCloseText(tc.children, tc.reason); got != tc.want {
+			t.Errorf("epicCloseText(%v, %s) = %q, want %q", tc.children, tc.reason, got, tc.want)
+		}
+	}
+}
+
+// The close's state reason is completed if any child's judged close left
+// stage:completed, and else not_planned: every child at stage:discarded,
+// as the owner's closes as not planned leave them, or none at all.
+func TestEpicCloseReason(t *testing.T) {
+	t.Parallel()
+	d := &Daemon{closingSeen: map[int]closingListed{2: {stages: "stage:discarded"}, 3: {stages: "stage:completed"}, 4: {stages: "stage:discarded"}}}
+	for _, tc := range []struct {
+		children []int
+		want     string
+	}{
+		{[]int{2, 3}, "completed"},
+		{[]int{3}, "completed"},
+		{[]int{2, 4}, "not_planned"},
+		{[]int{}, "not_planned"},
+	} {
+		if got := d.epicCloseReason(tc.children); got != tc.want {
+			t.Errorf("epicCloseReason(%v) = %s, want %s", tc.children, got, tc.want)
+		}
+	}
+}
+
+// An epic visited again that no longer waits on its children to close,
+// here once it's held, or once its plan has no data to tell what it was
+// planned into, is
+// forgotten: epicCloseSet drops what it waited on.
+func TestEpicCloseSetForgets(t *testing.T) {
+	t.Parallel()
+	held := doneSnap(t, 90, "epic", "epic-plan", 12)
+	held.Comments = append(held.Comments, github.Comment{ID: 9005, Author: waitApp, Body: "<!-- issuedog:transition from=planned to=held at=planned reason=owner cmd=9 -->"})
+	bad := doneSnap(t, 91, "epic", "epic-plan", 12)
+	bad.Comments[1].Body = waitPlanComment(t, 1)
+	bad.Comments[2].Body = "<!-- issuedog:transition from=plan-review to=planned rev=1 body=" + waitPlanHash(t, 1) + " cmd=r5 seen=2 -->"
+	for name, s := range map[string]*github.Snapshot{"held": held, "no plan data": bad} {
+		d := &Daemon{Step: &Step{Applier: &Applier{Owner: "o", Repo: "r", AppSlug: waitSlug}}}
+		d.epicCloseSet(doneSnap(t, s.Number, "epic", "epic-plan", 12), Dirt{})
+		if !slices.Equal(d.epicCloseDue[s.Number], []int{12}) {
+			t.Fatalf("%s: before, waiting %v; want the epic waiting on #12", name, d.epicCloseDue)
+		}
+		d.epicCloseSet(s, Dirt{})
+		if _, ok := d.epicCloseDue[s.Number]; ok {
+			t.Errorf("%s: waiting %v; want the epic forgotten", name, d.epicCloseDue)
 		}
 	}
 }

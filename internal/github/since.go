@@ -78,6 +78,19 @@ type issueTypeRevertEvent struct {
 	// NodeID is the event's GraphQL node ID, which go-github's Timeline
 	// leaves out too, or "" (Closing).
 	NodeID string `json:"node_id,omitempty"`
+	// SubIssue is the sub-issue a sub_issue_added or sub_issue_removed
+	// event names, which go-github's Timeline leaves out too, or nil
+	// (SubIssueRemovals).
+	SubIssue *subIssueRef `json:"sub_issue,omitempty"`
+}
+
+// subIssueRef is the sub-issue a timeline event names: its number, in
+// its repository, owner/name.
+type subIssueRef struct {
+	Number     int `json:"number"`
+	Repository struct {
+		FullName string `json:"full_name"`
+	} `json:"repository"`
 }
 
 // issueTypeRevertTimeline is TimelineSince, with each event's issue types.

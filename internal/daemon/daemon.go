@@ -88,9 +88,14 @@ type Daemon struct {
 	// children each waits on to close, after its last good step 1
 	// (epicclose.go).
 	epicCloseDue map[int][]int
+	// epicCloseHeld are the epics whose children have all closed that
+	// open issues hold open, by number, with those issues: each one's
+	// link below the epic someone untrusted removed (epicCloseUnlinked).
+	epicCloseHeld map[int][]int
 
 	closingSeen map[int]closingListed   // closed issues whose close is judged, as they were listed then (closing.go)
 	closingDue  map[int]*gogithub.Issue // closed issues with a close to judge, as last listed (closingList)
+	closingGone map[int]bool            // closed issues whose close's judging found them gone, with no good judging since (closingPass)
 	// closedListed are the issues the poll last listed closed, never a
 	// pull request, for a finished story's children (digestDoneStands).
 	closedListed map[int]bool
