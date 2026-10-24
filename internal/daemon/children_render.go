@@ -108,10 +108,12 @@ const childWidestNumber = math.MaxInt32
 //
 // Of a revision's items (SPEC §11.3), only the new ones are described
 // (planFiles): a kept, changed or dropped item has its child already, and
-// a kept or dropped one carries its ID and title alone. A changed child is
-// described by childSpecsWhere, for its rewrite (SPEC §6.4, #296), and a
-// dropped one is closed by droppedClose (#297). A new human task's "Why it
-// blocks" still names a changed item that depends on it, from all of items.
+// a dropped one carries its ID and title alone, while a kept one carries
+// its approved entry in full, dependencies included (planPrior.keptData).
+// A changed child is described by childSpecsWhere, for its rewrite (SPEC
+// §6.4, #296), and a dropped one is closed by droppedClose (#297). A new or
+// changed human task's "Why it blocks" still names a kept or changed item
+// that depends on it, from all of items (childDependents).
 //
 // An item it can't describe is an error naming it: a task with no scope
 // or no body of its kind, a check the plan's validation would refuse, or a
