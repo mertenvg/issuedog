@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -116,8 +117,11 @@ func planPriorOf(s *github.Snapshot, appSlug string, is state.Issue, dirty func(
 // origin the App reposted in a comment (#291), so it's still the plan's
 // child, and one a person filed, for an origin in a clean App comment, so
 // an adopted issue is its item's child, never one of Others, and a
-// revision keeps, changes or drops it like any child (#372). It fills in
-// Children, Others and Subs.
+// revision keeps, changes or drops it like any child (#372). One the App
+// filed whose listed body someone edited takes its origin from the
+// versions of the body the App wrote (childEditedOrigins), so a marker
+// pasted in, naming another item, doesn't make it that item's child
+// (#501). It fills in Children, Others and Subs.
 func (pr *planPrior) read(ctx context.Context, st *Step, s *github.Snapshot) error {
 	a := st.Applier
 	subs, err := a.Client.SubIssues(ctx, a.Owner, a.Repo, s.Number)
@@ -132,6 +136,11 @@ func (pr *planPrior) read(ctx context.Context, st *Step, s *github.Snapshot) err
 	if err != nil {
 		return fmt.Errorf("its children: %w", err)
 	}
+	edited, err := st.childEditedOrigins(ctx, s.Number, subs, listed)
+	if err != nil {
+		return fmt.Errorf("its children: %w", err)
+	}
+	maps.Copy(origins, edited)
 	found := childMatch(s.Number, a.AppSlug, subs, listed, a.inRepo, origins)
 	pr.Children = nil
 	byNumber := map[int]*gogithub.Issue{}

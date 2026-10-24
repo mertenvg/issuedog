@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -244,7 +245,9 @@ type childFound struct {
 // consistent, unlike search, which lags behind writes (SPEC §5.2,
 // "Finding a child, without search"). It returns them by item (childMatch),
 // with the Origin of each sub-issue whose listed body gives none
-// (childOrigins), a person's adopted issue's included (#372).
+// (childOrigins), a person's adopted issue's included (#372), and of each
+// issue the App filed whose listed body someone edited
+// (childEditedOrigins, #501).
 func (st *Step) childrenFind(ctx context.Context, s *github.Snapshot, since time.Time) (map[string]childFound, error) {
 	subs, err := st.Client.SubIssues(ctx, st.Owner, st.Repo, s.Number)
 	if err != nil {
@@ -258,6 +261,11 @@ func (st *Step) childrenFind(ctx context.Context, s *github.Snapshot, since time
 	if err != nil {
 		return nil, fmt.Errorf("find children: %w", err)
 	}
+	edited, err := st.childEditedOrigins(ctx, s.Number, subs, listed)
+	if err != nil {
+		return nil, fmt.Errorf("find children: %w", err)
+	}
+	maps.Copy(origins, edited)
 	return childMatch(s.Number, st.AppSlug, subs, listed, st.inRepo, origins), nil
 }
 
@@ -398,8 +406,8 @@ func childRefused(err error) bool {
 // Each such issue costs a snapshot, and one the App filed whose origin
 // isn't read costs its body's history too, unless Dirty read it already
 // for the same edit, as it does for a trusted user's (histories), or an
-// earlier call found no marker in any version of the App's for the same
-// body (originNone). One whose origin is read costs no history beyond
+// earlier call read it, as originLost keeps it, or found no marker in any
+// version of the App's for the same body (originNone). One whose origin is read costs no history beyond
 // Dirty's. The callers read them only before
 // the record stands (ChildrenVisit) or while a revision is planned and
 // checked (planPrior.read), so an unchanged pass reads none. Only
@@ -439,6 +447,89 @@ func (st *Step) childOrigins(ctx context.Context, subs []*gogithub.Issue) (map[i
 	return origins, nil
 }
 
+// childEditedOrigins returns, by number, the Origin of each issue the App
+// filed whose listed body gives one (childListedOrigin), but which someone
+// may have edited since: each of subs, a parent's sub-issues in this repo,
+// and each of listed whose listed body names the parent's plan. A listing
+// names no editor, so these bodies' histories are read, all in one query,
+// and none is read when there are no such issues, as before a first child
+// is filed. An issue never edited has no history: its listed body is the
+// App's original post, and it gets no entry. One that was edited takes its
+// Origin from the newest version of its body the App wrote that has a
+// whole marker, back to the original post (originFromHistory), never from
+// one anyone else wrote, as originLost reads it (SPEC §5.2, §6.4). So a
+// body that kept the App's marker matches as before, and one whose edit
+// pasted a whole marker naming another item, which Derive reads from the
+// body until step 1 marks it dirty, still matches its own item (#501):
+// matched to the other, it would leave its own item to be filed a second
+// time, and the other never filed. One with no such version, as when
+// someone deleted the text of each, gets the zero Origin, so it's no
+// item's child, as for a body with no marker of the App's (childOrigins).
+//
+// Each history that reaches the body as listed is kept (histories), so
+// the issue's own step 1 in the same pass doesn't read it again when its
+// dirty check needs it. Like childOrigins, it's called only before the
+// record stands (ChildrenVisit) and while a revision is planned and
+// checked (planPrior.read), so an unchanged pass reads none.
+func (st *Step) childEditedOrigins(ctx context.Context, parent int, subs, listed []*gogithub.Issue) (map[int]state.Origin, error) {
+	var nodes []string
+	byNode := map[string]*gogithub.Issue{}
+	add := func(is *gogithub.Issue, linked bool) {
+		node := is.GetNodeID()
+		if _, ok := byNode[node]; ok || node == "" || is.IsPullRequest() {
+			return
+		}
+		if o := childListedOrigin(is, st.AppSlug); o.Plan == 0 || !linked && o.Plan != parent {
+			return
+		}
+		byNode[node] = is
+		nodes = append(nodes, node)
+	}
+	for _, is := range subs {
+		if st.inRepo(is.GetRepositoryURL()) {
+			add(is, true)
+		}
+	}
+	for _, is := range listed {
+		add(is, false)
+	}
+	if len(nodes) == 0 {
+		return nil, nil
+	}
+	read, err := st.Client.History(ctx, nodes)
+	if err != nil {
+		return nil, fmt.Errorf("read the edit history of the issues filed for #%d's plan: %w", parent, err)
+	}
+	if st.histories == nil {
+		st.histories = histories{}
+	}
+	origins := map[int]state.Origin{}
+	for _, node := range nodes {
+		h, is := read[node], byNode[node]
+		if len(h) == 0 {
+			continue
+		}
+		n, body := is.GetNumber(), is.GetBody()
+		if newest := h[len(h)-1]; len(h) >= 2 && newest.Text == body {
+			st.histories[node] = kept{at: newest.At, body: body, edits: h}
+		}
+		listedOrigin := childListedOrigin(is, st.AppSlug)
+		m, ok := originFromHistory(h, st.AppSlug)
+		o, whole := state.OriginOf(m)
+		switch {
+		case !ok || !whole:
+			logr.Warnf("%s/%s#%d: its description names item %q of #%d's plan, but no version of it the App wrote has an origin marker, so it's no item's child",
+				st.Owner, st.Repo, n, listedOrigin.Item, listedOrigin.Plan)
+			o = state.Origin{}
+		case o.Plan != listedOrigin.Plan || o.Item != listedOrigin.Item:
+			logr.Warnf("%s/%s#%d: its description names item %q of #%d's plan, but the App filed it for item %s of #%d's, so it's matched to that one",
+				st.Owner, st.Repo, n, listedOrigin.Item, listedOrigin.Plan, o.Item, o.Plan)
+		}
+		origins[n] = o
+	}
+	return origins, nil
+}
+
 // childListedOrigin is the Origin that Derive reads from is, as a listing
 // gives it: from its author and body alone.
 func childListedOrigin(is *gogithub.Issue, appSlug string) state.Origin {
@@ -450,11 +541,14 @@ func childListedOrigin(is *gogithub.Issue, appSlug string) state.Origin {
 // parent's sub-issues, and listed, issues of this repo, by item. A child
 // is an issue whose origin names plan=#<parent>, whatever its rev (SPEC
 // §5.2). For an issue the App filed, it's read by Derive from a snapshot
-// of what the listing gives, its author and body: the listing has no edit
-// history, so a body someone edited still matches, as long as it keeps the
-// App's marker, since reusing an edited child is safer than filing a
-// duplicate (SPEC §5.2). One whose listed body gives no Origin takes it
-// from origins, what its snapshot gives (childOrigins), so
+// of what the listing gives, its author and body, unless origins has its
+// Origin: the listing has no edit history, so an edited body's comes from
+// the versions of it the App wrote (childEditedOrigins). So a body someone
+// edited still matches, as long as it keeps the App's marker, since
+// reusing an edited child is safer than filing a duplicate, but a marker
+// someone pasted in, naming another item, counts for nothing, since
+// matching by it files one (SPEC §5.2, #501). One whose listed body gives
+// no Origin takes it from origins, what its snapshot gives (childOrigins), so
 // a child whose origin the App reposted in a comment matches too (#291),
 // as does one whose repost isn't posted yet, by its body's history (#347),
 // and so does an issue a person filed, adopted by the plan, whose clean
@@ -476,9 +570,11 @@ func childMatch(parent int, appSlug string, subs, listed []*gogithub.Issue, inRe
 		seen[n] = true
 		// A person's body gives no Origin (github.TrustedMarkers), so a
 		// person's issue matches only through origins, by its snapshot.
-		o := childListedOrigin(is, appSlug)
-		if o.Plan == 0 {
-			o = origins[n]
+		// An App body someone edited matches only through origins too, by
+		// its history (childEditedOrigins).
+		o, ok := origins[n]
+		if !ok {
+			o = childListedOrigin(is, appSlug)
 		}
 		if o.Plan != parent {
 			return
