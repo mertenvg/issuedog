@@ -65,12 +65,16 @@ import (
 // out (childrenRecord), so the record stands only once every write
 // before it is made.
 //
-// A kept, changed or dropped item of a revision whose child isn't found,
-// as when someone unlinked it from the parent by hand before the
-// revision's first approval, and it hasn't been updated since, gets no
-// write, and no link is made to it: a warning names it, and the record
-// says so, and leaves it out. So it can't keep the record from standing, and once the record
-// stands no pass looks for it again (#297; #362 would find it).
+// The children are listed since the plan's first approval (childrenSince),
+// as the planner listed them for the revision, so a child someone
+// unlinked from the parent by hand is still found. A kept or changed item
+// of a revision whose child isn't found is gone, as when it was deleted or
+// moved to another repo after the revision was checked, and no later pass
+// finds it either: that's a failure no later pass gets past, below, found
+// before any write (childrenGone, #362). A dropped item whose child isn't
+// found gets no write: a warning names it, and the record says so, and
+// leaves it out, so it can't keep the record from standing, and once the
+// record stands no pass looks for it again (#297).
 //
 // Each child it may write to is reported to Touched first, or, for one it
 // files, once it has its number, so it skips the rest of the pass and is
@@ -81,11 +85,11 @@ import (
 //
 // But a failure no later pass gets past, as nothing it reads would change
 // (childrenStuck), isn't returned: plan data that won't read back, an
-// item that can't be written as an issue, or a link GitHub refuses with a
-// 422, as for a child that has another parent. It's reported once on the
-// parent instead, as a state error keyed by the comment holding the
-// parent's latest move, the one into planned (childrenStuckReport, SPEC
-// §5.3). While that error is reported, the visit returns before any read
+// item that can't be written as an issue, a kept or changed item whose
+// child is gone, or a link GitHub refuses with a 422, as for a child that
+// has another parent. It's reported once on the parent instead, as a
+// state error keyed by the comment holding the parent's latest move, the
+// one into planned (childrenStuckReport, SPEC §5.3). While that error is reported, the visit returns before any read
 // or write, as for a record, so the parent waits, at no cost, until it
 // moves, as by /hold and /resume, which gives the key a new value, and
 // the visit tries again.
@@ -152,9 +156,14 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 	if err != nil {
 		return fail(&childrenStuck{why: childrenStuckItem, err: err})
 	}
-	found, err := st.childrenFind(ctx, s, childrenSince(s, st.AppSlug, d.Has, rev.Rev, move))
+	found, err := st.childrenFind(ctx, s, childrenSince(s, st.AppSlug, d.Has, move))
 	if err != nil {
 		return wrap(err)
+	}
+	// A kept or changed child that isn't found is gone, so the visit stops
+	// with nothing written, and reports it once (#362).
+	if err := childrenGone(plan.Items, found); err != nil {
+		return fail(err)
 	}
 	key := state.Key{Field: "event", ID: "p" + strconv.FormatInt(move.ID, 10)}
 	// numbers is each child's number so far, by item, found or filed, for
@@ -184,8 +193,9 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 	// plan.Items is plan order, which the links and the record follow,
 	// whatever order the children were created in. Of a revision, the new
 	// items' children get their links here, and a kept child keeps its
-	// links. A dependency on a kept or changed item whose child isn't
-	// found is skipped, not an error, so it can't stop the record (#297).
+	// links. A kept or changed item's child is found by now (childrenGone),
+	// but should a dependency's child not be, it's skipped, not an error,
+	// so it can't stop the record (#297).
 	revised := slices.ContainsFunc(plan.Items, func(it planItem) bool { return it.Status != "" })
 	linked := plan.Items
 	if revised {
@@ -225,10 +235,11 @@ type childFound struct {
 
 // childrenFind reads the children of parent s filed already: its
 // sub-issues, which hold every linked child, open or closed, then the
-// repo's issues updated since the approved revision's first approval, at
-// since (childrenSince), which also hold one filed but not yet linked when
-// a pass stopped. Both lists are consistent, unlike search, which lags
-// behind writes (SPEC §5.2, "Finding a child, without search"). It returns them by item (childMatch),
+// repo's issues updated since the plan's first approval, at since
+// (childrenSince), which also hold one filed but not yet linked when a
+// pass stopped, and one someone unlinked by hand. Both lists are
+// consistent, unlike search, which lags behind writes (SPEC §5.2,
+// "Finding a child, without search"). It returns them by item (childMatch),
 // with the Origin of each sub-issue whose listed body gives none
 // (childOrigins), a person's adopted issue's included (#372).
 func (st *Step) childrenFind(ctx context.Context, s *github.Snapshot, since time.Time) (map[string]childFound, error) {
@@ -247,31 +258,66 @@ func (st *Step) childrenFind(ctx context.Context, s *github.Snapshot, since time
 	return childMatch(s.Number, st.AppSlug, subs, listed, st.inRepo, origins), nil
 }
 
-// childrenSince is when plan revision rev of parent s was first approved:
-// the earliest clean comment of the App's holding a move into planned that
-// names rev, or move, the comment holding the latest approval's move
-// (state.ApprovedPlanMove), if that's earlier, as when the first one's
-// comment is dirty. The children filed already are listed since then
-// (childrenFind, SPEC §5.2), not since the latest approval: the owner may
-// send the parent back and approve the revision again before the next
-// pass, after a child was filed but not linked when a pass stopped, and
-// that child's last update is earlier than the new approval. A move back
-// from a hold names no revision, so it's never the first, and an approval
-// of an earlier revision isn't either, so a child someone unlinked by
-// hand before it stays unfound (SPEC §5.2, "A child that isn't found").
-func childrenSince(s *github.Snapshot, appSlug string, dirty func(int64) bool, rev int, move github.Comment) time.Time {
+// childrenSince is when parent s's plan was first approved: the earliest
+// clean comment of the App's holding a move into planned that names a plan
+// revision, any of them, or move, the comment holding the latest
+// approval's move (state.ApprovedPlanMove), if that's earlier, as when the
+// first one's comment is dirty. The children filed already are listed
+// since then (childrenFind, SPEC §5.2), not since the latest approval: the
+// owner may send the parent back and approve the revision again before the
+// next pass, after a child was filed but not linked when a pass stopped,
+// and that child's last update is earlier than the new approval. Nor is it
+// since the approved revision's first approval: a revision is planned
+// against the children listed since its plan's first approval (planPrior),
+// and its children are found the same way once it's approved, so a kept
+// child of an earlier revision that someone unlinked by hand, and that
+// hasn't been updated since, is found by both (#362). A move back from a
+// hold names no revision, so it's never the first.
+func childrenSince(s *github.Snapshot, appSlug string, dirty func(int64) bool, move github.Comment) time.Time {
 	since := move.CreatedAt
 	for _, c := range s.Comments {
 		if dirty(c.ID) || !c.CreatedAt.Before(since) {
 			continue
 		}
 		if slices.ContainsFunc(github.TrustedMarkers(c.Author, c.Body, appSlug), func(m github.Marker) bool {
-			return m.Kind == "transition" && state.Stage(m.Fields["to"]) == state.Planned && m.Fields["rev"] == strconv.Itoa(rev)
+			r, err := strconv.Atoi(m.Fields["rev"])
+			return m.Kind == "transition" && state.Stage(m.Fields["to"]) == state.Planned && err == nil && r > 0
 		}) {
 			since = c.CreatedAt
 		}
 	}
 	return since
+}
+
+// childrenGone is the childrenStuck for the kept and changed items of
+// items, a revision's, whose child isn't among found (childrenFind), or
+// nil if each has one. The children are listed since the plan's first
+// approval (childrenSince), as the planner listed them, so one someone
+// unlinked by hand is found: such a child is gone, as when it was deleted
+// or moved to another repo after the revision was checked, and no later
+// pass finds it either (SPEC §5.2, "A child that isn't found", #362). Its
+// why names each item by its ID, the planner's, which the state error
+// escapes. A dropped item whose child isn't found isn't one, as the
+// revision has nothing to close: the record names it (childrenRecord).
+func childrenGone(items []planItem, found map[string]childFound) error {
+	var ids, named []string
+	for _, it := range items {
+		if _, ok := found[it.ID]; !ok && (it.Status == planKept || it.Status == planChanged) {
+			ids, named = append(ids, it.ID), append(named, inline(it.ID))
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	them, were := "it", "it was"
+	if len(ids) > 1 {
+		them, were = "them", "they were"
+	}
+	return &childrenStuck{
+		why: fmt.Sprintf("no child of %s is found, though the revision keeps or changes %s, as when %s deleted or moved to another repo",
+			list(named), them, were),
+		err: fmt.Errorf("no child of item %s is among the sub-issues or the issues updated since the plan's first approval", strings.Join(ids, ", ")),
+	}
 }
 
 // childrenErrKind is the kind of the state error for an approved plan
