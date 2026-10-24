@@ -29,11 +29,11 @@ func heldDeletionFamily(t testing.TB, order [3]int) (f *githubtest.Fake, a, j, k
 	return f, a, j, k, own
 }
 
-// #205's verifier probe: the owner's /resume on J, then the owner's /hold
-// on A, and A's pass handles the /hold, which writes no marker, as all
-// three are held already. Mallory then deletes A's /hold before J's pass.
-// The deletion, after J's /resume, may have been a /hold posted after it,
-// so J stays held, as K does: J's /resume applies, ending J's own /hold on
+// #205's case: the owner's /resume on J, then the owner's /hold on A, and
+// A's pass handles the /hold, which writes no marker, as all three are
+// held already. Mallory then deletes A's /hold before J's pass. The
+// deletion, after J's /resume, may have been a /hold posted after it, so J
+// stays held, as K does: J's /resume applies, ending J's own /hold on
 // both, which it records, but not the hold the deletion may have been. A's
 // /resume, posted after the deletion, ends that, so all three leave held.
 func TestHeldDeletionLaterHold(t *testing.T) {
@@ -68,7 +68,7 @@ func TestHeldDeletionLaterHold(t *testing.T) {
 	}
 }
 
-// The probe with two /holds on A after J's /resume, which A's pass both
+// The same with two /holds on A after J's /resume, which A's pass both
 // handles, and mallory deletes one of them: J's record names both what
 // keeps it held, the /hold left and the deletion, and A's /resume, after
 // both, takes all three back to ready.
@@ -166,8 +166,8 @@ func TestHeldDeletionRecordedAfter(t *testing.T) {
 	raceStages(t, f, "after A's /resume", map[int]string{1: "ready", 2: "clarifying"})
 }
 
-// heldDeletionProbe is #205's verifier probe up to J's pass, A #1, J #2
-// and K #3 (TestHeldDeletionLaterHold), with the writes forgotten.
+// heldDeletionProbe is #205's case up to J's pass, A #1, J #2 and K #3
+// (TestHeldDeletionLaterHold), with the writes forgotten.
 func heldDeletionProbe(t testing.TB) *githubtest.Fake {
 	t.Helper()
 	f, a, j, _, _ := heldDeletionFamily(t, raceOrders[0])
@@ -180,9 +180,9 @@ func heldDeletionProbe(t testing.TB) *githubtest.Fake {
 }
 
 // J's pass on its /resume is safe to replay after a crash at any write,
-// in #205's verifier probe, with its records on K and J and its 👍, and
-// with J's own record of the comment deleted after the /resume, with its
-// record on J and its 👍: J stays held either way.
+// in #205's case, with its records on K and J and its 👍, and with J's own
+// record of the comment deleted after the /resume, with its record on J
+// and its 👍: J stays held either way.
 func TestHeldDeletionReplay(t *testing.T) {
 	t.Parallel()
 	recorded := func(t testing.TB) *githubtest.Fake {
@@ -248,13 +248,13 @@ func heldDeletionSettle(t *testing.T, l *discRunLoop, name string) {
 	}
 }
 
-// #205's verifier probe as a whole run, with J, #2, numbered below A, #3,
-// and K #4. J's /resume waits for the owner's /hold on A posted before it
-// (#243), which A's pass handles, then the owner's /hold on A posted after
-// it, writing no marker, as all three are held already. Mallory deletes
-// that one before the next pass, which handles J's /resume: J and K stay
-// held, as the deletion may have been a /hold posted after it. Every pass
-// after is unchanged, a restart's too, and A's /resume, posted after the
+// #205's case as a whole run, with J, #2, numbered below A, #3, and K #4.
+// J's /resume waits for the owner's /hold on A posted before it (#243),
+// which A's pass handles, then the owner's /hold on A posted after it,
+// writing no marker, as all three are held already. Mallory deletes that
+// one before the next pass, which handles J's /resume: J and K stay held,
+// as the deletion may have been a /hold posted after it. Every pass after
+// is unchanged, a restart's too, and A's /resume, posted after the
 // deletion, takes all three back to ready.
 func TestHeldDeletionRun(t *testing.T) {
 	t.Parallel()

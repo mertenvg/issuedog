@@ -149,7 +149,7 @@ type ivHoldInput struct {
 //     doesn't make the edited text owner input: that takes a code owner's
 //     👍 after the edit, such as another code owner's, or the same one's
 //     removed and given again. Until then the comment is in untrusted.md
-//     only (#189's verify, attempt 3);
+//     only (SPEC §6.4);
 //   - countered: each clean comment by a trusted user, other than a
 //     /hold or a /resume, which resolve nothing (resolveHoldCommand),
 //     after at least one comment by someone who isn't trusted.

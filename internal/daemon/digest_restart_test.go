@@ -358,3 +358,85 @@ func TestDigestRestartTouchedReplay(t *testing.T) {
 	t.Parallel()
 	discRunReplay(t, discRunFamily, nil, func(l *discRunLoop) { digestRestartResumes(t, l) })
 }
+
+// A read again that fails leaves the issue unvisited that pass, as any
+// issue a command wrote to before its turn is. The epic's /hold, then #3's
+// own, both for a restart's first pass, as in TestDigestRestartTouchedHolds,
+// but #3's read again, the first GET of #3 after the epic's 👍, the last of
+// its visit's writes, answers 500: #3 skips the pass, so its own /hold
+// waits. The next pass reads #3, held, and its /hold writes only its 👍,
+// with no marker. Visited on the snapshot from before the epic's /hold,
+// #3 would look at ready, and get a second hold marker.
+func TestDigestRestartTouchedReadFails(t *testing.T) {
+	t.Parallel()
+	f := discRunFamily(t)
+	l := newDiscRunLoop(t, f)
+	l.quiet("the family")
+	hold, own := f.AddComment(2, "owner", "/hold"), f.AddComment(3, "owner", "/hold")
+	l.start()
+	react := discRunReact(hold)
+	f.BeforeRequest(func(r githubtest.Request) bool { return r.Method+" "+r.Path == react }, func() {
+		f.AnswerOnce(func(r githubtest.Request) bool { return r.Method == http.MethodGet && r.Path == "/issues/3" }, http.StatusInternalServerError)
+	})
+	from := len(f.Requests())
+	l.step("both /holds on a restart's first pass, #3's read again failing", "POST /issues/3/comments", "POST /issues/3/labels", "DELETE /issues/3/labels/stage:ready",
+		"POST /issues/4/comments", "POST /issues/4/labels", "DELETE /issues/4/labels/stage:ready",
+		"POST /issues/2/comments", "POST /issues/2/labels", "DELETE /issues/2/labels/stage:planned", react)
+	// #3: the pass's read, the /hold's, and the read again, which failed.
+	if got := digestRestartGets(f, from); got[3] != 3 {
+		t.Errorf("the restart's first pass read the issues %v times; want #3 three times", got)
+	}
+	l.step("the restart's second pass", discRunReact(own))
+	if got := digestRestartTransitions(f, 3, "to=held"); len(got) != 1 || !strings.Contains(got[0], fmt.Sprintf("cmd=%d ", hold)) {
+		t.Errorf("#3's hold markers %q; want the epic's /hold's alone", got)
+	}
+	if got := ivLabels(f, 3); !slices.Equal(got, []string{"stage:held", "type:task"}) {
+		t.Errorf("#3: labels %q; want it held", got)
+	}
+	l.quiet("both held")
+}
+
+// A visit that ends closing an issue again (closingErrClosedAgain) after
+// its command wrote to another holds that one back too, as a visit that
+// fails does. Owner's close of #4 stands, at completed, and mallory
+// reopens it while no daemon runs. Then the epic's /hold, and #3's own,
+// for the restart's first pass: the /hold's walk holds #3, then checks
+// #4's labels, which closes #4 again, so the epic's visit waits for its
+// next pass, and neither task is read again: #3's own /hold isn't handled
+// before the rest of the epic's, and #4, closed again, isn't visited. The
+// next pass finishes the epic's /hold, which writes to #3 before its turn
+// again, so #3, still with no visit since the start, is read again then,
+// and its /hold writes only its 👍.
+func TestDigestRestartTouchedClosedAgain(t *testing.T) {
+	t.Parallel()
+	f := discRunFamily(t)
+	l := newDiscRunLoop(t, f)
+	l.quiet("the family")
+	f.CloseBy(4, "owner")
+	l.step("owner's close of #4", "POST /issues/4/labels", "DELETE /issues/4/labels/stage:ready")
+	l.quiet("#4 done")
+	f.ReopenBy(4, "mallory")
+	hold, own := f.AddComment(2, "owner", "/hold"), f.AddComment(3, "owner", "/hold")
+	l.start()
+	from := len(f.Requests())
+	l.step("the /holds and mallory's reopen on a restart's first pass", "POST /issues/3/comments", "POST /issues/3/labels", "DELETE /issues/3/labels/stage:ready",
+		"POST /issues/4/comments", "PATCH /issues/4")
+	// #3: the pass's read and the /hold's, and no read again.
+	if got := digestRestartGets(f, from); got[3] != 2 {
+		t.Errorf("the restart's first pass read the issues %v times; want #3 twice", got)
+	}
+	from = len(f.Requests())
+	l.step("the restart's second pass", "POST /issues/2/comments", "POST /issues/2/labels", "DELETE /issues/2/labels/stage:planned",
+		discRunReact(hold), discRunReact(own))
+	// #3: the pass's read, the /hold's, and the read again at its turn.
+	if got := digestRestartGets(f, from); got[3] != 3 {
+		t.Errorf("the restart's second pass read the issues %v times; want #3 three times", got)
+	}
+	if got := ivLabels(f, 4); !f.State().Issues[3].Closed || !slices.Equal(got, []string{"stage:completed", "type:task"}) {
+		t.Errorf("#4: closed %v, labels %q; want it closed again, at completed", f.State().Issues[3].Closed, got)
+	}
+	if got := digestRestartTransitions(f, 3, "to=held"); len(got) != 1 || !strings.Contains(got[0], fmt.Sprintf("cmd=%d ", hold)) {
+		t.Errorf("#3's hold markers %q; want the epic's /hold's alone", got)
+	}
+	l.quiet("held")
+}

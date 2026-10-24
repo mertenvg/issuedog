@@ -41,8 +41,8 @@ type HeldStack struct {
 //
 // A held → held marker with no reason is no hold of its own (SPEC §5,
 // §6.4): the parent's newly approved revision changed the
-// held issue, so the stage it would have gone to becomes its At and
-// Origin, which /resume and the interviewer's unchanged take it to. It
+// held issue, or gave it its first move as a child (SPEC §5.2), so the
+// stage it would have gone to becomes its At and Origin, which /resume and the interviewer's unchanged take it to. It
 // sets those and adds nothing to Holds. With no hold before it, as when
 // the first hold's comment is dirty, it sets Seen too, from its own seen
 // or else before, and Holds stays empty, so /resume on the issue ends the
@@ -69,8 +69,8 @@ func (h HeldStack) heldStackNext(m github.Marker, before int64) HeldStack {
 }
 
 // heldStackChanged reports whether m is the held → held marker of a held
-// issue that its parent's newly approved revision changed: one with no
-// reason, which every hold's marker carries.
+// issue that its parent's newly approved revision changed, or gave its
+// first move: one with no reason, which every hold's marker carries.
 func heldStackChanged(m github.Marker) bool {
 	_, reason := m.Fields["reason"]
 	return Stage(m.Fields["from"]) == Held && Stage(m.Fields["to"]) == Held && !reason

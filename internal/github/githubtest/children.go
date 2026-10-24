@@ -84,8 +84,8 @@ func (f *Fake) addSubIssue(c *call) (int, any) {
 
 // isAncestor reports whether issue a is issue n or above it, through the
 // parents SetParent and addSubIssue set, or an error naming a parent on
-// the way that the fake hasn't got, as once DeleteIssue deleted it. f is
-// locked.
+// the way that the fake hasn't got, which no helper leaves, as DeleteIssue
+// drops a deleted issue's links. f is locked.
 func (f *Fake) isAncestor(a, n int) (bool, error) {
 	for seen := 0; n != 0 && seen <= len(f.issues); seen++ {
 		if n == a {

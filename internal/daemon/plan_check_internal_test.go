@@ -392,10 +392,16 @@ func TestCheckPlanLinkLimits(t *testing.T) {
 // A file path is a word with a directory and an extension, outside a link.
 // A bare file name, a URL to a file, a link's destination and words with
 // a slash but no extension are none. Nor, so prose passes (#311), is a
-// word whose extension doesn't start with a lowercase letter or is a
-// module's version, whose directory has no letter or is only versions, or
-// that is capitalized names ending in ".js" or ".io". Capitalized paths,
-// extensions with digits and directories named "x" or "v2" are paths.
+// word whose extension isn't a lowercase letter, then lowercase letters
+// and digits, or is a module's version, whose directory has no letter or
+// is only versions, or that is capitalized names, the last a known
+// framework's, such as "Express/Node.js" (#439). Capitalized paths, such as
+// "Components/Button.js", extensions with digits and directories named "x"
+// or "v2" are paths. So are lowercase library names, such as
+// "express/node.js", since a file can be named so, as "src/node.js" is.
+// The rule misses a path whose extension isn't all lowercase letters and
+// digits, whose directory has no letter or whose extension is a module's
+// version, such as "R/utils.R", "2024/notes.md" and "lib/x.v2".
 func TestPlanFilePath(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ text, want string }{
@@ -421,6 +427,18 @@ func TestPlanFilePath(t *testing.T) {
 		{"v2/main.go", "v2/main.go"},
 		{"api/v1.2/routes.go", "api/v1.2/routes.go"},
 		{"/etc/hosts.conf", "/etc/hosts.conf"},
+		{"Components/Button.js", "Components/Button.js"},
+		{"Pages/Index.js", "Pages/Index.js"},
+		{"Models/User.js", "Models/User.js"},
+		{"src/Components/Button.js", "src/Components/Button.js"},
+		{"src/Express/Node.js", "src/Express/Node.js"},
+		{"App/Web/lib/Node.js", "App/Web/lib/Node.js"},
+		{"src/app.js", "src/app.js"},
+		{"lib/index.js", "lib/index.js"},
+		{"src/node.js", "src/node.js"},
+		{"An express/node.js app.", "express/node.js"},
+		{"web3.js/ethers.js", "web3.js/ethers.js"},
+		{"chart.js/d3.js", "chart.js/d3.js"},
 		{"React/Next.js, and web/app.tsx", "web/app.tsx"},
 		{"Supports TLS 1.2/1.3.", ""},
 		{"Go 1.22/1.23", ""},
@@ -429,6 +447,8 @@ func TestPlanFilePath(t *testing.T) {
 		{"Speaks HTTP/1.1.", ""},
 		{"An Express/Node.js or React/Next.js app.", ""},
 		{"A Vue/Nuxt.js or Express/Socket.io app.", ""},
+		{"Next/React.js, Nuxt/Vue.js or Node/Express.js.", ""},
+		{"Express/Next.js/Node.js", ""},
 		{"Python 2.x/3.x", ""},
 		{"Vue 2.x/3.x", ""},
 		{"Node 18.x/20.x", ""},
@@ -437,6 +457,12 @@ func TestPlanFilePath(t *testing.T) {
 		{"Go 1.x/2.x/3.x", ""},
 		{"Parses with gopkg.in/yaml.v3.", ""},
 		{"A net/http.Handler, as internal/appkey.Load reads it.", ""},
+		{"See internal/daemon.checkPlan.", ""},
+		// Paths the rule misses, rare in a plan.
+		{"R/utils.R", ""},
+		{"docs/CHANGELOG.MD", ""},
+		{"2024/notes.md", ""},
+		{"lib/x.v2", ""},
 		{"The [settings file](deploy/production.env) ...", ""},
 		{"[cmd/main.go](https://github.com/acme/booking/blob/main/cmd/main.go)", "cmd/main.go"},
 		{"See https://github.com/acme/booking/blob/main/deploy/production.env for it.", ""},

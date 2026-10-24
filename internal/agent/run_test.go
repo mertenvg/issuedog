@@ -151,6 +151,11 @@ func TestRunFailures(t *testing.T) {
 			r, s := fakeRun(t, tt.mode, tt.cred)
 			if tt.mode == "hang" {
 				s.Timeout = 300 * time.Millisecond
+				// claude's child holds its output open for 300s, and the wait
+				// for that output is an hour. So only the group kill ends the
+				// run within the bound below, which is generous so a loaded
+				// machine doesn't fail it.
+				r.waitDelay = time.Hour
 			}
 			switch tt.wantErr {
 			case "invalid run ID":
@@ -189,11 +194,43 @@ func TestRunFailures(t *testing.T) {
 			if tt.mode != "hang" {
 				return
 			}
-			if d := time.Since(start); d >= waitDelay {
+			if d := time.Since(start); d >= time.Minute {
 				t.Errorf("Run took %v; the group kill should close claude's output at once", d)
 			}
 			waitChildDead(t, s.Dir)
 		})
+	}
+}
+
+// TestRunCommandSetup: the command Run starts gets the stage's directory and
+// environment, the output and stderr writers, its own process group and a
+// Cancel, and a WaitDelay of 5s, or the one a test sets.
+func TestRunCommandSetup(t *testing.T) {
+	t.Parallel()
+	s := Stage{Dir: "/work", Env: []string{"A=1"}}
+	var stdout, stderr bytes.Buffer
+	for _, tt := range []struct {
+		name      string
+		waitDelay time.Duration
+		want      time.Duration
+	}{
+		{name: "default", want: 5 * time.Second},
+		{name: "an hour set", waitDelay: time.Hour, want: time.Hour},
+	} {
+		r := &Runner{Claude: "/nonexistent/claude", Stderr: &stderr, waitDelay: tt.waitDelay}
+		cmd := r.command(context.Background(), s, "p", &stdout)
+		if cmd.WaitDelay != tt.want {
+			t.Errorf("%s: WaitDelay = %v, want %v", tt.name, cmd.WaitDelay, tt.want)
+		}
+		if cmd.Cancel == nil {
+			t.Errorf("%s: Cancel is nil, want the group kill", tt.name)
+		}
+		if cmd.Dir != s.Dir || !slices.Equal(cmd.Env, s.Env) || cmd.Stdout != &stdout || cmd.Stderr != &stderr {
+			t.Errorf("%s: Dir %q, Env %q, Stdout %p, Stderr %p; want %q, %q, %p, %p", tt.name, cmd.Dir, cmd.Env, cmd.Stdout, cmd.Stderr, s.Dir, s.Env, &stdout, &stderr)
+		}
+		if a := cmd.SysProcAttr; a == nil || !a.Setpgid {
+			t.Errorf("%s: SysProcAttr = %+v, want its own process group", tt.name, a)
+		}
 	}
 }
 
@@ -222,7 +259,9 @@ func TestRunKillsLeftovers(t *testing.T) {
 }
 
 // waitChildDead fails the test unless the child the fake script recorded in
-// dir/child.pid exits (or is a zombie) soon.
+// dir/child.pid exits (or is a zombie) within a minute. The child sleeps 300s,
+// so one that wasn't killed still fails. The minute is generous so a loaded
+// machine doesn't fail it.
 func waitChildDead(t *testing.T, dir string) {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(dir, "child.pid"))
@@ -233,7 +272,7 @@ func waitChildDead(t *testing.T, dir string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(time.Minute); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
 		stat, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
 		if err != nil {
 			return

@@ -602,6 +602,9 @@ func (r *Runs) applyLease(ctx context.Context, l Lease, st Stage, raw []byte, ou
 	l.ApplyFailures++
 	if l.ApplyFailures < r.limit() {
 		logr.Warnf("applying run %s on #%d failed, %d of %d times, so it's tried again: %v", l.RunID, l.Issue, l.ApplyFailures, r.limit(), err)
+		// The next pass applies it, as after a crash, and judges the
+		// assignees then (SPEC §9.6).
+		r.Daemon.assignWorked(l.Issue)
 		return errors.Join(err, r.writeLease(l))
 	}
 	// The run is now a failed attempt, as a run that fails is, and failed
@@ -734,6 +737,9 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 		return fmt.Errorf("apply run %s: %w", l.RunID, err)
 	}
 	logr.Infof("%s/%s#%d: applied run %s", a.Owner, a.Repo, l.Issue, l.RunID)
+	if st := stageOf(s); st == state.SpecReview || st == state.PlanReview {
+		r.Daemon.assignWorked(l.Issue) // it waits on the owner again (SPEC §9.6)
+	}
 	delete(r.attempts, countKey(l.Issue, l.AttemptKey))
 	delete(r.failures, countKey(l.Issue, l.AttemptKey))
 	return r.finish(ctx, l)

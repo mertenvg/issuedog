@@ -19,14 +19,13 @@ type deletedEvent struct {
 // login and the comment's author, which the GraphQL comments query serves
 // (deletedPage). It returns the event's node ID, the ID internal/github
 // gives it. An empty login is an event that names no actor. DeleteComment
-// records no event.
+// records no event. A comment the fake hasn't got, one deleted already
+// included, fails the test (fakeCommentID).
 func (f *Fake) DeleteCommentBy(login string, id int64) string {
+	f.t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	c := f.findComment(id)
-	if c == nil {
-		panic(fmt.Sprintf("githubtest: DeleteCommentBy: no comment %d", id))
-	}
+	c := f.fakeCommentID(id)
 	f.comments = slices.DeleteFunc(f.comments, func(c *comment) bool { return c.GetID() == id })
 	f.lastEvent++
 	e := deletedEvent{node: fmt.Sprintf("CDE_%d", firstEvent+f.lastEvent), by: login, author: c.GetUser().GetLogin(), at: f.tick().Time}

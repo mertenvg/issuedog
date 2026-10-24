@@ -260,14 +260,14 @@ func TestHoldOrderClosedParent(t *testing.T) {
 	}
 }
 
-// The verifier's probe of #243's wait: eve, with no access, posts /hold on
-// A, which holds nothing. Then she's given write access and named in
-// CODEOWNERS, so her /hold counts, though A never changes, and the owner's
-// /resume on J, numbered below A, waits for it. The wait reads A again on
-// the next pass, which handles eve's /hold: A goes on hold, and J and K,
-// held already by J's own /hold, get no marker. Then J's /resume ends both
-// /holds on J and K, which go back to ready. Every pass after is
-// unchanged, so the extra reads last only while J's /resume waits.
+// #243's wait: eve, with no access, posts /hold on A, which holds nothing.
+// Then she's given write access and named in CODEOWNERS, so her /hold
+// counts, though A never changes, and the owner's /resume on J, numbered
+// below A, waits for it. The wait reads A again on the next pass, which
+// handles eve's /hold: A goes on hold, and J and K, held already by J's
+// own /hold, get no marker. Then J's /resume ends both /holds on J and K,
+// which go back to ready. Every pass after is unchanged, so the extra
+// reads last only while J's /resume waits.
 func TestHoldOrderRunTrustedSince(t *testing.T) {
 	t.Parallel()
 	f := discRunRaceFamily(false)(t)

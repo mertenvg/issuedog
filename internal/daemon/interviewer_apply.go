@@ -258,8 +258,9 @@ func ivFactRounds(s *github.Snapshot, appSlug string, dirty func(int64) bool) []
 //     body=, the hash of the body GitHub returned. Its text is the line
 //     naming whose edit the spec replaced, if the body was dirty
 //     (rewriteReplacedText), the type line when it sets one, the agent's
-//     message (the answers to the revision notes, or what changed), the
-//     decisions added without asking, and the cc line (renderSpecNote).
+//     message (the answers to the revision notes, or what changed), and
+//     the decisions added without asking (renderSpecNote), then the
+//     revision, and last the cc line.
 //     The body is clean after step 2, so it is a normal revision.
 //     - At the clarifying after a discussion hold (#189), an unchanged
 //     outcome's is clarifying → origin on discussion-no-change, with no
@@ -271,7 +272,9 @@ func ivFactRounds(s *github.Snapshot, appSlug string, dirty func(int64) bool) []
 //     outcome's is clarifying → planning on plan-changed (#294), with no
 //     revision: the planner posts the next plan revision from the move's
 //     message, the discussion's owner input and the /revise it names
-//     (plannerHoldOf). Its text is renderPlanChange's.
+//     (plannerHoldOf). It carries replan=1, which tells it from
+//     unchanged's move after a hold from planning, the same clarifying →
+//     planning (SPEC §5). Its text is renderPlanChange's.
 //  4. At the clarifying after a hold, every move carries origin
 //     (ivHoldOrigin, SPEC §6.4), and one after a hold from spec-review or
 //     plan-review names the /revise that waited through it, if the run
@@ -323,6 +326,10 @@ func (iv *Interviewer) Apply(ctx context.Context, a *Applier, r Result) error {
 	}
 	if out.Outcome == outcomePlan {
 		m := hold.set(r.Move(to, trigger))
+		if m.Fields == nil {
+			m.Fields = map[string]string{}
+		}
+		m.Fields[ivReplanField] = "1" // tells it from unchanged after a hold from planning (ivPlanChanged)
 		m.Text = renderPlanChange(out, notify)
 		if !moved {
 			logr.Infof("%s/%s#%d: the discussion changes the plan, so it goes to planning", a.Owner, a.Repo, r.S.Number)
@@ -337,7 +344,7 @@ func (iv *Interviewer) Apply(ctx context.Context, a *Applier, r Result) error {
 			return wrap(errors.New("the spec outcome has no spec"))
 		}
 		m := hold.set(r.Move(to, trigger))
-		m.Text = renderSpecNote(out, notify)
+		m.Text = renderSpecNote(out)
 		dirt := r.Dirt
 		if !moved {
 			replaced, err := specWriteBody(ctx, a, r.S, r.Dirt, r.RunID, renderSpec(*out.Spec))
@@ -352,7 +359,7 @@ func (iv *Interviewer) Apply(ctx context.Context, a *Applier, r Result) error {
 			dirt = maps.Clone(r.Dirt)
 			delete(dirt, state.BodyID)
 		}
-		if err := a.PostRevision(ctx, r.S, dirt.Has, m); err != nil {
+		if err := a.PostRevision(ctx, r.S, dirt.Has, m, notify); err != nil {
 			return wrap(err)
 		}
 		return hold.ack(ctx, a, wrap)
