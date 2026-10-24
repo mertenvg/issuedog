@@ -94,7 +94,11 @@ func childPlanRun(plan github.Comment, appSlug string) (string, bool) {
 // after an edit of the body (originRepost): Derive reads the body's
 // marker first, but falls back to the newest clean App comment's once a
 // later edit makes the body's markers unread, and originRepost then
-// reposts nothing, since an origin is read (SPEC §6.4).
+// reposts nothing, since an origin is read (SPEC §6.4). Should anyone edit
+// an adopted child's move comment, step 1 posts the body's marker again
+// (adoptedRepost); should step 1 post it between the rewrite and the move,
+// as after a crash, Derive reads rev from it, and the move carries no
+// marker.
 //
 // The move is the last write, so once it stands the child is done, and a
 // later pass reads it and writes nothing. Before it, the child is reported
