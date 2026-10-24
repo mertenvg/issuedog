@@ -1241,11 +1241,12 @@ func resolveFields(h state.HeldStack, resolved time.Time) map[string]string {
 // hold: a trusted reopen of the App's own close holds the issue at the
 // stage the close came from (closingReopen), so the move before the close
 // is, as for a dropped child closed from the clarifying after a hold
-// (droppedOne). Once a parent's revision has changed the hold's at, by a
-// held → held marker with no reason (SPEC §6.4), /resume goes to that
-// stage, which isn't the clarifying after a hold, and carries no origin:
-// only the interviewer's move out of that clarifying does (SPEC §7.2,
-// Skipping plan review).
+// (droppedOne); or for a close from held, as a held child's, at its first
+// hold's at, so the move before that hold is. Once a parent's revision has
+// changed the hold's at, by a held → held marker with no reason (SPEC
+// §6.4), /resume goes to that stage, which isn't the clarifying after a
+// hold, and carries no origin: only the interviewer's move out of that
+// clarifying does (SPEC §7.2, Skipping plan review).
 func resolveHeldAfterHold(is state.Issue) (state.Stage, bool) {
 	var before, last github.Marker
 	for _, m := range is.Markers {
