@@ -35,6 +35,24 @@ func childrenCrashReapproved(t *testing.T) *github.Snapshot {
 	return childrenCrashTimed(s)
 }
 
+// childrenCrashRevised is planTestPlanned's issue 7, sent back to planning
+// by the owner (104), then planned again as plan revision 2 (105), which
+// the owner's 👍 approved (106), so its plan was first approved at
+// revision 1 (103) and again at revision 2.
+func childrenCrashRevised(t *testing.T) *github.Snapshot {
+	t.Helper()
+	s := planTestPlanned(t, 7, "epic", false, "app: from=planned to=planning event=11 by=owner")
+	body, err := planCommentBody(goldenPlan(t, "epic-plan"), planFacts{Issue: 7, Rev: 2, MaxTasks: 10, Priority: "p2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ms := github.ParseMarkers(body)
+	s.Comments = append(s.Comments, github.Comment{ID: 105, Author: planTestApp, Body: body}, github.Comment{ID: 106, Author: planTestApp,
+		Body: fmt.Sprintf("Approved.\n\n<!-- issuedog:transition from=plan-review to=planned cmd=r10 rev=2 body=%s seen=105 -->",
+			ms[len(ms)-1].Fields["body"])})
+	return childrenCrashTimed(s)
+}
+
 // childrenCrashComment is s's comment id, or fails t.
 func childrenCrashComment(t *testing.T, s *github.Snapshot, id int64) github.Comment {
 	t.Helper()
@@ -53,7 +71,8 @@ func childrenCrashComment(t *testing.T, s *github.Snapshot, id int64) github.Com
 // hand is still found (#362). A dirty comment, a person's marker, and a
 // move into planned that names no revision, as from a hold, or a rev that
 // isn't one, don't count. A revision is planned against the children
-// listed since then too.
+// listed since then too, as for a plan approved at revision 1 and again
+// at revision 2.
 func TestChildrenSinceFirstApproval(t *testing.T) {
 	t.Parallel()
 	clean := func(int64) bool { return false }
@@ -101,6 +120,18 @@ func TestChildrenSinceFirstApproval(t *testing.T) {
 	first := childrenCrashComment(t, reapproved, 103).CreatedAt
 	if pr.move.ID != 105 || !pr.since.Equal(first) {
 		t.Errorf("planPriorOf: the move is comment %d, and the children are listed since %s; want 105, and since %s", pr.move.ID, pr.since, first)
+	}
+	// A plan approved at revision 1, then again at revision 2, is a
+	// revision of revision 2, moved by its approval, with the children
+	// listed since revision 1's.
+	revisedAgain := childrenCrashRevised(t)
+	pr2, err := planPriorOf(revisedAgain, "issuedog", state.Derive(revisedAgain, "issuedog", clean), clean)
+	if err != nil || pr2 == nil {
+		t.Fatalf("planPriorOf after revision 2's approval: %+v, %v; want a revision's prior", pr2, err)
+	}
+	if first2 := childrenCrashComment(t, revisedAgain, 103).CreatedAt; pr2.Rev != 2 || pr2.move.ID != 106 || !pr2.since.Equal(first2) {
+		t.Errorf("planPriorOf after revision 2's approval: revision %d, moved by comment %d, the children listed since %s; "+
+			"want revision 2, moved by 106, since %s, revision 1's approval", pr2.Rev, pr2.move.ID, pr2.since, first2)
 	}
 	f := githubtest.New(t, "o/r", "issuedog")
 	f.AddIssue("owner", "Plan me", "body")
