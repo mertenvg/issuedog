@@ -506,6 +506,71 @@ func TestDoneByReactionFailsEscaped(t *testing.T) {
 		thumbRejected("eve&lt;!--@​owner", "This repo has no label `needs-design`.", 1002)})
 }
 
+// unreadableFound is what the check finds on an origin marker whose check
+// fields couldn't be read (state.CheckUnreadable).
+const unreadableFound = "I couldn't read the check on this task's `origin` marker, so it can't pass."
+
+// A /done or a 👍 on a human task whose origin marker has check fields that
+// don't record a whole check, an unknown kind or a value that doesn't
+// decode, fails without a read: the /done gets the App's 👎 and the
+// rejection reply, and the 👍 its one reply, each saying the check
+// couldn't be read and quoting none of the fields. The issue stays open
+// at needs-human, and a pass where nothing changed after makes only
+// conditional GETs, answered 304, and writes nothing.
+func TestDoneUnreadableCheck(t *testing.T) {
+	t.Parallel()
+	for _, marker := range []struct{ name, check string }{
+		{"an unknown kind", " check=app-installed value=%3C!--%20@owner"},
+		{"a value that doesn't decode", " check=label value=@owner%zz"},
+	} {
+		for _, tc := range []struct {
+			name    string
+			trigger func(t testing.TB, f *githubtest.Fake)
+			daemon  func(t testing.TB, f *githubtest.Fake, o *origin) *daemon.Daemon
+			pass    func(t testing.TB, o *origin) func(*githubtest.Fake) error
+			want    []string
+			thumb   []string // /done's reactions
+		}{
+			{"/done", doneBy("owner", 1002), doneDaemon, donePass, []string{"/done",
+				rejected("/done", `its "Done when" check didn't pass. `+strings.TrimSuffix(unreadableFound, "."), "1002")},
+				[]string{app + " -1"}},
+			{"a 👍", thumbBy("owner", 1002), thumbDaemon, thumbPass, []string{thumbRejected("owner", unreadableFound, 1002)}, nil},
+		} {
+			t.Run(marker.name+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				o := newOrigin(t)
+				setup := humanTask(marker.check, tc.trigger)
+				githubtest.Replay(t, setup, tc.pass(t, o))
+
+				f := setup(t)
+				d := tc.daemon(t, f, o)
+				iterate(t, d) // the reply
+				doneState(t, f, []string{"stage:needs-human"}, false, tc.want)
+				if tc.thumb != nil {
+					if r := f.State().Issues[0].Comments[1].Reactions; !slices.Equal(r, tc.thumb) {
+						t.Errorf("/done's reactions = %q, want %q", r, tc.thumb)
+					}
+				}
+				iterate(t, d) // the pass that reads the issue written to again
+				if r := checkReads(f, 0); len(r) != 0 {
+					t.Errorf("check reads %+v, want none", r)
+				}
+				from, writes := len(f.Requests()), len(f.Writes())
+				iterate(t, d)
+				if w := f.Writes()[writes:]; len(w) != 0 {
+					t.Errorf("a pass where nothing changed wrote %+v; want nothing", w)
+				}
+				for _, r := range f.Requests()[from:] {
+					if r.Method != http.MethodGet || !r.Conditional || r.Status != http.StatusNotModified {
+						t.Errorf("a pass where nothing changed sent %+v; want only conditional GETs answered 304", r)
+					}
+				}
+				doneState(t, f, []string{"stage:needs-human"}, false, tc.want)
+			})
+		}
+	}
+}
+
 // 👍s from an untrusted writer, an unknown user, a bot and the App, all
 // but the writer trusted by thumbTrust, write nothing and run no check,
 // and so do a trusted ❤️ on the issue and a trusted 👍 on a comment.

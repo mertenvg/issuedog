@@ -52,7 +52,7 @@ func file(f *githubtest.Fake, parent int, fields string) int {
 func tree(fields []string, parents []int, on int, cmd int64, body string, more func(f *githubtest.Fake)) func(testing.TB) *githubtest.Fake {
 	return func(t testing.TB) *githubtest.Fake {
 		f := githubtest.New(t, "o/r", slug)
-		f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, round 2)
+		f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (SPEC §6.4)
 		for i, fl := range fields {
 			file(f, parents[i], fl)
 		}
@@ -438,7 +438,7 @@ func TestOwnHolds(t *testing.T) {
 	setup := func(hand, gone bool, steps []step) func(testing.TB) *githubtest.Fake {
 		return func(t testing.TB) *githubtest.Fake {
 			f := githubtest.New(t, "o/r", slug)
-			f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, round 2)
+			f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (SPEC §6.4)
 			file(f, 0, ready)
 			file(f, 1, "from=ready to=in-progress run=a")
 			file(f, 2, "from=in-progress to=verifying run=a")
@@ -505,7 +505,7 @@ func TestOwnHolds(t *testing.T) {
 			gone:   true,
 			steps:  []step{{2, "/hold"}, {1, "/resume"}},
 			labels: [3]string{"stage:ready", "stage:held", "stage:held"}, react: "-1", reply: madeOn("#2, #3")},
-		{name: "a /resume on the issue itself ends its hold whose /hold comment is gone, and the one below, as its marker there names it (#188's verify, attempt 3)",
+		{name: "a /resume on the issue itself ends its hold whose /hold comment is gone, and the one below, as its marker there names it",
 			gone:   true,
 			steps:  []step{{2, "/hold"}, {2, "/resume"}},
 			labels: [3]string{"stage:ready", "stage:in-progress", "stage:verifying"}, react: "+1"},
@@ -552,7 +552,7 @@ func TestHoldMixedCaseRepo(t *testing.T) {
 	t.Parallel()
 	setup := func(t testing.TB) *githubtest.Fake {
 		f := githubtest.New(t, "O/r", slug)
-		f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, round 2)
+		f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (SPEC §6.4)
 		file(f, 0, ready)
 		file(f, 1, ready)
 		f.AddComment(1, "owner", "/hold")

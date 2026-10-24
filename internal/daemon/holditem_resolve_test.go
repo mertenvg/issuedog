@@ -16,7 +16,7 @@ import (
 // digest, and #2 the owner's issue at ready.
 
 // holdItemResolveDaemon is holdItemDaemon with ResolveByReaction as its
-// reaction trigger, as newStep wires it.
+// reaction trigger, as NewStep wires it.
 func holdItemResolveDaemon(t testing.TB, f *githubtest.Fake, o *origin) *daemon.Daemon {
 	t.Helper()
 	d := holdItemDaemon(t, f, o)

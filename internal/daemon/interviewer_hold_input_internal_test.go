@@ -3,10 +3,13 @@ package daemon
 import (
 	"context"
 	"errors"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+
+	gogithub "github.com/google/go-github/v92/github"
 
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
@@ -150,8 +153,8 @@ func TestAfterHoldInputAuthorTrustError(t *testing.T) {
 
 // A failed read of an untrusted comment's reactions stops the build with
 // its error, naming the comment, and returns no input, as a failed trust
-// read does. The comment
-// is deleted between the snapshot and the read, so the read gets a 404.
+// read does. The comment is deleted between the snapshot and the read, so
+// the error is the 404 of that comment's reactions read, not another one.
 func TestAfterHoldInputReactionsError(t *testing.T) {
 	t.Parallel()
 	f := githubtest.New(t, "o/r", "issuedog")
@@ -163,6 +166,13 @@ func TestAfterHoldInputReactionsError(t *testing.T) {
 	in, err := afterHoldInput(t, f, n, from, afterHoldTrust{trusted: map[string]bool{"owner": true}}, func() { f.DeleteComment(gone) })
 	if err == nil {
 		t.Fatalf("input %+v, err = nil, want the failed reactions read of comment %d", in, gone)
+	}
+	var er *gogithub.ErrorResponse
+	if !errors.As(err, &er) || er.Response == nil || er.Response.StatusCode != http.StatusNotFound {
+		t.Errorf("err = %v, want it to wrap a 404", err)
+	} else if r := er.Response.Request; r == nil || r.Method != http.MethodGet ||
+		!strings.HasSuffix(r.URL.Path, "/issues/comments/"+strconv.FormatInt(gone, 10)+"/reactions") {
+		t.Errorf("err = %v, want the 404 of the reactions read of comment %d", err, gone)
 	}
 	if !strings.Contains(err.Error(), "the 👍s on the discussion's comment "+strconv.FormatInt(gone, 10)+":") {
 		t.Errorf("err = %v, want it to name the 👍s on comment %d", err, gone)

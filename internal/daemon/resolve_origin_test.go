@@ -44,8 +44,8 @@ func resolveStillWaiting(t *testing.T, f *githubtest.Fake) {
 
 // At the clarifying after a hold, a later hold of either kind carries the
 // origin forward, and so does the /resume back there, so the waiting
-// /approve keeps waiting (#188's verify, attempt 1): a discussion hold, an
-// owner /hold, and a hold set by hand.
+// /approve keeps waiting (SPEC §6.4): a discussion hold, an owner /hold,
+// and a hold set by hand.
 func TestResolveOriginCarried(t *testing.T) {
 	t.Parallel()
 	t.Run("a discussion hold", func(t *testing.T) {
