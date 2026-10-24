@@ -86,13 +86,16 @@ import (
 // But a failure no later pass gets past, as nothing it reads would change
 // (childrenStuck), isn't returned: plan data that won't read back, an
 // item that can't be written as an issue, a kept or changed item whose
-// child is gone, or a link GitHub refuses with a 422, as for a child that
-// has another parent. It's reported once on the parent instead, as a
-// state error keyed by the comment holding the parent's latest move, the
-// one into planned (childrenStuckReport, SPEC §5.3). While that error is reported, the visit returns before any read
-// or write, as for a record, so the parent waits, at no cost, until it
-// moves, as by /hold and /resume, which gives the key a new value, and
-// the visit tries again.
+// child is gone, a child GitHub refuses to file with a 422, as for an
+// issue type the org doesn't have, a revision's plan comment that names
+// no run for its changed children's rewrite (childrenChanged), or a link
+// GitHub refuses with a 422, as for a child that has another parent.
+// It's reported once on the parent instead, as a state error keyed by
+// the comment holding the parent's latest move, the one into planned
+// (childrenStuckReport, SPEC §5.3). While that error is reported, the
+// visit returns before any read or write, as for a record, so the parent
+// waits, at no cost, until it moves, as by /hold and /resume, which gives
+// the key a new value, and the visit tries again.
 func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 	wrap := func(err error) error { return fmt.Errorf("children of %s/%s#%d: %w", st.Owner, st.Repo, s.Number, err) }
 	if s.Closed {
@@ -188,7 +191,7 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 	// blocks" can name a new item's issue, the changed children are
 	// rewritten and moved (SPEC §6.4).
 	if err := st.childrenChanged(ctx, s, rev.Rev, planComment, key, changed, children, numbers); err != nil {
-		return wrap(err)
+		return fail(err)
 	}
 	// plan.Items is plan order, which the links and the record follow,
 	// whatever order the children were created in. Of a revision, the new
@@ -364,11 +367,12 @@ func (st *Step) childrenStuckReport(ctx context.Context, s *github.Snapshot, rev
 	return nil
 }
 
-// childLinkRefused reports whether err, from a child's link under its
-// parent, is GitHub's 422, which refuses the link whatever pass asks, as
-// for a child that has another parent. A 5xx, or a request that got no
-// answer, isn't: a later pass may get past it.
-func childLinkRefused(err error) bool {
+// childRefused reports whether err, from filing a child or linking it
+// under its parent, is GitHub's 422, which refuses the write whatever pass
+// asks, as for an issue type the org doesn't have, or a child that has
+// another parent. A 5xx, or a request that got no answer, isn't: a later
+// pass may get past it.
+func childRefused(err error) bool {
 	var e *gogithub.ErrorResponse
 	return errors.As(err, &e) && e.Response != nil && e.Response.StatusCode == http.StatusUnprocessableEntity
 }
@@ -516,7 +520,11 @@ func (st *Step) childWrite(ctx context.Context, s *github.Snapshot, rev int, key
 		}
 		is, err := st.Client.CreateChild(ctx, st.Owner, st.Repo, github.NewChild{Title: c.Title, Body: body, Labels: c.Labels, Type: c.IssueType})
 		if err != nil {
-			return childFound{}, fmt.Errorf("create its child: %w", err)
+			err = fmt.Errorf("create its child: %w", err)
+			if childRefused(err) {
+				return childFound{}, &childrenStuck{why: fmt.Sprintf("GitHub refused to file the child of item %s", inline(c.Item)), err: err}
+			}
+			return childFound{}, err
 		}
 		f = childFound{Number: is.GetNumber(), ID: is.GetID()}
 		logr.Infof("%s/%s#%d: filed #%d for item %s of its plan, rev %d", st.Owner, st.Repo, s.Number, f.Number, c.Item, rev)
@@ -529,7 +537,7 @@ func (st *Step) childWrite(ctx context.Context, s *github.Snapshot, rev int, key
 		st.touch(f.Number)
 		if err := st.Client.AddSubIssue(ctx, st.Owner, st.Repo, s.Number, f.ID); err != nil {
 			err = fmt.Errorf("link #%d: %w", f.Number, err)
-			if childLinkRefused(err) {
+			if childRefused(err) {
 				return childFound{}, &childrenStuck{why: fmt.Sprintf("GitHub refused to link #%d, the child of item %s, under this issue", f.Number, inline(c.Item)), err: err}
 			}
 			return childFound{}, err
@@ -734,16 +742,20 @@ func (st *Step) childFirstMove(ctx context.Context, parent, rev int, key state.K
 // childMoved reports whether s has a transition marker of the App's that
 // counts (state.Derive), in a clean comment or a clean body the App last
 // edited, and stands for its first move: any but a hold's, which carries a
-// reason, and a move back from held to intake. A hold moves every open
-// issue below the one held, so a child linked but not yet moved when a
-// pass stopped may have been held since, and resumed back to intake, with
-// no first move (SPEC §5.2). A held → held marker with no reason, a held
-// child's first move (childFirstMove), counts.
+// reason, and a move back from held to intake that isn't an override. A
+// hold moves every open issue below the one held, so a child linked but
+// not yet moved when a pass stopped may have been held since, and resumed
+// back to intake, with no first move (SPEC §5.2). A held → held marker
+// with no reason, a held child's first move (childFirstMove), counts. So
+// does a held → intake override, with by=, as for a stage a trusted user
+// set by hand: a found child that has one gets no first move (SPEC §5.2,
+// "A found child keeps its labels").
 func childMoved(s *github.Snapshot, appSlug string, dirty func(int64) bool) bool {
 	return slices.ContainsFunc(state.Derive(s, appSlug, dirty).Markers, func(m github.Marker) bool {
 		from, to := state.Stage(m.Fields["from"]), state.Stage(m.Fields["to"])
 		_, reason := m.Fields["reason"]
-		return m.Kind == "transition" && !(to == state.Held && reason) && !(from == state.Held && to == state.Intake)
+		_, by := m.Fields["by"]
+		return m.Kind == "transition" && !(to == state.Held && reason) && !(from == state.Held && to == state.Intake && !by)
 	})
 }
 
