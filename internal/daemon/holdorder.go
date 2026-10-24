@@ -18,10 +18,11 @@ import (
 // then holds the child again, though the /resume ends that /hold. c waits
 // for the ancestor's visit, in this pass or a later one, and s's issue is
 // Touched, so it's read again next pass, and c is handled then, in the
-// order they were posted. The ancestor is read again next pass too
-// (holdOrderReread), so it's visited then, though nothing on it changed,
-// as when its command's author was trusted only since: else the wait could
-// last for good. The other way round needs no wait: a /resume
+// order they were posted. Nor is a saved result on it applied this pass
+// (holdOrderWaited), as c may drop it. The ancestor is read again next
+// pass too (holdOrderReread), so it's visited then, though nothing on it
+// changed, as when its command's author was trusted only since: else the
+// wait could last for good. The other way round needs no wait: a /resume
 // doesn't end a /hold on its path posted after it (resolveEndsHold, #205),
 // so a /hold above it handled first holds as it would have, and a /hold
 // below it, handled first, ends only by a /resume there or below. Other
@@ -56,6 +57,9 @@ func (st *Step) holdOrderWaits(ctx context.Context, s *github.Snapshot, d Dirt, 
 			}
 			if st.holdOrderReread != nil {
 				st.holdOrderReread(n.s.Number)
+			}
+			if st.holdOrderWaited != nil {
+				st.holdOrderWaited(s.Number)
 			}
 			return true, nil
 		}
