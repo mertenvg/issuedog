@@ -1,17 +1,18 @@
 package githubtest
 
 import (
-	gogithub "github.com/google/go-github/v92/github"
+	"fmt"
+	"slices"
 )
 
 // UnlinkBy removes the link of number below its parent as login, as the
-// sub-issues panel does, and returns the ID of the sub_issue_removed event
-// it writes on the parent's timeline, naming login and the sub-issue, by
-// its number and repository, as GitHub's sub_issue_added event names them
-// (github.SubIssueRemovals). The event is written after the lag
-// (LagEvents). It moves the sub-issue's updated_at, whose parent changes.
-// An issue with no parent fails the test.
-func (f *Fake) UnlinkBy(number int, login string) int64 {
+// sub-issues panel does, and returns the node ID of the
+// SubIssueRemovedEvent it records on the parent's timeline, naming login
+// and the sub-issue, by its number and repository, which the GraphQL
+// comments query serves (gqlEventsPage). It moves the sub-issue's
+// updated_at, whose parent changes. An issue with no parent fails the
+// test.
+func (f *Fake) UnlinkBy(number int, login string) string {
 	f.t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -22,40 +23,31 @@ func (f *Fake) UnlinkBy(number int, login string) int64 {
 	parent := f.fakeNumberIssue(is.parent)
 	f.linkUnder(is, 0)
 	is.UpdatedAt = f.tick()
+	return f.subIssueGone(parent, linked{f.repo, number}, login)
+}
+
+// UnlinkLinkedBy removes the link of number of repo ("owner/name") below
+// parent, one LinkSubIssue listed, as login, and returns the node ID of
+// the SubIssueRemovedEvent it records, as UnlinkBy does. A link
+// LinkSubIssue never listed fails the test.
+func (f *Fake) UnlinkLinkedBy(parent int, repo string, number int, login string) string {
+	f.t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	is, l := f.fakeNumberIssue(parent), linked{repo, number}
+	i := slices.Index(f.linked[parent], l)
+	if i < 0 {
+		f.t.Fatalf("githubtest: %s#%d isn't linked below #%d", repo, number, parent)
+	}
+	f.linked[parent] = slices.Delete(f.linked[parent], i, i+1)
+	return f.subIssueGone(is, l, login)
+}
+
+// subIssueGone records a SubIssueRemovedEvent on parent naming sub and
+// login, and returns its node ID. f is locked.
+func (f *Fake) subIssueGone(parent *issue, sub linked, login string) string {
 	f.lastEvent++
-	id := firstEvent + f.lastEvent
-	parent.labelEvents = append(parent.labelEvents, &gogithub.Timeline{ID: &id, Event: new("sub_issue_removed"), Actor: user(login),
-		CreatedAt: &gogithub.Timestamp{Time: is.UpdatedAt.Add(f.eventLag)}})
-	if parent.subIssueGone == nil {
-		parent.subIssueGone = map[int64]int{}
-	}
-	parent.subIssueGone[id] = number
-	return id
-}
-
-// subIssueGoneEvent is a sub_issue_removed event as the timeline serves
-// it, with its sub-issue.
-type subIssueGoneEvent struct {
-	*gogithub.Timeline
-	SubIssue subIssueGoneRef `json:"sub_issue"`
-}
-
-type subIssueGoneRef struct {
-	Number     int `json:"number"`
-	Repository struct {
-		FullName string `json:"full_name"`
-	} `json:"repository"`
-}
-
-// subIssueGoneServe is e as the timeline serves it, with the sub-issue it
-// names, for a sub_issue_removed event of is (UnlinkBy), in repo. It
-// reports false for any other event.
-func (is *issue) subIssueGoneServe(e *gogithub.Timeline, repo string) (any, bool) {
-	n, ok := is.subIssueGone[e.GetID()]
-	if !ok {
-		return nil, false
-	}
-	served := subIssueGoneEvent{Timeline: e, SubIssue: subIssueGoneRef{Number: n}}
-	served.SubIssue.Repository.FullName = repo
-	return served, true
+	e := gqlEvent{node: fmt.Sprintf("SIRE_%d", firstEvent+f.lastEvent), by: login, at: f.tick().Time, sub: &sub}
+	parent.gqlEvents = append(parent.gqlEvents, e)
+	return e.node
 }
