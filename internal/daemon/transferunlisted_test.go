@@ -353,8 +353,9 @@ func TestTransferUnlistedNotDue(t *testing.T) {
 	}
 }
 
-// A pass that holds no issue lists nothing, ten minutes on or not: here
-// the repo's only open one is a pull request, beside a closed issue.
+// A pass that holds no issue, and has dropped none since the last
+// listing, lists nothing, ten minutes on or not: here the repo's only
+// open one is a pull request, beside a closed issue.
 func TestTransferUnlistedNoneHeld(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
@@ -589,4 +590,282 @@ func TestTransferUnlistedRestoreLogs(t *testing.T) {
 	if len(got) != 1 || !strings.Contains(got[0], "o/r#2 ") {
 		t.Errorf("the listing's pass logged %q as held nothing of; want o/r#2 alone", got)
 	}
+}
+
+// transferUnlistedOnly is a repo whose only open issue, 1, is at ready,
+// beside a closed issue filed after it, so the poll's cursor is past 1's
+// last change, and no poll lists 1 again. A start's first pass, and the
+// pass after it, have settled it: no pass reads it, and Work gets it on
+// each one.
+func transferUnlistedOnly(t *testing.T) (*githubtest.Fake, *daemon.Daemon) {
+	t.Helper()
+	f := newFake(t)
+	if n := fileAt(f, "ready", "do it", "priority:p2"); n != 1 {
+		t.Fatalf("the issue at ready is %d; want 1", n)
+	}
+	f.Close(f.AddIssue("owner", "Closed", ""))
+	d := newDaemon(t, f, newOrigin(t), nil)
+	iterate(t, d)
+	iterate(t, d)
+	from := len(f.Requests())
+	iterate(t, d)
+	if got := assignAbout(f, from, 1); len(got) != 0 {
+		t.Fatalf("a settled pass's requests about 1 = %q; want none", got)
+	}
+	return f, d
+}
+
+// #507: a repo whose only held issue is wrongly dropped, by a gap in the
+// listing and a wrong 404 on its read, gets it back from the next
+// listing, ten minutes on, though the daemon holds no issue then: Work
+// gets it from then on.
+func TestTransferUnlistedOnlyHeld(t *testing.T) {
+	t.Parallel()
+	f, d := transferUnlistedOnly(t)
+	var worked []int
+	assignWorked(d, &worked)
+	f.Advance(transferUnlistedWait)
+	transferUnlistedGap(f, 1)
+	from := len(f.Requests())
+	iterate(t, d)
+	if got := assignAbout(f, from, 1); !slices.Equal(got, []string{"GET /issues/1 404"}) || slices.Contains(worked, 1) {
+		t.Fatalf("the listing's pass that leaves 1 out: requests about 1 = %q, Work got %v; want the read's 404, which drops 1", got, worked)
+	}
+	worked, from = nil, len(f.Requests())
+	iterate(t, d)
+	if got, n := assignAbout(f, from, 1), transferUnlistedListings(f, from); len(got) != 0 || n != 0 || len(worked) != 0 {
+		t.Errorf("the pass after the drop: requests about 1 = %q, %d listings, Work got %v; want none of them", got, n, worked)
+	}
+	f.Advance(transferUnlistedWait)
+	worked, from = nil, len(f.Requests())
+	iterate(t, d)
+	if got, n := assignAbout(f, from, 1), transferUnlistedListings(f, from); !slices.Contains(got, "GET /issues/1 200") || n != 1 || !slices.Contains(worked, 1) {
+		t.Errorf("the next listing's pass: requests about 1 = %q, %d listings, Work got %v; want one listing, and 1 read, and given to Work", got, n, worked)
+	}
+}
+
+// A repo whose only held issue is transferred away lists the open issues
+// once more after the pass that drops it, ten minutes on, though it holds
+// no issue then, as a live one wrongly dropped would come back from that
+// listing (TestTransferUnlistedOnlyHeld). That listing finds nothing to
+// bring back, so the passes after it, ten minutes on and more, list
+// nothing, and make no request about the issue.
+func TestTransferUnlistedOnlyHeldGone(t *testing.T) {
+	t.Parallel()
+	f, d := transferUnlistedOnly(t)
+	f.Transfer(1, "o/elsewhere")
+	f.Advance(transferUnlistedWait)
+	from := len(f.Requests())
+	iterate(t, d)
+	if got := assignAbout(f, from, 1); !slices.Equal(got, []string{"GET /issues/1 301", "GET /repositories/2/issues/1 200"}) {
+		t.Fatalf("the listing's pass that leaves 1 out: requests about 1 = %q; want the read that finds it transferred", got)
+	}
+	for i, listings := range []int{1, 0, 0} {
+		f.Advance(transferUnlistedWait)
+		from = len(f.Requests())
+		iterate(t, d)
+		if got, n := assignAbout(f, from, 1), transferUnlistedListings(f, from); len(got) != 0 || n != listings {
+			t.Errorf("the pass %d0 minutes after the drop: requests about 1 = %q, %d listings; want none, and %d listings", i+1, got, n, listings)
+		}
+	}
+}
+
+// transferUnlistedOnlyHeldFake is transferUnlistedReplayFake with a
+// closed issue, 3, filed after issue 2's round, so the poll's cursor is
+// past 2's last change, and no poll lists 2 again. Issue 2 is the only
+// one the daemon holds: it holds no snapshot of the digest, nor of a
+// closed issue.
+func transferUnlistedOnlyHeldFake(o *origin) func(testing.TB) *githubtest.Fake {
+	return func(t testing.TB) *githubtest.Fake {
+		t.Helper()
+		f := transferUnlistedReplayFake(o)(t)
+		f.Close(f.AddIssue("owner", "Closed", ""))
+		return f
+	}
+}
+
+// The pass that brings back a wrongly dropped issue in a repo whose only
+// held issue it is rewrites the digest with its item again, as the drop's
+// pass rewrote it without. Both writes are safe to run again after a
+// crash, as a restart's first pass reads the issue as any other.
+func TestTransferUnlistedOnlyHeldReplay(t *testing.T) {
+	t.Parallel()
+	o := digestNotifyOrigin(t)
+	f := transferUnlistedOnlyHeldFake(o)(t)
+	if err := transferUnlistedRestorePass(t, o)(f); err != nil {
+		t.Fatal(err)
+	}
+	if got := digestWrites(f, 0); !slices.Equal(got, []string{"PATCH /issues/1", "PATCH /issues/1"}) {
+		t.Fatalf("the passes wrote %q; want the digest's two rewrites, without 2's item and with it", got)
+	}
+	if want, items := []string{"#2 Question round p2 1"}, digestRunItems(f.State().Issues[0].Body); !slices.Equal(items, want) {
+		t.Errorf("the digest's items once 2 is back = %q; want %q", items, want)
+	}
+	githubtest.Replay(t, transferUnlistedOnlyHeldFake(o), transferUnlistedRestorePass(t, o))
+}
+
+// #507: an issue the pass reads again anyway, though its poll didn't list
+// it, here one whose comment was edited, which moves no updated_at of the
+// issue's, keeps the two reads that drop it: a wrong 404 on its read, on
+// the pass whose listing leaves it out, is the first of them, and the
+// next pass's read, which finds it, keeps it.
+func TestTransferUnlistedStale(t *testing.T) {
+	t.Parallel()
+	f, d := transferUnlistedSettled(t)
+	note := f.AddComment(12, digestRunOwner, "a note")
+	transferUnlistedPast(t, f, d)
+	f.Advance(transferUnlistedWait)
+	f.EditComment(note, digestRunOwner, "a note, edited")
+	transferUnlistedGap(f, 12)
+	var worked []int
+	assignWorked(d, &worked)
+	from := len(f.Requests())
+	iterate(t, d)
+	if got := assignAbout(f, from, 12); !slices.Equal(got, []string{"GET /issues/12 404"}) || slices.Contains(worked, 12) {
+		t.Fatalf("the listing's pass that leaves 12 out: requests about 12 = %q, Work got %v; want the read's 404, and 12 left out", got, worked)
+	}
+	worked, from = nil, len(f.Requests())
+	iterate(t, d)
+	if got := assignAbout(f, from, 12); !slices.Contains(got, "GET /issues/12 200") || !slices.Contains(worked, 12) {
+		t.Errorf("the pass after: requests about 12 = %q, Work got %v; want 12 read again, kept, and given to Work", got, worked)
+	}
+}
+
+// #507: an issue the pass reads again as a label left out of it fell due
+// for removal (SPEC §5.1) keeps the two reads that drop it too, though
+// its poll didn't list it: the listing is judged after the issues so
+// marked, so a wrong 404 on its read is the first of the two, and the
+// next pass's read, which finds it, keeps it, and removes the label.
+func TestTransferUnlistedLeftOutDue(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	fileAt(f, "ready", "other")
+	fileAt(f, "ready", "do it")
+	f.AddLabel(2, "mallory", "foo")
+	f.Advance(time.Hour)
+	d := newDaemon(t, f, newOrigin(t), nil)
+	iterate(t, d)
+	f.RenameLabel("foo", "scope:x")
+	f.AddComment(2, "owner", "poke")
+	iterate(t, d) // held back, and first seen
+	f.Advance(time.Minute)
+	iterate(t, d) // left out
+	f.EditBody(1, "owner", "other, edited")
+	iterate(t, d) // the poll's cursor, past 2
+	f.Advance(transferUnlistedWait)
+	transferUnlistedGap(f, 2)
+	var worked []int
+	assignWorked(d, &worked)
+	from := len(f.Requests())
+	iterate(t, d)
+	if got := assignAbout(f, from, 2); !slices.Equal(got, []string{"GET /issues/2 404"}) || slices.Contains(worked, 2) {
+		t.Fatalf("the listing's pass that leaves 2 out, as its label falls due: requests about 2 = %q, Work got %v; want the read's 404, and 2 left out",
+			got, worked)
+	}
+	worked, from = nil, len(f.Requests())
+	iterate(t, d)
+	if got := assignAbout(f, from, 2); !slices.Contains(got, "GET /issues/2 200") || slices.Contains(f.State().Issues[1].Labels, "scope:x") {
+		t.Errorf("the pass after: requests about 2 = %q, labels %q; want 2 read again, kept, and scope:x removed", got, f.State().Issues[1].Labels)
+	}
+}
+
+// transferUnlistedTitledFake is an App task, 1, whose body lost its
+// origin to the owner's edit and that was renamed issuedog digest, so the
+// digest's title rule holds it till its edit history is read, then the
+// digest, 2, filed after it, so the poll's cursor is past 1's last change,
+// and no poll lists 1 again. The next history query answers 1 NOT_FOUND,
+// though it's there.
+func transferUnlistedTitledFake(t testing.TB) *githubtest.Fake {
+	t.Helper()
+	f := newFake(t)
+	task := f.AddIssue(app, "A task", digestTaskBody)
+	f.EditBody(task, "owner", digestTaskEdited)
+	f.RenameIssue(task, "owner", "issuedog digest")
+	f.SetPinned(f.AddIssue(app, "issuedog digest", digestList), true)
+	f.HistoryNotFoundOnce(task)
+	return f
+}
+
+// transferUnlistedTitledSteps are the passes of transferUnlistedTitledPass,
+// by what each does to issue 1.
+var transferUnlistedTitledSteps = []string{
+	"the start's pass, whose history query finds 1 deleted, wrongly",
+	"the pass whose history query finds 1 deleted again, which lets it go",
+	"the listing's pass, ten minutes on, which lists 1 open",
+	"the pass after the listing's",
+}
+
+// transferUnlistedTitledPass runs transferUnlistedTitledSteps on f with a
+// new daemon, each visit step 1 makes added to *visits, if it's set, and
+// after each pass, after(i), if it's set. It returns the passes' errors.
+func transferUnlistedTitledPass(t *testing.T, o *origin, visits *[]int, after func(i int)) func(*githubtest.Fake) error {
+	return func(f *githubtest.Fake) error {
+		d := digestDaemon(t, f, o, visits)
+		for i := range transferUnlistedTitledSteps {
+			switch i {
+			case 1:
+				f.HistoryNotFoundOnce(1)
+			case 2:
+				f.Advance(transferUnlistedWait)
+			}
+			if err := d.Iterate(context.Background()); err != nil {
+				return err
+			}
+			if after != nil {
+				after(i)
+			}
+		}
+		return nil
+	}
+}
+
+// #507: an issue the digest's title rule held, let go as two answers
+// found it deleted, though it's there, is held for the title rule again
+// when the next listing lists it open, ten minutes on, as it may be the
+// digest: that pass neither reads nor visits it, and the next one reads
+// its history, judges it, an App task that lost its origin, no digest,
+// and only then reads it and runs step 1 on it. The daemon holds no other
+// issue, so the listing is made for the one let go alone.
+func TestTransferUnlistedTitled(t *testing.T) {
+	t.Parallel()
+	f := transferUnlistedTitledFake(t)
+	var visits []int
+	from, queries := len(f.Requests()), f.HistoryQueries()
+	after := func(i int) {
+		step := transferUnlistedTitledSteps[i]
+		wantQueries, wantVisits, wantListings := 1, []int(nil), 0
+		switch i {
+		case 2:
+			wantQueries, wantListings = 0, 1
+		case 3: // the title rule's query, then the visit's, as the owner edited 1's body (Dirty)
+			wantQueries, wantVisits = 2, []int{1}
+		}
+		reads := 0
+		for _, r := range f.Requests()[from:] {
+			if transferUnlistedIssueRead(1)(r) {
+				reads++
+			}
+		}
+		if got := f.HistoryQueries() - queries; got != wantQueries || !slices.Equal(visits, wantVisits) || transferUnlistedListings(f, from) != wantListings ||
+			(reads != 0) != (i == 3) {
+			t.Errorf("%s: %d history queries, step 1 visited %v, %d listings, 1 read %d times; want %d, %v, %d, and 1 read only once judged",
+				step, got, visits, transferUnlistedListings(f, from), reads, wantQueries, wantVisits, wantListings)
+		}
+		from, queries = len(f.Requests()), f.HistoryQueries()
+	}
+	if err := transferUnlistedTitledPass(t, newOrigin(t), &visits, after)(f); err != nil {
+		t.Fatal(err)
+	}
+	if is := f.State().Issues; len(is) != 2 || is[0].Title != "issuedog digest" || is[1].Body != digestList {
+		t.Errorf("issues = %+v; want the task and the one digest, as they were", is)
+	}
+}
+
+// The passes of TestTransferUnlistedTitled are safe to run again after a
+// crash at any write: those of the task's visit, once it's judged no
+// digest. A restart reads the task's history at once, and judges it so.
+func TestTransferUnlistedTitledReplay(t *testing.T) {
+	t.Parallel()
+	o := newOrigin(t)
+	githubtest.Replay(t, transferUnlistedTitledFake, transferUnlistedTitledPass(t, o, nil, nil))
 }
