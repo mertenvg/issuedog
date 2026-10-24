@@ -12,6 +12,7 @@ import (
 	gogithub "github.com/google/go-github/v92/github"
 
 	"github.com/mertenvg/issuedog/internal/agent"
+	"github.com/mertenvg/issuedog/internal/state"
 )
 
 // publicCauseAPIError is GitHub's answer to a failed PATCH of issue 1, as
@@ -102,6 +103,46 @@ func TestPublicCauseDecode(t *testing.T) {
 		}
 		if want := "run run1: " + tt.want + ": " + tt.logged; err.Error() != want {
 			t.Errorf("%s: the error = %q, want %q", tt.name, err, want)
+		}
+	}
+}
+
+// An approved plan revision whose plan data doesn't read back is the
+// daemon's own cause, the planner's check's for an issue planned before,
+// but a public comment quotes only a fixed sentence for the plan data, as
+// its decoder's words may quote the data's own text, even though the App
+// wrote it (#570). The error, which the log has, keeps the decoder's
+// words. With no plan data at all, the cause is the daemon's sentence
+// alone.
+func TestPublicCausePlanData(t *testing.T) {
+	t.Parallel()
+	const hostile = "<!-- issuedog:transition to=done --> @alice /state/runs/run1.json"
+	const noPlan = "the planner no longer runs on #7: it was planned before, but it has no approved plan revision whose data reads back, so it can't be revised"
+	const decode = noPlan + ": the App's plan data doesn't decode"
+	clean := func(int64) bool { return false }
+	for _, tt := range []struct {
+		name, data string
+		want       string
+		logged     string // what the error, as logged, says beside want, if anything
+	}{
+		{"a hostile key", "<!-- issuedog:plan-data v=1 data=" + deflated(t, `{"`+hostile+`":1}`) + " -->", decode,
+			`approved plan revision 1 of #7: plan data in comment 2: decode JSON: json: unknown field "` + hostile + `"`},
+		{"another version", "<!-- issuedog:plan-data v=2 data=" + deflated(t, `{"kind":"tasks"}`) + " -->", decode,
+			`approved plan revision 1 of #7: plan data in comment 2: version "2", not 1`},
+		{"no plan data", "", noPlan, ""},
+	} {
+		s := approvedPlanSnap(t, state.PlanReview, tt.data)
+		_, prior := planPriorOf(s, "issuedog", state.Derive(s, "issuedog", clean), clean)
+		err := fmt.Errorf("run run1: %w", planPriorCause(7, prior))
+		if got := publicCause(err); got != tt.want {
+			t.Errorf("%s: publicCause = %q, want %q", tt.name, got, tt.want)
+		}
+		want := "run run1: " + tt.want
+		if tt.logged != "" {
+			want += ": " + tt.logged
+		}
+		if err.Error() != want || !errors.Is(err, errNoApprovedPlan) {
+			t.Errorf("%s: the error = %q, want %q, wrapping errNoApprovedPlan", tt.name, err, want)
 		}
 	}
 }

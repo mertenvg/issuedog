@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -50,14 +51,30 @@ func (p *Planner) Check(ctx context.Context, r Result) error {
 			"it runs only on an epic or a story", r.S.Number, is.Item.Type, is.Item.HasParent)}
 	}
 	if _, err := planPriorOf(r.S, p.Daemon.Step.Applier.AppSlug, is, r.Dirt.Has); err != nil {
-		// The error is the daemon's, or the App's plan data's decoder's.
-		return &daemonCause{fmt.Errorf("the planner no longer runs on #%d: it was planned before, but %w", r.S.Number, err)}
+		return planPriorCause(r.S.Number, err)
 	}
 	read, err := p.read(ctx, r, is, false)
 	if err != nil {
 		return &checkReadError{fmt.Errorf("the planner's facts on #%d: %w", r.S.Number, err)}
 	}
 	return checkPlan(out, p.facts(r, is, class, read))
+}
+
+// planPriorCause is Check's error for issue n, planned before, whose
+// approved plan revision can't be read back: err, planPriorOf's, wraps
+// errNoApprovedPlan. Its words are the daemon's, so it's a *daemonCause,
+// which a public comment quotes. For plan data that doesn't read back (a
+// *planDataError), the *daemonCause ends with a fixed sentence, "the
+// App's plan data doesn't decode", beside the decoder's error, which only
+// the log has (SPEC §5.3): the data is the App's own, but a decoder's
+// words may quote the text it read, as on an agent's output (decodeCause).
+func planPriorCause(n int, err error) error {
+	why := fmt.Sprintf("the planner no longer runs on #%d: it was planned before, but", n)
+	var data *planDataError
+	if !errors.As(err, &data) {
+		return &daemonCause{fmt.Errorf("%s %w", why, err)}
+	}
+	return fmt.Errorf("%w: %w", &daemonCause{fmt.Errorf("%s %w: the App's plan data doesn't decode", why, errNoApprovedPlan)}, data.err)
 }
 
 // read reads what a plan on r's issue, in state is, is checked against,

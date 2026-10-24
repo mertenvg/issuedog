@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -183,11 +184,33 @@ type publicCauseLoose struct{ *daemon.Interviewer }
 
 func (publicCauseLoose) Schema() []byte { return []byte(`{"type":"object"}`) }
 
+// publicCauseLoosePlanner is publicCauseLoose for the Planner.
+type publicCauseLoosePlanner struct{ *daemon.Planner }
+
+func (publicCauseLoosePlanner) Schema() []byte { return []byte(`{"type":"object"}`) }
+
+// publicCauseLooseTriage is publicCauseLoose for Triage.
+type publicCauseLooseTriage struct{ *daemon.Triage }
+
+func (publicCauseLooseTriage) Schema() []byte { return []byte(`{"type":"object"}`) }
+
+// publicCauseHostileResult is claude's result whose structured output has
+// a key, publicCauseHostile, no stage's types have, beside fields, the
+// rest of the object, if it isn't "".
+func publicCauseHostileResult(fields string) string {
+	if fields != "" {
+		fields += ","
+	}
+	return `{"type":"result","subtype":"success","is_error":false,"result":"Done.",` +
+		`"structured_output":{` + fields + `"` + publicCauseHostile + `":1}}`
+}
+
 // publicCauseTypedCases are the causes the daemon writes itself past a
 // check's rules, each reached on a restart, as each is the same on the
 // run that found it: no valid result after a restart, an issue its stage
-// no longer runs on, read again, a move that doesn't fit, and output that
-// doesn't decode, here past a loosened schema.
+// no longer runs on, read again, a move that doesn't fit, output that
+// doesn't decode, here past a loosened schema, for each stage that
+// decodes its output, and the App's plan data that doesn't decode.
 func publicCauseTypedCases() []publicCauseTyped {
 	ivEntry := "from=intake to=clarifying event=5"
 	return []publicCauseTyped{
@@ -224,6 +247,26 @@ func publicCauseTypedCases() []publicCauseTyped {
 			g.interviewer()
 			g.r.Stages[state.Clarifying] = publicCauseLoose{&daemon.Interviewer{Daemon: g.d}}
 		}, "the interviewer's output doesn't decode"},
+		{"the planner's output, a hostile key past a loosened schema", func(t testing.TB, f *githubtest.Fake, root string) {
+			n, seen := plFiled(f, "story", false, plEntry)
+			changedSaveLease(t, root, n, seen, publicCauseHostileResult(`"outcome":"plan"`))
+		}, func(g *rig) {
+			g.planner(false)
+			g.r.Stages[state.Planning] = publicCauseLoosePlanner{&daemon.Planner{Daemon: g.d}}
+		}, "the planner's output doesn't decode"},
+		{"triage's output, a hostile key past a loosened schema", func(t testing.TB, f *githubtest.Fake, root string) {
+			f.AddIssue("owner", "Idea", "An idea.")
+			saveIntake(t, root, "saved", publicCauseHostileResult(`"verdict":"handle"`))
+		}, func(g *rig) {
+			g.r.Unlabeled = publicCauseLooseTriage{&daemon.Triage{Daemon: g.d}}
+		}, "triage's output doesn't decode"},
+		{"the planner, with the App's plan data a hostile key", func(t testing.TB, f *githubtest.Fake, root string) {
+			r := revStoryWith(t, f, planDataEdited(t, threeTasks, func(item map[string]any) { item[publicCauseHostile] = 1 }), revByOwner)
+			f.ForgetWrites() // the plan revision's, which the setup made as the App
+			changedSaveLease(t, root, r.n, r.back, ivResult(t, plGolden(t, "story-plan")))
+		}, func(g *rig) { g.planner(false) },
+			"the planner no longer runs on #1: it was planned before, but it has no approved plan revision whose data reads back, " +
+				"so it can't be revised: the App's plan data doesn't decode"},
 	}
 }
 
@@ -364,6 +407,92 @@ func TestPublicCauseEarlierApplyLogged(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), want) || strings.Contains(logs.String(), cause) || g.lease().ApplyFailures != 1 {
 		t.Errorf("Iterate = %v, logs %q, lease %+v; want the error %q, logged nowhere yet, and the lease counting it",
 			err, logs.String(), g.lease(), want)
+	}
+}
+
+// publicCauseLines is a logr writer that keeps what logr writes to it,
+// and signals seen once that holds match.
+type publicCauseLines struct {
+	mu    sync.Mutex
+	buf   strings.Builder
+	match string
+	seen  chan struct{}
+}
+
+func (w *publicCauseLines) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.buf.Write(p)
+	if w.seen != nil && strings.Contains(w.buf.String(), w.match) {
+		select {
+		case w.seen <- struct{}{}:
+		default:
+		}
+	}
+	return len(p), nil
+}
+
+// lines are the lines w kept that hold text.
+func (w *publicCauseLines) lines(text string) []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var with []string
+	for line := range strings.Lines(w.buf.String()) {
+		if strings.Contains(line, text) {
+			with = append(with, line)
+		}
+	}
+	return with
+}
+
+// The loop, Daemon.Run, logs a failure to apply a result before the last,
+// its pass's error, once, at Error, and nowhere else logs it (#570).
+func TestPublicCauseEarlierApplyLoopLogged(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	const cause = "PATCH https://api.github.com/repos/o/r/issues/1: 422 Validation Failed"
+	const bound = time.Minute // generous, so a loaded machine doesn't fail it
+	f := newFake(t)
+	interview(f)
+	o := newOrigin(t)
+	// Run loads config from main, and sleeps an hour after its first pass.
+	o.commit(config.Path, "types: labels\nloop:\n  max_attempts: 2\n  idle_sleep: 1h\n")
+	g := newRig(t, f, o, t.TempDir())
+	g.stage.applyErr = errors.New(cause)
+	g.claude(okOut, 0)
+	const loop = "loop iteration on o/r: "
+	// Lines other tests queued, which logr hasn't written yet, aren't this
+	// test's, so they're written before it captures.
+	logr.Wait()
+	errs := &publicCauseLines{}
+	all := &publicCauseLines{match: loop, seen: make(chan struct{}, 1)}
+	stopErrs := logr.AddWriter(errs, logr.WithFilter(logr.E))
+	stopAll := logr.AddWriter(all, logr.WithFilter(logr.Monitor))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		g.d.Run(ctx)
+		close(done)
+	}()
+	select {
+	case <-all.seen:
+	case <-time.After(bound):
+		t.Error("Run logged no loop line")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(bound):
+		t.Fatal("Run didn't stop when its context was canceled")
+	}
+	logr.Wait()
+	stopErrs()
+	stopAll()
+	want := "applying run run1 on #1 failed, 1 of 2 times, so it's tried again: apply run run1: " + cause
+	if got := errs.lines(cause); len(got) != 1 || !strings.Contains(got[0], loop) || !strings.Contains(got[0], want) {
+		t.Errorf("errors logged with the cause: %q; want one, the loop's, with %q", got, want)
+	}
+	if got := all.lines(cause); len(got) != 1 || g.lease().ApplyFailures != 1 {
+		t.Errorf("lines logged with the cause: %q, lease %+v; want only the loop's, and the lease counting the failure", got, g.lease())
 	}
 }
 
