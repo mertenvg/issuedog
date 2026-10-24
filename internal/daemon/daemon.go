@@ -36,6 +36,8 @@ type Daemon struct {
 	Config *config.Config
 	// Work, if set, gets each issue whose step 1 succeeded on the snapshot
 	// held, by number, with the Inputs it returned: stage work (Runs.Work).
+	// A saved result on an issue whose read or step 1 failed this pass
+	// waits (step1Failed).
 	Work func(ctx context.Context, ready []Ready) error
 	// Digest, if set, keeps the digest issue: Iterate creates it, pins it,
 	// handles its close, lists what waits on the owner in it and announces
@@ -67,6 +69,11 @@ type Daemon struct {
 	openErrs      map[int]bool             // issues with an open state error after their last step 1
 	stale         map[int]bool             // issues to read again
 	missing       map[int]bool             // stale issues found gone since their last good read
+	// step1Failed are the issues whose read or step 1 failed this pass.
+	// Step 1 may have left a command on one unhandled, such as a /hold
+	// whose first write failed, which would drop a saved result, so a
+	// saved result on one isn't applied this pass (Runs.resume, SPEC §8.2).
+	step1Failed   map[int]bool
 	issuesSince   time.Time
 	commentsSince time.Time
 	polled        time.Time // when the last poll began
@@ -193,7 +200,8 @@ func (d *Daemon) Run(ctx context.Context) {
 // failures stop nothing. Then it hands Work the issues ready for it, and
 // last makes the unassigns assignPass put off until after it
 // (assignLaterPass). It returns the errors of the issues it couldn't read
-// or run step 1 on, which the next Iterate reads again. An issue whose
+// or run step 1 on, which the next Iterate reads again, and on which Work
+// applies no saved result this pass (step1Failed). An issue whose
 // labels CheckLabels holds back (ErrLabelsHeld), or that it closed again
 // (closingErrClosedAgain), is no error: like a touched issue, it gets
 // nothing more this pass, and is read again on the next.
@@ -205,6 +213,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	if d.openErrs == nil { // reread may have made the others
 		d.openErrs = map[int]bool{}
 	}
+	d.step1Failed = map[int]bool{}
 	d.reload(ctx)
 	d.closerErrBegin() // a pass, for the closer questions' counts (closererr.go)
 	if d.Step.Trust == nil {
@@ -275,6 +284,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			d.missing[n] = true
 		case err != nil:
 			errs = append(errs, err)
+			d.step1Failed[n] = true
 		default:
 			d.snaps[n], read[n] = s, true
 			delete(d.stale, n)
@@ -361,6 +371,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			errs = append(errs, err)
 			delete(d.inputs, n)
 			d.stale[n] = true
+			d.step1Failed[n] = true
 			continue
 		}
 		d.inputs[n] = in
