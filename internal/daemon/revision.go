@@ -509,9 +509,11 @@ func newestRead(s *github.Snapshot, appSlug string, floor int64) int64 {
 // after Run succeeds on the issue, and at any other stage it does nothing.
 // While the latest spec revision is stale, Hidden or missing (SPEC §7.4), it
 // posts the next one (PostRevision), as after the owner edits the body,
-// which voids any pending approval: that binds to the latest revision. A
-// dirty body, or one last edited by a user Trust doesn't trust, gets none,
-// so the mismatch keeps approval blocked; the second is logged here.
+// which voids any pending approval: that binds to the latest revision. It
+// ends in the cc line for Notify, as every spec does (SPEC §9), so the
+// owner hears of a revision after another trusted user's edit too (#452).
+// A dirty body, or one last edited by a user Trust doesn't trust, gets
+// none, so the mismatch keeps approval blocked; the second is logged here.
 func (st *Step) ReviewVisit(ctx context.Context, s *github.Snapshot) error {
 	wrap := func(err error) error { return fmt.Errorf("revision of %s/%s#%d: %w", st.Owner, st.Repo, s.Number, err) }
 	d, err := st.Dirty(ctx, s, st.trustOnceTrust())
@@ -532,7 +534,7 @@ func (st *Step) ReviewVisit(ctx context.Context, s *github.Snapshot) error {
 			return nil
 		}
 	}
-	if err := st.PostRevision(ctx, s, d.Has, Move{}, nil); err != nil {
+	if err := st.PostRevision(ctx, s, d.Has, Move{}, st.Notify); err != nil {
 		return wrap(err)
 	}
 	return nil
