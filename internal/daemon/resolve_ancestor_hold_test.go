@@ -232,10 +232,10 @@ func TestResolveResumeOnParentOfDiscussion(t *testing.T) {
 }
 
 // When the last trigger goes with no act to resolve it, as mallory
-// deleting her own comment, an ancestor's /hold found keeps the issue held,
-// and the record naming it is written all the same (#188's verify, attempt
-// 2), with no resolved time, so no later pass reads the ancestors again:
-// an unchanged pass costs no rate limit.
+// deleting her own comment, an ancestor's /hold found keeps the issue
+// held, and the record naming it is written all the same (SPEC §6.4), with
+// no resolved time, so no later pass reads the ancestors again: an
+// unchanged pass costs no rate limit.
 func TestResolveAncestorHoldWithNoAct(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
@@ -382,8 +382,8 @@ func resolveParentHoldChildResume(t testing.TB, first bool) (*githubtest.Fake, i
 }
 
 // A /resume on the issue itself ends a /hold on its parent posted before
-// it (#188's verify, attempt 4): once the late trigger is resolved, the
-// issue goes to clarifying, with no record naming the parent's /hold.
+// it (SPEC §6.4): once the late trigger is resolved, the issue goes to
+// clarifying, with no record naming the parent's /hold.
 func TestResolveOwnResumeEndsParentHold(t *testing.T) {
 	t.Parallel()
 	setup := func(t testing.TB) *githubtest.Fake {

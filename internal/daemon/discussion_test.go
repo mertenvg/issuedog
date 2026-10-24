@@ -711,7 +711,7 @@ func TestDiscHoldsOnlyItsIssue(t *testing.T) {
 func TestDiscResumeOnParent(t *testing.T) {
 	t.Parallel()
 	f := githubtest.New(t, "o/r", slug)
-	f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, attempt 3)
+	f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (SPEC §6.4)
 	f.SetPermission("mallory", "write")
 	file(f, 0, above("ready")) // #1, held by its /hold in comment 1001
 	file(f, 1, above("ready")) // #2, held by the same /hold
@@ -737,7 +737,7 @@ func TestDiscResumeOnParent(t *testing.T) {
 func TestDiscResumeOnParentHeldForDiscussion(t *testing.T) {
 	t.Parallel()
 	f := githubtest.New(t, "o/r", slug)
-	f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (#188's verify, attempt 3)
+	f.SetPermission("owner", "admin") // a real collaborator, as discWho asks (SPEC §6.4)
 	f.SetPermission("mallory", "write")
 	file(f, 0, above("ready")) // #1, held by its /hold in comment 1001
 	file(f, 1, above("ready")) // #2, held by the same /hold

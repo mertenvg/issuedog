@@ -306,7 +306,7 @@ func TestDiscRunWhole(t *testing.T) {
 	f.AddComment(3, "eve", discRunEve)
 	l.step("mallory's comment", "POST /issues/1/comments", "PATCH /issues/1", "POST /issues/2/assignees")
 	if got := l.added(2); len(got) != 0 {
-		t.Errorf("#2's new comments %q; want none: no hold marker on an issue held already (Q2b), and no notice for a comment", got)
+		t.Errorf("#2's new comments %q; want none: no hold marker on an issue held already, and no notice for a comment", got)
 	}
 	body := l.digest()
 	for _, w := range []string{

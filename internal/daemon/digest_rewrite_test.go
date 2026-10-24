@@ -548,7 +548,7 @@ func TestDigestRewriteRanked(t *testing.T) {
 // on a read that failed, nor its note dropped, but the note names the
 // failure, and Work runs. An unchanged pass doesn't check again; the next
 // pass that changes the body does, and pins it, and its body is the list
-// alone (#159's verify, survivor N11).
+// alone (SPEC §9.4).
 func TestDigestRewritePinCheckFails(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)

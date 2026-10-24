@@ -126,7 +126,7 @@ type digestNews struct {
 // every other issue the App files has (SPEC §5.2), may be a digest whose
 // marker was taken out while no daemon ran, or just before a restart. But
 // it may as well be an App task whose body lost its origin to an edit, or
-// had it escaped by MarkDirty, and that was renamed (#87's probe). So it's
+// had it escaped by MarkDirty, and that was renamed (SPEC §9.4). So it's
 // no digest yet: it's held in titled, and digestTake judges it after the
 // poll's comments, and records it if it is one.
 //

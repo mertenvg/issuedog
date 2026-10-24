@@ -22,8 +22,9 @@ import (
 // and its schema.
 const plannerAgent = "planner"
 
-// Planner is the Stage at planning (#247, SPEC §9.1, §12). It breaks an approved epic or story into a plan, or asks a question
-// round first. Its Daemon gives the config, trust and clone of the moment.
+// Planner is the Stage at planning (#247, SPEC §9.1, §12). It breaks an
+// approved epic or story into a plan, or asks a question round first. Its
+// Daemon gives the config, trust and clone of the moment.
 // Its result is checked (Check) and applied (Apply) in planner_apply.go.
 type Planner struct {
 	Daemon *Daemon

@@ -590,13 +590,13 @@ func TestDigestRunTransferredRevert(t *testing.T) {
 	}
 }
 
-// digestRunTitleRule runs the whole run's repo through the probe of #87's
-// 2026-10-15 note on the title rule (SPEC §9.4), and returns the edit history
-// queries each step sent. Once the first pass created the digest as 12, the
-// App files task 13 at ready, with an origin marker, and a pass reads it.
-// Then mertenvg edits the origin out of its body, the original post's text is
-// deleted from its history, so there's no origin to repost, and, if renamed
-// is set, mertenvg renames it issuedog digest. The steps are:
+// digestRunTitleRule runs the whole run's repo through the title rule's
+// case (SPEC §9.4), and returns the edit history queries each step sent.
+// Once the first pass created the digest as 12, the App files task 13 at
+// ready, with an origin marker, and a pass reads it. Then mertenvg edits
+// the origin out of its body, the original post's text is deleted from its
+// history, so there's no origin to repost, and, if renamed is set,
+// mertenvg renames it issuedog digest. The steps are:
 //  1. the pass that lists the change;
 //  2. an unchanged pass, which sends only conditional GETs, answered 304,
 //     and writes nothing;

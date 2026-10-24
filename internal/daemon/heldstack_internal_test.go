@@ -99,7 +99,7 @@ func TestHeldStackResume(t *testing.T) {
 		{"as does a /hold made below", at(ready, below), true, 1, 0},
 		{"a hold by hand on top of a /hold made above stays", at(ready, above, onHeld), false, 1, 1},
 		{"until /resume on the issue itself", at(ready, above, onHeld), true, 2, 0},
-		{"a discussion hold ends on the issue itself (T4)", at(ready, discussion), true, 1, 0},
+		{"a discussion hold ends on the issue itself", at(ready, discussion), true, 1, 0},
 		{"but not from above", at(ready, discussion), false, 0, 1},
 		{"nor is a hold by hand on top of it, from above", at(ready, discussion, onHeld), false, 0, 2},
 		{"an at that's no stage to go back to has no holds", at(ready, "from=ready to=held at=held reason=owner cmd=5"), true, 0, 0},

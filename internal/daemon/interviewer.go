@@ -21,9 +21,10 @@ import (
 // prompt and its schema.
 const interviewerAgent = "interviewer"
 
-// Interviewer is the Stage at clarifying (SPEC §9.1, §12). It asks question rounds on an epic, a story with no parent or an
-// untyped issue, until it can write the spec. Its Daemon gives the config,
-// trust and clone of the moment.
+// Interviewer is the Stage at clarifying (SPEC §9.1, §12). It asks
+// question rounds on an epic, a story with no parent or an untyped issue,
+// until it can write the spec. Its Daemon gives the config, trust and
+// clone of the moment.
 type Interviewer struct {
 	Daemon *Daemon
 }
@@ -226,8 +227,9 @@ func ivRoundOf(rounds []interviewerRound, id int64) int {
 	return n
 }
 
-// Context returns the interviewer's context files (SPEC §12), each comment in them fenced under a heading the daemon writes,
-// with the text the App didn't write escaped (SPEC §5.1):
+// Context returns the interviewer's context files (SPEC §12), each
+// comment in them fenced under a heading the daemon writes, with the text
+// the App didn't write escaped (SPEC §5.1):
 //   - issue.md: the number, title, type or "none", and the body. A dirty
 //     body is left out, and so is a title or body an untrusted author's
 //     issue had changed after it was admitted (contextAdmission). The title

@@ -8,19 +8,17 @@ import (
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
 
-// #188's decision, round 3: every owner hold ends by /resume on the held
-// issue, on the issue where its /hold was posted, or on any issue between
-// the two, and by no other, a child's own /hold that wrote no marker as
-// the child was held already included (SPEC §6.4). The /resume path and
-// the leave path judge by the same rule (resolveEndsHold), and count a
-// /hold by the App's record that it applied it, whatever a write
-// collaborator made of its comment since, so they agree in either order,
-// across a restart, as #188's verify, round 2, attempts 4 and 5 found they
-// didn't.
+// Every owner hold ends by /resume on the held issue, on the issue where
+// its /hold was posted, or on any issue between the two, and by no other,
+// a child's own /hold that wrote no marker as the child was held already
+// included (SPEC §6.4). The /resume path and the leave path judge by the
+// same rule (resolveEndsHold), and count a /hold by the App's record that
+// it applied it, whatever a write collaborator made of its comment since,
+// so they agree in either order, across a restart.
 
-// #188's verify, attempt 4: a /hold that wrote no marker never ends with a
-// /resume above it (#188's decision, round 3); the /resume path and the
-// leave path agree, whichever /holds above the /resume's issue they read.
+// A /hold that wrote no marker never ends with a /resume above it (SPEC
+// §6.4); the /resume path and the leave path agree, whichever /holds
+// above the /resume's issue they read.
 
 // #3 > #2 > #1: #3's /hold held all three; #1's own /resume took #1 out;
 // then #2's /hold, which writes no marker on #2, held by #3's, but one on
@@ -58,7 +56,7 @@ func TestResolveHoldMarkedBelowNotEndedFromAbove(t *testing.T) {
 	f := run(t, setup, resolvePass(t, 3))
 	resolveLabels(t, f, "after #3's /resume", "held", "held", "ready")
 	// #2 records that #3's /hold ended there, though #2's own stays
-	// (#188's verify, round 3, note 1); #1 was in no hold of #3's.
+	// (SPEC §6.4); #1 was in no hold of #3's.
 	if body := newestComment(f, 2); !strings.Contains(body, fmt.Sprintf("<!-- issuedog:ended reason=owner key=c%d cmd=", top)) {
 		t.Errorf("#2: newest comment %q; want the record that #3's /hold ended", body)
 	}
@@ -234,7 +232,7 @@ func TestResolveHoldsBetweenNotEndedFromAbove(t *testing.T) {
 	resolveLabels(t, f, "after #2's /resume", "clarifying", "ready", "ready")
 }
 
-// round3Case is a family of tasks, levels deep, issues[0] at the top, each
+// holdBelowCase is a family of tasks, levels deep, issues[0] at the top, each
 // the parent of the next, and what happens to it:
 //   - mallory comments on each issue in discussed, which holds it;
 //   - with byHand, the owner holds issues[holds[0]] by hand first, so its
@@ -247,7 +245,7 @@ func TestResolveHoldsBetweenNotEndedFromAbove(t *testing.T) {
 //     then carry the record that an owner hold on them hasn't ended;
 //   - last, the owner posts /resume on issues[release], and final is each
 //     issue's stage then.
-type round3Case struct {
+type holdBelowCase struct {
 	name            string
 	levels          int
 	discussed       []int
@@ -261,7 +259,7 @@ type round3Case struct {
 }
 
 // run runs c, the 👍s first or the /resume first.
-func (c round3Case) run(t *testing.T, thumbsFirst bool) {
+func (c holdBelowCase) run(t *testing.T, thumbsFirst bool) {
 	l := newResolveLoop(t, newFake(t))
 	issues := make([]int, c.levels)
 	for i := range issues {
@@ -335,18 +333,18 @@ func (c round3Case) run(t *testing.T, thumbsFirst bool) {
 	l.unchanged("at the end")
 }
 
-// #188's verify, round 2, attempt 5, at three and four levels: the
-// owner's /hold on the issue at the top, then one on a child held for
-// discussion, which writes no marker there; then mallory edits or deletes the first /hold, or
-// deletes one that wrote no marker on its own issue either, as that was
-// held by hand; then a /resume on the top issue, or on one between. It
-// ends the top /hold's holds, by its record, but not the child's /hold,
-// posted below it, so the child and its own child stay held, whether the
-// 👍s come before the /resume or after it, until the child's /resume.
-func TestResolveRound3OwnHoldUnderEditedHold(t *testing.T) {
+// At three and four levels: the owner's /hold on the issue at the top,
+// then one on a child held for discussion, which writes no marker there;
+// then mallory edits or deletes the first /hold, or deletes one that
+// wrote no marker on its own issue either, as that was held by hand; then
+// a /resume on the top issue, or on one between. It ends the top /hold's
+// holds, by its record, but not the child's /hold, posted below it, so
+// the child and its own child stay held, whether the 👍s come before the
+// /resume or after it, until the child's /resume (SPEC §6.4).
+func TestResolveOwnHoldOutlivesTouchedAncestorHold(t *testing.T) {
 	t.Parallel()
 	const unended = "hasn't ended"
-	var cases []round3Case
+	var cases []holdBelowCase
 	for _, touch := range []string{"edited", "deleted", "deleted, no marker"} {
 		byHand := touch == "deleted, no marker"
 		touched := strings.TrimSuffix(touch, ", no marker")
@@ -360,18 +358,18 @@ func TestResolveRound3OwnHoldUnderEditedHold(t *testing.T) {
 			between = "held"
 		}
 		cases = append(cases,
-			// #3 > #2 > #1 in the verifier's words: the top, its child and
-			// grandchild, the child and grandchild held for discussion.
-			round3Case{name: "three levels, " + touch, levels: 3, discussed: []int{1, 2}, byHand: byHand, holds: []int{0, 1}, touch: touched,
+			// #1 > #2 > #3: the top, its child and grandchild, the child and
+			// grandchild held for discussion.
+			holdBelowCase{name: "three levels, " + touch, levels: 3, discussed: []int{1, 2}, byHand: byHand, holds: []int{0, 1}, touch: touched,
 				resume: 0, want: []string{"ready", "held", "held"}, records: []int{1, 2}, unendedText: unended,
 				release: 1, final: []string{"ready", "clarifying", "clarifying"}},
 			// Four levels, the /resume on the top issue.
-			round3Case{name: "four levels, the /resume on the top, " + touch, levels: 4, discussed: []int{2, 3}, byHand: byHand, holds: []int{0, 2}, touch: touched,
+			holdBelowCase{name: "four levels, the /resume on the top, " + touch, levels: 4, discussed: []int{2, 3}, byHand: byHand, holds: []int{0, 2}, touch: touched,
 				resume: 0, want: []string{"ready", between, "held", "held"}, records: []int{2, 3}, unendedText: unended,
 				release: 2, final: []string{"ready", between, "clarifying", "clarifying"}},
 			// Four levels, the /resume on the issue between the top and the
 			// child: it ends the top /hold below it, not on the top.
-			round3Case{name: "four levels, the /resume between, " + touch, levels: 4, discussed: []int{2, 3}, byHand: byHand, holds: []int{0, 2}, touch: touched,
+			holdBelowCase{name: "four levels, the /resume between, " + touch, levels: 4, discussed: []int{2, 3}, byHand: byHand, holds: []int{0, 2}, touch: touched,
 				resume: 1, want: []string{"held", "ready", "held", "held"}, records: []int{2, 3}, unendedText: unended,
 				release: 2, final: []string{"held", "ready", "clarifying", "clarifying"}},
 		)
@@ -383,16 +381,16 @@ func TestResolveRound3OwnHoldUnderEditedHold(t *testing.T) {
 	}
 }
 
-// #188's verify, round 2, attempt 4, at three and four levels: the
-// owner's /hold on the top issue, then one on an issue held for
-// discussion below, which writes no marker there; then a /resume on an issue between the two. It ends
-// the top /hold's holds below it, but not the other /hold, posted below
-// it, so that issue, and the one under it, stay held, whether the 👍s come
-// before the /resume or after it, until /resume on that issue.
-func TestResolveRound3OwnHoldBelowResume(t *testing.T) {
+// At three and four levels: the owner's /hold on the top issue, then one
+// on an issue held for discussion below, which writes no marker there;
+// then a /resume on an issue between the two. It ends the top /hold's
+// holds below it, but not the other /hold, posted below it, so that
+// issue, and the one under it, stay held, whether the 👍s come before the
+// /resume or after it, until /resume on that issue (SPEC §6.4).
+func TestResolveResumeBetweenLeavesOwnHoldBelow(t *testing.T) {
 	t.Parallel()
 	const unended = "hasn't ended"
-	for _, c := range []round3Case{
+	for _, c := range []holdBelowCase{
 		{name: "three levels", levels: 3, discussed: []int{2}, holds: []int{0, 2},
 			resume: 1, want: []string{"held", "ready", "held"}, records: []int{2}, unendedText: unended,
 			release: 2, final: []string{"held", "ready", "clarifying"}},
@@ -412,12 +410,12 @@ func TestResolveRound3OwnHoldBelowResume(t *testing.T) {
 	}
 }
 
-// A /hold posted after a /resume, handled first: #3 > #2 > #1. The
+// A /hold posted after a /resume, handled first: #1 > #2 > #3. The
 // owner's /resume on #2, then a /hold on #1, posted after it, whose pass
-// comes first, so it holds all three with markers. The /resume doesn't end that /hold on #3, posted after it
-// (SPEC §6.4), so #3 stays held, as #1 does, and nor on #2 (#205, once
-// #188's verify, round 3, note 3), so #2 stays held too.
-func TestResolveRound3MarkerPostedAfterResume(t *testing.T) {
+// comes first, so it holds all three with markers. The /resume doesn't
+// end that /hold on #3, posted after it (SPEC §6.4), so #3 stays held,
+// as #1 does, and nor on #2 (#205), so #2 stays held too.
+func TestResolveResumeEndsNoLaterHoldAbove(t *testing.T) {
 	t.Parallel()
 	f := discFake(t)  // #1
 	file(f, 1, ready) // #2, under #1
@@ -445,7 +443,7 @@ func TestResolveRound3MarkerPostedAfterResume(t *testing.T) {
 // marker, #2 and #1 held already. The /resume doesn't end it, posted
 // below it and after it, so #2 stays held by it, and #1 too once mallory's
 // comment is resolved, until #2's /resume.
-func TestResolveRound3PathHoldPostedAfterResume(t *testing.T) {
+func TestResolveResumeEndsNoLaterHoldBelow(t *testing.T) {
 	t.Parallel()
 	f := discFake(t)  // #1
 	file(f, 0, ready) // #2
@@ -472,7 +470,7 @@ func TestResolveRound3PathHoldPostedAfterResume(t *testing.T) {
 // The same, with #1 held only by #3's /hold: #3's /resume ends that on
 // #1, but not #2's /hold, posted below it and after it, whose pass came
 // first, so #1 stays held by it, as #2 does, until #2's /resume.
-func TestResolveRound3PathHoldPostedAfterResumeAlone(t *testing.T) {
+func TestResolveResumeEndsNoLaterHoldBelowNoDiscussion(t *testing.T) {
 	t.Parallel()
 	f := discFake(t)  // #1
 	file(f, 0, ready) // #2
