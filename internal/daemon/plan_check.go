@@ -587,7 +587,8 @@ func checkPlanLength(p planBody, f planFacts, fail func(string, string, ...any))
 
 // planCommentBody is the plan comment p is posted as under f, as
 // Applier.Transition writes it: the rendered plan, the move's transition
-// marker, with f.Fields, the plan-data marker, and the plan revision
+// marker, with f.Fields, the plan-data marker, with a revision's kept
+// items in full (planPrior.keptData), and the plan revision
 // marker. Only the run's ID stands in, planLengthRunID, as long as the
 // real one.
 func planCommentBody(p planBody, f planFacts) (string, error) {
@@ -604,7 +605,7 @@ func planCommentBody(p planBody, f planFacts) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("the plan comment's transition marker: %w", err)
 	}
-	m, err := planDataMarker(p)
+	m, err := planDataMarker(f.Prior.keptData(p))
 	if err != nil {
 		return "", fmt.Errorf("the plan comment's %w", err)
 	}

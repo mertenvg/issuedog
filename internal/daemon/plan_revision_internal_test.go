@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -383,6 +384,136 @@ func TestCheckRevisionCounts(t *testing.T) {
 	}
 }
 
+// A first plan's data is the plan itself, byte for byte, as it was
+// before revisions. A revision's kept item is its approved entry in full,
+// read from the approved revision, never from the planner's output, with
+// its status kept and only the dependencies it keeps: here T1's on T2,
+// not its one on T3, which the revision drops. The changed, new and
+// dropped items, and the planner's output, are left as they are.
+func TestKeptDataCarriesApprovedEntry(t *testing.T) {
+	t.Parallel()
+	first := goldenPlan(t, "story-plan")
+	got := (*planPrior)(nil).keptData(first)
+	gotMarker, err := planDataMarker(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantMarker, err := planDataMarker(goldenPlan(t, "story-plan"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, goldenPlan(t, "story-plan")) || gotMarker.Fields["data"] != wantMarker.Fields["data"] {
+		t.Errorf("a first plan's data = %+v, want the plan as it is", got)
+	}
+
+	pr := revisionPrior(t)
+	pr.Items[0].DependsOn = []string{"T3", "T2"}
+	p := goldenPlan(t, "story-revision")
+	p.Items[0].Outcome = "The planner's own outcome, which a kept item can't have."
+	data := pr.keptData(p)
+	want := pr.Items[0]
+	want.Status, want.DependsOn = planKept, []string{"T2"}
+	if !reflect.DeepEqual(data.Items[0], want) {
+		t.Errorf("the kept T1's data = %+v, want its approved entry %+v", data.Items[0], want)
+	}
+	for i := 1; i < len(p.Items); i++ {
+		if !reflect.DeepEqual(data.Items[i], p.Items[i]) {
+			t.Errorf("%s's data = %+v, want the revision's own %+v", p.Items[i].ID, data.Items[i], p.Items[i])
+		}
+	}
+	if p.Items[0].Outcome != "The planner's own outcome, which a kept item can't have." || p.Items[0].Criteria != nil {
+		t.Errorf("the planner's output was changed: %+v", p.Items[0])
+	}
+}
+
+// On a third plan, an item kept by the second and kept again counts with
+// its dependencies from its first plan, which the second plan's data
+// carries (planPrior.keptData): the cycle check finds T2 → T3 → T2 once
+// T3 is changed to depend on T2, and the link limits count the kept S51's
+// 50 blocked stories, so a new story on it is one over. children.md shows
+// the twice-kept T2's approved text.
+func TestCheckRevisionKeptTwice(t *testing.T) {
+	t.Parallel()
+	third := func(f planFacts, second planBody) planFacts {
+		data := f.Prior.keptData(second)
+		f.Rev, f.Prior = 3, &planPrior{Rev: 2, Items: data.Items, Children: f.Prior.Children, Subs: f.Prior.Subs}
+		return f
+	}
+	keptAll := func(p planBody) planBody {
+		for i, it := range p.Items {
+			p.Items[i] = planItem{ID: it.ID, Title: it.Title, Status: planKept}
+		}
+		return p
+	}
+
+	f := revisionFacts(t)
+	second := keptAll(goldenPlan(t, "story-revision"))
+	second.Items = second.Items[:3]
+	if err := checkPlan(planOutput{Outcome: outcomePlan, Plan: &second}, f); err != nil {
+		t.Fatalf("the second plan, keeping all three: %v", err)
+	}
+	f = third(f, second)
+	out := plannerOutput(t, "story-revision")
+	t3 := goldenPlan(t, "story-plan").Items[2]
+	t3.Status, t3.DependsOn = planChanged, []string{"T2"}
+	out.Plan.Items = []planItem{second.Items[0], second.Items[1], t3}
+	if err := checkPlan(out, f); !slices.Equal(rules(err), []string{ruleCycle}) || !strings.Contains(err.Error(), "rule cycle: T2 → T3 → T2") {
+		t.Errorf("the third plan, T3 changed to depend on the twice-kept T2 = %v, want only the cycle T2 → T3 → T2", err)
+	}
+	children, err := plannerChildrenFile(124, f.Prior)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t2 := goldenPlan(t, "story-plan").Items[1]
+	for _, want := range []string{
+		"## Items of plan revision 2, as approved",
+		`"outcome": "` + t2.Outcome + `"`,
+		`"` + t2.Criteria[0] + `"`,
+		"\"depends_on\": [\n      \"T1\",\n      \"T3\"\n    ]",
+		`"test_plan": `,
+	} {
+		if !strings.Contains(children, want) {
+			t.Errorf("the third plan's children.md lacks\n%s\nin\n%s", want, children)
+		}
+	}
+
+	stories, f := keptStories(t, 51)
+	f = third(f, *stories.Plan)
+	out, _ = keptStories(t, 51, planItem{ID: "S52", Title: "Title", Status: planNew, Outcome: "Outcome.", Criteria: []string{"Criterion."},
+		DependsOn: []string{"S51"}})
+	if err := checkPlan(out, f); !slices.Equal(rules(err), []string{ruleLinks}) || !strings.Contains(err.Error(), "rule links: S51 blocks 51 items, over 50") {
+		t.Errorf("the third plan, a new story on S51, which 50 twice-kept stories depend on = %v, want only S51 to block 51", err)
+	}
+}
+
+// The length rule counts a revision's comment as it's posted, with its
+// kept items in full in its data (planPrior.keptData): keeping ten tasks
+// whose approved bodies don't fit takes it over the limit, though the
+// revision's own items are each an ID, a title and a status.
+func TestCheckRevisionLengthCountsKeptData(t *testing.T) {
+	t.Parallel()
+	approved := bigPlan(t, 10, 8000).Plan
+	f := storyFacts()
+	f.Rev, f.SubIssues = 2, 10
+	f.Prior = &planPrior{Rev: 1, Items: approved.Items, Subs: 10}
+	p := planBody{Kind: planTasks, Why: approved.Why, Summary: approved.Summary, Order: "As before"}
+	for i, it := range approved.Items {
+		f.Prior.Children = append(f.Prior.Children, planChild{Item: it.ID, Number: 201 + i, Title: it.Title, Type: "task", Stage: state.Ready})
+		p.Items = append(p.Items, planItem{ID: it.ID, Title: it.Title, Status: planKept})
+	}
+	m, err := planDataMarker(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(m.Fields["data"]) + textLen(renderPlan(p, f.view())); n > (maxText-textRoom)/2 {
+		t.Fatalf("the revision's own text and data are %d characters, so they don't show the kept entries are counted", n)
+	}
+	err = checkPlan(planOutput{Outcome: outcomePlan, Plan: &p}, f)
+	if got := rules(err); !slices.Equal(got, []string{ruleLength}) || !strings.Contains(err.Error(), "the plan comment is") {
+		t.Errorf("a revision keeping ten tasks whose approved bodies don't fit: rules %q (%v), want length", got, err)
+	}
+}
+
 // revisionView is the view the golden revision is rendered with: story
 // #124 at p2, with its three children, as plan revision 2.
 func revisionView(t *testing.T) planView {
@@ -393,8 +524,9 @@ func revisionView(t *testing.T) planView {
 
 // The golden revision renders each item's status in its item line, kept
 // and dropped items on that one line alone, and a validation line from the
-// revision's counts. Its plan-data marker keeps the statuses, so approval
-// reads them back.
+// revision's counts. Its plan-data marker, as it's posted, keeps the
+// statuses, so approval reads them back, and the kept T1 in full
+// (planPrior.keptData).
 func TestRenderRevisionGolden(t *testing.T) {
 	t.Parallel()
 	p := goldenPlan(t, "story-revision")
@@ -427,7 +559,7 @@ func TestRenderRevisionGolden(t *testing.T) {
 		}
 	}
 
-	m, err := planDataMarker(p)
+	m, err := planDataMarker(revisionPrior(t).keptData(p))
 	if err != nil {
 		t.Fatal(err)
 	}
