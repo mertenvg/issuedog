@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -183,5 +184,108 @@ func TestPrepareRunsNoHooks(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Errorf("a hook ran during the clone: %v", err)
+	}
+}
+
+// TestSweepRemovesLeftoverRuns removes every run's checkout and context dir
+// but keep's, a read-only checkout and a run with only one of the two
+// among them, and the temp git configs, keeping the git config itself and
+// any other dot name.
+func TestSweepRemovesLeftoverRuns(t *testing.T) {
+	t.Parallel()
+	w, _ := newWorkspace(t)
+	ctx := context.Background()
+	for _, id := range []string{"live", "dead"} {
+		if err := w.Prepare(ctx, id, "", map[string][]byte{"prompt.md": nil}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(filepath.Join(w.Dir("dead"), ".git"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{w.Dir("clone-only"), w.Context("context-only"), filepath.Join(w.RunsDir, ".dot")} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{".agent.gitconfig.123", ".agent.gitconfig.x9"} {
+		if err := os.WriteFile(filepath.Join(w.ContextDir, name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Sweep(ctx, "live"); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	for dir, want := range map[string][]string{
+		w.RunsDir:    {".dot", "live"},
+		w.ContextDir: {".agent.gitconfig", "live"},
+	} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, e := range entries {
+			got = append(got, e.Name())
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("%s holds %q after the sweep, want %q", dir, got, want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(w.Context("live"), "prompt.md")); err != nil {
+		t.Errorf("the kept run's context file is gone: %v", err)
+	}
+}
+
+// TestSweepKeepsNothingAndSkipsMissingDirs keeps no run for an empty keep,
+// and finds nothing to remove in dirs that don't exist.
+func TestSweepKeepsNothingAndSkipsMissingDirs(t *testing.T) {
+	t.Parallel()
+	w, _ := newWorkspace(t)
+	ctx := context.Background()
+	if err := w.Prepare(ctx, "dead", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Sweep(ctx, ""); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	for _, d := range []string{w.Dir("dead"), w.Context("dead")} {
+		if _, err := os.Stat(d); !os.IsNotExist(err) {
+			t.Errorf("%s is still there: %v", d, err)
+		}
+	}
+	gone := &Workspace{RunsDir: filepath.Join(t.TempDir(), "runs"), ContextDir: filepath.Join(t.TempDir(), "ctx")}
+	if err := gone.Sweep(ctx, ""); err != nil {
+		t.Errorf("Sweep of missing dirs = %v, want nothing to remove", err)
+	}
+}
+
+// TestSweepGoesOnPastAFailure reports a run it can't remove, naming it, and
+// still removes the runs after it.
+func TestSweepGoesOnPastAFailure(t *testing.T) {
+	t.Parallel()
+	w, _ := newWorkspace(t)
+	ctx := context.Background()
+	stuck := w.Context("a-stuck")
+	if err := os.MkdirAll(filepath.Join(stuck, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(stuck, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(stuck, 0o755); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := w.Prepare(ctx, "b-dead", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	err := w.Sweep(ctx, "")
+	if err == nil || !strings.Contains(err.Error(), "clean up run a-stuck") {
+		t.Errorf("Sweep = %v, want it to name run a-stuck", err)
+	}
+	if _, err := os.Stat(w.Dir("b-dead")); !os.IsNotExist(err) {
+		t.Errorf("the run after the failure is still there: %v", err)
 	}
 }
