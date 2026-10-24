@@ -89,7 +89,8 @@ func childPlanRun(plan github.Comment, appSlug string) (string, bool) {
 // an adopted child's move comment, step 1 posts the body's marker again
 // (adoptedRepost); should step 1 post it between the rewrite and the move,
 // as after a crash, Derive reads rev from it, and the move carries no
-// marker.
+// marker. So it does once step 1 there reposts the rewrite's marker for a
+// child the App filed (originRepost), after an edit of its body.
 //
 // The move is the last write, so once it stands the child is done, and a
 // later pass reads it and writes nothing. Before it, the child is reported
@@ -162,11 +163,15 @@ func (st *Step) childChanged(ctx context.Context, parent *github.Snapshot, rev i
 		}
 		markers = []github.Marker{m}
 		text += " " + adoptedMoveText
-	} else if state.IsApp(s.Author, st.AppSlug) && childCommentOrigin(s, st.AppSlug, d.Has).Plan != 0 {
+	} else if co := childCommentOrigin(s, st.AppSlug, d.Has); state.IsApp(s.Author, st.AppSlug) && co.Plan != 0 && !names(co) {
 		// A child the App filed, whose clean App comment carries an older
 		// origin, as the App's repost of one an edit took from the body
 		// (originRepost) does: a later edit of the body would fall back to
-		// it, so the move's comment carries the new one.
+		// it, so the move's comment carries the new one. One that names
+		// rev already needs none: step 1 reposted the rewrite's marker
+		// between the rewrite and the move, after an edit of the body, so
+		// the rewrite isn't made again, as Derive reads rev, and the body
+		// has no marker to carry.
 		m, ok := state.OriginMarker(s.Body)
 		if !ok || !names(is.Origin) {
 			return fmt.Errorf("#%d has no rewrite of the App's whose origin names item %s of revision %d, for its move to carry", n, c.Item, rev)
