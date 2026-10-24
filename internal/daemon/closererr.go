@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 
+	gogithub "github.com/google/go-github/v92/github"
 	"github.com/mertenvg/logr/v2"
 
 	"github.com/mertenvg/issuedog/internal/config"
@@ -34,10 +35,14 @@ import (
 //     nothing (closerErrStep1), its error posted by step 1's visit of the
 //     issue (closerErrPost). The question is still asked once a pass, so
 //     the close is judged as soon as GitHub answers, which ends the
-//     error. Any other failure, a failed request or GraphQL failing as
-//     a whole, says nothing of the close itself, as an outage would, so it
-//     stays the pass's error, without bound, and counts no pass towards
-//     the state error.
+//     error. On a closed issue, that question is all a pass asks while
+//     the listing still shows the close the error is for: the timeline
+//     isn't read (closingJudge). On an open issue, the error also ends
+//     once step 1 no longer asks the question, as its close is no longer
+//     the one to judge (closerErrUnasked). Any other failure, a failed
+//     request or GraphQL failing as a whole, says nothing of the close
+//     itself, as an outage would, so it stays the pass's error, without
+//     bound, and counts no pass towards the state error.
 //   - Closing an issue again after an untrusted reopen (closingCloseAgain)
 //     waits for the question of the close the reopen undid until it has
 //     failed, in any way, on closerErrRetries passes, writing nothing
@@ -46,10 +51,12 @@ import (
 //
 // The counts are in memory, as the closer answers are (Applier.closingBy):
 // a restart forgets them, so each failing question starts from none again.
-// A state error posted already is found again, not posted twice: on an
-// open issue it stands at once, from its comment; on a closed one, whose
-// comment is read only when the count reaches the bound, it's found then.
-// Until then, after a restart, the failure is the pass's error again.
+// A state error posted already is found again, not posted twice, and
+// stands at once: on an open issue, from its comment; on a closed one, from
+// the one read of the issue a run makes at the question's first failure
+// under node (closerErrClosed), so the digest keeps listing it across a
+// restart. A closed issue that doesn't carry it yet is read again only
+// when the count reaches the bound, to post it.
 //
 // A closed issue's state error can't be open the way an open issue's is
 // (openErrors): no step 1 visits it, so no 👍 is read, and nothing is
@@ -81,6 +88,7 @@ type closerErrTally struct {
 	passes, last int
 	node, atNode int
 	cause        error // the last error under node, for the state error
+	looked       bool  // closerErrClosed read the closed issue for its state error, and found none
 }
 
 // closerErrBegin starts a pass for the closer counts: the next pass, with
@@ -144,6 +152,35 @@ func (a *Applier) closerErrNodePasses(cl github.Closing) int {
 // state error keyed key has ended (openErrors).
 func (a *Applier) closerErrAnswered(key string) bool {
 	return a.closerErr.done[key]
+}
+
+// closerErrEnded returns what ends a closer state error on s, an open issue
+// as step 1 left it, with dirty as for state.Derive (openErrors): given the
+// error's key, whether the question of its close was answered while the
+// daemon runs (closerErrAnswered), or step 1 no longer asks it
+// (closerErrUnasked).
+func (a *Applier) closerErrEnded(s *github.Snapshot, dirty func(int64) bool) func(key string) bool {
+	return func(key string) bool { return a.closerErrAnswered(key) || closerErrUnasked(s, a.AppSlug, dirty, key) }
+}
+
+// closerErrUnasked reports whether step 1 no longer asks how the close of
+// s keyed key was made, as its close is no longer the one to judge: by
+// what closingCounts judges before it asks anyone, s.Closings lists it,
+// and it's before the discussion floor (discFloor), as after a move out of
+// held, or a marker records it, or s has no floor, so discFind looks for
+// no trigger. A close s.Closings doesn't list, as on a snapshot
+// CheckLabels hasn't checked, is still asked.
+func closerErrUnasked(s *github.Snapshot, appSlug string, dirty func(int64) bool, key string) bool {
+	i := slices.IndexFunc(s.Closings, func(cl github.Closing) bool { return !cl.Reopen && strconv.FormatInt(cl.ID, 10) == key })
+	if i < 0 {
+		return false
+	}
+	b, ok := discFloor(s, appSlug, dirty)
+	if !ok {
+		return true
+	}
+	open, recorded := discOpenAfter(b, discRecords(s, appSlug, dirty))(key, s.Closings[i].At, 0)
+	return !open || recorded
 }
 
 // closerErrReport returns the ID of the comment on s that carries the
@@ -215,23 +252,32 @@ func (a *Applier) closerErrPost(ctx context.Context, s *github.Snapshot, d Dirt)
 }
 
 // closerErrClosed judges cause, closingAccepted's error for cl, the newest
-// close of n, a closed issue. It reports true when cause is an error under
-// node (github.CloserErrUnderNode) and the closer state error stands for
-// cl: the question has failed so on loop.max_attempts passes, and the
-// error is posted on n, or found there, and listed on the digest
-// (closerErrOn). The close then stays unjudged, and due, with no error.
-// The issue is read once, when the count reaches the bound; after that, a
-// pass makes no request for it beyond the question. An issue found open
-// again gets nothing: the poll forgets its close.
-func (d *Daemon) closerErrClosed(ctx context.Context, n int, cl github.Closing, cause error) (bool, error) {
-	a := d.Step.Applier
-	if !github.CloserErrUnderNode(cause) || a.closerErrNodePasses(cl) < a.closerErr.max {
+// close of is, a closed issue as listed. It reports true when cause is an
+// error under node (github.CloserErrUnderNode) and the closer state error
+// stands for cl: the issue carries it already, as after a restart, or the
+// question has now failed so on loop.max_attempts passes, and the error is
+// posted on the issue. It's then listed on the digest (closerErrOn), and the close stays
+// unjudged, and due, with no error. The issue is read at the question's
+// first failure under node in a run, to find the error, and again when the
+// count reaches the bound, if it wasn't found; once the error stands, a
+// pass makes no request for it beyond the question (closingJudge). An
+// issue found open again gets nothing: the poll forgets its close.
+func (d *Daemon) closerErrClosed(ctx context.Context, is *gogithub.Issue, cl github.Closing, cause error) (bool, error) {
+	a, n := d.Step.Applier, is.GetNumber()
+	if !github.CloserErrUnderNode(cause) {
 		return false, nil
 	}
 	key := strconv.FormatInt(cl.ID, 10)
 	if on, ok := d.closerErrOn[n]; ok && on.key == key {
 		logr.Debugf("%s/%s#%d: its close %d stays unjudged while its state error stands: %v", a.Owner, a.Repo, n, cl.ID, cause)
+		on.listed = closingListedOf(is) // its stage labels changed: as listed now, for closingJudge
+		d.closerErrOn[n] = on
 		return true, nil
+	}
+	t := a.closerErr.failed[cl.NodeID]
+	due := t.node >= a.closerErr.max
+	if !due && t.looked {
+		return false, nil
 	}
 	wrap := func(err error) error { return fmt.Errorf("the closer state error of close %d: %w", cl.ID, err) }
 	s, err := a.Client.Snapshot(ctx, a.Owner, a.Repo, n)
@@ -245,9 +291,16 @@ func (d *Daemon) closerErrClosed(ctx context.Context, n int, cl github.Closing, 
 	if err != nil {
 		return false, wrap(err)
 	}
+	if !due && !state.Derive(s, a.AppSlug, dirt.Has).Reported(closerErrKind, key) {
+		t.looked = true
+		a.closerErr.failed[cl.NodeID] = t
+		return false, nil
+	}
 	text := fmt.Sprintf("I can't tell how this issue was closed: asking GitHub whether %s's close was a merge failed on %d passes. "+
 		"So I've neither accepted nor reverted it, and its stage label stays as it is. "+
-		"I ask again on every pass, and judge the close once GitHub answers.", discLogin(cl.By.Login), a.closerErrNodePasses(cl))
+		"I ask again on every pass, and judge the close once GitHub answers. "+
+		"A 👍 here isn't read while the issue is closed. To settle it yourself, reopen the issue and close it again: "+
+		"a trusted user's close stands without asking GitHub how it was made.", discLogin(cl.By.Login), t.node)
 	id, err := a.closerErrReport(ctx, s, dirt.Has, cl, text)
 	if err != nil {
 		return false, wrap(err)
@@ -256,7 +309,7 @@ func (d *Daemon) closerErrClosed(ctx context.Context, n int, cl github.Closing, 
 		d.closerErrOn = map[int]closerErrClosedOn{}
 	}
 	e := openErr{ErrorKey: state.ErrorKey{Kind: closerErrKind, Key: key}, Comment: id}
-	d.closerErrOn[n] = closerErrClosedOn{key: key, acked: state.Derive(s, a.AppSlug, dirt.Has).Acked(e.Kind, e.Key),
+	d.closerErrOn[n] = closerErrClosedOn{key: key, cl: cl, listed: closingListedOf(is),
 		item: waitItem{Issue: n, Kind: waitError, Key: fmt.Sprintf("%s-%d-%s-%s", waitKeyPrefix[waitError], n, e.Kind, e.Key),
 			Title: s.Title, Lines: closerErrLines(s, e), Link: waitLink(a.Owner, a.Repo, n, id), Priority: priority(s),
 			Created: s.CreatedAt, Comment: id}}
@@ -264,13 +317,15 @@ func (d *Daemon) closerErrClosed(ctx context.Context, n int, cl github.Closing, 
 }
 
 // closerErrClosedOn is the closer state error that stands on a closed
-// issue (closerErrClosed): its key, whether a trusted 👍 acknowledged it
-// before the issue closed, which keeps it off the digest, and its digest
-// item, keyed as waitFind keys any state error.
+// issue (closerErrClosed): its key, its close, cl, which closingJudge asks
+// about with no timeline read while the listing shows the issue as listed,
+// the issue as last listed while it stood, and its digest item, keyed as
+// waitFind keys any state error.
 type closerErrClosedOn struct {
-	key   string
-	acked bool
-	item  waitItem
+	key    string
+	cl     github.Closing
+	listed closingListed
+	item   waitItem
 }
 
 // closerErrLines says what e, the closer state error on s, a closed issue,
@@ -296,14 +351,14 @@ func (d *Daemon) closerErrJudged(n int, cl *github.Closing) {
 	}
 }
 
-// closerErrDigest returns the closed issues' closer state errors that no
-// 👍 acknowledged, by issue, for the digest (digestCacheRanked).
+// closerErrDigest returns the closed issues' closer state errors, by
+// issue, for the digest (digestCacheRanked). None was acknowledged: each is
+// keyed by the close that closed its issue, and posted after it, while no
+// 👍 is read.
 func (d *Daemon) closerErrDigest() []waitItem {
 	var items []waitItem
 	for _, n := range slices.Sorted(maps.Keys(d.closerErrOn)) {
-		if on := d.closerErrOn[n]; !on.acked {
-			items = append(items, on.item)
-		}
+		items = append(items, d.closerErrOn[n].item)
 	}
 	return items
 }
