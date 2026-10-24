@@ -329,7 +329,7 @@ func TestIvWordingLostReplyAfterEdit(t *testing.T) {
 // replaces the edit, and then a new plan (SPEC §7.4, #331).
 func TestIvWordingPlanDirtyBody(t *testing.T) {
 	t.Parallel()
-	want := ivWordingApproveFinal("the issue description has an edit by mallory that wasn't approved, so I can't approve the plan. "+
+	want := ivWordingApproveFinal("the issue description has an edit by `mallory` that wasn't approved, so I can't approve the plan. "+
 		"Nothing at `planning` or `plan-review` rewrites the description, so sending the plan back won't clear the edit. "+
 		"To clear it, move the issue to `stage:clarifying`: that gets a new spec from the interviewer, "+
 		"which replaces the edit, and then a new plan", "1005")

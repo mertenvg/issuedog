@@ -455,6 +455,58 @@ func TestChildrenChangedStory(t *testing.T) {
 	}
 }
 
+// What /approve's rejection and the digest say clears a dirty body on a
+// story with a parent at plan-review (#525) does: S1's child, at
+// plan-review with eve's edit of its body and its origin reposted, is
+// rewritten whole by the owner's 👍 on the epic's revision that changes
+// S1, its rewrite marker naming eve, so its body is clean again, with its
+// origin naming revision 2, and it goes back to planning for a new plan.
+// A crash at any write writes nothing twice.
+func TestChildrenChangedStoryDirtyAtPlanReview(t *testing.T) {
+	t.Parallel()
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := changedEpicSetup(t)
+		f.AddComment(2, app, "Planned.\n\n<!-- issuedog:transition from=planning to=plan-review run=s1 -->")
+		f.RemoveLabel(2, app, "stage:planning")
+		f.AddLabel(2, app, "stage:plan-review")
+		f.EditBody(2, "eve", "The story, rewritten by eve.")
+		f.AddComment(2, app, originRepost("<!-- issuedog:origin plan=#1 rev=1 item=S1 -->"))
+		f.ForgetWrites()
+		return f
+	}
+	dirt := func(f *githubtest.Fake) (*github.Snapshot, daemon.Dirt) {
+		t.Helper()
+		c := f.Client(t)
+		s, err := c.Snapshot(context.Background(), "o", "r", 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a := &daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: slug}
+		d, err := a.Dirty(context.Background(), s, trusted{"owner": true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s, d
+	}
+	if s, d := dirt(setup(t)); !d.Has(state.BodyID) || state.Derive(s, slug, d.Has).Stage != state.PlanReview {
+		t.Fatal("before the approval, S1's child is clean, or not at plan-review; want it at plan-review, dirty by eve's edit")
+	}
+	githubtest.Replay(t, setup, childrenPass(t, twoStories))
+	f := run(t, setup, childrenPass(t, twoStories))
+	s, d := dirt(f)
+	if !strings.HasPrefix(s.Body, "<!-- issuedog:rewrite run=p2 replaced=eve -->\n") {
+		t.Errorf("S1's child's body is\n%s\nwant the App's rewrite, naming eve's edit it replaced", s.Body)
+	}
+	is := state.Derive(s, slug, d.Has)
+	if d.Has(state.BodyID) || is.Origin.Rev != 2 || is.Origin.Comment != state.BodyID || is.Stage != state.Planning {
+		t.Errorf("S1's child is dirty %t, with origin %+v, at %s; want a clean body, whose origin names revision 2, at planning",
+			d.Has(state.BodyID), is.Origin, is.Stage)
+	}
+	if m := changedLastMarker(t, f, 2); m.Fields["from"] != string(state.PlanReview) || m.Fields["to"] != string(state.Planning) {
+		t.Errorf("S1's child's newest move is %+v, want plan-review to planning", m.Fields)
+	}
+}
+
 // A planner run on S1's child that was still waiting to be applied when
 // the epic's revision changed S1 is dropped, uncounted, writing nothing:
 // the change's move to planning sits above the run's seen, though the

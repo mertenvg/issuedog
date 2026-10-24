@@ -775,9 +775,11 @@ func TestPlanReviewRunOldPlanAtSpecReview(t *testing.T) {
 // hash, as no one else's edit can make it (a trusted user's edit of an
 // App comment makes it dirty). Then mertenvg's /resume takes the epic back
 // to plan-review, and his /approve, after it, is rejected there, naming
-// the first reason only. The digest's item names each reason, in the same
-// order, then that a move to `stage:clarifying` clears the dirty body
-// (#331). A restart writes nothing.
+// the first reason, then the dirty body, with what clears it, a move to
+// `stage:clarifying`, in place of how to get a new plan, as that gets one
+// too (#525). The digest's item names each reason, in the same order,
+// then that a move to `stage:clarifying` clears the dirty body (#331). A
+// restart writes nothing.
 func TestPlanReviewRunApproveReasons(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -816,10 +818,11 @@ func TestPlanReviewRunApproveReasons(t *testing.T) {
 			approve := f.AddComment(1, planReviewRunOwner, "/approve")
 			l.step("the /resume and the /approve", 1, "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:held",
 				discRunReact(resume), discRunReact(approve), "POST /issues/1/comments", "PATCH /issues/2")
-			reason := fmt.Sprintf("the comment of plan revision 1 was edited after I posted it, so it no longer matches that revision's hash, `%s`. %s", hash, replanHint)
+			reason := fmt.Sprintf("the comment of plan revision 1 was edited after I posted it, so it no longer matches that revision's hash, `%s`", hash)
 			if tt.hide {
-				reason = "a comment of mine after plan revision 1 was edited without approval or deleted, so it may hide a newer plan revision. " + replanHint
+				reason = "a comment of mine after plan revision 1 was edited without approval or deleted, so it may hide a newer plan revision"
 			}
+			reason += ", and the issue description has an edit by `mallory` that wasn't approved. " + planDirtyEpic
 			a := strconv.FormatInt(approve, 10)
 			want := []string{
 				fmt.Sprintf("Resumed by `/resume`, back to `plan-review`.\n\n<!-- issuedog:transition from=held to=plan-review cmd=%d seen=%d -->", resume, entry),

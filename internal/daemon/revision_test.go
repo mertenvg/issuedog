@@ -87,8 +87,8 @@ func approveBoth(t testing.TB, f *githubtest.Fake) {
 
 // dirtyBody is /approve's reason at spec-review for mallory's edit to the
 // body. It says no revision follows, and how to get a new spec (#229), so
-// its reply is final.
-const dirtyBody = "the issue description has an edit by mallory that wasn't approved, so I can't approve it, " +
+// its reply is final. It names mallory as code, as the hold does (#525).
+const dirtyBody = "the issue description has an edit by `mallory` that wasn't approved, so I can't approve it, " +
 	"and I won't post a revision of it. To get a new spec, which replaces the edit, post `/revise <notes>`, or any other comment"
 
 // ivWordingFollows ends /approve's reason at spec-review for a stale

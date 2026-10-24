@@ -214,7 +214,7 @@ func TestApprovePlan(t *testing.T) {
 				f.AddReaction(1003, "owner", "+1")
 				post(t, f, 1005, "owner", "/approve")
 			}),
-			outcome{comments: []string{ivWordingApproveFinal("the issue description has an edit by mallory that wasn't approved, "+
+			outcome{comments: []string{ivWordingApproveFinal("the issue description has an edit by `mallory` that wasn't approved, "+
 				"so I can't approve the plan. Nothing at `planning` or `plan-review` rewrites the description, "+
 				"so sending the plan back won't clear the edit. To clear it, move the issue to `stage:clarifying`: that gets a new spec "+
 				"from the interviewer, which replaces the edit, and then a new plan", "1005")}, labels: atReview, downs: []string{"/approve"}}},
@@ -264,6 +264,86 @@ func TestApprovePlanNoRevision(t *testing.T) {
 	})
 	check(t, setup, approvePass(t), outcome{comments: []string{final("/approve", "I didn't apply this command",
 		"there's no clean plan revision to approve. "+replanHint, "1002")}, labels: []string{"stage:plan-review"}, downs: []string{"/approve"}})
+}
+
+// planDirtyEpic is /approve's advice at plan-review for a dirty body on an
+// epic or a story with no parent: a move to `stage:clarifying`, whose spec
+// replaces the edit (#331).
+const planDirtyEpic = "Nothing at `planning` or `plan-review` rewrites the description, so sending the plan back won't clear the edit. " +
+	"To clear it, move the issue to `stage:clarifying`: that gets a new spec from the interviewer, which replaces the edit, and then a new plan"
+
+// planDirtyParentStory is /approve's advice at plan-review for a dirty body
+// on a story whose parent is #2: the interviewer never rewrites its body,
+// so it's an approved revision of #2's plan that changes it (#525).
+const planDirtyParentStory = "Nothing at `planning` or `plan-review` rewrites the description, so sending the plan back won't clear the edit. " +
+	"Nor does the interviewer, as this story's description is its item of #2's plan. " +
+	"To clear it, get a revision of #2's plan that changes this story, as by moving #2 to `stage:planning`: " +
+	"once that's approved, I rewrite the description from it, which replaces the edit, and this story gets a new plan"
+
+// planDirtyStory makes issue 1 a story under #2, which it files.
+func planDirtyStory(f *githubtest.Fake) {
+	f.AddIssue("owner", "The epic", "The spec.")
+	f.SetType(1, "Story")
+	f.SetParent(1, 2)
+}
+
+// With a dirty body, /approve's rejection at plan-review names the edit,
+// its editor as code, and what clears it, after whatever reason comes
+// first, as that also gets the new plan any other reason needs (#525):
+// with no clean plan revision, or a plan comment that changed, it says so
+// first, then names the edit, and gives no /revise advice. For an epic,
+// what clears it is a move to `stage:clarifying`; for a story with a
+// parent, which the interviewer never rewrites (SPEC §9.1), it's an
+// approved revision of the parent's plan that changes it, which rewrites
+// its body whole (SPEC §6.4).
+func TestApprovePlanDirtyBodyClears(t *testing.T) {
+	t.Parallel()
+	const dirty = "the issue description has an edit by `mallory` that wasn't approved"
+	noPlan := func(more func(f *githubtest.Fake)) func(testing.TB) *githubtest.Fake {
+		return at(state.PlanReview, func(t testing.TB, f *githubtest.Fake) {
+			f.SetType(1, "Epic")
+			more(f)
+			f.EditBody(1, "mallory", noted("body"))
+			post(t, f, 1002, "owner", "/approve")
+		})
+	}
+	changed := func(more func(f *githubtest.Fake)) func(testing.TB) *githubtest.Fake {
+		return planReview(func(t testing.TB, f *githubtest.Fake) {
+			more(f)
+			f.EditComment(1003, app, strings.Replace(planComment(1, 1), "Do it.", "Do it now.", 1))
+			f.EditBody(1, "mallory", noted("body"))
+			post(t, f, 1004, "owner", "/approve")
+		})
+	}
+	alone := func(more func(f *githubtest.Fake)) func(testing.TB) *githubtest.Fake {
+		return planReview(func(t testing.TB, f *githubtest.Fake) {
+			more(f)
+			f.EditBody(1, "mallory", noted("body"))
+			post(t, f, 1004, "owner", "/approve")
+		})
+	}
+	epic := func(*githubtest.Fake) {}
+	changedWhy := "the comment of plan revision 1 was edited after I posted it, so it no longer matches that revision's hash, `" + planHash(1, 1) + "`"
+	for _, tt := range []struct {
+		name   string
+		setup  func(testing.TB) *githubtest.Fake
+		reason string
+		id     string
+	}{
+		{"an epic with no clean plan", noPlan(epic), "there's no clean plan revision to approve, and " + dirty + ". " + planDirtyEpic, "1002"},
+		{"an epic whose plan comment changed", changed(epic), changedWhy + ", and " + dirty + ". " + planDirtyEpic, "1004"},
+		{"a story with a parent", alone(planDirtyStory), dirty + ", so I can't approve the plan. " + planDirtyParentStory, "1004"},
+		{"a story with a parent and no clean plan", noPlan(planDirtyStory),
+			"there's no clean plan revision to approve, and " + dirty + ". " + planDirtyParentStory, "1002"},
+		{"a story with a parent whose plan comment changed", changed(planDirtyStory),
+			changedWhy + ", and " + dirty + ". " + planDirtyParentStory, "1004"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			check(t, tt.setup, approvePass(t), outcome{comments: []string{ivWordingApproveFinal(tt.reason, tt.id)},
+				labels: []string{"stage:plan-review"}, downs: []string{"/approve"}})
+		})
+	}
 }
 
 // The move into planned names the revision it approved, so
