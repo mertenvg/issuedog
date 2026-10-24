@@ -68,11 +68,10 @@ func TestResolveEndedHoldCountsNoMore(t *testing.T) {
 	}
 }
 
-// #188's verify, round 2, attempt 2: a child's own /hold that wrote no
-// marker (SPEC §6.4) counts, with a discussion hold on the child or not,
-// and ends only by /resume on the child (#188's decision, round 3); and a
-// /hold counts by the App's record that it applied it, whatever a write
-// collaborator made of its comment since.
+// A child's own /hold that wrote no marker counts, with a discussion hold
+// on the child or not, and ends only by /resume on the child; and a /hold
+// counts by the App's record that it applied it, whatever a write
+// collaborator made of its comment since (SPEC §6.4).
 
 // resolveOwnHoldUnder is #1 at ready with #2 under it, both held by the
 // owner's /hold on #1, then mallory's comment on #2, which holds nothing
@@ -101,9 +100,9 @@ func resolveOwnHoldUnder(t testing.TB) (*githubtest.Fake, int64) {
 // the child's own /hold, which wrote no marker (SPEC §6.4) and was posted below
 // it (#188's decision, round 3), so the child stays held by both, and the
 // parent's move names it for each. The child records that the parent's
-// /hold ended, so it stays ended (#188's verify, round 3, note 1). Once the owner's 👍 resolves mallory's
-// comment, the child stays held by its own /hold, and the record says so;
-// its own /resume then sends it to clarifying.
+// /hold ended, so it stays ended (SPEC §6.4). Once the owner's 👍
+// resolves mallory's comment, the child stays held by its own /hold, and
+// the record says so; its own /resume then sends it to clarifying.
 func TestResolveParentResumeLeavesOwnHoldUnderDiscussion(t *testing.T) {
 	t.Parallel()
 	var w int64
@@ -261,10 +260,9 @@ func TestResolveOwnHoldOnDiscussionThreeLevels(t *testing.T) {
 // writes none either. #2's /resume ends #2's /hold on #1 (#2's is its own
 // to end, so #1 never counts it), but not #1's own /hold, posted below it
 // (#188's decision, round 3), so #1 stays held, with the record that
-// #2's /hold ended there, and only that, so it stays ended (#188's verify,
-// round 3, note 1); once the owner's 👍 resolves mallory's comment, #1
-// stays held by its own /hold, until its own /resume sends it to
-// clarifying.
+// #2's /hold ended there, and only that, so it stays ended (SPEC §6.4);
+// once the owner's 👍 resolves mallory's comment, #1 stays held by its own
+// /hold, until its own /resume sends it to clarifying.
 func TestResolveOwnHoldUnderParentHoldWithoutMarker(t *testing.T) {
 	t.Parallel()
 	var w, parent int64

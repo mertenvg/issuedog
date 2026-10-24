@@ -104,7 +104,7 @@ func humanCheckApplier(t *testing.T, f *githubtest.Fake, clone *repo.Repo) *Appl
 
 // Each GitHub kind passes and fails on the fake, and found says what it
 // saw, every value as inline code. A plain-text "Done when" passes with
-// nothing to run.
+// nothing to run, and a check that couldn't be read fails, saying so.
 func TestHumanCheck(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -117,6 +117,8 @@ func TestHumanCheck(t *testing.T) {
 		found string
 	}{
 		{"plain text", nil, state.Check{}, true, `The "Done when" has no check for me to run.`},
+		{"a check that couldn't be read", nil, state.Check{Kind: state.CheckUnreadable}, false,
+			"I couldn't read the check on this task's `origin` marker, so it can't pass."},
 		{"a label", func(f *githubtest.Fake) { f.AddRepoLabel("Needs Design") }, check(state.CheckLabel, "needs design"),
 			true, "The label `needs design` exists."},
 		{"a missing label", func(f *githubtest.Fake) { f.AddRepoLabel("Needs Design") }, check(state.CheckLabel, "needs"),

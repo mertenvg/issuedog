@@ -180,6 +180,24 @@ func TestShippedPromptsAndSchemasPair(t *testing.T) {
 	}
 }
 
+// TestInterviewerPrompt: the shipped interviewer prompt says to record a
+// letter past a question's options as free, since the daemon's check fails
+// a decision whose letter names no option (SPEC §9.1, rule
+// decision-answer), and the run would fail until its attempts run out
+// (#399).
+func TestInterviewerPrompt(t *testing.T) {
+	t.Parallel()
+	p := string(shippedPrompt(t, "interviewer"))
+	for _, want := range []string{
+		"A letter past the question's options, such as `1c` on a question with options a and b, names no option: " +
+			"record it as `free`, with `summary` saying what was answered.",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("interviewer.md doesn't contain %q", want)
+		}
+	}
+}
+
 // unsupported are the schema keywords that --json-schema isn't known to
 // support (SPEC §16), or that would let a schema accept more than it lists.
 // claude refuses a schema with a $schema URL it doesn't have, such as

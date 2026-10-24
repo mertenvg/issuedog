@@ -205,8 +205,8 @@ func plural(n int, one, many string) string {
 // children are created from the approved revision's data (SPEC §5.2),
 // task bodies and checks included, which the comment's text never shows,
 // and a revision reads an earlier revision's items from it to revise a
-// plan (SPEC §11.3). Run results are
-// scratch, so this is the only copy:
+// plan (SPEC §11.3), a kept item's in full (planPrior.keptData). Run
+// results are scratch, so this is the only copy:
 //
 //	<!-- issuedog:plan-data v=1 data=<base64url(deflate(JSON))> -->
 //

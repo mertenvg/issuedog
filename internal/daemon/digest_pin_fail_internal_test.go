@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	gogithub "github.com/google/go-github/v92/github"
 
@@ -76,5 +78,40 @@ func TestDigestPinFailDropped(t *testing.T) {
 	d.digestDrop(1, errors.New("404"))
 	if g := d.digest; g.pinFailed != 0 || g.note != "" || g.noteOf(1) != "" {
 		t.Errorf("after the drop: pinFailed %d, note %q; want both forgotten", g.pinFailed, g.note)
+	}
+}
+
+// A refused pin's note cuts GitHub's message to digestPinNoteMax
+// characters, the last of them "…", on a character's boundary, and
+// escapes it after the cut: a 2,000-character message with a marker, a
+// mention, a backtick and multi-byte characters at the cut gives one short
+// line.
+func TestDigestPinRefusedNoteCap(t *testing.T) {
+	t.Parallel()
+	head := "Resource <!-- issuedog:x --> @eve `x` "
+	msg := head + strings.Repeat("日", 2000-utf8.RuneCountInString(head))
+	got := digestPinNote(digestPinFailHTTP(http.StatusForbidden, msg, true))
+	kept := digestPinNoteMax - 1 - utf8.RuneCountInString("HTTP 403: "+head)
+	want := "I couldn't pin this issue: `HTTP 403: Resource &lt;!-- issuedog:x --> @​eve 'x' " + strings.Repeat("日", kept) + "…`. Pin it by hand."
+	if got != want {
+		t.Errorf("digestPinNote(a 2,000-character message) = %q, want %q", got, want)
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("digestPinNote(a 2,000-character message) = %q; want valid UTF-8", got)
+	}
+}
+
+// A failed check or pin clears pinned, so a digest whose note this start
+// handled before isn't given the failure's note, which is another
+// digest's.
+func TestDigestPinFailedClearsPinned(t *testing.T) {
+	t.Parallel()
+	d := &Daemon{Step: &Step{Applier: &Applier{Owner: "o", Repo: "r"}}}
+	d.digest.pinned = 2
+	d.digestPinFailed(1, errors.New("i/o timeout"), "checking whether it's pinned failed")
+	want := "I couldn't pin this issue yet: checking whether it's pinned failed. I'll try again when the list changes, or pin it by hand."
+	if g := d.digest; g.pinned != 0 || g.pinFailed != 1 || g.noteOf(1) != want || g.noteOf(2) != "" {
+		t.Errorf("after the failure: pinned %d, pinFailed %d, noteOf(1) %q, noteOf(2) %q; want only digest 1's failure kept, with its note",
+			g.pinned, g.pinFailed, g.noteOf(1), g.noteOf(2))
 	}
 }

@@ -20,8 +20,9 @@ import (
 	"github.com/mertenvg/logr/v2"
 )
 
-// waitDelay bounds the wait for claude's output pipes to close after it exits.
-const waitDelay = 5 * time.Second
+// defaultWaitDelay bounds the wait for claude's output pipes to close after
+// it exits.
+const defaultWaitDelay = 5 * time.Second
 
 // Stage is one stage run of claude -p (SPEC §3.3).
 type Stage struct {
@@ -48,6 +49,7 @@ type Runner struct {
 	Stderr     io.Writer           // claude's stderr; nil discards it
 
 	dirSyncFunc func(dir string) error // syncs the runs dir after a result's rename; nil (all but tests) uses dirsync.Sync
+	waitDelay   time.Duration          // bounds the wait for claude's output pipes; 0 (all but tests) uses defaultWaitDelay
 }
 
 // dirSync flushes dir's entries to disk, through r.dirSyncFunc if it's set.
@@ -100,14 +102,7 @@ func (r *Runner) Run(ctx context.Context, s Stage) ([]byte, error) {
 	defer cancel()
 
 	var stdout bytes.Buffer
-	cmd := exec.CommandContext(ctx, r.Claude, args(string(prompt), s)...)
-	cmd.Dir = s.Dir
-	cmd.Env = s.Env
-	cmd.Stdout = &stdout
-	cmd.Stderr = r.Stderr
-	cmd.SysProcAttr = r.sysProcAttr()
-	cmd.Cancel = func() error { return r.killGroup(cmd.Process.Pid) }
-	cmd.WaitDelay = waitDelay
+	cmd := r.command(ctx, s, string(prompt), &stdout)
 	if err := cmd.Start(); err != nil {
 		return nil, &SetupError{fmt.Errorf("starting claude: %w", err)}
 	}
@@ -125,6 +120,24 @@ func (r *Runner) Run(ctx context.Context, s Stage) ([]byte, error) {
 		return stdout.Bytes(), fmt.Errorf("saving the result of run %s: %w", s.RunID, err)
 	}
 	return stdout.Bytes(), nil
+}
+
+// command builds the claude command for one stage run: in its own process
+// group, killed as a group when ctx is done, with r.waitDelay, or else
+// defaultWaitDelay, bounding the wait for its output pipes.
+func (r *Runner) command(ctx context.Context, s Stage, prompt string, stdout io.Writer) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, r.Claude, args(prompt, s)...)
+	cmd.Dir = s.Dir
+	cmd.Env = s.Env
+	cmd.Stdout = stdout
+	cmd.Stderr = r.Stderr
+	cmd.SysProcAttr = r.sysProcAttr()
+	cmd.Cancel = func() error { return r.killGroup(cmd.Process.Pid) }
+	cmd.WaitDelay = defaultWaitDelay
+	if r.waitDelay > 0 {
+		cmd.WaitDelay = r.waitDelay
+	}
+	return cmd
 }
 
 // args builds claude's arguments (SPEC §3.3).

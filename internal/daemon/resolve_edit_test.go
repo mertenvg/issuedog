@@ -241,7 +241,7 @@ func TestResolveEditedBeforeHoldIsNoHold(t *testing.T) {
 // before mallory's comment holds #1; then mallory edits it. That 👍 came
 // before #1's hold, so the edited comment is no /hold of it, and once the
 // owner's 👍 resolves mallory's comment, #1 goes to clarifying.
-func TestResolveRound3EditedBeforeHoldOnPath(t *testing.T) {
+func TestResolveEditedBeforeHoldOnParentIsNoHold(t *testing.T) {
 	t.Parallel()
 	l := newResolveLoop(t, newFake(t))
 	top := l.task(0)

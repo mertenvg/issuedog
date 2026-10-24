@@ -22,11 +22,13 @@ import (
 
 // This file is the interviewer's whole run against the fakes, from an epic
 // filed at intake to planning, through the real Interviewer at clarifying
-// and the real Triage as the Unlabeled stage, wired as stageWork will wire
-// them, with step 1 wired as main's newStep, and Daemon.Iterate as the
-// loop. Config and trust come from main on the origin, as in the daemon:
-// mertenvg and merten_acme own CODEOWNERS, notify is mertenvg, and eve has
-// no access at all.
+// and the real Triage as the Unlabeled stage, registered as stageWork
+// registers them, daemon.RegisterStages, but for the planner, with the
+// daemon built as startDaemon builds it, daemon.New, so step 1 is
+// daemon.NewStep's, but for the digest and assignment, and Daemon.Iterate
+// as the loop. Config and trust come from main on the origin, as in the
+// daemon: mertenvg and merten_acme own CODEOWNERS, notify is mertenvg, and
+// eve has no access at all.
 //
 // The agent's outputs are internal/agent's golden interviewer outputs, and
 // what's posted is checked against #132's golden files in testdata/interview.
@@ -76,6 +78,10 @@ type wholeRunCase struct {
 	// triaged files the epic, typed by its issue type, with no labels, so
 	// triage admits it first, in a run of its own.
 	triaged bool
+	// flagged, with triaged, has triage unsure, so its run flags the epic,
+	// and mertenvg's 👍 on the flag admits it (SPEC §6.2, Answering a
+	// flag), through step 1's FlagByReaction.
+	flagged bool
 	// override, if set, is .issuedog/prompts/interviewer.md on main.
 	override string
 }
@@ -106,16 +112,20 @@ func newWholeRun(t *testing.T, c wholeRunCase) *wholeRun {
 	if err := os.WriteFile(g.path("claude", "claude"), []byte(wholeRunClaude), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// As stageWork will register them (#137).
-	g.r.Stages = map[state.Stage]daemon.Stage{state.Clarifying: &daemon.Interviewer{Daemon: g.d}}
-	g.r.Unlabeled = &daemon.Triage{Daemon: g.d}
-	// As newStep wires step 1.
-	g.d.Step = daemon.NewStep(g.d.Step.Applier, g.d.Step.Trust, g.d.CurrentModels)
+	// As startDaemon builds the daemon, and stageWork registers the stages,
+	// but for the planner, the digest and assignment, on purpose: this run
+	// ends at planning, where the planner's own whole runs go on
+	// (planner_run_test.go), and predates the digest (#161) and assignment
+	// (#191), so its writes are the interviewer's and triage's alone. The
+	// later whole runs check theirs beside them.
+	g.wireAsMain(g.d.Config)
+	delete(g.r.Stages, state.Planning)
+	g.d.Digest, g.d.Assign = false, false
 	w := &wholeRun{rig: g, c: c}
 	var outs []string
 	if c.triaged {
 		w.skip = 1
-		outs = append(outs, triageOut("handle", true, wholeRunReason, "Make quotes expire."))
+		outs = append(outs, triageOut("handle", !c.flagged, wholeRunReason, "Make quotes expire."))
 	}
 	round1 := wholeRunOutput(t, "questions")
 	if !c.untyped {
@@ -373,18 +383,41 @@ func (w *wholeRun) run() {
 
 	// 1. You file the epic, and eve comments (newWholeRun). With no
 	// labels, triage admits it first: a pass with no other stage work.
-	if w.c.triaged {
+	// Unsure, it flags the epic instead, and your 👍 on the flag admits it
+	// in the next pass's step 1, before round 1.
+	var admit []string // the 👍's writes
+	var entryWant string
+	before := 1 // the comments before the move into clarifying: eve's
+	switch {
+	case w.c.flagged:
+		w.iterate("the flag", 1, "POST /issues/1/comments", "POST /issues/1/labels")
+		flag := w.newest("the flag", fmt.Sprintf("### Should issuedog handle #1?\n\n**1. Make quotes expire.** Blocks: #1\n"+
+			"   a. Handle it (recommended): %s\n   b. Leave it\n\n"+
+			"React 👍 to take the recommendation, or post `/track` or `/ignore`.\n\ncc @%s\n\n"+
+			"<!-- issuedog:triage verdict=ask run=run1 recommend=handle -->", wholeRunReason, wholeRunOwner))
+		w.labels("the flag", "triage:ask")
+		files := w.context(1, state.Intake)
+		ivOnlyIn(t, files, wholeRunEve, "untrusted.md")
+		w.quiet("the flag")
+		up := f.AddReaction(flag.ID, wholeRunOwner, "+1")
+		admit = []string{"POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/triage:ask"}
+		entryWant = flagAdmitted(wholeRunOwner+"'s 👍 on the flag takes its recommendation", "r"+strconv.FormatInt(up, 10))
+		before = 2 // and the flag
+	case w.c.triaged:
 		w.iterate("triage", 1, "POST /issues/1/comments", "POST /issues/1/labels")
 		w.newest("triage", fmt.Sprintf("Triage: issuedog will handle this issue: %s I've moved it to `clarifying`.\n\n"+
 			"<!-- issuedog:transition from=intake to=clarifying run=run1 seen=%d -->", wholeRunReason, w.eve))
 		w.labels("triage", at("clarifying")...)
 		files := w.context(1, state.Intake)
 		ivOnlyIn(t, files, wholeRunEve, "untrusted.md")
+	default:
+		entryWant = fmt.Sprintf("%s opened this issue, and it has `stage:intake`, so it's in the pipeline (SPEC §6.2). I've moved it to `clarifying`.\n\n"+
+			"<!-- issuedog:transition from=intake to=clarifying event=%d -->", wholeRunOwner, w.intakeEvent())
 	}
 
 	// 2. One iteration moves it to clarifying, unless triage has, and
 	// posts round 1 with 2 questions: an untyped issue is typed first.
-	var want []string
+	want := admit
 	if !w.c.triaged {
 		want = append(want, "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:intake")
 	}
@@ -394,16 +427,12 @@ func (w *wholeRun) run() {
 	want = append(want, "POST /issues/1/comments")
 	w.iterate("round 1", w.skip+1, want...)
 	cs := w.comments()
-	if len(cs) != 3 || cs[0].ID != w.eve {
-		t.Fatalf("round 1: %d comments; want eve's, the move into clarifying and round 1", len(cs))
+	if len(cs) != before+2 || cs[0].ID != w.eve {
+		t.Fatalf("round 1: %d comments; want eve's, the flag if any, the move into clarifying and round 1", len(cs))
 	}
-	entry := cs[1]
-	if !w.c.triaged {
-		ev := w.intakeEvent()
-		if want := fmt.Sprintf("%s opened this issue, and it has `stage:intake`, so it's in the pipeline (SPEC §6.2). I've moved it to `clarifying`.\n\n"+
-			"<!-- issuedog:transition from=intake to=clarifying event=%d -->", wholeRunOwner, ev); entry.Author.Login != app || entry.Body != want {
-			t.Errorf("the move into clarifying, by %s, =\n%s\nwant the App's\n%s", entry.Author.Login, entry.Body, want)
-		}
+	entry := cs[before]
+	if entryWant != "" && (entry.Author.Login != app || entry.Body != entryWant) {
+		t.Errorf("the move into clarifying, by %s, =\n%s\nwant the App's\n%s", entry.Author.Login, entry.Body, entryWant)
 	}
 	golden := wholeRunGolden(t, "questions-typed", n)
 	typ, typing := "epic", owners
@@ -466,8 +495,9 @@ func (w *wholeRun) run() {
 	rev := w.newest("the spec", wholeRunGolden(t, "spec-note", n)+"\n\n"+fmt.Sprintf("**Revision 1** of the spec, `%s`.\n\n"+
 		"- To approve it, react 👍 to this comment, or post `/approve`.\n"+
 		"- To send it back, post `/revise <notes>`, or any other comment.\n\n"+
+		"cc @%s\n\n"+
 		"<!-- issuedog:transition from=clarifying to=spec-review rev=1 body=%s run=run%d seen=%d -->\n"+
-		"<!-- issuedog:revision rev=1 body=%s -->", hash, hash, w.skip+3, a2, hash))
+		"<!-- issuedog:revision rev=1 body=%s -->", hash, wholeRunOwner, hash, w.skip+3, a2, hash))
 	w.labels("the spec", at("spec-review")...)
 	w.quiet("the spec")
 
@@ -477,8 +507,8 @@ func (w *wholeRun) run() {
 	w.newest("the approval", fmt.Sprintf("Revision 1 of the spec is approved, by %s's 👍.\n\n"+
 		"<!-- issuedog:transition from=spec-review to=planning rev=1 body=%s cmd=r%d seen=%d -->", wholeRunOwner, hash, up, rev.ID))
 	w.labels("the approval", at("planning")...)
-	if got := len(w.comments()); got != 8 {
-		t.Errorf("%d comments at the end; want 8: eve's, the move in, 2 rounds, 2 answers, the revision and the approval", got)
+	if got := len(w.comments()); got != before+7 {
+		t.Errorf("%d comments at the end; want %d: eve's, the flag if any, the move in, 2 rounds, 2 answers, the revision and the approval", got, before+7)
 	}
 
 	// An extra Iterate writes nothing, and nor does one a while later.
@@ -550,4 +580,14 @@ func TestWholeRunUntyped(t *testing.T) {
 func TestWholeRunTriaged(t *testing.T) {
 	t.Parallel()
 	newWholeRun(t, wholeRunCase{triaged: true}).run()
+}
+
+// TestWholeRunFlagged: the epic, filed with no labels, is flagged by
+// triage, unsure, in a run of its own, and mertenvg's 👍 on the flag
+// admits it in the next pass's step 1, whose interviewer run posts round
+// 1. So dropping FlagByReaction from step 1 (daemon.NewStep) fails a
+// whole run, not only main's wiring tests.
+func TestWholeRunFlagged(t *testing.T) {
+	t.Parallel()
+	newWholeRun(t, wholeRunCase{triaged: true, flagged: true}).run()
 }

@@ -45,7 +45,7 @@ After revision notes in `input.md`, revise the spec to address them, and put the
 
 Every question asked in any round appears in `decisions` at least once:
 
-- answered: `question` is its ID, `answer` the option letter or `free`, `summary` the decision in one line, `by` the login of the person who answered, as `conversation.md` or `input.md` shows it, and `round` the round they answered in.
+- answered: `question` is its ID, `answer` the option letter or `free`, `summary` the decision in one line, `by` the login of the person who answered, as `conversation.md` or `input.md` shows it, and `round` the round they answered in. A letter past the question's options, such as `1c` on a question with options a and b, names no option: record it as `free`, with `summary` saying what was answered.
 - superseded by a later question: `answer` is `superseded` and `summary` is the later question's ID.
 - dropped because it no longer matters: `answer` is `dropped` and `summary` says why.
 

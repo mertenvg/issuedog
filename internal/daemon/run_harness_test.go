@@ -643,8 +643,8 @@ func TestUnlabeledGetsInterviewerSettings(t *testing.T) {
 		t.Errorf("--max-turns = %q, want the interviewer's 7", got)
 	}
 	c.Stages.Timeouts.Interviewer = 200 * time.Millisecond
-	// claude sleeps 120s, so a run that outlives the bound, a generous one
-	// so a loaded machine doesn't fail it, wasn't killed at the timeout.
+	// claude sleeps 120s, so a run that outlives the bound wasn't killed at
+	// the timeout. The bound is generous so a loaded machine doesn't fail it.
 	if err := os.WriteFile(g.path("claude", "sleep"), []byte("120"), 0o644); err != nil {
 		t.Fatal(err)
 	}
