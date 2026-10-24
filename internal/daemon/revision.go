@@ -186,7 +186,9 @@ func ivWordingStale(latest state.Revision, ok bool, by github.Author, follows bo
 // PlanNoRevision may mean the only plan comment was made dirty or deleted,
 // not that no plan was ever posted, so it doesn't say "yet". A dirty body
 // stays dirty through a new plan, so its reason is Final too, and says
-// that a new plan won't help (#229).
+// that a new plan won't help (#229), and what does: moving the issue to
+// clarifying by hand, where the interviewer's new spec, the App's full
+// rewrite, replaces the edit (SPEC §5.1), and then a new plan (#331).
 func planRejection(latest state.Revision, why state.PlanReason, d Dirt) Rejection {
 	const replan = "To get a new plan, post `/revise`, or any other comment"
 	switch why {
@@ -200,10 +202,12 @@ func planRejection(latest state.Revision, why state.PlanReason, d Dirt) Rejectio
 			"so it no longer matches that revision's hash, `%s`. %s", latest.Rev, latest.Hash, replan), Final: true}
 	case state.PlanBodyDirty:
 		// Nothing at planning or plan-review rewrites the body (SPEC §7.4),
-		// so a new comment, or a new plan, wouldn't help (#229).
+		// so a new comment, or a new plan, wouldn't help (#229). A new
+		// spec does, so the reply names the stage that gets one (#331).
 		return Rejection{Reason: fmt.Sprintf("the issue description has an edit by %s that wasn't approved, so I can't approve the plan. "+
 			"Nothing at `planning` or `plan-review` rewrites the description, so sending the plan back won't clear the edit. "+
-			"To move on, set the stage by hand", d[state.BodyID]), Final: true}
+			"To clear it, move the issue to `stage:clarifying`: that gets a new spec from the interviewer, "+
+			"which replaces the edit, and then a new plan", d[state.BodyID]), Final: true}
 	}
 	return Rejection{Reason: fmt.Sprintf("plan revision %d can't be approved (reason %d)", latest.Rev, why)}
 }

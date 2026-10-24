@@ -216,7 +216,8 @@ func TestApprovePlan(t *testing.T) {
 			}),
 			outcome{comments: []string{ivWordingApproveFinal("the issue description has an edit by mallory that wasn't approved, "+
 				"so I can't approve the plan. Nothing at `planning` or `plan-review` rewrites the description, "+
-				"so sending the plan back won't clear the edit. To move on, set the stage by hand", "1005")}, labels: atReview, downs: []string{"/approve"}}},
+				"so sending the plan back won't clear the edit. To clear it, move the issue to `stage:clarifying`: that gets a new spec "+
+				"from the interviewer, which replaces the edit, and then a new plan", "1005")}, labels: atReview, downs: []string{"/approve"}}},
 		{"a trusted edit to the body leaves the plan approvable",
 			planReview(func(t testing.TB, f *githubtest.Fake) {
 				f.EditBody(1, "owner", "body v2")

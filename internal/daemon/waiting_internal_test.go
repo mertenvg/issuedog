@@ -776,6 +776,10 @@ const (
 	waitPlanApprove = "React 👍 to the plan comment, or post `/approve`, to approve it."
 	waitPlanBack    = "Post `/revise <notes>`, or any other comment, to send it back."
 	waitPlanRenew   = "Post `/revise <notes>`, or any other comment, to send it back and get a new plan."
+	// waitPlanDirtyClears is the last line of a plan that a dirty body
+	// keeps from approval, which only a new spec clears (#331).
+	waitPlanDirtyClears = "Move the issue to `stage:clarifying` to clear the edit: that gets a new spec from the interviewer, " +
+		"which replaces it, and then a new plan. Sending the plan back won't clear it."
 )
 
 // A story at plan-review with a clean plan revision is a plan's approval
@@ -833,7 +837,9 @@ func TestWaitFindPlanApproval(t *testing.T) {
 // with no clean revision, a hidden one or one whose comment changed says
 // that sending it back gets a new plan (SPEC §7.4), and one with no
 // clean revision links the transition, as it says "no clean revision",
-// not "no plan yet" (#267's verify).
+// not "no plan yet" (#267's verify). One with a dirty body says instead
+// that moving it to `stage:clarifying` clears the edit, with or without
+// the other reasons, as a new plan alone doesn't (#331).
 func TestWaitFindPlanApprovalBlocked(t *testing.T) {
 	t.Parallel()
 	plan := waitPlanComment(t, 1)
@@ -874,9 +880,9 @@ func TestWaitFindPlanApprovalBlocked(t *testing.T) {
 		{"changed", waitStory(43, 1, nil, changed), Dirt{}, "plan-43-1", 4301, "Revision 1 of the plan, `0badbeef`, waits for approval.",
 			[]string{"the comment of plan revision 1 changed after it was posted, so it no longer matches `0badbeef`"}, waitPlanRenew},
 		{"dirty body", waitStory(43, 1, nil, plan), Dirt{state.BodyID: "eve"}, "plan-43-1", 4301,
-			"Revision 1 of the plan, `" + hash + "`, waits for approval.", []string{dirty}, waitPlanBack},
+			"Revision 1 of the plan, `" + hash + "`, waits for approval.", []string{dirty}, waitPlanDirtyClears},
 		{"hidden and a dirty body", waitStory(43, 1, nil, plan, "Edited by someone."), Dirt{state.BodyID: "eve", 4302: "eve"}, "plan-43-1", 4301,
-			"Revision 1 of the plan, `" + hash + "`, waits for approval.", []string{hidden, dirty}, waitPlanRenew},
+			"Revision 1 of the plan, `" + hash + "`, waits for approval.", []string{hidden, dirty}, waitPlanDirtyClears},
 		{"untyped", untyped, Dirt{}, "plan-43-1", 4301, "Revision 1 of the plan, `" + hash + "`, waits for approval.",
 			[]string{"an issue of its type doesn't go on to `planned` on approval"}, waitPlanBack},
 		{"unknown type", unknown, Dirt{}, "plan-43-1", 4301, "Revision 1 of the plan, `" + hash + "`, waits for approval.",

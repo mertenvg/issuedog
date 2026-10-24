@@ -445,7 +445,12 @@ func waitTypeWhy(s *github.Snapshot, is state.Issue, next state.Stage, trigger s
 // can't be approved as it stands, with no clean revision, a hidden one or
 // one whose comment changed, needs a new plan, which only a planner run
 // posts: the daemon doesn't repost one (SPEC §7.4). So the last line
-// says that sending it back gets one.
+// says that sending it back gets one. A dirty body stays dirty through a
+// new plan, as nothing at planning or plan-review rewrites it (SPEC
+// §7.4), so then the last line says instead what clears it, as /approve's
+// rejection does (planRejection, #331): moving the issue to clarifying,
+// where the interviewer's new spec replaces the edit, and then a new plan,
+// which also stands in for the new plan the other reasons need.
 func waitPlanApprovalLines(in waitInput, is state.Issue) (int, int64, []waitLine) {
 	s := in.S
 	latest, reasons := state.PlanApproval(s, in.AppSlug, in.Dirt.Has)
@@ -457,6 +462,7 @@ func waitPlanApprovalLines(in waitInput, is state.Issue) (int, int64, []waitLine
 	}
 	var why []string
 	renew := false // only a new plan can be approved
+	dirty := false // only a new spec, then a new plan, can be approved
 	for _, r := range reasons {
 		switch r {
 		case state.PlanNoRevision:
@@ -472,6 +478,7 @@ func waitPlanApprovalLines(in waitInput, is state.Issue) (int, int64, []waitLine
 			renew = true
 		case state.PlanBodyDirty:
 			why = append(why, "the issue description has an edit that wasn't approved (see the note on it)")
+			dirty = true
 		}
 	}
 	why = append(why, waitTypeWhy(s, is, state.Planned, state.TriggerPlanApproved)...)
@@ -482,7 +489,11 @@ func waitPlanApprovalLines(in waitInput, is state.Issue) (int, int64, []waitLine
 		lines = append(lines, waitLine{Text: "React 👍 to the plan comment, or post `/approve`, to approve it."})
 	}
 	back := "Post `/revise <notes>`, or any other comment, to send it back."
-	if renew {
+	switch {
+	case dirty:
+		back = "Move the issue to `stage:clarifying` to clear the edit: that gets a new spec from the interviewer, " +
+			"which replaces it, and then a new plan. Sending the plan back won't clear it."
+	case renew:
 		back = "Post `/revise <notes>`, or any other comment, to send it back and get a new plan."
 	}
 	return latest.Rev, comment, append(lines, waitLine{Text: back})

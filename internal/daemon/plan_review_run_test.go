@@ -776,7 +776,8 @@ func TestPlanReviewRunOldPlanAtSpecReview(t *testing.T) {
 // App comment makes it dirty). Then mertenvg's /resume takes the epic back
 // to plan-review, and his /approve, after it, is rejected there, naming
 // the first reason only. The digest's item names each reason, in the same
-// order. A restart writes nothing.
+// order, then that a move to `stage:clarifying` clears the dirty body
+// (#331). A restart writes nothing.
 func TestPlanReviewRunApproveReasons(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -833,8 +834,11 @@ func TestPlanReviewRunApproveReasons(t *testing.T) {
 			for i, w := range why {
 				lines[i] = "- It can't be approved yet: " + w + ".\n"
 			}
+			// Then, as the body is dirty, what clears it (#331).
+			lines = append(lines, "- Move the issue to `stage:clarifying` to clear the edit: that gets a new spec from the interviewer, "+
+				"which replaces it, and then a new plan. Sending the plan back won't clear it.\n")
 			if body := f.State().Issues[1].Body; !strings.Contains(body, strings.Join(lines, "")) {
-				t.Errorf("the /resume and the /approve: the digest =\n%s\nwant the reasons, in order:\n%s", body, strings.Join(lines, ""))
+				t.Errorf("the /resume and the /approve: the digest =\n%s\nwant the reasons, in order, then what clears the edit:\n%s", body, strings.Join(lines, ""))
 			}
 			l.quiet("rejected")
 			l.restart("the end")
