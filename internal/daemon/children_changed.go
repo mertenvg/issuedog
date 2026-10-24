@@ -30,10 +30,11 @@ import (
 // and key the parent's move into planned, event=p<its comment ID>, which
 // keys each move as a child's first move is keyed (SPEC §5.2). A plan
 // comment that names no run is a failure no later pass gets past
-// (childrenStuck), returned before any changed child is written. A changed
-// item whose child isn't found, as when its body lost its origin to an
-// edit that the App hasn't reposted yet, is logged and skipped, and a
-// later pass tries again.
+// (childrenStuck), returned before any changed child is written. Each
+// changed item's child is in children, as ChildrenVisit stops a revision
+// whose kept or changed child isn't found before any write (childrenGone),
+// so one that isn't is an error, as for a first plan's dependency with no
+// child (childrenLink), and nothing is written to it.
 func (st *Step) childrenChanged(ctx context.Context, s *github.Snapshot, rev int, plan github.Comment, key state.Key,
 	specs []childSpec, children map[string]childFound, numbers map[string]int) error {
 	if len(specs) == 0 {
@@ -49,8 +50,7 @@ func (st *Step) childrenChanged(ctx context.Context, s *github.Snapshot, rev int
 	for _, c := range specs {
 		f, ok := children[c.Item]
 		if !ok {
-			logr.Warnf("%s/%s#%d: no child of item %s of its plan is found, so revision %d's change to it waits", st.Owner, st.Repo, s.Number, c.Item, rev)
-			continue
+			return fmt.Errorf("item %s: revision %d changes it, but it has no child", c.Item, rev)
 		}
 		if err := st.childChanged(ctx, s, rev, plan, run, key, c, f.Number, numbers); err != nil {
 			return fmt.Errorf("item %s: %w", c.Item, err)

@@ -70,7 +70,10 @@ import (
 // as the planner listed them for the revision, so a child someone
 // unlinked from the parent by hand is still found. A kept or changed item
 // of a revision whose child isn't found is gone, as when it was deleted or
-// moved to another repo after the revision was checked, and no later pass
+// moved to another repo after the revision was checked, or, rarely,
+// unlinked by hand and not listed: an issue a person filed, a child only
+// while it's a sub-issue, or one not updated since the plan's earliest
+// clean approval, as when the first one's comment is dirty. No later pass
 // finds it either: that's a failure no later pass gets past, below, found
 // before any write (childrenGone, #362). A dropped item whose child isn't
 // found gets no write: a warning names it, and the record says so, and
@@ -164,8 +167,9 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 	if err != nil {
 		return wrap(err)
 	}
-	// A kept or changed child that isn't found is gone, so the visit stops
-	// with nothing written, and reports it once (#362).
+	// A kept or changed child that isn't found is gone, or rarely unlinked
+	// and not listed, so the visit stops with nothing written, and reports
+	// it once (#362).
 	if err := childrenGone(plan.Items, found); err != nil {
 		return fail(err)
 	}
@@ -197,15 +201,15 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 	// plan.Items is plan order, which the links and the record follow,
 	// whatever order the children were created in. Of a revision, the new
 	// items' children get their links here, and a kept child keeps its
-	// links. A kept or changed item's child is found by now (childrenGone),
-	// but should a dependency's child not be, it's skipped, not an error,
-	// so it can't stop the record (#297).
+	// links. A new item depends on no dropped one (SPEC §11.3), and a kept
+	// or changed item's child is found by now (childrenGone), so each
+	// dependency has a child.
 	revised := slices.ContainsFunc(plan.Items, func(it planItem) bool { return it.Status != "" })
 	linked := plan.Items
 	if revised {
 		linked = slices.DeleteFunc(slices.Clone(plan.Items), func(it planItem) bool { return !planFiles(it.Status) })
 	}
-	if err := st.childrenLink(ctx, linked, children, revised); err != nil {
+	if err := st.childrenLink(ctx, linked, children); err != nil {
 		return wrap(err)
 	}
 	if revised {
@@ -304,12 +308,14 @@ func childrenSince(s *github.Snapshot, appSlug string, dirty func(int64) bool, m
 // items, a revision's, whose child isn't among found (childrenFind), or
 // nil if each has one. The children are listed since the plan's first
 // approval (childrenSince), as the planner listed them, so one someone
-// unlinked by hand is found: such a child is gone, as when it was deleted
-// or moved to another repo after the revision was checked, and no later
-// pass finds it either (SPEC §5.2, "A child that isn't found", #362). Its
-// why names each item by its ID, the planner's, which the state error
-// escapes. A dropped item whose child isn't found isn't one, as the
-// revision has nothing to close: the record names it (childrenRecord).
+// unlinked by hand is found. One that isn't found is gone, as when it was
+// deleted or moved to another repo after the revision was checked, or,
+// rarely, unlinked and not listed, as one a person filed is
+// (ChildrenVisit), and no later pass finds it either (SPEC §5.2, "A child
+// that isn't found", #362). So its why names all three causes, and each
+// item by its ID, the planner's, which the state error escapes. A dropped
+// item whose child isn't found isn't one, as the revision has nothing to
+// close: the record names it (childrenRecord).
 func childrenGone(items []planItem, found map[string]childFound) error {
 	var ids, named []string
 	for _, it := range items {
@@ -325,7 +331,7 @@ func childrenGone(items []planItem, found map[string]childFound) error {
 		them, were = "them", "they were"
 	}
 	return &childrenStuck{
-		why: fmt.Sprintf("no child of %s is found, though the revision keeps or changes %s, as when %s deleted or moved to another repo",
+		why: fmt.Sprintf("no child of %s is found, though the revision keeps or changes %s, as when %s deleted, moved to another repo or unlinked from this issue",
 			list(named), them, were),
 		err: fmt.Errorf("no child of item %s is among the sub-issues or the issues updated since the plan's first approval", strings.Join(ids, ", ")),
 	}
@@ -649,19 +655,19 @@ func (st *Step) childWrite(ctx context.Context, s *github.Snapshot, rev int, key
 // childrenLink makes each child in children, by item, blocked by the
 // children of the items its item's "Depends on" names, in plan order
 // (SPEC §5.2). Those name items of the same plan, each once, as the plan's
-// validation (SPEC §11.3) and the planner's schema check, so in a first
-// plan a dependency with no child is an error. In a revision, revised, it
-// may name a kept or
-// changed item whose child isn't found (ChildrenVisit): that link is
-// logged and skipped, and the record names the item (childrenRecord).
-// It reads each such child's blocked-by links first (BlockedBy),
-// and adds only the ones it lacks, matched by issue ID, so a replay adds
-// none twice. It removes none: links someone else added stay. A child it
-// adds a link to is reported to Touched first, as the add moves its
-// updated_at. A human task, created last, is blocked by what its own item
-// depends on, and the children of items that depend on it are blocked by
-// it, like any other child's.
-func (st *Step) childrenLink(ctx context.Context, items []planItem, children map[string]childFound, revised bool) error {
+// validation (SPEC §11.3) and the planner's schema check, so a dependency
+// with no child is an error. In a revision, items are its new ones, whose
+// dependencies may name new, kept and changed items but never a dropped
+// one (SPEC §11.3): a new item's child is filed by now, and a kept or
+// changed one's found, or ChildrenVisit stops before any write
+// (childrenGone). It reads each such child's blocked-by links first
+// (BlockedBy), and adds only the ones it lacks, matched by issue ID, so a
+// replay adds none twice. It removes none: links someone else added stay.
+// A child it adds a link to is reported to Touched first, as the add
+// moves its updated_at. A human task, created last, is blocked by what its
+// own item depends on, and the children of items that depend on it are
+// blocked by it, like any other child's.
+func (st *Step) childrenLink(ctx context.Context, items []planItem, children map[string]childFound) error {
 	for _, it := range items {
 		if len(it.DependsOn) == 0 {
 			continue
@@ -677,11 +683,6 @@ func (st *Step) childrenLink(ctx context.Context, items []planItem, children map
 		}
 		for _, dep := range it.DependsOn {
 			b, ok := children[dep]
-			if !ok && revised {
-				logr.Warnf("%s/%s#%d: item %s of a plan depends on item %s, whose child isn't found, so it isn't blocked by it",
-					st.Owner, st.Repo, c.Number, it.ID, dep)
-				continue
-			}
 			if !ok {
 				return fmt.Errorf("item %s: it depends on %s, which has no child", it.ID, dep)
 			}
@@ -709,9 +710,11 @@ func (st *Step) childrenLink(ctx context.Context, items []planItem, children map
 //
 // For a revision (#297), it lists every child but a dropped item's, a
 // kept one by the number it was found under. An item of a revision
-// whose child isn't found, kept, changed or dropped, isn't listed: a line
-// after the list names it, as one the revision left as it is. With no
-// child left to list, the marker has children=none (state.CreatedNone).
+// whose child isn't found, which by now is only a dropped one, as
+// ChildrenVisit stops a revision whose kept or changed child isn't found
+// (childrenGone), isn't listed: a line after the list names it, as one
+// the revision left as it is. With no child left to list, the marker has
+// children=none (state.CreatedNone).
 func (st *Step) childrenRecord(ctx context.Context, s *github.Snapshot, rev int, items []planItem, children map[string]childFound) error {
 	head := "I've created the children of plan rev %d:"
 	if slices.ContainsFunc(items, func(it planItem) bool { return it.Status != "" }) {

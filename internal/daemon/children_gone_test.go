@@ -65,11 +65,11 @@ func TestChildrenKeptGone(t *testing.T) {
 		why   string
 	}{
 		{"a kept child moved", goneKeptT3(4),
-			"no child of T3 is found, though the revision keeps or changes it, as when it was deleted or moved to another repo"},
+			"no child of T3 is found, though the revision keeps or changes it, as when it was deleted, moved to another repo or unlinked from this issue"},
 		{"a changed child moved", goneKeptT3(3),
-			"no child of T2 is found, though the revision keeps or changes it, as when it was deleted or moved to another repo"},
+			"no child of T2 is found, though the revision keeps or changes it, as when it was deleted, moved to another repo or unlinked from this issue"},
 		{"a changed child and a kept one moved", goneKeptT3(3, 4),
-			"no child of T2 and T3 is found, though the revision keeps or changes them, as when they were deleted or moved to another repo"},
+			"no child of T2 and T3 is found, though the revision keeps or changes them, as when they were deleted, moved to another repo or unlinked from this issue"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -111,7 +111,8 @@ func TestChildrenKeptGone(t *testing.T) {
 // the state error names the item, the human task gets no write, and the
 // visit returns no error. Here the kept T2, which the changed T3 blocks
 // (changedKeptBlocksRevision), was moved to another repo. A crash at the
-// error's post replays.
+// error's post replays, and a visit after the error makes no request at
+// all.
 func TestChildrenKeptGoneBlockedByChangedHuman(t *testing.T) {
 	t.Parallel()
 	setup := changedKeptBlocksSetup(3)
@@ -121,13 +122,58 @@ func TestChildrenKeptGoneBlockedByChangedHuman(t *testing.T) {
 	f := run(t, setup, pass)
 	st := f.State()
 	want := "I can't create the children of plan rev 2, as no child of T2 is found, though the revision keeps or changes it, " +
-		"as when it was deleted or moved to another repo. I won't try again until this issue moves, as by `/hold` and `/resume`. " +
+		"as when it was deleted, moved to another repo or unlinked from this issue. I won't try again until this issue moves, as by `/hold` and `/resume`. " +
 		"The daemon's log has the error.\n\n" + childrenCrashError(goneMoveID(t, f))
 	if got := childrenCrashErrors(st.Issues[0]); !reflect.DeepEqual(got, []string{want}) {
 		t.Errorf("issue 1's state errors are\n%q\nwant one\n%q", got, want)
 	}
 	if len(st.Issues) != 5 || len(records(st.Issues[0])) != 0 {
 		t.Errorf("%d issues, and the records %q; want none filed, and no record", len(st.Issues), records(st.Issues[0]))
+	}
+	for _, n := range []int{2, 3, 4, 5} {
+		droppedNoWrite(t, f, n, "a child or the bug, while the revision is stopped")
+	}
+	visit := childrenStep(t, f, revisionPlan)
+	s, err := visit.Client.Snapshot(context.Background(), "o", "r", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := len(f.Requests())
+	if err := visit.ChildrenVisit(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	if r := f.Requests()[from:]; len(r) != 0 {
+		t.Errorf("a visit once the state error stands sent %+v; want nothing", r)
+	}
+}
+
+// A kept child that someone unlinked by hand, but isn't listed, isn't
+// found either, though it isn't gone: here the adopted T3, kept, which
+// owner filed, so it's a child only while it's a sub-issue (SPEC §5.2).
+// The state error's cause fits it as well, naming an unlink, and the
+// issue gets no write.
+func TestChildrenKeptUnlinkedAdopted(t *testing.T) {
+	t.Parallel()
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := newFake(t)
+		r := adoptedApprovedWith(t, f, false, nil, changedPlanData(t, adoptedKeptRevision(t)))
+		f.SetParent(r.t3, 0)
+		return f
+	}
+	pass := childrenPass(t, revisionPlan)
+	githubtest.Replay(t, setup, pass)
+
+	f := run(t, setup, pass)
+	st := f.State()
+	want := "I can't create the children of plan rev 2, as no child of T3 is found, though the revision keeps or changes it, " +
+		"as when it was deleted, moved to another repo or unlinked from this issue. I won't try again until this issue moves, " +
+		"as by `/hold` and `/resume`. The daemon's log has the error.\n\n" + childrenCrashError(goneMoveID(t, f))
+	if got := childrenCrashErrors(st.Issues[0]); !reflect.DeepEqual(got, []string{want}) {
+		t.Errorf("issue 1's state errors are\n%q\nwant one\n%q", got, want)
+	}
+	if len(st.Issues) != 5 || len(records(st.Issues[0])) != 0 || st.Issues[3].Closed {
+		t.Errorf("%d issues, the records %q, and T3's child closed %t; want none filed, no record, and T3's child open",
+			len(st.Issues), records(st.Issues[0]), st.Issues[3].Closed)
 	}
 	for _, n := range []int{2, 3, 4, 5} {
 		droppedNoWrite(t, f, n, "a child or the bug, while the revision is stopped")

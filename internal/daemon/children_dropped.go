@@ -28,12 +28,15 @@ import (
 // by hand or in another repo, stays. Its blocked-by links are read first
 // (BlockedBy), so a replay adds and removes none twice, and the child is
 // reported to Touched before its first write. A changed child that's
-// closed, or isn't found, gets nothing, as childrenChanged gives it
-// nothing either, and a dependency whose child isn't found is skipped,
-// as childrenLink skips it. The links of a kept child, and the links
-// into a changed child from its siblings, are each the other child's
-// own: a kept item keeps its dependencies (keptDeps), and a new or
-// changed one's are its own item's.
+// closed gets nothing, as childrenChanged gives it nothing either. Each
+// changed item's child is in children, and so is each dependency's, as a
+// changed item depends on no dropped one (SPEC §11.3), a new one's child
+// is filed by now, and ChildrenVisit stops a revision whose kept or
+// changed child isn't found before any write (childrenGone): one that
+// isn't is an error, as in childrenLink. The links of a kept child, and
+// the links into a changed child from its siblings, are each the other
+// child's own: a kept item keeps its dependencies (keptDeps), and a new
+// or changed one's are its own item's.
 func (st *Step) revisedLink(ctx context.Context, items []planItem, children map[string]childFound) error {
 	siblings := make(map[int64]bool, len(children))
 	for _, f := range children {
@@ -44,8 +47,11 @@ func (st *Step) revisedLink(ctx context.Context, items []planItem, children map[
 			continue
 		}
 		c, ok := children[it.ID]
-		if !ok || c.Closed {
-			logr.Debugf("%s/%s: item %s's child is closed or not found, so its links to its siblings are left as they are", st.Owner, st.Repo, it.ID)
+		if !ok {
+			return fmt.Errorf("item %s: the revision changes it, but it has no child", it.ID)
+		}
+		if c.Closed {
+			logr.Debugf("%s/%s: item %s's child is closed, so its links to its siblings are left as they are", st.Owner, st.Repo, it.ID)
 			continue
 		}
 		listed, err := st.Client.BlockedBy(ctx, st.Owner, st.Repo, c.Number)
@@ -60,9 +66,7 @@ func (st *Step) revisedLink(ctx context.Context, items []planItem, children map[
 		for _, dep := range it.DependsOn {
 			b, ok := children[dep]
 			if !ok {
-				logr.Warnf("%s/%s#%d: item %s of a plan depends on item %s, whose child isn't found, so it isn't blocked by it",
-					st.Owner, st.Repo, c.Number, it.ID, dep)
-				continue
+				return fmt.Errorf("item %s: it depends on %s, which has no child", it.ID, dep)
 			}
 			want[b.ID] = true
 			if has[b.ID] {
