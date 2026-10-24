@@ -644,6 +644,43 @@ func TestTransferUnlistedOnlyHeld(t *testing.T) {
 	}
 }
 
+// #579: a failed listing keeps the issues dropped since the last listing
+// that worked. A repo whose only held issue is wrongly dropped, as in
+// TestTransferUnlistedOnlyHeld, has its next listing, ten minutes on,
+// fail: it holds no issue still, but the listing after, ten minutes from
+// the failed one, is made all the same, and brings the issue back. Had
+// the failed listing forgotten the drop, no listing would be made again,
+// and the issue would never come back.
+func TestTransferUnlistedOnlyHeldFailed(t *testing.T) {
+	t.Parallel()
+	f, d := transferUnlistedOnly(t)
+	var worked []int
+	assignWorked(d, &worked)
+	f.Advance(transferUnlistedWait)
+	transferUnlistedGap(f, 1)
+	from := len(f.Requests())
+	iterate(t, d)
+	if got := assignAbout(f, from, 1); !slices.Equal(got, []string{"GET /issues/1 404"}) || slices.Contains(worked, 1) {
+		t.Fatalf("the listing's pass that leaves 1 out: requests about 1 = %q, Work got %v; want the read's 404, which drops 1", got, worked)
+	}
+	f.Advance(transferUnlistedWait)
+	f.AnswerOnce(transferUnlistedListing, http.StatusInternalServerError)
+	worked, from = nil, len(f.Requests())
+	if err := d.Iterate(context.Background()); err == nil || !strings.Contains(err.Error(), "the check for held issues no longer listed") {
+		t.Errorf("Iterate with a failed listing = %v; want its error", err)
+	}
+	if got, n := assignAbout(f, from, 1), transferUnlistedListings(f, from); len(got) != 0 || n != 1 || len(worked) != 0 {
+		t.Errorf("the failed listing's pass: requests about 1 = %q, %d listings, Work got %v; want no request about 1, one listing, and nothing for Work", got, n, worked)
+	}
+	f.Advance(transferUnlistedWait)
+	worked, from = nil, len(f.Requests())
+	iterate(t, d)
+	if got, n := assignAbout(f, from, 1), transferUnlistedListings(f, from); !slices.Contains(got, "GET /issues/1 200") || n != 1 || !slices.Contains(worked, 1) {
+		t.Errorf("the listing's pass after the failed one: requests about 1 = %q, %d listings, Work got %v; want one listing, and 1 read, and given to Work",
+			got, n, worked)
+	}
+}
+
 // A repo whose only held issue is transferred away lists the open issues
 // once more after the pass that drops it, ten minutes on, though it holds
 // no issue then, as a live one wrongly dropped would come back from that
@@ -766,6 +803,43 @@ func TestTransferUnlistedLeftOutDue(t *testing.T) {
 	iterate(t, d)
 	if got := assignAbout(f, from, 2); !slices.Contains(got, "GET /issues/2 200") || slices.Contains(f.State().Issues[1].Labels, "scope:x") {
 		t.Errorf("the pass after: requests about 2 = %q, labels %q; want 2 read again, kept, and scope:x removed", got, f.State().Issues[1].Labels)
+	}
+}
+
+// #579: an issue the pass reads again as a login GitHub had no
+// permission record of is asked about again once its wait is up
+// (discNoRecord) keeps the two reads that drop it too, though its poll
+// didn't list it: the listing is judged after the issues so marked, so
+// the wrong 404 on its read, on the pass whose listing leaves it out, is
+// the first of the two, and the next pass's read, which finds it, keeps
+// it. Judged before them, the listing's gap would count as the first, and
+// that one 404 would drop it.
+func TestTransferUnlistedNoRecordDue(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	fileAt(f, "ready", "other")
+	fileAt(f, "ready", "do it")
+	d := newDaemon(t, f, newOrigin(t), nil)
+	iterate(t, d)
+	f.RenameIssue(2, "trent", "Renamed") // trent has no permission record
+	iterate(t, d)
+	f.EditBody(1, "owner", "other, edited")
+	iterate(t, d) // the poll's cursor, past 2
+	// The wait for trent is up, and the listing due.
+	f.Advance(time.Hour + time.Minute)
+	transferUnlistedGap(f, 2)
+	var worked []int
+	assignWorked(d, &worked)
+	from := len(f.Requests())
+	iterate(t, d)
+	if got := assignAbout(f, from, 2); !slices.Equal(got, []string{"GET /issues/2 404"}) || slices.Contains(worked, 2) {
+		t.Fatalf("the listing's pass that leaves 2 out, as trent's wait is up: requests about 2 = %q, Work got %v; want the read's 404, and 2 left out",
+			got, worked)
+	}
+	worked, from = nil, len(f.Requests())
+	iterate(t, d)
+	if got := assignAbout(f, from, 2); !slices.Contains(got, "GET /issues/2 200") || !slices.Contains(worked, 2) {
+		t.Errorf("the pass after: requests about 2 = %q, Work got %v; want 2 read again, kept, and given to Work", got, worked)
 	}
 }
 
