@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"fmt"
+	"time"
 
 	gogithub "github.com/google/go-github/v92/github"
 )
@@ -54,6 +55,42 @@ func (c *Client) SubIssues(ctx context.Context, owner, repo string, parent int) 
 		issues = append(issues, (*gogithub.Issue)(s))
 	}
 	return issues, nil
+}
+
+// SubIssueRemoval is a sub_issue_removed event on a parent's timeline:
+// who removed the link of which sub-issue below it, and when.
+type SubIssueRemoval struct {
+	ID int64 // the timeline event's ID
+	// Repo is the sub-issue's repository, owner/name, and Number its
+	// number there.
+	Repo   string
+	Number int
+	By     Author
+	At     time.Time
+}
+
+// SubIssueRemovals reads parent's whole timeline once, and returns its
+// sub_issue_removed events, oldest first, for an epic's close (SPEC
+// §7.3). GitHub's REST timeline gives a sub_issue_added event its actor
+// and its sub_issue, with the sub-issue's number and repository (checked
+// live on this repo's #509, in #419), and GraphQL's SubIssueRemovedEvent
+// has an actor and a subIssue too, so a removal is read as that shape:
+// SPEC §16 lists it to confirm live. An event that names no sub-issue
+// isn't returned.
+func (c *Client) SubIssueRemovals(ctx context.Context, owner, repo string, parent int) ([]SubIssueRemoval, error) {
+	events, err := c.issueTypeRevertTimeline(ctx, owner, repo, parent, time.Time{})
+	if err != nil {
+		return nil, fmt.Errorf("sub-issue links removed from %s/%s#%d: %w", owner, repo, parent, err)
+	}
+	var removals []SubIssueRemoval
+	for _, e := range events {
+		if e.GetEvent() != "sub_issue_removed" || e.SubIssue == nil || e.SubIssue.Number <= 0 {
+			continue
+		}
+		removals = append(removals, SubIssueRemoval{ID: e.GetID(), Repo: e.SubIssue.Repository.FullName, Number: e.SubIssue.Number,
+			By: authorOf(e.GetActor()), At: e.GetCreatedAt().Time})
+	}
+	return removals, nil
 }
 
 // AddSubIssue links the issue whose ID is childID (not its number) under

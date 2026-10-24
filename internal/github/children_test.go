@@ -83,6 +83,35 @@ func TestCreateChildRefused(t *testing.T) {
 	}
 }
 
+// SubIssueRemovals gives the parent's sub_issue_removed events, oldest
+// first, each with who removed which sub-issue's link, in which repo, and
+// none of its other events.
+func TestSubIssueRemovals(t *testing.T) {
+	t.Parallel()
+	f := githubtest.New(t, "o/r", "issuedog")
+	f.AddIssue("owner", "Parent", "")
+	for range 2 {
+		f.SetParent(f.AddIssue("owner", "Child", ""), 1)
+	}
+	f.AddLabel(1, "owner", "priority:p1")
+	first := f.UnlinkBy(3, "mallory")
+	second := f.UnlinkBy(2, "owner")
+	got, err := f.Client(t).SubIssueRemovals(context.Background(), "o", "r", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var removals []string
+	for _, r := range got {
+		removals = append(removals, fmt.Sprintf("%d %s#%d %s", r.ID, r.Repo, r.Number, r.By.Login))
+	}
+	if want := []string{fmt.Sprintf("%d o/r#3 mallory", first), fmt.Sprintf("%d o/r#2 owner", second)}; !slices.Equal(removals, want) {
+		t.Errorf("removals = %q, want %q", removals, want)
+	}
+	if p := f.State().Issues[1].Parent; p != 0 {
+		t.Errorf("#2's parent is #%d; want none once unlinked", p)
+	}
+}
+
 // AddSubIssue links a child by its ID after the parent's other sub-issues,
 // and SubIssues lists them in that order, with their bodies and authors.
 // Linking one that has a parent already is a wrapped 422, and so is a

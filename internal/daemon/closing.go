@@ -228,6 +228,7 @@ func (d *Daemon) closingForget(n int) {
 	delete(d.closingSeen, n)
 	delete(d.Step.closingAgain, n)
 	delete(d.closingDue, n)
+	delete(d.closingGone, n)
 	d.closerErrJudged(n, nil)
 }
 
@@ -235,8 +236,11 @@ func (d *Daemon) closingForget(n int) {
 // the newest closes first. One judged stays judged (closingSeen); one
 // reverted, reopened, is read again this pass, so step 1 holds it for a
 // write collaborator's close. One whose event isn't written yet, or whose
-// judging failed, stays due for the next pass. With nothing due, it makes
-// no request.
+// judging failed, stays due for the next pass. One whose judging finds it
+// gone, deleted or transferred, stays due too, as one answer may be
+// wrong: its close is forgotten only once a judging on a later pass finds
+// it gone again, with no good one between (closingGone), as two reads
+// drop an open issue (Iterate). With nothing due, it makes no request.
 func (d *Daemon) closingPass(ctx context.Context) error {
 	if len(d.closingDue) == 0 {
 		return nil
@@ -255,19 +259,29 @@ func (d *Daemon) closingPass(ctx context.Context) error {
 	var errs []error
 	for _, n := range due {
 		done, reopened, err := d.closingJudge(ctx, d.closingDue[n])
-		if gone(err) {
-			logr.Infof("%s/%s#%d is gone, deleted or transferred, so its close is forgotten: %v", d.Step.Owner, d.Step.Repo, n, err)
-			d.closingForget(n)
-			// Its close is never judged now, so a parent that waits on it
+		if gone(err) && d.closingGone[n] {
+			// A failed judging between the two shows nothing, so it
+			// doesn't count. Its close is never judged now, as closingForget
+			// forgets it was (closingSeen), so a parent that waits on it
 			// doesn't take it for closed (digestDoneStands): it waits for
 			// good, as after a restart, which lists it no more.
-			delete(d.closedListed, n)
+			logr.Infof("%s/%s#%d is gone, deleted or transferred, on two judgings of its close with no good one between, so its close is forgotten: %v", d.Step.Owner, d.Step.Repo, n, err)
+			d.closingForget(n)
+			continue
+		}
+		if gone(err) {
+			logr.Infof("%s/%s#%d looks gone, deleted or transferred, so its close is judged again next pass: %v", d.Step.Owner, d.Step.Repo, n, err)
+			if d.closingGone == nil {
+				d.closingGone = map[int]bool{}
+			}
+			d.closingGone[n] = true
 			continue
 		}
 		if err != nil {
 			errs = append(errs, err)
 			continue
 		}
+		delete(d.closingGone, n)
 		if !done {
 			continue
 		}
