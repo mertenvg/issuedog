@@ -157,3 +157,55 @@ func TestPlanDirtyRunUntrusted(t *testing.T) {
 	l.quiet("resumed")
 	l.restart("the end")
 }
+
+// mertenvg's /hold and /resume take the epic back to plan-review, then his
+// edit of the App's comment applying the /resume makes it dirty, which used
+// to put the epic back on hold, with a disagreement and the /resume used
+// (#485). Now the pass records the move back to plan-review again, with
+// the hold's seen, notes the edit, and lists the plan as hidden, with no
+// state error and no run, and an unchanged pass costs no rate limit.
+// /approve gets the hidden plan revision reply. A restart writes nothing.
+func TestPlanDirtyRunResume(t *testing.T) {
+	t.Parallel()
+	l, rev1, entry := planReviewRunAlone(t)
+	f := l.f
+	hold := f.AddComment(1, planReviewRunOwner, "/hold")
+	l.step("the /hold", 1, "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:plan-review", discRunReact(hold),
+		"PATCH /issues/2", "DELETE /issues/1/assignees")
+	l.labels("the /hold", 1, "stage:held", "type:epic")
+	l.quiet("held")
+	resume := f.AddComment(1, planReviewRunOwner, "/resume")
+	l.step("the /resume", 1, "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:held", discRunReact(resume),
+		"PATCH /issues/2", "POST /issues/1/assignees")
+	l.labels("the /resume", 1, "stage:plan-review", "type:epic")
+	resumed := l.newest("the /resume", 1)
+	l.quiet("resumed")
+
+	f.EditComment(resumed.ID, planReviewRunOwner, "Resumed, mine now.")
+	l.step("the /resume's move made dirty", 1, "POST /issues/1/comments", fmt.Sprintf("PATCH /issues/comments/%d", resumed.ID), "PATCH /issues/2")
+	record := l.newest("the /resume's move made dirty", 1)
+	// The record's seen is the hold's, which is the plan comment's: the
+	// newest comment the planner's run read, the spec's approval.
+	if want := planResumeDirtyRecorded(resumed.ID, entry); record.Body != want {
+		t.Errorf("the /resume's move made dirty: the newest comment =\n%s\nwant\n%s", record.Body, want)
+	}
+	l.labels("the /resume's move made dirty", 1, "stage:plan-review", "type:epic")
+	planDirtyRunNoError(t, l, "the /resume's move made dirty")
+	if want := fmt.Sprintf("- It can't be approved yet: a comment of mine after plan revision 1 was edited without approval or deleted, so it may hide a newer revision.\n"+
+		"- Post `/revise <notes>`, or any other comment, to send it back and get a new plan.\n"+
+		"- Answer here: https://github.com/o/r/issues/1#issuecomment-%d\n", rev1.ID); !strings.Contains(f.State().Issues[1].Body, want) {
+		t.Errorf("the /resume's move made dirty: the digest =\n%s\nwant\n%s", f.State().Issues[1].Body, want)
+	}
+	l.quiet("the /resume's move made dirty")
+
+	approve := f.AddComment(1, planReviewRunOwner, "/approve")
+	l.step("the /approve", 1, discRunReact(approve), "POST /issues/1/comments")
+	if added, want := l.added(1), []string{final("/approve", "I didn't apply this command",
+		"a comment of mine after plan revision 1 was edited without approval or deleted, so it may hide a newer plan revision. "+replanHint,
+		strconv.FormatInt(approve, 10))}; !slices.Equal(added, want) {
+		t.Errorf("the /approve: added %q; want %q", added, want)
+	}
+	l.labels("the /approve", 1, "stage:plan-review", "type:epic")
+	l.quiet("the /approve")
+	l.restart("the end")
+}
