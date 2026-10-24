@@ -323,7 +323,8 @@ func (g *digestState) has(n int) bool {
 // shows whether the App put it there (#498). But a read
 // that keeps failing would cost a request and an error log on every pass,
 // so after digestHistoryStrikes failures the issue gets a state error
-// (SPEC §5.3, digestHistoryReport), and its history is read only once
+// (SPEC §5.3, digestHistoryReport), unless it looks like the digest
+// itself (digestHistoryLikely), and its history is read only once
 // every digestHistoryStrikes passes from then on, each failure logged as
 // ever. It stays held, with no digest created, till a read works, so an
 // outage ends it on its own (#437), or the owner acts: a restart reads it
