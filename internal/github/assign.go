@@ -43,14 +43,14 @@ func (c *Client) RemoveAssignees(ctx context.Context, owner, repo string, number
 }
 
 // assignAnswer returns the assignees of is, GitHub's answer to an assignee
-// write with error err, or err. GitHub answers a write to a transferred
-// issue with a 301, and Go follows it with a GET, which may succeed with
-// the moved issue: so, as Snapshot does, an issue whose repository_url
-// names another repo is ErrTransferred (IssueMoved), and the write wrote
-// nothing.
+// write with error err, or err, wrapped. GitHub answers a write to a
+// transferred issue with a 301, and Go follows it with a GET, which may
+// succeed with the moved issue: so, as Snapshot does, an issue whose
+// repository_url names another repo is ErrTransferred (IssueMoved), and
+// the write wrote nothing.
 func assignAnswer(owner, repo string, is *gogithub.Issue, err error) ([]string, error) {
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("send the write: %w", err)
 	}
 	if err := IssueMoved(owner, repo, nil, is); err != nil {
 		return nil, fmt.Errorf("check the answer's repo: %w", err)
