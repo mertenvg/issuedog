@@ -324,7 +324,8 @@ func keptStories(t *testing.T, n int, added ...planItem) (planOutput, planFacts)
 // is one over. The sub-issue limit counts only the new items, since the
 // rest are sub-issues already, and plan.max_tasks the open and new tasks:
 // the changed and new ones, and the kept ones whose child is open (SPEC
-// §11.3), as the validation line does.
+// §11.3), as the validation line does. A kept task with no child counts,
+// and an epic's validation line counts its closed kept stories.
 func TestCheckRevisionCounts(t *testing.T) {
 	t.Parallel()
 	story := func(id string, deps ...string) planItem {
@@ -404,6 +405,32 @@ func TestCheckRevisionCounts(t *testing.T) {
 	if err := checkPlan(out, f); !strings.Contains(fmt.Sprint(err),
 		"rule max-tasks: 3 open and new tasks, over plan.max_tasks of 2: closed kept tasks don't count") {
 		t.Errorf("3 open and new tasks, plan.max_tasks 2 = %v, want max-tasks", err)
+	}
+
+	// A kept task with no child counts, as no closed child is its, though
+	// it fails the children rule: with T1's child gone, the kept T1, the
+	// changed T2 and the new T4 make 3, here and in the validation line.
+	out, f = plannerOutput(t, "story-revision"), revisionFacts(t)
+	f.Prior.Children, f.MaxTasks = f.Prior.Children[1:], 2
+	err := checkPlan(out, f)
+	if !slices.Contains(rules(err), ruleChildren) || !strings.Contains(fmt.Sprint(err),
+		"rule max-tasks: 3 open and new tasks, over plan.max_tasks of 2: closed kept tasks don't count") {
+		t.Errorf("the kept T1 with no child, plan.max_tasks 2 = %v, want children and max-tasks of 3", err)
+	}
+	if got := planValidation(*out.Plan, f.view()); !strings.Contains(got, "Validation (11.3): 3 open and new tasks, within `plan.max_tasks` of 2,") {
+		t.Errorf("the validation line = %q, want 3 open and new tasks", got)
+	}
+
+	// An epic's revision of stories counts every story that isn't
+	// dropped in its validation line, a kept one whose child is closed
+	// included: max-tasks leaves out closed kept tasks only.
+	out, f = keptStories(t, 2)
+	f.Prior.Children[0].Closed, f.Prior.Children[0].Reason, f.Prior.Children[0].Stage = true, "completed", ""
+	if err := checkPlan(out, f); err != nil {
+		t.Errorf("2 kept stories, S1's child closed: %v", err)
+	}
+	if got := planValidation(*out.Plan, f.view()); !strings.Contains(got, "Validation (11.3): 2 stories, with no tasks; every child listed once,") {
+		t.Errorf("the validation line = %q, want 2 stories, the closed kept S1 included", got)
 	}
 }
 
