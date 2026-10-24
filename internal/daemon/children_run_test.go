@@ -19,11 +19,12 @@ import (
 
 // This file is #249's whole run (#279): a run against the fakes, from
 // an epic's plan to its stories, a story's plan to its tasks, and the
-// story finished once its tasks close. The stages are registered as
-// registerStages registers them, step 1 is wired as main's newStep wires
-// it, the Applier reads main from the daemon's clone and the config's
-// labels exist, as startDaemon sets them, the digest and assignment are
-// on, and Daemon.Iterate is the loop. Config and trust come from main on
+// story finished once its tasks close. The daemon is built as startDaemon
+// builds it, daemon.New, so step 1 is daemon.NewStep's, the Applier reads
+// main from the daemon's clone, and the digest and assignment are on. The
+// stages are registered as registerStages registers them,
+// daemon.RegisterStages, the config's labels exist, as startDaemon creates
+// them, and Daemon.Iterate is the loop. Config and trust come from main on
 // the origin: mertenvg owns CODEOWNERS and is notify, the scopes are the
 // golden plans', and models.allowed is opus and sonnet. plan.review is
 // the default, true, so a story's plan waits for review.
@@ -68,10 +69,10 @@ func newChildrenRunLoop(t *testing.T, f *githubtest.Fake, types string) *childre
 // start starts a daemon on l's fake, as a start of the issuedog binary
 // does: a new client, with no ETags, a new daemon, with no snapshots, and
 // the same state directory, which outlives a restart. As startDaemon does,
-// it loads the config and creates its labels before the loop, sets the
-// Applier's ReadMain to the clone's, and turns the digest and assignment
-// on. The Stages are registerStages', and step 1 is newStep's,
-// daemon.NewStep. Iterate loads the trust from main.
+// it loads the config and creates its labels before the loop, and builds
+// the daemon with daemon.New (rig.wireAsMain). The Stages are
+// registerStages', daemon.RegisterStages. Iterate loads the trust from
+// main.
 func (l *childrenRunLoop) start() {
 	l.t.Helper()
 	g := newRig(l.t, l.f, l.o, l.root)
@@ -79,7 +80,6 @@ func (l *childrenRunLoop) start() {
 	if err != nil {
 		l.t.Fatal(err)
 	}
-	g.d.Config = cfg
 	if _, err := github.EnsureLabels(context.Background(), l.f.Client(l.t), "o", "r", daemon.LabelOptions(cfg)); err != nil {
 		l.t.Fatal(err)
 	}
@@ -91,14 +91,7 @@ func (l *childrenRunLoop) start() {
 	// Run IDs go on across a restart, as the daemon's random ones never
 	// repeat: run<k> is the fake claude's run k.
 	g.r.NewID = func() string { return "run" + strconv.Itoa(g.runs()+1) }
-	g.r.Stages = map[state.Stage]daemon.Stage{
-		state.Clarifying: &daemon.Interviewer{Daemon: g.d},
-		state.Planning:   &daemon.Planner{Daemon: g.d},
-	}
-	g.r.Unlabeled = &daemon.Triage{Daemon: g.d}
-	g.d.Digest, g.d.Assign = true, true
-	g.d.Step.ReadMain = g.d.Clone.ReadFile
-	g.d.Step = daemon.NewStep(g.d.Step.Applier, nil, g.d.CurrentModels)
+	g.wireAsMain(cfg)
 	l.g = g
 }
 

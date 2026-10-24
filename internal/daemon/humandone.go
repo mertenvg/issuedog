@@ -29,11 +29,12 @@ type doneChecked struct {
 //     task, as a task blocked on the owner, whose hand-off is phase 3's. On
 //     a human task it runs the task's check (humanCheck) on its origin
 //     marker's Issue.Origin.Check: the zero Check of a plain-text "Done
-//     when" passes with nothing read. A failed check is a Rejection whose
-//     reason quotes what it found, so Step 👎s the comment and replies once,
-//     and the issue stays open; a later /done checks again. A read that
-//     fails is an error, not a failed check: the pass fails with no reply,
-//     and the next pass checks again.
+//     when" passes with nothing read, and check fields that couldn't be
+//     read (state.CheckUnreadable) fail with nothing read. A failed check
+//     is a Rejection whose reason quotes what it found, so Step 👎s the
+//     comment and replies once, and the issue stays open; a later /done
+//     checks again. A read that fails is an error, not a failed check: the
+//     pass fails with no reply, and the next pass checks again.
 //   - Apply closes the issue as completed (Transition, needs-human → closed
 //     on human-task-done), keyed cmd=<comment id>, with seen=<comment id>:
 //     the marker, the 👍, then the close. Its text says who finished the
@@ -107,10 +108,12 @@ func (a *Applier) doneFound(ctx context.Context, c Cmd) (string, error) {
 //     (Transition, needs-human → closed on human-task-done), keyed
 //     cmd=r<reaction id>, with seen the newest comment read (newestRead).
 //     The close judge sets stage:completed on the next pass.
-//   - A failure gets one reply, quoting the 👍 and its user, and saying
-//     what the check found and how to check again, with a reply marker
-//     keyed cmd=r<reaction id>, reason=rejected. The issue stays open, and
-//     the marker names the 👍, so no later pass checks it again.
+//   - A failure, including a check that couldn't be read
+//     (state.CheckUnreadable), gets one reply, quoting the 👍 and its
+//     user, and saying what the check found and how to check again, with a
+//     reply marker keyed cmd=r<reaction id>, reason=rejected. The issue
+//     stays open, and the marker names the 👍, so no later pass checks it
+//     again.
 //
 // So each 👍 counts once: removing one and adding it again makes a new
 // reaction, which checks again. A read that fails, of the reactions or for

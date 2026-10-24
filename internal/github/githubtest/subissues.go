@@ -16,10 +16,13 @@ type linked struct {
 // sub-issue of parent, after the ones SetParent and addSubIssue linked. GitHub allows one from
 // another repo of the same owner. The fake serves nothing else of another
 // repo: the listing has only the number, the state and repository_url,
-// which names repo as given.
+// which names repo as given. A parent the fake hasn't got fails the test,
+// as a number does (fakeNumberIssue).
 func (f *Fake) LinkSubIssue(parent int, repo string, number int) {
+	f.t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.fakeNumberIssue(parent)
 	if f.linked == nil {
 		f.linked = map[int][]linked{}
 	}

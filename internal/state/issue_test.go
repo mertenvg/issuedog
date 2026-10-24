@@ -266,13 +266,16 @@ func TestDeriveOriginAnywhere(t *testing.T) {
 // task's marker has none, and a check on a marker that isn't read gives
 // none: in a dirty body, a body someone else edited last, someone else's
 // marker, one in someone else's comment, an escaped one, or one that isn't
-// whole. Nor do fields that don't record a whole check (checkOf). Since
-// #290, a marker in the App's clean comment is read when the body has
-// none, as a reposted origin (#291) is, check fields and all.
+// whole. Fields that don't record a whole check (checkOf), even a value or
+// contains with no check, give the CheckUnreadable Check, which fails, not
+// the zero Check, which passes. Since #290, a marker in the App's clean
+// comment is read when the body has none, as a reposted origin (#291) is,
+// check fields and all.
 func TestDeriveOriginCheck(t *testing.T) {
 	t.Parallel()
 	const file = "<!-- issuedog:origin plan=#250 rev=1 item=T3 human=1 check=file value=docs/a%20b.md contains=%3C!--%25 -->"
 	want := Check{Kind: CheckFile, Value: "docs/a b.md", Contains: "<!--%"}
+	unreadable := Check{Kind: CheckUnreadable}
 	byApp := snap("The task.\n\n"+file, nil)
 	byApp.BodyEdit = github.Edit{By: appBot, At: time.Unix(5, 0)}
 	byOwner := snap("The task.\n\n"+file, nil)
@@ -293,6 +296,7 @@ func TestDeriveOriginCheck(t *testing.T) {
 		{"each kind", origin("check=ruleset value=ci%2Ftest"), clean, Check{Kind: CheckRuleset, Value: "ci/test"}},
 		{"a file check with no contains", origin("check=file value=go.mod"), clean, Check{Kind: CheckFile, Value: "go.mod"}},
 		{"plain text", origin(""), clean, Check{}},
+		{"plain text with a field that isn't a check's", origin("note=x"), clean, Check{}},
 		{"a dirty body", snap(file, nil), dirtyIDs(BodyID), Check{}},
 		{"a body someone else edited last", byOwner, clean, Check{}},
 		{"a marker that isn't the App's", byMallory, clean, Check{}},
@@ -300,13 +304,15 @@ func TestDeriveOriginCheck(t *testing.T) {
 		{"a marker in someone else's comment", snap("", []github.Author{mallory}, file), clean, Check{}},
 		{"an escaped marker", snap(github.Escape(file), nil), clean, Check{}},
 		{"a marker with no item", snap("<!-- issuedog:origin plan=#250 rev=1 check=label value=x -->", nil), clean, Check{}},
-		{"an unknown kind", origin("check=app-installed value=o"), clean, Check{}},
-		{"no value", origin("check=label"), clean, Check{}},
-		{"a value that doesn't decode", origin("check=label value=50%"), clean, Check{}},
-		{"a value cut short", origin("check=label value=a%2"), clean, Check{}},
-		{"contains on a label check", origin("check=label value=x contains=y"), clean, Check{}},
-		{"contains that doesn't decode", origin("check=file value=x contains=%zz"), clean, Check{}},
-		{"a value with no check", origin("value=x"), clean, Check{}},
+		{"an unknown kind", origin("check=app-installed value=o"), clean, unreadable},
+		{"an unreadable kind written as one", origin("check=unreadable value=o"), clean, unreadable},
+		{"no value", origin("check=label"), clean, unreadable},
+		{"a value that doesn't decode", origin("check=label value=50%"), clean, unreadable},
+		{"a value cut short", origin("check=label value=a%2"), clean, unreadable},
+		{"contains on a label check", origin("check=label value=x contains=y"), clean, unreadable},
+		{"contains that doesn't decode", origin("check=file value=x contains=%zz"), clean, unreadable},
+		{"a value with no check", origin("value=x"), clean, unreadable},
+		{"contains with no check", origin("contains=x"), clean, unreadable},
 	} {
 		is := Derive(tt.s, slug, tt.dirty)
 		if is.Origin.Check != tt.want {

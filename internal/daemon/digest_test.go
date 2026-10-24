@@ -341,14 +341,14 @@ func TestDigestCloseEventLate(t *testing.T) {
 	}
 }
 
-// The verifier's late reopen (#179): on a digest the owner closed and
-// reopened, with those events written, the owner closes it and mallory,
-// untrusted, reopens it, both within GitHub's event lag. The owner's
-// reopen is the newest event then, but older than the listing, so it's
-// not taken as the newest: the digest is looked at again each pass, with
-// nothing written to it, not even the body the owner's edit changed,
-// until the events show. Then mallory's reopen is reverted, and the
-// owner's close stands, with no reopen ever written.
+// A late reopen (#179): on a digest the owner closed and reopened, with
+// those events written, the owner closes it and mallory, untrusted,
+// reopens it, both within GitHub's event lag. The owner's reopen is the
+// newest event then, but older than the listing, so it's not taken as the
+// newest: the digest is looked at again each pass, with nothing written to
+// it, not even the body the owner's edit changed, until the events show.
+// Then mallory's reopen is reverted, and the owner's close stands, with no
+// reopen ever written.
 func TestDigestLateReopen(t *testing.T) {
 	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
 	var logs bytes.Buffer
@@ -582,13 +582,13 @@ func TestDigestLateReopenCloseNewest(t *testing.T) {
 	}
 }
 
-// The verifier's probe for a close still newest (#179's verify), where the
-// last resolution is an earlier reopen: the owner closes and reopens the
-// digest, resolved, and closes it again, its event written at once. With
-// events lagging, mallory reopens it and the owner edits its body. After
-// the wait the digest is on, and its body is written, but the App's write
-// doesn't end the look: once mallory's reopen event shows, it's reverted,
-// and the owner's close stands.
+// A close still newest (#179), where the last resolution is an earlier
+// reopen: the owner closes and reopens the digest, resolved, and closes it
+// again, its event written at once. With events lagging, mallory reopens
+// it and the owner edits its body. After the wait the digest is on, and
+// its body is written, but the App's write doesn't end the look: once
+// mallory's reopen event shows, it's reverted, and the owner's close
+// stands.
 func TestDigestLateReopenCloseNewestAfterReopen(t *testing.T) {
 	t.Parallel()
 	f, d := lateReopenRig(t, time.Hour)
@@ -787,21 +787,22 @@ func TestDigestCloseReplay(t *testing.T) {
 	}
 }
 
-// digestTask is the App task #87's probe took for the digest: its body,
-// with its origin marker, and the body an edit leaves it without one.
+// digestTask is the App task the title rule's test takes for the digest
+// (SPEC §9.4): its body, with its origin marker, and the body an edit
+// leaves it without one.
 const (
 	digestTaskOrigin = "<!-- issuedog:origin plan=#9 rev=1 item=T1 -->"
 	digestTaskBody   = "Do it.\n\n" + digestTaskOrigin
 	digestTaskEdited = "Do it."
 )
 
-// The probe of #87's 2026-10-15 note: an App task whose body lost its
-// origin to the owner's edit, and that was renamed issuedog digest, isn't
-// the digest. That holds with the origin reposted in an App comment or
-// not, on a later pass and when both changes happened while no daemon ran,
-// on the restart's first poll. Its body is never written, step 1 still
-// visits it, a digest of its own is created beside it, and an extra pass
-// changes none of that.
+// The title rule (SPEC §9.4): an App task whose body lost its origin to
+// the owner's edit, and that was renamed issuedog digest, isn't the
+// digest. That holds with the origin reposted in an App comment or not, on
+// a later pass and when both changes happened while no daemon ran, on the
+// restart's first poll. Its body is never written, step 1 still visits it,
+// a digest of its own is created beside it, and an extra pass changes none
+// of that.
 func TestDigestTitleRuleProbe(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

@@ -201,7 +201,9 @@ func TestPlannerPrompt(t *testing.T) {
 
 	// A human task's "Done when" text is shown in the plan comment, so only
 	// its steps, links and check may name files (#266). Each place the
-	// prompt says where a human task's files go says so too.
+	// prompt says where a human task's files go says so too, in the exact
+	// words, so that a rewording which keeps the words but flips the meaning
+	// fails here.
 	detail := plannerPromptSection(t, p, "Levels of detail")
 	var filesGo string
 	for _, para := range strings.Split(detail, "\n\n") {
@@ -211,10 +213,8 @@ func TestPlannerPrompt(t *testing.T) {
 			}
 		}
 	}
-	for _, field := range []string{"`steps`", "`links`", "`check`"} {
-		if !strings.Contains(filesGo, field) {
-			t.Errorf("planner.md's sentence on where files go doesn't name a human task's %s: %q", field, filesGo)
-		}
+	if want := "and a human task in its `steps`, `links` and `check`"; !strings.Contains(filesGo, want) {
+		t.Errorf("planner.md's sentence on where files go doesn't say %q: %q", want, filesGo)
 	}
 	var taskBody string
 	for _, line := range strings.Split(detail, "\n") {
@@ -223,28 +223,35 @@ func TestPlannerPrompt(t *testing.T) {
 			break
 		}
 	}
-	if !strings.Contains(taskBody, "`done_when.text`") || !doneWhenShown.MatchString(taskBody) {
-		t.Errorf("planner.md's task bullet doesn't say a human task's `done_when.text` is shown: %q", taskBody)
+	if want := "apart from a human task's `done_when.text`, isn't shown in the plan comment"; !strings.Contains(taskBody, want) {
+		t.Errorf("planner.md's task bullet doesn't say %q: %q", want, taskBody)
 	}
-	humans := strings.Split(strings.TrimSpace(plannerPromptSection(t, p, "Human tasks")), "\n\n")
-	last := humans[len(humans)-1]
-	for _, field := range []string{"`steps`", "`links`", "`check`", "`done_when.text`"} {
-		if !strings.Contains(last, field) {
-			t.Errorf("planner.md's last paragraph on human tasks doesn't name %s: %q", field, last)
+	// The paragraph on a human task's files is the one that names its steps,
+	// links, check and done_when.text, wherever it is in the section.
+	var humanFiles string
+	for _, para := range strings.Split(plannerPromptSection(t, p, "Human tasks"), "\n\n") {
+		names := true
+		for _, field := range []string{"`steps`", "`links`", "`check`", "`done_when.text`"} {
+			names = names && strings.Contains(para, field)
+		}
+		if names {
+			humanFiles = para
+			break
 		}
 	}
-	if !doneWhenShown.MatchString(last) || !namesNoFile.MatchString(last) {
-		t.Errorf("planner.md's last paragraph on human tasks doesn't say `done_when.text` is shown and the other fields name no file: %q", last)
+	if humanFiles == "" {
+		t.Errorf("planner.md has no paragraph on human tasks that names `steps`, `links`, `check` and `done_when.text`")
+	}
+	for _, want := range []string{
+		"A human task's `steps`, `links` and `check` go only into its own issue, so they may name files.",
+		"Its other fields name none,",
+		"`done_when.text` is shown in the plan comment.",
+	} {
+		if !strings.Contains(humanFiles, want) {
+			t.Errorf("planner.md's paragraph on a human task's files doesn't say %q: %q", want, humanFiles)
+		}
 	}
 }
-
-// doneWhenShown and namesNoFile are how the prompt and the schema say a
-// human task's "Done when" text is shown in the plan comment, and names no
-// file.
-var (
-	doneWhenShown = regexp.MustCompile(`(?i)\bshow(n|s)\b`)
-	namesNoFile   = regexp.MustCompile(`(?i)\bnames? (none|no files?)\b`)
-)
 
 // plannerPromptSection returns the text of planner.md's "## heading"
 // section, up to the next heading. A missing section fails the test.
@@ -261,7 +268,9 @@ func plannerPromptSection(t *testing.T, p, heading string) string {
 // The schema, which every planner run is sent, says as the prompt does that
 // a human task's "Done when" text is shown in the plan comment and names no
 // file (#266): on the text itself, on the human task, and on the plan,
-// whose fields are all shown but the task bodies.
+// whose fields are all shown but the task bodies. Each says it in the exact
+// words, so that a rewording which keeps the words but flips the meaning
+// fails here.
 func TestPlannerSchemaDoneWhenShown(t *testing.T) {
 	t.Parallel()
 	raw, err := StageSchema("planner")
@@ -276,29 +285,34 @@ func TestPlannerSchemaDoneWhenShown(t *testing.T) {
 	humanTask := append(append([]any{}, plan...), "properties", "items", "items", "properties", "human_task")
 	text := append(append([]any{}, humanTask...), "properties", "done_when", "properties", "text")
 	for _, d := range []struct {
-		name     string
-		path     []any
-		doneWhen bool // names done_when, as the shown part of a wider field
-		noFile   bool // says the text names no file
+		name string
+		path []any
+		want []string // the phrases its description says it in
 	}{
-		{"done_when.text", text, false, true},
-		{"human_task", humanTask, true, true},
-		// The plan says none of its shown fields names a file.
-		{"plan", plan, true, false},
+		{"done_when.text", text, []string{
+			"The plan comment shows it, so it names no file",
+			"a path goes only in check",
+		}},
+		{"human_task", humanTask, []string{
+			"Its steps, links and check may name files.",
+			"Its done_when text is also shown in the plan comment, so it names none.",
+		}},
+		// The plan says none of its shown fields names a file, and that a
+		// human task's done_when text is shown, unlike the rest of its body.
+		{"plan", plan, []string{
+			"Every field here is shown in the plan comment, so none of them names a file",
+			"except the task bodies: task, and human_task but for its done_when text.",
+		}},
 	} {
 		desc, ok := valueAt(t, doc, append(append([]any{}, d.path...), "description")...).(string)
 		if !ok {
 			t.Errorf("%s has no description", d.name)
 			continue
 		}
-		if !doneWhenShown.MatchString(desc) {
-			t.Errorf("%s's description doesn't say the plan comment shows the \"Done when\" text: %q", d.name, desc)
-		}
-		if d.doneWhen && !strings.Contains(desc, "done_when") {
-			t.Errorf("%s's description doesn't name done_when: %q", d.name, desc)
-		}
-		if d.noFile && !namesNoFile.MatchString(desc) {
-			t.Errorf("%s's description doesn't say the \"Done when\" text names no file: %q", d.name, desc)
+		for _, want := range d.want {
+			if !strings.Contains(desc, want) {
+				t.Errorf("%s's description doesn't say %q: %q", d.name, want, desc)
+			}
 		}
 	}
 }

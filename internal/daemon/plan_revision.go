@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	gogithub "github.com/google/go-github/v92/github"
 
@@ -51,6 +52,7 @@ type planPrior struct {
 	Rev   int        // the approved plan revision
 	Items []planItem // its items, as its plan-data marker keeps them
 	move  github.Comment
+	since time.Time // the revision's first approval, which its children are listed since (childrenSince)
 	// Children are the issues matched to the plan's items by their
 	// origin (childMatch), in plan order, then any other item's by
 	// number.
@@ -67,8 +69,13 @@ type planChild struct {
 	Item   string // the plan item its origin names
 	Number int
 	Title  string
-	Type   string      // github.TypeOf's, or ""
-	Stage  state.Stage // while it's open, as its markers set it, once the planner's Context reads it (plannerTrustedStage), or ""
+	// Type is its issue type, as listed, or with none, "" until the
+	// planner's Context judges its type:* labels, from Labels, as the label
+	// rules do (plannerTrustedSub, #445). Labels are nil for one with an
+	// issue type.
+	Type   string
+	Labels []string
+	Stage  state.Stage // while it's open, as its markers set it, once the planner's Context reads it (plannerTrustedSub), or ""
 	Closed bool
 	// Reason is a closed child's state_reason, such as "completed" or
 	// "not_planned", or "".
@@ -98,12 +105,12 @@ func planPriorOf(s *github.Snapshot, appSlug string, is state.Issue, dirty func(
 	if !ok || !moved {
 		return nil, errNoApprovedPlan
 	}
-	return &planPrior{Rev: rev.Rev, Items: plan.Items, move: move}, nil
+	return &planPrior{Rev: rev.Rev, Items: plan.Items, move: move, since: childrenSince(s, appSlug, dirty, rev.Rev, move)}, nil
 }
 
 // read reads the children of the plan on issue s, as creating the
 // children finds them (childrenFind, SPEC §5.2): its sub-issues, then the repo's issues
-// updated since the move into planned, two listings, so each child's state
+// updated since the approved revision's first approval, two listings, so each child's state
 // and close reason come with it. A sub-issue whose listed body gives no
 // origin is read on its own (childOrigins): one the App filed, for an
 // origin the App reposted in a comment (#291), so it's still the plan's
@@ -117,7 +124,7 @@ func (pr *planPrior) read(ctx context.Context, st *Step, s *github.Snapshot) err
 	if err != nil {
 		return fmt.Errorf("its children: %w", err)
 	}
-	listed, err := a.Client.IssuesSince(ctx, a.Owner, a.Repo, pr.move.CreatedAt)
+	listed, err := a.Client.IssuesSince(ctx, a.Owner, a.Repo, pr.since)
 	if err != nil {
 		return fmt.Errorf("its children: %w", err)
 	}
@@ -134,10 +141,12 @@ func (pr *planPrior) read(ctx context.Context, st *Step, s *github.Snapshot) err
 	children := map[int]bool{}
 	for item, f := range found {
 		is := byNumber[f.Number]
-		// Its stage isn't the listing's to give, as its labels may be
-		// untrusted: the planner's Context reads it (plannerTrustedStage).
-		c := planChild{Item: item, Number: f.Number, Title: is.GetTitle(), Type: github.TypeOf(is),
+		// Its stage, and a type by label, aren't the listing's to give, as
+		// its labels may be untrusted: the planner's Context reads them
+		// (plannerTrustedSub).
+		c := planChild{Item: item, Number: f.Number, Title: is.GetTitle(),
 			Closed: is.GetState() == "closed", Reason: is.GetStateReason()}
+		c.Type, c.Labels = plannerListedType(is)
 		pr.Children = append(pr.Children, c)
 		children[f.Number] = true
 	}
@@ -199,6 +208,39 @@ func (pr *planPrior) keptDeps(p planBody) map[string][]string {
 		}
 	}
 	return deps
+}
+
+// keptData is plan p's data, as its plan-data marker keeps it (SPEC §5).
+// For a first plan, where pr is nil, it's p itself, so the data is as it
+// was before revisions. For a revision, each kept item, which carries its
+// ID, title and status only, is its approved item's entry in full, read
+// from the approved revision's own plan data (approvedPlanData), never
+// from the planner's output: its outcome, criteria and task body, with
+// its status kept and the dependencies keptDeps gives it, which are its
+// links once p is applied. So the next revision reads an item kept twice
+// from this revision's data alone: its dependencies count in the cycle
+// check and the link limits, and children.md shows its text (SPEC §11.3).
+// A kept item with no approved entry, as for a child whose item the
+// approved revision doesn't list, stays as it is. p is left as it is.
+func (pr *planPrior) keptData(p planBody) planBody {
+	if pr == nil {
+		return p
+	}
+	kept := pr.keptDeps(p)
+	p.Items = slices.Clone(p.Items)
+	for i, it := range p.Items {
+		if it.Status != planKept {
+			continue
+		}
+		j := slices.IndexFunc(pr.Items, func(e planItem) bool { return e.ID == it.ID })
+		if j < 0 {
+			continue
+		}
+		e := pr.Items[j]
+		e.Status, e.DependsOn = planKept, append([]string{}, kept[it.ID]...)
+		p.Items[i] = e
+	}
+	return p
 }
 
 // planDepsOf returns each item's dependencies as the links will be once
@@ -332,8 +374,8 @@ const plannerChildrenIntroRevision = "This issue was planned before, so your pla
 
 // plannerChildrenFile is children.md for a revision on issue n, after pr
 // is read: the children, each with its item ID, number, title, type, and
-// stage, as its markers set it (plannerTrustedStage), or close reason; the
-// approved revision's items, as its plan data, fenced; and the other
+// stage, as the planner's Context reads them (plannerTrustedSub), or close
+// reason; the approved revision's items, as its plan data, fenced; and the other
 // sub-issues, as context only. Titles, types and the data are escaped
 // (SPEC §5.1).
 func plannerChildrenFile(n int, pr *planPrior) (string, error) {

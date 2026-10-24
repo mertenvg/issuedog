@@ -654,15 +654,18 @@ func TestPlannerRunSettings(t *testing.T) {
 		t.Errorf("#%d's round markers %q, want the labels' model and effort", n2, markers)
 	}
 	c.Stages.Timeouts.Planner = 200 * time.Millisecond
-	if err := os.WriteFile(g.path("claude", "sleep"), []byte("10"), 0o644); err != nil {
+	// claude sleeps 120s, so a run that outlives the bound wasn't killed at
+	// the timeout. The bound is generous so a loaded machine doesn't fail it.
+	if err := os.WriteFile(g.path("claude", "sleep"), []byte("120"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	const bound = time.Minute
 	n3, _ := plFiled(f, "story", false, plEntry)
 	start := time.Now()
 	if err := g.work(n3); err != nil {
 		t.Fatal(err)
 	}
-	if took, l := time.Since(start), g.lease(); took > 5*time.Second || !l.Failed || l.Attempt != 1 || l.Issue != n3 {
+	if took, l := time.Since(start), g.lease(); took > bound || !l.Failed || l.Attempt != 1 || l.Issue != n3 {
 		t.Errorf("the run took %s, lease %+v; want it killed at the planner's timeout, a failed attempt", took, l)
 	}
 }
