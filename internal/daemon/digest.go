@@ -433,6 +433,7 @@ func (d *Daemon) digestTake(ctx context.Context) {
 		// A start's first poll marked it, listed open, as one whose items
 		// aren't cached (digestRestartList), but a digest has none.
 		delete(d.digestRestartUnknown, n)
+		delete(d.digestKeptListed, n)
 		if apps[n] { // what it lists for issues with none cached (digestkept.go)
 			d.digestKeptRead(n, is.GetBody())
 		}

@@ -93,6 +93,10 @@ type Daemon struct {
 	// body, by issue, for the issues in digestRestartUnknown, till each
 	// leaves it (digestkept.go).
 	digestKept map[int][]waitItem
+	// digestKeptListed is what the last listing that had it showed of each
+	// issue in digestRestartUnknown, for its kept items' rank while no
+	// snapshot of it is held (digestKeptList).
+	digestKeptListed map[int]digestKeptListing
 
 	// epicCloseDue are the epics planned into stories, by number, with the
 	// children each waits on to close, after its last good step 1
@@ -518,6 +522,7 @@ func (d *Daemon) poll(ctx context.Context) error {
 				d.closingForget(n)
 				d.stale[n] = true
 				d.digestRestartList(n, start)
+				d.digestKeptList(is) // for a kept item's rank if its read fails (digestkept.go)
 			}
 		}
 		if d.issuesSince.Equal(since) {

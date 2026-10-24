@@ -6,6 +6,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
+
+	gogithub "github.com/google/go-github/v92/github"
 
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
@@ -39,18 +42,37 @@ import (
 // there to read back.
 //
 // A kept item ranks as any other, by the snapshots held (waitRank): its
-// issue's created time comes from its snapshot, if there is one, and its
-// comment from its link. It has no key, so it's never new (waitItem.news):
+// issue's created time and the open issues it blocks come from its
+// snapshot, if there is one, and its comment from its link. With no
+// snapshot held, as when the issue's read failed, they come from the last
+// listing that had the issue (digestKeptList): the start's first poll,
+// which lists every issue, a later poll, or the 10-minute listing of every
+// open issue, each of which gives an issue's created_at and its
+// issue_dependencies_summary with no request of its own. So the item
+// ranks where its own was, and the digest's body isn't edited for it. It
+// has no key, so it's never new (waitItem.news):
 // the body listed it already. Assignment never takes one: it judges only
 // the issues step 1 succeeded on this pass, and step 1's success drops
 // the issue's kept items.
 
 // waitKept is what the digest's body showed of an item read back from it
 // (digestKeptParse): its heading's title and the lines under it, but for
-// the link, each as rendered.
+// the link, each as rendered. Blocking is how many open issues its issue
+// blocks, as the last listing of it showed (digestKeptListing), which
+// waitRank takes while no snapshot of the issue is held.
 type waitKept struct {
-	Title string
-	Lines []string
+	Title    string
+	Lines    []string
+	Blocking int
+}
+
+// digestKeptListing is what a listing showed of an issue the digest may
+// list items for that aren't cached (Daemon.digestRestartUnknown): when
+// it was opened, and how many open issues it blocks, the blocking of its
+// issue_dependencies_summary (SPEC §9.4, The order).
+type digestKeptListing struct {
+	Created  time.Time
+	Blocking int
 }
 
 // The heading of an item, and the line under it with its kind, priority
@@ -160,16 +182,39 @@ func (d *Daemon) digestKeptRead(n int, body string) {
 
 // digestKeptRanked returns the items read back for each issue, which has
 // none cached, as step 1's success drops them (digestRestartKnow), each
-// with its issue's created time, if a snapshot is held, for waitRank.
+// with its issue's created time, for waitRank: from its snapshot, if one
+// is held, which waitRank takes the open issues it blocks from too, or
+// else from the last listing that had it (digestKeptList), with the open
+// issues it blocks then.
 func (d *Daemon) digestKeptRanked() []waitItem {
 	var items []waitItem
 	for _, n := range slices.Sorted(maps.Keys(d.digestKept)) {
 		for _, it := range d.digestKept[n] {
 			if s := d.snaps[n]; s != nil {
 				it.Created = s.CreatedAt
+			} else if l, ok := d.digestKeptListed[n]; ok {
+				k := *it.Kept
+				it.Created, k.Blocking, it.Kept = l.Created, l.Blocking, &k
 			}
 			items = append(items, it)
 		}
 	}
 	return items
+}
+
+// digestKeptList records what a listing, a poll's or the 10-minute one of
+// every open issue (transferUnlistedCheck), showed of open issue is, if
+// the digest may list items for it that aren't cached
+// (Daemon.digestRestartUnknown), for its kept items' rank while no
+// snapshot of it is held (digestKeptRanked). The listing gives both with
+// no request of its own.
+func (d *Daemon) digestKeptList(is *gogithub.Issue) {
+	n := is.GetNumber()
+	if !d.digestRestartUnknown[n] {
+		return
+	}
+	if d.digestKeptListed == nil {
+		d.digestKeptListed = map[int]digestKeptListing{}
+	}
+	d.digestKeptListed[n] = digestKeptListing{Created: is.GetCreatedAt().Time, Blocking: is.GetIssueDependenciesSummary().GetBlocking()}
 }
