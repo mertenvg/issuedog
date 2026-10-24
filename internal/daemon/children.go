@@ -457,10 +457,10 @@ func childrenRun(plan github.Comment, rev int, changed []childSpec, appSlug stri
 // isn't read costs its body's history too, unless Dirty read it already
 // for the same edit, as it does for a trusted user's (histories), or an
 // earlier call read it, as originLost keeps it, or found no marker in any
-// version of the App's for the same body (originNone). One whose origin is read costs no history beyond
-// Dirty's. The callers read them only before
-// the record stands (ChildrenVisit) or while a revision is planned and
-// checked (planPrior.read), so an unchanged pass reads none. Only
+// version of the App's for the same body (originNone). One whose origin
+// is read costs no history beyond Dirty's. The callers read them only
+// before the record stands (ChildrenVisit) or while a revision is planned
+// and checked (planPrior.read), so an unchanged pass reads none. Only
 // sub-issues are read: a child loses its body's marker to an edit after
 // it's filed, and it's linked in the pass that files it, so one that isn't
 // linked yet was filed just now, and its body is still the App's. An
@@ -515,6 +515,18 @@ func (st *Step) childOrigins(ctx context.Context, subs []*gogithub.Issue) (map[i
 // time, and the other never filed. One with no such version, as when
 // someone deleted the text of each, gets the zero Origin, so it's no
 // item's child, as for a body with no marker of the App's (childOrigins).
+// Either is warned of once while the listed body stays the same
+// (childForgedWarn), not on each visit until step 1 notes it dirty, or,
+// for a trusted user's edit, which it never notes, until the record
+// stands.
+//
+// An issue that isn't linked whose listed body names another plan isn't
+// read, so a child forged to name another plan is missed, whether it was
+// filed but not yet linked when a pass stopped or someone unlinked it by
+// hand: it's a child that isn't found (childrenGone), or, for a new item,
+// it's filed again (SPEC §5.2). Reading each listed issue of the App's
+// that names any plan would add a query to visits that make none, as
+// before a first child is filed, for other plans' issues.
 //
 // Each history that reaches the body as listed is kept (histories), so
 // the issue's own step 1 in the same pass doesn't read it again when its
@@ -568,16 +580,32 @@ func (st *Step) childEditedOrigins(ctx context.Context, parent int, subs, listed
 		o, whole := state.OriginOf(m)
 		switch {
 		case !ok || !whole:
-			logr.Warnf("%s/%s#%d: its description names item %q of #%d's plan, but no version of it the App wrote has an origin marker, so it's no item's child",
+			st.childForgedWarn(n, body, "%s/%s#%d: its description names item %q of #%d's plan, but no version of it the App wrote has an origin marker, so it's no item's child",
 				st.Owner, st.Repo, n, listedOrigin.Item, listedOrigin.Plan)
 			o = state.Origin{}
 		case o.Plan != listedOrigin.Plan || o.Item != listedOrigin.Item:
-			logr.Warnf("%s/%s#%d: its description names item %q of #%d's plan, but the App filed it for item %s of #%d's, so it's matched to that one",
+			st.childForgedWarn(n, body, "%s/%s#%d: its description names item %q of #%d's plan, but the App filed it for item %s of #%d's, so it's matched to that one",
 				st.Owner, st.Repo, n, listedOrigin.Item, listedOrigin.Plan, o.Item, o.Plan)
 		}
 		origins[n] = o
 	}
 	return origins, nil
+}
+
+// childForgedWarn logs childEditedOrigins' warning about issue n, whose
+// listed body is body, unless it warned about n already while that was
+// its body. It keeps that in memory, by issue and listed body, as
+// originLost keeps originNone: any edit changes the body, so a new edit
+// is warned of again, and the next visit over the same body logs nothing.
+func (st *Step) childForgedWarn(n int, body, format string, args ...any) {
+	if warned, ok := st.childForged[n]; ok && warned == body {
+		return
+	}
+	if st.childForged == nil {
+		st.childForged = map[int]string{}
+	}
+	st.childForged[n] = body
+	logr.Warnf(format, args...)
 }
 
 // childListedOrigin is the Origin that Derive reads from is, as a listing
