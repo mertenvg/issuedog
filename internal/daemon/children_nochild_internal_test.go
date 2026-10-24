@@ -28,7 +28,7 @@ func TestChildrenNoChildIsAnError(t *testing.T) {
 		want  string
 	}{
 		{"a changed item's rewrite", func(st *Step, children map[string]childFound) error {
-			return st.childrenChanged(ctx, &github.Snapshot{Number: 1}, 2, plan, key, []childSpec{{Item: "T2"}}, children, map[string]int{})
+			return st.childrenChanged(ctx, &github.Snapshot{Number: 1}, 2, plan, "p2", key, []childSpec{{Item: "T2"}}, children, map[string]int{})
 		}, "item T2: revision 2 changes it, but it has no child"},
 		{"a new item's dependency", func(st *Step, children map[string]childFound) error {
 			return st.childrenLink(ctx, []planItem{{ID: "T4", Status: planNew, DependsOn: []string{"T1"}}}, children)

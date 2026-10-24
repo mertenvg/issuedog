@@ -92,8 +92,12 @@ import (
 // item that can't be written as an issue, a kept or changed item whose
 // child is gone, a child GitHub refuses to file with a 422, as for an
 // issue type the org doesn't have, a revision's plan comment that names
-// no run for its changed children's rewrite (childrenChanged), or a link
-// GitHub refuses with a 422, as for a child that has another parent.
+// no run for its changed children's rewrite, found before any write too
+// (childrenRun), a changed story whose child has no parent, which no row
+// of SPEC §7.2 sends back to planning (childChanged), a link GitHub
+// refuses with a 422, as for a child that has another parent, or a
+// blocked-by link it refuses with a 422, as for an issue 50 issues block
+// already (childBlockErr).
 // It's reported once on the parent instead, as a state error keyed by
 // the comment holding the parent's latest move, the one into planned
 // (childrenStuckReport, SPEC §5.3). While that error is reported, the
@@ -163,6 +167,11 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 	if err != nil {
 		return fail(&childrenStuck{why: childrenStuckItem, err: err})
 	}
+	// So is the run their rewrite names, from the plan comment.
+	run, err := childrenRun(planComment, rev.Rev, changed, st.AppSlug)
+	if err != nil {
+		return fail(err)
+	}
 	found, err := st.childrenFind(ctx, s, childrenSince(s, st.AppSlug, d.Has, move))
 	if err != nil {
 		return wrap(err)
@@ -195,7 +204,7 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 	// Once the new children are filed, so a changed human task's "Why it
 	// blocks" can name a new item's issue, the changed children are
 	// rewritten and moved (SPEC §6.4).
-	if err := st.childrenChanged(ctx, s, rev.Rev, planComment, key, changed, children, numbers); err != nil {
+	if err := st.childrenChanged(ctx, s, rev.Rev, planComment, run, key, changed, children, numbers); err != nil {
 		return fail(err)
 	}
 	// plan.Items is plan order, which the links and the record follow,
@@ -210,7 +219,7 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 		linked = slices.DeleteFunc(slices.Clone(plan.Items), func(it planItem) bool { return !planFiles(it.Status) })
 	}
 	if err := st.childrenLink(ctx, linked, children); err != nil {
-		return wrap(err)
+		return fail(err)
 	}
 	if revised {
 		// Then a changed child's links to its siblings follow the
@@ -219,7 +228,7 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 		// #297). The record comes only after them, so once
 		// it stands every write of the revision is made.
 		if err := st.revisedLink(ctx, plan.Items, children); err != nil {
-			return wrap(err)
+			return fail(err)
 		}
 		if err := st.droppedClose(ctx, s, rev.Rev, planComment, key, plan.Items, children); err != nil {
 			return wrap(err)
@@ -381,14 +390,49 @@ func (st *Step) childrenStuckReport(ctx context.Context, s *github.Snapshot, rev
 	return nil
 }
 
-// childRefused reports whether err, from filing a child or linking it
-// under its parent, is GitHub's 422, which refuses the write whatever pass
-// asks, as for an issue type the org doesn't have, or a child that has
-// another parent. A 5xx, or a request that got no answer, isn't: a later
-// pass may get past it.
+// childRefused reports whether err, from filing a child, linking it
+// under its parent or adding a blocked-by link to it, is GitHub's 422,
+// which refuses the write whatever pass asks, as for an issue type the org
+// doesn't have, a child that has another parent, or one 50 issues block
+// already. A 5xx, or a request that got no answer, isn't: a later pass
+// may get past it.
 func childRefused(err error) bool {
 	var e *gogithub.ErrorResponse
 	return errors.As(err, &e) && e.Response != nil && e.Response.StatusCode == http.StatusUnprocessableEntity
+}
+
+// childBlockErr is err, from making c, item's child, blocked by b, dep's
+// child (AddBlockedBy), saying what failed. A 422 refuses the link
+// whatever pass asks, as for a child 50 issues block already, GitHub's
+// cap, so it's a failure no later pass gets past (childrenStuck, SPEC
+// §5.2), as a refused link under the parent is, and not retried on every
+// pass.
+func childBlockErr(err error, item string, c childFound, dep string, b childFound) error {
+	err = fmt.Errorf("item %s: block #%d by #%d: %w", item, c.Number, b.Number, err)
+	if childRefused(err) {
+		return &childrenStuck{why: fmt.Sprintf("GitHub refused to make #%d, the child of item %s, blocked by #%d, the child of item %s",
+			c.Number, inline(item), b.Number, inline(dep)), err: err}
+	}
+	return err
+}
+
+// childrenRun is the run that the rewrite marker of changed, revision
+// rev's changed items, names (childRewrite): the run= of plan, the
+// revision's plan comment (childPlanRun), or "" with no changed item. A
+// plan comment that names none is a failure no later pass gets past
+// (childrenStuck): it's the approved revision's, which only a new
+// approval replaces, so no later pass reads a run from it either.
+// ChildrenVisit finds it before any write, as it finds childrenGone's.
+func childrenRun(plan github.Comment, rev int, changed []childSpec, appSlug string) (string, error) {
+	if len(changed) == 0 {
+		return "", nil
+	}
+	run, ok := childPlanRun(plan, appSlug)
+	if !ok {
+		return "", &childrenStuck{why: "its plan comment names no run, which the rewrite of its changed children would name",
+			err: fmt.Errorf("revision %d's plan comment %d names no run, which its changed children's rewrite marker would name", rev, plan.ID)}
+	}
+	return run, nil
 }
 
 // childOrigins returns the Origin of each of subs, a parent's sub-issues
@@ -664,7 +708,8 @@ func (st *Step) childWrite(ctx context.Context, s *github.Snapshot, rev int, key
 // (BlockedBy), and adds only the ones it lacks, matched by issue ID, so a
 // replay adds none twice. It removes none: links someone else added stay.
 // A child it adds a link to is reported to Touched first, as the add
-// moves its updated_at. A human task, created last, is blocked by what its
+// moves its updated_at. A link GitHub refuses with a 422 is a failure no
+// later pass gets past (childBlockErr). A human task, created last, is blocked by what its
 // own item depends on, and the children of items that depend on it are
 // blocked by it, like any other child's.
 func (st *Step) childrenLink(ctx context.Context, items []planItem, children map[string]childFound) error {
@@ -691,7 +736,7 @@ func (st *Step) childrenLink(ctx context.Context, items []planItem, children map
 			}
 			st.touch(c.Number)
 			if err := st.Client.AddBlockedBy(ctx, st.Owner, st.Repo, c.Number, b.ID); err != nil {
-				return fmt.Errorf("item %s: block #%d by #%d: %w", it.ID, c.Number, b.Number, err)
+				return childBlockErr(err, it.ID, c, dep, b)
 			}
 			logr.Infof("%s/%s#%d: blocked by #%d, as item %s of a plan depends on item %s", st.Owner, st.Repo, c.Number, b.Number, it.ID, dep)
 		}
