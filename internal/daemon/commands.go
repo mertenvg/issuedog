@@ -53,8 +53,9 @@ type Rejection struct {
 	// suggest one.
 	Final bool
 	// Dated is set when Reason holds because of when the comment was
-	// posted, before the latest revision or at a stage since moved on, so
-	// a new comment with its text, posted now, wouldn't get it (reword).
+	// posted, before the latest revision or at a review stage since moved
+	// on to another, so a new comment with its text, posted now, wouldn't
+	// get it, and could apply (reword).
 	Dated bool
 }
 
@@ -86,12 +87,14 @@ func (st *Step) command(ctx context.Context, s *github.Snapshot, d Dirt, c githu
 // request (requested) at any stage but the review stage it was posted at
 // (requestAt) finds the stage moved on since, so its reason says that,
 // whatever /revise would say at the stage now. It's Final: a new comment
-// now wouldn't send the spec or the plan back. It's Dated too: a new
-// comment is posted at the stage now, so it doesn't get this reason.
+// now wouldn't send the spec or the plan back. At spec-review or
+// plan-review it's Dated too: a new comment is posted at the stage now, so
+// it doesn't get this reason, and is a revision request there. At any
+// other stage a new comment sends nothing back either, so it isn't.
 func (st *Step) why(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment, cmd state.Command, stage state.Stage) (Rejection, Handler, error) {
 	if at := st.requestAt(s, d, c); at != "" && at != stage {
 		return Rejection{Reason: fmt.Sprintf("it was posted at `%s`, and this issue is at `%s` now. A comment sends the spec back only at `%s`, and the plan only at `%s`",
-			at, stage, state.SpecReview, state.PlanReview), Final: true, Dated: true}, Handler{}, nil
+			at, stage, state.SpecReview, state.PlanReview), Final: true, Dated: stage == state.SpecReview || stage == state.PlanReview}, Handler{}, nil
 	}
 	if err := cmd.Check(stage); err != nil {
 		return Rejection{Reason: err.Error()}, Handler{}, nil

@@ -307,7 +307,7 @@ func TestIvWordingLostReplyAfterEdit(t *testing.T) {
 				f.EditComment(1004, "owner", "/approve")
 			}),
 			outcome{comments: []string{ivWordingLostEdited("/approve", "1004")}, labels: []string{"stage:plan-review"}, downs: []string{"/approve"}}},
-		{"a request edited after its 👎, posted at a stage since moved on: a new one isn't, so the reply asks",
+		{"a request edited after its 👎, posted at a review stage since moved on to another: a new one could apply there, so the reply asks",
 			review(func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1002, "owner", "too long")
 				f.AddReaction(1002, app, "-1")
@@ -316,6 +316,26 @@ func TestIvWordingLostReplyAfterEdit(t *testing.T) {
 			}),
 			outcome{comments: []string{overridden(state.PlanReview, "from=spec-review to=plan-review by=owner event=9003"), ivWordingLostEdited("too short", "1002")},
 				labels: []string{"stage:plan-review"}, downs: []string{"too short"}}},
+		{"a request edited after its 👎, posted at a stage since moved on to planning: a new one couldn't apply either, so the reply gives the reason",
+			review(func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, "owner", "too long")
+				f.AddReaction(1002, app, "-1")
+				f.EditComment(1002, "owner", "too short")
+				handSet(t, f, state.SpecReview, state.Planning, 9003)
+			}),
+			outcome{comments: []string{overridden(state.Planning, "from=spec-review to=planning by=owner event=9003"),
+				ivWordingLostFinal("too short", movedOnReason(state.SpecReview, state.Planning), "1002")},
+				labels: []string{"stage:planning"}, downs: []string{"too short"}}},
+		{"likewise moved on to in-progress",
+			review(func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, "owner", "too long")
+				f.AddReaction(1002, app, "-1")
+				f.EditComment(1002, "owner", "too short")
+				handSet(t, f, state.SpecReview, state.InProgress, 9003)
+			}),
+			outcome{comments: []string{overridden(state.InProgress, "from=spec-review to=in-progress by=owner event=9003"),
+				ivWordingLostFinal("too short", movedOnReason(state.SpecReview, state.InProgress), "1002")},
+				labels: []string{"stage:in-progress"}, downs: []string{"too short"}}},
 		{"a command edited after its 👎 into plain text, posted at a stage since moved on: no request, so the reply asks",
 			filed(nil, func(t testing.TB, f *githubtest.Fake) {
 				f.SetType(1, "Story")
