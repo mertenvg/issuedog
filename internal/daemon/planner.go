@@ -626,7 +626,8 @@ func plannerPreamble(c *config.Config, s *github.Snapshot, children int, prior *
 			"- A `new` item's ID is no child's, and no item's of the approved revision.",
 			"- `depends_on` may name `kept`, `changed` and `new` items, never a `dropped` one. " +
 				"A `kept` item keeps its dependencies from the approved revision, and the cycle check and the link limits count them.",
-			"- `plan.max_tasks` counts the tasks that aren't `dropped`. A revision always waits for the owner's review, whatever `plan.review` says.",
+			"- `plan.max_tasks` counts the open and new tasks: the `changed` and `new` ones, and the `kept` ones whose child is open. A closed child's `kept` task doesn't count. " +
+				"A revision always waits for the owner's review, whatever `plan.review` says.",
 		}
 	}
 	asked := fmt.Sprintf("No questions have been asked on this issue yet, so a question round now is round %d.", nextRound(all))

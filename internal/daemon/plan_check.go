@@ -53,6 +53,11 @@ func (f planFacts) view() planView {
 		MaxTasks: f.MaxTasks, SubIssues: f.SubIssues}
 	if f.Prior != nil {
 		v.Revised, v.Earlier = true, f.Prior.Items
+		for _, c := range f.Prior.Children {
+			if c.Closed {
+				v.Closed = append(v.Closed, c.Item)
+			}
+		}
 	}
 	return v
 }
@@ -131,8 +136,10 @@ func checkPlan(out planOutput, f planFacts) error {
 // kept and dropped items carry an ID and a title only, so of
 // the item rules they're held to the ID's, the title's and the links':
 // a kept item's links are its approved item's (planPrior.keptDeps), and a
-// dropped one has none. max-tasks counts the tasks that aren't dropped,
-// and sub-issues only the new items, as the rest are sub-issues already.
+// dropped one has none. max-tasks counts the open and new tasks: the
+// changed and new ones, and the kept ones whose child isn't closed. And
+// sub-issues counts only the new items, as the rest are sub-issues
+// already.
 func checkPlanBody(p planBody, f planFacts, fail func(string, string, ...any)) error {
 	switch {
 	case p.Kind != planStories && p.Kind != planTasks:
@@ -209,7 +216,7 @@ func checkPlanBody(p planBody, f planFacts, fail func(string, string, ...any)) e
 			if n := len(depsOf(it)); n > planMaxLinks {
 				fail(ruleLinks, "%s is blocked by %d items, over %d", at, n, planMaxLinks)
 			}
-			if p.Kind == planTasks && it.Status == planKept {
+			if p.Kind == planTasks && it.Status == planKept && !f.Prior.closed(it.ID) {
 				tasks++
 			}
 			continue
@@ -275,7 +282,11 @@ func checkPlanBody(p planBody, f planFacts, fail func(string, string, ...any)) e
 			visible = append(visible, rendered{at + "'s done when", h.DoneWhen.Text})
 		}
 	}
-	if p.Kind == planTasks && tasks > f.MaxTasks {
+	switch {
+	case p.Kind != planTasks || tasks <= f.MaxTasks:
+	case f.Prior != nil:
+		fail(ruleMaxTasks, "%d open and new tasks, over plan.max_tasks of %d: closed kept tasks don't count", tasks, f.MaxTasks)
+	default:
 		fail(ruleMaxTasks, "%d tasks, over plan.max_tasks of %d", tasks, f.MaxTasks)
 	}
 	if n := f.SubIssues + added; n > planMaxSubIssues {

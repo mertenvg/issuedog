@@ -179,7 +179,7 @@ func TestPlannerRevision(t *testing.T) {
 				"\n\n**T2. Refuse an expired quote at booking, saying when it expired** · changed · scope:booking · p1\nOutcome: ",
 				"\n\n**T3. Set the quote lifetime in production** · dropped\n\n",
 				"\n\n**T4. Give the quote lifetime a default** · new · scope:booking · p2\nOutcome: ",
-				"\n\nValidation (11.3): 3 tasks, within `plan.max_tasks` of 10, each with one scope from the list; " +
+				"\n\nValidation (11.3): 2 open and new tasks, within `plan.max_tasks` of 10, each with one scope from the list; " +
 					"every child listed once, kept, changed or dropped, and each closed one kept; no dependency cycles; " +
 					"4 sub-issues in all, within 100; at most 2 dependency links of one type per issue, within 50.\n\n",
 				"\n\ncc @owner\n\n**To approve this plan, react 👍 to this comment.**",
