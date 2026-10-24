@@ -21,10 +21,11 @@ import (
 // is created while it is, as a new one would be a second (#305). Each pass
 // reads its history again, till digestHistoryStrikes reads have failed on
 // this start. Then it's a state error, kind=digesthistory, reported once
-// (SPEC §5.3), and the issue stays held, with no digest created, while its
-// history is read once every digestHistoryStrikes passes, so an outage
-// longer than the strikes ends on its own, and each failed read is logged
-// as an error (#437). A restart reads it again at once, and a rename, with
+// (SPEC §5.3), but for one that looks like the digest itself
+// (digestHistoryLikely), and the issue stays held, with no digest
+// created, while its history is read once every digestHistoryStrikes
+// passes, so an outage longer than the strikes ends on its own, and each
+// failed read is logged as an error (#437). A restart reads it again at once, and a rename, with
 // no identity marker left in its body, lets it go. No step 1 visits a held
 // issue, so a 👍 on the error isn't read, and the digest, if there's one,
 // doesn't list it. It ends once the issue is judged: step 1 visits only an
@@ -120,7 +121,8 @@ func (g *digestState) historyPostedOn(n int, key string) bool {
 // so too, unless its snapshot was read after the change that made the
 // title rule hold it, as when it was renamed between a poll and its read.
 // Once the read has failed digestHistoryStrikes times, it reports the
-// state error.
+// state error, but for one that looks like the digest itself
+// (digestHistoryLikely).
 //
 // It keeps the issue's assignment state (Daemon.assignManaged): assignment
 // writes only to an issue with a snapshot, so it can't touch a held one,
@@ -135,9 +137,32 @@ func (d *Daemon) digestHistoryHold(ctx context.Context, is *gogithub.Issue) {
 	if is.GetState() == "open" {
 		d.stale[n] = true
 	}
-	if d.digest.history[n].fails >= d.digestHistoryStrikes() {
-		d.digestHistoryReport(ctx, is)
+	if d.digest.history[n].fails < d.digestHistoryStrikes() {
+		return
 	}
+	if digestHistoryLikely(is) {
+		a := d.Step.Applier
+		logr.Debugf("%s/%s#%d, held as its edit history failed to read on %d passes, gets no state error: its body has the digest's identity marker, and it's titled %q, as the digest is",
+			a.Owner, a.Repo, n, d.digest.history[n].fails, digestTitle)
+		return
+	}
+	d.digestHistoryReport(ctx, is)
+}
+
+// digestHistoryLikely reports whether is, held as listed, looks like the
+// digest itself: its body has the identity marker, and its title is still
+// digestTitle. That's the digest on a start whose edit history reads fail,
+// as in an outage, and the state error would stay on it once a read works
+// and takes it back, as nothing ends it but a visit, which a digest never
+// gets (SPEC §5.3, #527). So it gets none. The hold is what keeps a second
+// digest from being created, not the error, and it stands all the same.
+// The error's post is also an answer that may find the issue gone, but
+// leaving it out only lets go of the issue later, never sooner, so that
+// can't make a second digest: the reads find it gone once they work. An
+// issue someone else made look so, marker and title, is held silently
+// till then, and its failed reads are logged as errors as ever.
+func digestHistoryLikely(is *gogithub.Issue) bool {
+	return is.GetTitle() == digestTitle && digestMarkedBody(is)
 }
 
 // digestHistoryGone takes err, a request's answer that found issue n, held
@@ -248,7 +273,7 @@ func digestHistoryText(h digestHistoryFail, marked bool) string {
 		why = "It's mine, and its body has the digest's identity marker, `issuedog:digest`: " +
 			"it may be the digest, or an issue of mine that someone else put the marker in. " +
 			"Only the versions of its body I wrote show which"
-		fix = fmt.Sprintf("take the marker out of its body, and rename it if it's titled `%s`", digestTitle)
+		fix = "take the marker out of its body" // one titled digestTitle gets no error (digestHistoryLikely)
 	}
 	text := fmt.Sprintf("I can't tell whether this issue is the digest. %s, and reading its edit history failed on %d passes in a row. "+
 		"So I keep it out of the pipeline, and create no digest while I can't tell, so there are never two: "+

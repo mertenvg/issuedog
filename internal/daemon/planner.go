@@ -369,13 +369,15 @@ func plannerList(subs []plannerSub, skip int) string {
 // sub-issues, and untrusted.md's sections for the parent: a title or body
 // its untrusted author changed after it was admitted, or both, if it never
 // was, and a title someone untrusted renamed (plannerParent). A parent in
-// another repo isn't read: the file says so. It reads the parent as
-// madeAbove does, its edits as Dirty does, which costs no request when
-// nothing on it was edited, its timeline once, for its admission when its
-// author isn't trusted (contextAdmission), and else for its renames
-// (plannerTrustedTitle), which also gives its type by label
-// (plannerTrustedType), and the stages and types of its other sub-issues
-// (plannerTrustedSubs), asking trust through tc.
+// another repo isn't read, nor is a digest that someone made a parent, as
+// the daemon never takes a snapshot of the digest (SPEC §5.1, #527): the
+// file says so. It reads the parent as madeAbove does, its edits as Dirty
+// does, which costs no request when nothing on it was edited, its timeline
+// once, for its admission when its author isn't trusted
+// (contextAdmission), and else for its renames (plannerTrustedTitle),
+// which also gives its type by label (plannerTrustedType), and the stages
+// and types of its other sub-issues (plannerTrustedSubs), asking trust
+// through tc.
 func (p *Planner) parent(ctx context.Context, s *github.Snapshot, tc trustCache) (string, []string, error) {
 	a := p.Daemon.Step.Applier
 	up, _, err := a.Client.SubIssue.GetParentIssue(ctx, a.Owner, a.Repo, int64(s.Number))
@@ -386,6 +388,10 @@ func (p *Planner) parent(ctx context.Context, s *github.Snapshot, tc trustCache)
 		logr.Infof("%s/%s#%d: its parent #%d of %s isn't in this repo, so the planner doesn't read it",
 			a.Owner, a.Repo, s.Number, up.GetNumber(), up.GetRepositoryURL())
 		return "# Parent\n\nThis story's parent isn't in this repo, so issuedog doesn't read it.\n", nil, nil
+	}
+	if p.Daemon.digest.has(up.GetNumber()) {
+		logr.Infof("%s/%s#%d: its parent #%d is the digest, so the planner doesn't read it", a.Owner, a.Repo, s.Number, up.GetNumber())
+		return "# Parent\n\nThis story's parent is issuedog's digest, which isn't in the pipeline, so issuedog doesn't read it.\n", nil, nil
 	}
 	ps, err := a.Client.Snapshot(ctx, a.Owner, a.Repo, up.GetNumber())
 	if err != nil {

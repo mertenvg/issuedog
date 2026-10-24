@@ -177,7 +177,8 @@ func digestMarkerTrustRenamed(t testing.TB, f *githubtest.Fake, o *origin) {
 // A restart whose edit history reads fail can't tell whether the renamed
 // digest, its identity marker in its body, is the digest: it creates no
 // digest, and after loop.max_attempts failed reads posts the state error
-// that says why, the marker's text, not the title rule's. The next
+// that says why, the marker's text, not the title rule's, which needs no
+// rename, as one still titled `issuedog digest` gets none (#527). The next
 // restart's read works, and takes the digest back, with no new one.
 func TestDigestMarkerTrustHistoryFails(t *testing.T) {
 	t.Parallel()
@@ -194,8 +195,9 @@ func TestDigestMarkerTrustHistoryFails(t *testing.T) {
 		t.Fatalf("writes %q; want the state error alone, and no digest created", w)
 	}
 	c := f.State().Issues[0].Comments[0].Body
-	if !strings.Contains(c, "its body has the digest's identity marker, `issuedog:digest`") || !strings.Contains(c, "take the marker out of its body") || strings.Contains(c, "has no `origin` marker") {
-		t.Errorf("the state error = %q; want the identity marker's text", c)
+	if !strings.Contains(c, "its body has the digest's identity marker, `issuedog:digest`") || !strings.Contains(c, "take the marker out of its body") || strings.Contains(c, "has no `origin` marker") ||
+		strings.Contains(c, "rename it") {
+		t.Errorf("the state error = %q; want the identity marker's text, with no rename, as one titled `issuedog digest` gets none", c)
 	}
 	from = len(f.Writes())
 	iterate(t, digestDaemon(t, f, o, nil))
