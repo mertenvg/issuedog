@@ -686,7 +686,9 @@ func TestStartDaemonUsesCurrentModels(t *testing.T) {
 	// daemon.New turns the digest and assignment on, and step 1 keeps the
 	// trust startDaemon loaded from main. Iterate reloads trust before
 	// step 1, so this is read before any Iterate: there, a daemon.New that
-	// dropped its trust would pass unseen.
+	// dropped its trust, or swapped it for one that trusts everyone, would
+	// pass unseen. mallory can write to the repo but isn't in main's
+	// CODEOWNERS, so main's trust doesn't trust her.
 	if !d.Digest || !d.Assign {
 		t.Errorf("Digest = %t, Assign = %t; want both on", d.Digest, d.Assign)
 	}
@@ -695,6 +697,9 @@ func TestStartDaemonUsesCurrentModels(t *testing.T) {
 	}
 	if ok, err := d.Step.Trust.Trusted(ctx, "mertenvg"); err != nil || !ok {
 		t.Errorf("step 1's trust: Trusted(mertenvg) = %t, %v; want true, as main's CODEOWNERS names him", ok, err)
+	}
+	if ok, err := d.Step.Trust.Trusted(ctx, "mallory"); err != nil || ok {
+		t.Errorf("step 1's trust: Trusted(mallory) = %t, %v; want false, as main's CODEOWNERS doesn't name her", ok, err)
 	}
 	iterate := func(want []string) {
 		t.Helper()
