@@ -748,8 +748,11 @@ func TestDiscRunApprovalEdited(t *testing.T) {
 
 	notice := discRunFind(t, f, 2, discNoticeMarker(edit))
 	f.AddReaction(notice, "owner", "+1")
+	// The hold ends at clarifying, which waits on nobody, but the run
+	// there asks round 1 in the same pass, which waits on the owner, so
+	// owner stays assigned with no write (SPEC §9.6).
 	l.step("the 👍 on the edit's notice", "POST /issues/2/comments", "POST /issues/2/labels", "DELETE /issues/2/labels/stage:held", "PATCH /issues/1",
-		"POST /issues/2/comments", "DELETE /issues/2/assignees")
+		"POST /issues/2/comments")
 	hold := discRunFind(t, f, 2, "to=held")
 	leave := ivHoldLeaveText("`owner`", "spec-review", fmt.Sprintf("from=held to=clarifying at=spec-review origin=spec-review event=h%d resolved=%d seen=%d",
 		hold, resolveReactionAt(t, f, notice), rev))
@@ -761,7 +764,8 @@ func TestDiscRunApprovalEdited(t *testing.T) {
 	files := l.ctx(1)
 	ivOnlyIn(t, files, mallory, "untrusted.md")
 	ivOnlyIn(t, files, eve, "untrusted.md")
-	l.step("round 1 listed", "PATCH /issues/1", "POST /issues/2/assignees")
+	l.step("round 1 listed", "PATCH /issues/1")
+	assignWant(t, f, "round 1 listed", map[int][]string{2: {"owner"}})
 	l.quiet("round 1 waits")
 
 	// The owner reads mallory's edit, and 👍s it anew: that 👍 post-dates it.
