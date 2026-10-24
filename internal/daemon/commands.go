@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -417,7 +418,8 @@ func (above madeAboveSet) on(id int64) (int, bool) {
 
 // madeAbove returns what is on c's issue and its ancestors (madeAboveSet),
 // read up through each parent in this repo. It stops at a parent in another
-// repo, as family skips those going down. Markers in dirty content aren't
+// repo, as family skips those going down, and passes over the digest,
+// reading nothing on it (madeAboveParent). Markers in dirty content aren't
 // read (SPEC §5.1), so it reads each ancestor's edits as Dirty does, which
 // costs no request when nothing on it was edited.
 func (a *Applier) madeAbove(ctx context.Context, c Cmd) (madeAboveSet, error) {
@@ -438,21 +440,54 @@ func (a *Applier) madeAbove(ctx context.Context, c Cmd) (madeAboveSet, error) {
 		if s.Parent == 0 || seen[s.Parent] {
 			return above, nil
 		}
-		parent, _, err := a.Client.SubIssue.GetParentIssue(ctx, a.Owner, a.Repo, int64(s.Number))
+		up, err := a.madeAboveParent(ctx, s.Number, seen, above.issues)
 		if err != nil {
-			return madeAboveSet{}, fmt.Errorf("parent of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
+			return madeAboveSet{}, fmt.Errorf("ancestor of %s/%s#%d: %w", a.Owner, a.Repo, c.S.Number, err)
 		}
-		if !a.inRepo(parent.GetRepositoryURL()) {
-			logr.Infof("%s/%s#%d: its parent #%d of %s isn't in this repo, so it's where the walk up stops",
-				a.Owner, a.Repo, s.Number, parent.GetNumber(), parent.GetRepositoryURL())
+		if up == 0 {
 			return above, nil
 		}
-		if s, err = a.Client.Snapshot(ctx, a.Owner, a.Repo, parent.GetNumber()); err != nil {
+		if s, err = a.Client.Snapshot(ctx, a.Owner, a.Repo, up); err != nil {
 			return madeAboveSet{}, fmt.Errorf("ancestor of %s/%s#%d: %w", a.Owner, a.Repo, c.S.Number, err)
 		}
 		if d, err = a.Dirty(ctx, s, c.Trust); err != nil {
 			return madeAboveSet{}, fmt.Errorf("ancestor of %s/%s#%d: %w", a.Owner, a.Repo, c.S.Number, err)
 		}
+	}
+}
+
+// madeAboveParent returns the ancestor of issue n, its parent in this repo,
+// whose snapshot madeAbove takes next, or 0 where the walk up stops: at a
+// parent in another repo, or one it has seen already. It passes over a
+// digest (Applier.madeAboveDigest), as the daemon never takes a snapshot of
+// the digest (SPEC §5.1), and no command on it is ever handled (SPEC §9.4).
+// The digest is on the path, so it's added to seen and issues, but nothing
+// on it is read, and the walk goes on from the digest's own parent, read
+// as Snapshot reads one, a 404 for none. So a hold made above a digest
+// that someone made a parent still counts as made above (#498).
+func (a *Applier) madeAboveParent(ctx context.Context, n int, seen, issues map[int]bool) (int, error) {
+	for digest := false; ; digest = true {
+		parent, resp, err := a.Client.SubIssue.GetParentIssue(ctx, a.Owner, a.Repo, int64(n))
+		if digest && resp != nil && resp.StatusCode == http.StatusNotFound {
+			return 0, nil // the digest has no parent
+		}
+		if err != nil {
+			return 0, fmt.Errorf("parent of %s/%s#%d: %w", a.Owner, a.Repo, n, err)
+		}
+		if !a.inRepo(parent.GetRepositoryURL()) {
+			logr.Infof("%s/%s#%d: its parent #%d of %s isn't in this repo, so it's where the walk up stops",
+				a.Owner, a.Repo, n, parent.GetNumber(), parent.GetRepositoryURL())
+			return 0, nil
+		}
+		up := parent.GetNumber()
+		if seen[up] {
+			return 0, nil
+		}
+		if a.madeAboveDigest == nil || !a.madeAboveDigest(up) {
+			return up, nil
+		}
+		seen[up], issues[up] = true, true
+		n = up
 	}
 }
 

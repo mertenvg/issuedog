@@ -12,21 +12,22 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// An issue the digest's title rule would take, whose edit history failed
-// to read, can't be judged: it may be the digest, whose marker was taken
-// out, or an App task that lost its origin and was renamed (digestTake).
-// So it's held, out of step 1 and Work, and no digest is created while it
-// is, as a new one would be a second (#305). Each pass reads its history
-// again, till digestHistoryStrikes reads have failed on this start. Then
-// it's a state error, kind=digesthistory, reported once (SPEC §5.3), and
-// the issue stays held, with no digest created, while its history is read
-// once every digestHistoryStrikes passes, so an outage longer than the
-// strikes ends on its own, and each failed read is logged as an error
-// (#437). A restart reads it again at once, and a rename, or the identity
-// marker put back, lets it go. No step 1 visits a held issue, so a 👍 on
-// the error isn't read, and the digest, if there's one, doesn't list it.
-// It ends once the issue is judged: step 1 visits only an issue the title
-// rule has judged, so it's never open there (openErrors).
+// An issue the digest's title rule would take, or whose body has the
+// identity marker, whose edit history failed to read, can't be judged: it
+// may be the digest, whose marker was taken out, or an App task that lost
+// its origin and was renamed, or one someone else put the marker in
+// (digestTake, #498). So it's held, out of step 1 and Work, and no digest
+// is created while it is, as a new one would be a second (#305). Each pass
+// reads its history again, till digestHistoryStrikes reads have failed on
+// this start. Then it's a state error, kind=digesthistory, reported once
+// (SPEC §5.3), and the issue stays held, with no digest created, while its
+// history is read once every digestHistoryStrikes passes, so an outage
+// longer than the strikes ends on its own, and each failed read is logged
+// as an error (#437). A restart reads it again at once, and a rename, with
+// no identity marker left in its body, lets it go. No step 1 visits a held
+// issue, so a 👍 on the error isn't read, and the digest, if there's one,
+// doesn't list it. It ends once the issue is judged: step 1 visits only an
+// issue digestTake has judged, so it's never open there (openErrors).
 
 // digestHistoryErrKind is the kind of the state error for an issue the
 // digest's title rule can't judge, as its edit history failed to read.
@@ -166,7 +167,7 @@ func (d *Daemon) digestHistoryReport(ctx context.Context, is *gogithub.Issue) {
 	key := state.BodyHash(is.GetBody())
 	desc := fmt.Sprintf("%s/%s#%d, titled %q, can't be judged the digest or not, as its edit history failed to read on %d passes: "+
 		"it's held out of the pipeline, and no digest is created, till a read works, tried once every %d passes and on a restart, keyed %s",
-		a.Owner, a.Repo, n, digestTitle, h.fails, d.digestHistoryStrikes(), key)
+		a.Owner, a.Repo, n, is.GetTitle(), h.fails, d.digestHistoryStrikes(), key)
 	if g.historyPostedOn(n, key) {
 		logr.Debugf("state error, reported already: %s", desc)
 		return
@@ -176,7 +177,7 @@ func (d *Daemon) digestHistoryReport(ctx context.Context, is *gogithub.Issue) {
 		logr.Errorf("report %s/%s#%d's edit history that failed to read: %v", a.Owner, a.Repo, n, err)
 		return
 	}
-	c, resp, err := a.Client.Issues.CreateComment(ctx, a.Owner, a.Repo, n, gogithub.IssueCommentRequest{Body: join(digestHistoryText(h), marker)})
+	c, resp, err := a.Client.Issues.CreateComment(ctx, a.Owner, a.Repo, n, gogithub.IssueCommentRequest{Body: join(digestHistoryText(h, digestMarkedBody(is)), marker)})
 	if moved := digestMoved(a, resp, nil); moved != nil {
 		err = moved // a redirected POST, a GET of the comments, posted nothing, whether that decoded or not
 	}
@@ -196,21 +197,31 @@ func (d *Daemon) digestHistoryReport(ctx context.Context, is *gogithub.Issue) {
 
 // digestHistoryText says that h's issue can't be judged the digest or not,
 // as its edit history failed to read on h.fails passes, so it's kept out
-// of the pipeline and no digest is created, and what ends that. The last
-// read's error is GitHub's text, so it says only that the daemon's log
-// has it, as the title rule logged it (digestTake), since it quotes no
-// cause the daemon didn't write (publicCause). The rest is the App's own,
-// with no marker, so it isn't escaped.
-func digestHistoryText(h digestHistoryFail) string {
-	text := fmt.Sprintf("I can't tell whether this issue is the digest. It's mine, titled `%s`, and its body has no `origin` marker: "+
+// of the pipeline and no digest is created, and what ends that: for one
+// whose body has the identity marker, marked, that only the versions the
+// App wrote show whether the marker is the App's (#498), and else what the
+// title rule needs. The last read's error is GitHub's text, so it says
+// only that the daemon's log has it, as digestTake logged it, since it
+// quotes no cause the daemon didn't write (publicCause). The rest is the
+// App's own, with no marker, so it isn't escaped: it names the identity
+// marker with no "<!--".
+func digestHistoryText(h digestHistoryFail, marked bool) string {
+	why := fmt.Sprintf("It's mine, titled `%s`, and its body has no `origin` marker: "+
 		"it may be the digest with its identity marker taken out, or a task of mine that lost its `origin` and was renamed. "+
-		"Only its first version shows which, and reading its edit history failed on %d passes in a row. "+
+		"Only its first version shows which", digestTitle)
+	fix := "rename it"
+	if marked {
+		why = "It's mine, and its body has the digest's identity marker, `issuedog:digest`: " +
+			"it may be the digest, or an issue of mine that someone else put the marker in. " +
+			"Only the versions of its body I wrote show which"
+		fix = fmt.Sprintf("take the marker out of its body, and rename it if it's titled `%s`", digestTitle)
+	}
+	text := fmt.Sprintf("I can't tell whether this issue is the digest. %s, and reading its edit history failed on %d passes in a row. "+
 		"So I keep it out of the pipeline, and create no digest while I can't tell, so there are never two: "+
 		"with no other digest, this repo has none till then. "+
 		"I keep reading its history, less often now, so this ends on its own once a read works, and I read it again when I restart. "+
-		"If this issue isn't the digest, rename it, and I'll take it as any other issue; "+
-		"if it is, putting the digest's identity marker back in its body makes it the digest again. "+
-		"A 👍 on this comment changes nothing: the error ends once I can tell.", digestTitle, h.fails)
+		"If this issue isn't the digest, %s, and I'll take it as any other issue. "+
+		"A 👍 on this comment changes nothing: the error ends once I can tell.", why, h.fails, fix)
 	if h.cause != nil {
 		text += publicCauseText("read", publicCause(h.cause))
 	}
