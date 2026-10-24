@@ -592,7 +592,7 @@ func TestTriageAfterIgnoreDuringRun(t *testing.T) {
 	}
 }
 
-// Through the loop's own Iterate, with the flag answers set as newStep
+// Through the loop's own Iterate, with the flag answers set as NewStep
 // sets them: triage flags the issue, a triage:ask someone removes comes
 // back with no comment, and the owner's 👍, which changes no updated_at,
 // is found on the next pass and admits the issue.

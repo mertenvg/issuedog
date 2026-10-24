@@ -683,8 +683,8 @@ func TestIterateCreatesChildren(t *testing.T) {
 
 	var visits, worked []int
 	// The config the pass loads allows childModels, which S1's model
-	// resolves against through the daemon's current config, as newStep in
-	// cmd/issuedog has it.
+	// resolves against through the daemon's current config, as
+	// daemon.New's step 1 has it.
 	o := newOrigin(t)
 	o.commit(config.Path, "types: labels\nloop:\n  idle_sleep: 7s\nmodels:\n  allowed: [opus, {name: claude-sonnet-5-5-20261001, label: sonnet}]\n")
 	d := newDaemon(t, f, o, nil)

@@ -30,8 +30,8 @@ func TestResolveLeaveStateError(t *testing.T) {
 }
 
 // When leaving the hold is a state error, as for a type the pipeline
-// doesn't know, the ancestors aren't read (#188's verify, attempt 3): the
-// error is reported once, and an unchanged pass costs no rate limit.
+// doesn't know, the ancestors aren't read (#188): the error is reported
+// once, and an unchanged pass costs no rate limit.
 func TestResolveNoAncestorReadsOnStateError(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)

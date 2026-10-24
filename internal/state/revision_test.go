@@ -327,7 +327,7 @@ func TestPlanApproval(t *testing.T) {
 	}{
 		{"an approvable plan", snap("the spec", apps(2), spec1, plan1), clean, plan1, 2, 1, false, nil},
 		{"the latest of two", snap("the spec", apps(3), spec1, plan1, plan2), clean, plan2, 3, 2, false, nil},
-		{"a trusted edit to the body changes nothing (Q2a)", snap("an edited spec", apps(2), spec1, plan1), clean, plan1, 2, 1, false, nil},
+		{"a trusted edit to the body changes nothing", snap("an edited spec", apps(2), spec1, plan1), clean, plan1, 2, 1, false, nil},
 		{"a dirty plan comment is no revision, and hides the one before it", snap("", apps(2), plan1, plan2), dirtyIDs(2),
 			plan1, 1, 1, true, []PlanReason{PlanHidden}},
 		{"a dirty App comment after the plan hides it", snap("", apps(2), plan1, "a reply"), dirtyIDs(2),

@@ -115,7 +115,7 @@ type LabelCheck struct {
 	Held []string
 	// DiscRenames are the issue's renamed events, oldest first, from the
 	// timeline CheckLabels reads anyway, so a rename's discussion trigger
-	// costs no request (SPEC §6.4). CheckLabels acts on none.
+	// costs no request (SPEC §12). CheckLabels acts on none.
 	DiscRenames []DiscRename
 	// DiscLabelTimes are when each labeled or unlabeled event of a
 	// pipeline label was made, by its ID, from the same timeline: a
@@ -124,7 +124,8 @@ type LabelCheck struct {
 	DiscLabelTimes map[int64]time.Time
 	// Closings are the issue's closed and reopened events, oldest first,
 	// from the same timeline, so judging a close or a reopen of an open
-	// issue costs no request (SPEC §6.4). CheckLabels acts on none of them.
+	// issue costs no request, as for a rename (SPEC §12). CheckLabels acts
+	// on none of them.
 	Closings []Closing
 }
 

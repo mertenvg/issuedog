@@ -156,16 +156,16 @@ func (a *Applier) CheckLabels(ctx context.Context, s *github.Snapshot, trust git
 // disagreement, discRestore holds s if a write collaborator's edit or
 // deletion of the App's content hid the stage its label shows: then it
 // acts on neither, as the hold sets the labels (SPEC §6.4). Failing that,
-// planDirtyRestore may record again a move to plan-review that a dirty
-// plan comment hid, which leaves them alone too (#315). Every caller
-// that has s's dirty content d uses it: step 1, a command's moves of other
-// issues, and a run's apply.
+// reviewDirtyRestore may record again a move to spec-review or plan-review
+// that a dirty spec revision or plan comment hid, which leaves them alone
+// too (#315, #447). Every caller that has s's dirty content d uses it:
+// step 1, a command's moves of other issues, and a run's apply.
 func (a *Applier) discCheckLabels(ctx context.Context, s *github.Snapshot, trust github.Trust, d Dirt) error {
 	return a.checkLabels(ctx, s, trust, d.Has, func(events []github.LabelEvent) (bool, error) {
 		if held, err := a.discRestore(ctx, s, trust, d, events); held || err != nil {
 			return held, err
 		}
-		return a.planDirtyRestore(ctx, s, d, events)
+		return a.reviewDirtyRestore(ctx, s, d, events)
 	})
 }
 

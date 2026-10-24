@@ -115,9 +115,9 @@ type Origin struct {
 	Human bool
 	// Check is a human task's "Done when" check, from the marker's check,
 	// value and contains (CheckFields, SPEC §5), or the zero Check
-	// for a plain-text one, and for fields that don't record a whole check
-	// (checkOf). It's read with the rest of the marker, so wherever Origin
-	// is read from, it is too.
+	// for a plain-text one, and the CheckUnreadable Check for fields that
+	// don't record a whole check (checkOf). It's read with the rest of the
+	// marker, so wherever Origin is read from, it is too.
 	Check Check
 }
 

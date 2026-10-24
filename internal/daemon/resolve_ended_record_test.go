@@ -10,18 +10,17 @@ import (
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
 
-// #188's verify, round 2, attempt 1: a record that a /resume ended an
-// ancestor's /hold on the issue (resolveResumed) ends it for every
-// judgement of the owner holds left (resolveLeft), so resolveAbove agrees
-// with resolveHoldsLeft. Before, the leave path found no owner hold left,
-// read the ancestors, counted the /hold again, as the /resume left no
-// marker on its own issue, and kept the issue held, reading the ancestors
-// again on every pass.
+// A record that a /resume ended an ancestor's /hold on the issue
+// (resolveResumed) ends it for every judgement of the owner holds left
+// (resolveLeft), so resolveAbove agrees with resolveHoldsLeft (SPEC §6.4).
+// Before, the leave path found no owner hold left, read the ancestors,
+// counted the /hold again, as the /resume left no marker on its own issue,
+// and kept the issue held, reading the ancestors again on every pass.
 
-// resolveR2Quiet runs Iterate on f until it settles, then checks that an
+// resolveQuietPass runs Iterate on f until it settles, then checks that an
 // unchanged pass writes nothing and asks only conditional GETs answered
 // 304: no ancestor is read again.
-func resolveR2Quiet(t *testing.T, f *githubtest.Fake) {
+func resolveQuietPass(t *testing.T, f *githubtest.Fake) {
 	t.Helper()
 	d := resolveDaemon(t, f, newOrigin(t))
 	for range 3 {
@@ -39,11 +38,11 @@ func resolveR2Quiet(t *testing.T, f *githubtest.Fake) {
 	}
 }
 
-// resolveR2Check runs setup's last pass on #1 under Replay, then on a
+// resolveResumedRecordCheck runs setup's last pass on #1 under Replay, then on a
 // fresh fake, where #1 goes to clarifying, as #2's /resume ended #3's
 // /hold for it, and a second pass writes nothing; then the daemon's
 // unchanged pass is quiet.
-func resolveR2Check(t *testing.T, setup func(testing.TB) *githubtest.Fake) {
+func resolveResumedRecordCheck(t *testing.T, setup func(testing.TB) *githubtest.Fake) {
 	t.Helper()
 	githubtest.Replay(t, setup, resolvePass(t, 1))
 	f := run(t, setup, resolvePass(t, 1))
@@ -51,15 +50,15 @@ func resolveR2Check(t *testing.T, setup func(testing.TB) *githubtest.Fake) {
 		!strings.HasPrefix(body, "The discussion is resolved, by `owner`, so this issue leaves its hold from `ready` for `clarifying`.") {
 		t.Errorf("#1: labels %q, newest comment %q; want it at clarifying, as #2's /resume ended #3's /hold", l, body)
 	}
-	resolveR2Quiet(t, f)
+	resolveQuietPass(t, f)
 }
 
-// resolveR2Tail is the end of both ways in, on f, with #1 held, its first
+// resolveResumedRecordTail is the end of both ways in, on f, with #1 held, its first
 // comment resolved, and its record naming #3's /hold: mallory comments on
 // #1 again, the owner's /resume on #2 ends #3's /hold for #1, recorded on
 // #1, and the owner 👍s the second comment, which setup leaves for the
 // last pass.
-func resolveR2Tail(t testing.TB, f *githubtest.Fake) {
+func resolveResumedRecordTail(t testing.TB, f *githubtest.Fake) {
 	t.Helper()
 	w2 := f.AddComment(1, "mallory", "One more.")
 	resolveSteps(t, f, 1)
@@ -78,9 +77,9 @@ func resolveR2Tail(t testing.TB, f *githubtest.Fake) {
 // resolves the comment, and #1's record names the /hold. The owner sets
 // #2's stage by hand, which ends #2's hold, so #2's /resume later applies
 // on #1 alone.
-func TestResolveR2OverrideBetween(t *testing.T) {
+func TestResolveResumedRecordAfterOverride(t *testing.T) {
 	t.Parallel()
-	resolveR2Check(t, func(t testing.TB) *githubtest.Fake {
+	resolveResumedRecordCheck(t, func(t testing.TB) *githubtest.Fake {
 		f := discFake(t)
 		file(f, 0, ready)
 		file(f, 0, ready)
@@ -101,7 +100,7 @@ func TestResolveR2OverrideBetween(t *testing.T) {
 		if l := f.State().Issues[1].Labels; !slices.Equal(l, []string{"stage:ready"}) {
 			t.Fatalf("#2: labels %q; want the owner's ready", l)
 		}
-		resolveR2Tail(t, f)
+		resolveResumedRecordTail(t, f)
 		return f
 	})
 }
@@ -109,9 +108,9 @@ func TestResolveR2OverrideBetween(t *testing.T) {
 // The second way in: #2 is linked under #3 after #3's /hold was applied,
 // so the /hold never held #2, and #1's record names it once its first
 // comment is resolved.
-func TestResolveR2Relink(t *testing.T) {
+func TestResolveResumedRecordAfterRelink(t *testing.T) {
 	t.Parallel()
-	resolveR2Check(t, func(t testing.TB) *githubtest.Fake {
+	resolveResumedRecordCheck(t, func(t testing.TB) *githubtest.Fake {
 		f := discFake(t)
 		file(f, 0, ready)
 		file(f, 0, ready)
@@ -126,20 +125,20 @@ func TestResolveR2Relink(t *testing.T) {
 		if body := newestComment(f, 1); !strings.Contains(body, "<!-- issuedog:ended reason=discussion held=") {
 			t.Fatalf("#1: newest comment %q; want the record naming #3's /hold", body)
 		}
-		resolveR2Tail(t, f)
+		resolveResumedRecordTail(t, f)
 		return f
 	})
 }
 
-// A hold a /resume ended stays ended (SPEC §6.4): #3 > #2 > #1. #3 held
-// by hand, and #2 for mallory's comment, so the owner's /hold on #3 writes
-// its marker on #1 alone; then the owner's /hold on #2, which writes none. #3's /resume ends #3's /hold on #1, but
-// #1 stays held by #2's, so it records that the first one ended. Once the
-// owner deletes #3's /hold, it would count as posted on #1, the farthest
-// issue with its marker, which only /resume on #1 ends; the record keeps
-// it ended, so #2's /resume takes #1 out of held, whether the deletion
-// came before it or after.
-func TestResolveRound3EndedHoldStaysEnded(t *testing.T) {
+// A hold a /resume ended stays ended (SPEC §6.4): #3 > #2 > #1. #3 held by
+// hand, and #2 for mallory's comment, so the owner's /hold on #3 writes
+// its marker on #1 alone; then the owner's /hold on #2, which writes none.
+// #3's /resume ends #3's /hold on #1, but #1 stays held by #2's, so it
+// records that the first one ended. Once the owner deletes #3's /hold, it
+// would count as posted on #1, the farthest issue with its marker, which
+// only /resume on #1 ends; the record keeps it ended, so #2's /resume
+// takes #1 out of held, whether the deletion came before it or after.
+func TestResolveEndedHoldStaysEnded(t *testing.T) {
 	t.Parallel()
 	for _, deleteFirst := range []bool{true, false} {
 		t.Run(fmt.Sprintf("deleted before #2's /resume %v", deleteFirst), func(t *testing.T) {
@@ -187,7 +186,7 @@ func TestResolveRound3EndedHoldStaysEnded(t *testing.T) {
 // counts as posted (heldon=). It still does once the owner deletes the /hold, which no
 // marker names: #2's /resume sends #1 to clarifying, whether the deletion
 // came before it or after.
-func TestResolveRound3HeldRecordAfterDeletion(t *testing.T) {
+func TestResolveHeldRecordAfterDeletion(t *testing.T) {
 	t.Parallel()
 	for _, deleteFirst := range []bool{true, false} {
 		t.Run(fmt.Sprintf("deleted before the /resume %v", deleteFirst), func(t *testing.T) {
@@ -228,7 +227,7 @@ func TestResolveRound3HeldRecordAfterDeletion(t *testing.T) {
 // still says #3, so the same /resume sends #1 to clarifying, judged by the
 // record alone, not again as posted on #2, which would leave #1 held for
 // the /resume's move to name.
-func TestResolveRound3HeldRecordMarkedBelow(t *testing.T) {
+func TestResolveHeldRecordMarkedBelow(t *testing.T) {
 	t.Parallel()
 	f := discFake(t)  // #1
 	file(f, 0, ready) // #2

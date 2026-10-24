@@ -465,6 +465,161 @@ func TestPlannerRevisionReplay(t *testing.T) {
 	})
 }
 
+// revKeptOut is the golden revision with every child of revision 1 kept,
+// and no other item: T1, T2 and T3, each its ID, title and status alone.
+func revKeptOut(t testing.TB) map[string]any {
+	t.Helper()
+	out := plGolden(t, "story-revision")
+	plan, ok := out["plan"].(map[string]any)
+	if !ok {
+		t.Fatalf("output %v has no plan", out)
+	}
+	first := plGolden(t, "story-plan")
+	var items []any
+	for i := range 3 {
+		it := plItem(t, first, i)
+		items = append(items, map[string]any{"id": it["id"], "title": it["title"], "status": "kept"})
+	}
+	plan["items"], plan["order"] = items, "As before"
+	return out
+}
+
+// revKeptTwice is revStory with T3's child linked, set back by the owner,
+// and revised by the real Planner as plan revision 2, which keeps all
+// three children (revKeptOut), approved into planned, then set back to
+// planning by the owner again. So its next plan is its third, and T2,
+// which depends on T1 and T3 in revision 1, is kept twice. Revision 2's
+// run is second1, so another rig's first run, run1, isn't it.
+func revKeptTwice(t *testing.T, tb testing.TB, f *githubtest.Fake) revIDs {
+	tb.Helper()
+	r := revStory(tb, f, revByOwner)
+	f.SetParent(r.t3, r.n)
+	g := plRig(t, f, revPlanReview)
+	ids := 0
+	g.r.NewID = func() string { ids++; return "second" + strconv.Itoa(ids) }
+	g.claude(ivResult(tb, revKeptOut(tb)), 0)
+	if err := g.work(r.n); err != nil {
+		tb.Fatal(err)
+	}
+	cs := f.State().Issues[r.n-1].Comments
+	ms := github.ParseMarkers(cs[len(cs)-1].Body)
+	if len(ms) != 3 || ms[2].Kind != "revision" || ms[2].Fields["rev"] != "2" {
+		tb.Fatalf("the newest comment's markers are %+v, want plan revision 2's", ms)
+	}
+	f.AddComment(r.n, app, fmt.Sprintf("Approved.\n\n<!-- issuedog:transition from=plan-review to=planned cmd=r19 rev=2 body=%s -->", ms[2].Fields["body"]))
+	f.AddComment(r.n, app, "Moved.\n\n<!-- issuedog:transition from=planned to=planning event=32 by=owner -->")
+	f.RemoveLabel(r.n, app, "stage:plan-review")
+	f.AddLabel(r.n, app, "stage:planning")
+	return r
+}
+
+// revKeptTwiceT2 is what revision 2's data keeps for T2, kept twice by the
+// third plan: revision 1's T2 in full, its outcome, first criterion and
+// dependencies, as children.md shows them.
+func revKeptTwiceT2(t testing.TB) []string {
+	t.Helper()
+	t2 := plItem(t, plGolden(t, "story-plan"), 1)
+	criteria, ok := t2["criteria"].([]any)
+	if !ok || len(criteria) == 0 {
+		t.Fatalf("T2 %v has no criteria", t2)
+	}
+	return []string{
+		fmt.Sprintf(`"outcome": "%s"`, t2["outcome"]),
+		fmt.Sprintf(`"%s"`, criteria[0]),
+		"\"depends_on\": [\n      \"T1\",\n      \"T3\"\n    ]",
+	}
+}
+
+// TestPlannerRevisionKeptTwice: on a story's third plan, T2, kept by
+// revision 2 and kept again, keeps its dependencies on T1 and T3 from
+// revision 1, which revision 2's data carries in full. children.md shows
+// its approved text, and a revision that changes T3 to depend on T2 fails
+// the cycle check, writing nothing but the attempts error.
+func TestPlannerRevisionKeptTwice(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	r := revKeptTwice(t, t, f)
+	children := planContext(t, ivDaemon(t, f, newOrigin(t)), r.n)["children.md"]
+	for _, want := range append([]string{"## Items of plan revision 2, as approved"}, revKeptTwiceT2(t)...) {
+		if !strings.Contains(children, want) {
+			t.Errorf("the third plan's children.md lacks\n%s\nin\n%s", want, children)
+		}
+	}
+
+	out := revKeptOut(t)
+	t3 := plItem(t, plGolden(t, "story-plan"), 2)
+	t3["status"], t3["depends_on"] = "changed", []any{"T2"}
+	plan, ok := out["plan"].(map[string]any)
+	if !ok {
+		t.Fatalf("output %v has no plan", out)
+	}
+	items, ok := plan["items"].([]any)
+	if !ok {
+		t.Fatalf("plan %v has no items", plan)
+	}
+	items[2] = t3
+	g := plRig(t, f, revPlanReview)
+	g.d.Config.Loop.MaxAttempts = 1
+	g.claude(ivResult(t, out), 0)
+	before := commentBodies(f, r.n)
+	if err := g.work(r.n); err != nil {
+		t.Fatal(err)
+	}
+	const want = "rule cycle: T2 → T3 → T2"
+	after := commentBodies(f, r.n)
+	if l := g.lease(); g.runs() != 1 || !l.Failed || !strings.Contains(l.LastFailure, want) {
+		t.Errorf("after %d runs, lease %+v; want one failed attempt naming %q", g.runs(), l, want)
+	}
+	if len(after) != len(before)+1 || !strings.Contains(after[len(after)-1], want) || strings.Contains(after[len(after)-1], "### Plan") {
+		t.Errorf("comments %q, want the attempts error alone, naming %q", after[len(before):], want)
+	}
+}
+
+// TestPlannerRevisionKeptTwiceReplay: a third plan that keeps all three
+// children again posts plan revision 3, safe to replay after a crash at
+// any write, and its data keeps the twice-kept T2 in full, on T1 and T3,
+// for a fourth plan to read.
+func TestPlannerRevisionKeptTwiceReplay(t *testing.T) {
+	t.Parallel()
+	replayRuns(t, func(tb testing.TB, f *githubtest.Fake, _ string) {
+		revKeptTwice(t, tb, f)
+		f.ForgetWrites()
+	}, func(g *rig) {
+		g.planner(revPlanReview)
+		g.claude(ivResult(t, revKeptOut(t)), 0)
+	})
+
+	f := newFake(t)
+	r := revKeptTwice(t, t, f)
+	g := plRig(t, f, revPlanReview)
+	g.claude(ivResult(t, revKeptOut(t)), 0)
+	if err := g.work(r.n); err != nil {
+		t.Fatal(err)
+	}
+	_, markers := plComment(t, f, r.n)
+	if len(markers) != 3 || !strings.HasPrefix(markers[0], "<!-- issuedog:transition from=planning to=plan-review rev=3 run=run1 ") {
+		t.Fatalf("markers %q, want the move to plan-review with rev 3, the plan data, and plan revision 3", markers)
+	}
+	plan, ok := plData(t, markers[1]).(map[string]any)
+	if !ok {
+		t.Fatalf("the plan data %v isn't an object", plData(t, markers[1]))
+	}
+	items, ok := plan["items"].([]any)
+	if !ok || len(items) != 3 {
+		t.Fatalf("the plan data's items %v aren't three", plan["items"])
+	}
+	raw, err := json.MarshalIndent(items[1], "  ", "  ") // as children.md indents an item
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range append([]string{`"status": "kept"`, `"test_plan": `}, revKeptTwiceT2(t)...) {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("revision 3's data for T2 lacks\n%s\nin\n%s", want, raw)
+		}
+	}
+	plRevision(t, g, r.n, 3)
+}
+
 // revApproved is revStory with the planner's revision posted as plan
 // revision 2, the golden revision (T1 kept, T2 changed, T3 dropped, T4
 // new), at plan-review, and the owner's 👍 on it, with the writes

@@ -50,7 +50,6 @@ func (f *Fake) issueTypeNamed(name string) *gogithub.IssueType {
 			f.orgTypeNames = map[int64]string{}
 		}
 		f.orgTypeNames[id] = name
-		delete(f.goneTypes, key)
 	}
 	t.ID, t.Name = &id, new(f.orgTypeNames[id])
 	return t
@@ -78,11 +77,6 @@ func (f *Fake) RenameOrgIssueType(from, to string) {
 	id := f.issueTypeNamed(from).GetID()
 	delete(f.orgTypes, strings.ToLower(from))
 	f.orgTypes[strings.ToLower(to)] = id
-	if f.goneTypes == nil {
-		f.goneTypes = map[string]bool{}
-	}
-	f.goneTypes[strings.ToLower(from)] = true
-	delete(f.goneTypes, strings.ToLower(to))
 	f.orgTypeNames[id] = to
 	for i, t := range f.checks.issueTypes {
 		if strings.EqualFold(t.Name, from) {
@@ -160,10 +154,11 @@ func (is *issue) issueTypeRevertServe(e *gogithub.Timeline) any {
 // an issue does for its type field: a name sets that type, by the name the
 // org shows (issueTypeNamed), and null removes
 // it. A type the issue has already, matched ignoring case, or none for an
-// issue with none, is no change and writes no event. A name the org renamed
-// away (RenameOrgIssueType) is refused with a 422, and so is one
-// fakeTypeRefusal refuses. Under DropTypeChanges, nothing changes. f is
-// locked.
+// issue with none, is no change and writes no event. A name the org has no
+// type of, ignoring case, is refused with a 422, as on a create
+// (createIssue): one the org never gave an ID, and one it renamed away
+// (RenameOrgIssueType). So is one fakeTypeRefusal refuses. Under
+// DropTypeChanges, nothing changes. f is locked.
 func (f *Fake) issueTypeRevertEdit(is *issue, raw json.RawMessage) (int, any) {
 	var name *string
 	if err := json.Unmarshal(raw, &name); err != nil {
@@ -172,10 +167,13 @@ func (f *Fake) issueTypeRevertEdit(is *issue, raw json.RawMessage) (int, any) {
 	if name != nil && *name == "" {
 		return http.StatusUnprocessableEntity, message("githubtest: type must be a name or null, not empty")
 	}
-	if name != nil && f.goneTypes[strings.ToLower(*name)] {
-		return http.StatusUnprocessableEntity, message(fmt.Sprintf("githubtest: the org has no issue type %q", *name))
-	}
 	if name != nil {
+		if _, ok := f.orgTypes[strings.ToLower(*name)]; !ok {
+			return http.StatusUnprocessableEntity, message(fmt.Sprintf("Validation Failed: the org has no issue type %q", *name))
+		}
+		// This refusal comes before the no-change check below, so an
+		// edit that names the disabled type the issue has already is
+		// refused too. GitHub's real answer to that edit is unconfirmed.
 		if status, msg := f.fakeTypeRefusal(*name); msg != nil {
 			return status, msg
 		}

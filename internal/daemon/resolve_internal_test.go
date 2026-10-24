@@ -17,8 +17,8 @@ import (
 // A notice accepts any other edit, a deletion of a trusted user's comment,
 // a rename and a close, which hides no App content (#190's verify note);
 // nothing accepts a comment, or a key of no known shape, nor a deletion
-// during the hold, which may have hidden an applied /hold (#188's verify,
-// round 2), though one that held the issue, made before, is accepted.
+// during the hold, which may have hidden an applied /hold (SPEC §6.4),
+// though one that held the issue, made before, is accepted.
 func TestResolveByNotice(t *testing.T) {
 	t.Parallel()
 	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}

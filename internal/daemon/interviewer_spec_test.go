@@ -17,7 +17,7 @@ import (
 )
 
 // specWired gives g's step 1 the /approve and /revise handlers and the
-// approval by 👍, as main wires them (newStep), for the real Step.
+// approval by 👍, as main wires them (NewStep), for the real Step.
 func specWired(g *rig) {
 	g.d.Step.Commands["approve"] = daemon.ApproveCommand()
 	g.d.Step.Commands["revise"] = daemon.ReviseCommand()
@@ -71,12 +71,14 @@ func specBody(run, spec string) string {
 	return "<!-- issuedog:rewrite run=" + run + " -->\n" + spec
 }
 
-// specRevision is revision rev's text and markers, with hash, posted by
-// run, having seen seen, with rig.interviewer's settings.
+// specRevision is revision rev's text, then the cc line for the rig's
+// notify, last (SPEC §9), then the markers, with hash, posted by run, having
+// seen seen, with rig.interviewer's settings.
 func specRevision(rev int, hash, run string, seen int64) string {
 	return fmt.Sprintf("**Revision %d** of the spec, `%s`.\n\n"+
 		"- To approve it, react 👍 to this comment, or post `/approve`.\n"+
 		"- To send it back, post `/revise <notes>`, or any other comment.\n\n"+
+		"cc @owner\n\n"+
 		"<!-- issuedog:transition from=clarifying to=spec-review rev=%d body=%s run=%s effort=high model=opus seen=%d -->\n"+
 		"<!-- issuedog:revision rev=%d body=%s -->", rev, hash, rev, hash, run, seen, rev, hash)
 }
@@ -125,7 +127,7 @@ func TestInterviewerSpec(t *testing.T) {
 		t.Errorf("title %q, body edited by %q:\n%s\nwant the title Idea and the App's body\n%s", is.Title, is.BodyEditedBy, is.Body, body)
 	}
 	hash := state.BodyHash(body)
-	want := "Round 1 settled it.\n\nAdded, not asked:\n\n- Quotes show their expiry.\n\ncc @owner\n\n" + specRevision(1, hash, "run1", answer)
+	want := "Round 1 settled it.\n\nAdded, not asked:\n\n- Quotes show their expiry.\n\n" + specRevision(1, hash, "run1", answer)
 	if got := newestComment(f, n); got != want {
 		t.Errorf("the revision comment =\n%s\nwant\n%s", got, want)
 	}
@@ -192,7 +194,7 @@ func TestInterviewerSpecRewriteCleans(t *testing.T) {
 	rev2 := specNewest(t, f, n)
 	got := newestComment(f, n)
 	if want := "This spec replaces the whole issue description, with the edit by `mallory` that wasn't approved, " +
-		"so the description is clean again.\n\nMallory's change is dropped.\n\ncc @owner\n\n"; !strings.HasPrefix(got, want) ||
+		"so the description is clean again.\n\nMallory's change is dropped.\n\n**Revision 2** "; !strings.HasPrefix(got, want) ||
 		!strings.Contains(got, "<!-- issuedog:revision rev=2 body="+state.BodyHash(body)+" -->") {
 		t.Errorf("revision 2 =\n%s\nwant it to start\n%s\nand carry revision 2 with the body's hash", got, want)
 	}
@@ -233,7 +235,7 @@ func TestInterviewerSpecRevised(t *testing.T) {
 			back = c.ID
 		}
 	}
-	want := "Your notes are answered: a quote lasts 24 hours.\n\ncc @owner\n\n" + specRevision(2, state.BodyHash(body), "run2", back)
+	want := "Your notes are answered: a quote lasts 24 hours.\n\n" + specRevision(2, state.BodyHash(body), "run2", back)
 	if got := newestComment(f, n); got != want {
 		t.Errorf("revision 2 =\n%s\nwant\n%s", got, want)
 	}
@@ -256,7 +258,7 @@ func TestInterviewerSpecTypes(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := specBody("run1", specRendered("Quotes expire.", "None."))
-	want := ivTypeLine("story") + "\n\ncc @owner\n\n" + specRevision(1, state.BodyHash(body), "run1", entry)
+	want := ivTypeLine("story") + "\n\n" + specRevision(1, state.BodyHash(body), "run1", entry)
 	if got := newestComment(f, n); got != want {
 		t.Errorf("the revision comment =\n%s\nwant\n%s", got, want)
 	}
@@ -292,7 +294,7 @@ func TestInterviewerSpecDirtyBody(t *testing.T) {
 		t.Errorf("body =\n%s\nwant\n%s", got, body)
 	}
 	want := "This spec replaces the whole issue description, with the edit by `mallory` that wasn't approved, " +
-		"so the description is clean again.\n\nDone.\n\ncc @owner\n\n" + specRevision(1, state.BodyHash(body), "run1", entry)
+		"so the description is clean again.\n\nDone.\n\n" + specRevision(1, state.BodyHash(body), "run1", entry)
 	if got := newestComment(f, n); got != want {
 		t.Errorf("the move =\n%s\nwant\n%s", got, want)
 	}
@@ -346,7 +348,7 @@ func TestInterviewerSpecForgedRewrite(t *testing.T) {
 		t.Errorf("body, edited by %s =\n%s\nwant the App's\n%s", got.BodyEditedBy, got.Body, body)
 	}
 	want := "This spec replaces the whole issue description, with the edit by `mallory` that wasn't approved, " +
-		"so the description is clean again.\n\ncc @owner\n\n" + specRevision(1, state.BodyHash(body), "run1", entry)
+		"so the description is clean again.\n\n" + specRevision(1, state.BodyHash(body), "run1", entry)
 	if got := newestComment(f, n); got != want {
 		t.Errorf("the move =\n%s\nwant\n%s", got, want)
 	}
@@ -369,7 +371,7 @@ func TestInterviewerSpecTrustedEdit(t *testing.T) {
 	if got := f.State().Issues[n-1].Body; got != body {
 		t.Errorf("body =\n%s\nwant\n%s", got, body)
 	}
-	if got, want := newestComment(f, n), "Done.\n\ncc @owner\n\n"+specRevision(1, state.BodyHash(body), "run1", entry); got != want {
+	if got, want := newestComment(f, n), "Done.\n\n"+specRevision(1, state.BodyHash(body), "run1", entry); got != want {
 		t.Errorf("the move =\n%s\nwant\n%s", got, want)
 	}
 }
@@ -398,7 +400,7 @@ func TestInterviewerSpecCrashAfterEdit(t *testing.T) {
 		}
 	}
 	body := specBody("run1", specRendered("Quotes expire.", "None."))
-	want := ivTypeLine("epic") + "\n\ncc @owner\n\n" + specRevision(1, state.BodyHash(body), "run1", entry)
+	want := ivTypeLine("epic") + "\n\n" + specRevision(1, state.BodyHash(body), "run1", entry)
 	if got := newestComment(f, n); edits != 1 || got != want || g.runs() != 1 {
 		t.Errorf("after %d runs and %d body edits, the newest comment =\n%s\nwant one run, one edit and\n%s", g.runs(), edits, got, want)
 	}
@@ -424,7 +426,7 @@ func TestInterviewerSpecEditFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := specBody("run1", specRendered("Quotes expire.", "None."))
-	if got, want := newestComment(f, n), "cc @owner\n\n"+specRevision(1, state.BodyHash(body), "run1", entry); got != want || g.runs() != 1 {
+	if got, want := newestComment(f, n), specRevision(1, state.BodyHash(body), "run1", entry); got != want || g.runs() != 1 {
 		t.Errorf("after %d runs, the newest comment =\n%s\nwant one run and\n%s", g.runs(), got, want)
 	}
 }
@@ -709,7 +711,7 @@ func TestInterviewerSpecBodyMatches(t *testing.T) {
 			if got := f.State().Issues[n-1].Body; edits != tt.edits || got != body {
 				t.Errorf("%d body edits, body %q; want %d, body %q", edits, got, tt.edits, body)
 			}
-			if got, want := newestComment(f, n), "cc @owner\n\n"+specRevision(1, state.BodyHash(body), "run1", entry); got != want {
+			if got, want := newestComment(f, n), specRevision(1, state.BodyHash(body), "run1", entry); got != want {
 				t.Errorf("the revision comment =\n%s\nwant\n%s", got, want)
 			}
 		})
@@ -727,7 +729,7 @@ func TestInterviewerSpecResumeAfterEdit(t *testing.T) {
 	saveRun(t, root, "saved", ivResult(t, specOut("", "")), entry)
 	body := specRendered("Quotes expire.", "None.")
 	f.EditBody(n, app, body)
-	f.AddComment(n, app, "cc @owner\n\n"+specRevision(1, state.BodyHash(body), "saved", entry))
+	f.AddComment(n, app, specRevision(1, state.BodyHash(body), "saved", entry))
 	f.AddLabel(n, app, "stage:spec-review")
 	f.RemoveLabel(n, app, "stage:clarifying")
 	f.EditBody(n, "owner", body+"\n\nOne more thing.")

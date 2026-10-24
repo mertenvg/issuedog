@@ -11,9 +11,9 @@ import (
 )
 
 // A /hold whose comment is gone, known by its markers alone, counts as
-// posted on the farthest issue on the path with its marker (resolveUnended,
-// #188's verify, attempt 3): a /resume the App applied there ends it, and
-// one above it doesn't.
+// posted on the farthest issue on the path with its marker
+// (resolveUnended, SPEC §6.4): a /resume the App applied there ends it,
+// and one above it doesn't.
 func TestResolveUnendedFarthestMarker(t *testing.T) {
 	t.Parallel()
 	at := func(s int) time.Time { return time.Date(2026, 1, 1, 0, 0, s, 0, time.UTC) }

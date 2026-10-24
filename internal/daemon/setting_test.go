@@ -631,7 +631,7 @@ func TestModelAppRemovalTrustNotAsked(t *testing.T) {
 // An untrusted user removes a stray label, before or after the owner's
 // /model gpt, and the label rules put it back as the App. That labeled event
 // is the revert, not a begun Apply, so /model gpt is still rejected, and the
-// allowed label stays (the verifier's attack on attempt 3).
+// allowed label stays (#117).
 func TestModelRevertIsNotApply(t *testing.T) {
 	t.Parallel()
 	const reason = "`gpt` isn't on `models.allowed`, which has `sonnet`"
@@ -681,7 +681,7 @@ func TestModelRevertIsNotApply(t *testing.T) {
 // command; mallory deletes the revert's comment, or edits it so it's dirty,
 // and its marker can't be read. The revert is still told by the removal's
 // untrusted actor, so the next pass rejects /model gpt, and model:sonnet
-// stays (the verifier's probe on attempt 4).
+// stays (#117).
 func TestModelRevertMarkerGone(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

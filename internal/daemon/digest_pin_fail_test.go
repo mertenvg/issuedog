@@ -20,6 +20,16 @@ import (
 const digestPinFailCheckNote = "I couldn't pin this issue yet: checking whether it's pinned failed (HTTP 502). " +
 	"I'll try again when the list changes, or pin it by hand.\n\n"
 
+// digestPinFailListed is the digest's list, under any pin note, with one
+// item: issue n's error from digestError keyed 5, the fake's second
+// comment.
+func digestPinFailListed(n int) string {
+	return fmt.Sprintf("1 item waits on you.\n\n### 1. #%d: A\n\n**State error**, priority p2, unblocks 1 open issue (itself included)\n\n"+
+		"- State error `disagreement`, keyed `5`.\n- The stage label disagreed with the marker, so I put it back.\n"+
+		"- React 👍 to the error comment to acknowledge it.\n- Answer here: https://github.com/o/r/issues/%d#issuecomment-1002\n\n"+
+		"<!-- issuedog:digest -->", n, n)
+}
+
 // digestPinFailChecks counts the requests from the from'th on that
 // FailIsPinned(502) answered: the isPinned checks, as nothing else
 // answers a 502.
@@ -230,7 +240,7 @@ func TestDigestPinFail5xxReplay(t *testing.T) {
 	}
 	note := "I couldn't pin this issue yet: pinning it failed (HTTP 500). I'll try again when the list changes, or pin it by hand.\n\n"
 	if got := digestWrites(f, 0); !reflect.DeepEqual(got, []string{"POST /graphql", "POST /issues/1/comments", "PATCH /issues/1"}) ||
-		!strings.HasPrefix(f.State().Issues[0].Body, note) || f.State().Issues[0].Pinned {
+		f.State().Issues[0].Body != note+digestPinFailListed(2) || f.State().Issues[0].Pinned {
 		t.Fatalf("writes %q, body %q; want the pin, the announcement, then the edit under the note, and no pin", got, f.State().Issues[0].Body)
 	}
 	githubtest.Replay(t, setup, pass)
@@ -254,7 +264,7 @@ func TestDigestPinFailCheckCreateReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := digestWrites(f, 0); !reflect.DeepEqual(got, []string{"POST /issues", "POST /issues/2/comments", "PATCH /issues/2"}) ||
-		!strings.HasPrefix(f.State().Issues[1].Body, digestPinFailCheckNote) || f.State().Issues[1].Pinned {
+		f.State().Issues[1].Body != digestPinFailCheckNote+digestPinFailListed(1) || f.State().Issues[1].Pinned {
 		t.Fatalf("writes %q, body %q; want the create, the announcement, then the edit under the note, and no pin", got, f.State().Issues[1].Body)
 	}
 	githubtest.Replay(t, setup, pass)

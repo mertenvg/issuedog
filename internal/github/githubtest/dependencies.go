@@ -32,8 +32,8 @@ func (f *Fake) SetBlockedBy(number, blocker int) {
 // order they were added, each with its repository_url, paged by per_page
 // and page
 // (GET /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by).
-// A blocker the fake hasn't got, as once DeleteIssue deleted it, is a 500
-// naming it.
+// A blocker the fake hasn't got, which no helper leaves, as DeleteIssue
+// drops a deleted issue's links, is a 500 naming it.
 func (f *Fake) blockedBy(c *call) (int, any) {
 	out := []gogithub.Issue{}
 	for _, n := range c.issue.blockedBy {

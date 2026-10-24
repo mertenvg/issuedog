@@ -17,8 +17,9 @@ import (
 // PostRevision posts the next revision comment for s's spec, its body (SPEC
 // §7.4): one more than the latest spec revision (state.LatestRevision), with
 // the body's hash, how to approve it, and a revision marker. Plan revisions
-// number on their own, so they don't count. m.Text, escaped, goes first.
-// dirty is as for state.Derive.
+// number on their own, so they don't count. m.Text, escaped, goes first,
+// and the cc line for notify, if any, last, after the revision, as in the
+// App's other comments (SPEC §9). dirty is as for state.Derive.
 //   - With m.To set, the revision comes with that move, in one comment
 //     through Transition, whose marker also gets rev and body. It is posted
 //     whatever the hash: a question answered is a new revision even if
@@ -31,9 +32,9 @@ import (
 //     transition's seen, if the move has one, does that.
 //
 // A dirty body (#91) gets no revision, since nothing may approve it. A move
-// still happens, saying why there's no revision, so the issue doesn't wait
-// on a stage run that can't succeed.
-func (a *Applier) PostRevision(ctx context.Context, s *github.Snapshot, dirty func(int64) bool, m Move) error {
+// still happens, saying why there's no revision, then the cc line, so the
+// issue doesn't wait on a stage run that can't succeed.
+func (a *Applier) PostRevision(ctx context.Context, s *github.Snapshot, dirty func(int64) bool, m Move, notify []string) error {
 	if m.To != "" && state.Derive(s, a.AppSlug, dirty).Moved(m.Key) {
 		return a.Transition(ctx, s, dirty, m)
 	}
@@ -42,7 +43,7 @@ func (a *Applier) PostRevision(ctx context.Context, s *github.Snapshot, dirty fu
 		if m.To == "" {
 			return nil
 		}
-		m.Text = join(m.Text, "There's no revision to approve: the issue description was edited without approval (see the note on it).")
+		m.Text = discCC(join(m.Text, "There's no revision to approve: the issue description was edited without approval (see the note on it)."), notify)
 		return a.Transition(ctx, s, dirty, m)
 	}
 	latest, _ := state.LatestRevision(s, a.AppSlug, state.SpecRevision, dirty)
@@ -52,9 +53,9 @@ func (a *Applier) PostRevision(ctx context.Context, s *github.Snapshot, dirty fu
 	}
 	rev := strconv.Itoa(latest.Rev + 1)
 	marker := github.Marker{Kind: "revision", Fields: map[string]string{"rev": rev, "body": hash}}
-	text := join(m.Text, fmt.Sprintf("**Revision %s** of the spec, `%s`.\n\n"+
+	text := discCC(join(m.Text, fmt.Sprintf("**Revision %s** of the spec, `%s`.\n\n"+
 		"- To approve it, react 👍 to this comment, or post `/approve`.\n"+
-		"- To send it back, post `/revise <notes>`, or any other comment.", rev, hash))
+		"- To send it back, post `/revise <notes>`, or any other comment.", rev, hash)), notify)
 	logr.Infof("%s/%s#%d: posting revision %s, %s", a.Owner, a.Repo, s.Number, rev, hash)
 	if m.To != "" {
 		m.Fields = maps.Clone(m.Fields)
@@ -126,13 +127,13 @@ func ApproveCommand() Handler {
 				}
 				return ivWordingStale(latest, ok, by, follows)
 			}
+			// A stale revision can't be approved, so the reply says so
+			// before it would say to approve that revision (#399).
 			switch {
-			case !ok, latest.Hidden:
+			case !ok, latest.Hidden, state.BodyHash(c.S.Body) != latest.Hash:
 				return stale()
 			case c.Comment.ID < latest.Comment:
 				return Rejection{Reason: fmt.Sprintf("it was posted before revision %d, the latest. To approve that, react 👍 to it, or post `/approve` again", latest.Rev), Final: true}
-			case state.BodyHash(c.S.Body) != latest.Hash:
-				return stale()
 			}
 			return inTable(is, state.Planning, state.TriggerSpecApproved, "on approval")
 		},
@@ -531,7 +532,7 @@ func (st *Step) ReviewVisit(ctx context.Context, s *github.Snapshot) error {
 			return nil
 		}
 	}
-	if err := st.PostRevision(ctx, s, d.Has, Move{}); err != nil {
+	if err := st.PostRevision(ctx, s, d.Has, Move{}, nil); err != nil {
 		return wrap(err)
 	}
 	return nil
