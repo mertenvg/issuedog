@@ -650,7 +650,10 @@ const ivWordingStrongChars = `\*_[]~`
 // A bare URL outside a code span (ivWordingURL) keeps its
 // ivWordingURLChars unescaped, so GitHub links it whole (#399).
 // The text reads as typed: only its own emphasis and links don't render.
+// Each U+FEFF is dropped first, as text drops it (normalize), so a URL is
+// judged as it's posted, and as GitHub reads it.
 func ivWordingStrong(s string) string {
+	s = strings.ReplaceAll(s, "\ufeff", "")
 	var b strings.Builder
 	url := 0 // the end of the bare URL that s[i] is in, while i is below it
 	for i := 0; i < len(s); {
@@ -690,38 +693,53 @@ func ivWordingStrong(s string) string {
 }
 
 // ivWordingURLChars are the characters of ivWordingStrongChars that a bare
-// URL keeps unescaped (ivWordingStrong): a backslash before one would cut
-// GitHub's link short, and neither can close the App's "**". An "_" or "~"
-// pairs only with its own kind, and the App's close pairs with its open
+// URL keeps unescaped (ivWordingStrong): GitHub would show a backslash
+// before one in its link, and neither can close the App's "**". An "_" or
+// "~" pairs only with its own kind, and the App's close pairs with its open
 // first, which drops any "_" or "~" left open between them. The URL's "*",
 // "\", "[" and "]" stay escaped, as an issue title's "[", "]" and "\" are
 // (digestRenderTitle): a bare "*" can close the App's bold where a parser
 // ends the link before it, and "[" and "]" can make a link or an image
-// where a parser reads them before the URL, so those still cut it short.
+// where a parser reads them before the URL, so GitHub shows those
+// backslashes in its link.
 const ivWordingURLChars = "_~"
 
 // ivWordingURLRE starts a bare URL that GFM links (its "Autolinks
 // (extension)"): "http://" or "https://", in any case, or "www.".
 var ivWordingURLRE = regexp.MustCompile(`^(?:(?i:https?://)|www\.)`)
 
-// ivWordingURL returns the end of the bare URL that starts at s[i], as GFM
-// links it, or 0 if none does. One starts with ivWordingURLRE at the start
-// of s, or after a space, a tab, "*", "_", "~" or "(", and runs to the next
-// space, control character or "<". GFM then leaves trailing punctuation out
-// of the link: each "?", "!", ".", ",", ":", "*", "_", "~", "'" and "\"" at
-// the end, a ")" with more ")" than "(" before it, and a ";", with the
-// entity it ends, if it ends one, such as "&amp;". A URL with nothing left
-// after its start is none.
+// ivWordingURL returns the end of the bare URL that starts at s[i], as
+// GitHub's GFM links it, or 0 if none does. One starts with ivWordingURLRE:
+// "http://" or "https://" where no ASCII letter is before it, and "www."
+// at the start of s, or after a space, a control character, "*", "_", "~"
+// or "(". Its domain must be one GFM accepts (ivWordingDomain). It runs to
+// the next space, control character or "<", past any other character,
+// non-ASCII spaces and DEL included: text is posted with its control
+// characters as spaces (normalize), and GitHub ends a link at no other
+// space. GFM then leaves trailing punctuation out of the link: each "?",
+// "!", ".", ",", ":", "*", "_", "~", "'" and "\"" at the end, a ")" with
+// more ")" than "(" before it, and a ";", with an "&" and the letters
+// between them, if it ends those, as it ends an entity such as "&amp;". A
+// URL with nothing left after its start is none.
 func ivWordingURL(s string, i int) int {
-	if i > 0 && strings.IndexByte(" \t*_~(", s[i-1]) < 0 {
-		return 0
-	}
 	m := ivWordingURLRE.FindStringIndex(s[i:])
 	if m == nil {
 		return 0
 	}
 	start, end := i+m[1], i+m[1]
-	for end < len(s) && s[end] > ' ' && s[end] != '<' && s[end] != 0x7f {
+	host := start // where the domain starts: after the scheme, or at "www."
+	if www := s[i] == 'w'; www {
+		host = i
+		if i > 0 && s[i-1] > ' ' && strings.IndexByte("*_~(", s[i-1]) < 0 {
+			return 0
+		}
+	} else if i > 0 && ivWordingLetter(s[i-1]) {
+		return 0
+	}
+	if !ivWordingDomain(s[host:]) {
+		return 0
+	}
+	for end < len(s) && s[end] > ' ' && s[end] != '<' {
 		end++
 	}
 	for end > start {
@@ -735,7 +753,7 @@ func ivWordingURL(s string, i int) int {
 			continue
 		case c == ';':
 			j := end - 1
-			for j > start && ivWordingAlnum(s[j-1]) {
+			for j > start && ivWordingLetter(s[j-1]) {
 				j--
 			}
 			if j < end-1 && j > start && s[j-1] == '&' {
@@ -753,9 +771,46 @@ func ivWordingURL(s string, i int) int {
 	return end
 }
 
+// ivWordingDomain reports whether d starts with a domain that GitHub's GFM
+// accepts in a bare URL (ivWordingURL), as ivWordingStrong posts it. Its
+// first character is an ASCII letter or digit, or one that isn't ASCII, a
+// space or punctuation (text posts an invalid byte as U+FFFD, which
+// counts). The domain then runs over ASCII letters, digits, "-", "_", "."
+// and DEL, and no "_" may be in its last two parts, split at ".". Any
+// other character ends it, as one that isn't ASCII does right after the
+// first. GitHub reads a "\" in a domain with the character after it, so
+// the "\\" ivWordingStrong posts for a "\" ends it too, and an escaped "_"
+// still counts as one.
+func ivWordingDomain(d string) bool {
+	if d == "" {
+		return false
+	}
+	if r, _ := utf8.DecodeRuneInString(d); r < utf8.RuneSelf && !ivWordingAlnum(d[0]) || unicode.IsSpace(r) || unicode.IsPunct(r) {
+		return false
+	}
+	last, prev := false, false // an "_" in the domain's last part, and in the one before it
+	for _, c := range []byte(d[1:]) {
+		switch {
+		case c == '_':
+			last = true
+		case c == '.':
+			prev, last = last, false
+		case c == '-' || c == 0x7f || ivWordingAlnum(c):
+		default:
+			return !prev && !last
+		}
+	}
+	return !prev && !last
+}
+
+// ivWordingLetter reports whether c is an ASCII letter.
+func ivWordingLetter(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+}
+
 // ivWordingAlnum reports whether c is an ASCII letter or digit.
 func ivWordingAlnum(c byte) bool {
-	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+	return ivWordingLetter(c) || c >= '0' && c <= '9'
 }
 
 // ivWordingTicks is the length of the backtick run that starts at s[i].
