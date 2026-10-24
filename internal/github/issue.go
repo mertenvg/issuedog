@@ -41,6 +41,10 @@ type Snapshot struct {
 	// Deleted are the issue's CommentDeletedEvents, oldest first: read
 	// with the comments, in the same GraphQL query (#186).
 	Deleted []DeletedComment
+	// SubIssueRemovals are the issue's SubIssueRemovedEvents that name a
+	// sub-issue, oldest first: read with the comments, in the same GraphQL
+	// query, for an epic's close (SPEC §7.3).
+	SubIssueRemovals []SubIssueRemoval
 	// SettingsEvent is the ID of the newest change to a model or effort
 	// label that stands, or 0: not read with the issue, but set when the
 	// daemon checks its labels (CheckLabels).

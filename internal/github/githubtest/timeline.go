@@ -122,8 +122,8 @@ func (f *Fake) labelEvent(is *issue, event, login, name string, at *gogithub.Tim
 }
 
 // timeline serves an issue's labeled, unlabeled, renamed, closed, reopened,
-// issue-type (with their types, issueTypeRevertServe), sub_issue_removed
-// (with its sub-issue, subIssueGoneServe) and commented events, oldest first, but for label events not written yet
+// issue-type (with their types, issueTypeRevertServe)
+// and commented events, oldest first, but for label events not written yet
 // (LagEvents). As on GitHub, a
 // commented event has its comment's ID, user and current body, and a deleted
 // comment's is gone.
@@ -139,10 +139,6 @@ func (f *Fake) timeline(c *call) (int, any) {
 	slices.SortStableFunc(events, func(a, b *gogithub.Timeline) int { return a.GetCreatedAt().Compare(b.GetCreatedAt().Time) })
 	served := make([]any, 0, len(events))
 	for _, e := range events {
-		if s, ok := c.issue.subIssueGoneServe(e, f.repo); ok {
-			served = append(served, s)
-			continue
-		}
 		served = append(served, c.issue.closingServe(e))
 	}
 	return page(c, served)

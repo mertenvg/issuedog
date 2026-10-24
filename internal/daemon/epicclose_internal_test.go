@@ -280,7 +280,8 @@ func TestEpicCloseReason(t *testing.T) {
 // An epic visited again that no longer waits on its children to close,
 // here once it's held, or once its plan has no data to tell what it was
 // planned into, is
-// forgotten: epicCloseSet drops what it waited on.
+// forgotten: epicCloseSet drops what it waited on, and the issues that
+// held it open by their links' removals.
 func TestEpicCloseSetForgets(t *testing.T) {
 	t.Parallel()
 	held := doneSnap(t, 90, "epic", "epic-plan", 12)
@@ -294,9 +295,13 @@ func TestEpicCloseSetForgets(t *testing.T) {
 		if !slices.Equal(d.epicCloseDue[s.Number], []int{12}) {
 			t.Fatalf("%s: before, waiting %v; want the epic waiting on #12", name, d.epicCloseDue)
 		}
+		d.epicCloseHeld = map[int]map[int]time.Time{s.Number: {13: {}}}
 		d.epicCloseSet(s, Dirt{})
 		if _, ok := d.epicCloseDue[s.Number]; ok {
 			t.Errorf("%s: waiting %v; want the epic forgotten", name, d.epicCloseDue)
+		}
+		if _, ok := d.epicCloseHeld[s.Number]; ok {
+			t.Errorf("%s: held by %v; want the epic forgotten", name, d.epicCloseHeld)
 		}
 	}
 }

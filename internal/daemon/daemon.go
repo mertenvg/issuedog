@@ -89,13 +89,16 @@ type Daemon struct {
 	// (epicclose.go).
 	epicCloseDue map[int][]int
 	// epicCloseHeld are the epics whose children have all closed that
-	// open issues hold open, by number, with those issues: each one's
-	// link below the epic someone untrusted removed (epicCloseUnlinked).
-	epicCloseHeld map[int][]int
+	// open issues hold open, by number, with those issues, each with the
+	// updated_at of the snapshot held of it then, or the zero time for
+	// none: each one's link below the epic someone untrusted removed
+	// (epicCloseUnlinked).
+	epicCloseHeld map[int]map[int]time.Time
 
-	closingSeen map[int]closingListed   // closed issues whose close is judged, as they were listed then (closing.go)
-	closingDue  map[int]*gogithub.Issue // closed issues with a close to judge, as last listed (closingList)
-	closingGone map[int]bool            // closed issues whose close's judging found them gone, with no good judging since (closingPass)
+	closingSeen  map[int]closingListed   // closed issues whose close is judged, as they were listed then (closing.go)
+	closingDue   map[int]*gogithub.Issue // closed issues with a close to judge, as last listed (closingList)
+	closingGone  map[int]bool            // closed issues whose close's judging found them gone, with no good judging since (closingPass)
+	closingBelow map[int]int             // closed issues with a close to judge, or reopened by its judging, with the parent their last snapshot named (closingBelowSet)
 	// closedListed are the issues the poll last listed closed, never a
 	// pull request, for a finished story's children (digestDoneStands).
 	closedListed map[int]bool
@@ -497,8 +500,10 @@ func (d *Daemon) poll(ctx context.Context) error {
 			case is.IsPullRequest():
 			case d.digest.listed(a.AppSlug, is) || is.GetState() != "open": // a digest is never in the pipeline
 				if is.GetState() != "open" && !d.digest.has(n) {
-					// A close still to judge is kept (closing.go).
+					// A close still to judge is kept (closing.go), with
+					// the parent it was held open below.
 					d.closingList(is, start, d.snaps[n] != nil && slices.ContainsFunc(d.snaps[n].Labels, isStageLabel))
+					d.closingBelowSet(n, d.snaps[n])
 				}
 				d.leave(n)
 			case changed(d.snaps[n], is):
