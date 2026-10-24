@@ -52,9 +52,15 @@ type Daemon struct {
 	// clock (transferunlisted.go).
 	transferUnlistedAt time.Time
 	// transferUnlistedPolled are the issues this pass's poll listed open,
-	// never a pull request, whose snapshots are from this pass, for that
-	// check (transferunlisted.go).
+	// never a pull request, as it lists each one that changed and the one
+	// at its cursor, for that check (transferunlisted.go).
 	transferUnlistedPolled map[int]bool
+	// transferUnlistedDropped are the issues dropped as gone since the
+	// last listing that worked, by two reads or, for one the digest's
+	// title rule held, two answers (digestHistoryGone), so a pass that
+	// holds no issue lists still, and brings back a live one wrongly
+	// dropped (transferunlisted.go).
+	transferUnlistedDropped map[int]bool
 
 	digest        digestState
 	digestCache   map[int][]waitItem // what waits on the owner, by issue, after its last good step 1, for the digest and assignment
@@ -224,12 +230,6 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	if err := d.closingPass(ctx); err != nil {
 		errs = append(errs, err)
 	}
-	// A held issue the open issues, listed once in a while, leave out, as
-	// a transfer does, is read again, once, and one they list that isn't
-	// held, as when wrong answers dropped it, is read (transferunlisted.go).
-	if err := d.transferUnlistedCheck(ctx); err != nil {
-		errs = append(errs, err)
-	}
 	// A label left out, which a rename changes no updated_at for, is
 	// removed once it falls due: read its issue again then, and no sooner.
 	now := d.Step.Client.Now()
@@ -245,6 +245,14 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		if _, ok := d.snaps[n]; ok {
 			d.stale[n] = true
 		}
+	}
+	// A held issue the open issues, listed once in a while, leave out, as
+	// a transfer does, is read again, once, and one they list that isn't
+	// held, as when wrong answers dropped it, is read. It comes after the
+	// issues marked to be read again above, as one this pass reads anyway
+	// keeps the two reads that drop it (transferunlisted.go).
+	if err := d.transferUnlistedCheck(ctx); err != nil {
+		errs = append(errs, err)
 	}
 	read := map[int]bool{}
 	for _, n := range slices.Sorted(maps.Keys(d.stale)) {
@@ -269,6 +277,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			d.digestRestartGone(n)
 			delete(d.assignManaged, n)
 			d.Step.forgetLabels(n)
+			d.transferUnlistedDrop(n)
 		case gone(err):
 			// One answer may be wrong, so it's read again next pass.
 			logr.Infof("%s/%s#%d looks gone, deleted or transferred, so it's read again: %v", d.Step.Owner, d.Step.Repo, n, err)

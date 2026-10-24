@@ -32,14 +32,15 @@ const transferUnlistedEvery = 10 * time.Minute
 // has passed by GitHub's clock since it last tried, and has each issue the
 // daemon holds a snapshot of that the listing leaves out read again
 // (reread). Being left out counts as the first of the two reads that drop
-// a gone issue (Iterate), unless the issue's snapshot is from this pass:
-// this pass's poll listed it, as it lists one that changed, which it
-// marks stale, and the one at its cursor, which a pass just read. So the
+// a gone issue (Iterate), unless this pass reads the issue anyway: this
+// pass's poll listed it, as it lists one that changed, which it marks
+// stale, and the one at its cursor, or it's stale already, as for a new
+// comment, a label left out that fell due, or a failed step 1. So the
 // read, this pass, drops a deleted or transferred issue at once: from
-// Work, the digest's items and assignment, while one the poll has just
-// shown in the repo needs two reads that find it gone, as ever. One that
-// is there after all, such as one closed since the poll, is kept, or left
-// by the next poll.
+// Work, the digest's items and assignment, while one the pass reads
+// anyway needs two reads that find it gone, as ever. One that is there
+// after all, such as one closed since the poll, is kept, or left by the
+// next poll.
 //
 // The listing brings back, too, each open issue it has that the daemon
 // holds nothing of, neither a snapshot nor a read to come, such as a live
@@ -52,15 +53,23 @@ const transferUnlistedEvery = 10 * time.Minute
 // one reopened, which is the only way a closed one gets listed open.
 // Every other issue the listing has is held, or the digest, or was
 // dropped, as a start's first poll lists every issue, and each later one
-// every issue that changed.
+// every issue that changed. One brought back that the digest's title rule
+// or identity marker may make a digest (digestState.listed), such as one
+// the title rule held that two answers wrongly found deleted
+// (digestHistoryGone), may be the digest, so it's held for digestTake, as
+// when a poll lists it: the next pass judges it, and reads it, and runs
+// step 1 on it, only once it's judged no digest.
 //
 // An issue the listing has and the daemon holds is read no more than
 // before, and a pass between two listings makes no request here. A start's
 // first pass lists nothing, as its poll lists every issue and the daemon
-// holds none before it, and nor does a pass that holds none. A failed
-// listing is the pass's error, and the next listing waits
-// transferUnlistedEvery from it, as from a good one, so a listing that
-// keeps failing is tried once every 10 minutes, not on every pass.
+// holds none before it, and nor does a pass that holds none, unless an
+// issue was dropped since the last listing that worked
+// (transferUnlistedDrop): so a repo whose only issue wrong answers dropped
+// gets it back too. A failed listing is the pass's error, and the next
+// listing waits transferUnlistedEvery from it, as from a good one, so a
+// listing that keeps failing is tried once every 10 minutes, not on every
+// pass.
 func (d *Daemon) transferUnlistedCheck(ctx context.Context) error {
 	st := d.Step
 	now := st.Client.Now()
@@ -68,7 +77,7 @@ func (d *Daemon) transferUnlistedCheck(ctx context.Context) error {
 	case d.transferUnlistedAt.IsZero():
 		d.transferUnlistedAt = now
 		return nil
-	case len(d.snaps) == 0 || now.Sub(d.transferUnlistedAt) < transferUnlistedEvery:
+	case (len(d.snaps) == 0 && len(d.transferUnlistedDropped) == 0) || now.Sub(d.transferUnlistedAt) < transferUnlistedEvery:
 		return nil
 	}
 	d.transferUnlistedAt = now // a failed listing waits as long as a good one
@@ -76,6 +85,7 @@ func (d *Daemon) transferUnlistedCheck(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("the check for held issues no longer listed, tried again in %s: %w", transferUnlistedEvery, err)
 	}
+	d.transferUnlistedDropped = nil
 	listed := make(map[int]bool, len(issues))
 	for _, is := range issues {
 		n := is.GetNumber()
@@ -83,14 +93,21 @@ func (d *Daemon) transferUnlistedCheck(ctx context.Context) error {
 		if d.snaps[n] != nil || d.stale[n] || is.IsPullRequest() || d.digest.has(n) || !is.GetUpdatedAt().Before(d.issuesSince) {
 			continue
 		}
-		logr.Infof("%s/%s#%d is listed open, but the daemon holds nothing of it, as when wrong answers dropped it as gone, so it's read again", st.Owner, st.Repo, n)
 		d.stale[n] = true
+		d.digest.listed(st.AppSlug, is) // records no digest, as n isn't one: it holds is in titled if a digest rule may take it
+		if _, held := d.digest.titled[n]; held {
+			logr.Infof("%s/%s#%d is listed open, but the daemon holds nothing of it, as when wrong answers dropped it as gone, "+
+				"and it may be the digest, so it's read again once its edit history shows it's no digest", st.Owner, st.Repo, n)
+			continue
+		}
+		logr.Infof("%s/%s#%d is listed open, but the daemon holds nothing of it, as when wrong answers dropped it as gone, so it's read again", st.Owner, st.Repo, n)
 	}
 	for _, n := range slices.Sorted(maps.Keys(d.snaps)) {
 		switch {
 		case listed[n]:
-		case d.transferUnlistedPolled[n]:
-			logr.Infof("%s/%s#%d isn't listed open any more, though this pass's poll listed it, so it's read again, and dropped if two reads find it gone", st.Owner, st.Repo, n)
+		case d.transferUnlistedPolled[n] || d.stale[n]:
+			logr.Infof("%s/%s#%d isn't listed open any more, though this pass's poll listed it, or reads it anyway, so it's read again, and dropped if two reads find it gone",
+				st.Owner, st.Repo, n)
 			d.reread(n, false)
 		default:
 			logr.Infof("%s/%s#%d isn't listed open any more, so it's read again, and dropped if it's gone, deleted or transferred", st.Owner, st.Repo, n)
@@ -98,4 +115,14 @@ func (d *Daemon) transferUnlistedCheck(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// transferUnlistedDrop records issue n as dropped as gone, so the next
+// listing is made even if the daemon holds no issue then
+// (transferUnlistedCheck).
+func (d *Daemon) transferUnlistedDrop(n int) {
+	if d.transferUnlistedDropped == nil {
+		d.transferUnlistedDropped = map[int]bool{}
+	}
+	d.transferUnlistedDropped[n] = true
 }

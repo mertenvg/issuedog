@@ -149,7 +149,10 @@ func (d *Daemon) digestHistoryHold(ctx context.Context, is *gogithub.Issue) {
 // is read again the next pass, as for a snapshot (Daemon.missing). A
 // failed read between shows nothing, so it doesn't count. A transfer lets
 // go of it at once: GitHub's 301 names the issue's new repo, and its node
-// still resolves from there, so no history read would find it gone.
+// still resolves from there, so no history read would find it gone. One
+// let go is dropped as a snapshot is, so the next listing of every open
+// issue is made, and holds it for the title rule again if it's there
+// after all (transferUnlistedCheck).
 func (d *Daemon) digestHistoryGone(n int, err error) {
 	a, g := d.Step.Applier, &d.digest
 	h := g.history[n]
@@ -168,6 +171,7 @@ func (d *Daemon) digestHistoryGone(n int, err error) {
 	delete(g.titled, n)
 	delete(g.history, n)
 	delete(d.stale, n)
+	d.transferUnlistedDrop(n)
 }
 
 // digestHistoryReport posts the digesthistory state error on is, keyed by
