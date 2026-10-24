@@ -349,11 +349,12 @@ func (f *Fake) EditComment(id int64, login, body string) {
 	f.fakeCommentID(id).editBy(login, body, f.tick())
 }
 
-// DeleteComment deletes a comment with no CommentDeletedEvent, as GitHub
-// records none when its author deletes it (SPEC §16): DeleteCommentBy
-// records one for someone else's deletion. As on GitHub, it moves the
-// issue's updated_at. A comment the fake hasn't got, one deleted already
-// included, fails the test (fakeCommentID).
+// DeleteComment deletes a comment with no CommentDeletedEvent: a deletion
+// the timeline doesn't show, whoever wrote the comment. On GitHub that's
+// only its author's deletion (SPEC §16); DeleteCommentBy records the event
+// GitHub would for anyone else's. As on GitHub, it moves the issue's
+// updated_at. A comment the fake hasn't got, one deleted already included,
+// fails the test (fakeCommentID).
 func (f *Fake) DeleteComment(id int64) {
 	f.t.Helper()
 	f.mu.Lock()

@@ -149,7 +149,10 @@ func TestDeleteCommentByAuthor(t *testing.T) {
 // DeleteCommentByUnmoved deletes the comment and records the event, as
 // DeleteCommentBy does for someone else's deletion, but leaves updated_at
 // where it was. An author's deletion of their own comment, which SPEC §16
-// confirms moves updated_at, fails the test and changes nothing.
+// confirms moves updated_at, fails the test and changes nothing. A
+// deletion that names no actor, of a comment GitHub names no author of,
+// is no author's own, as an empty login is never the author: it's recorded,
+// and leaves updated_at where it was too.
 func TestDeleteCommentByUnmoved(t *testing.T) {
 	t.Parallel()
 	tb := &fakeNumberTB{TB: t}
@@ -183,5 +186,20 @@ func TestDeleteCommentByUnmoved(t *testing.T) {
 	}
 	if got := f.State().Issues[0].Comments; len(got) != 1 || got[0].Author != "mallory" {
 		t.Errorf("comments %+v; want only mallory's, the notice gone", got)
+	}
+	gone := f.AddComment(n, "", "A ghost's note.")
+	before = updated()
+	var ghost string
+	if fatal, panicked := fakeNumberFatal(tb, func() { ghost = f.DeleteCommentByUnmoved("", gone) }); panicked != nil || len(fatal) != 0 {
+		t.Fatalf("a deletion naming no actor of a comment naming no author: Fatalf %q, panicked with %v; want neither", fatal, panicked)
+	}
+	if got := updated(); !got.Equal(before) {
+		t.Errorf("updated_at after the ghost's deletion %v; want it unmoved, at %v", got, before)
+	}
+	if _, nodes := deletedQuery(t, f, answered, n, nil); ghost == "" || len(nodes) != 2 || nodes[1].ID != ghost {
+		t.Errorf("deletions %+v; want %q, then the ghost's %q", nodes, node, ghost)
+	}
+	if got := f.State().Issues[0].Comments; len(got) != 1 || got[0].Author != "mallory" {
+		t.Errorf("comments %+v; want only mallory's, the ghost's note gone", got)
 	}
 }

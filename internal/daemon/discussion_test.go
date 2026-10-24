@@ -412,7 +412,10 @@ func TestDiscOwnApprovedEdit(t *testing.T) {
 // of one GitHub names no author of, holds the issue, keyed d<event node
 // ID>, with a notice in the hold's comment. Their deletion of their own
 // comment, or of an untrusted user's, holds nothing, and nor does the
-// owner's deletion or eve's.
+// owner's deletion or eve's. Nor does a deletion GitHub names no actor for,
+// even of a comment it names no author of, where the two empty logins
+// don't make it the author's own: someone GitHub doesn't name is no write
+// collaborator (SPEC §6.4).
 func TestDiscDeletionHolds(t *testing.T) {
 	t.Parallel()
 	for name, author := range map[string]string{"the owner's": "owner", "the App's": app} {
@@ -432,6 +435,9 @@ func TestDiscDeletionHolds(t *testing.T) {
 		"an untrusted user": func(f *githubtest.Fake) { f.DeleteCommentBy("mallory", f.AddComment(1, "eve", "Spam.")) },
 		"by the owner":      func(f *githubtest.Fake) { f.DeleteCommentBy("owner", f.AddComment(1, app, "A note.")) },
 		"by eve":            func(f *githubtest.Fake) { f.DeleteCommentBy("eve", f.AddComment(1, "owner", "A note.")) },
+		"by someone GitHub doesn't name, of a comment it names no author of": func(f *githubtest.Fake) {
+			f.DeleteCommentBy("", f.AddComment(1, "", "A ghost's note."))
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := run(t, discWith(func(_ testing.TB, f *githubtest.Fake) { del(f) }), discPass(t, 1))
