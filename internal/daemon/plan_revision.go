@@ -178,6 +178,14 @@ func (pr *planPrior) child(id string) (planChild, bool) {
 	return pr.Children[i], true
 }
 
+// closed reports whether item id's child is closed. A closed child is
+// only ever kept (checkStatuses), and plan.max_tasks doesn't count it
+// (SPEC §11.3).
+func (pr *planPrior) closed(id string) bool {
+	c, ok := pr.child(id)
+	return ok && c.Closed
+}
+
 // keptDeps are the dependencies of each kept item of revision p, which
 // carries none of its own: its item's in the approved revision, less any
 // that name an item p drops or doesn't list, as those links go (SPEC

@@ -1278,7 +1278,7 @@ The daemon runs a check as 9.3 says, and records it on the task's `origin` marke
 - `closed-child`: a closed child is only ever kept.
 - `new-id`: a new item's ID is no child's, and no item's of the approved revision.
 - `scope`: each task has a scope from the list.
-- `max-tasks`: at most `plan.max_tasks` tasks. In a revision, the tasks that aren't dropped.
+- `max-tasks`: at most `plan.max_tasks` tasks. In a revision, the open and new tasks: the changed and new ones, and the kept ones whose child is open. A kept task whose child is closed doesn't count, and the failure says it counts open and new tasks.
 - `depends-on`: each dependency is another item of this plan, named once, and in a revision, not a dropped one.
 - `cycle`: no dependency cycles. Each one is named, such as `T1 → T2 → T1`. In a revision, a kept item's dependencies from the approved revision count, less any on an item the revision drops or doesn't list, and a dropped item has none.
 - `sub-issues`: the issue's existing sub-issues and the plan's items come to at most 100. In a revision, only its new items are added.
@@ -1342,7 +1342,7 @@ A plan contains either stories or tasks (11.3); the template shows both forms. I
 - **The validation line** is the daemon's own, from its counts: the items and what they are, the sub-issues the issue will have, and the most dependency links of one type an item will have. An epic's plan of stories reads "N stories, with no tasks".
 - **Skipping review.** A plan that skips review (7.2) heads its assumptions "Assumptions:", and has no `cc` line or approval line. Its last line says the plan skips review, as `plan.review` is false, and the issue moves straight to `planned`.
 - **The markers.** After the text come the move's transition marker, with `rev` but no `body`, the `plan-data` marker, and the plan revision marker as the last line (section 5, 7.4). Once anyone but the App edits the comment, none of them counts, and the daemon records the move again in a comment of its own (5.1).
-- **A revision** (11.3) shows each item's status after its title, as in `**T2. Title** · changed · scope:booking · p1`. A kept or dropped item is that one line, `**T1. Title** · kept`, and a changed or new one shows its fields as any item does. Its validation line counts the items that aren't dropped, adds only the new items to the sub-issues, counts a kept item's links from the approved revision, and adds "every child listed once, kept, changed or dropped, and each closed one kept". A revision never skips review, so it always has the `cc` and approval lines.
+- **A revision** (11.3) shows each item's status after its title, as in `**T2. Title** · changed · scope:booking · p1`. A kept or dropped item is that one line, `**T1. Title** · kept`, and a changed or new one shows its fields as any item does. Its validation line counts the items that aren't dropped, less the kept tasks whose child is closed, as `max-tasks` does, as "N open and new tasks" in a plan of tasks. It adds only the new items to the sub-issues, counts a kept item's links from the approved revision, and adds "every child listed once, kept, changed or dropped, and each closed one kept". A revision never skips review, so it always has the `cc` and approval lines.
 
 ### 11.5 Pull request
 

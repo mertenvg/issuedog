@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/mertenvg/issuedog/internal/github"
@@ -42,9 +43,11 @@ type planView struct {
 	SubIssues int // the issue's sub-issues before the plan's are created
 	// Revised is set for a revision of an issue planned before (SPEC
 	// §11.3), whose items have statuses, and Earlier is the approved
-	// revision's items, whose dependencies a kept item keeps.
+	// revision's items, whose dependencies a kept item keeps. Closed are
+	// the items whose child is closed, which plan.max_tasks doesn't count.
 	Revised bool
 	Earlier []planItem
+	Closed  []string
 }
 
 // renderPlan renders p as plan revision f.Rev's comment on issue f.Issue
@@ -149,14 +152,17 @@ func renderPlanItem(it planItem, task bool, priority string, revised bool) strin
 // words: the items and what they are, the dependency graph, the
 // sub-issues the issue will have, and the most dependency links of one
 // type any item will have, blocked by or blocking. In a revision, the
-// items counted are those that aren't dropped, the sub-issues added are
+// items counted are those that aren't dropped, less a plan of tasks' kept
+// ones whose child is closed, as max-tasks counts (checkPlanBody), and the
+// line says "open and new tasks". The sub-issues added are
 // the new items, a kept item's links are its approved item's
 // (planPrior.keptDeps), and the line says every child is listed once,
 // with the closed ones kept (checkStatuses).
 func planValidation(p planBody, f planView) string {
 	n, added := 0, 0
 	for _, it := range p.Items {
-		if !f.Revised || it.Status != planDropped {
+		closedTask := p.Kind == planTasks && it.Status == planKept && slices.Contains(f.Closed, it.ID)
+		if !f.Revised || it.Status != planDropped && !closedTask {
 			n++
 		}
 		if !f.Revised || it.Status == planNew {
@@ -165,7 +171,11 @@ func planValidation(p planBody, f planView) string {
 	}
 	what := fmt.Sprintf("%d %s, with no tasks", n, plural(n, "story", "stories"))
 	if p.Kind == planTasks {
-		what = fmt.Sprintf("%d %s, within `plan.max_tasks` of %d, each with one scope from the list", n, plural(n, "task", "tasks"), f.MaxTasks)
+		tasks := plural(n, "task", "tasks")
+		if f.Revised {
+			tasks = "open and new " + tasks
+		}
+		what = fmt.Sprintf("%d %s, within `plan.max_tasks` of %d, each with one scope from the list", n, tasks, f.MaxTasks)
 	}
 	if f.Revised {
 		what += "; every child listed once, kept, changed or dropped, and each closed one kept"
