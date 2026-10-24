@@ -89,7 +89,10 @@ func childPlanRun(plan github.Comment, appSlug string) (string, bool) {
 // in its edit history. Derive still reads no marker from a body a person
 // filed, so the rewrite's origin marker, naming rev, goes in the move's
 // comment too, which is then the newest clean App comment with one, and
-// the comment says why.
+// the comment says why. Should anyone edit that comment, step 1 posts the
+// body's marker again (adoptedRepost); should step 1 post it between the
+// rewrite and the move, as after a crash, Derive reads rev from it, and
+// the move carries no marker.
 //
 // The move is the last write, so once it stands the child is done, and a
 // later pass reads it and writes nothing. Before it, the child is reported
