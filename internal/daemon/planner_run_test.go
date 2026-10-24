@@ -622,7 +622,8 @@ func TestPlannerWholeRunEpic(t *testing.T) {
 	// back its own writes; then a pass where nothing changed makes no
 	// request beyond the poll.
 	p.settle("the stories' rounds", digestEdit, "POST /issues/5/assignees")
-	rounds := []string{"#3 Question round p1 1", "#4 Question round p1 1", "#5 Question round p2 1"}
+	// S1 blocks S2 and S3, so it scores 3 (SPEC §9.4, The order).
+	rounds := []string{"#3 Question round p1 3", "#4 Question round p1 1", "#5 Question round p2 1"}
 	p.waiting("the stories' rounds", rounds)
 	owner := []string{wholeRunOwner}
 	assignWant(t, f, "the stories' rounds", map[int][]string{3: owner, 4: owner, 5: owner})
@@ -761,7 +762,8 @@ func TestPlannerWholeRunStory(t *testing.T) {
 				}
 				from = len(f.Requests())
 				p.settle("the tasks", "PATCH /issues/3", "POST /issues/6/assignees")
-				p.waiting("the tasks", []string{"#6 Human task p2 1"})
+				// The human task blocks #5, so it scores 2 (SPEC §9.4, The order).
+				p.waiting("the tasks", []string{"#6 Human task p2 2"})
 				assignWant(t, f, "the tasks", map[int][]string{6: {wholeRunOwner}})
 				recordStands(t, f, "the tasks", from, p.n, planned.CreatedAt, []int{5}, true)
 				from = len(f.Requests())
@@ -771,7 +773,7 @@ func TestPlannerWholeRunStory(t *testing.T) {
 				recordStands(t, f, "the restart", from, p.n, planned.CreatedAt, []int{5}, true)
 				runChildren(t, f, "the restart", p.n, 1, planned.ID, 4, planRunTasks)
 				runRecord(t, f, "the restart", p.n, 1, 4, planRunTasks, map[int][]int{5: {4, 6}})
-				p.waiting("the restart", []string{"#6 Human task p2 1"})
+				p.waiting("the restart", []string{"#6 Human task p2 2"})
 			} else if n := len(f.State().Issues); n != 3 {
 				t.Errorf("the restart: %d issues; want the epic, the story and the digest, as a plan at review files nothing", n)
 			}

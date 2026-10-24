@@ -71,6 +71,37 @@ func (f *Fake) dependency(is *issue) gogithub.Issue {
 	return dep
 }
 
+// dependencySummary is is's issue_dependencies_summary, as GitHub gives
+// it with an issue: how many open issues block it and how many it blocks,
+// and how many of each there are, open and closed. f is locked.
+func (f *Fake) dependencySummary(is *issue) *gogithub.IssueDependenciesSummary {
+	var blockedBy, blocking, totalBlockedBy, totalBlocking int
+	for _, other := range f.issues {
+		open := other.GetState() == "open"
+		if slices.Contains(is.blockedBy, other.GetNumber()) {
+			totalBlockedBy++
+			if open {
+				blockedBy++
+			}
+		}
+		if slices.Contains(other.blockedBy, is.GetNumber()) {
+			totalBlocking++
+			if open {
+				blocking++
+			}
+		}
+	}
+	return &gogithub.IssueDependenciesSummary{BlockedBy: &blockedBy, Blocking: &blocking, TotalBlockedBy: &totalBlockedBy, TotalBlocking: &totalBlocking}
+}
+
+// withDependencies is is as an issue GET or the issue list gives it, with
+// its issue_dependencies_summary. f is locked.
+func (f *Fake) withDependencies(is *issue) gogithub.Issue {
+	out := is.Issue
+	out.IssueDependenciesSummary = f.dependencySummary(is)
+	return out
+}
+
 // addBlockedBy makes the path's issue blocked by the issue whose ID is
 // issue_id, as the App, and answers 201 with the blocking issue
 // (POST /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by).

@@ -406,7 +406,8 @@ func TestChildrenRun(t *testing.T) {
 	l.planned("S2's plan", 4, 3)
 	l.g.checkFlags(3, "", "", "")
 	l.step("S2's plan listed", 3, "PATCH /issues/2", "POST /issues/4/assignees")
-	plans := []string{"#3 Plan approval p1 1", "#4 Plan approval p2 1"}
+	// S1 blocks S2, so it scores 2 (SPEC §9.4, The order).
+	plans := []string{"#3 Plan approval p1 2", "#4 Plan approval p2 1"}
 	l.digest("S2's plan listed", 2, plans, 3, 4)
 	l.labels("S2's plan listed", 3, false, "effort:high", "model:opus", "priority:p1", "stage:plan-review", "type:story")
 	l.labels("S2's plan listed", 4, false, "priority:p2", "stage:plan-review", "type:story")
@@ -460,8 +461,9 @@ func TestChildrenRun(t *testing.T) {
 	// 7. mertenvg closes T1 and T2. The pass that judges the closes, the
 	// newest first, sets stage:completed on each, and, as every child S1's
 	// record names has closed, lists S1 as a finished story, keyed done-3,
-	// ranked after every other kind of item, announces it once and assigns
-	// mertenvg on it (#278).
+	// ranked after every other kind of item of the same score, but first
+	// here, as it blocks S2, announces it once and assigns mertenvg on it
+	// (#278).
 	f.CloseBy(5, childrenRunOwner)
 	f.CloseBy(6, childrenRunOwner)
 	l.step("the tasks closed", 3, "POST /issues/6/labels", "DELETE /issues/6/labels/stage:needs-human",
@@ -474,13 +476,13 @@ func TestChildrenRun(t *testing.T) {
 	if added := l.added(2); !slices.Equal(added, []string{news}) {
 		t.Errorf("the tasks closed: the digest's new comments %q; want the announcement\n%s", added, news)
 	}
-	finished := "**Finished story**, priority p1, unblocks 1 open issue (itself included)\n\n" +
+	finished := "**Finished story**, priority p1, unblocks 2 open issues (itself included)\n\n" +
 		"- Every child of this story is closed, so it waits for story verification, which runs by hand for now. Close it once that passes.\n" +
 		"- Its children: #5, #6.\n"
 	if body := f.State().Issues[1].Body; !strings.Contains(body, finished) {
 		t.Errorf("the tasks closed: the digest =\n%s\nwant S1's item\n%s", body, finished)
 	}
-	done := append(slices.Clone(plans[1:]), "#3 Finished story p1 1")
+	done := append([]string{"#3 Finished story p1 2"}, plans[1:]...)
 	l.digest("the tasks closed", 2, done, 3, 4)
 	l.quiet("S1 finished")
 	l.restart("S1 finished")

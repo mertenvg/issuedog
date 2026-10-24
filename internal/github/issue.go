@@ -36,6 +36,11 @@ type Snapshot struct {
 	Type string
 	// Parent is the parent issue's number, or 0 if there is none.
 	Parent int
+	// Blocking is how many open issues this one blocks, through blocked-by
+	// links in any repo, as the issue_dependencies_summary of the issue GET
+	// Snapshot makes anyway gives it, so it costs no request of its own
+	// (SPEC §9.4, The order). It's as of that read.
+	Blocking int
 	// Comments are all the issue's comments, oldest first.
 	Comments []Comment
 	// Deleted are the issue's CommentDeletedEvents, oldest first: read
@@ -206,6 +211,7 @@ func (c *Client) Snapshot(ctx context.Context, owner, repo string, number int) (
 		CreatedAt: issue.GetCreatedAt().Time, UpdatedAt: issue.GetUpdatedAt().Time,
 		Type: TypeOf(issue), TypeFromLabels: issue.GetType().GetName() == "",
 		TypeName: issue.GetType().GetName(), TypeID: issue.GetType().GetID(),
+		Blocking: issue.GetIssueDependenciesSummary().GetBlocking(),
 	}
 	for _, l := range issue.Labels {
 		s.Labels = append(s.Labels, l.GetName())
