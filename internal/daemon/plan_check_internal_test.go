@@ -392,8 +392,8 @@ func TestCheckPlanLinkLimits(t *testing.T) {
 // A file path is a word with a directory and an extension, outside a link.
 // A bare file name, a URL to a file, a link's destination and words with
 // a slash but no extension are none. Nor, so prose passes (#311), is a
-// word whose extension isn't a lowercase letter, then lowercase letters
-// and digits, or is a module's version, whose directory has no letter or
+// word whose extension isn't a lowercase letter, then any lowercase
+// letters and digits, or is a module's version, whose directory has no letter or
 // is only versions, or that is capitalized names, the last a known
 // framework's, such as "Express/Node.js" (#439). Capitalized paths, such as
 // "Components/Button.js", extensions with digits and directories named "x"
@@ -401,7 +401,9 @@ func TestCheckPlanLinkLimits(t *testing.T) {
 // "express/node.js", since a file can be named so, as "src/node.js" is.
 // The rule misses a path whose extension isn't all lowercase letters and
 // digits, whose directory has no letter or whose extension is a module's
-// version, such as "R/utils.R", "2024/notes.md" and "lib/x.v2".
+// version, such as "R/utils.R", "2024/notes.md" and "lib/x.v2", and one
+// of capitalized names whose file is a known framework's name, such as
+// "App/Node.js" or "Components/Chart.js" (#476).
 func TestPlanFilePath(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ text, want string }{
@@ -449,6 +451,15 @@ func TestPlanFilePath(t *testing.T) {
 		{"A Vue/Nuxt.js or Express/Socket.io app.", ""},
 		{"Next/React.js, Nuxt/Vue.js or Node/Express.js.", ""},
 		{"Express/Next.js/Node.js", ""},
+		{"A React/Chart.js page.", ""},
+		{"A React/D3.js page.", ""},
+		{"An Ember/Glimmer.js app.", ""},
+		{"A Node/Koa.js server.", ""},
+		{"A Node/Nest.js server.", ""},
+		{"An Express/Passport.js login.", ""},
+		{"A React/Three.js scene.", ""},
+		{"A Vue/Vuex.js store.", ""},
+		{"src/React/Three.js", "src/React/Three.js"},
 		{"Python 2.x/3.x", ""},
 		{"Vue 2.x/3.x", ""},
 		{"Node 18.x/20.x", ""},
@@ -463,6 +474,8 @@ func TestPlanFilePath(t *testing.T) {
 		{"docs/CHANGELOG.MD", ""},
 		{"2024/notes.md", ""},
 		{"lib/x.v2", ""},
+		{"App/Node.js", ""},
+		{"Components/Chart.js", ""},
 		{"The [settings file](deploy/production.env) ...", ""},
 		{"[cmd/main.go](https://github.com/acme/booking/blob/main/cmd/main.go)", "cmd/main.go"},
 		{"See https://github.com/acme/booking/blob/main/deploy/production.env for it.", ""},
