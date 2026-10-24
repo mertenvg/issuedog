@@ -108,7 +108,7 @@ func ApproveCommand() Handler {
 					return planRejection(latest, why[0], c.Dirt)
 				case c.Comment.ID < latest.Comment:
 					return Rejection{Reason: fmt.Sprintf("it was posted before plan revision %d, the latest. "+
-						"To approve that, react 👍 to it, or post `/approve` again", latest.Rev), Final: true}
+						"To approve that, react 👍 to it, or post `/approve` again", latest.Rev), Final: true, Dated: true}
 				}
 				return inTable(is, state.Planned, state.TriggerPlanApproved, "on approval")
 			}
@@ -133,7 +133,7 @@ func ApproveCommand() Handler {
 			case !ok, latest.Hidden, state.BodyHash(c.S.Body) != latest.Hash:
 				return stale()
 			case c.Comment.ID < latest.Comment:
-				return Rejection{Reason: fmt.Sprintf("it was posted before revision %d, the latest. To approve that, react 👍 to it, or post `/approve` again", latest.Rev), Final: true}
+				return Rejection{Reason: fmt.Sprintf("it was posted before revision %d, the latest. To approve that, react 👍 to it, or post `/approve` again", latest.Rev), Final: true, Dated: true}
 			}
 			return inTable(is, state.Planning, state.TriggerSpecApproved, "on approval")
 		},
