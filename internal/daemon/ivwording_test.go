@@ -250,7 +250,8 @@ func ivWordingLostFinal(quote, reason, id string) string {
 // can't change, it gives that reason instead (#399, SPEC §9.2). A reason
 // that holds only for when the comment was posted, before the latest
 // revision or at a stage since moved on, is one a new comment changes, so
-// the reply asks for one (#474).
+// the reply asks for one (#474), but only where the table has the move a
+// new one makes: else it gives the table's reason (#556).
 func TestIvWordingLostReplyAfterEdit(t *testing.T) {
 	t.Parallel()
 	atReview := []string{"stage:spec-review"}
@@ -307,6 +308,26 @@ func TestIvWordingLostReplyAfterEdit(t *testing.T) {
 				f.EditComment(1004, "owner", "/approve")
 			}),
 			outcome{comments: []string{ivWordingLostEdited("/approve", "1004")}, labels: []string{"stage:plan-review"}, downs: []string{"/approve"}}},
+		{"an /approve edited after its 👎, posted before the latest revision, on a story with a parent: the table has no approval for a new one either, so the reply gives its reason",
+			review(func(t testing.TB, f *githubtest.Fake) {
+				f.SetParent(1, f.AddIssue("owner", "Epic", "epic"))
+				post(t, f, 1002, "owner", "/approve x")
+				f.AddReaction(1002, app, "-1")
+				post(t, f, 1004, app, revision(2, "body"))
+				f.EditComment(1002, "owner", "/approve")
+			}),
+			outcome{comments: []string{ivWordingLostFinal("/approve", "only an epic, or a story with no parent, goes from `spec-review` "+
+				"to `planning` on approval, and this is a story issue", "1002")}, labels: atReview, downs: []string{"/approve"}}},
+		{"likewise at plan-review, on a bug",
+			planReview(func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1004, "owner", "/approve x")
+				f.AddReaction(1004, app, "-1")
+				replan(t, f, 2, 1006)
+				f.EditComment(1004, "owner", "/approve")
+				f.SetType(1, "Bug")
+			}),
+			outcome{comments: []string{ivWordingLostFinal("/approve", "only an epic, or a story, goes from `plan-review` "+
+				"to `planned` on approval, and this is a new-bug issue", "1004")}, labels: []string{"stage:plan-review"}, downs: []string{"/approve"}}},
 		{"a request edited after its 👎, posted at a review stage since moved on to another: a new one could apply there, so the reply asks",
 			review(func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1002, "owner", "too long")
@@ -316,6 +337,27 @@ func TestIvWordingLostReplyAfterEdit(t *testing.T) {
 			}),
 			outcome{comments: []string{overridden(state.PlanReview, "from=spec-review to=plan-review by=owner event=9003"), ivWordingLostEdited("too short", "1002")},
 				labels: []string{"stage:plan-review"}, downs: []string{"too short"}}},
+		{"likewise posted at plan-review, since moved back to spec-review",
+			planReview(func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1004, "owner", "too long")
+				f.AddReaction(1004, app, "-1")
+				f.EditComment(1004, "owner", "too short")
+				handSet(t, f, state.PlanReview, state.SpecReview, 9005)
+			}),
+			outcome{comments: []string{overridden(state.SpecReview, "from=plan-review to=spec-review by=owner event=9005"), ivWordingLostEdited("too short", "1004")},
+				labels: atReview, downs: []string{"too short"}}},
+		{"likewise on a story with a parent, which the table doesn't send back from spec-review: a new one couldn't apply, so the reply gives the reason",
+			planReview(func(t testing.TB, f *githubtest.Fake) {
+				f.SetType(1, "Story")
+				f.SetParent(1, f.AddIssue("owner", "Epic", "epic"))
+				post(t, f, 1004, "owner", "too long")
+				f.AddReaction(1004, app, "-1")
+				f.EditComment(1004, "owner", "too short")
+				handSet(t, f, state.PlanReview, state.SpecReview, 9005)
+			}),
+			outcome{comments: []string{overridden(state.SpecReview, "from=plan-review to=spec-review by=owner event=9005"),
+				ivWordingLostFinal("too short", movedOnReason(state.PlanReview, state.SpecReview)+". Nor would a new comment here: "+storyOnly, "1004")},
+				labels: atReview, downs: []string{"too short"}}},
 		{"a request edited after its 👎, posted at a stage since moved on to planning: a new one couldn't apply either, so the reply gives the reason",
 			review(func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1002, "owner", "too long")

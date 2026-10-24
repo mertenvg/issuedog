@@ -791,6 +791,19 @@ func TestRevisePlan(t *testing.T) {
 			outcome{comments: []string{overridden(state.Planning, "from=plan-review to=planning by=owner event=9007"),
 				final("too long", "I didn't send the plan back for revision", movedOnReason(state.PlanReview, state.Planning), "1005")},
 				labels: planning, downs: []string{"too long"}}, nil},
+		{"one moved back to spec-review, on a story with a parent, also says a new comment wouldn't send the spec back",
+			revisePlanReview(func(t testing.TB, f *githubtest.Fake) {
+				f.SetType(1, "Story")
+				f.SetParent(1, f.AddIssue("owner", "Epic", "epic"))
+				post(t, f, 1005, "owner", "too long")
+				f.AddReaction(1005, app, "-1")
+				handSet(t, f, state.PlanReview, state.SpecReview, 9007)
+			}),
+			outcome{comments: []string{overridden(state.SpecReview, "from=plan-review to=spec-review by=owner event=9007"),
+				final("too long", "I didn't send the plan back for revision", movedOnReason(state.PlanReview, state.SpecReview)+
+					". Nor would a new comment here: only an epic, or a story with no parent, goes from `spec-review` to `clarifying` "+
+					"on a revision request, and this is a story issue", "1005")},
+				labels: []string{"stage:spec-review"}, downs: []string{"too long"}}, nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var in []string

@@ -55,7 +55,8 @@ type Rejection struct {
 	// Dated is set when Reason holds because of when the comment was
 	// posted, before the latest revision or at a review stage since moved
 	// on to another, so a new comment with its text, posted now, wouldn't
-	// get it, and could apply (reword).
+	// get it, and could apply (reword): it would pass the checks a new one
+	// gets, the table's included (SPEC §7.2).
 	Dated bool
 }
 
@@ -88,14 +89,42 @@ func (st *Step) command(ctx context.Context, s *github.Snapshot, d Dirt, c githu
 // (requestAt) finds the stage moved on since, so its reason says that,
 // whatever /revise would say at the stage now. It's Final: a new comment
 // now wouldn't send the spec or the plan back. At spec-review or
-// plan-review it's Dated too: a new comment is posted at the stage now, so
-// it doesn't get this reason, and is a revision request there. At any
-// other stage a new comment sends nothing back either, so it isn't.
+// plan-review, a new comment is posted at the stage now, so it doesn't get
+// this reason, and is a revision request there, which /revise's checks
+// judge (judge). The reason is Dated when that request would apply. When
+// it wouldn't, as when the table has no such move for the issue's class
+// (SPEC §7.2), the reason ends with why, so the reply doesn't ask for a
+// new comment. At any other stage a new comment sends nothing back either,
+// so it isn't Dated.
 func (st *Step) why(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment, cmd state.Command, stage state.Stage) (Rejection, Handler, error) {
 	if at := st.requestAt(s, d, c); at != "" && at != stage {
-		return Rejection{Reason: fmt.Sprintf("it was posted at `%s`, and this issue is at `%s` now. A comment sends the spec back only at `%s`, and the plan only at `%s`",
-			at, stage, state.SpecReview, state.PlanReview), Final: true, Dated: stage == state.SpecReview || stage == state.PlanReview}, Handler{}, nil
+		r := Rejection{Reason: fmt.Sprintf("it was posted at `%s`, and this issue is at `%s` now. A comment sends the spec back only at `%s`, and the plan only at `%s`",
+			at, stage, state.SpecReview, state.PlanReview), Final: true}
+		if stage != state.SpecReview && stage != state.PlanReview {
+			return r, Handler{}, nil
+		}
+		now, _, err := st.judge(ctx, s, d, c, cmd, stage)
+		if err != nil {
+			return Rejection{}, Handler{}, fmt.Errorf("judge a new request at %s: %w", stage, err)
+		}
+		if now.Reason == "" {
+			r.Dated = true
+		} else {
+			r.Reason += ". Nor would a new comment here: " + now.Reason
+		}
+		return r, Handler{}, nil
 	}
+	r, h, err := st.judge(ctx, s, d, c, cmd, stage)
+	if err != nil {
+		return Rejection{}, Handler{}, fmt.Errorf("why: %w", err)
+	}
+	return r, h, nil
+}
+
+// judge returns why cmd, from comment c, doesn't apply at stage, by its
+// own check and then its handler's, or a Rejection with no Reason and its
+// handler (why). It doesn't write.
+func (st *Step) judge(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment, cmd state.Command, stage state.Stage) (Rejection, Handler, error) {
 	if err := cmd.Check(stage); err != nil {
 		return Rejection{Reason: err.Error()}, Handler{}, nil
 	}

@@ -156,6 +156,14 @@ func TestApprovePlan(t *testing.T) {
 			}),
 			outcome{comments: []string{final("/approve", "I didn't apply this command", "it was posted before plan revision 2, the latest. "+
 				"To approve that, react 👍 to it, or post `/approve` again", "1004")}, labels: atReview, downs: []string{"/approve"}}},
+		{"an /approve before the latest plan revision that the table can't apply gets the table's reason, which holds for a new one too",
+			planReview(func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1004, "owner", "/approve")
+				replan(t, f, 2, 1005)
+				f.SetType(1, "Bug")
+			}),
+			outcome{comments: []string{final("/approve", "I didn't apply this command", "only an epic, or a story, goes from `plan-review` "+
+				"to `planned` on approval, and this is a new-bug issue", "1004")}, labels: atReview, downs: []string{"/approve"}}},
 		{"a dirty App comment after the plan revision hides it: a 👍 approves nothing and /approve is rejected",
 			planReview(func(t testing.TB, f *githubtest.Fake) {
 				post(t, f, 1004, app, "Noted.")
