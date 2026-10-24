@@ -448,9 +448,12 @@ func waitTypeWhy(s *github.Snapshot, is state.Issue, next state.Stage, trigger s
 // says that sending it back gets one. A dirty body stays dirty through a
 // new plan, as nothing at planning or plan-review rewrites it (SPEC
 // §7.4), so then the last line says instead what clears it, as /approve's
-// rejection does (planRejection, #331): moving the issue to clarifying,
+// rejection does (planDirtyClears, #331): moving the issue to clarifying,
 // where the interviewer's new spec replaces the edit, and then a new plan,
-// which also stands in for the new plan the other reasons need.
+// which also stands in for the new plan the other reasons need. For a
+// story with a parent, which the interviewer never rewrites (SPEC §9.1),
+// it's an approved revision of the parent's plan that changes the story,
+// which rewrites its body and sends it back to planning (SPEC §6.4, #525).
 func waitPlanApprovalLines(in waitInput, is state.Issue) (int, int64, []waitLine) {
 	s := in.S
 	latest, reasons := state.PlanApproval(s, in.AppSlug, in.Dirt.Has)
@@ -489,7 +492,11 @@ func waitPlanApprovalLines(in waitInput, is state.Issue) (int, int64, []waitLine
 		lines = append(lines, waitLine{Text: "React 👍 to the plan comment, or post `/approve`, to approve it."})
 	}
 	back := "Post `/revise <notes>`, or any other comment, to send it back."
-	switch {
+	switch p := planDirtyParent(s, is.Item); {
+	case dirty && p != 0:
+		back = fmt.Sprintf("Get a revision of #%d's plan that changes the issue to clear the edit, as by moving #%d to `stage:planning`: "+
+			"once that's approved, it rewrites the description, which replaces the edit, and then the issue gets a new plan. "+
+			"Sending the plan back won't clear it.", p, p)
 	case dirty:
 		back = "Move the issue to `stage:clarifying` to clear the edit: that gets a new spec from the interviewer, " +
 			"which replaces it, and then a new plan. Sending the plan back won't clear it."

@@ -246,3 +246,23 @@ func TestIvWordingPlannerDuplicates(t *testing.T) {
 		t.Errorf("checkPlan with distinct options = %v", err)
 	}
 }
+
+// dirtyLogin names the editor of a dirty body in /approve's rejections as
+// code, as the hold does (#525), and anything that isn't a GitHub login,
+// as a name typed in a note may be, as nobody GitHub names, so a backtick
+// in it can't end the code span.
+func TestDirtyLogin(t *testing.T) {
+	t.Parallel()
+	for by, want := range map[string]string{
+		"mallory":          "`mallory`",
+		"helper[bot]":      "`helper[bot]`",
+		"unknown":          "someone GitHub doesn't name",
+		"":                 "someone GitHub doesn't name",
+		"mal`lory":         "someone GitHub doesn't name",
+		"mallory` **owned": "someone GitHub doesn't name",
+	} {
+		if got := dirtyLogin(by); got != want {
+			t.Errorf("dirtyLogin(%q) = %q, want %q", by, got, want)
+		}
+	}
+}
