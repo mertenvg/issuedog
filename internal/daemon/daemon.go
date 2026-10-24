@@ -289,6 +289,10 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	// it's visited then, though nothing on it changed (#243).
 	d.Step.holdOrderReread = func(n int) { d.stale[n] = true }
 	defer func() { d.Step.holdOrderReread = nil }()
+	// A command on the digest is never handled, as no pass visits it, so
+	// none waits for it (#415).
+	d.Step.holdOrderDigest = d.digest.has
+	defer func() { d.Step.holdOrderDigest = nil }()
 	for _, n := range slices.Sorted(maps.Keys(d.snaps)) {
 		again := touched[n] && d.digestRestartRead(ctx, n, &touches) // as on a restart's first pass
 		s := d.snaps[n]
