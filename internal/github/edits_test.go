@@ -258,6 +258,64 @@ func TestHistoryPaging(t *testing.T) {
 	}
 }
 
+// An issue deleted since, whose node GitHub resolves to none, fails the
+// read as a HistoryGoneError that names it and holds the other nodes'
+// histories, read in the same query, oldest first: one gone node doesn't
+// fail the rest.
+func TestHistoryGoneNode(t *testing.T) {
+	t.Parallel()
+	f := githubtest.New(t, "o/r", "issuedog")
+	f.AddIssue("owner", "Kept", "body") // 1
+	f.EditBody(1, "owner", "body2")     // 2
+	f.AddIssue("owner", "Gone", "x")    // 3
+	kept, gone := snapshot(t, f, 1).BodyNode, snapshot(t, f, 2).BodyNode
+	f.DeleteIssue()
+	_, err := f.Client(t).History(context.Background(), []string{gone, kept})
+	var g *github.HistoryGoneError
+	if !errors.As(err, &g) || !errors.Is(err, github.ErrGraphQL) || !strings.Contains(err.Error(), gone) {
+		t.Fatalf("err = %v; want a HistoryGoneError, wrapping ErrGraphQL, that names %s", err, gone)
+	}
+	owner := github.Author{Login: "owner", Type: "User"}
+	want := map[string][]github.Edit{kept: {{By: owner, At: at(1), Text: "body"}, {By: owner, At: at(2), Text: "body2"}}}
+	if !reflect.DeepEqual(g.Nodes, []string{gone}) || !reflect.DeepEqual(g.Read, want) {
+		t.Errorf("gone %q, read %+v; want %s gone, and %+v", g.Nodes, g.Read, gone, want)
+	}
+	if q := f.HistoryQueries(); q != 1 {
+		t.Errorf("history queries = %d, want 1 for both nodes", q)
+	}
+}
+
+// A comment deleted, with its issue, between the first page of its long
+// history and the next is gone too, with none of its entries read: the
+// other node's history, from the first page, still reads.
+func TestHistoryGoneWhilePaging(t *testing.T) {
+	t.Parallel()
+	f := githubtest.New(t, "o/r", "issuedog")
+	f.HistoryCap(0)
+	f.AddIssue("owner", "Kept", "body")   // 1
+	f.EditBody(1, "owner", "body2")       // 2
+	n := f.AddIssue("owner", "Gone", "x") // 3
+	id := f.AddComment(n, "owner", "hi")  // 4
+	for i := range 150 {                  // 5 to 154
+		f.EditComment(id, "owner", fmt.Sprintf("v%d", i))
+	}
+	kept, gone := snapshot(t, f, 1).BodyNode, snapshot(t, f, n).Comments[0].Node
+	f.BeforeGraphQL(func() { f.BeforeGraphQL(f.DeleteIssue) }) // after the first page
+	_, err := f.Client(t).History(context.Background(), []string{gone, kept})
+	var g *github.HistoryGoneError
+	if !errors.As(err, &g) || !reflect.DeepEqual(g.Nodes, []string{gone}) {
+		t.Fatalf("err = %v; want a HistoryGoneError for %s alone", err, gone)
+	}
+	owner := github.Author{Login: "owner", Type: "User"}
+	want := map[string][]github.Edit{kept: {{By: owner, At: at(1), Text: "body"}, {By: owner, At: at(2), Text: "body2"}}}
+	if !reflect.DeepEqual(g.Read, want) {
+		t.Errorf("read %+v; want %+v", g.Read, want)
+	}
+	if q := f.HistoryQueries(); q != 2 {
+		t.Errorf("history queries = %d, want 2", q)
+	}
+}
+
 func TestHistoryUnknownNode(t *testing.T) {
 	f := githubtest.New(t, "o/r", "issuedog")
 	_, err := f.Client(t).History(context.Background(), []string{"IC_9"})

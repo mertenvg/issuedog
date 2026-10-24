@@ -200,9 +200,10 @@ func TestDigestTakeHistoryFails(t *testing.T) {
 	poll(3)
 }
 
-// An issue whose edit history read failed digestHistoryStrikes times is
-// read no more, but once a rename lets it go, and another renames it back,
-// its failures are forgotten: the next poll reads it again, and takes it.
+// An issue whose edit history read failed digestHistoryStrikes times isn't
+// read on the pass after, but once a rename lets it go, and another
+// renames it back, its failures are forgotten: the next poll reads it
+// again, and takes it.
 func TestDigestHistoryRenamedBack(t *testing.T) {
 	t.Parallel()
 	f := githubtest.New(t, "o/r", "issuedog")
@@ -214,19 +215,19 @@ func TestDigestHistoryRenamedBack(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for range digestHistoryStrikes {
+	for range d.digestHistoryStrikes() {
 		f.FailGraphQL("Something went wrong")
 		poll()
 	}
 	poll()
-	if got := f.HistoryQueries(); got != digestHistoryStrikes || d.digest.titled[1] == nil {
-		t.Fatalf("history queries = %d, held %v; want %d, and 1 held", got, d.digest.titled, digestHistoryStrikes)
+	if got := f.HistoryQueries(); got != d.digestHistoryStrikes() || d.digest.titled[1] == nil {
+		t.Fatalf("history queries = %d, held %v; want %d, and 1 held", got, d.digest.titled, d.digestHistoryStrikes())
 	}
 	f.RenameIssue(1, "owner", "Renamed")
 	poll()
 	f.RenameIssue(1, "owner", "issuedog digest")
 	poll()
-	if got := f.HistoryQueries(); got != digestHistoryStrikes+1 || !d.digest.has(1) {
+	if got := f.HistoryQueries(); got != d.digestHistoryStrikes()+1 || !d.digest.has(1) {
 		t.Errorf("history queries = %d, digests %v; want one more, and 1 the digest", got, d.digest.issues)
 	}
 }

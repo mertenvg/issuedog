@@ -3,9 +3,11 @@ package github
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -108,6 +110,36 @@ func TestHistoryBadAnswers(t *testing.T) {
 				t.Errorf("err = %v, want one wrapping %v", err, tc.want)
 			}
 		})
+	}
+	// A NOT_FOUND error is a gone node only at ["nodes", the index] of a
+	// null node, and only with no other error listed: else the read fails
+	// as a whole, as before.
+	notFound := `{"type":"NOT_FOUND","path":["nodes",%s],"message":"Could not resolve to a node with the global id of 'A'"}`
+	for _, tc := range []struct{ name, answer string }{
+		{"another error too", `{"data":{"nodes":[null]},"errors":[` + fmt.Sprintf(notFound, "0") + `,{"message":"Something went wrong"}]}`},
+		{"another index", `{"data":{"nodes":[null]},"errors":[` + fmt.Sprintf(notFound, "1") + `]}`},
+		{"a node there", `{"data":{"nodes":[{"id":"A"}]},"errors":[` + fmt.Sprintf(notFound, "0") + `]}`},
+		{"no type", `{"data":{"nodes":[null]},"errors":[{"path":["nodes",0],"message":"x"}]}`},
+		{"a path below the node", `{"data":{"nodes":[null]},"errors":[{"type":"NOT_FOUND","path":["nodes",0,"userContentEdits"],"message":"x"}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := graphQLAnswers(t, tc.answer).History(context.Background(), []string{"A"})
+			var g *HistoryGoneError
+			if !errors.Is(err, ErrGraphQL) || errors.As(err, &g) {
+				t.Errorf("err = %v; want GitHub's errors, and no node gone", err)
+			}
+		})
+	}
+	// A NOT_FOUND error at a node that's there, while another node is null,
+	// names neither gone: the error's index must be the null node's.
+	_, err := graphQLAnswers(t, `{"data":{"nodes":[null,{"id":"B"}]},"errors":[`+fmt.Sprintf(notFound, "1")+`]}`).
+		History(context.Background(), []string{"A", "B"})
+	if g := (*HistoryGoneError)(nil); !errors.Is(err, ErrGraphQL) || errors.As(err, &g) {
+		t.Errorf("err = %v; want GitHub's errors, and no node gone, for an error at B, which is there, with A null", err)
+	}
+	_, err = graphQLAnswers(t, `{"data":{"nodes":[null]},"errors":[`+fmt.Sprintf(notFound, "0")+`]}`).History(context.Background(), []string{"A"})
+	if g := (*HistoryGoneError)(nil); !errors.As(err, &g) || !slices.Equal(g.Nodes, []string{"A"}) || len(g.Read) != 0 {
+		t.Errorf("err = %v; want A gone, and nothing else read", err)
 	}
 	// A null history is no entries, not an error: the daemon fails closed on it.
 	h, err := graphQLAnswers(t, `{"data":{"nodes":[{"id":"A","userContentEdits":null}]}}`).History(context.Background(), []string{"A"})
