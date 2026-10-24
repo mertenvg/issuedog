@@ -190,10 +190,11 @@ type waitInput struct {
 	Dirt Dirt
 	// Inputs are what step 1 returned on S (Step.Run).
 	Inputs []github.Comment
-	// CloserErrAnswered, if set, reports whether the closer question of the
-	// close keyed key was answered while the daemon runs, which ends its
-	// closer state error (Applier.closerErrAnswered). Unset, none ends so.
-	CloserErrAnswered func(key string) bool
+	// CloserErrEnded, if set, reports whether the closer state error keyed
+	// key on S has ended: the question of its close was answered while the
+	// daemon runs, or step 1 no longer asks it (Applier.closerErrEnded).
+	// Unset, none ends so.
+	CloserErrEnded func(key string) bool
 	// Holds are the open discussion triggers on S after its visit, if S is
 	// held, and nil otherwise (Step.holdItemFind).
 	Holds []discTrigger
@@ -256,7 +257,7 @@ func waitFind(in waitInput) ([]waitItem, error) {
 			Title: s.Title, Lines: lines, Link: waitLink(in.Owner, in.Repo, s.Number, comment),
 			Priority: priority(s), Created: s.CreatedAt, Comment: comment})
 	}
-	open, err := openErrors(s, is, func() ([]github.Comment, error) { return in.Inputs, nil }, in.CloserErrAnswered)
+	open, err := openErrors(s, is, func() ([]github.Comment, error) { return in.Inputs, nil }, in.CloserErrEnded)
 	if err != nil {
 		return nil, fmt.Errorf("what waits on %s/%s#%d: %w", in.Owner, in.Repo, s.Number, err)
 	}

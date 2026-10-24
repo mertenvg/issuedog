@@ -119,7 +119,7 @@ func TestIvWordingFailsAttempt(t *testing.T) {
 			if after := f.State(); !reflect.DeepEqual(after.Issues, before.Issues) {
 				t.Errorf("the issue changed:\n%+v\nwant\n%+v", after.Issues, before.Issues)
 			}
-			if l := g.lease(); g.runs() != 1 || !l.Failed || l.Attempt != 1 || l.ApplyFailures != 0 || !strings.Contains(l.LastFailure, tt.want) {
+			if l := g.lease(); g.runs() != 1 || !l.Failed || l.Attempt != 1 || l.ApplyFailures != 0 || !strings.Contains(l.PublicFailure, tt.want) {
 				t.Errorf("after %d runs, lease %+v; want one failed attempt, for %q", g.runs(), l, tt.want)
 			}
 		})

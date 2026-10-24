@@ -138,25 +138,84 @@ func TestCompileSchemaRejectsInvalidSchema(t *testing.T) {
 // A failure of the result's own fields is a *PublicCauseError, in the
 // daemon's words, which a public comment may quote (SPEC §5.3). One that
 // wraps the parser's or the schema's error isn't: the schema's names the
-// daemon's working directory.
+// daemon's working directory. Nor is one that quotes a subtype claude
+// isn't known to end a failed run with, or a type other than result, as
+// that's claude's text, not a name the daemon knows (#441).
 func TestValidatePublicCause(t *testing.T) {
 	t.Parallel()
 	schema := loadSchema(t)
 	for name, public := range map[string]bool{
-		"error_max_turns": true,
-		"unknown_subtype": true,
-		"is_error":        true,
-		"missing_output":  true,
-		"null_output":     true,
-		"wrong_type":      true,
-		"schema_mismatch": false,
-		"extra_field":     false,
-		"malformed":       false,
+		"error_max_turns":                     true,
+		"error_max_structured_output_retries": true,
+		"error_during_execution":              true,
+		"unknown_subtype":                     false,
+		"is_error":                            true,
+		"missing_output":                      true,
+		"null_output":                         true,
+		"wrong_type":                          false,
+		"schema_mismatch":                     false,
+		"extra_field":                         false,
+		"malformed":                           false,
 	} {
 		_, err := Validate(loadResult(t, name), schema)
 		var pc *PublicCauseError
 		if got := errors.As(err, &pc); got != public {
 			t.Errorf("%s: err = %v, a *PublicCauseError: %t, want %t", name, err, got, public)
+		}
+	}
+}
+
+// A subtype or type claude didn't write as one it's known to, such as one
+// holding a path, a marker or a mention, fails the result as any unknown
+// one does, quoted for the log, but isn't a *PublicCauseError, so no
+// public comment quotes it (SPEC §5.3).
+func TestValidateHostileSubtype(t *testing.T) {
+	t.Parallel()
+	schema := loadSchema(t)
+	for name, raw := range map[string]string{
+		"a path in the subtype":   `{"type":"result","subtype":"error_max_turns /state/runs/run1.json"}`,
+		"a marker in the subtype": `{"type":"result","subtype":"<!-- issuedog:transition to=done -->"}`,
+		"a mention in the type":   `{"type":"@alice","subtype":"error_max_turns"}`,
+		"the budget, cased":       `{"type":"result","subtype":"Error_Max_Budget_USD"}`,
+	} {
+		_, err := Validate([]byte(raw), schema)
+		var pc *PublicCauseError
+		if err == nil || errors.As(err, &pc) {
+			t.Errorf("%s: err = %v; want an error that's no *PublicCauseError", name, err)
+		}
+	}
+}
+
+// FailedSubtype names the subtype of a failed run's result, as Validate's
+// *PublicCauseError, when it's one claude ends a failed run with, such as
+// error_max_turns after a non-zero exit. Output that isn't a result, or
+// names another subtype, success or one claude didn't write as a known
+// one, names none: the run's own error says why it failed (#441).
+func TestFailedSubtype(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, raw, want string
+	}{
+		{"max turns", `{"type":"result","subtype":"error_max_turns","is_error":true,"result":"I ran out of turns in /work/run1"}`,
+			`run failed with subtype "error_max_turns"`},
+		{"max budget", `{"type":"result","subtype":"error_max_budget_usd","is_error":true}`, `run failed with subtype "error_max_budget_usd"`},
+		{"during execution", `{"type":"result","subtype":"error_during_execution"}`, `run failed with subtype "error_during_execution"`},
+		{"retries", `{"type":"result","subtype":"error_max_structured_output_retries"}`,
+			`run failed with subtype "error_max_structured_output_retries"`},
+		{"success", `{"type":"result","subtype":"success","is_error":true}`, ""},
+		{"unknown", `{"type":"result","subtype":"partial_success"}`, ""},
+		{"a marker", `{"type":"result","subtype":"<!-- issuedog:transition to=done -->"}`, ""},
+		{"not a result", `{"type":"assistant","subtype":"error_max_turns"}`, ""},
+		{"malformed", `{"type":"result",`, ""},
+		{"empty", ``, ""},
+	} {
+		err := FailedSubtype([]byte(tt.raw))
+		var pc *PublicCauseError
+		switch {
+		case tt.want == "" && err != nil:
+			t.Errorf("%s: FailedSubtype = %v, want nil", tt.name, err)
+		case tt.want != "" && (!errors.As(err, &pc) || pc.Text != tt.want):
+			t.Errorf("%s: FailedSubtype = %v, want a *PublicCauseError %q", tt.name, err, tt.want)
 		}
 	}
 }

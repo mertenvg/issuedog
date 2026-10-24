@@ -49,12 +49,15 @@ func (g *rig) snapshot(n int) *github.Snapshot {
 
 // A result that keeps failing to apply, such as with a 422, is tried
 // max_attempts times, counted in the lease, then counts as a failed
-// attempt. So the attempt cap takes over, and other issues run.
+// attempt. So the attempt cap takes over, and other issues run. The last
+// failure to apply is a failed attempt, whose cause failed logs, once
+// (SPEC §5.3), so it isn't the pass's error too (#441): as after any
+// failed attempt a restart finds, the pass goes on to the next issue.
 func TestApplyFailuresAreBounded(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
 	first := interview(f)
-	interview(f)
+	second := interview(f)
 	f.AddLabel(1, app, "priority:p1")
 	o := newOrigin(t)
 	o.commit(config.Path, "types: labels\nloop:\n  max_attempts: 2\n")
@@ -65,17 +68,22 @@ func TestApplyFailuresAreBounded(t *testing.T) {
 	if err := pass(); err == nil || !strings.Contains(err.Error(), "422") || g.lease().ApplyFailures != 1 || g.lease().Failed {
 		t.Fatalf("the first pass = %v, with lease %+v; want the apply error, and the lease kept, counting it", err, g.lease())
 	}
-	for range 3 {
-		if err := pass(); err == nil {
-			t.Fatal("a pass with a failing apply returned no error")
+	// Each pass fails #1's or #2's result a second time, a failed attempt
+	// and no error, then runs the other, whose first apply fails.
+	for i := range 3 {
+		if err := pass(); err == nil || !strings.Contains(err.Error(), "422") || g.lease().ApplyFailures != 1 || g.lease().Issue != 2-i%2 {
+			t.Fatalf("pass %d = %v, with lease %+v; want a run on #%d failing to apply once", i+2, err, g.lease(), 2-i%2)
 		}
 	}
-	// Two runs on #1, each applied twice: the cap.
-	if want := []string{capError(first)}; g.runs() != 2 || !reflect.DeepEqual(errorMarkers(f, 1), want) {
-		t.Fatalf("after 4 passes: %d runs, errors %q; want 2 runs and %q", g.runs(), errorMarkers(f, 1), want)
+	// Two runs on #1, each applied twice: the cap. #2's second run is the
+	// one the lease holds.
+	if want := []string{capError(first)}; g.runs() != 4 || !reflect.DeepEqual(errorMarkers(f, 1), want) || len(errorMarkers(f, 2)) != 0 {
+		t.Fatalf("after 4 passes: %d runs, errors %q and %q; want 4 runs and %q on #1 alone",
+			g.runs(), errorMarkers(f, 1), errorMarkers(f, 2), want)
 	}
-	if err := pass(); err == nil || g.runs() != 3 || g.lease().Issue != 2 {
-		t.Errorf("the next pass = %v, with %d runs, the lease on #%d; want #2's run, failing to apply", err, g.runs(), g.lease().Issue)
+	if err := pass(); err != nil || g.runs() != 4 || !reflect.DeepEqual(errorMarkers(f, 2), []string{capError(second)}) {
+		t.Errorf("the next pass = %v, with %d runs, #2's errors %q; want #2's cap, no error, and no run, as #1's cap stands",
+			err, g.runs(), errorMarkers(f, 2))
 	}
 }
 
@@ -454,8 +462,9 @@ func capText(limit int) string {
 
 // The attempt cap's error names why the last attempt failed (SPEC §5.3),
 // for the interviewer as for every stage: its check's broken rule, fenced.
-// A run that fails as claude exits non-zero, the
-// runner's error, only says the daemon's log has it (#320).
+// A run that fails as claude exits non-zero names the subtype of the
+// result it printed (#441), but never the runner's error, so with no
+// result it only says the daemon's log has it (#320).
 func TestAttemptCapNamesLastFailure(t *testing.T) {
 	t.Parallel()
 	t.Run("a broken rule", func(t *testing.T) {
@@ -491,11 +500,30 @@ func TestAttemptCapNamesLastFailure(t *testing.T) {
 			}
 		}
 		// The runner's error isn't the daemon's own text, so neither the
-		// comment nor the lease quotes it any more (#320): "run run2:
-		// running claude: exit status 1" is in the log alone.
-		want := capText(2) + "\n\nThe last attempt failed; see the daemon's log for why.\n\n" + capError(answer)
-		if got := newestComment(f, 1); got != want || g.lease().LastFailure != "(in the daemon's log)" {
-			t.Errorf("the attempt cap's error =\n%s\nwant\n%s\nwith the lease's last failure %q", got, want, g.lease().LastFailure)
+		// comment nor the lease quotes it (#320): "run run2: running
+		// claude: exit status 1" is in the log alone. But the result claude
+		// printed names its subtype, which they quote (#441).
+		const sub = `run failed with subtype "error_max_turns"`
+		want := capText(2) + "\n\nThe last attempt failed:\n\n```text\n" + sub + "\n```\n\n" + capError(answer)
+		if got := newestComment(f, 1); got != want || g.lease().PublicFailure != sub {
+			t.Errorf("the attempt cap's error =\n%s\nwant\n%s\nwith the lease's last failure %q", got, want, g.lease().PublicFailure)
+		}
+	})
+	t.Run("the exit status alone", func(t *testing.T) {
+		t.Parallel()
+		f := newFake(t)
+		answer := interview(f)
+		g := newRig(t, f, newOrigin(t), t.TempDir())
+		g.d.Config.Loop.MaxAttempts = 1
+		g.claude("claude crashed", 1)
+		if err := g.work(1); err != nil {
+			t.Fatal(err)
+		}
+		// No result, so no subtype: only the runner's error, in the log
+		// alone (#320).
+		want := capText(1) + "\n\nThe last attempt failed; see the daemon's log for why.\n\n" + capError(answer)
+		if got := newestComment(f, 1); got != want || g.lease().PublicFailure != "(in the daemon's log)" {
+			t.Errorf("the attempt cap's error =\n%s\nwant\n%s\nwith the lease's last failure %q", got, want, g.lease().PublicFailure)
 		}
 	})
 }
@@ -522,7 +550,7 @@ func TestAttemptCapAfterRestart(t *testing.T) {
 			answer := interview(f)
 			root := t.TempDir()
 			l, err := json.Marshal(daemon.Lease{Issue: 1, Stage: "clarifying", RunID: "old", Failed: true, Attempt: 2,
-				AttemptKey: fmt.Sprintf("clarifying-%d", answer), LastFailure: tt.last})
+				AttemptKey: fmt.Sprintf("clarifying-%d", answer), PublicFailure: tt.last})
 			if err != nil {
 				t.Fatal(err)
 			}
