@@ -179,10 +179,26 @@ func (w *Workspace) checkout(ctx context.Context, runID, sha string) error {
 	return nil
 }
 
-// removeCheckout deletes the checkout as agent, making read-only dirs writable first.
+// removeCheckout deletes the checkout as agent, making read-only dirs
+// writable first. It checks with Lstat first, so anything but a real dir,
+// such as a symlink the agent planted, is only unlinked, never followed:
+// chmod would change the mode of the dir a symlink points to.
 func (w *Workspace) removeCheckout(ctx context.Context, runID string) error {
+	dir := w.Dir(runID)
+	fi, err := os.Lstat(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("remove checkout: %w", err)
+	}
 	script := `chmod -R u+rwx -- "$1" 2>/dev/null; rm -rf -- "$1"`
-	if err := w.asAgent(ctx, nil, "/bin/sh", "-c", script, "sh", w.Dir(runID)); err != nil {
+	if !fi.IsDir() {
+		// rm unlinks a symlink operand itself, as os.Remove would; the
+		// daemon can't, as the runs dir is agent's.
+		script = `rm -f -- "$1"`
+	}
+	if err := w.asAgent(ctx, nil, "/bin/sh", "-c", script, "sh", dir); err != nil {
 		return fmt.Errorf("remove checkout: %w", err)
 	}
 	return nil

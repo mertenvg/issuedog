@@ -249,6 +249,30 @@ func TestWorkSweepsRunsOnceTheLeaseReads(t *testing.T) {
 	}
 }
 
+// Once a pass has read the lease and swept, later passes don't sweep: what
+// looks like a crash's leftovers then may be a live run's files.
+func TestWorkSweepsOnlyOnTheFirstPass(t *testing.T) {
+	t.Parallel()
+	r := sweepRuns(t)
+	if err := r.Work(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	crashLeftovers(t, r, "late")
+	if err := r.Work(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	for dir, want := range map[string][]string{
+		r.Runner.StateDir:                        {"lease.9.tmp", "runs"},
+		filepath.Join(r.Runner.StateDir, "runs"): {"late.123.tmp"},
+		r.Workspace.RunsDir:                      {"late"},
+		r.Workspace.ContextDir:                   {".agent.gitconfig.4", "late"},
+	} {
+		if got := names(t, dir); !slices.Equal(got, want) {
+			t.Errorf("%s holds %q after the second Work, want %q", dir, got, want)
+		}
+	}
+}
+
 // pick finds each agent's setting, the interviewer's for triage, and none
 // for an unknown agent.
 func TestPick(t *testing.T) {

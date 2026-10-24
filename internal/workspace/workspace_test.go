@@ -289,3 +289,97 @@ func TestSweepGoesOnPastAFailure(t *testing.T) {
 		t.Errorf("the run after the failure is still there: %v", err)
 	}
 }
+
+// TestSweepUnlinksAPlantedSymlink removes a symlink planted as a run's
+// checkout, and leaves the read-only dir it points to, with its mode and
+// contents, as it was: chmod would follow it.
+func TestSweepUnlinksAPlantedSymlink(t *testing.T) {
+	t.Parallel()
+	w, _ := newWorkspace(t)
+	ctx := context.Background()
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.Mkdir(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "keep.txt"), []byte("kept"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(outside, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(outside, 0o755); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := os.Symlink(outside, w.Dir("planted")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Sweep(ctx, ""); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if _, err := os.Lstat(w.Dir("planted")); !os.IsNotExist(err) {
+		t.Errorf("the planted symlink is still there: %v", err)
+	}
+	if got := mode(t, outside); got != 0o500 {
+		t.Errorf("the dir the symlink points to has mode %o, want 500", got)
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "keep.txt" {
+		t.Errorf("the dir the symlink points to holds %v, want only keep.txt", entries)
+	}
+	data, err := os.ReadFile(filepath.Join(outside, "keep.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "kept" {
+		t.Errorf("keep.txt holds %q, want %q", data, "kept")
+	}
+}
+
+// TestSweepReportsAnUnreadableDir reports a dir it can't list, for a reason
+// other than its being missing, naming it, and still sweeps the other dir's
+// temp git config.
+func TestSweepReportsAnUnreadableDir(t *testing.T) {
+	t.Parallel()
+	w, _ := newWorkspace(t)
+	tempConfig := filepath.Join(w.ContextDir, ".agent.gitconfig.7")
+	if err := os.WriteFile(tempConfig, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(w.RunsDir); err != nil {
+		t.Fatal(err)
+	}
+	// A file where the runs dir goes can't be listed as one.
+	if err := os.WriteFile(w.RunsDir, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := w.Sweep(context.Background(), "")
+	if err == nil || !strings.Contains(err.Error(), "sweep "+w.RunsDir) {
+		t.Errorf("Sweep = %v, want it to name %s", err, w.RunsDir)
+	}
+	if _, err := os.Stat(tempConfig); !os.IsNotExist(err) {
+		t.Errorf("the temp git config past the unreadable dir is still there: %v", err)
+	}
+}
+
+// TestSweepLeavesTempGitConfigNamesInTheRunsDir removes temp git configs
+// only where writeGitConfig writes them, the context dir: a name like one
+// in the runs dir is the agent's, and stays.
+func TestSweepLeavesTempGitConfigNamesInTheRunsDir(t *testing.T) {
+	t.Parallel()
+	w, _ := newWorkspace(t)
+	planted := filepath.Join(w.RunsDir, ".agent.gitconfig.123")
+	if err := os.WriteFile(planted, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Sweep(context.Background(), ""); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if _, err := os.Stat(planted); err != nil {
+		t.Errorf("the runs dir's %s is gone: %v", filepath.Base(planted), err)
+	}
+}
