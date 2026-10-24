@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
@@ -162,7 +163,8 @@ func (st *Step) droppedWalk(ctx context.Context, d droppedItem, n int, id int64,
 // and removes every dependency link to and from it (droppedUnlink):
 //   - open, it's reported to Touched, the label rules run on it first
 //     (discCheckLabels), as for any move, then it moves to closed as not
-//     planned, keyed by d's key, with a comment naming the revision and
+//     planned, keyed by d's key, or apart from a move of it that key
+//     carries already (droppedKey), with a comment naming the revision and
 //     linking its plan comment. Closing a held one ends its hold. A close
 //     the table refuses, as for an issue of a type the pipeline doesn't
 //     know, is a state error that Transition reports once on the issue:
@@ -192,7 +194,8 @@ func (st *Step) droppedOne(ctx context.Context, d droppedItem, n int, id int64) 
 	if err := st.discCheckLabels(ctx, s, st.Trust, dirt); err != nil {
 		return fmt.Errorf("check #%d: %w", n, err)
 	}
-	m := Move{To: state.Closed, StateReason: "not_planned", Trigger: state.TriggerClosed, Key: d.key, Text: droppedText(d, n)}
+	m := Move{To: state.Closed, StateReason: "not_planned", Trigger: state.TriggerClosed, Key: droppedKey(state.Derive(s, st.AppSlug, dirt.Has), d.key),
+		Text: droppedText(d, n)}
 	err = st.Transition(ctx, s, dirt.Has, m)
 	if StateError(err) {
 		logr.Warnf("%s/%s#%d: left open, though revision %d of #%d's plan drops %s: %v", st.Owner, st.Repo, n, d.rev, d.parent, d.item, err)
@@ -203,6 +206,24 @@ func (st *Step) droppedOne(ctx context.Context, d droppedItem, n int, id int64) 
 	}
 	logr.Infof("%s/%s#%d: closed as not planned, as revision %d of #%d's plan drops %s", st.Owner, st.Repo, n, d.rev, d.parent, d.item)
 	return st.droppedUnlink(ctx, n, id)
+}
+
+// droppedKey is the key of the close of an open issue, in state is, in a
+// subtree a revision drops, whose moves the revision keys by key (SPEC
+// §5): key itself, unless a move other than a close carries it already,
+// as a new or changed child's has once someone moved it below a dropped
+// one. Transition would take that move for the close and write nothing,
+// so the issue would be unlinked but left open. Its close is then keyed
+// apart, by key's ID with "-closed" after it, which no other move
+// carries. A close keyed by key, cut short after its comment, keeps key,
+// so Transition finishes it.
+func droppedKey(is state.Issue, key state.Key) state.Key {
+	if !is.Moved(key) || slices.ContainsFunc(is.Markers, func(m github.Marker) bool {
+		return m.Kind == "transition" && m.Fields[key.Field] == key.ID && m.Fields["to"] == string(state.Closed)
+	}) {
+		return key
+	}
+	return state.Key{Field: key.Field, ID: key.ID + "-closed"}
 }
 
 // droppedText is the comment of the close of issue n in d's subtree,
@@ -222,7 +243,11 @@ func droppedText(d droppedItem, n int) string {
 // before its removals, so a replay removes none twice, and each issue is
 // reported to Touched before its link goes. A link to an issue in another
 // repo that n blocks is logged and left, as it's that repo's issue to
-// write.
+// write. A DELETE here would name this repo's issue of that number, which
+// has no such link, unless n blocks it as well, when its own link goes
+// anyway, or which redirects, for an issue moved from here. GitHub
+// answers 404 to it, so every pass would fail at the same point, and the
+// revision's record would never stand.
 func (st *Step) droppedUnlink(ctx context.Context, n int, id int64) error {
 	blockers, err := st.Client.BlockedBy(ctx, st.Owner, st.Repo, n)
 	if err != nil {

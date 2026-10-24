@@ -14,9 +14,13 @@ import (
 )
 
 // The guards in the close of a revision's dropped children (SPEC §6.4,
-// #368): an issue in another repo is never closed or unlinked as if it
-// were this repo's issue of that number, and each issue closed has its
-// labels checked and is reported to Touched before its close.
+// #368): a sub-issue in another repo is never walked, so this repo's issue
+// of that number isn't closed as if it were below the dropped child; a
+// link to an issue in another repo that a closed one blocks is left, as
+// a DELETE of it here, on this repo's issue of that number, answers 404,
+// and would fail every pass at the same point, so the record would never
+// stand; and each issue closed has its labels checked
+// and is reported to Touched before its first write.
 
 // droppedGuardEpic is droppedEpic with droppedEpicRevision as revision 2,
 // which drops S1, with its tasks, keeps S2 and adds S3.
@@ -30,7 +34,9 @@ func droppedGuardEpic(t testing.TB) *githubtest.Fake {
 // repo numbered #10, as the new S3's child is here: it isn't walked, so
 // S3's #10 stays open and keeps its link to the kept S2's #3. And #9, the
 // owner's, moved to another repo, is blocked by S1's T1, #4: that link
-// stays, as it's that repo's issue to write. The rest of S1's subtree
+// stays, as it's that repo's issue to write, and a DELETE of it on #9
+// here, which only redirects, answers 404, so the pass would fail there
+// every time. The rest of S1's subtree
 // closes, deepest first, as ever, and the record stands. A crash at any
 // write writes nothing twice.
 func TestChildrenDroppedOtherRepo(t *testing.T) {
@@ -79,7 +85,9 @@ func TestChildrenDroppedOtherRepo(t *testing.T) {
 // move has the label rules run on it before its close, as for any move:
 // here S1's T1, #4, which the owner moved from ready to in-progress. The
 // change is recorded as an owner override first, and the close then moves
-// it from in-progress. A crash at any write writes nothing twice.
+// it from in-progress. #4 is reported to Touched before the override's
+// comment, its first write, as before a close's. A crash at any write
+// writes nothing twice.
 func TestChildrenDroppedOverride(t *testing.T) {
 	t.Parallel()
 	setup := func(t testing.TB) *githubtest.Fake {
@@ -88,6 +96,7 @@ func TestChildrenDroppedOverride(t *testing.T) {
 		f.AddLabel(4, "owner", "stage:in-progress")
 		return f
 	}
+	droppedTouchedFirst(t, setup(t), 4)
 	githubtest.Replay(t, setup, childrenPass(t, twoStories))
 	f := run(t, setup, childrenPass(t, twoStories))
 	p, _ := changedApproval(t, f)
@@ -127,7 +136,15 @@ func withoutEvent(fields map[string]string) map[string]string {
 // has no links, so no unlink touches it.
 func TestChildrenDroppedTouched(t *testing.T) {
 	t.Parallel()
-	f := droppedGuardEpic(t)
+	droppedTouchedFirst(t, droppedGuardEpic(t), 2, 4, 5, 7)
+}
+
+// droppedTouchedFirst runs a pass of issue 1 on f, as childrenPass does,
+// with a Touched that notes how many writes f had when each issue was
+// first reported, and fails t unless each of numbers got a write, and was
+// reported before its first.
+func droppedTouchedFirst(t *testing.T, f *githubtest.Fake, numbers ...int) {
+	t.Helper()
 	st := childrenStep(t, f, twoStories)
 	touchedAt := map[int]int{}
 	st.Touched = func(n int) {
@@ -146,7 +163,7 @@ func TestChildrenDroppedTouched(t *testing.T) {
 		t.Fatal(err)
 	}
 	writes := f.Writes()
-	for _, n := range []int{2, 4, 5, 7} {
+	for _, n := range numbers {
 		first := slices.IndexFunc(writes, func(w githubtest.Write) bool {
 			return w.Path == fmt.Sprintf("/issues/%d", n) || strings.HasPrefix(w.Path, fmt.Sprintf("/issues/%d/", n))
 		})
@@ -161,5 +178,39 @@ func TestChildrenDroppedTouched(t *testing.T) {
 		case at > first:
 			t.Errorf("#%d is touched at write %d; want it touched before its first write, %d, %+v", n, at, first, writes[first])
 		}
+	}
+}
+
+// A child that a revision changes, moved by hand below a dropped one, is
+// closed with the rest of the dropped subtree, and unlinked: never left
+// open with its links gone (SPEC §5, §6.4). Here the owner moved T2's
+// child, #3, below T3's, #4, which the revision drops. Its move to ready,
+// keyed by the approval, comes first, so its close is keyed apart from
+// that move, as event=p<comment id>-closed, and isn't taken as written
+// already. The record still lists it, as the child of an item the
+// revision doesn't drop. A crash at any write writes nothing twice.
+func TestChildrenDroppedReparented(t *testing.T) {
+	t.Parallel()
+	setup := droppedStory(func(f *githubtest.Fake, r changedIDs) { f.SetParent(r.t2, r.t3) })
+	githubtest.Replay(t, setup, childrenPass(t, revisionPlan))
+	f := run(t, setup, childrenPass(t, revisionPlan))
+	p, plan := changedApproval(t, f)
+	t2 := f.State().Issues[2]
+	if !t2.Closed || droppedReason(t, f, 3) != "not_planned" || len(t2.BlockedBy) != 0 {
+		t.Errorf("T2's child is closed %t, as %q, blocked by %v; want it closed as not planned, unlinked", t2.Closed, droppedReason(t, f, 3), t2.BlockedBy)
+	}
+	text := fmt.Sprintf("Closed as not planned, since #1's plan, rev 2, drops T3, #4, which this issue is below ([the plan](https://github.com/o/r/issues/1#issuecomment-%d)).", plan)
+	if got := t2.Comments[len(t2.Comments)-1].Body; !strings.HasPrefix(got, text+"\n\n") {
+		t.Errorf("T2's child's newest comment is\n%q\nwant it to start\n%q", got, text)
+	}
+	want := map[string]string{"from": "ready", "to": "closed", "reason": "not_planned", "event": fmt.Sprintf("p%d-closed", p)}
+	if m := changedLastMarker(t, f, 3); !reflect.DeepEqual(m.Fields, want) {
+		t.Errorf("T2's child's newest marker has %v, want %v", m.Fields, want)
+	}
+	if !f.State().Issues[3].Closed {
+		t.Error("T3's child is open, want it closed as not planned")
+	}
+	if recs := droppedRecords(f, 1); len(recs) != 1 || !strings.HasSuffix(recs[0], "<!-- issuedog:created rev=2 children=2,3,6 -->") {
+		t.Errorf("issue 1's records are %q, want one listing #2, #3 and #6", recs)
 	}
 }
