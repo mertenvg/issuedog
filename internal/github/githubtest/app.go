@@ -87,17 +87,18 @@ func (f *Fake) Reopen(number int) {
 	f.ReopenBy(number, "")
 }
 
-// DeleteIssue deletes the newest issue and its comments, after which its
-// paths answer 404. Issues are kept by number, so only the newest can go.
-// Its links go with it, as GitHub would drop them: its sub-issues have no
-// parent after it, and no blocked-by link or LinkSubIssue listing names
-// it, on either side, so no listing names it. It moves no other issue's
-// updated_at, as GitHub isn't known to.
+// DeleteIssue deletes the newest issue the fake has, and its comments,
+// after which its paths answer 404. Its links go with it, as GitHub would
+// drop them: its sub-issues have no parent after it, and no blocked-by
+// link or LinkSubIssue listing names it, on either side, so no listing
+// names it. It moves no other issue's updated_at, as GitHub isn't known
+// to. As on GitHub, its number is never given again: the next issue filed
+// gets the one after the last filed (fileIssue).
 func (f *Fake) DeleteIssue() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	n := len(f.issues)
-	f.issues = f.issues[:n-1]
+	n := f.issues[len(f.issues)-1].GetNumber()
+	f.issues = f.issues[:len(f.issues)-1]
 	f.comments = slices.DeleteFunc(f.comments, func(c *comment) bool { return c.issue == n })
 	for _, is := range f.issues {
 		if is.parent == n {

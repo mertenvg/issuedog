@@ -18,7 +18,8 @@ import (
 // that is transferred to elsewhere/r just before PinIssue reads it, the
 // first GET of the issue in a pass: after the isPinned check found it
 // unpinned. The fake then pins it in its new repo if asked by its node
-// ID, as GitHub most likely would.
+// ID, as node IDs are global. Whether GitHub would is to be confirmed
+// live (SPEC §16).
 func pinMovedFake(t testing.TB) *githubtest.Fake {
 	t.Helper()
 	f := newFake(t)

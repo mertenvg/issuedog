@@ -180,13 +180,15 @@ func (f *Fake) graphql(c *call) (int, any) {
 		return reply(data)
 	}
 	// A transferred issue's number isn't this repo's to answer for
-	// (transfer.go).
-	if v.Number < 1 || v.Number > len(f.issues) || f.issues[v.Number-1].IsPullRequest() || !f.issues[v.Number-1].listed() {
-		errs = append(errs, map[string]any{"type": "NOT_FOUND", "message": fmt.Sprintf("Could not resolve to an Issue with the number of %d.", v.Number)})
+	// (transfer.go). As on GitHub, the error's path names the issue.
+	is := f.issueNumbered(v.Number)
+	if is == nil || is.IsPullRequest() || !is.listed() {
+		errs = append(errs, map[string]any{"type": "NOT_FOUND", "path": []any{"repository", "issue"},
+			"message": fmt.Sprintf("Could not resolve to an Issue with the number of %d.", v.Number)})
 		return reply(map[string]any{"repository": map[string]any{"issue": nil}})
 	}
 	if named["query.repository.issue.isPinned"] {
-		return reply(map[string]any{"repository": map[string]any{"issue": map[string]any{"isPinned": f.issues[v.Number-1].pinned}}})
+		return reply(map[string]any{"repository": map[string]any{"issue": map[string]any{"isPinned": is.pinned}}})
 	}
 	var list []*comment
 	for _, cm := range f.comments {
@@ -219,7 +221,6 @@ func (f *Fake) graphql(c *call) (int, any) {
 	if to > from {
 		end = strconv.FormatInt(list[to-1].GetID(), 10)
 	}
-	is := f.issues[v.Number-1]
 	if !deletedFilter.MatchString(req.Query) {
 		errs = append(errs, map[string]any{"message": "githubtest: the query's timelineItems doesn't ask for COMMENT_DELETED_EVENT alone"})
 		return reply(nil)

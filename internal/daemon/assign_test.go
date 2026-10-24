@@ -624,10 +624,10 @@ func TestAssignGoneRead(t *testing.T) {
 // leaves Work the issue in the pass that failed (#238). If the issue is
 // gone by then, deleted or transferred, that read finds it so, and the
 // read after drops it: Work never gets it after, and the write isn't
-// made again, on that pass or later ones. A deleted issue's number
-// filed again is an issue like any other, which the dropped one's memory
-// doesn't follow: outside the pipeline, it keeps mertenvg, assigned by
-// hand.
+// made again, on that pass or later ones. An issue filed after a deleted
+// one gets a new number, as GitHub never reuses one, and is an issue like
+// any other, which the dropped one's memory doesn't follow: outside the
+// pipeline, it keeps mertenvg, assigned by hand.
 func TestAssignGone(t *testing.T) {
 	t.Parallel()
 	for _, name := range []string{"deleted", "transferred"} {
@@ -651,11 +651,11 @@ func TestAssignGone(t *testing.T) {
 			if name != "deleted" {
 				return
 			}
-			if n := f.AddIssue(digestRunEve, "Filed again", "An idea."); n != 12 {
-				t.Fatalf("the new issue is %d; want 12", n)
+			if n := f.AddIssue(digestRunEve, "Filed after", "An idea."); n != 13 {
+				t.Fatalf("the new issue is %d; want 13, not the deleted 12", n)
 			}
-			f.SetAssignees(12, digestRunOwner)
-			assignStep(t, f, d, "a new issue 12, outside the pipeline")
+			f.SetAssignees(13, digestRunOwner)
+			assignStep(t, f, d, "a new issue 13, outside the pipeline")
 		})
 	}
 }

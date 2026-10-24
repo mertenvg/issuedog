@@ -402,9 +402,7 @@ func TestDigestRewriteDeleted(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "the digest is gone, deleted or transferred") {
 		t.Fatalf("Iterate = %v; want the digest gone", err)
 	}
-	// The fake numbers an issue by count, so this takes 2: the new digest
-	// gets 3, as GitHub, which never reuses a number, would give it a new one.
-	f.AddIssue("owner", "Filler", "")
+	// As on GitHub, which never reuses a number, the new digest gets 3.
 	from, reqs := len(f.Writes()), len(f.Requests())
 	iterate(t, d)
 	if got, want := digestWrites(f, from), []string{"POST /issues", "POST /graphql", "PATCH /issues/3", "POST /issues/3/comments"}; !reflect.DeepEqual(got, want) {
@@ -418,13 +416,14 @@ func TestDigestRewriteDeleted(t *testing.T) {
 		t.Errorf("the pass after the drop didn't list every issue again: %+v", f.Requests()[reqs:])
 	}
 	is := f.State().Issues
-	if len(is) != 3 || is[2].Title != "issuedog digest" || !is[2].Pinned || !strings.HasPrefix(is[2].Body, "2 items wait on you") || len(is[2].Comments) != 1 {
+	if len(is) != 2 || is[1].Number != 3 || is[1].Title != "issuedog digest" || !is[1].Pinned ||
+		!strings.HasPrefix(is[1].Body, "2 items wait on you") || len(is[1].Comments) != 1 {
 		t.Fatalf("issues = %+v; want a new pinned digest, 3, listing both errors, with one announcement", is)
 	}
 	// The old digest's announcements are on no other number: the new one
 	// announces both.
-	if want := fmt.Sprintf("items=err-%d-disagreement-5,err-%d-disagreement-6 -->", n, n); !strings.HasSuffix(is[2].Comments[0].Body, want) {
-		t.Errorf("the announcement = %q; want it to end %q", is[2].Comments[0].Body, want)
+	if want := fmt.Sprintf("items=err-%d-disagreement-5,err-%d-disagreement-6 -->", n, n); !strings.HasSuffix(is[1].Comments[0].Body, want) {
+		t.Errorf("the announcement = %q; want it to end %q", is[1].Comments[0].Body, want)
 	}
 	if got := digestPass(t, f, d); len(got) != 0 {
 		t.Errorf("the next pass wrote %q; want nothing", got)

@@ -9,7 +9,8 @@ import (
 // PinIssue's error wraps ErrIssueNotFound, with ErrGraphQL, only for
 // GitHub's NOT_FOUND with no pin, as GitHub answers a node ID it can't
 // resolve, such as a deleted issue's (#495). Another error type, such as
-// a refusal's FORBIDDEN, or a NOT_FOUND with a pin, isn't one.
+// a refusal's FORBIDDEN, a NOT_FOUND with a pin, or one at a path other
+// than pinIssue, isn't one.
 func TestPinIssueNotFound(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -21,6 +22,14 @@ func TestPinIssueNotFound(t *testing.T) {
 		{"the issue FORBIDDEN", `{"data":{"pinIssue":null},"errors":[{"type":"FORBIDDEN","path":["pinIssue"],` +
 			`"message":"Resource not accessible by integration"}]}`, false},
 		{"a NOT_FOUND with a pin", `{"data":{"pinIssue":{"issue":{"isPinned":true}}},"errors":[{"type":"NOT_FOUND",` +
+			`"message":"Could not resolve to a node with the global id of 'X_1'"}]}`, false},
+		// A NOT_FOUND at another path than the issue's names something
+		// else, so it's a refusal, as any other error is (#580).
+		{"a NOT_FOUND under the pin", `{"data":{"pinIssue":null},"errors":[{"type":"NOT_FOUND","path":["pinIssue","issue"],` +
+			`"message":"Could not resolve to a node with the global id of 'X_1'"}]}`, false},
+		{"a NOT_FOUND with no path", `{"data":{"pinIssue":null},"errors":[{"type":"NOT_FOUND",` +
+			`"message":"Could not resolve to a node with the global id of 'X_1'"}]}`, false},
+		{"a NOT_FOUND at an index", `{"data":{"pinIssue":null},"errors":[{"type":"NOT_FOUND","path":[0],` +
 			`"message":"Could not resolve to a node with the global id of 'X_1'"}]}`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
