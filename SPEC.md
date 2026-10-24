@@ -925,7 +925,7 @@ Its checks are 11.3's.
 | `/ignore` | Issue at `intake` that isn't in the pipeline | Leaves the issue to people (6.2) |
 | `/done` | `needs-human` issue | Owner finished the human task, which runs its **Done when** check (9.3), or wants a closed PR's task started over. Not built yet: starting a task over is phase 3's, and until then `/done` on a task that isn't a human task is rejected as not handled yet |
 | `/hold`, `/resume` | Any issue | Pauses or resumes the issue and its descendants. `/resume` also ends a discussion hold (6.4) |
-| 👍 on an untrusted comment or a hold notice | Issue held for discussion | Approves the comment, as the text the 👍 post-dates, or accepts the edit, deletion, rename or close the notice names. Accepting an edit ends its hold but doesn't approve the edited text (6.4) |
+| 👍 on an untrusted comment or a hold notice | Issue held for discussion | Approves the comment, as the text the 👍 post-dates, or accepts the edit, deletion, rename or close the notice names. Accepting an edit ends this edit's hold but doesn't approve the edited text (6.4) |
 | `/priority p1` | Any issue | Sets priority |
 | `/model <name>`, `/model verifier <name>` | Any issue | Sets the model of the issue's runs other than the verifier's, or with `verifier`, of its verifier runs (3.3) |
 | `/effort <level>`, `/effort verifier <level>` | Any issue | Sets the effort the same way (3.3) |
