@@ -347,7 +347,7 @@ func TestPlannerRevisionReposted(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "rule children: T2 is changed, but no child is item T2"
-	if l := g.lease(); !l.Failed || !strings.Contains(l.LastFailure, want) {
+	if l := g.lease(); !l.Failed || !strings.Contains(l.PublicFailure, want) {
 		t.Errorf("with the owner's copy of the marker, lease %+v; want a failed attempt naming %q", l, want)
 	}
 }
@@ -434,7 +434,7 @@ func TestPlannerRevisionCheckFails(t *testing.T) {
 			}
 			rule := strings.NewReplacer("#T1", fmt.Sprintf("#%d", r.t1), "#T2", fmt.Sprintf("#%d", r.t2), "#T3", fmt.Sprintf("#%d", r.t3)).Replace(tt.rule)
 			after := commentBodies(f, r.n)
-			if l := g.lease(); g.runs() != 1 || !l.Failed || !strings.Contains(l.LastFailure, rule) {
+			if l := g.lease(); g.runs() != 1 || !l.Failed || !strings.Contains(l.PublicFailure, rule) {
 				t.Errorf("after %d runs, lease %+v; want one failed attempt naming %q", g.runs(), l, rule)
 			}
 			if len(after) != len(before)+1 || !strings.Contains(after[len(after)-1], rule) || strings.Contains(after[len(after)-1], "### Plan") {
@@ -563,7 +563,7 @@ func TestPlannerRevisionKeptTwice(t *testing.T) {
 	}
 	const want = "rule cycle: T2 → T3 → T2"
 	after := commentBodies(f, r.n)
-	if l := g.lease(); g.runs() != 1 || !l.Failed || !strings.Contains(l.LastFailure, want) {
+	if l := g.lease(); g.runs() != 1 || !l.Failed || !strings.Contains(l.PublicFailure, want) {
 		t.Errorf("after %d runs, lease %+v; want one failed attempt naming %q", g.runs(), l, want)
 	}
 	if len(after) != len(before)+1 || !strings.Contains(after[len(after)-1], want) || strings.Contains(after[len(after)-1], "### Plan") {

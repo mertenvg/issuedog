@@ -47,15 +47,15 @@ func (iv *Interviewer) Check(ctx context.Context, r Result) error {
 	}
 	it := state.Derive(r.S, iv.Daemon.Step.AppSlug, r.Dirt.Has).Item
 	if !ivStillRuns(it, f.Origin, out, f.MayType) {
-		return fmt.Errorf("the interviewer no longer runs on #%d, with type %q and a parent %t: "+
+		return &daemonCause{fmt.Errorf("the interviewer no longer runs on #%d, with type %q and a parent %t: "+
 			"it runs only on an epic, a story with no parent or an untyped issue, "+
-			"and after a hold from planning, plan-review or planned on a story with a parent", r.S.Number, it.Type, it.HasParent)
+			"and after a hold from planning, plan-review or planned on a story with a parent", r.S.Number, it.Type, it.HasParent)}
 	}
 	if err := checkInterview(out, f); err != nil {
 		return err
 	}
 	if err := ivMoveFits(it, out, f.Origin); err != nil {
-		return fmt.Errorf("the interviewer's %s on #%d: %w", out.Outcome, r.S.Number, err)
+		return &daemonCause{fmt.Errorf("the interviewer's %s on #%d: %w", out.Outcome, r.S.Number, err)}
 	}
 	return nil
 }
