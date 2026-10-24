@@ -599,6 +599,9 @@ func (r *Runs) applyLease(ctx context.Context, l Lease, st Stage, raw []byte, ou
 	}
 	if errors.Is(err, ErrLabelsHeld) {
 		logr.Infof("run %s on #%d waits to be applied, which isn't counted as a failure: %v", l.RunID, l.Issue, err)
+		// A later pass applies it, and judges the assignees then (SPEC
+		// §9.6), as for a failed apply.
+		r.Daemon.assignWorked(l.Issue)
 		return err
 	}
 	return r.applyFailed(ctx, l, st, err)
@@ -747,9 +750,7 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 		return fmt.Errorf("apply run %s: %w", l.RunID, err)
 	}
 	logr.Infof("%s/%s#%d: applied run %s", a.Owner, a.Repo, l.Issue, l.RunID)
-	if st := stageOf(s); st == state.SpecReview || st == state.PlanReview {
-		r.Daemon.assignWorked(l.Issue) // it waits on the owner again (SPEC §9.6)
-	}
+	r.Daemon.assignApplied(s, d) // a revision or a round waits on the owner again (SPEC §9.6)
 	delete(r.attempts, countKey(l.Issue, l.AttemptKey))
 	delete(r.failures, countKey(l.Issue, l.AttemptKey))
 	return r.finish(ctx, l)
