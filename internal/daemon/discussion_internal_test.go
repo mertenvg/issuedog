@@ -182,9 +182,10 @@ func TestDiscWhat(t *testing.T) {
 func TestEditNoticeApproval(t *testing.T) {
 	t.Parallel()
 	const (
-		notice = "Accepting the edit releases the hold but doesn't approve the new text: " +
-			"to approve it, remove your 👍 from comment 7 and add it again."
-		digest = "Accepting it doesn't approve the new text: remove your 👍 from comment 7 and add it again."
+		notice = "Accepting the edit ends its hold but doesn't approve the new text. " +
+			"To approve it, a code owner adds a 👍 to comment 7 after the edit, first removing any 👍 they gave it before."
+		digest = "Accepting it doesn't approve the new text. " +
+			"To approve it, a code owner adds a 👍 to comment 7 after the edit, first removing any 👍 they gave it before."
 	)
 	for _, tt := range []struct {
 		name           string
