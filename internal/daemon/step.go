@@ -282,7 +282,9 @@ func roundStage(stage state.Stage) bool {
 // one could apply (SPEC §9.2), as rejected does: when the edited text, a
 // command or a revision request (ok), would get a Final Rejection, a new
 // comment with it would be rejected the same way, so the reply gives that
-// reason instead, which says what to do (#399).
+// reason instead, which says what to do (#399). A Dated one, such as the
+// reason for an /approve posted before the latest revision, holds only for
+// c, not for a new comment with its text, so the reply asks for one (#474).
 func (st *Step) reword(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment, cmd state.Command, ok bool, stage state.Stage, edited bool) error {
 	if edited {
 		text := ivWordingLostEdited + " Post a new comment to try again."
@@ -291,7 +293,7 @@ func (st *Step) reword(ctx context.Context, s *github.Snapshot, d Dirt, c github
 			if err != nil {
 				return fmt.Errorf("reword: %w", err)
 			}
-			if why.Final {
+			if why.Final && !why.Dated {
 				text = ivWordingLostEdited + " Its new text wouldn't apply either: " + why.Reason + "."
 			}
 		}

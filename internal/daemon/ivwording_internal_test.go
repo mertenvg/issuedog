@@ -1,7 +1,10 @@
 package daemon
 
 import (
+	"html"
 	"maps"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -139,9 +142,93 @@ func TestIvWordingStrongURL(t *testing.T) {
 	}
 }
 
+// ivWordingGFMLinkRE is a link in GitHub's HTML, and its text, and
+// ivWordingGFMTagRE is any tag there.
+var (
+	ivWordingGFMLinkRE = regexp.MustCompile(`<a [^>]*>([^<]*)</a>`)
+	ivWordingGFMTagRE  = regexp.MustCompile(`<[^>]*>`)
+)
+
+// TestIvWordingStrongGFM: text that GitHub's GFM doesn't autolink reads as
+// typed, with no emphasis or strikethrough, and a bare URL that it does
+// link keeps its "_" and "~", so it's linked whole. GFM's autolink rules
+// decide which: a scheme in any case, after anything but an ASCII letter,
+// "www." after a space, "*", "_", "~" or "(" only, and a domain that
+// starts with a letter or digit, or a character that isn't ASCII, a space
+// or punctuation, with no "_" in its last two parts. A link runs on past a
+// non-breaking space (#474). Each html is how GitHub's GFM renderer (its
+// Markdown API, in gfm mode) rendered "**" + want + "**", so the test checks
+// against it that the bold holds, that the text reads as it's posted,
+// without its U+FEFF (normalize), and that url is linked whole, or nothing
+// is for "".
+func TestIvWordingStrongGFM(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ text, want, url, html string }{
+		{"See HtTpS://x.com/_a_.b now", "See HtTpS://x.com/_a_.b now", "HtTpS://x.com/_a_.b",
+			`<p><strong>See <a href="HtTpS://x.com/_a_.b" rel="nofollow">HtTpS://x.com/_a_.b</a> now</strong></p>`},
+		{"See https://-/_a_.b now", `See https://-/\_a\_.b now`, "",
+			`<p><strong>See https://-/_a_.b now</strong></p>`},
+		{"See https://x.com/a\u00a0_b_.c now", "See https://x.com/a\u00a0_b_.c now", "https://x.com/a\u00a0_b_.c",
+			"<p><strong>See <a href=\"https://x.com/a%C2%A0_b_.c\" rel=\"nofollow\">https://x.com/a\u00a0_b_.c</a> now</strong></p>"},
+		{"See https://x_y.com/_a_.b now", `See https://x\_y.com/\_a\_.b now`, "",
+			`<p><strong>See https://x_y.com/_a_.b now</strong></p>`},
+		{"See https://a.b_c.d/_a_.b now", `See https://a.b\_c.d/\_a\_.b now`, "",
+			`<p><strong>See https://a.b_c.d/_a_.b now</strong></p>`},
+		{"See https://a_b.c.d/_a_.b now", "See https://a_b.c.d/_a_.b now", "https://a_b.c.d/_a_.b",
+			`<p><strong>See <a href="https://a_b.c.d/_a_.b" rel="nofollow">https://a_b.c.d/_a_.b</a> now</strong></p>`},
+		{"See https://a_/_a_.b now", `See https://a\_/\_a\_.b now`, "",
+			`<p><strong>See https://a_/_a_.b now</strong></p>`},
+		{"See https://a/_a_.b now", "See https://a/_a_.b now", "https://a/_a_.b",
+			`<p><strong>See <a href="https://a/_a_.b" rel="nofollow">https://a/_a_.b</a> now</strong></p>`},
+		{"See www.x_y.com/~a~.b now", `See www.x\_y.com/\~a\~.b now`, "",
+			`<p><strong>See www.x_y.com/~a~.b now</strong></p>`},
+		{"See www.a/~a~.b now", "See www.a/~a~.b now", "www.a/~a~.b",
+			`<p><strong>See <a href="http://www.a/~a~.b" rel="nofollow">www.a/~a~.b</a> now</strong></p>`},
+		{"See 1https://x.com/_a_.b now", "See 1https://x.com/_a_.b now", "https://x.com/_a_.b",
+			`<p><strong>See 1<a href="https://x.com/_a_.b" rel="nofollow">https://x.com/_a_.b</a> now</strong></p>`},
+		{"See a\u00a0www.x.com/_a_.b now", "See a\u00a0www.x.com/\\_a\\_.b now", "",
+			"<p><strong>See a\u00a0www.x.com/_a_.b now</strong></p>"},
+		{"See https://é_b.c/_a_.b now", "See https://é_b.c/_a_.b now", "https://é_b.c/_a_.b",
+			`<p><strong>See <a href="https://%C3%A9_b.c/_a_.b" rel="nofollow">https://é_b.c/_a_.b</a> now</strong></p>`},
+		{"See https://€.com/_a_.b now", "See https://€.com/_a_.b now", "https://€.com/_a_.b",
+			`<p><strong>See <a href="https://%E2%82%AC.com/_a_.b" rel="nofollow">https://€.com/_a_.b</a> now</strong></p>`},
+		{"See https://«a.b/_a_.b now", `See https://«a.b/\_a\_.b now`, "",
+			`<p><strong>See https://«a.b/_a_.b now</strong></p>`},
+		{"See https://x.com/a_&b1; now", "See https://x.com/a_&b1; now", "https://x.com/a_&b1",
+			`<p><strong>See <a href="https://x.com/a_&amp;b1" rel="nofollow">https://x.com/a_&amp;b1</a>; now</strong></p>`},
+		{"See https://a\ufeff_b.c/_a_.b now", `See https://a\_b.c/\_a\_.b now`, "",
+			`<p><strong>See https://a_b.c/_a_.b now</strong></p>`},
+	} {
+		got := inline(ivWordingStrong(tt.text))
+		if got != tt.want {
+			t.Errorf("%q: got %q, want %q", tt.text, got, tt.want)
+		}
+		inner, open := strings.CutPrefix(tt.html, "<p><strong>")
+		inner, closed := strings.CutSuffix(inner, "</strong></p>")
+		if !open || !closed || strings.Contains(inner, "<strong>") {
+			t.Errorf("%q: GitHub's bold doesn't hold in %s", tt.text, tt.html)
+		}
+		if strings.Contains(inner, "<em>") || strings.Contains(inner, "<del>") {
+			t.Errorf("%q: GitHub renders emphasis or strikethrough in %s", tt.text, tt.html)
+		}
+		if shown := html.UnescapeString(ivWordingGFMTagRE.ReplaceAllString(inner, "")); shown != strings.ReplaceAll(tt.text, "\ufeff", "") {
+			t.Errorf("%q: GitHub shows %q", tt.text, shown)
+		}
+		var links []string
+		for _, m := range ivWordingGFMLinkRE.FindAllStringSubmatch(inner, -1) {
+			links = append(links, html.UnescapeString(m[1]))
+		}
+		if want := []string{tt.url}; tt.url == "" && len(links) > 0 || tt.url != "" && !slices.Equal(links, want) {
+			t.Errorf("%q: GitHub links %q, want %q", tt.text, links, tt.url)
+		}
+	}
+}
+
 // TestIvWordingURL: a bare URL runs as GFM's link does, from its start to
 // a space, a control character or "<", less trailing punctuation, and
-// starts only where GFM's can. Nothing after a start is no URL (#399).
+// starts only where GFM's can. Nothing after a start is no URL (#399). It
+// starts as GitHub's does, has a domain GitHub accepts, and runs on past
+// a non-ASCII space or DEL, as GitHub's link does (#474).
 func TestIvWordingURL(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -163,6 +250,48 @@ func TestIvWordingURL(t *testing.T) {
 		{"xhttps://e.com/a", 1, ""},
 		{"~https://e.com/a", 1, "https://e.com/a"},
 		{"a\thttps://e.com/b", 2, "https://e.com/b"},
+		// GitHub's GFM renderer links these as want says (#474).
+		{"HtTpS://e.com/a_b", 0, "HtTpS://e.com/a_b"},
+		{"1https://e.com/a", 1, "https://e.com/a"},
+		{"x.https://e.com/a", 2, "https://e.com/a"},
+		{"éhttps://e.com/a", 2, "https://e.com/a"},
+		{"a www.e.com/a", 2, "www.e.com/a"},
+		{"a\x0bwww.e.com/a", 2, "www.e.com/a"},
+		{"a\x7fwww.e.com/a", 2, ""},
+		{"1www.e.com/a", 1, ""},
+		{"https://-/a_b", 0, ""},
+		{"https://_a.b/c", 0, ""},
+		{"https://$a.b/c", 0, ""},
+		{"https://+a.b/c", 0, ""},
+		{"https://«a.b/c", 0, ""},
+		{"https://\u00a0a.b/c", 0, ""},
+		{"https://é_b.c/d", 0, "https://é_b.c/d"},
+		{"https://€.com/a", 0, "https://€.com/a"},
+		{"https://a/b_c", 0, "https://a/b_c"},
+		{"https://a_/b", 0, ""},
+		{"https://x_y.com/a", 0, ""},
+		{"https://x_y.com", 0, ""},
+		{"https://a.b_c.d/e", 0, ""},
+		{"https://a_b.c.d/e", 0, "https://a_b.c.d/e"},
+		{"https://a.b.c_d/e", 0, ""},
+		{"https://a._b/c", 0, ""},
+		{"https://a_b./c", 0, ""},
+		{"https://a.b-c/d", 0, "https://a.b-c/d"},
+		{"https://a.b-c_d/e", 0, ""},
+		{"https://a.b:80/c_d", 0, "https://a.b:80/c_d"},
+		{"https://a.é_b/c", 0, "https://a.é_b/c"},
+		{"https://a.b\\c_d/e", 0, "https://a.b\\c_d/e"},
+		{"https://a.b\x7f_c/d", 0, ""},
+		{"www.x_y.com/a", 0, ""},
+		{"www._y.com/a", 0, ""},
+		{"www.a/b", 0, "www.a/b"},
+		{"www./a_b", 0, "www./a_b"},
+		{"www.$a/b_c", 0, "www.$a/b_c"},
+		{"https://e.com/a\u00a0b", 0, "https://e.com/a\u00a0b"},
+		{"https://e.com/a\u3000b", 0, "https://e.com/a\u3000b"},
+		{"https://e.com/a\x7fb", 0, "https://e.com/a\x7fb"},
+		{"https://e.com/a&b1;", 0, "https://e.com/a&b1"},
+		{"https://e.com/a&#64;", 0, "https://e.com/a&#64"},
 	} {
 		got := ""
 		if end := ivWordingURL(tt.s, tt.at); end > 0 {
