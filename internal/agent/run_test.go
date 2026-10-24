@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -203,8 +204,9 @@ func TestRunFailures(t *testing.T) {
 }
 
 // TestRunCommandSetup: the command Run starts gets the stage's directory and
-// environment, the output and stderr writers, its own process group and a
-// Cancel, and a WaitDelay of 5s, or the one a test sets.
+// environment, the output and stderr writers, its own process group, and a
+// WaitDelay of 5s, or the one a test sets. TestRunCommandCancelKillsGroup
+// checks its Cancel.
 func TestRunCommandSetup(t *testing.T) {
 	t.Parallel()
 	s := Stage{Dir: "/work", Env: []string{"A=1"}}
@@ -222,9 +224,6 @@ func TestRunCommandSetup(t *testing.T) {
 		if cmd.WaitDelay != tt.want {
 			t.Errorf("%s: WaitDelay = %v, want %v", tt.name, cmd.WaitDelay, tt.want)
 		}
-		if cmd.Cancel == nil {
-			t.Errorf("%s: Cancel is nil, want the group kill", tt.name)
-		}
 		if cmd.Dir != s.Dir || !slices.Equal(cmd.Env, s.Env) || cmd.Stdout != &stdout || cmd.Stderr != &stderr {
 			t.Errorf("%s: Dir %q, Env %q, Stdout %p, Stderr %p; want %q, %q, %p, %p", tt.name, cmd.Dir, cmd.Env, cmd.Stdout, cmd.Stderr, s.Dir, s.Env, &stdout, &stderr)
 		}
@@ -232,6 +231,65 @@ func TestRunCommandSetup(t *testing.T) {
 			t.Errorf("%s: SysProcAttr = %+v, want its own process group", tt.name, a)
 		}
 	}
+}
+
+// TestRunCommandCancelKillsGroup: the command's Cancel, which exec calls when
+// Run's context is done, kills claude's whole process group, so a child that
+// holds claude's output open dies with it. exec's own Cancel would kill only
+// claude.
+func TestRunCommandCancelKillsGroup(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name string
+		cred *syscall.Credential
+	}{
+		{name: "daemon uid"},
+		{name: "with credential", cred: currentUser()},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			r, s := fakeRun(t, "hang", tt.cred)
+			cmd := r.command(context.Background(), s, "p", io.Discard)
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			waited := false
+			t.Cleanup(func() {
+				// A failed test may leave claude's group running.
+				if waited {
+					return
+				}
+				if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+					t.Errorf("killing the fake claude's group: %v", err)
+				}
+			})
+			waitChildStarted(t, s.Dir)
+			if err := cmd.Cancel(); err != nil {
+				t.Errorf("Cancel = %v, want nil", err)
+			}
+			waitChildDead(t, s.Dir)
+			err := cmd.Wait()
+			waited = true
+			if err == nil {
+				t.Error("Wait = nil, want claude killed")
+			}
+		})
+	}
+}
+
+// waitChildStarted fails the test unless the fake script records its child's
+// pid in dir/child.pid within a minute, which is generous so a loaded machine
+// doesn't fail it.
+func waitChildStarted(t *testing.T, dir string) {
+	t.Helper()
+	for deadline := time.Now().Add(time.Minute); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		// echo writes the pid and its newline at once, so a newline means
+		// the whole pid is there.
+		if raw, err := os.ReadFile(filepath.Join(dir, "child.pid")); err == nil && bytes.HasSuffix(raw, []byte("\n")) {
+			return
+		}
+	}
+	t.Fatal("the fake claude recorded no child within a minute")
 }
 
 // A run the caller's context ends, as when the daemon stops, fails with the
