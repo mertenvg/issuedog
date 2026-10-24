@@ -108,8 +108,9 @@ func (f *Fake) withDependencies(is *issue) gogithub.Issue {
 // addBlockedBy makes the path's issue blocked by the issue whose ID is
 // issue_id, as the App, and answers 201 with the blocking issue
 // (POST /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by),
-// with its issue_dependencies_summary (withDependencies). It moves the blocked issue's updated_at. As on GitHub, it answers 422 for
-// a link the issue has already, for the issue itself, for an issue that
+// with its issue_dependencies_summary (withDependencies). It moves the
+// blocked issue's updated_at. As on GitHub, it answers 422 for a link the
+// issue has already, for the issue itself, for an issue that
 // 50 issues block already, and for a blocker that blocks 50 issues already,
 // and 404 for an ID no issue has.
 func (f *Fake) addBlockedBy(c *call) (int, any) {
