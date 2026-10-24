@@ -186,7 +186,7 @@ func TestPlanDirtyRunResume(t *testing.T) {
 	record := l.newest("the /resume's move made dirty", 1)
 	// The record's seen is the hold's, which is the plan comment's: the
 	// newest comment the planner's run read, the spec's approval.
-	if want := planResumeDirtyRecorded(resumed.ID, entry); record.Body != want {
+	if want := planResumeDirtyRecorded(resumed.ID, entry, resumed.CreatedAt.Unix()); record.Body != want {
 		t.Errorf("the /resume's move made dirty: the newest comment =\n%s\nwant\n%s", record.Body, want)
 	}
 	l.labels("the /resume's move made dirty", 1, "stage:plan-review", "type:epic")

@@ -830,9 +830,10 @@ func (r *Runs) newInput(ctx context.Context, s *github.Snapshot, d Dirt, seen in
 // resume finishes the lease a run left, if there is one, and returns the
 // issue it applied a result to, which gets no stage work this pass. A
 // valid saved result is applied (applyLease), with step 1's snapshot of
-// the issue in this pass, if ready, Work's, has it, as apply's read. A
-// saved result that hit a usage limit closes the gate, and isn't counted,
-// as in RunStage.
+// the issue, as apply's read: the one in ready, Work's, or else the one
+// step 1 ran on in this pass though it failed or the issue was touched
+// after (Daemon.stepRead). A saved result that hit a usage limit closes
+// the gate, and isn't counted, as in RunStage.
 // Otherwise the run counts as a failed attempt, its clone is deleted, and
 // the issue, at its pre-run stage (see Lease), runs again when its stage
 // has work pending. For a held or closed issue, the clone is deleted; a
@@ -898,7 +899,7 @@ func (r *Runs) resume(ctx context.Context, ready []Ready) (int, error) {
 		return 0, r.failed(ctx, st, l, &daemonCause{errors.New("no valid result after a restart")})
 	}
 	logr.Infof("applying the saved result of run %s on #%d", l.RunID, l.Issue)
-	var read *github.Snapshot
+	read := r.Daemon.stepRead[l.Issue]
 	if i := slices.IndexFunc(ready, func(rd Ready) bool { return rd.S.Number == l.Issue }); i >= 0 {
 		read = ready[i].S
 	}

@@ -104,7 +104,13 @@ var reviewDirtyMoves = []reviewDirtyMove{
 // App 👍'd as an answer before the run's move was posted is one the run
 // read, and isn't one (reviewDirtyRead). A /resume's move carries the
 // bound from before the hold (state.HeldStack.Seen), as resume's does, so
-// its seen is the hidden move's own. The move is in the table's row for
+// its seen is the hidden move's own. It also carries resolved, the time of
+// the oldest dirty App comment after the latest move the markers show, at
+// or before the hidden move's own, which bounds the discussion triggers
+// (discFloor): so a trigger after the /resume still holds the issue, as
+// under the hidden move, whose cmd named the /resume, and not only one
+// after the record (#566). The time is in the record, so it stands once
+// the dirty comment is deleted. The move is in the table's row for
 // the hidden move, so a type that has no such move gets no record, and the
 // disagreement stands, as before. The move's comment is added to s, so
 // Derive reads the review stage from it in the same pass, and a replay
@@ -141,8 +147,12 @@ func (a *Applier) reviewDirtyRestore(ctx context.Context, s *github.Snapshot, d 
 	}
 	rm := reviewDirtyMoves[i]
 	var hid int64
+	var first time.Time // when the oldest such dirty comment was posted
 	for _, c := range s.Comments {
 		if c.ID > is.TransitionComment && state.IsApp(c.Author, a.AppSlug) && d.Has(c.ID) {
+			if hid == 0 {
+				first = c.CreatedAt
+			}
 			hid = c.ID
 		}
 	}
@@ -151,8 +161,10 @@ func (a *Applier) reviewDirtyRestore(ctx context.Context, s *github.Snapshot, d 
 	}
 	fields := map[string]string{state.FieldSeen: strconv.FormatInt(is.Round, 10)}
 	if rm.from == state.Held {
-		// The bound from before the hold, as resume's move carries.
-		fields = state.HeldStackFields(nil, is.HeldStack.Seen)
+		// The bound from before the hold, as resume's move carries, and
+		// the oldest dirty comment's time as resolved, at or before the
+		// hidden move's own, as the discussion floor (discFloor).
+		fields = state.HeldStackFields(map[string]string{resolveField: strconv.FormatInt(first.Unix(), 10)}, is.HeldStack.Seen)
 	}
 	m := Move{To: rm.to, Trigger: rm.trigger, Key: state.Key{Field: "event", ID: rm.prefix + strconv.FormatInt(hid, 10)},
 		Fields: fields, Text: rm.text}
