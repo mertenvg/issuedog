@@ -376,6 +376,33 @@ func TestDigestKeptLeaves(t *testing.T) {
 			t.Errorf("digest %q; want #6's item gone with its close", digestKeptBody(f))
 		}
 	})
+	t.Run("held for its edit history", func(t *testing.T) {
+		t.Parallel()
+		// #13, an App task with a state error, renamed by the owner to the
+		// digest's title after its item was kept, is held while its edit
+		// history fails to read, with any items it had dropped from the
+		// digest (SPEC §9.4, A failed history read).
+		f, o := digestKeptRepo(t)
+		task := f.AddIssue(app, "A task", "Do it.")
+		f.AddLabel(task, app, "stage:ready")
+		f.AddComment(task, app, "<!-- issuedog:transition from=intake to=ready run=rready -->")
+		digestErrorOn(f, task, "9")
+		digestKeptSettle(t, f, digestKeptDaemon(t, f, o))
+		d := digestKeptDaemon(t, f, o)
+		digestKeptFail(t, f, task, "step 1")
+		if err := d.Iterate(context.Background()); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("o/r#%d", task)) {
+			t.Fatalf("the restart's first pass: Iterate = %v; want #%d's failure", err, task)
+		}
+		if !digestKeptLists(f, task) {
+			t.Fatalf("digest %q; want #%d's error kept", digestKeptBody(f), task)
+		}
+		f.RenameIssue(task, digestRunOwner, "issuedog digest")
+		f.FailGraphQL("Something went wrong")
+		iterate(t, d)
+		if digestKeptLists(f, task) {
+			t.Errorf("digest %q; want #%d's error dropped while it's held", digestKeptBody(f), task)
+		}
+	})
 	t.Run("gone", func(t *testing.T) {
 		t.Parallel()
 		f, o := digestKeptRepo(t)

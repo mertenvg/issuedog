@@ -25,9 +25,9 @@ import (
 // a command wrote to after its visit is, which is what a child numbered
 // before its parent gets anyway. But its assignees are judged on the
 // items its visit found, which the digest lists (assignPass), so
-// assignment doesn't lag the digest by a pass (#360). So the next pass's read finds what this one did,
-// mostly in 304s. The read again costs one snapshot read on such a pass.
-// On a later pass, an issue has items
+// assignment doesn't lag the digest by a pass (#360). So the next pass's
+// read finds what this one did, mostly in 304s. The read again costs one
+// snapshot read on such a pass. On a later pass, an issue has items
 // cached, or was first listed after the start, so the digest never listed
 // it, as a child a plan just filed, and it's read no more often than
 // before, but for one whose visits have failed since the start. The poll
