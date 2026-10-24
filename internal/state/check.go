@@ -20,12 +20,21 @@ const (
 // checkKinds are the kinds a Check can have.
 var checkKinds = []string{CheckLabel, CheckIssueType, CheckFile, CheckRuleset, CheckInstallation}
 
+// CheckUnreadable is the Kind of the Check that checkOf reads from origin
+// marker fields that don't record a whole check (SPEC §5, "The check"),
+// such as an unknown kind or a value that doesn't decode. It has no value.
+// It isn't one of checkKinds: no plan has it, so the App never writes it.
+// The daemon's check fails it, saying the check couldn't be read (SPEC
+// §9.3, "The checks"), so the task never closes without its check.
+const CheckUnreadable = "unreadable"
+
 // Check is a human task's "Done when" check (SPEC §9.3), as its origin
 // marker records it (SPEC §5): a kind, and its one value, which is
 // the label, the issue type, the file's path, the required check's name or
 // the owner. Contains is a file check's optional text, and "" for every
 // other kind. The zero Check is a plain-text "Done when", which the daemon
-// doesn't run.
+// doesn't run, and a Check of kind CheckUnreadable one whose fields
+// couldn't be read, which always fails.
 //
 // It holds values that were valid when the plan was, so it adds no
 // validation of its own: the daemon converts the plan's check after plan
@@ -49,25 +58,43 @@ func CheckFields(c Check) map[string]string {
 }
 
 // checkOf is the Check that an origin marker's fields record
-// (CheckFields), or the zero Check if they record none or not a whole
-// one: a known kind, a value that decodes and isn't empty, and contains
-// only on a file check, decoding too.
+// (CheckFields): the zero Check if they have none of check, value and
+// contains, as a plain-text "Done when"'s marker has none, or else the
+// whole check they record (wholeCheck). Fields that don't record a whole
+// one, even a value or contains with no check, are the CheckUnreadable
+// Check, which fails, never the zero Check, which passes.
 func checkOf(fields map[string]string) Check {
+	_, check := fields["check"]
+	_, value := fields["value"]
+	_, contains := fields["contains"]
+	if !check && !value && !contains {
+		return Check{}
+	}
+	if c, ok := wholeCheck(fields); ok {
+		return c
+	}
+	return Check{Kind: CheckUnreadable}
+}
+
+// wholeCheck is the whole check that fields record, for checkOf, or false
+// if they don't record one: a known kind, a value that decodes and isn't
+// empty, and contains only on a file check, decoding too.
+func wholeCheck(fields map[string]string) (Check, bool) {
 	kind := fields["check"]
 	if !slices.Contains(checkKinds, kind) {
-		return Check{}
+		return Check{}, false
 	}
 	value, err := github.DecodeValue(fields["value"])
 	if err != nil || value == "" {
-		return Check{}
+		return Check{}, false
 	}
 	c := Check{Kind: kind, Value: value}
 	if raw, ok := fields["contains"]; ok {
 		contains, err := github.DecodeValue(raw)
 		if err != nil || kind != CheckFile {
-			return Check{}
+			return Check{}, false
 		}
 		c.Contains = contains
 	}
-	return c
+	return c, true
 }

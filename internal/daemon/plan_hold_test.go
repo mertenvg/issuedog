@@ -565,11 +565,11 @@ func TestPlanHoldReviseUnchanged(t *testing.T) {
 	})
 }
 
-// #271's verify, second gap, decided by #294: a /revise that waited
-// through a hold from plan-review was meant for the plan, but when the
-// interviewer rewrites the spec instead, its spec move names the /revise
-// and 👍s it, so it's used up there, answered in the spec's message, and
-// never lands at spec-review as a revision request for the new spec.
+// A /revise that waited through a hold from plan-review was meant for the
+// plan, but when the interviewer rewrites the spec instead, its spec move
+// names the /revise and 👍s it, so it's used up there, answered in the
+// spec's message, and never lands at spec-review as a revision request
+// for the new spec (#294).
 func TestPlanHoldReviseSpec(t *testing.T) {
 	t.Parallel()
 	out := ivSpec()

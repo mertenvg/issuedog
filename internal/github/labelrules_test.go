@@ -84,7 +84,7 @@ func TestCheckLabels(t *testing.T) {
 				removed(3, "owner", "stage:ready"), added(4, "owner", "stage:held"), removed(5, "mallory", "stage:held")},
 			[]string{"POST /issues/7/comments revert key=5", `POST /issues/7/labels ["stage:held"]`},
 			[]LabelEvent{{Kind: LabelOverride, Stages: []string{"stage:held"}, Marker: "ready", By: "owner", Label: "stage:held", Key: 4}}},
-		{"the App's own revert doesn't hide an override that S4 hasn't recorded yet",
+		{"the App's own revert doesn't hide an override the daemon hasn't recorded yet",
 			[]ev{added(1, appBot, "stage:ready"), said(2, appBot, marker("ready")),
 				removed(3, "owner", "stage:ready"), added(4, "owner", "stage:held"), removed(5, "mallory", "stage:held"),
 				said(6, appBot, "<!-- issuedog:revert key=5 -->"), added(7, appBot, "stage:held")},

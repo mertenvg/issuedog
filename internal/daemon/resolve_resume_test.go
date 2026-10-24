@@ -17,12 +17,12 @@ func resolveSelfResumed(resolved int64, resume int64) string {
 		"\n\n<!-- issuedog:ended reason=discussion cmd=%d resolved=%d -->", resume, resolved)
 }
 
-// A /resume accepts only the triggers made before it (#188's verify,
-// attempt 1): a rename, or a deletion or edit of the owner's comment,
-// made after the owner's /resume but before the App's pass, gets its
-// notice, and keeps the issue held, with the record that the /resume
-// ended the rest. The next pass writes nothing, and once a code owner
-// accepts the act, the issue leaves the hold.
+// A /resume accepts only the triggers made before it (SPEC §6.4): a
+// rename, or a deletion or edit of the owner's comment, made after the
+// owner's /resume but before the App's pass, gets its notice, and keeps
+// the issue held, with the record that the /resume ended the rest. The
+// next pass writes nothing, and once a code owner accepts the act, the
+// issue leaves the hold.
 func TestResolveResumeThenLaterAct(t *testing.T) {
 	t.Parallel()
 	for name, act := range map[string]func(f *githubtest.Fake, x int64){
@@ -60,8 +60,7 @@ func TestResolveResumeThenLaterAct(t *testing.T) {
 			}
 			// The notice accepted, the issue leaves: no owner hold is left.
 			// But a deletion during the hold may have hidden a code owner's
-			// /hold, so only /resume accepts it (resolveHitsApp, #188's
-			// verify, round 2).
+			// /hold, so only /resume accepts it (resolveHitsApp, SPEC §6.4).
 			ids := commentIDs(t, f, 1)
 			f.AddReaction(ids[len(ids)-2], "owner", "+1")
 			if err := resolvePass(t, 1)(f); err != nil {
@@ -178,9 +177,9 @@ func resolveResumeTwice(t *testing.T, f *githubtest.Fake) int64 {
 }
 
 // A second /resume, after the first kept the issue held for a later
-// trigger, restores at (#188's verify, attempt 2): the first one's record
-// says no discussion ended, as that /resume itself went back to at. So it
-// is from a discussion hold, and from an owner /hold.
+// trigger, restores at (SPEC §6.4): the first one's record says no
+// discussion ended, as that /resume itself went back to at. So it is from
+// a discussion hold, and from an owner /hold.
 func TestResolveSecondResume(t *testing.T) {
 	t.Parallel()
 	for name, setup := range map[string]func(t testing.TB) *githubtest.Fake{

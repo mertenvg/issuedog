@@ -28,7 +28,6 @@ import (
 	"github.com/mertenvg/issuedog/internal/firewall"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/repo"
-	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/issuedog/internal/trust"
 	"github.com/mertenvg/issuedog/internal/workspace"
 )
@@ -159,8 +158,9 @@ func readSettings(environ []string) (settings, error) {
 
 // startDaemon runs the startup steps after the key check: the client, the
 // App's slug, a token, the clone, config and trust from main, and the
-// labels. It returns the daemon, ready to run, keeping the digest: its loop
-// creates the digest, not this startup (SPEC §3.5).
+// labels. It returns the daemon, as daemon.New builds it, which the
+// whole-run tests in internal/daemon build too, ready to run, keeping the
+// digest: its loop creates the digest, not this startup (SPEC §3.5).
 func startDaemon(ctx context.Context, set settings, key []byte) (*daemon.Daemon, error) {
 	client, err := github.New(github.Config{AppID: set.appID, InstallationID: set.installationID, Key: key, BaseURL: apiURL})
 	if err != nil {
@@ -194,22 +194,14 @@ func startDaemon(ctx context.Context, set settings, key []byte) (*daemon.Daemon,
 		logr.Infof("created the labels %s", strings.Join(created, ", "))
 	}
 	logr.Infof("running as %s[bot] on %s/%s", slug, set.owner, set.name)
-	a := &daemon.Applier{Client: client, Owner: set.owner, Repo: set.name, AppSlug: slug, ReadMain: clone.ReadFile}
-	d := &daemon.Daemon{Clone: clone, Config: cfg, Digest: true, Assign: true}
-	d.Step = newStep(a, tr, d.CurrentModels)
-	return d, nil
+	a := &daemon.Applier{Client: client, Owner: set.owner, Repo: set.name, AppSlug: slug}
+	return daemon.New(a, clone, cfg, tr), nil
 }
 
 // registerStages returns the Stages to register on d, by stage, and the
-// Unlabeled stage: the interviewer at clarifying, the planner at planning
-// (SPEC §12), and triage for open issues with no stage label (SPEC §6.2).
-// Tests replace it.
-var registerStages = func(d *daemon.Daemon) (map[state.Stage]daemon.Stage, daemon.Stage) {
-	return map[state.Stage]daemon.Stage{
-		state.Clarifying: &daemon.Interviewer{Daemon: d},
-		state.Planning:   &daemon.Planner{Daemon: d},
-	}, &daemon.Triage{Daemon: d}
-}
+// Unlabeled stage: daemon.RegisterStages, which the whole-run tests in
+// internal/daemon register too. Tests replace it.
+var registerStages = daemon.RegisterStages
 
 // stageWork is the stage-run harness for d's stage work, with the Stages
 // registerStages gives. Runs.CheckRegistered fails startup if one is at
@@ -240,13 +232,6 @@ func stageWork(d *daemon.Daemon, name string, cred agent.Cred) (*daemon.Runs, er
 		return nil, fmt.Errorf("registering the stages: %w", err)
 	}
 	return runs, nil
-}
-
-// newStep is step 1 as the daemon runs it, daemon.NewStep, which the
-// whole-run tests in internal/daemon build too, since they can't import
-// this package (#218). The tests below check its wiring.
-func newStep(a *daemon.Applier, tr github.Trust, models func() config.Models) *daemon.Step {
-	return daemon.NewStep(a, tr, models)
 }
 
 // printOut writes the program's own plain output, the version or help, and

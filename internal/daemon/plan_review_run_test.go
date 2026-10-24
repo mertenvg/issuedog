@@ -20,9 +20,9 @@ import (
 
 // This file is #272: a whole run of plan review against
 // the fakes, through the real Planner at planning, with the stages
-// registered as registerStages registers them, step 1 wired as main's
-// newStep wires it, the digest and assignment on, as startDaemon sets
-// them, and Daemon.Iterate as the loop. Config and trust come from main on
+// registered as registerStages registers them, the daemon built as
+// startDaemon builds it, daemon.New, so step 1 is daemon.NewStep's and the
+// digest and assignment are on, and Daemon.Iterate as the loop. Config and trust come from main on
 // the origin: mertenvg owns CODEOWNERS and is notify, mallory is a write
 // collaborator CODEOWNERS doesn't trust, and helper[bot] is another App.
 // Then the cases #268's verify left to this run (on #272), each on a loop
@@ -72,9 +72,11 @@ func newPlanReviewRunLoop(t *testing.T, f *githubtest.Fake, outs ...map[string]a
 // no ETags, a new daemon, with no snapshots, and the same state directory,
 // which outlives a restart. The stages are registered as registerStages
 // registers them: the Interviewer at clarifying, the Planner at planning,
-// and Triage as the Unlabeled stage. Step 1 is wired as newStep wires it:
-// every command handler, and the reaction triggers in its order, the end
-// of a discussion hold first. Iterate loads the trust from main.
+// and Triage as the Unlabeled stage, daemon.RegisterStages'. The daemon is
+// built as startDaemon builds it, daemon.New (rig.wireAsMain), so step 1
+// is daemon.NewStep's: every command handler, and the reaction triggers in
+// its order, the end of a discussion hold first. Iterate loads the trust
+// from main.
 func (l *planReviewRunLoop) start() {
 	l.t.Helper()
 	g := newRig(l.t, l.f, l.o, l.root)
@@ -83,14 +85,7 @@ func (l *planReviewRunLoop) start() {
 	if err := os.WriteFile(g.path("claude", "claude"), []byte(wholeRunClaude), 0o755); err != nil {
 		l.t.Fatal(err)
 	}
-	g.r.Stages = map[state.Stage]daemon.Stage{
-		state.Clarifying: &daemon.Interviewer{Daemon: g.d},
-		state.Planning:   &daemon.Planner{Daemon: g.d},
-	}
-	g.r.Unlabeled = &daemon.Triage{Daemon: g.d}
-	g.d.Digest, g.d.Assign = true, true // as startDaemon sets them
-	// No trust: Iterate loads it from main.
-	g.d.Step = daemon.NewStep(g.d.Step.Applier, nil, g.d.CurrentModels)
+	g.wireAsMain(g.d.Config)
 	l.g = g
 }
 
@@ -482,12 +477,13 @@ func TestPlanReviewRun(t *testing.T) {
 	l.labels("untrusted 👍s on revision 1", epic, "stage:plan-review", "type:epic")
 
 	// 4. mertenvg's comment sends the plan back, with a 👍 on it, which
-	// ends the epic's item and assignment for the pass. The planner's
-	// second run gets the comment as its notes, labelled so, and posts
-	// plan revision 2.
+	// ends the epic's item for the pass. The planner's second run gets the
+	// comment as its notes, labelled so, and posts plan revision 2 in the
+	// same pass, which waits on mertenvg again, so he stays assigned with
+	// no write (SPEC §9.6, #333).
 	notes := f.AddComment(epic, planReviewRunOwner, planReviewRunNotes)
 	l.step("the comment", 2, "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:plan-review",
-		discRunReact(notes), "PATCH /issues/5", "DELETE /issues/1/assignees",
+		discRunReact(notes), "PATCH /issues/5",
 		"POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:planning")
 	added := l.added(epic)
 	sentBack := fmt.Sprintf("The plan is sent back for revision, with %s's comment as the notes.\n\n"+
@@ -503,7 +499,7 @@ func TestPlanReviewRun(t *testing.T) {
 	if got := l.digest(5); !slices.Equal(got, stories) {
 		t.Errorf("the comment: items %q; want %q, with the epic's gone", got, stories)
 	}
-	assignWant(t, f, "the comment", map[int][]string{3: owner, 4: owner})
+	assignWant(t, f, "the comment", map[int][]string{1: owner, 3: owner, 4: owner})
 	files = l.context(2, epic, state.Planning)
 	input := files["input.md"]
 	if heading := fmt.Sprintf("## Comment %d by %s: the revision notes that sent the plan back\n", notes, planReviewRunOwner); !strings.Contains(input, heading) ||
@@ -514,8 +510,8 @@ func TestPlanReviewRun(t *testing.T) {
 		t.Errorf("planner run 2: conversation.md =\n%s\nwant plan revision 1 in it", files["conversation.md"])
 	}
 
-	// 5. The next pass lists revision 2 and assigns the epic again.
-	l.step("plan revision 2 listed", 2, "PATCH /issues/5", "POST /issues/1/assignees")
+	// 5. The next pass lists revision 2, and the epic keeps its assignee.
+	l.step("plan revision 2 listed", 2, "PATCH /issues/5")
 	if got := l.digest(5); !slices.Equal(got, withEpic) {
 		t.Errorf("plan revision 2 listed: items %q; want %q", got, withEpic)
 	}
@@ -703,7 +699,9 @@ func planReviewRunAlone(t *testing.T, more ...map[string]any) (*planReviewRunLoo
 // ends the hold for clarifying, where the interviewer writes spec
 // revision 2, at spec-review, in the same pass. There the 👍 on the plan
 // approves nothing, on any pass, and only his 👍 on spec revision 2 moves
-// the epic on, to planning, where the planner posts plan revision 2. A
+// the epic on, to planning, where the planner posts plan revision 2.
+// mertenvg stays assigned throughout, with no write, as each of those
+// passes' stage work leaves the epic waiting on him again (SPEC §9.6). A
 // restart writes nothing.
 func TestPlanReviewRunOldPlanAtSpecReview(t *testing.T) {
 	t.Parallel()
@@ -724,7 +722,7 @@ func TestPlanReviewRunOldPlanAtSpecReview(t *testing.T) {
 
 	f.AddReaction(m, planReviewRunOwner, "+1")
 	l.step("the discussion resolved", 2, "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:held",
-		"PATCH /issues/2", "DELETE /issues/1/assignees", "PATCH /issues/1", "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:clarifying")
+		"PATCH /issues/2", "PATCH /issues/1", "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:clarifying")
 	added := l.added(1)
 	if len(added) != 2 || !strings.HasPrefix(added[0], "The discussion is resolved, by `mertenvg`, so this issue leaves its hold from `plan-review` for `clarifying`.") {
 		t.Fatalf("the discussion resolved: added %q; want the move to clarifying, then spec revision 2", added)
@@ -741,7 +739,7 @@ func TestPlanReviewRunOldPlanAtSpecReview(t *testing.T) {
 		t.Errorf("the hold, %d, isn't before the move out of it, %d", hold.ID, leave.ID)
 	}
 
-	l.step("spec revision 2 listed", 2, "PATCH /issues/2", "POST /issues/1/assignees")
+	l.step("spec revision 2 listed", 2, "PATCH /issues/2")
 	if got, want := l.digest(2), []string{"#1 Approval p2 1"}; !slices.Equal(got, want) {
 		t.Errorf("spec revision 2 listed: items %q; want %q", got, want)
 	}
@@ -750,7 +748,7 @@ func TestPlanReviewRunOldPlanAtSpecReview(t *testing.T) {
 
 	up := f.AddReaction(spec.ID, planReviewRunOwner, "+1")
 	l.step("the spec approved", 3, "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:spec-review",
-		"PATCH /issues/2", "DELETE /issues/1/assignees", "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:planning")
+		"PATCH /issues/2", "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:planning")
 	cs = l.comments(1)
 	approval, rev2 := cs[len(cs)-2], cs[len(cs)-1]
 	if want := fmt.Sprintf("Revision 2 of the spec is approved, by %s's 👍.\n\n"+
@@ -758,7 +756,7 @@ func TestPlanReviewRunOldPlanAtSpecReview(t *testing.T) {
 		t.Errorf("the spec approved: the approval =\n%s\nwant\n%s", approval.Body, want)
 	}
 	hash2 := l.planComment("plan revision 2", rev2, 1, 2, 3, approval.ID, planReviewRunOutput(t, nil))
-	l.step("plan revision 2 listed", 3, "PATCH /issues/2", "POST /issues/1/assignees")
+	l.step("plan revision 2 listed", 3, "PATCH /issues/2")
 	if got, want := l.digest(2), []string{"#1 Plan approval p2 1"}; !slices.Equal(got, want) || !strings.Contains(f.State().Issues[1].Body, "`"+hash2+"`") {
 		t.Errorf("plan revision 2 listed: items %q; want %q, for plan revision 2", got, want)
 	}
@@ -846,17 +844,17 @@ func TestPlanReviewRunApproveReasons(t *testing.T) {
 
 // Another bot's 👍 on the latest plan revision is ignored because it's a
 // bot, not only because it isn't trusted (#268's verify, on #272): with
-// step 1 wired as newStep wires it, and a Trust that trusts helper[bot] by
-// name, its 👍, the earliest, approves nothing, and mertenvg's after it
-// approves. The loop's trust, loaded from main, never trusts a bot, so
-// this Trust is set on step 1 alone.
+// the daemon built as startDaemon builds it, daemon.New, and a Trust that
+// trusts helper[bot] by name, its 👍, the earliest, approves nothing, and
+// mertenvg's after it approves. The loop's trust, loaded from main, never
+// trusts a bot, so this Trust is set on step 1 alone.
 func TestPlanReviewRunBotThumb(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
 	epic, _ := planReviewRunEpic(f)
 	plan := planReviewRunPlan(t, f, epic)
-	d := newDaemon(t, f, newOrigin(t), nil)
-	d.Step = daemon.NewStep(d.Step.Applier, trusted{planReviewRunOwner: true, planReviewRunBot: true}, d.CurrentModels)
+	base := newDaemon(t, f, newOrigin(t), nil)
+	d := daemon.New(base.Step.Applier, base.Clone, base.Config, trusted{planReviewRunOwner: true, planReviewRunBot: true})
 	pass := func(step string) []string {
 		t.Helper()
 		s, err := f.Client(t).Snapshot(context.Background(), "o", "r", epic)

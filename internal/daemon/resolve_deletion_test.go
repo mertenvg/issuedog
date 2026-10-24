@@ -10,12 +10,11 @@ import (
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
 
-// #188's verify, round 2, attempt 3: a comment a write collaborator
-// deletes on an ancestor during a hold may have been a /hold that wrote no
-// marker, so it keeps the issue held until a /resume there, between or on
-// the issue ends it; and a /resume above never ends an issue's own /hold
-// that wrote no marker, whatever holds the issue was in when it was posted
-// (SPEC §6.4, #188's decision, round 3).
+// A comment a write collaborator deletes on an ancestor during a hold may
+// have been a /hold that wrote no marker, so it keeps the issue held
+// until a /resume there, between or on the issue ends it; and a /resume
+// above never ends an issue's own /hold that wrote no marker, whatever
+// holds the issue was in when it was posted (SPEC §6.4).
 
 // resolveGoneRecord is the start of the record that a comment deleted on
 // #2 during the hold keeps #1 held, and its marker's start.
@@ -176,11 +175,11 @@ func TestResolveGoneNotEndedFromAboveUnrecorded(t *testing.T) {
 
 // A /resume that ends a hold on a descendant left held by a comment deleted
 // below it says so truly: the descendant is held by a deleted comment that
-// may have been a /hold, which /resume there ends (#188's verify, attempt
-// 3). #3's /hold held all three; the owner's /hold on #2, which wrote no
-// marker, mallory deleted while #1 was held for discussion; #3's /resume
-// ends #3's hold everywhere, leaves #2 held for its own deletion, and #1
-// held by the deleted comment on #2.
+// may have been a /hold, which /resume there ends (SPEC §6.4). #3's /hold
+// held all three; the owner's /hold on #2, which wrote no marker, mallory
+// deleted while #1 was held for discussion; #3's /resume ends #3's hold
+// everywhere, leaves #2 held for its own deletion, and #1 held by the
+// deleted comment on #2.
 func TestResolveGoneStillOnHoldText(t *testing.T) {
 	t.Parallel()
 	var resume int64
@@ -223,7 +222,7 @@ func TestResolveGoneStillOnHoldText(t *testing.T) {
 // it, and the owner's 👍s on her two comments; before them, with resume
 // first, #3's /resume. #3 is between #4 and the others, so its /resume
 // ends what the /hold, or the deleted comment, held below it, and #1 and
-// #2 go to clarifying, whichever came first (#188's verify, attempt 3);
+// #2 go to clarifying, whichever came first (SPEC §6.4);
 // #4 stays held.
 func TestResolveDeletedAboveEitherOrder(t *testing.T) {
 	t.Parallel()
@@ -472,7 +471,7 @@ func TestResolveGoneHoldFromAnEarlierHold(t *testing.T) {
 // on that ancestor, and a /resume posted above it doesn't end it, as for
 // any /hold: the issue below stays held, in either
 // order, until a /resume on that ancestor, or below it, does.
-func TestResolveRound3GoneNotEndedFromAbove(t *testing.T) {
+func TestResolveGoneNotEndedFromAboveEitherOrder(t *testing.T) {
 	t.Parallel()
 	for _, thumbsFirst := range []bool{false, true} {
 		t.Run(fmt.Sprintf("thumbs first %v", thumbsFirst), func(t *testing.T) {
@@ -533,7 +532,7 @@ func TestResolveRound3GoneNotEndedFromAbove(t *testing.T) {
 // ended, whether its marker on #1 or the one on #2 told #1 of it, and #3's
 // move names it. A crash at any write leaves the same result, as the
 // replay counts that record as the /resume's own (resolveLeft).
-func TestResolveRound3DeletedHoldAboveReplay(t *testing.T) {
+func TestResolveDeletedHoldRecordedOnceOnReplay(t *testing.T) {
 	t.Parallel()
 	for _, commentFirst := range []bool{true, false} {
 		t.Run(fmt.Sprintf("comment first %v", commentFirst), func(t *testing.T) {
@@ -583,7 +582,7 @@ func TestResolveRound3DeletedHoldAboveReplay(t *testing.T) {
 // the deleted /hold there before it: a marker on #4 names that /hold, so
 // it counts as posted there, above #3, though the farthest marker on #1's
 // path is #2's. So #4's move doesn't name #1 as a hold it ended.
-func TestResolveRound3DeletedHoldEndedBetween(t *testing.T) {
+func TestResolveDeletedHoldEndedBetween(t *testing.T) {
 	t.Parallel()
 	f := discFake(t)  // #1
 	file(f, 0, ready) // #2
@@ -617,10 +616,10 @@ func TestResolveRound3DeletedHoldEndedBetween(t *testing.T) {
 	}
 }
 
-// #188's verify, round 3, attempt 1: the /resume path reads every issue
-// above the held one, as the leave path does, so both count the same
-// holds in either order; an owner hold a /resume ended stays ended; and
-// the gaps the verifier's mutants found.
+// The /resume path reads every issue above the held one, as the leave
+// path does, so both count the same holds in either order, and an owner
+// hold a /resume ended stays ended (SPEC §6.4). Below are the defect
+// where they didn't, and the cases around it.
 
 // The defect: a chain of tasks, the lowest held for mallory's comment.
 // The owner comments on the top issue, and mallory deletes that comment
@@ -631,7 +630,7 @@ func TestResolveRound3DeletedHoldEndedBetween(t *testing.T) {
 // /resume applies, and ends it, whether the 👍 on mallory's comment comes
 // before it or after, with a restart between, at two levels, the /resume
 // on the issue of the deletion, and at three, the /resume between.
-func TestResolveRound3GoneAboveResume(t *testing.T) {
+func TestResolveGoneAboveEndedByLaterResume(t *testing.T) {
 	t.Parallel()
 	for _, levels := range []int{2, 3} {
 		for _, thumbsFirst := range []bool{false, true} {
@@ -690,7 +689,7 @@ func TestResolveRound3GoneAboveResume(t *testing.T) {
 // earlier than it, so the /resume doesn't end what it may have been, on
 // either path: the issue below stays held, with the 👍 on mallory's comment
 // before the /resume or after, until a /resume posted after.
-func TestResolveRound3GoneSameSecond(t *testing.T) {
+func TestResolveGoneSameSecondAsResume(t *testing.T) {
 	t.Parallel()
 	for _, thumbsFirst := range []bool{false, true} {
 		t.Run(fmt.Sprintf("thumbs first %v", thumbsFirst), func(t *testing.T) {
@@ -733,7 +732,7 @@ func TestResolveRound3GoneSameSecond(t *testing.T) {
 // the owner deletes it. It counts as posted on #2, the farthest issue with
 // its marker, so #3's /resume, above that, doesn't end it, on #2 or on #1,
 // in either order of the 👍 on mallory's comment; #2's /resume does.
-func TestResolveRound3DeletedHoldFarthestMarker(t *testing.T) {
+func TestResolveDeletedHoldFarthestMarker(t *testing.T) {
 	t.Parallel()
 	for _, thumbsFirst := range []bool{false, true} {
 		t.Run(fmt.Sprintf("thumbs first %v", thumbsFirst), func(t *testing.T) {
@@ -781,7 +780,7 @@ func TestResolveRound3DeletedHoldFarthestMarker(t *testing.T) {
 // 👍 resolves it; then mallory comments on #2 again, and #1's /resume
 // records the end of that one hold once, as #2 stays held for her new
 // comment.
-func TestResolveRound3GoneRecordedOnce(t *testing.T) {
+func TestResolveGoneAndItsRecordEndOnce(t *testing.T) {
 	t.Parallel()
 	l := newResolveLoop(t, newFake(t))
 	top := l.task(0)

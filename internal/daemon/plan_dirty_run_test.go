@@ -61,7 +61,9 @@ func TestPlanDirtyRun(t *testing.T) {
 			f.EditComment(rev1.ID, planReviewRunOwner, "### Plan for #1 (rev 1)\n\nMine now.")
 			l.step("the plan comment made dirty", 1, "POST /issues/1/comments", fmt.Sprintf("PATCH /issues/comments/%d", rev1.ID), "PATCH /issues/2")
 			record := l.newest("the plan comment made dirty", 1)
-			if want := planDirtyRecorded(rev1.ID); record.Body != want {
+			// The record's seen is that of the spec's approval, which put the
+			// epic at planning: spec revision 1, the epic's first comment.
+			if want := planDirtyRecorded(rev1.ID, l.comments(1)[0].ID); record.Body != want {
 				t.Errorf("the plan comment made dirty: the newest comment =\n%s\nwant\n%s", record.Body, want)
 			}
 			l.labels("the plan comment made dirty", 1, "stage:plan-review", "type:epic")
@@ -88,7 +90,7 @@ func TestPlanDirtyRun(t *testing.T) {
 
 			back := f.AddComment(1, planReviewRunOwner, tt.back)
 			l.step("sent back", 2, "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:plan-review",
-				discRunReact(back), "PATCH /issues/2", "DELETE /issues/1/assignees",
+				discRunReact(back), "PATCH /issues/2",
 				"POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:planning")
 			added := l.added(1)
 			sentBack := fmt.Sprintf("The plan is sent back for revision, with %s's comment as the notes.\n\n"+
@@ -104,8 +106,10 @@ func TestPlanDirtyRun(t *testing.T) {
 			hash := l.planComment("the new plan", plan, 1, 1, 2, moved.ID, nextOut)
 			l.labels("the new plan", 1, "stage:plan-review", "type:epic")
 			planDirtyRunNoError(t, l, "the new plan")
-			// The next pass lists it, approvable, and assigns the epic again.
-			l.step("the new plan listed", 2, "PATCH /issues/2", "POST /issues/1/assignees")
+			// The next pass lists it, approvable, and the epic keeps its
+			// assignee, as the new plan was posted in the pass that sent the
+			// old one back (SPEC §9.6).
+			l.step("the new plan listed", 2, "PATCH /issues/2")
 			if want := fmt.Sprintf("- Revision 1 of the plan, `%s`, waits for approval.\n"+
 				"- React 👍 to the plan comment, or post `/approve`, to approve it.\n", hash); !strings.Contains(f.State().Issues[1].Body, want) {
 				t.Errorf("the new plan listed: the digest =\n%s\nwant\n%s", f.State().Issues[1].Body, want)
