@@ -179,6 +179,14 @@ func TestIvWordingApproveRejections(t *testing.T) {
 			outcome{comments: []string{ivWordingApproveFinal("the issue description changed after revision 1, "+
 				"so it no longer matches that revision's hash, `"+h+"`"+ivWordingFollows, "1002"), posted(2, "body v2", "", "", "1002")},
 				labels: atReview, downs: []string{"/approve"}}},
+		{"an /approve posted before a revision that's stale since: the reply doesn't say to approve that (#399)",
+			authored("mallory", func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, "owner", "/approve")
+				post(t, f, 1003, app, revision(2, "body"))
+				f.EditBody(1, "mallory", "body v2")
+			}),
+			outcome{comments: []string{ivWordingApproveFinal(untrusted("the issue description changed after revision 2, "+
+				"so it no longer matches that revision's hash, `"+h+"`"), "1002")}, labels: atReview, downs: []string{"/approve"}}},
 		{"an untrusted edit that makes the body dirty: no revision follows",
 			review(func(t testing.TB, f *githubtest.Fake) {
 				f.EditBody(1, "mallory", "body v2")
@@ -225,14 +233,25 @@ func TestIvWordingRepliesMatchByMarker(t *testing.T) {
 	}
 }
 
+// ivWordingLostFinal is the reply posted again to a 👎'd comment, quoted,
+// edited after the 👎, whose reply was lost, when its new text would be
+// rejected for reason, a Final one: it asks for no new comment (#399).
+func ivWordingLostFinal(quote, reason, id string) string {
+	return final(quote, "I didn't act on this comment, and my reply saying why was lost. "+
+		"It was edited after I rejected it, so I've ignored the edit. Its new text wouldn't apply either", reason, id)
+}
+
 // TestIvWordingLostReplyAfterEdit: a 👎'd command whose reply was lost
 // gets it again, worded from the issue as it is, unless it was edited
 // after its 👎: then the edit is ignored, and the reply says so, rather
 // than judging the edited text (#229). A request edited so is answered
-// the same way.
+// the same way. The reply asks for a new comment only when one could
+// apply: when the new text would be rejected for a reason a new comment
+// can't change, it gives that reason instead (#399, SPEC §9.2).
 func TestIvWordingLostReplyAfterEdit(t *testing.T) {
 	t.Parallel()
 	atReview := []string{"stage:spec-review"}
+	storyOnly := "only an epic, or a story with no parent, goes from `spec-review` to `clarifying` on a revision request, and this is a story issue"
 	for _, tt := range []struct {
 		name  string
 		setup func(testing.TB) *githubtest.Fake
@@ -253,7 +272,40 @@ func TestIvWordingLostReplyAfterEdit(t *testing.T) {
 				f.AddReaction(1002, app, "-1")
 				f.EditComment(1002, "owner", "too short")
 			}),
-			outcome{comments: []string{ivWordingLostEdited("too short", "1002")}, labels: atReview, downs: []string{"too short"}}},
+			outcome{comments: []string{ivWordingLostFinal("too short", storyOnly, "1002")}, labels: atReview, downs: []string{"too short"}}},
+		{"a request edited after its 👎 into a command that would apply",
+			review(func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, "owner", "too long")
+				f.AddReaction(1002, app, "-1")
+				f.EditComment(1002, "owner", "/approve")
+			}),
+			outcome{comments: []string{ivWordingLostEdited("/approve", "1002")}, labels: atReview, downs: []string{"/approve"}}},
+		{"an /approve edited after its 👎 into one rejected the same way",
+			review(func(t testing.TB, f *githubtest.Fake) {
+				f.EditBody(1, "mallory", "body v2")
+				post(t, f, 1002, "owner", "/approve x")
+				f.AddReaction(1002, app, "-1")
+				f.EditComment(1002, "owner", "/approve")
+			}),
+			outcome{comments: []string{ivWordingLostFinal("/approve", dirtyBody, "1002")}, labels: atReview, downs: []string{"/approve"}}},
+		{"a command edited after its 👎 into plain text, posted at a stage since moved on: no request, so the reply asks",
+			filed(nil, func(t testing.TB, f *githubtest.Fake) {
+				f.SetType(1, "Story")
+				labelEvent(t, f.AddLabel(1, app, "stage:spec-review"), 9001)
+				post(t, f, 1001, app, "<!-- issuedog:transition from=intake to=clarifying run=a -->")
+				post(t, f, 1002, "owner", "/frob")
+				f.AddReaction(1002, app, "-1")
+				f.EditComment(1002, "owner", "too long")
+				post(t, f, 1004, app, revision(1, "body"))
+			}),
+			outcome{comments: []string{ivWordingLostEdited("too long", "1002")}, labels: atReview, downs: []string{"too long"}}},
+		{"an /approve edited after its 👎 into a bad argument, which a new comment can fix",
+			review(func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1002, "owner", "/approve")
+				f.AddReaction(1002, app, "-1")
+				f.EditComment(1002, "owner", "/approve x")
+			}),
+			outcome{comments: []string{ivWordingLostEdited("/approve x", "1002")}, labels: atReview, downs: []string{"/approve x"}}},
 		{"an /approve edited before its 👎 is worded again from the issue",
 			review(func(t testing.TB, f *githubtest.Fake) {
 				f.EditBody(1, "mallory", "body v2")

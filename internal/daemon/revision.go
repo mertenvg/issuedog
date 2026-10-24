@@ -127,13 +127,13 @@ func ApproveCommand() Handler {
 				}
 				return ivWordingStale(latest, ok, by, follows)
 			}
+			// A stale revision can't be approved, so the reply says so
+			// before it would say to approve that revision (#399).
 			switch {
-			case !ok, latest.Hidden:
+			case !ok, latest.Hidden, state.BodyHash(c.S.Body) != latest.Hash:
 				return stale()
 			case c.Comment.ID < latest.Comment:
 				return Rejection{Reason: fmt.Sprintf("it was posted before revision %d, the latest. To approve that, react 👍 to it, or post `/approve` again", latest.Rev), Final: true}
-			case state.BodyHash(c.S.Body) != latest.Hash:
-				return stale()
 			}
 			return inTable(is, state.Planning, state.TriggerSpecApproved, "on approval")
 		},
