@@ -1,7 +1,9 @@
 package daemon_test
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"regexp"
 	"slices"
@@ -11,13 +13,17 @@ import (
 
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/logr/v2"
 )
 
 // Held issues no longer in the repo (#237): a settled issue, which no
 // pass visits, transferred or deleted, drops out of the repo's listings
 // and changes nothing there. Once every ten minutes, by GitHub's clock,
 // the daemon lists every open issue and reads again, once, each issue it
-// holds that the listing leaves out, which drops it if it's gone.
+// holds that the listing leaves out, which drops it if it's gone. The
+// listing brings back, too, a live issue it has that the daemon holds
+// nothing of, as when a gap in a listing and a wrong 404 dropped it
+// (#426).
 
 // transferUnlistedWait is the daemon's transferUnlistedEvery, the ten
 // minutes from one listing of every open issue to the next, and a second
@@ -196,8 +202,10 @@ func TestTransferUnlistedUnchanged(t *testing.T) {
 }
 
 // A failed listing is the pass's error, and the rest of the pass carries
-// on: Work gets its issues. The next pass lists again, at once, and drops
-// the transferred issue.
+// on: Work gets its issues. The next listing waits ten minutes from the
+// failed one, as from a good one, so a pass between makes no request for
+// it, and Work still gets the transferred issue. Ten minutes on, the
+// listing drops it.
 func TestTransferUnlistedFailed(t *testing.T) {
 	t.Parallel()
 	f, d := transferUnlistedSettled(t)
@@ -213,10 +221,18 @@ func TestTransferUnlistedFailed(t *testing.T) {
 	if got := assignAbout(f, from, 12); len(got) != 0 || !slices.Contains(worked, 7) {
 		t.Errorf("the failed listing's pass: requests about 12 = %q, Work got %v; want no request, and Work its issues, 7 among them", got, worked)
 	}
+	worked = nil
+	from = len(f.Requests())
+	iterate(t, d)
+	if got, n := assignAbout(f, from, 12), transferUnlistedListings(f, from); len(got) != 0 || n != 0 || !slices.Contains(worked, 12) {
+		t.Errorf("the pass after the failed listing: requests about 12 = %q, %d listings of the open issues, Work got %v; want none of either, and 12 given to Work, as the listing waits",
+			got, n, worked)
+	}
+	f.Advance(transferUnlistedWait)
 	from = len(f.Requests())
 	assignGonePasses(t, f, d, assignGoneRead["transferred"], nil)
 	if n := transferUnlistedListings(f, from); n != 1 {
-		t.Errorf("the passes after the failure listed the open issues %d times; want once, at once", n)
+		t.Errorf("the passes ten minutes after the failure listed the open issues %d times; want once", n)
 	}
 }
 
@@ -313,4 +329,264 @@ func TestTransferUnlistedReplay(t *testing.T) {
 		t.Errorf("the digest's items after the drop = %q; want none", items)
 	}
 	githubtest.Replay(t, transferUnlistedReplayFake(o), transferUnlistedReplayPass(t, o))
+}
+
+// No listing is made before ten minutes have passed since the last one,
+// by GitHub's clock: nine minutes after a start's first pass, a pass
+// lists nothing, and a minute later, one does.
+func TestTransferUnlistedNotDue(t *testing.T) {
+	t.Parallel()
+	f := quiet(t)
+	d := newDaemon(t, f, newOrigin(t), nil)
+	iterate(t, d)
+	f.Advance(9 * time.Minute)
+	from := len(f.Requests())
+	iterate(t, d)
+	if n := transferUnlistedListings(f, from); n != 0 {
+		t.Errorf("the pass nine minutes after the start listed the open issues %d times; want none, as ten minutes haven't passed", n)
+	}
+	f.Advance(transferUnlistedWait - 9*time.Minute)
+	from = len(f.Requests())
+	iterate(t, d)
+	if n := transferUnlistedListings(f, from); n != 1 {
+		t.Errorf("the pass ten minutes after the start listed the open issues %d times; want once", n)
+	}
+}
+
+// A pass that holds no issue lists nothing, ten minutes on or not: here
+// the repo's only open one is a pull request, beside a closed issue.
+func TestTransferUnlistedNoneHeld(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	f.SetPullRequest(f.AddIssue("owner", "PR", ""))
+	f.Close(f.AddIssue("owner", "Closed", ""))
+	d := newDaemon(t, f, newOrigin(t), nil)
+	iterate(t, d)
+	f.Advance(transferUnlistedWait)
+	from := len(f.Requests())
+	iterate(t, d)
+	iterate(t, d)
+	if n := transferUnlistedListings(f, from); n != 0 {
+		t.Errorf("the passes ten minutes on, holding no issue, listed the open issues %d times; want none", n)
+	}
+}
+
+// transferUnlistedIssueRead reports whether r is the GET of issue n's own
+// path, a snapshot's first read.
+func transferUnlistedIssueRead(n int) func(githubtest.Request) bool {
+	path := fmt.Sprintf("/issues/%d", n)
+	return func(r githubtest.Request) bool { return r.Method == http.MethodGet && r.Path == path }
+}
+
+// transferUnlistedGap makes the next listing of every open issue leave
+// out issue n, live all along, as a gap in GitHub's listing might, and
+// the next read of n answer a wrong 404.
+func transferUnlistedGap(f *githubtest.Fake, n int) {
+	f.AnswerOnce(transferUnlistedIssueRead(n), http.StatusNotFound)
+	f.BeforeRequest(transferUnlistedListing, func() {
+		f.Transfer(n, "o/elsewhere")
+		f.BeforeRequest(transferUnlistedIssueRead(n), func() { f.Transfer(n, "o/r") })
+	})
+}
+
+// transferUnlistedPast edits issue 7's body, and runs the pass that reads
+// it, which writes nothing, so the poll's cursor is past issue 12's last
+// change, and no poll lists 12 again.
+func transferUnlistedPast(t *testing.T, f *githubtest.Fake, d *daemon.Daemon) {
+	t.Helper()
+	f.EditBody(7, digestRunOwner, "A part, edited.")
+	writes := len(f.Writes())
+	iterate(t, d)
+	if got := digestWrites(f, writes); len(got) != 0 {
+		t.Fatalf("the pass that reads 7's edit wrote %q; want nothing", got)
+	}
+}
+
+// A live issue wrongly dropped, by a gap in the listing and a wrong 404
+// on its read, is held again by the next listing: the pass ten minutes
+// on reads it, and Work gets it from then on, with no request about it
+// after. Until then, as nothing about it changes, no pass reads it, and
+// Work doesn't get it.
+func TestTransferUnlistedRestore(t *testing.T) {
+	t.Parallel()
+	f, d := transferUnlistedSettled(t)
+	transferUnlistedPast(t, f, d)
+	var worked []int
+	assignWorked(d, &worked)
+	f.Advance(transferUnlistedWait)
+	transferUnlistedGap(f, 12)
+	from := len(f.Requests())
+	iterate(t, d)
+	if got := assignAbout(f, from, 12); !slices.Equal(got, []string{"GET /issues/12 404"}) || slices.Contains(worked, 12) {
+		t.Fatalf("the listing's pass that leaves 12 out: requests about 12 = %q, Work got %v; want the read's 404, which drops 12", got, worked)
+	}
+	worked, from = nil, len(f.Requests())
+	iterate(t, d)
+	if got := assignAbout(f, from, 12); len(got) != 0 || slices.Contains(worked, 12) {
+		t.Errorf("the pass after the drop: requests about 12 = %q, Work got %v; want none, and 12 left out", got, worked)
+	}
+	f.Advance(transferUnlistedWait)
+	worked, from = nil, len(f.Requests())
+	iterate(t, d)
+	if got := assignAbout(f, from, 12); !slices.Contains(got, "GET /issues/12 200") || !slices.Contains(worked, 12) {
+		t.Errorf("the next listing's pass: requests about 12 = %q, Work got %v; want 12 read, and given to Work", got, worked)
+	}
+	if n := transferUnlistedListings(f, from); n != 1 {
+		t.Errorf("the next listing's pass listed the open issues %d times; want once", n)
+	}
+	worked, from = nil, len(f.Requests())
+	iterate(t, d)
+	if got := assignAbout(f, from, 12); len(got) != 0 || !slices.Contains(worked, 12) {
+		t.Errorf("the pass after it's back: requests about 12 = %q, Work got %v; want none, and 12 given to Work", got, worked)
+	}
+}
+
+// An issue this pass's poll listed, as one that changed, is there as far
+// as that poll shows, so its absence from the listing in the same pass
+// isn't counted as a read that found it gone: a wrong 404 on its read is
+// the first of the two, and the next pass's read, which finds it, keeps
+// it, though the next poll lists it no more.
+func TestTransferUnlistedPolled(t *testing.T) {
+	t.Parallel()
+	f, d := transferUnlistedSettled(t)
+	f.Advance(transferUnlistedWait)
+	f.EditBody(12, digestRunOwner, "do it, edited")
+	f.EditBody(7, digestRunOwner, "A part, edited.") // the poll's cursor, past 12
+	transferUnlistedGap(f, 12)
+	var worked []int
+	assignWorked(d, &worked)
+	from := len(f.Requests())
+	iterate(t, d)
+	if got := assignAbout(f, from, 12); !slices.Equal(got, []string{"GET /issues/12 404"}) || slices.Contains(worked, 12) {
+		t.Fatalf("the listing's pass that leaves 12 out: requests about 12 = %q, Work got %v; want the read's 404, and 12 left out", got, worked)
+	}
+	worked, from = nil, len(f.Requests())
+	iterate(t, d)
+	if got := assignAbout(f, from, 12); !slices.Contains(got, "GET /issues/12 200") || !slices.Contains(worked, 12) {
+		t.Errorf("the pass after: requests about 12 = %q, Work got %v; want 12 read again, kept, and given to Work", got, worked)
+	}
+}
+
+// An issue the listing has that changed since the poll, here one opened
+// and one reopened while the listing pages, is the next poll's to list
+// and judge: the listing's pass reads neither, and the next pass reads
+// both.
+func TestTransferUnlistedLeftToPoll(t *testing.T) {
+	t.Parallel()
+	f := quiet(t)
+	d := newDaemon(t, f, newOrigin(t), nil)
+	iterate(t, d)
+	f.Advance(transferUnlistedWait)
+	opened := 0
+	f.BeforeRequest(transferUnlistedListing, func() {
+		f.Reopen(4)
+		opened = f.AddIssue("owner", "New", "")
+	})
+	from := len(f.Requests())
+	iterate(t, d)
+	if n := transferUnlistedListings(f, from); n != 1 || opened == 0 {
+		t.Fatalf("the pass ten minutes on listed the open issues %d times, and opened issue %d; want once, and an issue opened", n, opened)
+	}
+	for _, n := range []int{4, opened} {
+		if got := assignAbout(f, from, n); len(got) != 0 {
+			t.Errorf("the listing's pass: requests about %d = %q; want none, as it's the next poll's", n, got)
+		}
+	}
+	from = len(f.Requests())
+	iterate(t, d)
+	for _, n := range []int{4, opened} {
+		if !slices.ContainsFunc(f.Requests()[from:], transferUnlistedIssueRead(n)) {
+			t.Errorf("the pass after the listing's: requests %+v; want issue %d read, as the poll lists it", f.Requests()[from:], n)
+		}
+	}
+}
+
+// transferUnlistedRestoreFake is transferUnlistedReplayFake with issue
+// 3, filed after issue 2's round, so the poll's cursor is past 2's last
+// change, and no poll lists 2 again, and the daemon still holds an issue
+// once 2 is dropped, so the listing is made.
+func transferUnlistedRestoreFake(o *origin) func(testing.TB) *githubtest.Fake {
+	return func(t testing.TB) *githubtest.Fake {
+		t.Helper()
+		f := transferUnlistedReplayFake(o)(t)
+		f.AddIssue("owner", "Other", "something else")
+		return f
+	}
+}
+
+// transferUnlistedRestorePass is a new daemon's first pass over f, then,
+// ten minutes on, the listing's pass that leaves issue 2 out, with a
+// wrong 404 on its read, which drops it, and ten minutes after that, the
+// listing's pass that brings it back. It returns the passes' errors.
+func transferUnlistedRestorePass(t *testing.T, o *origin) func(*githubtest.Fake) error {
+	return func(f *githubtest.Fake) error {
+		d := digestDaemon(t, f, o, nil)
+		if err := d.Iterate(context.Background()); err != nil {
+			return err
+		}
+		f.Advance(transferUnlistedWait)
+		transferUnlistedGap(f, 2)
+		if err := d.Iterate(context.Background()); err != nil {
+			return err
+		}
+		f.Advance(transferUnlistedWait)
+		return d.Iterate(context.Background())
+	}
+}
+
+// The listing's pass that brings back a wrongly dropped issue rewrites
+// the digest with its item again, as the drop's pass rewrote it without:
+// those two writes are the passes' only ones, and both are safe to run
+// again after a crash, as a restart's first pass, which reads the issue
+// as any other, rewrites the digest with its item, or finds it so.
+func TestTransferUnlistedRestoreReplay(t *testing.T) {
+	t.Parallel()
+	o := digestNotifyOrigin(t)
+	f := transferUnlistedRestoreFake(o)(t)
+	want := []string{"#2 Question round p2 1"}
+	if items := digestRunItems(f.State().Issues[0].Body); !slices.Equal(items, want) {
+		t.Fatalf("the digest's items before the passes = %q; want %q", items, want)
+	}
+	if err := transferUnlistedRestorePass(t, o)(f); err != nil {
+		t.Fatal(err)
+	}
+	if got := digestWrites(f, 0); !slices.Equal(got, []string{"PATCH /issues/1", "PATCH /issues/1"}) {
+		t.Fatalf("the passes wrote %q; want the digest's two rewrites, without 2's item and with it", got)
+	}
+	if items := digestRunItems(f.State().Issues[0].Body); !slices.Equal(items, want) {
+		t.Errorf("the digest's items once 2 is back = %q; want %q", items, want)
+	}
+	githubtest.Replay(t, transferUnlistedRestoreFake(o), transferUnlistedRestorePass(t, o))
+}
+
+// The listing's pass that brings back a wrongly dropped issue logs that
+// issue alone as one it holds nothing of: not the digest, which the
+// listing has too, nor issue 3, which it holds. An edit of 3 after the
+// drop takes the poll's cursor past the digest's rewrite.
+func TestTransferUnlistedRestoreLogs(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	o := digestNotifyOrigin(t)
+	f := transferUnlistedRestoreFake(o)(t)
+	d := digestDaemon(t, f, o, nil)
+	iterate(t, d)
+	f.Advance(transferUnlistedWait)
+	transferUnlistedGap(f, 2)
+	iterate(t, d)
+	f.EditBody(3, "owner", "something else, edited")
+	iterate(t, d)
+	f.Advance(transferUnlistedWait)
+	var logs bytes.Buffer
+	stop := logr.AddWriter(&logs, logr.WithFilter(logr.I))
+	defer stop()
+	iterate(t, d)
+	logr.Wait()
+	var got []string
+	for line := range strings.Lines(logs.String()) {
+		if strings.Contains(line, "is listed open, but the daemon holds nothing of it") {
+			got = append(got, line)
+		}
+	}
+	if len(got) != 1 || !strings.Contains(got[0], "o/r#2 ") {
+		t.Errorf("the listing's pass logged %q as held nothing of; want o/r#2 alone", got)
+	}
 }

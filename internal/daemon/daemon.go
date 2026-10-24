@@ -47,9 +47,14 @@ type Daemon struct {
 	// (assign.go). Set or not, what waits is listed for every issue.
 	Assign bool
 
-	// transferUnlistedAt is when every open issue was last listed, for
-	// the held ones no longer there, by GitHub's clock (transferunlisted.go).
+	// transferUnlistedAt is when every open issue was last listed, or the
+	// listing last failed, for the held ones no longer there, by GitHub's
+	// clock (transferunlisted.go).
 	transferUnlistedAt time.Time
+	// transferUnlistedPolled are the issues this pass's poll listed open,
+	// never a pull request, whose snapshots are from this pass, for that
+	// check (transferunlisted.go).
+	transferUnlistedPolled map[int]bool
 
 	digest        digestState
 	digestCache   map[int][]waitItem // what waits on the owner, by issue, after its last good step 1, for the digest and assignment
@@ -214,7 +219,8 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		errs = append(errs, err)
 	}
 	// A held issue the open issues, listed once in a while, leave out, as
-	// a transfer does, is read again, once (transferunlisted.go).
+	// a transfer does, is read again, once, and one they list that isn't
+	// held, as when wrong answers dropped it, is read (transferunlisted.go).
 	if err := d.transferUnlistedCheck(ctx); err != nil {
 		errs = append(errs, err)
 	}
@@ -445,10 +451,12 @@ func (d *Daemon) reload(ctx context.Context) {
 // each one listed closed and dropping each one listed open, for a finished
 // story's children (#278): a start's first poll lists every issue, and
 // each later one every issue that changed, so a close or reopen is never
-// missed.
+// missed. The issues it lists open, it keeps for this pass alone
+// (transferUnlistedPolled).
 func (d *Daemon) poll(ctx context.Context) error {
 	a := d.Step.Applier
 	start := d.issuesSince.IsZero() // a start's first poll, which lists every issue
+	d.transferUnlistedPolled = map[int]bool{}
 	for range 2 {
 		since := d.issuesSince
 		issues, err := a.Client.IssuesSince(ctx, a.Owner, a.Repo, since)
@@ -462,6 +470,7 @@ func (d *Daemon) poll(ctx context.Context) error {
 			case is.IsPullRequest():
 			case is.GetState() == "open":
 				delete(d.closedListed, n)
+				d.transferUnlistedPolled[n] = true
 			default:
 				if d.closedListed == nil {
 					d.closedListed = map[int]bool{}
