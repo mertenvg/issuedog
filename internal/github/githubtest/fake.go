@@ -82,6 +82,8 @@ type Fake struct {
 
 	closingErrs []map[string]any // for the next GraphQL answer, with their paths (FailGraphQLAt)
 
+	historyNotFound int // the issue whose body node the next history query answers null (HistoryNotFoundOnce)
+
 	repoIDs map[string]int64 // the repos issues were transferred to, in lower case, by ID (transfer.go)
 
 	checks checkState // what the check reads answer (checks.go)

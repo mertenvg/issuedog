@@ -2,11 +2,17 @@ package daemon
 
 import (
 	"context"
+	"maps"
+	"slices"
 	"testing"
 
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
+
+// DigestHistoryDigests returns the issues d takes as digests, sorted, for
+// the title rule's tests in daemon_test.
+func DigestHistoryDigests(d *Daemon) []int { return slices.Sorted(maps.Keys(d.digest.issues)) }
 
 // A task in the pipeline renamed as the digest, its origin edited out,
 // between a poll and its snapshot's read, so the snapshot has the new

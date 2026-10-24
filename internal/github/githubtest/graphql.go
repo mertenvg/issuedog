@@ -249,6 +249,16 @@ func (f *Fake) HistoryCap(n int) {
 	f.historyCap = n
 }
 
+// HistoryNotFoundOnce makes the next history query answer issue number's
+// body node as GitHub answers one it can't resolve, null with a NOT_FOUND
+// error whose path names it, though the issue is there: a wrong answer,
+// as GitHub may give once.
+func (f *Fake) HistoryNotFoundOnce(number int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.historyNotFound = number
+}
+
 // history answers the history query: each node's edits, newest first, 100
 // per page, capped as HistoryCap says, with an issue body's text after each
 // edit as its diff. A cursor is the number of older
@@ -263,6 +273,10 @@ func (f *Fake) history(ids []string, cursor *string) ([]any, []map[string]any, s
 	}
 	for _, c := range f.comments {
 		histories[commentNode(c.GetID())] = c.history
+	}
+	if f.historyNotFound != 0 { // a wrong answer, once (HistoryNotFoundOnce)
+		delete(histories, issueNode(f.historyNotFound))
+		f.historyNotFound = 0
 	}
 	nodes, errs := []any{}, []map[string]any{}
 	for i, id := range ids {

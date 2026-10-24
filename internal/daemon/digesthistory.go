@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	gogithub "github.com/google/go-github/v92/github"
@@ -48,11 +49,14 @@ func (d *Daemon) digestHistoryStrikes() int {
 // digestHistoryFail is what a start knows of the failed reads of an issue's
 // edit history for the title rule: how many reads failed, in a row, the
 // last one's error, for the state error, and the title rule's pass
-// (digestState.pass) to read it on next.
+// (digestState.pass) to read it on next. gone is the pass on which an
+// answer first found the issue deleted, with none since that found it
+// there, or 0 (digestHistoryGone).
 type digestHistoryFail struct {
 	fails int
 	cause error
 	next  int
+	gone  int
 }
 
 // digestHistoryPosted is an App comment's digesthistory state error: the
@@ -134,11 +138,31 @@ func (d *Daemon) digestHistoryHold(ctx context.Context, is *gogithub.Issue) {
 	}
 }
 
-// digestHistoryGone lets go of issue n, held by the title rule, which err,
-// a request's, found gone, deleted or transferred, so a digest can be
-// created.
+// digestHistoryGone takes err, a request's answer that found issue n, held
+// by the title rule, gone: deleted, as a 404 or 410, or a node GitHub
+// resolves to none, or transferred. A deletion lets go of it, so a digest
+// can be created, only if an answer on an earlier pass found it deleted
+// too, with none since that found it there: a history read that worked,
+// which judges it, or a post of its state error. One answer may be wrong
+// (SPEC §8.1), and the issue may be the digest, so one false NOT_FOUND
+// would create a second (#500). Till then it stays held, and its history
+// is read again the next pass, as for a snapshot (Daemon.missing). A
+// failed read between shows nothing, so it doesn't count. A transfer lets
+// go of it at once: GitHub's 301 names the issue's new repo, and its node
+// still resolves from there, so no history read would find it gone.
 func (d *Daemon) digestHistoryGone(n int, err error) {
 	a, g := d.Step.Applier, &d.digest
+	h := g.history[n]
+	if !errors.Is(err, github.ErrTransferred) && (h.gone == 0 || h.gone == g.pass) {
+		h.gone, h.next = g.pass, g.pass+1
+		if g.history == nil {
+			g.history = map[int]digestHistoryFail{}
+		}
+		g.history[n] = h
+		logr.Infof("%s/%s#%d, held as the digest's title rule couldn't judge it, looks deleted, so it's held, and read again next pass: %v",
+			a.Owner, a.Repo, n, err)
+		return
+	}
 	logr.Infof("%s/%s#%d, held as the digest's title rule couldn't judge it, is gone, deleted or transferred, so it's held no more: %v",
 		a.Owner, a.Repo, n, err)
 	delete(g.titled, n)
@@ -153,8 +177,10 @@ func (d *Daemon) digestHistoryGone(n int, err error) {
 // carries it already, as this daemon posted it, or the poll, which lists
 // every comment on a start, found it. It's logged as an error when posted,
 // and at debug level after, so a pass that finds it writes nothing. A failed
-// post is logged, and tried again on the next pass; one that finds is gone,
-// deleted or transferred, drops it, so a digest can be created. GitHub
+// post is logged, and tried again on the next pass. One that finds it gone,
+// deleted or transferred, is digestHistoryGone's: a deletion lets go of it,
+// so a digest can be created, only if an answer on an earlier pass found it
+// deleted too, and a post that works shows it's there. GitHub
 // answers a POST about a transferred issue with a 301, which Go follows
 // with a GET of the comments in the issue's new repo: a post answered from
 // anywhere but this repo's path posted nothing, and is a transfer
@@ -190,6 +216,8 @@ func (d *Daemon) digestHistoryReport(ctx context.Context, is *gogithub.Issue) {
 	case err != nil:
 		logr.Errorf("report %s/%s#%d's edit history that failed to read, which is tried again next pass: %v", a.Owner, a.Repo, n, err)
 	default:
+		h.gone = 0 // it's there
+		g.history[n] = h
 		g.historyComment(c.GetID(), n, []github.Marker{{Kind: "error", Fields: map[string]string{"kind": digestHistoryErrKind, "key": key}}})
 		logr.Errorf("state error: %s", desc)
 	}

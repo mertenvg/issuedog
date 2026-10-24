@@ -115,11 +115,13 @@ func digestHistoryGoneTask(f *githubtest.Fake) int {
 // out, an App task that lost its origin and was renamed as the digest, and
 // an App issue titled as the digest, the last deleted between the start's
 // poll and its history read. GitHub resolves that one's node to none, so
-// it's let go, while the other two's histories, read in the same query,
-// are judged on that pass: the digest's takes it back, and the task's,
-// whose first version had an origin, lets it into the pipeline, visited,
-// so there's the one digest. No pass after reads a history, and no digest
-// is created.
+// it's held still, as one answer may be wrong (#500), while the other
+// two's histories, read in the same query, are judged on that pass: the
+// digest's takes it back, and the task's, whose first version had an
+// origin, lets it into the pipeline, visited, so there's the one digest.
+// The next pass reads the deleted one's history again, which finds it gone
+// too, so it's let go. No pass after reads a history, and no digest is
+// created.
 func TestDigestHistoryGoneCandidate(t *testing.T) {
 	t.Parallel()
 	f, o := newFake(t), newOrigin(t)
@@ -144,13 +146,14 @@ func TestDigestHistoryGoneCandidate(t *testing.T) {
 	if got := f.HistoryQueries() - queries; got != 2 {
 		t.Errorf("%d history queries; want 2, the title rule's and the task's visit's", got)
 	}
-	queries = f.HistoryQueries()
-	for range 2 {
+	for i, read := range []int{1, 0} {
+		from, queries = len(f.Writes()), f.HistoryQueries()
 		iterate(t, d)
-	}
-	if got := f.HistoryQueries() - queries; got != 0 || len(f.State().Issues) != 2 || !reflect.DeepEqual(daemon.DigestHistoryDigests(d), []int{1}) {
-		t.Errorf("%d history queries, issues %+v, digests %v; want none, and 1 the one digest",
-			got, f.State().Issues, daemon.DigestHistoryDigests(d))
+		if got := f.HistoryQueries() - queries; got != read || slices.Contains(digestWrites(f, from), "POST /issues") ||
+			len(f.State().Issues) != 2 || !reflect.DeepEqual(daemon.DigestHistoryDigests(d), []int{1}) {
+			t.Errorf("pass %d: %d history queries, issues %+v, digests %v; want %d, no digest created, and 1 the one digest",
+				i+2, got, f.State().Issues, daemon.DigestHistoryDigests(d), read)
+		}
 	}
 }
 
@@ -173,7 +176,9 @@ func TestDigestHistoryGoneCandidateReplay(t *testing.T) {
 
 // A held issue deleted after its state error was posted is found gone by
 // the next read, loop.max_attempts passes after the last, so on the third
-// pass after the error: it's let go, and that pass creates a pinned digest.
+// pass after the error. One answer may be wrong (#500), so it's read again
+// the next pass, which finds it gone too: it's let go, and that pass
+// creates a pinned digest.
 func TestDigestHistoryGoneAfterError(t *testing.T) {
 	t.Parallel()
 	f, o := newFake(t), newOrigin(t)
@@ -187,11 +192,14 @@ func TestDigestHistoryGoneAfterError(t *testing.T) {
 		t.Fatalf("issues = %+v; want the state error posted", f.State().Issues)
 	}
 	f.DeleteIssue()
-	for i := range 3 {
-		from := len(f.Writes())
+	for i, read := range []int{0, 0, 1, 1} {
+		from, queries := len(f.Writes()), f.HistoryQueries()
 		iterate(t, d)
-		if w := digestWrites(f, from); slices.Contains(w, "POST /issues") != (i == 2) {
-			t.Errorf("pass %d after the error wrote %q; want the digest created on the third alone", i+1, w)
+		if w := digestWrites(f, from); slices.Contains(w, "POST /issues") != (i == 3) {
+			t.Errorf("pass %d after the error wrote %q; want the digest created on the fourth alone", i+1, w)
+		}
+		if got := f.HistoryQueries() - queries; got != read {
+			t.Errorf("pass %d after the error: %d history queries; want %d", i+1, got, read)
 		}
 	}
 	if is := f.State().Issues; len(is) != 1 || is[0].Body != digestList || !is[0].Pinned {
