@@ -148,7 +148,7 @@ type isPinnedResponse struct {
 // ErrIssueNotFound is wrapped by IsPinned's error, with ErrGraphQL, when
 // GitHub answers that the repo has no such issue: a NOT_FOUND error, with
 // the repo found but the issue null. GitHub answers so, with an HTTP 200,
-// for an issue that was deleted, and most likely for one that was
+// for an issue that was deleted, and, as the fake does, for one that was
 // transferred, as a lookup by number is the old repo's (#413's verify, to
 // be confirmed live: SPEC §16). PinIssue's error wraps it too, for a
 // NOT_FOUND with no pin, which GitHub answers for a node ID it can't

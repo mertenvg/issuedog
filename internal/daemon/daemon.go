@@ -640,12 +640,12 @@ func parentOf(u string) int {
 // to the same host (github's sameHost), with a GET. So a transfer shows as
 // the moved issue, which Snapshot, assignAnswer, digestMoved and github's
 // PinIssue turn into github.ErrTransferred, or as the 404 of a path with
-// no GET there. No go-github RedirectionError reaches here: go-github returns one only from
-// its calls that don't follow redirects (archive and log downloads), which
-// we don't use, or for a 3xx with no Location, which net/http doesn't
-// follow and GitHub's transfer never sends. So gone doesn't look for one
-// (#239), and such an error, if one came, would be an ordinary failure,
-// read again rather than dropped.
+// no GET there. No go-github RedirectionError reaches here: go-github
+// returns one only from its calls that don't follow redirects (archive and
+// log downloads), which we don't use, or for a 3xx with no Location, which
+// net/http doesn't follow and GitHub's transfer never sends. So gone
+// doesn't look for one (#239), and such an error, if one came, would be an
+// ordinary failure, read again rather than dropped.
 func gone(err error) bool {
 	var e *gogithub.ErrorResponse
 	if errors.As(err, &e) && e.Response != nil {
