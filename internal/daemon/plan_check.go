@@ -520,9 +520,9 @@ var (
 	// prose by its parts.
 	planPathWordRE = regexp.MustCompile(`[\w./-]*/[\w./-]*`)
 	// planPathExtRE is a file name's extension: a lowercase letter, then
-	// lowercase letters and digits, as a file's almost always is, such as
-	// "go", "ps1" or "mp4". A version, such as the "3" of "1.3", and a Go
-	// name, such as "http.Handler", have none.
+	// any lowercase letters and digits, as a file's almost always is, such
+	// as "v", "go", "ps1" or "mp4". A version, such as the "3" of "1.3",
+	// and a Go name, such as "http.Handler", have none.
 	planPathExtRE = regexp.MustCompile(`\.[a-z][a-z0-9]*$`)
 	// planPathModuleRE is a Go module's major version, such as the "v3" of
 	// "gopkg.in/yaml.v3", which looks like an extension but isn't one.
@@ -541,15 +541,18 @@ var (
 	planPathNamesRE = regexp.MustCompile(`^[A-Z][\w.-]*(?:/[A-Z][\w.-]*)+$`)
 	// planFrameworks are the frameworks whose names end like a file's, as
 	// prose writes them.
-	planFrameworks = []string{"Express.js", "Next.js", "Node.js", "Nuxt.js", "React.js", "Socket.io", "Vue.js"}
+	planFrameworks = []string{
+		"Chart.js", "D3.js", "Express.js", "Glimmer.js", "Koa.js", "Nest.js", "Next.js", "Node.js",
+		"Nuxt.js", "Passport.js", "React.js", "Socket.io", "Three.js", "Vue.js", "Vuex.js",
+	}
 )
 
 // planFilePath is the first file path in text outside a link, or "". A
 // file path, as SPEC §11.3's file-paths rule defines one, is a word with a
 // directory and a file extension. A bare file name, with no directory,
 // isn't one. So that prose with a slash passes (#311):
-//   - the extension is a lowercase letter, then lowercase letters and
-//     digits, and isn't a module's version;
+//   - the extension is a lowercase letter, then any lowercase letters
+//     and digits, and isn't a module's version;
 //   - the directory has a letter, outside a directory of versions;
 //   - the word isn't capitalized names, the last a known framework's
 //     (#439).
