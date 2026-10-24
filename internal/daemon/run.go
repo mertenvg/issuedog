@@ -210,7 +210,7 @@ type Runs struct {
 	NewID     func() string    // nil makes random run IDs
 
 	attempts   map[string]int  // failed runs, by countKey
-	swept      bool            // leftover temp leases are removed
+	swept      bool            // what a crash left is removed (sweep)
 	ended      string          // the ended run (a Failed lease) whose files are removed
 	badSchemas map[string]bool // the agents whose Stage's schema doesn't compile, reported
 
@@ -219,7 +219,8 @@ type Runs struct {
 	failures map[string]string
 }
 
-// Work is Daemon.Work. It first finishes a lease a run left, after a
+// Work is Daemon.Work. On its first pass it first removes what a crash
+// left (sweep). Then it finishes a lease a run left, after a
 // restart or a failed apply (resume). Then, unless a usage limit closed
 // the gate, it runs the first issue, by priority then number, whose stage
 // has a Stage with work pending. If none ran, it runs Unlabeled, if set, on
@@ -234,8 +235,7 @@ type Runs struct {
 // the histories it reads, and only the issue about to run is read again.
 func (r *Runs) Work(ctx context.Context, ready []Ready) error {
 	if !r.swept {
-		r.sweep()
-		r.swept = true
+		r.swept = r.sweep(ctx)
 	}
 	skip, err := r.resume(ctx)
 	if errors.Is(err, ErrLabelsHeld) {
@@ -1148,9 +1148,12 @@ func (r *Runs) uncounted(ctx context.Context, l Lease) error {
 // Then it removes the run's files (cleanup), and the lease if count is 0.
 // Its error is an endError.
 //
-// A gap remains: when the ended lease can't be written, the lease stays
-// the run's, so resume treats the run as one a restart cut short, and so
-// it does after a crash in the short window before that write. A usage
+// A gap remains: when the ended lease isn't written, its write failing
+// before the rename puts it in place, the lease stays the run's, so resume
+// treats the run as one a restart cut short, and so it does after a crash
+// in the short window before that write. A write that fails only at its
+// dir sync has put the ended lease in place, so resume only takes its
+// count (endedLease) and removes the result, unapplied. A usage
 // limit is then observed twice, once more on resume, if claude exited 0,
 // as the runner saved its result; with a non-zero exit there's no saved
 // result, so it's counted as a failed attempt, as are a setup failure and
@@ -1258,7 +1261,7 @@ func (r *Runs) readLease(ctx context.Context) (Lease, bool, error) {
 			logr.Errorf("removing the clone %s of the bad lease: %v", l.Clone, err)
 		}
 	} else {
-		logr.Warnf("the bad lease names no clone in %s, so any clone it had stays", r.Workspace.RunsDir)
+		logr.Warnf("the bad lease names no clone in %s, so any clone it had is left for the sweep at startup", r.Workspace.RunsDir)
 	}
 	if err := r.remove(r.leasePath()); err != nil {
 		return Lease{}, false, fmt.Errorf("remove the lease: %w", err)
@@ -1302,18 +1305,43 @@ func (r *Runs) writeLease(l Lease) error {
 	return nil
 }
 
-// sweep removes the temp leases a crash in writeLease left.
-func (r *Runs) sweep() {
-	tmps, err := filepath.Glob(filepath.Join(r.Runner.StateDir, "lease.*.tmp"))
+// sweep removes what a crash left (SPEC §8.2), before any run starts: the
+// temp leases a crash in writeLease left, the temp results one in the
+// runner's save left, and, against the lease, every run's checkout and
+// context dir but the lease's run's, with the temp git configs
+// (workspace.Sweep). The lease's run's files are resume's to remove. It
+// reports whether it read the lease: while that fails, resume fails too,
+// so no run starts, and the next pass sweeps again.
+func (r *Runs) sweep(ctx context.Context) bool {
+	sweepTemps(filepath.Join(r.Runner.StateDir, "lease.*.tmp"), "temp lease")
+	sweepTemps(filepath.Join(r.Runner.StateDir, "runs", "*.tmp"), "temp result")
+	l, ok, err := r.readLease(ctx)
 	if err != nil {
-		logr.Errorf("finding leftover temp leases: %v", err)
+		logr.Errorf("sweeping the leftover runs waits for the lease: %v", err)
+		return false
+	}
+	keep := ""
+	if ok {
+		keep = l.RunID
+	}
+	if err := r.Workspace.Sweep(ctx, keep); err != nil {
+		logr.Errorf("sweeping the leftover runs: %v", err)
+	}
+	return true
+}
+
+// sweepTemps removes the files pattern matches, each a leftover what.
+func sweepTemps(pattern, what string) {
+	tmps, err := filepath.Glob(pattern)
+	if err != nil {
+		logr.Errorf("finding leftover %ss: %v", what, err)
 	}
 	for _, tmp := range tmps {
 		if err := os.Remove(tmp); err != nil {
-			logr.Errorf("removing the leftover temp lease %s: %v", tmp, err)
+			logr.Errorf("removing the leftover %s %s: %v", what, tmp, err)
 			continue
 		}
-		logr.Infof("removed the leftover temp lease %s", tmp)
+		logr.Infof("removed the leftover %s %s", what, tmp)
 	}
 }
 

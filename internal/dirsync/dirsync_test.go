@@ -17,8 +17,8 @@ func TestDirSyncFlushesADirectory(t *testing.T) {
 	}
 }
 
-// TestDirSyncReportsAMissingDirectory wraps the open's error and names the
-// directory.
+// TestDirSyncReportsAMissingDirectory wraps the open's error, says it was
+// the open that failed, and names the directory.
 func TestDirSyncReportsAMissingDirectory(t *testing.T) {
 	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "gone")
@@ -28,6 +28,9 @@ func TestDirSyncReportsAMissingDirectory(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), dir) {
 		t.Errorf("Sync = %v, want it to name %s", err, dir)
+	}
+	if !strings.Contains(err.Error(), "opening the directory") {
+		t.Errorf("Sync = %v, want it to say opening the directory failed", err)
 	}
 }
 
