@@ -406,6 +406,9 @@ func (d *Daemon) digestKeep(ctx context.Context, n int, items []waitItem) error 
 // every pass until a restart (#159's verify). The next poll lists every
 // issue again, as a start's does, so the next pass finds the digest if it
 // is there after all, or another, and creates one only if there's none.
+// That poll isn't a start's first all the same (Daemon.startPolled): it
+// judges the closes it lists as any later poll does (closingList), and
+// the items stay cached (digestRestartList).
 //
 // Its digest-new comments are kept: a digest found again, after a 404 that
 // was only a glitch, still has them, and the poll's comment cursor has
