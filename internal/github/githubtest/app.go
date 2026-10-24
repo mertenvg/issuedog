@@ -92,11 +92,18 @@ func (f *Fake) Reopen(number int) {
 // Its links go with it, as GitHub would drop them: its sub-issues have no
 // parent after it, and no blocked-by link or LinkSubIssue listing names
 // it, on either side, so no listing names it. It moves no other issue's
-// updated_at, as GitHub isn't known to.
+// updated_at, as GitHub isn't known to. A fake with no issue to delete
+// fails the test, as an issue number the fake hasn't got does
+// (fakeNumberIssue).
 func (f *Fake) DeleteIssue() {
+	f.t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	n := len(f.issues)
+	if n == 0 {
+		f.fakeFail("githubtest: no issue to delete: the fake has 0")
+		return
+	}
 	f.issues = f.issues[:n-1]
 	f.comments = slices.DeleteFunc(f.comments, func(c *comment) bool { return c.issue == n })
 	for _, is := range f.issues {
@@ -127,7 +134,10 @@ func (f *Fake) AnswerOnce(match func(Request) bool, status int) {
 
 // BeforeRequest runs do, once, just before the fake answers the next request
 // that match accepts (only its Method, Path and Query are set), as when
-// something changes while a list pages. do may call the fake's methods.
+// something changes while a list pages. do may call the fake's methods. It
+// runs off the test's goroutine, so a helper it calls with something the
+// fake hasn't got fails the test with Errorf, not Fatalf, and ends do, and
+// the request is answered with a 500 instead (fakeFail).
 func (f *Fake) BeforeRequest(match func(Request) bool, do func()) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -158,7 +168,9 @@ func (f *Fake) handleApp() {
 	f.handle("GET /collaborators/{user}/permission", f.permission)
 }
 
-// logged adds each request to the log once it's answered.
+// logged adds each request to the log once it's answered. One whose
+// BeforeRequest hook a helper's failure ended is answered with a 500
+// (fakeHookRun).
 func (f *Fake) logged(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		req := Request{Method: r.Method, Path: strings.TrimPrefix(r.URL.Path, "/repos/"+f.repo), Query: r.URL.RawQuery}
@@ -172,13 +184,17 @@ func (f *Fake) logged(next http.Handler) http.Handler {
 			status = f.answerOnce(req)
 		}
 		f.mu.Unlock()
+		var hookErr error
 		if do != nil {
-			do()
+			hookErr = f.fakeHookRun(do)
 		}
 		rec := &recorder{ResponseWriter: w, status: http.StatusOK}
-		if status != 0 {
+		switch {
+		case hookErr != nil:
+			send(rec, http.StatusInternalServerError, message(hookErr.Error()))
+		case status != 0:
 			send(rec, status, message(http.StatusText(status)))
-		} else {
+		default:
 			next.ServeHTTP(rec, r)
 		}
 		req.Status, req.Conditional = rec.status, r.Header.Get("If-None-Match") != ""

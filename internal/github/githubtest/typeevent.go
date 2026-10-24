@@ -158,34 +158,38 @@ func (is *issue) issueTypeRevertServe(e *gogithub.Timeline) any {
 // type of, ignoring case, is refused with a 422, as on a create
 // (createIssue): one the org never gave an ID, and one it renamed away
 // (RenameOrgIssueType). So is one fakeTypeRefusal refuses. Under
-// DropTypeChanges, nothing changes. f is locked.
-func (f *Fake) issueTypeRevertEdit(is *issue, raw json.RawMessage) (int, any) {
+// DropTypeChanges, nothing changes. It checks the type first and returns
+// the change as set, which makes it, so that editIssue can check every
+// field before it changes any; a refused type gets no set. f is locked,
+// and stays locked until set has run.
+func (f *Fake) issueTypeRevertEdit(is *issue, raw json.RawMessage) (set func(), status int, msg any) {
 	var name *string
 	if err := json.Unmarshal(raw, &name); err != nil {
-		return http.StatusUnprocessableEntity, message(fmt.Sprintf("githubtest: type must be a name or null: %v", err))
+		return nil, http.StatusUnprocessableEntity, message(fmt.Sprintf("githubtest: type must be a name or null: %v", err))
 	}
 	if name != nil && *name == "" {
-		return http.StatusUnprocessableEntity, message("githubtest: type must be a name or null, not empty")
+		return nil, http.StatusUnprocessableEntity, message("githubtest: type must be a name or null, not empty")
 	}
 	if name != nil {
 		if _, ok := f.orgTypes[strings.ToLower(*name)]; !ok {
-			return http.StatusUnprocessableEntity, message(fmt.Sprintf("Validation Failed: the org has no issue type %q", *name))
+			return nil, http.StatusUnprocessableEntity, message(fmt.Sprintf("Validation Failed: the org has no issue type %q", *name))
 		}
 		// This refusal comes before the no-change check below, so an
 		// edit that names the disabled type the issue has already is
 		// refused too. GitHub's real answer to that edit is unconfirmed.
 		if status, msg := f.fakeTypeRefusal(*name); msg != nil {
-			return status, msg
+			return nil, status, msg
 		}
 	}
-	switch {
-	case f.dropTypes:
-	case name == nil:
-		if is.Type != nil {
-			f.issueTypeRevertSet(is, f.slug+"[bot]", "")
+	return func() {
+		switch {
+		case f.dropTypes:
+		case name == nil:
+			if is.Type != nil {
+				f.issueTypeRevertSet(is, f.slug+"[bot]", "")
+			}
+		case !strings.EqualFold(is.GetType().GetName(), *name):
+			f.issueTypeRevertSet(is, f.slug+"[bot]", *name)
 		}
-	case !strings.EqualFold(is.GetType().GetName(), *name):
-		f.issueTypeRevertSet(is, f.slug+"[bot]", *name)
-	}
-	return 0, nil
+	}, 0, nil
 }
