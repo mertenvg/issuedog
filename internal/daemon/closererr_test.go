@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -466,26 +467,106 @@ func closerErrStep1Assigned(event *int64, o *origin) func(testing.TB) *githubtes
 	}
 }
 
+// closerErrCommentID is the ID of issue 1's comment on f carrying the
+// closer state error for close event.
+func closerErrCommentID(t testing.TB, f *githubtest.Fake, event int64) int64 {
+	t.Helper()
+	s, err := f.Client(t).Snapshot(context.Background(), "o", "r", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range s.Comments {
+		if strings.Contains(c.Body, closerErrMarker(event)) {
+			return c.ID
+		}
+	}
+	t.Fatalf("issue 1 has no closer state error for close %d", event)
+	return 0
+}
+
+// closerErrStep1Liked is closerErrStep1Assigned's issue 1 with owner's 👍,
+// as *up, on its closer state error, as *comment, which no daemon has
+// read yet.
+func closerErrStep1Liked(event, comment, up *int64, o *origin) func(testing.TB) *githubtest.Fake {
+	return func(t testing.TB) *githubtest.Fake {
+		f := closerErrStep1Assigned(event, o)(t)
+		*comment = closerErrCommentID(t, f, *event)
+		*up = f.AddReaction(*comment, "owner", "+1")
+		return f
+	}
+}
+
+// closerErrAckDaemon is a new daemon on o over f, as after a restart, with
+// the digest kept, assignment on, and step 1's 👍 on a state error
+// acknowledging it (daemon.ErrorByReaction), by the trust step 1 asks, as
+// daemon.NewStep wires it.
+func closerErrAckDaemon(t testing.TB, f *githubtest.Fake, o *origin) *daemon.Daemon {
+	t.Helper()
+	d := digestDaemon(t, f, o, nil)
+	d.Assign = true
+	d.Step.Reactions = daemon.ErrorByReaction(d.Step.CurrentTrust())
+	return d
+}
+
+// With CODEOWNERS on main, step 1 still asks an open issue's closer
+// question, so its closer state error stays open while GitHub can't say
+// how the close was made, and the owner's 👍 on it acknowledges it, by the
+// trust step 1 asks (SPEC §5.3, Which 👍): a restart, which knows no
+// answer, replies with the ack, unassigns the owner and drops the error
+// from the digest, which is safe to replay. The passes after it write
+// nothing, and make no request of issue 1, the error's reactions
+// included, nor any GraphQL one, as step 1 no longer visits the issue.
+func TestCloserErrStep1Acknowledged(t *testing.T) {
+	t.Parallel()
+	var event, comment, up int64
+	o := digestNotifyOrigin(t)
+	setup := closerErrStep1Liked(&event, &comment, &up, o)
+	restart := func(f *githubtest.Fake) *daemon.Daemon { return closerErrAckDaemon(t, f, o) }
+	githubtest.Replay(t, setup, func(f *githubtest.Fake) error { return restart(f).Iterate(context.Background()) })
+	f := setup(t)
+	d := restart(f)
+	iterate(t, d)
+	is := f.State().Issues[0]
+	if want := []string{closerErrOnOpen("`mallory`", event, 3), errAckReply("owner", "closer", strconv.FormatInt(event, 10), up)}; is.Closed ||
+		!slices.Equal(is.Labels, []string{"stage:pr-open"}) || len(is.Assignees) != 0 || !slices.Equal(closingComments(f, 1, 1), want) {
+		t.Errorf("closed %t, labels %q, assignees %q, comments\n%q\nwant open at stage:pr-open, with nobody assigned, and\n%q",
+			is.Closed, is.Labels, is.Assignees, closingComments(f, 1, 1), want)
+	}
+	if body := closerErrDigestBody(t, f); strings.Contains(body, "`closer`") {
+		t.Errorf("digest body %q; want the closer state error acknowledged", body)
+	}
+	iterate(t, d) // the poll lists issue 1 again, for the ack and the unassign
+	for _, name := range []string{"an unchanged pass", "the next"} {
+		writes, reqs := len(f.Writes()), len(f.Requests())
+		iterate(t, d)
+		if w := f.Writes()[writes:]; len(w) != 0 {
+			t.Errorf("%s wrote %+v; want nothing", name, w)
+		}
+		if n, r, likes := closingGraphQL(f, reqs), readsOf(f, reqs, 1), errAckReads(f.Requests()[reqs:], comment); n != 0 || len(r) != 0 || likes != 0 {
+			t.Errorf("%s made %d GraphQL requests, read issue 1 by %+v and the error's reactions %d times; want none, as it's acknowledged",
+				name, n, r, likes)
+		}
+	}
+}
+
 // With no CODEOWNERS file, nobody is a write collaborator who isn't
 // trusted, so step 1 asks no closer question, and an open issue's closer
 // state error ends without a 👍, while GitHub still can't say how its close
 // was made. Once CODEOWNERS leaves main, a restart, which knows no answer,
 // unassigns the owner and drops the error from the digest, which is safe
-// to replay. The passes after it write nothing, and make no request of
-// issue 1 nor any GraphQL one.
+// to replay. The owner's 👍 on the error, which has ended, gets no reply,
+// and its reactions aren't read, by the trust step 1 asks (SPEC §5.3,
+// Only open errors). The passes after it write nothing, and make no
+// request of issue 1 nor any GraphQL one.
 func TestCloserErrStep1NoCodeowners(t *testing.T) {
 	t.Parallel()
-	var event int64
+	var event, comment, up int64
 	o, noCodeowners := digestNotifyOrigin(t), digestNotifyOrigin(t)
 	gitIn(t, noCodeowners.work, "rm", "--quiet", ".github/CODEOWNERS")
 	gitIn(t, noCodeowners.work, "commit", "--quiet", "-m", "remove CODEOWNERS")
 	gitIn(t, noCodeowners.work, "push", "--quiet", noCodeowners.url, "main")
-	setup := closerErrStep1Assigned(&event, o)
-	restart := func(f *githubtest.Fake) *daemon.Daemon {
-		d := digestDaemon(t, f, noCodeowners, nil)
-		d.Assign = true
-		return d
-	}
+	setup := closerErrStep1Liked(&event, &comment, &up, o)
+	restart := func(f *githubtest.Fake) *daemon.Daemon { return closerErrAckDaemon(t, f, noCodeowners) }
 	githubtest.Replay(t, setup, func(f *githubtest.Fake) error { return restart(f).Iterate(context.Background()) })
 	f := setup(t)
 	if body, is := closerErrDigestBody(t, f), f.State().Issues[0]; !strings.Contains(body, closerErrDigestLine(event)) ||
@@ -493,11 +574,15 @@ func TestCloserErrStep1NoCodeowners(t *testing.T) {
 		t.Fatalf("digest body %q, assignees %q; want the open closer state error listed, and owner assigned for it", body, is.Assignees)
 	}
 	d := restart(f)
+	from := len(f.Requests())
 	iterate(t, d)
 	is := f.State().Issues[0]
 	if is.Closed || !slices.Equal(is.Labels, []string{"stage:pr-open"}) || len(is.Assignees) != 0 || len(closingComments(f, 1, 1)) != 1 {
-		t.Errorf("closed %t, labels %q, assignees %q, comments %q; want open at stage:pr-open, with nobody assigned and only the error",
+		t.Errorf("closed %t, labels %q, assignees %q, comments %q; want open at stage:pr-open, with nobody assigned and only the error, with no ack",
 			is.Closed, is.Labels, is.Assignees, closingComments(f, 1, 1))
+	}
+	if n := errAckReads(f.Requests()[from:], comment); n != 0 {
+		t.Errorf("the restart read the ended error's reactions %d times; want none", n)
 	}
 	if body := closerErrDigestBody(t, f); strings.Contains(body, "`closer`") {
 		t.Errorf("digest body %q; want the closer state error ended, as step 1 asks no closer question", body)
@@ -509,8 +594,8 @@ func TestCloserErrStep1NoCodeowners(t *testing.T) {
 		if w := f.Writes()[writes:]; len(w) != 0 {
 			t.Errorf("%s wrote %+v; want nothing", name, w)
 		}
-		if n, r := closingGraphQL(f, reqs), readsOf(f, reqs, 1); n != 0 || len(r) != 0 {
-			t.Errorf("%s made %d GraphQL requests and read issue 1 by %+v; want none", name, n, r)
+		if n, r, likes := closingGraphQL(f, reqs), readsOf(f, reqs, 1), errAckReads(f.Requests()[reqs:], comment); n != 0 || len(r) != 0 || likes != 0 {
+			t.Errorf("%s made %d GraphQL requests, read issue 1 by %+v and the error's reactions %d times; want none", name, n, r, likes)
 		}
 	}
 }
