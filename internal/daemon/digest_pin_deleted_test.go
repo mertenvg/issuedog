@@ -17,23 +17,16 @@ import (
 
 // pinDeletedFake is a fake whose issue 1 is a new digest, not yet pinned,
 // that is deleted just before the pinIssue mutation: after PinIssue's GET,
-// the first of the issue in a pass, read it. The fake numbers issues by
-// count, so the next create, the new digest's, first files a filler issue,
-// which takes 1, as GitHub, which never reuses a number, would give the
-// new digest a new one. Till then, 1's paths answer 404.
+// the first of the issue in a pass, read it. From then on, 1's paths
+// answer 404, and, as on GitHub, the next create, the new digest's, gets
+// a new number, 2.
 func pinDeletedFake(t testing.TB) *githubtest.Fake {
 	t.Helper()
 	f := newFake(t)
 	f.AddIssue(app, "issuedog digest", digestPending)
-	create := func(r githubtest.Request) bool { return r.Method == http.MethodPost && r.Path == "/issues" }
-	filler := func() { f.AddIssue("owner", "Filler", "") }
-	deleteDigest := func() {
-		f.DeleteIssue()
-		f.BeforeRequest(create, filler)
-	}
 	pin := func(r githubtest.Request) bool { return r.Method == http.MethodPost && r.Path == "/graphql" }
 	f.BeforeRequest(func(r githubtest.Request) bool { return r.Method == http.MethodGet && r.Path == "/issues/1" },
-		func() { f.BeforeRequest(pin, deleteDigest) })
+		func() { f.BeforeRequest(pin, f.DeleteIssue) })
 	return f
 }
 
@@ -61,13 +54,8 @@ func TestDigestPinDeletedDropped(t *testing.T) {
 	if !digestRunRelisted(f, from) {
 		t.Error("the pass after didn't list every issue again; want it to, as the digest was dropped")
 	}
-	if is := f.State().Issues; len(is) != 2 || is[0].Title != "Filler" || !is[1].Pinned || is[1].Body != digestList {
-		t.Errorf("issues = %+v; want the filler, and a new digest, pinned, listing nothing", is)
-	}
-	// The filler, filed just before the create, is first listed and read
-	// by the pass after.
-	if got := digestPass(t, f, d); len(got) != 0 {
-		t.Errorf("writes of the pass that reads the filler = %q; want none", got)
+	if is := f.State().Issues; len(is) != 1 || is[0].Number != 2 || !is[0].Pinned || is[0].Body != digestList {
+		t.Errorf("issues = %+v; want only a new digest, #2, pinned, listing nothing", is)
 	}
 	from = len(f.Requests())
 	iterate(t, d)

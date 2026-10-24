@@ -54,7 +54,8 @@ type Fake struct {
 	lastID      int64
 	lastEvent   int64         // timeline events have IDs of their own
 	eventLag    time.Duration // see LagEvents
-	issues      []*issue      // by number, from 1
+	issues      []*issue      // the issues the fake has, in number order (issueNumbered)
+	filed       int           // the last number given an issue, a deleted one's included (fileIssue)
 	comments    []*comment    // oldest first
 	writes      []Write
 	failAt      int
@@ -233,10 +234,13 @@ func (f *Fake) AddIssue(author, title, body string, labels ...string) int {
 
 // fileIssue files an issue by author, with its labels added by author, and
 // returns it. Its node ID is the one GraphQL knows it by (issueNode), and
-// its ID the one sub-issue and dependency writes name it by (issueID).
+// its ID the one sub-issue and dependency writes name it by (issueID). Its
+// number is the one after the last filed, so, as on GitHub, it's never a
+// deleted issue's (DeleteIssue).
 func (f *Fake) fileIssue(author, title, body string, labels []string) *issue {
 	now := f.tick()
-	n := len(f.issues) + 1
+	f.filed++
+	n := f.filed
 	is := &issue{Issue: gogithub.Issue{Number: &n, ID: new(issueID(n)), NodeID: new(issueNode(n)), Title: &title, Body: &body, State: new("open"),
 		User: user(author), CreatedAt: now, UpdatedAt: now}}
 	for _, l := range labels {
@@ -304,10 +308,21 @@ func (f *Fake) fakeNumberIssue(number int) *issue {
 // hasn't got, as DeleteIssue drops a deleted issue's links, but an answer
 // that meets one fails clearly, not with a panic. f is locked.
 func (f *Fake) fakeNumberFind(number int) (*issue, error) {
-	if number < 1 || number > len(f.issues) {
+	is := f.issueNumbered(number)
+	if is == nil {
 		return nil, fmt.Errorf("no issue #%d: the fake has %d", number, len(f.issues))
 	}
-	return f.issues[number-1], nil
+	return is, nil
+}
+
+// issueNumbered returns issue number, or nil if the fake hasn't got it:
+// one never filed, or one DeleteIssue deleted. f is locked.
+func (f *Fake) issueNumbered(number int) *issue {
+	i, ok := slices.BinarySearchFunc(f.issues, number, func(is *issue, n int) int { return is.GetNumber() - n })
+	if !ok {
+		return nil
+	}
+	return f.issues[i]
 }
 
 // AddComment posts a comment by author and returns its ID.
@@ -449,8 +464,8 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request, write bool, h handl
 		}
 	}
 	c := &call{w: w, r: r}
-	if n, err := strconv.Atoi(r.PathValue("n")); err == nil && n >= 1 && n <= len(f.issues) {
-		c.issue = f.issues[n-1]
+	if n, err := strconv.Atoi(r.PathValue("n")); err == nil {
+		c.issue = f.issueNumbered(n)
 	}
 	if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil {
 		c.comment = f.findComment(id)
@@ -640,7 +655,7 @@ func (f *Fake) listComments(c *call) (int, any) {
 		}
 	}
 	list := slices.DeleteFunc(slices.Clone(f.comments), func(cm *comment) bool {
-		return (c.issue != nil && cm.issue != c.issue.GetNumber()) || (c.issue == nil && !f.issues[cm.issue-1].listed()) ||
+		return (c.issue != nil && cm.issue != c.issue.GetNumber()) || (c.issue == nil && !f.issueNumbered(cm.issue).listed()) ||
 			cm.GetUpdatedAt().Before(from)
 	})
 	if c.issue == nil && c.r.URL.Query().Get("sort") == "updated" {
