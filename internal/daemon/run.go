@@ -792,7 +792,7 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 		return fmt.Errorf("apply run %s: %w", l.RunID, err)
 	}
 	logr.Infof("%s/%s#%d: applied run %s", a.Owner, a.Repo, l.Issue, l.RunID)
-	r.Daemon.assignApplied(s, d) // a revision or a round waits on the owner again (SPEC §9.6)
+	r.Daemon.assignApplied(s, d, moved) // a revision or a round waits on the owner again (SPEC §9.6)
 	delete(r.attempts, countKey(l.Issue, l.AttemptKey))
 	delete(r.failures, countKey(l.Issue, l.AttemptKey))
 	return r.finish(ctx, l)

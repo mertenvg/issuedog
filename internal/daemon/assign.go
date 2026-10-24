@@ -215,17 +215,30 @@ func (d *Daemon) assignWorked(n int) {
 // (waitFind) has an item a stage run posts, a spec or plan revision's
 // approval or a question round, it waits on the owner again, and its
 // unassign put off until after Work, if any, isn't made (assignWorked).
-// The run's own comment is the newest on s, so no answer has come since,
-// and no Inputs are given. Only those kinds count, as s is a fresh read,
-// not step 1's, which waitFind's other kinds, such as a labels error,
-// may need (waitInput.S). A failure to find the items is logged, and the
-// unassign is made, for the next pass to judge again.
-func (d *Daemon) assignApplied(s *github.Snapshot, dirt Dirt) {
+// Only those kinds count, as s is a fresh read, not step 1's, which
+// waitFind's other kinds, such as a labels error, may need (waitInput.S).
+// A failure to find the items is logged, and the unassign is made, for
+// the next pass to judge again.
+//
+// A round waits only while no answer has come since it (waitFind). Unless
+// moved, the run's own comment is the newest on s, as apply drops a
+// result with new input since the run read the issue (Runs.newInput), so
+// no Inputs are given. A result whose move was written before, by an
+// apply a crash or a failure cut short, is only finished, with no such
+// check (Runs.apply), so an answer may have come since its round. That
+// move was on the issue before this pass, so this pass's step 1 read it,
+// and step 1's Inputs, the answers since it, are given. An answer after
+// step 1's read is one the next pass judges.
+func (d *Daemon) assignApplied(s *github.Snapshot, dirt Dirt, moved bool) {
 	if _, ok := d.assignLater[s.Number]; !ok {
 		return
 	}
+	var inputs []github.Comment
+	if moved {
+		inputs = d.inputs[s.Number]
+	}
 	st := d.Step
-	items, err := waitFind(waitInput{Owner: st.Owner, Repo: st.Repo, AppSlug: st.AppSlug, S: s, Dirt: dirt})
+	items, err := waitFind(waitInput{Owner: st.Owner, Repo: st.Repo, AppSlug: st.AppSlug, S: s, Dirt: dirt, Inputs: inputs})
 	if err != nil {
 		logr.Errorf("%s/%s#%d is unassigned after its stage work, as what waits on the owner there can't be found: %v", st.Owner, st.Repo, s.Number, err)
 		return
