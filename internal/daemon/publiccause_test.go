@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/mertenvg/issuedog/internal/config"
+	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/logr/v2"
 )
 
@@ -166,55 +168,69 @@ func TestPublicCauseAttemptsReplay(t *testing.T) {
 // publicCauseTyped is a failed attempt whose cause the daemon wrote
 // itself, past a check's rules (#441): setup files issue 1 and leaves a
 // run's lease on it under root, as a daemon that stopped before applying
-// it would, and stage registers the stage that resumes it. pending is
-// whether that stage still has work on the issue: only then does a pass
-// post a cap error whose post failed before (RunStage), so Replay holds.
-// An issue its stage no longer runs on has none, by definition.
+// it would, and stage registers the stage that resumes it.
 type publicCauseTyped struct {
-	name    string
-	setup   func(t testing.TB, f *githubtest.Fake, root string)
-	stage   func(g *rig)
-	quote   string // the cause the attempt cap's error quotes
-	pending bool
+	name  string
+	setup func(t testing.TB, f *githubtest.Fake, root string)
+	stage func(g *rig)
+	quote string // the cause the attempt cap's error quotes
 }
+
+// publicCauseLoose is the Interviewer with its schema loosened to any
+// object, so output its own schema refuses, such as a hostile key,
+// reaches its decoder: the decoder's words then quote the agent's text.
+type publicCauseLoose struct{ *daemon.Interviewer }
+
+func (publicCauseLoose) Schema() []byte { return []byte(`{"type":"object"}`) }
 
 // publicCauseTypedCases are the causes the daemon writes itself past a
 // check's rules, each reached on a restart, as each is the same on the
 // run that found it: no valid result after a restart, an issue its stage
-// no longer runs on, read again, and a move that doesn't fit.
+// no longer runs on, read again, a move that doesn't fit, and output that
+// doesn't decode, here past a loosened schema.
 func publicCauseTypedCases() []publicCauseTyped {
 	ivEntry := "from=intake to=clarifying event=5"
 	return []publicCauseTyped{
 		{"no valid result after a restart", func(t testing.TB, f *githubtest.Fake, root string) {
 			saveAttempt(t, root, "saved", "", interview(f), 1)
-		}, func(*rig) {}, "no valid result after a restart", true},
+		}, func(*rig) {}, "no valid result after a restart"},
 		{"the interviewer, on the owner's task", func(t testing.TB, f *githubtest.Fake, root string) {
 			_, entry := ivFiled(f, "task", false, ivEntry)
 			saveAttempt(t, root, "saved", ivResult(t, ivRound(1, "")), entry, 1)
 		}, func(g *rig) { g.interviewer() },
 			`the interviewer no longer runs on #1, with type "task" and a parent false: it runs only on an epic, a story with no parent or an untyped issue, ` +
-				"and after a hold from planning, plan-review or planned on a story with a parent", false},
+				"and after a hold from planning, plan-review or planned on a story with a parent"},
 		{"the interviewer's move, which doesn't fit", func(t testing.TB, f *githubtest.Fake, root string) {
 			_, entry := ivFiled(f, "", true, ivEntry)
 			saveAttempt(t, root, "saved", ivResult(t, specOut("story", "")), entry, 1)
 		}, func(g *rig) { g.interviewer() },
-			`the interviewer's spec on #1: an issue of type "story" with a parent true can't move: look up clarifying → spec-review for story on spec-written: no such transition`, true},
+			`the interviewer's spec on #1: an issue of type "story" with a parent true can't move: look up clarifying → spec-review for story on spec-written: no such transition`},
 		{"the planner, on the owner's task", func(t testing.TB, f *githubtest.Fake, root string) {
 			n, seen := plFiled(f, "task", false, plEntry)
 			changedSaveLease(t, root, n, seen, ivResult(t, plGolden(t, "story-plan")))
 		}, func(g *rig) { g.planner(false) },
-			`the planner no longer runs on #1, with type "task" and a parent false: it runs only on an epic or a story`, false},
+			`the planner no longer runs on #1, with type "task" and a parent false: it runs only on an epic or a story`},
 		{"the planner, with no approved plan to revise", func(t testing.TB, f *githubtest.Fake, root string) {
 			n, seen := plFiled(f, "story", false, plEntry, "from=planning to=planned rev=1 run=p0", "from=planned to=planning by=owner event=8")
 			changedSaveLease(t, root, n, seen, ivResult(t, plGolden(t, "story-plan")))
 		}, func(g *rig) { g.planner(false) },
-			"the planner no longer runs on #1: it was planned before, but it has no approved plan revision whose data reads back, so it can't be revised", false},
+			"the planner no longer runs on #1: it was planned before, but it has no approved plan revision whose data reads back, so it can't be revised"},
+		{"the interviewer's output, a hostile key past a loosened schema", func(t testing.TB, f *githubtest.Fake, root string) {
+			_, entry := ivFiled(f, "epic", false, ivEntry)
+			out := `{"type":"result","subtype":"success","is_error":false,"result":"Done.",` +
+				`"structured_output":{"outcome":"questions","` + publicCauseHostile + `":1}}`
+			saveAttempt(t, root, "saved", out, entry, 1)
+		}, func(g *rig) {
+			g.interviewer()
+			g.r.Stages[state.Clarifying] = publicCauseLoose{&daemon.Interviewer{Daemon: g.d}}
+		}, "the interviewer's output doesn't decode"},
 	}
 }
 
 // The attempt cap's error quotes each cause the daemon wrote itself, past
-// a check's rules, fenced, and the lease keeps it (#441). The pass after,
-// unchanged, writes nothing, and runs nothing.
+// a check's rules, fenced, and the lease keeps it (#441), but none of
+// claude's text, even where a decoder's words would quote it (#480). The
+// pass after, unchanged, writes nothing, and runs nothing.
 func TestPublicCauseTyped(t *testing.T) {
 	t.Parallel()
 	for _, tt := range publicCauseTypedCases() {
@@ -233,6 +249,11 @@ func TestPublicCauseTyped(t *testing.T) {
 				strings.Contains(got, root) || g.runs() != 0 {
 				t.Errorf("after %d runs, the attempt cap's error =\n%s\nwant it to quote %q, fenced", g.runs(), got, tt.quote)
 			}
+			for _, leak := range publicCauseHostileLeaks {
+				if strings.Contains(got, leak) {
+					t.Errorf("the attempt cap's error has %q: %s", leak, got)
+				}
+			}
 			if l := g.lease(); !l.Failed || l.PublicFailure != tt.quote {
 				t.Errorf("the lease %+v; want it failed, its last failure %q", l, tt.quote)
 			}
@@ -240,20 +261,29 @@ func TestPublicCauseTyped(t *testing.T) {
 			if err := g.work(1); err != nil || len(f.Writes()) != writes || g.runs() != 0 {
 				t.Errorf("the unchanged pass = %v, writes %+v, %d runs; want no write and no run", err, f.Writes()[writes:], g.runs())
 			}
+			// Its stage work, past step 1, reads nothing either: the cap
+			// error is posted, so it isn't tried again (#480).
+			ctx := context.Background()
+			s := g.snapshot(1)
+			in, err := g.d.Step.Run(ctx, s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			from := len(f.Requests())
+			if err := g.r.Work(ctx, []daemon.Ready{{S: s, Inputs: in}}); err != nil || len(f.Requests()) != from {
+				t.Errorf("the unchanged stage work = %v, with requests %+v; want none", err, f.Requests()[from:])
+			}
 		})
 	}
 }
 
 // Replay passes for the attempt cap's error quoting each cause the daemon
-// wrote itself, past a check's rules (#441), on an issue whose stage still
-// has work pending: on any other, a cap error whose post failed isn't
-// posted again, as no run would start there either.
+// wrote itself, past a check's rules (#441). A cap error whose post failed
+// is posted on the next pass even on an issue its stage no longer runs on,
+// where no run would start (#480).
 func TestPublicCauseTypedReplay(t *testing.T) {
 	t.Parallel()
 	for _, tt := range publicCauseTypedCases() {
-		if !tt.pending {
-			continue
-		}
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			replayRuns(t, tt.setup, func(g *rig) {
@@ -309,6 +339,56 @@ func TestPublicCauseApplyLogged(t *testing.T) {
 	stop()
 	if err != nil || strings.Count(logs.String(), cause) != 1 || !strings.Contains(newestComment(f, 1), publicCauseLogged) {
 		t.Errorf("Iterate = %v, logs %q; want no error, the apply's error logged once, and the comment pointing there", err, logs.String())
+	}
+}
+
+// A failure to apply a result before the last, which the next pass tries
+// again, is the pass's error, for the loop to log, and isn't logged where
+// it happens too (#480).
+func TestPublicCauseEarlierApplyLogged(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	const cause = "PATCH https://api.github.com/repos/o/r/issues/1: 422 Validation Failed"
+	f := newFake(t)
+	interview(f)
+	o := newOrigin(t)
+	o.commit(config.Path, "types: labels\nloop:\n  max_attempts: 2\n") // Iterate loads config from main
+	g := newRig(t, f, o, t.TempDir())
+	g.stage.applyErr = errors.New(cause)
+	g.claude(okOut, 0)
+	var logs strings.Builder
+	stop := logr.AddWriter(&logs, logr.WithFilter(logr.Monitor))
+	err := g.d.Iterate(context.Background())
+	logr.Wait()
+	stop()
+	want := "applying run run1 on #1 failed, 1 of 2 times, so it's tried again: apply run run1: " + cause
+	if err == nil || !strings.Contains(err.Error(), want) || strings.Contains(logs.String(), cause) || g.lease().ApplyFailures != 1 {
+		t.Errorf("Iterate = %v, logs %q, lease %+v; want the error %q, logged nowhere yet, and the lease counting it",
+			err, logs.String(), g.lease(), want)
+	}
+}
+
+// A run that fails as claude exits non-zero, whose result names the
+// subtype the attempt cap's error quotes, logs the runner's error, its
+// exit status, beside the subtype, once (#480).
+func TestPublicCauseExitStatusLogged(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	const sub = `run failed with subtype "error_max_turns"`
+	f := newFake(t)
+	interview(f)
+	g := newRig(t, f, newOrigin(t), t.TempDir())
+	g.d.Config.Loop.MaxAttempts = 1
+	g.claude(failOut, 1)
+	var logs strings.Builder
+	stop := logr.AddWriter(&logs, logr.WithFilter(logr.Monitor))
+	err := g.work(1)
+	logr.Wait()
+	stop()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "run run1: running claude: exit status 1: " + sub; strings.Count(logs.String(), want) != 1 ||
+		!strings.Contains(newestComment(f, 1), publicCauseQuote(sub)) {
+		t.Errorf("logs %q; want %q once, and the comment quoting the subtype alone", logs.String(), want)
 	}
 }
 

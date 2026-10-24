@@ -210,7 +210,7 @@ type Runs struct {
 	NewID     func() string    // nil makes random run IDs
 
 	attempts   map[string]int  // failed runs, by countKey
-	swept      bool            // leftover temp leases are removed
+	swept      bool            // what a crash left is removed (sweep)
 	ended      string          // the ended run (a Failed lease) whose files are removed
 	badSchemas map[string]bool // the agents whose Stage's schema doesn't compile, reported
 
@@ -219,7 +219,8 @@ type Runs struct {
 	failures map[string]string
 }
 
-// Work is Daemon.Work. It first finishes a lease a run left, after a
+// Work is Daemon.Work. On its first pass it first removes what a crash
+// left (sweep). Then it finishes a lease a run left, after a
 // restart or a failed apply (resume). Then, unless a usage limit closed
 // the gate, it runs the first issue, by priority then number, whose stage
 // has a Stage with work pending. If none ran, it runs Unlabeled, if set, on
@@ -234,8 +235,7 @@ type Runs struct {
 // the histories it reads, and only the issue about to run is read again.
 func (r *Runs) Work(ctx context.Context, ready []Ready) error {
 	if !r.swept {
-		r.sweep()
-		r.swept = true
+		r.swept = r.sweep(ctx)
 	}
 	skip, err := r.resume(ctx)
 	if errors.Is(err, ErrLabelsHeld) {
@@ -321,7 +321,8 @@ func (r *Runs) CheckRegistered() error {
 // setup, counts as an attempt (failed); after loop.max_attempts in a row
 // the issue gets one state error (SPEC §5.3) and no more runs until the
 // stage moves or gets new input. If posting that error failed, RunStage
-// posts it instead of a run; if that fails too, it logs the error and
+// posts it instead of a run, even when the stage has no work pending, as
+// on an issue it no longer runs on; if that fails too, it logs the error and
 // moves on, so the next issue gets its turn. A Stage whose schema doesn't
 // compile starts no run: it's a setup failure, reported once (schema). A
 // result asking for a move the table lacks is no attempt: it gets one
@@ -362,10 +363,22 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		return false, nil
 	}
 	in := Input{S: rd.S, Inputs: rd.Inputs, Dirt: d, Issue: is}
+	errKey := attemptKey(is, rd.Inputs)
+	if r.attempts[countKey(n, errKey)] >= r.limit() && !is.Reported(kindAttempts, errKey) {
+		// The cap was reached, but posting its state error failed: post it,
+		// whether or not the stage has work pending, as a last attempt that
+		// failed on an issue its stage no longer runs on leaves it none.
+		// A post that keeps failing mustn't hold up the other issues.
+		last := Lease{Issue: n, Stage: is.Stage, AttemptKey: errKey, PublicFailure: r.failures[countKey(n, errKey)]}
+		if err := r.reportCap(ctx, nil, st, last); err != nil {
+			logr.Errorf("%s/%s#%d: no %s run, as it failed loop.max_attempts times, but posting that failed again: %v",
+				a.Owner, a.Repo, n, st.Agent(), err)
+		}
+		return false, nil
+	}
 	if !st.Pending(in) {
 		return false, nil
 	}
-	errKey := attemptKey(is, rd.Inputs)
 	if is.Reported(kindAttempts, errKey) {
 		logr.Debugf("%s/%s#%d: no %s run: it failed loop.max_attempts times", a.Owner, a.Repo, n, st.Agent())
 		return false, nil
@@ -382,16 +395,6 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		// another at intake gives triage no run (SPEC §5.3): step 1 posts
 		// the new key's error (typeCheck).
 		logr.Debugf("%s/%s#%d: no %s run: its type doesn't fit its stage, as reported", a.Owner, a.Repo, n, st.Agent())
-		return false, nil
-	}
-	if r.attempts[countKey(n, errKey)] >= r.limit() {
-		// The cap was reached, but posting its state error failed: post it.
-		// A post that keeps failing mustn't hold up the other issues.
-		last := Lease{Issue: n, Stage: is.Stage, AttemptKey: errKey, PublicFailure: r.failures[countKey(n, errKey)]}
-		if err := r.reportCap(ctx, nil, st, last); err != nil {
-			logr.Errorf("%s/%s#%d: no %s run, as it failed loop.max_attempts times, but posting that failed again: %v",
-				a.Owner, a.Repo, n, st.Agent(), err)
-		}
 		return false, nil
 	}
 	attempt := r.attempts[countKey(n, errKey)] + 1
@@ -575,9 +578,10 @@ func outcome(raw []byte) (failed bool, text string) {
 
 // applyLease applies l's result (apply): raw, claude's output, whose
 // structured output out is valid. A failure keeps the lease, counted in
-// ApplyFailures, so the next pass tries again; after loop.max_attempts of
-// them, the run is a failed attempt, and only failed's own error is
-// returned, as failed logs the cause. A failure to end the run once the
+// ApplyFailures, so the next pass tries again, and is returned, logged
+// only by the loop; after loop.max_attempts of them, the run is a failed
+// attempt, and only failed's own error is returned, as failed logs the
+// cause. A failure to end the run once the
 // result is applied, dropped or blocked (an endError) isn't counted, and
 // leaves the lease as end or finish left it, for the next pass. Nor is an
 // issue whose labels CheckLabels holds back: the error wraps
@@ -601,11 +605,13 @@ func (r *Runs) applyLease(ctx context.Context, l Lease, st Stage, raw []byte, ou
 	}
 	l.ApplyFailures++
 	if l.ApplyFailures < r.limit() {
-		logr.Warnf("applying run %s on #%d failed, %d of %d times, so it's tried again: %v", l.RunID, l.Issue, l.ApplyFailures, r.limit(), err)
 		// The next pass applies it, as after a crash, and judges the
-		// assignees then (SPEC §9.6).
+		// assignees then (SPEC §9.6). The failure is the pass's error, which
+		// stops the pass, so no other run takes the lease, and the loop logs
+		// it, once, so it isn't logged here too.
 		r.Daemon.assignWorked(l.Issue)
-		return errors.Join(err, r.writeLease(l))
+		return errors.Join(fmt.Errorf("applying run %s on #%d failed, %d of %d times, so it's tried again: %w",
+			l.RunID, l.Issue, l.ApplyFailures, r.limit(), err), r.writeLease(l))
 	}
 	// The run is now a failed attempt, as a run that fails is, and failed
 	// logs its cause, once (SPEC §5.3), so it isn't the pass's error too.
@@ -906,7 +912,7 @@ func (r *Runs) endedLease(ctx context.Context, l Lease) error {
 // publicCauseLogged. It logs cause in full. The last attempt allowed posts
 // one state error (reportCap), naming that cause, after which RunStage
 // runs no more. If posting it fails, RunStage posts it instead of starting
-// a run.
+// a run, whether or not the stage has work pending then.
 func (r *Runs) failed(ctx context.Context, st Stage, l Lease, cause error) error {
 	l.PublicFailure = cmp.Or(publicCause(cause), publicCauseLogged)
 	n := r.count(l)
@@ -1142,9 +1148,12 @@ func (r *Runs) uncounted(ctx context.Context, l Lease) error {
 // Then it removes the run's files (cleanup), and the lease if count is 0.
 // Its error is an endError.
 //
-// A gap remains: when the ended lease can't be written, the lease stays
-// the run's, so resume treats the run as one a restart cut short, and so
-// it does after a crash in the short window before that write. A usage
+// A gap remains: when the ended lease isn't written, its write failing
+// before the rename puts it in place, the lease stays the run's, so resume
+// treats the run as one a restart cut short, and so it does after a crash
+// in the short window before that write. A write that fails only at its
+// dir sync has put the ended lease in place, so resume only takes its
+// count (endedLease) and removes the result, unapplied. A usage
 // limit is then observed twice, once more on resume, if claude exited 0,
 // as the runner saved its result; with a non-zero exit there's no saved
 // result, so it's counted as a failed attempt, as are a setup failure and
@@ -1252,7 +1261,7 @@ func (r *Runs) readLease(ctx context.Context) (Lease, bool, error) {
 			logr.Errorf("removing the clone %s of the bad lease: %v", l.Clone, err)
 		}
 	} else {
-		logr.Warnf("the bad lease names no clone in %s, so any clone it had stays", r.Workspace.RunsDir)
+		logr.Warnf("the bad lease names no clone in %s, so any clone it had is left for the sweep at startup", r.Workspace.RunsDir)
 	}
 	if err := r.remove(r.leasePath()); err != nil {
 		return Lease{}, false, fmt.Errorf("remove the lease: %w", err)
@@ -1296,18 +1305,43 @@ func (r *Runs) writeLease(l Lease) error {
 	return nil
 }
 
-// sweep removes the temp leases a crash in writeLease left.
-func (r *Runs) sweep() {
-	tmps, err := filepath.Glob(filepath.Join(r.Runner.StateDir, "lease.*.tmp"))
+// sweep removes what a crash left (SPEC §8.2), before any run starts: the
+// temp leases a crash in writeLease left, the temp results one in the
+// runner's save left, and, against the lease, every run's checkout and
+// context dir but the lease's run's, with the temp git configs
+// (workspace.Sweep). The lease's run's files are resume's to remove. It
+// reports whether it read the lease: while that fails, resume fails too,
+// so no run starts, and the next pass sweeps again.
+func (r *Runs) sweep(ctx context.Context) bool {
+	sweepTemps(filepath.Join(r.Runner.StateDir, "lease.*.tmp"), "temp lease")
+	sweepTemps(filepath.Join(r.Runner.StateDir, "runs", "*.tmp"), "temp result")
+	l, ok, err := r.readLease(ctx)
 	if err != nil {
-		logr.Errorf("finding leftover temp leases: %v", err)
+		logr.Errorf("sweeping the leftover runs waits for the lease: %v", err)
+		return false
+	}
+	keep := ""
+	if ok {
+		keep = l.RunID
+	}
+	if err := r.Workspace.Sweep(ctx, keep); err != nil {
+		logr.Errorf("sweeping the leftover runs: %v", err)
+	}
+	return true
+}
+
+// sweepTemps removes the files pattern matches, each a leftover what.
+func sweepTemps(pattern, what string) {
+	tmps, err := filepath.Glob(pattern)
+	if err != nil {
+		logr.Errorf("finding leftover %ss: %v", what, err)
 	}
 	for _, tmp := range tmps {
 		if err := os.Remove(tmp); err != nil {
-			logr.Errorf("removing the leftover temp lease %s: %v", tmp, err)
+			logr.Errorf("removing the leftover %s %s: %v", what, tmp, err)
 			continue
 		}
-		logr.Infof("removed the leftover temp lease %s", tmp)
+		logr.Infof("removed the leftover %s %s", what, tmp)
 	}
 }
 

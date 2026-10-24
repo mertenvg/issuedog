@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -85,6 +87,47 @@ func (w *Workspace) Cleanup(ctx context.Context, runID string) error {
 		return fmt.Errorf("clean up run %s: remove context dir: %w", runID, err)
 	}
 	return nil
+}
+
+// Sweep removes what a crash left (SPEC §8.2), so it must run before any
+// run is prepared: the checkout and context dir of every run but keep's,
+// where keep may be "" for none, and the temp files writeGitConfig left.
+// A dir that doesn't exist holds nothing to remove. It goes on past a
+// failed removal, and returns every failure, joined.
+func (w *Workspace) Sweep(ctx context.Context, keep string) error {
+	var errs []error
+	runs := map[string]bool{}
+	tempConfig := filepath.Base(w.gitConfig()) + "."
+	for _, dir := range []string{w.RunsDir, w.ContextDir} {
+		entries, err := os.ReadDir(dir)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("sweep %s: %w", dir, err))
+			continue
+		}
+		for _, e := range entries {
+			switch name := e.Name(); {
+			case dir == w.ContextDir && strings.HasPrefix(name, tempConfig):
+				if err := os.Remove(filepath.Join(dir, name)); err != nil {
+					errs = append(errs, fmt.Errorf("sweep the temp git config: %w", err))
+					continue
+				}
+				logr.Infof("removed the leftover temp git config %s", filepath.Join(dir, name))
+			case validName(name) && name != keep:
+				runs[name] = true
+			}
+		}
+	}
+	for _, id := range slices.Sorted(maps.Keys(runs)) {
+		if err := w.Cleanup(ctx, id); err != nil {
+			errs = append(errs, fmt.Errorf("sweep: %w", err))
+			continue
+		}
+		logr.Infof("removed the leftover checkout and context dir of run %s", id)
+	}
+	return errors.Join(errs...)
 }
 
 // validName refuses empty names, path separators and leading dots.

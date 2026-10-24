@@ -56,16 +56,16 @@ type triageOutput struct {
 }
 
 // triageDecode decodes a triage run's output. A field the type doesn't
-// have is an error, as is a verdict the schema doesn't allow.
+// have is an error, as is a verdict the schema doesn't allow (decodeCause).
 func triageDecode(raw json.RawMessage) (triageOutput, error) {
 	var out triageOutput
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
 	if err := d.Decode(&out); err != nil {
-		return triageOutput{}, &daemonCause{fmt.Errorf("decode triage output: %w", err)}
+		return triageOutput{}, decodeCause("triage's", err)
 	}
 	if out.Verdict != triageHandle && out.Verdict != triageLeave {
-		return triageOutput{}, &daemonCause{fmt.Errorf("decode triage output: unknown verdict %q", out.Verdict)}
+		return triageOutput{}, decodeCause("triage's", fmt.Errorf("unknown verdict %q", out.Verdict))
 	}
 	return out, nil
 }
