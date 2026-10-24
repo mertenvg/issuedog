@@ -2,6 +2,7 @@ package githubtest
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -30,12 +31,36 @@ func (f *Fake) DeleteCommentBy(login string, id int64) string {
 	defer f.mu.Unlock()
 	c := f.fakeCommentID(id)
 	at := f.deleteComment(c)
-	author := c.GetUser().GetLogin()
-	if login != "" && strings.EqualFold(login, author) {
+	if login != "" && strings.EqualFold(login, c.GetUser().GetLogin()) {
 		return ""
 	}
+	return f.deletedEventBy(login, c, at.Time)
+}
+
+// DeleteCommentByUnmoved deletes a comment as login, someone other than
+// its author, as DeleteCommentBy does, but leaves its issue's updated_at
+// alone, as SPEC §16 hasn't confirmed that another user's deletion moves
+// it, and as an author's deletion leaves it for about 2 seconds. The
+// event's time is the clock's next tick. As an author's deletion of their
+// own comment is confirmed to move updated_at, one fails the test, as a
+// comment the fake hasn't got does (fakeCommentID).
+func (f *Fake) DeleteCommentByUnmoved(login string, id int64) string {
+	f.t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c := f.fakeCommentID(id)
+	if login != "" && strings.EqualFold(login, c.GetUser().GetLogin()) {
+		f.t.Fatalf("githubtest: %s deleting their own comment %d moves updated_at: use DeleteCommentBy", login, id)
+	}
+	f.comments = slices.DeleteFunc(f.comments, func(o *comment) bool { return o == c })
+	return f.deletedEventBy(login, c, f.tick().Time)
+}
+
+// deletedEventBy records a CommentDeletedEvent at at, of c by login, on
+// c's issue, and returns its node ID. f is locked.
+func (f *Fake) deletedEventBy(login string, c *comment, at time.Time) string {
 	f.lastEvent++
-	e := deletedEvent{node: fmt.Sprintf("CDE_%d", firstEvent+f.lastEvent), by: login, author: author, at: at.Time}
+	e := deletedEvent{node: fmt.Sprintf("CDE_%d", firstEvent+f.lastEvent), by: login, author: c.GetUser().GetLogin(), at: at}
 	is := f.issues[c.issue-1]
 	is.deletions = append(is.deletions, e)
 	return e.node

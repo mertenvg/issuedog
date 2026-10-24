@@ -2,6 +2,7 @@ package githubtest
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -142,5 +143,45 @@ func TestDeleteCommentByAuthor(t *testing.T) {
 	f.mu.Unlock()
 	if len(s) != 2 || !s[1].at.Equal(at) {
 		t.Errorf("deletions %+v; want the last one at updated_at, %v", s, at)
+	}
+}
+
+// DeleteCommentByUnmoved deletes the comment and records the event, as
+// DeleteCommentBy does for someone else's deletion, but leaves updated_at
+// where it was. An author's deletion of their own comment, which SPEC §16
+// confirms moves updated_at, fails the test and changes nothing.
+func TestDeleteCommentByUnmoved(t *testing.T) {
+	t.Parallel()
+	tb := &fakeNumberTB{TB: t}
+	f := New(tb, "o/r", "issuedog")
+	n := f.AddIssue("owner", "Title", "body")
+	c, ctx := f.Client(t), context.Background()
+	updated := func() time.Time {
+		t.Helper()
+		is, _, err := c.Issues.Get(ctx, "o", "r", n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return is.GetUpdatedAt().Time
+	}
+	own := f.AddComment(n, "mallory", "Oops.")
+	notice := f.AddComment(n, "issuedog[bot]", "A notice.")
+	before := updated()
+	if fatal, panicked := fakeNumberFatal(tb, func() { f.DeleteCommentByUnmoved("Mallory", own) }); panicked != nil ||
+		!slices.Equal(fatal, []string{fmt.Sprintf("githubtest: Mallory deleting their own comment %d moves updated_at: use DeleteCommentBy", own)}) {
+		t.Errorf("an author's own deletion: Fatalf %q, panicked with %v; want the test failed", fatal, panicked)
+	}
+	if got := f.State().Issues[0].Comments; len(got) != 2 {
+		t.Errorf("comments after the author's refused deletion %+v; want both kept", got)
+	}
+	node := f.DeleteCommentByUnmoved("mallory", notice)
+	if got := updated(); !got.Equal(before) {
+		t.Errorf("updated_at %v; want it unmoved, at %v", got, before)
+	}
+	if _, nodes := deletedQuery(t, f, answered, n, nil); node == "" || len(nodes) != 1 || nodes[0].ID != node {
+		t.Errorf("deletions %+v; want only %q", nodes, node)
+	}
+	if got := f.State().Issues[0].Comments; len(got) != 1 || got[0].Author != "mallory" {
+		t.Errorf("comments %+v; want only mallory's, the notice gone", got)
 	}
 }
