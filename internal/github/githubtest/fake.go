@@ -92,6 +92,8 @@ type Fake struct {
 	requests   []Request
 	beforeReq  func(Request) func() // see BeforeRequest
 	answerOnce func(Request) int    // see AnswerOnce
+
+	hooksRunning int // BeforeRequest and BeforeGraphQL hooks running now (fakehook.go)
 }
 
 // discard swallows a reply, for a write that takes effect but answers 500.
@@ -291,7 +293,7 @@ func (f *Fake) fakeNumberIssue(number int) *issue {
 	f.t.Helper()
 	is, err := f.fakeNumberFind(number)
 	if err != nil {
-		f.t.Fatalf("githubtest: %v", err)
+		f.fakeFail("githubtest: %v", err)
 	}
 	return is
 }
@@ -335,7 +337,7 @@ func (f *Fake) DeleteRevision(number, i int) {
 	defer f.mu.Unlock()
 	is := f.fakeNumberIssue(number)
 	if i < 0 || i >= len(is.history) {
-		f.t.Fatalf("githubtest: no revision %d of issue #%d: its history has %d", i, number, len(is.history))
+		f.fakeFail("githubtest: no revision %d of issue #%d: its history has %d", i, number, len(is.history))
 	}
 	is.history[i].text = ""
 }
@@ -549,7 +551,7 @@ func (f *Fake) fakeCommentID(id int64) *comment {
 	f.t.Helper()
 	c := f.findComment(id)
 	if c == nil {
-		f.t.Fatalf("githubtest: no comment %d: the fake has %d", id, len(f.comments))
+		f.fakeFail("githubtest: no comment %d: the fake has %d", id, len(f.comments))
 	}
 	return c
 }
@@ -665,7 +667,9 @@ func (f *Fake) addComment(c *call) (int, any) {
 // its type, or any of them, as the App. A state change is setState's, with
 // state_reason if given, and a type change is issueTypeRevertEdit's. A new
 // title adds the App's renamed event to the timeline, as RenameIssue does.
-// Nothing else of an issue is edited yet.
+// Nothing else of an issue is edited yet. The state and the type are
+// checked before any field changes, so an edit refused for either changes
+// none of the others, its title included.
 func (f *Fake) editIssue(c *call) (int, any) {
 	var req struct {
 		Title, Body, State *string
@@ -679,6 +683,17 @@ func (f *Fake) editIssue(c *call) (int, any) {
 	if req.Title == nil && req.Body == nil && req.State == nil && req.Type == nil {
 		return http.StatusUnprocessableEntity, message("githubtest: only the title, the body, the state and the type can be edited")
 	}
+	if req.State != nil && *req.State != "open" && *req.State != "closed" {
+		return http.StatusUnprocessableEntity, message(fmt.Sprintf("Validation Failed: state %q is not open or closed", *req.State))
+	}
+	var setType func()
+	if req.Type != nil {
+		set, status, msg := f.issueTypeRevertEdit(c.issue, req.Type)
+		if msg != nil {
+			return status, msg
+		}
+		setType = set
+	}
 	if req.Title != nil && *req.Title != c.issue.GetTitle() {
 		from, title := c.issue.GetTitle(), *req.Title
 		c.issue.Title, c.issue.UpdatedAt = &title, f.tick()
@@ -687,13 +702,8 @@ func (f *Fake) editIssue(c *call) (int, any) {
 		c.issue.labelEvents = append(c.issue.labelEvents, &gogithub.Timeline{ID: &id, Event: new("renamed"), Actor: user(f.slug + "[bot]"),
 			Rename: &gogithub.Rename{From: &from, To: &title}, CreatedAt: &gogithub.Timestamp{Time: c.issue.UpdatedAt.Time}})
 	}
-	if req.State != nil && *req.State != "open" && *req.State != "closed" {
-		return http.StatusUnprocessableEntity, message(fmt.Sprintf("Validation Failed: state %q is not open or closed", *req.State))
-	}
-	if req.Type != nil {
-		if status, msg := f.issueTypeRevertEdit(c.issue, req.Type); msg != nil {
-			return status, msg
-		}
+	if setType != nil {
+		setType()
 	}
 	if req.Body != nil {
 		c.issue.editBy(f.slug+"[bot]", *req.Body, f.tick())
