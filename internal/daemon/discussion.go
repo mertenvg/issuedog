@@ -113,10 +113,10 @@ func discWhat(tr discTrigger) string {
 // in its hold's comment and its notice, when tr is a write collaborator's
 // edit of their own comment after a code owner's 👍 approved it, and ""
 // for any other trigger. A 👍 approves only the text it post-dates, so
-// accepting the edit, by a 👍 on its notice or by /resume, ends its hold
-// but doesn't approve the new text. Other triggers or an owner hold may
-// still keep the issue held, so it says the edit's hold ends, not the
-// issue's. Any trusted 👍 after the edit approves it, whoever approved
+// accepting the edit, by a 👍 on its notice or by /resume, ends this
+// edit's hold but doesn't approve the new text. Other triggers or an owner
+// hold may still keep the issue held, so it says the edit's hold ends, not
+// the issue's. Any trusted 👍 after the edit approves it, whoever approved
 // the old text, and as GitHub keeps one 👍 a user, a code owner who gave
 // it a 👍 before removes theirs and adds it again (SPEC §6.4). One known
 // from its record alone is never an own edit (discFromKey makes it an
@@ -126,7 +126,7 @@ func editNoticeApproval(tr discTrigger) string {
 	if !editNoticeOwn(tr) {
 		return ""
 	}
-	return fmt.Sprintf("Accepting the edit ends its hold but doesn't approve the new text. %s.", editNoticeHow(tr))
+	return fmt.Sprintf("Accepting the edit ends this edit's hold but doesn't approve the new text. %s.", editNoticeHow(tr))
 }
 
 // editNoticeDigest is editNoticeApproval for tr's line in the digest,
@@ -992,7 +992,7 @@ func discHitsApp(tr discTrigger, appSlug string) bool {
 func (a *Applier) discHoldMove(s *github.Snapshot, d Dirt, tr discTrigger, from, at, origin state.Stage, seen int64, also string, more ...github.Marker) Move {
 	fields := map[string]string{"at": string(at), "origin": string(origin), "reason": "discussion"}
 	text := fmt.Sprintf("On hold for discussion, from `%s`: %s. Only a code owner can move this issue, "+
-		"so it stays on hold until they resolve this.", at, discWhat(tr))
+		"so it stays on hold at least until they resolve this.", at, discWhat(tr))
 	text = editNoticeAppend(text, editNoticeApproval(tr))
 	if also != "" {
 		text += " " + also
@@ -1154,7 +1154,7 @@ func (st *Step) discussion(ctx context.Context, s *github.Snapshot, d Dirt) ([]d
 		if err != nil {
 			return nil, wrap(err)
 		}
-		text := editNoticeAppend(fmt.Sprintf("Also on hold for discussion: %s. This issue stays on hold until a code owner accepts it.", discWhat(tr)), editNoticeApproval(tr))
+		text := editNoticeAppend(fmt.Sprintf("Also on hold for discussion: %s. This issue stays on hold at least until a code owner accepts it.", discWhat(tr)), editNoticeApproval(tr))
 		if err := st.comment(ctx, s, join(github.Escape(discCC(text, st.Notify)), marker)); err != nil {
 			return nil, wrap(err)
 		}

@@ -90,7 +90,7 @@ func discCheck(t *testing.T, setup func(testing.TB) *githubtest.Fake, n int, wan
 // transition fields, and any more markers, such as its notice.
 func discHeld(at, what, fields string, more ...string) string {
 	text := fmt.Sprintf("On hold for discussion, from `%s`: %s. Only a code owner can move this issue, "+
-		"so it stays on hold until they resolve this.\n\ncc @owner\n\n<!-- issuedog:transition %s -->", at, what, fields)
+		"so it stays on hold at least until they resolve this.\n\ncc @owner\n\n<!-- issuedog:transition %s -->", at, what, fields)
 	for _, m := range more {
 		text += "\n" + m
 	}
@@ -99,7 +99,7 @@ func discHeld(at, what, fields string, more ...string) string {
 
 // discNotice is the App's notice of what, keyed key, on a held issue.
 func discNotice(what, key string) string {
-	return fmt.Sprintf("Also on hold for discussion: %s. This issue stays on hold until a code owner accepts it.\n\ncc @owner\n\n"+
+	return fmt.Sprintf("Also on hold for discussion: %s. This issue stays on hold at least until a code owner accepts it.\n\ncc @owner\n\n"+
 		"<!-- issuedog:notice key=%s -->", what, key)
 }
 
@@ -108,7 +108,7 @@ func discNotice(what, key string) string {
 // its notice's own: accepting the edit doesn't approve the new text, and
 // how to approve it (SPEC §6.4).
 func editNoticeSentence(id int64) string {
-	return fmt.Sprintf("Accepting the edit ends its hold but doesn't approve the new text. "+
+	return fmt.Sprintf("Accepting the edit ends this edit's hold but doesn't approve the new text. "+
 		"To approve it, a code owner adds a 👍 to comment %d after the edit, first removing any 👍 they gave it before.", id)
 }
 
@@ -337,9 +337,9 @@ func TestDiscEditHolds(t *testing.T) {
 // approved it is a trigger of its own, with one notice, which says that
 // accepting the edit doesn't approve the new text, and how to approve it
 // (editNoticeSentence), both as a notice of its own and as the hold's
-// comment. Each runs under Replay (discCheck). An edit before
-// the 👍, or after an untrusted 👍, isn't. On an issue the owner held,
-// neither their comment nor their edit writes a hold marker.
+// comment. Each runs under Replay (discCheck). An edit before the 👍, or
+// after an untrusted 👍, isn't. On an issue the owner held, neither their
+// comment nor their edit writes a hold marker.
 func TestDiscOwnApprovedEdit(t *testing.T) {
 	t.Parallel()
 	owner := "from=ready to=held at=ready reason=owner cmd=9 seen=1001"
