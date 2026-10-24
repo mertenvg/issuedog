@@ -328,9 +328,11 @@ func (g *digestState) has(n int) bool {
 // again at once, and a rename, with no identity marker left in its body,
 // lets the pipeline take it as any other issue.
 //
-// A node GitHub resolves to none (github's HistoryGoneError) is an issue
-// deleted since: it's let go, as when the state error's post finds it gone
-// (digestHistoryGone), so a digest can be created, and the query's other
+// A node GitHub resolves to none (github's HistoryGoneError) may be an
+// issue deleted since: it's let go, so a digest can be created, only if an
+// answer on an earlier pass found it deleted too, as when the state error's
+// post finds it gone, and else read again the next pass, as one answer may
+// be wrong (digestHistoryGone, #500). Either way the query's other
 // histories are judged, so one gone issue doesn't fail the rest. A
 // transferred issue's node still resolves, from its new repo, so it's
 // judged as any other.
