@@ -369,7 +369,7 @@ func renderedTexts(out interviewOutput, f interviewFacts) []rendered {
 	if out.Outcome != outcomeSpec {
 		return []rendered{{"comment", renderQuestions(out, f.Issue, len(f.Rounds)+1, f.Notify)}}
 	}
-	texts := []rendered{{"revision comment", renderSpecNote(out, f.Notify)}}
+	texts := []rendered{{"revision comment", discCC(renderSpecNote(out), f.Notify)}}
 	if out.Spec != nil {
 		texts = append(texts, rendered{"body", renderSpec(*out.Spec)})
 	}
@@ -484,10 +484,11 @@ func renderTypeLine(t interviewType) string {
 	return "Type: " + inline(t.Value) + ", because " + lowerFirst(inline(t.Reason))
 }
 
-// renderSpecNote renders the text of a spec's revision comment: the type
-// line when out sets a type, out's message, the decisions made without
-// asking, and the cc line for notify.
-func renderSpecNote(out interviewOutput, notify []string) string {
+// renderSpecNote renders the text of a spec's revision comment, before the
+// revision: the type line when out sets a type, out's message, and the
+// decisions made without asking. The cc line goes after the revision
+// (PostRevision).
+func renderSpecNote(out interviewOutput) string {
 	var parts, added []string
 	if t := out.Type; t != nil {
 		parts = append(parts, renderTypeLine(*t))
@@ -505,7 +506,7 @@ func renderSpecNote(out interviewOutput, notify []string) string {
 	if len(added) > 0 {
 		parts = append(parts, "Added, not asked:\n\n"+bullets(added))
 	}
-	return github.Escape(strings.Join(append(parts, ccLines(notify)...), "\n\n"))
+	return github.Escape(strings.Join(parts, "\n\n"))
 }
 
 // renderUnchanged renders an unchanged outcome's comment (#189): that the

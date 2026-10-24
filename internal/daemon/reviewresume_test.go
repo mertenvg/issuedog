@@ -41,7 +41,7 @@ func (rs reviewResumeStage) Apply(ctx context.Context, a *daemon.Applier, r daem
 	}
 	m := r.Move(state.SpecReview, state.TriggerSpecWritten)
 	m.Text = "The spec."
-	return a.PostRevision(ctx, r.S, r.Dirt.Has, m)
+	return a.PostRevision(ctx, r.S, r.Dirt.Has, m, nil)
 }
 
 // reviewResumeSave leaves the files of run id on issue 1 at stage under

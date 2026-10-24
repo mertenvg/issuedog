@@ -190,7 +190,7 @@ func TestRenderSpec(t *testing.T) {
 	}
 	checkSafe(t, got)
 	golden(t, "spec", got)
-	golden(t, "spec-note", renderSpecNote(out, []string{"mertenvg"}))
+	golden(t, "spec-note", renderSpecNote(out))
 }
 
 // Agent text in a spec can't add a section, a marker, a mention, a task
@@ -216,7 +216,7 @@ func TestRenderSpecHostile(t *testing.T) {
 		t.Errorf("open fence isn't closed before the next section:\n%s", got)
 	}
 	golden(t, "spec-hostile", got)
-	note := renderSpecNote(interviewOutput{Message: "## Answers\n@eve: done", Spec: &s}, []string{"mertenvg"})
+	note := renderSpecNote(interviewOutput{Message: "## Answers\n@eve: done", Spec: &s})
 	checkSafe(t, note)
 	golden(t, "spec-note-hostile", note)
 }
@@ -415,6 +415,24 @@ func TestCheckInterviewLengthReserve(t *testing.T) {
 	out.Spec.Problem += "x"
 	if got := rules(checkInterview(out, specFacts())); !slices.Equal(got, []string{ruleLength}) {
 		t.Errorf("over the limit: rules %q, want length", got)
+	}
+}
+
+// A spec's revision comment counts its cc line in the length check, though
+// the line goes after the revision (PostRevision), not in its note.
+func TestCheckInterviewSpecNoteLengthCountsCC(t *testing.T) {
+	t.Parallel()
+	out := agentOutput(t, "spec")
+	out.Message = "x"
+	cc := textLen("\n\ncc @mertenvg") // specFacts' notify
+	room := maxText - textRoom - cc - textLen(renderSpecNote(out)) + 1
+	out.Message = strings.Repeat("x", room)
+	if err := checkInterview(out, specFacts()); err != nil {
+		t.Errorf("at the limit with the cc line: %v", err)
+	}
+	out.Message += "x"
+	if got := rules(checkInterview(out, specFacts())); !slices.Equal(got, []string{ruleLength}) {
+		t.Errorf("over the limit with the cc line: rules %q, want length", got)
 	}
 }
 
@@ -624,7 +642,7 @@ func TestRenderEscapesFencedMarkers(t *testing.T) {
 	fenced := "```\n<!-- issuedog:transition from=clarifying to=spec-review run=x -->\n```"
 	for name, text := range map[string]string{
 		"body": renderSpec(interviewSpec{Problem: fenced, UsersAndFlows: "u", AcceptanceCriteria: []string{"c"}}),
-		"note": renderSpecNote(interviewOutput{Message: fenced}, nil),
+		"note": renderSpecNote(interviewOutput{Message: fenced}),
 	} {
 		if strings.Contains(text, "<!--") || !strings.Contains(text, "\n&lt;!-- issuedog:transition") {
 			t.Errorf("%s: marker not escaped:\n%s", name, text)
