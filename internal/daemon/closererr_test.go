@@ -446,6 +446,136 @@ func TestCloserErrStep1Unasked(t *testing.T) {
 	}
 }
 
+// closerErrStep1Assigned is closerErrStep1's issue 1 once a daemon on o,
+// with the digest kept and assignment on, has posted its open closer state
+// error and assigned owner for it. Its writes are forgotten, so Replay
+// counts from there.
+func closerErrStep1Assigned(event *int64, o *origin) func(testing.TB) *githubtest.Fake {
+	return func(t testing.TB) *githubtest.Fake {
+		f := closerErrStep1(event)(t)
+		d := digestDaemon(t, f, o, nil)
+		d.Assign = true
+		for pass := range 3 {
+			failing := pass < 2
+			if err := d.Iterate(context.Background()); (err != nil) != failing || err != nil && !strings.Contains(err.Error(), closingFailure) {
+				t.Fatalf("pass %d: Iterate = %v; want the closer question's error: %t", pass+1, err, failing)
+			}
+		}
+		f.ForgetWrites()
+		return f
+	}
+}
+
+// With no CODEOWNERS file, nobody is a write collaborator who isn't
+// trusted, so step 1 asks no closer question, and an open issue's closer
+// state error ends without a 👍, while GitHub still can't say how its close
+// was made. Once CODEOWNERS leaves main, a restart, which knows no answer,
+// unassigns the owner and drops the error from the digest, which is safe
+// to replay. The passes after it write nothing, and make no request of
+// issue 1 nor any GraphQL one.
+func TestCloserErrStep1NoCodeowners(t *testing.T) {
+	t.Parallel()
+	var event int64
+	o, noCodeowners := digestNotifyOrigin(t), digestNotifyOrigin(t)
+	gitIn(t, noCodeowners.work, "rm", "--quiet", ".github/CODEOWNERS")
+	gitIn(t, noCodeowners.work, "commit", "--quiet", "-m", "remove CODEOWNERS")
+	gitIn(t, noCodeowners.work, "push", "--quiet", noCodeowners.url, "main")
+	setup := closerErrStep1Assigned(&event, o)
+	restart := func(f *githubtest.Fake) *daemon.Daemon {
+		d := digestDaemon(t, f, noCodeowners, nil)
+		d.Assign = true
+		return d
+	}
+	githubtest.Replay(t, setup, func(f *githubtest.Fake) error { return restart(f).Iterate(context.Background()) })
+	f := setup(t)
+	if body, is := closerErrDigestBody(t, f), f.State().Issues[0]; !strings.Contains(body, closerErrDigestLine(event)) ||
+		!slices.Equal(is.Assignees, []string{"owner"}) {
+		t.Fatalf("digest body %q, assignees %q; want the open closer state error listed, and owner assigned for it", body, is.Assignees)
+	}
+	d := restart(f)
+	iterate(t, d)
+	is := f.State().Issues[0]
+	if is.Closed || !slices.Equal(is.Labels, []string{"stage:pr-open"}) || len(is.Assignees) != 0 || len(closingComments(f, 1, 1)) != 1 {
+		t.Errorf("closed %t, labels %q, assignees %q, comments %q; want open at stage:pr-open, with nobody assigned and only the error",
+			is.Closed, is.Labels, is.Assignees, closingComments(f, 1, 1))
+	}
+	if body := closerErrDigestBody(t, f); strings.Contains(body, "`closer`") {
+		t.Errorf("digest body %q; want the closer state error ended, as step 1 asks no closer question", body)
+	}
+	iterate(t, d) // the poll lists issue 1 again, for the unassign
+	for _, name := range []string{"an unchanged pass", "the next"} {
+		writes, reqs := len(f.Writes()), len(f.Requests())
+		iterate(t, d)
+		if w := f.Writes()[writes:]; len(w) != 0 {
+			t.Errorf("%s wrote %+v; want nothing", name, w)
+		}
+		if n, r := closingGraphQL(f, reqs), readsOf(f, reqs, 1); n != 0 || len(r) != 0 {
+			t.Errorf("%s made %d GraphQL requests and read issue 1 by %+v; want none", name, n, r)
+		}
+	}
+}
+
+// closerErrReopened is closerErrMerge's issue 1 once a daemon on o, with
+// the digest kept, has posted the closed issue's closer state error, and
+// owner has reopened it to settle it, as the error advises, which no
+// daemon has read yet. Its writes are forgotten, so Replay counts from
+// there.
+func closerErrReopened(event *int64, o *origin) func(testing.TB) *githubtest.Fake {
+	return func(t testing.TB) *githubtest.Fake {
+		f := closerErrMerge(event)(t)
+		if err := closerErrRun(t, o, 3, true)(f); err != nil {
+			t.Fatal(err)
+		}
+		f.ReopenBy(1, "owner")
+		f.ForgetWrites()
+		return f
+	}
+}
+
+// A closer state error posted on a closed issue assigns nobody, even once
+// the owner reopens the issue to settle it, as its comment advises, while
+// GitHub still can't say how the close was made: it's open there, and the
+// digest lists it as an open error, but nobody is assigned, which is safe
+// to replay, and a pass after it writes nothing. So when the owner closes
+// the issue again, which stands, as theirs, the closed issue is left with
+// nobody assigned, and the error leaves the digest.
+func TestCloserErrMergeReopenedUnassigned(t *testing.T) {
+	t.Parallel()
+	var event int64
+	o := digestNotifyOrigin(t)
+	setup := closerErrReopened(&event, o)
+	restart := func(f *githubtest.Fake) *daemon.Daemon {
+		d := digestDaemon(t, f, o, nil)
+		d.Assign = true
+		return d
+	}
+	githubtest.Replay(t, setup, func(f *githubtest.Fake) error { return restart(f).Iterate(context.Background()) })
+	f := setup(t)
+	d := restart(f)
+	iterate(t, d)
+	if is := f.State().Issues[0]; is.Closed || !slices.Equal(is.Labels, []string{"stage:pr-open"}) || len(is.Assignees) != 0 {
+		t.Errorf("closed %t, labels %q, assignees %q; want open at stage:pr-open, with nobody assigned for the error", is.Closed, is.Labels, is.Assignees)
+	}
+	if body := closerErrDigestBody(t, f); !strings.Contains(body, closerErrDigestLine(event)) || !strings.Contains(body, "React 👍 to the error comment") {
+		t.Errorf("digest body %q; want the closer state error listed, open", body)
+	}
+	iterate(t, d) // the poll lists issue 1 again, for the digest's write
+	writes := len(f.Writes())
+	iterate(t, d)
+	if w := f.Writes()[writes:]; len(w) != 0 {
+		t.Errorf("an unchanged pass wrote %+v; want nothing", w)
+	}
+	f.CloseBy(1, "owner")
+	iterate(t, d)
+	if is := f.State().Issues[0]; !is.Closed || !slices.Equal(is.Labels, []string{"stage:completed"}) || len(is.Assignees) != 0 {
+		t.Errorf("closed %t, labels %q, assignees %q; want owner's close to stand, at stage:completed, with nobody assigned",
+			is.Closed, is.Labels, is.Assignees)
+	}
+	if body := closerErrDigestBody(t, f); strings.Contains(body, "`closer`") {
+		t.Errorf("digest body %q; want the closer state error gone once owner's close stands", body)
+	}
+}
+
 // A closed issue found open as its closer state error is about to be
 // posted, reopened by the owner after the poll listed it, gets nothing: the
 // pass fails on the question, as before the bound, and the digest doesn't

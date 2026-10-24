@@ -62,8 +62,10 @@ func TestCloserErrOpenErrors(t *testing.T) {
 // Step 1 no longer asks the question of a close, which ends its closer
 // state error on an open issue, once the close is before the discussion
 // floor, as after a move out of held, or a marker records it, or the issue
-// has no floor. A close the snapshot doesn't list, as on one CheckLabels
-// hasn't checked, or only a reopen with that ID, is still asked.
+// has no floor, or the trust can't name a writer, as with no CODEOWNERS
+// file, which asks it nothing. A close the snapshot doesn't list, as on one
+// CheckLabels hasn't checked, or only a reopen with that ID, is still
+// asked.
 func TestCloserErrUnasked(t *testing.T) {
 	t.Parallel()
 	const (
@@ -84,21 +86,71 @@ func TestCloserErrUnasked(t *testing.T) {
 		return s
 	}
 	closed := []github.Closing{{ID: 900, NodeID: "CE_900", At: t0.Add(time.Hour)}}
+	writers := newDiscCounting()
+	noCodeowners := discNoWriters{writers, true}
+	for _, tc := range []struct {
+		name  string
+		s     *github.Snapshot
+		trust github.Trust
+		want  bool
+	}{
+		{"after the floor", snap(closed, first), writers, false},
+		{"held after it", snap(closed, first, held), writers, false},
+		{"before a move out of held", snap(closed, first, held, out), writers, true},
+		{"recorded", snap(closed, first, "<!-- issuedog:notice key=900 -->"), writers, true},
+		{"no floor", snap(closed), writers, true},
+		{"not listed", snap(nil, first, held, out), writers, false},
+		{"only a reopen", snap([]github.Closing{{ID: 900, NodeID: "RE_900", At: t0.Add(time.Hour), Reopen: true}}, first, held, out), writers, false},
+		{"after the floor, with no CODEOWNERS", snap(closed, first), noCodeowners, true},
+		{"after the floor, the visit's trust with no CODEOWNERS", snap(closed, first), &trustOnceVisit{trust: noCodeowners}, true},
+		{"after the floor, the current trust with no CODEOWNERS", snap(closed, first), (&Step{Trust: noCodeowners}).CurrentTrust(), true},
+		{"not listed, with no CODEOWNERS", snap(nil, first), noCodeowners, false},
+	} {
+		if got := closerErrUnasked(tc.s, openErrSlug, none, tc.trust, "900"); got != tc.want {
+			t.Errorf("%s: unasked %t; want %t", tc.name, got, tc.want)
+		}
+	}
+	if len(writers.asked)+len(writers.access) != 0 {
+		t.Errorf("asked trust %v and %v; want no request", writers.asked, writers.access)
+	}
+}
+
+// A closer state error posted before the first reopen after its close, so
+// while the issue was closed, assigns nobody once the issue is open. One
+// posted after that reopen, as step 1 posts one, or in the same second, or
+// with no reopen or close listed, or another kind, assigns as before.
+func TestCloserErrPostedClosed(t *testing.T) {
+	t.Parallel()
+	t0 := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	closer := openErr{ErrorKey: state.ErrorKey{Kind: closerErrKind, Key: "900"}, Comment: 1}
+	// snap is closerErrSnap's issue, its error comment posted at posted,
+	// with closings.
+	snap := func(posted time.Time, closings ...github.Closing) *github.Snapshot {
+		s := closerErrSnap(false)
+		s.Comments[0].CreatedAt = posted
+		s.Closings = closings
+		return s
+	}
+	closed := github.Closing{ID: 900, NodeID: "CE_900", At: t0}
+	reopened := github.Closing{ID: 901, NodeID: "RE_901", At: t0.Add(time.Hour), Reopen: true}
 	for _, tc := range []struct {
 		name string
 		s    *github.Snapshot
+		e    openErr
 		want bool
 	}{
-		{"after the floor", snap(closed, first), false},
-		{"held after it", snap(closed, first, held), false},
-		{"before a move out of held", snap(closed, first, held, out), true},
-		{"recorded", snap(closed, first, "<!-- issuedog:notice key=900 -->"), true},
-		{"no floor", snap(closed), true},
-		{"not listed", snap(nil, first, held, out), false},
-		{"only a reopen", snap([]github.Closing{{ID: 900, NodeID: "RE_900", At: t0.Add(time.Hour), Reopen: true}}, first, held, out), false},
+		{"posted while closed", snap(t0.Add(time.Minute), closed, reopened), closer, true},
+		{"posted while closed, closed again since", snap(t0.Add(time.Minute), closed, reopened,
+			github.Closing{ID: 902, NodeID: "CE_902", At: t0.Add(2 * time.Hour)}), closer, true},
+		{"posted after the reopen", snap(t0.Add(2*time.Hour), closed, reopened), closer, false},
+		{"posted in the reopen's second", snap(t0.Add(time.Hour), closed, reopened), closer, false},
+		{"no reopen listed", snap(t0.Add(time.Minute), closed), closer, false},
+		{"its close not listed", snap(t0.Add(time.Minute), reopened), closer, false},
+		{"in the body", snap(t0.Add(time.Minute), closed, reopened), openErr{ErrorKey: closer.ErrorKey, Comment: state.BodyID}, false},
+		{"another kind", snap(t0.Add(time.Minute), closed, reopened), openErr{ErrorKey: state.ErrorKey{Kind: "transition", Key: "900"}, Comment: 1}, false},
 	} {
-		if got := closerErrUnasked(tc.s, openErrSlug, none, "900"); got != tc.want {
-			t.Errorf("%s: unasked %t; want %t", tc.name, got, tc.want)
+		if got := closerErrPostedClosed(tc.s, tc.e); got != tc.want {
+			t.Errorf("%s: posted closed %t; want %t", tc.name, got, tc.want)
 		}
 	}
 }
