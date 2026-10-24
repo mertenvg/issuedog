@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/mertenvg/issuedog/internal/daemon"
@@ -168,7 +169,11 @@ func TestHoldOriginHeldDropResume(t *testing.T) {
 
 // Once a held child that a revision dropped is reopened and resumed, the
 // interviewer's unchanged takes it back to spec-review, where it was before
-// its first discussion hold.
+// its first discussion hold. The /resume's move, which the interviewer's
+// run reads, carries the first hold's seen, which the reopen's hold kept,
+// not the bound after the close, so the comments since that hold's bound
+// are the interviewer's input (SPEC §5, §6.4), and that clarifying's
+// origin.
 func TestHoldOriginHeldDropUnchanged(t *testing.T) {
 	t.Parallel()
 	var event, seen int64
@@ -178,6 +183,42 @@ func TestHoldOriginHeldDropUnchanged(t *testing.T) {
 	}
 	f.ForgetWrites()
 	holdOriginUnchanged(t, f, nil)
+	var resumed []string
+	for _, c := range f.State().Issues[0].Comments {
+		if strings.Contains(c.Body, "<!-- issuedog:transition from=held to=clarifying ") {
+			resumed = append(resumed, c.Body)
+		}
+	}
+	if len(resumed) == 0 {
+		t.Fatal("no move from held to clarifying; want the /resume's")
+	}
+	ivHoldFields(t, ivHoldMove(t, resumed[len(resumed)-1]), map[string]string{"to": "clarifying", "origin": "spec-review",
+		state.FieldSeen: strconv.FormatInt(seen, 10)})
+}
+
+// A held child that a revision dropped, whose first hold's comment the
+// owner edited after the close, so its markers count for nothing (SPEC
+// §5.1): a trusted reopen holds it at the stage the markers left before
+// that hold show, the clarifying after a hold, with that clarifying's
+// origin and bound, as for hidden markers on an open issue (SPEC §6.4),
+// not at clarifying with no origin. The write is safe to replay.
+func TestHoldOriginHeldDropDirtyHold(t *testing.T) {
+	t.Parallel()
+	var event, seen int64
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := holdOriginHeldDropped(false, &event, &seen)(t)
+		hold := ivHoldFind(t, f, "from=clarifying to=held at=clarifying origin=spec-review reason=owner ")
+		f.EditComment(hold, "owner", "On hold, by the owner.")
+		return f
+	}
+	githubtest.Replay(t, setup, resolvePass(t, 1))
+	f := run(t, setup, resolvePass(t, 1))
+	m := ivHoldMove(t, newestComment(f, 1))
+	ivHoldFields(t, m, map[string]string{"from": "closed", "to": "held", "at": "clarifying", "origin": "spec-review", "reason": "owner",
+		"event": strconv.FormatInt(event, 10), state.FieldSeen: strconv.FormatInt(seen, 10)})
+	if l := ivLabels(f, 1); !slices.Equal(l, []string{"stage:held", "type:epic"}) {
+		t.Errorf("labels %q; want stage:held", l)
+	}
 }
 
 // holdOriginUnchangedPass runs the daemon twice on a fresh fake from setup,
