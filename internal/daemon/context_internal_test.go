@@ -6,6 +6,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	gogithub "github.com/google/go-github/v92/github"
 
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
@@ -227,6 +230,36 @@ func TestContextSortTrustError(t *testing.T) {
 	_, err := contextSort(t.Context(), s, "issuedog", Dirt{}, contextTestTC(), "", "", contextTestStage(true))
 	if !errors.Is(err, errContextTestTrust) || !strings.Contains(err.Error(), "who wrote comment 13") {
 		t.Errorf("contextSort = %v, want it to name comment 13 and wrap %v", err, errContextTestTrust)
+	}
+}
+
+// TestContextAdmissionGhost: who changed an untrusted author's title or body
+// after it was admitted is named as ivLogin names them, so a ghost, whom
+// GitHub doesn't name, is "someone unnamed", never "" (trusted as it
+// stands) nor a login like "unknown", and anyone else by their login.
+func TestContextAdmissionGhost(t *testing.T) {
+	t.Parallel()
+	admitted := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for _, by := range []github.Author{{}, {Login: "mallory", Type: "User"}} {
+		s := &github.Snapshot{Number: 7, Title: "Now", Author: github.Author{Login: "eve", Type: "User"},
+			BodyEdit: github.Edit{By: by, At: admitted.Add(time.Hour)}}
+		var actor *gogithub.User
+		if by.Login != "" {
+			actor = &gogithub.User{Login: &by.Login, Type: &by.Type}
+		}
+		tl := &ivTimeline{read: true, events: []*gogithub.Timeline{
+			{ID: new(int64(1)), Event: new("labeled"), Label: &gogithub.Label{Name: approvedLabel},
+				Actor: &gogithub.User{Login: new("owner"), Type: new("User")}, CreatedAt: &gogithub.Timestamp{Time: admitted}},
+			{ID: new(int64(2)), Event: new("renamed"), Actor: actor, Rename: &gogithub.Rename{From: new("First"), To: new("Now")},
+				CreatedAt: &gogithub.Timestamp{Time: admitted.Add(time.Hour)}},
+		}}
+		titleBy, bodyBy, never, err := contextAdmission(t.Context(), &Applier{AppSlug: "issuedog"}, s, Dirt{}, contextTestTC(), tl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := ivLogin(by.Login); titleBy != want || bodyBy != want || never {
+			t.Errorf("by %q: contextAdmission = %q, %q, never %t; want %q for both, admitted", by.Login, titleBy, bodyBy, never, want)
+		}
 	}
 }
 
