@@ -150,6 +150,10 @@ type waitItem struct {
 	// closed and no open issue is left below the story
 	// (Daemon.digestDoneStands).
 	Children []int
+	// Unassigned marks an open closer state error posted while its issue
+	// was closed (closerErrPostedClosed): the digest lists it, but it
+	// assigns nobody (assign.go). It's unset for every other item.
+	Unassigned bool
 }
 
 // waitLine is one line of an item. Its Text is the App's, never raw:
@@ -263,6 +267,7 @@ func waitFind(in waitInput) ([]waitItem, error) {
 	}
 	for _, e := range open {
 		add(waitError, e.Kind+"-"+e.Key, e.Comment, waitErrorLines(s, e))
+		items[len(items)-1].Unassigned = closerErrPostedClosed(s, e)
 	}
 	switch {
 	case is.Stage == state.Held && len(in.Holds) > 0:
