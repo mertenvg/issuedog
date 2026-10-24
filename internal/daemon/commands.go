@@ -192,10 +192,11 @@ func Commands(trust github.Trust) map[string]Handler {
 				// The issue's own move, which carries these lists, is made
 				// only when it leaves held, so they never name it, and each
 				// "there" is an issue below it: when it stays held,
-				// resolveResumed's record on it says "here" instead.
+				// resolveResumed's record on it says "here" instead. "ends
+				// it" is for one issue, and "ends them" for more (#466).
 				if self && len(rest) > 0 {
 					m.Text += fmt.Sprintf(" Still on hold: %s, by a hold this `/resume` doesn't end: one set by hand, a `/hold` below this issue, "+
-						"or a deleted comment that was, or may have been, a `/hold`. `/resume` there ends it.", list(rest))
+						"or a deleted comment that was, or may have been, a `/hold`. `/resume` there ends %s.", list(rest), heldWordingIt(len(rest)))
 				}
 				if self && len(discussed) > 0 {
 					m.Text += fmt.Sprintf(" Still on hold for discussion: %s.", list(discussed))
@@ -591,10 +592,9 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 		if is.Stage != state.Held && slices.ContainsFunc(s.Labels, func(l string) bool { return strings.EqualFold(l, "stage:held") }) {
 			by = append(by, n.s.Number) // unrecorded: a hold by hand
 		}
+		// Once for each hold, which heldWordingMakers counts.
 		for _, number := range by {
-			if s := fmt.Sprintf("#%d", number); !slices.Contains(makers, s) {
-				makers = append(makers, s)
-			}
+			makers = append(makers, fmt.Sprintf("#%d", number))
 		}
 	}
 	// The issue's own move: back to its at, or to clarifying after a
@@ -653,24 +653,75 @@ func heldWordingDiscussed(discussed []string, self string) string {
 
 // heldWordingMakers is resumeCheck's reason for a /resume that ends no
 // hold while owner holds it doesn't end are left in its family, makers
-// naming each issue where those holds were made, as "#3": /resume there
-// ends them. The reply is posted on self, c's issue, which may be one of
-// them, as when a comment deleted there after the /resume may have been
-// a /hold that holds an issue below (resolveGone). So self is "this
-// issue", with "here", and the rest "there", as in heldWordingDiscussed;
-// with both, the rest come first. A hold made on self may be on self
-// itself, not below, as by a /hold posted there after c (heldStackEnds),
-// so self's are "the holds left".
+// naming the issue where each of those holds was made, as "#3", once for
+// each hold: /resume there ends them. The reply is posted on self, c's
+// issue, which may be one of them, as when a comment deleted there after
+// the /resume may have been a /hold that holds an issue below
+// (resolveGone). So self is "this issue", with "here", and the rest
+// "there", each named once, as in heldWordingDiscussed; with both, the
+// rest come first. A hold left may be on self itself, not below, as by a
+// /hold posted on self or an ancestor after c, which the App applied
+// first (heldStackEnds), so the holds are "left", not "below" (#466).
+// Each clause follows the number of holds it counts: "the hold left was"
+// and "ends it" for one, "the holds left were" and "ends them" for more.
+// With both, the first clause counts "one hold left" or "some holds
+// left", and the second "one" or "the rest".
 func heldWordingMakers(makers []string, self string) string {
-	others := slices.DeleteFunc(slices.Clone(makers), func(n string) bool { return n == self })
-	there := fmt.Sprintf("the holds below were made on %s, by `/hold` or by hand, so `/resume` there ends them", strings.Join(others, ", "))
-	switch {
-	case len(others) == 0:
-		return "the holds left were made on this issue, by `/hold` or by hand, so `/resume` here ends them"
-	case len(others) < len(makers):
-		return there + "; and the rest were made on this issue, so `/resume` here ends them"
+	var others []string
+	there, here := 0, 0 // the holds made on the others, and on self
+	for _, n := range makers {
+		if n == self {
+			here++
+			continue
+		}
+		there++
+		if !slices.Contains(others, n) {
+			others = append(others, n)
+		}
 	}
-	return there
+	switch {
+	case there == 0:
+		return fmt.Sprintf("the %s left %s made on this issue, by `/hold` or by hand, so `/resume` here ends %s",
+			heldWordingNoun(here), heldWordingVerb(here), heldWordingIt(here))
+	case here == 0:
+		return fmt.Sprintf("the %s left %s made on %s, by `/hold` or by hand, so `/resume` there ends %s",
+			heldWordingNoun(there), heldWordingVerb(there), strings.Join(others, ", "), heldWordingIt(there))
+	}
+	some, rest := "some holds", "the rest"
+	if there == 1 {
+		some = "one hold"
+	}
+	if here == 1 {
+		rest = "one"
+	}
+	return fmt.Sprintf("%s left %s made on %s, by `/hold` or by hand, so `/resume` there ends %s; "+
+		"and %s %s made on this issue, so `/resume` here ends %s",
+		some, heldWordingVerb(there), strings.Join(others, ", "), heldWordingIt(there), rest, heldWordingVerb(here), heldWordingIt(here))
+}
+
+// heldWordingNoun is "hold" for one hold, and "holds" for more.
+func heldWordingNoun(holds int) string {
+	if holds == 1 {
+		return "hold"
+	}
+	return "holds"
+}
+
+// heldWordingVerb is "was" for one hold, and "were" for more.
+func heldWordingVerb(holds int) string {
+	if holds == 1 {
+		return "was"
+	}
+	return "were"
+}
+
+// heldWordingIt is what ends n holds, or the holds on n issues: "it" for
+// one, and "them" for more.
+func heldWordingIt(n int) string {
+	if n == 1 {
+		return "it"
+	}
+	return "them"
 }
 
 // moveFamily makes the move plan returns, if any, on each open descendant of

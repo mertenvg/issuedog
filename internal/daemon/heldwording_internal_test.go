@@ -72,13 +72,21 @@ func TestHeldWordingDiscussed(t *testing.T) {
 // #389: resumeCheck's reason for owner holds left names the issue the
 // reply is posted on, where some of them were made, as "this issue", with
 // "here", and each other issue by number, with "there", as its reason for
-// discussion holds does; with both, the others come first.
+// discussion holds does; with both, the others come first. makers names
+// an issue once for each hold made there, and each issue is named once.
+// The holds are "left", not "below", as one may be on self itself, and
+// each clause's words follow the number of holds it counts (#466).
 func TestHeldWordingMakers(t *testing.T) {
 	t.Parallel()
 	const (
-		there = "the holds below were made on %s, by `/hold` or by hand, so `/resume` there ends them"
-		here  = "the holds left were made on this issue, by `/hold` or by hand, so `/resume` here ends them"
-		rest  = "; and the rest were made on this issue, so `/resume` here ends them"
+		thereOne = "the hold left was made on %s, by `/hold` or by hand, so `/resume` there ends it"
+		there    = "the holds left were made on %s, by `/hold` or by hand, so `/resume` there ends them"
+		hereOne  = "the hold left was made on this issue, by `/hold` or by hand, so `/resume` here ends it"
+		here     = "the holds left were made on this issue, by `/hold` or by hand, so `/resume` here ends them"
+		bothOne  = "one hold left was made on %s, by `/hold` or by hand, so `/resume` there ends it"
+		bothSome = "some holds left were made on %s, by `/hold` or by hand, so `/resume` there ends them"
+		restOne  = "; and one was made on this issue, so `/resume` here ends it"
+		restSome = "; and the rest were made on this issue, so `/resume` here ends them"
 	)
 	for _, c := range []struct {
 		name   string
@@ -86,12 +94,19 @@ func TestHeldWordingMakers(t *testing.T) {
 		self   string
 		want   string
 	}{
-		{"only self", []string{"#1"}, "#1", here},
-		{"only another", []string{"#2"}, "#1", fmt.Sprintf(there, "#2")},
-		{"only others", []string{"#2", "#3"}, "#1", fmt.Sprintf(there, "#2, #3")},
-		{"others and self", []string{"#2", "#1", "#3"}, "#1", fmt.Sprintf(there, "#2, #3") + rest},
-		{"self, then another", []string{"#1", "#2"}, "#1", fmt.Sprintf(there, "#2") + rest},
-		{"a number that only starts like self's", []string{"#12"}, "#1", fmt.Sprintf(there, "#12")},
+		{"one on self", []string{"#1"}, "#1", hereOne},
+		{"two on self", []string{"#1", "#1"}, "#1", here},
+		{"one on another", []string{"#2"}, "#1", fmt.Sprintf(thereOne, "#2")},
+		{"two on another", []string{"#2", "#2"}, "#1", fmt.Sprintf(there, "#2")},
+		{"one each on others", []string{"#2", "#3"}, "#1", fmt.Sprintf(there, "#2, #3")},
+		{"others, each named once", []string{"#2", "#3", "#2"}, "#1", fmt.Sprintf(there, "#2, #3")},
+		{"one on another and one on self", []string{"#2", "#1"}, "#1", fmt.Sprintf(bothOne, "#2") + restOne},
+		{"self, then another", []string{"#1", "#2"}, "#1", fmt.Sprintf(bothOne, "#2") + restOne},
+		{"one on another and two on self", []string{"#1", "#2", "#1"}, "#1", fmt.Sprintf(bothOne, "#2") + restSome},
+		{"others and one on self", []string{"#2", "#1", "#3"}, "#1", fmt.Sprintf(bothSome, "#2, #3") + restOne},
+		{"two on another and one on self", []string{"#2", "#2", "#1"}, "#1", fmt.Sprintf(bothSome, "#2") + restOne},
+		{"others and two on self", []string{"#2", "#1", "#3", "#1"}, "#1", fmt.Sprintf(bothSome, "#2, #3") + restSome},
+		{"a number that only starts like self's", []string{"#12"}, "#1", fmt.Sprintf(thereOne, "#12")},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
@@ -103,5 +118,16 @@ func TestHeldWordingMakers(t *testing.T) {
 				t.Errorf("heldWordingMakers changed its argument to %q; want %q", makers, c.makers)
 			}
 		})
+	}
+}
+
+// #466: what ends n holds, or the holds on n issues, is "it" for one and
+// "them" for more.
+func TestHeldWordingIt(t *testing.T) {
+	t.Parallel()
+	for n, want := range map[int]string{1: "it", 2: "them", 3: "them"} {
+		if got := heldWordingIt(n); got != want {
+			t.Errorf("heldWordingIt(%d) = %q; want %q", n, got, want)
+		}
 	}
 }
