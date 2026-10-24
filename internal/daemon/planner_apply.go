@@ -46,11 +46,12 @@ func (p *Planner) Check(ctx context.Context, r Result) error {
 	is := state.Derive(r.S, p.Daemon.Step.Applier.AppSlug, r.Dirt.Has)
 	class, err := state.ClassOf(is.Item)
 	if err != nil || !plannerClass(is.Item) {
-		return fmt.Errorf("the planner no longer runs on #%d, with type %q and a parent %t: "+
-			"it runs only on an epic or a story", r.S.Number, is.Item.Type, is.Item.HasParent)
+		return &daemonCause{fmt.Errorf("the planner no longer runs on #%d, with type %q and a parent %t: "+
+			"it runs only on an epic or a story", r.S.Number, is.Item.Type, is.Item.HasParent)}
 	}
 	if _, err := planPriorOf(r.S, p.Daemon.Step.Applier.AppSlug, is, r.Dirt.Has); err != nil {
-		return fmt.Errorf("the planner no longer runs on #%d: it was planned before, but %w", r.S.Number, err)
+		// The error is the daemon's, or the App's plan data's decoder's.
+		return &daemonCause{fmt.Errorf("the planner no longer runs on #%d: it was planned before, but %w", r.S.Number, err)}
 	}
 	read, err := p.read(ctx, r, is, false)
 	if err != nil {

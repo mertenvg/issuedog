@@ -17,19 +17,8 @@ const originRepostText = "This issue's description was edited, so I've copied it
 // reposted in a comment once that body is dirty"). Step.Run calls it
 // right after MarkDirty, before the type check, so the issue keeps its
 // class (state.Origin) from the first pass on, held or not. It acts only
-// when all three hold:
-//   - the App wrote the issue;
-//   - s has no Origin (state.Derive), in the body or a clean App comment;
-//   - the body's markers aren't read: it's dirty, or someone other than
-//     the App edited it last, as a trusted user's edit does, even one
-//     that keeps the marker's text.
+// when originLost finds the marker the body lost.
 //
-// It then reads the body's edit history once (github.History), or uses
-// the one Dirty kept for this edit (histories), and takes the marker from
-// the newest version the App wrote that has a whole one, back to the
-// original post, which the App wrote too. So a version of the App's that
-// someone deleted from the history, or the App's own dirty note, which
-// escapes the text it keeps, is passed over, down to the original post.
 // The comment holds the whole marker, every field as it was written:
 // human=1, and a check's fields, still percent-encoded
 // (state.OriginMarker). It has no cc line, since there's nothing for
@@ -38,38 +27,18 @@ const originRepostText = "This issue's description was edited, so I've copied it
 // nothing more. Should anyone edit it, it's dirty, so it gives no Origin,
 // and it's reposted once more.
 //
-// With no marker in any version, it logs a warning and posts nothing. It
-// keeps that in memory, by issue and body text, which an edit changes, so
-// the next pass over the same body logs nothing and reads no history.
+// With no marker in any version, it posts nothing, and originLost logs a
+// warning once for the body as it is, so the next pass over the same body
+// logs nothing and reads no history.
 func (a *Applier) originRepost(ctx context.Context, s *github.Snapshot, d Dirt) error {
-	if !state.IsApp(s.Author, a.AppSlug) || state.Derive(s, a.AppSlug, d.Has).Origin.Plan != 0 {
-		return nil
-	}
-	if e := s.BodyEdit; !d.Has(state.BodyID) && (e.At.IsZero() || state.IsApp(e.By, a.AppSlug)) {
-		return nil // the body's markers are read, and it has no origin
-	}
-	if body, ok := a.originNone[s.Number]; ok && body == s.Body {
-		return nil
-	}
 	wrap := func(err error) error {
 		return fmt.Errorf("repost the origin of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
 	}
-	if a.histories == nil {
-		a.histories = histories{}
-	}
-	body := content{id: state.BodyID, node: s.BodyNode, author: s.Author, body: s.Body, edit: s.BodyEdit}
-	read, err := a.histories.read(ctx, a.Client, []content{body})
+	m, ok, err := a.originLost(ctx, s, d)
 	if err != nil {
 		return wrap(err)
 	}
-	m, ok := originFromHistory(read[s.BodyNode], a.AppSlug)
 	if !ok {
-		logr.Warnf("%s/%s#%d: the App filed it, and its description has lost its origin marker, but no version of it the App wrote has one, so it's not reposted",
-			a.Owner, a.Repo, s.Number)
-		if a.originNone == nil {
-			a.originNone = map[int]string{}
-		}
-		a.originNone[s.Number] = s.Body
 		return nil
 	}
 	marker, err := github.FormatMarker(m)
@@ -81,6 +50,59 @@ func (a *Applier) originRepost(ctx context.Context, s *github.Snapshot, d Dirt) 
 		return wrap(err)
 	}
 	return nil
+}
+
+// originLost returns the origin marker an App-filed issue's body no
+// longer gives: the one originRepost posts again, and the one childOrigins
+// matches a child by until that repost exists (SPEC §5.2, §6.4). It's
+// false unless all three hold:
+//   - the App wrote the issue;
+//   - s has no Origin (state.Derive), in the body or a clean App comment;
+//   - the body's markers aren't read: it's dirty, or someone other than
+//     the App edited it last, as a trusted user's edit does, even one
+//     that keeps the marker's text.
+//
+// So it reads no history for an issue whose origin is read. Otherwise it
+// reads the body's edit history once (github.History), or uses the one
+// Dirty kept for this edit (histories), and takes the marker from the
+// newest version the App wrote that has a whole one, back to the original
+// post, which the App wrote too (originFromHistory). So a version of the
+// App's that someone deleted from the history, or the App's own dirty
+// note, which escapes the text it keeps, is passed over, down to the
+// original post, and a version anyone else wrote gives none.
+//
+// With no marker in any version, it logs a warning and returns false. It
+// keeps that in memory, by issue and body text, which an edit changes, so
+// the next call over the same body logs nothing and reads no history.
+func (a *Applier) originLost(ctx context.Context, s *github.Snapshot, d Dirt) (github.Marker, bool, error) {
+	if !state.IsApp(s.Author, a.AppSlug) || state.Derive(s, a.AppSlug, d.Has).Origin.Plan != 0 {
+		return github.Marker{}, false, nil
+	}
+	if e := s.BodyEdit; !d.Has(state.BodyID) && (e.At.IsZero() || state.IsApp(e.By, a.AppSlug)) {
+		return github.Marker{}, false, nil // the body's markers are read, and it has no origin
+	}
+	if body, ok := a.originNone[s.Number]; ok && body == s.Body {
+		return github.Marker{}, false, nil
+	}
+	if a.histories == nil {
+		a.histories = histories{}
+	}
+	body := content{id: state.BodyID, node: s.BodyNode, author: s.Author, body: s.Body, edit: s.BodyEdit}
+	read, err := a.histories.read(ctx, a.Client, []content{body})
+	if err != nil {
+		return github.Marker{}, false, fmt.Errorf("find the origin its description lost: %w", err)
+	}
+	m, ok := originFromHistory(read[s.BodyNode], a.AppSlug)
+	if !ok {
+		logr.Warnf("%s/%s#%d: the App filed it, and its description has lost its origin marker, but no version of it the App wrote has one, so it's not reposted",
+			a.Owner, a.Repo, s.Number)
+		if a.originNone == nil {
+			a.originNone = map[int]string{}
+		}
+		a.originNone[s.Number] = s.Body
+		return github.Marker{}, false, nil
+	}
+	return m, true, nil
 }
 
 // originFromHistory returns the whole origin marker of the newest version

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
 	gogithub "github.com/google/go-github/v92/github"
 )
@@ -73,14 +72,20 @@ type pinIssueResponse struct {
 // GET of the issue. That GET is conditional (etagCache), so a repeat costs
 // no rate limit, where a GraphQL lookup would cost a point each time. A
 // GET that finds the issue moved to another repo pins nothing, and its
-// error wraps ErrTransferred (pinMoved, #413).
+// error wraps ErrTransferred (IssueMoved, #413).
 func (c *Client) PinIssue(ctx context.Context, owner, repo string, number int) error {
 	wrap := func(err error) error { return fmt.Errorf("pin %s/%s#%d: %w", owner, repo, number, err) }
 	is, resp, err := c.Issues.Get(ctx, owner, repo, number)
 	if err != nil {
 		return wrap(err)
 	}
-	if err := pinMoved(owner, repo, resp, is); err != nil {
+	// GitHub answers a GET of a transferred issue with a 301, which the
+	// client follows (sameHost) to the issue in its new repo. Node IDs are
+	// global, so pinIssue would pin it there, using one of that repo's three
+	// pins. So, as the daemon's digestMoved does, it takes an answer from
+	// anywhere but this repo's path as moved, and an issue whose
+	// repository_url names another repo too (IssueMoved).
+	if err := IssueMoved(owner, repo, resp, is); err != nil {
 		return wrap(err)
 	}
 	if is.GetNodeID() == "" {
@@ -103,26 +108,6 @@ func (c *Client) PinIssue(ctx context.Context, owner, repo string, number int) e
 	}
 	if p := out.Data.PinIssue; p == nil || p.Issue == nil || !p.Issue.IsPinned {
 		return wrap(ErrNotPinned)
-	}
-	return nil
-}
-
-// pinMoved returns an error that wraps ErrTransferred if resp, GitHub's
-// answer to PinIssue's GET of the issue, or is, the issue it read, shows
-// the issue is no longer in owner's repo, and nil otherwise. GitHub
-// answers a GET of a transferred issue with a 301, which the client
-// follows (sameHost) to the issue in its new repo. Node IDs are global, so
-// pinIssue would pin it there, using one of that repo's three pins. As the
-// daemon's digestMoved does, it takes an answer from anywhere but this
-// repo's path as moved, and, as Snapshot does, an issue whose
-// repository_url names another repo.
-func pinMoved(owner, repo string, resp *gogithub.Response, is *gogithub.Issue) error {
-	if resp != nil && resp.Response != nil && resp.Request != nil && resp.Request.URL != nil &&
-		!strings.Contains(strings.ToLower(resp.Request.URL.Path), strings.ToLower("/repos/"+owner+"/"+repo+"/")) {
-		return fmt.Errorf("%w: answered by %s %s", ErrTransferred, resp.Request.Method, resp.Request.URL.Path)
-	}
-	if u := is.GetRepositoryURL(); u != "" && !strings.HasSuffix(strings.ToLower(u), strings.ToLower("/repos/"+owner+"/"+repo)) {
-		return fmt.Errorf("%w to %s", ErrTransferred, u)
 	}
 	return nil
 }
@@ -155,8 +140,18 @@ type isPinnedResponse struct {
 	gqlErrors
 }
 
+// ErrIssueNotFound is wrapped by IsPinned's error, with ErrGraphQL, when
+// GitHub answers that the repo has no such issue: a NOT_FOUND error, with
+// the repo found but the issue null. GitHub answers so, with an HTTP 200,
+// for an issue that was deleted, and for one that was transferred, as a
+// lookup by number is the old repo's (#413's verify). An HTTP 404 or 410
+// from the GraphQL endpoint itself is no such answer, as it says nothing
+// of the issue (#428).
+var ErrIssueNotFound = errors.New("GitHub found no such issue")
+
 // IsPinned reports whether an issue is pinned to the repo's issue list. It
-// is one GraphQL query, by the issue's number, so it needs no node ID.
+// is one GraphQL query, by the issue's number, so it needs no node ID. A
+// NOT_FOUND for the issue wraps ErrIssueNotFound.
 func (c *Client) IsPinned(ctx context.Context, owner, repo string, number int) (bool, error) {
 	wrap := func(err error) error { return fmt.Errorf("is %s/%s#%d pinned: %w", owner, repo, number, err) }
 	req, err := c.NewRequest(ctx, "POST", "graphql", map[string]any{"query": isPinnedQuery,
@@ -169,10 +164,23 @@ func (c *Client) IsPinned(ctx context.Context, owner, repo string, number int) (
 		return false, wrap(err)
 	}
 	if err := out.err(); err != nil {
+		if out.Data.Repository != nil && out.Data.Repository.Issue == nil && out.notFound() {
+			return false, wrap(fmt.Errorf("%w: %w", ErrIssueNotFound, err))
+		}
 		return false, wrap(err)
 	}
 	if out.Data.Repository == nil || out.Data.Repository.Issue == nil {
 		return false, wrap(errNoIssue)
 	}
 	return out.Data.Repository.Issue.IsPinned, nil
+}
+
+// notFound reports whether any of the errors is GitHub's NOT_FOUND.
+func (e gqlErrors) notFound() bool {
+	for _, m := range e.Errors {
+		if m.Type == "NOT_FOUND" {
+			return true
+		}
+	}
+	return false
 }

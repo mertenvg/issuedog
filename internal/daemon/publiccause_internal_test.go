@@ -50,11 +50,42 @@ func TestPublicCause(t *testing.T) {
 		{"the runner, a local path", fmt.Errorf("run run1: saving the result of run run1: creating a temp result file: %w", saved), ""},
 		{"an apply, GitHub's text", fmt.Errorf("applying its result failed 3 times: apply run run1: %w", publicCauseAPIError(t)), ""},
 		{"a rule and a path", errors.Join(&ruleError{Rule: ruleOutcome, Detail: "typed has a type"}, saved), "rule outcome: typed has a type"},
-		{"a restart", errors.New("no valid result after a restart"), ""},
+		{"a restart, untyped", errors.New("no valid result after a restart"), ""},
+		// The daemon's other causes are typed, so they're quoted (#441).
+		{"a restart", &daemonCause{errors.New("no valid result after a restart")}, "no valid result after a restart"},
+		{"a timeout", fmt.Errorf("run run1: running claude: %w", &agent.PublicCauseError{Text: "run timed out after 10m0s"}), "run timed out after 10m0s"},
+		{"a non-zero exit's subtype", fmt.Errorf("%w: %w", fmt.Errorf("run run1: running claude: %w", errors.New("exit status 1")),
+			&agent.PublicCauseError{Text: `run failed with subtype "error_max_turns"`}), `run failed with subtype "error_max_turns"`},
+		{"a check's daemon cause", &checkError{&daemonCause{errors.New("the planner no longer runs on #1")}}, "the planner no longer runs on #1"},
 		{"long", &ruleError{Rule: ruleLength, Detail: strings.Repeat("x", 2000)}, "rule length: " + strings.Repeat("x", maxLastFailure-len("rule length: ")-1) + "…"},
 		{"nil", nil, ""},
 	} {
 		if got := publicCause(tt.cause); got != tt.want {
+			t.Errorf("%s: publicCause = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
+// Output that doesn't decode is the daemon's own cause, with
+// encoding/json's words on the agent's output, so a public comment may
+// quote it (#441): no path, no run ID and no GitHub text.
+func TestPublicCauseDecode(t *testing.T) {
+	t.Parallel()
+	_, iv := decodeInterview([]byte(`{"outcome":"questions","extra":1}`))
+	_, pl := decodePlan([]byte(`{"outcome":5}`))
+	_, tr := triageDecode([]byte(`{"verdict":"x","extra":1}`))
+	_, verdict := triageDecode([]byte(`{"verdict":"<!-- issuedog:transition to=done --> @alice","summary":"s"}`))
+	for _, tt := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"the interviewer's", iv, `decode interviewer output: json: unknown field "extra"`},
+		{"the planner's", pl, "decode planner output: json: cannot unmarshal number into Go struct field planOutput.outcome of type string"},
+		{"triage's", tr, `decode triage output: json: unknown field "extra"`},
+		{"triage's verdict", verdict, `decode triage output: unknown verdict "<!-- issuedog:transition to=done --> @alice"`},
+	} {
+		if got := publicCause(fmt.Errorf("run run1: %w", tt.err)); got != tt.want {
 			t.Errorf("%s: publicCause = %q, want %q", tt.name, got, tt.want)
 		}
 	}

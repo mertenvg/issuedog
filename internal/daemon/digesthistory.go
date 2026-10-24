@@ -200,7 +200,7 @@ func (d *Daemon) digestHistoryReport(ctx context.Context, is *gogithub.Issue) {
 // read's error is GitHub's text, so it says only that the daemon's log
 // has it, as the title rule logged it (digestTake), since it quotes no
 // cause the daemon didn't write (publicCause). The rest is the App's own,
-// with no marker, so it's escaped once, there.
+// with no marker, so it isn't escaped.
 func digestHistoryText(h digestHistoryFail) string {
 	text := fmt.Sprintf("I can't tell whether this issue is the digest. It's mine, titled `%s`, and its body has no `origin` marker: "+
 		"it may be the digest with its identity marker taken out, or a task of mine that lost its `origin` and was renamed. "+

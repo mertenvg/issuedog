@@ -466,14 +466,11 @@ func digestGone(err error) error {
 // follows one for a PATCH or a POST with a GET, which may well succeed:
 // so a write that's answered from anywhere but this repo's path wrote
 // nothing (#160's verify). Like Snapshot, it also takes an issue whose
-// repository_url names another repo as moved.
+// repository_url names another repo as moved. It's github's IssueMoved,
+// the check Snapshot and PinIssue make too.
 func digestMoved(a *Applier, resp *gogithub.Response, is *gogithub.Issue) error {
-	if resp != nil && resp.Response != nil && resp.Request != nil && resp.Request.URL != nil &&
-		!strings.Contains(strings.ToLower(resp.Request.URL.Path), strings.ToLower("/repos/"+a.Owner+"/"+a.Repo+"/")) {
-		return fmt.Errorf("%w: answered by %s %s", github.ErrTransferred, resp.Request.Method, resp.Request.URL.Path)
-	}
-	if u := is.GetRepositoryURL(); u != "" && !strings.HasSuffix(strings.ToLower(u), strings.ToLower("/repos/"+a.Owner+"/"+a.Repo)) {
-		return fmt.Errorf("%w to %s", github.ErrTransferred, u)
+	if err := github.IssueMoved(a.Owner, a.Repo, resp, is); err != nil {
+		return fmt.Errorf("check the answer's repo: %w", err)
 	}
 	return nil
 }
@@ -745,11 +742,11 @@ func (g *digestState) noteOf(n int) string {
 // no body edit of its own: a note that changes goes in that pass's edit. The
 // next start tries again too, as the note is still there.
 //
-// A check or pin that finds the digest gone, deleted or transferred, is the
-// pass's error, marked gone (digestGone), so the digest is dropped
-// (digestPass) and nothing more is written to it. PinIssue pins nothing
-// whose read GitHub answered from another repo, so a digest transferred
-// mid-pass is never pinned in its new repo (#413).
+// A check or pin that finds the digest gone, deleted or transferred
+// (digestPinGone), is the pass's error, marked gone (digestErrGone), so the
+// digest is dropped (digestPass) and nothing more is written to it.
+// PinIssue pins nothing whose read GitHub answered from another repo, so a
+// digest transferred mid-pass is never pinned in its new repo (#413).
 func (d *Daemon) digestPin(ctx context.Context, n int, items []waitItem) error {
 	a, g := d.Step.Applier, &d.digest
 	body := g.issues[n].body
@@ -767,8 +764,8 @@ func (d *Daemon) digestPin(ctx context.Context, n int, items []waitItem) error {
 	}
 	pinned, err := a.Client.IsPinned(ctx, a.Owner, a.Repo, n)
 	switch {
-	case gone(err):
-		return digestGone(fmt.Errorf("check the pin of the digest: %w", err))
+	case digestPinGone(err):
+		return fmt.Errorf("%w: check the pin of the digest: %w", digestErrGone, err)
 	case err != nil:
 		d.digestPinFailed(n, err, "checking whether it's pinned failed")
 		return nil
@@ -777,8 +774,8 @@ func (d *Daemon) digestPin(ctx context.Context, n int, items []waitItem) error {
 	if !pinned {
 		err := a.Client.PinIssue(ctx, a.Owner, a.Repo, n)
 		switch {
-		case gone(err):
-			return digestGone(fmt.Errorf("pin the digest: %w", err))
+		case digestPinGone(err):
+			return fmt.Errorf("%w: pin the digest: %w", digestErrGone, err)
 		case errors.Is(err, github.ErrGraphQL) || errors.Is(err, github.ErrNotPinned):
 			logr.Errorf("pinning %s/%s#%d, the digest, failed, so its body says so, and the next start tries again: %v", a.Owner, a.Repo, n, err)
 			note = digestPinNote(err)
@@ -792,6 +789,28 @@ func (d *Daemon) digestPin(ctx context.Context, n int, items []waitItem) error {
 	}
 	g.pinned, g.pinFailed, g.note = n, 0, note
 	return nil
+}
+
+// digestPinGone reports whether err, from the digest's IsPinned check or
+// its PinIssue, finds the digest gone (SPEC §9.4, "Creating and pinning
+// it"). The check finds it gone by GraphQL's NOT_FOUND for the issue
+// (github.ErrIssueNotFound), as GitHub answers a lookup by number of a
+// deleted or transferred issue so. The pin finds it gone as gone says: by
+// its REST GET's 404 or 410, or by that GET finding it moved
+// (github.ErrTransferred). An HTTP 404 or 410 from the GraphQL endpoint
+// itself, to either, says nothing of the digest, but that the endpoint
+// failed, so it's an ordinary failure (#428): dropping the digest for it
+// would list every issue again on every pass while it lasts.
+func digestPinGone(err error) bool {
+	if errors.Is(err, github.ErrIssueNotFound) {
+		return true
+	}
+	var e *gogithub.ErrorResponse
+	if errors.As(err, &e) && e.Response != nil && e.Response.Request != nil && e.Response.Request.URL != nil &&
+		strings.HasSuffix(e.Response.Request.URL.Path, "/graphql") {
+		return false
+	}
+	return gone(err)
 }
 
 // digestPinFailed records that digest n's pin check or pin failed with
@@ -906,7 +925,7 @@ func digestSameBody(a, b string) bool {
 // failed does.
 func (d *Daemon) digestCacheSet(s *github.Snapshot, inputs []github.Comment, dirt Dirt, holds []discTrigger, ownerHeld, blocked bool) {
 	st := d.Step
-	items, err := waitFind(waitInput{Owner: st.Owner, Repo: st.Repo, AppSlug: st.AppSlug, S: s, Dirt: dirt, Inputs: inputs, CloserErrAnswered: st.closerErrAnswered, Holds: holds,
+	items, err := waitFind(waitInput{Owner: st.Owner, Repo: st.Repo, AppSlug: st.AppSlug, S: s, Dirt: dirt, Inputs: inputs, CloserErrEnded: st.closerErrEnded(s, dirt.Has), Holds: holds,
 		OwnerHeld: ownerHeld, Blocked: blocked})
 	if err != nil {
 		logr.Errorf("%s/%s#%d keeps the items it had on the digest: %v", st.Owner, st.Repo, s.Number, err)
