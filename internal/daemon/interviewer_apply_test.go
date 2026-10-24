@@ -399,7 +399,8 @@ func TestInterviewerCheckMore(t *testing.T) {
 	check := func(out []byte) error {
 		return (&daemon.Interviewer{Daemon: d}).Check(context.Background(), daemon.Result{RunID: "run1", S: in.S, Dirt: in.Dirt, Output: out})
 	}
-	if err := check([]byte(`{"outcome":"questions","extra":1}`)); err == nil || !strings.Contains(err.Error(), "decode interviewer output") {
+	if err := check([]byte(`{"outcome":"questions","extra":1}`)); err == nil ||
+		err.Error() != `the interviewer's output doesn't decode: json: unknown field "extra"` {
 		t.Errorf("Check of an unknown field = %v, want the decode error", err)
 	}
 	if err := check(ivJSON(t, ivRound(1, ""))); err != nil {
