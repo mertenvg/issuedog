@@ -556,7 +556,15 @@ func TestDigestRewritePinCheckFails(t *testing.T) {
 	d := digestDaemon(t, f, newOrigin(t), nil)
 	worked := 0
 	d.Work = func(context.Context, []daemon.Ready) error { worked++; return nil }
-	f.AnswerOnce(func(r githubtest.Request) bool { return r.Path == "/graphql" }, http.StatusInternalServerError)
+	// The start's first GraphQL request reads the digest's edit history, for
+	// its identity marker (SPEC §5.1); the pin check is the second.
+	graphql := 0
+	f.AnswerOnce(func(r githubtest.Request) bool {
+		if r.Path == "/graphql" {
+			graphql++
+		}
+		return graphql == 2
+	}, http.StatusInternalServerError)
 	if err := d.Iterate(context.Background()); err != nil || worked != 1 {
 		t.Fatalf("Iterate = %v, Work ran %d times; want no error, and Work run", err, worked)
 	}

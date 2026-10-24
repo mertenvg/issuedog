@@ -71,7 +71,12 @@ func TestDigestHistoryOutageRecovers(t *testing.T) {
 // Replay passes for the outage of TestDigestHistoryOutageRecovers: the
 // state error, posted on pass 2, and the edit that takes the digest back
 // on pass 6. A crash at either is followed by a restart, which finds the
-// error from the poll, and whose reads take the digest back.
+// error from the poll, and whose reads take the digest back. The outage
+// lasts till a read works, which the App's edit of the body shows, as only
+// a read that worked lets it write the body back: a restart after that
+// edit meets no outage, and its read takes the digest back at once, as
+// the identity marker the edit put back counts only once its history
+// shows the App wrote it (SPEC §5.1, #498).
 func TestDigestHistoryOutageReplay(t *testing.T) {
 	t.Parallel()
 	o := digestHistoryOrigin(t)
@@ -82,8 +87,9 @@ func TestDigestHistoryOutageReplay(t *testing.T) {
 		return f
 	}, func(f *githubtest.Fake) error {
 		d := digestDaemon(t, f, o, nil)
+		over := f.State().Issues[0].BodyEditedBy == app
 		for i := range 6 {
-			if i < 4 && i != 2 {
+			if !over && i < 4 && i != 2 {
 				f.FailGraphQL(digestHistoryFailure)
 			}
 			if err := d.Iterate(context.Background()); err != nil {

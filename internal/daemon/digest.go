@@ -18,19 +18,21 @@ import (
 
 // The digest (SPEC §9.4, #159) is the App's issue that lists what waits on
 // the owner. It is the issue the App authored whose body has the identity
-// marker (digestRenderIdentity), read even in an edited body (SPEC §5.1),
-// since the marker holds no state, or one listed finds by other means if an
-// edit took the marker out. If there's more than one, the lowest number wins
-// and the rest are logged. Every one of them is kept out of the pipeline: the
-// poll never marks one stale, so it has no snapshot, and step 1, CheckLabels,
-// intake, stage runs and triage never see it.
+// marker (digestRenderIdentity) in a version the App wrote, read from its
+// edit history once per start (SPEC §5.1, digestTake), so someone else's
+// edit that adds the marker to another App issue makes no digest of it
+// (#498), or one listed finds by other means if an edit took the marker
+// out. If there's more than one, the lowest number wins and the rest are
+// logged. Every one of them is kept out of the pipeline: the poll never
+// marks one stale, so it has no snapshot, and step 1, CheckLabels, intake,
+// stage runs and triage never see it.
 //
 // The digest's body has no rewrite marker (SPEC §5.1, #169), though it's
 // a whole body the App writes: it is never read for state but for its
-// identity marker, which is read in an edited body anyway, it has no run
-// to name, and the pin note must be its first line (digestPin). It's an
-// exception for #162 to write into §5.1, beside the identity
-// marker's.
+// identity marker, which is read from the App's versions of the body in
+// its edit history anyway, it has no run to name, and the pin note must be
+// its first line (digestPin). It's an exception for #162 to write into
+// §5.1, beside the identity marker's.
 const (
 	digestTitle = "issuedog digest"
 	// digestPinPrefix starts the pin note, the body's first line while the
@@ -67,15 +69,19 @@ type digestState struct {
 	// by ID, as the issue each is on: an issue with one is never the
 	// digest by its title (digestTake).
 	origins map[int64]int
-	// titled are the issues only the title rule would take, as last
-	// listed, till digestTake judges them after the poll's comments, or,
-	// for one whose edit history failed to read, till a pass reads it
-	// (digestHistoryHold).
+	// titled are the issues the title rule or the identity marker may make
+	// digests, as last listed, till digestTake judges them after the
+	// poll's comments, or, for one whose edit history failed to read, till
+	// a pass reads it (digestHistoryHold).
 	titled map[int]*gogithub.Issue
 	// firsts records, by issue number, whether the App's first version of
 	// the issue's body has an origin marker, from its edit history, which
 	// is read once per start for each issue titled holds (digestTake).
 	firsts map[int]bool
+	// marked records, by issue number, whether a version of the issue's
+	// body the App wrote has the identity marker (digestMarkedHistory),
+	// from the same read as firsts, so it's set whenever firsts is.
+	marked map[int]bool
 	// history is what this start knows of the failed reads of the edit
 	// histories of issues titled holds, by issue number (digestTake).
 	history map[int]digestHistoryFail
@@ -119,19 +125,24 @@ type digestNews struct {
 
 // listed records a listed issue, never a pull request, which the poll
 // passes over: as a digest if it is one, and reports whether it is. An
-// issue of the App's is a digest if:
-//   - its body has the identity marker, or
-//   - this daemon has found it a digest before, so an edit that takes the
-//     marker out, by anyone, changes nothing, and the next pass writes the
-//     body again, marker and all (digestRewrite).
+// issue of the App's is a digest at once if this daemon has found it a
+// digest before, so an edit that takes the marker out, by anyone, changes
+// nothing, and the next pass writes the body again, marker and all
+// (digestRewrite).
+//
+// Any other one whose body has the identity marker is no digest yet: the
+// marker counts only in a version of the body the App wrote (SPEC §5.1),
+// as an origin does (originLost), and someone else's edit may have put it
+// in an App task's body (#498). So it's held in titled, and digestTake
+// judges it, from its edit history, after the poll's comments, and records
+// it if it is one. On a start, that's the digest itself, once.
 //
 // One whose title is digestTitle and whose body has no origin marker, which
 // every other issue the App files has (SPEC §5.2), may be a digest whose
 // marker was taken out while no daemon ran, or just before a restart. But
 // it may as well be an App task whose body lost its origin to an edit, or
 // had it escaped by MarkDirty, and that was renamed (SPEC §9.4). So it's
-// no digest yet: it's held in titled, and digestTake judges it after the
-// poll's comments, and records it if it is one.
+// held in titled too, for digestTake to judge.
 //
 // Gap, for SPEC §16 (#162): a digest whose marker was taken out and
 // whose title was changed, both before this daemon listed it, isn't found.
@@ -143,18 +154,48 @@ func (g *digestState) listed(slug string, is *gogithub.Issue) bool {
 		return false // only the App's issues, whose author never changes, are ever digests; only a bot's login ends in [bot]
 	}
 	delete(g.titled, n) // judged on this listing alone
-	markers := github.ParseMarkers(is.GetBody())
-	if !g.has(n) && !slices.ContainsFunc(markers, digestIdentity) {
-		if is.GetTitle() == digestTitle && !slices.ContainsFunc(markers, digestOrigin) {
-			if g.titled == nil {
-				g.titled = map[int]*gogithub.Issue{}
-			}
-			g.titled[n] = is
-		}
-		return false
+	if g.has(n) {
+		g.found(is)
+		return true
 	}
-	g.found(is)
-	return true
+	if digestMarkedBody(is) || digestTitled(is) {
+		if g.titled == nil {
+			g.titled = map[int]*gogithub.Issue{}
+		}
+		g.titled[n] = is
+	}
+	return false
+}
+
+// digestMarkedBody reports whether is, as listed, has the identity marker
+// in its body, whoever put it there.
+func digestMarkedBody(is *gogithub.Issue) bool {
+	return slices.ContainsFunc(github.ParseMarkers(is.GetBody()), digestIdentity)
+}
+
+// digestTitled reports whether the title rule may take is, as listed: its
+// title is digestTitle, and its body has no origin marker.
+func digestTitled(is *gogithub.Issue) bool {
+	return is.GetTitle() == digestTitle && !slices.ContainsFunc(github.ParseMarkers(is.GetBody()), digestOrigin)
+}
+
+// digestMarkedHistory reports whether a version of an App issue's body
+// that the App wrote has the identity marker, from h, its edit history,
+// oldest first, as originFromHistory reads an origin: an edit by the App,
+// or the original post, h[0], whoever GitHub names as its author, since
+// the App filed the issue. With no edit, h is empty, and body, as listed,
+// is the original post. A version someone deleted has no text, so it has
+// none, and the App's dirty note escapes the text it keeps (SPEC §5.1).
+func digestMarkedHistory(h []github.Edit, body, appSlug string) bool {
+	if len(h) == 0 {
+		return slices.ContainsFunc(github.ParseMarkers(body), digestIdentity)
+	}
+	for i, e := range h {
+		if (i == 0 || state.IsApp(e.By, appSlug)) && slices.ContainsFunc(github.ParseMarkers(e.Text), digestIdentity) {
+			return true
+		}
+	}
+	return false
 }
 
 // found records is, a listed issue, as a digest.
@@ -237,26 +278,36 @@ func (g *digestState) has(n int) bool {
 	return ok
 }
 
-// digestTake judges the issues held because only the title rule would take
-// them (digestState.listed), once the poll has listed the comments too: on
-// a start, every one. It takes one as a digest, recorded and out of the
-// pipeline from then on (Daemon.leave), only if both hold:
-//   - No App comment on it has an origin marker, edited or not
-//     (digestState.comment), such as a reposted one.
-//   - The App's first version of its body had no origin marker. That's its
-//     body as listed if it was never edited, and else the original post in
-//     its edit history (github's History), read once per start for each
-//     issue and kept by number. One whose original text someone deleted
-//     from the history can't show that it had none, so it counts as one
-//     that had.
+// digestTake judges the issues held because the identity marker or the
+// title rule may make them digests (digestState.listed), once the poll has
+// listed the comments too: on a start, every one. None that an App comment
+// has an origin marker on, edited or not (digestState.comment), such as a
+// reposted one, is a digest. Of the rest, it takes one as a digest,
+// recorded and out of the pipeline from then on (Daemon.leave), if either
+// holds:
+//   - A version of its body the App wrote has the identity marker
+//     (digestMarkedHistory, SPEC §5.1): its body as listed if it was never
+//     edited, and else an App edit or the original post in its edit
+//     history (github's History). So someone else's edit that adds the
+//     marker to an App task makes no digest of it (#498): the task stays
+//     in the pipeline, where the edit is judged as any other (MarkDirty,
+//     SPEC §6.4). And a digest the title rule holds, its marker taken out,
+//     is found by the App's own edits even if its original post's text
+//     was deleted.
+//   - The title rule takes it (digestTitled): the App's first version of
+//     its body had no origin marker. That's its body as listed if it was
+//     never edited, and else the original post in its edit history. One
+//     whose original text someone deleted from the history can't show that
+//     it had none, so it counts as one that had.
 //
-// So an App task whose body lost its origin and that was renamed is never
-// the digest, with or without a reposted origin, while a digest whose
-// marker was taken out is still found by its title. One query reads every
-// history needed, and an unchanged poll, which lists nothing new, needs
-// none while no issue is held (below): one it lists again, at the cursor,
-// was judged already. A poll that fails before digestTake keeps what it
-// held for the next one.
+// Each issue's history is read once per start, and what both rules need of
+// it is kept by number (firsts, marked). So an App task whose body lost
+// its origin and that was renamed is never the digest, with or without a
+// reposted origin, while a digest whose marker was taken out is still
+// found by its title. One query reads every history needed, and an
+// unchanged poll, which lists nothing new, needs none while no issue is
+// held (below): one it lists again, at the cursor, was judged already. A
+// poll that fails before digestTake keeps what it held for the next one.
 //
 // A failed read is logged, and each issue it was for stays held, unjudged:
 // it's kept out of step 1 and Work (digestHistoryHold), and digestPass
@@ -265,15 +316,17 @@ func (g *digestState) has(n int) bool {
 // pass reads again, in one query, the histories of the issues still held,
 // and judges each one read, so the first pass whose read works takes the
 // old digest back. An issue a poll lists again is judged on that listing,
-// as ever: renamed, or with its marker back, it's held no more. But a read
+// as ever: renamed, with no identity marker in its body, it's held no
+// more, while the marker put back holds it still, as only its history
+// shows whether the App put it there (#498). But a read
 // that keeps failing would cost a request and an error log on every pass,
 // so after digestHistoryStrikes failures the issue gets a state error
 // (SPEC §5.3, digestHistoryReport), and its history is read only once
 // every digestHistoryStrikes passes from then on, each failure logged as
 // ever. It stays held, with no digest created, till a read works, so an
 // outage ends it on its own (#437), or the owner acts: a restart reads it
-// again at once, a rename lets the pipeline take it as any other issue,
-// and the identity marker put back makes it the digest.
+// again at once, and a rename, with no identity marker left in its body,
+// lets the pipeline take it as any other issue.
 //
 // A node GitHub resolves to none (github's HistoryGoneError) is an issue
 // deleted since: it's let go, as when the state error's post finds it gone
@@ -284,8 +337,8 @@ func (g *digestState) has(n int) bool {
 func (d *Daemon) digestTake(ctx context.Context) {
 	a, g := d.Step.Applier, &d.digest
 	g.pass++
-	// An issue a listing let go of, renamed or a digest by its marker, has
-	// its failures forgotten, so a rename back starts with no strike.
+	// An issue a listing let go of, as a rename does, has its failures
+	// forgotten, so a rename back starts with no strike.
 	maps.DeleteFunc(g.history, func(n int, _ digestHistoryFail) bool {
 		_, held := g.titled[n]
 		return !held
@@ -314,17 +367,22 @@ func (d *Daemon) digestTake(ctx context.Context) {
 			}
 		}
 		if err != nil {
-			logr.Errorf("the edit histories of %s/%s's issues %v, titled %q, failed to read, so they stay out of the pipeline, and no digest is created, till they're read: %v",
-				a.Owner, a.Repo, slices.Sorted(maps.Values(need)), digestTitle, err)
+			logr.Errorf("the edit histories of %s/%s's issues %v, which may be digests, failed to read, so they stay out of the pipeline, and no digest is created, till they're read: %v",
+				a.Owner, a.Repo, slices.Sorted(maps.Values(need)), err)
 			g.historyFailed(slices.Collect(maps.Values(need)), err, d.digestHistoryStrikes())
 		} else {
 			if g.firsts == nil {
 				g.firsts = map[int]bool{}
 			}
+			if g.marked == nil {
+				g.marked = map[int]bool{}
+			}
 			for node, n := range need {
 				h := read[node]
-				// With no edit, the body as listed, which has none, is the first.
+				// With no edit, the body as listed is the first, and the
+				// title rule holds only one that has no origin marker.
 				g.firsts[n] = len(h) > 0 && (h[0].Text == "" || slices.ContainsFunc(github.ParseMarkers(h[0].Text), digestOrigin))
+				g.marked[n] = digestMarkedHistory(h, g.titled[n].GetBody(), a.AppSlug)
 			}
 		}
 	}
@@ -336,14 +394,29 @@ func (d *Daemon) digestTake(ctx context.Context) {
 		}
 		delete(g.titled, n)
 		delete(g.history, n)
-		if reposted[n] || g.firsts[n] {
+		if reposted[n] {
+			continue
+		}
+		var by string
+		switch {
+		case g.marked[n]:
+			by = "its identity marker, which a version of its body the App wrote has"
+		case digestTitled(is) && !g.firsts[n]:
+			by = "its title: the App filed it with no origin marker, and no comment of the App's on it has one"
+		default: // in the pipeline, as any other issue
+			if digestMarkedBody(is) {
+				logr.Infof("%s/%s#%d's body has the digest's identity marker, but no version of it the App wrote has, so it's no digest",
+					a.Owner, a.Repo, n)
+			}
 			continue
 		}
 		g.found(is)
 		d.leave(n)
 		d.closingForget(n)
-		logr.Infof("%s/%s#%d is a digest, found by its title: the App filed it with no origin marker, and no comment of the App's on it has one",
-			a.Owner, a.Repo, n)
+		// A start's first poll marked it, listed open, as one whose items
+		// aren't cached (digestRestartList), but a digest has none.
+		delete(d.digestRestartUnknown, n)
+		logr.Infof("%s/%s#%d is a digest, found by %s", a.Owner, a.Repo, n, by)
 	}
 }
 
@@ -353,9 +426,9 @@ func (d *Daemon) digestTake(ctx context.Context) {
 //   - With no digest, it creates one with them listed (SPEC §9.4).
 //     That's in the loop, not at startup, so a failure doesn't stop the
 //     daemon (SPEC §3.5); after a crash that follows the create, the next
-//     poll finds it. While the title rule holds an issue whose edit
-//     history is still to read, which may be the digest, it creates none
-//     (digestTake).
+//     poll finds it. While the identity marker or the title rule holds an
+//     issue whose edit history is still to read, which may be the digest,
+//     it creates none (digestTake).
 //   - It resolves a close or reopen (digestOpen, SPEC §9.4). A digest a
 //     trusted user closed is off: nothing more is done to it.
 //   - It handles the pin note (digestPin).
@@ -374,9 +447,9 @@ func (d *Daemon) digestPass(ctx context.Context) error {
 	items := d.digestCacheRanked()
 	nums := slices.Sorted(maps.Keys(g.issues))
 	if len(nums) == 0 && len(g.titled) > 0 {
-		// One may be the digest, its marker taken out (digestTake).
-		logr.Debugf("%s/%s has no digest, and none is created while the edit histories of its issues %v, titled %q, are still to read",
-			a.Owner, a.Repo, slices.Sorted(maps.Keys(g.titled)), digestTitle)
+		// One may be the digest, its marker kept or taken out (digestTake).
+		logr.Debugf("%s/%s has no digest, and none is created while the edit histories of its issues %v, which may be digests, are still to read",
+			a.Owner, a.Repo, slices.Sorted(maps.Keys(g.titled)))
 		return nil
 	}
 	if len(nums) == 0 {
