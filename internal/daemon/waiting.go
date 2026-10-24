@@ -150,6 +150,12 @@ type waitItem struct {
 	// closed and no open issue is left below the story
 	// (Daemon.digestDoneStands).
 	Children []int
+	// Kept is what the digest's body showed of an item read back from it
+	// after a restart (digestkept.go), which is rendered as it was, and nil
+	// for every item waitFind finds. A kept item has no Key, Title, Lines,
+	// Plan or Children: only its Issue, Kind, Priority, Link and Comment are
+	// read back, and its issue's Created is added for waitRank.
+	Kept *waitKept
 }
 
 // waitLine is one line of an item. Its Text is the App's, never raw:
@@ -751,8 +757,12 @@ func holdItemMarkerID(m github.Marker) string {
 // that nothing else mentioned, as a hold on a held issue writes no marker
 // (SPEC §6.4, discHeldStack), so each is announced once, whatever order
 // they're found in, and one resolved doesn't make the rest new again. A
-// hold whose triggers are all mentioned is never new.
+// hold whose triggers are all mentioned is never new. Nor is an item read
+// back from the digest's body (waitItem.Kept), which listed it already.
 func (it waitItem) news() []string {
+	if it.Kept != nil {
+		return nil
+	}
 	if it.Kind != waitHold {
 		return []string{it.Key}
 	}

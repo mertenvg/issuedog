@@ -114,7 +114,8 @@ func (g *digestState) historyPostedOn(n int, key string) bool {
 // digestHistoryHold keeps is, an issue the title rule holds as listed, whose
 // edit history no pass has read yet, out of step 1 and Work: it drops its
 // snapshot and inputs, if it had any, and its items, so the digest doesn't
-// list what its last visit found, and an open one is marked to be read
+// list what its last visit found, or what a start read back for it from
+// the digest's body (digestkept.go), and an open one is marked to be read
 // again, which Iterate does once it's judged, and not before. The poll marks it
 // so too, unless its snapshot was read after the change that made the
 // title rule hold it, as when it was renamed between a poll and its read.
@@ -130,6 +131,7 @@ func (d *Daemon) digestHistoryHold(ctx context.Context, is *gogithub.Issue) {
 	delete(d.snaps, n)
 	delete(d.inputs, n)
 	delete(d.digestCache, n)
+	delete(d.digestKept, n) // and any read back from the digest's body (digestkept.go)
 	if is.GetState() == "open" {
 		d.stale[n] = true
 	}

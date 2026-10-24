@@ -21,10 +21,12 @@ import (
 // step 1 hasn't succeeded since (Daemon.digestRestartUnknown), is read
 // again at its turn instead, after the writes made to it, and visited on
 // that snapshot, as the next pass would visit it. It stays touched all
-// the same: it's left out of Work and assignment, and read again next
-// pass, as an issue a command wrote to after its visit is, which is what
-// a child numbered before its parent gets anyway. So the next pass's read
-// finds what this one did, mostly in 304s. The read again costs one
+// the same: it's left out of Work, and read again next pass, as an issue
+// a command wrote to after its visit is, which is what a child numbered
+// before its parent gets anyway. But its assignees are judged on the
+// items its visit found, which the digest lists (assignPass), so
+// assignment doesn't lag the digest by a pass (#360). So the next pass's
+// read finds what this one did, mostly in 304s. The read again costs one
 // snapshot read on such a pass. On a later pass, an issue has items
 // cached, or was first listed after the start, so the digest never listed
 // it, as a child a plan just filed, and it's read no more often than
@@ -46,9 +48,10 @@ import (
 // before the rest of that one's, out of the order they're handled in
 // (holdOrderWaits, #205). It skips the pass, as before, and so does one
 // whose read again fails. A read again that finds it gone counts as the
-// first of the two reads that drop it, as any read does. An issue whose
-// own visit fails after a restart isn't covered: it isn't touched, and
-// drops out of the digest till a visit succeeds (#360).
+// first of the two reads that drop it, as any read does. Such an issue,
+// and one whose own visit fails after a restart, which isn't touched, has
+// no items cached, so the digest lists what its own body showed for it,
+// as the start read it back (digestkept.go), till a visit succeeds.
 
 // digestRestartTouches are the issues the commands of one pass's visits
 // wrote to (Step.Touched), for digestRestartRead.
@@ -98,7 +101,7 @@ func (d *Daemon) digestRestartRead(ctx context.Context, n int, touches *digestRe
 		return false
 	}
 	if err != nil {
-		logr.Warnf("%s/%s#%d, which a command wrote to, failed to read again, so it waits for the next pass, and the digest lists none of its items till then: %v",
+		logr.Warnf("%s/%s#%d, which a command wrote to, failed to read again, so it waits for the next pass, and the digest lists only what its body showed for it till then: %v",
 			st.Owner, st.Repo, n, err)
 		return false
 	}
@@ -122,8 +125,11 @@ func (d *Daemon) digestRestartList(n int, start bool) {
 }
 
 // digestRestartLeave records issue n, which left the pipeline, as one
-// whose items aren't cached, if it had any, which leave drops.
+// whose items aren't cached, if it had any, which leave drops. Any items
+// read back for it from the digest's body go: a closed issue has nothing
+// waiting, and a digest lists nothing of its own.
 func (d *Daemon) digestRestartLeave(n int) {
+	delete(d.digestKept, n)
 	if _, ok := d.digestCache[n]; !ok {
 		return
 	}
@@ -135,8 +141,16 @@ func (d *Daemon) digestRestartLeave(n int) {
 
 // digestRestartGone forgets issue n, dropped as gone, deleted or
 // transferred: GitHub never reuses its number, so no poll lists it again.
-func (d *Daemon) digestRestartGone(n int) { delete(d.digestRestartUnknown, n) }
+// Any items read back for it from the digest's body go too.
+func (d *Daemon) digestRestartGone(n int) {
+	delete(d.digestRestartUnknown, n)
+	delete(d.digestKept, n)
+}
 
 // digestRestartKnow records that step 1 succeeded on issue n, so its items
-// are cached (digestRestartRead).
-func (d *Daemon) digestRestartKnow(n int) { delete(d.digestRestartUnknown, n) }
+// are cached (digestRestartRead), in place of any read back for it from
+// the digest's body (digestkept.go).
+func (d *Daemon) digestRestartKnow(n int) {
+	delete(d.digestRestartUnknown, n)
+	delete(d.digestKept, n)
+}
