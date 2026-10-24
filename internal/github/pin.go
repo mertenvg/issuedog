@@ -66,7 +66,9 @@ type pinIssueResponse struct {
 // that way rather than as a GraphQL error: its error wraps ErrGraphQL and
 // GitHub's *gogithub.ErrorResponse, which holds the message. A rate limit,
 // which go-github gives its own error types, isn't one, nor is any answer
-// to the GET before the mutation.
+// to the GET before the mutation. A NOT_FOUND for the issue, with no pin,
+// as for an issue deleted since that GET, wraps ErrIssueNotFound with
+// ErrGraphQL.
 //
 // The mutation takes the issue's node ID, which it reads first with a REST
 // GET of the issue. That GET is conditional (etagCache), so a repeat costs
@@ -104,6 +106,9 @@ func (c *Client) PinIssue(ctx context.Context, owner, repo string, number int) e
 		return wrap(err)
 	}
 	if err := out.err(); err != nil {
+		if out.Data.PinIssue == nil && out.notFound() {
+			return wrap(fmt.Errorf("%w: %w", ErrIssueNotFound, err))
+		}
 		return wrap(err)
 	}
 	if p := out.Data.PinIssue; p == nil || p.Issue == nil || !p.Issue.IsPinned {
@@ -143,10 +148,13 @@ type isPinnedResponse struct {
 // ErrIssueNotFound is wrapped by IsPinned's error, with ErrGraphQL, when
 // GitHub answers that the repo has no such issue: a NOT_FOUND error, with
 // the repo found but the issue null. GitHub answers so, with an HTTP 200,
-// for an issue that was deleted, and for one that was transferred, as a
-// lookup by number is the old repo's (#413's verify). An HTTP 404 or 410
-// from the GraphQL endpoint itself is no such answer, as it says nothing
-// of the issue (#428).
+// for an issue that was deleted, and, as the fake does, for one that was
+// transferred, as a lookup by number is the old repo's (#413's verify, to
+// be confirmed live: SPEC §16). PinIssue's error wraps it too, for a
+// NOT_FOUND with no pin, which GitHub answers for a node ID it can't
+// resolve, such as a deleted issue's (#495). An HTTP 404 or 410 from the
+// GraphQL endpoint itself is no such answer, as it says nothing of the
+// issue (#428).
 var ErrIssueNotFound = errors.New("GitHub found no such issue")
 
 // IsPinned reports whether an issue is pinned to the repo's issue list. It

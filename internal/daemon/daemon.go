@@ -631,21 +631,21 @@ func parentOf(u string) int {
 // was deleted (404 or 410) or transferred: a Snapshot, an assignee write
 // (assignFailed), a close's judging (closingJudge) or a request about the
 // digest (digestGone, and digestPinGone, which first sets apart the pin
-// check's NOT_FOUND and an HTTP status from /graphql). A failed visit, which may 404 on a deleted comment,
-// marks the issue stale, so only Snapshot decides, and Iterate drops an
-// issue only when two reads say so with no good read between.
+// check's and the pin's NOT_FOUND and an HTTP status from /graphql). A
+// failed visit, which may 404 on a deleted comment, marks the issue stale,
+// so only Snapshot decides, and Iterate drops an issue only when two reads
+// say so with no good read between.
 //
 // GitHub answers a transferred issue with a 301, which our client follows
 // to the same host (github's sameHost), with a GET. So a transfer shows as
-// the moved issue, which Snapshot, assignAnswer, digestMoved and
-// github's PinIssue turn into github.ErrTransferred, or as the 404 of a
-// path with no GET there. No
-// go-github RedirectionError reaches here: go-github returns one only from
-// its calls that don't follow redirects (archive and log downloads), which
-// we don't use, or for a 3xx with no Location, which net/http doesn't
-// follow and GitHub's transfer never sends. So gone doesn't look for one
-// (#239), and such an error, if one came, would be an ordinary failure,
-// read again rather than dropped.
+// the moved issue, which Snapshot, assignAnswer, digestMoved and github's
+// PinIssue turn into github.ErrTransferred, or as the 404 of a path with
+// no GET there. No go-github RedirectionError reaches here: go-github
+// returns one only from its calls that don't follow redirects (archive and
+// log downloads), which we don't use, or for a 3xx with no Location, which
+// net/http doesn't follow and GitHub's transfer never sends. So gone
+// doesn't look for one (#239), and such an error, if one came, would be an
+// ordinary failure, read again rather than dropped.
 func gone(err error) bool {
 	var e *gogithub.ErrorResponse
 	if errors.As(err, &e) && e.Response != nil {

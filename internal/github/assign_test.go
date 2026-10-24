@@ -98,12 +98,12 @@ func TestAssignErrors(t *testing.T) {
 	f.FailWrite(1)
 	_, err := c.AddAssignees(ctx, "o", "r", n, []string{"owner"})
 	var ge *gogithub.ErrorResponse
-	if !errors.As(err, &ge) || !strings.Contains(err.Error(), "assign owner to o/r#1") {
+	if !errors.As(err, &ge) || !strings.Contains(err.Error(), "assign owner to o/r#1: send the write: ") {
 		t.Errorf("AddAssignees with a failed write = %v; want GitHub's error, naming the write", err)
 	}
 	f.FailWrite(2)
 	_, err = c.RemoveAssignees(ctx, "o", "r", n, []string{"owner", "bob"})
-	if !errors.As(err, &ge) || !strings.Contains(err.Error(), "unassign owner, bob from o/r#1") {
+	if !errors.As(err, &ge) || !strings.Contains(err.Error(), "unassign owner, bob from o/r#1: send the write: ") {
 		t.Errorf("RemoveAssignees with a failed write = %v; want GitHub's error, naming the write", err)
 	}
 	if _, err := c.AddAssignees(ctx, "o", "r", 9, []string{"owner"}); !errors.As(err, &ge) || ge.Response.StatusCode != 404 {

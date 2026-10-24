@@ -873,12 +873,16 @@ func (d *Daemon) digestPin(ctx context.Context, n int, items []waitItem) error {
 // its PinIssue, finds the digest gone (SPEC §9.4, "Creating and pinning
 // it"). The check finds it gone by GraphQL's NOT_FOUND for the issue
 // (github.ErrIssueNotFound), as GitHub answers a lookup by number of a
-// deleted or transferred issue so. The pin finds it gone as gone says: by
+// deleted issue so, and, as the fake does, of a transferred one, which is
+// to be confirmed live (SPEC §16). The pin finds it gone as gone says: by
 // its REST GET's 404 or 410, or by that GET finding it moved
-// (github.ErrTransferred). An HTTP 404 or 410 from the GraphQL endpoint
-// itself, to either, says nothing of the digest, but that the endpoint
-// failed, so it's an ordinary failure (#428): dropping the digest for it
-// would list every issue again on every pass while it lasts.
+// (github.ErrTransferred). It finds it gone by the mutation's
+// NOT_FOUND for the issue too (github.ErrIssueNotFound), as for a digest
+// deleted since that GET, which isn't GitHub's refusal, so no note names
+// it (#495). An HTTP 404 or 410 from the GraphQL endpoint itself, to
+// either, says nothing of the digest, but that the endpoint failed, so
+// it's an ordinary failure (#428): dropping the digest for it would list
+// every issue again on every pass while it lasts.
 func digestPinGone(err error) bool {
 	if errors.Is(err, github.ErrIssueNotFound) {
 		return true
