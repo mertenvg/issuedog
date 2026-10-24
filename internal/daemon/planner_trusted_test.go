@@ -517,10 +517,11 @@ func plannerTrustedFails(f *githubtest.Fake, path string) {
 
 // TestPlannerTrustedSubReadFails: a sub-issue's stage or type that can't be
 // read is a setup error (SPEC §12), so no run starts, and the error wraps
-// the read's and names the sub-issue: an open child's stage or type, a
-// closed child's type, a sibling's stage in parent.md, and in a revision,
-// an open or closed child's and another sub-issue's. eve's type:* label
-// costs a trust check, which fails (flakyTrust).
+// the read's and names the sub-issue: an open child's stage, type or
+// edits, a closed child's type, a sibling's stage in parent.md, and in a
+// revision, an open or closed child's and another sub-issue's. eve's
+// type:* label, or her edit, costs a trust check, which fails
+// (flakyTrust).
 func TestPlannerTrustedSubReadFails(t *testing.T) {
 	t.Parallel()
 	is500 := func(err error) bool {
@@ -556,6 +557,14 @@ func TestPlannerTrustedSubReadFails(t *testing.T) {
 		{"an open child's stage", func(f *githubtest.Fake) (int, int) { return firstPlan(f, app, false, false) },
 			func(f *githubtest.Fake, sub int) { plannerTrustedFails(f, fmt.Sprintf("/issues/%d", sub)) }, is500},
 		{"an open child's type", func(f *githubtest.Fake) (int, int) { return firstPlan(f, "eve", false, false) }, nil, isTrust},
+		// eve's edit of the owner's comment costs a trust check of her in
+		// the child's Dirty read, which fails.
+		{"an open child's edits", func(f *githubtest.Fake) (int, int) {
+			n, sub := firstPlan(f, app, false, false)
+			c := f.AddComment(sub, "owner", "Hi")
+			f.EditComment(c, "eve", "Hi again")
+			return n, sub
+		}, nil, isTrust},
 		{"a closed child's type, its timeline", func(f *githubtest.Fake) (int, int) { return firstPlan(f, app, true, false) },
 			func(f *githubtest.Fake, sub int) { plannerTrustedFails(f, fmt.Sprintf("/issues/%d/timeline", sub)) }, is500},
 		{"a closed child's type, its trust", func(f *githubtest.Fake) (int, int) { return firstPlan(f, "eve", true, false) }, nil, isTrust},
