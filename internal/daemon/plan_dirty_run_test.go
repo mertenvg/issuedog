@@ -61,7 +61,9 @@ func TestPlanDirtyRun(t *testing.T) {
 			f.EditComment(rev1.ID, planReviewRunOwner, "### Plan for #1 (rev 1)\n\nMine now.")
 			l.step("the plan comment made dirty", 1, "POST /issues/1/comments", fmt.Sprintf("PATCH /issues/comments/%d", rev1.ID), "PATCH /issues/2")
 			record := l.newest("the plan comment made dirty", 1)
-			if want := planDirtyRecorded(rev1.ID); record.Body != want {
+			// The record's seen is that of the spec's approval, which put the
+			// epic at planning: spec revision 1, the epic's first comment.
+			if want := planDirtyRecorded(rev1.ID, l.comments(1)[0].ID); record.Body != want {
 				t.Errorf("the plan comment made dirty: the newest comment =\n%s\nwant\n%s", record.Body, want)
 			}
 			l.labels("the plan comment made dirty", 1, "stage:plan-review", "type:epic")

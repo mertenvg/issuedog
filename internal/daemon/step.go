@@ -218,6 +218,12 @@ func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github
 	switch {
 	case reason == "edited":
 		return nil
+	case acked && request && !late && reviewDirtyRead(s, is, c, up.CreatedAt):
+		// The 👍 may be the answer's at clarifying or planning, read by the
+		// run whose move a dirty comment hid: the record of that move can
+		// only bound what came before the run (reviewDirtyRestore), so the
+		// 👍 processed it (SPEC §7.4).
+		return nil
 	case used && acked && editedSince(c, at):
 		return st.reply(ctx, s, c, "edited", editedText)
 	case acked && !named && (isCmd || !roundStage(posted)) && editedSince(c, up.CreatedAt):
