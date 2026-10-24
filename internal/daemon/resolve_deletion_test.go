@@ -137,7 +137,7 @@ func TestResolveGoneNotEndedFromAbove(t *testing.T) {
 	githubtest.Replay(t, setup, resolvePass(t, 3))
 	f := run(t, setup, resolvePass(t, 3))
 	resume := commentIDs(t, f, 3)[len(commentIDs(t, f, 3))-2]
-	if !resolveRejectedWith(f, 3, resume, madeOn("#2")) {
+	if !resolveRejectedWith(f, 3, resume, madeOn("#2", 2)) {
 		t.Errorf("#3: newest comment %q; want the /resume rejected, naming #2", newestComment(f, 3))
 	}
 	resolveSettle(t, f, 3, 2, 1)

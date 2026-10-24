@@ -148,7 +148,7 @@ func TestResolveHoldBetween(t *testing.T) {
 	st := f.State()
 	if body := newestComment(f, 1); !slices.ContainsFunc(st.Issues[0].Comments, func(c githubtest.CommentState) bool {
 		return c.Body == "/resume" && slices.Contains(c.Reactions, slug+"[bot] -1")
-	}) || !strings.Contains(body, madeOn("#2")) {
+	}) || !strings.Contains(body, madeOn("#2", 2)) {
 		t.Errorf("newest comment on #1 %q; want the /resume rejected, 👎'd, naming #2", body)
 	}
 	for i := 1; i < 3; i++ {
@@ -486,7 +486,7 @@ func TestResolveForgedMarkerAbove(t *testing.T) {
 	f.EditComment(commentIDs(t, f, 3)[0], "mallory", fmt.Sprintf("<!-- issuedog:transition from=ready to=held at=ready reason=owner cmd=%d -->", hold))
 	resume := f.AddComment(2, "owner", "/resume")
 	resolveSettle(t, f, 2, 1)
-	if !resolveRejectedWith(f, 2, resume, madeOn("#1")) {
+	if !resolveRejectedWith(f, 2, resume, madeOn("#1", 1)) {
 		t.Errorf("#2: newest comment %q; want the /resume rejected, naming #1", newestComment(f, 2))
 	}
 	resolveLabels(t, f, "after #2's /resume", "held", "ready")
