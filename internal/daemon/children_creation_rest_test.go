@@ -125,8 +125,9 @@ func TestChildrenCreateServerErrorRetried(t *testing.T) {
 // its changed children would name, is a failure no later pass gets past,
 // as the comment is the approved revision's: a state error on the story
 // says so, the visit returns no error, and a visit after it makes no
-// request. The changed T2's child gets no write. A crash at any write
-// replays.
+// request. The changed T2's child gets no write. Nor does any other: the
+// missing run is found before any write, as a gone child is, so no child
+// is filed for the new T4 (#544). A crash at any write replays.
 func TestChildrenChangedNoRun(t *testing.T) {
 	t.Parallel()
 	setup := func(tb testing.TB) *githubtest.Fake {
@@ -143,6 +144,12 @@ func TestChildrenChangedNoRun(t *testing.T) {
 
 	f := run(t, setup, pass)
 	droppedNoWrite(t, f, 3, "T2's child, whose rewrite would name the plan comment's run")
+	if got := len(f.State().Issues); got != 5 {
+		t.Errorf("%d issues, want the story, its three children and the bug: none filed for T4", got)
+	}
+	for _, n := range []int{2, 4, 5} {
+		droppedNoWrite(t, f, n, "a child or the bug, while the revision is stopped")
+	}
 	creationRestStuck(t, f, revisionPlan, 2, goneMoveID(t, f),
 		"its plan comment names no run, which the rewrite of its changed children would name")
 }

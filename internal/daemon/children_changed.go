@@ -26,27 +26,18 @@ import (
 // (childSpecsWhere), with children each item's child, found or filed, and
 // numbers each child's number, by item, which a changed human task's
 // "Why it blocks" names (childSpec.bodyOf). plan is the plan comment,
-// which the move links to and whose run= names the rewrite (childPlanRun),
-// and key the parent's move into planned, event=p<its comment ID>, which
-// keys each move as a child's first move is keyed (SPEC §5.2). A plan
-// comment that names no run is a failure no later pass gets past
-// (childrenStuck), returned before any changed child is written. Each
+// which the move links to, run its run=, which names the rewrite
+// (childrenRun), and key the parent's move into planned, event=p<its
+// comment ID>, which keys each move as a child's first move is keyed
+// (SPEC §5.2). A plan comment that names no run is a failure no later
+// pass gets past, which ChildrenVisit finds before any write
+// (childrenRun), so run is never "" here. Each
 // changed item's child is in children, as ChildrenVisit stops a revision
 // whose kept or changed child isn't found before any write (childrenGone),
 // so one that isn't is an error, as for a first plan's dependency with no
 // child (childrenLink), and nothing is written to it.
-func (st *Step) childrenChanged(ctx context.Context, s *github.Snapshot, rev int, plan github.Comment, key state.Key,
+func (st *Step) childrenChanged(ctx context.Context, s *github.Snapshot, rev int, plan github.Comment, run string, key state.Key,
 	specs []childSpec, children map[string]childFound, numbers map[string]int) error {
-	if len(specs) == 0 {
-		return nil
-	}
-	run, ok := childPlanRun(plan, st.AppSlug)
-	if !ok {
-		// The plan comment is the approved revision's, which only a new
-		// approval replaces, so no later pass reads a run from it either.
-		return &childrenStuck{why: "its plan comment names no run, which the rewrite of its changed children would name",
-			err: fmt.Errorf("revision %d's plan comment %d names no run, which its changed children's rewrite marker would name", rev, plan.ID)}
-	}
 	for _, c := range specs {
 		f, ok := children[c.Item]
 		if !ok {
@@ -105,7 +96,9 @@ func childPlanRun(plan github.Comment, appSlug string) (string, bool) {
 // to Touched, and the label rules run on it first (discCheckLabels), so a
 // stage a trusted user set by hand is recorded as an override first. A
 // closed child gets nothing: a revision can't change one (SPEC §11.3), but
-// it may close after the approval.
+// it may close after the approval. Nor does a story with no parent that
+// isn't held, whose move the table lacks: that's a failure no later pass
+// gets past (childOrphan).
 func (st *Step) childChanged(ctx context.Context, parent *github.Snapshot, rev int, plan github.Comment, run string, key state.Key,
 	c childSpec, n int, numbers map[string]int) error {
 	s, err := st.Client.Snapshot(ctx, st.Owner, st.Repo, n)
@@ -133,6 +126,9 @@ func (st *Step) childChanged(ctx context.Context, parent *github.Snapshot, rev i
 			return fmt.Errorf("check #%d: %w", n, err)
 		}
 		return nil
+	}
+	if err := childOrphan(s, state.Derive(s, st.AppSlug, d.Has), c); err != nil {
+		return fmt.Errorf("move #%d: %w", n, err)
 	}
 	st.touch(n)
 	if err := st.discCheckLabels(ctx, s, st.Trust, d); err != nil {
@@ -201,6 +197,31 @@ func (st *Step) childChanged(ctx context.Context, parent *github.Snapshot, rev i
 	logr.Infof("%s/%s#%d: sent #%d, the child of item %s of its plan, back to %s for revision %d, from %s",
 		st.Owner, st.Repo, parent.Number, n, c.Item, c.Stage, rev, is.Stage)
 	return nil
+}
+
+// childOrphan is the childrenStuck for s, in state is, the child of c, a
+// changed item, when c is a story and s has no parent, as a child a pass
+// filed but stopped before linking, or one someone unlinked by hand, and
+// isn't held, or nil otherwise. Such a child is a story with no parent
+// (state.ClassOwnerStory), which no row of SPEC §7.2 sends back to
+// planning on the parent's change, so its move would be a transition
+// error each pass, and the parent's visit would fail and read its
+// children again every pass. Linking it under the parent first would undo
+// a person's unlink, so the parent's state error asks for that instead
+// (SPEC §5.2). Once it's linked, a move of the parent, as by /hold and
+// /resume, applies the revision to it. A held child's move, held → held,
+// fits every class, so it's none. It's found before any write to the
+// child, which gets none.
+func childOrphan(s *github.Snapshot, is state.Issue, c childSpec) error {
+	if c.Stage != state.Planning || s.Parent != 0 || is.Stage == state.Held {
+		return nil
+	}
+	return &childrenStuck{
+		why: fmt.Sprintf("#%d, the child of item %s, is a story with no parent, which no transition sends back to `planning` until it's linked under this issue",
+			s.Number, inline(c.Item)),
+		err: fmt.Errorf("#%d, item %s's child, is a story with no parent at %s, and SPEC §7.2 has no row from there to planning on %s for one",
+			s.Number, c.Item, is.Stage, state.TriggerParentChangedStory),
+	}
 }
 
 // adoptedMoveText is the line in an adopted child's move comment, after

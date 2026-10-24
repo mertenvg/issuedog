@@ -34,7 +34,9 @@ import (
 // changed item depends on no dropped one (SPEC §11.3), a new one's child
 // is filed by now, and ChildrenVisit stops a revision whose kept or
 // changed child isn't found before any write (childrenGone): one that
-// isn't is an error, as in childrenLink. The links of a kept child, and
+// isn't is an error, as in childrenLink. A link GitHub refuses to add
+// with a 422 is a failure no later pass gets past, as in childrenLink
+// (childBlockErr). The links of a kept child, and
 // the links into a changed child from its siblings, are each the other
 // child's own: a kept item keeps its dependencies (keptDeps), and a new
 // or changed one's are its own item's.
@@ -75,7 +77,7 @@ func (st *Step) revisedLink(ctx context.Context, items []planItem, children map[
 			}
 			st.touch(c.Number)
 			if err := st.Client.AddBlockedBy(ctx, st.Owner, st.Repo, c.Number, b.ID); err != nil {
-				return fmt.Errorf("item %s: block #%d by #%d: %w", it.ID, c.Number, b.Number, err)
+				return childBlockErr(err, it.ID, c, dep, b)
 			}
 			logr.Infof("%s/%s#%d: blocked by #%d, as item %s of a plan's revision depends on item %s", st.Owner, st.Repo, c.Number, b.Number, it.ID, dep)
 		}
