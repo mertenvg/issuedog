@@ -592,10 +592,22 @@ func unreadableWarning(trigger string) string {
 		"so it fails: only a bug or a change to the marker's format does that"
 }
 
+// lostReplyDoneBy posts /done on issue 1 as login, with the App's 👎 on it
+// but no reply, as when the pass that 👎'd it stopped before replying: the
+// next pass posts the reply again (reword), wording it through the check.
+func lostReplyDoneBy(login string) func(t testing.TB, f *githubtest.Fake) {
+	return func(t testing.TB, f *githubtest.Fake) {
+		f.AddReaction(f.AddComment(1, login, "/done"), app, "-1")
+	}
+}
+
 // Running a check that couldn't be read logs a warning each time, on a
-// /done and on a 👍: once for the first, none on the passes after that read
-// the marker but run no check, and once more for a second /done or 👍. A
-// human task with such a marker but no /done or 👍 logs none.
+// /done, on a 👍, and on a 👎'd /done whose reply was lost, whose reply
+// runs the check again: once for the first, none on the passes after that
+// read the marker but run no check, and once more for a second /done, 👍
+// or lost reply. A human task with such a marker but no /done or 👍 logs
+// none, and a check that could be read, passing or failing, or a
+// plain-text "Done when", logs none on a /done or a 👍.
 func TestDoneUnreadableCheckWarns(t *testing.T) {
 	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
 	const marker = " check=app-installed value=go.mod"
@@ -613,6 +625,7 @@ func TestDoneUnreadableCheckWarns(t *testing.T) {
 			}
 			f.AddIssueReaction(1, "owner", "+1")
 		}, thumbDaemon, unreadableWarning("a 👍")},
+		{"/done whose reply was lost", lostReplyDoneBy("owner"), lostReplyDoneBy("owner"), doneDaemon, unreadableWarning("/done")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := humanTask(marker, tc.trigger)(t)
@@ -648,6 +661,47 @@ func TestDoneUnreadableCheckWarns(t *testing.T) {
 			t.Errorf("logged %q, want no warning for a check that isn't run", logs.String())
 		}
 	})
+	for _, check := range []struct {
+		name, marker string
+		label        bool // whether the repo has the label needs-design
+		reads        int  // the check's reads
+	}{
+		{"a label check that passes", doneLabelCheck, true, 1},
+		{"a label check that fails", doneLabelCheck, false, 1},
+		{"plain text", "", false, 0},
+	} {
+		for _, trig := range []struct {
+			name   string
+			by     func(t testing.TB, f *githubtest.Fake)
+			daemon func(t testing.TB, f *githubtest.Fake, o *origin) *daemon.Daemon
+		}{
+			{"/done", doneBy("owner", 1002), doneDaemon},
+			{"a 👍", thumbBy("owner", 1002), thumbDaemon},
+		} {
+			t.Run(check.name+"/"+trig.name, func(t *testing.T) {
+				f := humanTask(check.marker, func(t testing.TB, f *githubtest.Fake) {
+					if check.label {
+						f.AddRepoLabel("needs-design")
+					}
+					trig.by(t, f)
+				})(t)
+				d := trig.daemon(t, f, newOrigin(t))
+				logr.Wait() // so the capture holds only this test's lines
+				var logs bytes.Buffer
+				stop := logr.AddWriter(&logs, logr.WithFilter(logr.W))
+				defer stop()
+				iterate(t, d)
+				iterate(t, d)
+				logr.Wait()
+				if r := checkReads(f, 0); len(r) != check.reads {
+					t.Errorf("check reads %+v, want %d", r, check.reads)
+				}
+				if strings.Contains(logs.String(), "couldn't be read") {
+					t.Errorf("logged %q, want no warning for a check that could be read", logs.String())
+				}
+			})
+		}
+	}
 }
 
 // 👍s from an untrusted writer, an unknown user, a bot and the App, all
