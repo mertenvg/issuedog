@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/mertenvg/issuedog/internal/agent"
 )
@@ -28,14 +29,23 @@ const publicCauseLogged = "(in the daemon's log)"
 // a check's broken rules: a run that left no valid result after a restart,
 // an issue its stage no longer runs on, a move that doesn't fit, or output
 // that doesn't decode. Its text names only the issue's number and type,
-// the agent's output, the transition table's words and, for a decode, the
-// decoder's, such as encoding/json's, which name a field, a Go type or an
-// offset, never a path, a run ID or GitHub's text, so a public comment may
-// quote it (SPEC §5.3). Only an error of that text may be wrapped in one.
+// the agent's output and the transition table's words, never a path, a
+// run ID or GitHub's text, so a public comment may quote it (SPEC §5.3).
+// Only an error of that text may be wrapped in one.
 type daemonCause struct{ err error }
 
 func (e *daemonCause) Error() string { return e.err.Error() }
 func (e *daemonCause) Unwrap() error { return e.err }
+
+// decodeCause is the error of output, what's, such as "the interviewer's",
+// that doesn't decode: a *daemonCause of a fixed sentence, which a public
+// comment quotes, beside err, the decoder's error, which only the log has
+// (SPEC §5.3). A decoder's words may quote the output's own text, such as
+// encoding/json's `unknown field "<key>"`, which only the schema keeps out
+// today, so none of them is quoted.
+func decodeCause(what string, err error) error {
+	return fmt.Errorf("%w: %w", &daemonCause{errors.New(what + " output doesn't decode")}, err)
+}
 
 // publicCause returns the part of cause a public comment may quote: every
 // *ruleError, *agent.PublicCauseError and *daemonCause in it, in order,

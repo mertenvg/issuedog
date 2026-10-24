@@ -321,7 +321,8 @@ func (r *Runs) CheckRegistered() error {
 // setup, counts as an attempt (failed); after loop.max_attempts in a row
 // the issue gets one state error (SPEC §5.3) and no more runs until the
 // stage moves or gets new input. If posting that error failed, RunStage
-// posts it instead of a run; if that fails too, it logs the error and
+// posts it instead of a run, even when the stage has no work pending, as
+// on an issue it no longer runs on; if that fails too, it logs the error and
 // moves on, so the next issue gets its turn. A Stage whose schema doesn't
 // compile starts no run: it's a setup failure, reported once (schema). A
 // result asking for a move the table lacks is no attempt: it gets one
@@ -362,10 +363,22 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		return false, nil
 	}
 	in := Input{S: rd.S, Inputs: rd.Inputs, Dirt: d, Issue: is}
+	errKey := attemptKey(is, rd.Inputs)
+	if r.attempts[countKey(n, errKey)] >= r.limit() && !is.Reported(kindAttempts, errKey) {
+		// The cap was reached, but posting its state error failed: post it,
+		// whether or not the stage has work pending, as a last attempt that
+		// failed on an issue its stage no longer runs on leaves it none.
+		// A post that keeps failing mustn't hold up the other issues.
+		last := Lease{Issue: n, Stage: is.Stage, AttemptKey: errKey, PublicFailure: r.failures[countKey(n, errKey)]}
+		if err := r.reportCap(ctx, nil, st, last); err != nil {
+			logr.Errorf("%s/%s#%d: no %s run, as it failed loop.max_attempts times, but posting that failed again: %v",
+				a.Owner, a.Repo, n, st.Agent(), err)
+		}
+		return false, nil
+	}
 	if !st.Pending(in) {
 		return false, nil
 	}
-	errKey := attemptKey(is, rd.Inputs)
 	if is.Reported(kindAttempts, errKey) {
 		logr.Debugf("%s/%s#%d: no %s run: it failed loop.max_attempts times", a.Owner, a.Repo, n, st.Agent())
 		return false, nil
@@ -382,16 +395,6 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		// another at intake gives triage no run (SPEC §5.3): step 1 posts
 		// the new key's error (typeCheck).
 		logr.Debugf("%s/%s#%d: no %s run: its type doesn't fit its stage, as reported", a.Owner, a.Repo, n, st.Agent())
-		return false, nil
-	}
-	if r.attempts[countKey(n, errKey)] >= r.limit() {
-		// The cap was reached, but posting its state error failed: post it.
-		// A post that keeps failing mustn't hold up the other issues.
-		last := Lease{Issue: n, Stage: is.Stage, AttemptKey: errKey, PublicFailure: r.failures[countKey(n, errKey)]}
-		if err := r.reportCap(ctx, nil, st, last); err != nil {
-			logr.Errorf("%s/%s#%d: no %s run, as it failed loop.max_attempts times, but posting that failed again: %v",
-				a.Owner, a.Repo, n, st.Agent(), err)
-		}
 		return false, nil
 	}
 	attempt := r.attempts[countKey(n, errKey)] + 1
@@ -575,9 +578,10 @@ func outcome(raw []byte) (failed bool, text string) {
 
 // applyLease applies l's result (apply): raw, claude's output, whose
 // structured output out is valid. A failure keeps the lease, counted in
-// ApplyFailures, so the next pass tries again; after loop.max_attempts of
-// them, the run is a failed attempt, and only failed's own error is
-// returned, as failed logs the cause. A failure to end the run once the
+// ApplyFailures, so the next pass tries again, and is returned, logged
+// only by the loop; after loop.max_attempts of them, the run is a failed
+// attempt, and only failed's own error is returned, as failed logs the
+// cause. A failure to end the run once the
 // result is applied, dropped or blocked (an endError) isn't counted, and
 // leaves the lease as end or finish left it, for the next pass. Nor is an
 // issue whose labels CheckLabels holds back: the error wraps
@@ -601,11 +605,13 @@ func (r *Runs) applyLease(ctx context.Context, l Lease, st Stage, raw []byte, ou
 	}
 	l.ApplyFailures++
 	if l.ApplyFailures < r.limit() {
-		logr.Warnf("applying run %s on #%d failed, %d of %d times, so it's tried again: %v", l.RunID, l.Issue, l.ApplyFailures, r.limit(), err)
 		// The next pass applies it, as after a crash, and judges the
-		// assignees then (SPEC §9.6).
+		// assignees then (SPEC §9.6). The failure is the pass's error, which
+		// stops the pass, so no other run takes the lease, and the loop logs
+		// it, once, so it isn't logged here too.
 		r.Daemon.assignWorked(l.Issue)
-		return errors.Join(err, r.writeLease(l))
+		return errors.Join(fmt.Errorf("applying run %s on #%d failed, %d of %d times, so it's tried again: %w",
+			l.RunID, l.Issue, l.ApplyFailures, r.limit(), err), r.writeLease(l))
 	}
 	// The run is now a failed attempt, as a run that fails is, and failed
 	// logs its cause, once (SPEC §5.3), so it isn't the pass's error too.
@@ -906,7 +912,7 @@ func (r *Runs) endedLease(ctx context.Context, l Lease) error {
 // publicCauseLogged. It logs cause in full. The last attempt allowed posts
 // one state error (reportCap), naming that cause, after which RunStage
 // runs no more. If posting it fails, RunStage posts it instead of starting
-// a run.
+// a run, whether or not the stage has work pending then.
 func (r *Runs) failed(ctx context.Context, st Stage, l Lease, cause error) error {
 	l.PublicFailure = cmp.Or(publicCause(cause), publicCauseLogged)
 	n := r.count(l)

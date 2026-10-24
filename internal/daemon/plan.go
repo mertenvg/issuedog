@@ -3,7 +3,6 @@ package daemon
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 )
 
 // outcomePlan is the planner's outcome for a plan. Its other outcome is a
@@ -114,13 +113,13 @@ type planCheck struct {
 }
 
 // decodePlan decodes a planner run's output. A field the types don't have
-// is an error.
+// is an error (decodeCause).
 func decodePlan(raw json.RawMessage) (planOutput, error) {
 	var out planOutput
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
 	if err := d.Decode(&out); err != nil {
-		return planOutput{}, &daemonCause{fmt.Errorf("decode planner output: %w", err)}
+		return planOutput{}, decodeCause("the planner's", err)
 	}
 	return out, nil
 }
