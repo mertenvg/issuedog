@@ -9,7 +9,8 @@ import (
 // sub-issues panel does, and returns the node ID of the
 // SubIssueRemovedEvent it records on the parent's timeline, naming login
 // and the sub-issue, by its number and repository, which the GraphQL
-// comments query serves (gqlEventsPage). It moves the sub-issue's
+// comments query serves (gqlEventsPage), written after the lag
+// (LagEvents), as GitHub may write it late. It moves the sub-issue's
 // updated_at, whose parent changes. An issue with no parent fails the
 // test.
 func (f *Fake) UnlinkBy(number int, login string) string {
@@ -44,10 +45,11 @@ func (f *Fake) UnlinkLinkedBy(parent int, repo string, number int, login string)
 }
 
 // subIssueGone records a SubIssueRemovedEvent on parent naming sub and
-// login, and returns its node ID. f is locked.
+// login, written after the lag (LagEvents), and returns its node ID. f is
+// locked.
 func (f *Fake) subIssueGone(parent *issue, sub linked, login string) string {
 	f.lastEvent++
-	e := gqlEvent{node: fmt.Sprintf("SIRE_%d", firstEvent+f.lastEvent), by: login, at: f.tick().Time, sub: &sub}
+	e := gqlEvent{node: fmt.Sprintf("SIRE_%d", firstEvent+f.lastEvent), by: login, at: f.tick().Add(f.eventLag), sub: &sub}
 	parent.gqlEvents = append(parent.gqlEvents, e)
 	return e.node
 }

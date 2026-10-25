@@ -225,7 +225,7 @@ func (f *Fake) graphql(c *call) (int, any) {
 		errs = append(errs, map[string]any{"message": "githubtest: the query's timelineItems doesn't ask for COMMENT_DELETED_EVENT and SUB_ISSUE_REMOVED_EVENT alone"})
 		return reply(nil)
 	}
-	deleted, msg := gqlEventsPage(is, v.DeletedCursor)
+	deleted, msg := gqlEventsPage(is, f.now, v.DeletedCursor)
 	if msg != "" {
 		errs = append(errs, map[string]any{"message": msg})
 		return reply(nil)

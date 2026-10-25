@@ -231,11 +231,19 @@ func (d *Daemon) closingList(is *gogithub.Issue, start, had bool) {
 // open (closingForget): an untrusted close whose event is late, or how it
 // was made can't be read, doesn't let the parent close (SPEC §7.3, §9.4).
 // With no snapshot held, as when n is listed again, the parent kept
-// stays. One with no close to judge, or no parent, is forgotten.
-func (d *Daemon) closingBelowSet(n int, s *github.Snapshot) {
+// stays. With neither naming one, as after a restart, which holds no
+// snapshot of an issue closed before it, or for a link made since the
+// snapshot, it's listed, the number the poll's parent_issue_url for n
+// ends in, which costs no request: so an issue added by hand below an
+// epic and closed by someone untrusted holds the epic across a restart
+// too. One with no close to judge, or no parent, is forgotten.
+func (d *Daemon) closingBelowSet(n int, s *github.Snapshot, listed int) {
 	p := d.closingBelow[n]
 	if s != nil {
 		p = s.Parent
+	}
+	if p == 0 {
+		p = listed
 	}
 	if _, due := d.closingDue[n]; !due || p == 0 {
 		delete(d.closingBelow, n)

@@ -101,11 +101,15 @@ type Daemon struct {
 	// none: each one's link below the epic someone untrusted removed
 	// (epicCloseUnlinked).
 	epicCloseHeld map[int]map[int]time.Time
+	// epicUnlinks are the issues whose snapshot named a parent that the
+	// next one read doesn't, by number, with that parent: one whose
+	// removal's event is late holds an epic open (epicUnlinkNote).
+	epicUnlinks map[int]epicUnlink
 
 	closingSeen  map[int]closingListed   // closed issues whose close is judged, as they were listed then (closing.go)
 	closingDue   map[int]*gogithub.Issue // closed issues with a close to judge, as last listed (closingList)
 	closingGone  map[int]bool            // closed issues whose close's judging found them gone, with no good judging since (closingPass)
-	closingBelow map[int]int             // closed issues with a close to judge, or reopened by its judging, with the parent their last snapshot named (closingBelowSet)
+	closingBelow map[int]int             // closed issues with a close to judge, or reopened by its judging, with the parent their last snapshot named, or else the poll listed (closingBelowSet)
 	// closedListed are the issues the poll last listed closed, never a
 	// pull request, for a finished story's children (digestDoneStands).
 	closedListed map[int]bool
@@ -267,6 +271,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			delete(d.stale, n)
 			continue
 		}
+		prev := d.snaps[n] // for a link it no longer shows (epicUnlinkNote)
 		delete(d.snaps, n)
 		delete(d.inputs, n)
 		if _, held := d.digest.titled[n]; held { // maybe the digest: read once judged (digestHistoryHold)
@@ -291,6 +296,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		case err != nil:
 			errs = append(errs, err)
 		default:
+			d.epicUnlinkNote(prev, s)
 			d.snaps[n], read[n] = s, true
 			delete(d.stale, n)
 			delete(d.missing, n)
@@ -511,9 +517,10 @@ func (d *Daemon) poll(ctx context.Context) error {
 			case d.digest.listed(a.AppSlug, is) || is.GetState() != "open": // a digest is never in the pipeline
 				if is.GetState() != "open" && !d.digest.has(n) {
 					// A close still to judge is kept (closing.go), with
-					// the parent it was held open below.
+					// the parent it was held open below, or else the
+					// one listed.
 					d.closingList(is, start, d.snaps[n] != nil && slices.ContainsFunc(d.snaps[n].Labels, isStageLabel))
-					d.closingBelowSet(n, d.snaps[n])
+					d.closingBelowSet(n, d.snaps[n], parentOf(is.GetParentIssueURL()))
 				}
 				d.leave(n)
 			case changed(d.snaps[n], is):

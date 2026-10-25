@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mertenvg/issuedog/internal/daemon"
+	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 )
 
@@ -312,4 +313,153 @@ func TestEpicCloseUnlinkedOtherRepo(t *testing.T) {
 	f.CloseBy(3, "owner")
 	iterate(t, d)
 	epicCloseChecked(t, f, comments, "completed", "Every child of this epic is closed, so I've closed it as completed. Its children: #2, #3.", 1004)
+}
+
+// A removal whose event is late of a link below another issue holds
+// nothing on the epic: here #5 is below story #2, and once the owner has
+// closed both stories and #4, and taken #5 from below #2, its event never
+// written, the epic closes on that pass.
+func TestEpicCloseBelowLateUnlinkElsewhere(t *testing.T) {
+	t.Parallel()
+	f, d := epicCloseBelowStart(t)
+	if n := f.AddIssue("owner", "Below a story", "Added by hand."); n != 5 {
+		t.Fatalf("the issue below #2 is #%d; want #5", n)
+	}
+	f.SetParent(5, 2)
+	iterate(t, d)
+	comments := len(f.State().Issues[0].Comments)
+	f.CloseBy(2, "owner")
+	f.CloseBy(3, "owner")
+	f.CloseBy(epicCloseBelowExtra, "owner")
+	f.LagEvents(time.Hour)
+	f.UnlinkBy(5, "owner")
+	f.LagEvents(0)
+	iterate(t, d)
+	epicCloseChecked(t, f, comments, "completed", "Every child of this epic is closed, so I've closed it as completed. Its children: #2, #3.", 1004)
+}
+
+// A restart while mallory's close of #4, added below the epic by hand,
+// waits to be judged, its event late, doesn't let the epic close: the
+// fresh daemon holds no snapshot of #4, but the poll lists #4's parent,
+// so it holds the epic as the daemon before it did, with no request of
+// its own (SPEC §7.3), whatever write a crash comes at. Every pass of
+// Replay's is a restart, as each is a fresh daemon on the fake. Once her
+// close is judged, it's reverted, the epic stays open with no write, and
+// a pass where nothing changed then costs only 304s. The owner's close of
+// #4 then closes the epic, as completed, with one comment.
+func TestEpicCloseBelowRestart(t *testing.T) {
+	t.Parallel()
+	setup := func(tb testing.TB) *githubtest.Fake {
+		f, _ := epicCloseBelowFake(tb, epicCloseBelowCases[0].before, nil)
+		f.ForgetWrites()
+		return f
+	}
+	restarted := func(f *githubtest.Fake) *daemon.Daemon { return newDaemon(t, f, newOrigin(t), nil) }
+	githubtest.Replay(t, setup, func(f *githubtest.Fake) error { return epicCloseBelowPass(f, restarted(f)) })
+	f := setup(t)
+	d := restarted(f)
+	comments := len(f.State().Issues[0].Comments)
+	epicCloseIterate(t, d, false, "the restart's first pass, while the event is late")
+	epicCloseOpen(t, f, 0, "the restart's first pass, while the event is late")
+	if !f.State().Issues[epicCloseBelowExtra-1].Closed {
+		t.Fatalf("#%d is open; want mallory's close still to judge", epicCloseBelowExtra)
+	}
+	f.Advance(10 * time.Second)
+	if err := closingDropQuiet(f, d); err != nil {
+		t.Fatal(err)
+	}
+	epicCloseOpen(t, f, 0, "once mallory's close is judged")
+	if f.State().Issues[epicCloseBelowExtra-1].Closed {
+		t.Fatalf("#%d is closed; want mallory's close reverted", epicCloseBelowExtra)
+	}
+	iterate(t, d)
+	doneUnchanged(t, f, d)
+	f.CloseBy(epicCloseBelowExtra, "owner")
+	iterate(t, d)
+	epicCloseChecked(t, f, comments, "completed", "Every child of this epic is closed, so I've closed it as completed. Its children: #2, #3.", 1004)
+}
+
+// A removal of #4's link below the epic, once both stories closed, a
+// minute after #4 last changed, so its snapshot is older than
+// github.HoldBound, whose event GitHub writes late, holds the epic till
+// it's written, then it's
+// judged as any removal is (SPEC §7.3): mallory's holds the epic on,
+// with no request of the epic's on the passes after, and the owner's lets
+// it close. So it is when an older removal of #4's link, the owner's, is
+// on the epic's timeline already, from before #4 was linked below it
+// again: it isn't the removal the snapshots show. One whose event isn't
+// written within github.HoldBound of the removal, past #4's updated_at,
+// holds it no longer, so the epic closes; and one whose issue closed
+// since, its close accepted, holds nothing, as that issue is settled.
+func TestEpicCloseBelowLateUnlink(t *testing.T) {
+	t.Parallel()
+	relinked := func(t *testing.T, f *githubtest.Fake, d *daemon.Daemon) {
+		f.UnlinkBy(epicCloseBelowExtra, "owner")
+		iterate(t, d)
+		f.SetParent(epicCloseBelowExtra, 1)
+		f.RenameIssue(epicCloseBelowExtra, "owner", "One more story, again") // as a link moves its updated_at
+		iterate(t, d)
+	}
+	for _, tc := range []struct {
+		name, by string
+		before   func(*testing.T, *githubtest.Fake, *daemon.Daemon)
+		lag      time.Duration
+		closed   bool // the owner closes #4 after the first pass
+		closes   bool
+	}{
+		{"mallory's", "mallory", nil, 5 * time.Second, false, false},
+		{"the owner's", "owner", nil, 5 * time.Second, false, true},
+		{"mallory's, after an older one of the owner's", "mallory", relinked, 5 * time.Second, false, false},
+		{"one never written", "owner", nil, time.Hour, false, true},
+		{"one never written, its issue closed", "mallory", nil, time.Hour, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f, d := epicCloseBelowStart(t)
+			if tc.before != nil {
+				tc.before(t, f, d)
+			}
+			f.CloseBy(2, "owner")
+			f.CloseBy(3, "owner")
+			iterate(t, d)
+			f.Advance(time.Minute) // #4 last changed a minute before its removal
+			from, comments := len(f.Writes()), len(f.State().Issues[0].Comments)
+			f.LagEvents(tc.lag)
+			f.UnlinkBy(epicCloseBelowExtra, tc.by)
+			f.LagEvents(0)
+			epicCloseIterate(t, d, false, "the pass that reads the removal, its event late")
+			epicCloseOpen(t, f, from, "the pass that reads the removal, its event late")
+			if tc.closed {
+				f.CloseBy(epicCloseBelowExtra, "owner")
+				iterate(t, d)
+				epicCloseChecked(t, f, comments, "completed", "Every child of this epic is closed, so I've closed it as completed. Its children: #2, #3.", 1004)
+				return
+			}
+			f.Advance(10 * time.Second)
+			if tc.lag > 10*time.Second {
+				epicCloseIterate(t, d, false, "a pass still within the bound")
+				epicCloseOpen(t, f, from, "a pass still within the bound")
+				f.Advance(github.HoldBound)
+			}
+			if tc.closes {
+				iterate(t, d)
+				epicCloseChecked(t, f, comments, "completed", "Every child of this epic is closed, so I've closed it as completed. Its children: #2, #3.", 1004)
+				return
+			}
+			epicCloseIterate(t, d, false, "the pass that reads the event")
+			epicCloseOpen(t, f, from, "the pass that reads the event")
+			iterate(t, d)
+			req := len(f.Requests())
+			for _, step := range []string{"a pass where nothing changed", "the pass after"} {
+				iterate(t, d)
+				for _, r := range f.Requests()[req:] {
+					if r.Path == "/issues/1" || strings.HasPrefix(r.Path, "/issues/1/") {
+						t.Errorf("%s: requested %s %s; want no request of the epic's", step, r.Method, r.Path)
+					}
+				}
+				req = len(f.Requests())
+			}
+			epicCloseOpen(t, f, from, "the passes after")
+		})
+	}
 }

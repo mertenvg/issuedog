@@ -164,7 +164,9 @@ func (d *Daemon) epicClosePass(ctx context.Context) error {
 // An open issue whose link below it someone untrusted removed holds it
 // open then (epicCloseUnlinked), from that read's removals, as one still
 // below it does, and is kept for epicClosePass to judge with no request.
-// Else it moves to closed
+// One whose removal's event isn't written yet holds it too, for that read
+// alone: the epic is read again on the next pass, as after any visit
+// here, and judged afresh. Else it moves to closed
 // (Transition, planned → closed on children-closed), as completed if any
 // child closed as completed and else as not planned (epicCloseReason),
 // keyed by epicCloseKey, with one comment naming the children, and the
@@ -203,9 +205,13 @@ func (d *Daemon) epicCloseOne(ctx context.Context, n int) error {
 		logr.Debugf("%s/%s#%d isn't an epic whose children have all closed, as read again, so it stays open", st.Owner, st.Repo, n)
 		return nil
 	}
-	held, err := d.epicCloseUnlinked(ctx, s)
+	held, late, err := d.epicCloseUnlinked(ctx, s)
 	if err != nil {
 		return fmt.Errorf("close %s/%s#%d with its children: %w", st.Owner, st.Repo, n, err)
+	}
+	if len(late) > 0 {
+		logr.Infof("%s/%s#%d stays open till the events of the removals of issues %v from below it are written", st.Owner, st.Repo, n, late)
+		return nil
 	}
 	if len(held) > 0 {
 		if d.epicCloseHeld == nil {
@@ -258,7 +264,18 @@ func (d *Daemon) epicCloseReason(children []int) string {
 // request): the App's or a trusted user's (closingTrusted) lets the issue
 // go. One of an issue in another repo counts for nothing, as no snapshot
 // is held of it.
-func (d *Daemon) epicCloseUnlinked(ctx context.Context, s *github.Snapshot) ([]int, error) {
+//
+// It also returns, as late, the issues that may still be open whose
+// snapshot named s as their parent and whose next one didn't
+// (epicUnlinkNote), with no removal of their link on s's timeline from
+// on that first snapshot's updated_at, as GitHub may write the event
+// late: each holds the epic till the event is written, when it's judged
+// as above, but for github.HoldBound at most past the updated_at the
+// removal moved, by GitHub's clock, as for a late reopen (closingReopen).
+// After that it's taken that no event is coming, so it holds nothing, and
+// a removal whose event is later still doesn't hold the epic. Either way
+// it's forgotten.
+func (d *Daemon) epicCloseUnlinked(ctx context.Context, s *github.Snapshot) ([]int, []int, error) {
 	st := d.Step
 	newest := map[int]github.SubIssueRemoval{}
 	for _, r := range s.SubIssueRemovals {
@@ -266,20 +283,62 @@ func (d *Daemon) epicCloseUnlinked(ctx context.Context, s *github.Snapshot) ([]i
 			newest[r.Number] = r
 		}
 	}
-	var held []int
+	now := st.Client.Now()
+	var held, late []int
+	for _, c := range slices.Sorted(maps.Keys(d.epicUnlinks)) {
+		u := d.epicUnlinks[c]
+		if u.parent != s.Number {
+			continue
+		}
+		r, written := newest[c]
+		if written && !r.At.Before(u.linked) || !now.Before(u.at.Add(github.HoldBound)) {
+			delete(d.epicUnlinks, c)
+			continue
+		}
+		if d.closingUnsettled(c) {
+			late = append(late, c)
+		}
+	}
 	for _, c := range slices.Sorted(maps.Keys(newest)) {
 		if !d.closingUnsettled(c) || state.IsApp(newest[c].By, st.AppSlug) {
 			continue
 		}
 		ok, err := closingTrusted(ctx, st.Trust, newest[c].By)
 		if err != nil {
-			return nil, fmt.Errorf("who took #%d from below it: %w", c, err)
+			return nil, nil, fmt.Errorf("who took #%d from below it: %w", c, err)
 		}
 		if !ok {
 			held = append(held, c)
 		}
 	}
-	return held, nil
+	return held, late, nil
+}
+
+// epicUnlink is an issue's link below parent that a snapshot of it read
+// at linked, its updated_at, showed, and the next one, at at, didn't
+// (epicUnlinkNote).
+type epicUnlink struct {
+	parent     int
+	linked, at time.Time
+}
+
+// epicUnlinkNote keeps, for s, an issue just read again, whose snapshot
+// held before was prev, the link below its parent prev showed and s
+// doesn't, as when someone removed it, for an epic's close while the
+// removal's event may be late (epicCloseUnlinked). It's kept in memory
+// only, so a restart while the event is late forgets it, and an issue
+// keeps one at most, its newest: one linked below that parent again holds
+// the epic as an issue below it does, and one past github.HoldBound holds
+// nothing, so neither needs forgetting here. With no snapshot held
+// before, as after a failed read, there's nothing to compare.
+func (d *Daemon) epicUnlinkNote(prev, s *github.Snapshot) {
+	if prev == nil || prev.Parent == 0 || prev.Parent == s.Parent {
+		return
+	}
+	if d.epicUnlinks == nil {
+		d.epicUnlinks = map[int]epicUnlink{}
+	}
+	d.epicUnlinks[s.Number] = epicUnlink{parent: prev.Parent, linked: prev.UpdatedAt, at: s.UpdatedAt}
 }
 
 // epicCloseHolds reports whether the issues epicCloseUnlinked found
