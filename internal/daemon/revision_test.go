@@ -91,6 +91,11 @@ func approveBoth(t testing.TB, f *githubtest.Fake) {
 const dirtyBody = "the issue description has an edit by `mallory` that wasn't approved, so I can't approve it, " +
 	"and I won't post a revision of it. To get a new spec, which replaces the edit, post `/revise <notes>`, or any other comment"
 
+// dirtyBodySomeone is dirtyBody where the body's last edit doesn't confirm
+// mallory as its editor, as after the owner's edit of it, so it names
+// "someone" (#602).
+var dirtyBodySomeone = strings.Replace(dirtyBody, "`mallory`", "someone", 1)
+
 // ivWordingFollows ends /approve's reason at spec-review for a stale
 // revision when ReviewVisit posts the next one (#229).
 const ivWordingFollows = ". I'll post a new revision next. To approve it, react 👍 to it, or post `/approve` after it"
@@ -202,8 +207,8 @@ func TestApprove(t *testing.T) {
 			outcome{comments: []string{ivWordingApproveFinal("there's no revision to approve yet"+ivWordingFollows, "1002")}, labels: atReview, downs: []string{"/approve"}}},
 		{"while the body is dirty, under a note mallory wrote herself, a 👍 approves nothing and /approve is rejected",
 			dirtyReview(false, approveBoth), outcome{comments: []string{ivWordingApproveFinal(dirtyBody, "1003")}, labels: atReview, downs: []string{"/approve"}}},
-		{"likewise even after the owner edits the body",
-			dirtyReview(true, approveBoth), outcome{comments: []string{ivWordingApproveFinal(dirtyBody, "1003")}, labels: atReview, downs: []string{"/approve"}}},
+		{"likewise even after the owner edits the body, which leaves mallory unconfirmed as its editor",
+			dirtyReview(true, approveBoth), outcome{comments: []string{ivWordingApproveFinal(dirtyBodySomeone, "1003")}, labels: atReview, downs: []string{"/approve"}}},
 		{"an /approve the table can't apply is rejected, and a later command is still processed",
 			review(func(t testing.TB, f *githubtest.Fake) {
 				f.SetParent(1, f.AddIssue("owner", "Epic", "epic"))

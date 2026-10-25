@@ -156,7 +156,9 @@ The stage prompt follows.
 //     untrusted author's title and body, a dirty body, and the comments of
 //     untrusted people and other bots, and dirty comments by anyone. Each
 //     is fenced under a heading saying it's untrusted data, dirty content
-//     without the App's note, as the interviewer's is.
+//     without the App's note, as the interviewer's is. So the heading of
+//     an untrusted author's dirty body says who edited it without
+//     approval (SPEC §12).
 //
 // A login in a heading or the Author line is named as ivLogin names it, and
 // who made content dirty as ivEditor does, so a ghost, whom GitHub doesn't
@@ -190,8 +192,13 @@ func (t *Triage) Context(ctx context.Context, in Input) (map[string][]byte, erro
 	switch {
 	case !author:
 		issue = append(issue, "", "The author isn't trusted, so the title and body are in untrusted.md.")
-		untrusted = append(untrusted, triageFenced(fmt.Sprintf("The issue's title and body, by %s, who isn't trusted", ivLogin(s.Author.Login)),
-			"Title: "+s.Title+"\n\n"+body))
+		heading := fmt.Sprintf("The issue's title and body, by %s, who isn't trusted", ivLogin(s.Author.Login))
+		if in.Dirt.Has(state.BodyID) {
+			// The App's note is left out, so the heading says the body is
+			// dirty, as the interviewer's does (#602).
+			heading += ", and its body was edited by " + ivEditor(in.Dirt[state.BodyID], s.BodyEdit, t.Daemon.Step.AppSlug) + " without approval"
+		}
+		untrusted = append(untrusted, triageFenced(heading, "Title: "+s.Title+"\n\n"+body))
 	case in.Dirt.Has(state.BodyID):
 		issue = append(issue, "- Title: "+s.Title, "", "The body was edited by someone who isn't trusted, so it's in untrusted.md.")
 		untrusted = append(untrusted, triageFenced("The issue's body, edited by "+ivEditor(in.Dirt[state.BodyID], s.BodyEdit, t.Daemon.Step.AppSlug)+", so untrusted", body))

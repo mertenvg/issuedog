@@ -356,8 +356,10 @@ func TestTriageContextTrustedAuthor(t *testing.T) {
 // or not, and as who made the body or a comment dirty, before the App
 // notes it and after, when its note names them "unknown". Noted content,
 // an untrusted author's body included, is in untrusted.md without the
-// note, as the interviewer's is. A note the author typed, which the App
-// never wrote, names nobody, and mallory's noted edit still names her.
+// note, as the interviewer's is, so the heading of an untrusted author's
+// says it was edited without approval (#602). A note the author typed,
+// which the App never wrote, names nobody, and mallory's noted edit still
+// names her.
 func TestTriageContextGhost(t *testing.T) {
 	t.Parallel()
 	// ghostEdits files the owner's issue with comments by the owner, and
@@ -425,7 +427,8 @@ func TestTriageContextGhost(t *testing.T) {
 			f.EditBody(n, "", "GHOST-BODY")
 			ghostNoted(t, g, n)
 			return n, "- Author: eve (not trusted)\n", []string{
-				"## The issue's title and body, by eve, who isn't trusted\n\n```text\nTitle: Eve's title\n\nGHOST-BODY\n```",
+				"## The issue's title and body, by eve, who isn't trusted, and its body was edited by someone unnamed without approval\n\n" +
+					"```text\nTitle: Eve's title\n\nGHOST-BODY\n```",
 			}
 		}},
 		{"a note the author typed", func(_ *testing.T, _ *rig, f *githubtest.Fake) (int, string, []string) {
@@ -454,6 +457,68 @@ func TestTriageContextGhost(t *testing.T) {
 			ivOnlyIn(t, files, "unknown")
 			ivOnlyIn(t, files, "issuedog ignores this")
 			ivOnlyIn(t, files, "SYSTEM-OVERRIDE")
+		})
+	}
+}
+
+// TestTriageContextUntrustedDirtyBody: an untrusted author's body that's
+// dirty is in untrusted.md under the title and body's heading, which says
+// so, naming who edited it as ivEditor does, since the App's note is left
+// out (#602): mallory, whose edit it was, before the App notes it and
+// after, but never a login a note the author typed gives on a body nobody
+// edited, such as owner, who is "someone unnamed". A clean body's heading
+// says nothing of an edit.
+func TestTriageContextUntrustedDirtyBody(t *testing.T) {
+	t.Parallel()
+	const by = "## The issue's title and body, by eve, who isn't trusted"
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, g *rig, f *githubtest.Fake) int
+		want  string
+	}{
+		{"mallory's edit", func(_ *testing.T, _ *rig, f *githubtest.Fake) int {
+			n := f.AddIssue("eve", "Eve's title", "Eve's body")
+			f.EditBody(n, "mallory", "MALLORY-BODY")
+			return n
+		}, by + ", and its body was edited by mallory without approval\n\n```text\nTitle: Eve's title\n\nMALLORY-BODY\n```"},
+		{"mallory's edit, which the App noted", func(t *testing.T, g *rig, f *githubtest.Fake) int {
+			n := f.AddIssue("eve", "Eve's title", "Eve's body")
+			f.EditBody(n, "mallory", "MALLORY-BODY")
+			ctx := context.Background()
+			s := g.snapshot(n)
+			d, err := g.d.Step.Dirty(ctx, s, g.d.Step.Trust)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := g.d.Step.MarkDirty(ctx, s, d); err != nil {
+				t.Fatal(err)
+			}
+			if body := g.snapshot(n).Body; !strings.HasPrefix(body, "<!-- issuedog:dirty by=mallory -->\n") {
+				t.Fatalf("the body is %q; want the App's note naming mallory", body)
+			}
+			return n
+		}, by + ", and its body was edited by mallory without approval\n\n```text\nTitle: Eve's title\n\nMALLORY-BODY\n```"},
+		{"a note eve typed, naming owner", func(_ *testing.T, _ *rig, f *githubtest.Fake) int {
+			return f.AddIssue("eve", "Eve's title", "<!-- issuedog:dirty by=owner -->\n> ⚠️ issuedog ignores this issue description: "+
+				"**owner** edited it without approval.\n\nEVE-BODY")
+		}, by + ", and its body was edited by someone unnamed without approval\n\n```text\nTitle: Eve's title\n\nEVE-BODY\n```"},
+		{"a clean body", func(_ *testing.T, _ *rig, f *githubtest.Fake) int {
+			return f.AddIssue("eve", "Eve's title", "Eve's body")
+		}, by + "\n\n```text\nTitle: Eve's title\n\nEve's body\n```"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFake(t)
+			g := triageRig(t, f, triageOrigin(t), t.TempDir())
+			files := triageContext(t, g, tt.setup(t, g, f))
+			if !strings.Contains(files["untrusted.md"], tt.want) {
+				t.Errorf("untrusted.md lacks\n%s\nin\n%s", tt.want, files["untrusted.md"])
+			}
+			if strings.Contains(files["untrusted.md"], "owner") {
+				t.Errorf("untrusted.md names owner, whom only eve's own note names:\n%s", files["untrusted.md"])
+			}
+			ivOnlyIn(t, files, "issuedog ignores this")
 		})
 	}
 }

@@ -106,7 +106,7 @@ func ApproveCommand() Handler {
 				latest, why := state.PlanApproval(c.S, a.AppSlug, c.Dirt.Has)
 				switch {
 				case len(why) > 0:
-					return planRejection(latest, why, c.Dirt, planDirtyParent(c.S, is.Item))
+					return planRejection(latest, why, dirtyEditor(c.Dirt[state.BodyID], c.S.BodyEdit, a.AppSlug), planDirtyParent(c.S, is.Item))
 				case c.Comment.ID < latest.Comment:
 					return Rejection{Reason: fmt.Sprintf("it was posted before plan revision %d, the latest. "+
 						"To approve that, react 👍 to it, or post `/approve` again", latest.Rev), Final: true}
@@ -116,7 +116,7 @@ func ApproveCommand() Handler {
 			latest, ok := state.LatestRevision(c.S, a.AppSlug, state.SpecRevision, c.Dirt.Has)
 			if c.Dirt.Has(state.BodyID) {
 				return Rejection{Reason: fmt.Sprintf("the issue description has an edit by %s that wasn't approved, so I can't approve it, "+
-					"and I won't post a revision of it. %s", dirtyLogin(c.Dirt[state.BodyID]), ivWordingRespec), Final: true}
+					"and I won't post a revision of it. %s", dirtyEditor(c.Dirt[state.BodyID], c.S.BodyEdit, a.AppSlug), ivWordingRespec), Final: true}
 			}
 			// ReviewVisit posts the next revision of a stale spec after this,
 			// unless the body's last editor isn't trusted (SPEC §7.4), so a
@@ -190,15 +190,15 @@ func ivWordingStale(latest state.Revision, ok bool, by github.Author, follows bo
 // stays dirty through a new plan, so its reason is Final too, and says
 // that a new plan won't help (#229), and what does (planDirtyClears),
 // which also gets the new plan any other reason needs, so then that's what
-// the reply says to do, as the digest's item does (#525). parent is
-// planDirtyParent's.
-func planRejection(latest state.Revision, why []state.PlanReason, d Dirt, parent int) Rejection {
+// the reply says to do, as the digest's item does (#525). editor is
+// dirtyEditor's, for the body, and parent is planDirtyParent's.
+func planRejection(latest state.Revision, why []state.PlanReason, editor, parent string) Rejection {
 	const replan = "To get a new plan, post `/revise`, or any other comment"
 	if len(why) == 0 {
 		// Callers ask only once there's a reason, so this is a bug's.
 		return Rejection{Reason: fmt.Sprintf("plan revision %d can't be approved, for no reason given", latest.Rev)}
 	}
-	dirty := fmt.Sprintf("the issue description has an edit by %s that wasn't approved", dirtyLogin(d[state.BodyID]))
+	dirty := fmt.Sprintf("the issue description has an edit by %s that wasn't approved", editor)
 	var first string
 	switch why[0] {
 	case state.PlanNoRevision:
@@ -227,42 +227,50 @@ func planRejection(latest state.Revision, why []state.PlanReason, d Dirt, parent
 // dirty body: nothing at planning or plan-review rewrites the body (SPEC
 // §7.4), so a new comment, or a new plan, wouldn't help (#229), and what
 // does, the App's full rewrite of the body (SPEC §5.1). For an epic or a
-// story with no parent, parent 0, that's the interviewer's next spec, so
+// story with no parent, parent "", that's the interviewer's next spec, so
 // it names the stage that gets one (#331). The interviewer never rewrites
 // a story with a parent, whose body is its item of its parent's plan (SPEC
-// §9.1), so for one, parent its parent's number, it's the rewrite that an
-// approved revision of that plan which changes the story makes (SPEC §6.4,
-// childRewrite), which also sends the story back to planning (#525).
-func planDirtyClears(parent int) string {
+// §9.1), so for one, parent its parent as planDirtyParent names it, it's
+// the rewrite that an approved revision of that plan which changes the
+// story makes (SPEC §6.4, childRewrite), which also sends the story back
+// to planning (#525).
+func planDirtyClears(parent string) string {
 	const nothing = "Nothing at `planning` or `plan-review` rewrites the description, so sending the plan back won't clear the edit. "
-	if parent == 0 {
+	if parent == "" {
 		return nothing + "To clear it, move the issue to `stage:clarifying`: that gets a new spec from the interviewer, " +
 			"which replaces the edit, and then a new plan"
 	}
-	return nothing + fmt.Sprintf("Nor does the interviewer, as this story's description is its item of #%d's plan. "+
-		"To clear it, get a revision of #%d's plan that changes this story, as by moving #%d to `stage:planning`: "+
+	return nothing + fmt.Sprintf("Nor does the interviewer, as this story's description is its item of %s's plan. "+
+		"To clear it, get a revision of %s's plan that changes this story, as by moving %s to `stage:planning`: "+
 		"once that's approved, I rewrite the description from it, which replaces the edit, and this story gets a new plan",
 		parent, parent, parent)
 }
 
-// planDirtyParent is the number of s's parent when it, s's class, is a
-// story with a parent (ivParentStory), for planDirtyClears and the
-// digest's item, and 0 for any other issue.
-func planDirtyParent(s *github.Snapshot, it state.Item) int {
-	if ivParentStory(it) {
-		return s.Parent
+// planDirtyParent is s's parent when it, s's class, is a story with a
+// parent (ivParentStory), for planDirtyClears and the digest's item, and
+// "" for any other issue: "#P", or "owner/name#P" for a parent in another
+// repo, which "#P" would link wrongly, its repo as its repository_url
+// names it (github.Snapshot.ParentRepo), escaped (SPEC §5.1).
+func planDirtyParent(s *github.Snapshot, it state.Item) string {
+	if !ivParentStory(it) {
+		return ""
 	}
-	return 0
+	return github.Escape(s.ParentRepo) + "#" + strconv.Itoa(s.Parent)
 }
 
-// dirtyLogin is by, the login Dirt gives an editor who made content
-// dirty, as code and defused (discLogin), as the hold and the spec's
-// rewrite comment name them. It's a login only if GitHub would allow it
-// (rewriteLogin), as Dirt's may come from a note the author typed, so a
-// backtick in it can't end the code span, and else it's words for nobody
-// GitHub names.
-func dirtyLogin(by string) string {
-	return discLogin(rewriteLogin(by))
+// dirtyEditor names by, the login Dirt gives an editor who made the body
+// dirty, in /approve's rejections: as code and defused, as the hold and
+// the spec's rewrite comment name them, only when the body's last edit
+// confirms them, as ivEditor does (ivConfirmed), from the snapshot alone,
+// so it costs no request. Dirt's login may come from a note the author
+// typed on a body nobody edited, which can name anyone, so an editor that
+// isn't confirmed, or isn't a login GitHub would allow (ivLogin), as a
+// ghost isn't, is "someone" (#602). So a backtick can't end the code span.
+func dirtyEditor(by string, last github.Edit, appSlug string) string {
+	if !ivConfirmed(by, last, appSlug) || ivLogin(by) != by {
+		return "someone"
+	}
+	return "`" + defuse(by) + "`"
 }
 
 // ApproveByReaction returns the reaction trigger for Step.Reactions that
@@ -292,7 +300,7 @@ func ApproveByReaction(trust github.Trust) func(ctx context.Context, a *Applier,
 		case state.PlanReview:
 			var why []state.PlanReason
 			if latest, why = state.PlanApproval(s, a.AppSlug, d.Has); len(why) > 0 {
-				r := planRejection(latest, why, d, planDirtyParent(s, is.Item))
+				r := planRejection(latest, why, dirtyEditor(d[state.BodyID], s.BodyEdit, a.AppSlug), planDirtyParent(s, is.Item))
 				logr.Debugf("%s/%s#%d: no approval of the plan by 👍: %s", a.Owner, a.Repo, s.Number, r.Reason)
 				return nil
 			}
@@ -351,7 +359,7 @@ func (a *Applier) approve(ctx context.Context, s *github.Snapshot, d Dirt, stage
 	if stage == state.PlanReview {
 		var why []state.PlanReason
 		if latest, why = state.PlanApproval(s, a.AppSlug, d.Has); len(why) > 0 {
-			r := planRejection(latest, why, d, planDirtyParent(s, state.Derive(s, a.AppSlug, d.Has).Item))
+			r := planRejection(latest, why, dirtyEditor(d[state.BodyID], s.BodyEdit, a.AppSlug), planDirtyParent(s, state.Derive(s, a.AppSlug, d.Has).Item))
 			logr.Debugf("%s/%s#%d: not approving the plan by %s: %s", a.Owner, a.Repo, s.Number, by, r.Reason)
 			return nil
 		}

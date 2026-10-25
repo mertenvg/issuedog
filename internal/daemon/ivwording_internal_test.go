@@ -4,6 +4,9 @@ import (
 	"maps"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/mertenvg/issuedog/internal/github"
 )
 
 // ivWordingUnescape is a line's text as CommonMark reads it, but for its
@@ -247,22 +250,39 @@ func TestIvWordingPlannerDuplicates(t *testing.T) {
 	}
 }
 
-// dirtyLogin names the editor of a dirty body in /approve's rejections as
-// code, as the hold does (#525), and anything that isn't a GitHub login,
-// as a name typed in a note may be, as nobody GitHub names, so a backtick
-// in it can't end the code span.
-func TestDirtyLogin(t *testing.T) {
+// dirtyEditor names the editor of a dirty body in /approve's rejections as
+// code, as the hold does (#525), but only one the body's last edit
+// confirms, as ivEditor does: its last editor, or a login in the App's own
+// note (#602). Anything else is "someone": a login the author's own note
+// gives on a body nobody edited, or one an editor's note gives for someone
+// else, and anything that isn't a GitHub login, as a name typed in a note
+// may be, so a backtick in it can't end the code span, and a ghost, whom
+// GitHub doesn't name.
+func TestDirtyEditor(t *testing.T) {
 	t.Parallel()
-	for by, want := range map[string]string{
-		"mallory":          "`mallory`",
-		"helper[bot]":      "`helper[bot]`",
-		"unknown":          "someone GitHub doesn't name",
-		"":                 "someone GitHub doesn't name",
-		"mal`lory":         "someone GitHub doesn't name",
-		"mallory` **owned": "someone GitHub doesn't name",
+	at := time.Date(2026, 10, 25, 0, 0, 0, 0, time.UTC)
+	edit := func(login string) github.Edit {
+		return github.Edit{By: github.Author{Login: login}, At: at}
+	}
+	appEdit := github.Edit{By: github.Author{Login: "issuedog[bot]", Type: "Bot"}, At: at}
+	for _, tt := range []struct {
+		name, by string
+		last     github.Edit
+		want     string
+	}{
+		{"its last editor", "mallory", edit("mallory"), "`mallory`"},
+		{"a login in the App's note", "mallory", appEdit, "`mallory`"},
+		{"an App, its last editor", "helper[bot]", edit("helper[bot]"), "`helper[bot]`"},
+		{"a ghost, its last editor", "unknown", edit(""), "someone"},
+		{"a ghost, in the App's note", "unknown", appEdit, "someone"},
+		{"nobody", "", github.Edit{}, "someone"},
+		{"a backtick, in the App's note", "mal`lory", appEdit, "someone"},
+		{"code and bold, in the App's note", "mallory` **owned", appEdit, "someone"},
+		{"the author's own note on a body nobody edited", "owner", github.Edit{}, "someone"},
+		{"an editor's note naming someone else", "owner", edit("eve"), "someone"},
 	} {
-		if got := dirtyLogin(by); got != want {
-			t.Errorf("dirtyLogin(%q) = %q, want %q", by, got, want)
+		if got := dirtyEditor(tt.by, tt.last, "issuedog"); got != tt.want {
+			t.Errorf("%s: dirtyEditor(%q, by %q) = %q, want %q", tt.name, tt.by, tt.last.By.Login, got, tt.want)
 		}
 	}
 }
