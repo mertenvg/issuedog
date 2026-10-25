@@ -1,6 +1,7 @@
 package daemon_test
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -197,6 +198,94 @@ func TestHoldOrderRunRejectedAbove(t *testing.T) {
 	}
 	l.step("J's /hold", slices.Concat(holdOrderMoves(k, "ready"), holdOrderMoves(j, "ready"), []string{discRunReact(hold)})...)
 	l.quiet("J and K held")
+}
+
+// holdOrderRejectedAbove is A's /resume, which the App rejects, then a
+// command on J, posted after it, that waits for it, with J's number lower
+// (TestHoldOrderRunRejectedAbove): J's /hold, with nothing held, or with
+// J held for discussion by mallory's comment before, so the /hold writes
+// no marker on J, only its 👍 (SPEC §6.4); or J's /resume, with J and K
+// held by J's own /hold before. reason is the one the App gives A's
+// /resume in a clean run, and moved the issues J's command moves out of
+// from, K first.
+var holdOrderRejectedAbove = []struct {
+	name, before, cmd, from, reason string
+	moved                           []int
+}{
+	{"J's /hold", "", "/hold", "ready", "nothing here or in its open sub-issues is on an owner hold", []int{4, 2}},
+	{"J's /hold, J held for discussion", "mallory", "/hold", "ready",
+		"#2 is on hold for discussion, which only a code owner's response there, or `/resume` there, ends", []int{4}},
+	{"J's /resume", "J's /hold", "/resume", "held", "the holds left were made on #2, by `/hold` or by hand, so `/resume` there ends them", []int{4, 2}},
+}
+
+// holdOrderRejectedAboveBuild settles l on discRunRaceFamily(false), with
+// before done first: J's own /hold applied, or mallory's comment on J,
+// which holds J for discussion. Then it posts A's /resume and J's cmd,
+// and returns their IDs.
+func holdOrderRejectedAboveBuild(t *testing.T, l *discRunLoop, before, cmd string) (resume, onJ int64) {
+	t.Helper()
+	a, j, _ := discRunRaceIssues(false)
+	switch before {
+	case "J's /hold":
+		discRunRaceHeld(t, l, false)
+	case "mallory":
+		l.f.AddComment(j, "mallory", "Wait.")
+		for range discRunSettle {
+			from := len(l.f.Writes())
+			if err := l.g.d.Iterate(context.Background()); err != nil {
+				t.Fatalf("mallory's comment: Iterate: %v", err)
+			}
+			if len(l.f.Writes()) == from {
+				break
+			}
+		}
+		if got := ivLabels(l.f, j); !slices.Contains(got, "stage:held") {
+			t.Fatalf("#%d: labels %q; want J held for discussion", j, got)
+		}
+	}
+	l.quiet("before A's /resume")
+	return l.f.AddComment(a, "owner", "/resume"), l.f.AddComment(j, "owner", cmd)
+}
+
+// A crash just after the App's 👎 on A's /resume, before its reply: the 👎
+// alone counts it as processed (SPEC §9.2), so on the next pass J's
+// command, which waited for it, is handled before the reply is posted
+// again. The reply is worded as of the 👎, without what J's command did,
+// so it gives the clean run's reason (reword), not one from J's hold, or
+// from its end. The whole is safe to replay after a crash at any write.
+func TestHoldOrderRunRejectedAboveReplay(t *testing.T) {
+	t.Parallel()
+	for _, tc := range holdOrderRejectedAbove {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			discRunReplay(t, discRunRaceFamily(false), nil, func(l *discRunLoop) { holdOrderRejectedAboveBuild(t, l, tc.before, tc.cmd) })
+
+			f := discRunRaceFamily(false)(t)
+			a, _, _ := discRunRaceIssues(false)
+			l := newDiscRunLoop(t, f)
+			resume, onJ := holdOrderRejectedAboveBuild(t, l, tc.before, tc.cmd)
+			// The pass's first write is the 👎.
+			from := len(f.Writes())
+			f.FailWriteAfter(from + 1)
+			if err := l.g.d.Iterate(context.Background()); err == nil {
+				t.Fatal("the pass that crashed after the 👎 succeeded")
+			}
+			if w := f.Writes(); len(w) == from || w[from].Path != fmt.Sprintf("/issues/comments/%d/reactions", resume) {
+				t.Fatalf("the pass that crashed wrote %+v; want the 👎 on A's /resume first", w[from:])
+			}
+			f.FailWrite(0)
+			l.start() // the restart after the crash
+			var want []string
+			for _, n := range tc.moved {
+				want = append(want, holdOrderMoves(n, tc.from)...)
+			}
+			l.step("the restart's pass, which handles J's command, then posts the reply again",
+				append(want, discRunReact(onJ), fmt.Sprintf("POST /issues/%d/comments", a))...)
+			if body := newestComment(f, a); !strings.Contains(body, "I didn't apply this command: "+tc.reason+".") {
+				t.Errorf("#%d: newest comment %q; want the clean run's reason, %q", a, body, tc.reason)
+			}
+		})
+	}
 }
 
 // #243's race through the whole run is safe to replay after a crash at

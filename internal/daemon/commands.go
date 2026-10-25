@@ -42,6 +42,10 @@ type Cmd struct {
 	// Trust is Step's, which Dirt was found with, for the dirty content
 	// of the other issues a command reads, such as a /hold's descendants.
 	Trust github.Trust
+	// Reword is set when Check words again the reason for the App's 👎 on
+	// the command, whose reply was lost (Step.reword): Check then judges it
+	// as of that 👎, as resumeCheck does (resumeRewordFamily).
+	Reword bool
 }
 
 // Rejection is a Handler's error for a command that doesn't apply. Step
@@ -64,7 +68,7 @@ func (r Rejection) Error() string { return r.Reason }
 
 // command applies cmd, from comment c, through its handler, or rejects it.
 func (st *Step) command(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment, cmd state.Command, stage state.Stage) error {
-	r, h, err := st.why(ctx, s, d, c, cmd, stage)
+	r, h, err := st.why(ctx, s, d, c, cmd, stage, false)
 	switch {
 	case err != nil:
 		return fmt.Errorf("/%s: %w", cmd.Name, err)
@@ -95,15 +99,16 @@ func (st *Step) command(ctx context.Context, s *github.Snapshot, d Dirt, c githu
 // it wouldn't, as when the table has no such move for the issue's class
 // (SPEC §7.2), the reason ends with why, so the reply doesn't ask for a
 // new comment. At any other stage a new comment sends nothing back either,
-// so it isn't Dated.
-func (st *Step) why(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment, cmd state.Command, stage state.Stage) (Rejection, Handler, error) {
+// so it isn't Dated. With reword, cmd is judged as of the App's 👎 on it,
+// whose reply was lost (Cmd.Reword).
+func (st *Step) why(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment, cmd state.Command, stage state.Stage, reword bool) (Rejection, Handler, error) {
 	if at := st.requestAt(s, d, c); at != "" && at != stage {
 		r := Rejection{Reason: fmt.Sprintf("it was posted at `%s`, and this issue is at `%s` now. A comment sends the spec back only at `%s`, and the plan only at `%s`",
 			at, stage, state.SpecReview, state.PlanReview), Final: true}
 		if stage != state.SpecReview && stage != state.PlanReview {
 			return r, Handler{}, nil
 		}
-		now, _, err := st.judge(ctx, s, d, c, cmd, stage)
+		now, _, err := st.judge(ctx, s, d, c, cmd, stage, false) // a new comment, judged now
 		if err != nil {
 			return Rejection{}, Handler{}, fmt.Errorf("judge a new request at %s: %w", stage, err)
 		}
@@ -114,7 +119,7 @@ func (st *Step) why(ctx context.Context, s *github.Snapshot, d Dirt, c github.Co
 		}
 		return r, Handler{}, nil
 	}
-	r, h, err := st.judge(ctx, s, d, c, cmd, stage)
+	r, h, err := st.judge(ctx, s, d, c, cmd, stage, reword)
 	if err != nil {
 		return Rejection{}, Handler{}, fmt.Errorf("why: %w", err)
 	}
@@ -123,8 +128,8 @@ func (st *Step) why(ctx context.Context, s *github.Snapshot, d Dirt, c github.Co
 
 // judge returns why cmd, from comment c, doesn't apply at stage, by its
 // own check and then its handler's, or a Rejection with no Reason and its
-// handler (why). It doesn't write.
-func (st *Step) judge(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment, cmd state.Command, stage state.Stage) (Rejection, Handler, error) {
+// handler (why). It doesn't write. reword is the handler's Cmd.Reword.
+func (st *Step) judge(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment, cmd state.Command, stage state.Stage, reword bool) (Rejection, Handler, error) {
 	if err := cmd.Check(stage); err != nil {
 		return Rejection{Reason: err.Error()}, Handler{}, nil
 	}
@@ -132,7 +137,7 @@ func (st *Step) judge(ctx context.Context, s *github.Snapshot, d Dirt, c github.
 	if h.Check == nil {
 		return Rejection{}, h, nil
 	}
-	err := h.Check(ctx, st.Applier, Cmd{Command: cmd, Comment: c, S: s, Dirt: d, Trust: st.Trust})
+	err := h.Check(ctx, st.Applier, Cmd{Command: cmd, Comment: c, S: s, Dirt: d, Trust: st.Trust, Reword: reword})
 	if r := (Rejection{}); errors.As(err, &r) {
 		return r, h, nil
 	}
@@ -557,11 +562,18 @@ func holdCheck(ctx context.Context, a *Applier, c Cmd) error {
 // label no marker explains, which Apply's CheckLabels would record as a
 // hold by hand. And it rejects one whose issue's own holds would all end
 // but have no row back to their at, or to clarifying after a discussion
-// (resolveHeld), which Apply would only report as a state error.
+// (resolveHeld), which Apply would only report as a state error. For
+// reword, it judges c's family as it was at the App's 👎 on c
+// (resumeRewordFamily).
 func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 	family, err := a.family(ctx, c)
 	if err != nil {
 		return fmt.Errorf("check /resume: %w", err)
+	}
+	if c.Reword {
+		if family, err = a.resumeRewordFamily(ctx, family, c); err != nil {
+			return fmt.Errorf("check /resume: %w", err)
+		}
 	}
 	if a.begun(family, c) {
 		return nil
@@ -675,6 +687,62 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 		return Rejection{Reason: heldWordingMakers(makers, fmt.Sprintf("#%d", c.S.Number)), Final: true}
 	}
 	return Rejection{Reason: "nothing here or in its open sub-issues is on an owner hold"}
+}
+
+// resumeRewordFamily returns family, that of c, a /resume the App 👎'd
+// whose reply was lost, as it was at that 👎, for reword: without the
+// /hold and /resume comments a trusted user posted after c on c's
+// descendants, nor the App's comments whose markers name one of them in
+// cmd, and with each stage label those markers set put back to the stage
+// the markers left give. Each of those commands waits for c (holdOrderWaits,
+// SPEC §6.4), so none was handled at the 👎, and in a clean run the reply
+// comes with the 👎, before them. But the 👎 alone counts c as processed
+// (SPEC §9.2), so after a crash between the two they may be handled first,
+// and a reason worded from the issues as they are then would differ from
+// the one lost. One handled before the 👎 all the same, as when c's author
+// was trusted only since, is left out too. It reads nothing but the trust
+// of their authors.
+func (a *Applier) resumeRewordFamily(ctx context.Context, family []node, c Cmd) ([]node, error) {
+	later := map[string]bool{} // their keys, as a marker's cmd names them
+	for _, n := range family[:len(family)-1] {
+		for _, cm := range n.s.Comments {
+			cmd, ok := state.ParseCommand(cm.Body)
+			if cm.ID <= c.Comment.ID || !ok || !holdOrderCommand(cmd) || cm.Author.Type == "Bot" || n.d.Has(cm.ID) {
+				continue
+			}
+			trusted, err := c.Trust.Trusted(ctx, cm.Author.Login)
+			if err != nil {
+				return nil, fmt.Errorf("trust %s: %w", cm.Author.Login, err)
+			}
+			if trusted {
+				later[state.CmdKey(cm.ID).ID] = true
+			}
+		}
+	}
+	if len(later) == 0 {
+		return family, nil
+	}
+	family = slices.Clone(family)
+	for i, n := range family[:len(family)-1] {
+		s := *n.s
+		s.Comments = slices.DeleteFunc(slices.Clone(n.s.Comments), func(cm github.Comment) bool {
+			return later[state.CmdKey(cm.ID).ID] || slices.ContainsFunc(github.TrustedMarkers(cm.Author, cm.Body, a.AppSlug),
+				func(m github.Marker) bool { return later[m.Fields["cmd"]] })
+		})
+		if len(s.Comments) == len(n.s.Comments) {
+			continue
+		}
+		was, now := "stage:"+string(state.Derive(n.s, a.AppSlug, n.d.Has).Stage), "stage:"+string(state.Derive(&s, a.AppSlug, n.d.Has).Stage)
+		labels := slices.Clone(n.s.Labels)
+		for j, l := range labels {
+			if strings.EqualFold(l, was) {
+				labels[j] = now
+			}
+		}
+		s.SetLabels(labels)
+		family[i].s = &s
+	}
+	return family, nil
 }
 
 // heldWordingDiscussed is resumeCheck's reason for a /resume that ends no

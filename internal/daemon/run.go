@@ -877,8 +877,8 @@ func (r *Runs) newInput(ctx context.Context, s *github.Snapshot, d Dirt, seen in
 // after loop.max_attempts such passes and failed applies in all, the run
 // is a failed attempt. A wait on an issue whose read found it gone isn't
 // counted, as the next read drops it or runs step 1 on it. And one on an
-// issue this pass's read found held is dropped, uncounted, as apply would
-// drop it whatever step 1 left unhandled (step1Held).
+// issue whose last snapshot shows it held is dropped, uncounted, as apply
+// would drop it whatever step 1 left unhandled (step1Held).
 func (r *Runs) resume(ctx context.Context) (int, error) {
 	l, ok, err := r.readLease(ctx)
 	if err != nil || !ok {
@@ -965,11 +965,12 @@ func (r *Runs) resume(ctx context.Context) (int, error) {
 	return l.Issue, r.applyLease(ctx, l, st, raw, out)
 }
 
-// step1Held reports whether this pass's read found issue n held, for
-// resume: apply would then drop its saved result, uncounted, whatever
-// command step 1 left unhandled, as every way out of the hold writes a
-// move above the run's seen (SPEC §8.2). A read that failed, or found it
-// gone, leaves no snapshot, so it isn't.
+// step1Held reports whether the last snapshot of issue n, this pass's
+// read or an earlier one, shows it held, for resume: apply would then drop
+// its saved result, uncounted, whatever command step 1 left unhandled, as
+// every way out of the hold writes a move above the run's seen (SPEC
+// §8.2). A read that failed, or found it gone, leaves no snapshot, so it
+// isn't.
 func (r *Runs) step1Held(n int) bool {
 	s := r.Daemon.snaps[n]
 	return s != nil && slices.ContainsFunc(s.Labels, discHeldLabel)
