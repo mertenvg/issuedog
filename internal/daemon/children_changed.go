@@ -135,6 +135,16 @@ func (st *Step) childChanged(ctx context.Context, parent *github.Snapshot, rev i
 	if err := st.discCheckLabels(ctx, s, st.Trust, d); err != nil {
 		return fmt.Errorf("check #%d: %w", n, err)
 	}
+	if s.Closed {
+		// The label rules finished the App's close of it, cut short after
+		// its comment (SPEC §5.1, Unfinished writes), as a dropped
+		// subtree's close of a child below a dropped one may be once an
+		// edit hides the move keyed by key: a closed child gets nothing,
+		// and the close is the dropped subtree's to finish (droppedOne).
+		logr.Infof("%s/%s#%d: #%d, the child of item %s of its plan, is closed now, so revision %d's change to it isn't applied",
+			st.Owner, st.Repo, parent.Number, n, c.Item, rev)
+		return nil
+	}
 	names := func(o state.Origin) bool { return o.Plan == parent.Number && o.Item == c.Item && o.Rev >= rev }
 	if _, o, _ := adoptedRewrite(s, st.AppSlug, d.Has); !names(state.Derive(s, st.AppSlug, d.Has).Origin) && !names(o) {
 		body, err := c.bodyOf(numbers)

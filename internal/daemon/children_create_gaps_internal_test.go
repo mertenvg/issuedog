@@ -52,7 +52,7 @@ func TestChildrenRefusedCause(t *testing.T) {
 		{"a blocked-by link's 502", isBlockRequest, http.StatusBadGateway,
 			func(st *Step, _ *github.Snapshot, children map[string]childFound) error {
 				return st.childrenLink(ctx, []planItem{{ID: "T2", DependsOn: []string{"T1"}}}, children)
-			}, false, "item T2: block #3 by #2: "},
+			}, false, "blocked-by links: item T2: block #3 by #2: "},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
