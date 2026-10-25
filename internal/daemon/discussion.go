@@ -559,7 +559,10 @@ func discOpenAfter(b discBound, records map[string]int64) discOpen {
 //   - their deletion of a comment by the App, a trusted user or someone
 //     GitHub doesn't name, from s.Deleted, which fails closed for the
 //     last. Their deletion of their own comment, or of another untrusted
-//     user's, changes nothing anyone trusted wrote, so it's none;
+//     user's, changes nothing anyone trusted wrote, so it's none. Their
+//     own is ruled out so, as an untrusted user's, not by comparing the
+//     two logins, which two people GitHub doesn't name, or two deleted
+//     accounts shown as ghost, share;
 //   - their rename of the issue, from s.DiscRenames, which CheckLabels set
 //     from the timeline it reads, so this costs no request; it acts on
 //     none of them itself. A snapshot CheckLabels hasn't checked has none;
@@ -649,7 +652,7 @@ func (a *Applier) discFindResolved(ctx context.Context, s *github.Snapshot, d Di
 	for _, e := range s.Deleted {
 		key := "d" + e.ID
 		o, recorded := open(key, e.At, 0)
-		if !o || !recorded && strings.EqualFold(e.By.Login, e.Author.Login) {
+		if !o {
 			continue
 		}
 		if !recorded {
