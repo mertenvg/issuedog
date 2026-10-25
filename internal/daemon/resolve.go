@@ -92,8 +92,8 @@ const resolveKind = "ended"
 // record: when the act that resolved the last trigger happened. The record
 // bounds the triggers from then, not from when the App wrote it, so an act
 // in between still counts (discFloor). The record of a /resume's move back
-// to plan-review that a dirty comment hid carries it too, as the time of
-// the oldest dirty App comment after the hold (reviewDirtyRestore).
+// to plan-review that a dirty comment hid carries it too, as the time that
+// /resume was posted, floored at the hold (reviewDirtyResumeAt).
 const resolveField = "resolved"
 
 // How a trigger was resolved (resolveAct.How).

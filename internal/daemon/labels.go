@@ -165,7 +165,7 @@ func (a *Applier) discCheckLabels(ctx context.Context, s *github.Snapshot, trust
 		if held, err := a.discRestore(ctx, s, trust, d, events); held || err != nil {
 			return held, err
 		}
-		return a.reviewDirtyRestore(ctx, s, d, events)
+		return a.reviewDirtyRestore(ctx, s, trust, d, events)
 	})
 }
 
