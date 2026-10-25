@@ -42,22 +42,24 @@ func (f *Fake) DeleteCommentBy(login string, id int64) string {
 }
 
 // gqlEventsPage answers the comments query's timelineItems: the issue's
-// CommentDeletedEvents and SubIssueRemovedEvents, oldest first, 100 per
-// page after cursor, which is the number of older events, each with its
-// __typename. As on GitHub, a Bot's login has no "[bot]". A bad cursor is
-// an error message.
-func gqlEventsPage(is *issue, cursor *string) (map[string]any, string) {
+// CommentDeletedEvents and SubIssueRemovedEvents written by now, oldest
+// first, but for one not written yet (LagEvents), 100 per page after
+// cursor, which is the number of older events, each with its __typename.
+// As on GitHub, a Bot's login has no "[bot]". A bad cursor is an error
+// message.
+func gqlEventsPage(is *issue, now time.Time, cursor *string) (map[string]any, string) {
+	events := slices.DeleteFunc(slices.Clone(is.gqlEvents), func(e gqlEvent) bool { return e.at.After(now) })
 	from := 0
 	if cursor != nil {
 		n, err := strconv.Atoi(*cursor)
-		if err != nil || n < 0 || n > len(is.gqlEvents) {
+		if err != nil || n < 0 || n > len(events) {
 			return nil, fmt.Sprintf("`%s` does not appear to be a valid cursor.", *cursor)
 		}
 		from = n
 	}
-	to := min(from+100, len(is.gqlEvents))
+	to := min(from+100, len(events))
 	nodes := []map[string]any{}
-	for _, e := range is.gqlEvents[from:to] {
+	for _, e := range events[from:to] {
 		node := map[string]any{"__typename": "CommentDeletedEvent", "id": e.node, "createdAt": e.at, "actor": actor(e.by)}
 		if e.sub == nil {
 			node["deletedCommentAuthor"] = actor(e.author)
@@ -71,5 +73,5 @@ func gqlEventsPage(is *issue, cursor *string) (map[string]any, string) {
 	if to > from {
 		end = strconv.Itoa(to)
 	}
-	return map[string]any{"pageInfo": map[string]any{"hasNextPage": to < len(is.gqlEvents), "endCursor": end}, "nodes": nodes}, ""
+	return map[string]any{"pageInfo": map[string]any{"hasNextPage": to < len(events), "endCursor": end}, "nodes": nodes}, ""
 }
