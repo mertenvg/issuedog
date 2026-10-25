@@ -70,12 +70,12 @@ type Daemon struct {
 	stale         map[int]bool             // issues to read again
 	missing       map[int]bool             // stale issues found gone since their last good read
 	// step1Gaps are the issues step 1 didn't finish on this pass: their
-	// read or step 1 failed, a /hold or /resume on one waits for one on an
-	// ancestor (holdOrderWaits), or their read found them gone, once,
-	// which may be wrong. Step 1 may have left a command on one unhandled,
-	// such as a /hold whose first write failed, which would drop a saved
-	// result, so a saved result on one isn't applied this pass
-	// (Runs.resume, SPEC §8.2).
+	// read or step 1 failed, or that of an issue whose visit wrote to them,
+	// a /hold or /resume on one waits for one on an ancestor
+	// (holdOrderWaits), or their read found them gone, once, which may be
+	// wrong. Step 1 may have left a command on one unhandled, such as a
+	// /hold whose first write failed, which would drop a saved result, so a
+	// saved result on one isn't applied this pass (Runs.resume, SPEC §8.2).
 	step1Gaps     map[int]step1Gap
 	issuesSince   time.Time
 	commentsSince time.Time
@@ -204,12 +204,12 @@ func (d *Daemon) Run(ctx context.Context) {
 // last makes the unassigns assignPass put off until after it
 // (assignLaterPass). It returns the errors of the issues it couldn't read
 // or run step 1 on, which the next Iterate reads again, and on which Work
-// applies no saved result this pass (step1Gaps), as on one whose /hold or
-// /resume waits for an ancestor's, or whose read found it gone the first
-// time. An issue whose labels CheckLabels holds back (ErrLabelsHeld), or
-// that it closed again (closingErrClosedAgain), is no error: like a
-// touched issue, it gets nothing more this pass, and is read again on the
-// next.
+// applies no saved result this pass (step1Gaps), as on one such an
+// issue's visit wrote to, one whose /hold or /resume waits for an
+// ancestor's, or one whose read found it gone the first time. An issue
+// whose labels CheckLabels holds back (ErrLabelsHeld), or that it closed
+// again (closingErrClosedAgain), is no error: like a touched issue, it
+// gets nothing more this pass, and is read again on the next.
 func (d *Daemon) Iterate(ctx context.Context) error {
 	if d.snaps == nil {
 		d.snaps, d.inputs, d.stale = map[int]*github.Snapshot{}, map[int][]github.Comment{}, map[int]bool{}
@@ -386,6 +386,13 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			delete(d.inputs, n)
 			d.stale[n] = true
 			d.step1Gaps[n] = step1Gap{why: "step 1 failed on it"}
+			// So did it on the issues the visit wrote to, such as a
+			// /hold's descendants, as its command may be half done.
+			for t := range touches.visit {
+				if _, ok := d.step1Gaps[t]; !ok {
+					d.step1Gaps[t] = step1Gap{why: fmt.Sprintf("step 1 failed on #%d, which wrote to it", n)}
+				}
+			}
 			continue
 		}
 		d.inputs[n] = in

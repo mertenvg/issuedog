@@ -277,8 +277,9 @@ func roundStage(stage state.Stage) bool {
 }
 
 // reword posts again the reply to c, a 👎'd command with no clean reply. It
-// words the reason again through checks that don't write, so after a crash
-// the reply is the same, or else says it was lost. It never applies c.
+// words the reason again through checks that don't write, judging c as of
+// its 👎 (Cmd.Reword), so after a crash the reply is the same, or else says
+// it was lost. It never applies c.
 // Once c was edited after its 👎 (edited), its text isn't what the 👎
 // rejected, and a rejected command's edit is ignored (SPEC §9.2), so it
 // isn't worded again from that text: the reply says the reply was lost,
@@ -293,7 +294,8 @@ func (st *Step) reword(ctx context.Context, s *github.Snapshot, d Dirt, c github
 	if edited {
 		text := ivWordingLostEdited + " Post a new comment to try again."
 		if ok {
-			why, _, err := st.why(ctx, s, d, c, cmd, stage)
+			// As a new comment with that text would be judged: now.
+			why, _, err := st.why(ctx, s, d, c, cmd, stage, false)
 			if err != nil {
 				return fmt.Errorf("reword: %w", err)
 			}
@@ -309,7 +311,7 @@ func (st *Step) reword(ctx context.Context, s *github.Snapshot, d Dirt, c github
 	}
 	r := Rejection{Reason: lost}
 	if ok {
-		why, _, err := st.why(ctx, s, d, c, cmd, stage)
+		why, _, err := st.why(ctx, s, d, c, cmd, stage, true)
 		if err != nil {
 			return fmt.Errorf("reword: %w", err)
 		}

@@ -19,8 +19,9 @@ import (
 // This file is #517: the saved result a restart left waits for a pass
 // whose step 1 finishes on its issue (SPEC §8.2), also when a /hold on it
 // waits for an ancestor's command, or its read found it gone; it's
-// dropped, uncounted, when that pass's read found the issue held; and
-// each wait is logged once.
+// dropped, uncounted, when the issue's last snapshot shows it held; and
+// each wait is logged once. Then #593: an ancestor of a type the pipeline
+// knows, and a parent's failed visit that wrote to the issue.
 
 // savedWaitAncestor files J, issue 1, the interview, under A, issue 2, at
 // ready, with under root the lease and valid result of run saved on J,
@@ -107,6 +108,15 @@ func TestSavedWaitAncestorHoldReplay(t *testing.T) {
 	if body := newestComment(f, 2); !strings.Contains(body, "reason=rejected") {
 		t.Errorf("#2: newest comment %q; want A's /hold rejected", body)
 	}
+	savedWaitUnchanged(t, f, o, root)
+}
+
+// savedWaitUnchanged runs a pass on a new rig on f, with its state under
+// root, which reads the App's writes once, and then one with nothing
+// changed, which must write nothing and send only conditional GETs that
+// GitHub answers 304.
+func savedWaitUnchanged(t *testing.T, f *githubtest.Fake, o *origin, root string) {
+	t.Helper()
 	g := newRig(t, f, o, root)
 	g.pass()
 	from, writes := len(f.Requests()), len(f.Writes())
@@ -122,6 +132,89 @@ func TestSavedWaitAncestorHoldReplay(t *testing.T) {
 	}
 	if w := f.Writes(); len(w) != writes {
 		t.Errorf("the unchanged pass wrote %+v; want nothing", w[writes:])
+	}
+}
+
+// savedWaitOrdinaryAncestor is savedWaitAncestor with A a task, a type
+// the pipeline knows, so the App applies A's /hold, which holds A and J.
+func savedWaitOrdinaryAncestor(tb testing.TB, root string) *githubtest.Fake {
+	f := newFake(tb)
+	saveRun(tb, root, "saved", okOut, interview(f))
+	a := fileAt(f, "ready", "A part.")
+	f.SetType(a, "Task")
+	f.SetParent(1, a)
+	f.AddComment(a, "owner", "/hold")
+	f.AddComment(1, "owner", "/hold")
+	return f
+}
+
+// TestSavedWaitOrdinaryAncestorHoldReplay is TestSavedWaitAncestorHoldReplay
+// with an ancestor of a type the pipeline knows. J's /hold waits for A's,
+// which holds A and J, so the saved result on J isn't applied in that
+// pass (SPEC §8.2), and waits with its lease. The next pass applies J's
+// /hold on J, held already, which writes no marker there (SPEC §6.4), and
+// drops the result. Both passes are safe to replay after a crash at any
+// write, and an unchanged pass sends only conditional GETs answered 304.
+func TestSavedWaitOrdinaryAncestorHoldReplay(t *testing.T) {
+	t.Parallel()
+	o := newOrigin(t)
+	roots := map[*githubtest.Fake]string{}
+	githubtest.Replay(t, func(tb testing.TB) *githubtest.Fake {
+		root := t.TempDir()
+		f := savedWaitOrdinaryAncestor(tb, root)
+		roots[f] = root
+		return f
+	}, func(f *githubtest.Fake) error { return savedWaitAncestorPasses(t, f, o, roots[f], false) })
+
+	root := t.TempDir()
+	f := savedWaitOrdinaryAncestor(t, root)
+	if err := savedWaitAncestorPasses(t, f, o, root, true); err != nil {
+		t.Fatal(err)
+	}
+	if l := f.State().Issues[1].Labels; !slices.Contains(l, "stage:held") {
+		t.Errorf("#2: labels %v; want A's /hold applied", l)
+	}
+	if !slices.ContainsFunc(f.State().Issues[0].Comments, func(c githubtest.CommentState) bool {
+		return c.Body == "/hold" && slices.Contains(c.Reactions, app+" +1")
+	}) {
+		t.Errorf("#1: comments %+v; want J's /hold 👍'd", f.State().Issues[0].Comments)
+	}
+	savedWaitUnchanged(t, f, o, root)
+}
+
+// TestSavedWaitTouchedByFailedParent: a saved result on J, whose own
+// step 1 succeeds, isn't applied in a pass whose visit of its parent A
+// failed after it began writing to J, here on the move of A's /hold
+// there: that /hold is half done, and would drop the result. It waits
+// with its lease, counted as a failure to apply (SPEC §8.2), and the next
+// pass applies A's /hold, which drops it.
+func TestSavedWaitTouchedByFailedParent(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	f := newFake(t)
+	saveRun(t, root, "saved", okOut, interview(f))
+	a := fileAt(f, "ready", "A part.")
+	f.SetType(a, "Task")
+	f.SetParent(1, a)
+	f.AddComment(a, "owner", "/hold")
+	g := newRig(t, f, newOrigin(t), root)
+	g.claude(okOut, 0)
+	f.AnswerOnce(func(r githubtest.Request) bool { return r.Method == http.MethodPost && r.Path == "/issues/1/comments" }, http.StatusInternalServerError)
+	if err := g.d.Iterate(context.Background()); err == nil || !strings.Contains(err.Error(), "500") {
+		t.Fatalf("the pass = %v; want A's step 1's 500", err)
+	}
+	if l := g.lease(); l.RunID != "saved" || l.Failed || l.ApplyFailures != 1 || !slices.Contains(g.leftovers(), "state/runs/saved.json") || g.runs() != 0 {
+		t.Fatalf("lease %+v, left %v after %d runs; want the saved result waiting, counted once, and no run", l, g.leftovers(), g.runs())
+	}
+	if !savedWaitNothing(f) {
+		t.Fatalf("#1: comments %+v; want nothing of run saved applied over A's half-done /hold", f.State().Issues[0].Comments)
+	}
+	g.pass()
+	if l := f.State().Issues[0].Labels; !slices.Equal(l, []string{"stage:held"}) || !savedWaitNothing(f) {
+		t.Errorf("#1: labels %v, comments %+v; want A's /hold applied, and nothing of run saved", l, f.State().Issues[0].Comments)
+	}
+	if left := g.leftovers(); len(left) != 0 || g.runs() != 0 {
+		t.Errorf("left %v after %d runs; want the saved result dropped, and no run", left, g.runs())
 	}
 }
 
