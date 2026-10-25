@@ -36,6 +36,10 @@ type Snapshot struct {
 	Type string
 	// Parent is the parent issue's number, or 0 if there is none.
 	Parent int
+	// ParentRepo is "owner/name" for a parent in another repo, as its
+	// repository_url names it, else "": from the parent's GET Snapshot
+	// makes anyway, so it costs no request. Parent is that repo's number.
+	ParentRepo string
 	// Comments are all the issue's comments, oldest first.
 	Comments []Comment
 	// Deleted are the issue's CommentDeletedEvents, oldest first: read
@@ -223,11 +227,23 @@ func (c *Client) Snapshot(ctx context.Context, owner, repo string, number int) (
 		return nil, fmt.Errorf("parent of %s/%s#%d: %w", owner, repo, number, err)
 	default:
 		s.Parent = parent.GetNumber()
+		s.ParentRepo = parentRepo(owner, repo, parent.GetRepositoryURL())
 	}
 	if err := c.readComments(ctx, owner, repo, s); err != nil {
 		return nil, fmt.Errorf("snapshot of %s/%s#%d: %w", owner, repo, number, err)
 	}
 	return s, nil
+}
+
+// parentRepo is Snapshot.ParentRepo for a parent whose repository_url is
+// url, of the issue of owner/repo: "" for that repo, or a url that names
+// none, as GitHub's names compare in any case, and else the repo it names.
+func parentRepo(owner, repo, url string) string {
+	_, at, ok := strings.Cut(url, "/repos/")
+	if !ok || strings.EqualFold(at, owner+"/"+repo) {
+		return ""
+	}
+	return at
 }
 
 // TypeOf is Snapshot.Type for an issue as REST gives it.

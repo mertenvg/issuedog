@@ -789,8 +789,17 @@ func ivLogin(login string) string {
 // it's "someone unnamed". So is "unknown" in the App's note, which is how
 // Dirt names a ghost, an editor GitHub doesn't name.
 func ivEditor(by string, last github.Edit, appSlug string) string {
-	if last.By.Login == by || (state.IsApp(last.By, appSlug) && by != "unknown") {
+	if ivConfirmed(by, last, appSlug) {
 		return ivLogin(by)
 	}
 	return "someone unnamed"
+}
+
+// ivConfirmed reports whether by, who Dirt says made content dirty, is
+// confirmed by the content's last edit, as ivEditor names them: by is its
+// last editor, or the App is, so by comes from the App's own note, unless
+// that names a ghost, "unknown". It reads only the snapshot's last edit,
+// so it costs no request.
+func ivConfirmed(by string, last github.Edit, appSlug string) bool {
+	return last.By.Login == by || (state.IsApp(last.By, appSlug) && by != "unknown")
 }

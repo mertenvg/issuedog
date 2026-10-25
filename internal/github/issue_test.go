@@ -68,6 +68,37 @@ func TestSnapshot(t *testing.T) {
 	}
 }
 
+// A snapshot names its parent's repo when its repository_url names another
+// repo than the issue's, so "#P" isn't taken for this repo's issue P
+// (#602), and not when it names this one, in any case, as GitHub's names
+// ignore it. It's read from the parent's GET the snapshot makes anyway.
+func TestSnapshotParentRepo(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ name, repo, want string }{
+		{"in this repo", "", ""},
+		{"in this repo, named in other case", "O/R", ""},
+		{"in another repo", "o/other", "o/other"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := githubtest.New(t, "o/r", "issuedog")
+			epic := f.AddIssue("owner", "Epic", "an idea")
+			story := f.AddIssue("owner", "Story", "do it")
+			f.SetParent(story, epic)
+			if tt.repo != "" {
+				f.Transfer(epic, tt.repo)
+			}
+			s, err := f.Client(t).Snapshot(context.Background(), "o", "r", story)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if s.Parent != epic || s.ParentRepo != tt.want {
+				t.Errorf("parent = %d in %q, want %d in %q", s.Parent, s.ParentRepo, epic, tt.want)
+			}
+		})
+	}
+}
+
 // A type label gives the type in lower case, whatever its case, unless the
 // issue has an issue type, and SetLabels keeps the type up to date with the
 // labels it leaves, without those left out.

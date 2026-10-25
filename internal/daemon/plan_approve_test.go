@@ -287,6 +287,15 @@ func planDirtyStory(f *githubtest.Fake) {
 	f.SetParent(1, 2)
 }
 
+// planDirtyStoryIn is planDirtyStory with the parent moved to repo, as
+// GitHub names it ("owner/name"), so its repository_url names that repo.
+func planDirtyStoryIn(repo string) func(f *githubtest.Fake) {
+	return func(f *githubtest.Fake) {
+		planDirtyStory(f)
+		f.Transfer(2, repo)
+	}
+}
+
 // With a dirty body, /approve's rejection at plan-review names the edit,
 // its editor as code, and what clears it, after whatever reason comes
 // first, as that also gets the new plan any other reason needs (#525):
@@ -295,7 +304,10 @@ func planDirtyStory(f *githubtest.Fake) {
 // what clears it is a move to `stage:clarifying`; for a story with a
 // parent, which the interviewer never rewrites (SPEC §9.1), it's an
 // approved revision of the parent's plan that changes it, which rewrites
-// its body whole (SPEC §6.4).
+// its body whole (SPEC §6.4). A parent in another repo is named with its
+// repo, o/other#2, as "#2" would link this repo's issue 2 (#602), and one
+// whose repository_url names this repo in other case is still "#2", as
+// GitHub's names ignore case.
 func TestApprovePlanDirtyBodyClears(t *testing.T) {
 	t.Parallel()
 	const dirty = "the issue description has an edit by `mallory` that wasn't approved"
@@ -337,6 +349,10 @@ func TestApprovePlanDirtyBodyClears(t *testing.T) {
 			"there's no clean plan revision to approve, and " + dirty + ". " + planDirtyParentStory, "1002"},
 		{"a story with a parent whose plan comment changed", changed(planDirtyStory),
 			changedWhy + ", and " + dirty + ". " + planDirtyParentStory, "1004"},
+		{"a story with a parent in another repo", alone(planDirtyStoryIn("o/other")),
+			dirty + ", so I can't approve the plan. " + strings.ReplaceAll(planDirtyParentStory, "#2", "o/other#2"), "1004"},
+		{"a story with a parent in this repo, named in other case", alone(planDirtyStoryIn("O/R")),
+			dirty + ", so I can't approve the plan. " + planDirtyParentStory, "1004"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
