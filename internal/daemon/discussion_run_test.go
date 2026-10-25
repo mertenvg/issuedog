@@ -1160,7 +1160,7 @@ func TestDiscRunFourLevels(t *testing.T) {
 			l.quiet("held")
 			top := f.AddComment(2, "owner", "/resume")
 			l.step("the epic's /resume", "POST /issues/comments/"+strconv.FormatInt(top, 10)+"/reactions", "POST /issues/2/comments")
-			if got, want := l.added(2), []string{fmt.Sprintf("> /resume\n\nI didn't apply this command: the holds left were made on #3, #5, by `/hold` or by hand, "+
+			if got, want := l.added(2), []string{fmt.Sprintf("> /resume\n\nI didn't apply this command: the holds left were made on #3 and #5, by `/hold` or by hand, "+
 				"so `/resume` there ends them.\n\n<!-- issuedog:reply reason=rejected cmd=%d -->", top)}; !slices.Equal(got, want) {
 				t.Errorf("#2's new comments %q; want %q", got, want)
 			}

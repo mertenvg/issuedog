@@ -274,6 +274,7 @@ func TestIvWordingURL(t *testing.T) {
 		{"https://a.b_c.d/e", 0, ""},
 		{"https://a_b.c.d/e", 0, "https://a_b.c.d/e"},
 		{"https://a.b.c_d/e", 0, ""},
+		{"https://a.b_c", 0, ""},
 		{"https://a._b/c", 0, ""},
 		{"https://a_b./c", 0, ""},
 		{"https://a.b-c/d", 0, "https://a.b-c/d"},

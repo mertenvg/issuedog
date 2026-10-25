@@ -33,6 +33,10 @@ type Step struct {
 	// /resume another waits for (holdOrderWaits), so Iterate reads it again
 	// next pass, and visits it, without skipping its visit in this one.
 	holdOrderReread func(number int)
+	// holdOrderWaited, if set, is told of each issue whose own /hold or
+	// /resume waits (holdOrderWaits), so Work applies no saved result on
+	// it this pass: that command may drop it (SPEC §8.2).
+	holdOrderWaited func(number int)
 	// holdOrderDigest, if set, reports whether issue number is a digest,
 	// which step 1 never visits (Daemon.digest), so holdOrderWaits waits
 	// for nothing on it.

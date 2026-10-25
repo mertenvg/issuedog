@@ -25,8 +25,9 @@ import (
 // and the real Triage as the Unlabeled stage, registered as stageWork
 // registers them, daemon.RegisterStages, but for the planner, with the
 // daemon built as startDaemon builds it, daemon.New, so step 1 is
-// daemon.NewStep's, but for the digest and assignment, and Daemon.Iterate
-// as the loop. Config and trust come from main on the origin, as in the
+// daemon.NewStep's, but with the digest and assignment off unless the
+// case's digest keeps them on, as TestWholeRunFlaggedDigest's does, and
+// Daemon.Iterate as the loop. Config and trust come from main on the origin, as in the
 // daemon: mertenvg and merten_acme own CODEOWNERS, notify is mertenvg, and
 // eve has no access at all.
 //
@@ -642,7 +643,8 @@ func TestWholeRunFlaggedDigest(t *testing.T) {
 		t.Fatalf("the flag: the epic's second comment is\n%s\nwant the flag", flag.Body)
 	}
 
-	// The flag's own text says Blocks: #1, so its item unblocks one.
+	// The flag's item scores 1, for the epic itself, as no open issue is
+	// below it (SPEC §9.4, The order).
 	w.iterate("the flag listed", 1, "PATCH /issues/2", "POST /issues/1/assignees")
 	digest("the flag listed", true, "#1 Triage flag p2 1")
 	w.quiet("the flag listed")

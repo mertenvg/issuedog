@@ -55,7 +55,8 @@ type Rejection struct {
 	// Dated is set when Reason holds because of when the comment was
 	// posted, before the latest revision or at a review stage since moved
 	// on to another, so a new comment with its text, posted now, wouldn't
-	// get it, and could apply (reword).
+	// get it, and could apply (reword): it would pass the checks a new one
+	// gets, the table's included (SPEC §7.2).
 	Dated bool
 }
 
@@ -88,14 +89,42 @@ func (st *Step) command(ctx context.Context, s *github.Snapshot, d Dirt, c githu
 // (requestAt) finds the stage moved on since, so its reason says that,
 // whatever /revise would say at the stage now. It's Final: a new comment
 // now wouldn't send the spec or the plan back. At spec-review or
-// plan-review it's Dated too: a new comment is posted at the stage now, so
-// it doesn't get this reason, and is a revision request there. At any
-// other stage a new comment sends nothing back either, so it isn't.
+// plan-review, a new comment is posted at the stage now, so it doesn't get
+// this reason, and is a revision request there, which /revise's checks
+// judge (judge). The reason is Dated when that request would apply. When
+// it wouldn't, as when the table has no such move for the issue's class
+// (SPEC §7.2), the reason ends with why, so the reply doesn't ask for a
+// new comment. At any other stage a new comment sends nothing back either,
+// so it isn't Dated.
 func (st *Step) why(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment, cmd state.Command, stage state.Stage) (Rejection, Handler, error) {
 	if at := st.requestAt(s, d, c); at != "" && at != stage {
-		return Rejection{Reason: fmt.Sprintf("it was posted at `%s`, and this issue is at `%s` now. A comment sends the spec back only at `%s`, and the plan only at `%s`",
-			at, stage, state.SpecReview, state.PlanReview), Final: true, Dated: stage == state.SpecReview || stage == state.PlanReview}, Handler{}, nil
+		r := Rejection{Reason: fmt.Sprintf("it was posted at `%s`, and this issue is at `%s` now. A comment sends the spec back only at `%s`, and the plan only at `%s`",
+			at, stage, state.SpecReview, state.PlanReview), Final: true}
+		if stage != state.SpecReview && stage != state.PlanReview {
+			return r, Handler{}, nil
+		}
+		now, _, err := st.judge(ctx, s, d, c, cmd, stage)
+		if err != nil {
+			return Rejection{}, Handler{}, fmt.Errorf("judge a new request at %s: %w", stage, err)
+		}
+		if now.Reason == "" {
+			r.Dated = true
+		} else {
+			r.Reason += ". Nor would a new comment here: " + now.Reason
+		}
+		return r, Handler{}, nil
 	}
+	r, h, err := st.judge(ctx, s, d, c, cmd, stage)
+	if err != nil {
+		return Rejection{}, Handler{}, fmt.Errorf("why: %w", err)
+	}
+	return r, h, nil
+}
+
+// judge returns why cmd, from comment c, doesn't apply at stage, by its
+// own check and then its handler's, or a Rejection with no Reason and its
+// handler (why). It doesn't write.
+func (st *Step) judge(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment, cmd state.Command, stage state.Stage) (Rejection, Handler, error) {
 	if err := cmd.Check(stage); err != nil {
 		return Rejection{Reason: err.Error()}, Handler{}, nil
 	}
@@ -574,10 +603,22 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 		if len(left) > 0 && !resolveOwnerHeld(left) {
 			discussed = append(discussed, fmt.Sprintf("#%d", n.s.Number))
 		}
-		var by []int // the issues where the owner holds left were made
+		var by []int      // the issues where the owner holds left were made
+		var seen []string // their keys (resolveHoldKey)
 		for _, m := range left {
 			if m.Fields["reason"] != "owner" {
 				continue
+			}
+			// A hold two judgements found counts once, as resolveResumed
+			// records it once: a comment deleted on an ancestor that may
+			// have been a /hold (resolveGone) is named both by n's record
+			// of its discussion's end and by resolveHeldBy's read of the
+			// ancestors (#533).
+			if key := resolveHoldKey(m); key != "" {
+				if slices.Contains(seen, key) {
+					continue
+				}
+				seen = append(seen, key)
 			}
 			// A comment deleted on an issue between, which may have been a
 			// /hold there (resolveGone), is that issue's.
@@ -641,7 +682,8 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 // each named as "#3": only a code owner's response, or /resume, on each
 // ends its own. The reply is posted on self, c's issue, so self is "this
 // issue", and "here", and the rest "there" (#222); with both, the rest
-// come first.
+// come first. The rest are joined as the reply to a /resume that applies
+// joins them, as "#3 and #4" (list; #533).
 func heldWordingDiscussed(discussed []string, self string) string {
 	others := slices.DeleteFunc(slices.Clone(discussed), func(n string) bool { return n == self })
 	var why []string
@@ -651,7 +693,7 @@ func heldWordingDiscussed(discussed []string, self string) string {
 			verb = "are"
 		}
 		why = append(why, fmt.Sprintf("%s %s on hold for discussion, which only a code owner's response there, "+
-			"or `/resume` there, ends", strings.Join(others, ", "), verb))
+			"or `/resume` there, ends", list(others), verb))
 	}
 	if len(others) < len(discussed) {
 		why = append(why, "this issue is on hold for discussion, which only a code owner's response here, or `/resume` here, ends")
@@ -666,10 +708,11 @@ func heldWordingDiscussed(discussed []string, self string) string {
 // issue, which may be one of them, as when a comment deleted there after
 // the /resume may have been a /hold that holds an issue below
 // (resolveGone). So self is "this issue", with "here", and the rest
-// "there", each named once, as in heldWordingDiscussed; with both, the
-// rest come first. A hold left may be on self itself, not below, as by a
-// /hold posted on self or an ancestor after c, which the App applied
-// first (heldStackEnds), so the holds are "left", not "below" (#466).
+// "there", each named once and joined as "#3 and #4", as in
+// heldWordingDiscussed; with both, the rest come first. A hold left may
+// be on self itself, not below, as by a /hold posted on self or an
+// ancestor after c, which the App applied first (heldStackEnds), so the
+// holds are "left", not "below" (#466).
 // Each clause follows the number of holds it counts: "the hold left was"
 // and "ends it" for one, "the holds left were" and "ends them" for more.
 // With both, the first clause counts "one hold left" or "some holds
@@ -693,7 +736,7 @@ func heldWordingMakers(makers []string, self string) string {
 			heldWordingNoun(here), heldWordingVerb(here), heldWordingIt(here))
 	case here == 0:
 		return fmt.Sprintf("the %s left %s made on %s, by `/hold` or by hand, so `/resume` there ends %s",
-			heldWordingNoun(there), heldWordingVerb(there), strings.Join(others, ", "), heldWordingIt(there))
+			heldWordingNoun(there), heldWordingVerb(there), list(others), heldWordingIt(there))
 	}
 	some, rest := "some holds", "the rest"
 	if there == 1 {
@@ -704,7 +747,7 @@ func heldWordingMakers(makers []string, self string) string {
 	}
 	return fmt.Sprintf("%s left %s made on %s, by `/hold` or by hand, so `/resume` there ends %s; "+
 		"and %s %s made on this issue, so `/resume` here ends %s",
-		some, heldWordingVerb(there), strings.Join(others, ", "), heldWordingIt(there), rest, heldWordingVerb(here), heldWordingIt(here))
+		some, heldWordingVerb(there), list(others), heldWordingIt(there), rest, heldWordingVerb(here), heldWordingIt(here))
 }
 
 // heldWordingNoun is "hold" for one hold, and "holds" for more.
