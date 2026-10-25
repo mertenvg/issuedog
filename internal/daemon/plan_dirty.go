@@ -104,13 +104,14 @@ var reviewDirtyMoves = []reviewDirtyMove{
 // App 👍'd as an answer before the run's move was posted is one the run
 // read, and isn't one (reviewDirtyRead). A /resume's move carries the
 // bound from before the hold (state.HeldStack.Seen), as resume's does, so
-// its seen is the hidden move's own. It also carries resolved, the time of
-// the oldest dirty App comment after the latest move the markers show, at
-// or before the hidden move's own, which bounds the discussion triggers
-// (discFloor): so a trigger after the /resume still holds the issue, as
-// under the hidden move, whose cmd named the /resume, and not only one
-// after the record (#566). The time is in the record, so it stands once
-// the dirty comment is deleted. The move is in the table's row for
+// its seen is the hidden move's own. It also carries resolved, which
+// bounds the discussion triggers (discFloor) as the hidden move's cmd did:
+// when the /resume it applied was posted, floored at the hold
+// (reviewDirtyResumeAt). So a trigger after the /resume still holds the
+// issue, even one before the App's comment applying it, and not only one
+// after the record (#566, #595), while one the /resume accepted doesn't
+// hold it again. The time is in the record, so it stands once the dirty
+// comment is deleted. The move is in the table's row for
 // the hidden move, so a type that has no such move gets no record, and the
 // disagreement stands, as before. The move's comment is added to s, so
 // Derive reads the review stage from it in the same pass, and a replay
@@ -121,7 +122,7 @@ var reviewDirtyMoves = []reviewDirtyMove{
 // the dirty comment is the plan comment or an App comment after the latest
 // plan revision, and at spec-review ReviewVisit posts the next spec
 // revision.
-func (a *Applier) reviewDirtyRestore(ctx context.Context, s *github.Snapshot, d Dirt, events []github.LabelEvent) (bool, error) {
+func (a *Applier) reviewDirtyRestore(ctx context.Context, s *github.Snapshot, trust github.Trust, d Dirt, events []github.LabelEvent) (bool, error) {
 	if !slices.ContainsFunc(events, func(ev github.LabelEvent) bool { return ev.Kind == github.LabelDisagreement }) ||
 		slices.ContainsFunc(events, func(ev github.LabelEvent) bool { return ev.Kind == github.LabelOverride || ev.Unfinished }) {
 		return false, nil
@@ -147,12 +148,8 @@ func (a *Applier) reviewDirtyRestore(ctx context.Context, s *github.Snapshot, d 
 	}
 	rm := reviewDirtyMoves[i]
 	var hid int64
-	var first time.Time // when the oldest such dirty comment was posted
 	for _, c := range s.Comments {
 		if c.ID > is.TransitionComment && state.IsApp(c.Author, a.AppSlug) && d.Has(c.ID) {
-			if hid == 0 {
-				first = c.CreatedAt
-			}
 			hid = c.ID
 		}
 	}
@@ -162,9 +159,12 @@ func (a *Applier) reviewDirtyRestore(ctx context.Context, s *github.Snapshot, d 
 	fields := map[string]string{state.FieldSeen: strconv.FormatInt(is.Round, 10)}
 	if rm.from == state.Held {
 		// The bound from before the hold, as resume's move carries, and
-		// the oldest dirty comment's time as resolved, at or before the
-		// hidden move's own, as the discussion floor (discFloor).
-		fields = state.HeldStackFields(map[string]string{resolveField: strconv.FormatInt(first.Unix(), 10)}, is.HeldStack.Seen)
+		// the /resume's time as resolved, the discussion floor (discFloor).
+		at, err := a.reviewDirtyResumeAt(ctx, s, trust, d, is, hid)
+		if err != nil {
+			return false, fmt.Errorf("record again the move to %s that comment %d hid: %w", rm.to, hid, err)
+		}
+		fields = state.HeldStackFields(map[string]string{resolveField: strconv.FormatInt(at.Unix(), 10)}, is.HeldStack.Seen)
 	}
 	m := Move{To: rm.to, Trigger: rm.trigger, Key: state.Key{Field: "event", ID: rm.prefix + strconv.FormatInt(hid, 10)},
 		Fields: fields, Text: rm.text}
@@ -182,6 +182,47 @@ func (a *Applier) reviewDirtyRestore(ctx context.Context, s *github.Snapshot, d 
 	}
 	logr.Infof("%s/%s#%d: recorded again the move to %s that comment %d, made dirty, hid", a.Owner, a.Repo, s.Number, rm.to, hid)
 	return true, nil
+}
+
+// reviewDirtyResumeAt returns the resolved time for the record of a
+// /resume's move back to plan-review from held, on s in state is, keyed by
+// hid, the newest dirty App comment after the hold (reviewDirtyRestore).
+// It is when the /resume that move applied was posted, the bound the
+// move's cmd gave the discussion triggers (resolveActAt), floored at the
+// hold: when the latest move into or within held that the markers show was
+// posted. The cmd can't be read, so the /resume is the newest clean one on
+// s below hid by a user trust trusts that the App didn't reject
+// (resolveCommands, resolveRejected), as the hidden move is in hid or an
+// earlier comment, after its /resume.
+//
+// So a trigger after the /resume holds the issue, even one between it and
+// the App's comment applying it, which that pass's read missed, or one
+// before a later dirty App comment once that comment is deleted (#595).
+// One before it doesn't hold the issue again: a /resume accepts every open
+// trigger made before it and restores the hold's stage (SPEC §6.4), and no
+// record names a comment made during an owner hold, so the hold's time
+// alone would count that one again. A /resume from before the hold ended
+// an earlier hold, so the hold's time stands instead. So it does with no
+// such /resume, as once it's deleted, or when one on another issue ended
+// the hold, failing closed: a trigger during the hold then holds the issue.
+func (a *Applier) reviewDirtyResumeAt(ctx context.Context, s *github.Snapshot, trust github.Trust, d Dirt, is state.Issue, hid int64) (time.Time, error) {
+	at := s.CreatedAt // the body's, should the hold's move be in it
+	if i := slices.IndexFunc(s.Comments, func(c github.Comment) bool { return c.ID == is.TransitionComment }); i >= 0 {
+		at = s.Comments[i].CreatedAt
+	}
+	ids, err := a.resolveCommands(ctx, s, d, trust, "resume", 0, hid)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("the /resume before comment %d: %w", hid, err)
+	}
+	ids = slices.DeleteFunc(ids, func(id int64) bool { return resolveRejected(is, id) })
+	if len(ids) == 0 {
+		return at, nil
+	}
+	i := slices.IndexFunc(s.Comments, func(c github.Comment) bool { return c.ID == ids[len(ids)-1] })
+	if r := s.Comments[i].CreatedAt; r.After(at) {
+		return r, nil
+	}
+	return at, nil
 }
 
 // reviewDirtyRead reports whether c, a revision request the App 👍'd at

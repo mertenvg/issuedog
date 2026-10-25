@@ -208,6 +208,9 @@ func TestPlanDirtySeen(t *testing.T) {
 	// The plan comment is clean, and a /resume's move back to plan-review
 	// is dirty, in comment 1012.
 	resumeDirty := planReviewRun(during, func(t testing.TB, f *githubtest.Fake) {
+		// The owner shows as a collaborator, so the record's resolved is
+		// their /resume's time (reviewDirtyResumeAt).
+		f.SetPermission("owner", "admin")
 		f.AddReaction(1004, app, "+1")
 		post(t, f, 1007, "owner", "/hold")
 		f.AddReaction(1007, app, "+1")
@@ -282,7 +285,7 @@ func TestPlanDirtySeen(t *testing.T) {
 		// 1004, 👍'd after the plan comment, is a request.
 		{"a /resume's record swallows no 👍'd comment",
 			resumeDirty,
-			outcome{comments: []string{planResumeDirtyRecorded(1012, 1001, resolveCommentAt(t, resumeDirty(t), 1, 1012)), planSentBack("1004")}, labels: planning,
+			outcome{comments: []string{planResumeDirtyOn(t, resumeDirty(t), 1012, 1010, 1001), planSentBack("1004")}, labels: planning,
 				acks: []string{"also X", "/hold", "/resume"}}},
 		// Only a dirty App comment after the answer, up to the one the
 		// record names, may have held the run's move (#566): one before
