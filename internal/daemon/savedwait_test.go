@@ -10,8 +10,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mertenvg/issuedog/internal/config"
+	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
 	"github.com/mertenvg/logr/v2"
 )
@@ -21,7 +23,9 @@ import (
 // waits for an ancestor's command, or its read found it gone; it's
 // dropped, uncounted, when the issue's last snapshot shows it held; and
 // each wait is logged once. Then #593: an ancestor of a type the pipeline
-// knows, and a parent's failed visit that wrote to the issue.
+// knows, and a parent's failed visit that wrote to the issue. Then #634:
+// a parent's visit that failed, or waits for its next pass, before its
+// /hold reached the issue.
 
 // savedWaitAncestor files J, issue 1, the interview, under A, issue 2, at
 // ready, with under root the lease and valid result of run saved on J,
@@ -187,7 +191,8 @@ func TestSavedWaitOrdinaryAncestorHoldReplay(t *testing.T) {
 // failed after it began writing to J, here on the move of A's /hold
 // there: that /hold is half done, and would drop the result. It waits
 // with its lease, counted as a failure to apply (SPEC §8.2), and the next
-// pass applies A's /hold, which drops it.
+// pass applies A's /hold, which drops it. An unchanged pass after sends
+// only conditional GETs answered 304.
 func TestSavedWaitTouchedByFailedParent(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -197,7 +202,8 @@ func TestSavedWaitTouchedByFailedParent(t *testing.T) {
 	f.SetType(a, "Task")
 	f.SetParent(1, a)
 	f.AddComment(a, "owner", "/hold")
-	g := newRig(t, f, newOrigin(t), root)
+	o := newOrigin(t)
+	g := newRig(t, f, o, root)
 	g.claude(okOut, 0)
 	f.AnswerOnce(func(r githubtest.Request) bool { return r.Method == http.MethodPost && r.Path == "/issues/1/comments" }, http.StatusInternalServerError)
 	if err := g.d.Iterate(context.Background()); err == nil || !strings.Contains(err.Error(), "500") {
@@ -216,6 +222,184 @@ func TestSavedWaitTouchedByFailedParent(t *testing.T) {
 	if left := g.leftovers(); len(left) != 0 || g.runs() != 0 {
 		t.Errorf("left %v after %d runs; want the saved result dropped, and no run", left, g.runs())
 	}
+	savedWaitUnchanged(t, f, o, root)
+}
+
+// savedWaitFamily files J2, issue 1, the interview, and J1, issue 3, a
+// task at ready, under A, issue 2, a task at ready, J1 linked first, with
+// under root the lease and valid result of run saved on J2, left by a
+// restart, and the owner's /hold on A. A's /hold walks J1 before J2, so a
+// visit of A that stops on J1 doesn't reach J2. A is visited before J1.
+// j1, if set, then changes J1.
+func savedWaitFamily(tb testing.TB, root string, j1 func(f *githubtest.Fake, n int)) *githubtest.Fake {
+	f := newFake(tb)
+	saveRun(tb, root, "saved", okOut, interview(f))
+	a := fileAt(f, "ready", "A part.")
+	f.SetType(a, "Task")
+	n := fileAt(f, "ready", "J1 part.")
+	f.SetType(n, "Task")
+	f.SetParent(n, a)
+	f.SetParent(1, a)
+	f.AddComment(a, "owner", "/hold")
+	if j1 != nil {
+		j1(f, n)
+	}
+	return f
+}
+
+// savedWaitFamilyPasses runs two passes on a new rig on f, with its state
+// under root, and f.Advance(between) between them. The second must leave
+// J2 held by A's /hold, with nothing of run saved applied, its result
+// dropped, and no run. With waits, as on a first try whose first pass
+// stops on J1, that pass must leave the saved result waiting, counted
+// once, and nothing of it applied; a replay after a crash may get past J1
+// sooner.
+func savedWaitFamilyPasses(t *testing.T, f *githubtest.Fake, o *origin, root string, between time.Duration, waits bool) error {
+	g := newRig(t, f, o, root)
+	g.claude(okOut, 0)
+	if err := g.d.Iterate(context.Background()); err != nil {
+		return fmt.Errorf("the first pass: %w", err)
+	}
+	if l := g.lease(); waits && (l.RunID != "saved" || l.Failed || l.ApplyFailures != 1 || !slices.Contains(g.leftovers(), "state/runs/saved.json")) {
+		return fmt.Errorf("after the first pass: lease %+v, left %v; want the saved result waiting, counted once", l, g.leftovers())
+	}
+	if waits && !savedWaitNothing(f) {
+		return fmt.Errorf("after the first pass: comments %+v; want nothing of run saved applied over A's unfinished /hold", f.State().Issues[0].Comments)
+	}
+	f.Advance(between)
+	if err := g.d.Iterate(context.Background()); err != nil {
+		return fmt.Errorf("the second pass: %w", err)
+	}
+	if is := f.State().Issues[0]; !slices.Equal(is.Labels, []string{"stage:held"}) || !savedWaitNothing(f) {
+		return fmt.Errorf("after the second pass: labels %v, comments %+v; want A's /hold applied, and nothing of run saved", is.Labels, is.Comments)
+	}
+	if left := g.leftovers(); len(left) != 0 || g.runs() != 0 {
+		return fmt.Errorf("after the second pass: left %v after %d runs; want the saved result dropped, and no run", left, g.runs())
+	}
+	return nil
+}
+
+// savedWaitFamilyReplay is githubtest.Replay of savedWaitFamilyPasses on
+// savedWaitFamily(j1), each try with a root of its own. A replay may get
+// past J1 on its first pass, so none checks that pass: a result applied a
+// pass early shows in the second's.
+func savedWaitFamilyReplay(t *testing.T, o *origin, j1 func(f *githubtest.Fake, n int), between time.Duration) {
+	t.Helper()
+	roots := map[*githubtest.Fake]string{}
+	githubtest.Replay(t, func(tb testing.TB) *githubtest.Fake {
+		root := t.TempDir()
+		f := savedWaitFamily(tb, root, j1)
+		roots[f] = root
+		return f
+	}, func(f *githubtest.Fake) error { return savedWaitFamilyPasses(t, f, o, roots[f], between, false) })
+}
+
+// TestSavedWaitUnreachedByFailedParentReplay: a saved result on J2, whose
+// own step 1 succeeds, isn't applied in a pass whose visit of its parent
+// A failed on J1, before A's /hold reached J2: that /hold would write to
+// J2 too, and would drop the result (SPEC §8.2). The Replay crashes A's
+// visit at each write, J1's among them, and each crash must end as the
+// clean run does, the result dropped, not applied a pass early. Then a
+// failure on J1's move comment: the result waits with its lease, counted
+// as a failure to apply, and the next pass applies A's /hold, which drops
+// it. An unchanged pass after sends only conditional GETs answered 304.
+func TestSavedWaitUnreachedByFailedParentReplay(t *testing.T) {
+	t.Parallel()
+	o := newOrigin(t)
+	savedWaitFamilyReplay(t, o, nil, 0)
+
+	root := t.TempDir()
+	f := savedWaitFamily(t, root, nil)
+	f.AnswerOnce(func(r githubtest.Request) bool { return r.Method == http.MethodPost && r.Path == "/issues/3/comments" }, http.StatusInternalServerError)
+	g := newRig(t, f, o, root)
+	g.claude(okOut, 0)
+	if err := g.d.Iterate(context.Background()); err == nil || !strings.Contains(err.Error(), "500") {
+		t.Fatalf("the pass = %v; want A's step 1's 500 on J1", err)
+	}
+	if l := g.lease(); l.RunID != "saved" || l.Failed || l.ApplyFailures != 1 || !slices.Contains(g.leftovers(), "state/runs/saved.json") || g.runs() != 0 {
+		t.Fatalf("lease %+v, left %v after %d runs; want the saved result waiting, counted once, and no run", l, g.leftovers(), g.runs())
+	}
+	if !savedWaitNothing(f) {
+		t.Fatalf("#1: comments %+v; want nothing of run saved applied over A's half-done /hold", f.State().Issues[0].Comments)
+	}
+	g.pass()
+	if l := f.State().Issues[0].Labels; !slices.Equal(l, []string{"stage:held"}) || !savedWaitNothing(f) {
+		t.Errorf("#1: labels %v, comments %+v; want A's /hold applied, and nothing of run saved", l, f.State().Issues[0].Comments)
+	}
+	if left := g.leftovers(); len(left) != 0 || g.runs() != 0 {
+		t.Errorf("left %v after %d runs; want the saved result dropped, and no run", left, g.runs())
+	}
+	savedWaitUnchanged(t, f, o, root)
+}
+
+// TestSavedWaitUnreachedByHeldBackParentReplay is
+// TestSavedWaitUnreachedByFailedParentReplay with A's visit stopped on J1
+// by a label a rename put on J1, which no event explains yet: J1's labels
+// are held back (ErrLabelsHeld), so A's visit waits for its next pass,
+// with A's /hold unfinished, though that's no error. The saved result on
+// J2 waits with its lease, counted, until a pass after github.HoldBound,
+// which leaves the label out and applies A's /hold, which drops it. Both
+// passes are safe to replay after a crash at any write, and an unchanged
+// pass sends only conditional GETs answered 304.
+func TestSavedWaitUnreachedByHeldBackParentReplay(t *testing.T) {
+	t.Parallel()
+	o := newOrigin(t)
+	j1 := func(f *githubtest.Fake, n int) {
+		f.AddLabel(n, "mallory", "foo") // unguarded, so it stands
+		f.RenameLabel("foo", "priority:p0")
+	}
+	savedWaitFamilyReplay(t, o, j1, github.HoldBound)
+
+	root := t.TempDir()
+	f := savedWaitFamily(t, root, j1)
+	if err := savedWaitFamilyPasses(t, f, o, root, github.HoldBound, true); err != nil {
+		t.Fatal(err)
+	}
+	if l := f.State().Issues[2].Labels; !slices.Contains(l, "stage:held") || !slices.Contains(l, "priority:p0") {
+		t.Errorf("#3: labels %v; want J1 held, with priority:p0 left out but still on", l)
+	}
+	// Until it has stayed unexplained for github.UnexplainedWait, which a
+	// rig's memory counts from its first pass, and is removed, the label
+	// left out is checked again on each pass.
+	g := newRig(t, f, o, root)
+	g.pass()
+	f.Advance(github.UnexplainedWait)
+	g.pass()
+	if l := f.State().Issues[2].Labels; slices.Contains(l, "priority:p0") {
+		t.Errorf("#3: labels %v after github.UnexplainedWait; want priority:p0 removed", l)
+	}
+	savedWaitUnchanged(t, f, o, root)
+}
+
+// TestSavedWaitUnreachedByClosedAgainParentReplay is
+// TestSavedWaitUnreachedByFailedParentReplay with A's visit stopped on J1
+// by mallory's reopen of J1, completed, which A's /hold judges first, so
+// it closes J1 again (closingErrClosedAgain): A's visit waits for its next
+// pass, with A's /hold unfinished, though that's no error. The saved
+// result on J2 waits with its lease, counted, and the next pass applies
+// A's /hold, which leaves the closed J1 alone and drops the result. Both
+// passes are safe to replay after a crash at any write, and an unchanged
+// pass sends only conditional GETs answered 304.
+func TestSavedWaitUnreachedByClosedAgainParentReplay(t *testing.T) {
+	t.Parallel()
+	o := newOrigin(t)
+	j1 := func(f *githubtest.Fake, n int) {
+		f.CloseBy(n, "owner")
+		f.AddLabel(n, app, "stage:completed")
+		f.RemoveLabel(n, app, "stage:ready")
+		f.ReopenBy(n, "mallory")
+	}
+	savedWaitFamilyReplay(t, o, j1, 0)
+
+	root := t.TempDir()
+	f := savedWaitFamily(t, root, j1)
+	if err := savedWaitFamilyPasses(t, f, o, root, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	if is := f.State().Issues[2]; !is.Closed || !slices.Equal(is.Labels, []string{"stage:completed"}) {
+		t.Errorf("#3: closed %v, labels %v; want J1 closed again, still completed", is.Closed, is.Labels)
+	}
+	savedWaitUnchanged(t, f, o, root)
 }
 
 // TestSavedWaitGoneReadUncounted: a read that finds the issue a restart
