@@ -403,6 +403,7 @@ func (d *Daemon) digestTake(ctx context.Context) {
 			}
 		}
 	}
+	back := 0 // the lowest digest this pass takes whose body the App wrote, to read the items back from (digestkept.go)
 	for _, n := range slices.Sorted(maps.Keys(g.titled)) {
 		is := g.titled[n]
 		if _, ok := g.firsts[n]; !ok && !reposted[n] {
@@ -434,10 +435,16 @@ func (d *Daemon) digestTake(ctx context.Context) {
 		// aren't cached (digestRestartList), but a digest has none.
 		delete(d.digestRestartUnknown, n)
 		delete(d.digestKeptListed, n)
-		if apps[n] { // what it lists for issues with none cached (digestkept.go)
-			d.digestKeptRead(n, is.GetBody())
+		if apps[n] && back == 0 {
+			back = n
 		}
 		logr.Infof("%s/%s#%d is a digest, found by %s", a.Owner, a.Repo, n, by)
+	}
+	// What it lists for issues with none cached, once every issue is judged,
+	// so one still held gets none, whether it's numbered below the digest
+	// or above it, and one judged no digest keeps its own (#614).
+	if back != 0 {
+		d.digestKeptRead(back, g.issues[back].body)
 	}
 }
 

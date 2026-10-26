@@ -185,8 +185,10 @@ func digestHistoryLikely(is *gogithub.Issue) bool {
 // once, which a held issue's transfer does anyway. A transfer lets
 // go of it at once: GitHub's 301 names the issue's new repo, and its node
 // still resolves from there, so no history read would find it gone. One
-// let go is dropped as a snapshot is, so the next listing of every open
-// issue is made, and holds it for the title rule again if it's there
+// let go is dropped as a snapshot is: it's known no more, so any items a
+// start read back for it from the digest's body go, and none is read
+// back for it later (digestRestartGone), and the next listing of every
+// open issue is made, and holds it for the title rule again if it's there
 // after all (transferUnlistedCheck).
 func (d *Daemon) digestHistoryGone(n int, err error) {
 	a, g := d.Step.Applier, &d.digest
@@ -206,6 +208,7 @@ func (d *Daemon) digestHistoryGone(n int, err error) {
 	delete(g.titled, n)
 	delete(g.history, n)
 	delete(d.stale, n)
+	d.digestRestartGone(n)
 	d.transferUnlistedDrop(n)
 }
 
