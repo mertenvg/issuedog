@@ -257,7 +257,8 @@ func TestIvWordingPlannerDuplicates(t *testing.T) {
 // gives on a body nobody edited, or one an editor's note gives for someone
 // else, and anything that isn't a GitHub login, as a name typed in a note
 // may be, so a backtick in it can't end the code span, and a ghost, whom
-// GitHub doesn't name.
+// GitHub doesn't name. A full rewrite's replaced= names an editor by the
+// same rule, and is "unknown" where the rejection says "someone" (#638).
 func TestDirtyEditor(t *testing.T) {
 	t.Parallel()
 	at := time.Date(2026, 10, 25, 0, 0, 0, 0, time.UTC)
@@ -283,6 +284,13 @@ func TestDirtyEditor(t *testing.T) {
 	} {
 		if got := dirtyEditor(tt.by, tt.last, "issuedog"); got != tt.want {
 			t.Errorf("%s: dirtyEditor(%q, by %q) = %q, want %q", tt.name, tt.by, tt.last.By.Login, got, tt.want)
+		}
+		replaced := tt.by
+		if tt.want == "someone" {
+			replaced = "unknown"
+		}
+		if got := rewriteLogin(tt.by, tt.last, "issuedog"); got != replaced {
+			t.Errorf("%s: rewriteLogin(%q, by %q) = %q, want %q", tt.name, tt.by, tt.last.By.Login, got, replaced)
 		}
 	}
 }

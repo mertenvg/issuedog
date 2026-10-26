@@ -85,7 +85,8 @@ func TestApproveDirtyEditorForged(t *testing.T) {
 // Through the loop, a story at plan-review under a parent in another repo,
 // whose body has eve's own note naming owner, gets the reply to /approve
 // naming neither owner nor the parent as "#2", which would link this
-// repo's issue 2, but o/other#2 (#602), and so does its digest item. The
+// repo's issue 2, but o/other#2 (#602), and so does its digest item, each
+// saying that plan can't be revised from here (#638). The
 // next pass writes nothing, and the one after, unchanged, sends only
 // conditional GETs that GitHub answers 304: naming the editor and the
 // parent's repo costs no request.
@@ -109,8 +110,8 @@ func TestDirtyEditorQuiet(t *testing.T) {
 	d.Step.Reactions = daemon.ApproveByReaction(d.Step.CurrentTrust())
 	post(t, f, 1004, "owner", "/approve")
 	iterate(t, d)
-	const elsewhere = "Nor does the interviewer, as this story's description is its item of o/other#2's plan. " +
-		"To clear it, get a revision of o/other#2's plan that changes this story, as by moving o/other#2 to `stage:planning`: "
+	const elsewhere = "Nor does the interviewer, as this story's description is its item of o/other#2's plan, " +
+		"which I can't revise from here, as it's in another repo."
 	issues := f.State().Issues
 	reply := issues[0].Comments[len(issues[0].Comments)-1].Body
 	if !strings.Contains(reply, "the issue description has an edit by someone that wasn't approved") || !strings.Contains(reply, elsewhere) ||
@@ -118,7 +119,7 @@ func TestDirtyEditorQuiet(t *testing.T) {
 		t.Errorf("the reply to /approve is\n%s\nwant it to name someone, not owner, and the parent as o/other#2, not #2", reply)
 	}
 	digest := issues[len(issues)-1].Body
-	if want := "Get a revision of o/other#2's plan that changes the issue to clear the edit, as by moving o/other#2 to `stage:planning`"; !strings.Contains(digest, want) {
+	if want := "The description is its item of o/other#2's plan, which can't be revised from here, as it's in another repo."; !strings.Contains(digest, want) {
 		t.Errorf("the digest is\n%s\nwant it to name the parent as o/other#2: %q", digest, want)
 	}
 	n := len(f.Writes())

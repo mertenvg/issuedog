@@ -786,6 +786,11 @@ const (
 	waitPlanDirtyParent = "Get a revision of #40's plan that changes the issue to clear the edit, as by moving #40 to `stage:planning`: " +
 		"once that's approved, it rewrites the description, which replaces the edit, and then the issue gets a new plan. " +
 		"Sending the plan back won't clear it."
+	// waitPlanDirtyElsewhere is that last line for a story under o/other#40,
+	// a parent in another repo, whose plan the App doesn't revise, as it
+	// plans only this repo's issues (#638).
+	waitPlanDirtyElsewhere = "The description is its item of o/other#40's plan, which can't be revised from here, as it's in another repo. " +
+		"Sending the plan back won't clear the edit."
 )
 
 // A story at plan-review with a clean plan revision is a plan's approval
@@ -847,9 +852,10 @@ func TestWaitFindPlanApproval(t *testing.T) {
 // that moving it to `stage:clarifying` clears the edit, with or without
 // the other reasons, as a new plan alone doesn't (#331), or for a story
 // with a parent, that a revision of the parent's plan that changes it
-// does, as the interviewer never rewrites its body (#525), naming a parent
-// in another repo with its repo (#602). With no clean revision, the dirty
-// body is a reason too (#525).
+// does, as the interviewer never rewrites its body (#525). A parent in
+// another repo is named with its repo (#602), escaped, and its plan can't
+// be revised from here, so the line says that instead (#638). With no
+// clean revision, the dirty body is a reason too (#525).
 func TestWaitFindPlanApprovalBlocked(t *testing.T) {
 	t.Parallel()
 	plan := waitPlanComment(t, 1)
@@ -873,6 +879,8 @@ func TestWaitFindPlanApprovalBlocked(t *testing.T) {
 	epicUnder.Parent = 40
 	elsewhere := waitStory(43, 1, nil, plan)
 	elsewhere.ParentRepo = "o/other"
+	markedRepo := waitStory(43, 1, nil, plan)
+	markedRepo.ParentRepo = "o/<!--x"
 	const (
 		none   = "there's no clean plan revision to approve: none was posted, or it was edited without approval or deleted"
 		hidden = "a comment of mine after plan revision 1 was edited without approval or deleted, so it may hide a newer revision"
@@ -902,7 +910,10 @@ func TestWaitFindPlanApprovalBlocked(t *testing.T) {
 		{"no clean plan and a dirty body", heldBack, Dirt{4301: "eve", state.BodyID: "eve"}, "plan-43-0", 4303,
 			"The plan waits for review, with no clean revision to approve.", []string{none, dirty}, waitPlanDirtyParent},
 		{"a dirty body under a parent in another repo", elsewhere, Dirt{state.BodyID: "eve"}, "plan-43-1", 4301,
-			"Revision 1 of the plan, `" + hash + "`, waits for approval.", []string{dirty}, strings.ReplaceAll(waitPlanDirtyParent, "#40", "o/other#40")},
+			"Revision 1 of the plan, `" + hash + "`, waits for approval.", []string{dirty}, waitPlanDirtyElsewhere},
+		{"a dirty body under a parent in a repo whose name has a marker", markedRepo, Dirt{state.BodyID: "eve"}, "plan-43-1", 4301,
+			"Revision 1 of the plan, `" + hash + "`, waits for approval.", []string{dirty},
+			strings.ReplaceAll(waitPlanDirtyElsewhere, "o/other#40", "o/&lt;!--x#40")},
 		{"an epic's dirty body", waitSnap(43, nil, plan), Dirt{state.BodyID: "eve"}, "plan-43-1", 4301,
 			"Revision 1 of the plan, `" + hash + "`, waits for approval.", []string{dirty}, waitPlanDirtyClears},
 		{"an epic with no clean plan and a dirty body", waitSnap(43, nil, "<!-- issuedog:transition from=planning to=plan-review by=owner event=7 -->"),

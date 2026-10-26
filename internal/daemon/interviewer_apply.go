@@ -409,7 +409,7 @@ func specWriteBody(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt, 
 	}
 	replaced := ""
 	if by, dirty := d[state.BodyID]; dirty {
-		replaced = rewriteLogin(by)
+		replaced = rewriteLogin(by, s.BodyEdit, a.AppSlug)
 	}
 	marker := github.Marker{Kind: state.RewriteKind, Fields: map[string]string{"run": run}}
 	if replaced != "" {
@@ -433,12 +433,14 @@ func specWriteBody(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt, 
 	return replaced, nil
 }
 
-// rewriteLogin is by, a login as Dirt gives it, for a rewrite marker's
-// replaced=: by if it is a GitHub login (ivLogin), else "unknown", as Dirt
+// rewriteLogin is by, a login as Dirt gives it for a dirty body whose last
+// edit is last, for a rewrite marker's replaced=: by if the App may name
+// them (dirtyNamed), as /approve's rejections do, else "unknown", as Dirt
 // names an editor GitHub doesn't name. Dirt's login may come from a note
-// the author typed on content nobody edited, so it isn't the App's text.
-func rewriteLogin(by string) string {
-	if l := ivLogin(by); l != by {
+// the author typed on content nobody edited, which can name anyone, so it
+// isn't the App's text (#638).
+func rewriteLogin(by string, last github.Edit, appSlug string) string {
+	if !dirtyNamed(by, last, appSlug) {
 		return "unknown"
 	}
 	return by
@@ -446,10 +448,15 @@ func rewriteLogin(by string) string {
 
 // rewriteReplacedText is the line a spec's move adds when the spec replaced
 // a body that replaced, a login rewriteLogin gave, made dirty. The login
-// is defused, so it mentions nobody.
+// is defused, so it mentions nobody, and "unknown", an editor the App
+// doesn't name, is "someone", as /approve's rejections say (#638).
 func rewriteReplacedText(replaced string) string {
-	return fmt.Sprintf("This spec replaces the whole issue description, with the edit by `%s` that wasn't approved, "+
-		"so the description is clean again.", defuse(replaced))
+	by := "someone"
+	if replaced != "unknown" {
+		by = "`" + defuse(replaced) + "`"
+	}
+	return fmt.Sprintf("This spec replaces the whole issue description, with the edit by %s that wasn't approved, "+
+		"so the description is clean again.", by)
 }
 
 // specSameText reports whether a and b are the same text, with CRLF and CR

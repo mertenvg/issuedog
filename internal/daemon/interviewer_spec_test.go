@@ -309,8 +309,8 @@ func TestInterviewerSpecDirtyBody(t *testing.T) {
 
 // TestInterviewerSpecAuthorsNote: a note the owner typed on their own
 // body makes it dirty by whatever it names. That isn't the App's text, so
-// the rewrite marker and the move say "unknown" for a name that isn't a
-// login, and nobody is mentioned.
+// the rewrite marker says "unknown" for a name that isn't a login, and
+// the move says "someone" (#638), and nobody is mentioned.
 func TestInterviewerSpecAuthorsNote(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
@@ -325,8 +325,70 @@ func TestInterviewerSpecAuthorsNote(t *testing.T) {
 	if got := f.State().Issues[n-1].Body; got != body {
 		t.Errorf("body =\n%s\nwant\n%s", got, body)
 	}
-	if got := newestComment(f, n); !strings.HasPrefix(got, "This spec replaces the whole issue description, with the edit by `unknown` that wasn't approved") {
-		t.Errorf("the move =\n%s\nwant it to name unknown", got)
+	if got := newestComment(f, n); !strings.HasPrefix(got, "This spec replaces the whole issue description, with the edit by someone that wasn't approved") ||
+		strings.Contains(got, "everyone") {
+		t.Errorf("the move =\n%s\nwant it to name someone, not everyone", got)
+	}
+}
+
+// TestInterviewerSpecForgedNote: on eve's issue, admitted though she isn't
+// trusted, a dirty note naming owner, a valid login, that eve typed
+// herself, on her body or in her own edit of it, doesn't make the spec's
+// rewrite marker or its move's first line name owner, or eve: neither's
+// edit is the body's last that confirms it, so replaced= is "unknown" and
+// the line says "someone" (#638). Under mallory's edit, the App's note
+// names mallory, and so do both. A crash at any write writes nothing
+// twice.
+func TestInterviewerSpecForgedNote(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name     string
+		body     string // eve's body when she files it
+		editor   string // who then edits it to dirtyEditorForged, if anyone
+		replaced string
+		line     string
+		unnamed  []string
+	}{
+		{"eve's own note on a body nobody edited", dirtyEditorForged, "", "unknown", "someone", []string{"owner", "eve"}},
+		{"eve's own edit adding the note", "EVE-BODY", "eve", "unknown", "someone", []string{"owner", "eve"}},
+		{"mallory's edit adding the note", "EVE-BODY", "mallory", "mallory", "`mallory`", []string{"owner", "eve"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			setup := func(f *githubtest.Fake) int {
+				n := f.AddIssue("eve", "EVE-TITLE", tt.body)
+				if tt.editor != "" {
+					f.EditBody(n, tt.editor, dirtyEditorForged)
+				}
+				ivApproved(f, n, nil)
+				return n
+			}
+			replayRuns(t, func(_ testing.TB, f *githubtest.Fake, _ string) { setup(f) }, func(g *rig) {
+				g.interviewer()
+				g.claude(ivResult(t, specOut("epic", "Done.")), 0)
+			})
+			f := newFake(t)
+			n := setup(f)
+			g := ivRig(t, f)
+			g.claude(ivResult(t, specOut("epic", "Done.")), 0)
+			if err := g.work(n); err != nil {
+				t.Fatal(err)
+			}
+			head := "<!-- issuedog:rewrite run=run1 replaced=" + tt.replaced + " -->\n"
+			if got := f.State().Issues[n-1]; !strings.HasPrefix(got.Body, head) || got.BodyEditedBy != app {
+				t.Errorf("body, edited by %s =\n%s\nwant the App's, starting %q", got.BodyEditedBy, got.Body, head)
+			}
+			line, _, _ := strings.Cut(newestComment(f, n), "\n")
+			if want := "This spec replaces the whole issue description, with the edit by " + tt.line +
+				" that wasn't approved, so the description is clean again."; line != want {
+				t.Errorf("the move's first line =\n%s\nwant\n%s", line, want)
+			}
+			for _, l := range tt.unnamed {
+				if strings.Contains(line, l) {
+					t.Errorf("the move's first line names %s, whom no edit confirms:\n%s", l, line)
+				}
+			}
+		})
 	}
 }
 

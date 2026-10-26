@@ -455,6 +455,8 @@ func waitTypeWhy(s *github.Snapshot, is state.Issue, next state.Stage, trigger s
 // it's an approved revision of the parent's plan that changes the story,
 // which rewrites its body and sends it back to planning (SPEC §6.4, #525),
 // named as planDirtyParent names it, with its repo if that isn't this one.
+// The App plans only this repo's issues, so for a parent in another repo
+// it says that plan can't be revised from here instead (#638).
 func waitPlanApprovalLines(in waitInput, is state.Issue) (int, int64, []waitLine) {
 	s := in.S
 	latest, reasons := state.PlanApproval(s, in.AppSlug, in.Dirt.Has)
@@ -494,10 +496,13 @@ func waitPlanApprovalLines(in waitInput, is state.Issue) (int, int64, []waitLine
 	}
 	back := "Post `/revise <notes>`, or any other comment, to send it back."
 	switch p := planDirtyParent(s, is.Item); {
-	case dirty && p != "":
+	case dirty && p.elsewhere:
+		back = fmt.Sprintf("The description is its item of %s's plan, which can't be revised from here, as it's in another repo. "+
+			"Sending the plan back won't clear the edit.", p.ref)
+	case dirty && p.ref != "":
 		back = fmt.Sprintf("Get a revision of %s's plan that changes the issue to clear the edit, as by moving %s to `stage:planning`: "+
 			"once that's approved, it rewrites the description, which replaces the edit, and then the issue gets a new plan. "+
-			"Sending the plan back won't clear it.", p, p)
+			"Sending the plan back won't clear it.", p.ref, p.ref)
 	case dirty:
 		back = "Move the issue to `stage:clarifying` to clear the edit: that gets a new spec from the interviewer, " +
 			"which replaces it, and then a new plan. Sending the plan back won't clear it."

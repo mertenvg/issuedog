@@ -280,6 +280,14 @@ const planDirtyParentStory = "Nothing at `planning` or `plan-review` rewrites th
 	"To clear it, get a revision of #2's plan that changes this story, as by moving #2 to `stage:planning`: " +
 	"once that's approved, I rewrite the description from it, which replaces the edit, and this story gets a new plan"
 
+// planDirtyElsewhereStory is planDirtyParentStory for a story whose parent
+// is o/other#2, in another repo: the App plans only this repo's issues, so
+// it says that plan can't be revised from here, instead of pointing at it
+// (#638).
+const planDirtyElsewhereStory = "Nothing at `planning` or `plan-review` rewrites the description, so sending the plan back won't clear the edit. " +
+	"Nor does the interviewer, as this story's description is its item of o/other#2's plan, " +
+	"which I can't revise from here, as it's in another repo"
+
 // planDirtyStory makes issue 1 a story under #2, which it files.
 func planDirtyStory(f *githubtest.Fake) {
 	f.AddIssue("owner", "The epic", "The spec.")
@@ -305,9 +313,11 @@ func planDirtyStoryIn(repo string) func(f *githubtest.Fake) {
 // parent, which the interviewer never rewrites (SPEC §9.1), it's an
 // approved revision of the parent's plan that changes it, which rewrites
 // its body whole (SPEC §6.4). A parent in another repo is named with its
-// repo, o/other#2, as "#2" would link this repo's issue 2 (#602), and one
-// whose repository_url names this repo in other case is still "#2", as
-// GitHub's names ignore case.
+// repo, o/other#2, as "#2" would link this repo's issue 2 (#602), and as
+// the App plans only this repo's issues, the reply says its plan can't be
+// revised from here, instead of how to clear the edit (#638). One whose
+// repository_url names this repo in other case is still "#2", as GitHub's
+// names ignore case.
 func TestApprovePlanDirtyBodyClears(t *testing.T) {
 	t.Parallel()
 	const dirty = "the issue description has an edit by `mallory` that wasn't approved"
@@ -350,7 +360,9 @@ func TestApprovePlanDirtyBodyClears(t *testing.T) {
 		{"a story with a parent whose plan comment changed", changed(planDirtyStory),
 			changedWhy + ", and " + dirty + ". " + planDirtyParentStory, "1004"},
 		{"a story with a parent in another repo", alone(planDirtyStoryIn("o/other")),
-			dirty + ", so I can't approve the plan. " + strings.ReplaceAll(planDirtyParentStory, "#2", "o/other#2"), "1004"},
+			dirty + ", so I can't approve the plan. " + planDirtyElsewhereStory, "1004"},
+		{"a story with a parent in another repo and no clean plan", noPlan(planDirtyStoryIn("o/other")),
+			"there's no clean plan revision to approve, and " + dirty + ". " + planDirtyElsewhereStory, "1002"},
 		{"a story with a parent in this repo, named in other case", alone(planDirtyStoryIn("O/R")),
 			dirty + ", so I can't approve the plan. " + planDirtyParentStory, "1004"},
 	} {
