@@ -172,6 +172,25 @@ func TestReadFile(t *testing.T) {
 	}
 }
 
+// TestResolve resolves main to its commit locally, and refuses a missing
+// ref, a ref that names a tree rather than a commit, and an option.
+func TestResolve(t *testing.T) {
+	t.Parallel()
+	rem, r := synced(t)
+	main := run(t, rem.work, "rev-parse", "HEAD")
+	tree := run(t, r.dir, "rev-parse", "main^{tree}")
+	run(t, r.dir, "update-ref", "refs/issuedog/tree", tree)
+	got, err := r.Resolve(context.Background(), "main")
+	if err != nil || got != main {
+		t.Errorf("Resolve(main) = %q, %v; want %s", got, err, main)
+	}
+	for _, ref := range []string{"nope", "refs/issuedog/tree", "--all"} {
+		if got, err := r.Resolve(context.Background(), ref); err == nil {
+			t.Errorf("Resolve(%s) = %q, want an error", ref, got)
+		}
+	}
+}
+
 func TestTokenNeverOnDisk(t *testing.T) {
 	rem, r := synced(t)
 	rem.commit("c.txt", "c\n")

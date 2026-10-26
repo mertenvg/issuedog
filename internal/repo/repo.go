@@ -92,6 +92,20 @@ func (r *Repo) ReadFile(ctx context.Context, path string) ([]byte, error) {
 	return out, nil
 }
 
+// Dir returns the bare repo's path.
+func (r *Repo) Dir() string { return r.dir }
+
+// Resolve returns the SHA of the commit ref names in the bare repo, such as
+// main's, read locally. A ref the repo lacks, or one that names no commit,
+// is an error.
+func (r *Repo) Resolve(ctx context.Context, ref string) (string, error) {
+	out, err := r.git(ctx, "", "rev-parse", "--verify", "--end-of-options", ref+"^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("resolve %s: %w", ref, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // git runs one git command against the bare repo and returns its stdout.
 // The error includes git's stderr.
 func (r *Repo) git(ctx context.Context, token string, args ...string) ([]byte, error) {

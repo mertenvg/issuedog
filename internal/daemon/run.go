@@ -143,6 +143,11 @@ type Lease struct {
 	Model          string   `json:"model,omitempty"`
 	Effort         string   `json:"effort,omitempty"`
 	FallbackModels []string `json:"fallback_models,omitempty"`
+	// Start is the commit the run's clone starts from, and Target any
+	// commit it's to merge, both named when the run started (SPEC §3.4):
+	// for triage, the interviewer and the planner, Start is main's.
+	Start  string `json:"start,omitempty"`
+	Target string `json:"target,omitempty"`
 	// ApplyFailures counts the failed applies of the run's result.
 	ApplyFailures int `json:"apply_failures,omitempty"`
 	// PublicFailure is why the run failed, as failed records it, at most
@@ -165,6 +170,11 @@ type Lease struct {
 // settings are the run settings l records.
 func (l Lease) settings() state.Settings {
 	return state.Settings{Model: l.Model, Effort: l.Effort, FallbackModels: l.FallbackModels}
+}
+
+// commits are the commits l names for the run's clone.
+func (l Lease) commits() workspace.Commits {
+	return workspace.Commits{Start: l.Start, Target: l.Target}
 }
 
 // kindAttempts is the state error for a stage that failed loop.max_attempts
@@ -338,6 +348,11 @@ func (r *Runs) CheckRegistered() error {
 // and use no attempt: the issue gets one state error for each change to
 // them that stands (labelsKey), checked before the issue is read again,
 // and posted only if the issue read again would have run (reportLabels).
+//
+// The run's clone holds main's commit in the bare repo, as the pass's sync
+// left it, and its history (SPEC §3.2, §3.4). That commit is resolved just
+// before the lease is written, which records it as the run's start (SPEC
+// §8.2). A failure to resolve it starts no run, and uses no attempt.
 func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 	return r.runStage(ctx, rd, st, false)
 }
@@ -444,11 +459,15 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		r.Daemon.reread(n, false)
 		return false, wrap(r.reportLabels(ctx, rd.S, fresh, is.Stage, st, badLabels))
 	}
+	start, err := r.Daemon.Clone.Resolve(ctx, "main")
+	if err != nil {
+		return false, wrap(fmt.Errorf("name the run's start: %w", err))
+	}
 	in.RunID, in.Attempt = r.newID(), attempt
 	in.ContextDir = r.Workspace.Context(in.RunID)
 	l := Lease{Issue: n, Stage: is.Stage, RunID: in.RunID, Clone: r.Workspace.Dir(in.RunID),
 		Started: r.now(), Polled: r.Daemon.polled, Edits: map[int64]time.Time{}, BodyEdit: rd.S.BodyEdit.At, AttemptKey: errKey, Attempt: in.Attempt,
-		Model: set.Model, Effort: set.Effort, FallbackModels: set.FallbackModels}
+		Model: set.Model, Effort: set.Effort, FallbackModels: set.FallbackModels, Start: start}
 	for _, c := range rd.S.Comments {
 		l.Seen = max(l.Seen, c.ID)
 	}
@@ -468,7 +487,7 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 				a.Owner, a.Repo, n, l.RunID, stderr.Len(), stderr.Total(), stderr.Text())
 		}
 	}
-	raw, runErr := r.run(ctx, st, in, l.settings(), stderr)
+	raw, runErr := r.run(ctx, st, in, l.settings(), l.commits(), stderr)
 	var setup *agent.SetupError
 	switch {
 	case ctx.Err() != nil && runErr == nil:
@@ -530,10 +549,11 @@ func (r *Runs) schema(st Stage) (*agent.Schema, error) {
 	return nil, &agent.SetupError{Err: fmt.Errorf("no %s run starts until a restart: %w", st.Agent(), err)}
 }
 
-// run prepares the workspace and runs claude for st with the settings set,
-// returning its output and sending its stderr to stderr. A failure to set
-// the run up is an *agent.SetupError, as Runner.Run's are.
-func (r *Runs) run(ctx context.Context, st Stage, in Input, set state.Settings, stderr io.Writer) ([]byte, error) {
+// run prepares the workspace, its clone of the commits c, and runs claude
+// for st with the settings set, returning its output and sending its
+// stderr to stderr. A failure to set the run up is an *agent.SetupError,
+// as Runner.Run's are.
+func (r *Runs) run(ctx context.Context, st Stage, in Input, set state.Settings, c workspace.Commits, stderr io.Writer) ([]byte, error) {
 	cfg := r.Daemon.Config.Stages
 	turns, okT := pick(cfg.MaxTurns, st.Agent())
 	budget, okB := pick(cfg.MaxBudgetUSD, st.Agent())
@@ -545,7 +565,7 @@ func (r *Runs) run(ctx context.Context, st Stage, in Input, set state.Settings, 
 	if err != nil {
 		return nil, &agent.SetupError{Err: fmt.Errorf("context files: %w", err)}
 	}
-	if err := r.Workspace.Prepare(ctx, in.RunID, "", files); err != nil {
+	if err := r.Workspace.Prepare(ctx, in.RunID, c, files); err != nil {
 		return nil, &agent.SetupError{Err: err}
 	}
 	runner := *r.Runner

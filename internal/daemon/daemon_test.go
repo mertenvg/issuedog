@@ -56,16 +56,19 @@ func (o *origin) commit(path, content string) {
 	gitIn(o.t, o.work, "push", "--quiet", o.url, "main")
 }
 
-func gitIn(t testing.TB, dir string, args ...string) {
+// gitIn runs git in dir and returns its trimmed output.
+func gitIn(t testing.TB, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "GIT_") }),
 		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
 		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := cmd.CombinedOutput()
+	if err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, out)
 	}
+	return strings.TrimSpace(string(out))
 }
 
 // newDaemon is a fresh daemon of o/r on f, cloning o, with the /hold,
