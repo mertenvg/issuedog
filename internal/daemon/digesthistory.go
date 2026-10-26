@@ -27,10 +27,10 @@ import (
 // passes, so an outage longer than the strikes ends on its own, and each
 // failed read is logged as an error (#437). A restart reads it again at
 // once, and a rename, with no identity marker left in its body, lets it
-// go. No step 1 visits a held
-// issue, so a 👍 on the error isn't read, and the digest, if there's one,
-// doesn't list it. It ends once the issue is judged: step 1 visits only an
-// issue digestTake has judged, so it's never open there (openErrors).
+// go. No step 1 visits a held issue, so a 👍 on the error isn't read, and
+// the digest, if there's one, doesn't list it. It ends once the issue is
+// judged: step 1 visits only an issue digestTake has judged, so it's never
+// open there (openErrors).
 
 // digestHistoryErrKind is the kind of the state error for an issue the
 // digest's title rule can't judge, as its edit history failed to read.

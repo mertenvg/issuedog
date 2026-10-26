@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	gogithub "github.com/google/go-github/v92/github"
+
 	"github.com/mertenvg/issuedog/internal/github"
 )
 
@@ -105,5 +107,21 @@ func TestDigestKeptApp(t *testing.T) {
 		if got := digestKeptApp(c.h, "body", waitSlug); got != c.want {
 			t.Errorf("%s: digestKeptApp = %v; want %v", c.name, got, c.want)
 		}
+	}
+}
+
+// #614: while one issue the identity marker or the title rule holds gets
+// no item read back, another with none cached still gets its own.
+func TestDigestKeptReadHeld(t *testing.T) {
+	t.Parallel()
+	item := func(n int) string {
+		return "### 1. #" + strconv.Itoa(n) + ": T\n\n**State error**, priority p2\n\n- An error.\n- Answer here: https://github.com/o/r/issues/" + strconv.Itoa(n)
+	}
+	d := &Daemon{digestRestartUnknown: map[int]bool{1: true, 3: true}}
+	d.digest.issues = map[int]digestSeen{2: {number: 2}}
+	d.digest.titled = map[int]*gogithub.Issue{1: {}}
+	d.digestKeptRead(2, item(1)+"\n\n"+item(3)+"\n\n"+digestRenderIdentity)
+	if _, ok := d.digestKept[1]; ok || len(d.digestKept[3]) != 1 {
+		t.Errorf("read back %+v; want #3's item alone, as #1 is held", d.digestKept)
 	}
 }
