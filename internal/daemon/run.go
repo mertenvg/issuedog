@@ -22,6 +22,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/dirsync"
 	"github.com/mertenvg/issuedog/internal/github"
+	"github.com/mertenvg/issuedog/internal/repo"
 	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/issuedog/internal/workspace"
 	"github.com/mertenvg/logr/v2"
@@ -59,6 +60,16 @@ type Checker interface {
 	Check(ctx context.Context, r Result) error
 }
 
+// Committer is a Stage whose runs make commits in their clone, such as the
+// implementer's. Its runs start from the task's head (start), and their
+// commits reach the bare repo only by the handoff, before the result is
+// checked and applied (SPEC §3.2). Once the result applies, the task's
+// head, repo.TasksRef+<n>, moves to the run's.
+type Committer interface {
+	// MakesCommits marks the Stage as a Committer.
+	MakesCommits()
+}
+
 // Input is what a Stage gets before a run.
 type Input struct {
 	RunID string
@@ -89,6 +100,10 @@ type Result struct {
 	S      *github.Snapshot
 	Dirt   Dirt
 	Output json.RawMessage // valid by the Stage's Schema
+	// Head is the commit a Committer's run left, fetched into the bare repo
+	// before the result is checked and applied (handoff), or "" when the
+	// run made no commits past its start, or the Stage isn't a Committer.
+	Head string
 
 	moveKey string            // see moveKey
 	fields  map[string]string // the run's model, effort and ran (runFields)
@@ -350,9 +365,11 @@ func (r *Runs) CheckRegistered() error {
 // and posted only if the issue read again would have run (reportLabels).
 //
 // The run's clone holds main's commit in the bare repo, as the pass's sync
-// left it, and its history (SPEC §3.2, §3.4). That commit is resolved just
-// before the lease is written, which records it as the run's start (SPEC
-// §8.2). A failure to resolve it starts no run, and uses no attempt.
+// left it, and its history (SPEC §3.2, §3.4), or for a Committer, the
+// task's head, if it has one (start). That commit is named just before
+// the lease is written, which records it as the run's start (SPEC §8.2). A
+// failure to name it starts no run, and uses no attempt. A Committer
+// starts no run on an issue with a parent, uncounted (inStory).
 func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 	return r.runStage(ctx, rd, st, false)
 }
@@ -399,6 +416,9 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		logr.Debugf("%s/%s#%d: no %s run: its type doesn't fit its stage, as reported", a.Owner, a.Repo, n, st.Agent())
 		return false, nil
 	}
+	if inStory(st, rd.S) {
+		return false, nil
+	}
 	if r.attempts[countKey(n, errKey)] >= r.limit() {
 		// The cap was reached, but posting its state error failed: post it.
 		// A post that keeps failing mustn't hold up the other issues.
@@ -433,7 +453,7 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		return false, nil
 	case err != nil:
 		return false, wrap(err)
-	case fresh.Closed || !isUnlabeled && stageOf(fresh) != is.Stage:
+	case fresh.Closed || !isUnlabeled && stageOf(fresh) != is.Stage || inStory(st, fresh):
 		r.Daemon.reread(n, false)
 		return false, nil
 	}
@@ -459,7 +479,7 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		r.Daemon.reread(n, false)
 		return false, wrap(r.reportLabels(ctx, rd.S, fresh, is.Stage, st, badLabels))
 	}
-	start, err := r.Daemon.Clone.Resolve(ctx, "main")
+	start, err := r.start(ctx, st, n)
 	if err != nil {
 		return false, wrap(fmt.Errorf("name the run's start: %w", err))
 	}
@@ -656,12 +676,15 @@ func (r *Runs) applyLease(ctx context.Context, l Lease, st Stage, raw []byte, ou
 //   - when it has new trusted input since the run's seen (newInput), which
 //     the stage runs again with.
 //
-// Then a Checker checks the result: its error is a checkError, but for a
+// Then, for a Committer, the run's commits are handed to the bare repo
+// (handoff): a failed fetch is a failure to apply like any other. Then a
+// Checker checks the result: its error is a checkError, but for a
 // checkReadError, which is a failure to apply like any other. A result
 // whose move is written already is only finished, unchecked. A move the
-// table lacks ends the run (blocked). On an error, the lease stays. The
-// run marker's fields are l's settings and the models raw, claude's
-// output, reports (runFields).
+// table lacks ends the run (blocked). Once the result applies, the task's
+// head moves to the run's, if it made commits (moveTaskHead). On an
+// error, the lease stays. The run marker's fields are l's settings and the
+// models raw, claude's output, reports (runFields).
 func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out json.RawMessage) error {
 	a := r.Daemon.Step.Applier
 	drop := func(why string, args ...any) error {
@@ -739,8 +762,12 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 			return drop("comment %d is new trusted input since the run started, so the stage runs again with it", id)
 		}
 	}
+	head, err := r.handoff(ctx, l, st, moved)
+	if err != nil {
+		return fmt.Errorf("apply run %s: %w", l.RunID, err)
+	}
 	key := moveKey(l.AttemptKey, is.Item)
-	res := Result{RunID: l.RunID, Seen: l.Seen, S: s, Dirt: d, Output: out, moveKey: key, fields: runFields(l, raw)}
+	res := Result{RunID: l.RunID, Seen: l.Seen, S: s, Dirt: d, Output: out, Head: head, moveKey: key, fields: runFields(l, raw)}
 	if c, ok := st.(Checker); ok && !moved {
 		var read *checkReadError
 		switch err := c.Check(ctx, res); {
@@ -754,6 +781,9 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 		if StateError(err) {
 			return r.blocked(ctx, s, d, st, l, key, err)
 		}
+		return fmt.Errorf("apply run %s: %w", l.RunID, err)
+	}
+	if err := r.moveTaskHead(ctx, l, head); err != nil {
 		return fmt.Errorf("apply run %s: %w", l.RunID, err)
 	}
 	logr.Infof("%s/%s#%d: applied run %s", a.Owner, a.Repo, l.Issue, l.RunID)
@@ -829,7 +859,9 @@ func (r *Runs) newInput(ctx context.Context, s *github.Snapshot, d Dirt, seen in
 
 // resume finishes the lease a run left, if there is one, and returns the
 // issue it applied a result to, which gets no stage work this pass. A
-// valid saved result is applied (applyLease). A saved result that hit a
+// valid saved result is applied (applyLease), a Committer's after its
+// bundle is fetched from the clone, if it wasn't yet (handoff). A saved
+// result that hit a
 // usage limit closes the gate, and isn't counted, as in RunStage.
 // Otherwise the run counts as a failed attempt, its clone is deleted, and
 // the issue, at its pre-run stage (see Lease), runs again when its stage
@@ -1331,12 +1363,23 @@ func (r *Runs) sweep() {
 	}
 }
 
-// cleanup removes the run's clone and context files, then its result.
+// cleanup removes the run's clone and context files, its bundle file and
+// its result, then its ref in the bare repo (handoff). The ref goes after
+// the result, so while a result is left to apply again, a run whose bundle
+// was fetched still has its ref.
 func (r *Runs) cleanup(ctx context.Context, l Lease) error {
 	if err := r.Workspace.Cleanup(ctx, l.RunID); err != nil {
 		return fmt.Errorf("clean up run %s: %w", l.RunID, err)
 	}
-	return r.remove(r.resultPath(l.RunID))
+	for _, path := range []string{r.bundlePath(l.RunID), r.resultPath(l.RunID)} {
+		if err := r.remove(path); err != nil {
+			return fmt.Errorf("clean up run %s: %w", l.RunID, err)
+		}
+	}
+	if err := r.Daemon.Clone.DeleteRef(ctx, repo.RunsRef+l.RunID); err != nil {
+		return fmt.Errorf("clean up run %s: %w", l.RunID, err)
+	}
+	return nil
 }
 
 // finish removes the run's files (cleanup), then the lease. The lease goes

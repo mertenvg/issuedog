@@ -29,12 +29,19 @@ import (
 // $FAKE/prompt.<n>, $FAKE/args.<n>, $FAKE/lease.<n> and $FAKE/head.<n>,
 // sleeps for $FAKE/sleep seconds, if set, writes $FAKE/stderr, if set, to
 // stderr, prints $FAKE/out and exits with $FAKE/exit, if there is one.
+// When $FAKE/commit exists, it first commits run.<n>.txt in its clone, and
+// keeps the commit as $FAKE/commit.<n>.
 const fakeClaude = `#!/bin/sh
 n=$(($(cat "$FAKE/count" 2>/dev/null || echo 0) + 1))
 printf '%s' "$2" > "$FAKE/prompt.$n"
 printf '%s\n' "$@" > "$FAKE/args.$n"
 cp "$STATE/lease.json" "$FAKE/lease.$n"
 git rev-parse HEAD > "$FAKE/head.$n" 2>/dev/null
+if [ -f "$FAKE/commit" ]; then
+	echo "$n" > "run.$n.txt" && git add "run.$n.txt" &&
+		git -c user.name=t -c user.email=t@example.com commit --quiet -m "run $n" &&
+		git rev-parse HEAD > "$FAKE/commit.$n" || exit 5
+fi
 echo "$n" > "$FAKE/count"
 [ -f "$FAKE/sleep" ] && sleep "$(cat "$FAKE/sleep")"
 [ -f "$FAKE/stderr" ] && cat "$FAKE/stderr" >&2

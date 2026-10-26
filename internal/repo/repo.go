@@ -36,6 +36,15 @@ const refspec = "+refs/heads/*:refs/heads/*"
 // refs/issuedog/runs/<run-id>.
 const RunsRef = "refs/issuedog/runs/"
 
+// TasksRef is the prefix of each task's head in the bare repo,
+// refs/issuedog/tasks/<n>, which the run harness moves once a run's result
+// applies (SPEC §3.2).
+const TasksRef = "refs/issuedog/tasks/"
+
+// ownRefs is the prefix of every ref ReadRef, UpdateRef and DeleteRef
+// touch: the daemon's own, which Sync leaves alone.
+const ownRefs = "refs/issuedog/"
+
 // shaPattern matches a full SHA-1 or SHA-256 object name.
 var shaPattern = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
 
@@ -113,6 +122,66 @@ func (r *Repo) Resolve(ctx context.Context, ref string) (string, error) {
 		return "", fmt.Errorf("resolve %s: %w", ref, err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// ReadRef returns the object ref names in the bare repo, and whether it
+// exists. ref is a full ref name under refs/issuedog/, matched exactly, so
+// a branch synced from GitHub never stands in for it, whatever its name.
+func (r *Repo) ReadRef(ctx context.Context, ref string) (string, bool, error) {
+	if err := r.checkOwnRef(ctx, ref); err != nil {
+		return "", false, fmt.Errorf("read ref: %w", err)
+	}
+	out, err := r.git(ctx, "", "for-each-ref", "--format=%(objectname) %(refname)", "--", ref)
+	if err != nil {
+		return "", false, fmt.Errorf("read %s: %w", ref, err)
+	}
+	// The pattern also matches refs below ref, so only the exact name counts.
+	for line := range strings.Lines(string(out)) {
+		if oid, name, _ := strings.Cut(strings.TrimSuffix(line, "\n"), " "); name == ref {
+			return oid, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// UpdateRef points ref, a full ref name under refs/issuedog/, at sha, a
+// full SHA of an object the bare repo has, creating the ref if it's
+// missing.
+func (r *Repo) UpdateRef(ctx context.Context, ref, sha string) error {
+	if err := r.checkOwnRef(ctx, ref); err != nil {
+		return fmt.Errorf("update ref: %w", err)
+	}
+	if !shaPattern.MatchString(sha) {
+		return fmt.Errorf("update %s: invalid SHA %q", ref, sha)
+	}
+	if _, err := r.git(ctx, "", "update-ref", "--no-deref", ref, sha); err != nil {
+		return fmt.Errorf("update %s: %w", ref, err)
+	}
+	return nil
+}
+
+// DeleteRef deletes ref, a full ref name under refs/issuedog/. A missing
+// ref is fine.
+func (r *Repo) DeleteRef(ctx context.Context, ref string) error {
+	if err := r.checkOwnRef(ctx, ref); err != nil {
+		return fmt.Errorf("delete ref: %w", err)
+	}
+	if _, err := r.git(ctx, "", "update-ref", "--no-deref", "-d", ref); err != nil {
+		return fmt.Errorf("delete %s: %w", ref, err)
+	}
+	return nil
+}
+
+// checkOwnRef refuses a ref that isn't a valid full ref name under
+// refs/issuedog/.
+func (r *Repo) checkOwnRef(ctx context.Context, ref string) error {
+	if !strings.HasPrefix(ref, ownRefs) {
+		return fmt.Errorf("%q isn't under %s", ref, ownRefs)
+	}
+	if _, err := r.git(ctx, "", "check-ref-format", ref); err != nil {
+		return fmt.Errorf("invalid ref %q: %w", ref, err)
+	}
+	return nil
 }
 
 // FetchBundle takes a run's commits into the bare repo, as the daemon, from
