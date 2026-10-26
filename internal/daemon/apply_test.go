@@ -13,6 +13,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/logr/v2"
 )
@@ -102,7 +103,7 @@ func TestTransitionInTable(t *testing.T) {
 }
 
 func TestTransitionNotInTable(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	setup := cmdIssue("stage:intake")
 	m := daemon.Move{To: state.Planning, Trigger: state.TriggerSpecApproved, Key: state.ReactionKey(55)}
 	pass := func(f *githubtest.Fake) error {
@@ -115,8 +116,8 @@ func TestTransitionNotInTable(t *testing.T) {
 
 	// Two passes: an error when the comment is posted, then only debug.
 	var errs, debug bytes.Buffer
-	stopErrs := logr.AddWriter(&errs, logr.WithFilter(logr.E))
-	stopDebug := logr.AddWriter(&debug, logr.WithFilter(logr.D))
+	stopErrs := logtest.CaptureTo(t, &errs, logr.E)
+	stopDebug := logtest.CaptureTo(t, &debug, logr.D)
 	got := run(t, setup, pass).State().Issues[0]
 	logr.Wait()
 	stopErrs()

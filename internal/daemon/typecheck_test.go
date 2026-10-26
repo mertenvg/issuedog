@@ -14,6 +14,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/logr/v2"
 )
@@ -340,9 +341,9 @@ func TestTypeErrTransition(t *testing.T) {
 // type error is posted, and at debug level on every pass after, as a
 // reported error is (#156's verify).
 func TestTypeErrHoldBackLog(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	var logs bytes.Buffer
-	stop := logr.AddWriter(&logs, logr.WithFilter(logr.I))
+	stop := logtest.CaptureTo(t, &logs, logr.I)
 	defer stop()
 	m := daemon.Move{To: state.Planning, Trigger: state.TriggerSpecApproved, Key: state.Key{Field: "run", ID: "x"}}
 	f := typeErrEpic(func(t testing.TB, f *githubtest.Fake) { flagWant(t, typeErrRetype(f, 1, "epic", "task"), 9004) })(t)

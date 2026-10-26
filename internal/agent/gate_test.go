@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/logr/v2"
 )
 
@@ -101,6 +102,7 @@ func TestGateResetTime(t *testing.T) {
 }
 
 func TestGateUnreadableResetFallsBackToBackoff(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output.
 	for _, text := range []string{
 		"usage limit reached|1000000000",        // in the past
 		"usage limit reached|9999999999",        // too far ahead
@@ -111,7 +113,7 @@ func TestGateUnreadableResetFallsBackToBackoff(t *testing.T) {
 		"usage limit · resets Oct 9, 2026, 3pm", // a date that has passed
 	} {
 		var logs bytes.Buffer
-		stop := logr.AddWriter(&logs)
+		stop := logtest.CaptureTo(t, &logs, logr.All)
 		g := newGate(t)
 		g.Observe(gateStart, true, text)
 		logr.Wait()

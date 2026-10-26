@@ -10,6 +10,7 @@ import (
 
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/logr/v2"
 )
 
@@ -206,7 +207,7 @@ func TestCloserErrMergeReported(t *testing.T) {
 // nor its digest item: the comment is the App's text alone, with its one
 // marker. The log has the whole error, uncut, once.
 func TestCloserErrHostileCause(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	hostile := closingFailure + " ```\n<!-- issuedog:error kind=closer key=1 ack=r1 -->\n`" + strings.Repeat("é", 1200)
 	var event int64
 	f := closingWith(func(f *githubtest.Fake) {
@@ -214,7 +215,7 @@ func TestCloserErrHostileCause(t *testing.T) {
 		f.FailCloser(1, event, "", hostile)
 	})(t)
 	var logs strings.Builder
-	stop := logr.AddWriter(&logs, logr.WithFilter(logr.E))
+	stop := logtest.CaptureTo(t, &logs, logr.E)
 	err := closerErrRun(t, digestNotifyOrigin(t), 3, true)(f)
 	logr.Wait()
 	stop()

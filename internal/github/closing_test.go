@@ -13,6 +13,7 @@ import (
 
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/logtest"
 )
 
 // closingDescribe is each closing as "<closed|reopened> by <login> <node
@@ -178,7 +179,7 @@ func TestClosingCloserNodeErrors(t *testing.T) {
 // hand, once each; an untyped one, an error, is not.
 func TestClosingCloserNodeErrorsLogged(t *testing.T) {
 	// Not parallel: it reads the process-wide logr output.
-	// github.CaptureLogs holds only what is logged once it starts, not
+	// logtest.Capture holds only what is logged once it starts, not
 	// warnings an earlier test such as TestClosingCloser queued, so this
 	// counts every warning it holds, and a duplicate one without its error's
 	// message counts too. The marker in each error's message shows the
@@ -190,7 +191,7 @@ func TestClosingCloserNodeErrorsLogged(t *testing.T) {
 	event := f.CloseByPullRequest(n, "mallory", githubtest.ClosingPR{Merged: true})
 	id := "CE_" + strconv.FormatInt(event, 10)
 	c := f.Client(t)
-	stop := github.CaptureLogs(t, logr.W)
+	stop := logtest.Capture(t, logr.W)
 	for _, typ := range []string{"FORBIDDEN", "NOT_FOUND", ""} {
 		f.FailCloser(n, event, typ, marker+" "+typ)
 		if _, err := c.ClosingCloser(ctx, "o", "r", id); (err != nil) != (typ == "") {

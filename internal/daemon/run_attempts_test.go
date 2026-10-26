@@ -18,6 +18,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/logr/v2"
 )
 
@@ -405,7 +406,7 @@ func TestUntrustedEditDuringRunApplies(t *testing.T) {
 // exit code, and so do one whose output fails the schema (SPEC §3.3) and
 // one that hits a usage limit. A run with no stderr logs none.
 func TestFailedRunLogsStderr(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	long := "HEAD" + strings.Repeat("x", 5000) + "\x1b[31mTAIL"
 	for name, tt := range map[string]struct {
 		out, stderr string
@@ -428,7 +429,7 @@ func TestFailedRunLogsStderr(t *testing.T) {
 				t.Fatal(err)
 			}
 			var logs strings.Builder
-			stop := logr.AddWriter(&logs, logr.WithFilter(logr.W))
+			stop := logtest.CaptureTo(t, &logs, logr.W)
 			err := g.work(1)
 			logr.Wait()
 			stop()
