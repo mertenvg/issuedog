@@ -124,6 +124,86 @@ expect "the daemon starts agent with no capabilities" "$zero" as issuedog "$bin"
 check_not "agent started by the daemon can't read /state" as issuedog "$bin" as-agent -- ls /state
 check_not "agent started by the daemon can't read the daemon" as issuedog "$bin" as-agent -- cat "$bin"
 
+# Git handoff (SPEC §3.2). The unlisted `issuedog handoff` runs the daemon's
+# own handoff of a run's commits: the bundle as agent, through the same uid
+# switch as stage runs, then the fetch into the bare repo as issuedog. The
+# agent's clone plants a hooks path, every hook, core.fsmonitor,
+# core.sshCommand, and a filter and a diff driver its .gitattributes names.
+# Each appends the uid it ran as to a marker of its own, so a plant git ran
+# as issuedog would leave 10001 in one.
+bare=/work/sandbox-test-handoff.git
+run=sandbox-test-handoff
+clone=/work/runs/$run
+planted=$clone/.git/planted
+markers=/tmp/sandbox-test-handoff-markers
+# The global git config of git_as below: the bare repo, which agent doesn't
+# own, is a safe.directory, as in the config the daemon's workspace writes
+# for agent's clones.
+gitconfig=/tmp/sandbox-test-handoff.gitconfig
+printf '[safe]\n\tdirectory = %s\n' "$bare" >"$gitconfig"
+chmod 0644 "$gitconfig"
+install -d -m 1777 "$markers"
+
+# git_as <user> <git args...> runs git as user, with gitconfig as its
+# global config and a committer identity.
+git_as() {
+	gituser=$1
+	shift
+	as "$gituser" env GIT_CONFIG_GLOBAL="$gitconfig" GIT_AUTHOR_NAME=sandbox-test \
+		GIT_AUTHOR_EMAIL=sandbox-test@example.invalid GIT_COMMITTER_NAME=sandbox-test \
+		GIT_COMMITTER_EMAIL=sandbox-test@example.invalid git "$@"
+}
+
+# plant <path> <marker> [filter] writes, as agent, a script at path that
+# appends the uid it runs as to <marker>.<uid> in markers. A filter then
+# passes its input on.
+plant() {
+	last=
+	if [ "$#" -gt 2 ]; then last='exec cat'; fi
+	as agent sh -c 'printf "%s\n" "#!/bin/sh" "id -u >>$2/$3.\$(id -u)" "$4" >"$1" && chmod 0755 "$1"' \
+		sh "$1" "$markers" "$2" "$last"
+}
+
+git_as issuedog init --quiet --bare --initial-branch=main "$bare"
+tree=$(git_as issuedog --git-dir="$bare" mktree </dev/null)
+start=$(git_as issuedog --git-dir="$bare" commit-tree -m start "$tree")
+git_as issuedog --git-dir="$bare" update-ref refs/heads/main "$start"
+
+git_as agent clone --quiet --no-hardlinks "$bare" "$clone"
+as agent sh -c 'echo "* filter=planted diff=planted" >"$1/.gitattributes" && echo run >"$1/run.txt"' sh "$clone"
+git_as agent -C "$clone" add .gitattributes run.txt
+git_as agent -C "$clone" commit --quiet -m run
+commit=$(git_as agent -C "$clone" rev-parse HEAD)
+as agent mkdir "$planted" "$planted/hooks"
+for hook in applypatch-msg pre-applypatch post-applypatch pre-commit pre-merge-commit \
+	prepare-commit-msg commit-msg post-commit pre-rebase post-checkout post-merge \
+	pre-push pre-receive update proc-receive post-receive post-update \
+	reference-transaction push-to-checkout pre-auto-gc post-rewrite sendemail-validate \
+	fsmonitor-watchman p4-changelist p4-prepare-changelist p4-post-changelist \
+	p4-pre-submit post-index-change; do
+	plant "$clone/.git/hooks/$hook" hooks-dir
+	plant "$planted/hooks/$hook" hooks-path
+done
+plant "$planted/fsmonitor" fsmonitor
+plant "$planted/ssh" ssh
+plant "$planted/filter" filter filter
+plant "$planted/diff" diff
+git_as agent -C "$clone" config core.hooksPath "$planted/hooks"
+git_as agent -C "$clone" config core.fsmonitor "$planted/fsmonitor"
+git_as agent -C "$clone" config core.sshCommand "$planted/ssh"
+git_as agent -C "$clone" config filter.planted.clean "$planted/filter"
+git_as agent -C "$clone" config filter.planted.smudge "$planted/filter"
+git_as agent -C "$clone" config diff.planted.command "$planted/diff"
+
+check "issuedog hands off agent's commit" as issuedog "$bin" handoff "$clone" "$start" "$bare" "$run"
+expect "the commit lands under the run's ref" "$commit" \
+	as issuedog git --git-dir="$bare" rev-parse --verify --quiet "refs/issuedog/runs/$run"
+check_not "nothing planted in the clone runs as issuedog" grep -rqx 10001 "$markers"
+# --no-verify skips the planted pre-push hook, so only the bare repo's
+# permissions can refuse the push.
+check_not "agent can't push to the bare repo" git_as agent -C "$clone" push --quiet --no-verify origin HEAD:refs/heads/pushed
+rm -rf "$bare" "$clone" "$markers" "$gitconfig"
+
 # Tools
 check "agent can run claude" as agent claude --version
 check "git is installed" git --version
