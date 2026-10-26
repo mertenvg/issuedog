@@ -599,3 +599,81 @@ func TestFetchBundleRefuses(t *testing.T) {
 		})
 	}
 }
+
+// TestOwnRefs reads, moves and deletes a task's head under refs/issuedog/.
+// ReadRef matches the name exactly: a branch synced from GitHub whose name
+// is the ref's, and a ref below it, both read as missing. A missing ref
+// deletes fine.
+func TestOwnRefs(t *testing.T) {
+	t.Parallel()
+	rem, r := synced(t)
+	ctx := context.Background()
+	first := run(t, rem.work, "rev-parse", "HEAD")
+	second := rem.commit("b.txt", "b\n")
+	ref := TasksRef + "7"
+	run(t, rem.work, "push", "--quiet", rem.url, "main:refs/heads/"+ref)
+	if err := r.Sync(ctx, fakeToken); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	run(t, r.dir, "update-ref", ref+"0", second)
+	run(t, r.dir, "update-ref", TasksRef+"8/below", second)
+
+	readRef := func(ref, want string) {
+		t.Helper()
+		got, ok, err := r.ReadRef(ctx, ref)
+		if err != nil || got != want || ok != (want != "") {
+			t.Errorf("ReadRef(%s) = %q, %v, %v; want %q, %v", ref, got, ok, err, want, want != "")
+		}
+	}
+	readRef(ref, "")
+	readRef(TasksRef+"8", "")
+	if err := r.UpdateRef(ctx, ref, first); err != nil {
+		t.Fatalf("UpdateRef: %v", err)
+	}
+	readRef(ref, first)
+	if err := r.UpdateRef(ctx, ref, second); err != nil {
+		t.Fatalf("UpdateRef again: %v", err)
+	}
+	readRef(ref, second)
+	if got := run(t, r.dir, "rev-parse", "refs/heads/"+ref); got != second {
+		t.Errorf("the synced branch named like the ref = %s, want it left at %s", got, second)
+	}
+	for range 2 {
+		if err := r.DeleteRef(ctx, ref); err != nil {
+			t.Errorf("DeleteRef: %v", err)
+		}
+		readRef(ref, "")
+	}
+	readRef(ref+"0", second)
+}
+
+// TestOwnRefsRefuse refuses a ref outside refs/issuedog/, one that isn't a
+// valid ref name, and an update to what isn't a full SHA, or names an
+// object the bare repo lacks. Nothing is written.
+func TestOwnRefsRefuse(t *testing.T) {
+	t.Parallel()
+	rem, r := synced(t)
+	ctx := context.Background()
+	main := run(t, rem.work, "rev-parse", "HEAD")
+	want := refs(t, r)
+	for _, ref := range []string{"refs/heads/main", "main", "HEAD", "refs/issuedogs/x", "refs/issuedog/",
+		"refs/issuedog/a..b", "refs/issuedog/x.lock", "refs/issuedog/x~1"} {
+		if got, ok, err := r.ReadRef(ctx, ref); err == nil {
+			t.Errorf("ReadRef(%s) = %q, %v; want an error", ref, got, ok)
+		}
+		if err := r.UpdateRef(ctx, ref, main); err == nil {
+			t.Errorf("UpdateRef(%s) gave no error", ref)
+		}
+		if err := r.DeleteRef(ctx, ref); err == nil {
+			t.Errorf("DeleteRef(%s) gave no error", ref)
+		}
+	}
+	for _, sha := range []string{"main", main[:12], strings.ToUpper(main), strings.Repeat("0", 39) + "1"} {
+		if err := r.UpdateRef(ctx, TasksRef+"1", sha); err == nil {
+			t.Errorf("UpdateRef to %q gave no error", sha)
+		}
+	}
+	if got := refs(t, r); got != want {
+		t.Errorf("refs after the refusals =\n%s\nwant\n%s", got, want)
+	}
+}
