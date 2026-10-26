@@ -26,7 +26,8 @@ import (
 // the digest may list items for that aren't cached
 // (Daemon.digestRestartUnknown) is kept as the body showed it
 // (waitItem.Kept), until step 1 succeeds on the issue, which caches its
-// own, or the issue closes, is dropped as gone or is taken as a digest.
+// own, or the issue closes, is held for the digest's rules
+// (digestHistoryHold), is dropped as gone or is taken as a digest.
 // The same goes for an issue that skips the pass with nothing cached, as
 // one a failed visit wrote to, or whose read again failed, or whose
 // labels are held back (digestrestart.go).
@@ -163,14 +164,19 @@ func digestKeptKind(name string) (waitKind, bool) {
 // which the App wrote (digestKeptApp), if n is the digest, the lowest of
 // those found, for each issue whose items the digest may list but aren't
 // cached (Daemon.digestRestartUnknown). Those it had read back from
-// another digest go.
+// another digest go. It's called once digestTake has judged every issue
+// it holds, so an issue the identity marker or the title rule still holds
+// gets none: it's out of step 1, and the digest lists nothing for it
+// while it's held (digestHistoryHold), whether its hold came before the
+// digest's turn or after it. One let go as gone is known no more
+// (digestHistoryGone).
 func (d *Daemon) digestKeptRead(n int, body string) {
 	if slices.Min(slices.Collect(maps.Keys(d.digest.issues))) != n {
 		return
 	}
 	d.digestKept = nil
 	for m, items := range digestKeptParse(body) {
-		if !d.digestRestartUnknown[m] {
+		if _, held := d.digest.titled[m]; held || !d.digestRestartUnknown[m] {
 			continue
 		}
 		if d.digestKept == nil {
