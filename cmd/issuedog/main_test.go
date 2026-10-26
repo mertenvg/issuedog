@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1170,6 +1171,198 @@ func TestAsAgentFailures(t *testing.T) {
 	code, logs = runLogged(t, []string{"as-agent", "--", "/no/such/command"}, nil)
 	if code != 1 || !strings.Contains(logs, "running /no/such/command as agent: ") {
 		t.Errorf("exit code %d, logs %q; want 1 and the start error", code, logs)
+	}
+}
+
+func TestHandoffArgs(t *testing.T) {
+	lookups := fakeAgent(t, nil)
+	sha := strings.Repeat("a", 40)
+	for _, args := range [][]string{
+		{"handoff"},
+		{"handoff", "/runs/r1", sha, "/work/r.git"},
+		{"handoff", "/runs/r1", sha, "/work/r.git", "r1", "extra"},
+		{"handoff", "runs/r1", sha, "/work/r.git", "r1"},
+		{"handoff", "/runs/r1", sha, "work/r.git", "r1"},
+	} {
+		code, logs := runLogged(t, args, nil)
+		if code != 2 || !strings.Contains(logs, handoffUsage) {
+			t.Errorf("%q: exit code %d, logs %q; want 2 and the usage", args, code, logs)
+		}
+	}
+	if *lookups != 0 {
+		t.Errorf("looked agent up %d times, want none for bad arguments", *lookups)
+	}
+	if strings.Contains(usage, "handoff") {
+		t.Errorf("usage lists handoff: %q", usage)
+	}
+}
+
+// handoffRepos makes a bare repo whose main has one commit, the start, and
+// a run's clone of it, runs/clone-r1 in a temp dir, as the test's own uid.
+// The clone's dir isn't named after the run ID the tests pass, so a mix-up
+// of the two shows. It returns the clone, the bare repo and the start.
+func handoffRepos(t *testing.T) (clone, bare, start string) {
+	t.Helper()
+	dir := t.TempDir()
+	bare, clone = filepath.Join(dir, "r.git"), filepath.Join(dir, "runs", "clone-r1")
+	gitIn(t, dir, "init", "--bare", "--quiet", "--initial-branch=main", bare)
+	gitIn(t, dir, "clone", "--quiet", bare, clone)
+	commitFile(t, clone, "a.txt", "start")
+	gitIn(t, clone, "push", "--quiet", "origin", "HEAD:main")
+	return clone, bare, revParse(t, clone, "HEAD")
+}
+
+// commitFile commits path, holding content, in the work tree dir.
+func commitFile(t *testing.T, dir, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, path), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, dir, "add", path)
+	gitIn(t, dir, "commit", "--quiet", "-m", path)
+}
+
+// revParse is the object rev names in the repo at dir, or "" if none.
+func revParse(t *testing.T, dir, rev string) string {
+	t.Helper()
+	cmd := exec.Command("git", "rev-parse", "--verify", "--quiet", rev)
+	cmd.Dir = dir
+	cmd.Env = append(slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "GIT_") }),
+		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
+	out, err := cmd.Output()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return ""
+	}
+	if err != nil {
+		t.Fatalf("git rev-parse %s: %v", rev, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// fakeHandoffDirs points the handoff's temp dir and the context dir at temp
+// dirs of their own, and returns the temp dir, for a check that the bundle's
+// dir is removed.
+func fakeHandoffDirs(t *testing.T) string {
+	t.Helper()
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	old := runDir
+	t.Cleanup(func() { runDir = old })
+	runDir = t.TempDir()
+	return tmp
+}
+
+// TestHandoffRoundTrip runs the unlisted handoff command, which
+// sandbox/test.sh relies on, on a run's clone with two commits past its
+// start: they're bundled as agent, here the test's own uid, and fetched
+// into the bare repo under the run's ref, which the log names. The
+// bundle's dir is removed. Run again, it writes nothing new.
+func TestHandoffRoundTrip(t *testing.T) {
+	lookups := fakeAgent(t, nil)
+	tmp := fakeHandoffDirs(t)
+	clone, bare, start := handoffRepos(t)
+	commitFile(t, clone, "b.txt", "one")
+	commitFile(t, clone, "c.txt", "two")
+	head := revParse(t, clone, "HEAD")
+	for range 2 {
+		code, logs := runLogged(t, []string{"handoff", clone, start, bare, "r1"}, nil)
+		if code != 0 {
+			t.Errorf("exit code = %d, logs %q; want 0", code, logs)
+		}
+		if want := "fetched run r1's bundle into " + bare + ": " + repo.RunsRef + "r1 is " + head; !strings.Contains(logs, want) {
+			t.Errorf("logs = %q, want %q", logs, want)
+		}
+		if got := revParse(t, bare, repo.RunsRef+"r1"); got != head {
+			t.Errorf("%sr1 = %q, want the clone's HEAD %s", repo.RunsRef, got, head)
+		}
+		if got := revParse(t, bare, "main"); got != start {
+			t.Errorf("main = %q, want it left at %s", got, start)
+		}
+		if got := revParse(t, bare, repo.RunsRef+"clone-r1"); got != "" {
+			t.Errorf("%sclone-r1 = %s, want no ref named after the clone's dir", repo.RunsRef, got)
+		}
+		if left, err := os.ReadDir(tmp); err != nil || len(left) != 0 {
+			t.Errorf("temp dir holds %v, %v; want the bundle's dir removed", left, err)
+		}
+	}
+	if *lookups != 2 {
+		t.Errorf("looked agent up %d times, want once a handoff", *lookups)
+	}
+}
+
+// TestHandoffUsesAgentCredential gives the handoff an agent credential no
+// process can take, uid 2^32-1, which is never valid, so the switch fails
+// even for root. The bundle fails with it, so it ran under that credential.
+func TestHandoffUsesAgentCredential(t *testing.T) {
+	tmp := fakeHandoffDirs(t)
+	clone, bare, start := handoffRepos(t)
+	commitFile(t, clone, "b.txt", "one")
+	old := agentCredential
+	t.Cleanup(func() { agentCredential = old })
+	agentCredential = func(string) (*syscall.Credential, error) {
+		return &syscall.Credential{Uid: math.MaxUint32, Gid: uint32(os.Getgid()), NoSetGroups: true}, nil
+	}
+	code, logs := runLogged(t, []string{"handoff", clone, start, bare, "r1"}, nil)
+	if want := "handing off run r1 from " + clone + ": bundling as agent: bundle run clone-r1: count commits past " + start + ": git -C: fork/exec "; code != 1 ||
+		!strings.Contains(logs, want) || !strings.Contains(logs, syscall.EINVAL.Error()) {
+		t.Errorf("exit code %d, logs %q; want 1, %q and the switch's %v", code, logs, want, syscall.EINVAL)
+	}
+	if got := revParse(t, bare, repo.RunsRef+"r1"); got != "" {
+		t.Errorf("%sr1 = %s, want none", repo.RunsRef, got)
+	}
+	if left, err := os.ReadDir(tmp); err != nil || len(left) != 0 {
+		t.Errorf("temp dir holds %v, %v; want the bundle's dir removed", left, err)
+	}
+}
+
+// TestHandoffNoCommits hands off a clone with no commits past its start:
+// there's no bundle, so nothing is fetched, and that isn't an error.
+func TestHandoffNoCommits(t *testing.T) {
+	fakeAgent(t, nil)
+	tmp := fakeHandoffDirs(t)
+	clone, bare, start := handoffRepos(t)
+	code, logs := runLogged(t, []string{"handoff", clone, start, bare, "r1"}, nil)
+	if want := "run r1 has no commits past " + start + " in " + clone + ", so there's no bundle to fetch"; code != 0 || !strings.Contains(logs, want) {
+		t.Errorf("exit code %d, logs %q; want 0 and %q", code, logs, want)
+	}
+	if got := revParse(t, bare, repo.RunsRef+"r1"); got != "" {
+		t.Errorf("%sr1 = %s, want none", repo.RunsRef, got)
+	}
+	if left, err := os.ReadDir(tmp); err != nil || len(left) != 0 {
+		t.Errorf("temp dir holds %v, %v; want the bundle's dir removed", left, err)
+	}
+}
+
+// TestHandoffFailures exits 1, with the annotated error, when agent can't
+// be looked up, when the bundle or the fetch refuses, and when the bare
+// repo isn't there, and writes no ref.
+func TestHandoffFailures(t *testing.T) {
+	tmp := fakeHandoffDirs(t)
+	clone, bare, start := handoffRepos(t)
+	commitFile(t, clone, "b.txt", "one")
+	missing := strings.Repeat("b", 40)
+	for _, tc := range []struct {
+		name, start, bare, runID, want string
+		lookupErr                      error
+	}{
+		{"lookup", start, bare, "r1", "handing off run r1 from " + clone + ": looking up agent: no such user", errors.New("no such user")},
+		{"start not a SHA", "main", bare, "r1", "handing off run r1 from " + clone + ": bundling as agent: bundle run clone-r1: invalid start SHA \"main\"", nil},
+		{"start not in the clone", missing, bare, "r1", "handing off run r1 from " + clone + ": bundling as agent: bundle run clone-r1: count commits past " + missing + ": ", nil},
+		{"bad run ID", start, bare, "../r1", "handing off run ../r1 from " + clone + ": fetching the bundle into " + bare + ": fetch bundle: invalid run ID \"../r1\"", nil},
+		{"no bare repo", start, bare + "-missing", "r1", "handing off run r1 from " + clone + ": fetching the bundle into " + bare + "-missing: ", nil},
+	} {
+		fakeAgent(t, tc.lookupErr)
+		code, logs := runLogged(t, []string{"handoff", clone, tc.start, tc.bare, tc.runID}, nil)
+		if code != 1 || !strings.Contains(logs, tc.want) {
+			t.Errorf("%s: exit code %d, logs %q; want 1 and %q", tc.name, code, logs, tc.want)
+		}
+		if got := revParse(t, bare, repo.RunsRef+"r1"); got != "" {
+			t.Errorf("%s: %sr1 = %s, want none", tc.name, repo.RunsRef, got)
+		}
+		if left, err := os.ReadDir(tmp); err != nil || len(left) != 0 {
+			t.Errorf("%s: temp dir holds %v, %v; want the bundle's dir removed", tc.name, left, err)
+		}
 	}
 }
 

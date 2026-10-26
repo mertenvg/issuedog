@@ -252,14 +252,18 @@ const usage = `usage:
   issuedog key check [-path file]     the file defaults to ` + appkey.DefaultPath
 
 // command runs "key import" (store the App key from stdin) or "key check".
-// The unlisted "egress" serves the firewall and proxy, and the unlisted
-// "as-agent" runs one command as agent, both for sandbox/test.sh.
+// The unlisted "egress" serves the firewall and proxy, the unlisted
+// "as-agent" runs one command as agent, and the unlisted "handoff" hands a
+// clone's commits to a bare repo, all for sandbox/test.sh.
 func command(args []string, stdin io.Reader, stdout io.Writer) int {
 	if len(args) == 1 && args[0] == "egress" {
 		return serveEgress()
 	}
 	if len(args) > 0 && args[0] == "as-agent" {
 		return runAsAgent(args[1:], stdin, stdout)
+	}
+	if len(args) > 0 && args[0] == "handoff" {
+		return runHandoff(args[1:])
 	}
 	if len(args) < 2 || args[0] != "key" || (args[1] != "import" && args[1] != "check") {
 		logr.Error(usage)
@@ -403,4 +407,72 @@ func runAsAgent(args []string, stdin io.Reader, stdout io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+const handoffUsage = "usage: issuedog handoff <clone> <start-sha> <bare-repo> <run-id>   (absolute paths)"
+
+// runHandoff runs "handoff <clone> <start-sha> <bare-repo> <run-id>": the
+// daemon's own handoff of a run's commits (SPEC §3.2), so sandbox/test.sh can
+// check it between the two uids. It exits 0 once the commits are in the bare
+// repo, or when the clone has none past start.
+func runHandoff(args []string) int {
+	if len(args) != 4 || !filepath.IsAbs(args[0]) || !filepath.IsAbs(args[2]) {
+		logr.Error(handoffUsage)
+		return 2
+	}
+	clone, start, bare, runID := filepath.Clean(args[0]), args[1], args[2], args[3]
+	if err := handoff(context.Background(), clone, start, bare, runID); err != nil {
+		logr.Errorf("handing off run %s from %s: %v", runID, clone, err)
+		return 1
+	}
+	return 0
+}
+
+// handoff bundles start..HEAD in clone as agent, with workspace.Bundle and
+// the uid switch stage runs use, onto a file in a dir only this process's
+// uid can write. Then repo.FetchBundle fetches that file into bare, as this
+// process, under repo.RunsRef+runID, and the head is logged. A clone with no
+// commits past start gives no bundle, and nothing is fetched.
+func handoff(ctx context.Context, clone, start, bare, runID string) (err error) {
+	cred, err := agentCredential(agentUser)
+	if err != nil {
+		return fmt.Errorf("looking up %s: %w", agentUser, err)
+	}
+	// MkdirTemp makes the dir 0700, so only this uid can write in it.
+	dir, err := os.MkdirTemp("", "issuedog-handoff-")
+	if err != nil {
+		return fmt.Errorf("making the bundle's dir: %w", err)
+	}
+	defer func() {
+		if rerr := os.RemoveAll(dir); rerr != nil {
+			err = errors.Join(err, fmt.Errorf("removing the bundle's dir: %w", rerr))
+		}
+	}()
+	path := filepath.Join(dir, "run.bundle")
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("creating the bundle file: %w", err)
+	}
+	// The clone is the run in its parent dir named by its base, as a stage
+	// run's clone is RunsDir/<run-id>. The context dir is the daemon's, as
+	// for stage runs: agent can't write it, so it can't plant a git config
+	// there.
+	w := &workspace.Workspace{Bare: bare, RunsDir: filepath.Dir(clone), ContextDir: runDir, Credential: cred}
+	ok, err := w.Bundle(ctx, filepath.Base(clone), start, f)
+	if cerr := f.Close(); cerr != nil {
+		err = errors.Join(err, fmt.Errorf("closing the bundle file: %w", cerr))
+	}
+	if err != nil {
+		return fmt.Errorf("bundling as %s: %w", agentUser, err)
+	}
+	if !ok {
+		logr.Infof("run %s has no commits past %s in %s, so there's no bundle to fetch", runID, start, clone)
+		return nil
+	}
+	head, err := repo.New("", bare).FetchBundle(ctx, path, runID, start)
+	if err != nil {
+		return fmt.Errorf("fetching the bundle into %s: %w", bare, err)
+	}
+	logr.Infof("fetched run %s's bundle into %s: %s%s is %s", runID, bare, repo.RunsRef, runID, head)
+	return nil
 }
