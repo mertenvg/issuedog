@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"io/fs"
 	"os"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/mertenvg/issuedog/internal/repo"
 )
 
 // tryGit runs a test-setup git command in dir and returns its trimmed
@@ -373,5 +376,363 @@ func TestPrepareRunsNoHooks(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Errorf("a hook ran during the clone: %v", err)
+	}
+}
+
+// commitIn writes name with content in the clone at dir and commits every
+// change there, as a run would, and returns the new HEAD.
+func commitIn(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "add", "--all")
+	git(t, dir, "commit", "--quiet", "-m", "change "+name)
+	return git(t, dir, "rev-parse", "HEAD")
+}
+
+// bundleFile runs Bundle for the run into a new 0600 file in a dir of the
+// test's own, as the daemon's dir would be, and returns the file's path and
+// Bundle's answer.
+func bundleFile(t *testing.T, w *Workspace, runID, start string) (string, bool) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), runID+".bundle")
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, err := w.Bundle(context.Background(), runID, start, f)
+	if cerr := f.Close(); cerr != nil {
+		t.Fatal(cerr)
+	}
+	if err != nil {
+		t.Fatalf("Bundle(%s, %s): %v", runID, start, err)
+	}
+	return path, ok
+}
+
+// TestBundle writes nothing for a clone with no commits past its start, or
+// one whose HEAD went back before it, and a bundle of start..HEAD for one
+// with commits, with the start as its one prerequisite and HEAD as its one
+// ref.
+func TestBundle(t *testing.T) {
+	t.Parallel()
+	w, s := newWorkspace(t)
+	ctx := context.Background()
+	if err := w.Prepare(ctx, "r1", Commits{Start: s.second}, nil); err != nil {
+		t.Fatal(err)
+	}
+	dir := w.Dir("r1")
+	var none bytes.Buffer
+	if ok, err := w.Bundle(ctx, "r1", s.second, &none); err != nil || ok || none.Len() != 0 {
+		t.Errorf("Bundle with no commits = %v, %v, and %d bytes; want false, no error and none", ok, err, none.Len())
+	}
+
+	commitIn(t, dir, "a.txt", "a")
+	head := commitIn(t, dir, "b.txt", "b")
+	var b bytes.Buffer
+	ok, err := w.Bundle(ctx, "r1", s.second, &b)
+	if err != nil || !ok {
+		t.Fatalf("Bundle with two commits = %v, %v; want true", ok, err)
+	}
+	header := "# v2 git bundle\n-" + s.second + " two\n" + head + " HEAD\n\n"
+	if got := b.String(); !strings.HasPrefix(got, header) {
+		t.Errorf("the bundle starts %q, want %q", got[:min(len(got), len(header))], header)
+	}
+
+	git(t, dir, "checkout", "--quiet", "--detach", s.first)
+	none.Reset()
+	if ok, err := w.Bundle(ctx, "r1", s.second, &none); err != nil || ok || none.Len() != 0 {
+		t.Errorf("Bundle of a HEAD before the start = %v, %v, and %d bytes; want false, no error and none", ok, err, none.Len())
+	}
+}
+
+// TestBundleRejects refuses a bad run ID or start, and a run with no
+// clone, and writes nothing.
+func TestBundleRejects(t *testing.T) {
+	t.Parallel()
+	w, s := newWorkspace(t)
+	if err := w.Prepare(context.Background(), "r1", Commits{Start: s.second}, nil); err != nil {
+		t.Fatal(err)
+	}
+	commitIn(t, w.Dir("r1"), "a.txt", "a")
+	for _, tc := range []struct{ runID, start string }{
+		{"", s.second}, {".r1", s.second}, {"../r1", s.second}, {"./r1", s.second}, {"a/b", s.second},
+		{"r1", ""}, {"r1", "main"}, {"r1", "HEAD~1"}, {"r1", s.second[:12]}, {"r1", strings.ToUpper(s.second)},
+		{"r2", s.second},
+	} {
+		var b bytes.Buffer
+		if ok, err := w.Bundle(context.Background(), tc.runID, tc.start, &b); err == nil || ok || b.Len() != 0 {
+			t.Errorf("Bundle(%q, %q) = %v, %v, and %d bytes; want an error and nothing", tc.runID, tc.start, ok, err, b.Len())
+		}
+	}
+}
+
+// TestBundleHandoff hands a run's commits to the bare repo: Bundle as
+// agent, then repo.FetchBundle as the daemon, into the run's ref. A run can
+// then start from them. A run with no commits gives no bundle, and one
+// whose HEAD doesn't descend from its start writes no ref.
+func TestBundleHandoff(t *testing.T) {
+	t.Parallel()
+	w, s := newWorkspace(t)
+	ctx := context.Background()
+	bare := repo.New("", w.Bare)
+	if err := w.Prepare(ctx, "r1", Commits{Start: s.second}, nil); err != nil {
+		t.Fatal(err)
+	}
+	commitIn(t, w.Dir("r1"), "f.txt", "four")
+	want := commitIn(t, w.Dir("r1"), "g.txt", "five")
+	path, ok := bundleFile(t, w, "r1", s.second)
+	if !ok {
+		t.Fatal("Bundle of two commits = false")
+	}
+	head, err := bare.FetchBundle(ctx, path, "r1", s.second)
+	if err != nil || head != want {
+		t.Fatalf("FetchBundle = %q, %v; want the clone's HEAD %s", head, err, want)
+	}
+	if got := git(t, w.Bare, "rev-parse", repo.RunsRef+"r1"); got != want {
+		t.Errorf("%sr1 = %s, want %s", repo.RunsRef, got, want)
+	}
+	if err := w.Prepare(ctx, "r2", Commits{Start: head}, nil); err != nil {
+		t.Fatalf("Prepare from the fetched head: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(w.Dir("r2"), "f.txt")); err != nil || string(got) != "four" {
+		t.Errorf("f.txt from the fetched head reads %q, %v; want four", got, err)
+	}
+
+	if err := w.Prepare(ctx, "r3", Commits{Start: s.second}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if path, ok := bundleFile(t, w, "r3", s.second); ok {
+		t.Errorf("Bundle with no commits = true, wrote %s", path)
+	}
+
+	if err := w.Prepare(ctx, "r4", Commits{Start: s.second}, nil); err != nil {
+		t.Fatal(err)
+	}
+	git(t, w.Dir("r4"), "checkout", "--quiet", "--orphan", "fresh")
+	commitIn(t, w.Dir("r4"), "f.txt", "unrelated")
+	path, ok = bundleFile(t, w, "r4", s.second)
+	if !ok {
+		t.Fatal("Bundle of an unrelated history = false")
+	}
+	if head, err := bare.FetchBundle(ctx, path, "r4", s.second); err == nil || !strings.Contains(err.Error(), "in its history") {
+		t.Errorf("FetchBundle of an unrelated history = %q, %v; want an error that says the start isn't in its history", head, err)
+	}
+	if out, err := tryGit(w.Bare, nil, "rev-parse", "--verify", "--quiet", repo.RunsRef+"r4"); err == nil {
+		t.Errorf("the refused run's ref was written: %s", out)
+	}
+}
+
+// hookNames are the hooks githooks(5) lists.
+var hookNames = []string{
+	"applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit", "pre-merge-commit",
+	"prepare-commit-msg", "commit-msg", "post-commit", "pre-rebase", "post-checkout", "post-merge",
+	"pre-push", "pre-receive", "update", "proc-receive", "post-receive", "post-update",
+	"reference-transaction", "push-to-checkout", "pre-auto-gc", "post-rewrite", "sendemail-validate",
+	"fsmonitor-watchman", "p4-changelist", "p4-prepare-changelist", "p4-post-changelist",
+	"p4-pre-submit", "post-index-change",
+}
+
+// TestBundleHandoffRunsNothingFromClone plants, in a run's clone, every hook
+// in .git/hooks and in a core.hooksPath, a core.fsmonitor, a
+// core.sshCommand, and a filter and a diff driver that the run's own
+// .gitattributes names for every file. It plants every hook in the bare
+// repo's hooks dir too. Each writes a marker when it runs. None runs while
+// the clone's commits are bundled and fetched (SPEC §3.2). Then git, invited
+// to, runs each, so each plant would show if it ran.
+func TestBundleHandoffRunsNothingFromClone(t *testing.T) {
+	t.Parallel()
+	w, s := newWorkspace(t)
+	ctx := context.Background()
+	if err := w.Prepare(ctx, "r1", Commits{Start: s.second}, nil); err != nil {
+		t.Fatal(err)
+	}
+	dir := w.Dir("r1")
+	if err := os.WriteFile(filepath.Join(dir, ".gitattributes"), []byte("* filter=planted diff=planted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want := commitIn(t, dir, "f.txt", "changed")
+
+	markers, scripts, hooksPath := t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "hooks")
+	if err := os.Mkdir(hooksPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// plant writes an executable at path that appends its name to the
+	// marker file named marker, then, for a filter, passes its input on.
+	plant := func(path, marker string, filter bool) {
+		t.Helper()
+		script := "#!/bin/sh\necho \"$0\" >>" + filepath.Join(markers, marker) + "\n"
+		if filter {
+			script += "exec cat\n"
+		}
+		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, h := range hookNames {
+		plant(filepath.Join(dir, ".git", "hooks", h), "hooks-dir", false)
+		plant(filepath.Join(hooksPath, h), "hooks-path", false)
+		plant(filepath.Join(w.Bare, "hooks", h), "bare-hooks", false)
+	}
+	for _, name := range []string{"fsmonitor", "ssh", "filter", "diff"} {
+		plant(filepath.Join(scripts, name), name, name == "filter")
+	}
+	for _, kv := range [][2]string{
+		{"core.hooksPath", hooksPath},
+		{"core.fsmonitor", filepath.Join(scripts, "fsmonitor")},
+		{"core.sshCommand", filepath.Join(scripts, "ssh")},
+		{"filter.planted.clean", filepath.Join(scripts, "filter")},
+		{"filter.planted.smudge", filepath.Join(scripts, "filter")},
+		{"diff.planted.command", filepath.Join(scripts, "diff")},
+	} {
+		git(t, dir, "config", kv[0], kv[1])
+	}
+
+	path, ok := bundleFile(t, w, "r1", s.second)
+	if !ok {
+		t.Fatal("Bundle of the run's commit = false")
+	}
+	head, err := repo.New("", w.Bare).FetchBundle(ctx, path, "r1", s.second)
+	if err != nil || head != want {
+		t.Fatalf("FetchBundle = %q, %v; want %s", head, err, want)
+	}
+	if ran, err := os.ReadDir(markers); err != nil || len(ran) != 0 {
+		t.Errorf("planted hooks or config ran during the handoff: %v, %v", ran, err)
+	}
+
+	// Invited: a status runs the fsmonitor, a diff of a changed file its
+	// filter and diff driver, a commit the hooks path's hooks and, with
+	// that pointed back at .git/hooks, the hooks dir's, and an ssh URL the
+	// sshCommand. In the bare repo, a ref update runs its
+	// reference-transaction hook.
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("again"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"status"},
+		{"diff"},
+		{"commit", "--quiet", "--all", "-m", "again"},
+		{"-c", "core.hooksPath=" + filepath.Join(dir, ".git", "hooks"), "commit", "--quiet", "--allow-empty", "-m", "empty"},
+		{"ls-remote", "ssh://example.invalid/r.git"},
+	} {
+		if out, err := tryGit(dir, nil, args...); err != nil {
+			t.Logf("git %v in the clone: %v: %s", args, err, out) // the ssh one fails, after running the command
+		}
+	}
+	git(t, w.Bare, "update-ref", "refs/invited", head)
+	for _, marker := range []string{"hooks-dir", "hooks-path", "bare-hooks", "fsmonitor", "ssh", "filter", "diff"} {
+		if _, err := os.Stat(filepath.Join(markers, marker)); err != nil {
+			t.Errorf("the %s plant didn't run when git was invited to run it, so the test shows nothing: %v", marker, err)
+		}
+	}
+}
+
+// gitCall is one call the recording git saw.
+type gitCall struct {
+	global, dir string // its GIT_CONFIG_GLOBAL and working dir
+	args        []string
+}
+
+// TestBundleHandoffGitCalls puts a git on the PATH that records each call's
+// GIT_CONFIG_GLOBAL, working dir and args, then runs the real git. It makes
+// a run's clone, its bundle and the fetch. Every call is the agent's, told
+// by the agent's GIT_CONFIG_GLOBAL, or the daemon's, with /dev/null. The
+// agent's all run from /, through the workspace's agent runner, in the
+// run's clone. The daemon's name only the bare repo, never the runs dir
+// (SPEC §3.2).
+func TestBundleHandoffGitCalls(t *testing.T) {
+	w, s := newWorkspace(t)
+	ctx := context.Background()
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin, calls := t.TempDir(), filepath.Join(t.TempDir(), "calls")
+	script := "#!/bin/sh\n{\n" +
+		"\tprintf 'call\\t%s\\t%s\\n' \"$GIT_CONFIG_GLOBAL\" \"$(pwd)\"\n" +
+		"\tfor a in \"$@\"; do printf 'arg\\t%s\\n' \"$a\"; done\n" +
+		"} >>" + calls + "\nexec " + real + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	if err := w.Prepare(ctx, "r1", Commits{Start: s.second}, nil); err != nil {
+		t.Fatal(err)
+	}
+	clone := w.Dir("r1")
+	// The run's commit, by the real git, so the record holds only the
+	// workspace's and the daemon's calls.
+	if err := os.WriteFile(filepath.Join(clone, "f.txt"), []byte("four"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commit := exec.Command(real, "-C", clone, "commit", "--quiet", "--all", "-m", "four")
+	commit.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+	if out, err := commit.CombinedOutput(); err != nil {
+		t.Fatalf("commit in the clone: %v: %s", err, out)
+	}
+	path, ok := bundleFile(t, w, "r1", s.second)
+	if !ok {
+		t.Fatal("Bundle of the run's commit = false")
+	}
+	if _, err := repo.New("", w.Bare).FetchBundle(ctx, path, "r1", s.second); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorded []gitCall
+	for _, line := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
+		kind, rest, _ := strings.Cut(line, "\t")
+		switch {
+		case kind == "call":
+			global, dir, _ := strings.Cut(rest, "\t")
+			recorded = append(recorded, gitCall{global: global, dir: dir})
+		case kind == "arg" && len(recorded) > 0:
+			recorded[len(recorded)-1].args = append(recorded[len(recorded)-1].args, rest)
+		default:
+			t.Fatalf("bad record line %q", line)
+		}
+	}
+	var agentOps, daemonOps []string
+	for _, c := range recorded {
+		switch c.global {
+		case w.gitConfig():
+			if c.dir != "/" || !slices.Contains(c.args, clone) {
+				t.Errorf("agent's git %q ran in %s; want it from /, in the run's clone %s", c.args, c.dir, clone)
+			}
+			if len(c.args) > 2 && c.args[0] == "-C" {
+				agentOps = append(agentOps, c.args[2])
+			} else if len(c.args) > 0 {
+				agentOps = append(agentOps, c.args[0])
+			}
+		case "/dev/null":
+			if len(c.args) < 2 || c.args[0] != "--git-dir="+w.Bare {
+				t.Errorf("daemon's git %q doesn't start with --git-dir=%s", c.args, w.Bare)
+				continue
+			}
+			for _, a := range append([]string{c.dir}, c.args...) {
+				if strings.Contains(a, w.RunsDir) {
+					t.Errorf("daemon's git %q, in %s, names the runs dir %s", c.args, c.dir, w.RunsDir)
+				}
+			}
+			daemonOps = append(daemonOps, c.args[1])
+		default:
+			t.Errorf("git %q, in %s, ran with GIT_CONFIG_GLOBAL %q, neither the agent's nor the daemon's", c.args, c.dir, c.global)
+		}
+	}
+	for _, op := range []string{"init", "fetch", "checkout", "rev-list", "bundle"} {
+		if !slices.Contains(agentOps, op) {
+			t.Errorf("the agent ran no git %s; its calls: %q", op, agentOps)
+		}
+	}
+	for _, op := range []string{"bundle", "index-pack", "update-ref"} {
+		if !slices.Contains(daemonOps, op) {
+			t.Errorf("the daemon ran no git %s; its calls: %q", op, daemonOps)
+		}
 	}
 }
