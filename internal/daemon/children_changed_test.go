@@ -294,6 +294,32 @@ func TestChildrenChangedDirty(t *testing.T) {
 	}
 }
 
+// A changed child whose dirty note names alice, a valid login, gets a
+// rewrite marker that names only an editor the body's last edit confirms,
+// as /approve's rejections do (#638): owner's edit adding the note, which
+// is trusted, makes the body dirty by alice, whom no edit confirms, so
+// replaced= is "unknown", and eve's, which isn't, by eve, its last editor,
+// whatever the note says. A crash at any write writes nothing twice.
+func TestChildrenChangedNoteNamesAnother(t *testing.T) {
+	t.Parallel()
+	const noted = "<!-- issuedog:dirty by=alice -->\n> ⚠️ issuedog ignores this issue description: " +
+		"**alice** edited it without approval.\n\nThe task, rewritten."
+	for _, tt := range []struct{ editor, replaced string }{{"owner", "unknown"}, {"eve", "eve"}} {
+		t.Run(tt.editor, func(t *testing.T) {
+			t.Parallel()
+			setup := changedSetup(false, func(f *githubtest.Fake, r changedIDs) {
+				f.EditBody(r.t2, tt.editor, noted)
+				f.AddComment(r.t2, app, originRepost("<!-- issuedog:origin plan=#1 rev=1 item=T2 -->"))
+			})
+			githubtest.Replay(t, setup, childrenPass(t, revisionPlan))
+			body := run(t, setup, childrenPass(t, revisionPlan)).State().Issues[2].Body
+			if head := "<!-- issuedog:rewrite run=p2 replaced=" + tt.replaced + " -->\n"; !strings.HasPrefix(body, head) || strings.Contains(body, "alice") {
+				t.Errorf("T2's child's body is\n%s\nwant the App's rewrite, starting %q, naming no alice", body, head)
+			}
+		})
+	}
+}
+
 // A changed child that's held stays held: its held → held marker, keyed by
 // the approval, makes ready its at and origin, with the hold's seen and no
 // reason, so it's no hold of its own, and its labels and body are still

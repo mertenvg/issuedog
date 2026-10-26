@@ -192,7 +192,7 @@ func ivWordingStale(latest state.Revision, ok bool, by github.Author, follows bo
 // which also gets the new plan any other reason needs, so then that's what
 // the reply says to do, as the digest's item does (#525). editor is
 // dirtyEditor's, for the body, and parent is planDirtyParent's.
-func planRejection(latest state.Revision, why []state.PlanReason, editor, parent string) Rejection {
+func planRejection(latest state.Revision, why []state.PlanReason, editor string, parent planParent) Rejection {
 	const replan = "To get a new plan, post `/revise`, or any other comment"
 	if len(why) == 0 {
 		// Callers ask only once there's a reason, so this is a bug's.
@@ -227,50 +227,77 @@ func planRejection(latest state.Revision, why []state.PlanReason, editor, parent
 // dirty body: nothing at planning or plan-review rewrites the body (SPEC
 // §7.4), so a new comment, or a new plan, wouldn't help (#229), and what
 // does, the App's full rewrite of the body (SPEC §5.1). For an epic or a
-// story with no parent, parent "", that's the interviewer's next spec, so
-// it names the stage that gets one (#331). The interviewer never rewrites
-// a story with a parent, whose body is its item of its parent's plan (SPEC
-// §9.1), so for one, parent its parent as planDirtyParent names it, it's
-// the rewrite that an approved revision of that plan which changes the
-// story makes (SPEC §6.4, childRewrite), which also sends the story back
-// to planning (#525).
-func planDirtyClears(parent string) string {
+// story with no parent, parent the zero planParent, that's the
+// interviewer's next spec, so it names the stage that gets one (#331). The
+// interviewer never rewrites a story with a parent, whose body is its item
+// of its parent's plan (SPEC §9.1), so for one, parent its parent as
+// planDirtyParent names it, it's the rewrite that an approved revision of
+// that plan which changes the story makes (SPEC §6.4, childRewrite), which
+// also sends the story back to planning (#525). A parent in another repo
+// isn't planned from here, as the App plans only this repo's issues, so
+// for one it says that plan can't be revised from here, instead of
+// pointing at it (#638).
+func planDirtyClears(parent planParent) string {
 	const nothing = "Nothing at `planning` or `plan-review` rewrites the description, so sending the plan back won't clear the edit. "
-	if parent == "" {
+	switch {
+	case parent.ref == "":
 		return nothing + "To clear it, move the issue to `stage:clarifying`: that gets a new spec from the interviewer, " +
 			"which replaces the edit, and then a new plan"
+	case parent.elsewhere:
+		return nothing + fmt.Sprintf("Nor does the interviewer, as this story's description is its item of %s's plan, "+
+			"which I can't revise from here, as it's in another repo", parent.ref)
 	}
 	return nothing + fmt.Sprintf("Nor does the interviewer, as this story's description is its item of %s's plan. "+
 		"To clear it, get a revision of %s's plan that changes this story, as by moving %s to `stage:planning`: "+
 		"once that's approved, I rewrite the description from it, which replaces the edit, and this story gets a new plan",
-		parent, parent, parent)
+		parent.ref, parent.ref, parent.ref)
+}
+
+// planParent is a story's parent as planDirtyParent names it, for
+// planDirtyClears and the digest's item: ref is "#P", or "owner/name#P"
+// for a parent in another repo, elsewhere. The zero planParent is no
+// parent.
+type planParent struct {
+	ref       string
+	elsewhere bool
 }
 
 // planDirtyParent is s's parent when it, s's class, is a story with a
-// parent (ivParentStory), for planDirtyClears and the digest's item, and
-// "" for any other issue: "#P", or "owner/name#P" for a parent in another
-// repo, which "#P" would link wrongly, its repo as its repository_url
-// names it (github.Snapshot.ParentRepo), escaped (SPEC §5.1).
-func planDirtyParent(s *github.Snapshot, it state.Item) string {
+// parent (ivParentStory), and the zero planParent for any other issue:
+// "#P", or "owner/name#P" for a parent in another repo, which "#P" would
+// link wrongly, its repo as its repository_url names it
+// (github.Snapshot.ParentRepo), escaped (SPEC §5.1).
+func planDirtyParent(s *github.Snapshot, it state.Item) planParent {
 	if !ivParentStory(it) {
-		return ""
+		return planParent{}
 	}
-	return github.Escape(s.ParentRepo) + "#" + strconv.Itoa(s.Parent)
+	return planParent{ref: github.Escape(s.ParentRepo) + "#" + strconv.Itoa(s.Parent), elsewhere: s.ParentRepo != ""}
 }
 
 // dirtyEditor names by, the login Dirt gives an editor who made the body
 // dirty, in /approve's rejections: as code and defused, as the hold and
-// the spec's rewrite comment name them, only when the body's last edit
-// confirms them, as ivEditor does (ivConfirmed), from the snapshot alone,
-// so it costs no request. Dirt's login may come from a note the author
-// typed on a body nobody edited, which can name anyone, so an editor that
-// isn't confirmed, or isn't a login GitHub would allow (ivLogin), as a
-// ghost isn't, is "someone" (#602). So a backtick can't end the code span.
+// the spec's rewrite comment name them, only when dirtyNamed confirms
+// them, and else as "someone" (#602). So a backtick can't end the code
+// span.
 func dirtyEditor(by string, last github.Edit, appSlug string) string {
-	if !ivConfirmed(by, last, appSlug) || ivLogin(by) != by {
+	if !dirtyNamed(by, last, appSlug) {
 		return "someone"
 	}
 	return "`" + defuse(by) + "`"
+}
+
+// dirtyNamed reports whether the App may name by, the login Dirt gives an
+// editor who made the body dirty, whose last edit is last: only when that
+// edit confirms them, as ivEditor does (ivConfirmed), from the snapshot
+// alone, so it costs no request, and by is a login GitHub would allow
+// (ivLogin), as a ghost isn't. Dirt's login may come from a note the
+// author typed on a body nobody edited, which can name anyone, so the App
+// names a dirty body's editor only by this rule (SPEC §7.4's Naming the
+// editor): in /approve's rejections (dirtyEditor, #602), and in a full
+// rewrite's replaced= and the spec's line naming whose edit it replaced
+// (rewriteLogin, #638).
+func dirtyNamed(by string, last github.Edit, appSlug string) bool {
+	return ivConfirmed(by, last, appSlug) && ivLogin(by) == by
 }
 
 // ApproveByReaction returns the reaction trigger for Step.Reactions that

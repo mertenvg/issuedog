@@ -223,7 +223,7 @@ func childStageShown(s *github.Snapshot, stage state.Stage) bool {
 func (st *Step) childRewrite(ctx context.Context, s *github.Snapshot, d Dirt, run, title, body string) (Dirt, error) {
 	marker := github.Marker{Kind: state.RewriteKind, Fields: map[string]string{"run": run}}
 	if by, dirty := d[state.BodyID]; dirty {
-		marker.Fields["replaced"] = rewriteLogin(by)
+		marker.Fields["replaced"] = rewriteLogin(by, s.BodyEdit, st.AppSlug)
 	}
 	f, err := github.FormatMarker(marker)
 	if err != nil {
