@@ -40,9 +40,9 @@ import (
 // reverted before the visits, on a pass whose command writes to the issue
 // before its turn, keeps its items the same way.
 //
-// A visit that fails, or waits for its next pass, after its command wrote
-// to the issue may have left that command half done, to finish on the
-// next pass, so the issue isn't read again: its own commands would come
+// A visit that fails, or waits for its next pass, once its command may
+// write to the issue may have left that command half done, to finish on
+// the next pass, so the issue isn't read again: its own commands would come
 // before the rest of that one's, out of the order they're handled in
 // (holdOrderWaits, #205). It skips the pass, as before, and so does one
 // whose read again fails. An issue whose own visit fails after a restart
@@ -68,7 +68,7 @@ func (t *digestRestartTouches) touch(n int) {
 func (t *digestRestartTouches) begin() { clear(t.visit) }
 
 // fail records that the visit under way failed, or waits for its next
-// pass, so the issues it wrote to aren't read again this pass.
+// pass, so the issues it may write to aren't read again this pass.
 func (t *digestRestartTouches) fail() {
 	if t.failed == nil {
 		t.failed = map[int]bool{}
@@ -79,7 +79,7 @@ func (t *digestRestartTouches) fail() {
 // digestRestartRead reads issue n again, which a command on another issue
 // wrote to this pass before n's turn, and holds the snapshot, for n's
 // visit, if the digest may list items for n that aren't cached, and no
-// visit that failed wrote to it (touches). It reports whether it did. A
+// visit that failed may write to it (touches). It reports whether it did. A
 // failed read is logged, and n then skips the pass, as a touched issue
 // does.
 func (d *Daemon) digestRestartRead(ctx context.Context, n int, touches *digestRestartTouches) bool {

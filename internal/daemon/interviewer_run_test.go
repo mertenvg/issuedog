@@ -27,9 +27,9 @@ import (
 // daemon built as startDaemon builds it, daemon.New, so step 1 is
 // daemon.NewStep's, but with the digest and assignment off unless the
 // case's digest keeps them on, as TestWholeRunFlaggedDigest's does, and
-// Daemon.Iterate as the loop. Config and trust come from main on the origin, as in the
-// daemon: mertenvg and merten_acme own CODEOWNERS, notify is mertenvg, and
-// eve has no access at all.
+// Daemon.Iterate as the loop. Config and trust come from main on the
+// origin, as in the daemon: mertenvg and merten_acme own CODEOWNERS,
+// notify is mertenvg, and eve has no access at all.
 //
 // The agent's outputs are internal/agent's golden interviewer outputs, and
 // what's posted is checked against #132's golden files in testdata/interview.

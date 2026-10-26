@@ -306,7 +306,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	// are read again next pass. But one whose items the digest may list
 	// while none is cached, as on a restart's first pass, is read again at
 	// its turn, and visited for them, so the digest doesn't drop them, but
-	// still skips Work, unless a visit that failed wrote to it
+	// still skips Work, unless a visit that failed may write to it
 	// (digestRestartRead).
 	touched, touches := map[int]bool{}, digestRestartTouches{}
 	d.Step.Touched = func(n int) { touched[n] = true; touches.touch(n) }
