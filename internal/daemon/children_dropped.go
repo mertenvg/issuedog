@@ -29,7 +29,9 @@ import (
 // by hand or in another repo, stays. Its blocked-by links are read first
 // (BlockedBy), so a replay adds and removes none twice, and the child is
 // reported to Touched before its first write. A changed child that's
-// closed gets nothing, as childrenChanged gives it nothing either. Each
+// closed gets nothing, as childrenChanged gives it nothing either: one
+// the listing found closed, or one childrenChanged marked closed, as
+// when the label rules closed it in this pass. Each
 // changed item's child is in children, and so is each dependency's, as a
 // changed item depends on no dropped one (SPEC §11.3), a new one's child
 // is filed by now, and ChildrenVisit stops a revision whose kept or

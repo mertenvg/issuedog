@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -43,8 +44,17 @@ func (st *Step) childrenChanged(ctx context.Context, s *github.Snapshot, rev int
 		if !ok {
 			return fmt.Errorf("item %s: revision %d changes it, but it has no child", c.Item, rev)
 		}
-		if err := st.childChanged(ctx, s, rev, plan, run, key, c, f.Number, numbers); err != nil {
+		closed, err := st.childChanged(ctx, s, rev, plan, run, key, c, f.Number, numbers)
+		if err != nil {
 			return fmt.Errorf("item %s: %w", c.Item, err)
+		}
+		if closed {
+			// Closed since the listing, or by the label rules in this pass,
+			// it's closed for the rest of the pass: every later step that
+			// skips a closed child, as a changed child's links do
+			// (revisedLink), skips it (SPEC §5.2).
+			f.Closed = true
+			children[c.Item] = f
 		}
 	}
 	return nil
@@ -97,67 +107,73 @@ func childPlanRun(plan github.Comment, appSlug string) (string, bool) {
 // to Touched, and the label rules run on it first (discCheckLabels), so a
 // stage a trusted user set by hand is recorded as an override first. A
 // closed child gets nothing: a revision can't change one (SPEC §11.3), but
-// it may close after the approval. Nor does a story with no parent that
-// isn't held, whose move the table lacks: that's a failure no later pass
-// gets past (childOrphan).
+// it may close after the approval, or the label rules may close it
+// (childCheck). Then closed is true, so childrenChanged marks it closed
+// for the rest of the pass. Nor does a story with no parent that isn't
+// held, whose move the table lacks: that's a failure no later pass gets
+// past (childOrphan).
 func (st *Step) childChanged(ctx context.Context, parent *github.Snapshot, rev int, plan github.Comment, run string, key state.Key,
-	c childSpec, n int, numbers map[string]int) error {
+	c childSpec, n int, numbers map[string]int) (closed bool, err error) {
 	s, err := st.Client.Snapshot(ctx, st.Owner, st.Repo, n)
 	if err != nil {
-		return fmt.Errorf("read #%d: %w", n, err)
+		return false, fmt.Errorf("read #%d: %w", n, err)
 	}
 	if s.Closed {
 		logr.Infof("%s/%s#%d: #%d, the child of item %s of its plan, is closed, so revision %d's change to it isn't applied",
 			st.Owner, st.Repo, parent.Number, n, c.Item, rev)
-		return nil
+		return true, nil
 	}
 	d, err := st.Dirty(ctx, s, st.trustOnceTrust())
 	if err != nil {
-		return fmt.Errorf("read #%d: %w", n, err)
+		return false, fmt.Errorf("read #%d: %w", n, err)
 	}
 	if is := state.Derive(s, st.AppSlug, d.Has); is.Moved(key) {
 		if childStageShown(s, is.Stage) {
-			return nil
+			return false, nil
 		}
 		// The move was cut short after its comment, so its labels are
 		// unfinished, and the label rules finish them (SPEC §5.1), or
 		// record an owner's change since as an override.
 		st.touch(n)
-		if err := st.discCheckLabels(ctx, s, st.Trust, d); err != nil {
-			return fmt.Errorf("check #%d: %w", n, err)
+		closed, err := st.childCheck(ctx, s, d)
+		if err != nil {
+			return false, fmt.Errorf("moved already: %w", err)
 		}
-		return nil
+		return closed, nil
 	}
 	if err := childOrphan(s, state.Derive(s, st.AppSlug, d.Has), c); err != nil {
-		return fmt.Errorf("move #%d: %w", n, err)
+		return false, fmt.Errorf("move #%d: %w", n, err)
 	}
 	st.touch(n)
-	if err := st.discCheckLabels(ctx, s, st.Trust, d); err != nil {
-		return fmt.Errorf("check #%d: %w", n, err)
+	closed, err = st.childCheck(ctx, s, d)
+	if err != nil {
+		return false, fmt.Errorf("before its change: %w", err)
 	}
-	if s.Closed {
+	if closed {
 		// The label rules finished the App's close of it, cut short after
 		// its comment (SPEC §5.1, Unfinished writes), as a dropped
 		// subtree's close of a child below a dropped one may be once an
 		// edit hides the move keyed by key: a closed child gets nothing,
 		// and the close is the dropped subtree's to finish (droppedOne).
+		// Or they closed it again after an untrusted reopen (SPEC §6.4),
+		// and it gets nothing either.
 		logr.Infof("%s/%s#%d: #%d, the child of item %s of its plan, is closed now, so revision %d's change to it isn't applied",
 			st.Owner, st.Repo, parent.Number, n, c.Item, rev)
-		return nil
+		return true, nil
 	}
 	names := func(o state.Origin) bool { return o.Plan == parent.Number && o.Item == c.Item && o.Rev >= rev }
 	if _, o, _ := adoptedRewrite(s, st.AppSlug, d.Has); !names(state.Derive(s, st.AppSlug, d.Has).Origin) && !names(o) {
 		body, err := c.bodyOf(numbers)
 		if err != nil {
-			return fmt.Errorf("write #%d's body: %w", n, err)
+			return false, fmt.Errorf("write #%d's body: %w", n, err)
 		}
 		if d, err = st.childRewrite(ctx, s, d, run, c.Title, body); err != nil {
-			return fmt.Errorf("rewrite #%d: %w", n, err)
+			return false, fmt.Errorf("rewrite #%d: %w", n, err)
 		}
 		logr.Infof("%s/%s#%d: rewrote #%d, the child of item %s of its plan, from revision %d", st.Owner, st.Repo, parent.Number, n, c.Item, rev)
 	}
 	if err := st.childSetLabels(ctx, s, c); err != nil {
-		return fmt.Errorf("label #%d: %w", n, err)
+		return false, fmt.Errorf("label #%d: %w", n, err)
 	}
 	stage, _ := c.Stage.Label()
 	text := fmt.Sprintf("Rewritten from #%d's plan, rev %d, as %s, since [the plan](%s) changed it.",
@@ -169,7 +185,7 @@ func (st *Step) childChanged(ctx context.Context, parent *github.Snapshot, rev i
 		// comment carries it, naming rev.
 		m, o, ok := adoptedRewrite(s, st.AppSlug, d.Has)
 		if !ok || !names(o) {
-			return fmt.Errorf("#%d, which a person filed, has no rewrite of the App's whose origin names item %s of revision %d, for its move to carry", n, c.Item, rev)
+			return false, fmt.Errorf("#%d, which a person filed, has no rewrite of the App's whose origin names item %s of revision %d, for its move to carry", n, c.Item, rev)
 		}
 		markers = []github.Marker{m}
 		text += " " + adoptedMoveText
@@ -184,7 +200,7 @@ func (st *Step) childChanged(ctx context.Context, parent *github.Snapshot, rev i
 		// has no marker to carry.
 		m, ok := state.OriginMarker(s.Body)
 		if !ok || !names(is.Origin) {
-			return fmt.Errorf("#%d has no rewrite of the App's whose origin names item %s of revision %d, for its move to carry", n, c.Item, rev)
+			return false, fmt.Errorf("#%d has no rewrite of the App's whose origin names item %s of revision %d, for its move to carry", n, c.Item, rev)
 		}
 		markers = []github.Marker{m}
 		text += " " + childRepostMoveText
@@ -207,11 +223,31 @@ func (st *Step) childChanged(ctx context.Context, parent *github.Snapshot, rev i
 		m = Move{To: c.Stage, Trigger: trigger, Key: key, Text: text + ".", Markers: markers}
 	}
 	if err := st.Transition(ctx, s, d.Has, m); err != nil {
-		return fmt.Errorf("move #%d: %w", n, err)
+		return false, fmt.Errorf("move #%d: %w", n, err)
 	}
 	logr.Infof("%s/%s#%d: sent #%d, the child of item %s of its plan, back to %s for revision %d, from %s",
 		st.Owner, st.Repo, parent.Number, n, c.Item, c.Stage, rev, is.Stage)
-	return nil
+	return false, nil
+}
+
+// childCheck runs the label rules on s, a changed child read fresh, with
+// d its dirty content (discCheckLabels), and reports whether s is closed
+// after them: as when they finish the App's close of it, cut short after
+// its comment (SPEC §5.1), or close it again after an untrusted reopen
+// (SPEC §6.4). The error of the latter, closingErrClosedAgain, says only
+// that nothing more is acted on for s this pass, which a closed child
+// gets anyway, so it's no error here: the parent's visit goes on without
+// s, which it reported to Touched first, so s is read again next pass.
+func (st *Step) childCheck(ctx context.Context, s *github.Snapshot, d Dirt) (closed bool, err error) {
+	err = st.discCheckLabels(ctx, s, st.Trust, d)
+	if errors.Is(err, closingErrClosedAgain) && s.Closed {
+		logr.Debugf("%s/%s#%d: closed again in a revision's pass, so the revision skips it: %v", st.Owner, st.Repo, s.Number, err)
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check #%d: %w", s.Number, err)
+	}
+	return s.Closed, nil
 }
 
 // childOrphan is the childrenStuck for s, in state is, the child of c, a
