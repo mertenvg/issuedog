@@ -70,8 +70,9 @@ type Daemon struct {
 	stale         map[int]bool             // issues to read again
 	missing       map[int]bool             // stale issues found gone since their last good read
 	// step1Gaps are the issues step 1 didn't finish on this pass: their
-	// read or step 1 failed, or that of an issue whose visit wrote to them,
-	// a /hold or /resume on one waits for one on an ancestor
+	// read or step 1 failed, or failed or waits for its next pass on an
+	// issue whose visit may write to them (step1GapsTouched), a /hold or
+	// /resume on one waits for one on an ancestor
 	// (holdOrderWaits), or their read found them gone, once, which may be
 	// wrong. Step 1 may have left a command on one unhandled, such as a
 	// /hold whose first write failed, which would drop a saved result, so a
@@ -205,11 +206,12 @@ func (d *Daemon) Run(ctx context.Context) {
 // (assignLaterPass). It returns the errors of the issues it couldn't read
 // or run step 1 on, which the next Iterate reads again, and on which Work
 // applies no saved result this pass (step1Gaps), as on one such an
-// issue's visit wrote to, one whose /hold or /resume waits for an
+// issue's visit may write to, one whose /hold or /resume waits for an
 // ancestor's, or one whose read found it gone the first time. An issue
 // whose labels CheckLabels holds back (ErrLabelsHeld), or that it closed
 // again (closingErrClosedAgain), is no error: like a touched issue, it
-// gets nothing more this pass, and is read again on the next.
+// gets nothing more this pass, and is read again on the next. Nor does
+// Work apply a saved result this pass on one its visit may write to.
 func (d *Daemon) Iterate(ctx context.Context) error {
 	if d.snaps == nil {
 		d.snaps, d.inputs, d.stale = map[int]*github.Snapshot{}, map[int][]github.Comment{}, map[int]bool{}
@@ -379,6 +381,9 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			// Like a touched issue: nothing more this pass, and read again.
 			logr.Infof("%s/%s#%d waits for its next pass: %v", d.Step.Owner, d.Step.Repo, n, err)
 			touched[n] = true
+			// Its command may be half done all the same, as when a /hold
+			// on n stopped on a descendant whose labels are held back.
+			d.step1GapsTouched(n, touches.visit, "waits for its next pass")
 			continue
 		}
 		if err != nil {
@@ -386,13 +391,9 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			delete(d.inputs, n)
 			d.stale[n] = true
 			d.step1Gaps[n] = step1Gap{why: "step 1 failed on it"}
-			// So did it on the issues the visit wrote to, such as a
+			// So did it on the issues the visit may write to, such as a
 			// /hold's descendants, as its command may be half done.
-			for t := range touches.visit {
-				if _, ok := d.step1Gaps[t]; !ok {
-					d.step1Gaps[t] = step1Gap{why: fmt.Sprintf("step 1 failed on #%d, which wrote to it", n)}
-				}
-			}
+			d.step1GapsTouched(n, touches.visit, "failed")
 			continue
 		}
 		d.inputs[n] = in
@@ -427,6 +428,20 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
+}
+
+// step1GapsTouched records in step1Gaps the issues that n's visit, which
+// failed or waits for its next pass (how), may write to (touched, from
+// Step.Touched), such as each open descendant of a /hold on n, reached or
+// not: its command may be half done, and its rest would drop a saved
+// result on one (SPEC §8.2). An issue with a gap of its own keeps it, as
+// n does when its own /hold or /resume waits (holdOrderWaits).
+func (d *Daemon) step1GapsTouched(n int, touched map[int]bool, how string) {
+	for t := range touched {
+		if _, ok := d.step1Gaps[t]; !ok {
+			d.step1Gaps[t] = step1Gap{why: fmt.Sprintf("the visit of #%d, which may write to it, %s", n, how)}
+		}
+	}
 }
 
 // step1Gap is why step 1 didn't finish on an issue this pass

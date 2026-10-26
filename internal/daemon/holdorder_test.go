@@ -252,7 +252,10 @@ func holdOrderRejectedAboveBuild(t *testing.T, l *discRunLoop, before, cmd strin
 // command, which waited for it, is handled before the reply is posted
 // again. The reply is worded as of the 👎, without what J's command did,
 // so it gives the clean run's reason (reword), not one from J's hold, or
-// from its end. The whole is safe to replay after a crash at any write.
+// from its end. The whole is safe to replay after a crash at any write,
+// and after the reply, a pass that reads it back and an unchanged one
+// write nothing, the unchanged one sending only conditional GETs answered
+// 304.
 func TestHoldOrderRunRejectedAboveReplay(t *testing.T) {
 	t.Parallel()
 	for _, tc := range holdOrderRejectedAbove {
@@ -284,6 +287,7 @@ func TestHoldOrderRunRejectedAboveReplay(t *testing.T) {
 			if body := newestComment(f, a); !strings.Contains(body, "I didn't apply this command: "+tc.reason+".") {
 				t.Errorf("#%d: newest comment %q; want the clean run's reason, %q", a, body, tc.reason)
 			}
+			l.quiet("after the reply")
 		})
 	}
 }

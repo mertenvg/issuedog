@@ -710,6 +710,13 @@ func (a *Applier) resumeRewordFamily(ctx context.Context, family []node, c Cmd) 
 			if cm.ID <= c.Comment.ID || !ok || !holdOrderCommand(cmd) || cm.Author.Type == "Bot" || n.d.Has(cm.ID) {
 				continue
 			}
+			// Only a trusted user's is a command, which waits for c, as
+			// holdOrderPending judges it. An untrusted one isn't, so no
+			// marker names it, and no reason worded today reads its
+			// comment: hiding it too would change no reply. But a write
+			// collaborator's is a discussion trigger, which doesn't wait,
+			// and may be handled before the 👎, so it stays, and the family
+			// is c's as of the 👎, whatever a reason comes to read.
 			trusted, err := c.Trust.Trusted(ctx, cm.Author.Login)
 			if err != nil {
 				return nil, fmt.Errorf("trust %s: %w", cm.Author.Login, err)
@@ -858,15 +865,24 @@ func (a *Applier) moveFamily(ctx context.Context, c Cmd, trust github.Trust, r *
 	if err != nil {
 		return fmt.Errorf("move: %w", err)
 	}
+	// Every open descendant is Touched before the first write, not as the
+	// loop reaches it: a write that fails, or a descendant whose labels are
+	// held back (ErrLabelsHeld) or that is closed again
+	// (closingErrClosedAgain), leaves c half done for those after it too,
+	// so a saved result on one of them waits as well (SPEC §8.2).
+	if a.Touched != nil {
+		for _, n := range family {
+			if n.open && n.s != c.S {
+				a.Touched(n.s.Number)
+			}
+		}
+	}
 	for _, n := range family {
 		if !n.open {
 			continue
 		}
 		by := "`/" + c.Name + "`"
 		if n.s != c.S {
-			if a.Touched != nil {
-				a.Touched(n.s.Number)
-			}
 			if err := a.discCheckLabels(ctx, n.s, trust, n.d); err != nil {
 				return fmt.Errorf("move: %w", err)
 			}
