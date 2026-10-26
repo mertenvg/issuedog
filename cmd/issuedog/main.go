@@ -90,6 +90,7 @@ func run(args, environ []string, stdin io.Reader, stdout io.Writer) int {
 		logr.Errorf("loading the App key: %v", err)
 		return 1
 	}
+	logr.Infof("loaded the App key from %s", appKeyPath)
 	ctx, stop := notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	d, err := startDaemon(ctx, set, key)

@@ -1066,7 +1066,31 @@ func TestRunRefusesBadAppKey(t *testing.T) {
 			if len(*calls) != 0 || strings.Contains(logs, "egress proxy listening") {
 				t.Errorf("startup steps = %q, logs %q; want startup to stop before the firewall and proxy", *calls, logs)
 			}
+			if strings.Contains(logs, "loaded the App key") {
+				t.Errorf("logs = %q, want no key line for a key that didn't load", logs)
+			}
 		})
+	}
+}
+
+// TestRunLogsLoadedAppKey checks the line sandbox/test.sh greps for: a 0600
+// key logs that it loaded before the GitHub client is made, so before any
+// GitHub request. The key isn't PEM, so startup stops at the client, with no
+// request and before egress.
+func TestRunLogsLoadedAppKey(t *testing.T) {
+	path := fakeAppKey(t, 0o600)
+	calls := fakeEgress(t, nil, nil)
+	code, logs := runBounded(t, daemonEnv)
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	line := strings.Index(logs, "loaded the App key from "+path)
+	client := strings.Index(logs, "starting the daemon: creating the GitHub client: ")
+	if line < 0 || client < 0 || line > client {
+		t.Errorf("logs = %q, want the key line naming %s, then the client's error", logs, path)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("startup steps = %q, want none of egress", *calls)
 	}
 }
 
