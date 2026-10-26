@@ -22,6 +22,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/logr/v2"
 )
@@ -384,7 +385,7 @@ func TestChildrenCreated(t *testing.T) {
 // the child is filed. The child is still filed, with its effort label, and
 // the other children with theirs (#126).
 func TestChildrenModelDropped(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	afterReload := config.Models{Allowed: childModels.Allowed[:1]} // sonnet dropped
 	for _, tt := range []struct {
 		name   string
@@ -409,7 +410,7 @@ func TestChildrenModelDropped(t *testing.T) {
 			}
 			githubtest.Replay(t, setup, pass)
 			var logs bytes.Buffer
-			stop := logr.AddWriter(&logs, logr.WithFilter(logr.W))
+			stop := logtest.CaptureTo(t, &logs, logr.W)
 			defer stop()
 			f := run(t, setup, pass)
 			logr.Wait()

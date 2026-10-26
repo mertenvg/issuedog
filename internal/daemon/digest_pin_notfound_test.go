@@ -11,6 +11,7 @@ import (
 
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/logr/v2"
 )
 
@@ -36,9 +37,9 @@ func pinNotFoundFake(t testing.TB) *githubtest.Fake {
 // finds no digest, and creates and pins one. After that, an unchanged pass
 // makes no request about the digest.
 func TestDigestPinNotFoundDropped(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	var logs bytes.Buffer
-	stop := logr.AddWriter(&logs, logr.WithFilter(logr.E))
+	stop := logtest.CaptureTo(t, &logs, logr.E)
 	defer stop()
 	f := pinNotFoundFake(t)
 	d := digestDaemon(t, f, newOrigin(t), nil)

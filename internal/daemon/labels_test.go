@@ -12,6 +12,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/logr/v2"
 )
@@ -138,7 +139,7 @@ func TestCheckLabelsFinishesClose(t *testing.T) {
 }
 
 func TestCheckLabels(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	overridden := func(label, marker string) string {
 		return "owner set `" + label + "` by hand, so I've recorded it as an owner override.\n\n<!-- issuedog:transition " + marker + " -->"
 	}
@@ -415,7 +416,7 @@ func TestCheckLabels(t *testing.T) {
 
 			before := len(tt.setup(t).State().Issues[0].Comments)
 			var errs bytes.Buffer
-			stop := logr.AddWriter(&errs, logr.WithFilter(logr.E))
+			stop := logtest.CaptureTo(t, &errs, logr.E)
 			f := run(t, tt.setup, labelsPass(t, dirty, tt.move))
 			logr.Wait()
 			stop()

@@ -13,6 +13,7 @@ import (
 
 	"github.com/mertenvg/logr/v2"
 
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/issuedog/internal/trust"
 )
 
@@ -371,6 +372,7 @@ func readAll(r io.Reader) []byte {
 // With no Date on the second read of the issue, the local clock times an
 // unexplained label, which is logged, and a later Date counts from there.
 func TestCheckLabelsDateFallback(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output.
 	var date string // the Date of each read of the issue, or none
 	var writes []string
 	c := newClientWith(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -409,7 +411,7 @@ func TestCheckLabelsDateFallback(t *testing.T) {
 		{start.Add(6 * time.Minute).UTC().Format(http.TimeFormat), 2, false},
 	} {
 		date = tt.date
-		stop := CaptureLogs(t, logr.D)
+		stop := logtest.Capture(t, logr.D)
 		found, err := c.CheckLabels(context.Background(), "o", "r", 7, []string{"priority:p0"}, "issuedog", fakeTrust{},
 			func(int64) bool { return false }, seen, nil)
 		labels, held := found.Labels, found.Held

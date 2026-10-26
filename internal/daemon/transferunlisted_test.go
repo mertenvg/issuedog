@@ -13,6 +13,7 @@ import (
 
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/logr/v2"
 )
 
@@ -564,7 +565,7 @@ func TestTransferUnlistedRestoreReplay(t *testing.T) {
 // listing has too, nor issue 3, which it holds. An edit of 3 after the
 // drop takes the poll's cursor past the digest's rewrite.
 func TestTransferUnlistedRestoreLogs(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	o := digestNotifyOrigin(t)
 	f := transferUnlistedRestoreFake(o)(t)
 	d := digestDaemon(t, f, o, nil)
@@ -576,7 +577,7 @@ func TestTransferUnlistedRestoreLogs(t *testing.T) {
 	iterate(t, d)
 	f.Advance(transferUnlistedWait)
 	var logs bytes.Buffer
-	stop := logr.AddWriter(&logs, logr.WithFilter(logr.I))
+	stop := logtest.CaptureTo(t, &logs, logr.I)
 	defer stop()
 	iterate(t, d)
 	logr.Wait()

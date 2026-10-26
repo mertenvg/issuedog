@@ -15,6 +15,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/logr/v2"
 )
@@ -340,7 +341,7 @@ func TestPublicCauseTypedReplay(t *testing.T) {
 // The runner's failure, which the attempt cap's error doesn't quote, is
 // logged in full, local path and all, once.
 func TestPublicCauseAttemptLogged(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	f := newFake(t)
 	interview(f)
 	g := newRig(t, f, newOrigin(t), t.TempDir())
@@ -348,7 +349,7 @@ func TestPublicCauseAttemptLogged(t *testing.T) {
 	publicCauseUnsaved(t, g)
 	g.claude(okOut, 0)
 	var logs strings.Builder
-	stop := logr.AddWriter(&logs, logr.WithFilter(logr.Monitor))
+	stop := logtest.CaptureTo(t, &logs, logr.Monitor)
 	err := g.work(1)
 	logr.Wait()
 	stop()
@@ -366,7 +367,7 @@ func TestPublicCauseAttemptLogged(t *testing.T) {
 // fails, and isn't the pass's error too, which the loop would log again
 // (SPEC §5.3, #441).
 func TestPublicCauseApplyLogged(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	const cause = "PATCH https://api.github.com/repos/o/r/issues/1: 422 Validation Failed"
 	f := newFake(t)
 	interview(f)
@@ -376,7 +377,7 @@ func TestPublicCauseApplyLogged(t *testing.T) {
 	g.stage.applyErr = errors.New(cause)
 	g.claude(okOut, 0)
 	var logs strings.Builder
-	stop := logr.AddWriter(&logs, logr.WithFilter(logr.Monitor))
+	stop := logtest.CaptureTo(t, &logs, logr.Monitor)
 	err := g.d.Iterate(context.Background())
 	logr.Wait()
 	stop()
@@ -389,7 +390,7 @@ func TestPublicCauseApplyLogged(t *testing.T) {
 // again, is the pass's error, for the loop to log, and isn't logged where
 // it happens too (#480).
 func TestPublicCauseEarlierApplyLogged(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	const cause = "PATCH https://api.github.com/repos/o/r/issues/1: 422 Validation Failed"
 	f := newFake(t)
 	interview(f)
@@ -399,7 +400,7 @@ func TestPublicCauseEarlierApplyLogged(t *testing.T) {
 	g.stage.applyErr = errors.New(cause)
 	g.claude(okOut, 0)
 	var logs strings.Builder
-	stop := logr.AddWriter(&logs, logr.WithFilter(logr.Monitor))
+	stop := logtest.CaptureTo(t, &logs, logr.Monitor)
 	err := g.d.Iterate(context.Background())
 	logr.Wait()
 	stop()
@@ -448,7 +449,7 @@ func (w *publicCauseLines) lines(text string) []string {
 // The loop, Daemon.Run, logs a failure to apply a result before the last,
 // its pass's error, once, at Error, and nowhere else logs it (#570).
 func TestPublicCauseEarlierApplyLoopLogged(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	const cause = "PATCH https://api.github.com/repos/o/r/issues/1: 422 Validation Failed"
 	const bound = time.Minute // generous, so a loaded machine doesn't fail it
 	f := newFake(t)
@@ -460,13 +461,10 @@ func TestPublicCauseEarlierApplyLoopLogged(t *testing.T) {
 	g.stage.applyErr = errors.New(cause)
 	g.claude(okOut, 0)
 	const loop = "loop iteration on o/r: "
-	// Lines other tests queued, which logr hasn't written yet, aren't this
-	// test's, so they're written before it captures.
-	logr.Wait()
 	errs := &publicCauseLines{}
 	all := &publicCauseLines{match: loop, seen: make(chan struct{}, 1)}
-	stopErrs := logr.AddWriter(errs, logr.WithFilter(logr.E))
-	stopAll := logr.AddWriter(all, logr.WithFilter(logr.Monitor))
+	stopErrs := logtest.CaptureTo(t, errs, logr.E)
+	stopAll := logtest.CaptureTo(t, all, logr.Monitor)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -500,7 +498,7 @@ func TestPublicCauseEarlierApplyLoopLogged(t *testing.T) {
 // subtype the attempt cap's error quotes, logs the runner's error, its
 // exit status, beside the subtype, once (#480).
 func TestPublicCauseExitStatusLogged(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	const sub = `run failed with subtype "error_max_turns"`
 	f := newFake(t)
 	interview(f)
@@ -508,7 +506,7 @@ func TestPublicCauseExitStatusLogged(t *testing.T) {
 	g.d.Config.Loop.MaxAttempts = 1
 	g.claude(failOut, 1)
 	var logs strings.Builder
-	stop := logr.AddWriter(&logs, logr.WithFilter(logr.Monitor))
+	stop := logtest.CaptureTo(t, &logs, logr.Monitor)
 	err := g.work(1)
 	logr.Wait()
 	stop()
@@ -553,11 +551,11 @@ func TestPublicCauseOldLease(t *testing.T) {
 // The closer question's error, GitHub's text, which its state error
 // doesn't quote, is logged in full as the error is posted, once.
 func TestPublicCauseCloserLogged(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	var event int64
 	f, o := closerErrMerge(&event)(t), digestNotifyOrigin(t)
 	var logs strings.Builder
-	stop := logr.AddWriter(&logs, logr.WithFilter(logr.E))
+	stop := logtest.CaptureTo(t, &logs, logr.E)
 	err := closerErrRun(t, o, 3, false)(f)
 	logr.Wait()
 	stop()
@@ -576,12 +574,12 @@ func TestPublicCauseCloserLogged(t *testing.T) {
 // The edit history read's error, GitHub's text, which its state error
 // doesn't quote, is logged in full on each pass it fails, once.
 func TestPublicCauseDigestHistoryLogged(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	f, o := newFake(t), newOrigin(t)
 	f.AddIssue(app, "issuedog digest", "gone")
 	d := digestDaemon(t, f, o, nil)
 	var logs strings.Builder
-	stop := logr.AddWriter(&logs, logr.WithFilter(logr.E))
+	stop := logtest.CaptureTo(t, &logs, logr.E)
 	for range 3 {
 		f.FailGraphQL(digestHistoryFailure)
 		iterate(t, d)

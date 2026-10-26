@@ -16,6 +16,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/agent"
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/logr/v2"
 )
@@ -250,7 +251,7 @@ func TestResumedUsageLimitIsNoAttempt(t *testing.T) {
 // failure is logged and the next issue runs. Once the post works, the cap
 // is posted once.
 func TestCapPostFailureDoesNotStarveOthers(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	f := newFake(t)
 	interview(f)
 	f.AddLabel(1, app, "priority:p1")
@@ -266,7 +267,7 @@ func TestCapPostFailureDoesNotStarveOthers(t *testing.T) {
 	}
 	g.claude(okOut, 0)
 	var logs strings.Builder
-	stop := logr.AddWriter(&logs, logr.WithFilter(logr.E))
+	stop := logtest.CaptureTo(t, &logs, logr.E)
 	for range 2 {
 		f.AnswerOnce(postsOn(1), http.StatusBadGateway)
 		if err := g.r.Work(ctx, g.ready(1, 2)); err != nil {

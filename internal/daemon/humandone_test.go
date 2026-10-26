@@ -11,6 +11,7 @@ import (
 
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/logr/v2"
 )
@@ -609,7 +610,7 @@ func lostReplyDoneBy(login string) func(t testing.TB, f *githubtest.Fake) {
 // none, and a check that could be read, passing or failing, or a
 // plain-text "Done when", logs none on a /done or a 👍.
 func TestDoneUnreadableCheckWarns(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	const marker = " check=app-installed value=go.mod"
 	for _, tc := range []struct {
 		name    string
@@ -631,7 +632,7 @@ func TestDoneUnreadableCheckWarns(t *testing.T) {
 			f := humanTask(marker, tc.trigger)(t)
 			d := tc.daemon(t, f, newOrigin(t))
 			var logs bytes.Buffer
-			stop := logr.AddWriter(&logs, logr.WithFilter(logr.W))
+			stop := logtest.CaptureTo(t, &logs, logr.W)
 			defer stop()
 			for range 3 { // the reply, the pass that reads it, and one where nothing changed
 				iterate(t, d)
@@ -652,7 +653,7 @@ func TestDoneUnreadableCheckWarns(t *testing.T) {
 		f := humanTask(marker, func(testing.TB, *githubtest.Fake) {})(t)
 		d := thumbDaemon(t, f, newOrigin(t))
 		var logs bytes.Buffer
-		stop := logr.AddWriter(&logs, logr.WithFilter(logr.W))
+		stop := logtest.CaptureTo(t, &logs, logr.W)
 		defer stop()
 		iterate(t, d)
 		iterate(t, d)
@@ -686,9 +687,8 @@ func TestDoneUnreadableCheckWarns(t *testing.T) {
 					trig.by(t, f)
 				})(t)
 				d := trig.daemon(t, f, newOrigin(t))
-				logr.Wait() // so the capture holds only this test's lines
 				var logs bytes.Buffer
-				stop := logr.AddWriter(&logs, logr.WithFilter(logr.W))
+				stop := logtest.CaptureTo(t, &logs, logr.W)
 				defer stop()
 				iterate(t, d)
 				iterate(t, d)

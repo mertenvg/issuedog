@@ -12,6 +12,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/logr/v2"
 )
@@ -243,7 +244,7 @@ func TestMarkDirtyForgedNote(t *testing.T) {
 // A history that can't show the last edit fails closed: dirty by the last
 // editor, with a warning.
 func TestDirtyFailsClosed(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	for _, tc := range []struct {
 		name   string
 		cap    int
@@ -278,7 +279,7 @@ func TestDirtyFailsClosed(t *testing.T) {
 			}
 			id := tc.change(s)
 			var warn bytes.Buffer
-			stop := logr.AddWriter(&warn, logr.WithFilter(logr.W))
+			stop := logtest.CaptureTo(t, &warn, logr.W)
 			d, err := a.Dirty(context.Background(), s, trusted{"owner": true})
 			logr.Wait()
 			stop()

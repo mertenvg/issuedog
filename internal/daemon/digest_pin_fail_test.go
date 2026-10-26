@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/logr/v2"
 )
 
@@ -50,9 +51,9 @@ func digestPinFailChecks(f *githubtest.Fake, from int) int {
 // checks again, and the same failure leaves the body as it is; once the
 // check works, the digest is pinned and the note goes.
 func TestDigestPinFailCheckEveryPass(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	var logs bytes.Buffer
-	stop := logr.AddWriter(&logs, logr.WithFilter(logr.E))
+	stop := logtest.CaptureTo(t, &logs, logr.E)
 	defer stop()
 	f, o := newFake(t), digestNotifyOrigin(t)
 	f.AddIssue(app, "issuedog digest", digestPending)

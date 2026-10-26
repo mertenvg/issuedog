@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/logr/v2"
 )
 
@@ -255,6 +256,7 @@ func TestAllowed(t *testing.T) {
 // TestLogCopy checks that a tunnel side closing or resetting is debug, and
 // anything else is a warning.
 func TestLogCopy(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output.
 	reset := &net.OpError{Op: "read", Err: &os.SyscallError{Syscall: "read", Err: syscall.ECONNRESET}}
 	for _, tc := range []struct {
 		err   error
@@ -269,7 +271,7 @@ func TestLogCopy(t *testing.T) {
 	} {
 		// The writer only takes the expected level, so a wrong level fails.
 		var logs bytes.Buffer
-		stop := logr.AddWriter(&logs, logr.WithFilter(tc.level))
+		stop := logtest.CaptureTo(t, &logs, tc.level)
 		logCopy(allowedHost, "to client", tc.err)
 		logr.Wait()
 		stop()
