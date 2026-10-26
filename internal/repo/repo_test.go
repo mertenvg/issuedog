@@ -382,3 +382,220 @@ func TestSyncOtherFailureNamesNoRedirect(t *testing.T) {
 		})
 	}
 }
+
+// commitOnly writes name with content in the remote's work tree and commits
+// it, without pushing. It returns the new commit's SHA.
+func (r *remote) commitOnly(name, content string) string {
+	r.t.Helper()
+	if err := os.WriteFile(filepath.Join(r.work, name), []byte(content), 0o644); err != nil {
+		r.t.Fatal(err)
+	}
+	run(r.t, r.work, "add", name)
+	run(r.t, r.work, "commit", "--quiet", "-m", "add "+name)
+	return run(r.t, r.work, "rev-parse", "HEAD")
+}
+
+// bundle writes a bundle of revs, made in the remote's work tree, to a new
+// file, and returns its path.
+func (r *remote) bundle(revs ...string) string {
+	r.t.Helper()
+	path := filepath.Join(r.t.TempDir(), "run.bundle")
+	run(r.t, r.work, append([]string{"bundle", "create", "--quiet", path}, revs...)...)
+	return path
+}
+
+// refs lists the bare repo's refs, with the objects they name.
+func refs(t *testing.T, r *Repo) string {
+	t.Helper()
+	return run(t, r.dir, "for-each-ref", "--format=%(objectname) %(refname)")
+}
+
+// packs lists the bare repo's pack files.
+func packs(t *testing.T, r *Repo) []string {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(r.dir, "objects", "pack", "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
+// TestFetchBundle takes a run's two commits past main into the bare repo
+// from a bundle that also holds a tag. Only its HEAD is written, to the
+// run's ref. Fetching it again writes nothing and returns the same head,
+// without reading the file.
+func TestFetchBundle(t *testing.T) {
+	t.Parallel()
+	rem, r := synced(t)
+	ctx := context.Background()
+	start := run(t, rem.work, "rev-parse", "HEAD")
+	run(t, rem.work, "checkout", "--quiet", "--detach")
+	rem.commitOnly("a.txt", "a\n")
+	head := rem.commitOnly("b.txt", "b\n")
+	run(t, rem.work, "tag", "--annotate", "-m", "v9", "v9", head)
+	path := rem.bundle(start+"..HEAD", "v9")
+	if got := run(t, rem.work, "bundle", "list-heads", path); !strings.Contains(got, "refs/tags/v9") {
+		t.Fatalf("the bundle holds no tag, so the test shows nothing: %s", got)
+	}
+
+	got, err := r.FetchBundle(ctx, path, "r1", start)
+	if err != nil || got != head {
+		t.Fatalf("FetchBundle = %q, %v; want %s", got, err, head)
+	}
+	want := start + " refs/heads/main\n" + head + " " + RunsRef + "r1"
+	if got := refs(t, r); got != want {
+		t.Errorf("refs after the fetch =\n%s\nwant\n%s", got, want)
+	}
+	if got := run(t, r.dir, "rev-list", "--count", start+".."+RunsRef+"r1"); got != "2" {
+		t.Errorf("the run's ref has %s commits past the start, want 2", got)
+	}
+
+	before := packs(t, r)
+	again, err := r.FetchBundle(ctx, filepath.Join(t.TempDir(), "missing.bundle"), "r1", start)
+	if err != nil || again != head {
+		t.Errorf("FetchBundle again = %q, %v; want %s, without reading the file", again, err, head)
+	}
+	if got := refs(t, r); got != want {
+		t.Errorf("refs after fetching again =\n%s\nwant\n%s", got, want)
+	}
+	if after := packs(t, r); !slices.Equal(after, before) {
+		t.Errorf("fetching again wrote packs: %q, then %q", before, after)
+	}
+}
+
+// TestFetchBundleSHA256 takes a run's commit from a bundle into a bare
+// repo of SHA-256 objects.
+func TestFetchBundleSHA256(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	rem := &remote{t: t, url: filepath.Join(dir, "remote.git"), work: filepath.Join(dir, "work")}
+	run(t, dir, "init", "--bare", "--quiet", "--initial-branch=main", "--object-format=sha256", rem.url)
+	run(t, dir, "init", "--quiet", "--initial-branch=main", "--object-format=sha256", rem.work)
+	start := rem.commit("README.md", "hello\n")
+	r := New(rem.url, filepath.Join(dir, "target.git"))
+	run(t, dir, "clone", "--quiet", "--bare", rem.url, r.dir)
+	head := rem.commitOnly("a.txt", "a\n")
+	got, err := r.FetchBundle(context.Background(), rem.bundle(start+"..HEAD"), "r1", start)
+	if err != nil || got != head {
+		t.Errorf("FetchBundle = %q, %v; want %s", got, err, head)
+	}
+}
+
+// TestFetchBundleRefuses refuses bad run IDs and starts, files that aren't
+// bundles of a run's commits past its start, and objects fsck rejects. Each
+// leaves the refs as they were, and the error says why.
+func TestFetchBundleRefuses(t *testing.T) {
+	t.Parallel()
+	rem, r := synced(t)
+	ctx := context.Background()
+	first := run(t, rem.work, "rev-parse", "HEAD")
+	start := rem.commit("main.txt", "main\n") // main's tip, the run's start
+	if err := r.Sync(ctx, fakeToken); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	notBundle := filepath.Join(t.TempDir(), "run.bundle")
+	if err := os.WriteFile(notBundle, []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The start itself, with no commits past it.
+	atStart := rem.bundle("HEAD")
+
+	// A commit off main's first commit, so not after the start.
+	run(t, rem.work, "checkout", "--quiet", "--detach", first)
+	rem.commitOnly("side.txt", "side\n")
+	sideways := rem.bundle(first + "..HEAD")
+
+	// A commit past one the bare repo lacks.
+	run(t, rem.work, "checkout", "--quiet", "--detach", start)
+	unpushed := rem.commitOnly("a.txt", "a\n")
+	rem.commitOnly("b.txt", "b\n")
+	noPrereq := rem.bundle(unpushed + "..HEAD")
+
+	// Commits past the start, under a branch but no HEAD.
+	run(t, rem.work, "checkout", "--quiet", "-b", "feat", start)
+	rem.commitOnly("feat.txt", "feat\n")
+	noHead := rem.bundle(start + "..feat")
+
+	// renameRef rewrites the bundle at path so its ref from names to
+	// instead, which git bundle verify doesn't check.
+	renameRef := func(path, from, to string) {
+		t.Helper()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		oid := run(t, rem.work, "rev-parse", from)
+		renamed := bytes.Replace(data, []byte(oid+" "+from+"\n"), []byte(oid+" "+to+"\n"), 1)
+		if bytes.Equal(renamed, data) {
+			t.Fatalf("the bundle %s has no %s %s line to rename", path, oid, from)
+		}
+		if err := os.WriteFile(path, renamed, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Two HEADs: a bundle of HEAD and the branch, with the branch's ref
+	// renamed HEAD.
+	twoHeads := rem.bundle(start+"..HEAD", "refs/heads/feat")
+	renameRef(twoHeads, "refs/heads/feat", "HEAD")
+
+	// A HEAD that names an annotated tag, not a commit: a bundle of the
+	// tag, with its ref renamed HEAD.
+	run(t, rem.work, "tag", "--annotate", "-m", "t1", "t1")
+	tagged := rem.bundle(start + "..refs/tags/t1")
+	renameRef(tagged, "refs/tags/t1", "HEAD")
+
+	// A commit past the start whose author line fsck rejects.
+	tree := run(t, rem.work, "rev-parse", start+"^{tree}")
+	body := "tree " + tree + "\nparent " + start + "\nauthor bad <x> notadate\ncommitter t <t@t> 1 +0000\n\nbad\n"
+	cmd := exec.Command("git", "hash-object", "-t", "commit", "-w", "--literally", "--stdin")
+	cmd.Dir, cmd.Env, cmd.Stdin = rem.work, gitEnv(os.Environ(), "", ""), strings.NewReader(body)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("hash-object: %v", err)
+	}
+	run(t, rem.work, "update-ref", "--no-deref", "HEAD", strings.TrimSpace(string(out)))
+	broken := rem.bundle(start + "..HEAD")
+
+	tests := []struct {
+		name, path, runID, start string
+		want                     string // in the error
+	}{
+		{name: "not a bundle", path: notBundle, runID: "r", start: start, want: "does not look like a v2 or v3 bundle"},
+		{name: "missing file", path: filepath.Join(t.TempDir(), "none"), runID: "r", start: start, want: "verify bundle"},
+		{name: "missing prerequisite", path: noPrereq, runID: "r", start: start, want: "lacks these prerequisite commits"},
+		{name: "head is the start", path: atStart, runID: "r", start: start, want: "its HEAD is the start " + start},
+		{name: "not after the start", path: sideways, runID: "r", start: start, want: "doesn't have the start " + start + " in its history"},
+		{name: "start not in the repo", path: sideways, runID: "r", start: strings.Repeat("a", 40), want: "descends from"},
+		{name: "no HEAD", path: noHead, runID: "r", start: start, want: "want one HEAD"},
+		{name: "two HEADs", path: twoHeads, runID: "r", start: start, want: "want one HEAD"},
+		{name: "HEAD a tag", path: tagged, runID: "r", start: start, want: "isn't a commit"},
+		{name: "fsck", path: broken, runID: "r", start: start, want: "badDate"},
+		{name: "empty run ID", path: atStart, runID: "", start: start, want: "invalid run ID"},
+		{name: "run ID path", path: atStart, runID: "a/b", start: start, want: "invalid run ID"},
+		{name: "run ID dot", path: atStart, runID: ".r", start: start, want: "invalid run ID"},
+		{name: "run ID revision", path: atStart, runID: "r~1", start: start, want: "invalid run ID"},
+		{name: "run ID glob", path: atStart, runID: "r*", start: start, want: "invalid run ID"},
+		{name: "run ID lock", path: atStart, runID: "r.lock", start: start, want: "invalid run ID"},
+		{name: "start a ref", path: atStart, runID: "r", start: "main", want: "invalid start SHA"},
+		{name: "start short", path: atStart, runID: "r", start: start[:12], want: "invalid start SHA"},
+		{name: "start uppercase", path: atStart, runID: "r", start: strings.ToUpper(start), want: "invalid start SHA"},
+	}
+	want := refs(t, r)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			head, err := r.FetchBundle(ctx, tt.path, tt.runID, tt.start)
+			if err == nil {
+				t.Fatalf("FetchBundle = %q, want an error", head)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("FetchBundle err = %v, want it to contain %q", err, tt.want)
+			}
+			if got := refs(t, r); got != want {
+				t.Errorf("refs after a refused fetch =\n%s\nwant\n%s", got, want)
+			}
+		})
+	}
+}

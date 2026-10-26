@@ -3,11 +3,13 @@
 package repo
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -29,6 +31,13 @@ var ErrNotFile = errors.New("not a file")
 // each Sync. Refs outside refs/heads, such as refs/issuedog/runs/*, are left
 // alone.
 const refspec = "+refs/heads/*:refs/heads/*"
+
+// RunsRef is the prefix of the refs FetchBundle writes, one per run:
+// refs/issuedog/runs/<run-id>.
+const RunsRef = "refs/issuedog/runs/"
+
+// shaPattern matches a full SHA-1 or SHA-256 object name.
+var shaPattern = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
 
 // redirected matches git's error when the remote answers with a redirect,
 // which gitEnv tells git not to follow. Git doesn't say where it pointed.
@@ -106,13 +115,158 @@ func (r *Repo) Resolve(ctx context.Context, ref string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// FetchBundle takes a run's commits into the bare repo, as the daemon, from
+// the bundle at path: a file in a dir only the daemon can write, holding
+// what workspace.Bundle wrote of start..HEAD in the run's clone (SPEC §3.2).
+// It reads only that file, never the clone, and returns the bundle's HEAD,
+// which it writes to RunsRef+runID, and nothing else: no tags and no other
+// ref.
+//
+// git bundle verify checks the file is a bundle whose prerequisites the
+// bare repo has. git index-pack --strict then stores its objects, checking
+// each as fsck does, and that every object they name is there. (A git
+// fetch from a bundle checks no objects before git 2.48, whatever
+// fetch.fsckObjects says.) The ref is written only when the HEAD is a
+// commit that differs from start and has it in its history; otherwise the
+// error says why, and no ref is written. Like every call here, these run
+// with no hooks and no system or global config (gitEnv).
+//
+// A run whose ref exists already gets that ref's commit back, and the file
+// isn't read, so fetching a run's bundle again writes nothing. A runID
+// that wouldn't be a valid name for the run's dir in the workspace, or
+// for a ref, is refused, and so is a start that isn't a full SHA.
+func (r *Repo) FetchBundle(ctx context.Context, path, runID, start string) (string, error) {
+	if runID == "" || strings.ContainsRune(runID, filepath.Separator) || strings.HasPrefix(runID, ".") {
+		return "", fmt.Errorf("fetch bundle: invalid run ID %q", runID)
+	}
+	ref := RunsRef + runID
+	if _, err := r.git(ctx, "", "check-ref-format", ref); err != nil {
+		return "", fmt.Errorf("fetch bundle: invalid run ID %q: %w", runID, err)
+	}
+	if !shaPattern.MatchString(start) {
+		return "", fmt.Errorf("fetch bundle of run %s: invalid start SHA %q", runID, start)
+	}
+	out, err := r.git(ctx, "", "for-each-ref", "--format=%(objectname)", "--", ref)
+	if err != nil {
+		return "", fmt.Errorf("fetch bundle of run %s: read %s: %w", runID, ref, err)
+	}
+	if head := strings.TrimSpace(string(out)); head != "" {
+		return head, nil
+	}
+	head, err := r.storeBundle(ctx, path)
+	if err != nil {
+		return "", fmt.Errorf("fetch bundle of run %s: %w", runID, err)
+	}
+	if err := r.checkHead(ctx, head, start); err != nil {
+		return "", fmt.Errorf("fetch bundle of run %s: %w", runID, err)
+	}
+	// The empty old value means the ref mustn't exist yet.
+	if _, err := r.git(ctx, "", "update-ref", ref, head, ""); err != nil {
+		return "", fmt.Errorf("fetch bundle of run %s: write %s: %w", runID, ref, err)
+	}
+	return head, nil
+}
+
+// storeBundle verifies the bundle at path and stores its objects in the
+// bare repo, checked, and returns the object its HEAD names.
+func (r *Repo) storeBundle(ctx context.Context, path string) (head string, err error) {
+	// Not --quiet, which drops the list of missing prerequisites from the
+	// error. What it prints of the bundle's refs goes to stdout, unused.
+	if _, err := r.git(ctx, "", "bundle", "verify", "--", path); err != nil {
+		return "", fmt.Errorf("verify bundle %s: %w", path, err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open bundle: %w", err)
+	}
+	defer func() {
+		if cerr := f.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("close bundle %s: %w", path, cerr)
+		}
+	}()
+	br := bufio.NewReader(f)
+	head, err = bundleHead(br)
+	if err != nil {
+		return "", fmt.Errorf("bundle %s: %w", path, err)
+	}
+	// br is now at the pack. --fix-thin completes deltas against the
+	// prerequisites' objects, as git's own unbundle does.
+	if _, err := r.run(ctx, br, "", "index-pack", "--stdin", "--fix-thin", "--strict"); err != nil {
+		return "", fmt.Errorf("store bundle %s: %w", path, err)
+	}
+	return head, nil
+}
+
+// bundleHead reads a bundle's header from br, up to the blank line before
+// its pack, and returns the object its one HEAD names. The header is the
+// signature line, then capabilities (@...), prerequisites (-<oid> ...) and
+// refs (<oid> <name>), one to a line.
+func bundleHead(br *bufio.Reader) (string, error) {
+	sig, err := br.ReadString('\n')
+	if err != nil {
+		return "", fmt.Errorf("read header: %w", err)
+	}
+	if sig != "# v2 git bundle\n" && sig != "# v3 git bundle\n" {
+		return "", fmt.Errorf("not a v2 or v3 bundle: %q", strings.TrimSpace(sig))
+	}
+	var heads []string
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return "", fmt.Errorf("read header: %w", err)
+		}
+		line = strings.TrimSuffix(line, "\n")
+		if line == "" {
+			break
+		}
+		if strings.HasPrefix(line, "@") || strings.HasPrefix(line, "-") {
+			continue
+		}
+		if oid, name, _ := strings.Cut(line, " "); name == "HEAD" {
+			heads = append(heads, oid)
+		}
+	}
+	if len(heads) != 1 || !shaPattern.MatchString(heads[0]) {
+		return "", fmt.Errorf("want one HEAD, a full SHA, in its refs; got %q", heads)
+	}
+	return heads[0], nil
+}
+
+// checkHead checks that head is a commit other than start, with start in
+// its history.
+func (r *Repo) checkHead(ctx context.Context, head, start string) error {
+	if head == start {
+		return fmt.Errorf("its HEAD is the start %s, so it holds no commits past it", start)
+	}
+	commit, err := r.Resolve(ctx, head)
+	if err != nil {
+		return fmt.Errorf("its HEAD: %w", err)
+	}
+	if commit != head {
+		return fmt.Errorf("its HEAD %s isn't a commit", head)
+	}
+	if _, err := r.git(ctx, "", "merge-base", "--is-ancestor", start, head); err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 1 {
+			return fmt.Errorf("its HEAD %s doesn't have the start %s in its history", head, start)
+		}
+		return fmt.Errorf("check that its HEAD %s descends from %s: %w", head, start, err)
+	}
+	return nil
+}
+
 // git runs one git command against the bare repo and returns its stdout.
 // The error includes git's stderr.
 func (r *Repo) git(ctx context.Context, token string, args ...string) ([]byte, error) {
+	return r.run(ctx, nil, token, args...)
+}
+
+// run is git, with stdin as the command's input; nil gives it none.
+func (r *Repo) run(ctx context.Context, stdin io.Reader, token string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"--git-dir=" + r.dir}, args...)...)
 	cmd.Env = gitEnv(os.Environ(), r.remote, token)
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, &stdout, &stderr
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
 	}

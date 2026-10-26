@@ -6,11 +6,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -99,6 +101,37 @@ func (w *Workspace) Cleanup(ctx context.Context, runID string) error {
 		return fmt.Errorf("clean up run %s: remove context dir: %w", runID, err)
 	}
 	return nil
+}
+
+// Bundle writes the run's commits past start, start..HEAD in its clone, to
+// out as a git bundle, made as agent (SPEC §3.2). The daemon gives an out
+// in a dir only it can write, such as a file it created there, so it never
+// opens a path agent controls. A clone with no commits past start writes
+// nothing to out, and gives false and no error. On an error, out may hold
+// part of a bundle.
+func (w *Workspace) Bundle(ctx context.Context, runID, start string, out io.Writer) (bool, error) {
+	if !validName(runID) {
+		return false, fmt.Errorf("bundle run: invalid run ID %q", runID)
+	}
+	if !shaPattern.MatchString(start) {
+		return false, fmt.Errorf("bundle run %s: invalid start SHA %q", runID, start)
+	}
+	dir, commits := w.Dir(runID), start+"..HEAD"
+	var count bytes.Buffer
+	if err := w.gitTo(ctx, &count, "-C", dir, "rev-list", "--count", commits, "--"); err != nil {
+		return false, fmt.Errorf("bundle run %s: count commits past %s: %w", runID, start, err)
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(count.String()))
+	if err != nil {
+		return false, fmt.Errorf("bundle run %s: count commits past %s: %w", runID, start, err)
+	}
+	if n == 0 {
+		return false, nil
+	}
+	if err := w.gitTo(ctx, out, "-C", dir, "bundle", "create", "--quiet", "-", commits, "--"); err != nil {
+		return false, fmt.Errorf("bundle run %s: %w", runID, err)
+	}
+	return true, nil
 }
 
 // validName refuses empty names, path separators and leading dots.
@@ -220,13 +253,18 @@ func (w *Workspace) writeGitConfig() error {
 // system config and gitConfig as the global one: no hooks, and the daemon's
 // bare repo, which agent doesn't own, is a safe.directory.
 func (w *Workspace) git(ctx context.Context, args ...string) error {
+	return w.gitTo(ctx, nil, args...)
+}
+
+// gitTo is git, with git's stdout going to stdout; errors include its stderr.
+func (w *Workspace) gitTo(ctx context.Context, stdout io.Writer, args ...string) error {
 	env := append([]string{
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_GLOBAL=" + w.gitConfig(),
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_ASKPASS=", // empty, so git doesn't fall back to core.askPass
 	}, w.testEnv...)
-	if err := w.asAgent(ctx, env, "git", args...); err != nil {
+	if err := w.asAgentTo(ctx, stdout, env, "git", args...); err != nil {
 		return fmt.Errorf("git %s: %w", args[0], err)
 	}
 	return nil
@@ -234,12 +272,23 @@ func (w *Workspace) git(ctx context.Context, args ...string) error {
 
 // asAgent runs a command as w.Credential from /, with only env; errors include its output.
 func (w *Workspace) asAgent(ctx context.Context, env []string, name string, args ...string) error {
+	return w.asAgentTo(ctx, nil, env, name, args...)
+}
+
+// asAgentTo is asAgent, with the command's stdout going to stdout, and only
+// its stderr in errors. A nil stdout keeps both in errors, as asAgent does.
+func (w *Workspace) asAgentTo(ctx context.Context, stdout io.Writer, env []string, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = "/"
 	cmd.Env = append([]string{}, env...) // never nil, so nothing is inherited
 	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: w.Credential}
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("%w: %s", err, bytes.TrimSpace(out))
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = stdout, &out
+	if stdout == nil {
+		cmd.Stdout = &out // one buffer, so the output keeps its order, as CombinedOutput's does
+	}
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%w: %s", err, bytes.TrimSpace(out.Bytes()))
 	}
 	return nil
 }
