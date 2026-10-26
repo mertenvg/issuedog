@@ -32,7 +32,8 @@ func TestWriteLeaseReplaces(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := Lease{Issue: 7, Stage: "clarifying", RunID: "ab12", Clone: "/work/runs/ab12",
-		Started: time.Unix(100, 0).UTC(), Polled: time.Unix(90, 0).UTC(), Seen: 42, Edits: map[int64]time.Time{41: time.Unix(80, 0).UTC()}}
+		Started: time.Unix(100, 0).UTC(), Polled: time.Unix(90, 0).UTC(), Seen: 42, Edits: map[int64]time.Time{41: time.Unix(80, 0).UTC()},
+		Start: strings.Repeat("a", 40), Target: strings.Repeat("b", 40)}
 	if err := r.writeLease(want); err != nil {
 		t.Fatal(err)
 	}
@@ -47,8 +48,15 @@ func TestWriteLeaseReplaces(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatal(err)
 	}
+	if !strings.Contains(string(data), `"start":"`+want.Start+`"`) || !strings.Contains(string(data), `"target":"`+want.Target+`"`) {
+		t.Errorf("lease = %s, want its start and target under start and target", data)
+	}
+	if none, err := json.Marshal(Lease{}); err != nil || strings.Contains(string(none), `"start"`) || strings.Contains(string(none), `"target"`) {
+		t.Errorf("a lease with no start or target = %s, %v; want neither key", none, err)
+	}
 	if got.Issue != want.Issue || got.Stage != want.Stage || got.RunID != want.RunID || got.Clone != want.Clone ||
-		!got.Started.Equal(want.Started) || !got.Polled.Equal(want.Polled) || got.Seen != want.Seen || !got.Edits[41].Equal(want.Edits[41]) {
+		!got.Started.Equal(want.Started) || !got.Polled.Equal(want.Polled) || got.Seen != want.Seen || !got.Edits[41].Equal(want.Edits[41]) ||
+		got.Start != want.Start || got.Target != want.Target {
 		t.Errorf("lease = %+v, want %+v", got, want)
 	}
 	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o600 {

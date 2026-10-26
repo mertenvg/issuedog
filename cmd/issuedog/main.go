@@ -102,7 +102,7 @@ func run(args, environ []string, stdin io.Reader, stdout io.Writer) int {
 		logr.Errorf("starting the daemon: %v", err)
 		return 1
 	}
-	runs, err := stageWork(d, set.name, cred)
+	runs, err := stageWork(d, cred)
 	if err != nil {
 		logr.Errorf("setting up stage runs: %v", err)
 		return 1
@@ -208,9 +208,10 @@ var registerStages = daemon.RegisterStages
 // registerStages gives. Runs.CheckRegistered fails startup if one is at
 // intake beside Unlabeled. Runs, their clones in /work/runs and claude,
 // are agent's, and cred is the only credential in the agent's environment.
-// usage_limit.pattern is read once, so a change to it takes effect on
+// The clones fetch from d.Clone, the bare repo the daemon syncs and reads
+// main from, so the two can't differ. usage_limit.pattern is read once, so a change to it takes effect on
 // restart.
-func stageWork(d *daemon.Daemon, name string, cred agent.Cred) (*daemon.Runs, error) {
+func stageWork(d *daemon.Daemon, cred agent.Cred) (*daemon.Runs, error) {
 	uid, err := agentCredential(agentUser)
 	if err != nil {
 		return nil, fmt.Errorf("looking up %s: %w", agentUser, err)
@@ -225,7 +226,7 @@ func stageWork(d *daemon.Daemon, name string, cred agent.Cred) (*daemon.Runs, er
 		Stages:    stages,
 		Unlabeled: unlabeled,
 		Runner:    &agent.Runner{Claude: claudePath, StateDir: stateDir, Credential: uid},
-		Workspace: &workspace.Workspace{Bare: filepath.Join(workDir, name+".git"), RunsDir: filepath.Join(workDir, "runs"), ContextDir: runDir, Credential: uid},
+		Workspace: &workspace.Workspace{Bare: d.Clone.Dir(), RunsDir: filepath.Join(workDir, "runs"), ContextDir: runDir, Credential: uid},
 		Gate:      gate,
 		Env:       agent.Env(cred, fmt.Sprintf("http://127.0.0.1:%d", proxyPort), agentHome),
 	}

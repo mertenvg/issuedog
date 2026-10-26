@@ -22,7 +22,7 @@ var shaPattern = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
 
 // Workspace creates per-run checkouts and context dirs. All paths are absolute.
 type Workspace struct {
-	Bare       string              // the daemon's bare clone, /work/<repo>.git
+	Bare       string              // the daemon's bare clone, /work/<repo>.git (repo.Repo.Dir)
 	RunsDir    string              // /work/runs, owned by agent; checkouts go in RunsDir/<run-id>
 	ContextDir string              // /run/issuedog, owned by the daemon; context files go in ContextDir/<run-id>
 	Credential *syscall.Credential // agent's; nil (tests only) runs as the daemon
@@ -36,10 +36,21 @@ func (w *Workspace) Dir(runID string) string { return filepath.Join(w.RunsDir, r
 // Context returns the run's context dir, ContextDir/<run-id>.
 func (w *Workspace) Context(runID string) string { return filepath.Join(w.ContextDir, runID) }
 
+// TargetRef is where a run's clone holds its named target (Commits.Target).
+const TargetRef = "refs/heads/target"
+
+// Commits are the commits the daemon names for a run (SPEC §3.4): the clone
+// holds them and their history, and nothing else.
+type Commits struct {
+	Start  string // required: the clone's HEAD, detached
+	Target string // optional: a commit to merge, at TargetRef
+}
+
 // Prepare writes the run's context files as the daemon (0755 dir, 0644 files:
-// agent can read, not change), then clones the bare repo as agent, at main or
-// detached at sha. On failure it removes whatever it created.
-func (w *Workspace) Prepare(ctx context.Context, runID, sha string, files map[string][]byte) (err error) {
+// agent can read, not change), then makes the run's clone of c as agent
+// (checkout). Start must be a full SHA, and Target one too if it's set. On
+// failure it removes whatever it created.
+func (w *Workspace) Prepare(ctx context.Context, runID string, c Commits, files map[string][]byte) (err error) {
 	if !validName(runID) {
 		return fmt.Errorf("prepare run: invalid run ID %q", runID)
 	}
@@ -48,8 +59,11 @@ func (w *Workspace) Prepare(ctx context.Context, runID, sha string, files map[st
 			return fmt.Errorf("prepare run %s: invalid context file name %q", runID, name)
 		}
 	}
-	if sha != "" && !shaPattern.MatchString(sha) {
-		return fmt.Errorf("prepare run %s: invalid SHA %q", runID, sha)
+	if !shaPattern.MatchString(c.Start) {
+		return fmt.Errorf("prepare run %s: invalid start SHA %q", runID, c.Start)
+	}
+	if c.Target != "" && !shaPattern.MatchString(c.Target) {
+		return fmt.Errorf("prepare run %s: invalid target SHA %q", runID, c.Target)
 	}
 	cdir := w.Context(runID)
 	if err := os.Mkdir(cdir, 0o755); err != nil {
@@ -66,7 +80,7 @@ func (w *Workspace) Prepare(ctx context.Context, runID, sha string, files map[st
 	if err := w.writeGitConfig(); err != nil {
 		return fmt.Errorf("prepare run %s: %w", runID, err)
 	}
-	if err := w.checkout(ctx, runID, sha); err != nil {
+	if err := w.checkout(ctx, runID, c); err != nil {
 		return fmt.Errorf("prepare run %s: %w", runID, err)
 	}
 	return nil
@@ -116,22 +130,45 @@ func writeContext(dir string, files map[string][]byte) error {
 	return nil
 }
 
-// checkout clones as agent with --no-hardlinks, sharing no object files with
-// the daemon's repo. A failed detach removes the clone.
-func (w *Workspace) checkout(ctx context.Context, runID, sha string) error {
+// checkout makes the run's clone as agent, holding only c's commits and
+// their history, with no remote (SPEC §3.2). It creates the dir, which
+// mustn't exist yet, then fills it (fetch). A failure after that removes
+// the dir.
+func (w *Workspace) checkout(ctx context.Context, runID string, c Commits) error {
 	dir := w.Dir(runID)
-	args := []string{"clone", "--quiet", "--no-hardlinks", "--branch", "main"}
-	if sha != "" {
-		args = append(args, "--no-checkout")
+	if err := w.asAgent(ctx, nil, "mkdir", "--", dir); err != nil {
+		return fmt.Errorf("create checkout: %w", err)
 	}
-	if err := w.git(ctx, append(args, "--", w.Bare, dir)...); err != nil {
-		return fmt.Errorf("clone %s: %w", w.Bare, err)
+	if err := w.fetch(ctx, dir, c); err != nil {
+		return errors.Join(fmt.Errorf("clone %s: %w", c.Start, err), w.removeCheckout(ctx, runID))
 	}
-	if sha == "" {
-		return nil
+	return nil
+}
+
+// fetch inits a repo in dir, of Start's object format, and fetches c into
+// it from the bare repo by SHA, with no tags and no FETCH_HEAD, so nothing
+// names the bare repo: Target to TargetRef, and Start to no ref, as the
+// detached HEAD it checks out holds it. The fetch copies the objects, so
+// the clone shares no object files with the daemon's repo. Fetching a SHA
+// no ref of the bare repo advertises works under protocol v2, git's
+// default.
+func (w *Workspace) fetch(ctx context.Context, dir string, c Commits) error {
+	format := "sha1"
+	if len(c.Start) == 64 {
+		format = "sha256"
 	}
-	if err := w.git(ctx, "-C", dir, "checkout", "--quiet", "--detach", sha); err != nil {
-		return errors.Join(fmt.Errorf("check out %s: %w", sha, err), w.removeCheckout(ctx, runID))
+	if err := w.git(ctx, "init", "--quiet", "--object-format="+format, "--", dir); err != nil {
+		return fmt.Errorf("init clone: %w", err)
+	}
+	args := []string{"-C", dir, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--", w.Bare, c.Start}
+	if c.Target != "" {
+		args = append(args, c.Target+":"+TargetRef)
+	}
+	if err := w.git(ctx, args...); err != nil {
+		return fmt.Errorf("fetch from %s: %w", w.Bare, err)
+	}
+	if err := w.git(ctx, "-C", dir, "checkout", "--quiet", "--detach", c.Start); err != nil {
+		return fmt.Errorf("check out %s: %w", c.Start, err)
 	}
 	return nil
 }
@@ -149,7 +186,7 @@ func (w *Workspace) removeCheckout(ctx context.Context, runID string) error {
 func (w *Workspace) gitConfig() string { return filepath.Join(w.ContextDir, ".agent.gitconfig") }
 
 // writeGitConfig writes gitConfig (0644). It must be a file: git clears
-// GIT_CONFIG_COUNT for a local clone's upload-pack, which checks safe.directory.
+// GIT_CONFIG_COUNT for a local fetch's upload-pack, which checks safe.directory.
 func (w *Workspace) writeGitConfig() error {
 	quoted := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(w.Bare)
 	data := "[core]\n\thooksPath = /dev/null\n[safe]\n\tdirectory = \"" + quoted + "\"\n"

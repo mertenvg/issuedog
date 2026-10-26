@@ -35,6 +35,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/egress"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/repo"
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
@@ -179,6 +180,11 @@ func fakeGitHub(t *testing.T, files map[string]string) *githubtest.Fake {
 	oldAPI, oldRemote, oldWork := apiURL, gitRemote, workDir
 	t.Cleanup(func() { apiURL, gitRemote, workDir = oldAPI, oldRemote, oldWork })
 	apiURL, workDir = f.URL(), t.TempDir()
+	// The image makes /work/runs, agent's, where each run's clone goes in a
+	// dir of its own.
+	if err := os.Mkdir(filepath.Join(workDir, "runs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	gitRemote = func(owner, name string) string {
 		if owner+"/"+name != "mertenvg/issuedog" {
 			t.Errorf("remote of %s/%s, want mertenvg/issuedog", owner, name)
@@ -1287,8 +1293,10 @@ func TestStageWork(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.UsageLimit.Pattern = "frobnicated"
 	cred := agent.Cred{Name: agent.APIKeyVar, Value: "key"}
-	d := &daemon.Daemon{Config: cfg}
-	runs, err := stageWork(d, "repo", cred)
+	// The clone is outside workDir, so only d.Clone can name it.
+	clone := filepath.Join(t.TempDir(), "clone.git")
+	d := &daemon.Daemon{Config: cfg, Clone: repo.New("https://example.com/o/r.git", clone)}
+	runs, err := stageWork(d, cred)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1305,7 +1313,7 @@ func TestStageWork(t *testing.T) {
 		t.Errorf("the agent's environment = %q, want %q", runs.Env, wantEnv)
 	}
 	ws := runs.Workspace
-	if ws.Bare != filepath.Join(workDir, "repo.git") || ws.RunsDir != filepath.Join(workDir, "runs") || ws.ContextDir != runDir ||
+	if ws.Bare != clone || ws.RunsDir != filepath.Join(workDir, "runs") || ws.ContextDir != runDir ||
 		runs.Runner.StateDir != stateDir || runs.Runner.Claude != "claude" {
 		t.Errorf("workspace %+v, runner %+v; want the clone, runs and context dirs, and the state dir", ws, runs.Runner)
 	}
@@ -1330,7 +1338,7 @@ func TestStageWork(t *testing.T) {
 	}
 
 	fakeAgent(t, errors.New("no such user"))
-	if _, err := stageWork(&daemon.Daemon{Config: cfg}, "repo", cred); err == nil || !strings.Contains(err.Error(), "looking up agent: no such user") {
+	if _, err := stageWork(&daemon.Daemon{Config: cfg, Clone: d.Clone}, cred); err == nil || !strings.Contains(err.Error(), "looking up agent: no such user") {
 		t.Errorf("stageWork = %v, want the lookup error", err)
 	}
 }

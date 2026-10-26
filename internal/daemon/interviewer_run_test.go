@@ -39,17 +39,18 @@ import (
 // spec.json's free-text answer.
 
 // wholeRunClaude is the fake claude of a whole run. On its nth run it keeps
-// its prompt, its arguments, the lease and a copy of the run's context
-// directory, the one its --append-system-prompt-file is in, as
-// $FAKE/prompt.<n>, $FAKE/args.<n>, $FAKE/lease.<n> and $FAKE/ctx.<n>/, then
-// prints $FAKE/out.<n>. A run with no out.<n> exits 4, a failed run, so a
-// run the test didn't expect shows.
+// its prompt, its arguments, the lease, its clone's HEAD and a copy of the
+// run's context directory, the one its --append-system-prompt-file is in,
+// as $FAKE/prompt.<n>, $FAKE/args.<n>, $FAKE/lease.<n>, $FAKE/head.<n> and
+// $FAKE/ctx.<n>/, then prints $FAKE/out.<n>. A run with no out.<n> exits 4,
+// a failed run, so a run the test didn't expect shows.
 const wholeRunClaude = `#!/bin/sh
 n=$(($(cat "$FAKE/count" 2>/dev/null || echo 0) + 1))
 echo "$n" > "$FAKE/count"
 printf '%s' "$2" > "$FAKE/prompt.$n"
 printf '%s\n' "$@" > "$FAKE/args.$n"
 cp "$STATE/lease.json" "$FAKE/lease.$n"
+git rev-parse HEAD > "$FAKE/head.$n" 2>/dev/null
 sys=
 prev=
 for a in "$@"; do
@@ -263,8 +264,9 @@ func (w *wholeRun) newest(step, want string) github.Comment {
 }
 
 // context is claude run k's context files, as the run had them, after
-// checking that the run was leased at stage, and that its prompt was
-// prompt.md, naming its context directory.
+// checking that the run was leased at stage, that it ran in a clone of the
+// start its lease names, and that its prompt was prompt.md, naming its
+// context directory.
 func (w *wholeRun) context(k int, stage state.Stage) map[string]string {
 	w.t.Helper()
 	var l daemon.Lease
@@ -274,6 +276,9 @@ func (w *wholeRun) context(k int, stage state.Stage) map[string]string {
 	id := "run" + strconv.Itoa(k)
 	if l.RunID != id || l.Issue != w.n || l.Stage != stage {
 		w.t.Errorf("run %d's lease = %+v; want %s on #%d at %s", k, l, id, w.n, stage)
+	}
+	if head := strings.TrimSpace(w.file("head." + strconv.Itoa(k))); len(l.Start) != 40 || head != l.Start {
+		w.t.Errorf("run %d's clone was at %q, and its lease names start %q; want the clone at the start, a full SHA", k, head, l.Start)
 	}
 	dir := "ctx." + strconv.Itoa(k)
 	entries, err := os.ReadDir(w.path("claude", dir))
