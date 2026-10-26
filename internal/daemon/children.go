@@ -99,13 +99,12 @@ import (
 // blocked-by link it refuses to add with a 422, as for an issue 50 issues
 // block already (childBlockErr), but not one that stands by then
 // (childBlock), or a blocked-by link a revision removes that it refuses
-// with a 422 (childUnblockErr).
-// It's reported once on the parent instead, as a state error keyed by
-// the comment holding the parent's latest move, the one into planned
-// (childrenStuckReport, SPEC §5.3). While that error is reported, the
-// visit returns before any read or write, as for a record, so the parent
-// waits, at no cost, until it moves, as by /hold and /resume, which gives
-// the key a new value, and the visit tries again.
+// with a 422 (childUnblockErr). It's reported once on the parent instead,
+// as a state error keyed by the comment holding the parent's latest move,
+// the one into planned (childrenStuckReport, SPEC §5.3). While that error
+// is reported, the visit returns before any read or write, as for a
+// record, so the parent waits, at no cost, until it moves, as by /hold and
+// /resume, which gives the key a new value, and the visit tries again.
 func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 	wrap := func(err error) error { return fmt.Errorf("children of %s/%s#%d: %w", st.Owner, st.Repo, s.Number, err) }
 	if s.Closed {
@@ -227,8 +226,8 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 		// Then a changed child's links to its siblings follow the
 		// revision, and each dropped item's child is closed, with every
 		// open issue below it, deepest first, and unlinked (SPEC §6.4,
-		// #297). The record comes only after them, so once
-		// it stands every write of the revision is made.
+		// #297). The record comes only after them, so once it stands
+		// every write of the revision is made.
 		if err := st.revisedLink(ctx, plan.Items, children); err != nil {
 			return fail(err)
 		}

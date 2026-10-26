@@ -32,11 +32,11 @@ import (
 // comment ID>, which keys each move as a child's first move is keyed
 // (SPEC §5.2). A plan comment that names no run is a failure no later
 // pass gets past, which ChildrenVisit finds before any write
-// (childrenRun), so run is never "" here. Each
-// changed item's child is in children, as ChildrenVisit stops a revision
-// whose kept or changed child isn't found before any write (childrenGone),
-// so one that isn't is an error, as for a first plan's dependency with no
-// child (childrenLink), and nothing is written to it.
+// (childrenRun), so run is never "" here. Each changed item's child is in
+// children, as ChildrenVisit stops a revision whose kept or changed child
+// isn't found before any write (childrenGone), so one that isn't is an
+// error, as for a first plan's dependency with no child (childrenLink), and
+// nothing is written to it.
 func (st *Step) childrenChanged(ctx context.Context, s *github.Snapshot, rev int, plan github.Comment, run string, key state.Key,
 	specs []childSpec, children map[string]childFound, numbers map[string]int) error {
 	for _, c := range specs {

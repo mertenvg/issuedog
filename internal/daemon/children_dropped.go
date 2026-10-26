@@ -31,18 +31,18 @@ import (
 // reported to Touched before its first write. A changed child that's
 // closed gets nothing, as childrenChanged gives it nothing either: one
 // the listing found closed, or one childrenChanged marked closed, as
-// when the label rules closed it in this pass. Each
-// changed item's child is in children, and so is each dependency's, as a
-// changed item depends on no dropped one (SPEC §11.3), a new one's child
-// is filed by now, and ChildrenVisit stops a revision whose kept or
-// changed child isn't found before any write (childrenGone): one that
-// isn't is an error, as in childrenLink. A link GitHub refuses to add
-// with a 422 is a failure no later pass gets past, as in childrenLink
-// (childBlockErr), unless it stands by then (childBlock), and so is one it
-// refuses to remove with a 422 (childUnblockErr). The links of a kept child, and
-// the links into a changed child from its siblings, are each the other
-// child's own: a kept item keeps its dependencies (keptDeps), and a new
-// or changed one's are its own item's.
+// when the label rules closed it in this pass. Each changed item's child is
+// in children, and so is each dependency's, as a changed item depends on no
+// dropped one (SPEC §11.3), a new one's child is filed by now, and
+// ChildrenVisit stops a revision whose kept or changed child isn't found
+// before any write (childrenGone): one that isn't is an error, as in
+// childrenLink. A link GitHub refuses to add with a 422 is a failure no
+// later pass gets past, as in childrenLink (childBlockErr), unless it
+// stands by then (childBlock), and so is one it refuses to remove with a
+// 422 (childUnblockErr). The links of a kept child, and the links into a
+// changed child from its siblings, are each the other child's own: a kept
+// item keeps its dependencies (keptDeps), and a new or changed one's are
+// its own item's.
 func (st *Step) revisedLink(ctx context.Context, items []planItem, children map[string]childFound) error {
 	siblings := make(map[int64]bool, len(children))
 	for _, f := range children {
