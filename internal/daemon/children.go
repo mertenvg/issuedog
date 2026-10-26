@@ -244,7 +244,9 @@ func (st *Step) ChildrenVisit(ctx context.Context, s *github.Snapshot) error {
 
 // childFound is a child of a plan item filed already, as a listing gives
 // it: its number and ID, whether it's a sub-issue of the parent, and
-// whether it's closed, which a revision's links skip (revisedLink).
+// whether it's closed, which a revision's links skip (revisedLink). A
+// changed child found closed later in the pass, or that the label rules
+// close, is marked closed then (childrenChanged).
 type childFound struct {
 	Number int
 	ID     int64
