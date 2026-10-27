@@ -366,16 +366,16 @@ func TestChildrenDroppedAll(t *testing.T) {
 	}
 }
 
-// A kept child that isn't found, as when someone unlinked it from the
-// story by hand and it hasn't been updated since the approval, doesn't
-// stop the record (#297's decision; #362 would find it): here T3's
-// child, never linked, which the revision keeps, and which the new T4 and
-// the changed T2 depend on. T4's child is filed, blocked by nothing, and
-// T2's is blocked by T1's alone, as no link can name T3's. T3's child gets
-// no write. The record lists T1's, T2's and T4's children, and names T3
-// as left as it was, so a later pass writes nothing and reads nothing
-// more. A crash at any write writes nothing twice.
-func TestChildrenDroppedUnfound(t *testing.T) {
+// A kept child that isn't linked under the story, as when someone
+// unlinked it by hand, and that hasn't been updated since the revision's
+// approval, is still found, as the planner found it, since the children
+// are listed since the plan's first approval (#362): here T3's child,
+// never linked, which the revision keeps, and which the new T4 and the
+// changed T2 depend on. T4's child is filed, blocked by T3's, and T2's is
+// blocked by T1's and T3's. T3's child gets no write. The record lists
+// T1's, T2's, T3's and T4's children, so a later pass writes nothing and
+// reads nothing more. A crash at any write writes nothing twice.
+func TestChildrenKeptUnlinkedFound(t *testing.T) {
 	t.Parallel()
 	setup := func(t testing.TB) *githubtest.Fake {
 		out := plGolden(t, "story-revision")
@@ -390,16 +390,16 @@ func TestChildrenDroppedUnfound(t *testing.T) {
 	if len(issues) != 6 {
 		t.Fatalf("%d issues, want one filed, for T4", len(issues))
 	}
-	if got := issues[5].BlockedBy; len(got) != 0 {
-		t.Errorf("T4's child is blocked by %v, want nothing: T3's child isn't found", got)
+	if got := issues[5].BlockedBy; !slices.Equal(got, []int{4}) {
+		t.Errorf("T4's child is blocked by %v, want T3's #4: T3's child is found", got)
 	}
-	if got := issues[2].BlockedBy; !slices.Equal(got, []int{2}) {
-		t.Errorf("T2's child is blocked by %v, want T1's #2 alone", got)
+	if got := issues[2].BlockedBy; !slices.Equal(got, []int{2, 4}) {
+		t.Errorf("T2's child is blocked by %v, want T1's #2 and T3's #4", got)
 	}
-	droppedNoWrite(t, f, 4, "T3's child, not found")
+	droppedNoWrite(t, f, 4, "T3's child, kept")
 	want := "I've applied plan rev 2 to the children, which are now:\n- T1 #2: Record when each quote expires\n" +
-		"- T2 #3: Refuse an expired quote at booking, saying when it expired\n- T4 #6: Give the quote lifetime a default\n\n" +
-		"I found no child of T3, so this revision left it as it was.\n\n<!-- issuedog:created rev=2 children=2,3,6 -->"
+		"- T2 #3: Refuse an expired quote at booking, saying when it expired\n- T3 #4: Set the quote lifetime in production\n" +
+		"- T4 #6: Give the quote lifetime a default\n\n<!-- issuedog:created rev=2 children=2,3,4,6 -->"
 	if recs := droppedRecords(f, 1); len(recs) != 1 || recs[0] != want {
 		t.Errorf("issue 1's records are %q, want only\n%q", recs, want)
 	}

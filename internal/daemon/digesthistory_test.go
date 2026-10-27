@@ -240,20 +240,31 @@ func TestDigestHistoryReportEscaped(t *testing.T) {
 }
 
 // A held issue that the state error's post finds gone, as deleted, is held
-// no more, so the same pass creates a digest.
+// still, as one answer may be wrong (#500), so that pass creates no digest,
+// and its history is read again the next pass. That read finds it gone
+// too, so it's held no more, and the same pass creates a digest.
 func TestDigestHistoryReportGone(t *testing.T) {
 	t.Parallel()
 	f, o := newFake(t), newOrigin(t)
 	f.AddIssue(app, "issuedog digest", "gone")
 	d := digestDaemon(t, f, o, nil)
-	for i := range 3 {
+	for i := range 4 {
 		if i == 2 {
 			f.DeleteIssue()
 		}
-		f.FailGraphQL(digestHistoryFailure)
+		if i < 3 {
+			f.FailGraphQL(digestHistoryFailure)
+		}
+		queries := f.HistoryQueries()
 		iterate(t, d)
 		if is := f.State().Issues; i < 2 && (len(is) != 1 || is[0].Body != "gone") {
 			t.Fatalf("pass %d: issues = %+v; want the held issue alone, as it was", i+1, is)
+		}
+		if is := f.State().Issues; i == 2 && len(is) != 0 {
+			t.Fatalf("pass 3: issues = %+v; want none, as the post's one 404 lets nothing go", is)
+		}
+		if got := f.HistoryQueries() - queries; i == 3 && got != 1 {
+			t.Errorf("pass 4: %d history queries; want 1, the read again after the post's 404", got)
 		}
 	}
 	if is := f.State().Issues; len(is) != 1 || is[0].Body != digestList || !is[0].Pinned {

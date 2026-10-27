@@ -70,7 +70,7 @@ func childrenCrashPlanMoves(t *testing.T, f *githubtest.Fake) ([]int64, []time.T
 // when the owner sends the parent back to plan-review by hand and
 // approves the same plan revision again before the next pass. The new
 // approval is later than the child's last update, so the issues are listed
-// since the revision's first approval, not its latest (SPEC §5.2, "Finding
+// since the plan's first approval, not its latest (SPEC §5.2, "Finding
 // a child, without search"). The child is linked and moved, keyed by the latest
 // approval, with no second issue, and a crash at any write replays.
 func TestChildrenReapprovedUnlinked(t *testing.T) {

@@ -13,7 +13,8 @@ import (
 const firstIssueID = 700000
 
 // issueID is the ID of issue number n, which the sub-issue and dependency
-// writes name it by. Issues are kept by number, so the ID follows from it.
+// writes name it by. No two issues have one number, a deleted one's
+// included (fileIssue), so the ID follows from it.
 func issueID(n int) int64 { return firstIssueID + int64(n) }
 
 // issueByID returns the issue whose ID is id, or nil. f is locked.

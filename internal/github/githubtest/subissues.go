@@ -36,7 +36,7 @@ func (f *Fake) LinkSubIssue(parent int, repo string, number int) {
 func (f *Fake) subIssues(c *call) (int, any) {
 	subs := []gogithub.Issue{}
 	for _, n := range f.subIssueNumbers(c.issue.GetNumber()) {
-		is := f.issues[n-1]
+		is := f.issueNumbered(n)
 		sub := is.Issue
 		if is.listed() { // a transferred one names its new repo (Transfer)
 			sub.RepositoryURL = new(fmt.Sprintf("%s/repos/%s", f.srv.URL, f.repo))

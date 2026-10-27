@@ -69,7 +69,13 @@ func (a *Applier) originRepost(ctx context.Context, s *github.Snapshot, d Dirt) 
 // post, which the App wrote too (originFromHistory). So a version of the
 // App's that someone deleted from the history, or the App's own dirty
 // note, which escapes the text it keeps, is passed over, down to the
-// original post, and a version anyone else wrote gives none.
+// original post, and a version anyone else wrote gives none. A history
+// it reads that reaches the body's last edit, as Dirty's must, is kept
+// too, so the next call for the same edit reads none: for an untrusted
+// edit, which Dirty reads no history for, the parent's visit (childOrigins)
+// and the issue's own step 1 share one read in a pass (MarkDirty keeps it
+// past the App's note), and a closed child, which gets no repost, costs
+// one read, not one each time its parent's children are found (#501).
 //
 // With no marker in any version, it logs a warning and returns false. It
 // keeps that in memory, by issue and body text, which an edit changes, so
@@ -91,6 +97,9 @@ func (a *Applier) originLost(ctx context.Context, s *github.Snapshot, d Dirt) (g
 	read, err := a.histories.read(ctx, a.Client, []content{body})
 	if err != nil {
 		return github.Marker{}, false, fmt.Errorf("find the origin its description lost: %w", err)
+	}
+	if h := read[s.BodyNode]; len(h) >= 2 && !h[len(h)-1].At.Before(s.BodyEdit.At) {
+		a.histories[s.BodyNode] = kept{at: s.BodyEdit.At, body: s.Body, edits: h}
 	}
 	m, ok := originFromHistory(read[s.BodyNode], a.AppSlug)
 	if !ok {

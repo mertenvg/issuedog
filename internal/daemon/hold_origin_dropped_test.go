@@ -104,7 +104,8 @@ func holdOriginDroppedHeld(t testing.TB) *githubtest.Fake {
 // The owner's /resume of a dropped child that a trusted reopen held, from
 // the clarifying after a hold, goes back to that clarifying with the
 // origin of the move before the App's close, not the close's, which has
-// none. The write is safe to replay.
+// none. The write is safe to replay, and an unchanged pass after it sends
+// only conditional GETs answered 304.
 func TestHoldOriginDroppedResume(t *testing.T) {
 	t.Parallel()
 	var resume int64
@@ -117,6 +118,7 @@ func TestHoldOriginDroppedResume(t *testing.T) {
 	f := run(t, setup, resolvePass(t, 1))
 	ivHoldFields(t, ivHoldMove(t, newestComment(f, 1)), map[string]string{"from": "held", "to": "clarifying", "origin": "spec-review",
 		"cmd": strconv.FormatInt(resume, 10)})
+	holdOriginUnchangedPass(t, setup, "stage:clarifying")
 }
 
 // Once a dropped child's reopen hold ends, the interviewer's unchanged
@@ -166,7 +168,8 @@ func holdOriginChanged(resume *int64) func(testing.TB) *githubtest.Fake {
 // at a parent's revision changed to planning, goes to planning with no
 // origin: it's no move out of that clarifying, so the old origin doesn't
 // ride onto it and make a story's first plan wait for review. The write is
-// safe to replay.
+// safe to replay, and an unchanged pass after it sends only conditional
+// GETs answered 304.
 func TestHoldOriginChangedResume(t *testing.T) {
 	t.Parallel()
 	var resume int64
@@ -181,4 +184,5 @@ func TestHoldOriginChangedResume(t *testing.T) {
 	if l := ivLabels(f, 1); !slices.Equal(l, []string{"stage:planning", "type:epic"}) {
 		t.Errorf("labels %q; want stage:planning", l)
 	}
+	holdOriginUnchangedPass(t, setup, "stage:planning")
 }

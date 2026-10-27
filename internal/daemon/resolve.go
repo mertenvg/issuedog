@@ -766,8 +766,8 @@ func (a *Applier) resolveHeldBy(ctx context.Context, family []node, c Cmd, n nod
 		}
 		return a.resolveUnended(ctx, n, above.nodes[1:], is, p, trust, &resolveJudged{c: c.Comment, self: true})
 	}
-	var path []node // nearest first
-	for x, ok := byNumber[n.s.Parent]; ok && x.s != c.S && len(path) < len(family); x, ok = byNumber[x.s.Parent] {
+	var path []node // nearest first, up through family, which passes over a digest (node.up)
+	for x, ok := byNumber[n.up]; ok && x.s != c.S && len(path) < len(family); x, ok = byNumber[x.up] {
 		path = append(path, x)
 	}
 	return a.resolveUnended(ctx, n, append(path, above.nodes...), is, p, trust, &resolveJudged{c: c.Comment})
@@ -1068,22 +1068,25 @@ func (a *Applier) resolveHoldApplied(ctx context.Context, is state.Issue, id int
 
 // resolveAbove returns the /holds on s's ancestors in this repo that keep
 // s, in state is, held, p, (resolveUnended), read up through each parent
-// as madeAbove reads them. It reads only when s's discussion is resolved
-// with no other hold left, and the record of the discussion's end names
-// what it finds, so no other pass reads them again (resolveLeave).
+// as madeAbove reads them: each parent from madeAboveParent, which passes
+// over a digest, as the daemon never takes a snapshot of one (SPEC §5.1),
+// so a /hold on it, which is never handled, keeps nothing held (#527). It
+// reads only when s's discussion is resolved with no other hold left, and
+// the record of the discussion's end names what it finds, so no other pass
+// reads them again (resolveLeave).
 func (a *Applier) resolveAbove(ctx context.Context, s *github.Snapshot, sd Dirt, trust github.Trust, is state.Issue, p resolvePeriod) ([]github.Marker, error) {
 	var path []node
-	seen := map[int]bool{s.Number: true}
+	seen, onPath := map[int]bool{s.Number: true}, map[int]bool{} // onPath, madeAboveParent's, isn't read here
 	for x := s; x.Parent != 0 && !seen[x.Parent]; {
-		seen[x.Parent] = true
-		parent, _, err := a.Client.SubIssue.GetParentIssue(ctx, a.Owner, a.Repo, int64(x.Number))
+		up, err := a.madeAboveParent(ctx, x.Number, seen, onPath)
 		if err != nil {
-			return nil, fmt.Errorf("parent of %s/%s#%d: %w", a.Owner, a.Repo, x.Number, err)
+			return nil, fmt.Errorf("ancestor of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
 		}
-		if !a.inRepo(parent.GetRepositoryURL()) {
+		if up == 0 {
 			break
 		}
-		if x, err = a.Client.Snapshot(ctx, a.Owner, a.Repo, parent.GetNumber()); err != nil {
+		seen[up] = true
+		if x, err = a.Client.Snapshot(ctx, a.Owner, a.Repo, up); err != nil {
 			return nil, fmt.Errorf("ancestor of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
 		}
 		d, err := a.Dirty(ctx, x, trust)
@@ -1241,11 +1244,12 @@ func resolveFields(h state.HeldStack, resolved time.Time) map[string]string {
 // hold: a trusted reopen of the App's own close holds the issue at the
 // stage the close came from (closingReopen), so the move before the close
 // is, as for a dropped child closed from the clarifying after a hold
-// (droppedOne). Once a parent's revision has changed the hold's at, by a
-// held → held marker with no reason (SPEC §6.4), /resume goes to that
-// stage, which isn't the clarifying after a hold, and carries no origin:
-// only the interviewer's move out of that clarifying does (SPEC §7.2,
-// Skipping plan review).
+// (droppedOne); or for a close from held, as a held child's, at its first
+// hold's at, so the move before that hold is. Once a parent's revision has
+// changed the hold's at, by a held → held marker with no reason (SPEC
+// §6.4), /resume goes to that stage, which isn't the clarifying after a
+// hold, and carries no origin: only the interviewer's move out of that
+// clarifying does (SPEC §7.2, Skipping plan review).
 func resolveHeldAfterHold(is state.Issue) (state.Stage, bool) {
 	var before, last github.Marker
 	for _, m := range is.Markers {
