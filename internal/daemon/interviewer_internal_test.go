@@ -309,6 +309,22 @@ func TestRoundsAcrossStages(t *testing.T) {
 	}
 }
 
+// runClonePreamble is the interviewer's and the planner's preamble line on
+// the run's clone (SPEC §3.2): HEAD is detached at main's commit, and the
+// clone has no main branch, no other branch and no remote.
+const runClonePreamble = "- You run in a detached checkout of main's commit, with its history but no other branches and no remote, " +
+	"so git commands name HEAD, not main. Read the code, but don't change it."
+
+// The interviewer's preamble says what its clone holds, never that it's a
+// checkout of main, a branch the clone doesn't have.
+func TestInterviewerPreambleRunClone(t *testing.T) {
+	t.Parallel()
+	p := interviewerPreamble(4, nil, nil, nil, "typing", ivOutcomes("", state.ClassUntyped, true))
+	if !strings.Contains(p, runClonePreamble) || strings.Contains(p, "checkout of main.") {
+		t.Errorf("the preamble lacks\n%s\nor says it's a checkout of main, in\n%s", runClonePreamble, p)
+	}
+}
+
 // TestInterviewerPreambleRounds: with no planner rounds, the preamble's
 // line about rounds is as it was before them. With planner rounds, the
 // next round follows theirs, and a line says their questions get no

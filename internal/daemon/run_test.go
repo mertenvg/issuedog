@@ -435,6 +435,39 @@ func TestRunWithNoMainStartsNoRun(t *testing.T) {
 	}
 }
 
+// A start that can't be named costs no request: with no main in the bare
+// repo, Work gives up on the run before it reads the issue again, or
+// anything else, on every pass.
+func TestRunWithNoMainMakesNoRequest(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	interview(f)
+	g := newRig(t, f, newOrigin(t), t.TempDir())
+	gitIn(t, g.d.Clone.Dir(), "update-ref", "-d", "refs/heads/main")
+	g.claude(okOut, 0)
+	ctx := context.Background()
+	for pass := 1; pass <= 2; pass++ {
+		s, err := g.d.Step.Client.Snapshot(ctx, "o", "r", 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		in, err := g.d.Step.Run(ctx, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		from := len(f.Requests())
+		if err := g.r.Work(ctx, []daemon.Ready{{S: s, Inputs: in}}); err == nil || !strings.Contains(err.Error(), "name the run's start") {
+			t.Errorf("pass %d: work = %v, want the start's error", pass, err)
+		}
+		if made := f.Requests()[from:]; len(made) != 0 {
+			t.Errorf("pass %d: Work made %d requests, the first %+v; want none", pass, len(made), made[0])
+		}
+	}
+	if g.runs() != 0 || len(g.leftovers()) != 0 {
+		t.Errorf("claude ran %d times, leaving %v; want no run and nothing left", g.runs(), g.leftovers())
+	}
+}
+
 func TestRunStageApplyReplay(t *testing.T) {
 	t.Parallel()
 	replayRuns(t, func(_ testing.TB, f *githubtest.Fake, _ string) { interview(f) }, func(g *rig) {
