@@ -61,7 +61,10 @@ import (
 // Each pass looks only at the issues whose step 1 succeeded on the
 // snapshot held (Daemon.inputs), as Work does: an issue whose read or
 // step 1 failed, or that a command touched, keeps its assignees that
-// pass. Assignees are read from the snapshot, which Snapshot fills from
+// pass, but for a touched one read again and visited for its items
+// (assignPass). The digest keeps such an issue's last items too, or after
+// a restart, those its body showed (digestkept.go), so the two agree.
+// Assignees are read from the snapshot, which Snapshot fills from
 // the issue GET it makes anyway, so an unchanged pass makes no request. A
 // write's answer is the issue's assignees after it, which the snapshot
 // takes, so the next pass compares against what GitHub has.
@@ -92,13 +95,28 @@ import (
 // writes again if it still differs. A write that finds the issue gone is
 // no error, keeps the issue from Work, if it comes before it, and counts
 // as one of the two reads that drop it (assignFailed).
-func (d *Daemon) assignPass(ctx context.Context) error {
+//
+// Besides the issues Work gets, it judges those in again: the issues a
+// command wrote to before their turn that were read again then and
+// visited, as on a restart's first pass (digestRestartRead). Each skips
+// Work, but its items are what its visit found, which the digest lists
+// this pass, and no command writes assignees, so its snapshot's are
+// GitHub's: judged on the next pass instead, they would lag the digest's
+// list by one (#360).
+func (d *Daemon) assignPass(ctx context.Context, again map[int]bool) error {
 	if !d.Assign {
 		return nil
 	}
 	notify := d.assignNotify()
+	judge := maps.Clone(again)
+	if judge == nil {
+		judge = map[int]bool{}
+	}
+	for n := range d.inputs {
+		judge[n] = true
+	}
 	var errs []error
-	for _, n := range slices.Sorted(maps.Keys(d.inputs)) {
+	for _, n := range slices.Sorted(maps.Keys(judge)) {
 		if s := d.snaps[n]; s != nil && !s.Closed {
 			if err := d.assignIssue(ctx, s, notify); err != nil {
 				errs = append(errs, err)

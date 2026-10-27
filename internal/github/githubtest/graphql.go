@@ -187,13 +187,15 @@ func (f *Fake) graphql(c *call) (int, any) {
 		return reply(data)
 	}
 	// A transferred issue's number isn't this repo's to answer for
-	// (transfer.go).
-	if v.Number < 1 || v.Number > len(f.issues) || f.issues[v.Number-1].IsPullRequest() || !f.issues[v.Number-1].listed() {
-		errs = append(errs, map[string]any{"type": "NOT_FOUND", "message": fmt.Sprintf("Could not resolve to an Issue with the number of %d.", v.Number)})
+	// (transfer.go). As on GitHub, the error's path names the issue.
+	is := f.issueNumbered(v.Number)
+	if is == nil || is.IsPullRequest() || !is.listed() {
+		errs = append(errs, map[string]any{"type": "NOT_FOUND", "path": []any{"repository", "issue"},
+			"message": fmt.Sprintf("Could not resolve to an Issue with the number of %d.", v.Number)})
 		return reply(map[string]any{"repository": map[string]any{"issue": nil}})
 	}
 	if named["query.repository.issue.isPinned"] {
-		return reply(map[string]any{"repository": map[string]any{"issue": map[string]any{"isPinned": f.issues[v.Number-1].pinned}}})
+		return reply(map[string]any{"repository": map[string]any{"issue": map[string]any{"isPinned": is.pinned}}})
 	}
 	var list []*comment
 	for _, cm := range f.comments {
@@ -226,7 +228,6 @@ func (f *Fake) graphql(c *call) (int, any) {
 	if to > from {
 		end = strconv.FormatInt(list[to-1].GetID(), 10)
 	}
-	is := f.issues[v.Number-1]
 	if !deletedFilter.MatchString(req.Query) {
 		errs = append(errs, map[string]any{"message": "githubtest: the query's timelineItems doesn't ask for COMMENT_DELETED_EVENT alone"})
 		return reply(nil)
@@ -256,6 +257,16 @@ func (f *Fake) HistoryCap(n int) {
 	f.historyCap = n
 }
 
+// HistoryNotFoundOnce makes the next history query answer issue number's
+// body node as GitHub answers one it can't resolve, null with a NOT_FOUND
+// error whose path names it, though the issue is there: a wrong answer,
+// as GitHub may give once.
+func (f *Fake) HistoryNotFoundOnce(number int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.historyNotFound = number
+}
+
 // history answers the history query: each node's edits, newest first, 100
 // per page, capped as HistoryCap says, with an issue body's text after each
 // edit as its diff. A cursor is the number of older
@@ -270,6 +281,10 @@ func (f *Fake) history(ids []string, cursor *string) ([]any, []map[string]any, s
 	}
 	for _, c := range f.comments {
 		histories[commentNode(c.GetID())] = c.history
+	}
+	if f.historyNotFound != 0 { // a wrong answer, once (HistoryNotFoundOnce)
+		delete(histories, issueNode(f.historyNotFound))
+		f.historyNotFound = 0
 	}
 	nodes, errs := []any{}, []map[string]any{}
 	for i, id := range ids {

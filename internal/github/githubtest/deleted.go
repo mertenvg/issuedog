@@ -29,7 +29,7 @@ func (f *Fake) DeleteCommentBy(login string, id int64) string {
 	f.comments = slices.DeleteFunc(f.comments, func(c *comment) bool { return c.GetID() == id })
 	f.lastEvent++
 	e := deletedEvent{node: fmt.Sprintf("CDE_%d", firstEvent+f.lastEvent), by: login, author: c.GetUser().GetLogin(), at: f.tick().Time}
-	is := f.issues[c.issue-1]
+	is := f.issueNumbered(c.issue)
 	is.deletions = append(is.deletions, e)
 	return e.node
 }

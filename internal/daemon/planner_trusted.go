@@ -234,8 +234,15 @@ func plannerTrustedOpen(ctx context.Context, d *Daemon, n int) (state.Stage, str
 // plannerTrustedSub returns the stage and type of sub-issue n of this repo:
 // an open one's from plannerTrustedOpen, and a closed one's type, from what
 // the listing gave, typ and labels (plannerListedType), judged as
-// plannerTrustedType does, with no stage, as its line gives its state.
+// plannerTrustedType does, with no stage, as its line gives its state. A
+// digest that someone made a sub-issue gets neither, and nothing on it is
+// read, as the daemon never takes a snapshot of the digest, and its labels
+// are ignored (SPEC §5.1, §9.4, #527): its line says it's not in the
+// pipeline.
 func plannerTrustedSub(ctx context.Context, d *Daemon, n int, open bool, typ string, labels []string) (state.Stage, string, error) {
+	if d.digest.has(n) {
+		return "", "", nil
+	}
 	if open {
 		stage, typ, err := plannerTrustedOpen(ctx, d, n)
 		if err != nil {

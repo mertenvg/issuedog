@@ -112,7 +112,7 @@ func TestAssignTakesAnswer(t *testing.T) {
 		}
 		d.snaps[n], d.inputs[n] = s, nil
 	}
-	if err := d.assignPass(t.Context()); err != nil {
+	if err := d.assignPass(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := d.snaps[item].Assignees; !slices.Equal(got, []string{"owner"}) {
@@ -144,7 +144,7 @@ func TestAssignFailKeepsInputs(t *testing.T) {
 	}
 	d.snaps[n], d.inputs[n] = s, []github.Comment{{Body: "an input"}}
 	f.FailWrite(1)
-	if err := d.assignPass(t.Context()); err == nil {
+	if err := d.assignPass(t.Context(), nil); err == nil {
 		t.Errorf("assignPass with a failed write = nil; want its error")
 	}
 	if in, ok := d.inputs[n]; !ok || len(in) != 1 || !d.stale[n] || d.missing[n] {

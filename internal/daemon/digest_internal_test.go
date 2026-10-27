@@ -183,7 +183,7 @@ func TestDigestTakeHistoryFails(t *testing.T) {
 	poll(1)
 	logr.Wait()
 	if d.digest.has(1) || !d.stale[1] || d.digest.titled[1] == nil ||
-		!strings.Contains(logs.String(), "o/r's issues [1], titled \"issuedog digest\", failed to read, so they stay out of the pipeline, and no digest is created") {
+		!strings.Contains(logs.String(), "o/r's issues [1], which may be digests, failed to read, so they stay out of the pipeline, and no digest is created") {
 		t.Errorf("digests %v, stale %v, held %v, logs %q; want no digest, 1 stale and held, and the failure logged",
 			d.digest.issues, d.stale, d.digest.titled, logs.String())
 	}

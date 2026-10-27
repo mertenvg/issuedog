@@ -87,24 +87,25 @@ func (f *Fake) Reopen(number int) {
 	f.ReopenBy(number, "")
 }
 
-// DeleteIssue deletes the newest issue and its comments, after which its
-// paths answer 404. Issues are kept by number, so only the newest can go.
-// Its links go with it, as GitHub would drop them: its sub-issues have no
-// parent after it, and no blocked-by link or LinkSubIssue listing names
-// it, on either side, so no listing names it. It moves no other issue's
-// updated_at, as GitHub isn't known to. A fake with no issue to delete
-// fails the test, as an issue number the fake hasn't got does
+// DeleteIssue deletes the newest issue the fake has, and its comments,
+// after which its paths answer 404. Its links go with it, as GitHub would
+// drop them: its sub-issues have no parent after it, and no blocked-by
+// link or LinkSubIssue listing names it, on either side, so no listing
+// names it. It moves no other issue's updated_at, as GitHub isn't known
+// to. As on GitHub, its number is never given again: the next issue filed
+// gets the one after the last filed (fileIssue). A fake with no issue to
+// delete fails the test, as an issue number the fake hasn't got does
 // (fakeNumberIssue).
 func (f *Fake) DeleteIssue() {
 	f.t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	n := len(f.issues)
-	if n == 0 {
+	if len(f.issues) == 0 {
 		f.fakeFail("githubtest: no issue to delete: the fake has 0")
 		return
 	}
-	f.issues = f.issues[:n-1]
+	n := f.issues[len(f.issues)-1].GetNumber()
+	f.issues = f.issues[:len(f.issues)-1]
 	f.comments = slices.DeleteFunc(f.comments, func(c *comment) bool { return c.issue == n })
 	for _, is := range f.issues {
 		if is.parent == n {
@@ -229,7 +230,8 @@ func (r *recorder) Write(b []byte) (int, error) {
 
 // listIssues serves the repo's issues and pull requests, open ones unless
 // state= says otherwise, from since= on, by number or, for sort=updated, by
-// update in direction=. A transferred issue isn't listed (transfer.go).
+// update in direction=, each with its issue_dependencies_summary
+// (withDependencies). A transferred issue isn't listed (transfer.go).
 func (f *Fake) listIssues(c *call) (int, any) {
 	q := c.r.URL.Query()
 	var from time.Time
@@ -246,7 +248,7 @@ func (f *Fake) listIssues(c *call) (int, any) {
 	out := []gogithub.Issue{}
 	for _, is := range f.issues {
 		if is.listed() && (state == "all" || is.GetState() == state) && !is.GetUpdatedAt().Before(from) {
-			out = append(out, is.Issue)
+			out = append(out, f.withDependencies(is))
 		}
 	}
 	if q.Get("sort") == "updated" {

@@ -707,11 +707,11 @@ var revisionPlan = childPlan{"Story", "story-revision", 4, false}
 // carry no body to describe.
 //
 // The dropped T3's child was never linked under the story, and hasn't
-// been updated since revision 2's approval, so it isn't found, as for a
-// child someone unlinked by hand (#297's decision, and #362): it gets no
-// write, and the record of revision 2, the fixture's only record, stands
-// anyway, listing T1's, T2's and T4's children and naming T3 as left as
-// it was. So no later pass looks for T3's child again. A pass that
+// been updated since revision 2's approval, as for a child someone
+// unlinked by hand, but it's still found, as the planner found it, since
+// the children are listed since the plan's first approval, revision 1's
+// (#362): it's closed as not planned, and the record of revision 2, the
+// fixture's only record, lists T1's, T2's and T4's children. A pass that
 // crashes at any write leaves the same, and a later pass writes nothing.
 func TestChildrenOfRevision(t *testing.T) {
 	t.Parallel()
@@ -749,18 +749,16 @@ func TestChildrenOfRevision(t *testing.T) {
 	}
 	want := "I've applied plan rev 2 to the children, which are now:\n- T1 #2: Record when each quote expires\n" +
 		"- T2 #3: Refuse an expired quote at booking, saying when it expired\n- T4 #6: Give the quote lifetime a default\n\n" +
-		"I found no child of T3, so this revision left it as it was.\n\n<!-- issuedog:created rev=2 children=2,3,6 -->"
+		"<!-- issuedog:created rev=2 children=2,3,6 -->"
 	if len(records) != 1 || records[0] != want {
 		t.Errorf("issue 1's records of its children are %q, want only\n%q", records, want)
 	}
-	if issues[3].Closed {
-		t.Error("T3's child, not found, is closed; want it left as it was")
+	if reason := droppedReason(t, f, 4); !issues[3].Closed || reason != "not_planned" {
+		t.Errorf("T3's child, never linked, is closed %v as %q; want it found, and closed as not planned", issues[3].Closed, reason)
 	}
-	for _, n := range []int{2, 4} {
-		for _, w := range f.Writes() {
-			if strings.HasPrefix(w.Path, fmt.Sprintf("/issues/%d/", n)) || w.Path == fmt.Sprintf("/issues/%d", n) {
-				t.Errorf("child #%d, kept or not found, got the write %+v", n, w)
-			}
+	for _, w := range f.Writes() {
+		if strings.HasPrefix(w.Path, "/issues/2/") || w.Path == "/issues/2" {
+			t.Errorf("child #2, kept, got the write %+v", w)
 		}
 	}
 	if t2 := issues[2]; t2.Title != "Refuse an expired quote at booking, saying when it expired" ||

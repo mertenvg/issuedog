@@ -66,7 +66,10 @@ type pinIssueResponse struct {
 // that way rather than as a GraphQL error: its error wraps ErrGraphQL and
 // GitHub's *gogithub.ErrorResponse, which holds the message. A rate limit,
 // which go-github gives its own error types, isn't one, nor is any answer
-// to the GET before the mutation.
+// to the GET before the mutation. A NOT_FOUND for the issue, at the path
+// pinIssue, with no pin, as for an issue deleted since that GET, wraps
+// ErrIssueNotFound with ErrGraphQL. A NOT_FOUND at any other path is a
+// refusal, as any other GraphQL error is (#580).
 //
 // The mutation takes the issue's node ID, which it reads first with a REST
 // GET of the issue. That GET is conditional (etagCache), so a repeat costs
@@ -104,6 +107,9 @@ func (c *Client) PinIssue(ctx context.Context, owner, repo string, number int) e
 		return wrap(err)
 	}
 	if err := out.err(); err != nil {
+		if out.Data.PinIssue == nil && out.notFound("pinIssue") {
+			return wrap(fmt.Errorf("%w: %w", ErrIssueNotFound, err))
+		}
 		return wrap(err)
 	}
 	if p := out.Data.PinIssue; p == nil || p.Issue == nil || !p.Issue.IsPinned {
@@ -141,17 +147,23 @@ type isPinnedResponse struct {
 }
 
 // ErrIssueNotFound is wrapped by IsPinned's error, with ErrGraphQL, when
-// GitHub answers that the repo has no such issue: a NOT_FOUND error, with
-// the repo found but the issue null. GitHub answers so, with an HTTP 200,
-// for an issue that was deleted, and for one that was transferred, as a
-// lookup by number is the old repo's (#413's verify). An HTTP 404 or 410
-// from the GraphQL endpoint itself is no such answer, as it says nothing
-// of the issue (#428).
+// GitHub answers that the repo has no such issue: a NOT_FOUND error at
+// the issue's path, with the repo found but the issue null. GitHub
+// answers so, with an HTTP 200, for an issue that was deleted, and, as
+// the fake does, for one that was transferred, as a lookup by number is
+// the old repo's (#413's verify, to be confirmed live: SPEC §16).
+// PinIssue's error wraps it too, for a NOT_FOUND at the issue's path with
+// no pin, which GitHub answers for a node ID it can't
+// resolve, such as a deleted issue's (#495). An HTTP 404 or 410 from the
+// GraphQL endpoint itself is no such answer, as it says nothing of the
+// issue (#428).
 var ErrIssueNotFound = errors.New("GitHub found no such issue")
 
 // IsPinned reports whether an issue is pinned to the repo's issue list. It
 // is one GraphQL query, by the issue's number, so it needs no node ID. A
-// NOT_FOUND for the issue wraps ErrIssueNotFound.
+// NOT_FOUND for the issue, at the path repository.issue, wraps
+// ErrIssueNotFound. A NOT_FOUND at any other path fails the check as any
+// other GraphQL error does (#580).
 func (c *Client) IsPinned(ctx context.Context, owner, repo string, number int) (bool, error) {
 	wrap := func(err error) error { return fmt.Errorf("is %s/%s#%d pinned: %w", owner, repo, number, err) }
 	req, err := c.NewRequest(ctx, "POST", "graphql", map[string]any{"query": isPinnedQuery,
@@ -164,7 +176,7 @@ func (c *Client) IsPinned(ctx context.Context, owner, repo string, number int) (
 		return false, wrap(err)
 	}
 	if err := out.err(); err != nil {
-		if out.Data.Repository != nil && out.Data.Repository.Issue == nil && out.notFound() {
+		if out.Data.Repository != nil && out.Data.Repository.Issue == nil && out.notFound("repository", "issue") {
 			return false, wrap(fmt.Errorf("%w: %w", ErrIssueNotFound, err))
 		}
 		return false, wrap(err)
@@ -175,12 +187,31 @@ func (c *Client) IsPinned(ctx context.Context, owner, repo string, number int) (
 	return out.Data.Repository.Issue.IsPinned, nil
 }
 
-// notFound reports whether any of the errors is GitHub's NOT_FOUND.
-func (e gqlErrors) notFound() bool {
+// notFound reports whether any of the errors is GitHub's NOT_FOUND at
+// path, the field that names the issue. GitHub gives an error's path as
+// the answer's fields from its root to the one that failed. A NOT_FOUND
+// at any other path, or at none, names something other than the issue,
+// so it isn't one (#580).
+func (e gqlErrors) notFound(path ...string) bool {
 	for _, m := range e.Errors {
-		if m.Type == "NOT_FOUND" {
+		if m.Type == "NOT_FOUND" && pathIs(m.Path, path) {
 			return true
 		}
 	}
 	return false
+}
+
+// pathIs reports whether got, an error's path as decoded from JSON, is
+// want's field names, in order. A list index, a JSON number, never
+// matches a name.
+func pathIs(got []any, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i, w := range want {
+		if s, ok := got[i].(string); !ok || s != w {
+			return false
+		}
+	}
+	return true
 }

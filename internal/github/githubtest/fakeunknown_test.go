@@ -142,8 +142,9 @@ func fakeDeleteSubs(t *testing.T, c *github.Client, n int) []string {
 // sub-issues have no parent, its parent lists it no more, nor does a
 // LinkSubIssue listing that names this repo, in any case, and the
 // sub-issues LinkSubIssue listed under it go, and no blocked-by link names
-// it, either way. An issue filed after it, which gets its number, has none
-// of them. Another repo's issue of that number stays listed.
+// it, either way. An issue filed after it gets the next number, as GitHub
+// never reuses one, so the deleted issue's still answers 404, and has
+// none of them. Another repo's issue of that number stays listed.
 func TestFakeDeleteIssueLinks(t *testing.T) {
 	t.Parallel()
 	f := New(t, "o/r", "issuedog")
@@ -181,8 +182,11 @@ func TestFakeDeleteIssueLinks(t *testing.T) {
 		}
 	}
 	refiled := f.AddIssue("owner", "Refiled", "body")
-	if refiled != gone {
-		t.Fatalf("refiled as #%d; want #%d", refiled, gone)
+	if refiled != gone+1 {
+		t.Fatalf("refiled as #%d; want #%d, the number after the deleted #%d's, as GitHub never reuses one", refiled, gone+1, gone)
+	}
+	if status, msg := fakeNumberAnswer(t, c, http.MethodGet, fmt.Sprintf("/issues/%d", gone), nil); status != http.StatusNotFound {
+		t.Errorf("the deleted #%d after the refile: %d %q; want a 404 still", gone, status, msg)
 	}
 	if got := fakeDeleteSubs(t, c, refiled); len(got) != 0 {
 		t.Errorf("the refiled issue's sub-issues %q; want none", got)
@@ -227,7 +231,7 @@ func TestFakeTypeUnknownOnEdit(t *testing.T) {
 func fakeEditRefusedIssue(f *Fake, n int) (time.Time, int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	is := f.issues[n-1]
+	is := f.issueNumbered(n)
 	return is.GetUpdatedAt().Time, len(is.labelEvents)
 }
 

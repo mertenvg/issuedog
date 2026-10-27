@@ -62,20 +62,55 @@ func (f *Fake) blocking(c *call) (int, any) {
 }
 
 // dependency is is as a dependency listing shows it, with its
-// repository_url. f is locked.
+// repository_url and its issue_dependencies_summary (withDependencies), as
+// GitHub's does. f is locked.
 func (f *Fake) dependency(is *issue) gogithub.Issue {
-	dep := is.Issue
+	dep := f.withDependencies(is)
 	if is.listed() { // a transferred one names its new repo (Transfer)
 		dep.RepositoryURL = new(fmt.Sprintf("%s/repos/%s", f.srv.URL, f.repo))
 	}
 	return dep
 }
 
+// dependencySummary is is's issue_dependencies_summary, as GitHub gives
+// it with an issue: how many open issues block it and how many it blocks,
+// and how many of each there are, open and closed. f is locked.
+func (f *Fake) dependencySummary(is *issue) *gogithub.IssueDependenciesSummary {
+	var blockedBy, blocking, totalBlockedBy, totalBlocking int
+	for _, other := range f.issues {
+		open := other.GetState() == "open"
+		if slices.Contains(is.blockedBy, other.GetNumber()) {
+			totalBlockedBy++
+			if open {
+				blockedBy++
+			}
+		}
+		if slices.Contains(other.blockedBy, is.GetNumber()) {
+			totalBlocking++
+			if open {
+				blocking++
+			}
+		}
+	}
+	return &gogithub.IssueDependenciesSummary{BlockedBy: &blockedBy, Blocking: &blocking, TotalBlockedBy: &totalBlockedBy, TotalBlocking: &totalBlocking}
+}
+
+// withDependencies is is as an issue GET, the issue list, a dependency
+// listing, or the reply to a create, an edit or a blocked-by link's write
+// gives it, with its issue_dependencies_summary, as GitHub's do. f is
+// locked.
+func (f *Fake) withDependencies(is *issue) gogithub.Issue {
+	out := is.Issue
+	out.IssueDependenciesSummary = f.dependencySummary(is)
+	return out
+}
+
 // addBlockedBy makes the path's issue blocked by the issue whose ID is
 // issue_id, as the App, and answers 201 with the blocking issue
-// (POST /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by).
-// It moves the blocked issue's updated_at. As on GitHub, it answers 422 for
-// a link the issue has already, for the issue itself, for an issue that
+// (POST /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by),
+// with its issue_dependencies_summary (withDependencies). It moves the
+// blocked issue's updated_at. As on GitHub, it answers 422 for a link the
+// issue has already, for the issue itself, for an issue that
 // 50 issues block already, and for a blocker that blocks 50 issues already,
 // and 404 for an ID no issue has.
 func (f *Fake) addBlockedBy(c *call) (int, any) {
@@ -108,12 +143,12 @@ func (f *Fake) addBlockedBy(c *call) (int, any) {
 	}
 	c.issue.blockedBy = append(c.issue.blockedBy, b)
 	c.issue.UpdatedAt = f.tick()
-	return http.StatusCreated, blocker.Issue
+	return http.StatusCreated, f.withDependencies(blocker)
 }
 
 // removeBlockedBy removes the link that makes the path's issue blocked by
 // the issue whose ID is issue_id, as the App, and answers 200 with the
-// blocking issue
+// blocking issue, with its issue_dependencies_summary (withDependencies)
 // (DELETE /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by/{issue_id}).
 // It moves the blocked issue's updated_at, as addBlockedBy does. It answers
 // 404 for an ID no issue has and for an issue that doesn't block this one,
@@ -133,5 +168,5 @@ func (f *Fake) removeBlockedBy(c *call) (int, any) {
 	}
 	c.issue.blockedBy = slices.Delete(c.issue.blockedBy, i, i+1)
 	c.issue.UpdatedAt = f.tick()
-	return http.StatusOK, blocker.Issue
+	return http.StatusOK, f.withDependencies(blocker)
 }

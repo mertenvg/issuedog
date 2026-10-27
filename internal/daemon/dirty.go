@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -356,6 +357,12 @@ func (a *Applier) MarkDirty(ctx context.Context, s *github.Snapshot, d Dirt) err
 				return fmt.Errorf("mark the body of %s/%s#%d dirty: %w", a.Owner, a.Repo, s.Number, err)
 			}
 			s.Body, s.BodyEdit = is.GetBody(), github.Edit{By: app, At: is.GetUpdatedAt().Time}
+			// A history kept for the body as it was gains the App's edit,
+			// as GitHub's does, so originLost, right after, reads none for
+			// the noted body (#501).
+			if h, ok := a.histories[c.node]; ok && h.at.Equal(c.edit.At) && h.body == c.body {
+				a.histories[c.node] = kept{at: s.BodyEdit.At, body: s.Body, edits: append(slices.Clip(h.edits), github.Edit{By: app, At: s.BodyEdit.At, Text: s.Body})}
+			}
 			continue
 		}
 		cm, _, err := a.Client.Issues.UpdateComment(ctx, a.Owner, a.Repo, c.id, gogithub.IssueCommentRequest{Body: body})

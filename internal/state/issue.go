@@ -87,6 +87,10 @@ type Issue struct {
 //     body, so it covers a body someone else edited, whose marker the
 //     daemon reposts in a comment (SPEC §6.4, #291), and an adopted issue,
 //     whose body a person wrote and whose App comment carries the marker.
+//     A revision's move comment carries it too, for an adopted child or one
+//     whose clean App comment carries an older one (#366), and so does the
+//     daemon's repost of an adopted child's rewritten body's marker, once
+//     its move comment is edited or deleted (SPEC §6.4, #374).
 //
 // So a marker someone else wrote, in the body or a comment, gives none,
 // and the body's marker wins while it's read. Of several clean App

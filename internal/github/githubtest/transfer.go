@@ -32,10 +32,12 @@ import (
 //
 // GraphQL treats a transferred issue's number as not this repo's (#239),
 // with GitHub's answer for one it can't find: the comments and isPinned
-// queries, by its number, answer a null issue with a NOT_FOUND error.
+// queries, by its number, answer a null issue with a NOT_FOUND error at
+// its path, repository.issue.
 // Node IDs are global, so a lookup by node answers from the issue's new
-// repo (#413), as GitHub most likely does when the installation covers
-// that repo (SPEC §16): the history query, for its node or one of its
+// repo (#413). What GitHub answers for one, with an installation that
+// covers that repo and with one that doesn't, is to be confirmed live
+// (SPEC §16). Here the history query, for its node or one of its
 // comments', and the closer query, for one of its closed events, answer
 // as for any issue, and the pinIssue mutation pins it there. So a caller
 // that pins by a node ID it read must first check the issue is still
@@ -125,7 +127,7 @@ func (f *Fake) serveHome(w http.ResponseWriter, r *http.Request) {
 func (f *Fake) moved(c *call) bool {
 	is := c.issue
 	if c.comment != nil {
-		is = f.issues[c.comment.issue-1]
+		is = f.issueNumbered(c.comment.issue)
 	}
 	home, atHome := c.r.Context().Value(transferHome{}).(homeRequest)
 	switch {

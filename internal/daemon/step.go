@@ -33,15 +33,11 @@ type Step struct {
 	// /resume another waits for (holdOrderWaits), so Iterate reads it again
 	// next pass, and visits it, without skipping its visit in this one.
 	holdOrderReread func(number int)
-	// holdOrderDigest, if set, reports whether issue number is a digest,
-	// which step 1 never visits (Daemon.digest), so holdOrderWaits waits
-	// for nothing on it.
-	holdOrderDigest func(number int) bool
 }
 
 // Run runs step 1 on s, in this order: the label rules (CheckLabels), dirty
-// content (MarkDirty), a lost origin marker (originRepost), the type
-// (typeCheck), the discussion triggers
+// content (MarkDirty), a lost origin marker (originRepost), an adopted
+// child's (adoptedRepost), the type (typeCheck), the discussion triggers
 // (discussion), trusted comments oldest first,
 // from the first again each time one takes the issue out of held, then
 // Reactions, and the comments again if a reaction trigger took the issue
@@ -67,6 +63,9 @@ func (st *Step) Run(ctx context.Context, s *github.Snapshot) ([]github.Comment, 
 		return nil, wrap(err)
 	}
 	if err := st.originRepost(ctx, s, d); err != nil {
+		return nil, wrap(err)
+	}
+	if err := st.adoptedRepost(ctx, s, d); err != nil {
 		return nil, wrap(err)
 	}
 	if err := st.typeCheck(ctx, s, d); err != nil {
