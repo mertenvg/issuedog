@@ -79,7 +79,7 @@ func (w *Workspace) Prepare(ctx context.Context, runID string, c Commits, files 
 	if err := writeContext(cdir, files); err != nil {
 		return fmt.Errorf("prepare run %s: %w", runID, err)
 	}
-	if err := w.writeGitConfig(); err != nil {
+	if err := w.WriteGitConfig(); err != nil {
 		return fmt.Errorf("prepare run %s: %w", runID, err)
 	}
 	if err := w.checkout(ctx, runID, c); err != nil {
@@ -108,7 +108,8 @@ func (w *Workspace) Cleanup(ctx context.Context, runID string) error {
 // in a dir only it can write, such as a file it created there, so it never
 // opens a path agent controls. A clone with no commits past start writes
 // nothing to out, and gives false and no error. On an error, out may hold
-// part of a bundle.
+// part of a bundle. Its git calls read the commits as they were made
+// (asCommitted).
 func (w *Workspace) Bundle(ctx context.Context, runID, start string, out io.Writer) (bool, error) {
 	if !validName(runID) {
 		return false, fmt.Errorf("bundle run: invalid run ID %q", runID)
@@ -118,7 +119,7 @@ func (w *Workspace) Bundle(ctx context.Context, runID, start string, out io.Writ
 	}
 	dir, commits := w.Dir(runID), start+"..HEAD"
 	var count bytes.Buffer
-	if err := w.gitTo(ctx, &count, "-C", dir, "rev-list", "--count", commits, "--"); err != nil {
+	if err := w.gitTo(ctx, &count, asCommitted, "-C", dir, "rev-list", "--count", commits, "--"); err != nil {
 		return false, fmt.Errorf("bundle run %s: count commits past %s: %w", runID, start, err)
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(count.String()))
@@ -128,11 +129,17 @@ func (w *Workspace) Bundle(ctx context.Context, runID, start string, out io.Writ
 	if n == 0 {
 		return false, nil
 	}
-	if err := w.gitTo(ctx, out, "-C", dir, "bundle", "create", "--quiet", "-", commits, "--"); err != nil {
+	if err := w.gitTo(ctx, out, asCommitted, "-C", dir, "bundle", "create", "--quiet", "-", commits, "--"); err != nil {
 		return false, fmt.Errorf("bundle run %s: %w", runID, err)
 	}
 	return true, nil
 }
+
+// asCommitted is the environment that makes git read a clone's commits as
+// they were made: a replace ref (refs/replace/*) or a graft (info/grafts)
+// in the clone can't change what history git sees, such as by making
+// start..HEAD look empty.
+var asCommitted = []string{"GIT_NO_REPLACE_OBJECTS=1", "GIT_GRAFT_FILE=/dev/null"}
 
 // validName refuses empty names, path separators and leading dots.
 func validName(s string) bool {
@@ -218,9 +225,10 @@ func (w *Workspace) removeCheckout(ctx context.Context, runID string) error {
 // gitConfig is agent's git config, in the daemon's dir; run IDs can't start with a dot.
 func (w *Workspace) gitConfig() string { return filepath.Join(w.ContextDir, ".agent.gitconfig") }
 
-// writeGitConfig writes gitConfig (0644). It must be a file: git clears
+// WriteGitConfig writes gitConfig (0644), the global config of agent's git,
+// as Prepare does for each run. It must be a file: git clears
 // GIT_CONFIG_COUNT for a local fetch's upload-pack, which checks safe.directory.
-func (w *Workspace) writeGitConfig() error {
+func (w *Workspace) WriteGitConfig() error {
 	quoted := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(w.Bare)
 	data := "[core]\n\thooksPath = /dev/null\n[safe]\n\tdirectory = \"" + quoted + "\"\n"
 	f, err := os.CreateTemp(w.ContextDir, ".agent.gitconfig.*")
@@ -253,17 +261,18 @@ func (w *Workspace) writeGitConfig() error {
 // system config and gitConfig as the global one: no hooks, and the daemon's
 // bare repo, which agent doesn't own, is a safe.directory.
 func (w *Workspace) git(ctx context.Context, args ...string) error {
-	return w.gitTo(ctx, nil, args...)
+	return w.gitTo(ctx, nil, nil, args...)
 }
 
-// gitTo is git, with git's stdout going to stdout; errors include its stderr.
-func (w *Workspace) gitTo(ctx context.Context, stdout io.Writer, args ...string) error {
-	env := append([]string{
+// gitTo is git, with git's stdout going to stdout and extra in its
+// environment; errors include its stderr.
+func (w *Workspace) gitTo(ctx context.Context, stdout io.Writer, extra []string, args ...string) error {
+	env := append(append([]string{
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_GLOBAL=" + w.gitConfig(),
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_ASKPASS=", // empty, so git doesn't fall back to core.askPass
-	}, w.testEnv...)
+	}, extra...), w.testEnv...)
 	if err := w.asAgentTo(ctx, stdout, env, "git", args...); err != nil {
 		return fmt.Errorf("git %s: %w", args[0], err)
 	}
