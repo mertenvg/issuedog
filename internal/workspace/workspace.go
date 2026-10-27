@@ -79,7 +79,7 @@ func (w *Workspace) Prepare(ctx context.Context, runID string, c Commits, files 
 	if err := writeContext(cdir, files); err != nil {
 		return fmt.Errorf("prepare run %s: %w", runID, err)
 	}
-	if err := w.writeGitConfig(); err != nil {
+	if err := w.WriteGitConfig(); err != nil {
 		return fmt.Errorf("prepare run %s: %w", runID, err)
 	}
 	if err := w.checkout(ctx, runID, c); err != nil {
@@ -218,9 +218,10 @@ func (w *Workspace) removeCheckout(ctx context.Context, runID string) error {
 // gitConfig is agent's git config, in the daemon's dir; run IDs can't start with a dot.
 func (w *Workspace) gitConfig() string { return filepath.Join(w.ContextDir, ".agent.gitconfig") }
 
-// writeGitConfig writes gitConfig (0644). It must be a file: git clears
+// WriteGitConfig writes gitConfig (0644), the global config of agent's git,
+// as Prepare does for each run. It must be a file: git clears
 // GIT_CONFIG_COUNT for a local fetch's upload-pack, which checks safe.directory.
-func (w *Workspace) writeGitConfig() error {
+func (w *Workspace) WriteGitConfig() error {
 	quoted := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(w.Bare)
 	data := "[core]\n\thooksPath = /dev/null\n[safe]\n\tdirectory = \"" + quoted + "\"\n"
 	f, err := os.CreateTemp(w.ContextDir, ".agent.gitconfig.*")
