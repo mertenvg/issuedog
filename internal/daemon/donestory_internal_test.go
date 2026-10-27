@@ -241,8 +241,11 @@ func doneKeys(items []waitItem) []string {
 // whose read failed, keeps it out, and so does one listed closed whose
 // close wasn't judged and accepted (closingSeen), or is due to be judged
 // again (closingDue), and an open issue below the story that the record
-// doesn't name, such as one added by hand. A snapshot below it read as
-// closed, which the next poll drops, doesn't.
+// doesn't name, such as one added by hand. So does a snapshot below it
+// read as closed that the poll hasn't listed closed yet, whose close isn't
+// judged, but not one it has; and an issue held open below it, closed
+// since, whose close is still to judge, or that its judging reopened
+// (closingBelow), but not one below another.
 // Every other item stands whatever the snapshots hold.
 func TestDigestDoneStands(t *testing.T) {
 	t.Parallel()
@@ -263,7 +266,10 @@ func TestDigestDoneStands(t *testing.T) {
 		{"one child's close due again", []int{12, 13}, func(d *Daemon) { d.closingDue = map[int]*gogithub.Issue{13: {}} }, false},
 		{"a named child open below it", []int{12}, below(13, false), false},
 		{"an open issue below it the record doesn't name", []int{12, 13}, below(14, false), false},
-		{"an issue below it read as closed", []int{12, 13}, below(14, true), true},
+		{"an issue below it read as closed, not listed closed", []int{12, 13}, below(14, true), false},
+		{"an issue below it read as closed, listed closed", []int{12, 13, 14}, below(14, true), true},
+		{"an issue held below it, closed, its close to judge", []int{12, 13, 14}, func(d *Daemon) { d.closingBelow = map[int]int{14: 30} }, false},
+		{"an issue held below another, closed, its close to judge", []int{12, 13, 14}, func(d *Daemon) { d.closingBelow = map[int]int{14: 31} }, true},
 		{"an open issue below another", []int{12, 13}, func(d *Daemon) { d.snaps[15] = &github.Snapshot{Number: 15, Parent: 31} }, true},
 	} {
 		d := doneStoryDaemon(tc.closed...)

@@ -14,6 +14,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/state"
 )
 
 // An epic planned into stories closes once every child is closed (#251;
@@ -51,13 +52,13 @@ func epicCloseReason(t *testing.T, f *githubtest.Fake, n int) (string, string) {
 	return is.GetState(), is.GetStateReason()
 }
 
-// epicCloseChecked fails t unless issue 1, the epic, is closed as
-// completed, with comments its comments before it plus one, the App's,
+// epicCloseChecked fails t unless issue 1, the epic, is closed with state
+// reason want, with comments its comments before it plus one, the App's,
 // which says text and holds the move to closed, keyed event=p<key>.
-func epicCloseChecked(t *testing.T, f *githubtest.Fake, comments int, text string, key int64) {
+func epicCloseChecked(t *testing.T, f *githubtest.Fake, comments int, want, text string, key int64) {
 	t.Helper()
-	if st, reason := epicCloseReason(t, f, 1); st != "closed" || reason != "completed" {
-		t.Errorf("the epic is %s, as %q; want it closed as completed", st, reason)
+	if st, reason := epicCloseReason(t, f, 1); st != "closed" || reason != want {
+		t.Errorf("the epic is %s, as %q; want it closed as %s", st, reason, want)
 	}
 	cs := f.State().Issues[0].Comments
 	if len(cs) != comments+1 {
@@ -66,9 +67,9 @@ func epicCloseChecked(t *testing.T, f *githubtest.Fake, comments int, text strin
 	if c := cs[len(cs)-1]; c.Author != app || !strings.HasPrefix(c.Body, text+"\n\n") {
 		t.Errorf("the epic's newest comment is %s's\n%q\nwant the App's, starting\n%q", c.Author, c.Body, text)
 	}
-	want := map[string]string{"from": "planned", "to": "closed", "reason": "completed", "event": fmt.Sprintf("p%d", key)}
-	if m := changedLastMarker(t, f, 1); !maps.Equal(m.Fields, want) {
-		t.Errorf("the close's marker has %v, want %v", m.Fields, want)
+	fields := map[string]string{"from": "planned", "to": "closed", "reason": want, "event": fmt.Sprintf("p%d", key)}
+	if m := changedLastMarker(t, f, 1); !maps.Equal(m.Fields, fields) {
+		t.Errorf("the close's marker has %v, want %v", m.Fields, fields)
 	}
 }
 
@@ -117,7 +118,7 @@ func TestEpicClose(t *testing.T) {
 	if want := []string{"POST /issues/1/comments", "PATCH /issues/1"}; !slices.Equal(w, want) {
 		t.Errorf("the pass after the last issue below it closed wrote %q to the epic; want %q", w, want)
 	}
-	epicCloseChecked(t, f, comments, "Every child of this epic is closed, so I've closed it as completed. Its children: #2, #3.", 1004)
+	epicCloseChecked(t, f, comments, "completed", "Every child of this epic is closed, so I've closed it as completed. Its children: #2, #3.", 1004)
 	epicCloseStep(t, f, d)
 	if got := f.State().Issues[0].Labels; !slices.Contains(got, "stage:completed") || slices.Contains(got, "stage:planned") {
 		t.Errorf("the closed epic's labels are %q; want stage:completed in place of stage:planned", got)
@@ -160,10 +161,34 @@ func TestEpicCloseIntoTasks(t *testing.T) {
 	}
 }
 
+// epicCloseResumed is the ID of the epic's newest comment holding a move
+// from held back to planned, as /resume makes it, which keys its close
+// after that (SPEC §7.3).
+func epicCloseResumed(t testing.TB, f *githubtest.Fake) int64 {
+	t.Helper()
+	s, err := f.Client(t).Snapshot(context.Background(), "o", "r", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var id int64
+	for _, c := range s.Comments {
+		if c.Author.Login == app && strings.Contains(c.Body, "from=held to=planned ") {
+			id = c.ID
+		}
+	}
+	if id == 0 {
+		t.Fatal("the epic has no move from held back to planned")
+	}
+	return id
+}
+
 // A trusted reopen of the epic the App closed holds it at planned (SPEC
-// §6.4), and once /resume brings it back there, it stays open, though
-// every story is still closed: it closes so once for each approved plan,
-// and the owner reopened it.
+// §6.4), and /resume brings it back there, a new move into planned,
+// which keys a close of its own (SPEC §7.3). Here the owner reopened it
+// to add a story by hand, #4, below it, so it stays open while #4 is,
+// though every story its record names is still closed. Once #4 closes,
+// the pass closes the epic again, keyed by the /resume's move, and a
+// pass where nothing changed then costs only 304s.
 func TestEpicCloseReopen(t *testing.T) {
 	t.Parallel()
 	f, o := newFake(t), newOrigin(t)
@@ -184,6 +209,8 @@ func TestEpicCloseReopen(t *testing.T) {
 	if got := f.State().Issues[0].Labels; !slices.Contains(got, "stage:held") {
 		t.Fatalf("after the owner's reopen, the epic's labels are %q; want it held", got)
 	}
+	extra := f.AddIssue("owner", "One more story", "Added by hand.")
+	f.SetParent(extra, 1)
 	f.AddComment(1, "owner", "/resume")
 	iterate(t, d)
 	if got := f.State().Issues[0].Labels; !slices.Contains(got, "stage:planned") {
@@ -203,33 +230,46 @@ func TestEpicCloseReopen(t *testing.T) {
 	for _, step := range []string{"the pass after /resume", "the pass after that"} {
 		iterate(t, d)
 		if st, _ := epicCloseReason(t, f, 1); st != "open" || closes() != 1 {
-			t.Errorf("%s: the epic is %s, with %d moves to closed; want it open, with the one", step, st, closes())
+			t.Errorf("%s: the epic is %s, with %d moves to closed; want it open, with the one, with #%d open below it", step, st, closes(), extra)
 		}
 	}
+	doneUnchanged(t, f, d)
+
+	comments := len(f.State().Issues[0].Comments)
+	f.CloseBy(extra, "owner")
+	iterate(t, d)
+	epicCloseChecked(t, f, comments, "completed", "Every child of this epic is closed, so I've closed it as completed. Its children: #2, #3.", epicCloseResumed(t, f))
+	if closes() != 2 {
+		t.Errorf("the epic has %d moves to closed; want 2, one for each move into planned", closes())
+	}
+	iterate(t, d) // stage:completed
+	iterate(t, d) // it lists the judged close
 	doneUnchanged(t, f, d)
 }
 
 // Children a revision drops (SPEC §6.4) count as its record says: they
 // aren't the epic's children any more, and are closed as not planned.
 // Here revision 2 drops S1's #2, keeps S2's #3 and adds S3's #9: the epic
-// closes once #3 and #9 have, naming those two. A revision that drops
-// every child leaves the epic none to wait on, so its first pass closes
-// it, saying so.
+// closes once #3 and #9 have, as completed, naming those two. A
+// revision that drops every child leaves the epic none to wait on, so its
+// first pass closes it, as not planned, as no child closed as completed,
+// saying so.
 func TestEpicCloseDropped(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		revision func(testing.TB) map[string]any
 		open     []int
+		reason   string
 		text     string
 	}{
-		{"S1 dropped", func(t testing.TB) map[string]any { return droppedEpicRevision(t) }, []int{3, 9},
+		{"S1 dropped", func(t testing.TB) map[string]any { return droppedEpicRevision(t) }, []int{3, 9}, "completed",
 			"Every child of this epic is closed, so I've closed it as completed. Its children: #3, #9."},
 		{"every child dropped", func(t testing.TB) map[string]any {
 			return droppedEpicRevision(t,
 				map[string]any{"id": "S1", "title": "Quotes expire after 24 hours", "status": "dropped"},
 				map[string]any{"id": "S2", "title": "Customers see when a quote expires", "status": "dropped"})
-		}, nil, "Its plan's latest revision left this epic no children, so I've closed it as completed."},
+		}, nil, "not_planned", "Its plan's latest revision left this epic no children, so I've closed it as not planned."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -249,7 +289,7 @@ func TestEpicCloseDropped(t *testing.T) {
 				f.CloseBy(n, "owner")
 				iterate(t, d)
 			}
-			epicCloseChecked(t, f, comments, tc.text, p)
+			epicCloseChecked(t, f, comments, tc.reason, tc.text, p)
 		})
 	}
 }
@@ -261,21 +301,72 @@ func TestEpicCloseDropped(t *testing.T) {
 // comment 1005.
 func epicCloseReplayFake(t testing.TB) *githubtest.Fake {
 	t.Helper()
+	return epicCloseReplayFakeAs(t, "")
+}
+
+// epicCloseReplayFakeAs is epicCloseReplayFake with the stories closed as
+// the owner closed them with state reason reason, "" for none, each with
+// the closed stage the close judge leaves for that (state.ClosingStage).
+func epicCloseReplayFakeAs(t testing.TB, reason string) *githubtest.Fake {
+	t.Helper()
 	f := newFake(t)
 	doneParent(t, f, "epic", twoStories)
+	stage, _ := state.ClosingStage(reason, false).Label()
 	for i, w := range wantChildren(twoStories) {
 		n := f.AddIssue(app, w.title, fmt.Sprintf("A story.\n\n<!-- issuedog:origin plan=#1 rev=1 item=S%d -->", i+1), "type:story")
 		f.SetParent(n, 1)
-		f.CloseBy(n, "owner")
-		f.AddLabel(n, app, "stage:completed")
+		f.CloseAs(n, "owner", reason)
+		f.AddLabel(n, app, stage)
 	}
 	post(t, f, 1005, app, wantRecord(twoStories))
 	f.ForgetWrites()
 	return f
 }
 
+// epicCloseReplayNotPlanned is a setup for Replay: epicCloseReplayFake,
+// with the owner's closes of both stories as not planned, each at
+// stage:discarded.
+func epicCloseReplayNotPlanned(t testing.TB) *githubtest.Fake {
+	t.Helper()
+	return epicCloseReplayFakeAs(t, "not_planned")
+}
+
+// epicCloseReplayReopened returns a setup for Replay: epicCloseReplayFake,
+// whose epic a daemon of o's closed, then the owner reopened, which held
+// it, added #4 below it by hand and closed it, and brought it back to
+// planned with /resume, with the writes forgotten. So a restart closes it
+// again, keyed by the /resume's move (SPEC §7.3).
+func epicCloseReplayReopened(o *origin) func(testing.TB) *githubtest.Fake {
+	return func(t testing.TB) *githubtest.Fake {
+		t.Helper()
+		f := epicCloseReplayFake(t)
+		d := newDaemon(t, f, o, nil)
+		passes := func(n int) {
+			t.Helper()
+			for range n {
+				if err := d.Iterate(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		passes(2) // the close, then stage:completed
+		f.ReopenBy(1, "owner")
+		passes(2)
+		extra := f.AddIssue("owner", "One more story", "Added by hand.")
+		f.SetParent(extra, 1)
+		f.AddComment(1, "owner", "/resume")
+		passes(1)
+		f.CloseBy(extra, "owner")
+		if is := f.State().Issues[0]; is.Closed || !slices.Contains(is.Labels, "stage:planned") {
+			t.Fatalf("the epic is closed %t, labelled %q; want it open at planned after /resume", is.Closed, is.Labels)
+		}
+		f.ForgetWrites()
+		return f
+	}
+}
+
 // epicCloseReplayPass is a restart's first two passes, a fresh daemon of
-// o's on the fake: the close, then the close judge's stage:completed.
+// o's on the fake: the close, then the close judge's closed stage.
 func epicCloseReplayPass(t *testing.T, o *origin) func(*githubtest.Fake) error {
 	return func(f *githubtest.Fake) error {
 		d := newDaemon(t, f, o, nil)
@@ -284,20 +375,46 @@ func epicCloseReplayPass(t *testing.T, o *origin) func(*githubtest.Fake) error {
 }
 
 // Replay passes for the close of an epic whose stories have all closed,
-// whatever write a crash comes at: one comment, one close as completed,
-// and stage:completed.
+// whatever write a crash comes at: one comment, one close, and the closed
+// stage it names. It's as completed, and stage:completed, keyed by the
+// move into planned that approved the plan, comment 1004; as not planned,
+// and stage:discarded, when the owner closed every story as not planned;
+// and keyed by the /resume's move, after a reopen.
 func TestEpicCloseReplay(t *testing.T) {
 	t.Parallel()
 	o := newOrigin(t)
-	githubtest.Replay(t, epicCloseReplayFake, epicCloseReplayPass(t, o))
-	clean := epicCloseReplayFake(t)
-	if err := epicCloseReplayPass(t, o)(clean); err != nil {
-		t.Fatal(err)
+	done := "Every child of this epic is closed, so I've closed it as completed. Its children: #2, #3."
+	for _, tc := range []struct {
+		name          string
+		setup         func(testing.TB) *githubtest.Fake
+		reason, stage string
+		text          string
+		key           func(testing.TB, *githubtest.Fake) int64
+	}{
+		{"its stories closed", epicCloseReplayFake, "completed", "stage:completed", done, func(testing.TB, *githubtest.Fake) int64 { return 1004 }},
+		{"its stories closed as not planned", epicCloseReplayNotPlanned, "not_planned", "stage:discarded",
+			"Every child of this epic is closed, none as completed, so I've closed it as not planned. Its children: #2, #3.",
+			func(testing.TB, *githubtest.Fake) int64 { return 1004 }},
+		{"after a reopen and /resume", epicCloseReplayReopened(o), "completed", "stage:completed", done,
+			epicCloseResumed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			githubtest.Replay(t, tc.setup, epicCloseReplayPass(t, o))
+			clean := tc.setup(t)
+			comments, key := len(clean.State().Issues[0].Comments), tc.key(t, clean)
+			if err := epicCloseReplayPass(t, o)(clean); err != nil {
+				t.Fatal(err)
+			}
+			if want := []string{"POST /issues/1/comments", "PATCH /issues/1", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:planned"}; !slices.Equal(epicCloseWritesTo(clean, 0, 1), want) {
+				t.Errorf("the clean pass's writes to the epic = %q; want %q", epicCloseWritesTo(clean, 0, 1), want)
+			}
+			epicCloseChecked(t, clean, comments, tc.reason, tc.text, key)
+			if got := clean.State().Issues[0].Labels; !slices.Contains(got, tc.stage) || slices.Contains(got, "stage:planned") {
+				t.Errorf("the closed epic's labels are %q; want %s in place of stage:planned", got, tc.stage)
+			}
+		})
 	}
-	if want := []string{"POST /issues/1/comments", "PATCH /issues/1", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:planned"}; !slices.Equal(epicCloseWritesTo(clean, 0, 1), want) {
-		t.Errorf("the clean pass's writes to the epic = %q; want %q", epicCloseWritesTo(clean, 0, 1), want)
-	}
-	epicCloseChecked(t, clean, 4, "Every child of this epic is closed, so I've closed it as completed. Its children: #2, #3.", 1004)
 }
 
 // epicCloseUntrustedFake files the epic planned into twoStories and runs
@@ -342,10 +459,11 @@ func epicCloseIterate(t *testing.T, d *daemon.Daemon, wantErr bool, step string)
 // GitHub hasn't written the close's event, while the question of how it
 // was made fails, or when it's judged and reverted, but the story's read
 // after its reopen fails. Once it's judged, it's reverted, and the epic
-// stays open; the owner's close of #3 then closes it. A close that's
-// never judged, forgotten as gone, as when the story is transferred
-// before its event shows, or its timeline answers 404 once, keeps the
-// epic open for good.
+// stays open; the owner's close of #3 then closes it. So it is when the
+// story's timeline answers 404 once: one answer may be wrong, so the next
+// pass judges her close. A close that's never judged, forgotten as gone,
+// as when the story is transferred before its event shows, which two
+// judgings on later passes find, keeps the epic open for good.
 func TestEpicCloseUntrusted(t *testing.T) {
 	t.Parallel()
 	lagged := func(f *githubtest.Fake) {
@@ -391,7 +509,7 @@ func TestEpicCloseUntrusted(t *testing.T) {
 				f.Advance(10 * time.Second)
 				f.AnswerOnce(func(r githubtest.Request) bool { return r.Method == http.MethodGet && r.Path == "/issues/3/timeline" }, http.StatusNotFound)
 			}
-		}, true},
+		}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -419,7 +537,7 @@ func TestEpicCloseUntrusted(t *testing.T) {
 			comments := len(f.State().Issues[0].Comments)
 			f.CloseBy(3, "owner")
 			iterate(t, d)
-			epicCloseChecked(t, f, comments, "Every child of this epic is closed, so I've closed it as completed. Its children: #2, #3.", 1004)
+			epicCloseChecked(t, f, comments, "completed", "Every child of this epic is closed, so I've closed it as completed. Its children: #2, #3.", 1004)
 		})
 	}
 }
@@ -540,7 +658,7 @@ func TestEpicCloseUnlabelled(t *testing.T) {
 			f.AddLabel(3, "owner", "stage:completed")
 			iterate(t, d)
 			if by == "owner" {
-				epicCloseChecked(t, f, comments, "Every child of this epic is closed, so I've closed it as completed. Its children: #2, #3.", 1004)
+				epicCloseChecked(t, f, comments, "completed", "Every child of this epic is closed, so I've closed it as completed. Its children: #2, #3.", 1004)
 				return
 			}
 			epicCloseOpen(t, f, from, "the pass after the owner's stage:completed")
@@ -618,6 +736,51 @@ func TestEpicCloseClosedAgain(t *testing.T) {
 			f.CloseBy(2, "owner")
 			epicCloseIterate(t, d, fails, "the pass after mallory's close")
 			epicCloseOpen(t, f, from, "the pass after mallory's close")
+		})
+	}
+}
+
+// An open issue the owner added below the epic by hand holds it open
+// (SPEC §7.3), and so does one whose link below it someone untrusted
+// removed: here mallory, a write collaborator, takes #4 from below the
+// epic once both stories closed. The epic stays open, with no write, and
+// a pass where nothing changed then costs only 304s; once the owner
+// closes #4, the pass closes the epic. The owner's own unlink of #4 lets
+// it go, so the pass after it closes the epic.
+func TestEpicCloseUnlinked(t *testing.T) {
+	t.Parallel()
+	for _, by := range []string{"mallory", "owner"} {
+		t.Run(by, func(t *testing.T) {
+			t.Parallel()
+			f, o := newFake(t), newOrigin(t)
+			doneParent(t, f, "epic", twoStories)
+			d := newDaemon(t, f, o, nil)
+			iterate(t, d)
+			extra := f.AddIssue("owner", "One more thing", "Added by hand.")
+			f.SetParent(extra, 1)
+			iterate(t, d)
+			f.CloseBy(2, "owner")
+			f.CloseBy(3, "owner")
+			from := len(f.Writes())
+			for _, step := range []string{"both stories closed", "the pass after"} {
+				epicCloseIterate(t, d, false, step)
+				epicCloseOpen(t, f, from, step)
+			}
+			comments := len(f.State().Issues[0].Comments)
+			f.UnlinkBy(extra, by)
+			if by == "owner" {
+				iterate(t, d)
+				epicCloseChecked(t, f, comments, "completed", "Every child of this epic is closed, so I've closed it as completed. Its children: #2, #3.", 1004)
+				return
+			}
+			for _, step := range []string{"the pass after mallory's unlink", "the pass after", "the pass after that"} {
+				epicCloseIterate(t, d, false, step)
+				epicCloseOpen(t, f, from, step)
+			}
+			doneUnchanged(t, f, d)
+			f.CloseBy(extra, "owner")
+			iterate(t, d)
+			epicCloseChecked(t, f, comments, "completed", "Every child of this epic is closed, so I've closed it as completed. Its children: #2, #3.", 1004)
 		})
 	}
 }

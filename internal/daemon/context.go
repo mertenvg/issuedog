@@ -128,8 +128,10 @@ func contextSort(ctx context.Context, s *github.Snapshot, appSlug string, d Dirt
 // contextAdmission returns who changed s's title and body after the issue
 // was admitted, if its author isn't trusted (the owner's option (a) on #6):
 // an approval approves what the approver read, not what the author writes
-// later. Each is the login of the change that taints it, or "" if it's
-// trusted as it stands. The App's issues, and trusted authors', are.
+// later. Each is "" if it's trusted as it stands, and else names who made
+// the change that taints it, as ivLogin does: a ghost is "someone
+// unnamed", never a login like "unknown". The App's issues, and trusted
+// authors', are trusted.
 //   - The body is tainted by an edit at or after the admission
 //     (ivAdmitted), unless the App made it, as when it wrote the spec. The
 //     last edit is the only one GitHub dates, but any later one taints it,
@@ -164,7 +166,7 @@ func contextAdmission(ctx context.Context, a *Applier, s *github.Snapshot, d Dir
 	}
 	after := func(t time.Time) bool { return !admitted || !t.Before(at) }
 	if e := s.BodyEdit; !e.At.IsZero() && !state.IsApp(e.By, a.AppSlug) && after(e.At) {
-		bodyBy = login(e.By)
+		bodyBy = ivLogin(e.By.Login)
 	}
 	var rename *gogithub.Timeline
 	for _, e := range timeline {
@@ -183,7 +185,7 @@ func contextAdmission(ctx context.Context, a *Applier, s *github.Snapshot, d Dir
 		return "", "", false, fmt.Errorf("who renamed the issue: %w", err)
 	}
 	if !trusted {
-		titleBy = login(actor)
+		titleBy = ivLogin(actor.Login)
 	}
 	return titleBy, bodyBy, !admitted, nil
 }

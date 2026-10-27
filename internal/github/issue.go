@@ -36,6 +36,10 @@ type Snapshot struct {
 	Type string
 	// Parent is the parent issue's number, or 0 if there is none.
 	Parent int
+	// ParentRepo is "owner/name" for a parent in another repo, as its
+	// repository_url names it, else "": from the parent's GET Snapshot
+	// makes anyway, so it costs no request. Parent is that repo's number.
+	ParentRepo string
 	// Blocking is how many open issues this one blocks, through blocked-by
 	// links in any repo, as the issue_dependencies_summary of the issue GET
 	// Snapshot makes anyway gives it, so it costs no request of its own
@@ -46,6 +50,10 @@ type Snapshot struct {
 	// Deleted are the issue's CommentDeletedEvents, oldest first: read
 	// with the comments, in the same GraphQL query (#186).
 	Deleted []DeletedComment
+	// SubIssueRemovals are the issue's SubIssueRemovedEvents that name a
+	// sub-issue, oldest first: read with the comments, in the same GraphQL
+	// query, for an epic's close (SPEC §7.3).
+	SubIssueRemovals []SubIssueRemoval
 	// SettingsEvent is the ID of the newest change to a model or effort
 	// label that stands, or 0: not read with the issue, but set when the
 	// daemon checks its labels (CheckLabels).
@@ -225,11 +233,23 @@ func (c *Client) Snapshot(ctx context.Context, owner, repo string, number int) (
 		return nil, fmt.Errorf("parent of %s/%s#%d: %w", owner, repo, number, err)
 	default:
 		s.Parent = parent.GetNumber()
+		s.ParentRepo = parentRepo(owner, repo, parent.GetRepositoryURL())
 	}
 	if err := c.readComments(ctx, owner, repo, s); err != nil {
 		return nil, fmt.Errorf("snapshot of %s/%s#%d: %w", owner, repo, number, err)
 	}
 	return s, nil
+}
+
+// parentRepo is Snapshot.ParentRepo for a parent whose repository_url is
+// url, of the issue of owner/repo: "" for that repo, or a url that names
+// none, as GitHub's names compare in any case, and else the repo it names.
+func parentRepo(owner, repo, url string) string {
+	_, at, ok := strings.Cut(url, "/repos/")
+	if !ok || strings.EqualFold(at, owner+"/"+repo) {
+		return ""
+	}
+	return at
 }
 
 // TypeOf is Snapshot.Type for an issue as REST gives it.

@@ -216,6 +216,8 @@ func (r *recorder) Write(b []byte) (int, error) {
 // state= says otherwise, from since= on, by number or, for sort=updated, by
 // update in direction=, each with its issue_dependencies_summary
 // (withDependencies). A transferred issue isn't listed (transfer.go).
+// A sub-issue is listed with its parent's URL as its parent_issue_url, as
+// GitHub lists it, and an issue with no parent with none.
 func (f *Fake) listIssues(c *call) (int, any) {
 	q := c.r.URL.Query()
 	var from time.Time
@@ -232,7 +234,11 @@ func (f *Fake) listIssues(c *call) (int, any) {
 	out := []gogithub.Issue{}
 	for _, is := range f.issues {
 		if is.listed() && (state == "all" || is.GetState() == state) && !is.GetUpdatedAt().Before(from) {
-			out = append(out, f.withDependencies(is))
+			listed := f.withDependencies(is)
+			if is.parent != 0 {
+				listed.ParentIssueURL = new(fmt.Sprintf("%s/repos/%s/issues/%d", f.srv.URL, f.repo, is.parent))
+			}
+			out = append(out, listed)
 		}
 	}
 	if q.Get("sort") == "updated" {

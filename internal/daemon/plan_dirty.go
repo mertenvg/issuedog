@@ -25,6 +25,13 @@ const planDirtyText = "A comment of mine was edited without approval, and it hel
 const specDirtyText = "A comment of mine was edited without approval, and it held this issue's move to `spec-review`, so I've recorded the move again here. " +
 	"It's no revision of the spec: to approve the spec, approve the next revision I post. To send it back, post `/revise <notes>`, or any other comment."
 
+// planResumeDirtyText is the App's line above the /resume move back to
+// plan-review from held that it records again (reviewDirtyRestore). The
+// dirty comment is an App comment after the latest plan revision, so that
+// revision is hidden (state.PlanHidden), as /approve's reply says.
+const planResumeDirtyText = "A comment of mine was edited without approval, and it held this issue's move back to `plan-review` from `held`, so I've recorded the move again here. " +
+	"That comment may have hidden a newer plan revision, so I can't approve the plan. To get a new plan, post `/revise <notes>`, or any other comment."
+
 // planDirtyKeyPrefix and specDirtyKeyPrefix start the event key of a move
 // reviewDirtyRestore records again, before the ID of the dirty comment
 // that hid it. No label event's ID, which an override's event= names,
@@ -34,10 +41,10 @@ const (
 	specDirtyKeyPrefix = "spec-dirty-"
 )
 
-// reviewDirtyMove is a stage run's move to a review stage, which the App
-// comment of the stage's revision holds, that reviewDirtyRestore records
-// again once that comment is dirty: the move, its trigger in the table,
-// the record's key prefix and its text.
+// reviewDirtyMove is an App move to a review stage, held by an App
+// comment, that reviewDirtyRestore records again once that comment is
+// dirty: the move, its trigger in the table, the record's key prefix and
+// its text.
 type reviewDirtyMove struct {
 	from, to state.Stage
 	trigger  state.Trigger
@@ -46,22 +53,27 @@ type reviewDirtyMove struct {
 }
 
 // reviewDirtyMoves are the moves reviewDirtyRestore records again: the
-// interviewer's spec, posted with its spec revision (SPEC §7.4), and the
-// planner's plan comment, a plan revision (SPEC §11.4).
+// interviewer's spec, posted with its spec revision (SPEC §7.4), the
+// planner's plan comment, a plan revision (SPEC §11.4), and /resume's
+// move back to plan-review from held, in the App's comment applying it
+// (SPEC §6.4). No two have the same from and to.
 var reviewDirtyMoves = []reviewDirtyMove{
 	{state.Clarifying, state.SpecReview, state.TriggerSpecWritten, specDirtyKeyPrefix, specDirtyText},
 	{state.Planning, state.PlanReview, state.TriggerPlanValid, planDirtyKeyPrefix, planDirtyText},
+	{state.Held, state.PlanReview, state.TriggerResume, planDirtyKeyPrefix, planResumeDirtyText},
 }
 
 // reviewDirtyRestore records again, in an App comment of its own, the
-// App's move to a review stage that a dirty App comment hid (#315, #447),
-// before the label rules act on events: a spec revision comment carries
-// the interviewer's move to spec-review, and a plan comment the planner's
-// move to plan-review (SPEC §7.4, §11.4), and once anyone but the App
-// edits it, it's dirty, and its markers no longer count (SPEC §5.1). The
-// label rules would then put the label back to the stage before, with a
-// disagreement, and the stage would run again, where SPEC §7.4 has the
-// daemon post nothing. It reports whether it recorded the move, so the
+// App's move to a review stage that a dirty App comment hid (#315, #447,
+// #485), before the label rules act on events: a spec revision comment
+// carries the interviewer's move to spec-review, a plan comment the
+// planner's move to plan-review (SPEC §7.4, §11.4), and the comment
+// applying a /resume its move back to plan-review from held (SPEC §6.4),
+// and once anyone but the App edits it, it's dirty, and its markers no
+// longer count (SPEC §5.1). The label rules would then put the label back
+// to the stage before, with a disagreement, and the stage would run again,
+// where SPEC §7.4 has the daemon post nothing, or the issue would be held
+// again, its /resume used. It reports whether it recorded the move, so the
 // events are left alone: the label shows the review stage already.
 //
 // It acts only on a disagreement that is no override and not the App's
@@ -71,9 +83,11 @@ var reviewDirtyMoves = []reviewDirtyMove{
 //     already, and a trusted one would be an override: the App set it,
 //     with its own move there (discRestore relies on the same);
 //   - the markers left, in clean content, show the stage that move was
-//     from, clarifying or planning, but not the clarifying after a
+//     from, clarifying, planning or held, but not the clarifying after a
 //     discussion hold, whose moves carry origin and may name the /revise
-//     that waited through it (SPEC §6.4), which only the dirty text holds;
+//     that waited through it (SPEC §6.4), which only the dirty text holds.
+//     Held must be from that review stage, its first hold's at, which a
+//     /resume goes back to (heldStackResume);
 //   - an App comment after the latest move they show is dirty, so it may
 //     be the one that held the move.
 //
@@ -82,22 +96,33 @@ var reviewDirtyMoves = []reviewDirtyMove{
 // label shows. A write collaborator who isn't trusted holds the issue
 // instead (discRestore, asked first), as for any edit of theirs to the
 // App's content (SPEC §6.4). The move is keyed event=<prefix><id>, by the
-// newest such dirty comment. Its seen is the bound of the latest move the
-// markers show, the most the hidden move's seen can be known to cover, so
-// a comment no run read stays a revision request at the review stage, as
-// before the edit: one posted during the run, before the dirty comment, as
-// well as one after it (SPEC §7.4, #318). One the App 👍'd as an answer
-// before the dirty comment was posted may be one the run read, and isn't
-// one (reviewDirtyRead). The move is in the table's row for the stage
-// run's own move, so a type that has no such move gets no record, and the
+// newest such dirty comment. A stage run's move's seen is the bound of the
+// latest move the markers show, the most the hidden move's seen can be
+// known to cover, so a comment no run read stays a revision request at
+// the review stage, as before the edit: one posted during the run, before
+// the dirty comment, as well as one after it (SPEC §7.4, #318). One the
+// App 👍'd as an answer before the run's move was posted is one the run
+// read, and isn't one (reviewDirtyRead). A /resume's move carries the
+// bound from before the hold (state.HeldStack.Seen), as resume's does, so
+// its seen is the hidden move's own. It also carries resolved, which
+// bounds the discussion triggers (discFloor) as the hidden move's cmd did:
+// when the /resume it applied was posted, floored at the hold
+// (reviewDirtyResumeAt). So a trigger after the /resume still holds the
+// issue, even one before the App's comment applying it, and not only one
+// after the record (#566, #595), while one the /resume accepted doesn't
+// hold it again. The time is in the record, so it stands once the dirty
+// comment is deleted. The move is in the table's row for
+// the hidden move, so a type that has no such move gets no record, and the
 // disagreement stands, as before. The move's comment is added to s, so
 // Derive reads the review stage from it in the same pass, and a replay
 // finds it and records nothing more. Should anyone edit it, it's dirty in
 // turn, and recorded again, by its own ID. No revision is in it: at
 // plan-review nothing is approvable until a new plan, as the digest item
-// (waitPlanApprovalLines) and /approve's reply (planRejection) say, and at
-// spec-review ReviewVisit posts the next spec revision.
-func (a *Applier) reviewDirtyRestore(ctx context.Context, s *github.Snapshot, d Dirt, events []github.LabelEvent) (bool, error) {
+// (waitPlanApprovalLines) and /approve's reply (planRejection) say, since
+// the dirty comment is the plan comment or an App comment after the latest
+// plan revision, and at spec-review ReviewVisit posts the next spec
+// revision.
+func (a *Applier) reviewDirtyRestore(ctx context.Context, s *github.Snapshot, trust github.Trust, d Dirt, events []github.LabelEvent) (bool, error) {
 	if !slices.ContainsFunc(events, func(ev github.LabelEvent) bool { return ev.Kind == github.LabelDisagreement }) ||
 		slices.ContainsFunc(events, func(ev github.LabelEvent) bool { return ev.Kind == github.LabelOverride || ev.Unfinished }) {
 		return false, nil
@@ -116,15 +141,12 @@ func (a *Applier) reviewDirtyRestore(ctx context.Context, s *github.Snapshot, d 
 	if len(stages) != 1 {
 		return false, nil
 	}
-	i := slices.IndexFunc(reviewDirtyMoves, func(rm reviewDirtyMove) bool { return rm.to == stages[0] })
-	if i < 0 {
+	is := state.Derive(s, a.AppSlug, d.Has)
+	i := slices.IndexFunc(reviewDirtyMoves, func(rm reviewDirtyMove) bool { return rm.to == stages[0] && rm.from == is.Stage })
+	if i < 0 || is.AfterHold() || is.Stage == state.Held && is.HeldStack.At != stages[0] {
 		return false, nil
 	}
 	rm := reviewDirtyMoves[i]
-	is := state.Derive(s, a.AppSlug, d.Has)
-	if is.Stage != rm.from || is.AfterHold() {
-		return false, nil
-	}
 	var hid int64
 	for _, c := range s.Comments {
 		if c.ID > is.TransitionComment && state.IsApp(c.Author, a.AppSlug) && d.Has(c.ID) {
@@ -134,8 +156,18 @@ func (a *Applier) reviewDirtyRestore(ctx context.Context, s *github.Snapshot, d 
 	if hid == 0 {
 		return false, nil
 	}
+	fields := map[string]string{state.FieldSeen: strconv.FormatInt(is.Round, 10)}
+	if rm.from == state.Held {
+		// The bound from before the hold, as resume's move carries, and
+		// the /resume's time as resolved, the discussion floor (discFloor).
+		at, err := a.reviewDirtyResumeAt(ctx, s, trust, d, is, hid)
+		if err != nil {
+			return false, fmt.Errorf("record again the move to %s that comment %d hid: %w", rm.to, hid, err)
+		}
+		fields = state.HeldStackFields(map[string]string{resolveField: strconv.FormatInt(at.Unix(), 10)}, is.HeldStack.Seen)
+	}
 	m := Move{To: rm.to, Trigger: rm.trigger, Key: state.Key{Field: "event", ID: rm.prefix + strconv.FormatInt(hid, 10)},
-		Fields: map[string]string{state.FieldSeen: strconv.FormatInt(is.Round, 10)}, Text: rm.text}
+		Fields: fields, Text: rm.text}
 	// Checked here, so a move the table lacks reports no state error of
 	// its own: the disagreement stands for it, as before.
 	if why, err := noRow(is, m); err != nil {
@@ -152,34 +184,102 @@ func (a *Applier) reviewDirtyRestore(ctx context.Context, s *github.Snapshot, d 
 	return true, nil
 }
 
+// reviewDirtyResumeAt returns the resolved time for the record of a
+// /resume's move back to plan-review from held, on s in state is, keyed by
+// hid, the newest dirty App comment after the hold (reviewDirtyRestore).
+// It is when the /resume that move applied was posted, the bound the
+// move's cmd gave the discussion triggers (resolveActAt), floored at the
+// hold: when the latest move into or within held that the markers show was
+// posted. The cmd can't be read, so the /resume is the newest clean one on
+// s below hid by a user trust trusts that the App didn't reject
+// (resolveCommands, resolveRejected), as the hidden move is in hid or an
+// earlier comment, after its /resume.
+//
+// So a trigger after the /resume holds the issue, even one between it and
+// the App's comment applying it, which that pass's read missed, or one
+// before a later dirty App comment once that comment is deleted (#595).
+// One before it doesn't hold the issue again: a /resume accepts every open
+// trigger made before it and restores the hold's stage (SPEC §6.4), and no
+// record names a comment made during an owner hold, so the hold's time
+// alone would count that one again. A /resume from before the hold ended
+// an earlier hold, so the hold's time stands instead. So it does with no
+// such /resume, as once it's deleted, or when one on another issue ended
+// the hold, failing closed: a trigger during the hold then holds the issue.
+func (a *Applier) reviewDirtyResumeAt(ctx context.Context, s *github.Snapshot, trust github.Trust, d Dirt, is state.Issue, hid int64) (time.Time, error) {
+	at := s.CreatedAt // the body's, should the hold's move be in it
+	if i := slices.IndexFunc(s.Comments, func(c github.Comment) bool { return c.ID == is.TransitionComment }); i >= 0 {
+		at = s.Comments[i].CreatedAt
+	}
+	ids, err := a.resolveCommands(ctx, s, d, trust, "resume", 0, hid)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("the /resume before comment %d: %w", hid, err)
+	}
+	ids = slices.DeleteFunc(ids, func(id int64) bool { return resolveRejected(is, id) })
+	if len(ids) == 0 {
+		return at, nil
+	}
+	i := slices.IndexFunc(s.Comments, func(c github.Comment) bool { return c.ID == ids[len(ids)-1] })
+	if r := s.Comments[i].CreatedAt; r.After(at) {
+		return r, nil
+	}
+	return at, nil
+}
+
 // reviewDirtyRead reports whether c, a revision request the App 👍'd at
-// up, may be input that the stage run read whose move a dirty comment hid
-// (reviewDirtyRestore): a clean record of that move names a comment that
-// c was posted before, and the App 👍'd c before that comment was posted,
-// as step 1 does an answer before the run starts (SPEC §7.4). One 👍'd
-// after it was 👍'd during a read that didn't list the move yet, so no run
-// read it, and it's a request (#318). With the hiding comment gone, it may
-// have been read. GitHub's times are to the second, so a 👍 in that
-// comment's second counts as after it.
-func reviewDirtyRead(s *github.Snapshot, is state.Issue, c github.Comment, up time.Time) bool {
-	for _, m := range is.Markers {
-		if m.Kind != "transition" {
+// up, is input that the stage run read whose move a dirty comment hid
+// (reviewDirtyRestore), and if so, when the clean record of that move was
+// posted, which stands for the run's use of c (usedAt): an edit since gets
+// the edited reply (SPEC §6.2). It is when such a record names a comment
+// that c was posted before, and the App 👍'd c before any dirty App
+// comment after c, up to that one, was posted. One of those is the one
+// that held the run's move, so the 👍 came before the move. Step 1 👍s an
+// answer before the run starts, which reads it, or while a run's result
+// waits to be applied, after the run read up to its lease's seen: then the
+// apply drops the result, as the issue has new input, if step 1's read or
+// its own lists the answer (Runs.newInput, SPEC §8.2). So no run but one
+// that read c moved the issue after that 👍. One 👍'd after was 👍'd during
+// a read that didn't list the move yet, so no run read it, and it's a
+// request (#318). With the hiding comment gone, and no other dirty one
+// after c, it may have been read. GitHub's times are to the second, so a
+// 👍 in that comment's second counts as after it. A /resume's record
+// carries the hidden move's own seen, so it tells nothing more.
+func reviewDirtyRead(s *github.Snapshot, appSlug string, d Dirt, c github.Comment, up time.Time) (time.Time, bool) {
+	for _, r := range s.Comments {
+		if d.Has(r.ID) {
 			continue
 		}
-		var id string
-		for _, rm := range reviewDirtyMoves {
-			if v, ok := strings.CutPrefix(m.Fields["event"], rm.prefix); ok && m.Fields["to"] == string(rm.to) {
-				id = v
+		for _, m := range github.TrustedMarkers(r.Author, r.Body, appSlug) {
+			hid, ok := reviewDirtyHid(m)
+			if !ok || c.ID >= hid {
+				continue // no record of a run's move, or c came after the comment it names
+			}
+			i := slices.IndexFunc(s.Comments, func(x github.Comment) bool {
+				return x.ID > c.ID && x.ID <= hid && state.IsApp(x.Author, appSlug) && d.Has(x.ID)
+			})
+			if i < 0 || up.Before(s.Comments[i].CreatedAt) {
+				return r.CreatedAt, true
 			}
 		}
-		hid, err := strconv.ParseInt(id, 10, 64)
-		if err != nil || c.ID >= hid {
-			continue // no record, or c came after the comment it names
+	}
+	return time.Time{}, false
+}
+
+// reviewDirtyHid returns the ID of the dirty comment that m, a transition
+// marker, names as the one that hid a stage run's move to a review stage,
+// which reviewDirtyRestore recorded again, or reports that m is no such
+// record.
+func reviewDirtyHid(m github.Marker) (int64, bool) {
+	if m.Kind != "transition" {
+		return 0, false
+	}
+	for _, rm := range reviewDirtyMoves {
+		v, ok := strings.CutPrefix(m.Fields["event"], rm.prefix)
+		if !ok || rm.from == state.Held || m.Fields["from"] != string(rm.from) || m.Fields["to"] != string(rm.to) {
+			continue
 		}
-		i := slices.IndexFunc(s.Comments, func(x github.Comment) bool { return x.ID == hid })
-		if i < 0 || up.Before(s.Comments[i].CreatedAt) {
-			return true
+		if hid, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return hid, true
 		}
 	}
-	return false
+	return 0, false
 }

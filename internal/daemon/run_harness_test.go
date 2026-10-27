@@ -355,6 +355,92 @@ func TestAnswerAfterFailedApply(t *testing.T) {
 	}
 }
 
+// After a failed apply, step 1 👍s an answer that the resumed apply's own
+// read doesn't list, as a read that lags behind step 1's wouldn't yet:
+// the fake drops the answer before Work. The apply drops the result all
+// the same, as step 1's read lists the answer, so no move lands with a
+// seen below an answer the App 👍'd before it, which a dirty record of the
+// move couldn't tell from one the run read (SPEC §8.2, #485).
+func TestAnswerAfterLaggedApply(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	answer := interview(f)
+	g := newRig(t, f, newOrigin(t), t.TempDir())
+	g.claude(okOut, 0)
+	g.stage.applyErr = errors.New("502 bad gateway")
+	if err := g.d.Iterate(context.Background()); err == nil || g.lease().ApplyFailures != 1 {
+		t.Fatalf("the first pass = %v, lease %+v; want the apply error, its lease kept", err, g.lease())
+	}
+	g.stage.applyErr = nil
+	id := f.AddComment(1, "owner", "1b too")
+	ready := g.ready(1)
+	if is := f.State().Issues[0]; !slices.Contains(is.Comments[len(is.Comments)-1].Reactions, app+" +1") {
+		t.Fatalf("comments %+v; want the answer 👍'd", is.Comments)
+	}
+	f.DeleteComment(id)
+	if err := g.r.Work(context.Background(), ready); err != nil {
+		t.Fatal(err)
+	}
+	if specApplied(f, 1, "run1", answer) || g.lease().RunID != "" || g.runs() != 1 {
+		t.Errorf("run1 applied %t, lease %+v, %d runs; want run1 dropped, and no run yet", specApplied(f, 1, "run1", answer), g.lease(), g.runs())
+	}
+}
+
+// As TestAnswerAfterLaggedApply, but step 1 fails on the issue once it has
+// 👍'd the answer: GitHub applies the 👍 and answers with a 500. The issue
+// isn't ready, and step 1 may have left a command on it unhandled, so the
+// result isn't applied that pass: it waits with its lease, counted as a
+// failure to apply, and no other run starts (SPEC §8.2, #566). The next
+// pass's step 1 succeeds, and the resumed apply's own read doesn't list
+// the answer, but step 1's does, so the apply drops the result all the
+// same.
+func TestAnswerAfterLaggedApplyStepFailed(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	answer := interview(f)
+	g := newRig(t, f, newOrigin(t), t.TempDir())
+	g.claude(okOut, 0)
+	g.stage.applyErr = errors.New("502 bad gateway")
+	if err := g.d.Iterate(context.Background()); err == nil || g.lease().ApplyFailures != 1 {
+		t.Fatalf("the first pass = %v, lease %+v; want the apply error, its lease kept", err, g.lease())
+	}
+	g.stage.applyErr = nil
+	id := f.AddComment(1, "owner", "1b too")
+	thumb := len(f.Writes()) + 1
+	f.FailWriteAfter(thumb)
+	g.d.Work = func(ctx context.Context, ready []daemon.Ready) error {
+		if slices.ContainsFunc(ready, func(rd daemon.Ready) bool { return rd.S.Number == 1 }) {
+			t.Errorf("ready %+v; want #1 left out, as its step 1 failed", ready)
+		}
+		return g.r.Work(ctx, ready)
+	}
+	if err := g.d.Iterate(context.Background()); err == nil || !strings.Contains(err.Error(), "500") {
+		t.Fatalf("the second pass = %v; want step 1's failed 👍", err)
+	}
+	if w := f.Writes(); len(w) < thumb || !w[thumb-1].Failed || !strings.Contains(w[thumb-1].Path, "/reactions") {
+		t.Fatalf("writes %+v; want write %d the 👍, failed", w, thumb)
+	}
+	if specApplied(f, 1, "run1", answer) || g.lease().RunID != "run1" || g.lease().ApplyFailures != 2 || g.runs() != 1 {
+		t.Errorf("run1 applied %t, lease %+v, %d runs; want run1 waiting, its lease kept with 2 failures to apply, and no run yet",
+			specApplied(f, 1, "run1", answer), g.lease(), g.runs())
+	}
+
+	f.FailWriteAfter(0)
+	g.d.Work = func(ctx context.Context, ready []daemon.Ready) error {
+		if !slices.ContainsFunc(ready, func(rd daemon.Ready) bool { return rd.S.Number == 1 }) {
+			t.Errorf("ready %+v; want #1, as its step 1 succeeded", ready)
+		}
+		f.DeleteComment(id)
+		return g.r.Work(ctx, ready)
+	}
+	if err := g.d.Iterate(context.Background()); err != nil {
+		t.Fatalf("the third pass = %v; want no error", err)
+	}
+	if specApplied(f, 1, "run1", answer) || g.lease().RunID != "" || g.runs() != 1 {
+		t.Errorf("run1 applied %t, lease %+v, %d runs; want run1 dropped, and no run yet", specApplied(f, 1, "run1", answer), g.lease(), g.runs())
+	}
+}
+
 // The Unlabeled stage runs only in a pass where no registered stage ran,
 // on the newest issue with no stage label first, one a pass.
 func TestUnlabeledRunsWhenNoStageRan(t *testing.T) {
