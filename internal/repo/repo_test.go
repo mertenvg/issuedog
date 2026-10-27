@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -482,8 +483,12 @@ func TestFetchBundleSHA256(t *testing.T) {
 }
 
 // TestFetchBundleRefuses refuses bad run IDs and starts, files that aren't
-// bundles of a run's commits past its start, and objects fsck rejects. Each
-// leaves the refs as they were, and the error says why.
+// bundles of a run's commits past its start, objects fsck rejects or that
+// name objects the pack lacks, and a run's ref another fetch wrote after
+// the read. Each leaves the refs as they were, the other fetch's aside,
+// and the error says why. Each leaves nothing in the bare repo's objects
+// dir either, while the one that lost the race keeps its pack, which the
+// other fetch's ref may need.
 func TestFetchBundleRefuses(t *testing.T) {
 	t.Parallel()
 	rem, r := synced(t)
@@ -547,6 +552,35 @@ func TestFetchBundleRefuses(t *testing.T) {
 	tagged := rem.bundle(start + "..refs/tags/t1")
 	renameRef(tagged, "refs/tags/t1", "HEAD")
 
+	// A branch named HEAD, refs/heads/HEAD, and no HEAD: a bundle of the
+	// branch, with its ref renamed so.
+	branchHEAD := rem.bundle(start + "..feat")
+	renameRef(branchHEAD, "refs/heads/feat", "refs/heads/HEAD")
+
+	// A commit past the start whose pack lacks the blob its tree names: a
+	// bundle written by hand around a pack of only the commit and its tree.
+	run(t, rem.work, "checkout", "--quiet", "--detach", start)
+	blobless := rem.commitOnly("blob.txt", "blob\n")
+	blob := run(t, rem.work, "rev-parse", blobless+":blob.txt")
+	pack := exec.Command("git", "pack-objects", "--quiet", "--stdout")
+	pack.Dir, pack.Env = rem.work, gitEnv(os.Environ(), "", "")
+	pack.Stdin = strings.NewReader(blobless + "\n" + run(t, rem.work, "rev-parse", blobless+"^{tree}") + "\n")
+	packData, err := pack.Output()
+	if err != nil {
+		t.Fatalf("pack-objects: %v", err)
+	}
+	noBlob := filepath.Join(t.TempDir(), "run.bundle")
+	header := "# v2 git bundle\n-" + start + " main\n" + blobless + " HEAD\n\n"
+	if err := os.WriteFile(noBlob, append([]byte(header), packData...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A commit past the start that passes every check, for a fetch that
+	// another fetch of the run beats to the run's ref.
+	run(t, rem.work, "checkout", "--quiet", "--detach", start)
+	rem.commitOnly("raced.txt", "raced\n")
+	raced := rem.bundle(start + "..HEAD")
+
 	// A commit past the start whose author line fsck rejects.
 	tree := run(t, rem.work, "rev-parse", start+"^{tree}")
 	body := "tree " + tree + "\nparent " + start + "\nauthor bad <x> notadate\ncommitter t <t@t> 1 +0000\n\nbad\n"
@@ -562,6 +596,7 @@ func TestFetchBundleRefuses(t *testing.T) {
 	tests := []struct {
 		name, path, runID, start string
 		want                     string // in the error
+		raced                    bool   // another fetch writes the run's ref, at the start, just before this one does
 	}{
 		{name: "not a bundle", path: notBundle, runID: "r", start: start, want: "does not look like a v2 or v3 bundle"},
 		{name: "missing file", path: filepath.Join(t.TempDir(), "none"), runID: "r", start: start, want: "verify bundle"},
@@ -573,6 +608,9 @@ func TestFetchBundleRefuses(t *testing.T) {
 		{name: "two HEADs", path: twoHeads, runID: "r", start: start, want: "want one HEAD"},
 		{name: "HEAD a tag", path: tagged, runID: "r", start: start, want: "isn't a commit"},
 		{name: "fsck", path: broken, runID: "r", start: start, want: "badDate"},
+		{name: "branch named HEAD", path: branchHEAD, runID: "r", start: start, want: "want one HEAD"},
+		{name: "missing blob", path: noBlob, runID: "r", start: start, want: "did not receive expected object " + blob},
+		{name: "run ref written since the read", path: raced, runID: "r", start: start, want: "reference already exists", raced: true},
 		{name: "empty run ID", path: atStart, runID: "", start: start, want: "invalid run ID"},
 		{name: "run ID path", path: atStart, runID: "a/b", start: start, want: "invalid run ID"},
 		{name: "run ID dot", path: atStart, runID: ".r", start: start, want: "invalid run ID"},
@@ -586,6 +624,16 @@ func TestFetchBundleRefuses(t *testing.T) {
 	want := refs(t, r)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			wantRefs, runRef := want, RunsRef+tt.runID
+			if tt.raced {
+				wantRefs += "\n" + start + " " + runRef
+				r.beforeRunRef = func() { run(t, r.dir, "update-ref", runRef, start) }
+				defer func() {
+					r.beforeRunRef = nil
+					run(t, r.dir, "update-ref", "-d", runRef)
+				}()
+			}
+			before := objectFiles(t, r)
 			head, err := r.FetchBundle(ctx, tt.path, tt.runID, tt.start)
 			if err == nil {
 				t.Fatalf("FetchBundle = %q, want an error", head)
@@ -593,11 +641,60 @@ func TestFetchBundleRefuses(t *testing.T) {
 			if !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("FetchBundle err = %v, want it to contain %q", err, tt.want)
 			}
-			if got := refs(t, r); got != want {
-				t.Errorf("refs after a refused fetch =\n%s\nwant\n%s", got, want)
+			if got := refs(t, r); got != wantRefs {
+				t.Errorf("refs after a refused fetch =\n%s\nwant\n%s", got, wantRefs)
+			}
+			after := objectFiles(t, r)
+			if !tt.raced {
+				if !slices.Equal(after, before) {
+					t.Errorf("a refused fetch left objects behind: %q, then %q", before, after)
+				}
+				return
+			}
+			// The other fetch's ref may need the pack this one moved in,
+			// so it stays, and nothing else does.
+			var added []string
+			for _, f := range after {
+				if !slices.Contains(before, f) {
+					added = append(added, f)
+				}
+			}
+			for _, f := range added {
+				if filepath.Dir(f) != "pack" || !strings.HasPrefix(filepath.Base(f), "pack-") {
+					t.Errorf("a fetch that lost the race to the run's ref left %s, which isn't a pack", f)
+				}
+			}
+			if len(added) == 0 {
+				t.Errorf("a fetch that lost the race to the run's ref kept no pack, so the test shows nothing: %q", after)
 			}
 		})
 	}
+}
+
+// objectFiles lists the entries under the bare repo's objects dir, dirs
+// and files, relative to it, leaving out its info and pack dirs
+// themselves.
+func objectFiles(t *testing.T, r *Repo) []string {
+	t.Helper()
+	objects := filepath.Join(r.dir, "objects")
+	var entries []string
+	err := filepath.WalkDir(objects, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(objects, path)
+		if err != nil {
+			return err
+		}
+		if rel != "." && rel != "info" && rel != "pack" {
+			entries = append(entries, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entries
 }
 
 // TestOwnRefs reads, moves and deletes a task's head under refs/issuedog/.

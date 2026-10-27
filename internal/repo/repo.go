@@ -56,6 +56,9 @@ var redirected = regexp.MustCompile(`The requested URL returned error: (3[0-9][0
 type Repo struct {
 	remote string
 	dir    string
+	env    []string // extra git environment, after gitEnv's: a quarantine's (quarantine)
+
+	beforeRunRef func() // for tests only: runs just before FetchBundle writes the run's ref
 }
 
 // New returns the bare clone at dir (for example /work/<repo>.git) of the
@@ -192,13 +195,15 @@ func (r *Repo) checkOwnRef(ctx context.Context, ref string) error {
 // ref.
 //
 // git bundle verify checks the file is a bundle whose prerequisites the
-// bare repo has. git index-pack --strict then stores its objects, checking
-// each as fsck does, and that every object they name is there. (A git
-// fetch from a bundle checks no objects before git 2.48, whatever
-// fetch.fsckObjects says.) The ref is written only when the HEAD is a
-// commit that differs from start and has it in its history; otherwise the
-// error says why, and no ref is written. Like every call here, these run
-// with no hooks and no system or global config (gitEnv).
+// bare repo has. git index-pack --strict then stores its objects in a
+// quarantine, checking each as fsck does, and that every object they name
+// is there. (A git fetch from a bundle checks no objects before git 2.48,
+// whatever fetch.fsckObjects says.) The ref is written only when the HEAD
+// is a commit that differs from start and has it in its history; otherwise
+// the error says why, and no ref is written. The objects move into the
+// bare repo only once those checks pass, so a refused bundle leaves
+// nothing behind. Like every call here, these run with no hooks and no
+// system or global config (gitEnv).
 //
 // A run whose ref exists already gets that ref's commit back, and the file
 // isn't read, so fetching a run's bundle again writes nothing. A runID
@@ -222,23 +227,27 @@ func (r *Repo) FetchBundle(ctx context.Context, path, runID, start string) (stri
 	if head := strings.TrimSpace(string(out)); head != "" {
 		return head, nil
 	}
-	head, err := r.storeBundle(ctx, path)
+	head, err := r.storeBundle(ctx, path, start)
 	if err != nil {
 		return "", fmt.Errorf("fetch bundle of run %s: %w", runID, err)
 	}
-	if err := r.checkHead(ctx, head, start); err != nil {
-		return "", fmt.Errorf("fetch bundle of run %s: %w", runID, err)
+	if r.beforeRunRef != nil {
+		r.beforeRunRef()
 	}
-	// The empty old value means the ref mustn't exist yet.
+	// The empty old value means the ref mustn't exist yet, as another
+	// fetch of the run may have written it since the read above. The
+	// objects stay then: that fetch's ref may need the same pack.
 	if _, err := r.git(ctx, "", "update-ref", ref, head, ""); err != nil {
 		return "", fmt.Errorf("fetch bundle of run %s: write %s: %w", runID, ref, err)
 	}
 	return head, nil
 }
 
-// storeBundle verifies the bundle at path and stores its objects in the
-// bare repo, checked, and returns the object its HEAD names.
-func (r *Repo) storeBundle(ctx context.Context, path string) (head string, err error) {
+// storeBundle verifies the bundle at path, checks its objects and its HEAD
+// (checkHead) in a quarantine, then moves them into the bare repo, and
+// returns the commit its HEAD names. A bundle that fails a check leaves
+// nothing in the bare repo.
+func (r *Repo) storeBundle(ctx context.Context, path, start string) (head string, err error) {
 	// Not --quiet, which drops the list of missing prerequisites from the
 	// error. What it prints of the bundle's refs goes to stdout, unused.
 	if _, err := r.git(ctx, "", "bundle", "verify", "--", path); err != nil {
@@ -258,12 +267,75 @@ func (r *Repo) storeBundle(ctx context.Context, path string) (head string, err e
 	if err != nil {
 		return "", fmt.Errorf("bundle %s: %w", path, err)
 	}
+	dir, q, err := r.quarantine()
+	if err != nil {
+		return "", fmt.Errorf("bundle %s: %w", path, err)
+	}
+	defer func() {
+		if rerr := os.RemoveAll(dir); rerr != nil {
+			err = errors.Join(err, fmt.Errorf("remove quarantine: %w", rerr))
+		}
+	}()
 	// br is now at the pack. --fix-thin completes deltas against the
 	// prerequisites' objects, as git's own unbundle does.
-	if _, err := r.run(ctx, br, "", "index-pack", "--stdin", "--fix-thin", "--strict"); err != nil {
+	if _, err := q.run(ctx, br, "", "index-pack", "--stdin", "--fix-thin", "--strict"); err != nil {
+		return "", fmt.Errorf("store bundle %s: %w", path, err)
+	}
+	if err := q.checkHead(ctx, head, start); err != nil {
+		return "", fmt.Errorf("bundle %s: %w", path, err)
+	}
+	if err := r.migrate(dir); err != nil {
 		return "", fmt.Errorf("store bundle %s: %w", path, err)
 	}
 	return head, nil
+}
+
+// quarantine makes a dir in the bare repo's objects dir for new objects,
+// as git's receive-pack does, and returns it and a Repo whose git calls
+// store new objects there while reading the bare repo's too. Nothing else
+// sees them until migrate moves them in.
+func (r *Repo) quarantine() (string, *Repo, error) {
+	objects, err := filepath.Abs(filepath.Join(r.dir, "objects"))
+	if err != nil {
+		return "", nil, fmt.Errorf("quarantine: %w", err)
+	}
+	dir, err := os.MkdirTemp(objects, "tmp_objdir-incoming-")
+	if err != nil {
+		return "", nil, fmt.Errorf("create quarantine: %w", err)
+	}
+	q := &Repo{remote: r.remote, dir: r.dir, env: []string{
+		"GIT_OBJECT_DIRECTORY=" + dir,
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES=" + objects,
+	}}
+	return dir, q, nil
+}
+
+// migrate moves the packs index-pack wrote in the quarantine dir into the
+// bare repo's objects/pack, each .idx last, as git does, so git never sees
+// an index whose pack isn't there yet. A pack's name is its checksum, so
+// one already there by that name has the same bytes, and the rename keeps
+// them.
+func (r *Repo) migrate(dir string) error {
+	entries, err := os.ReadDir(filepath.Join(dir, "pack"))
+	if err != nil {
+		return fmt.Errorf("read quarantined packs: %w", err)
+	}
+	var names, indexes []string
+	for _, e := range entries {
+		switch name := e.Name(); {
+		case !strings.HasPrefix(name, "pack-"): // not a finished pack's file
+		case strings.HasSuffix(name, ".idx"):
+			indexes = append(indexes, name)
+		default:
+			names = append(names, name)
+		}
+	}
+	for _, name := range append(names, indexes...) {
+		if err := os.Rename(filepath.Join(dir, "pack", name), filepath.Join(r.dir, "objects", "pack", name)); err != nil {
+			return fmt.Errorf("move %s into the bare repo: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // bundleHead reads a bundle's header from br, up to the blank line before
@@ -333,7 +405,7 @@ func (r *Repo) git(ctx context.Context, token string, args ...string) ([]byte, e
 // run is git, with stdin as the command's input; nil gives it none.
 func (r *Repo) run(ctx context.Context, stdin io.Reader, token string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"--git-dir=" + r.dir}, args...)...)
-	cmd.Env = gitEnv(os.Environ(), r.remote, token)
+	cmd.Env = append(gitEnv(os.Environ(), r.remote, token), r.env...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, &stdout, &stderr
 	if err := cmd.Run(); err != nil {
