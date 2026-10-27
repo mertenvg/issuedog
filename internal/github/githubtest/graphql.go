@@ -46,15 +46,16 @@ func (f *Fake) serveGraphQL(w http.ResponseWriter, r *http.Request) {
 }
 
 // answered is every field graphql answers for the comments query, which a
-// query must name, with the one argument it checks (deletedFilter), so it
+// query must name, with the one argument it checks (eventsFilter), so it
 // can be sent as a query itself. answeredHistory, answeredPinned and answeredPin are the
 // same for the history query, the isPinned query and the pinIssue mutation.
 const (
 	answered = `query { repository { issue { id body lastEditedAt editor { login __typename }
 	comments { pageInfo { hasNextPage endCursor } nodes { id fullDatabaseId body createdAt updatedAt authorAssociation
 	lastEditedAt author { login __typename } editor { login __typename } } }
-	timelineItems(itemTypes: [COMMENT_DELETED_EVENT], first: 100) { pageInfo { hasNextPage endCursor } nodes { ... on CommentDeletedEvent {
-	id createdAt actor { login __typename } deletedCommentAuthor { login __typename } } } } } } }`
+	timelineItems(itemTypes: [COMMENT_DELETED_EVENT, SUB_ISSUE_REMOVED_EVENT], first: 100) { pageInfo { hasNextPage endCursor } nodes { __typename
+	... on CommentDeletedEvent { id createdAt actor { login __typename } deletedCommentAuthor { login __typename } }
+	... on SubIssueRemovedEvent { id createdAt actor { login __typename } subIssue { number repository { nameWithOwner } } } } } } } }`
 	answeredHistory = `query { nodes { id ... on Comment { userContentEdits {
 	pageInfo { hasNextPage endCursor } nodes { editedAt editor { login __typename } } } }
 	... on Issue { userContentEdits { nodes { diff } } } } }`
@@ -80,7 +81,7 @@ func (f *Fake) HistoryQueries() int {
 
 // graphql answers internal/github's comments query for the fake's repo,
 // paging comments by 100 and, as its timelineItems, CommentDeletedEvents
-// by 100 (deletedPage), its history query (see history), its isPinned
+// and SubIssueRemovedEvents by 100 (gqlEventsPage), its history query (see history), its isPinned
 // query and its pinIssue mutation (see pinIssue), each of which answers
 // an HTTP status alone under FailIsPinned or FailPinStatus. It refuses a query that
 // doesn't name every field in answered, or answeredHistory for a query of
@@ -221,11 +222,11 @@ func (f *Fake) graphql(c *call) (int, any) {
 	if to > from {
 		end = strconv.FormatInt(list[to-1].GetID(), 10)
 	}
-	if !deletedFilter.MatchString(req.Query) {
-		errs = append(errs, map[string]any{"message": "githubtest: the query's timelineItems doesn't ask for COMMENT_DELETED_EVENT alone"})
+	if !eventsFilter.MatchString(req.Query) {
+		errs = append(errs, map[string]any{"message": "githubtest: the query's timelineItems doesn't ask for COMMENT_DELETED_EVENT and SUB_ISSUE_REMOVED_EVENT alone"})
 		return reply(nil)
 	}
-	deleted, msg := deletedPage(is, v.DeletedCursor)
+	deleted, msg := gqlEventsPage(is, f.now, v.DeletedCursor)
 	if msg != "" {
 		errs = append(errs, map[string]any{"message": msg})
 		return reply(nil)
@@ -340,11 +341,12 @@ func actor(login string) any {
 }
 
 var (
-	// deletedFilter is the argument the comments query's timelineItems
-	// needs, which fields skips: the fake serves only the deletions.
-	deletedFilter = regexp.MustCompile(`timelineItems\(itemTypes:\s*\[COMMENT_DELETED_EVENT\],`)
-	queryArgs     = regexp.MustCompile(`\([^)]*\)`)
-	queryTokens   = regexp.MustCompile(`\.\.\.\s*on\s+\w+|[{}]|[A-Za-z_]\w*`)
+	// eventsFilter is the argument the comments query's timelineItems
+	// needs, which fields skips: the fake serves only the deletions and
+	// the removals of sub-issue links.
+	eventsFilter = regexp.MustCompile(`timelineItems\(itemTypes:\s*\[COMMENT_DELETED_EVENT,\s*SUB_ISSUE_REMOVED_EVENT\],`)
+	queryArgs    = regexp.MustCompile(`\([^)]*\)`)
+	queryTokens  = regexp.MustCompile(`\.\.\.\s*on\s+\w+|[{}]|[A-Za-z_]\w*`)
 )
 
 // fields returns the paths of the fields a query names, such as

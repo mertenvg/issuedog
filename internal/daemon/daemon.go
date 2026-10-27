@@ -95,6 +95,15 @@ type Daemon struct {
 	// digestRestartList).
 	startPolled bool
 
+	// stepRead are the snapshots step 1 ran on in this pass, by issue,
+	// whether it succeeded or not, or the issue was touched after: for
+	// the apply of a lease Work resumes (Runs.resume), as step 1 may have
+	// 👍'd an answer on one that the apply's own read doesn't list yet.
+	// On one whose step 1 didn't finish, the lease waits instead
+	// (step1Gaps), so only a touched issue's is read here. Nil outside
+	// Iterate's step 1 and Work.
+	stepRead map[int]*github.Snapshot
+
 	// digestRestartUnknown are the issues the digest may list items for
 	// that digestCache doesn't hold: each the start's first poll listed
 	// open, and each a poll listed closed with items cached, till step 1
@@ -113,9 +122,21 @@ type Daemon struct {
 	// children each waits on to close, after its last good step 1
 	// (epicclose.go).
 	epicCloseDue map[int][]int
+	// epicCloseHeld are the epics whose children have all closed that
+	// open issues hold open, by number, with those issues, each with the
+	// updated_at of the snapshot held of it then, or the zero time for
+	// none: each one's link below the epic someone untrusted removed
+	// (epicCloseUnlinked).
+	epicCloseHeld map[int]map[int]time.Time
+	// epicUnlinks are the issues whose snapshot named a parent that the
+	// next one read doesn't, by number, with that parent: one whose
+	// removal's event is late holds an epic open (epicUnlinkNote).
+	epicUnlinks map[int]epicUnlink
 
-	closingSeen map[int]closingListed   // closed issues whose close is judged, as they were listed then (closing.go)
-	closingDue  map[int]*gogithub.Issue // closed issues with a close to judge, as last listed (closingList)
+	closingSeen  map[int]closingListed   // closed issues whose close is judged, as they were listed then (closing.go)
+	closingDue   map[int]*gogithub.Issue // closed issues with a close to judge, as last listed (closingList)
+	closingGone  map[int]bool            // closed issues whose close's judging found them gone, with no good judging since (closingPass)
+	closingBelow map[int]int             // closed issues with a close to judge, or reopened by its judging, with the parent their last snapshot named, or else the poll listed (closingBelowSet)
 	// closedListed are the issues the poll last listed closed, never a
 	// pull request, for a finished story's children (digestDoneStands).
 	closedListed map[int]bool
@@ -284,6 +305,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			delete(d.stale, n)
 			continue
 		}
+		prev := d.snaps[n] // for a link it no longer shows (epicUnlinkNote)
 		delete(d.snaps, n)
 		delete(d.inputs, n)
 		if _, held := d.digest.titled[n]; held { // maybe the digest: read once judged (digestHistoryHold)
@@ -313,11 +335,14 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			errs = append(errs, err)
 			d.step1Gaps[n] = step1Gap{why: "its read failed"}
 		default:
+			d.epicUnlinkNote(prev, s)
 			d.snaps[n], read[n] = s, true
 			delete(d.stale, n)
 			delete(d.missing, n)
 		}
 	}
+	d.stepRead = map[int]*github.Snapshot{} // for a lease Work resumes
+	defer func() { d.stepRead = nil }()
 	// A command may write to other issues, such as a /hold's descendants,
 	// whose snapshots are then out of date: those skip step 1 and Work, and
 	// are read again next pass. But one whose items the digest may list
@@ -352,6 +377,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			continue
 		}
 		touches.begin()
+		d.stepRead[n] = s
 		// ReviewVisit, on an issue read again too, posts a revision for a body
 		// edit; it does nothing at any other stage than spec-review. The
 		// visit's Dirty calls ask trust about each editor once (#174).
@@ -569,8 +595,11 @@ func (d *Daemon) poll(ctx context.Context) error {
 			case is.IsPullRequest():
 			case d.digest.listed(a.AppSlug, is) || is.GetState() != "open": // a digest is never in the pipeline
 				if is.GetState() != "open" && !d.digest.has(n) {
-					// A close still to judge is kept (closing.go).
+					// A close still to judge is kept (closing.go), with
+					// the parent it was held open below, or else the
+					// one listed.
 					d.closingList(is, start, d.snaps[n] != nil && slices.ContainsFunc(d.snaps[n].Labels, isStageLabel))
+					d.closingBelowSet(n, d.snaps[n], parentOf(is.GetParentIssueURL()))
 				}
 				d.leave(n)
 			case changed(d.snaps[n], is):

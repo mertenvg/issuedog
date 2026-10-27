@@ -1124,7 +1124,12 @@ func (d *Daemon) digestCacheOf(n int) []waitItem {
 // listed closed (Daemon.closedListed), whose close was judged and
 // accepted (closingSeen) with no judging left to do (closingDue), and no
 // open snapshot names the story as its parent, such as an issue added
-// below it by hand. It's judged only from what the poll listed and the
+// below it by hand, nor a closed one the poll hasn't listed closed yet
+// (closingUnsettled), and no issue whose last snapshot held named it has
+// closed since with its close still to judge, or been reopened by that
+// judging and not listed open yet (closingBelowSet): so an untrusted close
+// of an issue added by hand keeps it out till that close is judged, as a
+// child's does (SPEC §7.3). It's judged only from what the poll listed and the
 // snapshots it read, and makes no request: so a child filed this pass,
 // which no poll listed yet, or one last listed open, keeps it out, and so
 // does one whose close may be untrusted, as while its event is late or
@@ -1133,8 +1138,8 @@ func (d *Daemon) digestCacheOf(n int) []waitItem {
 // good once it's forgotten as gone, and for a child with no stage label,
 // which closingList doesn't make due unless this daemon held it with one,
 // as when an untrusted user took the label off a child no visit has read
-// yet and closed it, till a closed stage added to it has its close judged
-// (SPEC §16). A child's close changes nothing on the story, so the item
+// yet and closed it, till a stage label, any one, added to it has its
+// close judged (SPEC §16). A child's close changes nothing on the story, so the item
 // is found on the story's last visit (waitFind) and judged again here on
 // each pass. An epic planned into stories closes by the same judgement
 // (epicClosePass, #251).
@@ -1146,7 +1151,12 @@ func (d *Daemon) digestDoneStands(it waitItem) bool {
 		}
 	}
 	for _, s := range d.snaps {
-		if !s.Closed && s.Parent == it.Issue {
+		if s.Parent == it.Issue && d.closingUnsettled(s.Number) {
+			return false
+		}
+	}
+	for _, p := range d.closingBelow {
+		if p == it.Issue {
 			return false
 		}
 	}

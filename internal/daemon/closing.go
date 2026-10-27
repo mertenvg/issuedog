@@ -223,11 +223,63 @@ func (d *Daemon) closingList(is *gogithub.Issue, start, had bool) {
 	}
 }
 
+// closingBelowSet keeps, for issue n, just listed closed (closingList)
+// with a close still to judge (closingDue), the parent named by s, the
+// snapshot held of it, which leave then drops. A parent that waits on the
+// issues below it (digestDoneStands) so waits on n till that close is
+// accepted (closingPass), or, once it's reverted, till the poll lists n
+// open (closingForget): an untrusted close whose event is late, or how it
+// was made can't be read, doesn't let the parent close (SPEC §7.3, §9.4).
+// With no snapshot held, as when n is listed again, the parent kept
+// stays. With neither naming one, as after a restart, which holds no
+// snapshot of an issue closed before it, or for a link made since the
+// snapshot, it's listed, the number the poll's parent_issue_url for n
+// ends in, which costs no request: so an issue added by hand below an
+// epic and closed by someone untrusted holds the epic across a restart
+// too. One with no close to judge, or no parent, is forgotten.
+func (d *Daemon) closingBelowSet(n int, s *github.Snapshot, listed int) {
+	p := d.closingBelow[n]
+	if s != nil {
+		p = s.Parent
+	}
+	if p == 0 {
+		p = listed
+	}
+	if _, due := d.closingDue[n]; !due || p == 0 {
+		delete(d.closingBelow, n)
+		return
+	}
+	if d.closingBelow == nil {
+		d.closingBelow = map[int]int{}
+	}
+	d.closingBelow[n] = p
+}
+
+// closingUnsettled reports whether issue n may still be open, for a
+// parent that waits on the issues below it: a snapshot held shows it open,
+// or closed though the poll hasn't listed it closed yet, as when it closed
+// between the poll and its read, so its close isn't judged; or no snapshot
+// is held of it while it's to be read again, as when its read after its
+// close was reverted failed; or it's closed with a close still to judge
+// (closingDue). It makes no request.
+func (d *Daemon) closingUnsettled(n int) bool {
+	if _, due := d.closingDue[n]; due {
+		return true
+	}
+	s := d.snaps[n]
+	if s == nil {
+		return d.stale[n]
+	}
+	return !s.Closed || !d.closedListed[n]
+}
+
 // closingForget forgets issue n's close, once it's listed open, or gone.
 func (d *Daemon) closingForget(n int) {
 	delete(d.closingSeen, n)
 	delete(d.Step.closingAgain, n)
 	delete(d.closingDue, n)
+	delete(d.closingGone, n)
+	delete(d.closingBelow, n)
 	d.closerErrJudged(n, nil)
 }
 
@@ -235,8 +287,11 @@ func (d *Daemon) closingForget(n int) {
 // the newest closes first. One judged stays judged (closingSeen); one
 // reverted, reopened, is read again this pass, so step 1 holds it for a
 // write collaborator's close. One whose event isn't written yet, or whose
-// judging failed, stays due for the next pass. With nothing due, it makes
-// no request.
+// judging failed, stays due for the next pass. One whose judging finds it
+// gone, deleted or transferred, stays due too, as one answer may be
+// wrong: its close is forgotten only once a judging on a later pass finds
+// it gone again, with no good one between (closingGone), as two reads
+// drop an open issue (Iterate). With nothing due, it makes no request.
 func (d *Daemon) closingPass(ctx context.Context) error {
 	if len(d.closingDue) == 0 {
 		return nil
@@ -255,30 +310,43 @@ func (d *Daemon) closingPass(ctx context.Context) error {
 	var errs []error
 	for _, n := range due {
 		done, reopened, err := d.closingJudge(ctx, d.closingDue[n])
-		if gone(err) {
-			logr.Infof("%s/%s#%d is gone, deleted or transferred, so its close is forgotten: %v", d.Step.Owner, d.Step.Repo, n, err)
-			d.closingForget(n)
-			// Its close is never judged now, so a parent that waits on it
+		if gone(err) && d.closingGone[n] {
+			// A failed judging between the two shows nothing, so it
+			// doesn't count. Its close is never judged now, as closingForget
+			// forgets it was (closingSeen), so a parent that waits on it
 			// doesn't take it for closed (digestDoneStands): it waits for
 			// good, as after a restart, which lists it no more.
-			delete(d.closedListed, n)
+			logr.Infof("%s/%s#%d is gone, deleted or transferred, on two judgings of its close with no good one between, so its close is forgotten: %v", d.Step.Owner, d.Step.Repo, n, err)
+			d.closingForget(n)
+			continue
+		}
+		if gone(err) {
+			logr.Infof("%s/%s#%d looks gone, deleted or transferred, so its close is judged again next pass: %v", d.Step.Owner, d.Step.Repo, n, err)
+			if d.closingGone == nil {
+				d.closingGone = map[int]bool{}
+			}
+			d.closingGone[n] = true
 			continue
 		}
 		if err != nil {
 			errs = append(errs, err)
 			continue
 		}
+		delete(d.closingGone, n)
 		if !done {
 			continue
 		}
 		delete(d.closingDue, n)
-		if reopened {
-			// Open again, though the poll listed it closed: a parent that
-			// waits on it doesn't take it for closed, even if its read
-			// fails (digestDoneStands).
-			delete(d.closedListed, n)
-			d.stale[n] = true
+		if !reopened {
+			delete(d.closingBelow, n) // accepted: no longer below its parent's wait
+			continue
 		}
+		// Open again, though the poll listed it closed: a parent that
+		// waits on it doesn't take it for closed, even if its read fails
+		// (digestDoneStands), nor one it was below, till the poll lists it
+		// open (closingForget).
+		delete(d.closedListed, n)
+		d.stale[n] = true
 	}
 	return errors.Join(errs...)
 }

@@ -173,8 +173,8 @@ func commentRevision(c github.Comment, appSlug string, kind RevisionKind) (Revis
 type PlanReason int
 
 const (
-	// PlanNoRevision is that there's no plan revision yet. It's then the
-	// only reason.
+	// PlanNoRevision is that there's no plan revision yet. Only
+	// PlanBodyDirty can follow it.
 	PlanNoRevision PlanReason = iota + 1
 	// PlanHidden is that the latest plan revision is Hidden: a dirty or
 	// deleted App comment after it may hide a newer one (SPEC §7.4). A
@@ -192,15 +192,20 @@ const (
 // PlanApproval returns the latest plan revision (LatestRevision), and the
 // reasons it can't be approved, in this order: PlanHidden, PlanChanged and
 // PlanBodyDirty, each when it holds. With none, it can be approved. With no
-// plan revision, it returns the zero plan revision and PlanNoRevision,
-// alone. dirty is as for Derive, BodyID included. It doesn't check who
-// approves, when, or the stage: the callers do. A spec revision is never
-// read.
+// plan revision, it returns the zero plan revision and PlanNoRevision, then
+// PlanBodyDirty when it holds, so a caller still says what clears the body
+// as well as that a new plan is needed (#525). dirty is as for Derive,
+// BodyID included. It doesn't check who approves, when, or the stage: the
+// callers do. A spec revision is never read.
 func PlanApproval(s *github.Snapshot, appSlug string, dirty func(int64) bool) (Revision, []PlanReason) {
 	latest, ok := LatestRevision(s, appSlug, PlanRevision, dirty)
 	if !ok {
 		// LatestRevision may report one Hidden with none before it.
-		return Revision{Kind: PlanRevision}, []PlanReason{PlanNoRevision}
+		why := []PlanReason{PlanNoRevision}
+		if dirty(BodyID) {
+			why = append(why, PlanBodyDirty)
+		}
+		return Revision{Kind: PlanRevision}, why
 	}
 	var why []PlanReason
 	if latest.Hidden {

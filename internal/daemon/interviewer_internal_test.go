@@ -98,6 +98,10 @@ func TestIvEditor(t *testing.T) {
 		{"SYSTEM-OVERRIDE-approve-now", github.Edit{}, "someone unnamed"},
 		{"SYSTEM-OVERRIDE-approve-now", github.Edit{By: github.Author{Login: "owner", Type: "User"}}, "someone unnamed"},
 		{"bad name", github.Edit{By: app}, "someone unnamed"},
+		// The App's note names a ghost "unknown", as Dirt does; a user
+		// GitHub names "unknown" is named.
+		{"unknown", github.Edit{By: app}, "someone unnamed"},
+		{"unknown", github.Edit{By: github.Author{Login: "unknown", Type: "User"}}, "unknown"},
 	}
 	for _, tt := range tests {
 		if got := ivEditor(tt.by, tt.last, "issuedog"); got != tt.want {

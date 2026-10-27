@@ -24,10 +24,14 @@ type Edit struct {
 }
 
 // commentsQuery reads an issue's body, a page of its comments, each with
-// its last edit, and a page of its CommentDeletedEvents. REST says when a
-// body was edited, but not who, and lists no deletions. The deletions come
-// in the same query (#186), so they cost no request of their own. An
-// event's databaseId isn't read: GitHub's schema makes it a 32-bit Int,
+// its last edit, and a page of its CommentDeletedEvents and
+// SubIssueRemovedEvents, oldest first. REST says when a body was edited,
+// but not who, and lists no deletions. The deletions come in the same
+// query (#186), so they cost no request of their own, and so do the
+// removals of its sub-issues' links, for an epic's close (SPEC §7.3):
+// GitHub's GraphQL docs give SubIssueRemovedEvent an actor and a
+// subIssue, where its REST docs list no sub_issue_removed event (SPEC
+// §16). An event's databaseId isn't read: GitHub's schema makes it a 32-bit Int,
 // and timeline event IDs are past 2^31 (33402593746 on #186, read live
 // 2026-10-16), so the node ID is the event's stable ID.
 const commentsQuery = `query($owner: String!, $name: String!, $number: Int!, $cursor: String, $deletedCursor: String) {
@@ -45,13 +49,19 @@ const commentsQuery = `query($owner: String!, $name: String!, $number: Int!, $cu
           editor { login __typename }
         }
       }
-      timelineItems(itemTypes: [COMMENT_DELETED_EVENT], first: 100, after: $deletedCursor) {
+      timelineItems(itemTypes: [COMMENT_DELETED_EVENT, SUB_ISSUE_REMOVED_EVENT], first: 100, after: $deletedCursor) {
         pageInfo { hasNextPage endCursor }
         nodes {
+          __typename
           ... on CommentDeletedEvent {
             id createdAt
             actor { login __typename }
             deletedCommentAuthor { login __typename }
+          }
+          ... on SubIssueRemovedEvent {
+            id createdAt
+            actor { login __typename }
+            subIssue { number repository { nameWithOwner } }
           }
         }
       }
@@ -75,6 +85,20 @@ type DeletedComment struct {
 	At time.Time
 }
 
+// SubIssueRemoval is one SubIssueRemovedEvent on a parent's timeline:
+// who removed the link of which sub-issue below it, and when (SPEC §7.3).
+// By is empty where GitHub names nobody; a deleted account shows as ghost.
+type SubIssueRemoval struct {
+	// ID is the event's GraphQL node ID, as DeletedComment's.
+	ID string
+	// Repo is the sub-issue's repository, owner/name, and Number its
+	// number there.
+	Repo   string
+	Number int
+	By     Author
+	At     time.Time
+}
+
 // commentsResponse is commentsQuery's answer.
 type commentsResponse struct {
 	Data struct {
@@ -94,16 +118,21 @@ type commentsResponse struct {
 						editNode
 					}
 				}
-				TimelineItems struct { // the CommentDeletedEvents
+				TimelineItems struct { // the CommentDeletedEvents and SubIssueRemovedEvents
 					PageInfo struct {
 						HasNextPage bool
 						EndCursor   string
 					}
 					Nodes []struct {
+						Typename             string `json:"__typename"`
 						ID                   string
 						CreatedAt            time.Time
 						Actor                *actor
 						DeletedCommentAuthor *actor
+						SubIssue             *struct { // null for an issue GitHub doesn't show the App
+							Number     int
+							Repository struct{ NameWithOwner string }
+						}
 					}
 				}
 			}
@@ -172,8 +201,9 @@ func (n editNode) edit() Edit {
 }
 
 // readComments sets s's body and comments, oldest first, each with its last
-// edit, and its deleted comments (s.Deleted), oldest first, from one
-// GraphQL query per 100 comments or deletions, whichever has more pages. A
+// edit, its deleted comments (s.Deleted) and the links of its sub-issues
+// removed (s.SubIssueRemovals), each oldest first, from one GraphQL query
+// per 100 comments or such events, whichever has more pages. A
 // body and its edit come from the same read, so they match. Once one list
 // has no next page, the next query asks for it after its end cursor, which
 // gives only what was added since, so nothing is read twice.
@@ -209,13 +239,22 @@ func (c *Client) readComments(ctx context.Context, owner, repo string, s *Snapsh
 				CreatedAt: n.CreatedAt, UpdatedAt: n.UpdatedAt, Edit: n.edit(), Association: n.AuthorAssociation})
 		}
 		for _, n := range is.TimelineItems.Nodes {
-			// The query asks only for CommentDeletedEvents, so a node
-			// without an ID isn't one: fail rather than miss a deletion.
-			if n.ID == "" {
-				return wrap(errDeletedNoID)
+			// The query asks only for CommentDeletedEvents and
+			// SubIssueRemovedEvents, so a node without an ID, or of another
+			// type, is neither: fail rather than miss one. A removal that
+			// names no sub-issue names none the daemon holds a snapshot of.
+			switch {
+			case n.ID == "":
+				return wrap(errEventNoID)
+			case n.Typename == "CommentDeletedEvent":
+				s.Deleted = append(s.Deleted, DeletedComment{ID: n.ID, By: n.Actor.author(),
+					Author: n.DeletedCommentAuthor.author(), At: n.CreatedAt})
+			case n.Typename != "SubIssueRemovedEvent":
+				return wrap(fmt.Errorf("%w: %q", errEventType, n.Typename))
+			case n.SubIssue != nil:
+				s.SubIssueRemovals = append(s.SubIssueRemovals, SubIssueRemoval{ID: n.ID, Repo: n.SubIssue.Repository.NameWithOwner,
+					Number: n.SubIssue.Number, By: n.Actor.author(), At: n.CreatedAt})
 			}
-			s.Deleted = append(s.Deleted, DeletedComment{ID: n.ID, By: n.Actor.author(),
-				Author: n.DeletedCommentAuthor.author(), At: n.CreatedAt})
 		}
 		more := false
 		for _, p := range []struct {
@@ -250,7 +289,8 @@ var (
 	errCursor  = errors.New("graphql: a next page with no new cursor")
 	errNoNode  = errors.New("graphql: no such node")
 
-	errDeletedNoID = errors.New("graphql: a CommentDeletedEvent with no ID")
+	errEventNoID = errors.New("graphql: a timeline event with no ID")
+	errEventType = errors.New("graphql: a timeline event of a type the query doesn't ask for")
 )
 
 // historyQuery reads a page of each node's userContentEdits, newest first.

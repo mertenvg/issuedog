@@ -39,7 +39,7 @@ Depends on: T1
 
 **Order:** T4, then T2
 
-Validation (11.3): 3 tasks, within `plan.max_tasks` of 10, each with one scope from the list; every child listed once, kept, changed or dropped, and each closed one kept; no dependency cycles; 4 sub-issues in all, within 100; at most 2 dependency links of one type per issue, within 50.
+Validation (11.3): 2 open and new tasks, within `plan.max_tasks` of 10, each with one scope from the list; every child listed once, kept, changed or dropped, and each closed one kept; no dependency cycles; 4 sub-issues in all, within 100; at most 2 dependency links of one type per issue, within 50.
 
 cc @mertenvg
 

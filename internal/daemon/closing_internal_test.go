@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"testing"
 	"time"
 
@@ -212,6 +213,63 @@ func TestClosingList(t *testing.T) {
 	d.closingForget(1)
 	if got := due(); !equalInts(got, []int{5, 6}) {
 		t.Errorf("due %v after 1 is forgotten; want 5 and 6", got)
+	}
+}
+
+// A closed issue's close to judge keeps the parent the snapshot held of it
+// names, or, with no snapshot held, as when it's listed again, the one
+// kept, or, with neither, as after a restart, the one listed; one with
+// none, or no close to judge, keeps none. Forgetting its close drops it,
+// and drops a judging's finding it gone, so a later close found gone once
+// isn't forgotten as if found twice (closingPass).
+func TestClosingBelowSet(t *testing.T) {
+	t.Parallel()
+	d := &Daemon{Step: &Step{Applier: &Applier{}}}
+	d.closingList(closingIssue(5, 1, "stage:ready"), false, true)
+	d.closingList(closingIssue(6, 1, "stage:ready"), false, true)
+	d.closingBelowSet(5, &github.Snapshot{Number: 5, Parent: 1}, 3)
+	d.closingBelowSet(6, &github.Snapshot{Number: 6}, 0)
+	d.closingBelowSet(7, &github.Snapshot{Number: 7, Parent: 1}, 1) // no close to judge
+	if want := map[int]int{5: 1}; !maps.Equal(d.closingBelow, want) {
+		t.Errorf("below %v; want %v", d.closingBelow, want)
+	}
+	d.closingBelowSet(5, nil, 3)
+	if want := map[int]int{5: 1}; !maps.Equal(d.closingBelow, want) {
+		t.Errorf("below %v, listed again with no snapshot; want %v", d.closingBelow, want)
+	}
+	d.closingBelowSet(5, &github.Snapshot{Number: 5, Parent: 2}, 0)
+	if want := map[int]int{5: 2}; !maps.Equal(d.closingBelow, want) {
+		t.Errorf("below %v, read below #2; want %v", d.closingBelow, want)
+	}
+	// A start holds no snapshot of a closed issue, nor a parent kept, so
+	// it takes the listed one; and so does one whose snapshot named none,
+	// linked since.
+	d.closingList(closingIssue(8, 1, "stage:ready"), true, false)
+	d.closingBelowSet(8, nil, 1)
+	d.closingBelowSet(6, &github.Snapshot{Number: 6}, 4)
+	if want := map[int]int{5: 2, 6: 4, 8: 1}; !maps.Equal(d.closingBelow, want) {
+		t.Errorf("below %v, listed below #1 and #4; want %v", d.closingBelow, want)
+	}
+	// A snapshot that names no parent overrides the one kept, with none
+	// listed, as when the issue's link was removed before it closed.
+	d.closingBelowSet(8, &github.Snapshot{Number: 8}, 0)
+	if want := map[int]int{5: 2, 6: 4}; !maps.Equal(d.closingBelow, want) {
+		t.Errorf("below %v, read below none; want %v", d.closingBelow, want)
+	}
+	delete(d.closingBelow, 6)
+	d.closingSeen[5] = closingListed{closed: githubtest.Start.Add(time.Second), stages: "stage:ready"}
+	d.closingList(closingIssue(5, 1, "stage:ready"), false, false)
+	d.closingBelowSet(5, nil, 2)
+	if len(d.closingBelow) != 0 {
+		t.Errorf("below %v, its close judged; want none", d.closingBelow)
+	}
+
+	d.closingList(closingIssue(5, 2, "stage:ready"), false, true)
+	d.closingBelowSet(5, &github.Snapshot{Number: 5, Parent: 1}, 0)
+	d.closingGone = map[int]bool{5: true}
+	d.closingForget(5)
+	if len(d.closingBelow) != 0 || len(d.closingGone) != 0 {
+		t.Errorf("below %v, gone %v, once forgotten; want neither", d.closingBelow, d.closingGone)
 	}
 }
 

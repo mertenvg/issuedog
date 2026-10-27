@@ -43,8 +43,8 @@ func deletedQuery(t *testing.T, f *Fake, query string, number int, cursor any) (
 }
 
 // The fake serves the deletions only to a query whose timelineItems asks
-// for CommentDeletedEvents alone, as the fields it checks can't show that,
-// and pages them by a cursor it checks.
+// for CommentDeletedEvents and SubIssueRemovedEvents alone, as the fields
+// it checks can't show that, and pages them by a cursor it checks.
 func TestGraphQLDeleted(t *testing.T) {
 	f := New(t, "o/r", "issuedog")
 	n := f.AddIssue("owner", "Title", "body")
@@ -61,10 +61,12 @@ func TestGraphQLDeleted(t *testing.T) {
 		cursor      any
 		want        string
 	}{
-		{"no filter", strings.Replace(answered, "itemTypes: [COMMENT_DELETED_EVENT], ", "", 1), nil,
-			"githubtest: the query's timelineItems doesn't ask for COMMENT_DELETED_EVENT alone"},
-		{"another filter", strings.Replace(answered, "[COMMENT_DELETED_EVENT]", "[COMMENT_DELETED_EVENT, RENAMED_TITLE_EVENT]", 1), nil,
-			"githubtest: the query's timelineItems doesn't ask for COMMENT_DELETED_EVENT alone"},
+		{"no filter", strings.Replace(answered, "itemTypes: [COMMENT_DELETED_EVENT, SUB_ISSUE_REMOVED_EVENT], ", "", 1), nil,
+			"githubtest: the query's timelineItems doesn't ask for COMMENT_DELETED_EVENT and SUB_ISSUE_REMOVED_EVENT alone"},
+		{"deletions alone", strings.Replace(answered, ", SUB_ISSUE_REMOVED_EVENT]", "]", 1), nil,
+			"githubtest: the query's timelineItems doesn't ask for COMMENT_DELETED_EVENT and SUB_ISSUE_REMOVED_EVENT alone"},
+		{"another filter", strings.Replace(answered, "SUB_ISSUE_REMOVED_EVENT]", "SUB_ISSUE_REMOVED_EVENT, RENAMED_TITLE_EVENT]", 1), nil,
+			"githubtest: the query's timelineItems doesn't ask for COMMENT_DELETED_EVENT and SUB_ISSUE_REMOVED_EVENT alone"},
 		{"bad cursor", answered, "nope", "`nope` does not appear to be a valid cursor."},
 		{"cursor past the end", answered, "2", "`2` does not appear to be a valid cursor."},
 		{"no deletedCommentAuthor", strings.Replace(answered, " deletedCommentAuthor { login __typename }", "", 1), nil,
@@ -139,7 +141,7 @@ func TestDeleteCommentByAuthor(t *testing.T) {
 		t.Errorf("deletions %+v; want the ghost's %s, then the owner's %s", nodes, ghost, other)
 	}
 	f.mu.Lock()
-	s := slices.Clone(f.issueNumbered(n).deletions)
+	s := slices.Clone(f.issueNumbered(n).gqlEvents)
 	f.mu.Unlock()
 	if len(s) != 2 || !s[1].at.Equal(at) {
 		t.Errorf("deletions %+v; want the last one at updated_at, %v", s, at)

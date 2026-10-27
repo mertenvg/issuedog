@@ -77,7 +77,8 @@ func (f *Fake) rename(from, to string, events bool) {
 
 // LagEvents makes the label events of every later change, the App's
 // included, be written d after the change, and its closed and reopened
-// events too, as GitHub may (CloseBy). GitHub was seen to write an
+// events too, as GitHub may (CloseBy), and its SubIssueRemovedEvents
+// (UnlinkBy, UnlinkLinkedBy). GitHub was seen to write an
 // issue's labeled events a second or two after the issue was filed with its
 // labels. Until the clock reaches it (see Advance), an event is missing from
 // the timeline. 0 writes them at once again.

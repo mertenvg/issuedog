@@ -322,8 +322,10 @@ func keptStories(t *testing.T, n int, added ...planItem) (planOutput, planFacts)
 // The link limits count a kept item's dependencies from its approved item:
 // S51 blocks the 50 kept stories, so one new story that depends on it too
 // is one over. The sub-issue limit counts only the new items, since the
-// rest are sub-issues already, and plan.max_tasks the tasks that aren't
-// dropped.
+// rest are sub-issues already, and plan.max_tasks the open and new tasks:
+// the changed and new ones, and the kept ones whose child is open (SPEC
+// §11.3), as the validation line does. A kept task with no child counts,
+// and an epic's validation line counts its closed kept stories.
 func TestCheckRevisionCounts(t *testing.T) {
 	t.Parallel()
 	story := func(id string, deps ...string) planItem {
@@ -373,14 +375,62 @@ func TestCheckRevisionCounts(t *testing.T) {
 	}
 
 	// The golden revision has 3 tasks that aren't dropped, and 4 items.
+	// Its kept T1's child is closed, so 2 are open and new: the changed T2
+	// and the new T4. At a plan.max_tasks of 2, it can still grow by T4.
 	out, f = plannerOutput(t, "story-revision"), revisionFacts(t)
+	f.MaxTasks = 2
+	if err := checkPlan(out, f); err != nil {
+		t.Errorf("2 open and new tasks and the closed kept T1, within plan.max_tasks of 2: %v", err)
+	}
+	if got := planValidation(*out.Plan, f.view()); !strings.Contains(got, "Validation (11.3): 2 open and new tasks, within `plan.max_tasks` of 2,") {
+		t.Errorf("the validation line = %q, want 2 open and new tasks", got)
+	}
+	f.MaxTasks = 1
+	if err := checkPlan(out, f); !strings.Contains(fmt.Sprint(err),
+		"rule max-tasks: 2 open and new tasks, over plan.max_tasks of 1: closed kept tasks don't count") {
+		t.Errorf("2 open and new tasks, plan.max_tasks 1 = %v, want max-tasks", err)
+	}
+
+	// With T1's child open, the kept T1 counts too.
+	out, f = plannerOutput(t, "story-revision"), revisionFacts(t)
+	f.Prior.Children[0].Closed, f.Prior.Children[0].Reason, f.Prior.Children[0].Stage = false, "", state.Ready
 	f.MaxTasks = 3
 	if err := checkPlan(out, f); err != nil {
-		t.Errorf("3 tasks not dropped, within plan.max_tasks of 3: %v", err)
+		t.Errorf("3 open and new tasks, within plan.max_tasks of 3: %v", err)
+	}
+	if got := planValidation(*out.Plan, f.view()); !strings.Contains(got, "Validation (11.3): 3 open and new tasks, within `plan.max_tasks` of 3,") {
+		t.Errorf("the validation line = %q, want 3 open and new tasks", got)
 	}
 	f.MaxTasks = 2
-	if err := checkPlan(out, f); !strings.Contains(fmt.Sprint(err), "rule max-tasks: 3 tasks, over plan.max_tasks of 2") {
-		t.Errorf("3 tasks not dropped, plan.max_tasks 2 = %v, want max-tasks", err)
+	if err := checkPlan(out, f); !strings.Contains(fmt.Sprint(err),
+		"rule max-tasks: 3 open and new tasks, over plan.max_tasks of 2: closed kept tasks don't count") {
+		t.Errorf("3 open and new tasks, plan.max_tasks 2 = %v, want max-tasks", err)
+	}
+
+	// A kept task with no child counts, as no closed child is its, though
+	// it fails the children rule: with T1's child gone, the kept T1, the
+	// changed T2 and the new T4 make 3, here and in the validation line.
+	out, f = plannerOutput(t, "story-revision"), revisionFacts(t)
+	f.Prior.Children, f.MaxTasks = f.Prior.Children[1:], 2
+	err := checkPlan(out, f)
+	if !slices.Contains(rules(err), ruleChildren) || !strings.Contains(fmt.Sprint(err),
+		"rule max-tasks: 3 open and new tasks, over plan.max_tasks of 2: closed kept tasks don't count") {
+		t.Errorf("the kept T1 with no child, plan.max_tasks 2 = %v, want children and max-tasks of 3", err)
+	}
+	if got := planValidation(*out.Plan, f.view()); !strings.Contains(got, "Validation (11.3): 3 open and new tasks, within `plan.max_tasks` of 2,") {
+		t.Errorf("the validation line = %q, want 3 open and new tasks", got)
+	}
+
+	// An epic's revision of stories counts every story that isn't
+	// dropped in its validation line, a kept one whose child is closed
+	// included: max-tasks leaves out closed kept tasks only.
+	out, f = keptStories(t, 2)
+	f.Prior.Children[0].Closed, f.Prior.Children[0].Reason, f.Prior.Children[0].Stage = true, "completed", ""
+	if err := checkPlan(out, f); err != nil {
+		t.Errorf("2 kept stories, S1's child closed: %v", err)
+	}
+	if got := planValidation(*out.Plan, f.view()); !strings.Contains(got, "Validation (11.3): 2 stories, with no tasks; every child listed once,") {
+		t.Errorf("the validation line = %q, want 2 stories, the closed kept S1 included", got)
 	}
 }
 
@@ -521,10 +571,10 @@ func TestCheckRevisionLengthCountsKeptData(t *testing.T) {
 }
 
 // revisionView is the view the golden revision is rendered with: story
-// #124 at p2, with its three children, as plan revision 2.
+// #124 at p2, with its three children, T1's closed, as plan revision 2.
 func revisionView(t *testing.T) planView {
 	v := storyView()
-	v.Rev, v.SubIssues, v.Revised, v.Earlier = 2, 3, true, goldenPlan(t, "story-plan").Items
+	v.Rev, v.SubIssues, v.Revised, v.Earlier, v.Closed = 2, 3, true, goldenPlan(t, "story-plan").Items, []string{"T1"}
 	return v
 }
 
@@ -550,7 +600,7 @@ func TestRenderRevisionGolden(t *testing.T) {
 		"**T3. Set the quote lifetime in production** · dropped",
 		"**T4. Give the quote lifetime a default** · new · scope:booking · p2",
 		"Depends on: T1, T4",
-		"Validation (11.3): 3 tasks, within `plan.max_tasks` of 10, each with one scope from the list; " +
+		"Validation (11.3): 2 open and new tasks, within `plan.max_tasks` of 10, each with one scope from the list; " +
 			"every child listed once, kept, changed or dropped, and each closed one kept; no dependency cycles; " +
 			"4 sub-issues in all, within 100; at most 2 dependency links of one type per issue, within 50.",
 		"cc @mertenvg", planApproveLine,
@@ -633,6 +683,8 @@ func TestPlannerPreambleRevision(t *testing.T) {
 		"- A `kept` or `dropped` item has its `id`, `title` and `status` only.",
 		"- A `new` item's ID is no child's, and no item's of the approved revision.",
 		"- `depends_on` may name `kept`, `changed` and `new` items, never a `dropped` one.",
+		"- `plan.max_tasks` counts the open and new tasks: the `changed` and `new` ones, and the `kept` ones whose child is open. " +
+			"A closed child's `kept` task doesn't count.",
 		"A revision always waits for the owner's review, whatever `plan.review` says.",
 	} {
 		if !strings.Contains(got, want) {

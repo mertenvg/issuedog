@@ -16,6 +16,35 @@ import (
 	"github.com/mertenvg/issuedog/internal/github"
 )
 
+// The issue list gives a sub-issue its parent's URL as its
+// parent_issue_url, closed or open, and an issue with no parent, as once
+// its link is removed, none.
+func TestIssuesSinceParentURL(t *testing.T) {
+	t.Parallel()
+	f := New(t, "o/r", "issuedog")
+	parent := f.AddIssue("owner", "Parent", "body")
+	open, closed, unlinked := f.AddIssue("owner", "Open", "body"), f.AddIssue("owner", "Closed", "body"), f.AddIssue("owner", "Unlinked", "body")
+	for _, n := range []int{open, closed, unlinked} {
+		f.SetParent(n, parent)
+	}
+	f.Close(closed)
+	f.UnlinkBy(unlinked, "owner")
+	all, err := f.Client(t).IssuesSince(context.Background(), "o", "r", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[int]string{}
+	for _, is := range all {
+		if is.ParentIssueURL != nil {
+			got[is.GetNumber()] = is.GetParentIssueURL()
+		}
+	}
+	url := fmt.Sprintf("%s/repos/o/r/issues/%d", f.srv.URL, parent)
+	if want := map[int]string{open: url, closed: url}; !reflect.DeepEqual(got, want) {
+		t.Errorf("parent_issue_url by issue = %v; want %v", got, want)
+	}
+}
+
 // Sub-issues are listed open and closed, in the order filed, then linked
 // ones, two pages of 2 here, each with its repository_url.
 func TestSubIssues(t *testing.T) {
