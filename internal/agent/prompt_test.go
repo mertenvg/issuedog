@@ -205,7 +205,7 @@ func TestInterviewerPrompt(t *testing.T) {
 // runClone is what the interviewer's and the planner's prompts say of the
 // run's clone (SPEC §3.2): HEAD is detached at main's commit, and the
 // clone has no main branch, no other branch and no remote.
-const runClone = "you run in a detached checkout of `main`'s commit, with its history but no other branches and no remote, " +
+const runClone = "you run in a detached checkout of `main`'s commit, with its history but no branches and no remote, " +
 	"so git commands name `HEAD`, not `main`."
 
 // unsupported are the schema keywords that --json-schema isn't known to

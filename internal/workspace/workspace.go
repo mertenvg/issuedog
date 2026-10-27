@@ -138,8 +138,9 @@ func (w *Workspace) Bundle(ctx context.Context, runID, start string, out io.Writ
 // asCommitted is the environment that makes git read a clone's commits as
 // they were made: a replace ref (refs/replace/*) or a graft (info/grafts)
 // in the clone can't change what history git sees, such as by making
-// start..HEAD look empty.
-var asCommitted = []string{"GIT_NO_REPLACE_OBJECTS=1", "GIT_GRAFT_FILE=/dev/null"}
+// start..HEAD look empty. The graft file is one that can't exist, not
+// /dev/null, which git reads and then warns of grafts' deprecation.
+var asCommitted = []string{"GIT_NO_REPLACE_OBJECTS=1", "GIT_GRAFT_FILE=/dev/null/no-grafts"}
 
 // validName refuses empty names, path separators and leading dots.
 func validName(s string) bool {

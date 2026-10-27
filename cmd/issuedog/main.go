@@ -209,8 +209,8 @@ var registerStages = daemon.RegisterStages
 // intake beside Unlabeled. Runs, their clones in /work/runs and claude,
 // are agent's, and cred is the only credential in the agent's environment.
 // The clones fetch from d.Clone, the bare repo the daemon syncs and reads
-// main from, so the two can't differ. usage_limit.pattern is read once, so a change to it takes effect on
-// restart.
+// main from, so the two can't differ. usage_limit.pattern is read once, so
+// a change to it takes effect on restart.
 func stageWork(d *daemon.Daemon, cred agent.Cred) (*daemon.Runs, error) {
 	uid, err := agentCredential(agentUser)
 	if err != nil {
@@ -414,7 +414,9 @@ const handoffUsage = "usage: issuedog handoff <clone> <start-sha> <bare-repo> <r
 // runHandoff runs "handoff <clone> <start-sha> <bare-repo> <run-id>": the
 // daemon's own handoff of a run's commits (SPEC §3.2), so sandbox/test.sh can
 // check it between the two uids. It exits 0 once the commits are in the bare
-// repo, or when the clone has none past start.
+// repo, or when the clone has none past start. It rewrites the shared
+// /run/issuedog/.agent.gitconfig, naming bare as agent's safe.directory, so
+// it's for the sandbox only, never beside a running daemon.
 func runHandoff(args []string) int {
 	if len(args) != 4 || !filepath.IsAbs(args[0]) || !filepath.IsAbs(args[2]) {
 		logr.Error(handoffUsage)
