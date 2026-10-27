@@ -145,8 +145,8 @@ func crashLeftovers(t *testing.T, r *Runs, runs ...string) {
 	}
 }
 
-// names lists dir's entries by name.
-func names(t *testing.T, dir string) []string {
+// sweepDirNames lists dir's entries by name.
+func sweepDirNames(t *testing.T, dir string) []string {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -189,7 +189,7 @@ func TestWorkSweepsLeftoversAfterACrash(t *testing.T) {
 		r.Workspace.RunsDir:                      nil,
 		r.Workspace.ContextDir:                   nil,
 	} {
-		if got := names(t, dir); !slices.Equal(got, want) {
+		if got := sweepDirNames(t, dir); !slices.Equal(got, want) {
 			t.Errorf("%s holds %q after the first Work, want %q", dir, got, want)
 		}
 	}
@@ -214,7 +214,7 @@ func TestSweepKeepsTheLeasesRun(t *testing.T) {
 		r.Workspace.RunsDir:                      {"live"},
 		r.Workspace.ContextDir:                   {"live"},
 	} {
-		if got := names(t, dir); !slices.Equal(got, want) {
+		if got := sweepDirNames(t, dir); !slices.Equal(got, want) {
 			t.Errorf("%s holds %q after the sweep, want %q", dir, got, want)
 		}
 	}
@@ -233,7 +233,7 @@ func TestWorkSweepsRunsOnceTheLeaseReads(t *testing.T) {
 	if err := r.Work(context.Background(), nil); err == nil {
 		t.Fatal("Work succeeded with a lease it can't read")
 	}
-	if got := names(t, r.Workspace.RunsDir); !slices.Equal(got, []string{"dead"}) {
+	if got := sweepDirNames(t, r.Workspace.RunsDir); !slices.Equal(got, []string{"dead"}) {
 		t.Errorf("the runs dir holds %q while the lease can't be read, want the clone kept", got)
 	}
 	if err := os.Remove(r.leasePath()); err != nil {
@@ -243,7 +243,7 @@ func TestWorkSweepsRunsOnceTheLeaseReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, dir := range []string{r.Workspace.RunsDir, r.Workspace.ContextDir} {
-		if got := names(t, dir); len(got) != 0 {
+		if got := sweepDirNames(t, dir); len(got) != 0 {
 			t.Errorf("%s holds %q once the lease reads, want nothing", dir, got)
 		}
 	}
@@ -267,7 +267,7 @@ func TestWorkSweepsOnlyOnTheFirstPass(t *testing.T) {
 		r.Workspace.RunsDir:                      {"late"},
 		r.Workspace.ContextDir:                   {".agent.gitconfig.4", "late"},
 	} {
-		if got := names(t, dir); !slices.Equal(got, want) {
+		if got := sweepDirNames(t, dir); !slices.Equal(got, want) {
 			t.Errorf("%s holds %q after the second Work, want %q", dir, got, want)
 		}
 	}
