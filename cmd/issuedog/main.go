@@ -432,7 +432,10 @@ func runHandoff(args []string) int {
 // the uid switch stage runs use, onto a file in a dir only this process's
 // uid can write. Then repo.FetchBundle fetches that file into bare, as this
 // process, under repo.RunsRef+runID, and the head is logged. A clone with no
-// commits past start gives no bundle, and nothing is fetched.
+// commits past start gives no bundle, and nothing is fetched. The bundle and
+// fetch are the daemon's own, daemon.BundleAndFetch, and agent's git runs
+// with the global config a stage run's Prepare writes, so the sandbox checks
+// the path a stage run takes.
 func handoff(ctx context.Context, clone, start, bare, runID string) (err error) {
 	cred, err := agentCredential(agentUser)
 	if err != nil {
@@ -448,30 +451,21 @@ func handoff(ctx context.Context, clone, start, bare, runID string) (err error) 
 			err = errors.Join(err, fmt.Errorf("removing the bundle's dir: %w", rerr))
 		}
 	}()
-	path := filepath.Join(dir, "run.bundle")
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return fmt.Errorf("creating the bundle file: %w", err)
-	}
 	// The clone is the run in its parent dir named by its base, as a stage
 	// run's clone is RunsDir/<run-id>. The context dir is the daemon's, as
 	// for stage runs: agent can't write it, so it can't plant a git config
 	// there.
 	w := &workspace.Workspace{Bare: bare, RunsDir: filepath.Dir(clone), ContextDir: runDir, Credential: cred}
-	ok, err := w.Bundle(ctx, filepath.Base(clone), start, f)
-	if cerr := f.Close(); cerr != nil {
-		err = errors.Join(err, fmt.Errorf("closing the bundle file: %w", cerr))
+	if err := w.WriteGitConfig(); err != nil {
+		return fmt.Errorf("writing %s's git config: %w", agentUser, err)
 	}
+	head, err := daemon.BundleAndFetch(ctx, w, repo.New("", bare), filepath.Base(clone), runID, start, filepath.Join(dir, "run.bundle"))
 	if err != nil {
-		return fmt.Errorf("bundling as %s: %w", agentUser, err)
+		return fmt.Errorf("bundling as %s and fetching into %s: %w", agentUser, bare, err)
 	}
-	if !ok {
+	if head == "" {
 		logr.Infof("run %s has no commits past %s in %s, so there's no bundle to fetch", runID, start, clone)
 		return nil
-	}
-	head, err := repo.New("", bare).FetchBundle(ctx, path, runID, start)
-	if err != nil {
-		return fmt.Errorf("fetching the bundle into %s: %w", bare, err)
 	}
 	logr.Infof("fetched run %s's bundle into %s: %s%s is %s", runID, bare, repo.RunsRef, runID, head)
 	return nil

@@ -130,7 +130,10 @@ check_not "agent started by the daemon can't read the daemon" as issuedog "$bin"
 # agent's clone plants a hooks path, every hook, core.fsmonitor,
 # core.sshCommand, and a filter and a diff driver its .gitattributes names.
 # Each appends the uid it ran as to a marker of its own, so a plant git ran
-# as issuedog would leave 10001 in one.
+# as issuedog would leave 10001 in one. The setup is checked too: a commit
+# to hand off, the plants, a clone that can read the bare repo, and a plant
+# that runs when agent's own git invites it. So a broken step fails by
+# name, not through a later check that then tests nothing.
 bare=/work/sandbox-test-handoff.git
 run=sandbox-test-handoff
 clone=/work/runs/$run
@@ -174,35 +177,55 @@ as agent sh -c 'echo "* filter=planted diff=planted" >"$1/.gitattributes" && ech
 git_as agent -C "$clone" add .gitattributes run.txt
 git_as agent -C "$clone" commit --quiet -m run
 commit=$(git_as agent -C "$clone" rev-parse HEAD)
-as agent mkdir "$planted" "$planted/hooks"
-for hook in applypatch-msg pre-applypatch post-applypatch pre-commit pre-merge-commit \
-	prepare-commit-msg commit-msg post-commit pre-rebase post-checkout post-merge \
-	pre-push pre-receive update proc-receive post-receive post-update \
-	reference-transaction push-to-checkout pre-auto-gc post-rewrite sendemail-validate \
-	fsmonitor-watchman p4-changelist p4-prepare-changelist p4-post-changelist \
-	p4-pre-submit post-index-change; do
-	plant "$clone/.git/hooks/$hook" hooks-dir
-	plant "$planted/hooks/$hook" hooks-path
-done
-plant "$planted/fsmonitor" fsmonitor
-plant "$planted/ssh" ssh
-plant "$planted/filter" filter filter
-plant "$planted/diff" diff
-git_as agent -C "$clone" config core.hooksPath "$planted/hooks"
-git_as agent -C "$clone" config core.fsmonitor "$planted/fsmonitor"
-git_as agent -C "$clone" config core.sshCommand "$planted/ssh"
-git_as agent -C "$clone" config filter.planted.clean "$planted/filter"
-git_as agent -C "$clone" config filter.planted.smudge "$planted/filter"
-git_as agent -C "$clone" config diff.planted.command "$planted/diff"
+# The handoff checks below mean something only with a commit to hand off.
+check "agent's clone has a commit past the start" \
+	sh -c '[ -n "$2" ] && [ -n "$1" ] && [ "$1" != "$2" ]' sh "$commit" "$start"
+
+# plant_clone plants, as agent, every hook in the clone's hooks dir and in a
+# hooks path, core.fsmonitor, core.sshCommand, and the filter and diff
+# drivers .gitattributes names. It fails at the first step that fails, so a
+# plant that isn't there fails a check, not just the marker check after it.
+plant_clone() {
+	as agent mkdir "$planted" "$planted/hooks" || return 1
+	for hook in applypatch-msg pre-applypatch post-applypatch pre-commit pre-merge-commit \
+		prepare-commit-msg commit-msg post-commit pre-rebase post-checkout post-merge \
+		pre-push pre-receive update proc-receive post-receive post-update \
+		reference-transaction push-to-checkout pre-auto-gc post-rewrite sendemail-validate \
+		fsmonitor-watchman p4-changelist p4-prepare-changelist p4-post-changelist \
+		p4-pre-submit post-index-change; do
+		plant "$clone/.git/hooks/$hook" hooks-dir || return 1
+		plant "$planted/hooks/$hook" hooks-path || return 1
+	done
+	plant "$planted/fsmonitor" fsmonitor &&
+		plant "$planted/ssh" ssh &&
+		plant "$planted/filter" filter filter &&
+		plant "$planted/diff" diff &&
+		git_as agent -C "$clone" config core.hooksPath "$planted/hooks" &&
+		git_as agent -C "$clone" config core.fsmonitor "$planted/fsmonitor" &&
+		git_as agent -C "$clone" config core.sshCommand "$planted/ssh" &&
+		git_as agent -C "$clone" config filter.planted.clean "$planted/filter" &&
+		git_as agent -C "$clone" config filter.planted.smudge "$planted/filter" &&
+		git_as agent -C "$clone" config diff.planted.command "$planted/diff"
+}
+check "agent plants hooks and config in its clone" plant_clone
 
 check "issuedog hands off agent's commit" as issuedog "$bin" handoff "$clone" "$start" "$bare" "$run"
+check "the handoff gives agent's git the global config of a stage run" \
+	grep -qx '	hooksPath = /dev/null' /run/issuedog/.agent.gitconfig
 expect "the commit lands under the run's ref" "$commit" \
 	as issuedog git --git-dir="$bare" rev-parse --verify --quiet "refs/issuedog/runs/$run"
 check_not "nothing planted in the clone runs as issuedog" grep -rqx 10001 "$markers"
+# agent's clone can read the bare repo, so a push it can't make is refused
+# for want of write permission, not of access.
+check "agent's clone can read the bare repo" git_as agent -C "$clone" ls-remote --exit-code origin refs/heads/main
 # --no-verify skips the planted pre-push hook, so only the bare repo's
 # permissions can refuse the push.
 check_not "agent can't push to the bare repo" git_as agent -C "$clone" push --quiet --no-verify origin HEAD:refs/heads/pushed
-rm -rf "$bare" "$clone" "$markers" "$gitconfig"
+# A positive control for the marker check: agent's own git status in the
+# clone runs its core.fsmonitor, which leaves agent's uid in its marker.
+git_as agent -C "$clone" status >/dev/null 2>&1
+check "the clone's core.fsmonitor runs as agent when agent's git invites it" test -s "$markers/fsmonitor.10002"
+rm -rf "$bare" "$clone" "$markers" "$gitconfig" /run/issuedog/.agent.gitconfig
 
 # Tools
 check "agent can run claude" as agent claude --version

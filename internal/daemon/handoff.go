@@ -11,6 +11,7 @@ import (
 
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/repo"
+	"github.com/mertenvg/issuedog/internal/workspace"
 	"github.com/mertenvg/logr/v2"
 )
 
@@ -87,21 +88,28 @@ func (r *Runs) handoff(ctx context.Context, l Lease, st Stage, moved bool) (stri
 		return head, nil
 	}
 	path := r.bundlePath(l.RunID)
-	if head, err = r.fetchBundle(ctx, l, path); err != nil {
+	if head, err = BundleAndFetch(ctx, r.Workspace, r.Daemon.Clone, l.RunID, l.RunID, l.Start, path); err != nil {
 		return "", errors.Join(fmt.Errorf("hand off the run's commits: %w", err), r.remove(path))
 	}
 	return head, nil
 }
 
-// fetchBundle is handoff's bundle and fetch, through the file at path.
-func (r *Runs) fetchBundle(ctx context.Context, l Lease, path string) (string, error) {
+// BundleAndFetch is handoff's bundle and fetch, through the file at path,
+// in a dir only the caller can write. ws bundles the commits past start in
+// the clone ws.Dir(checkout) as agent, and bare fetches that file as the
+// caller, under repo.RunsRef+runID. A stage run's checkout is its run ID.
+// It returns the fetched head, or "" when the clone has none past start.
+// As handoff says, Bundle gets a writer this copies from, never the
+// *os.File. The unlisted handoff command, which sandbox/test.sh runs,
+// calls it too, so the sandbox checks the daemon's own path.
+func BundleAndFetch(ctx context.Context, ws *workspace.Workspace, bare *repo.Repo, checkout, runID, start, path string) (string, error) {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return "", fmt.Errorf("create the bundle file: %w", err)
 	}
-	made, err := r.Workspace.Bundle(ctx, l.RunID, l.Start, struct{ io.Writer }{f})
-	if cerr := f.Close(); err == nil && cerr != nil {
-		err = fmt.Errorf("close the bundle file: %w", cerr)
+	made, err := ws.Bundle(ctx, checkout, start, struct{ io.Writer }{f})
+	if cerr := f.Close(); cerr != nil {
+		err = errors.Join(err, fmt.Errorf("close the bundle file: %w", cerr))
 	}
 	if err != nil {
 		return "", fmt.Errorf("bundle the clone: %w", err)
@@ -109,7 +117,7 @@ func (r *Runs) fetchBundle(ctx context.Context, l Lease, path string) (string, e
 	if !made {
 		return "", nil
 	}
-	head, err := r.Daemon.Clone.FetchBundle(ctx, path, l.RunID, l.Start)
+	head, err := bare.FetchBundle(ctx, path, runID, start)
 	if err != nil {
 		return "", fmt.Errorf("fetch the bundle: %w", err)
 	}
