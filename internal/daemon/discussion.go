@@ -113,10 +113,10 @@ func discWhat(tr discTrigger) string {
 // in its hold's comment and its notice, when tr is a write collaborator's
 // edit of their own comment after a code owner's 👍 approved it, and ""
 // for any other trigger. A 👍 approves only the text it post-dates, so
-// accepting the edit, by a 👍 on its notice or by /resume, ends its hold
-// but doesn't approve the new text. Other triggers or an owner hold may
-// still keep the issue held, so it says the edit's hold ends, not the
-// issue's. Any trusted 👍 after the edit approves it, whoever approved
+// accepting the edit, by a 👍 on its notice or by /resume, ends this
+// edit's hold but doesn't approve the new text. Other triggers or an owner
+// hold may still keep the issue held, so it says the edit's hold ends, not
+// the issue's. Any trusted 👍 after the edit approves it, whoever approved
 // the old text, and as GitHub keeps one 👍 a user, a code owner who gave
 // it a 👍 before removes theirs and adds it again (SPEC §6.4). One known
 // from its record alone is never an own edit (discFromKey makes it an
@@ -126,7 +126,7 @@ func editNoticeApproval(tr discTrigger) string {
 	if !editNoticeOwn(tr) {
 		return ""
 	}
-	return fmt.Sprintf("Accepting the edit ends its hold but doesn't approve the new text. %s.", editNoticeHow(tr))
+	return fmt.Sprintf("Accepting the edit ends this edit's hold but doesn't approve the new text. %s.", editNoticeHow(tr))
 }
 
 // editNoticeDigest is editNoticeApproval for tr's line in the digest,
@@ -559,7 +559,10 @@ func discOpenAfter(b discBound, records map[string]int64) discOpen {
 //   - their deletion of a comment by the App, a trusted user or someone
 //     GitHub doesn't name, from s.Deleted, which fails closed for the
 //     last. Their deletion of their own comment, or of another untrusted
-//     user's, changes nothing anyone trusted wrote, so it's none;
+//     user's, changes nothing anyone trusted wrote, so it's none. Their
+//     own is ruled out so, as an untrusted user's, not by comparing the
+//     two logins, which two people GitHub doesn't name, or two deleted
+//     accounts shown as ghost, share;
 //   - their rename of the issue, from s.DiscRenames, which CheckLabels set
 //     from the timeline it reads, so this costs no request; it acts on
 //     none of them itself. A snapshot CheckLabels hasn't checked has none;
@@ -649,7 +652,7 @@ func (a *Applier) discFindResolved(ctx context.Context, s *github.Snapshot, d Di
 	for _, e := range s.Deleted {
 		key := "d" + e.ID
 		o, recorded := open(key, e.At, 0)
-		if !o || !recorded && strings.EqualFold(e.By.Login, e.Author.Login) {
+		if !o {
 			continue
 		}
 		if !recorded {
@@ -992,7 +995,7 @@ func discHitsApp(tr discTrigger, appSlug string) bool {
 func (a *Applier) discHoldMove(s *github.Snapshot, d Dirt, tr discTrigger, from, at, origin state.Stage, seen int64, also string, more ...github.Marker) Move {
 	fields := map[string]string{"at": string(at), "origin": string(origin), "reason": "discussion"}
 	text := fmt.Sprintf("On hold for discussion, from `%s`: %s. Only a code owner can move this issue, "+
-		"so it stays on hold until they resolve this.", at, discWhat(tr))
+		"so it stays on hold at least until they resolve this.", at, discWhat(tr))
 	text = editNoticeAppend(text, editNoticeApproval(tr))
 	if also != "" {
 		text += " " + also
@@ -1154,7 +1157,7 @@ func (st *Step) discussion(ctx context.Context, s *github.Snapshot, d Dirt) ([]d
 		if err != nil {
 			return nil, wrap(err)
 		}
-		text := editNoticeAppend(fmt.Sprintf("Also on hold for discussion: %s. This issue stays on hold until a code owner accepts it.", discWhat(tr)), editNoticeApproval(tr))
+		text := editNoticeAppend(fmt.Sprintf("Also on hold for discussion: %s. This issue stays on hold at least until a code owner accepts it.", discWhat(tr)), editNoticeApproval(tr))
 		if err := st.comment(ctx, s, join(github.Escape(discCC(text, st.Notify)), marker)); err != nil {
 			return nil, wrap(err)
 		}
@@ -1208,7 +1211,8 @@ func (a *Applier) discHeldStack(ctx context.Context, s *github.Snapshot, d Dirt,
 // discHeldLabel reports whether label is stage:held: such an issue is
 // visited on every pass, as a 👍 that resolves a trigger (#188) changes no
 // updated_at. A deletion does move it, about 2 seconds later, so the
-// snapshot is read again then (SPEC §16).
+// snapshot is read again then, though only an author's deletion of their
+// own comment is confirmed to move it (SPEC §16).
 func discHeldLabel(label string) bool {
 	stage, ok := state.ParseLabel(label)
 	return ok && stage == state.Held

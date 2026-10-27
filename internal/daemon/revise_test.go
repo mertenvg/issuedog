@@ -573,6 +573,57 @@ func TestReviewVisitTrustError(t *testing.T) {
 	}
 }
 
+// The revision ReviewVisit posts after a trusted edit to the body ends in
+// the cc line for Notify, as every spec does (SPEC §9), so the owner hears
+// of it when another trusted user made the edit (#452). Once it's posted,
+// a visit to the unchanged issue makes no request.
+func TestReviewVisitRevisionNotifies(t *testing.T) {
+	t.Parallel()
+	notifyVisit := func(t *testing.T, st **daemon.Step) func(*githubtest.Fake) error {
+		return func(f *githubtest.Fake) error {
+			a, s, err := applier(t, f)
+			if err != nil {
+				return err
+			}
+			a.Notify = []string{"owner", "other"}
+			*st = &daemon.Step{Applier: a, Trust: owners}
+			return (*st).ReviewVisit(context.Background(), s)
+		}
+	}
+	for _, tt := range []struct {
+		name   string
+		editor string
+	}{
+		{"another trusted user's edit", "owner2"},
+		{"the owner's edit", "owner"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			setup := review(func(t testing.TB, f *githubtest.Fake) { f.EditBody(1, tt.editor, "body v2") })
+			var st *daemon.Step
+			check(t, setup, notifyVisit(t, &st), outcome{
+				comments: []string{ccPosted("cc @owner @other", 2, "body v2", "", "", "1001")},
+				labels:   []string{"stage:spec-review"}})
+
+			f := setup(t)
+			if err := notifyVisit(t, &st)(f); err != nil {
+				t.Fatal(err)
+			}
+			s, err := f.Client(t).Snapshot(context.Background(), "o", "r", 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			n := len(f.Requests())
+			if err := st.ReviewVisit(context.Background(), s); err != nil {
+				t.Fatal(err)
+			}
+			if r := f.Requests(); len(r) != n {
+				t.Errorf("a visit to the unchanged issue sent %+v, want no request", r[n:])
+			}
+		})
+	}
+}
+
 // planComment is plan revision rev's comment as the planner's move writes
 // it, with the move to plan-review whose run read up to comment seen, and
 // the plan revision marker last.
@@ -740,6 +791,19 @@ func TestRevisePlan(t *testing.T) {
 			outcome{comments: []string{overridden(state.Planning, "from=plan-review to=planning by=owner event=9007"),
 				final("too long", "I didn't send the plan back for revision", movedOnReason(state.PlanReview, state.Planning), "1005")},
 				labels: planning, downs: []string{"too long"}}, nil},
+		{"one moved back to spec-review, on a story with a parent, also says a new comment wouldn't send the spec back",
+			revisePlanReview(func(t testing.TB, f *githubtest.Fake) {
+				f.SetType(1, "Story")
+				f.SetParent(1, f.AddIssue("owner", "Epic", "epic"))
+				post(t, f, 1005, "owner", "too long")
+				f.AddReaction(1005, app, "-1")
+				handSet(t, f, state.PlanReview, state.SpecReview, 9007)
+			}),
+			outcome{comments: []string{overridden(state.SpecReview, "from=plan-review to=spec-review by=owner event=9007"),
+				final("too long", "I didn't send the plan back for revision", movedOnReason(state.PlanReview, state.SpecReview)+
+					". Nor would a new comment here: only an epic, or a story with no parent, goes from `spec-review` to `clarifying` "+
+					"on a revision request, and this is a story issue", "1005")},
+				labels: []string{"stage:spec-review"}, downs: []string{"too long"}}, nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var in []string

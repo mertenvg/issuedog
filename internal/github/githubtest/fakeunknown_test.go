@@ -42,6 +42,7 @@ func TestFakeCommentUnknown(t *testing.T) {
 			{"EditComment", func() { f.EditComment(id, "owner", "new") }},
 			{"DeleteComment", func() { f.DeleteComment(id) }},
 			{"DeleteCommentBy", func() { f.DeleteCommentBy("owner", id) }},
+			{"DeleteCommentByUnmoved", func() { f.DeleteCommentByUnmoved("mallory", id) }},
 			{"AddReaction", func() { f.AddReaction(id, "owner", "eyes") }},
 			{"RemoveReaction", func() { f.RemoveReaction(id, up) }},
 		} {

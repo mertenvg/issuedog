@@ -227,7 +227,7 @@ func TestHeldStackResumeNamesTheRest(t *testing.T) {
 	t.Run("the parent's /resume is rejected", func(t *testing.T) {
 		heldStackCheck(t, heldStackTasks, steps, func() map[int]issueWant {
 			return map[int]issueWant{
-				1: {[]string{"stage:ready"}, []string{final("/resume", "I didn't apply this command", madeOn("#2"), fmt.Sprint(resume))}},
+				1: {[]string{"stage:ready"}, []string{final("/resume", "I didn't apply this command", madeOn("#2", 1), fmt.Sprint(resume))}},
 				2: {[]string{"stage:held"}, nil},
 			}
 		}, "-1", &resume)

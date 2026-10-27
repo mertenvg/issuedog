@@ -17,7 +17,7 @@ import (
 // notice.
 func discHeldAgain(at, what, fields, owner, key string) string {
 	return fmt.Sprintf("On hold for discussion, from `%s`: %s. Only a code owner can move this issue, "+
-		"so it stays on hold until they resolve this. It was on hold already, so it also stays on hold until `/resume` here."+
+		"so it stays on hold at least until they resolve this. It was on hold already, so it also stays on hold until `/resume` here."+
 		"\n\ncc @owner\n\n<!-- issuedog:transition %s -->\n<!-- issuedog:transition %s -->\n%s", at, what, fields, owner, discNoticeMarker(key))
 }
 

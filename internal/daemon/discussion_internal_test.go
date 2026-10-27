@@ -182,7 +182,7 @@ func TestDiscWhat(t *testing.T) {
 func TestEditNoticeApproval(t *testing.T) {
 	t.Parallel()
 	const (
-		notice = "Accepting the edit ends its hold but doesn't approve the new text. " +
+		notice = "Accepting the edit ends this edit's hold but doesn't approve the new text. " +
 			"To approve it, a code owner adds a 👍 to comment 7 after the edit, first removing any 👍 they gave it before."
 		digest = "Accepting it doesn't approve the new text. " +
 			"To approve it, a code owner adds a 👍 to comment 7 after the edit, first removing any 👍 they gave it before."
@@ -612,6 +612,57 @@ func TestDiscFindSkipsBadKeys(t *testing.T) {
 	}
 	if len(found) != 1 || found[0].Key != "dCDE_ok" {
 		t.Errorf("found %+v; want only the deletion whose key a marker holds", found)
+	}
+}
+
+// A deletion is judged by who made it and whose comment it was, not by its
+// two logins matching (SPEC §6.4). GitHub records no event for an author's
+// deletion of their own comment (SPEC §16), so these events are built by
+// hand. Two deleted accounts, both shown as ghost, are two people, so
+// ghost's deletion of ghost's comment asks about the deleter, as any other
+// deletion does, both for a discussion trigger (discFind) and for a /hold
+// on an ancestor (resolveGoneMay); here GitHub says ghost can't write, so
+// it's neither. Two people GitHub doesn't name are asked about by neither,
+// as someone GitHub doesn't name is no write collaborator, so their
+// deletion is neither too.
+func TestDeletionSameLoginJudgedByDeleter(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	at := time.Date(2026, 1, 1, 0, 0, 9, 0, time.UTC)
+	app := github.Author{Login: "issuedog[bot]", Type: "Bot"}
+	for _, tt := range []struct {
+		name  string
+		login string
+		asked map[string]int
+	}{
+		{"two deleted accounts", "ghost", map[string]int{"ghost": 1}},
+		{"two people GitHub doesn't name", "", map[string]int{}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			who := github.Author{Login: tt.login}
+			e := github.DeletedComment{ID: "CDE_1", By: who, Author: who, At: at}
+			s := &github.Snapshot{Comments: []github.Comment{
+				{ID: 1, Author: app, Body: "<!-- issuedog:transition from=intake to=ready run=a -->", CreatedAt: at.Add(-time.Hour)},
+			}, Deleted: []github.DeletedComment{e}}
+			a := &Applier{Owner: "o", Repo: "r", AppSlug: "issuedog"}
+			tr := newDiscCounting()
+			found, err := a.discFind(ctx, s, Dirt{}, tr)
+			if err != nil || len(found) != 0 {
+				t.Errorf("discFind = %+v, %v; want no trigger, no error", found, err)
+			}
+			if !reflect.DeepEqual(tr.access, tt.asked) {
+				t.Errorf("discFind asked DiscAccess %v; want %v", tr.access, tt.asked)
+			}
+			tr = newDiscCounting()
+			may, err := a.resolveGoneMay(ctx, a.discWhoOf(s, tr), e, at.Add(-time.Hour))
+			if may || err != nil {
+				t.Errorf("resolveGoneMay = %v, %v; want no possible /hold, no error", may, err)
+			}
+			if !reflect.DeepEqual(tr.access, tt.asked) {
+				t.Errorf("resolveGoneMay asked DiscAccess %v; want %v", tr.access, tt.asked)
+			}
+		})
 	}
 }
 
