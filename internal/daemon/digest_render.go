@@ -112,9 +112,17 @@ func digestRenderFit(n int, render func(k int) string) int {
 // digestRenderItem renders it, ranked rank: a heading with its issue and
 // escaped title, what it is, its lines as a list, with each question's
 // options under it, the recommended one first and marked, and the link to
-// answer at.
+// answer at. An item read back from the digest's body (waitItem.Kept)
+// keeps its title and lines as the body showed them, already escaped.
 func digestRenderItem(rank int, it waitItem) string {
 	heading := fmt.Sprintf("### %d. #%d", rank, it.Issue)
+	if k := it.Kept; k != nil {
+		if k.Title != "" {
+			heading += ": " + k.Title
+		}
+		lines := append(slices.Clone(k.Lines), digestKeptAnswer+it.Link)
+		return strings.Join([]string{heading, digestRenderAbout(it), strings.Join(lines, "\n")}, "\n\n")
+	}
 	if title := digestRenderTitle(it.Title); title != "" {
 		// A heading drops the #s that end it after a space, so an escaped
 		// title keeps its last one.
@@ -123,10 +131,7 @@ func digestRenderItem(rank int, it waitItem) string {
 		}
 		heading += ": " + title
 	}
-	about := fmt.Sprintf("**%s**, priority p%d", digestRenderKindName(it.Kind), it.Priority)
-	if it.Unblocks > 0 {
-		about += fmt.Sprintf(", unblocks %s (itself included)", waitCount(it.Unblocks, "open issue"))
-	}
+	about := digestRenderAbout(it)
 	var lines []string
 	for _, l := range it.Lines {
 		t := l.Text
@@ -147,8 +152,18 @@ func digestRenderItem(rank int, it waitItem) string {
 			lines = append(lines, "- "+t)
 		}
 	}
-	lines = append(lines, "- Answer here: "+it.Link)
+	lines = append(lines, digestKeptAnswer+it.Link)
 	return strings.Join([]string{heading, about, strings.Join(lines, "\n")}, "\n\n")
+}
+
+// digestRenderAbout is the line under it's heading: its kind, priority
+// and score.
+func digestRenderAbout(it waitItem) string {
+	about := fmt.Sprintf("**%s**, priority p%d", digestRenderKindName(it.Kind), it.Priority)
+	if it.Unblocks > 0 {
+		about += fmt.Sprintf(", unblocks %s (itself included)", waitCount(it.Unblocks, "open issue"))
+	}
+	return about
 }
 
 // digestRenderText is text the App didn't write, or copied from its own

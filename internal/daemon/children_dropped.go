@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
@@ -28,12 +29,20 @@ import (
 // by hand or in another repo, stays. Its blocked-by links are read first
 // (BlockedBy), so a replay adds and removes none twice, and the child is
 // reported to Touched before its first write. A changed child that's
-// closed, or isn't found, gets nothing, as childrenChanged gives it
-// nothing either, and a dependency whose child isn't found is skipped,
-// as childrenLink skips it. The links of a kept child, and the links
-// into a changed child from its siblings, are each the other child's
-// own: a kept item keeps its dependencies (keptDeps), and a new or
-// changed one's are its own item's.
+// closed gets nothing, as childrenChanged gives it nothing either: one
+// the listing found closed, or one childrenChanged marked closed, as
+// when the label rules closed it in this pass. Each changed item's child is
+// in children, and so is each dependency's, as a changed item depends on no
+// dropped one (SPEC §11.3), a new one's child is filed by now, and
+// ChildrenVisit stops a revision whose kept or changed child isn't found
+// before any write (childrenGone): one that isn't is an error, as in
+// childrenLink. A link GitHub refuses to add with a 422 is a failure no
+// later pass gets past, as in childrenLink (childBlockErr), unless it
+// stands by then (childBlock), and so is one it refuses to remove with a
+// 422 (childUnblockErr). The links of a kept child, and the links into a
+// changed child from its siblings, are each the other child's own: a kept
+// item keeps its dependencies (keptDeps), and a new or changed one's are
+// its own item's.
 func (st *Step) revisedLink(ctx context.Context, items []planItem, children map[string]childFound) error {
 	siblings := make(map[int64]bool, len(children))
 	for _, f := range children {
@@ -44,8 +53,11 @@ func (st *Step) revisedLink(ctx context.Context, items []planItem, children map[
 			continue
 		}
 		c, ok := children[it.ID]
-		if !ok || c.Closed {
-			logr.Debugf("%s/%s: item %s's child is closed or not found, so its links to its siblings are left as they are", st.Owner, st.Repo, it.ID)
+		if !ok {
+			return fmt.Errorf("item %s: the revision changes it, but it has no child", it.ID)
+		}
+		if c.Closed {
+			logr.Debugf("%s/%s: item %s's child is closed, so its links to its siblings are left as they are", st.Owner, st.Repo, it.ID)
 			continue
 		}
 		listed, err := st.Client.BlockedBy(ctx, st.Owner, st.Repo, c.Number)
@@ -60,19 +72,20 @@ func (st *Step) revisedLink(ctx context.Context, items []planItem, children map[
 		for _, dep := range it.DependsOn {
 			b, ok := children[dep]
 			if !ok {
-				logr.Warnf("%s/%s#%d: item %s of a plan depends on item %s, whose child isn't found, so it isn't blocked by it",
-					st.Owner, st.Repo, c.Number, it.ID, dep)
-				continue
+				return fmt.Errorf("item %s: it depends on %s, which has no child", it.ID, dep)
 			}
 			want[b.ID] = true
 			if has[b.ID] {
 				continue
 			}
 			st.touch(c.Number)
-			if err := st.Client.AddBlockedBy(ctx, st.Owner, st.Repo, c.Number, b.ID); err != nil {
-				return fmt.Errorf("item %s: block #%d by #%d: %w", it.ID, c.Number, b.Number, err)
+			added, err := st.childBlock(ctx, it.ID, c, dep, b)
+			if err != nil {
+				return fmt.Errorf("revised links: %w", err)
 			}
-			logr.Infof("%s/%s#%d: blocked by #%d, as item %s of a plan's revision depends on item %s", st.Owner, st.Repo, c.Number, b.Number, it.ID, dep)
+			if added {
+				logr.Infof("%s/%s#%d: blocked by #%d, as item %s of a plan's revision depends on item %s", st.Owner, st.Repo, c.Number, b.Number, it.ID, dep)
+			}
 		}
 		for _, is := range listed {
 			if !siblings[is.GetID()] || want[is.GetID()] {
@@ -80,7 +93,7 @@ func (st *Step) revisedLink(ctx context.Context, items []planItem, children map[
 			}
 			st.touch(c.Number)
 			if err := st.Client.RemoveBlockedBy(ctx, st.Owner, st.Repo, c.Number, is.GetID()); err != nil {
-				return fmt.Errorf("item %s: unblock #%d from #%d: %w", it.ID, c.Number, is.GetNumber(), err)
+				return fmt.Errorf("item %s: %w", it.ID, childUnblockErr(err, c.Number, is.GetNumber()))
 			}
 			logr.Infof("%s/%s#%d: no longer blocked by #%d, as item %s of a plan's revision no longer depends on its item", st.Owner, st.Repo, c.Number, is.GetNumber(), it.ID)
 		}
@@ -158,16 +171,19 @@ func (st *Step) droppedWalk(ctx context.Context, d droppedItem, n int, id int64,
 // and removes every dependency link to and from it (droppedUnlink):
 //   - open, it's reported to Touched, the label rules run on it first
 //     (discCheckLabels), as for any move, then it moves to closed as not
-//     planned, keyed by d's key, with a comment naming the revision and
+//     planned, keyed by d's key, or apart from a move of it that key
+//     carries already (droppedKey), with a comment naming the revision and
 //     linking its plan comment. Closing a held one ends its hold. A close
 //     the table refuses, as for an issue of a type the pipeline doesn't
 //     know, is a state error that Transition reports once on the issue:
 //     it's logged, and the issue is left open, with its links, so it
 //     can't keep the revision's record from standing;
-//   - closed by that move, as after a pass that stopped part way, only
-//     its links are removed;
-//   - closed otherwise, as by someone before the approval, it gets no
-//     write: a closed issue is never written.
+//   - closed by that move, the App's close keyed by d's key or apart
+//     from it (droppedClosedBy), as after a pass that stopped part way,
+//     only its links are removed;
+//   - closed otherwise, as by someone before the approval, or by the
+//     owner after a move of it the key carries, as a new or changed
+//     child's, it gets no write: a closed issue is never written.
 func (st *Step) droppedOne(ctx context.Context, d droppedItem, n int, id int64) error {
 	s, err := st.Client.Snapshot(ctx, st.Owner, st.Repo, n)
 	if err != nil {
@@ -178,8 +194,8 @@ func (st *Step) droppedOne(ctx context.Context, d droppedItem, n int, id int64) 
 		return fmt.Errorf("read #%d: %w", n, err)
 	}
 	if s.Closed {
-		if !state.Derive(s, st.AppSlug, dirt.Has).Moved(d.key) {
-			logr.Debugf("%s/%s#%d: closed before revision %d of #%d's plan dropped %s, so it's left as it is", st.Owner, st.Repo, n, d.rev, d.parent, d.item)
+		if is := state.Derive(s, st.AppSlug, dirt.Has); !droppedClosedBy(is, d.key) && !droppedClosedBy(is, droppedClosedKey(d.key)) {
+			logr.Debugf("%s/%s#%d: closed, but not by revision %d of #%d's plan, which drops %s, so it's left as it is", st.Owner, st.Repo, n, d.rev, d.parent, d.item)
 			return nil
 		}
 		return st.droppedUnlink(ctx, n, id)
@@ -188,7 +204,8 @@ func (st *Step) droppedOne(ctx context.Context, d droppedItem, n int, id int64) 
 	if err := st.discCheckLabels(ctx, s, st.Trust, dirt); err != nil {
 		return fmt.Errorf("check #%d: %w", n, err)
 	}
-	m := Move{To: state.Closed, StateReason: "not_planned", Trigger: state.TriggerClosed, Key: d.key, Text: droppedText(d, n)}
+	m := Move{To: state.Closed, StateReason: "not_planned", Trigger: state.TriggerClosed, Key: droppedKey(state.Derive(s, st.AppSlug, dirt.Has), d.key),
+		Text: droppedText(d, n)}
 	err = st.Transition(ctx, s, dirt.Has, m)
 	if StateError(err) {
 		logr.Warnf("%s/%s#%d: left open, though revision %d of #%d's plan drops %s: %v", st.Owner, st.Repo, n, d.rev, d.parent, d.item, err)
@@ -199,6 +216,42 @@ func (st *Step) droppedOne(ctx context.Context, d droppedItem, n int, id int64) 
 	}
 	logr.Infof("%s/%s#%d: closed as not planned, as revision %d of #%d's plan drops %s", st.Owner, st.Repo, n, d.rev, d.parent, d.item)
 	return st.droppedUnlink(ctx, n, id)
+}
+
+// droppedKey is the key of the close of an open issue, in state is, in a
+// subtree a revision drops, whose moves the revision keys by key (SPEC
+// §5): key itself, unless a move other than a close carries it already,
+// as a new or changed child's has once someone moved it below a dropped
+// one. Transition would take that move for the close and write nothing,
+// so the issue would be unlinked but left open. Its close is then keyed
+// apart (droppedClosedKey), which no other move carries. A close cut
+// short after its comment keeps the key its marker carries, so
+// Transition finishes it: key, or the key apart whenever a marker carries
+// that, even once an edit has hidden the move that chose it, so no second
+// close comment is posted.
+func droppedKey(is state.Issue, key state.Key) state.Key {
+	apart := droppedClosedKey(key)
+	if is.Moved(apart) || is.Moved(key) && !droppedClosedBy(is, key) {
+		return apart
+	}
+	return key
+}
+
+// droppedClosedKey is key, the key of a revision's moves, with "-closed"
+// after its ID: the key of a dropped subtree's close of an issue that has
+// a move keyed by key already, other than a close (droppedKey, SPEC §5).
+func droppedClosedKey(key state.Key) state.Key {
+	return state.Key{Field: key.Field, ID: key.ID + "-closed"}
+}
+
+// droppedClosedBy reports whether a transition marker in is that moves
+// the issue to closed carries key: the App's close, keyed by a revision's
+// key or apart from it (droppedKey), and not any other move that key
+// carries, nor someone's close by hand, which writes no marker.
+func droppedClosedBy(is state.Issue, key state.Key) bool {
+	return slices.ContainsFunc(is.Markers, func(m github.Marker) bool {
+		return m.Kind == "transition" && m.Fields[key.Field] == key.ID && m.Fields["to"] == string(state.Closed)
+	})
 }
 
 // droppedText is the comment of the close of issue n in d's subtree,
@@ -218,7 +271,12 @@ func droppedText(d droppedItem, n int) string {
 // before its removals, so a replay removes none twice, and each issue is
 // reported to Touched before its link goes. A link to an issue in another
 // repo that n blocks is logged and left, as it's that repo's issue to
-// write.
+// write. A DELETE here would name this repo's issue of that number, which
+// has no such link, unless n blocks it as well, when its own link goes
+// anyway, or which redirects, for an issue moved from here. GitHub
+// answers 404 to it, so every pass would fail at the same point, and the
+// revision's record would never stand. A removal GitHub refuses with a
+// 422 is a failure no later pass gets past (childUnblockErr).
 func (st *Step) droppedUnlink(ctx context.Context, n int, id int64) error {
 	blockers, err := st.Client.BlockedBy(ctx, st.Owner, st.Repo, n)
 	if err != nil {
@@ -227,7 +285,7 @@ func (st *Step) droppedUnlink(ctx context.Context, n int, id int64) error {
 	for _, b := range blockers {
 		st.touch(n)
 		if err := st.Client.RemoveBlockedBy(ctx, st.Owner, st.Repo, n, b.GetID()); err != nil {
-			return fmt.Errorf("unlink #%d: %w", n, err)
+			return fmt.Errorf("unlink #%d: %w", n, childUnblockErr(err, n, b.GetNumber()))
 		}
 		logr.Infof("%s/%s#%d: no longer blocked by #%d of %s, as it's closed as not planned", st.Owner, st.Repo, n, b.GetNumber(), b.GetRepositoryURL())
 	}
@@ -242,7 +300,7 @@ func (st *Step) droppedUnlink(ctx context.Context, n int, id int64) error {
 		}
 		st.touch(b.GetNumber())
 		if err := st.Client.RemoveBlockedBy(ctx, st.Owner, st.Repo, b.GetNumber(), id); err != nil {
-			return fmt.Errorf("unlink #%d: %w", n, err)
+			return fmt.Errorf("unlink #%d: %w", n, childUnblockErr(err, b.GetNumber(), n))
 		}
 		logr.Infof("%s/%s#%d: no longer blocked by #%d, which is closed as not planned", st.Owner, st.Repo, b.GetNumber(), n)
 	}

@@ -61,7 +61,7 @@ func (f *Fake) DeleteCommentByUnmoved(login string, id int64) string {
 func (f *Fake) deletedEventBy(login string, c *comment, at time.Time) string {
 	f.lastEvent++
 	e := deletedEvent{node: fmt.Sprintf("CDE_%d", firstEvent+f.lastEvent), by: login, author: c.GetUser().GetLogin(), at: at}
-	is := f.issues[c.issue-1]
+	is := f.issueNumbered(c.issue)
 	is.deletions = append(is.deletions, e)
 	return e.node
 }

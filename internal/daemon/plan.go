@@ -54,8 +54,10 @@ type planBody struct {
 // and HumanTask are a task's only. Priority, Model and Effort are "" when
 // the item leaves them to the issue's and the defaults. Status is a
 // revision's only (plan_revision.go): planKept, planChanged, planNew or
-// planDropped, and a kept or dropped item has its ID and title alone, its
-// other fields empty or nil, as its data keeps them. A first plan's items
+// planDropped. A dropped item has its ID and title alone, its other fields
+// empty or nil, as its data keeps them, and so does a kept one in the
+// planner's output, while its data keeps a kept item's approved entry in
+// full, dependencies included (planPrior.keptData). A first plan's items
 // have none, so their data is as it was before revisions (omitempty).
 type planItem struct {
 	ID        string         `json:"id"`

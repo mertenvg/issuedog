@@ -386,10 +386,11 @@ func TestCheckRevisionCounts(t *testing.T) {
 
 // A first plan's data is the plan itself, byte for byte, as it was
 // before revisions. A revision's kept item is its approved entry in full,
-// read from the approved revision, never from the planner's output, with
-// its status kept and only the dependencies it keeps: here T1's on T2,
-// not its one on T3, which the revision drops. The changed, new and
-// dropped items, and the planner's output, are left as they are.
+// read from the approved revision, never from the planner's output, its
+// approved title too, with its status kept and only the dependencies it
+// keeps: here T1's on T2, not its one on T3, which the revision drops. The
+// changed, new and dropped items, and the planner's output, are left as
+// they are.
 func TestKeptDataCarriesApprovedEntry(t *testing.T) {
 	t.Parallel()
 	first := goldenPlan(t, "story-plan")
@@ -410,6 +411,7 @@ func TestKeptDataCarriesApprovedEntry(t *testing.T) {
 	pr.Items[0].DependsOn = []string{"T3", "T2"}
 	p := goldenPlan(t, "story-revision")
 	p.Items[0].Outcome = "The planner's own outcome, which a kept item can't have."
+	p.Items[0].Title = "The planner's own title for the kept T1"
 	data := pr.keptData(p)
 	want := pr.Items[0]
 	want.Status, want.DependsOn = planKept, []string{"T2"}
@@ -421,7 +423,11 @@ func TestKeptDataCarriesApprovedEntry(t *testing.T) {
 			t.Errorf("%s's data = %+v, want the revision's own %+v", p.Items[i].ID, data.Items[i], p.Items[i])
 		}
 	}
-	if p.Items[0].Outcome != "The planner's own outcome, which a kept item can't have." || p.Items[0].Criteria != nil {
+	if data.Items[0].Title != "Record when each quote expires" {
+		t.Errorf("the kept T1's data is titled %q, want its approved title", data.Items[0].Title)
+	}
+	if p.Items[0].Outcome != "The planner's own outcome, which a kept item can't have." || p.Items[0].Title != "The planner's own title for the kept T1" ||
+		p.Items[0].Criteria != nil {
 		t.Errorf("the planner's output was changed: %+v", p.Items[0])
 	}
 }

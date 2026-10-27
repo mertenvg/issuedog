@@ -346,23 +346,25 @@ func TestChildrenRun(t *testing.T) {
 
 	// 3. A restart finds S1 in the issues listed since the approval, and
 	// links it, but dies just after the link: S1 is under the epic, with no
-	// first move, and no second issue was filed. The new daemon's digest,
-	// built afresh, drops the epic's item, as the epic waits on no one at
-	// planned, but its assignment stays, as its visit failed (SPEC §9.6).
+	// first move, and no second issue was filed. The epic's visit failed,
+	// so the new daemon's digest keeps the epic's item as its body showed
+	// it, and its assignment stays, so the two agree (SPEC §9.4, After a
+	// restart, #360), though the epic waits on no one at planned.
 	l.start()
-	l.crash("the first restart, crashing after S1's link", 1, 1, "POST /issues/1/sub_issues", "PATCH /issues/2")
-	l.digest("the first restart", 2, nil, epic)
+	l.crash("the first restart, crashing after S1's link", 1, 1, "POST /issues/1/sub_issues")
+	l.digest("the first restart", 2, []string{"#1 Plan approval p2 1"}, epic)
 	if st := f.State(); len(st.Issues) != 3 || st.Issues[2].Parent != epic || len(st.Issues[2].Comments) != 0 {
 		t.Fatalf("the first restart: %d issues, #3 under #%d with comments %+v; want S1 alone, linked, with none", len(st.Issues), st.Issues[2].Parent, st.Issues[2].Comments)
 	}
 
 	// 4. A second restart finds S1 among the epic's sub-issues, and writes
 	// only what's missing: S1's first move, then S2, #4, filed, linked and
-	// moved, S2's blocked-by link to S1 and the record, last. Then
-	// mertenvg is unassigned from the epic.
+	// moved, S2's blocked-by link to S1 and the record, last. Then the
+	// digest drops the epic's item, and mertenvg is unassigned from the
+	// epic, in the same pass.
 	l.start()
 	l.step("the second restart", 1, slices.Concat([]string{"POST /issues/3/comments"}, childWrites(epic, 4), blockWrites(4),
-		[]string{recordWrite(epic), "DELETE /issues/1/assignees"})...)
+		[]string{recordWrite(epic), "PATCH /issues/2", "DELETE /issues/1/assignees"})...)
 	stories := []wantChild{
 		{"S1", "S1. Quotes expire after 24 hours", "", []string{"effort:high", "model:opus", "priority:p1", "stage:planning", "type:story"}, state.Planning},
 		{"S2", "S2. Customers see when a quote expires", "", []string{"priority:p2", "stage:planning", "type:story"}, state.Planning},
@@ -406,7 +408,8 @@ func TestChildrenRun(t *testing.T) {
 	l.planned("S2's plan", 4, 3)
 	l.g.checkFlags(3, "", "", "")
 	l.step("S2's plan listed", 3, "PATCH /issues/2", "POST /issues/4/assignees")
-	plans := []string{"#3 Plan approval p1 1", "#4 Plan approval p2 1"}
+	// S1 blocks S2, so it scores 2 (SPEC §9.4, The order).
+	plans := []string{"#3 Plan approval p1 2", "#4 Plan approval p2 1"}
 	l.digest("S2's plan listed", 2, plans, 3, 4)
 	l.labels("S2's plan listed", 3, false, "effort:high", "model:opus", "priority:p1", "stage:plan-review", "type:story")
 	l.labels("S2's plan listed", 4, false, "priority:p2", "stage:plan-review", "type:story")
@@ -460,8 +463,9 @@ func TestChildrenRun(t *testing.T) {
 	// 7. mertenvg closes T1 and T2. The pass that judges the closes, the
 	// newest first, sets stage:completed on each, and, as every child S1's
 	// record names has closed, lists S1 as a finished story, keyed done-3,
-	// ranked after every other kind of item, announces it once and assigns
-	// mertenvg on it (#278).
+	// ranked after every other kind of item of the same score, but first
+	// here, as it blocks S2, announces it once and assigns mertenvg on it
+	// (#278).
 	f.CloseBy(5, childrenRunOwner)
 	f.CloseBy(6, childrenRunOwner)
 	l.step("the tasks closed", 3, "POST /issues/6/labels", "DELETE /issues/6/labels/stage:needs-human",
@@ -474,13 +478,13 @@ func TestChildrenRun(t *testing.T) {
 	if added := l.added(2); !slices.Equal(added, []string{news}) {
 		t.Errorf("the tasks closed: the digest's new comments %q; want the announcement\n%s", added, news)
 	}
-	finished := "**Finished story**, priority p1, unblocks 1 open issue (itself included)\n\n" +
+	finished := "**Finished story**, priority p1, unblocks 2 open issues (itself included)\n\n" +
 		"- Every child of this story is closed, so it waits for story verification, which runs by hand for now. Close it once that passes.\n" +
 		"- Its children: #5, #6.\n"
 	if body := f.State().Issues[1].Body; !strings.Contains(body, finished) {
 		t.Errorf("the tasks closed: the digest =\n%s\nwant S1's item\n%s", body, finished)
 	}
-	done := append(slices.Clone(plans[1:]), "#3 Finished story p1 1")
+	done := append([]string{"#3 Finished story p1 2"}, plans[1:]...)
 	l.digest("the tasks closed", 2, done, 3, 4)
 	l.quiet("S1 finished")
 	l.restart("S1 finished")

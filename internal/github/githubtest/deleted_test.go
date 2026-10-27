@@ -139,7 +139,7 @@ func TestDeleteCommentByAuthor(t *testing.T) {
 		t.Errorf("deletions %+v; want the ghost's %s, then the owner's %s", nodes, ghost, other)
 	}
 	f.mu.Lock()
-	s := slices.Clone(f.issues[n-1].deletions)
+	s := slices.Clone(f.issueNumbered(n).deletions)
 	f.mu.Unlock()
 	if len(s) != 2 || !s[1].at.Equal(at) {
 		t.Errorf("deletions %+v; want the last one at updated_at, %v", s, at)
