@@ -171,6 +171,23 @@ func TestWaitFindDoneNothing(t *testing.T) {
 func TestWaitFindDoneBadData(t *testing.T) {
 	t.Parallel()
 	s := doneSnap(t, 50, "epic", "story-plan", 12)
+	doneBadData(t, s)
+	items, err := waitFind(waitIn(s, Dirt{}))
+	if err == nil || len(items) != 0 || !strings.Contains(err.Error(), "o/r#50") || !strings.Contains(err.Error(), "a finished epic's plan") {
+		t.Errorf("got %+v, %v; want an error naming o/r#50 and the epic's plan", items, err)
+	}
+	// A story's data isn't read: it's a story whatever its plan holds.
+	s.Type = "story"
+	if got := waitFindOne(t, waitIn(s, Dirt{})); got.Key != "done-50" {
+		t.Errorf("a story with bad plan data gave %s; want done-50", got.Key)
+	}
+}
+
+// doneBadData makes s, from doneSnap, hold plan data that doesn't read
+// back: its plan revision 1, and the move into planned that approves it,
+// are rewritten for a plan-data marker whose data isn't base64.
+func doneBadData(t *testing.T, s *github.Snapshot) {
+	t.Helper()
 	m := github.Marker{Kind: "plan-data", Fields: map[string]string{"v": "1", "data": "not-base64!"}}
 	data, err := github.FormatMarker(m)
 	if err != nil {
@@ -186,15 +203,6 @@ func TestWaitFindDoneBadData(t *testing.T) {
 	}
 	s.Comments[1].Body = plan
 	s.Comments[2].Body = "<!-- issuedog:transition from=plan-review to=planned rev=1 body=" + hash + " cmd=r5 seen=2 -->"
-	items, err := waitFind(waitIn(s, Dirt{}))
-	if err == nil || len(items) != 0 || !strings.Contains(err.Error(), "o/r#50") || !strings.Contains(err.Error(), "a finished epic's plan") {
-		t.Errorf("got %+v, %v; want an error naming o/r#50 and the epic's plan", items, err)
-	}
-	// A story's data isn't read: it's a story whatever its plan holds.
-	s.Type = "story"
-	if got := waitFindOne(t, waitIn(s, Dirt{})); got.Key != "done-50" {
-		t.Errorf("a story with bad plan data gave %s; want done-50", got.Key)
-	}
 }
 
 // doneStoryDaemon is a daemon whose cache holds a finished story's item on

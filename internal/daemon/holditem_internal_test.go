@@ -40,7 +40,7 @@ func holdItemSnap(comments ...github.Comment) *github.Snapshot {
 // keyed key, in comment id, with its cc line if cc is set and its notice
 // marker if notice is.
 func holdItemHeld(id int64, key string, cc, notice bool) github.Comment {
-	text := "On hold for discussion, from `ready`: it. Only a code owner can move this issue, so it stays on hold until they resolve this."
+	text := "On hold for discussion, from `ready`: it. Only a code owner can move this issue, so it stays on hold at least until they resolve this."
 	if cc {
 		text += "\n\ncc @owner"
 	}
@@ -54,7 +54,7 @@ func holdItemHeld(id int64, key string, cc, notice bool) github.Comment {
 // holdItemNotice is the App's notice of the trigger keyed key, in comment
 // id, with its cc line.
 func holdItemNotice(id int64, key string) github.Comment {
-	return holdItemComment(id, waitApp, "Also on hold for discussion: it. This issue stays on hold until a code owner accepts it.\n\ncc @owner\n\n"+
+	return holdItemComment(id, waitApp, "Also on hold for discussion: it. This issue stays on hold at least until a code owner accepts it.\n\ncc @owner\n\n"+
 		"<!-- issuedog:notice key="+key+" -->")
 }
 

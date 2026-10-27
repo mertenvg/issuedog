@@ -88,9 +88,14 @@ func above(at string) string {
 	return "from=" + at + " to=held at=" + at + " reason=owner cmd=1001"
 }
 
-// madeOn is /resume's rejection when only holds made on these issues remain.
-func madeOn(issues string) string {
-	return "the holds below were made on " + issues + ", by `/hold` or by hand, so `/resume` there ends them"
+// madeOn is /resume's rejection when only holds made on these issues
+// remain, as many as holds: "the hold left … ends it" for one, and "the
+// holds left … ends them" for more (#466).
+func madeOn(issues string, holds int) string {
+	if holds == 1 {
+		return "the hold left was made on " + issues + ", by `/hold` or by hand, so `/resume` there ends it"
+	}
+	return "the holds left were made on " + issues + ", by `/hold` or by hand, so `/resume` there ends them"
 }
 
 // issueWant is an issue after the passes: its labels and its new comments.
@@ -226,7 +231,7 @@ func TestHoldResumePriority(t *testing.T) {
 			}),
 			on: 1,
 			want: map[int]issueWant{
-				1: {[]string{"stage:ready"}, []string{final("/resume", "I didn't apply this command", madeOn("#2"), "1003")}},
+				1: {[]string{"stage:ready"}, []string{final("/resume", "I didn't apply this command", madeOn("#2", 1), "1003")}},
 			},
 			react: "-1"},
 		{name: "/resume on a parent leaves a child labelled held by hand, in any case, with no marker yet",
@@ -236,7 +241,7 @@ func TestHoldResumePriority(t *testing.T) {
 			}),
 			on: 1,
 			want: map[int]issueWant{
-				1: {[]string{"stage:ready"}, []string{final("/resume", "I didn't apply this command", madeOn("#2"), "1003")}},
+				1: {[]string{"stage:ready"}, []string{final("/resume", "I didn't apply this command", madeOn("#2", 1), "1003")}},
 			},
 			react: "-1"},
 		{name: "/resume names a closed issue whose /hold made the holds left below it",
@@ -245,7 +250,7 @@ func TestHoldResumePriority(t *testing.T) {
 				func(f *githubtest.Fake) { f.Close(2) }),
 			on: 1,
 			want: map[int]issueWant{
-				1: {[]string{"stage:ready"}, []string{final("/resume", "I didn't apply this command", madeOn("#2"), "1004")}},
+				1: {[]string{"stage:ready"}, []string{final("/resume", "I didn't apply this command", madeOn("#2", 1), "1004")}},
 			},
 			react: "-1"},
 		{name: "/resume ends a hold that a /hold on its grandparent made",
@@ -491,20 +496,20 @@ func TestOwnHolds(t *testing.T) {
 			labels: [3]string{"stage:ready", "stage:held", "stage:verifying"}, react: "+1"},
 		{name: "a second /resume on the parent is rejected, naming the child",
 			steps:  []step{{1, "/hold"}, {2, "/hold"}, {1, "/resume"}, {1, "/resume"}},
-			labels: [3]string{"stage:ready", "stage:held", "stage:held"}, react: "-1", reply: madeOn("#2")},
+			labels: [3]string{"stage:ready", "stage:held", "stage:held"}, react: "-1", reply: madeOn("#2", 2)},
 		{name: "a child's /resume ends its own hold and the one it made below",
 			steps:  []step{{2, "/hold"}, {1, "/hold"}, {2, "/resume"}},
 			labels: [3]string{"stage:held", "stage:in-progress", "stage:verifying"}, react: "+1"},
 		{name: "a grandparent's /resume with only holds made below it is rejected",
 			steps:  []step{{2, "/hold"}, {1, "/resume"}},
-			labels: [3]string{"stage:ready", "stage:held", "stage:held"}, react: "-1", reply: madeOn("#2")},
+			labels: [3]string{"stage:ready", "stage:held", "stage:held"}, react: "-1", reply: madeOn("#2", 2)},
 		{name: "a /resume ends the holds a /hold on its parent made",
 			steps:  []step{{1, "/hold"}, {2, "/resume"}},
 			labels: [3]string{"stage:held", "stage:in-progress", "stage:verifying"}, react: "+1"},
 		{name: "a hold whose /hold comment is gone isn't ended from above",
 			gone:   true,
 			steps:  []step{{2, "/hold"}, {1, "/resume"}},
-			labels: [3]string{"stage:ready", "stage:held", "stage:held"}, react: "-1", reply: madeOn("#2, #3")},
+			labels: [3]string{"stage:ready", "stage:held", "stage:held"}, react: "-1", reply: madeOn("#2 and #3", 2)},
 		{name: "a /resume on the issue itself ends its hold whose /hold comment is gone, and the one below, as its marker there names it",
 			gone:   true,
 			steps:  []step{{2, "/hold"}, {2, "/resume"}},

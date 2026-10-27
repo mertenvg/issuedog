@@ -24,7 +24,7 @@ func TestSnapshotDeleted(t *testing.T) {
 	second := f.DeleteCommentBy("", mine)           // 7
 	f.DeleteComment(quiet)
 	other := f.AddIssue("owner", "Other", "body")
-	f.DeleteCommentBy("owner", f.AddComment(other, "owner", "elsewhere"))
+	f.DeleteCommentBy("mallory", f.AddComment(other, "owner", "elsewhere"))
 	s := snapshot(t, f, n)
 	want := []github.DeletedComment{
 		{ID: first, By: github.Author{Login: "mallory", Type: "User"}, Author: github.Author{Login: "issuedog[bot]", Type: "Bot"}, At: at(6)},

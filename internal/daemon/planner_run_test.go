@@ -496,11 +496,10 @@ func TestPlannerWholeRunEpic(t *testing.T) {
 	p.settle("round 1", digestEdit, assign)
 	a1 := f.AddComment(p.n, wholeRunOwner, wholeRunAnswer)
 	// An answered round's unassign waits until after the pass's stage run
-	// (SPEC §9.6): round 2 leaves the issue at clarifying, so it's made
-	// then, but the spec leaves it at spec-review, waiting on you, so you
-	// stay assigned.
-	p.iterate("round 2", 2, react(a1), digestEdit, "POST /issues/1/comments", unassign)
-	p.settle("round 2", digestEdit, assign)
+	// (SPEC §9.6): round 2, and then the spec at spec-review, each wait on
+	// you again, so you stay assigned, with no write.
+	p.iterate("round 2", 2, react(a1), digestEdit, "POST /issues/1/comments")
+	p.settle("round 2", digestEdit)
 	a2 := f.AddComment(p.n, wholeRunOther, "1b")
 	p.iterate("the spec", 3, react(a2), digestEdit,
 		"PATCH /issues/1", "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:clarifying")
@@ -516,11 +515,11 @@ func TestPlannerWholeRunEpic(t *testing.T) {
 
 	// 2. Your /approve moves it to planning, and gets a 👍. The planner runs
 	// at once, in the same pass: it asks round 3, after the interviewer's
-	// 1 and 2, which waits in the digest, with you assigned, from the pass
-	// after.
+	// 1 and 2, which waits in the digest from the pass after. It waits on
+	// you, so you stay assigned, with no write (SPEC §9.6).
 	approveCmd := f.AddComment(p.n, wholeRunOwner, "/approve")
 	p.iterate("the approval and round 3", 4, "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:spec-review",
-		react(approveCmd), digestEdit, "POST /issues/1/comments", unassign)
+		react(approveCmd), digestEdit, "POST /issues/1/comments")
 	p.labels("round 3", labels("planning")...)
 	cs := p.comments()
 	approval := cs[len(cs)-2]
@@ -546,7 +545,7 @@ func TestPlannerWholeRunEpic(t *testing.T) {
 		}
 	}
 	p.plannerFlags(4)
-	p.settle("round 3", digestEdit, assign)
+	p.settle("round 3", digestEdit)
 	p.waiting("round 3", []string{"#1 Question round p1 1"}, wholeRunOwner)
 	f.Advance(time.Hour)
 	p.transferUnlistedUnchanged("round 3, an hour on") // it lists the open issues (#237)
