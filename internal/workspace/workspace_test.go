@@ -524,6 +524,57 @@ func TestBundleHandoff(t *testing.T) {
 	}
 }
 
+// TestBundleReadsCommitsAsMade plants, in a run's clone with two commits
+// past its start, a replace ref and a graft, each giving the start the
+// clone's HEAD as its parent, so that start..HEAD looks empty. Git
+// without Bundle's environment sees it so, so each plant takes effect.
+// Bundle ignores it, and the fetched run's ref holds both commits.
+func TestBundleReadsCommitsAsMade(t *testing.T) {
+	t.Parallel()
+	for name, plant := range map[string]func(t *testing.T, dir, start, head string){
+		"replace ref": func(t *testing.T, dir, start, head string) {
+			git(t, dir, "replace", "--graft", start, head)
+		},
+		"graft": func(t *testing.T, dir, start, head string) {
+			grafts := filepath.Join(dir, ".git", "info", "grafts")
+			if err := os.MkdirAll(filepath.Dir(grafts), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(grafts, []byte(start+" "+head+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			w, s := newWorkspace(t)
+			ctx := context.Background()
+			if err := w.Prepare(ctx, "r1", Commits{Start: s.second}, nil); err != nil {
+				t.Fatal(err)
+			}
+			dir := w.Dir("r1")
+			commitIn(t, dir, "a.txt", "a")
+			head := commitIn(t, dir, "b.txt", "b")
+			plant(t, dir, s.second, head)
+			if got := git(t, dir, "-c", "advice.graftFileDeprecated=false", "rev-list", "--count", s.second+"..HEAD"); got != "0" {
+				t.Fatalf("with the %s planted, git sees %s commits past the start, want 0, so the test shows nothing", name, got)
+			}
+
+			path, ok := bundleFile(t, w, "r1", s.second)
+			if !ok {
+				t.Fatalf("Bundle with a %s planted = false, want the run's two commits", name)
+			}
+			got, err := repo.New("", w.Bare).FetchBundle(ctx, path, "r1", s.second)
+			if err != nil || got != head {
+				t.Fatalf("FetchBundle = %q, %v; want the clone's HEAD %s", got, err, head)
+			}
+			if n := git(t, w.Bare, "rev-list", "--count", s.second+".."+repo.RunsRef+"r1"); n != "2" {
+				t.Errorf("the run's ref has %s commits past the start, want 2", n)
+			}
+		})
+	}
+}
+
 // hookNames are the hooks githooks(5) lists.
 var hookNames = []string{
 	"applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit", "pre-merge-commit",
