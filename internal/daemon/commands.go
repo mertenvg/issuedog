@@ -43,6 +43,10 @@ type Cmd struct {
 	// Trust is Step's, which Dirt was found with, for the dirty content
 	// of the other issues a command reads, such as a /hold's descendants.
 	Trust github.Trust
+	// Reword is set when Check words again the reason for the App's 👎 on
+	// the command, whose reply was lost (Step.reword): Check then judges it
+	// as of that 👎, as resumeCheck does (resumeRewordFamily).
+	Reword bool
 }
 
 // Rejection is a Handler's error for a command that doesn't apply. Step
@@ -53,13 +57,19 @@ type Rejection struct {
 	// when Reason already says what to do next, so the reply doesn't
 	// suggest one.
 	Final bool
+	// Dated is set when Reason holds because of when the comment was
+	// posted, before the latest revision or at a review stage since moved
+	// on to another, so a new comment with its text, posted now, wouldn't
+	// get it, and could apply (reword): it would pass the checks a new one
+	// gets, the table's included (SPEC §7.2).
+	Dated bool
 }
 
 func (r Rejection) Error() string { return r.Reason }
 
 // command applies cmd, from comment c, through its handler, or rejects it.
 func (st *Step) command(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment, cmd state.Command, stage state.Stage) error {
-	r, h, err := st.why(ctx, s, d, c, cmd, stage)
+	r, h, err := st.why(ctx, s, d, c, cmd, stage, false)
 	switch {
 	case err != nil:
 		return fmt.Errorf("/%s: %w", cmd.Name, err)
@@ -83,12 +93,44 @@ func (st *Step) command(ctx context.Context, s *github.Snapshot, d Dirt, c githu
 // request (requested) at any stage but the review stage it was posted at
 // (requestAt) finds the stage moved on since, so its reason says that,
 // whatever /revise would say at the stage now. It's Final: a new comment
-// now wouldn't send the spec or the plan back.
-func (st *Step) why(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment, cmd state.Command, stage state.Stage) (Rejection, Handler, error) {
+// now wouldn't send the spec or the plan back. At spec-review or
+// plan-review, a new comment is posted at the stage now, so it doesn't get
+// this reason, and is a revision request there, which /revise's checks
+// judge (judge). The reason is Dated when that request would apply. When
+// it wouldn't, as when the table has no such move for the issue's class
+// (SPEC §7.2), the reason ends with why, so the reply doesn't ask for a
+// new comment. At any other stage a new comment sends nothing back either,
+// so it isn't Dated. With reword, cmd is judged as of the App's 👎 on it,
+// whose reply was lost (Cmd.Reword).
+func (st *Step) why(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment, cmd state.Command, stage state.Stage, reword bool) (Rejection, Handler, error) {
 	if at := st.requestAt(s, d, c); at != "" && at != stage {
-		return Rejection{Reason: fmt.Sprintf("it was posted at `%s`, and this issue is at `%s` now. A comment sends the spec back only at `%s`, and the plan only at `%s`",
-			at, stage, state.SpecReview, state.PlanReview), Final: true}, Handler{}, nil
+		r := Rejection{Reason: fmt.Sprintf("it was posted at `%s`, and this issue is at `%s` now. A comment sends the spec back only at `%s`, and the plan only at `%s`",
+			at, stage, state.SpecReview, state.PlanReview), Final: true}
+		if stage != state.SpecReview && stage != state.PlanReview {
+			return r, Handler{}, nil
+		}
+		now, _, err := st.judge(ctx, s, d, c, cmd, stage, false) // a new comment, judged now
+		if err != nil {
+			return Rejection{}, Handler{}, fmt.Errorf("judge a new request at %s: %w", stage, err)
+		}
+		if now.Reason == "" {
+			r.Dated = true
+		} else {
+			r.Reason += ". Nor would a new comment here: " + now.Reason
+		}
+		return r, Handler{}, nil
 	}
+	r, h, err := st.judge(ctx, s, d, c, cmd, stage, reword)
+	if err != nil {
+		return Rejection{}, Handler{}, fmt.Errorf("why: %w", err)
+	}
+	return r, h, nil
+}
+
+// judge returns why cmd, from comment c, doesn't apply at stage, by its
+// own check and then its handler's, or a Rejection with no Reason and its
+// handler (why). It doesn't write. reword is the handler's Cmd.Reword.
+func (st *Step) judge(ctx context.Context, s *github.Snapshot, d Dirt, c github.Comment, cmd state.Command, stage state.Stage, reword bool) (Rejection, Handler, error) {
 	if err := cmd.Check(stage); err != nil {
 		return Rejection{Reason: err.Error()}, Handler{}, nil
 	}
@@ -96,7 +138,7 @@ func (st *Step) why(ctx context.Context, s *github.Snapshot, d Dirt, c github.Co
 	if h.Check == nil {
 		return Rejection{}, h, nil
 	}
-	err := h.Check(ctx, st.Applier, Cmd{Command: cmd, Comment: c, S: s, Dirt: d, Trust: st.Trust})
+	err := h.Check(ctx, st.Applier, Cmd{Command: cmd, Comment: c, S: s, Dirt: d, Trust: st.Trust, Reword: reword})
 	if r := (Rejection{}); errors.As(err, &r) {
 		return r, h, nil
 	}
@@ -193,10 +235,11 @@ func Commands(trust github.Trust) map[string]Handler {
 				// The issue's own move, which carries these lists, is made
 				// only when it leaves held, so they never name it, and each
 				// "there" is an issue below it: when it stays held,
-				// resolveResumed's record on it says "here" instead.
+				// resolveResumed's record on it says "here" instead. "ends
+				// it" is for one issue, and "ends them" for more (#466).
 				if self && len(rest) > 0 {
 					m.Text += fmt.Sprintf(" Still on hold: %s, by a hold this `/resume` doesn't end: one set by hand, a `/hold` below this issue, "+
-						"or a deleted comment that was, or may have been, a `/hold`. `/resume` there ends it.", list(rest))
+						"or a deleted comment that was, or may have been, a `/hold`. `/resume` there ends %s.", list(rest), heldWordingIt(len(rest)))
 				}
 				if self && len(discussed) > 0 {
 					m.Text += fmt.Sprintf(" Still on hold for discussion: %s.", list(discussed))
@@ -561,11 +604,18 @@ func holdCheck(ctx context.Context, a *Applier, c Cmd) error {
 // label no marker explains, which Apply's CheckLabels would record as a
 // hold by hand. And it rejects one whose issue's own holds would all end
 // but have no row back to their at, or to clarifying after a discussion
-// (resolveHeld), which Apply would only report as a state error.
+// (resolveHeld), which Apply would only report as a state error. For
+// reword, it judges c's family as it was at the App's 👎 on c
+// (resumeRewordFamily).
 func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 	family, err := a.family(ctx, c)
 	if err != nil {
 		return fmt.Errorf("check /resume: %w", err)
+	}
+	if c.Reword {
+		if family, err = a.resumeRewordFamily(ctx, family, c); err != nil {
+			return fmt.Errorf("check /resume: %w", err)
+		}
 	}
 	if a.begun(family, c) {
 		return nil
@@ -607,10 +657,22 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 		if len(left) > 0 && !resolveOwnerHeld(left) {
 			discussed = append(discussed, fmt.Sprintf("#%d", n.s.Number))
 		}
-		var by []int // the issues where the owner holds left were made
+		var by []int      // the issues where the owner holds left were made
+		var seen []string // their keys (resolveHoldKey)
 		for _, m := range left {
 			if m.Fields["reason"] != "owner" {
 				continue
+			}
+			// A hold two judgements found counts once, as resolveResumed
+			// records it once: a comment deleted on an ancestor that may
+			// have been a /hold (resolveGone) is named both by n's record
+			// of its discussion's end and by resolveHeldBy's read of the
+			// ancestors (#533).
+			if key := resolveHoldKey(m); key != "" {
+				if slices.Contains(seen, key) {
+					continue
+				}
+				seen = append(seen, key)
 			}
 			// A comment deleted on an issue between, which may have been a
 			// /hold there (resolveGone), is that issue's.
@@ -633,10 +695,9 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 		if is.Stage != state.Held && slices.ContainsFunc(s.Labels, func(l string) bool { return strings.EqualFold(l, "stage:held") }) {
 			by = append(by, n.s.Number) // unrecorded: a hold by hand
 		}
+		// Once for each hold, which heldWordingMakers counts.
 		for _, number := range by {
-			if s := fmt.Sprintf("#%d", number); !slices.Contains(makers, s) {
-				makers = append(makers, s)
-			}
+			makers = append(makers, fmt.Sprintf("#%d", number))
 		}
 	}
 	// The issue's own move: back to its at, or to clarifying after a
@@ -670,12 +731,76 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 	return Rejection{Reason: "nothing here or in its open sub-issues is on an owner hold"}
 }
 
+// resumeRewordFamily returns family, that of c, a /resume the App 👎'd
+// whose reply was lost, as it was at that 👎, for reword: without the
+// /hold and /resume comments a trusted user posted after c on c's
+// descendants, nor the App's comments whose markers name one of them in
+// cmd, and with each stage label those markers set put back to the stage
+// the markers left give. Each of those commands waits for c (holdOrderWaits,
+// SPEC §6.4), so none was handled at the 👎, and in a clean run the reply
+// comes with the 👎, before them. But the 👎 alone counts c as processed
+// (SPEC §9.2), so after a crash between the two they may be handled first,
+// and a reason worded from the issues as they are then would differ from
+// the one lost. One handled before the 👎 all the same, as when c's author
+// was trusted only since, is left out too. It reads nothing but the trust
+// of their authors.
+func (a *Applier) resumeRewordFamily(ctx context.Context, family []node, c Cmd) ([]node, error) {
+	later := map[string]bool{} // their keys, as a marker's cmd names them
+	for _, n := range family[:len(family)-1] {
+		for _, cm := range n.s.Comments {
+			cmd, ok := state.ParseCommand(cm.Body)
+			if cm.ID <= c.Comment.ID || !ok || !holdOrderCommand(cmd) || cm.Author.Type == "Bot" || n.d.Has(cm.ID) {
+				continue
+			}
+			// Only a trusted user's is a command, which waits for c, as
+			// holdOrderPending judges it. An untrusted one isn't, so no
+			// marker names it, and no reason worded today reads its
+			// comment: hiding it too would change no reply. But a write
+			// collaborator's is a discussion trigger, which doesn't wait,
+			// and may be handled before the 👎, so it stays, and the family
+			// is c's as of the 👎, whatever a reason comes to read.
+			trusted, err := c.Trust.Trusted(ctx, cm.Author.Login)
+			if err != nil {
+				return nil, fmt.Errorf("trust %s: %w", cm.Author.Login, err)
+			}
+			if trusted {
+				later[state.CmdKey(cm.ID).ID] = true
+			}
+		}
+	}
+	if len(later) == 0 {
+		return family, nil
+	}
+	family = slices.Clone(family)
+	for i, n := range family[:len(family)-1] {
+		s := *n.s
+		s.Comments = slices.DeleteFunc(slices.Clone(n.s.Comments), func(cm github.Comment) bool {
+			return later[state.CmdKey(cm.ID).ID] || slices.ContainsFunc(github.TrustedMarkers(cm.Author, cm.Body, a.AppSlug),
+				func(m github.Marker) bool { return later[m.Fields["cmd"]] })
+		})
+		if len(s.Comments) == len(n.s.Comments) {
+			continue
+		}
+		was, now := "stage:"+string(state.Derive(n.s, a.AppSlug, n.d.Has).Stage), "stage:"+string(state.Derive(&s, a.AppSlug, n.d.Has).Stage)
+		labels := slices.Clone(n.s.Labels)
+		for j, l := range labels {
+			if strings.EqualFold(l, was) {
+				labels[j] = now
+			}
+		}
+		s.SetLabels(labels)
+		family[i].s = &s
+	}
+	return family, nil
+}
+
 // heldWordingDiscussed is resumeCheck's reason for a /resume that ends no
 // hold while issues in its family stay on hold for discussion, discussed,
 // each named as "#3": only a code owner's response, or /resume, on each
 // ends its own. The reply is posted on self, c's issue, so self is "this
 // issue", and "here", and the rest "there" (#222); with both, the rest
-// come first.
+// come first. The rest are joined as the reply to a /resume that applies
+// joins them, as "#3 and #4" (list; #533).
 func heldWordingDiscussed(discussed []string, self string) string {
 	others := slices.DeleteFunc(slices.Clone(discussed), func(n string) bool { return n == self })
 	var why []string
@@ -685,7 +810,7 @@ func heldWordingDiscussed(discussed []string, self string) string {
 			verb = "are"
 		}
 		why = append(why, fmt.Sprintf("%s %s on hold for discussion, which only a code owner's response there, "+
-			"or `/resume` there, ends", strings.Join(others, ", "), verb))
+			"or `/resume` there, ends", list(others), verb))
 	}
 	if len(others) < len(discussed) {
 		why = append(why, "this issue is on hold for discussion, which only a code owner's response here, or `/resume` here, ends")
@@ -695,24 +820,76 @@ func heldWordingDiscussed(discussed []string, self string) string {
 
 // heldWordingMakers is resumeCheck's reason for a /resume that ends no
 // hold while owner holds it doesn't end are left in its family, makers
-// naming each issue where those holds were made, as "#3": /resume there
-// ends them. The reply is posted on self, c's issue, which may be one of
-// them, as when a comment deleted there after the /resume may have been
-// a /hold that holds an issue below (resolveGone). So self is "this
-// issue", with "here", and the rest "there", as in heldWordingDiscussed;
-// with both, the rest come first. A hold made on self may be on self
-// itself, not below, as by a /hold posted there after c (heldStackEnds),
-// so self's are "the holds left".
+// naming the issue where each of those holds was made, as "#3", once for
+// each hold: /resume there ends them. The reply is posted on self, c's
+// issue, which may be one of them, as when a comment deleted there after
+// the /resume may have been a /hold that holds an issue below
+// (resolveGone). So self is "this issue", with "here", and the rest
+// "there", each named once and joined as "#3 and #4", as in
+// heldWordingDiscussed; with both, the rest come first. A hold left may
+// be on self itself, not below, as by a /hold posted on self or an
+// ancestor after c, which the App applied first (heldStackEnds), so the
+// holds are "left", not "below" (#466).
+// Each clause follows the number of holds it counts: "the hold left was"
+// and "ends it" for one, "the holds left were" and "ends them" for more.
+// With both, the first clause counts "one hold left" or "some holds
+// left", and the second "one" or "the rest".
 func heldWordingMakers(makers []string, self string) string {
-	others := slices.DeleteFunc(slices.Clone(makers), func(n string) bool { return n == self })
-	there := fmt.Sprintf("the holds below were made on %s, by `/hold` or by hand, so `/resume` there ends them", strings.Join(others, ", "))
-	switch {
-	case len(others) == 0:
-		return "the holds left were made on this issue, by `/hold` or by hand, so `/resume` here ends them"
-	case len(others) < len(makers):
-		return there + "; and the rest were made on this issue, so `/resume` here ends them"
+	var others []string
+	there, here := 0, 0 // the holds made on the others, and on self
+	for _, n := range makers {
+		if n == self {
+			here++
+			continue
+		}
+		there++
+		if !slices.Contains(others, n) {
+			others = append(others, n)
+		}
 	}
-	return there
+	switch {
+	case there == 0:
+		return fmt.Sprintf("the %s left %s made on this issue, by `/hold` or by hand, so `/resume` here ends %s",
+			heldWordingNoun(here), heldWordingVerb(here), heldWordingIt(here))
+	case here == 0:
+		return fmt.Sprintf("the %s left %s made on %s, by `/hold` or by hand, so `/resume` there ends %s",
+			heldWordingNoun(there), heldWordingVerb(there), list(others), heldWordingIt(there))
+	}
+	some, rest := "some holds", "the rest"
+	if there == 1 {
+		some = "one hold"
+	}
+	if here == 1 {
+		rest = "one"
+	}
+	return fmt.Sprintf("%s left %s made on %s, by `/hold` or by hand, so `/resume` there ends %s; "+
+		"and %s %s made on this issue, so `/resume` here ends %s",
+		some, heldWordingVerb(there), list(others), heldWordingIt(there), rest, heldWordingVerb(here), heldWordingIt(here))
+}
+
+// heldWordingNoun is "hold" for one hold, and "holds" for more.
+func heldWordingNoun(holds int) string {
+	if holds == 1 {
+		return "hold"
+	}
+	return "holds"
+}
+
+// heldWordingVerb is "was" for one hold, and "were" for more.
+func heldWordingVerb(holds int) string {
+	if holds == 1 {
+		return "was"
+	}
+	return "were"
+}
+
+// heldWordingIt is what ends n holds, or the holds on n issues: "it" for
+// one, and "them" for more.
+func heldWordingIt(n int) string {
+	if n == 1 {
+		return "it"
+	}
+	return "them"
 }
 
 // moveFamily makes the move plan returns, if any, on each open descendant of
@@ -730,15 +907,24 @@ func (a *Applier) moveFamily(ctx context.Context, c Cmd, trust github.Trust, r *
 	if err != nil {
 		return fmt.Errorf("move: %w", err)
 	}
+	// Every open descendant is Touched before the first write, not as the
+	// loop reaches it: a write that fails, or a descendant whose labels are
+	// held back (ErrLabelsHeld) or that is closed again
+	// (closingErrClosedAgain), leaves c half done for those after it too,
+	// so a saved result on one of them waits as well (SPEC §8.2).
+	if a.Touched != nil {
+		for _, n := range family {
+			if n.open && n.s != c.S {
+				a.Touched(n.s.Number)
+			}
+		}
+	}
 	for _, n := range family {
 		if !n.open {
 			continue
 		}
 		by := "`/" + c.Name + "`"
 		if n.s != c.S {
-			if a.Touched != nil {
-				a.Touched(n.s.Number)
-			}
 			if err := a.discCheckLabels(ctx, n.s, trust, n.d); err != nil {
 				return fmt.Errorf("move: %w", err)
 			}

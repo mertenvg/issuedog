@@ -669,7 +669,9 @@ func TestNewStepSettingsUseCurrentTrust(t *testing.T) {
 }
 
 // startDaemon wires /model to the daemon's config of the moment: the
-// startup config's models.allowed applies, then a reload's from main.
+// startup config's models.allowed applies, then a reload's from main. Its
+// daemon, daemon.New's, has the digest and assignment on, and the trust
+// startDaemon loaded.
 func TestStartDaemonUsesCurrentModels(t *testing.T) {
 	const app = "issuedog-dev[bot]"
 	files := thisRepo(t)
@@ -687,6 +689,24 @@ func TestStartDaemonUsesCurrentModels(t *testing.T) {
 	d, err := startDaemon(ctx, settings{"mertenvg", "issuedog", 1, 1}, key)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// daemon.New turns the digest and assignment on, and step 1 keeps the
+	// trust startDaemon loaded from main. Iterate reloads trust before
+	// step 1, so this is read before any Iterate: there, a daemon.New that
+	// dropped its trust, or swapped it for one that trusts everyone, would
+	// pass unseen. mallory can write to the repo but isn't in main's
+	// CODEOWNERS, so main's trust doesn't trust her.
+	if !d.Digest || !d.Assign {
+		t.Errorf("Digest = %t, Assign = %t; want both on", d.Digest, d.Assign)
+	}
+	if d.Step.Trust == nil {
+		t.Fatal("startDaemon's step 1 has no trust; want the trust loaded from main")
+	}
+	if ok, err := d.Step.Trust.Trusted(ctx, "mertenvg"); err != nil || !ok {
+		t.Errorf("step 1's trust: Trusted(mertenvg) = %t, %v; want true, as main's CODEOWNERS names him", ok, err)
+	}
+	if ok, err := d.Step.Trust.Trusted(ctx, "mallory"); err != nil || ok {
+		t.Errorf("step 1's trust: Trusted(mallory) = %t, %v; want false, as main's CODEOWNERS doesn't name her", ok, err)
 	}
 	iterate := func(want []string) {
 		t.Helper()

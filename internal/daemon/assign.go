@@ -43,17 +43,24 @@ import (
 //
 // An unassign of notify users from an issue at clarifying or planning,
 // the stages whose stage work can bring it to spec-review or plan-review,
-// waits until after the pass's stage work (assignLaterPass), with anyone
-// else it takes off, as a send-back's does: step 1 moves the issue back
-// with the owner's notes, and Work's run then posts the next revision.
-// Such work leaves the issue waiting on the owner again, and then the
-// unassign isn't made, so the notify users stay, and the next pass, which
-// finds the revision's item, writes nothing (#333). So does a run whose result fails to apply, and is
-// tried again next pass (Runs.applyLease), as after a crash: that pass
-// judges the assignees with the result applied, so a crash in the apply
-// leaves them as a clean pass does. A run that fails, or work that leaves
-// the issue anywhere else, or none on it, leaves the unassign to be made
-// after Work.
+// or post a new question round, waits until after the pass's stage work
+// (assignLaterPass), with anyone else it takes off, as a send-back's
+// does: step 1 moves the issue back with the owner's notes, and Work's
+// run then posts the next revision. So does an answered round's: the run
+// then posts the next round, or the spec or plan. Such work leaves the
+// issue waiting on the owner again (assignApplied), and then the unassign
+// isn't made, so the notify users stay, and anyone else it would have
+// taken off stays too, till the next pass, which finds the revision's or
+// the round's item, and writes nothing for the notify users (#333, #456).
+// Nor is it made for a run whose result fails to apply, or waits for
+// labels held back (ErrLabelsHeld), and is tried again on a later pass
+// (Runs.applyLease), as after a crash: that pass judges the assignees
+// with the result applied, so a crash in the apply leaves them as a clean
+// pass does. A run that fails, or work that leaves the issue anywhere
+// else, or none on it, leaves the unassign to be made after Work. It is
+// judged from step 1's snapshot, as every assignee write is, so an issue
+// closed since, as during the run, gets it all the same, as it would
+// have before the close.
 //
 // Each pass looks only at the issues whose step 1 succeeded on the
 // snapshot held (Daemon.inputs), as Work does: an issue whose read or
@@ -209,14 +216,55 @@ func (d *Daemon) assignRemove(ctx context.Context, s *github.Snapshot, remove []
 }
 
 // assignWorked tells assignment that this pass's stage work on issue n
-// leaves it waiting on the owner again: a run's result applied left it at
-// spec-review or plan-review, or failed to apply and is tried again next
-// pass (Runs.applyLease). Its unassign put off until after Work, if any,
-// isn't made (see the top of this file).
+// leaves it waiting on the owner again: a run's result applied left a
+// revision's or a round's item on it (assignApplied), or failed to apply,
+// or waits for labels held back, and is tried again on a later pass
+// (Runs.applyLease). Its unassign put off until after Work, if any, isn't
+// made (see the top of this file).
 func (d *Daemon) assignWorked(n int) {
 	if _, ok := d.assignLater[n]; ok {
 		logr.Debugf("%s/%s#%d keeps its assignees: this pass's stage work leaves it waiting on the owner, or on its next pass", d.Step.Owner, d.Step.Repo, n)
 		delete(d.assignLater, n)
+	}
+}
+
+// assignApplied tells assignment of s, as a run's result just applied
+// left it, with its dirty content dirt: if what waits on the owner on it
+// (waitFind) has an item a stage run posts, a spec or plan revision's
+// approval or a question round, it waits on the owner again, and its
+// unassign put off until after Work, if any, isn't made (assignWorked).
+// Only those kinds count, as s is a fresh read, not step 1's, which
+// waitFind's other kinds, such as a labels error, may need (waitInput.S).
+// A failure to find the items is logged, and the unassign is made, for
+// the next pass to judge again.
+//
+// A round waits only while no answer has come since it (waitFind). Unless
+// moved, the run's own comment is the newest on s, as apply drops a
+// result with new input since the run read the issue (Runs.newInput), so
+// no Inputs are given. A result whose move was written before, by an
+// apply a crash or a failure cut short, is only finished, with no such
+// check (Runs.apply), so an answer may have come since its round. That
+// move was on the issue before this pass, so this pass's step 1 read it,
+// and step 1's Inputs, the answers since it, are given. An answer after
+// step 1's read is one the next pass judges.
+func (d *Daemon) assignApplied(s *github.Snapshot, dirt Dirt, moved bool) {
+	if _, ok := d.assignLater[s.Number]; !ok {
+		return
+	}
+	var inputs []github.Comment
+	if moved {
+		inputs = d.inputs[s.Number]
+	}
+	st := d.Step
+	items, err := waitFind(waitInput{Owner: st.Owner, Repo: st.Repo, AppSlug: st.AppSlug, S: s, Dirt: dirt, Inputs: inputs})
+	if err != nil {
+		logr.Errorf("%s/%s#%d is unassigned after its stage work, as what waits on the owner there can't be found: %v", st.Owner, st.Repo, s.Number, err)
+		return
+	}
+	if slices.ContainsFunc(items, func(it waitItem) bool {
+		return it.Kind == waitApproval || it.Kind == waitPlanApproval || it.Kind == waitQuestion
+	}) {
+		d.assignWorked(s.Number)
 	}
 }
 

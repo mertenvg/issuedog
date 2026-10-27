@@ -144,7 +144,8 @@ func TestHoldResumeRaceAncestorHoldBefore(t *testing.T) {
 
 // The race with J and K not held first: A's /hold, handled first, holds
 // all three with its markers, and J's /resume, posted before it, ends
-// nothing, so it's rejected, naming A, where the holds were made. With
+// nothing, so it's rejected, naming A, where the holds were made, as the
+// holds left, since one of them is on J itself. With
 // J's lower, J's /resume, handled first, finds nothing held, and A's /hold
 // then holds all three, as before #205.
 func TestHoldResumeRaceNothingHeld(t *testing.T) {
@@ -159,7 +160,9 @@ func TestHoldResumeRaceNothingHeld(t *testing.T) {
 			raceStages(t, f, "after the race", map[int]string{a: "held", j: "held", k: "held"})
 			reason := "nothing here or in its open sub-issues is on an owner hold"
 			if a < j {
-				reason = fmt.Sprintf("the holds below were made on #%d, by `/hold` or by hand, so `/resume` there ends them", a)
+				// The holds are on J and K, so they're "left", not "below"
+				// J (#466).
+				reason = madeOn(fmt.Sprintf("#%d", a), 2)
 			}
 			if !anyComment(f, j, "I didn't apply this command: "+reason+".") || !anyComment(f, j, fmt.Sprintf("reason=rejected cmd=%d ", resume)) {
 				t.Errorf("#%d: newest comment %q; want J's /resume rejected: %s", j, newestComment(f, j), reason)

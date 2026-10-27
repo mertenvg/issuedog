@@ -250,7 +250,10 @@ type Runs struct {
 // has a Stage with work pending. If none ran, it runs Unlabeled, if set, on
 // the newest issue, by number, with no stage label and no transition
 // marker that it has work for. A lease whose issue has labels held back
-// (ErrLabelsHeld) waits, and no run starts until it's applied. An issue
+// (ErrLabelsHeld) waits, and no run starts until it's applied. So does a
+// saved result on an issue step 1 didn't finish on this pass (resume),
+// whose wait resume logs: Work's error is then only a failure to keep the
+// lease, as step 1's own, if any, is the pass's already. An issue
 // with labels held back is never ready, so it starts no run either, and
 // one with a stage label left out (Snapshot.LeftOut) is no Unlabeled work.
 //
@@ -265,6 +268,14 @@ func (r *Runs) Work(ctx context.Context, ready []Ready) error {
 	skip, err := r.resume(ctx)
 	if errors.Is(err, ErrLabelsHeld) {
 		// The lease waits to be applied, and no run may start before it is.
+		return nil
+	}
+	var wait *step1Wait
+	if errors.As(err, &wait) {
+		// So does a lease on an issue step 1 didn't finish on, logged once.
+		if wait.err != nil {
+			return fmt.Errorf("the lease waiting for step 1: %w", wait.err)
+		}
 		return nil
 	}
 	if err != nil {
@@ -637,20 +648,64 @@ func (r *Runs) applyLease(ctx context.Context, l Lease, st Stage, raw []byte, ou
 	}
 	if errors.Is(err, ErrLabelsHeld) {
 		logr.Infof("run %s on #%d waits to be applied, which isn't counted as a failure: %v", l.RunID, l.Issue, err)
+		// A later pass applies it, and judges the assignees then (SPEC
+		// §9.6), as for a failed apply.
+		r.Daemon.assignWorked(l.Issue)
 		return err
 	}
+	return r.applyFailed(ctx, l, st, err)
+}
+
+// applyFailed counts err, a failure to apply l's result, in ApplyFailures,
+// and keeps the lease, so the next pass tries again; after
+// loop.max_attempts of them, the run is a failed attempt, and only failed's
+// own error is returned, as failed logs the cause.
+func (r *Runs) applyFailed(ctx context.Context, l Lease, st Stage, err error) error {
+	kept, cerr := r.applyCount(ctx, l, st, err)
+	switch {
+	case kept:
+		return errors.Join(err, cerr)
+	case cerr != nil:
+		return fmt.Errorf("end run %s on #%d: %w", l.RunID, l.Issue, cerr)
+	}
+	return nil
+}
+
+// applyCount is applyFailed but for its error: it logs err, and reports
+// whether the lease was kept, for the next pass to try again, returning
+// only a failure to write it; or, after loop.max_attempts, it returns
+// failed's own error.
+func (r *Runs) applyCount(ctx context.Context, l Lease, st Stage, err error) (kept bool, _ error) {
 	l.ApplyFailures++
 	if l.ApplyFailures < r.limit() {
 		logr.Warnf("applying run %s on #%d failed, %d of %d times, so it's tried again: %v", l.RunID, l.Issue, l.ApplyFailures, r.limit(), err)
 		// The next pass applies it, as after a crash, and judges the
 		// assignees then (SPEC §9.6).
 		r.Daemon.assignWorked(l.Issue)
-		return errors.Join(err, r.writeLease(l))
+		if err := r.writeLease(l); err != nil {
+			return true, fmt.Errorf("keep the lease of run %s on #%d: %w", l.RunID, l.Issue, err)
+		}
+		return true, nil
 	}
 	// The run is now a failed attempt, as a run that fails is, and failed
 	// logs its cause, once (SPEC §5.3), so it isn't the pass's error too.
-	return r.failed(ctx, st, l, fmt.Errorf("applying its result failed %d times: %w", l.ApplyFailures, err))
+	return false, r.failed(ctx, st, l, fmt.Errorf("applying its result failed %d times: %w", l.ApplyFailures, err))
 }
+
+// step1Wait is resume's error for a saved result that waits, its lease
+// kept, for a pass whose step 1 finishes on its issue, so no other run
+// starts (Work). The wait is logged already, so err is only a failure to
+// write the lease, if any.
+type step1Wait struct{ err error }
+
+func (e *step1Wait) Error() string {
+	if e.err == nil {
+		return "the saved result waits for step 1 to finish on its issue"
+	}
+	return e.err.Error()
+}
+
+func (e *step1Wait) Unwrap() error { return e.err }
 
 // apply reads the issue again, runs CheckLabels on it, and applies out,
 // l's valid result, through st, then removes the run's files. The result
@@ -716,10 +771,10 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 		// nothing pushed or posted from it (SPEC §6.4, §8.2). Step 1 held
 		// the issue for every trigger before the run's poll, l.Polled, as
 		// no run starts on a held issue, so any it finds here is one since,
-		// or one step 1 couldn't see, such as a deletion seen before its
-		// updated_at moved (SPEC §16): either holds the issue all the same. A hold the
-		// table lacks holds nothing (Step.discussion), so then the result
-		// is judged as before.
+		// or one step 1 couldn't see, such as a deletion made just before
+		// the poll, before its updated_at moved (SPEC §16): either holds
+		// the issue all the same. A hold the table lacks holds nothing
+		// (Step.discussion), so then the result is judged as before.
 		found, err := r.Daemon.Step.discussion(ctx, s, d)
 		if err != nil {
 			return fmt.Errorf("apply run %s: %w", l.RunID, err)
@@ -787,9 +842,7 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 		return fmt.Errorf("apply run %s: %w", l.RunID, err)
 	}
 	logr.Infof("%s/%s#%d: applied run %s", a.Owner, a.Repo, l.Issue, l.RunID)
-	if st := stageOf(s); st == state.SpecReview || st == state.PlanReview {
-		r.Daemon.assignWorked(l.Issue) // it waits on the owner again (SPEC §9.6)
-	}
+	r.Daemon.assignApplied(s, d, moved) // a revision or a round waits on the owner again (SPEC §9.6)
 	delete(r.attempts, countKey(l.Issue, l.AttemptKey))
 	delete(r.failures, countKey(l.Issue, l.AttemptKey))
 	return r.finish(ctx, l)
@@ -870,7 +923,14 @@ func (r *Runs) newInput(ctx context.Context, s *github.Snapshot, d Dirt, seen in
 // attempt unless it hit a usage limit or was applied; and the lease stays,
 // marked ended, while it holds a count. A Failed lease only gives its
 // count (endedLease). A saved result whose issue has labels held back
-// waits, its lease kept (applyLease).
+// waits, its lease kept (applyLease). So does a valid saved result on an
+// issue step 1 didn't finish on this pass (Daemon.step1Gaps), neither
+// applied nor dropped, but counted as a failure to apply (applyCount), so
+// after loop.max_attempts such passes and failed applies in all, the run
+// is a failed attempt. A wait on an issue whose read found it gone isn't
+// counted, as the next read drops it or runs step 1 on it. And one on an
+// issue whose last snapshot shows it held is dropped, uncounted, as apply
+// would drop it whatever step 1 left unhandled (step1Held).
 func (r *Runs) resume(ctx context.Context) (int, error) {
 	l, ok, err := r.readLease(ctx)
 	if err != nil || !ok {
@@ -927,8 +987,45 @@ func (r *Runs) resume(ctx context.Context) (int, error) {
 			l.RunID, l.Issue, l.Issue, l.Stage)
 		return 0, r.failed(ctx, st, l, &daemonCause{errors.New("no valid result after a restart")})
 	}
+	if gap, ok := r.Daemon.step1Gaps[l.Issue]; ok {
+		if r.step1Held(l.Issue) {
+			logr.Infof("%s/%s#%d: dropping the result of run %s, uncounted: the issue is held, and step 1 didn't finish on it this pass, as %s",
+				r.Daemon.Step.Owner, r.Daemon.Step.Repo, l.Issue, l.RunID, gap.why)
+			return 0, r.uncounted(ctx, l)
+		}
+		// Step 1 may have left a command unhandled, such as a /hold whose
+		// first write failed, which would drop the result (SPEC §8.2). So
+		// the result waits for a pass whose step 1 finishes on the issue,
+		// and counts as a failure to apply, so one whose step 1 keeps
+		// failing doesn't hold up stage work for ever.
+		cause := fmt.Errorf("step 1 didn't finish on #%d this pass, as %s, and may have left a command unhandled", l.Issue, gap.why)
+		if gap.uncounted {
+			logr.Infof("run %s on #%d waits to be applied, which isn't counted as a failure: %v", l.RunID, l.Issue, cause)
+			r.Daemon.assignWorked(l.Issue)
+			return 0, &step1Wait{}
+		}
+		kept, err := r.applyCount(ctx, l, st, cause)
+		switch {
+		case kept:
+			return 0, &step1Wait{err}
+		case err != nil:
+			return 0, fmt.Errorf("resume run %s: %w", l.RunID, err)
+		}
+		return 0, nil
+	}
 	logr.Infof("applying the saved result of run %s on #%d", l.RunID, l.Issue)
 	return l.Issue, r.applyLease(ctx, l, st, raw, out)
+}
+
+// step1Held reports whether the last snapshot of issue n, this pass's
+// read or an earlier one, shows it held, for resume: apply would then drop
+// its saved result, uncounted, whatever command step 1 left unhandled, as
+// every way out of the hold writes a move above the run's seen (SPEC
+// §8.2). A read that failed, or found it gone, leaves no snapshot, so it
+// isn't.
+func (r *Runs) step1Held(n int) bool {
+	s := r.Daemon.snaps[n]
+	return s != nil && slices.ContainsFunc(s.Labels, discHeldLabel)
 }
 
 // endedLease takes the count of l, the Failed lease of a run that ended

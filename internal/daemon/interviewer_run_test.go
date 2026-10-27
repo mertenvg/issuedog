@@ -25,10 +25,11 @@ import (
 // and the real Triage as the Unlabeled stage, registered as stageWork
 // registers them, daemon.RegisterStages, but for the planner, with the
 // daemon built as startDaemon builds it, daemon.New, so step 1 is
-// daemon.NewStep's, but for the digest and assignment, and Daemon.Iterate
-// as the loop. Config and trust come from main on the origin, as in the
-// daemon: mertenvg and merten_acme own CODEOWNERS, notify is mertenvg, and
-// eve has no access at all.
+// daemon.NewStep's, but with the digest and assignment off unless the
+// case's digest keeps them on, as TestWholeRunFlaggedDigest's does, and
+// Daemon.Iterate as the loop. Config and trust come from main on the
+// origin, as in the daemon: mertenvg and merten_acme own CODEOWNERS,
+// notify is mertenvg, and eve has no access at all.
 //
 // The agent's outputs are internal/agent's golden interviewer outputs, and
 // what's posted is checked against #132's golden files in testdata/interview.
@@ -85,6 +86,10 @@ type wholeRunCase struct {
 	flagged bool
 	// override, if set, is .issuedog/prompts/interviewer.md on main.
 	override string
+	// digest keeps the digest and assignment on, as daemon.New has them,
+	// for TestWholeRunFlaggedDigest, which checks their writes beside
+	// triage's. run leaves them off.
+	digest bool
 }
 
 // wholeRun is the whole run of case c on a rig, on issue n.
@@ -118,10 +123,12 @@ func newWholeRun(t *testing.T, c wholeRunCase) *wholeRun {
 	// ends at planning, where the planner's own whole runs go on
 	// (planner_run_test.go), and predates the digest (#161) and assignment
 	// (#191), so its writes are the interviewer's and triage's alone. The
-	// later whole runs check theirs beside them.
+	// later whole runs check theirs beside them, and so does c.digest's.
 	g.wireAsMain(g.d.Config)
 	delete(g.r.Stages, state.Planning)
-	g.d.Digest, g.d.Assign = false, false
+	if !c.digest {
+		g.d.Digest, g.d.Assign = false, false
+	}
 	w := &wholeRun{rig: g, c: c}
 	var outs []string
 	if c.triaged {
@@ -404,6 +411,13 @@ func (w *wholeRun) run() {
 		files := w.context(1, state.Intake)
 		ivOnlyIn(t, files, wholeRunEve, "untrusted.md")
 		w.quiet("the flag")
+		// eve's 👍, untrusted, and your ❤️, not a 👍, answer nothing (SPEC
+		// §6.2, Answering a flag): an extra pass writes nothing, and the
+		// flag stays.
+		f.AddReaction(flag.ID, "eve", "+1")
+		f.AddReaction(flag.ID, wholeRunOwner, "heart")
+		w.quiet("eve's 👍 and your ❤️ on the flag")
+		w.labels("eve's 👍 and your ❤️ on the flag", "triage:ask")
 		up := f.AddReaction(flag.ID, wholeRunOwner, "+1")
 		admit = []string{"POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/triage:ask"}
 		entryWant = flagAdmitted(wholeRunOwner+"'s 👍 on the flag takes its recommendation", "r"+strconv.FormatInt(up, 10))
@@ -591,8 +605,67 @@ func TestWholeRunTriaged(t *testing.T) {
 // triage, unsure, in a run of its own, and mertenvg's 👍 on the flag
 // admits it in the next pass's step 1, whose interviewer run posts round
 // 1. So dropping FlagByReaction from step 1 (daemon.NewStep) fails a
-// whole run, not only main's wiring tests.
+// whole run, not only main's wiring tests. Before it, eve's 👍, untrusted,
+// and mertenvg's ❤️ on the flag admit nothing, so a FlagByReaction that
+// ignored trust, or took any reaction, fails a whole run too.
 func TestWholeRunFlagged(t *testing.T) {
 	t.Parallel()
 	newWholeRun(t, wholeRunCase{triaged: true, flagged: true}).run()
+}
+
+// TestWholeRunFlaggedDigest: the flagged run with the digest and
+// assignment on, as daemon.New has them, so turning either off in it fails
+// a whole run. The first pass creates the digest, #2, and triage flags the
+// epic. The flag waits on mertenvg, so the pass after lists it in the
+// digest and assigns him on the epic (SPEC §9.4, §9.6). eve's 👍 on the
+// flag, untrusted, changes neither. His 👍 admits the epic, which ends the
+// flag's item, and the same pass posts round 1, which waits on him in
+// turn, so he stays assigned with no write, and the pass after lists the
+// round (SPEC §9.6, Stage work in the same pass).
+func TestWholeRunFlaggedDigest(t *testing.T) {
+	t.Parallel()
+	w := newWholeRun(t, wholeRunCase{triaged: true, flagged: true, digest: true})
+	f := w.f
+	// digest checks the digest's items, as digestRunItems gives them, and
+	// that mertenvg alone is assigned on the epic, if assigned, and nobody
+	// on any other issue.
+	digest := func(step string, assigned bool, items ...string) {
+		t.Helper()
+		if got := digestRunItems(f.State().Issues[1].Body); !slices.Equal(got, items) {
+			t.Errorf("%s: the digest's items %q; want %q", step, got, items)
+		}
+		want := map[int][]string{}
+		if assigned {
+			want[w.n] = []string{wholeRunOwner}
+		}
+		assignWant(t, f, step, want)
+	}
+	w.iterate("the flag", 1, "POST /issues", "POST /graphql", "PATCH /issues/2", "POST /issues/1/comments", "POST /issues/1/labels")
+	w.labels("the flag", "triage:ask")
+	digest("the flag", false)
+	flag := w.comments()[1]
+	if !strings.Contains(flag.Body, "<!-- issuedog:triage verdict=ask ") {
+		t.Fatalf("the flag: the epic's second comment is\n%s\nwant the flag", flag.Body)
+	}
+
+	// The flag's item scores 1, for the epic itself, as no open issue is
+	// below it (SPEC §9.4, The order).
+	w.iterate("the flag listed", 1, "PATCH /issues/2", "POST /issues/1/assignees")
+	digest("the flag listed", true, "#1 Triage flag p2 1")
+	w.quiet("the flag listed")
+
+	f.AddReaction(flag.ID, "eve", "+1")
+	w.quiet("eve's 👍 on the flag")
+	w.labels("eve's 👍 on the flag", "triage:ask")
+	digest("eve's 👍 on the flag", true, "#1 Triage flag p2 1")
+
+	f.AddReaction(flag.ID, wholeRunOwner, "+1")
+	w.iterate("the admission", 2, "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/triage:ask",
+		"PATCH /issues/2", "POST /issues/1/comments")
+	w.labels("the admission", "stage:clarifying")
+	digest("the admission", true)
+
+	w.iterate("round 1 listed", 2, "PATCH /issues/2")
+	digest("round 1 listed", true, "#1 Question round p2 1")
+	w.quiet("round 1 listed")
 }
