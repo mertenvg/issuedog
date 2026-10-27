@@ -83,6 +83,82 @@ func TestCreateChildRefused(t *testing.T) {
 	}
 }
 
+// A snapshot gives the parent's SubIssueRemovedEvents, oldest first, each
+// with who removed which sub-issue's link, in which repo, one in another
+// repo included, and none of its other events: a comment deletion read in
+// the same query is a deletion alone.
+func TestSubIssueRemovals(t *testing.T) {
+	t.Parallel()
+	f := githubtest.New(t, "o/r", "issuedog")
+	f.AddIssue("owner", "Parent", "")
+	for range 2 {
+		f.SetParent(f.AddIssue("owner", "Child", ""), 1)
+	}
+	f.LinkSubIssue(1, "o/other", 3)
+	f.AddLabel(1, "owner", "priority:p1")
+	first := f.UnlinkBy(3, "mallory")
+	deleted := f.DeleteCommentBy("owner", f.AddComment(1, "mallory", "hi"))
+	second := f.UnlinkBy(2, "owner")
+	other := f.UnlinkLinkedBy(1, "o/other", 3, "mallory")
+	s, err := f.Client(t).Snapshot(context.Background(), "o", "r", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var removals []string
+	for _, r := range s.SubIssueRemovals {
+		removals = append(removals, fmt.Sprintf("%s %s#%d %s", r.ID, r.Repo, r.Number, r.By.Login))
+	}
+	want := []string{first + " o/r#3 mallory", second + " o/r#2 owner", other + " o/other#3 mallory"}
+	if !slices.Equal(removals, want) {
+		t.Errorf("removals = %q, want %q", removals, want)
+	}
+	if len(s.Deleted) != 1 || s.Deleted[0].ID != deleted {
+		t.Errorf("deleted = %+v, want only %s", s.Deleted, deleted)
+	}
+	if p := f.State().Issues[1].Parent; p != 0 {
+		t.Errorf("#2's parent is #%d; want none once unlinked", p)
+	}
+	if subs := f.State().Issues[0].SubIssues; len(subs) != 0 {
+		t.Errorf("the parent's sub-issues are %v; want none once unlinked", subs)
+	}
+}
+
+// A SubIssueRemovedEvent the fake writes late (LagEvents) isn't in a
+// snapshot read before the clock reaches it, and is in one read once it
+// has, as GitHub may write the event a while after the removal.
+func TestSubIssueRemovalLate(t *testing.T) {
+	t.Parallel()
+	f := githubtest.New(t, "o/r", "issuedog")
+	f.AddIssue("owner", "Parent", "")
+	f.SetParent(f.AddIssue("owner", "Child", ""), 1)
+	f.LagEvents(5 * time.Second)
+	id := f.UnlinkBy(2, "mallory")
+	f.LagEvents(0)
+	removals := func() []string {
+		t.Helper()
+		s, err := f.Client(t).Snapshot(context.Background(), "o", "r", 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, r := range s.SubIssueRemovals {
+			ids = append(ids, r.ID)
+		}
+		return ids
+	}
+	if got := removals(); len(got) != 0 {
+		t.Errorf("removals before the event is written = %q; want none", got)
+	}
+	f.Advance(4 * time.Second)
+	if got := removals(); len(got) != 0 {
+		t.Errorf("removals a second before the event is written = %q; want none", got)
+	}
+	f.Advance(time.Second)
+	if got := removals(); !slices.Equal(got, []string{id}) {
+		t.Errorf("removals once the event is written = %q; want only %s", got, id)
+	}
+}
+
 // AddSubIssue links a child by its ID after the parent's other sub-issues,
 // and SubIssues lists them in that order, with their bodies and authors.
 // Linking one that has a parent already is a wrapped 422, and so is a

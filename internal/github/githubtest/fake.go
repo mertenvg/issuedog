@@ -117,7 +117,7 @@ type issue struct {
 	labelEvents    []*gogithub.Timeline            // labeled, unlabeled, renamed, closed, reopened and issue-type events, oldest first
 	pinned         bool                            // to the repo's issue list (PinIssue)
 	typeEvents     map[int64]issueTypeRevertChange // the types of each issue-type event, by its ID
-	deletions      []deletedEvent                  // CommentDeletedEvents, oldest first (DeleteCommentBy)
+	gqlEvents      []gqlEvent                      // CommentDeletedEvents and SubIssueRemovedEvents, oldest first (DeleteCommentBy, UnlinkBy)
 	closingClosers map[int64]closingCloser         // how each closed event was made, by its ID (closingAnswer)
 	movedTo        string                          // the repo Transfer moved it to, in lower case, or "" (transfer.go)
 	reactions      []*gogithub.Reaction            // to the issue itself, oldest first (reactions_issue.go)

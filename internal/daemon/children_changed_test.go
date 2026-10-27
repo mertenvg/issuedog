@@ -390,6 +390,32 @@ func TestChildrenChangedDirty(t *testing.T) {
 	}
 }
 
+// A changed child whose dirty note names alice, a valid login, gets a
+// rewrite marker that names only an editor the body's last edit confirms,
+// as /approve's rejections do (#638): owner's edit adding the note, which
+// is trusted, makes the body dirty by alice, whom no edit confirms, so
+// replaced= is "unknown", and eve's, which isn't, by eve, its last editor,
+// whatever the note says. A crash at any write writes nothing twice.
+func TestChildrenChangedNoteNamesAnother(t *testing.T) {
+	t.Parallel()
+	const noted = "<!-- issuedog:dirty by=alice -->\n> ⚠️ issuedog ignores this issue description: " +
+		"**alice** edited it without approval.\n\nThe task, rewritten."
+	for _, tt := range []struct{ editor, replaced string }{{"owner", "unknown"}, {"eve", "eve"}} {
+		t.Run(tt.editor, func(t *testing.T) {
+			t.Parallel()
+			setup := changedSetup(false, func(f *githubtest.Fake, r changedIDs) {
+				f.EditBody(r.t2, tt.editor, noted)
+				f.AddComment(r.t2, app, originRepost("<!-- issuedog:origin plan=#1 rev=1 item=T2 -->"))
+			})
+			githubtest.Replay(t, setup, childrenPass(t, revisionPlan))
+			body := run(t, setup, childrenPass(t, revisionPlan)).State().Issues[2].Body
+			if head := "<!-- issuedog:rewrite run=p2 replaced=" + tt.replaced + " -->\n"; !strings.HasPrefix(body, head) || strings.Contains(body, "alice") {
+				t.Errorf("T2's child's body is\n%s\nwant the App's rewrite, starting %q, naming no alice", body, head)
+			}
+		})
+	}
+}
+
 // A changed child that's held stays held: its held → held marker, keyed by
 // the approval, makes ready its at and origin, with the hold's seen and no
 // reason, so it's no hold of its own, and its labels and body are still
@@ -548,6 +574,58 @@ func TestChildrenChangedStory(t *testing.T) {
 		if strings.HasPrefix(w.Path, "/issues/3/") || w.Path == "/issues/3" {
 			t.Errorf("#3, the kept S2's child, got the write %+v", w)
 		}
+	}
+}
+
+// What /approve's rejection and the digest say clears a dirty body on a
+// story with a parent at plan-review (#525) does: S1's child, at
+// plan-review with eve's edit of its body and its origin reposted, is
+// rewritten whole by the owner's 👍 on the epic's revision that changes
+// S1, its rewrite marker naming eve, so its body is clean again, with its
+// origin naming revision 2, and it goes back to planning for a new plan.
+// A crash at any write writes nothing twice.
+func TestChildrenChangedStoryDirtyAtPlanReview(t *testing.T) {
+	t.Parallel()
+	setup := func(t testing.TB) *githubtest.Fake {
+		f := changedEpicSetup(t)
+		f.AddComment(2, app, "Planned.\n\n<!-- issuedog:transition from=planning to=plan-review run=s1 -->")
+		f.RemoveLabel(2, app, "stage:planning")
+		f.AddLabel(2, app, "stage:plan-review")
+		f.EditBody(2, "eve", "The story, rewritten by eve.")
+		f.AddComment(2, app, originRepost("<!-- issuedog:origin plan=#1 rev=1 item=S1 -->"))
+		f.ForgetWrites()
+		return f
+	}
+	dirt := func(f *githubtest.Fake) (*github.Snapshot, daemon.Dirt) {
+		t.Helper()
+		c := f.Client(t)
+		s, err := c.Snapshot(context.Background(), "o", "r", 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a := &daemon.Applier{Client: c, Owner: "o", Repo: "r", AppSlug: slug}
+		d, err := a.Dirty(context.Background(), s, trusted{"owner": true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s, d
+	}
+	if s, d := dirt(setup(t)); !d.Has(state.BodyID) || state.Derive(s, slug, d.Has).Stage != state.PlanReview {
+		t.Fatal("before the approval, S1's child is clean, or not at plan-review; want it at plan-review, dirty by eve's edit")
+	}
+	githubtest.Replay(t, setup, childrenPass(t, twoStories))
+	f := run(t, setup, childrenPass(t, twoStories))
+	s, d := dirt(f)
+	if !strings.HasPrefix(s.Body, "<!-- issuedog:rewrite run=p2 replaced=eve -->\n") {
+		t.Errorf("S1's child's body is\n%s\nwant the App's rewrite, naming eve's edit it replaced", s.Body)
+	}
+	is := state.Derive(s, slug, d.Has)
+	if d.Has(state.BodyID) || is.Origin.Rev != 2 || is.Origin.Comment != state.BodyID || is.Stage != state.Planning {
+		t.Errorf("S1's child is dirty %t, with origin %+v, at %s; want a clean body, whose origin names revision 2, at planning",
+			d.Has(state.BodyID), is.Origin, is.Stage)
+	}
+	if m := changedLastMarker(t, f, 2); m.Fields["from"] != string(state.PlanReview) || m.Fields["to"] != string(state.Planning) {
+		t.Errorf("S1's child's newest move is %+v, want plan-review to planning", m.Fields)
 	}
 }
 

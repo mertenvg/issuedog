@@ -155,7 +155,14 @@ The stage prompt follows.
 //   - untrusted.md, if there's anything for it (SPEC §6.2): an
 //     untrusted author's title and body, a dirty body, and the comments of
 //     untrusted people and other bots, and dirty comments by anyone. Each
-//     is fenced under a heading saying it's untrusted data.
+//     is fenced under a heading saying it's untrusted data, dirty content
+//     without the App's note, as the interviewer's is. So the heading of
+//     an untrusted author's dirty body says who edited it without
+//     approval (SPEC §12).
+//
+// A login in a heading or the Author line is named as ivLogin names it, and
+// who made content dirty as ivEditor does, so a ghost, whom GitHub doesn't
+// name, is "someone unnamed", never "unknown" (SPEC §12).
 //
 // The App's own comments are left out. A failure to read the prompt or to
 // check trust is an error, so no run starts and none is counted.
@@ -176,16 +183,25 @@ func (t *Triage) Context(ctx context.Context, in Input) (map[string][]byte, erro
 	}
 	var untrusted []string
 	issue := []string{fmt.Sprintf("# Issue #%d", s.Number), "",
-		fmt.Sprintf("- Author: %s (%s)", login(s.Author), map[bool]string{true: "trusted", false: "not trusted"}[author]),
+		fmt.Sprintf("- Author: %s (%s)", ivLogin(s.Author.Login), map[bool]string{true: "trusted", false: "not trusted"}[author]),
 		"- Type: " + cmp.Or(s.Type, "none")}
+	body := s.Body
+	if in.Dirt.Has(state.BodyID) {
+		_, body = noted(s.Body)
+	}
 	switch {
 	case !author:
 		issue = append(issue, "", "The author isn't trusted, so the title and body are in untrusted.md.")
-		untrusted = append(untrusted, triageFenced(fmt.Sprintf("The issue's title and body, by %s, who isn't trusted", login(s.Author)),
-			"Title: "+s.Title+"\n\n"+s.Body))
+		heading := fmt.Sprintf("The issue's title and body, by %s, who isn't trusted", ivLogin(s.Author.Login))
+		if in.Dirt.Has(state.BodyID) {
+			// The App's note is left out, so the heading says the body is
+			// dirty, as the interviewer's does (#602).
+			heading += ", and its body was edited by " + ivEditor(in.Dirt[state.BodyID], s.BodyEdit, t.Daemon.Step.AppSlug) + " without approval"
+		}
+		untrusted = append(untrusted, triageFenced(heading, "Title: "+s.Title+"\n\n"+body))
 	case in.Dirt.Has(state.BodyID):
 		issue = append(issue, "- Title: "+s.Title, "", "The body was edited by someone who isn't trusted, so it's in untrusted.md.")
-		untrusted = append(untrusted, triageFenced("The issue's body, edited by "+in.Dirt[state.BodyID]+", so untrusted", s.Body))
+		untrusted = append(untrusted, triageFenced("The issue's body, edited by "+ivEditor(in.Dirt[state.BodyID], s.BodyEdit, t.Daemon.Step.AppSlug)+", so untrusted", body))
 	default:
 		issue = append(issue, "- Title: "+s.Title, "", "## Body", "", s.Body)
 	}
@@ -200,11 +216,13 @@ func (t *Triage) Context(ctx context.Context, in Input) (map[string][]byte, erro
 		}
 		switch {
 		case in.Dirt.Has(c.ID):
-			untrusted = append(untrusted, triageFenced(fmt.Sprintf("Comment %d by %s, edited by %s, so untrusted", c.ID, login(c.Author), in.Dirt[c.ID]), c.Body))
+			_, rest := noted(c.Body)
+			untrusted = append(untrusted, triageFenced(fmt.Sprintf("Comment %d by %s, edited by %s, so untrusted",
+				c.ID, ivLogin(c.Author.Login), ivEditor(in.Dirt[c.ID], c.Edit, t.Daemon.Step.AppSlug)), rest))
 		case !ok:
-			untrusted = append(untrusted, triageFenced(fmt.Sprintf("Comment %d by %s, who isn't trusted", c.ID, login(c.Author)), c.Body))
+			untrusted = append(untrusted, triageFenced(fmt.Sprintf("Comment %d by %s, who isn't trusted", c.ID, ivLogin(c.Author.Login)), c.Body))
 		default:
-			comments = append(comments, fmt.Sprintf("## Comment %d by %s\n\n%s", c.ID, login(c.Author), c.Body))
+			comments = append(comments, fmt.Sprintf("## Comment %d by %s\n\n%s", c.ID, ivLogin(c.Author.Login), c.Body))
 		}
 	}
 	files := map[string][]byte{

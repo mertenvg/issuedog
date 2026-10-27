@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/http"
 	"reflect"
 	"slices"
 	"strings"
@@ -593,7 +594,8 @@ func TestClosingRestartThenComment(t *testing.T) {
 }
 
 // A closed issue deleted while its close waits to be judged is forgotten,
-// with no error, and isn't read again.
+// with no error, once a judging on a later pass finds it gone again, as
+// one answer may be wrong, and isn't read again.
 func TestClosingGone(t *testing.T) {
 	t.Parallel()
 	f, o := closingFake(t), digestNotifyOrigin(t)
@@ -607,8 +609,42 @@ func TestClosingGone(t *testing.T) {
 	iterate(t, d)
 	reqs := len(f.Requests())
 	iterate(t, d)
+	if r := readsOf(f, reqs, 1); len(r) == 0 {
+		t.Error("the pass after the first 404 didn't judge deleted issue 1 again; want a second judging")
+	}
+	reqs = len(f.Requests())
+	iterate(t, d)
 	if r := readsOf(f, reqs, 1); len(r) != 0 {
 		t.Errorf("read deleted issue 1 again: %+v", r)
+	}
+}
+
+// A close whose timeline answers 404 once stays to judge, as one answer
+// may be wrong, and a good judging after it ends that strike: here one
+// that finds the close's event not written yet. So a second 404 after it
+// is a first again, and the pass after that judges the close, which
+// stands, at stage:completed. An issue filed after the close keeps it
+// from the poll's cursor, which every poll lists again, so a close
+// forgotten isn't found due again.
+func TestClosingGoneOnce(t *testing.T) {
+	t.Parallel()
+	f, o := closingFake(t), digestNotifyOrigin(t)
+	d := newDaemon(t, f, o, nil)
+	iterate(t, d)
+	timeline := func(r githubtest.Request) bool { return r.Method == http.MethodGet && r.Path == "/issues/1/timeline" }
+	f.LagEvents(5 * time.Second)
+	f.CloseBy(1, "owner")
+	f.LagEvents(0)
+	f.AddIssue("owner", "Newer", "")
+	f.AnswerOnce(timeline, http.StatusNotFound)
+	iterate(t, d) // the first 404
+	iterate(t, d) // a good judging: the close's event isn't written yet
+	f.Advance(10 * time.Second)
+	f.AnswerOnce(timeline, http.StatusNotFound)
+	iterate(t, d) // a first 404 again
+	iterate(t, d)
+	if got := f.State().Issues[0].Labels; !slices.Equal(got, []string{"stage:completed"}) {
+		t.Errorf("labels %q; want the owner's close judged, at stage:completed", got)
 	}
 }
 

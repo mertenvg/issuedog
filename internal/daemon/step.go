@@ -171,7 +171,11 @@ func (st *Step) counted(ctx context.Context, s *github.Snapshot, d Dirt) (map[in
 // processed once a cmd or reply marker names it, or the App 👍'd or 👎'd it,
 // but for a revision request the App 👍'd as an answer before the move to
 // the review stage, whose seen it comes after: no run read it, so it's
-// handled as a request (#318).
+// handled as a request (#318). Unless that move is one a dirty comment hid,
+// recorded again with a seen that may be below the run's, and the App 👍'd
+// c before the move was posted: then the run read it, so it's no request,
+// and an edit after the record gets the edited reply (reviewDirtyRead,
+// #447, #485).
 // Only the App can remove its reaction, so a rejection is 👎, then the reply,
 // and a 👎'd command with no clean reply gets it again (reword). A processed
 // comment missing its 👍 gets it (SPEC §5.2), and one edited since it was
@@ -222,14 +226,24 @@ func (st *Step) handle(ctx context.Context, s *github.Snapshot, d Dirt, c github
 		acked = true
 	}
 	at, used, posted := st.usedAt(s, d, c.ID, isCmd)
+	var recorded time.Time // when the record of the hidden move that read c was posted
+	read := false
+	if acked && request && !late {
+		recorded, read = reviewDirtyRead(s, st.AppSlug, d, c, up.CreatedAt)
+	}
 	switch {
 	case reason == "edited":
 		return nil
-	case acked && request && !late && reviewDirtyRead(s, is, c, up.CreatedAt):
-		// The 👍 may be the answer's at clarifying or planning, read by the
-		// run whose move a dirty comment hid: the record of that move can
-		// only bound what came before the run (reviewDirtyRestore), so the
-		// 👍 processed it (SPEC §7.4).
+	case read && editedSince(c, recorded):
+		// The 👍 is the answer's at clarifying or planning, read by the run
+		// whose move a dirty comment hid, and the record stands for that
+		// move, which used it: an edit since is ignored (SPEC §6.2).
+		return st.reply(ctx, s, c, "edited", editedText)
+	case read:
+		// The record of that move can only bound what came before the run
+		// (reviewDirtyRestore), so the 👍 processed it (SPEC §7.4). The 👍
+		// is no use of the answer, so an edit between it and the record,
+		// which the run may have read, gets no reply.
 		return nil
 	case used && acked && editedSince(c, at):
 		return st.reply(ctx, s, c, "edited", editedText)

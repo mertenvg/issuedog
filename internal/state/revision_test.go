@@ -297,7 +297,8 @@ func planRev(t *testing.T, body string, id int64, rev int) Revision {
 
 // PlanApproval gives the latest plan revision, and each reason it can't be
 // approved, in a fixed order (SPEC §7.4): hidden, changed, a dirty body.
-// With no plan revision, that's the only reason.
+// With no plan revision, that's the first reason, and only a dirty body
+// can follow it (#525).
 func TestPlanApproval(t *testing.T) {
 	t.Parallel()
 	const spec1 = "<!-- issuedog:revision rev=1 body=aaaaaaaa -->"
@@ -344,8 +345,8 @@ func TestPlanApproval(t *testing.T) {
 		{"every reason, in order", withComment(snap("", apps(3), spec1, plan1, "a reply"), 2, edited), dirtyIDs(BodyID, 3),
 			plan1, 2, 1, true, []PlanReason{PlanHidden, PlanChanged, PlanBodyDirty}},
 		{"no plan revision", snap("the spec", apps(2), spec1, "a reply"), clean, "", 0, 0, false, []PlanReason{PlanNoRevision}},
-		{"no plan revision is the only reason, with a dirty body", snap("", apps(1), spec1), dirtyIDs(BodyID),
-			"", 0, 0, false, []PlanReason{PlanNoRevision}},
+		{"no plan revision, then a dirty body (#525)", snap("", apps(1), spec1), dirtyIDs(BodyID),
+			"", 0, 0, false, []PlanReason{PlanNoRevision, PlanBodyDirty}},
 		// LatestRevision reports this one Hidden, with no revision before it.
 		{"a dirty plan comment with none before it: no plan revision", snap("", apps(2), spec1, plan1), dirtyIDs(2),
 			"", 0, 0, false, []PlanReason{PlanNoRevision}},

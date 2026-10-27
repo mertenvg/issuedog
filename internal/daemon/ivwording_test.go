@@ -415,11 +415,14 @@ func TestIvWordingLostReplyAfterEdit(t *testing.T) {
 
 // TestIvWordingPlanDirtyBody: at plan-review, /approve's reply for a dirty
 // body says a new plan won't clear the edit, and asks for no new comment.
+// It names what does: a move to `stage:clarifying`, for a new spec that
+// replaces the edit, and then a new plan (SPEC §7.4, #331).
 func TestIvWordingPlanDirtyBody(t *testing.T) {
 	t.Parallel()
-	want := ivWordingApproveFinal("the issue description has an edit by mallory that wasn't approved, so I can't approve the plan. "+
+	want := ivWordingApproveFinal("the issue description has an edit by `mallory` that wasn't approved, so I can't approve the plan. "+
 		"Nothing at `planning` or `plan-review` rewrites the description, so sending the plan back won't clear the edit. "+
-		"To move on, set the stage by hand", "1005")
+		"To clear it, move the issue to `stage:clarifying`: that gets a new spec from the interviewer, "+
+		"which replaces the edit, and then a new plan", "1005")
 	setup := planReview(func(t testing.TB, f *githubtest.Fake) {
 		f.EditBody(1, "mallory", noted("body"))
 		f.AddReaction(1003, "owner", "+1") // 1004, and it approves nothing

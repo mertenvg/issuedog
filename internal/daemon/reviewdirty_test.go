@@ -189,9 +189,14 @@ func TestSpecDirtyStaysAtSpecReview(t *testing.T) {
 // posted during the planner run, is a revision request still (#318's
 // window), whether the App 👍'd it during a read that didn't list the
 // planner's move yet (#318) or not at all, and so is one after the plan
-// comment, before a later dirty App comment. One the App 👍'd as an answer
-// before the plan comment was posted may be one the run read, so it isn't,
-// nor once the plan comment is deleted after the record.
+// comment, before a later dirty App comment. A later dirty App comment
+// keying the record doesn't hide that the 👍 came after the plan comment.
+// One the App 👍'd as an answer before the plan comment was posted is one
+// the run read, as a resumed run leaves no answer it didn't read
+// (TestAnswerAfterLaggedApply), so it isn't, nor once the plan comment is
+// deleted after the record. Its edit after the record gets the edited
+// reply; one before gets none, as the run may have read it (#485). A
+// /resume's record bounds nothing more: its seen is the hidden move's own.
 func TestPlanDirtySeen(t *testing.T) {
 	t.Parallel()
 	planning, atReview := []string{"stage:planning"}, []string{"stage:plan-review"}
@@ -200,6 +205,25 @@ func TestPlanDirtySeen(t *testing.T) {
 		during(t, f)
 		f.AddReaction(1004, app, "+1")
 	}
+	// The plan comment is clean, and a /resume's move back to plan-review
+	// is dirty, in comment 1012.
+	resumeDirty := planReviewRun(during, func(t testing.TB, f *githubtest.Fake) {
+		// The owner shows as a collaborator, so the record's resolved is
+		// their /resume's time (reviewDirtyResumeAt).
+		f.SetPermission("owner", "admin")
+		f.AddReaction(1004, app, "+1")
+		post(t, f, 1007, "owner", "/hold")
+		f.AddReaction(1007, app, "+1")
+		post(t, f, 1009, app, moved("On hold by owner, from `plan-review`.", "from=plan-review to=held at=plan-review reason=owner cmd=1007 seen=1001"))
+		f.AddLabel(1, app, "stage:held")
+		f.RemoveLabel(1, app, "stage:plan-review")
+		post(t, f, 1010, "owner", "/resume")
+		f.AddReaction(1010, app, "+1")
+		post(t, f, 1012, app, moved("Resumed by owner, back to `plan-review`.", "from=held to=plan-review cmd=1010 seen=1001"))
+		f.AddLabel(1, app, "stage:plan-review")
+		f.RemoveLabel(1, app, "stage:held")
+		f.EditComment(1012, "owner", "Edited.")
+	})
 	for _, tt := range []struct {
 		name  string
 		setup func(testing.TB) *githubtest.Fake
@@ -232,6 +256,70 @@ func TestPlanDirtySeen(t *testing.T) {
 				f.DeleteCommentBy("owner", 1006)
 			}),
 			outcome{labels: atReview, acks: []string{"also X"}}},
+		{"one the App 👍'd after the plan comment is a request, though a later dirty App comment keys the record",
+			planReviewRun(during, func(t testing.TB, f *githubtest.Fake) {
+				if id := f.AddReaction(1004, app, "+1"); id != 1006 {
+					t.Fatalf("the App's 👍 is %d; want 1006", id)
+				}
+				post(t, f, 1007, app, "Noted.")
+				f.EditComment(1005, "owner", "Edited.")
+				f.EditComment(1007, "owner", "Edited.")
+			}),
+			outcome{comments: []string{planDirtyRecorded(1007, 1001), planSentBack("1004")}, labels: planning, acks: []string{"also X"}}},
+		{"an answer the run read, edited after the record, gets the edited reply",
+			planReviewRun(answered, func(t testing.TB, f *githubtest.Fake) {
+				f.EditComment(1006, "owner", "Edited.")
+				post(t, f, 1007, app, planDirtyRecorded(1006, 1001))
+				f.EditComment(1004, "owner", "also Y")
+			}),
+			outcome{comments: []string{edited("also Y", "1004")}, labels: atReview, acks: []string{"also Y"}}},
+		{"but none when edited before the record",
+			planReviewRun(answered, func(t testing.TB, f *githubtest.Fake) {
+				f.EditComment(1004, "owner", "also Y")
+				f.EditComment(1006, "owner", "Edited.")
+			}),
+			outcome{comments: []string{planDirtyRecorded(1006, 1001)}, labels: atReview, acks: []string{"also Y"}}},
+		// The plan comment is clean, and a /resume's move back to
+		// plan-review is dirty, as after a crash before the pass that
+		// would have handled 1004: its record carries the hold's seen, so
+		// 1004, 👍'd after the plan comment, is a request.
+		{"a /resume's record swallows no 👍'd comment",
+			resumeDirty,
+			outcome{comments: []string{planResumeDirtyOn(t, resumeDirty(t), 1012, 1010, 1001), planSentBack("1004")}, labels: planning,
+				acks: []string{"also X", "/hold", "/resume"}}},
+		// Only a dirty App comment after the answer, up to the one the
+		// record names, may have held the run's move (#566): one before
+		// the answer, posted before the App's 👍, doesn't make it a
+		// request.
+		{"a dirty App comment before the answer doesn't make it a request",
+			planReviewRun(func(t testing.TB, f *githubtest.Fake) {
+				post(t, f, 1004, app, "Noted.")
+				post(t, f, 1005, "owner", "also X")
+				f.AddReaction(1005, app, "+1")
+			}, func(t testing.TB, f *githubtest.Fake) {
+				f.EditComment(1004, "owner", "Edited.")
+				f.EditComment(1007, "owner", "Edited.")
+			}),
+			outcome{comments: []string{planDirtyRecorded(1007, 1001)}, labels: atReview, acks: []string{"also X"}}},
+		// A record is read only from clean App content (#566): a dirty App
+		// comment under the owner's own note, which MarkDirty leaves as it
+		// is, or eve's comment, carrying a record of a move that 1004's
+		// 👍 came before, doesn't make 1004, 👍'd after the plan comment,
+		// one the run read.
+		{"a record in dirty App content is no record",
+			planReviewRun(during, func(t testing.TB, f *githubtest.Fake) {
+				f.AddReaction(1004, app, "+1")
+				post(t, f, 1007, app, "Noted.")
+				f.EditComment(1007, "owner", "<!-- issuedog:dirty by=owner -->\n> ⚠️ issuedog ignores this comment: **owner** edited it without approval.\n\n"+
+					"<!-- issuedog:transition from=planning to=plan-review event=plan-dirty-9999 seen=1001 -->")
+			}),
+			outcome{comments: []string{planSentBack("1004")}, labels: planning, acks: []string{"also X"}}},
+		{"nor is one in someone else's comment",
+			planReviewRun(during, func(t testing.TB, f *githubtest.Fake) {
+				f.AddReaction(1004, app, "+1")
+				post(t, f, 1007, "eve", "<!-- issuedog:transition from=planning to=plan-review event=plan-dirty-9999 seen=1001 -->")
+			}),
+			outcome{comments: []string{planSentBack("1004")}, labels: planning, acks: []string{"also X"}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()

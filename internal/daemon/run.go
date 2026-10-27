@@ -240,7 +240,7 @@ func (r *Runs) Work(ctx context.Context, ready []Ready) error {
 	if !r.swept {
 		r.swept = r.sweep(ctx)
 	}
-	skip, err := r.resume(ctx)
+	skip, err := r.resume(ctx, ready)
 	if errors.Is(err, ErrLabelsHeld) {
 		// The lease waits to be applied, and no run may start before it is.
 		return nil
@@ -514,7 +514,9 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		// The issue may have changed during the run, so failed reads it again.
 		return true, wrap(r.failed(ctx, st, l, runErr)) // logged there
 	}
-	if err := r.applyLease(ctx, l, st, raw, out); !errors.Is(err, ErrLabelsHeld) {
+	// Step 1's read, rd.S, is from before the run, which was given all of
+	// it, so the apply has no later one to look at.
+	if err := r.applyLease(ctx, l, st, raw, out, nil); !errors.Is(err, ErrLabelsHeld) {
 		return true, wrap(err)
 	}
 	return true, nil // the lease waits for the next pass to apply it
@@ -599,9 +601,9 @@ func outcome(raw []byte) (failed bool, text string) {
 // ErrLabelsHeld, and the lease and the result stay as they are, for a
 // later pass to apply once the labels are explained, or left out after
 // github.HoldBound. A result its Checker rejects (a checkError) is a failed
-// attempt, not a failure to apply.
-func (r *Runs) applyLease(ctx context.Context, l Lease, st Stage, raw []byte, out json.RawMessage) error {
-	err := r.apply(ctx, l, st, raw, out)
+// attempt, not a failure to apply. read is as for apply.
+func (r *Runs) applyLease(ctx context.Context, l Lease, st Stage, raw []byte, out json.RawMessage, read *github.Snapshot) error {
+	err := r.apply(ctx, l, st, raw, out, read)
 	var ending *endError
 	if err == nil || errors.As(err, &ending) {
 		return err
@@ -697,7 +699,9 @@ func (e *step1Wait) Unwrap() error { return e.err }
 //     it (SPEC §6.4), or a hold that ended back there, so the stage runs
 //     again on what's there now.
 //   - when it has new trusted input since the run's seen (newInput), which
-//     the stage runs again with.
+//     the stage runs again with, in its read or in read, if set: step 1's
+//     snapshot of the issue in this pass, after the run, which may list
+//     an answer step 1 👍'd that the apply's own read doesn't list yet.
 //
 // Then a Checker checks the result: its error is a checkError, but for a
 // checkReadError, which is a failure to apply like any other. A result
@@ -705,7 +709,7 @@ func (e *step1Wait) Unwrap() error { return e.err }
 // table lacks ends the run (blocked). On an error, the lease stays. The
 // run marker's fields are l's settings and the models raw, claude's
 // output, reports (runFields).
-func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out json.RawMessage) error {
+func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out json.RawMessage, read *github.Snapshot) error {
 	a := r.Daemon.Step.Applier
 	drop := func(why string, args ...any) error {
 		logr.Infof("%s/%s#%d: dropping the result of run %s, uncounted: "+why, append([]any{a.Owner, a.Repo, l.Issue, l.RunID}, args...)...)
@@ -774,7 +778,7 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 		if id := runMovedSince(s, a.AppSlug, d.Has, l.Seen); id != 0 {
 			return drop("comment %d moved the issue since the run started, so the stage runs again", id)
 		}
-		id, err := r.newInput(ctx, s, d, l.Seen)
+		id, err := r.newInput(ctx, s, d, l.Seen, read)
 		if err != nil {
 			return fmt.Errorf("apply run %s: %w", l.RunID, err)
 		}
@@ -846,10 +850,26 @@ func runMovedSince(s *github.Snapshot, appSlug string, dirty func(int64) bool, s
 // none (SPEC §8.2): one above seen, by a trusted user, that
 // isn't a command and isn't dirty. The App's comments, and other bots',
 // aren't, as no bot is trusted. A result applied without it would lose
-// it, such as an answer step 1 👍'd before a delayed apply.
-func (r *Runs) newInput(ctx context.Context, s *github.Snapshot, d Dirt, seen int64) (int64, error) {
+// it, such as an answer step 1 👍'd before a delayed apply. d is s's dirty
+// content. Failing one on s, it looks at the comments of read, if set,
+// that s doesn't list: step 1's snapshot of the issue, read after the run
+// but before s, so s's read lags behind it (SPEC §8.2). Step 1 may have
+// 👍'd such a comment as an answer, and with the result applied, that 👍
+// would come before the move, under a seen below it, and a dirty record
+// of the move couldn't tell it from one the run read (reviewDirtyRead).
+// Whether such a comment is dirty isn't known, so it counts as input: at
+// worst, the stage runs again.
+func (r *Runs) newInput(ctx context.Context, s *github.Snapshot, d Dirt, seen int64, read *github.Snapshot) (int64, error) {
 	ok := map[string]bool{}
-	for _, c := range s.Comments {
+	comments := slices.Clone(s.Comments)
+	if read != nil {
+		for _, c := range read.Comments {
+			if !slices.ContainsFunc(s.Comments, func(x github.Comment) bool { return x.ID == c.ID }) {
+				comments = append(comments, c)
+			}
+		}
+	}
+	for _, c := range comments {
 		if _, cmd := state.ParseCommand(c.Body); c.ID <= seen || cmd || c.Author.Type == "Bot" || d.Has(c.ID) {
 			continue
 		}
@@ -870,8 +890,12 @@ func (r *Runs) newInput(ctx context.Context, s *github.Snapshot, d Dirt, seen in
 
 // resume finishes the lease a run left, if there is one, and returns the
 // issue it applied a result to, which gets no stage work this pass. A
-// valid saved result is applied (applyLease). A saved result that hit a
-// usage limit closes the gate, and isn't counted, as in RunStage.
+// valid saved result is applied (applyLease), with step 1's snapshot of
+// the issue, as apply's read: the one in ready, Work's, or else the one
+// step 1 ran on in this pass though the issue was touched after
+// (Daemon.stepRead). On an issue step 1 didn't finish on, it waits
+// (step1Gaps, below). A saved result that hit a usage limit closes
+// the gate, and isn't counted, as in RunStage.
 // Otherwise the run counts as a failed attempt, its clone is deleted, and
 // the issue, at its pre-run stage (see Lease), runs again when its stage
 // has work pending. For a held or closed issue, the clone is deleted; a
@@ -887,7 +911,7 @@ func (r *Runs) newInput(ctx context.Context, s *github.Snapshot, d Dirt, seen in
 // counted, as the next read drops it or runs step 1 on it. And one on an
 // issue whose last snapshot shows it held is dropped, uncounted, as apply
 // would drop it whatever step 1 left unhandled (step1Held).
-func (r *Runs) resume(ctx context.Context) (int, error) {
+func (r *Runs) resume(ctx context.Context, ready []Ready) (int, error) {
 	l, ok, err := r.readLease(ctx)
 	if err != nil || !ok {
 		return 0, err
@@ -972,7 +996,14 @@ func (r *Runs) resume(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 	logr.Infof("applying the saved result of run %s on #%d", l.RunID, l.Issue)
-	return l.Issue, r.applyLease(ctx, l, st, raw, out)
+	read := r.Daemon.stepRead[l.Issue]
+	if i := slices.IndexFunc(ready, func(rd Ready) bool { return rd.S.Number == l.Issue }); i >= 0 {
+		read = ready[i].S
+	}
+	if err := r.applyLease(ctx, l, st, raw, out, read); err != nil {
+		return l.Issue, fmt.Errorf("resume run %s: %w", l.RunID, err)
+	}
+	return l.Issue, nil
 }
 
 // step1Held reports whether the last snapshot of issue n, this pass's

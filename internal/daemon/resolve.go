@@ -91,7 +91,9 @@ const resolveKind = "ended"
 // of held for a resolved discussion, and on an "ended reason=discussion"
 // record: when the act that resolved the last trigger happened. The record
 // bounds the triggers from then, not from when the App wrote it, so an act
-// in between still counts (discFloor).
+// in between still counts (discFloor). The record of a /resume's move back
+// to plan-review that a dirty comment hid carries it too, as the time that
+// /resume was posted, floored at the hold (reviewDirtyResumeAt).
 const resolveField = "resolved"
 
 // How a trigger was resolved (resolveAct.How).
