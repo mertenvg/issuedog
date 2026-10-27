@@ -884,8 +884,9 @@ func (r *Runs) newInput(ctx context.Context, s *github.Snapshot, d Dirt, seen in
 // issue it applied a result to, which gets no stage work this pass. A
 // valid saved result is applied (applyLease), with step 1's snapshot of
 // the issue, as apply's read: the one in ready, Work's, or else the one
-// step 1 ran on in this pass though it failed or the issue was touched
-// after (Daemon.stepRead). A saved result that hit a usage limit closes
+// step 1 ran on in this pass though the issue was touched after
+// (Daemon.stepRead). On an issue step 1 didn't finish on, it waits
+// (step1Gaps, below). A saved result that hit a usage limit closes
 // the gate, and isn't counted, as in RunStage.
 // Otherwise the run counts as a failed attempt, its clone is deleted, and
 // the issue, at its pre-run stage (see Lease), runs again when its stage

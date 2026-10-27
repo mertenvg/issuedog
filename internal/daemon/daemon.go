@@ -99,7 +99,9 @@ type Daemon struct {
 	// whether it succeeded or not, or the issue was touched after: for
 	// the apply of a lease Work resumes (Runs.resume), as step 1 may have
 	// 👍'd an answer on one that the apply's own read doesn't list yet.
-	// Nil outside Iterate's step 1 and Work.
+	// On one whose step 1 didn't finish, the lease waits instead
+	// (step1Gaps), so only a touched issue's is read here. Nil outside
+	// Iterate's step 1 and Work.
 	stepRead map[int]*github.Snapshot
 
 	// digestRestartUnknown are the issues the digest may list items for

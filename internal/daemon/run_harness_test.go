@@ -388,9 +388,12 @@ func TestAnswerAfterLaggedApply(t *testing.T) {
 
 // As TestAnswerAfterLaggedApply, but step 1 fails on the issue once it has
 // 👍'd the answer: GitHub applies the 👍 and answers with a 500. The issue
-// isn't ready, and the resumed apply's own read doesn't list the answer,
-// but step 1's read in the pass does, so the apply drops the result all
-// the same (SPEC §8.2, #566).
+// isn't ready, and step 1 may have left a command on it unhandled, so the
+// result isn't applied that pass: it waits with its lease, counted as a
+// failure to apply, and no other run starts (SPEC §8.2, #566). The next
+// pass's step 1 succeeds, and the resumed apply's own read doesn't list
+// the answer, but step 1's does, so the apply drops the result all the
+// same.
 func TestAnswerAfterLaggedApplyStepFailed(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
@@ -409,7 +412,6 @@ func TestAnswerAfterLaggedApplyStepFailed(t *testing.T) {
 		if slices.ContainsFunc(ready, func(rd daemon.Ready) bool { return rd.S.Number == 1 }) {
 			t.Errorf("ready %+v; want #1 left out, as its step 1 failed", ready)
 		}
-		f.DeleteComment(id)
 		return g.r.Work(ctx, ready)
 	}
 	if err := g.d.Iterate(context.Background()); err == nil || !strings.Contains(err.Error(), "500") {
@@ -417,6 +419,22 @@ func TestAnswerAfterLaggedApplyStepFailed(t *testing.T) {
 	}
 	if w := f.Writes(); len(w) < thumb || !w[thumb-1].Failed || !strings.Contains(w[thumb-1].Path, "/reactions") {
 		t.Fatalf("writes %+v; want write %d the 👍, failed", w, thumb)
+	}
+	if specApplied(f, 1, "run1", answer) || g.lease().RunID != "run1" || g.lease().ApplyFailures != 2 || g.runs() != 1 {
+		t.Errorf("run1 applied %t, lease %+v, %d runs; want run1 waiting, its lease kept with 2 failures to apply, and no run yet",
+			specApplied(f, 1, "run1", answer), g.lease(), g.runs())
+	}
+
+	f.FailWriteAfter(0)
+	g.d.Work = func(ctx context.Context, ready []daemon.Ready) error {
+		if !slices.ContainsFunc(ready, func(rd daemon.Ready) bool { return rd.S.Number == 1 }) {
+			t.Errorf("ready %+v; want #1, as its step 1 succeeded", ready)
+		}
+		f.DeleteComment(id)
+		return g.r.Work(ctx, ready)
+	}
+	if err := g.d.Iterate(context.Background()); err != nil {
+		t.Fatalf("the third pass = %v; want no error", err)
 	}
 	if specApplied(f, 1, "run1", answer) || g.lease().RunID != "" || g.runs() != 1 {
 		t.Errorf("run1 applied %t, lease %+v, %d runs; want run1 dropped, and no run yet", specApplied(f, 1, "run1", answer), g.lease(), g.runs())
