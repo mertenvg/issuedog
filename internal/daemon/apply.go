@@ -48,6 +48,13 @@ type Applier struct {
 	// directory one matching repo.ErrNotFile.
 	ReadMain func(ctx context.Context, path string) ([]byte, error)
 
+	// madeAboveDigest, if set, reports whether issue number is a digest,
+	// which the walks up (madeAbove, resolveAbove) and down (family) take
+	// no snapshot of (isDigest), and step 1 never visits (Daemon.digest),
+	// so nothing on it is read, and no /hold or /resume waits for one on
+	// it (holdOrderWaits).
+	madeAboveDigest func(number int) bool
+
 	histories     histories                // see Dirty
 	originNone    map[int]string           // the body, by issue, in which originRepost found no origin to repost
 	discNoRecords map[string]*discNoRecord // logins with no permission record, in lower case (discNoRecord)

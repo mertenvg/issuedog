@@ -9,8 +9,9 @@ import (
 // IsPinned's error wraps ErrIssueNotFound only for GitHub's NOT_FOUND
 // with the repo found and the issue null, as GitHub answers a lookup by
 // number of a deleted or transferred issue (#428). An HTTP 404 from the
-// GraphQL endpoint itself, a NOT_FOUND for the repo, or another error
-// type for the issue isn't one.
+// GraphQL endpoint itself, a NOT_FOUND for the repo, a NOT_FOUND at a
+// path other than repository.issue, or another error type for the issue
+// isn't one.
 func TestIsPinnedNotFound(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -25,6 +26,16 @@ func TestIsPinnedNotFound(t *testing.T) {
 		{"the issue FORBIDDEN", `{"data":{"repository":{"issue":null}},"errors":[{"type":"FORBIDDEN","path":["repository","issue"],` +
 			`"message":"Resource not accessible by integration"}]}`, false},
 		{"no issue and no error", `{"data":{"repository":{"issue":null}}}`, false},
+		// A NOT_FOUND at another path than the issue's names something
+		// else, so it fails the check as any other error does (#580).
+		{"a NOT_FOUND under the issue", `{"data":{"repository":{"issue":null}},"errors":[{"type":"NOT_FOUND",` +
+			`"path":["repository","issue","isPinned"],"message":"Could not resolve to a node with the global id of 'X_1'"}]}`, false},
+		{"a NOT_FOUND at the root", `{"data":{"repository":{"issue":null}},"errors":[{"type":"NOT_FOUND","path":["issue"],` +
+			`"message":"Could not resolve to an Issue with the number of 7."}]}`, false},
+		{"a NOT_FOUND with no path", `{"data":{"repository":{"issue":null}},"errors":[{"type":"NOT_FOUND",` +
+			`"message":"Could not resolve to an Issue with the number of 7."}]}`, false},
+		{"a NOT_FOUND at an index", `{"data":{"repository":{"issue":null}},"errors":[{"type":"NOT_FOUND","path":["repository",0],` +
+			`"message":"Could not resolve to an Issue with the number of 7."}]}`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

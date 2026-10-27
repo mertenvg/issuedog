@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -417,7 +418,8 @@ func (above madeAboveSet) on(id int64) (int, bool) {
 
 // madeAbove returns what is on c's issue and its ancestors (madeAboveSet),
 // read up through each parent in this repo. It stops at a parent in another
-// repo, as family skips those going down. Markers in dirty content aren't
+// repo, as family skips those going down, and passes over the digest,
+// reading nothing on it (madeAboveParent). Markers in dirty content aren't
 // read (SPEC §5.1), so it reads each ancestor's edits as Dirty does, which
 // costs no request when nothing on it was edited.
 func (a *Applier) madeAbove(ctx context.Context, c Cmd) (madeAboveSet, error) {
@@ -438,22 +440,62 @@ func (a *Applier) madeAbove(ctx context.Context, c Cmd) (madeAboveSet, error) {
 		if s.Parent == 0 || seen[s.Parent] {
 			return above, nil
 		}
-		parent, _, err := a.Client.SubIssue.GetParentIssue(ctx, a.Owner, a.Repo, int64(s.Number))
+		up, err := a.madeAboveParent(ctx, s.Number, seen, above.issues)
 		if err != nil {
-			return madeAboveSet{}, fmt.Errorf("parent of %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
+			return madeAboveSet{}, fmt.Errorf("ancestor of %s/%s#%d: %w", a.Owner, a.Repo, c.S.Number, err)
 		}
-		if !a.inRepo(parent.GetRepositoryURL()) {
-			logr.Infof("%s/%s#%d: its parent #%d of %s isn't in this repo, so it's where the walk up stops",
-				a.Owner, a.Repo, s.Number, parent.GetNumber(), parent.GetRepositoryURL())
+		if up == 0 {
 			return above, nil
 		}
-		if s, err = a.Client.Snapshot(ctx, a.Owner, a.Repo, parent.GetNumber()); err != nil {
+		if s, err = a.Client.Snapshot(ctx, a.Owner, a.Repo, up); err != nil {
 			return madeAboveSet{}, fmt.Errorf("ancestor of %s/%s#%d: %w", a.Owner, a.Repo, c.S.Number, err)
 		}
 		if d, err = a.Dirty(ctx, s, c.Trust); err != nil {
 			return madeAboveSet{}, fmt.Errorf("ancestor of %s/%s#%d: %w", a.Owner, a.Repo, c.S.Number, err)
 		}
 	}
+}
+
+// madeAboveParent returns the ancestor of issue n, its parent in this repo,
+// whose snapshot madeAbove, or resolveAbove, takes next, or 0 where the
+// walk up stops: at a parent in another repo, or one it has seen already.
+// It passes over a
+// digest (Applier.madeAboveDigest), as the daemon never takes a snapshot of
+// the digest (SPEC §5.1), and no command on it is ever handled (SPEC §9.4).
+// The digest is on the path, so it's added to seen and issues, but nothing
+// on it is read, and the walk goes on from the digest's own parent, read
+// as Snapshot reads one, a 404 for none. So a hold made above a digest
+// that someone made a parent still counts as made above (#498).
+func (a *Applier) madeAboveParent(ctx context.Context, n int, seen, issues map[int]bool) (int, error) {
+	for digest := false; ; digest = true {
+		parent, resp, err := a.Client.SubIssue.GetParentIssue(ctx, a.Owner, a.Repo, int64(n))
+		if digest && resp != nil && resp.StatusCode == http.StatusNotFound {
+			return 0, nil // the digest has no parent
+		}
+		if err != nil {
+			return 0, fmt.Errorf("parent of %s/%s#%d: %w", a.Owner, a.Repo, n, err)
+		}
+		if !a.inRepo(parent.GetRepositoryURL()) {
+			logr.Infof("%s/%s#%d: its parent #%d of %s isn't in this repo, so it's where the walk up stops",
+				a.Owner, a.Repo, n, parent.GetNumber(), parent.GetRepositoryURL())
+			return 0, nil
+		}
+		up := parent.GetNumber()
+		if seen[up] {
+			return 0, nil
+		}
+		if !a.isDigest(up) {
+			return up, nil
+		}
+		seen[up], issues[up] = true, true
+		n = up
+	}
+}
+
+// isDigest reports whether issue n is a digest (Applier.madeAboveDigest),
+// which no walk through a family takes a snapshot of (SPEC §5.1).
+func (a *Applier) isDigest(n int) bool {
+	return a.madeAboveDigest != nil && a.madeAboveDigest(n)
 }
 
 // inRepo reports whether an issue's repository_url, ".../repos/{owner}/{repo}",
@@ -741,21 +783,32 @@ type resumeRecord struct {
 	record func(ctx context.Context, n node, is state.Issue, after bool) error
 }
 
-// node is an issue a command moves, with its dirty content.
+// node is an issue a command moves, with its dirty content. up is, for a
+// descendant in family, the issue above it in the family: its parent, or,
+// below a digest that family passes over, the digest's own (#527). It's 0
+// for c's issue, and for any node family didn't make.
 type node struct {
 	s    *github.Snapshot
 	d    Dirt
 	open bool
+	up   int
 }
 
 // family returns the descendants of c's issue (sub-issues) in this repo,
 // open and closed, depth first, each read fresh, then the issue itself,
-// last. A sub-issue in another repo is skipped, with all below it.
+// last. A sub-issue in another repo is skipped, with all below it. A
+// digest that someone made a sub-issue is passed over, as the walk up
+// passes over it (madeAboveParent): the daemon never takes a snapshot of
+// the digest (SPEC §5.1), so it isn't among the nodes, and nothing is
+// written to it, but the walk goes on to its own sub-issues, so a hold
+// made above it holds them too (#527). Each descendant's up is the issue
+// above it in the family, so a path through it up to c's issue
+// (resolveHeldBy) passes over the digest too, with no issue dropped.
 func (a *Applier) family(ctx context.Context, c Cmd) ([]node, error) {
 	var nodes []node
 	seen := map[int]bool{c.S.Number: true}
-	var walk func(n int) error
-	walk = func(n int) error {
+	var walk func(n, up int) error // up is the issue its sub-issues are below
+	walk = func(n, up int) error {
 		opts := &gogithub.ListOptions{PerPage: 100}
 		for sub, err := range a.Client.SubIssue.ListByIssueIter(ctx, a.Owner, a.Repo, int64(n), opts) {
 			if err != nil {
@@ -771,6 +824,12 @@ func (a *Applier) family(ctx context.Context, c Cmd) ([]node, error) {
 				continue
 			}
 			seen[is.GetNumber()] = true
+			if a.isDigest(is.GetNumber()) { // its sub-issues are below its own up
+				if err := walk(is.GetNumber(), up); err != nil {
+					return fmt.Errorf("below #%d: %w", n, err)
+				}
+				continue
+			}
 			s, err := a.Client.Snapshot(ctx, a.Owner, a.Repo, is.GetNumber())
 			if err != nil {
 				return fmt.Errorf("descendant: %w", err)
@@ -779,17 +838,17 @@ func (a *Applier) family(ctx context.Context, c Cmd) ([]node, error) {
 			if err != nil {
 				return fmt.Errorf("descendant: %w", err)
 			}
-			nodes = append(nodes, node{s, d, is.GetState() == "open"})
-			if err := walk(is.GetNumber()); err != nil {
+			nodes = append(nodes, node{s: s, d: d, open: is.GetState() == "open", up: up})
+			if err := walk(is.GetNumber(), is.GetNumber()); err != nil {
 				return fmt.Errorf("below #%d: %w", n, err)
 			}
 		}
 		return nil
 	}
-	if err := walk(c.S.Number); err != nil {
+	if err := walk(c.S.Number, c.S.Number); err != nil {
 		return nil, fmt.Errorf("family of %s/%s#%d: %w", a.Owner, a.Repo, c.S.Number, err)
 	}
-	return append(nodes, node{c.S, c.Dirt, true}), nil
+	return append(nodes, node{s: c.S, d: c.Dirt, open: true}), nil
 }
 
 // setPriority sets c's priority:pN label, removes the other priority:*

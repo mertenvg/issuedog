@@ -120,10 +120,11 @@ func digestRestartResumes(t *testing.T, l *discRunLoop) (resume, r3 int64) {
 // pass: #3, read again at its turn after the epic's record, is visited on
 // that snapshot, so its /resume is handled in the same pass, as the next
 // would handle it, which takes it back to ready. The digest is written
-// once, with nothing waiting. #3 is still left out of Work and assignment
-// on that pass, as any issue a command wrote to is, so owner is
-// unassigned on the next, which reads it again. The passes after that
-// write nothing.
+// once, with nothing waiting. #3 is still left out of Work on that pass,
+// as any issue a command wrote to is, but its assignees are judged on
+// the items its visit found, so owner is unassigned in the same pass, as
+// the digest drops its item, not on the next, which reads it again
+// (#360). The passes after that write nothing.
 func TestDigestRestartTouchedOwnResume(t *testing.T) {
 	t.Parallel()
 	f := discRunFamily(t)
@@ -134,14 +135,14 @@ func TestDigestRestartTouchedOwnResume(t *testing.T) {
 	l.step("both /resumes on a restart's first pass", "POST /issues/3/comments", "POST /issues/4/comments",
 		"POST /issues/2/comments", "POST /issues/2/labels", "DELETE /issues/2/labels/stage:held", discRunReact(resume),
 		"POST /issues/3/comments", "POST /issues/3/labels", "DELETE /issues/3/labels/stage:held", discRunReact(r3),
-		"PATCH /issues/1")
+		"PATCH /issues/1", "DELETE /issues/3/assignees")
 	if got := l.added(3); len(got) != 2 || got[1] != moved("Resumed by `/resume`, back to `ready`.", fmt.Sprintf("from=held to=ready cmd=%d seen=%d", r3, entry)) {
 		t.Errorf("#3's new comments %q; want the record, then the move back to ready", got)
 	}
-	if l.digest() != digestList {
-		t.Errorf("digest %q; want nothing listed", l.digest())
+	if l.digest() != digestList || len(assignees(f, 3)) != 0 {
+		t.Errorf("digest %q, #3's assignees %q; want nothing listed or assigned", l.digest(), assignees(f, 3))
 	}
-	l.step("the restart's second pass", "DELETE /issues/3/assignees")
+	l.step("the restart's second pass")
 	if l.digest() != digestList || len(assignees(f, 3)) != 0 {
 		t.Errorf("digest %q, #3's assignees %q; want nothing listed or assigned", l.digest(), assignees(f, 3))
 	}
@@ -179,29 +180,39 @@ func TestDigestRestartTouchedReopened(t *testing.T) {
 // On a restart's first pass, the epic's /resume writes to both, and #3's
 // visit, read again, fails at its own /resume's first write. #4, which
 // only the epic's visit, which worked, wrote to, is still read again and
-// visited, so its item stays. #3's goes, as a failed visit after a restart
-// has none to keep (#360): the digest is written without it, and the next
-// pass, which handles #3's /resume, takes it back to ready.
+// visited, so its item stays. #3's stays too, as the digest's body showed
+// it, since a failed visit after a restart has no items cached to keep
+// (#360): so the digest isn't written, and owner stays assigned to #3, as
+// any issue whose visit fails keeps its assignees. The next pass, which
+// handles #3's /resume, takes it back to ready, and drops its item and
+// owner together.
 func TestDigestRestartTouchedFailedVisit(t *testing.T) {
 	t.Parallel()
 	f := discRunFamily(t)
 	l := newDiscRunLoop(t, f)
-	digestRestartHeld(t, l)
+	m3 := digestRestartHeld(t, l)
 	m4 := f.AddComment(4, "mallory", "Wait.")
 	l.step("mallory's comment on #4", "POST /issues/1/comments", "PATCH /issues/1", "POST /issues/4/assignees")
 	l.quiet("both tasks held for discussion")
+	before := l.digest()
 	resume, r3 := f.AddComment(2, "owner", "/resume"), f.AddComment(3, "owner", "/resume")
 	l.start()
 	f.FailWrite(len(f.Writes()) + 7) // #3's /resume's first, after the epic's six
 	l.fail("both /resumes on a restart's first pass, #3's failing", []string{"step 1 on o/r#3"}, "POST /issues/3/comments", "POST /issues/4/comments",
 		"POST /issues/2/comments", "POST /issues/2/labels", "DELETE /issues/2/labels/stage:held", discRunReact(resume),
-		"POST /issues/3/comments", "PATCH /issues/1")
-	if body := l.digest(); !strings.Contains(body, "1 item waits on you.") || !strings.Contains(body, fmt.Sprintf("`mallory` posted comment %d", m4)) {
-		t.Errorf("digest %q; want #4's hold alone listed", body)
+		"POST /issues/3/comments")
+	if body := l.digest(); body != before || !strings.Contains(body, fmt.Sprintf("`mallory` posted comment %d", m3)) {
+		t.Errorf("digest\n%q\nwant it as before the restart, #3's hold listed with #4's\n%q", body, before)
+	}
+	if a := assignees(f, 3); !slices.Equal(a, []string{"owner"}) {
+		t.Errorf("#3's assignees %q; want owner, as the digest lists #3", a)
 	}
 	f.FailWrite(0)
 	l.step("the restart's second pass", "POST /issues/3/comments", "POST /issues/3/labels", "DELETE /issues/3/labels/stage:held", discRunReact(r3),
-		"DELETE /issues/3/assignees")
+		"PATCH /issues/1", "DELETE /issues/3/assignees")
+	if body := l.digest(); !strings.Contains(body, "1 item waits on you.") || !strings.Contains(body, fmt.Sprintf("`mallory` posted comment %d", m4)) {
+		t.Errorf("digest %q; want #4's hold alone listed", body)
+	}
 	l.quiet("#3 resumed")
 }
 
@@ -290,27 +301,36 @@ func TestDigestRestartTouchedResumeThenHold(t *testing.T) {
 // An issue read again whose visit then fails is still one whose items
 // aren't cached. The epic's /resume, and #3's own /hold after it, which
 // #3, held already, answers with a 👍 alone, for a restart's first pass:
-// #3's visit, read again, fails at that 👍, so the digest drops #3's item
-// (#360). On the next pass, the epic's new /hold writes to #3 before its
+// #3's visit, read again, fails at that 👍, so the digest keeps #3's item
+// as its body showed it, with nothing cached for #3 (#360), and isn't
+// written. On the next pass, the epic's new /hold writes to #3 before its
 // turn again, so #3 is read again again, and visited: its 👍 is posted,
-// and its item is back.
+// and its own item, the same, takes the place of the one kept, so the
+// digest isn't written then either.
 func TestDigestRestartTouchedFailedThenTouched(t *testing.T) {
 	t.Parallel()
 	f := discRunFamily(t)
 	l := newDiscRunLoop(t, f)
 	m := digestRestartHeld(t, l)
+	before := l.digest()
 	resume, own := f.AddComment(2, "owner", "/resume"), f.AddComment(3, "owner", "/hold")
 	l.start()
 	f.FailWrite(len(f.Writes()) + 7) // #3's 👍, after the epic's six
 	l.fail("the /resume and #3's /hold on a restart's first pass, #3's 👍 failing", []string{"step 1 on o/r#3"},
 		"POST /issues/3/comments", "POST /issues/4/comments", "POST /issues/2/comments", "POST /issues/2/labels", "DELETE /issues/2/labels/stage:held",
-		discRunReact(resume), discRunReact(own), "PATCH /issues/1")
+		discRunReact(resume), discRunReact(own))
+	if body := l.digest(); body != before {
+		t.Errorf("digest\n%q\nwant it as before the restart, #3's hold listed\n%q", body, before)
+	}
 	f.FailWrite(0)
 	hold := f.AddComment(2, "owner", "/hold")
 	l.step("the epic's /hold, and #3 read again", "POST /issues/2/comments", "POST /issues/2/labels", "DELETE /issues/2/labels/stage:planned",
-		discRunReact(hold), discRunReact(own), "PATCH /issues/1")
+		discRunReact(hold), discRunReact(own))
 	if body := l.digest(); !strings.Contains(body, fmt.Sprintf("`mallory` posted comment %d", m)) {
-		t.Errorf("digest %q; want #3's hold listed again", body)
+		t.Errorf("digest %q; want #3's hold listed still", body)
+	}
+	if a := assignees(f, 3); !slices.Equal(a, []string{"owner"}) {
+		t.Errorf("#3's assignees %q; want owner, as the digest lists #3", a)
 	}
 	l.quiet("all held")
 }
@@ -394,6 +414,87 @@ func TestDigestRestartTouchedReadFails(t *testing.T) {
 		t.Errorf("#3: labels %q; want it held", got)
 	}
 	l.quiet("both held")
+}
+
+// #490: a read again that finds the issue gone counts as the first of the
+// two reads that drop it, as the pass's own read would. The epic's /hold,
+// for a restart's first pass, writes to both tasks, and #4, the newest, is
+// deleted after the epic's 👍, the last of its visit's writes, so its read
+// again at its turn answers 404, and it skips the pass. The next pass's
+// read, the second 404, drops it, so the pass after that doesn't read it.
+// Not counted, the next pass's read would be the first, and the one after
+// it would drop it, a pass later than SPEC §8.1's two reads do.
+func TestDigestRestartTouchedGoneReread(t *testing.T) {
+	t.Parallel()
+	f := discRunFamily(t)
+	l := newDiscRunLoop(t, f)
+	l.quiet("the family")
+	hold := f.AddComment(2, "owner", "/hold")
+	l.start()
+	react := discRunReact(hold)
+	f.BeforeRequest(func(r githubtest.Request) bool { return r.Method+" "+r.Path == react }, f.DeleteIssue)
+	from := len(f.Requests())
+	l.step("the epic's /hold on a restart's first pass, #4 deleted before its read again", "POST /issues/3/comments", "POST /issues/3/labels", "DELETE /issues/3/labels/stage:ready",
+		"POST /issues/4/comments", "POST /issues/4/labels", "DELETE /issues/4/labels/stage:ready",
+		"POST /issues/2/comments", "POST /issues/2/labels", "DELETE /issues/2/labels/stage:planned", react)
+	// #4: the pass's read, the /hold's, and the read again, which found it gone.
+	if got := digestRestartGets(f, from); got[4] != 3 {
+		t.Errorf("the restart's first pass read the issues %v times; want #4 three times", got)
+	}
+	from = len(f.Requests())
+	l.step("the restart's second pass")
+	if got := digestRestartGets(f, from); got[4] != 1 {
+		t.Errorf("the restart's second pass read the issues %v times; want #4 once", got)
+	}
+	from = len(f.Requests())
+	l.step("the pass after #4 is dropped")
+	if got := digestRestartGets(f, from); got[4] != 0 {
+		t.Errorf("the pass after the second 404 read the issues %v times; want #4 dropped, and not read", got)
+	}
+	l.quiet("#4 gone")
+}
+
+// #579: a read again that fails other than as gone, here a 500, isn't
+// counted as one of the two reads that drop the issue. The epic's /hold,
+// for a restart's first pass, writes to both tasks, and #4's read again,
+// the first GET of #4 after the epic's 👍, answers 500, so it skips the
+// pass. #4 is deleted before the next pass, whose read, a 404, is the
+// first of the two, so the pass after reads it again, and that 404 drops
+// it. Counted as gone, the 500 would let the next pass's 404 drop it, a
+// pass early, with one wrong answer (SPEC §8.1).
+func TestDigestRestartTouchedFailedRereadNotGone(t *testing.T) {
+	t.Parallel()
+	f := discRunFamily(t)
+	l := newDiscRunLoop(t, f)
+	l.quiet("the family")
+	hold := f.AddComment(2, "owner", "/hold")
+	l.start()
+	react := discRunReact(hold)
+	f.BeforeRequest(func(r githubtest.Request) bool { return r.Method+" "+r.Path == react }, func() {
+		f.AnswerOnce(func(r githubtest.Request) bool { return r.Method == http.MethodGet && r.Path == "/issues/4" }, http.StatusInternalServerError)
+	})
+	from := len(f.Requests())
+	l.step("the epic's /hold on a restart's first pass, #4's read again failing", "POST /issues/3/comments", "POST /issues/3/labels", "DELETE /issues/3/labels/stage:ready",
+		"POST /issues/4/comments", "POST /issues/4/labels", "DELETE /issues/4/labels/stage:ready",
+		"POST /issues/2/comments", "POST /issues/2/labels", "DELETE /issues/2/labels/stage:planned", react)
+	// #4: the pass's read, the /hold's, and the read again, which failed.
+	if got := digestRestartGets(f, from); got[4] != 3 {
+		t.Errorf("the restart's first pass read the issues %v times; want #4 three times", got)
+	}
+	f.DeleteIssue()
+	for _, step := range []string{"the restart's second pass, the first 404", "the pass after, the second 404"} {
+		from = len(f.Requests())
+		l.step(step)
+		if got := digestRestartGets(f, from); got[4] != 1 {
+			t.Errorf("%s read the issues %v times; want #4 once", step, got)
+		}
+	}
+	from = len(f.Requests())
+	l.step("the pass after #4 is dropped")
+	if got := digestRestartGets(f, from); got[4] != 0 {
+		t.Errorf("the pass after the second 404 read the issues %v times; want #4 dropped, and not read", got)
+	}
+	l.quiet("#4 gone")
 }
 
 // A visit that ends closing an issue again (closingErrClosedAgain) after

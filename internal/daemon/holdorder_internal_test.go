@@ -53,7 +53,8 @@ func TestHoldOrderRereadsAwaited(t *testing.T) {
 			}
 			var touched, reread []int
 			st := &Step{Applier: &Applier{Client: c, Owner: "o", Repo: "r", AppSlug: "issuedog", Touched: func(n int) { touched = append(touched, n) }},
-				Trust: ownerOnly{}, holdOrderReread: func(n int) { reread = append(reread, n) }, holdOrderDigest: func(n int) bool { return n == tt.digest }}
+				Trust: ownerOnly{}, holdOrderReread: func(n int) { reread = append(reread, n) }}
+			st.madeAboveDigest = func(n int) bool { return n == tt.digest }
 			d, err := st.Dirty(ctx, s, st.Trust)
 			if err != nil {
 				t.Fatal(err)

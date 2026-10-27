@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	gogithub "github.com/google/go-github/v92/github"
@@ -72,5 +73,34 @@ func TestIsPinnedTransferredNotFound(t *testing.T) {
 	}
 	if pinned, err := c.IsPinned(ctx, "o", "r", 2); err != nil || pinned {
 		t.Errorf("IsPinned of the issue that stays = %t, %v; want false", pinned, err)
+	}
+}
+
+// Snapshot of an issue transferred to another repo fails, its error
+// wrapping ErrTransferred, as the GET followed GitHub's 301 to the issue
+// in its new repo, whose repository_url names that repo (IssueMoved). It
+// reads nothing more: no parent and no GraphQL. An issue whose
+// repository_url names this repo in another case is no move (#495).
+func TestSnapshotMoved(t *testing.T) {
+	t.Parallel()
+	f := githubtest.New(t, "o/r", "issuedog")
+	moved := f.AddIssue("owner", "Moved", "")
+	stays := f.AddIssue("owner", "Stays", "")
+	f.Transfer(moved, "o/elsewhere")
+	f.Transfer(stays, "O/R")
+	ctx, c := context.Background(), f.Client(t)
+	from := len(f.Requests())
+	s, err := c.Snapshot(ctx, "o", "r", moved)
+	if !errors.Is(err, github.ErrTransferred) || !strings.HasPrefix(err.Error(), "snapshot of o/r#1: transferred to ") ||
+		!strings.HasSuffix(err.Error(), "/repos/o/elsewhere") {
+		t.Errorf("Snapshot of the moved issue = %+v, %v; want ErrTransferred, naming its new repo", s, err)
+	}
+	for _, r := range f.Requests()[from:] {
+		if r.Path == "/graphql" || strings.HasSuffix(r.Path, "/parent") {
+			t.Errorf("Snapshot of the moved issue sent %+v; want nothing after its GET", r)
+		}
+	}
+	if s, err := c.Snapshot(ctx, "o", "r", stays); err != nil || s.Title != "Stays" {
+		t.Errorf("Snapshot of the issue that stays = %+v, %v; want it read", s, err)
 	}
 }

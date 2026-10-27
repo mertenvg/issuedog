@@ -26,8 +26,9 @@ import (
 // so a /hold above it handled first holds as it would have, and a /hold
 // below it, handled first, ends only by a /resume there or below. Other
 // commands never wait for these. Nor does c wait for one on a closed
-// ancestor or on the digest (holdOrderDigest), which no pass visits, so
-// it's never handled (SPEC §6.4, §9.4): that wait would last for good.
+// ancestor or on the digest, which no pass visits, so it's never handled
+// (SPEC §6.4, §9.4): that wait would last for good. The walk up passes
+// over the digest, so it's never among the nodes (madeAboveParent).
 // The walk up (madeAbove) reads nothing for an issue with no parent, and
 // an unprocessed /hold or /resume reaches this only on a pass that has it
 // to handle, so an unchanged pass costs no request.
@@ -41,7 +42,7 @@ func (st *Step) holdOrderWaits(ctx context.Context, s *github.Snapshot, d Dirt, 
 		return false, fmt.Errorf("the commands above comment %d: %w", c.ID, err)
 	}
 	for _, n := range above.nodes[1:] {
-		if n.s.Closed || st.holdOrderDigest != nil && st.holdOrderDigest(n.s.Number) { // never visited, so nothing on it is handled
+		if n.s.Closed { // never visited, so nothing on it is handled
 			continue
 		}
 		id, err := st.holdOrderPending(ctx, n, c.ID, trust)

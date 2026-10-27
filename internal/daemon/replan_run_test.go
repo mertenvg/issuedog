@@ -235,7 +235,9 @@ func TestReplanRun(t *testing.T) {
 			t.Fatalf("the setup: #%d is labelled %v, with sub-issues %v and records %q; want it planned, with %v and one record", n, is.Labels, is.SubIssues, records(is), subs)
 		}
 	}
-	l.digest("the setup", 2, []string{"#9 Human task p2 1"}, 9)
+	// #9 blocks T2, #8, so it scores 2 (SPEC §9.4, The order), as #13 does
+	// once revision 2 makes T2 depend on it.
+	l.digest("the setup", 2, []string{"#9 Human task p2 2"}, 9)
 	l.quiet("the setup")
 
 	// 2. wendy's comment, as a write collaborator CODEOWNERS doesn't trust,
@@ -278,7 +280,7 @@ func TestReplanRun(t *testing.T) {
 		"**S1. Quotes expire after 24 hours** · kept", "**S2. Customers see when a quote expires, and why** · changed · p2",
 		"**S3. Expired quotes in the monthly report** · dropped", "**S4. Support sees why a quote expired** · new · p2 · effort:medium"})
 	l.step("the epic's revision listed", 6, "PATCH /issues/2", "POST /issues/1/assignees")
-	l.digest("the epic's revision listed", 2, []string{"#1 Plan approval p2 9", "#9 Human task p2 1"}, 1, 9)
+	l.digest("the epic's revision listed", 2, []string{"#1 Plan approval p2 9", "#9 Human task p2 2"}, 1, 9)
 	l.quiet("the epic's revision")
 
 	// 4. mertenvg's 👍 applies it, in one pass: the approval; S4 filed as
@@ -333,7 +335,7 @@ func TestReplanRun(t *testing.T) {
 		t.Errorf("the epic's revision approved: the epic's records %q; want revision 1's, then\n%s", got, record)
 	}
 	l.labels("the epic's revision approved", epic, false, "stage:planned", "type:epic")
-	l.digest("the epic's revision approved", 2, []string{"#9 Human task p2 1"}, 9)
+	l.digest("the epic's revision approved", 2, []string{"#9 Human task p2 2"}, 9)
 
 	// The pass after, the close judge sets stage:discarded on #5 and #10,
 	// two label writes each, and the planner posts S2's own revision, of
@@ -352,7 +354,7 @@ func TestReplanRun(t *testing.T) {
 	l.step("S4's plan", 8, "PATCH /issues/2", "POST /issues/4/assignees", "POST /issues/11/comments", "POST /issues/11/labels", "DELETE /issues/11/labels/stage:planning")
 	l.step("S4's task", 8, slices.Concat(childWrites(11, 12), []string{recordWrite(11)})...)
 	replanRunUntouched(t, f, "the passes after the approval", from, epic, 3)
-	l.digest("S4's task", 2, []string{"#4 Plan approval p2 4", "#9 Human task p2 1"}, 4, 9)
+	l.digest("S4's task", 2, []string{"#4 Plan approval p2 4", "#9 Human task p2 2"}, 4, 9)
 	l.quiet("S2's revision")
 
 	// 5. mertenvg's 👍 applies S2's revision the same way: T4 filed as the
@@ -400,7 +402,7 @@ func TestReplanRun(t *testing.T) {
 	l.step("S2's revision applied", 8, "POST /issues/9/labels", "DELETE /issues/9/labels/stage:needs-human", "PATCH /issues/2", "POST /issues/13/assignees")
 	l.labels("S2's revision applied", 9, true, "priority:p2", "scope:infra", "stage:discarded", "type:task")
 	// #9 keeps its assignee, as any closed issue does (SPEC §9.6).
-	l.digest("S2's revision applied", 2, []string{"#13 Human task p2 1"}, 9, 13)
+	l.digest("S2's revision applied", 2, []string{"#13 Human task p2 2"}, 9, 13)
 	l.quiet("S2's tasks")
 
 	// 6. mertenvg's edit of #13's body drops its origin marker: the App
@@ -414,7 +416,7 @@ func TestReplanRun(t *testing.T) {
 		t.Errorf("the edit: #13's new comments %q; want the repost\n%s", added, originRepost(origin))
 	}
 	l.labels("the edit", 13, false, "priority:p2", "scope:infra", "stage:needs-human", "type:task")
-	l.digest("the edit", 2, []string{"#13 Human task p2 1"}, 9, 13)
+	l.digest("the edit", 2, []string{"#13 Human task p2 2"}, 9, 13)
 	l.quiet("the edit")
 
 	// 7. Renamed issuedog digest, #13 isn't the digest: its item stays,
@@ -431,6 +433,6 @@ func TestReplanRun(t *testing.T) {
 		!strings.Contains(is[1].Body, "\n### 1. #13: issuedog digest\n\n**Human task**, priority p2, ") {
 		t.Errorf("the end: %d issues, #13's body %q, and the digest\n%s\nwant 13, #13 as mertenvg left it, and #2 listing it", len(is), is[12].Body, is[1].Body)
 	}
-	l.digest("the end", 2, []string{"#13 Human task p2 1"}, 9, 13)
+	l.digest("the end", 2, []string{"#13 Human task p2 2"}, 9, 13)
 	l.labels("the end", 13, false, "priority:p2", "scope:infra", "stage:needs-human", "type:task")
 }
