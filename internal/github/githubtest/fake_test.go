@@ -277,6 +277,27 @@ func TestGraphQLHistoryUnknownNode(t *testing.T) {
 	}
 }
 
+// HistoryNotFoundOnce answers the next history query for an issue that's
+// there as for one deleted, and the query after it as ever.
+func TestHistoryNotFoundOnce(t *testing.T) {
+	t.Parallel()
+	f := New(t, "o/r", "issuedog")
+	f.AddIssue("owner", "Kept", "body")
+	f.AddIssue("owner", "Answered gone", "x")
+	f.EditBody(2, "owner", "y")
+	c := f.Client(t)
+	f.HistoryNotFoundOnce(2)
+	_, err := c.History(context.Background(), []string{"I_1", "I_2"})
+	var g *github.HistoryGoneError
+	if !errors.As(err, &g) || !reflect.DeepEqual(g.Nodes, []string{"I_2"}) {
+		t.Fatalf("err = %v; want I_2 gone alone", err)
+	}
+	h, err := c.History(context.Background(), []string{"I_1", "I_2"})
+	if err != nil || len(h["I_2"]) != 2 {
+		t.Errorf("history = %+v, %v; want I_2's two entries, and no error", h, err)
+	}
+}
+
 func TestBeforeGraphQLRunsOnce(t *testing.T) {
 	f := New(t, "o/r", "issuedog")
 	n := f.AddIssue("owner", "Title", "body")

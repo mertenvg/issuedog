@@ -87,17 +87,18 @@ func (f *Fake) Reopen(number int) {
 	f.ReopenBy(number, "")
 }
 
-// DeleteIssue deletes the newest issue and its comments, after which its
-// paths answer 404. Issues are kept by number, so only the newest can go.
-// Its links go with it, as GitHub would drop them: its sub-issues have no
-// parent after it, and no blocked-by link or LinkSubIssue listing names
-// it, on either side, so no listing names it. It moves no other issue's
-// updated_at, as GitHub isn't known to.
+// DeleteIssue deletes the newest issue the fake has, and its comments,
+// after which its paths answer 404. Its links go with it, as GitHub would
+// drop them: its sub-issues have no parent after it, and no blocked-by
+// link or LinkSubIssue listing names it, on either side, so no listing
+// names it. It moves no other issue's updated_at, as GitHub isn't known
+// to. As on GitHub, its number is never given again: the next issue filed
+// gets the one after the last filed (fileIssue).
 func (f *Fake) DeleteIssue() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	n := len(f.issues)
-	f.issues = f.issues[:n-1]
+	n := f.issues[len(f.issues)-1].GetNumber()
+	f.issues = f.issues[:len(f.issues)-1]
 	f.comments = slices.DeleteFunc(f.comments, func(c *comment) bool { return c.issue == n })
 	for _, is := range f.issues {
 		if is.parent == n {
@@ -213,7 +214,8 @@ func (r *recorder) Write(b []byte) (int, error) {
 
 // listIssues serves the repo's issues and pull requests, open ones unless
 // state= says otherwise, from since= on, by number or, for sort=updated, by
-// update in direction=. A transferred issue isn't listed (transfer.go).
+// update in direction=, each with its issue_dependencies_summary
+// (withDependencies). A transferred issue isn't listed (transfer.go).
 // A sub-issue is listed with its parent's URL as its parent_issue_url, as
 // GitHub lists it, and an issue with no parent with none.
 func (f *Fake) listIssues(c *call) (int, any) {
@@ -232,7 +234,7 @@ func (f *Fake) listIssues(c *call) (int, any) {
 	out := []gogithub.Issue{}
 	for _, is := range f.issues {
 		if is.listed() && (state == "all" || is.GetState() == state) && !is.GetUpdatedAt().Before(from) {
-			listed := is.Issue
+			listed := f.withDependencies(is)
 			if is.parent != 0 {
 				listed.ParentIssueURL = new(fmt.Sprintf("%s/repos/%s/issues/%d", f.srv.URL, f.repo, is.parent))
 			}

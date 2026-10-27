@@ -184,8 +184,9 @@ func TestChildOriginLostHostileEdit(t *testing.T) {
 // S1's marker from its body, and a restart visits #1 before #3, so the
 // epic's visit finds S1 by its body's history: it files S2, #4, alone,
 // not a fifth issue for S1. #3's step 1, later in the same pass, reposts
-// S1's origin, and the pass reads #3's history once. Every unchanged pass
-// after costs no rate limit.
+// S1's origin, and the pass reads #3's history once, and the digest's
+// once, for its identity marker (SPEC §5.1). Every unchanged pass after
+// costs no rate limit.
 func TestChildOriginLostRun(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
@@ -217,8 +218,8 @@ func TestChildOriginLostRun(t *testing.T) {
 	l.step("the restart after the edit", 2, slices.Concat(childWrites(epic, 4), blockWrites(4),
 		[]string{recordWrite(epic), "POST /issues/3/comments", "PATCH /issues/2", "DELETE /issues/1/assignees",
 			"POST /issues/3/comments", "POST /issues/3/labels", "DELETE /issues/3/labels/stage:planning"})...)
-	if q := f.HistoryQueries() - histories; q != 1 {
-		t.Errorf("the restart after the edit sent %d history queries; want 1, for #3's edit", q)
+	if q := f.HistoryQueries() - histories; q != 2 {
+		t.Errorf("the restart after the edit sent %d history queries; want 2, for #3's edit and the digest's identity marker", q)
 	}
 	if got := len(f.State().Issues); got != 4 {
 		t.Fatalf("the restart after the edit left %d issues; want 4: the epic, the digest, S1 and S2", got)
@@ -239,8 +240,8 @@ func TestChildOriginLostRun(t *testing.T) {
 		"POST /issues/4/comments", "POST /issues/4/labels", "DELETE /issues/4/labels/stage:planning")
 	l.planned("S2's plan", 4, 3)
 	l.step("S2's plan listed", 3, "PATCH /issues/2", "POST /issues/4/assignees")
-	if q := f.HistoryQueries() - histories; q != 1 {
-		t.Errorf("the passes after the edit sent %d history queries; want 1, for #3's edit", q)
+	if q := f.HistoryQueries() - histories; q != 2 {
+		t.Errorf("the passes after the edit sent %d history queries; want 2, for #3's edit and the digest's identity marker", q)
 	}
 	l.quiet("the stories' plans")
 }

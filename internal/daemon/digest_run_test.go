@@ -654,14 +654,16 @@ func digestRunTitleRule(t *testing.T, renamed bool) []int {
 }
 
 // The title rule costs one edit history query, for task 13's first
-// version, on the pass that lists its rename, and one on the restart's
-// first poll: at most one per start for each issue only the title rule
-// would take. It costs none on an unchanged pass, nor on a pass that lists
-// 13 again. Every other query is the same as without the rename.
+// version, on the pass that lists its rename, and none more on the
+// restart's first poll, whose one query reads the digest's history anyway,
+// for its identity marker (SPEC §5.1, #498), and 13's with it: at most one
+// per start for each issue only the title rule would take. It costs none
+// on an unchanged pass, nor on a pass that lists 13 again. Every other
+// query is the same as without the rename.
 func TestDigestRunTitleRuleRequests(t *testing.T) {
 	t.Parallel()
 	base, got := digestRunTitleRule(t, false), digestRunTitleRule(t, true)
-	want := []int{1, 0, 0, 1, 0}
+	want := []int{1, 0, 0, 0, 0}
 	for i := range want {
 		if got[i]-base[i] != want[i] || (i == 1 || i == 4) && got[i] != 0 {
 			t.Fatalf("history queries per step = %v, and %v without the rename; want %v more, and none on an unchanged pass", got, base, want)

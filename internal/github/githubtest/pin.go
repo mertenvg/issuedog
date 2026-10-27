@@ -73,7 +73,8 @@ func (f *Fake) pinIssue(id string) (any, []map[string]any) {
 // does a type fakeTypeRefusal refuses: any on a personal account, and one
 // the org disabled. The type is set by the name the org shows, so "task"
 // is the org's Task. Under DropTypeChanges, the issue is filed with no
-// type.
+// type. The reply gives the issue with its issue_dependencies_summary
+// (withDependencies), as GitHub's does.
 func (f *Fake) createIssue(c *call) (int, any) {
 	var req struct {
 		Title  string
@@ -99,5 +100,5 @@ func (f *Fake) createIssue(c *call) (int, any) {
 	if req.Type != nil && !f.dropTypes {
 		f.issueTypeRevertSet(is, f.slug+"[bot]", *req.Type)
 	}
-	return http.StatusCreated, is.Issue
+	return http.StatusCreated, f.withDependencies(is)
 }

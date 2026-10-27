@@ -52,9 +52,15 @@ type Daemon struct {
 	// clock (transferunlisted.go).
 	transferUnlistedAt time.Time
 	// transferUnlistedPolled are the issues this pass's poll listed open,
-	// never a pull request, whose snapshots are from this pass, for that
-	// check (transferunlisted.go).
+	// never a pull request, as it lists each one that changed and the one
+	// at its cursor, for that check (transferunlisted.go).
 	transferUnlistedPolled map[int]bool
+	// transferUnlistedDropped are the issues dropped as gone since the
+	// last listing that worked, by two reads or, for one the digest's
+	// title rule held, two answers (digestHistoryGone), so a pass that
+	// holds no issue lists still, and brings back a live one wrongly
+	// dropped (transferunlisted.go).
+	transferUnlistedDropped map[int]bool
 
 	digest        digestState
 	digestCache   map[int][]waitItem // what waits on the owner, by issue, after its last good step 1, for the digest and assignment
@@ -90,6 +96,14 @@ type Daemon struct {
 	// open, and each a poll listed closed with items cached, till step 1
 	// succeeds on it (digestrestart.go).
 	digestRestartUnknown map[int]bool
+	// digestKept are the items the start read back from the digest's
+	// body, by issue, for the issues in digestRestartUnknown, till each
+	// leaves it (digestkept.go).
+	digestKept map[int][]waitItem
+	// digestKeptListed is what the last listing that had it showed of each
+	// issue in digestRestartUnknown, for its kept items' rank while no
+	// snapshot of it is held (digestKeptList).
+	digestKeptListed map[int]digestKeptListing
 
 	// epicCloseDue are the epics planned into stories, by number, with the
 	// children each waits on to close, after its last good step 1
@@ -243,12 +257,6 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	if err := d.closingPass(ctx); err != nil {
 		errs = append(errs, err)
 	}
-	// A held issue the open issues, listed once in a while, leave out, as
-	// a transfer does, is read again, once, and one they list that isn't
-	// held, as when wrong answers dropped it, is read (transferunlisted.go).
-	if err := d.transferUnlistedCheck(ctx); err != nil {
-		errs = append(errs, err)
-	}
 	// A label left out, which a rename changes no updated_at for, is
 	// removed once it falls due: read its issue again then, and no sooner.
 	now := d.Step.Client.Now()
@@ -264,6 +272,14 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		if _, ok := d.snaps[n]; ok {
 			d.stale[n] = true
 		}
+	}
+	// A held issue the open issues, listed once in a while, leave out, as
+	// a transfer does, is read again, once, and one they list that isn't
+	// held, as when wrong answers dropped it, is read. It comes after the
+	// issues marked to be read again above, as one this pass reads anyway
+	// keeps the two reads that drop it (transferunlisted.go).
+	if err := d.transferUnlistedCheck(ctx); err != nil {
+		errs = append(errs, err)
 	}
 	read := map[int]bool{}
 	for _, n := range slices.Sorted(maps.Keys(d.stale)) {
@@ -289,6 +305,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 			d.digestRestartGone(n)
 			delete(d.assignManaged, n)
 			d.Step.forgetLabels(n)
+			d.transferUnlistedDrop(n)
 		case gone(err):
 			// One answer may be wrong, so it's read again next pass.
 			logr.Infof("%s/%s#%d looks gone, deleted or transferred, so it's read again: %v", d.Step.Owner, d.Step.Repo, n, err)
@@ -310,8 +327,9 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	// while none is cached, as on a restart's first pass, is read again at
 	// its turn, and visited for them, so the digest doesn't drop them, but
 	// still skips Work, unless a visit that failed wrote to it
-	// (digestRestartRead).
-	touched, touches := map[int]bool{}, digestRestartTouches{}
+	// (digestRestartRead). Its assignees are judged on the items its visit
+	// found, as the digest lists them, all the same (again, assignPass).
+	touched, touches, again := map[int]bool{}, digestRestartTouches{}, map[int]bool{}
 	d.Step.Touched = func(n int) { touched[n] = true; touches.touch(n) }
 	defer func() { d.Step.Touched = nil }()
 	// An ancestor a /hold or /resume waits for is read again next pass, so
@@ -319,13 +337,14 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	d.Step.holdOrderReread = func(n int) { d.stale[n] = true }
 	defer func() { d.Step.holdOrderReread = nil }()
 	// A command on the digest is never handled, as no pass visits it, so
-	// none waits for it (#415).
-	d.Step.holdOrderDigest = d.digest.has
-	defer func() { d.Step.holdOrderDigest = nil }()
+	// none waits for it (#415), and the walk up from an issue under it
+	// passes over it with no snapshot (#498).
+	d.Step.madeAboveDigest = d.digest.has
+	defer func() { d.Step.madeAboveDigest = nil }()
 	for _, n := range slices.Sorted(maps.Keys(d.snaps)) {
-		again := touched[n] && d.digestRestartRead(ctx, n, &touches) // as on a restart's first pass
+		reread := touched[n] && d.digestRestartRead(ctx, n, &touches) // as on a restart's first pass
 		s := d.snaps[n]
-		if !again && (touched[n] || (!read[n] && !slices.ContainsFunc(s.Labels, isReview) && !slices.ContainsFunc(s.Labels, flagAsked) &&
+		if !reread && (touched[n] || (!read[n] && !slices.ContainsFunc(s.Labels, isReview) && !slices.ContainsFunc(s.Labels, flagAsked) &&
 			!slices.ContainsFunc(s.Labels, discHeldLabel) && !slices.ContainsFunc(s.Labels, isNeedsHuman) && !d.openErrs[n])) {
 			continue
 		}
@@ -391,6 +410,9 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		d.digestCacheSet(s, in, dirt, holds, ownerHeld, blocked) // for assignment too, so with the digest off as well
 		d.digestRestartKnow(n)
 		d.epicCloseSet(s, dirt)
+		if reread {
+			again[n] = true
+		}
 	}
 	for n := range touched {
 		delete(d.inputs, n)
@@ -402,7 +424,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	if err := d.digestPass(ctx); err != nil {
 		errs = append(errs, err)
 	}
-	if err := d.assignPass(ctx); err != nil {
+	if err := d.assignPass(ctx, again); err != nil {
 		errs = append(errs, err)
 	}
 	d.Step.typeRenamePass(false)
@@ -527,6 +549,7 @@ func (d *Daemon) poll(ctx context.Context) error {
 				d.closingForget(n)
 				d.stale[n] = true
 				d.digestRestartList(n, start)
+				d.digestKeptList(is) // for a kept item's rank if its read fails (digestkept.go)
 			}
 		}
 		if d.issuesSince.Equal(since) {
@@ -648,21 +671,21 @@ func parentOf(u string) int {
 // was deleted (404 or 410) or transferred: a Snapshot, an assignee write
 // (assignFailed), a close's judging (closingJudge) or a request about the
 // digest (digestGone, and digestPinGone, which first sets apart the pin
-// check's NOT_FOUND and an HTTP status from /graphql). A failed visit, which may 404 on a deleted comment,
-// marks the issue stale, so only Snapshot decides, and Iterate drops an
-// issue only when two reads say so with no good read between.
+// check's and the pin's NOT_FOUND and an HTTP status from /graphql). A
+// failed visit, which may 404 on a deleted comment, marks the issue stale,
+// so only Snapshot decides, and Iterate drops an issue only when two reads
+// say so with no good read between.
 //
 // GitHub answers a transferred issue with a 301, which our client follows
 // to the same host (github's sameHost), with a GET. So a transfer shows as
-// the moved issue, which Snapshot, assignAnswer, digestMoved and
-// github's PinIssue turn into github.ErrTransferred, or as the 404 of a
-// path with no GET there. No
-// go-github RedirectionError reaches here: go-github returns one only from
-// its calls that don't follow redirects (archive and log downloads), which
-// we don't use, or for a 3xx with no Location, which net/http doesn't
-// follow and GitHub's transfer never sends. So gone doesn't look for one
-// (#239), and such an error, if one came, would be an ordinary failure,
-// read again rather than dropped.
+// the moved issue, which Snapshot, assignAnswer, digestMoved and github's
+// PinIssue turn into github.ErrTransferred, or as the 404 of a path with
+// no GET there. No go-github RedirectionError reaches here: go-github
+// returns one only from its calls that don't follow redirects (archive and
+// log downloads), which we don't use, or for a 3xx with no Location, which
+// net/http doesn't follow and GitHub's transfer never sends. So gone
+// doesn't look for one (#239), and such an error, if one came, would be an
+// ordinary failure, read again rather than dropped.
 func gone(err error) bool {
 	var e *gogithub.ErrorResponse
 	if errors.As(err, &e) && e.Response != nil {

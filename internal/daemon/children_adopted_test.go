@@ -98,9 +98,16 @@ func adoptedStory(t testing.TB, f *githubtest.Fake, held bool, edit func(*github
 // dropped, and T4 new.
 func adoptedApproved(t testing.TB, f *githubtest.Fake, held bool, edit func(*githubtest.Fake, adoptedIDs)) adoptedIDs {
 	t.Helper()
+	return adoptedApprovedWith(t, f, held, edit, changedPlanData(t, plGolden(t, "story-revision")))
+}
+
+// adoptedApprovedWith is adoptedApproved with data as plan revision 2's
+// plan-data marker, such as a revision that keeps the adopted T3 (#374).
+func adoptedApprovedWith(t testing.TB, f *githubtest.Fake, held bool, edit func(*githubtest.Fake, adoptedIDs), data github.Marker) adoptedIDs {
+	t.Helper()
 	r := adoptedStory(t, f, held, edit)
 	r.rev = revMove(t, f, r.n, daemon.Move{To: state.PlanReview, Trigger: state.TriggerPlanValid, Key: state.Key{Field: "run", ID: "p2"},
-		PlanRev: 2, Text: planText(r.n, 2), Markers: []github.Marker{changedPlanData(t, plGolden(t, "story-revision"))}})
+		PlanRev: 2, Text: planText(r.n, 2), Markers: []github.Marker{data}})
 	f.AddReaction(r.rev, "owner", "+1")
 	f.ForgetWrites()
 	return r

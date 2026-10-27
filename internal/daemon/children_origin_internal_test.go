@@ -16,7 +16,8 @@ import (
 // clean App comment, costs no history, nor does a person's issue, whose
 // original post the App didn't write, nor an App issue whose body is
 // read and has none. The step trusts nobody, so every edit here is dirty,
-// and Dirty reads no history of its own.
+// and Dirty reads no history of its own. A history read is kept, so a
+// second call reads none.
 func TestChildOriginsHistory(t *testing.T) {
 	t.Parallel()
 	const app = "issuedog[bot]"
@@ -79,6 +80,16 @@ func TestChildOriginsHistory(t *testing.T) {
 			}
 			if q := f.HistoryQueries() - before; q != tt.histories {
 				t.Errorf("childOrigins sent %d history queries; want %d", q, tt.histories)
+			}
+			// The history read is kept for the same edit (originLost), so a
+			// second call, as a closed child's parent's next visit makes,
+			// reads none (#501).
+			before = f.HistoryQueries()
+			if _, err := st.childOrigins(ctx, subs); err != nil {
+				t.Fatal(err)
+			}
+			if q := f.HistoryQueries() - before; q != 0 {
+				t.Errorf("a second childOrigins sent %d history queries; want none", q)
 			}
 			o, ok := got[n]
 			if tt.item == "" {

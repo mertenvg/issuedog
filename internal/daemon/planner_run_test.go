@@ -175,14 +175,24 @@ func (p *planRun) plannerFlags(k int) {
 // the transition marker want, the plan-data marker and the plan revision
 // marker rev 1, last, whose hash is PlanHash's of the comment and which
 // LatestRevision reads as the latest plan revision, matching. Its data
-// reads back (readPlanData) as the plan in out. It returns the comment.
-func (p *planRun) planComment(step, golden string, from int, want string, out map[string]any) github.Comment {
+// reads back (readPlanData) as the plan in out. Each pair in edits, an old
+// text and its new, changes golden first, for a plan out changed from the
+// golden plan, and each old text must be in golden once. It returns the
+// comment.
+func (p *planRun) planComment(step, golden string, from int, want string, out map[string]any, edits ...[2]string) github.Comment {
 	p.t.Helper()
 	data, err := os.ReadFile(filepath.Join("testdata", "plan", golden+".md"))
 	if err != nil {
 		p.t.Fatal(err)
 	}
-	text := strings.ReplaceAll(strings.TrimSuffix(string(data), "\n"), "#"+strconv.Itoa(from), "#"+strconv.Itoa(p.n))
+	text := strings.TrimSuffix(string(data), "\n")
+	for _, e := range edits {
+		if strings.Count(text, e[0]) != 1 {
+			p.t.Fatalf("%s: testdata/plan/%s.md has %q %d times; want it once", step, golden, e[0], strings.Count(text, e[0]))
+		}
+		text = strings.Replace(text, e[0], e[1], 1)
+	}
+	text = strings.ReplaceAll(text, "#"+strconv.Itoa(from), "#"+strconv.Itoa(p.n))
 	cs := p.comments()
 	c := cs[len(cs)-1]
 	body, markers, ok := strings.Cut(c.Body, "\n\n<!-- issuedog:")
@@ -622,7 +632,8 @@ func TestPlannerWholeRunEpic(t *testing.T) {
 	// back its own writes; then a pass where nothing changed makes no
 	// request beyond the poll.
 	p.settle("the stories' rounds", digestEdit, "POST /issues/5/assignees")
-	rounds := []string{"#3 Question round p1 1", "#4 Question round p1 1", "#5 Question round p2 1"}
+	// S1 blocks S2 and S3, so it scores 3 (SPEC §9.4, The order).
+	rounds := []string{"#3 Question round p1 3", "#4 Question round p1 1", "#5 Question round p2 1"}
 	p.waiting("the stories' rounds", rounds)
 	owner := []string{wholeRunOwner}
 	assignWant(t, f, "the stories' rounds", map[int][]string{3: owner, 4: owner, 5: owner})
@@ -694,7 +705,17 @@ func TestPlannerWholeRunStory(t *testing.T) {
 			parent := f.AddIssue(wholeRunOwner, "Quote expiry", wholeRunBody, "type:epic")
 			f.AddLabel(parent, app, "stage:planned")
 			f.AddComment(parent, app, "Planned.\n\n<!-- issuedog:transition from=plan-review to=planned cmd=r1 rev=1 -->")
+			// T1 depends on T3 here, as the booking service won't start
+			// without the lifetime T3 sets, so two items depend on others,
+			// and the links' plan order shows in the writes: T1's, then
+			// T2's (#354).
 			plan := plGolden(t, "story-plan")
+			plItem(t, plan, 0)["depends_on"] = []any{"T3"}
+			planFields, ok := plan["plan"].(map[string]any)
+			if !ok {
+				t.Fatalf("output %v has no plan", plan)
+			}
+			planFields["order"] = "T3, then T1, then T2"
 			p.outputs(plan)
 			p.n = f.AddIssue(wholeRunOwner, "Refuse expired quotes", "Booking refuses an expired quote.", "type:story")
 			if p.n != 2 {
@@ -726,7 +747,9 @@ func TestPlannerWholeRunStory(t *testing.T) {
 				t.Errorf("the owner's stage, recorded by %s, =\n%s\nwant the App's, with %q", entry.Author.Login, entry.Body, want)
 			}
 			planned := p.planComment("the plan", tc.golden, 124,
-				fmt.Sprintf("<!-- issuedog:transition from=planning to=%s rev=1 run=run1 model=sonnet seen=%d -->", tc.to, entry.ID), plan)
+				fmt.Sprintf("<!-- issuedog:transition from=planning to=%s rev=1 run=run1 model=sonnet seen=%d -->", tc.to, entry.ID), plan,
+				[2]string{"each quote's expiry time.\n\nDepends on: nothing\n", "each quote's expiry time.\n\nDepends on: T3\n"},
+				[2]string{"**Order:** T1 and T3 in parallel, then T2", "**Order:** T3, then T1, then T2"})
 			if p.plans() != 1 {
 				t.Errorf("%d plan comments; want 1", p.plans())
 			}
@@ -739,39 +762,41 @@ func TestPlannerWholeRunStory(t *testing.T) {
 			// files its three tasks, #4 to #6, in plan order, each created,
 			// linked under the story and moved to its first stage, keyed by
 			// the plan comment's move into planned (#276). That's in the pass
-			// after, as the planner's move came after the pass's visits. Then
-			// T2, which depends on T1 and T3, the human task, is blocked by
-			// both, and the record of the tasks is posted on the story, last
-			// (#277). The pass after that reads the story again, as the
-			// record changed it, and makes no request for creation, as the
-			// record stands. It lists the human task, #6, which nothing
-			// blocks, in the digest, and assigns notify on it (#336), and the
-			// pass after its writes reads them back. No task has a stage
-			// that runs.
+			// after, as the planner's move came after the pass's visits. Then,
+			// in plan order, T1, which depends on T3, the human task, is
+			// blocked by it, and T2, which depends on T1 and T3, by both, and
+			// the record of the tasks is posted on the story, last (#277).
+			// The pass after that reads the story again, as the record
+			// changed it, and makes no request for creation, as the record
+			// stands. It lists the human task, #6, which nothing blocks, in
+			// the digest, and assigns notify on it (#336), and the pass after
+			// its writes reads them back. No task has a stage that runs.
 			from := len(f.Requests())
 			if tc.waits != nil {
 				p.settle("the plan", "PATCH /issues/3", "POST /issues/2/assignees")
 				p.waiting("the plan", tc.waits, wholeRunOwner)
 			} else {
-				p.iterate("the plan, the pass after", 1, slices.Concat(childWrites(p.n, 4, 5, 6), blockWrites(5, 5), []string{recordWrite(p.n)})...)
+				p.iterate("the plan, the pass after", 1, slices.Concat(childWrites(p.n, 4, 5, 6), blockWrites(4, 5, 5), []string{recordWrite(p.n)})...)
 				runChildren(t, f, "the plan", p.n, 1, planned.ID, 4, planRunTasks)
-				runRecord(t, f, "the plan", p.n, 1, 4, planRunTasks, map[int][]int{5: {4, 6}})
+				runRecord(t, f, "the plan", p.n, 1, 4, planRunTasks, map[int][]int{4: {6}, 5: {4, 6}})
 				if !childrenLooked(f, from, planned.CreatedAt) {
 					t.Errorf("the plan: the pass didn't look for the story's children in the issues listed since its move into planned")
 				}
 				from = len(f.Requests())
 				p.settle("the tasks", "PATCH /issues/3", "POST /issues/6/assignees")
-				p.waiting("the tasks", []string{"#6 Human task p2 1"})
+				// The human task blocks #4 and #5, so it scores 3 (SPEC §9.4,
+				// The order).
+				p.waiting("the tasks", []string{"#6 Human task p2 3"})
 				assignWant(t, f, "the tasks", map[int][]string{6: {wholeRunOwner}})
-				recordStands(t, f, "the tasks", from, p.n, planned.CreatedAt, []int{5}, true)
+				recordStands(t, f, "the tasks", from, p.n, planned.CreatedAt, []int{4, 5}, true)
 				from = len(f.Requests())
 			}
 			p.restart("the plan")
 			if !tc.hold {
-				recordStands(t, f, "the restart", from, p.n, planned.CreatedAt, []int{5}, true)
+				recordStands(t, f, "the restart", from, p.n, planned.CreatedAt, []int{4, 5}, true)
 				runChildren(t, f, "the restart", p.n, 1, planned.ID, 4, planRunTasks)
-				runRecord(t, f, "the restart", p.n, 1, 4, planRunTasks, map[int][]int{5: {4, 6}})
-				p.waiting("the restart", []string{"#6 Human task p2 1"})
+				runRecord(t, f, "the restart", p.n, 1, 4, planRunTasks, map[int][]int{4: {6}, 5: {4, 6}})
+				p.waiting("the restart", []string{"#6 Human task p2 3"})
 			} else if n := len(f.State().Issues); n != 3 {
 				t.Errorf("the restart: %d issues; want the epic, the story and the digest, as a plan at review files nothing", n)
 			}

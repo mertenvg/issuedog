@@ -141,6 +141,15 @@ func TestHistoryBadAnswers(t *testing.T) {
 	if g := (*HistoryGoneError)(nil); !errors.As(err, &g) || !slices.Equal(g.Nodes, []string{"A"}) || len(g.Read) != 0 {
 		t.Errorf("err = %v; want A gone, and nothing else read", err)
 	}
+	// A gone node above index 0 is found by its own index, and the node
+	// before it is read (#500).
+	kept := `{"id":"B","userContentEdits":{"pageInfo":{"hasNextPage":false,"endCursor":null},` +
+		`"nodes":[{"editedAt":"2026-10-12T01:00:00Z","editor":{"login":"issuedog-dev","__typename":"Bot"}}]}}`
+	_, err = graphQLAnswers(t, `{"data":{"nodes":[`+kept+`,null]},"errors":[`+fmt.Sprintf(notFound, "1")+`]}`).
+		History(context.Background(), []string{"B", "A"})
+	if g := (*HistoryGoneError)(nil); !errors.As(err, &g) || !slices.Equal(g.Nodes, []string{"A"}) || len(g.Read) != 1 || len(g.Read["B"]) != 1 {
+		t.Errorf("err = %v; want A, at index 1, gone, and B's one entry read", err)
+	}
 	// A null history is no entries, not an error: the daemon fails closed on it.
 	h, err := graphQLAnswers(t, `{"data":{"nodes":[{"id":"A","userContentEdits":null}]}}`).History(context.Background(), []string{"A"})
 	if err != nil || len(h["A"]) != 0 {
