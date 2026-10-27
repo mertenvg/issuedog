@@ -255,6 +255,102 @@ func TestChildrenChanged(t *testing.T) {
 	noSearch(t, f)
 }
 
+// changedKeptBlocksRevision is changedStoryRevision with T2 kept rather
+// than changed: its data is revision 1's entry for it in full, depending
+// on T1 and T3, as a revision's data carries a kept item's approved entry
+// (planPrior.keptData, #351). So the changed human task T3 blocks the
+// kept T2.
+func changedKeptBlocksRevision(t testing.TB) map[string]any {
+	t.Helper()
+	out := changedStoryRevision(t)
+	t2 := plItem(t, plGolden(t, "story-plan"), 1)
+	t2["status"] = "kept"
+	plan, ok := out["plan"].(map[string]any)
+	if !ok {
+		t.Fatalf("output %v has no plan", out)
+	}
+	items, ok := plan["items"].([]any)
+	if !ok || len(items) < 2 {
+		t.Fatalf("plan %v has no item 2", plan)
+	}
+	items[1] = t2
+	return out
+}
+
+// changedKeptBlocksSetup is changedStory with changedKeptBlocksRevision as
+// plan revision 2, on a new fake, for Replay, with each of moved, a
+// child's number, then moved to another repo.
+func changedKeptBlocksSetup(moved ...int) func(testing.TB) *githubtest.Fake {
+	return func(t testing.TB) *githubtest.Fake {
+		f := newFake(t)
+		changedStoryWith(t, f, false, nil, changedPlanData(t, changedKeptBlocksRevision(t)))
+		for _, n := range moved {
+			f.Transfer(n, "o/elsewhere")
+		}
+		return f
+	}
+}
+
+// A changed human task's "Why it blocks" names the issue of a kept item
+// that depends on it, as a kept item's data carries its dependencies
+// (SPEC §9.3): here the kept T2's #3, not the story, #1, as when no item
+// depends on it. The kept child gets no write. A crash at any write,
+// before or after it applies, writes nothing twice.
+func TestChildrenChangedHumanBlocksKept(t *testing.T) {
+	t.Parallel()
+	setup := changedKeptBlocksSetup()
+	githubtest.Replay(t, setup, childrenPass(t, revisionPlan))
+	f := run(t, setup, childrenPass(t, revisionPlan))
+	t3 := f.State().Issues[3]
+	if t3.Title != "Set the quote lifetime in production to 12 hours" || t3.BodyEditedBy != app ||
+		!strings.Contains(t3.Body, "**Why it blocks:** #3 can't proceed until ") {
+		t.Errorf("T3's child is %q, last edited by %q, with body\n%s\nwant revision 2's human task T3, blocking the kept T2's #3", t3.Title, t3.BodyEditedBy, t3.Body)
+	}
+	droppedNoWrite(t, f, 3, "the kept T2's child")
+	noSearch(t, f)
+}
+
+// The same, end to end: the planner keeps T2 bare, with its ID, title and
+// status alone, and changes the human task T3, so the revision's data
+// gets T2's approved entry, dependencies included, from revision 1
+// (planPrior.keptData), and once the owner's 👍 approves it, T3's "Why it
+// blocks" names the kept T2's issue (childDependents), not the story.
+func TestChildrenChangedHumanBlocksKeptPlanned(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	r := revStory(t, f, revByOwner)
+	out := changedStoryRevision(t)
+	plan, ok := out["plan"].(map[string]any)
+	if !ok {
+		t.Fatalf("output %v has no plan", out)
+	}
+	items, ok := plan["items"].([]any)
+	if !ok || len(items) < 2 {
+		t.Fatalf("plan %v has no item 2", plan)
+	}
+	items[1] = map[string]any{"id": "T2", "title": "Refuse an expired quote at booking", "status": "kept"}
+	g := plRig(t, f, revPlanReview)
+	g.claude(ivResult(t, out), 0)
+	if err := g.work(r.n); err != nil {
+		t.Fatal(err)
+	}
+	plRevision(t, g, r.n, 2)
+	s := g.snapshot(r.n)
+	f.AddReaction(s.Comments[len(s.Comments)-1].ID, "owner", "+1")
+	if err := childrenPass(t, revisionPlan)(f); err != nil {
+		t.Fatal(err)
+	}
+	t3 := f.State().Issues[r.t3-1]
+	if t3.Title != "Set the quote lifetime in production to 12 hours" || t3.BodyEditedBy != app ||
+		!strings.Contains(t3.Body, fmt.Sprintf("**Why it blocks:** #%d can't proceed until ", r.t2)) {
+		t.Errorf("T3's child is %q, last edited by %q, with body\n%s\nwant revision 2's human task T3, blocking the kept T2's #%d",
+			t3.Title, t3.BodyEditedBy, t3.Body, r.t2)
+	}
+	if got := records(f.State().Issues[r.n-1]); len(got) != 1 {
+		t.Errorf("the story's records are %q; want revision 2's", got)
+	}
+}
+
 // A changed child whose body someone made dirty is rewritten whole, so the
 // body is clean again: its rewrite marker names who made it dirty, and
 // its markers, the origin naming revision 2 among them, are read again.

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -52,7 +53,7 @@ type planPrior struct {
 	Rev   int        // the approved plan revision
 	Items []planItem // its items, as its plan-data marker keeps them
 	move  github.Comment
-	since time.Time // the revision's first approval, which its children are listed since (childrenSince)
+	since time.Time // the plan's first approval, which its children are listed since (childrenSince)
 	// Children are the issues matched to the plan's items by their
 	// origin (childMatch), in plan order, then any other item's by
 	// number.
@@ -105,19 +106,22 @@ func planPriorOf(s *github.Snapshot, appSlug string, is state.Issue, dirty func(
 	if !ok || !moved {
 		return nil, errNoApprovedPlan
 	}
-	return &planPrior{Rev: rev.Rev, Items: plan.Items, move: move, since: childrenSince(s, appSlug, dirty, rev.Rev, move)}, nil
+	return &planPrior{Rev: rev.Rev, Items: plan.Items, move: move, since: childrenSince(s, appSlug, dirty, move)}, nil
 }
 
 // read reads the children of the plan on issue s, as creating the
 // children finds them (childrenFind, SPEC §5.2): its sub-issues, then the repo's issues
-// updated since the approved revision's first approval, two listings, so each child's state
+// updated since the plan's first approval, two listings, so each child's state
 // and close reason come with it. A sub-issue whose listed body gives no
 // origin is read on its own (childOrigins): one the App filed, for an
 // origin the App reposted in a comment (#291), so it's still the plan's
 // child, and one a person filed, for an origin in a clean App comment, so
 // an adopted issue is its item's child, never one of Others, and a
-// revision keeps, changes or drops it like any child (#372). It fills in
-// Children, Others and Subs.
+// revision keeps, changes or drops it like any child (#372). One the App
+// filed whose listed body someone edited takes its origin from the
+// versions of the body the App wrote (childEditedOrigins), so a marker
+// pasted in, naming another item, doesn't make it that item's child
+// (#501). It fills in Children, Others and Subs.
 func (pr *planPrior) read(ctx context.Context, st *Step, s *github.Snapshot) error {
 	a := st.Applier
 	subs, err := a.Client.SubIssues(ctx, a.Owner, a.Repo, s.Number)
@@ -132,6 +136,11 @@ func (pr *planPrior) read(ctx context.Context, st *Step, s *github.Snapshot) err
 	if err != nil {
 		return fmt.Errorf("its children: %w", err)
 	}
+	edited, err := st.childEditedOrigins(ctx, s.Number, subs, listed)
+	if err != nil {
+		return fmt.Errorf("its children: %w", err)
+	}
+	maps.Copy(origins, edited)
 	found := childMatch(s.Number, a.AppSlug, subs, listed, a.inRepo, origins)
 	pr.Children = nil
 	byNumber := map[int]*gogithub.Issue{}

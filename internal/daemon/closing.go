@@ -595,9 +595,13 @@ func (a *Applier) closingRevertComment(ctx context.Context, s *github.Snapshot, 
 //     close leaves as it was, or for the App's own move to closed, the
 //     stage it moved from, as an owner hold with no cmd, which /resume
 //     here ends (heldStackEnds); the move's labels take the closed stage
-//     off. On a held issue, the first hold's at and origin stay, and at the
-//     clarifying after a hold, its origin (discOrigin), or for the App's
-//     own move to closed from there, the origin before it (closingBefore).
+//     off. On a held issue, or for the App's own move to closed from held,
+//     as a held child's that a revision drops (closingHeldBefore), the
+//     first hold's at, origin and seen stay, or, once a dirty comment hid
+//     every hold before that move, the stage the markers left show, as
+//     for an issue that wasn't held, and at the clarifying after a
+//     hold, its origin (discOrigin), or for the App's own move to closed
+//     from there, the origin before it (closingBefore).
 //     A move the table lacks, as for a type the pipeline doesn't know,
 //     holds nothing: the label rules then put the label back, as for any
 //     disagreement.
@@ -655,7 +659,24 @@ func (a *Applier) closingReopen(ctx context.Context, s *github.Snapshot, trust g
 		// on /done: the stage it was closed from.
 		m, _ := latestTransition(is)
 		at = state.Stage(m.Fields["from"])
-		if before := closingBefore(is, at); before.AfterHold() {
+		if at == state.Held {
+			// A close from held, as a held child's (droppedOne), ended its
+			// hold, so the hold is read as it was before the close: the
+			// first hold's at, origin and seen stay, as on a held issue
+			// (SPEC §6.4).
+			h := closingHeldBefore(s, a.AppSlug, dirty, is)
+			at, origin, seen = h.HeldStack.At, h.HeldStack.Origin, h.HeldStack.Seen
+			if h.Stage != state.Held {
+				// A dirty comment hid every hold (SPEC §5.1), so, as for
+				// hidden markers on an open issue, the hold is at the stage
+				// the markers left show, with its origin and bound, as on an
+				// issue that wasn't held when it closed (SPEC §6.4).
+				at, origin, seen = h.Stage, "", h.Round
+				if h.AfterHold() {
+					origin = discOrigin(h, at)
+				}
+			}
+		} else if before := closingBefore(is, at); before.AfterHold() {
 			// A close from the clarifying after a hold, as a dropped
 			// child's (droppedOne), is a parent's revision's move, which
 			// carries no origin (SPEC §5), so the hold takes the origin
@@ -704,6 +725,15 @@ func closingBefore(is state.Issue, from state.Stage) state.Issue {
 	}
 	is.Stage = from
 	return is
+}
+
+// closingHeldBefore is s, in state is, whose latest transition is the App's
+// own move from held to closed (latestTransition), as it was before that
+// move: s read again with the move's comment skipped (state.Derive), as
+// the move ends every hold. It's held, with its HeldStack, unless a dirty
+// comment hid every hold marker.
+func closingHeldBefore(s *github.Snapshot, appSlug string, dirty func(int64) bool, is state.Issue) state.Issue {
+	return state.Derive(s, appSlug, func(id int64) bool { return dirty(id) || id == is.TransitionComment })
 }
 
 // closingCloseAgain reverts reopen, s.Closings[r], an untrusted reopen of
