@@ -95,7 +95,9 @@ func (a *Applier) PostRevision(ctx context.Context, s *github.Snapshot, dirty fu
 // move for the issue's class (SPEC §7.2). At spec-review, a rejection for
 // a dirty body or a stale revision says whether a revision follows, and
 // what the owner can do (ivWordingStale, #229), so none of them asks for a
-// new comment.
+// new comment. One posted before the latest revision is Dated, as a new
+// /approve could apply, but only where the table has the move: else it
+// gets the table's reason, which a new one would get too.
 func ApproveCommand() Handler {
 	return Handler{
 		Check: func(ctx context.Context, a *Applier, c Cmd) error {
@@ -107,9 +109,12 @@ func ApproveCommand() Handler {
 				switch {
 				case len(why) > 0:
 					return planRejection(latest, why, dirtyEditor(c.Dirt[state.BodyID], c.S.BodyEdit, a.AppSlug), planDirtyParent(c.S, is.Item))
-				case c.Comment.ID < latest.Comment:
+				case c.Comment.ID < latest.Comment && inTable(is, state.Planned, state.TriggerPlanApproved, "on approval") == nil:
+					// Dated only while a new /approve, or a 👍, could
+					// apply: else the table's reason holds for it too,
+					// and is returned below.
 					return Rejection{Reason: fmt.Sprintf("it was posted before plan revision %d, the latest. "+
-						"To approve that, react 👍 to it, or post `/approve` again", latest.Rev), Final: true}
+						"To approve that, react 👍 to it, or post `/approve` again", latest.Rev), Final: true, Dated: true}
 				}
 				return inTable(is, state.Planned, state.TriggerPlanApproved, "on approval")
 			}
@@ -133,8 +138,10 @@ func ApproveCommand() Handler {
 			switch {
 			case !ok, latest.Hidden, state.BodyHash(c.S.Body) != latest.Hash:
 				return stale()
-			case c.Comment.ID < latest.Comment:
-				return Rejection{Reason: fmt.Sprintf("it was posted before revision %d, the latest. To approve that, react 👍 to it, or post `/approve` again", latest.Rev), Final: true}
+			case c.Comment.ID < latest.Comment && inTable(is, state.Planning, state.TriggerSpecApproved, "on approval") == nil:
+				// Dated only while a new /approve, or a 👍, could apply,
+				// as at plan-review.
+				return Rejection{Reason: fmt.Sprintf("it was posted before revision %d, the latest. To approve that, react 👍 to it, or post `/approve` again", latest.Rev), Final: true, Dated: true}
 			}
 			return inTable(is, state.Planning, state.TriggerSpecApproved, "on approval")
 		},
@@ -603,9 +610,11 @@ func newestRead(s *github.Snapshot, appSlug string, floor int64) int64 {
 // after Run succeeds on the issue, and at any other stage it does nothing.
 // While the latest spec revision is stale, Hidden or missing (SPEC §7.4), it
 // posts the next one (PostRevision), as after the owner edits the body,
-// which voids any pending approval: that binds to the latest revision. A
-// dirty body, or one last edited by a user Trust doesn't trust, gets none,
-// so the mismatch keeps approval blocked; the second is logged here.
+// which voids any pending approval: that binds to the latest revision. It
+// ends in the cc line for Notify, as every spec does (SPEC §9), so the
+// owner hears of a revision after another trusted user's edit too (#452).
+// A dirty body, or one last edited by a user Trust doesn't trust, gets
+// none, so the mismatch keeps approval blocked; the second is logged here.
 func (st *Step) ReviewVisit(ctx context.Context, s *github.Snapshot) error {
 	wrap := func(err error) error { return fmt.Errorf("revision of %s/%s#%d: %w", st.Owner, st.Repo, s.Number, err) }
 	d, err := st.Dirty(ctx, s, st.trustOnceTrust())
@@ -626,7 +635,7 @@ func (st *Step) ReviewVisit(ctx context.Context, s *github.Snapshot) error {
 			return nil
 		}
 	}
-	if err := st.PostRevision(ctx, s, d.Has, Move{}, nil); err != nil {
+	if err := st.PostRevision(ctx, s, d.Has, Move{}, st.Notify); err != nil {
 		return wrap(err)
 	}
 	return nil

@@ -202,6 +202,14 @@ func TestApprove(t *testing.T) {
 			}),
 			outcome{comments: []string{final("/approve", "I didn't apply this command", "it was posted before revision 2, the latest. "+
 				"To approve that, react 👍 to it, or post `/approve` again", "1002")}, labels: atReview, downs: []string{"/approve"}}},
+		{"an /approve before the latest revision that the table can't apply gets the table's reason, which holds for a new one too",
+			review(func(t testing.TB, f *githubtest.Fake) {
+				f.SetParent(1, f.AddIssue("owner", "Epic", "epic"))
+				post(t, f, 1002, "owner", "/approve")
+				post(t, f, 1003, app, revision(2, "body"))
+			}),
+			outcome{comments: []string{final("/approve", "I didn't apply this command", "only an epic, or a story with no parent, goes from `spec-review` "+
+				"to `planning` on approval, and this is a story issue", "1002")}, labels: atReview, downs: []string{"/approve"}}},
 		{"an /approve with no revision is rejected",
 			at(state.SpecReview, func(t testing.TB, f *githubtest.Fake) { post(t, f, 1002, "owner", "/approve") }),
 			outcome{comments: []string{ivWordingApproveFinal("there's no revision to approve yet"+ivWordingFollows, "1002")}, labels: atReview, downs: []string{"/approve"}}},

@@ -137,7 +137,7 @@ func TestResolveGoneNotEndedFromAbove(t *testing.T) {
 	githubtest.Replay(t, setup, resolvePass(t, 3))
 	f := run(t, setup, resolvePass(t, 3))
 	resume := commentIDs(t, f, 3)[len(commentIDs(t, f, 3))-2]
-	if !resolveRejectedWith(f, 3, resume, madeOn("#2")) {
+	if !resolveRejectedWith(f, 3, resume, madeOn("#2", 2)) {
 		t.Errorf("#3: newest comment %q; want the /resume rejected, naming #2", newestComment(f, 3))
 	}
 	resolveSettle(t, f, 3, 2, 1)
@@ -335,8 +335,10 @@ func TestResolveGoneEndedBy(t *testing.T) {
 
 // Only a deletion that may have hidden a code owner's /hold during the
 // hold counts: not one before the hold began, nor one of a comment by a
-// user who isn't trusted. A comment by someone GitHub doesn't name, and
-// two deleted on the same issue, do; the record names that issue once.
+// user who isn't trusted, nor one deleted by a user without write access
+// or by someone GitHub doesn't name, even of a comment it names no author
+// of. A comment by someone GitHub doesn't name, and two deleted on the
+// same issue, do; the record names that issue once.
 func TestResolveGoneWhich(t *testing.T) {
 	t.Parallel()
 	t.Run("deleted before the hold", func(t *testing.T) {
@@ -372,6 +374,15 @@ func TestResolveGoneWhich(t *testing.T) {
 		f.SetPermission("eve", "read")
 		note := f.AddComment(2, "owner", "Note.")
 		f.DeleteCommentBy("eve", note)
+		f.AddReaction(w, "owner", "+1")
+		resolveSettle(t, f, 2, 1)
+		if body := newestComment(f, 1); strings.Contains(body, resolveGoneMarker) || !strings.Contains(body, "a `/hold` on an issue above it") {
+			t.Errorf("#1: newest comment %q; want it held by the /hold on #2 alone", body)
+		}
+	})
+	t.Run("deleted by someone GitHub doesn't name, of a comment it names no author of", func(t *testing.T) {
+		f, w, _ := resolveGoneParent(t)
+		f.DeleteCommentBy("", f.AddComment(2, "", "Gone."))
 		f.AddReaction(w, "owner", "+1")
 		resolveSettle(t, f, 2, 1)
 		if body := newestComment(f, 1); strings.Contains(body, resolveGoneMarker) || !strings.Contains(body, "a `/hold` on an issue above it") {

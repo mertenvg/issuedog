@@ -209,7 +209,7 @@ func TestResolveOwnHoldOnDiscussionStays(t *testing.T) {
 	}
 	githubtest.Replay(t, setup, resolvePass(t, 2))
 	f := run(t, setup, resolvePass(t, 2))
-	if !resolveRejectedWith(f, 2, resume, madeOn("#1")) {
+	if !resolveRejectedWith(f, 2, resume, madeOn("#1", 1)) {
 		t.Errorf("#2: newest comment %q; want the /resume rejected, naming #1", newestComment(f, 2))
 	}
 	if body := newestComment(f, 1); strings.Contains(body, "issuedog:ended") {
@@ -247,7 +247,7 @@ func TestResolveOwnHoldOnDiscussionThreeLevels(t *testing.T) {
 	}
 	githubtest.Replay(t, setup, resolvePass(t, 1))
 	f := run(t, setup, resolvePass(t, 1))
-	if !resolveRejectedWith(f, 1, resume, madeOn("#2")) {
+	if !resolveRejectedWith(f, 1, resume, madeOn("#2", 2)) {
 		t.Errorf("#1: newest comment %q; want the /resume rejected, naming #2", newestComment(f, 1))
 	}
 	f.AddReaction(w, "owner", "+1")

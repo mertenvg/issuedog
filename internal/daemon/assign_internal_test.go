@@ -152,3 +152,60 @@ func TestAssignFailKeepsInputs(t *testing.T) {
 			in, ok, d.stale[n], d.missing[n])
 	}
 }
+
+// What a run's result leaves on the issue it applied to decides whether
+// the unassign put off until after Work is made (assignApplied, SPEC
+// §9.6): a question round with no answer since calls it off, and so it
+// does unless the result was re-applied, when step 1's Inputs, the
+// answers since the round, count, as apply checks for none then. A
+// failure to find what waits on the issue, as an epic at planned whose
+// plan data doesn't read back gives, leaves the unassign to be made, for
+// the next pass to judge again.
+func TestAssignAppliedUnassign(t *testing.T) {
+	t.Parallel()
+	answer := []github.Comment{{ID: 199, Author: waitOwner, Body: "1a 2a"}}
+	round := func(*testing.T) *github.Snapshot {
+		return waitSnap(1, []string{"stage:clarifying"}, waitRoundMarker(1, 2))
+	}
+	badData := func(t *testing.T) *github.Snapshot {
+		s := doneSnap(t, 1, "epic", "story-plan", 12)
+		doneBadData(t, s)
+		return s
+	}
+	for _, tc := range []struct {
+		name     string
+		applied  func(*testing.T) *github.Snapshot
+		moved    bool
+		inputs   []github.Comment
+		unassign bool
+	}{
+		{"a new round", round, false, nil, false},
+		{"a new round, after the answer to the one before", round, false, answer, false},
+		{"a re-applied round", round, true, nil, false},
+		{"a re-applied round answered since", round, true, answer, true},
+		{"plan data that doesn't read back", badData, false, nil, true},
+	} {
+		f := githubtest.New(t, "o/r", waitSlug)
+		n := f.AddIssue("owner", "Waits", "")
+		f.SetAssignees(n, "owner")
+		c := f.Client(t)
+		s, err := c.Snapshot(t.Context(), "o", "r", n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d := &Daemon{Step: &Step{Applier: &Applier{Client: c, Owner: "o", Repo: "r", AppSlug: waitSlug}},
+			snaps: map[int]*github.Snapshot{n: s}, inputs: map[int][]github.Comment{n: tc.inputs},
+			assignLater: map[int][]string{n: {"owner"}}}
+		d.assignApplied(tc.applied(t), Dirt{}, tc.moved)
+		if err := d.assignLaterPass(t.Context()); err != nil {
+			t.Fatalf("%s: assignLaterPass: %v", tc.name, err)
+		}
+		want := []string{"owner"}
+		if tc.unassign {
+			want = nil
+		}
+		if got := f.State().Issues[0].Assignees; !slices.Equal(got, want) {
+			t.Errorf("%s: assignees %q; want %q", tc.name, got, want)
+		}
+	}
+}

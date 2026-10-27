@@ -1026,10 +1026,12 @@ func resolveEndsHold(h resolveMade, r resolveResume) bool {
 // at any time if that isn't known, by a write collaborator who isn't
 // trusted, of a comment by someone else who is trusted, or whom GitHub
 // doesn't name, failing closed. Not the App's, which is no /hold, nor the
-// deleter's own. The cheap checks come first, so a deletion before the
-// hold costs no request.
+// deleter's own, which is an untrusted user's: that rules it out, not a
+// comparison of the two logins, which two people GitHub doesn't name, or
+// two deleted accounts shown as ghost, share. The cheap checks come first,
+// so a deletion before the hold costs no request.
 func (a *Applier) resolveGoneMay(ctx context.Context, who discWho, e github.DeletedComment, heldAt time.Time) (bool, error) {
-	if e.At.Before(heldAt) || strings.EqualFold(e.By.Login, e.Author.Login) || state.IsApp(e.Author, a.AppSlug) {
+	if e.At.Before(heldAt) || state.IsApp(e.Author, a.AppSlug) {
 		return false, nil
 	}
 	w, err := who.writer(ctx, e.By)
