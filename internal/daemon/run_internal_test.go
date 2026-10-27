@@ -6,6 +6,7 @@ import (
 	"errors"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -196,5 +197,66 @@ func TestOverrideLabels(t *testing.T) {
 	want := []string{"effort:low", "model:sonnet", "verifier-effort:max", "verifier-model:opus"}
 	if !slices.Equal(got, want) {
 		t.Errorf("overrideLabels = %q, want %q", got, want)
+	}
+}
+
+// leaseCommitsGit runs git in dir, with no inherited or global config, and
+// returns its output, trimmed.
+func leaseCommitsGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "GIT_") }),
+		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// The lease's start and target are the commits its run's clone is made of
+// (SPEC §3.2, §3.4): HEAD detached at the start, and the target, when the
+// lease names one, at workspace.TargetRef, the clone's only ref. With no
+// target, the clone has no ref at all.
+func TestLeaseCommitsNameTheClone(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	work, bare := filepath.Join(dir, "work"), filepath.Join(dir, "r.git")
+	leaseCommitsGit(t, dir, "init", "--quiet", "--initial-branch=main", work)
+	leaseCommitsGit(t, work, "commit", "--quiet", "--allow-empty", "-m", "start")
+	start := leaseCommitsGit(t, work, "rev-parse", "HEAD")
+	leaseCommitsGit(t, work, "checkout", "--quiet", "-b", "side")
+	leaseCommitsGit(t, work, "commit", "--quiet", "--allow-empty", "-m", "target")
+	target := leaseCommitsGit(t, work, "rev-parse", "HEAD")
+	leaseCommitsGit(t, dir, "clone", "--quiet", "--bare", work, bare)
+	for name, tt := range map[string]struct {
+		target, refs string
+	}{
+		"no target":   {"", ""},
+		"with target": {target, target + " " + workspace.TargetRef},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			w := &workspace.Workspace{Bare: bare, RunsDir: filepath.Join(root, "runs"), ContextDir: filepath.Join(root, "ctx")}
+			for _, d := range []string{w.RunsDir, w.ContextDir} {
+				if err := os.MkdirAll(d, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			l := Lease{RunID: "run1", Start: start, Target: tt.target}
+			if err := w.Prepare(context.Background(), l.RunID, l.commits(), nil); err != nil {
+				t.Fatal(err)
+			}
+			clone := w.Dir(l.RunID)
+			if head := leaseCommitsGit(t, clone, "rev-parse", "HEAD"); head != start {
+				t.Errorf("the clone's HEAD = %s, want the lease's start %s", head, start)
+			}
+			if refs := leaseCommitsGit(t, clone, "for-each-ref", "--format=%(objectname) %(refname)"); refs != tt.refs {
+				t.Errorf("the clone's refs = %q, want %q", refs, tt.refs)
+			}
+		})
 	}
 }

@@ -527,6 +527,18 @@ func TestBadLabelsPostFails(t *testing.T) {
 	}
 }
 
+// Labels that give no settings start no run, so they need no start: their
+// state error is posted even when the bare repo has no main to name one.
+func TestBadLabelsReportWithNoMain(t *testing.T) {
+	t.Parallel()
+	f, g := badLabels(t, "model:sonnet")
+	gitIn(t, g.d.Clone.Dir(), "update-ref", "-d", "refs/heads/main")
+	g.workN(1)
+	if errs := labelErrors(f, 1); len(errs) != 1 || g.runs() != 0 {
+		t.Errorf("with no main: label errors %q, %d runs; want one error and no run", errs, g.runs())
+	}
+}
+
 func TestBadLabelsReplay(t *testing.T) {
 	t.Parallel()
 	setup := func(_ testing.TB, f *githubtest.Fake, _ string) {

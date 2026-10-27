@@ -377,10 +377,11 @@ func (r *Runs) CheckRegistered() error {
 //
 // The run's clone holds main's commit in the bare repo, as the pass's sync
 // left it, and its history (SPEC §3.2, §3.4), or for a Committer, the
-// task's head, if it has one (start). That commit is named just before
-// the lease is written, which records it as the run's start (SPEC §8.2). A
-// failure to name it starts no run, and uses no attempt. A Committer
-// starts no run on an issue with a parent, uncounted (inStory).
+// task's head, if it has one (start). That commit is named before the
+// issue is read again, from the bare repo alone, and the lease records it
+// as the run's start (SPEC §8.2). A failure to name it starts no run, uses
+// no attempt and makes no request. A Committer starts no run on an issue
+// with a parent, uncounted (inStory).
 func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 	return r.runStage(ctx, rd, st, false)
 }
@@ -453,6 +454,16 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 	if err != nil || schema == nil {
 		return false, wrap(err)
 	}
+	// The start is named from the bare repo alone, before the issue is
+	// read again, so a start that can't be named, such as a bare repo with
+	// no main, costs no request. Labels that give no settings start no
+	// run, so they need none, and their state error doesn't wait on one.
+	var start string
+	if badLabels == nil {
+		if start, err = r.start(ctx, st, n); err != nil {
+			return false, wrap(fmt.Errorf("name the run's start: %w", err))
+		}
+	}
 	fresh, err := a.Client.Snapshot(ctx, a.Owner, a.Repo, n)
 	if err == nil {
 		a.hide(fresh) // nothing here runs CheckLabels on it
@@ -489,10 +500,6 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 	if badLabels != nil {
 		r.Daemon.reread(n, false)
 		return false, wrap(r.reportLabels(ctx, rd.S, fresh, is.Stage, st, badLabels))
-	}
-	start, err := r.start(ctx, st, n)
-	if err != nil {
-		return false, wrap(fmt.Errorf("name the run's start: %w", err))
 	}
 	in.RunID, in.Attempt = r.newID(), attempt
 	in.ContextDir = r.Workspace.Context(in.RunID)
