@@ -1033,7 +1033,7 @@ func digestSameBody(a, b string) bool {
 // failed does.
 func (d *Daemon) digestCacheSet(s *github.Snapshot, inputs []github.Comment, dirt Dirt, holds []discTrigger, ownerHeld, blocked bool) {
 	st := d.Step
-	items, err := waitFind(waitInput{Owner: st.Owner, Repo: st.Repo, AppSlug: st.AppSlug, S: s, Dirt: dirt, Inputs: inputs, CloserErrEnded: st.closerErrEnded(s, dirt.Has), Holds: holds,
+	items, err := waitFind(waitInput{Owner: st.Owner, Repo: st.Repo, AppSlug: st.AppSlug, S: s, Dirt: dirt, Inputs: inputs, CloserErrEnded: st.closerErrEnded(s, dirt.Has, st.trustOnceTrust()), Holds: holds,
 		OwnerHeld: ownerHeld, Blocked: blocked})
 	if err != nil {
 		logr.Errorf("%s/%s#%d keeps the items it had on the digest: %v", st.Owner, st.Repo, s.Number, err)

@@ -10,6 +10,7 @@ import (
 
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/logr/v2"
 )
@@ -319,7 +320,7 @@ func TestOriginRepostHistory(t *testing.T) {
 // posted, and one warning is logged: the next pass over the same body
 // logs nothing more and reads no history. A new edit is looked at again.
 func TestOriginRepostNone(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	f := originTask("ready", originT2, func(_ testing.TB, f *githubtest.Fake) {
 		f.EditBody(1, "owner", "The task, put better.")
 		f.DeleteRevision(1, 0)
@@ -338,7 +339,7 @@ func TestOriginRepostNone(t *testing.T) {
 		}
 	}
 	var warnings bytes.Buffer
-	stop := logr.AddWriter(&warnings, logr.WithFilter(logr.W))
+	stop := logtest.CaptureTo(t, &warnings, logr.W)
 	pass()
 	histories := f.HistoryQueries()
 	pass()

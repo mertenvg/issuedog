@@ -1,7 +1,6 @@
 package github
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/logr/v2"
 )
 
@@ -132,6 +132,7 @@ func (b *failBody) Close() error { return b.closeErr }
 // A failed close after a full read, or a failed drain of a 304, is logged and
 // the response kept; a failed read fails the request with both errors.
 func TestETagCacheBodyErrors(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output.
 	errRead, errClose := errors.New("read failed"), errors.New("close failed")
 	steps := []struct {
 		status   int
@@ -146,9 +147,7 @@ func TestETagCacheBodyErrors(t *testing.T) {
 	c := newETagCache(rtFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: steps[i].status, Header: http.Header{"Etag": {`"v1"`}}, Body: steps[i].body}, nil
 	}))
-	var logs bytes.Buffer
-	stop := logr.AddWriter(&logs)
-	defer stop()
+	stop := logtest.Capture(t, logr.All)
 	for i = range steps {
 		resp, err := c.RoundTrip(httptest.NewRequest(http.MethodGet, "https://api.github.com/res", nil))
 		if steps[i].wantBody == "" {
@@ -164,9 +163,9 @@ func TestETagCacheBodyErrors(t *testing.T) {
 			t.Errorf("step %d: body %q, want %q", i, body, steps[i].wantBody)
 		}
 	}
-	logr.Wait()
-	if n := strings.Count(logs.String(), "not released cleanly"); n != 2 {
-		t.Errorf("%d body warnings, want 2; logs:\n%s", n, logs.String())
+	logs := stop()
+	if n := strings.Count(logs, "not released cleanly"); n != 2 {
+		t.Errorf("%d body warnings, want 2; logs:\n%s", n, logs)
 	}
 }
 

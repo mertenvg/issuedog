@@ -1,7 +1,6 @@
 package daemon_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -15,6 +14,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/logr/v2"
 )
 
@@ -478,21 +478,19 @@ func TestSavedWaitHeldDropped(t *testing.T) {
 // fails on its issue is logged once, as a warning, and isn't the pass's
 // error too: that's step 1's own.
 func TestSavedWaitLoggedOnce(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.Capture).
 	root := t.TempDir()
 	f := phase1PinHoldSaved(t, root)
 	g := newRig(t, f, newOrigin(t), root)
 	g.claude(okOut, 0)
 	f.AnswerOnce(func(r githubtest.Request) bool { return r.Method == http.MethodPost && r.Path == "/issues/1/comments" }, http.StatusInternalServerError)
-	var warnings bytes.Buffer
-	stop := logr.AddWriter(&warnings, logr.WithFilter(logr.W))
+	stop := logtest.Capture(t, logr.W)
 	err := g.d.Iterate(context.Background())
-	logr.Wait()
-	stop()
+	warnings := stop()
 	if err == nil || !strings.Contains(err.Error(), "500") || strings.Contains(err.Error(), "didn't finish") {
 		t.Errorf("the pass = %v; want step 1's 500, and not the wait", err)
 	}
-	if got := warnings.String(); strings.Count(got, "step 1 didn't finish on #1") != 1 || !strings.Contains(got, "applying run saved on #1 failed, 1 of 3 times") {
+	if got := warnings; strings.Count(got, "step 1 didn't finish on #1") != 1 || !strings.Contains(got, "applying run saved on #1 failed, 1 of 3 times") {
 		t.Errorf("the pass's warnings = %q; want the wait once", got)
 	}
 	if l := g.lease(); l.RunID != "saved" || l.ApplyFailures != 1 {

@@ -131,6 +131,12 @@ func (r *Runner) Run(ctx context.Context, s Stage) ([]byte, error) {
 // command builds the claude command for one stage run: in its own process
 // group, killed as a group when ctx is done, with r.waitDelay, or else
 // defaultWaitDelay, bounding the wait for its output pipes.
+//
+// Run must build its command here. TestRunFailures's timeout subtests set
+// r.waitDelay to an hour, so that only the group kill ends their run within
+// the test's bound, and TestRunCommandCancelKillsGroup tests this command's
+// Cancel. A command Run built for itself would wait the default 5s instead,
+// so a group kill in it that killed nothing would go unnoticed.
 func (r *Runner) command(ctx context.Context, s Stage, prompt string, stdout io.Writer) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, r.Claude, args(prompt, s)...)
 	cmd.Dir = s.Dir

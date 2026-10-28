@@ -1,7 +1,6 @@
 package github
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/mertenvg/logr/v2"
 
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/issuedog/internal/trust"
 )
 
@@ -372,6 +372,7 @@ func readAll(r io.Reader) []byte {
 // With no Date on the second read of the issue, the local clock times an
 // unexplained label, which is logged, and a later Date counts from there.
 func TestCheckLabelsDateFallback(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output.
 	var date string // the Date of each read of the issue, or none
 	var writes []string
 	c := newClientWith(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -410,13 +411,11 @@ func TestCheckLabelsDateFallback(t *testing.T) {
 		{start.Add(6 * time.Minute).UTC().Format(http.TimeFormat), 2, false},
 	} {
 		date = tt.date
-		var logs bytes.Buffer
-		stop := logr.AddWriter(&logs, logr.WithFilter(logr.D))
+		stop := logtest.Capture(t, logr.D)
 		found, err := c.CheckLabels(context.Background(), "o", "r", 7, []string{"priority:p0"}, "issuedog", fakeTrust{},
 			func(int64) bool { return false }, seen, nil)
 		labels, held := found.Labels, found.Held
-		logr.Wait()
-		stop()
+		logs := stop()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -424,8 +423,8 @@ func TestCheckLabelsDateFallback(t *testing.T) {
 			t.Errorf("pass %d: writes %q, held %q, labels %q; want %d writes, held back %v, and the label returned only if so",
 				i, writes, held, labels, tt.writes, tt.held)
 		}
-		if fell := strings.Contains(logs.String(), "the local clock times"); fell != (tt.date == "") {
-			t.Errorf("pass %d: logs = %q, want the fallback logged only with no Date", i, logs.String())
+		if fell := strings.Contains(logs, "the local clock times"); fell != (tt.date == "") {
+			t.Errorf("pass %d: logs = %q, want the fallback logged only with no Date", i, logs)
 		}
 	}
 }

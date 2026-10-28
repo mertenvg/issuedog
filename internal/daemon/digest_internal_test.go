@@ -21,6 +21,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/issuedog/internal/repo"
 )
 
@@ -161,9 +162,9 @@ func TestDigestTake(t *testing.T) {
 // once each. The first read that works takes it, out of the pipeline, and
 // the poll after that reads nothing.
 func TestDigestTakeHistoryFails(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	var logs bytes.Buffer
-	stop := logr.AddWriter(&logs, logr.WithFilter(logr.E))
+	stop := logtest.CaptureTo(t, &logs, logr.E)
 	defer stop()
 	f := githubtest.New(t, "o/r", "issuedog")
 	f.EditBody(f.AddIssue("issuedog[bot]", "issuedog digest", "<!-- issuedog:digest -->"), "owner", "gone")

@@ -14,6 +14,7 @@ import (
 	"github.com/mertenvg/logr/v2"
 
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/logtest"
 )
 
 // Closes, reopens and the closed stages (SPEC §6.4, §7.1, §7.2, #190).
@@ -1230,12 +1231,12 @@ func TestClosingUntrustedReopenCloserFailsNotOlder(t *testing.T) {
 // failed question: on the second failing pass, as the first only fails the
 // pass (#233), and not again on the pass after.
 func TestClosingUntrustedReopenCloserFailsLogged(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	var event int64
 	f := closingReopenCloserFails(&event)(t)
 	d := newDaemon(t, f, digestNotifyOrigin(t), nil)
 	var warnings bytes.Buffer
-	stop := logr.AddWriter(&warnings, logr.WithFilter(logr.W))
+	stop := logtest.CaptureTo(t, &warnings, logr.W)
 	closerErrFailing(t, f, d, "the first pass")
 	iterate(t, d)
 	iterate(t, d)

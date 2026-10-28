@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -107,6 +108,42 @@ func TestCapPostRetriedWithoutARun(t *testing.T) {
 	}
 	if errs := errorMarkers(f, 1); g.runs() != 2 || len(errs) != 1 || errs[0] != capError(answer) {
 		t.Errorf("%d runs, errors %q; want 2 runs, then the cap posted once", g.runs(), errs)
+	}
+}
+
+// When posting the cap's state error fails, and a type change that can't
+// be at the stage lands before the next pass, that pass posts both the
+// type error and the cap, so the two stand together, and runs nothing
+// (SPEC §8.3, #570).
+func TestCapPostRetriedWithTypeError(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	f.AddIssue("owner", "Idea", "the idea", "type:epic")
+	f.AddLabel(1, app, "stage:clarifying")
+	f.AddComment(1, app, "Questions.\n\n<!-- issuedog:transition from=intake to=clarifying run=r0 -->")
+	answer := f.AddComment(1, "owner", "An answer.")
+	g := newRig(t, f, newOrigin(t), t.TempDir())
+	g.d.Config.Loop.MaxAttempts = 1
+	g.stage.pending = always
+	g.claude(failOut, 1)
+	f.AnswerOnce(func(r githubtest.Request) bool {
+		return r.Method == http.MethodPost && strings.HasSuffix(r.Path, "/comments")
+	}, http.StatusBadGateway)
+	if err := g.work(1); err == nil {
+		t.Fatal("Work = nil, want the failed post")
+	}
+	if errs := errorMarkers(f, 1); g.runs() != 1 || len(errs) != 0 {
+		t.Fatalf("%d runs, errors %q; want one run, and its cap's post lost", g.runs(), errs)
+	}
+	event := typeErrRetype(f, 1, "epic", "feature")
+	for range 3 {
+		if err := g.work(1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []string{fmt.Sprintf("<!-- issuedog:error kind=type key=%d -->", event), capError(answer)}
+	if errs := errorMarkers(f, 1); g.runs() != 1 || !slices.Equal(errs, want) {
+		t.Errorf("%d runs, errors %q; want still one run, and %q, each once", g.runs(), errs, want)
 	}
 }
 

@@ -87,12 +87,22 @@ type planChild struct {
 // that has no approved plan revision with its data.
 var errNoApprovedPlan = errors.New("it has no approved plan revision whose data reads back, so it can't be revised")
 
+// planDataError is planPriorOf's error, beside errNoApprovedPlan, for an
+// approved plan revision whose plan data doesn't read back
+// (approvedPlanData): err is the decoder's, on the App's own plan data,
+// so it may quote that data's text (planPriorCause).
+type planDataError struct{ err error }
+
+func (e *planDataError) Error() string { return e.err.Error() }
+func (e *planDataError) Unwrap() error { return e.err }
+
 // planPriorOf returns the planPrior of issue s in state is, for a revision,
 // or nil for an issue never planned before (plannedBefore), whose plan is a
 // first plan. It reads nothing: the children are read by planPrior.read.
 // An issue planned before whose approved revision can't be read back, as
 // when no move into planned names one (state.ApprovedPlan), or its comment
-// was edited since, wraps errNoApprovedPlan: it isn't planned again, as a
+// was edited since, wraps errNoApprovedPlan, and for plan data that
+// doesn't read back, a *planDataError too: it isn't planned again, as a
 // revision can't be checked without its children's items.
 func planPriorOf(s *github.Snapshot, appSlug string, is state.Issue, dirty func(int64) bool) (*planPrior, error) {
 	if !plannedBefore(is) {
@@ -100,7 +110,7 @@ func planPriorOf(s *github.Snapshot, appSlug string, is state.Issue, dirty func(
 	}
 	rev, plan, ok, err := approvedPlanData(s, appSlug, dirty)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", errNoApprovedPlan, err)
+		return nil, fmt.Errorf("%w: %w", errNoApprovedPlan, &planDataError{err})
 	}
 	move, moved := state.ApprovedPlanMove(s, appSlug, dirty)
 	if !ok || !moved {

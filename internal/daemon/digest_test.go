@@ -13,6 +13,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/logr/v2"
 )
 
@@ -57,9 +58,9 @@ func digestRequests(f *githubtest.Fake, from int) []githubtest.Request {
 // fake, find it and write nothing, and an unchanged pass makes no request
 // about it.
 func TestDigestCreatedAndPinnedOnce(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	var logs bytes.Buffer
-	stop := logr.AddWriter(&logs, logr.WithFilter(logr.W))
+	stop := logtest.CaptureTo(t, &logs, logr.W)
 	defer stop()
 	f, o := newFake(t), newOrigin(t)
 	d := digestDaemon(t, f, o, nil)
@@ -145,9 +146,9 @@ func TestDigestNeverTriaged(t *testing.T) {
 // dirty: the other's, which is left alone, as the digest's would be
 // written again. The user's issue with the marker is visited as any other.
 func TestDigestLowestWinsAndStaysOut(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	var logs bytes.Buffer
-	stop := logr.AddWriter(&logs, logr.WithFilter(logr.W))
+	stop := logtest.CaptureTo(t, &logs, logr.W)
 	defer stop()
 	f := newFake(t)
 	f.SetPinned(f.AddIssue(app, "issuedog digest", digestList), true)
@@ -175,9 +176,9 @@ func TestDigestLowestWinsAndStaysOut(t *testing.T) {
 // The same daemon doesn't try again; the next start does, and once the pin
 // works, the note goes. An unpin by the owner after that stands.
 func TestDigestPinFailure(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	var logs bytes.Buffer
-	stop := logr.AddWriter(&logs, logr.WithFilter(logr.E))
+	stop := logtest.CaptureTo(t, &logs, logr.E)
 	defer stop()
 	f, o := newFake(t), newOrigin(t)
 	f.FailPin("Repository already has 3 pinned issues <!-- issuedog:x --> @eve `x`")
@@ -298,9 +299,9 @@ func TestDigestClose(t *testing.T) {
 // pass, with nothing reverted, until the event shows: then an untrusted
 // close is reverted, and a trusted one stands.
 func TestDigestCloseEventLate(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	var logs bytes.Buffer
-	stop := logr.AddWriter(&logs, logr.WithFilter(logr.I))
+	stop := logtest.CaptureTo(t, &logs, logr.I)
 	defer stop()
 	f := newFake(t)
 	f.SetPinned(f.AddIssue(app, "issuedog digest", digestList), true)
@@ -350,9 +351,9 @@ func TestDigestCloseEventLate(t *testing.T) {
 // Then mallory's reopen is reverted, and the owner's close stands, with no
 // reopen ever written.
 func TestDigestLateReopen(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	var logs bytes.Buffer
-	stop := logr.AddWriter(&logs, logr.WithFilter(logr.I))
+	stop := logtest.CaptureTo(t, &logs, logr.I)
 	defer stop()
 	f := newFake(t)
 	f.SetPinned(f.AddIssue(app, "issuedog digest", digestList), true)
@@ -529,9 +530,9 @@ func TestDigestLateReopenBoundaries(t *testing.T) {
 // at each pass until the reopen's event shows. A new newest event starts
 // the wait again.
 func TestDigestLateReopenCloseNewest(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	var logs bytes.Buffer
-	stop := logr.AddWriter(&logs, logr.WithFilter(logr.I))
+	stop := logtest.CaptureTo(t, &logs, logr.I)
 	defer stop()
 	f := newFake(t)
 	f.SetPinned(f.AddIssue(app, "issuedog digest", digestList), true)
@@ -647,9 +648,9 @@ func TestDigestOffNotPinned(t *testing.T) {
 // GitHub answering a pin with no error but no pin is a refusal: logged,
 // named in the note, and not tried again until the next start.
 func TestDigestPinNotPinned(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	var logs bytes.Buffer
-	stop := logr.AddWriter(&logs, logr.WithFilter(logr.E))
+	stop := logtest.CaptureTo(t, &logs, logr.E)
 	defer stop()
 	f := newFake(t)
 	graphql := 0

@@ -15,6 +15,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/logr/v2"
 )
@@ -117,7 +118,7 @@ func edited(quote, id string) string {
 }
 
 func TestStep(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	tests := []struct {
 		name     string
 		setup    func(testing.TB) *githubtest.Fake
@@ -371,7 +372,7 @@ func TestStep(t *testing.T) {
 
 			before := len(tt.setup(t).State().Issues[0].Comments)
 			var errs bytes.Buffer
-			stop := logr.AddWriter(&errs, logr.WithFilter(logr.E))
+			stop := logtest.CaptureTo(t, &errs, logr.E)
 			sp := &stepper{}
 			f := run(t, tt.setup, sp.pass(t))
 			logr.Wait()
