@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/issuedog/internal/repo"
 	"github.com/mertenvg/logr/v2"
 )
@@ -80,12 +81,13 @@ func TestPromptMissingUsesDefault(t *testing.T) {
 }
 
 func TestPromptBlankUsesDefaultAndWarns(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output.
 	for _, name := range []string{"triage", "planner"} {
 		for _, blank := range []string{"", " \n\t\r\n"} {
 			r := &fakeMain{files: map[string][]byte{".issuedog/prompts/" + name + ".md": []byte(blank)}}
 			// The writer takes only warnings, so another level fails.
 			var logs bytes.Buffer
-			stop := logr.AddWriter(&logs, logr.WithFilter(logr.W))
+			stop := logtest.CaptureTo(t, &logs, logr.W)
 			got, override, err := Prompt(context.Background(), r, name)
 			logr.Wait()
 			stop()

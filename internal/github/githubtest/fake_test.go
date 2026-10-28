@@ -382,11 +382,19 @@ func TestCreateIssueWithLabelsAndType(t *testing.T) {
 
 // fakeNumberTB is the test a fake is given, which records each Fatalf and
 // ends the goroutine that called it, as testing's own does, so a test can
-// check that a helper fails it.
+// check that a helper fails it. It records each Errorf too, which a helper
+// a hook called fails it with (fakeHookErrors).
 type fakeNumberTB struct {
 	testing.TB
-	mu    sync.Mutex
-	fatal []string
+	mu     sync.Mutex
+	fatal  []string
+	errorf []string
+}
+
+func (tb *fakeNumberTB) Errorf(format string, args ...any) {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	tb.errorf = append(tb.errorf, fmt.Sprintf(format, args...))
 }
 
 func (tb *fakeNumberTB) Fatalf(format string, args ...any) {
@@ -497,6 +505,28 @@ func TestFakeNumberUnknown(t *testing.T) {
 	}
 	if got := f.State(); !reflect.DeepEqual(got, before) {
 		t.Errorf("state after the unknown numbers:\n%+v\nwant it unchanged:\n%+v", got, before)
+	}
+
+	// The newest issue, #2, deleted: its number fails as the issue, as the
+	// parent and as the blocker, and n is unchanged by them.
+	f.DeleteIssue()
+	deleted := f.State()
+	for _, tc := range []struct {
+		name string
+		do   func()
+	}{
+		{"Close", func() { f.Close(2) }},
+		{"AddComment", func() { f.AddComment(2, "owner", "hi") }},
+		{"SetParent to a deleted parent", func() { f.SetParent(n, 2) }},
+		{"SetBlockedBy by a deleted blocker", func() { f.SetBlockedBy(n, 2) }},
+	} {
+		fatal, panicked := fakeNumberFatal(tb, tc.do)
+		if want := []string{"githubtest: no issue #2: the fake has 1"}; panicked != nil || !slices.Equal(fatal, want) {
+			t.Errorf("%s, with the deleted #2: Fatalf %q, panicked with %v; want Fatalf %q", tc.name, fatal, panicked, want)
+		}
+	}
+	if got := f.State(); !reflect.DeepEqual(got, deleted) {
+		t.Errorf("state after the deleted number:\n%+v\nwant it unchanged:\n%+v", got, deleted)
 	}
 
 	// A parent and a blocker the fake hasn't got: the answers that name

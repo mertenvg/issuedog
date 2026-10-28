@@ -119,13 +119,166 @@ func TestWorkSweepsTempLeases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &Runs{Runner: &agent.Runner{StateDir: dir}, Gate: gate}
+	r := &Runs{Runner: &agent.Runner{StateDir: dir}, Gate: gate,
+		Workspace: &workspace.Workspace{RunsDir: t.TempDir(), ContextDir: t.TempDir()}}
 	if err := r.Work(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil || len(entries) != 1 || entries[0].Name() != "other.tmp" {
 		t.Errorf("the state dir has %v, %v; want only other.tmp", entries, err)
+	}
+}
+
+// crashLeftovers makes what a crash leaves for runs: a checkout, a context
+// dir and a temp result for each, a temp lease, and a temp git config.
+func crashLeftovers(t *testing.T, r *Runs, runs ...string) {
+	t.Helper()
+	if err := os.Mkdir(filepath.Join(r.Runner.StateDir, "runs"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range runs {
+		for _, d := range []string{r.Workspace.Dir(id), r.Workspace.Context(id)} {
+			if err := os.Mkdir(d, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(r.Runner.StateDir, "runs", id+".123.tmp"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, path := range []string{filepath.Join(r.Runner.StateDir, "lease.9.tmp"), filepath.Join(r.Workspace.ContextDir, ".agent.gitconfig.4")} {
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// sweepDirNames lists dir's entries by name.
+func sweepDirNames(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range entries {
+		got = append(got, e.Name())
+	}
+	return got
+}
+
+// sweepRuns is a Runs for the sweep tests, its dirs all empty.
+func sweepRuns(t *testing.T) *Runs {
+	t.Helper()
+	gate, err := agent.NewGate("x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &Runs{Runner: &agent.Runner{StateDir: t.TempDir()}, Gate: gate,
+		Workspace: &workspace.Workspace{RunsDir: t.TempDir(), ContextDir: t.TempDir()}}
+}
+
+// After a crash with no lease, the next start's first Work removes every
+// run's checkout and context dir, the temp results, the temp lease and the
+// temp git config, and leaves a result, which isn't a temp file.
+func TestWorkSweepsLeftoversAfterACrash(t *testing.T) {
+	t.Parallel()
+	r := sweepRuns(t)
+	crashLeftovers(t, r, "ab12", "cd34")
+	if err := os.WriteFile(r.resultPath("ab12"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Work(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	for dir, want := range map[string][]string{
+		r.Runner.StateDir:                        {"runs"},
+		filepath.Join(r.Runner.StateDir, "runs"): {"ab12.json"},
+		r.Workspace.RunsDir:                      nil,
+		r.Workspace.ContextDir:                   nil,
+	} {
+		if got := sweepDirNames(t, dir); !slices.Equal(got, want) {
+			t.Errorf("%s holds %q after the first Work, want %q", dir, got, want)
+		}
+	}
+}
+
+// The sweep keeps the lease's run's checkout and context dir, for resume,
+// and removes every other run's, with the temp files.
+func TestSweepKeepsTheLeasesRun(t *testing.T) {
+	t.Parallel()
+	r := sweepRuns(t)
+	crashLeftovers(t, r, "live", "dead")
+	l := Lease{Issue: 7, Stage: "clarifying", RunID: "live", Clone: r.Workspace.Dir("live"), Attempt: 1}
+	if err := r.writeLease(l); err != nil {
+		t.Fatal(err)
+	}
+	if !r.sweep(context.Background()) {
+		t.Fatal("sweep reports the lease unread")
+	}
+	for dir, want := range map[string][]string{
+		r.Runner.StateDir:                        {"lease.json", "runs"},
+		filepath.Join(r.Runner.StateDir, "runs"): nil,
+		r.Workspace.RunsDir:                      {"live"},
+		r.Workspace.ContextDir:                   {"live"},
+	} {
+		if got := sweepDirNames(t, dir); !slices.Equal(got, want) {
+			t.Errorf("%s holds %q after the sweep, want %q", dir, got, want)
+		}
+	}
+}
+
+// While the lease can't be read, Work sweeps no run's files, as it can't
+// tell which is the lease's, and sweeps them on a later pass that reads it.
+func TestWorkSweepsRunsOnceTheLeaseReads(t *testing.T) {
+	t.Parallel()
+	r := sweepRuns(t)
+	crashLeftovers(t, r, "dead")
+	// A dir where the lease goes can't be read as one.
+	if err := os.Mkdir(r.leasePath(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Work(context.Background(), nil); err == nil {
+		t.Fatal("Work succeeded with a lease it can't read")
+	}
+	if got := sweepDirNames(t, r.Workspace.RunsDir); !slices.Equal(got, []string{"dead"}) {
+		t.Errorf("the runs dir holds %q while the lease can't be read, want the clone kept", got)
+	}
+	if err := os.Remove(r.leasePath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Work(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{r.Workspace.RunsDir, r.Workspace.ContextDir} {
+		if got := sweepDirNames(t, dir); len(got) != 0 {
+			t.Errorf("%s holds %q once the lease reads, want nothing", dir, got)
+		}
+	}
+}
+
+// Once a pass has read the lease and swept, later passes don't sweep: what
+// looks like a crash's leftovers then may be a live run's files.
+func TestWorkSweepsOnlyOnTheFirstPass(t *testing.T) {
+	t.Parallel()
+	r := sweepRuns(t)
+	if err := r.Work(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	crashLeftovers(t, r, "late")
+	if err := r.Work(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	for dir, want := range map[string][]string{
+		r.Runner.StateDir:                        {"lease.9.tmp", "runs"},
+		filepath.Join(r.Runner.StateDir, "runs"): {"late.123.tmp"},
+		r.Workspace.RunsDir:                      {"late"},
+		r.Workspace.ContextDir:                   {".agent.gitconfig.4", "late"},
+	} {
+		if got := sweepDirNames(t, dir); !slices.Equal(got, want) {
+			t.Errorf("%s holds %q after the second Work, want %q", dir, got, want)
+		}
 	}
 }
 

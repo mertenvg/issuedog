@@ -79,10 +79,17 @@ func revChild(f *githubtest.Fake, n int, id, title, stage string, linked bool) i
 // Then back, each a move's marker fields, bring it back to planning.
 func revStory(t testing.TB, f *githubtest.Fake, back ...string) revIDs {
 	t.Helper()
+	return revStoryWith(t, f, planData(t, threeTasks), back...)
+}
+
+// revStoryWith is revStory with data as plan revision 1's plan-data
+// marker.
+func revStoryWith(t testing.TB, f *githubtest.Fake, data github.Marker, back ...string) revIDs {
+	t.Helper()
 	var r revIDs
 	r.n, _ = plFiled(f, "story", false, plEntry)
 	r.plan = revMove(t, f, r.n, daemon.Move{To: state.PlanReview, Trigger: state.TriggerPlanValid, Key: state.Key{Field: "run", ID: "p1"},
-		PlanRev: 1, Text: planText(r.n, 1), Markers: []github.Marker{planData(t, threeTasks)}})
+		PlanRev: 1, Text: planText(r.n, 1), Markers: []github.Marker{data}})
 	ms := github.ParseMarkers(f.State().Issues[r.n-1].Comments[len(f.State().Issues[r.n-1].Comments)-1].Body)
 	r.approve = f.AddComment(r.n, app, fmt.Sprintf("Approved.\n\n<!-- issuedog:transition from=plan-review to=planned cmd=r9 rev=1 body=%s -->",
 		ms[len(ms)-1].Fields["body"]))

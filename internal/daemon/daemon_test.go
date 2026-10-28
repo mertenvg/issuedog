@@ -19,6 +19,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/issuedog/internal/repo"
 	"github.com/mertenvg/logr/v2"
 )
@@ -321,9 +322,9 @@ func TestIterateSkipsWorkAfterStepFails(t *testing.T) {
 }
 
 func TestIterateKeepsLastGoodConfig(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	var logs bytes.Buffer
-	stop := logr.AddWriter(&logs)
+	stop := logtest.CaptureTo(t, &logs, logr.All)
 	defer stop()
 	f := quiet(t)
 	o := newOrigin(t)
@@ -363,9 +364,9 @@ func TestIterateKeepsLastGoodConfig(t *testing.T) {
 // A reload that allows a new model creates its labels, once. One that adds
 // none doesn't touch the repo's labels, and a failure is tried again.
 func TestIterateCreatesLabelsForNewModels(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	var logs bytes.Buffer
-	stop := logr.AddWriter(&logs)
+	stop := logtest.CaptureTo(t, &logs, logr.All)
 	defer stop()
 	f := quiet(t)
 	o := newOrigin(t)
@@ -504,7 +505,7 @@ func TestLabelOptions(t *testing.T) {
 
 // A long name with no label falls back to its last 35 characters, and says so.
 func TestLabelOptionsLogsTheFallback(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	const long = "x.us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 	at35, wide := strings.Repeat("a", 35), strings.Repeat("é", 36) // 35 characters, and 36 in 72 bytes
 	cfg, err := config.Parse([]byte("models: {allowed: [opus, " + long + ", {name: y." + long + ", label: sonnet}, " + at35 + ", " + wide + "]}\n"))
@@ -512,7 +513,7 @@ func TestLabelOptionsLogsTheFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	var logs bytes.Buffer
-	stop := logr.AddWriter(&logs, logr.WithFilter(logr.I))
+	stop := logtest.CaptureTo(t, &logs, logr.I)
 	defer stop()
 	got := daemon.LabelOptions(cfg)
 	logr.Wait()

@@ -10,6 +10,7 @@ import (
 
 	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/github"
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
@@ -149,9 +150,9 @@ func TestPlannerPending(t *testing.T) {
 // can't be read back is logged once, at info, however often Pending is
 // asked, and each such issue is logged.
 func TestPlannerSkipLoggedOnce(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	var logs bytes.Buffer
-	stop := logr.AddWriter(&logs, logr.WithFilter(logr.I))
+	stop := logtest.CaptureTo(t, &logs, logr.I)
 	defer stop()
 	planned := func(n int) Input {
 		return planTestInput(planTestIssue(n, "epic", false, planTestApproval,

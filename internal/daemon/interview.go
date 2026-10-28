@@ -90,13 +90,13 @@ type interviewDecision struct {
 }
 
 // decodeInterview decodes a run's output. A field the types don't have is
-// an error.
+// an error (decodeCause).
 func decodeInterview(raw json.RawMessage) (interviewOutput, error) {
 	var out interviewOutput
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
 	if err := d.Decode(&out); err != nil {
-		return interviewOutput{}, &daemonCause{fmt.Errorf("decode interviewer output: %w", err)}
+		return interviewOutput{}, decodeCause("the interviewer's", err)
 	}
 	return out, nil
 }

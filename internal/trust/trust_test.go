@@ -14,6 +14,7 @@ import (
 	gogithub "github.com/google/go-github/v92/github"
 	"github.com/mertenvg/logr/v2"
 
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/issuedog/internal/repo"
 )
 
@@ -123,8 +124,9 @@ func TestTeamOwnerMembersTrusted(t *testing.T) {
 }
 
 func TestEmailOwnerIgnoredAndLogged(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output.
 	var logs bytes.Buffer
-	stop := logr.AddWriter(&logs)
+	stop := logtest.CaptureTo(t, &logs, logr.All)
 	defer stop()
 
 	api := fakeAPI(t, map[string]access{"alice": writer}, nil)

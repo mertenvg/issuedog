@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/logr/v2"
 )
@@ -199,7 +200,7 @@ func TestOriginLostKeepsOnlyReachingHistory(t *testing.T) {
 // that has one. A trusted user's edit is never noted dirty, so its body
 // stays as it is from visit to visit. A new edit is warned of again.
 func TestChildForgedWarnOnce(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	ctx := context.Background()
 	f := githubtest.New(t, "o/r", "issuedog")
 	f.AddIssue("owner", "Parent", "The plan.")
@@ -228,7 +229,7 @@ func TestChildForgedWarnOnce(t *testing.T) {
 	const forged = `o/r#2: its description names item "T2" of #1's plan, but the App filed it for item T1 of #1's`
 	const none = `o/r#3: its description names item "T3" of #1's plan, but no version of it the App wrote has an origin marker`
 	var warnings bytes.Buffer
-	t.Cleanup(logr.AddWriter(&warnings, logr.WithFilter(logr.W)))
+	logtest.CaptureTo(t, &warnings, logr.W)
 	visit()
 	visit()
 	logr.Wait()

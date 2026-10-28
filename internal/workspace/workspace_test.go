@@ -787,3 +787,200 @@ func TestBundleHandoffGitCalls(t *testing.T) {
 		}
 	}
 }
+
+// TestSweepRemovesLeftoverRuns removes every run's checkout and context dir
+// but keep's, a read-only checkout and a run with only one of the two
+// among them, and the temp git configs, keeping the git config itself and
+// any other dot name.
+func TestSweepRemovesLeftoverRuns(t *testing.T) {
+	t.Parallel()
+	w, s := newWorkspace(t)
+	ctx := context.Background()
+	for _, id := range []string{"live", "dead"} {
+		if err := w.Prepare(ctx, id, Commits{Start: s.second}, map[string][]byte{"prompt.md": nil}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(filepath.Join(w.Dir("dead"), ".git"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{w.Dir("clone-only"), w.Context("context-only"), filepath.Join(w.RunsDir, ".dot")} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{".agent.gitconfig.123", ".agent.gitconfig.x9"} {
+		if err := os.WriteFile(filepath.Join(w.ContextDir, name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Sweep(ctx, "live"); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	for dir, want := range map[string][]string{
+		w.RunsDir:    {".dot", "live"},
+		w.ContextDir: {".agent.gitconfig", "live"},
+	} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, e := range entries {
+			got = append(got, e.Name())
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("%s holds %q after the sweep, want %q", dir, got, want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(w.Context("live"), "prompt.md")); err != nil {
+		t.Errorf("the kept run's context file is gone: %v", err)
+	}
+}
+
+// TestSweepKeepsNothingAndSkipsMissingDirs keeps no run for an empty keep,
+// and finds nothing to remove in dirs that don't exist.
+func TestSweepKeepsNothingAndSkipsMissingDirs(t *testing.T) {
+	t.Parallel()
+	w, s := newWorkspace(t)
+	ctx := context.Background()
+	if err := w.Prepare(ctx, "dead", Commits{Start: s.second}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Sweep(ctx, ""); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	for _, d := range []string{w.Dir("dead"), w.Context("dead")} {
+		if _, err := os.Stat(d); !os.IsNotExist(err) {
+			t.Errorf("%s is still there: %v", d, err)
+		}
+	}
+	gone := &Workspace{RunsDir: filepath.Join(t.TempDir(), "runs"), ContextDir: filepath.Join(t.TempDir(), "ctx")}
+	if err := gone.Sweep(ctx, ""); err != nil {
+		t.Errorf("Sweep of missing dirs = %v, want nothing to remove", err)
+	}
+}
+
+// TestSweepGoesOnPastAFailure reports a run it can't remove, naming it, and
+// still removes the runs after it.
+func TestSweepGoesOnPastAFailure(t *testing.T) {
+	t.Parallel()
+	w, s := newWorkspace(t)
+	ctx := context.Background()
+	stuck := w.Context("a-stuck")
+	if err := os.MkdirAll(filepath.Join(stuck, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(stuck, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(stuck, 0o755); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := w.Prepare(ctx, "b-dead", Commits{Start: s.second}, nil); err != nil {
+		t.Fatal(err)
+	}
+	err := w.Sweep(ctx, "")
+	if err == nil || !strings.Contains(err.Error(), "clean up run a-stuck") {
+		t.Errorf("Sweep = %v, want it to name run a-stuck", err)
+	}
+	if _, err := os.Stat(w.Dir("b-dead")); !os.IsNotExist(err) {
+		t.Errorf("the run after the failure is still there: %v", err)
+	}
+}
+
+// TestSweepUnlinksAPlantedSymlink removes a symlink planted as a run's
+// checkout, and leaves the read-only dir it points to, with its mode and
+// contents, as it was: chmod would follow it.
+func TestSweepUnlinksAPlantedSymlink(t *testing.T) {
+	t.Parallel()
+	w, _ := newWorkspace(t)
+	ctx := context.Background()
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.Mkdir(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "keep.txt"), []byte("kept"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(outside, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(outside, 0o755); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := os.Symlink(outside, w.Dir("planted")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Sweep(ctx, ""); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if _, err := os.Lstat(w.Dir("planted")); !os.IsNotExist(err) {
+		t.Errorf("the planted symlink is still there: %v", err)
+	}
+	if got := mode(t, outside); got != 0o500 {
+		t.Errorf("the dir the symlink points to has mode %o, want 500", got)
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "keep.txt" {
+		t.Errorf("the dir the symlink points to holds %v, want only keep.txt", entries)
+	}
+	data, err := os.ReadFile(filepath.Join(outside, "keep.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "kept" {
+		t.Errorf("keep.txt holds %q, want %q", data, "kept")
+	}
+}
+
+// TestSweepReportsAnUnreadableDir reports a dir it can't list, for a reason
+// other than its being missing, naming it, and still sweeps the other dir's
+// temp git config.
+func TestSweepReportsAnUnreadableDir(t *testing.T) {
+	t.Parallel()
+	w, _ := newWorkspace(t)
+	tempConfig := filepath.Join(w.ContextDir, ".agent.gitconfig.7")
+	if err := os.WriteFile(tempConfig, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(w.RunsDir); err != nil {
+		t.Fatal(err)
+	}
+	// A file where the runs dir goes can't be listed as one.
+	if err := os.WriteFile(w.RunsDir, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := w.Sweep(context.Background(), "")
+	if err == nil || !strings.Contains(err.Error(), "sweep "+w.RunsDir) {
+		t.Errorf("Sweep = %v, want it to name %s", err, w.RunsDir)
+	}
+	if _, err := os.Stat(tempConfig); !os.IsNotExist(err) {
+		t.Errorf("the temp git config past the unreadable dir is still there: %v", err)
+	}
+}
+
+// TestSweepLeavesTempGitConfigNamesInTheRunsDir removes temp git configs
+// only where writeGitConfig writes them, the context dir: a name like one
+// in the runs dir is the agent's, and stays.
+func TestSweepLeavesTempGitConfigNamesInTheRunsDir(t *testing.T) {
+	t.Parallel()
+	w, _ := newWorkspace(t)
+	planted := filepath.Join(w.RunsDir, ".agent.gitconfig.123")
+	if err := os.WriteFile(planted, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Sweep(context.Background(), ""); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if _, err := os.Stat(planted); err != nil {
+		t.Errorf("the runs dir's %s is gone: %v", filepath.Base(planted), err)
+	}
+}

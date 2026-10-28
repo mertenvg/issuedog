@@ -37,15 +37,18 @@ import (
 	"github.com/mertenvg/issuedog/internal/egress"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/issuedog/internal/repo"
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
 // runLogged runs the program and returns its exit code and what it logged.
+// It reads the process-wide logr output, so a test that calls it is not
+// parallel.
 func runLogged(t *testing.T, args, environ []string) (int, string) {
 	t.Helper()
 	var logs bytes.Buffer
-	stop := logr.AddWriter(&logs)
+	stop := logtest.CaptureTo(t, &logs, logr.All)
 	defer stop()
 	code := run(args, environ, nil, io.Discard)
 	logr.Wait()
@@ -55,6 +58,7 @@ func runLogged(t *testing.T, args, environ []string) (int, string) {
 // TestRunPlainOutput checks that the version and help text go to stdout as
 // plain text, not through logr, which would add log metadata.
 func TestRunPlainOutput(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output.
 	for _, tc := range []struct {
 		args []string
 		want string
@@ -64,7 +68,7 @@ func TestRunPlainOutput(t *testing.T) {
 		{[]string{"key", "import", "-h"}, usage + "\n"},
 	} {
 		var logs, stdout bytes.Buffer
-		stop := logr.AddWriter(&logs)
+		stop := logtest.CaptureTo(t, &logs, logr.All)
 		code := run(tc.args, nil, nil, &stdout)
 		logr.Wait()
 		stop()
@@ -79,8 +83,9 @@ type failingWriter struct{}
 func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("stdout closed") }
 
 func TestRunPlainOutputFails(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output.
 	var logs bytes.Buffer
-	stop := logr.AddWriter(&logs)
+	stop := logtest.CaptureTo(t, &logs, logr.All)
 	code := run([]string{"--version"}, nil, nil, failingWriter{})
 	logr.Wait()
 	stop()
@@ -90,6 +95,7 @@ func TestRunPlainOutputFails(t *testing.T) {
 }
 
 func TestRunUnknownFlag(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output.
 	code, logs := runLogged(t, []string{"--nope"}, nil)
 	if code != 2 || !strings.Contains(logs, "flag provided but not defined: -nope") || !strings.Contains(logs, "usage:") {
 		t.Errorf("exit code %d, logs %q; want 2, the flag error and the usage", code, logs)
@@ -779,6 +785,7 @@ func cancelOnCall(t *testing.T) (cancel func(), signals *[]os.Signal) {
 }
 
 func TestRunDaemon(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output.
 	f := fakeGitHub(t, thisRepo(t))
 	f.AddRepoLabel("stage:intake")
 	n := f.AddIssue("mertenvg", "Task", "do it")
@@ -817,7 +824,7 @@ func TestRunDaemon(t *testing.T) {
 	calls := fakeEgress(t, nil, nil)
 	cancel, signals := cancelOnCall(t)
 	var logs bytes.Buffer
-	stop := logr.AddWriter(&logs)
+	stop := logtest.CaptureTo(t, &logs, logr.All)
 	defer stop()
 	done := make(chan int, 1)
 	go func() { done <- run(nil, daemonEnv, nil, io.Discard) }()
@@ -913,6 +920,7 @@ func TestRunDaemon(t *testing.T) {
 }
 
 func TestRunStartupFailures(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output.
 	without := func(key string) []string {
 		return slices.DeleteFunc(slices.Clone(daemonEnv), func(kv string) bool { return strings.HasPrefix(kv, key+"=") })
 	}
@@ -1029,10 +1037,12 @@ func TestStartDaemonFailsOnTrust(t *testing.T) {
 
 // runBounded is runLogged, failing t if run hasn't returned in 20s, as when
 // startup goes on into the loop.
+// It reads the process-wide logr output, so a test that calls it is not
+// parallel.
 func runBounded(t *testing.T, environ []string) (int, string) {
 	t.Helper()
 	var logs bytes.Buffer
-	stop := logr.AddWriter(&logs)
+	stop := logtest.CaptureTo(t, &logs, logr.All)
 	defer stop()
 	done := make(chan int, 1)
 	go func() { done <- run(nil, environ, nil, io.Discard) }()
@@ -1074,6 +1084,7 @@ func TestEgressCommandStopsOnSignal(t *testing.T) {
 }
 
 func TestRunRefusesBadAppKey(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output.
 	for name, tt := range map[string]struct {
 		perm os.FileMode
 		want string
@@ -1143,6 +1154,7 @@ func fakeAgent(t *testing.T, err error) *int {
 }
 
 func TestAsAgentArgs(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output.
 	lookups := fakeAgent(t, nil)
 	for _, args := range [][]string{
 		{"as-agent"},
@@ -1164,9 +1176,10 @@ func TestAsAgentArgs(t *testing.T) {
 }
 
 func TestAsAgentRunsCommand(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output.
 	fakeAgent(t, nil)
 	var logs, stdout bytes.Buffer
-	stop := logr.AddWriter(&logs)
+	stop := logtest.CaptureTo(t, &logs, logr.All)
 	defer stop()
 	script := `echo "$HOME $PATH $(pwd)"; echo oops >&2; exit 3`
 	code := run([]string{"as-agent", "--", "sh", "-c", script}, nil, nil, &stdout)
@@ -1183,6 +1196,7 @@ func TestAsAgentRunsCommand(t *testing.T) {
 }
 
 func TestAsAgentFailures(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output.
 	fakeAgent(t, errors.New("no such user"))
 	code, logs := runLogged(t, []string{"as-agent", "--", "true"}, nil)
 	if code != 1 || !strings.Contains(logs, "running true as agent: no such user") {
@@ -1481,6 +1495,7 @@ func TestHandoffFailures(t *testing.T) {
 }
 
 func TestRunStopsWhenEgressFails(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output.
 	for name, tt := range map[string]struct {
 		fwErr, listenErr error
 		wantCalls, want  string
@@ -1509,6 +1524,7 @@ func TestRunStopsWhenEgressFails(t *testing.T) {
 }
 
 func TestRunRefusesBadCredentials(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output.
 	for name, environ := range map[string][]string{
 		"both set":    {"CLAUDE_CODE_OAUTH_TOKEN=oauth", "ANTHROPIC_API_KEY=key"},
 		"neither set": {"GH_TOKEN=gh"},
@@ -1529,6 +1545,7 @@ func TestRunRefusesBadCredentials(t *testing.T) {
 }
 
 func TestSetupLoggingRoutesByLevel(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output.
 	var stdout, stderr bytes.Buffer
 	stop := setupLogging(&stdout, &stderr)
 	defer stop()
@@ -1554,8 +1571,9 @@ func TestSetupLoggingRoutesByLevel(t *testing.T) {
 }
 
 func TestRunKeyCommands(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output.
 	var logs bytes.Buffer
-	stop := logr.AddWriter(&logs)
+	stop := logtest.CaptureTo(t, &logs, logr.All)
 	defer stop()
 
 	k, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -1654,6 +1672,7 @@ func TestStageWork(t *testing.T) {
 // the reason, before egress and the loop: every result of that Stage would
 // be dropped (#130's verify).
 func TestRegisterStagesChecked(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output.
 	f := fakeGitHub(t, thisRepo(t))
 	calls := fakeEgress(t, nil, nil)
 	old := registerStages
@@ -1671,7 +1690,7 @@ func TestRegisterStagesChecked(t *testing.T) {
 	// it gets 10s, then a cancel, and fails rather than hangs.
 	cancel, _ := cancelOnCall(t)
 	var buf bytes.Buffer
-	stop := logr.AddWriter(&buf)
+	stop := logtest.CaptureTo(t, &buf, logr.All)
 	defer stop()
 	done := make(chan int, 1)
 	go func() { done <- run(nil, daemonEnv, nil, io.Discard) }()

@@ -37,9 +37,14 @@ import (
 //     the close is judged as soon as GitHub answers, which ends the
 //     error. On a closed issue, that question is all a pass asks while
 //     the listing still shows the close the error is for: the timeline
-//     isn't read (closingJudge). On an open issue, the error also ends
-//     once step 1 no longer asks the question, as its close is no longer
-//     the one to judge (closerErrUnasked). Any other failure, a failed
+//     isn't read (closingJudge). The listing shows the close by its
+//     closed_at and the stage labels, so a reopen and a close again within
+//     the same second, or a close again that keeps closed_at, isn't seen
+//     while the question fails: the older close stays the one asked, and
+//     its error stands, until GitHub answers or the listing changes (a gap
+//     SPEC §5.3 states). On an open issue, the error also ends once step 1
+//     no longer asks the question, as its close is no longer the one to
+//     judge (closerErrUnasked). Any other failure, a failed
 //     request or GraphQL failing as a whole, says nothing of the close
 //     itself, as an outage would, so it stays the pass's error, without
 //     bound, and counts no pass towards the state error.
@@ -61,7 +66,11 @@ import (
 // A closed issue's state error can't be open the way an open issue's is
 // (openErrors): no step 1 visits it, so no 👍 is read, and nothing is
 // assigned on it (assign.go). The digest still lists it, from memory
-// (Daemon.closerErrOn), while the close stays unjudged.
+// (Daemon.closerErrOn), while the close stays unjudged. Once the issue is
+// reopened, as to settle it by closing it again, which its comment
+// advises, the error is open there, and the digest lists it as any open
+// error, but it still assigns nobody (closerErrPostedClosed): so the close
+// again leaves nobody assigned to the closed issue for it.
 
 // closerErrKind is the kind of the state error for a closer question that
 // keeps failing.
@@ -155,32 +164,59 @@ func (a *Applier) closerErrAnswered(key string) bool {
 }
 
 // closerErrEnded returns what ends a closer state error on s, an open issue
-// as step 1 left it, with dirty as for state.Derive (openErrors): given the
-// error's key, whether the question of its close was answered while the
-// daemon runs (closerErrAnswered), or step 1 no longer asks it
-// (closerErrUnasked).
-func (a *Applier) closerErrEnded(s *github.Snapshot, dirty func(int64) bool) func(key string) bool {
-	return func(key string) bool { return a.closerErrAnswered(key) || closerErrUnasked(s, a.AppSlug, dirty, key) }
+// as step 1 left it, with dirty as for state.Derive and trust as step 1's
+// look for triggers asks it (openErrors): given the error's key, whether
+// the question of its close was answered while the daemon runs
+// (closerErrAnswered), or step 1 no longer asks it (closerErrUnasked).
+func (a *Applier) closerErrEnded(s *github.Snapshot, dirty func(int64) bool, trust github.Trust) func(key string) bool {
+	return func(key string) bool {
+		return a.closerErrAnswered(key) || closerErrUnasked(s, a.AppSlug, dirty, trust, key)
+	}
 }
 
 // closerErrUnasked reports whether step 1 no longer asks how the close of
 // s keyed key was made, as its close is no longer the one to judge: by
 // what closingCounts judges before it asks anyone, s.Closings lists it,
 // and it's before the discussion floor (discFloor), as after a move out of
-// held, or a marker records it, or s has no floor, so discFind looks for
-// no trigger. A close s.Closings doesn't list, as on a snapshot
-// CheckLabels hasn't checked, is still asked.
-func closerErrUnasked(s *github.Snapshot, appSlug string, dirty func(int64) bool, key string) bool {
+// held, or a marker records it, or s has no floor, or trust can't name a
+// write collaborator who isn't trusted (discKnowsWriters), as with no
+// CODEOWNERS file, so discFind looks for no trigger. That needs no
+// request. A close s.Closings doesn't list, as on a snapshot CheckLabels
+// hasn't checked, is still asked.
+func closerErrUnasked(s *github.Snapshot, appSlug string, dirty func(int64) bool, trust github.Trust, key string) bool {
 	i := slices.IndexFunc(s.Closings, func(cl github.Closing) bool { return !cl.Reopen && strconv.FormatInt(cl.ID, 10) == key })
 	if i < 0 {
 		return false
 	}
 	b, ok := discFloor(s, appSlug, dirty)
-	if !ok {
+	if !ok || !discKnowsWriters(trust) {
 		return true
 	}
 	open, recorded := discOpenAfter(b, discRecords(s, appSlug, dirty))(key, s.Closings[i].At, 0)
 	return !open || recorded
+}
+
+// closerErrPostedClosed reports whether e, an open closer state error on
+// s, an open issue, was posted while s was closed (closerErrClosed), not
+// by step 1 (closerErrPost): its comment is from before the first reopen
+// s.Closings lists after the close e is keyed by. Such an error assigns
+// nobody (assign.go), as on the closed issue, since reopening the issue
+// and closing it again is how its comment says to settle it. One posted
+// in the same second as that reopen, or with no reopen or close listed,
+// as on a snapshot CheckLabels hasn't checked, or in the body, assigns
+// as any open error does. It makes no request.
+func closerErrPostedClosed(s *github.Snapshot, e openErr) bool {
+	i := slices.IndexFunc(s.Closings, func(cl github.Closing) bool { return !cl.Reopen && strconv.FormatInt(cl.ID, 10) == e.Key })
+	c := slices.IndexFunc(s.Comments, func(c github.Comment) bool { return c.ID == e.Comment })
+	if e.Kind != closerErrKind || i < 0 || c < 0 {
+		return false
+	}
+	for _, cl := range s.Closings[i+1:] {
+		if cl.Reopen {
+			return s.Comments[c].CreatedAt.Before(cl.At)
+		}
+	}
+	return false
 }
 
 // closerErrReport returns the ID of the comment on s that carries the

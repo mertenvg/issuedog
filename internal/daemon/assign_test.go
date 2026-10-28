@@ -15,6 +15,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
@@ -381,14 +382,14 @@ func TestAssignFailures(t *testing.T) {
 // a change to notify. Assigned by hand all the same, he stays where an
 // item wants him. The first pass warns of him once, and of no other add.
 func TestAssignDropped(t *testing.T) {
-	// Not parallel: it reads the process-wide logr output (logr.AddWriter).
+	// Not parallel: it reads the process-wide logr output (logtest.CaptureTo).
 	f, o := digestRunFake(t), newOrigin(t)
 	o.commit(".github/CODEOWNERS", "* @"+digestRunOwner+"\n")
 	o.commit(config.Path, "types: labels\nnotify: ["+digestRunOwner+", ghost]\n")
 	f.Unassignable("ghost")
 	d := assignDaemon(t, f, o, nil)
 	var warnings bytes.Buffer
-	stop := logr.AddWriter(&warnings, logr.WithFilter(logr.W))
+	stop := logtest.CaptureTo(t, &warnings, logr.W)
 	assignStep(t, f, d, "the first pass", assignAdd(1, digestRunOwner, "ghost"), assignAdd(2, digestRunOwner), assignAdd(3, digestRunOwner),
 		assignAdd(4, digestRunOwner), assignAdd(5, digestRunOwner), assignAdd(6, digestRunOwner))
 	logr.Wait()
