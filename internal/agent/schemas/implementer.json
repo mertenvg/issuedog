@@ -1,0 +1,156 @@
+{
+  "title": "implementer",
+  "description": "One implementer run on a task: commits, a question round, or a hand-off. Set outcome, then only the fields that go with it.",
+  "type": "object",
+  "required": ["outcome"],
+  "additionalProperties": false,
+  "properties": {
+    "outcome": {
+      "description": "commits: the change is committed in the clone; set title and summary. question: a criterion is ambiguous; set questions. handoff: an action only the owner can do blocks the task; set handoff.",
+      "enum": ["commits", "question", "handoff"]
+    },
+    "title": {
+      "description": "With outcome commits: the PR title, <type>: <sentence>. The daemon joins the two.",
+      "type": "object",
+      "required": ["type", "sentence"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "description": "One of the preamble's title types, as it's written there.",
+          "type": "string",
+          "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+        },
+        "sentence": {
+          "description": "A short sentence on what the change does, in one line, without the type.",
+          "type": "string",
+          "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+        }
+      }
+    },
+    "summary": {
+      "description": "With outcome commits: the PR's summary of the change.",
+      "type": "object",
+      "required": ["what_changed", "why", "tests_added", "tests_updated"],
+      "additionalProperties": false,
+      "properties": {
+        "what_changed": {
+          "description": "A few lines of Markdown, without headings: what the commits change.",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "why": {
+          "description": "A few lines of Markdown, without headings: why, against the task's criteria.",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "tests_added": {
+          "description": "The tests you added, one line each. Empty for none.",
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$" }
+        },
+        "tests_updated": {
+          "description": "The tests you changed, one line each. Empty for none.",
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$" }
+        }
+      }
+    },
+    "questions": {
+      "description": "With outcome question: this round's questions, most blocking first.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["text", "blocks", "recommended", "others"],
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "description": "The question, in one line that stands alone.",
+            "type": "string",
+            "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+          },
+          "blocks": {
+            "description": "The issue numbers the question blocks.",
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "integer", "minimum": 1 }
+          },
+          "recommended": {
+            "description": "The option you recommend, listed first.",
+            "type": "object",
+            "required": ["text", "why"],
+            "additionalProperties": false,
+            "properties": {
+              "text": {
+                "description": "The option, in one line.",
+                "type": "string",
+                "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+              },
+              "why": {
+                "description": "Why you recommend it, in one line.",
+                "type": "string",
+                "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+              }
+            }
+          },
+          "others": {
+            "description": "The other options, one line each.",
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+            }
+          }
+        }
+      }
+    },
+    "handoff": {
+      "description": "With outcome handoff: the hand-off for the owner, every field filled. If you can't fill one, ask a question instead.",
+      "type": "object",
+      "required": ["goal", "why_blocks", "steps", "links", "done_when", "estimated_time"],
+      "additionalProperties": false,
+      "properties": {
+        "goal": {
+          "description": "One sentence: what the owner's action achieves.",
+          "type": "string",
+          "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+        },
+        "why_blocks": {
+          "description": "What the task waits for, and why, in one line that reads on after \"can't proceed until\". Don't name the task: the daemon puts its number first.",
+          "type": "string",
+          "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+        },
+        "steps": {
+          "description": "Markdown: exact actions, with exact values, commands or settings, as a numbered list, in order.",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "links": {
+          "description": "Markdown: direct links to the console page, file or doc, as a list.",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "done_when": {
+          "description": "The observable result the owner can check, in one line.",
+          "type": "string",
+          "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+        },
+        "estimated_time": {
+          "description": "Such as 5 min.",
+          "type": "string",
+          "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+        }
+      }
+    }
+  },
+  "if": { "properties": { "outcome": { "const": "commits" } }, "required": ["outcome"] },
+  "then": { "required": ["title", "summary"], "properties": { "questions": false, "handoff": false } },
+  "else": {
+    "if": { "properties": { "outcome": { "const": "question" } }, "required": ["outcome"] },
+    "then": { "required": ["questions"], "properties": { "title": false, "summary": false, "handoff": false } },
+    "else": { "required": ["handoff"], "properties": { "title": false, "summary": false, "questions": false } }
+  }
+}

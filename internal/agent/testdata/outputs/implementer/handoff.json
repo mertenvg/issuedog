@@ -1,0 +1,11 @@
+{
+  "outcome": "handoff",
+  "handoff": {
+    "goal": "Give the booking tests the payment provider's sandbox key, as a repository secret.",
+    "why_blocks": "the repo has the secret PAYMENTS_SANDBOX_KEY, which the expired-quote refund test calls the sandbox with, and only the owner can add a secret",
+    "steps": "1. Open the payment provider's dashboard, switch to Sandbox, and copy the secret key that starts with `sk_test_`.\n2. In the repo's settings, under Secrets and variables, Actions, add a repository secret named `PAYMENTS_SANDBOX_KEY` with that key.\n3. Reply `/done` on this issue.",
+    "links": "- https://dashboard.payments.example.com/test/apikeys\n- https://github.com/acme/booking/settings/secrets/actions",
+    "done_when": "The repo's Actions secrets list PAYMENTS_SANDBOX_KEY.",
+    "estimated_time": "5 min"
+  }
+}

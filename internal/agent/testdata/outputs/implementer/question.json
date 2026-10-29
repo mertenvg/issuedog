@@ -1,0 +1,18 @@
+{
+  "outcome": "question",
+  "questions": [
+    {
+      "text": "Should a quote booked at the exact second it expires be refused or accepted?",
+      "blocks": [
+        126
+      ],
+      "recommended": {
+        "text": "Refused",
+        "why": "the expiry time is the first moment the quote is no longer valid, as the quote API documents it"
+      },
+      "others": [
+        "Accepted, and refused only after that second"
+      ]
+    }
+  ]
+}
