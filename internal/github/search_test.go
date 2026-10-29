@@ -34,7 +34,7 @@ func readyBlockedSearches(t *testing.T, f *githubtest.Fake, from int) ([]string,
 }
 
 // ReadyBlocked asks advanced search for this repo's open stage:ready issues
-// that are blocked, 100 to a page, and finds the one with an open blocker,
+// that are blocked, oldest first, 100 to a page, and finds the one with an open blocker,
 // not one whose blocker closed, one at another stage or one with none. A
 // repeat with nothing changed is a conditional 304. While the search lags,
 // a blocker's close doesn't show; once it catches up, it does.
@@ -70,6 +70,8 @@ func TestReadyBlocked(t *testing.T) {
 		}
 		wantQuery := url.Values{
 			"q":               {`repo:o/r is:issue is:open label:"stage:ready" is:blocked`},
+			"sort":            {"created"},
+			"order":           {"asc"},
 			"per_page":        {"100"},
 			"advanced_search": {"true"},
 		}

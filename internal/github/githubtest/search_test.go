@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
 	"testing"
 
@@ -16,12 +17,12 @@ import (
 // readyBlockedQ is the search the client makes for blocked ready tasks.
 const readyBlockedQ = `repo:o/r is:issue is:open label:"stage:ready" is:blocked`
 
-// searchFound runs the advanced issue search q, perPage to a page, and
-// returns the numbers it finds, every page's, in order, and the total the
-// first page gives, failing t on any error.
+// searchFound runs the advanced issue search q, oldest first, perPage to a
+// page, and returns the numbers it finds, every page's, in order, and the
+// total the first page gives, failing t on any error.
 func searchFound(t *testing.T, c *github.Client, q string, perPage int) ([]int, int) {
 	t.Helper()
-	opts := &gogithub.SearchOptions{AdvancedSearch: new(true), ListOptions: gogithub.ListOptions{PerPage: perPage}}
+	opts := &gogithub.SearchOptions{Sort: "created", Order: "asc", AdvancedSearch: new(true), ListOptions: gogithub.ListOptions{PerPage: perPage}}
 	var found []int
 	total := -1
 	for {
@@ -58,7 +59,7 @@ func searchStatuses(f *Fake, from int) []string {
 // whose only blocker is closed, one at another stage, one with no blocker,
 // a closed one, or one transferred away. A pull request is found only
 // without is:issue, and an issue without is:open is found closed too.
-// Labels match in any case.
+// Labels match in any case, the issue's and the query's.
 func TestSearchIssuesBlocked(t *testing.T) {
 	t.Parallel()
 	f := New(t, "o/r", "issuedog")
@@ -90,6 +91,7 @@ func TestSearchIssuesBlocked(t *testing.T) {
 		want []int
 	}{
 		{readyBlockedQ, []int{blocked, upper}},
+		{`repo:o/r is:issue is:open label:"Stage:Ready" is:blocked`, []int{blocked, upper}},
 		{`repo:o/r is:open label:"stage:ready" is:blocked`, []int{blocked, pr, upper}},
 		{`repo:o/r is:issue label:"stage:ready" is:blocked`, []int{blocked, closed, upper}},
 		{`repo:O/R is:issue is:open label:stage:ready`, []int{blocked, closedOnly, unblocked, upper}},
@@ -104,7 +106,8 @@ func TestSearchIssuesBlocked(t *testing.T) {
 
 // A search the fake doesn't read is a 422: a qualifier it doesn't know, a
 // typo of one, free text, a negation, an empty label, an unclosed quote,
-// no repo: or another repo, and a search that isn't advanced.
+// no repo: or another repo, and a search that isn't advanced. Each is
+// sorted as the fake serves, so only the q or advanced_search refuses it.
 func TestSearchIssuesRefused(t *testing.T) {
 	t.Parallel()
 	f := New(t, "o/r", "issuedog")
@@ -123,16 +126,56 @@ func TestSearchIssuesRefused(t *testing.T) {
 		`repo:o/other is:issue`,
 		`repo:o/r repo:o/other is:issue`,
 	} {
-		opts := &gogithub.SearchOptions{AdvancedSearch: new(true)}
+		opts := &gogithub.SearchOptions{Sort: "created", Order: "asc", AdvancedSearch: new(true)}
 		_, resp, err := c.Search.Issues(context.Background(), q, opts)
 		var er *gogithub.ErrorResponse
 		if !errors.As(err, &er) || resp.StatusCode != http.StatusUnprocessableEntity {
 			t.Errorf("search %q: err %v, want a 422", q, err)
 		}
 	}
-	_, resp, err := c.Search.Issues(context.Background(), readyBlockedQ, &gogithub.SearchOptions{})
+	_, resp, err := c.Search.Issues(context.Background(), readyBlockedQ, &gogithub.SearchOptions{Sort: "created", Order: "asc"})
 	if err == nil || resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Errorf("a search that isn't advanced: err %v, want a 422", err)
+	}
+}
+
+// The search serves sort=created and order=asc only, each once: one
+// without either, with another, or with one twice is a 422, so a client
+// can't drop the order unseen. The search with both answers.
+func TestSearchIssuesOrderRefused(t *testing.T) {
+	t.Parallel()
+	f := New(t, "o/r", "issuedog")
+	f.AddIssue("owner", "Ready", "body", "stage:ready")
+	c := f.Client(t)
+	for _, tc := range []struct {
+		order string
+		want  int
+	}{
+		{"sort=created&order=asc", http.StatusOK},
+		{"", http.StatusUnprocessableEntity},
+		{"sort=created", http.StatusUnprocessableEntity},
+		{"order=asc", http.StatusUnprocessableEntity},
+		{"sort=updated&order=asc", http.StatusUnprocessableEntity},
+		{"sort=created&order=desc", http.StatusUnprocessableEntity},
+		{"sort=created&sort=updated&order=asc", http.StatusUnprocessableEntity},
+		{"sort=created&order=asc&order=desc", http.StatusUnprocessableEntity},
+	} {
+		path := "search/issues?advanced_search=true&q=" + url.QueryEscape(readyBlockedQ)
+		if tc.order != "" {
+			path += "&" + tc.order
+		}
+		req, err := c.NewRequest(context.Background(), http.MethodGet, path, nil)
+		if err != nil {
+			t.Fatalf("%q: %v", tc.order, err)
+		}
+		resp, err := c.Do(req, nil)
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		if status != tc.want {
+			t.Errorf("search with %q: status %d, err %v; want a %d", tc.order, status, err, tc.want)
+		}
 	}
 }
 
@@ -249,5 +292,29 @@ func TestSearchIssuesFrozen(t *testing.T) {
 	f.ThawSearch()
 	if got, _ := searchFound(t, c, readyBlockedQ, 100); !slices.Equal(got, []int{filed}) {
 		t.Errorf("thawed again: found %v, want [%d]", got, filed)
+	}
+}
+
+// A search frozen while the repo has no issues stays empty, a 304 to a
+// repeat, while a blocked ready task is filed, and finds it once thawed.
+func TestSearchIssuesFrozenEmpty(t *testing.T) {
+	t.Parallel()
+	f := New(t, "o/r", "issuedog")
+	c := f.Client(t)
+	searchFound(t, c, readyBlockedQ, 100)
+	f.FreezeSearch()
+	blocker := f.AddIssue("owner", "Blocker", "body")
+	blocked := f.AddIssue("owner", "Blocked", "body", "stage:ready")
+	f.SetBlockedBy(blocked, blocker)
+	from := len(f.Requests())
+	if got, total := searchFound(t, c, readyBlockedQ, 100); len(got) != 0 || total != 0 {
+		t.Errorf("frozen empty: found %v, total %d; want none", got, total)
+	}
+	if got, want := searchStatuses(f, from), []string{"304 true"}; !slices.Equal(got, want) {
+		t.Errorf("frozen empty: searches = %q, want %q", got, want)
+	}
+	f.ThawSearch()
+	if got, total := searchFound(t, c, readyBlockedQ, 100); !slices.Equal(got, []int{blocked}) || total != 1 {
+		t.Errorf("thawed: found %v, total %d; want [%d]", got, total, blocked)
 	}
 }
