@@ -591,14 +591,21 @@ func waitGoalDone(body string) (goal, done string) {
 }
 
 // waitHandoffLines returns the lines of the hand-off in comment id on s
-// (SPEC §9.4): that it waits, then its Goal and "Done when", copied from
-// the comment (waitLine.Copied, waitGoalDone), and last how to finish it.
-// The comment is the App's and clean, as latestHandoff found it. With
-// either field not found, as for a format that has changed, a line says
-// to see the hand-off instead.
+// (SPEC §9.4): that it waits, and why, then its Goal and "Done when",
+// copied from the comment (waitLine.Copied, waitGoalDone), and last how to
+// finish it. The comment is the App's and clean, as latestHandoff found
+// it. Why it waits is the implementer's need of an owner action, or for
+// the attempt cap's hand-off (capHandoffMove), the implementer's failed
+// runs. With either field not found, as for a format that has changed, a
+// line says to see the hand-off instead.
 func waitHandoffLines(s *github.Snapshot, id int64) []waitLine {
-	lines := []waitLine{{Text: "A hand-off waits for you: the implementer needs an action only you can do."}}
-	if goal, done := waitGoalDone(waitBody(s, id)); goal != "" && done != "" {
+	body := waitBody(s, id)
+	why := "the implementer needs an action only you can do."
+	if slices.ContainsFunc(github.ParseMarkers(body), capHandoffMove) {
+		why = "the implementer's runs failed `loop.max_attempts` times in a row, and the hand-off says why."
+	}
+	lines := []waitLine{{Text: "A hand-off waits for you: " + why}}
+	if goal, done := waitGoalDone(body); goal != "" && done != "" {
 		lines = append(lines, waitLine{Text: "Goal: " + goal, Copied: true}, waitLine{Text: "Done when: " + done, Copied: true})
 	} else {
 		lines = append(lines, waitLine{Text: "See the hand-off for what to do."})

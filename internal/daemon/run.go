@@ -166,8 +166,9 @@ type Lease struct {
 	// ApplyFailures counts the failed applies of the run's result.
 	ApplyFailures int `json:"apply_failures,omitempty"`
 	// PublicFailure is why the run failed, as failed records it, at most
-	// maxLastFailure characters (lastFailure), for the attempt cap's error
-	// (SPEC §5.3, §8.2), so a restart still names it. It holds only
+	// maxLastFailure characters (lastFailure), for the attempt cap's error,
+	// or the implementer's hand-off at the cap (SPEC §5.3, §8.2, §8.3), so
+	// a restart still names it. It holds only
 	// what that public comment may quote of the cause (publicCause), or
 	// publicCauseLogged when that's nothing: failed logs the whole cause,
 	// and nothing else reads it. Its key is new with that (#320), so a
@@ -404,11 +405,13 @@ func (r *Runs) CheckRegistered() error {
 // whether it ran. A run that fails, but not on a usage limit or in its
 // setup, counts as an attempt (failed); after loop.max_attempts in a row
 // the issue gets one state error (SPEC §5.3) and no more runs until the
-// stage moves or gets new input. If posting that error failed, RunStage
-// posts it instead of a run, even when the stage has no work pending, as
-// on an issue it no longer runs on; if that fails too, it logs the error and
-// moves on, so the next issue gets its turn. A Stage whose schema doesn't
-// compile starts no run: it's a setup failure, reported once (schema). A
+// stage moves or gets new input, or for the implementer on a task, a
+// hand-off at needs-human (atCap). If posting that error, or making that
+// hand-off, failed, RunStage posts it instead of a run, even when the
+// stage has no work pending, as on an issue it no longer runs on; if that
+// fails too, it logs the error and moves on, so the next issue gets its
+// turn. A Stage whose schema doesn't compile starts no run: it's a setup
+// failure, reported once (schema). A
 // result asking for a move the table lacks is no attempt: it gets one
 // state error (Transition), and no run starts until the issue changes
 // (moveKey). A run whose result fails to apply keeps its lease, for the
@@ -462,7 +465,7 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		// failed on an issue its stage no longer runs on leaves it none.
 		// A post that keeps failing mustn't hold up the other issues.
 		last := Lease{Issue: n, Stage: is.Stage, AttemptKey: errKey, PublicFailure: r.failures[countKey(n, errKey)]}
-		if err := r.reportCap(ctx, nil, st, last); err != nil {
+		if err := r.atCap(ctx, st, last); err != nil {
 			logr.Errorf("%s/%s#%d: no %s run, as it failed loop.max_attempts times, but posting that failed again: %v",
 				a.Owner, a.Repo, n, st.Agent(), err)
 		}
@@ -1165,8 +1168,10 @@ func (r *Runs) endedLease(ctx context.Context, l Lease) error {
 // may quote of cause as its PublicFailure (publicCause), or, if nothing,
 // publicCauseLogged. It logs cause in full. The last attempt allowed posts
 // one state error (reportCap), naming that cause, after which RunStage
-// runs no more. If posting it fails, RunStage posts it instead of starting
-// a run, whether or not the stage has work pending then.
+// runs no more, or for the implementer on a task, hands the task off to
+// the owner, naming it too (atCap). If that fails, RunStage does it
+// instead of starting a run, whether or not the stage has work pending
+// then.
 func (r *Runs) failed(ctx context.Context, st Stage, l Lease, cause error) error {
 	l.PublicFailure = cmp.Or(publicCause(cause), publicCauseLogged)
 	n := r.count(l)
@@ -1177,7 +1182,75 @@ func (r *Runs) failed(ctx context.Context, st Stage, l Lease, cause error) error
 	if n < r.limit() {
 		return nil
 	}
+	return r.atCap(ctx, st, l)
+}
+
+// atCap is what the attempt cap does once l's run is the last of
+// loop.max_attempts failed in a row (SPEC §8.3). For a Committer's run at
+// in-progress, the implementer's on a task, it's a hand-off at needs-human
+// (capHandoff), which releases the worker. For every other stage, it's
+// the kind=attempts state error (reportCap), and the stage runs no more
+// until the round changes.
+func (r *Runs) atCap(ctx context.Context, st Stage, l Lease) error {
+	if _, commits := st.(Committer); commits && l.Stage == state.InProgress {
+		return r.capHandoff(ctx, st, l)
+	}
 	return r.reportCap(ctx, nil, st, l)
+}
+
+// capHandoff is the implementer's attempt cap on a task (SPEC §8.3, §9.3):
+// l's run was the last of loop.max_attempts failed in a row, so the task
+// moves in-progress → needs-human on attempt-cap, keyed
+// event=a<l.AttemptKey> (capHandoffKey), with a hand-off in the
+// implementer's form whose opening says the runs failed, and quotes why
+// the last one did, as the cap's state error would (renderCapHandoff).
+// That releases the worker (SPEC §8.1), and /done or a trusted 👍 on the
+// hand-off sends the task back to ready, a new round (handback.go).
+//
+// It reads the issue again, and runs CheckLabels on it before its move,
+// as a run's apply does. Like reportCap, it moves nothing on an issue
+// that's closed, gone, or has moved on, by a marker or a stage label not
+// yet recorded. A task retyped since, which the table no longer moves to
+// needs-human, gets reportCap's state error instead. An error is the
+// caller's: RunStage makes the hand-off on its next pass instead of a
+// run, as it posts reportCap's state error then.
+func (r *Runs) capHandoff(ctx context.Context, st Stage, l Lease) error {
+	a := r.Daemon.Step.Applier
+	wrap := func(err error) error { return fmt.Errorf("hand off the attempt cap on #%d: %w", l.Issue, err) }
+	s, err := a.Client.Snapshot(ctx, a.Owner, a.Repo, l.Issue)
+	switch {
+	case gone(err):
+		logr.Infof("#%d looks gone, so it gets no attempt cap hand-off: %v", l.Issue, err)
+		return nil
+	case err != nil:
+		return wrap(err)
+	}
+	defer r.Daemon.reread(l.Issue, false)
+	d, err := a.Dirty(ctx, s, r.Daemon.Step.Trust)
+	if err == nil {
+		err = a.discCheckLabels(ctx, s, r.Daemon.Step.Trust, d)
+	}
+	if err != nil {
+		return wrap(err)
+	}
+	is := state.Derive(s, a.AppSlug, d.Has)
+	if s.Closed || is.Stage != l.Stage || otherStage(s, l.Stage) {
+		return nil
+	}
+	if class, err := state.ClassOf(is.Item); err != nil || class&state.AnyTask == 0 {
+		if err := r.reportCap(ctx, s, st, l); err != nil {
+			return wrap(err)
+		}
+		return nil
+	}
+	m := Move{To: state.NeedsHuman, Trigger: state.TriggerAttemptCap, Key: capHandoffKey(l.AttemptKey),
+		Text: renderCapHandoff(r.limit(), l.PublicFailure, l.Issue, r.Daemon.Config.Notify)}
+	if err := a.Transition(ctx, s, d.Has, m); err != nil {
+		return wrap(err)
+	}
+	logr.Warnf("%s/%s#%d: the %s run failed %d times in a row, so the task is handed off to the owner at %s",
+		a.Owner, a.Repo, l.Issue, st.Agent(), r.limit(), state.NeedsHuman)
+	return nil
 }
 
 // count adds l's attempt to the count of its attempts, which it returns,
