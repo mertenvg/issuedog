@@ -193,7 +193,7 @@ func TestHeldStackHandSetHold(t *testing.T) {
 		heldStackCheck(t, heldStackFamily, steps, func() map[int]issueWant {
 			return map[int]issueWant{
 				1: {[]string{"stage:ready"}, nil},
-				2: {[]string{"stage:in-progress"}, []string{moved("Resumed by `/resume`, back to `in-progress`.", fmt.Sprintf("from=held to=in-progress cmd=%d seen=1002", resume2))}},
+				2: {[]string{"stage:ready"}, []string{moved(resumedToReady, fmt.Sprintf("from=held to=ready cmd=%d seen=1002", resume2))}},
 				3: {[]string{"stage:ready"}, nil},
 			}
 		}, "+1", &resume2)

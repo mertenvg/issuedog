@@ -322,7 +322,7 @@ func (im *Implementer) Apply(ctx context.Context, a *Applier, r Result) error {
 	}
 	if out.Outcome == implementerHandoff {
 		m := r.Move(state.NeedsHuman, state.TriggerImplementerBlocked)
-		m.Text = renderHandoff(*out.Handoff, f.Issue, f.Notify)
+		m.Text = renderHandoff(handoffIntro, *out.Handoff, f.Issue, f.Notify)
 		logr.Infof("%s/%s#%d: run %s hands off an owner action, moving to %s", a.Owner, a.Repo, r.S.Number, r.RunID, state.NeedsHuman)
 		if err := a.Transition(ctx, r.S, r.Dirt.Has, m); err != nil {
 			return wrap(err)

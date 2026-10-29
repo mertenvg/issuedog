@@ -41,7 +41,10 @@ func taskAnswerComments() []github.Comment {
 // that are clean, trusted and not commands, while no implementer run has
 // moved the task since. A move to ready that isn't an answer's, keyed by a
 // run, gives none, and so does one an implementer run's move came after,
-// such as a move to verifying the owner sent back to in-progress by hand.
+// such as a move to verifying the owner sent back to in-progress by hand,
+// or a parent's revision that changed the task. A hold the task went back
+// to ready from by /resume, from in-progress, whose run it dropped, or
+// from ready, doesn't end them (SPEC §6.4, §9.1).
 func TestImplementerAnswers(t *testing.T) {
 	t.Parallel()
 	app := contextTestApp
@@ -62,6 +65,19 @@ func TestImplementerAnswers(t *testing.T) {
 		{"after a move to ready by a run", []github.Comment{
 			{ID: 18, Author: app, Body: "<!-- issuedog:transition from=ready to=clarifying by=owner event=900 -->"},
 			{ID: 19, Author: app, Body: "<!-- issuedog:transition from=clarifying to=ready run=run3 -->"},
+		}, nil},
+		{"after a hold at in-progress, which /resume sent to ready", []github.Comment{
+			{ID: 18, Author: app, Body: "<!-- issuedog:transition from=ready to=in-progress event=s16 seen=17 -->"},
+			{ID: 19, Author: app, Body: "<!-- issuedog:transition from=in-progress to=held at=in-progress reason=owner cmd=900 seen=17 -->"},
+			{ID: 20, Author: app, Body: "<!-- issuedog:transition from=held to=ready cmd=901 seen=17 -->"},
+		}, []int64{11, 15}},
+		{"after a hold at ready and its /resume", []github.Comment{
+			{ID: 18, Author: app, Body: "<!-- issuedog:transition from=ready to=held at=ready reason=owner cmd=900 seen=15 -->"},
+			{ID: 19, Author: app, Body: "<!-- issuedog:transition from=held to=ready cmd=901 seen=15 -->"},
+		}, []int64{11, 15}},
+		{"after a parent's revision changed it", []github.Comment{
+			{ID: 18, Author: app, Body: "<!-- issuedog:transition from=ready to=in-progress event=s16 seen=17 -->"},
+			{ID: 19, Author: app, Body: "<!-- issuedog:transition from=in-progress to=ready event=p5 -->"},
 		}, nil},
 	} {
 		s := &github.Snapshot{Number: 1, Comments: append(taskAnswerComments(), tt.more...)}

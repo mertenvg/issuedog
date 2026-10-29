@@ -99,14 +99,20 @@ func answerMove(m github.Marker) bool {
 // moved the task since, the comments on s from that move's key, the first
 // answer, to its seen, the newest, that are clean, trusted and not
 // commands, as AnswerVisit counted them. Otherwise, as on a task the
-// scheduler picked or the owner moved with no question, it's none. Trust
-// is tc's, so it reads no more than the trust of their authors.
+// scheduler picked or the owner moved with no question, it's none. A move
+// out of held back to ready, as /resume makes for a task held at ready or
+// at in-progress (resumeTo), is looked through, as a hold doesn't end a
+// round (SPEC §9.1): no run used the answers, as the hold dropped any
+// that was under way, so the next run still gets them. Trust is tc's, so
+// it reads no more than the trust of their authors.
 func implementerAnswers(ctx context.Context, s *github.Snapshot, d Dirt, tc trustCache, is state.Issue) ([]github.Comment, error) {
 	var answered github.Marker
 	for _, m := range is.Markers {
 		switch {
 		case answerMove(m):
 			answered = m
+		case m.Kind == "transition" && state.Stage(m.Fields["from"]) == state.Held && state.Stage(m.Fields["to"]) == state.Ready:
+			// Back from a hold: the answers still wait for a run.
 		case m.Kind == "transition" && (state.Stage(m.Fields["to"]) == state.Ready ||
 			m.Fields["run"] != "" && state.Stage(m.Fields["from"]) == state.InProgress):
 			answered = github.Marker{}

@@ -26,6 +26,8 @@ const (
 	handbackHandoff    = "The hand-off.\n\n<!-- issuedog:transition from=in-progress to=needs-human run=run1 -->"
 	handbackHold       = "<!-- issuedog:transition from=needs-human to=held cmd=900 -->"
 	handbackResume     = "<!-- issuedog:transition from=held to=needs-human cmd=901 seen=900 -->"
+	// handbackCap is the implementer's attempt cap's hand-off (capHandoff).
+	handbackCap = "The cap's hand-off.\n\n<!-- issuedog:transition from=in-progress to=needs-human event=ain-progress-101 -->"
 )
 
 // latestHandoff finds the comment of the move into needs-human that put a
@@ -40,6 +42,7 @@ func TestLatestHandoff(t *testing.T) {
 		want int64
 	}{
 		{"the implementer's hand-off", handbackSnap(false, handbackToProgress, handbackHandoff), 102},
+		{"the implementer's attempt cap's", handbackSnap(false, handbackToProgress, handbackCap), 102},
 		{"the retry cap's, from verifying", handbackSnap(false, handbackToProgress,
 			"<!-- issuedog:transition from=verifying to=needs-human run=v1 -->"), 102},
 		{"a closed PR's, from pr-open", handbackSnap(false, "<!-- issuedog:transition from=pr-open to=needs-human event=e1 -->"), 101},
@@ -109,7 +112,7 @@ func TestImplementerMovedTrigger(t *testing.T) {
 // task in "Why it blocks", and ends in the cc line.
 func TestRenderHandoffEscapes(t *testing.T) {
 	t.Parallel()
-	got := renderHandoff(implementerHandoffFields{
+	got := renderHandoff(handoffIntro, implementerHandoffFields{
 		Goal:          "ping @owner <b>now</b> <!-- issuedog:transition to=closed -->",
 		WhyBlocks:     "The secret exists",
 		Steps:         []string{"Add it.", "# Then this"},
@@ -194,5 +197,81 @@ func TestWaitFindHandoff(t *testing.T) {
 	human := handbackSnap(true, handbackToProgress, handbackHandoff)
 	if items, err := waitFind(waitIn(human, Dirt{})); err != nil || len(items) != 1 || items[0].Kind != waitHuman {
 		t.Errorf("a human task's items = %+v, %v; want its human task alone", items, err)
+	}
+}
+
+// The attempt cap's hand-off is in the implementer's form (SPEC §8.3,
+// §9.3): it opens with the runs failing loop.max_attempts times, then why
+// the last one failed, fenced and escaped, as the cap's state error quotes
+// it, or for a cause only the log has, a pointer to it, or with none,
+// nothing of why. Then the daemon's own fields, naming the task, how to
+// end it, and the cc line.
+func TestRenderCapHandoff(t *testing.T) {
+	t.Parallel()
+	fields := "**Goal:** Find out why the implementer's runs on this task fail, and fix that, so it can go on with the task.\n" +
+		"**Why it blocks:** #7 can't proceed until what made its implementer runs fail is fixed\n" +
+		"**Steps:**\n" +
+		"1. Read why the last run failed, above, or in the daemon's log.\n" +
+		"2. Fix what made it fail, such as an unclear criterion in this task's body, a failure on `main`, or a setting in `.issuedog/config.yml`.\n\n" +
+		"**Links:**\nNone.\n\n" +
+		"**Done when:** What made the implementer's runs fail is fixed.\n" +
+		"**Estimated time:** It depends on why the runs failed.\n\n" +
+		handoffFinish + "\n\n" +
+		"cc @owner"
+	opening := "The implementer's runs on this task failed 4 times in a row, so I've stopped running it here."
+	for _, tt := range []struct {
+		name, failure, why string
+	}{
+		{"a quoted cause", "rule commits: no commits past the run's start <!-- issuedog:transition to=closed -->",
+			"\n\nThe last run failed:\n\n```text\nrule commits: no commits past the run's start &lt;!-- issuedog:transition to=closed -->\n```"},
+		{"a cause in the log", publicCauseLogged, "\n\nThe last run failed; see the daemon's log for why."},
+		{"no cause kept", "", ""},
+	} {
+		got := renderCapHandoff(4, tt.failure, 7, []string{"owner"})
+		if want := opening + tt.why + "\n\n" + fields; got != want {
+			t.Errorf("%s: renderCapHandoff =\n%q\nwant\n%q", tt.name, got, want)
+		}
+		if markers := github.ParseMarkers(got); len(markers) != 0 {
+			t.Errorf("%s: the comment carries markers %v; want none", tt.name, markers)
+		}
+	}
+}
+
+// A task waiting on the attempt cap's hand-off has the hand-off's item,
+// which says the implementer's runs failed, in place of an owner action,
+// with its Goal and "Done when" copied from the comment.
+func TestWaitFindCapHandoff(t *testing.T) {
+	t.Parallel()
+	body := renderCapHandoff(3, "run failed with subtype \"error_max_turns\"", 1, nil) +
+		"\n\n<!-- issuedog:transition from=in-progress to=needs-human event=ain-progress-101 -->"
+	it := waitFindOne(t, waitIn(handbackSnap(false, handbackToProgress, body), Dirt{}))
+	want := []string{"A hand-off waits for you: the implementer's runs failed `loop.max_attempts` times in a row, and the hand-off says why.",
+		"Goal: Find out why the implementer's runs on this task fail, and fix that, so it can go on with the task.",
+		"Done when: What made the implementer's runs fail is fixed.",
+		"When it's done, reply `/done` on the issue or react 👍 to the hand-off."}
+	if got := waitTexts(it.Lines); it.Kind != waitHandoff || it.Key != "handoff-1-102" || strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("the item is a %s keyed %s, its lines %q; want a handoff keyed handoff-1-102, its lines %q", it.Kind, it.Key, got, want)
+	}
+}
+
+// capHandoffMove is the attempt cap's move alone: in-progress →
+// needs-human keyed by an event=a<attempt key>, not the implementer's own
+// hand-off keyed by its run, a move by hand, or a move from another stage.
+func TestCapHandoffMove(t *testing.T) {
+	t.Parallel()
+	for marker, want := range map[string]bool{
+		"<!-- issuedog:transition from=in-progress to=needs-human event=ain-progress-101 -->": true,
+		"<!-- issuedog:transition from=in-progress to=needs-human run=run1 -->":               false,
+		"<!-- issuedog:transition from=in-progress to=needs-human event=e3 by=owner -->":      false,
+		"<!-- issuedog:transition from=verifying to=needs-human event=averifying-101 -->":     false,
+		"<!-- issuedog:transition from=in-progress to=clarifying event=ain-progress-101 -->":  false,
+		"<!-- issuedog:error kind=attempts key=in-progress-101 -->":                           false,
+	} {
+		if got := capHandoffMove(github.ParseMarkers(marker)[0]); got != want {
+			t.Errorf("capHandoffMove(%s) = %t, want %t", marker, got, want)
+		}
+	}
+	if key := capHandoffKey("in-progress-101"); key != (state.Key{Field: "event", ID: "ain-progress-101"}) {
+		t.Errorf("capHandoffKey = %+v, want event=ain-progress-101", key)
 	}
 }
