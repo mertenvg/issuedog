@@ -27,14 +27,16 @@ func New(a *Applier, clone *repo.Repo, cfg *config.Config, tr github.Trust) *Dae
 }
 
 // RegisterStages returns the Stages to register on d, by stage, and the
-// Unlabeled stage: the interviewer at clarifying, the planner at planning
-// (SPEC §12), and triage for open issues with no stage label (SPEC §6.2).
+// Unlabeled stage: the interviewer at clarifying, the planner at planning,
+// the implementer at in-progress (SPEC §12), and triage for open issues
+// with no stage label (SPEC §6.2).
 // main's stageWork and the whole-run tests both register them with it
 // (#330).
 func RegisterStages(d *Daemon) (map[state.Stage]Stage, Stage) {
 	return map[state.Stage]Stage{
 		state.Clarifying: &Interviewer{Daemon: d},
 		state.Planning:   &Planner{Daemon: d},
+		state.InProgress: &Implementer{Daemon: d},
 	}, &Triage{Daemon: d}
 }
 
