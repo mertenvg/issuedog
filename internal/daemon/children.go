@@ -20,7 +20,7 @@ import (
 )
 
 // ChildrenVisit creates the children of an approved plan (SPEC §5.2):
-// the loop calls it after FlagVisit, so the pass that approves a plan, by
+// the loop calls it after AnswerVisit, so the pass that approves a plan, by
 // 👍 or /approve, or that skips review, creates its children too. It acts
 // only on an open parent at planned, whose move there approved a plan
 // revision R with its data (approvedPlanData): the move's comment, ID P,

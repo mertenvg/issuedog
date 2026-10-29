@@ -75,7 +75,11 @@ func (*Implementer) Pending(in Input) bool {
 //     their numbers and questions, and the trusted, clean comments, with
 //     author, ID and round, oldest first, as the planner's. The rounds are
 //     every stage's (allRounds).
-//   - input.md: in.Inputs, or "none: first run".
+//   - input.md: the answers to the task's latest round, each labelled with
+//     its round, as ivInputs labels the interviewer's, when the move that
+//     sent it back to ready was an answer's and no implementer run has
+//     moved it since (implementerAnswers), then in.Inputs, or with
+//     neither, "none: first run".
 //   - system.md: the preamble (implementerPreamble), then
 //     .issuedog/prompts/implementer.md from main or the shipped default
 //     (agent.Prompt).
@@ -115,13 +119,22 @@ func (im *Implementer) Context(ctx context.Context, in Input) (map[string][]byte
 	if err := plannerTrustedTitleNote(ctx, a.AppSlug, tc, s, false, &text); err != nil {
 		return nil, wrap(err)
 	}
+	answers, err := implementerAnswers(ctx, s, in.Dirt, tc, in.Issue)
+	if err != nil {
+		return nil, wrap(err)
+	}
+	input := contextInputs(answers, func(c github.Comment) string {
+		return "an answer to round " + strconv.Itoa(ivRoundOf(all, c.ID))
+	})
+	input = append(input, contextInputs(in.Inputs, func(github.Comment) string {
+		return "new since the task came to in-progress"
+	})...)
 	files := map[string][]byte{
 		"issue.md": []byte(contextIssue(s, a.AppSlug, text.TitleNote, text.BodyNote,
 			"- Priority: p"+strconv.Itoa(priority(s)), "- Scope: "+implementerScope(s))),
 		"conversation.md": []byte(ivFile("Conversation on #"+strconv.Itoa(s.Number), implementerConversationIntro, text.Conversation, "None yet.")),
-		"input.md": []byte(ivFile("Input for this run", implementerInputIntro, contextInputs(in.Inputs, func(github.Comment) string {
-			return "new since the task came to in-progress"
-		}), "none: first run")),
+		"input.md": []byte(ivFile("Input for this run", implementerInputIntro,
+			input, "none: first run")),
 		"prompt.md": []byte(implementerTask(s.Number, in.ContextDir)),
 		"system.md": []byte(implementerPreamble(d.Config, all) + "\n\n" + string(prompt)),
 	}
