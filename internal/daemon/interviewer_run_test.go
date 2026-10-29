@@ -18,6 +18,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
+	"github.com/mertenvg/issuedog/internal/workspace"
 )
 
 // This file is the interviewer's whole run against the fakes, from an epic
@@ -40,17 +41,22 @@ import (
 // spec.json's free-text answer.
 
 // wholeRunClaude is the fake claude of a whole run. On its nth run it keeps
-// its prompt, its arguments, the lease and a copy of the run's context
-// directory, the one its --append-system-prompt-file is in, as
-// $FAKE/prompt.<n>, $FAKE/args.<n>, $FAKE/lease.<n> and $FAKE/ctx.<n>/, then
-// prints $FAKE/out.<n>. A run with no out.<n> exits 4, a failed run, so a
-// run the test didn't expect shows.
+// its prompt, its arguments, the lease, its clone's HEAD, its clone's refs,
+// one "<sha> <ref>" a line, and a copy of the run's context directory, the
+// one its --append-system-prompt-file is in, as $FAKE/prompt.<n>,
+// $FAKE/args.<n>, $FAKE/lease.<n>, $FAKE/head.<n>, $FAKE/refs.<n> and
+// $FAKE/ctx.<n>/, then prints $FAKE/out.<n>. A run with no out.<n> exits 4,
+// a failed run, so a run the test didn't expect shows. A failed ref
+// listing leaves "for-each-ref failed" in refs.<n>, so it never reads as
+// no refs.
 const wholeRunClaude = `#!/bin/sh
 n=$(($(cat "$FAKE/count" 2>/dev/null || echo 0) + 1))
 echo "$n" > "$FAKE/count"
 printf '%s' "$2" > "$FAKE/prompt.$n"
 printf '%s\n' "$@" > "$FAKE/args.$n"
 cp "$STATE/lease.json" "$FAKE/lease.$n"
+git rev-parse HEAD > "$FAKE/head.$n" 2>/dev/null
+git for-each-ref --format='%(objectname) %(refname)' > "$FAKE/refs.$n" 2>/dev/null || echo "for-each-ref failed" >> "$FAKE/refs.$n"
 sys=
 prev=
 for a in "$@"; do
@@ -270,8 +276,10 @@ func (w *wholeRun) newest(step, want string) github.Comment {
 }
 
 // context is claude run k's context files, as the run had them, after
-// checking that the run was leased at stage, and that its prompt was
-// prompt.md, naming its context directory.
+// checking that the run was leased at stage, that it ran in a clone of the
+// start its lease names, with no refs but the target's, if the lease names
+// one (SPEC §3.2), and that its prompt was prompt.md, naming its context
+// directory.
 func (w *wholeRun) context(k int, stage state.Stage) map[string]string {
 	w.t.Helper()
 	var l daemon.Lease
@@ -281,6 +289,18 @@ func (w *wholeRun) context(k int, stage state.Stage) map[string]string {
 	id := "run" + strconv.Itoa(k)
 	if l.RunID != id || l.Issue != w.n || l.Stage != stage {
 		w.t.Errorf("run %d's lease = %+v; want %s on #%d at %s", k, l, id, w.n, stage)
+	}
+	if head := strings.TrimSpace(w.file("head." + strconv.Itoa(k))); len(l.Start) != 40 || head != l.Start {
+		w.t.Errorf("run %d's clone was at %q, and its lease names start %q; want the clone at the start, a full SHA", k, head, l.Start)
+	}
+	// HEAD is detached, so a clone with no target has no ref at all: no
+	// main, no other branch and no remote-tracking ref.
+	want := ""
+	if l.Target != "" {
+		want = l.Target + " " + workspace.TargetRef
+	}
+	if refs := strings.TrimSpace(w.file("refs." + strconv.Itoa(k))); refs != want {
+		w.t.Errorf("run %d's clone had refs %q, and its lease names target %q; want %q", k, refs, l.Target, want)
 	}
 	dir := "ctx." + strconv.Itoa(k)
 	entries, err := os.ReadDir(w.path("claude", dir))

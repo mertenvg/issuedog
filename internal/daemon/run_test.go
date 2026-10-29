@@ -25,15 +25,23 @@ import (
 )
 
 // fakeClaude counts its runs in $FAKE/count, keeps each prompt, its
-// arguments, one a line, and the lease it ran under as $FAKE/prompt.<n>,
-// $FAKE/args.<n> and $FAKE/lease.<n>, sleeps for $FAKE/sleep seconds, if
-// set, writes $FAKE/stderr, if set, to stderr, prints $FAKE/out and exits
-// with $FAKE/exit, if there is one.
+// arguments, one a line, the lease it ran under and its clone's HEAD, as
+// $FAKE/prompt.<n>, $FAKE/args.<n>, $FAKE/lease.<n> and $FAKE/head.<n>,
+// sleeps for $FAKE/sleep seconds, if set, writes $FAKE/stderr, if set, to
+// stderr, prints $FAKE/out and exits with $FAKE/exit, if there is one.
+// When $FAKE/commit exists, it first commits run.<n>.txt in its clone, and
+// keeps the commit as $FAKE/commit.<n>.
 const fakeClaude = `#!/bin/sh
 n=$(($(cat "$FAKE/count" 2>/dev/null || echo 0) + 1))
 printf '%s' "$2" > "$FAKE/prompt.$n"
 printf '%s\n' "$@" > "$FAKE/args.$n"
 cp "$STATE/lease.json" "$FAKE/lease.$n"
+git rev-parse HEAD > "$FAKE/head.$n" 2>/dev/null
+if [ -f "$FAKE/commit" ]; then
+	echo "$n" > "run.$n.txt" && git add "run.$n.txt" &&
+		git -c user.name=t -c user.email=t@example.com commit --quiet -m "run $n" &&
+		git rev-parse HEAD > "$FAKE/commit.$n" || exit 5
+fi
 echo "$n" > "$FAKE/count"
 [ -f "$FAKE/sleep" ] && sleep "$(cat "$FAKE/sleep")"
 [ -f "$FAKE/stderr" ] && cat "$FAKE/stderr" >&2
@@ -151,10 +159,15 @@ func newRig(t *testing.T, f *githubtest.Fake, o *origin, root string) *rig {
 	}
 	g.d = newDaemon(t, f, o, nil)
 	g.d.Step.Trust = trusted{"owner": true}
+	// Runs fetch from the daemon's clone, as main's stageWork has them, so
+	// the clone is synced from o first, as startup syncs it.
+	if err := g.d.Clone.Sync(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
 	ids := 0
 	g.r = &daemon.Runs{Daemon: g.d, Stages: map[state.Stage]daemon.Stage{state.Clarifying: g.stage},
 		Runner:    &agent.Runner{Claude: script, StateDir: g.path("state")},
-		Workspace: &workspace.Workspace{Bare: o.url, RunsDir: g.path("runs"), ContextDir: g.path("ctx")},
+		Workspace: &workspace.Workspace{Bare: g.d.Clone.Dir(), RunsDir: g.path("runs"), ContextDir: g.path("ctx")},
 		Gate:      gate,
 		Env:       []string{"FAKE=" + g.path("claude"), "STATE=" + g.path("state"), "PATH=/usr/bin:/bin"},
 		Now:       func() time.Time { return g.now },
@@ -359,6 +372,99 @@ func TestRunStageAppliesResult(t *testing.T) {
 	writes := len(f.Writes())
 	if err := g.work(1); err != nil || len(f.Writes()) != writes || g.runs() != 1 {
 		t.Errorf("a second Work = %v, with %d writes and %d runs; want none", err, len(f.Writes())-writes, g.runs())
+	}
+}
+
+// A run's clone starts from main's commit in the daemon's clone, as its
+// last sync left it, not from the origin's newer main, and the lease
+// records that commit as the run's start, with no target (SPEC §3.4, §8.2).
+func TestRunStartsFromMainInTheClone(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	interview(f)
+	o := newOrigin(t)
+	g := newRig(t, f, o, t.TempDir())
+	synced := gitIn(t, g.d.Clone.Dir(), "rev-parse", "main")
+	if want := gitIn(t, o.url, "rev-parse", "main"); synced != want {
+		t.Fatalf("the clone's main = %s, want the origin's %s", synced, want)
+	}
+	o.commit("later.txt", "not synced\n")
+	g.claude(okOut, 0)
+	if err := g.work(1); err != nil {
+		t.Fatal(err)
+	}
+	var l daemon.Lease
+	if err := json.Unmarshal([]byte(g.file("lease.1")), &l); err != nil {
+		t.Fatal(err)
+	}
+	if l.Start != synced || l.Target != "" {
+		t.Errorf("the lease names start %q and target %q; want main's %s as synced, and no target", l.Start, l.Target, synced)
+	}
+	if head := strings.TrimSpace(g.file("head.1")); head != synced {
+		t.Errorf("the run's clone was at %q, want main's %s as synced", head, synced)
+	}
+}
+
+// A daemon's clone with no main to name starts no run, and uses no
+// attempt: the run once main is back is attempt 1.
+func TestRunWithNoMainStartsNoRun(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	interview(f)
+	g := newRig(t, f, newOrigin(t), t.TempDir())
+	gitIn(t, g.d.Clone.Dir(), "update-ref", "-d", "refs/heads/main")
+	g.claude(okOut, 0)
+	if err := g.work(1); err == nil || !strings.Contains(err.Error(), "name the run's start") {
+		t.Errorf("work = %v, want the start's error", err)
+	}
+	if g.runs() != 0 || len(g.leftovers()) != 0 || g.lease().Attempt != 0 {
+		t.Fatalf("claude ran %d times, leaving %v and lease %+v; want no run, nothing left and no attempt", g.runs(), g.leftovers(), g.lease())
+	}
+	if err := g.d.Clone.Sync(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.work(1); err != nil {
+		t.Fatal(err)
+	}
+	var l daemon.Lease
+	if err := json.Unmarshal([]byte(g.file("lease.1")), &l); err != nil {
+		t.Fatal(err)
+	}
+	if g.runs() != 1 || l.Attempt != 1 {
+		t.Errorf("claude ran %d times, and the run once main is back is attempt %d; want 1, attempt 1", g.runs(), l.Attempt)
+	}
+}
+
+// A start that can't be named costs no request: with no main in the bare
+// repo, Work gives up on the run before it reads the issue again, or
+// anything else, on every pass.
+func TestRunWithNoMainMakesNoRequest(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	interview(f)
+	g := newRig(t, f, newOrigin(t), t.TempDir())
+	gitIn(t, g.d.Clone.Dir(), "update-ref", "-d", "refs/heads/main")
+	g.claude(okOut, 0)
+	ctx := context.Background()
+	for pass := 1; pass <= 2; pass++ {
+		s, err := g.d.Step.Client.Snapshot(ctx, "o", "r", 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		in, err := g.d.Step.Run(ctx, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		from := len(f.Requests())
+		if err := g.r.Work(ctx, []daemon.Ready{{S: s, Inputs: in}}); err == nil || !strings.Contains(err.Error(), "name the run's start") {
+			t.Errorf("pass %d: work = %v, want the start's error", pass, err)
+		}
+		if made := f.Requests()[from:]; len(made) != 0 {
+			t.Errorf("pass %d: Work made %d requests, the first %+v; want none", pass, len(made), made[0])
+		}
+	}
+	if g.runs() != 0 || len(g.leftovers()) != 0 {
+		t.Errorf("claude ran %d times, leaving %v; want no run and nothing left", g.runs(), g.leftovers())
 	}
 }
 

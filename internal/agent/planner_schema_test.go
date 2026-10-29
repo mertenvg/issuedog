@@ -188,6 +188,8 @@ func TestPlannerPrompt(t *testing.T) {
 		// A revision's statuses, and their rules.
 		"`children.md`", "## Revised plans", "- `kept`:", "- `changed`:", "- `new`:", "- `dropped`:",
 		"List every child exactly once, never as `new`", "A closed child can only be `kept`", "On a first plan, leave `status` out of every item.",
+		// The run's clone has no main branch.
+		runClone,
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("planner.md doesn't contain %q", want)
@@ -197,6 +199,9 @@ func TestPlannerPrompt(t *testing.T) {
 		if strings.Contains(p, old) {
 			t.Errorf("planner.md names the old check kind %q", old)
 		}
+	}
+	if strings.Contains(p, "checkout of `main`.") {
+		t.Errorf("planner.md says the run is in a checkout of `main`, a branch its clone doesn't have")
 	}
 
 	// A human task's "Done when" text is shown in the plan comment, so only
