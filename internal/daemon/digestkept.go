@@ -150,9 +150,10 @@ func digestKeptItem(heading, about, list string) (waitItem, bool) {
 		Kept: &waitKept{Title: h[2], Lines: lines[:len(lines)-1]}}, true
 }
 
-// digestKeptKind is the kind digestRenderKindName names name, if any.
+// digestKeptKind is the kind digestRenderKindName names name, if any, of
+// every kind there is: waitHandoff is the last.
 func digestKeptKind(name string) (waitKind, bool) {
-	for k := waitError; k <= waitDone; k++ {
+	for k := waitError; k <= waitHandoff; k++ {
 		if digestRenderKindName(k) == name {
 			return k, true
 		}

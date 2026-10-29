@@ -16,7 +16,8 @@ import (
 )
 
 // This file checks and applies the implementer's results (SPEC §7.2, §12):
-// for now its commits, which move the task to verifying with its head.
+// its commits, which move the task to verifying with its head, and its
+// hand-off, which implementer_handoff.go checks and renders.
 
 // The implementer's outcomes, as its schema names them.
 const (
@@ -94,6 +95,11 @@ type implementerFacts struct {
 	// Head is the commit the run left (Result.Head), or "" when it made
 	// none past its start.
 	Head string
+	// Issue is the task's number, and Notify the config's notify, which a
+	// hand-off's comment names (renderHandoff), so its length rule counts
+	// it as it's posted.
+	Issue  int
+	Notify []string
 }
 
 // checkImplementer checks out against f after the schema. Its error joins
@@ -104,8 +110,11 @@ type implementerFacts struct {
 //     needs commits past the run's start, a title type on pr.title_types,
 //     exactly as written, and a title on one line within GitHub's limit,
 //     and its comment (renderCommits) within maxText less textRoom.
-//   - question and handoff aren't handled yet, so either is a failed
-//     attempt, as an unknown outcome is.
+//   - handoff has a hand-off, and no title, summary or questions. Every
+//     field of the hand-off is filled, as a human task's (checkHandoff),
+//     and its comment (renderHandoff) is within maxText less textRoom.
+//   - question isn't handled yet, so it's a failed attempt, as an unknown
+//     outcome is.
 func checkImplementer(out implementerOutput, f implementerFacts) error {
 	var errs []error
 	fail := func(rule, format string, args ...any) {
@@ -114,7 +123,9 @@ func checkImplementer(out implementerOutput, f implementerFacts) error {
 	switch out.Outcome {
 	case implementerCommits:
 		checkCommits(out, f, fail)
-	case implementerQuestion, implementerHandoff:
+	case implementerHandoff:
+		checkHandoff(out, f, fail)
+	case implementerQuestion:
 		fail(ruleOutcome, "the %s outcome isn't handled yet", out.Outcome)
 	default:
 		fail(ruleOutcome, "unknown outcome %q", out.Outcome)
@@ -161,9 +172,11 @@ func checkCommits(out implementerOutput, f implementerFacts, fail func(string, s
 }
 
 // facts are what checkImplementer holds r's output to: the config's
-// pr.title_types, and the run's head.
+// pr.title_types, the run's head, the task's number and the config's
+// notify.
 func (im *Implementer) facts(r Result) implementerFacts {
-	return implementerFacts{TitleTypes: im.Daemon.Config.PR.TitleTypes, Head: r.Head}
+	c := im.Daemon.Config
+	return implementerFacts{TitleTypes: c.PR.TitleTypes, Head: r.Head, Issue: r.S.Number, Notify: c.Notify}
 }
 
 // Check checks r's output after its schema (checkImplementer): a broken
@@ -197,14 +210,18 @@ func renderCommits(title implementerTitle, sum implementerSummary, head string) 
 	}, "\n\n"))
 }
 
-// Apply writes r's commits, which Check passed, on r.S: the move
-// in-progress → verifying on implemented, r.Move's, keyed by the run, with
-// seen= and the run's model=, effort= and ran=, and head=, the run's head
-// (Result.Head), and its comment renderCommits'. Each write is checked
-// first, so it can run again after a crash part way (SPEC §5.2). Once the
-// run's move is written, it only finishes the move's labels (Transition),
-// at the stage the move put the issue at. Nothing is rendered from output
-// that fails checkImplementer.
+// Apply writes r's result, which Check passed, on r.S, as r.Move's move,
+// keyed by the run, with seen= and the run's model=, effort= and ran=:
+//   - commits: in-progress → verifying on implemented, with head=, the
+//     run's head (Result.Head), and its comment renderCommits';
+//   - handoff: in-progress → needs-human on implementer-blocked, and its
+//     comment the hand-off (renderHandoff), ending in the cc line.
+//
+// Each write is checked first, so it can run again after a crash part way
+// (SPEC §5.2). Once the run's move is written, it only finishes the move's
+// labels (Transition), at the stage the move put the issue at, on the
+// trigger of the move the run wrote (implementerMovedTrigger). Nothing is
+// rendered from output that fails checkImplementer.
 func (im *Implementer) Apply(ctx context.Context, a *Applier, r Result) error {
 	wrap := func(err error) error {
 		return fmt.Errorf("apply implementer run %s on %s/%s#%d: %w", r.RunID, a.Owner, a.Repo, r.S.Number, err)
@@ -212,7 +229,7 @@ func (im *Implementer) Apply(ctx context.Context, a *Applier, r Result) error {
 	is := state.Derive(r.S, a.AppSlug, r.Dirt.Has)
 	if is.Moved(state.Key{Field: "run", ID: r.RunID}) {
 		logr.Debugf("%s/%s#%d: run %s's move is written already, so only its labels are left", a.Owner, a.Repo, r.S.Number, r.RunID)
-		if err := a.Transition(ctx, r.S, r.Dirt.Has, r.Move(is.Stage, state.TriggerImplemented)); err != nil {
+		if err := a.Transition(ctx, r.S, r.Dirt.Has, r.Move(is.Stage, implementerMovedTrigger(is, r.RunID))); err != nil {
 			return wrap(err)
 		}
 		return nil
@@ -221,8 +238,18 @@ func (im *Implementer) Apply(ctx context.Context, a *Applier, r Result) error {
 	if err != nil {
 		return wrap(err)
 	}
-	if err := checkImplementer(out, im.facts(r)); err != nil {
+	f := im.facts(r)
+	if err := checkImplementer(out, f); err != nil {
 		return wrap(err)
+	}
+	if out.Outcome == implementerHandoff {
+		m := r.Move(state.NeedsHuman, state.TriggerImplementerBlocked)
+		m.Text = renderHandoff(*out.Handoff, f.Issue, f.Notify)
+		logr.Infof("%s/%s#%d: run %s hands off an owner action, moving to %s", a.Owner, a.Repo, r.S.Number, r.RunID, state.NeedsHuman)
+		if err := a.Transition(ctx, r.S, r.Dirt.Has, m); err != nil {
+			return wrap(err)
+		}
+		return nil
 	}
 	m := r.Move(state.Verifying, state.TriggerImplemented)
 	if m.Fields == nil {
@@ -235,4 +262,28 @@ func (im *Implementer) Apply(ctx context.Context, a *Applier, r Result) error {
 		return wrap(err)
 	}
 	return nil
+}
+
+// implementerMoveTriggers are the triggers of the implementer's moves, by
+// the stage each moves the task to (SPEC §7.2).
+var implementerMoveTriggers = map[state.Stage]state.Trigger{
+	state.Verifying:  state.TriggerImplemented,
+	state.NeedsHuman: state.TriggerImplementerBlocked,
+}
+
+// implementerMovedTrigger is the trigger of the move run wrote on is, by
+// the stage its marker moved the task to (implementerMoveTriggers), so a
+// move finished after a crash names the trigger it was written on, whatever
+// the outcome. A marker records no trigger, and Transition reads it only
+// for its messages, so a run whose move names no stage of the
+// implementer's, which only a bug writes, is named implemented.
+func implementerMovedTrigger(is state.Issue, run string) state.Trigger {
+	for _, m := range is.Markers {
+		if m.Kind == "transition" && m.Fields["run"] == run {
+			if t, ok := implementerMoveTriggers[state.Stage(m.Fields["to"])]; ok {
+				return t
+			}
+		}
+	}
+	return state.TriggerImplemented
 }

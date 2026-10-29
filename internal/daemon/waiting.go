@@ -42,9 +42,9 @@ import (
 // waitKind is a kind of item. The order's tie-break after the unblock
 // count (SPEC §9.4, The order) goes by waitKind.rank: state errors, then
 // discussion holds (#192), then approvals, then questions, then human
-// tasks (#287), then flags, then finished stories (#278). A plan's
-// approval (#270) ranks as an approval: it's a kind of its own only for
-// its key and its name.
+// tasks (#287) and hand-offs, then flags, then finished stories (#278). A
+// plan's approval (#270) ranks as an approval, and a hand-off as a human
+// task: each is a kind of its own only for its key and its name.
 type waitKind int
 
 const (
@@ -56,20 +56,21 @@ const (
 	waitPlanApproval
 	waitHuman
 	waitDone
+	waitHandoff
 )
 
 // rank is k's place in SPEC §9.4's order of kinds, lowest first: a plan's
-// approval is an approval's, a human task's comes after a question's and
-// before a flag's (#287), a flag's after that, and a finished story's
-// after every other kind's (#278), as story verification unblocks no
-// other issue. Any other kind ranks by its own value, so a kind appended
-// later, unless it's mapped here, ranks after finished stories: each
-// after waitDone is above waitDone's rank.
+// approval is an approval's, a human task's and a hand-off's come after a
+// question's and before a flag's (#287), a flag's after that, and a
+// finished story's after every other kind's (#278), as story verification
+// unblocks no other issue. Any other kind ranks by its own value, so a kind
+// appended later, unless it's mapped here, ranks after finished stories:
+// each after waitDone is above waitDone's rank.
 func (k waitKind) rank() int {
 	switch k {
 	case waitPlanApproval:
 		return int(waitApproval)
-	case waitHuman:
+	case waitHuman, waitHandoff:
 		return int(waitQuestion) + 1
 	case waitFlag:
 		return int(waitQuestion) + 2
@@ -97,6 +98,8 @@ func (k waitKind) String() string {
 		return "human"
 	case waitDone:
 		return "done"
+	case waitHandoff:
+		return "handoff"
 	}
 	return "kind" + strconv.Itoa(int(k))
 }
@@ -112,8 +115,9 @@ type waitItem struct {
 	// #270), flag-<n>-<comment id>,
 	// err-<n>-<kind>-<key>, hold-<n>-<hold marker id> (holdItemOf),
 	// human-<n> for a human task's (#287) or done-<n> for a finished
-	// story's (#278), of each of which an issue has one at most. A hold is
-	// announced by other keys than this one (waitItem.news).
+	// story's (#278), of each of which an issue has one at most, or
+	// handoff-<n>-<comment id> for a hand-off's, naming its comment. A hold
+	// is announced by other keys than this one (waitItem.news).
 	Key string
 	// Title is the issue's title. It's raw: anyone may have written it, so
 	// the digest's renderer runs it through inline and github.Escape.
@@ -245,6 +249,9 @@ type waitInput struct {
 //   - at needs-human, a human task (#287, SPEC §9.6's row), when it is
 //     one (waitHumanTask) and no open issue blocks it (in.Blocked). It
 //     links the issue, whose body says what to do (waitHumanLines);
+//   - at needs-human, a hand-off, on a task with one waiting
+//     (latestHandoff), whatever blocks it. It links the hand-off comment,
+//     which says what to do (waitHandoffLines);
 //   - at planned, a finished story (#278), when the record of its approved
 //     plan revision's children stands (waitDoneChildren), whether or not
 //     they're closed: the digest and assignment judge that on each pass
@@ -276,6 +283,7 @@ func waitFind(in waitInput) ([]waitItem, error) {
 		add(waitError, e.Kind+"-"+e.Key, e.Comment, waitErrorLines(s, e))
 		items[len(items)-1].Unassigned = closerErrPostedClosed(s, e)
 	}
+	handoff, handoffWaits := latestHandoff(s, in.AppSlug, in.Dirt.Has)
 	switch {
 	case is.Stage == state.Held && len(in.Holds) > 0:
 		id, lines := holdItemOf(in, is)
@@ -318,6 +326,8 @@ func waitFind(in waitInput) ([]waitItem, error) {
 		// An issue has one human task at most: its key is human-<n>.
 		add(waitHuman, "", state.BodyID, waitHumanLines(in))
 		items[len(items)-1].Key = fmt.Sprintf("%s-%d", waitKeyPrefix[waitHuman], s.Number)
+	case handoffWaits:
+		add(waitHandoff, strconv.FormatInt(handoff, 10), handoff, waitHandoffLines(s, handoff))
 	case is.Stage == state.Planned:
 		children, err := waitDoneChildren(in, is)
 		if err != nil {
@@ -343,7 +353,7 @@ func waitFind(in waitInput) ([]waitItem, error) {
 
 // waitKeyPrefix starts each kind's key.
 var waitKeyPrefix = map[waitKind]string{waitError: "err", waitHold: "hold", waitApproval: "rev", waitQuestion: "q", waitFlag: "flag",
-	waitPlanApproval: "plan", waitHuman: "human", waitDone: "done"}
+	waitPlanApproval: "plan", waitHuman: "human", waitDone: "done", waitHandoff: "handoff"}
 
 // waitLink is the link to comment id on issue n, or to the issue itself
 // when id is state.BodyID: an error in the body (#155's verify).
@@ -526,8 +536,8 @@ func waitPlanApprovalLines(in waitInput, is state.Issue) (int, int64, []waitLine
 
 // waitHumanTask reports whether is is a human task at needs-human (SPEC
 // §9.3): a task from a plan whose clean origin marker has human=1
-// (state.ClassHumanTask). A task at needs-human after a hand-off, which
-// phase 3 adds, isn't one.
+// (state.ClassHumanTask). A task at needs-human after a hand-off isn't one:
+// its item is a hand-off's (latestHandoff, waitHandoffLines).
 func waitHumanTask(is state.Issue) bool {
 	class, err := state.ClassOf(is.Item)
 	return is.Stage == state.NeedsHuman && err == nil && class == state.ClassHumanTask
@@ -544,22 +554,17 @@ func waitHumanTask(is state.Issue) bool {
 // has changed, a line says to see the issue instead. Each field is the
 // first line that starts with its bold name, as humanBody writes them
 // (#284): no line above "Done when" starts so, as each field is one line,
-// steps are numbered and links are bullets. A check's "Done when" is
-// copied without humanDoneTail, which says to react on "this issue": in
-// the digest that's the digest, and the last line says how to finish.
+// steps are numbered and links are bullets (waitGoalDone). A check's "Done
+// when" is copied without humanDoneTail, which says to react on "this
+// issue": in the digest that's the digest, and the last line says how to
+// finish.
 func waitHumanLines(in waitInput) []waitLine {
 	s := in.S
 	lines := []waitLine{{Text: "A human task waits for you."}}
 	var goal, done string
 	if e := s.BodyEdit; state.IsApp(s.Author, in.AppSlug) && !in.Dirt.Has(state.BodyID) && (e.At.IsZero() || state.IsApp(e.By, in.AppSlug)) {
-		for _, l := range strings.Split(strings.ReplaceAll(s.Body, "\r\n", "\n"), "\n") {
-			if v, ok := strings.CutPrefix(l, "**Goal:** "); ok && goal == "" {
-				goal = strings.TrimSpace(v)
-			}
-			if v, ok := strings.CutPrefix(l, "**Done when:** "); ok && done == "" {
-				done = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(v), humanDoneTail))
-			}
-		}
+		goal, done = waitGoalDone(s.Body)
+		done = strings.TrimSpace(strings.TrimSuffix(done, humanDoneTail))
 	}
 	if goal != "" && done != "" {
 		lines = append(lines, waitLine{Text: "Goal: " + goal, Copied: true}, waitLine{Text: "Done when: " + done, Copied: true})
@@ -567,6 +572,37 @@ func waitHumanLines(in waitInput) []waitLine {
 		lines = append(lines, waitLine{Text: "See the issue for what to do."})
 	}
 	return append(lines, waitLine{Text: "When it's done, reply `/done` or react 👍 to the issue."})
+}
+
+// waitGoalDone returns the Goal and "Done when" of body, a human task's
+// or a hand-off's, as humanFields writes them: each the first line that
+// starts with its bold name, after it, trimmed, or "" if there's none.
+func waitGoalDone(body string) (goal, done string) {
+	for _, l := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
+		if v, ok := strings.CutPrefix(l, "**Goal:** "); ok && goal == "" {
+			goal = strings.TrimSpace(v)
+		}
+		if v, ok := strings.CutPrefix(l, "**Done when:** "); ok && done == "" {
+			done = strings.TrimSpace(v)
+		}
+	}
+	return goal, done
+}
+
+// waitHandoffLines returns the lines of the hand-off in comment id on s
+// (SPEC §9.4): that it waits, then its Goal and "Done when", copied from
+// the comment (waitLine.Copied, waitGoalDone), and last how to finish it.
+// The comment is the App's and clean, as latestHandoff found it. With
+// either field not found, as for a format that has changed, a line says
+// to see the hand-off instead.
+func waitHandoffLines(s *github.Snapshot, id int64) []waitLine {
+	lines := []waitLine{{Text: "A hand-off waits for you: the implementer needs an action only you can do."}}
+	if goal, done := waitGoalDone(waitBody(s, id)); goal != "" && done != "" {
+		lines = append(lines, waitLine{Text: "Goal: " + goal, Copied: true}, waitLine{Text: "Done when: " + done, Copied: true})
+	} else {
+		lines = append(lines, waitLine{Text: "See the hand-off for what to do."})
+	}
+	return append(lines, waitLine{Text: "When it's done, reply `/done` on the issue or react 👍 to the hand-off."})
 }
 
 // waitDoneChildren returns the children of in.S, an issue at planned

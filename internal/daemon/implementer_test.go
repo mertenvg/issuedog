@@ -175,9 +175,10 @@ func TestImplementerOnlyOnTasks(t *testing.T) {
 // attempt, with nothing written, and the lease names the rule: the
 // pairing of commits with its fields, commits with no commits past the
 // run's start, a PR title type not on pr.title_types, a title over
-// GitHub's limit or not on one line, a comment over the length limit, and
-// a question or a hand-off, which aren't handled yet. Nothing moves the
-// task's head.
+// GitHub's limit or not on one line, a comment over the length limit, a
+// question, which isn't handled yet, and a hand-off with a commits
+// outcome's field, whose other rules TestImplementerHandoffRules covers.
+// Nothing moves the task's head.
 func TestImplementerCheckRules(t *testing.T) {
 	t.Parallel()
 	question, handoff := implementerOutput(t, "question"), implementerOutput(t, "handoff")
@@ -208,10 +209,10 @@ func TestImplementerCheckRules(t *testing.T) {
 			clear(out)
 			out["outcome"], out["questions"] = "question", question["questions"]
 		}, want: "rule outcome: the question outcome isn't handled yet"},
-		{name: "a hand-off", change: func(out map[string]any) {
-			clear(out)
+		{name: "a hand-off with a title", change: func(out map[string]any) {
 			out["outcome"], out["handoff"] = "handoff", handoff["handoff"]
-		}, want: "rule outcome: the handoff outcome isn't handled yet"},
+			delete(out, "summary")
+		}, want: "rule outcome: handoff has no title"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
