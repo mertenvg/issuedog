@@ -16,12 +16,13 @@ import (
 )
 
 // This file is a whole run of the implementer against the fakes: a task
-// the owner filed and set to in-progress by hand, which the scheduler will
-// do once it's built, through the real Implementer at in-progress, as
-// daemon.RegisterStages registers it, with the daemon built as startDaemon
-// builds it (rig.wireAsMain), so step 1 is daemon.NewStep's and the digest
-// and assignment are on, and Daemon.Iterate as the loop. Config, trust and
-// the implementer's prompt come from main on the origin.
+// the owner filed and set to in-progress by hand, as the pick does for a
+// ready task (schedule_run_test.go), through the real Implementer at
+// in-progress, as daemon.RegisterStages registers it, with the daemon
+// built as startDaemon builds it (rig.wireAsMain), so step 1 is
+// daemon.NewStep's and the digest and assignment are on, and
+// Daemon.Iterate as the loop. Config, trust and the implementer's prompt
+// come from main on the origin.
 
 // implementerRunConfig is .issuedog/config.yml on main for the whole run:
 // its own title types, diff limit, protected paths and questions per

@@ -281,14 +281,30 @@ func TestImplementerQuestionWholeRun(t *testing.T) {
 	}
 
 	answer := f.AddComment(n, wholeRunOwner, "1a")
+	answerAt := len(f.State().Issues[n-1].Comments) - 1
+	// The answer's move to ready frees the worker, so the same pass's
+	// step 4 picks the task again and runs it (8.1).
 	g.pass()
-	w.labels("the answer", "priority:p1", "scope:booking", "stage:ready", "type:task")
-	moved := w.comments()[len(w.comments())-1]
-	if want := fmt.Sprintf("Round 1 has an answer, so the task goes back to `ready`. The implementer's next run gets it.\n\n"+
-		"<!-- issuedog:transition from=clarifying to=ready cmd=%d seen=%d -->", answer, answer); moved.Author.Login != app || moved.Body != want {
-		t.Errorf("the task's newest comment, by %s, =\n%s\nwant the App's\n%s", moved.Author.Login, moved.Body, want)
+	if g.runs() != 2 {
+		t.Fatalf("claude ran %d times once the answer moved the task to ready, want twice", g.runs())
 	}
-	if r := f.State().Issues[n-1].Comments[len(f.State().Issues[n-1].Comments)-2].Reactions; !slices.Equal(r, []string{app + " +1"}) {
+	var moved, picked bool
+	for _, c := range w.comments() {
+		if c.ID <= answer || c.Author.Login != app {
+			continue
+		}
+		if want := fmt.Sprintf("Round 1 has an answer, so the task goes back to `ready`. The implementer's next run gets it.\n\n"+
+			"<!-- issuedog:transition from=clarifying to=ready cmd=%d seen=%d -->", answer, answer); c.Body == want {
+			moved = true
+		}
+		if moved && strings.Contains(c.Body, "<!-- issuedog:transition from=ready to=in-progress ") {
+			picked = true
+		}
+	}
+	if !moved || !picked {
+		t.Errorf("after the answer, the App's move to ready is there: %v, and its pick after it: %v; want both", moved, picked)
+	}
+	if r := f.State().Issues[n-1].Comments[answerAt].Reactions; !slices.Equal(r, []string{app + " +1"}) {
 		t.Errorf("the answer's reactions = %q, want the App's 👍", r)
 	}
 	g.pass()
@@ -296,16 +312,10 @@ func TestImplementerQuestionWholeRun(t *testing.T) {
 		t.Errorf("the digest lists %q once the round is answered; want nothing", got)
 	}
 	assignWant(t, f, "the answer", nil)
-	if g.runs() != 1 {
-		t.Fatalf("claude ran %d times at ready, want once in all", g.runs())
+	if g.runs() != 2 {
+		t.Fatalf("claude ran %d times at verifying, want twice in all", g.runs())
 	}
 
-	f.RemoveLabel(n, wholeRunOwner, "stage:ready")
-	f.AddLabel(n, wholeRunOwner, "stage:in-progress")
-	g.pass()
-	if g.runs() != 2 {
-		t.Fatalf("claude ran %d times, want twice", g.runs())
-	}
 	files := w.context(2, state.InProgress)
 	if names := slices.Sorted(maps.Keys(files)); !slices.Equal(names, []string{"conversation.md", "input.md", "issue.md", "prompt.md", "system.md"}) {
 		t.Errorf("run 2's context files are %v; want issue.md, conversation.md, input.md, prompt.md and system.md", names)

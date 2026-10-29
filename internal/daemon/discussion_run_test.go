@@ -77,8 +77,11 @@ func (l *discRunLoop) start() {
 	g.wireAsMain(g.d.Config)
 	// Only the interviewer, on purpose: this run's issues stop at
 	// planning, where the planner's own whole runs go on
-	// (planner_run_test.go), and nothing here needs triage.
+	// (planner_run_test.go), and nothing here needs triage. Its tasks wait
+	// at ready for the commands on them, so with no Stage at in-progress
+	// none is picked: the pick's own whole runs are schedule_run_test.go's.
 	delete(g.r.Stages, state.Planning)
+	delete(g.r.Stages, state.InProgress)
 	g.r.Unlabeled = nil
 	l.g = g
 }
