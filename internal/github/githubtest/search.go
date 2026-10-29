@@ -72,14 +72,21 @@ func (f *Fake) ThawSearch() {
 // it. It reads the qualifiers is:issue, is:open, label: and is:blocked, and
 // any other, free text included, is a 422, as is a search that isn't
 // advanced (advanced_search=true), so a typo or a missed qualifier fails
-// rather than matching more. An issue is blocked when one of its blocked-by
-// issues is open. It answers the issues that match, by number, paged by
+// rather than matching more. It serves only the order the client asks
+// for, sort=created and order=asc, so pages keep one order between reads,
+// and a search without either, or with another, is a 422 too, so a client
+// can't drop them unseen. An issue is blocked when one of its blocked-by
+// issues is open. It answers the issues that match, oldest first, which is
+// by number, as the fake files issues in time order (fileIssue), paged by
 // per_page and page, each as the issue list gives it, with the total. A
 // transferred issue isn't found, as it isn't listed (transfer.go). While
 // FreezeSearch holds, it answers from the issues as they were then.
 func (f *Fake) searchIssues(c *call) (int, any) {
 	if c.r.URL.Query().Get("advanced_search") != "true" {
 		return http.StatusUnprocessableEntity, message("Validation Failed: githubtest serves advanced search only (advanced_search=true)")
+	}
+	if sort, order := c.r.URL.Query()["sort"], c.r.URL.Query()["order"]; !slices.Equal(sort, []string{"created"}) || !slices.Equal(order, []string{"asc"}) {
+		return http.StatusUnprocessableEntity, message(fmt.Sprintf("Validation Failed: githubtest serves sort=created and order=asc only, not sort=%q and order=%q", sort, order))
 	}
 	query, err := f.searchParse(c.r.URL.Query().Get("q"))
 	if err != nil {
