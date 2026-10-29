@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "properties": {
     "outcome": {
-      "description": "commits: the change is committed in the clone; set title and summary. question: a criterion is ambiguous; set questions. handoff: an action only the owner can do blocks the task; set handoff.",
+      "description": "commits: the change is committed in the clone; set title and summary. question: a criterion is ambiguous; set questions. handoff: an action only the owner can do blocks the task; set handoff. Set no other outcome's fields.",
       "enum": ["commits", "question", "handoff"]
     },
     "title": {
@@ -124,14 +124,16 @@
           "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
         },
         "steps": {
-          "description": "Markdown: exact actions, with exact values, commands or settings, as a numbered list, in order.",
-          "type": "string",
-          "pattern": "\\S"
+          "description": "Exact actions, with exact values, commands or settings, one line each, in order.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$" }
         },
         "links": {
-          "description": "Markdown: direct links to the console page, file or doc, as a list.",
-          "type": "string",
-          "pattern": "\\S"
+          "description": "Direct links to the console page, file or doc, one line each.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$" }
         },
         "done_when": {
           "description": "The observable result the owner can check, in one line.",
@@ -145,12 +147,5 @@
         }
       }
     }
-  },
-  "if": { "properties": { "outcome": { "const": "commits" } }, "required": ["outcome"] },
-  "then": { "required": ["title", "summary"], "properties": { "questions": false, "handoff": false } },
-  "else": {
-    "if": { "properties": { "outcome": { "const": "question" } }, "required": ["outcome"] },
-    "then": { "required": ["questions"], "properties": { "title": false, "summary": false, "handoff": false } },
-    "else": { "required": ["handoff"], "properties": { "title": false, "summary": false, "questions": false } }
   }
 }

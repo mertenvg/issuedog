@@ -52,8 +52,8 @@ Fill every field of `handoff`. If you can't fill one, such as an exact value you
 
 - `goal`: one sentence.
 - `why_blocks`: what the task waits for, and why, in one line that reads on after "can't proceed until", such as "the repo has the secret `PAYMENTS_SANDBOX_KEY`, which the refund test needs, and only the owner can add a secret". Don't name the task: the daemon puts its number first.
-- `steps`: exact actions, with exact values, commands or settings, as a numbered list, in order.
-- `links`: direct links to the console page, file or doc, as a list.
+- `steps`: exact actions, with exact values, commands or settings, one line each, in order. The daemon numbers them, so don't.
+- `links`: direct links to the console page, file or doc, one link each.
 - `done_when`: the observable result the owner can check, in one line.
 - `estimated_time`: such as "5 min".
 

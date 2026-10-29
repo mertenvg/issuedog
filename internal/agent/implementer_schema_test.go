@@ -40,21 +40,17 @@ func TestImplementerGolden(t *testing.T) {
 	}
 }
 
-// The schema branches on outcome with if/then/else, the one conditional it
-// has at the top level, where the Messages API refuses unions in a tool's
-// input schema (SPEC §16). Below it, as the planner's, it uses no union or
-// reference, and every object lists its properties, all of them known.
+// The top level has no conditional or union, as the planner's has none,
+// since the Messages API is reported to refuse unions there (SPEC §16): it
+// lists outcome and each outcome's fields, and the daemon's check pairs
+// them. Below it, the schema uses no union or reference, and every object
+// lists its properties, all of them known.
 func TestImplementerSchemaShape(t *testing.T) {
 	t.Parallel()
 	doc := implementerSchemaDoc(t)
-	for _, k := range []string{"oneOf", "anyOf", "allOf", "not"} {
+	for _, k := range []string{"if", "then", "else", "oneOf", "anyOf", "allOf", "not"} {
 		if _, ok := doc[k]; ok {
 			t.Errorf("the top level uses %s", k)
-		}
-	}
-	for _, k := range []string{"if", "then", "else"} {
-		if _, ok := doc[k]; !ok {
-			t.Errorf("the top level has no %s, so it doesn't branch on outcome", k)
 		}
 	}
 	checkPlannerSchema(t, "#", doc)
@@ -89,6 +85,29 @@ func TestImplementerQuestionShapeIsTheInterviewers(t *testing.T) {
 	}
 }
 
+// The hand-off's steps and links are the planner's human task's, one-line
+// items the daemon numbers and lists itself, so the daemon checks and
+// renders them as it does a human task's (SPEC §9.3).
+func TestImplementerHandoffListsAreThePlanners(t *testing.T) {
+	t.Parallel()
+	raw, err := StageSchema("planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var planner map[string]any
+	if err := json.Unmarshal(raw, &planner); err != nil {
+		t.Fatal(err)
+	}
+	implementer := implementerSchemaDoc(t)
+	for _, k := range []string{"steps", "links"} {
+		got := valueAt(t, implementer, "properties", "handoff", "properties", k)
+		want := valueAt(t, planner, "properties", "plan", "properties", "items", "items", "properties", "human_task", "properties", k)
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("handoff.%s is %v, want the planner's human_task.%s %v", k, got, want, k)
+		}
+	}
+}
+
 // The hand-off has every field of SPEC §9.3's template, one each, and
 // nothing else.
 func TestImplementerHandoffFields(t *testing.T) {
@@ -118,16 +137,10 @@ func TestImplementerHandoffFields(t *testing.T) {
 
 func TestImplementerBadOutputs(t *testing.T) {
 	t.Parallel()
-	question := golden(t, "implementer", "question")["questions"]
-	handoff := golden(t, "implementer", "handoff")["handoff"]
-	commits := golden(t, "implementer", "commits")
-	title, summary := commits["title"], commits["summary"]
+	// Which fields go with which outcome is the daemon's check, not the
+	// schema's: the schema checks each field's shape.
 	checkBad(t, "implementer", map[string]badOutput{
-		// commits: a PR title and a summary, and no other outcome's fields.
-		"commits with no title":         {"commits", remove, []any{"title"}, "missing property 'title'"},
-		"commits with no summary":       {"commits", remove, []any{"summary"}, "missing property 'summary'"},
-		"commits with questions":        {"commits", question, []any{"questions"}, "at '/questions': false schema"},
-		"commits with a handoff":        {"commits", handoff, []any{"handoff"}, "at '/handoff': false schema"},
+		// commits: a PR title and a summary.
 		"title with no type":            {"commits", remove, []any{"title", "type"}, "at '/title': missing property 'type'"},
 		"title with no sentence":        {"commits", remove, []any{"title", "sentence"}, "at '/title': missing property 'sentence'"},
 		"blank type":                    {"commits", " ", []any{"title", "type"}, "at '/title/type'"},
@@ -146,11 +159,7 @@ func TestImplementerBadOutputs(t *testing.T) {
 		"blank test updated":            {"commits", " ", []any{"summary", "tests_updated", 0}, "at '/summary/tests_updated/0'"},
 		"summary with notes":            {"commits", "x", []any{"summary", "notes"}, "additional properties 'notes' not allowed"},
 
-		// question: questions, in the interviewer's shape, and nothing else.
-		"question with no questions": {"question", remove, []any{"questions"}, "missing property 'questions'"},
-		"question with a title":      {"question", title, []any{"title"}, "at '/title': false schema"},
-		"question with a summary":    {"question", summary, []any{"summary"}, "at '/summary': false schema"},
-		"question with a handoff":    {"question", handoff, []any{"handoff"}, "at '/handoff': false schema"},
+		// question: questions, in the interviewer's shape.
 		"4 others":                   {"question", []any{"b", "c", "d", "e"}, []any{"questions", 0, "others"}, "at '/questions/0/others': maxItems"},
 		"no others":                  {"question", []any{}, []any{"questions", 0, "others"}, "at '/questions/0/others': minItems"},
 		"empty blocks":               {"question", []any{}, []any{"questions", 0, "blocks"}, "at '/questions/0/blocks': minItems"},
@@ -159,10 +168,6 @@ func TestImplementerBadOutputs(t *testing.T) {
 		"options in place of others": {"question", []any{"Accepted"}, []any{"questions", 0, "options"}, "additional properties 'options' not allowed"},
 
 		// handoff: every 9.3 field, filled, and nothing else.
-		"handoff with no handoff":     {"handoff", remove, []any{"handoff"}, "missing property 'handoff'"},
-		"handoff with a title":        {"handoff", title, []any{"title"}, "at '/title': false schema"},
-		"handoff with a summary":      {"handoff", summary, []any{"summary"}, "at '/summary': false schema"},
-		"handoff with questions":      {"handoff", question, []any{"questions"}, "at '/questions': false schema"},
 		"no goal":                     {"handoff", remove, []any{"handoff", "goal"}, "at '/handoff': missing property 'goal'"},
 		"no why_blocks":               {"handoff", remove, []any{"handoff", "why_blocks"}, "at '/handoff': missing property 'why_blocks'"},
 		"no steps":                    {"handoff", remove, []any{"handoff", "steps"}, "at '/handoff': missing property 'steps'"},
@@ -171,15 +176,20 @@ func TestImplementerBadOutputs(t *testing.T) {
 		"no estimated_time":           {"handoff", remove, []any{"handoff", "estimated_time"}, "at '/handoff': missing property 'estimated_time'"},
 		"empty goal":                  {"handoff", "", []any{"handoff", "goal"}, "at '/handoff/goal'"},
 		"blank why_blocks":            {"handoff", " ", []any{"handoff", "why_blocks"}, "at '/handoff/why_blocks'"},
-		"blank steps":                 {"handoff", " \n ", []any{"handoff", "steps"}, "at '/handoff/steps'"},
-		"empty links":                 {"handoff", "", []any{"handoff", "links"}, "at '/handoff/links'"},
+		"empty steps":                 {"handoff", []any{}, []any{"handoff", "steps"}, "at '/handoff/steps': minItems"},
+		"empty links":                 {"handoff", []any{}, []any{"handoff", "links"}, "at '/handoff/links': minItems"},
+		"blank step":                  {"handoff", " ", []any{"handoff", "steps", 0}, "at '/handoff/steps/0'"},
+		"empty link":                  {"handoff", "", []any{"handoff", "links", 1}, "at '/handoff/links/1'"},
+		"multi-line step":             {"handoff", "Open it.\n2. Edit it.", []any{"handoff", "steps", 1}, "at '/handoff/steps/1'"},
+		"multi-line link":             {"handoff", "https://a.example\n### Injected", []any{"handoff", "links", 0}, "at '/handoff/links/0'"},
+		"steps as a string":           {"handoff", "1. Open it.\n2. Edit it.", []any{"handoff", "steps"}, "at '/handoff/steps': got string, want array"},
+		"links as a string":           {"handoff", "https://a.example", []any{"handoff", "links"}, "at '/handoff/links': got string, want array"},
 		"blank done_when":             {"handoff", "\t", []any{"handoff", "done_when"}, "at '/handoff/done_when'"},
 		"empty estimated_time":        {"handoff", "", []any{"handoff", "estimated_time"}, "at '/handoff/estimated_time'"},
 		"multi-line goal":             {"handoff", "Add a key.\n### Injected", []any{"handoff", "goal"}, "at '/handoff/goal'"},
 		"multi-line why_blocks":       {"handoff", "a key\nreally", []any{"handoff", "why_blocks"}, "at '/handoff/why_blocks'"},
 		"multi-line done_when":        {"handoff", "The key.\nReally.", []any{"handoff", "done_when"}, "at '/handoff/done_when'"},
 		"multi-line estimated_time":   {"handoff", "5\nmin", []any{"handoff", "estimated_time"}, "at '/handoff/estimated_time'"},
-		"steps as a list":             {"handoff", []any{"Open it."}, []any{"handoff", "steps"}, "at '/handoff/steps': got array, want string"},
 		"handoff with a check":        {"handoff", map[string]any{"kind": "label"}, []any{"handoff", "check"}, "additional properties 'check' not allowed"},
 		"handoff as a string":         {"handoff", "Add the key.", []any{"handoff"}, "at '/handoff': got string, want object"},
 		"handoff with an extra field": {"handoff", "x", []any{"handoff", "notes"}, "additional properties 'notes' not allowed"},
@@ -224,6 +234,9 @@ func TestImplementerPrompt(t *testing.T) {
 		"Ask when an acceptance criterion is ambiguous",
 		"Hand off only for an action only the owner can do",
 		"Fill every field of `handoff`. If you can't fill one, such as an exact value you don't know, ask a question instead.",
+		// The steps and links are one line each, which the daemon numbers
+		// and lists itself.
+		"one line each, in order. The daemon numbers them", "one link each",
 		"Commit the work you've done before you ask",
 		"Commit the work you've done before you hand off",
 		// The question shape is the interviewer's.
