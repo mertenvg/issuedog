@@ -392,6 +392,11 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		if err == nil {
 			err = d.Step.FlagVisit(ctx, s)
 		}
+		// AnswerVisit sends a task whose implementer round has an answer
+		// back to ready (taskanswer.go).
+		if err == nil {
+			err = d.Step.AnswerVisit(ctx, s)
+		}
 		// ChildrenVisit, last, creates the children of a plan the visits
 		// above may just have approved, so they land in the same pass. The
 		// children it writes to are Touched.
