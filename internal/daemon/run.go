@@ -28,8 +28,8 @@ import (
 	"github.com/mertenvg/logr/v2"
 )
 
-// Stage is one kind of non-task stage run, such as the interviewer's (#6).
-// Runs runs it for issues at the stage it's registered at.
+// Stage is one kind of stage run, such as the interviewer's (#6) or the
+// implementer's. Runs runs it for issues at the stage it's registered at.
 type Stage interface {
 	// Agent names the stage's settings in config.Stages, such as "interviewer".
 	Agent() string
@@ -216,7 +216,8 @@ func lastFailure(cause error) string {
 const kindLabels = "labels"
 
 // Runs is the stage-run harness. Its Work is the loop's stage work (SPEC
-// §8.1, step 3), one run at a time, under a lease (SPEC §8.2).
+// §8.1, step 3), then a task's run (step 4), one run at a time, under a
+// lease (SPEC §8.2).
 type Runs struct {
 	// Daemon gives the applier, trust and config of the moment.
 	Daemon *Daemon
@@ -248,9 +249,13 @@ type Runs struct {
 // left (sweep). Then it finishes a lease a run left, after a
 // restart or a failed apply (resume). Then, unless a usage limit closed
 // the gate, it runs the first issue, by priority then number, whose stage
-// has a Stage with work pending. If none ran, it runs Unlabeled, if set, on
-// the newest issue, by number, with no stage label and no transition
-// marker that it has work for. A lease whose issue has labels held back
+// has a Stage with work pending, other than a Committer. If none ran, it
+// runs Unlabeled, if set, on the newest issue, by number, with no stage
+// label and no transition marker that it has work for. If none ran either,
+// it runs a Committer, such as the implementer, on the first issue, by
+// priority then number, whose stage has one with work pending: task work
+// comes after the other stages and triage (SPEC §8.1, step 4). A lease
+// whose issue has labels held back
 // (ErrLabelsHeld) waits, and no run starts until it's applied. So does a
 // saved result on an issue step 1 didn't finish on this pass (resume),
 // whose wait resume logs: Work's error is then only a failure to keep the
@@ -287,28 +292,56 @@ func (r *Runs) Work(ctx context.Context, ready []Ready) error {
 	}
 	ready = slices.Clone(ready)
 	slices.SortStableFunc(ready, func(a, b Ready) int { return cmp.Compare(priority(a.S), priority(b.S)) })
-	for _, rd := range ready {
-		st, ok := r.Stages[stageOf(rd.S)]
-		if !ok || rd.S.Number == skip {
-			continue
-		}
-		if ran, err := r.RunStage(ctx, rd, st); err != nil || ran {
-			return err
-		}
-	}
-	if r.Unlabeled == nil {
+	ran, err := r.work(ctx, ready, skip, false)
+	switch {
+	case err != nil:
+		return fmt.Errorf("stage work: %w", err)
+	case ran:
 		return nil
 	}
-	slices.SortStableFunc(ready, func(a, b Ready) int { return cmp.Compare(b.S.Number, a.S.Number) })
-	for _, rd := range ready {
-		if stageOf(rd.S) != "" || leftOutStage(rd.S) || rd.S.Number == skip {
-			continue
-		}
-		if ran, err := r.runStage(ctx, rd, r.Unlabeled, true); err != nil || ran {
-			return err
+	if r.Unlabeled != nil {
+		newest := slices.Clone(ready)
+		slices.SortStableFunc(newest, func(a, b Ready) int { return cmp.Compare(b.S.Number, a.S.Number) })
+		for _, rd := range newest {
+			if stageOf(rd.S) != "" || leftOutStage(rd.S) || rd.S.Number == skip {
+				continue
+			}
+			ran, err := r.runStage(ctx, rd, r.Unlabeled, true)
+			switch {
+			case err != nil:
+				return fmt.Errorf("unlabeled work: %w", err)
+			case ran:
+				return nil
+			}
 		}
 	}
+	slices.SortStableFunc(ready, func(a, b Ready) int {
+		return cmp.Or(cmp.Compare(priority(a.S), priority(b.S)), cmp.Compare(a.S.Number, b.S.Number))
+	})
+	if _, err := r.work(ctx, ready, skip, true); err != nil {
+		return fmt.Errorf("task work: %w", err)
+	}
 	return nil
+}
+
+// work runs the first of ready, in its order, but issue skip, whose stage
+// has a Stage with work pending that is a Committer, if committers, or
+// that isn't, if not, and reports whether one ran.
+func (r *Runs) work(ctx context.Context, ready []Ready, skip int, committers bool) (bool, error) {
+	for _, rd := range ready {
+		st, ok := r.Stages[stageOf(rd.S)]
+		if _, commits := st.(Committer); !ok || commits != committers || rd.S.Number == skip {
+			continue
+		}
+		ran, err := r.RunStage(ctx, rd, st)
+		switch {
+		case err != nil:
+			return ran, fmt.Errorf("the %s on #%d: %w", st.Agent(), rd.S.Number, err)
+		case ran:
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // unlabeled reports whether s, whose state is is, is Unlabeled work: it has
@@ -594,8 +627,9 @@ func (r *Runs) schema(st Stage) (*agent.Schema, error) {
 
 // run prepares the workspace, its clone of the commits c, and runs claude
 // for st with the settings set, returning its output and sending its
-// stderr to stderr. A failure to set the run up is an *agent.SetupError,
-// as Runner.Run's are.
+// stderr to stderr. A Committer's run gets the App's git identity in its
+// environment too (commitIdentity). A failure to set the run up is an
+// *agent.SetupError, as Runner.Run's are.
 func (r *Runs) run(ctx context.Context, st Stage, in Input, set state.Settings, c workspace.Commits, stderr io.Writer) ([]byte, error) {
 	cfg := r.Daemon.Config.Stages
 	turns, okT := pick(cfg.MaxTurns, st.Agent())
@@ -616,13 +650,28 @@ func (r *Runs) run(ctx context.Context, st Stage, in Input, set state.Settings, 
 		stderr = io.MultiWriter(runner.Stderr, stderr)
 	}
 	runner.Stderr = stderr
+	env := r.Env
+	if _, ok := st.(Committer); ok {
+		env = append(slices.Clone(r.Env), commitIdentity(r.Daemon.Step.Applier.AppSlug)...)
+	}
 	out, err := runner.Run(ctx, agent.Stage{RunID: in.RunID, Dir: r.Workspace.Dir(in.RunID), ContextDir: r.Workspace.Context(in.RunID),
-		Schema: st.Schema(), MaxTurns: int(turns), MaxBudgetUSD: budget, Timeout: timeout, Env: r.Env,
+		Schema: st.Schema(), MaxTurns: int(turns), MaxBudgetUSD: budget, Timeout: timeout, Env: env,
 		Model: set.Model, Effort: set.Effort, FallbackModels: set.FallbackModels})
 	if err != nil {
 		return out, fmt.Errorf("run %s: %w", in.RunID, err)
 	}
 	return out, nil
+}
+
+// commitIdentity is the git identity of a Committer's runs, in their
+// environment (SPEC §3.3): the App's bot, <slug>[bot], with its noreply
+// address, as author and committer, so every commit a run makes names the
+// App, whatever the clone's config says. slug is the one GET /app gave at
+// startup.
+func commitIdentity(slug string) []string {
+	name := slug + "[bot]"
+	email := name + "@users.noreply.github.com"
+	return []string{"GIT_AUTHOR_NAME=" + name, "GIT_AUTHOR_EMAIL=" + email, "GIT_COMMITTER_NAME=" + name, "GIT_COMMITTER_EMAIL=" + email}
 }
 
 // outcome reads from a run's output whether it failed, and its text: it

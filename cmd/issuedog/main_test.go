@@ -1642,14 +1642,17 @@ func TestStageWork(t *testing.T) {
 		runs.Runner.StateDir != stateDir || runs.Runner.Claude != "claude" {
 		t.Errorf("workspace %+v, runner %+v; want the clone, runs and context dirs, and the state dir", ws, runs.Runner)
 	}
-	// The interviewer at clarifying, the planner at planning and triage as
-	// Unlabeled, all on d, and nothing else: a Stage at intake beside
-	// triage fails CheckRegistered.
-	if iv, ok := runs.Stages[state.Clarifying].(*daemon.Interviewer); len(runs.Stages) != 2 || !ok || iv.Daemon != d {
-		t.Errorf("stages = %v, want the interviewer on d at clarifying and the planner at planning", runs.Stages)
+	// The interviewer at clarifying, the planner at planning, the
+	// implementer at in-progress and triage as Unlabeled, all on d, and
+	// nothing else: a Stage at intake beside triage fails CheckRegistered.
+	if iv, ok := runs.Stages[state.Clarifying].(*daemon.Interviewer); len(runs.Stages) != 3 || !ok || iv.Daemon != d {
+		t.Errorf("stages = %v, want the interviewer on d at clarifying, the planner at planning and the implementer at in-progress", runs.Stages)
 	}
 	if pl, ok := runs.Stages[state.Planning].(*daemon.Planner); !ok || pl.Daemon != d {
 		t.Errorf("the stage at planning = %#v, want the planner on d", runs.Stages[state.Planning])
+	}
+	if im, ok := runs.Stages[state.InProgress].(*daemon.Implementer); !ok || im.Daemon != d {
+		t.Errorf("the stage at in-progress = %#v, want the implementer on d", runs.Stages[state.InProgress])
 	}
 	if tr, ok := runs.Unlabeled.(*daemon.Triage); !ok || tr.Daemon != d {
 		t.Errorf("Unlabeled = %#v, want triage on d", runs.Unlabeled)
