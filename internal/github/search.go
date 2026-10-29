@@ -19,12 +19,15 @@ func readyBlockedQuery(owner, repo string) string {
 // an open blocked-by link (8.1). It asks advanced search, which `is:blocked`
 // is a qualifier of, reading every page, 100 to a page, through the client's
 // ETag cache, as IssuesSince reads, so a repeat with nothing changed is a 304
-// for each page. A pull request in the answer is skipped, though `is:issue`
-// leaves them out. Search lags behind dependency writes and closes, so a
-// caller confirms a candidate through Blockers before acting on it (8.1).
+// for each page. It sorts by creation, oldest first, as best match, the
+// default, can move an issue from one page to another between reads, so
+// one could be missed on both. A pull request in the answer is skipped,
+// though `is:issue` leaves them out. Search lags behind dependency writes
+// and closes, so a caller confirms a candidate through Blockers before
+// acting on it (8.1).
 func (c *Client) ReadyBlocked(ctx context.Context, owner, repo string) (map[int]bool, error) {
 	q := readyBlockedQuery(owner, repo)
-	opts := &gogithub.SearchOptions{AdvancedSearch: new(true), ListOptions: gogithub.ListOptions{PerPage: 100}}
+	opts := &gogithub.SearchOptions{Sort: "created", Order: "asc", AdvancedSearch: new(true), ListOptions: gogithub.ListOptions{PerPage: 100}}
 	blocked := map[int]bool{}
 	for {
 		res, resp, err := c.Search.Issues(ctx, q, opts)
