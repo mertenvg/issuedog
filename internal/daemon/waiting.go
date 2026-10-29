@@ -236,9 +236,10 @@ type waitInput struct {
 //     no approval to planning, says why;
 //   - at clarifying, a question round: when the latest transition, looking
 //     through a hold the issue went back from (ivHoldLatest), is an
-//     interviewer round with round= and questions= above 0, and no
-//     trusted answer has come since (no Inputs). A typed bug or task's
-//     move carries neither, so it waits for phase 3 with no item;
+//     interviewer round, or an implementer's (implRoundMove), with round=
+//     and questions= above 0, and no trusted answer has come since (no
+//     Inputs). A typed bug or task's move carries neither, so it waits for
+//     phase 3 with no item;
 //   - at planning, a question round in the same way, when that latest
 //     transition is a planner round (planRoundMove, #253). Its key and
 //     rank are an interviewer round's, as the rounds share one numbering;
@@ -294,9 +295,9 @@ func waitFind(in waitInput) ([]waitItem, error) {
 	case (is.Stage == state.Clarifying || is.Stage == state.Planning) && len(in.Inputs) == 0:
 		// Through a hold the issue went back from (#185's verify note):
 		// after /resume back to clarifying or planning, the round still
-		// waits. The round is the stage's own: the interviewer's at
-		// clarifying, the planner's at planning (#253).
-		isRound := ivRoundMove
+		// waits. The round is the stage's own: the interviewer's or the
+		// implementer's at clarifying, the planner's at planning (#253).
+		isRound := func(m github.Marker) bool { return ivRoundMove(m) || implRoundMove(m) }
 		if is.Stage == state.Planning {
 			isRound = planRoundMove
 		}

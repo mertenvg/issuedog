@@ -83,7 +83,8 @@ func TestLatestHandoff(t *testing.T) {
 
 // A run's move written already is finished on the trigger it was written
 // on, found by the stage its marker moved the task to: implemented to
-// verifying, implementer-blocked to needs-human.
+// verifying, implementer-question to clarifying, implementer-blocked to
+// needs-human.
 func TestImplementerMovedTrigger(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -91,11 +92,13 @@ func TestImplementerMovedTrigger(t *testing.T) {
 		want state.Trigger
 	}{
 		{"verifying", state.TriggerImplemented},
+		{"clarifying", state.TriggerImplementerQuestion},
 		{"needs-human", state.TriggerImplementerBlocked},
 	} {
 		s := handbackSnap(false, handbackToProgress, "<!-- issuedog:transition from=in-progress to="+tt.to+" run=run1 -->")
-		if got := implementerMovedTrigger(state.Derive(s, waitSlug, Dirt{}.Has), "run1"); got != tt.want {
-			t.Errorf("a move to %s: implementerMovedTrigger = %s, want %s", tt.to, got, tt.want)
+		m, ok := implementerMoved(state.Derive(s, waitSlug, Dirt{}.Has), Result{RunID: "run1"})
+		if !ok || m.To != state.Stage(tt.to) || m.Trigger != tt.want {
+			t.Errorf("a move to %s: implementerMoved = %s on %s, %v; want %s on %s", tt.to, m.To, m.Trigger, ok, tt.to, tt.want)
 		}
 	}
 }

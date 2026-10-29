@@ -216,8 +216,8 @@ func lastFailure(cause error) string {
 const kindLabels = "labels"
 
 // Runs is the stage-run harness. Its Work is the loop's stage work (SPEC
-// §8.1, step 3), then a task's run (step 4), one run at a time, under a
-// lease (SPEC §8.2).
+// §8.1, step 3), then a task's run or the pick of the next task (step 4),
+// one run at a time, under a lease (SPEC §8.2).
 type Runs struct {
 	// Daemon gives the applier, trust and config of the moment.
 	Daemon *Daemon
@@ -243,6 +243,12 @@ type Runs struct {
 	// failures holds why the last of the failed runs failed
 	// (Lease.PublicFailure), by countKey, for the attempt cap's error.
 	failures map[string]string
+
+	// pickBlocked are the ready tasks the pick passes over as blocked: the
+	// issue search's last answer, as of pickSearched, by GitHub's clock,
+	// and those the pick found an open blocker of since (schedule.go).
+	pickBlocked  map[int]bool
+	pickSearched time.Time
 }
 
 // Work is Daemon.Work. On its first pass it first removes what a crash
@@ -254,7 +260,9 @@ type Runs struct {
 // label and no transition marker that it has work for. If none ran either,
 // it runs a Committer, such as the implementer, on the first issue, by
 // priority then number, whose stage has one with work pending: task work
-// comes after the other stages and triage (SPEC §8.1, step 4). A lease
+// comes after the other stages and triage (SPEC §8.1, step 4). If none ran
+// either, it picks the next ready task, moves it to in-progress and starts
+// its run (pickTask), unless a task holds the worker. A lease
 // whose issue has labels held back
 // (ErrLabelsHeld) waits, and no run starts until it's applied. So does a
 // saved result on an issue step 1 didn't finish on this pass (resume),
@@ -318,8 +326,15 @@ func (r *Runs) Work(ctx context.Context, ready []Ready) error {
 	slices.SortStableFunc(ready, func(a, b Ready) int {
 		return cmp.Or(cmp.Compare(priority(a.S), priority(b.S)), cmp.Compare(a.S.Number, b.S.Number))
 	})
-	if _, err := r.work(ctx, ready, skip, true); err != nil {
+	ran, err = r.work(ctx, ready, skip, true)
+	switch {
+	case err != nil:
 		return fmt.Errorf("task work: %w", err)
+	case ran:
+		return nil
+	}
+	if _, err := r.pickTask(ctx, ready); err != nil {
+		return fmt.Errorf("the pick: %w", err)
 	}
 	return nil
 }

@@ -205,10 +205,10 @@ func (t dirtyTrust) trusted(login string) bool {
 
 // trustOnceVisit is the trust one visit to an issue shares between its
 // Dirty calls (#174). Iterate's visit finds the issue's dirty content in
-// Run, ReviewVisit, IntakeVisit and FlagVisit, and once more itself for
-// openErrAny and the digest, and each call would ask trust about the same
-// editors again: up to five permission requests per editor on an
-// unchanged pass. It asks trust about each login once, ignoring case, as
+// Run, ReviewVisit, IntakeVisit, FlagVisit and AnswerVisit, and once more
+// itself for openErrAny and the digest, and each call would ask trust
+// about the same editors again: up to six permission requests per editor
+// on an unchanged pass. It asks trust about each login once, ignoring case, as
 // GitHub's logins do. It keeps verdicts only: an error isn't kept, so it
 // fails the call that got it, and so the visit, and the next call asks
 // again.

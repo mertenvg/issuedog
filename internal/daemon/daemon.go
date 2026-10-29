@@ -143,6 +143,10 @@ type Daemon struct {
 	// closerErrOn are the closed issues whose close stays unjudged while a
 	// closer state error stands on them, for the digest (closererr.go).
 	closerErrOn map[int]closerErrClosedOn
+	// pickStale is set once a poll lists an issue changed since the pick's
+	// last search for the blocked ready tasks, so its next one asks again
+	// (Runs.pickSearch).
+	pickStale bool
 }
 
 // CurrentTrust is a github.Trust that asks st.Trust on each call. Iterate's
@@ -392,6 +396,11 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		if err == nil {
 			err = d.Step.FlagVisit(ctx, s)
 		}
+		// AnswerVisit sends a task whose implementer round has an answer
+		// back to ready (taskanswer.go).
+		if err == nil {
+			err = d.Step.AnswerVisit(ctx, s)
+		}
 		// ChildrenVisit, last, creates the children of a plan the visits
 		// above may just have approved, so they land in the same pass. The
 		// children it writes to are Touched.
@@ -565,7 +574,9 @@ func (d *Daemon) reload(ctx context.Context) {
 // story's children (#278): a start's first poll lists every issue, and
 // each later one every issue that changed, so a close or reopen is never
 // missed. The issues it lists open, it keeps for this pass alone
-// (transferUnlistedPolled).
+// (transferUnlistedPolled). One it lists updated after its cursor, open or
+// closed, but for a pull request, marks the pick's search stale
+// (pickStale).
 func (d *Daemon) poll(ctx context.Context) error {
 	a := d.Step.Applier
 	start := !d.startPolled // a start's first poll, which lists every issue
@@ -580,6 +591,11 @@ func (d *Daemon) poll(ctx context.Context) error {
 		for _, is := range issues {
 			d.issuesSince = latest(d.issuesSince, is.GetUpdatedAt().Time)
 			n := is.GetNumber()
+			if !is.IsPullRequest() && is.GetUpdatedAt().After(since) {
+				// Open or closed, past the cursor, so not the repeat of the
+				// one at it: a change the pick's search may not have seen.
+				d.pickStale = true
+			}
 			switch {
 			case is.IsPullRequest():
 			case is.GetState() == "open":
