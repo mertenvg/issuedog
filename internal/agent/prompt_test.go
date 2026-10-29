@@ -51,7 +51,7 @@ func shippedPrompt(t *testing.T, name string) []byte {
 }
 
 func TestPromptOverride(t *testing.T) {
-	for _, name := range []string{"interviewer", "planner"} {
+	for _, name := range []string{"interviewer", "planner", "implementer"} {
 		want := []byte("# Our " + name + "\n\nAsk about the API first.\n")
 		r := &fakeMain{files: map[string][]byte{".issuedog/prompts/" + name + ".md": want}}
 		got, override, err := Prompt(context.Background(), r, name)
@@ -65,7 +65,7 @@ func TestPromptOverride(t *testing.T) {
 }
 
 func TestPromptMissingUsesDefault(t *testing.T) {
-	for _, name := range []string{"interviewer", "planner", "triage"} {
+	for _, name := range []string{"interviewer", "planner", "triage", "implementer"} {
 		r := &fakeMain{}
 		got, override, err := Prompt(context.Background(), r, name)
 		if err != nil {
@@ -82,7 +82,7 @@ func TestPromptMissingUsesDefault(t *testing.T) {
 
 func TestPromptBlankUsesDefaultAndWarns(t *testing.T) {
 	// Not parallel: it reads the process-wide logr output.
-	for _, name := range []string{"triage", "planner"} {
+	for _, name := range []string{"triage", "planner", "implementer"} {
 		for _, blank := range []string{"", " \n\t\r\n"} {
 			r := &fakeMain{files: map[string][]byte{".issuedog/prompts/" + name + ".md": []byte(blank)}}
 			// The writer takes only warnings, so another level fails.
@@ -116,7 +116,7 @@ func TestPromptReadError(t *testing.T) {
 }
 
 func TestPromptUnknownName(t *testing.T) {
-	for _, name := range []string{"implementer", "", "../schemas/triage", "prompts/triage", "Triage", "../schemas/planner"} {
+	for _, name := range []string{"verifier", "", "../schemas/triage", "prompts/triage", "Triage", "../schemas/planner"} {
 		r := &fakeMain{files: map[string][]byte{".issuedog/prompts/" + name + ".md": []byte("x")}}
 		got, _, err := Prompt(context.Background(), r, name)
 		if err == nil || !strings.Contains(err.Error(), "no shipped prompt") {
@@ -143,7 +143,7 @@ func TestPromptSizeLimit(t *testing.T) {
 }
 
 func TestStageSchema(t *testing.T) {
-	for _, name := range []string{"interviewer", "planner", "triage"} {
+	for _, name := range []string{"interviewer", "planner", "triage", "implementer"} {
 		raw, err := StageSchema(name)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
@@ -152,8 +152,25 @@ func TestStageSchema(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if raw, err := StageSchema("implementer"); err == nil || !strings.Contains(err.Error(), `no schema for stage "implementer"`) {
-		t.Errorf("StageSchema(implementer) = %q, err %v; want an error", raw, err)
+	if raw, err := StageSchema("verifier"); err == nil || !strings.Contains(err.Error(), `no schema for stage "verifier"`) {
+		t.Errorf("StageSchema(verifier) = %q, err %v; want an error", raw, err)
+	}
+}
+
+// The implementer's schema is the one that ships, byte for byte: StageSchema
+// reads nothing from main, so no file there replaces it (SPEC §3.4).
+func TestImplementerStageSchemaIsShipped(t *testing.T) {
+	t.Parallel()
+	want, err := os.ReadFile(filepath.Join("schemas", "implementer.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := StageSchema("implementer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("StageSchema(implementer) = %q, want schemas/implementer.json", got)
 	}
 }
 
@@ -172,7 +189,7 @@ func TestShippedPromptsAndSchemasPair(t *testing.T) {
 		return n
 	}
 	prompts, schemas := names("prompts/*.md"), names("schemas/*.json")
-	if want := []string{"interviewer", "planner", "triage"}; !slices.Equal(prompts, want) || !slices.Equal(schemas, want) {
+	if want := []string{"implementer", "interviewer", "planner", "triage"}; !slices.Equal(prompts, want) || !slices.Equal(schemas, want) {
 		t.Errorf("prompts %q, schemas %q; want %q for both", prompts, schemas, want)
 	}
 	for _, name := range prompts {

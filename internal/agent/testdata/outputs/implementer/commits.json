@@ -1,0 +1,19 @@
+{
+  "outcome": "commits",
+  "title": {
+    "type": "feat",
+    "sentence": "refuse booking an expired quote, with a link to a new one"
+  },
+  "summary": {
+    "what_changed": "- `Book` checks the quote's expiry time before it books, and returns `ErrQuoteExpired` once it has passed.\n- The booking API answers an expired quote with `410 Gone` and a link to request a new quote.",
+    "why": "The task's criteria: an expired quote can't be booked, and the customer is told how to get a new one. Quotes already booked are unaffected, as the check runs only at booking.",
+    "tests_added": [
+      "TestBookExpiredQuote: a quote past its expiry time is refused with ErrQuoteExpired",
+      "TestBookQuoteAtExpiry: a quote booked at its exact expiry time is refused",
+      "TestBookingAPIExpiredQuote: the API answers 410 with the new-quote link"
+    ],
+    "tests_updated": [
+      "TestBook: its quotes get an expiry time in the future"
+    ]
+  }
+}
