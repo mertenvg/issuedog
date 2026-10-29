@@ -26,7 +26,7 @@ const humanDoneTail = "I check this when you reply `/done` or react 👍 to this
 //     boxes stripped, and an empty field reads "None.".
 //   - The steps are numbered "1.", "2." and so on, and the links are a "-"
 //     list, each set apart by a blank line after it, so the field after it
-//     isn't read as part of its last item.
+//     isn't read as part of its last item (humanFields).
 //   - "Why it blocks" names the issues of blocks, the children whose plan
 //     items depend on this one, or the parent when there are none, then
 //     the planner's reason (humanWhyBlocks, SPEC §9.3).
@@ -44,13 +44,26 @@ func humanBody(it planItem, check state.Check, blocks []int, parent int, pri str
 	if err != nil {
 		return "", fmt.Errorf("its done when: %w", err)
 	}
+	fields := humanFields(*h, humanWhyBlocks(h.WhyBlocks, blocks, parent), done)
+	return github.Escape(strings.Join(append([]string{childParentLine(it, parent, pri), fields}, ccLines(notify)...), "\n\n")), nil
+}
+
+// humanFields is the SPEC §9.3 template's fields of h, in order, not yet
+// escaped (github.Escape): a human task's body has them (humanBody), and
+// so does a hand-off comment (renderHandoff). why and done are "Why it
+// blocks" and "Done when" as the caller words them, made safe already.
+// Every other field is agent text, made one line per field as humanBody
+// says, and an empty one reads "None.". The steps are numbered "1.", "2."
+// and so on, and the links are a "-" list, each set apart by a blank line
+// after it, so the field after it isn't read as part of its last item.
+func humanFields(h planHumanTask, why, done string) string {
 	steps := make([]string, len(h.Steps))
 	for i, s := range h.Steps {
 		steps[i] = clean(strconv.Itoa(i+1) + ". " + text(s))
 	}
-	fields := strings.Join([]string{
+	return strings.Join([]string{
 		"**Goal:** " + orNone(inline(h.Goal)),
-		"**Why it blocks:** " + humanWhyBlocks(h.WhyBlocks, blocks, parent),
+		"**Why it blocks:** " + why,
 		"**Steps:**",
 		orNone(strings.Join(steps, "\n")) + "\n",
 		"**Links:**",
@@ -58,7 +71,6 @@ func humanBody(it planItem, check state.Check, blocks []int, parent int, pri str
 		"**Done when:** " + done,
 		"**Estimated time:** " + orNone(inline(h.EstimatedTime)),
 	}, "\n")
-	return github.Escape(strings.Join(append([]string{childParentLine(it, parent, pri), fields}, ccLines(notify)...), "\n\n")), nil
 }
 
 // humanWhyBlocks is "Why it blocks" (SPEC §9.3): "#12 and #13 can't proceed

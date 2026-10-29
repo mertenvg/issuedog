@@ -25,31 +25,42 @@ type doneChecked struct {
 // state.Command.Check lets /done apply only at needs-human, and Waits makes
 // it wait while the issue is held.
 //
-//   - Check, which only reads, rejects /done on an issue that isn't a human
-//     task, as a task blocked on the owner, whose hand-off is phase 3's. On
-//     a human task it runs the task's check (humanCheck) on its origin
-//     marker's Issue.Origin.Check: the zero Check of a plain-text "Done
-//     when" passes with nothing read, and check fields that couldn't be
-//     read (state.CheckUnreadable) fail with nothing read. A failed check
-//     is a Rejection whose reason quotes what it found, so Step 👎s the
-//     comment and replies once, and the issue stays open; a later /done
-//     checks again. A check that couldn't be read fails every time, so its
-//     Rejection is Final, and says to close the issue by hand instead
-//     (unreadableAdvice). A read that fails is an error, not a failed
-//     check: the pass fails with no reply, and the next pass checks again.
-//   - Apply closes the issue as completed (Transition, needs-human → closed
-//     on human-task-done), keyed cmd=<comment id>, with seen=<comment id>:
-//     the marker, the 👍, then the close. Its text says who finished the
-//     task and what the check found, escaped. The close judge sets
-//     stage:completed on the next pass.
+//   - Check, which only reads, accepts /done on a task with a hand-off
+//     waiting (latestHandoff), with nothing more read: a hand-off has no
+//     check (SPEC §9.3). It rejects /done on any other issue that isn't a
+//     human task, such as a task a person moved to needs-human by hand,
+//     which has no hand-off to finish. On a human task it runs the task's
+//     check (humanCheck) on its origin marker's Issue.Origin.Check: the
+//     zero Check of a plain-text "Done when" passes with nothing read, and
+//     check fields that couldn't be read (state.CheckUnreadable) fail with
+//     nothing read. A failed check is a Rejection whose reason quotes what
+//     it found, so Step 👎s the comment and replies once, and the issue
+//     stays open; a later /done checks again. A check that couldn't be
+//     read fails every time, so its Rejection is Final, and says to close
+//     the issue by hand instead (unreadableAdvice). A read that fails is an
+//     error, not a failed check: the pass fails with no reply, and the next
+//     pass checks again.
+//   - Apply, on an issue that isn't a human task, sends the task back to
+//     ready (Transition, needs-human → ready on handoff-done), keyed
+//     cmd=<comment id>, with seen=<comment id>: the marker, the stage
+//     label, then the 👍. Its text says who finished the hand-off.
+//   - Apply, on a human task, closes the issue as completed (Transition,
+//     needs-human → closed on human-task-done), keyed cmd=<comment id>,
+//     with seen=<comment id>: the marker, the 👍, then the close. Its text
+//     says who finished the task and what the check found, escaped. The
+//     close judge sets stage:completed on the next pass.
 func DoneCommand() Handler {
 	return Handler{
 		Check: func(ctx context.Context, a *Applier, c Cmd) error {
-			// Once Apply's marker exists, the stage is closed, so Step
-			// finishes the command before it asks Check.
+			// Once Apply's marker exists, the stage is ready or closed, so
+			// Step finishes the command before it asks Check.
 			is := state.Derive(c.S, a.AppSlug, c.Dirt.Has)
 			if class, err := state.ClassOf(is.Item); err != nil || class != state.ClassHumanTask {
-				return Rejection{Reason: "`/done` on a blocked task isn't handled yet (build phase 3)", Final: true}
+				if _, ok := latestHandoff(c.S, a.AppSlug, c.Dirt.Has); ok {
+					return nil
+				}
+				return Rejection{Reason: "this issue has no hand-off of mine waiting, so `/done` has nothing to finish. " +
+					"To send a task on from here, set its stage by hand", Final: true}
 			}
 			pass, found, err := a.humanCheckOn(ctx, c.S.Number, is.Origin.Check, "/done")
 			if err != nil {
@@ -65,12 +76,21 @@ func DoneCommand() Handler {
 			return nil
 		},
 		Apply: func(ctx context.Context, a *Applier, c Cmd) error {
+			seen := map[string]string{state.FieldSeen: strconv.FormatInt(c.Comment.ID, 10)}
+			if class, err := state.ClassOf(state.Derive(c.S, a.AppSlug, c.Dirt.Has).Item); err != nil || class != state.ClassHumanTask {
+				m := Move{To: state.Ready, Trigger: state.TriggerHandoffDone, Key: state.CmdKey(c.Comment.ID), Fields: seen,
+					Text: fmt.Sprintf("%s said the hand-off is done, so the task goes back to `ready`.", c.Comment.Author.Login)}
+				if err := a.Transition(ctx, c.S, c.Dirt.Has, m); err != nil {
+					return fmt.Errorf("done with the hand-off: %w", err)
+				}
+				return nil
+			}
 			found, err := a.doneFound(ctx, c)
 			if err != nil {
 				return fmt.Errorf("done: %w", err)
 			}
 			m := Move{To: state.Closed, StateReason: "completed", Trigger: state.TriggerHumanTaskDone, Key: state.CmdKey(c.Comment.ID),
-				Fields: map[string]string{state.FieldSeen: strconv.FormatInt(c.Comment.ID, 10)},
+				Fields: seen,
 				Text:   fmt.Sprintf("%s said this task is done. %s So I've closed it as completed.", c.Comment.Author.Login, found)}
 			if err := a.Transition(ctx, c.S, c.Dirt.Has, m); err != nil {
 				return fmt.Errorf("done: %w", err)

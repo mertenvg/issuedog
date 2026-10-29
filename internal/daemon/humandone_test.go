@@ -171,8 +171,9 @@ func TestDoneFails(t *testing.T) {
 	doneState(t, f, []string{"stage:needs-human"}, true, []string{"/done", reply, "/done", doneClosed("The label `needs-design` exists.", 1005)})
 }
 
-// A /done on a task that isn't a human task, at needs-human, is rejected as
-// not handled yet, with no check read; no new comment would do better.
+// A /done on a task that isn't a human task, at needs-human with no hand-off
+// waiting, here by a move into needs-human that no hand-off makes, is
+// rejected, with no check read; no new comment would do better.
 func TestDoneNotHumanTask(t *testing.T) {
 	t.Parallel()
 	o := newOrigin(t)
@@ -187,7 +188,8 @@ func TestDoneNotHumanTask(t *testing.T) {
 	f := setup(t)
 	iterate(t, doneDaemon(t, f, o))
 	doneState(t, f, []string{"stage:needs-human"}, false, []string{"/done",
-		"> /done\n\nI didn't apply this command: `/done` on a blocked task isn't handled yet (build phase 3).\n\n" +
+		"> /done\n\nI didn't apply this command: this issue has no hand-off of mine waiting, so `/done` has nothing to finish. " +
+			"To send a task on from here, set its stage by hand.\n\n" +
 			"<!-- issuedog:reply reason=rejected cmd=1002 -->"})
 	if r := checkReads(f, 0); len(r) != 0 {
 		t.Errorf("check reads %+v, want none", r)

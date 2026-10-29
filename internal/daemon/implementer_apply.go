@@ -17,8 +17,9 @@ import (
 )
 
 // This file checks and applies the implementer's results (SPEC §7.2, §12):
-// its commits, which move the task to verifying with its head, and its
-// question round, which moves it to clarifying (SPEC §9.1).
+// its commits, which move the task to verifying with its head, its
+// question round, which moves it to clarifying (SPEC §9.1), and its
+// hand-off, which implementer_handoff.go checks and renders.
 
 // The implementer's outcomes, as its schema names them.
 const (
@@ -97,7 +98,8 @@ type implementerFacts struct {
 	// none past its start.
 	Head string
 	// Issue is the task's number, MaxQuestions loop.max_questions_per_round
-	// and Notify the config's notify, for a question round and its cc line.
+	// and Notify the config's notify, for a question round's or a hand-off's
+	// comment and its cc line, so its length rule counts it as it's posted.
 	Issue        int
 	MaxQuestions int
 	Notify       []string
@@ -118,8 +120,9 @@ type implementerFacts struct {
 //   - question has questions, and no title, summary or hand-off. Its
 //     questions follow the interviewer's question rules (checkQuestions),
 //     and its comment (renderQuestions) fits within maxText less textRoom.
-//   - handoff isn't handled yet, so it's a failed attempt, as an unknown
-//     outcome is.
+//   - handoff has a hand-off, and no title, summary or questions. Every
+//     field of the hand-off is filled, as a human task's (checkHandoff),
+//     and its comment (renderHandoff) is within maxText less textRoom.
 func checkImplementer(out implementerOutput, f implementerFacts) error {
 	var errs []error
 	fail := func(rule, format string, args ...any) {
@@ -131,7 +134,7 @@ func checkImplementer(out implementerOutput, f implementerFacts) error {
 	case implementerQuestion:
 		checkImplementerQuestion(out, f, fail)
 	case implementerHandoff:
-		fail(ruleOutcome, "the %s outcome isn't handled yet", out.Outcome)
+		checkHandoff(out, f, fail)
 	default:
 		fail(ruleOutcome, "unknown outcome %q", out.Outcome)
 	}
@@ -200,7 +203,7 @@ func checkImplementerQuestion(out implementerOutput, f implementerFacts, fail fu
 
 // facts are what checkImplementer holds r's output to: the config's
 // pr.title_types, loop.max_questions_per_round and notify, the run's head,
-// and the rounds of every stage on r.S so far.
+// the task's number, and the rounds of every stage on r.S so far.
 func (im *Implementer) facts(r Result) implementerFacts {
 	c := im.Daemon.Config
 	return implementerFacts{
@@ -275,6 +278,8 @@ func implementerMoved(is state.Issue, r Result) (Move, bool) {
 //     (nextRound, SPEC §9.1), and its comment the round in the SPEC §9.1
 //     format, then the cc line (renderQuestions). The task waits there for
 //     its answer (Step.AnswerVisit).
+//   - handoff: in-progress → needs-human on implementer-blocked, and its
+//     comment the hand-off (renderHandoff), ending in the cc line.
 //
 // Each write is checked first, so it can run again after a crash part way
 // (SPEC §5.2). Once the run's move is written, it only finishes the move's
@@ -310,6 +315,15 @@ func (im *Implementer) Apply(ctx context.Context, a *Applier, r Result) error {
 		m.Fields["round"], m.Fields["questions"] = strconv.Itoa(round), strconv.Itoa(len(out.Questions))
 		m.Text = renderQuestions(interviewOutput{Questions: out.Questions}, r.S.Number, round, f.Notify)
 		logr.Infof("%s/%s#%d: run %s asks round %d, of %d questions, moving to %s", a.Owner, a.Repo, r.S.Number, r.RunID, round, len(out.Questions), state.Clarifying)
+		if err := a.Transition(ctx, r.S, r.Dirt.Has, m); err != nil {
+			return wrap(err)
+		}
+		return nil
+	}
+	if out.Outcome == implementerHandoff {
+		m := r.Move(state.NeedsHuman, state.TriggerImplementerBlocked)
+		m.Text = renderHandoff(*out.Handoff, f.Issue, f.Notify)
+		logr.Infof("%s/%s#%d: run %s hands off an owner action, moving to %s", a.Owner, a.Repo, r.S.Number, r.RunID, state.NeedsHuman)
 		if err := a.Transition(ctx, r.S, r.Dirt.Has, m); err != nil {
 			return wrap(err)
 		}
