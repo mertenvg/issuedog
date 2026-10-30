@@ -96,6 +96,43 @@ func TestImplementerAnswers(t *testing.T) {
 	}
 }
 
+// The answers are every clean, trusted comment that isn't a command from
+// the move's key to its seen, not only those two: with three trusted
+// answers, the middle one is kept, in order. A move written with no seen=
+// read its key alone, so its answer is that one, and none after it.
+func TestImplementerAnswersMiddleAndNoSeen(t *testing.T) {
+	t.Parallel()
+	owner, alice := github.Author{Login: "owner", Type: "User"}, github.Author{Login: "alice", Type: "User"}
+	round := github.Comment{ID: 10, Author: contextTestApp, Body: "Round 1.\n\n<!-- issuedog:transition from=in-progress to=clarifying round=1 run=run1 questions=2 -->"}
+	answers := []github.Comment{
+		round,
+		{ID: 11, Author: owner, Body: "1a"},
+		{ID: 12, Author: alice, Body: "2b"},
+		{ID: 13, Author: owner, Body: "And keep it short."},
+	}
+	for _, tt := range []struct {
+		name, move string
+		want       []int64
+	}{
+		{"three answers", "<!-- issuedog:transition from=clarifying to=ready cmd=11 seen=13 -->", []int64{11, 12, 13}},
+		{"a move with no seen", "<!-- issuedog:transition from=clarifying to=ready cmd=11 -->", []int64{11}},
+	} {
+		cs := append(slices.Clone(answers), github.Comment{ID: 14, Author: contextTestApp, Body: "Answered.\n\n" + tt.move})
+		s := &github.Snapshot{Number: 1, Comments: cs}
+		got, err := implementerAnswers(context.Background(), s, Dirt{}, contextTestTC(), state.Derive(s, "issuedog", Dirt{}.Has))
+		if err != nil {
+			t.Fatalf("%s: %v", tt.name, err)
+		}
+		var ids []int64
+		for _, c := range got {
+			ids = append(ids, c.ID)
+		}
+		if !slices.Equal(ids, tt.want) {
+			t.Errorf("%s: the answers are %v, want %v", tt.name, ids, tt.want)
+		}
+	}
+}
+
 // A trust check that fails fails the answers, which the run's context
 // then reports as a setup failure.
 func TestImplementerAnswersTrustFails(t *testing.T) {
