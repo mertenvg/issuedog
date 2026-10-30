@@ -118,6 +118,24 @@ func TestHandoffDone(t *testing.T) {
 	}
 }
 
+// A trusted /done on a task waiting on its hand-off sends it back to ready
+// with seen the /done itself, as SPEC §9.3 says, not the newest comment
+// read, though a later comment is read in the same pass: owner's /done,
+// 1003, then owner's comment, 1004.
+func TestHandoffDoneSeenItself(t *testing.T) {
+	t.Parallel()
+	f := handbackTask(func(t testing.TB, f *githubtest.Fake) {
+		doneBy("owner", 1003)(t, f)
+		if id := f.AddComment(1, "owner", "The secret is in, under Actions."); id != 1004 {
+			t.Fatalf("owner's comment ID = %d, want 1004", id)
+		}
+	})(t)
+	iterate(t, handbackDaemon(t, f, newOrigin(t)))
+	handbackState(t, f, []string{"stage:ready"}, []string{"/done", "The secret is in, under Actions.",
+		"owner said the hand-off is done, so the task goes back to `ready`.\n\n" +
+			"<!-- issuedog:transition from=needs-human to=ready cmd=1003 seen=1003 -->"})
+}
+
 // An untrusted /done on a task waiting on its hand-off writes nothing.
 func TestHandoffDoneUntrusted(t *testing.T) {
 	t.Parallel()
@@ -163,11 +181,11 @@ func TestHandoffByReaction(t *testing.T) {
 	}
 }
 
-// A trusted 👍 on the hand-off after comments that followed it sends the
-// task back to ready with seen the newest comment read, the newest of
-// them, not the hand-off's own (SPEC §5, seen on an approval by 👍), as
-// seen bounds the next round's input: owner's comment, 1003, then eve's,
-// 1004, then owner's 👍, 1005.
+// A trusted 👍 on the hand-off, given after other comments, sends the task
+// back to ready with seen the newest comment read, not the hand-off's own,
+// as seen bounds the next round's input (SPEC §5, seen on an approval by
+// 👍). Here owner comments, 1003, then eve, untrusted, 1004, and then owner
+// 👍s the hand-off, 1005, so seen is 1004.
 func TestHandoffByReactionSeenNewest(t *testing.T) {
 	t.Parallel()
 	f := handbackTask(func(t testing.TB, f *githubtest.Fake) {

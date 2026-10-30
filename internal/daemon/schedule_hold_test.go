@@ -146,10 +146,12 @@ func TestPickLabelDisagreesAtReady(t *testing.T) {
 }
 
 // A whole run in which a run's lease holds the worker: a restart left the
-// interview's saved result, whose apply fails once, so its lease stays,
-// and no task is picked that pass, with no search and no blocked_by read,
-// though one waits at ready. The next pass applies the result, ending the
-// lease, and picks the task, whose run starts (SPEC §8.1, §8.2).
+// interview's saved result, whose apply fails once, so its lease stays.
+// The failed apply ends stage work for the pass (Runs.resume), so no task
+// is picked that pass, with no search and no blocked_by read, though one
+// waits at ready; pickHeld's own check of a lease is TestPickHeldByLease's.
+// The next pass applies the result, ending the lease, and picks the task,
+// whose run starts (SPEC §8.1, §8.2).
 func TestPickLeaseHoldsWorker(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)

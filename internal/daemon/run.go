@@ -664,7 +664,7 @@ func (r *Runs) run(ctx context.Context, st Stage, in Input, set state.Settings, 
 		return nil, &agent.SetupError{Err: fmt.Errorf("context files: %w", err)}
 	}
 	if err := r.Workspace.Prepare(ctx, in.RunID, c, files); err != nil {
-		return nil, &agent.SetupError{Err: err}
+		return nil, &agent.SetupError{Err: fmt.Errorf("workspace: %w", err)}
 	}
 	runner := *r.Runner
 	if runner.Stderr != nil {
