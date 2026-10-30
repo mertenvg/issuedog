@@ -263,7 +263,8 @@ type Runs struct {
 // priority then number, whose stage has one with work pending: task work
 // comes after the other stages and triage (SPEC §8.1, step 4). If none ran
 // either, it picks the next ready task, moves it to in-progress and starts
-// its run (pickTask), unless a task holds the worker. A lease
+// its run (pickTask), unless a task holds the worker, or step 1 didn't
+// finish on every issue this pass. A lease
 // whose issue has labels held back
 // (ErrLabelsHeld) waits, and no run starts until it's applied. So does a
 // saved result on an issue step 1 didn't finish on this pass (resume),
