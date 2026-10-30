@@ -646,8 +646,10 @@ func (r *Runs) schema(st Stage) (*agent.Schema, error) {
 // run prepares the workspace, its clone of the commits c, and runs claude
 // for st with the settings set, returning its output and sending its
 // stderr to stderr. A Committer's run gets the App's git identity in its
-// environment too (commitIdentity). A failure to set the run up is an
-// *agent.SetupError, as Runner.Run's are.
+// environment too (commitIdentity), but only when r.Env has something in
+// it: an empty one stays empty, so Runner.Run refuses it as a setup
+// failure, uncounted, for a Committer as for any other stage. A failure
+// to set the run up is an *agent.SetupError, as Runner.Run's are.
 func (r *Runs) run(ctx context.Context, st Stage, in Input, set state.Settings, c workspace.Commits, stderr io.Writer) ([]byte, error) {
 	cfg := r.Daemon.Config.Stages
 	turns, okT := pick(cfg.MaxTurns, st.Agent())
@@ -669,7 +671,7 @@ func (r *Runs) run(ctx context.Context, st Stage, in Input, set state.Settings, 
 	}
 	runner.Stderr = stderr
 	env := r.Env
-	if _, ok := st.(Committer); ok {
+	if _, ok := st.(Committer); ok && len(r.Env) > 0 {
 		env = append(slices.Clone(r.Env), commitIdentity(r.Daemon.Step.Applier.AppSlug)...)
 	}
 	out, err := runner.Run(ctx, agent.Stage{RunID: in.RunID, Dir: r.Workspace.Dir(in.RunID), ContextDir: r.Workspace.Context(in.RunID),

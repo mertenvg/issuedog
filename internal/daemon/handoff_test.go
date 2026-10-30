@@ -606,3 +606,43 @@ func TestCommitterBundleThroughAPipe(t *testing.T) {
 		t.Errorf("the bare repo's refs =\n%s\nwant\n%s", got, wantRefs(main, g.trimmed("commit.1")))
 	}
 }
+
+// A run with no agent environment is a setup failure, so it's no attempt,
+// for a Committer as for a stage that isn't one: the App's git identity
+// isn't added to an empty environment, which Runner.Run refuses before
+// claude starts. The run counts no attempt, writes nothing to GitHub, and
+// leaves no lease or run files.
+func TestCommitterNoEnvironmentIsNoAttempt(t *testing.T) {
+	t.Parallel()
+	for name, committer := range map[string]bool{"a stage that isn't a Committer": false, "a Committer": true} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newFake(t)
+			interview(f)
+			g, cs := newCommitRig(t, f, newOrigin(t), t.TempDir(), nil)
+			if !committer {
+				g.r.Stages[state.Clarifying] = cs.fakeStage
+			}
+			g.d.Config.Loop.MaxAttempts = 1
+			g.claude(failOut, 1)
+			g.commits(true)
+			g.r.Env = nil
+			writes := len(f.Writes())
+			if err := g.work(1); err == nil || !strings.Contains(err.Error(), "has no agent environment") {
+				t.Errorf("Work = %v, want the setup error for no agent environment", err)
+			}
+			if w := f.Writes(); len(w) != writes {
+				t.Errorf("the run wrote %+v; want nothing written to GitHub", w[writes:])
+			}
+			if errs, l := errorMarkers(f, 1), g.lease(); len(errs) != 0 || g.runs() != 0 || l.RunID != "" || l.Failed || l.Attempt != 0 {
+				t.Errorf("errors %q, %d runs, lease %+v; want no attempt counted, and claude never started", errs, g.runs(), l)
+			}
+			if left := g.leftovers(); len(left) != 0 {
+				t.Errorf("left %v; want no lease, result, bundle or clone", left)
+			}
+			if len(cs.checked) != 0 || len(cs.applied) != 0 {
+				t.Errorf("the stage checked %q and applied %q; want neither", cs.checked, cs.applied)
+			}
+		})
+	}
+}

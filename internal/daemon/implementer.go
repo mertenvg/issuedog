@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -13,6 +14,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
+	"github.com/mertenvg/issuedog/internal/trust"
 )
 
 // implementerAgent names the implementer's settings in config.Stages, its
@@ -175,10 +177,20 @@ func implementerTask(number int, dir string) string {
 
 // implementerProtected are the protected paths of SPEC §6.3 that every
 // repo has, before verify.protected_paths: CODEOWNERS in each of the three
-// places GitHub reads it, .github/**, .issuedog/** and the agent-config
-// paths.
-var implementerProtected = []string{"CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS", ".github/**", ".issuedog/**",
-	".claude/**", "**/CLAUDE.md", "**/CLAUDE.local.md", ".mcp.json"}
+// places GitHub reads it (implementerCodeowners), .github/**, .issuedog/**
+// and the agent-config paths.
+var implementerProtected = slices.Concat(implementerCodeowners(), []string{".github/**", ".issuedog/**",
+	".claude/**", "**/CLAUDE.md", "**/CLAUDE.local.md", ".mcp.json"})
+
+// implementerCodeowners lists the places GitHub reads CODEOWNERS from, as
+// trust.Locations lists them, in the order the preamble names them: the
+// root's first, then the others in GitHub's order. So the list is trust's,
+// and the preamble's text stays as it was.
+func implementerCodeowners() []string {
+	paths := slices.Clone(trust.Locations)
+	slices.SortStableFunc(paths, func(a, b string) int { return cmp.Compare(strings.Count(a, "/"), strings.Count(b, "/")) })
+	return paths
+}
 
 // implementerPreamble is the start of system.md, which no prompt on main
 // can remove (SPEC §12): the trust rules, the clone, the output contract,
