@@ -351,15 +351,16 @@ func TestPollClosedListed(t *testing.T) {
 }
 
 // SPEC §9.4's order of kinds puts a finished story after every other kind,
-// a flag and a human task included, and a kind not mapped after it.
+// a flag, a human task and a hand-off included, and a kind not mapped after
+// it.
 func TestWaitDoneRank(t *testing.T) {
 	t.Parallel()
-	for _, k := range []waitKind{waitError, waitHold, waitApproval, waitPlanApproval, waitQuestion, waitHuman, waitFlag} {
+	for _, k := range []waitKind{waitError, waitHold, waitApproval, waitPlanApproval, waitQuestion, waitHuman, waitHandoff, waitFlag} {
 		if k.rank() >= waitDone.rank() {
 			t.Errorf("%s ranks %d, a finished story %d; want %s first", k, k.rank(), waitDone.rank(), k)
 		}
 	}
-	for _, k := range []waitKind{waitDone + 1, waitKind(9), waitKind(20)} {
+	for _, k := range []waitKind{waitHandoff + 1, waitKind(10), waitKind(20)} {
 		if k.rank() <= waitDone.rank() {
 			t.Errorf("%s ranks %d, a finished story %d; want the finished story first", k, k.rank(), waitDone.rank())
 		}

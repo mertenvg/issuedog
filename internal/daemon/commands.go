@@ -276,7 +276,8 @@ func hold(is state.Issue, _ bool, _ int, by string, _ bool) (Move, bool) {
 
 // resume is /resume's move for an issue in its family, in state is, by the
 // command by: back to the first hold's at, once the command ends every hold
-// on it (heldStackResume). The move carries the round bound from before the
+// on it (heldStackResume), but for a task held at in-progress, which goes
+// to ready (resumeTo). The move carries the round bound from before the
 // hold (state.HeldStack.Seen), so the round the hold came in goes on. With
 // after, as when a discussion hold ended on the issue while an owner hold
 // stayed (resolveHeld), it goes to clarifying instead (SPEC §6.4), with at
@@ -289,8 +290,11 @@ func resume(is state.Issue, self bool, above madeAboveSet, by string, after bool
 		// forward (SPEC §6.4), so the commands there keep waiting.
 		fields["origin"] = string(o)
 	}
-	m := Move{To: at, Trigger: state.TriggerResume, Fields: state.HeldStackFields(fields, is.HeldStack.Seen),
-		Text: fmt.Sprintf("Resumed by %s, back to `%s`.", by, at)}
+	to, text := resumeTo(at), fmt.Sprintf("Resumed by %s, back to `%s`.", by, at)
+	if to != at {
+		text = fmt.Sprintf("Resumed by %s. The hold from `%s` dropped the task's run, so it goes back to `%s`.", by, at, to)
+	}
+	m := Move{To: to, Trigger: state.TriggerResume, Fields: state.HeldStackFields(fields, is.HeldStack.Seen), Text: text}
 	if after {
 		fields := resolveFields(is.HeldStack, time.Time{})
 		m = Move{To: state.Clarifying, Trigger: state.TriggerResumeAfterDiscussion, Fields: fields,
@@ -298,6 +302,19 @@ func resume(is state.Issue, self bool, above madeAboveSet, by string, after bool
 				by, at, ivHoldWait(is.Item, state.Stage(fields["origin"])))}
 	}
 	return m, ended > 0 && len(left) == 0
+}
+
+// resumeTo is where /resume sends an issue held from at, once it ends
+// every hold on it: back to at, but a task held at in-progress goes to
+// ready, as the hold dropped its run (SPEC §6.4, §7.2, §8.2), so the pick
+// starts it again (SPEC §8.1). Only a task fits in-progress (state.Fits),
+// so the stage alone tells: an issue of another class there, as by a
+// change of its type, has a type error at either stage.
+func resumeTo(at state.Stage) state.Stage {
+	if at == state.InProgress {
+		return state.Ready
+	}
+	return at
 }
 
 // heldStackResume returns what /resume on an issue does to an issue in its
@@ -707,7 +724,7 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 		return fmt.Errorf("check /resume: %w", err)
 	}
 	if at, ended, left := heldStackResume(is, true, above); ended > 0 && len(left) == 0 {
-		to, trigger := at, state.TriggerResume
+		to, trigger := resumeTo(at), state.TriggerResume
 		if after {
 			to, trigger = state.Clarifying, state.TriggerResumeAfterDiscussion
 		}

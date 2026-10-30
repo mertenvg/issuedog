@@ -27,14 +27,16 @@ func New(a *Applier, clone *repo.Repo, cfg *config.Config, tr github.Trust) *Dae
 }
 
 // RegisterStages returns the Stages to register on d, by stage, and the
-// Unlabeled stage: the interviewer at clarifying, the planner at planning
-// (SPEC §12), and triage for open issues with no stage label (SPEC §6.2).
+// Unlabeled stage: the interviewer at clarifying, the planner at planning,
+// the implementer at in-progress (SPEC §12), and triage for open issues
+// with no stage label (SPEC §6.2).
 // main's stageWork and the whole-run tests both register them with it
 // (#330).
 func RegisterStages(d *Daemon) (map[state.Stage]Stage, Stage) {
 	return map[state.Stage]Stage{
 		state.Clarifying: &Interviewer{Daemon: d},
 		state.Planning:   &Planner{Daemon: d},
+		state.InProgress: &Implementer{Daemon: d},
 	}, &Triage{Daemon: d}
 }
 
@@ -46,7 +48,9 @@ func RegisterStages(d *Daemon) (map[state.Stage]Stage, Stage) {
 // stages, spec-review or plan-review for a spec or plan revision, and
 // intake for a flag, so at most one of them acts on an issue; then a 👍 on
 // a human task itself, at needs-human, which a hold the first ended may
-// have returned it to; then a 👍 on a state error, at any stage. The
+// have returned it to; then a 👍 on a task's latest hand-off comment, at
+// needs-human too, which acts on no human task, so at most one of the two
+// acts on an issue; then a 👍 on a state error, at any stage. The
 // loop's reloads replace its Trust and the daemon's Config, so the
 // handlers and the triggers ask for the current trust, and models for the
 // current models.allowed, rather than keeping what they had at the start.
@@ -62,7 +66,7 @@ func NewStep(a *Applier, tr github.Trust, models func() config.Models) *Step {
 	maps.Copy(st.Commands, FlagCommands())
 	approve, answer := ApproveByReaction(st.CurrentTrust()), FlagByReaction(st.CurrentTrust())
 	errAck, resolved := ErrorByReaction(st.CurrentTrust()), ResolveByReaction(st.CurrentTrust())
-	done := DoneByReaction(st.CurrentTrust())
+	done, handback := DoneByReaction(st.CurrentTrust()), HandoffByReaction(st.CurrentTrust())
 	st.Reactions = func(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt) error {
 		if err := resolved(ctx, a, s, d); err != nil {
 			return fmt.Errorf("discussion hold resolved: %w", err)
@@ -75,6 +79,9 @@ func NewStep(a *Applier, tr github.Trust, models func() config.Models) *Step {
 		}
 		if err := done(ctx, a, s, d); err != nil {
 			return fmt.Errorf("human task done by 👍: %w", err)
+		}
+		if err := handback(ctx, a, s, d); err != nil {
+			return fmt.Errorf("hand-off done by 👍: %w", err)
 		}
 		// Last, so an error a move above ended gets no read.
 		if err := errAck(ctx, a, s, d); err != nil {

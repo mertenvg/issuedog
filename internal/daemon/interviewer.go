@@ -135,12 +135,21 @@ func planRoundMove(m github.Marker) bool {
 	return roundMoveAt(m, state.Planning)
 }
 
-// roundMove reports whether m is a stage run's move from a stage to itself
-// that may carry a question round: the interviewer's (ivRoundMove) or the
-// planner's (planRoundMove). Their rounds share one numbering per issue
-// (SPEC §9.1).
+// implRoundMove reports whether m is an implementer run's move, keyed by
+// run=, from in-progress to clarifying: its question round (SPEC §7.2,
+// §9.1). Nothing else moves a task from in-progress to clarifying: an
+// override writes a marker keyed by event= instead.
+func implRoundMove(m github.Marker) bool {
+	return m.Kind == "transition" && m.Fields["run"] != "" &&
+		state.Stage(m.Fields["from"]) == state.InProgress && state.Stage(m.Fields["to"]) == state.Clarifying
+}
+
+// roundMove reports whether m is a stage run's move that may carry a
+// question round: the interviewer's (ivRoundMove), the planner's
+// (planRoundMove) or the implementer's (implRoundMove). Their rounds share
+// one numbering per issue (SPEC §9.1).
 func roundMove(m github.Marker) bool {
-	return ivRoundMove(m) || planRoundMove(m)
+	return ivRoundMove(m) || planRoundMove(m) || implRoundMove(m)
 }
 
 // roundMoveAt reports whether m is a run's move, keyed by run=, from stage
@@ -174,8 +183,8 @@ func planRounds(s *github.Snapshot, appSlug string, dirty func(int64) bool) []in
 	return questionRounds(s, appSlug, dirty, planRoundMove)
 }
 
-// allRounds returns every question round on s, the interviewer's and the
-// planner's (roundMove), in order.
+// allRounds returns every question round on s, the interviewer's, the
+// planner's and the implementer's (roundMove), in order.
 func allRounds(s *github.Snapshot, appSlug string, dirty func(int64) bool) []interviewerRound {
 	return questionRounds(s, appSlug, dirty, roundMove)
 }

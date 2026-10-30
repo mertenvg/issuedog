@@ -36,7 +36,8 @@ var Start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 // (children.go, dependencies.go), a created issue's labels and type, a
 // transferred issue's 301s and new home (transfer.go), the
 // GraphQL queries for their edits, deleted
-// comments and pins, and the pinIssue mutation. Its API writes, comment edits, created issues and
+// comments and pins, and the pinIssue mutation, and the issue search for
+// blocked issues (search.go). Its API writes, comment edits, created issues and
 // pins included, are made by the App, "<slug>[bot]" of type Bot. A GET whose
 // answer hasn't changed gets a 304. Every write (any method but GET, and a
 // GraphQL mutation) is logged, and FailWrite can fail one.
@@ -97,6 +98,8 @@ type Fake struct {
 	answerOnce func(Request) int    // see AnswerOnce
 
 	hooksRunning int // BeforeRequest and BeforeGraphQL hooks running now (fakehook.go)
+
+	searchFrozen []searchEntry // what the issue search answers from while FreezeSearch holds, or nil (search.go)
 }
 
 // discard swallows a reply, for a write that takes effect but answers 500.
@@ -199,6 +202,7 @@ func New(t testing.TB, repo, slug string) *Fake {
 	f.handleChecks()
 	f.handleAssign()
 	f.handleTransfer()
+	f.handleSearch()
 	f.srv = httptest.NewServer(f.logged(f.mux))
 	t.Cleanup(f.srv.Close)
 	return f

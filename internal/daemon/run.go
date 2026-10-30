@@ -28,8 +28,8 @@ import (
 	"github.com/mertenvg/logr/v2"
 )
 
-// Stage is one kind of non-task stage run, such as the interviewer's (#6).
-// Runs runs it for issues at the stage it's registered at.
+// Stage is one kind of stage run, such as the interviewer's (#6) or the
+// implementer's. Runs runs it for issues at the stage it's registered at.
 type Stage interface {
 	// Agent names the stage's settings in config.Stages, such as "interviewer".
 	Agent() string
@@ -166,8 +166,9 @@ type Lease struct {
 	// ApplyFailures counts the failed applies of the run's result.
 	ApplyFailures int `json:"apply_failures,omitempty"`
 	// PublicFailure is why the run failed, as failed records it, at most
-	// maxLastFailure characters (lastFailure), for the attempt cap's error
-	// (SPEC §5.3, §8.2), so a restart still names it. It holds only
+	// maxLastFailure characters (lastFailure), for the attempt cap's error,
+	// or the implementer's hand-off at the cap (SPEC §5.3, §8.2, §8.3), so
+	// a restart still names it. It holds only
 	// what that public comment may quote of the cause (publicCause), or
 	// publicCauseLogged when that's nothing: failed logs the whole cause,
 	// and nothing else reads it. Its key is new with that (#320), so a
@@ -216,7 +217,8 @@ func lastFailure(cause error) string {
 const kindLabels = "labels"
 
 // Runs is the stage-run harness. Its Work is the loop's stage work (SPEC
-// §8.1, step 3), one run at a time, under a lease (SPEC §8.2).
+// §8.1, step 3), then a task's run or the pick of the next task (step 4),
+// one run at a time, under a lease (SPEC §8.2).
 type Runs struct {
 	// Daemon gives the applier, trust and config of the moment.
 	Daemon *Daemon
@@ -242,15 +244,28 @@ type Runs struct {
 	// failures holds why the last of the failed runs failed
 	// (Lease.PublicFailure), by countKey, for the attempt cap's error.
 	failures map[string]string
+
+	// pickBlocked are the ready tasks the pick passes over as blocked: the
+	// issue search's last answer, as of pickSearched, by GitHub's clock,
+	// and those the pick found an open blocker of since (schedule.go).
+	pickBlocked  map[int]bool
+	pickSearched time.Time
 }
 
 // Work is Daemon.Work. On its first pass it first removes what a crash
 // left (sweep). Then it finishes a lease a run left, after a
 // restart or a failed apply (resume). Then, unless a usage limit closed
 // the gate, it runs the first issue, by priority then number, whose stage
-// has a Stage with work pending. If none ran, it runs Unlabeled, if set, on
-// the newest issue, by number, with no stage label and no transition
-// marker that it has work for. A lease whose issue has labels held back
+// has a Stage with work pending, other than a Committer. If none ran, it
+// runs Unlabeled, if set, on the newest issue, by number, with no stage
+// label and no transition marker that it has work for. If none ran either,
+// it runs a Committer, such as the implementer, on the first issue, by
+// priority then number, whose stage has one with work pending: task work
+// comes after the other stages and triage (SPEC §8.1, step 4). If none ran
+// either, it picks the next ready task, moves it to in-progress and starts
+// its run (pickTask), unless a task holds the worker, or step 1 didn't
+// finish on every issue this pass. A lease
+// whose issue has labels held back
 // (ErrLabelsHeld) waits, and no run starts until it's applied. So does a
 // saved result on an issue step 1 didn't finish on this pass (resume),
 // whose wait resume logs: Work's error is then only a failure to keep the
@@ -287,28 +302,63 @@ func (r *Runs) Work(ctx context.Context, ready []Ready) error {
 	}
 	ready = slices.Clone(ready)
 	slices.SortStableFunc(ready, func(a, b Ready) int { return cmp.Compare(priority(a.S), priority(b.S)) })
-	for _, rd := range ready {
-		st, ok := r.Stages[stageOf(rd.S)]
-		if !ok || rd.S.Number == skip {
-			continue
-		}
-		if ran, err := r.RunStage(ctx, rd, st); err != nil || ran {
-			return err
-		}
-	}
-	if r.Unlabeled == nil {
+	ran, err := r.work(ctx, ready, skip, false)
+	switch {
+	case err != nil:
+		return fmt.Errorf("stage work: %w", err)
+	case ran:
 		return nil
 	}
-	slices.SortStableFunc(ready, func(a, b Ready) int { return cmp.Compare(b.S.Number, a.S.Number) })
-	for _, rd := range ready {
-		if stageOf(rd.S) != "" || leftOutStage(rd.S) || rd.S.Number == skip {
-			continue
-		}
-		if ran, err := r.runStage(ctx, rd, r.Unlabeled, true); err != nil || ran {
-			return err
+	if r.Unlabeled != nil {
+		newest := slices.Clone(ready)
+		slices.SortStableFunc(newest, func(a, b Ready) int { return cmp.Compare(b.S.Number, a.S.Number) })
+		for _, rd := range newest {
+			if stageOf(rd.S) != "" || leftOutStage(rd.S) || rd.S.Number == skip {
+				continue
+			}
+			ran, err := r.runStage(ctx, rd, r.Unlabeled, true)
+			switch {
+			case err != nil:
+				return fmt.Errorf("unlabeled work: %w", err)
+			case ran:
+				return nil
+			}
 		}
 	}
+	slices.SortStableFunc(ready, func(a, b Ready) int {
+		return cmp.Or(cmp.Compare(priority(a.S), priority(b.S)), cmp.Compare(a.S.Number, b.S.Number))
+	})
+	ran, err = r.work(ctx, ready, skip, true)
+	switch {
+	case err != nil:
+		return fmt.Errorf("task work: %w", err)
+	case ran:
+		return nil
+	}
+	if _, err := r.pickTask(ctx, ready); err != nil {
+		return fmt.Errorf("the pick: %w", err)
+	}
 	return nil
+}
+
+// work runs the first of ready, in its order, but issue skip, whose stage
+// has a Stage with work pending that is a Committer, if committers, or
+// that isn't, if not, and reports whether one ran.
+func (r *Runs) work(ctx context.Context, ready []Ready, skip int, committers bool) (bool, error) {
+	for _, rd := range ready {
+		st, ok := r.Stages[stageOf(rd.S)]
+		if _, commits := st.(Committer); !ok || commits != committers || rd.S.Number == skip {
+			continue
+		}
+		ran, err := r.RunStage(ctx, rd, st)
+		switch {
+		case err != nil:
+			return ran, fmt.Errorf("the %s on #%d: %w", st.Agent(), rd.S.Number, err)
+		case ran:
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // unlabeled reports whether s, whose state is is, is Unlabeled work: it has
@@ -356,11 +406,13 @@ func (r *Runs) CheckRegistered() error {
 // whether it ran. A run that fails, but not on a usage limit or in its
 // setup, counts as an attempt (failed); after loop.max_attempts in a row
 // the issue gets one state error (SPEC §5.3) and no more runs until the
-// stage moves or gets new input. If posting that error failed, RunStage
-// posts it instead of a run, even when the stage has no work pending, as
-// on an issue it no longer runs on; if that fails too, it logs the error and
-// moves on, so the next issue gets its turn. A Stage whose schema doesn't
-// compile starts no run: it's a setup failure, reported once (schema). A
+// stage moves or gets new input, or for the implementer on a task, a
+// hand-off at needs-human (atCap). If posting that error, or making that
+// hand-off, failed, RunStage posts it instead of a run, even when the
+// stage has no work pending, as on an issue it no longer runs on; if that
+// fails too, it logs the error and moves on, so the next issue gets its
+// turn. A Stage whose schema doesn't compile starts no run: it's a setup
+// failure, reported once (schema). A
 // result asking for a move the table lacks is no attempt: it gets one
 // state error (Transition), and no run starts until the issue changes
 // (moveKey). A run whose result fails to apply keeps its lease, for the
@@ -414,7 +466,7 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		// failed on an issue its stage no longer runs on leaves it none.
 		// A post that keeps failing mustn't hold up the other issues.
 		last := Lease{Issue: n, Stage: is.Stage, AttemptKey: errKey, PublicFailure: r.failures[countKey(n, errKey)]}
-		if err := r.reportCap(ctx, nil, st, last); err != nil {
+		if err := r.atCap(ctx, st, last); err != nil {
 			logr.Errorf("%s/%s#%d: no %s run, as it failed loop.max_attempts times, but posting that failed again: %v",
 				a.Owner, a.Repo, n, st.Agent(), err)
 		}
@@ -594,8 +646,11 @@ func (r *Runs) schema(st Stage) (*agent.Schema, error) {
 
 // run prepares the workspace, its clone of the commits c, and runs claude
 // for st with the settings set, returning its output and sending its
-// stderr to stderr. A failure to set the run up is an *agent.SetupError,
-// as Runner.Run's are.
+// stderr to stderr. A Committer's run gets the App's git identity in its
+// environment too (commitIdentity), but only when r.Env has something in
+// it: an empty one stays empty, so Runner.Run refuses it as a setup
+// failure, uncounted, for a Committer as for any other stage. A failure
+// to set the run up is an *agent.SetupError, as Runner.Run's are.
 func (r *Runs) run(ctx context.Context, st Stage, in Input, set state.Settings, c workspace.Commits, stderr io.Writer) ([]byte, error) {
 	cfg := r.Daemon.Config.Stages
 	turns, okT := pick(cfg.MaxTurns, st.Agent())
@@ -609,20 +664,35 @@ func (r *Runs) run(ctx context.Context, st Stage, in Input, set state.Settings, 
 		return nil, &agent.SetupError{Err: fmt.Errorf("context files: %w", err)}
 	}
 	if err := r.Workspace.Prepare(ctx, in.RunID, c, files); err != nil {
-		return nil, &agent.SetupError{Err: err}
+		return nil, &agent.SetupError{Err: fmt.Errorf("workspace: %w", err)}
 	}
 	runner := *r.Runner
 	if runner.Stderr != nil {
 		stderr = io.MultiWriter(runner.Stderr, stderr)
 	}
 	runner.Stderr = stderr
+	env := r.Env
+	if _, ok := st.(Committer); ok && len(r.Env) > 0 {
+		env = append(slices.Clone(r.Env), commitIdentity(r.Daemon.Step.Applier.AppSlug)...)
+	}
 	out, err := runner.Run(ctx, agent.Stage{RunID: in.RunID, Dir: r.Workspace.Dir(in.RunID), ContextDir: r.Workspace.Context(in.RunID),
-		Schema: st.Schema(), MaxTurns: int(turns), MaxBudgetUSD: budget, Timeout: timeout, Env: r.Env,
+		Schema: st.Schema(), MaxTurns: int(turns), MaxBudgetUSD: budget, Timeout: timeout, Env: env,
 		Model: set.Model, Effort: set.Effort, FallbackModels: set.FallbackModels})
 	if err != nil {
 		return out, fmt.Errorf("run %s: %w", in.RunID, err)
 	}
 	return out, nil
+}
+
+// commitIdentity is the git identity of a Committer's runs, in their
+// environment (SPEC §3.3): the App's bot, <slug>[bot], with its noreply
+// address, as author and committer, so every commit a run makes names the
+// App, whatever the clone's config says. slug is the one GET /app gave at
+// startup.
+func commitIdentity(slug string) []string {
+	name := slug + "[bot]"
+	email := name + "@users.noreply.github.com"
+	return []string{"GIT_AUTHOR_NAME=" + name, "GIT_AUTHOR_EMAIL=" + email, "GIT_COMMITTER_NAME=" + name, "GIT_COMMITTER_EMAIL=" + email}
 }
 
 // outcome reads from a run's output whether it failed, and its text: it
@@ -1101,8 +1171,10 @@ func (r *Runs) endedLease(ctx context.Context, l Lease) error {
 // may quote of cause as its PublicFailure (publicCause), or, if nothing,
 // publicCauseLogged. It logs cause in full. The last attempt allowed posts
 // one state error (reportCap), naming that cause, after which RunStage
-// runs no more. If posting it fails, RunStage posts it instead of starting
-// a run, whether or not the stage has work pending then.
+// runs no more, or for the implementer on a task, hands the task off to
+// the owner, naming it too (atCap). If that fails, RunStage does it
+// instead of starting a run, whether or not the stage has work pending
+// then.
 func (r *Runs) failed(ctx context.Context, st Stage, l Lease, cause error) error {
 	l.PublicFailure = cmp.Or(publicCause(cause), publicCauseLogged)
 	n := r.count(l)
@@ -1113,7 +1185,75 @@ func (r *Runs) failed(ctx context.Context, st Stage, l Lease, cause error) error
 	if n < r.limit() {
 		return nil
 	}
+	return r.atCap(ctx, st, l)
+}
+
+// atCap is what the attempt cap does once l's run is the last of
+// loop.max_attempts failed in a row (SPEC §8.3). For a Committer's run at
+// in-progress, the implementer's on a task, it's a hand-off at needs-human
+// (capHandoff), which releases the worker. For every other stage, it's
+// the kind=attempts state error (reportCap), and the stage runs no more
+// until the round changes.
+func (r *Runs) atCap(ctx context.Context, st Stage, l Lease) error {
+	if _, commits := st.(Committer); commits && l.Stage == state.InProgress {
+		return r.capHandoff(ctx, st, l)
+	}
 	return r.reportCap(ctx, nil, st, l)
+}
+
+// capHandoff is the implementer's attempt cap on a task (SPEC §8.3, §9.3):
+// l's run was the last of loop.max_attempts failed in a row, so the task
+// moves in-progress → needs-human on attempt-cap, keyed
+// event=a<l.AttemptKey> (capHandoffKey), with a hand-off in the
+// implementer's form whose opening says the runs failed, and quotes why
+// the last one did, as the cap's state error would (renderCapHandoff).
+// That releases the worker (SPEC §8.1), and /done or a trusted 👍 on the
+// hand-off sends the task back to ready, a new round (handback.go).
+//
+// It reads the issue again, and runs CheckLabels on it before its move,
+// as a run's apply does. Like reportCap, it moves nothing on an issue
+// that's closed, gone, or has moved on, by a marker or a stage label not
+// yet recorded. A task retyped since, which the table no longer moves to
+// needs-human, gets reportCap's state error instead. An error is the
+// caller's: RunStage makes the hand-off on its next pass instead of a
+// run, as it posts reportCap's state error then.
+func (r *Runs) capHandoff(ctx context.Context, st Stage, l Lease) error {
+	a := r.Daemon.Step.Applier
+	wrap := func(err error) error { return fmt.Errorf("hand off the attempt cap on #%d: %w", l.Issue, err) }
+	s, err := a.Client.Snapshot(ctx, a.Owner, a.Repo, l.Issue)
+	switch {
+	case gone(err):
+		logr.Infof("#%d looks gone, so it gets no attempt cap hand-off: %v", l.Issue, err)
+		return nil
+	case err != nil:
+		return wrap(err)
+	}
+	defer r.Daemon.reread(l.Issue, false)
+	d, err := a.Dirty(ctx, s, r.Daemon.Step.Trust)
+	if err == nil {
+		err = a.discCheckLabels(ctx, s, r.Daemon.Step.Trust, d)
+	}
+	if err != nil {
+		return wrap(err)
+	}
+	is := state.Derive(s, a.AppSlug, d.Has)
+	if s.Closed || is.Stage != l.Stage || otherStage(s, l.Stage) {
+		return nil
+	}
+	if class, err := state.ClassOf(is.Item); err != nil || class&state.AnyTask == 0 {
+		if err := r.reportCap(ctx, s, st, l); err != nil {
+			return wrap(err)
+		}
+		return nil
+	}
+	m := Move{To: state.NeedsHuman, Trigger: state.TriggerAttemptCap, Key: capHandoffKey(l.AttemptKey),
+		Text: renderCapHandoff(r.limit(), l.PublicFailure, l.Issue, r.Daemon.Config.Notify)}
+	if err := a.Transition(ctx, s, d.Has, m); err != nil {
+		return wrap(err)
+	}
+	logr.Warnf("%s/%s#%d: the %s run failed %d times in a row, so the task is handed off to the owner at %s",
+		a.Owner, a.Repo, l.Issue, st.Agent(), r.limit(), state.NeedsHuman)
+	return nil
 }
 
 // count adds l's attempt to the count of its attempts, which it returns,

@@ -98,6 +98,11 @@ func madeOn(issues string, holds int) string {
 	return "the holds left were made on " + issues + ", by `/hold` or by hand, so `/resume` there ends them"
 }
 
+// resumedToReady is the text of /resume's move of a task held at
+// in-progress, which goes to ready, as the hold dropped its run (SPEC
+// §6.4).
+const resumedToReady = "Resumed by `/resume`. The hold from `in-progress` dropped the task's run, so it goes back to `ready`."
+
 // issueWant is an issue after the passes: its labels and its new comments.
 type issueWant struct{ labels, comments []string }
 
@@ -205,7 +210,7 @@ func TestHoldResumePriority(t *testing.T) {
 				[]int{0, 1, 2, 2}, 2, 1005, "/resume", nil),
 			on: 2,
 			want: map[int]issueWant{
-				2: {[]string{"stage:in-progress"}, []string{moved("Resumed by `/resume`, back to `in-progress`.", "from=held to=in-progress cmd=1005")}},
+				2: {[]string{"stage:ready"}, []string{moved(resumedToReady, "from=held to=ready cmd=1005")}},
 				3: {[]string{"stage:verifying"}, []string{moved("Resumed by `/resume` on #2, back to `verifying`.", "from=held to=verifying cmd=1005")}},
 			},
 			react: "+1", posts: []string{"/issues/3/comments", "/issues/2/comments"}},
@@ -258,7 +263,7 @@ func TestHoldResumePriority(t *testing.T) {
 			setup: tree([]string{ready, above("ready"), above("in-progress"), above("verifying")}, []int{0, 1, 2, 3}, 3, 1005, "/resume", nil),
 			on:    3,
 			want: map[int]issueWant{
-				3: {[]string{"stage:in-progress"}, []string{moved("Resumed by `/resume`, back to `in-progress`.", "from=held to=in-progress cmd=1005")}},
+				3: {[]string{"stage:ready"}, []string{moved(resumedToReady, "from=held to=ready cmd=1005")}},
 				4: {[]string{"stage:verifying"}, []string{moved("Resumed by `/resume` on #3, back to `verifying`.", "from=held to=verifying cmd=1005")}},
 			},
 			react: "+1"},
@@ -297,7 +302,7 @@ func TestHoldResumePriority(t *testing.T) {
 			}),
 			on: 1,
 			want: map[int]issueWant{
-				1: {[]string{"stage:in-progress"}, []string{moved("Resumed by `/resume`, back to `in-progress`.", "from=held to=in-progress cmd=1006 seen=1004")}},
+				1: {[]string{"stage:ready"}, []string{moved(resumedToReady, "from=held to=ready cmd=1006 seen=1004")}},
 			},
 			react: "+1"},
 		{name: "/resume reports a child it can't move once, resumes the rest, and a later comment is still processed",
@@ -439,7 +444,9 @@ func TestOwnHolds(t *testing.T) {
 	}
 	// #1 at ready, its child #2 at in-progress, maybe held by the owner's
 	// hand, and #2's child #3 at verifying, then each step but the last
-	// applied, the first one's comment deleted after if gone.
+	// applied, the first one's comment deleted after if gone. A /resume
+	// that ends #2's holds sends it to ready, as a task held at in-progress
+	// (SPEC §6.4).
 	setup := func(hand, gone bool, steps []step) func(testing.TB) *githubtest.Fake {
 		return func(t testing.TB) *githubtest.Fake {
 			f := githubtest.New(t, "o/r", slug)
@@ -484,13 +491,13 @@ func TestOwnHolds(t *testing.T) {
 			labels: [3]string{"stage:ready", "stage:held", "stage:verifying"}, react: "+1"},
 		{name: "a parent's /resume ends the holds its /hold made",
 			steps:  []step{{1, "/hold"}, {1, "/resume"}},
-			labels: [3]string{"stage:ready", "stage:in-progress", "stage:verifying"}, react: "+1"},
+			labels: [3]string{"stage:ready", "stage:ready", "stage:verifying"}, react: "+1"},
 		{name: "a child's own /hold under its parent's writes no marker, but stays when its parent resumes, as does the hold it made below (#188's decision, round 3)",
 			steps:  []step{{1, "/hold"}, {2, "/hold"}, {1, "/resume"}},
 			labels: [3]string{"stage:ready", "stage:held", "stage:held"}, react: "+1"},
 		{name: "then the child's /resume ends its own /hold, and the one it made below",
 			steps:  []step{{1, "/hold"}, {2, "/hold"}, {1, "/resume"}, {2, "/resume"}},
-			labels: [3]string{"stage:ready", "stage:in-progress", "stage:verifying"}, react: "+1"},
+			labels: [3]string{"stage:ready", "stage:ready", "stage:verifying"}, react: "+1"},
 		{name: "a grandchild's /resume ends every hold on itself, the child's /hold too, but the child stays held",
 			steps:  []step{{1, "/hold"}, {2, "/hold"}, {1, "/resume"}, {3, "/resume"}},
 			labels: [3]string{"stage:ready", "stage:held", "stage:verifying"}, react: "+1"},
@@ -499,13 +506,13 @@ func TestOwnHolds(t *testing.T) {
 			labels: [3]string{"stage:ready", "stage:held", "stage:held"}, react: "-1", reply: madeOn("#2", 2)},
 		{name: "a child's /resume ends its own hold and the one it made below",
 			steps:  []step{{2, "/hold"}, {1, "/hold"}, {2, "/resume"}},
-			labels: [3]string{"stage:held", "stage:in-progress", "stage:verifying"}, react: "+1"},
+			labels: [3]string{"stage:held", "stage:ready", "stage:verifying"}, react: "+1"},
 		{name: "a grandparent's /resume with only holds made below it is rejected",
 			steps:  []step{{2, "/hold"}, {1, "/resume"}},
 			labels: [3]string{"stage:ready", "stage:held", "stage:held"}, react: "-1", reply: madeOn("#2", 2)},
 		{name: "a /resume ends the holds a /hold on its parent made",
 			steps:  []step{{1, "/hold"}, {2, "/resume"}},
-			labels: [3]string{"stage:held", "stage:in-progress", "stage:verifying"}, react: "+1"},
+			labels: [3]string{"stage:held", "stage:ready", "stage:verifying"}, react: "+1"},
 		{name: "a hold whose /hold comment is gone isn't ended from above",
 			gone:   true,
 			steps:  []step{{2, "/hold"}, {1, "/resume"}},
@@ -513,7 +520,7 @@ func TestOwnHolds(t *testing.T) {
 		{name: "a /resume on the issue itself ends its hold whose /hold comment is gone, and the one below, as its marker there names it",
 			gone:   true,
 			steps:  []step{{2, "/hold"}, {2, "/resume"}},
-			labels: [3]string{"stage:ready", "stage:in-progress", "stage:verifying"}, react: "+1"},
+			labels: [3]string{"stage:ready", "stage:ready", "stage:verifying"}, react: "+1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
