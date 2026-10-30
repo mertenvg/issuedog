@@ -101,6 +101,33 @@ func TestImplementerQuestionRound(t *testing.T) {
 	}
 }
 
+// A question round's move records how many questions it asks, which the
+// rounds listed to later runs are read from (SPEC §9.1): a round of two
+// has questions=2, and its comment asks both.
+func TestImplementerQuestionRoundCountsQuestions(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	n := implementerTask(f)
+	out := implementerOutput(t, "question")
+	second := maps.Clone(out["questions"].([]any)[0].(map[string]any))
+	second["text"] = "Should the refusal name the second the quote expired?"
+	out["questions"] = append(out["questions"].([]any), second)
+	g := newImplementerRig(t, f, newOrigin(t), t.TempDir(), nil, out)
+
+	g.pass()
+	if g.runs() != 1 {
+		t.Fatalf("claude ran %d times, want once", g.runs())
+	}
+	cs := implementerComments(t, f, n)
+	last := cs[len(cs)-1]
+	if want := fmt.Sprintf("<!-- issuedog:transition from=in-progress to=clarifying round=1 run=run1 questions=2 seen=%d -->", cs[len(cs)-2].ID); last.Author.Login != app || !strings.HasSuffix(last.Body, want) {
+		t.Errorf("the task's newest comment, by %s, =\n%s\nwant the App's, ending %s", last.Author.Login, last.Body, want)
+	}
+	if !strings.Contains(last.Body, "\n**2. Should the refusal name the second the quote expired?** Blocks: #126\n") {
+		t.Errorf("the task's newest comment =\n%s\nwant it to ask question 2", last.Body)
+	}
+}
+
 // A question result is checked as the interviewer's question round is
 // (SPEC §9.1, §12): it has questions, and no title, summary or hand-off,
 // each a rule of its own; at most loop.max_questions_per_round of them,
@@ -329,4 +356,53 @@ func TestImplementerQuestionWholeRun(t *testing.T) {
 		t.Errorf("run 2's system.md =\n%s\nwant round 1 so far, and round 2 next", files["system.md"])
 	}
 	w.labels("run 2", "priority:p1", "scope:booking", "stage:verifying", "type:task")
+}
+
+// implementerAnsweredRound adds to task n, at in-progress, round round of
+// the implementer's run run, then owner's answer to it, the App's move
+// back to ready on it and the App's pick of the task again, as the App
+// writes them, and returns the answer's ID.
+func implementerAnsweredRound(f *githubtest.Fake, n, round int, run, answer string) int64 {
+	asked := f.AddComment(n, app, fmt.Sprintf("Round %d.\n\n<!-- issuedog:transition from=in-progress to=clarifying round=%d run=%s questions=1 -->", round, round, run))
+	id := f.AddComment(n, "owner", answer)
+	f.AddReaction(id, app, "+1")
+	moved := f.AddComment(n, app, fmt.Sprintf("Round %d has an answer.\n\n<!-- issuedog:transition from=clarifying to=ready cmd=%d seen=%d -->", round, id, id))
+	f.AddComment(n, app, fmt.Sprintf("<!-- issuedog:transition from=ready to=in-progress event=s%d seen=%d -->", asked, moved))
+	return id
+}
+
+// The next implementer run's input.md holds the answers to the task's
+// latest round alone, each labelled with its own round (SPEC §9.1, §12):
+// after round 1's answer, it's that answer to round 1, and after round 2's,
+// it's that answer to round 2, and round 1's is gone.
+func TestImplementerQuestionAnswersByRound(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	n := implementerTask(f)
+	d := newDaemon(t, f, newOrigin(t), nil)
+	d.Step.Trust = ivTrust
+	if err := d.Clone.Sync(t.Context(), ""); err != nil {
+		t.Fatal(err)
+	}
+	input := func() string {
+		t.Helper()
+		files, err := (&daemon.Implementer{Daemon: d}).Context(t.Context(), ivInput(t, d, n))
+		if err != nil {
+			t.Fatalf("Context: %v", err)
+		}
+		return string(files["input.md"])
+	}
+	answerWant := func(id int64, round int, text string) string {
+		return fmt.Sprintf("# Input for this run\n\nWhat's new since the implementer last ran, or since the task came to in-progress.\n\n"+
+			"## Comment %d by owner: an answer to round %d\n\n```text\n%s\n```\n", id, round, text)
+	}
+
+	a1 := implementerAnsweredRound(f, n, 1, "run1", "1a")
+	if got, want := input(), answerWant(a1, 1, "1a"); got != want {
+		t.Errorf("after round 1's answer, input.md =\n%s\nwant\n%s", got, want)
+	}
+	a2 := implementerAnsweredRound(f, n, 2, "run2", "1b")
+	if got, want := input(), answerWant(a2, 2, "1b"); got != want {
+		t.Errorf("after round 2's answer, input.md =\n%s\nwant\n%s", got, want)
+	}
 }
