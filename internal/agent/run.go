@@ -20,9 +20,9 @@ import (
 	"github.com/mertenvg/logr/v2"
 )
 
-// defaultWaitDelay bounds the wait for claude's output pipes to close after
-// it exits.
-const defaultWaitDelay = 5 * time.Second
+// DefaultWaitDelay bounds the wait for claude's output pipes to close after
+// it exits, and a verify command's after it exits (package verify).
+const DefaultWaitDelay = 5 * time.Second
 
 // Stage is one stage run of claude -p (SPEC §3.3).
 type Stage struct {
@@ -49,7 +49,7 @@ type Runner struct {
 	Stderr     io.Writer           // claude's stderr; nil discards it
 
 	dirSyncFunc func(dir string) error // syncs the runs dir after a result's rename; nil (all but tests) uses dirsync.Sync
-	waitDelay   time.Duration          // bounds the wait for claude's output pipes; 0 (all but tests) uses defaultWaitDelay
+	waitDelay   time.Duration          // bounds the wait for claude's output pipes; 0 (all but tests) uses DefaultWaitDelay
 }
 
 // dirSync flushes dir's entries to disk, through r.dirSyncFunc if it's set.
@@ -130,7 +130,7 @@ func (r *Runner) Run(ctx context.Context, s Stage) ([]byte, error) {
 
 // command builds the claude command for one stage run: in its own process
 // group, killed as a group when ctx is done, with r.waitDelay, or else
-// defaultWaitDelay, bounding the wait for its output pipes.
+// DefaultWaitDelay, bounding the wait for its output pipes.
 //
 // Run must build its command here. TestRunFailures's timeout subtests set
 // r.waitDelay to an hour, so that only the group kill ends their run within
@@ -144,8 +144,8 @@ func (r *Runner) command(ctx context.Context, s Stage, prompt string, stdout io.
 	cmd.Stdout = stdout
 	cmd.Stderr = r.Stderr
 	cmd.SysProcAttr = r.sysProcAttr()
-	cmd.Cancel = func() error { return r.killGroup(cmd.Process.Pid) }
-	cmd.WaitDelay = defaultWaitDelay
+	cmd.Cancel = func() error { return KillGroup(r.Credential, cmd.Process.Pid) }
+	cmd.WaitDelay = DefaultWaitDelay
 	if r.waitDelay > 0 {
 		cmd.WaitDelay = r.waitDelay
 	}
@@ -189,40 +189,56 @@ func SysProcAttr(cred *syscall.Credential) *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{Setpgid: true, Credential: cred}
 }
 
-// cleanup kills every process of the agent uid, even setsid ones, as only one
-// run is active (SPEC §8.2). The daemon's own uid (tests) gets just the group.
+// cleanup kills what claude left (KillLeftovers).
 func (r *Runner) cleanup(pgid int) error {
-	if r.Credential == nil || r.Credential.Uid == uint32(os.Getuid()) {
-		return r.killGroup(pgid)
+	return KillLeftovers(r.Credential, pgid)
+}
+
+// KillLeftovers kills what a process started with SysProcAttr(cred) left
+// once it's done: every process of the agent uid, even setsid ones, as only
+// one run is active (SPEC §8.2). The daemon's own uid (tests) gets just the
+// group, pgid.
+func KillLeftovers(cred *syscall.Credential, pgid int) error {
+	if cred == nil || cred.Uid == uint32(os.Getuid()) {
+		return KillGroup(cred, pgid)
+	}
+	return KillAll(cred)
+}
+
+// KillAll kills every process of cred's uid, even setsid ones. It refuses a
+// nil cred or the daemon's own uid, whose processes include the daemon.
+func KillAll(cred *syscall.Credential) error {
+	if cred == nil || cred.Uid == uint32(os.Getuid()) {
+		return errors.New("killing the agent's processes: refused for the daemon's own uid")
 	}
 	// kill(-1) skips the calling shell, and fails only if nothing was left.
-	if err := r.asAgent(`kill -KILL -1 2>/dev/null || true`); err != nil {
+	if err := asAgent(cred, `kill -KILL -1 2>/dev/null || true`); err != nil {
 		return fmt.Errorf("killing the agent's processes: %w", err)
 	}
 	return nil
 }
 
-// killGroup kills a run's process group, if it still exists. Without CAP_KILL
-// the daemon can't signal another uid, so with a Credential it runs as that uid.
-func (r *Runner) killGroup(pgid int) error {
-	if r.Credential == nil {
+// KillGroup kills a process group, if it still exists. Without CAP_KILL the
+// daemon can't signal another uid, so with a cred it runs as that uid.
+func KillGroup(cred *syscall.Credential, pgid int) error {
+	if cred == nil {
 		if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 			return fmt.Errorf("killing process group %d: %w", pgid, err)
 		}
 		return nil
 	}
-	if err := r.asAgent(`kill -KILL -"$1" 2>/dev/null || ! kill -0 -"$1" 2>/dev/null`, strconv.Itoa(pgid)); err != nil {
+	if err := asAgent(cred, `kill -KILL -"$1" 2>/dev/null || ! kill -0 -"$1" 2>/dev/null`, strconv.Itoa(pgid)); err != nil {
 		return fmt.Errorf("killing process group %d: %w", pgid, err)
 	}
 	return nil
 }
 
-// asAgent runs a /bin/sh script as r.Credential, with an empty environment.
-func (r *Runner) asAgent(script string, args ...string) error {
+// asAgent runs a /bin/sh script as cred, with an empty environment.
+func asAgent(cred *syscall.Credential, script string, args ...string) error {
 	cmd := exec.Command("/bin/sh", append([]string{"-c", script, "sh"}, args...)...)
 	cmd.Dir = "/"
 	cmd.Env = []string{}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: r.Credential}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: cred}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%w: %s", err, bytes.TrimSpace(out))
 	}
