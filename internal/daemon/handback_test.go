@@ -163,6 +163,30 @@ func TestHandoffByReaction(t *testing.T) {
 	}
 }
 
+// A trusted 👍 on the hand-off after comments that followed it sends the
+// task back to ready with seen the newest comment read, the newest of
+// them, not the hand-off's own (SPEC §5, seen on an approval by 👍), as
+// seen bounds the next round's input: owner's comment, 1003, then eve's,
+// 1004, then owner's 👍, 1005.
+func TestHandoffByReactionSeenNewest(t *testing.T) {
+	t.Parallel()
+	f := handbackTask(func(t testing.TB, f *githubtest.Fake) {
+		f.AddComment(1, "owner", "I've added the secret, checking the list now.")
+		if id := f.AddComment(1, "eve", "Is it the sandbox key or the live one?"); id != 1004 {
+			t.Fatalf("eve's comment ID = %d, want 1004", id)
+		}
+		if id := f.AddReaction(1002, "owner", "+1"); id != 1005 {
+			t.Fatalf("owner's 👍's ID = %d, want 1005", id)
+		}
+	})(t)
+	iterate(t, handbackDaemon(t, f, newOrigin(t)))
+	handbackState(t, f, []string{"stage:ready"}, []string{
+		"I've added the secret, checking the list now.",
+		"Is it the sandbox key or the live one?",
+		"`owner`'s 👍 on the hand-off says it's done, so the task goes back to `ready`.\n\n" +
+			"<!-- issuedog:transition from=needs-human to=ready cmd=r1005 seen=1004 -->"})
+}
+
 // handbackTwice is newFake with issue 1 a task at needs-human after its
 // second hand-off: its move to in-progress, 1001, its first hand-off,
 // 1002, a 👍 on it that sent the task back to ready, 1003, its next move
