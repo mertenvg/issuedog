@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mertenvg/logr/v2"
@@ -34,9 +36,16 @@ const pickSearchEvery = 10 * time.Minute
 // finds blocked is passed over with no request. The first of the others
 // that pickOne picks is the one: a candidate pickOne passes over leaves
 // the next its turn.
+//
+// Nor is anything picked on a pass whose step 1 didn't finish on every
+// issue (pickGaps): an issue whose read failed or found it gone is out of
+// the pass, so a task the pass can't see may hold the worker.
 func (r *Runs) pickTask(ctx context.Context, ready []Ready) (bool, error) {
 	st, ok := r.Stages[state.InProgress]
 	if !ok {
+		return false, nil
+	}
+	if r.pickGaps() {
 		return false, nil
 	}
 	switch held, err := r.pickHeld(ctx, ready); {
@@ -74,6 +83,25 @@ func (r *Runs) pickTask(ctx context.Context, ready []Ready) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// pickGaps reports whether step 1 didn't finish on some issue this pass
+// (Daemon.step1Gaps), its read included, and logs why: then the pass may
+// not see the task that holds the worker, such as one at in-progress
+// whose read failed, so nothing is picked (SPEC §8.1). It costs no
+// request.
+func (r *Runs) pickGaps() bool {
+	gaps := r.Daemon.step1Gaps
+	if len(gaps) == 0 {
+		return false
+	}
+	why := make([]string, 0, len(gaps))
+	for _, n := range slices.Sorted(maps.Keys(gaps)) {
+		why = append(why, fmt.Sprintf("#%d, as %s", n, gaps[n].why))
+	}
+	logr.Debugf("no task is picked: step 1 didn't finish on every issue this pass, so a task holding the worker may be out of it: %s",
+		strings.Join(why, "; "))
+	return true
 }
 
 // pickHeld reports whether a task holds the one worker (SPEC §8.1): a

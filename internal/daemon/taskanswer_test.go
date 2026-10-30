@@ -137,6 +137,68 @@ func TestTaskAnswerIgnores(t *testing.T) {
 	}
 }
 
+// A task closed since its round waits at clarifying no more: a visit to
+// it, as one read just after it closed, before step 1 records the close,
+// writes nothing for its owner's answer, though its markers still have it
+// at clarifying.
+func TestTaskAnswerClosedTask(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	n := taskAnswerTask(f)
+	f.AddComment(n, "owner", "1a")
+	f.Close(n)
+	d := newDaemon(t, f, newOrigin(t), nil)
+	d.Step.Trust = ivTrust
+	s, err := d.Step.Client.Snapshot(t.Context(), "o", "r", n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.Closed {
+		t.Fatalf("the task's snapshot isn't closed; want it closed")
+	}
+	writes := len(f.Writes())
+	if err := d.Step.AnswerVisit(t.Context(), s); err != nil {
+		t.Fatalf("AnswerVisit: %v", err)
+	}
+	if w := f.Writes()[writes:]; len(w) != 0 {
+		t.Errorf("AnswerVisit on the closed task wrote %+v; want nothing", w)
+	}
+}
+
+// A task retyped since its round, here to a story, has no clarifying →
+// ready row on answered (SPEC §7.2), so the answer's move is a state
+// error (SPEC §5.3): it's reported once, with an error comment keyed by
+// the answer, and the pass goes on, as do the passes after, which report
+// it no more. The task stays at clarifying.
+func TestTaskAnswerRetypedReportsOnce(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	n := taskAnswerTask(f)
+	f.SetType(n, "Story")
+	answer := f.AddComment(n, "owner", "1a")
+	d := newDaemon(t, f, newOrigin(t), nil)
+	iterate(t, d)
+	iterate(t, d)
+
+	is := f.State().Issues[n-1]
+	if !slices.Contains(is.Labels, "stage:clarifying") || slices.Contains(is.Labels, "stage:ready") {
+		t.Errorf("the task's labels are %v, want stage:clarifying still", is.Labels)
+	}
+	key := fmt.Sprintf("<!-- issuedog:error kind=transition key=%d -->", answer)
+	reports := 0
+	for _, c := range is.Comments {
+		if strings.Contains(c.Body, "to=ready") {
+			t.Errorf("the task has a move to ready, %q; want none", c.Body)
+		}
+		if c.Author == app && strings.HasSuffix(c.Body, key) {
+			reports++
+		}
+	}
+	if reports != 1 {
+		t.Errorf("the task has %d error comments ending %s; want 1. Its comments are %+v", reports, key, is.Comments)
+	}
+}
+
 // The answer's move, a crash at each of its writes, then a restart: the
 // replay ends with the same writes, the answer's 👍 and the move once
 // (SPEC §5.2).
