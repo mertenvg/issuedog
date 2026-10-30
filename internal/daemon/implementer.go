@@ -1,10 +1,8 @@
 package daemon
 
 import (
-	"cmp"
 	"context"
 	"fmt"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -14,7 +12,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
-	"github.com/mertenvg/issuedog/internal/trust"
+	"github.com/mertenvg/issuedog/internal/verify"
 )
 
 // implementerAgent names the implementer's settings in config.Stages, its
@@ -175,23 +173,6 @@ func implementerTask(number int, dir string) string {
 		"or a question round or a hand-off if something blocks it, as the system prompt says.\n", number, where)
 }
 
-// implementerProtected are the protected paths of SPEC §6.3 that every
-// repo has, before verify.protected_paths: CODEOWNERS in each of the three
-// places GitHub reads it (implementerCodeowners), .github/**, .issuedog/**
-// and the agent-config paths.
-var implementerProtected = slices.Concat(implementerCodeowners(), []string{".github/**", ".issuedog/**",
-	".claude/**", "**/CLAUDE.md", "**/CLAUDE.local.md", ".mcp.json"})
-
-// implementerCodeowners lists the places GitHub reads CODEOWNERS from, as
-// trust.Locations lists them, in the order the preamble names them: the
-// root's first, then the others in GitHub's order. So the list is trust's,
-// and the preamble's text stays as it was.
-func implementerCodeowners() []string {
-	paths := slices.Clone(trust.Locations)
-	slices.SortStableFunc(paths, func(a, b string) int { return cmp.Compare(strings.Count(a, "/"), strings.Count(b, "/")) })
-	return paths
-}
-
 // implementerPreamble is the start of system.md, which no prompt on main
 // can remove (SPEC §12): the trust rules, the clone, the output contract,
 // and every value the prompt defers to it, with c's values:
@@ -199,8 +180,8 @@ func implementerCodeowners() []string {
 //     checkCommits enforces them (implementerMaxTitle);
 //   - the diff limit, verify.max_diff_lines, tests included, as SPEC
 //     §10.1's rule 6 counts it;
-//   - the protected paths of SPEC §6.3 (implementerProtected), then
-//     verify.protected_paths;
+//   - the protected paths of SPEC §6.3, then verify.protected_paths
+//     (verify.Protected);
 //   - the rounds so far, every stage's (all), the next round's number
 //     (nextRound), and loop.max_questions_per_round;
 //   - that commits needs commits past the run's start, and the comment's
@@ -211,7 +192,7 @@ func implementerPreamble(c *config.Config, all []interviewerRound) string {
 		types[i] = "`" + github.Escape(t) + "`"
 	}
 	var paths []string
-	for _, p := range slices.Concat(implementerProtected, c.Verify.ProtectedPaths) {
+	for _, p := range verify.Protected(c.Verify) {
 		paths = append(paths, "`"+github.Escape(p)+"`")
 	}
 	asked := fmt.Sprintf("No questions have been asked on this issue yet, so a question round now is round %d.", nextRound(all))

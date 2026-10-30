@@ -474,7 +474,7 @@ A command counts once. If its comment is edited after the daemon applied it (its
   - the agent-config paths: `.claude/**`, `**/CLAUDE.md`, `**/CLAUDE.local.md` and `.mcp.json`
   - anything in `verify.protected_paths`
 
-  Any diff that touches one fails deterministic verification (section 10.1) and needs a human-authored change instead. The owner merges those through the admin bypass in section 15.
+  Each is a path pattern, matched as section 13 says. Any diff that touches one fails deterministic verification (section 10.1) and needs a human-authored change instead. The owner merges those through the admin bypass in section 15.
 
 ### 6.4 Discussion holds
 
@@ -1193,17 +1193,19 @@ Verification is the gate between implementation and a PR.
 
 ### 10.1 Deterministic checks (run first)
 
-The daemon decides these itself, outside Claude, from exit codes and its own git inspection of the bare repo.
+The daemon decides these itself, outside Claude, from exit codes and its own git inspection of the bare repo. Its diffs are git's own, read as `issuedog` with no diff or filter driver, textconv or external diff, whatever the repo's attributes say.
 
 1. Every command in `verify.commands` (tests, lint, vet, build) passes.
    - The commands run as `agent` in a fresh checkout of the head SHA.
    - They get no GitHub credentials, the `network.allow` egress list and `verify.command_timeout`.
 2. The diff touches no protected path (section 6.3). Every protected path must also be as it is at the baseline, one `main` commit. On a story branch, for a task in a story, and for a story's corrections (7.5, not built yet), that's the story's baseline: the merge base of `main` and the story branch's tip, the tip the task is named against (3.4). `main` is linear, as section 15 allows only squash merges, so that's the newest `main` commit in the tip's history; if git finds more than one merge base, the rule fails. For a task with no parent, it's `main` as it is now. For a conflict bug, it's the `main` commit the bug names, which is also the merge base of its head and `main` (7.5). A task's own history never chooses its baseline. A story's history does, and nothing pushed to the branch can make that an older commit: only an admin or the App can create a story branch or force-push one, and the App creates it from `main` as it is then, so its baseline is never older than the `main` commit it was cut from (7.5, section 15). So no older version on `main` counts, and nothing pushed to a branch can bring in agent config (3.4). A story's head that's only behind `main` still passes, since its baseline moves only when `main` is merged into the branch.
+   - The daemon reads two diffs: the head against the baseline, and the task's own diff from the merge base it starts at. Neither finds renames, so a rename is a deletion and an addition, and both of its paths count. The finding names each path: those the task's own diff touches, then those that only differ from the baseline.
 3. No file matching `verify.test_globs` is deleted, and no new `verify.skip_markers` are added.
+   - The daemon reads the task's own diff, finding renames, so a rename out of `verify.test_globs` counts as a deletion, and a moved file's lines aren't added lines.
    - Markers are checked only on added lines, and only in files matching `verify.test_globs`.
    - Markers are plain strings. A marker that starts with a letter matches only where it is not preceded by a letter, digit or `_`. So `xit(` matches `xit("works", …)` but not `os.Exit(`, and `.skip(` still matches `describe.skip(`.
-4. Files in `verify.config_paths` are unchanged, unless the task's scope is `verify.tooling_scope`. A story's corrections have no scope, so this always holds for them (7.5, not built yet): a change to such a file needs a task.
-5. When the diff modifies files matching `verify.source_globs` that are not tests, it also adds or modifies files matching `verify.test_globs`. Changes to other files, such as docs, are exempt.
+4. Files in `verify.config_paths` are unchanged in the task's own diff, either path of a rename included, unless the task's scope is `verify.tooling_scope`. With no `verify.tooling_scope`, no task may change them. A story's corrections have no scope, so this always holds for them (7.5, not built yet): a change to such a file needs a task.
+5. When the task's own diff adds, modifies or renames (git's `A`, `M` or `R`) files matching `verify.source_globs` that are not tests, it also adds, modifies or renames files matching `verify.test_globs`. Deletions, and changes to other files, such as docs, are exempt.
 6. The diff is at most `verify.max_diff_lines`, counted by the daemon. Binary files are allowed only if they match `verify.binary_allow`.
 7. The branch is based on its target branch and merges cleanly: its story branch for a task in a story or a story's corrections (not built yet), else `main` (7.5).
 
@@ -1565,6 +1567,8 @@ usage_limit:
 cross_repo:
   allowed: [mertenvg/dmcn, dmcnp/open-dmcn]
 ```
+
+Path patterns, in `verify.test_globs`, `source_globs`, `config_paths`, `binary_allow` and `protected_paths` and in section 6.3's list, match a slash-separated path from the repo root. `*` and `?` match within one segment, `[...]` is a class and `\` escapes the next character, and a `**` segment matches zero or more whole segments. So `**/*_test.go` matches a test at the root, `.github/**` matches `.github` itself, and a pattern with no `**` matches only at its own depth. A file with a pattern that won't parse, has `**` inside a segment, or has an empty segment (a leading, trailing or doubled `/`) is refused, naming its key.
 
 Model and effort keys:
 
