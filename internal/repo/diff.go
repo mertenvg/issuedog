@@ -4,7 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"regexp"
 	"slices"
 	"strconv"
@@ -65,10 +68,7 @@ func (r *Repo) Changes(ctx context.Context, from, to string, renames bool) ([]Ch
 // each ended by a NUL, or for a rename or copy, a status with a score, its
 // old path and its new one.
 func parseNameStatus(out []byte) ([]Change, error) {
-	fields := strings.Split(string(out), "\x00")
-	if n := len(fields); n > 0 && fields[n-1] == "" {
-		fields = fields[:n-1]
-	}
+	fields := nulFields(out)
 	var changes []Change
 	for i := 0; i < len(fields); {
 		status := fields[i]
@@ -240,6 +240,139 @@ func patchPath(name string) (string, error) {
 		return "", fmt.Errorf("%q doesn't start with b/", name)
 	}
 	return p, nil
+}
+
+// Stat is one file's line counts in a diff, as git's --numstat gives them.
+type Stat struct {
+	// Path is the file's path in the diff's to side, or its from side for
+	// a deletion. A rename has its new path.
+	Path    string
+	Added   int // lines added
+	Deleted int // lines deleted
+	// Binary says git took the file as binary, so it counted no lines.
+	Binary bool
+}
+
+// NumStat returns each file's added and deleted lines in the diff from
+// from to to, both full SHAs, read in the bare repo with diffFlags. It
+// finds renames, so a file that only moved counts no lines, as a PR's
+// stats count them.
+func (r *Repo) NumStat(ctx context.Context, from, to string) ([]Stat, error) {
+	if err := checkSHAs(from, to); err != nil {
+		return nil, fmt.Errorf("numstat: %w", err)
+	}
+	args := slices.Concat([]string{"diff-tree", "-r", "-z", "--numstat", "--find-renames"}, diffFlags, []string{from, to, "--"})
+	out, err := r.git(ctx, "", args...)
+	if err != nil {
+		return nil, fmt.Errorf("numstat %s..%s: %w", from, to, err)
+	}
+	stats, err := parseNumStat(out)
+	if err != nil {
+		return nil, fmt.Errorf("numstat %s..%s: %w", from, to, err)
+	}
+	return stats, nil
+}
+
+// parseNumStat parses --numstat -z output: the added and deleted counts,
+// each ended by a tab, then the path, ended by a NUL; or for a rename, no
+// path, then its old path and its new one, each ended by a NUL. A binary
+// file's counts are "-".
+func parseNumStat(out []byte) ([]Stat, error) {
+	fields := nulFields(out)
+	var stats []Stat
+	for i := 0; i < len(fields); i++ {
+		parts := strings.SplitN(fields[i], "\t", 3)
+		if len(parts) != 3 {
+			return nil, fmt.Errorf("bad numstat field %q", fields[i])
+		}
+		s := Stat{Path: parts[2], Binary: parts[0] == "-" && parts[1] == "-"}
+		if s.Path == "" {
+			if i+2 >= len(fields) {
+				return nil, fmt.Errorf("rename %q has no old and new path", fields[i])
+			}
+			s.Path = fields[i+2]
+			i += 2
+		}
+		if !s.Binary {
+			var err error
+			if s.Added, err = strconv.Atoi(parts[0]); err != nil {
+				return nil, fmt.Errorf("added count of %q: %w", s.Path, err)
+			}
+			if s.Deleted, err = strconv.Atoi(parts[1]); err != nil {
+				return nil, fmt.Errorf("deleted count of %q: %w", s.Path, err)
+			}
+		}
+		stats = append(stats, s)
+	}
+	return stats, nil
+}
+
+// MergeBase returns every merge base of the commits a and b, both full
+// SHAs, as git merge-base --all finds them. Commits with no common history
+// have none, which is no error.
+func (r *Repo) MergeBase(ctx context.Context, a, b string) ([]string, error) {
+	if err := checkSHAs(a, b); err != nil {
+		return nil, fmt.Errorf("merge base: %w", err)
+	}
+	out, err := r.git(ctx, "", "merge-base", "--all", a, b)
+	if err != nil {
+		// merge-base exits 1, and prints nothing, when it finds none.
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 1 && len(bytes.TrimSpace(out)) == 0 {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("merge base of %s and %s: %w", a, b, err)
+	}
+	return strings.Fields(string(out)), nil
+}
+
+// MergeTree merges head into target, both full SHAs, as git merge-tree
+// --write-tree does, in the bare repo with no worktree or index, and
+// returns the paths that conflict, each once; none when the merge is
+// clean. Commits with no common history are an error, as merge-tree
+// refuses to merge them.
+//
+// merge-tree writes no ref, but it does write the merged blobs and trees,
+// and any merge base it builds from several, as new objects. They go to a
+// quarantine (quarantine), removed after, so the merge leaves nothing in
+// the bare repo.
+func (r *Repo) MergeTree(ctx context.Context, target, head string) (conflicts []string, err error) {
+	if err := checkSHAs(target, head); err != nil {
+		return nil, fmt.Errorf("merge tree: %w", err)
+	}
+	dir, q, err := r.quarantine()
+	if err != nil {
+		return nil, fmt.Errorf("merge tree of %s and %s: %w", target, head, err)
+	}
+	defer func() {
+		if rerr := os.RemoveAll(dir); rerr != nil {
+			err = errors.Join(err, fmt.Errorf("remove quarantine: %w", rerr))
+		}
+	}()
+	out, err := q.git(ctx, "", "merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", target, head)
+	// With -z, the output is the merged tree's ID, then each conflicting
+	// path, each ended by a NUL. It exits 1 when there are conflicts.
+	fields := nulFields(out)
+	var exit *exec.ExitError
+	switch {
+	case err == nil && len(fields) == 1:
+		return nil, nil
+	case err != nil && errors.As(err, &exit) && exit.ExitCode() == 1 && len(fields) > 1:
+		return fields[1:], nil
+	case err != nil:
+		return nil, fmt.Errorf("merge tree of %s and %s: %w", target, head, err)
+	default:
+		return nil, fmt.Errorf("merge tree of %s and %s: unexpected output %q", target, head, out)
+	}
+}
+
+// nulFields splits -z output into its NUL-ended fields.
+func nulFields(out []byte) []string {
+	fields := strings.Split(string(out), "\x00")
+	if n := len(fields); n > 0 && fields[n-1] == "" {
+		fields = fields[:n-1]
+	}
+	return fields
 }
 
 // checkSHAs refuses a diff end that isn't a full SHA.

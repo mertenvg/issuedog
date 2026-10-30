@@ -2,6 +2,7 @@ package verify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -31,7 +32,7 @@ type Facts struct {
 	// Baseline is the main commit every protected path must match (SPEC
 	// §10.1, rule 2).
 	Baseline string
-	// Base is the merge base the task's own diff starts at.
+	// Base is the merge base the task's own diff starts at (BaseOf).
 	Base string
 	// Head is the commit judged.
 	Head string
@@ -178,6 +179,99 @@ func Rule5(ctx context.Context, f Facts) (*Finding, error) {
 	}
 	return &Finding{Rule: 5, Name: "tests alongside source", Detail: "The diff adds or changes source files (verify.source_globs), " +
 		"but adds or changes no test file (verify.test_globs):\n" + list(source)}, nil
+}
+
+// TooLarge starts rule 6's finding for a diff over verify.max_diff_lines
+// (SPEC §10.1).
+const TooLarge = "task too large, split it"
+
+// Rule6 fails a head whose diff from Base changes more than
+// verify.max_diff_lines lines, added plus deleted, in files outside
+// verify.test_globs, as a hard limit: lines in test files count for
+// nothing. It finds renames, so a file that only moved counts no lines. It
+// also fails a binary file the diff adds or changes that doesn't match
+// verify.binary_allow, in or out of the test globs. A binary's lines count
+// for nothing, and deleting one passes.
+func Rule6(ctx context.Context, f Facts) (*Finding, error) {
+	stats, err := f.Repo.NumStat(ctx, f.Base, f.Head)
+	if err != nil {
+		return nil, fmt.Errorf("rule 6: %w", err)
+	}
+	count := 0
+	var binaries []string
+	for _, s := range stats {
+		switch {
+		case s.Binary:
+			if !matchAny(f.Config.BinaryAllow, s.Path) {
+				binaries = append(binaries, s.Path)
+			}
+		case !matchAny(f.Config.TestGlobs, s.Path):
+			count += s.Added + s.Deleted
+		}
+	}
+	if len(binaries) > 0 {
+		changes, err := f.Repo.Changes(ctx, f.Base, f.Head, true)
+		if err != nil {
+			return nil, fmt.Errorf("rule 6: %w", err)
+		}
+		for _, c := range changes {
+			if c.Status == 'D' {
+				binaries = slices.DeleteFunc(binaries, func(p string) bool { return p == c.Path })
+			}
+		}
+	}
+	var parts []string
+	if limit := int(f.Config.MaxDiffLines); count > limit {
+		parts = append(parts, fmt.Sprintf("%s: the diff changes %d lines in files outside verify.test_globs, "+
+			"over verify.max_diff_lines of %d.", TooLarge, count, limit))
+	}
+	if len(binaries) > 0 {
+		parts = append(parts, "The diff adds or changes binary files outside verify.binary_allow:\n"+list(binaries))
+	}
+	if len(parts) == 0 {
+		return nil, nil
+	}
+	return &Finding{Rule: 6, Name: "diff size and binaries", Detail: strings.Join(parts, "\n\n")}, nil
+}
+
+// Rule7 fails a head that shares no history with Target, or doesn't merge
+// with it cleanly, judged in the bare repo with no worktree
+// (repo.MergeTree). The finding names each conflicting path.
+func Rule7(ctx context.Context, f Facts) (*Finding, error) {
+	bases, err := f.Repo.MergeBase(ctx, f.Target, f.Head)
+	if err != nil {
+		return nil, fmt.Errorf("rule 7: %w", err)
+	}
+	if len(bases) == 0 {
+		return &Finding{Rule: 7, Name: "merge with the target", Detail: fmt.Sprintf("The head %s shares no history with its target %s.", f.Head, f.Target)}, nil
+	}
+	conflicts, err := f.Repo.MergeTree(ctx, f.Target, f.Head)
+	if err != nil {
+		return nil, fmt.Errorf("rule 7: %w", err)
+	}
+	if len(conflicts) == 0 {
+		return nil, nil
+	}
+	return &Finding{Rule: 7, Name: "merge with the target", Detail: fmt.Sprintf("The head %s doesn't merge cleanly with its target %s. "+
+		"These files conflict:\n%s", f.Head, f.Target, list(conflicts))}, nil
+}
+
+// ErrMergeBases is BaseOf's error when the head and its target don't have
+// exactly one merge base, which fails rule 2 (SPEC §10.1).
+var ErrMergeBases = errors.New("not exactly one merge base")
+
+// BaseOf returns the commit the task's own diff starts at: the one merge
+// base of f.Head and f.Target. None, or more than one, is an error
+// matching ErrMergeBases.
+func BaseOf(ctx context.Context, f Facts) (string, error) {
+	bases, err := f.Repo.MergeBase(ctx, f.Head, f.Target)
+	if err != nil {
+		return "", fmt.Errorf("base of %s: %w", f.Head, err)
+	}
+	if len(bases) != 1 {
+		return "", fmt.Errorf("base of %s: %w with %s: %d of them", f.Head, ErrMergeBases, f.Target, len(bases))
+	}
+	return bases[0], nil
 }
 
 // markerAt reports whether line holds marker. A marker that starts with a

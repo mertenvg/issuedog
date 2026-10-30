@@ -230,6 +230,15 @@ func TestDiffRefusesNonSHA(t *testing.T) {
 		if _, err := d.r.AddedLines(ctx, tc.from, tc.to, []string{"a"}); err == nil || !strings.Contains(err.Error(), "invalid SHA") {
 			t.Errorf("AddedLines(%q, %q) error = %v, want invalid SHA", tc.from, tc.to, err)
 		}
+		if _, err := d.r.NumStat(ctx, tc.from, tc.to); err == nil || !strings.Contains(err.Error(), "invalid SHA") {
+			t.Errorf("NumStat(%q, %q) error = %v, want invalid SHA", tc.from, tc.to, err)
+		}
+		if _, err := d.r.MergeBase(ctx, tc.from, tc.to); err == nil || !strings.Contains(err.Error(), "invalid SHA") {
+			t.Errorf("MergeBase(%q, %q) error = %v, want invalid SHA", tc.from, tc.to, err)
+		}
+		if _, err := d.r.MergeTree(ctx, tc.from, tc.to); err == nil || !strings.Contains(err.Error(), "invalid SHA") {
+			t.Errorf("MergeTree(%q, %q) error = %v, want invalid SHA", tc.from, tc.to, err)
+		}
 	}
 }
 
@@ -297,10 +306,167 @@ func TestDiffRunsNoDriver(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddedLines: %v", err)
 	}
+	stats, err := d.r.NumStat(ctx, base, head)
+	if err != nil {
+		t.Fatalf("NumStat: %v", err)
+	}
+	if want := []Stat{{Path: ".gitattributes", Added: 1}, {Path: "a_test.go", Added: 1}}; !reflect.DeepEqual(stats, want) {
+		t.Errorf("NumStat = %+v, want git's own %+v", stats, want)
+	}
 	if got := ran(); len(got) != 0 {
 		t.Errorf("the diff reads ran %v, want no driver", got)
 	}
 	if want := []Added{{Path: "a_test.go", Line: 2, Text: "t.Skip("}}; !reflect.DeepEqual(added, want) {
 		t.Errorf("AddedLines = %+v, want git's own %+v", added, want)
+	}
+}
+
+// NumStat gives each file's added and deleted lines, as a PR's stats
+// count them: a rename counts only its changed lines, under its new path,
+// a deletion its old lines, a binary file none, and a path git quotes
+// comes back as it is.
+func TestNumStat(t *testing.T) {
+	t.Parallel()
+	d := newDiffRig(t)
+	base, head := diffCommits(d)
+	got, err := d.r.NumStat(context.Background(), base, head)
+	if err != nil {
+		t.Fatalf("NumStat: %v", err)
+	}
+	want := []Stat{
+		{Path: "added.go", Added: 1},
+		{Path: odd, Added: 2},
+		{Path: accented, Added: 1},
+		{Path: "gone.go", Deleted: 1},
+		{Path: "img.bin", Binary: true},
+		{Path: "keep.go", Added: 3},
+		{Path: "new/moved.go", Added: 1},
+		{Path: "space name.go", Added: 2},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("NumStat =\n%+v\nwant\n%+v", got, want)
+	}
+
+	changed := d.commit(map[string]string{"keep.go": "package keep\n\nfunc A() { _ = 1 }\n\nfunc B() {}\nfunc C() {}\n"})
+	if got, err := d.r.NumStat(context.Background(), head, changed); err != nil || !reflect.DeepEqual(got, []Stat{{Path: "keep.go", Added: 1, Deleted: 1}}) {
+		t.Errorf("NumStat of one changed line = %+v, %v; want 1 added and 1 deleted", got, err)
+	}
+}
+
+// mergeRig is a diffRig whose work tree branches. Each commit still goes
+// to the bare repo.
+type mergeRig struct{ *diffRig }
+
+// on checks out a new branch, name, at sha, or an orphan one with nothing
+// staged for an empty sha, for the next commits.
+func (m mergeRig) on(name, sha string) {
+	m.t.Helper()
+	if sha == "" {
+		run(m.t, m.work, "checkout", "--quiet", "--orphan", name)
+		run(m.t, m.work, "rm", "-r", "--quiet", "--cached", "--ignore-unmatch", ".")
+		return
+	}
+	run(m.t, m.work, "checkout", "--quiet", "-b", name, sha)
+}
+
+// merge merges sha into what's checked out, pushes the merge to the bare
+// repo and returns its SHA.
+func (m mergeRig) merge(sha string) string {
+	m.t.Helper()
+	run(m.t, m.work, "merge", "--quiet", "--no-ff", "--no-edit", sha)
+	run(m.t, m.work, "push", "--quiet", "--force", m.r.dir, "HEAD:refs/heads/main")
+	return run(m.t, m.work, "rev-parse", "HEAD")
+}
+
+// MergeBase finds the one merge base of two branches, both of a
+// criss-cross merge, and none for commits with no common history. A commit
+// the repo lacks is an error.
+func TestMergeBase(t *testing.T) {
+	t.Parallel()
+	m := mergeRig{newDiffRig(t)}
+	ctx := context.Background()
+	base := m.commit(map[string]string{"a": "a\n"})
+	m.on("x", base)
+	x1 := m.commit(map[string]string{"x": "x\n"})
+	m.on("y", base)
+	y1 := m.commit(map[string]string{"y": "y\n"})
+	if got, err := m.r.MergeBase(ctx, x1, y1); err != nil || !slices.Equal(got, []string{base}) {
+		t.Errorf("MergeBase of two branches = %q, %v; want [%s]", got, err, base)
+	}
+
+	// y2 merges x1 into y1, and x2 y1 into x1, so x1 and y1 are both best
+	// common ancestors of x2 and y2.
+	y2 := m.merge(x1)
+	m.on("x2", x1)
+	x2 := m.merge(y1)
+	got, err := m.r.MergeBase(ctx, x2, y2)
+	slices.Sort(got)
+	want := []string{x1, y1}
+	slices.Sort(want)
+	if err != nil || !slices.Equal(got, want) {
+		t.Errorf("MergeBase of a criss-cross = %q, %v; want %q", got, err, want)
+	}
+
+	m.on("orphan", "")
+	alone := m.commit(map[string]string{"b": "b\n"})
+	if got, err := m.r.MergeBase(ctx, x1, alone); err != nil || len(got) != 0 {
+		t.Errorf("MergeBase with no common history = %q, %v; want none and no error", got, err)
+	}
+
+	missing := strings.Repeat("1", len(base))
+	if got, err := m.r.MergeBase(ctx, x1, missing); err == nil {
+		t.Errorf("MergeBase with a missing commit = %q, want an error", got)
+	}
+}
+
+// bareState is what a merge must leave as it was in the bare repo: its
+// refs, its objects, and the entries of its objects dir.
+func bareState(t *testing.T, dir string) string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(dir, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return run(t, dir, "--git-dir=.", "for-each-ref") + "\n" + run(t, dir, "--git-dir=.", "count-objects", "-v") + "\n" + strings.Join(names, " ")
+}
+
+// MergeTree finds a clean merge clean, and names each conflicting path
+// once: a line changed on both sides, a path git quotes, and a file one
+// side deletes while the other changes it. It leaves the bare repo's refs
+// and objects as they were. Commits with no common history are an error.
+func TestMergeTree(t *testing.T) {
+	t.Parallel()
+	m := mergeRig{newDiffRig(t)}
+	ctx := context.Background()
+	base := m.commit(map[string]string{"a.go": "one\n", odd: "two\n", "gone.go": "three\n", "same.go": "four\n"})
+	m.on("target", base)
+	target := m.commit(map[string]string{"a.go": "one, target\n", odd: "two, target\n", "gone.go": "three, target\n", "other.go": "x\n"})
+	m.on("clean", base)
+	clean := m.commit(map[string]string{"same.go": "four, head\n", "new.go": "y\n"})
+	m.on("conflict", base)
+	conflict := m.commit(map[string]string{"a.go": "one, head\n", odd: "two, head\n", "same.go": "four, head\n"}, "gone.go")
+	m.on("orphan", "")
+	alone := m.commit(map[string]string{"b": "b\n"})
+	before := bareState(t, m.r.dir)
+
+	if got, err := m.r.MergeTree(ctx, target, clean); err != nil || len(got) != 0 {
+		t.Errorf("MergeTree of a clean merge = %q, %v; want no conflicts", got, err)
+	}
+	got, err := m.r.MergeTree(ctx, target, conflict)
+	slices.Sort(got)
+	want := []string{"a.go", odd, "gone.go"}
+	slices.Sort(want)
+	if err != nil || !slices.Equal(got, want) {
+		t.Errorf("MergeTree of a conflicting merge = %q, %v; want %q", got, err, want)
+	}
+	if got, err := m.r.MergeTree(ctx, target, alone); err == nil {
+		t.Errorf("MergeTree with no common history = %q, want an error", got)
+	}
+	if after := bareState(t, m.r.dir); after != before {
+		t.Errorf("the merges changed the bare repo from\n%s\nto\n%s", before, after)
 	}
 }

@@ -227,6 +227,8 @@ func TestImplementerPrompt(t *testing.T) {
 		"Add no skip markers, and delete no test file.",
 		// The limits the preamble gives.
 		"within the line limit the preamble gives",
+		// Rule 6 counts no test lines (SPEC §10.1).
+		"Keep the diff outside test files within the line limit the preamble gives. Tests don't count toward it.",
 		"one of the preamble's title types",
 		"At most the per-round limit the preamble gives",
 		// A question for an ambiguous criterion, a hand-off only for an

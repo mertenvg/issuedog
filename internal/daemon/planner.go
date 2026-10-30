@@ -665,7 +665,7 @@ func plannerPreamble(c *config.Config, s *github.Snapshot, children int, prior *
 		"## Limits",
 		"- " + kinds,
 		"- " + scopes,
-		fmt.Sprintf("- At most %d tasks in a plan (`plan.max_tasks`). Each task other than a human task is one PR within %d changed lines (`verify.max_diff_lines`), tests included.",
+		fmt.Sprintf("- At most %d tasks in a plan (`plan.max_tasks`). Each task other than a human task is one PR within %d changed lines (`verify.max_diff_lines`), not counting files in `verify.test_globs`.",
 			c.Plan.MaxTasks, c.Verify.MaxDiffLines),
 		"- " + models,
 		"- An item's `effort`, if set, is one of: " + strings.Join(efforts, ", ") + ".",

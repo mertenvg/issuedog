@@ -178,8 +178,8 @@ func implementerTask(number int, dir string) string {
 // and every value the prompt defers to it, with c's values:
 //   - the PR title types (pr.title_types), and the title's bounds, as
 //     checkCommits enforces them (implementerMaxTitle);
-//   - the diff limit, verify.max_diff_lines, tests included, as SPEC
-//     §10.1's rule 6 counts it;
+//   - the diff limit, verify.max_diff_lines, counting only files outside
+//     verify.test_globs, which it lists, as SPEC §10.1's rule 6 counts it;
 //   - the protected paths of SPEC §6.3, then verify.protected_paths
 //     (verify.Protected);
 //   - the rounds so far, every stage's (all), the next round's number
@@ -194,6 +194,14 @@ func implementerPreamble(c *config.Config, all []interviewerRound) string {
 	var paths []string
 	for _, p := range verify.Protected(c.Verify) {
 		paths = append(paths, "`"+github.Escape(p)+"`")
+	}
+	testFiles := ", which is empty, so every file counts. It's a hard limit."
+	if len(c.Verify.TestGlobs) > 0 {
+		globs := make([]string, len(c.Verify.TestGlobs))
+		for i, g := range c.Verify.TestGlobs {
+			globs[i] = "`" + github.Escape(g) + "`"
+		}
+		testFiles = ": " + strings.Join(globs, ", ") + ". Test files don't count. It's a hard limit."
 	}
 	asked := fmt.Sprintf("No questions have been asked on this issue yet, so a question round now is round %d.", nextRound(all))
 	if len(all) > 0 {
@@ -213,7 +221,8 @@ func implementerPreamble(c *config.Config, all []interviewerRound) string {
 		"## Limits",
 		"- A PR title's `type` is one of: " + strings.Join(types, ", ") + " (`pr.title_types`), exactly as written. " +
 			fmt.Sprintf("The title, `<type>: <sentence>`, is one line of at most %d characters.", implementerMaxTitle),
-		fmt.Sprintf("- The task's whole diff is at most %d changed lines (`verify.max_diff_lines`), tests included.", c.Verify.MaxDiffLines),
+		fmt.Sprintf("- The task's diff is at most %d changed lines (`verify.max_diff_lines`), counting only files outside `verify.test_globs`%s",
+			c.Verify.MaxDiffLines, testFiles),
 		"- Never touch a protected path: " + strings.Join(paths, ", ") + ". A change that needs one is an owner action.",
 		"- `commits` needs at least one commit past the commit your checkout started at. Uncommitted work doesn't count.",
 		"- " + asked + fmt.Sprintf(" At most %d questions in a round, each with 2 to 4 options.", c.Loop.MaxQuestionsPerRound),
