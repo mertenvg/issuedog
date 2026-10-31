@@ -29,6 +29,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/repo"
 	"github.com/mertenvg/issuedog/internal/trust"
+	"github.com/mertenvg/issuedog/internal/verify"
 	"github.com/mertenvg/issuedog/internal/workspace"
 )
 
@@ -221,14 +222,21 @@ func stageWork(d *daemon.Daemon, cred agent.Cred) (*daemon.Runs, error) {
 		return nil, fmt.Errorf("the usage-limit gate: %w", err)
 	}
 	stages, unlabeled := registerStages(d)
+	proxy := fmt.Sprintf("http://127.0.0.1:%d", proxyPort)
+	ws := &workspace.Workspace{Bare: d.Clone.Dir(), RunsDir: filepath.Join(workDir, "runs"), ContextDir: runDir, Credential: uid}
 	runs := &daemon.Runs{
 		Daemon:    d,
 		Stages:    stages,
 		Unlabeled: unlabeled,
 		Runner:    &agent.Runner{Claude: claudePath, StateDir: stateDir, Credential: uid},
-		Workspace: &workspace.Workspace{Bare: d.Clone.Dir(), RunsDir: filepath.Join(workDir, "runs"), ContextDir: runDir, Credential: uid},
+		Workspace: ws,
 		Gate:      gate,
-		Env:       agent.Env(cred, fmt.Sprintf("http://127.0.0.1:%d", proxyPort), agentHome),
+		Env:       agent.Env(cred, proxy, agentHome),
+		// The checks' commands run in the runs' workspace, as agent, through
+		// the egress proxy, with no credential, under verify.command_timeout
+		// as main's config gives it when each command starts.
+		Commands: &verify.Commands{Workspace: ws, Credential: uid, Proxy: proxy,
+			Timeout: func() time.Duration { return d.Config.Verify.CommandTimeout }},
 	}
 	if err := runs.CheckRegistered(); err != nil {
 		return nil, fmt.Errorf("registering the stages: %w", err)
