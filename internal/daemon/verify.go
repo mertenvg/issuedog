@@ -223,12 +223,17 @@ func commandsFailed(results []verify.CommandResult) int {
 // When that attempt is loop.max_attempts or more, the round's last, the
 // task never goes back to in-progress: it moves verifying → needs-human on
 // attempt-cap instead, keyed as the findings move would be, so a replay or
-// a restart writes it once, with the verify cap's hand-off
-// (renderVerifyCapHandoff), which gives the findings and ends with the cc
-// line for notify (SPEC §8.3, §9.3). That releases the worker (SPEC §8.1),
-// and /done or a trusted 👍 on the hand-off sends the task back to ready,
-// a new round (handback.go). A move to verifying that names no attempt, as
-// one by hand, never reaches the cap.
+// a restart writes it once, with seen= as that move would have it, so a
+// comment posted during the checks is above the hand-off's round bound
+// (SPEC §5). Its comment is the verify cap's hand-off
+// (renderVerifyCapHandoff), which counts the round's attempts as that
+// attempt's number, loop.max_attempts or more, so after a
+// loop.max_attempts lowered since it counts no fewer than the findings
+// name, then gives the findings and ends with the cc line for notify
+// (SPEC §8.3, §9.3). That releases the worker (SPEC §8.1), and /done or a
+// trusted 👍 on the hand-off sends the task back to ready, a new round
+// (handback.go). A move to verifying that names no attempt, as one by
+// hand, never reaches the cap.
 //
 // Before the move, it reads the issue again, and runs CheckLabels and the
 // look for discussion triggers on it, as a run's apply does (SPEC §8.2).
@@ -277,7 +282,10 @@ func (r *Runs) verifyFindings(ctx context.Context, rd Ready, is state.Issue, hea
 	attempt := verifyAttempt(is)
 	if attempt >= r.limit() {
 		m := Move{To: state.NeedsHuman, Trigger: state.TriggerAttemptCap, Key: verifyKey(is.TransitionComment),
-			Text: renderVerifyCapHandoff(r.limit(), findingsText(head, main, attempt, r.limit(), fs, cmds), n, r.Daemon.Config.Notify)}
+			Text: renderVerifyCapHandoff(attempt, findingsText(head, main, attempt, r.limit(), fs, cmds), n, r.Daemon.Config.Notify)}
+		if seen > 0 {
+			m.Fields = map[string]string{state.FieldSeen: strconv.FormatInt(seen, 10)}
+		}
 		if err := a.Transition(ctx, s, d.Has, m); err != nil {
 			return fmt.Errorf("hand off the verify cap: %w", err)
 		}

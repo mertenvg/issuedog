@@ -44,9 +44,11 @@ func verifyCapText(limit, attempt int, head, main string) string {
 }
 
 // verifyCapMarker is the verify cap's move's marker, keyed by move, the
-// comment holding the move to verifying whose head failed.
-func verifyCapMarker(move int64) string {
-	return "<!-- issuedog:transition from=verifying to=needs-human event=v" + strconv.FormatInt(move, 10) + " -->"
+// comment holding the move to verifying whose head failed, with seen, the
+// newest comment when the checks started, as the findings move has it.
+func verifyCapMarker(move, seen int64) string {
+	return "<!-- issuedog:transition from=verifying to=needs-human event=v" + strconv.FormatInt(move, 10) +
+		" seen=" + strconv.FormatInt(seen, 10) + " -->"
 }
 
 // Every attempt of a round commits a head that fails verify, with
@@ -54,7 +56,8 @@ func verifyCapMarker(move int64) string {
 // back to in-progress, each carrying the attempt= of the latest move into
 // verifying, not the first. On the last attempt, they move it verifying →
 // needs-human on attempt-cap, keyed event=v<comment id> by the move into
-// verifying, with the hand-off: never back to in-progress. No run starts
+// verifying, with seen= that move, the newest comment when the checks
+// started, and the hand-off: never back to in-progress. No run starts
 // after, and an unchanged pass costs only conditional GETs answered 304,
 // one of them the hand-off's reactions. /done starts a new round: the next
 // run is attempt 1, at effort low.
@@ -89,7 +92,7 @@ func TestVerifyCapHandsOff(t *testing.T) {
 			}
 			head := g.trimmed("commit." + strconv.Itoa(limit))
 			cs := implementerComments(t, f, n)
-			if got, want := cs[len(cs)-1].Body, verifyCapText(limit, limit, head, main)+"\n\n"+verifyCapMarker(move); got != want || pickStage(f, n) != "stage:needs-human" {
+			if got, want := cs[len(cs)-1].Body, verifyCapText(limit, limit, head, main)+"\n\n"+verifyCapMarker(move, move); got != want || pickStage(f, n) != "stage:needs-human" {
 				t.Fatalf("after the last attempt's checks, the newest comment =\n%s\nwith the task at %s; want\n%s\nat needs-human", got, pickStage(f, n), want)
 			}
 			for _, c := range cs {
@@ -143,7 +146,7 @@ func TestVerifyCapAfterFailedRun(t *testing.T) {
 	head, main := g.trimmed("commit.2"), gitIn(t, g.d.Clone.Dir(), "rev-parse", "main")
 	cs = implementerComments(t, f, n)
 	got := cs[len(cs)-1].Body
-	if want := verifyCapText(2, 2, head, main) + "\n\n" + verifyCapMarker(move); got != want || pickStage(f, n) != "stage:needs-human" {
+	if want := verifyCapText(2, 2, head, main) + "\n\n" + verifyCapMarker(move, move); got != want || pickStage(f, n) != "stage:needs-human" {
 		t.Errorf("the newest comment =\n%s\nwith the task at %s; want\n%s\nat needs-human", got, pickStage(f, n), want)
 	}
 	if strings.Contains(got, "error_max_turns") || strings.Contains(got, "a run, failed") {
@@ -177,7 +180,7 @@ func TestVerifyCapReplay(t *testing.T) {
 	})
 	for f, move := range moves {
 		cs := implementerComments(t, f, 1)
-		if got, want := cs[len(cs)-1].Body, verifyCapText(2, 2, head, main)+"\n\n"+verifyCapMarker(move); got != want || pickStage(f, 1) != "stage:needs-human" {
+		if got, want := cs[len(cs)-1].Body, verifyCapText(2, 2, head, main)+"\n\n"+verifyCapMarker(move, move); got != want || pickStage(f, 1) != "stage:needs-human" {
 			t.Errorf("after the replay, the newest comment =\n%s\nwith the task at %s; want\n%s\nat needs-human", got, pickStage(f, 1), want)
 		}
 	}
@@ -194,7 +197,7 @@ func verifyCapTask(more func(t testing.TB, f *githubtest.Fake)) func(testing.TB)
 		f.AddComment(1, app, "<!-- issuedog:transition from=needs-human to=ready cmd=r77 seen=1002 -->")
 		f.AddComment(1, app, "<!-- issuedog:transition from=ready to=in-progress event=p6 -->")
 		move := f.AddComment(1, app, "The implementer committed.\n\n<!-- issuedog:transition from=in-progress to=verifying attempt=2 run=r2 head=abc -->")
-		if id := f.AddComment(1, app, verifyCapText(2, 2, "abc", "def")+"\n\n"+verifyCapMarker(move)); id != 1006 {
+		if id := f.AddComment(1, app, verifyCapText(2, 2, "abc", "def")+"\n\n"+verifyCapMarker(move, move)); id != 1006 {
 			t.Fatalf("the verify cap's hand-off's comment ID = %d, want 1006", id)
 		}
 		more(t, f)

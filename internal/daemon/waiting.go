@@ -597,7 +597,11 @@ func waitGoalDone(body string) (goal, done string) {
 // it. Why it waits is the implementer's need of an owner action, or the
 // task's round of attempts failing (SPEC §8.3): for the attempt cap's
 // hand-off at in-progress (capHandoffMove), the last a run that failed,
-// and for the verify cap's (verifyCapMove), the last a head that failed
+// whose cause the hand-off gives, but only when it does
+// (capHandoffSaysWhy), as one whose last attempt was findings, below a
+// loop.max_attempts lowered since, or from a lease written before the
+// cause was kept, says nothing of the last attempt; and for the verify
+// cap's (verifyCapMove), the last a head that failed
 // verify, whose findings the hand-off gives. The findings come before the
 // fields, and may hold a line like a field's in a fence, so for that
 // hand-off the fields are read from its last Goal line on. With either
@@ -608,8 +612,10 @@ func waitHandoffLines(s *github.Snapshot, id int64) []waitLine {
 	fields := body
 	why := "the implementer needs an action only you can do."
 	switch markers := github.ParseMarkers(body); {
-	case slices.ContainsFunc(markers, capHandoffMove):
+	case slices.ContainsFunc(markers, capHandoffMove) && capHandoffSaysWhy(body):
 		why = "the task's `loop.max_attempts` attempts in its round failed, the last a failed implementer run, and the hand-off says why."
+	case slices.ContainsFunc(markers, capHandoffMove):
+		why = "the task's `loop.max_attempts` attempts in its round failed."
 	case slices.ContainsFunc(markers, verifyCapMove):
 		why = "the task's `loop.max_attempts` attempts in its round failed, the last at verify, and the hand-off has the findings."
 		if i := strings.LastIndex(body, "\n**Goal:** "); i >= 0 {

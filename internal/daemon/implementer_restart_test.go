@@ -312,8 +312,8 @@ func restartCapRig(t *testing.T, f *githubtest.Fake, o *origin, root string) *ri
 
 // restartCapComment is the attempt cap's hand-off on task 1, for its round
 // key, after 3 failed runs, the last as failOut fails, with the cc line for
-// owner.
-func restartCapComment(key string) string {
+// owner, and seen, the newest comment when the last run started.
+func restartCapComment(key string, seen int64) string {
 	return "This task's 3 attempts in this round failed, so I've stopped running the implementer here.\n\n" +
 		"The last attempt, a run, failed:\n\n" +
 		"```text\nrun failed with subtype \"error_max_turns\"\n```\n\n" +
@@ -327,7 +327,7 @@ func restartCapComment(key string) string {
 		"**Estimated time:** It depends on why the runs failed.\n\n" +
 		"When it's done, reply `/done` on this issue or react 👍 to this comment, and the task goes back to `ready`.\n\n" +
 		"cc @owner\n\n" +
-		"<!-- issuedog:transition from=in-progress to=needs-human event=a" + key + " -->"
+		"<!-- issuedog:transition from=in-progress to=needs-human event=a" + key + " seen=" + strconv.FormatInt(seen, 10) + " -->"
 }
 
 // After loop.max_attempts failed implementer runs in a row, the task gets
@@ -354,7 +354,7 @@ func TestImplementerAttemptCapHandoff(t *testing.T) {
 	}
 	cs := implementerComments(t, f, n)
 	last := cs[len(cs)-1]
-	if want := restartCapComment(key); last.Author.Login != app || last.Body != want {
+	if want := restartCapComment(key, cs[len(cs)-2].ID); last.Author.Login != app || last.Body != want {
 		t.Errorf("the task's newest comment, by %s, =\n%s\nwant the App's\n%s", last.Author.Login, last.Body, want)
 	}
 	if pickStage(f, n) != "stage:needs-human" || len(errorMarkers(f, n)) != 0 {
@@ -454,7 +454,7 @@ func TestImplementerAttemptCapReplay(t *testing.T) {
 	})
 	for f, g := range rigs {
 		cs := implementerComments(t, f, 1)
-		if want := restartCapComment(restartKey(t, f, 1)); len(cs) != 2 || cs[1].Body != want || pickStage(f, 1) != "stage:needs-human" || g.runs() != 1 {
+		if want := restartCapComment(restartKey(t, f, 1), cs[0].ID); len(cs) != 2 || cs[1].Body != want || pickStage(f, 1) != "stage:needs-human" || g.runs() != 1 {
 			t.Errorf("after the replay, %d comments, the newest\n%s\nat %s, with %d runs; want 2, the newest\n%s\nat needs-human, with 1 run",
 				len(cs), cs[len(cs)-1].Body, pickStage(f, 1), g.runs(), want)
 		}

@@ -97,13 +97,15 @@ var verifyCapFields = implementerHandoffFields{
 // renderVerifyCapHandoff is the verify cap's hand-off comment on task n
 // (SPEC §8.3, §9.3), for its move verifying → needs-human when the head of
 // its round's last attempt fails verify, escaped: renderHandoff with
-// verifyCapFields, opening with the task's limit attempts in its round
+// verifyCapFields, opening with the task's attempts attempts in its round
 // failing, so the implementer runs no more, then findings, the last
-// attempt's findings as findingsText gives them. It quotes no run's
-// failure, as the last attempt's run didn't fail: the failed runs' hand-off
-// is renderCapHandoff's.
-func renderVerifyCapHandoff(limit int, findings string, n int, notify []string) string {
-	intro := fmt.Sprintf("This task's %d attempts in this round failed, so I've stopped running the implementer here.\n\n%s", limit, findings)
+// attempt's findings as findingsText gives them. attempts is the last
+// attempt's number, loop.max_attempts or more: more when loop.max_attempts
+// was lowered since the round's runs began. It quotes no run's failure, as
+// the last attempt's run didn't fail: the failed runs' hand-off is
+// renderCapHandoff's.
+func renderVerifyCapHandoff(attempts int, findings string, n int, notify []string) string {
+	intro := fmt.Sprintf("This task's %d attempts in this round failed, so I've stopped running the implementer here.\n\n%s", attempts, findings)
 	return renderHandoff(intro, verifyCapFields, n, notify)
 }
 

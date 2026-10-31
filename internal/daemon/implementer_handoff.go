@@ -93,24 +93,41 @@ var capHandoffFields = implementerHandoffFields{
 
 // renderCapHandoff is the attempt cap's hand-off comment on task n (SPEC
 // §8.3, §9.3), escaped: renderHandoff with capHandoffFields, opening with
-// the task's limit attempts in its round failing, its implementer's runs
-// and its verifies alike, then that the last was a run that failed, and
-// why, failure, as the cap's state error quotes it (Lease.PublicFailure,
-// publicCauseText): fenced, or for publicCauseLogged, a pointer to the
-// daemon's log. With no failure, as when findings below the cap reached a
-// loop.max_attempts lowered since, whose findings are on the task already,
-// or from a lease written before it was kept, it says nothing of why. It
-// never quotes findings: when the head of the round's last attempt fails
-// verify, the hand-off is renderVerifyCapHandoff's, at verifying.
-func renderCapHandoff(limit int, failure string, n int, notify []string) string {
-	intro := fmt.Sprintf("This task's %d attempts in this round failed, so I've stopped running the implementer here.", limit)
+// the task's attempts attempts in its round failing, its implementer's
+// runs and its verifies alike, then that the last was a run that failed,
+// and why, failure, as the cap's state error quotes it
+// (Lease.PublicFailure, publicCauseText): fenced, or for
+// publicCauseLogged, a pointer to the daemon's log. With no failure, as
+// when findings below the cap reached a loop.max_attempts lowered since,
+// whose findings are on the task already, or from a lease written before
+// it was kept, it says nothing of why, and the digest's item says nothing
+// of the last attempt either (capHandoffSaysWhy). It never quotes
+// findings: when the head of the round's last attempt fails verify, the
+// hand-off is renderVerifyCapHandoff's, at verifying.
+func renderCapHandoff(attempts int, failure string, n int, notify []string) string {
+	intro := fmt.Sprintf("This task's %d attempts in this round failed, so I've stopped running the implementer here.", attempts)
 	if failure != "" {
 		if failure == publicCauseLogged {
 			failure = ""
 		}
-		intro += publicCauseText("attempt, a run,", failure)
+		intro += publicCauseText(capCauseWhat, failure)
 	}
 	return renderHandoff(intro, capHandoffFields, n, notify)
+}
+
+// capCauseWhat is what the attempt cap's hand-off says failed last, in
+// publicCauseText's paragraph, when a run did.
+const capCauseWhat = "attempt, a run,"
+
+// capHandoffSaysWhy reports whether body, the attempt cap's hand-off
+// comment as renderCapHandoff writes it, says why the round's last
+// attempt failed: whether the paragraph after its opening is
+// publicCauseText's for a run that failed last. Both are the App's own
+// text, before any failure it quotes, and the comment is the App's and
+// clean, as latestHandoff finds it.
+func capHandoffSaysWhy(body string) bool {
+	_, rest, _ := strings.Cut(strings.ReplaceAll(body, "\r\n", "\n"), "\n\n")
+	return strings.HasPrefix(rest, "The last "+capCauseWhat+" failed")
 }
 
 // capHandoffKey keys the attempt cap's move to needs-human on a task:

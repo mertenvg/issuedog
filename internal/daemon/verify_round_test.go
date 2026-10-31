@@ -132,9 +132,10 @@ func TestVerifyRoundMixesRunsAndFindings(t *testing.T) {
 	}
 	cs = implementerComments(t, f, n)
 	handoff := cs[len(cs)-1]
+	// Its seen is the newest comment when run 3 started: the findings.
 	if want := "This task's 3 attempts in this round failed, so I've stopped running the implementer here.\n\n" +
 		"The last attempt, a run, failed:\n\n"; !strings.HasPrefix(handoff.Body, want) ||
-		!strings.HasSuffix(handoff.Body, "<!-- issuedog:transition from=in-progress to=needs-human event=a"+key+" -->") ||
+		!strings.HasSuffix(handoff.Body, fmt.Sprintf("<!-- issuedog:transition from=in-progress to=needs-human event=a%s seen=%d -->", key, findings.ID)) ||
 		pickStage(f, n) != "stage:needs-human" {
 		t.Errorf("after run 3 failed, the newest comment =\n%s\nwith the task at %s; want the cap's hand-off, starting\n%s\nat needs-human",
 			handoff.Body, pickStage(f, n), want)
@@ -245,7 +246,8 @@ func TestVerifyRoundRestart(t *testing.T) {
 // findings on attempt 2 of 4, with loop.max_attempts lowered to 2 since,
 // leave the round no attempt: the next pass makes the cap's hand-off at
 // in-progress in place of a run, saying the round's attempts failed, and
-// nothing of why, as no run failed last.
+// nothing of why, as no run failed last. Its seen is the newest comment
+// that pass's step 1 read, the findings.
 func TestVerifyRoundFindingsAtCap(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
@@ -257,7 +259,7 @@ func TestVerifyRoundFindingsAtCap(t *testing.T) {
 	cs := implementerComments(t, f, 1)
 	want := "This task's 2 attempts in this round failed, so I've stopped running the implementer here.\n\n**Goal:**"
 	if g.runs() != 0 || !strings.HasPrefix(cs[len(cs)-1].Body, want) ||
-		!strings.HasSuffix(cs[len(cs)-1].Body, "<!-- issuedog:transition from=in-progress to=needs-human event=a"+key+" -->") {
+		!strings.HasSuffix(cs[len(cs)-1].Body, fmt.Sprintf("<!-- issuedog:transition from=in-progress to=needs-human event=a%s seen=%d -->", key, cs[len(cs)-2].ID)) {
 		t.Errorf("%d runs, the newest comment =\n%s\nwant none, and the cap's hand-off keyed by %s, starting\n%s", g.runs(), cs[len(cs)-1].Body, key, want)
 	}
 }

@@ -512,8 +512,13 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		// verifying (verifyFindings), so they never bring it back here at
 		// the cap. Findings below it may reach a loop.max_attempts lowered
 		// since: then the hand-off says nothing of why, as no run failed
-		// last, so it has no failure kept.
-		last := Lease{Issue: n, Stage: is.Stage, AttemptKey: errKey, PublicFailure: r.failures[countKey(n, errKey)]}
+		// last, so it has no failure kept. It counts the used attempts,
+		// which may be more than the limit, and its seen is the newest
+		// comment step 1 read, as the last run's would be.
+		last := Lease{Issue: n, Stage: is.Stage, AttemptKey: errKey, Attempt: used, PublicFailure: r.failures[countKey(n, errKey)]}
+		for _, c := range rd.S.Comments {
+			last.Seen = max(last.Seen, c.ID)
+		}
 		if err := r.atCap(ctx, st, last); err != nil {
 			logr.Errorf("%s/%s#%d: no %s run, as it failed loop.max_attempts times, but posting that failed again: %v",
 				a.Owner, a.Repo, n, st.Agent(), err)
@@ -1257,10 +1262,15 @@ func (r *Runs) atCap(ctx context.Context, st Stage, l Lease) error {
 // runs and failed verifies, or the findings of an earlier attempt reached
 // a loop.max_attempts lowered since they moved the task back, so the task
 // moves in-progress → needs-human on attempt-cap, keyed
-// event=a<l.AttemptKey> (capHandoffKey), with a hand-off in the
-// implementer's form whose opening says the round's attempts failed, and
-// for a run that failed last, quotes why, as the cap's state error would
-// (renderCapHandoff).
+// event=a<l.AttemptKey> (capHandoffKey), with seen=l.Seen, the newest
+// comment on step 1's snapshot the last run started from, or for a
+// hand-off made in place of a run, this pass's, as the findings move has
+// it (verifyFindings), so a comment posted during that run is above the
+// hand-off's round bound (SPEC §5). Its comment is a hand-off in the
+// implementer's form whose opening says the round's attempts failed,
+// l.Attempt of them, or loop.max_attempts if more, as a limit lowered
+// since may be below l.Attempt, and for a run that failed last, quotes
+// why, as the cap's state error would (renderCapHandoff).
 // That releases the worker (SPEC §8.1), and /done or a trusted 👍 on the
 // hand-off sends the task back to ready, a new round (handback.go).
 //
@@ -1300,13 +1310,17 @@ func (r *Runs) capHandoff(ctx context.Context, st Stage, l Lease) error {
 		}
 		return nil
 	}
+	attempts := max(r.limit(), l.Attempt)
 	m := Move{To: state.NeedsHuman, Trigger: state.TriggerAttemptCap, Key: capHandoffKey(l.AttemptKey),
-		Text: renderCapHandoff(r.limit(), l.PublicFailure, l.Issue, r.Daemon.Config.Notify)}
+		Text: renderCapHandoff(attempts, l.PublicFailure, l.Issue, r.Daemon.Config.Notify)}
+	if l.Seen > 0 {
+		m.Fields = map[string]string{state.FieldSeen: strconv.FormatInt(l.Seen, 10)}
+	}
 	if err := a.Transition(ctx, s, d.Has, m); err != nil {
 		return wrap(err)
 	}
 	logr.Warnf("%s/%s#%d: the task's %d attempts in its round failed, %s runs and verifies, so it's handed off to the owner at %s",
-		a.Owner, a.Repo, l.Issue, r.limit(), st.Agent(), state.NeedsHuman)
+		a.Owner, a.Repo, l.Issue, attempts, st.Agent(), state.NeedsHuman)
 	return nil
 }
 
