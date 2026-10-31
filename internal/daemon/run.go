@@ -443,9 +443,9 @@ func (r *Runs) CheckRegistered() error {
 // verifies, as the verify loop's moves record them (roundAttempts), so its
 // run is the round's attempt after the latest of those and the failed runs
 // since (SPEC §8.3), and the hand-off comes once they reach the cap
-// together. If posting that error, or making that
-// hand-off, failed, RunStage posts it instead of a run, even when the
-// stage has no work pending, as on an issue it no longer runs on; if that
+// together. If posting that error, or making that hand-off, failed,
+// RunStage posts it instead of a run, even when the stage has no work
+// pending, as on an issue it no longer runs on; if that
 // fails too, it logs the error and moves on, so the next issue gets its
 // turn. A Stage whose schema doesn't compile starts no run: it's a setup
 // failure, reported once (schema). A
@@ -1245,9 +1245,8 @@ func (r *Runs) failed(ctx context.Context, st Stage, l Lease, cause error) error
 
 // atCap is what the attempt cap does once l's run is the last of
 // loop.max_attempts failed in a row, or for a task, the last attempt of its
-// round (SPEC §8.3). For a Committer's run at
-// in-progress, the implementer's on a task, it's a hand-off at needs-human
-// (capHandoff), which releases the worker. For every other stage, it's
+// round (SPEC §8.3). For a Committer's run at in-progress, the
+// implementer's on a task, it's a hand-off at needs-human (capHandoff), which releases the worker. For every other stage, it's
 // the kind=attempts state error (reportCap), and the stage runs no more
 // until the round changes.
 func (r *Runs) atCap(ctx context.Context, st Stage, l Lease) error {

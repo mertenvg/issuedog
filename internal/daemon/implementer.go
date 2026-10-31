@@ -278,7 +278,7 @@ func implementerPreamble(c *config.Config, all []interviewerRound, target, dropp
 			"Merge `target` first, resolve the conflicts, and commit the merge.")
 	}
 	if dropped != "" {
-		clone = append(clone, "- The head your earlier runs left on this task fails verify's rule 2, on protected paths, so issuedog dropped it: "+
+		clone = append(clone, "- The head your earlier runs left on this task fails verify's rule 2, as the finding below says, so issuedog dropped it: "+
 			"your checkout starts from `main`, as a first run's does, and holds none of their work. Do the task again from here. "+
 			"Rule 2's finding on the dropped head:\n\n"+ivFenced(dropped))
 	}

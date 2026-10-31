@@ -601,8 +601,8 @@ func waitGoalDone(body string) (goal, done string) {
 // (capHandoffSaysWhy), as one whose last attempt was findings, below a
 // loop.max_attempts lowered since, or from a lease written before the
 // cause was kept, says nothing of the last attempt; and for the verify
-// cap's (verifyCapMove), the last a head that failed
-// verify, whose findings the hand-off gives. The findings come before the
+// cap's (verifyCapMove), the last a head that failed verify, whose
+// findings the hand-off gives. The findings come before the
 // fields, and may hold a line like a field's in a fence, so for that
 // hand-off the fields are read from its last Goal line on. With either
 // field not found, as for a format that has changed, a line says to see

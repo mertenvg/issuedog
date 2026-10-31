@@ -41,10 +41,9 @@ func renderFindings(head, main string, attempt, limit int, fs []verify.Finding, 
 // attempt, the implementer run's number in the task's round, of limit,
 // loop.max_attempts, unless attempt is 0 for none (SPEC §8.3), head, the
 // head checked, or says there was none, and main, main's commit it was
-// checked against. Then
-// each failed check gets a section, in the order checked: the head's own
-// finding (Rule 0) or rule 2's, then rule 1's, from cmds, then rules 3 to
-// 7. A rule's section gives its detail, and its output, if any, each cut
+// checked against. Then each failed check gets a section, in the order
+// checked: the head's own finding (Rule 0) or rule 2's, then rule 1's,
+// from cmds, then rules 3 to 7. A rule's section gives its detail, and its output, if any, each cut
 // to its last findingChars characters and fenced. Rule 1's names each
 // failed command, fenced, why it failed, its timeout or exit status
 // (CommandResult.Failure), and its output, cut and fenced the same way.

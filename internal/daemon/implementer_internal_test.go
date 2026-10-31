@@ -87,7 +87,7 @@ func TestImplementerPreambleDropped(t *testing.T) {
 	finding := "The task's diff touches protected paths (SPEC 6.3 and verify.protected_paths):\n- .github/<!-- issuedog:x -->\n- ```"
 	got := implementerPreamble(c, nil, "", finding)
 	want := "issuedog checks your output and posts it.\n" +
-		"- The head your earlier runs left on this task fails verify's rule 2, on protected paths, so issuedog dropped it: " +
+		"- The head your earlier runs left on this task fails verify's rule 2, as the finding below says, so issuedog dropped it: " +
 		"your checkout starts from `main`, as a first run's does, and holds none of their work. Do the task again from here. " +
 		"Rule 2's finding on the dropped head:\n\n" +
 		"````text\nThe task's diff touches protected paths (SPEC 6.3 and verify.protected_paths):\n- .github/&lt;!-- issuedog:x -->\n- ```\n````" +

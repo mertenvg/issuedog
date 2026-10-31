@@ -217,7 +217,9 @@ func commandsFailed(results []verify.CommandResult) int {
 // attempt=, that move's (verifyAttempt), so the round's count lives on
 // the issue (SPEC §8.3), and seen=, the newest comment on step 1's
 // snapshot the checks started from, as a run's move has it, so a comment
-// posted during the checks is the next run's input. Its comment is
+// posted during the checks is above the move's bound: at in-progress,
+// where step 1 gives no input, it reaches the next run's conversation.md,
+// as any trusted comment does, not its input.md. Its comment is
 // renderFindings', naming the attempt of loop.max_attempts.
 //
 // When that attempt is loop.max_attempts or more, the round's last, the

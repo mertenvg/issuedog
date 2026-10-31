@@ -35,7 +35,7 @@ func implementerStartTarget(sha string) string {
 
 // implementerStartDropped is the preamble's line saying the task's head
 // was dropped for failing rule 2, before rule 2's finding (SPEC §3.4, §12).
-const implementerStartDropped = "- The head your earlier runs left on this task fails verify's rule 2, on protected paths, so issuedog dropped it: " +
+const implementerStartDropped = "- The head your earlier runs left on this task fails verify's rule 2, as the finding below says, so issuedog dropped it: " +
 	"your checkout starts from `main`, as a first run's does, and holds none of their work. Do the task again from here. " +
 	"Rule 2's finding on the dropped head:\n\n```text\n"
 

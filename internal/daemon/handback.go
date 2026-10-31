@@ -66,8 +66,7 @@ func latestHandoff(s *github.Snapshot, appSlug string, dirty func(int64) bool) (
 // needs-human with a hand-off (SPEC §9.3, Blocked work): in-progress, as
 // the implementer hands off, or its attempt cap does (capHandoff),
 // verifying, as the verify cap does (verifyFindings), pr-open, for a
-// closed PR, and needs-human
-// itself, for an untrusted merge.
+// closed PR, and needs-human itself, for an untrusted merge.
 var handoffFrom = []state.Stage{state.InProgress, state.Verifying, state.PROpen, state.NeedsHuman}
 
 // HandoffByReaction returns the reaction trigger for Step.Reactions that
