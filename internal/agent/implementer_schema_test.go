@@ -217,6 +217,10 @@ func TestImplementerPrompt(t *testing.T) {
 	for _, want := range []string{
 		// The clone: commit there, push nothing, add no remote.
 		"you run in a detached checkout of the commit the daemon named for this task, with its history but no branches and no remote",
+		// A later run carries on from the earlier runs' work, unless their
+		// head failed rule 2 and was dropped, as the preamble then says
+		// (SPEC §3.4).
+		"On a later run, that commit holds your earlier runs' work, unless the preamble says their head was dropped: carry on from it.",
 		// A target the daemon names to merge (SPEC §3.4), from the preamble.
 		"When the preamble names a `target` branch, your checkout has that one branch too: merge it first, as the preamble says.",
 		"Work in the current directory, the clone. Commit your work there",

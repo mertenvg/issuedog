@@ -114,6 +114,7 @@ func TestCommandsRun(t *testing.T) {
 				`ls -A "$HOME"; ls -A "$TMPDIR"; echo "$TMPDIR"`,
 				"cat f.txt; git rev-parse HEAD; git remote; git for-each-ref",
 				`stat -c %a "$HOME"`,
+				"kill -KILL $$",
 			}
 			got, err := c.Run(context.Background(), "v1", head, cmds)
 			if err != nil {
@@ -127,6 +128,8 @@ func TestCommandsRun(t *testing.T) {
 				// The clone holds the head, detached, with no remote and no ref.
 				{Command: cmds[4], Exit: 0, Timeout: 10 * time.Second, Output: "one" + head + "\n"},
 				{Command: cmds[5], Exit: 0, Timeout: 10 * time.Second, Output: "700\n"},
+				// A signal of its own, within its timeout, isn't a timeout.
+				{Command: cmds[6], Exit: -1, Timeout: 10 * time.Second, Output: ""},
 			}
 			if !slices.Equal(got, want) {
 				t.Errorf("results:\n%+v\nwant:\n%+v", got, want)
@@ -254,6 +257,46 @@ func TestCommandsTimeoutKillsGroup(t *testing.T) {
 	}
 }
 
+// TestCommandsExitWithinTimeoutHoldingOutput decides a command that exits
+// within its timeout by its own exit status, though a process it left holds
+// its output open past the timeout, until the wait delay ends the wait. The
+// leftover is killed. The wait delay, longer than the timeout, is what lets
+// the timeout pass while the wait still runs.
+func TestCommandsExitWithinTimeoutHoldingOutput(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, command string
+		cred          *syscall.Credential
+		exit          int
+		failure       string
+	}{
+		{name: "exit 0, daemon uid", command: "(sleep 60 & echo $!); echo done; exit 0", failure: ""},
+		{name: "exit 0, with credential", command: "(sleep 60 & echo $!); echo done; exit 0", cred: currentUser(), failure: ""},
+		{name: "exit 1", command: "(sleep 60 & echo $!); echo done; exit 1", exit: 1, failure: "exit status 1"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c, head := newCommands(t, tt.cred, time.Second)
+			c.waitDelay = 2 * time.Second
+			got, err := c.Run(context.Background(), "v1", head, []string{tt.command})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("results = %+v, want 1", got)
+			}
+			waitDead(t, pidIn(t, got[0]))
+			if got[0].TimedOut || got[0].Exit != tt.exit || got[0].Failure() != tt.failure {
+				t.Errorf("result = %+v, failure %q; want exit status %d, not timed out, failure %q", got[0], got[0].Failure(), tt.exit, tt.failure)
+			}
+			if _, rest, _ := strings.Cut(got[0].Output, "\n"); rest != "done\n" {
+				t.Errorf("output = %q, want the leftover's pid, then done", got[0].Output)
+			}
+			checkNothingLeft(t, c)
+		})
+	}
+}
+
 // TestCommandsKillLeftovers kills what a passing command left running in
 // the background before the next command starts.
 func TestCommandsKillLeftovers(t *testing.T) {
@@ -367,36 +410,49 @@ func TestCommandsSetupFailures(t *testing.T) {
 }
 
 // TestCommandsCallerCancel ends a verify whose caller's ctx ends with an
-// error, not a result, kills the command, and still removes its dirs.
+// error, not a result, kills the command, and still removes its dirs. A
+// command that passed before gives no result either.
 func TestCommandsCallerCancel(t *testing.T) {
 	t.Parallel()
-	c, head := newCommands(t, nil, time.Hour)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	pidFile := filepath.Join(t.TempDir(), "pid")
-	go func() {
-		// Cancel once the command has started.
-		for deadline := time.Now().Add(time.Minute); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-			if raw, err := os.ReadFile(pidFile); err == nil && bytes.HasSuffix(raw, []byte("\n")) {
-				break
+	for _, tt := range []struct {
+		name   string
+		before []string // commands that pass before the cancelled one
+	}{
+		{name: "first command"},
+		{name: "after a passing command", before: []string{"echo first"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c, head := newCommands(t, nil, time.Hour)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			pidFile := filepath.Join(t.TempDir(), "pid")
+			go func() {
+				// Cancel once the command has started.
+				for deadline := time.Now().Add(time.Minute); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+					if raw, err := os.ReadFile(pidFile); err == nil && bytes.HasSuffix(raw, []byte("\n")) {
+						break
+					}
+				}
+				cancel()
+			}()
+			cmds := append(slices.Clone(tt.before), "sleep 60 & echo $! >"+pidFile+"; wait")
+			got, err := c.Run(ctx, "v1", head, cmds)
+			if !errors.Is(err, context.Canceled) || got != nil {
+				t.Fatalf("Run = %+v, %v; want no results and the caller's cancellation", got, err)
 			}
-		}
-		cancel()
-	}()
-	got, err := c.Run(ctx, "v1", head, []string{"sleep 60 & echo $! >" + pidFile + "; wait"})
-	if !errors.Is(err, context.Canceled) || got != nil {
-		t.Fatalf("Run = %+v, %v; want no results and the caller's cancellation", got, err)
+			raw, err := os.ReadFile(pidFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			waitDead(t, pid)
+			checkNothingLeft(t, c)
+		})
 	}
-	raw, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	waitDead(t, pid)
-	checkNothingLeft(t, c)
 }
 
 func TestCommandResultFailure(t *testing.T) {
