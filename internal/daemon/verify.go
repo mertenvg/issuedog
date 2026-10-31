@@ -171,8 +171,7 @@ func (r *Runs) verifyChecks(ctx context.Context, s *github.Snapshot, head, main 
 	base, err := verify.BaseOf(ctx, f)
 	switch {
 	case errors.Is(err, verify.ErrMergeBases):
-		return []verify.Finding{{Rule: 2, Name: "protected paths", Detail: fmt.Sprintf(
-			"The head doesn't have exactly one merge base with main's %s, so the task's own diff has no start: %v", main, err)}}, nil, nil
+		return []verify.Finding{{Rule: 2, Name: "protected paths", Detail: mergeBasesDetail(main, err)}}, nil, nil
 	case err != nil:
 		return nil, nil, fmt.Errorf("read the head's base: %w", err)
 	}

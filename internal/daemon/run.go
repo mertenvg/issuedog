@@ -93,6 +93,10 @@ type Input struct {
 	// Target is the commit the run's clone holds to merge first, at
 	// workspace.TargetRef, set with RunID, or "" for none (SPEC §3.4).
 	Target string
+	// Dropped is why the task's head wasn't named as the run's start, rule
+	// 2's finding on it, set with RunID, or "" when it was, or there's
+	// none (SPEC §3.4, §12).
+	Dropped string
 }
 
 // Result is a valid run result, for a Stage to apply.
@@ -557,7 +561,7 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 	// read again, so a start that can't be named, such as a bare repo with
 	// no main, costs no request. Labels that give no settings start no
 	// run, so they need none, and their state error doesn't wait on one.
-	var commits workspace.Commits
+	var commits runStart
 	if badLabels == nil {
 		if commits, err = r.start(ctx, st, n); err != nil {
 			return false, wrap(fmt.Errorf("name the run's start: %w", err))
@@ -600,7 +604,7 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		r.Daemon.reread(n, false)
 		return false, wrap(r.reportLabels(ctx, rd.S, fresh, is.Stage, st, badLabels))
 	}
-	in.RunID, in.Attempt, in.Target = r.newID(), attempt, commits.Target
+	in.RunID, in.Attempt, in.Target, in.Dropped = r.newID(), attempt, commits.Target, commits.Dropped
 	in.ContextDir = r.Workspace.Context(in.RunID)
 	l := Lease{Issue: n, Stage: is.Stage, RunID: in.RunID, Clone: r.Workspace.Dir(in.RunID),
 		Started: r.now(), Polled: r.Daemon.polled, Edits: map[int64]time.Time{}, BodyEdit: rd.S.BodyEdit.At, AttemptKey: errKey, Attempt: in.Attempt,

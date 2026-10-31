@@ -84,7 +84,8 @@ func (*Implementer) Pending(in Input) bool {
 //     moved it since (implementerAnswers), then in.Inputs, or with
 //     neither, "none: first run".
 //   - system.md: the preamble (implementerPreamble), naming in.Target
-//     when the run has one, then .issuedog/prompts/implementer.md from
+//     when the run has one, and in.Dropped when the task's head was
+//     dropped, then .issuedog/prompts/implementer.md from
 //     main or the shipped default (agent.Prompt).
 //   - prompt.md: the task, naming in.ContextDir.
 //
@@ -143,7 +144,7 @@ func (im *Implementer) Context(ctx context.Context, in Input) (map[string][]byte
 		"input.md": []byte(ivFile("Input for this run", implementerInputIntro,
 			input, "none: first run")),
 		"prompt.md": []byte(implementerTask(s.Number, in.ContextDir)),
-		"system.md": []byte(implementerPreamble(d.Config, all, in.Target) + "\n\n" + string(prompt)),
+		"system.md": []byte(implementerPreamble(d.Config, all, in.Target, in.Dropped) + "\n\n" + string(prompt)),
 	}
 	return files, nil
 }
@@ -231,8 +232,10 @@ func implementerTask(number int, dir string) string {
 // implementerPreamble is the start of system.md, which no prompt on main
 // can remove (SPEC §12): the trust rules, the clone, with its target,
 // main's commit named to merge first, when the run has one (SPEC §3.4),
-// the output contract, and every value the prompt defers to it, with c's
-// values:
+// and when the task's head was dropped, that it was, and dropped, why:
+// rule 2's finding on it, fenced and escaped (SPEC §5.1), as it names
+// paths from the repo; the output contract, and every value the prompt
+// defers to it, with c's values:
 //   - the PR title types (pr.title_types), and the title's bounds, as
 //     checkCommits enforces them (implementerMaxTitle);
 //   - the diff limit, verify.max_diff_lines, counting only files outside
@@ -243,7 +246,7 @@ func implementerTask(number int, dir string) string {
 //     (nextRound), and loop.max_questions_per_round;
 //   - that commits needs commits past the run's start, and the comment's
 //     length (maxText less textRoom), as checkCommits counts it.
-func implementerPreamble(c *config.Config, all []interviewerRound, target string) string {
+func implementerPreamble(c *config.Config, all []interviewerRound, target, dropped string) string {
 	types := make([]string, len(c.PR.TitleTypes))
 	for i, t := range c.PR.TitleTypes {
 		types[i] = "`" + github.Escape(t) + "`"
@@ -273,6 +276,11 @@ func implementerPreamble(c *config.Config, all []interviewerRound, target string
 	if target != "" {
 		clone = append(clone, "- Your checkout's `target` branch is `main` at `"+target+"`, which your starting commit doesn't merge with cleanly. "+
 			"Merge `target` first, resolve the conflicts, and commit the merge.")
+	}
+	if dropped != "" {
+		clone = append(clone, "- The head your earlier runs left on this task fails verify's rule 2, on protected paths, so issuedog dropped it: "+
+			"your checkout starts from `main`, as a first run's does, and holds none of their work. Do the task again from here. "+
+			"Rule 2's finding on the dropped head:\n\n"+ivFenced(dropped))
 	}
 	return strings.Join([]string{
 		"# issuedog's rules for this run",
