@@ -1,4 +1,3 @@
-// Package verify runs the deterministic checks of SPEC §10.1.
 package verify
 
 import (

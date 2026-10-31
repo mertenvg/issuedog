@@ -88,6 +88,9 @@ type Input struct {
 	// ContextDir is where the run's context files go, set with RunID, so
 	// prompt.md can tell the agent where to read them.
 	ContextDir string
+	// Target is the commit the run's clone holds to merge first, at
+	// workspace.TargetRef, set with RunID, or "" for none (SPEC §3.4).
+	Target string
 }
 
 // Result is a valid run result, for a Stage to apply.
@@ -513,9 +516,9 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 	// read again, so a start that can't be named, such as a bare repo with
 	// no main, costs no request. Labels that give no settings start no
 	// run, so they need none, and their state error doesn't wait on one.
-	var start string
+	var commits workspace.Commits
 	if badLabels == nil {
-		if start, err = r.start(ctx, st, n); err != nil {
+		if commits, err = r.start(ctx, st, n); err != nil {
 			return false, wrap(fmt.Errorf("name the run's start: %w", err))
 		}
 	}
@@ -556,11 +559,11 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		r.Daemon.reread(n, false)
 		return false, wrap(r.reportLabels(ctx, rd.S, fresh, is.Stage, st, badLabels))
 	}
-	in.RunID, in.Attempt = r.newID(), attempt
+	in.RunID, in.Attempt, in.Target = r.newID(), attempt, commits.Target
 	in.ContextDir = r.Workspace.Context(in.RunID)
 	l := Lease{Issue: n, Stage: is.Stage, RunID: in.RunID, Clone: r.Workspace.Dir(in.RunID),
 		Started: r.now(), Polled: r.Daemon.polled, Edits: map[int64]time.Time{}, BodyEdit: rd.S.BodyEdit.At, AttemptKey: errKey, Attempt: in.Attempt,
-		Model: set.Model, Effort: set.Effort, FallbackModels: set.FallbackModels, Start: start}
+		Model: set.Model, Effort: set.Effort, FallbackModels: set.FallbackModels, Start: commits.Start, Target: commits.Target}
 	for _, c := range rd.S.Comments {
 		l.Seen = max(l.Seen, c.ID)
 	}
