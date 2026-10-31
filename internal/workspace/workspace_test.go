@@ -356,6 +356,33 @@ func TestPrepareHomeRejects(t *testing.T) {
 	}
 }
 
+// TestPrepareHomeTmpFails removes the home it made when making the tmp dir
+// in it fails, so no half-made home is left. A mkdir on the PATH fails for
+// the tmp dir alone and runs the real mkdir otherwise. It sets PATH, so it
+// can't run in parallel.
+func TestPrepareHomeTmpFails(t *testing.T) {
+	w, _ := newWorkspace(t)
+	ctx := context.Background()
+	real, err := exec.LookPath("mkdir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	script := "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in */tmp) echo 'mkdir: no tmp' >&2; exit 1;; esac; done\nexec " + real + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "mkdir"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err = w.PrepareHome(ctx, "v1-home")
+	if err == nil || !strings.Contains(err.Error(), "prepare home v1-home") || !strings.Contains(err.Error(), "no tmp") {
+		t.Fatalf("PrepareHome = %v, want the tmp dir's failure", err)
+	}
+	if _, err := os.Lstat(w.Dir("v1-home")); !os.IsNotExist(err) {
+		t.Errorf("the home is left after its tmp dir failed: %v", err)
+	}
+}
+
 // TestPrepareRejects refuses bad names, and a start or target SHA that's
 // missing, not a full SHA, or not in the bare repo, leaving nothing, even
 // after a failed fetch.
