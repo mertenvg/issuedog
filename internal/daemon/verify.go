@@ -14,8 +14,9 @@ import (
 )
 
 // verifyKey keys a task's move verifying → in-progress on findings (SPEC
-// §5): event=v<c>, the comment holding its move to verifying, so the
-// checks of each move there move it back once.
+// §5), or in its place at the round's last attempt, the verify cap's move
+// to needs-human: event=v<c>, the comment holding its move to verifying,
+// so the checks of each move there move it on once.
 func verifyKey(c int64) state.Key {
 	return state.Key{Field: "event", ID: "v" + strconv.FormatInt(c, 10)}
 }
@@ -38,7 +39,8 @@ func verifyKey(c int64) state.Key {
 // keeps the worker, until the verifier and the PR are built (#620, #622).
 // The pass is kept in passed, by head and main's commit, so the checks
 // don't run again until either changes, or the daemon restarts. A
-// failure moves the task back to in-progress (verifyFindings).
+// failure moves the task back to in-progress, or on the round's last
+// attempt, hands it off to the owner at needs-human (verifyFindings).
 //
 // Naming the head and main, and a skip for a pass kept, read only the bare
 // repo and the snapshot step 1 left, so they cost no request.
@@ -219,6 +221,16 @@ func commandsFailed(results []verify.CommandResult) int {
 // posted during the checks is the next run's input. Its comment is
 // renderFindings', naming the attempt of loop.max_attempts.
 //
+// When that attempt is loop.max_attempts or more, the round's last, the
+// task never goes back to in-progress: it moves verifying → needs-human on
+// attempt-cap instead, keyed as the findings move would be, so a replay or
+// a restart writes it once, with the verify cap's hand-off
+// (renderVerifyCapHandoff), which gives the findings and ends with the cc
+// line for notify (SPEC §8.3, §9.3). That releases the worker (SPEC §8.1),
+// and /done or a trusted 👍 on the hand-off sends the task back to ready,
+// a new round (handback.go). A move to verifying that names no attempt, as
+// one by hand, never reaches the cap.
+//
 // Before the move, it reads the issue again, and runs CheckLabels and the
 // look for discussion triggers on it, as a run's apply does (SPEC §8.2).
 // A task closed, gone, held, or moved since the checks started, even back
@@ -264,6 +276,16 @@ func (r *Runs) verifyFindings(ctx context.Context, rd Ready, is state.Issue, hea
 		seen = max(seen, c.ID)
 	}
 	attempt := verifyAttempt(is)
+	if attempt >= r.limit() {
+		m := Move{To: state.NeedsHuman, Trigger: state.TriggerAttemptCap, Key: verifyKey(is.TransitionComment),
+			Text: renderVerifyCapHandoff(r.limit(), findingsText(head, main, attempt, r.limit(), fs, cmds), n, r.Daemon.Config.Notify)}
+		if err := a.Transition(ctx, s, d.Has, m); err != nil {
+			return fmt.Errorf("hand off the verify cap: %w", err)
+		}
+		logr.Warnf("%s/%s#%d: its head %s fails the checks against main's %s, in %d rules and %d commands, on attempt %d of %d, so it's handed off to the owner at %s",
+			a.Owner, a.Repo, n, head, main, len(fs), commandsFailed(cmds), attempt, r.limit(), state.NeedsHuman)
+		return nil
+	}
 	m := Move{To: state.InProgress, Trigger: state.TriggerFindings, Key: verifyKey(is.TransitionComment), Fields: map[string]string{},
 		Text: renderFindings(head, main, attempt, r.limit(), fs, cmds)}
 	if head != "" {

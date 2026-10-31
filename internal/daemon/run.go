@@ -504,9 +504,11 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		// whether or not the stage has work pending, as a last attempt that
 		// failed on an issue its stage no longer runs on leaves it none.
 		// A post that keeps failing mustn't hold up the other issues. For a
-		// task, the round's last attempt may be its verify's findings,
-		// which the verify loop's moves record: then the hand-off says
-		// nothing of why, as no run failed last, so it has no failure kept.
+		// task, findings on the round's last attempt hand it off at
+		// verifying (verifyFindings), so they never bring it back here at
+		// the cap. Findings below it may reach a loop.max_attempts lowered
+		// since: then the hand-off says nothing of why, as no run failed
+		// last, so it has no failure kept.
 		last := Lease{Issue: n, Stage: is.Stage, AttemptKey: errKey, PublicFailure: r.failures[countKey(n, errKey)]}
 		if err := r.atCap(ctx, st, last); err != nil {
 			logr.Errorf("%s/%s#%d: no %s run, as it failed loop.max_attempts times, but posting that failed again: %v",
@@ -1248,7 +1250,8 @@ func (r *Runs) atCap(ctx context.Context, st Stage, l Lease) error {
 
 // capHandoff is the implementer's attempt cap on a task (SPEC §8.3, §9.3):
 // l's run was the last of the round's loop.max_attempts attempts, failed
-// runs and failed verifies, or the last was a failed verify, so the task
+// runs and failed verifies, or the findings of an earlier attempt reached
+// a loop.max_attempts lowered since they moved the task back, so the task
 // moves in-progress → needs-human on attempt-cap, keyed
 // event=a<l.AttemptKey> (capHandoffKey), with a hand-off in the
 // implementer's form whose opening says the round's attempts failed, and
