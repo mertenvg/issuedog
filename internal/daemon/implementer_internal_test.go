@@ -25,7 +25,7 @@ func TestImplementerPreamble(t *testing.T) {
 	c.Verify.ProtectedPaths = []string{"secrets/**", "deploy/<prod>"}
 	c.Loop.MaxQuestionsPerRound = 4
 	rounds := []interviewerRound{{Number: 1, Questions: 2}, {Number: 2, Questions: 1}}
-	got := implementerPreamble(c, rounds)
+	got := implementerPreamble(c, rounds, "")
 	for _, want := range []string{
 		"- A PR title's `type` is one of: `feat`, `fix`, `perf` (`pr.title_types`), exactly as written. " +
 			"The title, `<type>: <sentence>`, is one line of at most 256 characters.",
@@ -42,12 +42,37 @@ func TestImplementerPreamble(t *testing.T) {
 			t.Errorf("the preamble =\n%s\nwant it to say\n%s", got, want)
 		}
 	}
-	if none := implementerPreamble(c, nil); !strings.Contains(none, "No questions have been asked on this issue yet, so a question round now is round 1.") {
+	if none := implementerPreamble(c, nil, ""); !strings.Contains(none, "No questions have been asked on this issue yet, so a question round now is round 1.") {
 		t.Errorf("the preamble with no rounds =\n%s\nwant round 1 next", none)
 	}
 	c.Verify.TestGlobs = nil
-	if all := implementerPreamble(c, nil); !strings.Contains(all, "counting only files outside `verify.test_globs`, which is empty, so every file counts.") {
+	if all := implementerPreamble(c, nil, ""); !strings.Contains(all, "counting only files outside `verify.test_globs`, which is empty, so every file counts.") {
 		t.Errorf("the preamble with no test globs =\n%s\nwant every file to count", all)
+	}
+}
+
+// With a target, the implementer's preamble says the checkout has one
+// branch, target, which is main at the target's SHA, to merge first,
+// resolving the conflicts (SPEC §3.4, §12). With none, it names no target
+// and says the checkout has no branches.
+func TestImplementerPreambleTarget(t *testing.T) {
+	t.Parallel()
+	c := config.Defaults()
+	target := strings.Repeat("ab", 20)
+	got := implementerPreamble(c, nil, target)
+	for _, want := range []string{
+		"- You run in a detached checkout of the commit issuedog named for this task, with its history and one branch, `target` (below), but no remote, " +
+			"so git commands name HEAD. Commit your work there.",
+		"issuedog checks your output and posts it.\n- Your checkout's `target` branch is `main` at `" + target + "`, " +
+			"which your starting commit doesn't merge with cleanly. Merge `target` first, resolve the conflicts, and commit the merge.\n\n## Output",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the preamble with a target =\n%s\nwant it to say\n%s", got, want)
+		}
+	}
+	none := implementerPreamble(c, nil, "")
+	if strings.Contains(none, "`target`") || !strings.Contains(none, "with its history but no branches and no remote, so git commands name HEAD.") {
+		t.Errorf("the preamble with no target =\n%s\nwant no target named, and no branches", none)
 	}
 }
 

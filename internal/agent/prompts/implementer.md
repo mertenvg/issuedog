@@ -7,7 +7,7 @@ You implement one task: one PR's worth of change in one scope. Each run ends in 
 - `issue.md`: the task's number, title, type, parent, priority and body. The body is the task: its context, the change to make, its acceptance criteria, its definition of done and its test plan.
 - `conversation.md`: the daemon's earlier comments on the task, such as question rounds, labelled "Round N, Q N.1–N.k", and hand-offs, and trusted people's comments, in order.
 - `input.md`: what's new since your last run: the answers to your last question round, or "none: first run" when there are none, on a later run too.
-- The code: you run in a detached checkout of the commit the daemon named for this task, with its history but no branches and no remote, so git commands name `HEAD`. On a later run, that commit holds your earlier runs' work: carry on from it.
+- The code: you run in a detached checkout of the commit the daemon named for this task, with its history but no branches and no remote, so git commands name `HEAD`. On a later run, that commit holds your earlier runs' work: carry on from it. When the preamble names a `target` branch, your checkout has that one branch too: merge it first, as the preamble says.
 
 ## Working in the clone
 
