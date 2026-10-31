@@ -1212,7 +1212,7 @@ The daemon decides these itself, outside Claude, from exit codes and its own git
 5. When the task's own diff adds, modifies or renames (git's `A`, `M` or `R`) files matching `verify.source_globs` that are not tests, it also adds, modifies or renames files matching `verify.test_globs`. Deletions, and changes to other files, such as docs, are exempt.
 6. The task's own diff is at most `verify.max_diff_lines`, counted by the daemon in files outside `verify.test_globs`, as added plus deleted lines; a hard limit. Lines in test files don't count.
    - The daemon reads git's line counts for the task's own diff, finding renames, as a PR's stats count them, so a file that only moved counts no lines.
-   - A binary file, in or out of `verify.test_globs`, is allowed only if it matches `verify.binary_allow`, and its lines count for nothing. Deleting one is allowed.
+   - A binary file, in or out of `verify.test_globs`, is allowed only if it matches `verify.binary_allow`, and its lines count for nothing. Deleting one is allowed, and so is a change that leaves its content as it was, such as a move. A file is binary by its new content: a binary turned into text counts its new lines as added, and text turned into a binary is a binary.
 7. The head shares history with its target branch and merges with it cleanly: its story branch for a task in a story or a story's corrections (not built yet), else `main` (7.5).
    - The daemon judges the merge with `git merge-tree` in the bare repo, with no worktree, and keeps none of the objects it writes. The finding names each conflicting file.
 

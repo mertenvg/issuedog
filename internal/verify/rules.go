@@ -191,7 +191,10 @@ const TooLarge = "task too large, split it"
 // nothing. It finds renames, so a file that only moved counts no lines. It
 // also fails a binary file the diff adds or changes that doesn't match
 // verify.binary_allow, in or out of the test globs. A binary's lines count
-// for nothing, and deleting one passes.
+// for nothing. Deleting one passes, and so does a change that leaves its
+// content as it was, such as a move. A file is binary by its new content
+// (repo.Stat), so a binary turned into text counts its new lines as
+// added, and text turned into a binary is a binary.
 func Rule6(ctx context.Context, f Facts) (*Finding, error) {
 	stats, err := f.Repo.NumStat(ctx, f.Base, f.Head)
 	if err != nil {
@@ -201,23 +204,14 @@ func Rule6(ctx context.Context, f Facts) (*Finding, error) {
 	var binaries []string
 	for _, s := range stats {
 		switch {
+		case s.Same:
+			// Its content is as it was, so it adds no binary and no lines.
 		case s.Binary:
 			if !matchAny(f.Config.BinaryAllow, s.Path) {
 				binaries = append(binaries, s.Path)
 			}
 		case !matchAny(f.Config.TestGlobs, s.Path):
 			count += s.Added + s.Deleted
-		}
-	}
-	if len(binaries) > 0 {
-		changes, err := f.Repo.Changes(ctx, f.Base, f.Head, true)
-		if err != nil {
-			return nil, fmt.Errorf("rule 6: %w", err)
-		}
-		for _, c := range changes {
-			if c.Status == 'D' {
-				binaries = slices.DeleteFunc(binaries, func(p string) bool { return p == c.Path })
-			}
 		}
 	}
 	var parts []string
