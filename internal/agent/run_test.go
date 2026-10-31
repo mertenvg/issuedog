@@ -343,6 +343,18 @@ func waitChildDead(t *testing.T, dir string) {
 	t.Errorf("child %d outlived the run", pid)
 }
 
+// TestKillAllRefusesTheDaemonsUid: killing every process of the daemon's
+// own uid would kill the daemon, so KillAll refuses it, and a nil
+// credential, which runs as the daemon.
+func TestKillAllRefusesTheDaemonsUid(t *testing.T) {
+	t.Parallel()
+	for _, cred := range []*syscall.Credential{nil, currentUser()} {
+		if err := KillAll(cred); err == nil || !strings.Contains(err.Error(), "refused") {
+			t.Errorf("KillAll(%+v) = %v, want it refused", cred, err)
+		}
+	}
+}
+
 func TestSysProcAttr(t *testing.T) {
 	cred := &syscall.Credential{Uid: 10002, Gid: 10002, Groups: []uint32{}}
 	a := (&Runner{Credential: cred}).sysProcAttr()

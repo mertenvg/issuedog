@@ -1,5 +1,6 @@
 // Package verify judges a task's head by SPEC §10.1's deterministic
-// rules, from the daemon's own reads of the bare repo.
+// rules, from the daemon's own reads of the bare repo, and runs its
+// verify.commands as agent in a fresh checkout.
 package verify
 
 import (
