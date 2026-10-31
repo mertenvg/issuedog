@@ -26,8 +26,10 @@ const (
 )
 
 // renderFindings is the comment on a task's move verifying → in-progress
-// on findings (SPEC §7.2, §10.1): it names head, the head checked, or says
-// there was none, and main, main's commit it was checked against. Then
+// on findings (SPEC §7.2, §10.1): it names attempt, the implementer run's
+// number in the task's round, of limit, loop.max_attempts, unless attempt
+// is 0 for none (SPEC §8.3), head, the head checked, or says there was
+// none, and main, main's commit it was checked against. Then
 // each failed check gets a section, in the order checked: the head's own
 // finding (Rule 0) or rule 2's, then rule 1's, from cmds, then rules 3 to
 // 7. A rule's section gives its detail, and its output, if any, each cut
@@ -36,12 +38,16 @@ const (
 // (CommandResult.Failure), and its output, cut and fenced the same way.
 // Every text the daemon didn't write is fenced, and the whole is escaped
 // (SPEC §5.1).
-func renderFindings(head, main string, fs []verify.Finding, cmds []verify.CommandResult) string {
+func renderFindings(head, main string, attempt, limit int, fs []verify.Finding, cmds []verify.CommandResult) string {
 	var parts []string
+	on := ""
+	if attempt > 0 {
+		on = fmt.Sprintf(" on attempt %d of %d,", attempt, limit)
+	}
 	if head == "" {
-		parts = append(parts, fmt.Sprintf("Verify failed with no head to check, against `main` at `%s`.", main))
+		parts = append(parts, fmt.Sprintf("Verify failed%s with no head to check, against `main` at `%s`.", on, main))
 	} else {
-		parts = append(parts, fmt.Sprintf("Verify failed at `%s`, checked against `main` at `%s`.", head, main))
+		parts = append(parts, fmt.Sprintf("Verify failed%s at `%s`, checked against `main` at `%s`.", on, head, main))
 	}
 	first := func(f verify.Finding) bool { return f.Rule == 0 || f.Rule == 2 }
 	for _, f := range fs {

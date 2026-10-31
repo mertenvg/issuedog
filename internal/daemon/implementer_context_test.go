@@ -69,3 +69,45 @@ func TestImplementerContextDirtyBodyAndEarlierRound(t *testing.T) {
 		t.Errorf("system.md lacks\n%s\nin\n%s", w, files["system.md"])
 	}
 }
+
+// input.md gives the round's latest findings first (SPEC §8.3, §12): the
+// comment of the latest move back on findings, verbatim with its marker
+// left out, fenced under a heading naming its attempt, and not an earlier
+// one's. Here attempt 1's findings, then attempt 2's, are in the round,
+// so only attempt 2's are given. After the hand-off, /done's move to
+// ready and the pick's to in-progress start a new round, so the next
+// run's input.md has no findings.
+func TestImplementerContextFindings(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	n := implementerTask(f)
+	findings := func(attempt int) string {
+		moved := f.AddComment(n, app, fmt.Sprintf("The implementer committed.\n\n"+
+			"<!-- issuedog:transition from=in-progress to=verifying attempt=%d run=r%d head=h%d -->", attempt, attempt, attempt))
+		text := fmt.Sprintf("Verify failed on attempt %d of 3, at `h%d`, checked against `main` at `m`.\n\n"+
+			"### Rule 5: tests alongside source\n\n```text\nNo test for a%d.go.\n```\n\n"+
+			"So the task is back at in-progress, for the implementer to fix.", attempt, attempt, attempt)
+		f.AddComment(n, app, fmt.Sprintf("%s\n\n<!-- issuedog:transition from=verifying to=in-progress attempt=%d event=v%d head=h%d seen=%d -->",
+			text, attempt, moved, attempt, moved))
+		return text
+	}
+	findings(1)
+	second := findings(2)
+	d := ivDaemon(t, f, newOrigin(t))
+
+	want := "# Input for this run\n\n" +
+		"What's new since the implementer last ran, or since the task came to in-progress. " +
+		"Verify's findings on the task's head, if any, come first: fix every one.\n\n" +
+		"## The findings of verify attempt 2, which this run must fix\n\n````text\n" + second + "\n````\n"
+	if got := implementerContext(t, d, n)["input.md"]; got != want {
+		t.Errorf("input.md after attempt 2's findings =\n%s\nwant\n%s", got, want)
+	}
+
+	f.AddComment(n, app, "Handed off.\n\n<!-- issuedog:transition from=in-progress to=needs-human event=ain-progress-1 -->")
+	done := f.AddComment(n, "owner", "/done")
+	ready := f.AddComment(n, app, fmt.Sprintf("Back.\n\n<!-- issuedog:transition from=needs-human to=ready cmd=%d seen=%d -->", done, done))
+	f.AddComment(n, app, fmt.Sprintf("Picked up.\n\n<!-- issuedog:transition from=ready to=in-progress event=s%d seen=%d -->", ready, ready))
+	if got := implementerContext(t, d, n)["input.md"]; !strings.HasSuffix(got, "\n\nnone: first run\n") || strings.Contains(got, "findings of verify") {
+		t.Errorf("input.md in a new round =\n%s\nwant no findings, and none: first run", got)
+	}
+}

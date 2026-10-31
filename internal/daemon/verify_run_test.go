@@ -72,9 +72,9 @@ func TestVerifyWholeRun(t *testing.T) {
 	}
 	cs := w.comments()
 	last := cs[len(cs)-1]
-	wantMarker := findingsMarker(move.ID, head, move.ID)
+	wantMarker := findingsAttemptMarker(move.ID, head, 1, move.ID)
 	if last.Author.Login != app ||
-		!strings.HasPrefix(last.Body, "Verify failed at `"+head+"`, checked against `main` at `"+main+"`.\n\n### Rule 5: tests alongside source\n\n") ||
+		!strings.HasPrefix(last.Body, "Verify failed on attempt 1 of 3, at `"+head+"`, checked against `main` at `"+main+"`.\n\n### Rule 5: tests alongside source\n\n") ||
 		!strings.Contains(last.Body, "- run.1.txt\n") || !strings.HasSuffix(last.Body, wantMarker) {
 		t.Errorf("the task's newest comment, by %s, =\n%s\nwant the App's findings on head %s, rule 5 naming run.1.txt, ending with %s",
 			last.Author.Login, last.Body, head, wantMarker)

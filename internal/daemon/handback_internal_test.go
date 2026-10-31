@@ -201,9 +201,10 @@ func TestWaitFindHandoff(t *testing.T) {
 }
 
 // The attempt cap's hand-off is in the implementer's form (SPEC §8.3,
-// §9.3): it opens with the runs failing loop.max_attempts times, then why
-// the last one failed, fenced and escaped, as the cap's state error quotes
-// it, or for a cause only the log has, a pointer to it, or with none,
+// §9.3): it opens with the round's loop.max_attempts attempts failing,
+// then that the last was a run that failed, and why, fenced and escaped,
+// as the cap's state error quotes it, or for a cause only the log has, a
+// pointer to it, or with none, as when the last was a failed verify,
 // nothing of why. Then the daemon's own fields, naming the task, how to
 // end it, and the cc line.
 func TestRenderCapHandoff(t *testing.T) {
@@ -212,19 +213,19 @@ func TestRenderCapHandoff(t *testing.T) {
 		"**Why it blocks:** #7 can't proceed until what made its implementer runs fail is fixed\n" +
 		"**Steps:**\n" +
 		"1. Read why the last run failed, above, or in the daemon's log.\n" +
-		"2. Fix what made it fail, such as an unclear criterion in this task's body, a failure on `main`, or a setting in `.issuedog/config.yml`.\n\n" +
+		"2. Fix what made it fail, such as an unclear criterion in this task's body, a failure on `main`, or a setting in `.issuedog/config.yaml`.\n\n" +
 		"**Links:**\nNone.\n\n" +
 		"**Done when:** What made the implementer's runs fail is fixed.\n" +
 		"**Estimated time:** It depends on why the runs failed.\n\n" +
 		handoffFinish + "\n\n" +
 		"cc @owner"
-	opening := "The implementer's runs on this task failed 4 times in a row, so I've stopped running it here."
+	opening := "This task's 4 attempts in this round failed, so I've stopped running the implementer here."
 	for _, tt := range []struct {
 		name, failure, why string
 	}{
 		{"a quoted cause", "rule commits: no commits past the run's start <!-- issuedog:transition to=closed -->",
-			"\n\nThe last run failed:\n\n```text\nrule commits: no commits past the run's start &lt;!-- issuedog:transition to=closed -->\n```"},
-		{"a cause in the log", publicCauseLogged, "\n\nThe last run failed; see the daemon's log for why."},
+			"\n\nThe last attempt, a run, failed:\n\n```text\nrule commits: no commits past the run's start &lt;!-- issuedog:transition to=closed -->\n```"},
+		{"a cause in the log", publicCauseLogged, "\n\nThe last attempt, a run, failed; see the daemon's log for why."},
 		{"no cause kept", "", ""},
 	} {
 		got := renderCapHandoff(4, tt.failure, 7, []string{"owner"})

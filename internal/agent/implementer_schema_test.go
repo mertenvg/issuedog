@@ -252,6 +252,10 @@ func TestImplementerPrompt(t *testing.T) {
 		`in one line that reads on after "can't proceed until"`,
 		// The run's files.
 		"`issue.md`", "`conversation.md`", "`input.md`",
+		// A retry fixes each of verify's findings, which input.md gives
+		// first (SPEC §8.3, §12).
+		"its findings, labelled with their attempt",
+		"When `input.md` holds findings from verify, fix every one before you return `commits`.",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("implementer.md doesn't contain %q", want)

@@ -84,7 +84,7 @@ var capHandoffFields = implementerHandoffFields{
 	WhyBlocks: "what made its implementer runs fail is fixed",
 	Steps: []string{
 		"Read why the last run failed, above, or in the daemon's log.",
-		"Fix what made it fail, such as an unclear criterion in this task's body, a failure on `main`, or a setting in `.issuedog/config.yml`.",
+		"Fix what made it fail, such as an unclear criterion in this task's body, a failure on `main`, or a setting in `.issuedog/config.yaml`.",
 	},
 	DoneWhen:      "What made the implementer's runs fail is fixed.",
 	EstimatedTime: "It depends on why the runs failed.",
@@ -92,18 +92,20 @@ var capHandoffFields = implementerHandoffFields{
 
 // renderCapHandoff is the attempt cap's hand-off comment on task n (SPEC
 // §8.3, §9.3), escaped: renderHandoff with capHandoffFields, opening with
-// the implementer's runs failing limit times in a row, then why the last
-// one failed, failure, as the cap's state error quotes it
-// (Lease.PublicFailure, publicCauseText): fenced, or for
-// publicCauseLogged, a pointer to the daemon's log. With no failure, as
-// from a lease written before it was kept, it says nothing of why.
+// the task's limit attempts in its round failing, its implementer's runs
+// and its verifies alike, then that the last was a run that failed, and
+// why, failure, as the cap's state error quotes it (Lease.PublicFailure,
+// publicCauseText): fenced, or for publicCauseLogged, a pointer to the
+// daemon's log. With no failure, as when the last attempt was a verify's,
+// whose findings are on the task already, or from a lease written before
+// it was kept, it says nothing of why.
 func renderCapHandoff(limit int, failure string, n int, notify []string) string {
-	intro := fmt.Sprintf("The implementer's runs on this task failed %d times in a row, so I've stopped running it here.", limit)
+	intro := fmt.Sprintf("This task's %d attempts in this round failed, so I've stopped running the implementer here.", limit)
 	if failure != "" {
 		if failure == publicCauseLogged {
 			failure = ""
 		}
-		intro += publicCauseText("run", failure)
+		intro += publicCauseText("attempt, a run,", failure)
 	}
 	return renderHandoff(intro, capHandoffFields, n, notify)
 }

@@ -161,7 +161,7 @@ func TestImplementerRestartFetchesSavedResult(t *testing.T) {
 		t.Errorf("the restart's Work read #%d %d times, with %d runs; want once, for the apply, and no run", n, reads, g.runs())
 	}
 	cs := implementerComments(t, f, n)
-	if want := implementerCommitted("saved", head, cs[0].ID); len(cs) != 2 || cs[1].Body != want || pickStage(f, n) != "stage:verifying" {
+	if want := implementerCommitted("saved", head, 1, cs[0].ID); len(cs) != 2 || cs[1].Body != want || pickStage(f, n) != "stage:verifying" {
 		t.Errorf("after the restart, %d comments, the newest\n%s\nat %s; want the saved result's move,\n%s\nat verifying", len(cs), cs[len(cs)-1].Body, pickStage(f, n), want)
 	}
 	if got := g.bareRefs(); got != wantRefs(main, head) {
@@ -206,7 +206,7 @@ func TestImplementerRestartAppliesFetchedResult(t *testing.T) {
 	}
 	main := gitIn(t, g.d.Clone.Dir(), "rev-parse", "main")
 	cs := implementerComments(t, f, n)
-	if want := implementerCommitted("run1", head, cs[0].ID); len(cs) != 2 || cs[1].Body != want || g.runs() != 1 {
+	if want := implementerCommitted("run1", head, 1, cs[0].ID); len(cs) != 2 || cs[1].Body != want || g.runs() != 1 {
 		t.Errorf("after the restart, %d comments, the newest\n%s\nafter %d runs; want run 1's move,\n%s\nafter 1 run", len(cs), cs[len(cs)-1].Body, g.runs(), want)
 	}
 	if got := g.bareRefs(); got != wantRefs(main, head) || pickStage(f, n) != "stage:verifying" {
@@ -314,14 +314,14 @@ func restartCapRig(t *testing.T, f *githubtest.Fake, o *origin, root string) *ri
 // key, after 3 failed runs, the last as failOut fails, with the cc line for
 // owner.
 func restartCapComment(key string) string {
-	return "The implementer's runs on this task failed 3 times in a row, so I've stopped running it here.\n\n" +
-		"The last run failed:\n\n" +
+	return "This task's 3 attempts in this round failed, so I've stopped running the implementer here.\n\n" +
+		"The last attempt, a run, failed:\n\n" +
 		"```text\nrun failed with subtype \"error_max_turns\"\n```\n\n" +
 		"**Goal:** Find out why the implementer's runs on this task fail, and fix that, so it can go on with the task.\n" +
 		"**Why it blocks:** #1 can't proceed until what made its implementer runs fail is fixed\n" +
 		"**Steps:**\n" +
 		"1. Read why the last run failed, above, or in the daemon's log.\n" +
-		"2. Fix what made it fail, such as an unclear criterion in this task's body, a failure on `main`, or a setting in `.issuedog/config.yml`.\n\n" +
+		"2. Fix what made it fail, such as an unclear criterion in this task's body, a failure on `main`, or a setting in `.issuedog/config.yaml`.\n\n" +
 		"**Links:**\nNone.\n\n" +
 		"**Done when:** What made the implementer's runs fail is fixed.\n" +
 		"**Estimated time:** It depends on why the runs failed.\n\n" +
@@ -561,7 +561,7 @@ func TestImplementerResumeHeldTask(t *testing.T) {
 	// comment, the newest then, so its seen is that comment too.
 	back := moved(resumedToReady, fmt.Sprintf("from=held to=ready cmd=%d seen=%d", resume, cs[0].ID))
 	if len(bodies) != 3 || bodies[0] != back || bodies[1] != pickMoved(cs[at+1].ID, cs[at+1].ID) ||
-		bodies[2] != implementerCommitted("run1", g.trimmed("commit.1"), cs[at+2].ID) {
+		bodies[2] != implementerCommitted("run1", g.trimmed("commit.1"), 1, cs[at+2].ID) {
 		t.Errorf("after /resume, the comments are\n%q\nwant its move to ready,\n%q\nthen the pick's, and run 1's to verifying", bodies, back)
 	}
 	if g.runs() != 1 || pickStage(f, n) != "stage:verifying" {

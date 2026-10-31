@@ -24,7 +24,7 @@ import (
 // Daemon.Iterate as the loop. Config, trust and the implementer's prompt
 // come from main on the origin.
 
-// implementerRunConfig is .issuedog/config.yml on main for the whole run:
+// implementerRunConfig is .issuedog/config.yaml on main for the whole run:
 // its own title types, diff limit, protected paths and questions per
 // round, so the preamble's values are main's, not the defaults.
 const implementerRunConfig = "types: labels\nnotify: [" + wholeRunOwner + "]\nscopes: [booking]\n" +
@@ -105,7 +105,7 @@ func TestImplementerWholeRun(t *testing.T) {
 			t.Errorf("%s has eve's comment; want it in no file", name)
 		}
 	}
-	if want := "# Input for this run\n\n" + "What's new since the implementer last ran, or since the task came to in-progress.\n\nnone: first run\n"; files["input.md"] != want {
+	if want := "# Input for this run\n\n" + "What's new since the implementer last ran, or since the task came to in-progress. Verify's findings on the task's head, if any, come first: fix every one.\n\nnone: first run\n"; files["input.md"] != want {
 		t.Errorf("input.md =\n%s\nwant\n%s", files["input.md"], want)
 	}
 	system := files["system.md"]

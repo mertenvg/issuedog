@@ -125,6 +125,20 @@ func (r *Runs) verifyHead(ctx context.Context, n int, is state.Issue) (string, e
 	return head, nil
 }
 
+// verifyAttempt is the attempt= of task is's latest move into verifying,
+// the implementer run's number in its round, whose head the checks judge
+// (verifyHead), or 0 when it names none, as a move by hand or out of held
+// doesn't (SPEC §8.3).
+func verifyAttempt(is state.Issue) int {
+	attempt := 0
+	for _, m := range is.Markers {
+		if m.Kind == "transition" && state.Stage(m.Fields["to"]) == state.Verifying {
+			attempt = markerAttempt(m)
+		}
+	}
+	return attempt
+}
+
 // verifyChecks runs SPEC §10.1's checks on head, in the bare repo, with
 // main's commit main as rule 2's baseline and rule 7's target, for the
 // task s, whose scope rule 4 reads (scopeOf). It returns each rule's
@@ -198,10 +212,12 @@ func commandsFailed(results []verify.CommandResult) int {
 
 // verifyFindings moves rd's task, whose state was is when the checks
 // started, verifying → in-progress on findings (SPEC §7.2), keyed by
-// verifyKey of the comment holding its move to verifying, with head= and
-// seen=, the newest comment on step 1's snapshot the checks started from,
-// as a run's move has it, so a comment posted during the checks is the
-// next run's input. Its comment is renderFindings'.
+// verifyKey of the comment holding its move to verifying, with head=,
+// attempt=, that move's (verifyAttempt), so the round's count lives on
+// the issue (SPEC §8.3), and seen=, the newest comment on step 1's
+// snapshot the checks started from, as a run's move has it, so a comment
+// posted during the checks is the next run's input. Its comment is
+// renderFindings', naming the attempt of loop.max_attempts.
 //
 // Before the move, it reads the issue again, and runs CheckLabels and the
 // look for discussion triggers on it, as a run's apply does (SPEC §8.2).
@@ -247,10 +263,14 @@ func (r *Runs) verifyFindings(ctx context.Context, rd Ready, is state.Issue, hea
 	for _, c := range rd.S.Comments {
 		seen = max(seen, c.ID)
 	}
+	attempt := verifyAttempt(is)
 	m := Move{To: state.InProgress, Trigger: state.TriggerFindings, Key: verifyKey(is.TransitionComment), Fields: map[string]string{},
-		Text: renderFindings(head, main, fs, cmds)}
+		Text: renderFindings(head, main, attempt, r.limit(), fs, cmds)}
 	if head != "" {
 		m.Fields["head"] = head
+	}
+	if attempt > 0 {
+		m.Fields[fieldAttempt] = strconv.Itoa(attempt)
 	}
 	if seen > 0 {
 		m.Fields[state.FieldSeen] = strconv.FormatInt(seen, 10)

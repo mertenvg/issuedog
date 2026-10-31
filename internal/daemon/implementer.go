@@ -75,7 +75,10 @@ func (*Implementer) Pending(in Input) bool {
 //     their numbers and questions, and the trusted, clean comments, with
 //     author, ID and round, oldest first, as the planner's. The rounds are
 //     every stage's (allRounds).
-//   - input.md: the answers to the task's latest round, each labelled with
+//   - input.md: first, the round's latest findings from verify, the
+//     comment of the move back on them with its markers left out, under
+//     a heading naming their attempt (implementerFindings), then the
+//     answers to the task's latest round, each labelled with
 //     its round, as ivInputs labels the interviewer's, when the move that
 //     sent it back to ready was an answer's and no implementer run has
 //     moved it since (implementerAnswers), then in.Inputs, or with
@@ -123,9 +126,13 @@ func (im *Implementer) Context(ctx context.Context, in Input) (map[string][]byte
 	if err != nil {
 		return nil, wrap(err)
 	}
-	input := contextInputs(answers, func(c github.Comment) string {
+	var input []string
+	if c, attempt, ok := implementerFindings(s, in.Issue); ok {
+		input = append(input, ivSection(findingsLabel(attempt), ivStripMarkers(c.Body)))
+	}
+	input = append(input, contextInputs(answers, func(c github.Comment) string {
 		return "an answer to round " + strconv.Itoa(ivRoundOf(all, c.ID))
-	})
+	})...)
 	input = append(input, contextInputs(in.Inputs, func(github.Comment) string {
 		return "new since the task came to in-progress"
 	})...)
@@ -139,6 +146,43 @@ func (im *Implementer) Context(ctx context.Context, in Input) (map[string][]byte
 		"system.md": []byte(implementerPreamble(d.Config, all, in.Target) + "\n\n" + string(prompt)),
 	}
 	return files, nil
+}
+
+// implementerFindings returns the comment on s of task is's latest move
+// back on findings in its round (SPEC §8.3, §10.1), one whose marker
+// counts, above the round's start (taskRoundBound), and the attempt it
+// names, 0 for none, or false if there's none. They stand for every run of
+// the round, failed ones included, until newer findings, or a move other
+// than the verify loop's, such as the pick's after /done, starts a new
+// round. A comment posted since isn't input at in-progress, as step 1
+// gives none there (state.Issue.Inputs): conversation.md has it, as for
+// any trusted comment. It reads only s, the issue as step 1 read it, and
+// is, derived from it, so it costs no request.
+func implementerFindings(s *github.Snapshot, is state.Issue) (github.Comment, int, bool) {
+	bound := taskRoundBound(is)
+	var id int64
+	attempt := 0
+	for i, m := range is.Markers {
+		c, ok := is.MarkerComment(i)
+		if ok && c > bound && verifyLoopMove(m) && state.Stage(m.Fields["to"]) == state.InProgress {
+			id, attempt = c, markerAttempt(m)
+		}
+	}
+	for _, c := range s.Comments {
+		if id != 0 && c.ID == id {
+			return c, attempt, true
+		}
+	}
+	return github.Comment{}, 0, false
+}
+
+// findingsLabel is the heading of input.md's findings, of verify attempt
+// attempt, or 0 for one not named.
+func findingsLabel(attempt int) string {
+	if attempt == 0 {
+		return "the findings of verify, which this run must fix"
+	}
+	return "the findings of verify attempt " + strconv.Itoa(attempt) + ", which this run must fix"
 }
 
 // implementerScope is issue.md's scope for s: its first scope:<name>
@@ -169,7 +213,8 @@ const (
 		"Rounds are labelled with their numbers and questions. " +
 		"The round a comment is in is the latest round asked before it, so it answers that round's questions. " +
 		"This run's input is in input.md too."
-	implementerInputIntro = "What's new since the implementer last ran, or since the task came to in-progress."
+	implementerInputIntro = "What's new since the implementer last ran, or since the task came to in-progress. " +
+		"Verify's findings on the task's head, if any, come first: fix every one."
 )
 
 // implementerTask is prompt.md: the task, and where the context files are.
