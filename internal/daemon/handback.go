@@ -16,8 +16,8 @@ import (
 
 // This file ends a hand-off (SPEC §9.3, Blocked work): a task at
 // needs-human that waits on an owner action goes back to ready on a trusted
-// /done (DoneCommand) or a trusted 👍 on its latest hand-off comment
-// (HandoffByReaction).
+// /done posted after its latest hand-off comment (DoneCommand) or a
+// trusted 👍 on that comment (HandoffByReaction).
 
 // latestHandoff returns the ID of the clean App comment holding s's latest
 // hand-off, and true, or false if s has none waiting: the move into

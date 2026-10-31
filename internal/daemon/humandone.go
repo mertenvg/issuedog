@@ -27,7 +27,12 @@ type doneChecked struct {
 //
 //   - Check, which only reads, accepts /done on a task with a hand-off
 //     waiting (latestHandoff), with nothing more read: a hand-off has no
-//     check (SPEC §9.3). It rejects /done on any other issue that isn't a
+//     check (SPEC §9.3). But a /done posted before that hand-off's
+//     comment, as during the run or the checks whose failure made it,
+//     can't have read it, so it's rejected, Final, as the reason says to
+//     post /done again or 👍 the hand-off, and Dated, as one posted now
+//     would apply. A 👍 on the hand-off (HandoffByReaction) is always
+//     newer than it. It rejects /done on any other issue that isn't a
 //     human task, such as a task a person moved to needs-human by hand,
 //     which has no hand-off to finish. On a human task it runs the task's
 //     check (humanCheck) on its origin marker's Issue.Origin.Check: the
@@ -56,7 +61,15 @@ func DoneCommand() Handler {
 			// Step finishes the command before it asks Check.
 			is := state.Derive(c.S, a.AppSlug, c.Dirt.Has)
 			if class, err := state.ClassOf(is.Item); err != nil || class != state.ClassHumanTask {
-				if _, ok := latestHandoff(c.S, a.AppSlug, c.Dirt.Has); ok {
+				handoff, ok := latestHandoff(c.S, a.AppSlug, c.Dirt.Has)
+				switch {
+				case ok && c.Comment.ID < handoff:
+					// Comment IDs only increase, so it was posted before the
+					// hand-off, as during the run or the checks that led to
+					// it: it can't be the owner's answer to it.
+					return Rejection{Reason: "it was posted before the hand-off it would finish. " +
+						"Once you've done what the hand-off asks, reply `/done` again or react 👍 to it", Final: true, Dated: true}
+				case ok:
 					return nil
 				}
 				return Rejection{Reason: "this issue has no hand-off of mine waiting, so `/done` has nothing to finish. " +
