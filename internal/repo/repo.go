@@ -396,8 +396,10 @@ func (r *Repo) checkHead(ctx context.Context, head, start string) error {
 	return nil
 }
 
-// git runs one git command against the bare repo and returns its stdout.
-// The error includes git's stderr.
+// git runs one git command against the bare repo and returns its stdout,
+// even when it fails, as a command that exits non-zero, such as
+// merge-tree with conflicts, may still have written what its caller
+// reads. The error includes git's stderr.
 func (r *Repo) git(ctx context.Context, token string, args ...string) ([]byte, error) {
 	return r.run(ctx, nil, token, args...)
 }
@@ -409,7 +411,7 @@ func (r *Repo) run(ctx context.Context, stdin io.Reader, token string, args ...s
 	var stdout, stderr bytes.Buffer
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
+		return stdout.Bytes(), fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.Bytes(), nil
 }

@@ -111,7 +111,7 @@ func TestImplementerWholeRun(t *testing.T) {
 	system := files["system.md"]
 	for _, want := range []string{
 		"- A PR title's `type` is one of: `feat`, `fix`, `docs` (`pr.title_types`), exactly as written.",
-		"at most 250 changed lines (`verify.max_diff_lines`), tests included.",
+		"at most 250 changed lines (`verify.max_diff_lines`), counting only files outside `verify.test_globs`, which is empty, so every file counts. It's a hard limit.",
 		"`.mcp.json`, `secrets/**`. A change that needs one is an owner action.",
 		"so a question round now is round 1. At most 5 questions in a round",
 	} {

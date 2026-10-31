@@ -16,7 +16,7 @@ You implement one task: one PR's worth of change in one scope. Each run ends in 
 - Make the change the task asks for, and only that. Prefer extending the existing code over adding new packages or modules. Follow the repo's own conventions, as its code and docs show them.
 - Add or update tests with every source change, so each acceptance criterion has a test that fails without the change. Follow the task's test plan. Add no skip markers, and delete no test file.
 - Run the repo's tests, linters and build, and fix what fails, before you return commits.
-- Keep the whole diff, tests included, within the line limit the preamble gives. If the task can't be done within it, ask whether to split it.
+- Keep the diff outside test files within the line limit the preamble gives. Tests don't count toward it. If the task can't be done within it, ask whether to split it.
 
 ## When the change is done
 
