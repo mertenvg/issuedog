@@ -145,12 +145,22 @@ func (im *Implementer) Context(ctx context.Context, in Input) (map[string][]byte
 // label's name, in a code span and escaped, or "none". s is as step 1
 // checked it, so an untrusted scope label is reverted already.
 func implementerScope(s *github.Snapshot) string {
-	for _, l := range s.Labels {
-		if len(l) > len("scope:") && strings.EqualFold(l[:len("scope:")], "scope:") {
-			return "`" + github.Escape(l[len("scope:"):]) + "`"
-		}
+	if name := scopeOf(s); name != "" {
+		return "`" + github.Escape(name) + "`"
 	}
 	return "none"
+}
+
+// scopeOf is s's scope: its first scope:<name> label's name, as it is, or
+// "" for none. Rule 4 of SPEC §10.1 judges a task by it, and issue.md
+// gives it (implementerScope).
+func scopeOf(s *github.Snapshot) string {
+	for _, l := range s.Labels {
+		if len(l) > len("scope:") && strings.EqualFold(l[:len("scope:")], "scope:") {
+			return l[len("scope:"):]
+		}
+	}
+	return ""
 }
 
 // The introductions of the implementer's context files.

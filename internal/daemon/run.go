@@ -24,6 +24,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/repo"
 	"github.com/mertenvg/issuedog/internal/state"
+	"github.com/mertenvg/issuedog/internal/verify"
 	"github.com/mertenvg/issuedog/internal/workspace"
 	"github.com/mertenvg/logr/v2"
 )
@@ -220,8 +221,8 @@ func lastFailure(cause error) string {
 const kindLabels = "labels"
 
 // Runs is the stage-run harness. Its Work is the loop's stage work (SPEC
-// §8.1, step 3), then a task's run or the pick of the next task (step 4),
-// one run at a time, under a lease (SPEC §8.2).
+// §8.1, step 3), then a task's run, the checks at verifying or the pick
+// of the next task (step 4), one run at a time, under a lease (SPEC §8.2).
 type Runs struct {
 	// Daemon gives the applier, trust and config of the moment.
 	Daemon *Daemon
@@ -237,7 +238,10 @@ type Runs struct {
 	Gate      *agent.Gate
 	Env       []string         // the agent's whole environment (agent.Env)
 	Now       func() time.Time // nil is time.Now
-	NewID     func() string    // nil makes random run IDs
+	NewID     func() string    // nil makes random run IDs; it names the checks' checkouts too
+	// Commands runs verify.commands for the checks at verifying
+	// (verifyTask). With none, no task gets checks.
+	Commands *verify.Commands
 
 	attempts   map[string]int  // failed runs, by countKey
 	swept      bool            // what a crash left is removed (sweep)
@@ -253,6 +257,11 @@ type Runs struct {
 	// and those the pick found an open blocker of since (schedule.go).
 	pickBlocked  map[int]bool
 	pickSearched time.Time
+
+	// passed holds the head and main's commit, "<head>:<main>", that each
+	// task at verifying passed the checks with, by issue number, so they
+	// don't run again (verifyTask).
+	passed map[int]string
 }
 
 // Work is Daemon.Work. On its first pass it first removes what a crash
@@ -265,9 +274,11 @@ type Runs struct {
 // it runs a Committer, such as the implementer, on the first issue, by
 // priority then number, whose stage has one with work pending: task work
 // comes after the other stages and triage (SPEC §8.1, step 4). If none ran
-// either, it picks the next ready task, moves it to in-progress and starts
-// its run (pickTask), unless a task holds the worker, or step 1 didn't
-// finish on every issue this pass. A lease
+// either, it runs SPEC §10.1's checks on the first task at verifying, by
+// priority then number, whose head hasn't passed them (verifyTask). If it
+// ran none either, it picks the next ready task, moves it to in-progress
+// and starts its run (pickTask), unless a task holds the worker, or step 1
+// didn't finish on every issue this pass. A lease
 // whose issue has labels held back
 // (ErrLabelsHeld) waits, and no run starts until it's applied. So does a
 // saved result on an issue step 1 didn't finish on this pass (resume),
@@ -335,6 +346,15 @@ func (r *Runs) Work(ctx context.Context, ready []Ready) error {
 	switch {
 	case err != nil:
 		return fmt.Errorf("task work: %w", err)
+	case ran:
+		return nil
+	}
+	// No run is in progress here, and none starts until the checks are
+	// done, so their commands never overlap a claude run (verifyTask).
+	ran, err = r.verifyTask(ctx, ready)
+	switch {
+	case err != nil:
+		return fmt.Errorf("the checks at %s: %w", state.Verifying, err)
 	case ran:
 		return nil
 	}

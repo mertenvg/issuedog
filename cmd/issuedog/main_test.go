@@ -1642,6 +1642,18 @@ func TestStageWork(t *testing.T) {
 		runs.Runner.StateDir != stateDir || runs.Runner.Claude != "claude" {
 		t.Errorf("workspace %+v, runner %+v; want the clone, runs and context dirs, and the state dir", ws, runs.Runner)
 	}
+	// The checks' commands run in the runs' workspace, as agent, through
+	// the proxy, under verify.command_timeout as d's config has it when a
+	// command starts, so a reload's new timeout counts.
+	if c := runs.Commands; c == nil || c.Workspace != ws || c.Credential == nil || c.Credential.Uid != uid || c.Proxy != "http://127.0.0.1:3128" {
+		t.Errorf("the commands = %+v, want them in the runs' workspace, as agent, through the proxy", c)
+	} else {
+		d.Config = &config.Config{Verify: config.Verify{CommandTimeout: 7 * time.Minute}}
+		if got := c.Timeout(); got != 7*time.Minute {
+			t.Errorf("the commands' timeout = %s, want the config's 7m0s", got)
+		}
+		d.Config = cfg
+	}
 	// The interviewer at clarifying, the planner at planning, the
 	// implementer at in-progress and triage as Unlabeled, all on d, and
 	// nothing else: a Stage at intake beside triage fails CheckRegistered.

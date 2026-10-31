@@ -127,6 +127,27 @@ func (r *Repo) Resolve(ctx context.Context, ref string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// HasCommit reports whether the bare repo has the commit sha, a full SHA.
+// One that isn't a full SHA names no commit, so it has none, and nor does
+// an object of another kind, such as a tree. Only a failure to read the
+// repo is an error.
+func (r *Repo) HasCommit(ctx context.Context, sha string) (bool, error) {
+	if !shaPattern.MatchString(sha) {
+		return false, nil
+	}
+	out, err := r.git(ctx, "", "rev-parse", "--verify", "--quiet", "--end-of-options", sha+"^{commit}")
+	if err != nil {
+		// With --quiet, rev-parse exits 1, and prints nothing, for an
+		// object the repo lacks.
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 1 && len(bytes.TrimSpace(out)) == 0 {
+			return false, nil
+		}
+		return false, fmt.Errorf("has commit %s: %w", sha, err)
+	}
+	return true, nil
+}
+
 // ReadRef returns the object ref names in the bare repo, and whether it
 // exists. ref is a full ref name under refs/issuedog/, matched exactly, so
 // a branch synced from GitHub never stands in for it, whatever its name.
