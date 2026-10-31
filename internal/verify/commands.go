@@ -127,12 +127,16 @@ func (c *Commands) run(ctx context.Context, dir string, env []string, command st
 	if err := ctx.Err(); err != nil {
 		return CommandResult{}, fmt.Errorf("running %q: %w", command, context.Cause(ctx))
 	}
-	// As in agent.Runner.Run, a command that ends cleanly as its timeout
-	// passes has passed.
-	timedOut := waitErr != nil && errors.Is(context.Cause(cmdCtx), errCommandTimeout)
 	if cmd.ProcessState == nil {
 		return CommandResult{}, fmt.Errorf("running %q: %w", command, waitErr)
 	}
+	// It timed out only if the timeout's group kill ended it: a signal
+	// ended the shell (exit -1) and the timeout has passed. As in
+	// agent.Runner.Run, a command that ends cleanly as its timeout passes
+	// has passed. A command that exits on its own keeps its own exit
+	// status, also when a process it left holds its output open past the
+	// timeout, until the wait delay ends the wait (exec.ErrWaitDelay).
+	timedOut := cmd.ProcessState.ExitCode() == -1 && errors.Is(context.Cause(cmdCtx), errCommandTimeout)
 	if errors.Is(waitErr, exec.ErrWaitDelay) {
 		// It exited, but a process it left held its output open, which
 		// KillLeftovers has now killed. Its exit status still stands.
