@@ -23,7 +23,7 @@ import (
 // naming the rules' globs, and shell commands as verify.commands, as the
 // image has no Go toolchain.
 
-// verifyConfig is .issuedog/config.yml on main for the checks, with
+// verifyConfig is .issuedog/config.yaml on main for the checks, with
 // commands as verify.commands: Go files are source, *_test.go files
 // tests, .golangci.yml a config path only scope tooling may change, at
 // most 4 changed lines outside tests, and secrets/** protected.
@@ -76,9 +76,19 @@ func verifyingTask(f *githubtest.Fake, head string) (int, int64) {
 
 // findingsMarker is the transition marker of the move back on findings,
 // keyed by move, the comment holding the move to verifying, with head, if
-// set, and seen.
+// set, and seen, for a move to verifying that names no attempt.
 func findingsMarker(move int64, head string, seen int64) string {
-	m := "<!-- issuedog:transition from=verifying to=in-progress event=v" + strconv.FormatInt(move, 10)
+	return findingsAttemptMarker(move, head, 0, seen)
+}
+
+// findingsAttemptMarker is findingsMarker with attempt=, the attempt the
+// move to verifying names, if above 0.
+func findingsAttemptMarker(move int64, head string, attempt int, seen int64) string {
+	m := "<!-- issuedog:transition from=verifying to=in-progress"
+	if attempt > 0 {
+		m += " attempt=" + strconv.Itoa(attempt)
+	}
+	m += " event=v" + strconv.FormatInt(move, 10)
 	if head != "" {
 		m += " head=" + head
 	}

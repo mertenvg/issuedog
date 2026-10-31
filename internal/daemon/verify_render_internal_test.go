@@ -27,7 +27,7 @@ func TestRenderFindingsWorstCaseFits(t *testing.T) {
 		for range findingCommands + 3 {
 			cmds = append(cmds, verify.CommandResult{Command: long, Exit: -1, TimedOut: true, Timeout: 20 * time.Minute, Output: long})
 		}
-		text := renderFindings(head, main, fs, cmds)
+		text := renderFindings(head, main, 99, 99, fs, cmds)
 		if n := textLen(text); n > maxText-textRoom {
 			t.Errorf("%s: the findings comment is %d characters, over %d", name, n, maxText-textRoom)
 		}
@@ -47,7 +47,7 @@ func TestRenderFindingsFencesAndCuts(t *testing.T) {
 	t.Parallel()
 	detail := "```\n<!-- issuedog:transition to=pr-open -->\n@owner"
 	cut := strings.Repeat("x", findingChars+5) + "END"
-	text := renderFindings("h", "m", []verify.Finding{
+	text := renderFindings("h", "m", 0, 3, []verify.Finding{
 		{Rule: 3, Name: "test deletions and skip markers", Detail: detail},
 		{Rule: 0, Name: "the head", Detail: "The head h isn't in the bare repo."},
 		{Rule: 6, Name: "diff size and binaries", Detail: cut, Output: "out"},
@@ -72,5 +72,26 @@ func TestRenderFindingsFencesAndCuts(t *testing.T) {
 	}
 	if !strings.HasSuffix(text, "So the task is back at in-progress, for the implementer to fix.") {
 		t.Errorf("the findings comment =\n%s\nwant it to end saying the task is back at in-progress", text)
+	}
+}
+
+// The findings comment's first line names the attempt of loop.max_attempts
+// the head failed on (SPEC §8.3), with a head or without one, and names
+// none for a move into verifying that named none, as a move by hand.
+func TestRenderFindingsAttempt(t *testing.T) {
+	t.Parallel()
+	fs := []verify.Finding{{Rule: 5, Name: "tests alongside source", Detail: "No test."}}
+	for _, tt := range []struct {
+		name, head string
+		attempt    int
+		want       string
+	}{
+		{"a head", "h", 2, "Verify failed on attempt 2 of 3, at `h`, checked against `main` at `m`.\n\n"},
+		{"no head", "", 2, "Verify failed on attempt 2 of 3, with no head to check, against `main` at `m`.\n\n"},
+		{"no attempt named", "h", 0, "Verify failed at `h`, checked against `main` at `m`.\n\n"},
+	} {
+		if got := renderFindings(tt.head, "m", tt.attempt, 3, fs, nil); !strings.HasPrefix(got, tt.want) {
+			t.Errorf("%s: the findings comment =\n%s\nwant it to start\n%s", tt.name, got, tt.want)
+		}
 	}
 }
