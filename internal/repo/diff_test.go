@@ -363,6 +363,104 @@ func TestNumStat(t *testing.T) {
 	}
 }
 
+// binaryContent is n bytes git takes as binary, as it holds a NUL, and
+// that differ from line to line, so git can find a rename of it.
+func binaryContent(n int) string {
+	var b strings.Builder
+	b.WriteString("\x00")
+	for i := 0; b.Len() < n; i++ {
+		fmt.Fprintf(&b, "row %d\n", i)
+	}
+	return b.String()
+}
+
+// git's --numstat counts "-" for a file binary in either side, even a
+// binary moved unchanged, and without renames, a move is a deletion and an
+// addition. NumStat finds renames and tells them apart by blob: a binary
+// moved unchanged, or with only its mode changed, is Same; one moved and
+// changed isn't. A file is Binary by its to side: a binary turned into
+// text counts its new lines as added, text turned into a binary counts
+// none, and a deleted binary isn't Binary. A path that starts with ":",
+// as pathspec magic would, is read as it is.
+func TestNumStatBinarySides(t *testing.T) {
+	t.Parallel()
+	d := newDiffRig(t)
+	img, changed := binaryContent(2000), binaryContent(3000)
+	base := d.commit(map[string]string{
+		"img.bin":   img,
+		"chg.bin":   changed,
+		":b2t.dat":  binaryContent(100),
+		"t2b.dat":   "one\ntwo\nthree\n",
+		"gone.bin":  binaryContent(100),
+		"mode.bin":  binaryContent(200),
+		"plain.txt": "plain\n",
+	})
+	if err := os.Chmod(filepath.Join(d.work, "mode.bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	head := d.commit(map[string]string{
+		"pics/img.bin":  img,
+		"moved/chg.bin": changed + "row extra\n",
+		":b2t.dat":      "a\nb\nc\nd\n",
+		"t2b.dat":       "one\x00two\n",
+		"text/plain.md": "plain\n",
+	}, "img.bin", "chg.bin", "gone.bin", "plain.txt")
+
+	plain := run(t, d.r.dir, "--git-dir=.", "diff-tree", "-r", "--numstat", "--find-renames", base, head)
+	for _, line := range []string{"-\t-\timg.bin => pics/img.bin", "-\t-\tchg.bin => moved/chg.bin", "-\t-\t:b2t.dat", "-\t-\tt2b.dat", "-\t-\tmode.bin"} {
+		if !strings.Contains(plain, line) {
+			t.Fatalf("plain numstat =\n%s\nwant %q, or the setup proves nothing", plain, line)
+		}
+	}
+	noRenames := run(t, d.r.dir, "--git-dir=.", "diff-tree", "-r", "--numstat", "--no-renames", base, head)
+	if lines := strings.Split(noRenames, "\n"); !slices.Contains(lines, "-\t-\timg.bin") || !slices.Contains(lines, "-\t-\tpics/img.bin") {
+		t.Fatalf("numstat without renames =\n%s\nwant img.bin's deletion and pics/img.bin's addition", noRenames)
+	}
+
+	got, err := d.r.NumStat(context.Background(), base, head)
+	if err != nil {
+		t.Fatalf("NumStat: %v", err)
+	}
+	want := map[string]Stat{
+		"pics/img.bin":  {Path: "pics/img.bin", Binary: true, Same: true},
+		"moved/chg.bin": {Path: "moved/chg.bin", Binary: true},
+		":b2t.dat":      {Path: ":b2t.dat", Added: 4},
+		"t2b.dat":       {Path: "t2b.dat", Binary: true},
+		"gone.bin":      {Path: "gone.bin"},
+		"mode.bin":      {Path: "mode.bin", Binary: true, Same: true},
+		"text/plain.md": {Path: "text/plain.md", Same: true},
+	}
+	if len(got) != len(want) {
+		t.Errorf("NumStat =\n%+v\nwant %d files", got, len(want))
+	}
+	for _, s := range got {
+		if s != want[s.Path] {
+			t.Errorf("NumStat of %s = %+v, want %+v", s.Path, s, want[s.Path])
+		}
+	}
+}
+
+// parseRawNumStat refuses output whose --raw and --numstat entries don't
+// match, one for one and path for path, or that it can't read.
+func TestParseRawNumStatErrors(t *testing.T) {
+	t.Parallel()
+	zero := strings.Repeat("0", 40)
+	blob := strings.Repeat("a", 40)
+	for name, out := range map[string]string{
+		"fewer numstat": ":000000 100644 " + zero + " " + blob + " A\x00a.go\x00",
+		"more numstat":  "1\t0\ta.go\x00",
+		"other path":    ":000000 100644 " + zero + " " + blob + " A\x00a.go\x001\t0\tb.go\x00",
+		"short raw":     ":000000 100644 " + zero + " A\x00a.go\x001\t0\ta.go\x00",
+		"raw no path":   ":000000 100644 " + zero + " " + blob + " A",
+		"rename no new": ":100644 100644 " + blob + " " + blob + " R100\x00a.go",
+		"bad numstat":   ":000000 100644 " + zero + " " + blob + " A\x00a.go\x00x\t0\ta.go\x00",
+	} {
+		if got, toRead, err := parseRawNumStat([]byte(out)); err == nil {
+			t.Errorf("parseRawNumStat(%s) = %+v, %v; want an error", name, got, toRead)
+		}
+	}
+}
+
 // mergeRig is a diffRig whose work tree branches. Each commit still goes
 // to the bare repo.
 type mergeRig struct{ *diffRig }
@@ -649,5 +747,30 @@ func TestParseGitVersion(t *testing.T) {
 		if got, err := parseGitVersion(out); err == nil {
 			t.Errorf("parseGitVersion(%q) = %v, want an error", out, got)
 		}
+	}
+}
+
+// gitVersion keeps the version once a read succeeds, and keeps no failed
+// read: after a failure, the next get reads again, so one failed git
+// version call doesn't fail every diff until a restart.
+func TestGitVersionCacheRetries(t *testing.T) {
+	t.Parallel()
+	failure := errors.New("git version failed")
+	reads := 0
+	c := &gitVersionCache{read: func() ([2]int, error) {
+		reads++
+		if reads == 1 {
+			return [2]int{}, failure
+		}
+		return [2]int{2, 47}, nil
+	}}
+	if got, err := c.get(); !errors.Is(err, failure) || got != [2]int{} {
+		t.Errorf("get after a failed read = %v, %v; want the read's error", got, err)
+	}
+	if got, err := c.get(); err != nil || got != [2]int{2, 47} {
+		t.Errorf("get after a failure = %v, %v; want 2.47, read again", got, err)
+	}
+	if got, err := c.get(); err != nil || got != [2]int{2, 47} || reads != 2 {
+		t.Errorf("get after a success = %v, %v with %d reads; want 2.47, kept from the second read", got, err, reads)
 	}
 }

@@ -100,6 +100,73 @@ func TestRule6Binaries(t *testing.T) {
 	wantFinding(t, check(t, Rule6, f), 6, TooLarge+": the diff changes 2 lines", "over verify.max_diff_lines of 1.\n\nThe diff adds or changes binary files")
 }
 
+// rule6Binary is n bytes git takes as binary, as it holds a NUL, and that
+// differ from line to line, so git can find a rename of it.
+func rule6Binary(n int) string {
+	var b strings.Builder
+	b.WriteString("\x00")
+	for i := 0; b.Len() < n; i++ {
+		b.WriteString("row " + strings.Repeat("y", i%11) + "\n")
+	}
+	return b.String()
+}
+
+// Rule 6 passes a binary moved with its content unchanged, outside
+// verify.binary_allow, and fails one moved and changed. A file is binary
+// by its new content: a binary turned into text counts its new lines, and
+// text turned into a binary fails as a binary, counting no lines (SPEC
+// §10.1).
+func TestRule6BinaryMoves(t *testing.T) {
+	t.Parallel()
+	rr := newRulesRepo(t)
+	img := rule6Binary(3000)
+	files := map[string]string{"assets/img.bin": img, "data.dat": rule6Binary(100), "notes.txt": sizeLines(500)}
+	for p, c := range rulesBase {
+		files[p] = c
+	}
+	base := rr.commit(files)
+	v := rulesConfig()
+	v.MaxDiffLines = 3
+	f := Facts{Repo: rr.bare, Baseline: base, Base: base, Config: v}
+
+	f.Head = rr.commit(map[string]string{"pics/img.bin": img}, "assets/img.bin")
+	if got := check(t, Rule6, f); got != nil {
+		t.Errorf("Rule6 of a binary moved unchanged = %+v, want nil", got)
+	}
+
+	rr.checkout(base)
+	f.Head = rr.commit(map[string]string{"pics/img.bin": img + "row extra\n"}, "assets/img.bin")
+	if renamed := rulesGit(t, rr.bare.Dir(), "--git-dir=.", "diff-tree", "-r", "--name-status", "--find-renames", base, f.Head); !strings.HasPrefix(renamed, "R") {
+		t.Fatalf("diff-tree =\n%s\nwant a rename, or the setup proves nothing", renamed)
+	}
+	got := check(t, Rule6, f)
+	wantFinding(t, got, 6, "The diff adds or changes binary files outside verify.binary_allow:\n- pics/img.bin")
+	if got != nil && strings.Contains(got.Detail, "assets/img.bin") {
+		t.Errorf("detail =\n%s\nwant only the new path", got.Detail)
+	}
+
+	rr.checkout(base)
+	f.Head = rr.commit(map[string]string{"data.dat": "a\nb\nc\nd\n"})
+	got = check(t, Rule6, f)
+	wantFinding(t, got, 6, TooLarge+": the diff changes 4 lines", "of 3.")
+	if got != nil && strings.Contains(got.Detail, "binary") {
+		t.Errorf("detail =\n%s\nwant no binary part for a binary turned into text", got.Detail)
+	}
+	f.Config.MaxDiffLines = 4
+	if got := check(t, Rule6, f); got != nil {
+		t.Errorf("Rule6 of a binary turned into 4 lines of text, with the limit at 4 = %+v, want nil", got)
+	}
+
+	rr.checkout(base)
+	f.Config.MaxDiffLines = 3
+	f.Head = rr.commit(map[string]string{"notes.txt": "now\x00binary\n"})
+	got = check(t, Rule6, f)
+	wantFinding(t, got, 6, "The diff adds or changes binary files outside verify.binary_allow:\n- notes.txt")
+	if got != nil && strings.Contains(got.Detail, TooLarge) {
+		t.Errorf("detail =\n%s\nwant no size part, as the binary's 500 old lines count for nothing", got.Detail)
+	}
+}
+
 // Rule 7 passes a head that merges cleanly with its target, and fails one
 // that conflicts, naming each conflicting file, or that shares no history
 // with it.

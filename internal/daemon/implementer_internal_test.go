@@ -21,8 +21,8 @@ func TestImplementerPreamble(t *testing.T) {
 	c := config.Defaults()
 	c.PR.TitleTypes = []string{"feat", "fix", "perf"}
 	c.Verify.MaxDiffLines = 300
-	c.Verify.TestGlobs = []string{"**/*_test.go", "e2e/**"}
-	c.Verify.ProtectedPaths = []string{"secrets/**", "deploy/<prod>"}
+	c.Verify.TestGlobs = []string{"**/*_test.go", "e2e/**", "fix<!--`/**"}
+	c.Verify.ProtectedPaths = []string{"secrets/**", "deploy/<prod>", "ops/<!--`x"}
 	c.Loop.MaxQuestionsPerRound = 4
 	rounds := []interviewerRound{{Number: 1, Questions: 2}, {Number: 2, Questions: 1}}
 	got := implementerPreamble(c, rounds, "", "")
@@ -30,9 +30,9 @@ func TestImplementerPreamble(t *testing.T) {
 		"- A PR title's `type` is one of: `feat`, `fix`, `perf` (`pr.title_types`), exactly as written. " +
 			"The title, `<type>: <sentence>`, is one line of at most 256 characters.",
 		"- The task's diff is at most 300 changed lines (`verify.max_diff_lines`), counting only files outside `verify.test_globs`: " +
-			"`**/*_test.go`, `e2e/**`. Test files don't count. It's a hard limit.",
+			"`**/*_test.go`, `e2e/**`, `fix&lt;!--`/**`. Test files don't count. It's a hard limit.",
 		"- Never touch a protected path: `CODEOWNERS`, `.github/CODEOWNERS`, `docs/CODEOWNERS`, `.github/**`, `.issuedog/**`, " +
-			"`.claude/**`, `**/CLAUDE.md`, `**/CLAUDE.local.md`, `.mcp.json`, `secrets/**`, `deploy/<prod>`. A change that needs one is an owner action.",
+			"`.claude/**`, `**/CLAUDE.md`, `**/CLAUDE.local.md`, `.mcp.json`, `secrets/**`, `deploy/<prod>`, `ops/&lt;!--`x`. A change that needs one is an owner action.",
 		"- Questions so far on this issue: round 1 (Q1.1–1.2), round 2 (Q2.1). A question round now is round 3. " +
 			"At most 4 questions in a round, each with 2 to 4 options.",
 		"- `commits` needs at least one commit past the commit your checkout started at.",

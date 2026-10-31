@@ -409,9 +409,11 @@ func TestRule7IgnoresAttributes(t *testing.T) {
 // No test file in this repo holds a marker of its own verify.skip_markers
 // where rule 3 matches it (markerAt), so rule 3 fails no task for this
 // repo's test data. The markers and test globs are read from the repo's
-// config, so this test holds no marker either. Dirs whose names start with
-// "." are skipped, as Go skips them: in a main checkout, .claude holds
-// other worktrees.
+// config, so this test holds no marker either. Every dir is walked, those
+// whose names start with "." too, as rule 3 matches test files there, such
+// as .github/x_test.go, but for .git, which holds no file of the tree, and
+// .claude, which in a main checkout holds other worktrees. The walk must
+// enter .github, so one that skips every dot-dir fails.
 func TestNoSkipMarkersInTests(t *testing.T) {
 	t.Parallel()
 	root, err := filepath.Abs(filepath.Join("..", ".."))
@@ -431,15 +433,16 @@ func TestNoSkipMarkersInTests(t *testing.T) {
 		t.Fatalf("verify.skip_markers = %q and verify.test_globs = %q, want both set, or this test checks nothing", v.SkipMarkers, v.TestGlobs)
 	}
 	var found []string
-	self := false
+	self, dotDir := false, false
 	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
-			if path != root && strings.HasPrefix(d.Name(), ".") {
+			if path != root && (d.Name() == ".git" || d.Name() == ".claude") {
 				return filepath.SkipDir
 			}
+			dotDir = dotDir || path == filepath.Join(root, ".github")
 			return nil
 		}
 		rel, err := filepath.Rel(root, path)
@@ -466,6 +469,9 @@ func TestNoSkipMarkersInTests(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("walk %s: %v", root, err)
+	}
+	if !dotDir {
+		t.Errorf("the walk of %s didn't enter .github, want every dir but .git and .claude", root)
 	}
 	if !self {
 		t.Errorf("the walk of %s didn't check internal/verify/rules_test.go, want every test file", root)

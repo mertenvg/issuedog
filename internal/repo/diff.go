@@ -251,15 +251,23 @@ func patchPath(name string) (string, error) {
 	return p, nil
 }
 
-// Stat is one file's line counts in a diff, as git's --numstat gives them.
+// Stat is one file's line counts in a diff, as git's --numstat gives them,
+// with the to side's content deciding whether the file is binary.
 type Stat struct {
 	// Path is the file's path in the diff's to side, or its from side for
 	// a deletion. A rename has its new path.
 	Path    string
 	Added   int // lines added
 	Deleted int // lines deleted
-	// Binary says git took the file as binary, so it counted no lines.
+	// Binary says git takes the file's content in the to side as binary,
+	// so it counts no lines. A file binary only in the from side isn't
+	// Binary, and its from side counts no lines: a deleted one counts
+	// none, and one turned into text counts its new lines as added.
 	Binary bool
+	// Same says the file's content is the same in both sides, so it
+	// counts no lines: it only moved (git's R100), or only its mode
+	// changed.
+	Same bool
 }
 
 // NumStat returns each file's added and deleted lines in the diff from
@@ -267,28 +275,158 @@ type Stat struct {
 // no attributes (attrless), so git takes a file as binary by its content
 // alone. It finds renames, so a file that only moved counts no lines, as a
 // PR's stats count them.
-func (r *Repo) NumStat(ctx context.Context, from, to string) ([]Stat, error) {
+//
+// git's --numstat counts no lines for a file binary in either side, even
+// one whose content is the same in both, such as a binary moved
+// unchanged. So NumStat also reads --raw, whose blob IDs tell a file
+// whose content is the same (Same) from one that changed. For a file that
+// changed and that git counted no lines for, it reads the to side alone,
+// as the diff from the empty tree, which says whether the to side is
+// binary and, when it isn't, counts its lines.
+func (r *Repo) NumStat(ctx context.Context, from, to string) (stats []Stat, err error) {
 	if err := checkSHAs(from, to); err != nil {
 		return nil, fmt.Errorf("numstat: %w", err)
 	}
-	args := slices.Concat([]string{"diff-tree", "-r", "-z", "--numstat", "--find-renames"}, diffFlags, []string{from, to, "--"})
-	out, err := r.gitAttrless(ctx, from, args...)
+	dir, a, err := r.attrless(ctx, from)
 	if err != nil {
 		return nil, fmt.Errorf("numstat %s..%s: %w", from, to, err)
 	}
-	stats, err := parseNumStat(out)
+	defer func() {
+		if rerr := os.RemoveAll(dir); rerr != nil {
+			err = errors.Join(err, fmt.Errorf("remove attrless repo: %w", rerr))
+		}
+	}()
+	args := slices.Concat([]string{"diff-tree", "-r", "-z", "--raw", "--numstat", "--find-renames"}, diffFlags, []string{from, to, "--"})
+	out, err := a.git(ctx, "", args...)
 	if err != nil {
 		return nil, fmt.Errorf("numstat %s..%s: %w", from, to, err)
+	}
+	stats, toRead, err := parseRawNumStat(out)
+	if err != nil {
+		return nil, fmt.Errorf("numstat %s..%s: %w", from, to, err)
+	}
+	if len(toRead) == 0 {
+		return stats, nil
+	}
+	paths := make([]string, len(toRead))
+	for j, i := range toRead {
+		paths[j] = stats[i].Path
+	}
+	sides, err := toSideStats(ctx, a, to, paths)
+	if err != nil {
+		return nil, fmt.Errorf("numstat %s..%s: %w", from, to, err)
+	}
+	for _, i := range toRead {
+		side, ok := sides[stats[i].Path]
+		if !ok {
+			return nil, fmt.Errorf("numstat %s..%s: no to side read for %q", from, to, stats[i].Path)
+		}
+		stats[i].Added, stats[i].Binary = side.Added, side.Binary
 	}
 	return stats, nil
 }
 
-// parseNumStat parses --numstat -z output: the added and deleted counts,
-// each ended by a tab, then the path, ended by a NUL; or for a rename, no
-// path, then its old path and its new one, each ended by a NUL. A binary
-// file's counts are "-".
-func parseNumStat(out []byte) ([]Stat, error) {
+// toSideStats reads the to side alone of the files at paths in to, a full
+// SHA: each one's lines, all added, from the empty tree, or that git takes
+// it as binary. It runs in a, an attrless repo, and writes the empty tree
+// there, so it never relies on git knowing that tree without the object.
+func toSideStats(ctx context.Context, a *Repo, to string, paths []string) (map[string]Stat, error) {
+	empty, err := a.run(ctx, strings.NewReader(""), "", "mktree")
+	if err != nil {
+		return nil, fmt.Errorf("write the empty tree: %w", err)
+	}
+	specs := make([]string, len(paths))
+	for i, p := range paths {
+		specs[i] = ":(literal)" + p
+	}
+	args := slices.Concat([]string{"diff-tree", "-r", "-z", "--numstat", "--no-renames"}, diffFlags,
+		[]string{strings.TrimSpace(string(empty)), to, "--"}, specs)
+	out, err := a.git(ctx, "", args...)
+	if err != nil {
+		return nil, fmt.Errorf("read the to side of %d files: %w", len(paths), err)
+	}
+	stats, err := parseNumStat(nulFields(out))
+	if err != nil {
+		return nil, fmt.Errorf("read the to side of %d files: %w", len(paths), err)
+	}
+	sides := make(map[string]Stat, len(stats))
+	for _, s := range stats {
+		sides[s.Path] = s
+	}
+	return sides, nil
+}
+
+// rawEntry is one file of --raw -z output: its status letter, its blob IDs
+// in each side, all zeros for a side it isn't in, and its path.
+type rawEntry struct {
+	status           byte
+	fromBlob, toBlob string
+	path             string // as Stat's Path
+}
+
+// parseRawNumStat parses the -z output of --raw and --numstat together:
+// every file's --raw entry, then every file's --numstat entry, in the same
+// order. It returns each file's Stat, with Same set from the blob IDs,
+// and the index of each Stat git counted no lines for that changed and
+// isn't deleted, whose to side the caller reads (toSideStats). A deleted
+// one's Binary is cleared, as it has no to side.
+func parseRawNumStat(out []byte) ([]Stat, []int, error) {
 	fields := nulFields(out)
+	var raws []rawEntry
+	i := 0
+	// A --numstat entry starts with a count or "-", never ":".
+	for i < len(fields) && strings.HasPrefix(fields[i], ":") {
+		parts := strings.Fields(fields[i])
+		if len(parts) != 5 || parts[4] == "" {
+			return nil, nil, fmt.Errorf("bad raw field %q", fields[i])
+		}
+		e := rawEntry{status: parts[4][0], fromBlob: parts[2], toBlob: parts[3]}
+		switch e.status {
+		case 'R', 'C':
+			if i+2 >= len(fields) {
+				return nil, nil, fmt.Errorf("raw %q has no old and new path", fields[i])
+			}
+			e.path = fields[i+2]
+			i += 3
+		default:
+			if i+1 >= len(fields) {
+				return nil, nil, fmt.Errorf("raw %q has no path", fields[i])
+			}
+			e.path = fields[i+1]
+			i += 2
+		}
+		raws = append(raws, e)
+	}
+	stats, err := parseNumStat(fields[i:])
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse numstat: %w", err)
+	}
+	if len(stats) != len(raws) {
+		return nil, nil, fmt.Errorf("%d raw entries but %d numstat entries", len(raws), len(stats))
+	}
+	var toRead []int
+	for j, e := range raws {
+		s := &stats[j]
+		if s.Path != e.path {
+			return nil, nil, fmt.Errorf("raw entry %d is %q but numstat entry %d is %q", j, e.path, j, s.Path)
+		}
+		s.Same = e.fromBlob == e.toBlob
+		switch {
+		case !s.Binary || s.Same:
+		case e.status == 'D':
+			s.Binary = false
+		default:
+			toRead = append(toRead, j)
+		}
+	}
+	return stats, toRead, nil
+}
+
+// parseNumStat parses --numstat -z output's fields: the added and deleted
+// counts, each ended by a tab, then the path, ended by a NUL; or for a
+// rename, no path, then its old path and its new one, each ended by a NUL.
+// A file git counted no lines for, as binary, has "-" counts.
+func parseNumStat(fields []string) ([]Stat, error) {
 	var stats []Stat
 	for i := 0; i < len(fields); i++ {
 		parts := strings.SplitN(fields[i], "\t", 3)
@@ -386,8 +524,39 @@ var emptyTrees = map[string]string{
 	"sha256": "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321",
 }
 
-// gitVersion is the major and minor version of the git on PATH, read once.
-var gitVersion = sync.OnceValues(func() ([2]int, error) {
+// gitVersion is the major and minor version of the git on PATH, read once
+// it's read without an error.
+var gitVersion = &gitVersionCache{read: readGitVersion}
+
+// gitVersionCache keeps the git version read gives once a read succeeds.
+// A failed read is returned and not kept, so the next get reads again: one
+// failed git version call doesn't fail every diff until a restart.
+type gitVersionCache struct {
+	read func() ([2]int, error)
+
+	mu      sync.Mutex
+	version [2]int
+	ok      bool
+}
+
+// get returns the kept version, or reads it, keeping it if the read
+// succeeds.
+func (c *gitVersionCache) get() ([2]int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ok {
+		return c.version, nil
+	}
+	v, err := c.read()
+	if err != nil {
+		return [2]int{}, fmt.Errorf("git version: %w", err)
+	}
+	c.version, c.ok = v, true
+	return v, nil
+}
+
+// readGitVersion reads the major and minor version of the git on PATH.
+func readGitVersion() ([2]int, error) {
 	cmd := exec.Command("git", "version")
 	cmd.Env = gitEnv(os.Environ(), "", "")
 	out, err := cmd.Output()
@@ -399,7 +568,7 @@ var gitVersion = sync.OnceValues(func() ([2]int, error) {
 		return [2]int{}, fmt.Errorf("read git's version: %w", err)
 	}
 	return v, nil
-})
+}
 
 // versionLine matches git version's output, capturing the major and minor
 // version: "git version 2.47.3", maybe followed by more, as in "2.39.5
@@ -452,7 +621,7 @@ func attrOptions(version [2]int, format string) []string {
 // commit, so no .gitattributes is read from it; GIT_ATTR_NOSYSTEM=1 skips
 // the system's attributes file; and attrOptions turn off the rest.
 func (r *Repo) attrless(ctx context.Context, sha string) (string, *Repo, error) {
-	version, err := gitVersion()
+	version, err := gitVersion.get()
 	if err != nil {
 		return "", nil, fmt.Errorf("attrless repo: %w", err)
 	}
