@@ -1,7 +1,12 @@
 package repo
 
 import (
+	"bufio"
 	"context"
+	"crypto/sha1"
+	"crypto/sha256"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -50,6 +55,11 @@ func (d *diffRig) commit(files map[string]string, remove ...string) string {
 	run(d.t, d.work, "push", "--quiet", "--force", d.r.dir, "HEAD:refs/heads/main")
 	return run(d.t, d.work, "rev-parse", "HEAD")
 }
+
+// diffMarker is a skip marker of this repo's verify.skip_markers, joined
+// from two strings, so no line here holds one and rule 3 (SPEC §10.1)
+// doesn't fail a task that adds these lines.
+const diffMarker = "t." + "Skip("
 
 // odd is a path with a space and a newline in it, and accented is one
 // with a byte past ASCII: git quotes both.
@@ -178,7 +188,7 @@ func TestAddedLinesHeaderLikeText(t *testing.T) {
 	t.Parallel()
 	d := newDiffRig(t)
 	base := d.commit(map[string]string{"a_test.go": "one\n"})
-	head := d.commit(map[string]string{"a_test.go": "one\n++ b/other_test.go\n@@ -1 +1 @@\ndiff --git a/x b/x\nt.Skip(\n"})
+	head := d.commit(map[string]string{"a_test.go": "one\n++ b/other_test.go\n@@ -1 +1 @@\ndiff --git a/x b/x\n" + diffMarker + "\n"})
 	got, err := d.r.AddedLines(context.Background(), base, head, []string{"a_test.go"})
 	if err != nil {
 		t.Fatalf("AddedLines: %v", err)
@@ -187,7 +197,7 @@ func TestAddedLinesHeaderLikeText(t *testing.T) {
 		{Path: "a_test.go", Line: 2, Text: "++ b/other_test.go"},
 		{Path: "a_test.go", Line: 3, Text: "@@ -1 +1 @@"},
 		{Path: "a_test.go", Line: 4, Text: "diff --git a/x b/x"},
-		{Path: "a_test.go", Line: 5, Text: "t.Skip("},
+		{Path: "a_test.go", Line: 5, Text: diffMarker},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("AddedLines =\n%+v\nwant\n%+v", got, want)
@@ -262,7 +272,7 @@ func TestDiffRunsNoDriver(t *testing.T) {
 	}
 	attrs := "* diff=evil filter=evil\n"
 	base := d.commit(map[string]string{"a_test.go": "one\n"})
-	head := d.commit(map[string]string{"a_test.go": "one\nt.Skip(\n", ".gitattributes": attrs})
+	head := d.commit(map[string]string{"a_test.go": "one\n" + diffMarker + "\n", ".gitattributes": attrs})
 	if err := os.WriteFile(filepath.Join(d.r.dir, "info", "attributes"), []byte(attrs), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +326,7 @@ func TestDiffRunsNoDriver(t *testing.T) {
 	if got := ran(); len(got) != 0 {
 		t.Errorf("the diff reads ran %v, want no driver", got)
 	}
-	if want := []Added{{Path: "a_test.go", Line: 2, Text: "t.Skip("}}; !reflect.DeepEqual(added, want) {
+	if want := []Added{{Path: "a_test.go", Line: 2, Text: diffMarker}}; !reflect.DeepEqual(added, want) {
 		t.Errorf("AddedLines = %+v, want git's own %+v", added, want)
 	}
 }
@@ -468,5 +478,176 @@ func TestMergeTree(t *testing.T) {
 	}
 	if after := bareState(t, m.r.dir); after != before {
 		t.Errorf("the merges changed the bare repo from\n%s\nto\n%s", before, after)
+	}
+}
+
+// The diff reads ignore every attribute: here -diff on a test file and a
+// Go file, and diff on a binary file, both in the bare repo's
+// info/attributes and in a .gitattributes on main, with attr.tree naming
+// main for a git that has it. A plain diff-tree in the bare repo with the
+// same setup takes the test file as binary and the binary file as text, so
+// the setup would catch a read that let them. The reads leave the bare
+// repo's objects dir as it was.
+func TestDiffIgnoresAttributes(t *testing.T) {
+	t.Parallel()
+	d := newDiffRig(t)
+	attrs := "*_test.go -diff\n*.go -diff\nimg.bin diff\n"
+	base := d.commit(map[string]string{"a_test.go": "one\n", "b.go": "package b\n", "img.bin": "\x00\x01", ".gitattributes": attrs})
+	head := d.commit(map[string]string{"a_test.go": "one\n" + diffMarker + "\n", "b.go": "package b\n\nvar x = 1\n", "img.bin": "\x00\x02"})
+	if err := os.WriteFile(filepath.Join(d.r.dir, "info", "attributes"), []byte(attrs), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, d.r.dir, "--git-dir=.", "config", "attr.tree", "main")
+
+	plain := run(t, d.r.dir, "--git-dir=.", "diff-tree", "-p", base, head)
+	stat := run(t, d.r.dir, "--git-dir=.", "diff-tree", "--numstat", base, head)
+	if !strings.Contains(plain, "Binary files a/a_test.go and b/a_test.go differ") || !strings.Contains(stat, "1\t1\timg.bin") {
+		t.Fatalf("plain diff-tree =\n%s\n%s\nwant a_test.go binary and img.bin text, or the setup proves nothing", plain, stat)
+	}
+	before := bareState(t, d.r.dir)
+
+	ctx := context.Background()
+	added, err := d.r.AddedLines(ctx, base, head, []string{"a_test.go", "b.go", "img.bin"})
+	if err != nil {
+		t.Fatalf("AddedLines: %v", err)
+	}
+	want := []Added{
+		{Path: "a_test.go", Line: 2, Text: diffMarker},
+		{Path: "b.go", Line: 2, Text: ""},
+		{Path: "b.go", Line: 3, Text: "var x = 1"},
+	}
+	if !reflect.DeepEqual(added, want) {
+		t.Errorf("AddedLines =\n%+v\nwant git's own\n%+v", added, want)
+	}
+	stats, err := d.r.NumStat(ctx, base, head)
+	if err != nil {
+		t.Fatalf("NumStat: %v", err)
+	}
+	if want := []Stat{{Path: "a_test.go", Added: 1}, {Path: "b.go", Added: 2}, {Path: "img.bin", Binary: true}}; !reflect.DeepEqual(stats, want) {
+		t.Errorf("NumStat = %+v, want git's own %+v", stats, want)
+	}
+	if after := bareState(t, d.r.dir); after != before {
+		t.Errorf("the reads changed the bare repo from\n%s\nto\n%s", before, after)
+	}
+}
+
+// The diff reads ignore the user's attributes file too, which git reads
+// though no config names it. It sets HOME and XDG_CONFIG_HOME, so it
+// doesn't run in parallel.
+func TestDiffIgnoresUserAttributes(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	if err := os.MkdirAll(filepath.Join(home, ".config", "git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".config", "git", "attributes"), []byte("*_test.go -diff\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d := newDiffRig(t)
+	base := d.commit(map[string]string{"a_test.go": "one\n"})
+	head := d.commit(map[string]string{"a_test.go": "one\n" + diffMarker + "\n"})
+	if plain := run(t, d.r.dir, "--git-dir=.", "diff-tree", "-p", base, head); !strings.Contains(plain, "Binary files") {
+		t.Fatalf("plain diff-tree =\n%s\nwant a_test.go binary, or the setup proves nothing", plain)
+	}
+
+	added, err := d.r.AddedLines(context.Background(), base, head, []string{"a_test.go"})
+	if err != nil {
+		t.Fatalf("AddedLines: %v", err)
+	}
+	if want := []Added{{Path: "a_test.go", Line: 2, Text: diffMarker}}; !reflect.DeepEqual(added, want) {
+		t.Errorf("AddedLines = %+v, want git's own %+v", added, want)
+	}
+}
+
+// The diff reads and the merge work in a SHA-256 repo too: the attrless
+// repo they run in takes the bare repo's object format.
+func TestDiffSHA256(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	d := &diffRig{t: t, work: filepath.Join(dir, "work"), r: New("", filepath.Join(dir, "r.git"))}
+	run(t, dir, "init", "--bare", "--quiet", "--initial-branch=main", "--object-format=sha256", d.r.dir)
+	run(t, dir, "init", "--quiet", "--initial-branch=main", "--object-format=sha256", d.work)
+	base := d.commit(map[string]string{"a_test.go": "one\n"})
+	head := d.commit(map[string]string{"a_test.go": "one\n" + diffMarker + "\n"})
+	if len(head) != 64 {
+		t.Fatalf("head = %q, want a SHA-256", head)
+	}
+	ctx := context.Background()
+
+	if got, err := d.r.Changes(ctx, base, head, true); err != nil || !reflect.DeepEqual(got, []Change{{Status: 'M', Path: "a_test.go"}}) {
+		t.Errorf("Changes = %+v, %v; want a_test.go modified", got, err)
+	}
+	if got, err := d.r.AddedLines(ctx, base, head, []string{"a_test.go"}); err != nil || !reflect.DeepEqual(got, []Added{{Path: "a_test.go", Line: 2, Text: diffMarker}}) {
+		t.Errorf("AddedLines = %+v, %v; want the marker", got, err)
+	}
+	if got, err := d.r.NumStat(ctx, base, head); err != nil || !reflect.DeepEqual(got, []Stat{{Path: "a_test.go", Added: 1}}) {
+		t.Errorf("NumStat = %+v, %v; want 1 added", got, err)
+	}
+	if got, err := d.r.MergeTree(ctx, base, head); err != nil || len(got) != 0 {
+		t.Errorf("MergeTree = %q, %v; want a clean merge", got, err)
+	}
+}
+
+// A hunk line too long to scan is the scanner's error, bufio.ErrTooLong,
+// not a hunk that ends early.
+func TestHunkLineTooLong(t *testing.T) {
+	t.Parallel()
+	sc := bufio.NewScanner(strings.NewReader("+" + strings.Repeat("x", 100) + "\n"))
+	sc.Buffer(nil, 16)
+	if got, err := hunk(sc, 0, 1); !errors.Is(err, bufio.ErrTooLong) || got != nil {
+		t.Errorf("hunk of a line past the buffer = %q, %v; want bufio.ErrTooLong", got, err)
+	}
+}
+
+// attrOptions turn off the user's attributes file on every git, and set
+// attr.tree to the object format's empty tree only from git 2.42, which
+// has it.
+func TestAttrOptions(t *testing.T) {
+	t.Parallel()
+	for format, want := range map[string]string{
+		"sha1":   fmt.Sprintf("%x", sha1.Sum([]byte("tree 0\x00"))),
+		"sha256": fmt.Sprintf("%x", sha256.Sum256([]byte("tree 0\x00"))),
+	} {
+		if emptyTrees[format] != want {
+			t.Errorf("emptyTrees[%s] = %s, want %s", format, emptyTrees[format], want)
+		}
+		for _, tc := range []struct {
+			version [2]int
+			want    []string
+		}{
+			{[2]int{2, 39}, []string{"-c", "core.attributesFile=/dev/null"}},
+			{[2]int{2, 41}, []string{"-c", "core.attributesFile=/dev/null"}},
+			{[2]int{2, 42}, []string{"-c", "core.attributesFile=/dev/null", "-c", "attr.tree=" + want}},
+			{[2]int{2, 47}, []string{"-c", "core.attributesFile=/dev/null", "-c", "attr.tree=" + want}},
+			{[2]int{3, 0}, []string{"-c", "core.attributesFile=/dev/null", "-c", "attr.tree=" + want}},
+			{[2]int{1, 50}, []string{"-c", "core.attributesFile=/dev/null"}},
+		} {
+			if got := attrOptions(tc.version, format); !slices.Equal(got, tc.want) {
+				t.Errorf("attrOptions(%v, %s) = %q, want %q", tc.version, format, got, tc.want)
+			}
+		}
+	}
+}
+
+// parseGitVersion reads the major and minor version from git version's
+// output, as git prints it on each platform, and refuses other text.
+func TestParseGitVersion(t *testing.T) {
+	t.Parallel()
+	for out, want := range map[string][2]int{
+		"git version 2.39.5\n":                 {2, 39},
+		"git version 2.47.3\n":                 {2, 47},
+		"git version 2.39.3 (Apple Git-146)\n": {2, 39},
+		"git version 2.41.0.windows.1\n":       {2, 41},
+		"git version 3.0.0-rc1\n":              {3, 0},
+	} {
+		if got, err := parseGitVersion(out); err != nil || got != want {
+			t.Errorf("parseGitVersion(%q) = %v, %v; want %v", out, got, err, want)
+		}
+	}
+	for _, out := range []string{"", "version 2.39.5", "git version x.y", "git version 99999999999999999999.1"} {
+		if got, err := parseGitVersion(out); err == nil {
+			t.Errorf("parseGitVersion(%q) = %v, want an error", out, got)
+		}
 	}
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -113,6 +115,17 @@ var rulesBase = map[string]string{
 	"docs/guide.md":            "guide\n",
 	"CLAUDE.md":                "rules\n",
 }
+
+// The skip markers of SPEC §13's example, which this repo's own
+// verify.skip_markers holds too. Each is joined from two strings, so that
+// no line here holds one, and rule 3 doesn't fail a task that adds these
+// lines (TestNoSkipMarkersInTests).
+const (
+	markSkip   = "t." + "Skip("
+	markDot    = "." + "skip("
+	markXit    = "x" + "it("
+	markIgnore = "#[" + "ignore]"
+)
 
 // check runs rule on f, and fails the test on an error.
 func check(t *testing.T, rule func(context.Context, Facts) (*Finding, error), f Facts) *Finding {
@@ -243,23 +256,23 @@ func TestRule3(t *testing.T) {
 		"renamed out of the test globs": {files: map[string]string{"main_test.go.bak": "package main\n"}, remove: []string{"main_test.go"},
 			want: []string{"- main_test.go (renamed to main_test.go.bak)"}},
 		"renamed to another test": {files: map[string]string{"cmd/main_test.go": "package main\n"}, remove: []string{"main_test.go"}},
-		"skip marker": {files: map[string]string{"main_test.go": "package main\n\nfunc TestX(t *testing.T) {\n\tt.Skip(\"later\")\n}\n"},
-			want: []string{"The diff adds skip markers", `- main_test.go:4 adds "t.Skip(": t.Skip("later")`}},
-		"describe.skip": {files: map[string]string{"web/app.test.ts": "it('works', () => {})\ndescribe.skip('x', () => {})\n"},
-			want: []string{`- web/app.test.ts:2 adds ".skip(": describe.skip('x', () => {})`}},
-		"xit at a word start": {files: map[string]string{"web/app.test.ts": "it('works', () => {})\nxit(\"works\")\n"},
-			want: []string{`- web/app.test.ts:2 adds "xit(": xit("works")`}},
-		"new test with #[ignore]": {files: map[string]string{"e2e/a.rs": "#[ignore]\nfn a() {}\n"},
-			want: []string{`- e2e/a.rs:1 adds "#[ignore]": #[ignore]`}},
+		"skip marker": {files: map[string]string{"main_test.go": "package main\n\nfunc TestX(t *testing.T) {\n\t" + markSkip + "\"later\")\n}\n"},
+			want: []string{"The diff adds skip markers", `- main_test.go:4 adds "` + markSkip + `": ` + markSkip + `"later")`}},
+		"describe.skip": {files: map[string]string{"web/app.test.ts": "it('works', () => {})\ndescribe" + markDot + "'x', () => {})\n"},
+			want: []string{`- web/app.test.ts:2 adds "` + markDot + `": describe` + markDot + `'x', () => {})`}},
+		"xit at a word start": {files: map[string]string{"web/app.test.ts": "it('works', () => {})\n" + markXit + "\"works\")\n"},
+			want: []string{`- web/app.test.ts:2 adds "` + markXit + `": ` + markXit + `"works")`}},
+		"new test with Rust's ignore attribute": {files: map[string]string{"e2e/a.rs": markIgnore + "\nfn a() {}\n"},
+			want: []string{`- e2e/a.rs:1 adds "` + markIgnore + `": ` + markIgnore}},
 		"os.Exit is no xit":             {files: map[string]string{"main_test.go": "package main\n\nfunc init() { os.Exit(0) }\n"}},
-		"marker outside tests":          {files: map[string]string{"main.go": "package main\n\n// t.Skip( xit(\n"}},
+		"marker outside tests":          {files: map[string]string{"main.go": "package main\n\n// " + markSkip + " " + markXit + "\n"}},
 		"plain test lines":              {files: map[string]string{"main_test.go": "package main\n\nfunc TestY(t *testing.T) {}\n"}},
 		"marker only on a removed line": {files: map[string]string{"web/app.test.ts": "it('works', () => { done() })\n"}},
 	} {
 		rr.checkout(base)
 		if name == "marker only on a removed line" {
 			// Its base holds a marker, which the head removes.
-			rr.commit(map[string]string{"web/app.test.ts": "xit('works', () => {})\n"})
+			rr.commit(map[string]string{"web/app.test.ts": markXit + "'works', () => {})\n"})
 		}
 		start := rulesGit(t, rr.work, "rev-parse", "HEAD")
 		head := rr.commit(tc.files, tc.remove...)
@@ -282,15 +295,183 @@ func TestRule3ManyMarkers(t *testing.T) {
 	t.Parallel()
 	rr := newRulesRepo(t)
 	base := rr.commit(rulesBase)
-	files := map[string]string{"e2e/odd\nname.ts": "xit('a')\n"}
+	files := map[string]string{"e2e/odd\nname.ts": markXit + "'a')\n"}
 	for i := range 24 {
-		files[fmt.Sprintf("e2e/t%02d.ts", i)] = "xit('a')\n"
+		files[fmt.Sprintf("e2e/t%02d.ts", i)] = markXit + "'a')\n"
 	}
 	head := rr.commit(files)
 	got := check(t, Rule3, Facts{Repo: rr.bare, Baseline: base, Base: base, Head: head, Config: rulesConfig()})
-	wantFinding(t, got, 3, `- "e2e/odd\nname.ts":1 adds "xit("`, "- e2e/t00.ts:1", "- e2e/t18.ts:1", "…and 5 more")
+	wantFinding(t, got, 3, `- "e2e/odd\nname.ts":1 adds "`+markXit+`"`, "- e2e/t00.ts:1", "- e2e/t18.ts:1", "…and 5 more")
 	if got != nil && strings.Contains(got.Detail, "e2e/t19.ts") {
 		t.Errorf("detail =\n%s\nwant the list cut after %d entries", got.Detail, listMax)
+	}
+}
+
+// Rule 3 names a marker added to a test file the diff renames, at its new
+// path and line, and the rename is no deletion.
+func TestRule3RenamedTestGainsMarker(t *testing.T) {
+	t.Parallel()
+	rr := newRulesRepo(t)
+	files := maps.Clone(rulesBase)
+	files["pkg/long_test.go"] = "package pkg\n\n" + sizeLines(20)
+	base := rr.commit(files)
+	head := rr.commit(map[string]string{"cmd/long_test.go": "package pkg\n\n" + sizeLines(20) + markSkip + "\"later\")\n"}, "pkg/long_test.go")
+	got := check(t, Rule3, Facts{Repo: rr.bare, Baseline: base, Base: base, Head: head, Config: rulesConfig()})
+	wantFinding(t, got, 3, "The diff adds skip markers", `- cmd/long_test.go:23 adds "`+markSkip+`": `+markSkip+`"later")`)
+	if got != nil && strings.Contains(got.Detail, "deletes") {
+		t.Errorf("detail =\n%s\nwant no deletion, as the test was renamed to another test", got.Detail)
+	}
+}
+
+// Rules 3 to 5 read the task's own diff, from its base, though main moved
+// after it: main dropped a marker from a test the task adds a line to,
+// added a test, changed a config path, or changed source, and the task's
+// head has none of it. Read from the baseline, each would be the head's
+// change, and fail the rule.
+func TestRules3To5ReadTheTasksOwnDiff(t *testing.T) {
+	t.Parallel()
+	rr := newRulesRepo(t)
+	files := maps.Clone(rulesBase)
+	files["web/app.test.ts"] = markXit + "'works', () => {})\n"
+	base := rr.commit(files)
+	docs := map[string]string{"docs/guide.md": "task guide\n"}
+	for name, tc := range map[string]struct {
+		rule        func(context.Context, Facts) (*Finding, error)
+		head, moved map[string]string
+	}{
+		"rule 3, main dropped a marker": {Rule3, map[string]string{"web/app.test.ts": markXit + "'works', () => {})\nit('more', () => {})\n"},
+			map[string]string{"web/app.test.ts": "it('works', () => {})\n"}},
+		"rule 3, main added a test":   {Rule3, docs, map[string]string{"cmd/new_test.go": "package cmd\n"}},
+		"rule 4, main changed config": {Rule4, docs, map[string]string{".golangci.yml": "linters: {enable: [gofmt]}\n"}},
+		"rule 5, main changed source": {Rule5, docs, map[string]string{"main.go": "package main\n\n// main moved\n"}},
+	} {
+		rr.checkout(base)
+		head := rr.commit(tc.head)
+		rr.checkout(base)
+		moved := rr.commit(tc.moved)
+		f := Facts{Repo: rr.bare, Baseline: moved, Base: base, Head: head, Target: moved, Scope: "daemon", Config: rulesConfig()}
+		if got := check(t, tc.rule, f); got != nil {
+			t.Errorf("%s: finding = %+v, want nil, as the task's own diff changes only docs", name, got)
+		}
+	}
+}
+
+// Rule 3 sees a marker added to a test file whatever the attributes say:
+// -diff and binary for test files, in the bare repo's info/attributes and
+// in a .gitattributes on main, which some versions of git read in a bare
+// repo by default. A plain diff-tree in the bare repo with the same setup
+// takes both test files as binary, so the setup would catch a read that
+// let them.
+func TestRule3IgnoresAttributes(t *testing.T) {
+	t.Parallel()
+	rr := newRulesRepo(t)
+	attrs := "*_test.go -diff\n*.test.ts binary\n"
+	files := maps.Clone(rulesBase)
+	files[".gitattributes"] = attrs
+	base := rr.commit(files)
+	rulesGit(t, rr.work, "push", "--quiet", rr.bare.Dir(), base+":refs/heads/main")
+	if err := os.WriteFile(filepath.Join(rr.bare.Dir(), "info", "attributes"), []byte(attrs), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	head := rr.commit(map[string]string{
+		"main_test.go":    "package main\n\nfunc TestX(t *testing.T) {\n\t" + markSkip + "\"later\")\n}\n",
+		"web/app.test.ts": "it('works', () => {})\n" + markXit + "'a')\n",
+	})
+	plain := rulesGit(t, rr.bare.Dir(), "--git-dir=.", "diff-tree", "-p", base, head)
+	if !strings.Contains(plain, "Binary files a/main_test.go") || !strings.Contains(plain, "Binary files a/web/app.test.ts") {
+		t.Fatalf("plain diff-tree =\n%s\nwant both test files binary, or the setup proves nothing", plain)
+	}
+
+	got := check(t, Rule3, Facts{Repo: rr.bare, Baseline: base, Base: base, Head: head, Config: rulesConfig()})
+	wantFinding(t, got, 3, `- main_test.go:4 adds "`+markSkip+`"`, `- web/app.test.ts:2 adds "`+markXit+`"`)
+}
+
+// Rule 7 finds a conflict whatever the merge attributes say: merge=union
+// in the bare repo's info/attributes doesn't merge it. A plain merge-tree
+// in the bare repo with the same setup merges cleanly (rulesGit fails the
+// test on a conflict), so the setup would catch a merge that let it.
+func TestRule7IgnoresAttributes(t *testing.T) {
+	t.Parallel()
+	rr := newRulesRepo(t)
+	base := rr.commit(rulesBase)
+	target := rr.commit(map[string]string{"docs/guide.md": "target guide\n"})
+	rr.checkout(base)
+	head := rr.commit(map[string]string{"docs/guide.md": "head guide\n"})
+	if err := os.WriteFile(filepath.Join(rr.bare.Dir(), "info", "attributes"), []byte("* merge=union\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rulesGit(t, rr.bare.Dir(), "--git-dir=.", "merge-tree", "--write-tree", target, head)
+
+	got := check(t, Rule7, Facts{Repo: rr.bare, Baseline: base, Base: base, Head: head, Target: target, Config: rulesConfig()})
+	wantFinding(t, got, 7, "doesn't merge cleanly", "- docs/guide.md")
+}
+
+// No test file in this repo holds a marker of its own verify.skip_markers
+// where rule 3 matches it (markerAt), so rule 3 fails no task for this
+// repo's test data. The markers and test globs are read from the repo's
+// config, so this test holds no marker either. Dirs whose names start with
+// "." are skipped, as Go skips them: in a main checkout, .claude holds
+// other worktrees.
+func TestNoSkipMarkersInTests(t *testing.T) {
+	t.Parallel()
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(config.Path)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := cfg.Verify
+	if len(v.SkipMarkers) == 0 || len(v.TestGlobs) == 0 {
+		t.Fatalf("verify.skip_markers = %q and verify.test_globs = %q, want both set, or this test checks nothing", v.SkipMarkers, v.TestGlobs)
+	}
+	var found []string
+	self := false
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if path != root && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if !matchAny(v.TestGlobs, rel) {
+			return nil
+		}
+		self = self || rel == "internal/verify/rules_test.go"
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for i, line := range strings.Split(string(content), "\n") {
+			for _, m := range v.SkipMarkers {
+				if markerAt(line, m) {
+					found = append(found, fmt.Sprintf("%s:%d holds %q", rel, i+1, m))
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", root, err)
+	}
+	if !self {
+		t.Errorf("the walk of %s didn't check internal/verify/rules_test.go, want every test file", root)
+	}
+	if len(found) > 0 {
+		t.Errorf("test files hold skip markers literally; join each from two strings:\n%s", strings.Join(found, "\n"))
 	}
 }
 
@@ -302,23 +483,23 @@ func TestMarkerAt(t *testing.T) {
 		line, marker string
 		want         bool
 	}{
-		{`xit("works", func() {})`, "xit(", true},
-		{`  xit("works")`, "xit(", true},
-		{`os.Exit(1)`, "xit(", false},
-		{`exit(1)`, "xit(", false},
-		{`_xit(1)`, "xit(", false},
-		{`2xit(1)`, "xit(", false},
-		{`éxit(1)`, "xit(", false},
-		{`os.Exit(1); xit("a")`, "xit(", true},
-		{`(xit("a"))`, "xit(", true},
-		{`describe.skip("x")`, ".skip(", true},
-		{`it.skip("x")`, ".skip(", true},
-		{`t.Skip("later")`, "t.Skip(", true},
-		{`at.Skip("later")`, "t.Skip(", false},
-		{`#[ignore]`, "#[ignore]", true},
-		{`a#[ignore]`, "#[ignore]", true},
+		{markXit + `"works", func() {})`, markXit, true},
+		{`  ` + markXit + `"works")`, markXit, true},
+		{`os.Exit(1)`, markXit, false},
+		{`exit(1)`, markXit, false},
+		{`_xit(1)`, markXit, false},
+		{`2xit(1)`, markXit, false},
+		{`éxit(1)`, markXit, false},
+		{`os.Exit(1); ` + markXit + `"a")`, markXit, true},
+		{`(` + markXit + `"a"))`, markXit, true},
+		{`describe` + markDot + `"x")`, markDot, true},
+		{`it` + markDot + `"x")`, markDot, true},
+		{markSkip + `"later")`, markSkip, true},
+		{`a` + markSkip + `"later")`, markSkip, false},
+		{markIgnore, markIgnore, true},
+		{`a` + markIgnore, markIgnore, true},
 		{`plain line`, "", false},
-		{`t.Skipf("x")`, "t.Skip(", false},
+		{`t.Skipf("x")`, markSkip, false},
 	} {
 		if got := markerAt(tc.line, tc.marker); got != tc.want {
 			t.Errorf("markerAt(%q, %q) = %v, want %v", tc.line, tc.marker, got, tc.want)

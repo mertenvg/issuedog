@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -56,7 +57,8 @@ var redirected = regexp.MustCompile(`The requested URL returned error: (3[0-9][0
 type Repo struct {
 	remote string
 	dir    string
-	env    []string // extra git environment, after gitEnv's: a quarantine's (quarantine)
+	env    []string // extra git environment, after gitEnv's: a quarantine's (quarantine) or an attrless repo's (attrless)
+	opts   []string // git's options before the command, after --git-dir: an attrless repo's (attrless)
 
 	beforeRunRef func() // for tests only: runs just before FetchBundle writes the run's ref
 }
@@ -427,7 +429,7 @@ func (r *Repo) git(ctx context.Context, token string, args ...string) ([]byte, e
 
 // run is git, with stdin as the command's input; nil gives it none.
 func (r *Repo) run(ctx context.Context, stdin io.Reader, token string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"--git-dir=" + r.dir}, args...)...)
+	cmd := exec.CommandContext(ctx, "git", slices.Concat([]string{"--git-dir=" + r.dir}, r.opts, args)...)
 	cmd.Env = append(gitEnv(os.Environ(), r.remote, token), r.env...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, &stdout, &stderr

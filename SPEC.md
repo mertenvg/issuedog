@@ -1195,7 +1195,7 @@ Verification is the gate between implementation and a PR.
 
 ### 10.1 Deterministic checks (run first)
 
-The daemon decides these itself, outside Claude, from exit codes and its own git inspection of the bare repo. Its diffs are git's own, read as `issuedog` with no diff or filter driver, textconv or external diff, whatever the repo's attributes say.
+The daemon decides these itself, outside Claude, from exit codes and its own git inspection of the bare repo. Its diffs, and rule 7's merge, are git's own, read as `issuedog` with no diff or filter driver, textconv or external diff, and with every git attribute ignored, wherever it's set, so none makes a file binary or text, or changes how it merges.
 
 1. Every command in `verify.commands` (tests, lint, vet, build) passes.
    - The commands run as `agent` in a fresh checkout of the head SHA (3.2), in order, each through `/bin/sh -c` in its own process group. Every command runs, even after one fails.
