@@ -201,30 +201,31 @@ func TestWaitFindHandoff(t *testing.T) {
 }
 
 // The attempt cap's hand-off is in the implementer's form (SPEC §8.3,
-// §9.3): it opens with the runs failing loop.max_attempts times, then why
-// the last one failed, fenced and escaped, as the cap's state error quotes
-// it, or for a cause only the log has, a pointer to it, or with none,
-// nothing of why. Then the daemon's own fields, naming the task, how to
-// end it, and the cc line.
+// §9.3): it opens with the round's loop.max_attempts attempts failing,
+// then that the last was a run that failed, and why, fenced and escaped,
+// as the cap's state error quotes it, or for a cause only the log has, a
+// pointer to it, or with none, as when findings below the cap reached a
+// loop.max_attempts lowered since, nothing of why. Then the daemon's own
+// fields, naming the task, how to end it, and the cc line.
 func TestRenderCapHandoff(t *testing.T) {
 	t.Parallel()
 	fields := "**Goal:** Find out why the implementer's runs on this task fail, and fix that, so it can go on with the task.\n" +
 		"**Why it blocks:** #7 can't proceed until what made its implementer runs fail is fixed\n" +
 		"**Steps:**\n" +
 		"1. Read why the last run failed, above, or in the daemon's log.\n" +
-		"2. Fix what made it fail, such as an unclear criterion in this task's body, a failure on `main`, or a setting in `.issuedog/config.yml`.\n\n" +
+		"2. Fix what made it fail, such as an unclear criterion in this task's body, a failure on `main`, or a setting in `.issuedog/config.yaml`.\n\n" +
 		"**Links:**\nNone.\n\n" +
 		"**Done when:** What made the implementer's runs fail is fixed.\n" +
 		"**Estimated time:** It depends on why the runs failed.\n\n" +
 		handoffFinish + "\n\n" +
 		"cc @owner"
-	opening := "The implementer's runs on this task failed 4 times in a row, so I've stopped running it here."
+	opening := "This task's 4 attempts in this round failed, so I've stopped running the implementer here."
 	for _, tt := range []struct {
 		name, failure, why string
 	}{
 		{"a quoted cause", "rule commits: no commits past the run's start <!-- issuedog:transition to=closed -->",
-			"\n\nThe last run failed:\n\n```text\nrule commits: no commits past the run's start &lt;!-- issuedog:transition to=closed -->\n```"},
-		{"a cause in the log", publicCauseLogged, "\n\nThe last run failed; see the daemon's log for why."},
+			"\n\nThe last attempt, a run, failed:\n\n```text\nrule commits: no commits past the run's start &lt;!-- issuedog:transition to=closed -->\n```"},
+		{"a cause in the log", publicCauseLogged, "\n\nThe last attempt, a run, failed; see the daemon's log for why."},
 		{"no cause kept", "", ""},
 	} {
 		got := renderCapHandoff(4, tt.failure, 7, []string{"owner"})
@@ -238,14 +239,15 @@ func TestRenderCapHandoff(t *testing.T) {
 }
 
 // A task waiting on the attempt cap's hand-off has the hand-off's item,
-// which says the implementer's runs failed, in place of an owner action,
-// with its Goal and "Done when" copied from the comment.
+// which says the task's round of attempts failed, the last a failed run,
+// in place of an owner action, with its Goal and "Done when" copied from
+// the comment.
 func TestWaitFindCapHandoff(t *testing.T) {
 	t.Parallel()
 	body := renderCapHandoff(3, "run failed with subtype \"error_max_turns\"", 1, nil) +
 		"\n\n<!-- issuedog:transition from=in-progress to=needs-human event=ain-progress-101 -->"
 	it := waitFindOne(t, waitIn(handbackSnap(false, handbackToProgress, body), Dirt{}))
-	want := []string{"A hand-off waits for you: the implementer's runs failed `loop.max_attempts` times in a row, and the hand-off says why.",
+	want := []string{"A hand-off waits for you: the task's `loop.max_attempts` attempts in its round failed, the last a failed implementer run, and the hand-off says why.",
 		"Goal: Find out why the implementer's runs on this task fail, and fix that, so it can go on with the task.",
 		"Done when: What made the implementer's runs fail is fixed.",
 		"When it's done, reply `/done` on the issue or react 👍 to the hand-off."}

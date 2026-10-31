@@ -106,3 +106,25 @@ func TestEnvHoldsOnlyTheExplicitList(t *testing.T) {
 		}
 	}
 }
+
+// TestCommandEnvHoldsNoCredential: a repo command's environment is the
+// proxy, HOME and the fixed PATH, with no Claude or GitHub credential.
+func TestCommandEnvHoldsNoCredential(t *testing.T) {
+	t.Parallel()
+	got := CommandEnv("http://127.0.0.1:3128", "/work/runs/v1-home")
+	want := []string{
+		"HTTPS_PROXY=http://127.0.0.1:3128",
+		"HTTP_PROXY=http://127.0.0.1:3128",
+		"HOME=/work/runs/v1-home",
+		"PATH=" + agentPath,
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("CommandEnv = %q, want %q", got, want)
+	}
+	for _, kv := range got {
+		name, _, _ := strings.Cut(kv, "=")
+		if name == OAuthTokenVar || name == APIKeyVar || strings.HasPrefix(name, "GH_") || strings.HasPrefix(name, "GITHUB_") {
+			t.Errorf("CommandEnv holds the credential %s", name)
+		}
+	}
+}

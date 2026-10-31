@@ -35,7 +35,7 @@ const (
 	childrenRunBody  = "Quotes should expire."
 )
 
-// childrenRunConfig is .issuedog/config.yml on main, typing by types:
+// childrenRunConfig is .issuedog/config.yaml on main, typing by types:
 // labels, or issue-types.
 func childrenRunConfig(types string) string {
 	return "types: " + types + "\nnotify: [" + childrenRunOwner + "]\nscopes: [booking, infra, docs]\nmodels: {allowed: [opus, sonnet]}\n"

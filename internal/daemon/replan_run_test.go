@@ -35,7 +35,7 @@ const (
 	replanRunEdited  = "Approve the default lifetime, 24 hours, in the defaults file."
 )
 
-// replanRunConfig is .issuedog/config.yml on main: childrenRunConfig's,
+// replanRunConfig is .issuedog/config.yaml on main: childrenRunConfig's,
 // typing by labels, with plan.review false.
 const replanRunConfig = "types: labels\nnotify: [" + childrenRunOwner + "]\nscopes: [booking, infra, docs]\n" +
 	"models: {allowed: [opus, sonnet]}\nplan: {review: false}\n"

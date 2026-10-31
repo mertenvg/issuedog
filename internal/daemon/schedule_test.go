@@ -90,7 +90,7 @@ func TestPickStartsTheRun(t *testing.T) {
 	if want := pickMoved(cs[0].ID, cs[0].ID); cs[1].Author.Login != app || cs[1].Body != want {
 		t.Errorf("the pick's comment, by %s, =\n%s\nwant\n%s", cs[1].Author.Login, cs[1].Body, want)
 	}
-	if want := implementerCommitted("run1", g.trimmed("commit.1"), cs[1].ID); cs[2].Body != want {
+	if want := implementerCommitted("run1", g.trimmed("commit.1"), 1, cs[1].ID); cs[2].Body != want {
 		t.Errorf("the run's comment =\n%s\nwant\n%s", cs[2].Body, want)
 	}
 	if got := pickStage(f, n); got != "stage:verifying" {

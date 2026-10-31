@@ -11,6 +11,7 @@ import (
 
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/repo"
+	"github.com/mertenvg/issuedog/internal/verify"
 	"github.com/mertenvg/issuedog/internal/workspace"
 	"github.com/mertenvg/logr/v2"
 )
@@ -18,26 +19,94 @@ import (
 // taskRef is task n's head in the bare repo (SPEC §3.2).
 func taskRef(n int) string { return repo.TasksRef + strconv.Itoa(n) }
 
-// start names the start of st's run on issue n (SPEC §3.2, §3.4). A
-// Committer's run starts from the task's head, taskRef(n), or with none
-// yet, from its base: main's commit as the pass's sync left it, which is a
-// task with no parent's (inStory). Any other Stage's run starts from
-// main's commit.
-func (r *Runs) start(ctx context.Context, st Stage, n int) (string, error) {
+// runStart is what start names for a run: the commits of its clone, and
+// Dropped, why the task's head wasn't named, rule 2's finding on it (SPEC
+// §3.4, §10.1), for the preamble to tell the run (SPEC §12), or "" when
+// it was named, or there's none.
+type runStart struct {
+	workspace.Commits
+	Dropped string
+}
+
+// start names the commits of st's run on issue n (SPEC §3.2, §3.4). A
+// Committer's run starts from the task's head, taskRef(n), once it passes
+// rule 2 of SPEC §10.1 (startFrom), or with none yet, from its base:
+// main's commit as the pass's sync left it, which is a task with no
+// parent's (inStory). Any other Stage's run starts from main's commit.
+// Only a Committer's run may name a target, or have its head dropped.
+func (r *Runs) start(ctx context.Context, st Stage, n int) (runStart, error) {
+	head, hasHead := "", false
 	if _, ok := st.(Committer); ok {
-		head, ok, err := r.Daemon.Clone.ReadRef(ctx, taskRef(n))
-		if err != nil {
-			return "", fmt.Errorf("read the task's head: %w", err)
-		}
-		if ok {
-			return head, nil
+		var err error
+		if head, hasHead, err = r.Daemon.Clone.ReadRef(ctx, taskRef(n)); err != nil {
+			return runStart{}, fmt.Errorf("read the task's head: %w", err)
 		}
 	}
 	main, err := r.Daemon.Clone.Resolve(ctx, "main")
 	if err != nil {
-		return "", fmt.Errorf("read main: %w", err)
+		return runStart{}, fmt.Errorf("read main: %w", err)
 	}
-	return main, nil
+	if !hasHead {
+		return runStart{Commits: workspace.Commits{Start: main}}, nil
+	}
+	c, err := r.startFrom(ctx, n, head, main)
+	if err != nil {
+		return runStart{}, fmt.Errorf("name the task's head %s: %w", head, err)
+	}
+	return c, nil
+}
+
+// startFrom names the commits of a run on task n, whose head is head, with
+// main's commit main as its rule 2 baseline and its target (SPEC §3.4,
+// §10.1). It reads only the bare repo, so it costs no request.
+//   - A head that fails rule 2 is never named: the run starts from main,
+//     as a first attempt does, and the log says why, as Dropped does for
+//     the preamble: rule 2's finding. A head with no merge base with main,
+//     or more than one, fails rule 2 too (verify.ErrMergeBases,
+//     mergeBasesDetail). The task's head isn't moved here: the new run's
+//     head replaces it once its result applies (moveTaskHead).
+//   - A head that passes but doesn't merge cleanly with main, by the
+//     merge-tree read rule 7 judges by (repo.MergeTree), starts the run
+//     with main named as its target, to merge first.
+//   - Otherwise the run starts from the head, with no target.
+//
+// Any other failed read is an error, so no run starts.
+func (r *Runs) startFrom(ctx context.Context, n int, head, main string) (runStart, error) {
+	f := verify.Facts{Repo: r.Daemon.Clone, Baseline: main, Head: head, Target: main, Config: r.Daemon.Config.Verify}
+	base, err := verify.BaseOf(ctx, f)
+	if errors.Is(err, verify.ErrMergeBases) {
+		logr.Infof("#%d: the task's head %s fails rule 2, so the run starts from main's %s, as a first attempt does: %v", n, head, main, err)
+		return runStart{Commits: workspace.Commits{Start: main}, Dropped: mergeBasesDetail(main, err)}, nil
+	}
+	if err != nil {
+		return runStart{}, fmt.Errorf("read the head's base: %w", err)
+	}
+	f.Base = base
+	finding, err := verify.Rule2(ctx, f)
+	if err != nil {
+		return runStart{}, fmt.Errorf("check rule 2: %w", err)
+	}
+	if finding != nil {
+		logr.Infof("#%d: the task's head %s fails rule 2, so the run starts from main's %s, as a first attempt does.\n%s", n, head, main, finding.Detail)
+		return runStart{Commits: workspace.Commits{Start: main}, Dropped: finding.Detail}, nil
+	}
+	conflicts, err := r.Daemon.Clone.MergeTree(ctx, main, head)
+	if err != nil {
+		return runStart{}, fmt.Errorf("merge with main: %w", err)
+	}
+	if len(conflicts) > 0 {
+		logr.Infof("#%d: the task's head %s doesn't merge cleanly with main's %s, so the run starts from the head with main named as its target, to merge first; these files conflict: %q",
+			n, head, main, conflicts)
+		return runStart{Commits: workspace.Commits{Start: head, Target: main}}, nil
+	}
+	return runStart{Commits: workspace.Commits{Start: head}}, nil
+}
+
+// mergeBasesDetail is rule 2's finding on a head that doesn't have exactly
+// one merge base with main's commit main, as err, verify.BaseOf's, says:
+// the task's own diff then has no start (SPEC §10.1).
+func mergeBasesDetail(main string, err error) string {
+	return fmt.Sprintf("The head doesn't have exactly one merge base with main's %s, so the task's own diff has no start: %v", main, err)
 }
 
 // inStory reports whether st is a Committer and s has a parent. Such a

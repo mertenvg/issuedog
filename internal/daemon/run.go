@@ -24,6 +24,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/repo"
 	"github.com/mertenvg/issuedog/internal/state"
+	"github.com/mertenvg/issuedog/internal/verify"
 	"github.com/mertenvg/issuedog/internal/workspace"
 	"github.com/mertenvg/logr/v2"
 )
@@ -79,7 +80,8 @@ type Input struct {
 	// longer trusted.
 	Inputs []github.Comment
 	// Attempt is the run's number, from 1, since the stage last moved or
-	// got new input.
+	// got new input, or for a task at in-progress, in its round, which the
+	// verify loop's own moves don't end (attemptBound).
 	Attempt int
 	// Dirt is S's dirty content, and Issue is state.Derive of S, both read
 	// before the first Pending.
@@ -88,6 +90,13 @@ type Input struct {
 	// ContextDir is where the run's context files go, set with RunID, so
 	// prompt.md can tell the agent where to read them.
 	ContextDir string
+	// Target is the commit the run's clone holds to merge first, at
+	// workspace.TargetRef, set with RunID, or "" for none (SPEC §3.4).
+	Target string
+	// Dropped is why the task's head wasn't named as the run's start, rule
+	// 2's finding on it, set with RunID, or "" when it was, or there's
+	// none (SPEC §3.4, §12).
+	Dropped string
 }
 
 // Result is a valid run result, for a Stage to apply.
@@ -104,6 +113,10 @@ type Result struct {
 	// before the result is checked and applied (handoff), or "" when the
 	// run made no commits past its start, or the Stage isn't a Committer.
 	Head string
+	// Attempt is the run's number in its round of attempts, from 1
+	// (Lease.Attempt), which the implementer's move to verifying records,
+	// or 0 for a lease that names none (SPEC §8.3).
+	Attempt int
 
 	moveKey string            // see moveKey
 	fields  map[string]string // the run's model, effort and ran (runFields)
@@ -217,8 +230,8 @@ func lastFailure(cause error) string {
 const kindLabels = "labels"
 
 // Runs is the stage-run harness. Its Work is the loop's stage work (SPEC
-// §8.1, step 3), then a task's run or the pick of the next task (step 4),
-// one run at a time, under a lease (SPEC §8.2).
+// §8.1, step 3), then a task's run, the checks at verifying or the pick
+// of the next task (step 4), one run at a time, under a lease (SPEC §8.2).
 type Runs struct {
 	// Daemon gives the applier, trust and config of the moment.
 	Daemon *Daemon
@@ -234,7 +247,10 @@ type Runs struct {
 	Gate      *agent.Gate
 	Env       []string         // the agent's whole environment (agent.Env)
 	Now       func() time.Time // nil is time.Now
-	NewID     func() string    // nil makes random run IDs
+	NewID     func() string    // nil makes random run IDs; it names the checks' checkouts too
+	// Commands runs verify.commands for the checks at verifying
+	// (verifyTask). With none, no task gets checks.
+	Commands *verify.Commands
 
 	attempts   map[string]int  // failed runs, by countKey
 	swept      bool            // what a crash left is removed (sweep)
@@ -250,6 +266,11 @@ type Runs struct {
 	// and those the pick found an open blocker of since (schedule.go).
 	pickBlocked  map[int]bool
 	pickSearched time.Time
+
+	// passed holds the head and main's commit, "<head>:<main>", that each
+	// task at verifying passed the checks with, by issue number, so they
+	// don't run again (verifyTask).
+	passed map[int]string
 }
 
 // Work is Daemon.Work. On its first pass it first removes what a crash
@@ -262,9 +283,11 @@ type Runs struct {
 // it runs a Committer, such as the implementer, on the first issue, by
 // priority then number, whose stage has one with work pending: task work
 // comes after the other stages and triage (SPEC §8.1, step 4). If none ran
-// either, it picks the next ready task, moves it to in-progress and starts
-// its run (pickTask), unless a task holds the worker, or step 1 didn't
-// finish on every issue this pass. A lease
+// either, it runs SPEC §10.1's checks on the first task at verifying, by
+// priority then number, whose head hasn't passed them (verifyTask). If it
+// ran none either, it picks the next ready task, moves it to in-progress
+// and starts its run (pickTask), unless a task holds the worker, or step 1
+// didn't finish on every issue this pass. A lease
 // whose issue has labels held back
 // (ErrLabelsHeld) waits, and no run starts until it's applied. So does a
 // saved result on an issue step 1 didn't finish on this pass (resume),
@@ -332,6 +355,15 @@ func (r *Runs) Work(ctx context.Context, ready []Ready) error {
 	switch {
 	case err != nil:
 		return fmt.Errorf("task work: %w", err)
+	case ran:
+		return nil
+	}
+	// No run is in progress here, and none starts until the checks are
+	// done, so their commands never overlap a claude run (verifyTask).
+	ran, err = r.verifyTask(ctx, ready)
+	switch {
+	case err != nil:
+		return fmt.Errorf("the checks at %s: %w", state.Verifying, err)
 	case ran:
 		return nil
 	}
@@ -407,9 +439,13 @@ func (r *Runs) CheckRegistered() error {
 // setup, counts as an attempt (failed); after loop.max_attempts in a row
 // the issue gets one state error (SPEC §5.3) and no more runs until the
 // stage moves or gets new input, or for the implementer on a task, a
-// hand-off at needs-human (atCap). If posting that error, or making that
-// hand-off, failed, RunStage posts it instead of a run, even when the
-// stage has no work pending, as on an issue it no longer runs on; if that
+// hand-off at needs-human (atCap). A task's round also counts its failed
+// verifies, as the verify loop's moves record them (roundAttempts), so its
+// run is the round's attempt after the latest of those and the failed runs
+// since (SPEC §8.3), and the hand-off comes once they reach the cap
+// together. If posting that error, or making that hand-off, failed,
+// RunStage posts it instead of a run, even when the stage has no work
+// pending, as on an issue it no longer runs on; if that
 // fails too, it logs the error and moves on, so the next issue gets its
 // turn. A Stage whose schema doesn't compile starts no run: it's a setup
 // failure, reported once (schema). A
@@ -460,12 +496,29 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 	}
 	in := Input{S: rd.S, Inputs: rd.Inputs, Dirt: d, Issue: is}
 	errKey := attemptKey(is, rd.Inputs)
-	if r.attempts[countKey(n, errKey)] >= r.limit() && !is.Reported(kindAttempts, errKey) {
+	// The attempts the round has used: its failed runs, and for a task's,
+	// the attempts its verify loop's moves record, whichever is more, as
+	// failed runs since the latest of those count on from it (SPEC §8.3).
+	used := r.attempts[countKey(n, errKey)]
+	if _, commits := st.(Committer); commits && is.Stage == state.InProgress {
+		used = max(used, roundAttempts(is, attemptBound(is, rd.Inputs)))
+	}
+	if used >= r.limit() && !is.Reported(kindAttempts, errKey) {
 		// The cap was reached, but posting its state error failed: post it,
 		// whether or not the stage has work pending, as a last attempt that
 		// failed on an issue its stage no longer runs on leaves it none.
-		// A post that keeps failing mustn't hold up the other issues.
-		last := Lease{Issue: n, Stage: is.Stage, AttemptKey: errKey, PublicFailure: r.failures[countKey(n, errKey)]}
+		// A post that keeps failing mustn't hold up the other issues. For a
+		// task, findings on the round's last attempt hand it off at
+		// verifying (verifyFindings), so they never bring it back here at
+		// the cap. Findings below it may reach a loop.max_attempts lowered
+		// since: then the hand-off says nothing of why, as no run failed
+		// last, so it has no failure kept. It counts the used attempts,
+		// which may be more than the limit, and its seen is the newest
+		// comment step 1 read, as the last run's would be.
+		last := Lease{Issue: n, Stage: is.Stage, AttemptKey: errKey, Attempt: used, PublicFailure: r.failures[countKey(n, errKey)]}
+		for _, c := range rd.S.Comments {
+			last.Seen = max(last.Seen, c.ID)
+		}
 		if err := r.atCap(ctx, st, last); err != nil {
 			logr.Errorf("%s/%s#%d: no %s run, as it failed loop.max_attempts times, but posting that failed again: %v",
 				a.Owner, a.Repo, n, st.Agent(), err)
@@ -496,7 +549,7 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 	if inStory(st, rd.S) {
 		return false, nil
 	}
-	attempt := r.attempts[countKey(n, errKey)] + 1
+	attempt := used + 1
 	set, badLabels := state.RunSettings(state.Agent(st.Agent()), rd.S.Labels, r.Daemon.Config, attempt)
 	switch {
 	case errors.Is(badLabels, state.ErrLabels) && is.Reported(kindLabels, labelsKey(rd.S)):
@@ -513,9 +566,9 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 	// read again, so a start that can't be named, such as a bare repo with
 	// no main, costs no request. Labels that give no settings start no
 	// run, so they need none, and their state error doesn't wait on one.
-	var start string
+	var commits runStart
 	if badLabels == nil {
-		if start, err = r.start(ctx, st, n); err != nil {
+		if commits, err = r.start(ctx, st, n); err != nil {
 			return false, wrap(fmt.Errorf("name the run's start: %w", err))
 		}
 	}
@@ -556,11 +609,11 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		r.Daemon.reread(n, false)
 		return false, wrap(r.reportLabels(ctx, rd.S, fresh, is.Stage, st, badLabels))
 	}
-	in.RunID, in.Attempt = r.newID(), attempt
+	in.RunID, in.Attempt, in.Target, in.Dropped = r.newID(), attempt, commits.Target, commits.Dropped
 	in.ContextDir = r.Workspace.Context(in.RunID)
 	l := Lease{Issue: n, Stage: is.Stage, RunID: in.RunID, Clone: r.Workspace.Dir(in.RunID),
 		Started: r.now(), Polled: r.Daemon.polled, Edits: map[int64]time.Time{}, BodyEdit: rd.S.BodyEdit.At, AttemptKey: errKey, Attempt: in.Attempt,
-		Model: set.Model, Effort: set.Effort, FallbackModels: set.FallbackModels, Start: start}
+		Model: set.Model, Effort: set.Effort, FallbackModels: set.FallbackModels, Start: commits.Start, Target: commits.Target}
 	for _, c := range rd.S.Comments {
 		l.Seen = max(l.Seen, c.ID)
 	}
@@ -911,7 +964,7 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 		return fmt.Errorf("apply run %s: %w", l.RunID, err)
 	}
 	key := moveKey(l.AttemptKey, is.Item)
-	res := Result{RunID: l.RunID, Seen: l.Seen, S: s, Dirt: d, Output: out, Head: head, moveKey: key, fields: runFields(l, raw)}
+	res := Result{RunID: l.RunID, Seen: l.Seen, S: s, Dirt: d, Output: out, Head: head, Attempt: l.Attempt, moveKey: key, fields: runFields(l, raw)}
 	if c, ok := st.(Checker); ok && !moved {
 		var read *checkReadError
 		switch err := c.Check(ctx, res); {
@@ -932,6 +985,8 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 	}
 	logr.Infof("%s/%s#%d: applied run %s", a.Owner, a.Repo, l.Issue, l.RunID)
 	r.Daemon.assignApplied(s, d, moved) // a revision or a round waits on the owner again (SPEC §9.6)
+	// The round's count of failed runs ends here. For a task's move to
+	// verifying, the move's attempt= holds the round's count now (SPEC §8.3).
 	delete(r.attempts, countKey(l.Issue, l.AttemptKey))
 	delete(r.failures, countKey(l.Issue, l.AttemptKey))
 	return r.finish(ctx, l)
@@ -1189,9 +1244,9 @@ func (r *Runs) failed(ctx context.Context, st Stage, l Lease, cause error) error
 }
 
 // atCap is what the attempt cap does once l's run is the last of
-// loop.max_attempts failed in a row (SPEC §8.3). For a Committer's run at
-// in-progress, the implementer's on a task, it's a hand-off at needs-human
-// (capHandoff), which releases the worker. For every other stage, it's
+// loop.max_attempts failed in a row, or for a task, the last attempt of its
+// round (SPEC §8.3). For a Committer's run at in-progress, the
+// implementer's on a task, it's a hand-off at needs-human (capHandoff), which releases the worker. For every other stage, it's
 // the kind=attempts state error (reportCap), and the stage runs no more
 // until the round changes.
 func (r *Runs) atCap(ctx context.Context, st Stage, l Lease) error {
@@ -1202,11 +1257,19 @@ func (r *Runs) atCap(ctx context.Context, st Stage, l Lease) error {
 }
 
 // capHandoff is the implementer's attempt cap on a task (SPEC §8.3, §9.3):
-// l's run was the last of loop.max_attempts failed in a row, so the task
+// l's run was the last of the round's loop.max_attempts attempts, failed
+// runs and failed verifies, or the findings of an earlier attempt reached
+// a loop.max_attempts lowered since they moved the task back, so the task
 // moves in-progress → needs-human on attempt-cap, keyed
-// event=a<l.AttemptKey> (capHandoffKey), with a hand-off in the
-// implementer's form whose opening says the runs failed, and quotes why
-// the last one did, as the cap's state error would (renderCapHandoff).
+// event=a<l.AttemptKey> (capHandoffKey), with seen=l.Seen, the newest
+// comment on step 1's snapshot the last run started from, or for a
+// hand-off made in place of a run, this pass's, as the findings move has
+// it (verifyFindings), so a comment posted during that run is above the
+// hand-off's round bound (SPEC §5). Its comment is a hand-off in the
+// implementer's form whose opening says the round's attempts failed,
+// l.Attempt of them, or loop.max_attempts if more, as a limit lowered
+// since may be below l.Attempt, and for a run that failed last, quotes
+// why, as the cap's state error would (renderCapHandoff).
 // That releases the worker (SPEC §8.1), and /done or a trusted 👍 on the
 // hand-off sends the task back to ready, a new round (handback.go).
 //
@@ -1246,13 +1309,17 @@ func (r *Runs) capHandoff(ctx context.Context, st Stage, l Lease) error {
 		}
 		return nil
 	}
+	attempts := max(r.limit(), l.Attempt)
 	m := Move{To: state.NeedsHuman, Trigger: state.TriggerAttemptCap, Key: capHandoffKey(l.AttemptKey),
-		Text: renderCapHandoff(r.limit(), l.PublicFailure, l.Issue, r.Daemon.Config.Notify)}
+		Text: renderCapHandoff(attempts, l.PublicFailure, l.Issue, r.Daemon.Config.Notify)}
+	if l.Seen > 0 {
+		m.Fields = map[string]string{state.FieldSeen: strconv.FormatInt(l.Seen, 10)}
+	}
 	if err := a.Transition(ctx, s, d.Has, m); err != nil {
 		return wrap(err)
 	}
-	logr.Warnf("%s/%s#%d: the %s run failed %d times in a row, so the task is handed off to the owner at %s",
-		a.Owner, a.Repo, l.Issue, st.Agent(), r.limit(), state.NeedsHuman)
+	logr.Warnf("%s/%s#%d: the task's %d attempts in its round failed, %s runs and verifies, so it's handed off to the owner at %s",
+		a.Owner, a.Repo, l.Issue, attempts, st.Agent(), state.NeedsHuman)
 	return nil
 }
 
@@ -1513,21 +1580,111 @@ func moveKey(attemptKey string, it state.Item) string {
 	return attemptKey + "-" + state.BodyHash(fmt.Sprintf("%+v", it))
 }
 
-// attemptKey names the stage's current round of attempts: its stage and the
-// newest of the latest transition's bound and the inputs, so a move or a new
-// input starts a new one. A move out of held keeps the bound from before the
-// hold (state.HeldStack.Seen), so after one the newest is at least the
-// move's comment.
+// attemptKey names the stage's current round of attempts: its stage and
+// its bound (attemptBound), so a move or a new input starts a new one.
 func attemptKey(is state.Issue, inputs []github.Comment) string {
-	bound := is.Round
-	if state.Stage(ivLatestMove(is).Fields["from"]) == state.Held {
-		bound = max(bound, is.TransitionComment)
+	return fmt.Sprintf("%s-%d", is.Stage, attemptBound(is, inputs))
+}
+
+// attemptBound is the bound of is's current round of attempts (SPEC
+// §8.3): the newest of the round's start and the inputs, of which step 1
+// gives none at in-progress (state.Issue.Inputs). The round's start
+// is the latest transition's bound (roundBound), but at in-progress, the
+// implementer's stage, where a task's verify loop's own moves start no
+// round, so its failed runs and its failed verifies count in one: there
+// it's taskRoundBound's. It's judged by the issue's stage, not the
+// Stage's, so openErrors, which has no Stage, keys a round as RunStage
+// does. It reads only is, so it costs no request.
+func attemptBound(is state.Issue, inputs []github.Comment) int64 {
+	bound := roundBound(is)
+	if is.Stage == state.InProgress {
+		bound = taskRoundBound(is)
 	}
 	for _, c := range inputs {
 		bound = max(bound, c.ID)
 	}
-	return fmt.Sprintf("%s-%d", is.Stage, bound)
+	return bound
 }
+
+// roundBound is the bound of is's latest transition (state.RoundBound). A
+// move out of held keeps the bound from before the hold
+// (state.HeldStack.Seen), so after one it's at least the move's comment,
+// as the move starts a round.
+func roundBound(is state.Issue) int64 {
+	bound := is.Round
+	if state.Stage(ivLatestMove(is).Fields["from"]) == state.Held {
+		bound = max(bound, is.TransitionComment)
+	}
+	return bound
+}
+
+// taskRoundBound is the start of task is's round at in-progress (SPEC
+// §8.3): the bound of its latest transition other than the verify loop's
+// own moves (verifyLoopMove), such as the pick's, an owner's or one out of
+// held, which roundBound would give were it the latest. With no comment
+// IDs for its markers, as in an Issue built by hand, it's roundBound's.
+func taskRoundBound(is state.Issue) int64 {
+	if len(is.MarkerComments) < len(is.Markers) {
+		return roundBound(is)
+	}
+	var bound int64
+	for i, m := range is.Markers {
+		id, ok := is.MarkerComment(i)
+		b, bounds := state.RoundBound(m, id)
+		if !ok || !bounds || verifyLoopMove(m) {
+			continue
+		}
+		if state.Stage(m.Fields["from"]) == state.Held {
+			b = max(b, id)
+		}
+		bound = b
+	}
+	return bound
+}
+
+// roundAttempts is the count of task is's round that starts at bound
+// (attemptBound), as its markers record it: the attempt= of its verify
+// loop's latest move in a comment above bound (verifyLoopMove), or 0 with
+// none, or one that names none. Failed runs since are counted in memory
+// and the lease (Runs.attempts). It reads only is, so it costs no
+// request.
+func roundAttempts(is state.Issue, bound int64) int {
+	attempts := 0
+	for i, m := range is.Markers {
+		if id, ok := is.MarkerComment(i); ok && id > bound && verifyLoopMove(m) {
+			attempts = markerAttempt(m)
+		}
+	}
+	return attempts
+}
+
+// verifyLoopMove reports whether m is one of a task's verify loop's own
+// moves (SPEC §8.3): the implementer's move in-progress → verifying, keyed
+// by its run, or the move back on findings, verifying → in-progress, keyed
+// event=v<comment id> (verifyKey). An owner's move between those stages,
+// by a stage label, is keyed by its timeline event, a number, so it isn't
+// one: it starts a round.
+func verifyLoopMove(m github.Marker) bool {
+	if m.Kind != "transition" {
+		return false
+	}
+	from, to := state.Stage(m.Fields["from"]), state.Stage(m.Fields["to"])
+	return from == state.InProgress && to == state.Verifying && m.Fields["run"] != "" ||
+		from == state.Verifying && to == state.InProgress && strings.HasPrefix(m.Fields["event"], "v")
+}
+
+// markerAttempt is m's attempt=, a number above 0, or 0 for none.
+func markerAttempt(m github.Marker) int {
+	n, err := strconv.Atoi(m.Fields[fieldAttempt])
+	if err != nil || n < 1 {
+		return 0
+	}
+	return n
+}
+
+// fieldAttempt is the marker field attempt=<n>, a run's number in its
+// task's round, on the verify loop's moves (SPEC §5, §8.3).
+const fieldAttempt = "attempt"
 
 // countKey is the key of issue n's attempts in Runs.attempts.
 func countKey(n int, attemptKey string) string { return strconv.Itoa(n) + "/" + attemptKey }

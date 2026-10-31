@@ -296,6 +296,93 @@ func TestCleanup(t *testing.T) {
 	}
 }
 
+// TestPrepareHome makes an empty 0700 HOME with a 0700 tmp dir in it,
+// whatever the umask, which Cleanup removes.
+func TestPrepareHome(t *testing.T) {
+	w, _ := newWorkspace(t)
+	defer syscall.Umask(syscall.Umask(0o022))
+	ctx := context.Background()
+	if err := w.PrepareHome(ctx, "v1-home"); err != nil {
+		t.Fatal(err)
+	}
+	home := w.Dir("v1-home")
+	entries, err := os.ReadDir(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "tmp" || !entries[0].IsDir() {
+		t.Errorf("the home holds %v, want only a tmp dir", entries)
+	}
+	for _, d := range []string{home, filepath.Join(home, "tmp")} {
+		if m := mode(t, d); m != 0o700 {
+			t.Errorf("%s mode %o, want 700", d, m)
+		}
+	}
+	if err := w.Cleanup(ctx, "v1-home"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(home); !os.IsNotExist(err) {
+		t.Errorf("%s still exists: %v", home, err)
+	}
+}
+
+// TestPrepareHomeRejects refuses a bad name, and a home that's there
+// already, which it leaves as it was, so nothing a run left there reaches a
+// verify.
+func TestPrepareHomeRejects(t *testing.T) {
+	t.Parallel()
+	w, _ := newWorkspace(t)
+	ctx := context.Background()
+	for _, id := range []string{"", ".hidden", "a/b"} {
+		if err := w.PrepareHome(ctx, id); err == nil || !strings.Contains(err.Error(), "invalid run ID") {
+			t.Errorf("PrepareHome(%q) = %v, want an invalid run ID", id, err)
+		}
+	}
+	old := w.Dir("old-home")
+	if err := os.Mkdir(old, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(old, "cache"), []byte("planted"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.PrepareHome(ctx, "old-home"); err == nil {
+		t.Error("PrepareHome of an existing home = nil, want an error")
+	}
+	if got, err := os.ReadFile(filepath.Join(old, "cache")); err != nil || string(got) != "planted" {
+		t.Errorf("the existing home's file = %q, %v; want it left alone", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(old, "tmp")); !os.IsNotExist(err) {
+		t.Errorf("PrepareHome made a tmp dir in the existing home: %v", err)
+	}
+}
+
+// TestPrepareHomeTmpFails removes the home it made when making the tmp dir
+// in it fails, so no half-made home is left. A mkdir on the PATH fails for
+// the tmp dir alone and runs the real mkdir otherwise. It sets PATH, so it
+// can't run in parallel.
+func TestPrepareHomeTmpFails(t *testing.T) {
+	w, _ := newWorkspace(t)
+	ctx := context.Background()
+	real, err := exec.LookPath("mkdir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	script := "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in */tmp) echo 'mkdir: no tmp' >&2; exit 1;; esac; done\nexec " + real + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "mkdir"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err = w.PrepareHome(ctx, "v1-home")
+	if err == nil || !strings.Contains(err.Error(), "prepare home v1-home") || !strings.Contains(err.Error(), "no tmp") {
+		t.Fatalf("PrepareHome = %v, want the tmp dir's failure", err)
+	}
+	if _, err := os.Lstat(w.Dir("v1-home")); !os.IsNotExist(err) {
+		t.Errorf("the home is left after its tmp dir failed: %v", err)
+	}
+}
+
 // TestPrepareRejects refuses bad names, and a start or target SHA that's
 // missing, not a full SHA, or not in the bare repo, leaving nothing, even
 // after a failed fetch.
@@ -858,6 +945,39 @@ func TestSweepKeepsNothingAndSkipsMissingDirs(t *testing.T) {
 	gone := &Workspace{RunsDir: filepath.Join(t.TempDir(), "runs"), ContextDir: filepath.Join(t.TempDir(), "ctx")}
 	if err := gone.Sweep(ctx, ""); err != nil {
 		t.Errorf("Sweep of missing dirs = %v, want nothing to remove", err)
+	}
+}
+
+// TestSweepRemovesALeftoverVerify removes what a crash left of a verify:
+// its checkout of the head, its empty context dir, and its HOME beside the
+// checkout, with whatever its commands wrote there.
+func TestSweepRemovesALeftoverVerify(t *testing.T) {
+	t.Parallel()
+	w, s := newWorkspace(t)
+	ctx := context.Background()
+	if err := w.Prepare(ctx, "v1", Commits{Start: s.second}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.PrepareHome(ctx, "v1-home"); err != nil {
+		t.Fatal(err)
+	}
+	cache := filepath.Join(w.Dir("v1-home"), "tmp", "cache")
+	if err := os.WriteFile(cache, []byte("cached"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Sweep(ctx, ""); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	for _, dir := range []string{w.RunsDir, w.ContextDir} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			if e.Name() != ".agent.gitconfig" {
+				t.Errorf("%s still holds %s after the sweep", dir, e.Name())
+			}
+		}
 	}
 }
 

@@ -24,7 +24,7 @@ import (
 // Daemon.Iterate as the loop. Config, trust and the implementer's prompt
 // come from main on the origin.
 
-// implementerRunConfig is .issuedog/config.yml on main for the whole run:
+// implementerRunConfig is .issuedog/config.yaml on main for the whole run:
 // its own title types, diff limit, protected paths and questions per
 // round, so the preamble's values are main's, not the defaults.
 const implementerRunConfig = "types: labels\nnotify: [" + wholeRunOwner + "]\nscopes: [booking]\n" +
@@ -105,13 +105,13 @@ func TestImplementerWholeRun(t *testing.T) {
 			t.Errorf("%s has eve's comment; want it in no file", name)
 		}
 	}
-	if want := "# Input for this run\n\n" + "What's new since the implementer last ran, or since the task came to in-progress.\n\nnone: first run\n"; files["input.md"] != want {
+	if want := "# Input for this run\n\n" + "What's new since the implementer last ran, or since the task came to in-progress. Verify's findings on the task's head, if any, come first: fix every one.\n\nnone: first run\n"; files["input.md"] != want {
 		t.Errorf("input.md =\n%s\nwant\n%s", files["input.md"], want)
 	}
 	system := files["system.md"]
 	for _, want := range []string{
 		"- A PR title's `type` is one of: `feat`, `fix`, `docs` (`pr.title_types`), exactly as written.",
-		"at most 250 changed lines (`verify.max_diff_lines`), tests included.",
+		"at most 250 changed lines (`verify.max_diff_lines`), counting only files outside `verify.test_globs`, which is empty, so every file counts. It's a hard limit.",
 		"`.mcp.json`, `secrets/**`. A change that needs one is an owner action.",
 		"so a question round now is round 1. At most 5 questions in a round",
 	} {

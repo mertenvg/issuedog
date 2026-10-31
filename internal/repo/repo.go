@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -56,7 +57,8 @@ var redirected = regexp.MustCompile(`The requested URL returned error: (3[0-9][0
 type Repo struct {
 	remote string
 	dir    string
-	env    []string // extra git environment, after gitEnv's: a quarantine's (quarantine)
+	env    []string // extra git environment, after gitEnv's: a quarantine's (quarantine) or an attrless repo's (attrless)
+	opts   []string // git's options before the command, after --git-dir: an attrless repo's (attrless)
 
 	beforeRunRef func() // for tests only: runs just before FetchBundle writes the run's ref
 }
@@ -125,6 +127,27 @@ func (r *Repo) Resolve(ctx context.Context, ref string) (string, error) {
 		return "", fmt.Errorf("resolve %s: %w", ref, err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// HasCommit reports whether the bare repo has the commit sha, a full SHA.
+// One that isn't a full SHA names no commit, so it has none, and nor does
+// an object of another kind, such as a tree. Only a failure to read the
+// repo is an error.
+func (r *Repo) HasCommit(ctx context.Context, sha string) (bool, error) {
+	if !shaPattern.MatchString(sha) {
+		return false, nil
+	}
+	out, err := r.git(ctx, "", "rev-parse", "--verify", "--quiet", "--end-of-options", sha+"^{commit}")
+	if err != nil {
+		// With --quiet, rev-parse exits 1, and prints nothing, for an
+		// object the repo lacks.
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 1 && len(bytes.TrimSpace(out)) == 0 {
+			return false, nil
+		}
+		return false, fmt.Errorf("has commit %s: %w", sha, err)
+	}
+	return true, nil
 }
 
 // ReadRef returns the object ref names in the bare repo, and whether it
@@ -396,20 +419,22 @@ func (r *Repo) checkHead(ctx context.Context, head, start string) error {
 	return nil
 }
 
-// git runs one git command against the bare repo and returns its stdout.
-// The error includes git's stderr.
+// git runs one git command against the bare repo and returns its stdout,
+// even when it fails, as a command that exits non-zero, such as
+// merge-tree with conflicts, may still have written what its caller
+// reads. The error includes git's stderr.
 func (r *Repo) git(ctx context.Context, token string, args ...string) ([]byte, error) {
 	return r.run(ctx, nil, token, args...)
 }
 
 // run is git, with stdin as the command's input; nil gives it none.
 func (r *Repo) run(ctx context.Context, stdin io.Reader, token string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"--git-dir=" + r.dir}, args...)...)
+	cmd := exec.CommandContext(ctx, "git", slices.Concat([]string{"--git-dir=" + r.dir}, r.opts, args)...)
 	cmd.Env = append(gitEnv(os.Environ(), r.remote, token), r.env...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
+		return stdout.Bytes(), fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.Bytes(), nil
 }
