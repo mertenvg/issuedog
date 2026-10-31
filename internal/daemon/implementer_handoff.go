@@ -12,7 +12,8 @@ import (
 // §12): an action only the owner can do blocks the task, so Apply moves it
 // to needs-human with this comment, which /done or a trusted 👍 on it ends
 // (handback.go). The attempt cap's hand-off (capHandoff, SPEC §8.3) has
-// the same form, with its own opening and fields.
+// the same form, with its own opening and fields, and so has the verify
+// cap's (renderVerifyCapHandoff).
 
 // handoffTask is h as a human task's fields, so a hand-off is checked
 // (checkHumanTask) and rendered (humanFields) as a human task is. Its
@@ -96,9 +97,11 @@ var capHandoffFields = implementerHandoffFields{
 // and its verifies alike, then that the last was a run that failed, and
 // why, failure, as the cap's state error quotes it (Lease.PublicFailure,
 // publicCauseText): fenced, or for publicCauseLogged, a pointer to the
-// daemon's log. With no failure, as when the last attempt was a verify's,
-// whose findings are on the task already, or from a lease written before
-// it was kept, it says nothing of why.
+// daemon's log. With no failure, as when findings below the cap reached a
+// loop.max_attempts lowered since, whose findings are on the task already,
+// or from a lease written before it was kept, it says nothing of why. It
+// never quotes findings: when the head of the round's last attempt fails
+// verify, the hand-off is renderVerifyCapHandoff's, at verifying.
 func renderCapHandoff(limit int, failure string, n int, notify []string) string {
 	intro := fmt.Sprintf("This task's %d attempts in this round failed, so I've stopped running the implementer here.", limit)
 	if failure != "" {

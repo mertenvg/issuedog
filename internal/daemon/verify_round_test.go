@@ -239,20 +239,23 @@ func TestVerifyRoundRestart(t *testing.T) {
 	}
 }
 
-// Findings on the round's last attempt send the task back to in-progress,
-// as the checks do on any attempt, and then the round has no attempt
-// left: the next pass makes the cap's hand-off in place of a run, saying
-// the round's attempts failed, and nothing of why, as no run failed last.
+// Findings below the round's last attempt send the task back to
+// in-progress, and findings on it hand the task off at verifying
+// (verify_cap_test.go), so they never bring it back here at the cap. But
+// findings on attempt 2 of 4, with loop.max_attempts lowered to 2 since,
+// leave the round no attempt: the next pass makes the cap's hand-off at
+// in-progress in place of a run, saying the round's attempts failed, and
+// nothing of why, as no run failed last.
 func TestVerifyRoundFindingsAtCap(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
-	roundTask(f, 4, "abc", "")
-	g := roundRig(t, f, roundConfig(4, "xhigh"), ivResult(t, implementerOutput(t, "commits")))
+	roundTask(f, 2, "abc", "")
+	g := roundRig(t, f, roundConfig(2, "xhigh"), ivResult(t, implementerOutput(t, "commits")))
 	key := restartKey(t, f, 1)
 
 	g.pass()
 	cs := implementerComments(t, f, 1)
-	want := "This task's 4 attempts in this round failed, so I've stopped running the implementer here.\n\n**Goal:**"
+	want := "This task's 2 attempts in this round failed, so I've stopped running the implementer here.\n\n**Goal:**"
 	if g.runs() != 0 || !strings.HasPrefix(cs[len(cs)-1].Body, want) ||
 		!strings.HasSuffix(cs[len(cs)-1].Body, "<!-- issuedog:transition from=in-progress to=needs-human event=a"+key+" -->") {
 		t.Errorf("%d runs, the newest comment =\n%s\nwant none, and the cap's hand-off keyed by %s, starting\n%s", g.runs(), cs[len(cs)-1].Body, key, want)

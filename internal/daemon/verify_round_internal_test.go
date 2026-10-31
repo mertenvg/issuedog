@@ -50,6 +50,8 @@ func TestTaskRound(t *testing.T) {
 		{"an owner's move back", []string{pick, verify1, "from=verifying to=in-progress by=owner event=99"}, "in-progress-12", 0},
 		{"an owner's move there and back", []string{pick, verify1, findings,
 			"from=in-progress to=verifying by=owner event=98", "from=verifying to=in-progress by=owner event=99"}, "in-progress-14", 0},
+		{"an owner's move there, then the checks' findings", []string{pick, verify1, findings,
+			"from=in-progress to=verifying by=owner event=98", "from=verifying to=in-progress event=v13 head=h seen=13"}, "in-progress-13", 0},
 		{"out of held", []string{pick, verify1, findings, "from=in-progress to=held at=in-progress reason=owner cmd=1 seen=11",
 			"from=held to=in-progress cmd=2 seen=11"}, "in-progress-14", 0},
 	} {

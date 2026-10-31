@@ -27,7 +27,8 @@ import (
 // transitions, oldest first:
 //   - a move into needs-human from a stage a hand-off leaves
 //     (handoffFrom), and not one a person set by hand (by=), is a
-//     hand-off, the implementer's attempt cap's (capHandoff) included;
+//     hand-off, the implementer's attempt cap's (capHandoff) and the
+//     verify cap's (verifyFindings) included;
 //   - a move into held, and one from held back to needs-human, as /resume
 //     makes, are looked through: the hand-off from before the hold still
 //     waits;
@@ -64,7 +65,8 @@ func latestHandoff(s *github.Snapshot, appSlug string, dirty func(int64) bool) (
 // handoffFrom are the stages SPEC §7.2's table moves a task from into
 // needs-human with a hand-off (SPEC §9.3, Blocked work): in-progress, as
 // the implementer hands off, or its attempt cap does (capHandoff),
-// verifying, at the retry cap, pr-open, for a closed PR, and needs-human
+// verifying, as the verify cap does (verifyFindings), pr-open, for a
+// closed PR, and needs-human
 // itself, for an untrusted merge.
 var handoffFrom = []state.Stage{state.InProgress, state.Verifying, state.PROpen, state.NeedsHuman}
 
