@@ -21,9 +21,9 @@ func roundIssue(markers ...string) (*github.Snapshot, state.Issue) {
 
 // A task's round at in-progress starts at its latest move other than the
 // verify loop's own (SPEC §8.3), the implementer's move to verifying by a
-// run and the move back on findings keyed event=v: so its key stays the
-// pick's through the loop, and its count is the attempt= of the loop's
-// latest move. An owner's move between those stages, keyed by a timeline
+// run and the move back on findings keyed event=v or, for the verifier's,
+// by a run: so its key stays the pick's through the loop, and its count is
+// the attempt= of the loop's latest move. An owner's move between those stages, keyed by a timeline
 // event, starts a round, as does a move out of held, at its comment. At
 // any other stage, the round is the latest move's, as before.
 func TestTaskRound(t *testing.T) {
@@ -33,6 +33,7 @@ func TestTaskRound(t *testing.T) {
 		verify1  = "from=in-progress to=verifying attempt=1 run=a head=h seen=10"
 		findings = "from=verifying to=in-progress attempt=1 event=v11 head=h seen=11"
 		verify2  = "from=in-progress to=verifying attempt=2 run=b head=h seen=12"
+		verdict  = "from=verifying to=in-progress attempt=1 run=c head=h seen=11"
 	)
 	for _, tt := range []struct {
 		name     string
@@ -47,6 +48,16 @@ func TestTaskRound(t *testing.T) {
 			"from=verifying to=in-progress attempt=2 event=v13 head=h seen=13"}, "in-progress-5", 2},
 		{"findings that name no attempt", []string{pick, verify1, "from=verifying to=in-progress event=v11 head=h seen=11"}, "in-progress-5", 0},
 		{"findings that name no attempt above 0", []string{pick, verify1, "from=verifying to=in-progress attempt=-2 event=v11 head=h seen=11"}, "in-progress-5", 0},
+		{"the verifier's findings", []string{pick, verify1, verdict}, "in-progress-5", 1},
+		{"after the verifier's findings, a second verify's", []string{pick, verify1, verdict, verify2,
+			"from=verifying to=in-progress attempt=2 event=v13 head=h seen=13"}, "in-progress-5", 2},
+		{"after the checks' findings, the verifier's", []string{pick, verify1, findings, verify2,
+			"from=verifying to=in-progress attempt=2 run=d head=h seen=13"}, "in-progress-5", 2},
+		{"the verifier's findings that name no attempt", []string{pick, verify1, "from=verifying to=in-progress run=c head=h seen=11"}, "in-progress-5", 0},
+		{"an owner's move back after the verifier's findings", []string{pick, verify1, verdict, verify2,
+			"from=verifying to=in-progress by=owner event=99"}, "in-progress-14", 0},
+		{"an owner's move there and back after the verifier's findings", []string{pick, verify1, verdict,
+			"from=in-progress to=verifying by=owner event=98", "from=verifying to=in-progress by=owner event=99"}, "in-progress-14", 0},
 		{"an owner's move back", []string{pick, verify1, "from=verifying to=in-progress by=owner event=99"}, "in-progress-12", 0},
 		{"an owner's move there and back", []string{pick, verify1, findings,
 			"from=in-progress to=verifying by=owner event=98", "from=verifying to=in-progress by=owner event=99"}, "in-progress-14", 0},

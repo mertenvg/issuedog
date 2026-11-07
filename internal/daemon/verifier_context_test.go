@@ -20,7 +20,7 @@ import (
 )
 
 // This file is the verifier's context files of SPEC §12, called directly
-// on a real temporary repo, as nothing registers the Stage yet.
+// on a real temporary repo.
 
 // verifierTaskBody is a planned task's body, as the App filed it, with its
 // origin marker last.

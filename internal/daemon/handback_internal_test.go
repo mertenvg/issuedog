@@ -99,9 +99,9 @@ func TestImplementerMovedTrigger(t *testing.T) {
 		{"needs-human", state.TriggerImplementerBlocked},
 	} {
 		s := handbackSnap(false, handbackToProgress, "<!-- issuedog:transition from=in-progress to="+tt.to+" run=run1 -->")
-		m, ok := implementerMoved(state.Derive(s, waitSlug, Dirt{}.Has), Result{RunID: "run1"})
+		m, ok := runMoved(state.Derive(s, waitSlug, Dirt{}.Has), Result{RunID: "run1"}, implementerTriggers)
 		if !ok || m.To != state.Stage(tt.to) || m.Trigger != tt.want {
-			t.Errorf("a move to %s: implementerMoved = %s on %s, %v; want %s on %s", tt.to, m.To, m.Trigger, ok, tt.to, tt.want)
+			t.Errorf("a move to %s: runMoved = %s on %s, %v; want %s on %s", tt.to, m.To, m.Trigger, ok, tt.to, tt.want)
 		}
 	}
 }

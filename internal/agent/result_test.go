@@ -165,6 +165,61 @@ func TestValidatePublicCause(t *testing.T) {
 	}
 }
 
+// ErrOutput is on a run that finished with output that can't be read, and
+// the subtype that says claude gave up on it, never on a run that failed
+// some other way: those say nothing of its output, so a stage that fails
+// closed tells the two apart (SPEC §10.2). Each keeps its *PublicCauseError,
+// or its lack of one, as TestValidatePublicCause has it.
+func TestValidateErrOutput(t *testing.T) {
+	t.Parallel()
+	schema := loadSchema(t)
+	for name, output := range map[string]bool{
+		"error_max_structured_output_retries": true,
+		"missing_output":                      true,
+		"null_output":                         true,
+		"schema_mismatch":                     true,
+		"extra_field":                         true,
+		"malformed":                           true,
+		"wrong_type":                          true,
+		"error_max_turns":                     false,
+		"error_during_execution":              false,
+		"unknown_subtype":                     false,
+		"is_error":                            false,
+	} {
+		_, err := Validate(loadResult(t, name), schema)
+		if err == nil {
+			t.Fatalf("%s: validated, want an error", name)
+		}
+		if got := errors.Is(err, ErrOutput); got != output {
+			t.Errorf("%s: err = %v, ErrOutput: %t, want %t", name, err, got, output)
+		}
+	}
+	if _, err := Validate(loadResult(t, "success"), schema); errors.Is(err, ErrOutput) {
+		t.Errorf("a valid result: err = %v; want no ErrOutput", err)
+	}
+}
+
+// FailedSubtype carries ErrOutput as Validate does, on the one subtype that
+// says claude gave up on its output, with its *PublicCauseError, so a run
+// that exited non-zero with it is told apart from any other failed run.
+func TestFailedSubtypeErrOutput(t *testing.T) {
+	t.Parallel()
+	for name, output := range map[string]bool{
+		"error_max_structured_output_retries": true,
+		"error_max_turns":                     false,
+		"error_during_execution":              false,
+	} {
+		err := FailedSubtype(loadResult(t, name))
+		var pc *PublicCauseError
+		if err == nil || !errors.As(err, &pc) {
+			t.Fatalf("%s: FailedSubtype = %v; want a *PublicCauseError", name, err)
+		}
+		if got := errors.Is(err, ErrOutput); got != output {
+			t.Errorf("%s: FailedSubtype = %v, ErrOutput: %t, want %t", name, err, got, output)
+		}
+	}
+}
+
 // A subtype or type claude didn't write as one it's known to, such as one
 // holding a path, a marker or a mention, fails the result as any unknown
 // one does, quoted for the log, but isn't a *PublicCauseError, so no

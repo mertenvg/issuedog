@@ -26,8 +26,9 @@ import (
 // A verifier run after the checks (SPEC §8.1, §8.2, §10.2), on a rig wired
 // as main's, with real temporary repos and a fake claude. Each verifier
 // run's verdict is the one the test gives it. Nothing here files a
-// follow-up, moves a task on a verdict or builds a PR: those are #621's,
-// #622's, #724's and #726's.
+// follow-up, moves a task on a question or builds a PR: those are #621's,
+// #622's and #726's. A request_changes and no readable verdict are
+// verifier_apply_test.go's and verifier_round_test.go's.
 
 // verifierRunClaude is wholeRunClaude, but each run first commits in its
 // clone. Only a verifier run has a HOME in the rig's environment. It keeps
@@ -35,9 +36,11 @@ import (
 // what's in its tmp as $FAKE/hometmp.<n>, then leaves a settings file
 // there, and makes a commit of its own, with an identity it names, as it
 // gets none, kept as $FAKE/commit.<n>. Any other run commits as
-// implementerRunClaude's do.
+// implementerRunClaude's do. A run sleeps for as long as $FAKE/sleep.<n>
+// says, if it's there, and exits with $FAKE/exit.<n>, or else 0.
 var verifierRunClaude = strings.Replace(wholeRunClaude, `[ -f "$FAKE/out.$n" ] || exit 4`,
-	`if [ -n "$HOME" ]; then
+	`[ -f "$FAKE/sleep.$n" ] && sleep "$(cat "$FAKE/sleep.$n")"
+if [ -n "$HOME" ]; then
 	echo "$HOME" > "$FAKE/home.$n"
 	ls -A "$HOME" > "$FAKE/homelist.$n"
 	ls -A "$HOME/tmp" > "$FAKE/hometmp.$n"
@@ -49,7 +52,8 @@ else
 	echo "$n" > "run.$n.txt" && git add "run.$n.txt" && git commit --quiet -m "run $n" &&
 		git rev-parse HEAD > "$FAKE/commit.$n" || exit 5
 fi
-[ -f "$FAKE/out.$n" ] || exit 4`, 1)
+[ -f "$FAKE/out.$n" ] || exit 4`, 1) + `exit "$(cat "$FAKE/exit.$n" 2>/dev/null || echo 0)"
+`
 
 // verdictRig is a rig wired as main's, whose main's config has max
 // attempts and two commands: one counts its runs in ran, and one prints
@@ -70,10 +74,18 @@ const verifierRunPrinted = "every test passed"
 // wholeRunOwner.
 func newVerdictRig(t *testing.T, f *githubtest.Fake, attempts int) *verdictRig {
 	t.Helper()
+	return newVerdictRigWith(t, f, attempts, "", "")
+}
+
+// newVerdictRigWith is newVerdictRig, with more, whole lines of its config,
+// and commands, more of verify.commands after its two, each with a comma
+// before it.
+func newVerdictRigWith(t *testing.T, f *githubtest.Fake, attempts int, more, commands string) *verdictRig {
+	t.Helper()
 	ran := filepath.Join(t.TempDir(), "ran")
 	text := "types: labels\nnotify: [" + wholeRunOwner + "]\nscopes: [booking]\npr: {title_types: [feat, fix, docs]}\n" +
-		"models: {allowed: [opus, sonnet]}\nloop: {max_attempts: " + strconv.Itoa(attempts) + "}\n" +
-		"verify:\n  commands: [\"echo ran >> '" + ran + "'\", \"echo " + verifierRunPrinted + "\"]\n" +
+		"models: {allowed: [opus, sonnet]}\nloop: {max_attempts: " + strconv.Itoa(attempts) + "}\n" + more +
+		"verify:\n  commands: [\"echo ran >> '" + ran + "'\", \"echo " + verifierRunPrinted + "\"" + commands + "]\n" +
 		"  source_globs: [\"**/*.go\"]\n  test_globs: [\"**/*_test.go\"]\n  protected_paths: [\"secrets/**\"]\n"
 	cfg, err := config.Parse([]byte(text))
 	if err != nil {
@@ -736,14 +748,13 @@ func TestVerifierCommentDuringTheRun(t *testing.T) {
 	}
 }
 
-// Until #724 and #726 apply them, a verdict other than pass, live or saved
-// across a restart, moves nothing and reads as no verdict: it gets one
-// kind=transition state error saying so, the run isn't counted, no run
-// starts on the task after it, a restart included, and a pass after makes
-// only conditional reads.
+// Until #726 applies it, a question, live or saved across a restart, moves
+// nothing and reads as no verdict: it gets one kind=transition state error
+// saying so, the run isn't counted, no run starts on the task after it, a
+// restart included, and a pass after makes only conditional reads.
 func TestVerifierOtherVerdicts(t *testing.T) {
 	t.Parallel()
-	for _, verdict := range []string{"request_changes", "question"} {
+	for _, verdict := range []string{"question"} {
 		for _, saved := range []bool{false, true} {
 			t.Run(verdict+" saved "+strconv.FormatBool(saved), func(t *testing.T) {
 				t.Parallel()
@@ -934,21 +945,55 @@ func verifierSaved(t testing.TB, root, head, out string, seen int64) {
 	}
 }
 
+// verifierReplayTask files a task at verifying on attempt, as the
+// implementer's move left it, naming head, and returns the move's comment.
+func verifierReplayTask(f *githubtest.Fake, attempt int, head string) int64 {
+	n := f.AddIssue("owner", "Refuse an expired quote", "Booking an expired quote returns 410.", "type:task", "priority:p1", "scope:booking")
+	f.AddLabel(n, app, "stage:verifying")
+	return f.AddComment(n, app, "The implementer committed.\n\n<!-- issuedog:transition from=in-progress to=verifying attempt="+strconv.Itoa(attempt)+" run=r1 head="+head+" -->")
+}
+
+// verifierReplayCases are the results whose writes a replay pins, with the
+// attempt of the task's move into verifying: a pass's comment, the state
+// error of a verdict not applied yet, a request_changes, as the move back
+// and as the verify cap's hand-off on attempt 3, and no readable verdict,
+// the same two ways.
+func verifierReplayCases(t *testing.T) []struct {
+	name    string
+	attempt int
+	out     map[string]any
+} {
+	t.Helper()
+	unreadable := map[string]any{"verdict": "pass", "notes": "n", "findings": []any{verifierOutput(t, "request_changes")["findings"].([]any)[0]}}
+	return []struct {
+		name    string
+		attempt int
+		out     map[string]any
+	}{
+		{"pass", 1, verifierOutput(t, "pass")},
+		{"question", 1, verifierOutput(t, "question")},
+		{"request_changes", 1, verifierOutput(t, "request_changes")},
+		{"request_changes at the cap", 3, verifierOutput(t, "request_changes")},
+		{"no readable verdict", 1, unreadable},
+		{"no readable verdict at the cap", 3, unreadable},
+	}
+}
+
 // A saved verdict's writes, a crash at each of them, then a restart: the
-// replay ends with the same writes (SPEC §5.2), through the harness, for a
-// pass's comment and for the state error of a verdict not applied yet.
+// replay ends with the same writes (SPEC §5.2), through the harness, for
+// each kind of result.
 func TestVerifierSavedVerdictReplay(t *testing.T) {
 	t.Parallel()
 	head := strings.Repeat("a", 40)
-	for _, verdict := range []string{"pass", "request_changes"} {
-		t.Run(verdict, func(t *testing.T) {
+	for _, tt := range verifierReplayCases(t) {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			o := newOrigin(t)
-			out := ivResult(t, verifierOutput(t, verdict))
+			out := ivResult(t, tt.out)
 			roots := map[*githubtest.Fake]string{}
 			githubtest.Replay(t, func(tb testing.TB) *githubtest.Fake {
 				f := newFake(tb)
-				_, move := verifierTask(f, head)
+				move := verifierReplayTask(f, tt.attempt, head)
 				roots[f] = t.TempDir()
 				verifierSaved(tb, roots[f], head, out, move)
 				return f
@@ -961,31 +1006,68 @@ func TestVerifierSavedVerdictReplay(t *testing.T) {
 	}
 }
 
-// (*Verifier).Apply posts a pass once, whatever crash it replays from
-// (SPEC §5.2): its marker, read back by its run=, is the check before the
-// write.
+// A saved result that's no readable verdict at all replays as the move it
+// counts as: a crash at each of its writes, then a restart, writes it once.
+func TestVerifierSavedNoVerdictReplay(t *testing.T) {
+	t.Parallel()
+	head := strings.Repeat("c", 40)
+	for _, attempt := range []int{1, 3} {
+		t.Run("attempt "+strconv.Itoa(attempt), func(t *testing.T) {
+			t.Parallel()
+			o := newOrigin(t)
+			roots := map[*githubtest.Fake]string{}
+			githubtest.Replay(t, func(tb testing.TB) *githubtest.Fake {
+				f := newFake(tb)
+				move := verifierReplayTask(f, attempt, head)
+				roots[f] = t.TempDir()
+				verifierSaved(tb, roots[f], head, `{"type":"result","subtype":"success","is_error":false,"result":"Done."}`, move)
+				return f
+			}, func(f *githubtest.Fake) error {
+				g := newRig(t, f, o, roots[f])
+				g.r.Stages = map[state.Stage]daemon.Stage{state.Verifying: &daemon.Verifier{Daemon: g.d}}
+				return g.work(1)
+			})
+		})
+	}
+}
+
+// (*Verifier).Apply writes each result once, whatever crash it replays from
+// (SPEC §5.2): a verify marker, or the run's move, read back by its run=, is
+// the check before the write.
 func TestVerifierApplyReplay(t *testing.T) {
 	t.Parallel()
 	head := strings.Repeat("b", 40)
-	out, err := json.Marshal(verifierOutput(t, "pass"))
+	cfg, err := config.Parse([]byte("types: labels\nnotify: [owner]\nloop: {max_attempts: 3}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	githubtest.Replay(t, func(tb testing.TB) *githubtest.Fake {
-		f := newFake(tb)
-		verifierTask(f, head)
-		return f
-	}, func(f *githubtest.Fake) error {
-		ctx := context.Background()
-		a := &daemon.Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: slug}
-		s, err := a.Client.Snapshot(ctx, "o", "r", 1)
-		if err != nil {
-			return err
+	for _, tt := range verifierReplayCases(t) {
+		if tt.name == "question" {
+			continue // a state error, which only the harness keeps from a second try
 		}
-		d, err := a.Dirty(ctx, s, trusted{"owner": true})
-		if err != nil {
-			return err
-		}
-		return (&daemon.Verifier{}).Apply(ctx, a, daemon.Result{RunID: "applied", S: s, Dirt: d, Output: out, Start: head})
-	})
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			out, err := json.Marshal(tt.out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			githubtest.Replay(t, func(tb testing.TB) *githubtest.Fake {
+				f := newFake(tb)
+				verifierReplayTask(f, tt.attempt, head)
+				return f
+			}, func(f *githubtest.Fake) error {
+				ctx := context.Background()
+				a := &daemon.Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: slug}
+				s, err := a.Client.Snapshot(ctx, "o", "r", 1)
+				if err != nil {
+					return err
+				}
+				d, err := a.Dirty(ctx, s, trusted{"owner": true})
+				if err != nil {
+					return err
+				}
+				return (&daemon.Verifier{Daemon: &daemon.Daemon{Config: cfg}}).Apply(ctx, a, daemon.Result{RunID: "applied", S: s, Dirt: d, Output: out, Start: head})
+			})
+		})
+	}
 }

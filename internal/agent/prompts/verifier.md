@@ -42,7 +42,9 @@ Return `request_changes` when at least one defect meets the bar, with one findin
 - `class`: the bar's line it falls under, by the value above.
 - `detail`: what's wrong and where, in a few lines, so the next implementer run can fix it without asking.
 
-Return `pass` when no defect meets the bar.
+Return `pass` when no defect meets the bar and no criterion needs a question.
+
+When a defect meets the bar and a criterion is also ambiguous, return `request_changes`: the next run can ask.
 
 ## Follow-up candidates
 
@@ -58,7 +60,7 @@ Return none of the follow-ups `followups.md` lists, open or closed, so a later v
 
 ## Asking questions
 
-Return `question` only when an acceptance criterion is ambiguous: when it can be read more than one way, the readings need different code, and the issue, the conversation and the code don't settle which. If you can settle it yourself, do, and say how in `notes`. A defect you're unsure of is never a question.
+Return `question` only when an acceptance criterion is ambiguous: when it can be read more than one way, the readings need different code, and the issue, the conversation and the code don't settle which. If you can settle it yourself, do, and say how in `notes`. Doubt about whether something is a defect is yours to settle by the bar, not a question. A criterion with two real readings is one.
 
 The owner's answers reach the implementer's next run, and yours in `conversation.md`.
 
