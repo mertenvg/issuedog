@@ -1,0 +1,13 @@
+{
+  "verdict": "pass",
+  "notes": "Every criterion holds: `Book` refuses an expired quote with `ErrQuoteExpired`, and the API answers `410 Gone` with the new-quote link. `TestBookQuoteAtExpiry` books at the exact expiry time, as the round's answer settled.",
+  "follow_ups": [
+    {
+      "title": "A quote that expires between the check and the write is still booked",
+      "scope": "booking",
+      "scenario": "A customer books in the same millisecond the quote expires, and the check runs just before it does.",
+      "likelihood": "Rare: the window is the few milliseconds between the check and the write.",
+      "impact": "One booking at a price that has just expired, which support can refund."
+    }
+  ]
+}

@@ -51,7 +51,7 @@ func shippedPrompt(t *testing.T, name string) []byte {
 }
 
 func TestPromptOverride(t *testing.T) {
-	for _, name := range []string{"interviewer", "planner", "implementer"} {
+	for _, name := range []string{"interviewer", "planner", "implementer", "verifier"} {
 		want := []byte("# Our " + name + "\n\nAsk about the API first.\n")
 		r := &fakeMain{files: map[string][]byte{".issuedog/prompts/" + name + ".md": want}}
 		got, override, err := Prompt(context.Background(), r, name)
@@ -65,7 +65,7 @@ func TestPromptOverride(t *testing.T) {
 }
 
 func TestPromptMissingUsesDefault(t *testing.T) {
-	for _, name := range []string{"interviewer", "planner", "triage", "implementer"} {
+	for _, name := range []string{"interviewer", "planner", "triage", "implementer", "verifier"} {
 		r := &fakeMain{}
 		got, override, err := Prompt(context.Background(), r, name)
 		if err != nil {
@@ -82,7 +82,7 @@ func TestPromptMissingUsesDefault(t *testing.T) {
 
 func TestPromptBlankUsesDefaultAndWarns(t *testing.T) {
 	// Not parallel: it reads the process-wide logr output.
-	for _, name := range []string{"triage", "planner", "implementer"} {
+	for _, name := range []string{"triage", "planner", "implementer", "verifier"} {
 		for _, blank := range []string{"", " \n\t\r\n"} {
 			r := &fakeMain{files: map[string][]byte{".issuedog/prompts/" + name + ".md": []byte(blank)}}
 			// The writer takes only warnings, so another level fails.
@@ -116,7 +116,7 @@ func TestPromptReadError(t *testing.T) {
 }
 
 func TestPromptUnknownName(t *testing.T) {
-	for _, name := range []string{"verifier", "", "../schemas/triage", "prompts/triage", "Triage", "../schemas/planner"} {
+	for _, name := range []string{"story-verifier", "", "../schemas/triage", "prompts/triage", "Triage", "../schemas/planner"} {
 		r := &fakeMain{files: map[string][]byte{".issuedog/prompts/" + name + ".md": []byte("x")}}
 		got, _, err := Prompt(context.Background(), r, name)
 		if err == nil || !strings.Contains(err.Error(), "no shipped prompt") {
@@ -129,21 +129,24 @@ func TestPromptUnknownName(t *testing.T) {
 }
 
 func TestPromptSizeLimit(t *testing.T) {
-	limit := bytes.Repeat([]byte("a"), MaxPromptSize)
-	r := &fakeMain{files: map[string][]byte{".issuedog/prompts/interviewer.md": limit}}
-	if got, override, err := Prompt(context.Background(), r, "interviewer"); err != nil || !override || len(got) != MaxPromptSize {
-		t.Errorf("a 64 KiB file: %d bytes, override %v, err %v; want it used", len(got), override, err)
-	}
+	for _, name := range []string{"interviewer", "verifier"} {
+		path := ".issuedog/prompts/" + name + ".md"
+		limit := bytes.Repeat([]byte("a"), MaxPromptSize)
+		r := &fakeMain{files: map[string][]byte{path: limit}}
+		if got, override, err := Prompt(context.Background(), r, name); err != nil || !override || len(got) != MaxPromptSize {
+			t.Errorf("%s: a 64 KiB file: %d bytes, override %v, err %v; want it used", name, len(got), override, err)
+		}
 
-	r.files[".issuedog/prompts/interviewer.md"] = append(limit, '\n')
-	got, _, err := Prompt(context.Background(), r, "interviewer")
-	if err == nil || !strings.Contains(err.Error(), ".issuedog/prompts/interviewer.md is 65537 bytes") {
-		t.Errorf("a file over 64 KiB: %d bytes, err %v; want an error naming the path and size", len(got), err)
+		r.files[path] = append(limit, '\n')
+		got, _, err := Prompt(context.Background(), r, name)
+		if err == nil || !strings.Contains(err.Error(), path+" is 65537 bytes") {
+			t.Errorf("%s: a file over 64 KiB: %d bytes, err %v; want an error naming the path and size", name, len(got), err)
+		}
 	}
 }
 
 func TestStageSchema(t *testing.T) {
-	for _, name := range []string{"interviewer", "planner", "triage", "implementer"} {
+	for _, name := range []string{"interviewer", "planner", "triage", "implementer", "verifier"} {
 		raw, err := StageSchema(name)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
@@ -152,8 +155,8 @@ func TestStageSchema(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if raw, err := StageSchema("verifier"); err == nil || !strings.Contains(err.Error(), `no schema for stage "verifier"`) {
-		t.Errorf("StageSchema(verifier) = %q, err %v; want an error", raw, err)
+	if raw, err := StageSchema("story-verifier"); err == nil || !strings.Contains(err.Error(), `no schema for stage "story-verifier"`) {
+		t.Errorf("StageSchema(story-verifier) = %q, err %v; want an error", raw, err)
 	}
 }
 
@@ -174,6 +177,39 @@ func TestImplementerStageSchemaIsShipped(t *testing.T) {
 	}
 }
 
+// The verifier's schema is the one that ships, byte for byte, whatever main
+// holds: a prompt there overrides the default, but no schema file does, and
+// nothing reads one (SPEC §3.4).
+func TestVerifierSchemaNeverReadFromMain(t *testing.T) {
+	t.Parallel()
+	want, err := os.ReadFile(filepath.Join("schemas", "verifier.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged := []byte(`{"title": "verifier", "type": "object"}`)
+	prompt := ".issuedog/prompts/verifier.md"
+	r := &fakeMain{files: map[string][]byte{
+		prompt:                                 []byte("# Our verifier\n"),
+		".issuedog/prompts/verifier.json":      forged,
+		".issuedog/schemas/verifier.json":      forged,
+		"schemas/verifier.json":                forged,
+		"internal/agent/schemas/verifier.json": forged,
+	}}
+	if _, override, err := Prompt(context.Background(), r, "verifier"); err != nil || !override {
+		t.Fatalf("Prompt: override %v, err %v; want main's file used", override, err)
+	}
+	got, err := StageSchema("verifier")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("StageSchema(verifier) = %q, want schemas/verifier.json", got)
+	}
+	if want := []string{prompt}; !slices.Equal(r.reads, want) {
+		t.Errorf("read %q from main, want only %q", r.reads, want)
+	}
+}
+
 // Every shipped prompt has a schema and the other way round, and each
 // prompt is within the size an override may have.
 func TestShippedPromptsAndSchemasPair(t *testing.T) {
@@ -189,12 +225,64 @@ func TestShippedPromptsAndSchemasPair(t *testing.T) {
 		return n
 	}
 	prompts, schemas := names("prompts/*.md"), names("schemas/*.json")
-	if want := []string{"implementer", "interviewer", "planner", "triage"}; !slices.Equal(prompts, want) || !slices.Equal(schemas, want) {
+	if want := []string{"implementer", "interviewer", "planner", "triage", "verifier"}; !slices.Equal(prompts, want) || !slices.Equal(schemas, want) {
 		t.Errorf("prompts %q, schemas %q; want %q for both", prompts, schemas, want)
 	}
 	for _, name := range prompts {
 		if p := shippedPrompt(t, name); len(bytes.TrimSpace(p)) == 0 || len(p) > MaxPromptSize {
 			t.Errorf("%s.md is %d bytes, want a non-blank prompt within %d", name, len(p), MaxPromptSize)
+		}
+	}
+}
+
+// specBlockingBar returns the lines of SPEC §10.2's blocking bar, without
+// their bullets or closing punctuation.
+func specBlockingBar(t *testing.T) []string {
+	t.Helper()
+	spec, err := os.ReadFile(filepath.Join("..", "..", "SPEC.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, section, _ := strings.Cut(string(spec), "### 10.2 LLM verifier")
+	_, section, ok := strings.Cut(section, "**The blocking bar.**")
+	if !ok {
+		t.Fatal("SPEC §10.2 has no blocking bar")
+	}
+	section, _, ok = strings.Cut(section, "Anything rarer is never a finding.")
+	if !ok {
+		t.Fatal("SPEC §10.2 doesn't say anything rarer is never a finding")
+	}
+	var bar []string
+	for _, line := range strings.Split(section, "\n") {
+		if text, ok := strings.CutPrefix(line, "- "); ok {
+			bar = append(bar, strings.TrimRight(text, ";."))
+		}
+	}
+	return bar
+}
+
+// The prompt carries SPEC §10.2's bar word for word, each line under its
+// class, so the two can't drift, and the classes are the schema's. Anything
+// rarer is never a finding but a candidate.
+func TestVerifierPromptBar(t *testing.T) {
+	t.Parallel()
+	bar := specBlockingBar(t)
+	if len(bar) != len(verifierClasses) {
+		t.Fatalf("SPEC §10.2's bar has %d lines %q, want one for each of the classes %q", len(bar), bar, verifierClasses)
+	}
+	p := string(shippedPrompt(t, "verifier"))
+	for i, class := range verifierClasses {
+		if want := "- `" + class + "`: " + bar[i] + ".\n"; !strings.Contains(p, want) {
+			t.Errorf("verifier.md doesn't contain %q", want)
+		}
+	}
+	for _, want := range []string{
+		"A finding blocks only when it's one of these",
+		"Anything rarer is never a finding. It's a follow-up candidate, returned with the verdict.",
+		"Put anything rarer than the bar in `follow_ups`",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("verifier.md doesn't contain %q", want)
 		}
 	}
 }
