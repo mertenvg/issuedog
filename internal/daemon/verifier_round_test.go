@@ -321,4 +321,7 @@ func TestOnlyTheVerifierFailsClosed(t *testing.T) {
 			t.Errorf("the Stage at %s is FailClosed: %t, want %t", at, ok, at == state.Verifying)
 		}
 	}
+	if _, ok := v.r.Unlabeled.(daemon.FailClosed); ok {
+		t.Error("the Unlabeled stage is FailClosed; want it not")
+	}
 }

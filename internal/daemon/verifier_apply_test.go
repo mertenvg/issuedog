@@ -368,7 +368,12 @@ func TestVerifierFailedRunIsNoVerdict(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			f := newFake(t)
-			v := newVerdictRig(t, f, 1)
+			more := ""
+			if tt.sleep {
+				// Each pass reloads the config from main, so the timeout is set there.
+				more = "stages:\n  timeouts: {verifier: 1s}\n"
+			}
+			v := newVerdictRigWith(t, f, 1, more, "")
 			head := v.head()
 			n, _ := verifierTask(f, head)
 			v.out(1, tt.out)
@@ -378,8 +383,7 @@ func TestVerifierFailedRunIsNoVerdict(t *testing.T) {
 				}
 			}
 			if tt.sleep {
-				v.d.Config.Stages.Timeouts.Verifier = 200 * time.Millisecond
-				if err := os.WriteFile(v.path("claude", "sleep.1"), []byte("120"), 0o644); err != nil {
+				if err := os.WriteFile(v.path("claude", "sleep.1"), []byte("30"), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -389,6 +393,8 @@ func TestVerifierFailedRunIsNoVerdict(t *testing.T) {
 			}
 			if body := verifierNewest(f, n); !strings.Contains(body, "issuedog:error kind=attempts") || strings.Contains(body, "no readable verdict") {
 				t.Errorf("the newest comment =\n%s\nwant the kind=attempts error, saying nothing of a verdict", body)
+			} else if tt.sleep && !strings.Contains(body, "run timed out after 1s") {
+				t.Errorf("the newest comment =\n%s\nwant it to say the run timed out", body)
 			}
 		})
 	}
