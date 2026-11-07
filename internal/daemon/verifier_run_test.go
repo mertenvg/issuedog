@@ -804,11 +804,11 @@ func TestVerifierOtherVerdicts(t *testing.T) {
 	}
 }
 
-// Until #725, a failed verifier run goes as any stage's that isn't the
-// implementer's: it's tried again at the same effort, as the verifier's
-// never rises, and after loop.max_attempts in a row the task gets one
-// kind=attempts state error, no run starts, nothing moves it, and the
-// worker stays held, with no second error on later passes.
+// A failed verifier run is tried again at the same effort, as the
+// verifier's never rises, and after loop.max_attempts in a row on the head
+// the task is handed off at needs-human, with no kind=attempts state error.
+// No run starts on it then, and the worker is free, so the next pass picks
+// the next task.
 func TestVerifierFailedRuns(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
@@ -828,22 +828,16 @@ func TestVerifierFailedRuns(t *testing.T) {
 	if l := v.leaseOf("2"); l.Attempt != 2 {
 		t.Errorf("run 2 is attempt %d, want 2", l.Attempt)
 	}
-	errs := func() (errs []string) {
-		for _, c := range f.State().Issues[n-1].Comments {
-			if strings.Contains(c.Body, "<!-- issuedog:error kind=attempts ") {
-				errs = append(errs, c.Body)
-			}
-		}
-		return errs
+	if got := verifierNewest(f, n); !strings.HasPrefix(got, "The verifier's 2 runs on this head failed, so I've stopped running it here.") {
+		t.Errorf("the newest comment =\n%s\nwant the hand-off for the verifier's runs", got)
 	}
-	if got := errs(); len(got) != 1 || !strings.HasPrefix(got[0], "The verifier run failed 2 times in a row, so I've stopped running it here.") {
-		t.Errorf("the attempts errors = %q; want one, on the verifier", got)
+	if got := pickStage(f, ready); got != "stage:ready" {
+		t.Errorf("#%d is at %s in the cap's pass; want ready, as the pass ended with the failed run", ready, got)
 	}
-	v.passes(2)
-	v.quietPass("after the cap")
-	if v.runs() != 2 || len(errs()) != 1 || pickStage(f, n) != "stage:verifying" || pickStage(f, ready) != "stage:ready" {
-		t.Errorf("after the cap: %d runs, %d errors, at %s, the next task at %s; want two, one, still at verifying, and still ready",
-			v.runs(), len(errs()), pickStage(f, n), pickStage(f, ready))
+	v.pass()
+	if v.leaseOf("3").Issue != ready || len(errorMarkers(f, n)) != 0 || pickStage(f, n) != "stage:needs-human" || pickStage(f, ready) != "stage:in-progress" {
+		t.Errorf("after the cap: run 3's lease %+v, errors %q, at %s, the next task at %s; want #%d's, none, at needs-human, and picked",
+			v.leaseOf("3"), errorMarkers(f, n), pickStage(f, n), pickStage(f, ready), ready)
 	}
 }
 
