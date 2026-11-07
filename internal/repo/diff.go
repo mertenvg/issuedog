@@ -130,6 +130,24 @@ func (r *Repo) AddedLines(ctx context.Context, from, to string, paths []string) 
 	return added, nil
 }
 
+// Patch returns the whole patch from from to to, both full SHAs, as git
+// gives it: every file, test files included, finding renames, read from
+// the bare repo with diffFlags and no attributes (attrless), so no
+// attribute, such as -diff or binary, hides a file's lines. A file git
+// takes as binary, by its content alone, is git's one line saying so.
+func (r *Repo) Patch(ctx context.Context, from, to string) ([]byte, error) {
+	if err := checkSHAs(from, to); err != nil {
+		return nil, fmt.Errorf("patch: %w", err)
+	}
+	args := slices.Concat([]string{"diff-tree", "-r", "-p", "--find-renames", "--submodule=short",
+		"--src-prefix=a/", "--dst-prefix=b/"}, diffFlags, []string{from, to, "--"})
+	out, err := r.gitAttrless(ctx, from, args...)
+	if err != nil {
+		return nil, fmt.Errorf("patch %s..%s: %w", from, to, err)
+	}
+	return out, nil
+}
+
 // parseAdded reads a -U0 patch and returns its added lines in files at
 // paths. Each file's patch starts with a "diff --git" line; its "+++" line
 // names the file in the to side; each hunk header says how many lines
