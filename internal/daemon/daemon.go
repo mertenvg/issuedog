@@ -396,8 +396,8 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		if err == nil {
 			err = d.Step.FlagVisit(ctx, s)
 		}
-		// AnswerVisit sends a task whose implementer round has an answer
-		// back to ready (taskanswer.go).
+		// AnswerVisit sends a task whose implementer or verifier round has
+		// an answer back to ready (taskanswer.go).
 		if err == nil {
 			err = d.Step.AnswerVisit(ctx, s)
 		}

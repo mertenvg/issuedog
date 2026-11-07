@@ -105,21 +105,33 @@ type verifierFacts struct {
 	Head           string
 	Attempt, Limit int
 	// Issue is the task's number and Notify the config's notify, for the
-	// hand-off's comment and its cc line.
+	// comment of a hand-off or a question round and its cc line.
 	Issue  int
 	Notify []string
+	// MaxQuestions is loop.max_questions_per_round, and Round the number a
+	// question round takes, the next of every stage's (SPEC §9.1).
+	MaxQuestions, Round int
 }
 
-// facts are what checkVerifier holds r's output to, on an issue in state is.
-func (v *Verifier) facts(r Result, is state.Issue) verifierFacts {
+// facts are what checkVerifier holds r's output to, on an issue in state is
+// whose App is appSlug.
+func (v *Verifier) facts(r Result, is state.Issue, appSlug string) verifierFacts {
 	c := v.Daemon.Config
-	return verifierFacts{Head: r.Start, Attempt: verifyAttempt(is), Limit: int(c.Loop.MaxAttempts), Issue: r.S.Number, Notify: c.Notify}
+	return verifierFacts{Head: r.Start, Attempt: verifyAttempt(is), Limit: int(c.Loop.MaxAttempts), Issue: r.S.Number, Notify: c.Notify,
+		MaxQuestions: int(c.Loop.MaxQuestionsPerRound), Round: nextRound(allRounds(r.S, appSlug, r.Dirt.Has))}
 }
 
 // atCap reports whether the head judged is the round's last attempt's, or
 // one past a loop.max_attempts lowered since (SPEC §8.3). A move into
 // verifying that names no attempt never is, as verifyFindings has it.
 func (f verifierFacts) atCap() bool { return f.Attempt >= f.Limit }
+
+// questionComment is the comment a question posts: the round in the SPEC
+// §9.1 format, then the cc line. Only the questions reach it, so a question's
+// notes aren't posted.
+func questionComment(out verifierOutput, f verifierFacts) string {
+	return renderQuestions(interviewOutput{Questions: out.Questions}, f.Issue, f.Round, f.Notify)
+}
 
 // changesComment is the comment request_changes posts: the findings
 // (renderVerdict), or on the round's last attempt, the verify cap's hand-off
@@ -144,7 +156,9 @@ func changesComment(out verifierOutput, f verifierFacts) string {
 //     criterion is on one line, and the comment it posts (changesComment),
 //     the findings or at the cap the hand-off, is within maxText less
 //     textRoom.
-//   - question has questions and no findings.
+//   - question has questions and no findings. They follow the interviewer's
+//     question rules (checkVerifierQuestions), and the comment it posts
+//     (questionComment) is within maxText less textRoom.
 //
 // Follow-up candidates aren't looked at: a failing verdict drops its own.
 // A stand-in for a run with no readable verdict has nothing to check.
@@ -189,6 +203,10 @@ func checkVerifier(out verifierOutput, f verifierFacts) error {
 		if len(out.Findings) > 0 {
 			fail(ruleOutcome, "question has no findings")
 		}
+		errs = append(errs, checkVerifierQuestions(out.Questions, f)...)
+		if n := textLen(questionComment(out, f)); n > maxText-textRoom {
+			fail(ruleLength, "the comment is %d characters, over %d", n, maxText-textRoom)
+		}
 	default:
 		fail(ruleOutcome, "the verdict isn't one the schema names")
 	}
@@ -196,6 +214,20 @@ func checkVerifier(out verifierOutput, f verifierFacts) error {
 		return nil
 	}
 	return fmt.Errorf("check verifier output: %w", errors.Join(errs...))
+}
+
+// checkVerifierQuestions is checkQuestions on a question's round. Its details
+// may quote the run's text, and a broken rule reaches a public comment here
+// (noVerdict), so each error's *ruleError names the rule alone, and only the
+// log, which reads the whole error, gets the detail, as decodeCause keeps a
+// decoder's words.
+func checkVerifierQuestions(qs []interviewQuestion, f verifierFacts) []error {
+	var errs []error
+	checkQuestions(qs, interviewFacts{MaxQuestions: f.MaxQuestions}, func(rule, format string, args ...any) {
+		public := &ruleError{Rule: rule, Detail: "a question breaks the interviewer's question rules"}
+		errs = append(errs, fmt.Errorf("%w: %s", public, fmt.Sprintf(format, args...)))
+	})
+	return errs
 }
 
 // verdictOn reports whether is has a clean pass of the verifier's on head:
@@ -237,13 +269,11 @@ func verdictRun(is state.Issue, runID string) bool {
 //
 // A request_changes is the implementer attempt that made the head failing
 // verify, so it's one of the verify loop's moves (verifyLoopMove), and the
-// round goes on (SPEC §8.3). See applyChanges. Its candidates are dropped.
+// round goes on (SPEC §8.3). See applyChanges. Its notes and candidates are
+// dropped.
 //
-// A question isn't applied yet (#726). It's a state error (StateError), so
-// the run ends uncounted, with one kind=transition error on the issue, keyed
-// by the run's moveKey, and the task stays where it is, with no comment that
-// reads as a verdict. No run starts on the task until its round changes
-// (runStage), after a restart too, as the error is the record.
+// A question is a question round, and the owner's answer starts a new round
+// of attempts. See applyQuestion. Its notes and candidates are dropped.
 func (v *Verifier) Apply(ctx context.Context, a *Applier, r Result) error {
 	wrap := func(err error) error {
 		return fmt.Errorf("apply verifier run %s on %s/%s#%d: %w", r.RunID, a.Owner, a.Repo, r.S.Number, err)
@@ -260,7 +290,7 @@ func (v *Verifier) Apply(ctx context.Context, a *Applier, r Result) error {
 		}
 		return nil
 	}
-	f := v.facts(r, is)
+	f := v.facts(r, is, a.AppSlug)
 	out, err := decodeVerifier(r.Output)
 	if err == nil {
 		err = checkVerifier(out, f)
@@ -275,8 +305,11 @@ func (v *Verifier) Apply(ctx context.Context, a *Applier, r Result) error {
 		}
 		return nil
 	}
-	if out.Verdict != verdictPass {
-		return fmt.Errorf("%w: its `%s` verdict can't be applied yet, so the task stays at %s", state.ErrNoTransition, out.Verdict, state.Verifying)
+	if out.Verdict == verdictQuestion {
+		if err := applyQuestion(ctx, a, r, out, f); err != nil {
+			return wrap(err)
+		}
+		return nil
 	}
 	fields := map[string]string{"verdict": verdictPass, "run": r.RunID, "head": r.Start}
 	maps.Copy(fields, r.fields)
@@ -291,6 +324,28 @@ func (v *Verifier) Apply(ctx context.Context, a *Applier, r Result) error {
 		return wrap(err)
 	}
 	logr.Infof("%s/%s#%d: run %s passes its head %s, which waits at %s", a.Owner, a.Repo, r.S.Number, r.RunID, r.Start, state.Verifying)
+	return nil
+}
+
+// applyQuestion writes a question, as r.Move's move, keyed by the run, with
+// seen=, the lease's, and the run's model=, effort= and ran=: verifying →
+// clarifying on verifier-question, with round= and questions=, the round the
+// next of every stage's (nextRound, SPEC §9.1), and its comment
+// questionComment's. That releases the worker (SPEC §8.1), and the task waits
+// there for its answer (Step.AnswerVisit), which sends it back to ready, a new
+// round of attempts.
+func applyQuestion(ctx context.Context, a *Applier, r Result, out verifierOutput, f verifierFacts) error {
+	m := r.Move(state.Clarifying, state.TriggerVerifierQuestion)
+	if m.Fields == nil {
+		m.Fields = map[string]string{}
+	}
+	m.Fields["round"], m.Fields["questions"] = strconv.Itoa(f.Round), strconv.Itoa(len(out.Questions))
+	m.Text = questionComment(out, f)
+	if err := a.Transition(ctx, r.S, r.Dirt.Has, m); err != nil {
+		return fmt.Errorf("move the task to %s on the verifier's question: %w", state.Clarifying, err)
+	}
+	logr.Infof("%s/%s#%d: run %s asks round %d, of %d questions, on its head %s, moving to %s",
+		a.Owner, a.Repo, r.S.Number, r.RunID, f.Round, len(out.Questions), f.Head, state.Clarifying)
 	return nil
 }
 

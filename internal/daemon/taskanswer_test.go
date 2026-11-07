@@ -33,7 +33,7 @@ func taskAnswerTask(f *githubtest.Fake) int {
 // taskAnswered is the App's comment on a task's move back to ready on
 // answers to round 1, keyed by the first, with seen the newest.
 func taskAnswered(first, newest int64) string {
-	return fmt.Sprintf("Round 1 has answers, so the task goes back to `ready`. The implementer's next run gets them.\n\n"+
+	return fmt.Sprintf("Round 1 has answers, so the task goes back to `ready`. The next run gets them.\n\n"+
 		"<!-- issuedog:transition from=clarifying to=ready cmd=%d seen=%d -->", first, newest)
 }
 
@@ -263,7 +263,7 @@ func TestTaskAnswerAfterResume(t *testing.T) {
 	if !slices.Contains(is.Labels, "stage:ready") || slices.Contains(is.Labels, "stage:clarifying") {
 		t.Errorf("the task's labels are %v, want stage:ready in place of stage:clarifying", is.Labels)
 	}
-	want := fmt.Sprintf("Round 1 has an answer, so the task goes back to `ready`. The implementer's next run gets it.\n\n"+
+	want := fmt.Sprintf("Round 1 has an answer, so the task goes back to `ready`. The next run gets it.\n\n"+
 		"<!-- issuedog:transition from=clarifying to=ready cmd=%d seen=%d -->", answer, answer)
 	if last := is.Comments[len(is.Comments)-1]; last.Author != app || last.Body != want {
 		t.Errorf("the task's newest comment, by %s, =\n%s\nwant the App's\n%s", last.Author, last.Body, want)

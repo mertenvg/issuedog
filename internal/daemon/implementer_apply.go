@@ -260,6 +260,7 @@ var implementerTriggers = map[state.Stage]state.Trigger{
 var verifierTriggers = map[state.Stage]state.Trigger{
 	state.InProgress: state.TriggerFindings,
 	state.NeedsHuman: state.TriggerAttemptCap,
+	state.Clarifying: state.TriggerVerifierQuestion,
 }
 
 // runMoved returns the move r's run wrote on an issue in state is, as a

@@ -36,20 +36,32 @@ func renderFindings(head, main string, attempt, limit int, fs []verify.Finding, 
 }
 
 // findingsBack ends the comment of a move back on findings, the checks'
-// and the verifier's.
-const findingsBack = "\n\nSo the task is back at in-progress, for the implementer to fix."
+// and the verifier's. noVerdictBack ends it for a run with no readable
+// verdict: nothing is known to be wrong, so the implementer's next run needs
+// only a head of its own for the verifier to judge, and commits needs a
+// commit past its start (SPEC §10.2, §12).
+const (
+	findingsBack  = "\n\nSo the task is back at in-progress, for the implementer to fix."
+	noVerdictBack = "\n\nSo the task is back at in-progress. There's nothing to fix: make one empty commit saying so."
+)
 
 // renderVerdict is the comment on a task's move verifying → in-progress on
 // the verifier's findings (SPEC §7.2, §10.2): the verdict as verdictText
-// gives it, then that the task is back at in-progress, the whole escaped
-// (SPEC §5.1).
+// gives it, then that the task is back at in-progress, and for a run with no
+// readable verdict, that there's nothing to fix, the whole escaped (SPEC
+// §5.1).
 func renderVerdict(head string, attempt, limit int, out verifierOutput) string {
-	return github.Escape(verdictText(head, attempt, limit, out) + findingsBack)
+	back := findingsBack
+	if out.NoVerdict != "" {
+		back = noVerdictBack
+	}
+	return github.Escape(verdictText(head, attempt, limit, out) + back)
 }
 
-// verdictText is the verifier's request_changes (SPEC §10.2), as the
-// findings comment (renderVerdict) and the verify cap's hand-off
-// (renderVerifyCapHandoff) both give it, unescaped: it names attempt, the
+// verdictText is the verifier's request_changes, or a run's lack of any
+// verdict (SPEC §10.2), as the findings comment (renderVerdict) and the
+// verify cap's hand-off (renderVerifyCapHandoff) both give it, unescaped: it
+// opens by saying which it is, and names attempt, the
 // implementer run's number in the task's round, of limit, loop.max_attempts,
 // unless attempt is 0 for none (SPEC §8.3), and head, the head the run
 // judged, which is git's. Then each finding gets a section: its criterion,
@@ -63,7 +75,11 @@ func verdictText(head string, attempt, limit int, out verifierOutput) string {
 	if attempt > 0 {
 		on = fmt.Sprintf(" on attempt %d of %d,", attempt, limit)
 	}
-	parts := []string{fmt.Sprintf("The verifier asked for changes%s at `%s`.", on, head)}
+	said := "asked for changes"
+	if out.NoVerdict != "" {
+		said = "gave no verdict"
+	}
+	parts := []string{fmt.Sprintf("The verifier %s%s at `%s`.", said, on, head)}
 	if out.NoVerdict != "" {
 		parts = append(parts, "The verifier's run gave no readable verdict, so this counts as `request_changes`: "+out.NoVerdict+
 			". Nothing is known to be wrong with the code.")
