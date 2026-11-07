@@ -74,12 +74,13 @@ func listingsSince(t *testing.T, f *githubtest.Fake, at time.Time) int {
 	return n
 }
 
-// issueListings counts the requests the fake answered with a listing of the
-// repo's issues, not a 304.
-func issueListings(f *githubtest.Fake) int {
+// issueReads counts the requests that listed the repo's issues, whatever the
+// fake answered: a repeated listing is conditional, so most of its answers
+// are 304s.
+func issueReads(f *githubtest.Fake) int {
 	n := 0
 	for _, r := range f.Requests() {
-		if r.Path == "/issues" && r.Status == http.StatusOK {
+		if r.Path == "/issues" {
 			n++
 		}
 	}
@@ -147,12 +148,13 @@ func TestVerifierCandidatesThroughARestart(t *testing.T) {
 	}
 
 	v.pass()
-	listings := issueListings(f)
-	for _, step := range []string{"first", "second"} {
+	reads := issueReads(f)
+	quiet := []string{"first", "second"}
+	for _, step := range quiet {
 		v.quietPass(step)
 	}
-	if got := issueListings(f); got != listings {
-		t.Errorf("unchanged passes listed the issues %d times; want none", got-listings)
+	if got := issueReads(f) - reads; got != len(quiet) {
+		t.Errorf("%d unchanged passes read the issue list %d times; want the poll's alone, once a pass", len(quiet), got)
 	}
 
 	filed := f.AddIssue(app, "Filed since", followUpBody(n, v.leaseOf("1").RunID, "F1"), "stage:intake", "type:task")
