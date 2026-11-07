@@ -127,7 +127,7 @@ func TestVerifierFindingsMove(t *testing.T) {
 		t.Fatalf("the next pass: %d runs, run 2 leased %+v; want the implementer's, attempt 2", v.runs(), v.leaseOf("2"))
 	}
 	input := v.file("ctx.2/input.md")
-	if !strings.Contains(input, "## The findings of verify attempt 1, which this run must fix") || !strings.Contains(input, "The verifier asked for changes on attempt 1 of 3") {
+	if !strings.Contains(input, "## The findings of verify attempt 1") || !strings.Contains(input, "The verifier asked for changes on attempt 1 of 3") {
 		t.Errorf("input.md =\n%s\nwant the verifier's findings of attempt 1", input)
 	}
 }
@@ -363,7 +363,7 @@ func TestVerifierPassWithEmptyFields(t *testing.T) {
 // a verdict in their output. With loop.max_attempts at 1, each ends in the
 // hand-off for the verifier's failed runs, keyed by the attempt key, with no
 // state error, no move of the run's and no findings.
-func TestVerifierFailedRunIsNoVerdict(t *testing.T) {
+func TestVerifierFailedRunIsNotAVerdict(t *testing.T) {
 	t.Parallel()
 	output := `"structured_output":{"verdict":"request_changes","notes":"n","findings":[{"criterion":"c","class":"criterion","detail":"d"}]}`
 	for _, tt := range []struct {
@@ -656,7 +656,7 @@ func TestVerifyTaskGoesOnToTheNext(t *testing.T) {
 		{"waiting on its pass", func(_ *testing.T, v *verdictRig, n int, head string) {
 			v.f.AddComment(n, app, "The verifier passed.\n\n<!-- issuedog:verify verdict=pass attempt=1 run=r0 head="+head+" -->")
 		}, 0, 3},
-		{"blocked by a state error", func(_ *testing.T, v *verdictRig, _ int, _ string) {
+		{"handed off after failed runs", func(_ *testing.T, v *verdictRig, _ int, _ string) {
 			for k := range 3 {
 				v.out(k+1, failOut)
 			}

@@ -208,16 +208,16 @@ func publicCauseHostileResult(fields string) string {
 
 // publicCauseTypedCases are the causes the daemon writes itself past a
 // check's rules, each reached on a restart, as each is the same on the
-// run that found it: no valid result after a restart, an issue its stage
+// run that found it: no valid result was saved, an issue its stage
 // no longer runs on, read again, a move that doesn't fit, output that
 // doesn't decode, here past a loosened schema, for each stage that
 // decodes its output, and the App's plan data that doesn't decode.
 func publicCauseTypedCases() []publicCauseTyped {
 	ivEntry := "from=intake to=clarifying event=5"
 	return []publicCauseTyped{
-		{"no valid result after a restart", func(t testing.TB, f *githubtest.Fake, root string) {
+		{"no valid result was saved", func(t testing.TB, f *githubtest.Fake, root string) {
 			saveAttempt(t, root, "saved", "", interview(f), 1)
-		}, func(*rig) {}, "no valid result after a restart"},
+		}, func(*rig) {}, "no valid result was saved"},
 		{"the interviewer, on the owner's task", func(t testing.TB, f *githubtest.Fake, root string) {
 			_, entry := ivFiled(f, "task", false, ivEntry)
 			saveAttempt(t, root, "saved", ivResult(t, ivRound(1, "")), entry, 1)

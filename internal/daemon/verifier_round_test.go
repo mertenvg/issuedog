@@ -110,7 +110,7 @@ func TestVerifierRoundRunThenVerdictThenChecks(t *testing.T) {
 	v.pass()
 	v.checkRun(4, state.InProgress, 3, "high")
 	input := v.roundInput(4)
-	if !strings.Contains(input, "## The findings of verify attempt 2, which this run must fix") ||
+	if !strings.Contains(input, "## The findings of verify attempt 2") ||
 		!strings.Contains(input, "The verifier asked for changes on attempt 2 of 3, at `"+head+"`.") ||
 		!strings.Contains(input, "`TestBookExpiredQuote` builds its quote") {
 		t.Errorf("run 4's input.md =\n%s\nwant the verifier's findings of attempt 2", input)
@@ -156,13 +156,13 @@ func TestVerifierRoundChecksThenRunThenVerdict(t *testing.T) {
 	v.failChecks(false)
 	v.pass()
 	v.checkRun(2, state.InProgress, 2, "medium")
-	if input := v.roundInput(2); !strings.Contains(input, "## The findings of verify attempt 1, which this run must fix") {
+	if input := v.roundInput(2); !strings.Contains(input, "## The findings of verify attempt 1") {
 		t.Errorf("run 2's input.md =\n%s\nwant the checks' findings of attempt 1", input)
 	}
 	v.pass()
 	v.checkRun(3, state.InProgress, 3, "high")
 	head := v.trimmed("commit.3")
-	if input := v.roundInput(3); !strings.Contains(input, "## The findings of verify attempt 1, which this run must fix") {
+	if input := v.roundInput(3); !strings.Contains(input, "## The findings of verify attempt 1") {
 		t.Errorf("run 3's input.md =\n%s\nwant the same findings: they stand for a failed run's retry", input)
 	}
 	v.passes(2)
@@ -213,7 +213,7 @@ func TestVerifierRoundRestart(t *testing.T) {
 	r := v.restart()
 	r.pass()
 	r.checkRun(3, state.InProgress, 2, "medium")
-	if input := r.roundInput(3); !strings.Contains(input, "## The findings of verify attempt 1, which this run must fix") {
+	if input := r.roundInput(3); !strings.Contains(input, "## The findings of verify attempt 1") {
 		t.Errorf("run 3's input.md =\n%s\nwant the verifier's findings of attempt 1", input)
 	}
 	r.passes(2)

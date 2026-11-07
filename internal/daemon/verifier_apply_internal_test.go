@@ -313,6 +313,12 @@ func TestCheckVerifier(t *testing.T) {
 			t.Errorf("%s: its public cause %q quotes the run's text", tt.name, publicCause(err))
 		}
 	}
+	// The public cause leaves a question rule's own words out, but the log
+	// reads the whole error, which keeps them.
+	repeated := asked(func(q *interviewQuestion) { q.Recommended.Text, q.Others = hostile, []string{hostile} })
+	if err := checkVerifier(repeated, f); err == nil || !strings.Contains(err.Error(), "is the same as option") {
+		t.Errorf("a repeated option: checkVerifier = %v; want the whole error to hold the rule's own detail", err)
+	}
 }
 
 // With the stand-in's cause at its longest, the findings comment and the

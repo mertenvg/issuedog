@@ -210,7 +210,7 @@ func TestVerifierFailedRunsKeepTheRound(t *testing.T) {
 	}
 	r.pass()
 	r.checkRun(5, state.InProgress, 2, "medium")
-	if input := r.roundInput(5); !strings.Contains(input, "## The findings of verify attempt 1, which this run must fix") {
+	if input := r.roundInput(5); !strings.Contains(input, "## The findings of verify attempt 1") {
 		t.Errorf("run 5's input.md =\n%s\nwant the verifier's findings of attempt 1", input)
 	}
 }
@@ -412,7 +412,7 @@ func TestVerifierRestartWithNoResult(t *testing.T) {
 		verifierNoResult(t, v, head, move)
 		r := v.restart()
 		r.pass()
-		want := verifierFailedHandoff(n, 1, verifierFailedQuoted("no valid result after a restart"), wholeRunOwner, move, move)
+		want := verifierFailedHandoff(n, 1, verifierFailedQuoted("no valid result was saved"), wholeRunOwner, move, move)
 		if got := verifierNewest(f, n); got != want || pickStage(f, n) != "stage:needs-human" || r.runs() != 0 {
 			t.Errorf("after the restart, at %s, with %d runs, the newest comment =\n%s\nwant needs-human, none, and\n%s", pickStage(f, n), r.runs(), got, want)
 		}
@@ -811,5 +811,35 @@ func TestCapAtVerifyingIsTheVerifiers(t *testing.T) {
 	}
 	if got := errorMarkers(f, n); g.runs() != 3 || len(got) != 1 || !strings.Contains(got[0], "kind=attempts key=verifying-") || pickStage(f, n) != "stage:verifying" {
 		t.Errorf("%d runs, errors %q, at %s; want three, one kind=attempts, still at verifying", g.runs(), got, pickStage(f, n))
+	}
+}
+
+// A task the owner moved during the verifier's last run allowed gets no
+// hand-off when the run fails, as for the implementer's: the owner's move
+// wins, and is recorded, and the task waits there.
+func TestVerifierAttemptCapMovedOn(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	v := newVerdictRig(t, f, 1)
+	head := v.head()
+	n, _ := verifierTask(f, head)
+	v.out(1, failOut)
+	moved := false
+	v.r.Stages[state.Verifying] = commentingVerifier{Verifier: &daemon.Verifier{Daemon: v.d}, during: func() {
+		if !moved {
+			moved = true
+			f.RemoveLabel(n, "owner", "stage:verifying")
+			f.AddLabel(n, "owner", "stage:ready")
+		}
+	}}
+	delete(v.r.Stages, state.InProgress)
+	v.passes(2)
+	cs := f.State().Issues[n-1].Comments
+	last := cs[len(cs)-1].Body
+	if l := v.lease(); v.runs() != 1 || !l.Failed || l.Attempt != 1 || !strings.Contains(last, "from=verifying to=ready") {
+		t.Errorf("after %d runs, the lease %+v, the newest comment\n%s\nwant one failed, and the owner's move recorded", v.runs(), l, last)
+	}
+	if pickStage(f, n) != "stage:ready" || len(errorMarkers(f, n)) != 0 || strings.Contains(last, "to=needs-human") {
+		t.Errorf("the task is at %s, with errors %q, the newest comment\n%s\nwant ready, no error, and no hand-off", pickStage(f, n), errorMarkers(f, n), last)
 	}
 }

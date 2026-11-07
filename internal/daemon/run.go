@@ -263,8 +263,8 @@ const kindLabels = "labels"
 
 // Runs is the stage-run harness. Its Work is the loop's stage work (SPEC
 // §8.1, step 3), then a task's run, the checks or the verifier at
-// verifying, or the pick
-// of the next task (step 4), one run at a time, under a lease (SPEC §8.2).
+// verifying, or the pick of the next task (step 4), one run at a time,
+// under a lease (SPEC §8.2).
 type Runs struct {
 	// Daemon gives the applier, trust and config of the moment.
 	Daemon *Daemon
@@ -487,11 +487,10 @@ func (r *Runs) CheckRegistered() error {
 // the issue gets one state error (SPEC §5.3) and no more runs until the
 // stage moves or gets new input, or for the implementer on a task, or the
 // verifier on one, a hand-off at needs-human (atCap). A task's round also
-// counts its failed
-// verifies, as the verify loop's moves record them (roundAttempts), so its
-// run is the round's attempt after the latest of those and the failed runs
-// since (SPEC §8.3), and the hand-off comes once they reach the cap
-// together. If posting that error, or making that hand-off, failed,
+// counts its failed verifies, as the verify loop's moves record them
+// (roundAttempts), so its run is the round's attempt after the latest of
+// those and the failed runs since (SPEC §8.3), and the hand-off comes once
+// they reach the cap together. If posting that error, or making that hand-off, failed,
 // RunStage posts it instead of a run, even when the stage has no work
 // pending, as on an issue it no longer runs on; if that
 // fails too, it logs the error and moves on, so the next issue gets its
@@ -1244,7 +1243,7 @@ func (r *Runs) resume(ctx context.Context, ready []Ready) (int, error) {
 		}
 		logr.Infof("run %s on #%d left no valid result, so it's a failed attempt, its clone is deleted, and #%d stays at %s to run again",
 			l.RunID, l.Issue, l.Issue, l.Stage)
-		return 0, r.failed(ctx, st, l, &daemonCause{errors.New("no valid result after a restart")})
+		return 0, r.failed(ctx, st, l, &daemonCause{errors.New("no valid result was saved")})
 	}
 	if gap, ok := r.Daemon.step1Gaps[l.Issue]; ok {
 		if r.step1Held(l.Issue) {

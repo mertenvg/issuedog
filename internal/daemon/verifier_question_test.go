@@ -445,7 +445,7 @@ func TestVerifierQuestionWholeRun(t *testing.T) {
 // which passes the checks and gets a verifier run of its own.
 func TestImplementerEmptyCommitAfterEachWayBack(t *testing.T) {
 	t.Parallel()
-	const line = "When an answer, a hand-off or findings need no change to your head, make one empty commit with `git commit --allow-empty`, saying why, and return `commits`."
+	const line = "When an answer or a hand-off needs no change to your head, or findings say there's nothing to fix, make one empty commit with `git commit --allow-empty`, saying why, and return `commits`."
 	for _, tt := range []struct {
 		name  string
 		first func(t *testing.T, v *verdictRig) int // files the task, and takes it to the implementer's run 2
@@ -510,5 +510,64 @@ func TestImplementerEmptyCommitAfterEachWayBack(t *testing.T) {
 				t.Errorf("%d runs, the passes %q; want three, and a pass of %s", v.runs(), got, head)
 			}
 		})
+	}
+}
+
+// verifierApplyQuestion applies a round of qs questions to task 1, under the
+// config text, directly, as a run's result, on the issue as it stands.
+func verifierApplyQuestion(t *testing.T, f *githubtest.Fake, text string, qs int) {
+	t.Helper()
+	cfg, err := config.Parse([]byte(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := verifierOutput(t, "question")
+	one := q["questions"].([]any)[0]
+	q["questions"] = slices.Repeat([]any{one}, qs)
+	out, err := json.Marshal(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &daemon.Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: slug}
+	s, err := a.Client.Snapshot(t.Context(), "o", "r", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := a.Dirty(t.Context(), s, trusted{"owner": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (&daemon.Verifier{Daemon: &daemon.Daemon{Config: cfg}}).Apply(t.Context(), a, daemon.Result{RunID: "applied", S: s, Dirt: d, Output: out, Start: strings.Repeat("e", 40)}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The check holds a question to the repo's own loop.max_questions_per_round,
+// not the default: two questions over a limit of 1 are no readable verdict.
+func TestVerifierQuestionOverTheRepoLimit(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	verifierReplayTask(f, 1, strings.Repeat("e", 40))
+	verifierApplyQuestion(t, f, "types: labels\nloop: {max_attempts: 3, max_questions_per_round: 1}\n", 2)
+	if got, body := pickStage(f, 1), verifierNewest(f, 1); got != "stage:in-progress" || !strings.Contains(body, "rule question-count") {
+		t.Errorf("at %s, the newest comment\n%s\nwant in-progress, naming rule question-count", got, body)
+	}
+}
+
+// A dirty round before the question doesn't count, so the question takes its
+// number (SPEC §9.1): the round is cancelled, and its number is reused.
+func TestVerifierQuestionReusesADirtyRound(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	verifierReplayTask(f, 1, strings.Repeat("e", 40))
+	asked := verifierRoundText(1, 1, "owner") + "<!-- issuedog:transition from=in-progress to=clarifying round=1 run=asked questions=1 -->"
+	round := f.AddComment(1, app, asked)
+	f.AddComment(1, app, "<!-- issuedog:transition from=clarifying to=ready cmd=9 seen=9 -->")
+	f.AddComment(1, app, "<!-- issuedog:transition from=ready to=in-progress event=s9 -->")
+	f.AddComment(1, app, "The implementer committed.\n\n<!-- issuedog:transition from=in-progress to=verifying attempt=1 run=r2 head="+strings.Repeat("e", 40)+" -->")
+	f.EditComment(round, "eve", asked+"\n\nEdited.")
+	verifierApplyQuestion(t, f, "types: labels\nloop: {max_attempts: 3}\n", 1)
+	if moves := verifierMoves(f, 1); len(moves) == 0 || moves[len(moves)-1].Fields["round"] != "1" {
+		t.Errorf("the moves = %+v; want the last on round 1, the dirty round's number", moves)
 	}
 }

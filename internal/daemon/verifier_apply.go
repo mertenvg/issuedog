@@ -451,7 +451,7 @@ func renderPass(head, notes string, fs []verifierFollowUp) string {
 		parts = append(parts, "**Follow-up candidates, not filed yet:**")
 	}
 	for i, c := range fs {
-		parts = append(parts, fmt.Sprintf("**F%d. %s** · scope:%s\n%s", i+1, inline(c.Title), inline(c.Scope),
+		parts = append(parts, fmt.Sprintf("**F%d. %s** · scope:%s\n%s", i+1, inline(ivWordingStrong(c.Title)), inline(c.Scope),
 			bullets([]string{"Scenario: " + c.Scenario, "Likelihood: " + c.Likelihood, "Impact: " + c.Impact})))
 	}
 	return strings.Join(parts, "\n\n")

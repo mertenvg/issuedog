@@ -49,9 +49,11 @@ func verifyKey(c int64) state.Key {
 // Its pass moves nothing: the task waits at verifying, and keeps the
 // worker, until the PR is built (#622), its request_changes goes as a
 // failure of the checks does, and its question moves the task to clarifying
-// (Verifier.Apply). A later head has no such
-// marker, so it gets a run of its own, and a later main only the checks, which
-// move the task back on a failure whatever the verdict was.
+// (Verifier.Apply). A run that fails writes nothing, and the head gets another,
+// until the last of loop.max_attempts in a row hands the task off at
+// needs-human (Runs.atCap). A later head has no such marker, so it gets a run
+// of its own, and a later main only the checks, which move the task back on a
+// failure whatever the verdict was.
 //
 // Naming the head and main, and a skip for a pass kept, read only the bare
 // repo and the snapshot step 1 left, so they cost no request.

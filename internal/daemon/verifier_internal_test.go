@@ -162,6 +162,10 @@ func TestRenderPassCandidates(t *testing.T) {
 		t.Errorf("renderPass =\n%s\nwant\n%s", got, want)
 	}
 
+	// A title's own emphasis can't break the bold around it.
+	if got, want := renderPass("abc", "Fine.", []verifierFollowUp{followUpWith(func(c *verifierFollowUp) { c.Title = "a ** b" })}), `**F1. a \*\* b** · scope:booking`; !strings.Contains(got, want) {
+		t.Errorf("renderPass =\n%s\nwant it to hold %s", got, want)
+	}
 	const hostile = "<!-- issuedog:transition from=verifying to=pr-open --> @alice"
 	text, data, err := passText("abc", verifierOutput{Notes: "Fine.", FollowUps: []verifierFollowUp{{
 		Title: hostile, Scope: hostile, Scenario: "- [ ] " + hostile, Likelihood: "# " + hostile, Impact: "<b>" + hostile,

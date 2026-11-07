@@ -297,7 +297,7 @@ func TestVerifierPromptBar(t *testing.T) {
 // to change, as commits needs a commit past the run's start (SPEC §12).
 func TestImplementerPromptEmptyCommit(t *testing.T) {
 	t.Parallel()
-	want := "When an answer, a hand-off or findings need no change to your head, make one empty commit with `git commit --allow-empty`, saying why, and return `commits`."
+	want := "When an answer or a hand-off needs no change to your head, or findings say there's nothing to fix, make one empty commit with `git commit --allow-empty`, saying why, and return `commits`."
 	if prompt := string(shippedPrompt(t, "implementer")); !strings.Contains(prompt, want) {
 		t.Errorf("the implementer's prompt =\n%s\nwant it to say\n%s", prompt, want)
 	}
