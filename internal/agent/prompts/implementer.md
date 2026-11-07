@@ -22,6 +22,8 @@ You implement one task: one PR's worth of change in one scope. Each run ends in 
 
 When `input.md` holds findings from verify, fix every one before you return `commits`.
 
+When an answer, a hand-off or findings need no change to your head, make one empty commit with `git commit --allow-empty`, saying why, and return `commits`.
+
 Return `commits`:
 
 - `title`: the PR title. `type` is one of the preamble's title types, exactly as written there, the one that fits the change. `sentence` is a short sentence in one line saying what the change does, without the type: the daemon writes the title as `<type>: <sentence>`.

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"maps"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -198,6 +199,18 @@ func verifierUnreadables() []verifierUnreadable {
 		{"a question with findings", verdict(func(t testing.TB) map[string]any {
 			return map[string]any{"verdict": "question", "questions": verifierOutput(t, "question")["questions"], "findings": verifierFindings(t)}
 		}), "rule outcome: question has no findings"},
+		{"a round with a repeated option", verdict(func(testing.TB) map[string]any {
+			return map[string]any{"verdict": "question", "questions": []any{map[string]any{"text": "Which?", "blocks": []any{1},
+				"recommended": map[string]any{"text": verifierHostile, "why": "w"}, "others": []any{verifierHostile}}}}
+		}), "rule options: a question breaks the interviewer's question rules"},
+		{"a round over the question limit", verdict(func(t testing.TB) map[string]any {
+			one := verifierOutput(t, "question")["questions"].([]any)[0]
+			return map[string]any{"verdict": "question", "questions": slices.Repeat([]any{one}, 8)}
+		}), "rule question-count: a question breaks the interviewer's question rules"},
+		{"a round over the length", verdict(func(testing.TB) map[string]any {
+			return map[string]any{"verdict": "question", "questions": []any{map[string]any{"text": strings.Repeat("Which? ", 10000), "blocks": []any{1},
+				"recommended": map[string]any{"text": "a", "why": "w"}, "others": []any{"b"}}}}
+		}), "rule length: the comment is "},
 		{"two rules broken", verdict(func(t testing.TB) map[string]any {
 			return map[string]any{"verdict": "pass", "questions": verifierOutput(t, "question")["questions"], "findings": verifierFindings(t)}
 		}), "rule outcome: pass has no findings; rule outcome: pass has no questions"},
@@ -271,7 +284,7 @@ func TestVerifierNoVerdict(t *testing.T) {
 				if m := moves[0].Fields; m["to"] != "in-progress" || m["head"] != head || m["attempt"] != "1" || m["seen"] != strconv.FormatInt(move, 10) {
 					t.Errorf("the move's fields = %v; want in-progress, head %s, attempt 1, seen %d", m, head, move)
 				}
-				verifierNoVerdictChecks(t, verifierNewest(f, n), "The verifier asked for changes on attempt 1 of 3, at `"+head+"`.\n\n", tt.cause)
+				verifierNoVerdictChecks(t, verifierNewest(f, n), "The verifier gave no verdict on attempt 1 of 3, at `"+head+"`.\n\n", tt.cause)
 				if got := v.lease(); got.RunID != "" || len(v.leftovers()) != 0 {
 					t.Errorf("the lease %+v, left %v; want none: it's no failed run", got, v.leftovers())
 				}
@@ -298,7 +311,7 @@ func TestVerifierNoVerdictAtCap(t *testing.T) {
 			}
 			verifierNoVerdictChecks(t, verifierNewest(f, n),
 				"This task's 1 attempts in this round failed, so I've stopped running the implementer here.\n\n"+
-					"The verifier asked for changes on attempt 1 of 1, at `"+head+"`.\n\n", tt.cause)
+					"The verifier gave no verdict on attempt 1 of 1, at `"+head+"`.\n\n", tt.cause)
 		})
 	}
 }
@@ -320,7 +333,7 @@ func TestVerifierNoVerdictNonZeroExit(t *testing.T) {
 	if pickStage(f, n) != "stage:in-progress" {
 		t.Fatalf("the task is at %s, want in-progress", pickStage(f, n))
 	}
-	verifierNoVerdictChecks(t, verifierNewest(f, n), "The verifier asked for changes on attempt 1 of 3, at `"+head+"`.\n\n",
+	verifierNoVerdictChecks(t, verifierNewest(f, n), "The verifier gave no verdict on attempt 1 of 3, at `"+head+"`.\n\n",
 		`run failed with subtype "error_max_structured_output_retries"`)
 	for _, leak := range []string{"exit status"} {
 		if strings.Contains(verifierNewest(f, n), leak) {
@@ -643,9 +656,11 @@ func TestVerifyTaskGoesOnToTheNext(t *testing.T) {
 		{"waiting on its pass", func(_ *testing.T, v *verdictRig, n int, head string) {
 			v.f.AddComment(n, app, "The verifier passed.\n\n<!-- issuedog:verify verdict=pass attempt=1 run=r0 head="+head+" -->")
 		}, 0, 3},
-		{"blocked by a state error", func(t *testing.T, v *verdictRig, _ int, _ string) {
-			v.out(1, ivResult(t, verifierOutput(t, "question")))
-		}, 1, 4},
+		{"blocked by a state error", func(_ *testing.T, v *verdictRig, _ int, _ string) {
+			for k := range 3 {
+				v.out(k+1, failOut)
+			}
+		}, 3, 6},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -696,7 +711,7 @@ func TestVerifierApplyUndecodable(t *testing.T) {
 	if err := (&daemon.Verifier{Daemon: &daemon.Daemon{Config: cfg}}).Apply(ctx, a, daemon.Result{RunID: "applied", S: s, Dirt: d, Output: out, Start: head}); err != nil {
 		t.Fatal(err)
 	}
-	verifierNoVerdictChecks(t, verifierNewest(f, 1), "The verifier asked for changes on attempt 1 of 3, at `"+head+"`.\n\n", "the verifier's output doesn't decode")
+	verifierNoVerdictChecks(t, verifierNewest(f, 1), "The verifier gave no verdict on attempt 1 of 3, at `"+head+"`.\n\n", "the verifier's output doesn't decode")
 }
 
 // A run whose move is written only has its labels finished, whatever its

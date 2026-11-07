@@ -47,8 +47,9 @@ func verifyKey(c int64) state.Key {
 // verifier, on the head, the only place one starts, unless a clean pass
 // marker of its own names that head (verdictOn), or none is registered.
 // Its pass moves nothing: the task waits at verifying, and keeps the
-// worker, until the PR is built (#622), and its request_changes goes as a
-// failure of the checks does (Verifier.Apply). A later head has no such
+// worker, until the PR is built (#622), its request_changes goes as a
+// failure of the checks does, and its question moves the task to clarifying
+// (Verifier.Apply). A later head has no such
 // marker, so it gets a run of its own, and a later main only the checks, which
 // move the task back on a failure whatever the verdict was.
 //

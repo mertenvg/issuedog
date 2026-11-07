@@ -320,7 +320,7 @@ func TestImplementerQuestionWholeRun(t *testing.T) {
 		if c.ID <= answer || c.Author.Login != app {
 			continue
 		}
-		if want := fmt.Sprintf("Round 1 has an answer, so the task goes back to `ready`. The implementer's next run gets it.\n\n"+
+		if want := fmt.Sprintf("Round 1 has an answer, so the task goes back to `ready`. The next run gets it.\n\n"+
 			"<!-- issuedog:transition from=clarifying to=ready cmd=%d seen=%d -->", answer, answer); c.Body == want {
 			moved = true
 		}

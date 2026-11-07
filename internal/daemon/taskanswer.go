@@ -12,14 +12,16 @@ import (
 )
 
 // This file sends a task back to ready once the owner answers the
-// implementer's question round (SPEC §7.2, §9.1), and finds those answers
-// again for the implementer's next run (implementerAnswers).
+// implementer's or the verifier's question round (SPEC §7.2, §9.1), and
+// finds those answers again for the implementer's next run
+// (implementerAnswers). The verifier's next run reads them in its
+// conversation.md, on the head that run commits.
 
 // AnswerVisit ends a visit to an open task at clarifying whose round is
-// the implementer's: the loop calls it after FlagVisit. The latest
-// transition, looking through a hold the task went back from by /resume
-// (ivHoldLatest), as the digest's question item does, is the implementer's
-// question round (implRoundMove). Then the task's answers are its trusted,
+// the implementer's or the verifier's: the loop calls it after FlagVisit.
+// The latest transition, looking through a hold the task went back from by
+// /resume (ivHoldLatest), as the digest's question item does, is that
+// question round (taskRoundMove). Then the task's answers are its trusted,
 // clean comments above the round bound that aren't commands, as step 1
 // gives them (state.Issue.Inputs): no App comment, no other bot's and no
 // untrusted one counts. With any, it moves the task clarifying → ready on
@@ -44,7 +46,7 @@ func (st *Step) AnswerVisit(ctx context.Context, s *github.Snapshot) error {
 	}
 	is := state.Derive(s, st.AppSlug, d.Has)
 	round := ivHoldLatest(is, true)
-	if is.Stage != state.Clarifying || !implRoundMove(round) {
+	if is.Stage != state.Clarifying || !taskRoundMove(round) {
 		return nil
 	}
 	counts, err := st.counted(ctx, s, d)
@@ -72,17 +74,19 @@ func (st *Step) AnswerVisit(ctx context.Context, s *github.Snapshot) error {
 }
 
 // taskAnswerText is the comment on a task's move back to ready, for n
-// answers to round, the round= of the implementer's round move, which the
-// App wrote, or a round with no number if it isn't one.
+// answers to round, the round= of the round's move (taskRoundMove), which
+// the App wrote, or a round with no number if it isn't one. The next run is
+// the implementer's, whichever stage asked, and the verifier's after it
+// reads them too.
 func taskAnswerText(round string, n int) string {
 	what, them := "an answer", "it"
 	if n > 1 {
 		what, them = "answers", "them"
 	}
 	if _, err := strconv.Atoi(round); err != nil {
-		return fmt.Sprintf("The implementer's question round has %s, so the task goes back to `ready`. Its next run gets %s.", what, them)
+		return fmt.Sprintf("The question round has %s, so the task goes back to `ready`. The next run gets %s.", what, them)
 	}
-	return fmt.Sprintf("Round %s has %s, so the task goes back to `ready`. The implementer's next run gets %s.", round, what, them)
+	return fmt.Sprintf("Round %s has %s, so the task goes back to `ready`. The next run gets %s.", round, what, them)
 }
 
 // answerMove reports whether m is the move AnswerVisit writes: clarifying
