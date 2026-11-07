@@ -21,10 +21,11 @@ const (
 	// outputChars is how much of the end of a command's output its result
 	// keeps.
 	outputChars = 1000
-	// homeSuffix names a verify's fresh HOME, beside its checkout:
-	// RunsDir/<id>-home.
-	homeSuffix = "-home"
 )
+
+// HomeSuffix names a fresh HOME beside its checkout, RunsDir/<id>-home: a
+// verify's commands', and a verifier run's (SPEC §3.3, §10.1).
+const HomeSuffix = "-home"
 
 // Commands runs verify.commands for rule 1 of SPEC §10.1: each through the
 // shell, as agent, in a fresh checkout of the head, with a fresh HOME and no
@@ -67,7 +68,7 @@ func (r CommandResult) Failure() string {
 // leftover is the startup sweep's. A failure to make them, to start or end a
 // command, or the caller's ctx ending, is an error, not a result.
 func (c *Commands) Run(ctx context.Context, id, head string, cmds []string) (results []CommandResult, err error) {
-	home := id + homeSuffix
+	home := id + HomeSuffix
 	defer func() {
 		// The caller's ctx may be done, and the dirs must go anyway.
 		clean := context.WithoutCancel(ctx)

@@ -23,14 +23,17 @@ const verifierAgent = "verifier"
 // Verifier is the Stage at verifying (SPEC §10.2, §12). It judges a task's
 // head, once the checks of SPEC §10.1 pass it, in a fresh process that
 // shares no context with the implementer (SPEC §3). Its Daemon gives the
-// config, trust and clone of the moment. Nothing registers it yet, so no
-// run starts it (#620).
+// config, trust and clone of the moment.
 type Verifier struct {
 	Daemon *Daemon
 }
 
 // Agent is "verifier".
 func (*Verifier) Agent() string { return verifierAgent }
+
+// RunsAfterChecks marks the Verifier as an AfterChecks Stage, which only
+// verifyTask starts.
+func (*Verifier) RunsAfterChecks() {}
 
 // Schema is the shipped verifier schema, which nothing overrides (SPEC
 // §3.4). It's embedded, so it can't be missing; if it were, the error is
@@ -46,14 +49,16 @@ func (*Verifier) Schema() []byte {
 }
 
 // Pending reports whether the verifier has work on the issue: it's at
-// verifying, as its markers set it, and it's a task that gets a PR
-// (state.AnyTask), never a human task, which never reaches verify.
+// verifying, as its markers set it, it's a task that gets a PR
+// (state.AnyTask), never a human task, which never reaches verify, and the
+// head its latest move names has no clean pass of the verifier's. A move
+// that names no head leaves that to verifyTask, which reads the task's.
 func (*Verifier) Pending(in Input) bool {
 	if in.Issue.Stage != state.Verifying {
 		return false
 	}
 	class, err := state.ClassOf(in.Issue.Item)
-	return err == nil && class&state.AnyTask != 0
+	return err == nil && class&state.AnyTask != 0 && !verdictOn(in.Issue, moveHead(in.Issue))
 }
 
 // Context returns the verifier's context files (SPEC §12), each comment

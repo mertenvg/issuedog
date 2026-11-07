@@ -11,6 +11,7 @@ import (
 
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/repo"
+	"github.com/mertenvg/issuedog/internal/state"
 	"github.com/mertenvg/issuedog/internal/verify"
 	"github.com/mertenvg/issuedog/internal/workspace"
 	"github.com/mertenvg/logr/v2"
@@ -22,19 +23,26 @@ func taskRef(n int) string { return repo.TasksRef + strconv.Itoa(n) }
 // runStart is what start names for a run: the commits of its clone, and
 // Dropped, why the task's head wasn't named, rule 2's finding on it (SPEC
 // §3.4, §10.1), for the preamble to tell the run (SPEC §12), or "" when
-// it was named, or there's none.
+// it was named, or there's none. For an AfterChecks Stage's run, Main is
+// main's commit its head passed the checks against, and "" for any other's.
 type runStart struct {
 	workspace.Commits
 	Dropped string
+	Main    string
 }
 
-// start names the commits of st's run on issue n (SPEC §3.2, §3.4). A
-// Committer's run starts from the task's head, taskRef(n), once it passes
-// rule 2 of SPEC §10.1 (startFrom), or with none yet, from its base:
-// main's commit as the pass's sync left it, which is a task with no
-// parent's (inStory). Any other Stage's run starts from main's commit.
-// Only a Committer's run may name a target, or have its head dropped.
-func (r *Runs) start(ctx context.Context, st Stage, n int) (runStart, error) {
+// start names the commits of st's run on issue n, whose state is is (SPEC
+// §3.2, §3.4). A Committer's run starts from the task's head, taskRef(n),
+// once it passes rule 2 of SPEC §10.1 (startFrom), or with none yet, from
+// its base: main's commit as the pass's sync left it, which is a task with
+// no parent's (inStory). An AfterChecks Stage's run starts from the head
+// the checks judge (startAfterChecks). Any other Stage's run starts from
+// main's commit. Only a Committer's run may name a target, or have its
+// head dropped.
+func (r *Runs) start(ctx context.Context, st Stage, is state.Issue, n int) (runStart, error) {
+	if _, ok := st.(AfterChecks); ok {
+		return r.startAfterChecks(ctx, is, n)
+	}
 	head, hasHead := "", false
 	if _, ok := st.(Committer); ok {
 		var err error
@@ -54,6 +62,27 @@ func (r *Runs) start(ctx context.Context, st Stage, n int) (runStart, error) {
 		return runStart{}, fmt.Errorf("name the task's head %s: %w", head, err)
 	}
 	return c, nil
+}
+
+// startAfterChecks names the commits of a run on task n, whose state is
+// is, that only follows the checks: the head they judge, alone (verifyHead,
+// SPEC §10.2). It refuses a head with no pass for it and main's commit as
+// the pass's sync left it (Runs.passed), so a run on a head the checks
+// haven't passed never starts, and a restart, which empties passed, runs
+// them again first. It reads only the bare repo, so it costs no request.
+func (r *Runs) startAfterChecks(ctx context.Context, is state.Issue, n int) (runStart, error) {
+	head, err := r.verifyHead(ctx, n, is)
+	if err != nil {
+		return runStart{}, fmt.Errorf("name the head the checks judge: %w", err)
+	}
+	main, err := r.Daemon.Clone.Resolve(ctx, "main")
+	if err != nil {
+		return runStart{}, fmt.Errorf("read main: %w", err)
+	}
+	if !r.passed[n].holds(head, main) {
+		return runStart{}, fmt.Errorf("the head %q has no pass of the checks against main's %s", head, main)
+	}
+	return runStart{Commits: workspace.Commits{Start: head}, Main: main}, nil
 }
 
 // startFrom names the commits of a run on task n, whose head is head, with
