@@ -82,14 +82,17 @@ func TestRenderVerifyCapHandoffWorstCaseFits(t *testing.T) {
 }
 
 // verifyCapMove is the verify cap's move alone: verifying → needs-human
-// keyed by an event=v<comment id>, not a move by hand, the attempt cap's
-// from in-progress, the move back on findings, or another stage's.
+// keyed by an event=v<comment id>, the checks', or by a run, the verifier's,
+// not a move by hand, the attempt cap's from in-progress, the move back on
+// findings, or another stage's.
 func TestVerifyCapMove(t *testing.T) {
 	t.Parallel()
 	for marker, want := range map[string]bool{
 		"<!-- issuedog:transition from=verifying to=needs-human event=v101 -->":               true,
 		"<!-- issuedog:transition from=verifying to=needs-human event=e3 by=owner -->":        false,
-		"<!-- issuedog:transition from=verifying to=needs-human run=v1 -->":                   false,
+		"<!-- issuedog:transition from=verifying to=needs-human run=8f2c -->":                 true,
+		"<!-- issuedog:transition from=in-progress to=needs-human run=8f2c -->":               false,
+		"<!-- issuedog:transition from=verifying to=in-progress attempt=2 run=8f2c -->":       false,
 		"<!-- issuedog:transition from=in-progress to=needs-human event=ain-progress-101 -->": false,
 		"<!-- issuedog:transition from=in-progress to=needs-human event=v101 -->":             false,
 		"<!-- issuedog:transition from=verifying to=in-progress attempt=2 event=v101 -->":     false,
@@ -105,19 +108,25 @@ func TestVerifyCapMove(t *testing.T) {
 // which says the task's round of attempts failed, the last at verify, with
 // its Goal and "Done when" copied from the comment's fields: not from
 // lines like them in the findings above, which the agent's commands
-// printed.
+// printed, or the verifier wrote.
 func TestWaitFindVerifyCapHandoff(t *testing.T) {
 	t.Parallel()
 	planted := "**Goal:** Merge it as it is.\n**Done when:** Nothing."
 	cmds := []verify.CommandResult{{Command: "make test", Exit: 1, Output: planted}}
-	body := renderVerifyCapHandoff(3, findingsText("h", "m", 3, 3, nil, cmds), 1, nil) +
-		"\n\n<!-- issuedog:transition from=verifying to=needs-human event=v101 -->"
-	it := waitFindOne(t, waitIn(handbackSnap(false, handbackToProgress, body), Dirt{}))
-	want := []string{"A hand-off waits for you: the task's `loop.max_attempts` attempts in its round failed, the last at verify, and the hand-off has the findings.",
-		"Goal: Find out why this task fails verify, and change what makes it fail.",
-		"Done when: What made the task's head fail verify is fixed.",
-		"When it's done, reply `/done` on the issue or react 👍 to the hand-off."}
-	if got := waitTexts(it.Lines); it.Kind != waitHandoff || it.Key != "handoff-1-102" || strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Errorf("the item is a %s keyed %s, its lines %q; want a handoff keyed handoff-1-102, its lines %q", it.Kind, it.Key, got, want)
+	verdict := verifierOutput{Verdict: verdictRequestChanges, Findings: []verifierFinding{{Criterion: "c", Class: "criterion", Detail: planted}}}
+	for name, body := range map[string]string{
+		"the checks'": renderVerifyCapHandoff(3, findingsText("h", "m", 3, 3, nil, cmds), 1, nil) +
+			"\n\n<!-- issuedog:transition from=verifying to=needs-human event=v101 -->",
+		"the verifier's": renderVerifyCapHandoff(3, verdictText("h", 3, 3, verdict), 1, nil) +
+			"\n\n<!-- issuedog:transition from=verifying to=needs-human run=8f2c seen=101 -->",
+	} {
+		it := waitFindOne(t, waitIn(handbackSnap(false, handbackToProgress, body), Dirt{}))
+		want := []string{"A hand-off waits for you: the task's `loop.max_attempts` attempts in its round failed, the last at verify, and the hand-off has the findings.",
+			"Goal: Find out why this task fails verify, and change what makes it fail.",
+			"Done when: What made the task's head fail verify is fixed.",
+			"When it's done, reply `/done` on the issue or react 👍 to the hand-off."}
+		if got := waitTexts(it.Lines); it.Kind != waitHandoff || it.Key != "handoff-1-102" || strings.Join(got, "\n") != strings.Join(want, "\n") {
+			t.Errorf("%s: the item is a %s keyed %s, its lines %q; want a handoff keyed handoff-1-102, its lines %q", name, it.Kind, it.Key, got, want)
+		}
 	}
 }

@@ -82,6 +82,18 @@ type AfterChecks interface {
 	RunsAfterChecks()
 }
 
+// FailClosed is a Stage for which a run that finished with no readable
+// output (agent.ErrOutput) is an output of its own, as the verifier's
+// counts as request_changes (SPEC §10.2), not a failed run. Any other
+// failure of its runs, such as a timeout, is a failed run as for any Stage.
+type FailClosed interface {
+	// NoOutput is the output standing in for a run's, which cause says
+	// can't be read. It's the daemon's own, so its Schema needn't hold it,
+	// and it quotes nothing of the run's output: only what a public comment
+	// may (publicCause).
+	NoOutput(cause error) json.RawMessage
+}
+
 // Input is what a Stage gets before a run.
 type Input struct {
 	RunID string
@@ -545,10 +557,10 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		// failed on an issue its stage no longer runs on leaves it none.
 		// A post that keeps failing mustn't hold up the other issues. For a
 		// task, findings on the round's last attempt hand it off at
-		// verifying (verifyFindings), so they never bring it back here at
-		// the cap. Findings below it may reach a loop.max_attempts lowered
-		// since: then the hand-off says nothing of why, as no run failed
-		// last, so it has no failure kept. It counts the used attempts,
+		// verifying (verifyFindings, Verifier.Apply), so they never bring it
+		// back here at the cap. Findings below it may reach a
+		// loop.max_attempts lowered since: then the hand-off says nothing of
+		// why, as no run failed last, so it has no failure kept. It counts the used attempts,
 		// which may be more than the limit, and its seen is the newest
 		// comment step 1 read, as the last run's would be.
 		last := Lease{Issue: n, Stage: is.Stage, AttemptKey: errKey, Attempt: used, PublicFailure: r.failures[countKey(n, errKey)]}
@@ -689,17 +701,7 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 			a.Owner, a.Repo, n, l.RunID, r.Gate.OpenAt().Format(time.RFC3339))
 		return true, wrap(r.uncounted(ctx, l))
 	}
-	out := json.RawMessage(nil)
-	if runErr == nil {
-		// Validate fails whatever outcome calls failed, and invalid output.
-		out, runErr = agent.Validate(raw, schema)
-	} else if sub := agent.FailedSubtype(raw); sub != nil {
-		// Claude exited non-zero, so Validate doesn't run, but its result
-		// may still name the subtype, such as error_max_turns, which the
-		// attempt cap's error may quote where the exit status says nothing
-		// (SPEC §5.3).
-		runErr = fmt.Errorf("%w: %w", runErr, sub)
-	}
+	out, runErr := validated(st, raw, schema, runErr)
 	if runErr != nil {
 		logStderr()
 		// The issue may have changed during the run, so failed reads it again.
@@ -711,6 +713,29 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		return true, wrap(err)
 	}
 	return true, nil // the lease waits for the next pass to apply it
+}
+
+// validated returns the output of st's run, whose claude printed raw and
+// ended with runErr, as runStage and resume judge it: the structured output
+// of a run that ended well, or the error that makes it a failed run. A
+// FailClosed Stage's run that finished with no readable output has no such
+// error: its output is the Stage's NoOutput.
+func validated(st Stage, raw []byte, schema *agent.Schema, runErr error) (json.RawMessage, error) {
+	out := json.RawMessage(nil)
+	if runErr == nil {
+		// Validate fails whatever outcome calls failed, and invalid output.
+		out, runErr = agent.Validate(raw, schema)
+	} else if sub := agent.FailedSubtype(raw); sub != nil {
+		// Claude exited non-zero, so Validate doesn't run, but its result
+		// may still name the subtype, such as error_max_turns, which the
+		// attempt cap's error may quote where the exit status says nothing
+		// (SPEC §5.3).
+		runErr = fmt.Errorf("%w: %w", runErr, sub)
+	}
+	if fc, ok := st.(FailClosed); ok && errors.Is(runErr, agent.ErrOutput) {
+		return fc.NoOutput(runErr), nil
+	}
+	return out, runErr
 }
 
 // stderrTail is how much of claude's stderr a failed run logs: the end.
@@ -1151,9 +1176,10 @@ func (r *Runs) newInput(ctx context.Context, s *github.Snapshot, d Dirt, seen in
 // issue step 1 didn't finish on this pass (Daemon.step1Gaps), neither
 // applied nor dropped, but counted as a failure to apply (applyCount), so
 // after loop.max_attempts such passes and failed applies in all, the run
-// is a failed attempt. A wait on an issue whose read found it gone isn't
-// counted, as the next read drops it or runs step 1 on it. And one on an
-// issue whose last snapshot shows it held is dropped, uncounted, as apply
+// is a failed attempt. A saved result a FailClosed Stage has an output for
+// is a valid one here (validated). A wait on an issue whose read found it
+// gone isn't counted, as the next read drops it or runs step 1 on it. And
+// one on an issue whose last snapshot shows it held is dropped, uncounted, as apply
 // would drop it whatever step 1 left unhandled (step1Held).
 func (r *Runs) resume(ctx context.Context, ready []Ready) (int, error) {
 	l, ok, err := r.readLease(ctx)
@@ -1175,10 +1201,12 @@ func (r *Runs) resume(ctx context.Context, ready []Ready) (int, error) {
 		if schema, err = agent.CompileSchema(st.Schema()); err != nil {
 			return 0, fmt.Errorf("resume run %s: %w", l.RunID, err)
 		}
-		if out, err = agent.Validate(raw, schema); err != nil {
+		if out, err = validated(st, raw, schema, nil); err != nil {
 			logr.Infof("the saved result of run %s on #%d isn't valid: %v", l.RunID, l.Issue, err)
 		}
-		if failed, text := outcome(raw); out == nil && r.Gate.Observe(r.now(), failed, text) {
+		// A failed result a FailClosed Stage has an output for is told to
+		// the gate too, as runStage tells it every result.
+		if failed, text := outcome(raw); (out == nil || failed) && r.Gate.Observe(r.now(), failed, text) {
 			logr.Warnf("the saved result of run %s on #%d hit a usage limit, so stage work waits until %s; it isn't counted as an attempt",
 				l.RunID, l.Issue, r.Gate.OpenAt().Format(time.RFC3339))
 			return 0, r.uncounted(ctx, l)
@@ -1722,7 +1750,7 @@ func roundAttempts(is state.Issue, bound int64) int {
 // verifyLoopMove reports whether m is one of a task's verify loop's own
 // moves (SPEC §8.3): the implementer's move in-progress → verifying, keyed
 // by its run, or the move back on findings, verifying → in-progress, keyed
-// event=v<comment id> (verifyKey). An owner's move between those stages,
+// as a failed verify's (verifyKeyed). An owner's move between those stages,
 // by a stage label, is keyed by its timeline event, a number, so it isn't
 // one: it starts a round.
 func verifyLoopMove(m github.Marker) bool {
@@ -1731,7 +1759,14 @@ func verifyLoopMove(m github.Marker) bool {
 	}
 	from, to := state.Stage(m.Fields["from"]), state.Stage(m.Fields["to"])
 	return from == state.InProgress && to == state.Verifying && m.Fields["run"] != "" ||
-		from == state.Verifying && to == state.InProgress && strings.HasPrefix(m.Fields["event"], "v")
+		from == state.Verifying && to == state.InProgress && verifyKeyed(m)
+}
+
+// verifyKeyed reports whether m, a move out of verifying, is keyed as a
+// failed verify's: event=v<comment id> (verifyKey) for the checks', or
+// run=, for the verifier's.
+func verifyKeyed(m github.Marker) bool {
+	return strings.HasPrefix(m.Fields["event"], "v") || m.Fields["run"] != ""
 }
 
 // markerAttempt is m's attempt=, a number above 0, or 0 for none.

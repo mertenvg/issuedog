@@ -13,8 +13,8 @@ import (
 	"github.com/mertenvg/issuedog/internal/verify"
 )
 
-// verifyKey keys a task's move verifying → in-progress on findings (SPEC
-// §5), or in its place at the round's last attempt, the verify cap's move
+// verifyKey keys the checks' move of a task verifying → in-progress on
+// findings (SPEC §5), or in its place at the round's last attempt, the verify cap's move
 // to needs-human: event=v<c>, the comment holding its move to verifying,
 // so the checks of each move there move it on once.
 func verifyKey(c int64) state.Key {
@@ -47,8 +47,9 @@ func verifyKey(c int64) state.Key {
 // verifier, on the head, the only place one starts, unless a clean pass
 // marker of its own names that head (verdictOn), or none is registered.
 // Its pass moves nothing: the task waits at verifying, and keeps the
-// worker, until the PR is built (#622). A later head has no such marker,
-// so it gets a run of its own, and a later main only the checks, which
+// worker, until the PR is built (#622), and its request_changes goes as a
+// failure of the checks does (Verifier.Apply). A later head has no such
+// marker, so it gets a run of its own, and a later main only the checks, which
 // move the task back on a failure whatever the verdict was.
 //
 // Naming the head and main, and a skip for a pass kept, read only the bare

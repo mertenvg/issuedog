@@ -186,18 +186,32 @@ func TestVerifyCapReplay(t *testing.T) {
 	}
 }
 
+// verifierCapMarker is the verify cap's move as the verifier's run writes
+// it, keyed by the run, with seen=seen.
+func verifierCapMarker(seen int64) string {
+	return fmt.Sprintf("<!-- issuedog:transition from=verifying to=needs-human run=8f2c seen=%d -->", seen)
+}
+
+// verifyCapMarkers are the verify cap's moves, the checks' and the
+// verifier's, by the comment holding the move to verifying.
+var verifyCapMarkers = map[string]func(move int64) string{
+	"the checks'":    func(move int64) string { return verifyCapMarker(move, move) },
+	"the verifier's": verifierCapMarker,
+}
+
 // verifyCapTask is newFake with issue 1 a task the owner filed, at
 // needs-human after the verify cap's hand-off, with an earlier hand-off
 // before it: its move to in-progress, 1001, the implementer's hand-off,
 // 1002, a 👍 on it that sent the task back to ready, 1003, its next move
 // to in-progress, 1004, the implementer's move to verifying, 1005, and
-// the verify cap's hand-off, 1006. Then it runs more.
-func verifyCapTask(more func(t testing.TB, f *githubtest.Fake)) func(testing.TB) *githubtest.Fake {
+// the verify cap's hand-off, 1006, whose move is marker(move), by the
+// comment holding the move to verifying. Then it runs more.
+func verifyCapTask(marker func(move int64) string, more func(t testing.TB, f *githubtest.Fake)) func(testing.TB) *githubtest.Fake {
 	return handbackTask(func(t testing.TB, f *githubtest.Fake) {
 		f.AddComment(1, app, "<!-- issuedog:transition from=needs-human to=ready cmd=r77 seen=1002 -->")
 		f.AddComment(1, app, "<!-- issuedog:transition from=ready to=in-progress event=p6 -->")
 		move := f.AddComment(1, app, "The implementer committed.\n\n<!-- issuedog:transition from=in-progress to=verifying attempt=2 run=r2 head=abc -->")
-		if id := f.AddComment(1, app, verifyCapText(2, 2, "abc", "def")+"\n\n"+verifyCapMarker(move, move)); id != 1006 {
+		if id := f.AddComment(1, app, verifyCapText(2, 2, "abc", "def")+"\n\n"+marker(move)); id != 1006 {
 			t.Fatalf("the verify cap's hand-off's comment ID = %d, want 1006", id)
 		}
 		more(t, f)
@@ -206,8 +220,9 @@ func verifyCapTask(more func(t testing.TB, f *githubtest.Fake)) func(testing.TB)
 
 // A trusted /done, or a trusted 👍 on the verify cap's hand-off, sends the
 // task back to ready, a new round, as for any hand-off (SPEC §9.3), since
-// a move into needs-human from verifying is one. An untrusted /done or 👍
-// does nothing, and nor does a trusted 👍 on the earlier hand-off.
+// a move into needs-human from verifying is one, the checks' or the
+// verifier's. An untrusted /done or 👍 does nothing, and nor does a trusted
+// 👍 on the earlier hand-off.
 func TestVerifyCapEnds(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -225,21 +240,23 @@ func TestVerifyCapEnds(t *testing.T) {
 		{"an untrusted 👍", func(_ testing.TB, f *githubtest.Fake) { f.AddReaction(1006, "eve", "+1") }, ""},
 		{"a trusted 👍 on the earlier hand-off", func(_ testing.TB, f *githubtest.Fake) { f.AddReaction(1002, "owner", "+1") }, ""},
 	} {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			f := verifyCapTask(tt.more)(t)
-			iterate(t, handbackDaemon(t, f, newOrigin(t)))
-			is := f.State().Issues[0]
-			if tt.want == "" {
-				if w := f.Writes(); len(w) != 0 || !slices.Equal(is.Labels, []string{"stage:needs-human"}) {
-					t.Errorf("writes %+v, labels %q; want none, at needs-human", w, is.Labels)
+		for by, marker := range verifyCapMarkers {
+			t.Run(tt.name+", "+by, func(t *testing.T) {
+				t.Parallel()
+				f := verifyCapTask(marker, tt.more)(t)
+				iterate(t, handbackDaemon(t, f, newOrigin(t)))
+				is := f.State().Issues[0]
+				if tt.want == "" {
+					if w := f.Writes(); len(w) != 0 || !slices.Equal(is.Labels, []string{"stage:needs-human"}) {
+						t.Errorf("writes %+v, labels %q; want none, at needs-human", w, is.Labels)
+					}
+					return
 				}
-				return
-			}
-			if last := is.Comments[len(is.Comments)-1].Body; !slices.Equal(is.Labels, []string{"stage:ready"}) || !strings.HasSuffix(last, tt.want) {
-				t.Errorf("labels %q, newest comment\n%s\nwant ready, on a move ending %s", is.Labels, last, tt.want)
-			}
-		})
+				if last := is.Comments[len(is.Comments)-1].Body; !slices.Equal(is.Labels, []string{"stage:ready"}) || !strings.HasSuffix(last, tt.want) {
+					t.Errorf("labels %q, newest comment\n%s\nwant ready, on a move ending %s", is.Labels, last, tt.want)
+				}
+			})
+		}
 	}
 }
 
@@ -247,41 +264,47 @@ func TestVerifyCapEnds(t *testing.T) {
 // a hand-off for failed verifies, with its Goal and "Done when" copied
 // from the comment, how to finish it and a link to the comment, and notify
 // is assigned. Both end on the pass whose 👍 sends the task back to ready.
+// The checks' hand-off and the verifier's are listed alike.
 func TestVerifyCapItem(t *testing.T) {
 	t.Parallel()
-	f, o := verifyCapTask(func(testing.TB, *githubtest.Fake) {})(t), digestNotifyOrigin(t)
-	d := digestDaemon(t, f, o, nil)
-	d.Assign = true
-	d.Step.Reactions = daemon.HandoffByReaction(handbackTrust)
-	iterate(t, d)
-	digestN := len(f.State().Issues)
-	if want := []string{"#1 Hand-off p2 1"}; !slices.Equal(handbackListed(f, digestN), want) {
-		t.Errorf("the digest lists %q; want %q", handbackListed(f, digestN), want)
-	}
-	body := f.State().Issues[digestN-1].Body
-	for _, line := range []string{
-		"- A hand-off waits for you: the task's `loop.max_attempts` attempts in its round failed, the last at verify, and the hand-off has the findings.\n",
-		"- Goal: Find out why this task fails verify, and change what makes it fail.\n",
-		"- Done when: What made the task's head fail verify is fixed.\n",
-		"- When it's done, reply `/done` on the issue or react 👍 to the hand-off.\n",
-		"- Answer here: https://github.com/o/r/issues/1#issuecomment-1006\n",
-	} {
-		if !strings.Contains(body, line) {
-			t.Errorf("the digest has no line %q:\n%s", line, body)
-		}
-	}
-	if got := assignees(f, 1); !slices.Equal(got, []string{"owner"}) {
-		t.Errorf("the task's assignees = %q; want owner", got)
-	}
-	f.AddReaction(1006, "owner", "+1")
-	iterate(t, d)
-	if got := handbackListed(f, digestN); len(got) != 0 {
-		t.Errorf("after the 👍, the digest lists %q; want no hand-off", got)
-	}
-	if got := assignees(f, 1); len(got) != 0 {
-		t.Errorf("after the 👍, the task's assignees = %q; want none", got)
-	}
-	if l := f.State().Issues[0].Labels; !slices.Equal(l, []string{"stage:ready"}) {
-		t.Errorf("after the 👍, the task's labels = %q; want ready", l)
+	for by, marker := range verifyCapMarkers {
+		t.Run(by, func(t *testing.T) {
+			t.Parallel()
+			f, o := verifyCapTask(marker, func(testing.TB, *githubtest.Fake) {})(t), digestNotifyOrigin(t)
+			d := digestDaemon(t, f, o, nil)
+			d.Assign = true
+			d.Step.Reactions = daemon.HandoffByReaction(handbackTrust)
+			iterate(t, d)
+			digestN := len(f.State().Issues)
+			if want := []string{"#1 Hand-off p2 1"}; !slices.Equal(handbackListed(f, digestN), want) {
+				t.Errorf("the digest lists %q; want %q", handbackListed(f, digestN), want)
+			}
+			body := f.State().Issues[digestN-1].Body
+			for _, line := range []string{
+				"- A hand-off waits for you: the task's `loop.max_attempts` attempts in its round failed, the last at verify, and the hand-off has the findings.\n",
+				"- Goal: Find out why this task fails verify, and change what makes it fail.\n",
+				"- Done when: What made the task's head fail verify is fixed.\n",
+				"- When it's done, reply `/done` on the issue or react 👍 to the hand-off.\n",
+				"- Answer here: https://github.com/o/r/issues/1#issuecomment-1006\n",
+			} {
+				if !strings.Contains(body, line) {
+					t.Errorf("the digest has no line %q:\n%s", line, body)
+				}
+			}
+			if got := assignees(f, 1); !slices.Equal(got, []string{"owner"}) {
+				t.Errorf("the task's assignees = %q; want owner", got)
+			}
+			f.AddReaction(1006, "owner", "+1")
+			iterate(t, d)
+			if got := handbackListed(f, digestN); len(got) != 0 {
+				t.Errorf("after the 👍, the digest lists %q; want no hand-off", got)
+			}
+			if got := assignees(f, 1); len(got) != 0 {
+				t.Errorf("after the 👍, the task's assignees = %q; want none", got)
+			}
+			if l := f.State().Issues[0].Labels; !slices.Equal(l, []string{"stage:ready"}) {
+				t.Errorf("after the 👍, the task's labels = %q; want ready", l)
+			}
+		})
 	}
 }

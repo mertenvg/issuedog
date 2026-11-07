@@ -280,10 +280,16 @@ func TestVerifierPromptBar(t *testing.T) {
 		"A finding blocks only when it's one of these",
 		"Anything rarer is never a finding. It's a follow-up candidate, returned with the verdict.",
 		"Put anything rarer than the bar in `follow_ups`",
+		"Return `pass` when no defect meets the bar and no criterion needs a question.",
+		"When a defect meets the bar and a criterion is also ambiguous, return `request_changes`: the next run can ask.",
+		"Doubt about whether something is a defect is yours to settle by the bar, not a question. A criterion with two real readings is one.",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("verifier.md doesn't contain %q", want)
 		}
+	}
+	if forbids := "A defect you're unsure of is never a question"; strings.Contains(p, forbids) {
+		t.Errorf("verifier.md contains %q, which reads as forbidding a real two-readings question", forbids)
 	}
 }
 

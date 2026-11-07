@@ -32,7 +32,46 @@ const (
 // then that the task is back at in-progress, the whole escaped (SPEC
 // §5.1).
 func renderFindings(head, main string, attempt, limit int, fs []verify.Finding, cmds []verify.CommandResult) string {
-	return github.Escape(findingsText(head, main, attempt, limit, fs, cmds) + "\n\nSo the task is back at in-progress, for the implementer to fix.")
+	return github.Escape(findingsText(head, main, attempt, limit, fs, cmds) + findingsBack)
+}
+
+// findingsBack ends the comment of a move back on findings, the checks'
+// and the verifier's.
+const findingsBack = "\n\nSo the task is back at in-progress, for the implementer to fix."
+
+// renderVerdict is the comment on a task's move verifying → in-progress on
+// the verifier's findings (SPEC §7.2, §10.2): the verdict as verdictText
+// gives it, then that the task is back at in-progress, the whole escaped
+// (SPEC §5.1).
+func renderVerdict(head string, attempt, limit int, out verifierOutput) string {
+	return github.Escape(verdictText(head, attempt, limit, out) + findingsBack)
+}
+
+// verdictText is the verifier's request_changes (SPEC §10.2), as the
+// findings comment (renderVerdict) and the verify cap's hand-off
+// (renderVerifyCapHandoff) both give it, unescaped: it names attempt, the
+// implementer run's number in the task's round, of limit, loop.max_attempts,
+// unless attempt is 0 for none (SPEC §8.3), and head, the head the run
+// judged, which is git's. Then each finding gets a section: its criterion,
+// its class on the blocking bar, and its detail. They're the agent's text
+// (inline, block), which the caller escapes. Its notes aren't given, as
+// they aren't findings. A run with no readable verdict (out.NoVerdict) has
+// one paragraph in their place, the daemon's words alone, saying nothing is
+// known to be wrong with the code, so the next run doesn't invent a fix.
+func verdictText(head string, attempt, limit int, out verifierOutput) string {
+	on := ""
+	if attempt > 0 {
+		on = fmt.Sprintf(" on attempt %d of %d,", attempt, limit)
+	}
+	parts := []string{fmt.Sprintf("The verifier asked for changes%s at `%s`.", on, head)}
+	if out.NoVerdict != "" {
+		parts = append(parts, "The verifier's run gave no readable verdict, so this counts as `request_changes`: "+out.NoVerdict+
+			". Nothing is known to be wrong with the code.")
+	}
+	for _, f := range out.Findings {
+		parts = append(parts, "### "+inline(f.Criterion)+"\n\nClass: `"+inline(f.Class)+"`\n\n"+block(f.Detail))
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 // findingsText is the findings of a task's checks at verifying (SPEC
@@ -98,7 +137,8 @@ var verifyCapFields = implementerHandoffFields{
 // its round's last attempt fails verify, escaped: renderHandoff with
 // verifyCapFields, opening with the task's attempts attempts in its round
 // failing, so the implementer runs no more, then findings, the last
-// attempt's findings as findingsText gives them. attempts is the last
+// attempt's findings as findingsText or, for the verifier's, verdictText
+// gives them. attempts is the last
 // attempt's number, loop.max_attempts or more: more when loop.max_attempts
 // was lowered since the round's runs began. It quotes no run's failure, as
 // the last attempt's run didn't fail: the failed runs' hand-off is
@@ -109,11 +149,11 @@ func renderVerifyCapHandoff(attempts int, findings string, n int, notify []strin
 }
 
 // verifyCapMove reports whether m is the verify cap's move of a task to
-// needs-human (verifyFindings): verifying → needs-human, keyed
-// event=v<comment id> (verifyKey), as the move back on findings would be.
+// needs-human (verifyFindings, Verifier.Apply): verifying → needs-human,
+// keyed as the move back on findings would be (verifyKeyed).
 func verifyCapMove(m github.Marker) bool {
 	return m.Kind == "transition" && state.Stage(m.Fields["from"]) == state.Verifying &&
-		state.Stage(m.Fields["to"]) == state.NeedsHuman && strings.HasPrefix(m.Fields["event"], "v")
+		state.Stage(m.Fields["to"]) == state.NeedsHuman && verifyKeyed(m)
 }
 
 // findingSection is f's section of the findings comment: its heading, by

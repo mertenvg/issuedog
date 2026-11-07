@@ -69,21 +69,38 @@ type PublicCauseError struct{ Text string }
 
 func (e *PublicCauseError) Error() string { return e.Text }
 
+// ErrOutput marks a run that finished with output the daemon can't read,
+// matched by errors.Is: a result that doesn't parse, of the wrong type, or
+// whose structured output is missing, null, malformed or off the schema, or
+// the subtype that says claude gave up producing it. It isn't on a run that
+// failed some other way, such as one that ran out of turns, reported an
+// error or timed out: that run says nothing of its output. So a stage that
+// fails closed on it (daemon.FailClosed) tells the two apart (SPEC §10.2).
+var ErrOutput = errors.New("no readable output")
+
+// outputRetriesSubtype is the subtype of a run that gave up producing
+// output that matches its schema.
+const outputRetriesSubtype = "error_max_structured_output_retries"
+
 // failedSubtypes are the subtypes claude ends a failed run's result with,
 // the only ones a public comment may name.
 var failedSubtypes = map[string]bool{
-	"error_max_turns":                     true,
-	"error_max_budget_usd":                true,
-	"error_during_execution":              true,
-	"error_max_structured_output_retries": true,
+	"error_max_turns":        true,
+	"error_max_budget_usd":   true,
+	"error_during_execution": true,
+	outputRetriesSubtype:     true,
 }
 
 // subtypeError is the failure of a result whose subtype isn't success: a
 // *PublicCauseError for one of failedSubtypes, and for any other, a plain
-// error, which quotes it for the daemon's log alone.
+// error, which quotes it for the daemon's log alone. outputRetriesSubtype's
+// is ErrOutput too.
 func subtypeError(subtype string) error {
 	text := fmt.Sprintf("run failed with subtype %q", subtype)
-	if failedSubtypes[subtype] {
+	switch {
+	case subtype == outputRetriesSubtype:
+		return fmt.Errorf("%w: %w", ErrOutput, &PublicCauseError{text})
+	case failedSubtypes[subtype]:
 		return &PublicCauseError{text}
 	}
 	return errors.New(text)
@@ -94,7 +111,8 @@ func subtypeError(subtype string) error {
 // *PublicCauseError naming it, as Validate's, if raw is a result with one
 // of failedSubtypes, or nil for any other output, whose run's own error
 // says why it failed. Only the subtype is read, as nothing else of a
-// failed run's result is the daemon's to quote.
+// failed run's result is the daemon's to quote. outputRetriesSubtype's is
+// ErrOutput too, as Validate's is.
 func FailedSubtype(raw []byte) error {
 	var r Result
 	if err := json.Unmarshal(raw, &r); err != nil || r.Type != "result" || !failedSubtypes[r.Subtype] {
@@ -108,14 +126,15 @@ func FailedSubtype(raw []byte) error {
 // whose structured output matches the schema is an error, including a
 // subtype it doesn't know. One of the result's own fields failing is a
 // *PublicCauseError, but for a type other than result, or a subtype not
-// in failedSubtypes, as those errors quote claude's text.
+// in failedSubtypes, as those errors quote claude's text. Output the run
+// finished with but that can't be read is ErrOutput too (SPEC §10.2).
 func Validate(raw []byte, schema *Schema) (json.RawMessage, error) {
 	var r Result
 	if err := json.Unmarshal(raw, &r); err != nil {
-		return nil, fmt.Errorf("malformed result: %w", err)
+		return nil, fmt.Errorf("%w: malformed result: %w", ErrOutput, err)
 	}
 	if r.Type != "result" {
-		return nil, fmt.Errorf("unexpected result type %q", r.Type)
+		return nil, fmt.Errorf("%w: unexpected result type %q", ErrOutput, r.Type)
 	}
 	if r.Subtype != "success" {
 		return nil, subtypeError(r.Subtype)
@@ -124,14 +143,14 @@ func Validate(raw []byte, schema *Schema) (json.RawMessage, error) {
 		return nil, &PublicCauseError{"run reported an error"}
 	}
 	if len(r.StructuredOutput) == 0 || string(r.StructuredOutput) == "null" {
-		return nil, &PublicCauseError{"result has no structured_output"}
+		return nil, fmt.Errorf("%w: %w", ErrOutput, &PublicCauseError{"result has no structured_output"})
 	}
 	out, err := jsonschema.UnmarshalJSON(bytes.NewReader(r.StructuredOutput))
 	if err != nil {
-		return nil, fmt.Errorf("malformed structured_output: %w", err)
+		return nil, fmt.Errorf("%w: malformed structured_output: %w", ErrOutput, err)
 	}
 	if err := schema.schema.Validate(out); err != nil {
-		return nil, fmt.Errorf("structured_output doesn't match the stage schema: %w", err)
+		return nil, fmt.Errorf("%w: structured_output doesn't match the stage schema: %w", ErrOutput, err)
 	}
 	return r.StructuredOutput, nil
 }
