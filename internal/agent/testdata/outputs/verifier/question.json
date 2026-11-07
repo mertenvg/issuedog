@@ -1,0 +1,19 @@
+{
+  "verdict": "question",
+  "notes": "The criterion on a quote's expiry can be read two ways, and the change takes one of them with nothing in the task to settle it.",
+  "questions": [
+    {
+      "text": "Should a quote booked at the exact second it expires be refused or accepted?",
+      "blocks": [
+        126
+      ],
+      "recommended": {
+        "text": "Refused",
+        "why": "the expiry time is the first moment the quote is no longer valid, as the quote API documents it"
+      },
+      "others": [
+        "Accepted, and refused only after that second"
+      ]
+    }
+  ]
+}

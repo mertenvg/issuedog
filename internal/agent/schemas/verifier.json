@@ -1,0 +1,131 @@
+{
+  "title": "verifier",
+  "description": "One verifier run on a task's head: a verdict. Set verdict and notes, then only the fields that go with the verdict.",
+  "type": "object",
+  "required": ["verdict", "notes"],
+  "additionalProperties": false,
+  "properties": {
+    "verdict": {
+      "description": "pass: nothing meets the blocking bar. request_changes: something does; set findings. question: a criterion is ambiguous; set questions. Set no other verdict's fields.",
+      "enum": ["pass", "request_changes", "question"]
+    },
+    "notes": {
+      "description": "A few lines of Markdown, without headings: what you judged and what you found, whatever the verdict.",
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "findings": {
+      "description": "With verdict request_changes: each defect that meets the blocking bar.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["criterion", "class", "detail"],
+        "additionalProperties": false,
+        "properties": {
+          "criterion": {
+            "description": "The acceptance criterion the finding is tied to, quoted from the task, in one line.",
+            "type": "string",
+            "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+          },
+          "class": {
+            "description": "The line of the blocking bar the finding falls under.",
+            "enum": ["criterion", "regression", "code-rule", "quiet-pass", "common-scenario", "trust"]
+          },
+          "detail": {
+            "description": "A few lines of Markdown, without headings: what's wrong, and where.",
+            "type": "string",
+            "pattern": "\\S"
+          }
+        }
+      }
+    },
+    "follow_ups": {
+      "description": "With any verdict: each defect rarer than the blocking bar, and none that followups.md lists. Only a pass files them.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title", "scope", "scenario", "likelihood", "impact"],
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "description": "The candidate's title, in one line.",
+            "type": "string",
+            "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+          },
+          "scope": {
+            "description": "One scope from the preamble's list, without the scope: prefix.",
+            "type": "string",
+            "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+          },
+          "scenario": {
+            "description": "What has to happen for the defect to show, in one line.",
+            "type": "string",
+            "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+          },
+          "likelihood": {
+            "description": "How likely that is, in one line.",
+            "type": "string",
+            "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+          },
+          "impact": {
+            "description": "What goes wrong when it happens, in one line.",
+            "type": "string",
+            "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+          }
+        }
+      }
+    },
+    "questions": {
+      "description": "With verdict question: this round's questions, most blocking first.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["text", "blocks", "recommended", "others"],
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "description": "The question, in one line that stands alone.",
+            "type": "string",
+            "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+          },
+          "blocks": {
+            "description": "The issue numbers the question blocks.",
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "integer", "minimum": 1 }
+          },
+          "recommended": {
+            "description": "The option you recommend, listed first.",
+            "type": "object",
+            "required": ["text", "why"],
+            "additionalProperties": false,
+            "properties": {
+              "text": {
+                "description": "The option, in one line.",
+                "type": "string",
+                "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+              },
+              "why": {
+                "description": "Why you recommend it, in one line.",
+                "type": "string",
+                "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+              }
+            }
+          },
+          "others": {
+            "description": "The other options, one line each.",
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+            }
+          }
+        }
+      }
+    }
+  }
+}
