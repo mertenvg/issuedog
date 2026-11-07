@@ -60,8 +60,9 @@ func newImplementerRig(t *testing.T, f *githubtest.Fake, o *origin, root string,
 }
 
 // implementerCommitted is the App's comment on the move to verifying of
-// run, which committed head, with seen, for the golden commits output.
-func implementerCommitted(run, head string, seen int64) string {
+// run, which committed head as attempt attempt of its round, with seen,
+// for the golden commits output.
+func implementerCommitted(run, head string, attempt int, seen int64) string {
 	return "The implementer committed `" + head + "`.\n\n" +
 		"**PR title:** feat: refuse booking an expired quote, with a link to a new one\n\n" +
 		"## What changed\n\n" +
@@ -75,7 +76,7 @@ func implementerCommitted(run, head string, seen int64) string {
 		"- added: TestBookQuoteAtExpiry: a quote booked at its exact expiry time is refused\n" +
 		"- added: TestBookingAPIExpiredQuote: the API answers 410 with the new-quote link\n" +
 		"- updated: TestBook: its quotes get an expiry time in the future\n\n" +
-		fmt.Sprintf("<!-- issuedog:transition from=in-progress to=verifying run=%s head=%s seen=%d -->", run, head, seen)
+		fmt.Sprintf("<!-- issuedog:transition from=in-progress to=verifying attempt=%d run=%s head=%s seen=%d -->", attempt, run, head, seen)
 }
 
 // A task at in-progress gets an implementer run, as a Committer: its
@@ -111,7 +112,7 @@ func TestImplementerCommitsMoveToVerifying(t *testing.T) {
 	}
 	cs := implementerComments(t, f, n)
 	last := cs[len(cs)-1]
-	if want := implementerCommitted("run1", head, cs[len(cs)-2].ID); last.Author.Login != app || last.Body != want {
+	if want := implementerCommitted("run1", head, 1, cs[len(cs)-2].ID); last.Author.Login != app || last.Body != want {
 		t.Errorf("the task's newest comment, by %s, =\n%s\nwant the App's\n%s", last.Author.Login, last.Body, want)
 	}
 	if left := g.leftovers(); len(left) != 0 {
@@ -279,7 +280,7 @@ func TestImplementerApplyReplay(t *testing.T) {
 		}
 		labels, cs := f.State().Issues[0].Labels, implementerComments(t, f, 1)
 		last := cs[len(cs)-1]
-		if want := implementerCommitted("run1", head, cs[len(cs)-2].ID); last.Body != want || !slices.Contains(labels, "stage:verifying") {
+		if want := implementerCommitted("run1", head, 1, cs[len(cs)-2].ID); last.Body != want || !slices.Contains(labels, "stage:verifying") {
 			t.Errorf("after the replay, the newest comment =\n%s\nwith labels %v; want\n%s\nat verifying", last.Body, labels, want)
 		}
 	}

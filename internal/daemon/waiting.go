@@ -594,18 +594,36 @@ func waitGoalDone(body string) (goal, done string) {
 // (SPEC §9.4): that it waits, and why, then its Goal and "Done when",
 // copied from the comment (waitLine.Copied, waitGoalDone), and last how to
 // finish it. The comment is the App's and clean, as latestHandoff found
-// it. Why it waits is the implementer's need of an owner action, or for
-// the attempt cap's hand-off (capHandoffMove), the implementer's failed
-// runs. With either field not found, as for a format that has changed, a
-// line says to see the hand-off instead.
+// it. Why it waits is the implementer's need of an owner action, or the
+// task's round of attempts failing (SPEC §8.3): for the attempt cap's
+// hand-off at in-progress (capHandoffMove), the last a run that failed,
+// whose cause the hand-off gives, but only when it does
+// (capHandoffSaysWhy), as one whose last attempt was findings, below a
+// loop.max_attempts lowered since, or from a lease written before the
+// cause was kept, says nothing of the last attempt; and for the verify
+// cap's (verifyCapMove), the last a head that failed verify, whose
+// findings the hand-off gives. The findings come before the
+// fields, and may hold a line like a field's in a fence, so for that
+// hand-off the fields are read from its last Goal line on. With either
+// field not found, as for a format that has changed, a line says to see
+// the hand-off instead.
 func waitHandoffLines(s *github.Snapshot, id int64) []waitLine {
 	body := waitBody(s, id)
+	fields := body
 	why := "the implementer needs an action only you can do."
-	if slices.ContainsFunc(github.ParseMarkers(body), capHandoffMove) {
-		why = "the implementer's runs failed `loop.max_attempts` times in a row, and the hand-off says why."
+	switch markers := github.ParseMarkers(body); {
+	case slices.ContainsFunc(markers, capHandoffMove) && capHandoffSaysWhy(body):
+		why = "the task's `loop.max_attempts` attempts in its round failed, the last a failed implementer run, and the hand-off says why."
+	case slices.ContainsFunc(markers, capHandoffMove):
+		why = "the task's `loop.max_attempts` attempts in its round failed."
+	case slices.ContainsFunc(markers, verifyCapMove):
+		why = "the task's `loop.max_attempts` attempts in its round failed, the last at verify, and the hand-off has the findings."
+		if i := strings.LastIndex(body, "\n**Goal:** "); i >= 0 {
+			fields = body[i+1:]
+		}
 	}
 	lines := []waitLine{{Text: "A hand-off waits for you: " + why}}
-	if goal, done := waitGoalDone(body); goal != "" && done != "" {
+	if goal, done := waitGoalDone(fields); goal != "" && done != "" {
 		lines = append(lines, waitLine{Text: "Goal: " + goal, Copied: true}, waitLine{Text: "Done when: " + done, Copied: true})
 	} else {
 		lines = append(lines, waitLine{Text: "See the hand-off for what to do."})

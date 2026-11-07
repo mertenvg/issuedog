@@ -40,7 +40,7 @@ import (
 // and its plan comments are checked against renderPlan's golden files in
 // testdata/plan.
 
-// planRunConfig is .issuedog/config.yml on main for the planner's whole run.
+// planRunConfig is .issuedog/config.yaml on main for the planner's whole run.
 const planRunConfig = "types: labels\nnotify: [" + wholeRunOwner + "]\nscopes: [booking, infra, docs]\n" +
 	"models: {allowed: [opus, sonnet, haiku]}\nplan: {review: false}\nstages: {model: {planner: sonnet}}\n"
 

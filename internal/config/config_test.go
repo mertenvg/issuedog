@@ -70,6 +70,20 @@ func TestParseOverrides(t *testing.T) {
 	}
 }
 
+// Every verify key that holds path patterns takes SPEC §13's globs.
+func TestParseVerifyGlobs(t *testing.T) {
+	t.Parallel()
+	c, err := Parse([]byte("verify:\n  test_globs: ['**/*_test.go', 'e2e/**']\n  source_globs: ['**/*.go']\n" +
+		"  config_paths: ['.golangci.yml']\n  binary_allow: ['assets/*.png']\n  protected_paths: ['deploy/**/prod-?.yaml', '[ab]/x']\n"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(c.Verify.TestGlobs) != 2 || len(c.Verify.SourceGlobs) != 1 || len(c.Verify.ConfigPaths) != 1 ||
+		len(c.Verify.BinaryAllow) != 1 || len(c.Verify.ProtectedPaths) != 2 {
+		t.Errorf("unexpected verify config: %+v", c.Verify)
+	}
+}
+
 func TestParseModelsAndEffort(t *testing.T) {
 	c, err := Parse([]byte(`models: {allowed: [opus, sonnet, claude-haiku-5-5]}
 stages:
@@ -237,6 +251,11 @@ func TestParseErrors(t *testing.T) {
 			`"us.anthropic.claude-sonnet-4-5-20250929-v1:0" and "eu.anthropic.claude-sonnet-4-5-20250929-v1:0" have the same label suffix`},
 		{"models: {allowed: [{name: claude-a, label: b}, {name: B, label: c}]}", `"B" is also the label suffix of "claude-a"`},
 		{"stages: {fallback_model: {planner: opus}}", "!!str"},
+		{"verify: {test_globs: ['**/*_test.go', '[']}", `verify.test_globs[1]: "["`},
+		{"verify: {source_globs: ['src/**.go']}", "verify.source_globs[0]: \"src/**.go\" has ** inside a segment"},
+		{"verify: {config_paths: ['/.golangci.yml']}", "verify.config_paths[0]: \"/.golangci.yml\" has an empty segment"},
+		{"verify: {binary_allow: ['']}", "verify.binary_allow[0]: empty pattern"},
+		{"verify: {protected_paths: ['secrets/']}", "verify.protected_paths[0]: \"secrets/\" has an empty segment"},
 	} {
 		_, err := Parse([]byte(tc.in))
 		if err == nil || !strings.Contains(err.Error(), tc.want) {

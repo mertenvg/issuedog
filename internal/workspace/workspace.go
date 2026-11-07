@@ -53,7 +53,8 @@ type Commits struct {
 // Prepare writes the run's context files as the daemon (0755 dir, 0644 files:
 // agent can read, not change), then makes the run's clone of c as agent
 // (checkout). Start must be a full SHA, and Target one too if it's set. On
-// failure it removes whatever it created.
+// failure it removes whatever it created. With no files the context dir is
+// empty, as for a verify checkout: a clone of the head alone (SPEC §10.1).
 func (w *Workspace) Prepare(ctx context.Context, runID string, c Commits, files map[string][]byte) (err error) {
 	if !validName(runID) {
 		return fmt.Errorf("prepare run: invalid run ID %q", runID)
@@ -86,6 +87,25 @@ func (w *Workspace) Prepare(ctx context.Context, runID string, c Commits, files 
 	}
 	if err := w.checkout(ctx, runID, c); err != nil {
 		return fmt.Errorf("prepare run %s: %w", runID, err)
+	}
+	return nil
+}
+
+// PrepareHome makes RunsDir/<runID> as agent, 0700 and empty but for a tmp
+// dir, as a fresh HOME and TMPDIR for a verify's commands (SPEC §10.1), so
+// nothing an earlier run left in the agent's home reaches them. It mustn't
+// exist yet. Cleanup removes it, and Sweep a crash's leftover, as it does
+// a run's checkout. On failure it removes whatever it created.
+func (w *Workspace) PrepareHome(ctx context.Context, runID string) error {
+	if !validName(runID) {
+		return fmt.Errorf("prepare home: invalid run ID %q", runID)
+	}
+	dir := w.Dir(runID)
+	if err := w.asAgent(ctx, nil, "mkdir", "-m", "700", "--", dir); err != nil {
+		return fmt.Errorf("prepare home %s: %w", runID, err)
+	}
+	if err := w.asAgent(ctx, nil, "mkdir", "-m", "700", "--", filepath.Join(dir, "tmp")); err != nil {
+		return errors.Join(fmt.Errorf("prepare home %s: %w", runID, err), w.removeCheckout(ctx, runID))
 	}
 	return nil
 }

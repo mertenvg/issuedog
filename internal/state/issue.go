@@ -35,6 +35,10 @@ type Issue struct {
 	Stage Stage
 	// Markers are every marker that counts, the body's first, then by comment.
 	Markers []github.Marker
+	// MarkerComments holds, at each index of Markers, the ID of the comment
+	// that holds that marker, or BodyID, so a prefix of Markers keeps its
+	// IDs. It's set by Derive alone: see MarkerComment.
+	MarkerComments []int64
 	// Keys are the cmd, run and event IDs the markers name.
 	Keys map[Key]bool
 	// Errors are the state errors posted (SPEC §5.3), by kind and key, each
@@ -230,6 +234,16 @@ func (is Issue) Moved(k Key) bool {
 	return false
 }
 
+// MarkerComment returns the ID of the comment that holds is.Markers[i], or
+// BodyID for the body, and false for an index Derive recorded no ID for,
+// as in an Issue built by hand.
+func (is Issue) MarkerComment(i int) (int64, bool) {
+	if i < 0 || i >= len(is.MarkerComments) || i >= len(is.Markers) {
+		return 0, false
+	}
+	return is.MarkerComments[i], true
+}
+
 // CreatedRecord returns the children that the record of plan revision
 // rev's children names (SPEC §5, §5.2), by number in plan
 // order, and true, or false if there's none: the latest created marker
@@ -301,6 +315,7 @@ func Derive(s *github.Snapshot, appSlug string, dirty func(id int64) bool) Issue
 		}
 		for _, m := range github.TrustedMarkers(author, body, appSlug) {
 			is.Markers = append(is.Markers, m)
+			is.MarkerComments = append(is.MarkerComments, id)
 			if b, ok := RoundBound(m, id); ok {
 				is.HeldStack = is.HeldStack.heldStackNext(m, is.Round)
 				is.Round, is.TransitionComment = b, id

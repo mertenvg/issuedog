@@ -37,7 +37,7 @@ Write plain Markdown with no headings, HTML comments, `@` mentions or checkboxes
 ## Tasks
 
 - Each task has one scope from the preamble's list, written without the `scope:` prefix. A scope that isn't on the list is a question, never a guess.
-- Each task other than a human task is one PR, sized to fit within the preamble's `verify.max_diff_lines`. Split a task that doesn't. Tests count toward the size, so say in `change` when tests or fixtures push it over.
+- Each task other than a human task is one PR, sized to fit within the preamble's `verify.max_diff_lines`. Split a task that doesn't. Files matching `verify.test_globs` don't count toward the size, but fixtures outside them do, so say in `change` when they push it over.
 - Prefer extending existing code over adding new packages or modules. Name the existing files each task touches.
 - At most the preamble's `plan.max_tasks` tasks, and no more items than the preamble says still fit under the issue. Larger work becomes more stories, or a question.
 - Each task's criteria are observable and testable, one line each, and together cover its outcome.

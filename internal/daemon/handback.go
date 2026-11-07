@@ -16,8 +16,8 @@ import (
 
 // This file ends a hand-off (SPEC §9.3, Blocked work): a task at
 // needs-human that waits on an owner action goes back to ready on a trusted
-// /done (DoneCommand) or a trusted 👍 on its latest hand-off comment
-// (HandoffByReaction).
+// /done posted after its latest hand-off comment (DoneCommand) or a
+// trusted 👍 on that comment (HandoffByReaction).
 
 // latestHandoff returns the ID of the clean App comment holding s's latest
 // hand-off, and true, or false if s has none waiting: the move into
@@ -27,7 +27,8 @@ import (
 // transitions, oldest first:
 //   - a move into needs-human from a stage a hand-off leaves
 //     (handoffFrom), and not one a person set by hand (by=), is a
-//     hand-off, the implementer's attempt cap's (capHandoff) included;
+//     hand-off, the implementer's attempt cap's (capHandoff) and the
+//     verify cap's (verifyFindings) included;
 //   - a move into held, and one from held back to needs-human, as /resume
 //     makes, are looked through: the hand-off from before the hold still
 //     waits;
@@ -64,8 +65,8 @@ func latestHandoff(s *github.Snapshot, appSlug string, dirty func(int64) bool) (
 // handoffFrom are the stages SPEC §7.2's table moves a task from into
 // needs-human with a hand-off (SPEC §9.3, Blocked work): in-progress, as
 // the implementer hands off, or its attempt cap does (capHandoff),
-// verifying, at the retry cap, pr-open, for a closed PR, and needs-human
-// itself, for an untrusted merge.
+// verifying, as the verify cap does (verifyFindings), pr-open, for a
+// closed PR, and needs-human itself, for an untrusted merge.
 var handoffFrom = []state.Stage{state.InProgress, state.Verifying, state.PROpen, state.NeedsHuman}
 
 // HandoffByReaction returns the reaction trigger for Step.Reactions that

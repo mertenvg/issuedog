@@ -347,7 +347,7 @@ func TestImplementerQuestionWholeRun(t *testing.T) {
 	if names := slices.Sorted(maps.Keys(files)); !slices.Equal(names, []string{"conversation.md", "input.md", "issue.md", "prompt.md", "system.md"}) {
 		t.Errorf("run 2's context files are %v; want issue.md, conversation.md, input.md, prompt.md and system.md", names)
 	}
-	want := "# Input for this run\n\nWhat's new since the implementer last ran, or since the task came to in-progress.\n\n" +
+	want := "# Input for this run\n\nWhat's new since the implementer last ran, or since the task came to in-progress. Verify's findings on the task's head, if any, come first: fix every one.\n\n" +
 		"## Comment " + strconv.FormatInt(answer, 10) + " by " + wholeRunOwner + ": an answer to round 1\n\n```text\n1a\n```\n"
 	if files["input.md"] != want {
 		t.Errorf("run 2's input.md =\n%s\nwant\n%s", files["input.md"], want)
@@ -393,7 +393,7 @@ func TestImplementerQuestionAnswersByRound(t *testing.T) {
 		return string(files["input.md"])
 	}
 	answerWant := func(id int64, round int, text string) string {
-		return fmt.Sprintf("# Input for this run\n\nWhat's new since the implementer last ran, or since the task came to in-progress.\n\n"+
+		return fmt.Sprintf("# Input for this run\n\nWhat's new since the implementer last ran, or since the task came to in-progress. Verify's findings on the task's head, if any, come first: fix every one.\n\n"+
 			"## Comment %d by owner: an answer to round %d\n\n```text\n%s\n```\n", id, round, text)
 	}
 

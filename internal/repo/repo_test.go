@@ -192,6 +192,35 @@ func TestResolve(t *testing.T) {
 	}
 }
 
+// TestHasCommit finds main's commit in the bare repo, and no commit for a
+// SHA it lacks, a tree, or text that isn't a full SHA, none of them an
+// error. A repo that can't be read is an error.
+func TestHasCommit(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, r := synced(t)
+	main := run(t, r.dir, "rev-parse", "main")
+	tree := run(t, r.dir, "rev-parse", "main^{tree}")
+	for _, tt := range []struct {
+		sha  string
+		want bool
+	}{
+		{main, true},
+		{strings.Repeat("1", 40), false},
+		{tree, false},
+		{main[:12], false},
+		{"--all", false},
+	} {
+		if got, err := r.HasCommit(ctx, tt.sha); got != tt.want || err != nil {
+			t.Errorf("HasCommit(%q) = %t, %v; want %t, nil", tt.sha, got, err, tt.want)
+		}
+	}
+	gone := New("", filepath.Join(t.TempDir(), "gone.git"))
+	if got, err := gone.HasCommit(ctx, main); err == nil {
+		t.Errorf("HasCommit on a repo that isn't there = %t, nil; want an error", got)
+	}
+}
+
 func TestTokenNeverOnDisk(t *testing.T) {
 	rem, r := synced(t)
 	rem.commit("c.txt", "c\n")

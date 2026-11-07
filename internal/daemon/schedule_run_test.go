@@ -10,7 +10,7 @@ import (
 	"github.com/mertenvg/issuedog/internal/config"
 )
 
-// pickRunConfig is .issuedog/config.yml on main for the pick's whole run.
+// pickRunConfig is .issuedog/config.yaml on main for the pick's whole run.
 const pickRunConfig = "types: labels\nnotify: [" + wholeRunOwner + "]\n"
 
 // A whole run against the fakes, with the daemon built as startDaemon
@@ -72,7 +72,7 @@ func TestPickWholeRun(t *testing.T) {
 		t.Errorf("#%d is at %s, and #%d closed %v; want the first at verifying, and the blocker closed", blocked, got, blocker, f.State().Issues[blocker-1].Closed)
 	}
 	cs := implementerComments(t, f, blocked)
-	if last := cs[len(cs)-1]; last.Body != implementerCommitted("run2", g.trimmed("commit.2"), cs[len(cs)-2].ID) ||
+	if last := cs[len(cs)-1]; last.Body != implementerCommitted("run2", g.trimmed("commit.2"), 1, cs[len(cs)-2].ID) ||
 		cs[len(cs)-2].Body != pickMoved(cs[0].ID, cs[0].ID) {
 		t.Errorf("#%d's comments end\n%s\n%s\nwant the pick's move, then run2's move to verifying", blocked, cs[len(cs)-2].Body, last.Body)
 	}

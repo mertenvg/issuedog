@@ -16,6 +16,8 @@ import (
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/mertenvg/issuedog/internal/verify/glob"
 )
 
 // Path is the config file's path in the target repo.
@@ -324,6 +326,9 @@ func (c *Config) validate() error {
 	if c.Verify.ToolingScope != "" && !slices.Contains(c.Scopes, c.Verify.ToolingScope) {
 		return fmt.Errorf("verify.tooling_scope: %q is not in scopes", c.Verify.ToolingScope)
 	}
+	if err := c.Verify.validateGlobs(); err != nil {
+		return fmt.Errorf("validate globs: %w", err)
+	}
 	if len(c.PR.TitleTypes) == 0 || slices.Contains(c.PR.TitleTypes, "") {
 		return errors.New("pr.title_types: empty, or has an empty entry")
 	}
@@ -362,6 +367,29 @@ func (c *Config) validate() error {
 		return errors.New("stages.max_budget_usd: must not be negative")
 	}
 	return c.validateModels()
+}
+
+// validateGlobs checks that every path pattern in the verify keys that hold
+// them is one glob.Match can match (SPEC §13), naming the key and the
+// entry of the first that isn't.
+func (v *Verify) validateGlobs() error {
+	for _, k := range []struct {
+		key      string
+		patterns []string
+	}{
+		{"verify.test_globs", v.TestGlobs},
+		{"verify.source_globs", v.SourceGlobs},
+		{"verify.config_paths", v.ConfigPaths},
+		{"verify.binary_allow", v.BinaryAllow},
+		{"verify.protected_paths", v.ProtectedPaths},
+	} {
+		for i, p := range k.patterns {
+			if err := glob.Valid(p); err != nil {
+				return fmt.Errorf("%s[%d]: %w", k.key, i, err)
+			}
+		}
+	}
+	return nil
 }
 
 // validateModels checks models.allowed and the stages' model and effort keys.

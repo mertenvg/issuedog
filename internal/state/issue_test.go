@@ -591,3 +591,34 @@ func TestDeriveOriginHuman(t *testing.T) {
 		t.Errorf("origin = %+v, want %+v", is.Origin, want)
 	}
 }
+
+// Derive records the comment that holds each marker that counts, BodyID
+// for the body's, so a marker's comment can be found by its index, and a
+// dirty comment's markers, which don't count, take no index. An index
+// with no ID recorded, as in an Issue built by hand, has none.
+func TestDeriveMarkerComments(t *testing.T) {
+	t.Parallel()
+	const (
+		origin = "<!-- issuedog:origin plan=#3 rev=1 item=T1 -->"
+		moved  = "<!-- issuedog:transition from=intake to=ready event=5 -->"
+		picked = "<!-- issuedog:transition from=ready to=in-progress event=s2 -->"
+	)
+	s := snap(origin, []github.Author{appBot, appBot, appBot}, moved, picked, picked)
+	is := Derive(s, slug, func(id int64) bool { return id == 3 })
+	if want := []int64{BodyID, 1, 2}; !reflect.DeepEqual(is.MarkerComments, want) || len(is.Markers) != len(want) {
+		t.Fatalf("markers %v in comments %v; want 3, in %v", is.Markers, is.MarkerComments, want)
+	}
+	for i, want := range []int64{BodyID, 1, 2} {
+		if got, ok := is.MarkerComment(i); !ok || got != want {
+			t.Errorf("MarkerComment(%d) = %d, %t; want %d, true", i, got, ok, want)
+		}
+	}
+	for _, i := range []int{-1, 3} {
+		if got, ok := is.MarkerComment(i); ok {
+			t.Errorf("MarkerComment(%d) = %d, true; want none", i, got)
+		}
+	}
+	if got, ok := (Issue{Markers: is.Markers}).MarkerComment(1); ok {
+		t.Errorf("an Issue built by hand: MarkerComment(1) = %d, true; want none", got)
+	}
+}

@@ -272,7 +272,8 @@ func implementerMoved(is state.Issue, r Result) (Move, bool) {
 // Apply writes r's result, which Check passed, on r.S, as r.Move's move,
 // keyed by the run, with seen= and the run's model=, effort= and ran=:
 //   - commits: in-progress → verifying on implemented, with head=, the
-//     run's head (Result.Head), and its comment renderCommits'.
+//     run's head (Result.Head), attempt=, the run's number in its round
+//     (Result.Attempt), and its comment renderCommits'.
 //   - question: in-progress → clarifying on implementer-question, with
 //     round= and questions=, the round the next of every stage's
 //     (nextRound, SPEC §9.1), and its comment the round in the SPEC §9.1
@@ -334,6 +335,11 @@ func (im *Implementer) Apply(ctx context.Context, a *Applier, r Result) error {
 		m.Fields = map[string]string{}
 	}
 	m.Fields["head"] = r.Head
+	if r.Attempt > 0 {
+		// The round's count lives on this move and the findings move, so a
+		// restart reads it back (SPEC §8.3).
+		m.Fields[fieldAttempt] = strconv.Itoa(r.Attempt)
+	}
 	m.Text = renderCommits(*out.Title, *out.Summary, r.Head)
 	logr.Infof("%s/%s#%d: run %s committed %s, moving to %s", a.Owner, a.Repo, r.S.Number, r.RunID, r.Head, state.Verifying)
 	if err := a.Transition(ctx, r.S, r.Dirt.Has, m); err != nil {

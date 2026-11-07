@@ -44,8 +44,14 @@ func Credential(environ []string) (Cred, error) {
 // Env builds the agent's whole environment: the credential, the egress proxy,
 // HOME and a fixed PATH. Nothing else is inherited from the daemon.
 func Env(cred Cred, proxyURL, home string) []string {
+	return append([]string{cred.Name + "=" + cred.Value}, CommandEnv(proxyURL, home)...)
+}
+
+// CommandEnv builds the whole environment of a repo command, such as one of
+// verify.commands: the egress proxy, HOME and a fixed PATH, with no Claude
+// or GitHub credential (SPEC §3.1). Nothing else is inherited from the daemon.
+func CommandEnv(proxyURL, home string) []string {
 	return []string{
-		cred.Name + "=" + cred.Value,
 		"HTTPS_PROXY=" + proxyURL,
 		"HTTP_PROXY=" + proxyURL,
 		"HOME=" + home,

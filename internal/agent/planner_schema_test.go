@@ -185,6 +185,8 @@ func TestPlannerPrompt(t *testing.T) {
 		// The item fields' limits come from the preamble.
 		"`plan.max_tasks`", "`verify.max_diff_lines`", "preamble's list of allowed models", "`low`, `medium`, `high`, `xhigh` and `max`", "`p0` to `p3`",
 		"`recommended` first",
+		// Rule 6 counts no test lines (SPEC §10.1, §11.3).
+		"Files matching `verify.test_globs` don't count toward the size",
 		// A revision's statuses, and their rules.
 		"`children.md`", "## Revised plans", "- `kept`:", "- `changed`:", "- `new`:", "- `dropped`:",
 		"List every child exactly once, never as `new`", "A closed child can only be `kept`", "On a first plan, leave `status` out of every item.",
