@@ -622,3 +622,47 @@ func TestDeriveMarkerComments(t *testing.T) {
 		t.Errorf("an Issue built by hand: MarkerComment(1) = %d, true; want none", got)
 	}
 }
+
+// FollowUpOf reads an origin marker naming a verify, with all three of its
+// fields: a plan's origin, another kind of marker, and a field that's missing
+// or bad give nothing. Derive reads no Origin from one, as a follow-up's class
+// is #621's.
+func TestFollowUpOf(t *testing.T) {
+	t.Parallel()
+	marker := func(kind string, kv ...string) github.Marker {
+		m := github.Marker{Kind: kind, Fields: map[string]string{}}
+		for i := 0; i+1 < len(kv); i += 2 {
+			m.Fields[kv[i]] = kv[i+1]
+		}
+		return m
+	}
+	if verify, run, item, ok := FollowUpOf(marker("origin", "verify", "#620", "run", "8f2c", "item", "F12")); !ok || verify != 620 || run != "8f2c" || item != "F12" {
+		t.Errorf("FollowUpOf = %d, %q, %q, %t; want 620, 8f2c, F12", verify, run, item, ok)
+	}
+	for name, m := range map[string]github.Marker{
+		"a plan's":      marker("origin", "plan", "#620", "rev", "1", "item", "T1"),
+		"another kind":  marker("verify", "verify", "#620", "run", "r", "item", "F1"),
+		"no verify":     marker("origin", "run", "r", "item", "F1"),
+		"no #":          marker("origin", "verify", "620", "run", "r", "item", "F1"),
+		"no number":     marker("origin", "verify", "#x", "run", "r", "item", "F1"),
+		"zero":          marker("origin", "verify", "#0", "run", "r", "item", "F1"),
+		"below zero":    marker("origin", "verify", "#-1", "run", "r", "item", "F1"),
+		"no run":        marker("origin", "verify", "#620", "item", "F1"),
+		"no item":       marker("origin", "verify", "#620", "run", "r"),
+		"a plan's item": marker("origin", "verify", "#620", "run", "r", "item", "T1"),
+		"item F":        marker("origin", "verify", "#620", "run", "r", "item", "F"),
+		"item F0":       marker("origin", "verify", "#620", "run", "r", "item", "F0"),
+		"item F01":      marker("origin", "verify", "#620", "run", "r", "item", "F01"),
+		"item after":    marker("origin", "verify", "#620", "run", "r", "item", "F1x"),
+		"item before":   marker("origin", "verify", "#620", "run", "r", "item", "xF1"),
+	} {
+		if verify, run, item, ok := FollowUpOf(m); ok || verify != 0 || run != "" || item != "" {
+			t.Errorf("%s: FollowUpOf = %d, %q, %q, %t; want nothing", name, verify, run, item, ok)
+		}
+	}
+	s := snap("A follow-up.\n\n<!-- issuedog:origin verify=#620 run=r item=F1 -->", nil)
+	s.Author = appBot
+	if is := Derive(s, slug, clean); is.Origin != (Origin{}) || is.Item.FromPlan {
+		t.Errorf("Derive gave Origin %+v, FromPlan %t; want neither", is.Origin, is.Item.FromPlan)
+	}
+}

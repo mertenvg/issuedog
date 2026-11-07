@@ -105,7 +105,7 @@ func TestVerifierPendingOnTheHead(t *testing.T) {
 // A pass's comment names the head and the notes, as block leaves them.
 func TestRenderPass(t *testing.T) {
 	t.Parallel()
-	got := renderPass("abc", "# Heading\n\nFine.")
+	got := renderPass("abc", "# Heading\n\nFine.", nil)
 	want := "The verifier passed `abc`.\n\n" + block("# Heading\n\nFine.")
 	if got != want {
 		t.Errorf("renderPass =\n%s\nwant\n%s", got, want)
@@ -219,7 +219,7 @@ func TestNoVerdict(t *testing.T) {
 func TestCheckVerifier(t *testing.T) {
 	t.Parallel()
 	const hostile = "/work/run1 @alice"
-	f := verifierFacts{Head: "abc", Attempt: 1, Limit: 3, Issue: 7, Notify: []string{"owner"}}
+	f := verifierFacts{Head: "abc", Attempt: 1, Limit: 3, Issue: 7, Notify: []string{"owner"}, Scopes: []string{"booking", "tooling"}}
 	cap := f
 	cap.Attempt = 3
 	finding := verifierFinding{Criterion: "c", Class: "criterion", Detail: "d"}
@@ -229,7 +229,7 @@ func TestCheckVerifier(t *testing.T) {
 	roomFor := func(f verifierFacts) int {
 		return maxText - textRoom - textLen(changesComment(verifierOutput{Verdict: verdictRequestChanges, Findings: []verifierFinding{{Criterion: "c", Class: "criterion", Detail: "x"}}}, f)) + 1
 	}
-	passRoom := maxText - textRoom - textLen(renderPass("abc", ""+"x")) + 1
+	passRoom := maxText - textRoom - textLen(renderPass("abc", ""+"x", nil)) + 1
 	withDetail := func(n int) verifierOutput {
 		return verifierOutput{Verdict: verdictRequestChanges, Findings: []verifierFinding{{Criterion: "c", Class: "criterion", Detail: long(n)}}}
 	}
@@ -241,7 +241,7 @@ func TestCheckVerifier(t *testing.T) {
 	}{
 		{"a pass", verifierOutput{Verdict: verdictPass, Notes: "n"}, f, nil},
 		{"a pass with empty fields", verifierOutput{Verdict: verdictPass, Notes: "n", Findings: []verifierFinding{}, Questions: []interviewQuestion{}}, f, nil},
-		{"a pass with candidates", verifierOutput{Verdict: verdictPass, Notes: "n", FollowUps: []verifierFollowUp{{Title: "t"}}}, f, nil},
+		{"a pass with candidates", verifierOutput{Verdict: verdictPass, Notes: "n", FollowUps: []verifierFollowUp{wholeFollowUp(), wholeFollowUp()}}, f, nil},
 		{"a pass with findings", verifierOutput{Verdict: verdictPass, Notes: "n", Findings: []verifierFinding{finding}}, f, []string{"rule outcome: pass has no findings"}},
 		{"a pass with questions", verifierOutput{Verdict: verdictPass, Notes: "n", Questions: []interviewQuestion{question}}, f, []string{"rule outcome: pass has no questions"}},
 		{"a pass at the limit", verifierOutput{Verdict: verdictPass, Notes: long(passRoom)}, f, nil},

@@ -236,35 +236,46 @@ func plural(n int, one, many string) string {
 const (
 	planDataKind    = "plan-data"
 	planDataVersion = "1"
-	// maxPlanData bounds a plan's JSON, so readPlanData never inflates
-	// more than this, and planDataMarker never writes what it couldn't
-	// read back. A plan comment is at most 65536 characters, so its data
-	// is far smaller.
+	// maxPlanData bounds a data marker's JSON, a plan's or a pass's
+	// candidates', so readMarkerData never inflates more than this, and
+	// markerData never writes what it couldn't read back. A comment is at
+	// most 65536 characters, so its data is far smaller.
 	maxPlanData = 1 << 20
 )
 
 // planDataMarker is the plan-data marker holding p, for Move.Markers.
 func planDataMarker(p planBody) (github.Marker, error) {
-	raw, err := json.Marshal(p)
+	data, err := markerData(p)
 	if err != nil {
 		return github.Marker{}, fmt.Errorf("plan data: %w", err)
 	}
+	return github.Marker{Kind: planDataKind, Fields: map[string]string{"v": planDataVersion, "data": data}}, nil
+}
+
+// markerData is v as a data marker's data field holds it (SPEC §5): its
+// JSON, compressed and encoded as the plan-data marker's is, for any marker
+// that keeps structured data in a comment. It refuses JSON over maxPlanData,
+// so nothing is written that readMarkerData couldn't read back.
+func markerData(v any) (string, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return "", fmt.Errorf("marshal JSON: %w", err)
+	}
 	if len(raw) > maxPlanData {
-		return github.Marker{}, fmt.Errorf("plan data: %d bytes of JSON, over %d", len(raw), maxPlanData)
+		return "", fmt.Errorf("%d bytes of JSON, over %d", len(raw), maxPlanData)
 	}
 	var z bytes.Buffer
 	w, err := flate.NewWriter(&z, flate.BestCompression)
 	if err != nil {
-		return github.Marker{}, fmt.Errorf("plan data: compress: %w", err)
+		return "", fmt.Errorf("compress: %w", err)
 	}
 	if _, err := w.Write(raw); err != nil {
-		return github.Marker{}, fmt.Errorf("plan data: compress: %w", err)
+		return "", fmt.Errorf("compress: %w", err)
 	}
 	if err := w.Close(); err != nil {
-		return github.Marker{}, fmt.Errorf("plan data: compress: %w", err)
+		return "", fmt.Errorf("compress: %w", err)
 	}
-	return github.Marker{Kind: planDataKind, Fields: map[string]string{
-		"v": planDataVersion, "data": base64.RawURLEncoding.EncodeToString(z.Bytes())}}, nil
+	return base64.RawURLEncoding.EncodeToString(z.Bytes()), nil
 }
 
 // readPlanData reads the plan back from c's plan-data marker, as
@@ -296,38 +307,38 @@ func readPlanData(c github.Comment, appSlug string) (planBody, bool, error) {
 	if v := m.Fields["v"]; v != planDataVersion {
 		return fail("version %q, not %s", v, planDataVersion)
 	}
-	p, err := decodePlanData(m.Fields["data"])
-	if err != nil {
+	var p planBody
+	if err := readMarkerData(m.Fields["data"], &p); err != nil {
 		return planBody{}, false, fmt.Errorf("plan data in comment %d: %w", c.ID, err)
 	}
 	return p, true, nil
 }
 
-// decodePlanData undoes planDataMarker's data field.
-func decodePlanData(data string) (planBody, error) {
+// readMarkerData undoes markerData's data field into v, which must take
+// exactly the JSON's fields. It inflates no more than maxPlanData.
+func readMarkerData(data string, v any) error {
 	z, err := base64.RawURLEncoding.DecodeString(data)
 	if err != nil {
-		return planBody{}, fmt.Errorf("decode base64url: %w", err)
+		return fmt.Errorf("decode base64url: %w", err)
 	}
 	r := flate.NewReader(bytes.NewReader(z))
 	raw, err := io.ReadAll(io.LimitReader(r, maxPlanData+1))
 	if err != nil {
-		return planBody{}, fmt.Errorf("inflate: %w", err)
+		return fmt.Errorf("inflate: %w", err)
 	}
 	if err := r.Close(); err != nil {
-		return planBody{}, fmt.Errorf("inflate: %w", err)
+		return fmt.Errorf("inflate: %w", err)
 	}
 	if len(raw) > maxPlanData {
-		return planBody{}, fmt.Errorf("inflate: over %d bytes", maxPlanData)
+		return fmt.Errorf("inflate: over %d bytes", maxPlanData)
 	}
-	var p planBody
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
-	if err := d.Decode(&p); err != nil {
-		return planBody{}, fmt.Errorf("decode JSON: %w", err)
+	if err := d.Decode(v); err != nil {
+		return fmt.Errorf("decode JSON: %w", err)
 	}
 	if _, err := d.Token(); !errors.Is(err, io.EOF) {
-		return planBody{}, errors.New("decode JSON: more after the plan")
+		return errors.New("decode JSON: more after the data")
 	}
-	return p, nil
+	return nil
 }

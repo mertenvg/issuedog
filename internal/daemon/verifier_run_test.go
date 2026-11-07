@@ -221,8 +221,8 @@ func (v *verdictRig) quietPass(step string) {
 // next pass runs the checks and no claude, and the pass after runs the
 // verifier, in a clone of that head alone, with the settings of its own
 // labels, a fresh HOME and the commands' results in checks.md. Its pass is
-// one comment naming the head and the notes, with the verify marker, and
-// moves nothing. Its commit goes nowhere, nothing of the run is left, and
+// one comment naming the head, the notes and the candidate, with the verify
+// marker and the candidate's data, and moves nothing. Its commit goes nowhere, nothing of the run is left, and
 // each unchanged pass after makes no request but 304s, while the task
 // holds the worker.
 func TestVerifierWholeRun(t *testing.T) {
@@ -295,11 +295,15 @@ func TestVerifierWholeRun(t *testing.T) {
 	}
 
 	notes, _ := pass["notes"].(string)
-	want := "The verifier passed `" + head + "`.\n\n" + notes + "\n\n<!-- issuedog:verify verdict=pass attempt=1 run=" + l.RunID +
-		" effort=high head=" + head + " model=opus -->"
+	want := "The verifier passed `" + head + "`.\n\n" + notes + "\n\n**Follow-up candidates, not filed yet:**\n\n" +
+		"**F1. A quote that expires between the check and the write is still booked** · scope:booking\n" +
+		"- Scenario: A customer books in the same millisecond the quote expires, and the check runs just before it does.\n" +
+		"- Likelihood: Rare: the window is the few milliseconds between the check and the write.\n" +
+		"- Impact: One booking at a price that has just expired, which support can refund.\n\n" +
+		"<!-- issuedog:verify verdict=pass attempt=1 run=" + l.RunID + " effort=high head=" + head + " model=opus -->\n<!-- issuedog:verify-data v=1 data="
 	passes := passComments(f, n)
-	if len(passes) != 1 || passes[0] != want {
-		t.Errorf("the verifier's comments = %q; want the one\n%s", passes, want)
+	if len(passes) != 1 || !strings.HasPrefix(passes[0], want) {
+		t.Errorf("the verifier's comments = %q; want the one starting\n%s", passes, want)
 	}
 	if got := len(f.State().Issues[n-1].Comments); got != comments+1 || pickStage(f, n) != "stage:verifying" {
 		t.Errorf("after the pass, %d comments, at %s; want %d, still at verifying", got, pickStage(f, n), comments+1)
@@ -999,6 +1003,7 @@ func TestVerifierSavedVerdictReplay(t *testing.T) {
 				return f
 			}, func(f *githubtest.Fake) error {
 				g := newRig(t, f, o, roots[f])
+				g.d.Config.Scopes = []string{"booking"}
 				g.r.Stages = map[state.Stage]daemon.Stage{state.Verifying: &daemon.Verifier{Daemon: g.d}}
 				return g.work(1)
 			})
@@ -1037,7 +1042,7 @@ func TestVerifierSavedNoVerdictReplay(t *testing.T) {
 func TestVerifierApplyReplay(t *testing.T) {
 	t.Parallel()
 	head := strings.Repeat("b", 40)
-	cfg, err := config.Parse([]byte("types: labels\nnotify: [owner]\nloop: {max_attempts: 3}\n"))
+	cfg, err := config.Parse([]byte("types: labels\nnotify: [owner]\nscopes: [booking]\nloop: {max_attempts: 3}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
