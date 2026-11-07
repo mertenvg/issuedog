@@ -97,6 +97,12 @@ type Input struct {
 	// 2's finding on it, set with RunID, or "" when it was, or there's
 	// none (SPEC §3.4, §12).
 	Dropped string
+	// Head is the commit a verifier run judges and Main is main's commit
+	// it passed the checks against, and Checks is what verify.commands
+	// gave on them, each set with RunID, or empty for any other Stage's
+	// run (SPEC §10.1, §10.2).
+	Head, Main string
+	Checks     []verify.CommandResult
 }
 
 // Result is a valid run result, for a Stage to apply.

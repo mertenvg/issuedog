@@ -30,6 +30,10 @@ type contextStage struct {
 	// App is the heading of the App's clean comment c in conversation.md,
 	// such as one naming a round or a revision (ivAppLabel).
 	App func(c github.Comment) string
+	// AppLeftOut, if set, reports the App's clean comments conversation.md
+	// leaves out, as the verifier's leaves out all but the question rounds
+	// (SPEC §3, §12).
+	AppLeftOut func(c github.Comment) bool
 	// Trusted is what follows "comment <ID> by <login>, " in the heading of
 	// a trusted user's clean comment c, such as the round it's in.
 	Trusted func(c github.Comment) string
@@ -49,8 +53,8 @@ type contextText struct {
 	// anywhere.
 	TitleNote, BodyNote string
 	// Conversation is conversation.md's sections: the App's clean
-	// comments, its markers left out, and the trusted, clean comments,
-	// oldest first.
+	// comments, less those the stage leaves out (contextStage.AppLeftOut),
+	// its markers left out, and the trusted, clean comments, oldest first.
 	Conversation []string
 	// Untrusted is untrusted.md's sections, if the stage collects them: a
 	// title or body changed after admission, a dirty body, and comments by
@@ -102,7 +106,9 @@ func contextSort(ctx context.Context, s *github.Snapshot, appSlug string, d Dirt
 			continue
 		}
 		if state.IsApp(c.Author, appSlug) {
-			t.Conversation = append(t.Conversation, ivSection(st.App(c), ivStripMarkers(c.Body)))
+			if st.AppLeftOut == nil || !st.AppLeftOut(c) {
+				t.Conversation = append(t.Conversation, ivSection(st.App(c), ivStripMarkers(c.Body)))
+			}
 			continue
 		}
 		trusted, err := tc.trusted(ctx, c.Author)
