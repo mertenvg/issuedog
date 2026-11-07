@@ -361,7 +361,8 @@ func TestVerifierPassWithEmptyFields(t *testing.T) {
 // turns, a result that's an error, a subtype claude isn't known to write, a
 // non-zero exit with no result and a timeout all stay failed runs, even with
 // a verdict in their output. With loop.max_attempts at 1, each ends in the
-// kind=attempts state error, until #725, with no move and no findings.
+// hand-off for the verifier's failed runs, keyed by the attempt key, with no
+// state error, no move of the run's and no findings.
 func TestVerifierFailedRunIsNoVerdict(t *testing.T) {
 	t.Parallel()
 	output := `"structured_output":{"verdict":"request_changes","notes":"n","findings":[{"criterion":"c","class":"criterion","detail":"d"}]}`
@@ -401,11 +402,11 @@ func TestVerifierFailedRunIsNoVerdict(t *testing.T) {
 				}
 			}
 			v.passes(2)
-			if v.runs() != 1 || pickStage(f, n) != "stage:verifying" || len(verifierMoves(f, n)) != 0 {
-				t.Fatalf("%d runs, at %s, moves %+v; want one, still at verifying, and none", v.runs(), pickStage(f, n), verifierMoves(f, n))
+			if v.runs() != 1 || pickStage(f, n) != "stage:needs-human" || len(verifierMoves(f, n)) != 0 || len(errorMarkers(f, n)) != 0 {
+				t.Fatalf("%d runs, at %s, moves %+v, errors %q; want one, at needs-human, and none of either", v.runs(), pickStage(f, n), verifierMoves(f, n), errorMarkers(f, n))
 			}
-			if body := verifierNewest(f, n); !strings.Contains(body, "issuedog:error kind=attempts") || strings.Contains(body, "no readable verdict") {
-				t.Errorf("the newest comment =\n%s\nwant the kind=attempts error, saying nothing of a verdict", body)
+			if body := verifierNewest(f, n); !strings.Contains(body, "issuedog:transition from=verifying to=needs-human event=averifying-") || strings.Contains(body, "no readable verdict") {
+				t.Errorf("the newest comment =\n%s\nwant the hand-off, saying nothing of a verdict", body)
 			} else if tt.sleep && !strings.Contains(body, "run timed out after 1s") {
 				t.Errorf("the newest comment =\n%s\nwant it to say the run timed out", body)
 			}

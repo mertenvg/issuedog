@@ -485,8 +485,9 @@ func (r *Runs) CheckRegistered() error {
 // whether it ran. A run that fails, but not on a usage limit or in its
 // setup, counts as an attempt (failed); after loop.max_attempts in a row
 // the issue gets one state error (SPEC §5.3) and no more runs until the
-// stage moves or gets new input, or for the implementer on a task, a
-// hand-off at needs-human (atCap). A task's round also counts its failed
+// stage moves or gets new input, or for the implementer on a task, or the
+// verifier on one, a hand-off at needs-human (atCap). A task's round also
+// counts its failed
 // verifies, as the verify loop's moves record them (roundAttempts), so its
 // run is the round's attempt after the latest of those and the failed runs
 // since (SPEC §8.3), and the hand-off comes once they reach the cap
@@ -562,7 +563,10 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		// loop.max_attempts lowered since: then the hand-off says nothing of
 		// why, as no run failed last, so it has no failure kept. It counts the used attempts,
 		// which may be more than the limit, and its seen is the newest
-		// comment step 1 read, as the last run's would be.
+		// comment step 1 read, as the last run's would be. At verifying, only
+		// the verifier's failed runs are counted here, and verifyTask gets
+		// this far only with a pass of the checks kept, so a restart runs
+		// them again before this hand-off.
 		last := Lease{Issue: n, Stage: is.Stage, AttemptKey: errKey, Attempt: used, PublicFailure: r.failures[countKey(n, errKey)]}
 		for _, c := range rd.S.Comments {
 			last.Seen = max(last.Seen, c.ID)
@@ -1167,7 +1171,10 @@ func (r *Runs) newInput(ctx context.Context, s *github.Snapshot, d Dirt, seen in
 // gate, and isn't counted, as in RunStage.
 // Otherwise the run counts as a failed attempt, its clone is deleted, and
 // the issue, at its pre-run stage (see Lease), runs again when its stage
-// has work pending. For a held or closed issue, the clone is deleted; a
+// has work pending. So does a FailClosed Stage's run that exited non-zero
+// with an output its Stage stood in for (validated) and whose first apply
+// failed: no result was saved, so nothing is left to apply, which is the
+// safe side (SPEC §8.3). For a held or closed issue, the clone is deleted; a
 // valid saved result is dropped; without one, the run counts as a failed
 // attempt unless it hit a usage limit or was applied; and the lease stays,
 // marked ended, while it holds a count. A Failed lease only gives its
@@ -1315,10 +1322,16 @@ func (r *Runs) endedLease(ctx context.Context, l Lease) error {
 // may quote of cause as its PublicFailure (publicCause), or, if nothing,
 // publicCauseLogged. It logs cause in full. The last attempt allowed posts
 // one state error (reportCap), naming that cause, after which RunStage
-// runs no more, or for the implementer on a task, hands the task off to
-// the owner, naming it too (atCap). If that fails, RunStage does it
-// instead of starting a run, whether or not the stage has work pending
-// then.
+// runs no more, or for the implementer or the verifier on a task, hands
+// the task off to the owner, naming it too (atCap). If that fails,
+// RunStage does it instead of starting a run, whether or not the stage has
+// work pending then.
+//
+// A verifier's failed run is counted here on its own attempts at
+// verifying, by l.AttemptKey, so it writes nothing below the cap, and
+// never reaches the task's round: that's read from the verify loop's
+// moves (roundAttempts), and the next one's attempt= is the move into
+// verifying's (verifyAttempt), however many of these fail (SPEC §8.3).
 func (r *Runs) failed(ctx context.Context, st Stage, l Lease, cause error) error {
 	l.PublicFailure = cmp.Or(publicCause(cause), publicCauseLogged)
 	n := r.count(l)
@@ -1335,11 +1348,14 @@ func (r *Runs) failed(ctx context.Context, st Stage, l Lease, cause error) error
 // atCap is what the attempt cap does once l's run is the last of
 // loop.max_attempts failed in a row, or for a task, the last attempt of its
 // round (SPEC §8.3). For a Committer's run at in-progress, the
-// implementer's on a task, it's a hand-off at needs-human (capHandoff), which releases the worker. For every other stage, it's
+// implementer's on a task, or an AfterChecks Stage's at verifying, the
+// verifier's, it's a hand-off at needs-human (capHandoff), which releases the worker. For every other stage, it's
 // the kind=attempts state error (reportCap), and the stage runs no more
 // until the round changes.
 func (r *Runs) atCap(ctx context.Context, st Stage, l Lease) error {
-	if _, commits := st.(Committer); commits && l.Stage == state.InProgress {
+	_, commits := st.(Committer)
+	_, after := st.(AfterChecks)
+	if commits && l.Stage == state.InProgress || after && l.Stage == state.Verifying {
 		return r.capHandoff(ctx, st, l)
 	}
 	return r.reportCap(ctx, nil, st, l)
@@ -1361,6 +1377,13 @@ func (r *Runs) atCap(ctx context.Context, st Stage, l Lease) error {
 // why, as the cap's state error would (renderCapHandoff).
 // That releases the worker (SPEC §8.1), and /done or a trusted 👍 on the
 // hand-off sends the task back to ready, a new round (handback.go).
+//
+// With l.Stage verifying, it's the verifier's cap: l's run was the last of
+// loop.max_attempts failed in a row on the head, so the task moves
+// verifying → needs-human the same way, keyed and with seen= the same, but
+// its text and fields are the verifier's (renderVerifierCapHandoff): they
+// count the verifier's runs on the head, not the task's round, which none
+// of them is an attempt of.
 //
 // It reads the issue again, and runs CheckLabels on it before its move,
 // as a run's apply does. Like reportCap, it moves nothing on an issue
@@ -1399,16 +1422,20 @@ func (r *Runs) capHandoff(ctx context.Context, st Stage, l Lease) error {
 		return nil
 	}
 	attempts := max(r.limit(), l.Attempt)
-	m := Move{To: state.NeedsHuman, Trigger: state.TriggerAttemptCap, Key: capHandoffKey(l.AttemptKey),
-		Text: renderCapHandoff(attempts, l.PublicFailure, l.Issue, r.Daemon.Config.Notify)}
+	text := renderCapHandoff(attempts, l.PublicFailure, l.Issue, r.Daemon.Config.Notify)
+	failed := fmt.Sprintf("the task's %d attempts in its round failed, %s runs and verifies", attempts, st.Agent())
+	if l.Stage == state.Verifying {
+		text = renderVerifierCapHandoff(attempts, l.PublicFailure, l.Issue, r.Daemon.Config.Notify)
+		failed = fmt.Sprintf("the %s's %d runs on the task's head failed", st.Agent(), attempts)
+	}
+	m := Move{To: state.NeedsHuman, Trigger: state.TriggerAttemptCap, Key: capHandoffKey(l.AttemptKey), Text: text}
 	if l.Seen > 0 {
 		m.Fields = map[string]string{state.FieldSeen: strconv.FormatInt(l.Seen, 10)}
 	}
 	if err := a.Transition(ctx, s, d.Has, m); err != nil {
 		return wrap(err)
 	}
-	logr.Warnf("%s/%s#%d: the task's %d attempts in its round failed, %s runs and verifies, so it's handed off to the owner at %s",
-		a.Owner, a.Repo, l.Issue, attempts, st.Agent(), state.NeedsHuman)
+	logr.Warnf("%s/%s#%d: %s, so it's handed off to the owner at %s", a.Owner, a.Repo, l.Issue, failed, state.NeedsHuman)
 	return nil
 }
 

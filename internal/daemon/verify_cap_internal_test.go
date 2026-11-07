@@ -94,6 +94,7 @@ func TestVerifyCapMove(t *testing.T) {
 		"<!-- issuedog:transition from=in-progress to=needs-human run=8f2c -->":               false,
 		"<!-- issuedog:transition from=verifying to=in-progress attempt=2 run=8f2c -->":       false,
 		"<!-- issuedog:transition from=in-progress to=needs-human event=ain-progress-101 -->": false,
+		"<!-- issuedog:transition from=verifying to=needs-human event=averifying-101 -->":     false,
 		"<!-- issuedog:transition from=in-progress to=needs-human event=v101 -->":             false,
 		"<!-- issuedog:transition from=verifying to=in-progress attempt=2 event=v101 -->":     false,
 		"<!-- issuedog:reply reason=rejected event=v101 -->":                                  false,
