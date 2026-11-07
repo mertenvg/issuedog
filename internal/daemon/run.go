@@ -71,6 +71,17 @@ type Committer interface {
 	MakesCommits()
 }
 
+// AfterChecks is a Stage whose runs only follow SPEC §10.1's checks, such
+// as the verifier's: only verifyTask starts one, once the head and main's
+// commit have a pass of them, and step 3 never does (work). Its run's clone
+// holds the head the checks judged, which start refuses without that pass,
+// and its HOME is fresh and empty (run). It isn't a Committer, so nothing
+// fetches a commit it makes: its clone goes with whatever it holds.
+type AfterChecks interface {
+	// RunsAfterChecks marks the Stage as one.
+	RunsAfterChecks()
+}
+
 // Input is what a Stage gets before a run.
 type Input struct {
 	RunID string
@@ -123,6 +134,9 @@ type Result struct {
 	// (Lease.Attempt), which the implementer's move to verifying records,
 	// or 0 for a lease that names none (SPEC §8.3).
 	Attempt int
+	// Start is the commit the run's clone started from (Lease.Start): for a
+	// verifier run, the head it judged.
+	Start string
 
 	moveKey string            // see moveKey
 	fields  map[string]string // the run's model, effort and ran (runFields)
@@ -236,7 +250,8 @@ func lastFailure(cause error) string {
 const kindLabels = "labels"
 
 // Runs is the stage-run harness. Its Work is the loop's stage work (SPEC
-// §8.1, step 3), then a task's run, the checks at verifying or the pick
+// §8.1, step 3), then a task's run, the checks or the verifier at
+// verifying, or the pick
 // of the next task (step 4), one run at a time, under a lease (SPEC §8.2).
 type Runs struct {
 	// Daemon gives the applier, trust and config of the moment.
@@ -255,7 +270,7 @@ type Runs struct {
 	Now       func() time.Time // nil is time.Now
 	NewID     func() string    // nil makes random run IDs; it names the checks' checkouts too
 	// Commands runs verify.commands for the checks at verifying
-	// (verifyTask). With none, no task gets checks.
+	// (verifyTask). With none, no task gets checks or a verifier run.
 	Commands *verify.Commands
 
 	attempts   map[string]int  // failed runs, by countKey
@@ -273,11 +288,21 @@ type Runs struct {
 	pickBlocked  map[int]bool
 	pickSearched time.Time
 
-	// passed holds the head and main's commit, "<head>:<main>", that each
-	// task at verifying passed the checks with, by issue number, so they
-	// don't run again (verifyTask).
-	passed map[int]string
+	// passed holds the pass of the checks of each task at verifying, by
+	// issue number, so they don't run again (verifyTask), and a verifier
+	// run reads what they gave (checksPassed).
+	passed map[int]checksPassed
 }
+
+// checksPassed is a pass of SPEC §10.1's checks: the head and main's commit
+// that passed them, and what verify.commands gave.
+type checksPassed struct {
+	Head, Main string
+	Results    []verify.CommandResult
+}
+
+// holds reports whether p is a pass of head against main.
+func (p checksPassed) holds(head, main string) bool { return p.Head == head && p.Main == main }
 
 // Work is Daemon.Work. On its first pass it first removes what a crash
 // left (sweep). Then it finishes a lease a run left, after a
@@ -290,10 +315,12 @@ type Runs struct {
 // priority then number, whose stage has one with work pending: task work
 // comes after the other stages and triage (SPEC §8.1, step 4). If none ran
 // either, it runs SPEC §10.1's checks on the first task at verifying, by
-// priority then number, whose head hasn't passed them (verifyTask). If it
-// ran none either, it picks the next ready task, moves it to in-progress
-// and starts its run (pickTask), unless a task holds the worker, or step 1
-// didn't finish on every issue this pass. A lease
+// priority then number, whose head hasn't passed them, or a verifier run
+// on one whose head has, with no pass of the verifier's yet (verifyTask).
+// Neither touches the issue resume applied a result to, whose snapshot is
+// from before it. If it ran none either, it picks the next ready task,
+// moves it to in-progress and starts its run (pickTask), unless a task
+// holds the worker, or step 1 didn't finish on every issue this pass. A lease
 // whose issue has labels held back
 // (ErrLabelsHeld) waits, and no run starts until it's applied. So does a
 // saved result on an issue step 1 didn't finish on this pass (resume),
@@ -366,10 +393,10 @@ func (r *Runs) Work(ctx context.Context, ready []Ready) error {
 	}
 	// No run is in progress here, and none starts until the checks are
 	// done, so their commands never overlap a claude run (verifyTask).
-	ran, err = r.verifyTask(ctx, ready)
+	ran, err = r.verifyTask(ctx, ready, skip)
 	switch {
 	case err != nil:
-		return fmt.Errorf("the checks at %s: %w", state.Verifying, err)
+		return fmt.Errorf("the checks or the verifier at %s: %w", state.Verifying, err)
 	case ran:
 		return nil
 	}
@@ -381,11 +408,13 @@ func (r *Runs) Work(ctx context.Context, ready []Ready) error {
 
 // work runs the first of ready, in its order, but issue skip, whose stage
 // has a Stage with work pending that is a Committer, if committers, or
-// that isn't, if not, and reports whether one ran.
+// that isn't, if not, and reports whether one ran. It never runs an
+// AfterChecks Stage, which only verifyTask starts.
 func (r *Runs) work(ctx context.Context, ready []Ready, skip int, committers bool) (bool, error) {
 	for _, rd := range ready {
 		st, ok := r.Stages[stageOf(rd.S)]
-		if _, commits := st.(Committer); !ok || commits != committers || rd.S.Number == skip {
+		_, commits := st.(Committer)
+		if _, after := st.(AfterChecks); !ok || after || commits != committers || rd.S.Number == skip {
 			continue
 		}
 		ran, err := r.RunStage(ctx, rd, st)
@@ -472,7 +501,8 @@ func (r *Runs) CheckRegistered() error {
 //
 // The run's clone holds main's commit in the bare repo, as the pass's sync
 // left it, and its history (SPEC §3.2, §3.4), or for a Committer, the
-// task's head, if it has one (start). That commit is named before the
+// task's head, if it has one, or for an AfterChecks Stage, the head the
+// checks passed (start). That commit is named before the
 // issue is read again, from the bare repo alone, and the lease records it
 // as the run's start (SPEC §8.2). A failure to name it starts no run, uses
 // no attempt and makes no request. A Committer starts no run on an issue
@@ -574,7 +604,7 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 	// run, so they need none, and their state error doesn't wait on one.
 	var commits runStart
 	if badLabels == nil {
-		if commits, err = r.start(ctx, st, n); err != nil {
+		if commits, err = r.start(ctx, st, is, n); err != nil {
 			return false, wrap(fmt.Errorf("name the run's start: %w", err))
 		}
 	}
@@ -617,6 +647,10 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 	}
 	in.RunID, in.Attempt, in.Target, in.Dropped = r.newID(), attempt, commits.Target, commits.Dropped
 	in.ContextDir = r.Workspace.Context(in.RunID)
+	if _, after := st.(AfterChecks); after {
+		// start refused a head with no pass, so passed holds this one's.
+		in.Head, in.Main, in.Checks = commits.Start, commits.Main, r.passed[n].Results
+	}
 	l := Lease{Issue: n, Stage: is.Stage, RunID: in.RunID, Clone: r.Workspace.Dir(in.RunID),
 		Started: r.now(), Polled: r.Daemon.polled, Edits: map[int64]time.Time{}, BodyEdit: rd.S.BodyEdit.At, AttemptKey: errKey, Attempt: in.Attempt,
 		Model: set.Model, Effort: set.Effort, FallbackModels: set.FallbackModels, Start: commits.Start, Target: commits.Target}
@@ -706,10 +740,15 @@ func (r *Runs) schema(st Stage) (*agent.Schema, error) {
 // run prepares the workspace, its clone of the commits c, and runs claude
 // for st with the settings set, returning its output and sending its
 // stderr to stderr. A Committer's run gets the App's git identity in its
-// environment too (commitIdentity), but only when r.Env has something in
-// it: an empty one stays empty, so Runner.Run refuses it as a setup
-// failure, uncounted, for a Committer as for any other stage. A failure
-// to set the run up is an *agent.SetupError, as Runner.Run's are.
+// environment too (commitIdentity), and an AfterChecks Stage's run gets a
+// fresh, empty HOME beside its clone, made as agent, in place of the
+// agent's own, so nothing an earlier run left there reaches it (SPEC
+// §3.3): Claude's credential is in its environment, so it needs nothing
+// from HOME. cleanup removes that HOME, and the startup sweep one a crash
+// left. Both only when r.Env has something in it: an empty one stays
+// empty, so Runner.Run refuses it as a setup failure, uncounted, for
+// these as for any other stage. A failure to set the run up is an
+// *agent.SetupError, as Runner.Run's are.
 func (r *Runs) run(ctx context.Context, st Stage, in Input, set state.Settings, c workspace.Commits, stderr io.Writer) ([]byte, error) {
 	cfg := r.Daemon.Config.Stages
 	turns, okT := pick(cfg.MaxTurns, st.Agent())
@@ -733,6 +772,13 @@ func (r *Runs) run(ctx context.Context, st Stage, in Input, set state.Settings, 
 	env := r.Env
 	if _, ok := st.(Committer); ok && len(r.Env) > 0 {
 		env = append(slices.Clone(r.Env), commitIdentity(r.Daemon.Step.Applier.AppSlug)...)
+	}
+	if _, ok := st.(AfterChecks); ok && len(r.Env) > 0 {
+		home := in.RunID + verify.HomeSuffix
+		if err := r.Workspace.PrepareHome(ctx, home); err != nil {
+			return nil, &agent.SetupError{Err: fmt.Errorf("the run's HOME: %w", err)}
+		}
+		env = agent.WithHome(r.Env, r.Workspace.Dir(home))
 	}
 	out, err := runner.Run(ctx, agent.Stage{RunID: in.RunID, Dir: r.Workspace.Dir(in.RunID), ContextDir: r.Workspace.Context(in.RunID),
 		Schema: st.Schema(), MaxTurns: int(turns), MaxBudgetUSD: budget, Timeout: timeout, Env: env,
@@ -856,7 +902,8 @@ func (e *step1Wait) Unwrap() error { return e.err }
 // apply reads the issue again, runs CheckLabels on it, and applies out,
 // l's valid result, through st, then removes the run's files. The result
 // is dropped, writing nothing and with no attempt counted, when the issue
-// is gone or closed, or, unless the run's move is written already:
+// is gone or closed, or, unless the run's result is written already
+// (runApplied):
 //   - when a discussion trigger holds the issue (Step.discussion), which
 //     writes the hold and its notices first: then nothing of the result
 //     is written (SPEC §6.4, §8.2).
@@ -913,7 +960,7 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 		return fmt.Errorf("apply run %s: %w", l.RunID, err)
 	}
 	is := state.Derive(s, a.AppSlug, d.Has)
-	moved := is.Moved(state.Key{Field: "run", ID: l.RunID})
+	moved := runApplied(is, l.RunID)
 	if !moved {
 		// A discussion trigger holds the issue, and drops the result, with
 		// nothing pushed or posted from it (SPEC §6.4, §8.2). Step 1 held
@@ -970,7 +1017,7 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 		return fmt.Errorf("apply run %s: %w", l.RunID, err)
 	}
 	key := moveKey(l.AttemptKey, is.Item)
-	res := Result{RunID: l.RunID, Seen: l.Seen, S: s, Dirt: d, Output: out, Head: head, Attempt: l.Attempt, moveKey: key, fields: runFields(l, raw)}
+	res := Result{RunID: l.RunID, Seen: l.Seen, S: s, Dirt: d, Output: out, Head: head, Attempt: l.Attempt, Start: l.Start, moveKey: key, fields: runFields(l, raw)}
 	if c, ok := st.(Checker); ok && !moved {
 		var read *checkReadError
 		switch err := c.Check(ctx, res); {
@@ -996,6 +1043,14 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 	delete(r.attempts, countKey(l.Issue, l.AttemptKey))
 	delete(r.failures, countKey(l.Issue, l.AttemptKey))
 	return r.finish(ctx, l)
+}
+
+// runApplied reports whether is shows the result of run runID written: its
+// move, or for a verifier's pass, which moves nothing, its verdict's marker
+// (SPEC §8.2). A crash after that write leaves a run that's only to finish,
+// neither dropped nor counted as failed.
+func runApplied(is state.Issue, runID string) bool {
+	return is.Moved(state.Key{Field: "run", ID: runID}) || verdictRun(is, runID)
 }
 
 // checkError is a Checker's rejection of a run's result, which applyLease
@@ -1148,7 +1203,7 @@ func (r *Runs) resume(ctx context.Context, ready []Ready) (int, error) {
 		if err != nil {
 			return 0, fmt.Errorf("resume run %s: %w", l.RunID, err)
 		}
-		if state.Derive(s, a.AppSlug, d.Has).Moved(state.Key{Field: "run", ID: l.RunID}) {
+		if runApplied(state.Derive(s, a.AppSlug, d.Has), l.RunID) {
 			logr.Infof("run %s on #%d was applied before the restart, so only its files are left to remove", l.RunID, l.Issue)
 			return 0, r.finish(ctx, l)
 		}
@@ -1838,13 +1893,15 @@ func sweepTemps(pattern, what string) {
 	}
 }
 
-// cleanup removes the run's clone and context files, its bundle file and
-// its result, then its ref in the bare repo (handoff). The ref goes after
-// the result, so while a result is left to apply again, a run whose bundle
-// was fetched still has its ref.
+// cleanup removes the run's clone and context files, its fresh HOME if it
+// had one (run), its bundle file and its result, then its ref in the bare
+// repo (handoff). The ref goes after the result, so while a result is left
+// to apply again, a run whose bundle was fetched still has its ref.
 func (r *Runs) cleanup(ctx context.Context, l Lease) error {
-	if err := r.Workspace.Cleanup(ctx, l.RunID); err != nil {
-		return fmt.Errorf("clean up run %s: %w", l.RunID, err)
+	for _, id := range []string{l.RunID, l.RunID + verify.HomeSuffix} {
+		if err := r.Workspace.Cleanup(ctx, id); err != nil {
+			return fmt.Errorf("clean up run %s: %w", l.RunID, err)
+		}
 	}
 	for _, path := range []string{r.bundlePath(l.RunID), r.resultPath(l.RunID)} {
 		if err := r.remove(path); err != nil {

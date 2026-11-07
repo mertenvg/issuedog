@@ -21,26 +21,35 @@ func verifyKey(c int64) state.Key {
 	return state.Key{Field: "event", ID: "v" + strconv.FormatInt(c, 10)}
 }
 
-// verifyTask is step 4's checks at verifying (SPEC §8.1, §10.1), which
-// Work runs after task work at in-progress and before the pick. It runs
-// the checks on the first of ready, by priority then number, that is an
-// open task at verifying, by its stage label and its markers, of a class
-// that gets a PR (state.AnyTask), so never a human task, and reports
-// whether it ran them. Its findings move, once written, is its latest
-// marker, so its markers no longer put it at verifying. A task with a
-// parent gets none, uncounted, as it gets no run (inStory): its baseline
-// and target are its story branch's, which nothing names yet (#624). With
-// no Commands, no task gets checks.
+// verifyTask is step 4's checks at verifying and the verifier's run after
+// them (SPEC §8.1, §10.1, §10.2), which Work runs after task work at
+// in-progress and before the pick. It looks at each of ready, by priority
+// then number, but issue skip, whose snapshot is from before the result
+// resume just applied to it, that is an open task at verifying, by its
+// stage label and its markers, of a class that gets a PR (state.AnyTask),
+// so never a human task, and reports whether it ran the checks or a run on
+// one. Its findings move, once written, is its latest marker, so its
+// markers no longer put it at verifying. A task with a parent gets
+// neither, uncounted, as it gets no run (inStory): its baseline and target
+// are its story branch's, which nothing names yet (#624). With no
+// Commands, no task gets either.
 //
 // The head is the latest move into verifying's head=, or else the task's
 // head, taskRef (verifyHead). It's checked against main's commit as the
 // pass's sync left it, rule 2's baseline and rule 7's target, by
-// verifyChecks. A pass writes nothing: the task waits at verifying, and
-// keeps the worker, until the verifier and the PR are built (#620, #622).
-// The pass is kept in passed, by head and main's commit, so the checks
-// don't run again until either changes, or the daemon restarts. A
-// failure moves the task back to in-progress, or on the round's last
+// verifyChecks. A pass writes nothing, and returns: it's kept in passed, by
+// head and main's commit, with what the commands gave, so the checks don't
+// run again until either changes, or the daemon restarts, which empties
+// it. A failure moves the task back to in-progress, or on the round's last
 // attempt, hands it off to the owner at needs-human (verifyFindings).
+//
+// With a pass kept, the next pass starts the Stage at verifying, the
+// verifier, on the head, the only place one starts, unless a clean pass
+// marker of its own names that head (verdictOn), or none is registered.
+// Its pass moves nothing: the task waits at verifying, and keeps the
+// worker, until the PR is built (#622). A later head has no such marker,
+// so it gets a run of its own, and a later main only the checks, which
+// move the task back on a failure whatever the verdict was.
 //
 // Naming the head and main, and a skip for a pass kept, read only the bare
 // repo and the snapshot step 1 left, so they cost no request.
@@ -50,14 +59,14 @@ func verifyKey(c int64) state.Key {
 // run, which runs as agent too. Work keeps them apart: it runs one thing
 // at a time, and runs the checks only once resume has applied or ended any
 // run a lease names, and no task work ran in the pass (SPEC §8.2).
-func (r *Runs) verifyTask(ctx context.Context, ready []Ready) (bool, error) {
+func (r *Runs) verifyTask(ctx context.Context, ready []Ready, skip int) (bool, error) {
 	if r.Commands == nil {
 		return false, nil
 	}
 	a := r.Daemon.Step.Applier
 	for _, rd := range ready {
 		s, n := rd.S, rd.S.Number
-		if s.Closed || stageOf(s) != state.Verifying {
+		if n == skip || s.Closed || stageOf(s) != state.Verifying {
 			continue
 		}
 		if s.Parent != 0 {
@@ -82,8 +91,19 @@ func (r *Runs) verifyTask(ctx context.Context, ready []Ready) (bool, error) {
 		if err != nil {
 			return false, fmt.Errorf("verify #%d: read main: %w", n, err)
 		}
-		if r.passed[n] == head+":"+main {
-			logr.Debugf("%s/%s#%d: its head %s passed the checks against main's %s already, so it waits at %s", a.Owner, a.Repo, n, head, main, state.Verifying)
+		if r.passed[n].holds(head, main) {
+			st, ok := r.Stages[state.Verifying]
+			if !ok || verdictOn(is, head) {
+				logr.Debugf("%s/%s#%d: its head %s passed the checks against main's %s already, so it waits at %s", a.Owner, a.Repo, n, head, main, state.Verifying)
+				continue
+			}
+			ran, err := r.RunStage(ctx, rd, st)
+			switch {
+			case err != nil:
+				return ran, fmt.Errorf("the %s on #%d: %w", st.Agent(), n, err)
+			case ran:
+				return true, nil
+			}
 			continue
 		}
 		findings, results, err := r.verifyChecks(ctx, s, head, main)
@@ -92,10 +112,10 @@ func (r *Runs) verifyTask(ctx context.Context, ready []Ready) (bool, error) {
 		}
 		if len(findings) == 0 && commandsFailed(results) == 0 {
 			if r.passed == nil {
-				r.passed = map[int]string{}
+				r.passed = map[int]checksPassed{}
 			}
-			r.passed[n] = head + ":" + main
-			logr.Infof("%s/%s#%d: its head %s passes the checks against main's %s, so it waits at %s", a.Owner, a.Repo, n, head, main, state.Verifying)
+			r.passed[n] = checksPassed{Head: head, Main: main, Results: results}
+			logr.Infof("%s/%s#%d: its head %s passes the checks against main's %s, at %s", a.Owner, a.Repo, n, head, main, state.Verifying)
 			return true, nil
 		}
 		if err := r.verifyFindings(ctx, rd, is, head, main, findings, results); err != nil {
@@ -111,13 +131,7 @@ func (r *Runs) verifyTask(ctx context.Context, ready []Ready) (bool, error) {
 // carries (SPEC §5), or else the task's head, taskRef(n), or "" with
 // neither, as for a task set to verifying by hand before any run.
 func (r *Runs) verifyHead(ctx context.Context, n int, is state.Issue) (string, error) {
-	head := ""
-	for _, m := range is.Markers {
-		if m.Kind == "transition" && state.Stage(m.Fields["to"]) == state.Verifying {
-			head = m.Fields["head"]
-		}
-	}
-	if head != "" {
+	if head := moveHead(is); head != "" {
 		return head, nil
 	}
 	head, _, err := r.Daemon.Clone.ReadRef(ctx, taskRef(n))
@@ -125,6 +139,18 @@ func (r *Runs) verifyHead(ctx context.Context, n int, is state.Issue) (string, e
 		return "", fmt.Errorf("read the task's head: %w", err)
 	}
 	return head, nil
+}
+
+// moveHead is the head= of task is's latest move into verifying, or "" when
+// it names none, as a move by hand or out of held doesn't.
+func moveHead(is state.Issue) string {
+	head := ""
+	for _, m := range is.Markers {
+		if m.Kind == "transition" && state.Stage(m.Fields["to"]) == state.Verifying {
+			head = m.Fields["head"]
+		}
+	}
+	return head
 }
 
 // verifyAttempt is the attempt= of task is's latest move into verifying,

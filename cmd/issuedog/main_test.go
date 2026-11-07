@@ -1655,16 +1655,20 @@ func TestStageWork(t *testing.T) {
 		d.Config = cfg
 	}
 	// The interviewer at clarifying, the planner at planning, the
-	// implementer at in-progress and triage as Unlabeled, all on d, and
-	// nothing else: a Stage at intake beside triage fails CheckRegistered.
-	if iv, ok := runs.Stages[state.Clarifying].(*daemon.Interviewer); len(runs.Stages) != 3 || !ok || iv.Daemon != d {
-		t.Errorf("stages = %v, want the interviewer on d at clarifying, the planner at planning and the implementer at in-progress", runs.Stages)
+	// implementer at in-progress, the verifier at verifying and triage as
+	// Unlabeled, all on d, and nothing else: a Stage at intake beside
+	// triage fails CheckRegistered.
+	if iv, ok := runs.Stages[state.Clarifying].(*daemon.Interviewer); len(runs.Stages) != 4 || !ok || iv.Daemon != d {
+		t.Errorf("stages = %v, want the interviewer on d at clarifying, the planner at planning, the implementer at in-progress and the verifier at verifying", runs.Stages)
 	}
 	if pl, ok := runs.Stages[state.Planning].(*daemon.Planner); !ok || pl.Daemon != d {
 		t.Errorf("the stage at planning = %#v, want the planner on d", runs.Stages[state.Planning])
 	}
 	if im, ok := runs.Stages[state.InProgress].(*daemon.Implementer); !ok || im.Daemon != d {
 		t.Errorf("the stage at in-progress = %#v, want the implementer on d", runs.Stages[state.InProgress])
+	}
+	if v, ok := runs.Stages[state.Verifying].(*daemon.Verifier); !ok || v.Daemon != d {
+		t.Errorf("the stage at verifying = %#v, want the verifier on d", runs.Stages[state.Verifying])
 	}
 	if tr, ok := runs.Unlabeled.(*daemon.Triage); !ok || tr.Daemon != d {
 		t.Errorf("Unlabeled = %#v, want triage on d", runs.Unlabeled)
