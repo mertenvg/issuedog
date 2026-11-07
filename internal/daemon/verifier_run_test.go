@@ -26,9 +26,9 @@ import (
 // A verifier run after the checks (SPEC §8.1, §8.2, §10.2), on a rig wired
 // as main's, with real temporary repos and a fake claude. Each verifier
 // run's verdict is the one the test gives it. Nothing here files a
-// follow-up, moves a task on a question or builds a PR: those are #621's,
-// #622's and #726's. A request_changes and no readable verdict are
-// verifier_apply_test.go's and verifier_round_test.go's.
+// follow-up or builds a PR: those are #621's and #622's. A request_changes
+// and no readable verdict are verifier_apply_test.go's and
+// verifier_round_test.go's, and a question verifier_question_test.go's.
 
 // verifierRunClaude is wholeRunClaude, but each run first commits in its
 // clone. Only a verifier run has a HOME in the rig's environment. It keeps
@@ -752,67 +752,11 @@ func TestVerifierCommentDuringTheRun(t *testing.T) {
 	}
 }
 
-// Until #726 applies it, a question, live or saved across a restart, moves
-// nothing and reads as no verdict: it gets one kind=transition state error
-// saying so, the run isn't counted, no run starts on the task after it, a
-// restart included, and a pass after makes only conditional reads.
-func TestVerifierOtherVerdicts(t *testing.T) {
-	t.Parallel()
-	for _, verdict := range []string{"question"} {
-		for _, saved := range []bool{false, true} {
-			t.Run(verdict+" saved "+strconv.FormatBool(saved), func(t *testing.T) {
-				t.Parallel()
-				f := newFake(t)
-				v := newVerdictRig(t, f, 3)
-				head := v.head()
-				n, _ := verifierTask(f, head)
-				v.out(1, ivResult(t, verifierOutput(t, verdict)))
-				comments := len(f.State().Issues[n-1].Comments)
-				v.pass()
-				if saved {
-					f.FailWrite(len(f.Writes()) + 1)
-					if err := v.d.Iterate(context.Background()); err == nil {
-						t.Fatal("the pass whose state error failed gave no error")
-					}
-					v = v.restart()
-				}
-				v.pass()
-
-				cs := f.State().Issues[n-1].Comments
-				if v.runs() != 1 || len(cs) != comments+1 {
-					t.Fatalf("after the verdict: %d runs, %d comments; want one, and %d", v.runs(), len(cs), comments+1)
-				}
-				body := cs[len(cs)-1].Body
-				if want := "I can't apply the result of the verifier run: no such transition: its `" + verdict + "` verdict can't be applied yet, so the task stays at verifying. " +
-					"It won't run again until this issue changes.\n\n<!-- issuedog:error kind=transition key="; !strings.HasPrefix(body, want) {
-					t.Errorf("the verdict's comment =\n%s\nwant it to start\n%s", body, want)
-				}
-				if len(passComments(f, n)) != 0 || pickStage(f, n) != "stage:verifying" || strings.Contains(body, "issuedog:transition") {
-					t.Errorf("%d verdicts, at %s, the comment\n%s\nwant none, still at verifying, and no move", len(passComments(f, n)), pickStage(f, n), body)
-				}
-				if l := v.lease(); l.RunID != "" {
-					t.Errorf("the lease = %+v; want none: the run isn't counted", l)
-				}
-				v.passes(2)
-				v.quietPass("after the verdict")
-
-				v = v.restart()
-				ran := v.checksRan()
-				v.passes(3)
-				if got := len(f.State().Issues[n-1].Comments); v.runs() != 1 || got != comments+1 || v.checksRan() != ran+1 {
-					t.Errorf("after a restart: %d runs, %d comments, the commands at %d; want one, %d, and %d", v.runs(), got, v.checksRan(), comments+1, ran+1)
-				}
-				v.quietPass("after the restart")
-			})
-		}
-	}
-}
-
-// Until #725, a failed verifier run goes as any stage's that isn't the
-// implementer's: it's tried again at the same effort, as the verifier's
-// never rises, and after loop.max_attempts in a row the task gets one
-// kind=attempts state error, no run starts, nothing moves it, and the
-// worker stays held, with no second error on later passes.
+// A failed verifier run is tried again at the same effort, as the
+// verifier's never rises, and after loop.max_attempts in a row on the head
+// the task is handed off at needs-human, with no kind=attempts state error.
+// No run starts on it then, and the worker is free, so the next pass picks
+// the next task.
 func TestVerifierFailedRuns(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
@@ -832,22 +776,16 @@ func TestVerifierFailedRuns(t *testing.T) {
 	if l := v.leaseOf("2"); l.Attempt != 2 {
 		t.Errorf("run 2 is attempt %d, want 2", l.Attempt)
 	}
-	errs := func() (errs []string) {
-		for _, c := range f.State().Issues[n-1].Comments {
-			if strings.Contains(c.Body, "<!-- issuedog:error kind=attempts ") {
-				errs = append(errs, c.Body)
-			}
-		}
-		return errs
+	if got := verifierNewest(f, n); !strings.HasPrefix(got, "The verifier's 2 runs on this head failed, so I've stopped running it here.") {
+		t.Errorf("the newest comment =\n%s\nwant the hand-off for the verifier's runs", got)
 	}
-	if got := errs(); len(got) != 1 || !strings.HasPrefix(got[0], "The verifier run failed 2 times in a row, so I've stopped running it here.") {
-		t.Errorf("the attempts errors = %q; want one, on the verifier", got)
+	if got := pickStage(f, ready); got != "stage:ready" {
+		t.Errorf("#%d is at %s in the cap's pass; want ready, as the pass ended with the failed run", ready, got)
 	}
-	v.passes(2)
-	v.quietPass("after the cap")
-	if v.runs() != 2 || len(errs()) != 1 || pickStage(f, n) != "stage:verifying" || pickStage(f, ready) != "stage:ready" {
-		t.Errorf("after the cap: %d runs, %d errors, at %s, the next task at %s; want two, one, still at verifying, and still ready",
-			v.runs(), len(errs()), pickStage(f, n), pickStage(f, ready))
+	v.pass()
+	if v.leaseOf("3").Issue != ready || len(errorMarkers(f, n)) != 0 || pickStage(f, n) != "stage:needs-human" || pickStage(f, ready) != "stage:in-progress" {
+		t.Errorf("after the cap: run 3's lease %+v, errors %q, at %s, the next task at %s; want #%d's, none, at needs-human, and picked",
+			v.leaseOf("3"), errorMarkers(f, n), pickStage(f, n), pickStage(f, ready), ready)
 	}
 }
 
@@ -1047,9 +985,6 @@ func TestVerifierApplyReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tt := range verifierReplayCases(t) {
-		if tt.name == "question" {
-			continue // a state error, which only the harness keeps from a second try
-		}
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			out, err := json.Marshal(tt.out)

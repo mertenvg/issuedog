@@ -86,11 +86,12 @@ func TestCheckVerifierFollowUps(t *testing.T) {
 // Only a pass's candidates are checked, as any other verdict drops them.
 func TestCheckVerifierOtherVerdictsDropCandidates(t *testing.T) {
 	t.Parallel()
-	f := verifierFacts{Head: "abc", Attempt: 1, Limit: 3, Issue: 7}
+	f := verifierFacts{Head: "abc", Attempt: 1, Limit: 3, Issue: 7, MaxQuestions: 2, Round: 1}
 	broken := []verifierFollowUp{{Title: "two\nlines"}}
+	question := interviewQuestion{Text: "q", Blocks: []int{7}, Recommended: interviewOption{Text: "a", Why: "w"}, Others: []string{"b"}}
 	for _, out := range []verifierOutput{
 		{Verdict: verdictRequestChanges, FollowUps: broken, Findings: []verifierFinding{{Criterion: "c", Class: "criterion", Detail: "d"}}},
-		{Verdict: verdictQuestion, FollowUps: broken, Questions: []interviewQuestion{{Text: "q"}}},
+		{Verdict: verdictQuestion, FollowUps: broken, Questions: []interviewQuestion{question}},
 	} {
 		if err := checkVerifier(out, f); err != nil {
 			t.Errorf("%s: checkVerifier = %v, want nil", out.Verdict, err)

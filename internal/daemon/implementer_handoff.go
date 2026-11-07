@@ -12,8 +12,9 @@ import (
 // §12): an action only the owner can do blocks the task, so Apply moves it
 // to needs-human with this comment, which /done or a trusted 👍 on it ends
 // (handback.go). The attempt cap's hand-off (capHandoff, SPEC §8.3) has
-// the same form, with its own opening and fields, and so has the verify
-// cap's (renderVerifyCapHandoff).
+// the same form, with its own opening and fields, and so have the verify
+// cap's (renderVerifyCapHandoff) and the verifier's failed runs'
+// (renderVerifierCapHandoff).
 
 // handoffTask is h as a human task's fields, so a hand-off is checked
 // (checkHumanTask) and rendered (humanFields) as a human task is. Its
@@ -119,6 +120,42 @@ func renderCapHandoff(attempts int, failure string, n int, notify []string) stri
 // publicCauseText's paragraph, when a run did.
 const capCauseWhat = "attempt, a run,"
 
+// verifierCapFields are the fields of the hand-off for the verifier's
+// failed runs (SPEC §8.3, §9.3), in the daemon's own words, as no run gave
+// any. It has no links: what to fix depends on why the runs failed, which
+// its opening says (renderVerifierCapHandoff).
+var verifierCapFields = implementerHandoffFields{
+	Goal:      "Find out why the verifier's runs on this task fail, and fix that, so it can judge the task's head.",
+	WhyBlocks: "what made its verifier runs fail is fixed",
+	Steps: []string{
+		"Read why the last run failed, above, or in the daemon's log.",
+		"Fix what made it fail, such as a limit in `stages` in `.issuedog/config.yaml`, or the prompt in `.issuedog/prompts/verifier.md`.",
+	},
+	DoneWhen:      "What made the verifier's runs fail is fixed.",
+	EstimatedTime: "It depends on why the runs failed.",
+}
+
+// renderVerifierCapHandoff is the hand-off comment on task n when the
+// verifier's runs on its head failed (SPEC §8.3, §9.3), escaped:
+// renderHandoff with verifierCapFields, opening with the attempts runs in a
+// row that failed, loop.max_attempts or more, as a limit lowered since may
+// be below them, that they say nothing of the head and use none of the
+// task's attempts, then why the last failed, failure, as the cap's state
+// error quotes it (Lease.PublicFailure, publicCauseText): fenced, or for
+// publicCauseLogged, a pointer to the daemon's log. A run always failed
+// last here, so it always says why, and it needs no capHandoffSaysWhy: with
+// no failure, as from a lease an uncounted run wrote before a restart, it
+// points to the log too. failure is the daemon's words alone (publicCause),
+// so it quotes nothing of the run's output.
+func renderVerifierCapHandoff(attempts int, failure string, n int, notify []string) string {
+	intro := fmt.Sprintf("The verifier's %d runs on this head failed, so I've stopped running it here. "+
+		"That says nothing about the head, and uses none of this task's attempts.", attempts)
+	if failure == publicCauseLogged {
+		failure = ""
+	}
+	return renderHandoff(intro+publicCauseText("run", failure), verifierCapFields, n, notify)
+}
+
 // capHandoffSaysWhy reports whether body, the attempt cap's hand-off
 // comment as renderCapHandoff writes it, says why the round's last
 // attempt failed: whether the paragraph after its opening is
@@ -130,9 +167,9 @@ func capHandoffSaysWhy(body string) bool {
 	return strings.HasPrefix(rest, "The last "+capCauseWhat+" failed")
 }
 
-// capHandoffKey keys the attempt cap's move to needs-human on a task:
-// event=a<attempt key>, the round of attempts that reached the cap
-// (attemptKey), so each round's cap moves the task once.
+// capHandoffKey keys the attempt cap's move to needs-human on a task, or
+// the verifier's: event=a<attempt key>, the round of attempts that reached
+// the cap (attemptKey), so each round's cap moves the task once.
 func capHandoffKey(attemptKey string) state.Key {
 	return state.Key{Field: "event", ID: "a" + attemptKey}
 }
@@ -142,5 +179,14 @@ func capHandoffKey(attemptKey string) state.Key {
 // capHandoffKey, not by a run, as the implementer's own hand-off is.
 func capHandoffMove(m github.Marker) bool {
 	return m.Kind == "transition" && state.Stage(m.Fields["from"]) == state.InProgress &&
+		state.Stage(m.Fields["to"]) == state.NeedsHuman && strings.HasPrefix(m.Fields["event"], "a")
+}
+
+// verifierCapMove reports whether m is the move of a task to needs-human
+// that the verifier's failed runs make (capHandoff): verifying →
+// needs-human, keyed by capHandoffKey, not as the verify cap's is
+// (verifyCapMove).
+func verifierCapMove(m github.Marker) bool {
+	return m.Kind == "transition" && state.Stage(m.Fields["from"]) == state.Verifying &&
 		state.Stage(m.Fields["to"]) == state.NeedsHuman && strings.HasPrefix(m.Fields["event"], "a")
 }

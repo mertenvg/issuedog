@@ -181,7 +181,7 @@ func TestVerdictText(t *testing.T) {
 		t.Errorf("with no attempt, verdictText =\n%s\nwant\n%s", got, want)
 	}
 	got = verdictText("abc", 1, 3, noVerdict(errors.New("no text of mine")))
-	want := "The verifier asked for changes on attempt 1 of 3, at `abc`.\n\n" +
+	want := "The verifier gave no verdict on attempt 1 of 3, at `abc`.\n\n" +
 		"The verifier's run gave no readable verdict, so this counts as `request_changes`: its output can't be read. Nothing is known to be wrong with the code."
 	if got != want {
 		t.Errorf("verdictText =\n%s\nwant\n%s", got, want)
@@ -219,11 +219,23 @@ func TestNoVerdict(t *testing.T) {
 func TestCheckVerifier(t *testing.T) {
 	t.Parallel()
 	const hostile = "/work/run1 @alice"
-	f := verifierFacts{Head: "abc", Attempt: 1, Limit: 3, Issue: 7, Notify: []string{"owner"}, Scopes: []string{"booking", "tooling"}}
+	f := verifierFacts{Head: "abc", Attempt: 1, Limit: 3, Issue: 7, Notify: []string{"owner"}, Scopes: []string{"booking", "tooling"}, MaxQuestions: 2, Round: 1}
 	cap := f
 	cap.Attempt = 3
 	finding := verifierFinding{Criterion: "c", Class: "criterion", Detail: "d"}
-	question := interviewQuestion{Text: hostile}
+	question := interviewQuestion{Text: hostile, Blocks: []int{7}, Recommended: interviewOption{Text: "a", Why: "w"}, Others: []string{"b"}}
+	// asked is question with change made to it, as a round's only question.
+	asked := func(change func(q *interviewQuestion)) verifierOutput {
+		q := question
+		change(&q)
+		return verifierOutput{Verdict: verdictQuestion, Questions: []interviewQuestion{q}}
+	}
+	// questionRoom is how long a question's text fits at exactly the limit.
+	questionRoom := func(f verifierFacts) int {
+		short := asked(func(q *interviewQuestion) { q.Text = "x" })
+		return maxText - textRoom - textLen(questionComment(short, f)) + 1
+	}
+	const questionRule = ": a question breaks the interviewer's question rules"
 	long := func(n int) string { return strings.Repeat("x", n) }
 	// roomFor is how long a finding's detail fits at exactly the limit.
 	roomFor := func(f verifierFacts) int {
@@ -271,6 +283,17 @@ func TestCheckVerifier(t *testing.T) {
 		{"a question with none", verifierOutput{Verdict: verdictQuestion}, f, []string{"rule outcome: question has questions"}},
 		{"a question with findings", verifierOutput{Verdict: verdictQuestion, Questions: []interviewQuestion{question}, Findings: []verifierFinding{finding}}, f,
 			[]string{"rule outcome: question has no findings"}},
+		{"a question at the question limit", verifierOutput{Verdict: verdictQuestion, Questions: []interviewQuestion{question, question}}, f, nil},
+		{"a question past the question limit", verifierOutput{Verdict: verdictQuestion, Questions: []interviewQuestion{question, question, question}}, f,
+			[]string{"rule question-count" + questionRule}},
+		{"a question that blocks nothing", asked(func(q *interviewQuestion) { q.Blocks = nil }), f, []string{"rule blocks" + questionRule}},
+		{"a question with one option", asked(func(q *interviewQuestion) { q.Others = nil }), f, []string{"rule options" + questionRule}},
+		{"a question with a repeated option", asked(func(q *interviewQuestion) { q.Recommended.Text, q.Others = hostile, []string{hostile} }), f,
+			[]string{"rule options" + questionRule}},
+		{"a question on two lines", asked(func(q *interviewQuestion) { q.Text = hostile + "\nmore" }), f, []string{"rule one-line" + questionRule}},
+		{"a question at the limit", asked(func(q *interviewQuestion) { q.Text = long(questionRoom(f)) }), f, nil},
+		{"a question past the limit", asked(func(q *interviewQuestion) { q.Text = long(questionRoom(f) + 1) }), f,
+			[]string{fmt.Sprintf("rule length: the comment is %d characters, over %d", maxText-textRoom+1, maxText-textRoom)}},
 		{"an unknown verdict", verifierOutput{Verdict: hostile}, f, []string{"rule outcome: the verdict isn't one the schema names"}},
 		{"a stand-in", noVerdict(errors.New("no text")), f, nil},
 		{"two rules", verifierOutput{Verdict: verdictPass, Findings: []verifierFinding{finding}, Questions: []interviewQuestion{question}}, f,

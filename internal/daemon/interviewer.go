@@ -144,12 +144,43 @@ func implRoundMove(m github.Marker) bool {
 		state.Stage(m.Fields["from"]) == state.InProgress && state.Stage(m.Fields["to"]) == state.Clarifying
 }
 
+// verifierRoundMove reports whether m is a verifier run's move, keyed by
+// run=, from verifying to clarifying: its question round (SPEC §7.2,
+// §9.1). Nothing else moves a task from verifying to clarifying: an
+// override writes a marker keyed by event= instead.
+func verifierRoundMove(m github.Marker) bool {
+	return m.Kind == "transition" && m.Fields["run"] != "" &&
+		state.Stage(m.Fields["from"]) == state.Verifying && state.Stage(m.Fields["to"]) == state.Clarifying
+}
+
+// taskRoundMove reports whether m is the question round of a stage run on
+// a task: the implementer's (implRoundMove) or the verifier's
+// (verifierRoundMove). The interviewer doesn't run on a task, so the owner's
+// answer ends either (Step.AnswerVisit).
+func taskRoundMove(m github.Marker) bool {
+	return implRoundMove(m) || verifierRoundMove(m)
+}
+
 // roundMove reports whether m is a stage run's move that may carry a
 // question round: the interviewer's (ivRoundMove), the planner's
-// (planRoundMove) or the implementer's (implRoundMove). Their rounds share
-// one numbering per issue (SPEC §9.1).
+// (planRoundMove), or the implementer's or the verifier's (taskRoundMove).
+// Their rounds share one numbering per issue (SPEC §9.1).
 func roundMove(m github.Marker) bool {
-	return ivRoundMove(m) || planRoundMove(m) || implRoundMove(m)
+	return ivRoundMove(m) || planRoundMove(m) || taskRoundMove(m)
+}
+
+// roundAsker names the stage whose run asked the round on m, a move that
+// roundMove reports.
+func roundAsker(m github.Marker) string {
+	switch {
+	case ivRoundMove(m):
+		return interviewerAgent
+	case planRoundMove(m):
+		return plannerAgent
+	case implRoundMove(m):
+		return implementerAgent
+	}
+	return verifierAgent
 }
 
 // roundMoveAt reports whether m is a run's move, keyed by run=, from stage
@@ -162,10 +193,12 @@ func roundMoveAt(m github.Marker, stage state.Stage) bool {
 // interviewerRound is a question round a stage run asked, as its
 // transition records it (SPEC §9.1): round=<Number> and
 // questions=<Questions>, in comment Comment. Comments above Bound
-// (state.RoundBound) came after it, so they answer it.
+// (state.RoundBound) came after it, so they answer it. Asker names the
+// stage whose run asked it (roundAsker).
 type interviewerRound struct {
 	Number, Questions int
 	Comment, Bound    int64
+	Asker             string
 }
 
 // interviewerRounds returns the interviewer's question rounds on s, in
@@ -184,7 +217,7 @@ func planRounds(s *github.Snapshot, appSlug string, dirty func(int64) bool) []in
 }
 
 // allRounds returns every question round on s, the interviewer's, the
-// planner's and the implementer's (roundMove), in order.
+// planner's, the implementer's and the verifier's (roundMove), in order.
 func allRounds(s *github.Snapshot, appSlug string, dirty func(int64) bool) []interviewerRound {
 	return questionRounds(s, appSlug, dirty, roundMove)
 }
@@ -205,7 +238,7 @@ func questionRounds(s *github.Snapshot, appSlug string, dirty func(int64) bool, 
 				continue
 			}
 			bound, _ := state.RoundBound(m, c.ID) // a round move always sets one
-			rounds = append(rounds, interviewerRound{Number: n, Questions: q, Comment: c.ID, Bound: bound})
+			rounds = append(rounds, interviewerRound{Number: n, Questions: q, Comment: c.ID, Bound: bound, Asker: roundAsker(m)})
 		}
 	}
 	return rounds
