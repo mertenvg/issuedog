@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -19,6 +20,21 @@ import (
 
 // verifyKind is the kind of the marker on a verifier's verdict (SPEC §5).
 const verifyKind = "verify"
+
+// The verify-data marker keeps a pass's follow-up candidates in its comment
+// (SPEC §5, §10.2), as the plan-data marker keeps a plan in its own:
+//
+//	<!-- issuedog:verify-data v=1 data=<base64url(deflate(JSON))> -->
+//
+// v is the format's version, and a reader refuses any other. data is the
+// candidates as a JSON array, with the schema's field names (markerData). A
+// run's result is scratch, so this is the only copy, and it goes right after
+// the comment's verify marker, whose run= it's read with. Only the App's
+// markers are read (readVerifyData).
+const (
+	verifyDataKind    = "verify-data"
+	verifyDataVersion = "1"
+)
 
 // The verifier's verdicts, as its schema names them (SPEC §10.2): nothing
 // at the blocking bar, a defect at it, and an ambiguous criterion.
@@ -108,6 +124,8 @@ type verifierFacts struct {
 	// comment of a hand-off or a question round and its cc line.
 	Issue  int
 	Notify []string
+	// Scopes is the config's scopes, the ones a follow-up candidate may name.
+	Scopes []string
 	// MaxQuestions is loop.max_questions_per_round, and Round the number a
 	// question round takes, the next of every stage's (SPEC §9.1).
 	MaxQuestions, Round int
@@ -117,7 +135,7 @@ type verifierFacts struct {
 // whose App is appSlug.
 func (v *Verifier) facts(r Result, is state.Issue, appSlug string) verifierFacts {
 	c := v.Daemon.Config
-	return verifierFacts{Head: r.Start, Attempt: verifyAttempt(is), Limit: int(c.Loop.MaxAttempts), Issue: r.S.Number, Notify: c.Notify,
+	return verifierFacts{Head: r.Start, Attempt: verifyAttempt(is), Limit: int(c.Loop.MaxAttempts), Issue: r.S.Number, Notify: c.Notify, Scopes: c.Scopes,
 		MaxQuestions: int(c.Loop.MaxQuestionsPerRound), Round: nextRound(allRounds(r.S, appSlug, r.Dirt.Has))}
 }
 
@@ -150,8 +168,11 @@ func changesComment(out verifierOutput, f verifierFacts) string {
 // with its fields here, as the schema has no conditional at its top level.
 // A field the verdict leaves empty is as good as left out, so a pass with
 // "findings": [] is a pass (SPEC §12):
-//   - pass has no findings or questions, and its comment (renderPass) is
-//     within maxText less textRoom.
+//   - pass has no findings or questions, each follow-up candidate is whole
+//     (checkFollowUps), and its comment, its text and its verify-data marker
+//     together (passText), is within maxText less textRoom. So at the worst,
+//     candidates too long to keep make a pass no readable verdict, as notes
+//     too long do, and the task goes back through the verify loop.
 //   - request_changes has findings and no questions, each finding's
 //     criterion is on one line, and the comment it posts (changesComment),
 //     the findings or at the cap the hand-off, is within maxText less
@@ -160,7 +181,7 @@ func changesComment(out verifierOutput, f verifierFacts) string {
 //     question rules (checkVerifierQuestions), and the comment it posts
 //     (questionComment) is within maxText less textRoom.
 //
-// Follow-up candidates aren't looked at: a failing verdict drops its own.
+// Any other verdict's candidates aren't looked at, as it drops them.
 // A stand-in for a run with no readable verdict has nothing to check.
 func checkVerifier(out verifierOutput, f verifierFacts) error {
 	if out.NoVerdict != "" {
@@ -178,7 +199,11 @@ func checkVerifier(out verifierOutput, f verifierFacts) error {
 		if len(out.Questions) > 0 {
 			fail(ruleOutcome, "pass has no questions")
 		}
-		if n := textLen(github.Escape(renderPass(f.Head, out.Notes))); n > maxText-textRoom {
+		checkFollowUps(out.FollowUps, f.Scopes, fail)
+		text, data, err := passText(f.Head, out)
+		if err != nil {
+			fail(ruleLength, "%v", err)
+		} else if n := textLen(text) + textLen(data); n > maxText-textRoom {
 			fail(ruleLength, "the comment is %d characters, over %d", n, maxText-textRoom)
 		}
 	case verdictRequestChanges:
@@ -214,6 +239,24 @@ func checkVerifier(out verifierOutput, f verifierFacts) error {
 		return nil
 	}
 	return fmt.Errorf("check verifier output: %w", errors.Join(errs...))
+}
+
+// checkFollowUps checks a pass's candidates: each field on one line, and
+// each scope one of scopes, exactly. With no scopes no candidate can name
+// one, so any candidate fails, as the preamble tells the run (verifierPreamble).
+func checkFollowUps(fs []verifierFollowUp, scopes []string, fail func(rule, format string, args ...any)) {
+	for i, c := range fs {
+		for _, field := range []struct{ name, value string }{
+			{"title", c.Title}, {"scope", c.Scope}, {"scenario", c.Scenario}, {"likelihood", c.Likelihood}, {"impact", c.Impact},
+		} {
+			if !oneLine(field.value) {
+				fail(ruleOneLine, "the %s of follow-up candidate %d", field.name, i+1)
+			}
+		}
+		if !slices.Contains(scopes, c.Scope) {
+			fail(ruleScope, "the scope of follow-up candidate %d isn't one the repo lists", i+1)
+		}
+	}
 }
 
 // checkVerifierQuestions is checkQuestions on a question's round. Its details
@@ -260,12 +303,15 @@ func verdictRun(is state.Issue, runID string) bool {
 // checkVerifier, counts as no readable verdict (noVerdict), as a run's that
 // never had any does (NoOutput).
 //
-// A pass is one comment naming the head the run judged, r.Start, and its
-// notes, escaped, carrying the verify marker: verdict=, run=, head=, the
-// attempt= of the move into verifying, if it names one, and the run's
-// model=, effort= and ran=. It moves nothing, whatever the checks say next:
-// the task waits at verifying, holding the worker, until the PR is built
-// (#622), and they run again when main moves or the daemon restarts.
+// A pass is one comment naming the head the run judged, r.Start, its notes
+// and its follow-up candidates, escaped (passText), carrying the verify
+// marker: verdict=, run=, head=, the attempt= of the move into verifying, if
+// it names one, and the run's model=, effort= and ran=. With candidates, the
+// verify-data marker follows it, so they're on GitHub for #621 to file, and
+// a restart loses none. It files nothing and moves nothing, whatever the
+// checks say next: the task waits at verifying, holding the worker, until
+// the PR is built (#622), and they run again when main moves or the daemon
+// restarts.
 //
 // A request_changes is the implementer attempt that made the head failing
 // verify, so it's one of the verify loop's moves (verifyLoopMove), and the
@@ -320,7 +366,14 @@ func (v *Verifier) Apply(ctx context.Context, a *Applier, r Result) error {
 	if err != nil {
 		return wrap(err)
 	}
-	if err := a.comment(ctx, r.S, join(github.Escape(renderPass(r.Start, out.Notes)), marker)); err != nil {
+	text, data, err := passText(r.Start, out)
+	if err != nil {
+		return wrap(err)
+	}
+	if data != "" {
+		marker += "\n" + data
+	}
+	if err := a.comment(ctx, r.S, join(text, marker)); err != nil {
 		return wrap(err)
 	}
 	logr.Infof("%s/%s#%d: run %s passes its head %s, which waits at %s", a.Owner, a.Repo, r.S.Number, r.RunID, r.Start, state.Verifying)
@@ -389,7 +442,78 @@ func applyChanges(ctx context.Context, a *Applier, r Result, out verifierOutput,
 }
 
 // renderPass renders the comment of a pass: the head the run judged, which
-// is git's, so it's the App's text, then its notes, the agent's text (block).
-func renderPass(head, notes string) string {
-	return "The verifier passed `" + head + "`.\n\n" + block(notes)
+// is git's, so it's the App's text, then its notes, the agent's text (block),
+// then each of fs, numbered from F1, as #621 names it, its fields the agent's
+// text too.
+func renderPass(head, notes string, fs []verifierFollowUp) string {
+	parts := []string{"The verifier passed `" + head + "`.", block(notes)}
+	if len(fs) > 0 {
+		parts = append(parts, "**Follow-up candidates, not filed yet:**")
+	}
+	for i, c := range fs {
+		parts = append(parts, fmt.Sprintf("**F%d. %s** · scope:%s\n%s", i+1, inline(c.Title), inline(c.Scope),
+			bullets([]string{"Scenario: " + c.Scenario, "Likelihood: " + c.Likelihood, "Impact: " + c.Impact})))
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// passText is what a pass posts around its verify marker: its text, escaped
+// (renderPass), and its verify-data marker as written, or "" with no
+// candidates. checkVerifier measures the two, and Apply posts them, so the
+// comment checked is the comment written.
+func passText(head string, out verifierOutput) (text, data string, err error) {
+	text = github.Escape(renderPass(head, out.Notes, out.FollowUps))
+	if len(out.FollowUps) == 0 {
+		return text, "", nil
+	}
+	m, err := verifyDataMarker(out.FollowUps)
+	if err != nil {
+		return "", "", fmt.Errorf("the pass comment's %w", err)
+	}
+	data, err = github.FormatMarker(m)
+	if err != nil {
+		return "", "", fmt.Errorf("the pass comment's verify-data marker: %w", err)
+	}
+	return text, data, nil
+}
+
+// verifyDataMarker is the verify-data marker holding fs.
+func verifyDataMarker(fs []verifierFollowUp) (github.Marker, error) {
+	data, err := markerData(fs)
+	if err != nil {
+		return github.Marker{}, fmt.Errorf("verify data: %w", err)
+	}
+	return github.Marker{Kind: verifyDataKind, Fields: map[string]string{"v": verifyDataVersion, "data": data}}, nil
+}
+
+// readVerifyData reads the candidates back from c's verify-data marker, as
+// verifyDataMarker wrote them. It reports false, with no error, when c has no
+// verify-data marker the App wrote: one in a comment by anyone else, a
+// malformed one ParseMarkers skips, or an escaped one in text the App quoted
+// are no marker. One that doesn't read back is an error: a second one,
+// another version, or data that isn't base64url, raw DEFLATE, or JSON of
+// exactly the candidates' fields. It doesn't check whether c is dirty: the
+// caller does, by reading only a marker Derive counted (verifierCandidates).
+func readVerifyData(c github.Comment, appSlug string) ([]verifierFollowUp, bool, error) {
+	var found []github.Marker
+	for _, m := range github.TrustedMarkers(c.Author, c.Body, appSlug) {
+		if m.Kind == verifyDataKind {
+			found = append(found, m)
+		}
+	}
+	if len(found) == 0 {
+		return nil, false, nil
+	}
+	if len(found) > 1 {
+		return nil, false, fmt.Errorf("verify data in comment %d: %d verify-data markers, not one", c.ID, len(found))
+	}
+	m := found[0]
+	if v := m.Fields["v"]; v != verifyDataVersion {
+		return nil, false, fmt.Errorf("verify data in comment %d: version %q, not %s", c.ID, v, verifyDataVersion)
+	}
+	var fs []verifierFollowUp
+	if err := readMarkerData(m.Fields["data"], &fs); err != nil {
+		return nil, false, fmt.Errorf("verify data in comment %d: %w", c.ID, err)
+	}
+	return fs, true, nil
 }
