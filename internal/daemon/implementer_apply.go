@@ -255,15 +255,23 @@ var implementerTriggers = map[state.Stage]state.Trigger{
 	state.NeedsHuman: state.TriggerImplementerBlocked,
 }
 
-// implementerMoved returns the move r's run wrote on an issue in state
-// is, as a Move to finish (Transition): to the stage its marker names, on
-// the trigger of that move (implementerTriggers), whichever outcome it
-// was. It reports false if no transition marker carries the run's key.
-func implementerMoved(is state.Issue, r Result) (Move, bool) {
+// verifierTriggers are the triggers of the verifier's moves, by the stage
+// each moves a task to from verifying (SPEC §7.2).
+var verifierTriggers = map[state.Stage]state.Trigger{
+	state.InProgress: state.TriggerFindings,
+	state.NeedsHuman: state.TriggerAttemptCap,
+	state.Clarifying: state.TriggerVerifierQuestion,
+}
+
+// runMoved returns the move r's run wrote on an issue in state is, as a
+// Move to finish (Transition): to the stage its marker names, on that
+// move's trigger among triggers, the stage's own, whichever outcome it was.
+// It reports false if no transition marker carries the run's key.
+func runMoved(is state.Issue, r Result, triggers map[state.Stage]state.Trigger) (Move, bool) {
 	for _, m := range is.Markers {
 		if m.Kind == "transition" && m.Fields["run"] == r.RunID {
 			to := state.Stage(m.Fields["to"])
-			return r.Move(to, implementerTriggers[to]), true
+			return r.Move(to, triggers[to]), true
 		}
 	}
 	return Move{}, false
@@ -285,14 +293,14 @@ func implementerMoved(is state.Issue, r Result) (Move, bool) {
 // Each write is checked first, so it can run again after a crash part way
 // (SPEC §5.2). Once the run's move is written, it only finishes the move's
 // labels (Transition), at the stage the move put the issue at, whichever
-// outcome it was (implementerMoved). Nothing is rendered from output that
+// outcome it was (runMoved). Nothing is rendered from output that
 // fails checkImplementer.
 func (im *Implementer) Apply(ctx context.Context, a *Applier, r Result) error {
 	wrap := func(err error) error {
 		return fmt.Errorf("apply implementer run %s on %s/%s#%d: %w", r.RunID, a.Owner, a.Repo, r.S.Number, err)
 	}
 	is := state.Derive(r.S, a.AppSlug, r.Dirt.Has)
-	if m, moved := implementerMoved(is, r); moved {
+	if m, moved := runMoved(is, r, implementerTriggers); moved {
 		logr.Debugf("%s/%s#%d: run %s's move is written already, so only its labels are left", a.Owner, a.Repo, r.S.Number, r.RunID)
 		if err := a.Transition(ctx, r.S, r.Dirt.Has, m); err != nil {
 			return wrap(err)

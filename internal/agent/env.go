@@ -3,6 +3,7 @@ package agent
 
 import (
 	"errors"
+	"slices"
 	"strings"
 )
 
@@ -57,6 +58,13 @@ func CommandEnv(proxyURL, home string) []string {
 		"HOME=" + home,
 		"PATH=" + agentPath,
 	}
+}
+
+// WithHome is env with home as its only HOME, such as a verifier run's fresh
+// one (SPEC §3.3). env itself is left as it is.
+func WithHome(env []string, home string) []string {
+	kept := slices.DeleteFunc(slices.Clone(env), func(kv string) bool { return strings.HasPrefix(kv, "HOME=") })
+	return append(kept, "HOME="+home)
 }
 
 // lookup returns the value of the last entry for name in environ, as os/exec

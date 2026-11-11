@@ -73,6 +73,30 @@ func TestCredential(t *testing.T) {
 	}
 }
 
+// WithHome gives env one HOME, the new one, in a copy: every other entry
+// stays, an env with no HOME gets it, and env itself is left as it was.
+func TestWithHome(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name string
+		env  []string
+		want []string
+	}{
+		{"replaces it", []string{"A=1", "HOME=/home/agent", "PATH=/bin"}, []string{"A=1", "PATH=/bin", "HOME=/fresh"}},
+		{"adds it", []string{"A=1"}, []string{"A=1", "HOME=/fresh"}},
+		{"replaces each", []string{"HOME=/a", "A=1", "HOME=/b"}, []string{"A=1", "HOME=/fresh"}},
+		{"leaves a name that only starts with it", []string{"HOMEDIR=/a"}, []string{"HOMEDIR=/a", "HOME=/fresh"}},
+	} {
+		before := slices.Clone(tt.env)
+		if got := WithHome(tt.env, "/fresh"); !slices.Equal(got, tt.want) {
+			t.Errorf("%s: WithHome = %q, want %q", tt.name, got, tt.want)
+		}
+		if !slices.Equal(tt.env, before) {
+			t.Errorf("%s: WithHome changed env to %q, from %q", tt.name, tt.env, before)
+		}
+	}
+}
+
 func TestEnvHoldsOnlyTheExplicitList(t *testing.T) {
 	daemon := []string{
 		"GH_TOKEN=gh",

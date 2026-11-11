@@ -181,9 +181,9 @@ func implementerFindings(s *github.Snapshot, is state.Issue) (github.Comment, in
 // attempt, or 0 for one not named.
 func findingsLabel(attempt int) string {
 	if attempt == 0 {
-		return "the findings of verify, which this run must fix"
+		return "the findings of verify"
 	}
-	return "the findings of verify attempt " + strconv.Itoa(attempt) + ", which this run must fix"
+	return "the findings of verify attempt " + strconv.Itoa(attempt)
 }
 
 // implementerScope is issue.md's scope for s: its first scope:<name>
@@ -215,7 +215,7 @@ const (
 		"The round a comment is in is the latest round asked before it, so it answers that round's questions. " +
 		"This run's input is in input.md too."
 	implementerInputIntro = "What's new since the implementer last ran, or since the task came to in-progress. " +
-		"Verify's findings on the task's head, if any, come first: fix every one."
+		"Verify's findings on the task's head, if any, come first: fix every one, unless they say there's nothing to fix."
 )
 
 // implementerTask is prompt.md: the task, and where the context files are.

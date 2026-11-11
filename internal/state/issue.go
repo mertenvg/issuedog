@@ -1,6 +1,7 @@
 package state
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -142,6 +143,26 @@ func originOf(m github.Marker, id int64) (Origin, bool) {
 		return Origin{}, false
 	}
 	return Origin{Plan: plan, Rev: rev, Item: item, Comment: id, Human: m.Fields["human"] == "1", Check: checkOf(m.Fields)}, true
+}
+
+// followUpItemRE is a follow-up candidate's place in its passing verdict.
+var followUpItemRE = regexp.MustCompile(`^F[1-9][0-9]*$`)
+
+// FollowUpOf returns what m, a follow-up's origin marker, names (SPEC §5,
+// §10.2): the issue verified, from verify=#N, above 0, the verifier run, from
+// a non-empty run=, and the candidate's place in its passing verdict, from
+// item=, such as F1. It's false for anything else, a plan's origin among
+// them. Like OriginOf, it doesn't check who wrote m: the caller reads it
+// through github.TrustedMarkers. Derive doesn't read it (originOf), so it
+// gives an issue no Origin and no class.
+func FollowUpOf(m github.Marker) (verify int, run, item string, ok bool) {
+	num, hash := strings.CutPrefix(m.Fields["verify"], "#")
+	n, err := strconv.Atoi(num)
+	run, item = m.Fields["run"], m.Fields["item"]
+	if m.Kind != "origin" || !hash || err != nil || n <= 0 || run == "" || !followUpItemRE.MatchString(item) {
+		return 0, "", "", false
+	}
+	return n, run, item, true
 }
 
 // OriginMarker returns the origin marker Derive would read from text as a

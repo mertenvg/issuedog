@@ -26,7 +26,7 @@ import (
 const publicCauseLogged = "(in the daemon's log)"
 
 // daemonCause is a failed attempt's cause in the daemon's own words, past
-// a check's broken rules: a run that left no valid result after a restart,
+// a check's broken rules: a run that left no valid result saved,
 // an issue its stage no longer runs on, a move that doesn't fit, or output
 // that doesn't decode. Its text names only the issue's number and type,
 // the agent's output and the transition table's words, never a path, a

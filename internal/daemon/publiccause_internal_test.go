@@ -51,9 +51,9 @@ func TestPublicCause(t *testing.T) {
 		{"the runner, a local path", fmt.Errorf("run run1: saving the result of run run1: creating a temp result file: %w", saved), ""},
 		{"an apply, GitHub's text", fmt.Errorf("applying its result failed 3 times: apply run run1: %w", publicCauseAPIError(t)), ""},
 		{"a rule and a path", errors.Join(&ruleError{Rule: ruleOutcome, Detail: "typed has a type"}, saved), "rule outcome: typed has a type"},
-		{"a restart, untyped", errors.New("no valid result after a restart"), ""},
+		{"a restart, untyped", errors.New("no valid result was saved"), ""},
 		// The daemon's other causes are typed, so they're quoted (#441).
-		{"a restart", &daemonCause{errors.New("no valid result after a restart")}, "no valid result after a restart"},
+		{"a restart", &daemonCause{errors.New("no valid result was saved")}, "no valid result was saved"},
 		{"a timeout", fmt.Errorf("run run1: running claude: %w", &agent.PublicCauseError{Text: "run timed out after 10m0s"}), "run timed out after 10m0s"},
 		{"a non-zero exit's subtype", fmt.Errorf("%w: %w", fmt.Errorf("run run1: running claude: %w", errors.New("exit status 1")),
 			&agent.PublicCauseError{Text: `run failed with subtype "error_max_turns"`}), `run failed with subtype "error_max_turns"`},

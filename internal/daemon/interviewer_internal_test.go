@@ -120,7 +120,7 @@ func TestInterviewerRoundsOnly(t *testing.T) {
 		{ID: 11, Author: app, Body: "<!-- issuedog:transition from=clarifying to=clarifying run=b seen=10 round=1 questions=3 -->"},
 	}}
 	got := interviewerRounds(s, "issuedog", func(int64) bool { return false })
-	if want := []interviewerRound{{Number: 1, Questions: 3, Comment: 11, Bound: 10}}; !reflect.DeepEqual(got, want) {
+	if want := []interviewerRound{{Number: 1, Questions: 3, Comment: 11, Bound: 10, Asker: interviewerAgent}}; !reflect.DeepEqual(got, want) {
 		t.Errorf("interviewerRounds = %+v, want %+v", got, want)
 	}
 }
@@ -247,7 +247,7 @@ func TestRoundsAcrossStages(t *testing.T) {
 	clean := func(int64) bool { return false }
 	s := roundsSnap(iv1, iv2, spec)
 	if got, want := interviewerRounds(s, "issuedog", clean), []interviewerRound{
-		{Number: 1, Questions: 2, Comment: 10, Bound: 9}, {Number: 2, Questions: 1, Comment: 11, Bound: 10}}; !reflect.DeepEqual(got, want) {
+		{Number: 1, Questions: 2, Comment: 10, Bound: 9, Asker: interviewerAgent}, {Number: 2, Questions: 1, Comment: 11, Bound: 10, Asker: interviewerAgent}}; !reflect.DeepEqual(got, want) {
 		t.Errorf("interviewerRounds = %+v, want %+v", got, want)
 	}
 	if got := planRounds(s, "issuedog", clean); got != nil {
@@ -265,7 +265,7 @@ func TestRoundsAcrossStages(t *testing.T) {
 	}
 
 	s = roundsSnap(iv1, iv2, spec, plan3)
-	if got, want := planRounds(s, "issuedog", clean), []interviewerRound{{Number: 3, Questions: 2, Comment: 13, Bound: 12}}; !reflect.DeepEqual(got, want) {
+	if got, want := planRounds(s, "issuedog", clean), []interviewerRound{{Number: 3, Questions: 2, Comment: 13, Bound: 12, Asker: plannerAgent}}; !reflect.DeepEqual(got, want) {
 		t.Errorf("planRounds = %+v, want %+v", got, want)
 	}
 	if got := len(interviewerRounds(s, "issuedog", clean)); got != 2 {

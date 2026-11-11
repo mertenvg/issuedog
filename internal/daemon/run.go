@@ -71,6 +71,29 @@ type Committer interface {
 	MakesCommits()
 }
 
+// AfterChecks is a Stage whose runs only follow SPEC §10.1's checks, such
+// as the verifier's: only verifyTask starts one, once the head and main's
+// commit have a pass of them, and step 3 never does (work). Its run's clone
+// holds the head the checks judged, which start refuses without that pass,
+// and its HOME is fresh and empty (run). It isn't a Committer, so nothing
+// fetches a commit it makes: its clone goes with whatever it holds.
+type AfterChecks interface {
+	// RunsAfterChecks marks the Stage as one.
+	RunsAfterChecks()
+}
+
+// FailClosed is a Stage for which a run that finished with no readable
+// output (agent.ErrOutput) is an output of its own, as the verifier's
+// counts as request_changes (SPEC §10.2), not a failed run. Any other
+// failure of its runs, such as a timeout, is a failed run as for any Stage.
+type FailClosed interface {
+	// NoOutput is the output standing in for a run's, which cause says
+	// can't be read. It's the daemon's own, so its Schema needn't hold it,
+	// and it quotes nothing of the run's output: only what a public comment
+	// may (publicCause).
+	NoOutput(cause error) json.RawMessage
+}
+
 // Input is what a Stage gets before a run.
 type Input struct {
 	RunID string
@@ -97,6 +120,12 @@ type Input struct {
 	// 2's finding on it, set with RunID, or "" when it was, or there's
 	// none (SPEC §3.4, §12).
 	Dropped string
+	// Head is the commit a verifier run judges and Main is main's commit
+	// it passed the checks against, and Checks is what verify.commands
+	// gave on them, each set with RunID, or empty for any other Stage's
+	// run (SPEC §10.1, §10.2).
+	Head, Main string
+	Checks     []verify.CommandResult
 }
 
 // Result is a valid run result, for a Stage to apply.
@@ -117,6 +146,9 @@ type Result struct {
 	// (Lease.Attempt), which the implementer's move to verifying records,
 	// or 0 for a lease that names none (SPEC §8.3).
 	Attempt int
+	// Start is the commit the run's clone started from (Lease.Start): for a
+	// verifier run, the head it judged.
+	Start string
 
 	moveKey string            // see moveKey
 	fields  map[string]string // the run's model, effort and ran (runFields)
@@ -230,8 +262,9 @@ func lastFailure(cause error) string {
 const kindLabels = "labels"
 
 // Runs is the stage-run harness. Its Work is the loop's stage work (SPEC
-// §8.1, step 3), then a task's run, the checks at verifying or the pick
-// of the next task (step 4), one run at a time, under a lease (SPEC §8.2).
+// §8.1, step 3), then a task's run, the checks or the verifier at
+// verifying, or the pick of the next task (step 4), one run at a time,
+// under a lease (SPEC §8.2).
 type Runs struct {
 	// Daemon gives the applier, trust and config of the moment.
 	Daemon *Daemon
@@ -249,7 +282,7 @@ type Runs struct {
 	Now       func() time.Time // nil is time.Now
 	NewID     func() string    // nil makes random run IDs; it names the checks' checkouts too
 	// Commands runs verify.commands for the checks at verifying
-	// (verifyTask). With none, no task gets checks.
+	// (verifyTask). With none, no task gets checks or a verifier run.
 	Commands *verify.Commands
 
 	attempts   map[string]int  // failed runs, by countKey
@@ -267,11 +300,21 @@ type Runs struct {
 	pickBlocked  map[int]bool
 	pickSearched time.Time
 
-	// passed holds the head and main's commit, "<head>:<main>", that each
-	// task at verifying passed the checks with, by issue number, so they
-	// don't run again (verifyTask).
-	passed map[int]string
+	// passed holds the pass of the checks of each task at verifying, by
+	// issue number, so they don't run again (verifyTask), and a verifier
+	// run reads what they gave (checksPassed).
+	passed map[int]checksPassed
 }
+
+// checksPassed is a pass of SPEC §10.1's checks: the head and main's commit
+// that passed them, and what verify.commands gave.
+type checksPassed struct {
+	Head, Main string
+	Results    []verify.CommandResult
+}
+
+// holds reports whether p is a pass of head against main.
+func (p checksPassed) holds(head, main string) bool { return p.Head == head && p.Main == main }
 
 // Work is Daemon.Work. On its first pass it first removes what a crash
 // left (sweep). Then it finishes a lease a run left, after a
@@ -284,10 +327,12 @@ type Runs struct {
 // priority then number, whose stage has one with work pending: task work
 // comes after the other stages and triage (SPEC §8.1, step 4). If none ran
 // either, it runs SPEC §10.1's checks on the first task at verifying, by
-// priority then number, whose head hasn't passed them (verifyTask). If it
-// ran none either, it picks the next ready task, moves it to in-progress
-// and starts its run (pickTask), unless a task holds the worker, or step 1
-// didn't finish on every issue this pass. A lease
+// priority then number, whose head hasn't passed them, or a verifier run
+// on one whose head has, with no pass of the verifier's yet (verifyTask).
+// Neither touches the issue resume applied a result to, whose snapshot is
+// from before it. If it ran none either, it picks the next ready task,
+// moves it to in-progress and starts its run (pickTask), unless a task
+// holds the worker, or step 1 didn't finish on every issue this pass. A lease
 // whose issue has labels held back
 // (ErrLabelsHeld) waits, and no run starts until it's applied. So does a
 // saved result on an issue step 1 didn't finish on this pass (resume),
@@ -360,10 +405,10 @@ func (r *Runs) Work(ctx context.Context, ready []Ready) error {
 	}
 	// No run is in progress here, and none starts until the checks are
 	// done, so their commands never overlap a claude run (verifyTask).
-	ran, err = r.verifyTask(ctx, ready)
+	ran, err = r.verifyTask(ctx, ready, skip)
 	switch {
 	case err != nil:
-		return fmt.Errorf("the checks at %s: %w", state.Verifying, err)
+		return fmt.Errorf("the checks or the verifier at %s: %w", state.Verifying, err)
 	case ran:
 		return nil
 	}
@@ -375,11 +420,13 @@ func (r *Runs) Work(ctx context.Context, ready []Ready) error {
 
 // work runs the first of ready, in its order, but issue skip, whose stage
 // has a Stage with work pending that is a Committer, if committers, or
-// that isn't, if not, and reports whether one ran.
+// that isn't, if not, and reports whether one ran. It never runs an
+// AfterChecks Stage, which only verifyTask starts.
 func (r *Runs) work(ctx context.Context, ready []Ready, skip int, committers bool) (bool, error) {
 	for _, rd := range ready {
 		st, ok := r.Stages[stageOf(rd.S)]
-		if _, commits := st.(Committer); !ok || commits != committers || rd.S.Number == skip {
+		_, commits := st.(Committer)
+		if _, after := st.(AfterChecks); !ok || after || commits != committers || rd.S.Number == skip {
 			continue
 		}
 		ran, err := r.RunStage(ctx, rd, st)
@@ -438,12 +485,12 @@ func (r *Runs) CheckRegistered() error {
 // whether it ran. A run that fails, but not on a usage limit or in its
 // setup, counts as an attempt (failed); after loop.max_attempts in a row
 // the issue gets one state error (SPEC §5.3) and no more runs until the
-// stage moves or gets new input, or for the implementer on a task, a
-// hand-off at needs-human (atCap). A task's round also counts its failed
-// verifies, as the verify loop's moves record them (roundAttempts), so its
-// run is the round's attempt after the latest of those and the failed runs
-// since (SPEC §8.3), and the hand-off comes once they reach the cap
-// together. If posting that error, or making that hand-off, failed,
+// stage moves or gets new input, or for the implementer on a task, or the
+// verifier on one, a hand-off at needs-human (atCap). A task's round also
+// counts its failed verifies, as the verify loop's moves record them
+// (roundAttempts), so its run is the round's attempt after the latest of
+// those and the failed runs since (SPEC §8.3), and the hand-off comes once
+// they reach the cap together. If posting that error, or making that hand-off, failed,
 // RunStage posts it instead of a run, even when the stage has no work
 // pending, as on an issue it no longer runs on; if that
 // fails too, it logs the error and moves on, so the next issue gets its
@@ -466,7 +513,8 @@ func (r *Runs) CheckRegistered() error {
 //
 // The run's clone holds main's commit in the bare repo, as the pass's sync
 // left it, and its history (SPEC §3.2, §3.4), or for a Committer, the
-// task's head, if it has one (start). That commit is named before the
+// task's head, if it has one, or for an AfterChecks Stage, the head the
+// checks passed (start). That commit is named before the
 // issue is read again, from the bare repo alone, and the lease records it
 // as the run's start (SPEC §8.2). A failure to name it starts no run, uses
 // no attempt and makes no request. A Committer starts no run on an issue
@@ -509,12 +557,15 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		// failed on an issue its stage no longer runs on leaves it none.
 		// A post that keeps failing mustn't hold up the other issues. For a
 		// task, findings on the round's last attempt hand it off at
-		// verifying (verifyFindings), so they never bring it back here at
-		// the cap. Findings below it may reach a loop.max_attempts lowered
-		// since: then the hand-off says nothing of why, as no run failed
-		// last, so it has no failure kept. It counts the used attempts,
+		// verifying (verifyFindings, Verifier.Apply), so they never bring it
+		// back here at the cap. Findings below it may reach a
+		// loop.max_attempts lowered since: then the hand-off says nothing of
+		// why, as no run failed last, so it has no failure kept. It counts the used attempts,
 		// which may be more than the limit, and its seen is the newest
-		// comment step 1 read, as the last run's would be.
+		// comment step 1 read, as the last run's would be. At verifying, only
+		// the verifier's failed runs are counted here, and verifyTask gets
+		// this far only with a pass of the checks kept, so a restart runs
+		// them again before this hand-off.
 		last := Lease{Issue: n, Stage: is.Stage, AttemptKey: errKey, Attempt: used, PublicFailure: r.failures[countKey(n, errKey)]}
 		for _, c := range rd.S.Comments {
 			last.Seen = max(last.Seen, c.ID)
@@ -568,7 +619,7 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 	// run, so they need none, and their state error doesn't wait on one.
 	var commits runStart
 	if badLabels == nil {
-		if commits, err = r.start(ctx, st, n); err != nil {
+		if commits, err = r.start(ctx, st, is, n); err != nil {
 			return false, wrap(fmt.Errorf("name the run's start: %w", err))
 		}
 	}
@@ -611,6 +662,10 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 	}
 	in.RunID, in.Attempt, in.Target, in.Dropped = r.newID(), attempt, commits.Target, commits.Dropped
 	in.ContextDir = r.Workspace.Context(in.RunID)
+	if _, after := st.(AfterChecks); after {
+		// start refused a head with no pass, so passed holds this one's.
+		in.Head, in.Main, in.Checks = commits.Start, commits.Main, r.passed[n].Results
+	}
 	l := Lease{Issue: n, Stage: is.Stage, RunID: in.RunID, Clone: r.Workspace.Dir(in.RunID),
 		Started: r.now(), Polled: r.Daemon.polled, Edits: map[int64]time.Time{}, BodyEdit: rd.S.BodyEdit.At, AttemptKey: errKey, Attempt: in.Attempt,
 		Model: set.Model, Effort: set.Effort, FallbackModels: set.FallbackModels, Start: commits.Start, Target: commits.Target}
@@ -649,17 +704,7 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 			a.Owner, a.Repo, n, l.RunID, r.Gate.OpenAt().Format(time.RFC3339))
 		return true, wrap(r.uncounted(ctx, l))
 	}
-	out := json.RawMessage(nil)
-	if runErr == nil {
-		// Validate fails whatever outcome calls failed, and invalid output.
-		out, runErr = agent.Validate(raw, schema)
-	} else if sub := agent.FailedSubtype(raw); sub != nil {
-		// Claude exited non-zero, so Validate doesn't run, but its result
-		// may still name the subtype, such as error_max_turns, which the
-		// attempt cap's error may quote where the exit status says nothing
-		// (SPEC §5.3).
-		runErr = fmt.Errorf("%w: %w", runErr, sub)
-	}
+	out, runErr := validated(st, raw, schema, runErr)
 	if runErr != nil {
 		logStderr()
 		// The issue may have changed during the run, so failed reads it again.
@@ -671,6 +716,29 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		return true, wrap(err)
 	}
 	return true, nil // the lease waits for the next pass to apply it
+}
+
+// validated returns the output of st's run, whose claude printed raw and
+// ended with runErr, as runStage and resume judge it: the structured output
+// of a run that ended well, or the error that makes it a failed run. A
+// FailClosed Stage's run that finished with no readable output has no such
+// error: its output is the Stage's NoOutput.
+func validated(st Stage, raw []byte, schema *agent.Schema, runErr error) (json.RawMessage, error) {
+	out := json.RawMessage(nil)
+	if runErr == nil {
+		// Validate fails whatever outcome calls failed, and invalid output.
+		out, runErr = agent.Validate(raw, schema)
+	} else if sub := agent.FailedSubtype(raw); sub != nil {
+		// Claude exited non-zero, so Validate doesn't run, but its result
+		// may still name the subtype, such as error_max_turns, which the
+		// attempt cap's error may quote where the exit status says nothing
+		// (SPEC §5.3).
+		runErr = fmt.Errorf("%w: %w", runErr, sub)
+	}
+	if fc, ok := st.(FailClosed); ok && errors.Is(runErr, agent.ErrOutput) {
+		return fc.NoOutput(runErr), nil
+	}
+	return out, runErr
 }
 
 // stderrTail is how much of claude's stderr a failed run logs: the end.
@@ -700,10 +768,15 @@ func (r *Runs) schema(st Stage) (*agent.Schema, error) {
 // run prepares the workspace, its clone of the commits c, and runs claude
 // for st with the settings set, returning its output and sending its
 // stderr to stderr. A Committer's run gets the App's git identity in its
-// environment too (commitIdentity), but only when r.Env has something in
-// it: an empty one stays empty, so Runner.Run refuses it as a setup
-// failure, uncounted, for a Committer as for any other stage. A failure
-// to set the run up is an *agent.SetupError, as Runner.Run's are.
+// environment too (commitIdentity), and an AfterChecks Stage's run gets a
+// fresh, empty HOME beside its clone, made as agent, in place of the
+// agent's own, so nothing an earlier run left there reaches it (SPEC
+// §3.3): Claude's credential is in its environment, so it needs nothing
+// from HOME. cleanup removes that HOME, and the startup sweep one a crash
+// left. Both only when r.Env has something in it: an empty one stays
+// empty, so Runner.Run refuses it as a setup failure, uncounted, for
+// these as for any other stage. A failure to set the run up is an
+// *agent.SetupError, as Runner.Run's are.
 func (r *Runs) run(ctx context.Context, st Stage, in Input, set state.Settings, c workspace.Commits, stderr io.Writer) ([]byte, error) {
 	cfg := r.Daemon.Config.Stages
 	turns, okT := pick(cfg.MaxTurns, st.Agent())
@@ -727,6 +800,13 @@ func (r *Runs) run(ctx context.Context, st Stage, in Input, set state.Settings, 
 	env := r.Env
 	if _, ok := st.(Committer); ok && len(r.Env) > 0 {
 		env = append(slices.Clone(r.Env), commitIdentity(r.Daemon.Step.Applier.AppSlug)...)
+	}
+	if _, ok := st.(AfterChecks); ok && len(r.Env) > 0 {
+		home := in.RunID + verify.HomeSuffix
+		if err := r.Workspace.PrepareHome(ctx, home); err != nil {
+			return nil, &agent.SetupError{Err: fmt.Errorf("the run's HOME: %w", err)}
+		}
+		env = agent.WithHome(r.Env, r.Workspace.Dir(home))
 	}
 	out, err := runner.Run(ctx, agent.Stage{RunID: in.RunID, Dir: r.Workspace.Dir(in.RunID), ContextDir: r.Workspace.Context(in.RunID),
 		Schema: st.Schema(), MaxTurns: int(turns), MaxBudgetUSD: budget, Timeout: timeout, Env: env,
@@ -850,7 +930,8 @@ func (e *step1Wait) Unwrap() error { return e.err }
 // apply reads the issue again, runs CheckLabels on it, and applies out,
 // l's valid result, through st, then removes the run's files. The result
 // is dropped, writing nothing and with no attempt counted, when the issue
-// is gone or closed, or, unless the run's move is written already:
+// is gone or closed, or, unless the run's result is written already
+// (runApplied):
 //   - when a discussion trigger holds the issue (Step.discussion), which
 //     writes the hold and its notices first: then nothing of the result
 //     is written (SPEC §6.4, §8.2).
@@ -907,7 +988,7 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 		return fmt.Errorf("apply run %s: %w", l.RunID, err)
 	}
 	is := state.Derive(s, a.AppSlug, d.Has)
-	moved := is.Moved(state.Key{Field: "run", ID: l.RunID})
+	moved := runApplied(is, l.RunID)
 	if !moved {
 		// A discussion trigger holds the issue, and drops the result, with
 		// nothing pushed or posted from it (SPEC §6.4, §8.2). Step 1 held
@@ -964,7 +1045,7 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 		return fmt.Errorf("apply run %s: %w", l.RunID, err)
 	}
 	key := moveKey(l.AttemptKey, is.Item)
-	res := Result{RunID: l.RunID, Seen: l.Seen, S: s, Dirt: d, Output: out, Head: head, Attempt: l.Attempt, moveKey: key, fields: runFields(l, raw)}
+	res := Result{RunID: l.RunID, Seen: l.Seen, S: s, Dirt: d, Output: out, Head: head, Attempt: l.Attempt, Start: l.Start, moveKey: key, fields: runFields(l, raw)}
 	if c, ok := st.(Checker); ok && !moved {
 		var read *checkReadError
 		switch err := c.Check(ctx, res); {
@@ -990,6 +1071,14 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 	delete(r.attempts, countKey(l.Issue, l.AttemptKey))
 	delete(r.failures, countKey(l.Issue, l.AttemptKey))
 	return r.finish(ctx, l)
+}
+
+// runApplied reports whether is shows the result of run runID written: its
+// move, or for a verifier's pass, which moves nothing, its verdict's marker
+// (SPEC §8.2). A crash after that write leaves a run that's only to finish,
+// neither dropped nor counted as failed.
+func runApplied(is state.Issue, runID string) bool {
+	return is.Moved(state.Key{Field: "run", ID: runID}) || verdictRun(is, runID)
 }
 
 // checkError is a Checker's rejection of a run's result, which applyLease
@@ -1081,7 +1170,10 @@ func (r *Runs) newInput(ctx context.Context, s *github.Snapshot, d Dirt, seen in
 // gate, and isn't counted, as in RunStage.
 // Otherwise the run counts as a failed attempt, its clone is deleted, and
 // the issue, at its pre-run stage (see Lease), runs again when its stage
-// has work pending. For a held or closed issue, the clone is deleted; a
+// has work pending. So does a FailClosed Stage's run that exited non-zero
+// with an output its Stage stood in for (validated) and whose first apply
+// failed: no result was saved, so nothing is left to apply, which is the
+// safe side (SPEC §8.3). For a held or closed issue, the clone is deleted; a
 // valid saved result is dropped; without one, the run counts as a failed
 // attempt unless it hit a usage limit or was applied; and the lease stays,
 // marked ended, while it holds a count. A Failed lease only gives its
@@ -1090,9 +1182,10 @@ func (r *Runs) newInput(ctx context.Context, s *github.Snapshot, d Dirt, seen in
 // issue step 1 didn't finish on this pass (Daemon.step1Gaps), neither
 // applied nor dropped, but counted as a failure to apply (applyCount), so
 // after loop.max_attempts such passes and failed applies in all, the run
-// is a failed attempt. A wait on an issue whose read found it gone isn't
-// counted, as the next read drops it or runs step 1 on it. And one on an
-// issue whose last snapshot shows it held is dropped, uncounted, as apply
+// is a failed attempt. A saved result a FailClosed Stage has an output for
+// is a valid one here (validated). A wait on an issue whose read found it
+// gone isn't counted, as the next read drops it or runs step 1 on it. And
+// one on an issue whose last snapshot shows it held is dropped, uncounted, as apply
 // would drop it whatever step 1 left unhandled (step1Held).
 func (r *Runs) resume(ctx context.Context, ready []Ready) (int, error) {
 	l, ok, err := r.readLease(ctx)
@@ -1114,10 +1207,12 @@ func (r *Runs) resume(ctx context.Context, ready []Ready) (int, error) {
 		if schema, err = agent.CompileSchema(st.Schema()); err != nil {
 			return 0, fmt.Errorf("resume run %s: %w", l.RunID, err)
 		}
-		if out, err = agent.Validate(raw, schema); err != nil {
+		if out, err = validated(st, raw, schema, nil); err != nil {
 			logr.Infof("the saved result of run %s on #%d isn't valid: %v", l.RunID, l.Issue, err)
 		}
-		if failed, text := outcome(raw); out == nil && r.Gate.Observe(r.now(), failed, text) {
+		// A failed result a FailClosed Stage has an output for is told to
+		// the gate too, as runStage tells it every result.
+		if failed, text := outcome(raw); (out == nil || failed) && r.Gate.Observe(r.now(), failed, text) {
 			logr.Warnf("the saved result of run %s on #%d hit a usage limit, so stage work waits until %s; it isn't counted as an attempt",
 				l.RunID, l.Issue, r.Gate.OpenAt().Format(time.RFC3339))
 			return 0, r.uncounted(ctx, l)
@@ -1142,13 +1237,13 @@ func (r *Runs) resume(ctx context.Context, ready []Ready) (int, error) {
 		if err != nil {
 			return 0, fmt.Errorf("resume run %s: %w", l.RunID, err)
 		}
-		if state.Derive(s, a.AppSlug, d.Has).Moved(state.Key{Field: "run", ID: l.RunID}) {
+		if runApplied(state.Derive(s, a.AppSlug, d.Has), l.RunID) {
 			logr.Infof("run %s on #%d was applied before the restart, so only its files are left to remove", l.RunID, l.Issue)
 			return 0, r.finish(ctx, l)
 		}
 		logr.Infof("run %s on #%d left no valid result, so it's a failed attempt, its clone is deleted, and #%d stays at %s to run again",
 			l.RunID, l.Issue, l.Issue, l.Stage)
-		return 0, r.failed(ctx, st, l, &daemonCause{errors.New("no valid result after a restart")})
+		return 0, r.failed(ctx, st, l, &daemonCause{errors.New("no valid result was saved")})
 	}
 	if gap, ok := r.Daemon.step1Gaps[l.Issue]; ok {
 		if r.step1Held(l.Issue) {
@@ -1226,10 +1321,16 @@ func (r *Runs) endedLease(ctx context.Context, l Lease) error {
 // may quote of cause as its PublicFailure (publicCause), or, if nothing,
 // publicCauseLogged. It logs cause in full. The last attempt allowed posts
 // one state error (reportCap), naming that cause, after which RunStage
-// runs no more, or for the implementer on a task, hands the task off to
-// the owner, naming it too (atCap). If that fails, RunStage does it
-// instead of starting a run, whether or not the stage has work pending
-// then.
+// runs no more, or for the implementer or the verifier on a task, hands
+// the task off to the owner, naming it too (atCap). If that fails,
+// RunStage does it instead of starting a run, whether or not the stage has
+// work pending then.
+//
+// A verifier's failed run is counted here on its own attempts at
+// verifying, by l.AttemptKey, so it writes nothing below the cap, and
+// never reaches the task's round: that's read from the verify loop's
+// moves (roundAttempts), and the next one's attempt= is the move into
+// verifying's (verifyAttempt), however many of these fail (SPEC §8.3).
 func (r *Runs) failed(ctx context.Context, st Stage, l Lease, cause error) error {
 	l.PublicFailure = cmp.Or(publicCause(cause), publicCauseLogged)
 	n := r.count(l)
@@ -1246,11 +1347,14 @@ func (r *Runs) failed(ctx context.Context, st Stage, l Lease, cause error) error
 // atCap is what the attempt cap does once l's run is the last of
 // loop.max_attempts failed in a row, or for a task, the last attempt of its
 // round (SPEC §8.3). For a Committer's run at in-progress, the
-// implementer's on a task, it's a hand-off at needs-human (capHandoff), which releases the worker. For every other stage, it's
+// implementer's on a task, or an AfterChecks Stage's at verifying, the
+// verifier's, it's a hand-off at needs-human (capHandoff), which releases the worker. For every other stage, it's
 // the kind=attempts state error (reportCap), and the stage runs no more
 // until the round changes.
 func (r *Runs) atCap(ctx context.Context, st Stage, l Lease) error {
-	if _, commits := st.(Committer); commits && l.Stage == state.InProgress {
+	_, commits := st.(Committer)
+	_, after := st.(AfterChecks)
+	if commits && l.Stage == state.InProgress || after && l.Stage == state.Verifying {
 		return r.capHandoff(ctx, st, l)
 	}
 	return r.reportCap(ctx, nil, st, l)
@@ -1272,6 +1376,13 @@ func (r *Runs) atCap(ctx context.Context, st Stage, l Lease) error {
 // why, as the cap's state error would (renderCapHandoff).
 // That releases the worker (SPEC §8.1), and /done or a trusted 👍 on the
 // hand-off sends the task back to ready, a new round (handback.go).
+//
+// With l.Stage verifying, it's the verifier's cap: l's run was the last of
+// loop.max_attempts failed in a row on the head, so the task moves
+// verifying → needs-human the same way, keyed and with seen= the same, but
+// its text and fields are the verifier's (renderVerifierCapHandoff): they
+// count the verifier's runs on the head, not the task's round, which none
+// of them is an attempt of.
 //
 // It reads the issue again, and runs CheckLabels on it before its move,
 // as a run's apply does. Like reportCap, it moves nothing on an issue
@@ -1310,16 +1421,20 @@ func (r *Runs) capHandoff(ctx context.Context, st Stage, l Lease) error {
 		return nil
 	}
 	attempts := max(r.limit(), l.Attempt)
-	m := Move{To: state.NeedsHuman, Trigger: state.TriggerAttemptCap, Key: capHandoffKey(l.AttemptKey),
-		Text: renderCapHandoff(attempts, l.PublicFailure, l.Issue, r.Daemon.Config.Notify)}
+	text := renderCapHandoff(attempts, l.PublicFailure, l.Issue, r.Daemon.Config.Notify)
+	failed := fmt.Sprintf("the task's %d attempts in its round failed, %s runs and verifies", attempts, st.Agent())
+	if l.Stage == state.Verifying {
+		text = renderVerifierCapHandoff(attempts, l.PublicFailure, l.Issue, r.Daemon.Config.Notify)
+		failed = fmt.Sprintf("the %s's %d runs on the task's head failed", st.Agent(), attempts)
+	}
+	m := Move{To: state.NeedsHuman, Trigger: state.TriggerAttemptCap, Key: capHandoffKey(l.AttemptKey), Text: text}
 	if l.Seen > 0 {
 		m.Fields = map[string]string{state.FieldSeen: strconv.FormatInt(l.Seen, 10)}
 	}
 	if err := a.Transition(ctx, s, d.Has, m); err != nil {
 		return wrap(err)
 	}
-	logr.Warnf("%s/%s#%d: the task's %d attempts in its round failed, %s runs and verifies, so it's handed off to the owner at %s",
-		a.Owner, a.Repo, l.Issue, attempts, st.Agent(), state.NeedsHuman)
+	logr.Warnf("%s/%s#%d: %s, so it's handed off to the owner at %s", a.Owner, a.Repo, l.Issue, failed, state.NeedsHuman)
 	return nil
 }
 
@@ -1661,7 +1776,7 @@ func roundAttempts(is state.Issue, bound int64) int {
 // verifyLoopMove reports whether m is one of a task's verify loop's own
 // moves (SPEC §8.3): the implementer's move in-progress → verifying, keyed
 // by its run, or the move back on findings, verifying → in-progress, keyed
-// event=v<comment id> (verifyKey). An owner's move between those stages,
+// as a failed verify's (verifyKeyed). An owner's move between those stages,
 // by a stage label, is keyed by its timeline event, a number, so it isn't
 // one: it starts a round.
 func verifyLoopMove(m github.Marker) bool {
@@ -1670,7 +1785,14 @@ func verifyLoopMove(m github.Marker) bool {
 	}
 	from, to := state.Stage(m.Fields["from"]), state.Stage(m.Fields["to"])
 	return from == state.InProgress && to == state.Verifying && m.Fields["run"] != "" ||
-		from == state.Verifying && to == state.InProgress && strings.HasPrefix(m.Fields["event"], "v")
+		from == state.Verifying && to == state.InProgress && verifyKeyed(m)
+}
+
+// verifyKeyed reports whether m, a move out of verifying, is keyed as a
+// failed verify's: event=v<comment id> (verifyKey) for the checks', or
+// run=, for the verifier's.
+func verifyKeyed(m github.Marker) bool {
+	return strings.HasPrefix(m.Fields["event"], "v") || m.Fields["run"] != ""
 }
 
 // markerAttempt is m's attempt=, a number above 0, or 0 for none.
@@ -1832,13 +1954,15 @@ func sweepTemps(pattern, what string) {
 	}
 }
 
-// cleanup removes the run's clone and context files, its bundle file and
-// its result, then its ref in the bare repo (handoff). The ref goes after
-// the result, so while a result is left to apply again, a run whose bundle
-// was fetched still has its ref.
+// cleanup removes the run's clone and context files, its fresh HOME if it
+// had one (run), its bundle file and its result, then its ref in the bare
+// repo (handoff). The ref goes after the result, so while a result is left
+// to apply again, a run whose bundle was fetched still has its ref.
 func (r *Runs) cleanup(ctx context.Context, l Lease) error {
-	if err := r.Workspace.Cleanup(ctx, l.RunID); err != nil {
-		return fmt.Errorf("clean up run %s: %w", l.RunID, err)
+	for _, id := range []string{l.RunID, l.RunID + verify.HomeSuffix} {
+		if err := r.Workspace.Cleanup(ctx, id); err != nil {
+			return fmt.Errorf("clean up run %s: %w", l.RunID, err)
+		}
 	}
 	for _, path := range []string{r.bundlePath(l.RunID), r.resultPath(l.RunID)} {
 		if err := r.remove(path); err != nil {

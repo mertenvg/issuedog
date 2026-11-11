@@ -88,6 +88,95 @@ func diffCommits(d *diffRig) (base, head string) {
 	return base, head
 }
 
+// Patch is git's whole patch of the diff, as a reader needs it: an added
+// test file and a deleted file in full, a modified file with its context
+// lines, a rename as a rename with only the lines it changed, and a binary
+// as git's one line. Reading it changes nothing in the bare repo. A commit
+// the repo lacks is an error.
+func TestPatch(t *testing.T) {
+	t.Parallel()
+	d := newDiffRig(t)
+	moved := "package moved\n\n// one\n// two\n// three\n// four\n"
+	base := d.commit(map[string]string{"keep.go": "package keep\n\nfunc A() {}\n", "gone.go": "package gone\n", "old/moved.go": moved, "img.bin": "\x00\x01\x02"})
+	head := d.commit(map[string]string{
+		"keep.go":      "package keep\n\nfunc A() {}\n\nfunc B() {}\n",
+		"keep_test.go": "package keep\n\n// " + diffMarker + "\n",
+		"new/moved.go": moved + "// five\n",
+		"img.bin":      "\x00\x03\x04\x05",
+	}, "gone.go", "old/moved.go")
+	before := bareState(t, d.r.dir)
+	ctx := context.Background()
+
+	got, err := d.r.Patch(ctx, base, head)
+	if err != nil {
+		t.Fatalf("Patch: %v", err)
+	}
+	patch := string(got)
+	for _, want := range []string{
+		"diff --git a/gone.go b/gone.go\ndeleted file mode 100644\n",
+		"-package gone\n",
+		"diff --git a/img.bin b/img.bin\n",
+		"Binary files a/img.bin and b/img.bin differ\n",
+		"--- a/keep.go\n+++ b/keep.go\n@@ -1,3 +1,5 @@\n package keep\n \n func A() {}\n+\n+func B() {}\n",
+		"diff --git a/keep_test.go b/keep_test.go\nnew file mode 100644\n",
+		"+// " + diffMarker + "\n",
+		"diff --git a/old/moved.go b/new/moved.go\nsimilarity index ",
+		"rename from old/moved.go\nrename to new/moved.go\n",
+		" // four\n+// five\n",
+	} {
+		if !strings.Contains(patch, want) {
+			t.Errorf("Patch =\n%s\nwant it to hold %q", patch, want)
+		}
+	}
+	if unwanted := "+package moved\n"; strings.Contains(patch, unwanted) {
+		t.Errorf("Patch =\n%s\nwant the rename's unchanged lines left out, but it holds %q", patch, unwanted)
+	}
+	if after := bareState(t, d.r.dir); after != before {
+		t.Errorf("Patch changed the bare repo from\n%s\nto\n%s", before, after)
+	}
+
+	if _, err := d.r.Patch(ctx, strings.Repeat("1", len(head)), head); err == nil || !strings.Contains(err.Error(), "patch 1111") {
+		t.Errorf("Patch from a commit the repo lacks: error = %v, want one naming the patch", err)
+	}
+}
+
+// No attribute hides a file's lines from Patch: not -diff, and not binary,
+// wherever it's set, here a .gitattributes in the head, the same lines in
+// the bare repo's info/attributes, and attr.tree pointing at the head.
+// Plain git takes both files as binary, so the setup would catch a read
+// that didn't turn attributes off.
+func TestPatchIgnoresAttributes(t *testing.T) {
+	t.Parallel()
+	d := newDiffRig(t)
+	attrs := "off.txt -diff\nbin.txt binary\n"
+	base := d.commit(map[string]string{"off.txt": "one\n", "bin.txt": "one\n"})
+	head := d.commit(map[string]string{"off.txt": "one\ntwo\n", "bin.txt": "one\nthree\n", ".gitattributes": attrs})
+	if err := os.WriteFile(filepath.Join(d.r.dir, "info", "attributes"), []byte(attrs), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, d.r.dir, "--git-dir=.", "config", "attr.tree", head)
+
+	plain := run(t, d.r.dir, "--git-dir=.", "diff-tree", "-p", base, head)
+	for _, want := range []string{"Binary files a/off.txt and b/off.txt differ", "Binary files a/bin.txt and b/bin.txt differ"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("plain diff-tree =\n%s\nwant %q, or the setup proves nothing", plain, want)
+		}
+	}
+
+	got, err := d.r.Patch(context.Background(), base, head)
+	if err != nil {
+		t.Fatalf("Patch: %v", err)
+	}
+	for _, want := range []string{"--- a/off.txt\n+++ b/off.txt\n@@ -1 +1,2 @@\n one\n+two\n", "--- a/bin.txt\n+++ b/bin.txt\n@@ -1 +1,2 @@\n one\n+three\n"} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("Patch =\n%s\nwant it to hold %q", got, want)
+		}
+	}
+	if strings.Contains(string(got), "Binary files") {
+		t.Errorf("Patch =\n%s\nwant no file taken as binary", got)
+	}
+}
+
 // Changes lists each file the diff changes. Without renames, a rename is
 // its old path's deletion and its new path's addition; with them, one R
 // change names both. Paths with spaces and newlines come back as they are.
@@ -243,6 +332,9 @@ func TestDiffRefusesNonSHA(t *testing.T) {
 		if _, err := d.r.NumStat(ctx, tc.from, tc.to); err == nil || !strings.Contains(err.Error(), "invalid SHA") {
 			t.Errorf("NumStat(%q, %q) error = %v, want invalid SHA", tc.from, tc.to, err)
 		}
+		if _, err := d.r.Patch(ctx, tc.from, tc.to); err == nil || !strings.Contains(err.Error(), "invalid SHA") {
+			t.Errorf("Patch(%q, %q) error = %v, want invalid SHA", tc.from, tc.to, err)
+		}
 		if _, err := d.r.MergeBase(ctx, tc.from, tc.to); err == nil || !strings.Contains(err.Error(), "invalid SHA") {
 			t.Errorf("MergeBase(%q, %q) error = %v, want invalid SHA", tc.from, tc.to, err)
 		}
@@ -315,6 +407,13 @@ func TestDiffRunsNoDriver(t *testing.T) {
 	added, err := d.r.AddedLines(ctx, base, head, []string{"a_test.go"})
 	if err != nil {
 		t.Fatalf("AddedLines: %v", err)
+	}
+	patch, err := d.r.Patch(ctx, base, head)
+	if err != nil {
+		t.Fatalf("Patch: %v", err)
+	}
+	if want := "+" + diffMarker + "\n"; !strings.Contains(string(patch), want) {
+		t.Errorf("Patch =\n%s\nwant it to hold %q", patch, want)
 	}
 	stats, err := d.r.NumStat(ctx, base, head)
 	if err != nil {
@@ -624,6 +723,15 @@ func TestDiffIgnoresAttributes(t *testing.T) {
 	if want := []Stat{{Path: "a_test.go", Added: 1}, {Path: "b.go", Added: 2}, {Path: "img.bin", Binary: true}}; !reflect.DeepEqual(stats, want) {
 		t.Errorf("NumStat = %+v, want git's own %+v", stats, want)
 	}
+	patch, err := d.r.Patch(ctx, base, head)
+	if err != nil {
+		t.Fatalf("Patch: %v", err)
+	}
+	for _, want := range []string{"+" + diffMarker + "\n", "+var x = 1\n", "Binary files a/img.bin and b/img.bin differ\n"} {
+		if !strings.Contains(string(patch), want) {
+			t.Errorf("Patch =\n%s\nwant git's own, holding %q", patch, want)
+		}
+	}
 	if after := bareState(t, d.r.dir); after != before {
 		t.Errorf("the reads changed the bare repo from\n%s\nto\n%s", before, after)
 	}
@@ -684,6 +792,9 @@ func TestDiffSHA256(t *testing.T) {
 	}
 	if got, err := d.r.MergeTree(ctx, base, head); err != nil || len(got) != 0 {
 		t.Errorf("MergeTree = %q, %v; want a clean merge", got, err)
+	}
+	if got, err := d.r.Patch(ctx, base, head); err != nil || !strings.Contains(string(got), "+"+diffMarker+"\n") {
+		t.Errorf("Patch = %q, %v; want the marker", got, err)
 	}
 }
 

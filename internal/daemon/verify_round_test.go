@@ -70,8 +70,8 @@ func (g *rig) roundInput(k int) string {
 func roundFindingsInput(attempt int, findings string) string {
 	return "# Input for this run\n\n" +
 		"What's new since the implementer last ran, or since the task came to in-progress. " +
-		"Verify's findings on the task's head, if any, come first: fix every one.\n\n" +
-		"## The findings of verify attempt " + strconv.Itoa(attempt) + ", which this run must fix\n\n" +
+		"Verify's findings on the task's head, if any, come first: fix every one, unless they say there's nothing to fix.\n\n" +
+		"## The findings of verify attempt " + strconv.Itoa(attempt) + "\n\n" +
 		"````text\n" + findings + "\n````"
 }
 

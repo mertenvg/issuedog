@@ -1,0 +1,16 @@
+{
+  "verdict": "request_changes",
+  "notes": "The refusal works, but its test doesn't show it, and the API lost its error body for every other failure.",
+  "findings": [
+    {
+      "criterion": "A quote past its expiry time can't be booked",
+      "class": "criterion",
+      "detail": "`TestBookExpiredQuote` builds its quote with an expiry time in the future, so it never reaches the refusal, and it passes with the check removed."
+    },
+    {
+      "criterion": "The booking API tells the customer how to get a new quote",
+      "class": "regression",
+      "detail": "`writeError` in `api/booking.go` now returns before it writes the body, so every failure, not just `410 Gone`, answers with an empty body. `TestBookingAPIOutOfStock` no longer reads it."
+    }
+  ]
+}
