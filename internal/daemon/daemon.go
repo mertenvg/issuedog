@@ -232,7 +232,9 @@ func (d *Daemon) Run(ctx context.Context) {
 // (humanBlocked, #287), and for the 👍s on a human task itself, which
 // change none either (DoneByReaction, #286). Each visit ends with
 // ChildrenVisit, which creates the children of a plan approved on the
-// issue (children.go); the children it writes to are touched. On each
+// issue (children.go); the children it writes to are touched. Then
+// FollowUpsVisit files the follow-ups of a task's passes
+// (followup_file.go); the task is touched once it writes to it. On each
 // issue step 1 succeeds on, it caches what waits on the owner
 // (digestCacheSet), with the issue's dirty content, which
 // openErrAny takes too; an issue whose read or step 1 fails keeps its last
@@ -408,6 +410,12 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		if err == nil {
 			err = d.Step.ChildrenVisit(ctx, s)
 		}
+		// FollowUpsVisit files the follow-ups of a task's passes, after its
+		// commands and reactions too. The task is Touched once it writes to
+		// it.
+		if err == nil {
+			err = d.Step.FollowUpsVisit(ctx, s)
+		}
 		// The open errors and what waits on the owner are read from the
 		// snapshot as the visits left it, with one look at its dirty content.
 		var dirt Dirt
@@ -548,6 +556,7 @@ func (d *Daemon) reload(ctx context.Context) {
 	if d.Config != nil {
 		a.IssueTypes = d.Config.Types == "issue-types"
 		d.Step.Notify = d.Config.Notify
+		d.Step.Scopes = d.Config.Scopes
 	}
 	// A switch to types: labels leaves no issue type waiting (#246).
 	d.typeWaitClear()

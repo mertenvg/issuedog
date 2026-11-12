@@ -369,6 +369,43 @@ func TestCreatedRecord(t *testing.T) {
 	}
 }
 
+// FiledRecord reads the latest clean filed record of a run's pass, as
+// CreatedRecord reads a plan's: not a dirty one, nor another run's, nor
+// one whose follow-ups don't all read back as numbers above 0, nor one of
+// children=none, which a pass with candidates never names.
+func TestFiledRecord(t *testing.T) {
+	t.Parallel()
+	const rec = "I've filed the follow-ups of this pass:\n- F1 #12: One\n- F2 #13: Two\n\n<!-- issuedog:filed run=r1 children=12,13 -->"
+	app := []github.Author{appBot}
+	for _, tt := range []struct {
+		name   string
+		s      *github.Snapshot
+		dirty  func(int64) bool
+		run    string
+		want   []int
+		wantOK bool
+	}{
+		{"a clean record", snap("", app, rec), clean, "r1", []int{12, 13}, true},
+		{"a dirty record", snap("", app, rec), dirtyIDs(1), "r1", nil, false},
+		{"another run's", snap("", app, rec), clean, "r2", nil, false},
+		{"no run asked for", snap("", app, "<!-- issuedog:filed children=12 -->"), clean, "", nil, false},
+		{"the latest of two", snap("", []github.Author{appBot, appBot}, rec, "<!-- issuedog:filed run=r1 children=12,14 -->"), clean, "r1", []int{12, 14}, true},
+		{"a clean one before a dirty one", snap("", []github.Author{appBot, appBot}, rec, "<!-- issuedog:filed run=r1 children=9 -->"), dirtyIDs(2), "r1", []int{12, 13}, true},
+		{"someone else's", snap("", []github.Author{mallory}, rec), clean, "r1", nil, false},
+		{"an escaped one", snap("", app, github.Escape(rec)), clean, "r1", nil, false},
+		{"no children", snap("", app, "<!-- issuedog:filed run=r1 -->"), clean, "r1", nil, false},
+		{"a follow-up that isn't a number", snap("", app, "<!-- issuedog:filed run=r1 children=12,x -->"), clean, "r1", nil, false},
+		{"follow-up 0", snap("", app, "<!-- issuedog:filed run=r1 children=0 -->"), clean, "r1", nil, false},
+		{"children=none", snap("", app, "<!-- issuedog:filed run=r1 children=none -->"), clean, "r1", nil, false},
+		{"a plan's record", snap("", app, "<!-- issuedog:created run=r1 children=12 -->"), clean, "r1", nil, false},
+	} {
+		got, ok := FiledRecord(Derive(tt.s, slug, tt.dirty), tt.run)
+		if ok != tt.wantOK || !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("%s: FiledRecord = %v, %v; want %v, %v", tt.name, got, ok, tt.want, tt.wantOK)
+		}
+	}
+}
+
 // Derive reads the latest triage marker that counts, and its comment: not
 // a dirty one, nor one in the body or by anyone but the App.
 func TestDeriveTriage(t *testing.T) {

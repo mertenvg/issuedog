@@ -237,7 +237,7 @@ func TestFollowUpOriginReposted(t *testing.T) {
 	d := approvalDaemon(t, f, newOrigin(t))
 	iterate(t, d)
 	repost := "This issue's description was edited, so I've copied its `origin` marker here to keep tracking it as a follow-up.\n\n" +
-		"<!-- issuedog:origin item=F1 run=run3 verify=#7 -->"
+		"<!-- issuedog:origin verify=#7 run=run3 item=F1 -->"
 	approvalState(t, f, []string{"priority:p3", "stage:intake"}, []string{repost})
 	writes := len(f.Writes())
 	iterate(t, d)
