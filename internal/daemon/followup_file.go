@@ -68,18 +68,18 @@ const followUpsErrKind = "followups"
 // the writes to them. A follow-up filed in this visit isn't one the pass
 // has read, so it isn't reported.
 //
-// A failed read or write is returned, wrapped: Iterate reads the task
-// again next pass, and the visit starts again from the reads. A failure no
-// later pass gets past, as nothing it reads would change (followUpsStuck),
-// isn't returned: data that won't read back, a candidate that can't be
-// written as an issue, or a follow-up GitHub refuses to file, or to link
-// under the story, with a 422, as for a story with 100 sub-issues or a
-// follow-up someone linked under another parent.
-// It files nothing more of that pass, and is reported once on the task
-// instead, as a state error keyed by the pass comment and the task's latest
-// move (followUpsStuckReport, SPEC §5.3). While that error is reported, the
-// pass is skipped, at no cost, until the task moves, as by /hold and
-// /resume, which gives the key a new value, and the visit tries again.
+// A failed read or write is returned, wrapped: Iterate reads the task again
+// next pass, and the visit starts again from the reads. A failure no later
+// pass gets past, as nothing it reads would change (followUpsStuck), isn't
+// returned: data that won't read back, a candidate that can't be written as
+// an issue, or a follow-up GitHub refuses to file, or to link under the
+// story, with a 422, as for a story with 100 sub-issues or a follow-up
+// someone linked under another parent. It files nothing more of that pass,
+// and is reported once on the task instead, as a state error keyed by the
+// pass comment and the task's latest move (followUpsStuckReport, SPEC §5.3).
+// While that error is reported, the pass is skipped, at no cost, until the
+// task moves, as by /hold and /resume, which gives the key a new value, and
+// the visit tries again.
 func (st *Step) FollowUpsVisit(ctx context.Context, s *github.Snapshot) error {
 	wrap := func(err error) error {
 		return fmt.Errorf("follow-ups of %s/%s#%d: %w", st.Owner, st.Repo, s.Number, err)
@@ -306,12 +306,12 @@ func (st *Step) followUpsFind(ctx context.Context, s *github.Snapshot, run strin
 	return found, nil
 }
 
-// followUpWrite files c, the follow-up of a candidate of run's pass on
-// task, as the App, with its title, body, labels and issue type at once
-// (CreateChild), and returns it, by its number and ID, linked under no
-// parent yet. A scope left off its labels is
-// logged as a warning. A 422 is a failure no later pass gets past
-// (childRefused), as for an issue type the org doesn't have.
+// followUpWrite files c, the follow-up of a candidate of run's pass on task,
+// as the App, with its title, body, labels and issue type at once
+// (CreateChild), and returns it, by its number and ID, linked under no parent
+// yet. A scope left off its labels is logged as a warning. A 422 is a failure
+// no later pass gets past (childRefused), as for an issue type the org
+// doesn't have.
 func (st *Step) followUpWrite(ctx context.Context, task int, run string, c followUpChild) (childFound, error) {
 	is, err := st.Client.CreateChild(ctx, st.Owner, st.Repo, github.NewChild{Title: c.Title, Body: c.Body, Labels: c.Labels, Type: c.IssueType})
 	if err != nil {

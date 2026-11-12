@@ -41,25 +41,24 @@ func RegisterStages(d *Daemon) (map[state.Stage]Stage, Stage) {
 	}, &Triage{Daemon: d}
 }
 
-// NewStep is step 1 as the daemon runs it, on the Applier a, with the
-// trust tr: the command and reaction handlers merged so far, /track and
-// /ignore among them, and the reaction triggers: first the end of a
-// discussion hold once a 👍 or a counter comment resolves it, on a held
-// issue; then a 👍 on a revision and a 👍 on a flag, each at its own
-// stages, spec-review or plan-review for a spec or plan revision, and
-// intake for a flag, so at most one of them acts on an issue; then a 👍 on
-// a follow-up, or on its addendum on its story, which the story's
-// snapshot the daemon holds gives (Step.HeldSnap), at intake too, but with
-// a stage label, so triage never flagged it; then a 👍 on a human task itself, at needs-human, which a
-// hold the first ended may have returned it to; then a 👍 on a task's
-// latest hand-off comment, at needs-human too, which acts on no human
-// task, so at most one of the two acts on an issue; then a 👍 on a state
-// error, at any stage. The
-// loop's reloads replace its Trust and the daemon's Config, so the
+// NewStep is step 1 as the daemon runs it, on the Applier a, with the trust
+// tr: the command and reaction handlers merged so far, /track and /ignore
+// among them, and the reaction triggers: first the end of a discussion hold
+// once a 👍 or a counter comment resolves it, on a held issue; then a 👍 on a
+// revision and a 👍 on a flag, each at its own stages, spec-review or
+// plan-review for a spec or plan revision, and intake for a flag, so at most
+// one of them acts on an issue; then a 👍 on a follow-up, or on its addendum
+// on its story, which the story's snapshot the daemon holds gives
+// (Step.HeldSnap), at intake too, but with a stage label, so triage never
+// flagged it; then a 👍 on a human task itself, at needs-human, which a hold
+// the first ended may have returned it to; then a 👍 on a task's latest
+// hand-off comment, at needs-human too, which acts on no human task, so at
+// most one of the two acts on an issue; then a 👍 on a state error, at any
+// stage. The loop's reloads replace its Trust and the daemon's Config, so the
 // handlers and the triggers ask for the current trust, and models for the
-// current models.allowed, rather than keeping what they had at the start.
-// New builds step 1 with it, for main's startDaemon and the whole-run
-// tests both, so the two can't drift apart (#218).
+// current models.allowed, rather than keeping what they had at the start. New
+// builds step 1 with it, for main's startDaemon and the whole-run tests both,
+// so the two can't drift apart (#218).
 func NewStep(a *Applier, tr github.Trust, models func() config.Models) *Step {
 	st := &Step{Applier: a, Trust: tr, Models: models}
 	st.Commands = Commands(st.CurrentTrust())

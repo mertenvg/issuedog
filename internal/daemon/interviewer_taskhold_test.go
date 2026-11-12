@@ -208,7 +208,10 @@ func TestTaskHoldRewrite(t *testing.T) {
 // The unchanged outcome sends the task back to the stage it was held at,
 // with origin, and writes no body: a task held at in-progress, whose run
 // the hold dropped, goes to ready instead (SPEC §6.4, §7.2), and a human
-// task back to needs-human. The pass after writes nothing and runs nothing.
+// task back to needs-human. Back at needs-human, the comment says what
+// still stands, the hand-off or the human task, and ends in the cc line,
+// as the task waits on the owner again (SPEC §9.1). The pass after writes
+// nothing and runs nothing.
 func TestTaskHoldUnchanged(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -218,8 +221,10 @@ func TestTaskHoldUnchanged(t *testing.T) {
 		{"owner", "in-progress", "ready", "Nothing in the discussion during the hold changes this issue. " +
 			"The hold from `in-progress` dropped the task's run, so it goes back to `ready`."},
 		{"plan", "verifying", "verifying", "Nothing in the discussion during the hold changes this issue, so it goes back to `verifying`."},
-		{"owner", "needs-human", "needs-human", "Nothing in the discussion during the hold changes this issue, so it goes back to `needs-human`."},
-		{"human", "needs-human", "needs-human", "Nothing in the discussion during the hold changes this issue, so it goes back to `needs-human`."},
+		{"owner", "needs-human", "needs-human", "Nothing in the discussion during the hold changes this issue, so it goes back to `needs-human`.\n\n" +
+			"The hand-off from before the hold still stands: when it's done, reply `/done` on this issue or react 👍 to the hand-off.\n\ncc @owner"},
+		{"human", "needs-human", "needs-human", "Nothing in the discussion during the hold changes this issue, so it goes back to `needs-human`.\n\n" +
+			"When it's done, reply `/done` or react 👍 to this issue.\n\ncc @owner"},
 	} {
 		t.Run(tt.kind+" at "+tt.stage, func(t *testing.T) {
 			t.Parallel()
@@ -577,5 +582,27 @@ func TestTaskHoldCrashThenFreshDaemon(t *testing.T) {
 				t.Errorf("origin %+v; want the human task's T2 still read", is.Origin)
 			}
 		})
+	}
+}
+
+// A human task that blocks no open issue makes no read of the issues it
+// blocks as the interviewer's human outcome rewrites it after a hold
+// (ivHumanBlocks): its snapshot says it blocks none.
+func TestTaskHoldHumanNoBlockingRead(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	taskHoldFiled(t, f, "plain", "needs-human")
+	g := taskHoldRig(t, f, wholeRunOutput(t, "human"))
+	from := len(f.Requests())
+	if err := g.work(1); err != nil {
+		t.Fatal(err)
+	}
+	if st := ivStage(t, g.d, 1); st != state.NeedsHuman {
+		t.Fatalf("at %s, want needs-human, rewritten", st)
+	}
+	for _, r := range f.Requests()[from:] {
+		if strings.HasSuffix(r.Path, "/dependencies/blocking") {
+			t.Errorf("the rewrite sent %+v; want no read of what a human task that blocks nothing blocks", r)
+		}
 	}
 }

@@ -231,10 +231,14 @@ func TestFollowUpTrack(t *testing.T) {
 // stays a follow-up: a trusted 👍 still approves it.
 func TestFollowUpOriginReposted(t *testing.T) {
 	t.Parallel()
-	f := approvalFiled(func(t testing.TB, f *githubtest.Fake) {
+	o := newOrigin(t)
+	setup := approvalFiled(func(t testing.TB, f *githubtest.Fake) {
 		f.EditBody(1, "owner", "A quote that expires mid-booking is booked at its old price.")
-	})(t)
-	d := approvalDaemon(t, f, newOrigin(t))
+	})
+	githubtest.Replay(t, setup, approvalPass(t, o))
+
+	f := setup(t)
+	d := approvalDaemon(t, f, o)
 	iterate(t, d)
 	repost := "This issue's description was edited, so I've copied its `origin` marker here to keep tracking it as a follow-up.\n\n" +
 		"<!-- issuedog:origin verify=#7 run=run3 item=F1 -->"

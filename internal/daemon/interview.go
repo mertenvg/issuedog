@@ -301,7 +301,11 @@ func checkInterview(out interviewOutput, f interviewFacts) error {
 			fail(ruleTypeValue, "a %s output sets epic or story, not %q", out.Outcome, t.Value)
 		}
 	}
-	for _, t := range renderedTexts(out, f) {
+	texts, err := renderedTexts(out, f)
+	if err != nil {
+		fail(ruleHuman, "the human task doesn't render: %v", err)
+	}
+	for _, t := range texts {
 		if n := textLen(t.text); n > maxText-textRoom {
 			fail(ruleLength, "the %s is %d characters, over %d", t.what, n, maxText-textRoom)
 		}
@@ -479,41 +483,42 @@ func checkSpec(s interviewSpec, f interviewFacts, fail func(string, string, ...a
 // rendered is a text an output renders to, and what it is.
 type rendered struct{ what, text string }
 
-// renderedTexts is what out renders to under f.
-func renderedTexts(out interviewOutput, f interviewFacts) []rendered {
+// renderedTexts is what out renders to under f. Its error is a human
+// task's that doesn't render, for any cause but an unreadable check, which
+// renders nothing, as checkHuman refuses it.
+func renderedTexts(out interviewOutput, f interviewFacts) ([]rendered, error) {
 	if out.Outcome == outcomeUnchanged {
-		return []rendered{{"comment", renderUnchanged(out, f.Origin, "", f.Notify)}}
+		return []rendered{{"comment", renderUnchanged(out, f.Origin, "", f.Notify)}}, nil
 	}
 	if out.Outcome == outcomePlan {
-		return []rendered{{"comment", renderPlanChange(out, f.Notify)}}
+		return []rendered{{"comment", renderPlanChange(out, f.Notify)}}, nil
 	}
 	if out.Outcome == outcomeTask {
 		if out.Task == nil {
-			return nil
+			return nil, nil
 		}
-		return []rendered{{"body", renderTask(*out.Task, f.Parent, f.Priority)}}
+		return []rendered{{"body", renderTask(*out.Task, f.Parent, f.Priority)}}, nil
 	}
 	if out.Outcome == outcomeHuman {
 		// It names no issue the task blocks here, which a few characters of
-		// textRoom cover, as its apply reads them (ivHumanBlocks). An
-		// unreadable check renders nothing, as checkHuman refuses it.
-		if out.Human == nil {
-			return nil
+		// textRoom cover, as its apply reads them (ivHumanBlocks).
+		if out.Human == nil || f.Check.Kind == state.CheckUnreadable {
+			return nil, nil
 		}
 		body, err := renderHuman(*out.Human, f.Check, humanHeader(f.Parent, f.Scope, f.Priority), nil, f.BlocksOn, f.Notify)
 		if err != nil {
-			return nil
+			return nil, fmt.Errorf("render the human task: %w", err)
 		}
-		return []rendered{{"body", body}}
+		return []rendered{{"body", body}}, nil
 	}
 	if out.Outcome != outcomeSpec {
-		return []rendered{{"comment", renderQuestions(out, f.Issue, len(f.Rounds)+1, f.Notify)}}
+		return []rendered{{"comment", renderQuestions(out, f.Issue, len(f.Rounds)+1, f.Notify)}}, nil
 	}
 	texts := []rendered{{"revision comment", discCC(renderSpecNote(out), f.Notify)}}
 	if out.Spec != nil {
 		texts = append(texts, rendered{"body", renderSpec(*out.Spec)})
 	}
-	return texts
+	return texts, nil
 }
 
 // textLen is text's length in UTF-16 code units, which is never less than
@@ -717,7 +722,8 @@ func renderSpecNote(out interviewOutput) string {
 // task held at in-progress, whose run the hold dropped, to ready
 // (resumeTo, SPEC §6.4), then standing, the App's line on a revision that
 // still stands, if any, then out's message, then the cc line for notify
-// when the issue waits on the owner there, at a review stage.
+// when the issue waits on the owner there, at a review stage or at
+// needs-human.
 func renderUnchanged(out interviewOutput, origin state.Stage, standing string, notify []string) string {
 	parts := []string{fmt.Sprintf("Nothing in the discussion during the hold changes this issue, so it goes back to `%s`.", origin)}
 	if to := resumeTo(origin); to != origin {
@@ -730,7 +736,7 @@ func renderUnchanged(out interviewOutput, origin state.Stage, standing string, n
 	if strings.TrimSpace(out.Message) != "" {
 		parts = append(parts, block(out.Message))
 	}
-	if origin == state.SpecReview || origin == state.PlanReview {
+	if origin == state.SpecReview || origin == state.PlanReview || origin == state.NeedsHuman {
 		parts = append(parts, ccLines(notify)...)
 	}
 	return github.Escape(strings.Join(parts, "\n\n"))

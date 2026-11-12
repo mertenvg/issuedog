@@ -217,17 +217,17 @@ func (v *verdictRig) quietPass(step string) {
 	}
 }
 
-// A whole run against the fakes, with the daemon built as startDaemon
-// builds it: the implementer commits and moves the task to verifying, the
-// next pass runs the checks and no claude, and the pass after runs the
-// verifier, in a clone of that head alone, with the settings of its own
-// labels, a fresh HOME and the commands' results in checks.md. Its pass is
-// one comment naming the head, the notes and the candidate, with the verify
-// marker and the candidate's data, and moves nothing. Its commit goes nowhere, nothing of the run is left, and
-// once the next pass has filed the candidate, the one after has read
-// what it wrote and listed and assigned the follow-up, and the one after
-// that has read those writes, each unchanged pass after makes no request but 304s,
-// while the task holds the worker.
+// A whole run against the fakes, with the daemon built as startDaemon builds
+// it: the implementer commits and moves the task to verifying, the next pass
+// runs the checks and no claude, and the pass after runs the verifier, in a
+// clone of that head alone, with the settings of its own labels, a fresh HOME
+// and the commands' results in checks.md. Its pass is one comment naming the
+// head, the notes and the candidate, with the verify marker and the
+// candidate's data, and moves nothing. Its commit goes nowhere, nothing of
+// the run is left, and once the next pass has filed the candidate, the one
+// after has read what it wrote and listed and assigned the follow-up, and the
+// one after that has read those writes, each unchanged pass after makes no
+// request but 304s, while the task holds the worker.
 func TestVerifierWholeRun(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)

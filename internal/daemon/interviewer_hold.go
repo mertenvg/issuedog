@@ -408,7 +408,10 @@ func (h ivHoldFields) ack(ctx context.Context, a *Applier, wrap func(error) erro
 //   - at plan-review, the latest plan revision, while state.PlanApproval
 //     gives no reason it can't be approved (#271). Otherwise nothing
 //     approves it until a new plan, which /revise or any comment gets
-//     there (SPEC §7.4).
+//     there (SPEC §7.4);
+//   - at needs-human, that the hand-off from before the hold still stands,
+//     as latestHandoff reads it once the task is back there (SPEC §9.3), or
+//     for a human task, how to say it's done.
 //
 // Anywhere else, or when nothing stands, it's "".
 func ivHoldStanding(s *github.Snapshot, appSlug string, d Dirt, to state.Stage) string {
@@ -425,6 +428,11 @@ func ivHoldStanding(s *github.Snapshot, appSlug string, d Dirt, to state.Stage) 
 			return ""
 		}
 		return fmt.Sprintf("Revision %d of the plan, `%s`, still stands: to approve it, react 👍 to it, or post `/approve`.", latest.Rev, latest.Hash)
+	case state.NeedsHuman:
+		if state.Derive(s, appSlug, d.Has).Item.Human {
+			return "When it's done, reply `/done` or react 👍 to this issue."
+		}
+		return "The hand-off from before the hold still stands: when it's done, reply `/done` on this issue or react 👍 to the hand-off."
 	}
 	return ""
 }

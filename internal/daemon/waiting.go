@@ -256,8 +256,8 @@ type waitInput struct {
 //     interviewer round, or an implementer's or a verifier's
 //     (taskRoundMove), with round= and questions= above 0, and no trusted
 //     answer has come since (no Inputs). A typed bug or task's move
-//     carries neither, so it has no item:
-//     its next run comes at once (Interviewer.Pending);
+//     carries neither, so it has no item: its next run comes at once
+//     (Interviewer.Pending);
 //   - at planning, a question round in the same way, when that latest
 //     transition is a planner round (planRoundMove, #253). Its key and
 //     rank are an interviewer round's, as the rounds share one numbering;

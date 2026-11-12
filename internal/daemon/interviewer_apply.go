@@ -68,21 +68,20 @@ func (iv *Interviewer) Check(ctx context.Context, r Result) error {
 	return nil
 }
 
-// ivStillRuns reports whether the interviewer still runs on an issue like
-// it, read again after a run whose output is out, with origin the stage it
-// came from to the clarifying after a hold, or "" (ivRunsOn), but for a
-// typed outcome on a bug or a task, a human task included (ivTaskClass),
-// whose outcomes never include typed (ivOutcomes, SPEC §4), so a task at
-// the clarifying after a hold can't retype itself either; or whether out,
-// a typed outcome, made it the task or bug it is with its own type, set
-// before a crash: the type is out's, and the App set it (may, as typing
-// says), so it isn't the owner's retype, and no typed move stands
-// (ivTypedBefore), so it isn't a
-// second typing of a bug the interviewer already typed, which would start a
-// run at once, on and on (SPEC §9.1). Its move, the typed one, is an entry for the run that
-// writes its task (Pending). Only a typed outcome sets a type the
-// interviewer runs on with other outcomes, so a story with a parent never
-// passes, whoever typed it.
+// ivStillRuns reports whether the interviewer still runs on an issue like it,
+// read again after a run whose output is out, with origin the stage it came
+// from to the clarifying after a hold, or "" (ivRunsOn), but for a typed
+// outcome on a bug or a task, a human task included (ivTaskClass), whose
+// outcomes never include typed (ivOutcomes, SPEC §4), so a task at the
+// clarifying after a hold can't retype itself either; or whether out, a typed
+// outcome, made it the task or bug it is with its own type, set before a
+// crash: the type is out's, and the App set it (may, as typing says), so it
+// isn't the owner's retype, and no typed move stands (ivTypedBefore), so it
+// isn't a second typing of a bug the interviewer already typed, which would
+// start a run at once, on and on (SPEC §9.1). Its move, the typed one, is an
+// entry for the run that writes its task (Pending). Only a typed outcome sets
+// a type the interviewer runs on with other outcomes, so a story with a
+// parent never passes, whoever typed it.
 func ivStillRuns(it state.Item, origin state.Stage, out interviewOutput, may bool) bool {
 	if out.Outcome == outcomeTyped && out.Type != nil && may && strings.EqualFold(it.Type, out.Type.Value) {
 		return true
@@ -107,16 +106,16 @@ func ivTypedBefore(is state.Issue) bool {
 // out's type, if it sets one, is set: the table has the move for its class
 // (SPEC §7.2), clarifying → spec-review on spec-written for a spec, or on
 // spec-rewritten at the clarifying after a hold, whose origin is set
-// (ivHoldOrigin); clarifying → ready on task-written for a task, which only
-// a bug or a task the owner filed has before ready, or on task-rewritten
-// at the clarifying after a hold; clarifying → origin on discussion-no-change for
-// unchanged; clarifying → planning on plan-changed for plan, which only an
-// epic or a story has (#294); and clarifying → clarifying on
-// more-questions otherwise. A question round must also leave the issue one
-// the interviewer runs on (ivRunsOn), or no run would read its answers: a
-// story with a parent waits at clarifying for good, but at the clarifying
-// after a hold from a stage of its plan (SPEC §9.1). out has passed
-// checkInterview, so its type is a known one.
+// (ivHoldOrigin); clarifying → ready on task-written for a task, which only a
+// bug or a task the owner filed has before ready, or on task-rewritten at the
+// clarifying after a hold; clarifying → origin on discussion-no-change for
+// unchanged, or ready for a task held at in-progress (resumeTo); clarifying →
+// planning on plan-changed for plan, which only an epic or a story has
+// (#294); and clarifying → clarifying on more-questions otherwise. A question
+// round must also leave the issue one the interviewer runs on (ivRunsOn), or
+// no run would read its answers: a story with a parent waits at clarifying
+// for good, but at the clarifying after a hold from a stage of its plan (SPEC
+// §9.1). out has passed checkInterview, so its type is a known one.
 func ivMoveFits(it state.Item, out interviewOutput, origin state.Stage) error {
 	if out.Type != nil {
 		it.Type = out.Type.Value

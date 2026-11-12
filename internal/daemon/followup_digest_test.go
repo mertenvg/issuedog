@@ -399,3 +399,26 @@ func TestFollowUpDigestRestart(t *testing.T) {
 		})
 	}
 }
+
+// With assignment off, a trusted close of a follow-up waiting at intake,
+// with notify assigned, makes no assignee write (SPEC §9.6): the close's
+// unassign is assignment's.
+func TestFollowUpClosedAssignOff(t *testing.T) {
+	t.Parallel()
+	f := approvalFiled(func(testing.TB, *githubtest.Fake) {})(t)
+	d := followUpDigestDaemon(t, f, digestNotifyOrigin(t))
+	d.Assign = false
+	iterate(t, d)
+	iterate(t, d)
+	f.SetAssignees(1, "owner")
+	f.CloseAs(1, "owner", "not_planned")
+	from := len(f.Writes())
+	iterate(t, d)
+	if got := assignWrites(f, from); len(got) != 0 {
+		t.Errorf("the assignee writes %q; want none, as assignment is off", got)
+	}
+	is := f.State().Issues[0]
+	if !is.Closed || !slices.Equal(is.Labels, []string{"priority:p3", "stage:discarded"}) || !slices.Equal(is.Assignees, []string{"owner"}) {
+		t.Errorf("closed %t, labels %q, assignees %q; want closed, at stage:discarded, owner still assigned", is.Closed, is.Labels, is.Assignees)
+	}
+}

@@ -764,6 +764,11 @@ func TestFollowUpAddendumNamesItsChild(t *testing.T) {
 	})(t)
 	iterate(t, approvalDaemon(t, f, newOrigin(t)))
 	approvalState(t, f, []string{"priority:p3", "stage:intake"}, nil)
+	for _, w := range f.Writes() {
+		if w.Path == "/issues/1" || strings.HasPrefix(w.Path, "/issues/1/") {
+			t.Errorf("a write to the first follow-up, %s %s; want none", w.Method, w.Path)
+		}
+	}
 	second := f.State().Issues[2]
 	if !slices.Equal(second.Labels, []string{"priority:p3", "stage:ready"}) {
 		t.Errorf("the second follow-up's labels = %q; want it at ready", second.Labels)
