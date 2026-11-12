@@ -116,6 +116,10 @@ func TestFormatMarker(t *testing.T) {
 			"<!-- issuedog:transition from=clarifying to=spec-review rev=3 body=9f2a61c0 run=8f2c cmd=2214587 -->"},
 		{Marker{"error", map[string]string{"key": "r12", "kind": "transition"}}, "<!-- issuedog:error kind=transition key=r12 -->"},
 		{Marker{"origin", map[string]string{"item": "T4", "rev": "1", "plan": "#2"}}, "<!-- issuedog:origin plan=#2 rev=1 item=T4 -->"},
+		// A follow-up's origin, as SPEC §5 writes it.
+		{Marker{"origin", map[string]string{"item": "F1", "run": "run3", "verify": "#7"}}, "<!-- issuedog:origin verify=#7 run=run3 item=F1 -->"},
+		{Marker{"verify", map[string]string{"head": "abc", "run": "r1", "attempt": "1", "verdict": "pass"}}, "<!-- issuedog:verify verdict=pass attempt=1 run=r1 head=abc -->"},
+		{Marker{"filed", map[string]string{"children": "12,13", "run": "r1"}}, "<!-- issuedog:filed run=r1 children=12,13 -->"},
 		{Marker{"x", map[string]string{"zz": "1", "aa": "2", "to": "ready"}}, "<!-- issuedog:x to=ready aa=2 zz=1 -->"},
 		{Marker{"revert", nil}, "<!-- issuedog:revert -->"},
 		{Marker{"plan-data", map[string]string{"data": "q1YqSSxSslIqSy1SqgUA", "v": "1"}}, "<!-- issuedog:plan-data v=1 data=q1YqSSxSslIqSy1SqgUA -->"},

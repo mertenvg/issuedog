@@ -168,8 +168,55 @@ func TestInterviewerPending(t *testing.T) {
 		{"an untyped issue", entered("", false, intake), true},
 		{"an untyped issue with a parent", entered("", true, intake), true},
 		{"a story with a parent", entered("story", true, intake), false},
-		{"a task", entered("task", false, intake), false},
-		{"a bug", entered("bug", false, intake), false},
+		// SPEC §9.1: a bug, or a task the owner filed, gets runs at
+		// clarifying before it has been at ready, with a parent or not.
+		{"a task", entered("task", false, intake), true},
+		{"a bug", entered("bug", false, intake), true},
+		{"a bug with a parent", entered("bug", true, intake), true},
+		{"a task at clarifying by hand", entered("task", false, "from=intake to=clarifying event=9 by=owner"), true},
+		{"after a round on a bug, nothing", func(f *githubtest.Fake) int {
+			n, entry := ivFiled(f, "bug", false, intake)
+			ivAsked(f, n, 1, 1, entry)
+			return n
+		}, false},
+		{"after a round on a bug, a trusted answer", func(f *githubtest.Fake) int {
+			n, entry := ivFiled(f, "bug", false, intake)
+			ivAsked(f, n, 1, 1, entry)
+			f.AddComment(n, "owner", "1a")
+			return n
+		}, true},
+		// A task at clarifying on the implementer's or the verifier's round
+		// has been at ready: its answer sends it there, with no run, and so
+		// does nothing else, answered or not.
+		{"the implementer's round on a task", func(f *githubtest.Fake) int {
+			n, _ := ivFiled(f, "task", false, "from=ready to=in-progress event=s3")
+			f.AddComment(n, app, "Round.\n\n<!-- issuedog:transition from=in-progress to=clarifying round=1 run=im1 questions=1 seen=4 -->")
+			return n
+		}, false},
+		{"the implementer's round on a bug, answered", func(f *githubtest.Fake) int {
+			n, _ := ivFiled(f, "bug", false, "from=ready to=in-progress event=s3")
+			f.AddComment(n, app, "Round.\n\n<!-- issuedog:transition from=in-progress to=clarifying round=1 run=im1 questions=1 seen=4 -->")
+			f.AddComment(n, "owner", "1a")
+			return n
+		}, false},
+		{"the verifier's round on a task", func(f *githubtest.Fake) int {
+			n, _ := ivFiled(f, "task", false, "from=in-progress to=verifying run=im1 head=abc attempt=1")
+			f.AddComment(n, app, "Round.\n\n<!-- issuedog:transition from=verifying to=clarifying round=1 run=vf1 questions=1 seen=4 -->")
+			return n
+		}, false},
+		{"the verifier's round on a task, answered", func(f *githubtest.Fake) int {
+			n, _ := ivFiled(f, "task", false, "from=in-progress to=verifying run=im1 head=abc attempt=1")
+			f.AddComment(n, app, "Round.\n\n<!-- issuedog:transition from=verifying to=clarifying round=1 run=vf1 questions=1 seen=4 -->")
+			f.AddComment(n, "owner", "1a")
+			return n
+		}, false},
+		{"a task from a plan, at clarifying by hand", func(f *githubtest.Fake) int {
+			n := f.AddIssue(app, "Task", "A task.\n\n<!-- issuedog:origin plan=#7 rev=1 item=T1 -->")
+			f.AddLabel(n, app, "type:task")
+			f.AddLabel(n, app, "stage:clarifying")
+			f.AddComment(n, app, "Moved.\n\n<!-- issuedog:transition from=intake to=clarifying event=9 by=owner -->")
+			return n
+		}, false},
 		{"an unknown type", entered("chore", false, intake), false},
 		{"not at clarifying", entered("epic", false, "from=intake to=spec-review event=5"), false},
 		{"after a round, nothing", answered("", ""), false},
@@ -194,7 +241,37 @@ func TestInterviewerPending(t *testing.T) {
 			f.AddComment(n, "owner", "Go on.")
 			return n
 		}, true},
-		{"a task at the clarifying after a hold", entered("task", false, "from=held to=clarifying at=ready origin=ready event=h9 seen=7"), false},
+		// SPEC §6.4: and on any task, bug or human task there, from any
+		// stage, but not on an issue of a type the table doesn't know.
+		{"a task at the clarifying after a hold", entered("task", false, "from=held to=clarifying at=ready origin=ready event=h9 seen=7"), true},
+		{"a bug at the clarifying after a hold from in-progress", entered("bug", false, "from=held to=clarifying at=in-progress origin=in-progress event=h9 seen=7"), true},
+		{"a task from a plan at the clarifying after a hold", func(f *githubtest.Fake) int {
+			n := f.AddIssue(app, "Task", "A task.\n\n<!-- issuedog:origin plan=#7 rev=1 item=T1 -->")
+			f.AddLabel(n, app, "type:task")
+			f.AddLabel(n, app, "stage:clarifying")
+			f.AddComment(n, app, "Resolved.\n\n<!-- issuedog:transition from=held to=clarifying at=verifying origin=verifying event=h9 seen=7 -->")
+			return n
+		}, true},
+		{"a human task at the clarifying after a hold", func(f *githubtest.Fake) int {
+			n := f.AddIssue(app, "Task", "A human task.\n\n<!-- issuedog:origin plan=#7 rev=1 item=T2 human=1 -->")
+			f.AddLabel(n, app, "type:task")
+			f.AddLabel(n, app, "stage:clarifying")
+			f.AddComment(n, app, "Resolved.\n\n<!-- issuedog:transition from=held to=clarifying at=needs-human origin=needs-human event=h9 seen=7 -->")
+			return n
+		}, true},
+		{"after a round on a task at the clarifying after a hold, nothing", func(f *githubtest.Fake) int {
+			n, entry := ivFiled(f, "task", false, "from=held to=clarifying at=ready origin=ready event=h9 seen=7")
+			f.AddComment(n, app, fmt.Sprintf("Round.\n\n<!-- issuedog:transition from=clarifying to=clarifying round=1 run=iv1 origin=ready questions=1 seen=%d -->", entry))
+			return n
+		}, false},
+		{"after a round on a task at the clarifying after a hold, a trusted answer", func(f *githubtest.Fake) int {
+			n, entry := ivFiled(f, "task", false, "from=held to=clarifying at=ready origin=ready event=h9 seen=7")
+			f.AddComment(n, app, fmt.Sprintf("Round.\n\n<!-- issuedog:transition from=clarifying to=clarifying round=1 run=iv1 origin=ready questions=1 seen=%d -->", entry))
+			f.AddComment(n, "owner", "1a")
+			return n
+		}, true},
+		{"an unknown type at the clarifying after a hold", entered("chore", false, "from=held to=clarifying at=ready origin=ready event=h9 seen=7"), false},
+		{"a bug at the clarifying after a hold from clarifying", entered("bug", false, "from=held to=clarifying at=clarifying origin=clarifying event=h9 seen=7"), true},
 		// SPEC §9.1: a story with a parent gets a run at the clarifying
 		// after a hold from a stage of its plan, and only there.
 		{"a story with a parent at the clarifying after a hold from planning", entered("story", true, "from=held to=clarifying at=planning origin=planning event=h9 seen=7"), true},
@@ -246,10 +323,24 @@ func TestInterviewerPending(t *testing.T) {
 			f.AddComment(n, app, "Overridden.\n\n<!-- issuedog:transition from=held to=clarifying event=92 by=owner seen=3 -->")
 			return n
 		}, true},
+		// SPEC §9.1: the typed move, with no round, is an entry, so the run
+		// that writes the task comes at once, with input or without.
 		{"after a typed bug", func(f *githubtest.Fake) int {
 			n, entry := ivFiled(f, "bug", false, intake)
 			f.AddComment(n, app, fmt.Sprintf("Type: bug.\n\n<!-- issuedog:transition from=clarifying to=clarifying run=iv1 seen=%d -->", entry))
 			f.AddComment(n, "owner", "more")
+			return n
+		}, true},
+		{"after a typed task, nothing", func(f *githubtest.Fake) int {
+			n, entry := ivFiled(f, "", false, intake)
+			f.AddLabel(n, app, "type:task")
+			f.AddComment(n, app, fmt.Sprintf("Type: task.\n\n<!-- issuedog:transition from=clarifying to=clarifying run=iv1 seen=%d -->", entry))
+			return n
+		}, true},
+		{"after a typed bug, then a round, nothing", func(f *githubtest.Fake) int {
+			n, entry := ivFiled(f, "bug", false, intake)
+			typed := f.AddComment(n, app, fmt.Sprintf("Type: bug.\n\n<!-- issuedog:transition from=clarifying to=clarifying run=iv1 seen=%d -->", entry))
+			ivAsked(f, n, 1, 1, typed)
 			return n
 		}, false},
 	}

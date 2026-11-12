@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/mertenvg/issuedog/internal/state"
 )
 
 var update = flag.Bool("update", false, "rewrite the golden files in testdata/interview")
@@ -58,6 +60,14 @@ func specFacts() interviewFacts {
 // questionFacts are the facts agentOutput("questions") was written for.
 func questionFacts() interviewFacts {
 	return interviewFacts{Issue: 123, MaxQuestions: 7, MayType: true, Untyped: true, Notify: []string{"mertenvg"}}
+}
+
+// taskFacts are the facts agentOutput("task") was written for: a bug the
+// owner filed, with no parent and no priority label, on a repo whose
+// scopes include booking.
+func taskFacts() interviewFacts {
+	return interviewFacts{Issue: 123, MaxQuestions: 7, Notify: []string{"mertenvg"}, Class: state.ClassNewBug,
+		Scopes: []string{"booking", "cli"}, Parent: "none", Priority: "p2"}
 }
 
 var mentionAnyRE = regexp.MustCompile(`@[A-Za-z0-9]`)
@@ -440,7 +450,7 @@ func TestCheckInterviewSpecNoteLengthCountsCC(t *testing.T) {
 // they have every field of the schema the goldens use.
 func TestDecodeInterviewRoundTrip(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"questions", "spec", "typed"} {
+	for _, name := range []string{"questions", "spec", "typed", "task", "human"} {
 		raw, err := os.ReadFile(filepath.Join("..", "agent", "testdata", "outputs", "interviewer", name+".json"))
 		if err != nil {
 			t.Fatal(err)
@@ -494,6 +504,133 @@ func TestCheckInterviewGolden(t *testing.T) {
 	}
 	if err := checkInterview(agentOutput(t, "typed"), questionFacts()); err != nil {
 		t.Errorf("typed: %v", err)
+	}
+	if err := checkInterview(agentOutput(t, "task"), taskFacts()); err != nil {
+		t.Errorf("task: %v", err)
+	}
+	f = taskFacts()
+	f.Class = state.ClassNewOwnerTask
+	if err := checkInterview(agentOutput(t, "task"), f); err != nil {
+		t.Errorf("task, on the owner's task: %v", err)
+	}
+	if err := checkInterview(agentOutput(t, "human"), humanFacts()); err != nil {
+		t.Errorf("human: %v", err)
+	}
+}
+
+// humanFacts are the facts agentOutput("human") is checked against: a
+// human task from #9's plan, back at clarifying after a hold from
+// needs-human, with a file check on its origin marker.
+func humanFacts() interviewFacts {
+	return interviewFacts{Issue: 123, MaxQuestions: 7, Notify: []string{"mertenvg"}, Class: state.ClassHumanTask, Origin: state.NeedsHuman,
+		Parent: "#9", Priority: "p2", Scope: "booking", BlocksOn: 9,
+		Check: state.Check{Kind: state.CheckFile, Value: "deploy/production.env", Contains: "QUOTE_TTL=24h"}}
+}
+
+// The human outcome is decoded in the hand-off's shape, its done_when one
+// line of text, and handoffTask converts it as it does a hand-off's.
+func TestDecodeInterviewHuman(t *testing.T) {
+	t.Parallel()
+	out := agentOutput(t, "human")
+	if out.Human == nil || out.Human.DoneWhen != "The production service's settings list QUOTE_TTL=24h." {
+		t.Fatalf("human = %+v, want the golden's fields, its done_when as text", out.Human)
+	}
+	if h := handoffTask(*out.Human); h.DoneWhen.Text != out.Human.DoneWhen || h.DoneWhen.Check != nil || len(h.Steps) != 3 || len(h.Links) != 1 {
+		t.Errorf("handoffTask = %+v, want the fields, with no check", h)
+	}
+	if _, err := decodeInterview([]byte(`{"outcome":"human","human":{"done_when":{"text":"t"}}}`)); err == nil {
+		t.Errorf("a plan's done_when object decoded, want the hand-off's text only")
+	}
+}
+
+// checkInterview holds human to SPEC §9.1's checks: only on a human task at
+// the clarifying after a hold, with human and nothing else, every 9.3 field
+// filled and on one line, at least one step and one link, a check on its
+// origin marker that reads, and a body within the length limit. task isn't
+// for a human task, nor human for a task.
+func TestCheckInterviewHuman(t *testing.T) {
+	t.Parallel()
+	human := func(edit func(h *implementerHandoffFields)) interviewOutput {
+		out := agentOutput(t, "human")
+		h := *out.Human
+		h.Steps, h.Links = slices.Clone(h.Steps), slices.Clone(h.Links)
+		edit(&h)
+		out.Human = &h
+		return out
+	}
+	none := func(*implementerHandoffFields) {}
+	for _, c := range []struct {
+		name string
+		out  interviewOutput
+		f    func(f *interviewFacts)
+		want []string
+	}{
+		{"the golden, plain text", human(none), func(f *interviewFacts) { f.Check = state.Check{} }, nil},
+		{"not after a hold", human(none), func(f *interviewFacts) { f.Origin = "" }, []string{ruleHuman}},
+		{"on a task", human(none), func(f *interviewFacts) { f.Class = state.ClassTask }, []string{ruleHuman}},
+		{"an unreadable check", human(none), func(f *interviewFacts) { f.Check = state.Check{Kind: state.CheckUnreadable} }, []string{ruleHuman}},
+		{"no links", human(func(h *implementerHandoffFields) { h.Links = nil }), nil, []string{ruleHumanTask}},
+		{"no steps", human(func(h *implementerHandoffFields) { h.Steps = nil }), nil, []string{ruleHumanTask}},
+		{"a blank goal", human(func(h *implementerHandoffFields) { h.Goal = " " }), nil, []string{ruleHumanTask}},
+		{"a two-line done when", human(func(h *implementerHandoffFields) { h.DoneWhen = "a\nb" }), nil, []string{ruleOneLine}},
+		{"a body over the limit", human(func(h *implementerHandoffFields) { h.Goal = strings.Repeat("x", maxText) }), nil, []string{ruleLength}},
+		{"with a message", func() interviewOutput { out := human(none); out.Message = "x"; return out }(), nil, []string{ruleOutcome}},
+		{"with no human task", interviewOutput{Outcome: outcomeHuman}, nil, []string{ruleOutcome}},
+		{"a task on the human task", agentOutput(t, "task"), func(f *interviewFacts) { f.Scopes = []string{"booking"} }, []string{ruleTask}},
+	} {
+		f := humanFacts()
+		if c.f != nil {
+			c.f(&f)
+		}
+		if got := rules(checkInterview(c.out, f)); !slices.Equal(got, c.want) {
+			t.Errorf("%s: rules %q, want %q", c.name, got, c.want)
+		}
+	}
+	// task on a task or a bug that has been at ready, at the clarifying
+	// after a hold, but not elsewhere (SPEC §9.1).
+	for _, c := range []struct {
+		class  state.Class
+		origin state.Stage
+		want   []string
+	}{
+		{state.ClassTask, state.Ready, nil},
+		{state.ClassBug, state.Clarifying, nil},
+		{state.ClassOwnerTask, state.InProgress, nil},
+		{state.ClassTask, "", []string{ruleTask}},
+		{state.ClassEpic, state.SpecReview, []string{ruleTask}},
+	} {
+		f := taskFacts()
+		f.Class, f.Origin = c.class, c.origin
+		if got := rules(checkInterview(agentOutput(t, "task"), f)); !slices.Equal(got, c.want) {
+			t.Errorf("task on %s after a hold from %q: rules %q, want %q", c.class, c.origin, got, c.want)
+		}
+	}
+}
+
+// SPEC §4: a bug or a task keeps its type, even one the App set and may
+// change: a round that types it fails the run, while an epic's round, or
+// a typed outcome's own replay, doesn't.
+func TestCheckInterviewTaskType(t *testing.T) {
+	t.Parallel()
+	round := agentOutput(t, "questions")
+	round.Type = &interviewType{Value: "epic", Reason: "It's large."}
+	for _, c := range []struct {
+		class state.Class
+		out   interviewOutput
+		want  []string
+	}{
+		{state.ClassNewBug, round, []string{ruleTypeAllowed}},
+		{state.ClassOwnerTask, round, []string{ruleTypeAllowed}},
+		{state.ClassHumanTask, round, []string{ruleTypeAllowed}},
+		{state.ClassUntyped, round, nil},
+		{state.ClassEpic, round, nil},
+		{state.ClassNewBug, agentOutput(t, "typed"), nil},
+	} {
+		f := questionFacts()
+		f.Class = c.class
+		if got := rules(checkInterview(c.out, f)); !slices.Equal(got, c.want) {
+			t.Errorf("%s on %s: rules %q, want %q", c.out.Outcome, c.class, got, c.want)
+		}
 	}
 }
 
@@ -619,11 +756,63 @@ func TestCheckInterviewRules(t *testing.T) {
 		{"round too long", "questions", ruleLength, func(o *interviewOutput, _ *interviewFacts) {
 			question(o).Text = strings.Repeat("x", maxText)
 		}},
+		// A task (SPEC §9.1): task and nothing else, only on a bug or a task
+		// the owner filed before ready, every section filled, one-line list
+		// items, a scope from the list, and a body within the limit.
+		{"task with a type", "task", ruleOutcome, func(o *interviewOutput, _ *interviewFacts) {
+			o.Type = &interviewType{Value: "bug", Reason: "It's broken."}
+		}},
+		{"task with a message", "task", ruleOutcome, func(o *interviewOutput, _ *interviewFacts) { o.Message = "hi" }},
+		{"task with questions", "task", ruleOutcome, func(o *interviewOutput, _ *interviewFacts) {
+			o.Questions = agentOutput(t, "questions").Questions
+		}},
+		{"task with a spec", "task", ruleOutcome, func(o *interviewOutput, _ *interviewFacts) { o.Spec = agentOutput(t, "spec").Spec }},
+		{"task with no task", "task", ruleOutcome, func(o *interviewOutput, _ *interviewFacts) { o.Task = nil }},
+		{"questions with a task", "questions", ruleOutcome, func(o *interviewOutput, _ *interviewFacts) {
+			o.Task = agentOutput(t, "task").Task
+			o.Type = nil
+		}},
+		{"spec with a task", "spec", ruleOutcome, func(o *interviewOutput, _ *interviewFacts) { o.Task = agentOutput(t, "task").Task }},
+		{"typed with a task", "typed", ruleOutcome, func(o *interviewOutput, _ *interviewFacts) { o.Task = agentOutput(t, "task").Task }},
+		{"unchanged with a task", "task", ruleOutcome, func(o *interviewOutput, f *interviewFacts) {
+			o.Outcome, f.Origin = outcomeUnchanged, state.Ready
+		}},
+		{"plan with a task", "task", ruleOutcome, func(o *interviewOutput, f *interviewFacts) {
+			o.Outcome, o.Message, f.Origin, f.Class = outcomePlan, "Reorder.", state.Planning, state.ClassEpic
+		}},
+		{"task on an epic", "task", ruleTask, func(_ *interviewOutput, f *interviewFacts) { f.Class = state.ClassEpic }},
+		{"task on an untyped issue", "task", ruleTask, func(_ *interviewOutput, f *interviewFacts) { f.Class = state.ClassUntyped }},
+		{"task on a task that has been at ready", "task", ruleTask, func(_ *interviewOutput, f *interviewFacts) { f.Class = state.ClassOwnerTask }},
+		{"task on a bug that has been at ready", "task", ruleTask, func(_ *interviewOutput, f *interviewFacts) { f.Class = state.ClassBug }},
+		{"task on a plan's task", "task", ruleTask, func(_ *interviewOutput, f *interviewFacts) { f.Class = state.ClassTask }},
+		{"blank context", "task", ruleSection, func(o *interviewOutput, _ *interviewFacts) { o.Task.Context = " \n" }},
+		{"blank change", "task", ruleSection, func(o *interviewOutput, _ *interviewFacts) { o.Task.Change = "" }},
+		{"blank test plan", "task", ruleSection, func(o *interviewOutput, _ *interviewFacts) { o.Task.TestPlan = "\t" }},
+		{"no definition of done", "task", ruleSection, func(o *interviewOutput, _ *interviewFacts) { o.Task.DefinitionOfDone = nil }},
+		{"no task criteria", "task", ruleCriteria, func(o *interviewOutput, _ *interviewFacts) { o.Task.AcceptanceCriteria = nil }},
+		{"two-line task criterion", "task", ruleOneLine, func(o *interviewOutput, _ *interviewFacts) {
+			o.Task.AcceptanceCriteria[0] = "a\nb"
+		}},
+		{"blank task criterion", "task", ruleOneLine, func(o *interviewOutput, _ *interviewFacts) { o.Task.AcceptanceCriteria[1] = " " }},
+		{"two-line definition of done", "task", ruleOneLine, func(o *interviewOutput, _ *interviewFacts) {
+			o.Task.DefinitionOfDone[2] = "a\rb"
+		}},
+		{"a scope not on the list", "task", ruleScope, func(o *interviewOutput, _ *interviewFacts) { o.Task.Scope = "billing" }},
+		{"a scope in another case", "task", ruleScope, func(o *interviewOutput, _ *interviewFacts) { o.Task.Scope = "Booking" }},
+		{"a scope with its prefix", "task", ruleScope, func(o *interviewOutput, _ *interviewFacts) { o.Task.Scope = "scope:booking" }},
+		{"a scope, with no scopes listed", "task", ruleScope, func(_ *interviewOutput, f *interviewFacts) { f.Scopes = nil }},
+		{"task body too long", "task", ruleLength, func(o *interviewOutput, _ *interviewFacts) {
+			o.Task.Change = strings.Repeat("x", maxText)
+		}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			out, f := agentOutput(t, c.base), specFacts()
-			if c.base != "spec" {
+			switch c.base {
+			case "task":
+				f = taskFacts()
+			case "spec":
+			default:
 				f = questionFacts()
 			}
 			c.change(&out, &f)

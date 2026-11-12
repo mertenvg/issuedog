@@ -8,4 +8,4 @@ human-63             unblocks=1 kind=human    p3 created=2026-01-01T00:00:00Z co
 flag-61-1            unblocks=1 kind=flag     p0 created=2026-01-01T00:00:00Z comment=1
 done-60              unblocks=1 kind=done     p0 created=2026-01-01T00:00:00Z comment=0
 done-64              unblocks=1 kind=done     p1 created=2026-01-01T00:00:00Z comment=0
-kind9-62-1           unblocks=1 kind=kind9    p0 created=2026-01-01T00:00:00Z comment=1
+kind10-62-1          unblocks=1 kind=kind10   p0 created=2026-01-01T00:00:00Z comment=1

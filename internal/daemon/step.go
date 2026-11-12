@@ -37,6 +37,23 @@ type Step struct {
 	// /resume waits (holdOrderWaits), so Work applies no saved result on
 	// it this pass: that command may drop it (SPEC §8.2).
 	holdOrderWaited func(number int)
+	// heldSnap, if set, gives the snapshot the daemon holds of issue n, or
+	// nil for none: Iterate sets it for its visits, so a follow-up's 👍
+	// trigger finds its addendum in its story's snapshot, at no request
+	// (HeldSnap).
+	heldSnap func(n int) *github.Snapshot
+}
+
+// HeldSnap is the snapshot the daemon holds of issue n, as of its latest
+// read, while Iterate visits, or nil: for an issue it doesn't hold, as a
+// closed one, and outside Iterate's visits. It costs no request. NewStep
+// gives it to the follow-up's 👍 trigger (FollowUpByReaction), for the
+// story whose addendum names a follow-up.
+func (st *Step) HeldSnap(n int) *github.Snapshot {
+	if st.heldSnap == nil {
+		return nil
+	}
+	return st.heldSnap(n)
 }
 
 // Run runs step 1 on s, in this order: the label rules (CheckLabels), dirty
@@ -53,7 +70,8 @@ type Step struct {
 // When CheckLabels holds labels back, Run stops there, and its error wraps
 // ErrLabelsHeld.
 // After a Run that succeeds, the loop calls ReviewVisit, then IntakeVisit,
-// then FlagVisit, then AnswerVisit, then ChildrenVisit.
+// then FlagVisit, then AnswerVisit, then ChildrenVisit, then
+// FollowUpsVisit.
 func (st *Step) Run(ctx context.Context, s *github.Snapshot) ([]github.Comment, error) {
 	wrap := func(err error) error { return fmt.Errorf("step 1 on %s/%s#%d: %w", st.Owner, st.Repo, s.Number, err) }
 	d, err := st.Dirty(ctx, s, st.trustOnceTrust())

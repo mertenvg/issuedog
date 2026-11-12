@@ -32,9 +32,11 @@ var (
 )
 
 // fieldOrder is FormatMarker's order for the fields SPEC names, as in its
-// examples. Any other field follows them, sorted.
+// examples. Any other field follows them, sorted. A plan item's origin is
+// plan, rev, item, and a follow-up's verify, run, item, so item comes after
+// run.
 var fieldOrder = []string{"from", "to", "at", "origin", "reason", "by", "kind", "key", "ack",
-	"plan", "rev", "body", "item", "verdict", "attempt", "round", "sha", "url", "run", "event", "cmd",
+	"plan", "rev", "body", "verdict", "attempt", "round", "sha", "url", "verify", "run", "item", "event", "cmd",
 	"v", "data"}
 
 // FormatMarker writes m as a hidden marker, its fields in a fixed order

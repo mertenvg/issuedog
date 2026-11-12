@@ -1026,15 +1026,17 @@ func digestSameBody(a, b string) bool {
 // with its dirty content dirt and, if it's held, its open discussion
 // triggers holds, and whether an owner hold stays too, ownerHeld
 // (holdItemFind), and whether an open issue blocks it, if it's a human
-// task, blocked (humanBlocked). Iterate calls it whether or not the
-// digest is on, since assignment takes the same items (assign.go). An
-// issue with nothing waiting has no entry. If waitFind fails, that's
-// logged, and the issue keeps the items it had, as one whose step 1
-// failed does.
+// task, blocked (humanBlocked). For a follow-up waiting at intake in a
+// story, it finds the clean addendum on the story that names it in the
+// story's snapshot held, at no request (digestCacheAddendum). Iterate
+// calls it whether or not the digest is on, since assignment takes the
+// same items (assign.go). An issue with nothing waiting has no entry. If
+// waitFind fails, that's logged, and the issue keeps the items it had, as
+// one whose step 1 failed does.
 func (d *Daemon) digestCacheSet(s *github.Snapshot, inputs []github.Comment, dirt Dirt, holds []discTrigger, ownerHeld, blocked bool) {
 	st := d.Step
 	items, err := waitFind(waitInput{Owner: st.Owner, Repo: st.Repo, AppSlug: st.AppSlug, S: s, Dirt: dirt, Inputs: inputs, CloserErrEnded: st.closerErrEnded(s, dirt.Has, st.trustOnceTrust()), Holds: holds,
-		OwnerHeld: ownerHeld, Blocked: blocked})
+		OwnerHeld: ownerHeld, Blocked: blocked, Addendum: d.digestCacheAddendum(s)})
 	if err != nil {
 		logr.Errorf("%s/%s#%d keeps the items it had on the digest: %v", st.Owner, st.Repo, s.Number, err)
 		return
@@ -1047,6 +1049,27 @@ func (d *Daemon) digestCacheSet(s *github.Snapshot, inputs []github.Comment, dir
 		d.digestCache = map[int][]waitItem{}
 	}
 	d.digestCache[s.Number] = items
+}
+
+// digestCacheAddendum is the ID of the clean addendum comment that names
+// s, if s may be a follow-up waiting at intake (followUpWaits) in a story
+// in this repo, on that story's snapshot the daemon holds, as
+// FollowUpByReaction finds it, at no request (followUpAddendumOf), or 0
+// for none: for any other issue, a story the daemon doesn't hold, or one
+// with no clean addendum for s (waitInput.Addendum).
+func (d *Daemon) digestCacheAddendum(s *github.Snapshot) int64 {
+	if !followUpWaits(s, d.Step.AppSlug) || s.Parent == 0 || s.ParentRepo != "" {
+		return 0
+	}
+	story := d.snaps[s.Parent]
+	if story == nil {
+		return 0
+	}
+	id, ok := followUpAddendumOf(story, s.Number, d.Step.AppSlug)
+	if !ok {
+		return 0
+	}
+	return id
 }
 
 // holdItemFind returns the open discussion triggers on s, as its visit

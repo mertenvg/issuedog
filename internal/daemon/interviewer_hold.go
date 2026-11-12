@@ -292,17 +292,27 @@ func ivHoldRevise(ctx context.Context, a *Applier, tc trustCache, s *github.Snap
 // ivHoldMove returns where an interviewer outcome moves the issue, and on
 // which trigger (SPEC §7.2), with origin the stage it came from to the
 // clarifying after a hold (ivHoldOrigin), or "": a spec to spec-review, on
-// spec-rewritten after a hold, else spec-written; unchanged to origin, on
-// discussion-no-change; plan to planning, on plan-changed (#294); anything
-// else stays at clarifying, on more-questions.
+// spec-rewritten after a hold, else spec-written; a task to ready, on
+// task-rewritten after a hold, else task-written; a human task to
+// needs-human, on human-task-rewritten; unchanged to origin, on
+// discussion-no-change, but a task held at in-progress, whose run the hold
+// dropped, to ready, as /resume sends it (resumeTo, SPEC §6.4); plan to
+// planning, on plan-changed (#294); anything else stays at clarifying, on
+// more-questions.
 func ivHoldMove(outcome string, origin state.Stage) (state.Stage, state.Trigger) {
 	switch {
 	case outcome == outcomeSpec && origin != "":
 		return state.SpecReview, state.TriggerSpecRewritten
 	case outcome == outcomeSpec:
 		return state.SpecReview, state.TriggerSpecWritten
+	case outcome == outcomeTask && origin != "":
+		return state.Ready, state.TriggerTaskRewritten
+	case outcome == outcomeTask:
+		return state.Ready, state.TriggerTaskWritten
+	case outcome == outcomeHuman:
+		return state.NeedsHuman, state.TriggerHumanTaskRewritten
 	case outcome == outcomeUnchanged:
-		return origin, state.TriggerDiscussionNoChange
+		return resumeTo(origin), state.TriggerDiscussionNoChange
 	case outcome == outcomePlan:
 		return state.Planning, state.TriggerPlanChanged
 	}
@@ -398,7 +408,10 @@ func (h ivHoldFields) ack(ctx context.Context, a *Applier, wrap func(error) erro
 //   - at plan-review, the latest plan revision, while state.PlanApproval
 //     gives no reason it can't be approved (#271). Otherwise nothing
 //     approves it until a new plan, which /revise or any comment gets
-//     there (SPEC §7.4).
+//     there (SPEC §7.4);
+//   - at needs-human, that the hand-off from before the hold still stands,
+//     as latestHandoff reads it once the task is back there (SPEC §9.3), or
+//     for a human task, how to say it's done.
 //
 // Anywhere else, or when nothing stands, it's "".
 func ivHoldStanding(s *github.Snapshot, appSlug string, d Dirt, to state.Stage) string {
@@ -415,15 +428,22 @@ func ivHoldStanding(s *github.Snapshot, appSlug string, d Dirt, to state.Stage) 
 			return ""
 		}
 		return fmt.Sprintf("Revision %d of the plan, `%s`, still stands: to approve it, react 👍 to it, or post `/approve`.", latest.Rev, latest.Hash)
+	case state.NeedsHuman:
+		if state.Derive(s, appSlug, d.Has).Item.Human {
+			return "When it's done, reply `/done` or react 👍 to this issue."
+		}
+		return "The hand-off from before the hold still stands: when it's done, reply `/done` on this issue or react 👍 to the hand-off."
 	}
 	return ""
 }
 
 // ivHoldWait is what a move to the clarifying after a hold from origin
 // says of what comes next (SPEC §7.2): the interviewer reads the discussion on
-// an issue it runs on there (ivRunsOn), a story with a parent included
-// after a hold from a stage of its plan (SPEC §9.1); any other issue
-// waits there until a code owner sets its stage by hand (resolveWait).
+// an issue it runs on there (ivRunsOn), any task, bug or human task
+// included (SPEC §6.4), and a story with a parent after a hold from a
+// stage of its plan (SPEC §9.1); any other issue, a story with a parent
+// back from another stage or one of a type the table doesn't know, waits
+// there until a code owner sets its stage by hand (resolveWait).
 func ivHoldWait(it state.Item, origin state.Stage) string {
 	if ivRunsOn(it, origin) {
 		return "The interviewer reads the discussion next, and picks where it goes from there."

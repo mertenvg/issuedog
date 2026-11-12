@@ -355,12 +355,12 @@ func TestPollClosedListed(t *testing.T) {
 // it.
 func TestWaitDoneRank(t *testing.T) {
 	t.Parallel()
-	for _, k := range []waitKind{waitError, waitHold, waitApproval, waitPlanApproval, waitQuestion, waitHuman, waitHandoff, waitFlag} {
+	for _, k := range []waitKind{waitError, waitHold, waitApproval, waitPlanApproval, waitFollowUp, waitQuestion, waitHuman, waitHandoff, waitFlag} {
 		if k.rank() >= waitDone.rank() {
 			t.Errorf("%s ranks %d, a finished story %d; want %s first", k, k.rank(), waitDone.rank(), k)
 		}
 	}
-	for _, k := range []waitKind{waitHandoff + 1, waitKind(10), waitKind(20)} {
+	for _, k := range []waitKind{waitFollowUp + 1, waitKind(11), waitKind(20)} {
 		if k.rank() <= waitDone.rank() {
 			t.Errorf("%s ranks %d, a finished story %d; want the finished story first", k, k.rank(), waitDone.rank())
 		}
@@ -377,7 +377,7 @@ func doneRankItems() []waitItem {
 	return []waitItem{
 		{Issue: 60, Kind: waitDone, Key: "done-60", Priority: 0, Created: waitT0},
 		{Issue: 61, Kind: waitFlag, Key: "flag-61-1", Priority: 0, Created: waitT0, Comment: 1},
-		{Issue: 62, Kind: waitKind(9), Key: "kind9-62-1", Priority: 0, Created: waitT0, Comment: 1},
+		{Issue: 62, Kind: waitKind(10), Key: "kind10-62-1", Priority: 0, Created: waitT0, Comment: 1},
 		{Issue: 63, Kind: waitHuman, Key: "human-63", Priority: 3, Created: waitT0},
 		{Issue: 64, Kind: waitDone, Key: "done-64", Priority: 1, Created: waitT0},
 		{Issue: 65, Kind: waitQuestion, Key: "q-65-1", Priority: 3, Created: waitT0, Comment: 1},

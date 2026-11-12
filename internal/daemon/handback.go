@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -32,6 +31,11 @@ import (
 //   - a move into held, and one from held back to needs-human, as /resume
 //     makes, are looked through: the hand-off from before the hold still
 //     waits;
+//   - so is the way back through the clarifying after a discussion hold
+//     from needs-human (handbackThrough): the move there out of held, the
+//     interviewer's rounds and any hold there, and its unchanged outcome's
+//     move back to needs-human (SPEC §6.4): the discussion changed
+//     nothing, so the hand-off from before the hold still waits;
 //   - any other move, a hand-set one into needs-human among them, leaves
 //     none waiting, so a hand-off from before the task last left
 //     needs-human never counts again.
@@ -54,12 +58,32 @@ func latestHandoff(s *github.Snapshot, appSlug string, dirty func(int64) bool) (
 		switch {
 		case to == state.NeedsHuman && slices.Contains(handoffFrom, from) && m.Fields["by"] == "" && c != state.BodyID:
 			id = c
-		case to == state.Held, from == state.Held && to == state.NeedsHuman:
+		case to == state.Held, from == state.Held && to == state.NeedsHuman, handbackThrough(m):
 		default:
 			id = 0
 		}
 	})
 	return id, id != 0
+}
+
+// handbackThrough reports whether latestHandoff looks through m, a move on
+// the way back to needs-human through the clarifying after a discussion
+// hold from there (SPEC §6.4): one carrying origin=needs-human, which the
+// move out of held to that clarifying writes, and so does every move the
+// App writes there after it: the interviewer's rounds, a hold from there
+// or a /resume back, and the interviewer's unchanged, back to
+// needs-human, the one move there to needs-human with an origin. Any other
+// move from that clarifying, as to ready on task-rewritten, isn't, so it
+// leaves no hand-off waiting, and neither does a stage set by hand, whose
+// override carries no origin (Applier.override). The way there is only
+// out of held, where the hand-off counted already: a move to clarifying
+// from anywhere else leaves none.
+func handbackThrough(m github.Marker) bool {
+	from, to := state.Stage(m.Fields["from"]), state.Stage(m.Fields["to"])
+	if state.Stage(m.Fields["origin"]) != state.NeedsHuman {
+		return false
+	}
+	return from == state.Held && to == state.Clarifying || from == state.Clarifying && (to == state.Clarifying || to == state.NeedsHuman)
 }
 
 // handoffFrom are the stages SPEC §7.2's table moves a task from into
@@ -79,11 +103,12 @@ var handoffFrom = []state.Stage{state.InProgress, state.Verifying, state.PROpen,
 // (Client.Reactions), with a conditional request, so a pass where nothing
 // changed costs a 304: never an earlier hand-off's, nor the issue's own.
 // It takes the earliest 👍 that no marker names (state.ReactionKey) by a
-// user trust trusts, not a bot, so neither the App nor any other bot
-// counts, and moves the task needs-human → ready on handoff-done, keyed
-// cmd=r<reaction id>, with seen the newest comment read (newestRead). Its
-// text names the 👍's user, escaped and defused. A read that fails is an
-// error: the pass fails, and the next pass tries again.
+// user trust trusts, not a bot (firstTrustedThumb), so neither the App nor
+// any other bot counts, and moves the task needs-human → ready on
+// handoff-done, keyed cmd=r<reaction id>, with seen the newest comment
+// read (newestRead). Its text names the 👍's user, escaped and defused. A
+// read that fails is an error: the pass fails, and the next pass tries
+// again.
 func HandoffByReaction(trust github.Trust) func(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt) error {
 	return func(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt) error {
 		wrap := func(err error) error {
@@ -98,21 +123,9 @@ func HandoffByReaction(trust github.Trust) func(ctx context.Context, a *Applier,
 			return wrap(fmt.Errorf("read the hand-off's reactions: %w", err))
 		}
 		is := state.Derive(s, a.AppSlug, d.Has)
-		// Oldest first, so the first trusted one is the 👍 to take.
-		slices.SortFunc(reactions, func(x, y github.Reaction) int { return cmp.Compare(x.ID, y.ID) })
-		var thumb *github.Reaction
-		for _, r := range reactions {
-			if r.Content != "+1" || r.User.Type == "Bot" || is.Keys[state.ReactionKey(r.ID)] {
-				continue
-			}
-			t, err := trust.Trusted(ctx, r.User.Login)
-			if err != nil {
-				return wrap(fmt.Errorf("trust %s: %w", r.User.Login, err))
-			}
-			if t {
-				thumb = &r
-				break
-			}
+		thumb, err := firstTrustedThumb(ctx, trust, reactions, func(id int64) bool { return is.Keys[state.ReactionKey(id)] })
+		if err != nil {
+			return wrap(err)
 		}
 		if thumb == nil {
 			return nil

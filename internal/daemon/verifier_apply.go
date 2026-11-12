@@ -307,11 +307,12 @@ func verdictRun(is state.Issue, runID string) bool {
 // and its follow-up candidates, escaped (passText), carrying the verify
 // marker: verdict=, run=, head=, the attempt= of the move into verifying, if
 // it names one, and the run's model=, effort= and ran=. With candidates, the
-// verify-data marker follows it, so they're on GitHub for #621 to file, and
-// a restart loses none. It files nothing and moves nothing, whatever the
-// checks say next: the task waits at verifying, holding the worker, until
-// the PR is built (#622), and they run again when main moves or the daemon
-// restarts.
+// verify-data marker follows it, so they're on GitHub for the next pass's
+// step 1 to file (FollowUpsVisit), and a restart loses none. It files nothing
+// itself, so a failed create can't fail the run's apply, and moves nothing,
+// whatever the checks say next: the task waits at verifying, holding the
+// worker, until the PR is built (#622), and they run again when main moves or
+// the daemon restarts.
 //
 // A request_changes is the implementer attempt that made the head failing
 // verify, so it's one of the verify loop's moves (verifyLoopMove), and the
@@ -491,9 +492,11 @@ func verifyDataMarker(fs []verifierFollowUp) (github.Marker, error) {
 // verify-data marker the App wrote: one in a comment by anyone else, a
 // malformed one ParseMarkers skips, or an escaped one in text the App quoted
 // are no marker. One that doesn't read back is an error: a second one,
-// another version, or data that isn't base64url, raw DEFLATE, or JSON of
-// exactly the candidates' fields. It doesn't check whether c is dirty: the
-// caller does, by reading only a marker Derive counted (verifierCandidates).
+// another version, data that isn't base64url, raw DEFLATE, or a JSON array,
+// and an entry of it that's null or isn't a whole candidate
+// (wholeCandidate). So it gives only candidates checkFollowUps could have
+// passed (SPEC §5). It doesn't check whether c is dirty: the caller does, by
+// reading only a marker Derive counted (verifierCandidates).
 func readVerifyData(c github.Comment, appSlug string) ([]verifierFollowUp, bool, error) {
 	var found []github.Marker
 	for _, m := range github.TrustedMarkers(c.Author, c.Body, appSlug) {
@@ -511,9 +514,67 @@ func readVerifyData(c github.Comment, appSlug string) ([]verifierFollowUp, bool,
 	if v := m.Fields["v"]; v != verifyDataVersion {
 		return nil, false, fmt.Errorf("verify data in comment %d: version %q, not %s", c.ID, v, verifyDataVersion)
 	}
-	var fs []verifierFollowUp
-	if err := readMarkerData(m.Fields["data"], &fs); err != nil {
+	var raws []json.RawMessage
+	if err := readMarkerData(m.Fields["data"], &raws); err != nil {
 		return nil, false, fmt.Errorf("verify data in comment %d: %w", c.ID, err)
 	}
+	if raws == nil {
+		return nil, false, fmt.Errorf("verify data in comment %d: null, not a list", c.ID)
+	}
+	fs := make([]verifierFollowUp, 0, len(raws))
+	for i, raw := range raws {
+		if string(raw) == "null" {
+			return nil, false, fmt.Errorf("verify data in comment %d: candidate %d is null", c.ID, i+1)
+		}
+		f, err := wholeCandidate(raw)
+		if err != nil {
+			return nil, false, fmt.Errorf("verify data in comment %d: candidate %d: %w", c.ID, i+1, err)
+		}
+		fs = append(fs, f)
+	}
 	return fs, true, nil
+}
+
+// candidateFields are a candidate's fields, as its JSON names them.
+var candidateFields = []string{"title", "scope", "scenario", "likelihood", "impact"}
+
+// wholeCandidate reads raw, one entry of a verify-data marker's array, as a
+// whole candidate (SPEC §5): an object with exactly candidateFields as its
+// keys, in their case, each a string on one line that isn't blank
+// (oneLine), as checkFollowUps passed it. A missing field, another key, a
+// key in another case, a value that isn't a string, null among them, and an
+// empty, whitespace-only or multi-line one are each an error, naming the
+// field and not its text.
+func wholeCandidate(raw json.RawMessage) (verifierFollowUp, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return verifierFollowUp{}, fmt.Errorf("not an object: %w", err)
+	}
+	for key := range fields {
+		if !slices.Contains(candidateFields, key) {
+			return verifierFollowUp{}, fmt.Errorf("the key %q isn't a candidate's field", key)
+		}
+	}
+	values := make(map[string]string, len(candidateFields))
+	for _, name := range candidateFields {
+		v, ok := fields[name]
+		if !ok {
+			return verifierFollowUp{}, fmt.Errorf("no %s", name)
+		}
+		if string(v) == "null" {
+			return verifierFollowUp{}, fmt.Errorf("the %s is null, not a string", name)
+		}
+		var text string
+		if err := json.Unmarshal(v, &text); err != nil {
+			return verifierFollowUp{}, fmt.Errorf("the %s: %w", name, err)
+		}
+		if !oneLine(text) {
+			return verifierFollowUp{}, fmt.Errorf("the %s is empty, blank or more than one line", name)
+		}
+		values[name] = text
+	}
+	return verifierFollowUp{
+		Title: values["title"], Scope: values["scope"], Scenario: values["scenario"],
+		Likelihood: values["likelihood"], Impact: values["impact"],
+	}, nil
 }

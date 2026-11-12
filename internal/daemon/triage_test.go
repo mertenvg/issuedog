@@ -107,9 +107,10 @@ func TestTriageAdmitsSureHandle(t *testing.T) {
 	}
 }
 
-// A sure handle on a trusted author's bug, task or story with a parent
-// tells it that it waits at clarifying, as the other ways in do; an epic,
-// an untyped issue and a story with no parent get no note.
+// A sure handle on a trusted author's story with a parent tells it that it
+// waits at clarifying, as the other ways in do; an epic, an untyped issue,
+// a story with no parent, and a bug or a task, which the interviewer runs
+// on (SPEC §9.1), get no note.
 func TestTriageAdmitWaitNote(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
@@ -118,8 +119,8 @@ func TestTriageAdmitWaitNote(t *testing.T) {
 		parent bool
 		note   string
 	}{
-		{"a bug waits", []string{"type:bug"}, false, phase3Note("bug")},
-		{"a task waits", []string{"type:task"}, false, phase3Note("task")},
+		{"a bug gets no note", []string{"type:bug"}, false, ""},
+		{"a task gets no note", []string{"type:task"}, false, ""},
 		{"a story with a parent waits", []string{"type:story"}, true, storyNote},
 		{"an epic gets no note", []string{"type:epic"}, false, ""},
 		{"an untyped issue gets no note", nil, false, ""},

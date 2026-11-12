@@ -17,17 +17,23 @@ import (
 )
 
 // This file applies the interviewer's results (SPEC §9.1): a question
-// round, the typing of a bug or task, and the spec (§11.1), which is
-// written into the body and posted as a revision,
-// and at the clarifying after a hold, unchanged (#189) and plan (#294).
+// round, the typing of a bug or task, the spec (§11.1), which is
+// written into the body and posted as a revision, a bug's or an owner
+// task's body (§11.2), written into the body before its move to ready,
+// and at the clarifying after a hold, unchanged (#189), plan (#294) and a
+// human task's body (§9.3), written into the body before its move back to
+// needs-human.
 
 // Check checks r's output after its schema (checkInterview, SPEC §9.1's
 // Checks) against the facts of r.S, the issue read again
 // (ivFacts). A broken rule is a failed attempt, with nothing written. So is
 //   - an issue the interviewer no longer runs on (ivStillRuns), such as one
-//     the owner retyped to a task or bug, or gave a parent, during the run,
-//     away from the clarifying after a hold from a stage of its plan
-//     (ivRunsOn): Pending is false for it from then on, so no run follows;
+//     the owner gave a type of a story with a parent, or a parent, during
+//     the run, away from the clarifying after a hold from a stage of its
+//     plan (ivRunsOn): Pending is false for it from then on, so no run
+//     follows; and a typed outcome on a bug or a task, which gets only
+//     questions and task (ivOutcomes), such as one the owner typed during
+//     the run;
 //   - output whose move doesn't fit the issue once the output's type is set
 //     (ivMoveFits), such as a spec typing an issue with a parent a story,
 //     which the table moves to spec-review only with no parent. Checked
@@ -45,11 +51,13 @@ func (iv *Interviewer) Check(ctx context.Context, r Result) error {
 	if err != nil {
 		return &checkReadError{fmt.Errorf("the interviewer's facts on #%d: %w", r.S.Number, err)}
 	}
-	it := state.Derive(r.S, iv.Daemon.Step.AppSlug, r.Dirt.Has).Item
-	if !ivStillRuns(it, f.Origin, out, f.MayType) {
-		return &daemonCause{fmt.Errorf("the interviewer no longer runs on #%d, with type %q and a parent %t: "+
+	is := state.Derive(r.S, iv.Daemon.Step.AppSlug, r.Dirt.Has)
+	it := is.Item
+	if !ivStillRuns(it, f.Origin, out, f.MayType && !ivTypedBefore(is)) {
+		return &daemonCause{fmt.Errorf("the interviewer no longer runs on #%d, with type %q and a parent %t, for its %s: "+
 			"it runs only on an epic, a story with no parent or an untyped issue, "+
-			"and after a hold from planning, plan-review or planned on a story with a parent", r.S.Number, it.Type, it.HasParent)}
+			"on a bug or a task with no typed outcome, on any task, bug or human task after a hold, "+
+			"and after a hold from planning, plan-review or planned on a story with a parent", r.S.Number, it.Type, it.HasParent, out.Outcome)}
 	}
 	if err := checkInterview(out, f); err != nil {
 		return err
@@ -60,32 +68,54 @@ func (iv *Interviewer) Check(ctx context.Context, r Result) error {
 	return nil
 }
 
-// ivStillRuns reports whether the interviewer still runs on an issue like
-// it, read again after a run whose output is out, with origin the stage it
-// came from to the clarifying after a hold, or "" (ivRunsOn), or
-// whether out, a typed outcome, made it the task or bug it is with its own
-// type, set before a crash: the type is out's, and the App set it (may, as
-// typing says), so it isn't the owner's retype. Pending is false for such
-// an issue, so the only run on it is the one that typed it. Only a typed
-// outcome sets a type the interviewer doesn't run on, so a story with a
+// ivStillRuns reports whether the interviewer still runs on an issue like it,
+// read again after a run whose output is out, with origin the stage it came
+// from to the clarifying after a hold, or "" (ivRunsOn), but for a typed
+// outcome on a bug or a task, a human task included (ivTaskClass), whose
+// outcomes never include typed (ivOutcomes, SPEC §4), so a task at the
+// clarifying after a hold can't retype itself either; or whether out, a typed
+// outcome, made it the task or bug it is with its own type, set before a
+// crash: the type is out's, and the App set it (may, as typing says), so it
+// isn't the owner's retype, and no typed move stands (ivTypedBefore), so it
+// isn't a second typing of a bug the interviewer already typed, which would
+// start a run at once, on and on (SPEC §9.1). Its move, the typed one, is an
+// entry for the run that writes its task (Pending). Only a typed outcome sets
+// a type the interviewer runs on with other outcomes, so a story with a
 // parent never passes, whoever typed it.
 func ivStillRuns(it state.Item, origin state.Stage, out interviewOutput, may bool) bool {
-	return ivRunsOn(it, origin) ||
-		out.Outcome == outcomeTyped && out.Type != nil && may && strings.EqualFold(it.Type, out.Type.Value)
+	if out.Outcome == outcomeTyped && out.Type != nil && may && strings.EqualFold(it.Type, out.Type.Value) {
+		return true
+	}
+	return ivRunsOn(it, origin) && (out.Outcome != outcomeTyped || !ivTaskClass(it))
+}
+
+// ivTypedBefore reports whether is has a typed move (ivRoundMove, with no
+// round): the interviewer typed the issue already, so a typed outcome is no
+// replay of its own typing. A run's check comes only before its own move
+// (Runs.apply), so the move is another run's.
+func ivTypedBefore(is state.Issue) bool {
+	for _, m := range is.Markers {
+		if ivRoundMove(m) && m.Fields["round"] == "" {
+			return true
+		}
+	}
+	return false
 }
 
 // ivMoveFits returns an error unless out's move fits an issue like it once
 // out's type, if it sets one, is set: the table has the move for its class
 // (SPEC §7.2), clarifying → spec-review on spec-written for a spec, or on
 // spec-rewritten at the clarifying after a hold, whose origin is set
-// (ivHoldOrigin); clarifying → origin on discussion-no-change for
-// unchanged; clarifying → planning on plan-changed for plan, which only an
-// epic or a story has (#294); and clarifying → clarifying on
-// more-questions otherwise. A question round must also leave the issue one
-// the interviewer runs on (ivRunsOn), or no run would read its answers: a
-// story with a parent waits at clarifying for good, but at the clarifying
-// after a hold from a stage of its plan (SPEC §9.1). out has passed
-// checkInterview, so its type is a known one.
+// (ivHoldOrigin); clarifying → ready on task-written for a task, which only a
+// bug or a task the owner filed has before ready, or on task-rewritten at the
+// clarifying after a hold; clarifying → origin on discussion-no-change for
+// unchanged, or ready for a task held at in-progress (resumeTo); clarifying →
+// planning on plan-changed for plan, which only an epic or a story has
+// (#294); and clarifying → clarifying on more-questions otherwise. A question
+// round must also leave the issue one the interviewer runs on (ivRunsOn), or
+// no run would read its answers: a story with a parent waits at clarifying
+// for good, but at the clarifying after a hold from a stage of its plan (SPEC
+// §9.1). out has passed checkInterview, so its type is a known one.
 func ivMoveFits(it state.Item, out interviewOutput, origin state.Stage) error {
 	if out.Type != nil {
 		it.Type = out.Type.Value
@@ -121,7 +151,12 @@ func ivMoveFits(it state.Item, out interviewOutput, origin state.Stage) error {
 //     a parent (SPEC §9.1) refuses a spec, typed and any type: whatever
 //     typing says, it may not set the type there;
 //   - the option count of each question its round comments read back
-//     with, which a decision's letter must name one of (ivWordingOptions).
+//     with, which a decision's letter must name one of (ivWordingOptions);
+//   - config's scopes, which a task's must be one of, and the parent and
+//     the priority its header names (taskParent, priority), for its length;
+//   - for a human task, the scope its header names (scopeOf), the check on
+//     its origin marker, which its rewrite keeps, and the issue its "Why
+//     it blocks" names with no other (humanBlocksOn), for its length.
 func (iv *Interviewer) facts(ctx context.Context, r Result) (interviewFacts, error) {
 	d := iv.Daemon
 	a := d.Step.Applier
@@ -152,6 +187,12 @@ func (iv *Interviewer) facts(ctx context.Context, r Result) (interviewFacts, err
 		Origin:       ivHoldOrigin(is),
 		Class:        class,
 		Options:      ivWordingOptions(r.S, a.AppSlug, r.Dirt.Has),
+		Scopes:       d.Config.Scopes,
+		Parent:       taskParent(r.S),
+		Priority:     "p" + strconv.Itoa(priority(r.S)),
+		Scope:        scopeOf(r.S),
+		Check:        is.Origin.Check,
+		BlocksOn:     humanBlocksOn(r.S),
 	}, nil
 }
 
@@ -232,9 +273,10 @@ func ivFactRounds(s *github.Snapshot, appSlug string, dirty func(int64) bool) []
 	return counts
 }
 
-// Apply writes r's question round, its typed outcome (SPEC §9.1) or its
-// spec (§11.1), which Check passed, on r.S. Each write is checked
-// first, so it can run again after a crash part way (SPEC §5.2):
+// Apply writes r's question round, its typed outcome (SPEC §9.1), its
+// spec (§11.1), its task (§11.2) or its human task (§9.3), which Check
+// passed, on r.S. Each write is checked first, so it can run again after a
+// crash part way (SPEC §5.2):
 //  1. If the output sets a type, the App adds its type:* label and removes
 //     the issue's other type:* labels (ivSetType), which updates r.S.Type,
 //     so an untyped issue is typed before its move. A move written already
@@ -243,7 +285,8 @@ func ivFactRounds(s *github.Snapshot, appSlug string, dirty func(int64) bool) []
 //  2. A spec is written into the body (specWriteBody), unless the move is
 //     written already, so an edit made since stands. It is the App's full
 //     rewrite, so a body that was dirty is clean from then on (#169,
-//     SPEC §5.1).
+//     SPEC §5.1). A task's scope:* label is set, then the task is written
+//     into the body (taskWriteBody) the same way.
 //  3. The move, keyed by the run, with seen= and the run's model= and
 //     effort= (Result.Move):
 //     - A question round's is clarifying → clarifying on more-questions.
@@ -251,8 +294,8 @@ func ivFactRounds(s *github.Snapshot, appSlug string, dirty func(int64) bool) []
 //     text is the round in the SPEC §9.1 format, the type line first when
 //     it sets one, then the cc line (renderQuestions).
 //     - A typed outcome's is the same move with neither, and its text is
-//     the type line, that a bug or task waits here until phase 3, and the
-//     cc line.
+//     the type line, that the next run writes it up as a task
+//     (ivTypedWaits), and the cc line.
 //     - A spec's is clarifying → spec-review on spec-written, posted with
 //     the next revision (PostRevision), so its marker carries rev= and
 //     body=, the hash of the body GitHub returned. Its text is the line
@@ -262,12 +305,32 @@ func ivFactRounds(s *github.Snapshot, appSlug string, dirty func(int64) bool) []
 //     the decisions added without asking (renderSpecNote), then the
 //     revision, and last the cc line.
 //     The body is clean after step 2, so it is a normal revision.
+//     - A task's is clarifying → ready on task-written (SPEC §7.2), or on
+//     task-rewritten at the clarifying after a hold, with no revision: a
+//     task gets none. Before it, unless the move is written already, the
+//     App sets the task's scope:* label (taskSetScope), then writes the
+//     task into the body (taskWriteBody), the App's full rewrite, as a
+//     spec's. A task with an origin, from a plan or a follow-up, keeps its
+//     origin marker whole as the body's last line (ivOriginMarker), as
+//     only a plan revision changes it (SPEC §6.4). Its text is the line
+//     naming whose edit the task replaced, if the body was dirty
+//     (rewriteReplacedText), then ivTaskWritten.
+//     - At the clarifying after a hold, a human task's is clarifying →
+//     needs-human on human-task-rewritten (SPEC §6.4, §7.2). Before it,
+//     unless the move is written already, the App writes the human task
+//     into the body (humanWriteBody, ivHumanBody), the App's full rewrite,
+//     with its header, its §9.3 fields, its "Done when" the daemon's
+//     sentence on the check its origin marker keeps, if it has one, the cc
+//     line, and its origin marker whole, human=1 and the check included.
+//     Its text is the line naming whose edit it replaced, if the body was
+//     dirty, then ivHumanWritten and the cc line, as it waits on the owner.
 //     - At the clarifying after a discussion hold (#189), an unchanged
 //     outcome's is clarifying → origin on discussion-no-change, with no
 //     revision: the latest one, if the body still has its hash, still
 //     stands, and says so (ivHoldStanding), so a 👍 or /approve on it
-//     approves it (SPEC §7.4). Its text is renderUnchanged's. A spec's
-//     there is on spec-rewritten.
+//     approves it (SPEC §7.4). A task held at in-progress, whose run the
+//     hold dropped, goes to ready instead (ivHoldMove). Its text is
+//     renderUnchanged's. A spec's there is on spec-rewritten.
 //     - There, after a hold from planning, plan-review or planned, a plan
 //     outcome's is clarifying → planning on plan-changed (#294), with no
 //     revision: the planner posts the next plan revision from the move's
@@ -300,7 +363,7 @@ func (iv *Interviewer) Apply(ctx context.Context, a *Applier, r Result) error {
 	if err != nil {
 		return wrap(err)
 	}
-	if !slices.Contains([]string{outcomeQuestions, outcomeTyped, outcomeSpec, outcomeUnchanged, outcomePlan}, out.Outcome) {
+	if !slices.Contains([]string{outcomeQuestions, outcomeTyped, outcomeSpec, outcomeUnchanged, outcomePlan, outcomeTask, outcomeHuman}, out.Outcome) {
 		return wrap(fmt.Errorf("unknown outcome %q", out.Outcome))
 	}
 	is := state.Derive(r.S, a.AppSlug, r.Dirt.Has)
@@ -318,7 +381,7 @@ func (iv *Interviewer) Apply(ctx context.Context, a *Applier, r Result) error {
 	to, trigger := ivHoldMove(out.Outcome, hold.origin)
 	if out.Outcome == outcomeUnchanged {
 		m := hold.set(r.Move(to, trigger))
-		m.Text = renderUnchanged(out, to, ivHoldStanding(r.S, a.AppSlug, r.Dirt, to), notify)
+		m.Text = renderUnchanged(out, hold.origin, ivHoldStanding(r.S, a.AppSlug, r.Dirt, to), notify)
 		if err := a.Transition(ctx, r.S, r.Dirt.Has, m); err != nil {
 			return wrap(err)
 		}
@@ -352,7 +415,7 @@ func (iv *Interviewer) Apply(ctx context.Context, a *Applier, r Result) error {
 				return wrap(err)
 			}
 			if replaced != "" {
-				m.Text = strings.TrimSpace(rewriteReplacedText(replaced) + "\n\n" + m.Text)
+				m.Text = strings.TrimSpace(rewriteReplacedText("spec", replaced) + "\n\n" + m.Text)
 			}
 			// The body is the App's full rewrite now, so it's clean
 			// (Applier.Dirty), and the spec gets a normal revision.
@@ -360,6 +423,64 @@ func (iv *Interviewer) Apply(ctx context.Context, a *Applier, r Result) error {
 			delete(dirt, state.BodyID)
 		}
 		if err := a.PostRevision(ctx, r.S, dirt.Has, m, notify); err != nil {
+			return wrap(err)
+		}
+		return hold.ack(ctx, a, wrap)
+	}
+	if out.Outcome == outcomeTask {
+		if out.Task == nil {
+			return wrap(errors.New("the task outcome has no task"))
+		}
+		m := hold.set(r.Move(to, trigger))
+		m.Text = ivTaskWritten
+		if !moved {
+			marker, err := ivOriginMarker(is)
+			if err != nil {
+				return wrap(err)
+			}
+			if err := taskSetScope(ctx, a, r.S, out.Task.Scope); err != nil {
+				return wrap(err)
+			}
+			body := ivWithMarker(renderTask(*out.Task, taskParent(r.S), "p"+strconv.Itoa(priority(r.S))), marker)
+			replaced, err := taskWriteBody(ctx, a, r.S, r.Dirt, r.RunID, body)
+			if err != nil {
+				return wrap(err)
+			}
+			if replaced != "" {
+				m.Text = rewriteReplacedText("task", replaced) + "\n\n" + m.Text
+			}
+		}
+		// The move holds no revision, unlike a spec's, and the body has no
+		// marker but its rewrite marker, which no state is read from, and
+		// the origin it had already, so whether r.Dirt still counts the
+		// body dirty changes nothing here.
+		if err := a.Transition(ctx, r.S, r.Dirt.Has, m); err != nil {
+			return wrap(err)
+		}
+		return hold.ack(ctx, a, wrap)
+	}
+	if out.Outcome == outcomeHuman {
+		if out.Human == nil {
+			return wrap(errors.New("the human outcome has no human task"))
+		}
+		m := hold.set(r.Move(to, trigger))
+		m.Text = strings.Join(append([]string{ivHumanWritten}, ccLines(notify)...), "\n\n")
+		if !moved {
+			body, err := ivHumanBody(ctx, a, r.S, is, *out.Human, notify)
+			if err != nil {
+				return wrap(err)
+			}
+			replaced, err := humanWriteBody(ctx, a, r.S, r.Dirt, r.RunID, body)
+			if err != nil {
+				return wrap(err)
+			}
+			if replaced != "" {
+				m.Text = rewriteReplacedText("human task", replaced) + "\n\n" + m.Text
+			}
+		}
+		// As for a task: the body's markers are its rewrite marker and the
+		// origin it had already.
+		if err := a.Transition(ctx, r.S, r.Dirt.Has, m); err != nil {
 			return wrap(err)
 		}
 		return hold.ack(ctx, a, wrap)
@@ -398,9 +519,130 @@ func (iv *Interviewer) Apply(ctx context.Context, a *Applier, r Result) error {
 // returns, which the revision's hash is taken from, and the App as its
 // last editor.
 func specWriteBody(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt, run, spec string) (string, error) {
+	return rewriteBody(ctx, a, s, d, run, spec, "spec", false)
+}
+
+// taskWriteBody makes task, the rendered task (renderTask), s's whole
+// body, with s's title left as it is (SPEC §11.2), as specWriteBody does
+// for a spec: the App's full rewrite, with the rewrite marker, so a dirty
+// body is clean from then on, and the same check before it, so a replay
+// writes nothing twice. A body whose rewrite marker names run, as the App's
+// last edit, isn't edited again either, though it isn't task: this run
+// wrote it before a crash, and its header's parent or priority changed
+// since, so it stays as the run wrote it. It returns who made the body it
+// replaced dirty, if anyone did, from d.
+func taskWriteBody(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt, run, task string) (string, error) {
+	return rewriteBody(ctx, a, s, d, run, task, "task", true)
+}
+
+// humanWriteBody makes body, the rendered human task (ivHumanBody), s's
+// whole body, as taskWriteBody does for a task: the App's full rewrite,
+// and a body whose rewrite marker names run, as the App's last edit, isn't
+// edited again, though the issues it blocks may have changed since. It
+// returns who made the body it replaced dirty, if anyone did, from d.
+func humanWriteBody(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt, run, body string) (string, error) {
+	return rewriteBody(ctx, a, s, d, run, body, "human task", true)
+}
+
+// ivHumanBody is the body a human outcome's fields h write on s, a human
+// task in state is (SPEC §6.4, §9.3): renderHuman's, with the header
+// naming s's parent, scope and priority (humanHeader), "Why it blocks"
+// naming the open issues in this repo it blocks (ivHumanBlocks), and
+// "Done when" the daemon's sentence on the check its origin marker keeps,
+// then the origin marker whole (ivOriginMarker), human=1 and the check
+// included, as only a plan revision changes them.
+func ivHumanBody(ctx context.Context, a *Applier, s *github.Snapshot, is state.Issue, h implementerHandoffFields, notify []string) (string, error) {
+	marker, err := ivOriginMarker(is)
+	if err != nil {
+		return "", fmt.Errorf("write the human task: %w", err)
+	}
+	blocks, err := ivHumanBlocks(ctx, a, s)
+	if err != nil {
+		return "", fmt.Errorf("write the human task: %w", err)
+	}
+	text, err := renderHuman(h, is.Origin.Check, humanHeader(taskParent(s), scopeOf(s), "p"+strconv.Itoa(priority(s))), blocks, humanBlocksOn(s), notify)
+	if err != nil {
+		return "", fmt.Errorf("write the human task: %w", err)
+	}
+	return ivWithMarker(text, marker), nil
+}
+
+// ivHumanBlocks returns the open issues in this repo that s blocks, the
+// ones a human task's "Why it blocks" names (SPEC §9.3), by number. It
+// reads them (Client.Blocking) only when s's snapshot says it blocks an
+// open one, so a human task that blocks none costs no request. One in
+// another repo is left out, as its number isn't this repo's.
+func ivHumanBlocks(ctx context.Context, a *Applier, s *github.Snapshot) ([]int, error) {
+	if s.Blocking == 0 {
+		return nil, nil
+	}
+	blocked, err := a.Client.Blocking(ctx, a.Owner, a.Repo, s.Number)
+	if err != nil {
+		return nil, fmt.Errorf("the issues it blocks: %w", err)
+	}
+	var nums []int
+	for _, b := range blocked {
+		if b.GetState() == "open" && a.inRepo(b.GetRepositoryURL()) {
+			nums = append(nums, b.GetNumber())
+		}
+	}
+	return nums, nil
+}
+
+// ivOriginMarker is is's origin marker, whole, as state.Derive reads it into
+// is.Origin (SPEC §5): the body's first whole one, or the last whole one
+// in the clean App comment it reads it from, as an adopted task's is, with
+// every field as the App wrote it, human=1 and a check's fields still
+// percent-encoded, as originRepost posts it. It's "" for an issue with no
+// origin, such as a bug or a task the owner filed.
+func ivOriginMarker(is state.Issue) (string, error) {
+	if !is.Origin.Any() {
+		return "", nil
+	}
+	var found github.Marker
+	for i, m := range is.Markers {
+		if is.MarkerComments[i] != is.Origin.Comment {
+			continue
+		}
+		if _, whole := state.OriginOf(m); !whole {
+			continue
+		}
+		found = m
+		if is.Origin.Comment == state.BodyID {
+			break
+		}
+	}
+	if found.Kind == "" {
+		return "", fmt.Errorf("no origin marker in %d, where its origin was read", is.Origin.Comment)
+	}
+	marker, err := github.FormatMarker(found)
+	if err != nil {
+		return "", fmt.Errorf("keep the origin marker: %w", err)
+	}
+	return marker, nil
+}
+
+// ivWithMarker is text, a rewritten body, with marker, its origin marker
+// (ivOriginMarker), as its last line, as a created child's body has it
+// (SPEC §5.2), or text alone for no marker.
+func ivWithMarker(text, marker string) string {
+	if marker == "" {
+		return text
+	}
+	return text + "\n\n" + marker
+}
+
+// rewriteBody is specWriteBody and taskWriteBody: it makes text, the
+// rendered what, "spec" or "task", s's whole body, the App's full rewrite
+// (SPEC §5.1), and returns who made the body it replaced dirty, if anyone
+// did, from d. A body whose last edit is the App's rewrite isn't edited
+// again when it's text already, or, with byRun, when its marker names run.
+// Either way, the marker's replaced= is returned when it names run, and
+// else nothing.
+func rewriteBody(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt, run, text, what string, byRun bool) (string, error) {
 	if m, rest, ok := state.ParseRewrite(s.Body); ok && state.IsApp(s.BodyEdit.By, a.AppSlug) {
-		if specSameText(rest, spec) {
-			logr.Debugf("%s/%s#%d: the body has the spec already", a.Owner, a.Repo, s.Number)
+		if specSameText(rest, text) || byRun && m.Fields["run"] == run {
+			logr.Debugf("%s/%s#%d: the body has the %s already", a.Owner, a.Repo, s.Number, what)
 			if m.Fields["run"] != run {
 				return "", nil
 			}
@@ -417,17 +659,17 @@ func specWriteBody(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt, 
 	}
 	f, err := github.FormatMarker(marker)
 	if err != nil {
-		return "", fmt.Errorf("write the spec into the body: %w", err)
+		return "", fmt.Errorf("write the %s into the body: %w", what, err)
 	}
-	body := f + "\n" + spec
+	body := f + "\n" + text
 	if replaced != "" {
-		logr.Infof("%s/%s#%d: writing the spec into the body, replacing %s's edit, which wasn't approved", a.Owner, a.Repo, s.Number, replaced)
+		logr.Infof("%s/%s#%d: writing the %s into the body, replacing %s's edit, which wasn't approved", a.Owner, a.Repo, s.Number, what, replaced)
 	} else {
-		logr.Infof("%s/%s#%d: writing the spec into the body", a.Owner, a.Repo, s.Number)
+		logr.Infof("%s/%s#%d: writing the %s into the body", a.Owner, a.Repo, s.Number, what)
 	}
 	is, _, err := a.Client.Issues.Update(ctx, a.Owner, a.Repo, s.Number, gogithub.UpdateIssueRequest{Body: &body})
 	if err != nil {
-		return "", fmt.Errorf("write the spec into the body: %w", err)
+		return "", fmt.Errorf("write the %s into the body: %w", what, err)
 	}
 	s.Body, s.BodyEdit = is.GetBody(), github.Edit{By: github.Author{Login: a.AppSlug + "[bot]", Type: "Bot"}, At: is.GetUpdatedAt().Time}
 	return replaced, nil
@@ -446,17 +688,18 @@ func rewriteLogin(by string, last github.Edit, appSlug string) string {
 	return by
 }
 
-// rewriteReplacedText is the line a spec's move adds when the spec replaced
-// a body that replaced, a login rewriteLogin gave, made dirty. The login
-// is defused, so it mentions nobody, and "unknown", an editor the App
-// doesn't name, is "someone", as /approve's rejections say (#638).
-func rewriteReplacedText(replaced string) string {
+// rewriteReplacedText is the line a spec's or a task's move adds when
+// what, "spec" or "task", replaced a body that replaced, a login
+// rewriteLogin gave, made dirty. The login is defused, so it mentions
+// nobody, and "unknown", an editor the App doesn't name, is "someone", as
+// /approve's rejections say (#638).
+func rewriteReplacedText(what, replaced string) string {
 	by := "someone"
 	if replaced != "unknown" {
 		by = "`" + defuse(replaced) + "`"
 	}
-	return fmt.Sprintf("This spec replaces the whole issue description, with the edit by %s that wasn't approved, "+
-		"so the description is clean again.", by)
+	return fmt.Sprintf("This %s replaces the whole issue description, with the edit by %s that wasn't approved, "+
+		"so the description is clean again.", what, by)
 }
 
 // specSameText reports whether a and b are the same text, with CRLF and CR
@@ -467,8 +710,41 @@ func specSameText(a, b string) bool {
 }
 
 // ivTypedWaits follows the type line of a bug or task the interviewer
-// typed (SPEC §9.1), as IntakeVisit says it for one filed so.
-const ivTypedWaits = "Bugs and tasks wait at `clarifying` for now, until issuedog can implement them (build phase 3), so I won't ask anything more here."
+// typed (SPEC §9.1): its move is an entry, so the next run comes at once
+// (Pending), and writes it up as a task, or asks first.
+const ivTypedWaits = "I'll write it up as a task next."
+
+// ivTaskWritten is the text of a task's move to ready (SPEC §9.1), after
+// the line naming whose edit it replaced, if any.
+const ivTaskWritten = "I've written this issue up as a task, in the description above, so it's `ready` for the implementer."
+
+// ivHumanWritten is the text of a human task's move back to needs-human
+// after a hold (SPEC §6.4), after the line naming whose edit it replaced,
+// if any, and before the cc line, as it waits on the owner again.
+const ivHumanWritten = "I've rewritten this human task from the discussion, in the description above, so it's back at `needs-human`. " +
+	"When it's done, reply `/done` or react 👍 to this issue."
+
+// taskSetScope makes scope:<scope> the only scope:* label on s, as
+// ivSetType does for the type: it adds it, then removes the others s had
+// before the add, ignoring case. One the add's answer shows for the first
+// time was set since s was read, so it's left for the next CheckLabels.
+// scope is one from config's list (checkTask).
+func taskSetScope(ctx context.Context, a *Applier, s *github.Snapshot, scope string) error {
+	want := "scope:" + scope
+	known := slices.Clone(s.Labels)
+	if err := a.addLabel(ctx, s, want); err != nil {
+		return fmt.Errorf("set the scope %s: %w", scope, err)
+	}
+	for _, l := range known {
+		if !strings.HasPrefix(strings.ToLower(l), "scope:") || strings.EqualFold(l, want) {
+			continue
+		}
+		if err := a.removeLabel(ctx, s, l); err != nil {
+			return fmt.Errorf("set the scope %s: %w", scope, err)
+		}
+	}
+	return nil
+}
 
 // ivTypes are the types the interviewer sets, as type:<type> labels.
 var ivTypes = []string{"epic", "story", "bug", "task"}

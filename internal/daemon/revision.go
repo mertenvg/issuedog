@@ -310,17 +310,18 @@ func dirtyNamed(by string, last github.Edit, appSlug string) bool {
 // ApproveByReaction returns the reaction trigger for Step.Reactions that
 // approves a spec or a plan by 👍 (SPEC §7.4). At spec-review, the earliest
 // 👍 on the latest spec revision comment from a user trust trusts, not a
-// bot, approves it while the body still has its hash: the issue moves to
-// planning with cmd=r<reaction id>, rev and body. At plan-review, the same
-// on the latest plan revision comment approves it while state.PlanApproval
-// gives no reason it can't be: the issue moves to planned, with the plan's
-// hash as body. Until then, its reactions aren't read. Other 👍s, the App's,
-// those on an earlier revision and those on a revision of the other kind
-// included, are ignored. At any other stage it reads nothing, so removing
-// the 👍 once the approval is applied changes nothing. A 👍 the table can't
-// apply is reported once by Transition (SPEC §5.3), then only logged. An
-// issue of a type ClassOf doesn't know is only logged: the §4 type error
-// will report it.
+// bot (firstTrustedThumb, as a hand-off's end and a follow-up's approval
+// take theirs), approves it while the body still has its hash: the issue
+// moves to planning with cmd=r<reaction id>, rev and body. At plan-review,
+// the same on the latest plan revision comment approves it while
+// state.PlanApproval gives no reason it can't be: the issue moves to
+// planned, with the plan's hash as body. Until then, its reactions aren't
+// read. Other 👍s, the App's, those on an earlier revision and those on a
+// revision of the other kind included, are ignored. At any other stage it
+// reads nothing, so removing the 👍 once the approval is applied changes
+// nothing. A 👍 the table can't apply is reported once by Transition (SPEC
+// §5.3), then only logged. An issue of a type ClassOf doesn't know is only
+// logged: the §4 type error will report it.
 func ApproveByReaction(trust github.Trust) func(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt) error {
 	return func(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt) error {
 		is := state.Derive(s, a.AppSlug, d.Has)
@@ -349,18 +350,12 @@ func ApproveByReaction(trust github.Trust) func(ctx context.Context, a *Applier,
 		if err != nil {
 			return fmt.Errorf("approvals on %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
 		}
-		var first *github.Reaction
-		for _, r := range reactions {
-			if r.Content != "+1" || r.User.Type == "Bot" || (first != nil && first.ID < r.ID) {
-				continue
-			}
-			t, err := trust.Trusted(ctx, r.User.Login)
-			if err != nil {
-				return fmt.Errorf("approvals on %s/%s#%d: trust %s: %w", a.Owner, a.Repo, s.Number, r.User.Login, err)
-			}
-			if t {
-				first = &r
-			}
+		// Only the approval a 👍 made names it, so none is passed over
+		// for a marker: after a move back to review by hand, Transition
+		// finds that approval written, and moves nothing.
+		first, err := firstTrustedThumb(ctx, trust, reactions, nil)
+		if err != nil {
+			return fmt.Errorf("approvals on %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
 		}
 		if first == nil {
 			return nil
