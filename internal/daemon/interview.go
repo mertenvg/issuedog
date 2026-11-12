@@ -32,6 +32,11 @@ const (
 	// plan-review or planned (ivPlanOrigin), on an epic or a story (#294):
 	// the spec stands, but its plan changes, so the issue goes to
 	// planning, with the message as the planner's notes.
+
+	// outcomeTask is a bug's, or an owner task's, body in the SPEC §11.2
+	// template, once nothing open blocks it (SPEC §9.1): the App rewrites
+	// the body as the task, and it goes to ready.
+	outcomeTask = "task"
 )
 
 // interviewOutput is the interviewer's structured output, as
@@ -43,6 +48,7 @@ type interviewOutput struct {
 	Message   string              `json:"message,omitempty"`
 	Questions []interviewQuestion `json:"questions,omitempty"`
 	Spec      *interviewSpec      `json:"spec,omitempty"`
+	Task      *interviewTask      `json:"task,omitempty"`
 }
 
 // interviewType is the type the interviewer sets, and why.
@@ -75,6 +81,18 @@ type interviewSpec struct {
 	Constraints        []string            `json:"constraints"`
 	AcceptanceCriteria []string            `json:"acceptance_criteria"`
 	Decisions          []interviewDecision `json:"decisions"`
+}
+
+// interviewTask is a task's sections (SPEC §11.2), as a plan's task has
+// them: its scope, without the scope: prefix, then the body's sections.
+// The daemon writes the header and the headings (renderTask).
+type interviewTask struct {
+	Scope              string   `json:"scope"`
+	Context            string   `json:"context"`
+	Change             string   `json:"change"`
+	AcceptanceCriteria []string `json:"acceptance_criteria"`
+	DefinitionOfDone   []string `json:"definition_of_done"`
+	TestPlan           string   `json:"test_plan"`
 }
 
 // interviewDecision is one Decisions line. Answer is a–d or free for an
@@ -123,8 +141,16 @@ type interviewFacts struct {
 	// Class is the issue's class (state.ClassOf), or 0 if it has none the
 	// table knows. Only an epic or a story may get plan, and a story with
 	// a parent (ClassStory) gets no spec and no typed outcome (SPEC §4,
-	// §9.1): its body is its parent's plan item.
+	// §9.1): its body is its parent's plan item. Only a bug, or a task the
+	// owner filed, before ready (state.NewBugOrOwnerTask) may get task.
 	Class state.Class
+	// Scopes is config's scopes, the only ones a task may have (SPEC
+	// §11.3).
+	Scopes []string
+	// Parent and Priority are a task's header's (SPEC §11.2), as
+	// renderTask writes them: the parent, "#N", "owner/repo#N" or "none"
+	// (taskParent), and the priority, such as "p2".
+	Parent, Priority string
 	// Options is the option count of each question asked whose round
 	// comment reads back (ivWordingOptions), so a decision's letter must
 	// name one of its options (#229). A question missing from it may be
@@ -154,6 +180,8 @@ const (
 	ruleUnchanged          = "unchanged"
 	rulePlan               = "plan"
 	ruleParentStory        = "parent-story"
+	ruleTask               = "task"
+	ruleSection            = "section"
 )
 
 // ruleError is an output that breaks a rule.
@@ -181,12 +209,12 @@ func checkInterview(out interviewOutput, f interviewFacts) error {
 	}
 	switch out.Outcome {
 	case outcomeQuestions:
-		if out.Spec != nil || out.Message != "" || len(out.Questions) == 0 {
+		if out.Spec != nil || out.Task != nil || out.Message != "" || len(out.Questions) == 0 {
 			fail(ruleOutcome, "a question round has questions, and a type at most")
 		}
 		checkQuestions(out.Questions, f, fail)
 	case outcomeSpec:
-		if out.Spec == nil || len(out.Questions) > 0 {
+		if out.Spec == nil || out.Task != nil || len(out.Questions) > 0 {
 			fail(ruleOutcome, "a spec has a spec, and a type and a message at most")
 		}
 		if out.Spec != nil {
@@ -196,22 +224,32 @@ func checkInterview(out interviewOutput, f interviewFacts) error {
 			fail(ruleSpecType, "a spec on an issue with no type sets it to epic or story")
 		}
 	case outcomeTyped:
-		if out.Type == nil || out.Spec != nil || out.Message != "" || len(out.Questions) > 0 {
+		if out.Type == nil || out.Spec != nil || out.Task != nil || out.Message != "" || len(out.Questions) > 0 {
 			fail(ruleOutcome, "typed has a type and nothing else")
 		}
 	case outcomeUnchanged:
-		if out.Type != nil || out.Spec != nil || len(out.Questions) > 0 {
+		if out.Type != nil || out.Spec != nil || out.Task != nil || len(out.Questions) > 0 {
 			fail(ruleOutcome, "unchanged has a message at most")
 		}
 		if f.Origin == "" || f.Origin == state.Clarifying {
 			fail(ruleUnchanged, "unchanged is only for the clarifying after a discussion hold from another stage")
 		}
 	case outcomePlan:
-		if out.Type != nil || out.Spec != nil || len(out.Questions) > 0 || strings.TrimSpace(out.Message) == "" {
+		if out.Type != nil || out.Spec != nil || out.Task != nil || len(out.Questions) > 0 || strings.TrimSpace(out.Message) == "" {
 			fail(ruleOutcome, "plan has a message and nothing else")
 		}
 		if !ivPlanOrigin(f.Origin) || f.Class&(state.ClassEpic|state.AnyStory) == 0 {
 			fail(rulePlan, "plan is only for an epic or a story at the clarifying after a discussion hold from planning, plan-review or planned")
+		}
+	case outcomeTask:
+		if out.Task == nil || out.Type != nil || out.Spec != nil || out.Message != "" || len(out.Questions) > 0 {
+			fail(ruleOutcome, "task has a task and nothing else")
+		}
+		if f.Class&state.NewBugOrOwnerTask == 0 {
+			fail(ruleTask, "task is only for a bug, or a task the owner filed, before it has been at ready")
+		}
+		if out.Task != nil {
+			checkTask(*out.Task, f, fail)
 		}
 	default:
 		fail(ruleOutcome, "unknown outcome %q", out.Outcome)
@@ -241,6 +279,35 @@ func checkInterview(out interviewOutput, f interviewFacts) error {
 		return nil
 	}
 	return fmt.Errorf("check interviewer output: %w", errors.Join(errs...))
+}
+
+// checkTask checks a task's sections (SPEC §9.1's Checks): every section
+// filled, at least one acceptance criterion and one line of the definition
+// of done, each one line, and a scope from f.Scopes, as a plan's task's
+// scope is checked (SPEC §11.3), by the planner's rule, ruleScope. The
+// body's length is renderedTexts'.
+func checkTask(t interviewTask, f interviewFacts, fail func(string, string, ...any)) {
+	for _, s := range []struct{ name, text string }{{"context", t.Context}, {"change", t.Change}, {"test plan", t.TestPlan}} {
+		if strings.TrimSpace(s.text) == "" {
+			fail(ruleSection, "the task's %s is empty", s.name)
+		}
+	}
+	if len(t.AcceptanceCriteria) == 0 {
+		fail(ruleCriteria, "a task has at least one acceptance criterion")
+	}
+	if len(t.DefinitionOfDone) == 0 {
+		fail(ruleSection, "the task's definition of done is empty")
+	}
+	for _, list := range [][]string{t.AcceptanceCriteria, t.DefinitionOfDone} {
+		for _, item := range list {
+			if !oneLine(item) {
+				fail(ruleOneLine, "list item %q", item)
+			}
+		}
+	}
+	if !slices.Contains(f.Scopes, t.Scope) {
+		fail(ruleScope, "the task's scope %q isn't on the list", t.Scope)
+	}
 }
 
 func checkQuestions(qs []interviewQuestion, f interviewFacts, fail func(string, string, ...any)) {
@@ -366,6 +433,12 @@ func renderedTexts(out interviewOutput, f interviewFacts) []rendered {
 	if out.Outcome == outcomePlan {
 		return []rendered{{"comment", renderPlanChange(out, f.Notify)}}
 	}
+	if out.Outcome == outcomeTask {
+		if out.Task == nil {
+			return nil
+		}
+		return []rendered{{"body", renderTask(*out.Task, f.Parent, f.Priority)}}
+	}
 	if out.Outcome != outcomeSpec {
 		return []rendered{{"comment", renderQuestions(out, f.Issue, len(f.Rounds)+1, f.Notify)}}
 	}
@@ -476,6 +549,29 @@ func renderSpec(s interviewSpec) string {
 		"## Acceptance criteria\n\n" + bullets(s.AcceptanceCriteria),
 		"## Decisions\n\n" + orNone(strings.Join(decisions, "\n")),
 	}, "\n\n"))
+}
+
+// renderTask renders t as the issue body, in the SPEC §11.2 template: the
+// header, with parent, t's scope and pri, then the sections a plan's task
+// has (taskSections), escaped. parent is the header's text for the
+// issue's parent (taskParent), and t's scope is one from the list
+// (checkTask), so neither is agent text.
+func renderTask(t interviewTask, parent, pri string) string {
+	header := fmt.Sprintf("**Parent:** %s   **Scope:** scope:%s   **Priority:** %s", parent, inline(t.Scope), pri)
+	return github.Escape(strings.Join(append([]string{header},
+		taskSections(t.Context, t.Change, t.AcceptanceCriteria, t.DefinitionOfDone, t.TestPlan)...), "\n\n"))
+}
+
+// taskParent is a task's header's parent for s (SPEC §11.2): "#N", or
+// "owner/repo#N" for a parent in another repo, or "none".
+func taskParent(s *github.Snapshot) string {
+	switch {
+	case s.Parent == 0:
+		return "none"
+	case s.ParentRepo != "":
+		return s.ParentRepo + "#" + strconv.Itoa(s.Parent)
+	}
+	return "#" + strconv.Itoa(s.Parent)
 }
 
 // renderTypeLine is the line naming the type t sets, and why, that starts

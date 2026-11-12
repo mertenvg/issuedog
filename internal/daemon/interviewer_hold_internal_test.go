@@ -629,12 +629,14 @@ func TestIvHoldMoveFitsPlan(t *testing.T) {
 	}
 }
 
-// ivRunsOn: the interviewer's classes anywhere at clarifying, and a story
-// with a parent only at the clarifying after a hold from planning,
-// plan-review or planned (SPEC §9.1). Nothing else.
+// ivRunsOn: the interviewer's classes anywhere at clarifying, a bug or a
+// task the owner filed anywhere at clarifying before it has been at ready,
+// and a story with a parent only at the clarifying after a hold from
+// planning, plan-review or planned (SPEC §9.1). Nothing else: not a task
+// or a bug that has been at ready, a task from a plan or a human task.
 func TestIvRunsOn(t *testing.T) {
 	t.Parallel()
-	story, task := state.Item{Type: "story", HasParent: true}, state.Item{Type: "task"}
+	story, task := state.Item{Type: "story", HasParent: true}, state.Item{Type: "task", ReachedReady: true}
 	for _, c := range []struct {
 		it     state.Item
 		origin state.Stage
@@ -650,6 +652,13 @@ func TestIvRunsOn(t *testing.T) {
 		{story, state.Clarifying, false},
 		{story, state.SpecReview, false},
 		{task, state.Planning, false},
+		{task, "", false},
+		{state.Item{Type: "bug", ReachedReady: true}, "", false},
+		{state.Item{Type: "task", FromPlan: true}, "", false},
+		{state.Item{Type: "task", FromPlan: true, Human: true}, state.Clarifying, false},
+		{state.Item{Type: "task"}, "", true},
+		{state.Item{Type: "bug"}, "", true},
+		{state.Item{Type: "Bug"}, state.Clarifying, true},
 		{state.Item{Type: "chore"}, state.Planning, false},
 	} {
 		if got := ivRunsOn(c.it, c.origin); got != c.want {
@@ -679,10 +688,12 @@ func TestIvHoldRenderPlanChange(t *testing.T) {
 }
 
 // ivOutcomes lists what a run may return, and the preamble names them and
-// says when plan is the outcome: questions always; spec, and typed where
-// the run may type, but on a story with a parent; unchanged after a hold
-// from a stage other than clarifying; plan after a hold from a stage of
-// the plan, on an epic or a story (#294, SPEC §9.1).
+// says when plan is the outcome: questions always; on a bug or a task the
+// owner filed, before ready, task, and never spec or typed, even where the
+// run may type; else spec, and typed where the run may type, but on a
+// story with a parent; unchanged after a hold from a stage other than
+// clarifying; plan after a hold from a stage of the plan, on an epic or a
+// story (#294, SPEC §9.1).
 func TestIvOutcomes(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
@@ -702,6 +713,9 @@ func TestIvOutcomes(t *testing.T) {
 		{state.Planning, state.ClassStory, false, []string{"questions", "unchanged", "plan"},
 			"It's a story with a parent, and its body is its item of the parent's plan, so never write the spec and never set a type."},
 		{state.PlanReview, state.ClassUntyped, true, []string{"questions", "spec", "typed", "unchanged"}, "Never return `plan`"},
+		{"", state.ClassNewBug, true, []string{"questions", "task"}, "never return `unchanged` or `plan`"},
+		{"", state.ClassNewOwnerTask, false, []string{"questions", "task"}, "never return `unchanged` or `plan`"},
+		{state.Clarifying, state.ClassNewBug, false, []string{"questions", "task"}, "ask a round or write the task, as usual."},
 	} {
 		o := ivOutcomes(c.origin, c.class, c.may)
 		if !slices.Equal(o.outcomes, c.want) {

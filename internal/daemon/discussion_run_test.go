@@ -239,7 +239,8 @@ var discRunUnchanged = map[string]any{"outcome": "unchanged"}
 //     moved to clarifying, then, after owner's answer (discRunAnswer), to
 //     spec-review with revision 1 of discRunBody;
 //  3. owner's task "Expire quotes nightly", typed by owner's label, which
-//     the App moved to clarifying, where it waits for phase 3.
+//     owner set back to clarifying from ready by hand, where it waits: it
+//     has been at ready, so the interviewer doesn't run on it (SPEC §9.1).
 //
 // newFake makes owner an admin and mallory a writer; eve can read.
 func discRunFake(t testing.TB) *githubtest.Fake {
@@ -257,7 +258,7 @@ func discRunFake(t testing.TB) *githubtest.Fake {
 	f.AddIssue("owner", "Expire quotes nightly", "A nightly job.")
 	f.AddLabel(3, "owner", "type:task")
 	f.AddLabel(3, app, "stage:clarifying")
-	f.AddComment(3, app, "It waits at clarifying.\n\n<!-- issuedog:transition from=intake to=clarifying event=6 -->")
+	f.AddComment(3, app, "It waits at clarifying.\n\n<!-- issuedog:transition from=ready to=clarifying event=6 by=owner -->")
 	return f
 }
 
@@ -457,7 +458,7 @@ func TestDiscRunWhole(t *testing.T) {
 	l.quiet("back at planning")
 
 	// Mallory's close of the task: reopened, and held for discussion.
-	entry := discRunFind(t, f, 3, "from=intake to=clarifying")
+	entry := discRunFind(t, f, 3, "from=ready to=clarifying")
 	closed := f.CloseBy(3, "mallory")
 	l.step("mallory's close of the task", "PATCH /issues/3", "POST /issues/3/comments", "POST /issues/3/labels", "DELETE /issues/3/labels/stage:clarifying",
 		"PATCH /issues/1", "POST /issues/3/assignees")

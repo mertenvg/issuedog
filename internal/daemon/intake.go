@@ -33,9 +33,9 @@ const approvedLabel = "approved"
 // and one with no stage label and no approved is left to triage. So does a
 // follow-up, whatever its labels: only a trusted 👍 on it, its approval
 // (FollowUpByReaction), or an override moves it on (SPEC §6.2). The move's
-// comment says why the issue is in and, as SPEC §4 and §6.2 say, tells a bug or
-// a task that it waits at clarifying until phase 3, and a story with a
-// parent that it waits there too, since the interviewer doesn't run on it.
+// comment says why the issue is in and, as SPEC §6.2 says, tells a story
+// with a parent that it waits at clarifying, since the interviewer doesn't
+// run on it.
 //
 // CheckLabels has run on s, so its labels are the ones that stand. The
 // events are read from a fresh timeline, and the move waits for the next
@@ -125,15 +125,12 @@ func (st *Step) IntakeVisit(ctx context.Context, s *github.Snapshot) error {
 }
 
 // intakeNote is what a move into the pipeline tells an issue that waits at
-// clarifying (SPEC §4, §6.2), after a space, or "": a bug or a task
-// waits until phase 3, and a story with a parent waits too, since the
-// interviewer doesn't run on it.
+// clarifying (SPEC §6.2), after a space, or "": a story with a parent
+// waits, since the interviewer doesn't run on it. A bug or a task gets the
+// interviewer's runs there (SPEC §9.1), so it's told nothing.
 func intakeNote(s *github.Snapshot) string {
-	switch {
-	case s.Type == "bug" || s.Type == "task":
-		return fmt.Sprintf(" It's a %s: bugs and tasks wait at `clarifying` for now, until issuedog can implement them (build phase 3).", s.Type)
-	case s.Type == "story" && s.Parent != 0:
-		return " It's a story with a parent: those wait at `clarifying` for now, as issuedog only clarifies epics, stories with no parent and untyped issues."
+	if s.Type == "story" && s.Parent != 0 {
+		return " It's a story with a parent: those wait at `clarifying` for now, as issuedog doesn't clarify a story whose parent's plan gave it its body."
 	}
 	return ""
 }

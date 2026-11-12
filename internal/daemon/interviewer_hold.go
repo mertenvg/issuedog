@@ -292,7 +292,8 @@ func ivHoldRevise(ctx context.Context, a *Applier, tc trustCache, s *github.Snap
 // ivHoldMove returns where an interviewer outcome moves the issue, and on
 // which trigger (SPEC §7.2), with origin the stage it came from to the
 // clarifying after a hold (ivHoldOrigin), or "": a spec to spec-review, on
-// spec-rewritten after a hold, else spec-written; unchanged to origin, on
+// spec-rewritten after a hold, else spec-written; a task to ready, on
+// task-rewritten after a hold, else task-written; unchanged to origin, on
 // discussion-no-change; plan to planning, on plan-changed (#294); anything
 // else stays at clarifying, on more-questions.
 func ivHoldMove(outcome string, origin state.Stage) (state.Stage, state.Trigger) {
@@ -301,6 +302,10 @@ func ivHoldMove(outcome string, origin state.Stage) (state.Stage, state.Trigger)
 		return state.SpecReview, state.TriggerSpecRewritten
 	case outcome == outcomeSpec:
 		return state.SpecReview, state.TriggerSpecWritten
+	case outcome == outcomeTask && origin != "":
+		return state.Ready, state.TriggerTaskRewritten
+	case outcome == outcomeTask:
+		return state.Ready, state.TriggerTaskWritten
 	case outcome == outcomeUnchanged:
 		return origin, state.TriggerDiscussionNoChange
 	case outcome == outcomePlan:
