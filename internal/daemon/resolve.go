@@ -65,10 +65,12 @@ import (
 // (resume, hold). An issue held from intake isn't in the pipeline yet, so
 // it stays held, and /resume takes it back to intake (resolveIntake). The
 // interviewer reads the discussion at that clarifying on an epic, a story
-// with no parent or an untyped issue (#189); every other class waits there
-// until a code owner sets its stage by hand (SPEC §6.4, Leaving the hold;
-// Interviewer.Pending, ivHoldWait). The commands that would move the issue
-// wait there too (state.Command.Waits).
+// with no parent or an untyped issue (#189), on any task, bug or human
+// task, and on a story with a parent back from a stage of its plan; any
+// other story with a parent, and an issue of a type the table doesn't
+// know, waits there until a code owner sets its stage by hand (SPEC §6.4,
+// Leaving the hold; Interviewer.Pending, ivHoldWait). The commands that
+// would move the issue wait there too (state.Command.Waits).
 
 // resolveKind is the kind of the marker that records the end of one hold
 // while another stays (SPEC §6.4), so the issue stays held:
@@ -1280,8 +1282,10 @@ func resolveHeldAfterHold(is state.Issue) (state.Stage, bool) {
 func resolveIntake(h state.HeldStack) bool { return h.At == state.Intake }
 
 // resolveWait is what the move to clarifying after a hold says of what
-// comes next on an issue the interviewer doesn't run on yet: it waits
-// there (SPEC §6.4, Leaving the hold; ivHoldWait).
+// comes next on an issue the interviewer doesn't run on there, a story
+// with a parent back from a stage outside its plan or an issue of a type
+// the table doesn't know: it waits there (SPEC §6.4, Leaving the hold;
+// ivHoldWait).
 const resolveWait = "It waits at `clarifying` until a code owner sets its stage by hand."
 
 // ResolveByReaction returns the reaction trigger for Step.Reactions that

@@ -223,7 +223,7 @@ func publicCauseTypedCases() []publicCauseTyped {
 			saveAttempt(t, root, "saved", ivResult(t, ivRound(1, "")), entry, 1)
 		}, func(g *rig) { g.interviewer() },
 			`the interviewer no longer runs on #1, with type "story" and a parent true, for its questions: ` +
-				"it runs only on an epic, a story with no parent or an untyped issue, on a bug or a task with questions and task only, " +
+				"it runs only on an epic, a story with no parent or an untyped issue, on a bug or a task with no typed outcome, on any task, bug or human task after a hold, " +
 				"and after a hold from planning, plan-review or planned on a story with a parent"},
 		{"the interviewer's typed, on a bug", func(t testing.TB, f *githubtest.Fake, root string) {
 			_, entry := ivFiled(f, "", false, ivEntry)
@@ -231,7 +231,7 @@ func publicCauseTypedCases() []publicCauseTyped {
 			saveAttempt(t, root, "saved", ivResult(t, ivTyped("task")), entry, 1)
 		}, func(g *rig) { g.interviewer() },
 			`the interviewer no longer runs on #1, with type "bug" and a parent false, for its typed: ` +
-				"it runs only on an epic, a story with no parent or an untyped issue, on a bug or a task with questions and task only, " +
+				"it runs only on an epic, a story with no parent or an untyped issue, on a bug or a task with no typed outcome, on any task, bug or human task after a hold, " +
 				"and after a hold from planning, plan-review or planned on a story with a parent"},
 		{"the interviewer's move, which doesn't fit", func(t testing.TB, f *githubtest.Fake, root string) {
 			_, entry := ivFiled(f, "", true, ivEntry)

@@ -109,15 +109,24 @@ func TestIvPreambleTask(t *testing.T) {
 	}
 }
 
-// prompt.md asks for the task's body where task is an outcome, and for the
-// spec anywhere else.
+// prompt.md asks for the task's body where task is an outcome, for the
+// human task's body where human is, and for the spec anywhere else.
 func TestInterviewerTaskPrompt(t *testing.T) {
 	t.Parallel()
-	if got := interviewerTask(1, "/run/x", false, true); !strings.Contains(got, "or the task's body once nothing that blocks it is open") {
-		t.Errorf("prompt.md on a bug = %q, want the task's body", got)
-	}
-	if got := interviewerTask(1, "/run/x", false, false); !strings.Contains(got, "or the spec once nothing that blocks it is open") {
-		t.Errorf("prompt.md on an epic = %q, want the spec", got)
+	for _, c := range []struct {
+		name   string
+		origin state.Stage
+		class  state.Class
+		want   string
+	}{
+		{"a bug", "", state.ClassNewBug, "or the task's body once nothing that blocks it is open"},
+		{"a task from a plan after a hold", state.Ready, state.ClassTask, "or the task's body once nothing that blocks it is open"},
+		{"a human task after a hold", state.NeedsHuman, state.ClassHumanTask, "or the human task's body once nothing that blocks it is open"},
+		{"an epic", "", state.ClassEpic, "or the spec once nothing that blocks it is open"},
+	} {
+		if got := interviewerTask(1, "/run/x", false, ivWrites(ivOutcomes(c.origin, c.class, false))); !strings.Contains(got, c.want) {
+			t.Errorf("prompt.md on %s = %q, want %q", c.name, got, c.want)
+		}
 	}
 }
 
@@ -144,6 +153,87 @@ func TestIvTaskMove(t *testing.T) {
 	} {
 		if err := ivMoveFits(c.it, out, ""); (err == nil) != c.ok {
 			t.Errorf("ivMoveFits(%+v, task) = %v, want ok %t", c.it, err, c.ok)
+		}
+	}
+}
+
+// After a hold (SPEC §6.4, §7.2), task moves any task or bug to ready on
+// task-rewritten, human a human task to needs-human on
+// human-task-rewritten, and unchanged back to the origin, but a task held
+// at in-progress, whose run the hold dropped, to ready, on
+// discussion-no-change. The table has each move for the class.
+func TestIvHoldTaskMove(t *testing.T) {
+	t.Parallel()
+	task, human := state.Item{Type: "task", FromPlan: true}, state.Item{Type: "task", FromPlan: true, Human: true}
+	bug := state.Item{Type: "bug", ReachedReady: true}
+	for _, c := range []struct {
+		outcome string
+		origin  state.Stage
+		it      state.Item
+		to      state.Stage
+		trigger state.Trigger
+		ok      bool
+	}{
+		{outcomeTask, state.Ready, task, state.Ready, state.TriggerTaskRewritten, true},
+		{outcomeTask, state.Verifying, bug, state.Ready, state.TriggerTaskRewritten, true},
+		{outcomeTask, state.NeedsHuman, human, state.Ready, state.TriggerTaskRewritten, false},
+		{outcomeHuman, state.NeedsHuman, human, state.NeedsHuman, state.TriggerHumanTaskRewritten, true},
+		{outcomeHuman, state.NeedsHuman, task, state.NeedsHuman, state.TriggerHumanTaskRewritten, false},
+		{outcomeUnchanged, state.InProgress, task, state.Ready, state.TriggerDiscussionNoChange, true},
+		{outcomeUnchanged, state.Verifying, bug, state.Verifying, state.TriggerDiscussionNoChange, true},
+		{outcomeUnchanged, state.NeedsHuman, human, state.NeedsHuman, state.TriggerDiscussionNoChange, true},
+		{outcomeUnchanged, state.PROpen, task, state.PROpen, state.TriggerDiscussionNoChange, true},
+	} {
+		if to, trigger := ivHoldMove(c.outcome, c.origin); to != c.to || trigger != c.trigger {
+			t.Errorf("ivHoldMove(%s, %s) = %s on %s, want %s on %s", c.outcome, c.origin, to, trigger, c.to, c.trigger)
+		}
+		if err := ivMoveFits(c.it, interviewOutput{Outcome: c.outcome}, c.origin); (err == nil) != c.ok {
+			t.Errorf("ivMoveFits(%+v, %s, %s) = %v, want ok %t", c.it, c.outcome, c.origin, err, c.ok)
+		}
+	}
+}
+
+// renderUnchanged says a task held at in-progress goes back to ready, as
+// the hold dropped its run, and any other issue back to its origin.
+func TestRenderUnchangedDroppedRun(t *testing.T) {
+	t.Parallel()
+	for origin, want := range map[state.Stage]string{
+		state.InProgress: "Nothing in the discussion during the hold changes this issue. The hold from `in-progress` dropped the task's run, so it goes back to `ready`.",
+		state.Verifying:  "Nothing in the discussion during the hold changes this issue, so it goes back to `verifying`.",
+	} {
+		if got := renderUnchanged(interviewOutput{Outcome: outcomeUnchanged}, origin, "", []string{"owner"}); got != want {
+			t.Errorf("renderUnchanged from %s = %q, want %q", origin, got, want)
+		}
+	}
+}
+
+// ivOriginMarker is the origin marker state.Derive reads, whole: the
+// body's first whole one, while the App's body is read, else the newest
+// clean App comment's last whole one, every field kept, human=1 and a
+// check's encoded values included, and "" for an issue with none.
+func TestIvOriginMarker(t *testing.T) {
+	t.Parallel()
+	const (
+		t1 = "<!-- issuedog:origin plan=#2 rev=1 item=T1 -->"
+		t2 = "<!-- issuedog:origin plan=#2 rev=2 item=T2 check=file contains=QUOTE_TTL%3D24h human=1 value=deploy/production.env -->"
+		t3 = "<!-- issuedog:origin plan=#2 rev=3 item=T3 -->"
+	)
+	appAuthor, ownerAuthor := github.Author{Login: "issuedog[bot]", Type: "Bot"}, github.Author{Login: "owner", Type: "User"}
+	for _, c := range []struct {
+		name string
+		s    *github.Snapshot
+		want string
+	}{
+		{"the body's first", &github.Snapshot{Author: appAuthor, Body: "A task.\n\n" + t2 + "\n" + t1}, t2},
+		{"a comment's last, the body a person's", &github.Snapshot{Author: ownerAuthor, Body: "A task.\n\n" + t1,
+			Comments: []github.Comment{{ID: 7, Author: appAuthor, Body: "Adopted.\n\n" + t1 + "\n" + t3}}}, t3},
+		{"the newest comment's", &github.Snapshot{Author: ownerAuthor, Body: "A task.",
+			Comments: []github.Comment{{ID: 7, Author: appAuthor, Body: t1}, {ID: 8, Author: appAuthor, Body: t2}}}, t2},
+		{"none", &github.Snapshot{Author: ownerAuthor, Body: "A task."}, ""},
+	} {
+		got, err := ivOriginMarker(state.Derive(c.s, "issuedog", Dirt{}.Has))
+		if err != nil || got != c.want {
+			t.Errorf("%s: ivOriginMarker = %q, %v; want %q", c.name, got, err, c.want)
 		}
 	}
 }

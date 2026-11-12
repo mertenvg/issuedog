@@ -631,12 +631,15 @@ func TestIvHoldMoveFitsPlan(t *testing.T) {
 
 // ivRunsOn: the interviewer's classes anywhere at clarifying, a bug or a
 // task the owner filed anywhere at clarifying before it has been at ready,
-// and a story with a parent only at the clarifying after a hold from
-// planning, plan-review or planned (SPEC §9.1). Nothing else: not a task
-// or a bug that has been at ready, a task from a plan or a human task.
+// any task, bug or human task at the clarifying after a hold, from any
+// stage (SPEC §6.4), and a story with a parent only at the clarifying
+// after a hold from planning, plan-review or planned (SPEC §9.1). Nothing
+// else: not a task or a bug that has been at ready, a task from a plan or
+// a human task at any other clarifying, nor an unknown type.
 func TestIvRunsOn(t *testing.T) {
 	t.Parallel()
 	story, task := state.Item{Type: "story", HasParent: true}, state.Item{Type: "task", ReachedReady: true}
+	human := state.Item{Type: "task", FromPlan: true, Human: true}
 	for _, c := range []struct {
 		it     state.Item
 		origin state.Stage
@@ -651,11 +654,20 @@ func TestIvRunsOn(t *testing.T) {
 		{story, "", false},
 		{story, state.Clarifying, false},
 		{story, state.SpecReview, false},
-		{task, state.Planning, false},
+		{task, state.Planning, true},
+		{task, state.Ready, true},
+		{task, state.InProgress, true},
+		{task, state.Clarifying, true},
 		{task, "", false},
 		{state.Item{Type: "bug", ReachedReady: true}, "", false},
+		{state.Item{Type: "bug", ReachedReady: true}, state.Verifying, true},
 		{state.Item{Type: "task", FromPlan: true}, "", false},
-		{state.Item{Type: "task", FromPlan: true, Human: true}, state.Clarifying, false},
+		{state.Item{Type: "task", FromPlan: true}, state.Ready, true},
+		{state.Item{Type: "task", FollowUp: true}, state.PROpen, true},
+		{human, "", false},
+		{human, state.Clarifying, true},
+		{human, state.NeedsHuman, true},
+		{state.Item{Type: "chore"}, state.Ready, false},
 		{state.Item{Type: "task"}, "", true},
 		{state.Item{Type: "bug"}, "", true},
 		{state.Item{Type: "Bug"}, state.Clarifying, true},
@@ -716,6 +728,20 @@ func TestIvOutcomes(t *testing.T) {
 		{"", state.ClassNewBug, true, []string{"questions", "task"}, "never return `unchanged` or `plan`"},
 		{"", state.ClassNewOwnerTask, false, []string{"questions", "task"}, "never return `unchanged` or `plan`"},
 		{state.Clarifying, state.ClassNewBug, false, []string{"questions", "task"}, "ask a round or write the task, as usual."},
+		// SPEC §6.4: after a hold, any task or bug gets task, a human task
+		// human, and unchanged unless it was at clarifying, which takes a
+		// task held at in-progress to ready.
+		{state.Ready, state.ClassTask, false, []string{"questions", "task", "unchanged"},
+			"Before the hold it was at `ready`. If nothing in the discussion changes the task, return `unchanged`, and it goes back there. " +
+				"If the discussion changes the task's body, return `task`, its whole body, and it goes to `ready`. If you need answers first, ask a round. " +
+				"Never return `spec` or `plan`."},
+		{state.InProgress, state.ClassOwnerTask, true, []string{"questions", "task", "unchanged"},
+			"return `unchanged`, and it goes to `ready`, as the hold dropped its run."},
+		{state.Verifying, state.ClassBug, true, []string{"questions", "task", "unchanged"}, "Never return `spec` or `plan`."},
+		{state.Clarifying, state.ClassTask, false, []string{"questions", "task"}, "ask a round or write the task, as usual."},
+		{state.NeedsHuman, state.ClassHumanTask, true, []string{"questions", "human", "unchanged"},
+			"If the discussion changes the task's body, return `human`, its whole body, and it goes back to `needs-human`."},
+		{state.Clarifying, state.ClassHumanTask, false, []string{"questions", "human"}, "ask a round or write the human task, as usual."},
 	} {
 		o := ivOutcomes(c.origin, c.class, c.may)
 		if !slices.Equal(o.outcomes, c.want) {
