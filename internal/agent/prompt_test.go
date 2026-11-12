@@ -505,7 +505,7 @@ func checkBad(t *testing.T, stage string, cases map[string]badOutput) {
 }
 
 func TestInterviewerGolden(t *testing.T) {
-	for _, name := range []string{"questions", "spec", "typed", "unchanged", "plan"} {
+	for _, name := range interviewerOutcomes {
 		if err := validateOutput(t, "interviewer", golden(t, "interviewer", name)); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
@@ -515,7 +515,7 @@ func TestInterviewerGolden(t *testing.T) {
 		"4 others":           {"questions", []any{"b", "c", "d", "e"}, []any{"questions", 0, "others"}, "at '/questions/0/others': maxItems"},
 		"empty blocks":       {"questions", []any{}, []any{"questions", 1, "blocks"}, "at '/questions/1/blocks': minItems"},
 		"no criteria":        {"spec", []any{}, []any{"spec", "acceptance_criteria"}, "at '/spec/acceptance_criteria': minItems"},
-		"unknown outcome":    {"questions", "task", []any{"outcome"}, "at '/outcome': value must be one of"},
+		"unknown outcome":    {"questions", "bug", []any{"outcome"}, "at '/outcome': value must be one of"},
 		"extra field":        {"spec", "extra", []any{"notes"}, "additional properties 'notes' not allowed"},
 		"multi-line text":    {"questions", "Where?\n### Injected", []any{"questions", 0, "text"}, "at '/questions/0/text': 'Where?\\n### Injected' does not match pattern"},
 		"blank option":       {"questions", " ", []any{"questions", 0, "recommended", "text"}, "at '/questions/0/recommended/text'"},
@@ -555,6 +555,50 @@ func TestInterviewerGolden(t *testing.T) {
 		// requires the message and holds the outcome to the issue.
 		"blank plan message": {"plan", " ", []any{"message"}, "at '/message'"},
 		"plan with a field":  {"plan", "x", []any{"notes"}, "additional properties 'notes' not allowed"},
+
+		// task: the task's body, every section of the task template
+		// (SPEC §11.2), as a plan's task has them. Which fields go with the
+		// outcome is the daemon's check.
+		"task with no scope":               {"task", remove, []any{"task", "scope"}, "at '/task': missing property 'scope'"},
+		"task with no context":             {"task", remove, []any{"task", "context"}, "at '/task': missing property 'context'"},
+		"task with no change":              {"task", remove, []any{"task", "change"}, "at '/task': missing property 'change'"},
+		"task with no acceptance_criteria": {"task", remove, []any{"task", "acceptance_criteria"}, "at '/task': missing property 'acceptance_criteria'"},
+		"task with no definition_of_done":  {"task", remove, []any{"task", "definition_of_done"}, "at '/task': missing property 'definition_of_done'"},
+		"task with no test_plan":           {"task", remove, []any{"task", "test_plan"}, "at '/task': missing property 'test_plan'"},
+		"task with no criteria":            {"task", []any{}, []any{"task", "acceptance_criteria"}, "at '/task/acceptance_criteria': minItems"},
+		"task with an empty DoD":           {"task", []any{}, []any{"task", "definition_of_done"}, "at '/task/definition_of_done': minItems"},
+		"blank task scope":                 {"task", " ", []any{"task", "scope"}, "at '/task/scope'"},
+		"multi-line task scope":            {"task", "booking\nquotes", []any{"task", "scope"}, "at '/task/scope'"},
+		"blank task context":               {"task", " \n ", []any{"task", "context"}, "at '/task/context'"},
+		"blank task change":                {"task", "\t", []any{"task", "change"}, "at '/task/change'"},
+		"blank task test_plan":             {"task", "", []any{"task", "test_plan"}, "at '/task/test_plan'"},
+		"multi-line task criterion":        {"task", "Refused.\n- another", []any{"task", "acceptance_criteria", 0}, "at '/task/acceptance_criteria/0'"},
+		"blank task criterion":             {"task", " ", []any{"task", "acceptance_criteria", 1}, "at '/task/acceptance_criteria/1'"},
+		"multi-line DoD":                   {"task", "Tests\npass", []any{"task", "definition_of_done", 0}, "at '/task/definition_of_done/0'"},
+		"task with a priority":             {"task", "p1", []any{"task", "priority"}, "additional properties 'priority' not allowed"},
+		"task with criteria":               {"task", []any{"x"}, []any{"task", "criteria"}, "additional properties 'criteria' not allowed"},
+		"task as a string":                 {"task", "## Context", []any{"task"}, "at '/task': got string, want object"},
+		"task outcome with notes":          {"task", "x", []any{"notes"}, "additional properties 'notes' not allowed"},
+
+		// human: the human task's body, every field of SPEC §9.3's template
+		// filled, as the implementer's hand-off has them.
+		"human with no goal":           {"human", remove, []any{"human", "goal"}, "at '/human': missing property 'goal'"},
+		"human with no why_blocks":     {"human", remove, []any{"human", "why_blocks"}, "at '/human': missing property 'why_blocks'"},
+		"human with no steps":          {"human", remove, []any{"human", "steps"}, "at '/human': missing property 'steps'"},
+		"human with no links":          {"human", remove, []any{"human", "links"}, "at '/human': missing property 'links'"},
+		"human with no done_when":      {"human", remove, []any{"human", "done_when"}, "at '/human': missing property 'done_when'"},
+		"human with no estimated_time": {"human", remove, []any{"human", "estimated_time"}, "at '/human': missing property 'estimated_time'"},
+		"human with empty steps":       {"human", []any{}, []any{"human", "steps"}, "at '/human/steps': minItems"},
+		"human with empty links":       {"human", []any{}, []any{"human", "links"}, "at '/human/links': minItems"},
+		"blank human goal":             {"human", " ", []any{"human", "goal"}, "at '/human/goal'"},
+		"multi-line why_blocks":        {"human", "a key\nreally", []any{"human", "why_blocks"}, "at '/human/why_blocks'"},
+		"multi-line human step":        {"human", "Open it.\n2. Edit it.", []any{"human", "steps", 1}, "at '/human/steps/1'"},
+		"blank human link":             {"human", "", []any{"human", "links", 0}, "at '/human/links/0'"},
+		"multi-line done_when":         {"human", "Listed.\nReally.", []any{"human", "done_when"}, "at '/human/done_when'"},
+		"blank estimated_time":         {"human", "\t", []any{"human", "estimated_time"}, "at '/human/estimated_time'"},
+		"human with a check":           {"human", map[string]any{"kind": "label"}, []any{"human", "check"}, "additional properties 'check' not allowed"},
+		"done_when as an object":       {"human", map[string]any{"text": "Listed."}, []any{"human", "done_when"}, "at '/human/done_when': got object, want string"},
+		"human as a string":            {"human", "Add the key.", []any{"human"}, "at '/human': got string, want object"},
 	})
 }
 

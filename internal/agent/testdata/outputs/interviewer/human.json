@@ -1,0 +1,17 @@
+{
+  "outcome": "human",
+  "human": {
+    "goal": "Give the booking service its quote lifetime in production.",
+    "why_blocks": "production has a quote lifetime, because the discussion moved it out of the code and the service won't start without one",
+    "steps": [
+      "Open the production service's settings in the hosting console.",
+      "Add the environment variable `QUOTE_TTL` with the value `24h`, and save.",
+      "Reply `/done` on this issue."
+    ],
+    "links": [
+      "https://console.hosting.example.com/services/booking/settings"
+    ],
+    "done_when": "The production service's settings list QUOTE_TTL=24h.",
+    "estimated_time": "5 min"
+  }
+}
