@@ -351,6 +351,9 @@ func (iv *Interviewer) Context(ctx context.Context, in Input) (map[string][]byte
 	if ivParentStory(in.Issue.Item) {
 		typing, may = ivParentTyping, false
 	}
+	if ivNewTask(in.Issue.Item) {
+		typing = ivTaskTyping
+	}
 	// The interviewer's own rounds are the ones its spec decides, and an
 	// input answers one only when the latest move is its round (ivInputs).
 	// Every stage's are what a comment in the conversation answers, and
@@ -646,6 +649,11 @@ func interviewerPreamble(maxQuestions int, rounds, planned []interviewerRound, l
 // ivParentTyping is the typing line on a story with a parent (SPEC §9.1):
 // its parent's plan gave it its type, which the interviewer never changes.
 const ivParentTyping = "This story has a parent, whose plan gave it its type, so leave `type` out."
+
+// ivTaskTyping is the typing line on a bug or a task the owner filed,
+// before it has been at ready (ivNewTask): it has its type, whoever set it,
+// and its run writes its task, so a typed outcome fails the run (SPEC §9.1).
+const ivTaskTyping = "This issue is a bug or a task already, so leave `type` out, and never return `typed`."
 
 // ivAllowed is what an interviewer run may return (ivOutcomes): its
 // outcomes, in the order the preamble lists them, the stage the issue came

@@ -206,7 +206,9 @@ func TestTaskContext(t *testing.T) {
 		"a bug": {"bug", []string{
 			"- The outcomes you may return here: `questions` and `task`. Any other outcome fails the run.",
 			"- A task's scope is one of: `booking`, `cli`. Any other scope is a question to the owner, never a guess.",
-			"- This issue is a bug or a task, so it gets no spec: once nothing open blocks it, return `task`, its body,"}, nil},
+			"- This issue is a bug or a task, so it gets no spec: once nothing open blocks it, return `task`, its body,",
+			"- This issue is a bug or a task already, so leave `type` out, and never return `typed`."},
+			[]string{"so you may change it", "The owner set"}},
 		"an untyped issue": {"", []string{"- The outcomes you may return here: `questions`, `spec` and `typed`. Any other outcome fails the run."},
 			[]string{"A task's scope", "`task`"}},
 	} {

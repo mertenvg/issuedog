@@ -251,6 +251,8 @@ func TestInterviewerPromptTaskBody(t *testing.T) {
 		"Keep both when you rewrite its body.",
 		// Typing comes first, and the run after it writes the task (SPEC
 		// §9.1).
+		"If you may set a type, the issue has none yet, and it is a bug or a task, return `typed` with that type and nothing else.",
+		"Never return `typed` on an issue that is a bug or a task already.",
 		"An untyped bug or task always returns `typed` before `task`: you run again at once, and that run writes its task, or asks a round first",
 	} {
 		if !strings.Contains(p, want) {

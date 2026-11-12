@@ -49,8 +49,9 @@ func (iv *Interviewer) Check(ctx context.Context, r Result) error {
 	if err != nil {
 		return &checkReadError{fmt.Errorf("the interviewer's facts on #%d: %w", r.S.Number, err)}
 	}
-	it := state.Derive(r.S, iv.Daemon.Step.AppSlug, r.Dirt.Has).Item
-	if !ivStillRuns(it, f.Origin, out, f.MayType) {
+	is := state.Derive(r.S, iv.Daemon.Step.AppSlug, r.Dirt.Has)
+	it := is.Item
+	if !ivStillRuns(it, f.Origin, out, f.MayType && !ivTypedBefore(is)) {
 		return &daemonCause{fmt.Errorf("the interviewer no longer runs on #%d, with type %q and a parent %t, for its %s: "+
 			"it runs only on an epic, a story with no parent or an untyped issue, "+
 			"on a bug or a task with questions and task only, "+
@@ -72,7 +73,9 @@ func (iv *Interviewer) Check(ctx context.Context, r Result) error {
 // questions and task (ivOutcomes); or whether out, a typed outcome, made
 // it the task or bug it is with its own type, set before a crash: the
 // type is out's, and the App set it (may, as typing says), so it isn't the
-// owner's retype. Its move, the typed one, is an entry for the run that
+// owner's retype, and no typed move stands (ivTypedBefore), so it isn't a
+// second typing of a bug the interviewer already typed, which would start a
+// run at once, on and on (SPEC §9.1). Its move, the typed one, is an entry for the run that
 // writes its task (Pending). Only a typed outcome sets a type the
 // interviewer runs on with other outcomes, so a story with a parent never
 // passes, whoever typed it.
@@ -81,6 +84,19 @@ func ivStillRuns(it state.Item, origin state.Stage, out interviewOutput, may boo
 		return true
 	}
 	return ivRunsOn(it, origin) && (out.Outcome != outcomeTyped || !ivNewTask(it))
+}
+
+// ivTypedBefore reports whether is has a typed move (ivRoundMove, with no
+// round): the interviewer typed the issue already, so a typed outcome is no
+// replay of its own typing. A run's check comes only before its own move
+// (Runs.apply), so the move is another run's.
+func ivTypedBefore(is state.Issue) bool {
+	for _, m := range is.Markers {
+		if ivRoundMove(m) && m.Fields["round"] == "" {
+			return true
+		}
+	}
+	return false
 }
 
 // ivMoveFits returns an error unless out's move fits an issue like it once

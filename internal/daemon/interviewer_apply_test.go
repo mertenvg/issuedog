@@ -232,6 +232,18 @@ func TestInterviewerTyped(t *testing.T) {
 	if l := g.lease(); !l.Failed || newestComment(f, n) != want {
 		t.Errorf("typed again on the bug: lease %+v, newest comment %q; want a failed attempt, with nothing written", l, newestComment(f, n))
 	}
+	// typed again with the bug's own type is no replay of run1's typing,
+	// which its move shows: it fails too, writing nothing, so a typed bug
+	// never starts run after run.
+	before := f.State()
+	g.claude(ivResult(t, ivTyped("bug")), 0)
+	if err := g.work(n); err != nil || g.runs() != 3 {
+		t.Fatalf("work on the bug = %v, after %d runs; want its run", err, g.runs())
+	}
+	if l := g.lease(); !l.Failed || !reflect.DeepEqual(f.State().Issues, before.Issues) {
+		t.Errorf("typed bug again on the bug: lease %+v, issues changed %t; want a failed attempt, with nothing written",
+			l, !reflect.DeepEqual(f.State().Issues, before.Issues))
+	}
 }
 
 // TestInterviewerCheckFailsAttempt: an output that breaks a rule is a
@@ -523,17 +535,25 @@ func TestInterviewerRoundReplay(t *testing.T) {
 	for name, tt := range map[string]struct {
 		before string
 		out    map[string]any
+		// asked is whether an earlier round, answered, comes before the
+		// run: a typed outcome after it replays as one with none.
+		asked bool
 	}{
-		"a round typing an untyped issue": {"", ivRound(2, "epic")},
-		"a round changing the App's type": {"story", ivRound(1, "epic")},
-		"a typed outcome":                 {"", ivTyped("task")},
-		"a round with no type":            {"", ivRound(1, "")},
+		"a round typing an untyped issue": {"", ivRound(2, "epic"), false},
+		"a round changing the App's type": {"story", ivRound(1, "epic"), false},
+		"a typed outcome":                 {"", ivTyped("task"), false},
+		"a typed outcome after a round":   {"", ivTyped("bug"), true},
+		"a round with no type":            {"", ivRound(1, ""), false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			replayRuns(t, func(_ testing.TB, f *githubtest.Fake, _ string) {
-				n, _ := ivFiled(f, "", false, "from=intake to=clarifying event=5")
+				n, entry := ivFiled(f, "", false, "from=intake to=clarifying event=5")
 				if tt.before != "" {
 					f.AddLabel(n, app, "type:"+tt.before)
+				}
+				if tt.asked {
+					ivAsked(f, n, 1, 1, entry)
+					f.AddComment(n, "owner", "1a")
 				}
 			}, func(g *rig) {
 				g.interviewer()
