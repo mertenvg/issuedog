@@ -313,6 +313,28 @@ func CreatedRecord(is Issue, rev int) ([]int, bool) {
 	return found, found != nil
 }
 
+// FiledRecord returns the follow-ups that the filed record of verifier
+// run run's pass names (SPEC §5, §10.2), by number in the pass's order,
+// and true, or false if there's none: the latest filed marker among is's
+// markers that count, with run=<run> and children=<n>,<n>, each a number
+// above 0, as CreatedRecord reads a plan's, but for children=none, which a
+// pass with candidates never names. The App posts it on a task once
+// each candidate of the pass is filed. A record in a dirty comment doesn't
+// count, since Derive skips it, nor does one of another run, or one whose
+// follow-ups don't all read back.
+func FiledRecord(is Issue, run string) ([]int, bool) {
+	var found []int
+	for _, m := range is.Markers {
+		if m.Kind != "filed" || run == "" || m.Fields["run"] != run || m.Fields["children"] == CreatedNone {
+			continue
+		}
+		if children, ok := createdChildren(m.Fields["children"]); ok {
+			found = children
+		}
+	}
+	return found, found != nil
+}
+
 // CreatedNone is a created marker's children= when its revision leaves
 // no child to list (#297).
 const CreatedNone = "none"
