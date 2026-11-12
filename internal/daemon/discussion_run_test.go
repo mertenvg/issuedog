@@ -291,12 +291,14 @@ func discRunHeld(t *testing.T, l *discRunLoop) int64 {
 // interviewer finds nothing changed: back to spec-review, in the same
 // pass. The /approve posted during the hold waited, and applies on the
 // next pass. Then a hold from planning returns there (#189's verify), and
-// mallory's close of the task is reopened and holds it. A restart writes
-// nothing. Every pass's writes are checked.
+// mallory's close of the task is reopened and holds it. The owner's 👍 on
+// its notice ends that discussion, and the interviewer, which reads it on
+// a task too (SPEC §6.4), asks a round, which then waits with no request.
+// A restart writes nothing. Every pass's writes are checked.
 func TestDiscRunWhole(t *testing.T) {
 	t.Parallel()
 	f := discRunFake(t)
-	l := newDiscRunLoop(t, f, discRunUnchanged, discRunUnchanged)
+	l := newDiscRunLoop(t, f, discRunUnchanged, discRunUnchanged, discRunRound())
 	answer, rev := discRunFind(t, f, 2, discRunAnswer), discRunFind(t, f, 2, "issuedog:revision rev=1")
 	discRunHeld(t, l)
 	l.quiet("held by the owner alone")
@@ -473,18 +475,29 @@ func TestDiscRunWhole(t *testing.T) {
 	l.quiet("the task held")
 	notice := discRunFind(t, f, 3, discNoticeMarker(key))
 	f.AddReaction(notice, "owner", "+1")
-	l.step("the 👍 on the close's notice", "POST /issues/3/comments", "POST /issues/3/labels", "DELETE /issues/3/labels/stage:held", "PATCH /issues/1", "DELETE /issues/3/assignees")
+	l.step("the 👍 on the close's notice", "POST /issues/3/comments", "POST /issues/3/labels", "DELETE /issues/3/labels/stage:held", "PATCH /issues/1", "POST /issues/3/comments")
+	resolved := discRunFind(t, f, 3, "from=held to=clarifying")
 	if got, want := l.added(3), []string{resolveLeaveText("`owner`", "clarifying", fmt.Sprintf("from=held to=clarifying at=clarifying origin=clarifying event=h%d resolved=%d seen=%d",
-		notice, resolveReactionAt(t, f, notice), entry))}; !slices.Equal(got, want) {
+		notice, resolveReactionAt(t, f, notice), entry)),
+		"### Questions for #3 (round 1)\n\n**1. Q1?** Blocks: #2\n   a. Yes (recommended): it's simplest\n   b. No\n\nReply in one comment, e.g. `1a 2c 3: free text`.\n\ncc @owner\n\n" +
+			fmt.Sprintf("<!-- issuedog:transition from=clarifying to=clarifying origin=clarifying round=1 run=run3 questions=1 seen=%d -->", resolved)}; !slices.Equal(got, want) {
 		t.Errorf("#3's new comments\n%q\nwant\n%q", got, want)
 	}
-	if l.digest() != digestList || len(assignees(f, 3)) != 0 || l.g.runs() != 2 {
-		t.Errorf("digest %q, #3's assignees %q, %d runs; want nothing listed or assigned, and no run on the task", l.digest(), assignees(f, 3), l.g.runs())
+	// SPEC §6.4: the task's discussion ended at clarifying, so the
+	// interviewer reads it at once, in the same pass, and asks a round.
+	if l.digest() != digestList || l.g.runs() != 3 {
+		t.Errorf("digest %q, %d runs; want nothing listed, and the interviewer's run on the task", l.digest(), l.g.runs())
 	}
-	l.quiet("all resolved")
+	l.step("the task's round, listed", "PATCH /issues/1")
+	if !strings.Contains(l.digest(), "#3") || !slices.Equal(assignees(f, 3), []string{"owner"}) {
+		t.Errorf("digest %q, #3's assignees %q; want the round listed, and notify assigned", l.digest(), assignees(f, 3))
+	}
+	// A task waiting on its round after a hold makes no request and starts
+	// no run.
+	l.quiet("the task's round waits")
 	l.restart("the end")
-	if n := len(digestComments(f, 1)); n != 1 || l.g.runs() != 2 {
-		t.Errorf("%d digest comments, %d runs; want the one announcement, and two runs", n, l.g.runs())
+	if n := len(digestComments(f, 1)); n != 1 || l.g.runs() != 3 {
+		t.Errorf("%d digest comments, %d runs; want the one announcement, and three runs", n, l.g.runs())
 	}
 }
 
@@ -1275,7 +1288,8 @@ func TestDiscRunFourLevels(t *testing.T) {
 // the deletion, seen in the same pass, is rejected, as it would take no
 // issue out of held: the deletion is after it. The /resume after the
 // deletion ends #2's hold, back to planned, and #3's, to clarifying, as
-// its discussion was resolved, where a task waits. Eve's comment, which
+// its discussion was resolved, where the interviewer finds nothing changed
+// on the next pass, so the task goes back to ready. Eve's comment, which
 // holds nothing, has the poll read #2 again in the deletion's pass
 // (TestDiscRunDeletedUnread).
 func TestDiscRunParentDeletion(t *testing.T) {
@@ -1284,7 +1298,7 @@ func TestDiscRunParentDeletion(t *testing.T) {
 		t.Run(fmt.Sprintf("a /resume before the deletion: %t", early), func(t *testing.T) {
 			f := discRunFamily(t)
 			note := f.AddComment(2, "owner", "Plan note.")
-			l := newDiscRunLoop(t, f)
+			l := newDiscRunLoop(t, f, discRunUnchanged)
 			l.quiet("the first passes")
 			entries := map[int]int64{2: discRunFind(t, f, 2, "issuedog:transition"), 3: discRunFind(t, f, 3, "issuedog:transition")}
 			m := f.AddComment(3, "mallory", "Wait.")
@@ -1323,7 +1337,15 @@ func TestDiscRunParentDeletion(t *testing.T) {
 				t.Errorf("#2's new comments %q; want %q", got, want)
 			}
 			if got, want := l.added(3), []string{moved("Resumed by `/resume` on #2. A discussion on this issue was resolved during its hold from `ready`, so it goes to `clarifying`. "+
-				"It waits at `clarifying` until a code owner sets its stage by hand.", fmt.Sprintf("from=held to=clarifying at=ready origin=ready cmd=%d seen=%d", resume, entries[3]))}; !slices.Equal(got, want) {
+				"The interviewer reads the discussion next, and picks where it goes from there.", fmt.Sprintf("from=held to=clarifying at=ready origin=ready cmd=%d seen=%d", resume, entries[3]))}; !slices.Equal(got, want) {
+				t.Errorf("#3's new comments\n%q\nwant\n%q", got, want)
+			}
+			// SPEC §6.4: the interviewer reads the task's discussion on the
+			// next pass, and finds nothing changed: back to ready.
+			back := discRunFind(t, f, 3, "from=held to=clarifying")
+			l.step("the interviewer on #3", "POST /issues/3/comments", "POST /issues/3/labels", "DELETE /issues/3/labels/stage:clarifying")
+			if got, want := l.added(3), []string{"Nothing in the discussion during the hold changes this issue, so it goes back to `ready`.\n\n" +
+				fmt.Sprintf("<!-- issuedog:transition from=clarifying to=ready origin=ready run=run1 seen=%d -->", back)}; !slices.Equal(got, want) {
 				t.Errorf("#3's new comments\n%q\nwant\n%q", got, want)
 			}
 			l.quiet("resumed")

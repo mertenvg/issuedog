@@ -35,8 +35,15 @@ const (
 
 	// outcomeTask is a bug's, or an owner task's, body in the SPEC §11.2
 	// template, once nothing open blocks it (SPEC §9.1): the App rewrites
-	// the body as the task, and it goes to ready.
+	// the body as the task, and it goes to ready. At the clarifying after a
+	// discussion hold, it's also any task's or bug's whose body the
+	// discussion changes (SPEC §6.4).
 	outcomeTask = "task"
+	// outcomeHuman is a human task's body in the SPEC §9.3 template, only at
+	// the clarifying after a discussion hold, when the discussion changes
+	// the owner's action (SPEC §6.4, §9.1): the App rewrites the body, and
+	// it goes back to needs-human.
+	outcomeHuman = "human"
 )
 
 // interviewOutput is the interviewer's structured output, as
@@ -49,6 +56,10 @@ type interviewOutput struct {
 	Questions []interviewQuestion `json:"questions,omitempty"`
 	Spec      *interviewSpec      `json:"spec,omitempty"`
 	Task      *interviewTask      `json:"task,omitempty"`
+	// Human is a human task's fields, in the implementer's hand-off's shape,
+	// its "Done when" one line of text, which handoffTask converts to a
+	// human task's, as for a hand-off.
+	Human *implementerHandoffFields `json:"human,omitempty"`
 }
 
 // interviewType is the type the interviewer sets, and why.
@@ -142,15 +153,26 @@ type interviewFacts struct {
 	// table knows. Only an epic or a story may get plan, and a story with
 	// a parent (ClassStory) gets no spec and no typed outcome (SPEC §4,
 	// §9.1): its body is its parent's plan item. Only a bug, or a task the
-	// owner filed, before ready (state.NewBugOrOwnerTask) may get task.
+	// owner filed, before ready (state.NewBugOrOwnerTask), or a task or a
+	// bug at the clarifying after a hold, may get task, and only a human
+	// task at the clarifying after a hold may get human. A bug or a task
+	// gets no type (ivTaskClasses): its runs write its task.
 	Class state.Class
 	// Scopes is config's scopes, the only ones a task may have (SPEC
 	// §11.3).
 	Scopes []string
 	// Parent and Priority are a task's header's (SPEC §11.2), as
 	// renderTask writes them: the parent, "#N", "owner/repo#N" or "none"
-	// (taskParent), and the priority, such as "p2".
-	Parent, Priority string
+	// (taskParent), and the priority, such as "p2". Scope is the issue's
+	// scope label's name (scopeOf), or "", which a human task's header
+	// names (humanHeader).
+	Parent, Priority, Scope string
+	// Check is a human task's "Done when" check, from its origin marker
+	// (state.Origin.Check), which its rewrite keeps (renderHuman), and
+	// BlocksOn the issue its "Why it blocks" names when it blocks none
+	// (humanBlocksOn).
+	Check    state.Check
+	BlocksOn int
 	// Options is the option count of each question asked whose round
 	// comment reads back (ivWordingOptions), so a decision's letter must
 	// name one of its options (#229). A question missing from it may be
@@ -182,6 +204,7 @@ const (
 	ruleParentStory        = "parent-story"
 	ruleTask               = "task"
 	ruleSection            = "section"
+	ruleHuman              = "human"
 )
 
 // ruleError is an output that breaks a rule.
@@ -209,12 +232,12 @@ func checkInterview(out interviewOutput, f interviewFacts) error {
 	}
 	switch out.Outcome {
 	case outcomeQuestions:
-		if out.Spec != nil || out.Task != nil || out.Message != "" || len(out.Questions) == 0 {
+		if out.Spec != nil || out.Task != nil || out.Human != nil || out.Message != "" || len(out.Questions) == 0 {
 			fail(ruleOutcome, "a question round has questions, and a type at most")
 		}
 		checkQuestions(out.Questions, f, fail)
 	case outcomeSpec:
-		if out.Spec == nil || out.Task != nil || len(out.Questions) > 0 {
+		if out.Spec == nil || out.Task != nil || out.Human != nil || len(out.Questions) > 0 {
 			fail(ruleOutcome, "a spec has a spec, and a type and a message at most")
 		}
 		if out.Spec != nil {
@@ -224,33 +247,36 @@ func checkInterview(out interviewOutput, f interviewFacts) error {
 			fail(ruleSpecType, "a spec on an issue with no type sets it to epic or story")
 		}
 	case outcomeTyped:
-		if out.Type == nil || out.Spec != nil || out.Task != nil || out.Message != "" || len(out.Questions) > 0 {
+		if out.Type == nil || out.Spec != nil || out.Task != nil || out.Human != nil || out.Message != "" || len(out.Questions) > 0 {
 			fail(ruleOutcome, "typed has a type and nothing else")
 		}
 	case outcomeUnchanged:
-		if out.Type != nil || out.Spec != nil || out.Task != nil || len(out.Questions) > 0 {
+		if out.Type != nil || out.Spec != nil || out.Task != nil || out.Human != nil || len(out.Questions) > 0 {
 			fail(ruleOutcome, "unchanged has a message at most")
 		}
 		if f.Origin == "" || f.Origin == state.Clarifying {
 			fail(ruleUnchanged, "unchanged is only for the clarifying after a discussion hold from another stage")
 		}
 	case outcomePlan:
-		if out.Type != nil || out.Spec != nil || out.Task != nil || len(out.Questions) > 0 || strings.TrimSpace(out.Message) == "" {
+		if out.Type != nil || out.Spec != nil || out.Task != nil || out.Human != nil || len(out.Questions) > 0 || strings.TrimSpace(out.Message) == "" {
 			fail(ruleOutcome, "plan has a message and nothing else")
 		}
 		if !ivPlanOrigin(f.Origin) || f.Class&(state.ClassEpic|state.AnyStory) == 0 {
 			fail(rulePlan, "plan is only for an epic or a story at the clarifying after a discussion hold from planning, plan-review or planned")
 		}
 	case outcomeTask:
-		if out.Task == nil || out.Type != nil || out.Spec != nil || out.Message != "" || len(out.Questions) > 0 {
+		if out.Task == nil || out.Type != nil || out.Spec != nil || out.Human != nil || out.Message != "" || len(out.Questions) > 0 {
 			fail(ruleOutcome, "task has a task and nothing else")
 		}
-		if f.Class&state.NewBugOrOwnerTask == 0 {
-			fail(ruleTask, "task is only for a bug, or a task the owner filed, before it has been at ready")
+		if f.Class&state.NewBugOrOwnerTask == 0 && (f.Origin == "" || f.Class&state.AnyTask == 0) {
+			fail(ruleTask, "task is only for a bug, or a task the owner filed, before it has been at ready, "+
+				"or for a task or a bug at the clarifying after a discussion hold")
 		}
 		if out.Task != nil {
 			checkTask(*out.Task, f, fail)
 		}
+	case outcomeHuman:
+		checkHuman(out, f, fail)
 	default:
 		fail(ruleOutcome, "unknown outcome %q", out.Outcome)
 	}
@@ -258,8 +284,13 @@ func checkInterview(out interviewOutput, f interviewFacts) error {
 		fail(ruleParentStory, "a story with a parent gets only questions, unchanged or plan, never %s", out.Outcome)
 	}
 	if t := out.Type; t != nil {
-		if !f.MayType {
+		switch {
+		case !f.MayType:
 			fail(ruleTypeAllowed, "the interviewer may not set this issue's type")
+		case out.Outcome != outcomeTyped && f.Class&ivTaskClasses != 0:
+			// A typed outcome on a bug or a task is only the replay of its own
+			// typing, which Check's ivStillRuns lets through alone (SPEC §4).
+			fail(ruleTypeAllowed, "a bug or a task keeps its type: the interviewer writes its task, and never sets a type on it")
 		}
 		if !oneLine(t.Reason) {
 			fail(ruleOneLine, "the type's reason")
@@ -307,6 +338,29 @@ func checkTask(t interviewTask, f interviewFacts, fail func(string, string, ...a
 	}
 	if !slices.Contains(f.Scopes, t.Scope) {
 		fail(ruleScope, "the task's scope %q isn't on the list", t.Scope)
+	}
+}
+
+// checkHuman is checkInterview's rules for a human outcome, as
+// checkHandoff's are for the implementer's hand-off: it has a human task
+// and nothing else (rule outcome); only a human task at the clarifying
+// after a discussion hold gets one (rule human), and only while the check
+// on its origin marker reads, as its "Done when" names the check
+// (humanDoneWhen); and every field of SPEC §9.3's template is filled, at
+// least one step and one link included, each one line (checkHumanTask,
+// rule human-task or one-line). The body's length is renderedTexts'.
+func checkHuman(out interviewOutput, f interviewFacts, fail func(string, string, ...any)) {
+	if out.Human == nil || out.Type != nil || out.Spec != nil || out.Task != nil || out.Message != "" || len(out.Questions) > 0 {
+		fail(ruleOutcome, "human has a human task and nothing else")
+	}
+	if f.Class != state.ClassHumanTask || f.Origin == "" {
+		fail(ruleHuman, "human is only for a human task at the clarifying after a discussion hold")
+	}
+	if f.Check.Kind == state.CheckUnreadable {
+		fail(ruleHuman, "the check on the human task's origin marker can't be read, so its Done when can't be written")
+	}
+	if out.Human != nil {
+		checkHumanTask("the human task", handoffTask(*out.Human), fail)
 	}
 }
 
@@ -439,6 +493,19 @@ func renderedTexts(out interviewOutput, f interviewFacts) []rendered {
 		}
 		return []rendered{{"body", renderTask(*out.Task, f.Parent, f.Priority)}}
 	}
+	if out.Outcome == outcomeHuman {
+		// It names no issue the task blocks here, which a few characters of
+		// textRoom cover, as its apply reads them (ivHumanBlocks). An
+		// unreadable check renders nothing, as checkHuman refuses it.
+		if out.Human == nil {
+			return nil
+		}
+		body, err := renderHuman(*out.Human, f.Check, humanHeader(f.Parent, f.Scope, f.Priority), nil, f.BlocksOn, f.Notify)
+		if err != nil {
+			return nil
+		}
+		return []rendered{{"body", body}}
+	}
 	if out.Outcome != outcomeSpec {
 		return []rendered{{"comment", renderQuestions(out, f.Issue, len(f.Rounds)+1, f.Notify)}}
 	}
@@ -562,6 +629,46 @@ func renderTask(t interviewTask, parent, pri string) string {
 		taskSections(t.Context, t.Change, t.AcceptanceCriteria, t.DefinitionOfDone, t.TestPlan)...), "\n\n"))
 }
 
+// renderHuman renders h, a human outcome's fields, as a human task's body
+// (SPEC §9.3), escaped, without its origin marker, as humanBody writes one
+// from a plan: header, the task's first line (humanHeader), then the
+// template's fields (humanFields), each filled, then the cc line for
+// notify. "Why it blocks" names blocks, the open issues it blocks, or
+// blocksOn when it blocks none (humanWhyBlocks, humanBlocksOn), then h's
+// reason. "Done when" is h's text for a plain-text one, the zero check, or
+// else the daemon's sentence on check, the one its origin marker keeps
+// (humanDoneWhen), which a check of a kind it doesn't know is an error of.
+func renderHuman(h implementerHandoffFields, check state.Check, header string, blocks []int, blocksOn int, notify []string) (string, error) {
+	t := handoffTask(h)
+	done, err := humanDoneWhen(t.DoneWhen.Text, check)
+	if err != nil {
+		return "", fmt.Errorf("its done when: %w", err)
+	}
+	fields := humanFields(t, humanWhyBlocks(t.WhyBlocks, blocks, blocksOn), done)
+	return github.Escape(strings.Join(append([]string{header, fields}, ccLines(notify)...), "\n\n")), nil
+}
+
+// humanHeader is a human task's first line, as its rewrite writes it (SPEC
+// §9.3, §11.2): its parent (taskParent), its scope, the scope:* label's
+// name (scopeOf), escaped, or "none", and its priority, such as "p2".
+func humanHeader(parent, scope, pri string) string {
+	sc := "none"
+	if scope != "" {
+		sc = "scope:" + inline(scope)
+	}
+	return fmt.Sprintf("**Parent:** %s   **Scope:** %s   **Priority:** %s", parent, sc, pri)
+}
+
+// humanBlocksOn is the issue a human task's "Why it blocks" names when it
+// blocks no open issue (humanWhyBlocks): its parent, in this repo, or else
+// the task itself, as a hand-off names its task (renderHandoff).
+func humanBlocksOn(s *github.Snapshot) int {
+	if s.Parent != 0 && s.ParentRepo == "" {
+		return s.Parent
+	}
+	return s.Number
+}
+
 // taskParent is a task's header's parent for s (SPEC §11.2): "#N", or
 // "owner/repo#N" for a parent in another repo, or "none".
 func taskParent(s *github.Snapshot) string {
@@ -606,12 +713,17 @@ func renderSpecNote(out interviewOutput) string {
 }
 
 // renderUnchanged renders an unchanged outcome's comment (#189): that the
-// discussion changed nothing, so the issue goes back to origin, then
-// standing, the App's line on a revision that still stands, if any, then
-// out's message, then the cc line for notify when the issue waits on the
-// owner there, at a review stage.
+// discussion changed nothing, so the issue goes back to origin, or for a
+// task held at in-progress, whose run the hold dropped, to ready
+// (resumeTo, SPEC §6.4), then standing, the App's line on a revision that
+// still stands, if any, then out's message, then the cc line for notify
+// when the issue waits on the owner there, at a review stage.
 func renderUnchanged(out interviewOutput, origin state.Stage, standing string, notify []string) string {
 	parts := []string{fmt.Sprintf("Nothing in the discussion during the hold changes this issue, so it goes back to `%s`.", origin)}
+	if to := resumeTo(origin); to != origin {
+		parts[0] = fmt.Sprintf("Nothing in the discussion during the hold changes this issue. The hold from `%s` dropped the task's run, "+
+			"so it goes back to `%s`.", origin, to)
+	}
 	if standing != "" {
 		parts = append(parts, standing)
 	}

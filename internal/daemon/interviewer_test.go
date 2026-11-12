@@ -241,7 +241,36 @@ func TestInterviewerPending(t *testing.T) {
 			f.AddComment(n, "owner", "Go on.")
 			return n
 		}, true},
-		{"a task at the clarifying after a hold", entered("task", false, "from=held to=clarifying at=ready origin=ready event=h9 seen=7"), false},
+		// SPEC §6.4: and on any task, bug or human task there, from any
+		// stage, but not on an issue of a type the table doesn't know.
+		{"a task at the clarifying after a hold", entered("task", false, "from=held to=clarifying at=ready origin=ready event=h9 seen=7"), true},
+		{"a bug at the clarifying after a hold from in-progress", entered("bug", false, "from=held to=clarifying at=in-progress origin=in-progress event=h9 seen=7"), true},
+		{"a task from a plan at the clarifying after a hold", func(f *githubtest.Fake) int {
+			n := f.AddIssue(app, "Task", "A task.\n\n<!-- issuedog:origin plan=#7 rev=1 item=T1 -->")
+			f.AddLabel(n, app, "type:task")
+			f.AddLabel(n, app, "stage:clarifying")
+			f.AddComment(n, app, "Resolved.\n\n<!-- issuedog:transition from=held to=clarifying at=verifying origin=verifying event=h9 seen=7 -->")
+			return n
+		}, true},
+		{"a human task at the clarifying after a hold", func(f *githubtest.Fake) int {
+			n := f.AddIssue(app, "Task", "A human task.\n\n<!-- issuedog:origin plan=#7 rev=1 item=T2 human=1 -->")
+			f.AddLabel(n, app, "type:task")
+			f.AddLabel(n, app, "stage:clarifying")
+			f.AddComment(n, app, "Resolved.\n\n<!-- issuedog:transition from=held to=clarifying at=needs-human origin=needs-human event=h9 seen=7 -->")
+			return n
+		}, true},
+		{"after a round on a task at the clarifying after a hold, nothing", func(f *githubtest.Fake) int {
+			n, entry := ivFiled(f, "task", false, "from=held to=clarifying at=ready origin=ready event=h9 seen=7")
+			f.AddComment(n, app, fmt.Sprintf("Round.\n\n<!-- issuedog:transition from=clarifying to=clarifying round=1 run=iv1 origin=ready questions=1 seen=%d -->", entry))
+			return n
+		}, false},
+		{"after a round on a task at the clarifying after a hold, a trusted answer", func(f *githubtest.Fake) int {
+			n, entry := ivFiled(f, "task", false, "from=held to=clarifying at=ready origin=ready event=h9 seen=7")
+			f.AddComment(n, app, fmt.Sprintf("Round.\n\n<!-- issuedog:transition from=clarifying to=clarifying round=1 run=iv1 origin=ready questions=1 seen=%d -->", entry))
+			f.AddComment(n, "owner", "1a")
+			return n
+		}, true},
+		{"an unknown type at the clarifying after a hold", entered("chore", false, "from=held to=clarifying at=ready origin=ready event=h9 seen=7"), false},
 		{"a bug at the clarifying after a hold from clarifying", entered("bug", false, "from=held to=clarifying at=clarifying origin=clarifying event=h9 seen=7"), true},
 		// SPEC §9.1: a story with a parent gets a run at the clarifying
 		// after a hold from a stage of its plan, and only there.

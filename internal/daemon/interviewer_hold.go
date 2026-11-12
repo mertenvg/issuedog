@@ -293,9 +293,12 @@ func ivHoldRevise(ctx context.Context, a *Applier, tc trustCache, s *github.Snap
 // which trigger (SPEC §7.2), with origin the stage it came from to the
 // clarifying after a hold (ivHoldOrigin), or "": a spec to spec-review, on
 // spec-rewritten after a hold, else spec-written; a task to ready, on
-// task-rewritten after a hold, else task-written; unchanged to origin, on
-// discussion-no-change; plan to planning, on plan-changed (#294); anything
-// else stays at clarifying, on more-questions.
+// task-rewritten after a hold, else task-written; a human task to
+// needs-human, on human-task-rewritten; unchanged to origin, on
+// discussion-no-change, but a task held at in-progress, whose run the hold
+// dropped, to ready, as /resume sends it (resumeTo, SPEC §6.4); plan to
+// planning, on plan-changed (#294); anything else stays at clarifying, on
+// more-questions.
 func ivHoldMove(outcome string, origin state.Stage) (state.Stage, state.Trigger) {
 	switch {
 	case outcome == outcomeSpec && origin != "":
@@ -306,8 +309,10 @@ func ivHoldMove(outcome string, origin state.Stage) (state.Stage, state.Trigger)
 		return state.Ready, state.TriggerTaskRewritten
 	case outcome == outcomeTask:
 		return state.Ready, state.TriggerTaskWritten
+	case outcome == outcomeHuman:
+		return state.NeedsHuman, state.TriggerHumanTaskRewritten
 	case outcome == outcomeUnchanged:
-		return origin, state.TriggerDiscussionNoChange
+		return resumeTo(origin), state.TriggerDiscussionNoChange
 	case outcome == outcomePlan:
 		return state.Planning, state.TriggerPlanChanged
 	}
@@ -426,9 +431,11 @@ func ivHoldStanding(s *github.Snapshot, appSlug string, d Dirt, to state.Stage) 
 
 // ivHoldWait is what a move to the clarifying after a hold from origin
 // says of what comes next (SPEC §7.2): the interviewer reads the discussion on
-// an issue it runs on there (ivRunsOn), a story with a parent included
-// after a hold from a stage of its plan (SPEC §9.1); any other issue
-// waits there until a code owner sets its stage by hand (resolveWait).
+// an issue it runs on there (ivRunsOn), any task, bug or human task
+// included (SPEC §6.4), and a story with a parent after a hold from a
+// stage of its plan (SPEC §9.1); any other issue, a story with a parent
+// back from another stage or one of a type the table doesn't know, waits
+// there until a code owner sets its stage by hand (resolveWait).
 func ivHoldWait(it state.Item, origin state.Stage) string {
 	if ivRunsOn(it, origin) {
 		return "The interviewer reads the discussion next, and picks where it goes from there."
