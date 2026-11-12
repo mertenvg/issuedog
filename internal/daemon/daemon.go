@@ -377,7 +377,8 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		reread := touched[n] && d.digestRestartRead(ctx, n, &touches) // as on a restart's first pass
 		s := d.snaps[n]
 		if !reread && (touched[n] || (!read[n] && !slices.ContainsFunc(s.Labels, isReview) && !slices.ContainsFunc(s.Labels, flagAsked) &&
-			!slices.ContainsFunc(s.Labels, discHeldLabel) && !slices.ContainsFunc(s.Labels, isNeedsHuman) && !d.openErrs[n])) {
+			!slices.ContainsFunc(s.Labels, discHeldLabel) && !slices.ContainsFunc(s.Labels, isNeedsHuman) && !followUpWaits(s, d.Step.AppSlug) &&
+			!d.openErrs[n])) {
 			continue
 		}
 		touches.begin()

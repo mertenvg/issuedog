@@ -30,7 +30,9 @@ const approvedLabel = "approved"
 //     stage label. The move is keyed event=<that labeled event>.
 //
 // Otherwise the issue stays: an untrusted author's issue waits for approved,
-// and one with no stage label and no approved is left to triage. Its
+// and one with no stage label and no approved is left to triage. So does a
+// follow-up, whatever its labels: only a trusted 👍 on it, its approval
+// (FollowUpByReaction), or an override moves it on (SPEC §6.2). The move's
 // comment says why the issue is in and, as SPEC §4 and §6.2 say, tells a bug or
 // a task that it waits at clarifying until phase 3, and a story with a
 // parent that it waits there too, since the interviewer doesn't run on it.
@@ -54,7 +56,7 @@ func (st *Step) IntakeVisit(ctx context.Context, s *github.Snapshot) error {
 		return wrap(err)
 	}
 	is := state.Derive(s, st.AppSlug, d.Has)
-	if is.Stage != state.Intake {
+	if is.Stage != state.Intake || is.Item.FollowUp {
 		return nil
 	}
 	stages := stageLabels(s.Labels)

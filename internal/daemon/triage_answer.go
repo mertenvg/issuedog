@@ -37,12 +37,17 @@ func FlagCommands() map[string]Handler {
 	}
 }
 
-// flagTrackCheck rejects a /track when the table has no move to
-// clarifying for the issue, as for a type the pipeline doesn't know. Once
-// Apply's marker exists, the stage is clarifying, so Step finishes the
-// command before it asks Check.
+// flagTrackCheck rejects a /track on a follow-up, saying how to approve
+// it, as only its approval moves it on (SPEC §6.2), and when the table has
+// no move to clarifying for the issue, as for a type the pipeline doesn't
+// know. Once Apply's marker exists, the stage is clarifying, so Step
+// finishes the command before it asks Check.
 func flagTrackCheck(_ context.Context, a *Applier, c Cmd) error {
-	why, err := noRow(state.Derive(c.S, a.AppSlug, c.Dirt.Has), flagAdmit(c.S, state.CmdKey(c.Comment.ID), ""))
+	is := state.Derive(c.S, a.AppSlug, c.Dirt.Has)
+	if is.Item.FollowUp {
+		return Rejection{Reason: followUpTrackReason, Final: true}
+	}
+	why, err := noRow(is, flagAdmit(c.S, state.CmdKey(c.Comment.ID), ""))
 	switch {
 	case StateError(err):
 		return Rejection{Reason: "this issue can't move to `clarifying`: " + why}
@@ -51,6 +56,10 @@ func flagTrackCheck(_ context.Context, a *Applier, c Cmd) error {
 	}
 	return nil
 }
+
+// followUpTrackReason is why /track doesn't admit a follow-up, and how to
+// approve or drop it instead (SPEC §6.2, §10.2).
+const followUpTrackReason = "this is a follow-up, which `/track` doesn't admit. React 👍 to it to approve it, or close it to drop it"
 
 // flagTrack admits c's issue: the move keyed by c, then the triage:*
 // labels off, then the 👍, which ends the command. A crash before the 👍
