@@ -9,8 +9,12 @@ import (
 	"github.com/mertenvg/logr/v2"
 )
 
-// originRepostText is the App's line above an origin marker it reposts.
-const originRepostText = "This issue's description was edited, so I've copied its `origin` marker here to keep tracking it in its plan."
+// originRepostText is the App's line above an origin marker it reposts,
+// and followUpRepostText a follow-up's, which has no plan.
+const (
+	originRepostText   = "This issue's description was edited, so I've copied its `origin` marker here to keep tracking it in its plan."
+	followUpRepostText = "This issue's description was edited, so I've copied its `origin` marker here to keep tracking it as a follow-up."
+)
 
 // originRepost posts again, in an App comment, the origin marker an
 // App-filed issue's body no longer gives (#291; SPEC §5: "or
@@ -46,16 +50,20 @@ func (a *Applier) originRepost(ctx context.Context, s *github.Snapshot, d Dirt) 
 		return wrap(err)
 	}
 	logr.Infof("%s/%s#%d: its description lost its origin marker, so posting it again in a comment", a.Owner, a.Repo, s.Number)
-	if err := a.comment(ctx, s, join(originRepostText, marker)); err != nil {
+	text := originRepostText
+	if _, _, _, ok := state.FollowUpOf(m); ok {
+		text = followUpRepostText
+	}
+	if err := a.comment(ctx, s, join(text, marker)); err != nil {
 		return wrap(err)
 	}
 	return nil
 }
 
 // originLost returns the origin marker an App-filed issue's body no
-// longer gives: the one originRepost posts again, and the one childOrigins
-// matches a child by until that repost exists (SPEC §5.2, §6.4). It's
-// false unless all three hold:
+// longer gives, a plan's or a follow-up's: the one originRepost posts
+// again, and the one childOrigins matches a child by until that repost
+// exists (SPEC §5.2, §6.4). It's false unless all three hold:
 //   - the App wrote the issue;
 //   - s has no Origin (state.Derive), in the body or a clean App comment;
 //   - the body's markers aren't read: it's dirty, or someone other than
@@ -81,7 +89,7 @@ func (a *Applier) originRepost(ctx context.Context, s *github.Snapshot, d Dirt) 
 // keeps that in memory, by issue and body text, which an edit changes, so
 // the next call over the same body logs nothing and reads no history.
 func (a *Applier) originLost(ctx context.Context, s *github.Snapshot, d Dirt) (github.Marker, bool, error) {
-	if !state.IsApp(s.Author, a.AppSlug) || state.Derive(s, a.AppSlug, d.Has).Origin.Plan != 0 {
+	if !state.IsApp(s.Author, a.AppSlug) || state.Derive(s, a.AppSlug, d.Has).Origin.Any() {
 		return github.Marker{}, false, nil
 	}
 	if e := s.BodyEdit; !d.Has(state.BodyID) && (e.At.IsZero() || state.IsApp(e.By, a.AppSlug)) {

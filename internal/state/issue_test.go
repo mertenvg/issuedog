@@ -625,8 +625,8 @@ func TestDeriveMarkerComments(t *testing.T) {
 
 // FollowUpOf reads an origin marker naming a verify, with all three of its
 // fields: a plan's origin, another kind of marker, and a field that's missing
-// or bad give nothing. Derive reads no Origin from one, as a follow-up's class
-// is #621's.
+// or bad give nothing. Derive reads one as a follow-up's Origin, with
+// FollowUp set and FromPlan not (SPEC §5, Follow-ups).
 func TestFollowUpOf(t *testing.T) {
 	t.Parallel()
 	marker := func(kind string, kv ...string) github.Marker {
@@ -662,7 +662,81 @@ func TestFollowUpOf(t *testing.T) {
 	}
 	s := snap("A follow-up.\n\n<!-- issuedog:origin verify=#620 run=r item=F1 -->", nil)
 	s.Author = appBot
-	if is := Derive(s, slug, clean); is.Origin != (Origin{}) || is.Item.FromPlan {
-		t.Errorf("Derive gave Origin %+v, FromPlan %t; want neither", is.Origin, is.Item.FromPlan)
+	want := Origin{Verify: 620, Run: "r", Item: "F1", Comment: BodyID}
+	if is := Derive(s, slug, clean); is.Origin != want || is.Item.FromPlan || !is.Item.FollowUp {
+		t.Errorf("Derive gave Origin %+v, FromPlan %t, FollowUp %t; want %+v, a follow-up's alone", is.Origin, is.Item.FromPlan, is.Item.FollowUp, want)
+	}
+}
+
+// Derive reads a follow-up's origin, verify=#N run=ID item=F<k>, where it
+// reads a plan's (SPEC §5): from the App's clean body, or else from the
+// newest clean App comment with a whole one, as the App's repost of a lost
+// marker (SPEC §6.4). The body's marker wins while it's read, a plan's or
+// a follow-up's, over a comment's of either. FollowUp follows it, and
+// FromPlan stays false, so the plan order and a plan's children leave it
+// alone. A marker in a
+// person's issue or comment, in a dirty body or App comment, in a body
+// someone else edited last, or one that isn't whole, gives none, so the
+// issue is no follow-up. A follow-up's human=1 and check fields are
+// ignored: it's never a human task. Any is true exactly when there's an
+// origin, a plan's or a follow-up's.
+func TestDeriveFollowUpOrigin(t *testing.T) {
+	t.Parallel()
+	const origin = "<!-- issuedog:origin verify=#736 run=run7 item=F2 -->"
+	body := Origin{Verify: 736, Run: "run7", Item: "F2", Comment: BodyID}
+	inComment := Origin{Verify: 736, Run: "run7", Item: "F2", Comment: 1}
+	app := []github.Author{appBot}
+	editedBy := func(by github.Author, bodyText string, authors []github.Author, comments ...string) *github.Snapshot {
+		s := snap(bodyText, authors, comments...)
+		s.BodyEdit = github.Edit{By: by, At: time.Unix(5, 0)}
+		return s
+	}
+	byPerson := func(authors []github.Author, comments ...string) *github.Snapshot {
+		s := snap("A follow-up, filed by a person.\n\n"+origin, authors, comments...)
+		s.Author = owner
+		return s
+	}
+	for _, tt := range []struct {
+		name  string
+		s     *github.Snapshot
+		dirty func(int64) bool
+		want  Origin
+	}{
+		{"the App's clean body", snap("Refuse it.\n\n"+origin, nil), clean, body},
+		{"other fields, human=1 and a check among them", snap("<!-- issuedog:origin check=label human=1 item=F2 run=run7 value=x verify=#736 -->", nil), clean, body},
+		{"a body the App edited last", editedBy(appBot, "Refuse it.\n\n"+origin, nil), clean, body},
+		{"a clean App comment, the body edited by someone else", editedBy(owner, "Refuse it, edited.", app, "Reposted.\n\n"+origin), clean, inComment},
+		{"a clean App comment, the body dirty", snap("Refuse it.", app, "Reposted.\n\n"+origin), dirtyIDs(BodyID), inComment},
+		{"a body and a comment that are both read", snap("Refuse it.\n\n"+origin, app, "<!-- issuedog:origin verify=#736 run=run8 item=F5 -->"), clean, body},
+		{"a comment after a plan's in the body", snap("Refuse it.\n\n<!-- issuedog:origin plan=#621 rev=1 item=T1 -->", app, origin), clean,
+			Origin{Plan: 621, Rev: 1, Item: "T1", Comment: BodyID}},
+		{"a body someone else edited last", editedBy(owner, "Refuse it.\n\n"+origin, nil), clean, Origin{}},
+		{"a dirty body", snap("Refuse it.\n\n"+origin, nil), dirtyIDs(BodyID), Origin{}},
+		{"a dirty App comment", editedBy(owner, "Refuse it, edited.", app, origin), dirtyIDs(1), Origin{}},
+		{"a person's issue", byPerson(nil), clean, Origin{}},
+		{"a person's issue with the marker in their comment", byPerson([]github.Author{owner}, origin), clean, Origin{}},
+		{"an escaped marker", snap(github.Escape(origin), nil), clean, Origin{}},
+		{"a marker that isn't whole", snap("<!-- issuedog:origin verify=#736 item=F2 -->", nil), clean, Origin{}},
+	} {
+		is := Derive(tt.s, slug, tt.dirty)
+		if is.Origin != tt.want {
+			t.Errorf("%s: origin = %+v, want %+v", tt.name, is.Origin, tt.want)
+		}
+		if is.Item.FollowUp != (tt.want.Verify != 0) || is.Item.FromPlan != (tt.want.Plan != 0) || is.Item.Human {
+			t.Errorf("%s: FollowUp %t, FromPlan %t, Human %t; want %t, %t and no human task", tt.name,
+				is.Item.FollowUp, is.Item.FromPlan, is.Item.Human, tt.want.Verify != 0, tt.want.Plan != 0)
+		}
+		if is.Origin.Any() != (tt.want != Origin{}) {
+			t.Errorf("%s: Any = %t, want %t", tt.name, is.Origin.Any(), tt.want != Origin{})
+		}
+	}
+	// OriginMarker and OriginOf read it as Derive does, for a repost of a
+	// lost marker (SPEC §6.4).
+	m, ok := OriginMarker("Refuse it.\n\n" + origin)
+	if o, whole := OriginOf(m); !ok || !whole || o != body {
+		t.Errorf("OriginMarker, OriginOf = %+v, %t, %+v, %t; want the follow-up's marker and %+v", m, ok, o, whole, body)
+	}
+	if plan := (Origin{Plan: 9, Rev: 1, Item: "T1"}); !plan.Any() {
+		t.Errorf("Any of %+v = false, want true", plan)
 	}
 }

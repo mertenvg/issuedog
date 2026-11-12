@@ -66,21 +66,25 @@ type Issue struct {
 	// HeldStack is what holds the issue while Stage is Held, else the zero
 	// HeldStack.
 	HeldStack HeldStack
-	// Origin is the plan item the App filed the issue from, from the
-	// origin marker in its body or else in the newest clean App comment
-	// that has one, or the zero Origin with none (originOf).
+	// Origin is the plan item, or the verify's follow-up candidate, the
+	// App filed the issue from, from the origin marker in its body or else
+	// in the newest clean App comment that has one, or the zero Origin with
+	// none (originOf).
 	Origin Origin
 }
 
 // Origin is an issue's origin marker (SPEC §16, "Created issues"): the
-// plan item the App filed it from, as origin plan=#N rev=R item=ID. It's
-// the one place the marker is read, and what every later reader builds on
-// (SPEC §5):
+// plan item the App filed it from, as origin plan=#N rev=R item=ID, or for
+// a follow-up, the verify that found it, as origin verify=#N run=ID
+// item=F<k> (SPEC §5, §10.2). It's the one place the marker is read, and
+// what every later reader builds on (SPEC §5):
 //   - the digest's plan order (SPEC §9.4), which lists the stories one plan
 //     filed together, in the plan's item order (waitRank);
 //   - matching created children to their plan items (SPEC §5.2), and
 //     Item.Human, from a human task's human=1 (SPEC §9.3, Human);
-//   - the class: Item.FromPlan is true exactly when there's one (#290).
+//   - the class: Item.FromPlan is true exactly when it names a plan
+//     (#290), and Item.FollowUp exactly when it names a verify, which
+//     makes the issue a task the daemon filed, as a plan's is (SPEC §7.2).
 //
 // Derive reads it where SPEC §5 has it, "in the body … or reposted in a
 // comment once that body is dirty" (#290):
@@ -101,18 +105,27 @@ type Issue struct {
 // and the body's marker wins while it's read. Of several clean App
 // comments with a whole marker, the newest counts.
 //
-// Plan is above 0 whenever there is one: the zero Origin is none, so
-// callers check Plan. Fields the marker has besides plan, rev, item, human
-// and a human task's check fields aren't kept here, and don't stop it from
-// being read.
+// Plan is above 0 for a plan's item, and Verify for a follow-up: the zero
+// Origin is none, so callers check Any, or Plan for a plan's item alone. A
+// follow-up's Plan is 0, so the plan order and the matching of a plan's
+// children leave it alone. Fields the marker has besides plan, rev, item,
+// human and a human task's check fields, or a follow-up's verify, run and
+// item, aren't kept here, and don't stop it from being read.
 type Origin struct {
 	// Plan is the number of the issue whose plan the item is from, from
 	// plan=#N.
 	Plan int
+	// Verify is the number of the issue whose verify found a follow-up,
+	// from verify=#N (SPEC §5, Follow-ups). It's 0 for a plan's item.
+	Verify int
+	// Run is the verifier run that found a follow-up, from run=. It's
+	// empty for a plan's item.
+	Run string
 	// Rev is the plan revision the item was filed from, from rev=. A kept
 	// item keeps the rev it was filed at after a re-plan (SPEC §16).
 	Rev int
-	// Item is the item's ID in the plan, such as S2 or T4, from item=.
+	// Item is the item's ID in the plan, such as S2 or T4, from item=, or
+	// a follow-up's place in its passing verdict, such as F1.
 	Item string
 	// Comment is the ID of the comment that holds the marker, or BodyID
 	// for the body.
@@ -132,18 +145,27 @@ type Origin struct {
 
 // originOf returns the Origin that marker m, read in comment id (or
 // BodyID), records, or false if it isn't a whole one: an origin marker
-// with plan=#N and rev=R, each above 0, and a non-empty item. Its human
-// and check fields are read too, and its other fields ignored.
+// with plan=#N and rev=R, each above 0, and a non-empty item, or else a
+// follow-up's whole one (FollowUpOf). A plan's human and check fields are
+// read too, and its other fields ignored. A follow-up is never a human
+// task, so its human and check fields are ignored, as are its others.
 func originOf(m github.Marker, id int64) (Origin, bool) {
 	num, hash := strings.CutPrefix(m.Fields["plan"], "#")
 	plan, perr := strconv.Atoi(num)
 	rev, rerr := strconv.Atoi(m.Fields["rev"])
 	item := m.Fields["item"]
 	if m.Kind != "origin" || !hash || perr != nil || plan <= 0 || rerr != nil || rev <= 0 || item == "" {
+		if verify, run, item, ok := FollowUpOf(m); ok {
+			return Origin{Verify: verify, Run: run, Item: item, Comment: id}, true
+		}
 		return Origin{}, false
 	}
 	return Origin{Plan: plan, Rev: rev, Item: item, Comment: id, Human: m.Fields["human"] == "1", Check: checkOf(m.Fields)}, true
 }
+
+// Any reports whether o is an origin at all: a plan's item's, with Plan
+// above 0, or a follow-up's, with Verify above 0.
+func (o Origin) Any() bool { return o.Plan != 0 || o.Verify != 0 }
 
 // followUpItemRE is a follow-up candidate's place in its passing verdict.
 var followUpItemRE = regexp.MustCompile(`^F[1-9][0-9]*$`)
@@ -153,8 +175,9 @@ var followUpItemRE = regexp.MustCompile(`^F[1-9][0-9]*$`)
 // a non-empty run=, and the candidate's place in its passing verdict, from
 // item=, such as F1. It's false for anything else, a plan's origin among
 // them. Like OriginOf, it doesn't check who wrote m: the caller reads it
-// through github.TrustedMarkers. Derive doesn't read it (originOf), so it
-// gives an issue no Origin and no class.
+// through github.TrustedMarkers. Derive reads it where it reads a plan's
+// (originOf), into Origin's Verify, Run and Item, and the issue is then a
+// follow-up (Item.FollowUp).
 func FollowUpOf(m github.Marker) (verify int, run, item string, ok bool) {
 	num, hash := strings.CutPrefix(m.Fields["verify"], "#")
 	n, err := strconv.Atoi(num)
@@ -166,7 +189,8 @@ func FollowUpOf(m github.Marker) (verify int, run, item string, ok bool) {
 }
 
 // OriginMarker returns the origin marker Derive would read from text as a
-// clean body of the App's: the first whole one (originOf), with every
+// clean body of the App's: the first whole one (originOf), a plan's or a
+// follow-up's, with every
 // field it has, its values as written, so still percent-encoded. It's
 // false if text has none. It doesn't check who wrote text: the caller
 // knows it's the App's, as a version of the body the App wrote is (SPEC
@@ -323,7 +347,7 @@ func createdChildren(field string) ([]int, bool) {
 // body or escape the text they keep (SPEC §5.1), so after one, every
 // marker in the body is the App's. Origin comes from the body's markers
 // while they're read, and else from the newest clean App comment's, and
-// Item.FromPlan follows it (see Origin).
+// Item.FromPlan and Item.FollowUp follow it (see Origin).
 func Derive(s *github.Snapshot, appSlug string, dirty func(id int64) bool) Issue {
 	is := Issue{Stage: Intake, Keys: map[Key]bool{}, Errors: map[ErrorKey]int64{}, Acks: map[ErrorKey]bool{},
 		Item: Item{Type: s.Type, HasParent: s.Parent != 0}}
@@ -346,7 +370,7 @@ func Derive(s *github.Snapshot, appSlug string, dirty func(id int64) bool) Issue
 			// writes, while the body's markers are read. Without one, the
 			// newest clean App comment's: the body is read first, so a
 			// comment's replaces any but the body's.
-			if o, ok := originOf(m, id); ok && (is.Origin.Plan == 0 || is.Origin.Comment != BodyID) {
+			if o, ok := originOf(m, id); ok && (!is.Origin.Any() || is.Origin.Comment != BodyID) {
 				is.Origin = o
 			}
 			if m.Kind == "triage" && id != BodyID {
@@ -358,9 +382,10 @@ func Derive(s *github.Snapshot, appSlug string, dirty func(id int64) bool) Issue
 	for _, c := range s.Comments {
 		read(c.ID, c.Author, c.Body)
 	}
-	// FromPlan follows Origin, so the two always agree (#290): a marker
-	// that isn't a whole one gives neither.
+	// FromPlan and FollowUp follow Origin, so they always agree (#290): a
+	// marker that isn't a whole one gives none of them.
 	is.Item.FromPlan = is.Origin.Plan != 0
+	is.Item.FollowUp = is.Origin.Verify > 0
 	// A human task is known by its origin marker alone, read wherever
 	// Origin is read (#275, #290).
 	is.Item.Human = is.Origin.Human
