@@ -7,4 +7,4 @@ q-65-1               unblocks=1 kind=question p3 created=2026-01-01T00:00:00Z co
 human-64             unblocks=1 kind=human    p1 created=2026-01-01T00:00:00Z comment=0
 human-63             unblocks=1 kind=human    p3 created=2026-01-01T00:00:00Z comment=0
 flag-61-1            unblocks=1 kind=flag     p0 created=2026-01-01T00:00:00Z comment=1
-kind9-62-1           unblocks=1 kind=kind9    p0 created=2026-01-01T00:00:00Z comment=1
+kind10-62-1          unblocks=1 kind=kind10   p0 created=2026-01-01T00:00:00Z comment=1

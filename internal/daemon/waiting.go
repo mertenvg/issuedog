@@ -41,10 +41,11 @@ import (
 
 // waitKind is a kind of item. The order's tie-break after the unblock
 // count (SPEC §9.4, The order) goes by waitKind.rank: state errors, then
-// discussion holds (#192), then approvals, then questions, then human
-// tasks (#287) and hand-offs, then flags, then finished stories (#278). A
-// plan's approval (#270) ranks as an approval, and a hand-off as a human
-// task: each is a kind of its own only for its key and its name.
+// discussion holds (#192), then approvals, then follow-ups waiting for
+// their approval (SPEC §10.2), then questions, then human tasks (#287) and
+// hand-offs, then flags, then finished stories (#278). A plan's approval
+// (#270) ranks as an approval, and a hand-off as a human task: each is a
+// kind of its own only for its key and its name.
 type waitKind int
 
 const (
@@ -57,25 +58,31 @@ const (
 	waitHuman
 	waitDone
 	waitHandoff
+	waitFollowUp
 )
 
 // rank is k's place in SPEC §9.4's order of kinds, lowest first: a plan's
-// approval is an approval's, a human task's and a hand-off's come after a
-// question's and before a flag's (#287), a flag's after that, and a
-// finished story's after every other kind's (#278), as story verification
-// unblocks no other issue. Any other kind ranks by its own value, so a kind
-// appended later, unless it's mapped here, ranks after finished stories:
-// each after waitDone is above waitDone's rank.
+// approval is an approval's, a follow-up's comes after an approval's and
+// before a question's, a human task's and a hand-off's after a question's
+// and before a flag's (#287), a flag's after that, and a finished story's
+// after every other kind's (#278), as story verification unblocks no other
+// issue. Any other kind ranks by its own value, so a kind appended later,
+// unless it's mapped here, ranks after finished stories: each after
+// waitFollowUp is above waitDone's rank.
 func (k waitKind) rank() int {
 	switch k {
 	case waitPlanApproval:
 		return int(waitApproval)
+	case waitFollowUp:
+		return int(waitApproval) + 1
+	case waitQuestion:
+		return int(waitApproval) + 2
 	case waitHuman, waitHandoff:
-		return int(waitQuestion) + 1
+		return int(waitApproval) + 3
 	case waitFlag:
-		return int(waitQuestion) + 2
+		return int(waitApproval) + 4
 	case waitDone:
-		return int(waitQuestion) + 3
+		return int(waitApproval) + 5
 	}
 	return int(k)
 }
@@ -100,6 +107,8 @@ func (k waitKind) String() string {
 		return "done"
 	case waitHandoff:
 		return "handoff"
+	case waitFollowUp:
+		return "followup"
 	}
 	return "kind" + strconv.Itoa(int(k))
 }
@@ -114,8 +123,9 @@ type waitItem struct {
 	// plan-<n>-<rev> for a plan's (plan-<n>-0 with no clean plan revision,
 	// #270), flag-<n>-<comment id>,
 	// err-<n>-<kind>-<key>, hold-<n>-<hold marker id> (holdItemOf),
-	// human-<n> for a human task's (#287) or done-<n> for a finished
-	// story's (#278), of each of which an issue has one at most, or
+	// human-<n> for a human task's (#287), done-<n> for a finished
+	// story's (#278) or followup-<n> for a follow-up's (SPEC §10.2), of
+	// each of which an issue has one at most, or
 	// handoff-<n>-<comment id> for a hand-off's, naming its comment. A hold
 	// is announced by other keys than this one (waitItem.news).
 	Key string
@@ -221,6 +231,13 @@ type waitInput struct {
 	// that an open issue blocks, as its visit read them (Daemon.humanBlocked,
 	// #287), and unset for any other issue.
 	Blocked bool
+	// Addendum is the ID of the clean addendum comment on S's story that
+	// names S, a follow-up waiting at intake, as the story's snapshot the
+	// daemon holds shows it (followUpAddendumOf), at no request, or 0 for
+	// none: for a follow-up with no parent, or whose story the daemon
+	// doesn't hold or has no clean addendum for it, and for any other
+	// issue (Daemon.digestCacheSet).
+	Addendum int64
 }
 
 // waitFind returns what on in.S waits on the owner (SPEC §9.4), in no
@@ -258,6 +275,9 @@ type waitInput struct {
 //     plan revision's children stands (waitDoneChildren), whether or not
 //     they're closed: the digest and assignment judge that on each pass
 //     (Daemon.digestDoneStands). It links the issue;
+//   - at intake, a follow-up waiting for its approval (SPEC §10.2), when
+//     a 👍 would approve it (followUpApprovable). It links its addendum on
+//     its story, in.Addendum, or with none the issue (waitFollowUpLines);
 //   - at intake with no stage label, a flag: when the latest triage
 //     marker has verdict=ask, as FlagByReaction answers it.
 //
@@ -343,6 +363,15 @@ func waitFind(in waitInput) ([]waitItem, error) {
 		add(waitDone, "", state.BodyID, waitDoneLines(children))
 		items[len(items)-1].Key = fmt.Sprintf("%s-%d", waitKeyPrefix[waitDone], s.Number)
 		items[len(items)-1].Children = children
+	case followUpApprovable(s, is):
+		// An issue is one follow-up at most: its key is followup-<n>. It
+		// links its clean addendum, on its story, if there is one.
+		add(waitFollowUp, "", state.BodyID, waitFollowUpLines(in, is))
+		it := &items[len(items)-1]
+		it.Key = fmt.Sprintf("%s-%d", waitKeyPrefix[waitFollowUp], s.Number)
+		if in.Addendum != 0 {
+			it.Link, it.Comment = waitLink(in.Owner, in.Repo, s.Parent, in.Addendum), in.Addendum
+		}
 	case is.Stage == state.Intake && stageOf(s) == "" && is.Triage.Verdict == triageAsk:
 		lines := []waitLine{{Text: "Triage flagged this issue: should issuedog handle it?"}}
 		heading := fmt.Sprintf("### Should issuedog handle #%d?", s.Number)
@@ -356,7 +385,7 @@ func waitFind(in waitInput) ([]waitItem, error) {
 
 // waitKeyPrefix starts each kind's key.
 var waitKeyPrefix = map[waitKind]string{waitError: "err", waitHold: "hold", waitApproval: "rev", waitQuestion: "q", waitFlag: "flag",
-	waitPlanApproval: "plan", waitHuman: "human", waitDone: "done", waitHandoff: "handoff"}
+	waitPlanApproval: "plan", waitHuman: "human", waitDone: "done", waitHandoff: "handoff", waitFollowUp: "followup"}
 
 // waitLink is the link to comment id on issue n, or to the issue itself
 // when id is state.BodyID: an error in the body (#155's verify).
@@ -635,6 +664,26 @@ func waitHandoffLines(s *github.Snapshot, id int64) []waitLine {
 		lines = append(lines, waitLine{Text: "See the hand-off for what to do."})
 	}
 	return append(lines, waitLine{Text: "When it's done, reply `/done` on the issue or react 👍 to the hand-off."})
+}
+
+// waitFollowUpLines returns the lines of a follow-up waiting at intake for
+// its approval (SPEC §9.4, §10.2), whose state is is: that it waits, naming
+// the issue whose verify found it, from its origin marker, then how to
+// approve it, and that closing it drops it. A 👍 on its addendum approves
+// it only on a clean one on its story (FollowUpByReaction), in.Addendum,
+// which the item then links. With none, the lines name only a 👍 on the
+// issue, which the item links. Every line is this file's own words, with
+// only numbers in them.
+func waitFollowUpLines(in waitInput, is state.Issue) []waitLine {
+	approve := "React 👍 to the issue to approve it, and it goes to `ready`."
+	if in.Addendum != 0 {
+		approve = fmt.Sprintf("React 👍 to its addendum on #%d, or to the issue, to approve it, and it goes to `ready`.", in.S.Parent)
+	}
+	return []waitLine{
+		{Text: fmt.Sprintf("A follow-up the verifier found on #%d waits for your approval.", is.Origin.Verify)},
+		{Text: approve},
+		{Text: "Close the issue to drop it."},
+	}
 }
 
 // waitDoneChildren returns the children of in.S, an issue at planned
