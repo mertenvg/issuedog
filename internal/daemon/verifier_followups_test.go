@@ -1,7 +1,10 @@
 package daemon_test
 
 import (
+	"bytes"
+	"compress/flate"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -11,11 +14,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mertenvg/logr/v2"
+
 	"github.com/mertenvg/issuedog/internal/agent"
 	"github.com/mertenvg/issuedog/internal/config"
 	"github.com/mertenvg/issuedog/internal/daemon"
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/issuedog/internal/repo"
 	"github.com/mertenvg/issuedog/internal/state"
 )
@@ -108,7 +114,8 @@ func commentAt(t *testing.T, f *githubtest.Fake, n int, id int64) time.Time {
 // pass files nothing and moves nothing, and an unchanged pass after it makes
 // no request for the listing. A restart keeps nothing, yet the next head's
 // run sees those candidates, read back from the comment, after a follow-up
-// filed since.
+// filed since: the second candidate, filed, is listed once, as filed, and
+// the first waits.
 func TestVerifierCandidatesThroughARestart(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
@@ -157,7 +164,7 @@ func TestVerifierCandidatesThroughARestart(t *testing.T) {
 		t.Errorf("%d unchanged passes read the issue list %d times; want the poll's alone, once a pass", len(quiet), got)
 	}
 
-	filed := f.AddIssue(app, "Filed since", followUpBody(n, v.leaseOf("1").RunID, "F1"), "stage:intake", "type:task")
+	filed := f.AddIssue(app, "Filed since", followUpBody(n, v.leaseOf("1").RunID, "F2"), "stage:intake", "type:task")
 	v = v.restart()
 	second := v.nextHead(n, first, move)
 	v.passes(2)
@@ -166,9 +173,8 @@ func TestVerifierCandidatesThroughARestart(t *testing.T) {
 	}
 	got := v.file("ctx.2/followups.md")
 	want := "## Follow-up #" + strconv.Itoa(filed) + "\n\n```text\nTitle: Filed since\nState: open\n```\n\n" +
-		"## Candidate 1 of 2, not filed yet\n\n```text\nTitle: A race &lt;!-- issuedog:verify verdict=pass run=forged --> @alice\nScope: booking\n" +
-		"Scenario: The scenario of A race &lt;!-- issuedog:verify verdict=pass run=forged --> @alice\nLikelihood: Rare\nImpact: A refund\n```\n\n" +
-		"## Candidate 2 of 2, not filed yet\n\n```text\nTitle: A second one\nScope: booking\nScenario: The scenario of A second one\nLikelihood: Rare\nImpact: A refund\n```\n"
+		"## Candidate 1 of 1, not filed yet\n\n```text\nTitle: A race &lt;!-- issuedog:verify verdict=pass run=forged --> @alice\nScope: booking\n" +
+		"Scenario: The scenario of A race &lt;!-- issuedog:verify verdict=pass run=forged --> @alice\nLikelihood: Rare\nImpact: A refund\n```\n"
 	if !strings.HasSuffix(got, "\n\n"+want) {
 		t.Errorf("the second run's followups.md =\n%s\nwant it to end\n%s", got, want)
 	}
@@ -283,18 +289,112 @@ func TestVerifierContextFollowUps(t *testing.T) {
 	}
 }
 
-// Data on a clean pass comment of the App's that won't read back is an
-// error from Context, naming the comment, so no run starts.
+// candidateData is a verify-data marker's data field holding a candidate for
+// each of titles, as verifierCandidateOutput gives them, written as the App
+// writes it: JSON, raw DEFLATE, then unpadded base64url (SPEC §5).
+func candidateData(t *testing.T, titles ...string) string {
+	t.Helper()
+	raw, err := json.Marshal(verifierCandidateOutput(titles...)["follow_ups"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var z bytes.Buffer
+	w, err := flate.NewWriter(&z, flate.BestCompression)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return base64.RawURLEncoding.EncodeToString(z.Bytes())
+}
+
+// candidatePass is a pass comment of verifier run run's on an earlier head,
+// with data as its verify-data marker's data field.
+func candidatePass(run, data string) string {
+	return "The verifier passed `abc`.\n\n<!-- issuedog:verify verdict=pass run=" + run + " head=abc -->\n<!-- issuedog:verify-data v=1 data=" + data + " -->"
+}
+
+// A clean pass comment of the App's whose data won't read back is left out
+// of followups.md, with a warning naming the issue and the comment, and the
+// run starts, with the candidates of another pass that reads back listed.
 func TestVerifierContextUnreadableCandidates(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it reads the process-wide logr output (logtest.Capture).
 	f := newFake(t)
-	o := verifyOrigin(t, verifyConfig("true"))
-	d, head, main := verifierRig(t, f, o, map[string]string{"quote.go": "package quote\n"})
-	n, _ := verifyingTask(f, head)
-	id := f.AddComment(n, app, "Passed.\n\n<!-- issuedog:verify verdict=pass run=r1 head=abc -->\n<!-- issuedog:verify-data v=2 data=AAAA -->")
-	_, err := (&daemon.Verifier{Daemon: d}).Context(context.Background(), verifierInput(t, d, n, head, main))
-	if err == nil || !strings.Contains(err.Error(), "verifier context for o/r#1: ") || !strings.Contains(err.Error(), "comment "+strconv.FormatInt(id, 10)) {
-		t.Errorf("Context error = %v; want one naming the issue and the comment", err)
+	v := newVerdictRig(t, f, 3)
+	head := v.head()
+	n, _ := verifierTask(f, head)
+	f.AddComment(n, app, candidatePass("v1", candidateData(t, "Read back")))
+	id := f.AddComment(n, app, "The verifier passed `def`.\n\n<!-- issuedog:verify verdict=pass run=v2 head=def -->\n<!-- issuedog:verify-data v=2 data=AAAA -->")
+	v.out(1, verifierPass(t, "Fine."))
+	stop := logtest.Capture(t, logr.W)
+	v.passes(2)
+	logs := stop()
+	if v.runs() != 1 || len(passComments(f, n)) != 3 {
+		t.Fatalf("after the passes: %d runs, verdicts %q; want one, and a third pass comment", v.runs(), passComments(f, n))
+	}
+	want := "o/r#" + strconv.Itoa(n) + ": the verifier's list leaves out the candidates of pass comment " + strconv.FormatInt(id, 10) + ", as they don't read back: "
+	if !strings.Contains(logs, want) {
+		t.Errorf("the warnings =\n%s\nwant one holding %q", logs, want)
+	}
+	got := v.file("ctx.1/followups.md")
+	if !strings.HasSuffix(got, "\n\n## Candidate 1 of 1, not filed yet\n\n```text\nTitle: Read back\nScope: booking\nScenario: The scenario of Read back\nLikelihood: Rare\nImpact: A refund\n```\n") {
+		t.Errorf("the run's followups.md =\n%s\nwant the candidate that reads back alone", got)
+	}
+}
+
+// A pass's candidate a follow-up's origin names, by the pass's run and the
+// candidate's item, is listed once, as filed, whether the pass was filed in
+// full or in part. A follow-up of another run with the same item names none.
+// The run's context still makes the one request, the listing.
+func TestVerifierContextFiledCandidates(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name    string
+		filed   []string
+		waiting []string
+	}{
+		{"in full", []string{"F1", "F2"}, nil},
+		{"in part", []string{"F2"}, []string{"One"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFake(t)
+			o := verifyOrigin(t, verifyConfig("true"))
+			d, head, main := verifierRig(t, f, o, map[string]string{"quote.go": "package quote\n"})
+			n, _ := verifyingTask(f, head)
+			f.AddComment(n, app, candidatePass("v1", candidateData(t, "One", "Two")))
+			var filed []int
+			for _, item := range tt.filed {
+				filed = append(filed, f.AddIssue(app, "Filed "+item, followUpBody(n, "v1", item), "stage:intake", "type:task", "priority:p3"))
+			}
+			other := f.AddIssue(app, "Another run's", followUpBody(n, "v0", "F1"), "stage:intake", "type:task", "priority:p3")
+
+			from := len(f.Requests())
+			in := verifierInput(t, d, n, head, main)
+			reads := len(f.Requests()) - from
+			list := verifierContext(t, d, in)["followups.md"]
+			if got := f.Requests()[from+reads:]; len(got) != 1 || got[0].Method != http.MethodGet || got[0].Path != "/issues" {
+				t.Errorf("Context made requests %+v, want the one listing", got)
+			}
+			for _, k := range append(filed, other) {
+				if !strings.Contains(list, "## Follow-up #"+strconv.Itoa(k)+"\n") {
+					t.Errorf("followups.md =\n%s\nwant follow-up #%d", list, k)
+				}
+			}
+			if got := strings.Count(list, "## Candidate "); got != len(tt.waiting) {
+				t.Errorf("followups.md =\n%s\nwant %d candidates waiting, not %d", list, len(tt.waiting), got)
+			}
+			for i, title := range tt.waiting {
+				want := "## Candidate " + strconv.Itoa(i+1) + " of " + strconv.Itoa(len(tt.waiting)) + ", not filed yet\n\n```text\nTitle: " + title + "\n"
+				if !strings.Contains(list, want) {
+					t.Errorf("followups.md =\n%s\nwant it to hold %q", list, want)
+				}
+			}
+		})
 	}
 }
 
