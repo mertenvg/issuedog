@@ -52,8 +52,10 @@ func filingFollowUps(f *githubtest.Fake) []githubtest.IssueState {
 // and stage:intake, whose body names the pass, gives the candidate's
 // fields, says how to approve it, ends in the cc line and has its origin
 // last, then the record on the task, naming both. The pass after reads
-// what it wrote, and writes nothing, and each unchanged pass after makes no
-// request but 304s, writes nothing and starts no run. claude ran twice in
+// what it wrote: the digest, #2, lists both follow-ups, and notify is
+// assigned to each. The pass after that reads those writes, and writes
+// nothing, and each unchanged pass after makes no request but 304s,
+// writes nothing and starts no run. claude ran twice in
 // all, the implementer and the verifier, so no other Stage ran, triage, the
 // Unlabeled stage, included, on the follow-ups or anything else.
 func TestFollowUpsWholeRun(t *testing.T) {
@@ -105,10 +107,29 @@ func TestFollowUpsWholeRun(t *testing.T) {
 		t.Errorf("the task's last comment =\n%s\nwant the record, the filing's last write", comments[len(comments)-1].Body)
 	}
 
+	// The pass after reads the follow-ups, each waiting for its approval:
+	// the digest lists both, and notify is assigned to each, with no
+	// announcement, as each body's cc line mentioned notify (SPEC §9.4,
+	// §9.6).
 	writes := len(f.Writes())
 	v.pass()
+	if got, want := writesOf(f)[writes:], []string{"PATCH /issues/2", "POST /issues/" + strconv.Itoa(issues+1) + "/assignees",
+		"POST /issues/" + strconv.Itoa(issues+2) + "/assignees"}; !slices.Equal(got, want) {
+		t.Errorf("the pass after the filing wrote %q, want %q", got, want)
+	}
+	digest := f.State().Issues[1].Body
+	if items := digestRunItems(digest); !slices.Equal(items, []string{"#" + strconv.Itoa(issues+1) + " Follow-up p3 1", "#" + strconv.Itoa(issues+2) + " Follow-up p3 1"}) {
+		t.Errorf("the digest lists %q; want the two follow-ups", items)
+	}
+	for _, fu := range []int{issues + 1, issues + 2} {
+		if got := assignees(f, fu); !slices.Equal(got, []string{wholeRunOwner}) {
+			t.Errorf("follow-up #%d's assignees = %q; want %s", fu, got, wholeRunOwner)
+		}
+	}
+	writes = len(f.Writes())
+	v.pass()
 	if got := f.Writes()[writes:]; len(got) != 0 {
-		t.Errorf("the pass after the filing wrote %+v, want nothing", got)
+		t.Errorf("the pass that reads the follow-ups again wrote %+v, want nothing", got)
 	}
 	for _, step := range []string{"first", "second"} {
 		v.quietPass(step)

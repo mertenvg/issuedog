@@ -31,6 +31,20 @@ func followUpWaits(s *github.Snapshot, appSlug string) bool {
 	})
 }
 
+// followUpApprovable reports whether s, whose state is is, is a follow-up
+// waiting at intake that a 👍 would approve (SPEC §10.2): open, at intake,
+// with a follow-up's origin marker (state.Item.FollowUp), and still a task.
+// One retyped is left to the type check (SPEC §5.3), which reports it.
+// FollowUpByReaction acts only on such an issue, and the digest lists it
+// as a follow-up (waitFind), so the two agree.
+func followUpApprovable(s *github.Snapshot, is state.Issue) bool {
+	if s.Closed || is.Stage != state.Intake || !is.Item.FollowUp {
+		return false
+	}
+	class, err := state.ClassOf(is.Item)
+	return err == nil && class == state.ClassTask
+}
+
 // firstTrustedThumb returns the 👍 that a reaction command takes from
 // reactions (SPEC §6.1, §9.2), or nil if none counts: the earliest, by
 // reaction ID, whose user trust trusts and isn't a bot, so neither the App
@@ -108,11 +122,8 @@ func FollowUpByReaction(trust github.Trust, held func(n int) *github.Snapshot) f
 			return fmt.Errorf("follow-up approval by 👍 on %s/%s#%d: %w", a.Owner, a.Repo, s.Number, err)
 		}
 		is := state.Derive(s, a.AppSlug, d.Has)
-		if s.Closed || is.Stage != state.Intake || !is.Item.FollowUp {
+		if !followUpApprovable(s, is) {
 			return nil
-		}
-		if class, err := state.ClassOf(is.Item); err != nil || class != state.ClassTask {
-			return nil // a type change; the type check (SPEC §5.3) reports it
 		}
 		reactions, err := a.Client.IssueReactions(ctx, a.Owner, a.Repo, s.Number)
 		if err != nil {

@@ -113,8 +113,9 @@ func commentAt(t *testing.T, f *githubtest.Fake, n int, id int64) time.Time {
 // them, escaped, with the verify-data marker after the verify marker. The
 // pass files nothing and moves nothing. A follow-up of the second is filed
 // since, as by a filing that stopped before its record, so the next pass
-// finds it and files the first alone, read back from the comment, and an
-// unchanged pass after that makes no request for the listing. A restart
+// finds it and files the first alone, read back from the comment, and,
+// once the follow-ups are listed and assigned, an unchanged pass after
+// that makes no request for the listing. A restart
 // keeps nothing, yet the next head's run sees each candidate once, as filed,
 // and none as waiting.
 func TestVerifierCandidatesThroughARestart(t *testing.T) {
@@ -161,7 +162,10 @@ func TestVerifierCandidatesThroughARestart(t *testing.T) {
 	if len(follow) != 2 || follow[0].Number != filed || follow[1].Title != hostile {
 		t.Fatalf("the follow-ups = %+v; want #%d, found, and the first candidate's, filed", follow, filed)
 	}
-	v.pass()
+	// The pass after reads the follow-ups, lists them on the digest and
+	// assigns notify to them (SPEC §9.4, §9.6), and the one after that
+	// reads those writes.
+	v.passes(2)
 	reads := issueReads(f)
 	quiet := []string{"first", "second"}
 	for _, step := range quiet {

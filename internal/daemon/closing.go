@@ -24,7 +24,9 @@ import (
 // reopened event decides:
 //   - An accepted close stands: the issue gets the closed stage its close
 //     names, stage:completed or stage:discarded (state.ClosingStage), in
-//     place of its other stage labels, with no comment (closingJudge).
+//     place of its other stage labels, with no comment (closingJudge). A
+//     follow-up that waited for its approval loses notify first, as its
+//     close drops it (assignClosedFollowUp).
 //   - An untrusted close is reverted: the App reopens the issue, leaving its
 //     stage label alone. A write collaborator's close is a discussion
 //     trigger, keyed event=<its timeline event id> (SPEC §6.4), so
@@ -408,6 +410,11 @@ func (d *Daemon) closingJudge(ctx context.Context, is *gogithub.Issue) (done, re
 			return false, false, wrap(err)
 		}
 		return reverted, reverted, nil
+	}
+	// A follow-up's close drops it, so notify goes, before the closed
+	// stage takes stage:intake off (assignClosedFollowUp).
+	if err := d.assignClosedFollowUp(ctx, is); err != nil {
+		return false, false, wrap(err)
 	}
 	s := &github.Snapshot{Number: n, Closed: true}
 	for _, l := range is.Labels {
