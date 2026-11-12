@@ -25,8 +25,9 @@ import (
 
 // A verifier run after the checks (SPEC §8.1, §8.2, §10.2), on a rig wired
 // as main's, with real temporary repos and a fake claude. Each verifier
-// run's verdict is the one the test gives it. Nothing here files a
-// follow-up or builds a PR: those are #621's and #622's. A request_changes
+// run's verdict is the one the test gives it. Filing a pass's candidates
+// is followup_file_test.go's and followup_run_test.go's, and nothing here
+// builds a PR, which is #622's. A request_changes
 // and no readable verdict are verifier_apply_test.go's and
 // verifier_round_test.go's, and a question verifier_question_test.go's.
 
@@ -223,8 +224,9 @@ func (v *verdictRig) quietPass(step string) {
 // labels, a fresh HOME and the commands' results in checks.md. Its pass is
 // one comment naming the head, the notes and the candidate, with the verify
 // marker and the candidate's data, and moves nothing. Its commit goes nowhere, nothing of the run is left, and
-// each unchanged pass after makes no request but 304s, while the task
-// holds the worker.
+// once the next pass has filed the candidate and the one after has read
+// what it wrote, each unchanged pass after makes no request but 304s,
+// while the task holds the worker.
 func TestVerifierWholeRun(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
@@ -322,7 +324,12 @@ func TestVerifierWholeRun(t *testing.T) {
 		t.Errorf("the verifier's commit %s is in the bare repo: %t, and the task's head is %s; want no, and %s", commit, has, got, head)
 	}
 
-	v.pass()
+	// The next pass files the candidate (followup_run_test.go), and the one
+	// after reads the follow-up and the task again.
+	v.passes(2)
+	if got := filingFollowUps(f); len(got) != 1 || got[0].Title != "A quote that expires between the check and the write is still booked" {
+		t.Errorf("the follow-ups = %+v; want the candidate's", got)
+	}
 	for _, step := range []string{"first", "second"} {
 		v.quietPass(step)
 	}

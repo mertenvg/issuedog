@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -79,11 +78,12 @@ var handoffFrom = []state.Stage{state.InProgress, state.Verifying, state.PROpen,
 // (Client.Reactions), with a conditional request, so a pass where nothing
 // changed costs a 304: never an earlier hand-off's, nor the issue's own.
 // It takes the earliest 👍 that no marker names (state.ReactionKey) by a
-// user trust trusts, not a bot, so neither the App nor any other bot
-// counts, and moves the task needs-human → ready on handoff-done, keyed
-// cmd=r<reaction id>, with seen the newest comment read (newestRead). Its
-// text names the 👍's user, escaped and defused. A read that fails is an
-// error: the pass fails, and the next pass tries again.
+// user trust trusts, not a bot (firstTrustedThumb), so neither the App nor
+// any other bot counts, and moves the task needs-human → ready on
+// handoff-done, keyed cmd=r<reaction id>, with seen the newest comment
+// read (newestRead). Its text names the 👍's user, escaped and defused. A
+// read that fails is an error: the pass fails, and the next pass tries
+// again.
 func HandoffByReaction(trust github.Trust) func(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt) error {
 	return func(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt) error {
 		wrap := func(err error) error {
@@ -98,21 +98,9 @@ func HandoffByReaction(trust github.Trust) func(ctx context.Context, a *Applier,
 			return wrap(fmt.Errorf("read the hand-off's reactions: %w", err))
 		}
 		is := state.Derive(s, a.AppSlug, d.Has)
-		// Oldest first, so the first trusted one is the 👍 to take.
-		slices.SortFunc(reactions, func(x, y github.Reaction) int { return cmp.Compare(x.ID, y.ID) })
-		var thumb *github.Reaction
-		for _, r := range reactions {
-			if r.Content != "+1" || r.User.Type == "Bot" || is.Keys[state.ReactionKey(r.ID)] {
-				continue
-			}
-			t, err := trust.Trusted(ctx, r.User.Login)
-			if err != nil {
-				return wrap(fmt.Errorf("trust %s: %w", r.User.Login, err))
-			}
-			if t {
-				thumb = &r
-				break
-			}
+		thumb, err := firstTrustedThumb(ctx, trust, reactions, func(id int64) bool { return is.Keys[state.ReactionKey(id)] })
+		if err != nil {
+			return wrap(err)
 		}
 		if thumb == nil {
 			return nil
