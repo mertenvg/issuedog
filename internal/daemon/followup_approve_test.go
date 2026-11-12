@@ -50,7 +50,7 @@ func approvalDaemon(t testing.TB, f *githubtest.Fake, o *origin) *daemon.Daemon 
 	for name, h := range daemon.FlagCommands() {
 		d.Step.Commands[name] = h
 	}
-	d.Step.Reactions = daemon.FollowUpByReaction(handbackTrust)
+	d.Step.Reactions = daemon.FollowUpByReaction(handbackTrust, d.Step.HeldSnap)
 	return d
 }
 

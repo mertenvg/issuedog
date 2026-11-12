@@ -45,6 +45,9 @@ func FlagCommands() map[string]Handler {
 func flagTrackCheck(_ context.Context, a *Applier, c Cmd) error {
 	is := state.Derive(c.S, a.AppSlug, c.Dirt.Has)
 	if is.Item.FollowUp {
+		if c.S.Parent != 0 && c.S.ParentRepo == "" {
+			return Rejection{Reason: followUpStoryTrackReason, Final: true}
+		}
 		return Rejection{Reason: followUpTrackReason, Final: true}
 	}
 	why, err := noRow(is, flagAdmit(c.S, state.CmdKey(c.Comment.ID), ""))
@@ -60,6 +63,10 @@ func flagTrackCheck(_ context.Context, a *Applier, c Cmd) error {
 // followUpTrackReason is why /track doesn't admit a follow-up, and how to
 // approve or drop it instead (SPEC §6.2, §10.2).
 const followUpTrackReason = "this is a follow-up, which `/track` doesn't admit. React 👍 to it to approve it, or close it to drop it"
+
+// followUpStoryTrackReason is followUpTrackReason for a follow-up in a
+// story, whose addendum on the story a 👍 approves it on too (SPEC §10.2).
+const followUpStoryTrackReason = "this is a follow-up, which `/track` doesn't admit. React 👍 to it or to its addendum on its story to approve it, or close it to drop it"
 
 // flagTrack admits c's issue: the move keyed by c, then the triage:*
 // labels off, then the 👍, which ends the command. A crash before the 👍
@@ -164,8 +171,8 @@ func flagInPipeline(s *github.Snapshot, is state.Issue) string {
 // FlagByReaction returns the reaction trigger for Step.Reactions that
 // answers a flag by 👍 (SPEC §6.2, Answering a flag). At intake, while the
 // latest triage marker is a flag, the earliest 👍 on the flag from a user
-// trust trusts, not a bot, takes the flag's recommendation, from its
-// marker's recommend:
+// trust trusts, not a bot, takes the flag's recommendation, by the rule the
+// other 👍 triggers share (firstTrustedThumb), from its marker's recommend:
 //   - handle admits the issue, an untrusted author's too, keyed
 //     cmd=r<reaction id>. A move the table lacks is reported once by
 //     Transition (SPEC §5.3), then only logged.
@@ -195,18 +202,9 @@ func FlagByReaction(trust github.Trust) func(ctx context.Context, a *Applier, s 
 		if err != nil {
 			return wrap(err)
 		}
-		var first *github.Reaction
-		for _, r := range reactions {
-			if r.Content != "+1" || r.User.Type == "Bot" || (first != nil && first.ID < r.ID) {
-				continue
-			}
-			t, err := trust.Trusted(ctx, r.User.Login)
-			if err != nil {
-				return wrap(fmt.Errorf("trust %s: %w", r.User.Login, err))
-			}
-			if t {
-				first = &r
-			}
+		first, err := firstTrustedThumb(ctx, trust, reactions, nil)
+		if err != nil {
+			return wrap(err)
 		}
 		if first == nil {
 			return nil
