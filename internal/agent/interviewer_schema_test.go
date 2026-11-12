@@ -209,7 +209,7 @@ func specFollowUpRule(t *testing.T) string {
 		t.Fatal("SPEC.md has no section 4")
 	}
 	section, _, _ = strings.Cut(section, "\n## 5. ")
-	_, rule, ok := strings.Cut(section, "starts its body with `Follow-up to #N` and includes the acceptance criterion \"")
+	_, rule, ok := strings.Cut(section, "starts its Context with `Follow-up to #N` and includes the acceptance criterion \"")
 	if !ok {
 		t.Fatal("SPEC §4 has no Follow-up to #N rule")
 	}
@@ -249,10 +249,17 @@ func TestInterviewerPromptTaskBody(t *testing.T) {
 		// SPEC §4's rule for a bug against earlier work.
 		"starts `context` with `Follow-up to #N` and includes the acceptance criterion \"" + specFollowUpRule(t) + "\"",
 		"Keep both when you rewrite its body.",
+		// Typing comes first, and the run after it writes the task (SPEC
+		// §9.1).
+		"An untyped bug or task always returns `typed` before `task`: you run again at once, and that run writes its task, or asks a round first",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("interviewer.md doesn't contain %q", want)
 		}
+	}
+	// A typed bug or task no longer waits: the daemon writes its task.
+	if bad := "It waits for a later stage."; strings.Contains(p, bad) {
+		t.Errorf("interviewer.md still says %q", bad)
 	}
 	doc := stageSchemaDoc(t, "interviewer")
 	for name, fields := range map[string][]string{"task": interviewerTaskFields, "human": interviewerHumanFields} {

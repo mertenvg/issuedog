@@ -251,7 +251,7 @@ func TestIntakeLagIsClean(t *testing.T) {
 			moves = append(moves, c.Body)
 		}
 	}
-	if want := []string{waits(byOwner, "bug", strconv.FormatInt(intake, 10))}; !slices.Equal(moves, want) {
+	if want := []string{admitted(byOwner, strconv.FormatInt(intake, 10))}; !slices.Equal(moves, want) {
 		t.Errorf("transitions %q, want %q", moves, want)
 	}
 	if want := []string{"priority:p1", "stage:clarifying", "type:bug"}; !slices.Equal(is.Labels, want) {
