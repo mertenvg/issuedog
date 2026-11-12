@@ -85,8 +85,10 @@ func (*Verifier) Pending(in Input) bool {
 //     stay a patch, and the preamble says it's data.
 //   - checks.md: in.Checks (verifierChecks).
 //   - followups.md: the follow-ups already filed (verifierFollowUps), then
-//     the candidates of earlier passes (verifierCandidates), so a later head
-//     repeats neither (verifierFollowUpList).
+//     the candidates of earlier passes (verifierCandidates) not filed yet,
+//     so a later head repeats neither, and lists each once
+//     (verifierFollowUpList). A pass whose data won't read back is left
+//     out, with a warning, and stops no run.
 //   - system.md: the preamble (verifierPreamble), naming in.Head, then
 //     .issuedog/prompts/verifier.md from main or the shipped default
 //     (agent.Prompt).
@@ -140,10 +142,7 @@ func (v *Verifier) Context(ctx context.Context, in Input) (map[string][]byte, er
 	if err != nil {
 		return nil, wrap(err)
 	}
-	waiting, err := verifierCandidates(s, in.Issue, a.AppSlug)
-	if err != nil {
-		return nil, wrap(err)
-	}
+	waiting := verifierCandidates(a, s, in.Issue)
 	filed, err := verifierFollowUps(ctx, a, s, in.Issue)
 	if err != nil {
 		return nil, wrap(err)
@@ -211,10 +210,13 @@ func verifierChecks(results []verify.CommandResult) string {
 	return ivFile("The checks", verifierChecksIntro, append(sections, "Rules 2 to 7 passed."), "")
 }
 
-// followUp is one follow-up already filed, as a listing gives it.
+// followUp is one follow-up already filed, as a listing gives it, with the
+// run and the item its origin names (state.FollowUpOf), which match it to
+// its candidate (passCandidate).
 type followUp struct {
 	Number               int
 	Title, State, Reason string
+	Run, Item            string
 }
 
 // verifierFollowUps lists the follow-ups already filed that s's verifier run
@@ -246,11 +248,12 @@ func verifierFollowUps(ctx context.Context, a *Applier, s *github.Snapshot, is s
 			continue
 		}
 		author := github.Author{Login: l.GetUser().GetLogin(), Type: l.GetUser().GetType()}
-		if slices.ContainsFunc(github.TrustedMarkers(author, l.GetBody(), a.AppSlug), func(m github.Marker) bool {
-			verify, _, _, ok := state.FollowUpOf(m)
-			return ok && (s.Parent != 0 || verify == s.Number)
-		}) {
-			found = append(found, followUp{Number: l.GetNumber(), Title: l.GetTitle(), State: l.GetState(), Reason: l.GetStateReason()})
+		for _, m := range github.TrustedMarkers(author, l.GetBody(), a.AppSlug) {
+			verify, run, item, ok := state.FollowUpOf(m)
+			if ok && (s.Parent != 0 || verify == s.Number) {
+				found = append(found, followUp{Number: l.GetNumber(), Title: l.GetTitle(), State: l.GetState(), Reason: l.GetStateReason(), Run: run, Item: item})
+				break
+			}
 		}
 	}
 	return found, nil
@@ -284,13 +287,22 @@ func markerCommentOf(s *github.Snapshot, is state.Issue, i int) (github.Comment,
 	return s.Comments[k], true
 }
 
+// passCandidate is one candidate of a pass, with the run of its verify marker
+// and its place in the pass, F1, F2 and so on, as a follow-up's origin names
+// them (SPEC §5).
+type passCandidate struct {
+	Run, Item string
+	verifierFollowUp
+}
+
 // verifierCandidates are the candidates of s's clean pass comments, oldest
-// first, which wait for #621 to file them, so a later head doesn't repeat
-// one (SPEC §10.2). It reads only markers is counts, so a pass comment
-// someone edited gives none, and it reads only s, so it costs no request.
-// Data that won't read back is an error, as for a plan.
-func verifierCandidates(s *github.Snapshot, is state.Issue, appSlug string) ([]verifierFollowUp, error) {
-	var all []verifierFollowUp
+// first, which wait to be filed, so a later head doesn't repeat one (SPEC
+// §10.2). It reads only markers is counts, so a pass comment someone edited
+// gives none, and it reads only s, so it costs no request. A clean pass
+// comment whose data won't read back gives none either: it's logged as a
+// warning naming the comment, and the rest are read, so it stops no run.
+func verifierCandidates(a *Applier, s *github.Snapshot, is state.Issue) []passCandidate {
+	var all []passCandidate
 	for i, m := range is.Markers {
 		if m.Kind != verifyKind || m.Fields["verdict"] != verdictPass {
 			continue
@@ -299,21 +311,25 @@ func verifierCandidates(s *github.Snapshot, is state.Issue, appSlug string) ([]v
 		if !ok {
 			continue
 		}
-		fs, _, err := readVerifyData(c, appSlug)
+		fs, _, err := readVerifyData(c, a.AppSlug)
 		if err != nil {
-			return nil, fmt.Errorf("read an earlier pass's candidates: %w", err)
+			logr.Warnf("%s/%s#%d: the verifier's list leaves out the candidates of pass comment %d, as they don't read back: %v", a.Owner, a.Repo, s.Number, c.ID, err)
+			continue
 		}
-		all = append(all, fs...)
+		for k, f := range fs {
+			all = append(all, passCandidate{Run: m.Fields["run"], Item: "F" + strconv.Itoa(k+1), verifierFollowUp: f})
+		}
 	}
-	return all, nil
+	return all
 }
 
 // verifierFollowUpList is followups.md: each of filed, with its number,
 // title, state and, once closed, its close reason, then each of waiting, with
 // its fields, each fenced so nothing in it can close the fence (ivSection).
-// A follow-up's title is the agent's and anyone's who edits it, and a
-// candidate's fields are the agent's.
-func verifierFollowUpList(number int, filed []followUp, waiting []verifierFollowUp) string {
+// A candidate whose run and item a filed one's origin names is that one, so
+// it's listed once, as filed (SPEC §10.2). A follow-up's title is the agent's
+// and anyone's who edits it, and a candidate's fields are the agent's.
+func verifierFollowUpList(number int, filed []followUp, candidates []passCandidate) string {
 	var sections []string
 	for _, f := range filed {
 		text := "Title: " + f.Title + "\nState: " + f.State
@@ -322,6 +338,9 @@ func verifierFollowUpList(number int, filed []followUp, waiting []verifierFollow
 		}
 		sections = append(sections, ivSection("follow-up #"+strconv.Itoa(f.Number), text))
 	}
+	waiting := slices.DeleteFunc(slices.Clone(candidates), func(c passCandidate) bool {
+		return slices.ContainsFunc(filed, func(f followUp) bool { return f.Run == c.Run && f.Item == c.Item })
+	})
 	for i, c := range waiting {
 		sections = append(sections, ivSection(fmt.Sprintf("candidate %d of %d, not filed yet", i+1, len(waiting)),
 			strings.Join([]string{"Title: " + c.Title, "Scope: " + c.Scope, "Scenario: " + c.Scenario, "Likelihood: " + c.Likelihood, "Impact: " + c.Impact}, "\n")))

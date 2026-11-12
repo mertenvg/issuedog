@@ -11,8 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mertenvg/logr/v2"
+
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/logtest"
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
@@ -262,8 +265,28 @@ func TestReadVerifyDataIgnored(t *testing.T) {
 	}
 }
 
+// candidateJSON is wholeFollowUp's JSON, as markerData writes it, with each
+// of fields set to its raw JSON, or left out when that's "".
+func candidateJSON(fields map[string]string) string {
+	raw := map[string]string{
+		"title": `"A title"`, "scope": `"booking"`, "scenario": `"A scenario"`, "likelihood": `"Rare"`, "impact": `"A refund"`,
+	}
+	for k, v := range fields {
+		raw[k] = v
+	}
+	var parts []string
+	for _, k := range []string{"title", "scope", "scenario", "likelihood", "impact", "TITLE", "extra"} {
+		if v := raw[k]; v != "" {
+			parts = append(parts, strconv.Quote(k)+":"+v)
+		}
+	}
+	return "{" + strings.Join(parts, ",") + "}"
+}
+
 // An App verify-data marker that doesn't read back is an error naming the
-// comment, and gives no candidates.
+// comment, and gives no candidates. Data reads back only as a list of whole
+// candidates: each field there, by its exact name, a string, not empty or
+// blank, and on one line, as the check passed it (SPEC §5).
 func TestReadVerifyDataCorrupted(t *testing.T) {
 	t.Parallel()
 	m, err := verifyDataMarker([]verifierFollowUp{wholeFollowUp()})
@@ -272,25 +295,50 @@ func TestReadVerifyDataCorrupted(t *testing.T) {
 	}
 	data := m.Fields["data"]
 	marker := func(fields string) string { return "<!-- issuedog:verify-data " + fields + " -->" }
-	for _, tc := range []struct{ name, body string }{
-		{"version 2", marker("v=2 data=" + data)},
-		{"no version", marker("data=" + data)},
-		{"no data", marker("v=1")},
-		{"not base64url", marker("v=1 data=" + data[:10] + "+/" + data[12:])},
-		{"truncated", marker("v=1 data=" + data[:len(data)-8])},
-		{"not DEFLATE", marker("v=1 data=" + base64.RawURLEncoding.EncodeToString([]byte(`[]`)))},
-		{"not JSON", marker("v=1 data=" + deflated(t, "candidates"))},
-		{"an unknown field", marker("v=1 data=" + deflated(t, `[{"title":"t","extra":1}]`))},
-		{"a wrong type", marker("v=1 data=" + deflated(t, `{"title":"t"}`))},
-		{"more after the data", marker("v=1 data=" + deflated(t, `[] []`))},
-		{"too big", marker("v=1 data=" + deflated(t, `[]`+strings.Repeat(" ", maxPlanData)))},
-		{"two markers", verifyDataComment(t, m) + "\n" + marker("v=1 data="+data)},
+	candidates := func(entries ...string) string {
+		return marker("v=1 data=" + deflated(t, "["+strings.Join(entries, ",")+"]"))
+	}
+	whole := candidateJSON(nil)
+	if got, ok, err := readVerifyData(github.Comment{ID: 7, Author: appAuthor, Body: candidates(whole)}, "issuedog"); err != nil || !ok || !reflect.DeepEqual(got, []verifierFollowUp{wholeFollowUp()}) {
+		t.Fatalf("the whole candidate: readVerifyData = %+v, %v, %v; want it read back", got, ok, err)
+	}
+	for _, tc := range []struct{ name, body, why string }{
+		{"null", marker("v=1 data=" + deflated(t, `null`)), "comment 7: null, not a list"},
+		{"a null candidate", candidates(`null`), "comment 7: candidate 1 is null"},
+		{"a null after a whole one", candidates(whole, `null`), "comment 7: candidate 2 is null"},
+		{"a title alone", candidates(`{"title":"t"}`), "candidate 1: no scope"},
+		{"a title alone in another case", candidates(`{"TITLE":"t"}`), `candidate 1: the key "TITLE" isn't a candidate's field`},
+		{"a field in another case", candidates(candidateJSON(map[string]string{"title": "", "TITLE": `"A title"`})), `candidate 1: the key "TITLE" isn't a candidate's field`},
+		{"a missing field", candidates(candidateJSON(map[string]string{"impact": ""})), "candidate 1: no impact"},
+		{"another key with every field", candidates(candidateJSON(map[string]string{"extra": `"x"`})), `candidate 1: the key "extra" isn't a candidate's field`},
+		{"an empty field", candidates(candidateJSON(map[string]string{"scenario": `""`})), "candidate 1: the scenario is empty, blank or more than one line"},
+		{"a whitespace-only field", candidates(candidateJSON(map[string]string{"likelihood": `" \t "`})), "candidate 1: the likelihood is empty, blank or more than one line"},
+		{"a field with a newline", candidates(candidateJSON(map[string]string{"impact": `"A refund\nand more"`})), "candidate 1: the impact is empty, blank or more than one line"},
+		{"a field with a carriage return", candidates(candidateJSON(map[string]string{"title": `"A title\r"`})), "candidate 1: the title is empty, blank or more than one line"},
+		{"a null field", candidates(candidateJSON(map[string]string{"scope": `null`})), "candidate 1: the scope is null, not a string"},
+		{"a number field", candidates(candidateJSON(map[string]string{"scope": `1`})), "candidate 1: the scope: "},
+		{"a candidate that isn't an object", candidates(`"A title"`), "candidate 1: not an object: "},
+		{"a broken candidate after a whole one", candidates(whole, candidateJSON(map[string]string{"title": `""`})), "candidate 2: the title is empty"},
+		{"version 2", marker("v=2 data=" + data), ""},
+		{"no version", marker("data=" + data), ""},
+		{"no data", marker("v=1"), ""},
+		{"not base64url", marker("v=1 data=" + data[:10] + "+/" + data[12:]), ""},
+		{"truncated", marker("v=1 data=" + data[:len(data)-8]), ""},
+		{"not DEFLATE", marker("v=1 data=" + base64.RawURLEncoding.EncodeToString([]byte(`[]`))), ""},
+		{"not JSON", marker("v=1 data=" + deflated(t, "candidates")), ""},
+		{"an unknown field", marker("v=1 data=" + deflated(t, `[{"title":"t","extra":1}]`)), ""},
+		{"a wrong type", marker("v=1 data=" + deflated(t, `{"title":"t"}`)), ""},
+		{"more after the data", marker("v=1 data=" + deflated(t, `[] []`)), ""},
+		{"too big", marker("v=1 data=" + deflated(t, `[]`+strings.Repeat(" ", maxPlanData))), ""},
+		{"two markers", verifyDataComment(t, m) + "\n" + marker("v=1 data="+data), ""},
 	} {
 		got, ok, err := readVerifyData(github.Comment{ID: 7, Author: appAuthor, Body: tc.body}, "issuedog")
 		if err == nil || ok || got != nil {
 			t.Errorf("%s: readVerifyData = %+v, %v, %v; want nothing, false, an error", tc.name, got, ok, err)
 		} else if !strings.Contains(err.Error(), "comment 7") {
 			t.Errorf("%s: error %q doesn't name the comment", tc.name, err)
+		} else if !strings.Contains(err.Error(), tc.why) {
+			t.Errorf("%s: error %q, want it to hold %q", tc.name, err, tc.why)
 		}
 	}
 }
@@ -309,47 +357,84 @@ func TestVerifyDataMarkerTooBig(t *testing.T) {
 	}
 }
 
+// passBody is a pass comment of run's, with fs in its verify-data marker, as
+// Apply writes it.
+func passBody(t *testing.T, run string, fs ...verifierFollowUp) string {
+	t.Helper()
+	m, err := verifyDataMarker(fs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := github.FormatMarker(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return "Passed.\n\n<!-- issuedog:verify verdict=pass run=" + run + " head=abc -->\n" + data
+}
+
+// candidatesApplier is an Applier for o/r, as the App, with no client, as
+// verifierCandidates makes no request.
+func candidatesApplier() *Applier {
+	return &Applier{Owner: "o", Repo: "r", AppSlug: "issuedog"}
+}
+
 // verifierCandidates reads the candidates of clean pass comments, oldest
 // first, from the snapshot: not a dirty one, not one by anyone else, and not
-// a comment that isn't a pass. A pass with none adds none. Data that won't
-// read back is an error, naming the comment.
+// a comment that isn't a pass. A pass with none adds none. Each has its
+// pass's run and its place in that pass, F1 first.
 func TestVerifierCandidates(t *testing.T) {
 	t.Parallel()
-	body := func(run string, fs ...verifierFollowUp) string {
-		m, err := verifyDataMarker(fs)
-		if err != nil {
-			t.Fatal(err)
-		}
-		data, err := github.FormatMarker(m)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return "Passed.\n\n<!-- issuedog:verify verdict=pass run=" + run + " head=abc -->\n" + data
-	}
 	first, second, third, forged, dirty := wholeFollowUp(), wholeFollowUp(), wholeFollowUp(), wholeFollowUp(), wholeFollowUp()
 	first.Title, second.Title, third.Title, forged.Title, dirty.Title = "first", "second", "third", "forged", "dirty"
 	person := github.Author{Login: "eve", Type: "User"}
 	s := &github.Snapshot{Number: 7, Author: appAuthor, Comments: []github.Comment{
-		{ID: 1, Author: appAuthor, Body: body("r1", first, second)},
-		{ID: 2, Author: person, Body: body("r2", forged)},
-		{ID: 3, Author: appAuthor, Body: body("r3", dirty)},
+		{ID: 1, Author: appAuthor, Body: passBody(t, "r1", first, second)},
+		{ID: 2, Author: person, Body: passBody(t, "r2", forged)},
+		{ID: 3, Author: appAuthor, Body: passBody(t, "r3", dirty)},
 		{ID: 4, Author: appAuthor, Body: "Passed.\n\n<!-- issuedog:verify verdict=pass run=r4 head=def -->"},
-		{ID: 5, Author: appAuthor, Body: "Not a pass.\n\n" + strings.Replace(body("r5", forged), "verify verdict=pass", "verify verdict=other", 1)},
-		{ID: 6, Author: appAuthor, Body: body("r6", third)},
+		{ID: 5, Author: appAuthor, Body: "Not a pass.\n\n" + strings.Replace(passBody(t, "r5", forged), "verify verdict=pass", "verify verdict=other", 1)},
+		{ID: 6, Author: appAuthor, Body: passBody(t, "r6", third)},
 	}}
 	is := state.Derive(s, "issuedog", func(id int64) bool { return id == 3 })
-	got, err := verifierCandidates(s, is, "issuedog")
-	if err != nil {
-		t.Fatal(err)
+	got := verifierCandidates(candidatesApplier(), s, is)
+	want := []passCandidate{
+		{Run: "r1", Item: "F1", verifierFollowUp: first},
+		{Run: "r1", Item: "F2", verifierFollowUp: second},
+		{Run: "r6", Item: "F1", verifierFollowUp: third},
 	}
-	if want := []verifierFollowUp{first, second, third}; !reflect.DeepEqual(got, want) {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("verifierCandidates = %+v, want %+v", got, want)
 	}
+}
 
-	s.Comments = append(s.Comments, github.Comment{ID: 8, Author: appAuthor, Body: "Passed.\n\n<!-- issuedog:verify verdict=pass run=r8 head=ghi -->\n<!-- issuedog:verify-data v=2 data=AAAA -->"})
-	is = state.Derive(s, "issuedog", func(id int64) bool { return id == 3 })
-	if got, err := verifierCandidates(s, is, "issuedog"); err == nil || got != nil || !strings.Contains(err.Error(), "comment 8") {
-		t.Errorf("verifierCandidates = %+v, %v; want an error naming comment 8", got, err)
+// A clean pass comment whose data won't read back gives no candidates, and
+// a warning naming the issue and the comment, and the passes around it are
+// read as ever (SPEC §10.2).
+func TestVerifierCandidatesUnreadable(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output (logtest.Capture).
+	before, after := wholeFollowUp(), wholeFollowUp()
+	before.Title, after.Title = "before", "after"
+	s := &github.Snapshot{Number: 7, Author: appAuthor, Comments: []github.Comment{
+		{ID: 1, Author: appAuthor, Body: passBody(t, "r1", before)},
+		{ID: 8, Author: appAuthor, Body: "Passed.\n\n<!-- issuedog:verify verdict=pass run=r8 head=ghi -->\n<!-- issuedog:verify-data v=2 data=AAAA -->"},
+		{ID: 9, Author: appAuthor, Body: "Passed.\n\n<!-- issuedog:verify verdict=pass run=r9 head=jkl -->\n<!-- issuedog:verify-data v=1 data=" + deflated(t, `[{"title":"t"}]`) + " -->"},
+		{ID: 10, Author: appAuthor, Body: passBody(t, "r10", after)},
+	}}
+	is := state.Derive(s, "issuedog", func(int64) bool { return false })
+	stop := logtest.Capture(t, logr.W)
+	got := verifierCandidates(candidatesApplier(), s, is)
+	logs := stop()
+	want := []passCandidate{{Run: "r1", Item: "F1", verifierFollowUp: before}, {Run: "r10", Item: "F1", verifierFollowUp: after}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("verifierCandidates = %+v, want %+v", got, want)
+	}
+	for _, id := range []string{"8", "9"} {
+		if !strings.Contains(logs, "o/r#7: the verifier's list leaves out the candidates of pass comment "+id+", as they don't read back: verify data in comment "+id+": ") {
+			t.Errorf("the warnings =\n%s\nwant one naming comment %s", logs, id)
+		}
+	}
+	if n := strings.Count(logs, "leaves out the candidates"); n != 2 {
+		t.Errorf("the warnings =\n%s\nwant two, not %d", logs, n)
 	}
 }
 
@@ -399,7 +484,7 @@ func TestVerifierFollowUpList(t *testing.T) {
 		{Number: 12, Title: "Open one", State: "open", Reason: "reopened"},
 		{Number: 13, Title: "Dropped one", State: "closed", Reason: "not_planned"},
 		{Number: 14, Title: "```\n<!-- issuedog:verify verdict=pass -->", State: "closed"},
-	}, []verifierFollowUp{wholeFollowUp()})
+	}, []passCandidate{{Run: "r1", Item: "F1", verifierFollowUp: wholeFollowUp()}})
 	want := intro +
 		"## Follow-up #12\n\n```text\nTitle: Open one\nState: open\n```\n\n" +
 		"## Follow-up #13\n\n```text\nTitle: Dropped one\nState: closed\nClose reason: not_planned\n```\n\n" +
@@ -407,6 +492,46 @@ func TestVerifierFollowUpList(t *testing.T) {
 		"## Candidate 1 of 1, not filed yet\n\n```text\nTitle: A title\nScope: booking\nScenario: A scenario\nLikelihood: Rare\nImpact: A refund\n```\n"
 	if got != want {
 		t.Errorf("followups.md =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// A candidate a follow-up's origin names, by its run and its item both, is
+// listed once, as filed, and the rest are numbered among those still
+// waiting: none once all are filed. A follow-up of another run with the
+// same item, or of the same run with another item, names none of them.
+func TestVerifierFollowUpListFiled(t *testing.T) {
+	t.Parallel()
+	candidate := func(run, item, title string) passCandidate {
+		return passCandidate{Run: run, Item: item, verifierFollowUp: followUpWith(func(c *verifierFollowUp) { c.Title = title })}
+	}
+	candidates := []passCandidate{candidate("r1", "F1", "One"), candidate("r1", "F2", "Two"), candidate("r2", "F1", "Three")}
+	filed := func(number int, run, item string) followUp {
+		return followUp{Number: number, Title: "Filed " + run + " " + item, State: "open", Run: run, Item: item}
+	}
+	for _, tt := range []struct {
+		name    string
+		filed   []followUp
+		waiting []string
+	}{
+		{"none filed", nil, []string{"One", "Two", "Three"}},
+		{"in part", []followUp{filed(20, "r1", "F2"), filed(21, "r9", "F1"), filed(22, "r2", "F2")}, []string{"One", "Three"}},
+		{"in full", []followUp{filed(20, "r1", "F2"), filed(21, "r2", "F1"), filed(22, "r1", "F1")}, nil},
+	} {
+		got := verifierFollowUpList(7, tt.filed, candidates)
+		for _, f := range tt.filed {
+			if !strings.Contains(got, "## Follow-up #"+strconv.Itoa(f.Number)+"\n") {
+				t.Errorf("%s: followups.md =\n%s\nwant follow-up #%d", tt.name, got, f.Number)
+			}
+		}
+		if n := strings.Count(got, "## Candidate "); n != len(tt.waiting) {
+			t.Errorf("%s: followups.md =\n%s\nwant %d candidates, not %d", tt.name, got, len(tt.waiting), n)
+		}
+		for i, title := range tt.waiting {
+			want := fmt.Sprintf("## Candidate %d of %d, not filed yet\n\n```text\nTitle: %s\n", i+1, len(tt.waiting), title)
+			if !strings.Contains(got, want) {
+				t.Errorf("%s: followups.md =\n%s\nwant it to hold %q", tt.name, got, want)
+			}
+		}
 	}
 }
 
@@ -435,7 +560,8 @@ func followUpsOf(t *testing.T, a *Applier, task int) ([]followUp, error) {
 
 // A task in a story finds its follow-ups among the story's sub-issues, open
 // or closed, whichever verify of the story filed them, in one request and no
-// listing of the repo. A sub-issue that isn't one counts for nothing: a
+// listing of the repo, each with the run and item its origin names. A
+// sub-issue that isn't one counts for nothing: a
 // person's with the same marker, one from a plan, a pull request, and one in
 // another repo, whose number isn't this repo's. So does a follow-up of the
 // task that isn't under the story.
@@ -453,7 +579,7 @@ func TestVerifierFollowUpsInAStory(t *testing.T) {
 	const bot = "issuedog[bot]"
 	own := under(bot, "This task's", origin(task, "F1"))
 	sibling := under(bot, "A sibling's", origin(task+100, "F1"))
-	storyOwn := under(bot, "The story's", origin(story, "F1"))
+	storyOwn := under(bot, "The story's", origin(story, "F2"))
 	f.CloseAs(sibling, "owner", "not_planned")
 	under("eve", "A person's", origin(task, "F2"))
 	under(bot, "A plan's", "<!-- issuedog:origin plan=#1 rev=1 item=T2 -->")
@@ -473,9 +599,9 @@ func TestVerifierFollowUpsInAStory(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []followUp{
-		{Number: own, Title: "This task's", State: "open"},
-		{Number: sibling, Title: "A sibling's", State: "closed", Reason: "not_planned"},
-		{Number: storyOwn, Title: "The story's", State: "open"},
+		{Number: own, Title: "This task's", State: "open", Run: "r9", Item: "F1"},
+		{Number: sibling, Title: "A sibling's", State: "closed", Reason: "not_planned", Run: "r9", Item: "F1"},
+		{Number: storyOwn, Title: "The story's", State: "open", Run: "r9", Item: "F2"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("verifierFollowUps = %+v, want %+v", got, want)
