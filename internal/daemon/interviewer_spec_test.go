@@ -526,21 +526,37 @@ func TestInterviewerSpecReplay(t *testing.T) {
 	}
 }
 
-// TestInterviewerRetypedDuringRun: an issue the owner retypes to a task
-// during the run fails the result as an attempt, with nothing written, and
-// no run follows.
+// TestInterviewerRetypedDuringRun: an issue the owner retypes during the
+// run to a story with a parent, which the interviewer doesn't run on, or
+// to a task, which gets no spec (SPEC §9.1), fails the result as an
+// attempt, with nothing written. No run follows on the story. The task's
+// latest move is still its entry, so it gets a run of its own next, to
+// write its task.
 func TestInterviewerRetypedDuringRun(t *testing.T) {
 	t.Parallel()
-	for name, out := range map[string]map[string]any{"a round": ivRound(1, ""), "a spec": specOut("", "")} {
+	for name, tt := range map[string]struct {
+		out    map[string]any
+		typ    string
+		parent bool
+		runs   int // after the next work
+	}{
+		"a round, retyped a story with a parent": {ivRound(1, ""), "story", true, 1},
+		"a spec, retyped a story with a parent":  {specOut("", ""), "story", true, 1},
+		"a spec, retyped a task":                 {specOut("", ""), "task", false, 2},
+	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFake(t)
 			n, _ := ivFiled(f, "epic", false, "from=intake to=clarifying event=5")
+			parent := f.AddIssue("owner", "Parent", "")
 			g := ivRig(t, f)
-			g.claude(ivResult(t, out), 0)
+			g.claude(ivResult(t, tt.out), 0)
 			var before githubtest.State
 			f.BeforeRequest(func(githubtest.Request) bool { return g.runs() > 0 }, func() {
-				f.AddLabel(n, "owner", "type:task")
+				f.AddLabel(n, "owner", "type:"+tt.typ)
 				f.RemoveLabel(n, "owner", "type:epic")
+				if tt.parent {
+					f.SetParent(n, parent)
+				}
 				before = f.State()
 			})
 			if err := g.work(n); err != nil {
@@ -553,8 +569,8 @@ func TestInterviewerRetypedDuringRun(t *testing.T) {
 				t.Errorf("after %d runs, lease %+v; want one failed attempt", g.runs(), l)
 			}
 			f.AddComment(n, "owner", "Any news?")
-			if err := g.work(n); err != nil || g.runs() != 1 {
-				t.Errorf("work on the task = %v, after %d runs; want no run", err, g.runs())
+			if err := g.work(n); err != nil || g.runs() != tt.runs {
+				t.Errorf("work on the %s = %v, after %d runs; want %d", tt.typ, err, g.runs(), tt.runs)
 			}
 		})
 	}
