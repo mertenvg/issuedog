@@ -12,9 +12,10 @@ import (
 )
 
 // One rule takes the 👍 of a plan's approval (SPEC §7.4), a hand-off's end
-// (SPEC §9.3) and a follow-up's approval (SPEC §10.2): the earliest 👍 by
-// a user trust trusts, not a bot (SPEC §6.1). This runs one set of
-// reactions through all three, so they can't drift apart.
+// (SPEC §9.3), a follow-up's approval (SPEC §10.2), on the issue or on its
+// addendum on its story, and a flag's answer (SPEC §6.2): the earliest 👍
+// by a user trust trusts, not a bot (SPEC §6.1). This runs one set of
+// reactions through all of them, so they can't drift apart.
 
 // ruleThumb is one reaction of a case: its user and its content.
 type ruleThumb struct{ login, content string }
@@ -23,23 +24,53 @@ type ruleThumb struct{ login, content string }
 // their being bots leaves them out.
 var ruleTrust = trusted{"owner": true, "owner2": true, app: true, "helper[bot]": true}
 
-// ruleTrigger is one of the three triggers: the fake it acts on, with
-// issue 1 waiting for its 👍, how to add a reaction where it reads them,
-// and the trigger itself.
+// ruleTrigger is one of the triggers: the fake it acts on, with issue 1
+// waiting for its 👍, how to add a reaction where it reads them, and the
+// trigger itself, on that fake.
 type ruleTrigger struct {
 	name  string
 	setup func(testing.TB) *githubtest.Fake
 	react func(f *githubtest.Fake, login, content string) int64
-	run   func(github.Trust) func(ctx context.Context, a *daemon.Applier, s *github.Snapshot, d daemon.Dirt) error
+	run   func(t testing.TB, f *githubtest.Fake, tr github.Trust) func(ctx context.Context, a *daemon.Applier, s *github.Snapshot, d daemon.Dirt) error
+}
+
+// ruleOn is a trigger that needs only the trust.
+func ruleOn(trigger func(github.Trust) func(ctx context.Context, a *daemon.Applier, s *github.Snapshot, d daemon.Dirt) error) func(testing.TB, *githubtest.Fake, github.Trust) func(ctx context.Context, a *daemon.Applier, s *github.Snapshot, d daemon.Dirt) error {
+	return func(_ testing.TB, _ *githubtest.Fake, tr github.Trust) func(ctx context.Context, a *daemon.Applier, s *github.Snapshot, d daemon.Dirt) error {
+		return trigger(tr)
+	}
+}
+
+// ruleHeld gives f's snapshot of issue n, as Iterate gives the daemon's
+// (Step.HeldSnap), failing t on a read that fails.
+func ruleHeld(t testing.TB, f *githubtest.Fake) func(n int) *github.Snapshot {
+	return func(n int) *github.Snapshot {
+		s, err := f.Client(t).Snapshot(context.Background(), "o", "r", n)
+		if err != nil {
+			t.Errorf("read #%d: %v", n, err)
+			return nil
+		}
+		return s
+	}
 }
 
 var ruleTriggers = []ruleTrigger{
 	{"plan approval", planReview(func(testing.TB, *githubtest.Fake) {}),
-		func(f *githubtest.Fake, login, content string) int64 { return f.AddReaction(1003, login, content) }, daemon.ApproveByReaction},
+		func(f *githubtest.Fake, login, content string) int64 { return f.AddReaction(1003, login, content) }, ruleOn(daemon.ApproveByReaction)},
 	{"hand-off", handbackTask(func(testing.TB, *githubtest.Fake) {}),
-		func(f *githubtest.Fake, login, content string) int64 { return f.AddReaction(1002, login, content) }, daemon.HandoffByReaction},
+		func(f *githubtest.Fake, login, content string) int64 { return f.AddReaction(1002, login, content) }, ruleOn(daemon.HandoffByReaction)},
 	{"follow-up", approvalFiled(func(testing.TB, *githubtest.Fake) {}),
-		func(f *githubtest.Fake, login, content string) int64 { return f.AddIssueReaction(1, login, content) }, daemon.FollowUpByReaction},
+		func(f *githubtest.Fake, login, content string) int64 { return f.AddIssueReaction(1, login, content) },
+		func(_ testing.TB, _ *githubtest.Fake, tr github.Trust) func(ctx context.Context, a *daemon.Applier, s *github.Snapshot, d daemon.Dirt) error {
+			return daemon.FollowUpByReaction(tr, nil)
+		}},
+	{"follow-up's addendum", approvalFiled(func(t testing.TB, f *githubtest.Fake) { storyAddendumOf(t, f, 1, 1001) }),
+		func(f *githubtest.Fake, login, content string) int64 { return f.AddReaction(1001, login, content) },
+		func(t testing.TB, f *githubtest.Fake, tr github.Trust) func(ctx context.Context, a *daemon.Applier, s *github.Snapshot, d daemon.Dirt) error {
+			return daemon.FollowUpByReaction(tr, ruleHeld(t, f))
+		}},
+	{"flag answer", flagIssue("eve", flagWith("handle", nil)),
+		func(f *githubtest.Fake, login, content string) int64 { return f.AddReaction(1001, login, content) }, ruleOn(daemon.FlagByReaction)},
 }
 
 // TestReactionRuleShared runs each case's reactions, in order, through each
@@ -72,7 +103,7 @@ func TestReactionRuleShared(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				st := &daemon.Step{Applier: a, Trust: ruleTrust, Commands: map[string]daemon.Handler{}, Reactions: tr.run(ruleTrust)}
+				st := &daemon.Step{Applier: a, Trust: ruleTrust, Commands: map[string]daemon.Handler{}, Reactions: tr.run(t, f, ruleTrust)}
 				if _, err := st.Run(context.Background(), s); err != nil {
 					t.Fatalf("step 1: %v", err)
 				}

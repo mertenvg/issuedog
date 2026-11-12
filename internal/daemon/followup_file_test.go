@@ -285,9 +285,10 @@ func TestFollowUpsForgedOrigin(t *testing.T) {
 // What files nothing, writes nothing and lists nothing: a pass with no
 // candidates, or whose data is an empty list, a pass comment someone else
 // edited, which is dirty, whether step 1 has noted it or not yet, the App's
-// comment on a request_changes, whose candidates aren't kept, a closed
-// task, and a task with a parent, whose follow-ups go under its story,
-// which isn't built yet.
+// comment on a request_changes, whose candidates aren't kept, and a closed
+// task. A task with a parent files its follow-ups under its story
+// (followup_story_test.go), and one whose parent is in another repo files
+// none (TestFollowUpsParentElsewhere).
 func TestFollowUpsNothingToFile(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -321,11 +322,6 @@ func TestFollowUpsNothingToFile(t *testing.T) {
 			filingPassOf(f, "v1", candidateData(t, "One"))
 			f.CloseAs(1, "owner", "completed")
 		}, true},
-		{"a task with a parent", func(t testing.TB, f *githubtest.Fake) {
-			filingPassOf(f, "v1", candidateData(t, "One"))
-			story := f.AddIssue("owner", "A story", "The story.")
-			f.SetParent(1, story)
-		}, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()

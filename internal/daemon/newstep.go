@@ -48,8 +48,9 @@ func RegisterStages(d *Daemon) (map[state.Stage]Stage, Stage) {
 // issue; then a 👍 on a revision and a 👍 on a flag, each at its own
 // stages, spec-review or plan-review for a spec or plan revision, and
 // intake for a flag, so at most one of them acts on an issue; then a 👍 on
-// a follow-up, at intake too, but with a stage label, so triage never
-// flagged it; then a 👍 on a human task itself, at needs-human, which a
+// a follow-up, or on its addendum on its story, which the story's
+// snapshot the daemon holds gives (Step.HeldSnap), at intake too, but with
+// a stage label, so triage never flagged it; then a 👍 on a human task itself, at needs-human, which a
 // hold the first ended may have returned it to; then a 👍 on a task's
 // latest hand-off comment, at needs-human too, which acts on no human
 // task, so at most one of the two acts on an issue; then a 👍 on a state
@@ -70,7 +71,7 @@ func NewStep(a *Applier, tr github.Trust, models func() config.Models) *Step {
 	approve, answer := ApproveByReaction(st.CurrentTrust()), FlagByReaction(st.CurrentTrust())
 	errAck, resolved := ErrorByReaction(st.CurrentTrust()), ResolveByReaction(st.CurrentTrust())
 	done, handback := DoneByReaction(st.CurrentTrust()), HandoffByReaction(st.CurrentTrust())
-	followUp := FollowUpByReaction(st.CurrentTrust())
+	followUp := FollowUpByReaction(st.CurrentTrust(), st.HeldSnap)
 	st.Reactions = func(ctx context.Context, a *Applier, s *github.Snapshot, d Dirt) error {
 		if err := resolved(ctx, a, s, d); err != nil {
 			return fmt.Errorf("discussion hold resolved: %w", err)

@@ -16,13 +16,45 @@ import (
 // followUpPriority is every follow-up's priority (SPEC §10.2).
 const followUpPriority = "p3"
 
+// followUpMaxTitle is GitHub's limit on an issue title, in characters,
+// counted as textLen counts them.
+const followUpMaxTitle = 256
+
 // followUpTitle is c's title as the follow-up's issue title: on one line,
 // with each control character a space and no U+FEFF (normalize), trimmed,
 // as a plan item's child's is (childTitle). A title isn't Markdown, so
 // nothing else in it needs escaping. It's "" for a title that's only
-// spaces and control characters, which no issue can have.
+// spaces and control characters, which no issue can have. One over
+// followUpMaxTitle is cut short to fit, at a character, and ends in "…",
+// as GitHub refuses a longer title with a 422 on every try, so its pass
+// would never be filed. The candidate's fields in the body are whole.
 func followUpTitle(c verifierFollowUp) string {
-	return strings.TrimSpace(normalize(c.Title, ""))
+	title := strings.TrimSpace(normalize(c.Title, ""))
+	if textLen(title) <= followUpMaxTitle {
+		return title
+	}
+	const more = "…"
+	n, cut := textLen(more), 0
+	for i, r := range title {
+		if n += textLen(string(r)); n > followUpMaxTitle {
+			cut = i
+			break
+		}
+	}
+	return strings.TrimSpace(title[:cut]) + more
+}
+
+// addendumText is the addendum's text, without its marker (SPEC §10.2): it
+// names child, the follow-up of candidate item, titled title, of the pass on
+// task, whose comment is at link, says it belongs to the story, so it's
+// worked on the story's branch and the story waits for it, and how to
+// approve it or drop it. It has no cc line, as the follow-up's own body
+// mentions notify. The title is the verifier's text, so it's escaped
+// (inline), and so is the whole text (SPEC §5.1).
+func addendumText(child, task int, link, item, title string) string {
+	return github.Escape(fmt.Sprintf("**Addendum:** #%d, %s, is a follow-up the verifier found on #%d, a task in this story ([its pass](%s), %s). "+
+		"It belongs here, so it's worked on this story's branch, and the story waits for it. "+
+		"React 👍 to this comment or to #%d to approve it, or close #%d to drop it.", child, inline(title), task, link, item, child, child))
 }
 
 // followUpBody is the body of the follow-up for candidate item of task's
