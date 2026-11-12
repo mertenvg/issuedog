@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/mertenvg/issuedog/internal/github"
@@ -71,5 +72,24 @@ func TestChildOriginsSkipFollowUps(t *testing.T) {
 	}
 	if !slices.ContainsFunc(f.Requests()[from:], func(r githubtest.Request) bool { return r.Path == "/issues/3" }) {
 		t.Errorf("childOrigins sent %+v; want #3's snapshot read", f.Requests()[from:])
+	}
+}
+
+// followUpTitle cuts a title over GitHub's 256 UTF-16 units at a
+// character, counting each emoji as two units, and trims a space at the
+// cut before its "…".
+func TestFollowUpTitleCut(t *testing.T) {
+	t.Parallel()
+	for name, tt := range map[string]struct{ title, want string }{
+		"emoji":         {strings.Repeat("😀", 300), strings.Repeat("😀", 127) + "…"},
+		"a space at it": {strings.Repeat("a", 254) + " " + strings.Repeat("b", 10), strings.Repeat("a", 254) + "…"},
+		"at the limit":  {strings.Repeat("a", 256), strings.Repeat("a", 256)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got := followUpTitle(verifierFollowUp{Title: tt.title}); got != tt.want {
+				t.Errorf("followUpTitle = %q (%d units); want %q", got, textLen(got), tt.want)
+			}
+		})
 	}
 }

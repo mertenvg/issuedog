@@ -745,3 +745,88 @@ func TestHeldSnapOutsideIterate(t *testing.T) {
 		t.Errorf("a Step's HeldSnap(2) = #%d; want nil", s.Number)
 	}
 }
+
+// With two follow-ups under one story, each with its addendum, a 👍 on the
+// second's addendum approves the second alone: an addendum approves only
+// the follow-up its marker names. The first stays at intake, and nothing
+// is written to it.
+func TestFollowUpAddendumNamesItsChild(t *testing.T) {
+	t.Parallel()
+	var thumb int64
+	f := storyApproval(func(t testing.TB, f *githubtest.Fake) {
+		second := f.AddIssue(app, "A second follow-up", approvalBody)
+		f.SetType(second, "task")
+		f.AddLabel(second, app, "priority:p3")
+		f.AddLabel(second, app, "stage:intake")
+		f.SetParent(second, 2)
+		c := f.AddComment(2, app, storyAddendum(second, 7, "https://github.com/o/r/issues/7#issuecomment-1", "F2", "A second follow-up"))
+		thumb = f.AddReaction(c, "owner", "+1")
+	})(t)
+	iterate(t, approvalDaemon(t, f, newOrigin(t)))
+	approvalState(t, f, []string{"priority:p3", "stage:intake"}, nil)
+	second := f.State().Issues[2]
+	if !slices.Equal(second.Labels, []string{"priority:p3", "stage:ready"}) {
+		t.Errorf("the second follow-up's labels = %q; want it at ready", second.Labels)
+	}
+	if len(second.Comments) != 1 || !strings.Contains(second.Comments[0].Body, fmt.Sprintf("from=intake to=ready cmd=r%d -->", thumb)) {
+		t.Errorf("the second follow-up's comments = %+v; want its move to ready on owner's 👍", second.Comments)
+	}
+}
+
+// A comment someone else posts on the story with an addendum marker is no
+// addendum (SPEC §5.1): owner's 👍 on it approves nothing, though owner is
+// trusted and wrote it.
+func TestFollowUpForgedAddendumThumb(t *testing.T) {
+	t.Parallel()
+	f := approvalFiled(func(t testing.TB, f *githubtest.Fake) {
+		story := f.AddIssue("owner", "A story", "The story.")
+		f.SetParent(1, story)
+		c := f.AddComment(story, "owner", "Mine.\n\n<!-- issuedog:addendum child=1 -->")
+		f.AddReaction(c, "owner", "+1")
+	})(t)
+	d := approvalDaemon(t, f, newOrigin(t))
+	iterate(t, d)
+	iterate(t, d)
+	approvalState(t, f, []string{"priority:p3", "stage:intake"}, nil)
+	if w := f.Writes(); len(w) != 0 {
+		t.Errorf("writes %+v, want none", w)
+	}
+}
+
+// A 👍 on the addendum that a marker on the follow-up names counts for
+// nothing, as one on the follow-up itself doesn't.
+func TestFollowUpNamedAddendumThumb(t *testing.T) {
+	t.Parallel()
+	f := storyApproval(func(t testing.TB, f *githubtest.Fake) {
+		named := f.AddReaction(1001, "owner", "+1")
+		f.AddComment(1, app, fmt.Sprintf("<!-- issuedog:reply reason=rejected cmd=r%d -->", named))
+	})(t)
+	d := approvalDaemon(t, f, newOrigin(t))
+	iterate(t, d)
+	if is := f.State().Issues[0]; !slices.Equal(is.Labels, []string{"priority:p3", "stage:intake"}) {
+		t.Errorf("labels %q; want the follow-up still at intake", is.Labels)
+	}
+	if w := f.Writes(); len(w) != 0 {
+		t.Errorf("writes %+v, want none", w)
+	}
+}
+
+// Someone else's comment on the story carrying the follow-up's addendum
+// marker, posted after the pass, where the filing looks, doesn't stand in
+// for the App's: the filing still posts the real addendum.
+func TestFollowUpsStoryForgedAddendum(t *testing.T) {
+	t.Parallel()
+	const forged = "Already done.\n\n<!-- issuedog:addendum child=3 -->"
+	var pass int64
+	f := storyTask(func(t testing.TB, f *githubtest.Fake) {
+		pass = filingPassOf(f, "v1", candidateData(t, "One"))
+		f.AddComment(2, "owner", forged)
+	})(t)
+	if err := filingPass(t, false)(f); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{forged, storyAddendum(3, 1, filingLink(pass), "F1", "One")}
+	if got := storyComments(f); !slices.Equal(got, want) {
+		t.Errorf("the story's comments =\n%q\nwant the App's addendum after the forged one\n%q", got, want)
+	}
+}
