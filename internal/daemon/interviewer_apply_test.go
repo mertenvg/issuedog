@@ -355,8 +355,22 @@ func TestInterviewerCheck(t *testing.T) {
 		{"typed, on the App's bug", func(f *githubtest.Fake, n int, _ int64) { f.AddLabel(n, app, "type:bug") }, "labels", 7, ivTyped("task"),
 			"no longer runs"},
 		{"a round, on the App's task", func(f *githubtest.Fake, n int, _ int64) { f.AddLabel(n, app, "type:task") }, "labels", 7, ivRound(1, ""), ""},
+		// SPEC §4: a bug or a task keeps its type, even one the App set: its
+		// runs write its task, so a round that retypes it fails.
 		{"a round typing the App's task an epic", func(f *githubtest.Fake, n int, _ int64) { f.AddLabel(n, app, "type:task") }, "labels", 7,
-			ivRound(1, "epic"), ""},
+			ivRound(1, "epic"), "rule type-allowed: a bug or a task keeps its type"},
+		{"a round typing the App's bug a story", func(f *githubtest.Fake, n int, _ int64) { f.AddLabel(n, app, "type:bug") }, "labels", 7,
+			ivRound(1, "story"), "rule type-allowed: a bug or a task keeps its type"},
+		// SPEC §6.4: at the clarifying after a hold, a task that has been at
+		// ready gets a run, but never typed, even on a type the App set.
+		{"typed, on the App's task after a hold", func(f *githubtest.Fake, n int, _ int64) {
+			f.AddLabel(n, app, "type:task")
+			f.AddComment(n, app, "Resolved.\n\n<!-- issuedog:transition from=held to=clarifying at=ready origin=ready event=h9 seen=4 -->")
+		}, "labels", 7, ivTyped("bug"), "no longer runs on #1, with type \"task\" and a parent false, for its typed"},
+		{"a round on the owner's task after a hold", func(f *githubtest.Fake, n int, _ int64) {
+			f.AddLabel(n, "owner", "type:task")
+			f.AddComment(n, app, "Resolved.\n\n<!-- issuedog:transition from=held to=clarifying at=ready origin=ready event=h9 seen=4 -->")
+		}, "labels", 7, ivRound(1, ""), ""},
 		{"a spec typing an issue with a parent a story", func(f *githubtest.Fake, n int, _ int64) { f.SetParent(n, f.AddIssue("owner", "Parent", "")) },
 			"labels", 7, specOut("story", ""), "the interviewer's spec on #1: an issue of type \"story\" with a parent true can't move: look up clarifying → spec-review"},
 		{"a round typing an issue with a parent a story", func(f *githubtest.Fake, n int, _ int64) { f.SetParent(n, f.AddIssue("owner", "Parent", "")) },

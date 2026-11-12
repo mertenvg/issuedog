@@ -31,6 +31,11 @@ import (
 //   - a move into held, and one from held back to needs-human, as /resume
 //     makes, are looked through: the hand-off from before the hold still
 //     waits;
+//   - so is the way back through the clarifying after a discussion hold
+//     from needs-human (handbackThrough): the move there out of held, the
+//     interviewer's rounds and any hold there, and its unchanged outcome's
+//     move back to needs-human (SPEC §6.4): the discussion changed
+//     nothing, so the hand-off from before the hold still waits;
 //   - any other move, a hand-set one into needs-human among them, leaves
 //     none waiting, so a hand-off from before the task last left
 //     needs-human never counts again.
@@ -53,12 +58,32 @@ func latestHandoff(s *github.Snapshot, appSlug string, dirty func(int64) bool) (
 		switch {
 		case to == state.NeedsHuman && slices.Contains(handoffFrom, from) && m.Fields["by"] == "" && c != state.BodyID:
 			id = c
-		case to == state.Held, from == state.Held && to == state.NeedsHuman:
+		case to == state.Held, from == state.Held && to == state.NeedsHuman, handbackThrough(m):
 		default:
 			id = 0
 		}
 	})
 	return id, id != 0
+}
+
+// handbackThrough reports whether latestHandoff looks through m, a move on
+// the way back to needs-human through the clarifying after a discussion
+// hold from there (SPEC §6.4): one carrying origin=needs-human, which the
+// move out of held to that clarifying writes, and so does every move the
+// App writes there after it: the interviewer's rounds, a hold from there
+// or a /resume back, and the interviewer's unchanged, back to
+// needs-human, the one move there to needs-human with an origin. Any other
+// move from that clarifying, as to ready on task-rewritten, isn't, so it
+// leaves no hand-off waiting, and neither does a stage set by hand, whose
+// override carries no origin (Applier.override). The way there is only
+// out of held, where the hand-off counted already: a move to clarifying
+// from anywhere else leaves none.
+func handbackThrough(m github.Marker) bool {
+	from, to := state.Stage(m.Fields["from"]), state.Stage(m.Fields["to"])
+	if state.Stage(m.Fields["origin"]) != state.NeedsHuman {
+		return false
+	}
+	return from == state.Held && to == state.Clarifying || from == state.Clarifying && (to == state.Clarifying || to == state.NeedsHuman)
 }
 
 // handoffFrom are the stages SPEC §7.2's table moves a task from into

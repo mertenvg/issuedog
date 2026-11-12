@@ -196,26 +196,48 @@ func TestTaskAfterTyped(t *testing.T) {
 // The interviewer's context on a bug offers questions and task only, and
 // lists the scopes a task may have, as the planner's does (SPEC §12), and
 // prompt.md asks for the task's body. On an untyped issue it offers typed,
-// never task, so an untyped bug is typed first.
+// never task, so an untyped bug is typed first. A bug or a task the App
+// typed itself gets the same typing line as the owner's, never "you may
+// change it", so its run writes its task, not a type (SPEC §4): with that
+// line, #742's first attempt typed the same bug again and again.
 func TestTaskContext(t *testing.T) {
 	t.Parallel()
+	taskLines := []string{
+		"- The outcomes you may return here: `questions` and `task`. Any other outcome fails the run.",
+		"- A task's scope is one of: `booking`, `cli`. Any other scope is a question to the owner, never a guess.",
+		"- This issue is a bug or a task, so it gets no spec: once nothing open blocks it, return `task`, its body,",
+		"- This issue is a bug or a task already, so leave `type` out, and never return `typed`."}
+	// appTyped is an untyped issue the interviewer typed typ, its type:*
+	// label the App's add, and its typed move the latest.
+	appTyped := func(typ string) func(f *githubtest.Fake) int {
+		return func(f *githubtest.Fake) int {
+			n, entry := ivFiled(f, "", false, "from=intake to=clarifying event=5")
+			f.AddLabel(n, app, "type:"+typ)
+			f.AddComment(n, app, fmt.Sprintf("%s\n\n%s\n\n<!-- issuedog:transition from=clarifying to=clarifying run=iv1 seen=%d -->", ivTypeLine(typ), "I'll write it up as a task next.", entry))
+			return n
+		}
+	}
 	for name, tt := range map[string]struct {
 		typ       string
+		setup     func(f *githubtest.Fake) int
 		want, not []string
 	}{
-		"a bug": {"bug", []string{
-			"- The outcomes you may return here: `questions` and `task`. Any other outcome fails the run.",
-			"- A task's scope is one of: `booking`, `cli`. Any other scope is a question to the owner, never a guess.",
-			"- This issue is a bug or a task, so it gets no spec: once nothing open blocks it, return `task`, its body,",
-			"- This issue is a bug or a task already, so leave `type` out, and never return `typed`."},
-			[]string{"so you may change it", "The owner set"}},
-		"an untyped issue": {"", []string{"- The outcomes you may return here: `questions`, `spec` and `typed`. Any other outcome fails the run."},
+		"a bug":                 {"bug", nil, taskLines, []string{"so you may change it", "The owner set"}},
+		"a bug issuedog typed":  {"bug", appTyped("bug"), taskLines, []string{"so you may change it", "The owner set", "`typed`,"}},
+		"a task issuedog typed": {"task", appTyped("task"), taskLines, []string{"so you may change it", "The owner set", "`typed`,"}},
+		"an untyped issue": {"", nil, []string{"- The outcomes you may return here: `questions`, `spec` and `typed`. Any other outcome fails the run."},
 			[]string{"A task's scope", "`task`"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			f := newFake(t)
-			n, _ := ivFiled(f, tt.typ, false, "from=intake to=clarifying event=5")
+			setup := tt.setup
+			if setup == nil {
+				setup = func(f *githubtest.Fake) int {
+					return fst(ivFiled(f, tt.typ, false, "from=intake to=clarifying event=5"))
+				}
+			}
+			n := setup(f)
 			d := ivDaemon(t, f, newOrigin(t))
 			d.Config.Scopes = []string{"booking", "cli"}
 			files := ivContext(t, d, n)
