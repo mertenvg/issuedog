@@ -375,6 +375,10 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	// passes over it with no snapshot (#498).
 	d.Step.madeAboveDigest = d.digest.has
 	defer func() { d.Step.madeAboveDigest = nil }()
+	// A follow-up's 👍 trigger finds its addendum in its story's snapshot,
+	// as held, at no request (FollowUpByReaction).
+	d.Step.heldSnap = func(n int) *github.Snapshot { return d.snaps[n] }
+	defer func() { d.Step.heldSnap = nil }()
 	for _, n := range slices.Sorted(maps.Keys(d.snaps)) {
 		reread := touched[n] && d.digestRestartRead(ctx, n, &touches) // as on a restart's first pass
 		s := d.snaps[n]
