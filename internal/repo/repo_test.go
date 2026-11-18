@@ -227,8 +227,16 @@ func TestTokenNeverOnDisk(t *testing.T) {
 	if err := r.Sync(context.Background(), fakeToken); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
+	checkNoToken(t, r.dir)
+}
+
+// checkNoToken checks that no file under dir, a bare repo, holds fakeToken,
+// as it is or in the Authorization header gitEnv makes of it, and that the
+// repo's config, where git would keep it, is there to check.
+func checkNoToken(t *testing.T, dir string) {
+	t.Helper()
 	secrets := []string{fakeToken, base64.StdEncoding.EncodeToString([]byte("x-access-token:" + fakeToken))}
-	err := filepath.WalkDir(r.dir, func(path string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
@@ -246,7 +254,7 @@ func TestTokenNeverOnDisk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(r.dir, "config")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, "config")); err != nil {
 		t.Errorf("no config file to check: %v", err)
 	}
 }
