@@ -62,8 +62,8 @@ func TestVerifyWholeRun(t *testing.T) {
 	head := g.trimmed("commit.1")
 	moved := w.comments()
 	move := moved[len(moved)-1]
-	if ms := github.ParseMarkers(move.Body); len(ms) != 1 || ms[0].Fields["to"] != "verifying" || ms[0].Fields["head"] != head {
-		t.Fatalf("the task's newest comment =\n%s\nwant the move to verifying, naming head %s", move.Body, head)
+	if ms := github.ParseMarkers(move.Body); len(ms) != 2 || ms[0].Fields["to"] != "verifying" || ms[0].Fields["head"] != head || ms[1].Kind != "pr-text" {
+		t.Fatalf("the task's newest comment =\n%s\nwant the move to verifying, naming head %s, then its pr-text", move.Body, head)
 	}
 
 	g.pass()

@@ -634,8 +634,8 @@ func TestVerifierPassAfterAHold(t *testing.T) {
 		t.Fatalf("the verdicts = %q, at %s; want one", passes, pickStage(f, n))
 	}
 	markers := github.ParseMarkers(passes[0])
-	if len(markers) != 1 || markers[0].Fields["head"] != head {
-		t.Fatalf("the markers = %+v; want the verify marker on %s", markers, head)
+	if len(markers) != 2 || markers[0].Fields["head"] != head || markers[1].Kind != "verify-notes" {
+		t.Fatalf("the markers = %+v; want the verify marker on %s, then verify-notes", markers, head)
 	}
 	if got, ok := markers[0].Fields["attempt"]; ok {
 		t.Errorf("the marker's attempt = %q; want none", got)

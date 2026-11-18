@@ -137,10 +137,10 @@ func TestImplementerWholeRun(t *testing.T) {
 	cs := w.comments()
 	last := cs[len(cs)-1]
 	moves := github.ParseMarkers(last.Body)
-	if last.Author.Login != app || len(moves) != 1 || moves[0].Fields["from"] != "in-progress" || moves[0].Fields["to"] != "verifying" ||
+	if last.Author.Login != app || len(moves) != 2 || moves[0].Fields["from"] != "in-progress" || moves[0].Fields["to"] != "verifying" || moves[1].Kind != "pr-text" ||
 		moves[0].Fields["run"] != "run1" || moves[0].Fields["head"] != head ||
 		!strings.HasPrefix(last.Body, "The implementer committed `"+head+"`.\n\n**PR title:** feat: refuse booking an expired quote") {
-		t.Errorf("the task's newest comment, by %s, =\n%s\nwant the App's move to verifying by run1, naming head %s", last.Author.Login, last.Body, head)
+		t.Errorf("the task's newest comment, by %s, =\n%s\nwant the App's move to verifying by run1, naming head %s, then its pr-text", last.Author.Login, last.Body, head)
 	}
 
 	w.quiet("after the run")

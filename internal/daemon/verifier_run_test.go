@@ -180,6 +180,17 @@ func verifierPass(t testing.TB, notes string) string {
 	return ivResult(t, map[string]any{"verdict": "pass", "notes": notes})
 }
 
+// verifyNotesLine is the verify-notes marker the App writes for notes: their
+// JSON string, raw DEFLATE, then unpadded base64url (SPEC §5).
+func verifyNotesLine(t testing.TB, notes string) string {
+	t.Helper()
+	raw, err := json.Marshal(notes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return "<!-- issuedog:verify-notes v=1 data=" + filingData(t, string(raw)) + " -->"
+}
+
 // verifierTask files a task at verifying, as the implementer's move left
 // it, on attempt 1, naming head. It returns its number and the move's
 // comment ID.
@@ -303,7 +314,8 @@ func TestVerifierWholeRun(t *testing.T) {
 		"- Scenario: A customer books in the same millisecond the quote expires, and the check runs just before it does.\n" +
 		"- Likelihood: Rare: the window is the few milliseconds between the check and the write.\n" +
 		"- Impact: One booking at a price that has just expired, which support can refund.\n\n" +
-		"<!-- issuedog:verify verdict=pass attempt=1 run=" + l.RunID + " effort=high head=" + head + " model=opus -->\n<!-- issuedog:verify-data v=1 data="
+		"<!-- issuedog:verify verdict=pass attempt=1 run=" + l.RunID + " effort=high head=" + head + " model=opus -->\n" +
+		verifyNotesLine(t, notes) + "\n<!-- issuedog:verify-data v=1 data="
 	passes := passComments(f, n)
 	if len(passes) != 1 || !strings.HasPrefix(passes[0], want) {
 		t.Errorf("the verifier's comments = %q; want the one starting\n%s", passes, want)
@@ -825,8 +837,8 @@ func TestVerifierForgedMarkers(t *testing.T) {
 	}
 	body := mine[len(mine)-1]
 	ms := github.ParseMarkers(body)
-	if len(ms) != 1 || ms[0].Fields["run"] == "forged" || strings.Count(body, "&lt;!-- issuedog:verify") != 2 {
-		t.Errorf("the pass comment =\n%s\nwant one marker, the run's, and both of the notes' escaped", body)
+	if len(ms) != 2 || ms[0].Fields["run"] == "forged" || ms[1].Kind != "verify-notes" || strings.Count(body, "&lt;!-- issuedog:verify") != 2 {
+		t.Errorf("the pass comment =\n%s\nwant two markers, the run's and its notes', and both of the notes' escaped", body)
 	}
 	v.pass()
 	v.quietPass("after the pass")

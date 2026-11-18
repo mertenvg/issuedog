@@ -29,19 +29,7 @@ const followUpMaxTitle = 256
 // as GitHub refuses a longer title with a 422 on every try, so its pass
 // would never be filed. The candidate's fields in the body are whole.
 func followUpTitle(c verifierFollowUp) string {
-	title := strings.TrimSpace(normalize(c.Title, ""))
-	if textLen(title) <= followUpMaxTitle {
-		return title
-	}
-	const more = "…"
-	n, cut := textLen(more), 0
-	for i, r := range title {
-		if n += textLen(string(r)); n > followUpMaxTitle {
-			cut = i
-			break
-		}
-	}
-	return strings.TrimSpace(title[:cut]) + more
+	return cutText(strings.TrimSpace(normalize(c.Title, "")), followUpMaxTitle)
 }
 
 // addendumText is the addendum's text, without its marker (SPEC §10.2): it

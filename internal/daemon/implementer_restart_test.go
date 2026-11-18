@@ -161,7 +161,7 @@ func TestImplementerRestartFetchesSavedResult(t *testing.T) {
 		t.Errorf("the restart's Work read #%d %d times, with %d runs; want once, for the apply, and no run", n, reads, g.runs())
 	}
 	cs := implementerComments(t, f, n)
-	if want := implementerCommitted("saved", head, 1, cs[0].ID); len(cs) != 2 || cs[1].Body != want || pickStage(f, n) != "stage:verifying" {
+	if want := implementerCommitted(t, "saved", head, 1, cs[0].ID); len(cs) != 2 || cs[1].Body != want || pickStage(f, n) != "stage:verifying" {
 		t.Errorf("after the restart, %d comments, the newest\n%s\nat %s; want the saved result's move,\n%s\nat verifying", len(cs), cs[len(cs)-1].Body, pickStage(f, n), want)
 	}
 	if got := g.bareRefs(); got != wantRefs(main, head) {
@@ -206,7 +206,7 @@ func TestImplementerRestartAppliesFetchedResult(t *testing.T) {
 	}
 	main := gitIn(t, g.d.Clone.Dir(), "rev-parse", "main")
 	cs := implementerComments(t, f, n)
-	if want := implementerCommitted("run1", head, 1, cs[0].ID); len(cs) != 2 || cs[1].Body != want || g.runs() != 1 {
+	if want := implementerCommitted(t, "run1", head, 1, cs[0].ID); len(cs) != 2 || cs[1].Body != want || g.runs() != 1 {
 		t.Errorf("after the restart, %d comments, the newest\n%s\nafter %d runs; want run 1's move,\n%s\nafter 1 run", len(cs), cs[len(cs)-1].Body, g.runs(), want)
 	}
 	if got := g.bareRefs(); got != wantRefs(main, head) || pickStage(f, n) != "stage:verifying" {
@@ -561,7 +561,7 @@ func TestImplementerResumeHeldTask(t *testing.T) {
 	// comment, the newest then, so its seen is that comment too.
 	back := moved(resumedToReady, fmt.Sprintf("from=held to=ready cmd=%d seen=%d", resume, cs[0].ID))
 	if len(bodies) != 3 || bodies[0] != back || bodies[1] != pickMoved(cs[at+1].ID, cs[at+1].ID) ||
-		bodies[2] != implementerCommitted("run1", g.trimmed("commit.1"), 1, cs[at+2].ID) {
+		bodies[2] != implementerCommitted(t, "run1", g.trimmed("commit.1"), 1, cs[at+2].ID) {
 		t.Errorf("after /resume, the comments are\n%q\nwant its move to ready,\n%q\nthen the pick's, and run 1's to verifying", bodies, back)
 	}
 	if g.runs() != 1 || pickStage(f, n) != "stage:verifying" {

@@ -59,10 +59,42 @@ func newImplementerRig(t *testing.T, f *githubtest.Fake, o *origin, root string,
 	return g
 }
 
+// prTextLine is the pr-text marker the App writes for out's title and
+// summary: their JSON, in the schema's field order, raw DEFLATE, then
+// unpadded base64url (SPEC §5).
+func prTextLine(t testing.TB, out map[string]any) string {
+	t.Helper()
+	var kept struct {
+		Title struct {
+			Type     string `json:"type"`
+			Sentence string `json:"sentence"`
+		} `json:"title"`
+		Summary struct {
+			WhatChanged  string   `json:"what_changed"`
+			Why          string   `json:"why"`
+			TestsAdded   []string `json:"tests_added"`
+			TestsUpdated []string `json:"tests_updated"`
+		} `json:"summary"`
+	}
+	raw, err := json.Marshal(map[string]any{"title": out["title"], "summary": out["summary"]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &kept); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err = json.Marshal(kept); err != nil {
+		t.Fatal(err)
+	}
+	return "<!-- issuedog:pr-text v=1 data=" + filingData(t, string(raw)) + " -->"
+}
+
 // implementerCommitted is the App's comment on the move to verifying of
 // run, which committed head as attempt attempt of its round, with seen,
-// for the golden commits output.
-func implementerCommitted(run, head string, attempt int, seen int64) string {
+// for the golden commits output, its pr-text marker after the transition
+// marker.
+func implementerCommitted(t testing.TB, run, head string, attempt int, seen int64) string {
+	t.Helper()
 	return "The implementer committed `" + head + "`.\n\n" +
 		"**PR title:** feat: refuse booking an expired quote, with a link to a new one\n\n" +
 		"## What changed\n\n" +
@@ -76,7 +108,8 @@ func implementerCommitted(run, head string, attempt int, seen int64) string {
 		"- added: TestBookQuoteAtExpiry: a quote booked at its exact expiry time is refused\n" +
 		"- added: TestBookingAPIExpiredQuote: the API answers 410 with the new-quote link\n" +
 		"- updated: TestBook: its quotes get an expiry time in the future\n\n" +
-		fmt.Sprintf("<!-- issuedog:transition from=in-progress to=verifying attempt=%d run=%s head=%s seen=%d -->", attempt, run, head, seen)
+		fmt.Sprintf("<!-- issuedog:transition from=in-progress to=verifying attempt=%d run=%s head=%s seen=%d -->\n", attempt, run, head, seen) +
+		prTextLine(t, implementerOutput(t, "commits"))
 }
 
 // A task at in-progress gets an implementer run, as a Committer: its
@@ -112,7 +145,7 @@ func TestImplementerCommitsMoveToVerifying(t *testing.T) {
 	}
 	cs := implementerComments(t, f, n)
 	last := cs[len(cs)-1]
-	if want := implementerCommitted("run1", head, 1, cs[len(cs)-2].ID); last.Author.Login != app || last.Body != want {
+	if want := implementerCommitted(t, "run1", head, 1, cs[len(cs)-2].ID); last.Author.Login != app || last.Body != want {
 		t.Errorf("the task's newest comment, by %s, =\n%s\nwant the App's\n%s", last.Author.Login, last.Body, want)
 	}
 	if left := g.leftovers(); len(left) != 0 {
@@ -280,7 +313,7 @@ func TestImplementerApplyReplay(t *testing.T) {
 		}
 		labels, cs := f.State().Issues[0].Labels, implementerComments(t, f, 1)
 		last := cs[len(cs)-1]
-		if want := implementerCommitted("run1", head, 1, cs[len(cs)-2].ID); last.Body != want || !slices.Contains(labels, "stage:verifying") {
+		if want := implementerCommitted(t, "run1", head, 1, cs[len(cs)-2].ID); last.Body != want || !slices.Contains(labels, "stage:verifying") {
 			t.Errorf("after the replay, the newest comment =\n%s\nwith labels %v; want\n%s\nat verifying", last.Body, labels, want)
 		}
 	}

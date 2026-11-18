@@ -147,8 +147,8 @@ func TestVerifierCandidatesThroughARestart(t *testing.T) {
 		}
 	}
 	ms := github.ParseMarkers(body)
-	if len(ms) != 2 || ms[0].Kind != "verify" || ms[0].Fields["run"] != v.leaseOf("1").RunID || ms[1].Kind != "verify-data" {
-		t.Errorf("the pass comment's markers = %+v; want the run's verify, then verify-data", ms)
+	if len(ms) != 3 || ms[0].Kind != "verify" || ms[0].Fields["run"] != v.leaseOf("1").RunID || ms[1].Kind != "verify-notes" || ms[2].Kind != "verify-data" {
+		t.Errorf("the pass comment's markers = %+v; want the run's verify, then verify-notes, then verify-data", ms)
 	}
 	for _, is := range f.State().Issues {
 		if is.Number != n && !strings.Contains(is.Body, "<!-- issuedog:digest") {
