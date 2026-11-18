@@ -244,14 +244,15 @@ func TestPullsHeadFromGit(t *testing.T) {
 }
 
 // The fake refuses, with a 422 and changing nothing, a second open pull
-// request with one head and base, one whose head is no branch, and a
-// reopen once the branch was pushed past its head by force, of a merged
-// one, and of one whose head and base another open one has. A reopen
+// request with one head and base, one whose head is no branch or in
+// another repo, and a reopen once the branch was pushed past its head by
+// force, once it was deleted, of a merged one, and of one whose head and
+// base another open one has. A reopen
 // after a fast-forward isn't refused. A remote that can't be read, or none,
 // is a 500 that names it.
 func TestPullsRefusals(t *testing.T) {
 	t.Parallel()
-	f, r := pullFake(t, "a", "b")
+	f, r := pullFake(t, "a", "b", "c")
 	a := pullOpen(t, f, "A", "a", "main", "")
 	before := f.State()
 	open := func(head, base string) (int, string) {
@@ -263,8 +264,8 @@ func TestPullsRefusals(t *testing.T) {
 	if status, msg := open("nope", "main"); status != http.StatusUnprocessableEntity || !strings.Contains(msg, "nope") {
 		t.Errorf("no such head: %d %q; want 422 naming it", status, msg)
 	}
-	if status, _ := open("x:a", "main"); status != http.StatusUnprocessableEntity {
-		t.Errorf("a head in another repo: %d; want 422", status)
+	if status, msg := open("x:b", "main"); status != http.StatusUnprocessableEntity || !strings.Contains(msg, "isn't in this repo") {
+		t.Errorf("a head in another repo: %d %q; want 422, isn't in this repo", status, msg)
 	}
 	if got := f.State(); !reflect.DeepEqual(got, before) {
 		t.Errorf("state after the refused opens:\n%+v\nwant it unchanged:\n%+v", got, before)
@@ -299,6 +300,12 @@ func TestPullsRefusals(t *testing.T) {
 	}
 	if got := f.State().PRs[0]; !reflect.DeepEqual(got, before.PRs[0]) {
 		t.Errorf("the refused reopen changed #%d: %+v; want %+v", a, got, before.PRs[0])
+	}
+	gone := pullOpen(t, f, "C", "c", "main", "")
+	f.ClosePR(gone, "owner")
+	r.git("update-ref", "-d", "refs/heads/c")
+	if status, msg := reopen(gone); status != http.StatusUnprocessableEntity || !strings.Contains(msg, "c branch was deleted") {
+		t.Errorf("reopen with its branch deleted: %d %q; want 422, deleted", status, msg)
 	}
 	if status, msg := pullDo(t, f, "PATCH", fmt.Sprintf("repos/o/r/pulls/%d", a2), map[string]string{"state": "merged"}, nil); status != http.StatusUnprocessableEntity {
 		t.Errorf("state=merged: %d %q; want 422", status, msg)
@@ -367,6 +374,36 @@ func TestPullsAsIssues(t *testing.T) {
 	}
 	want := []string{"labeled issuedog[bot]", "closed mallory", "reopened owner", "merged owner", "closed owner"}
 	if !slices.Equal(got, want) {
+		t.Errorf("timeline %q; want %q", got, want)
+	}
+}
+
+// A close or a reopen through PATCH /pulls names the App as its actor in
+// the timeline, as GitHub names the token's user, so a reader can tell the
+// App's own closes and reopens from a person's.
+func TestPullsPatchActor(t *testing.T) {
+	t.Parallel()
+	f, _ := pullFake(t, "a")
+	n := pullOpen(t, f, "A", "a", "main", "")
+	for _, state := range []string{"closed", "open"} {
+		if status, msg := pullDo(t, f, "PATCH", fmt.Sprintf("repos/o/r/pulls/%d", n), map[string]string{"state": state}, nil); status != http.StatusOK {
+			t.Fatalf("PATCH state=%s: %d %q; want 200", state, status, msg)
+		}
+	}
+	c, ctx := f.Client(t), context.Background()
+	req, err := c.NewRequest(ctx, "GET", fmt.Sprintf("repos/o/r/issues/%d/timeline", n), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []*gogithub.Timeline
+	if _, err := c.Do(req, &events); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range events {
+		got = append(got, e.GetEvent()+" "+e.GetActor().GetLogin())
+	}
+	if want := []string{"closed issuedog[bot]", "reopened issuedog[bot]"}; !slices.Equal(got, want) {
 		t.Errorf("timeline %q; want %q", got, want)
 	}
 }
