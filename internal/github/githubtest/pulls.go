@@ -56,20 +56,22 @@ func (f *Fake) handlePulls() {
 }
 
 // SetGitRemote makes dir, a bare git repo, the one whose refs/heads/*
-// give each pull request's head. Until it's set, a request that reads a
-// head fails with a 500 naming it, as does one when the repo can't be read.
+// give each pull request's head, and hold the commits a check run may be
+// posted on (checkruns.go). Until it's set, a request that reads a head or
+// a branch fails with a 500 naming it, as does one when the repo can't be
+// read.
 func (f *Fake) SetGitRemote(dir string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.pulls.remote = dir
 }
 
-// pullGit runs git in the git remote, with no system or global config and
+// remoteGit runs git in the git remote, with no system or global config and
 // no inherited GIT_* variable, as internal/repo runs it, and returns its
 // trimmed stdout. The error wraps git's *exec.ExitError, with its stderr.
-func (f *Fake) pullGit(ctx context.Context, args ...string) (string, error) {
+func (f *Fake) remoteGit(ctx context.Context, args ...string) (string, error) {
 	if f.pulls.remote == "" {
-		return "", errors.New("githubtest: no git remote to read pull requests' heads from: call SetGitRemote")
+		return "", errors.New("githubtest: no git remote to read branches from: call SetGitRemote")
 	}
 	cmd := exec.CommandContext(ctx, "git", append([]string{"--git-dir=" + f.pulls.remote}, args...)...)
 	for _, kv := range os.Environ() {
@@ -86,10 +88,10 @@ func (f *Fake) pullGit(ctx context.Context, args ...string) (string, error) {
 	return strings.TrimSpace(stdout.String()), nil
 }
 
-// pullNo reports whether err is git's exit status 1, which rev-parse
-// --verify --quiet gives for a ref that isn't there, and merge-base
-// --is-ancestor for a commit that isn't an ancestor.
-func pullNo(err error) bool {
+// remoteNo reports whether err is git's exit status 1, which rev-parse
+// --verify --quiet gives for a ref or a commit that isn't there, and
+// merge-base --is-ancestor for a commit that isn't an ancestor.
+func remoteNo(err error) bool {
 	var ee *exec.ExitError
 	return errors.As(err, &ee) && ee.ExitCode() == 1
 }
@@ -97,9 +99,9 @@ func pullNo(err error) bool {
 // pullTip is branch's tip in the git remote, or "" if it has no such
 // branch. f is locked.
 func (f *Fake) pullTip(ctx context.Context, branch string) (string, error) {
-	sha, err := f.pullGit(ctx, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch+"^{commit}")
+	sha, err := f.remoteGit(ctx, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch+"^{commit}")
 	switch {
-	case pullNo(err):
+	case remoteNo(err):
 		return "", nil
 	case err != nil:
 		return "", fmt.Errorf("githubtest: the tip of %s: %w", branch, err)
@@ -155,8 +157,8 @@ func (f *Fake) pullReopen(ctx context.Context, is *issue) (string, int, any) {
 	if tip == "" {
 		return refuse(fmt.Sprintf("The %s branch was deleted.", is.pr.head))
 	}
-	switch _, err := f.pullGit(ctx, "merge-base", "--is-ancestor", is.pr.headSHA, tip); {
-	case pullNo(err):
+	switch _, err := f.remoteGit(ctx, "merge-base", "--is-ancestor", is.pr.headSHA, tip); {
+	case remoteNo(err):
 		return refuse(fmt.Sprintf("The %s branch was force-pushed or recreated.", is.pr.head))
 	case err != nil:
 		return "", http.StatusInternalServerError, message(err.Error())

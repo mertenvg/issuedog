@@ -16,6 +16,16 @@ type State struct {
 	// PRs are the pull requests the fake opened (pulls.go), by number. Each
 	// is in Issues too, with its labels and assignees.
 	PRs []PRState
+	// CheckRuns are the check runs on the git remote's commits
+	// (checkruns.go), by SHA, sorted, and each SHA's in the order posted.
+	CheckRuns []CheckRunState
+}
+
+// CheckRunState is one check run in a State: the commit it's on, its name
+// and conclusion, and the ID of the App that posted it.
+type CheckRunState struct {
+	SHA, Name, Conclusion string
+	AppID                 int64
 }
 
 // PRState is one pull request in a State: its head and base branches, the
@@ -95,6 +105,7 @@ func (f *Fake) State() State {
 		}
 	}
 	s.RepoLabels = f.repoLabelState()
+	s.CheckRuns = f.checkRunState()
 	return s
 }
 
@@ -118,9 +129,10 @@ func (f *Fake) State() State {
 //     another order, and so are assignees and blocked-by links; comments
 //     are compared in order, with their bodies, and sub-issues in the
 //     order they were linked, and pull requests by number, with their
-//     heads, bases, titles, bodies and states. A run may not leave an extra
-//     comment, reaction, label, assignee, sub-issue, blocked-by link or
-//     pull request, or miss one.
+//     heads, bases, titles, bodies and states, and check runs by SHA, in
+//     the order posted, with their names, conclusions and Apps. A run may
+//     not leave an extra comment, reaction, label, assignee, sub-issue,
+//     blocked-by link, pull request or check run, or miss one.
 //
 // pass must build its own client and in-memory state from the fake it gets,
 // as the daemon does on restart, and must decide its writes only from what
