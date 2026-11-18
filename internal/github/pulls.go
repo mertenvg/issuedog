@@ -13,10 +13,12 @@ import (
 // PullRequest is one pull request as the daemon reads it: its number, its
 // head branch and the SHA GitHub shows for it, its base branch, its state
 // ("open" or "closed", a merged one included), its title, body and author's
-// login, whether it merged, and when it closed and was last updated.
+// login, its labels' names, whether it merged, and when it closed and was
+// last updated.
 type PullRequest struct {
 	Number                                          int
 	Head, HeadSHA, Base, State, Title, Body, Author string
+	Labels                                          []string
 	Merged                                          bool
 	ClosedAt, UpdatedAt                             time.Time
 }
@@ -37,7 +39,11 @@ var ErrReopenRefused = errors.New("GitHub refused to reopen the pull request")
 // requests gives no merged field, only merged_at, so either one says it
 // merged.
 func pullRequestOf(p *gogithub.PullRequest) PullRequest {
-	return PullRequest{
+	var labels []string
+	for _, l := range p.Labels {
+		labels = append(labels, l.GetName())
+	}
+	return PullRequest{Labels: labels,
 		Number: p.GetNumber(), Head: p.GetHead().GetRef(), HeadSHA: p.GetHead().GetSHA(), Base: p.GetBase().GetRef(),
 		State: p.GetState(), Title: p.GetTitle(), Body: p.GetBody(), Author: p.GetUser().GetLogin(),
 		Merged: p.GetMerged() || p.MergedAt != nil, ClosedAt: p.GetClosedAt().Time, UpdatedAt: p.GetUpdatedAt().Time,

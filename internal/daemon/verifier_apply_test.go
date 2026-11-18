@@ -643,7 +643,7 @@ func TestVerifierPassAfterAHold(t *testing.T) {
 }
 
 // verifyTask looks past a task that has nothing for it, to the next task at
-// verifying: one waiting on its pass, or one whose run is held back.
+// verifying: one whose PR its pass opened, or one whose run is held back.
 func TestVerifyTaskGoesOnToTheNext(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -653,9 +653,9 @@ func TestVerifyTaskGoesOnToTheNext(t *testing.T) {
 		// passes is how many it takes for the second to get its run.
 		passes int
 	}{
-		{"waiting on its pass", func(_ *testing.T, v *verdictRig, n int, head string) {
+		{"its PR open on its pass", func(_ *testing.T, v *verdictRig, n int, head string) {
 			v.f.AddComment(n, app, "The verifier passed.\n\n<!-- issuedog:verify verdict=pass attempt=1 run=r0 head="+head+" -->")
-		}, 0, 3},
+		}, 0, 4},
 		{"handed off after failed runs", func(_ *testing.T, v *verdictRig, _ int, _ string) {
 			for k := range 3 {
 				v.out(k+1, failOut)
