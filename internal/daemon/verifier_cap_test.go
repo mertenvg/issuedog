@@ -176,7 +176,7 @@ func TestVerifierFailedRunThenAPass(t *testing.T) {
 	if l := v.lease(); l.RunID != "" {
 		t.Errorf("the lease = %+v; want none: the count ended with the result", l)
 	}
-	v.pass()
+	v.prOpens(head)
 	v.quietPass("after the pass")
 }
 

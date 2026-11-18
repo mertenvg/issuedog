@@ -60,8 +60,8 @@ func pullsFake(t testing.TB, branches ...string) (*githubtest.Fake, func(args ..
 
 // PullRequestsByHead lists every pull request with the branch as its head,
 // open, closed and merged, over pages of 100, newest first, each with its
-// head's SHA, its base, state, title, body, author, merge and times, and
-// none with another head.
+// head's SHA, its base, state, title, body, author, labels, merge and
+// times, and none with another head.
 func TestPullRequestsByHead(t *testing.T) {
 	t.Parallel()
 	f, git := pullsFake(t, "issuedog/7-task", "other")
@@ -87,6 +87,7 @@ func TestPullRequestsByHead(t *testing.T) {
 	if _, err := c.CreatePullRequest(ctx, "o", "r", github.NewPullRequest{Title: "Other", Head: "other", Base: "main"}); err != nil {
 		t.Fatal(err)
 	}
+	f.AddLabel(first.Number, "owner", "priority:p1")
 	from := len(f.Requests())
 	prs, err := c.PullRequestsByHead(ctx, "o", "r", "issuedog/7-task")
 	if err != nil {
@@ -112,7 +113,7 @@ func TestPullRequestsByHead(t *testing.T) {
 	}
 	last := prs[100]
 	want := github.PullRequest{Number: first.Number, Head: "issuedog/7-task", HeadSHA: tip, Base: "main", State: "closed",
-		Title: "T0", Body: "B", Author: "issuedog[bot]", ClosedAt: last.ClosedAt, UpdatedAt: last.UpdatedAt}
+		Title: "T0", Body: "B", Author: "issuedog[bot]", Labels: []string{"priority:p1"}, ClosedAt: last.ClosedAt, UpdatedAt: last.UpdatedAt}
 	if !reflect.DeepEqual(last, want) || last.ClosedAt.IsZero() || last.UpdatedAt.Before(last.ClosedAt) {
 		t.Errorf("oldest %+v; want %+v, with its close's time", last, want)
 	}

@@ -53,8 +53,10 @@ func filingFollowUps(f *githubtest.Fake) []githubtest.IssueState {
 // fields, says how to approve it, ends in the cc line and has its origin
 // last, then the record on the task, naming both. The pass after reads
 // what it wrote: the digest, #2, lists both follow-ups, and notify is
-// assigned to each. The pass after that reads those writes, and writes
-// nothing, and each unchanged pass after makes no request but 304s,
+// assigned to each, and with the record standing, the task's PR opens,
+// with its priority label (pr_open.go). The pass after that reads those
+// writes, and writes nothing, and each unchanged pass after makes no
+// request but 304s,
 // writes nothing and starts no run. claude ran twice in
 // all, the implementer and the verifier, so no other Stage ran, triage, the
 // Unlabeled stage, included, on the follow-ups or anything else.
@@ -110,11 +112,13 @@ func TestFollowUpsWholeRun(t *testing.T) {
 	// The pass after reads the follow-ups, each waiting for its approval:
 	// the digest lists both, and notify is assigned to each, with no
 	// announcement, as each body's cc line mentioned notify (SPEC §9.4,
-	// §9.6).
+	// §9.6). It reads the record too, so the task's PR opens, the next
+	// issue's number, with its priority label.
 	writes := len(f.Writes())
 	v.pass()
+	pr := issues + 3
 	if got, want := writesOf(f)[writes:], []string{"PATCH /issues/2", "POST /issues/" + strconv.Itoa(issues+1) + "/assignees",
-		"POST /issues/" + strconv.Itoa(issues+2) + "/assignees"}; !slices.Equal(got, want) {
+		"POST /issues/" + strconv.Itoa(issues+2) + "/assignees", "POST /pulls", "POST /issues/" + strconv.Itoa(pr) + "/labels"}; !slices.Equal(got, want) {
 		t.Errorf("the pass after the filing wrote %q, want %q", got, want)
 	}
 	digest := f.State().Issues[1].Body

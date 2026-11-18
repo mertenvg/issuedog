@@ -47,9 +47,13 @@ func verifyKey(c int64) state.Key {
 // verifier, on the head, the only place one starts, unless a clean pass
 // marker of its own names that head (verdictOn), or none is registered.
 // Its pass moves nothing: the task waits at verifying, and keeps the
-// worker, until the PR is built (#622), its request_changes goes as a
-// failure of the checks does, and its question moves the task to clarifying
-// (Verifier.Apply). A run that fails writes nothing, and the head gets another,
+// worker, its request_changes goes as a failure of the checks does, and its
+// question moves the task to clarifying (Verifier.Apply). A head with a
+// clean pass marker gets the PR step instead, while the checks' pass holds
+// on it and main (openPR): its head pushed to the task's branch and its PR
+// to main opened or updated, once its follow-ups' filed record stands. It
+// reports a run when that step read the issue again to write, and else
+// looks at the next task. A run that fails writes nothing, and the head gets another,
 // until the last of loop.max_attempts in a row hands the task off at
 // needs-human (Runs.atCap). A later head has no such marker, so it gets a run
 // of its own, and a later main only the checks, which move the task back on a
@@ -96,8 +100,18 @@ func (r *Runs) verifyTask(ctx context.Context, ready []Ready, skip int) (bool, e
 			return false, fmt.Errorf("verify #%d: read main: %w", n, err)
 		}
 		if r.passed[n].holds(head, main) {
+			if verdictOn(is, head) {
+				wrote, err := r.openPR(ctx, rd, is, head, main)
+				switch {
+				case err != nil:
+					return wrote, fmt.Errorf("verify #%d: %w", n, err)
+				case wrote:
+					return true, nil
+				}
+				continue
+			}
 			st, ok := r.Stages[state.Verifying]
-			if !ok || verdictOn(is, head) {
+			if !ok {
 				logr.Debugf("%s/%s#%d: its head %s passed the checks against main's %s already, so it waits at %s", a.Owner, a.Repo, n, head, main, state.Verifying)
 				continue
 			}
