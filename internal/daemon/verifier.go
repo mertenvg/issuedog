@@ -368,9 +368,9 @@ func verifierTask(number int, dir string) string {
 //   - the scopes a follow-up candidate may name (config.Scopes);
 //   - the rounds so far, every stage's (all), the next round's number
 //     (nextRound), and loop.max_questions_per_round;
-//   - the comment's length (maxText less textRoom), which a pass's candidates
-//     count towards twice, as passText has it, and what each verdict posts:
-//     only a pass posts its notes (Verifier.Apply).
+//   - the comment's length (maxText less textRoom), which a pass's notes and
+//     candidates count towards twice, as passText has it, and what each
+//     verdict posts: only a pass posts its notes (Verifier.Apply).
 func verifierPreamble(c *config.Config, all []interviewerRound, head string) string {
 	scopes := "- This repo lists no scopes, so a follow-up candidate can't name one: return none, and say what you found in `notes`."
 	if len(c.Scopes) > 0 {
@@ -405,6 +405,6 @@ func verifierPreamble(c *config.Config, all []interviewerRound, head string) str
 		"- " + asked + fmt.Sprintf(" At most %d questions in a round, each with 2 to 4 options.", c.Loop.MaxQuestionsPerRound),
 		fmt.Sprintf("- The comment issuedog posts from your output is at most %d characters. "+
 			"A `pass` posts your notes and your follow-up candidates, a `request_changes` only your findings and a `question` only your questions. "+
-			"A pass's candidates count twice: once as listed, and once as kept, compressed, in a marker.", maxText-textRoom),
+			"A pass's notes and candidates count twice: once as shown, and once as kept, compressed, in a marker.", maxText-textRoom),
 	}, "\n\n")
 }

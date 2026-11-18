@@ -102,7 +102,8 @@ func TestVerifyRoundMixesRunsAndFindings(t *testing.T) {
 	cs := implementerComments(t, f, n)
 	moved := cs[len(cs)-1]
 	if l := g.leaseOf("2"); g.runs() != 2 || l.Attempt != 2 || l.AttemptKey != key ||
-		!strings.HasSuffix(moved.Body, fmt.Sprintf("<!-- issuedog:transition from=in-progress to=verifying attempt=2 run=%s effort=medium head=%s seen=%d -->", l.RunID, head, cs[len(cs)-2].ID)) {
+		!strings.HasSuffix(moved.Body, fmt.Sprintf("<!-- issuedog:transition from=in-progress to=verifying attempt=2 run=%s effort=medium head=%s seen=%d -->\n", l.RunID, head, cs[len(cs)-2].ID)+
+			prTextLine(t, implementerOutput(t, "commits"))) {
 		t.Fatalf("after pass 2: %d runs, run 2 leased %+v, the newest comment\n%s\nwant two, attempt 2 of %s, moving to verifying with attempt=2 and head %s",
 			g.runs(), l, moved.Body, key, head)
 	}

@@ -116,7 +116,8 @@ type implementerFacts struct {
 //   - commits has a title and a summary, and no questions or hand-off. It
 //     needs commits past the run's start, a title type on pr.title_types,
 //     exactly as written, and a title on one line within GitHub's limit,
-//     and its comment (renderCommits) within maxText less textRoom.
+//     and its comment, its text (renderCommits) and its pr-text marker
+//     together (commitsData), within maxText less textRoom.
 //   - question has questions, and no title, summary or hand-off. Its
 //     questions follow the interviewer's question rules (checkQuestions),
 //     and its comment (renderQuestions) fits within maxText less textRoom.
@@ -173,10 +174,29 @@ func checkCommits(out implementerOutput, f implementerFacts, fail func(string, s
 		}
 	}
 	if out.Title != nil && out.Summary != nil {
-		if n := textLen(renderCommits(*out.Title, *out.Summary, f.Head)); n > maxText-textRoom {
+		data, err := commitsData(*out.Title, *out.Summary)
+		if err != nil {
+			fail(ruleLength, "%v", err)
+		} else if n := textLen(renderCommits(*out.Title, *out.Summary, f.Head)) + textLen(data); n > maxText-textRoom {
 			fail(ruleLength, "the comment is %d characters, over %d", n, maxText-textRoom)
 		}
 	}
+}
+
+// commitsData is the pr-text marker of a commits outcome's move, as
+// Transition writes it after the transition marker. checkCommits measures
+// it with renderCommits' text, so the comment checked is the comment
+// posted.
+func commitsData(title implementerTitle, sum implementerSummary) (string, error) {
+	m, err := prTextMarker(title, sum)
+	if err != nil {
+		return "", fmt.Errorf("the comment's %w", err)
+	}
+	data, err := github.FormatMarker(m)
+	if err != nil {
+		return "", fmt.Errorf("the comment's pr-text marker: %w", err)
+	}
+	return data, nil
 }
 
 // checkImplementerQuestion is checkImplementer's rules for a question
@@ -281,7 +301,9 @@ func runMoved(is state.Issue, r Result, triggers map[state.Stage]state.Trigger) 
 // keyed by the run, with seen= and the run's model=, effort= and ran=:
 //   - commits: in-progress → verifying on implemented, with head=, the
 //     run's head (Result.Head), attempt=, the run's number in its round
-//     (Result.Attempt), and its comment renderCommits'.
+//     (Result.Attempt), and its comment renderCommits', with the pr-text
+//     marker after the transition marker (prTextMarker), which keeps the
+//     title and the summary for the task's PR (SPEC §11.5).
 //   - question: in-progress → clarifying on implementer-question, with
 //     round= and questions=, the round the next of every stage's
 //     (nextRound, SPEC §9.1), and its comment the round in the SPEC §9.1
@@ -349,6 +371,11 @@ func (im *Implementer) Apply(ctx context.Context, a *Applier, r Result) error {
 		m.Fields[fieldAttempt] = strconv.Itoa(r.Attempt)
 	}
 	m.Text = renderCommits(*out.Title, *out.Summary, r.Head)
+	data, err := prTextMarker(*out.Title, *out.Summary)
+	if err != nil {
+		return wrap(err)
+	}
+	m.Markers = append(m.Markers, data)
 	logr.Infof("%s/%s#%d: run %s committed %s, moving to %s", a.Owner, a.Repo, r.S.Number, r.RunID, r.Head, state.Verifying)
 	if err := a.Transition(ctx, r.S, r.Dirt.Has, m); err != nil {
 		return wrap(err)

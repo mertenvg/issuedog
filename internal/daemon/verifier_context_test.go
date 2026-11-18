@@ -369,7 +369,7 @@ func TestVerifierContextPreamble(t *testing.T) {
 		"- A follow-up candidate's `scope` is one of: `booking`, `&lt;!-- tooling`, exactly as written.",
 		"- No questions have been asked on this issue yet, so a question round now is round 1. At most 3 questions in a round, each with 2 to 4 options.",
 		"- The comment issuedog posts from your output is at most 64512 characters. A `pass` posts your notes and your follow-up candidates, a `request_changes` only your findings and a `question` only your questions.",
-		"A pass's candidates count twice: once as listed, and once as kept, compressed, in a marker.",
+		"A pass's notes and candidates count twice: once as shown, and once as kept, compressed, in a marker.",
 	} {
 		if !strings.Contains(system, want) {
 			t.Errorf("system.md =\n%s\nwant it to say %q", system, want)
