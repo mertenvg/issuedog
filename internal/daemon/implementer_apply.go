@@ -276,11 +276,14 @@ var implementerTriggers = map[state.Stage]state.Trigger{
 }
 
 // verifierTriggers are the triggers of the verifier's moves, by the stage
-// each moves a task to from verifying (SPEC §7.2).
+// each moves a task to from verifying (SPEC §7.2), and of the PR step's
+// move to pr-open on its pass, which is keyed by the pass's run (prMove),
+// so a verifier's apply that finds it written finishes it too (runMoved).
 var verifierTriggers = map[state.Stage]state.Trigger{
 	state.InProgress: state.TriggerFindings,
 	state.NeedsHuman: state.TriggerAttemptCap,
 	state.Clarifying: state.TriggerVerifierQuestion,
+	state.PROpen:     state.TriggerVerified,
 }
 
 // runMoved returns the move r's run wrote on an issue in state is, as a

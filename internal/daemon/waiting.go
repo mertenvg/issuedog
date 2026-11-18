@@ -637,7 +637,9 @@ func waitGoalDone(body string) (goal, done string) {
 // fields, and may hold a line like a field's in a fence, so for that
 // hand-off the fields are read from its last Goal line on. Or it's the
 // verifier's runs on the task's head failing (verifierCapMove), whose
-// hand-off always says why. With either
+// hand-off always says why. Or it's the verifier passing a head that
+// changes nothing on main, so it gets no PR (nothingHandoffMove), which
+// verifyCapMove leaves out, though both are keyed run=. With either
 // field not found, as for a format that has changed, a line says to see
 // the hand-off instead.
 func waitHandoffLines(s *github.Snapshot, id int64) []waitLine {
@@ -649,6 +651,8 @@ func waitHandoffLines(s *github.Snapshot, id int64) []waitLine {
 		why = "the task's `loop.max_attempts` attempts in its round failed, the last a failed implementer run, and the hand-off says why."
 	case slices.ContainsFunc(markers, capHandoffMove):
 		why = "the task's `loop.max_attempts` attempts in its round failed."
+	case slices.ContainsFunc(markers, nothingHandoffMove):
+		why = "the verifier passed a head that changes nothing on `main`, so it gets no PR."
 	case slices.ContainsFunc(markers, verifyCapMove):
 		why = "the task's `loop.max_attempts` attempts in its round failed, the last at verify, and the hand-off has the findings."
 		if i := strings.LastIndex(body, "\n**Goal:** "); i >= 0 {

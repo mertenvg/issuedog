@@ -63,6 +63,7 @@ const (
 	TriggerVerifierQuestion       Trigger = "verifier-question"
 	TriggerVerified               Trigger = "verified"
 	TriggerPersonPushed           Trigger = "person-pushed"
+	TriggerNothingToMerge         Trigger = "nothing-to-merge"
 	TriggerReviewChanges          Trigger = "review-changes"
 	TriggerNewHead                Trigger = "new-head"
 	TriggerMainMoved              Trigger = "main-moved"
@@ -147,6 +148,7 @@ var table = []Row{
 	{Verifying, Clarifying, AnyTask, TriggerVerifierQuestion},
 	{Verifying, PROpen, AnyTask, TriggerVerified},
 	{Verifying, PROpen, AnyTask, TriggerPersonPushed},
+	{Verifying, NeedsHuman, AnyTask, TriggerNothingToMerge},
 	{PROpen, InProgress, AnyTask, TriggerReviewChanges},
 	{PROpen, Verifying, AnyTask, TriggerNewHead},
 	{PROpen, PROpen, AnyTask, TriggerMainMoved},

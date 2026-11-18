@@ -213,15 +213,16 @@ func passComments(f *githubtest.Fake, n int) []string {
 	return bodies
 }
 
-// prOpens runs the pass after a pass, which opens the task's PR
-// (pr_open.go), and the one after, which reads what it wrote, so the next
-// unchanged pass is quiet. Then head is on the task's branch, with one PR
-// open.
+// prOpens runs the pass after a pass, which opens the task's PR, checks
+// its head and moves task 1 to pr-open (pr_open.go), and the one after,
+// which reads what it wrote, so the next unchanged pass is quiet. Then
+// head is on the task's branch, with one PR open, and the task is at
+// pr-open.
 func (v *verdictRig) prOpens(head string) {
 	v.t.Helper()
 	v.passes(2)
-	if prs := v.f.State().PRs; len(prs) != 1 || prs[0].HeadSHA != head || prs[0].State != "open" {
-		v.t.Errorf("the PRs = %+v; want one, open at %s", prs, head)
+	if prs := v.f.State().PRs; len(prs) != 1 || prs[0].HeadSHA != head || prs[0].State != "open" || pickStage(v.f, 1) != "stage:pr-open" {
+		v.t.Errorf("the PRs = %+v, the task at %s; want one, open at %s, and the task at pr-open", prs, pickStage(v.f, 1), head)
 	}
 }
 
@@ -252,8 +253,10 @@ func (v *verdictRig) quietPass(step string) {
 // the run is left, and once the next pass has filed the candidate, the one
 // after has read what it wrote, listed and assigned the follow-up, and,
 // with the filed record standing, opened the task's PR (pr_open_test.go),
-// and the one after that has read those writes, each unchanged pass after
-// makes no request but 304s, while the task holds the worker.
+// checked its head and moved it to pr-open (pr_move_test.go), which
+// releases the worker, and the one after that has read those writes and
+// picked the next task, whose run asks a question, and the one after has
+// read that, each unchanged pass after makes no request but 304s.
 func TestVerifierWholeRun(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
@@ -261,6 +264,7 @@ func TestVerifierWholeRun(t *testing.T) {
 	v.out(1, ivResult(t, implementerOutput(t, "commits")))
 	pass := verifierOutput(t, "pass")
 	v.out(2, ivResult(t, pass))
+	v.out(3, ivResult(t, implementerOutput(t, "question")))
 	n := f.AddIssue(wholeRunOwner, "Refuse an expired quote", "Booking an expired quote returns 410.",
 		"type:task", "priority:p1", "scope:booking", "model:sonnet", "effort:low", "verifier-model:opus", "verifier-effort:high")
 	f.AddLabel(n, wholeRunOwner, "stage:in-progress")
@@ -355,19 +359,25 @@ func TestVerifierWholeRun(t *testing.T) {
 	// The next pass files the candidate (followup_run_test.go), the one
 	// after reads the follow-up and the task again, lists the follow-up on
 	// the digest and assigns notify to it (SPEC §9.4, §9.6), and opens the
-	// task's PR, and the one after that reads those writes.
+	// task's PR, checks its head and moves it to pr-open, and the one after
+	// that reads those writes, and picks the next task, whose run asks a
+	// question.
 	v.passes(3)
 	if got := filingFollowUps(f); len(got) != 1 || got[0].Title != "A quote that expires between the check and the write is still booked" {
 		t.Errorf("the follow-ups = %+v; want the candidate's", got)
 	}
-	if prs := f.State().PRs; len(prs) != 1 || prs[0].HeadSHA != head || prs[0].State != "open" {
-		t.Errorf("the PRs = %+v; want one, open at %s", prs, head)
+	if prs := f.State().PRs; len(prs) != 1 || prs[0].HeadSHA != head || prs[0].State != "open" || pickStage(f, n) != "stage:pr-open" {
+		t.Errorf("the PRs = %+v, the task at %s; want one, open at %s, and the task at pr-open", prs, pickStage(f, n), head)
 	}
+	if pickStage(f, ready) != "stage:clarifying" || v.runs() != 3 {
+		t.Errorf("the next task is at %s, after %d runs; want it picked, as the task at pr-open released the worker, and its run's question at clarifying",
+			pickStage(f, ready), v.runs())
+	}
+	// The next pass reads the question, lists it on the digest and assigns
+	// notify to it, and the one after reads those writes.
+	v.passes(2)
 	for _, step := range []string{"first", "second"} {
 		v.quietPass(step)
-	}
-	if pickStage(f, ready) != "stage:ready" {
-		t.Errorf("the next task is at %s, want ready: the task waiting at verifying holds the worker", pickStage(f, ready))
 	}
 }
 
@@ -451,7 +461,8 @@ func TestVerifierStartRefusesNoPass(t *testing.T) {
 // With a clean pass marker on the head, nothing starts a second run: not
 // the next pass, a hold and /resume, a restart or a move of main. Each
 // runs the checks only as it would with no verdict: a hold keeps the pass
-// kept, and a restart or a new main runs them once.
+// kept, and a restart or a new main runs them once. The PR step then
+// moves the task to pr-open on that one pass.
 func TestVerifierPassStands(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -468,8 +479,13 @@ func TestVerifierPassStands(t *testing.T) {
 			}
 			v.f.AddComment(n, "owner", "/resume")
 			v.pass()
-			if got := pickStage(v.f, n); got != "stage:verifying" {
-				v.t.Fatalf("after /resume, the task is at %s, want verifying", got)
+			// /resume sends it back to verifying, where its pass stands, so
+			// the PR step of the same pass moves it on to pr-open.
+			resumed := slices.ContainsFunc(v.f.State().Issues[n-1].Comments, func(c githubtest.CommentState) bool {
+				return strings.Contains(c.Body, "<!-- issuedog:transition from=held to=verifying ")
+			})
+			if got := pickStage(v.f, n); !resumed || got != "stage:pr-open" {
+				v.t.Fatalf("after /resume, the task is at %s, resumed to verifying %t; want resumed there, then at pr-open", got, resumed)
 			}
 			return v
 		}, 1},
@@ -492,8 +508,9 @@ func TestVerifierPassStands(t *testing.T) {
 			}
 			v = tt.act(v, n)
 			v.passes(3)
-			if v.runs() != 1 || len(passComments(f, n)) != 1 || pickStage(f, n) != "stage:verifying" {
-				t.Errorf("%d runs, %d verdicts, at %s; want no second run, the one verdict, still at verifying", v.runs(), len(passComments(f, n)), pickStage(f, n))
+			if v.runs() != 1 || len(passComments(f, n)) != 1 || pickStage(f, n) != "stage:pr-open" || len(f.State().PRs) != 1 {
+				t.Errorf("%d runs, %d verdicts, at %s, PRs %+v; want no second run, the one verdict, at pr-open on it, with its one PR",
+					v.runs(), len(passComments(f, n)), pickStage(f, n), f.State().PRs)
 			}
 			if got := v.checksRan(); got != tt.checks {
 				t.Errorf("the commands ran %d times, want %d", got, tt.checks)
@@ -640,7 +657,9 @@ func TestVerifierRestartRunsTheChecksFirst(t *testing.T) {
 // removes the run's files, its fresh HOME among them, posts nothing and
 // starts no run, though a trusted comment since, which drops any other
 // result, sits above the run's seen. The run is the round's second, so a
-// lease kept with a count, or a failure counted, would show.
+// lease kept with a count, or a failure counted, would show. The pass
+// stands, so once the checks run again, the PR step moves the task to
+// pr-open.
 func TestVerifierCrashAfterTheComment(t *testing.T) {
 	t.Parallel()
 	for _, saved := range []bool{true, false} {
@@ -681,8 +700,8 @@ func TestVerifierCrashAfterTheComment(t *testing.T) {
 				t.Errorf("the restart left %v; want nothing", left)
 			}
 			v.passes(2)
-			if v.runs() != 2 || len(passComments(f, n)) != 1 || pickStage(f, n) != "stage:verifying" {
-				t.Errorf("%d runs, %d verdicts, at %s; want two, one, still at verifying", v.runs(), len(passComments(f, n)), pickStage(f, n))
+			if v.runs() != 2 || len(passComments(f, n)) != 1 || pickStage(f, n) != "stage:pr-open" {
+				t.Errorf("%d runs, %d verdicts, at %s; want two, one, at pr-open on that pass (pr_move_test.go)", v.runs(), len(passComments(f, n)), pickStage(f, n))
 			}
 			if cs := f.State().Issues[n-1].Comments; strings.Contains(cs[len(cs)-1].Body, "issuedog:error") {
 				t.Errorf("the newest comment =\n%s\nwant no state error", cs[len(cs)-1].Body)

@@ -432,6 +432,7 @@ func TestRunMovedVerifier(t *testing.T) {
 	}{
 		{"the move back", "from=verifying to=in-progress attempt=1 run=run1 head=h", state.InProgress, state.TriggerFindings, true},
 		{"the hand-off", "from=verifying to=needs-human run=run1", state.NeedsHuman, state.TriggerAttemptCap, true},
+		{"the PR step's move on its pass", "from=verifying to=pr-open run=run1 head=h pr=3 seen=5", state.PROpen, state.TriggerVerified, true},
 		{"another run's", "from=verifying to=in-progress attempt=1 run=run2 head=h", "", "", false},
 		{"the checks' move", "from=verifying to=in-progress attempt=1 event=v5 head=h", "", "", false},
 	} {
