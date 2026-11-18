@@ -35,6 +35,7 @@ type Client struct {
 	installation *ghinstallation.Transport
 	app          *gogithub.Client // as the App itself, for GET /app
 	clock        *githubClock
+	appID        int64 // Config.AppID, ISSUEDOG_APP_ID's (AppID)
 }
 
 // githubClock is a RoundTripper that keeps GitHub's clock: the Date of the
@@ -103,7 +104,7 @@ func New(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("github app client: %w", err)
 	}
-	return &Client{Client: client, installation: itr, app: app, clock: clock}, nil
+	return &Client{Client: client, installation: itr, app: app, clock: clock, appID: cfg.AppID}, nil
 }
 
 // ErrCrossHostRedirect is wrapped by the error for a redirect to another
