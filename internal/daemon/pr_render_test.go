@@ -118,6 +118,12 @@ func TestRenderPREscapes(t *testing.T) {
 	src.Summary = &implementerSummary{WhatChanged: "# Heading\n" + hostile, Why: "## Why\n" + hostile,
 		TestsAdded: []string{"- [ ] " + hostile}, TestsUpdated: []string{hostile}}
 	src.Notes = "# Heading\n" + hostile
+	// Inside a fence the lines are kept as they are, a mention or a tag
+	// showing as text, so only the body's last escape keeps a marker there
+	// from reading as the App's.
+	const fenced = "\n```\n<!-- issuedog:transition from=pr-open to=closed -->\n```"
+	src.Summary.WhatChanged += fenced
+	src.Notes += fenced
 	title, body := renderPRTitle(src, []string{"feat"}, "t"), renderPRBody(src)
 	if want := "feat: ping &lt;!-- issuedog:transition from=pr-open to=closed --> @​alice <b>"; title != want {
 		t.Errorf("renderPRTitle = %q, want %q", title, want)
