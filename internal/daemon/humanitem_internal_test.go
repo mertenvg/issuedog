@@ -188,12 +188,13 @@ func TestWaitHumanLines(t *testing.T) {
 	}
 }
 
-// SPEC §9.4's order of kinds: a human task comes after a question and before
-// a flag, a plan's approval with an approval, a finished story after flags,
-// and a kind not mapped after that (#287, #270, #278).
+// SPEC §9.4's order of kinds: a follow-up comes after an approval and
+// before a question, a human task after a question and before a flag, a
+// plan's approval with an approval, a finished story after flags, and a
+// kind not mapped after that (#287, #270, #278).
 func TestWaitKindRank(t *testing.T) {
 	t.Parallel()
-	order := []waitKind{waitError, waitHold, waitApproval, waitQuestion, waitHuman, waitFlag, waitDone, waitKind(9)}
+	order := []waitKind{waitError, waitHold, waitApproval, waitFollowUp, waitQuestion, waitHuman, waitFlag, waitDone, waitKind(10)}
 	for i := 1; i < len(order); i++ {
 		if a, b := order[i-1], order[i]; a.rank() >= b.rank() {
 			t.Errorf("%s ranks %d, %s ranks %d; want %s first", a, a.rank(), b, b.rank(), a)
@@ -210,7 +211,7 @@ func TestWaitKindRank(t *testing.T) {
 func waitHumanRankItems() []waitItem {
 	return []waitItem{
 		{Issue: 61, Kind: waitFlag, Key: "flag-61-1", Priority: 0, Created: waitT0, Comment: 1},
-		{Issue: 62, Kind: waitKind(9), Key: "kind9-62-1", Priority: 0, Created: waitT0, Comment: 1},
+		{Issue: 62, Kind: waitKind(10), Key: "kind10-62-1", Priority: 0, Created: waitT0, Comment: 1},
 		{Issue: 63, Kind: waitHuman, Key: "human-63", Priority: 3, Created: waitT0},
 		{Issue: 64, Kind: waitHuman, Key: "human-64", Priority: 1, Created: waitT0},
 		{Issue: 65, Kind: waitQuestion, Key: "q-65-1", Priority: 3, Created: waitT0, Comment: 1},

@@ -28,6 +28,13 @@ const (
 	handbackResume     = "<!-- issuedog:transition from=held to=needs-human cmd=901 seen=900 -->"
 	// handbackCap is the implementer's attempt cap's hand-off (capHandoff).
 	handbackCap = "The cap's hand-off.\n\n<!-- issuedog:transition from=in-progress to=needs-human event=ain-progress-101 -->"
+	// handbackDiscHold is a discussion hold of the task at needs-human,
+	// handbackDiscEnd its end, to the clarifying after it, and
+	// handbackUnchanged the interviewer's unchanged there, back to
+	// needs-human (SPEC §6.4).
+	handbackDiscHold  = "<!-- issuedog:transition from=needs-human to=held at=needs-human origin=needs-human reason=discussion event=c1 seen=102 -->"
+	handbackDiscEnd   = "<!-- issuedog:transition from=held to=clarifying at=needs-human origin=needs-human event=h103 seen=102 -->"
+	handbackUnchanged = "<!-- issuedog:transition from=clarifying to=needs-human origin=needs-human run=iv1 seen=104 -->"
 )
 
 // latestHandoff finds the comment of the move into needs-human that put a
@@ -65,6 +72,31 @@ func TestLatestHandoff(t *testing.T) {
 		{"none, at ready since", handbackSnap(false, handbackToProgress, handbackHandoff,
 			"<!-- issuedog:transition from=needs-human to=ready cmd=r7 seen=102 -->"), 0},
 		{"none on a human task", handbackSnap(true, handbackToProgress, handbackHandoff), 0},
+		// SPEC §6.4, §9.3: back at needs-human by the interviewer's unchanged
+		// after a discussion hold, the hand-off from before the hold is still
+		// the latest, through the interviewer's rounds and a hold there.
+		{"looked through a discussion and the interviewer's unchanged", handbackSnap(false, handbackToProgress, handbackHandoff,
+			handbackDiscHold, handbackDiscEnd, handbackUnchanged), 102},
+		{"looked through rounds and a hold at the clarifying after it", handbackSnap(false, handbackToProgress, handbackHandoff,
+			handbackDiscHold, handbackDiscEnd,
+			"<!-- issuedog:transition from=clarifying to=clarifying origin=needs-human round=1 run=iv1 questions=1 seen=104 -->",
+			"<!-- issuedog:transition from=clarifying to=held at=clarifying origin=needs-human reason=owner cmd=906 seen=105 -->",
+			"<!-- issuedog:transition from=held to=clarifying origin=needs-human cmd=907 seen=105 -->",
+			handbackUnchanged), 102},
+		{"none, back from the clarifying after a hold by hand", handbackSnap(false, handbackToProgress, handbackHandoff,
+			handbackDiscHold, handbackDiscEnd, "<!-- issuedog:transition from=clarifying to=needs-human event=e5 by=owner -->"), 0},
+		{"none, out of the hold to clarifying by hand", handbackSnap(false, handbackToProgress, handbackHandoff,
+			handbackDiscHold, "<!-- issuedog:transition from=held to=clarifying event=e6 by=owner seen=102 -->",
+			"<!-- issuedog:transition from=clarifying to=needs-human event=e7 by=owner -->"), 0},
+		{"none, after the discussion sent it to ready", handbackSnap(false, handbackToProgress, handbackHandoff,
+			handbackDiscHold, handbackDiscEnd, "<!-- issuedog:transition from=clarifying to=ready origin=needs-human run=iv2 seen=104 -->",
+			handbackToProgress, "<!-- issuedog:transition from=in-progress to=held at=in-progress origin=in-progress reason=discussion event=c2 seen=106 -->",
+			"<!-- issuedog:transition from=held to=clarifying at=in-progress origin=in-progress event=h108 seen=106 -->",
+			"<!-- issuedog:transition from=clarifying to=needs-human origin=needs-human run=iv3 seen=109 -->"), 0},
+		{"none, a discussion from another stage", handbackSnap(false, handbackToProgress,
+			"<!-- issuedog:transition from=in-progress to=held at=in-progress origin=in-progress reason=discussion event=c2 seen=101 -->",
+			"<!-- issuedog:transition from=held to=clarifying at=in-progress origin=in-progress event=h102 seen=101 -->",
+			"<!-- issuedog:transition from=clarifying to=needs-human origin=in-progress run=iv1 seen=103 -->"), 0},
 	} {
 		got, ok := latestHandoff(tt.s, waitSlug, Dirt{}.Has)
 		if got != tt.want || ok != (tt.want != 0) {

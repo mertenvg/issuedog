@@ -483,7 +483,10 @@ func childrenRun(plan github.Comment, rev int, changed []childSpec, appSlug stri
 // childOrigins returns the Origin of each of subs, a parent's sub-issues
 // in this repo, whose listed body gives none (childListedOrigin), by
 // number, as state.Derive reads it from the issue's snapshot, comments
-// and dirty content included. That's one of two kinds of sub-issue:
+// and dirty content included. A follow-up filed under a story, whose
+// listed body gives a follow-up's origin, isn't read: it's no plan item's
+// child (childMatch), and a story may have one from each verify of its
+// tasks. That leaves one of two kinds of sub-issue:
 //   - one the App filed, whose origin the App reposted in a comment once
 //     the body lost it (originRepost, SPEC §6.4, #291). Until that repost
 //     exists, as when the parent's visit comes before the child's step 1
@@ -514,7 +517,7 @@ func (st *Step) childOrigins(ctx context.Context, subs []*gogithub.Issue) (map[i
 	origins := map[int]state.Origin{}
 	for _, is := range subs {
 		n := is.GetNumber()
-		if !st.inRepo(is.GetRepositoryURL()) || is.IsPullRequest() || childListedOrigin(is, st.AppSlug).Plan != 0 {
+		if !st.inRepo(is.GetRepositoryURL()) || is.IsPullRequest() || childListedOrigin(is, st.AppSlug).Any() {
 			continue
 		}
 		s, err := st.Client.Snapshot(ctx, st.Owner, st.Repo, n)

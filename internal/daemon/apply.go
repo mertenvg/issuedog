@@ -42,6 +42,10 @@ type Applier struct {
 	// hold and its notices (discussion.go). Daemon.reload keeps it up to
 	// date with the config.
 	Notify []string
+	// Scopes are config's scopes, the only ones a follow-up's scope label
+	// may name (followUpLabels). Daemon.reload keeps it up to date with the
+	// config.
+	Scopes []string
 	// ReadMain reads a file on main from the daemon's bare clone, as
 	// repo.Repo.ReadFile does, for a human task's file check (humanCheck).
 	// A missing file is an error matching repo.ErrNotFound, and a

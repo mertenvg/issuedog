@@ -38,30 +38,14 @@ func intakePassWith(t testing.TB, tr github.Trust) func(*githubtest.Fake) error 
 
 // admitted is the comment that moves an issue from intake: why, then the
 // marker keyed event=key.
-func admitted(why, key string) string { return waits(why, "", key) }
-
-// waits is admitted with the note that tells an issue of type typ, a bug or
-// a task, that it waits for phase 3.
-func waits(why, typ, key string) string {
-	note := ""
-	if typ != "" {
-		note = phase3Note(typ)
-	}
-	return withNote(why, note, key)
-}
-
-// phase3Note is the note a move into the pipeline adds for typ, a bug or a
-// task: it waits for phase 3.
-func phase3Note(typ string) string {
-	return " It's a " + typ + ": bugs and tasks wait at `clarifying` for now, until issuedog can implement them (build phase 3)."
-}
+func admitted(why, key string) string { return withNote(why, "", key) }
 
 // withNote is admitted with note after the move.
 func withNote(why, note, key string) string {
 	return why + " I've moved it to `clarifying`." + note + "\n\n<!-- issuedog:transition from=intake to=clarifying event=" + key + " -->"
 }
 
-const storyNote = " It's a story with a parent: those wait at `clarifying` for now, as issuedog only clarifies epics, stories with no parent and untyped issues."
+const storyNote = " It's a story with a parent: those wait at `clarifying` for now, as issuedog doesn't clarify a story whose parent's plan gave it its body."
 
 const (
 	byOwner    = "owner opened this issue, and it has `stage:intake`, so it's in the pipeline (SPEC §6.2)."
@@ -147,13 +131,13 @@ func TestIntakeVisit(t *testing.T) {
 		{name: "a story with no parent gets no note",
 			setup: issueBy("owner", []string{"stage:intake", "type:story"}, nil),
 			want:  outcome{comments: []string{admitted(byOwner, "9001")}, labels: []string{"stage:clarifying", "type:story"}}},
-		{name: "a task is told it waits for phase 3",
+		{name: "a task gets no note, as the interviewer runs on it",
 			setup: issueBy("owner", []string{"stage:intake", "type:task"}, nil),
-			want:  outcome{comments: []string{waits(byOwner, "task", "9001")}, labels: []string{"stage:clarifying", "type:task"}}},
-		{name: "a bug is told it waits for phase 3",
+			want:  outcome{comments: []string{admitted(byOwner, "9001")}, labels: []string{"stage:clarifying", "type:task"}}},
+		{name: "a bug gets no note, as the interviewer runs on it",
 			setup: issueBy("owner", []string{"stage:intake", "type:bug"}, nil),
-			want:  outcome{comments: []string{waits(byOwner, "bug", "9001")}, labels: []string{"stage:clarifying", "type:bug"}}},
-		{name: "an epic gets no phase 3 note",
+			want:  outcome{comments: []string{admitted(byOwner, "9001")}, labels: []string{"stage:clarifying", "type:bug"}}},
+		{name: "an epic gets no note",
 			setup: issueBy("owner", []string{"stage:intake", "type:epic"}, nil),
 			want:  outcome{comments: []string{admitted(byOwner, "9001")}, labels: []string{"stage:clarifying", "type:epic"}}},
 		{name: "an untrusted author's issue the owner labelled stage:intake waits for approved",

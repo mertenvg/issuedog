@@ -242,6 +242,8 @@ func digestRenderKindName(k waitKind) string {
 		return "Finished story"
 	case waitHandoff:
 		return "Hand-off"
+	case waitFollowUp:
+		return "Follow-up"
 	}
 	return "Item (" + k.String() + ")"
 }
@@ -250,8 +252,9 @@ func digestRenderKindName(k waitKind) string {
 // mention (SPEC §9.4, "Announcing new items"): only one whose own comment
 // doesn't mention notify already. A question round, a spec's revision, a
 // plan's revision (the plan comment ends in one, #270) and a triage flag end
-// in a cc line, and so do a human task's body (#287, SPEC §9.4) and a
-// hand-off comment (renderHandoff), so that
+// in a cc line, and so do a human task's body (#287, SPEC §9.4), a
+// hand-off comment (renderHandoff) and a follow-up's body (followUpBody,
+// SPEC §10.2), so that
 // leaves state errors, and a discussion hold with a trigger that no App
 // comment mentioning notify names (waitItem.news, #192): a comment on an
 // issue held already, which writes no hold marker (SPEC §6.4), or a trigger
@@ -263,7 +266,7 @@ func digestRenderKindName(k waitKind) string {
 // here.
 func digestRenderMentions(it waitItem) bool {
 	switch it.Kind {
-	case waitApproval, waitPlanApproval, waitQuestion, waitFlag, waitHuman, waitHandoff:
+	case waitApproval, waitPlanApproval, waitQuestion, waitFlag, waitHuman, waitHandoff, waitFollowUp:
 		return false
 	case waitHold:
 		return len(it.news()) > 0

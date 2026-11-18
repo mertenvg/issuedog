@@ -118,7 +118,8 @@ const (
 	ClassStory
 	// ClassOwnerStory is a story with no parent, filed by the owner.
 	ClassOwnerStory
-	// ClassTask is a task the App created from a plan.
+	// ClassTask is a task the App created from a plan, or a follow-up it
+	// filed from a verify (SPEC §10.2).
 	ClassTask
 	// ClassOwnerTask is a task filed by the owner.
 	ClassOwnerTask
@@ -163,6 +164,10 @@ type Item struct {
 	// plan item (SPEC §5.2): Derive sets it exactly when Issue.Origin has a
 	// plan, read from the body or else from a clean App comment (#290).
 	FromPlan bool
+	// FollowUp is true when the issue has the App's origin marker naming the
+	// verify that found it (SPEC §5, §10.2): Derive sets it exactly when
+	// Issue.Origin has a Verify, read where a plan's is.
+	FollowUp bool
 	// Human is true for a plan item the planner marked human (SPEC §11.3).
 	// Derive sets it from the origin marker's human=1 (Origin.Human).
 	Human bool
@@ -189,6 +194,10 @@ func ClassOf(it Item) (Class, error) {
 		return ClassOwnerStory, nil
 	case "task":
 		switch {
+		case it.FollowUp:
+			// A task the daemon filed from a verify, as a plan's task is,
+			// and never a human task (SPEC §7.2, §10.2).
+			return ClassTask, nil
 		case it.FromPlan && it.Human:
 			return ClassHumanTask, nil
 		case it.FromPlan:

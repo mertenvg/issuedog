@@ -151,13 +151,12 @@ func TestFlagByReaction(t *testing.T) {
 				f.AddReaction(1001, "owner", "+1")
 			})),
 			want: outcome{comments: []string{flagAdmitted("owner2's 👍 on the flag takes its recommendation", "r1003")}, labels: clarifying}},
-		{name: "a 👍 on a task's flag says it waits",
+		{name: "a 👍 on a task's flag adds no note, as the interviewer runs on it",
 			setup: flagIssue("owner", func(t testing.TB, f *githubtest.Fake) {
 				f.AddLabel(1, "owner", "type:task")
 				flagWith("handle", up("owner"))(t, f)
 			}),
-			want: outcome{comments: []string{strings.Replace(flagAdmitted(flagTakes, "r1002"), "`clarifying`.", "`clarifying`."+
-				" It's a task: bugs and tasks wait at `clarifying` for now, until issuedog can implement them (build phase 3).", 1)},
+			want: outcome{comments: []string{flagAdmitted(flagTakes, "r1002")},
 				labels: []string{"stage:clarifying", "type:task"}}},
 		{name: "a 👍 on an older flag is ignored",
 			setup: flagIssue("owner", flagWith("handle", func(t testing.TB, f *githubtest.Fake) {

@@ -110,10 +110,11 @@ func resolveCommentAt(t testing.TB, f *githubtest.Fake, n int, id int64) int64 {
 
 // resolveLeaveText is the App's comment taking an issue held at at out of the
 // hold, to clarifying, once a discussion is resolved by by, with the
-// transition's fields.
+// transition's fields. The issue is a task, which the interviewer reads the
+// discussion of there (SPEC §6.4, ivHoldWait).
 func resolveLeaveText(by, at, fields string) string {
 	return fmt.Sprintf("The discussion is resolved, by %s, so this issue leaves its hold from `%s` for `clarifying`. "+
-		"It waits at `clarifying` until a code owner sets its stage by hand.\n\ncc @owner\n\n<!-- issuedog:transition %s -->", by, at, fields)
+		"The interviewer reads the discussion next, and picks where it goes from there.\n\ncc @owner\n\n<!-- issuedog:transition %s -->", by, at, fields)
 }
 
 // resolveEndedText is the App's record that a discussion resolved by by ended
@@ -280,7 +281,7 @@ func TestResolveOwnerHoldStays(t *testing.T) {
 	}
 	resolveCheck(t, resumed, 1, func(*githubtest.Fake) issueWant {
 		return issueWant{[]string{"stage:clarifying"}, []string{moved("Resumed by `/resume`. A discussion on this issue was resolved during its hold from `ready`, "+
-			"so it goes to `clarifying`. It waits at `clarifying` until a code owner sets its stage by hand.",
+			"so it goes to `clarifying`. The interviewer reads the discussion next, and picks where it goes from there.",
 			fmt.Sprintf("from=held to=clarifying at=ready origin=ready cmd=%d seen=1001", resume))}}
 	})
 }
@@ -299,7 +300,7 @@ func TestResolveResumeBeforeRecord(t *testing.T) {
 	}
 	resolveCheck(t, setup, 1, func(*githubtest.Fake) issueWant {
 		return issueWant{[]string{"stage:clarifying"}, []string{moved("Resumed by `/resume`. A discussion on this issue was resolved during its hold from `ready`, "+
-			"so it goes to `clarifying`. It waits at `clarifying` until a code owner sets its stage by hand.",
+			"so it goes to `clarifying`. The interviewer reads the discussion next, and picks where it goes from there.",
 			fmt.Sprintf("from=held to=clarifying at=ready origin=ready cmd=%d seen=1001", resume))}}
 	})
 }

@@ -202,8 +202,9 @@ func TestInterviewerSetsType(t *testing.T) {
 }
 
 // TestInterviewerTyped: a typed outcome (SPEC §9.1) sets the bug's
-// label, and its move, with no round, says the issue waits, after which
-// the interviewer doesn't run on it.
+// label, and its move, with no round, says the bug is written up as a
+// task next. The move is an entry, so the interviewer runs on the bug at
+// once, with no input, and that run may return task, never typed again.
 func TestInterviewerTyped(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
@@ -213,8 +214,7 @@ func TestInterviewerTyped(t *testing.T) {
 	if err := g.work(n); err != nil {
 		t.Fatal(err)
 	}
-	want := ivTypeLine("bug") + "\n\nBugs and tasks wait at `clarifying` for now, until issuedog can implement them (build phase 3), " +
-		"so I won't ask anything more here.\n\ncc @owner\n\n" +
+	want := ivTypeLine("bug") + "\n\nI'll write it up as a task next.\n\ncc @owner\n\n" +
 		fmt.Sprintf("<!-- issuedog:transition from=clarifying to=clarifying run=run1 effort=high model=opus seen=%d -->", entry)
 	if got := newestComment(f, n); got != want {
 		t.Errorf("the typed comment =\n%s\nwant\n%s", got, want)
@@ -222,9 +222,27 @@ func TestInterviewerTyped(t *testing.T) {
 	if labels := ivLabels(f, n); !slices.Equal(labels, []string{"stage:clarifying", "type:bug"}) {
 		t.Errorf("labels %v, want stage:clarifying and type:bug", labels)
 	}
-	f.AddComment(n, "owner", "Any news?")
-	if err := g.work(n); err != nil || g.runs() != 1 {
-		t.Errorf("work on the bug = %v, after %d runs; want no run", err, g.runs())
+	g.claude(ivResult(t, ivTyped("task")), 0)
+	if err := g.work(n); err != nil || g.runs() != 2 {
+		t.Fatalf("work on the bug = %v, after %d runs; want its run", err, g.runs())
+	}
+	if p := g.file("prompt.2"); !strings.Contains(p, "then return a question round, or the task's body once nothing that blocks it is open") {
+		t.Errorf("the bug's run's prompt.md =\n%s\nwant it to ask for the task's body", p)
+	}
+	if l := g.lease(); !l.Failed || newestComment(f, n) != want {
+		t.Errorf("typed again on the bug: lease %+v, newest comment %q; want a failed attempt, with nothing written", l, newestComment(f, n))
+	}
+	// typed again with the bug's own type is no replay of run1's typing,
+	// which its move shows: it fails too, writing nothing, so a typed bug
+	// never starts run after run.
+	before := f.State()
+	g.claude(ivResult(t, ivTyped("bug")), 0)
+	if err := g.work(n); err != nil || g.runs() != 3 {
+		t.Fatalf("work on the bug = %v, after %d runs; want its run", err, g.runs())
+	}
+	if l := g.lease(); !l.Failed || !reflect.DeepEqual(f.State().Issues, before.Issues) {
+		t.Errorf("typed bug again on the bug: lease %+v, issues changed %t; want a failed attempt, with nothing written",
+			l, !reflect.DeepEqual(f.State().Issues, before.Issues))
 	}
 }
 
@@ -314,10 +332,19 @@ func TestInterviewerCheck(t *testing.T) {
 			f.EditComment(f.AddComment(n, "alice", "1a"), "mallory", "1b")
 		}, "labels", 7, ivSpec(decision("Q1.1", "alice")), "rule decision-by"},
 		{"a spec with no type, on an untyped issue", nil, "labels", 7, ivSpec(), "rule spec-type"},
-		{"a round on the owner's task", func(f *githubtest.Fake, n int, _ int64) { f.AddLabel(n, "owner", "type:task") }, "labels", 7, ivRound(1, ""),
-			"no longer runs on #1, with type \"task\" and a parent false"},
+		{"a round on the owner's task", func(f *githubtest.Fake, n int, _ int64) { f.AddLabel(n, "owner", "type:task") }, "labels", 7, ivRound(1, ""), ""},
 		{"a spec on the owner's bug", func(f *githubtest.Fake, n int, _ int64) { f.AddLabel(n, "owner", "type:bug") }, "labels", 7, ivSpec(),
-			"no longer runs on #1, with type \"bug\""},
+			"the interviewer's spec on #1: an issue of type \"bug\" with a parent false can't move: look up clarifying → spec-review for new-bug on spec-written"},
+		{"a round on a task that has been at ready", func(f *githubtest.Fake, n int, _ int64) {
+			f.AddLabel(n, "owner", "type:task")
+			f.AddComment(n, app, "Round.\n\n<!-- issuedog:transition from=in-progress to=clarifying round=1 run=im1 questions=1 seen=4 -->")
+		}, "labels", 7, ivRound(1, ""), "no longer runs on #1, with type \"task\" and a parent false, for its questions"},
+		{"a task on a task that has been at ready", func(f *githubtest.Fake, n int, _ int64) {
+			f.AddLabel(n, "owner", "type:task")
+			f.AddComment(n, app, "Back.\n\n<!-- issuedog:transition from=ready to=clarifying event=9 by=owner -->")
+		}, "labels", 7, taskOut(t), "no longer runs on #1, with type \"task\" and a parent false, for its task"},
+		{"a task on an epic", func(f *githubtest.Fake, n int, _ int64) { f.AddLabel(n, "owner", "type:epic") }, "labels", 7, taskOut(t),
+			"rule task: task is only for a bug, or a task the owner filed, before it has been at ready"},
 		{"a round on a story with a parent", func(f *githubtest.Fake, n int, _ int64) {
 			f.AddLabel(n, "owner", "type:story")
 			f.SetParent(n, f.AddIssue("owner", "Parent", ""))
@@ -327,8 +354,23 @@ func TestInterviewerCheck(t *testing.T) {
 			ivTyped("task"), ""},
 		{"typed, on the App's bug", func(f *githubtest.Fake, n int, _ int64) { f.AddLabel(n, app, "type:bug") }, "labels", 7, ivTyped("task"),
 			"no longer runs"},
-		{"a round, on the App's task", func(f *githubtest.Fake, n int, _ int64) { f.AddLabel(n, app, "type:task") }, "labels", 7, ivRound(1, ""),
-			"no longer runs"},
+		{"a round, on the App's task", func(f *githubtest.Fake, n int, _ int64) { f.AddLabel(n, app, "type:task") }, "labels", 7, ivRound(1, ""), ""},
+		// SPEC §4: a bug or a task keeps its type, even one the App set: its
+		// runs write its task, so a round that retypes it fails.
+		{"a round typing the App's task an epic", func(f *githubtest.Fake, n int, _ int64) { f.AddLabel(n, app, "type:task") }, "labels", 7,
+			ivRound(1, "epic"), "rule type-allowed: a bug or a task keeps its type"},
+		{"a round typing the App's bug a story", func(f *githubtest.Fake, n int, _ int64) { f.AddLabel(n, app, "type:bug") }, "labels", 7,
+			ivRound(1, "story"), "rule type-allowed: a bug or a task keeps its type"},
+		// SPEC §6.4: at the clarifying after a hold, a task that has been at
+		// ready gets a run, but never typed, even on a type the App set.
+		{"typed, on the App's task after a hold", func(f *githubtest.Fake, n int, _ int64) {
+			f.AddLabel(n, app, "type:task")
+			f.AddComment(n, app, "Resolved.\n\n<!-- issuedog:transition from=held to=clarifying at=ready origin=ready event=h9 seen=4 -->")
+		}, "labels", 7, ivTyped("bug"), "no longer runs on #1, with type \"task\" and a parent false, for its typed"},
+		{"a round on the owner's task after a hold", func(f *githubtest.Fake, n int, _ int64) {
+			f.AddLabel(n, "owner", "type:task")
+			f.AddComment(n, app, "Resolved.\n\n<!-- issuedog:transition from=held to=clarifying at=ready origin=ready event=h9 seen=4 -->")
+		}, "labels", 7, ivRound(1, ""), ""},
 		{"a spec typing an issue with a parent a story", func(f *githubtest.Fake, n int, _ int64) { f.SetParent(n, f.AddIssue("owner", "Parent", "")) },
 			"labels", 7, specOut("story", ""), "the interviewer's spec on #1: an issue of type \"story\" with a parent true can't move: look up clarifying → spec-review"},
 		{"a round typing an issue with a parent a story", func(f *githubtest.Fake, n int, _ int64) { f.SetParent(n, f.AddIssue("owner", "Parent", "")) },
@@ -507,17 +549,25 @@ func TestInterviewerRoundReplay(t *testing.T) {
 	for name, tt := range map[string]struct {
 		before string
 		out    map[string]any
+		// asked is whether an earlier round, answered, comes before the
+		// run: a typed outcome after it replays as one with none.
+		asked bool
 	}{
-		"a round typing an untyped issue": {"", ivRound(2, "epic")},
-		"a round changing the App's type": {"story", ivRound(1, "epic")},
-		"a typed outcome":                 {"", ivTyped("task")},
-		"a round with no type":            {"", ivRound(1, "")},
+		"a round typing an untyped issue": {"", ivRound(2, "epic"), false},
+		"a round changing the App's type": {"story", ivRound(1, "epic"), false},
+		"a typed outcome":                 {"", ivTyped("task"), false},
+		"a typed outcome after a round":   {"", ivTyped("bug"), true},
+		"a round with no type":            {"", ivRound(1, ""), false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			replayRuns(t, func(_ testing.TB, f *githubtest.Fake, _ string) {
-				n, _ := ivFiled(f, "", false, "from=intake to=clarifying event=5")
+				n, entry := ivFiled(f, "", false, "from=intake to=clarifying event=5")
 				if tt.before != "" {
 					f.AddLabel(n, app, "type:"+tt.before)
+				}
+				if tt.asked {
+					ivAsked(f, n, 1, 1, entry)
+					f.AddComment(n, "owner", "1a")
 				}
 			}, func(g *rig) {
 				g.interviewer()

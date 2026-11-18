@@ -1,13 +1,13 @@
 {
   "title": "interviewer",
-  "description": "One interviewer run: a question round, a spec, a type for a bug or task, or, after a discussion hold, unchanged or plan. Set outcome, then only the fields that go with it.",
+  "description": "One interviewer run: a question round, a spec, a type for a bug or task, a task's body, or, after a discussion hold, unchanged, plan or a human task's body. Set outcome, then only the fields that go with it.",
   "type": "object",
   "required": ["outcome"],
   "additionalProperties": false,
   "properties": {
     "outcome": {
-      "description": "questions: ask a round. spec: write the spec. typed: the issue is a bug or task; set type and nothing else. unchanged: only where the preamble allows it, after a discussion hold, when nothing in the discussion changes the issue, so it goes back to the stage it came from; set message at most. plan: only where the preamble allows it, after a discussion hold from planning, plan-review or planned, when the spec stands but its plan changes, its stories or tasks, so it goes to planning; set message, which plan requires, and nothing else.",
-      "enum": ["questions", "spec", "typed", "unchanged", "plan"]
+      "description": "questions: ask a round. spec: write the spec. typed: the issue is a bug or task; set type and nothing else. unchanged: only where the preamble allows it, after a discussion hold, when nothing in the discussion changes the issue, so it goes back to the stage it came from; set message at most. plan: only where the preamble allows it, after a discussion hold from planning, plan-review or planned, when the spec stands but its plan changes, its stories or tasks, so it goes to planning; set message, which plan requires, and nothing else. task: only where the preamble allows it, on a bug or a task with nothing open that blocks it, or after a discussion hold on a task whose body the discussion changes; set task and nothing else. human: only where the preamble allows it, after a discussion hold on a human task whose body the discussion changes; set human and nothing else.",
+      "enum": ["questions", "spec", "typed", "unchanged", "plan", "task", "human"]
     },
     "type": {
       "description": "The type you set on the issue. Only where you may set one.",
@@ -140,6 +140,86 @@
               }
             }
           }
+        }
+      }
+    },
+    "task": {
+      "description": "With outcome task: the task's issue body, in the task template's sections, as Markdown without headings. The daemon writes the header and the headings.",
+      "type": "object",
+      "required": ["scope", "context", "change", "acceptance_criteria", "definition_of_done", "test_plan"],
+      "additionalProperties": false,
+      "properties": {
+        "scope": {
+          "description": "One scope from the preamble's list, without the scope: prefix.",
+          "type": "string",
+          "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+        },
+        "context": {
+          "description": "Markdown: what exists today, and which files matter.",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "change": {
+          "description": "Markdown: what to build, and the files it touches.",
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "acceptance_criteria": {
+          "description": "Observable, testable acceptance criteria, one line each.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$" }
+        },
+        "definition_of_done": {
+          "description": "One line each.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$" }
+        },
+        "test_plan": {
+          "description": "Markdown: which tests prove each criterion.",
+          "type": "string",
+          "pattern": "\\S"
+        }
+      }
+    },
+    "human": {
+      "description": "With outcome human: the human task's issue body, every field of the human task template filled. If you can't fill one, ask a question instead.",
+      "type": "object",
+      "required": ["goal", "why_blocks", "steps", "links", "done_when", "estimated_time"],
+      "additionalProperties": false,
+      "properties": {
+        "goal": {
+          "description": "One sentence: what the owner's action achieves.",
+          "type": "string",
+          "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+        },
+        "why_blocks": {
+          "description": "What the work waits for, and why, in one line that reads on after \"can't proceed until\". Don't name the issues: the daemon puts their numbers first.",
+          "type": "string",
+          "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+        },
+        "steps": {
+          "description": "Exact actions, with exact values, commands or settings, one line each, in order.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$" }
+        },
+        "links": {
+          "description": "Direct links to the console page, file or doc, one line each.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$" }
+        },
+        "done_when": {
+          "description": "The observable result the owner can check, in one line. When the task's Done when is a check the daemon runs, the daemon keeps its own sentence in its place.",
+          "type": "string",
+          "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
+        },
+        "estimated_time": {
+          "description": "Such as 5 min.",
+          "type": "string",
+          "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$"
         }
       }
     }

@@ -36,6 +36,7 @@ const (
 	// it in an App comment on the child, keyed by the parent's move to
 	// planned (SPEC §5).
 	TriggerCreated                Trigger = "created"
+	TriggerFollowUpApproved       Trigger = "follow-up-approved"
 	TriggerMoreQuestions          Trigger = "more-questions"
 	TriggerSpecWritten            Trigger = "spec-written"
 	TriggerTaskWritten            Trigger = "task-written"
@@ -117,6 +118,7 @@ var table = []Row{
 	{Intake, Clarifying, All, TriggerTrusted},
 	{Intake, Planning, ClassStory, TriggerCreated},
 	{Intake, Ready, ClassTask, TriggerCreated},
+	{Intake, Ready, ClassTask, TriggerFollowUpApproved},
 	{Intake, NeedsHuman, ClassHumanTask, TriggerCreated},
 	{Clarifying, Clarifying, All, TriggerMoreQuestions},
 	{Clarifying, SpecReview, epicOrOwnerStory, TriggerSpecWritten},

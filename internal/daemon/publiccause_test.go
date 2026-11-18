@@ -218,11 +218,20 @@ func publicCauseTypedCases() []publicCauseTyped {
 		{"no valid result was saved", func(t testing.TB, f *githubtest.Fake, root string) {
 			saveAttempt(t, root, "saved", "", interview(f), 1)
 		}, func(*rig) {}, "no valid result was saved"},
-		{"the interviewer, on the owner's task", func(t testing.TB, f *githubtest.Fake, root string) {
-			_, entry := ivFiled(f, "task", false, ivEntry)
+		{"the interviewer, on a story with a parent", func(t testing.TB, f *githubtest.Fake, root string) {
+			_, entry := ivFiled(f, "story", true, ivEntry)
 			saveAttempt(t, root, "saved", ivResult(t, ivRound(1, "")), entry, 1)
 		}, func(g *rig) { g.interviewer() },
-			`the interviewer no longer runs on #1, with type "task" and a parent false: it runs only on an epic, a story with no parent or an untyped issue, ` +
+			`the interviewer no longer runs on #1, with type "story" and a parent true, for its questions: ` +
+				"it runs only on an epic, a story with no parent or an untyped issue, on a bug or a task with no typed outcome, on any task, bug or human task after a hold, " +
+				"and after a hold from planning, plan-review or planned on a story with a parent"},
+		{"the interviewer's typed, on a bug", func(t testing.TB, f *githubtest.Fake, root string) {
+			_, entry := ivFiled(f, "", false, ivEntry)
+			f.AddLabel(1, app, "type:bug") // the App typed it, so it may type it again, but not with typed
+			saveAttempt(t, root, "saved", ivResult(t, ivTyped("task")), entry, 1)
+		}, func(g *rig) { g.interviewer() },
+			`the interviewer no longer runs on #1, with type "bug" and a parent false, for its typed: ` +
+				"it runs only on an epic, a story with no parent or an untyped issue, on a bug or a task with no typed outcome, on any task, bug or human task after a hold, " +
 				"and after a hold from planning, plan-review or planned on a story with a parent"},
 		{"the interviewer's move, which doesn't fit", func(t testing.TB, f *githubtest.Fake, root string) {
 			_, entry := ivFiled(f, "", true, ivEntry)

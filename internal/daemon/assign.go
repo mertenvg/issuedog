@@ -34,7 +34,10 @@ import (
 // in a triage flag, which waits at intake with no stage label, and a state
 // error on an issue outside the stages. An issue with none of these, such
 // as one triage left to people, or one not triaged yet, is left alone,
-// and so is a closed issue, whose snapshot the poll drops.
+// and so is a closed issue, whose snapshot the poll drops, but for a
+// follow-up closed while it waited for its approval, which closing drops:
+// the close's judging unassigns notify from it once it accepts the close
+// (assignClosedFollowUp).
 //
 // The assignees a pipeline issue should have are exactly the notify
 // users if it has an item, and nobody if it hasn't. Anyone else's
@@ -361,6 +364,55 @@ func assignPipeline(s *github.Snapshot, slug string, items bool) bool {
 		}
 	}
 	return false
+}
+
+// assignClosedFollowUp unassigns the notify users from is, a closed issue
+// as the poll listed it, whose close closingJudge has just accepted, if
+// Daemon.Assign is set and is was a follow-up waiting for its approval
+// (assignFollowUpListed): closing a follow-up drops it, so its item ends,
+// and so does its assignment (SPEC §9.6, §10.2). No other close gets an
+// assignee write: notify stays assigned to any other closed issue, out of
+// the "is:open assignee:@me" view (see the top of this file). It removes
+// only the notify users the listing shows assigned, so a follow-up with
+// none makes no request, and anyone else stays. closingJudge calls it
+// before it sets the closed stage, which takes stage:intake off, so a
+// crash between the two, or a failed write, which is the judging's error,
+// leaves the close to judge again with the follow-up still at intake, and
+// the next judging unassigns what's left.
+func (d *Daemon) assignClosedFollowUp(ctx context.Context, is *gogithub.Issue) error {
+	if !d.Assign || !assignFollowUpListed(is, d.Step.AppSlug) {
+		return nil
+	}
+	notify := d.assignNotify()
+	remove := slices.DeleteFunc(assignListed(is), func(l string) bool { return !assignHas(notify, l) })
+	if len(remove) == 0 {
+		return nil
+	}
+	a, n := d.Step.Applier, is.GetNumber()
+	if _, err := a.Client.RemoveAssignees(ctx, a.Owner, a.Repo, n, remove); err != nil {
+		return fmt.Errorf("unassign %s from the closed follow-up: %w", strings.Join(remove, ", "), err)
+	}
+	logr.Infof("unassigned %s from %s/%s#%d, a follow-up closed while it waited for approval", strings.Join(remove, ", "), a.Owner, a.Repo, n)
+	return nil
+}
+
+// assignFollowUpListed reports whether is, a closed issue as the poll
+// listed it, was a follow-up waiting for its approval when it closed: at
+// stage:intake, in any case, with the App's follow-up origin marker
+// (state.FollowUpOf) in its body as listed, which only counts in the App's
+// issue (github.TrustedMarkers). The listing gives both, so it makes no
+// request.
+func assignFollowUpListed(is *gogithub.Issue, slug string) bool {
+	if !slices.ContainsFunc(is.Labels, func(l *gogithub.Label) bool {
+		stage, ok := state.ParseLabel(l.GetName())
+		return ok && stage == state.Intake
+	}) {
+		return false
+	}
+	return slices.ContainsFunc(github.TrustedMarkers(author(is.GetUser()), is.GetBody(), slug), func(m github.Marker) bool {
+		_, _, _, ok := state.FollowUpOf(m)
+		return ok
+	})
 }
 
 // assignHas reports whether logins has login, in any case.

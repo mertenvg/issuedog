@@ -21,6 +21,7 @@ func TestLookupFindsEveryRow(t *testing.T) {
 		{Intake, Clarifying, ClassUntyped, TriggerTrusted},
 		{Intake, Planning, ClassStory, TriggerCreated},
 		{Intake, Ready, ClassTask, TriggerCreated},
+		{Intake, Ready, ClassTask, TriggerFollowUpApproved},
 		{Intake, NeedsHuman, ClassHumanTask, TriggerCreated},
 		{Clarifying, Clarifying, ClassBug, TriggerMoreQuestions},
 		{Clarifying, SpecReview, ClassOwnerStory, TriggerSpecWritten},
@@ -197,6 +198,28 @@ func TestLookupCreated(t *testing.T) {
 	for c, to := range first {
 		if _, err := Lookup(Intake, to, c, TriggerTrusted); !errors.Is(err, ErrNoTransition) {
 			t.Errorf("%s: trusted to %s = %v, want ErrNoTransition", c, to, err)
+		}
+	}
+}
+
+// TestLookupFollowUpApproved: a follow-up's approval (SPEC §7.2, §10.2) is
+// its first move, intake → ready, for a task the daemon filed alone, and
+// from intake alone. No other class gets it, the owner's tasks and bugs
+// included, nor does it move a task to any other stage.
+func TestLookupFollowUpApproved(t *testing.T) {
+	t.Parallel()
+	for c := Class(1); c&All != 0; c <<= 1 {
+		for _, from := range append(slices.Clone(openStages), Closed) {
+			for _, to := range append(slices.Clone(openStages), Closed) {
+				r, err := Lookup(from, to, c, TriggerFollowUpApproved)
+				want := c == ClassTask && from == Intake && to == Ready
+				switch {
+				case want && (err != nil || r.Classes() != ClassTask || r.Trigger() != TriggerFollowUpApproved):
+					t.Errorf("%s: Lookup(%s, %s) = %+v, %v; want the follow-up's approval for a task alone", c, from, to, r, err)
+				case !want && !errors.Is(err, ErrNoTransition):
+					t.Errorf("%s: Lookup(%s, %s) = %v, want ErrNoTransition", c, from, to, err)
+				}
+			}
 		}
 	}
 }

@@ -332,12 +332,20 @@ func childParentLine(it planItem, parent int, pri string) string {
 // SPEC §11.2 template, with the files the planner named in its Context.
 func childTaskBody(it planItem, parent int, pri string) string {
 	t := it.Task
-	return github.Escape(strings.Join([]string{
-		childParentLine(it, parent, pri),
-		"## Context\n\n" + block(t.Context),
-		"## Change\n\n" + block(t.Change),
-		"## Acceptance criteria\n\n" + bullets(it.Criteria),
-		"## Definition of done\n\n" + bullets(t.DefinitionOfDone),
-		"## Test plan\n\n" + block(t.TestPlan),
-	}, "\n\n"))
+	return github.Escape(strings.Join(append([]string{childParentLine(it, parent, pri)},
+		taskSections(t.Context, t.Change, it.Criteria, t.DefinitionOfDone, t.TestPlan)...), "\n\n"))
+}
+
+// taskSections are a task body's sections after its header (SPEC §11.2),
+// from agent text, not yet escaped: Context, Change, Acceptance criteria,
+// Definition of done and Test plan, each under its heading. A plan's task
+// (childTaskBody) and the interviewer's (renderTask) share them.
+func taskSections(context, change string, criteria, done []string, testPlan string) []string {
+	return []string{
+		"## Context\n\n" + block(context),
+		"## Change\n\n" + block(change),
+		"## Acceptance criteria\n\n" + bullets(criteria),
+		"## Definition of done\n\n" + bullets(done),
+		"## Test plan\n\n" + block(testPlan),
+	}
 }

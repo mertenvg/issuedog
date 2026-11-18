@@ -403,15 +403,25 @@ func TestIvHoldReviseContext(t *testing.T) {
 	}
 }
 
-// SPEC §7.2: a task held at ready goes to clarifying once the discussion is
-// resolved, and the move says it waits there for a stage set by hand. The
-// interviewer doesn't run on it, and nothing more is written until the
-// owner sets ready by hand.
-func TestIvHoldTaskWaits(t *testing.T) {
+// SPEC §6.4, §7.2: a story with a parent held at clarifying, where it waits
+// with no runs, goes back to clarifying once the discussion is resolved,
+// and the move says it waits there for a stage set by hand: the
+// interviewer runs on one only after a hold from a stage of its plan
+// (SPEC §9.1). Nothing more is written until the owner sets planning by
+// hand. A task, a bug or a human task gets a run there instead
+// (interviewer_taskhold_test.go).
+func TestIvHoldParentStoryWaits(t *testing.T) {
 	t.Parallel()
-	const entry = "<!-- issuedog:transition from=intake to=ready run=a -->"
 	setup := func(tb testing.TB, f *githubtest.Fake) {
-		m := ivHoldHeld(tb, f, "task", "ready", entry)
+		n := f.AddIssue("owner", "Quotes", "body")
+		f.AddLabel(n, "owner", "type:story")
+		f.SetParent(n, f.AddIssue("owner", "Epic", ""))
+		f.AddLabel(n, app, "stage:clarifying")
+		f.AddComment(n, app, "<!-- issuedog:transition from=intake to=clarifying event=5 -->")
+		m := f.AddComment(n, "mallory", ivHoldMallory)
+		if err := resolvePass(tb, n)(f); err != nil {
+			tb.Fatal(err)
+		}
 		f.AddReaction(m, "owner", "+1")
 		f.ForgetWrites()
 	}
@@ -421,9 +431,10 @@ func TestIvHoldTaskWaits(t *testing.T) {
 	if err := g.work(1); err != nil {
 		t.Fatal(err)
 	}
-	m, hold, first := ivHoldFind(t, f, "Quotes should expire"), ivHoldFind(t, f, "to=held"), ivHoldFind(t, f, "from=intake to=ready")
-	want := resolveLeaveText("`owner`", "ready", fmt.Sprintf("from=held to=clarifying at=ready origin=ready event=h%d resolved=%d seen=%d",
-		hold, resolveReactionAt(t, f, m), first))
+	m, hold, first := ivHoldFind(t, f, "Quotes should expire"), ivHoldFind(t, f, "to=held"), ivHoldFind(t, f, "from=intake to=clarifying")
+	want := fmt.Sprintf("The discussion is resolved, by `owner`, so this issue leaves its hold from `clarifying` for `clarifying`. "+
+		"It waits at `clarifying` until a code owner sets its stage by hand.\n\ncc @owner\n\n"+
+		"<!-- issuedog:transition from=held to=clarifying at=clarifying origin=clarifying event=h%d resolved=%d seen=%d -->", hold, resolveReactionAt(t, f, m), first)
 	if c := newestComment(f, 1); c != want || g.runs() != 0 {
 		t.Errorf("newest comment\n%s\nafter %d runs; want\n%s\nand no run", c, g.runs(), want)
 	}
@@ -435,13 +446,13 @@ func TestIvHoldTaskWaits(t *testing.T) {
 		t.Errorf("a second pass wrote %+v with %d runs; want nothing", w[writes:], g.runs())
 	}
 	f.RemoveLabel(1, "owner", "stage:clarifying")
-	f.AddLabel(1, "owner", "stage:ready")
+	f.AddLabel(1, "owner", "stage:planning")
 	if err := g.work(1); err != nil {
 		t.Fatal(err)
 	}
-	if l, c := ivLabels(f, 1), newestComment(f, 1); !slices.Equal(l, []string{"stage:ready", "type:task"}) ||
-		!strings.Contains(c, "from=clarifying to=ready by=owner") || g.runs() != 0 {
-		t.Errorf("labels %q, newest comment %q, %d runs; want ready by the owner's override, with no run", l, c, g.runs())
+	if l, c := ivLabels(f, 1), newestComment(f, 1); !slices.Equal(l, []string{"stage:planning", "type:story"}) ||
+		!strings.Contains(c, "from=clarifying to=planning by=owner") || g.runs() != 0 {
+		t.Errorf("labels %q, newest comment %q, %d runs; want planning by the owner's override, with no run", l, c, g.runs())
 	}
 	replayRuns(t, func(tb testing.TB, f *githubtest.Fake, _ string) { setup(tb, f) }, func(g *rig) {
 		ivHoldRig(g)
@@ -536,7 +547,7 @@ func TestIvHoldResumeAgrees(t *testing.T) {
 			f := run(t, setup, resolvePass(t, n))
 			is := f.State().Issues[n-1]
 			if c := is.Comments[len(is.Comments)-1].Body; !slices.Equal(is.Labels, []string{"stage:clarifying"}) ||
-				!strings.Contains(c, "so it goes to `clarifying`. It waits at `clarifying` until a code owner sets its stage by hand.") ||
+				!strings.Contains(c, "so it goes to `clarifying`. The interviewer reads the discussion next, and picks where it goes from there.") ||
 				!strings.Contains(c, "from=held to=clarifying at=ready origin=ready cmd=") {
 				t.Errorf("#%d: labels %q, newest comment %q; want clarifying after the /resume", n, is.Labels, c)
 			}
