@@ -1701,7 +1701,9 @@ Changes to this file go through a human-authored PR (section 6.3).
   - that `closer` is the merged `PullRequest`, with `merged`, `baseRefName` and `baseRepository`, or a `Commit`, with `repository`, readable with the App's token;
   - that `stateReason` is filled in;
   - that GitHub answers `FORBIDDEN`, with a null `closer`, under `node.closer`, for a project's closer on a personal account and for a closer in a private repo, and no other type, such as `INSUFFICIENT_SCOPES`: one would join `FORBIDDEN` as no merge, where today it is the pass's error until the closer state error (5.3, #232);
-  - that a PATCH that closes an issue again with `state_reason=duplicate` and no `duplicate_issue_id` works.
+  - that a PATCH that closes an issue again with `state_reason=duplicate` and no `duplicate_issue_id` works;
+  - that GitHub refuses, with a 422, to reopen a pull request whose branch was pushed past its head by force while it was closed, and reopens one whose branch only moved on, as the client and the fakes take it (7.5's A closed PR);
+  - whether GitHub opens a pull request whose head has no diff from its base, as when a task's only commit is an empty one, and whether it squash-merges one.
 - **Story branches.** The design in 7.5 relies on GitHub behaviour the docs don't state, or state only in passing. Confirm on real GitHub, with the App's token:
   - that a squash-merge into a non-default branch writes none of the events the daemon reads for a merge (6.4): no `closed` event on an issue its PR names, even with a closing keyword, so nothing reaches the closer check, and that the PR then reads `merged`, with `baseRefName` the story branch;
   - that if GitHub ever does close an issue on such a merge, the closer is that PR, with the story branch as its base, which 6.4 counts as no merge, and the `closed` event names the App as actor when the App merged it, so the close is accepted as the App's;

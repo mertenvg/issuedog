@@ -37,7 +37,8 @@ var Start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 // transferred issue's 301s and new home (transfer.go), the
 // GraphQL queries for their edits, deleted
 // comments and pins, and the pinIssue mutation, and the issue search for
-// blocked issues (search.go). Its API writes, comment edits, created issues and
+// blocked issues (search.go), and pull requests, with their heads from a
+// real git repo (pulls.go). Its API writes, comment edits, created issues and
 // pins included, are made by the App, "<slug>[bot]" of type Bot. A GET whose
 // answer hasn't changed gets a 304. Every write (any method but GET, and a
 // GraphQL mutation) is logged, and FailWrite can fail one.
@@ -100,6 +101,8 @@ type Fake struct {
 	hooksRunning int // BeforeRequest and BeforeGraphQL hooks running now (fakehook.go)
 
 	searchFrozen []searchEntry // what the issue search answers from while FreezeSearch holds, or nil (search.go)
+
+	pulls pullState // the git remote that gives pull requests' heads (pulls.go)
 }
 
 // discard swallows a reply, for a write that takes effect but answers 500.
@@ -124,6 +127,7 @@ type issue struct {
 	closingClosers map[int64]closingCloser         // how each closed event was made, by its ID (closingAnswer)
 	movedTo        string                          // the repo Transfer moved it to, in lower case, or "" (transfer.go)
 	reactions      []*gogithub.Reaction            // to the issue itself, oldest first (reactions_issue.go)
+	pr             *pullRequest                    // a pull request's head, base and merge, if the fake opened it as one (pulls.go)
 }
 
 type comment struct {
@@ -203,6 +207,7 @@ func New(t testing.TB, repo, slug string) *Fake {
 	f.handleAssign()
 	f.handleTransfer()
 	f.handleSearch()
+	f.handlePulls()
 	f.srv = httptest.NewServer(f.logged(f.mux))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -265,12 +270,12 @@ func (f *Fake) SetType(number int, name string) {
 	f.edit(number, func(is *issue) { is.Type = f.issueTypeNamed(name) })
 }
 
-// SetPullRequest makes number a pull request, which REST lists with the issues.
+// SetPullRequest makes number a pull request, which REST lists with the
+// issues. It has no head or base, so /pulls doesn't serve it: one opened
+// with POST /pulls does (pulls.go).
 func (f *Fake) SetPullRequest(number int) {
 	f.t.Helper()
-	f.edit(number, func(is *issue) {
-		is.PullRequestLinks = &gogithub.PullRequestLinks{URL: new(fmt.Sprintf("%s/repos/%s/pulls/%d", f.srv.URL, f.repo, number))}
-	})
+	f.edit(number, f.pullLinks)
 }
 
 // SetParent makes number a sub-issue of parent, listed after its other
@@ -728,13 +733,8 @@ func (f *Fake) editIssue(c *call) (int, any) {
 		}
 		setType = set
 	}
-	if req.Title != nil && *req.Title != c.issue.GetTitle() {
-		from, title := c.issue.GetTitle(), *req.Title
-		c.issue.Title, c.issue.UpdatedAt = &title, f.tick()
-		f.lastEvent++
-		id := firstEvent + f.lastEvent
-		c.issue.labelEvents = append(c.issue.labelEvents, &gogithub.Timeline{ID: &id, Event: new("renamed"), Actor: user(f.slug + "[bot]"),
-			Rename: &gogithub.Rename{From: &from, To: &title}, CreatedAt: &gogithub.Timestamp{Time: c.issue.UpdatedAt.Time}})
+	if req.Title != nil {
+		f.retitle(c.issue, f.slug+"[bot]", *req.Title)
 	}
 	if setType != nil {
 		setType()
@@ -746,6 +746,20 @@ func (f *Fake) editIssue(c *call) (int, any) {
 		f.setState(c.issue, *req.State, req.StateReason, f.slug+"[bot]")
 	}
 	return http.StatusOK, f.withDependencies(c.issue)
+}
+
+// retitle sets is's title as login, with a renamed event on its timeline,
+// as RenameIssue does, unless it has that title already. f is locked.
+func (f *Fake) retitle(is *issue, login, title string) {
+	if title == is.GetTitle() {
+		return
+	}
+	from := is.GetTitle()
+	is.Title, is.UpdatedAt = &title, f.tick()
+	f.lastEvent++
+	id := firstEvent + f.lastEvent
+	is.labelEvents = append(is.labelEvents, &gogithub.Timeline{ID: &id, Event: new("renamed"), Actor: user(login),
+		Rename: &gogithub.Rename{From: &from, To: &title}, CreatedAt: &gogithub.Timestamp{Time: is.UpdatedAt.Time}})
 }
 
 func (is *issue) editBy(login, body string, now *gogithub.Timestamp) {
