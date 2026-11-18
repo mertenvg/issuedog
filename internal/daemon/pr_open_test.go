@@ -268,6 +268,35 @@ func TestPROpenUpdatesTheBody(t *testing.T) {
 	}
 }
 
+// The PR carries its task's priority label (SPEC §9.6), and p2 for a task
+// with none, the default priority (SPEC 5).
+func TestPROpenPriorityLabel(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, label, want string }{
+		{"p3", "priority:p3", "priority:p3"},
+		{"none", "", "priority:p2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFake(t)
+			v := newVerdictRig(t, f, 3)
+			head, _ := v.prTask()
+			f.RemoveLabel(1, app, "priority:p1")
+			if tc.label != "" {
+				f.AddLabel(1, app, tc.label)
+			}
+			v.prOpens(head)
+			prs := f.State().PRs
+			if len(prs) != 1 {
+				t.Fatalf("the PRs = %+v; want one", prs)
+			}
+			if got := f.State().Issues[prs[0].Number-1].Labels; !slices.Equal(got, []string{tc.want}) {
+				t.Errorf("the PR's labels = %q; want %s", got, tc.want)
+			}
+		})
+	}
+}
+
 // A PR closed at verifying is reopened, in a request that sets the state
 // alone, then updated, by the task's next pass through verify (SPEC §7.5's
 // A closed PR). The close here comes with a move of main, so the body
