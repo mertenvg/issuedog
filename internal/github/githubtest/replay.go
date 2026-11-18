@@ -13,6 +13,18 @@ type State struct {
 	Issues []IssueState
 	// RepoLabels are the repo's labels, a set (repolabels.go).
 	RepoLabels []string
+	// PRs are the pull requests the fake opened (pulls.go), by number. Each
+	// is in Issues too, with its labels and assignees.
+	PRs []PRState
+}
+
+// PRState is one pull request in a State: its head and base branches, the
+// SHA its head showed when last read, its title, body and state, and
+// whether it merged.
+type PRState struct {
+	Number                                  int
+	Head, Base, HeadSHA, Title, Body, State string
+	Merged                                  bool
 }
 
 // IssueState is one issue in a State.
@@ -77,6 +89,10 @@ func (f *Fake) State() State {
 			st.Comments = append(st.Comments, cs)
 		}
 		s.Issues = append(s.Issues, st)
+		if pr := is.pr; pr != nil {
+			s.PRs = append(s.PRs, PRState{Number: is.GetNumber(), Head: pr.head, Base: pr.base, HeadSHA: pr.headSHA,
+				Title: is.GetTitle(), Body: is.GetBody(), State: is.GetState(), Merged: pr.merged})
+		}
 	}
 	s.RepoLabels = f.repoLabelState()
 	return s
@@ -101,8 +117,10 @@ func (f *Fake) State() State {
 //     and times. Labels and reactions are sets, so those may be redone in
 //     another order, and so are assignees and blocked-by links; comments
 //     are compared in order, with their bodies, and sub-issues in the
-//     order they were linked. A run may not leave an extra comment,
-//     reaction, label, assignee, sub-issue or blocked-by link, or miss one.
+//     order they were linked, and pull requests by number, with their
+//     heads, bases, titles, bodies and states. A run may not leave an extra
+//     comment, reaction, label, assignee, sub-issue, blocked-by link or
+//     pull request, or miss one.
 //
 // pass must build its own client and in-memory state from the fake it gets,
 // as the daemon does on restart, and must decide its writes only from what
