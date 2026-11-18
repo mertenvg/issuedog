@@ -64,7 +64,12 @@ func (f *Fake) CloseByPullRequest(number int, login string, pr ClosingPR) int64 
 	f.t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	is := f.fakeNumberIssue(number)
+	return f.closeByPullRequest(f.fakeNumberIssue(number), login, pr)
+}
+
+// closeByPullRequest is CloseByPullRequest for is, which MergePR calls too.
+// f is locked.
+func (f *Fake) closeByPullRequest(is *issue, login string, pr ClosingPR) int64 {
 	id := f.setState(is, "closed", "", login)
 	if id != 0 {
 		base, repo := pr.Base, pr.Repo
