@@ -38,6 +38,9 @@ import (
 //   - a hold's trigger (waitLine.Hold) names logins and a rename's title,
 //     which aren't the App's: logins go in code, defused, and the title
 //     is escaped as an item's Title is (digestRenderHold);
+//   - a pull request's title (waitLine.PR) isn't the App's either, as
+//     anyone with write access may edit it, so it's escaped as an item's
+//     Title is (digestRenderPR);
 //   - waiting.go's own lines, the pin note and the link are the App's.
 //
 // The body mentions nobody: titles and copied lines are defused, and the
@@ -141,6 +144,8 @@ func digestRenderItem(rank int, it waitItem) string {
 		switch {
 		case l.Hold != nil:
 			lines = append(lines, "- "+digestRenderHold(*l.Hold))
+		case l.PR > 0:
+			lines = append(lines, digestRenderPR(l.PR, l.Text))
 		case l.Question > 0:
 			lines = append(lines, fmt.Sprintf("- **Question %d:** %s", l.Question, t))
 		case l.Option != "" && l.Recommended:
@@ -244,6 +249,10 @@ func digestRenderKindName(k waitKind) string {
 		return "Hand-off"
 	case waitFollowUp:
 		return "Follow-up"
+	case waitPR:
+		return "Pull request"
+	case waitStalled:
+		return "Stalled task"
 	}
 	return "Item (" + k.String() + ")"
 }
@@ -262,8 +271,9 @@ func digestRenderKindName(k waitKind) string {
 // records it. A hold's other triggers, named by the hold's comment or a
 // notice, each ending in a cc line (SPEC §6.4), give it none. A finished
 // story (#278) gets it, as it isn't listed here: no comment says its children
-// have all closed. A kind added later gets the mention unless it's listed
-// here.
+// have all closed. So does a pull request, as the move to pr-open has no cc
+// line (prMove), and a stalled task, as nothing the App posts says it's
+// stalled. A kind added later gets the mention unless it's listed here.
 func digestRenderMentions(it waitItem) bool {
 	switch it.Kind {
 	case waitApproval, waitPlanApproval, waitQuestion, waitFlag, waitHuman, waitHandoff, waitFollowUp:
@@ -292,6 +302,18 @@ func digestRenderHold(h holdItemTrigger) string {
 		what = fmt.Sprintf("%s renamed this issue to “%s”", discLogin(tr.By), digestRenderTitle(tr.Title))
 	}
 	return fmt.Sprintf("**Trigger:** %s. %s See %s", github.Escape(what), editNoticeAppend(h.How, editNoticeDigest(tr)), h.Link)
+}
+
+// digestRenderPR renders the line of a pull request item that names PR
+// pr, whose title is raw: the PR, then its title escaped as an item's
+// Title is (digestRenderTitle), so it makes no link, image, mention or
+// marker, or no title for an empty one.
+func digestRenderPR(pr int, title string) string {
+	line := fmt.Sprintf("- **PR #%d**", pr)
+	if t := digestRenderTitle(title); t != "" {
+		line += ": " + t
+	}
+	return line
 }
 
 // digestRenderNew returns the items, in order, with a key that announces

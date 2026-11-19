@@ -214,15 +214,21 @@ func passComments(f *githubtest.Fake, n int) []string {
 }
 
 // prOpens runs the pass after a pass, which opens the task's PR, checks
-// its head and moves task 1 to pr-open (pr_open.go), and the one after,
-// which reads what it wrote, so the next unchanged pass is quiet. Then
-// head is on the task's branch, with one PR open, and the task is at
-// pr-open.
+// its head and moves task 1 to pr-open (pr_open.go), the one after, which
+// reads what it wrote, lists the PR on the digest and assigns notify to
+// the PR (prs.go), and the one after that, which reads those writes, so
+// the next unchanged pass is quiet. Then head is on the task's branch,
+// with one PR open, assigned to notify alone, and the task is at pr-open,
+// assigned to nobody.
 func (v *verdictRig) prOpens(head string) {
 	v.t.Helper()
-	v.passes(2)
-	if prs := v.f.State().PRs; len(prs) != 1 || prs[0].HeadSHA != head || prs[0].State != "open" || pickStage(v.f, 1) != "stage:pr-open" {
-		v.t.Errorf("the PRs = %+v, the task at %s; want one, open at %s, and the task at pr-open", prs, pickStage(v.f, 1), head)
+	v.passes(3)
+	prs := v.f.State().PRs
+	if len(prs) != 1 || prs[0].HeadSHA != head || prs[0].State != "open" || pickStage(v.f, 1) != "stage:pr-open" {
+		v.t.Fatalf("the PRs = %+v, the task at %s; want one, open at %s, and the task at pr-open", prs, pickStage(v.f, 1), head)
+	}
+	if got, task := v.f.State().Issues[prs[0].Number-1].Assignees, v.f.State().Issues[0].Assignees; !slices.Equal(got, []string{wholeRunOwner}) || len(task) != 0 {
+		v.t.Errorf("the PR's assignees = %q, the task's %q; want %s on the PR, and nobody on the task", got, task, wholeRunOwner)
 	}
 }
 
@@ -507,7 +513,10 @@ func TestVerifierPassStands(t *testing.T) {
 				t.Fatalf("after the checks and the run: %d runs, %d verdicts; want one, and one", v.runs(), len(passComments(f, n)))
 			}
 			v = tt.act(v, n)
-			v.passes(3)
+			// The checks, if they run again, the PR step, the pass that
+			// lists the PR on the digest and assigns notify to it, and the
+			// one that reads those writes.
+			v.passes(4)
 			if v.runs() != 1 || len(passComments(f, n)) != 1 || pickStage(f, n) != "stage:pr-open" || len(f.State().PRs) != 1 {
 				t.Errorf("%d runs, %d verdicts, at %s, PRs %+v; want no second run, the one verdict, at pr-open on it, with its one PR",
 					v.runs(), len(passComments(f, n)), pickStage(f, n), f.State().PRs)

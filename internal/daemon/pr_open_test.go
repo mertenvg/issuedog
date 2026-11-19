@@ -145,7 +145,8 @@ var prMoveWrites = []string{"POST /check-runs", "POST /issues/1/comments", "POST
 // implementer's pr-text and the verifier's notes, with the task's priority
 // label, then checks the head and moves the task to pr-open
 // (pr_move_test.go), which releases the worker. The pass after reads no
-// PR, and picks the next task, whose run asks a question, and once those
+// PR, but assigns notify to it (prs.go), and picks the next task, whose
+// run asks a question, and once those
 // writes are read, each unchanged pass after makes no request but 304s,
 // none of them for a PR: no second push, PR or label.
 func TestPROpenWholeRun(t *testing.T) {
@@ -218,6 +219,9 @@ func TestPROpenWholeRun(t *testing.T) {
 	if pickStage(f, ready) != "stage:clarifying" || v.runs() != 3 {
 		t.Errorf("the next task is at %s, after %d runs; want it picked, as the task at pr-open released the worker, and its run's question at clarifying",
 			pickStage(f, ready), v.runs())
+	}
+	if got := assignees(f, pr.Number); !slices.Equal(got, []string{wholeRunOwner}) {
+		t.Errorf("the PR's assignees = %q; want %s, as the pass read the task's move to pr-open", got, wholeRunOwner)
 	}
 	// The next pass reads the question, lists it on the digest and assigns
 	// notify to it, and the one after reads those writes.
@@ -741,7 +745,9 @@ func TestPROpenPushRefused(t *testing.T) {
 // ends with the same push, PR and label (SPEC §5.2), whether the step
 // opens the PR, or reopens a closed one and updates its body. Each pass is a
 // fresh daemon on the fake's own bare clone, so it runs the checks again
-// before the PR step. The origin is shared, so every run's commits, and so
+// before the PR step, and its third iteration reads what the step wrote,
+// so the digest lists the PR, and notify is assigned to it, by then in
+// every run. The origin is shared, so every run's commits, and so
 // its SHAs, are the clean run's, and each setup sets the task's branch
 // there as its case has it.
 func TestPROpenReplay(t *testing.T) {
@@ -790,7 +796,7 @@ func TestPROpenReplay(t *testing.T) {
 				g.d.Clone, g.r.Workspace.Bare = clones[f], clones[f].Dir()
 				v := &verdictRig{rig: g, o: base.o, cfg: base.cfg, ran: base.ran}
 				v.wire()
-				for range 2 {
+				for range 3 {
 					if err := v.d.Iterate(context.Background()); err != nil {
 						return err
 					}
@@ -800,10 +806,13 @@ func TestPROpenReplay(t *testing.T) {
 			for f := range roots {
 				prs := f.State().PRs
 				if len(prs) != 1 || prs[0].HeadSHA != head || prs[0].Head != prBranch || prs[0].State != "open" || !strings.HasPrefix(prs[0].Body, "Closes #1\n\n") {
-					t.Errorf("after the replay, the PRs = %+v; want one, open from %s at %s, with the PR step's body", prs, prBranch, head)
+					t.Fatalf("after the replay, the PRs = %+v; want one, open from %s at %s, with the PR step's body", prs, prBranch, head)
 				}
 				if got := f.State().Issues[prs[0].Number-1].Labels; !slices.Equal(got, []string{"priority:p1"}) {
 					t.Errorf("after the replay, the PR's labels = %q; want priority:p1", got)
+				}
+				if got := f.State().Issues[prs[0].Number-1].Assignees; !slices.Equal(got, []string{wholeRunOwner}) {
+					t.Errorf("after the replay, the PR's assignees = %q; want %s", got, wholeRunOwner)
 				}
 			}
 		})

@@ -118,9 +118,10 @@ func (v *verdictRig) prMoveQuiet(step string, task bool) {
 // comment, and last moves the task verifying → pr-open, keyed by the
 // pass's run, with head=, pr= and seen=, in a comment naming the PR and
 // the head. That pass picks nothing, as the move was its step 4, and the
-// next picks the second task, as the task at pr-open holds no worker.
-// Once that's read, each unchanged pass makes no request for the task, its
-// PR or its head.
+// next picks the second task, as the task at pr-open holds no worker, and
+// reads the move, so the digest lists the PR, and notify is assigned to
+// the PR. Once that's read, each unchanged pass makes no request for the
+// task, its PR or its head.
 func TestPRMoveWholeRun(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
@@ -181,6 +182,15 @@ func TestPRMoveWholeRun(t *testing.T) {
 	if pickStage(f, next) != "stage:clarifying" || v.runs() != 3 {
 		t.Errorf("the next task is at %s, after %d runs; want it picked on this pass, its run's question at clarifying", pickStage(f, next), v.runs())
 	}
+	// That pass reads the move too: the digest lists the PR, and notify is
+	// assigned to the PR, not the task (SPEC §9.4, §9.6).
+	if digest := prMoveDigest(f); !strings.Contains(digest, "**Pull request**, priority p1") ||
+		!strings.Contains(digest, "- Answer here: https://github.com/o/r/pull/"+strconv.Itoa(pr)) {
+		t.Errorf("the digest =\n%s\nwant it to list PR #%d", digest, pr)
+	}
+	if got, task := assignees(f, pr), assignees(f, n); !slices.Equal(got, []string{wholeRunOwner}) || len(task) != 0 {
+		t.Errorf("the PR's assignees = %q, the task's %q; want %s on the PR, and nobody on the task", got, task, wholeRunOwner)
+	}
 	// The next pass reads the question, lists it on the digest and assigns
 	// notify to it, and the one after reads those writes.
 	v.passes(2)
@@ -225,7 +235,10 @@ func TestPRMoveCrash(t *testing.T) {
 			}
 
 			v = v.restart()
-			v.passes(3)
+			// The checks, the move, then the pass that lists the PR on
+			// the digest and assigns notify to it, and the one that reads
+			// those writes.
+			v.passes(4)
 			if got := prMoveCheckRuns(f); !slices.Equal(got, []githubtest.CheckRunState{prMoveVerified(head)}) {
 				t.Errorf("after the restart, the check runs = %+v; want the one", got)
 			}
@@ -385,9 +398,13 @@ func TestPRMoveNothingToMerge(t *testing.T) {
 			}
 			v.passes(2)
 			if !slices.ContainsFunc(f.State().Issues, func(is githubtest.IssueState) bool {
-				return strings.Contains(is.Body, "A hand-off waits for you: the verifier passed a head that changes nothing on `main`, so it gets no PR.")
+				return strings.Contains(is.Body, "A hand-off waits for you: the verifier passed a head that changes nothing on `main`, so it gets no PR.") &&
+					strings.Contains(is.Body, "- If something needs to change, reply `/done` on the issue or react 👍 to the hand-off, and the task goes back to `ready`. If not, close the issue.\n")
 			}) {
-				t.Errorf("no digest lists the hand-off for a head that changes nothing")
+				t.Errorf("no digest lists the hand-off for a head that changes nothing, ending with /done or a 👍 for a change, and a close for none")
+			}
+			if !strings.Contains(moves[0], "\n\nIf something needs to change, reply `/done` on this issue or react 👍 to this comment, and the task goes back to `ready`. If not, close this issue.\n\ncc @") {
+				t.Errorf("the hand-off =\n%s\nwant it to end with /done or a 👍 for a change, and a close for none, before the cc line", moves[0])
 			}
 			v.prMoveQuiet("at the hand-off", false)
 
@@ -472,22 +489,48 @@ func TestPRMoveReplay(t *testing.T) {
 	}
 }
 
+// prMoveDigest is the digest's body on f, or "" with none.
+func prMoveDigest(f *githubtest.Fake) string {
+	for _, is := range f.State().Issues {
+		if is.Author == app && strings.HasSuffix(is.Body, "<!-- issuedog:digest -->") {
+			return is.Body
+		}
+	}
+	return ""
+}
+
 // A task back at verifying by a stage set by hand, after its pass moved it
 // to pr-open, on the same head and pass, gets nothing more from that pass:
 // the move keyed by its run is written, so it waits, with no request for
-// its PR and no write.
+// its PR and no write. It holds the worker, so the digest lists it as a
+// stalled task, which says to set stage:pr-open back or stage:ready,
+// and notify is assigned to it, while its PR's item ends, and notify is
+// unassigned from the PR (SPEC §9.4, §9.6).
 func TestPRMoveOnce(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
 	v := newVerdictRig(t, f, 3)
 	head, _ := v.prTask()
 	v.prOpens(head)
+	pr := f.State().PRs[0].Number
 	f.RemoveLabel(1, "owner", "stage:pr-open")
 	f.AddLabel(1, "owner", "stage:verifying")
 	v.passes(3)
 	if pickStage(f, 1) != "stage:verifying" || len(prMoveComments(f, "pr-open")) != 1 || len(prMoveCheckRuns(f)) != 1 {
 		t.Errorf("at %s, the moves %q, the checks %+v; want still at verifying, the one move and the one check",
 			pickStage(f, 1), prMoveComments(f, "pr-open"), prMoveCheckRuns(f))
+	}
+	digest := prMoveDigest(f)
+	item := "### 1. #1: Refuse an expired quote\n\n**Stalled task**, priority p1, unblocks 1 open issue (itself included)\n\n" +
+		"- This task is back at `verifying`, but its pass, run `rv`, moved it to `pr-open` once already, so the pass moves it no more. " +
+		"It holds the worker, so no other task is picked.\n" +
+		"- Set `stage:pr-open` back to wait on its PR, or set `stage:ready` for a new round.\n" +
+		"- Answer here: https://github.com/o/r/issues/1"
+	if !strings.Contains(digest, item) || strings.Contains(digest, "**Pull request**") {
+		t.Errorf("the digest =\n%s\nwant it to list\n%s\nand no pull request", digest, item)
+	}
+	if got, task := assignees(f, pr), assignees(f, 1); len(got) != 0 || !slices.Equal(task, []string{wholeRunOwner}) {
+		t.Errorf("the PR's assignees = %q, the task's %q; want nobody on the PR, and %s on the task", got, task, wholeRunOwner)
 	}
 	from := len(f.Requests())
 	v.quietPass("back at verifying")
