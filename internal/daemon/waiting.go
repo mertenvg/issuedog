@@ -693,10 +693,14 @@ func waitGoalDone(body string) (goal, done string) {
 // changes nothing on main, so it gets no PR (nothingHandoffMove), which
 // verifyCapMove leaves out, though both are keyed run=. With either
 // field not found, as for a format that has changed, a line says to see
-// the hand-off instead. The last line says how to end it, as the hand-off
+// the hand-off instead. Or it's the task's PR, closed without merging, or
+// reopened after a close by someone who isn't trusted (prClosedMove,
+// prClosedByReopen). The last line says how to end it, as the hand-off
 // does: for a head that changes nothing, that /done or a 👍 is for a
 // change, and closing the issue for none (nothingHandoffFinish), so a 👍
-// out of habit isn't taken for a yes.
+// out of habit isn't taken for a yes; for the PR's, that reopening it, or
+// closing and reopening it for an untrusted reopen, sends the task back to
+// pr-open, /done or a 👍 starts a new round, or the issue can be closed.
 func waitHandoffLines(s *github.Snapshot, id int64) []waitLine {
 	body := waitBody(s, id)
 	fields := body
@@ -717,6 +721,12 @@ func waitHandoffLines(s *github.Snapshot, id int64) []waitLine {
 		}
 	case slices.ContainsFunc(markers, verifierCapMove):
 		why = "the verifier's runs on this head failed, and the hand-off says why."
+	case slices.ContainsFunc(markers, func(m github.Marker) bool { return prClosedMove(m) && prClosedByReopen(m) }):
+		why = "the task's PR was reopened after a close by someone who isn't trusted."
+		finish = "Close and reopen the PR yourself to send the task back to `pr-open`, or reply `/done` on the issue or react 👍 to the hand-off for a new round, or close the issue."
+	case slices.ContainsFunc(markers, prClosedMove):
+		why = "the task's PR was closed without merging."
+		finish = "Reopen the PR to send the task back to `pr-open`, or reply `/done` on the issue or react 👍 to the hand-off for a new round, or close the issue."
 	}
 	lines := []waitLine{{Text: "A hand-off waits for you: " + why}}
 	if goal, done := waitGoalDone(fields); goal != "" && done != "" {

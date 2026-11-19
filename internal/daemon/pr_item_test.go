@@ -101,17 +101,20 @@ func prItemQuiet(t *testing.T, f *githubtest.Fake, d *daemon.Daemon, step string
 // The digest announces it, as the move has no cc line, and notify is
 // assigned to the PR, never the task. A pass after writes nothing, and
 // makes no request about the PR. Then the PR merges, which closes the
-// task, or closes: the item ends, and notify is unassigned from the PR,
-// once. An assign by hand after that is left alone.
+// task, or closes, which hands the task off at needs-human (SPEC §7.2):
+// the item ends, and notify is unassigned from the PR, once, on that pass,
+// and for the close, the hand-off's item is listed instead, which assigns
+// the task. An assign by hand after that is left alone.
 func TestPRItemThroughMergeAndClose(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name   string
-		end    func(f *githubtest.Fake)
-		closed bool // the task closes
+		name    string
+		end     func(f *githubtest.Fake)
+		closed  bool // the task closes
+		handoff bool // the task is handed off
 	}{
-		{"merge", func(f *githubtest.Fake) { f.MergePR(2, digestRunOwner) }, true},
-		{"close", func(f *githubtest.Fake) { f.ClosePR(2, digestRunOwner) }, false},
+		{"merge", func(f *githubtest.Fake) { f.MergePR(2, digestRunOwner) }, true, false},
+		{"close", func(f *githubtest.Fake) { f.ClosePR(2, digestRunOwner) }, false, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -138,14 +141,25 @@ func TestPRItemThroughMergeAndClose(t *testing.T) {
 			f.SetAssignees(2, digestRunOwner, "bob")
 			from := len(f.Writes())
 			iterate(t, d)
-			if got, want := assignWrites(f, from), []string{assignRemove(2, digestRunOwner)}; !slices.Equal(got, want) || !slices.Equal(assignees(f, 2), []string{"bob"}) {
+			want, taskWant := []string{assignRemove(2, digestRunOwner)}, []string(nil)
+			if tt.handoff {
+				want, taskWant = []string{assignAdd(1, digestRunOwner), assignRemove(2, digestRunOwner)}, []string{digestRunOwner}
+			}
+			if got := assignWrites(f, from); !slices.Equal(got, want) || !slices.Equal(assignees(f, 2), []string{"bob"}) {
 				t.Errorf("the pass after the %s wrote assignees %q, leaving %q; want %q, leaving bob, who was assigned by hand", tt.name, got, assignees(f, 2), want)
 			}
-			if body := f.State().Issues[2].Body; strings.Contains(body, "Pull request") || !strings.Contains(body, "Nothing is waiting on you.") {
-				t.Errorf("after the %s, the digest =\n%s\nwant nothing waiting", tt.name, body)
+			body := f.State().Issues[2].Body
+			switch {
+			case strings.Contains(body, "Pull request"):
+				t.Errorf("after the %s, the digest =\n%s\nwant no pull request", tt.name, body)
+			case tt.handoff && !strings.Contains(body, "**Hand-off**") || !tt.handoff && !strings.Contains(body, "Nothing is waiting on you."):
+				t.Errorf("after the %s, the digest =\n%s\nwant a hand-off %t, or else nothing waiting", tt.name, body, tt.handoff)
 			}
-			if task := f.State().Issues[0]; task.Closed != tt.closed || len(task.Assignees) != 0 {
-				t.Errorf("after the %s, the task is closed %t, assigned %q; want closed %t, and nobody", tt.name, task.Closed, task.Assignees, tt.closed)
+			if task := f.State().Issues[0]; task.Closed != tt.closed || !slices.Equal(task.Assignees, taskWant) {
+				t.Errorf("after the %s, the task is closed %t, assigned %q; want closed %t, and %q", tt.name, task.Closed, task.Assignees, tt.closed, taskWant)
+			}
+			if got := pickStage(f, 1); tt.handoff && got != "stage:needs-human" {
+				t.Errorf("after the %s, the task is at %s; want needs-human", tt.name, got)
 			}
 			from = len(f.Writes())
 			iterate(t, d)
@@ -208,8 +222,11 @@ func TestPRItemHeld(t *testing.T) {
 // A restart reads the item back from the digest's body: with the task's
 // read failing on the restart's first pass, the digest lists what its
 // body showed, so it isn't edited, and the PR keeps notify, with no write,
-// as the task keeps its last items. Once the read works, nothing is
-// written either.
+// as the task keeps its last items, and no request about the PR, as the
+// task isn't judged in step 2. Once the read works, nothing is written
+// either: that pass judges the task's PR, a restart's first judging,
+// with its one timeline read (SPEC §6.4), and the pass after makes no
+// request about the PR.
 func TestPRItemRestart(t *testing.T) {
 	t.Parallel()
 	o := prItemOrigin(t)
@@ -221,17 +238,38 @@ func TestPRItemRestart(t *testing.T) {
 
 	d = prItemDaemon(t, f, o)
 	f.AnswerOnce(func(r githubtest.Request) bool { return r.Method == http.MethodGet && r.Path == "/issues/1" }, http.StatusInternalServerError)
-	from := len(f.Writes())
+	from, reqs := len(f.Writes()), len(f.Requests())
 	if err := d.Iterate(context.Background()); err == nil {
 		t.Fatal("the restart's pass whose read of the task failed gave no error")
 	}
 	if got := writesOf(f)[from:]; len(got) != 0 || f.State().Issues[2].Body != body {
 		t.Errorf("the restart's first pass wrote %q, the digest\n%s\nwant nothing written, and the digest as it was\n%s", got, f.State().Issues[2].Body, body)
 	}
+	if got := prTimelineReads(f, reqs); got != 0 {
+		t.Errorf("the restart's first pass read the PR's timeline %d times; want none, as its task wasn't read", got)
+	}
 	if !strings.Contains(body, prItemBody) || !slices.Equal(assignees(f, 2), []string{digestRunOwner}) {
 		t.Errorf("the digest =\n%s\nthe PR's assignees %q; want the item, and %s", body, assignees(f, 2), digestRunOwner)
 	}
-	prItemQuiet(t, f, d, "once the task's read works")
+	from, reqs = len(f.Writes()), len(f.Requests())
+	iterate(t, d)
+	if got := writesOf(f)[from:]; len(got) != 0 || prTimelineReads(f, reqs) != 1 {
+		t.Errorf("once the task's read works, the pass wrote %q, and read the PR's timeline %d times; want nothing written, and one read",
+			got, prTimelineReads(f, reqs))
+	}
+	prItemQuiet(t, f, d, "the pass after the task's read works")
+}
+
+// prTimelineReads counts the reads of PR #2's timeline among f's
+// requests from from on.
+func prTimelineReads(f *githubtest.Fake, from int) int {
+	n := 0
+	for _, r := range f.Requests()[from:] {
+		if r.Method == http.MethodGet && r.Path == "/issues/2/timeline" {
+			n++
+		}
+	}
+	return n
 }
 
 // A PR someone else opened is never a task's (SPEC §7.5): with the task's

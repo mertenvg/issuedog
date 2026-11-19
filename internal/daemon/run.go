@@ -309,6 +309,12 @@ type Runs struct {
 	// task, by issue number, so a wait that lasts is warned of once
 	// (prWarnOnce).
 	prWarned map[int]string
+	// prExists is, for each task whose PR GitHub wouldn't open as an open
+	// one someone else opened from its branch to main stands, by issue
+	// number, the count of polls that listed a pull request changed
+	// (Daemon.prPolls) when it last tried, so it tries again only once a
+	// poll lists one changed (openPR).
+	prExists map[int]int
 }
 
 // checksPassed is a pass of SPEC §10.1's checks: the head and main's commit

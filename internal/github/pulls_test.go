@@ -125,10 +125,11 @@ func TestPullRequestsByHead(t *testing.T) {
 // CreatePullRequest opens a pull request as the App, from the head to the
 // base, with the title and body, and returns it with its head's SHA. A
 // second open one with that head and base is GitHub's 422, which is no
-// refused reopen.
+// refused reopen, but ErrPullRequestExists, and so is one when someone
+// else's is open. Any other 422, such as a head that's no branch, isn't.
 func TestCreatePullRequest(t *testing.T) {
 	t.Parallel()
-	f, git := pullsFake(t, "issuedog/7-task")
+	f, git := pullsFake(t, "issuedog/7-task", "theirs")
 	c, ctx := f.Client(t), context.Background()
 	pr, err := c.CreatePullRequest(ctx, "o", "r", github.NewPullRequest{Title: "feat: a thing", Head: "issuedog/7-task", Base: "main", Body: "Closes #1"})
 	if err != nil {
@@ -145,8 +146,18 @@ func TestCreatePullRequest(t *testing.T) {
 	}
 	_, err = c.CreatePullRequest(ctx, "o", "r", github.NewPullRequest{Title: "again", Head: "issuedog/7-task", Base: "main"})
 	var er *gogithub.ErrorResponse
-	if !errors.As(err, &er) || er.Response.StatusCode != http.StatusUnprocessableEntity || errors.Is(err, github.ErrReopenRefused) {
-		t.Errorf("a second open one: %v; want GitHub's 422, not a refused reopen", err)
+	if !errors.As(err, &er) || er.Response.StatusCode != http.StatusUnprocessableEntity || errors.Is(err, github.ErrReopenRefused) ||
+		!errors.Is(err, github.ErrPullRequestExists) {
+		t.Errorf("a second open one: %v; want GitHub's 422, ErrPullRequestExists, not a refused reopen", err)
+	}
+	f.OpenPRAs("mallory", "theirs", "main", "Theirs", "")
+	_, err = c.CreatePullRequest(ctx, "o", "r", github.NewPullRequest{Title: "T", Head: "theirs", Base: "main"})
+	if !errors.As(err, &er) || er.Response.StatusCode != http.StatusUnprocessableEntity || !errors.Is(err, github.ErrPullRequestExists) {
+		t.Errorf("an open one with mallory's open: %v; want GitHub's 422, ErrPullRequestExists", err)
+	}
+	_, err = c.CreatePullRequest(ctx, "o", "r", github.NewPullRequest{Title: "T", Head: "nope", Base: "main"})
+	if !errors.As(err, &er) || er.Response.StatusCode != http.StatusUnprocessableEntity || errors.Is(err, github.ErrPullRequestExists) {
+		t.Errorf("an open from no branch: %v; want GitHub's 422, not ErrPullRequestExists", err)
 	}
 }
 

@@ -22,8 +22,11 @@ import (
 // pull_request.merged_at once it merged. The /pulls routes serve the ones
 // the fake opened, for POST /pulls: each has a head and a base branch, and
 // the SHA its head shows, read from a real bare repo (SetGitRemote) with
-// git rev-parse when it's opened, updated, reopened and listed while open.
-// A closed one keeps the SHA it had, as GitHub stops following its branch.
+// git rev-parse when it's opened, updated, reopened and listed while open,
+// in the issue list too. A head that moved since, as by a push, moves its
+// updated_at, as GitHub's does (pullFollow). A closed one keeps the SHA it
+// had, as GitHub stops following its branch. OpenPRAs opens one as someone
+// else.
 // As on GitHub, the fake refuses with a 422 a second open pull request with
 // one head and base, and a reopen once the branch's tip no longer has the
 // pull request's head in its history, as after a push by force while it
@@ -123,6 +126,25 @@ func (f *Fake) pullHead(ctx context.Context, is *issue) (string, error) {
 	return sha, nil
 }
 
+// pullFollow reads open pull request is's head again from the git remote,
+// as GitHub follows its branch, and moves its updated_at when the head
+// moved, as a push does on GitHub. A pull request the fake didn't open, or
+// a closed one, is left as it is. A branch gone is an error, as for
+// pullHead. f is locked.
+func (f *Fake) pullFollow(ctx context.Context, is *issue) error {
+	if is.pr == nil || is.GetState() != "open" {
+		return nil
+	}
+	sha, err := f.pullHead(ctx, is)
+	if err != nil {
+		return fmt.Errorf("githubtest: follow pull request #%d: %w", is.GetNumber(), err)
+	}
+	if sha != is.pr.headSHA {
+		is.pr.headSHA, is.UpdatedAt = sha, f.tick()
+	}
+	return nil
+}
+
 // pullOpenWith is the open pull request other than skip with head and
 // base, or nil. f is locked.
 func (f *Fake) pullOpenWith(head, base string, skip *issue) *issue {
@@ -195,7 +217,8 @@ func (f *Fake) pullServe(is *issue, listed bool) gogithub.PullRequest {
 // all, only those whose head is head= and whose base is base=, if given.
 // head= is "<owner>:<branch>", as GitHub takes it, and a head= with no
 // owner is refused with a 422 here, so a caller that leaves it out is
-// caught. Each open one's head is read again from the git remote first.
+// caught. Each open one's head is read again from the git remote first
+// (pullFollow).
 func (f *Fake) listPulls(c *call) (int, any) {
 	q := c.r.URL.Query()
 	state := q.Get("state")
@@ -220,12 +243,8 @@ func (f *Fake) listPulls(c *call) (int, any) {
 			head != "" && (!strings.EqualFold(headOwner, owner) || is.pr.head != head) {
 			continue
 		}
-		if is.GetState() == "open" {
-			sha, err := f.pullHead(c.r.Context(), is)
-			if err != nil {
-				return http.StatusInternalServerError, message(err.Error())
-			}
-			is.pr.headSHA = sha
+		if err := f.pullFollow(c.r.Context(), is); err != nil {
+			return http.StatusInternalServerError, message(err.Error())
 		}
 		out = append(out, f.pullServe(is, true))
 	}
@@ -237,36 +256,69 @@ func (f *Fake) listPulls(c *call) (int, any) {
 // it. It's a new issue, numbered as one, with its head read from the git
 // remote. As on GitHub, it answers 422 with no title, a head or base
 // missing, a head branch the git remote hasn't got, and a head and base an
-// open pull request has already.
+// open pull request has already (pullCreate).
 func (f *Fake) createPull(c *call) (int, any) {
 	var req struct{ Title, Head, Base, Body string }
 	if status, msg := c.decode(&req); msg != nil {
 		return status, msg
 	}
+	is, status, msg := f.pullCreate(c.r.Context(), f.slug+"[bot]", req.Title, req.Head, req.Base, req.Body)
+	if msg != nil {
+		return status, msg
+	}
+	return http.StatusCreated, f.pullServe(is, false)
+}
+
+// pullCreate opens a pull request as author, from head, a branch of this
+// repo, given as "<branch>" or "<owner>:<branch>", to base, with title and
+// body, and returns it, or the status and message GitHub refuses it with:
+// a 422 with no title, a head or base missing, a head branch the git
+// remote hasn't got, and a head and base an open pull request has already,
+// the last with GitHub's errors list, whose message says one already
+// exists. A tip that can't be read is a 500. It's a new issue, numbered as
+// one, with its head read from the git remote. f is locked.
+func (f *Fake) pullCreate(ctx context.Context, author, title, head, base, body string) (*issue, int, any) {
 	owner, _, _ := strings.Cut(f.repo, "/")
-	if o, branch, ok := strings.Cut(req.Head, ":"); ok {
+	if o, branch, ok := strings.Cut(head, ":"); ok {
 		if !strings.EqualFold(o, owner) {
-			return http.StatusUnprocessableEntity, message(fmt.Sprintf("githubtest: head %q isn't in this repo; forks aren't modelled", req.Head))
+			return nil, http.StatusUnprocessableEntity, message(fmt.Sprintf("githubtest: head %q isn't in this repo; forks aren't modelled", head))
 		}
-		req.Head = branch
+		head = branch
 	}
-	if req.Title == "" || req.Head == "" || req.Base == "" {
-		return http.StatusUnprocessableEntity, message("Validation Failed: a pull request needs a title, a head and a base")
+	if title == "" || head == "" || base == "" {
+		return nil, http.StatusUnprocessableEntity, message("Validation Failed: a pull request needs a title, a head and a base")
 	}
-	if other := f.pullOpenWith(req.Head, req.Base, nil); other != nil {
-		return http.StatusUnprocessableEntity, message(fmt.Sprintf("Validation Failed: A pull request already exists for %s:%s, #%d.", owner, req.Head, other.GetNumber()))
+	if other := f.pullOpenWith(head, base, nil); other != nil {
+		return nil, http.StatusUnprocessableEntity, map[string]any{"message": "Validation Failed",
+			"errors": []map[string]string{{"resource": "PullRequest", "code": "custom",
+				"message": fmt.Sprintf("A pull request already exists for %s:%s.", owner, head)}}}
 	}
-	sha, err := f.pullTip(c.r.Context(), req.Head)
+	sha, err := f.pullTip(ctx, head)
 	if err != nil {
-		return http.StatusInternalServerError, message(err.Error())
+		return nil, http.StatusInternalServerError, message(err.Error())
 	}
 	if sha == "" {
-		return http.StatusUnprocessableEntity, message(fmt.Sprintf("Validation Failed: head %q is no branch of the repo", req.Head))
+		return nil, http.StatusUnprocessableEntity, message(fmt.Sprintf("Validation Failed: head %q is no branch of the repo", head))
 	}
-	is := f.fileIssue(f.slug+"[bot]", req.Title, req.Body, nil)
+	is := f.fileIssue(author, title, body, nil)
 	f.pullLinks(is)
-	is.pr = &pullRequest{head: req.Head, base: req.Base, headSHA: sha}
-	return http.StatusCreated, f.pullServe(is, false)
+	is.pr = &pullRequest{head: head, base: base, headSHA: sha}
+	return is, 0, nil
+}
+
+// OpenPRAs opens a pull request as login, from head, a branch of the git
+// remote, to base, with title and body, as someone other than the App may
+// from the web page, and returns its number. One POST /pulls would refuse
+// (pullCreate) fails the test, naming why.
+func (f *Fake) OpenPRAs(login, head, base, title, body string) int {
+	f.t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	is, status, msg := f.pullCreate(context.Background(), login, title, head, base, body)
+	if msg != nil {
+		f.fakeFail("githubtest: open a pull request from %s to %s as %s: %d %v", head, base, login, status, msg)
+	}
+	return is.GetNumber()
 }
 
 // editPull edits a pull request's title, its body, its state (open or

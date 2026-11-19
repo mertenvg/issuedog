@@ -679,6 +679,73 @@ func TestPROpenSomeoneElsesTip(t *testing.T) {
 	}
 }
 
+// Someone else's open PR from the task's branch to main is never the
+// task's (SPEC §7.5): the PR step leaves it alone, and GitHub's 422 to the
+// App's own open, as one exists for that head and base, is a wait, not an
+// error, warned of once: nothing is written, and the step tries again only
+// once a poll lists a PR changed. The App's push moves that PR's head, so
+// the next poll lists it once, and the step tries once more; then passes
+// make no request for it. Once mallory closes her PR, the next pass opens
+// the App's, and the task moves to pr-open, with her PR as she left it. It
+// reads logr, so it isn't parallel.
+func TestPROpenSomeoneElsesPR(t *testing.T) {
+	f := newFake(t)
+	v := newVerdictRig(t, f, 3)
+	head, _ := v.prTask()
+	gitIn(t, v.o.work, "push", "--quiet", v.o.url, "main:refs/heads/"+prBranch)
+	theirs := f.OpenPRAs("mallory", prBranch, "main", "mallory's", "Mine.")
+	untouched := func(step, state string) {
+		t.Helper()
+		var got githubtest.PRState
+		for _, p := range f.State().PRs {
+			if p.Number == theirs {
+				got = p
+			}
+		}
+		if got.Title != "mallory's" || got.Body != "Mine." || got.State != state {
+			t.Errorf("%s: mallory's PR = %+v; want hers as she left it, %s", step, got, state)
+		}
+		for _, w := range f.Writes() {
+			if w.Method == http.MethodPatch && w.Path == "/pulls/"+strconv.Itoa(theirs) {
+				t.Errorf("%s: wrote %+v; want nothing on mallory's PR", step, w)
+			}
+		}
+	}
+	stop := logtest.Capture(t, logr.W)
+	v.pass()
+	from := len(f.Requests())
+	v.pass()
+	if reads, writes := prRequests(f, from); reads != 1 || writes != 1 || len(f.State().PRs) != 1 || pickStage(f, 1) != "stage:verifying" {
+		t.Errorf("the PR step: %d reads and %d writes of /pulls, PRs %+v, the task at %s; want the list, the open GitHub refused, mallory's PR alone, and the task at verifying",
+			reads, writes, f.State().PRs, pickStage(f, 1))
+	}
+	untouched("the PR step", "open")
+	from = len(f.Requests())
+	v.pass()
+	if reads, writes := prRequests(f, from); reads != 1 || writes != 1 {
+		t.Errorf("the pass whose poll lists mallory's PR, its head moved by the push: %d reads and %d writes of /pulls; want one more try", reads, writes)
+	}
+	from = len(f.Requests())
+	v.passes(2)
+	if reads, writes := prRequests(f, from); reads != 0 || writes != 0 || pickStage(f, 1) != "stage:verifying" {
+		t.Errorf("the passes after: %d reads and %d writes of /pulls, the task at %s; want none, as no poll lists a PR changed, and the task waiting at verifying",
+			reads, writes, pickStage(f, 1))
+	}
+	logs := stop()
+	want := "#1: someone else's open PR from " + prBranch + " to main stands, so GitHub won't open the task's"
+	if got := strings.Count(logs, want); got != 1 {
+		t.Errorf("the warnings =\n%s\nwant %q once", logs, want)
+	}
+
+	f.ClosePR(theirs, "mallory")
+	v.pass()
+	prs := f.State().PRs
+	if len(prs) != 2 || prs[1].State != "open" || prs[1].HeadSHA != head || pickStage(f, 1) != "stage:pr-open" {
+		t.Errorf("once mallory's PR closed: PRs %+v, the task at %s; want the App's open at %s, and the task at pr-open", prs, pickStage(f, 1), head)
+	}
+	untouched("once mallory's PR closed", "closed")
+}
+
 // A push the remote refuses for any reason but a stale lease, here a
 // pre-receive hook on the origin, is the pass's error, not a wait for the
 // next sync, and its stderr, which the App didn't write, reaches no

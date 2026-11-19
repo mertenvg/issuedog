@@ -25,7 +25,9 @@ import (
 // never kept. The digest's pull request item, the PRs' assignees and their
 // priority labels are judged from what's kept, at no request of their own,
 // and a write's answer is kept as GitHub gave it, so the next pass
-// compares against what GitHub has.
+// compares against what GitHub has. Step 2 judges a task's PR from what's
+// kept too, and reads the timeline of an open one only once it's listed as
+// changed, or as pr_reconcile.go says.
 
 // listedPR is what the poll last listed of a PR the App opened, or what a
 // write to it answered: whether it's open, whether it merged, when it
@@ -41,7 +43,11 @@ type listedPR struct {
 
 // prKeep keeps is, a pull request the poll listed, in Daemon.prs, if the
 // App opened it. A PR someone else opened is left out, so it's never a
-// task's, whatever a move's pr= names (SPEC §7.5).
+// task's, whatever a move's pr= names (SPEC §7.5). An open one listed as
+// changed, its updated_at not the one kept, as on a start's first poll,
+// is marked for step 2 to read (Daemon.prRead, prPass). A write's answer
+// keeps the updated_at the poll listed, so the poll after a write lists
+// it as changed too.
 func (d *Daemon) prKeep(is *gogithub.Issue) {
 	if !strings.EqualFold(is.GetUser().GetLogin(), d.Step.AppSlug+"[bot]") {
 		return
@@ -53,9 +59,13 @@ func (d *Daemon) prKeep(is *gogithub.Issue) {
 	if d.prs == nil {
 		d.prs = map[int]listedPR{}
 	}
-	d.prs[is.GetNumber()] = listedPR{Number: is.GetNumber(), Title: is.GetTitle(), Open: is.GetState() == "open",
+	p := listedPR{Number: is.GetNumber(), Title: is.GetTitle(), Open: is.GetState() == "open",
 		Merged: !is.GetPullRequestLinks().GetMergedAt().IsZero(), ClosedAt: is.GetClosedAt().Time, UpdatedAt: is.GetUpdatedAt().Time,
 		Labels: labels, Assignees: assignListed(is)}
+	if old, ok := d.prs[p.Number]; p.Open && !p.Merged && (!ok || !old.UpdatedAt.Equal(p.UpdatedAt)) {
+		d.prReadAgain(p.Number)
+	}
+	d.prs[p.Number] = p
 }
 
 // taskPR is the PR of task is (SPEC §5): the pr= of its latest move into

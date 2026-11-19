@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	gogithub "github.com/google/go-github/v92/github"
 )
@@ -103,7 +104,8 @@ func pullFake(t testing.TB, branches ...string) (*Fake, *pullRemote) {
 }
 
 // pullDo sends a request to the fake as the App, decodes a 2xx answer into
-// out, if any, and returns the status and the message of any other.
+// out, if any, and returns the status and the message of any other, with
+// the message of each entry in its errors list after it.
 func pullDo(t *testing.T, f *Fake, method, path string, body, out any) (int, string) {
 	t.Helper()
 	c := f.Client(t)
@@ -113,7 +115,11 @@ func pullDo(t *testing.T, f *Fake, method, path string, body, out any) (int, str
 	}
 	resp, err := c.Do(req, out)
 	if er := (*gogithub.ErrorResponse)(nil); errors.As(err, &er) {
-		return resp.StatusCode, er.Message
+		msg := er.Message
+		for _, e := range er.Errors {
+			msg += ": " + e.Message
+		}
+		return resp.StatusCode, msg
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -375,6 +381,78 @@ func TestPullsAsIssues(t *testing.T) {
 	want := []string{"labeled issuedog[bot]", "closed mallory", "reopened owner", "merged owner", "closed owner"}
 	if !slices.Equal(got, want) {
 		t.Errorf("timeline %q; want %q", got, want)
+	}
+}
+
+// A pull request's updated_at moves as GitHub's does: on a push to its
+// branch while it's open, which the issue list sees, as /pulls does, and
+// on a close and a reopen, so a poll since its last updated_at lists it
+// for each. A listing with no change moves nothing, and a push while it's
+// closed moves nothing either.
+func TestPullsUpdatedAt(t *testing.T) {
+	t.Parallel()
+	f, r := pullFake(t, "a")
+	n := pullOpen(t, f, "A", "a", "main", "")
+	updated := func() time.Time {
+		t.Helper()
+		var issues []*gogithub.Issue
+		pullDo(t, f, "GET", "repos/o/r/issues?state=all", nil, &issues)
+		if len(issues) != 1 || issues[0].GetNumber() != n {
+			t.Fatalf("listed %+v; want the pull request alone", issues)
+		}
+		return issues[0].GetUpdatedAt().Time
+	}
+	last := updated()
+	for _, tt := range []struct {
+		name  string
+		act   func()
+		moves bool
+	}{
+		{"nothing", func() {}, false},
+		{"a push", func() { r.commit("a") }, true},
+		{"a listing after the push", func() {}, false},
+		{"a push listed by /pulls first", func() {
+			r.commit("a")
+			var prs []*gogithub.PullRequest
+			pullDo(t, f, "GET", "repos/o/r/pulls", nil, &prs)
+		}, true},
+		{"a close", func() { f.ClosePR(n, "owner") }, true},
+		{"a push while closed", func() { r.commit("a") }, false},
+		{"a reopen", func() { f.ReopenPR(n, "owner") }, true},
+	} {
+		tt.act()
+		got := updated()
+		if moved := got.After(last); moved != tt.moves {
+			t.Errorf("%s: updated_at %s, after %s: moved %t; want %t", tt.name, got, last, moved, tt.moves)
+		}
+		last = got
+	}
+}
+
+// OpenPRAs opens a pull request as someone other than the App, from a
+// branch to a base, which the list serves with its author and head, and
+// which keeps the App from opening its own for that head and base, as
+// GitHub does, with the 422 whose errors list says one exists. A second
+// one for that head and base fails the test, naming why.
+func TestOpenPRAs(t *testing.T) {
+	t.Parallel()
+	tb := &fakeNumberTB{TB: t}
+	f, r := pullFake(tb, "a")
+	n := f.OpenPRAs("mallory", "a", "main", "Theirs", "Mine.")
+	var prs []*gogithub.PullRequest
+	pullDo(t, f, "GET", "repos/o/r/pulls?head=o:a", nil, &prs)
+	if len(prs) != 1 || prs[0].GetNumber() != n || prs[0].GetUser().GetLogin() != "mallory" || prs[0].GetHead().GetSHA() != r.tip("a") ||
+		prs[0].GetTitle() != "Theirs" || prs[0].GetBody() != "Mine." || prs[0].GetBase().GetRef() != "main" {
+		t.Errorf("listed %+v; want mallory's, from a at %s to main, titled Theirs", prs, r.tip("a"))
+	}
+	status, msg := pullDo(t, f, "POST", "repos/o/r/pulls", map[string]string{"title": "T", "head": "a", "base": "main"}, nil)
+	if status != http.StatusUnprocessableEntity || msg != "Validation Failed: A pull request already exists for o:a." {
+		t.Errorf("the App's open: %d %q; want 422, Validation Failed, with one in its errors list", status, msg)
+	}
+	fatal, panicked := fakeNumberFatal(tb, func() { f.OpenPRAs("eve", "a", "main", "Again", "") })
+	if panicked != nil || len(fatal) != 1 || !strings.HasPrefix(fatal[0], "githubtest: open a pull request from a to main as eve: 422 ") ||
+		!strings.Contains(fatal[0], "already exists") {
+		t.Errorf("a second open: Fatalf %q, panicked with %v; want one Fatalf naming the 422", fatal, panicked)
 	}
 }
 

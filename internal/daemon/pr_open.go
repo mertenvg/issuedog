@@ -73,7 +73,10 @@ type prWant struct {
 // (prWrite); then the priority label on it, unless it has it; then the
 // issuedog/verify check on the head, unless the App's newest there is a
 // success (prCheck); and last the move to pr-open (prMove), which releases
-// the worker (SPEC §8.1). The App never merges the PR. A head that changes
+// the worker (SPEC §8.1). The App never merges the PR. Someone else's open
+// PR from the task's branch to main, which GitHub's 422 to the open says,
+// makes the task wait, with no write, till a poll lists a PR changed
+// (prExistsWait). A head that changes
 // nothing on main gets none of those writes, but the move to needs-human
 // with its hand-off (prNothingMove).
 func (r *Runs) openPR(ctx context.Context, rd Ready, is state.Issue, head, main string) (bool, error) {
@@ -84,6 +87,11 @@ func (r *Runs) openPR(ctx context.Context, rd Ready, is state.Issue, head, main 
 		if err != nil {
 			return false, wrap(err)
 		}
+		return false, nil
+	}
+	if polls, ok := r.prExists[n]; ok && !want.Nothing && polls == r.Daemon.prPolls {
+		logr.Debugf("%s/%s#%d: someone else's open PR from %s to %s stood when its PR was last opened, and no poll has listed a PR changed since, so it waits at %s",
+			a.Owner, a.Repo, n, want.Branch, prBase, state.Verifying)
 		return false, nil
 	}
 	var pr *github.PullRequest
@@ -155,9 +163,15 @@ func (r *Runs) openPR(ctx context.Context, rd Ready, is state.Issue, head, main 
 		}
 		logr.Infof("%s/%s#%d: its head %s is pushed to %s", a.Owner, a.Repo, n, head, want.Branch)
 	}
-	if pr, err = r.prWrite(ctx, n, want, pr); err != nil {
+	pr, err = r.prWrite(ctx, n, want, pr)
+	if errors.Is(err, github.ErrPullRequestExists) {
+		r.prExistsWait(n, want.Branch, err)
+		return true, nil
+	}
+	if err != nil {
 		return true, wrap(err)
 	}
+	delete(r.prExists, n)
 	if !slices.ContainsFunc(pr.Labels, func(l string) bool { return strings.EqualFold(l, want.Label) }) {
 		if _, _, err := a.Client.Issues.AddLabelsToIssue(ctx, a.Owner, a.Repo, pr.Number, []string{want.Label}); err != nil {
 			return true, wrap(fmt.Errorf("add %s to PR #%d: %w", want.Label, pr.Number, err))
@@ -291,6 +305,27 @@ func (r *Runs) prWarnOnce(n int, key, format string, args ...any) {
 	}
 	r.prWarned[n] = key
 	logr.Warnf(format, args...)
+}
+
+// prExistsWait has task n wait at verifying when GitHub won't open its PR
+// from branch to main, err, as someone else's open PR there stands: that
+// PR is never the task's (prFind, SPEC §7.5), and GitHub keeps one open PR
+// for a head and base. It writes nothing, and tries again only once a poll
+// lists a pull request changed (Daemon.prPolls), as when that PR closes,
+// so it costs no request till then. It's warned of once, while the wait
+// lasts, and logged at debug on each try after.
+func (r *Runs) prExistsWait(n int, branch string, err error) {
+	a := r.Daemon.Step.Applier
+	log := logr.Warnf
+	if _, ok := r.prExists[n]; ok {
+		log = logr.Debugf
+	}
+	if r.prExists == nil {
+		r.prExists = map[int]int{}
+	}
+	r.prExists[n] = r.Daemon.prPolls
+	log("%s/%s#%d: someone else's open PR from %s to %s stands, so GitHub won't open the task's: nothing is written, and the task waits at %s till a poll lists a PR changed: %v",
+		a.Owner, a.Repo, n, branch, prBase, state.Verifying, err)
 }
 
 // prPushOK reports whether the head may be pushed over tip, the task's
