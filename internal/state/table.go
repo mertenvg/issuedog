@@ -63,11 +63,13 @@ const (
 	TriggerVerifierQuestion       Trigger = "verifier-question"
 	TriggerVerified               Trigger = "verified"
 	TriggerPersonPushed           Trigger = "person-pushed"
+	TriggerNothingToMerge         Trigger = "nothing-to-merge"
 	TriggerReviewChanges          Trigger = "review-changes"
 	TriggerNewHead                Trigger = "new-head"
 	TriggerMainMoved              Trigger = "main-moved"
 	TriggerMerged                 Trigger = "merged"
 	TriggerPRClosed               Trigger = "pr-closed"
+	TriggerPRReopened             Trigger = "pr-reopened"
 	TriggerHandoffDone            Trigger = "handoff-done"
 	TriggerHumanTaskDone          Trigger = "human-task-done"
 	TriggerHold                   Trigger = "hold"
@@ -147,11 +149,13 @@ var table = []Row{
 	{Verifying, Clarifying, AnyTask, TriggerVerifierQuestion},
 	{Verifying, PROpen, AnyTask, TriggerVerified},
 	{Verifying, PROpen, AnyTask, TriggerPersonPushed},
+	{Verifying, NeedsHuman, AnyTask, TriggerNothingToMerge},
 	{PROpen, InProgress, AnyTask, TriggerReviewChanges},
 	{PROpen, Verifying, AnyTask, TriggerNewHead},
 	{PROpen, PROpen, AnyTask, TriggerMainMoved},
 	{PROpen, Closed, AnyTask, TriggerMerged},
 	{PROpen, NeedsHuman, AnyTask, TriggerPRClosed},
+	{NeedsHuman, PROpen, AnyTask, TriggerPRReopened},
 	{NeedsHuman, Ready, AnyTask, TriggerHandoffDone},
 	{NeedsHuman, Closed, ClassHumanTask, TriggerHumanTaskDone},
 	{AnyOpen, Held, All, TriggerHold},

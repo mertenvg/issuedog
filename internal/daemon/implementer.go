@@ -300,6 +300,7 @@ func implementerPreamble(c *config.Config, all []interviewerRound, target, dropp
 		"- Never touch a protected path: " + strings.Join(paths, ", ") + ". A change that needs one is an owner action.",
 		"- `commits` needs at least one commit past the commit your checkout started at. Uncommitted work doesn't count.",
 		"- " + asked + fmt.Sprintf(" At most %d questions in a round, each with 2 to 4 options.", c.Loop.MaxQuestionsPerRound),
-		fmt.Sprintf("- The comment issuedog posts from your output, its PR title and summary, is at most %d characters.", maxText-textRoom),
+		fmt.Sprintf("- The comment issuedog posts from your output, its PR title and summary, is at most %d characters. "+
+			"They count twice: once as shown, and once as kept, compressed, in a marker.", maxText-textRoom),
 	}, "\n\n")
 }

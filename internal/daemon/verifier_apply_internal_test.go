@@ -241,7 +241,9 @@ func TestCheckVerifier(t *testing.T) {
 	roomFor := func(f verifierFacts) int {
 		return maxText - textRoom - textLen(changesComment(verifierOutput{Verdict: verdictRequestChanges, Findings: []verifierFinding{{Criterion: "c", Class: "criterion", Detail: "x"}}}, f)) + 1
 	}
-	passRoom := maxText - textRoom - textLen(renderPass("abc", ""+"x", nil)) + 1
+	// passRoom is how long a pass's notes fit at exactly the limit, with
+	// their marker, and passOver the comment's length with one more.
+	passRoom, passOver := passFit(t, "abc", nil)
 	withDetail := func(n int) verifierOutput {
 		return verifierOutput{Verdict: verdictRequestChanges, Findings: []verifierFinding{{Criterion: "c", Class: "criterion", Detail: long(n)}}}
 	}
@@ -258,7 +260,7 @@ func TestCheckVerifier(t *testing.T) {
 		{"a pass with questions", verifierOutput{Verdict: verdictPass, Notes: "n", Questions: []interviewQuestion{question}}, f, []string{"rule outcome: pass has no questions"}},
 		{"a pass at the limit", verifierOutput{Verdict: verdictPass, Notes: long(passRoom)}, f, nil},
 		{"a pass past the limit", verifierOutput{Verdict: verdictPass, Notes: long(passRoom + 1)}, f,
-			[]string{fmt.Sprintf("rule length: the comment is %d characters, over %d", maxText-textRoom+1, maxText-textRoom)}},
+			[]string{fmt.Sprintf("rule length: the comment is %d characters, over %d", passOver, maxText-textRoom)}},
 		{"findings", verifierOutput{Verdict: verdictRequestChanges, Findings: []verifierFinding{finding}}, f, nil},
 		{"findings with an empty questions", verifierOutput{Verdict: verdictRequestChanges, Findings: []verifierFinding{finding}, Questions: []interviewQuestion{}}, f, nil},
 		{"findings with candidates that break a rule", verifierOutput{Verdict: verdictRequestChanges, Findings: []verifierFinding{finding},
@@ -430,6 +432,7 @@ func TestRunMovedVerifier(t *testing.T) {
 	}{
 		{"the move back", "from=verifying to=in-progress attempt=1 run=run1 head=h", state.InProgress, state.TriggerFindings, true},
 		{"the hand-off", "from=verifying to=needs-human run=run1", state.NeedsHuman, state.TriggerAttemptCap, true},
+		{"the PR step's move on its pass", "from=verifying to=pr-open run=run1 head=h pr=3 seen=5", state.PROpen, state.TriggerVerified, true},
 		{"another run's", "from=verifying to=in-progress attempt=1 run=run2 head=h", "", "", false},
 		{"the checks' move", "from=verifying to=in-progress attempt=1 event=v5 head=h", "", "", false},
 	} {

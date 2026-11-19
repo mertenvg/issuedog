@@ -27,15 +27,17 @@ import (
 //     item's open descendants from the parents in all the snapshots held.
 //
 // Assignment (§9.6, #191) takes the same items, from the same cache, and
-// assigns for any kind (assign.go), a hold among them (#192). A finished
-// story's item (#278) is the one both keep only while it stands, which
-// they judge on each pass from what the poll listed
-// (Daemon.digestDoneStands).
+// assigns for any kind (assign.go), a hold among them (#192), but a pull
+// request's, which assigns its PR (waitItem.AssignPR). A finished story's
+// item (#278) and a pull request's are the ones both keep only while they
+// stand, which they judge on each pass from what the poll listed
+// (Daemon.digestDoneStands, Daemon.prItemStands).
 //
 // Which text is whose (SPEC §9.4): an item's Title is raw, and the
-// digest's renderer (digestRenderTitle) escapes it. No line's Text is raw:
-// each is the App's, either this file's own words or copied from the App's
-// own clean comment (waitLine.Copied). A hold's trigger line
+// digest's renderer (digestRenderTitle) escapes it. No line's Text is raw
+// but a pull request's title (waitLine.PR), which it escapes the same way:
+// each other is the App's, either this file's own words or copied from the
+// App's own clean comment (waitLine.Copied). A hold's trigger line
 // (waitLine.Hold) has no Text: its trigger's logins and title are raw, and
 // digestRenderHold escapes them.
 
@@ -44,8 +46,9 @@ import (
 // discussion holds (#192), then approvals, then follow-ups waiting for
 // their approval (SPEC §10.2), then questions, then human tasks (#287) and
 // hand-offs, then flags, then finished stories (#278). A plan's approval
-// (#270) ranks as an approval, and a hand-off as a human task: each is a
-// kind of its own only for its key and its name.
+// (#270) and a pull request's review rank as an approval, and a hand-off
+// and a task stalled at verifying as a human task: each is a kind of its
+// own only for its key and its name.
 type waitKind int
 
 const (
@@ -59,25 +62,29 @@ const (
 	waitDone
 	waitHandoff
 	waitFollowUp
+	waitPR
+	waitStalled
 )
 
 // rank is k's place in SPEC §9.4's order of kinds, lowest first: a plan's
-// approval is an approval's, a follow-up's comes after an approval's and
-// before a question's, a human task's and a hand-off's after a question's
-// and before a flag's (#287), a flag's after that, and a finished story's
-// after every other kind's (#278), as story verification unblocks no other
-// issue. Any other kind ranks by its own value, so a kind appended later,
-// unless it's mapped here, ranks after finished stories: each after
-// waitFollowUp is above waitDone's rank.
+// approval and a pull request's are an approval's, as a PR waits for the
+// owner's yes to finished work, a follow-up's comes after an approval's
+// and before a question's, a human task's, a hand-off's and a stalled
+// task's after a question's and before a flag's (#287), as each is an
+// owner action a task waits on, a flag's after that, and a finished
+// story's after every other kind's (#278), as story verification unblocks
+// no other issue. Any other kind ranks by its own value, so a kind
+// appended later, unless it's mapped here, ranks after finished stories:
+// each after waitStalled is above waitDone's rank.
 func (k waitKind) rank() int {
 	switch k {
-	case waitPlanApproval:
+	case waitPlanApproval, waitPR:
 		return int(waitApproval)
 	case waitFollowUp:
 		return int(waitApproval) + 1
 	case waitQuestion:
 		return int(waitApproval) + 2
-	case waitHuman, waitHandoff:
+	case waitHuman, waitHandoff, waitStalled:
 		return int(waitApproval) + 3
 	case waitFlag:
 		return int(waitApproval) + 4
@@ -109,6 +116,10 @@ func (k waitKind) String() string {
 		return "handoff"
 	case waitFollowUp:
 		return "followup"
+	case waitPR:
+		return "pr"
+	case waitStalled:
+		return "stalled"
 	}
 	return "kind" + strconv.Itoa(int(k))
 }
@@ -126,8 +137,11 @@ type waitItem struct {
 	// human-<n> for a human task's (#287), done-<n> for a finished
 	// story's (#278) or followup-<n> for a follow-up's (SPEC §10.2), of
 	// each of which an issue has one at most, or
-	// handoff-<n>-<comment id> for a hand-off's, naming its comment. A hold
-	// is announced by other keys than this one (waitItem.news).
+	// handoff-<n>-<comment id> for a hand-off's, naming its comment, or
+	// pr-<n>-<PR number> for a pull request's, naming the PR, or
+	// stalled-<n>-<run> for a task stalled at verifying, naming the run of
+	// the pass that moved it out once already. A hold is announced by
+	// other keys than this one (waitItem.news).
 	Key string
 	// Title is the issue's title. It's raw: anyone may have written it, so
 	// the digest's renderer runs it through inline and github.Escape.
@@ -136,7 +150,7 @@ type waitItem struct {
 	// first and marked, and how to answer. None is raw (waitLine).
 	Lines []waitLine
 	// Link is where to answer: the comment that asks, or the issue itself
-	// when that's in the body (waitLink).
+	// when that's in the body (waitLink), or a pull request's PR (prLink).
 	Link string
 	// Priority is the issue's priority:pN, 0 to 3, or 2 with none.
 	Priority int
@@ -168,6 +182,11 @@ type waitItem struct {
 	// was closed (closerErrPostedClosed): the digest lists it, but it
 	// assigns nobody (assign.go). It's unset for every other item.
 	Unassigned bool
+	// AssignPR is a pull request item's PR (waitPR), which assignment
+	// assigns instead of the issue (assignPRs), and which the item stands
+	// on only while the poll lists it open (Daemon.prItemStands). It's 0
+	// for every other item.
+	AssignPR int
 	// Kept is what the digest's body showed of an item read back from it
 	// after a restart (digestkept.go), which is rendered as it was, and nil
 	// for every item waitFind finds. A kept item has no Key, Title, Lines,
@@ -203,6 +222,11 @@ type waitLine struct {
 	// Text is "": digestRenderHold renders the trigger, whose By, Of and
 	// Title are raw, and escapes them.
 	Hold *holdItemTrigger
+	// PR is the PR a pull request item's first line names, or 0 for any
+	// other line. Its Text is then the PR's title, which is raw: anyone
+	// with write access may have written it, so the digest's renderer
+	// escapes it as an item's Title (digestRenderTitle).
+	PR int
 }
 
 // waitInput is what waitFind reads of one issue.
@@ -238,6 +262,10 @@ type waitInput struct {
 	// doesn't hold or has no clean addendum for it, and for any other
 	// issue (Daemon.digestCacheSet).
 	Addendum int64
+	// PR is S's PR, the pr= of its latest move into pr-open that names
+	// one (taskPR), as the poll last listed it, if the App opened it, or
+	// nil (Daemon.prOfDigest).
+	PR *listedPR
 }
 
 // waitFind returns what on in.S waits on the owner (SPEC §9.4), in no
@@ -271,6 +299,17 @@ type waitInput struct {
 //   - at needs-human, a hand-off, on a task with one waiting
 //     (latestHandoff), whatever blocks it. It links the hand-off comment,
 //     which says what to do (waitHandoffLines);
+//   - at pr-open, a pull request (SPEC §9.4), when its PR, in.PR, is
+//     listed open. It names the PR and its title, and links the PR
+//     (waitPRLines), and assignment assigns the PR, not the issue
+//     (waitItem.AssignPR). A PR that merges or closes changes nothing on
+//     the issue, so the digest and assignment judge the item again on each
+//     pass (Daemon.prItemStands);
+//   - at verifying, a stalled task, when the pass on its head moved it out
+//     of verifying once already, and a later move put it back, as a stage
+//     set by hand, on that head (waitStalledRun): the pass moves it no
+//     more, and it holds the worker, so nothing else is picked till the
+//     owner acts (waitStalledLines). It links the issue;
 //   - at planned, a finished story (#278), when the record of its approved
 //     plan revision's children stands (waitDoneChildren), whether or not
 //     they're closed: the digest and assignment judge that on each pass
@@ -351,6 +390,18 @@ func waitFind(in waitInput) ([]waitItem, error) {
 		items[len(items)-1].Key = fmt.Sprintf("%s-%d", waitKeyPrefix[waitHuman], s.Number)
 	case handoffWaits:
 		add(waitHandoff, strconv.FormatInt(handoff, 10), handoff, waitHandoffLines(s, handoff))
+	case is.Stage == state.PROpen && in.PR != nil && in.PR.Open:
+		// A task has one PR at a time: its key is pr-<n>-<PR number>.
+		pr := in.PR.Number
+		add(waitPR, strconv.Itoa(pr), state.BodyID, waitPRLines(*in.PR))
+		it := &items[len(items)-1]
+		it.Link, it.AssignPR = prLink(in.Owner, in.Repo, pr), pr
+	case is.Stage == state.Verifying:
+		run, to, ok := waitStalledRun(is)
+		if !ok {
+			break
+		}
+		add(waitStalled, run, state.BodyID, waitStalledLines(run, to))
 	case is.Stage == state.Planned:
 		children, err := waitDoneChildren(in, is)
 		if err != nil {
@@ -385,7 +436,8 @@ func waitFind(in waitInput) ([]waitItem, error) {
 
 // waitKeyPrefix starts each kind's key.
 var waitKeyPrefix = map[waitKind]string{waitError: "err", waitHold: "hold", waitApproval: "rev", waitQuestion: "q", waitFlag: "flag",
-	waitPlanApproval: "plan", waitHuman: "human", waitDone: "done", waitHandoff: "handoff", waitFollowUp: "followup"}
+	waitPlanApproval: "plan", waitHuman: "human", waitDone: "done", waitHandoff: "handoff", waitFollowUp: "followup", waitPR: "pr",
+	waitStalled: "stalled"}
 
 // waitLink is the link to comment id on issue n, or to the issue itself
 // when id is state.BodyID: an error in the body (#155's verify).
@@ -637,18 +689,31 @@ func waitGoalDone(body string) (goal, done string) {
 // fields, and may hold a line like a field's in a fence, so for that
 // hand-off the fields are read from its last Goal line on. Or it's the
 // verifier's runs on the task's head failing (verifierCapMove), whose
-// hand-off always says why. With either
+// hand-off always says why. Or it's the verifier passing a head that
+// changes nothing on main, so it gets no PR (nothingHandoffMove), which
+// verifyCapMove leaves out, though both are keyed run=. With either
 // field not found, as for a format that has changed, a line says to see
-// the hand-off instead.
+// the hand-off instead. Or it's the task's PR, closed without merging, or
+// reopened after a close by someone who isn't trusted (prClosedMove,
+// prClosedByReopen). The last line says how to end it, as the hand-off
+// does: for a head that changes nothing, that /done or a 👍 is for a
+// change, and closing the issue for none (nothingHandoffFinish), so a 👍
+// out of habit isn't taken for a yes; for the PR's, that reopening it, or
+// closing and reopening it for an untrusted reopen, sends the task back to
+// pr-open, /done or a 👍 starts a new round, or the issue can be closed.
 func waitHandoffLines(s *github.Snapshot, id int64) []waitLine {
 	body := waitBody(s, id)
 	fields := body
 	why := "the implementer needs an action only you can do."
+	finish := "When it's done, reply `/done` on the issue or react 👍 to the hand-off."
 	switch markers := github.ParseMarkers(body); {
 	case slices.ContainsFunc(markers, capHandoffMove) && capHandoffSaysWhy(body):
 		why = "the task's `loop.max_attempts` attempts in its round failed, the last a failed implementer run, and the hand-off says why."
 	case slices.ContainsFunc(markers, capHandoffMove):
 		why = "the task's `loop.max_attempts` attempts in its round failed."
+	case slices.ContainsFunc(markers, nothingHandoffMove):
+		why = "the verifier passed a head that changes nothing on `main`, so it gets no PR."
+		finish = "If something needs to change, reply `/done` on the issue or react 👍 to the hand-off, and the task goes back to `ready`. If not, close the issue."
 	case slices.ContainsFunc(markers, verifyCapMove):
 		why = "the task's `loop.max_attempts` attempts in its round failed, the last at verify, and the hand-off has the findings."
 		if i := strings.LastIndex(body, "\n**Goal:** "); i >= 0 {
@@ -656,6 +721,12 @@ func waitHandoffLines(s *github.Snapshot, id int64) []waitLine {
 		}
 	case slices.ContainsFunc(markers, verifierCapMove):
 		why = "the verifier's runs on this head failed, and the hand-off says why."
+	case slices.ContainsFunc(markers, func(m github.Marker) bool { return prClosedMove(m) && prClosedByReopen(m) }):
+		why = "the task's PR was reopened after a close by someone who isn't trusted."
+		finish = "Close and reopen the PR yourself to send the task back to `pr-open`, or reply `/done` on the issue or react 👍 to the hand-off for a new round, or close the issue."
+	case slices.ContainsFunc(markers, prClosedMove):
+		why = "the task's PR was closed without merging."
+		finish = "Reopen the PR to send the task back to `pr-open`, or reply `/done` on the issue or react 👍 to the hand-off for a new round, or close the issue."
 	}
 	lines := []waitLine{{Text: "A hand-off waits for you: " + why}}
 	if goal, done := waitGoalDone(fields); goal != "" && done != "" {
@@ -663,7 +734,85 @@ func waitHandoffLines(s *github.Snapshot, id int64) []waitLine {
 	} else {
 		lines = append(lines, waitLine{Text: "See the hand-off for what to do."})
 	}
-	return append(lines, waitLine{Text: "When it's done, reply `/done` on the issue or react 👍 to the hand-off."})
+	return append(lines, waitLine{Text: finish})
+}
+
+// waitPRLines returns the lines of a pull request item (SPEC §9.4) for
+// p, a task's PR the poll lists open: the PR and its title, raw
+// (waitLine.PR), then that it waits for the owner's review, that merging
+// it closes the task, and that closing it hands the task back to the
+// owner.
+func waitPRLines(p listedPR) []waitLine {
+	return []waitLine{
+		{Text: p.Title, PR: p.Number},
+		{Text: "It waits for your review. Merging it closes this task, and closing it without merging hands the task back to you."},
+	}
+}
+
+// waitStalledRun reports whether task is, at verifying, is stalled there
+// (SPEC §9.4): its latest clean pass of the verifier's on its head, the
+// head= of its latest move into verifying that names one (stalledHead),
+// or with none named, on any head, has moved it out of verifying once
+// already, by the move keyed by the pass's run (prMove, prNothingMove),
+// and it's back since. That key moves it once (SPEC §5.2), so the PR step
+// waits (prWant), and the task holds the worker, so nothing else is
+// picked. It returns the pass's run, and the stage that move went to.
+func waitStalledRun(is state.Issue) (string, state.Stage, bool) {
+	if is.Stage != state.Verifying {
+		return "", "", false
+	}
+	head, run := stalledHead(is), ""
+	for _, m := range is.Markers {
+		if m.Kind == verifyKind && m.Fields["verdict"] == verdictPass && m.Fields["head"] != "" && (head == "" || m.Fields["head"] == head) {
+			run = m.Fields["run"]
+		}
+	}
+	if run == "" {
+		return "", "", false
+	}
+	var to state.Stage
+	for _, m := range is.Markers {
+		if m.Kind == "transition" && m.Fields["run"] == run && state.Stage(m.Fields["from"]) == state.Verifying {
+			to = state.Stage(m.Fields["to"])
+		}
+	}
+	return run, to, to != ""
+}
+
+// stalledHead is the head= of task is's latest move into verifying that
+// names one. A move by hand, or out of held or an interview, names none,
+// so it looks through to the head the task's round is on: a pass on an
+// earlier round's head never stalls a task on a later one.
+func stalledHead(is state.Issue) string {
+	head := ""
+	for _, m := range is.Markers {
+		if m.Kind == "transition" && state.Stage(m.Fields["to"]) == state.Verifying && m.Fields["head"] != "" {
+			head = m.Fields["head"]
+		}
+	}
+	return head
+}
+
+// waitStalledLines are a stalled task's lines (SPEC §9.4): that the pass
+// of run run moved it out of verifying, to to, once already, so it moves
+// it no more, and that it holds the worker, then what the owner can do.
+// At pr-open: set stage:pr-open back to wait on its PR, or stage:ready
+// for a new round. At needs-human, a stage set back by hand has no
+// hand-off to answer, so: close the issue if nothing needs to change, or
+// set stage:ready for a new round. A pushed head isn't one of them: it
+// moves nothing at verifying (SPEC §7.2's "a head a person pushed" isn't
+// built). Every line is this file's own words, with only a run ID from an
+// App marker and stage names in them.
+func waitStalledLines(run string, to state.Stage) []waitLine {
+	act := fmt.Sprintf("Set `stage:%s` back to wait on its PR, or set `stage:%s` for a new round.", to, state.Ready)
+	if to != state.PROpen {
+		act = fmt.Sprintf("Close this issue if nothing needs to change, or set `stage:%s` for a new round.", state.Ready)
+	}
+	return []waitLine{
+		{Text: fmt.Sprintf("This task is back at `%s`, but its pass, run `%s`, moved it to `%s` once already, so the pass moves it no more. It holds the worker, so no other task is picked.",
+			state.Verifying, run, to)},
+		{Text: act},
+	}
 }
 
 // waitFollowUpLines returns the lines of a follow-up waiting at intake for

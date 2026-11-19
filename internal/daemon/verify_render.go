@@ -166,10 +166,12 @@ func renderVerifyCapHandoff(attempts int, findings string, n int, notify []strin
 
 // verifyCapMove reports whether m is the verify cap's move of a task to
 // needs-human (verifyFindings, Verifier.Apply): verifying → needs-human,
-// keyed as the move back on findings would be (verifyKeyed).
+// keyed as the move back on findings would be (verifyKeyed), and not the
+// hand-off for a head that changes nothing, which is keyed run= too
+// (nothingHandoffMove).
 func verifyCapMove(m github.Marker) bool {
 	return m.Kind == "transition" && state.Stage(m.Fields["from"]) == state.Verifying &&
-		state.Stage(m.Fields["to"]) == state.NeedsHuman && verifyKeyed(m)
+		state.Stage(m.Fields["to"]) == state.NeedsHuman && verifyKeyed(m) && !nothingHandoffMove(m)
 }
 
 // findingSection is f's section of the findings comment: its heading, by

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -147,8 +148,8 @@ func TestVerifierCandidatesThroughARestart(t *testing.T) {
 		}
 	}
 	ms := github.ParseMarkers(body)
-	if len(ms) != 2 || ms[0].Kind != "verify" || ms[0].Fields["run"] != v.leaseOf("1").RunID || ms[1].Kind != "verify-data" {
-		t.Errorf("the pass comment's markers = %+v; want the run's verify, then verify-data", ms)
+	if len(ms) != 3 || ms[0].Kind != "verify" || ms[0].Fields["run"] != v.leaseOf("1").RunID || ms[1].Kind != "verify-notes" || ms[2].Kind != "verify-data" {
+		t.Errorf("the pass comment's markers = %+v; want the run's verify, then verify-notes, then verify-data", ms)
 	}
 	for _, is := range f.State().Issues {
 		if is.Number != n && !strings.Contains(is.Body, "<!-- issuedog:digest") {
@@ -163,9 +164,14 @@ func TestVerifierCandidatesThroughARestart(t *testing.T) {
 		t.Fatalf("the follow-ups = %+v; want #%d, found, and the first candidate's, filed", follow, filed)
 	}
 	// The pass after reads the follow-ups, lists them on the digest and
-	// assigns notify to them (SPEC §9.4, §9.6), and the one after that
-	// reads those writes.
-	v.passes(2)
+	// assigns notify to them (SPEC §9.4, §9.6), and with the filed record
+	// standing opens the task's PR and moves the task to pr-open, the one
+	// after that reads those writes, and lists the PR on the digest and
+	// assigns notify to it, and the one after that reads those.
+	v.passes(3)
+	if prs := f.State().PRs; len(prs) != 1 || !slices.Equal(assignees(f, prs[0].Number), []string{wholeRunOwner}) {
+		t.Errorf("the PRs = %+v; want one, assigned to %s", prs, wholeRunOwner)
+	}
 	reads := issueReads(f)
 	quiet := []string{"first", "second"}
 	for _, step := range quiet {

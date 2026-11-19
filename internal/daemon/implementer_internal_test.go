@@ -36,7 +36,8 @@ func TestImplementerPreamble(t *testing.T) {
 		"- Questions so far on this issue: round 1 (Q1.1–1.2), round 2 (Q2.1). A question round now is round 3. " +
 			"At most 4 questions in a round, each with 2 to 4 options.",
 		"- `commits` needs at least one commit past the commit your checkout started at.",
-		"- The comment issuedog posts from your output, its PR title and summary, is at most 64512 characters.",
+		"- The comment issuedog posts from your output, its PR title and summary, is at most 64512 characters. " +
+			"They count twice: once as shown, and once as kept, compressed, in a marker.",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the preamble =\n%s\nwant it to say\n%s", got, want)

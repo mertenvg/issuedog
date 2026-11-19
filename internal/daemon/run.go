@@ -304,6 +304,17 @@ type Runs struct {
 	// issue number, so they don't run again (verifyTask), and a verifier
 	// run reads what they gave (checksPassed).
 	passed map[int]checksPassed
+
+	// prWarned is the key of the last warning the PR step logged for each
+	// task, by issue number, so a wait that lasts is warned of once
+	// (prWarnOnce).
+	prWarned map[int]string
+	// prExists is, for each task whose PR GitHub wouldn't open as an open
+	// one someone else opened from its branch to main stands, by issue
+	// number, the count of polls that listed a pull request changed
+	// (Daemon.prPolls) when it last tried, so it tries again only once a
+	// poll lists one changed (openPR).
+	prExists map[int]int
 }
 
 // checksPassed is a pass of SPEC §10.1's checks: the head and main's commit
@@ -328,7 +339,8 @@ func (p checksPassed) holds(head, main string) bool { return p.Head == head && p
 // comes after the other stages and triage (SPEC §8.1, step 4). If none ran
 // either, it runs SPEC §10.1's checks on the first task at verifying, by
 // priority then number, whose head hasn't passed them, or a verifier run
-// on one whose head has, with no pass of the verifier's yet (verifyTask).
+// on one whose head has, with no pass of the verifier's yet, or the PR step
+// on one with a pass that has a write to make (verifyTask).
 // Neither touches the issue resume applied a result to, whose snapshot is
 // from before it. If it ran none either, it picks the next ready task,
 // moves it to in-progress and starts its run (pickTask), unless a task

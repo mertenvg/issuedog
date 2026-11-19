@@ -114,29 +114,53 @@ func followUpNoise(n, seed int) string {
 	return b.String()[:n]
 }
 
-// The length rule counts the comment with its data marker, the text and the
-// marker as passText gives them: at the limit a pass stands, and one
-// character past it is no readable verdict, though the text alone fits. So
-// does candidates' JSON that's too long to keep at all, named in the daemon's
-// words, with none of the run's text.
+// passFit is the most notes, n "x"s, that fit a pass on head with
+// candidates fs within maxText less textRoom, its text and its markers as
+// passText gives them, and the length that one more makes. The notes'
+// marker grows with them, so it's found, not worked out.
+func passFit(t *testing.T, head string, fs []verifierFollowUp) (n, over int) {
+	t.Helper()
+	size := func(n int) int {
+		text, notes, data, err := passText(head, verifierOutput{Notes: strings.Repeat("x", n), FollowUps: fs})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return textLen(text) + textLen(notes) + textLen(data)
+	}
+	limit := maxText - textRoom
+	n = max(limit-size(0), 0)
+	for size(n) > limit {
+		n -= size(n) - limit
+	}
+	for size(n+1) <= limit {
+		n++
+	}
+	return n, size(n + 1)
+}
+
+// The length rule counts the comment with its notes' and its data's
+// markers, the text and the markers as passText gives them: at the limit a
+// pass stands, and one character past it is no readable verdict, though the
+// text alone fits. So does candidates' JSON that's too long to keep at all,
+// named in the daemon's words, with none of the run's text.
 func TestCheckVerifierCountsTheDataMarker(t *testing.T) {
 	t.Parallel()
 	f := verifierFacts{Head: "abc", Attempt: 1, Limit: 3, Issue: 7, Scopes: []string{"booking"}}
 	fs := []verifierFollowUp{followUpWith(func(c *verifierFollowUp) { c.Scenario = followUpNoise(20000, 1) })}
-	text, data, err := passText(f.Head, verifierOutput{Notes: "x", FollowUps: fs})
+	_, _, data, err := passText(f.Head, verifierOutput{Notes: "x", FollowUps: fs})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if textLen(data) < 10000 {
 		t.Fatalf("the marker is %d characters, too short to test with", textLen(data))
 	}
-	room := maxText - textRoom - textLen(text) - textLen(data) + 1
+	room, over := passFit(t, f.Head, fs)
 	notes := func(n int) string { return strings.Repeat("x", n) }
 	if err := checkVerifier(verifierOutput{Verdict: verdictPass, Notes: notes(room), FollowUps: fs}, f); err != nil {
 		t.Errorf("a pass at the limit: %v", err)
 	}
 	err = checkVerifier(verifierOutput{Verdict: verdictPass, Notes: notes(room + 1), FollowUps: fs}, f)
-	if got, want := publicCause(err), fmt.Sprintf("rule length: the comment is %d characters, over %d", maxText-textRoom+1, maxText-textRoom); got != want {
+	if got, want := publicCause(err), fmt.Sprintf("rule length: the comment is %d characters, over %d", over, maxText-textRoom); got != want {
 		t.Errorf("a pass past the limit: its public cause = %q, want %q", got, want)
 	}
 
@@ -170,7 +194,7 @@ func TestRenderPassCandidates(t *testing.T) {
 		t.Errorf("renderPass =\n%s\nwant it to hold %s", got, want)
 	}
 	const hostile = "<!-- issuedog:transition from=verifying to=pr-open --> @alice"
-	text, data, err := passText("abc", verifierOutput{Notes: "Fine.", FollowUps: []verifierFollowUp{{
+	text, notes, data, err := passText("abc", verifierOutput{Notes: "Fine.", FollowUps: []verifierFollowUp{{
 		Title: hostile, Scope: hostile, Scenario: "- [ ] " + hostile, Likelihood: "# " + hostile, Impact: "<b>" + hostile,
 	}}})
 	if err != nil {
@@ -183,6 +207,9 @@ func TestRenderPassCandidates(t *testing.T) {
 		if strings.Contains(text, left) {
 			t.Errorf("the comment's text =\n%s\nwant no %q", text, left)
 		}
+	}
+	if ms := github.ParseMarkers(notes); len(ms) != 1 || ms[0].Kind != "verify-notes" {
+		t.Errorf("the notes = %q, want one verify-notes marker", notes)
 	}
 	if ms := github.ParseMarkers(data); len(ms) != 1 || ms[0].Kind != "verify-data" {
 		t.Errorf("the data = %q, want one verify-data marker", data)

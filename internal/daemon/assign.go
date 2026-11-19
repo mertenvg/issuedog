@@ -21,12 +21,14 @@ import (
 // list (Daemon.digestCache), which Iterate fills whether or not the digest
 // is on, so the two never disagree. It holds no item kind of its own:
 // any item on an issue assigns it, so a kind the list gains, such as
-// #192's holds, assigns with no change here. The one item that doesn't is
-// an open closer state error posted while its issue was closed
+// #192's holds, assigns with no change here. The items that don't are an
+// open closer state error posted while its issue was closed
 // (waitItem.Unassigned), which assigns nobody, as on the closed issue
-// (closererr.go). It takes the items that stand on the pass, as the digest
-// does (Daemon.digestCacheOf), which leaves out a finished story's while a
-// child is open (#278).
+// (closererr.go), and a pull request's, which assigns its PR instead
+// (waitItem.AssignPR, assignPRs). It takes the items that stand on the
+// pass, as the digest does (Daemon.digestCacheOf), which leaves out a
+// finished story's while a child is open (#278), and a pull request's
+// once its PR merges or closes.
 //
 // A pipeline issue, here (assignPipeline), is an open issue the daemon
 // holds a snapshot of (never the digest, which has none) with a stage
@@ -133,7 +135,90 @@ func (d *Daemon) assignPass(ctx context.Context, again map[int]bool) error {
 			}
 		}
 	}
+	if err := d.assignPRs(ctx, notify); err != nil {
+		errs = append(errs, err)
+	}
 	return errors.Join(errs...)
+}
+
+// assignPRs keeps the assignees of each PR the App opened (SPEC §9.6's
+// pull request row), as the poll last listed it, or a write to it answered
+// (Daemon.prs): exactly the notify users while a pull request item that
+// stands names it (waitItem.AssignPR, digestCacheOf), which assigns the
+// PR, never its task (assignIssue). Once no such item names a PR it
+// assigned, as when the PR merges or closes, or its task leaves pr-open,
+// the notify users it shows are unassigned from it, once
+// (Daemon.prManaged): anyone else, and any later change, are left alone,
+// as for an issue that leaves the pipeline. That memory is the start's,
+// so a PR whose item ended while no daemon ran keeps them. A PR whose
+// task's step 1 failed keeps its item, as the task keeps its last items,
+// so its assignees stay too. Only the difference is written, removals
+// first, with logins GitHub won't assign left out of an add, as for an
+// issue (assignDrop), and each write's answer is kept, so an unchanged
+// poll makes no request. A failed write is the pass's error, and the
+// rest carry on: the next pass writes again if the listing still
+// differs.
+func (d *Daemon) assignPRs(ctx context.Context, notify []string) error {
+	want := map[int]bool{}
+	for _, n := range slices.Sorted(maps.Keys(d.digestCache)) {
+		for _, it := range d.digestCacheOf(n) {
+			if it.AssignPR != 0 {
+				want[it.AssignPR] = true
+			}
+		}
+	}
+	var errs []error
+	for _, n := range slices.Sorted(maps.Keys(d.prs)) {
+		p := d.prs[n]
+		var add, remove []string
+		switch {
+		case want[n]:
+			if d.prManaged == nil {
+				d.prManaged = map[int]bool{}
+			}
+			d.prManaged[n] = true
+			remove = assignMinus(p.Assignees, notify)
+			add = slices.DeleteFunc(assignMinus(notify, p.Assignees), func(l string) bool { return d.assignDropped[strings.ToLower(l)] })
+		case d.prManaged[n]:
+			remove = slices.DeleteFunc(slices.Clone(p.Assignees), func(l string) bool { return !assignHas(notify, l) })
+		default:
+			continue
+		}
+		if err := d.assignPR(ctx, p, add, remove); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if !want[n] {
+			delete(d.prManaged, n)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// assignPR unassigns remove from PR p, then assigns add, each only if
+// any, and keeps p with the assignees GitHub answers with.
+func (d *Daemon) assignPR(ctx context.Context, p listedPR, add, remove []string) error {
+	a := d.Step.Applier
+	if len(remove) > 0 {
+		got, err := a.Client.RemoveAssignees(ctx, a.Owner, a.Repo, p.Number, remove)
+		if err != nil {
+			return fmt.Errorf("the assignees of PR %s/%s#%d: %w", a.Owner, a.Repo, p.Number, err)
+		}
+		logr.Infof("unassigned %s from PR %s/%s#%d", strings.Join(remove, ", "), a.Owner, a.Repo, p.Number)
+		p.Assignees = got
+		d.prs[p.Number] = p
+	}
+	if len(add) > 0 {
+		got, err := a.Client.AddAssignees(ctx, a.Owner, a.Repo, p.Number, add)
+		if err != nil {
+			return fmt.Errorf("the assignees of PR %s/%s#%d: %w", a.Owner, a.Repo, p.Number, err)
+		}
+		logr.Infof("assigned %s to PR %s/%s#%d", strings.Join(add, ", "), a.Owner, a.Repo, p.Number)
+		p.Assignees = got
+		d.prs[p.Number] = p
+		d.assignDrop(p.Number, assignMinus(add, got))
+	}
+	return nil
 }
 
 // assignNotify returns config's notify users, without an empty login or
@@ -159,7 +244,7 @@ func (d *Daemon) assignNotify() []string {
 // assignIssue writes the difference between s's assignees and what they
 // should be (see the top of this file), and records whether s is managed.
 func (d *Daemon) assignIssue(ctx context.Context, s *github.Snapshot, notify []string) error {
-	n, items := s.Number, slices.ContainsFunc(d.digestCacheOf(s.Number), func(it waitItem) bool { return !it.Unassigned })
+	n, items := s.Number, slices.ContainsFunc(d.digestCacheOf(s.Number), func(it waitItem) bool { return !it.Unassigned && it.AssignPR == 0 })
 	pipeline := assignPipeline(s, d.Step.AppSlug, items)
 	var add, remove []string
 	switch {

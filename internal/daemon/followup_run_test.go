@@ -53,8 +53,12 @@ func filingFollowUps(f *githubtest.Fake) []githubtest.IssueState {
 // fields, says how to approve it, ends in the cc line and has its origin
 // last, then the record on the task, naming both. The pass after reads
 // what it wrote: the digest, #2, lists both follow-ups, and notify is
-// assigned to each. The pass after that reads those writes, and writes
-// nothing, and each unchanged pass after makes no request but 304s,
+// assigned to each, and with the record standing, the task's PR opens,
+// with its priority label, the head gets its check, and the task moves to
+// pr-open (pr_open.go). The pass after that reads those writes, and lists
+// the PR on the digest, announced, and assigns notify to it (prs.go). The
+// pass after that reads those, and writes nothing, and each unchanged
+// pass after makes no request but 304s,
 // writes nothing and starts no run. claude ran twice in
 // all, the implementer and the verifier, so no other Stage ran, triage, the
 // Unlabeled stage, included, on the follow-ups or anything else.
@@ -110,11 +114,15 @@ func TestFollowUpsWholeRun(t *testing.T) {
 	// The pass after reads the follow-ups, each waiting for its approval:
 	// the digest lists both, and notify is assigned to each, with no
 	// announcement, as each body's cc line mentioned notify (SPEC §9.4,
-	// §9.6).
+	// §9.6). It reads the record too, so the task's PR opens, the next
+	// issue's number, with its priority label, then the head's check, and
+	// the task's move to pr-open.
 	writes := len(f.Writes())
 	v.pass()
+	pr := issues + 3
 	if got, want := writesOf(f)[writes:], []string{"PATCH /issues/2", "POST /issues/" + strconv.Itoa(issues+1) + "/assignees",
-		"POST /issues/" + strconv.Itoa(issues+2) + "/assignees"}; !slices.Equal(got, want) {
+		"POST /issues/" + strconv.Itoa(issues+2) + "/assignees", "POST /pulls", "POST /issues/" + strconv.Itoa(pr) + "/labels",
+		"POST /check-runs", "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:verifying"}; !slices.Equal(got, want) {
 		t.Errorf("the pass after the filing wrote %q, want %q", got, want)
 	}
 	digest := f.State().Issues[1].Body
@@ -126,10 +134,24 @@ func TestFollowUpsWholeRun(t *testing.T) {
 			t.Errorf("follow-up #%d's assignees = %q; want %s", fu, got, wholeRunOwner)
 		}
 	}
+	// The pass after that reads the move to pr-open and the PR: the
+	// digest announces the PR's item, as the move has no cc line, and
+	// lists it, and notify is assigned to the PR (SPEC §9.4, §9.6).
+	writes = len(f.Writes())
+	v.pass()
+	if got, want := writesOf(f)[writes:], []string{"POST /issues/2/comments", "PATCH /issues/2", "POST /issues/" + strconv.Itoa(pr) + "/assignees"}; !slices.Equal(got, want) {
+		t.Errorf("the pass that reads the move to pr-open wrote %q, want %q", got, want)
+	}
+	if items := digestRunItems(f.State().Issues[1].Body); !slices.Contains(items, "#1 Pull request p1 1") {
+		t.Errorf("the digest lists %q; want the task's PR among them", items)
+	}
+	if got := assignees(f, pr); !slices.Equal(got, []string{wholeRunOwner}) {
+		t.Errorf("the PR's assignees = %q; want %s", got, wholeRunOwner)
+	}
 	writes = len(f.Writes())
 	v.pass()
 	if got := f.Writes()[writes:]; len(got) != 0 {
-		t.Errorf("the pass that reads the follow-ups again wrote %+v, want nothing", got)
+		t.Errorf("the pass that reads the PR's item and assignees wrote %+v, want nothing", got)
 	}
 	for _, step := range []string{"first", "second"} {
 		v.quietPass(step)

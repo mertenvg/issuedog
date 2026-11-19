@@ -28,9 +28,10 @@ const verifyKind = "verify"
 //
 // v is the format's version, and a reader refuses any other. data is the
 // candidates as a JSON array, with the schema's field names (markerData). A
-// run's result is scratch, so this is the only copy, and it goes right after
-// the comment's verify marker, whose run= it's read with. Only the App's
-// markers are read (readVerifyData).
+// run's result is scratch, so this is the only copy, and it goes after the
+// comment's verify marker, whose run= it's read with, and its verify-notes
+// marker (verifyNotesMarker). Only the App's markers are read
+// (readVerifyData).
 const (
 	verifyDataKind    = "verify-data"
 	verifyDataVersion = "1"
@@ -169,10 +170,11 @@ func changesComment(out verifierOutput, f verifierFacts) string {
 // A field the verdict leaves empty is as good as left out, so a pass with
 // "findings": [] is a pass (SPEC §12):
 //   - pass has no findings or questions, each follow-up candidate is whole
-//     (checkFollowUps), and its comment, its text and its verify-data marker
-//     together (passText), is within maxText less textRoom. So at the worst,
-//     candidates too long to keep make a pass no readable verdict, as notes
-//     too long do, and the task goes back through the verify loop.
+//     (checkFollowUps), and its comment, its text, its verify-notes marker
+//     and its verify-data marker together (passText), is within maxText
+//     less textRoom. So at the worst, candidates too long to keep make a
+//     pass no readable verdict, as notes too long do, and the task goes
+//     back through the verify loop.
 //   - request_changes has findings and no questions, each finding's
 //     criterion is on one line, and the comment it posts (changesComment),
 //     the findings or at the cap the hand-off, is within maxText less
@@ -200,10 +202,10 @@ func checkVerifier(out verifierOutput, f verifierFacts) error {
 			fail(ruleOutcome, "pass has no questions")
 		}
 		checkFollowUps(out.FollowUps, f.Scopes, fail)
-		text, data, err := passText(f.Head, out)
+		text, notes, data, err := passText(f.Head, out)
 		if err != nil {
 			fail(ruleLength, "%v", err)
-		} else if n := textLen(text) + textLen(data); n > maxText-textRoom {
+		} else if n := textLen(text) + textLen(notes) + textLen(data); n > maxText-textRoom {
 			fail(ruleLength, "the comment is %d characters, over %d", n, maxText-textRoom)
 		}
 	case verdictRequestChanges:
@@ -306,13 +308,16 @@ func verdictRun(is state.Issue, runID string) bool {
 // A pass is one comment naming the head the run judged, r.Start, its notes
 // and its follow-up candidates, escaped (passText), carrying the verify
 // marker: verdict=, run=, head=, the attempt= of the move into verifying, if
-// it names one, and the run's model=, effort= and ran=. With candidates, the
-// verify-data marker follows it, so they're on GitHub for the next pass's
-// step 1 to file (FollowUpsVisit), and a restart loses none. It files nothing
-// itself, so a failed create can't fail the run's apply, and moves nothing,
+// it names one, and the run's model=, effort= and ran=. The verify-notes
+// marker follows it, keeping the notes for the task's PR (SPEC §11.5). With
+// candidates, the verify-data marker follows that, so they're on GitHub for
+// the next pass's step 1 to file (FollowUpsVisit), and a restart loses
+// none. It files nothing itself, so a failed create can't fail the run's
+// apply, and moves nothing,
 // whatever the checks say next: the task waits at verifying, holding the
-// worker, until the PR is built (#622), and they run again when main moves or
-// the daemon restarts.
+// worker, and the PR step of a later pass, once the checks hold on the head
+// and main, opens or updates its PR and moves it to pr-open (Runs.openPR),
+// and they run again when main moves or the daemon restarts.
 //
 // A request_changes is the implementer attempt that made the head failing
 // verify, so it's one of the verify loop's moves (verifyLoopMove), and the
@@ -367,10 +372,11 @@ func (v *Verifier) Apply(ctx context.Context, a *Applier, r Result) error {
 	if err != nil {
 		return wrap(err)
 	}
-	text, data, err := passText(r.Start, out)
+	text, notes, data, err := passText(r.Start, out)
 	if err != nil {
 		return wrap(err)
 	}
+	marker += "\n" + notes
 	if data != "" {
 		marker += "\n" + data
 	}
@@ -459,23 +465,32 @@ func renderPass(head, notes string, fs []verifierFollowUp) string {
 }
 
 // passText is what a pass posts around its verify marker: its text, escaped
-// (renderPass), and its verify-data marker as written, or "" with no
-// candidates. checkVerifier measures the two, and Apply posts them, so the
-// comment checked is the comment written.
-func passText(head string, out verifierOutput) (text, data string, err error) {
+// (renderPass), its verify-notes marker as written, which goes right after
+// the verify marker, and its verify-data marker as written, which goes after
+// that, or "" with no candidates. checkVerifier measures the three, and
+// Apply posts them, so the comment checked is the comment written.
+func passText(head string, out verifierOutput) (text, notes, data string, err error) {
 	text = github.Escape(renderPass(head, out.Notes, out.FollowUps))
+	n, err := verifyNotesMarker(out.Notes)
+	if err != nil {
+		return "", "", "", fmt.Errorf("the pass comment's %w", err)
+	}
+	notes, err = github.FormatMarker(n)
+	if err != nil {
+		return "", "", "", fmt.Errorf("the pass comment's verify-notes marker: %w", err)
+	}
 	if len(out.FollowUps) == 0 {
-		return text, "", nil
+		return text, notes, "", nil
 	}
 	m, err := verifyDataMarker(out.FollowUps)
 	if err != nil {
-		return "", "", fmt.Errorf("the pass comment's %w", err)
+		return "", "", "", fmt.Errorf("the pass comment's %w", err)
 	}
 	data, err = github.FormatMarker(m)
 	if err != nil {
-		return "", "", fmt.Errorf("the pass comment's verify-data marker: %w", err)
+		return "", "", "", fmt.Errorf("the pass comment's verify-data marker: %w", err)
 	}
-	return text, data, nil
+	return text, notes, data, nil
 }
 
 // verifyDataMarker is the verify-data marker holding fs.
