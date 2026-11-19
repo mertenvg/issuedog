@@ -112,15 +112,18 @@ func TestPRLabelLeavesClosed(t *testing.T) {
 }
 
 // Replay passes for the PR's label and assignee writes, whatever write a
-// crash comes at (SPEC §5.2): the PR has mallory's priority:p0 beside the
-// task's priority:p1, and bob assigned, so a pass removes the label and
-// bob, and assigns notify.
+// crash comes at (SPEC §5.2): mallory swapped the PR's priority:p1 for
+// priority:p0 and added bug, and bob is assigned, so a pass removes
+// priority:p0, adds the task's priority:p1 back, leaves bug, and swaps
+// bob for notify.
 func TestPRLabelAndAssigneesReplay(t *testing.T) {
 	t.Parallel()
 	o := prItemOrigin(t)
 	setup := func(tb testing.TB) *githubtest.Fake {
 		f := prItemFake(tb, o)
 		f.AddLabel(2, "mallory", "priority:p0")
+		f.RemoveLabel(2, "mallory", "priority:p1")
+		f.AddLabel(2, "mallory", "bug")
 		f.SetAssignees(2, "bob")
 		return f
 	}
@@ -133,7 +136,7 @@ func TestPRLabelAndAssigneesReplay(t *testing.T) {
 	if err := pass(clean); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"DELETE /issues/2/labels/priority:p0", "DELETE /issues/2/assignees", "POST /issues/2/assignees"}
+	want := []string{"DELETE /issues/2/labels/priority:p0", "POST /issues/2/labels", "DELETE /issues/2/assignees", "POST /issues/2/assignees"}
 	if got := writesOf(clean); !slices.Equal(got, want) {
 		t.Errorf("the clean pass wrote %q; want %q", got, want)
 	}

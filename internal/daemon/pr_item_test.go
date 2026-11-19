@@ -135,10 +135,11 @@ func TestPRItemThroughMergeAndClose(t *testing.T) {
 			prItemQuiet(t, f, d, "at pr-open")
 
 			tt.end(f)
+			f.SetAssignees(2, digestRunOwner, "bob")
 			from := len(f.Writes())
 			iterate(t, d)
-			if got, want := assignWrites(f, from), []string{assignRemove(2, digestRunOwner)}; !slices.Equal(got, want) {
-				t.Errorf("the pass after the %s wrote assignees %q; want %q", tt.name, got, want)
+			if got, want := assignWrites(f, from), []string{assignRemove(2, digestRunOwner)}; !slices.Equal(got, want) || !slices.Equal(assignees(f, 2), []string{"bob"}) {
+				t.Errorf("the pass after the %s wrote assignees %q, leaving %q; want %q, leaving bob, who was assigned by hand", tt.name, got, assignees(f, 2), want)
 			}
 			if body := f.State().Issues[2].Body; strings.Contains(body, "Pull request") || !strings.Contains(body, "Nothing is waiting on you.") {
 				t.Errorf("after the %s, the digest =\n%s\nwant nothing waiting", tt.name, body)

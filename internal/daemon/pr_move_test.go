@@ -503,7 +503,7 @@ func prMoveDigest(f *githubtest.Fake) string {
 // to pr-open, on the same head and pass, gets nothing more from that pass:
 // the move keyed by its run is written, so it waits, with no request for
 // its PR and no write. It holds the worker, so the digest lists it as a
-// stalled task, which says to set stage:pr-open back or push a new head,
+// stalled task, which says to set stage:pr-open back or stage:ready,
 // and notify is assigned to it, while its PR's item ends, and notify is
 // unassigned from the PR (SPEC §9.4, §9.6).
 func TestPRMoveOnce(t *testing.T) {
@@ -524,7 +524,7 @@ func TestPRMoveOnce(t *testing.T) {
 	item := "### 1. #1: Refuse an expired quote\n\n**Stalled task**, priority p1, unblocks 1 open issue (itself included)\n\n" +
 		"- This task is back at `verifying`, but its pass, run `rv`, moved it to `pr-open` once already, so the pass moves it no more. " +
 		"It holds the worker, so no other task is picked.\n" +
-		"- Set `stage:pr-open` back, or push a new head.\n" +
+		"- Set `stage:pr-open` back to wait on its PR, or set `stage:ready` for a new round.\n" +
 		"- Answer here: https://github.com/o/r/issues/1"
 	if !strings.Contains(digest, item) || strings.Contains(digest, "**Pull request**") {
 		t.Errorf("the digest =\n%s\nwant it to list\n%s\nand no pull request", digest, item)

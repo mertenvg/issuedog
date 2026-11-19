@@ -87,24 +87,27 @@ func TestWaitFindPR(t *testing.T) {
 
 // A task back at verifying on its pass's head, after that pass moved it
 // out once, is stalled: its item, stalled-<n>-<run>, ranks as a hand-off,
-// says the pass moves it no more and it holds the worker, and to set the
-// stage that pass moved it to back, or push a new head, and links the
-// issue. A task at verifying whose pass hasn't moved it, or whose latest
-// move into verifying names another head, has none.
+// says the pass moves it no more and it holds the worker, and what the
+// owner can do for the stage that pass moved it to, never a pushed head,
+// and links the issue. A task at verifying whose pass hasn't moved it, or
+// whose latest move into verifying that names a head names another, has
+// none, even when a later move, as out of a hold, names no head.
 func TestWaitFindStalled(t *testing.T) {
 	t.Parallel()
 	back := "<!-- issuedog:transition from=pr-open to=verifying event=l900 -->"
 	for name, c := range map[string]struct {
-		moved, to string
+		moved, to, act string
 	}{
-		"from pr-open":     {prItemMoved("pr-open", " pr=7"), "pr-open"},
-		"from needs-human": {prItemMoved("needs-human", ""), "needs-human"},
+		"from pr-open": {prItemMoved("pr-open", " pr=7"), "pr-open",
+			"Set `stage:pr-open` back to wait on its PR, or set `stage:ready` for a new round."},
+		"from needs-human": {prItemMoved("needs-human", ""), "needs-human",
+			"Close this issue if nothing needs to change, or set `stage:ready` for a new round."},
 	} {
 		it := waitFindOne(t, waitIn(prItemSnap("verifying", c.moved, back), Dirt{}))
 		want := []string{
 			"This task is back at `verifying`, but its pass, run `rv`, moved it to `" + c.to + "` once already, so the pass moves it no more. " +
 				"It holds the worker, so no other task is picked.",
-			"Set `stage:" + c.to + "` back, or push a new head.",
+			c.act,
 		}
 		if it.Kind != waitStalled || it.Key != "stalled-1-rv" || it.Link != "https://github.com/o/r/issues/1" || it.AssignPR != 0 ||
 			!slices.Equal(waitTexts(it.Lines), want) {
@@ -119,7 +122,10 @@ func TestWaitFindStalled(t *testing.T) {
 	for name, s := range map[string]*github.Snapshot{
 		"a pass not moved yet": prItemSnap("verifying"),
 		"a new head":           prItemSnap("verifying", prItemMoved("pr-open", " pr=7"), back, other),
-		"at pr-open":           prItemSnap("pr-open", prItemMoved("pr-open", " pr=7")),
+		"a new head, then a hold": prItemSnap("verifying", prItemMoved("needs-human", ""), other,
+			"<!-- issuedog:transition from=verifying to=held event=l901 -->",
+			"<!-- issuedog:transition from=held to=verifying event=l902 -->"),
+		"at pr-open": prItemSnap("pr-open", prItemMoved("pr-open", " pr=7")),
 	} {
 		if items, err := waitFind(waitIn(s, Dirt{})); err != nil || slices.ContainsFunc(items, func(it waitItem) bool { return it.Kind == waitStalled }) {
 			t.Errorf("%s: got %+v, %v; want no stalled task", name, items, err)

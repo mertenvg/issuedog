@@ -741,8 +741,8 @@ func waitPRLines(p listedPR) []waitLine {
 
 // waitStalledRun reports whether task is, at verifying, is stalled there
 // (SPEC §9.4): its latest clean pass of the verifier's on its head, the
-// head= of its latest move into verifying, or with none named, as after a
-// stage set by hand, on any head, has moved it out of verifying once
+// head= of its latest move into verifying that names one (stalledHead),
+// or with none named, on any head, has moved it out of verifying once
 // already, by the move keyed by the pass's run (prMove, prNothingMove),
 // and it's back since. That key moves it once (SPEC §5.2), so the PR step
 // waits (prWant), and the task holds the worker, so nothing else is
@@ -751,7 +751,7 @@ func waitStalledRun(is state.Issue) (string, state.Stage, bool) {
 	if is.Stage != state.Verifying {
 		return "", "", false
 	}
-	head, run := moveHead(is), ""
+	head, run := stalledHead(is), ""
 	for _, m := range is.Markers {
 		if m.Kind == verifyKind && m.Fields["verdict"] == verdictPass && m.Fields["head"] != "" && (head == "" || m.Fields["head"] == head) {
 			run = m.Fields["run"]
@@ -769,17 +769,39 @@ func waitStalledRun(is state.Issue) (string, state.Stage, bool) {
 	return run, to, to != ""
 }
 
+// stalledHead is the head= of task is's latest move into verifying that
+// names one. A move by hand, or out of held or an interview, names none,
+// so it looks through to the head the task's round is on: a pass on an
+// earlier round's head never stalls a task on a later one.
+func stalledHead(is state.Issue) string {
+	head := ""
+	for _, m := range is.Markers {
+		if m.Kind == "transition" && state.Stage(m.Fields["to"]) == state.Verifying && m.Fields["head"] != "" {
+			head = m.Fields["head"]
+		}
+	}
+	return head
+}
+
 // waitStalledLines are a stalled task's lines (SPEC §9.4): that the pass
 // of run run moved it out of verifying, to to, once already, so it moves
-// it no more, and that it holds the worker, then what the owner can do:
-// set to's stage label back, or push a new head. Every line is this
-// file's own words, with only a run ID from an App marker and stage names
-// in them.
+// it no more, and that it holds the worker, then what the owner can do.
+// At pr-open: set stage:pr-open back to wait on its PR, or stage:ready
+// for a new round. At needs-human, a stage set back by hand has no
+// hand-off to answer, so: close the issue if nothing needs to change, or
+// set stage:ready for a new round. A pushed head isn't one of them: it
+// moves nothing at verifying (SPEC §7.2's "a head a person pushed" isn't
+// built). Every line is this file's own words, with only a run ID from an
+// App marker and stage names in them.
 func waitStalledLines(run string, to state.Stage) []waitLine {
+	act := fmt.Sprintf("Set `stage:%s` back to wait on its PR, or set `stage:%s` for a new round.", to, state.Ready)
+	if to != state.PROpen {
+		act = fmt.Sprintf("Close this issue if nothing needs to change, or set `stage:%s` for a new round.", state.Ready)
+	}
 	return []waitLine{
 		{Text: fmt.Sprintf("This task is back at `%s`, but its pass, run `%s`, moved it to `%s` once already, so the pass moves it no more. It holds the worker, so no other task is picked.",
 			state.Verifying, run, to)},
-		{Text: fmt.Sprintf("Set `stage:%s` back, or push a new head.", to)},
+		{Text: act},
 	}
 }
 
