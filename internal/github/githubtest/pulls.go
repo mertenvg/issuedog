@@ -274,8 +274,8 @@ func (f *Fake) createPull(c *call) (int, any) {
 // body, and returns it, or the status and message GitHub refuses it with:
 // a 422 with no title, a head or base missing, a head branch the git
 // remote hasn't got, and a head and base an open pull request has already,
-// the last with GitHub's errors list, whose message says one already
-// exists. A tip that can't be read is a 500. It's a new issue, numbered as
+// the last two with GitHub's errors list: an invalid head's, and one whose
+// message says one already exists. A tip that can't be read is a 500. It's a new issue, numbered as
 // one, with its head read from the git remote. f is locked.
 func (f *Fake) pullCreate(ctx context.Context, author, title, head, base, body string) (*issue, int, any) {
 	owner, _, _ := strings.Cut(f.repo, "/")
@@ -298,7 +298,8 @@ func (f *Fake) pullCreate(ctx context.Context, author, title, head, base, body s
 		return nil, http.StatusInternalServerError, message(err.Error())
 	}
 	if sha == "" {
-		return nil, http.StatusUnprocessableEntity, message(fmt.Sprintf("Validation Failed: head %q is no branch of the repo", head))
+		return nil, http.StatusUnprocessableEntity, map[string]any{"message": fmt.Sprintf("Validation Failed: head %q is no branch of the repo", head),
+			"errors": []map[string]string{{"resource": "PullRequest", "field": "head", "code": "invalid"}}}
 	}
 	is := f.fileIssue(author, title, body, nil)
 	f.pullLinks(is)

@@ -499,6 +499,30 @@ func prMoveDigest(f *githubtest.Fake) string {
 	return ""
 }
 
+// A trusted comment posted after step 1 read the task, here just before
+// the PR step lists its PRs, is above the move's bound: the move to
+// pr-open carries seen= step 1's newest comment, the pass comment, not
+// the new one (SPEC §5, §10.2).
+func TestPRMoveSeenIsStep1s(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	v := newVerdictRig(t, f, 3)
+	_, pass := v.prTask()
+	v.pass()
+	var late int64
+	f.BeforeRequest(func(r githubtest.Request) bool { return r.Method == http.MethodGet && r.Path == "/pulls" }, func() {
+		late = f.AddComment(1, wholeRunOwner, "One more thought on the expiry check.")
+	})
+	v.pass()
+	moves := prMoveComments(f, "pr-open")
+	if pickStage(f, 1) != "stage:pr-open" || len(moves) != 1 {
+		t.Fatalf("at %s, moves %q; want pr-open, by one move", pickStage(f, 1), moves)
+	}
+	if got, want := prMoveFields(t, moves[0])["seen"], strconv.FormatInt(pass, 10); late == 0 || got != want {
+		t.Errorf("the move's seen = %s; want %s, step 1's newest comment, not %d, posted after step 1 read the task", got, want, late)
+	}
+}
+
 // A task back at verifying by a stage set by hand, after its pass moved it
 // to pr-open, on the same head and pass, gets nothing more from that pass:
 // the move keyed by its run is written, so it waits, with no request for

@@ -682,7 +682,7 @@ func TestPROpenSomeoneElsesTip(t *testing.T) {
 // Someone else's open PR from the task's branch to main is never the
 // task's (SPEC §7.5): the PR step leaves it alone, and GitHub's 422 to the
 // App's own open, as one exists for that head and base, is a wait, not an
-// error, warned of once: nothing is written, and the step tries again only
+// error, warned of once: no PR is written, and the step tries again only
 // once a poll lists a PR changed. The App's push moves that PR's head, so
 // the next poll lists it once, and the step tries once more; then passes
 // make no request for it. Once mallory closes her PR, the next pass opens

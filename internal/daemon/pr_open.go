@@ -75,7 +75,7 @@ type prWant struct {
 // success (prCheck); and last the move to pr-open (prMove), which releases
 // the worker (SPEC §8.1). The App never merges the PR. Someone else's open
 // PR from the task's branch to main, which GitHub's 422 to the open says,
-// makes the task wait, with no write, till a poll lists a PR changed
+// makes the task wait, with no PR write, till a poll lists a PR changed
 // (prExistsWait). A head that changes
 // nothing on main gets none of those writes, but the move to needs-human
 // with its hand-off (prNothingMove).
@@ -310,7 +310,8 @@ func (r *Runs) prWarnOnce(n int, key, format string, args ...any) {
 // prExistsWait has task n wait at verifying when GitHub won't open its PR
 // from branch to main, err, as someone else's open PR there stands: that
 // PR is never the task's (prFind, SPEC §7.5), and GitHub keeps one open PR
-// for a head and base. It writes nothing, and tries again only once a poll
+// for a head and base. It makes no PR write, as the head is pushed
+// already, and tries again only once a poll
 // lists a pull request changed (Daemon.prPolls), as when that PR closes,
 // so it costs no request till then. It's warned of once, while the wait
 // lasts, and logged at debug on each try after.
@@ -324,7 +325,7 @@ func (r *Runs) prExistsWait(n int, branch string, err error) {
 		r.prExists = map[int]int{}
 	}
 	r.prExists[n] = r.Daemon.prPolls
-	log("%s/%s#%d: someone else's open PR from %s to %s stands, so GitHub won't open the task's: nothing is written, and the task waits at %s till a poll lists a PR changed: %v",
+	log("%s/%s#%d: someone else's open PR from %s to %s stands, so GitHub won't open the task's: no PR is written, and the task waits at %s till a poll lists a PR changed: %v",
 		a.Owner, a.Repo, n, branch, prBase, state.Verifying, err)
 }
 
