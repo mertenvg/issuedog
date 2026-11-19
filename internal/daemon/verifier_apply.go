@@ -316,8 +316,8 @@ func verdictRun(is state.Issue, runID string) bool {
 // apply, and moves nothing,
 // whatever the checks say next: the task waits at verifying, holding the
 // worker, and the PR step of a later pass, once the checks hold on the head
-// and main, opens or updates its PR (Runs.openPR), and they run again when
-// main moves or the daemon restarts.
+// and main, opens or updates its PR and moves it to pr-open (Runs.openPR),
+// and they run again when main moves or the daemon restarts.
 //
 // A request_changes is the implementer attempt that made the head failing
 // verify, so it's one of the verify loop's moves (verifyLoopMove), and the

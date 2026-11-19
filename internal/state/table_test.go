@@ -50,6 +50,7 @@ func TestLookupFindsEveryRow(t *testing.T) {
 		{Verifying, Clarifying, ClassTask, TriggerVerifierQuestion},
 		{Verifying, PROpen, ClassBug, TriggerVerified},
 		{Verifying, PROpen, ClassTask, TriggerPersonPushed},
+		{Verifying, NeedsHuman, ClassBug, TriggerNothingToMerge},
 		{PROpen, InProgress, ClassTask, TriggerReviewChanges},
 		{PROpen, Verifying, ClassTask, TriggerNewHead},
 		{PROpen, PROpen, ClassTask, TriggerMainMoved},

@@ -50,8 +50,10 @@ func verifyKey(c int64) state.Key {
 // worker, its request_changes goes as a failure of the checks does, and its
 // question moves the task to clarifying (Verifier.Apply). A head with a
 // clean pass marker gets the PR step instead, while the checks' pass holds
-// on it and main (openPR): its head pushed to the task's branch and its PR
-// to main opened or updated, once its follow-ups' filed record stands. It
+// on it and main (openPR): its head pushed to the task's branch, its PR
+// to main opened or updated, its issuedog/verify check posted, and the
+// task moved to pr-open, or for a head that changes nothing on main,
+// handed off at needs-human, once its follow-ups' filed record stands. It
 // reports a run when that step read the issue again to write, and else
 // looks at the next task. A run that fails writes nothing, and the head gets another,
 // until the last of loop.max_attempts in a row hands the task off at

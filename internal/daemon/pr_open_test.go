@@ -114,15 +114,40 @@ func prRequests(f *githubtest.Fake, from int) (reads, writes int) {
 	return reads, writes
 }
 
+// prOpensAtVerifying runs the checks' pass on task 1, then the PR step's,
+// with GitHub refusing the head's check once, as a glitch might, so that
+// pass fails after the PR's writes and before the move: the task waits at
+// verifying, with its PR open at head and no check, for the next pass's PR
+// step to find it.
+func (v *verdictRig) prOpensAtVerifying(head string) {
+	v.t.Helper()
+	v.pass()
+	v.f.AnswerOnce(func(r githubtest.Request) bool { return r.Method == http.MethodPost && r.Path == "/check-runs" }, http.StatusInternalServerError)
+	if err := v.d.Iterate(context.Background()); err == nil {
+		v.t.Fatal("the PR step's pass whose check GitHub refused gave no error")
+	}
+	if prs := v.f.State().PRs; len(prs) != 1 || prs[0].HeadSHA != head || prs[0].State != "open" ||
+		pickStage(v.f, 1) != "stage:verifying" || len(v.f.State().CheckRuns) != 0 {
+		v.t.Fatalf("the PRs = %+v, the task at %s, the checks %+v; want one, open at %s, the task still at verifying, and no check",
+			prs, pickStage(v.f, 1), v.f.State().CheckRuns, head)
+	}
+}
+
+// prMoveWrites are the writes of the PR step's last two on task 1, the
+// head's check and the move to pr-open, after its PR's writes.
+var prMoveWrites = []string{"POST /check-runs", "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:verifying"}
+
 // A whole run against the fakes, from the implementer's commits to the PR:
 // the implementer commits and moves the task to verifying, the next pass
 // runs the checks, the pass after runs the verifier, which passes with no
 // candidates, and the pass after that pushes the head to the task's branch,
 // and opens one PR from it to main, in the SPEC §11.5 format, from the
 // implementer's pr-text and the verifier's notes, with the task's priority
-// label. The task stays at verifying, holding the worker, and the pass
-// after only finds the PR, and each unchanged pass after makes no request
-// but 304s: no second push, PR or label.
+// label, then checks the head and moves the task to pr-open
+// (pr_move_test.go), which releases the worker. The pass after reads no
+// PR, and picks the next task, whose run asks a question, and once those
+// writes are read, each unchanged pass after makes no request but 304s,
+// none of them for a PR: no second push, PR or label.
 func TestPROpenWholeRun(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
@@ -131,6 +156,7 @@ func TestPROpenWholeRun(t *testing.T) {
 	v.out(1, ivResult(t, out))
 	notes := "The expiry check runs before the write, as the criteria ask."
 	v.out(2, verifierPass(t, notes))
+	v.out(3, ivResult(t, implementerOutput(t, "question")))
 	n := f.AddIssue(wholeRunOwner, "Refuse an expired quote", "Booking an expired quote returns 410.", "type:task", "priority:p1", "scope:booking")
 	f.AddLabel(n, wholeRunOwner, "stage:in-progress")
 	ready := fileAt(f, "ready", "The next task.", "priority:p1", "scope:booking", "type:task")
@@ -176,30 +202,35 @@ func TestPROpenWholeRun(t *testing.T) {
 	if got := f.State().Issues[pr.Number-1]; !slices.Equal(got.Labels, []string{"priority:p1"}) || got.Author != app {
 		t.Errorf("the PR, by %s, has labels %q; want the App's, with priority:p1", got.Author, got.Labels)
 	}
-	if got, want := writesOf(f)[writes:], []string{"POST /pulls", "POST /issues/" + strconv.Itoa(pr.Number) + "/labels"}; !slices.Equal(got, want) {
+	if got, want := writesOf(f)[writes:], []string{"POST /pulls", "POST /issues/" + strconv.Itoa(pr.Number) + "/labels",
+		"POST /check-runs", "POST /issues/1/comments", "POST /issues/1/labels", "DELETE /issues/1/labels/stage:verifying"}; !slices.Equal(got, want) {
 		t.Errorf("the PR step wrote %q, want %q", got, want)
 	}
-	if pickStage(f, n) != "stage:verifying" || len(passComments(f, n)) != 1 {
-		t.Errorf("the task is at %s with verdicts %q; want still at verifying, the one pass", pickStage(f, n), passComments(f, n))
+	if pickStage(f, n) != "stage:pr-open" || len(passComments(f, n)) != 1 {
+		t.Errorf("the task is at %s with verdicts %q; want at pr-open, the one pass", pickStage(f, n), passComments(f, n))
 	}
 
-	from, writes := len(f.Requests()), len(f.Writes())
+	from := len(f.Requests())
 	v.pass()
-	if reads, prWrites := prRequests(f, from); reads != 1 || prWrites != 0 || len(f.Writes()) != writes {
-		t.Errorf("the pass after the PR read /pulls %d times, and wrote %+v; want one find, and nothing", reads, f.Writes()[writes:])
+	if reads, prWrites := prRequests(f, from); reads != 0 || prWrites != 0 {
+		t.Errorf("the pass after the PR read /pulls %d times, and wrote it %d times; want neither", reads, prWrites)
 	}
+	if pickStage(f, ready) != "stage:clarifying" || v.runs() != 3 {
+		t.Errorf("the next task is at %s, after %d runs; want it picked, as the task at pr-open released the worker, and its run's question at clarifying",
+			pickStage(f, ready), v.runs())
+	}
+	// The next pass reads the question, lists it on the digest and assigns
+	// notify to it, and the one after reads those writes.
+	v.passes(2)
 	for _, step := range []string{"first", "second"} {
 		from := len(f.Requests())
 		v.quietPass(step)
-		if reads, _ := prRequests(f, from); reads != 1 {
-			t.Errorf("%s: the unchanged pass read /pulls %d times, want once: the find", step, reads)
+		if reads, _ := prRequests(f, from); reads != 0 {
+			t.Errorf("%s: the unchanged pass read /pulls %d times, want none: the task at pr-open has its PR in its move", step, reads)
 		}
 	}
-	if len(f.State().PRs) != 1 || v.originTip(prBranch) != head || v.runs() != 2 {
-		t.Errorf("the PRs = %+v, the branch at %s, %d runs; want the one PR, the head, two runs", f.State().PRs, v.originTip(prBranch), v.runs())
-	}
-	if pickStage(f, ready) != "stage:ready" {
-		t.Errorf("the next task is at %s, want ready: the task waiting at verifying holds the worker", pickStage(f, ready))
+	if len(f.State().PRs) != 1 || v.originTip(prBranch) != head || v.runs() != 3 {
+		t.Errorf("the PRs = %+v, the branch at %s, %d runs; want the one PR, the head, three runs", f.State().PRs, v.originTip(prBranch), v.runs())
 	}
 }
 
@@ -244,15 +275,16 @@ func TestPROpenAfterTheChecks(t *testing.T) {
 	}
 }
 
-// main moving under an open PR at verifying runs the checks again, then
-// updates the PR's body, which names main's new SHA, alone: no push, no
-// second PR, no state and no title sent.
+// main moving under an open PR at verifying, left there by a pass that
+// failed before its move, runs the checks again, then updates the PR's
+// body, which names main's new SHA, alone: no push, no second PR, no state
+// and no title sent. Then come the head's check and the move.
 func TestPROpenUpdatesTheBody(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
 	v := newVerdictRig(t, f, 3)
 	head, pass := v.prTask()
-	v.prOpens(head)
+	v.prOpensAtVerifying(head)
 	v.o.commit("docs.md", "Docs.\n")
 	v.pass()
 	writes := len(f.Writes())
@@ -262,9 +294,10 @@ func TestPROpenUpdatesTheBody(t *testing.T) {
 		t.Errorf("the PRs = %+v; want the one, open, against main at %s", prs, v.mainSHA())
 	}
 	w := f.Writes()[writes:]
-	if len(w) != 1 || w[0].Method != http.MethodPatch || w[0].Path != "/pulls/"+strconv.Itoa(prs[0].Number) ||
-		!strings.HasPrefix(w[0].Body, `{"body":`) || strings.Contains(w[0].Body, `"state"`) || strings.Contains(w[0].Body, `"title"`) {
-		t.Errorf("the update wrote %+v; want one PATCH of the PR's body alone", w)
+	if len(w) != 1+len(prMoveWrites) || w[0].Method != http.MethodPatch || w[0].Path != "/pulls/"+strconv.Itoa(prs[0].Number) ||
+		!strings.HasPrefix(w[0].Body, `{"body":`) || strings.Contains(w[0].Body, `"state"`) || strings.Contains(w[0].Body, `"title"`) ||
+		!slices.Equal(writesOf(f)[writes+1:], prMoveWrites) {
+		t.Errorf("the update wrote %+v; want one PATCH of the PR's body alone, then %q", w, prMoveWrites)
 	}
 }
 
@@ -300,13 +333,13 @@ func TestPROpenPriorityLabel(t *testing.T) {
 // A PR closed at verifying is reopened, in a request that sets the state
 // alone, then updated, by the task's next pass through verify (SPEC §7.5's
 // A closed PR). The close here comes with a move of main, so the body
-// differs too.
+// differs too. Then come the head's check and the move.
 func TestPROpenReopensAClosedPR(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
 	v := newVerdictRig(t, f, 3)
 	head, pass := v.prTask()
-	v.prOpens(head)
+	v.prOpensAtVerifying(head)
 	pr := f.State().PRs[0].Number
 	f.ClosePR(pr, "owner")
 	v.o.commit("docs.md", "Docs.\n")
@@ -318,9 +351,9 @@ func TestPROpenReopensAClosedPR(t *testing.T) {
 		t.Errorf("the PRs = %+v; want the one, reopened, against main at %s", prs, v.mainSHA())
 	}
 	w := f.Writes()[writes:]
-	if len(w) != 2 || w[0].Path != "/pulls/"+strconv.Itoa(pr) || w[0].Body != `{"state":"open"}`+"\n" ||
-		w[1].Path != "/pulls/"+strconv.Itoa(pr) || !strings.HasPrefix(w[1].Body, `{"body":`) {
-		t.Errorf("the PR step wrote %+v; want the reopen, its state alone, then the body", w)
+	if len(w) != 2+len(prMoveWrites) || w[0].Path != "/pulls/"+strconv.Itoa(pr) || w[0].Body != `{"state":"open"}`+"\n" ||
+		w[1].Path != "/pulls/"+strconv.Itoa(pr) || !strings.HasPrefix(w[1].Body, `{"body":`) || !slices.Equal(writesOf(f)[writes+2:], prMoveWrites) {
+		t.Errorf("the PR step wrote %+v; want the reopen, its state alone, then the body, then %q", w, prMoveWrites)
 	}
 	v.passes(2)
 	if len(f.State().PRs) != 1 {
@@ -331,13 +364,15 @@ func TestPROpenReopensAClosedPR(t *testing.T) {
 // A PR GitHub won't reopen, as once the App pushed a new head over its own
 // dropped one since the close, gets a new PR (SPEC §7.5's A closed PR). The
 // new head, from main, isn't in the old one's history, but a clean App
-// marker names the old one as a head, so the push goes over it.
+// marker names the old one as a head, so the push goes over it. The first
+// PR's pass stops before its move, so the task is at verifying when the
+// next round's markers come.
 func TestPROpenRefusedReopen(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
 	v := newVerdictRig(t, f, 3)
 	first, _ := v.prTask()
-	v.prOpens(first)
+	v.prOpensAtVerifying(first)
 	old := f.State().PRs[0].Number
 	f.ClosePR(old, "owner")
 
@@ -489,14 +524,15 @@ func TestPROpenSkipsOtherPRs(t *testing.T) {
 }
 
 // The open PR is the task's, even when a closed one from its branch is
-// newer, as when the owner reopened an older one: a move of main updates
-// the open one's body, and the closed one stays as it is.
+// newer, as when the owner reopened an older one: a move of main, with the
+// task at verifying, updates the open one's body, and the closed one stays
+// as it is.
 func TestPROpenFindsTheOpenPR(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
 	v := newVerdictRig(t, f, 3)
 	head, pass := v.prTask()
-	v.prOpens(head)
+	v.prOpensAtVerifying(head)
 	older := f.State().PRs[0].Number
 	f.ClosePR(older, "owner")
 	newer, err := f.Client(t).CreatePullRequest(context.Background(), "o", "r", github.NewPullRequest{Title: "Newer", Head: prBranch, Base: "main", Body: "A newer one."})
@@ -539,8 +575,9 @@ func TestPROpenCutsTheSummary(t *testing.T) {
 }
 
 // A head whose own diff from main is empty, as when an answer's only
-// commit is an empty one, gets no push and no PR, on any pass, and the
-// next task isn't picked, as it holds the worker.
+// commit is an empty one, gets no push and no PR, on any pass, and no
+// check: it's handed off at needs-human (pr_move_test.go), and once the
+// digest has its item, each pass after is quiet, with no PR read.
 func TestPROpenEmptyHead(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
@@ -549,9 +586,10 @@ func TestPROpenEmptyHead(t *testing.T) {
 	gitIn(t, v.d.Clone.Dir(), "fetch", "--quiet", "--no-tags", v.o.work, "refs/heads/empty:"+repo.TasksRef+"1")
 	n, _ := verifierTask(f, head)
 	f.AddComment(n, app, prPassComment(t, "rv", head, "Nothing needed to change."))
-	v.passes(3)
-	if v.originTip(prBranch) != "" || len(f.State().PRs) != 0 || pickStage(f, n) != "stage:verifying" {
-		t.Errorf("the branch at %q, PRs %+v, at %s; want no push, no PR, still at verifying", v.originTip(prBranch), f.State().PRs, pickStage(f, n))
+	v.passes(4)
+	if v.originTip(prBranch) != "" || len(f.State().PRs) != 0 || len(f.State().CheckRuns) != 0 || pickStage(f, n) != "stage:needs-human" {
+		t.Errorf("the branch at %q, PRs %+v, checks %+v, at %s; want no push, no PR, no check, and at needs-human",
+			v.originTip(prBranch), f.State().PRs, f.State().CheckRuns, pickStage(f, n))
 	}
 	from := len(f.Requests())
 	v.quietPass("an empty head")

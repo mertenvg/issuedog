@@ -244,8 +244,25 @@ func prBody(src prSource, cutSummary, cutNotes bool) string {
 			"## Why\n\n"+defuseRefs(block(sum.Why)),
 			"## Tests\n\n"+orNone(strings.Join(tests, "\n")))
 	}
+	parts = append(parts, "## Results\n\n"+prResults(src.Results))
+	notes := defuseRefs(block(src.Notes))
+	if cutNotes {
+		notes = fmt.Sprintf(prCutNotes, src.VerifierLink)
+	}
+	parts = append(parts, "## Verifier notes\n\n"+notes,
+		fmt.Sprintf("Verified at `%s`, against `main` at `%s`: %s", src.Head, src.Main, src.VerifierLink))
+	return github.Escape(strings.Join(parts, "\n\n"))
+}
+
+// prResults is the checks' results, as the PR's Results (SPEC §11.5) and
+// its head's issuedog/verify check (SPEC §10.4) give them: a table of each
+// of results, verify.commands' as the checks' pass gave them, and its
+// result, then a row saying rules 2 to 7 passed. A command is the repo's
+// config, but it's text the App didn't write, so it's cut, and defused
+// for the squash merge's commit (SPEC §15); the caller escapes it.
+func prResults(results []verify.CommandResult) string {
 	rows := []string{"| Check | Result |", "|---|---|"}
-	for _, r := range src.Results {
+	for _, r := range results {
 		result := "pass"
 		if why := r.Failure(); why != "" {
 			result = why
@@ -254,14 +271,7 @@ func prBody(src prSource, cutSummary, cutNotes bool) string {
 		rows = append(rows, "| "+cmd+" | "+result+" |")
 	}
 	rows = append(rows, "| Rules 2 to 7 | pass |")
-	parts = append(parts, "## Results\n\n"+strings.Join(rows, "\n"))
-	notes := defuseRefs(block(src.Notes))
-	if cutNotes {
-		notes = fmt.Sprintf(prCutNotes, src.VerifierLink)
-	}
-	parts = append(parts, "## Verifier notes\n\n"+notes,
-		fmt.Sprintf("Verified at `%s`, against `main` at `%s`: %s", src.Head, src.Main, src.VerifierLink))
-	return github.Escape(strings.Join(parts, "\n\n"))
+	return strings.Join(rows, "\n")
 }
 
 // zeroWidthSpace is what defuse and defuseRefs put in agent text to break a
