@@ -68,11 +68,19 @@ const (
 // (inline), as a human task's plain-text one is. Nothing is checked here:
 // Apply renders only output that passed checkHandoff.
 func renderHandoff(intro string, h implementerHandoffFields, n int, notify []string) string {
+	return renderHandoffEnding(intro, h, handoffFinish, n, notify)
+}
+
+// renderHandoffEnding is renderHandoff with finish, the line that says how
+// to end the hand-off, in handoffFinish's place, for a hand-off whose end
+// isn't only /done, as when closing the issue is one way to end it
+// (renderNothingHandoff).
+func renderHandoffEnding(intro string, h implementerHandoffFields, finish string, n int, notify []string) string {
 	t := handoffTask(h)
 	parts := []string{
 		intro,
 		humanFields(t, humanWhyBlocks(t.WhyBlocks, []int{n}, n), orNone(inline(t.DoneWhen.Text))),
-		handoffFinish,
+		finish,
 	}
 	return github.Escape(strings.Join(append(parts, ccLines(notify)...), "\n\n"))
 }

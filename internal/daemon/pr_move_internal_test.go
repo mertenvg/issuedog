@@ -67,7 +67,9 @@ func TestNothingHandoffMove(t *testing.T) {
 
 // The hand-off for a head that changes nothing is in the SPEC §9.3 form:
 // it names the head and why it gets no PR, then the daemon's own fields,
-// how to end it, and the cc line.
+// how to end it, and the cc line. Its last line says /done or a 👍 is for
+// a change, and closing the issue for none, so a 👍 out of habit isn't
+// taken for a yes.
 func TestRenderNothingHandoff(t *testing.T) {
 	t.Parallel()
 	head := strings.Repeat("ab", 20)
@@ -81,7 +83,7 @@ func TestRenderNothingHandoff(t *testing.T) {
 		"**Links:**\nNone.\n\n" +
 		"**Done when:** The issue is closed, or a new round is asked for.\n" +
 		"**Estimated time:** A few minutes.\n\n" +
-		"When it's done, reply `/done` on this issue or react 👍 to this comment, and the task goes back to `ready`.\n\n" +
+		"If something needs to change, reply `/done` on this issue or react 👍 to this comment, and the task goes back to `ready`. If not, close this issue.\n\n" +
 		"cc @owner"
 	if got := renderNothingHandoff(head, 4, []string{"owner"}); got != want {
 		t.Errorf("the hand-off =\n%s\nwant\n%s", got, want)
@@ -91,7 +93,8 @@ func TestRenderNothingHandoff(t *testing.T) {
 // A task waiting on the hand-off for a head that changes nothing has the
 // hand-off's item, which says the verifier passed a head that changes
 // nothing on main, so it gets no PR, with its Goal and "Done when" copied
-// from the comment (SPEC §9.4).
+// from the comment, and ends as the hand-off does: /done or a 👍 for a
+// change, a close for none (SPEC §9.4).
 func TestWaitFindNothingHandoff(t *testing.T) {
 	t.Parallel()
 	body := renderNothingHandoff(strings.Repeat("ab", 20), 1, nil) +
@@ -100,7 +103,7 @@ func TestWaitFindNothingHandoff(t *testing.T) {
 	want := []string{"A hand-off waits for you: the verifier passed a head that changes nothing on `main`, so it gets no PR.",
 		"Goal: Decide whether this task needs a change on `main`, as its verified head makes none.",
 		"Done when: The issue is closed, or a new round is asked for.",
-		"When it's done, reply `/done` on the issue or react 👍 to the hand-off."}
+		"If something needs to change, reply `/done` on the issue or react 👍 to the hand-off, and the task goes back to `ready`. If not, close the issue."}
 	if got := waitTexts(it.Lines); it.Kind != waitHandoff || it.Key != "handoff-1-102" || strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("the item is a %s keyed %s, its lines %q; want a handoff keyed handoff-1-102, its lines %q", it.Kind, it.Key, got, want)
 	}

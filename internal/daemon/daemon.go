@@ -147,6 +147,17 @@ type Daemon struct {
 	// last search for the blocked ready tasks, so its next one asks again
 	// (Runs.pickSearch).
 	pickStale bool
+
+	// prs are the PRs the App opened, by number, as the poll last listed
+	// each, or a write to it answered (prs.go).
+	prs map[int]listedPR
+	// prOf is each task's PR (taskPR), by task, after its last good step
+	// 1, for the PR's priority label (prLabelPass).
+	prOf map[int]int
+	// prManaged are the PRs assignment assigned while their pull request
+	// item stood, so it unassigns notify from each once the item ends
+	// (assignPRs).
+	prManaged map[int]bool
 }
 
 // CurrentTrust is a github.Trust that asks st.Trust on each call. Iterate's
@@ -240,9 +251,9 @@ func (d *Daemon) Run(ctx context.Context) {
 // openErrAny takes too; an issue whose read or step 1 fails keeps its last
 // items, and one that closes or leaves the listing loses them. Then it
 // closes each epic planned into stories whose children have all closed
-// (epicClosePass, #251), keeps the digest (digestPass), and then the
-// assignees (assignPass), whose
-// failures stop nothing. Then it hands Work the issues ready for it, and
+// (epicClosePass, #251), keeps each task's PR's priority label
+// (prLabelPass), the digest (digestPass), and then the assignees
+// (assignPass), whose failures stop nothing. Then it hands Work the issues ready for it, and
 // last makes the unassigns assignPass put off until after it
 // (assignLaterPass). It returns the errors of the issues it couldn't read
 // or run step 1 on, which the next Iterate reads again, and on which Work
@@ -478,6 +489,9 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	if err := d.epicClosePass(ctx); err != nil { // an epic whose stories have all closed (epicclose.go)
 		errs = append(errs, err)
 	}
+	if err := d.prLabelPass(ctx); err != nil { // each task's PR carries its priority (prs.go)
+		errs = append(errs, err)
+	}
 	if err := d.digestPass(ctx); err != nil {
 		errs = append(errs, err)
 	}
@@ -578,9 +592,10 @@ func (d *Daemon) reload(ctx context.Context) {
 // marks as stale each open issue that changed. Each cursor moves to the
 // newest updated_at GitHub returned. A list whose cursor moved is read once
 // more from there, so the next poll of an unchanged repo repeats that
-// request and gets a 304. Closed issues and pull requests are dropped, and
-// so are digests, which it records, with the App's digest-new comments
-// (digest.go). One only the digest's title rule would take is judged after
+// request and gets a 304. Closed issues and pull requests are dropped from
+// the pipeline, and so are digests, which it records, with the App's
+// digest-new comments (digest.go). A pull request the App opened is kept,
+// as listed (prKeep), for the digest, assignment and its priority label. One only the digest's title rule would take is judged after
 // the comments (digestTake). A closed issue whose close is still to judge
 // is kept for closingPass (closingList), and an open one forgets its close.
 // Which issues it last listed closed it keeps too (closedListed), adding
@@ -623,6 +638,7 @@ func (d *Daemon) poll(ctx context.Context) error {
 			}
 			switch {
 			case is.IsPullRequest():
+				d.prKeep(is) // one the App opened (prs.go)
 			case d.digest.listed(a.AppSlug, is) || is.GetState() != "open": // a digest is never in the pipeline
 				if is.GetState() != "open" && !d.digest.has(n) {
 					// A close still to judge is kept (closing.go), with
@@ -683,6 +699,7 @@ func (d *Daemon) leave(n int) {
 	d.digestRestartLeave(n)
 	delete(d.digestCache, n) // a closed issue has nothing waiting
 	delete(d.assignManaged, n)
+	delete(d.prOf, n)
 	d.Step.forgetLabels(n)
 }
 

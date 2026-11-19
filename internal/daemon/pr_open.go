@@ -561,14 +561,21 @@ var nothingHandoffFields = implementerHandoffFields{
 	EstimatedTime: "A few minutes.",
 }
 
+// nothingHandoffFinish ends the hand-off for a head that changes nothing
+// on main (SPEC §9.3): /done or a 👍 is for a change, and closing the
+// issue for none, so a 👍 out of habit doesn't read as the answer to a
+// hand-off whose other way out is a close.
+const nothingHandoffFinish = "If something needs to change, reply `/done` on this issue or react 👍 to this comment, and the task goes back to `ready`. If not, close this issue."
+
 // renderNothingHandoff is the hand-off comment on task n when the head the
 // verifier passed, head, changes nothing on main (SPEC §9.3, §10.2),
-// escaped: renderHandoff with nothingHandoffFields, opening with the head,
-// and that its own diff from its merge base with main is empty, so it
-// gets no PR. Only a commit SHA is in it, so it quotes nothing of a run's.
+// escaped: renderHandoffEnding with nothingHandoffFields, opening with
+// the head, and that its own diff from its merge base with main is empty,
+// so it gets no PR, and ending with nothingHandoffFinish. Only a commit
+// SHA is in it, so it quotes nothing of a run's.
 func renderNothingHandoff(head string, n int, notify []string) string {
 	intro := fmt.Sprintf("The verifier passed `%s`, but it changes nothing on `main`: its own diff from its merge base with `main` is empty, so it gets no PR.", head)
-	return renderHandoff(intro, nothingHandoffFields, n, notify)
+	return renderHandoffEnding(intro, nothingHandoffFields, nothingHandoffFinish, n, notify)
 }
 
 // nothingHandoffMove reports whether m is the hand-off for a head that

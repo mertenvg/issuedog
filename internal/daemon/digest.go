@@ -1028,15 +1028,20 @@ func digestSameBody(a, b string) bool {
 // (holdItemFind), and whether an open issue blocks it, if it's a human
 // task, blocked (humanBlocked). For a follow-up waiting at intake in a
 // story, it finds the clean addendum on the story that names it in the
-// story's snapshot held, at no request (digestCacheAddendum). Iterate
+// story's snapshot held, at no request (digestCacheAddendum). For a task
+// with a PR (taskPR), it gives waitFind the PR as the poll listed it
+// (prOfDigest), and records it for the PR's priority label (prTaskSet).
+// Iterate
 // calls it whether or not the digest is on, since assignment takes the
 // same items (assign.go). An issue with nothing waiting has no entry. If
 // waitFind fails, that's logged, and the issue keeps the items it had, as
 // one whose step 1 failed does.
 func (d *Daemon) digestCacheSet(s *github.Snapshot, inputs []github.Comment, dirt Dirt, holds []discTrigger, ownerHeld, blocked bool) {
 	st := d.Step
+	is := state.Derive(s, st.AppSlug, dirt.Has)
+	d.prTaskSet(s.Number, taskPR(is)) // for its PR's priority label (prLabelPass)
 	items, err := waitFind(waitInput{Owner: st.Owner, Repo: st.Repo, AppSlug: st.AppSlug, S: s, Dirt: dirt, Inputs: inputs, CloserErrEnded: st.closerErrEnded(s, dirt.Has, st.trustOnceTrust()), Holds: holds,
-		OwnerHeld: ownerHeld, Blocked: blocked, Addendum: d.digestCacheAddendum(s)})
+		OwnerHeld: ownerHeld, Blocked: blocked, Addendum: d.digestCacheAddendum(s), PR: d.prOfDigest(is)})
 	if err != nil {
 		logr.Errorf("%s/%s#%d keeps the items it had on the digest: %v", st.Owner, st.Repo, s.Number, err)
 		return
@@ -1133,13 +1138,21 @@ func (d *Daemon) digestCacheRanked() []waitItem {
 }
 
 // digestCacheOf returns issue n's cached items that stand on this pass:
-// every one but a finished story's that digestDoneStands doesn't keep.
-// The digest and assignment both take them from here, so they never
-// disagree.
+// every one but a finished story's that digestDoneStands doesn't keep, and
+// a pull request's whose PR the poll no longer lists open
+// (prItemStands). A pull request's that stands names the PR's title as
+// the poll last listed it. The digest and assignment both take them from
+// here, so they never disagree.
 func (d *Daemon) digestCacheOf(n int) []waitItem {
-	return slices.DeleteFunc(slices.Clone(d.digestCache[n]), func(it waitItem) bool {
-		return it.Kind == waitDone && !d.digestDoneStands(it)
+	items := slices.DeleteFunc(slices.Clone(d.digestCache[n]), func(it waitItem) bool {
+		return it.Kind == waitDone && !d.digestDoneStands(it) || it.Kind == waitPR && !d.prItemStands(it)
 	})
+	for i, it := range items {
+		if it.Kind == waitPR {
+			items[i].Lines = waitPRLines(d.prs[it.AssignPR])
+		}
+	}
+	return items
 }
 
 // digestDoneStands reports whether it, a finished story's item (#278),
