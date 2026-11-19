@@ -158,6 +158,28 @@ type Daemon struct {
 	// item stood, so it unassigns notify from each once the item ends
 	// (assignPRs).
 	prManaged map[int]bool
+	// prRead are the open PRs the App opened whose timeline step 2 reads
+	// when it next judges them: each the poll listed as changed, its
+	// updated_at moved, and each whose last read judged nothing or failed
+	// (pr_reconcile.go).
+	prRead map[int]bool
+	// prJudged is the comment holding each task's latest transition when
+	// step 2 last judged its PR at pr-open, by task, so a task back at
+	// pr-open by another move, as from a hold, is judged again
+	// (prJudgeOpen).
+	prJudged map[int]int64
+	// prTrusted is whether the user who made each reopened event on a
+	// task's PR is trusted, by event, asked once while the daemon runs
+	// (prReopenTrusted).
+	prTrusted map[int64]bool
+	// prDirt is the dirty content of each task at pr-open or needs-human,
+	// by task, after its last good step 1, which step 2 moves it with
+	// (prDirtSet).
+	prDirt map[int]Dirt
+	// prPolls counts the polls that listed a pull request changed, so the
+	// PR step that waits on someone else's open PR tries again only once
+	// one has (Runs.prExists).
+	prPolls int
 }
 
 // CurrentTrust is a github.Trust that asks st.Trust on each call. Iterate's
@@ -249,7 +271,9 @@ func (d *Daemon) Run(ctx context.Context) {
 // issue step 1 succeeds on, it caches what waits on the owner
 // (digestCacheSet), with the issue's dirty content, which
 // openErrAny takes too; an issue whose read or step 1 fails keeps its last
-// items, and one that closes or leaves the listing loses them. Then it
+// items, and one that closes or leaves the listing loses them. Then step 2
+// judges each task's PR at pr-open, or on the hand-off for its close
+// (prPass), and moves the task, with its items found again. Then it
 // closes each epic planned into stories whose children have all closed
 // (epicClosePass, #251), keeps each task's PR's priority label
 // (prLabelPass), the digest (digestPass), and then the assignees
@@ -478,6 +502,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		d.digestCacheSet(s, in, dirt, holds, ownerHeld, blocked) // for assignment too, so with the digest off as well
 		d.digestRestartKnow(n)
 		d.epicCloseSet(s, dirt)
+		d.prDirtSet(s, dirt) // for step 2's moves (pr_reconcile.go)
 		if reread {
 			again[n] = true
 		}
@@ -486,6 +511,14 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		delete(d.inputs, n)
 		d.stale[n] = true
 	}
+	// Step 2: a task's PR closed, or reopened, at pr-open or on its
+	// hand-off (pr_reconcile.go). A task it moves skips Work, but its
+	// assignees are judged this pass, on the items its move left.
+	prMoved, err := d.prPass(ctx)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	maps.Copy(again, prMoved)
 	if err := d.epicClosePass(ctx); err != nil { // an epic whose stories have all closed (epicclose.go)
 		errs = append(errs, err)
 	}
@@ -595,7 +628,10 @@ func (d *Daemon) reload(ctx context.Context) {
 // request and gets a 304. Closed issues and pull requests are dropped from
 // the pipeline, and so are digests, which it records, with the App's
 // digest-new comments (digest.go). A pull request the App opened is kept,
-// as listed (prKeep), for the digest, assignment and its priority label. One only the digest's title rule would take is judged after
+// as listed (prKeep), for the digest, assignment, its priority label and
+// step 2, which reads one listed as changed (prPass), and a poll that
+// lists any pull request changed is counted (Daemon.prPolls). One only the
+// digest's title rule would take is judged after
 // the comments (digestTake). A closed issue whose close is still to judge
 // is kept for closingPass (closingList), and an open one forgets its close.
 // Which issues it last listed closed it keeps too (closedListed), adding
@@ -610,6 +646,7 @@ func (d *Daemon) poll(ctx context.Context) error {
 	a := d.Step.Applier
 	start := !d.startPolled // a start's first poll, which lists every issue
 	d.transferUnlistedPolled = map[int]bool{}
+	prListed := false // a pull request listed past the cursor (Daemon.prPolls)
 	for range 2 {
 		since := d.issuesSince
 		issues, err := a.Client.IssuesSince(ctx, a.Owner, a.Repo, since)
@@ -624,6 +661,9 @@ func (d *Daemon) poll(ctx context.Context) error {
 				// Open or closed, past the cursor, so not the repeat of the
 				// one at it: a change the pick's search may not have seen.
 				d.pickStale = true
+			}
+			if is.IsPullRequest() && is.GetUpdatedAt().After(since) {
+				prListed = true
 			}
 			switch {
 			case is.IsPullRequest():
@@ -658,6 +698,9 @@ func (d *Daemon) poll(ctx context.Context) error {
 		if d.issuesSince.Equal(since) {
 			break
 		}
+	}
+	if prListed {
+		d.prPolls++
 	}
 	for range 2 {
 		since := d.commentsSince
@@ -700,6 +743,8 @@ func (d *Daemon) leave(n int) {
 	delete(d.digestCache, n) // a closed issue has nothing waiting
 	delete(d.assignManaged, n)
 	delete(d.prOf, n)
+	delete(d.prDirt, n)
+	delete(d.prJudged, n)
 	d.Step.forgetLabels(n)
 }
 

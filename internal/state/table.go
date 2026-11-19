@@ -69,6 +69,7 @@ const (
 	TriggerMainMoved              Trigger = "main-moved"
 	TriggerMerged                 Trigger = "merged"
 	TriggerPRClosed               Trigger = "pr-closed"
+	TriggerPRReopened             Trigger = "pr-reopened"
 	TriggerHandoffDone            Trigger = "handoff-done"
 	TriggerHumanTaskDone          Trigger = "human-task-done"
 	TriggerHold                   Trigger = "hold"
@@ -154,6 +155,7 @@ var table = []Row{
 	{PROpen, PROpen, AnyTask, TriggerMainMoved},
 	{PROpen, Closed, AnyTask, TriggerMerged},
 	{PROpen, NeedsHuman, AnyTask, TriggerPRClosed},
+	{NeedsHuman, PROpen, AnyTask, TriggerPRReopened},
 	{NeedsHuman, Ready, AnyTask, TriggerHandoffDone},
 	{NeedsHuman, Closed, ClassHumanTask, TriggerHumanTaskDone},
 	{AnyOpen, Held, All, TriggerHold},

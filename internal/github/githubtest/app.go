@@ -233,7 +233,10 @@ func (r *recorder) Write(b []byte) (int, error) {
 // update in direction=, each with its issue_dependencies_summary
 // (withDependencies). A transferred issue isn't listed (transfer.go).
 // A sub-issue is listed with its parent's URL as its parent_issue_url, as
-// GitHub lists it, and an issue with no parent with none.
+// GitHub lists it, and an issue with no parent with none. An open pull
+// request the fake opened has its head read again first, and a head that
+// moved since, as by a push, moves its updated_at, as on GitHub
+// (pullFollow).
 func (f *Fake) listIssues(c *call) (int, any) {
 	q := c.r.URL.Query()
 	var from time.Time
@@ -249,6 +252,9 @@ func (f *Fake) listIssues(c *call) (int, any) {
 	}
 	out := []gogithub.Issue{}
 	for _, is := range f.issues {
+		if err := f.pullFollow(c.r.Context(), is); err != nil {
+			return http.StatusInternalServerError, message(err.Error())
+		}
 		if is.listed() && (state == "all" || is.GetState() == state) && !is.GetUpdatedAt().Before(from) {
 			listed := f.withDependencies(is)
 			if is.parent != 0 {

@@ -56,6 +56,7 @@ func TestLookupFindsEveryRow(t *testing.T) {
 		{PROpen, PROpen, ClassTask, TriggerMainMoved},
 		{PROpen, Closed, ClassBug, TriggerMerged},
 		{PROpen, NeedsHuman, ClassTask, TriggerPRClosed},
+		{NeedsHuman, PROpen, ClassBug, TriggerPRReopened},
 		{NeedsHuman, Ready, ClassTask, TriggerHandoffDone},
 		{NeedsHuman, Closed, ClassHumanTask, TriggerHumanTaskDone},
 		{SpecReview, Held, ClassEpic, TriggerHold},
