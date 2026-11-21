@@ -29,9 +29,10 @@ import (
 // the bare clone find it again.
 
 // prHeadOf is the head task is's PR was verified at (SPEC §5): the head= of
-// its latest move into pr-open that names one, the PR step's, or "" for
-// none. A move into pr-open that names no head, as a trusted reopen's, a
-// return from a hold or a stage set by hand, is looked through.
+// its latest move into pr-open that names one, the PR step's, or a
+// person's head's back from verifying (personBack), or "" for none. A move
+// into pr-open that names no head, as a trusted reopen's, a return from a
+// hold or a stage set by hand, is looked through.
 func prHeadOf(is state.Issue) string {
 	head := ""
 	for _, m := range is.Markers {
@@ -127,22 +128,18 @@ func newHeadMove(m github.Marker) bool {
 }
 
 // taskHeadFollow moves task n's head, taskRef(n), to the head= of its
-// latest move, as is reads it, when that move names a head the task's
-// head follows (headMove): a new head's, or a review's that carries one,
-// and the ref isn't there already (SPEC §3.2). Step 2 calls it after that
-// move, verifyTask on each pass at verifying before it names the head, and
-// a Committer's run start before it reads the task's head, so a crash
-// between the move and the ref is finished there. A head the bare repo
-// lacks moves nothing: the checks find that (verifyChecks), and a run
-// starts from the task's head as it is.
+// latest move, as is reads it, looking through a hold (taskHeadMove), when
+// that move names a head the task's head follows (headMove): a new
+// head's, or a review's that carries one, and the ref isn't there already
+// (SPEC §3.2). Step 2 calls it after that move, verifyTask on each pass at
+// verifying before it names the head, and a Committer's run start before
+// it reads the task's head, so a crash between the move and the ref is
+// finished there, even after a hold and /resume in between. A head the
+// bare repo lacks moves nothing: the checks find that (verifyChecks), and
+// a run starts from the task's head as it is.
 func (d *Daemon) taskHeadFollow(ctx context.Context, n int, is state.Issue) error {
 	a := d.Step.Applier
-	var latest github.Marker
-	for _, m := range is.Markers {
-		if m.Kind == "transition" {
-			latest = m
-		}
-	}
+	latest := taskHeadMove(is)
 	if !headMove(latest) {
 		return nil
 	}
@@ -167,6 +164,29 @@ func (d *Daemon) taskHeadFollow(ctx context.Context, n int, is state.Issue) erro
 	}
 	logr.Infof("%s/%s#%d: the task's head is now the head its move names, %s", a.Owner, a.Repo, n, head)
 	return nil
+}
+
+// taskHeadMove is task is's latest transition, looking through a hold
+// that went back where it came from: a move into held, and a move out of
+// held back to the stage the move before the hold went to, as /resume
+// makes, are skipped, so the move that put the task there stands (SPEC
+// §6.4). taskHeadFollow reads it, and so does personMove, so the head
+// the task's head follows and the head a person's verify judges are one.
+// Any other move, out of held to another stage, or a stage set by hand,
+// is the latest.
+func taskHeadMove(is state.Issue) github.Marker {
+	var latest github.Marker
+	for _, m := range is.Markers {
+		if m.Kind != "transition" {
+			continue
+		}
+		from, to := state.Stage(m.Fields["from"]), state.Stage(m.Fields["to"])
+		if to == state.Held || from == state.Held && to == state.Stage(latest.Fields["to"]) {
+			continue
+		}
+		latest = m
+	}
+	return latest
 }
 
 // headMove reports whether m is a move whose head= the task's head follows

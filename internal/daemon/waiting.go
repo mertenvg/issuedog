@@ -715,9 +715,12 @@ func waitGoalDone(body string) (goal, done string) {
 // verifier's runs on the task's head failing (verifierCapMove), whose
 // hand-off always says why. Or it's the verifier passing a head that
 // changes nothing on main, so it gets no PR (nothingHandoffMove), which
-// verifyCapMove leaves out, though both are keyed run=. With either
-// field not found, as for a format that has changed, a line says to see
-// the hand-off instead. Or it's the task's PR, closed without merging, or
+// verifyCapMove leaves out, though both are keyed run=. Or it's a head
+// someone else pushed failing rule 2 (personRule2Move), which verifyCapMove
+// leaves out, though both are keyed event=v: its hand-off names the paths
+// before its fields, so they're read from its last Goal line on, as for
+// the verify cap's. With either field not found, as for a format that has
+// changed, a line says to see the hand-off instead. Or it's the task's PR, closed without merging, or
 // reopened after a close by someone who isn't trusted (prClosedMove,
 // prClosedByReopen). The last line says how to end it, as the hand-off
 // does: for a head that changes nothing, that /done or a 👍 is for a
@@ -738,6 +741,11 @@ func waitHandoffLines(s *github.Snapshot, id int64) []waitLine {
 	case slices.ContainsFunc(markers, nothingHandoffMove):
 		why = "the verifier passed a head that changes nothing on `main`, so it gets no PR."
 		finish = "If something needs to change, reply `/done` on the issue or react 👍 to the hand-off, and the task goes back to `ready`. If not, close the issue."
+	case slices.ContainsFunc(markers, personRule2Move):
+		why = "a head someone else pushed to the task's branch changes a protected path, so it fails rule 2, and the hand-off names the paths."
+		if i := strings.LastIndex(body, "\n**Goal:** "); i >= 0 {
+			fields = body[i+1:]
+		}
 	case slices.ContainsFunc(markers, verifyCapMove):
 		why = "the task's `loop.max_attempts` attempts in its round failed, the last at verify, and the hand-off has the findings."
 		if i := strings.LastIndex(body, "\n**Goal:** "); i >= 0 {
@@ -824,9 +832,9 @@ func stalledHead(is state.Issue) string {
 // for a new round. At needs-human, a stage set back by hand has no
 // hand-off to answer, so: close the issue if nothing needs to change, or
 // set stage:ready for a new round. A pushed head isn't one of them: it
-// moves nothing at verifying (SPEC §7.2's "a head a person pushed" isn't
-// built). Every line is this file's own words, with only a run ID from an
-// App marker and stage names in them.
+// moves nothing at verifying, as step 2 judges a task's branch only at
+// pr-open (SPEC §7.2). Every line is this file's own words, with only a
+// run ID from an App marker and stage names in them.
 func waitStalledLines(run string, to state.Stage) []waitLine {
 	act := fmt.Sprintf("Set `stage:%s` back to wait on its PR, or set `stage:%s` for a new round.", to, state.Ready)
 	if to != state.PROpen {
