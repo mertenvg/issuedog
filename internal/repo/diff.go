@@ -516,6 +516,18 @@ func (r *Repo) MergeTree(ctx context.Context, target, head string) (conflicts []
 			err = errors.Join(err, fmt.Errorf("remove attrless repo: %w", rerr))
 		}
 	}()
+	_, conflicts, err = mergeTree(ctx, a, target, head)
+	if err != nil {
+		return nil, fmt.Errorf("merge tree: %w", err)
+	}
+	return conflicts, nil
+}
+
+// mergeTree runs git merge-tree --write-tree on target and head, both full
+// SHAs, in a, an attrless repo, and returns the merged tree's ID and the
+// paths that conflict, each once; none when the merge is clean. The tree,
+// and every object the merge writes, are a's.
+func mergeTree(ctx context.Context, a *Repo, target, head string) (tree string, conflicts []string, err error) {
 	out, err := a.git(ctx, "", "merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", target, head)
 	// With -z, the output is the merged tree's ID, then each conflicting
 	// path, each ended by a NUL. It exits 1 when there are conflicts.
@@ -523,13 +535,13 @@ func (r *Repo) MergeTree(ctx context.Context, target, head string) (conflicts []
 	var exit *exec.ExitError
 	switch {
 	case err == nil && len(fields) == 1:
-		return nil, nil
+		return fields[0], nil, nil
 	case err != nil && errors.As(err, &exit) && exit.ExitCode() == 1 && len(fields) > 1:
-		return fields[1:], nil
+		return fields[0], fields[1:], nil
 	case err != nil:
-		return nil, fmt.Errorf("merge tree of %s and %s: %w", target, head, err)
+		return "", nil, fmt.Errorf("merge %s into %s: %w", head, target, err)
 	default:
-		return nil, fmt.Errorf("merge tree of %s and %s: unexpected output %q", target, head, out)
+		return "", nil, fmt.Errorf("merge %s into %s: unexpected output %q", head, target, out)
 	}
 }
 
