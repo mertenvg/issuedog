@@ -230,12 +230,12 @@ func prTakesWorker(m Move) bool {
 	return m.To == state.Verifying || m.To == state.InProgress
 }
 
-// prWaitingFor is the move step 2 found for task n at pr-open, whose state
-// is is, with its PR p, that waits for the worker (Daemon.prWaiting), and
-// true, while it stands: the task hasn't moved since its PR was last
-// judged (Daemon.prJudged), and the poll hasn't listed the PR changed
-// since (Daemon.prRead). Otherwise the move is dropped, and the PR is
-// judged again.
+// prWaitingFor is the move step 2, or step 4 (Runs.mainMoved), found for
+// task n at pr-open, whose state is is, with its PR p, that waits for the
+// worker (Daemon.prWaiting), and true, while it stands: the task hasn't
+// moved since its PR was last judged (Daemon.prJudged), and the poll
+// hasn't listed the PR changed since (Daemon.prRead). Otherwise the move
+// is dropped, and the PR is judged again.
 func (d *Daemon) prWaitingFor(n int, is state.Issue, p listedPR) (Move, bool) {
 	m, ok := d.prWaiting[n]
 	if !ok {
@@ -261,7 +261,8 @@ func (d *Daemon) prWaitingFor(n int, is state.Issue, p listedPR) (Move, bool) {
 // branch's tip as head= when it isn't the PR's verified head, and none
 // otherwise (prReviewHead). Two branches with the task's prefix drop a new
 // head's move, as prNewHead makes none then, and leave a review's as it
-// was found.
+// was found. A move on main's moving, which step 4 found (Runs.mainMoved),
+// stands only while main is at the commit its key names (prWaitingMain).
 func (d *Daemon) prWaitingTip(ctx context.Context, s *github.Snapshot, is state.Issue, m Move) (Move, bool, error) {
 	a, n := d.Step.Applier, s.Number
 	_, tip, ok, err := d.prTip(ctx, s)
@@ -274,15 +275,22 @@ func (d *Daemon) prWaitingTip(ctx context.Context, s *github.Snapshot, is state.
 			a.Owner, a.Repo, n, m.To, m.Trigger, tip)
 		delete(d.prWaiting, n)
 		return Move{}, false, nil
+	case mainKeyed(m.Key):
+		stands, err := d.prWaitingMain(ctx, s, m)
+		if err != nil {
+			return Move{}, false, fmt.Errorf("its waiting move on main: %w", err)
+		}
+		return m, stands, nil
 	case m.Trigger == state.TriggerReviewChanges && ok:
 		m.Fields = prReviewHead(maps.Clone(m.Fields), prHeadOf(is), tip)
 	}
 	return m, true, nil
 }
 
-// prWait keeps m, the move step 2 found for task n out of pr-open, to make
-// once the worker is free (Daemon.prWaiting), logging why it waits: at
-// info the pass it's found, and at debug each pass after.
+// prWait keeps m, the move step 2, or step 4 (Runs.mainMoved), found for
+// task n out of pr-open, to make once the worker is free
+// (Daemon.prWaiting), logging why it waits: at info the pass it's found,
+// and at debug each pass after.
 func (d *Daemon) prWait(n int, m Move, why string) {
 	a := d.Step.Applier
 	log := logr.Infof

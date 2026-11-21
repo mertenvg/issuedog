@@ -179,7 +179,7 @@ func (r *Runs) openPR(ctx context.Context, rd Ready, is state.Issue, head, main 
 	}
 	logr.Infof("%s/%s#%d: its PR #%d from %s to %s is open at its head %s", a.Owner, a.Repo, n, pr.Number, want.Branch, prBase, head)
 	link := waitLink(a.Owner, a.Repo, n, want.Pass)
-	if err := r.Daemon.prCheck(ctx, n, head, checkSuccess, renderPRCheck(n, head, main, r.passed[n].Results, link), link); err != nil {
+	if err := r.Daemon.prCheck(ctx, n, head, main, checkSuccess, renderPRCheck(n, head, main, r.passed[n].Results, link), link); err != nil {
 		return true, wrap(err)
 	}
 	if err := r.prMove(ctx, s, d, want.Run, head, pr.Number, seen); err != nil {
@@ -539,11 +539,15 @@ const checkSummaryMax = 65535
 // summary summary, escaped by the caller: for a success renderPRCheck's,
 // with what the checks of head against main gave (Runs.passed), so
 // nothing runs again. Its details URL is link: for a success, the
-// verifier's pass comment. It's checked first: it reads the App's check
-// runs there (github.Client.VerifyChecks), and posts none when the newest
+// verifier's pass comment. Its external_id names the main commit the
+// commands ran with (mainCheckID, checkedMain): main, main's commit the
+// checks ran against, when it's in head's history, and else head's merge
+// base with it, so once main moves past the head, its merge with main is
+// checked after a restart too (Runs.mainMoved). It's checked first: it
+// reads the App's check runs there (github.Client.VerifyChecks), and posts none when the newest
 // of them has that conclusion already (prChecked), so a replay or a
 // restart posts one.
-func (d *Daemon) prCheck(ctx context.Context, n int, head, conclusion, summary, link string) error {
+func (d *Daemon) prCheck(ctx context.Context, n int, head, main, conclusion, summary, link string) error {
 	a := d.Step.Applier
 	runs, err := a.Client.VerifyChecks(ctx, a.Owner, a.Repo, head)
 	if err != nil {
@@ -557,8 +561,16 @@ func (d *Daemon) prCheck(ctx context.Context, n int, head, conclusion, summary, 
 	if conclusion != checkSuccess {
 		title = prCheckFailedTitle
 	}
+	ran, err := d.checkedMain(ctx, head, main)
+	if err != nil {
+		return fmt.Errorf("name the main the checks ran with: %w", err)
+	}
+	var id string
+	if ran != "" {
+		id = mainCheckID(ran)
+	}
 	run, err := a.Client.PostVerifyCheck(ctx, a.Owner, a.Repo, github.NewCheckRun{HeadSHA: head, Conclusion: conclusion,
-		Title: title, Summary: summary, DetailsURL: link})
+		Title: title, Summary: summary, DetailsURL: link, ExternalID: id})
 	if err != nil {
 		return fmt.Errorf("check the head: %w", err)
 	}
