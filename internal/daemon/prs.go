@@ -197,3 +197,17 @@ func (d *Daemon) prOfDigest(is state.Issue) *listedPR {
 func (d *Daemon) prItemStands(it waitItem) bool {
 	return d.prs[it.AssignPR].Open
 }
+
+// prStallStands reports whether it, a stalled task's item on its closed PR
+// at pr-open (waitItem.ClosedPR), stands on this pass: the PR is listed
+// closed and not merged (SPEC §9.4). A PR that's reopened or merged changes
+// nothing on its task, so the item is found on the task's last visit and
+// judged again here on each pass, from what the poll listed, with no
+// request. Every other item stands.
+func (d *Daemon) prStallStands(it waitItem) bool {
+	if it.ClosedPR == 0 {
+		return true
+	}
+	p := d.prs[it.ClosedPR]
+	return !p.Open && !p.Merged
+}

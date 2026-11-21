@@ -57,9 +57,12 @@ import (
 // of a hand-off for its close or untrusted reopen is judged by
 // prJudgeHandoff. A move it makes gets its task's items found again, so
 // the digest and assignment show it this pass, and its task is read again
-// next pass and skips Work. It returns the tasks it moved, for assignment
-// (assignPass). A failed read or move is the pass's error, and only that
-// task's: the next pass judges it again.
+// next pass and skips Work. So does a task at pr-open stalled on its
+// closed PR (waitFind) whose PR the poll lists open again, as after a
+// trusted reopen, which moves nothing, so its pull request item comes
+// back on that pass, at no request. It returns the tasks it moved, for
+// assignment (assignPass). A failed read or move is the pass's error, and
+// only that task's: the next pass judges it again.
 //
 // A move into verifying or in-progress takes the worker, so while another
 // task holds it (workerFree), the move waits, kept in memory
@@ -90,6 +93,12 @@ func (d *Daemon) prPass(ctx context.Context) (map[int]bool, error) {
 		p, ok := d.prs[taskPR(is)]
 		if !ok || p.Merged {
 			continue
+		}
+		if is.Stage == state.PROpen && p.Open && slices.ContainsFunc(d.digestCache[n], func(it waitItem) bool { return it.ClosedPR == p.Number }) {
+			// A stalled task on its closed PR whose PR the poll lists open
+			// again, as on a trusted reopen, which moves nothing, gets its
+			// items found again, its PR's among them, at no request.
+			d.digestCacheSet(s, d.inputs[n], dirt, nil, false, false)
 		}
 		var m *Move
 		var err error
@@ -193,7 +202,7 @@ func (d *Daemon) prJudgeOpen(ctx context.Context, s *github.Snapshot, dirt Dirt,
 	a, n := d.Step.Applier, s.Number
 	link := prLink(a.Owner, a.Repo, p.Number)
 	if !p.Open {
-		key := state.Key{Field: "event", ID: fmt.Sprintf("c%d-%d", p.Number, p.ClosedAt.Unix())}
+		key := prClosedKey(p)
 		if is.Moved(key) {
 			logr.Debugf("%s/%s#%d: its PR #%d's close was handed off already, so it moves the task no more", a.Owner, a.Repo, n, p.Number)
 			return nil, nil
@@ -239,6 +248,14 @@ func (d *Daemon) prJudgeOpen(ctx context.Context, s *github.Snapshot, dirt Dirt,
 	}
 	d.prJudged[n] = is.TransitionComment
 	return m, nil
+}
+
+// prClosedKey keys the hand-off of a task at pr-open for p, its PR the
+// poll lists closed without merging (SPEC §5): event=c<PR>-<closed_at in
+// Unix seconds>. A close handed off already moves the task no more, and
+// the digest lists the task as stalled on it (waitFind).
+func prClosedKey(p listedPR) state.Key {
+	return state.Key{Field: "event", ID: fmt.Sprintf("c%d-%d", p.Number, p.ClosedAt.Unix())}
 }
 
 // prJudgeHandoff judges p, the PR of task s at needs-human, whose state is
