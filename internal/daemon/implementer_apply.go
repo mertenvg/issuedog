@@ -279,6 +279,11 @@ var implementerTriggers = map[state.Stage]state.Trigger{
 // each moves a task to from verifying (SPEC §7.2), and of the PR step's
 // move to pr-open on its pass, which is keyed by the pass's run (prMove),
 // so a verifier's apply that finds it written finishes it too (runMoved).
+// A person's head's move to pr-open, on person-pushed, keyed by the
+// pass's run (personPass) or by the request_changes' (personChanges), is
+// finished the same way: a move written already only has its labels
+// finished (Transition), which reads no row, so pr-open's one trigger
+// stands for both rows.
 var verifierTriggers = map[state.Stage]state.Trigger{
 	state.InProgress: state.TriggerFindings,
 	state.NeedsHuman: state.TriggerAttemptCap,

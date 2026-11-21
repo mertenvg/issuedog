@@ -157,7 +157,9 @@ func oneDataMarker(c github.Comment, appSlug, kind, version string) (github.Mark
 // verifier's notes, from its pass comment's verify-notes marker
 // (readVerifyNotes), and VerifierLink, that comment; the head the pass
 // verified, and main's SHA its checks ran against; and the checks' results
-// on them, each of verify.commands.
+// on them, each of verify.commands. Failed is set for a head someone else
+// pushed that fails verify (personBack): Head is that head, and nothing
+// but the summary is read.
 type prSource struct {
 	Task         int
 	Title        *implementerTitle
@@ -167,6 +169,7 @@ type prSource struct {
 	Head, Main   string
 	Results      []verify.CommandResult
 	VerifierLink string
+	Failed       bool
 }
 
 // renderPRTitle is the PR's title (SPEC §11.5): the implementer's
@@ -194,6 +197,8 @@ const (
 	prNoSummary  = "The implementer's summary isn't on #%d: the task's move to `verifying` keeps no `pr-text` data, as a move made by hand doesn't."
 	prCutSummary = "The implementer's summary is too long for this description, so it's left out. It's in [its comment](%s)."
 	prCutNotes   = "The verifier's notes are too long for this description, so they're left out. They're in [its comment](%s)."
+	prFailed     = "`%s`, a head the daemon didn't push, fails verify, so it isn't verified: its `issuedog/verify` check has the findings."
+	prNoNotes    = "None, as the head didn't pass."
 )
 
 // renderPRBody is the PR's body, in the SPEC §11.5 format: "Closes #N",
@@ -202,7 +207,9 @@ const (
 // rules 2 to 7 passed, then the verifier's notes, and last a line naming the
 // head verified and main's SHA, and linking the verifier's comment. A move
 // with no pr-text has a line saying the summary isn't on the issue in place
-// of What changed, Why and Tests.
+// of What changed, Why and Tests. A head that fails verify (prSource.Failed)
+// has a line naming it in place of Results, saying its check has the
+// findings, and no notes, and isn't said to be verified.
 //
 // Each agent field is made safe as a comment's is (block, inline), then its
 // issue references are defused (defuseRefs), so on a squash merge, whose
@@ -243,6 +250,10 @@ func prBody(src prSource, cutSummary, cutNotes bool) string {
 			"## What changed\n\n"+defuseRefs(block(sum.WhatChanged)),
 			"## Why\n\n"+defuseRefs(block(sum.Why)),
 			"## Tests\n\n"+orNone(strings.Join(tests, "\n")))
+	}
+	if src.Failed {
+		parts = append(parts, "## Results\n\n"+fmt.Sprintf(prFailed, src.Head), "## Verifier notes\n\n"+prNoNotes)
+		return github.Escape(strings.Join(parts, "\n\n"))
 	}
 	parts = append(parts, "## Results\n\n"+prResults(src.Results))
 	notes := defuseRefs(block(src.Notes))

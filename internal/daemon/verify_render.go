@@ -168,10 +168,11 @@ func renderVerifyCapHandoff(attempts int, findings string, n int, notify []strin
 // needs-human (verifyFindings, Verifier.Apply): verifying → needs-human,
 // keyed as the move back on findings would be (verifyKeyed), and not the
 // hand-off for a head that changes nothing, which is keyed run= too
-// (nothingHandoffMove).
+// (nothingHandoffMove), nor the one for a person's head that fails rule 2,
+// which is keyed event=v too (personRule2Move).
 func verifyCapMove(m github.Marker) bool {
 	return m.Kind == "transition" && state.Stage(m.Fields["from"]) == state.Verifying &&
-		state.Stage(m.Fields["to"]) == state.NeedsHuman && verifyKeyed(m) && !nothingHandoffMove(m)
+		state.Stage(m.Fields["to"]) == state.NeedsHuman && verifyKeyed(m) && !nothingHandoffMove(m) && !personRule2Move(m)
 }
 
 // findingSection is f's section of the findings comment: its heading, by
