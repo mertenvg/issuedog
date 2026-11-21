@@ -180,6 +180,18 @@ type Daemon struct {
 	// PR step that waits on someone else's open PR tries again only once
 	// one has (Runs.prExists).
 	prPolls int
+	// prWaiting is the move out of pr-open step 2 found for each task, by
+	// task, that waits for the worker: one into verifying or in-progress,
+	// made once the worker is free, and dropped when the task moves or its
+	// PR changes (pr_head.go).
+	prWaiting map[int]Move
+	// prHeadWarned is the key of the last warning step 2 logged for each
+	// task's branch, by task, so a wait that lasts is warned of once
+	// (prHeadWarnOnce).
+	prHeadWarned map[int]string
+	// workerLeased is whether a run's lease held the worker when Work last
+	// ended (Runs.Work), for step 2's moves that take it (workerFree).
+	workerLeased bool
 }
 
 // CurrentTrust is a github.Trust that asks st.Trust on each call. Iterate's

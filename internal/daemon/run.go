@@ -356,7 +356,15 @@ func (p checksPassed) holds(head, main string) bool { return p.Head == head && p
 // Every open issue whose step 1 succeeded is ready, those with no stage
 // label among them, so finding Unlabeled work costs no reads: Dirty keeps
 // the histories it reads, and only the issue about to run is read again.
-func (r *Runs) Work(ctx context.Context, ready []Ready) error {
+//
+// Last, whatever it ran, it notes whether a lease holds the worker, for
+// step 2's moves that take it on the next pass (workerLeaseNote).
+func (r *Runs) Work(ctx context.Context, ready []Ready) (err error) {
+	defer func() {
+		if lerr := r.workerLeaseNote(ctx); lerr != nil {
+			err = errors.Join(err, fmt.Errorf("note the worker's lease: %w", lerr))
+		}
+	}()
 	if !r.swept {
 		r.swept = r.sweep(ctx)
 	}
@@ -1888,6 +1896,27 @@ func (r *Runs) readLease(ctx context.Context) (Lease, bool, error) {
 		return Lease{}, false, fmt.Errorf("remove the lease: %w", err)
 	}
 	return Lease{}, false, nil
+}
+
+// workerLeaseNote notes in Daemon.workerLeased whether a lease holds the
+// worker, as pickHeld judges one: it stands, and isn't marked ended. Work
+// calls it last, so step 2 of the next pass, which comes before Work,
+// knows it at no request (workerFree). A daemon whose Work hasn't run yet,
+// as on a start's first pass, knows of none, but a task's lease is for a
+// task at in-progress or verifying, whose stage label holds the worker
+// too. A lease that can't be read is taken to hold it. A Runs with no
+// Daemon, as a sweep's alone, notes nothing.
+func (r *Runs) workerLeaseNote(ctx context.Context) error {
+	if r.Daemon == nil {
+		return nil
+	}
+	l, ok, err := r.readLease(ctx)
+	if err != nil {
+		r.Daemon.workerLeased = true
+		return fmt.Errorf("read the lease: %w", err)
+	}
+	r.Daemon.workerLeased = ok && !l.Failed
+	return nil
 }
 
 // writeLease writes the lease through a temp file and a rename, then syncs
