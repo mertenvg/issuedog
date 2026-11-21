@@ -22,7 +22,8 @@ import (
 // close, hands its task at pr-open to the owner at needs-human, and a
 // trusted user's reopen sends it back to pr-open. A merge is no close
 // here: its "Closes #N" closes the task, which the close judge accepts
-// (closingAccepted).
+// (closingAccepted). A task at pr-open whose branch moved to a head the
+// daemon didn't push goes back to verifying (pr_head.go).
 //
 // What it reads:
 //   - a closed PR's state, as the poll listed it (Daemon.prs), says
@@ -36,7 +37,10 @@ import (
 //     reopened event GitHub hasn't written yet. So a pass whose poll lists
 //     no PR makes no request here (SPEC §8.1);
 //   - whether a reopener is trusted is asked once per event while the
-//     daemon runs (Daemon.prTrusted).
+//     daemon runs (Daemon.prTrusted);
+//   - a task's branch is read from the bare clone, as the pass's sync left
+//     it, at no request (prNewHead), and a move waiting for the worker is
+//     kept in memory (Daemon.prWaiting).
 
 // prPass judges the PR of each task held at pr-open or at needs-human
 // (Daemon.prDirt), step 2 (SPEC §8.1), after step 1's visits and before
@@ -44,17 +48,29 @@ import (
 // a command touched, waits for its next pass, keeping its PR's read
 // (Daemon.prRead), and so does a held one, which isn't judged. At pr-open,
 // the PR the task names (taskPR), one the App opened that isn't merged,
-// is judged by prJudgeOpen; at needs-human, the PR of a hand-off for its
-// close or untrusted reopen is judged by prJudgeHandoff. A move it makes
-// gets its task's items found again, so the digest and assignment show it
-// this pass, and its task is read again next pass and skips Work. It
-// returns the tasks it moved, for assignment (assignPass). A failed read
-// or move is the pass's error, and only that task's: the next pass judges
-// it again.
+// is judged by prJudgeOpenHead, and its branch too; at needs-human, the PR
+// of a hand-off for its close or untrusted reopen is judged by
+// prJudgeHandoff. A move it makes gets its task's items found again, so
+// the digest and assignment show it this pass, and its task is read again
+// next pass and skips Work. It returns the tasks it moved, for assignment
+// (assignPass). A failed read or move is the pass's error, and only that
+// task's: the next pass judges it again.
+//
+// A move into verifying or in-progress takes the worker, so while another
+// task holds it (workerFree), the move waits, kept in memory
+// (Daemon.prWaiting), with no write, and is made on the first pass the
+// worker is free, unless the task moved or its PR changed since
+// (prWaitingFor), or the task left pr-open (SPEC §8.1). A move into
+// verifying on a new head then moves the task's head (taskHeadFollow).
 func (d *Daemon) prPass(ctx context.Context) (map[int]bool, error) {
 	a := d.Step.Applier
 	moved := map[int]bool{}
 	var errs []error
+	for n := range d.prWaiting {
+		if _, ok := d.prDirt[n]; !ok { // it left pr-open (prDirtSet)
+			delete(d.prWaiting, n)
+		}
+	}
 	for _, n := range slices.Sorted(maps.Keys(d.prDirt)) {
 		s, dirt := d.snaps[n], d.prDirt[n]
 		if s == nil || s.Closed || d.stale[n] {
@@ -72,8 +88,9 @@ func (d *Daemon) prPass(ctx context.Context) (map[int]bool, error) {
 		var err error
 		switch is.Stage {
 		case state.PROpen:
-			m, err = d.prJudgeOpen(ctx, s, dirt, is, p)
+			m, err = d.prJudgeOpenHead(ctx, s, dirt, is, p)
 		case state.NeedsHuman:
+			delete(d.prWaiting, n)
 			m, err = d.prJudgeHandoff(ctx, s, dirt, is, p)
 		}
 		if err != nil {
@@ -83,6 +100,13 @@ func (d *Daemon) prPass(ctx context.Context) (map[int]bool, error) {
 		if m == nil {
 			continue
 		}
+		if prTakesWorker(*m) {
+			if free, why := d.workerFree(n); !free {
+				d.prWait(n, *m, why)
+				continue
+			}
+		}
+		delete(d.prWaiting, n)
 		if err := a.Transition(ctx, s, dirt.Has, *m); err != nil {
 			d.prReadAgain(p.Number)
 			d.reread(n, false)
@@ -93,8 +117,39 @@ func (d *Daemon) prPass(ctx context.Context) (map[int]bool, error) {
 		d.digestCacheSet(s, d.inputs[n], dirt, nil, false, false)
 		d.reread(n, false)
 		moved[n] = true
+		// Then the task's head, which verifying finishes if a crash
+		// comes between (SPEC §3.2).
+		if err := d.taskHeadFollow(ctx, n, state.Derive(s, a.AppSlug, dirt.Has)); err != nil {
+			errs = append(errs, fmt.Errorf("judge PR %s/%s#%d of #%d: %w", a.Owner, a.Repo, p.Number, n, err))
+		}
 	}
 	return moved, errors.Join(errs...)
+}
+
+// prJudgeOpenHead judges task s at pr-open, whose state is is, with its
+// PR p, and returns the move it makes, or nil. A move found on an earlier
+// pass that waits for the worker, and still stands (prWaitingFor), is the
+// one, with no request. Otherwise the PR is judged (prJudgeOpen), and when
+// that moves nothing, and judged the PR, as its read isn't to be made
+// again next pass, an open PR's branch is judged for a new head
+// (prNewHead), from the bare clone alone. A PR the poll lists closed, its
+// close handed off already, gets no such look: its close is the PR's
+// (SPEC §6.4).
+func (d *Daemon) prJudgeOpenHead(ctx context.Context, s *github.Snapshot, dirt Dirt, is state.Issue, p listedPR) (*Move, error) {
+	if m, ok := d.prWaitingFor(s.Number, is, p); ok {
+		return &m, nil
+	}
+	m, err := d.prJudgeOpen(ctx, s, dirt, is, p)
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("the PR's events: %w", err)
+	case m != nil || !p.Open || d.prRead[p.Number]:
+		return m, nil
+	}
+	if m, err = d.prNewHead(ctx, s, is); err != nil {
+		return nil, fmt.Errorf("its branch at %s: %w", is.Stage, err)
+	}
+	return m, nil
 }
 
 // prJudgeOpen judges p, the PR of task s at pr-open, whose state is is

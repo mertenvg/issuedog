@@ -35,7 +35,9 @@ func verifyKey(c int64) state.Key {
 // Commands, no task gets either.
 //
 // The head is the latest move into verifying's head=, or else the task's
-// head, taskRef (verifyHead). It's checked against main's commit as the
+// head, taskRef (verifyHead). When the latest move is step 2's on a new
+// head, the task's head is moved there first, if it's behind
+// (taskHeadFollow). It's checked against main's commit as the
 // pass's sync left it, rule 2's baseline and rule 7's target, by
 // verifyChecks. A pass writes nothing, and returns: it's kept in passed, by
 // head and main's commit, with what the commands gave, so the checks don't
@@ -92,6 +94,11 @@ func (r *Runs) verifyTask(ctx context.Context, ready []Ready, skip int) (bool, e
 		if class, err := state.ClassOf(is.Item); is.Stage != state.Verifying || err != nil || class&state.AnyTask == 0 {
 			logr.Debugf("%s/%s#%d gets no checks: it's no task at %s that gets a PR, by its markers", a.Owner, a.Repo, n, state.Verifying)
 			continue
+		}
+		// A new head's move written, and the task's head not moved after
+		// it, as by a crash between them, is finished first (SPEC §3.2).
+		if err := r.Daemon.taskHeadFollow(ctx, n, is); err != nil {
+			return false, fmt.Errorf("verify #%d: %w", n, err)
 		}
 		head, err := r.verifyHead(ctx, n, is)
 		if err != nil {
