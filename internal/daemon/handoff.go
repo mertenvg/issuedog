@@ -35,7 +35,10 @@ type runStart struct {
 // §3.2, §3.4). A Committer's run starts from the task's head, taskRef(n),
 // once it passes rule 2 of SPEC §10.1 (startFrom), or with none yet, from
 // its base: main's commit as the pass's sync left it, which is a task with
-// no parent's (inStory). An AfterChecks Stage's run starts from the head
+// no parent's (inStory). When the task's latest move names a head its
+// head follows, as a review's with the branch's tip does, the task's head
+// moves there first, if it's behind (taskHeadFollow). An AfterChecks
+// Stage's run starts from the head
 // the checks judge (startAfterChecks). Any other Stage's run starts from
 // main's commit. Only a Committer's run may name a target, or have its
 // head dropped.
@@ -45,6 +48,12 @@ func (r *Runs) start(ctx context.Context, st Stage, is state.Issue, n int) (runS
 	}
 	head, hasHead := "", false
 	if _, ok := st.(Committer); ok {
+		// A review's move that named the branch's tip, and the task's head
+		// not moved after it, as by a crash between them, is finished
+		// first (SPEC §3.2).
+		if err := r.Daemon.taskHeadFollow(ctx, n, is); err != nil {
+			return runStart{}, fmt.Errorf("follow the task's head: %w", err)
+		}
 		var err error
 		if head, hasHead, err = r.Daemon.Clone.ReadRef(ctx, taskRef(n)); err != nil {
 			return runStart{}, fmt.Errorf("read the task's head: %w", err)
