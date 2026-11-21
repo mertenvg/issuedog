@@ -22,10 +22,12 @@ type State struct {
 }
 
 // CheckRunState is one check run in a State: the commit it's on, its name
-// and conclusion, and the ID of the App that posted it.
+// and conclusion, the ID of the App that posted it, and its external_id, ""
+// for none.
 type CheckRunState struct {
 	SHA, Name, Conclusion string
 	AppID                 int64
+	ExternalID            string
 }
 
 // PRState is one pull request in a State: its head and base branches, the
@@ -130,7 +132,8 @@ func (f *Fake) State() State {
 //     are compared in order, with their bodies, and sub-issues in the
 //     order they were linked, and pull requests by number, with their
 //     heads, bases, titles, bodies and states, and check runs by SHA, in
-//     the order posted, with their names, conclusions and Apps. A run may
+//     the order posted, with their names, conclusions, Apps and
+//     external_ids. A run may
 //     not leave an extra comment, reaction, label, assignee, sub-issue,
 //     blocked-by link, pull request or check run, or miss one.
 //

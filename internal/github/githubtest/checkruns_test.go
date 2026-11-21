@@ -196,3 +196,42 @@ func TestCheckRunsCreate(t *testing.T) {
 		t.Errorf("State().CheckRuns with no git remote %+v; want none", got)
 	}
 }
+
+// A check run's external_id is kept from the POST and served as sent, in
+// the answer and the list, and State holds it. One posted with none, and
+// one SetCheckRun adds, have none, and are served with none.
+func TestCheckRunsExternalID(t *testing.T) {
+	t.Parallel()
+	f, r := pullFake(t, "a")
+	sha, main := r.tip("a"), r.tip("main")
+	f.SetCheckRun(sha, "issuedog/verify", "success", AppID)
+	status, msg, run := checkRunPost(t, f, map[string]any{"name": "issuedog/verify", "head_sha": sha, "conclusion": "failure", "external_id": "main=" + main})
+	if status != http.StatusCreated || run.GetExternalID() != "main="+main {
+		t.Fatalf("post: %d %s, external_id %q; want a 201 with main=%s", status, msg, run.GetExternalID(), main)
+	}
+	if status, msg, run := checkRunPost(t, f, map[string]any{"name": "issuedog/verify", "head_sha": sha, "conclusion": "success"}); status != http.StatusCreated ||
+		run.ExternalID != nil {
+		t.Errorf("post with none: %d %s, external_id %v; want a 201 with none", status, msg, run.ExternalID)
+	}
+	var out gogithub.ListCheckRunsResults
+	if status, msg := pullDo(t, f, "GET", "repos/o/r/commits/"+sha+"/check-runs?filter=all", nil, &out); status != http.StatusOK {
+		t.Fatalf("list: %d %s", status, msg)
+	}
+	var got []string
+	for _, run := range out.CheckRuns {
+		external := "none"
+		if run.ExternalID != nil {
+			external = *run.ExternalID
+		}
+		got = append(got, run.GetConclusion()+" "+external)
+	}
+	if want := []string{"success none", "failure main=" + main, "success none"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("listed %q; want %q: only the run posted with one names main", got, want)
+	}
+	want := []CheckRunState{{SHA: sha, Name: "issuedog/verify", Conclusion: "success", AppID: AppID},
+		{SHA: sha, Name: "issuedog/verify", Conclusion: "failure", AppID: AppID, ExternalID: "main=" + main},
+		{SHA: sha, Name: "issuedog/verify", Conclusion: "success", AppID: AppID}}
+	if got := f.State().CheckRuns; !reflect.DeepEqual(got, want) {
+		t.Errorf("State().CheckRuns %+v; want %+v", got, want)
+	}
+}

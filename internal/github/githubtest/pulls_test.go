@@ -556,3 +556,42 @@ func TestPullsHelpersFail(t *testing.T) {
 		}
 	}
 }
+
+// A push to an open pull request's branch, then the issue list with
+// since= from after its last change, lists the pull request as changed,
+// as GitHub is believed to (SPEC §16): the list reads its head again
+// (pullFollow), which moves its updated_at. The pull request then shows
+// the new head. With no push, that list is empty.
+func TestPullsPushListedSince(t *testing.T) {
+	t.Parallel()
+	f, r := pullFake(t, "a")
+	n := pullOpen(t, f, "A", "a", "main", "")
+	c, ctx := f.Client(t), t.Context()
+	all, err := c.IssuesSince(ctx, "o", "r", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].GetNumber() != n {
+		t.Fatalf("listed %+v; want the pull request alone", all)
+	}
+	since := all[0].GetUpdatedAt().Add(time.Second)
+	f.Advance(time.Second)
+	if quiet, err := c.IssuesSince(ctx, "o", "r", since); err != nil || len(quiet) != 0 {
+		t.Fatalf("listed since %s with no push: %+v, %v; want none", since, quiet, err)
+	}
+	pushed := r.commit("a")
+	changed, err := c.IssuesSince(ctx, "o", "r", since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changed) != 1 || changed[0].GetNumber() != n || !changed[0].IsPullRequest() || changed[0].GetUpdatedAt().Before(since) {
+		t.Fatalf("listed since %s after a push: %+v; want the pull request, updated since", since, changed)
+	}
+	prs, err := c.PullRequestsByHead(ctx, "o", "r", "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prs) != 1 || prs[0].Number != n || prs[0].HeadSHA != pushed || !prs[0].UpdatedAt.Equal(changed[0].GetUpdatedAt().Time) {
+		t.Errorf("pull requests from a %+v; want #%d at the pushed head %s, updated as listed", prs, n, pushed)
+	}
+}

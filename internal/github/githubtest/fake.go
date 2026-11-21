@@ -38,7 +38,7 @@ var Start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 // GraphQL queries for their edits, deleted
 // comments and pins, and the pinIssue mutation, and the issue search for
 // blocked issues (search.go), and pull requests, with their heads from a
-// real git repo (pulls.go), and check runs on that repo's commits
+// real git repo (pulls.go) and their reviews (reviews.go), and check runs on that repo's commits
 // (checkruns.go). Its API writes, comment edits, created issues and
 // pins included, are made by the App, "<slug>[bot]" of type Bot. A GET whose
 // answer hasn't changed gets a 304. Every write (any method but GET, and a
@@ -211,6 +211,7 @@ func New(t testing.TB, repo, slug string) *Fake {
 	f.handleTransfer()
 	f.handleSearch()
 	f.handlePulls()
+	f.handleReviews()
 	f.handleCheckRuns()
 	f.srv = httptest.NewServer(f.logged(f.mux))
 	t.Cleanup(f.srv.Close)
