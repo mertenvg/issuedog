@@ -124,10 +124,12 @@ func (f *Fake) labelEvent(is *issue, event, login, name string, at *gogithub.Tim
 
 // timeline serves an issue's labeled, unlabeled, renamed, closed, reopened,
 // issue-type (with their types, issueTypeRevertServe)
-// and commented events, oldest first, but for label events not written yet
+// and commented events, and a pull request's reviewed events (reviews.go),
+// oldest first, but for label events not written yet
 // (LagEvents). As on GitHub, a
 // commented event has its comment's ID, user and current body, and a deleted
-// comment's is gone.
+// comment's is gone, and a reviewed event has its review's ID, user, state,
+// body and submitted_at, and no actor or created_at.
 func (f *Fake) timeline(c *call) (int, any) {
 	events := slices.DeleteFunc(slices.Clone(c.issue.labelEvents), func(e *gogithub.Timeline) bool { return e.GetCreatedAt().After(f.now) })
 	for _, cm := range f.comments {
@@ -136,8 +138,19 @@ func (f *Fake) timeline(c *call) (int, any) {
 				Body: cm.Body, CreatedAt: cm.CreatedAt})
 		}
 	}
+	if c.issue.pr != nil {
+		for _, r := range c.issue.pr.reviews {
+			events = append(events, r.event)
+		}
+	}
 	// Every change ticks the clock, so only one call's label events share a time.
-	slices.SortStableFunc(events, func(a, b *gogithub.Timeline) int { return a.GetCreatedAt().Compare(b.GetCreatedAt().Time) })
+	at := func(e *gogithub.Timeline) time.Time {
+		if e.CreatedAt != nil {
+			return e.CreatedAt.Time
+		}
+		return e.GetSubmittedAt().Time
+	}
+	slices.SortStableFunc(events, func(a, b *gogithub.Timeline) int { return at(a).Compare(at(b)) })
 	served := make([]any, 0, len(events))
 	for _, e := range events {
 		served = append(served, c.issue.closingServe(e))

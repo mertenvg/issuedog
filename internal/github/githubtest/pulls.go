@@ -34,11 +34,13 @@ import (
 
 // pullRequest is what an issue the fake opened as a pull request has
 // beyond an issue's: its head and base branches, the SHA its head showed
-// when last read, whether it merged and who merged it.
+// when last read, whether it merged and who merged it, and its reviews,
+// oldest first (reviews.go).
 type pullRequest struct {
 	head, base, headSHA string
 	merged              bool
 	mergedBy            string
+	reviews             []*review
 }
 
 // pullState is the fake's git remote (SetGitRemote).

@@ -227,3 +227,102 @@ func TestVerifyCheckReplay(t *testing.T) {
 	}
 	githubtest.Replay(t, setup, verifyCheckPass(t, sha))
 }
+
+// PostVerifyCheck sends the run's external_id when it's set, and none when
+// it isn't, and the check reads back with it, as posted and as
+// VerifyChecks lists it. An older check with none, as one SetCheckRun
+// adds, reads back with "".
+func TestVerifyCheckExternalID(t *testing.T) {
+	t.Parallel()
+	f, git := pullsFake(t, "issuedog/7-task")
+	sha, main := git("rev-parse", "refs/heads/issuedog/7-task"), git("rev-parse", "refs/heads/main")
+	f.SetCheckRun(sha, github.VerifyCheck, "success", githubtest.AppID)
+	c, ctx := f.Client(t), context.Background()
+	named, err := c.PostVerifyCheck(ctx, "o", "r", github.NewCheckRun{HeadSHA: sha, Conclusion: "failure", Title: "Failed on main",
+		Summary: "A test fails on the merge.", ExternalID: main})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if named.ExternalID != main {
+		t.Errorf("posted %+v; want external_id %s", named, main)
+	}
+	unnamed, err := c.PostVerifyCheck(ctx, "o", "r", github.NewCheckRun{HeadSHA: sha, Conclusion: "success", Title: "Verified", Summary: "Passed."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unnamed.ExternalID != "" {
+		t.Errorf("posted %+v; want no external_id", unnamed)
+	}
+	writes := f.Writes()
+	if len(writes) != 2 {
+		t.Fatalf("writes %+v; want two posts", writes)
+	}
+	for i, want := range []any{main, nil} {
+		var body map[string]any
+		if err := json.Unmarshal([]byte(writes[i].Body), &body); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := body["external_id"]; want == nil && ok || want != nil && got != want {
+			t.Errorf("post %d sent %s; want external_id %v", i+1, writes[i].Body, want)
+		}
+	}
+	runs, err := c.VerifyChecks(ctx, "o", "r", sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range runs {
+		got = append(got, r.Conclusion+" "+r.ExternalID)
+	}
+	if want := []string{"success ", "failure " + main, "success "}; !reflect.DeepEqual(got, want) {
+		t.Errorf("listed %q; want %q, newest first", got, want)
+	}
+}
+
+// verifyCheckMainPass posts the App's issuedog/verify success on sha,
+// naming main in its external_id, unless the newest one the App posted
+// there is a success naming main already, as a check judged against main
+// is posted (SPEC §10.4).
+func verifyCheckMainPass(t *testing.T, sha, main string) func(*githubtest.Fake) error {
+	return func(f *githubtest.Fake) error {
+		c, ctx := f.Client(t), context.Background()
+		runs, err := c.VerifyChecks(ctx, "o", "r", sha)
+		if err != nil {
+			return fmt.Errorf("list: %w", err)
+		}
+		if len(runs) > 0 && runs[0].Conclusion == "success" && runs[0].ExternalID == main {
+			return nil
+		}
+		if _, err := c.PostVerifyCheck(ctx, "o", "r", github.NewCheckRun{HeadSHA: sha, Conclusion: "success", Title: "Verified",
+			Summary: "The checks passed on the merge with main.", ExternalID: main}); err != nil {
+			return fmt.Errorf("post: %w", err)
+		}
+		return nil
+	}
+}
+
+// Posting a check naming main is safe to replay after a crash at any
+// write: the App's older success, which names no main, doesn't stand in
+// for it, and the replay posts one success naming main, no more.
+func TestVerifyCheckExternalIDReplay(t *testing.T) {
+	t.Parallel()
+	_, git := pullsRemote(t, "issuedog/7-task")
+	sha, main := git("rev-parse", "refs/heads/issuedog/7-task"), git("rev-parse", "refs/heads/main")
+	setup := func(tb testing.TB) *githubtest.Fake {
+		f, _ := pullsFake(tb, "issuedog/7-task")
+		f.SetCheckRun(sha, github.VerifyCheck, "success", githubtest.AppID)
+		return f
+	}
+	clean := setup(t)
+	if err := verifyCheckMainPass(t, sha, main)(clean); err != nil {
+		t.Fatal(err)
+	}
+	want := []githubtest.CheckRunState{
+		{SHA: sha, Name: github.VerifyCheck, Conclusion: "success", AppID: githubtest.AppID},
+		{SHA: sha, Name: github.VerifyCheck, Conclusion: "success", AppID: githubtest.AppID, ExternalID: main},
+	}
+	if got := clean.State().CheckRuns; !reflect.DeepEqual(got, want) {
+		t.Fatalf("State().CheckRuns %+v; want %+v", got, want)
+	}
+	githubtest.Replay(t, setup, verifyCheckMainPass(t, sha, main))
+}
