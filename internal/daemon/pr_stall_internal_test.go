@@ -34,16 +34,16 @@ func TestWaitFindPRStall(t *testing.T) {
 	}{
 		"someone else's PR": {stall{Why: stalledPR, Run: "rv", PR: 9}, "https://github.com/o/r/pull/9", []string{
 			"This task's head passed, but someone else's open PR #9 from its branch to `main` stands, so GitHub won't open the task's, and it waits at `verifying`." + holds,
-			"Close PR #9, and the task's opens once a poll lists it closed; or set `stage:ready` for a new round.",
+			"Close PR #9, and the task's opens once a poll lists it closed; or set `stage:ready` to free the worker for a new round, though its next head waits here again while that PR is open.",
 		}},
 		"someone else's PR, unknown": {stall{Why: stalledPR, Run: "rv"}, "https://github.com/o/r/issues/1", []string{
 			"This task's head passed, but someone else's open PR from its branch to `main` stands, so GitHub won't open the task's, and it waits at `verifying`." + holds,
-			"Close that PR, and the task's opens once a poll lists it closed; or set `stage:ready` for a new round.",
+			"Close that PR, and the task's opens once a poll lists it closed; or set `stage:ready` to free the worker for a new round, though its next head waits here again while that PR is open.",
 		}},
 		"someone else's tip": {stall{Why: stalledTip, Run: "rv", Head: prItemHead, Tip: prStallTip}, "https://github.com/o/r/issues/1", []string{
 			"This task's head `" + prItemHead + "` passed, but its branch is at `" + prStallTip + "`, which isn't in the head's history and no App marker names, " +
 				"so it's someone else's commits: nothing is pushed over them, and it waits at `verifying`." + holds,
-			"Reset the branch to a commit in `" + prItemHead + "`'s history, and the head is pushed and its PR opened; or set `stage:ready` for a new round.",
+			"Reset the branch to a commit in `" + prItemHead + "`'s history, and the head is pushed and its PR opened; or set `stage:ready` to free the worker for a new round, though its next head waits here again while the branch is at those commits.",
 		}},
 	} {
 		in := waitIn(prItemSnap("verifying"), Dirt{})

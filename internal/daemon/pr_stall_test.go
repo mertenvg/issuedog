@@ -32,7 +32,7 @@ func prStallPRLines(theirs int) []string {
 	return []string{
 		"This task's head passed, but someone else's open PR #" + pr + " from its branch to `main` stands, so GitHub won't open the task's, and it waits at `verifying`. " +
 			"It holds the worker, so no other task is picked.",
-		"Close PR #" + pr + ", and the task's opens once a poll lists it closed; or set `stage:ready` for a new round.",
+		"Close PR #" + pr + ", and the task's opens once a poll lists it closed; or set `stage:ready` to free the worker for a new round, though its next head waits here again while that PR is open.",
 	}
 }
 
@@ -42,7 +42,7 @@ func prStallTipLines(head, tip string) []string {
 	return []string{
 		"This task's head `" + head + "` passed, but its branch is at `" + tip + "`, which isn't in the head's history and no App marker names, so it's someone else's commits: " +
 			"nothing is pushed over them, and it waits at `verifying`. It holds the worker, so no other task is picked.",
-		"Reset the branch to a commit in `" + head + "`'s history, and the head is pushed and its PR opened; or set `stage:ready` for a new round.",
+		"Reset the branch to a commit in `" + head + "`'s history, and the head is pushed and its PR opened; or set `stage:ready` to free the worker for a new round, though its next head waits here again while the branch is at those commits.",
 	}
 }
 

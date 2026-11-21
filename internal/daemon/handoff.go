@@ -38,10 +38,9 @@ type runStart struct {
 // no parent's (inStory). When the task's latest move names a head its
 // head follows, as a review's with the branch's tip does, the task's head
 // moves there first, if it's behind (taskHeadFollow). An AfterChecks
-// Stage's run starts from the head
-// the checks judge (startAfterChecks). Any other Stage's run starts from
-// main's commit. Only a Committer's run may name a target, or have its
-// head dropped.
+// Stage's run starts from the head the checks judge (startAfterChecks).
+// Any other Stage's run starts from main's commit. Only a Committer's run
+// may name a target, or have its head dropped.
 func (r *Runs) start(ctx context.Context, st Stage, is state.Issue, n int) (runStart, error) {
 	if _, ok := st.(AfterChecks); ok {
 		return r.startAfterChecks(ctx, is, n)

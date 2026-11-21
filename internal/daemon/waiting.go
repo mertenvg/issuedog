@@ -943,6 +943,7 @@ func stalledHead(is state.Issue) string {
 func waitStalledLines(st stall) []waitLine {
 	holds := "It holds the worker, so no other task is picked."
 	ready := fmt.Sprintf("set `stage:%s` for a new round", state.Ready)
+	readyFree := fmt.Sprintf("set `stage:%s` to free the worker for a new round", state.Ready)
 	switch st.Why {
 	case stalledPR:
 		pr, closeIt := "someone else's open PR", "Close that PR"
@@ -952,13 +953,13 @@ func waitStalledLines(st stall) []waitLine {
 		return []waitLine{
 			{Text: fmt.Sprintf("This task's head passed, but %s from its branch to `%s` stands, so GitHub won't open the task's, and it waits at `%s`. %s",
 				pr, prBase, state.Verifying, holds)},
-			{Text: fmt.Sprintf("%s, and the task's opens once a poll lists it closed; or %s.", closeIt, ready)},
+			{Text: fmt.Sprintf("%s, and the task's opens once a poll lists it closed; or %s, though its next head waits here again while that PR is open.", closeIt, readyFree)},
 		}
 	case stalledTip:
 		return []waitLine{
 			{Text: fmt.Sprintf("This task's head `%s` passed, but its branch is at `%s`, which isn't in the head's history and no App marker names, so it's someone else's commits: nothing is pushed over them, and it waits at `%s`. %s",
 				st.Head, st.Tip, state.Verifying, holds)},
-			{Text: fmt.Sprintf("Reset the branch to a commit in `%s`'s history, and the head is pushed and its PR opened; or %s.", st.Head, ready)},
+			{Text: fmt.Sprintf("Reset the branch to a commit in `%s`'s history, and the head is pushed and its PR opened; or %s, though its next head waits here again while the branch is at those commits.", st.Head, readyFree)},
 		}
 	case stalledClosed:
 		return []waitLine{
