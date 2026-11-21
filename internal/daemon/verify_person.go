@@ -279,7 +279,7 @@ func (d *Daemon) personBack(ctx context.Context, s *github.Snapshot, dirt Dirt, 
 	}
 	var pr *github.PullRequest
 	if named {
-		if pr, err = d.prFind(ctx, branch); err != nil {
+		if pr, _, err = d.prFind(ctx, branch); err != nil {
 			return wrap(err)
 		}
 	}

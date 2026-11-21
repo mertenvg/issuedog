@@ -197,6 +197,11 @@ type waitItem struct {
 	// on only while the poll lists it open (Daemon.prItemStands). It's 0
 	// for every other item.
 	AssignPR int
+	// ClosedPR is a stalled task's PR at pr-open, listed closed with its
+	// close handed off already (stalledClosed), on which the item stands
+	// only while the poll lists it closed and not merged
+	// (Daemon.prStallStands). It's 0 for every other item.
+	ClosedPR int
 	// Kept is what the digest's body showed of an item read back from it
 	// after a restart (digestkept.go), which is rendered as it was, and nil
 	// for every item waitFind finds. A kept item has no Key, Title, Lines,
@@ -277,6 +282,11 @@ type waitInput struct {
 	// one (taskPR), as the poll last listed it, if the App opened it, or
 	// nil (Daemon.prOfDigest).
 	PR *listedPR
+	// Stall is the PR step's wait on S at verifying that stands, as the
+	// PR step keeps it in memory, or after a restart the stalled task's
+	// item read back from the digest's body (Daemon.prStalled,
+	// Daemon.prStallKept), or nil.
+	Stall *prStall
 }
 
 // waitFind returns what on in.S waits on the owner (SPEC §9.4), in no
@@ -323,11 +333,23 @@ type waitInput struct {
 //     (waitItem.AssignPR). A PR that merges or closes changes nothing on
 //     the issue, so the digest and assignment judge the item again on each
 //     pass (Daemon.prItemStands);
+//   - at pr-open, a stalled task, when its PR, in.PR, is listed closed,
+//     not merged, and its close was handed off already (prClosedKey), as
+//     after a stage:pr-open set back by hand: the close moves it no more
+//     (stalledClosed). It links the PR, and stands only while the poll
+//     lists the PR closed (Daemon.prStallStands);
 //   - at verifying, a stalled task, when the pass on its head moved it out
 //     of verifying once already, and a later move put it back, as a stage
-//     set by hand, on that head (waitStalledRun): the pass moves it no
-//     more, and it holds the worker, so nothing else is picked till the
-//     owner acts (waitStalledLines). It links the issue;
+//     set by hand, or a new head that's a head it verified before, as
+//     when the branch is reset to it, on that head (waitStalledRun): the
+//     pass moves it no more, and it holds the worker, so nothing else is
+//     picked till the owner acts (waitStalledLines). It links the issue.
+//     Otherwise, the PR step's wait, in.Stall, when it has one: someone
+//     else's open PR from its branch to main, which it links when it knows
+//     its number, or someone else's tip on its branch (stalledPR,
+//     stalledTip). It holds the worker too. After a restart, the item read
+//     back from the digest's body stands for it till the PR step judges
+//     the task again (Daemon.prStallKept);
 //   - at planned, a finished story (#278), when the record of its approved
 //     plan revision's children stands (waitDoneChildren), whether or not
 //     they're closed: the digest and assignment judge that on each pass
@@ -350,9 +372,7 @@ func waitFind(in waitInput) ([]waitItem, error) {
 	is := state.Derive(s, in.AppSlug, in.Dirt.Has)
 	var items []waitItem
 	add := func(kind waitKind, key string, comment int64, lines []waitLine) {
-		items = append(items, waitItem{Issue: s.Number, Kind: kind, Key: fmt.Sprintf("%s-%d-%s", waitKeyPrefix[kind], s.Number, key),
-			Title: s.Title, Lines: lines, Link: waitLink(in.Owner, in.Repo, s.Number, comment),
-			Priority: priority(s), Created: s.CreatedAt, Comment: comment})
+		items = append(items, waitItemOf(in.Owner, in.Repo, s, kind, key, comment, lines))
 	}
 	open, err := openErrors(s, is, func() ([]github.Comment, error) { return in.Inputs, nil }, in.CloserErrEnded)
 	if err != nil {
@@ -420,12 +440,21 @@ func waitFind(in waitInput) ([]waitItem, error) {
 		add(waitPR, strconv.Itoa(pr), state.BodyID, waitPRLines(*in.PR))
 		it := &items[len(items)-1]
 		it.Link, it.AssignPR = prLink(in.Owner, in.Repo, pr), pr
+	case is.Stage == state.PROpen && in.PR != nil && !in.PR.Merged && is.Moved(prClosedKey(*in.PR)):
+		// Its close was handed off already, so it moves the task no more.
+		pr := in.PR.Number
+		st := stall{Why: stalledClosed, PR: pr}
+		add(waitStalled, st.key(), state.BodyID, waitStalledLines(st))
+		it := &items[len(items)-1]
+		it.Link, it.ClosedPR = prLink(in.Owner, in.Repo, pr), pr
 	case is.Stage == state.Verifying:
-		run, to, ok := waitStalledRun(is)
-		if !ok {
+		if st, ok := waitStalledRun(is); ok {
+			add(waitStalled, st.key(), state.BodyID, waitStalledLines(st))
 			break
 		}
-		add(waitStalled, run, state.BodyID, waitStalledLines(run, to))
+		if in.Stall != nil {
+			items = append(items, prStallItem(in.Owner, in.Repo, s, *in.Stall))
+		}
 	case is.Stage == state.Planned:
 		children, err := waitDoneChildren(in, is)
 		if err != nil {
@@ -456,6 +485,14 @@ func waitFind(in waitInput) ([]waitItem, error) {
 		add(waitFlag, strconv.FormatInt(is.Triage.Comment, 10), is.Triage.Comment, lines)
 	}
 	return items, nil
+}
+
+// waitItemOf is the item of kind on s, keyed <prefix>-<n>-key
+// (waitKeyPrefix), linking comment id on s (waitLink), with lines.
+func waitItemOf(owner, repo string, s *github.Snapshot, kind waitKind, key string, comment int64, lines []waitLine) waitItem {
+	return waitItem{Issue: s.Number, Kind: kind, Key: fmt.Sprintf("%s-%d-%s", waitKeyPrefix[kind], s.Number, key),
+		Title: s.Title, Lines: lines, Link: waitLink(owner, repo, s.Number, comment),
+		Priority: priority(s), Created: s.CreatedAt, Comment: comment}
 }
 
 // waitKeyPrefix starts each kind's key.
@@ -781,6 +818,56 @@ func waitPRLines(p listedPR) []waitLine {
 	}
 }
 
+// stallWhy is why a task is stalled (SPEC §9.4's Stalled task).
+type stallWhy int
+
+const (
+	// stalledMoved: at verifying, the pass on its head moved it out of
+	// verifying once already, and it's back since (waitStalledRun).
+	stalledMoved stallWhy = iota
+	// stalledPR: at verifying, someone else's open PR from its branch to
+	// main stands, so GitHub won't open the task's (Runs.prExistsWait).
+	stalledPR
+	// stalledTip: at verifying, its branch's tip is someone else's
+	// commits, which the PR step pushes nothing over (prPushOK).
+	stalledTip
+	// stalledClosed: at pr-open, its PR is listed closed, and its close
+	// was handed off already, so it moves the task no more (prJudgeOpen).
+	stalledClosed
+)
+
+// stall is a stalled task's wait (SPEC §9.4), what its item's key and
+// lines say. Its fields are an App marker's run ID and stage, commit SHAs
+// and numbers alone, so its lines are the App's words.
+type stall struct {
+	Why stallWhy
+	// Run is the run of the pass on the task's head, which keys the item,
+	// for every reason but stalledClosed.
+	Run string
+	// To is the stage that pass moved the task to once already, and
+	// Reset is set when a new head put it back at verifying on that
+	// pass's head, as when the branch is reset to a head it verified
+	// before (stalledMoved).
+	To    state.Stage
+	Reset bool
+	// Head is the task's head, the pass's (stalledMoved, stalledTip), and
+	// Tip its branch's tip, someone else's commits (stalledTip).
+	Head, Tip string
+	// PR is someone else's open PR from the task's branch, or 0 when the
+	// listing the PR step read didn't show it (stalledPR), or the task's
+	// own PR, listed closed (stalledClosed).
+	PR int
+}
+
+// key is st's item's key after stalled-<n>-: the pass's run, or for a
+// closed PR, pr<PR number> (SPEC §9.4).
+func (st stall) key() string {
+	if st.Why == stalledClosed {
+		return "pr" + strconv.Itoa(st.PR)
+	}
+	return st.Run
+}
+
 // waitStalledRun reports whether task is, at verifying, is stalled there
 // (SPEC §9.4): its latest clean pass of the verifier's on its head, the
 // head= of its latest move into verifying that names one (stalledHead),
@@ -788,10 +875,13 @@ func waitPRLines(p listedPR) []waitLine {
 // already, by the move keyed by the pass's run (prMove, prNothingMove),
 // and it's back since. That key moves it once (SPEC §5.2), so the PR step
 // waits (prWant), and the task holds the worker, so nothing else is
-// picked. It returns the pass's run, and the stage that move went to.
-func waitStalledRun(is state.Issue) (string, state.Stage, bool) {
+// picked. It returns the stall, stalledMoved, with the pass's run, the
+// stage that move went to and the head, and whether the move that put it
+// back is a new head's (personHead), as when the branch is reset to a
+// head it verified before, which the markers alone tell.
+func waitStalledRun(is state.Issue) (stall, bool) {
 	if is.Stage != state.Verifying {
-		return "", "", false
+		return stall{}, false
 	}
 	head, run := stalledHead(is), ""
 	for _, m := range is.Markers {
@@ -800,7 +890,7 @@ func waitStalledRun(is state.Issue) (string, state.Stage, bool) {
 		}
 	}
 	if run == "" {
-		return "", "", false
+		return stall{}, false
 	}
 	var to state.Stage
 	for _, m := range is.Markers {
@@ -808,7 +898,7 @@ func waitStalledRun(is state.Issue) (string, state.Stage, bool) {
 			to = state.Stage(m.Fields["to"])
 		}
 	}
-	return run, to, to != ""
+	return stall{Why: stalledMoved, Run: run, To: to, Head: head, Reset: head != "" && personHead(is)}, to != ""
 }
 
 // stalledHead is the head= of task is's latest move into verifying that
@@ -825,26 +915,69 @@ func stalledHead(is state.Issue) string {
 	return head
 }
 
-// waitStalledLines are a stalled task's lines (SPEC §9.4): that the pass
-// of run run moved it out of verifying, to to, once already, so it moves
-// it no more, and that it holds the worker, then what the owner can do.
-// At pr-open: set stage:pr-open back to wait on its PR, or stage:ready
-// for a new round. At needs-human, a stage set back by hand has no
-// hand-off to answer, so: close the issue if nothing needs to change, or
-// set stage:ready for a new round. A pushed head isn't one of them: it
-// moves nothing at verifying, as step 2 judges a task's branch only at
-// pr-open (SPEC §7.2). Every line is this file's own words, with only a
-// run ID from an App marker and stage names in them.
-func waitStalledLines(run string, to state.Stage) []waitLine {
-	act := fmt.Sprintf("Set `stage:%s` back to wait on its PR, or set `stage:%s` for a new round.", to, state.Ready)
-	if to != state.PROpen {
-		act = fmt.Sprintf("Close this issue if nothing needs to change, or set `stage:%s` for a new round.", state.Ready)
+// waitStalledLines are a stalled task's lines (SPEC §9.4), for st: why it
+// waits, and at verifying that it holds the worker, then what the owner
+// can do. Every line is this file's own words, with only a run ID from an
+// App marker, stage names, commit SHAs and numbers in them.
+//   - stalledMoved: the pass of st.Run moved it out of verifying, to
+//     st.To, once already, so it moves it no more, after a stage set by
+//     hand, or with st.Reset, after its branch was put back at the pass's
+//     head. At pr-open: set stage:pr-open back to wait on its PR, or
+//     stage:ready for a new round. At needs-human, a stage set back by
+//     hand has no hand-off to answer, so: close the issue if nothing needs
+//     to change, or set stage:ready for a new round. A pushed head isn't
+//     one of them: it moves nothing at verifying, as step 2 judges a
+//     task's branch only at pr-open (SPEC §7.2).
+//   - stalledPR: someone else's open PR from its branch to main stands, so
+//     GitHub won't open the task's: close that PR, and the PR step opens
+//     the task's once a poll lists it closed, or set stage:ready.
+//   - stalledTip: its branch is at someone else's commits, not in its
+//     head's history, so nothing is pushed over them: reset the branch to
+//     a commit in the head's history, and the PR step pushes the head, or
+//     set stage:ready.
+//   - stalledClosed: at pr-open, its PR is closed, and its close was
+//     handed off already, as after a stage:pr-open set back by hand, so
+//     the close moves it no more: reopen the PR to wait on its review, or
+//     set stage:ready for a new round, or close the issue. /done finishes
+//     only a hand-off waiting at needs-human, and the task has none here.
+func waitStalledLines(st stall) []waitLine {
+	holds := "It holds the worker, so no other task is picked."
+	ready := fmt.Sprintf("set `stage:%s` for a new round", state.Ready)
+	switch st.Why {
+	case stalledPR:
+		pr, closeIt := "someone else's open PR", "Close that PR"
+		if st.PR > 0 {
+			pr, closeIt = fmt.Sprintf("someone else's open PR #%d", st.PR), fmt.Sprintf("Close PR #%d", st.PR)
+		}
+		return []waitLine{
+			{Text: fmt.Sprintf("This task's head passed, but %s from its branch to `%s` stands, so GitHub won't open the task's, and it waits at `%s`. %s",
+				pr, prBase, state.Verifying, holds)},
+			{Text: fmt.Sprintf("%s, and the task's opens once a poll lists it closed; or %s.", closeIt, ready)},
+		}
+	case stalledTip:
+		return []waitLine{
+			{Text: fmt.Sprintf("This task's head `%s` passed, but its branch is at `%s`, which isn't in the head's history and no App marker names, so it's someone else's commits: nothing is pushed over them, and it waits at `%s`. %s",
+				st.Head, st.Tip, state.Verifying, holds)},
+			{Text: fmt.Sprintf("Reset the branch to a commit in `%s`'s history, and the head is pushed and its PR opened; or %s.", st.Head, ready)},
+		}
+	case stalledClosed:
+		return []waitLine{
+			{Text: fmt.Sprintf("This task is at `%s`, but its PR #%d is closed, and its close was handed off already, so the close moves it no more.",
+				state.PROpen, st.PR)},
+			{Text: fmt.Sprintf("Reopen PR #%d to wait on its review, or %s, or close this issue.", st.PR, ready)},
+		}
 	}
-	return []waitLine{
-		{Text: fmt.Sprintf("This task is back at `%s`, but its pass, run `%s`, moved it to `%s` once already, so the pass moves it no more. It holds the worker, so no other task is picked.",
-			state.Verifying, run, to)},
-		{Text: act},
+	act := fmt.Sprintf("Set `stage:%s` back to wait on its PR, or %s.", st.To, ready)
+	if st.To != state.PROpen {
+		act = fmt.Sprintf("Close this issue if nothing needs to change, or %s.", ready)
 	}
+	why := fmt.Sprintf("This task is back at `%s`, but its pass, run `%s`, moved it to `%s` once already, so the pass moves it no more.",
+		state.Verifying, st.Run, st.To)
+	if st.Reset {
+		why = fmt.Sprintf("This task's branch was put back at `%s`, a head it verified before, so it's back at `%s`, but its pass there, run `%s`, moved it to `%s` once already, so the pass moves it no more.",
+			st.Head, state.Verifying, st.Run, st.To)
+	}
+	return []waitLine{{Text: why + " " + holds}, {Text: act}}
 }
 
 // waitDroppedLines are the lines of the item of s, in state is, a task

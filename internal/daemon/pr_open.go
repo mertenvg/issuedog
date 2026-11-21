@@ -56,9 +56,10 @@ type prWant struct {
 // filed record, two branches with the task's prefix and someone else's
 // tip each want nothing, and a head whose own diff is empty wants only its
 // hand-off. Otherwise the PR is found by its branch (prFind), with one
-// request. Every pass that gets past those waits ends in the task's move
-// out of verifying, so the PR list is read only on the pass that writes,
-// and the move's pr= names the PR for every pass after it (SPEC §8.1).
+// request, which names someone else's open PR from it too, if any. Every
+// pass that gets past those waits ends in the task's move out of
+// verifying, so the PR list is read only on the pass that writes, and the
+// move's pr= names the PR for every pass after it (SPEC §8.1).
 //
 // Before any write, it reads the issue again, and runs CheckLabels and the
 // look for discussion triggers on it, as verifyFindings does (SPEC §8.2). A
@@ -76,9 +77,10 @@ type prWant struct {
 // the worker (SPEC §8.1). The App never merges the PR. Someone else's open
 // PR from the task's branch to main, which GitHub's 422 to the open says,
 // makes the task wait, with no PR write, till a poll lists a PR changed
-// (prExistsWait). A head that changes
-// nothing on main gets none of those writes, but the move to needs-human
-// with its hand-off (prNothingMove).
+// (prExistsWait). The digest lists that wait, and someone else's tip's,
+// as a stalled task till it ends (Daemon.prStallSet, SPEC §9.4). A head
+// that changes nothing on main gets none of those writes, but the move to
+// needs-human with its hand-off (prNothingMove).
 func (r *Runs) openPR(ctx context.Context, rd Ready, is state.Issue, head, main string) (bool, error) {
 	a, n := r.Daemon.Step.Applier, rd.S.Number
 	wrap := func(err error) error { return fmt.Errorf("open or update the PR: %w", err) }
@@ -95,8 +97,9 @@ func (r *Runs) openPR(ctx context.Context, rd Ready, is state.Issue, head, main 
 		return false, nil
 	}
 	var pr *github.PullRequest
+	theirs := 0 // someone else's open PR from the task's branch, if listed
 	if !want.Nothing {
-		if pr, err = r.Daemon.prFind(ctx, want.Branch); err != nil {
+		if pr, theirs, err = r.Daemon.prFind(ctx, want.Branch); err != nil {
 			return false, wrap(err)
 		}
 	}
@@ -165,13 +168,14 @@ func (r *Runs) openPR(ctx context.Context, rd Ready, is state.Issue, head, main 
 	}
 	pr, err = r.prWrite(ctx, n, want, pr)
 	if errors.Is(err, github.ErrPullRequestExists) {
-		r.prExistsWait(n, want.Branch, err)
+		r.prExistsWait(s, now, want, theirs, err)
 		return true, nil
 	}
 	if err != nil {
 		return true, wrap(err)
 	}
 	delete(r.prExists, n)
+	r.Daemon.prStallEnd(s, now, stalledPR)
 	if !slices.ContainsFunc(pr.Labels, func(l string) bool { return strings.EqualFold(l, want.Label) }) {
 		if _, _, err := a.Client.Issues.AddLabelsToIssue(ctx, a.Owner, a.Repo, pr.Number, []string{want.Label}); err != nil {
 			return true, wrap(fmt.Errorf("add %s to PR #%d: %w", want.Label, pr.Number, err))
@@ -201,7 +205,8 @@ func (r *Runs) openPR(ctx context.Context, rd Ready, is state.Issue, head, main 
 //     (state.FiledRecord, SPEC §10.2), or its candidates don't read back,
 //     which step 1 reports as a followups state error and never files;
 //   - more than one branch has the task's prefix (taskBranch, SPEC §7.5);
-//   - the branch's tip isn't one the head may go over (prPushOK).
+//   - the branch's tip isn't one the head may go over (prPushOK), which
+//     the digest lists as a stalled task till it ends (prStallSet).
 //
 // A head whose own diff, from its merge base with main, is empty wants
 // only its hand-off (prWant.Nothing), with no push and no PR, so no branch
@@ -250,11 +255,14 @@ func (r *Runs) prWant(ctx context.Context, s *github.Snapshot, is state.Issue, h
 		if !ok {
 			r.prWarnOnce(n, "tip:"+tip, "%s/%s#%d: its branch %s is at %s, which isn't in its head %s's history, and no App marker names it as a head, so it's someone else's: nothing is pushed, and the task waits at %s",
 				a.Owner, a.Repo, n, branch, tip, head, state.Verifying)
+			r.Daemon.prStallSet(s, is, stall{Why: stalledTip, Run: run, Head: head, Tip: tip})
 			return prWant{}, false, nil
 		}
 	}
-	// A wait that ended is warned of again if it comes back.
+	// A wait that ended is warned of again if it comes back, and the
+	// digest lists it no more.
 	delete(r.prWarned, n)
+	r.Daemon.prStallEnd(s, is, stalledTip)
 	title, body := r.prText(s, is, pass, head, main, warnf)
 	return prWant{Run: run, Pass: pass.ID, Branch: branch, Tip: tip, Push: push, Title: title, Body: body,
 		Label: fmt.Sprintf("priority:p%d", priority(s))}, true, nil
@@ -327,16 +335,19 @@ func (r *Runs) prWarnOnce(n int, key, format string, args ...any) {
 	logr.Warnf(format, args...)
 }
 
-// prExistsWait has task n wait at verifying when GitHub won't open its PR
-// from branch to main, err, as someone else's open PR there stands: that
-// PR is never the task's (prFind, SPEC §7.5), and GitHub keeps one open PR
-// for a head and base. It makes no PR write, as the head is pushed
-// already, and tries again only once a poll
+// prExistsWait has task s, whose state is is, wait at verifying when
+// GitHub won't open its PR from want's branch to main, err, as someone
+// else's open PR there stands: that PR is never the task's (prFind, SPEC
+// §7.5), and GitHub keeps one open PR for a head and base. It makes no PR
+// write, as the head is pushed already, and tries again only once a poll
 // lists a pull request changed (Daemon.prPolls), as when that PR closes,
 // so it costs no request till then. It's warned of once, while the wait
-// lasts, and logged at debug on each try after.
-func (r *Runs) prExistsWait(n int, branch string, err error) {
-	a := r.Daemon.Step.Applier
+// lasts, and logged at debug on each try after. The digest lists it as a
+// stalled task, naming theirs, that PR as the PR step's listing showed it,
+// or 0 when it didn't, till it ends (Daemon.prStallSet).
+func (r *Runs) prExistsWait(s *github.Snapshot, is state.Issue, want prWant, theirs int, err error) {
+	a, n, branch := r.Daemon.Step.Applier, s.Number, want.Branch
+	r.Daemon.prStallSet(s, is, stall{Why: stalledPR, Run: want.Run, PR: theirs})
 	log := logr.Warnf
 	if _, ok := r.prExists[n]; ok {
 		log = logr.Debugf
@@ -347,6 +358,106 @@ func (r *Runs) prExistsWait(n int, branch string, err error) {
 	r.prExists[n] = r.Daemon.prPolls
 	log("%s/%s#%d: someone else's open PR from %s to %s stands, so GitHub won't open the task's: no PR is written, and the task waits at %s till a poll lists a PR changed: %v",
 		a.Owner, a.Repo, n, branch, prBase, state.Verifying, err)
+}
+
+// prStall is a wait of the PR step's on a task at verifying that the
+// digest lists as a stalled task (SPEC §9.4): someone else's open PR from
+// its branch, or someone else's tip on it (stalledPR, stalledTip), kept in
+// memory, as each is found at a request the PR step makes anyway or from
+// the bare repo, and none from the issue. Move is the comment holding the
+// task's latest transition when it was found
+// (state.Issue.TransitionComment), so it stands only while the task
+// hasn't moved since. Or, after a restart, Kept is the stalled task's
+// item read back from the digest's body, which stands for the wait till
+// the PR step judges the task again (Daemon.prStallKept).
+type prStall struct {
+	stall
+	Move int64
+	Kept *waitItem
+}
+
+// prStallSet keeps st as the PR step's wait on task s, at verifying, whose
+// state is is, for the digest's stalled task item, and assignment's
+// (SPEC §9.4, §9.6). A wait new or changed, as for a tip that moved on,
+// has s's cached items found again (prStallCache), at no request, so the
+// next digest lists it, though nothing on the issue changed for a visit
+// to find it.
+func (d *Daemon) prStallSet(s *github.Snapshot, is state.Issue, st stall) {
+	n, w := s.Number, prStall{stall: st, Move: is.TransitionComment}
+	if old, ok := d.prStalls[n]; ok && old == w {
+		return
+	}
+	if d.prStalls == nil {
+		d.prStalls = map[int]prStall{}
+	}
+	d.prStalls[n] = w
+	d.prStallCache(s, is)
+}
+
+// prStallEnd ends the PR step's wait of reason why on task s, whose state
+// is is, if it's the one kept, or the item read back for it after a
+// restart (prStall.Kept), as the PR step has judged the task since. Then
+// s's cached items are found again (prStallCache), so its item ends on
+// the next digest.
+func (d *Daemon) prStallEnd(s *github.Snapshot, is state.Issue, why stallWhy) {
+	w, ok := d.prStalls[s.Number]
+	if !ok || w.Kept == nil && w.Why != why {
+		return
+	}
+	delete(d.prStalls, s.Number)
+	d.prStallCache(s, is)
+}
+
+// prStalled is the PR step's wait on task n, whose state is is, and true,
+// while it stands: the task is at verifying, and hasn't moved since it was
+// found (prStall.Move). One that doesn't stand is dropped.
+func (d *Daemon) prStalled(n int, is state.Issue) (prStall, bool) {
+	w, ok := d.prStalls[n]
+	if ok && is.Stage == state.Verifying && w.Move == is.TransitionComment {
+		return w, true
+	}
+	delete(d.prStalls, n)
+	return prStall{}, false
+}
+
+// prStallCache finds task s's cached items again (Daemon.digestCache) for
+// the PR step's wait on it, with its state is: its stalled task's item
+// goes, and the wait's, if one stands (prStalled), takes its place. Its
+// other items stay as its last visit found them. The task is at verifying,
+// where the pass that moved it once already (waitStalledRun) leaves the PR
+// step nothing to judge, so its stalled task's item is the PR step's.
+func (d *Daemon) prStallCache(s *github.Snapshot, is state.Issue) {
+	n := s.Number
+	items := slices.DeleteFunc(slices.Clone(d.digestCache[n]), func(it waitItem) bool { return it.Kind == waitStalled })
+	if w, ok := d.prStalled(n, is); ok {
+		items = append(items, prStallItem(d.Step.Owner, d.Step.Repo, s, w))
+	}
+	if len(items) == 0 {
+		delete(d.digestCache, n)
+		return
+	}
+	if d.digestCache == nil {
+		d.digestCache = map[int][]waitItem{}
+	}
+	d.digestCache[n] = items
+}
+
+// prStallItem is the stalled task's item on s for w, the PR step's wait
+// on it (SPEC §9.4): keyed stalled-<n>-<run>, by the pass's run, and
+// linking someone else's PR when its number is known, or else the issue.
+// One read back after a restart (prStall.Kept) is that item as the body
+// showed it, with s's created time for its rank.
+func prStallItem(owner, repo string, s *github.Snapshot, w prStall) waitItem {
+	if w.Kept != nil {
+		it := *w.Kept
+		it.Created = s.CreatedAt
+		return it
+	}
+	it := waitItemOf(owner, repo, s, waitStalled, w.key(), state.BodyID, waitStalledLines(w.stall))
+	if w.Why == stalledPR && w.PR > 0 {
+		it.Link = prLink(owner, repo, w.PR)
+	}
+	return it
 }
 
 // prPushOK reports whether the head may be pushed over tip, the task's
@@ -437,27 +548,38 @@ func (d *Daemon) prSummary(s *github.Snapshot, is state.Issue, warnf func(string
 // prFind is the task's PR (SPEC §7.5): of the PRs whose head is branch,
 // the ones the App opened, to prBase, not merged, the open one first, or
 // else the newest closed one, or nil with none, as a merged one is never
-// reused. It's one request, a 304 when the listing is unchanged.
-func (d *Daemon) prFind(ctx context.Context, branch string) (*github.PullRequest, error) {
+// reused. It also returns the number of someone else's open PR from branch
+// to prBase, of which GitHub keeps one at most, or 0 with none, which is
+// never the task's, for the digest (prExistsWait). It's one request, a 304 when the listing is
+// unchanged.
+func (d *Daemon) prFind(ctx context.Context, branch string) (*github.PullRequest, int, error) {
 	a := d.Step.Applier
 	prs, err := a.Client.PullRequestsByHead(ctx, a.Owner, a.Repo, branch)
 	if err != nil {
-		return nil, fmt.Errorf("find the PR: %w", err)
+		return nil, 0, fmt.Errorf("find the PR: %w", err)
 	}
-	var closed *github.PullRequest
+	var open, closed *github.PullRequest
+	theirs := 0
 	for i := range prs {
 		p := &prs[i]
-		if p.Author != a.AppSlug+"[bot]" || p.Base != prBase || p.Merged {
-			continue
-		}
-		if p.State == "open" {
-			return p, nil
-		}
-		if closed == nil {
+		switch {
+		case p.Base != prBase || p.Merged:
+		case p.Author != a.AppSlug+"[bot]":
+			if p.State == "open" {
+				theirs = p.Number
+			}
+		case p.State == "open":
+			if open == nil {
+				open = p
+			}
+		case closed == nil:
 			closed = p
 		}
 	}
-	return closed, nil
+	if open != nil {
+		return open, theirs, nil
+	}
+	return closed, theirs, nil
 }
 
 // prWrite makes pr, task n's PR as prFind found it, match want, and returns

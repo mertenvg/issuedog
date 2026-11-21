@@ -184,6 +184,11 @@ type Daemon struct {
 	// PR step that waits on someone else's open PR tries again only once
 	// one has (Runs.prExists).
 	prPolls int
+	// prStalls is the PR step's wait on each task at verifying that the
+	// digest lists as a stalled task, by task: someone else's open PR from
+	// its branch, or someone else's tip on it, or after a restart the
+	// item read back for it, till the PR step judges it (pr_open.go).
+	prStalls map[int]prStall
 	// prWaiting is the move out of pr-open step 2, or step 4 for main's
 	// moving (Runs.mainMoved), found for each task, by task, that waits for
 	// the worker: one into verifying or in-progress, made once the worker
