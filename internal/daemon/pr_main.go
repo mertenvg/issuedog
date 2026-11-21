@@ -27,6 +27,30 @@ import (
 // against.
 func mainCheckID(main string) string { return "main=" + main }
 
+// checkedMain is the main commit head's checks ran with, which its
+// issuedog/verify check names (mainCheckID): main, main's commit the
+// checks ran against, when it's in head's history, and else head's merge
+// base with it, the newest main commit head holds, as the commands run on
+// head alone (SPEC §10.1, §10.4). With no one merge base, it's "", and the
+// check names none. It reads only the bare repo, so it costs no request.
+func (d *Daemon) checkedMain(ctx context.Context, head, main string) (string, error) {
+	in, err := d.Clone.IsAncestor(ctx, main, head)
+	if err != nil {
+		return "", fmt.Errorf("read main against the head: %w", err)
+	}
+	if in {
+		return main, nil
+	}
+	bases, err := d.Clone.MergeBase(ctx, head, main)
+	if err != nil {
+		return "", fmt.Errorf("read the head's merge base with main: %w", err)
+	}
+	if len(bases) != 1 {
+		return "", nil
+	}
+	return bases[0], nil
+}
+
 // mainKey keys a task's move pr-open → in-progress when its PR's head
 // fails on its merge with main's commit main (SPEC §5): event=m<main>.
 func mainKey(main string) state.Key {
@@ -97,7 +121,9 @@ func personPROpen(is state.Issue) bool {
 // A task is judged on the head its PR was verified at (prHeadOf) and main's
 // commit as the pass's sync left it, at no request, and skipped when:
 //   - that head passed the checks against that main, at verifying, as the
-//     PR step's check says (Runs.passed), or on its merge (mergeJudged);
+//     PR step's check says (Runs.passed), while that main is in the
+//     head's history, as the commands ran on the head alone, or it passed
+//     them on its merge (mergeJudged);
 //   - a move keyed by that main sent it back once already (mainKey), as
 //     before a stage set back by hand: that key moves it once (SPEC §5.2);
 //   - a move out of pr-open waits for the worker (Daemon.prWaiting), as
@@ -152,8 +178,19 @@ func (r *Runs) mainMoved(ctx context.Context, ready []Ready, skip int) (bool, er
 		if err != nil {
 			return false, fmt.Errorf("the merge with main of #%d: read main: %w", n, err)
 		}
-		if r.passed[n].holds(head, main) || r.mergeJudged[n].holds(head, main) {
+		if r.mergeJudged[n].holds(head, main) {
 			continue
+		}
+		if r.passed[n].holds(head, main) {
+			// The commands ran on the head alone, so they ran with this
+			// main only when it's in the head's history.
+			in, err := d.Clone.IsAncestor(ctx, main, head)
+			if err != nil {
+				return false, fmt.Errorf("the merge with main of #%d: read main against the head: %w", n, err)
+			}
+			if in {
+				continue
+			}
 		}
 		if is.Moved(mainKey(main)) {
 			logr.Debugf("%s/%s#%d: main's %s sent it back to %s once already, so its head %s isn't checked on it again",

@@ -341,6 +341,48 @@ func TestPRMainFailingCommand(t *testing.T) {
 	v.prMainTarget(1, head, main, prMainMoves(f)[0])
 }
 
+// main moves after the task's head was made and before its checks at
+// verifying, with a commit that breaks a command only on the merge: the
+// checks run on the head alone, so they pass, and the PR step's success
+// names the head's merge base with main, the main the commands ran with,
+// not the main the checks ran against. So the pass after, by the same
+// daemon or a fresh one, builds the head's merge with main, the command
+// fails there, and the task goes back with failure naming main.
+func TestPRMainMovedBeforeTheChecks(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name    string
+		restart bool
+	}{
+		{"same daemon", false},
+		{"restart", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFake(t)
+			v := newVerdictRigWith(t, f, 3, "", `, "test ! -f breaks.txt"`)
+			head, _ := v.prTask()
+			base := v.mainSHA()
+			main := v.prMainCommit("breaks.txt", "main's own change\n")
+			v.passes(2) // the checks, then the PR step
+			if got, want := f.State().CheckRuns, []githubtest.CheckRunState{prMoveVerified(head, base)}; !slices.Equal(got, want) || pickStage(f, 1) != "stage:pr-open" {
+				t.Fatalf("after the PR step, the check runs = %+v, the task at %s; want %+v, naming the head's merge base, and pr-open", got, pickStage(f, 1), want)
+			}
+			if tt.restart {
+				v = v.restart()
+			}
+			seen := prMainSeen(t, f)
+			ran := v.checksRan()
+			v.pass()
+			want := []githubtest.CheckRunState{prMoveVerified(head, base), prMainCheck(head, main, "failure")}
+			if got := f.State().CheckRuns; !slices.Equal(got, want) || v.checksRan() != ran+1 {
+				t.Fatalf("the pass after left the check runs %+v, and ran the commands %d times; want %+v, and once", got, v.checksRan()-ran, want)
+			}
+			prMainMoved(t, f, "stage:in-progress", prMainFindingsText(head, main), main, seen)
+		})
+	}
+}
+
 // main moves again during the checks on its merge, here just before the
 // check is posted: the check names the main the merge was built on, and
 // the next pass, whose sync brings the newer main, checks the head again
