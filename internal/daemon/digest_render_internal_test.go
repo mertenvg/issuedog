@@ -533,7 +533,7 @@ func TestDigestRenderNews(t *testing.T) {
 // none, as with no triggers at all, gets none.
 func TestDigestRenderKinds(t *testing.T) {
 	t.Parallel()
-	for k, want := range map[waitKind]bool{waitError: true, waitHold: false, waitApproval: false, waitPlanApproval: false, waitQuestion: false, waitFlag: false, waitHuman: false, waitFollowUp: false, waitPR: true, waitStalled: true, waitKind(12): true} {
+	for k, want := range map[waitKind]bool{waitError: true, waitHold: false, waitApproval: false, waitPlanApproval: false, waitQuestion: false, waitFlag: false, waitHuman: false, waitFollowUp: false, waitPR: true, waitStalled: true, waitDropped: true, waitKind(13): true} {
 		if got := digestRenderMentions(waitItem{Kind: k}); got != want {
 			t.Errorf("digestRenderMentions(%s) = %v, want %v", k, got, want)
 		}
@@ -548,13 +548,13 @@ func TestDigestRenderKinds(t *testing.T) {
 		t.Errorf("a hold with a trigger no App comment mentioned gets no mention; want one")
 	}
 	for k, want := range map[waitKind]string{waitError: "State error", waitHold: "Discussion hold", waitApproval: "Approval", waitPlanApproval: "Plan approval", waitQuestion: "Question round",
-		waitFlag: "Triage flag", waitHuman: "Human task", waitFollowUp: "Follow-up", waitPR: "Pull request", waitStalled: "Stalled task", waitKind(12): "Item (kind12)"} {
+		waitFlag: "Triage flag", waitHuman: "Human task", waitFollowUp: "Follow-up", waitPR: "Pull request", waitStalled: "Stalled task", waitDropped: "Dropped with an open PR", waitKind(13): "Item (kind13)"} {
 		if got := digestRenderKindName(k); got != want {
 			t.Errorf("digestRenderKindName(%d) = %q, want %q", k, got, want)
 		}
 	}
-	if got := waitKind(12).String(); got != "kind12" || waitHold.String() != "hold" {
-		t.Errorf("kind names %q and %q; want kind12 and hold", got, waitHold.String())
+	if got := waitKind(13).String(); got != "kind13" || waitHold.String() != "hold" {
+		t.Errorf("kind names %q and %q; want kind13 and hold", got, waitHold.String())
 	}
 }
 

@@ -46,9 +46,11 @@ import (
 // discussion holds (#192), then approvals, then follow-ups waiting for
 // their approval (SPEC §10.2), then questions, then human tasks (#287) and
 // hand-offs, then flags, then finished stories (#278). A plan's approval
-// (#270) and a pull request's review rank as an approval, and a hand-off
-// and a task stalled at verifying as a human task: each is a kind of its
-// own only for its key and its name.
+// (#270) and a pull request's review rank as an approval, a hand-off
+// and a task stalled at verifying as a human task, and a task a revision
+// dropped while its PR is open as a discussion hold, as each is an issue
+// held for the owner: each is a kind of its own only for its key and its
+// name.
 type waitKind int
 
 const (
@@ -64,6 +66,7 @@ const (
 	waitFollowUp
 	waitPR
 	waitStalled
+	waitDropped
 )
 
 // rank is k's place in SPEC §9.4's order of kinds, lowest first: a plan's
@@ -73,11 +76,14 @@ const (
 // task's after a question's and before a flag's (#287), as each is an
 // owner action a task waits on, a flag's after that, and a finished
 // story's after every other kind's (#278), as story verification unblocks
-// no other issue. Any other kind ranks by its own value, so a kind
+// no other issue. A task a revision dropped while its PR is open ranks as
+// a discussion hold. Any other kind ranks by its own value, so a kind
 // appended later, unless it's mapped here, ranks after finished stories:
-// each after waitStalled is above waitDone's rank.
+// each after waitDropped is above waitDone's rank.
 func (k waitKind) rank() int {
 	switch k {
+	case waitDropped:
+		return int(waitHold)
 	case waitPlanApproval, waitPR:
 		return int(waitApproval)
 	case waitFollowUp:
@@ -120,6 +126,8 @@ func (k waitKind) String() string {
 		return "pr"
 	case waitStalled:
 		return "stalled"
+	case waitDropped:
+		return "dropped"
 	}
 	return "kind" + strconv.Itoa(int(k))
 }
@@ -140,8 +148,10 @@ type waitItem struct {
 	// handoff-<n>-<comment id> for a hand-off's, naming its comment, or
 	// pr-<n>-<PR number> for a pull request's, naming the PR, or
 	// stalled-<n>-<run> for a task stalled at verifying, naming the run of
-	// the pass that moved it out once already. A hold is announced by
-	// other keys than this one (waitItem.news).
+	// the pass that moved it out once already, or dropped-<n> for a task a
+	// revision dropped while its PR is open, of which an issue has one at
+	// most. A hold is announced by other keys than this one
+	// (waitItem.news).
 	Key string
 	// Title is the issue's title. It's raw: anyone may have written it, so
 	// the digest's renderer runs it through inline and github.Escape.
@@ -222,8 +232,9 @@ type waitLine struct {
 	// Text is "": digestRenderHold renders the trigger, whose By, Of and
 	// Title are raw, and escapes them.
 	Hold *holdItemTrigger
-	// PR is the PR a pull request item's first line names, or 0 for any
-	// other line. Its Text is then the PR's title, which is raw: anyone
+	// PR is the PR a pull request item's first line names, or a dropped
+	// task's item's line on its PR, or 0 for any other line. Its Text is
+	// then the PR's title, which is raw: anyone
 	// with write access may have written it, so the digest's renderer
 	// escapes it as an item's Title (digestRenderTitle).
 	PR int
@@ -271,6 +282,13 @@ type waitInput struct {
 // waitFind returns what on in.S waits on the owner (SPEC §9.4), in no
 // set order (waitRank orders them). A closed issue has nothing. Otherwise:
 //   - a state error for each open one (openErrors), linked to its comment;
+//   - while held for a PR, as a revision dropped it (droppedHeld), a
+//     dropped task, when its PR, in.PR, is listed open (SPEC §9.4,
+//     §9.6), whatever other item it has. It copies what its hold's
+//     comment says of the revision and the PR, names the PR and its
+//     title, says how the hold ends, and links the PR (waitDroppedLines).
+//     It assigns the issue. The PR's merge or close ends it on the next
+//     visit, which a held issue gets on every pass;
 //   - while held, a discussion hold, when in.Holds has an open trigger
 //     (holdItemOf). An issue held only by owner holds has none: a /hold,
 //     or a stage:held set by hand, is the owner's own, and waits on
@@ -343,6 +361,12 @@ func waitFind(in waitInput) ([]waitItem, error) {
 	for _, e := range open {
 		add(waitError, e.Kind+"-"+e.Key, e.Comment, waitErrorLines(s, e))
 		items[len(items)-1].Unassigned = closerErrPostedClosed(s, e)
+	}
+	if _, held := droppedHeld(is); held && in.PR != nil && in.PR.Open {
+		// An issue has one such hold at most: its key is dropped-<n>.
+		add(waitDropped, "", state.BodyID, waitDroppedLines(s, is, *in.PR))
+		it := &items[len(items)-1]
+		it.Key, it.Link = fmt.Sprintf("%s-%d", waitKeyPrefix[waitDropped], s.Number), prLink(in.Owner, in.Repo, in.PR.Number)
 	}
 	handoff, handoffWaits := latestHandoff(s, in.AppSlug, in.Dirt.Has)
 	switch {
@@ -437,7 +461,7 @@ func waitFind(in waitInput) ([]waitItem, error) {
 // waitKeyPrefix starts each kind's key.
 var waitKeyPrefix = map[waitKind]string{waitError: "err", waitHold: "hold", waitApproval: "rev", waitQuestion: "q", waitFlag: "flag",
 	waitPlanApproval: "plan", waitHuman: "human", waitDone: "done", waitHandoff: "handoff", waitFollowUp: "followup", waitPR: "pr",
-	waitStalled: "stalled"}
+	waitStalled: "stalled", waitDropped: "dropped"}
 
 // waitLink is the link to comment id on issue n, or to the issue itself
 // when id is state.BodyID: an error in the body (#155's verify).
@@ -812,6 +836,34 @@ func waitStalledLines(run string, to state.Stage) []waitLine {
 		{Text: fmt.Sprintf("This task is back at `%s`, but its pass, run `%s`, moved it to `%s` once already, so the pass moves it no more. It holds the worker, so no other task is picked.",
 			state.Verifying, run, to)},
 		{Text: act},
+	}
+}
+
+// waitDroppedLines are the lines of the item of s, in state is, a task
+// held for p, its PR the poll lists open, as a revision dropped it (SPEC
+// §9.4): the first paragraph of its hold's comment, which names the
+// revision and the PR and links the plan (droppedHoldText), copied from
+// the App's clean comment, or with none, that a revision dropped it; then
+// the PR and its title, raw (waitLine.PR); then that merging or closing
+// the PR closes it, or the owner can, and that /resume doesn't end the
+// hold.
+func waitDroppedLines(s *github.Snapshot, is state.Issue, p listedPR) []waitLine {
+	first := waitLine{Text: "A plan's revision dropped this task while its PR is open, so it's on hold. See the issue for the revision."}
+	for i := len(is.Markers) - 1; i >= 0; i-- {
+		if m := is.Markers[i]; m.Kind != "transition" || state.Stage(m.Fields["to"]) != state.Held || !droppedHold(m) {
+			continue
+		}
+		if id, ok := is.MarkerComment(i); ok {
+			if text, _, _ := strings.Cut(strings.ReplaceAll(waitBody(s, id), "\r\n", "\n"), "\n\n"); strings.HasPrefix(text, "On hold, not closed, ") {
+				first = waitLine{Text: text, Copied: true}
+			}
+		}
+		break
+	}
+	return []waitLine{
+		first,
+		{Text: p.Title, PR: p.Number},
+		{Text: "Merge the PR, and its `Closes` closes this task; close the PR, and I close the task as not planned; or close the task yourself. `/resume` doesn't end this hold."},
 	}
 }
 

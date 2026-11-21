@@ -219,17 +219,21 @@ func Commands(trust github.Trust) map[string]Handler {
 			// The descendants it ends a hold on that stay held: by hand, or
 			// for discussion (resolveHeld), which /resume on an ancestor
 			// doesn't end.
-			var rest, discussed []string
+			var rest, discussed, dropped []string
 			return a.moveFamily(ctx, c, trust, &resumeRecord{above: above, record: record}, func(is state.Issue, self bool, n int, by string, after bool) (Move, bool) {
 				m, ok := resume(is, self, above, by, after)
 				if _, ended, left := heldStackResume(is, self, above); ended > 0 && len(left) > 0 {
 					// Held for discussion, by an owner hold, or both, as by a
-					// /hold of its own (resolveOwnHolds).
+					// /hold of its own (resolveOwnHolds), or for a PR, as a
+					// revision dropped it, which no /resume ends.
 					if slices.ContainsFunc(left, func(m github.Marker) bool { return m.Fields["reason"] == "discussion" }) {
 						discussed = append(discussed, fmt.Sprintf("#%d", n))
 					}
-					if resolveOwnerHeld(left) {
+					if resolveOwnerHeld(slices.DeleteFunc(slices.Clone(left), droppedHold)) {
 						rest = append(rest, fmt.Sprintf("#%d", n))
+					}
+					if slices.ContainsFunc(left, droppedHold) {
+						dropped = append(dropped, fmt.Sprintf("#%d", n))
 					}
 				}
 				// The issue's own move, which carries these lists, is made
@@ -243,6 +247,10 @@ func Commands(trust github.Trust) map[string]Handler {
 				}
 				if self && len(discussed) > 0 {
 					m.Text += fmt.Sprintf(" Still on hold for discussion: %s.", list(discussed))
+				}
+				if self && len(dropped) > 0 {
+					m.Text += fmt.Sprintf(" Still on hold for a PR, as a plan's revision dropped %s: %s. `/resume` doesn't end that hold.",
+						heldWordingIt(len(dropped)), list(dropped))
 				}
 				return m, ok
 			})
@@ -644,6 +652,7 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 	below := madeBelow(family)
 	held := false
 	var makers, discussed []string
+	var dropped []heldDropped     // the issues held for a PR, as a revision dropped them, which no /resume ends (SPEC §6.4)
 	var selfExtra []github.Marker // c's issue's holds from above that c doesn't end (resolveHeldBy)
 	for _, n := range family {
 		if !n.open {
@@ -669,9 +678,16 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 		// Apply records the holds c ends there too, so a /resume posted
 		// after that /hold, which may not end them, needn't.
 		held = held || ended > 0 && (!resolveOwnerHeld(left) || heldStackLater(left, above))
-		// A descendant held for discussion only, which this doesn't end; if
-		// it ends an owner hold there too, the /resume applies (held).
-		if len(left) > 0 && !resolveOwnerHeld(left) {
+		// Held for a PR, as a revision dropped it, which no /resume ends
+		// (SPEC §6.4): the reason names its PR, or with none, the issues
+		// below it that it waits for.
+		if slices.ContainsFunc(left, droppedHold) {
+			dropped = append(dropped, heldDropped{n: n.s.Number, pr: taskPR(is)})
+		}
+		// A descendant held for discussion only, besides a hold for a PR,
+		// which this doesn't end; if it ends an owner hold there too, the
+		// /resume applies (held).
+		if owner := slices.DeleteFunc(slices.Clone(left), droppedHold); len(owner) > 0 && !resolveOwnerHeld(owner) {
 			discussed = append(discussed, fmt.Sprintf("#%d", n.s.Number))
 		}
 		var by []int      // the issues where the owner holds left were made
@@ -736,16 +752,54 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 			return fmt.Errorf("check /resume: %w", err)
 		}
 	}
-	switch {
-	case held:
+	if held {
 		return nil
+	}
+	// A hold for a PR is named first, beside the holds below.
+	var why []string
+	if len(dropped) > 0 {
+		why = append(why, heldWordingDropped(dropped, c.S.Number))
+	}
+	switch {
 	case len(discussed) > 0:
 		// /resume on an ancestor doesn't end a discussion hold (SPEC §6.4).
-		return Rejection{Reason: heldWordingDiscussed(discussed, fmt.Sprintf("#%d", c.S.Number)), Final: true}
+		why = append(why, heldWordingDiscussed(discussed, fmt.Sprintf("#%d", c.S.Number)))
 	case len(makers) > 0:
-		return Rejection{Reason: heldWordingMakers(makers, fmt.Sprintf("#%d", c.S.Number)), Final: true}
+		why = append(why, heldWordingMakers(makers, fmt.Sprintf("#%d", c.S.Number)))
+	}
+	if len(why) > 0 {
+		return Rejection{Reason: strings.Join(why, "; and "), Final: true}
 	}
 	return Rejection{Reason: "nothing here or in its open sub-issues is on an owner hold"}
+}
+
+// heldDropped is an issue n in a /resume's family held for a PR, as a
+// revision dropped it, which no /resume ends (droppedHold, SPEC §6.4):
+// pr is its task PR (taskPR), or 0 for none, as for an issue held above
+// one.
+type heldDropped struct{ n, pr int }
+
+// heldWordingDropped is resumeCheck's reason for the holds for a PR left
+// in its family, dropped, in the order it found them, each its own clause,
+// on self, c's issue, which is "this issue": an issue with a PR waits for
+// it, and one with none for the issues below it, and no /resume ends
+// either hold.
+func heldWordingDropped(dropped []heldDropped, self int) string {
+	var why []string
+	for _, h := range dropped {
+		who := fmt.Sprintf("#%d", h.n)
+		if h.n == self {
+			who = "this issue"
+		}
+		if h.pr > 0 {
+			why = append(why, fmt.Sprintf("%s is on hold for its PR #%d, as a plan's revision dropped it: "+
+				"it closes once the PR merges or closes, and `/resume` doesn't end that hold", who, h.pr))
+			continue
+		}
+		why = append(why, fmt.Sprintf("%s is on hold for the issues below it, as a plan's revision dropped it: "+
+			"it closes once nothing below it is open, and `/resume` doesn't end that hold", who))
+	}
+	return strings.Join(why, "; and ")
 }
 
 // resumeRewordFamily returns family, that of c, a /resume the App 👎'd
