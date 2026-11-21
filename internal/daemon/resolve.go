@@ -1563,7 +1563,10 @@ func (a *Applier) resolveResumed(ctx context.Context, c Cmd, n node, is state.Is
 	text := fmt.Sprintf("`/resume` on #%d ended the owner hold on this issue, but it stays on hold for discussion "+
 		"until a code owner resolves that, or posts `/resume` here.", c.S.Number)
 	discussed := slices.ContainsFunc(left, func(m github.Marker) bool { return m.Fields["reason"] == "discussion" })
-	if resolveOwnerHeld(left) {
+	// A hold for a PR, as a revision dropped the issue, which no /resume
+	// ends (SPEC §6.4), is said apart from the owner holds left.
+	owner, forPR := slices.DeleteFunc(slices.Clone(left), droppedHold), slices.ContainsFunc(left, droppedHold)
+	if resolveOwnerHeld(owner) {
 		// A descendant's: c ends every owner hold on its own issue that
 		// came before it.
 		kinds := "one set by hand, a `/hold` below #%d, or a deleted comment that was, or may have been, a `/hold`"
@@ -1586,7 +1589,7 @@ func (a *Applier) resolveResumed(ctx context.Context, c Cmd, n node, is state.Is
 		records = append(records, github.Marker{Kind: resolveKind, Fields: fields})
 		text = "This `/resume` ended the holds on this issue from before it, but it stays on hold for discussion: " +
 			"a write collaborator acted after the `/resume` was posted. A code owner's response to that, or another `/resume` here, ends it."
-		if resolveOwnerHeld(left) {
+		if resolveOwnerHeld(owner) {
 			// Only a /hold posted after c stays (heldStackEnds), one the
 			// App applied first, as on an ancestor whose pass came first
 			// (#205), or a comment deleted above after c that may have
@@ -1609,6 +1612,17 @@ func (a *Applier) resolveResumed(ctx context.Context, c Cmd, n node, is state.Is
 				text += " It's on hold for discussion too: a write collaborator acted after the `/resume` was posted."
 			}
 		}
+	}
+	switch {
+	case !forPR:
+	case resolveOwnerHeld(owner) || discussed:
+		text += " It's on hold for a PR too, as a plan's revision dropped it, which `/resume` doesn't end."
+	case self:
+		text = "This `/resume` ended the holds on this issue from before it, but it stays on hold for a PR, as a plan's revision dropped it, " +
+			"which `/resume` doesn't end."
+	default:
+		text = fmt.Sprintf("`/resume` on #%d ended the owner hold on this issue, but it stays on hold for a PR, as a plan's revision dropped it, "+
+			"which `/resume` doesn't end.", c.S.Number)
 	}
 	var markers []string
 	for _, m := range records {

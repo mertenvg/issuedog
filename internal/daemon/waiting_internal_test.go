@@ -618,7 +618,7 @@ func TestWaitLinkAndBody(t *testing.T) {
 	if got := waitBody(s, 5); got != "five" {
 		t.Errorf("waitBody(5) = %q, want five", got)
 	}
-	for k, want := range map[waitKind]string{waitError: "error", waitApproval: "approval", waitQuestion: "question", waitFlag: "flag", waitPlanApproval: "plan-approval", waitHuman: "human", waitFollowUp: "followup", waitPR: "pr", waitStalled: "stalled", 12: "kind12"} {
+	for k, want := range map[waitKind]string{waitError: "error", waitApproval: "approval", waitQuestion: "question", waitFlag: "flag", waitPlanApproval: "plan-approval", waitHuman: "human", waitFollowUp: "followup", waitPR: "pr", waitStalled: "stalled", waitDropped: "dropped", 13: "kind13"} {
 		if k.String() != want {
 			t.Errorf("waitKind(%d) = %s, want %s", k, k, want)
 		}

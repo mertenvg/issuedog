@@ -16,8 +16,12 @@ import (
 // changed child's links to its siblings follow the revision
 // (revisedLink), and each dropped item's child is closed as not planned,
 // with every open issue below it, deepest first, and loses its links
-// (droppedClose). ChildrenVisit posts the revision's record only after
-// these, so once it stands no pass reads the children again.
+// (droppedClose), but for a task whose PR is open, which is held for its
+// PR instead, with each open issue above it in the dropped subtree
+// (droppedOne): step 2 closes those once their PR merges or closes, or
+// nothing below them is open (dropped_pass.go). ChildrenVisit posts the
+// revision's record only after these, so once it stands no pass reads the
+// children again.
 
 // revisedLink makes the links of each changed item's child, among items,
 // a revision's in plan order, to its siblings follow the revision: it
@@ -105,9 +109,11 @@ func (st *Step) revisedLink(ctx context.Context, items []planItem, children map[
 // rev's of parent's approved plan, with children each item's child, and
 // every open issue below it (SPEC §6.4): deepest first, each through the
 // App's move to closed, as not planned (Transition), keyed by key, the
-// parent's move into planned. plan is the revision's plan comment, which
-// each close's comment links. A dropped item whose child isn't found is
-// left alone: childrenRecord names it.
+// parent's move into planned, but for a task whose PR is open, and each
+// open issue above it, which are held instead (droppedOne). plan is the
+// revision's plan comment, which each close's and hold's comment links. A
+// dropped item whose child isn't found is left alone: childrenRecord
+// names it.
 func (st *Step) droppedClose(ctx context.Context, parent *github.Snapshot, rev int, plan github.Comment, key state.Key,
 	items []planItem, children map[string]childFound) error {
 	for _, it := range items {
@@ -121,7 +127,7 @@ func (st *Step) droppedClose(ctx context.Context, parent *github.Snapshot, rev i
 		d := droppedItem{parent: parent.Number, rev: rev, item: it.ID, root: f.Number, key: key,
 			plan: waitLink(st.Owner, st.Repo, parent.Number, plan.ID)}
 		seen := map[int]bool{parent.Number: true, f.Number: true}
-		if err := st.droppedWalk(ctx, d, f.Number, f.ID, seen); err != nil {
+		if _, err := st.droppedWalk(ctx, d, f.Number, f.ID, seen); err != nil {
 			return fmt.Errorf("item %s: %w", it.ID, err)
 		}
 	}
@@ -140,15 +146,18 @@ type droppedItem struct {
 
 // droppedWalk closes issue n, whose ID is id, in d's subtree, and every
 // issue below it, post-order: each of its sub-issues' subtrees, in the
-// order GitHub lists them, then n itself (droppedOne). seen holds the
-// issues walked already, so a loop of links can't walk one twice. A
-// sub-issue in another repo is skipped, with everything below it, as
-// family skips one, as is a pull request.
-func (st *Step) droppedWalk(ctx context.Context, d droppedItem, n int, id int64, seen map[int]bool) error {
+// order GitHub lists them, then n itself (droppedOne), which is held in
+// place of its close when anything below it was. It reports whether n is
+// open still, held so or otherwise. seen holds the issues walked already,
+// so a loop of links can't walk one twice. A sub-issue in another repo is
+// skipped, with everything below it, as family skips one, as is a pull
+// request.
+func (st *Step) droppedWalk(ctx context.Context, d droppedItem, n int, id int64, seen map[int]bool) (bool, error) {
 	subs, err := st.Client.SubIssues(ctx, st.Owner, st.Repo, n)
 	if err != nil {
-		return fmt.Errorf("below #%d: %w", n, err)
+		return false, fmt.Errorf("below #%d: %w", n, err)
 	}
+	below := false
 	for _, is := range subs {
 		m := is.GetNumber()
 		if !st.inRepo(is.GetRepositoryURL()) {
@@ -160,16 +169,37 @@ func (st *Step) droppedWalk(ctx context.Context, d droppedItem, n int, id int64,
 			continue
 		}
 		seen[m] = true
-		if err := st.droppedWalk(ctx, d, m, is.GetID(), seen); err != nil {
-			return fmt.Errorf("below #%d: %w", n, err)
+		held, err := st.droppedWalk(ctx, d, m, is.GetID(), seen)
+		if err != nil {
+			return false, fmt.Errorf("below #%d: %w", n, err)
 		}
+		below = below || held
 	}
-	return st.droppedOne(ctx, d, n, id)
+	held, err := st.droppedOne(ctx, d, n, id, below)
+	if err != nil {
+		return false, fmt.Errorf("drop #%d: %w", n, err)
+	}
+	return held, nil
 }
 
 // droppedOne closes issue n, whose ID is id, in d's subtree, read fresh,
-// and removes every dependency link to and from it (droppedUnlink):
-//   - open, it's reported to Touched, the label rules run on it first
+// and removes every dependency link to and from it (droppedUnlink), or
+// holds it for a PR, and reports whether it's left open, held so or not:
+//   - held for a PR already (droppedHeld), as by a pass that stopped part
+//     way after its hold, it gets no write;
+//   - open, a task whose PR the poll lists open (Step.PROpenOf), or an
+//     issue with one held so below it, below, is held for it (SPEC §6.4):
+//     it's reported to Touched, the label rules run on it first, then it
+//     moves to held with reason=dropped and at, keyed as its close would
+//     be (droppedKey), its comment naming the revision and the PR, or
+//     that an issue below it waits for one (droppedHoldText). A held one
+//     gets a held → held marker that keeps its first hold's at, origin and
+//     round bound (droppedHoldFields), as a hold by hand on a held issue
+//     does. It keeps its links until step 2 closes it (droppedPass). A
+//     hold the table refuses is a state error that Transition reports once
+//     on the issue: it's logged, and the issue is left open, so the issues
+//     above it are held too, as they can't close before it;
+//   - open otherwise, it's reported to Touched, the label rules run on it first
 //     (discCheckLabels), as for any move, then it moves to closed as not
 //     planned, keyed by d's key, or apart from a move of it that key
 //     carries already (droppedKey), with a comment naming the revision and
@@ -184,38 +214,133 @@ func (st *Step) droppedWalk(ctx context.Context, d droppedItem, n int, id int64,
 //   - closed otherwise, as by someone before the approval, or by the
 //     owner after a move of it the key carries, as a new or changed
 //     child's, it gets no write: a closed issue is never written.
-func (st *Step) droppedOne(ctx context.Context, d droppedItem, n int, id int64) error {
+func (st *Step) droppedOne(ctx context.Context, d droppedItem, n int, id int64, below bool) (bool, error) {
 	s, err := st.Client.Snapshot(ctx, st.Owner, st.Repo, n)
 	if err != nil {
-		return fmt.Errorf("read #%d: %w", n, err)
+		return false, fmt.Errorf("read #%d: %w", n, err)
 	}
 	dirt, err := st.Dirty(ctx, s, st.trustOnceTrust())
 	if err != nil {
-		return fmt.Errorf("read #%d: %w", n, err)
+		return false, fmt.Errorf("read #%d: %w", n, err)
 	}
 	if s.Closed {
 		if is := state.Derive(s, st.AppSlug, dirt.Has); !droppedClosedBy(is, d.key) && !droppedClosedBy(is, droppedClosedKey(d.key)) {
 			logr.Debugf("%s/%s#%d: closed, but not by revision %d of #%d's plan, which drops %s, so it's left as it is", st.Owner, st.Repo, n, d.rev, d.parent, d.item)
-			return nil
+			return false, nil
 		}
-		return st.droppedUnlink(ctx, n, id)
+		if err := st.droppedUnlink(ctx, n, id); err != nil {
+			return false, fmt.Errorf("closed #%d: %w", n, err)
+		}
+		return false, nil
+	}
+	if _, ok := droppedHeld(state.Derive(s, st.AppSlug, dirt.Has)); ok {
+		logr.Debugf("%s/%s#%d: held for a PR already, as revision %d of #%d's plan drops %s", st.Owner, st.Repo, n, d.rev, d.parent, d.item)
+		return true, nil
 	}
 	st.touch(n)
 	if err := st.discCheckLabels(ctx, s, st.Trust, dirt); err != nil {
-		return fmt.Errorf("check #%d: %w", n, err)
+		return false, fmt.Errorf("check #%d: %w", n, err)
 	}
-	m := Move{To: state.Closed, StateReason: "not_planned", Trigger: state.TriggerClosed, Key: droppedKey(state.Derive(s, st.AppSlug, dirt.Has), d.key),
+	is := state.Derive(s, st.AppSlug, dirt.Has)
+	pr, open := 0, false
+	if st.PROpenOf != nil {
+		pr, open = st.PROpenOf(is)
+	}
+	if open || below {
+		if !open {
+			pr = 0
+		}
+		m := Move{To: state.Held, Trigger: state.TriggerDropped, Key: droppedKey(is, d.key), Fields: droppedHoldFields(is), Text: droppedHoldText(d, n, pr)}
+		err := st.Transition(ctx, s, dirt.Has, m)
+		if StateError(err) {
+			logr.Warnf("%s/%s#%d: left open, not held, though revision %d of #%d's plan drops %s while a PR waits: %v", st.Owner, st.Repo, n, d.rev, d.parent, d.item, err)
+			return true, nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("hold #%d: %w", n, err)
+		}
+		logr.Infof("%s/%s#%d: held, not closed, as revision %d of #%d's plan drops %s while a PR waits", st.Owner, st.Repo, n, d.rev, d.parent, d.item)
+		return true, nil
+	}
+	m := Move{To: state.Closed, StateReason: "not_planned", Trigger: state.TriggerClosed, Key: droppedKey(is, d.key),
 		Text: droppedText(d, n)}
 	err = st.Transition(ctx, s, dirt.Has, m)
 	if StateError(err) {
 		logr.Warnf("%s/%s#%d: left open, though revision %d of #%d's plan drops %s: %v", st.Owner, st.Repo, n, d.rev, d.parent, d.item, err)
-		return nil
+		return false, nil
 	}
 	if err != nil {
-		return fmt.Errorf("close #%d: %w", n, err)
+		return false, fmt.Errorf("close #%d: %w", n, err)
 	}
 	logr.Infof("%s/%s#%d: closed as not planned, as revision %d of #%d's plan drops %s", st.Owner, st.Repo, n, d.rev, d.parent, d.item)
-	return st.droppedUnlink(ctx, n, id)
+	if err := st.droppedUnlink(ctx, n, id); err != nil {
+		return false, fmt.Errorf("closed #%d: %w", n, err)
+	}
+	return false, nil
+}
+
+// droppedHoldFields are the fields of the move that holds is for a PR, as
+// a revision drops it (SPEC §5, §6.4): reason=dropped and at, the stage it
+// was at, with the round bound from before the hold, and, at the
+// clarifying after a hold, its origin, as hold writes them. A held issue
+// keeps its first hold's at, origin and round bound, as a hold by hand on
+// a held issue does (Applier.override).
+func droppedHoldFields(is state.Issue) map[string]string {
+	fields := map[string]string{"reason": "dropped"}
+	if h := is.HeldStack; is.Stage == state.Held {
+		fields["at"] = string(h.At)
+		if h.Origin != "" {
+			fields["origin"] = string(h.Origin)
+		}
+		return state.HeldStackFields(fields, h.Seen)
+	}
+	fields["at"] = string(is.Stage)
+	if is.AfterHold() {
+		// The clarifying after a hold carries its origin forward, a later
+		// hold of any kind included (SPEC §6.4).
+		fields["origin"] = string(discOrigin(is, is.Stage))
+	}
+	return state.HeldStackFields(fields, is.Round)
+}
+
+// droppedHeld returns the marker of the hold on is for a PR, as a
+// revision dropped it (droppedOne), the first if there are two, and
+// whether is is held so: one of the holds on it (state.HeldStack) has
+// reason=dropped.
+func droppedHeld(is state.Issue) (github.Marker, bool) {
+	if is.Stage != state.Held {
+		return github.Marker{}, false
+	}
+	i := slices.IndexFunc(is.HeldStack.Holds, droppedHold)
+	if i < 0 {
+		return github.Marker{}, false
+	}
+	return is.HeldStack.Holds[i], true
+}
+
+// droppedHold reports whether m is the marker of a hold for a PR, as a
+// revision dropped its issue: reason=dropped.
+func droppedHold(m github.Marker) bool {
+	return m.Fields["reason"] == "dropped"
+}
+
+// droppedHoldText is the comment of the hold of issue n in d's subtree
+// for its PR, pr, or with pr 0 for the issues below it, which Transition
+// escapes: the item ID is the planner's. Its first paragraph names the
+// revision and the PR, which the digest's item copies (waitDroppedLines),
+// and the second says what ends the hold.
+func droppedHoldText(d droppedItem, n, pr int) string {
+	text := fmt.Sprintf("On hold, not closed, since #%d's plan, rev %d, drops %s", d.parent, d.rev, d.item)
+	if n != d.root {
+		text += fmt.Sprintf(", #%d, which this issue is below", d.root)
+	}
+	if pr > 0 {
+		return text + fmt.Sprintf(", while its PR #%d is open ([the plan](%s)).\n\n", pr, d.plan) +
+			"Once the PR merges, its `Closes` closes this issue, and once it's closed without merging, I close this issue as not planned. " +
+			"Or close it yourself. `/resume` doesn't end this hold."
+	}
+	return text + fmt.Sprintf(", while an issue below it waits for its PR ([the plan](%s)).\n\n", d.plan) +
+		"Once nothing below it is open, I close this issue as not planned. `/resume` doesn't end this hold."
 }
 
 // droppedKey is the key of the close of an open issue, in state is, in a

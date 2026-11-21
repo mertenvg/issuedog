@@ -53,7 +53,8 @@ func droppedExactPass(t *testing.T) func(*githubtest.Fake) error {
 		}
 		d := droppedItem{parent: 1, rev: 2, root: 2, item: "T3", key: state.Key{Field: "event", ID: "p10"},
 			plan: "https://github.com/o/r/issues/1#issuecomment-9"}
-		return st.droppedWalk(ctx, d, 2, root.GetID(), map[int]bool{1: true, 2: true})
+		_, err = st.droppedWalk(ctx, d, 2, root.GetID(), map[int]bool{1: true, 2: true})
+		return err
 	}
 }
 

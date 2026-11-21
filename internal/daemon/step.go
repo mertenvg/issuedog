@@ -27,6 +27,12 @@ type Step struct {
 	// The loop's reloads replace the daemon's Config, so it asks each time,
 	// as SettingCommands does. Unset, no model resolves.
 	Models func() config.Models
+	// PROpenOf, if set, reports the PR of task is (taskPR), and whether
+	// the poll lists it open, as the PR the App opened: a revision's drop
+	// holds such a task for its PR in place of its close (droppedOne, SPEC
+	// §6.4). The Daemon sets it, from what the poll listed (Daemon.prs), at
+	// no request. Unset, no PR is open.
+	PROpenOf func(is state.Issue) (int, bool)
 
 	trustOnce *trustOnceVisit // the trust of Iterate's visit under way, if any (#174)
 	// holdOrderReread, if set, is told of each ancestor whose /hold or

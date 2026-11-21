@@ -176,6 +176,10 @@ type Daemon struct {
 	// by task, after its last good step 1, which step 2 moves it with
 	// (prDirtSet).
 	prDirt map[int]Dirt
+	// droppedDirt is the dirty content of each issue held for a PR, as a
+	// revision dropped it, by issue, after its last good step 1, which step
+	// 2 closes it with once its hold ends (dropped_pass.go).
+	droppedDirt map[int]Dirt
 	// prPolls counts the polls that listed a pull request changed, so the
 	// PR step that waits on someone else's open PR tries again only once
 	// one has (Runs.prExists).
@@ -285,7 +289,9 @@ func (d *Daemon) Run(ctx context.Context) {
 // openErrAny takes too; an issue whose read or step 1 fails keeps its last
 // items, and one that closes or leaves the listing loses them. Then step 2
 // judges each task's PR at pr-open, or on the hand-off for its close
-// (prPass), and moves the task, with its items found again. Then it
+// (prPass), and moves the task, with its items found again, and closes
+// each issue a revision held for a PR whose hold has ended (droppedPass),
+// with its items found again too. Then it
 // closes each epic planned into stories whose children have all closed
 // (epicClosePass, #251), keeps each task's PR's priority label
 // (prLabelPass), the digest (digestPass), and then the assignees
@@ -426,6 +432,10 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	// as held, at no request (FollowUpByReaction).
 	d.Step.heldSnap = func(n int) *github.Snapshot { return d.snaps[n] }
 	defer func() { d.Step.heldSnap = nil }()
+	// A revision's drop holds a task whose PR the poll lists open, in place
+	// of its close (droppedOne), at no request.
+	d.Step.PROpenOf = d.droppedPROpen
+	defer func() { d.Step.PROpenOf = nil }()
 	for _, n := range slices.Sorted(maps.Keys(d.snaps)) {
 		reread := touched[n] && d.digestRestartRead(ctx, n, &touches) // as on a restart's first pass
 		s := d.snaps[n]
@@ -515,6 +525,8 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		d.digestRestartKnow(n)
 		d.epicCloseSet(s, dirt)
 		d.prDirtSet(s, dirt) // for step 2's moves (pr_reconcile.go)
+		// For step 2's close of an issue held for a PR (dropped_pass.go).
+		d.droppedSet(s, dirt)
 		if reread {
 			again[n] = true
 		}
@@ -531,6 +543,13 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		errs = append(errs, err)
 	}
 	maps.Copy(again, prMoved)
+	// An issue a revision held for a PR closes once the PR closes without
+	// merging, or nothing below it is open (dropped_pass.go).
+	droppedClosed, err := d.droppedPass(ctx)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	maps.Copy(again, droppedClosed)
 	if err := d.epicClosePass(ctx); err != nil { // an epic whose stories have all closed (epicclose.go)
 		errs = append(errs, err)
 	}

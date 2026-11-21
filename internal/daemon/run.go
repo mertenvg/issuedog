@@ -950,7 +950,8 @@ func (e *step1Wait) Unwrap() error { return e.err }
 // apply reads the issue again, runs CheckLabels on it, and applies out,
 // l's valid result, through st, then removes the run's files. The result
 // is dropped, writing nothing and with no attempt counted, when the issue
-// is gone or closed, or, unless the run's result is written already
+// is gone or closed, or held for its PR as a revision dropped it
+// (droppedHeld), or, unless the run's result is written already
 // (runApplied):
 //   - when a discussion trigger holds the issue (Step.discussion), which
 //     writes the hold and its notices first: then nothing of the result
@@ -1008,6 +1009,12 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 		return fmt.Errorf("apply run %s: %w", l.RunID, err)
 	}
 	is := state.Derive(s, a.AppSlug, d.Has)
+	if _, ok := droppedHeld(is); ok {
+		// Held for its PR in place of the close a revision's drop would
+		// make (SPEC §6.4): as on a closed issue, nothing more of the
+		// result is written, even once its move is.
+		return drop("a plan's revision dropped the issue, which is held for its PR")
+	}
 	moved := runApplied(is, l.RunID)
 	if !moved {
 		// A discussion trigger holds the issue, and drops the result, with
