@@ -672,3 +672,50 @@ func TestPRMainReplay(t *testing.T) {
 		})
 	}
 }
+
+// A head a person pushed that fails a command goes back to pr-open on
+// person-pushed with issuedog/verify failure on it (verify_person.go).
+// That failure stands: neither the passes after it nor the ones after
+// main moves, nor a fresh daemon's passes, build its merge, run a command,
+// post a check or send the task to in-progress, whatever main its check
+// names. Its next push or the owner's review moves it on.
+func TestPRMainPersonFailed(t *testing.T) {
+	t.Parallel()
+	f, v, head := personRig(t)
+	tip, _ := v.personPush(head, "broken.txt")
+	v.pass()
+	personBack(t, f, tip)
+	checks, ran := f.State().CheckRuns, v.checksRan()
+	v.passes(2)
+	v.prMainCommit("other.txt", "main's own change\n")
+	v.passes(2)
+	v = v.restart()
+	v.passes(2)
+	if got := f.State().CheckRuns; !slices.Equal(got, checks) || v.checksRan() != ran || pickStage(f, 1) != "stage:pr-open" {
+		t.Errorf("the check runs = %+v, the commands run %d times more, the task at %s; want %+v, none, and pr-open",
+			got, v.checksRan()-ran, pickStage(f, 1), checks)
+	}
+	personNever(t, f)
+	v.prMoveQuiet("after the restart", true)
+}
+
+// A head a person pushed that passes goes back to pr-open on person-pushed
+// with issuedog/verify success on it, and is judged on a new main as any
+// head is: once main moves, its merge runs the commands once, and a
+// success naming the new main is posted on it.
+func TestPRMainPersonPassed(t *testing.T) {
+	t.Parallel()
+	f, v, head := personRig(t)
+	tip, _ := v.personPush(head, "person.txt")
+	v.pass()
+	v.out(1, verifierPass(t, "Fine."))
+	v.passes(2)
+	personBack(t, f, tip)
+	main := v.prMainCommit("other.txt", "main's own change\n")
+	ran := v.checksRan()
+	v.pass()
+	if !slices.Contains(f.State().CheckRuns, prMainCheck(tip, main, "success")) || v.checksRan() != ran+1 {
+		t.Errorf("the check runs = %+v, the commands run %d times; want a success on %s naming %s, and once",
+			f.State().CheckRuns, v.checksRan()-ran, tip, main)
+	}
+}

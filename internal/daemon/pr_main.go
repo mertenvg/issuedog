@@ -63,6 +63,28 @@ func mainRound(is state.Issue) bool {
 	return mainMove(start)
 }
 
+// personPROpen reports whether task is's latest move into pr-open that
+// names a head, as prHeadOf reads it, is a person's head's move back on
+// person-pushed (personBack): verifying → pr-open after a move into
+// verifying on a new head (newHeadMove). A move out of held back to
+// verifying is looked through, as a hold keeps the stage it came from.
+func personPROpen(is state.Issue) bool {
+	person, back := false, false
+	for _, m := range is.Markers {
+		if m.Kind != "transition" {
+			continue
+		}
+		from, to := state.Stage(m.Fields["from"]), state.Stage(m.Fields["to"])
+		switch {
+		case to == state.Verifying && from != state.Held:
+			person = newHeadMove(m)
+		case to == state.PROpen && m.Fields["head"] != "":
+			back = person && from == state.Verifying
+		}
+	}
+	return back
+}
+
 // mainMoved is step 4's checks on a task's merge with main (SPEC §8.1,
 // §10.4), which Work runs after the checks at verifying (verifyTask) and
 // before the pick, only on a pass where no task work ran, so the commands
@@ -86,7 +108,12 @@ func mainRound(is state.Issue) bool {
 //
 // Otherwise the App's issuedog/verify checks on the head are read, one
 // request: when the newest names that main (mainCheckID) and is a
-// success, as after a restart, the head is judged, and nothing runs. A
+// success, as after a restart, the head is judged, and nothing runs. So
+// is a head a person pushed that failed verify, whose latest move into
+// pr-open is on person-pushed (personPROpen) while the newest is a
+// failure, whatever main it names: it never goes to in-progress, and its
+// failure stands until its next push or the owner's review moves the task
+// on (SPEC §7.2). Either is kept in mergeJudged, so it's read once a main. A
 // check with no external_id, as one posted before main was named there,
 // names none. Then the merge is built (repo.Repo.MergeCommit). A conflict
 // posts failure, naming the files, and sends the task back
@@ -150,7 +177,14 @@ func (r *Runs) mainMoved(ctx context.Context, ready []Ready, skip int) (bool, er
 		if err != nil {
 			return false, fmt.Errorf("the merge with main of #%d: read the head's checks: %w", n, err)
 		}
-		if c, ok := mainChecked(runs, a.Client.AppID()); ok && c.ExternalID == mainCheckID(main) && c.Conclusion == "success" {
+		c, checked := mainChecked(runs, a.Client.AppID())
+		if checked && c.Conclusion == checkFailure && personPROpen(is) {
+			r.mergeJudge(n, head, main, nil)
+			logr.Debugf("%s/%s#%d: its head %s, which the daemon didn't push, failed verify, as the App's %s says, so its merge with main's %s isn't checked: its next push or the owner's review moves it on",
+				a.Owner, a.Repo, n, head, github.VerifyCheck, main)
+			continue
+		}
+		if checked && c.ExternalID == mainCheckID(main) && c.Conclusion == checkSuccess {
 			r.mergeJudge(n, head, main, nil)
 			logr.Debugf("%s/%s#%d: its head %s has the App's %s naming main's %s as success already, so nothing runs",
 				a.Owner, a.Repo, n, head, github.VerifyCheck, main)

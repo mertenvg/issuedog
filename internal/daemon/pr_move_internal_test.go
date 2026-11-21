@@ -11,7 +11,9 @@ import (
 // posts one: only a success of the App's own stands. Another App's run,
 // listed as if GitHub ignored the app_id filter, never counts, nor does a
 // run of another name, and the App's failure after a success needs a new
-// one (SPEC §10.4).
+// one (SPEC §10.4). A person's head's failure is matched the same way:
+// only the App's newest failure stands for it, so a success, or a
+// failure older than one, needs a new one.
 func TestPRChecked(t *testing.T) {
 	t.Parallel()
 	const app, other = 7, 9
@@ -19,24 +21,31 @@ func TestPRChecked(t *testing.T) {
 		return github.CheckRun{ID: id, Name: name, Status: "completed", Conclusion: conclusion, AppID: appID}
 	}
 	for _, tt := range []struct {
-		name string
-		runs []github.CheckRun // newest first
-		want bool
+		name       string
+		runs       []github.CheckRun // newest first
+		conclusion string
+		want       bool
 	}{
-		{"none", nil, false},
-		{"the App's success", []github.CheckRun{run(1, app, github.VerifyCheck, "success")}, true},
-		{"another App's success alone", []github.CheckRun{run(2, other, github.VerifyCheck, "success")}, false},
+		{"none", nil, "success", false},
+		{"the App's success", []github.CheckRun{run(1, app, github.VerifyCheck, "success")}, "success", true},
+		{"another App's success alone", []github.CheckRun{run(2, other, github.VerifyCheck, "success")}, "success", false},
 		{"another App's success, newer than the App's failure", []github.CheckRun{
-			run(3, other, github.VerifyCheck, "success"), run(2, app, github.VerifyCheck, "failure")}, false},
+			run(3, other, github.VerifyCheck, "success"), run(2, app, github.VerifyCheck, "failure")}, "success", false},
 		{"another App's failure, newer than the App's success", []github.CheckRun{
-			run(3, other, github.VerifyCheck, "failure"), run(2, app, github.VerifyCheck, "success")}, true},
+			run(3, other, github.VerifyCheck, "failure"), run(2, app, github.VerifyCheck, "success")}, "success", true},
 		{"the App's failure, newer than its success", []github.CheckRun{
-			run(3, app, github.VerifyCheck, "failure"), run(2, app, github.VerifyCheck, "success")}, false},
-		{"the App's success of another name", []github.CheckRun{run(1, app, "issuedog/tip", "success")}, false},
-		{"the App's run still queued", []github.CheckRun{{ID: 1, Name: github.VerifyCheck, Status: "queued", AppID: app}}, false},
+			run(3, app, github.VerifyCheck, "failure"), run(2, app, github.VerifyCheck, "success")}, "success", false},
+		{"the App's success of another name", []github.CheckRun{run(1, app, "issuedog/tip", "success")}, "success", false},
+		{"the App's run still queued", []github.CheckRun{{ID: 1, Name: github.VerifyCheck, Status: "queued", AppID: app}}, "success", false},
+		{"no failure", nil, "failure", false},
+		{"the App's failure, for a failure", []github.CheckRun{run(1, app, github.VerifyCheck, "failure")}, "failure", true},
+		{"the App's success, for a failure", []github.CheckRun{run(1, app, github.VerifyCheck, "success")}, "failure", false},
+		{"the App's success, newer than its failure, for a failure", []github.CheckRun{
+			run(3, app, github.VerifyCheck, "success"), run(2, app, github.VerifyCheck, "failure")}, "failure", false},
+		{"another App's failure alone, for a failure", []github.CheckRun{run(2, other, github.VerifyCheck, "failure")}, "failure", false},
 	} {
-		if got := prChecked(tt.runs, app); got != tt.want {
-			t.Errorf("%s: prChecked = %t, want %t", tt.name, got, tt.want)
+		if got := prChecked(tt.runs, app, tt.conclusion); got != tt.want {
+			t.Errorf("%s: prChecked(%s) = %t, want %t", tt.name, tt.conclusion, got, tt.want)
 		}
 	}
 }
