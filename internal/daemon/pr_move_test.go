@@ -88,9 +88,11 @@ func prMoveText(pr int, head string) string {
 // prMoveCheckRuns are the fake's check runs, in State's form.
 func prMoveCheckRuns(f *githubtest.Fake) []githubtest.CheckRunState { return f.State().CheckRuns }
 
-// prMoveVerified is the one success of the App's on head, as State has it.
-func prMoveVerified(head string) githubtest.CheckRunState {
-	return githubtest.CheckRunState{SHA: head, Name: github.VerifyCheck, Conclusion: "success", AppID: githubtest.AppID}
+// prMoveVerified is the one success of the App's on head, as State has it,
+// naming main, the main commit its checks ran against, in its external_id
+// (SPEC §10.4).
+func prMoveVerified(head, main string) githubtest.CheckRunState {
+	return githubtest.CheckRunState{SHA: head, Name: github.VerifyCheck, Conclusion: "success", AppID: githubtest.AppID, ExternalID: "main=" + main}
 }
 
 // prMoveQuiet runs quietPass, and fails if the pass sent anything about a
@@ -150,7 +152,7 @@ func TestPRMoveWholeRun(t *testing.T) {
 	}
 	pr := prs[0].Number
 	link := "https://github.com/o/r/issues/1#issuecomment-" + strconv.FormatInt(pass, 10)
-	if got := prMoveCheckRuns(f); !slices.Equal(got, []githubtest.CheckRunState{prMoveVerified(head)}) {
+	if got := prMoveCheckRuns(f); !slices.Equal(got, []githubtest.CheckRunState{prMoveVerified(head, main)}) {
 		t.Errorf("the check runs = %+v; want the App's success on the head %s", got, head)
 	}
 	checks := prMoveChecks(t, f)
@@ -224,13 +226,14 @@ func TestPRMoveCrash(t *testing.T) {
 			f := newFake(t)
 			v := newVerdictRig(t, f, 3)
 			head, _ := v.prTask()
+			main := v.mainSHA()
 			v.pass()
 			f.BeforeRequest(func(r githubtest.Request) bool { return r.Method == http.MethodPost && r.Path == tt.path },
 				func() { f.FailWriteAfter(len(f.Writes()) + 1) })
 			if err := v.d.Iterate(context.Background()); err == nil {
 				t.Fatal("the pass whose answer was lost gave no error")
 			}
-			if got := prMoveCheckRuns(f); !slices.Equal(got, []githubtest.CheckRunState{prMoveVerified(head)}) {
+			if got := prMoveCheckRuns(f); !slices.Equal(got, []githubtest.CheckRunState{prMoveVerified(head, main)}) {
 				t.Fatalf("after the lost answer, the check runs = %+v; want the App's success on %s", got, head)
 			}
 
@@ -239,7 +242,7 @@ func TestPRMoveCrash(t *testing.T) {
 			// the digest and assigns notify to it, and the one that reads
 			// those writes.
 			v.passes(4)
-			if got := prMoveCheckRuns(f); !slices.Equal(got, []githubtest.CheckRunState{prMoveVerified(head)}) {
+			if got := prMoveCheckRuns(f); !slices.Equal(got, []githubtest.CheckRunState{prMoveVerified(head, main)}) {
 				t.Errorf("after the restart, the check runs = %+v; want the one", got)
 			}
 			if moves := prMoveComments(f, "pr-open"); len(moves) != 1 || pickStage(f, 1) != "stage:pr-open" {
@@ -277,13 +280,14 @@ func TestPRMoveCheckStands(t *testing.T) {
 			f := newFake(t)
 			v := newVerdictRig(t, f, 3)
 			head, _ := v.prTask()
+			main := v.mainSHA()
 			var want []githubtest.CheckRunState
 			for _, c := range tt.before {
 				f.SetCheckRun(head, github.VerifyCheck, c.Conclusion, c.AppID)
 				want = append(want, githubtest.CheckRunState{SHA: head, Name: github.VerifyCheck, Conclusion: c.Conclusion, AppID: c.AppID})
 			}
 			if tt.posted {
-				want = append(want, prMoveVerified(head))
+				want = append(want, prMoveVerified(head, main))
 			}
 			v.pass() // the checks
 			v.prOpens(head)
@@ -307,6 +311,7 @@ func TestPRMovePushBetween(t *testing.T) {
 	f := newFake(t)
 	v := newVerdictRig(t, f, 3)
 	head, _ := v.prTask()
+	main := v.mainSHA()
 	gitIn(t, v.o.work, "checkout", "--quiet", "-b", "theirs", "task")
 	if err := os.WriteFile(filepath.Join(v.o.work, "theirs.txt"), []byte("Theirs.\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -323,7 +328,7 @@ func TestPRMovePushBetween(t *testing.T) {
 	if len(prs) != 1 || prs[0].HeadSHA != theirs {
 		t.Fatalf("the PRs = %+v; want one, showing their head %s", prs, theirs)
 	}
-	if got := prMoveCheckRuns(f); !slices.Equal(got, []githubtest.CheckRunState{prMoveVerified(head)}) {
+	if got := prMoveCheckRuns(f); !slices.Equal(got, []githubtest.CheckRunState{prMoveVerified(head, main)}) {
 		t.Errorf("the check runs = %+v; want the App's success on the verified head %s alone, none on %s", got, head, theirs)
 	}
 	moves := prMoveComments(f, "pr-open")
@@ -475,7 +480,7 @@ func TestPRMoveReplay(t *testing.T) {
 			for f := range roots {
 				var want []githubtest.CheckRunState
 				if !tt.empty {
-					want = []githubtest.CheckRunState{prMoveVerified(head)}
+					want = []githubtest.CheckRunState{prMoveVerified(head, base.mainSHA())}
 				}
 				if got := prMoveCheckRuns(f); !slices.Equal(got, want) {
 					t.Errorf("after the replay, the check runs = %+v; want %+v", got, want)

@@ -65,7 +65,7 @@ func TestImplementerPreambleTarget(t *testing.T) {
 		"- You run in a detached checkout of the commit issuedog named for this task, with its history and one branch, `target` (below), but no remote, " +
 			"so git commands name HEAD. Commit your work there.",
 		"issuedog checks your output and posts it.\n- Your checkout's `target` branch is `main` at `" + target + "`, " +
-			"which your starting commit doesn't merge with cleanly. Merge `target` first, resolve the conflicts, and commit the merge.\n\n## Output",
+			"which your starting commit doesn't merge with cleanly, or fails verify once merged with, as input.md says. Merge `target` first, resolve any conflicts, and commit the merge.\n\n## Output",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the preamble with a target =\n%s\nwant it to say\n%s", got, want)

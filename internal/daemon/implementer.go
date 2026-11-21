@@ -159,8 +159,10 @@ func (im *Implementer) Context(ctx context.Context, in Input) (map[string][]byte
 //     after /done, starts a new round;
 //   - then, when the round's start is a review's move, pr-open →
 //     in-progress (reviewMove), that move's comment, which quotes the
-//     reviews, under a heading naming them (reviewsLabel). It stands for
-//     every run of the round, as the reviews are what the round answers.
+//     reviews, under a heading naming them (reviewsLabel), or main's
+//     moving's (mainMove), which gives what failed on the merge with main,
+//     under mainLabel. It stands for every run of the round, as that's
+//     what the round answers.
 //
 // A comment posted since isn't input at in-progress, as step 1 gives none
 // there (state.Issue.Inputs): conversation.md has it, as for any trusted
@@ -168,7 +170,7 @@ func (im *Implementer) Context(ctx context.Context, in Input) (map[string][]byte
 // from it, so it costs no request.
 func implementerFindings(s *github.Snapshot, is state.Issue) []string {
 	bound := taskRoundBound(is)
-	var id, review int64
+	var id, sentBack int64
 	var start github.Marker
 	attempt := 0
 	for i, m := range is.Markers {
@@ -177,14 +179,20 @@ func implementerFindings(s *github.Snapshot, is state.Issue) []string {
 			continue
 		}
 		if _, bounds := state.RoundBound(m, c); bounds && !verifyLoopMove(m) {
-			start, review = m, c // the round's start, as taskRoundBound reads it
+			start, sentBack = m, c // the round's start, as taskRoundBound reads it
 		}
 		if c > bound && verifyLoopMove(m) && state.Stage(m.Fields["to"]) == state.InProgress {
 			id, attempt = c, markerAttempt(m)
 		}
 	}
-	if !reviewMove(start) {
-		review = 0
+	var label string
+	switch {
+	case reviewMove(start):
+		label = reviewsLabel(start)
+	case mainMove(start):
+		label = mainLabel
+	default:
+		sentBack = 0
 	}
 	var sections []string
 	for _, c := range s.Comments {
@@ -193,12 +201,16 @@ func implementerFindings(s *github.Snapshot, is state.Issue) []string {
 		}
 	}
 	for _, c := range s.Comments {
-		if review != 0 && c.ID == review {
-			sections = append(sections, ivSection(reviewsLabel(start), ivStripMarkers(c.Body)))
+		if sentBack != 0 && c.ID == sentBack {
+			sections = append(sections, ivSection(label, ivStripMarkers(c.Body)))
 		}
 	}
 	return sections
 }
+
+// mainLabel is the heading of input.md's section for the move that sent a
+// task back from pr-open on its merge with main (mainMove).
+const mainLabel = "the merge with `main`"
 
 // reviewsLabel is the heading of input.md's reviews, those m, a review's
 // move (reviewMove), quotes: "the review by `<login>`" when it names one
@@ -308,8 +320,8 @@ func implementerPreamble(c *config.Config, all []interviewerRound, target, dropp
 	clone := []string{"- You run in a detached checkout of the commit issuedog named for this task, " + has + ", so git commands name HEAD. " +
 		"Commit your work there. Never push: issuedog takes your commits from the clone. You can't write to GitHub: issuedog checks your output and posts it."}
 	if target != "" {
-		clone = append(clone, "- Your checkout's `target` branch is `main` at `"+target+"`, which your starting commit doesn't merge with cleanly. "+
-			"Merge `target` first, resolve the conflicts, and commit the merge.")
+		clone = append(clone, "- Your checkout's `target` branch is `main` at `"+target+"`, which your starting commit doesn't merge with cleanly, "+
+			"or fails verify once merged with, as input.md says. Merge `target` first, resolve any conflicts, and commit the merge.")
 	}
 	if dropped != "" {
 		clone = append(clone, "- The head your earlier runs left on this task fails verify's rule 2, as the finding below says, so issuedog dropped it: "+

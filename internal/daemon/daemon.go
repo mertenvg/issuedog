@@ -184,10 +184,12 @@ type Daemon struct {
 	// PR step that waits on someone else's open PR tries again only once
 	// one has (Runs.prExists).
 	prPolls int
-	// prWaiting is the move out of pr-open step 2 found for each task, by
-	// task, that waits for the worker: one into verifying or in-progress,
-	// made once the worker is free, and dropped when the task moves or its
-	// PR changes (pr_head.go).
+	// prWaiting is the move out of pr-open step 2, or step 4 for main's
+	// moving (Runs.mainMoved), found for each task, by task, that waits for
+	// the worker: one into verifying or in-progress, made once the worker
+	// is free, and dropped when the task moves or its PR changes
+	// (pr_head.go), or for main's moving, when main moves again
+	// (prWaitingMain).
 	prWaiting map[int]Move
 	// prHeadWarned is the key of the last warning step 2 logged for each
 	// task's branch, by task, so a wait that lasts is warned of once

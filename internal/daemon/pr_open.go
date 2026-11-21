@@ -483,8 +483,9 @@ const prCheckTitle = "issuedog verified this head"
 // head someone pushed after the App's has none there, and the main ruleset
 // blocks its merge (SPEC §15). Its title is prCheckTitle, its summary
 // renderPRCheck's, with what the checks of head against main's commit main
-// gave (Runs.passed), so nothing runs again, and its details URL link,
-// the verifier's pass comment. It's checked first: it reads the App's
+// gave (Runs.passed), so nothing runs again, its details URL link, the
+// verifier's pass comment, and its external_id, naming main
+// (mainCheckID). It's checked first: it reads the App's
 // check runs there (github.Client.VerifyChecks), and posts none when the
 // newest of them is a success already (prChecked), so a replay or a
 // restart posts one.
@@ -499,7 +500,7 @@ func (r *Runs) prCheck(ctx context.Context, n int, head, main, link string) erro
 		return nil
 	}
 	run, err := a.Client.PostVerifyCheck(ctx, a.Owner, a.Repo, github.NewCheckRun{HeadSHA: head, Conclusion: "success",
-		Title: prCheckTitle, Summary: renderPRCheck(n, head, main, r.passed[n].Results, link), DetailsURL: link})
+		Title: prCheckTitle, Summary: renderPRCheck(n, head, main, r.passed[n].Results, link), DetailsURL: link, ExternalID: mainCheckID(main)})
 	if err != nil {
 		return fmt.Errorf("check the head: %w", err)
 	}
