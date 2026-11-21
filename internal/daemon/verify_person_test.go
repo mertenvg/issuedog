@@ -703,3 +703,86 @@ func TestPersonHeadReplay(t *testing.T) {
 		})
 	}
 }
+
+// personMoveID is the ID of the comment on f's task #1 that holds step 2's
+// move to verifying on tip.
+func personMoveID(tb testing.TB, f *githubtest.Fake, tip string) int64 {
+	tb.Helper()
+	s, err := f.Client(tb).Snapshot(context.Background(), "o", "r", 1)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	for _, c := range s.Comments {
+		if c.Author.Login == app && strings.Contains(c.Body, "event=n"+tip+" ") {
+			return c.ID
+		}
+	}
+	tb.Fatalf("no move to verifying on %s", tip)
+	return 0
+}
+
+// Replay passes for the verifier's request_changes, and for no readable
+// verdict, on a person's head, whatever write a crash comes at (SPEC
+// §5.2): a saved result, applied by a fresh daemon on each pass, writes
+// the PR's body, the failure on the head and the move back to pr-open,
+// keyed by the saved run, once each, through the verdict's own checks
+// (verdictRun, runMoved), with no attempt counted.
+func TestPersonHeadVerifierReplay(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name string
+		out  func(t *testing.T) string
+	}{
+		{"request_changes", func(t *testing.T) string { return ivResult(t, verifierOutput(t, "request_changes")) }},
+		{"no readable verdict", func(*testing.T) string {
+			return `{"type":"result","subtype":"success","is_error":false,"result":"Done."}`
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			base := newVerdictRigWith(t, newFake(t), 3, "", `, "`+personBrokenCommand+`"`)
+			old := base.head()
+			gitIn(t, base.o.work, "push", "--quiet", base.o.url, old+":refs/heads/"+prBranch)
+			tip := prHeadPush(t, base.o, old, "person.txt")
+			out := tt.out(t)
+			roots, clones := map[*githubtest.Fake]string{}, map[*githubtest.Fake]*repo.Repo{}
+			githubtest.Replay(t, func(tb testing.TB) *githubtest.Fake {
+				f := personReplayFake(tb, base.o, old, tip)
+				roots[f] = t.TempDir()
+				verifierSaved(tb, roots[f], tip, out, personMoveID(tb, f, tip))
+				return f
+			}, func(f *githubtest.Fake) error {
+				g := newRig(t, f, base.o, roots[f])
+				if clones[f] == nil {
+					clones[f] = g.d.Clone
+				}
+				g.d.Clone, g.r.Workspace.Bare = clones[f], clones[f].Dir()
+				v := &verdictRig{rig: g, o: base.o, cfg: base.cfg, ran: base.ran}
+				v.wire()
+				for range 3 {
+					if err := v.d.Iterate(context.Background()); err != nil {
+						return err
+					}
+				}
+				return nil
+			})
+			for f := range roots {
+				want := []githubtest.CheckRunState{{SHA: tip, Name: github.VerifyCheck, Conclusion: "failure", AppID: githubtest.AppID}}
+				if got := f.State().CheckRuns; !slices.Equal(got, want) {
+					t.Errorf("after the replay, the check runs = %+v; want %+v", got, want)
+				}
+				moves := slices.DeleteFunc(prMoveComments(f, "pr-open"), func(c string) bool { return !strings.Contains(c, " head="+tip+" ") })
+				if len(moves) != 1 || pickStage(f, 1) != "stage:pr-open" {
+					t.Fatalf("after the replay, the moves to pr-open on %s = %q, at %s; want one, at pr-open", tip, moves, pickStage(f, 1))
+				}
+				fields := prMoveFields(t, moves[0])
+				if _, ok := fields["attempt"]; ok || fields["run"] != "saved" || fields["head"] != tip {
+					t.Errorf("after the replay, the move's marker has %v; want run=saved, head=%s, and no attempt", fields, tip)
+				}
+				if got := f.State().PRs[0].Body; got != personFailedBody(tip) {
+					t.Errorf("after the replay, the PR's body =\n%s\nwant\n%s", got, personFailedBody(tip))
+				}
+			}
+		})
+	}
+}
