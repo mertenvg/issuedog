@@ -311,9 +311,9 @@ func TestPRHeadRestart(t *testing.T) {
 }
 
 // A push between the App's push and its PR, here just before the PR is
-// opened (S6's race): the PR step's move names the head it verified and
-// pushed, so the next pass finds the branch at the person's commit, a new
-// head, and moves the task to verifying on it.
+// opened: the PR step's move names the head it verified and pushed, so the
+// next pass finds the branch at the person's commit, a new head, and moves
+// the task to verifying on it.
 func TestPRHeadPushBeforeThePR(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
