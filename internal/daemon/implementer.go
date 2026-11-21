@@ -77,8 +77,10 @@ func (*Implementer) Pending(in Input) bool {
 //     every stage's (allRounds).
 //   - input.md: first, the round's latest findings from verify, the
 //     comment of the move back on them with its markers left out, under
-//     a heading naming their attempt (implementerFindings), then the
-//     answers to the task's latest round, each labelled with
+//     a heading naming their attempt, then, when a review's move started
+//     the round, that move's comment, under a heading naming the review
+//     (implementerFindings), then the answers to the task's latest round,
+//     each labelled with
 //     its round, as ivInputs labels the interviewer's, when the move that
 //     sent it back to ready was an answer's and no implementer run has
 //     moved it since (implementerAnswers), then in.Inputs, or with
@@ -127,10 +129,7 @@ func (im *Implementer) Context(ctx context.Context, in Input) (map[string][]byte
 	if err != nil {
 		return nil, wrap(err)
 	}
-	var input []string
-	if c, attempt, ok := implementerFindings(s, in.Issue); ok {
-		input = append(input, ivSection(findingsLabel(attempt), ivStripMarkers(c.Body)))
-	}
+	input := implementerFindings(s, in.Issue)
 	input = append(input, contextInputs(answers, func(c github.Comment) string {
 		return "an answer to round " + strconv.Itoa(ivRoundOf(all, c.ID))
 	})...)
@@ -149,32 +148,67 @@ func (im *Implementer) Context(ctx context.Context, in Input) (map[string][]byte
 	return files, nil
 }
 
-// implementerFindings returns the comment on s of task is's latest move
-// back on findings in its round (SPEC §8.3, §10.1), one whose marker
-// counts, above the round's start (taskRoundBound), and the attempt it
-// names, 0 for none, or false if there's none. They stand for every run of
-// the round, failed ones included, until newer findings, or a move other
-// than the verify loop's, such as the pick's after /done, starts a new
-// round. A comment posted since isn't input at in-progress, as step 1
-// gives none there (state.Issue.Inputs): conversation.md has it, as for
-// any trusted comment. It reads only s, the issue as step 1 read it, and
-// is, derived from it, so it costs no request.
-func implementerFindings(s *github.Snapshot, is state.Issue) (github.Comment, int, bool) {
+// implementerFindings is input.md's sections for the round of task is,
+// whose snapshot is s, that its verify loop and its PR give (SPEC §8.3,
+// §12), each a comment the App wrote, with its markers left out:
+//   - first, the comment of its latest move back on findings in its round,
+//     one whose marker counts, above the round's start (taskRoundBound),
+//     under a heading naming the attempt it names (findingsLabel). They
+//     stand for every run of the round, failed ones included, until newer
+//     findings, or a move other than the verify loop's, such as the pick's
+//     after /done, starts a new round;
+//   - then, when the round's start is a review's move, pr-open →
+//     in-progress (reviewMove), that move's comment, which quotes the
+//     reviews, under a heading naming them (reviewsLabel). It stands for
+//     every run of the round, as the reviews are what the round answers.
+//
+// A comment posted since isn't input at in-progress, as step 1 gives none
+// there (state.Issue.Inputs): conversation.md has it, as for any trusted
+// comment. It reads only s, the issue as step 1 read it, and is, derived
+// from it, so it costs no request.
+func implementerFindings(s *github.Snapshot, is state.Issue) []string {
 	bound := taskRoundBound(is)
-	var id int64
+	var id, review int64
+	var start github.Marker
 	attempt := 0
 	for i, m := range is.Markers {
 		c, ok := is.MarkerComment(i)
-		if ok && c > bound && verifyLoopMove(m) && state.Stage(m.Fields["to"]) == state.InProgress {
+		if !ok {
+			continue
+		}
+		if _, bounds := state.RoundBound(m, c); bounds && !verifyLoopMove(m) {
+			start, review = m, c // the round's start, as taskRoundBound reads it
+		}
+		if c > bound && verifyLoopMove(m) && state.Stage(m.Fields["to"]) == state.InProgress {
 			id, attempt = c, markerAttempt(m)
 		}
 	}
+	if !reviewMove(start) {
+		review = 0
+	}
+	var sections []string
 	for _, c := range s.Comments {
 		if id != 0 && c.ID == id {
-			return c, attempt, true
+			sections = append(sections, ivSection(findingsLabel(attempt), ivStripMarkers(c.Body)))
 		}
 	}
-	return github.Comment{}, 0, false
+	for _, c := range s.Comments {
+		if review != 0 && c.ID == review {
+			sections = append(sections, ivSection(reviewsLabel(start), ivStripMarkers(c.Body)))
+		}
+	}
+	return sections
+}
+
+// reviewsLabel is the heading of input.md's reviews, those m, a review's
+// move (reviewMove), quotes: "the review by `<login>`" when it names one
+// reviewer (fieldReviewer), a valid login (ivLogin), or else "the
+// reviews".
+func reviewsLabel(m github.Marker) string {
+	if who := m.Fields[fieldReviewer]; who != "" && ivLogin(who) == who {
+		return "the review by `" + who + "`"
+	}
+	return "the reviews"
 }
 
 // findingsLabel is the heading of input.md's findings, of verify attempt

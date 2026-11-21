@@ -50,32 +50,24 @@ func newHeadKey(tip string) state.Key {
 
 // prNewHead judges task s's branch at pr-open, whose state is is (SPEC
 // §7.2's pr-open → verifying), from the bare clone's branches as the
-// pass's sync left them, so at no request, and returns the move it makes,
-// or nil. The task's branch is the one with its prefix (taskBranch). A tip
-// that's neither prHeadOf(is) nor "", as for a branch that's gone, which
-// leaves the PR to its close (prJudgeOpen), is a new head: the move
-// pr-open → verifying on new-head, keyed event=n<tip>, with head=, that
-// tip, and the round bound the task had as seen= (state.HeldStackFields),
-// its comment naming the old head and the new one (renderNewHead). A tip
-// such a move named once already moves the task no more (SPEC §5.2). Two
-// branches with the task's prefix move nothing, as the daemon can't tell
-// which is the task's, warned of once while that lasts (prHeadWarnOnce).
+// pass's sync left them, so at no request (prTip), and returns the move it
+// makes, or nil. A tip that's neither prHeadOf(is) nor "", as for a branch
+// that's gone, which leaves the PR to its close (prJudgeOpen), is a new
+// head: the move pr-open → verifying on new-head, keyed event=n<tip>, with
+// head=, that tip, and the round bound the task had as seen=
+// (state.HeldStackFields), its comment naming the old head and the new one
+// (renderNewHead). A tip such a move named once already moves the task no
+// more (SPEC §5.2). Two branches with the task's prefix move nothing, as
+// the daemon can't tell which is the task's (prTip).
 func (d *Daemon) prNewHead(ctx context.Context, s *github.Snapshot, is state.Issue) (*Move, error) {
 	a, n := d.Step.Applier, s.Number
-	branches, err := d.Clone.Branches(ctx, taskBranchPrefix(n))
+	branch, tip, ok, err := d.prTip(ctx, s)
 	if err != nil {
-		return nil, fmt.Errorf("list the task's branches: %w", err)
+		return nil, fmt.Errorf("read the task's branch: %w", err)
 	}
-	branch, tip, err := taskBranch(n, s.Title, branches)
-	switch {
-	case errors.Is(err, errTwoBranches):
-		d.prHeadWarnOnce(n, err.Error(), "%s/%s#%d: its branch's tip isn't judged at %s: %v", a.Owner, a.Repo, n, state.PROpen, err)
+	if !ok {
 		return nil, nil
-	case err != nil:
-		return nil, fmt.Errorf("name the task's branch: %w", err)
 	}
-	// A wait that ended is warned of again if it comes back.
-	delete(d.prHeadWarned, n)
 	old := prHeadOf(is)
 	if tip == "" || tip == old {
 		return nil, nil
@@ -88,6 +80,31 @@ func (d *Daemon) prNewHead(ctx context.Context, s *github.Snapshot, is state.Iss
 	logr.Infof("%s/%s#%d: its branch %s is at %s, not at %s, its PR's verified head, so it's a new head the daemon didn't push", a.Owner, a.Repo, n, branch, tip, old)
 	return &Move{To: state.Verifying, Trigger: state.TriggerNewHead, Key: key,
 		Fields: state.HeldStackFields(map[string]string{"head": tip}, is.Round), Text: renderNewHead(old, tip)}, nil
+}
+
+// prTip is task s's branch and its tip, from the bare clone's branches as
+// the pass's sync left them, so at no request, and true. The task's branch
+// is the one with its prefix (taskBranch), and a branch that's gone has
+// tip "". Two branches with the task's prefix give false, as the daemon
+// can't tell which is the task's, warned of once while that lasts
+// (prHeadWarnOnce).
+func (d *Daemon) prTip(ctx context.Context, s *github.Snapshot) (string, string, bool, error) {
+	a, n := d.Step.Applier, s.Number
+	branches, err := d.Clone.Branches(ctx, taskBranchPrefix(n))
+	if err != nil {
+		return "", "", false, fmt.Errorf("list the task's branches: %w", err)
+	}
+	branch, tip, err := taskBranch(n, s.Title, branches)
+	switch {
+	case errors.Is(err, errTwoBranches):
+		d.prHeadWarnOnce(n, err.Error(), "%s/%s#%d: its branch's tip isn't judged at %s: %v", a.Owner, a.Repo, n, state.PROpen, err)
+		return "", "", false, nil
+	case err != nil:
+		return "", "", false, fmt.Errorf("name the task's branch: %w", err)
+	}
+	// A wait that ended is warned of again if it comes back.
+	delete(d.prHeadWarned, n)
+	return branch, tip, true, nil
 }
 
 // renderNewHead is the comment of a task's move pr-open → verifying on a
@@ -110,12 +127,14 @@ func newHeadMove(m github.Marker) bool {
 }
 
 // taskHeadFollow moves task n's head, taskRef(n), to the head= of its
-// latest move, as is reads it, when that move is a new head's
-// (newHeadMove), and the ref isn't there already (SPEC §3.2). Step 2 calls
-// it after that move, and verifyTask on each pass at verifying before it
-// names the head, so a crash between the move and the ref is finished
-// there. A head the bare repo lacks moves nothing: the checks find that
-// (verifyChecks).
+// latest move, as is reads it, when that move names a head the task's
+// head follows (headMove): a new head's, or a review's that carries one,
+// and the ref isn't there already (SPEC §3.2). Step 2 calls it after that
+// move, verifyTask on each pass at verifying before it names the head, and
+// a Committer's run start before it reads the task's head, so a crash
+// between the move and the ref is finished there. A head the bare repo
+// lacks moves nothing: the checks find that (verifyChecks), and a run
+// starts from the task's head as it is.
 func (d *Daemon) taskHeadFollow(ctx context.Context, n int, is state.Issue) error {
 	a := d.Step.Applier
 	var latest github.Marker
@@ -124,7 +143,7 @@ func (d *Daemon) taskHeadFollow(ctx context.Context, n int, is state.Issue) erro
 			latest = m
 		}
 	}
-	if !newHeadMove(latest) {
+	if !headMove(latest) {
 		return nil
 	}
 	head := latest.Fields["head"]
@@ -137,17 +156,25 @@ func (d *Daemon) taskHeadFollow(ctx context.Context, n int, is state.Issue) erro
 	}
 	has, err := d.Clone.HasCommit(ctx, head)
 	if err != nil {
-		return fmt.Errorf("read the new head: %w", err)
+		return fmt.Errorf("read the head its move names: %w", err)
 	}
 	if !has {
-		logr.Debugf("%s/%s#%d: its new head %s isn't in the bare repo, so the task's head stays at %q", a.Owner, a.Repo, n, head, at)
+		logr.Debugf("%s/%s#%d: the head %s its move names isn't in the bare repo, so the task's head stays at %q", a.Owner, a.Repo, n, head, at)
 		return nil
 	}
 	if err := d.Clone.UpdateRef(ctx, taskRef(n), head); err != nil {
-		return fmt.Errorf("move the task's head to its new head: %w", err)
+		return fmt.Errorf("move the task's head to the head its move names: %w", err)
 	}
-	logr.Infof("%s/%s#%d: the task's head is now its new head, %s", a.Owner, a.Repo, n, head)
+	logr.Infof("%s/%s#%d: the task's head is now the head its move names, %s", a.Owner, a.Repo, n, head)
 	return nil
+}
+
+// headMove reports whether m is a move whose head= the task's head follows
+// (taskHeadFollow, SPEC §3.2): a new head's (newHeadMove), or a review's
+// (reviewMove) that carries one, as the task's branch was at a head other
+// than its PR's verified head.
+func headMove(m github.Marker) bool {
+	return newHeadMove(m) || reviewMove(m) && m.Fields["head"] != ""
 }
 
 // workerFree reports whether task n may take the one worker (SPEC §8.1's
@@ -202,6 +229,35 @@ func (d *Daemon) prWaitingFor(n int, is state.Issue, p listedPR) (Move, bool) {
 		return Move{}, false
 	}
 	return m, true
+}
+
+// prWaitingTip is m, the move found for task s at pr-open, whose state is
+// is, that waits for the worker and still stands (prWaitingFor), made to
+// fit the task's branch as the pass's sync left it, at no request (prTip),
+// and true, or false when it no longer stands, and is dropped, so the PR
+// is judged again: a branch that moved on since the move was found, even
+// with no change the poll lists, isn't missed. A new head's move stands
+// only while the branch is at the head its key names. A review's takes the
+// branch's tip as head= when it isn't the PR's verified head, and none
+// otherwise (prReviewHead). Two branches with the task's prefix drop a new
+// head's move, as prNewHead makes none then, and leave a review's as it
+// was found.
+func (d *Daemon) prWaitingTip(ctx context.Context, s *github.Snapshot, is state.Issue, m Move) (Move, bool, error) {
+	a, n := d.Step.Applier, s.Number
+	_, tip, ok, err := d.prTip(ctx, s)
+	if err != nil {
+		return Move{}, false, fmt.Errorf("read the task's branch for its waiting move: %w", err)
+	}
+	switch {
+	case m.Trigger == state.TriggerNewHead && (!ok || newHeadKey(tip) != m.Key):
+		logr.Debugf("%s/%s#%d: its move to %s on %s, which waited for the worker, is dropped, as its branch is at %q now, so it's judged again",
+			a.Owner, a.Repo, n, m.To, m.Trigger, tip)
+		delete(d.prWaiting, n)
+		return Move{}, false, nil
+	case m.Trigger == state.TriggerReviewChanges && ok:
+		m.Fields = prReviewHead(maps.Clone(m.Fields), prHeadOf(is), tip)
+	}
+	return m, true, nil
 }
 
 // prWait keeps m, the move step 2 found for task n out of pr-open, to make
