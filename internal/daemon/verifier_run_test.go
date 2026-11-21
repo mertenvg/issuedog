@@ -468,7 +468,9 @@ func TestVerifierStartRefusesNoPass(t *testing.T) {
 // the next pass, a hold and /resume, a restart or a move of main. Each
 // runs the checks only as it would with no verdict: a hold keeps the pass
 // kept, and a restart or a new main runs them once. The PR step then
-// moves the task to pr-open on that one pass.
+// moves the task to pr-open on that one pass. A new main the head lacks
+// runs them once more at pr-open, on the head's merge with it, as the
+// checks at verifying ran on the head alone (SPEC §10.4).
 func TestVerifierPassStands(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -499,7 +501,7 @@ func TestVerifierPassStands(t *testing.T) {
 		{"a move of main", func(v *verdictRig, _ int) *verdictRig {
 			v.o.commit("docs.md", "Docs.\n")
 			return v
-		}, 2},
+		}, 3},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -515,8 +517,9 @@ func TestVerifierPassStands(t *testing.T) {
 			v = tt.act(v, n)
 			// The checks, if they run again, the PR step, the pass that
 			// lists the PR on the digest and assigns notify to it, and the
-			// one that reads those writes.
-			v.passes(4)
+			// one that reads those writes, then for a new main, the checks
+			// on the merge.
+			v.passes(5)
 			if v.runs() != 1 || len(passComments(f, n)) != 1 || pickStage(f, n) != "stage:pr-open" || len(f.State().PRs) != 1 {
 				t.Errorf("%d runs, %d verdicts, at %s, PRs %+v; want no second run, the one verdict, at pr-open on it, with its one PR",
 					v.runs(), len(passComments(f, n)), pickStage(f, n), f.State().PRs)

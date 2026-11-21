@@ -66,7 +66,7 @@ func (r *Runs) start(ctx context.Context, st Stage, is state.Issue, n int) (runS
 	if !hasHead {
 		return runStart{Commits: workspace.Commits{Start: main}}, nil
 	}
-	c, err := r.startFrom(ctx, n, head, main)
+	c, err := r.startFrom(ctx, n, head, main, mainRound(is))
 	if err != nil {
 		return runStart{}, fmt.Errorf("name the task's head %s: %w", head, err)
 	}
@@ -96,7 +96,8 @@ func (r *Runs) startAfterChecks(ctx context.Context, is state.Issue, n int) (run
 
 // startFrom names the commits of a run on task n, whose head is head, with
 // main's commit main as its rule 2 baseline and its target (SPEC §3.4,
-// §10.1). It reads only the bare repo, so it costs no request.
+// §10.1), and with merge, in a round that main's moving began at pr-open
+// (mainRound). It reads only the bare repo, so it costs no request.
 //   - A head that fails rule 2 is never named: the run starts from main,
 //     as a first attempt does, and the log says why, as Dropped does for
 //     the preamble: rule 2's finding. A head with no merge base with main,
@@ -106,10 +107,13 @@ func (r *Runs) startAfterChecks(ctx context.Context, is state.Issue, n int) (run
 //   - A head that passes but doesn't merge cleanly with main, by the
 //     merge-tree read rule 7 judges by (repo.MergeTree), starts the run
 //     with main named as its target, to merge first.
+//   - So does one that merges cleanly, with merge, while main isn't in its
+//     history: its merge with main failed the checks (SPEC §7.2, §10.4),
+//     and the fix needs main's changes in the checkout.
 //   - Otherwise the run starts from the head, with no target.
 //
 // Any other failed read is an error, so no run starts.
-func (r *Runs) startFrom(ctx context.Context, n int, head, main string) (runStart, error) {
+func (r *Runs) startFrom(ctx context.Context, n int, head, main string, merge bool) (runStart, error) {
 	f := verify.Facts{Repo: r.Daemon.Clone, Baseline: main, Head: head, Target: main, Config: r.Daemon.Config.Verify}
 	base, err := verify.BaseOf(ctx, f)
 	if errors.Is(err, verify.ErrMergeBases) {
@@ -136,6 +140,17 @@ func (r *Runs) startFrom(ctx context.Context, n int, head, main string) (runStar
 		logr.Infof("#%d: the task's head %s doesn't merge cleanly with main's %s, so the run starts from the head with main named as its target, to merge first; these files conflict: %q",
 			n, head, main, conflicts)
 		return runStart{Commits: workspace.Commits{Start: head, Target: main}}, nil
+	}
+	if merge {
+		merged, err := r.Daemon.Clone.IsAncestor(ctx, main, head)
+		if err != nil {
+			return runStart{}, fmt.Errorf("read main against the head: %w", err)
+		}
+		if !merged {
+			logr.Infof("#%d: main moving sent the task back, and its head %s lacks main's %s, so the run starts from the head with main named as its target, to merge first",
+				n, head, main)
+			return runStart{Commits: workspace.Commits{Start: head, Target: main}}, nil
+		}
 	}
 	return runStart{Commits: workspace.Commits{Start: head}}, nil
 }

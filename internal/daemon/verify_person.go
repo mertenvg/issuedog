@@ -53,11 +53,13 @@ func personHead(is state.Issue) bool {
 
 // personResult is what a person's head goes back to pr-open with
 // (personBack): its PR's body, its issuedog/verify check's conclusion,
-// summary and details URL, and the move's comment, given the PR's number,
-// or 0 for none found.
+// summary and details URL, main's commit its checks ran against, which the
+// check names (prCheck), and the move's comment, given the PR's number, or
+// 0 for none found.
 type personResult struct {
 	Body                      string
 	Conclusion, Summary, Link string
+	Main                      string
 	Text                      func(pr int) string
 }
 
@@ -151,6 +153,7 @@ func (r *Runs) personFindings(ctx context.Context, rd Ready, is state.Issue, hea
 	}
 	m := Move{To: state.PROpen, Trigger: state.TriggerPersonPushed, Key: key, Fields: fields}
 	res := r.Daemon.personFailed(s, state.Derive(s, a.AppSlug, d.Has), head, findingsText(head, main, 0, r.limit(), fs, cmds))
+	res.Main = main
 	if err := r.Daemon.personBack(ctx, s, d, m, head, res); err != nil {
 		return fmt.Errorf("judge a person's head's findings: %w", err)
 	}
@@ -193,7 +196,7 @@ func (r *Runs) personPass(ctx context.Context, rd Ready, is state.Issue, head, m
 		m.Fields[state.FieldSeen] = strconv.FormatInt(seen, 10)
 	}
 	res := personResult{Body: body, Conclusion: checkSuccess, Summary: renderPRCheck(n, head, main, r.passed[n].Results, link), Link: link,
-		Text: func(pr int) string { return renderPersonPassed(head, pr) }}
+		Main: main, Text: func(pr int) string { return renderPersonPassed(head, pr) }}
 	if err := r.Daemon.personBack(ctx, s, d, m, head, res); err != nil {
 		return true, fmt.Errorf("move a person's head back on its pass: %w", err)
 	}
@@ -213,6 +216,14 @@ func (v *Verifier) personChanges(ctx context.Context, r Result, is state.Issue, 
 		m.Fields = map[string]string{}
 	}
 	res := v.Daemon.personFailed(r.S, is, f.Head, verdictText(f.Head, f.Attempt, f.Limit, out))
+	// The verifier ran on a head whose checks passed against main as the
+	// pass's sync left it (startAfterChecks): this pass's main, unless it
+	// moved during the run.
+	main, err := v.Daemon.Clone.Resolve(ctx, "main")
+	if err != nil {
+		return fmt.Errorf("move a person's head back on the verifier's findings: read main: %w", err)
+	}
+	res.Main = main
 	if err := v.Daemon.personBack(ctx, r.S, r.Dirt, m, f.Head, res); err != nil {
 		return fmt.Errorf("move a person's head back on the verifier's findings: %w", err)
 	}
@@ -290,7 +301,7 @@ func (d *Daemon) personBack(ctx context.Context, s *github.Snapshot, dirt Dirt, 
 		return wrap(fmt.Errorf("read the head: %w", err))
 	}
 	if has {
-		if err := d.prCheck(ctx, n, head, res.Conclusion, res.Summary, res.Link); err != nil {
+		if err := d.prCheck(ctx, n, head, res.Main, res.Conclusion, res.Summary, res.Link); err != nil {
 			return wrap(err)
 		}
 	} else {

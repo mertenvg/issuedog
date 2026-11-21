@@ -457,7 +457,7 @@ func TestPersonHeadCrashAfterTheCheck(t *testing.T) {
 	on := func() []githubtest.CheckRunState {
 		return slices.DeleteFunc(f.State().CheckRuns, func(c githubtest.CheckRunState) bool { return c.SHA != tip })
 	}
-	failure := []githubtest.CheckRunState{{SHA: tip, Name: github.VerifyCheck, Conclusion: "failure", AppID: githubtest.AppID}}
+	failure := []githubtest.CheckRunState{{SHA: tip, Name: github.VerifyCheck, Conclusion: "failure", AppID: githubtest.AppID, ExternalID: "main=" + v.mainSHA()}}
 	if got := on(); pickStage(f, 1) != "stage:verifying" || !slices.Equal(got, failure) {
 		t.Fatalf("after the lost answer, the task at %s, the checks on %s %+v; want verifying, and the failure", pickStage(f, 1), tip, got)
 	}
@@ -689,7 +689,7 @@ func TestPersonHeadReplay(t *testing.T) {
 			for f := range roots {
 				var want []githubtest.CheckRunState
 				if tt.conclusion != "" {
-					want = []githubtest.CheckRunState{{SHA: tip, Name: github.VerifyCheck, Conclusion: tt.conclusion, AppID: githubtest.AppID}}
+					want = []githubtest.CheckRunState{{SHA: tip, Name: github.VerifyCheck, Conclusion: tt.conclusion, AppID: githubtest.AppID, ExternalID: "main=" + base.mainSHA()}}
 				}
 				if got := f.State().CheckRuns; !slices.Equal(got, want) {
 					t.Errorf("after the replay, the check runs = %+v; want %+v", got, want)
@@ -767,7 +767,7 @@ func TestPersonHeadVerifierReplay(t *testing.T) {
 				return nil
 			})
 			for f := range roots {
-				want := []githubtest.CheckRunState{{SHA: tip, Name: github.VerifyCheck, Conclusion: "failure", AppID: githubtest.AppID}}
+				want := []githubtest.CheckRunState{{SHA: tip, Name: github.VerifyCheck, Conclusion: "failure", AppID: githubtest.AppID, ExternalID: "main=" + base.mainSHA()}}
 				if got := f.State().CheckRuns; !slices.Equal(got, want) {
 					t.Errorf("after the replay, the check runs = %+v; want %+v", got, want)
 				}
