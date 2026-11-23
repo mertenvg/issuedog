@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"strconv"
@@ -85,9 +86,9 @@ func (*Implementer) Pending(in Input) bool {
 //     sent it back to ready was an answer's and no implementer run has
 //     moved it since (implementerAnswers), then in.Inputs, or with
 //     neither, "none: first run".
-//   - system.md: the preamble (implementerPreamble), naming in.Target
-//     when the run has one, and in.Dropped when the task's head was
-//     dropped, then .issuedog/prompts/implementer.md from
+//   - system.md: the preamble (implementerPreamble), naming in.Target, on
+//     in.Branch, when the run has one, and in.Dropped when the task's head
+//     was dropped, then .issuedog/prompts/implementer.md from
 //     main or the shipped default (agent.Prompt).
 //   - prompt.md: the task, naming in.ContextDir.
 //
@@ -143,7 +144,7 @@ func (im *Implementer) Context(ctx context.Context, in Input) (map[string][]byte
 		"input.md": []byte(ivFile("Input for this run", implementerInputIntro,
 			input, "none: first run")),
 		"prompt.md": []byte(implementerTask(s.Number, in.ContextDir)),
-		"system.md": []byte(implementerPreamble(d.Config, all, in.Target, in.Dropped) + "\n\n" + string(prompt)),
+		"system.md": []byte(implementerPreamble(d.Config, all, in.Branch, in.Target, in.Dropped) + "\n\n" + string(prompt)),
 	}
 	return files, nil
 }
@@ -277,10 +278,13 @@ func implementerTask(number int, dir string) string {
 
 // implementerPreamble is the start of system.md, which no prompt on main
 // can remove (SPEC §12): the trust rules, the clone, with its target,
-// main's commit named to merge first, when the run has one (SPEC §3.4),
-// and when the task's head was dropped, that it was, and dropped, why:
-// rule 2's finding on it, fenced and escaped (SPEC §5.1), as it names
-// paths from the repo; the output contract, and every value the prompt
+// branch's commit named to merge first, when the run has one (SPEC §3.4),
+// and when the task's head was dropped, that it was, so the checkout
+// starts from branch, and dropped, why: rule 2's finding on it, fenced and
+// escaped (SPEC §5.1), as it names paths from the repo. branch is main, or
+// for a task in a story, its story branch, which the bare clone names, so
+// it's in a code span and escaped (checkCode); "" is main. Then the
+// output contract, and every value the prompt
 // defers to it, with c's values:
 //   - the PR title types (pr.title_types), and the title's bounds, as
 //     checkCommits enforces them (implementerMaxTitle);
@@ -292,7 +296,7 @@ func implementerTask(number int, dir string) string {
 //     (nextRound), and loop.max_questions_per_round;
 //   - that commits needs commits past the run's start, and the comment's
 //     length (maxText less textRoom), as checkCommits counts it.
-func implementerPreamble(c *config.Config, all []interviewerRound, target, dropped string) string {
+func implementerPreamble(c *config.Config, all []interviewerRound, branch, target, dropped string) string {
 	types := make([]string, len(c.PR.TitleTypes))
 	for i, t := range c.PR.TitleTypes {
 		types[i] = "`" + github.Escape(t) + "`"
@@ -319,13 +323,14 @@ func implementerPreamble(c *config.Config, all []interviewerRound, target, dropp
 	}
 	clone := []string{"- You run in a detached checkout of the commit issuedog named for this task, " + has + ", so git commands name HEAD. " +
 		"Commit your work there. Never push: issuedog takes your commits from the clone. You can't write to GitHub: issuedog checks your output and posts it."}
+	name := checkCode(cmp.Or(branch, "main"))
 	if target != "" {
-		clone = append(clone, "- Your checkout's `target` branch is `main` at `"+target+"`, which your starting commit doesn't merge with cleanly, "+
+		clone = append(clone, "- Your checkout's `target` branch is "+name+" at `"+target+"`, which your starting commit doesn't merge with cleanly, "+
 			"or fails verify once merged with, as input.md says. Merge `target` first, resolve any conflicts, and commit the merge.")
 	}
 	if dropped != "" {
 		clone = append(clone, "- The head your earlier runs left on this task fails verify's rule 2, as the finding below says, so issuedog dropped it: "+
-			"your checkout starts from `main`, as a first run's does, and holds none of their work. Do the task again from here. "+
+			"your checkout starts from "+name+", as a first run's does, and holds none of their work. Do the task again from here. "+
 			"Rule 2's finding on the dropped head:\n\n"+ivFenced(dropped))
 	}
 	return strings.Join([]string{

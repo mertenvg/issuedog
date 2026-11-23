@@ -30,9 +30,9 @@ const pickSearchEvery = 10 * time.Minute
 // Nothing is picked while a task holds the one worker (pickHeld), or with
 // no Stage at in-progress. The candidates are the open ready issues with a
 // stage:ready label and no parent, in pickLess's order. A task with a
-// parent waits for its story branch's tip to be named (inStory),
-// uncounted. Only once there is a candidate does the pick ask the issue
-// search for the blocked ready tasks (pickSearch), and each candidate it
+// parent isn't picked yet (pickInStory), uncounted. Only once there is a
+// candidate does the pick ask the issue search for the blocked ready
+// tasks (pickSearch), and each candidate it
 // finds blocked is passed over with no request. The first of the others
 // that pickOne picks is the one: a candidate pickOne passes over leaves
 // the next its turn.
@@ -56,7 +56,7 @@ func (r *Runs) pickTask(ctx context.Context, ready []Ready) (bool, error) {
 	}
 	var candidates []Ready
 	for _, rd := range ready {
-		if rd.S.Closed || stageOf(rd.S) != state.Ready || inStory(st, rd.S) {
+		if rd.S.Closed || stageOf(rd.S) != state.Ready || pickInStory(st, rd.S) {
 			continue
 		}
 		candidates = append(candidates, rd)
@@ -83,6 +83,18 @@ func (r *Runs) pickTask(ctx context.Context, ready []Ready) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// pickInStory reports whether st, the Stage at in-progress, is a Committer
+// and s has a parent. The pick doesn't take such a task yet, as nothing
+// cuts its story's branch, so it isn't a candidate, and that isn't
+// counted. Step 1's snapshot tells, so the skip costs no request.
+func pickInStory(st Stage, s *github.Snapshot) bool {
+	if _, ok := st.(Committer); !ok || s.Parent == 0 {
+		return false
+	}
+	logr.Debugf("#%d isn't picked: it has a parent, #%d, and the pick takes no task in a story yet", s.Number, s.Parent)
+	return true
 }
 
 // pickGaps reports whether step 1 didn't finish on some issue this pass
