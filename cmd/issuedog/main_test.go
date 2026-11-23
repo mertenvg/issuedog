@@ -29,6 +29,7 @@ import (
 	"testing"
 	"time"
 
+	gogithub "github.com/google/go-github/v92/github"
 	"github.com/mertenvg/logr/v2"
 
 	"github.com/mertenvg/issuedog/internal/agent"
@@ -149,10 +150,15 @@ func fakeAppKey(t *testing.T, perm os.FileMode) string {
 var daemonEnv = []string{"ANTHROPIC_API_KEY=key", "ISSUEDOG_REPO=mertenvg/issuedog",
 	"ISSUEDOG_APP_ID=5275196", "ISSUEDOG_INSTALLATION_ID=170308396"}
 
+// fakeBranchesRuleset is the issuedog branches ruleset, active on
+// issuedog/*, with the rules story and task branches rely on.
+var fakeBranchesRuleset = githubtest.Ruleset{Pattern: "issuedog/*", Rules: []string{"creation", "deletion", "non_fast_forward"}}
+
 // fakeGitHub points the daemon at a fake GitHub for mertenvg/issuedog, with
-// mertenvg an admin and mallory a writer, and at a local bare repo as the
-// remote, whose main has files (path to content). It writes a usable App key.
-// Runs would be the test's own uid's, with state in a temp dir.
+// mertenvg an admin and mallory a writer, and the issuedog branches ruleset
+// in place, and at a local bare repo as the remote, whose main has files
+// (path to content). It writes a usable App key. Runs would be the test's
+// own uid's, with state in a temp dir.
 func fakeGitHub(t *testing.T, files map[string]string) *githubtest.Fake {
 	t.Helper()
 	fakeAgent(t, nil)
@@ -168,6 +174,9 @@ func fakeGitHub(t *testing.T, files map[string]string) *githubtest.Fake {
 	f := githubtest.New(t, "mertenvg/issuedog", "issuedog-dev")
 	f.SetPermission("mertenvg", "admin")
 	f.SetPermission("mallory", "write")
+	// The issuedog branches ruleset as SPEC §15's step 4 sets it, which
+	// startup checks after the labels.
+	f.SetRulesets(fakeBranchesRuleset)
 	dir := t.TempDir()
 	remote, work := filepath.Join(dir, "remote.git"), filepath.Join(dir, "work")
 	gitIn(t, dir, "init", "--bare", "--quiet", "--initial-branch=main", remote)
@@ -991,6 +1000,85 @@ func TestRunStartupFailures(t *testing.T) {
 			}
 			if len(*calls) != 0 {
 				t.Errorf("startup steps = %q, want none of egress", *calls)
+			}
+		})
+	}
+}
+
+// Startup reads the rules on issuedog/ruleset-check after the labels, and
+// stops with exit code 1, before egress and the loop, unless the active
+// ones, org rulesets' included, have creation, deletion and
+// non_fast_forward, logging each one missing, or when the read fails. A
+// signal during the read doesn't cancel it, as for the steps after it: a
+// check that passes goes on and stops in the loop, with exit code 0, and
+// one that fails still exits 1.
+func TestRunChecksBranchRules(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output.
+	const rulesPath = "/rules/branches/issuedog/ruleset-check"
+	lack := "checking the issuedog branches ruleset: the active rules on issuedog/ruleset-check lack "
+	rules := func(types ...string) githubtest.Ruleset {
+		return githubtest.Ruleset{Pattern: "issuedog/*", Rules: types}
+	}
+	for name, tt := range map[string]struct {
+		rulesets []githubtest.Ruleset
+		status   int  // the rules read's answer, if not 0
+		signal   bool // a signal comes in as the rules are read
+		code     int
+		want     string
+	}{
+		"all three": {rulesets: []githubtest.Ruleset{fakeBranchesRuleset}, signal: true, code: 0, want: "stopping on a signal"},
+		"split, one the org's": {rulesets: []githubtest.Ruleset{
+			{Pattern: "issuedog/*", Rules: []string{"creation", "non_fast_forward"}, Org: true},
+			{Pattern: "*/*", Rules: []string{"deletion", "update"}},
+		}, signal: true, code: 0, want: "stopping on a signal"},
+		"no creation":         {rulesets: []githubtest.Ruleset{rules("deletion", "non_fast_forward")}, code: 1, want: lack + "creation, which story and task branches rely on (SPEC §15, step 4)"},
+		"no deletion":         {rulesets: []githubtest.Ruleset{rules("creation", "non_fast_forward")}, code: 1, want: lack + "deletion, which "},
+		"no non_fast_forward": {rulesets: []githubtest.Ruleset{rules("creation", "deletion", "update")}, code: 1, want: lack + "non_fast_forward, which "},
+		"evaluate": {rulesets: []githubtest.Ruleset{
+			{Pattern: "issuedog/*", Rules: []string{"creation", "deletion", "non_fast_forward"}, Enforcement: gogithub.RulesetEnforcementEvaluate},
+			rules("deletion"),
+		}, code: 1, want: lack + "creation, non_fast_forward, which "},
+		"other branches": {rulesets: []githubtest.Ruleset{{Pattern: "main", Rules: []string{"creation", "deletion", "non_fast_forward"}}},
+			code: 1, want: lack + "creation, deletion, non_fast_forward, which "},
+		"none": {code: 1, want: lack + "creation, deletion, non_fast_forward, which "},
+		"failed": {rulesets: []githubtest.Ruleset{fakeBranchesRuleset}, status: http.StatusInternalServerError, code: 1,
+			want: "checking the issuedog branches ruleset: reading the rules on issuedog/ruleset-check: rule types on issuedog/ruleset-check in mertenvg/issuedog: GET "},
+		"failing, then a signal": {rulesets: []githubtest.Ruleset{rules("creation", "deletion")}, signal: true, code: 1, want: lack + "non_fast_forward, which "},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := fakeGitHub(t, thisRepo(t))
+			f.SetRulesets(tt.rulesets...)
+			if tt.status != 0 {
+				f.AnswerOnce(func(r githubtest.Request) bool { return r.Path == rulesPath }, tt.status)
+			}
+			if tt.signal {
+				cancel, _ := cancelOnCall(t)
+				f.BeforeRequest(func(r githubtest.Request) bool { return r.Path == rulesPath }, cancel)
+			}
+			calls := fakeEgress(t, nil, nil)
+			code, logs := runBounded(t, daemonEnv)
+			if code != tt.code || !strings.Contains(logs, tt.want) {
+				t.Errorf("exit code %d, logs %q; want %d and %q", code, logs, tt.code, tt.want)
+			}
+			if strings.Contains(logs, "stopping on a signal during startup") {
+				t.Errorf("logs %q; want no stop during startup, as the check doesn't watch for a signal", logs)
+			}
+			// The read comes once, after the labels, and before egress and
+			// the loop.
+			reqs := f.Requests()
+			read := slices.IndexFunc(reqs, func(r githubtest.Request) bool { return r.Method == http.MethodGet && r.Path == rulesPath })
+			labels := slices.IndexFunc(reqs, func(r githubtest.Request) bool { return r.Method == http.MethodPost && r.Path == "/labels" })
+			loop := slices.IndexFunc(reqs, func(r githubtest.Request) bool { return r.Path == "/issues" })
+			reads := len(slices.DeleteFunc(slices.Clone(reqs), func(r githubtest.Request) bool { return r.Path != rulesPath }))
+			if reads != 1 || labels < 0 || read < labels || (loop >= 0 && loop < read) {
+				t.Errorf("requests = %+v; want one rules read, after the labels and before the loop", reqs)
+			}
+			wantCalls := ""
+			if tt.code == 0 {
+				wantCalls = "firewall agent, listen 3128"
+			}
+			if got := strings.Join(*calls, ", "); got != wantCalls || (tt.code != 0 && loop >= 0) {
+				t.Errorf("startup steps = %q, loop read at %d; want %q, and the loop only on a pass", got, loop, wantCalls)
 			}
 		})
 	}

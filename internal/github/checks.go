@@ -12,7 +12,8 @@ import (
 
 // The reads behind a human task's checks (#250): whether a label exists,
 // an org's issue types, the required checks on a branch, and the App's
-// installations. Each fits the App's permissions in §15, and none needs
+// installations. Startup's check of the issuedog branches ruleset reads
+// the rule types on a branch (BranchRuleTypes). Each fits the App's permissions in §15, and none needs
 // admin. A thing that isn't there is an answer, not an error: a missing
 // label, a personal account with no issue types, and a branch with no
 // rules. Any other failure, such as a 403 or a 500, is an error.
@@ -103,6 +104,76 @@ func (c *Client) RequiredChecks(ctx context.Context, owner, repo, branch string)
 		}
 		opts.Page = resp.NextPage
 	}
+}
+
+// BranchRuleTypes lists the type of each rule the active rulesets on
+// branch carry, such as "creation", org rulesets included, reading every
+// page: one entry a rule, so a type two rulesets carry is listed twice. It
+// reads the same endpoint as RequiredChecks, with the same permission, and
+// like it gives only active rules. GitHub matches each ruleset's branch
+// patterns against the name, so branch needn't exist. go-github decodes
+// the rules into a field per type, and drops a type it doesn't know, so
+// the types are listed by field (branchRuleTypes), not in GitHub's order,
+// and an unknown one isn't listed. A 404 is an empty list, with no error.
+func (c *Client) BranchRuleTypes(ctx context.Context, owner, repo, branch string) ([]string, error) {
+	var types []string
+	opts := &gogithub.ListOptions{PerPage: 100}
+	for {
+		rules, resp, err := c.Repositories.ListRulesForBranch(ctx, owner, repo, branch, opts)
+		switch {
+		case resp != nil && resp.StatusCode == http.StatusNotFound:
+			return nil, nil
+		case err != nil:
+			return nil, fmt.Errorf("rule types on %s in %s/%s: %w", branch, owner, repo, err)
+		}
+		types = append(types, branchRuleTypes(rules)...)
+		if resp.NextPage == 0 {
+			return types, nil
+		}
+		opts.Page = resp.NextPage
+	}
+}
+
+// branchRuleTypes is the type of each rule in rules, one entry a rule, by
+// go-github's field for the type. creation, deletion and non_fast_forward
+// carry no parameters, and each still has its own field.
+func branchRuleTypes(rules *gogithub.BranchRules) []string {
+	if rules == nil {
+		return nil
+	}
+	var types []string
+	for _, field := range []struct {
+		typ   gogithub.RepositoryRuleType
+		count int
+	}{
+		{gogithub.RulesetRuleTypeCreation, len(rules.Creation)},
+		{gogithub.RulesetRuleTypeUpdate, len(rules.Update)},
+		{gogithub.RulesetRuleTypeDeletion, len(rules.Deletion)},
+		{gogithub.RulesetRuleTypeRequiredLinearHistory, len(rules.RequiredLinearHistory)},
+		{gogithub.RulesetRuleTypeMergeQueue, len(rules.MergeQueue)},
+		{gogithub.RulesetRuleTypeRequiredDeployments, len(rules.RequiredDeployments)},
+		{gogithub.RulesetRuleTypeRequiredSignatures, len(rules.RequiredSignatures)},
+		{gogithub.RulesetRuleTypePullRequest, len(rules.PullRequest)},
+		{gogithub.RulesetRuleTypeRequiredStatusChecks, len(rules.RequiredStatusChecks)},
+		{gogithub.RulesetRuleTypeNonFastForward, len(rules.NonFastForward)},
+		{gogithub.RulesetRuleTypeCommitMessagePattern, len(rules.CommitMessagePattern)},
+		{gogithub.RulesetRuleTypeCommitAuthorEmailPattern, len(rules.CommitAuthorEmailPattern)},
+		{gogithub.RulesetRuleTypeCommitterEmailPattern, len(rules.CommitterEmailPattern)},
+		{gogithub.RulesetRuleTypeBranchNamePattern, len(rules.BranchNamePattern)},
+		{gogithub.RulesetRuleTypeTagNamePattern, len(rules.TagNamePattern)},
+		{gogithub.RulesetRuleTypeWorkflows, len(rules.Workflows)},
+		{gogithub.RulesetRuleTypeCodeScanning, len(rules.CodeScanning)},
+		{gogithub.RulesetRuleTypeCopilotCodeReview, len(rules.CopilotCodeReview)},
+		{gogithub.RulesetRuleTypeFileExtensionRestriction, len(rules.FileExtensionRestriction)},
+		{gogithub.RulesetRuleTypeFilePathRestriction, len(rules.FilePathRestriction)},
+		{gogithub.RulesetRuleTypeMaxFilePathLength, len(rules.MaxFilePathLength)},
+		{gogithub.RulesetRuleTypeMaxFileSize, len(rules.MaxFileSize)},
+	} {
+		for range field.count {
+			types = append(types, string(field.typ))
+		}
+	}
+	return types
 }
 
 // Installations lists the App's installations, reading every page, each
