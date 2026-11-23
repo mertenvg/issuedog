@@ -204,6 +204,16 @@ type Daemon struct {
 	// workerLeased is whether a run's lease held the worker when Work last
 	// ended (Runs.Work), for step 2's moves that take it (workerFree).
 	workerLeased bool
+
+	// tips is each story branch's tip as step 4 last judged it, or read its
+	// App issuedog/tip naming the branch after a restart, by branch, so an
+	// unchanged tip is checked once and costs no request (Runs.tipCheck,
+	// tipSuccess).
+	tips map[string]tipJudged
+	// storyWarned is the key of the last warning logged for each story, by
+	// issue number, so a wait that lasts is warned of once
+	// (storyWarnOnce).
+	storyWarned map[int]string
 }
 
 // CurrentTrust is a github.Trust that asks st.Trust on each call. Iterate's
