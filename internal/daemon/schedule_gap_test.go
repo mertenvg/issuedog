@@ -17,7 +17,7 @@ import (
 
 // pickGapHolder files a task at in-progress, which holds the worker, with
 // priority:p0, under a story at planned, so it gets no run of its own
-// until #624, and returns its number.
+// while its story has no branch, and returns its number.
 func pickGapHolder(f *githubtest.Fake) int {
 	story := fileAt(f, "planned", "A story.")
 	f.SetType(story, "Story")

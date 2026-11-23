@@ -311,9 +311,14 @@ type Runs struct {
 
 	// pickBlocked are the ready tasks the pick passes over as blocked: the
 	// issue search's last answer, as of pickSearched, by GitHub's clock,
-	// and those the pick found an open blocker of since (schedule.go).
+	// and those the pick found an open blocker of since, and the stories
+	// it found one of, whose tasks it passes over too (schedule.go).
 	pickBlocked  map[int]bool
 	pickSearched time.Time
+	// pickLogged is the key of the last log of why no task in a story is
+	// picked, by the story's number, so a wait that lasts is logged once
+	// (pickStoryOnce).
+	pickLogged map[int]string
 
 	// passed holds the pass of the checks of each task at verifying, by
 	// issue number, keyed by its head and its target's commit, so they

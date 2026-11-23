@@ -13,8 +13,8 @@ import (
 
 // The pick's order (SPEC §8.1): by priority, then the parent's priority,
 // then number. A task with no parent, or whose parent no snapshot holds,
-// stands in for its own parent. Stories wait for #624, so only this test
-// sees the parent's priority decide.
+// stands in for its own parent. Only this test sees the parent's priority
+// decide.
 func TestPickLess(t *testing.T) {
 	t.Parallel()
 	task := func(n int, p string, parent int) *github.Snapshot {
