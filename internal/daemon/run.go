@@ -72,11 +72,12 @@ type Committer interface {
 }
 
 // AfterChecks is a Stage whose runs only follow SPEC §10.1's checks, such
-// as the verifier's: only verifyTask starts one, once the head and main's
-// commit have a pass of them, and step 3 never does (work). Its run's clone
-// holds the head the checks judged, which start refuses without that pass,
-// and its HOME is fresh and empty (run). It isn't a Committer, so nothing
-// fetches a commit it makes: its clone goes with whatever it holds.
+// as the verifier's: only verifyTask starts one, once the head and its
+// target's commit have a pass of them, and step 3 never does (work). Its
+// run's clone holds the head the checks judged, which start refuses
+// without that pass, and its HOME is fresh and empty (run). It isn't a
+// Committer, so nothing fetches a commit it makes: its clone goes with
+// whatever it holds.
 type AfterChecks interface {
 	// RunsAfterChecks marks the Stage as one.
 	RunsAfterChecks()
@@ -120,12 +121,16 @@ type Input struct {
 	// 2's finding on it, set with RunID, or "" when it was, or there's
 	// none (SPEC §3.4, §12).
 	Dropped string
-	// Head is the commit a verifier run judges and Main is main's commit
-	// it passed the checks against, and Checks is what verify.commands
-	// gave on them, each set with RunID, or empty for any other Stage's
-	// run (SPEC §10.1, §10.2).
-	Head, Main string
-	Checks     []verify.CommandResult
+	// Head is the commit a verifier run judges, Against is what it passed
+	// the checks against, main's commit, or for a task in a story its
+	// story branch's tip, with the story's baseline (VerifyTarget), and
+	// Checks is what verify.commands gave on them, each set with RunID, or
+	// empty for any other Stage's run (SPEC §10.1, §10.2). Against isn't
+	// Target, the commit a run's clone holds to merge first, which a
+	// verifier run's never names.
+	Head    string
+	Against VerifyTarget
+	Checks  []verify.CommandResult
 }
 
 // Result is a valid run result, for a Stage to apply.
@@ -301,7 +306,8 @@ type Runs struct {
 	pickSearched time.Time
 
 	// passed holds the pass of the checks of each task at verifying, by
-	// issue number, so they don't run again (verifyTask), and a verifier
+	// issue number, keyed by its head and its target's commit, so they
+	// don't run again until either changes (verifyTask), and a verifier
 	// run reads what they gave (checksPassed).
 	passed map[int]checksPassed
 	// mergeJudged holds the pass of the checks on the merge with main of
@@ -321,15 +327,21 @@ type Runs struct {
 	prExists map[int]int
 }
 
-// checksPassed is a pass of SPEC §10.1's checks: the head and main's commit
-// that passed them, and what verify.commands gave.
+// checksPassed is a pass of SPEC §10.1's checks: the head, and the target
+// it passed them against, main's commit, or for a task in a story its
+// story branch's tip, with the baseline its rule 2 ran with
+// (VerifyTarget), and what verify.commands gave.
 type checksPassed struct {
-	Head, Main string
-	Results    []verify.CommandResult
+	Head    string
+	Target  VerifyTarget
+	Results []verify.CommandResult
 }
 
-// holds reports whether p is a pass of head against main.
-func (p checksPassed) holds(head, main string) bool { return p.Head == head && p.Main == main }
+// holds reports whether p is a pass of head against target, its target's
+// commit.
+func (p checksPassed) holds(head, target string) bool {
+	return p.Head == head && p.Target.SHA == target
+}
 
 // Work is Daemon.Work. On its first pass it first removes what a crash
 // left (sweep). Then it finishes a lease a run left, after a
@@ -711,7 +723,7 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 	in.ContextDir = r.Workspace.Context(in.RunID)
 	if _, after := st.(AfterChecks); after {
 		// start refused a head with no pass, so passed holds this one's.
-		in.Head, in.Main, in.Checks = commits.Start, commits.Main, r.passed[n].Results
+		in.Head, in.Against, in.Checks = commits.Start, commits.Against, r.passed[n].Results
 	}
 	l := Lease{Issue: n, Stage: is.Stage, RunID: in.RunID, Clone: r.Workspace.Dir(in.RunID),
 		Started: r.now(), Polled: r.Daemon.polled, Edits: map[int64]time.Time{}, BodyEdit: rd.S.BodyEdit.At, AttemptKey: errKey, Attempt: in.Attempt,

@@ -210,8 +210,8 @@ type Daemon struct {
 	// unchanged tip is checked once and costs no request (Runs.tipCheck,
 	// tipSuccess).
 	tips map[string]tipJudged
-	// storyWarned is the key of the last warning logged for each story, by
-	// issue number, so a wait that lasts is warned of once
+	// storyWarned is the key of the last warning logged for each story, or
+	// task in one, by issue number, so a wait that lasts is warned of once
 	// (storyWarnOnce).
 	storyWarned map[int]string
 }

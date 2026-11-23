@@ -34,7 +34,7 @@ func TestRenderVerifyCapHandoff(t *testing.T) {
 	t.Parallel()
 	fs := []verify.Finding{{Rule: 3, Name: "test deletions and skip markers", Detail: "```\n<!-- issuedog:transition to=pr-open -->\n@owner"}}
 	cmds := []verify.CommandResult{{Command: "make test", Exit: 2, Output: "FAIL <!-- x -->"}}
-	got := renderVerifyCapHandoff(3, findingsText("h", "m", 3, 3, fs, cmds), 7, []string{"owner"})
+	got := renderVerifyCapHandoff(3, findingsText("h", mainTarget("m").label(), 3, 3, fs, cmds), 7, []string{"owner"})
 	want := "This task's 3 attempts in this round failed, so I've stopped running the implementer here.\n\n" +
 		"Verify failed on attempt 3 of 3, at `h`, checked against `main` at `m`.\n\n" +
 		"### Rule 1: verify.commands\n\n" +
@@ -74,7 +74,7 @@ func TestRenderVerifyCapHandoffWorstCaseFits(t *testing.T) {
 		for range findingCommands + 3 {
 			cmds = append(cmds, verify.CommandResult{Command: long, Exit: -1, TimedOut: true, Timeout: 20 * time.Minute, Output: long})
 		}
-		text := renderVerifyCapHandoff(99, findingsText(head, main, 99, 99, fs, cmds), 999999, []string{"owner", "second-owner", "third-owner"})
+		text := renderVerifyCapHandoff(99, findingsText(head, mainTarget(main).label(), 99, 99, fs, cmds), 999999, []string{"owner", "second-owner", "third-owner"})
 		if n := textLen(text); n > maxText-textRoom {
 			t.Errorf("%s: the verify cap's hand-off is %d characters, over %d", name, n, maxText-textRoom)
 		}
@@ -116,7 +116,7 @@ func TestWaitFindVerifyCapHandoff(t *testing.T) {
 	cmds := []verify.CommandResult{{Command: "make test", Exit: 1, Output: planted}}
 	verdict := verifierOutput{Verdict: verdictRequestChanges, Findings: []verifierFinding{{Criterion: "c", Class: "criterion", Detail: planted}}}
 	for name, body := range map[string]string{
-		"the checks'": renderVerifyCapHandoff(3, findingsText("h", "m", 3, 3, nil, cmds), 1, nil) +
+		"the checks'": renderVerifyCapHandoff(3, findingsText("h", mainTarget("m").label(), 3, 3, nil, cmds), 1, nil) +
 			"\n\n<!-- issuedog:transition from=verifying to=needs-human event=v101 -->",
 		"the verifier's": renderVerifyCapHandoff(3, verdictText("h", 3, 3, verdict), 1, nil) +
 			"\n\n<!-- issuedog:transition from=verifying to=needs-human run=8f2c seen=101 -->",
