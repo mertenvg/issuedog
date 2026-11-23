@@ -201,6 +201,14 @@ type Daemon struct {
 	// task's branch, by task, so a wait that lasts is warned of once
 	// (prHeadWarnOnce).
 	prHeadWarned map[int]string
+	// prMergeLogged is the key of the last log of why each task's PR into
+	// its story branch isn't merged, by task, so a wait that lasts, or a
+	// refusal of one head, is logged once (prMergeOnce).
+	prMergeLogged map[int]string
+	// prMergeFailed is, for each task at pr-open whose verified head a
+	// person pushed, by task, the head the App's newest issuedog/verify was
+	// read as failure on, so it's read once a head (prPersonFailed).
+	prMergeFailed map[int]string
 	// workerLeased is whether a run's lease held the worker when Work last
 	// ended (Runs.Work), for step 2's moves that take it (workerFree).
 	workerLeased bool

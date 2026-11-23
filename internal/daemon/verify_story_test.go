@@ -134,8 +134,9 @@ func storyAgainst(tip string) string {
 // the task's change and not the story's. Its pass moves nothing: the pass
 // after, the PR step's, opens its PR into the story branch and moves it to
 // pr-open (pr_story_test.go), with no command run, and once that's read,
-// the passes after make no request but 304s, run no command and start no
-// run.
+// which merges the PR, and the story branch's new tip is checked
+// (storyMergeSettles), the passes after make no request but 304s, run no
+// command and start no run.
 func TestVerifyStoryPass(t *testing.T) {
 	t.Parallel()
 	f, v := newStoryVerifyRig(t)
@@ -170,11 +171,12 @@ func TestVerifyStoryPass(t *testing.T) {
 	if prs := f.State().PRs; len(prs) != 1 || prs[0].Base != storyVerifyBranch || pickStage(f, 1) != "stage:pr-open" {
 		t.Fatalf("the PR step's pass left the PRs %+v, the task at %s; want one into %s, and pr-open", prs, pickStage(f, 1), storyVerifyBranch)
 	}
-	v.pass()
+	v.storyMergeSettles(f.State().PRs[0].Number)
 	v.quietPass("the pass after a story task's PR step")
 	v.quietPass("again")
-	if pickStage(f, 1) != "stage:pr-open" || v.runs() != 1 || v.checksRan() != 2 {
-		t.Errorf("the task is at %s, after %d runs and the commands run %d times; want pr-open, one, and twice", pickStage(f, 1), v.runs(), v.checksRan())
+	if pickStage(f, 1) != "stage:pr-open" || v.runs() != 1 || v.checksRan() != 3 {
+		t.Errorf("the task is at %s, after %d runs and the commands run %d times; want pr-open, one, and 3, the last on the merge's new tip",
+			pickStage(f, 1), v.runs(), v.checksRan())
 	}
 }
 
@@ -402,7 +404,9 @@ func TestVerifyStoryPersonHead(t *testing.T) {
 // the verifier. After the verifier's pass, a fresh daemon runs the checks
 // once more, and the pass after is the PR step's, which opens the task's
 // PR into its story branch and moves it to pr-open, with no command and no
-// run, and once that's read, the passes after make no request but 304s.
+// run, and once that's read, which merges the PR, and the story branch's
+// new tip is checked (storyMergeSettles), the passes after make no request
+// but 304s.
 func TestVerifyStoryRestart(t *testing.T) {
 	t.Parallel()
 	f, v := newStoryVerifyRig(t)
@@ -440,7 +444,7 @@ func TestVerifyStoryRestart(t *testing.T) {
 		t.Fatalf("the PR step's pass left the PRs %+v, the task at %s, the commands run %d times, claude %d; want one into %s at %s, pr-open, 4, and once",
 			prs, pickStage(f, 1), v.checksRan(), v.runs(), storyVerifyBranch, head)
 	}
-	v.pass()
+	v.storyMergeSettles(f.State().PRs[0].Number)
 	v.quietPass("after the second restart")
 	v.quietPass("again")
 }
