@@ -38,8 +38,9 @@ var Start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 // GraphQL queries for their edits, deleted
 // comments and pins, and the pinIssue mutation, and the issue search for
 // blocked issues (search.go), and pull requests, with their heads from a
-// real git repo (pulls.go) and their reviews (reviews.go), and check runs on that repo's commits
-// (checkruns.go). Its API writes, comment edits, created issues and
+// real git repo (pulls.go), their reviews (reviews.go) and their merges,
+// check runs on that repo's commits (checkruns.go), and deletes of its
+// branches (refs.go). Its API writes, comment edits, created issues and
 // pins included, are made by the App, "<slug>[bot]" of type Bot. A GET whose
 // answer hasn't changed gets a 304. Every write (any method but GET, and a
 // GraphQL mutation) is logged, and FailWrite can fail one.
@@ -213,6 +214,7 @@ func New(t testing.TB, repo, slug string) *Fake {
 	f.handlePulls()
 	f.handleReviews()
 	f.handleCheckRuns()
+	f.handleRefs()
 	f.srv = httptest.NewServer(f.logged(f.mux))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -469,8 +471,9 @@ func (f *Fake) handle(pattern string, h handler) {
 // path naming a missing issue or comment gets a 404, and one naming a
 // transferred issue or its comment a 301 to its new home (moved, which also
 // serves the new home). A read gets an ETag over
-// its body and Link header, and a 304 if that matches If-None-Match. Every
-// answer is dated by the fake clock, as GitHub dates its own.
+// its body and Link header, and a 304 if that matches If-None-Match. A 204
+// has no body, as h's value is left out. Every answer is dated by the fake
+// clock, as GitHub dates its own.
 func (f *Fake) serve(w http.ResponseWriter, r *http.Request, write bool, h handler) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -509,6 +512,10 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request, write bool, h handl
 		return
 	}
 	status, v := h(c)
+	if status == http.StatusNoContent {
+		w.WriteHeader(status)
+		return
+	}
 	data, err := json.Marshal(v)
 	if err != nil {
 		send(w, http.StatusInternalServerError, message(err.Error()))
