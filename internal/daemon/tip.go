@@ -172,7 +172,7 @@ func (r *Runs) tipJudge(ctx context.Context, story *github.Snapshot, branch, tip
 	} else {
 		logr.Infof("%s/%s#%d: its branch %s's tip %s passes its checks against main's %s", a.Owner, a.Repo, n, branch, tip, main)
 	}
-	if err := r.tipPost(ctx, n, branch, tip, conclusion, renderTipCheck(n, branch, tip, base, findings, results)); err != nil {
+	if err := r.Daemon.tipPost(ctx, n, branch, tip, conclusion, renderTipCheck(n, branch, tip, base, findings, results)); err != nil {
 		return fmt.Errorf("post its check: %w", err)
 	}
 	return nil
@@ -220,9 +220,11 @@ func tipMergeBasesDetail(main string, err error) string {
 // checked first: it reads the App's issuedog/tip checks on tip, and posts
 // none when the newest naming branch has that conclusion already
 // (tipChecked), so a replay, or a restart after a crash, posts one. Either
-// way the tip is then judged with conclusion (Daemon.tips).
-func (r *Runs) tipPost(ctx context.Context, n int, branch, tip, conclusion, summary string) error {
-	a, d := r.Daemon.Step.Applier, r.Daemon
+// way the tip is then judged with conclusion (Daemon.tips). Step 4's
+// checks post it (Runs.tipJudge), and so does step 2's carried check on
+// the App's merge (tipCarry).
+func (d *Daemon) tipPost(ctx context.Context, n int, branch, tip, conclusion, summary string) error {
+	a := d.Step.Applier
 	runs, err := a.Client.CheckRuns(ctx, a.Owner, a.Repo, tip, github.TipCheck)
 	if err != nil {
 		return fmt.Errorf("read the tip's checks: %w", err)

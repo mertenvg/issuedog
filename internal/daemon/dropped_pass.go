@@ -18,20 +18,29 @@ import (
 // parent's newly approved revision dropped it, and each open issue above
 // it in the dropped subtree, each held with reason=dropped. Such a hold
 // ends only with the issue's close:
-//   - a task's PR that merges closes it by its "Closes #N", which the
-//     close judge accepts (closingAccepted), held or not, and so does a
-//     trusted user's close, the owner's included: neither is this file's;
-//   - a task's PR closed without merging, as the poll lists it
-//     (Daemon.prs), closes it as not planned, here (droppedPass);
+//   - a task's PR that merges into main closes it by its "Closes #N",
+//     which the close judge accepts (closingAccepted), held or not, and so
+//     does a trusted user's close, the owner's included: neither is this
+//     file's;
+//   - a task's PR that merges into its story branch, as the poll lists it
+//     (Daemon.prs), closes nothing on GitHub, so it's read once, for its
+//     merger, and closes the task here: as completed for the App's or a
+//     trusted user's merge, after its check carried over and its branch
+//     deleted as any task in a story's (prMergedWrites), and as not
+//     planned for anyone else's (droppedPass);
+//   - a task's PR closed without merging, as the poll lists it, closes it
+//     as not planned, here;
 //   - an issue above it closes the same way once nothing below it is
 //     open, as the snapshots held show, on the pass that closes the last
 //     issue below it or a later one.
 //
 // It's judged from what the poll listed and the snapshots held, at no
 // request, so a pass whose poll lists no change to a held issue's PR, or
-// to an issue below it, makes none here (SPEC §8.1). Only the close makes
-// requests: the issue's read for its ID, the reads and removals of its
-// dependency links (droppedUnlink), then the move.
+// to an issue below it, makes none here (SPEC §8.1), but for the read of a
+// PR listed merged. Only the close makes other requests: the issue's read
+// for its ID, the reads and removals of its dependency links
+// (droppedUnlink), or for a merge that completes the task, the merge's
+// writes, then the move.
 
 // droppedSet records the dirty content of s, an issue step 1 just
 // succeeded on with dirt, while it's held for a PR (droppedHeld), for
@@ -61,16 +70,20 @@ func (d *Daemon) droppedPROpen(is state.Issue) (int, bool) {
 // same pass. A held issue whose step 1 failed this pass, or that a
 // command touched, waits for its next pass, as in prPass. One ends when:
 //   - its PR (taskPR), as the poll lists it, is closed without merging, or
-//     it names none the App opened, as an issue above a task has none. A
-//     PR listed open, or merged, whose "Closes #N" closes the task, leaves
-//     it held; and
+//     merged into the task's story branch, as one read of it says
+//     (droppedMerge), or it names none the App opened, as an issue above a
+//     task has none. A PR listed open, or merged into main, whose "Closes
+//     #N" closes the task, leaves it held; and
 //   - no open issue is below it, as the snapshots held show (droppedBelow).
 //
 // Its close removes every dependency link to and from it first
 // (droppedUnlink), the issue's ID read for that, then moves it to closed as
 // not planned, keyed apart from the hold (droppedClosedKey), with a comment
 // saying why. So a crash between the two leaves it held, without links,
-// and the next pass closes it, removing none twice. A close the table
+// and the next pass closes it, removing none twice. A merge by the App or
+// a trusted user closes it as completed instead, keyed the same, with its
+// links kept, after the merge's writes, each checked first (droppedEnd).
+// A close the table
 // refuses is a state error, reported once on the issue, and logged. The
 // issues it closes get their items found again, so the digest and
 // assignment show the close this pass, and each is read again next pass.
@@ -92,14 +105,27 @@ func (d *Daemon) droppedPass(ctx context.Context) (map[int]bool, error) {
 			continue
 		}
 		pr := taskPR(is)
-		if p, listed := d.prs[pr]; listed && (p.Open || p.Merged) {
+		p, listed := d.prs[pr]
+		if listed && p.Open {
 			continue
+		}
+		var merge *prMerge
+		if listed && p.Merged {
+			mg, ok, err := d.droppedMerge(ctx, s, p)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("close %s/%s#%d, held for a PR: %w", a.Owner, a.Repo, n, err))
+				continue
+			}
+			if !ok {
+				continue
+			}
+			merge = mg
 		}
 		if below := d.droppedBelow(n); below != 0 {
 			logr.Debugf("%s/%s#%d: held for a PR, and #%d below it is open, so it stays held", a.Owner, a.Repo, n, below)
 			continue
 		}
-		if err := d.droppedEnd(ctx, s, dirt, hold, pr); err != nil {
+		if err := d.droppedEnd(ctx, s, dirt, is, hold, pr, merge); err != nil {
 			d.reread(n, false)
 			errs = append(errs, fmt.Errorf("close %s/%s#%d, held for a PR: %w", a.Owner, a.Repo, n, err))
 			continue
@@ -111,30 +137,74 @@ func (d *Daemon) droppedPass(ctx context.Context) (map[int]bool, error) {
 	return closed, errors.Join(errs...)
 }
 
-// droppedEnd closes s, held for a PR by hold with dirt, whose task PR,
-// pr, closed without merging, or with pr naming none, nothing below it is
-// open: its links go first (droppedUnlink), then it moves to closed, as
-// not planned, keyed apart from hold (droppedClosedKey). A state error is
-// logged, and left as Transition reported it.
-func (d *Daemon) droppedEnd(ctx context.Context, s *github.Snapshot, dirt Dirt, hold github.Marker, pr int) error {
+// droppedMerge reads p, the PR of task s, held for it, which the poll
+// lists merged, and returns it with its merger judged, and true, once it
+// merged into s's story branch (prMergeRead), which ends the hold. A PR
+// merged into main, whose "Closes #N" closes the task, and a task with no
+// story, leave it held, false. The read is one conditional request, made
+// only while the task is held for the PR, as the close ends that.
+func (d *Daemon) droppedMerge(ctx context.Context, s *github.Snapshot, p listedPR) (*prMerge, bool, error) {
+	a, n := d.Step.Applier, s.Number
+	mg, ok, err := d.prMergeRead(ctx, s, p)
+	if err != nil {
+		return nil, false, fmt.Errorf("its PR's merge: %w", err)
+	}
+	if !ok {
+		logr.Debugf("%s/%s#%d: held for a PR whose merge isn't into its story branch, so it stays held for its \"Closes #%d\"", a.Owner, a.Repo, n, n)
+		return nil, false, nil
+	}
+	return &mg, true, nil
+}
+
+// droppedEnd closes s, held for a PR by hold with dirt, whose state is is,
+// once its task PR, pr, closed without merging, or merged into its story
+// branch, merge, or with pr naming none, nothing below it is open: its
+// links go first (droppedUnlink), then it moves to closed, as not planned,
+// keyed apart from hold (droppedClosedKey). A merge by the App or a
+// trusted user closes it as completed instead, as any task in a story
+// (SPEC §6.4, §7.5): the check carried over, for the App's, and the task's
+// branch deleted first (prMergedWrites), and its links kept, as a close
+// that completes the task leaves its dependents' links, which it no longer
+// blocks. Anyone else's merge closes it as not planned, as its plan
+// dropped it. A state error is logged, and left as Transition reported it.
+func (d *Daemon) droppedEnd(ctx context.Context, s *github.Snapshot, dirt Dirt, is state.Issue, hold github.Marker, pr int, merge *prMerge) error {
 	a, n := d.Step.Applier, s.Number
 	key, ok := droppedHoldKey(hold)
 	if !ok {
 		return fmt.Errorf("its hold's marker %v has no key", hold.Fields)
 	}
-	listed, _, err := a.Client.Issues.Get(ctx, a.Owner, a.Repo, n)
-	if err != nil {
-		return fmt.Errorf("read its ID: %w", err)
-	}
-	if err := d.Step.droppedUnlink(ctx, n, listed.GetID()); err != nil {
-		return fmt.Errorf("unlink: %w", err)
-	}
-	text := "Closed as not planned: nothing below this issue is open now, and a plan's revision dropped it."
+	reason, text := "not_planned", "Closed as not planned: nothing below this issue is open now, and a plan's revision dropped it."
 	if _, ok := d.prs[pr]; ok {
 		text = fmt.Sprintf("Closed as not planned: its PR #%d was closed without merging, and a plan's revision dropped it.", pr)
 	}
-	m := Move{To: state.Closed, StateReason: "not_planned", Trigger: state.TriggerClosed, Key: droppedClosedKey(key), Text: text}
-	err = a.Transition(ctx, s, dirt.Has, m)
+	switch {
+	case merge != nil && (merge.App || merge.Trusted):
+		if err := d.prMergedWrites(ctx, s, is, *merge); err != nil {
+			return fmt.Errorf("its PR's merge: %w", err)
+		}
+		by := merge.PR.MergedBy
+		if merge.App {
+			by = ""
+		}
+		reason, text = "completed", renderMergedClose(pr, merge.PR.MergeCommitSHA, by)+" A plan's revision dropped it, but its PR merged first."
+	case merge != nil:
+		who := "`" + defuse(merge.PR.MergedBy) + "`, who isn't trusted"
+		if merge.PR.MergedBy == "" {
+			who = "someone GitHub doesn't name"
+		}
+		text = fmt.Sprintf("Closed as not planned: its PR #%d was merged into the story branch by %s, and a plan's revision dropped it.", pr, who)
+	}
+	if reason == "not_planned" {
+		listed, _, err := a.Client.Issues.Get(ctx, a.Owner, a.Repo, n)
+		if err != nil {
+			return fmt.Errorf("read its ID: %w", err)
+		}
+		if err := d.Step.droppedUnlink(ctx, n, listed.GetID()); err != nil {
+			return fmt.Errorf("unlink: %w", err)
+		}
+	}
+	m := Move{To: state.Closed, StateReason: reason, Trigger: state.TriggerClosed, Key: droppedClosedKey(key), Text: text}
+	err := a.Transition(ctx, s, dirt.Has, m)
 	if StateError(err) {
 		logr.Warnf("%s/%s#%d: left open and held, though its hold for a PR has ended: %v", a.Owner, a.Repo, n, err)
 		return nil
@@ -142,7 +212,7 @@ func (d *Daemon) droppedEnd(ctx context.Context, s *github.Snapshot, dirt Dirt, 
 	if err != nil {
 		return fmt.Errorf("close: %w", err)
 	}
-	logr.Infof("%s/%s#%d: closed as not planned, as its hold for a PR has ended", a.Owner, a.Repo, n)
+	logr.Infof("%s/%s#%d: closed as %s, as its hold for a PR has ended", a.Owner, a.Repo, n, reason)
 	return nil
 }
 
