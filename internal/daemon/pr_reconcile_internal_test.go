@@ -50,11 +50,11 @@ func TestRenderPRClosedHandoff(t *testing.T) {
 			"PR #2 for this task was reopened after a close by someone GitHub doesn't name, and only a trusted user's reopen keeps it, so the task waits on you.\n\n" +
 				reopened},
 	} {
-		if got := renderPRClosedHandoff(1, 2, prReconcileLink, tt.reopened, tt.by, tt.notify); got != tt.want {
+		if got := renderPRClosedHandoff(1, 2, prReconcileLink, tt.reopened, tt.by, false, tt.notify); got != tt.want {
 			t.Errorf("%s: the hand-off =\n%s\nwant\n%s", tt.name, got, tt.want)
 		}
 	}
-	if got, want := renderPRReopened(2, "mal@lory"), "`mal@​lory` reopened PR #2, so this task is back at `pr-open`. It waits for your review and merge, and merging it closes this task."; got != want {
+	if got, want := renderPRReopened(2, "mal@lory", false), "`mal@​lory` reopened PR #2, so this task is back at `pr-open`. It waits for your review and merge, and merging it closes this task."; got != want {
 		t.Errorf("the reopen's move =\n%s\nwant\n%s", got, want)
 	}
 }
@@ -158,7 +158,7 @@ func TestWaitFindPRClosedHandoff(t *testing.T) {
 			"Done when: The PR is closed and reopened by you, a new round is asked for, or the issue is closed.",
 			"Close and reopen the PR yourself to send the task back to `pr-open`, or reply `/done` on the issue or react 👍 to the hand-off for a new round, or close the issue."}},
 	} {
-		body := renderPRClosedHandoff(1, 2, prReconcileLink, tt.reopened, "mallory", nil) +
+		body := renderPRClosedHandoff(1, 2, prReconcileLink, tt.reopened, "mallory", false, nil) +
 			"\n\n<!-- issuedog:transition from=pr-open to=needs-human event=" + tt.key + " -->"
 		it := waitFindOne(t, waitIn(handbackSnap(false, "<!-- issuedog:transition from=verifying to=pr-open run=rv head=abc pr=2 -->", body), Dirt{}))
 		if got := waitTexts(it.Lines); it.Kind != waitHandoff || it.Key != "handoff-1-102" || strings.Join(got, "\n") != strings.Join(tt.want, "\n") {

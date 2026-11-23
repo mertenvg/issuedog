@@ -131,9 +131,11 @@ func storyAgainst(tip string) string {
 // nothing, and the one after runs the verifier on it alone. Its checks.md
 // names the story branch, the tip and the story's baseline, the cut, and
 // its diff.patch starts at the head's merge base with the tip, so it holds
-// the task's change and not the story's. Its pass moves nothing: a task in
-// a story has no PR step yet, so it waits at verifying, and the passes
-// after make no request but 304s, run no command and start no run.
+// the task's change and not the story's. Its pass moves nothing: the pass
+// after, the PR step's, opens its PR into the story branch and moves it to
+// pr-open (pr_story_test.go), with no command run, and once that's read,
+// the passes after make no request but 304s, run no command and start no
+// run.
 func TestVerifyStoryPass(t *testing.T) {
 	t.Parallel()
 	f, v := newStoryVerifyRig(t)
@@ -165,10 +167,14 @@ func TestVerifyStoryPass(t *testing.T) {
 	}
 
 	v.pass()
-	v.quietPass("the pass waiting for a story task's PR step")
+	if prs := f.State().PRs; len(prs) != 1 || prs[0].Base != storyVerifyBranch || pickStage(f, 1) != "stage:pr-open" {
+		t.Fatalf("the PR step's pass left the PRs %+v, the task at %s; want one into %s, and pr-open", prs, pickStage(f, 1), storyVerifyBranch)
+	}
+	v.pass()
+	v.quietPass("the pass after a story task's PR step")
 	v.quietPass("again")
-	if pickStage(f, 1) != "stage:verifying" || v.runs() != 1 || v.checksRan() != 2 {
-		t.Errorf("the task is at %s, after %d runs and the commands run %d times; want verifying, one, and twice", pickStage(f, 1), v.runs(), v.checksRan())
+	if pickStage(f, 1) != "stage:pr-open" || v.runs() != 1 || v.checksRan() != 2 {
+		t.Errorf("the task is at %s, after %d runs and the commands run %d times; want pr-open, one, and twice", pickStage(f, 1), v.runs(), v.checksRan())
 	}
 }
 
@@ -394,8 +400,9 @@ func TestVerifyStoryPersonHead(t *testing.T) {
 // the tip's checks once, finds its issuedog/tip naming the branch, and
 // runs the head's checks again against it, and only the pass after runs
 // the verifier. After the verifier's pass, a fresh daemon runs the checks
-// once more, and the task then waits for its PR step, with no request,
-// no command and no run.
+// once more, and the pass after is the PR step's, which opens the task's
+// PR into its story branch and moves it to pr-open, with no command and no
+// run, and once that's read, the passes after make no request but 304s.
 func TestVerifyStoryRestart(t *testing.T) {
 	t.Parallel()
 	f, v := newStoryVerifyRig(t)
@@ -427,6 +434,13 @@ func TestVerifyStoryRestart(t *testing.T) {
 		t.Fatalf("the second restart's first pass ran the commands %d times in all, claude %d, the task at %s; want 4, once, and verifying",
 			v.checksRan(), v.runs(), pickStage(f, 1))
 	}
+	v.pass()
+	if prs := f.State().PRs; len(prs) != 1 || prs[0].Base != storyVerifyBranch || prs[0].HeadSHA != head || pickStage(f, 1) != "stage:pr-open" ||
+		v.checksRan() != 4 || v.runs() != 1 {
+		t.Fatalf("the PR step's pass left the PRs %+v, the task at %s, the commands run %d times, claude %d; want one into %s at %s, pr-open, 4, and once",
+			prs, pickStage(f, 1), v.checksRan(), v.runs(), storyVerifyBranch, head)
+	}
+	v.pass()
 	v.quietPass("after the second restart")
 	v.quietPass("again")
 }

@@ -62,22 +62,19 @@ func verifyKey(c int64) state.Key {
 // question moves the task to clarifying (Verifier.Apply). A head with a
 // clean pass marker gets the PR step instead, while the checks' pass holds
 // on it and its target (openPR): its head pushed to the task's branch, its
-// PR to main opened or updated, its issuedog/verify check posted, and the
-// task moved to pr-open, or for a head that changes nothing on main,
-// handed off at needs-human, once its follow-ups' filed record stands. On a
-// person's head, the PR step gives way to personPass, which pushes nothing
-// and moves the task back to pr-open, and the verifier's request_changes
-// goes there too (Verifier.personChanges). It reports a run when that step
-// read the issue again to write, and else looks at the next task. A task
-// in a story has no PR step yet, its own head's or a person's: with its
-// head's pass and a clean pass marker on it, it waits at verifying,
-// holding the worker, logged once, with no request and no command, until
-// its head or its story branch's tip moves. A run that fails writes
-// nothing, and the head gets another, until the last of loop.max_attempts
-// in a row hands the task off at needs-human (Runs.atCap). A later head
-// has no such marker, so it gets a run of its own, and a later target only
-// the checks, which move the task back on a failure whatever the verdict
-// was.
+// PR to main, or for a task in a story into its story branch, opened or
+// updated, its issuedog/verify check posted, and the task moved to
+// pr-open, or for a head that changes nothing on that base, handed off at
+// needs-human, once its follow-ups' filed record stands. On a person's
+// head, the PR step gives way to personPass, which pushes nothing and
+// moves the task back to pr-open, and the verifier's request_changes goes
+// there too (Verifier.personChanges). It reports a run when that step read
+// the issue again to write, and else looks at the next task. A run that
+// fails writes nothing, and the head gets another, until the last of
+// loop.max_attempts in a row hands the task off at needs-human
+// (Runs.atCap). A later head has no such marker, so it gets a run of its
+// own, and a later target only the checks, which move the task back on a
+// failure whatever the verdict was.
 //
 // Naming the head and its target, and a skip for a pass kept, read only
 // the bare repo, what the daemon holds of the story and its tip's check,
@@ -134,16 +131,11 @@ func (r *Runs) verifyTask(ctx context.Context, ready []Ready, skip int) (bool, e
 		person := personHead(is)
 		if r.passed[n].holds(head, t.SHA) {
 			if verdictOn(is, head) {
-				if t.Branch != "" {
-					r.Daemon.storyWarnOnce(n, "pr:"+head+"@"+t.SHA, "%s/%s#%d: its head %s passed against %s, and a task in a story gets no PR step yet, so it waits at %s",
-						a.Owner, a.Repo, n, head, t, state.Verifying)
-					continue
-				}
 				var wrote bool
 				if person {
 					wrote, err = r.personPass(ctx, rd, is, head, t)
 				} else {
-					wrote, err = r.openPR(ctx, rd, is, head, t.SHA)
+					wrote, err = r.openPR(ctx, rd, is, head, t)
 				}
 				switch {
 				case err != nil:
