@@ -622,8 +622,9 @@ func holdCheck(ctx context.Context, a *Applier, c Cmd) error {
 
 // resumeCheck rejects a /resume, unless Apply began (see begun), that takes
 // neither c's issue nor an open descendant out of held (heldStackResume),
-// nor ends the owner hold of a descendant that stays held for discussion
-// only, which Apply records (resolveResumed). It names the issues whose
+// nor ends a hold on one that stays held for discussion only, for a PR as
+// a revision dropped it, which no /resume ends (SPEC §6.4), or both, which
+// Apply records (resolveResumed). It names the issues whose
 // /resume would end the holds left: those held for discussion, and those
 // that made the owner holds, by /hold or by hand, including a stage:held
 // label no marker explains, which Apply's CheckLabels would record as a
@@ -672,12 +673,16 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 			return fmt.Errorf("check /resume: %w", err)
 		}
 		_, ended, left := heldStackResume(is, n.s == c.S, above)
-		// It leaves held, or stays held for discussion only, which Apply
-		// records (resolveResumed), or by a /hold posted after c, which
-		// the App applied first, as an ancestor's pass came first (#205):
-		// Apply records the holds c ends there too, so a /resume posted
-		// after that /hold, which may not end them, needn't.
-		held = held || ended > 0 && (!resolveOwnerHeld(left) || heldStackLater(left, above))
+		// The holds left but one for a PR, as a revision dropped the issue,
+		// which no /resume ends, and which stays beside any hold c ends
+		// there (SPEC §6.4).
+		owner := slices.DeleteFunc(slices.Clone(left), droppedHold)
+		// It leaves held, or stays held for discussion only, for a PR, or
+		// both, which Apply records (resolveResumed), or by a /hold posted
+		// after c, which the App applied first, as an ancestor's pass came
+		// first (#205): Apply records the holds c ends there too, so a
+		// /resume posted after that /hold, which may not end them, needn't.
+		held = held || ended > 0 && (!resolveOwnerHeld(owner) || heldStackLater(left, above))
 		// Held for a PR, as a revision dropped it, which no /resume ends
 		// (SPEC §6.4): the reason names its PR, or with none, the issues
 		// below it that it waits for.
@@ -687,7 +692,7 @@ func resumeCheck(ctx context.Context, a *Applier, c Cmd) error {
 		// A descendant held for discussion only, besides a hold for a PR,
 		// which this doesn't end; if it ends an owner hold there too, the
 		// /resume applies (held).
-		if owner := slices.DeleteFunc(slices.Clone(left), droppedHold); len(owner) > 0 && !resolveOwnerHeld(owner) {
+		if len(owner) > 0 && !resolveOwnerHeld(owner) {
 			discussed = append(discussed, fmt.Sprintf("#%d", n.s.Number))
 		}
 		var by []int      // the issues where the owner holds left were made
