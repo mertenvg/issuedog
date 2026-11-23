@@ -105,16 +105,16 @@ func TestRequiredChecks(t *testing.T) {
 		githubtest.Ruleset{Checks: []gogithub.RuleStatusCheck{{Context: "ci"}, {Context: "lint", IntegrationID: new(int64(15368))}}},
 		githubtest.Ruleset{Checks: []gogithub.RuleStatusCheck{{Context: "trying"}}, Enforcement: gogithub.RulesetEnforcementEvaluate},
 		githubtest.Ruleset{Checks: []gogithub.RuleStatusCheck{{Context: "off"}}, Enforcement: gogithub.RulesetEnforcementDisabled},
-		githubtest.Ruleset{},
+		githubtest.Ruleset{Rules: []string{"deletion"}},
 		githubtest.Ruleset{Checks: []gogithub.RuleStatusCheck{{Context: "org-ci"}}, Org: true, Enforcement: gogithub.RulesetEnforcementActive},
 	)
 	f.SetRequiredChecks("release/1.0", githubtest.Ruleset{Checks: []gogithub.RuleStatusCheck{{Context: "release"}}})
-	f.SetRequiredChecks("bare", githubtest.Ruleset{}, githubtest.Ruleset{Org: true})
+	f.SetRequiredChecks("bare", githubtest.Ruleset{Rules: []string{"deletion"}}, githubtest.Ruleset{Org: true, Rules: []string{"deletion"}})
 	f.SetRequiredChecks("trial", githubtest.Ruleset{Checks: []gogithub.RuleStatusCheck{{Context: "ci"}}, Enforcement: gogithub.RulesetEnforcementEvaluate})
 	var many []githubtest.Ruleset
 	var wantMany []github.RequiredCheck
 	for i := range 120 {
-		many = append(many, githubtest.Ruleset{Checks: []gogithub.RuleStatusCheck{{Context: fmt.Sprintf("check-%d", i)}}})
+		many = append(many, githubtest.Ruleset{Rules: []string{"deletion"}, Checks: []gogithub.RuleStatusCheck{{Context: fmt.Sprintf("check-%d", i)}}})
 		wantMany = append(wantMany, github.RequiredCheck{Context: fmt.Sprintf("check-%d", i)})
 	}
 	f.SetRequiredChecks("big", many...)
@@ -152,6 +152,82 @@ func TestRequiredChecks(t *testing.T) {
 	checksWantStatus(t, "RequiredChecks with page 2 answering 500", err, http.StatusInternalServerError)
 	if got != nil {
 		t.Errorf("RequiredChecks with page 2 answering 500 = %+v; want nothing", got)
+	}
+}
+
+// branchRuleTypesKnown is every rule type go-github v92 decodes for a
+// branch, in its BranchRules field order, which BranchRuleTypes lists by.
+var branchRuleTypesKnown = []string{"creation", "update", "deletion", "required_linear_history", "merge_queue",
+	"required_deployments", "required_signatures", "pull_request", "required_status_checks", "non_fast_forward",
+	"commit_message_pattern", "commit_author_email_pattern", "committer_email_pattern", "branch_name_pattern",
+	"tag_name_pattern", "workflows", "code_scanning", "copilot_code_review", "file_extension_restriction",
+	"file_path_restriction", "max_file_path_length", "max_file_size"}
+
+// Each rule the active rulesets on a branch carry is listed by its type,
+// org rulesets and those that target it by a pattern included, from every
+// page: creation, deletion and non_fast_forward, which carry no
+// parameters, among them. A type go-github doesn't know isn't listed. A
+// branch with no rules is an empty list, and so is a 404. Any other status
+// is an error.
+func TestBranchRuleTypes(t *testing.T) {
+	t.Parallel()
+	f := githubtest.New(t, "o/r", "issuedog")
+	f.SetRequiredChecks("issuedog/ruleset-check", githubtest.Ruleset{Rules: []string{"required_linear_history"}})
+	f.SetRequiredChecks("all/known", githubtest.Ruleset{Rules: append([]string{"made_up_rule"}, branchRuleTypesKnown...)})
+	var many []githubtest.Ruleset
+	var wantMany []string
+	for range 150 {
+		many = append(many, githubtest.Ruleset{Rules: []string{"creation"}})
+		wantMany = append(wantMany, "creation")
+	}
+	f.SetRequiredChecks("big", many...)
+	f.SetRulesets(
+		githubtest.Ruleset{Pattern: "issuedog/*", Rules: []string{"creation", "deletion", "non_fast_forward"}},
+		githubtest.Ruleset{Pattern: "issuedog/*", Rules: []string{"deletion", "update"}, Checks: []gogithub.RuleStatusCheck{{Context: "ci"}}, Org: true},
+		githubtest.Ruleset{Pattern: "issuedog/*", Rules: []string{"pull_request"}, Enforcement: gogithub.RulesetEnforcementEvaluate},
+		githubtest.Ruleset{Pattern: "issuedog/*", Rules: []string{"merge_queue"}, Enforcement: gogithub.RulesetEnforcementDisabled},
+		githubtest.Ruleset{Pattern: "main", Rules: []string{"required_signatures"}},
+	)
+	ctx, c := context.Background(), f.Client(t)
+	for branch, want := range map[string][]string{
+		// By name, then by pattern, each by its field: the two deletions
+		// together.
+		"issuedog/ruleset-check": {"creation", "update", "deletion", "deletion", "required_linear_history", "required_status_checks", "non_fast_forward"},
+		"issuedog/7-x":           {"creation", "update", "deletion", "deletion", "required_status_checks", "non_fast_forward"},
+		"all/known":              branchRuleTypesKnown,
+		"big":                    wantMany, // 150 rules, over two pages
+		"main":                   {"required_signatures"},
+		"issuedog/7/x":           nil, // "*" matches no "/"
+		"nowhere":                nil,
+	} {
+		if got, err := c.BranchRuleTypes(ctx, "o", "r", branch); err != nil || !reflect.DeepEqual(got, want) {
+			t.Errorf("BranchRuleTypes(%s) = %q, %v; want %q", branch, got, err, want)
+		}
+	}
+	checksAnswerOnce(f, "/rules/branches/issuedog/ruleset-check", http.StatusNotFound)
+	if got, err := c.BranchRuleTypes(ctx, "o", "r", "issuedog/ruleset-check"); err != nil || got != nil {
+		t.Errorf("BranchRuleTypes answered 404 = %q, %v; want none, no error", got, err)
+	}
+	for _, status := range []int{http.StatusForbidden, http.StatusInternalServerError} {
+		checksAnswerOnce(f, "/rules/branches/issuedog/ruleset-check", status)
+		got, err := c.BranchRuleTypes(ctx, "o", "r", "issuedog/ruleset-check")
+		checksWantStatus(t, fmt.Sprintf("BranchRuleTypes answered %d", status), err, status)
+		if got != nil {
+			t.Errorf("BranchRuleTypes answered %d = %q; want nothing", status, got)
+		}
+	}
+	// A failure on a later page fails the read too.
+	pageTwo := func(r githubtest.Request) bool {
+		return r.Path == "/rules/branches/big" && strings.Contains(r.Query, "page=2")
+	}
+	f.AnswerOnce(pageTwo, http.StatusInternalServerError)
+	got, err := c.BranchRuleTypes(ctx, "o", "r", "big")
+	checksWantStatus(t, "BranchRuleTypes with page 2 answering 500", err, http.StatusInternalServerError)
+	if got != nil {
+		t.Errorf("BranchRuleTypes with page 2 answering 500 = %q; want nothing", got)
+	}
+	if err == nil || !strings.Contains(err.Error(), "rule types on big in o/r: ") {
+		t.Errorf("BranchRuleTypes with page 2 answering 500: %v; want it to name the branch and repo", err)
 	}
 }
 

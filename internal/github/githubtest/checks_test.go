@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"reflect"
 	"slices"
 	"strings"
@@ -235,5 +236,83 @@ func TestFakeTypeCanonical(t *testing.T) {
 	f.SetOrgIssueTypes(OrgIssueType{Name: "Bug"}, OrgIssueType{Name: "Task"})
 	if got, _, err := c.Issues.Create(ctx, "o", "r", gogithub.CreateIssueRequest{Title: "Upper", Type: new("BUG")}); err != nil || got.GetType().GetName() != "Bug" {
 		t.Errorf("create with BUG after the org listed Bug = %q, %v; want Bug", got.GetType().GetName(), err)
+	}
+}
+
+// fakeRulesServed is the rules the fake serves on branch, each as "type
+// source_type:source#id", in the order it serves them, from one GET.
+func fakeRulesServed(t *testing.T, f *Fake, branch string) []string {
+	t.Helper()
+	ctx, c := context.Background(), f.Client(t)
+	req, err := c.Client.NewRequest(ctx, http.MethodGet, "repos/o/r/rules/branches/"+url.PathEscape(branch)+"?per_page=100", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rules []struct {
+		Type       string         `json:"type"`
+		SourceType string         `json:"ruleset_source_type"`
+		Source     string         `json:"ruleset_source"`
+		ID         int64          `json:"ruleset_id"`
+		Parameters map[string]any `json:"parameters"`
+	}
+	if _, err := c.Client.Do(req, &rules); err != nil {
+		t.Fatalf("rules on %s: %v", branch, err)
+	}
+	var out []string
+	for _, r := range rules {
+		s := fmt.Sprintf("%s %s:%s#%d", r.Type, r.SourceType, r.Source, r.ID)
+		if r.Parameters != nil {
+			s += " with parameters"
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// SetRulesets' rulesets target the branches their pattern matches, as
+// path.Match matches, so "*" matches no "/", beside SetRequiredChecks'
+// by name, which come first. Each serves its Rules, of any type, with no
+// parameters, then its checks, with its own ID and source, the org's for
+// an org ruleset. One in evaluate or disabled isn't served. A second
+// SetRulesets replaces the first's, and a pattern path.Match can't parse
+// is a 500.
+func TestFakeRulesetPatterns(t *testing.T) {
+	t.Parallel()
+	f := New(t, "o/r", "issuedog")
+	f.SetRequiredChecks("issuedog/1-x", Ruleset{Rules: []string{"update"}})
+	f.SetRulesets(
+		Ruleset{Pattern: "issuedog/*", Rules: []string{"creation", "deletion", "non_fast_forward"}},
+		Ruleset{Pattern: "issuedog/*", Rules: []string{"made_up_rule"}, Checks: []gogithub.RuleStatusCheck{{Context: "ci"}}, Org: true},
+		Ruleset{Pattern: "issuedog/*", Rules: []string{"pull_request"}, Enforcement: gogithub.RulesetEnforcementEvaluate},
+		Ruleset{Pattern: "issuedog/*", Rules: []string{"merge_queue"}, Enforcement: gogithub.RulesetEnforcementDisabled},
+		Ruleset{Pattern: "release/*", Rules: []string{"required_signatures"}},
+	)
+	for branch, want := range map[string][]string{
+		"issuedog/1-x": {"update Repository:o/r#1", "creation Repository:o/r#2", "deletion Repository:o/r#2", "non_fast_forward Repository:o/r#2",
+			"made_up_rule Organization:o#3", "required_status_checks Organization:o#3 with parameters"},
+		"issuedog/2-y": {"creation Repository:o/r#2", "deletion Repository:o/r#2", "non_fast_forward Repository:o/r#2",
+			"made_up_rule Organization:o#3", "required_status_checks Organization:o#3 with parameters"},
+		"release/1.0":    {"required_signatures Repository:o/r#6"},
+		"issuedog/1/x":   nil,
+		"issuedog":       nil,
+		"main":           nil,
+		"other/issuedog": nil,
+	} {
+		if got := fakeRulesServed(t, f, branch); !slices.Equal(got, want) {
+			t.Errorf("rules on %s = %q; want %q", branch, got, want)
+		}
+	}
+	f.SetRulesets(Ruleset{Pattern: "issuedog/*", Rules: []string{"deletion"}})
+	if got, want := fakeRulesServed(t, f, "issuedog/2-y"), []string{"deletion Repository:o/r#7"}; !slices.Equal(got, want) {
+		t.Errorf("after a second SetRulesets, rules = %q; want %q", got, want)
+	}
+	f.SetRulesets()
+	if got := fakeRulesServed(t, f, "issuedog/2-y"); got != nil {
+		t.Errorf("after SetRulesets with none, rules = %q; want none", got)
+	}
+	f.SetRulesets(Ruleset{Pattern: "issuedog/[", Rules: []string{"deletion"}})
+	_, resp, err := f.Client(t).Repositories.ListRulesForBranch(context.Background(), "o", "r", "issuedog/2-y", nil)
+	if err == nil || resp == nil || resp.StatusCode != http.StatusInternalServerError || !strings.Contains(err.Error(), `ruleset pattern "issuedog/["`) {
+		t.Errorf("rules with a bad pattern: %v; want a 500 naming the pattern", err)
 	}
 }
