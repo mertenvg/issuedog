@@ -21,7 +21,7 @@ import (
 // A story branch's tip gets its issuedog/tip check (SPEC §7.5, §8.1 step
 // 4, §10.4), on a verdictRig wired as main's, with real temporary repos:
 // story 1, at planned, whose branch the test cuts or pushes to in the
-// origin itself, as nothing in the daemon cuts one yet.
+// origin itself, as an admin may, so no task need be picked to cut one.
 
 // tipBranch is story 1's branch, from its title, tipStoryTitle.
 const tipBranch = "issuedog/1-quote-expiry"
@@ -47,7 +47,7 @@ func tipStoryAt(f *githubtest.Fake, title, stage string, labels ...string) int {
 	return n
 }
 
-// tipCut cuts branch from main in v's origin, as the App's pick will, and
+// tipCut cuts branch from main in v's origin, as the App's pick does, and
 // returns its tip, main's SHA.
 func (v *verdictRig) tipCut(branch string) string {
 	v.t.Helper()

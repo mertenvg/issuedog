@@ -25,8 +25,8 @@ import (
 // tip moves under it to one that fails rule 2 (SPEC §8.2), on a
 // verdictRig wired as main's, with real temporary repos: story 1, at
 // planned, whose branch the test cuts and pushes to in the origin itself,
-// and task 2 in it, at in-progress, as the pick would move it there, as
-// nothing in the daemon picks a task in a story yet.
+// and task 2 in it, at in-progress, as the pick would move it there
+// (pick_story_test.go tests the pick itself).
 
 // storyRunTask files task 2, in story 1, at in-progress, as the App moved
 // it there, with priority:p1 and scope:booking, and returns its number.

@@ -605,8 +605,9 @@ func TestFollowUpStoryTrack(t *testing.T) {
 // counted whatever its answer: the poll, the visit's read of the
 // follow-up's timeline, as any visited issue's, and two reads for a 👍,
 // its reactions and its addendum's. Then owner's 👍 on the addendum
-// approves it, and at ready it waits, unpicked, as any task with a parent
-// does until #624: no run starts, and it stays at ready.
+// approves it, and at ready it waits, unpicked, as the branch the pick
+// cuts for its story gets no tip check, with no checks wired here: no run
+// starts, and it stays at ready.
 func TestFollowUpStoryWaitsRun(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)

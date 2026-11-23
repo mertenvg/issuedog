@@ -124,9 +124,9 @@ func TestPickOrder(t *testing.T) {
 // A task at in-progress or verifying holds the worker: nothing is picked,
 // and the pass makes no search and reads no blocked_by, on a start's
 // first pass or after. The task at in-progress here is in a story, so it
-// gets no run of its own until #624. A task waiting on the owner, at
-// clarifying, needs-human, pr-open or held, releases the worker, and the
-// ready task is picked (SPEC §8.1).
+// gets no run of its own while its story has no branch. A task waiting on
+// the owner, at clarifying, needs-human, pr-open or held, releases the
+// worker, and the ready task is picked (SPEC §8.1).
 func TestPickWorker(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -167,22 +167,27 @@ func TestPickWorker(t *testing.T) {
 	}
 }
 
-// A task in a story isn't picked, uncounted, until #624 names its story
-// branch's tip: with it the only ready task, a pass makes no search and
-// writes nothing, and a task with no parent filed after it, at a lower
-// priority, is picked.
+// A task whose parent is no story it's worked in, here an epic with no
+// approved plan, so not one planned into tasks, isn't picked, uncounted
+// (SPEC §7.5, §8.1): with it the only ready task, a pass makes no search,
+// writes nothing and cuts no branch, and a task with no parent filed
+// after it, at a lower priority, is picked.
 func TestPickSkipsTaskInStory(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
-	story := fileAt(f, "planned", "A story.")
-	f.SetType(story, "Story")
+	o := newOrigin(t)
+	story := fileAt(f, "planned", "An epic.")
+	f.SetType(story, "Epic")
 	inStory := pickReady(f, "p0")
 	f.SetParent(inStory, story)
-	g := pickRig(t, f)
+	g := newImplementerRig(t, f, o, t.TempDir(), nil, implementerOutput(t, "commits"))
 	writes := len(f.Writes())
 	if searches, blockedBy := pickPass(g); searches != 0 || blockedBy != 0 || g.runs() != 0 || len(f.Writes()) != writes {
 		t.Errorf("with only a task in a story at ready, the pass made %d searches and %d blocked_by reads, ran claude %d times and wrote %+v; "+
 			"want none of them", searches, blockedBy, g.runs(), f.Writes()[writes:])
+	}
+	if out := gitIn(t, o.url, "for-each-ref", "refs/heads/issuedog/"); out != "" {
+		t.Errorf("the origin's issuedog branches are %q; want none cut", out)
 	}
 	if l := g.lease(); l.RunID != "" {
 		t.Errorf("the lease = %+v; want none, with no attempt counted", l)
