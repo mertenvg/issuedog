@@ -15,8 +15,8 @@ import (
 // droppedItemHold is the App's comment holding task 1, from pr-open, for
 // PR 7, as droppedOne writes it.
 const droppedItemHold = "On hold, not closed, since #4's plan, rev 2, drops T1, while its PR #7 is open ([the plan](https://github.com/o/r/issues/4#issuecomment-30)).\n\n" +
-	"Once the PR merges, its `Closes` closes this issue, and once it's closed without merging, I close this issue as not planned. " +
-	"Or close it yourself. `/resume` doesn't end this hold.\n\n" +
+	"Once the PR merges into the story branch, I close this issue: as completed for the App's or a trusted user's merge, and as not planned for anyone else's, " +
+	"or once it's closed without merging. Or close it yourself. `/resume` doesn't end this hold.\n\n" +
 	"<!-- issuedog:transition from=pr-open to=held at=pr-open reason=dropped event=p20 -->"
 
 // A task held for its PR, listed open, has the item dropped-<n>: it ranks
@@ -35,7 +35,7 @@ func TestWaitFindDropped(t *testing.T) {
 	want := []waitLine{
 		{Text: "On hold, not closed, since #4's plan, rev 2, drops T1, while its PR #7 is open ([the plan](https://github.com/o/r/issues/4#issuecomment-30)).", Copied: true},
 		{Text: "feat: x <b> @eve", PR: 7},
-		{Text: "Merge the PR, and its `Closes` closes this task; close the PR, and I close the task as not planned; or close the task yourself. `/resume` doesn't end this hold."},
+		{Text: "Merge the PR into the story branch, and I close this task as completed; close the PR, and I close the task as not planned; or close the task yourself. `/resume` doesn't end this hold."},
 	}
 	if it.Kind != waitDropped || it.Key != "dropped-1" || it.Link != "https://github.com/o/r/pull/7" || it.AssignPR != 0 || it.Comment != state.BodyID ||
 		!slices.Equal(it.Lines, want) {

@@ -173,6 +173,7 @@ type Daemon struct {
 	// (prReopenTrusted).
 	prTrusted map[int64]bool
 	// prDirt is the dirty content of each task at pr-open or needs-human,
+	// or in a story at in-progress or verifying with a PR, for its merge,
 	// by task, after its last good step 1, which step 2 moves it with
 	// (prDirtSet).
 	prDirt map[int]Dirt

@@ -26,7 +26,8 @@ import (
 // none. A person's head that failed verify goes back to pr-open with no
 // tip= (personFailed), so it has none, and nothing merges it: an older
 // move's tip= is never taken in its place, as it was the tip of another
-// head.
+// head. The check carried over once the PR merges reads it too
+// (tipCarry).
 func prMoveTip(is state.Issue) string {
 	tip := ""
 	for _, m := range is.Markers {

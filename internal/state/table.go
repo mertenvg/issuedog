@@ -20,14 +20,19 @@ const (
 
 // Trigger names what caused a transition. Each §7.2 row has its own, but
 // for TriggerCreated, whose three rows differ by class, and
-// TriggerAttemptCap, whose two differ by the stage they move from.
+// TriggerAttemptCap, TriggerMerged and TriggerUntrustedMerge, whose rows
+// differ by the stage they move from.
 type Trigger string
 
 // The §7.2 triggers, one per row and in table order, TriggerCreated once
-// for its three rows, and TriggerAttemptCap once for its two: a task's
-// move to needs-human with a hand-off once its runs reach the cap (SPEC
-// §8.3), from in-progress for the implementer's failed runs, and from
-// verifying for the verify loop's findings.
+// for its three rows, TriggerAttemptCap once for its two: a task's move to
+// needs-human with a hand-off once its runs reach the cap (SPEC §8.3), from
+// in-progress for the implementer's failed runs, and from verifying for the
+// verify loop's findings, TriggerMerged once for its two, a task's close
+// once its PR merged, from pr-open or needs-human, and
+// TriggerUntrustedMerge once for its four: a task's hand-off once someone
+// untrusted merged its PR into its story branch (SPEC §7.5), from pr-open,
+// in-progress, verifying or needs-human.
 const (
 	TriggerTrusted Trigger = "trusted"
 	// TriggerCreated is a created child's first move, intake → its first
@@ -69,6 +74,7 @@ const (
 	TriggerMainMoved              Trigger = "main-moved"
 	TriggerMerged                 Trigger = "merged"
 	TriggerPRClosed               Trigger = "pr-closed"
+	TriggerUntrustedMerge         Trigger = "untrusted-merge"
 	TriggerPRReopened             Trigger = "pr-reopened"
 	TriggerHandoffDone            Trigger = "handoff-done"
 	TriggerHumanTaskDone          Trigger = "human-task-done"
@@ -154,7 +160,12 @@ var table = []Row{
 	{PROpen, Verifying, AnyTask, TriggerNewHead},
 	{PROpen, PROpen, AnyTask, TriggerMainMoved},
 	{PROpen, Closed, AnyTask, TriggerMerged},
+	{NeedsHuman, Closed, AnyTask, TriggerMerged},
 	{PROpen, NeedsHuman, AnyTask, TriggerPRClosed},
+	{PROpen, NeedsHuman, AnyTask, TriggerUntrustedMerge},
+	{InProgress, NeedsHuman, AnyTask, TriggerUntrustedMerge},
+	{Verifying, NeedsHuman, AnyTask, TriggerUntrustedMerge},
+	{NeedsHuman, NeedsHuman, AnyTask, TriggerUntrustedMerge},
 	{NeedsHuman, PROpen, AnyTask, TriggerPRReopened},
 	{NeedsHuman, Ready, AnyTask, TriggerHandoffDone},
 	{NeedsHuman, Closed, ClassHumanTask, TriggerHumanTaskDone},

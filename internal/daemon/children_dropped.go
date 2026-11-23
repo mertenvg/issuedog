@@ -328,7 +328,9 @@ func droppedHold(m github.Marker) bool {
 // for its PR, pr, or with pr 0 for the issues below it, which Transition
 // escapes: the item ID is the planner's. Its first paragraph names the
 // revision and the PR, which the digest's item copies (waitDroppedLines),
-// and the second says what ends the hold.
+// and the second says what ends the hold: a task with a PR is in a story,
+// so its PR is into the story branch, and its merge there closes it
+// (dropped_pass.go).
 func droppedHoldText(d droppedItem, n, pr int) string {
 	text := fmt.Sprintf("On hold, not closed, since #%d's plan, rev %d, drops %s", d.parent, d.rev, d.item)
 	if n != d.root {
@@ -336,7 +338,8 @@ func droppedHoldText(d droppedItem, n, pr int) string {
 	}
 	if pr > 0 {
 		return text + fmt.Sprintf(", while its PR #%d is open ([the plan](%s)).\n\n", pr, d.plan) +
-			"Once the PR merges, its `Closes` closes this issue, and once it's closed without merging, I close this issue as not planned. " +
+			"Once the PR merges into the story branch, I close this issue: as completed for the App's or a trusted user's merge, and as not planned for anyone else's, " +
+			"or once it's closed without merging. " +
 			"Or close it yourself. `/resume` doesn't end this hold."
 	}
 	return text + fmt.Sprintf(", while an issue below it waits for its PR ([the plan](%s)).\n\n", d.plan) +
