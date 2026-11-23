@@ -31,8 +31,8 @@ const (
 // on findings (SPEC §7.2, §10.1): the findings as findingsText gives them,
 // then that the task is back at in-progress, the whole escaped (SPEC
 // §5.1).
-func renderFindings(head, main string, attempt, limit int, fs []verify.Finding, cmds []verify.CommandResult) string {
-	return github.Escape(findingsText(head, main, attempt, limit, fs, cmds) + findingsBack)
+func renderFindings(head, against string, attempt, limit int, fs []verify.Finding, cmds []verify.CommandResult) string {
+	return github.Escape(findingsText(head, against, attempt, limit, fs, cmds) + findingsBack)
 }
 
 // findingsBack ends the comment of a move back on findings, the checks'
@@ -95,8 +95,10 @@ func verdictText(head string, attempt, limit int, out verifierOutput) string {
 // hand-off (renderVerifyCapHandoff) both give them, unescaped: it names
 // attempt, the implementer run's number in the task's round, of limit,
 // loop.max_attempts, unless attempt is 0 for none (SPEC §8.3), head, the
-// head checked, or says there was none, and main, main's commit it was
-// checked against. Then each failed check gets a section, in the order
+// head checked, or says there was none, and against, what it was checked
+// against, as VerifyTarget.label names it: "`main` at `<SHA>`", or for a
+// task in a story, "the story branch `<name>` at `<SHA>`", its tip. Then
+// each failed check gets a section, in the order
 // checked: the head's own finding (Rule 0) or rule 2's, then rule 1's,
 // from cmds, then rules 3 to 7. A rule's section gives its detail, and its output, if any, each cut
 // to its last findingChars characters and fenced. Rule 1's names each
@@ -104,16 +106,16 @@ func verdictText(head string, attempt, limit int, out verifierOutput) string {
 // (CommandResult.Failure), and its output, cut and fenced the same way.
 // Every text the daemon didn't write is fenced, and the caller escapes the
 // whole (SPEC §5.1).
-func findingsText(head, main string, attempt, limit int, fs []verify.Finding, cmds []verify.CommandResult) string {
+func findingsText(head, against string, attempt, limit int, fs []verify.Finding, cmds []verify.CommandResult) string {
 	var parts []string
 	on := ""
 	if attempt > 0 {
 		on = fmt.Sprintf(" on attempt %d of %d,", attempt, limit)
 	}
 	if head == "" {
-		parts = append(parts, fmt.Sprintf("Verify failed%s with no head to check, against `main` at `%s`.", on, main))
+		parts = append(parts, fmt.Sprintf("Verify failed%s with no head to check, against %s.", on, against))
 	} else {
-		parts = append(parts, fmt.Sprintf("Verify failed%s at `%s`, checked against `main` at `%s`.", on, head, main))
+		parts = append(parts, fmt.Sprintf("Verify failed%s at `%s`, checked against %s.", on, head, against))
 	}
 	first := func(f verify.Finding) bool { return f.Rule == 0 || f.Rule == 2 }
 	for _, f := range fs {

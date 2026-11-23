@@ -48,7 +48,7 @@ func verifierRig(t *testing.T, f *githubtest.Fake, o *origin, files map[string]s
 func verifierInput(t *testing.T, d *daemon.Daemon, n int, head, main string, checks ...verify.CommandResult) daemon.Input {
 	t.Helper()
 	in := ivInput(t, d, n)
-	in.Head, in.Main, in.Checks = head, main, checks
+	in.Head, in.Against, in.Checks = head, daemon.VerifyTarget{SHA: main, Baseline: main}, checks
 	return in
 }
 

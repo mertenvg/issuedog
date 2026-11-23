@@ -259,7 +259,7 @@ func (r *Runs) mainJudge(ctx context.Context, rd Ready, is state.Issue, head, ma
 		}
 		return nil
 	}
-	findings, results, err := r.verifyChecks(ctx, rd.S, merge, main)
+	findings, results, err := r.verifyChecks(ctx, rd.S, merge, main, main)
 	if err != nil {
 		return fmt.Errorf("check the merge %s: %w", merge, err)
 	}
@@ -273,11 +273,11 @@ func (r *Runs) mainJudge(ctx context.Context, rd Ready, is state.Issue, head, ma
 	}
 	logr.Infof("%s/%s#%d: its PR's head %s fails the checks on its merge with main's %s, %s, in %d rules and %d commands",
 		a.Owner, a.Repo, n, head, main, merge, len(findings), commandsFailed(results))
-	sum := github.Escape(mainFindingsIntro(head, main) + "\n\n" + findingsText(head, main, 0, 0, findings, results))
+	sum := github.Escape(mainFindingsIntro(head, main) + "\n\n" + findingsText(head, mainTarget(main).label(), 0, 0, findings, results))
 	if err := r.prMainCheck(ctx, n, head, main, "failure", mainFailTitle, sum, link, runs); err != nil {
 		return fmt.Errorf("on findings: %w", err)
 	}
-	if err := r.mainSendBack(ctx, rd, is, main, mainFindingsIntro(head, main)+"\n\n"+renderFindings(head, main, 0, 0, findings, results)); err != nil {
+	if err := r.mainSendBack(ctx, rd, is, main, mainFindingsIntro(head, main)+"\n\n"+renderFindings(head, mainTarget(main).label(), 0, 0, findings, results)); err != nil {
 		return fmt.Errorf("on findings: %w", err)
 	}
 	return nil
@@ -290,7 +290,7 @@ func (r *Runs) mergeJudge(n int, head, main string, results []verify.CommandResu
 	if r.mergeJudged == nil {
 		r.mergeJudged = map[int]checksPassed{}
 	}
-	r.mergeJudged[n] = checksPassed{Head: head, Main: main, Results: results}
+	r.mergeJudged[n] = checksPassed{Head: head, Target: mainTarget(main), Results: results}
 }
 
 // mainChecked is the newest of runs, newest first, that's the App's, app's,

@@ -23,17 +23,18 @@ func taskRef(n int) string { return repo.TasksRef + strconv.Itoa(n) }
 // runStart is what start names for a run: the commits of its clone, and
 // Dropped, why the task's head wasn't named, rule 2's finding on it (SPEC
 // §3.4, §10.1), for the preamble to tell the run (SPEC §12), or "" when
-// it was named, or there's none. For an AfterChecks Stage's run, Main is
-// main's commit its head passed the checks against, and "" for any other's.
-// For a Committer's run on a task in a story, StoryTip is its story
-// branch's tip, which the run names as its base (storyStart), and "" for
-// any other run. Branch is the branch a Committer's run's base is on, main
-// or the story branch, which the preamble names with a target or a dropped
-// head (SPEC §3.4, §7.5, §12).
+// it was named, or there's none. For an AfterChecks Stage's run, Against
+// is what its head passed the checks against, main's commit or a story
+// branch's tip (VerifyTarget), and empty for any other's. For a
+// Committer's run on a task in a story, StoryTip is its story branch's
+// tip, which the run names as its base (storyStart), and "" for any other
+// run. Branch is the branch a Committer's run's base is on, main or the
+// story branch, which the preamble names with a target or a dropped head
+// (SPEC §3.4, §7.5, §12).
 type runStart struct {
 	workspace.Commits
 	Dropped  string
-	Main     string
+	Against  VerifyTarget
 	StoryTip string
 	Branch   string
 }
@@ -96,23 +97,26 @@ func (r *Runs) start(ctx context.Context, st Stage, is state.Issue, n int, story
 
 // startAfterChecks names the commits of a run on task n, whose state is
 // is, that only follows the checks: the head they judge, alone (verifyHead,
-// SPEC §10.2). It refuses a head with no pass for it and main's commit as
-// the pass's sync left it (Runs.passed), so a run on a head the checks
-// haven't passed never starts, and a restart, which empties passed, runs
-// them again first. It reads only the bare repo, so it costs no request.
+// SPEC §10.2), with the target its pass names (Runs.passed). It refuses a
+// head with no pass for it and that target as the pass's sync left it,
+// main's commit or the story branch's tip (Daemon.targetNow), so a run on
+// a head the checks haven't passed never starts, a target that moved
+// since runs them again first, and so does a restart, which empties
+// passed. It reads only the bare repo, so it costs no request.
 func (r *Runs) startAfterChecks(ctx context.Context, is state.Issue, n int) (runStart, error) {
 	head, err := r.verifyHead(ctx, n, is)
 	if err != nil {
 		return runStart{}, fmt.Errorf("name the head the checks judge: %w", err)
 	}
-	main, err := r.Daemon.Clone.Resolve(ctx, "main")
+	p := r.passed[n]
+	now, err := r.Daemon.targetNow(ctx, p.Target)
 	if err != nil {
-		return runStart{}, fmt.Errorf("read main: %w", err)
+		return runStart{}, fmt.Errorf("name the head's target: %w", err)
 	}
-	if !r.passed[n].holds(head, main) {
-		return runStart{}, fmt.Errorf("the head %q has no pass of the checks against main's %s", head, main)
+	if now == "" || !p.holds(head, now) {
+		return runStart{}, fmt.Errorf("the head %q has no pass of the checks against %s", head, VerifyTarget{Branch: p.Target.Branch, SHA: now})
 	}
-	return runStart{Commits: workspace.Commits{Start: head}, Main: main}, nil
+	return runStart{Commits: workspace.Commits{Start: head}, Against: p.Target}, nil
 }
 
 // startFrom names the commits of a run on task n, whose head is head, with
