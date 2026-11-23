@@ -611,6 +611,50 @@ func TestBundleHandoff(t *testing.T) {
 	}
 }
 
+// TestPrepareMergeResult checks out a task's merge result as the commands
+// on it would be: a run's head handed to the bare repo by its bundle,
+// merged with a newer main there by repo.MergeCommit, then a fresh clone
+// of the merge commit, by its SHA, holding it and its whole history, both
+// sides' changes, and nothing else (SPEC §3.2, §10.4).
+func TestPrepareMergeResult(t *testing.T) {
+	t.Parallel()
+	w, s := newWorkspace(t)
+	ctx := context.Background()
+	bare := repo.New("", w.Bare)
+	if err := w.Prepare(ctx, "r1", Commits{Start: s.second}, nil); err != nil {
+		t.Fatal(err)
+	}
+	commitIn(t, w.Dir("r1"), "g.txt", "five")
+	path, ok := bundleFile(t, w, "r1", s.second)
+	if !ok {
+		t.Fatal("Bundle of a commit = false")
+	}
+	head, err := bare.FetchBundle(ctx, path, "r1", s.second)
+	if err != nil {
+		t.Fatalf("FetchBundle: %v", err)
+	}
+	// s.other stands in for main moved past the head's start.
+	sha, conflicts, err := bare.MergeCommit(ctx, 7, s.other, head)
+	if err != nil || len(conflicts) != 0 {
+		t.Fatalf("MergeCommit = %q, %q, %v; want a merge commit", sha, conflicts, err)
+	}
+
+	c := Commits{Start: sha}
+	if err := w.Prepare(ctx, "merge", c, nil); err != nil {
+		t.Fatalf("Prepare of the merge result: %v", err)
+	}
+	dir := w.Dir("merge")
+	checkNamedClone(t, w, dir, c, []string{s.run, s.tag})
+	for name, want := range map[string]string{"f.txt": "three", "g.txt": "five"} {
+		if got, err := os.ReadFile(filepath.Join(dir, name)); err != nil || string(got) != want {
+			t.Errorf("%s in the merge's checkout = %q, %v; want %q", name, got, err, want)
+		}
+	}
+	if got := git(t, dir, "rev-list", "--parents", "--no-walk", "HEAD"); got != sha+" "+s.other+" "+head {
+		t.Errorf("the checkout's HEAD and its parents: %q, want %s, then main %s and the head %s", got, sha, s.other, head)
+	}
+}
+
 // TestBundleReadsCommitsAsMade plants, in a run's clone with two commits
 // past its start, a replace ref and a graft, each giving the start the
 // clone's HEAD as its parent, so that start..HEAD looks empty. Git

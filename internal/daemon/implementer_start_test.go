@@ -29,8 +29,8 @@ import (
 // implementerStartTarget is the preamble's line naming main at sha as the
 // run's target (SPEC §12).
 func implementerStartTarget(sha string) string {
-	return "- Your checkout's `target` branch is `main` at `" + sha + "`, which your starting commit doesn't merge with cleanly. " +
-		"Merge `target` first, resolve the conflicts, and commit the merge."
+	return "- Your checkout's `target` branch is `main` at `" + sha + "`, which your starting commit doesn't merge with cleanly, " +
+		"or fails verify once merged with, as input.md says. Merge `target` first, resolve any conflicts, and commit the merge."
 }
 
 // implementerStartDropped is the preamble's line saying the task's head

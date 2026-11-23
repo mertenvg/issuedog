@@ -12,7 +12,8 @@ import (
 )
 
 // Check runs. The fake keeps each one by the commit it's on, with the App
-// that posted it: POST /check-runs posts one as the App, whose ID is AppID,
+// that posted it and any external_id it was posted with, which it serves
+// as sent: POST /check-runs posts one as the App, whose ID is AppID,
 // as the installation token names it, and SetCheckRun adds one as if
 // another App, or the App by hand, had posted it. GET
 // /commits/{sha}/check-runs lists a commit's, in GitHub's shape
@@ -25,12 +26,13 @@ import (
 // was never pushed.
 
 // checkRun is one check run the fake has: its ID, the commit it's on, its
-// name, status, conclusion, output and details URL, and the App that posted
-// it, by ID and slug.
+// name, status, conclusion, output and details URL, its external_id, ""
+// for none, and the App that posted it, by ID and slug.
 type checkRun struct {
 	id                                  int64
 	headSHA, name, status, conclusion   string
 	title, summary, detailsURL, appSlug string
+	externalID                          string
 	appID                               int64
 	startedAt, completedAt              *gogithub.Timestamp
 }
@@ -86,6 +88,9 @@ func (f *Fake) checkRunServe(run *checkRun) *gogithub.CheckRun {
 	}
 	if run.detailsURL != "" {
 		out.DetailsURL = &run.detailsURL
+	}
+	if run.externalID != "" {
+		out.ExternalID = &run.externalID
 	}
 	if run.title != "" || run.summary != "" {
 		out.Output = &gogithub.CheckRunOutput{Title: &run.title, Summary: &run.summary}
@@ -153,12 +158,13 @@ func (f *Fake) listCheckRuns(c *call) (int, any) {
 // conclusion, an output a title and a summary, and the status and the
 // conclusion are GitHub's values. Its head_sha must be a full SHA that a
 // branch of the git remote holds, or it's refused with a 422 (the head of
-// this file).
+// this file). Its external_id, if any, is kept and served as sent.
 func (f *Fake) createCheckRun(c *call) (int, any) {
 	var req struct {
 		Name       string                   `json:"name"`
 		HeadSHA    string                   `json:"head_sha"`
 		DetailsURL string                   `json:"details_url"`
+		ExternalID string                   `json:"external_id"`
 		Status     string                   `json:"status"`
 		Conclusion string                   `json:"conclusion"`
 		Output     *gogithub.CheckRunOutput `json:"output"`
@@ -200,7 +206,7 @@ func (f *Fake) createCheckRun(c *call) (int, any) {
 	}
 	now := f.tick()
 	run := &checkRun{headSHA: req.HeadSHA, name: req.Name, status: req.Status, conclusion: req.Conclusion,
-		title: req.Output.GetTitle(), summary: req.Output.GetSummary(), detailsURL: req.DetailsURL,
+		title: req.Output.GetTitle(), summary: req.Output.GetSummary(), detailsURL: req.DetailsURL, externalID: req.ExternalID,
 		appID: AppID, appSlug: f.slug, startedAt: now}
 	if run.status == "completed" {
 		run.completedAt = now
@@ -236,13 +242,14 @@ func (f *Fake) checkRunOnBranch(c *call, sha string) (int, any) {
 }
 
 // checkRunState is the fake's check runs for a State: by SHA, sorted, and
-// each SHA's in the order they were posted, so a replay may not post one
-// more, miss one or post them in another order.
+// each SHA's in the order they were posted, with its external_id, so a
+// replay may not post one more, miss one, post them in another order or
+// name another reference in one.
 func (f *Fake) checkRunState() []CheckRunState {
 	var out []CheckRunState
 	for _, sha := range slices.Sorted(maps.Keys(f.checkRuns)) {
 		for _, run := range f.checkRuns[sha] {
-			out = append(out, CheckRunState{SHA: sha, Name: run.name, Conclusion: run.conclusion, AppID: run.appID})
+			out = append(out, CheckRunState{SHA: sha, Name: run.name, Conclusion: run.conclusion, AppID: run.appID, ExternalID: run.externalID})
 		}
 	}
 	return out

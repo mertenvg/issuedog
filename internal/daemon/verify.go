@@ -35,13 +35,18 @@ func verifyKey(c int64) state.Key {
 // Commands, no task gets either.
 //
 // The head is the latest move into verifying's head=, or else the task's
-// head, taskRef (verifyHead). It's checked against main's commit as the
+// head, taskRef (verifyHead). When the latest move is step 2's on a new
+// head, the task's head is moved there first, if it's behind
+// (taskHeadFollow). It's checked against main's commit as the
 // pass's sync left it, rule 2's baseline and rule 7's target, by
 // verifyChecks. A pass writes nothing, and returns: it's kept in passed, by
 // head and main's commit, with what the commands gave, so the checks don't
 // run again until either changes, or the daemon restarts, which empties
 // it. A failure moves the task back to in-progress, or on the round's last
-// attempt, hands it off to the owner at needs-human (verifyFindings).
+// attempt, hands it off to the owner at needs-human (verifyFindings). On a
+// person's head, the head of step 2's move on a new head (personHead), a
+// failure never does: it goes back to pr-open, or for rule 2 to the owner
+// at needs-human, with no attempt counted (personFindings).
 //
 // With a pass kept, the next pass starts the Stage at verifying, the
 // verifier, on the head, the only place one starts, unless a clean pass
@@ -53,9 +58,11 @@ func verifyKey(c int64) state.Key {
 // on it and main (openPR): its head pushed to the task's branch, its PR
 // to main opened or updated, its issuedog/verify check posted, and the
 // task moved to pr-open, or for a head that changes nothing on main,
-// handed off at needs-human, once its follow-ups' filed record stands. It
-// reports a run when that step read the issue again to write, and else
-// looks at the next task. A run that fails writes nothing, and the head gets another,
+// handed off at needs-human, once its follow-ups' filed record stands. On a
+// person's head, the PR step gives way to personPass, which pushes nothing
+// and moves the task back to pr-open, and the verifier's request_changes
+// goes there too (Verifier.personChanges). It reports a run when that step
+// read the issue again to write, and else looks at the next task. A run that fails writes nothing, and the head gets another,
 // until the last of loop.max_attempts in a row hands the task off at
 // needs-human (Runs.atCap). A later head has no such marker, so it gets a run
 // of its own, and a later main only the checks, which move the task back on a
@@ -93,6 +100,11 @@ func (r *Runs) verifyTask(ctx context.Context, ready []Ready, skip int) (bool, e
 			logr.Debugf("%s/%s#%d gets no checks: it's no task at %s that gets a PR, by its markers", a.Owner, a.Repo, n, state.Verifying)
 			continue
 		}
+		// A new head's move written, and the task's head not moved after
+		// it, as by a crash between them, is finished first (SPEC §3.2).
+		if err := r.Daemon.taskHeadFollow(ctx, n, is); err != nil {
+			return false, fmt.Errorf("verify #%d: %w", n, err)
+		}
 		head, err := r.verifyHead(ctx, n, is)
 		if err != nil {
 			return false, fmt.Errorf("verify #%d: %w", n, err)
@@ -101,9 +113,14 @@ func (r *Runs) verifyTask(ctx context.Context, ready []Ready, skip int) (bool, e
 		if err != nil {
 			return false, fmt.Errorf("verify #%d: read main: %w", n, err)
 		}
+		person := personHead(is)
 		if r.passed[n].holds(head, main) {
 			if verdictOn(is, head) {
-				wrote, err := r.openPR(ctx, rd, is, head, main)
+				step := r.openPR
+				if person {
+					step = r.personPass
+				}
+				wrote, err := step(ctx, rd, is, head, main)
 				switch {
 				case err != nil:
 					return wrote, fmt.Errorf("verify #%d: %w", n, err)
@@ -138,7 +155,11 @@ func (r *Runs) verifyTask(ctx context.Context, ready []Ready, skip int) (bool, e
 			logr.Infof("%s/%s#%d: its head %s passes the checks against main's %s, at %s", a.Owner, a.Repo, n, head, main, state.Verifying)
 			return true, nil
 		}
-		if err := r.verifyFindings(ctx, rd, is, head, main, findings, results); err != nil {
+		judge := r.verifyFindings
+		if person {
+			judge = r.personFindings
+		}
+		if err := judge(ctx, rd, is, head, main, findings, results); err != nil {
 			return true, fmt.Errorf("verify #%d: %w", n, err)
 		}
 		return true, nil
@@ -146,11 +167,16 @@ func (r *Runs) verifyTask(ctx context.Context, ready []Ready, skip int) (bool, e
 	return false, nil
 }
 
-// verifyHead is the head of task n, whose state is is, at verifying: the
-// head= of its latest move into verifying, which the implementer's move
-// carries (SPEC §5), or else the task's head, taskRef(n), or "" with
-// neither, as for a task set to verifying by hand before any run.
+// verifyHead is the head of task n, whose state is is, at verifying: a
+// person's head's move's head=, looking through a hold (personMove), or
+// else the head= of its latest move into verifying, which the
+// implementer's move carries (SPEC §5), or else the task's head,
+// taskRef(n), or "" with none, as for a task set to verifying by hand
+// before any run.
 func (r *Runs) verifyHead(ctx context.Context, n int, is state.Issue) (string, error) {
+	if m, ok := personMove(is); ok {
+		return m.Fields["head"], nil
+	}
 	if head := moveHead(is); head != "" {
 		return head, nil
 	}

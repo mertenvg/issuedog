@@ -29,6 +29,13 @@ func TestSinceHelpers(t *testing.T) {
 			  {"event":"committed"},{"created_at":"2026-10-02T00:00:00Z"},{"event":"reviewed","submitted_at":"2026-10-02T00:00:00Z"}]`,
 			func(c *Client) (int, error) { return count(c.TimelineSince(context.Background(), "o", "r", 5, since)) },
 			map[string]string{"per_page": "100", "since": ""}, 3},
+		{"timeline keeps a review by its submitted_at", "/repos/o/r/issues/5/timeline",
+			`[{"id":1,"event":"reviewed","user":{"login":"owner"},"state":"commented","submitted_at":"2026-09-30T00:00:00Z"},
+			  {"id":2,"event":"reviewed","user":{"login":"owner"},"state":"changes_requested","submitted_at":"2026-10-01T12:00:00Z"},
+			  {"event":"committed"},
+			  {"id":3,"event":"reviewed","user":{"login":"owner"},"state":"approved","submitted_at":"2026-10-02T00:00:00Z"}]`,
+			func(c *Client) (int, error) { return count(c.TimelineSince(context.Background(), "o", "r", 5, since)) },
+			map[string]string{"per_page": "100", "since": ""}, 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

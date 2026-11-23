@@ -253,6 +253,8 @@ func digestRenderKindName(k waitKind) string {
 		return "Pull request"
 	case waitStalled:
 		return "Stalled task"
+	case waitDropped:
+		return "Dropped with an open PR"
 	}
 	return "Item (" + k.String() + ")"
 }
@@ -272,8 +274,10 @@ func digestRenderKindName(k waitKind) string {
 // notice, each ending in a cc line (SPEC §6.4), give it none. A finished
 // story (#278) gets it, as it isn't listed here: no comment says its children
 // have all closed. So does a pull request, as the move to pr-open has no cc
-// line (prMove), and a stalled task, as nothing the App posts says it's
-// stalled. A kind added later gets the mention unless it's listed here.
+// line (prMove), a stalled task, as nothing the App posts says it's
+// stalled, and a task a revision dropped while its PR is open, as its
+// hold's comment has no cc line (droppedHoldText). A kind added later gets
+// the mention unless it's listed here.
 func digestRenderMentions(it waitItem) bool {
 	switch it.Kind {
 	case waitApproval, waitPlanApproval, waitQuestion, waitFlag, waitHuman, waitHandoff, waitFollowUp:

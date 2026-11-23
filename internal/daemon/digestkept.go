@@ -151,9 +151,9 @@ func digestKeptItem(heading, about, list string) (waitItem, bool) {
 }
 
 // digestKeptKind is the kind digestRenderKindName names name, if any, of
-// every kind there is: waitStalled is the last.
+// every kind there is: waitDropped is the last.
 func digestKeptKind(name string) (waitKind, bool) {
-	for k := waitError; k <= waitStalled; k++ {
+	for k := waitError; k <= waitDropped; k++ {
 		if digestRenderKindName(k) == name {
 			return k, true
 		}
@@ -224,4 +224,33 @@ func (d *Daemon) digestKeptList(is *gogithub.Issue) {
 		d.digestKeptListed = map[int]digestKeptListing{}
 	}
 	d.digestKeptListed[n] = digestKeptListing{Created: is.GetCreatedAt().Time, Blocking: is.GetIssueDependenciesSummary().GetBlocking()}
+}
+
+// prStallKept is, for task n at verifying, whose state is is, on its
+// first visit after a restart, the stalled task's item the digest's body
+// showed for it, read back (digestKeptRead), kept as the PR step's wait on
+// it (Daemon.prStalls, prStall.Kept), and true. The PR step keeps its
+// waits in memory, so the restart lost them, and it finds them again
+// only once the checks run again and pass, a pass or two later: till
+// then the item stands as the body showed it, and notify stays assigned,
+// so the digest isn't edited twice for a wait that never ended (SPEC
+// §9.4, Keeping the list). The PR step's next judgment of the task ends
+// it, or puts the wait it finds in its place (prStallEnd, prStallSet), and
+// so does any move of the task (prStalled). With none read back, it
+// reports false.
+func (d *Daemon) prStallKept(n int, is state.Issue) (prStall, bool) {
+	if is.Stage != state.Verifying {
+		return prStall{}, false
+	}
+	i := slices.IndexFunc(d.digestKept[n], func(it waitItem) bool { return it.Kind == waitStalled })
+	if i < 0 {
+		return prStall{}, false
+	}
+	it := d.digestKept[n][i]
+	w := prStall{Move: is.TransitionComment, Kept: &it}
+	if d.prStalls == nil {
+		d.prStalls = map[int]prStall{}
+	}
+	d.prStalls[n] = w
+	return w, true
 }

@@ -56,9 +56,10 @@ type prWant struct {
 // filed record, two branches with the task's prefix and someone else's
 // tip each want nothing, and a head whose own diff is empty wants only its
 // hand-off. Otherwise the PR is found by its branch (prFind), with one
-// request. Every pass that gets past those waits ends in the task's move
-// out of verifying, so the PR list is read only on the pass that writes,
-// and the move's pr= names the PR for every pass after it (SPEC §8.1).
+// request, which names someone else's open PR from it too, if any. Every
+// pass that gets past those waits ends in the task's move out of
+// verifying, so the PR list is read only on the pass that writes, and the
+// move's pr= names the PR for every pass after it (SPEC §8.1).
 //
 // Before any write, it reads the issue again, and runs CheckLabels and the
 // look for discussion triggers on it, as verifyFindings does (SPEC §8.2). A
@@ -76,9 +77,10 @@ type prWant struct {
 // the worker (SPEC §8.1). The App never merges the PR. Someone else's open
 // PR from the task's branch to main, which GitHub's 422 to the open says,
 // makes the task wait, with no PR write, till a poll lists a PR changed
-// (prExistsWait). A head that changes
-// nothing on main gets none of those writes, but the move to needs-human
-// with its hand-off (prNothingMove).
+// (prExistsWait). The digest lists that wait, and someone else's tip's,
+// as a stalled task till it ends (Daemon.prStallSet, SPEC §9.4). A head
+// that changes nothing on main gets none of those writes, but the move to
+// needs-human with its hand-off (prNothingMove).
 func (r *Runs) openPR(ctx context.Context, rd Ready, is state.Issue, head, main string) (bool, error) {
 	a, n := r.Daemon.Step.Applier, rd.S.Number
 	wrap := func(err error) error { return fmt.Errorf("open or update the PR: %w", err) }
@@ -95,8 +97,9 @@ func (r *Runs) openPR(ctx context.Context, rd Ready, is state.Issue, head, main 
 		return false, nil
 	}
 	var pr *github.PullRequest
+	theirs := 0 // someone else's open PR from the task's branch, if listed
 	if !want.Nothing {
-		if pr, err = r.prFind(ctx, want.Branch); err != nil {
+		if pr, theirs, err = r.Daemon.prFind(ctx, want.Branch); err != nil {
 			return false, wrap(err)
 		}
 	}
@@ -165,20 +168,22 @@ func (r *Runs) openPR(ctx context.Context, rd Ready, is state.Issue, head, main 
 	}
 	pr, err = r.prWrite(ctx, n, want, pr)
 	if errors.Is(err, github.ErrPullRequestExists) {
-		r.prExistsWait(n, want.Branch, err)
+		r.prExistsWait(s, now, want, theirs, err)
 		return true, nil
 	}
 	if err != nil {
 		return true, wrap(err)
 	}
 	delete(r.prExists, n)
+	r.Daemon.prStallEnd(s, now, stalledPR)
 	if !slices.ContainsFunc(pr.Labels, func(l string) bool { return strings.EqualFold(l, want.Label) }) {
 		if _, _, err := a.Client.Issues.AddLabelsToIssue(ctx, a.Owner, a.Repo, pr.Number, []string{want.Label}); err != nil {
 			return true, wrap(fmt.Errorf("add %s to PR #%d: %w", want.Label, pr.Number, err))
 		}
 	}
 	logr.Infof("%s/%s#%d: its PR #%d from %s to %s is open at its head %s", a.Owner, a.Repo, n, pr.Number, want.Branch, prBase, head)
-	if err := r.prCheck(ctx, n, head, main, waitLink(a.Owner, a.Repo, n, want.Pass)); err != nil {
+	link := waitLink(a.Owner, a.Repo, n, want.Pass)
+	if err := r.Daemon.prCheck(ctx, n, head, main, checkSuccess, renderPRCheck(n, head, main, r.passed[n].Results, link), link); err != nil {
 		return true, wrap(err)
 	}
 	if err := r.prMove(ctx, s, d, want.Run, head, pr.Number, seen); err != nil {
@@ -200,7 +205,8 @@ func (r *Runs) openPR(ctx context.Context, rd Ready, is state.Issue, head, main 
 //     (state.FiledRecord, SPEC §10.2), or its candidates don't read back,
 //     which step 1 reports as a followups state error and never files;
 //   - more than one branch has the task's prefix (taskBranch, SPEC §7.5);
-//   - the branch's tip isn't one the head may go over (prPushOK).
+//   - the branch's tip isn't one the head may go over (prPushOK), which
+//     the digest lists as a stalled task till it ends (prStallSet).
 //
 // A head whose own diff, from its merge base with main, is empty wants
 // only its hand-off (prWant.Nothing), with no push and no PR, so no branch
@@ -212,29 +218,8 @@ func (r *Runs) openPR(ctx context.Context, rd Ready, is state.Issue, head, main 
 // warned of on every pass.
 func (r *Runs) prWant(ctx context.Context, s *github.Snapshot, is state.Issue, head, main string, warnf func(string, ...any) string) (prWant, bool, error) {
 	a, n, clone := r.Daemon.Step.Applier, s.Number, r.Daemon.Clone
-	i := passOn(is, head)
-	if i < 0 {
-		logr.Debugf("%s/%s#%d has no clean pass on its head %s, so it gets no PR", a.Owner, a.Repo, n, head)
-		return prWant{}, false, nil
-	}
-	pass, ok := markerCommentOf(s, is, i)
+	run, pass, ok := r.prPassReady(s, is, head)
 	if !ok {
-		logr.Debugf("%s/%s#%d: its pass on %s is in no comment, so it gets no PR", a.Owner, a.Repo, n, head)
-		return prWant{}, false, nil
-	}
-	run := is.Markers[i].Fields["run"]
-	if is.Moved(state.Key{Field: "run", ID: run}) {
-		r.prWarnOnce(n, "moved:"+run, "%s/%s#%d: its pass, run %s, moved it out of %s once already, and it's back there since, as by a stage set by hand, so the pass moves it no more: it waits at %s",
-			a.Owner, a.Repo, n, run, state.Verifying, state.Verifying)
-		return prWant{}, false, nil
-	}
-	fs, _, err := readVerifyData(pass, a.AppSlug)
-	if err != nil {
-		logr.Debugf("%s/%s#%d: the candidates of pass comment %d don't read back, so it gets no PR: %v", a.Owner, a.Repo, n, pass.ID, err)
-		return prWant{}, false, nil
-	}
-	if _, filed := state.FiledRecord(is, run); len(fs) > 0 && !filed {
-		logr.Debugf("%s/%s#%d: the follow-ups of pass comment %d have no filed record, so it waits at %s for them", a.Owner, a.Repo, n, pass.ID, state.Verifying)
 		return prWant{}, false, nil
 	}
 	base, err := verify.BaseOf(ctx, verify.Facts{Repo: clone, Head: head, Target: main})
@@ -270,14 +255,57 @@ func (r *Runs) prWant(ctx context.Context, s *github.Snapshot, is state.Issue, h
 		if !ok {
 			r.prWarnOnce(n, "tip:"+tip, "%s/%s#%d: its branch %s is at %s, which isn't in its head %s's history, and no App marker names it as a head, so it's someone else's: nothing is pushed, and the task waits at %s",
 				a.Owner, a.Repo, n, branch, tip, head, state.Verifying)
+			r.Daemon.prStallSet(s, is, stall{Why: stalledTip, Run: run, Head: head, Tip: tip})
 			return prWant{}, false, nil
 		}
 	}
-	// A wait that ended is warned of again if it comes back.
+	// A wait that ended is warned of again if it comes back, and the
+	// digest lists it no more.
 	delete(r.prWarned, n)
+	r.Daemon.prStallEnd(s, is, stalledTip)
 	title, body := r.prText(s, is, pass, head, main, warnf)
 	return prWant{Run: run, Pass: pass.ID, Branch: branch, Tip: tip, Push: push, Title: title, Body: body,
 		Label: fmt.Sprintf("priority:p%d", priority(s))}, true, nil
+}
+
+// prPassReady is the pass the move out of verifying of task s, whose state
+// is is, stands on at head, its run and its comment, and true, or false
+// when the move waits, each logged, as prWant lists them: is has no clean
+// pass of the verifier's on head in a comment; the move keyed by the
+// pass's run is written already, and the task is back at verifying since,
+// as by a stage set by hand, which is warned of once (prWarnOnce); or the
+// pass has candidates, and no clean filed record of its run stands, or
+// its candidates don't read back (SPEC §10.2). The PR step reads it, and
+// so does a person's head's pass (personPass). It reads only s and is, so
+// it costs no request.
+func (r *Runs) prPassReady(s *github.Snapshot, is state.Issue, head string) (string, github.Comment, bool) {
+	a, n := r.Daemon.Step.Applier, s.Number
+	i := passOn(is, head)
+	if i < 0 {
+		logr.Debugf("%s/%s#%d has no clean pass on its head %s, so it gets no PR", a.Owner, a.Repo, n, head)
+		return "", github.Comment{}, false
+	}
+	pass, ok := markerCommentOf(s, is, i)
+	if !ok {
+		logr.Debugf("%s/%s#%d: its pass on %s is in no comment, so it gets no PR", a.Owner, a.Repo, n, head)
+		return "", github.Comment{}, false
+	}
+	run := is.Markers[i].Fields["run"]
+	if is.Moved(state.Key{Field: "run", ID: run}) {
+		r.prWarnOnce(n, "moved:"+run, "%s/%s#%d: its pass, run %s, moved it out of %s once already, and it's back there since, as by a stage set by hand, so the pass moves it no more: it waits at %s",
+			a.Owner, a.Repo, n, run, state.Verifying, state.Verifying)
+		return "", github.Comment{}, false
+	}
+	fs, _, err := readVerifyData(pass, a.AppSlug)
+	if err != nil {
+		logr.Debugf("%s/%s#%d: the candidates of pass comment %d don't read back, so it gets no PR: %v", a.Owner, a.Repo, n, pass.ID, err)
+		return "", github.Comment{}, false
+	}
+	if _, filed := state.FiledRecord(is, run); len(fs) > 0 && !filed {
+		logr.Debugf("%s/%s#%d: the follow-ups of pass comment %d have no filed record, so it waits at %s for them", a.Owner, a.Repo, n, pass.ID, state.Verifying)
+		return "", github.Comment{}, false
+	}
+	return run, pass, true
 }
 
 // passOn is the index among is's markers of its latest clean pass of the
@@ -307,16 +335,19 @@ func (r *Runs) prWarnOnce(n int, key, format string, args ...any) {
 	logr.Warnf(format, args...)
 }
 
-// prExistsWait has task n wait at verifying when GitHub won't open its PR
-// from branch to main, err, as someone else's open PR there stands: that
-// PR is never the task's (prFind, SPEC §7.5), and GitHub keeps one open PR
-// for a head and base. It makes no PR write, as the head is pushed
-// already, and tries again only once a poll
+// prExistsWait has task s, whose state is is, wait at verifying when
+// GitHub won't open its PR from want's branch to main, err, as someone
+// else's open PR there stands: that PR is never the task's (prFind, SPEC
+// §7.5), and GitHub keeps one open PR for a head and base. It makes no PR
+// write, as the head is pushed already, and tries again only once a poll
 // lists a pull request changed (Daemon.prPolls), as when that PR closes,
 // so it costs no request till then. It's warned of once, while the wait
-// lasts, and logged at debug on each try after.
-func (r *Runs) prExistsWait(n int, branch string, err error) {
-	a := r.Daemon.Step.Applier
+// lasts, and logged at debug on each try after. The digest lists it as a
+// stalled task, naming theirs, that PR as the PR step's listing showed it,
+// or 0 when it didn't, till it ends (Daemon.prStallSet).
+func (r *Runs) prExistsWait(s *github.Snapshot, is state.Issue, want prWant, theirs int, err error) {
+	a, n, branch := r.Daemon.Step.Applier, s.Number, want.Branch
+	r.Daemon.prStallSet(s, is, stall{Why: stalledPR, Run: want.Run, PR: theirs})
 	log := logr.Warnf
 	if _, ok := r.prExists[n]; ok {
 		log = logr.Debugf
@@ -327,6 +358,106 @@ func (r *Runs) prExistsWait(n int, branch string, err error) {
 	r.prExists[n] = r.Daemon.prPolls
 	log("%s/%s#%d: someone else's open PR from %s to %s stands, so GitHub won't open the task's: no PR is written, and the task waits at %s till a poll lists a PR changed: %v",
 		a.Owner, a.Repo, n, branch, prBase, state.Verifying, err)
+}
+
+// prStall is a wait of the PR step's on a task at verifying that the
+// digest lists as a stalled task (SPEC §9.4): someone else's open PR from
+// its branch, or someone else's tip on it (stalledPR, stalledTip), kept in
+// memory, as each is found at a request the PR step makes anyway or from
+// the bare repo, and none from the issue. Move is the comment holding the
+// task's latest transition when it was found
+// (state.Issue.TransitionComment), so it stands only while the task
+// hasn't moved since. Or, after a restart, Kept is the stalled task's
+// item read back from the digest's body, which stands for the wait till
+// the PR step judges the task again (Daemon.prStallKept).
+type prStall struct {
+	stall
+	Move int64
+	Kept *waitItem
+}
+
+// prStallSet keeps st as the PR step's wait on task s, at verifying, whose
+// state is is, for the digest's stalled task item, and assignment's
+// (SPEC §9.4, §9.6). A wait new or changed, as for a tip that moved on,
+// has s's cached items found again (prStallCache), at no request, so the
+// next digest lists it, though nothing on the issue changed for a visit
+// to find it.
+func (d *Daemon) prStallSet(s *github.Snapshot, is state.Issue, st stall) {
+	n, w := s.Number, prStall{stall: st, Move: is.TransitionComment}
+	if old, ok := d.prStalls[n]; ok && old == w {
+		return
+	}
+	if d.prStalls == nil {
+		d.prStalls = map[int]prStall{}
+	}
+	d.prStalls[n] = w
+	d.prStallCache(s, is)
+}
+
+// prStallEnd ends the PR step's wait of reason why on task s, whose state
+// is is, if it's the one kept, or the item read back for it after a
+// restart (prStall.Kept), as the PR step has judged the task since. Then
+// s's cached items are found again (prStallCache), so its item ends on
+// the next digest.
+func (d *Daemon) prStallEnd(s *github.Snapshot, is state.Issue, why stallWhy) {
+	w, ok := d.prStalls[s.Number]
+	if !ok || w.Kept == nil && w.Why != why {
+		return
+	}
+	delete(d.prStalls, s.Number)
+	d.prStallCache(s, is)
+}
+
+// prStalled is the PR step's wait on task n, whose state is is, and true,
+// while it stands: the task is at verifying, and hasn't moved since it was
+// found (prStall.Move). One that doesn't stand is dropped.
+func (d *Daemon) prStalled(n int, is state.Issue) (prStall, bool) {
+	w, ok := d.prStalls[n]
+	if ok && is.Stage == state.Verifying && w.Move == is.TransitionComment {
+		return w, true
+	}
+	delete(d.prStalls, n)
+	return prStall{}, false
+}
+
+// prStallCache finds task s's cached items again (Daemon.digestCache) for
+// the PR step's wait on it, with its state is: its stalled task's item
+// goes, and the wait's, if one stands (prStalled), takes its place. Its
+// other items stay as its last visit found them. The task is at verifying,
+// where the pass that moved it once already (waitStalledRun) leaves the PR
+// step nothing to judge, so its stalled task's item is the PR step's.
+func (d *Daemon) prStallCache(s *github.Snapshot, is state.Issue) {
+	n := s.Number
+	items := slices.DeleteFunc(slices.Clone(d.digestCache[n]), func(it waitItem) bool { return it.Kind == waitStalled })
+	if w, ok := d.prStalled(n, is); ok {
+		items = append(items, prStallItem(d.Step.Owner, d.Step.Repo, s, w))
+	}
+	if len(items) == 0 {
+		delete(d.digestCache, n)
+		return
+	}
+	if d.digestCache == nil {
+		d.digestCache = map[int][]waitItem{}
+	}
+	d.digestCache[n] = items
+}
+
+// prStallItem is the stalled task's item on s for w, the PR step's wait
+// on it (SPEC §9.4): keyed stalled-<n>-<run>, by the pass's run, and
+// linking someone else's PR when its number is known, or else the issue.
+// One read back after a restart (prStall.Kept) is that item as the body
+// showed it, with s's created time for its rank.
+func prStallItem(owner, repo string, s *github.Snapshot, w prStall) waitItem {
+	if w.Kept != nil {
+		it := *w.Kept
+		it.Created = s.CreatedAt
+		return it
+	}
+	it := waitItemOf(owner, repo, s, waitStalled, w.key(), state.BodyID, waitStalledLines(w.stall))
+	if w.Why == stalledPR && w.PR > 0 {
+		it.Link = prLink(owner, repo, w.PR)
+	}
+	return it
 }
 
 // prPushOK reports whether the head may be pushed over tip, the task's
@@ -361,17 +492,42 @@ func (r *Runs) prPush(ctx context.Context, n int, head string, want prWant) erro
 }
 
 // prText is the PR's title and body (SPEC §11.5) for task s, whose state
-// is is, from the pr-text marker on its latest move to verifying, the
-// verify-notes marker on pass, its pass comment on head, and what the
-// checks of head against main gave (Runs.passed). Text that doesn't read
-// back is left out, and logged with warnf: the move's gives the fallback
-// title and body, and the pass's no notes, so the PR still opens.
+// is is, from the pr-text marker on its latest move to verifying
+// (prSummary), the verify-notes marker on pass, its pass comment on head,
+// and what the checks of head against main gave (Runs.passed). Text that
+// doesn't read back is left out, and logged with warnf: the move's gives
+// the fallback title and body, and the pass's no notes, so the PR still
+// opens.
 func (r *Runs) prText(s *github.Snapshot, is state.Issue, pass github.Comment, head, main string, warnf func(string, ...any) string) (string, string) {
 	a, n := r.Daemon.Step.Applier, s.Number
-	src := prSource{Task: n, Head: head, Main: main, Results: r.passed[n].Results, VerifierLink: waitLink(a.Owner, a.Repo, n, pass.ID)}
+	src := r.Daemon.prSummary(s, is, warnf)
+	src.Head, src.Main, src.Results, src.VerifierLink = head, main, r.passed[n].Results, waitLink(a.Owner, a.Repo, n, pass.ID)
+	notes, _, err := readVerifyNotes(pass, a.AppSlug)
+	if err != nil {
+		warnf("%s/%s#%d: its PR's verifier notes don't read back, so it has none: %v", a.Owner, a.Repo, n, err)
+	}
+	src.Notes = notes
+	var types []string
+	if r.Daemon.Config != nil {
+		types = r.Daemon.Config.PR.TitleTypes
+	}
+	return renderPRTitle(src, types, s.Title), renderPRBody(src)
+}
+
+// prSummary is what task s's PR is rendered from that its implementer's
+// move gives (SPEC §11.5): the task's number, and the title and summary
+// from the pr-text marker on its latest move to verifying, as is reads its
+// markers, with SummaryLink, that move's comment. A move on a new head
+// (newHeadMove) is looked through: a head someone else pushed has no
+// summary of its own, so its PR keeps the implementer's (personBack). Text
+// that doesn't read back is left out, and logged with warnf, so the PR
+// gets the fallback.
+func (d *Daemon) prSummary(s *github.Snapshot, is state.Issue, warnf func(string, ...any) string) prSource {
+	a, n := d.Step.Applier, s.Number
+	src := prSource{Task: n}
 	move := -1
 	for i, m := range is.Markers {
-		if m.Kind == "transition" && state.Stage(m.Fields["to"]) == state.Verifying {
+		if m.Kind == "transition" && state.Stage(m.Fields["to"]) == state.Verifying && !newHeadMove(m) {
 			move = i
 		}
 	}
@@ -386,42 +542,44 @@ func (r *Runs) prText(s *github.Snapshot, is state.Issue, pass github.Comment, h
 			src.Title, src.Summary = &title, &sum
 		}
 	}
-	notes, _, err := readVerifyNotes(pass, a.AppSlug)
-	if err != nil {
-		warnf("%s/%s#%d: its PR's verifier notes don't read back, so it has none: %v", a.Owner, a.Repo, n, err)
-	}
-	src.Notes = notes
-	var types []string
-	if r.Daemon.Config != nil {
-		types = r.Daemon.Config.PR.TitleTypes
-	}
-	return renderPRTitle(src, types, s.Title), renderPRBody(src)
+	return src
 }
 
 // prFind is the task's PR (SPEC §7.5): of the PRs whose head is branch,
 // the ones the App opened, to prBase, not merged, the open one first, or
 // else the newest closed one, or nil with none, as a merged one is never
-// reused. It's one request, a 304 when the listing is unchanged.
-func (r *Runs) prFind(ctx context.Context, branch string) (*github.PullRequest, error) {
-	a := r.Daemon.Step.Applier
+// reused. It also returns the number of someone else's open PR from branch
+// to prBase, of which GitHub keeps one at most, or 0 with none, which is
+// never the task's, for the digest (prExistsWait). It's one request, a 304 when the listing is
+// unchanged.
+func (d *Daemon) prFind(ctx context.Context, branch string) (*github.PullRequest, int, error) {
+	a := d.Step.Applier
 	prs, err := a.Client.PullRequestsByHead(ctx, a.Owner, a.Repo, branch)
 	if err != nil {
-		return nil, fmt.Errorf("find the PR: %w", err)
+		return nil, 0, fmt.Errorf("find the PR: %w", err)
 	}
-	var closed *github.PullRequest
+	var open, closed *github.PullRequest
+	theirs := 0
 	for i := range prs {
 		p := &prs[i]
-		if p.Author != a.AppSlug+"[bot]" || p.Base != prBase || p.Merged {
-			continue
-		}
-		if p.State == "open" {
-			return p, nil
-		}
-		if closed == nil {
+		switch {
+		case p.Base != prBase || p.Merged:
+		case p.Author != a.AppSlug+"[bot]":
+			if p.State == "open" {
+				theirs = p.Number
+			}
+		case p.State == "open":
+			if open == nil {
+				open = p
+			}
+		case closed == nil:
 			closed = p
 		}
 	}
-	return closed, nil
+	if open != nil {
+		return open, theirs, nil
+	}
+	return closed, theirs, nil
 }
 
 // prWrite makes pr, task n's PR as prFind found it, match want, and returns
@@ -473,49 +631,84 @@ func (r *Runs) prWrite(ctx context.Context, n int, want prWant, pr *github.PullR
 	return &p, nil
 }
 
-// prCheckTitle is the title of the issuedog/verify check the App posts on
-// a verified head (SPEC §10.4).
-const prCheckTitle = "issuedog verified this head"
+// The conclusions of the issuedog/verify check the App posts (SPEC §10.4):
+// a verified head's, and a failing one's, which only a head someone else
+// pushed gets (personBack).
+const (
+	checkSuccess = "success"
+	checkFailure = "failure"
+)
 
-// prCheck posts the issuedog/verify check run, success, on head, the SHA
-// task n's pass marker names, never the PR's head (SPEC §10.4), so the
-// check is never a success for a head nobody verified: a PR that shows a
-// head someone pushed after the App's has none there, and the main ruleset
-// blocks its merge (SPEC §15). Its title is prCheckTitle, its summary
-// renderPRCheck's, with what the checks of head against main's commit main
-// gave (Runs.passed), so nothing runs again, and its details URL link,
-// the verifier's pass comment. It's checked first: it reads the App's
-// check runs there (github.Client.VerifyChecks), and posts none when the
-// newest of them is a success already (prChecked), so a replay or a
+// prCheckTitle is the title of the issuedog/verify check the App posts on
+// a verified head, and prCheckFailedTitle on a head that fails verify
+// (SPEC §10.4).
+const (
+	prCheckTitle       = "issuedog verified this head"
+	prCheckFailedTitle = "issuedog found this head fails verify"
+)
+
+// checkSummaryMax is the most characters GitHub takes in a check run's
+// summary.
+const checkSummaryMax = 65535
+
+// prCheck posts the issuedog/verify check run on head, with conclusion,
+// for task n (SPEC §10.4): success on the SHA its pass marker names, never
+// the PR's head, so the check is never a success for a head nobody
+// verified: a PR that shows a head someone pushed after the App's has none
+// there, and the main ruleset blocks its merge (SPEC §15). A head someone
+// else pushed that fails verify gets failure instead (personBack). Its
+// title is prCheckTitle, or prCheckFailedTitle for a failure, and its
+// summary summary, escaped by the caller: for a success renderPRCheck's,
+// with what the checks of head against main gave (Runs.passed), so
+// nothing runs again. Its details URL is link: for a success, the
+// verifier's pass comment. Its external_id names the main commit the
+// commands ran with (mainCheckID, checkedMain): main, main's commit the
+// checks ran against, when it's in head's history, and else head's merge
+// base with it, so once main moves past the head, its merge with main is
+// checked after a restart too (Runs.mainMoved). It's checked first: it
+// reads the App's check runs there (github.Client.VerifyChecks), and posts none when the newest
+// of them has that conclusion already (prChecked), so a replay or a
 // restart posts one.
-func (r *Runs) prCheck(ctx context.Context, n int, head, main, link string) error {
-	a := r.Daemon.Step.Applier
+func (d *Daemon) prCheck(ctx context.Context, n int, head, main, conclusion, summary, link string) error {
+	a := d.Step.Applier
 	runs, err := a.Client.VerifyChecks(ctx, a.Owner, a.Repo, head)
 	if err != nil {
 		return fmt.Errorf("read the head's checks: %w", err)
 	}
-	if prChecked(runs, a.Client.AppID()) {
-		logr.Debugf("%s/%s#%d: its head %s has the App's %s as success already", a.Owner, a.Repo, n, head, github.VerifyCheck)
+	if prChecked(runs, a.Client.AppID(), conclusion) {
+		logr.Debugf("%s/%s#%d: its head %s has the App's %s as %s already", a.Owner, a.Repo, n, head, github.VerifyCheck, conclusion)
 		return nil
 	}
-	run, err := a.Client.PostVerifyCheck(ctx, a.Owner, a.Repo, github.NewCheckRun{HeadSHA: head, Conclusion: "success",
-		Title: prCheckTitle, Summary: renderPRCheck(n, head, main, r.passed[n].Results, link), DetailsURL: link})
+	title := prCheckTitle
+	if conclusion != checkSuccess {
+		title = prCheckFailedTitle
+	}
+	ran, err := d.checkedMain(ctx, head, main)
+	if err != nil {
+		return fmt.Errorf("name the main the checks ran with: %w", err)
+	}
+	var id string
+	if ran != "" {
+		id = mainCheckID(ran)
+	}
+	run, err := a.Client.PostVerifyCheck(ctx, a.Owner, a.Repo, github.NewCheckRun{HeadSHA: head, Conclusion: conclusion,
+		Title: title, Summary: summary, DetailsURL: link, ExternalID: id})
 	if err != nil {
 		return fmt.Errorf("check the head: %w", err)
 	}
-	logr.Infof("%s/%s#%d: its head %s has %s as success, check run %d", a.Owner, a.Repo, n, head, github.VerifyCheck, run.ID)
+	logr.Infof("%s/%s#%d: its head %s has %s as %s, check run %d", a.Owner, a.Repo, n, head, github.VerifyCheck, conclusion, run.ID)
 	return nil
 }
 
 // prChecked reports whether the newest of runs, newest first, that's the
-// App's, app's, and named issuedog/verify is a success. Only the App's
+// App's, app's, and named issuedog/verify has conclusion. Only the App's
 // count (SPEC §10.4): the listing asks for them alone, and another App's
 // run is skipped here too, so it never counts even if GitHub ignored the
 // filter.
-func prChecked(runs []github.CheckRun, app int64) bool {
+func prChecked(runs []github.CheckRun, app int64, conclusion string) bool {
 	for _, c := range runs {
 		if c.AppID == app && c.Name == github.VerifyCheck {
-			return c.Conclusion == "success"
+			return c.Conclusion == conclusion
 		}
 	}
 	return false

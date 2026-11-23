@@ -322,7 +322,9 @@ func verdictRun(is state.Issue, runID string) bool {
 // A request_changes is the implementer attempt that made the head failing
 // verify, so it's one of the verify loop's moves (verifyLoopMove), and the
 // round goes on (SPEC §8.3). See applyChanges. Its notes and candidates are
-// dropped.
+// dropped. On a person's head (personHead), no implementer made it, so it
+// counts no attempt: the task goes back to pr-open on person-pushed
+// instead, with the head's check a failure (Verifier.personChanges).
 //
 // A question is a question round, and the owner's answer starts a new round
 // of attempts. See applyQuestion. Its notes and candidates are dropped.
@@ -352,7 +354,12 @@ func (v *Verifier) Apply(ctx context.Context, a *Applier, r Result) error {
 		out = noVerdict(err)
 	}
 	if out.Verdict == verdictRequestChanges {
-		if err := applyChanges(ctx, a, r, out, f); err != nil {
+		if personHead(is) {
+			err = v.personChanges(ctx, r, is, out, f)
+		} else {
+			err = applyChanges(ctx, a, r, out, f)
+		}
+		if err != nil {
 			return wrap(err)
 		}
 		return nil

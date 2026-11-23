@@ -304,6 +304,10 @@ type Runs struct {
 	// issue number, so they don't run again (verifyTask), and a verifier
 	// run reads what they gave (checksPassed).
 	passed map[int]checksPassed
+	// mergeJudged holds the pass of the checks on the merge with main of
+	// each task at pr-open, by issue number, keyed by its head and main's
+	// commit, so they don't run again until either changes (mainMoved).
+	mergeJudged map[int]checksPassed
 
 	// prWarned is the key of the last warning the PR step logged for each
 	// task, by issue number, so a wait that lasts is warned of once
@@ -340,9 +344,12 @@ func (p checksPassed) holds(head, main string) bool { return p.Head == head && p
 // either, it runs SPEC §10.1's checks on the first task at verifying, by
 // priority then number, whose head hasn't passed them, or a verifier run
 // on one whose head has, with no pass of the verifier's yet, or the PR step
-// on one with a pass that has a write to make (verifyTask).
-// Neither touches the issue resume applied a result to, whose snapshot is
-// from before it. If it ran none either, it picks the next ready task,
+// on one with a pass that has a write to make (verifyTask). If none ran
+// either, it runs the checks on the merge with main of the first task at
+// pr-open, by priority then number, whose head isn't judged against main
+// as it is now (mainMoved). None of those touches the issue resume applied
+// a result to, whose snapshot is from before it. If it ran none either, it
+// picks the next ready task,
 // moves it to in-progress and starts its run (pickTask), unless a task
 // holds the worker, or step 1 didn't finish on every issue this pass. A lease
 // whose issue has labels held back
@@ -356,7 +363,15 @@ func (p checksPassed) holds(head, main string) bool { return p.Head == head && p
 // Every open issue whose step 1 succeeded is ready, those with no stage
 // label among them, so finding Unlabeled work costs no reads: Dirty keeps
 // the histories it reads, and only the issue about to run is read again.
-func (r *Runs) Work(ctx context.Context, ready []Ready) error {
+//
+// Last, whatever it ran, it notes whether a lease holds the worker, for
+// step 2's moves that take it on the next pass (workerLeaseNote).
+func (r *Runs) Work(ctx context.Context, ready []Ready) (err error) {
+	defer func() {
+		if lerr := r.workerLeaseNote(ctx); lerr != nil {
+			err = errors.Join(err, fmt.Errorf("note the worker's lease: %w", lerr))
+		}
+	}()
 	if !r.swept {
 		r.swept = r.sweep(ctx)
 	}
@@ -421,6 +436,14 @@ func (r *Runs) Work(ctx context.Context, ready []Ready) error {
 	switch {
 	case err != nil:
 		return fmt.Errorf("the checks or the verifier at %s: %w", state.Verifying, err)
+	case ran:
+		return nil
+	}
+	// Nor while the checks on a task's merge with main run (mainMoved).
+	ran, err = r.mainMoved(ctx, ready, skip)
+	switch {
+	case err != nil:
+		return fmt.Errorf("the checks at %s: %w", state.PROpen, err)
 	case ran:
 		return nil
 	}
@@ -942,7 +965,8 @@ func (e *step1Wait) Unwrap() error { return e.err }
 // apply reads the issue again, runs CheckLabels on it, and applies out,
 // l's valid result, through st, then removes the run's files. The result
 // is dropped, writing nothing and with no attempt counted, when the issue
-// is gone or closed, or, unless the run's result is written already
+// is gone or closed, or held for its PR as a revision dropped it
+// (droppedHeld), or, unless the run's result is written already
 // (runApplied):
 //   - when a discussion trigger holds the issue (Step.discussion), which
 //     writes the hold and its notices first: then nothing of the result
@@ -1000,6 +1024,12 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 		return fmt.Errorf("apply run %s: %w", l.RunID, err)
 	}
 	is := state.Derive(s, a.AppSlug, d.Has)
+	if _, ok := droppedHeld(is); ok {
+		// Held for its PR in place of the close a revision's drop would
+		// make (SPEC §6.4): as on a closed issue, nothing more of the
+		// result is written, even once its move is.
+		return drop("a plan's revision dropped the issue, which is held for its PR")
+	}
 	moved := runApplied(is, l.RunID)
 	if !moved {
 		// A discussion trigger holds the issue, and drops the result, with
@@ -1888,6 +1918,27 @@ func (r *Runs) readLease(ctx context.Context) (Lease, bool, error) {
 		return Lease{}, false, fmt.Errorf("remove the lease: %w", err)
 	}
 	return Lease{}, false, nil
+}
+
+// workerLeaseNote notes in Daemon.workerLeased whether a lease holds the
+// worker, as pickHeld judges one: it stands, and isn't marked ended. Work
+// calls it last, so step 2 of the next pass, which comes before Work,
+// knows it at no request (workerFree). A daemon whose Work hasn't run yet,
+// as on a start's first pass, knows of none, but a task's lease is for a
+// task at in-progress or verifying, whose stage label holds the worker
+// too. A lease that can't be read is taken to hold it. A Runs with no
+// Daemon, as a sweep's alone, notes nothing.
+func (r *Runs) workerLeaseNote(ctx context.Context) error {
+	if r.Daemon == nil {
+		return nil
+	}
+	l, ok, err := r.readLease(ctx)
+	if err != nil {
+		r.Daemon.workerLeased = true
+		return fmt.Errorf("read the lease: %w", err)
+	}
+	r.Daemon.workerLeased = ok && !l.Failed
+	return nil
 }
 
 // writeLease writes the lease through a temp file and a rename, then syncs

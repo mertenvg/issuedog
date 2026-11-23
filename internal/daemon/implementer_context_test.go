@@ -111,3 +111,51 @@ func TestImplementerContextFindings(t *testing.T) {
 		t.Errorf("input.md in a new round =\n%s\nwant no findings, and none: first run", got)
 	}
 }
+
+// input.md gives the comment of a review's move that started the round,
+// pr-open → in-progress, under a heading naming the review, after the
+// round's findings, for every run of that round (SPEC §8.3, §12): alone
+// at first, then after attempt 1's findings. A move that quotes more than
+// one review, naming no reviewer, is headed as the reviews. The pick's
+// move after /done starts a new round, so the next run's input.md has
+// neither.
+func TestImplementerContextReview(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	n := implementerTask(f)
+	verified := f.AddComment(n, app, "Verified.\n\n<!-- issuedog:transition from=verifying to=pr-open run=rv head=h0 pr=2 -->")
+	quoted := "A review of PR #2 sends this task back to `in-progress`, for the implementer to answer it.\n\n" +
+		"### `owner` asked for changes\n\nIn [review 77](https://github.com/o/r/pull/2#pullrequestreview-77):\n\n```text\nRename it.\n```"
+	review := f.AddComment(n, app, fmt.Sprintf("%s\n\n<!-- issuedog:transition from=pr-open to=in-progress event=r77 reviewer=owner seen=%d -->", quoted, verified))
+	d := ivDaemon(t, f, newOrigin(t))
+	intro := "# Input for this run\n\n" +
+		"What's new since the implementer last ran, or since the task came to in-progress. " +
+		"Verify's findings on the task's head, if any, come first: fix every one, unless they say there's nothing to fix.\n\n"
+	reviewSection := "## The review by `owner`\n\n````text\n" + quoted + "\n````\n"
+	if got := implementerContext(t, d, n)["input.md"]; got != intro+reviewSection {
+		t.Errorf("input.md after the review's move =\n%s\nwant\n%s", got, intro+reviewSection)
+	}
+
+	moved := f.AddComment(n, app, "The implementer committed.\n\n<!-- issuedog:transition from=in-progress to=verifying attempt=1 run=r1 head=h1 -->")
+	findings := "Verify failed on attempt 1 of 3, at `h1`, checked against `main` at `m`."
+	f.AddComment(n, app, fmt.Sprintf("%s\n\n<!-- issuedog:transition from=verifying to=in-progress attempt=1 event=v%d head=h1 seen=%d -->", findings, moved, review))
+	want := intro + "## The findings of verify attempt 1\n\n```text\n" + findings + "\n```\n\n" + reviewSection
+	if got := implementerContext(t, d, n)["input.md"]; got != want {
+		t.Errorf("input.md after attempt 1's findings =\n%s\nwant\n%s", got, want)
+	}
+
+	f.AddComment(n, app, "Handed off.\n\n<!-- issuedog:transition from=in-progress to=needs-human event=ain-progress-1 -->")
+	done := f.AddComment(n, "owner", "/done")
+	ready := f.AddComment(n, app, fmt.Sprintf("Back.\n\n<!-- issuedog:transition from=needs-human to=ready cmd=%d seen=%d -->", done, done))
+	f.AddComment(n, app, fmt.Sprintf("Picked up.\n\n<!-- issuedog:transition from=ready to=in-progress event=s%d seen=%d -->", ready, ready))
+	if got := implementerContext(t, d, n)["input.md"]; !strings.HasSuffix(got, "\n\nnone: first run\n") || strings.Contains(got, "review") {
+		t.Errorf("input.md in a new round =\n%s\nwant no review, and none: first run", got)
+	}
+
+	f.AddComment(n, app, "Verified.\n\n<!-- issuedog:transition from=in-progress to=verifying attempt=1 run=r2 head=h2 -->")
+	verifiedAgain := f.AddComment(n, app, "Verified.\n\n<!-- issuedog:transition from=verifying to=pr-open run=rv2 head=h2 pr=2 -->")
+	f.AddComment(n, app, fmt.Sprintf("Two reviews.\n\n<!-- issuedog:transition from=pr-open to=in-progress event=r88 seen=%d -->", verifiedAgain))
+	if got, want := implementerContext(t, d, n)["input.md"], intro+"## The reviews\n\n```text\nTwo reviews.\n```\n"; got != want {
+		t.Errorf("input.md after a move on two reviews =\n%s\nwant\n%s", got, want)
+	}
+}

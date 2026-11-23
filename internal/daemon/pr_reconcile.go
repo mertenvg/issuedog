@@ -22,7 +22,10 @@ import (
 // close, hands its task at pr-open to the owner at needs-human, and a
 // trusted user's reopen sends it back to pr-open. A merge is no close
 // here: its "Closes #N" closes the task, which the close judge accepts
-// (closingAccepted).
+// (closingAccepted). A task at pr-open whose branch moved to a head the
+// daemon didn't push goes back to verifying (pr_head.go), and one a
+// trusted user's "comment" or "request changes" review sends back goes to
+// in-progress (pr_review.go).
 //
 // What it reads:
 //   - a closed PR's state, as the poll listed it (Daemon.prs), says
@@ -35,8 +38,14 @@ import (
 //     as a failed read or a newest close on a PR listed open, whose
 //     reopened event GitHub hasn't written yet. So a pass whose poll lists
 //     no PR makes no request here (SPEC §8.1);
-//   - whether a reopener is trusted is asked once per event while the
-//     daemon runs (Daemon.prTrusted).
+//   - that read holds the PR's reviews too, so a review costs no read of
+//     its own: only the line comments of the reviews that send the task
+//     back are read, on the pass that moves it (prReviewMove);
+//   - whether a reopener or a reviewer is trusted is asked once per event
+//     while the daemon runs (Daemon.prTrusted);
+//   - a task's branch is read from the bare clone, as the pass's sync left
+//     it, at no request (prNewHead), and a move waiting for the worker is
+//     kept in memory (Daemon.prWaiting).
 
 // prPass judges the PR of each task held at pr-open or at needs-human
 // (Daemon.prDirt), step 2 (SPEC §8.1), after step 1's visits and before
@@ -44,17 +53,34 @@ import (
 // a command touched, waits for its next pass, keeping its PR's read
 // (Daemon.prRead), and so does a held one, which isn't judged. At pr-open,
 // the PR the task names (taskPR), one the App opened that isn't merged,
-// is judged by prJudgeOpen; at needs-human, the PR of a hand-off for its
-// close or untrusted reopen is judged by prJudgeHandoff. A move it makes
-// gets its task's items found again, so the digest and assignment show it
-// this pass, and its task is read again next pass and skips Work. It
-// returns the tasks it moved, for assignment (assignPass). A failed read
-// or move is the pass's error, and only that task's: the next pass judges
-// it again.
+// is judged by prJudgeOpenHead, and its branch too; at needs-human, the PR
+// of a hand-off for its close or untrusted reopen is judged by
+// prJudgeHandoff. A move it makes gets its task's items found again, so
+// the digest and assignment show it this pass, and its task is read again
+// next pass and skips Work. So does a task at pr-open stalled on its
+// closed PR (waitFind) whose PR the poll lists open again, as after a
+// trusted reopen, which moves nothing, so its pull request item comes
+// back on that pass, at no request. It returns the tasks it moved, for
+// assignment (assignPass). A failed read or move is the pass's error, and
+// only that task's: the next pass judges it again.
+//
+// A move into verifying or in-progress takes the worker, so while another
+// task holds it (workerFree), the move waits, kept in memory
+// (Daemon.prWaiting), with no write, and is made on the first pass the
+// worker is free, unless the task moved or its PR changed since
+// (prWaitingFor), or the task left pr-open (SPEC §8.1), or the branch
+// moved on under a new head's move (prWaitingTip). A move into verifying
+// on a new head, or into in-progress on a review that carries the
+// branch's tip, then moves the task's head (taskHeadFollow).
 func (d *Daemon) prPass(ctx context.Context) (map[int]bool, error) {
 	a := d.Step.Applier
 	moved := map[int]bool{}
 	var errs []error
+	for n := range d.prWaiting {
+		if _, ok := d.prDirt[n]; !ok { // it left pr-open (prDirtSet)
+			delete(d.prWaiting, n)
+		}
+	}
 	for _, n := range slices.Sorted(maps.Keys(d.prDirt)) {
 		s, dirt := d.snaps[n], d.prDirt[n]
 		if s == nil || s.Closed || d.stale[n] {
@@ -68,12 +94,19 @@ func (d *Daemon) prPass(ctx context.Context) (map[int]bool, error) {
 		if !ok || p.Merged {
 			continue
 		}
+		if is.Stage == state.PROpen && p.Open && slices.ContainsFunc(d.digestCache[n], func(it waitItem) bool { return it.ClosedPR == p.Number }) {
+			// A stalled task on its closed PR whose PR the poll lists open
+			// again, as on a trusted reopen, which moves nothing, gets its
+			// items found again, its PR's among them, at no request.
+			d.digestCacheSet(s, d.inputs[n], dirt, nil, false, false)
+		}
 		var m *Move
 		var err error
 		switch is.Stage {
 		case state.PROpen:
-			m, err = d.prJudgeOpen(ctx, s, dirt, is, p)
+			m, err = d.prJudgeOpenHead(ctx, s, dirt, is, p)
 		case state.NeedsHuman:
+			delete(d.prWaiting, n)
 			m, err = d.prJudgeHandoff(ctx, s, dirt, is, p)
 		}
 		if err != nil {
@@ -83,6 +116,13 @@ func (d *Daemon) prPass(ctx context.Context) (map[int]bool, error) {
 		if m == nil {
 			continue
 		}
+		if prTakesWorker(*m) {
+			if free, why := d.workerFree(n); !free {
+				d.prWait(n, *m, why)
+				continue
+			}
+		}
+		delete(d.prWaiting, n)
 		if err := a.Transition(ctx, s, dirt.Has, *m); err != nil {
 			d.prReadAgain(p.Number)
 			d.reread(n, false)
@@ -93,8 +133,47 @@ func (d *Daemon) prPass(ctx context.Context) (map[int]bool, error) {
 		d.digestCacheSet(s, d.inputs[n], dirt, nil, false, false)
 		d.reread(n, false)
 		moved[n] = true
+		// Then the task's head, which verifying finishes if a crash
+		// comes between (SPEC §3.2).
+		if err := d.taskHeadFollow(ctx, n, state.Derive(s, a.AppSlug, dirt.Has)); err != nil {
+			errs = append(errs, fmt.Errorf("judge PR %s/%s#%d of #%d: %w", a.Owner, a.Repo, p.Number, n, err))
+		}
 	}
 	return moved, errors.Join(errs...)
+}
+
+// prJudgeOpenHead judges task s at pr-open, whose state is is, with its
+// PR p, and returns the move it makes, or nil. A move found on an earlier
+// pass that waits for the worker, and still stands (prWaitingFor), made
+// to fit the branch as it is now (prWaitingTip), is the one, with no
+// request. Otherwise the PR is judged (prJudgeOpen), its reviews included,
+// so a review that sends the task back wins over a new head in the same
+// pass, and carries it (prReviewMove). When that moves nothing, and judged
+// the PR, as its read isn't to be made again next pass, an open PR's
+// branch is judged for a new head (prNewHead), from the bare clone alone.
+// A PR the poll lists closed, its close handed off already, gets no such
+// look: its close is the PR's (SPEC §6.4).
+func (d *Daemon) prJudgeOpenHead(ctx context.Context, s *github.Snapshot, dirt Dirt, is state.Issue, p listedPR) (*Move, error) {
+	if m, ok := d.prWaitingFor(s.Number, is, p); ok {
+		m, ok, err := d.prWaitingTip(ctx, s, is, m)
+		if err != nil {
+			return nil, fmt.Errorf("its waiting move at %s: %w", is.Stage, err)
+		}
+		if ok {
+			return &m, nil
+		}
+	}
+	m, err := d.prJudgeOpen(ctx, s, dirt, is, p)
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("the PR's events: %w", err)
+	case m != nil || !p.Open || d.prRead[p.Number]:
+		return m, nil
+	}
+	if m, err = d.prNewHead(ctx, s, is); err != nil {
+		return nil, fmt.Errorf("its branch at %s: %w", is.Stage, err)
+	}
+	return m, nil
 }
 
 // prJudgeOpen judges p, the PR of task s at pr-open, whose state is is
@@ -111,12 +190,19 @@ func (d *Daemon) prPass(ctx context.Context) (map[int]bool, error) {
 //     hands the task off the same way, keyed event=<the reopened event's
 //     ID>; a newest close, on a PR the poll lists open, is a reopen whose
 //     event isn't written yet, and is read again next pass, as is a failed
-//     read, which is an error; anything else judges it, and nothing moves.
+//     read, which is an error;
+//   - otherwise its reviews in their window (prReviewWindow), from the
+//     same read, decide: a trusted user's "comment" or "request changes"
+//     review that no move has named sends the task back to in-progress
+//     (prReviewMove), and anything else moves nothing. Either judges the
+//     PR, so a move that waits for the worker stands (prWaitingFor). A
+//     failed read of a review's line comments, or of a reviewer's trust, is
+//     an error, and the PR is read again next pass.
 func (d *Daemon) prJudgeOpen(ctx context.Context, s *github.Snapshot, dirt Dirt, is state.Issue, p listedPR) (*Move, error) {
 	a, n := d.Step.Applier, s.Number
 	link := prLink(a.Owner, a.Repo, p.Number)
 	if !p.Open {
-		key := state.Key{Field: "event", ID: fmt.Sprintf("c%d-%d", p.Number, p.ClosedAt.Unix())}
+		key := prClosedKey(p)
 		if is.Moved(key) {
 			logr.Debugf("%s/%s#%d: its PR #%d's close was handed off already, so it moves the task no more", a.Owner, a.Repo, n, p.Number)
 			return nil, nil
@@ -127,7 +213,7 @@ func (d *Daemon) prJudgeOpen(ctx context.Context, s *github.Snapshot, dirt Dirt,
 	if !d.prRead[p.Number] && d.prJudged[n] == is.TransitionComment {
 		return nil, nil
 	}
-	e, err := d.prNewest(ctx, p.Number, prWindow(s, a.AppSlug, dirt.Has))
+	e, reviews, err := d.prEvents(ctx, p.Number, prWindow(s, a.AppSlug, dirt.Has), prReviewWindow(s, a.AppSlug, dirt.Has))
 	if err != nil {
 		return nil, fmt.Errorf("at %s: %w", is.Stage, err)
 	}
@@ -151,12 +237,25 @@ func (d *Daemon) prJudgeOpen(ctx context.Context, s *github.Snapshot, dirt Dirt,
 				Text: renderPRClosedHandoff(n, p.Number, link, true, by.Login, d.Step.Notify)}, nil
 		}
 	}
+	m, err := d.prReviewMove(ctx, s, is, p, reviews)
+	if err != nil {
+		d.prReadAgain(p.Number)
+		return nil, fmt.Errorf("at %s: %w", is.Stage, err)
+	}
 	delete(d.prRead, p.Number)
 	if d.prJudged == nil {
 		d.prJudged = map[int]int64{}
 	}
 	d.prJudged[n] = is.TransitionComment
-	return nil, nil
+	return m, nil
+}
+
+// prClosedKey keys the hand-off of a task at pr-open for p, its PR the
+// poll lists closed without merging (SPEC §5): event=c<PR>-<closed_at in
+// Unix seconds>. A close handed off already moves the task no more, and
+// the digest lists the task as stalled on it (waitFind).
+func prClosedKey(p listedPR) state.Key {
+	return state.Key{Field: "event", ID: fmt.Sprintf("c%d-%d", p.Number, p.ClosedAt.Unix())}
 }
 
 // prJudgeHandoff judges p, the PR of task s at needs-human, whose state is
@@ -179,7 +278,8 @@ func (d *Daemon) prJudgeHandoff(ctx context.Context, s *github.Snapshot, dirt Di
 	if !ok || !p.Open || !d.prRead[p.Number] || !prHandoffIn(is, id) {
 		return nil, nil
 	}
-	e, err := d.prNewest(ctx, p.Number, prWindow(s, a.AppSlug, dirt.Has))
+	win := prWindow(s, a.AppSlug, dirt.Has)
+	e, _, err := d.prEvents(ctx, p.Number, win, win)
 	if err != nil {
 		return nil, fmt.Errorf("at %s: %w", is.Stage, err)
 	}
@@ -227,37 +327,50 @@ func (d *Daemon) prReadAgain(pr int) {
 	d.prRead[pr] = true
 }
 
-// prNewest is the newest closed or reopened event on PR pr's timeline from
-// since on, read every page (Client.TimelineSince), or nil for none. A
-// failed read is an error, and the PR is read again on the next pass.
-func (d *Daemon) prNewest(ctx context.Context, pr int, since time.Time) (*gogithub.Timeline, error) {
+// prEvents is what step 2 judges on PR pr's timeline, read every page
+// once (Client.TimelineSince), from the earlier of win and reviewWin on:
+// the newest closed or reopened event from win on, the PR's window
+// (prWindow), or nil for none, and the reviews submitted from reviewWin
+// on, their window (prReviewWindow), oldest first, as `reviewed` events
+// give them (prReviewOf). A failed read is an error, and the PR is read
+// again on the next pass.
+func (d *Daemon) prEvents(ctx context.Context, pr int, win, reviewWin time.Time) (*gogithub.Timeline, []prReview, error) {
 	a := d.Step.Applier
+	since := win
+	if reviewWin.Before(since) {
+		since = reviewWin
+	}
 	events, err := a.Client.TimelineSince(ctx, a.Owner, a.Repo, pr, since)
 	if err != nil {
 		d.prReadAgain(pr)
-		return nil, fmt.Errorf("read its closes and reopens: %w", err)
+		return nil, nil, fmt.Errorf("read its closes, reopens and reviews: %w", err)
 	}
 	var newest *gogithub.Timeline
+	var reviews []prReview
 	for _, e := range events {
-		if ev := e.GetEvent(); ev == "closed" || ev == "reopened" {
+		switch ev := e.GetEvent(); {
+		case (ev == "closed" || ev == "reopened") && !e.GetCreatedAt().Before(win):
 			newest = e
+		case ev == "reviewed" && !e.GetSubmittedAt().Before(reviewWin):
+			reviews = append(reviews, prReviewOf(e))
 		}
 	}
-	return newest, nil
+	return newest, reviews, nil
 }
 
-// prReopenTrusted reports whether by, who made reopened event id, is a
-// trusted user (closingTrusted): not a bot, the App's included, nor
-// someone GitHub doesn't name. It's a question of trust alone, asked once
-// per event while the daemon runs (SPEC §6.4), so a PR read again asks
-// nothing again. A failed question is an error, and isn't kept.
+// prReopenTrusted reports whether by, who made event id, a reopened event
+// or a review, whose ID is its reviewed event's, is a trusted user
+// (closingTrusted): not a bot, the App's included, nor someone GitHub
+// doesn't name. It's a question of trust alone, asked once per event while
+// the daemon runs (SPEC §6.4), so a PR read again asks nothing again. A
+// failed question is an error, and isn't kept.
 func (d *Daemon) prReopenTrusted(ctx context.Context, id int64, by github.Author) (bool, error) {
 	if ok, asked := d.prTrusted[id]; asked {
 		return ok, nil
 	}
 	ok, err := closingTrusted(ctx, d.Step.CurrentTrust(), by)
 	if err != nil {
-		return false, fmt.Errorf("the reopener of event %d: %w", id, err)
+		return false, fmt.Errorf("the maker of event %d: %w", id, err)
 	}
 	if d.prTrusted == nil {
 		d.prTrusted = map[int64]bool{}
