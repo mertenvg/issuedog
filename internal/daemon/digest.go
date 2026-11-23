@@ -1125,7 +1125,10 @@ func (st *Step) holdItemFind(ctx context.Context, s *github.Snapshot, dirt Dirt)
 	if err != nil {
 		return nil, false, fmt.Errorf("the digest's hold item: %w", err)
 	}
-	return found, resolveOwnerHeld(holds), nil
+	// Not a hold for a PR, as a revision dropped the issue, which isn't an
+	// owner hold, no /resume ends, and has an item of its own (SPEC §6.4,
+	// §9.4). holds is resolveLeft's own copy.
+	return found, resolveOwnerHeld(slices.DeleteFunc(holds, droppedHold)), nil
 }
 
 // digestCacheRanked returns every issue's cached items that stand

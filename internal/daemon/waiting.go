@@ -1215,7 +1215,10 @@ func holdItemOf(in waitInput, is state.Issue) (string, []waitLine) {
 	}
 	// An owner hold that stays: in.OwnerHeld, from what only a request can
 	// tell, or one a marker records that no /resume ended (resolveLeft).
-	if in.OwnerHeld || resolveOwnerHeld(resolveLeft(is.HeldStack.Holds, period, 0)) {
+	// Not a hold for a PR, as a revision dropped the issue, which isn't an
+	// owner hold, no /resume ends, and has an item of its own (waitDropped,
+	// SPEC §6.4, §9.4).
+	if in.OwnerHeld || resolveOwnerHeld(slices.DeleteFunc(resolveLeft(is.HeldStack.Holds, period, 0), droppedHold)) {
 		lines = append(lines, waitLine{Text: "It's on an owner hold too, so it stays held after these until `/resume` ends that."})
 	}
 	return id, append(lines, waitLine{Text: "Post `/resume` here to accept every open trigger at once."})
