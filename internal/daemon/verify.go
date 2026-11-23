@@ -29,21 +29,27 @@ func verifyKey(c int64) state.Key {
 // stage label and its markers, of a class that gets a PR (state.AnyTask),
 // so never a human task, and reports whether it ran the checks or a run on
 // one. Its findings move, once written, is its latest marker, so its
-// markers no longer put it at verifying. A task with a parent gets
-// neither, uncounted, as it gets no run (inStory): its baseline and target
-// are its story branch's, which nothing names yet (#624). With no
-// Commands, no task gets either.
+// markers no longer put it at verifying. With no Commands, no task gets
+// either.
 //
 // The head is the latest move into verifying's head=, or else the task's
 // head, taskRef (verifyHead). When the latest move is step 2's on a new
 // head, the task's head is moved there first, if it's behind
-// (taskHeadFollow). It's checked against main's commit as the
-// pass's sync left it, rule 2's baseline and rule 7's target, by
-// verifyChecks. A pass writes nothing, and returns: it's kept in passed, by
-// head and main's commit, with what the commands gave, so the checks don't
-// run again until either changes, or the daemon restarts, which empties
-// it. A failure moves the task back to in-progress, or on the round's last
-// attempt, hands it off to the owner at needs-human (verifyFindings). On a
+// (taskHeadFollow). It's checked against its target (VerifyTarget), by
+// verifyChecks: for a task with no parent, main's commit as the pass's
+// sync left it, rule 2's baseline and rule 7's target. A task in a story
+// (storyOf) is checked against its story branch's tip, as the pass's sync
+// left it, rule 7's target, with the story's baseline, the merge base of
+// that tip and main, as rule 2's, only while that tip's issuedog/tip
+// naming the branch is success (storyTarget, SPEC §7.5, §10.1). Until
+// then it waits, uncounted, logged once. A task whose parent is no story,
+// as an epic planned into stories, gets neither, uncounted. A pass writes
+// nothing, and returns: it's kept in passed, by head and its target's
+// commit, with what the commands gave, so the checks don't run again
+// until either changes, as when the story branch moves, or the daemon
+// restarts, which empties it. A failure moves the task back to
+// in-progress, or on the round's last attempt, hands it off to the owner
+// at needs-human (verifyFindings). On a
 // person's head, the head of step 2's move on a new head (personHead), a
 // failure never does: it goes back to pr-open, or for rule 2 to the owner
 // at needs-human, with no attempt counted (personFindings).
@@ -55,21 +61,27 @@ func verifyKey(c int64) state.Key {
 // worker, its request_changes goes as a failure of the checks does, and its
 // question moves the task to clarifying (Verifier.Apply). A head with a
 // clean pass marker gets the PR step instead, while the checks' pass holds
-// on it and main (openPR): its head pushed to the task's branch, its PR
-// to main opened or updated, its issuedog/verify check posted, and the
+// on it and its target (openPR): its head pushed to the task's branch, its
+// PR to main opened or updated, its issuedog/verify check posted, and the
 // task moved to pr-open, or for a head that changes nothing on main,
 // handed off at needs-human, once its follow-ups' filed record stands. On a
 // person's head, the PR step gives way to personPass, which pushes nothing
 // and moves the task back to pr-open, and the verifier's request_changes
 // goes there too (Verifier.personChanges). It reports a run when that step
-// read the issue again to write, and else looks at the next task. A run that fails writes nothing, and the head gets another,
-// until the last of loop.max_attempts in a row hands the task off at
-// needs-human (Runs.atCap). A later head has no such marker, so it gets a run
-// of its own, and a later main only the checks, which move the task back on a
-// failure whatever the verdict was.
+// read the issue again to write, and else looks at the next task. A task
+// in a story has no PR step yet, its own head's or a person's: with its
+// head's pass and a clean pass marker on it, it waits at verifying,
+// holding the worker, logged once, with no request and no command, until
+// its head or its story branch's tip moves. A run that fails writes
+// nothing, and the head gets another, until the last of loop.max_attempts
+// in a row hands the task off at needs-human (Runs.atCap). A later head
+// has no such marker, so it gets a run of its own, and a later target only
+// the checks, which move the task back on a failure whatever the verdict
+// was.
 //
-// Naming the head and main, and a skip for a pass kept, read only the bare
-// repo and the snapshot step 1 left, so they cost no request.
+// Naming the head and its target, and a skip for a pass kept, read only
+// the bare repo, what the daemon holds of the story and its tip's check,
+// and the snapshot step 1 left, so they cost no request.
 //
 // The commands run as agent, and after each one every agent process is
 // killed (agent.KillLeftovers), so the checks must never overlap a claude
@@ -86,10 +98,20 @@ func (r *Runs) verifyTask(ctx context.Context, ready []Ready, skip int) (bool, e
 		if n == skip || s.Closed || stageOf(s) != state.Verifying {
 			continue
 		}
+		main, err := r.Daemon.Clone.Resolve(ctx, "main")
+		if err != nil {
+			return false, fmt.Errorf("verify #%d: read main: %w", n, err)
+		}
+		t := mainTarget(main)
 		if s.Parent != 0 {
-			logr.Debugf("%s/%s#%d gets no checks at %s: it has a parent, #%d, and a task in a story gets none until its story branch's tip is named",
-				a.Owner, a.Repo, n, state.Verifying, s.Parent)
-			continue
+			st, ok, err := r.storyTarget(ctx, s, main)
+			if err != nil {
+				return false, fmt.Errorf("verify #%d: %w", n, err)
+			}
+			if !ok {
+				continue
+			}
+			t = st
 		}
 		d, err := a.Dirty(ctx, s, r.Daemon.Step.Trust)
 		if err != nil {
@@ -109,18 +131,20 @@ func (r *Runs) verifyTask(ctx context.Context, ready []Ready, skip int) (bool, e
 		if err != nil {
 			return false, fmt.Errorf("verify #%d: %w", n, err)
 		}
-		main, err := r.Daemon.Clone.Resolve(ctx, "main")
-		if err != nil {
-			return false, fmt.Errorf("verify #%d: read main: %w", n, err)
-		}
 		person := personHead(is)
-		if r.passed[n].holds(head, main) {
+		if r.passed[n].holds(head, t.SHA) {
 			if verdictOn(is, head) {
-				step := r.openPR
-				if person {
-					step = r.personPass
+				if t.Branch != "" {
+					r.Daemon.storyWarnOnce(n, "pr:"+head+"@"+t.SHA, "%s/%s#%d: its head %s passed against %s, and a task in a story gets no PR step yet, so it waits at %s",
+						a.Owner, a.Repo, n, head, t, state.Verifying)
+					continue
 				}
-				wrote, err := step(ctx, rd, is, head, main)
+				var wrote bool
+				if person {
+					wrote, err = r.personPass(ctx, rd, is, head, t)
+				} else {
+					wrote, err = r.openPR(ctx, rd, is, head, t.SHA)
+				}
 				switch {
 				case err != nil:
 					return wrote, fmt.Errorf("verify #%d: %w", n, err)
@@ -131,7 +155,7 @@ func (r *Runs) verifyTask(ctx context.Context, ready []Ready, skip int) (bool, e
 			}
 			st, ok := r.Stages[state.Verifying]
 			if !ok {
-				logr.Debugf("%s/%s#%d: its head %s passed the checks against main's %s already, so it waits at %s", a.Owner, a.Repo, n, head, main, state.Verifying)
+				logr.Debugf("%s/%s#%d: its head %s passed the checks against %s already, so it waits at %s", a.Owner, a.Repo, n, head, t, state.Verifying)
 				continue
 			}
 			ran, err := r.RunStage(ctx, rd, st)
@@ -143,7 +167,7 @@ func (r *Runs) verifyTask(ctx context.Context, ready []Ready, skip int) (bool, e
 			}
 			continue
 		}
-		findings, results, err := r.verifyChecks(ctx, s, head, main)
+		findings, results, err := r.verifyChecks(ctx, s, head, t.Baseline, t.SHA)
 		if err != nil {
 			return true, fmt.Errorf("verify #%d: %w", n, err)
 		}
@@ -151,15 +175,15 @@ func (r *Runs) verifyTask(ctx context.Context, ready []Ready, skip int) (bool, e
 			if r.passed == nil {
 				r.passed = map[int]checksPassed{}
 			}
-			r.passed[n] = checksPassed{Head: head, Main: main, Results: results}
-			logr.Infof("%s/%s#%d: its head %s passes the checks against main's %s, at %s", a.Owner, a.Repo, n, head, main, state.Verifying)
+			r.passed[n] = checksPassed{Head: head, Target: t, Results: results}
+			logr.Infof("%s/%s#%d: its head %s passes the checks against %s, at %s", a.Owner, a.Repo, n, head, t, state.Verifying)
 			return true, nil
 		}
 		judge := r.verifyFindings
 		if person {
 			judge = r.personFindings
 		}
-		if err := judge(ctx, rd, is, head, main, findings, results); err != nil {
+		if err := judge(ctx, rd, is, head, t, findings, results); err != nil {
 			return true, fmt.Errorf("verify #%d: %w", n, err)
 		}
 		return true, nil
@@ -214,19 +238,22 @@ func verifyAttempt(is state.Issue) int {
 }
 
 // verifyChecks runs SPEC §10.1's checks on head, in the bare repo, with
-// main's commit main as rule 2's baseline and rule 7's target, for the
-// task s, whose scope rule 4 reads (scopeOf). It returns each rule's
+// baseline as rule 2's baseline and target as rule 7's target, for the
+// task s, whose scope rule 4 reads (scopeOf): for a task with no parent,
+// both are main's commit, and for a task in a story, the story's baseline
+// and its branch's tip (VerifyTarget). Rules 2 to 6 read the task's own
+// diff from head's merge base with target. It returns each rule's
 // finding, and rule 1's commands' results. No head, or one the bare repo
 // lacks, is the one finding, with no rule, and no rule runs. Rule 2 runs
 // first, and its failure stops the checks, so no command runs on a diff
-// that touches a protected path. A head with no merge base with main, or
+// that touches a protected path. A head with no merge base with target, or
 // more than one, fails rule 2 too (verify.ErrMergeBases), as the task's own
 // diff then has no start. Otherwise every command runs, in a fresh
 // checkout of head named by a new ID, never the lease's run's, which the
 // commands remove when they're done, and rules 3 to 7 all run, so the
 // implementer sees every finding at once (SPEC §10.1). A failure to read
 // the bare repo, or to run the commands, is an error, not a finding.
-func (r *Runs) verifyChecks(ctx context.Context, s *github.Snapshot, head, main string) ([]verify.Finding, []verify.CommandResult, error) {
+func (r *Runs) verifyChecks(ctx context.Context, s *github.Snapshot, head, baseline, target string) ([]verify.Finding, []verify.CommandResult, error) {
 	if head == "" {
 		return []verify.Finding{{Name: "the head", Detail: "The task has no head: its move to verifying names none, and there's no " + taskRef(s.Number) + "."}}, nil, nil
 	}
@@ -239,11 +266,11 @@ func (r *Runs) verifyChecks(ctx context.Context, s *github.Snapshot, head, main 
 		return []verify.Finding{{Name: "the head", Detail: "The head " + head + " isn't in the bare repo."}}, nil, nil
 	}
 	cfg := r.Daemon.Config.Verify
-	f := verify.Facts{Repo: r.Daemon.Clone, Baseline: main, Head: head, Target: main, Scope: scopeOf(s), Config: cfg}
+	f := verify.Facts{Repo: r.Daemon.Clone, Baseline: baseline, Head: head, Target: target, Scope: scopeOf(s), Config: cfg}
 	base, err := verify.BaseOf(ctx, f)
 	switch {
 	case errors.Is(err, verify.ErrMergeBases):
-		return []verify.Finding{{Rule: 2, Name: "protected paths", Detail: mergeBasesDetail(main, err)}}, nil, nil
+		return []verify.Finding{{Rule: 2, Name: "protected paths", Detail: targetBasesDetail(baseline, target, err)}}, nil, nil
 	case err != nil:
 		return nil, nil, fmt.Errorf("read the head's base: %w", err)
 	}
@@ -272,6 +299,146 @@ func (r *Runs) verifyChecks(ctx context.Context, s *github.Snapshot, head, main 
 	return findings, results, nil
 }
 
+// targetBasesDetail is rule 2's finding on a head that doesn't have exactly
+// one merge base with target, its target, whose baseline is baseline, as
+// err, verify.BaseOf's, says: mergeBasesDetail's when target is the
+// baseline, a main commit, as for a task with no parent, and else one
+// naming target as the story branch's tip it is (VerifyTarget).
+func targetBasesDetail(baseline, target string, err error) string {
+	if baseline == target {
+		return mergeBasesDetail(target, err)
+	}
+	return fmt.Sprintf("The head doesn't have exactly one merge base with its story branch's tip %s, so the task's own diff has no start: %v", target, err)
+}
+
+// VerifyTarget is what the checks at verifying judge a task's head against
+// (SPEC §7.5, §10.1): SHA, rule 7's target, the head's own diff starting at
+// its merge base with it, and Baseline, rule 2's baseline. For a task with
+// no parent, both are main's commit as the pass's sync left it, and Branch
+// is "" (mainTarget). For a task in a story, SHA is the tip of its story's
+// branch, Branch, as the pass's sync left it, and Baseline is the story's,
+// the merge base of that tip and main (storyTarget).
+type VerifyTarget struct {
+	Branch, SHA, Baseline string
+}
+
+// mainTarget is main's commit main as the target and baseline of a task
+// with no parent.
+func mainTarget(main string) VerifyTarget {
+	return VerifyTarget{SHA: main, Baseline: main}
+}
+
+// label names t in the App's comments and a verifier's context: "`main`
+// at `<SHA>`", or "the story branch `<name>` at `<SHA>`", with the name,
+// which an admin may have chosen, as a code span with its markers escaped
+// (checkCode, SPEC §5.1). A SHA is git's, so it needs no escaping.
+func (t VerifyTarget) label() string {
+	if t.Branch == "" {
+		return fmt.Sprintf("`main` at `%s`", t.SHA)
+	}
+	return fmt.Sprintf("the story branch %s at `%s`", checkCode(t.Branch), t.SHA)
+}
+
+// String names t in the log: "main's <SHA>", or "the story branch <name>'s
+// tip <SHA>".
+func (t VerifyTarget) String() string {
+	if t.Branch == "" {
+		return "main's " + t.SHA
+	}
+	return fmt.Sprintf("the story branch %s's tip %s", t.Branch, t.SHA)
+}
+
+// storyTarget is the target of task s, which has a parent, whose checks at
+// verifying run with main's commit main as the pass's sync left it, and
+// true; or false when they don't run, uncounted (SPEC §7.5, §10.1):
+//   - its parent isn't its story (storyOf), as an epic planned into
+//     stories, or one in another repo or closed: it gets no checks, as it
+//     gets no run, logged at debug.
+//   - its parent's plan data doesn't read back (storyOf's error), or its
+//     story has two branches with its prefix (errTwoBranches), or none, or
+//     that branch's tip has no issuedog/tip naming the branch as success,
+//     as the daemon judged or read it (tipSuccess), or the tip has no one
+//     merge base with main, so the story has no baseline: it waits, and
+//     that's warned of once (storyWarnOnce), until that changes.
+//
+// Otherwise it's the story branch, its tip and the story's baseline, the
+// merge base of that tip and main. The parent's dirty content is read only
+// for an epic's plan, as storyOf reads it, and a failure to read it is an
+// error. The rest reads only the snapshots the daemon holds, its judged
+// tips and the bare repo, so a task that waits costs no request.
+func (r *Runs) storyTarget(ctx context.Context, s *github.Snapshot, main string) (VerifyTarget, bool, error) {
+	d, n := r.Daemon, s.Number
+	a := d.Step.Applier
+	parent := d.snaps[s.Parent]
+	var parentDirt Dirt
+	var dirtErr error
+	read := false
+	dirty := func(id int64) bool {
+		if !read {
+			read = true
+			parentDirt, dirtErr = a.Dirty(ctx, parent, d.Step.Trust)
+		}
+		return parentDirt.Has(id)
+	}
+	story, ok, err := storyOf(d.snaps, s, a.AppSlug, dirty)
+	switch {
+	case dirtErr != nil:
+		return VerifyTarget{}, false, fmt.Errorf("read its parent #%d: %w", s.Parent, dirtErr)
+	case err != nil:
+		d.storyWarnOnce(n, "plan:"+err.Error(), "%s/%s#%d gets no checks at %s, as it can't tell what its parent #%d's plan is of: %v",
+			a.Owner, a.Repo, n, state.Verifying, s.Parent, err)
+		return VerifyTarget{}, false, nil
+	case !ok:
+		logr.Debugf("%s/%s#%d gets no checks at %s: its parent, #%d, isn't a story it's worked in", a.Owner, a.Repo, n, state.Verifying, s.Parent)
+		return VerifyTarget{}, false, nil
+	}
+	branch, tip, err := d.storyBranch(ctx, story)
+	switch {
+	case errors.Is(err, errTwoBranches):
+		d.storyWarnOnce(n, "branches:"+err.Error(), "%s/%s#%d waits at %s, as it can't tell which is its story #%d's branch: %v",
+			a.Owner, a.Repo, n, state.Verifying, story.Number, err)
+		return VerifyTarget{}, false, nil
+	case err != nil:
+		return VerifyTarget{}, false, fmt.Errorf("name its story branch's tip: %w", err)
+	case tip == "":
+		d.storyWarnOnce(n, "no-branch:"+branch, "%s/%s#%d waits at %s, as its story #%d has no branch yet",
+			a.Owner, a.Repo, n, state.Verifying, story.Number)
+		return VerifyTarget{}, false, nil
+	case !d.tipSuccess(branch, tip):
+		d.storyWarnOnce(n, "tip:"+branch+"@"+tip, "%s/%s#%d waits at %s, as its story branch %s's tip %s has no %s naming it as success",
+			a.Owner, a.Repo, n, state.Verifying, branch, tip, github.TipCheck)
+		return VerifyTarget{}, false, nil
+	}
+	base, err := verify.BaseOf(ctx, verify.Facts{Repo: d.Clone, Head: tip, Target: main})
+	switch {
+	case errors.Is(err, verify.ErrMergeBases):
+		d.storyWarnOnce(n, "baseline:"+branch+"@"+tip, "%s/%s#%d waits at %s, as its story branch %s's tip %s has no one baseline: %v",
+			a.Owner, a.Repo, n, state.Verifying, branch, tip, err)
+		return VerifyTarget{}, false, nil
+	case err != nil:
+		return VerifyTarget{}, false, fmt.Errorf("read its story's baseline: %w", err)
+	}
+	return VerifyTarget{Branch: branch, SHA: tip, Baseline: base}, true, nil
+}
+
+// targetNow is t's commit as the pass's sync left it: main's, or for a
+// story branch, its tip, or "" when the bare repo has no such branch. It
+// reads only the bare repo, so it costs no request.
+func (d *Daemon) targetNow(ctx context.Context, t VerifyTarget) (string, error) {
+	if t.Branch == "" {
+		main, err := d.Clone.Resolve(ctx, "main")
+		if err != nil {
+			return "", fmt.Errorf("read main: %w", err)
+		}
+		return main, nil
+	}
+	branches, err := d.Clone.Branches(ctx, t.Branch)
+	if err != nil {
+		return "", fmt.Errorf("read the story branch %s: %w", t.Branch, err)
+	}
+	return branches[t.Branch], nil
+}
+
 // commandsFailed is how many of results failed.
 func commandsFailed(results []verify.CommandResult) int {
 	failed := 0
@@ -292,7 +459,8 @@ func commandsFailed(results []verify.CommandResult) int {
 // posted during the checks is above the move's bound: at in-progress,
 // where step 1 gives no input, it reaches the next run's conversation.md,
 // as any trusted comment does, not its input.md. Its comment is
-// renderFindings', naming the attempt of loop.max_attempts.
+// renderFindings', naming the attempt of loop.max_attempts, and t, what
+// the head was checked against: main, or its story branch and tip.
 //
 // When that attempt is loop.max_attempts or more, the round's last, the
 // task never goes back to in-progress: it moves verifying → needs-human on
@@ -314,7 +482,7 @@ func commandsFailed(results []verify.CommandResult) int {
 // A task closed, gone, held, or moved since the checks started, even back
 // to verifying, gets no move: then its next checks, if any, are on what's
 // there.
-func (r *Runs) verifyFindings(ctx context.Context, rd Ready, is state.Issue, head, main string, fs []verify.Finding, cmds []verify.CommandResult) error {
+func (r *Runs) verifyFindings(ctx context.Context, rd Ready, is state.Issue, head string, t VerifyTarget, fs []verify.Finding, cmds []verify.CommandResult) error {
 	a, n := r.Daemon.Step.Applier, rd.S.Number
 	wrap := func(err error) error { return fmt.Errorf("move the task back on its findings: %w", err) }
 	s, err := a.Client.Snapshot(ctx, a.Owner, a.Repo, n)
@@ -356,19 +524,19 @@ func (r *Runs) verifyFindings(ctx context.Context, rd Ready, is state.Issue, hea
 	attempt := verifyAttempt(is)
 	if attempt >= r.limit() {
 		m := Move{To: state.NeedsHuman, Trigger: state.TriggerAttemptCap, Key: verifyKey(is.TransitionComment),
-			Text: renderVerifyCapHandoff(attempt, findingsText(head, main, attempt, r.limit(), fs, cmds), n, r.Daemon.Config.Notify)}
+			Text: renderVerifyCapHandoff(attempt, findingsText(head, t.label(), attempt, r.limit(), fs, cmds), n, r.Daemon.Config.Notify)}
 		if seen > 0 {
 			m.Fields = map[string]string{state.FieldSeen: strconv.FormatInt(seen, 10)}
 		}
 		if err := a.Transition(ctx, s, d.Has, m); err != nil {
 			return fmt.Errorf("hand off the verify cap: %w", err)
 		}
-		logr.Warnf("%s/%s#%d: its head %s fails the checks against main's %s, in %d rules and %d commands, on attempt %d of %d, so it's handed off to the owner at %s",
-			a.Owner, a.Repo, n, head, main, len(fs), commandsFailed(cmds), attempt, r.limit(), state.NeedsHuman)
+		logr.Warnf("%s/%s#%d: its head %s fails the checks against %s, in %d rules and %d commands, on attempt %d of %d, so it's handed off to the owner at %s",
+			a.Owner, a.Repo, n, head, t, len(fs), commandsFailed(cmds), attempt, r.limit(), state.NeedsHuman)
 		return nil
 	}
 	m := Move{To: state.InProgress, Trigger: state.TriggerFindings, Key: verifyKey(is.TransitionComment), Fields: map[string]string{},
-		Text: renderFindings(head, main, attempt, r.limit(), fs, cmds)}
+		Text: renderFindings(head, t.label(), attempt, r.limit(), fs, cmds)}
 	if head != "" {
 		m.Fields["head"] = head
 	}
@@ -381,7 +549,7 @@ func (r *Runs) verifyFindings(ctx context.Context, rd Ready, is state.Issue, hea
 	if err := a.Transition(ctx, s, d.Has, m); err != nil {
 		return wrap(err)
 	}
-	logr.Infof("%s/%s#%d: its head %s fails the checks against main's %s, in %d rules and %d commands, so it's back at %s",
-		a.Owner, a.Repo, n, head, main, len(fs), commandsFailed(cmds), state.InProgress)
+	logr.Infof("%s/%s#%d: its head %s fails the checks against %s, in %d rules and %d commands, so it's back at %s",
+		a.Owner, a.Repo, n, head, t, len(fs), commandsFailed(cmds), state.InProgress)
 	return nil
 }

@@ -53,9 +53,9 @@ func personHead(is state.Issue) bool {
 
 // personResult is what a person's head goes back to pr-open with
 // (personBack): its PR's body, its issuedog/verify check's conclusion,
-// summary and details URL, main's commit its checks ran against, which the
-// check names (prCheck), and the move's comment, given the PR's number, or
-// 0 for none found.
+// summary and details URL, main's commit its checks ran against, or for a
+// task in a story the story's baseline, which the check names (prCheck),
+// and the move's comment, given the PR's number, or 0 for none found.
 type personResult struct {
 	Body                      string
 	Conclusion, Summary, Link string
@@ -115,7 +115,8 @@ func stepSeen(s *github.Snapshot) int64 {
 
 // personFindings is verifyFindings for a person's head (personHead): rd's
 // task, whose state was is when the checks started, failed them on head
-// against main's commit main, with fs and cmds. It reads the issue again
+// against t, main's commit, or for a task in a story its story branch's
+// tip, with fs and cmds, which the findings name. It reads the issue again
 // first (personRead). The move is keyed verifyKey of the comment holding
 // the move to verifying, as the checks' moves are, with head= and seen=,
 // and no attempt=, as a person's head counts none (SPEC §8.3):
@@ -127,7 +128,7 @@ func stepSeen(s *github.Snapshot) int64 {
 //     starts from this head (startFrom, SPEC §3.4).
 //   - any other failure goes back to pr-open on person-pushed, with
 //     issuedog/verify failure on the head (personBack, personFailed).
-func (r *Runs) personFindings(ctx context.Context, rd Ready, is state.Issue, head, main string, fs []verify.Finding, cmds []verify.CommandResult) error {
+func (r *Runs) personFindings(ctx context.Context, rd Ready, is state.Issue, head string, t VerifyTarget, fs []verify.Finding, cmds []verify.CommandResult) error {
 	a, n := r.Daemon.Step.Applier, rd.S.Number
 	s, d, ok, err := r.personRead(ctx, rd, is)
 	if err != nil || !ok {
@@ -147,13 +148,16 @@ func (r *Runs) personFindings(ctx context.Context, rd Ready, is state.Issue, hea
 		if err := a.Transition(ctx, s, d.Has, m); err != nil {
 			return fmt.Errorf("hand off a person's head that fails rule 2: %w", err)
 		}
-		logr.Warnf("%s/%s#%d: its head %s, which the daemon didn't push, fails rule 2 against main's %s, so it's handed off to the owner at %s",
-			a.Owner, a.Repo, n, head, main, state.NeedsHuman)
+		logr.Warnf("%s/%s#%d: its head %s, which the daemon didn't push, fails rule 2 against %s, so it's handed off to the owner at %s",
+			a.Owner, a.Repo, n, head, t, state.NeedsHuman)
 		return nil
 	}
 	m := Move{To: state.PROpen, Trigger: state.TriggerPersonPushed, Key: key, Fields: fields}
-	res := r.Daemon.personFailed(s, state.Derive(s, a.AppSlug, d.Has), head, findingsText(head, main, 0, r.limit(), fs, cmds))
-	res.Main = main
+	res := r.Daemon.personFailed(s, state.Derive(s, a.AppSlug, d.Has), head, findingsText(head, t.label(), 0, r.limit(), fs, cmds))
+	// The check names the newest main commit the commands ran with
+	// (checkedMain): the baseline, main's commit, or the story's, which is
+	// in the head's history as it's in its story branch's tip's.
+	res.Main = t.Baseline
 	if err := r.Daemon.personBack(ctx, s, d, m, head, res); err != nil {
 		return fmt.Errorf("judge a person's head's findings: %w", err)
 	}
@@ -161,8 +165,9 @@ func (r *Runs) personFindings(ctx context.Context, rd Ready, is state.Issue, hea
 }
 
 // personPass is the PR step for a person's head (personHead) that passed
-// the checks against main's commit main and has a clean pass of the
-// verifier's (verdictOn): verifyTask calls it in openPR's place. It waits
+// the checks against t, main's commit, and has a clean pass of the
+// verifier's (verdictOn): verifyTask calls it in openPR's place, for a
+// task with no parent, as a task in a story has no PR step yet. It waits
 // as the PR step does for the pass and its follow-ups (prPassReady), but
 // never for the branch: nothing is pushed, and a tip that moved on is
 // step 2's new head once the task is back at pr-open. It reads the issue
@@ -172,8 +177,8 @@ func (r *Runs) personFindings(ctx context.Context, rd Ready, is state.Issue, hea
 // and issuedog/verify on head is success, as the PR step posts it
 // (personBack). It reports whether it read the issue again, as openPR
 // does.
-func (r *Runs) personPass(ctx context.Context, rd Ready, is state.Issue, head, main string) (bool, error) {
-	a, n := r.Daemon.Step.Applier, rd.S.Number
+func (r *Runs) personPass(ctx context.Context, rd Ready, is state.Issue, head string, t VerifyTarget) (bool, error) {
+	a, n, main := r.Daemon.Step.Applier, rd.S.Number, t.SHA
 	if _, _, ok := r.prPassReady(rd.S, is, head); !ok {
 		return false, nil
 	}

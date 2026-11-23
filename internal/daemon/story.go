@@ -111,10 +111,11 @@ func (d *Daemon) tipJudge(branch, tip, conclusion string) {
 	d.tips[branch] = tipJudged{Tip: tip, Conclusion: conclusion}
 }
 
-// storyWarnOnce logs a warning for story n, unless the last one logged for
-// it had the same key, so a wait that lasts, as on two branches with its
-// prefix, is warned of once, not every pass, and a new cause is warned of
-// again. The repeats are logged at debug.
+// storyWarnOnce logs a warning for story n, or for task n in a story,
+// unless the last one logged for it had the same key, so a wait that
+// lasts, as on two branches with its prefix, or a task's for its story
+// branch's tip (storyTarget), is warned of once, not every pass, and a new
+// cause is warned of again. The repeats are logged at debug.
 func (d *Daemon) storyWarnOnce(n int, key, format string, args ...any) {
 	if d.storyWarned[n] == key {
 		logr.Debugf(format, args...)
