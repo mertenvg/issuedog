@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"path"
 	"slices"
 	"strings"
 	"time"
@@ -11,8 +12,9 @@ import (
 	gogithub "github.com/google/go-github/v92/github"
 )
 
-// The reads behind a human task's checks (#282): a repo label by name, the
-// org's issue types, the rules on a branch, and the App's installations.
+// The reads behind a human task's checks (#282) and startup's check of the
+// issuedog branches ruleset: a repo label by name, the org's issue types,
+// the rules on a branch, and the App's installations.
 // Each serves what its setter gave. The owner of the repo is an org unless
 // SetPersonalAccount says otherwise.
 
@@ -22,6 +24,7 @@ type checkState struct {
 	issueTypes    []OrgIssueType       // see SetOrgIssueTypes
 	typesSet      bool                 // SetOrgIssueTypes was called, so issueTypes replaces the default
 	rulesets      map[string][]ruleset // by branch, see SetRequiredChecks
+	patterned     []ruleset            // see SetRulesets
 	lastRuleset   int64
 	installations []Installation // see SetInstallations
 	installsSet   bool           // SetInstallations was called, so installations replaces the default
@@ -36,13 +39,20 @@ type OrgIssueType struct {
 	Disabled bool
 }
 
-// Ruleset is one ruleset that targets a branch, for SetRequiredChecks: the
-// status checks it requires, its enforcement, and whether it is the org's
-// rather than the repo's. Enforcement "" means active. As on GitHub, only
-// an active ruleset's rules are served: one in evaluate or disabled is left
-// out.
+// Ruleset is one ruleset that targets a branch, for SetRequiredChecks, or
+// the branches its Pattern matches, for SetRulesets: the status checks it
+// requires, its other rules, its enforcement, and whether it is the org's
+// rather than the repo's. Rules are rule types other than
+// required_status_checks, such as "creation", each served once with no
+// parameters, and Checks, if any, are served as one required_status_checks
+// rule. Pattern is matched as path.Match matches, so "issuedog/*" matches
+// "issuedog/1-x" and not "issuedog/1/x", as GitHub's "*" matches no "/".
+// Enforcement "" means active. As on GitHub, only an active ruleset's
+// rules are served: one in evaluate or disabled is left out.
 type Ruleset struct {
 	Checks      []gogithub.RuleStatusCheck
+	Rules       []string
+	Pattern     string
 	Enforcement gogithub.RulesetEnforcement
 	Org         bool
 }
@@ -148,6 +158,20 @@ func (f *Fake) SetRequiredChecks(branch string, rulesets ...Ruleset) {
 	f.checks.rulesets[branch] = set
 }
 
+// SetRulesets sets the rulesets that target the branches their Pattern
+// matches, replacing any SetRulesets set before, beside those
+// SetRequiredChecks sets by branch. Each gets a new ID. With none, no
+// branch has rules but those SetRequiredChecks set.
+func (f *Fake) SetRulesets(rulesets ...Ruleset) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.checks.patterned = nil
+	for _, rs := range rulesets {
+		f.checks.lastRuleset++
+		f.checks.patterned = append(f.checks.patterned, ruleset{Ruleset: rs, id: f.checks.lastRuleset})
+	}
+}
+
 // SetInstallations sets the App's installations, in order, replacing the
 // default: one on the repo's owner (ID 1, as Client's), not suspended.
 func (f *Fake) SetInstallations(installs ...Installation) {
@@ -203,14 +227,27 @@ type branchRule struct {
 }
 
 // branchRules serves the rules of the active rulesets that target branch,
-// paged: each ruleset's deletion rule, which the rulesets GitHub suggests
-// carry, and its required_status_checks rule if it requires any check. A
-// branch with none answers an empty list, as on GitHub, where it needn't
-// exist.
+// paged: those SetRequiredChecks set for it by name, then those SetRulesets
+// set whose Pattern matches it. Each ruleset's Rules come first, each by
+// its type with no parameters, then its required_status_checks rule if it
+// requires any check. A branch with none answers an empty list, as on
+// GitHub, where it needn't exist. A Pattern path.Match can't parse answers
+// a 500 naming it.
 func (f *Fake) branchRules(c *call) (int, any) {
 	owner, _, _ := strings.Cut(f.repo, "/")
+	branch := c.r.PathValue("branch")
+	targets := slices.Clone(f.checks.rulesets[branch])
+	for _, rs := range f.checks.patterned {
+		ok, err := path.Match(rs.Pattern, branch)
+		if err != nil {
+			return http.StatusInternalServerError, message(fmt.Sprintf("githubtest: ruleset pattern %q: %v", rs.Pattern, err))
+		}
+		if ok {
+			targets = append(targets, rs)
+		}
+	}
 	out := []branchRule{}
-	for _, rs := range f.checks.rulesets[c.r.PathValue("branch")] {
+	for _, rs := range targets {
 		if rs.Enforcement != "" && rs.Enforcement != gogithub.RulesetEnforcementActive {
 			continue
 		}
@@ -218,7 +255,9 @@ func (f *Fake) branchRules(c *call) (int, any) {
 		if rs.Org {
 			meta.RulesetSourceType, meta.RulesetSource = gogithub.RulesetSourceTypeOrganization, owner
 		}
-		out = append(out, branchRule{Type: string(gogithub.RulesetRuleTypeDeletion), BranchRuleMetadata: meta})
+		for _, typ := range rs.Rules {
+			out = append(out, branchRule{Type: typ, BranchRuleMetadata: meta})
+		}
 		if len(rs.Checks) > 0 {
 			var checks []*gogithub.RuleStatusCheck
 			for _, ch := range rs.Checks {

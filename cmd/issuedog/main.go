@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -101,6 +102,13 @@ func run(args, environ []string, stdin io.Reader, stdout io.Writer) int {
 	}
 	if err != nil {
 		logr.Errorf("starting the daemon: %v", err)
+		return 1
+	}
+	// Like the steps after it, up to the loop, the ruleset check doesn't
+	// watch for a signal (SPEC §3.5): its read isn't canceled by one, and a
+	// check that fails exits 1 even once a signal has come in.
+	if err := checkBranchRules(context.WithoutCancel(ctx), d.Step.Client, set.owner, set.name); err != nil {
+		logr.Errorf("checking the issuedog branches ruleset: %v", err)
 		return 1
 	}
 	runs, err := stageWork(d, cred)
@@ -198,6 +206,41 @@ func startDaemon(ctx context.Context, set settings, key []byte) (*daemon.Daemon,
 	logr.Infof("running as %s[bot] on %s/%s", slug, set.owner, set.name)
 	a := &daemon.Applier{Client: client, Owner: set.owner, Repo: set.name, AppSlug: slug}
 	return daemon.New(a, clone, cfg, tr), nil
+}
+
+// branchRulesBranch is the branch name whose rules the startup check reads
+// (SPEC §3.5). It's under issuedog/, so the issuedog branches ruleset's
+// issuedog/* pattern covers it, and no story or task branch uses it, as
+// theirs start issuedog/<n>-. GitHub matches the pattern against the name,
+// so the branch needn't exist.
+const branchRulesBranch = "issuedog/ruleset-check"
+
+// branchRulesNeeded are the rules story and task branches rely on the
+// issuedog branches ruleset for (SPEC §15, step 4): restrict creations,
+// restrict deletions and block force pushes, by their rule types.
+var branchRulesNeeded = []string{"creation", "deletion", "non_fast_forward"}
+
+// checkBranchRules checks that the active rules on branchRulesBranch,
+// org rulesets' included, have every rule in branchRulesNeeded, and
+// returns an error naming each one missing, or the read's error. The App
+// can't read a ruleset's bypass list, so the check can't confirm it (SPEC
+// §16).
+func checkBranchRules(ctx context.Context, client *github.Client, owner, name string) error {
+	types, err := client.BranchRuleTypes(ctx, owner, name, branchRulesBranch)
+	if err != nil {
+		return fmt.Errorf("reading the rules on %s: %w", branchRulesBranch, err)
+	}
+	var missing []string
+	for _, rule := range branchRulesNeeded {
+		if !slices.Contains(types, rule) {
+			missing = append(missing, rule)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("the active rules on %s lack %s, which story and task branches rely on (SPEC §15, step 4)",
+			branchRulesBranch, strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 // registerStages returns the Stages to register on d, by stage, and the
