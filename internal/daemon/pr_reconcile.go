@@ -179,9 +179,12 @@ func (d *Daemon) prPass(ctx context.Context) (map[int]bool, error) {
 // so a review that sends the task back wins over a new head in the same
 // pass, and carries it (prReviewMove). When that moves nothing, and judged
 // the PR, as its read isn't to be made again next pass, an open PR's
-// branch is judged for a new head (prNewHead), from the bare clone alone.
-// A PR the poll lists closed, its close handed off already, gets no such
-// look: its close is the PR's (SPEC §6.4).
+// branch is judged for a new head (prNewHead), from the bare clone alone,
+// and when that moves nothing either, a task in a story's PR is merged
+// into its story branch (prMerge), whose read just before the merge may
+// judge the PR again and return that move instead. A PR the poll lists
+// closed, its close handed off already, gets no such look: its close is
+// the PR's (SPEC §6.4).
 func (d *Daemon) prJudgeOpenHead(ctx context.Context, s *github.Snapshot, dirt Dirt, is state.Issue, p listedPR) (*Move, error) {
 	if m, ok := d.prWaitingFor(s.Number, is, p); ok {
 		m, ok, err := d.prWaitingTip(ctx, s, is, m)
@@ -201,6 +204,12 @@ func (d *Daemon) prJudgeOpenHead(ctx context.Context, s *github.Snapshot, dirt D
 	}
 	if m, err = d.prNewHead(ctx, s, is); err != nil {
 		return nil, fmt.Errorf("its branch at %s: %w", is.Stage, err)
+	}
+	if m != nil {
+		return m, nil
+	}
+	if m, err = d.prMerge(ctx, s, dirt, is, p); err != nil {
+		return nil, fmt.Errorf("its merge into its story branch: %w", err)
 	}
 	return m, nil
 }

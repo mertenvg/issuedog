@@ -141,8 +141,10 @@ func (v *verdictRig) storyPROpensAtVerifying(head string) int {
 // issuedog/verify as success on the head, naming the story's baseline,
 // its summary naming the branch and the tip, and moves the task to
 // pr-open with head=, pr=, tip= and seen=, saying the App merges the PR
-// once it's checked. No command runs. Once that's read, the passes after
-// make no request but 304s, none of them for a PR.
+// once it's checked. No command runs. Once that's read, and the pass that
+// reads it has merged the PR, and the one after has carried the tip's
+// check over to the merge and closed the task (storyMergeSettles), the
+// passes after make no request but 304s, none of them for a PR.
 func TestPRStoryOpens(t *testing.T) {
 	t.Parallel()
 	f, v, cut, tip, head, pass := storyPRReady(t)
@@ -165,7 +167,7 @@ func TestPRStoryOpens(t *testing.T) {
 	if v.checksRan() != 2 || v.runs() != 0 {
 		t.Errorf("the commands ran %d times in all, claude %d; want twice, and never", v.checksRan(), v.runs())
 	}
-	v.pass()
+	v.storyMergeSettles(pr)
 	from := len(f.Requests())
 	v.quietPass("after the PR step")
 	v.quietPass("again")
@@ -177,10 +179,15 @@ func TestPRStoryOpens(t *testing.T) {
 // A task's PR into its story branch waits on the App, not the owner (SPEC
 // §9.4, §9.6): the digest lists no item for the task, and nobody is
 // assigned to the PR or the task, on the passes after the move to pr-open,
-// a restart's included.
+// a restart's included. GitHub refuses the App's merge once, so the task
+// stays at pr-open and the merge waits with no request (prMerge), till
+// the restart forgets the refusal and merges it.
 func TestPRStoryNoDigestItem(t *testing.T) {
 	t.Parallel()
 	f, v, _, _, _, _ := storyPRReady(t)
+	f.AnswerOnce(func(r githubtest.Request) bool {
+		return r.Method == http.MethodPut && strings.HasSuffix(r.Path, "/merge")
+	}, http.StatusMethodNotAllowed)
 	v.passes(3)
 	if pickStage(f, 1) != "stage:pr-open" || len(f.State().PRs) != 1 {
 		t.Fatalf("the task at %s, PRs %+v; want pr-open, and one", pickStage(f, 1), f.State().PRs)
@@ -366,7 +373,7 @@ func TestPRStorySomeoneElsesPR(t *testing.T) {
 func TestPRStoryPersonHead(t *testing.T) {
 	t.Parallel()
 	f, v, cut, tip, head, _ := storyPRReady(t)
-	v.passes(3)
+	v.pass() // the PR step's, so the PR is open till the next pass merges it
 	pr := f.State().PRs[0]
 	if pickStage(f, 1) != "stage:pr-open" {
 		t.Fatalf("the task is at %s; want pr-open", pickStage(f, 1))
@@ -428,7 +435,7 @@ func TestPRStoryPersonHeadFails(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			f, v, _, _, head, _ := storyPRReady(t)
-			v.passes(3)
+			v.pass() // the PR step's, so the PR is open till the next pass merges it
 			pr := f.State().PRs[0]
 			person, _ := v.personPush(head, tt.file)
 			if tt.verifier {
@@ -460,7 +467,7 @@ func TestPRStoryPersonHeadFails(t *testing.T) {
 func TestPRStoryCloseAndReopen(t *testing.T) {
 	t.Parallel()
 	f, v, _, _, _, _ := storyPRReady(t)
-	v.passes(3)
+	v.pass() // the PR step's, so the PR is open till the next pass merges it
 	pr := f.State().PRs[0].Number
 	f.ClosePR(pr, wholeRunOwner)
 	v.pass()
@@ -487,7 +494,7 @@ func TestPRStoryCloseAndReopen(t *testing.T) {
 func TestPRStoryUntrustedReopen(t *testing.T) {
 	t.Parallel()
 	f, v, _, _, _, _ := storyPRReady(t)
-	v.passes(3)
+	v.pass() // the PR step's, so the PR is open till the next pass merges it
 	pr := f.State().PRs[0].Number
 	f.ClosePR(pr, wholeRunOwner)
 	f.ReopenPR(pr, "mallory")
@@ -530,8 +537,10 @@ func TestPRStoryRestart(t *testing.T) {
 // restart: the replay ends with the same push, PR, label, check and move
 // (SPEC §5.2). Each pass is a fresh daemon on the fake's own bare clone,
 // so it reads the tip's check and runs the head's checks again before the
-// PR step, and its third iteration reads what the step wrote. The origin
-// is shared, so each setup deletes the task's branch there.
+// PR step, and its third iteration reads what the step wrote, unless the
+// task is at pr-open by then, as the pass after the step's merges the PR
+// (TestPRMergeReplay has that). The origin is shared, so each setup
+// deletes the task's branch there.
 func TestPRStoryReplay(t *testing.T) {
 	t.Parallel()
 	_, base := newStoryVerifyRig(t)
@@ -566,6 +575,9 @@ func TestPRStoryReplay(t *testing.T) {
 		for range 3 {
 			if err := v.d.Iterate(context.Background()); err != nil {
 				return err
+			}
+			if pickStage(f, 1) == "stage:pr-open" {
+				break
 			}
 		}
 		return nil

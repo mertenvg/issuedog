@@ -202,6 +202,18 @@ type Daemon struct {
 	// task's branch, by task, so a wait that lasts is warned of once
 	// (prHeadWarnOnce).
 	prHeadWarned map[int]string
+	// prMergeLogged is the key of the last log of why each task's PR into
+	// its story branch isn't merged, by task, so a wait that lasts, or a
+	// refusal of one head, is logged once (prMergeOnce).
+	prMergeLogged map[int]string
+	// prMergeFailed is, for each task at pr-open whose verified head a
+	// person pushed, by task, the head the App's newest issuedog/verify was
+	// read as failure on, so it's read once a head (prPersonFailed).
+	prMergeFailed map[int]string
+	// prMergeRefused is GitHub's last refusal of each task's PR's merge
+	// into its story branch, by task, so the merge waits, with no request,
+	// till its head, its PR or its story branch's tip changes (prMerge).
+	prMergeRefused map[int]prRefusal
 	// workerLeased is whether a run's lease held the worker when Work last
 	// ended (Runs.Work), for step 2's moves that take it (workerFree).
 	workerLeased bool
@@ -211,6 +223,11 @@ type Daemon struct {
 	// unchanged tip is checked once and costs no request (Runs.tipCheck,
 	// tipSuccess).
 	tips map[string]tipJudged
+	// tipsMerged is, by story branch, the tip the App last merged a task's
+	// PR onto, which is the branch's tip no more, though the bare clone
+	// names it till the next sync, which forgets it (reload,
+	// tipMergedOnto).
+	tipsMerged map[string]string
 	// storyWarned is the key of the last warning logged for each story, or
 	// task in one, by issue number, so a wait that lasts is warned of once
 	// (storyWarnOnce).
@@ -648,6 +665,10 @@ func (d *Daemon) reload(ctx context.Context) {
 		logr.Errorf("syncing the clone of %s/%s failed, so the last good config and trust stay: %v", a.Owner, a.Repo, err)
 		return
 	}
+	// The sync brings each story branch's tip past the App's merges onto
+	// it, so no tip the App merged onto is held back any more
+	// (tipMergedOnto).
+	d.tipsMerged = nil
 	if cfg, err := config.Load(ctx, d.Clone); err != nil {
 		logr.Errorf("loading the config of %s/%s from main failed, so the last good one stays: %v", a.Owner, a.Repo, err)
 	} else {

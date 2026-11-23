@@ -210,20 +210,6 @@ func (d *Daemon) prMergedWrites(ctx context.Context, s *github.Snapshot, is stat
 	return nil
 }
 
-// prMoveTip is the story branch's tip the head of task is was verified
-// against (SPEC §5): the tip= of its latest move into pr-open that names a
-// head (prHeadOf's), or "" when that move names none, as a person's head
-// that failed verify, or a stage set by hand, has none.
-func prMoveTip(is state.Issue) string {
-	tip := ""
-	for _, m := range is.Markers {
-		if m.Kind == "transition" && state.Stage(m.Fields["to"]) == state.PROpen && m.Fields["head"] != "" {
-			tip = m.Fields[fieldStoryTip]
-		}
-	}
-	return tip
-}
-
 // tipCarry carries the issuedog/tip check over to the merge commit of pr,
 // task s's PR, which the App merged into its story branch, pr.Base (SPEC
 // §7.5's Carrying the check over): the squash commit's tree is the

@@ -110,33 +110,3 @@ func TestPRDirtSetMerge(t *testing.T) {
 		t.Error("the task's move out of pr-open still waits; want it dropped, as the task is at in-progress")
 	}
 }
-
-// A task's verified tip is the tip= of its latest move into pr-open that
-// names a head, so a person's head that failed verify, with no tip=, names
-// none, and a move into pr-open with no head, as a stage set by hand,
-// looks through to the one before.
-func TestPRMoveTip(t *testing.T) {
-	t.Parallel()
-	to := func(fields string) github.Marker {
-		m := github.Marker{Kind: "transition", Fields: map[string]string{"to": "pr-open"}}
-		for f := range strings.FieldsSeq(fields) {
-			k, v, _ := strings.Cut(f, "=")
-			m.Fields[k] = v
-		}
-		return m
-	}
-	for _, tt := range []struct {
-		name    string
-		markers []github.Marker
-		want    string
-	}{
-		{"none", nil, ""},
-		{"the PR step's", []github.Marker{to("head=h1 tip=t1")}, "t1"},
-		{"a person's failed head after", []github.Marker{to("head=h1 tip=t1"), to("head=h2")}, ""},
-		{"a stage set by hand after", []github.Marker{to("head=h1 tip=t1"), to("by=owner")}, "t1"},
-	} {
-		if got := prMoveTip(state.Issue{Markers: tt.markers}); got != tt.want {
-			t.Errorf("%s: prMoveTip = %q; want %q", tt.name, got, tt.want)
-		}
-	}
-}

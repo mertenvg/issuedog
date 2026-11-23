@@ -214,7 +214,9 @@ func branchMergeBasesDetail(branch, target string, err error) string {
 // that's no such story, as for any other parent the pick passes over, or
 // whose plan data doesn't read back, two branches with its story's
 // prefix, no branch yet, and a tip that isn't checked yet, after a
-// restart too, until step 4 reads its check, or whose check is failure.
+// restart too, until step 4 reads its check, or whose check is failure,
+// or that step 2 merged a task's PR onto, which isn't the tip any more
+// (tipMergedOnto).
 // It reads only the snapshots step 1 left, the bare repo and what step 4
 // judged, so it costs no request: the parent's dirty content is kept from
 // step 1 (Applier.Dirty).
@@ -254,6 +256,9 @@ func (r *Runs) storyStart(ctx context.Context, st Stage, s *github.Snapshot) (ru
 		why := "has no " + github.TipCheck + " as success yet"
 		if j, ok := d.tips[branch]; ok && j.Tip == tip {
 			why = "has " + github.TipCheck + " as " + j.Conclusion
+		}
+		if d.tipMergedOnto(branch, tip) {
+			why = "had a task's PR merged onto it, so it's the branch's tip no more"
 		}
 		r.startWaitOnce(n, "tip:"+branch+"@"+tip+":"+why, "#%d: no %s run: its story branch %s's tip %s %s, so it isn't named as the run's base",
 			n, st.Agent(), branch, tip, why)
