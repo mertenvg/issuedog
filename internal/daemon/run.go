@@ -341,7 +341,10 @@ func (p checksPassed) holds(head, main string) bool { return p.Head == head && p
 // it runs a Committer, such as the implementer, on the first issue, by
 // priority then number, whose stage has one with work pending: task work
 // comes after the other stages and triage (SPEC §8.1, step 4). If none ran
-// either, it runs SPEC §10.1's checks on the first task at verifying, by
+// either, it runs SPEC §10.1's checks on the tip of the first open story's
+// branch, by priority then number, that has no App issuedog/tip naming the
+// branch, one tip a pass (tipCheck). If none ran either, it runs SPEC
+// §10.1's checks on the first task at verifying, by
 // priority then number, whose head hasn't passed them, or a verifier run
 // on one whose head has, with no pass of the verifier's yet, or the PR step
 // on one with a pass that has a write to make (verifyTask). If none ran
@@ -430,8 +433,17 @@ func (r *Runs) Work(ctx context.Context, ready []Ready) (err error) {
 	case ran:
 		return nil
 	}
-	// No run is in progress here, and none starts until the checks are
-	// done, so their commands never overlap a claude run (verifyTask).
+	// No run is in progress here, and none starts until the checks on a
+	// story branch's tip are done, so their commands never overlap a
+	// claude run (tipCheck).
+	ran, err = r.tipCheck(ctx, ready, skip)
+	switch {
+	case err != nil:
+		return fmt.Errorf("the checks on a story branch's tip: %w", err)
+	case ran:
+		return nil
+	}
+	// Nor while the checks at verifying run (verifyTask).
 	ran, err = r.verifyTask(ctx, ready, skip)
 	switch {
 	case err != nil:
