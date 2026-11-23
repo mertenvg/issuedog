@@ -142,9 +142,9 @@ func (v *verdictRig) storyPROpensAtVerifying(head string) int {
 // its summary naming the branch and the tip, and moves the task to
 // pr-open with head=, pr=, tip= and seen=, saying the App merges the PR
 // once it's checked. No command runs. Once that's read, and the pass that
-// reads it has merged the PR and the one after has checked the story
-// branch's new tip (storyMergeSettles), the passes after make no request
-// but 304s, none of them for a PR.
+// reads it has merged the PR, and the one after has carried the tip's
+// check over to the merge and closed the task (storyMergeSettles), the
+// passes after make no request but 304s, none of them for a PR.
 func TestPRStoryOpens(t *testing.T) {
 	t.Parallel()
 	f, v, cut, tip, head, pass := storyPRReady(t)
@@ -179,10 +179,15 @@ func TestPRStoryOpens(t *testing.T) {
 // A task's PR into its story branch waits on the App, not the owner (SPEC
 // §9.4, §9.6): the digest lists no item for the task, and nobody is
 // assigned to the PR or the task, on the passes after the move to pr-open,
-// a restart's included.
+// a restart's included. GitHub refuses the App's merge once, so the task
+// stays at pr-open and the merge waits with no request (prMerge), till
+// the restart forgets the refusal and merges it.
 func TestPRStoryNoDigestItem(t *testing.T) {
 	t.Parallel()
 	f, v, _, _, _, _ := storyPRReady(t)
+	f.AnswerOnce(func(r githubtest.Request) bool {
+		return r.Method == http.MethodPut && strings.HasSuffix(r.Path, "/merge")
+	}, http.StatusMethodNotAllowed)
 	v.passes(3)
 	if pickStage(f, 1) != "stage:pr-open" || len(f.State().PRs) != 1 {
 		t.Fatalf("the task at %s, PRs %+v; want pr-open, and one", pickStage(f, 1), f.State().PRs)

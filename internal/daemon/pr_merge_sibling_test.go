@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/mertenvg/issuedog/internal/github/githubtest"
+	"github.com/mertenvg/issuedog/internal/repo"
 )
 
 // The App's merge and what else names its story branch's tip in the same
@@ -63,9 +64,11 @@ func storyMergeSibling(t *testing.T, f *githubtest.Fake, v *verdictRig, tip stri
 // Two tasks of one story at pr-open, both verified against the same tip:
 // the pass that merges the first, the lower-numbered, merges only it, as
 // the second would go onto the first's squash commit, a tip it wasn't
-// verified against. The pass after checks the new tip, and the second then
-// waits at pr-open, with no request for its PR, as no check on its merge
-// with the new tip is built.
+// verified against. The pass after carries the tip's check over to the
+// squash commit, with no command run, and closes the first task, as its
+// merge is onto the tip it was verified against (SPEC §7.5's Carrying the
+// check over), and the second then waits at pr-open, with no request for
+// its PR, as no check on its merge with the new tip is built.
 func TestPRMergeSiblings(t *testing.T) {
 	t.Parallel()
 	f, v, tip, _, pr := storyMergeReady(t)
@@ -76,11 +79,8 @@ func TestPRMergeSiblings(t *testing.T) {
 		t.Fatalf("the pass merged %+v and %+v; want the first PR, #%d, alone", first, second, pr)
 	}
 	squash := v.storyMerged(pr, tip)
-	from, ran := len(f.Requests()), v.checksRan()
-	v.pass()
-	if got := f.State().CheckRuns; !slices.Contains(got, tipCheck(squash, storyVerifyBranch, "success")) || v.checksRan() != ran+1 {
-		t.Fatalf("the pass after the merge left the checks %+v, and ran the commands %d times; want the new tip's success, once", got, v.checksRan()-ran)
-	}
+	from := len(f.Requests())
+	v.storyMergeCarried(pr, squash)
 	v.quietPass("the sibling waiting on the new tip")
 	v.quietPass("again")
 	for _, r := range f.Requests()[from:] {
@@ -98,9 +98,9 @@ func TestPRMergeSiblings(t *testing.T) {
 
 // A task in the story at in-progress, whose run would start in step 4 of
 // the pass that merges task 1's PR, doesn't start from the tip the merge
-// went onto: it waits for the new tip, which the pass after checks, and
-// the pass after that starts its run from the new tip, the merge's squash
-// commit, which its lease records as story_tip (SPEC §3.4).
+// went onto. The pass after carries the tip's check over to the merge's
+// squash commit, so its step 4 starts the run from that new tip, which
+// the lease records as story_tip (SPEC §3.4), with no command run on it.
 func TestPRMergeRunStartAfter(t *testing.T) {
 	t.Parallel()
 	f, v, tip, _, pr := storyMergeReady(t)
@@ -112,15 +112,75 @@ func TestPRMergeRunStartAfter(t *testing.T) {
 	if v.runs() != 0 {
 		t.Fatalf("the merge's pass ran claude %d times; want no run from the old tip %s", v.runs(), tip)
 	}
+	ran := v.checksRan()
 	v.pass()
-	if got := f.State().CheckRuns; !slices.Contains(got, tipCheck(squash, storyVerifyBranch, "success")) || v.runs() != 0 {
-		t.Fatalf("the pass after the merge left the checks %+v, and ran claude %d times; want the new tip's success, and no run", got, v.runs())
+	if got := f.State().CheckRuns; !slices.Contains(got, tipCheck(squash, storyVerifyBranch, "success")) || v.checksRan() != ran {
+		t.Fatalf("the pass after the merge left the checks %+v, and ran the commands %d times; want the carried success on %s, and never",
+			got, v.checksRan()-ran, squash)
 	}
-	v.pass()
 	if v.runs() != 1 {
 		t.Fatalf("the task at %s, after %d runs; want one", pickStage(f, n), v.runs())
 	}
 	if l := v.leaseOf("1"); l.Issue != n || l.StoryTip != squash || l.Start != squash {
 		t.Errorf("the run leased #%d, with story_tip %s and start %s; want #%d, from the new tip %s", l.Issue, l.StoryTip, l.Start, n, squash)
+	}
+}
+
+// A ready task in the story, which the pick would take in step 4 of the
+// pass that merges task 1's PR, isn't picked onto the tip the merge went
+// onto: it stays at ready that pass. The pass after carries the tip's
+// check over to the merge's squash commit, and picks it, its run starting
+// from that new tip (SPEC §8.1).
+func TestPRMergePickAfter(t *testing.T) {
+	t.Parallel()
+	f, v, tip, _, pr := storyMergeReady(t)
+	n := storyMergeSiblingTask(t, f, "ready")
+	f.AddComment(n, app, "<!-- issuedog:transition from=intake to=ready run=rready -->")
+	v.out(1, ivResult(t, implementerOutput(t, "commits")))
+	v.pass()
+	squash := v.storyMerged(pr, tip)
+	if pickStage(f, n) != "stage:ready" || v.runs() != 0 {
+		t.Fatalf("the merge's pass left the task at %s, with %d runs; want ready, and none from the old tip %s", pickStage(f, n), v.runs(), tip)
+	}
+	v.pass()
+	if v.runs() != 1 || pickStage(f, n) == "stage:ready" {
+		t.Fatalf("the pass after the merge left the task at %s, after %d runs; want it picked, and one run", pickStage(f, n), v.runs())
+	}
+	if l := v.leaseOf("1"); l.Issue != n || l.StoryTip != squash || l.Start != squash {
+		t.Errorf("the run leased #%d, with story_tip %s and start %s; want #%d, from the new tip %s", l.Issue, l.StoryTip, l.Start, n, squash)
+	}
+}
+
+// A task in the story at verifying, whose checks would run in step 4 of
+// the pass that merges task 1's PR, isn't checked against the tip the
+// merge went onto: no command runs that pass. The pass after carries the
+// tip's check over to the merge's squash commit, and checks the task's
+// head against that new tip (SPEC §10.1).
+func TestPRMergeVerifyAfter(t *testing.T) {
+	t.Parallel()
+	f, v, tip, _, pr := storyMergeReady(t)
+	n := storyMergeSiblingTask(t, f, "verifying")
+	w := v.o.work
+	gitIn(t, w, "checkout", "--quiet", "-B", "sibling", tip)
+	if err := os.WriteFile(filepath.Join(w, "stale.txt"), []byte("stale\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, w, "add", "stale.txt")
+	gitIn(t, w, "commit", "--quiet", "-m", "the sibling's run")
+	head := gitIn(t, w, "rev-parse", "HEAD")
+	gitIn(t, w, "checkout", "--quiet", "main")
+	gitIn(t, v.d.Clone.Dir(), "fetch", "--quiet", "--no-tags", w, "+refs/heads/sibling:"+repo.TasksRef+strconv.Itoa(n))
+	f.AddComment(n, app, "The implementer committed.\n\n<!-- issuedog:transition from=in-progress to=verifying attempt=1 run=r5 head="+head+" -->")
+	ran := v.checksRan()
+	v.pass()
+	squash := v.storyMerged(pr, tip)
+	if v.checksRan() != ran || pickStage(f, n) != "stage:verifying" {
+		t.Fatalf("the merge's pass ran the commands %d times, with the task at %s; want never against the old tip %s, and verifying",
+			v.checksRan()-ran, pickStage(f, n), tip)
+	}
+	v.pass()
+	if got := f.State().CheckRuns; !slices.Contains(got, tipCheck(squash, storyVerifyBranch, "success")) || v.checksRan() != ran+1 {
+		t.Errorf("the pass after the merge left the checks %+v, and ran the commands %d times; want the carried success on %s, and the head's checks once",
+			got, v.checksRan()-ran, squash)
 	}
 }

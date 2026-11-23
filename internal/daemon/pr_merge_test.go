@@ -77,8 +77,7 @@ type storyMergeBody struct {
 // storyMerged fails unless PR pr is merged by the App, by one merge in all
 // of f's writes, and story #2's branch is at a squash commit whose only
 // parent is tip, the tip head was verified against, and which changes only
-// head's quote.txt there, with task 1 still at pr-open, as nothing closes
-// it yet. It returns the squash commit.
+// head's quote.txt there. It returns the squash commit.
 func (v *verdictRig) storyMerged(pr int, tip string) string {
 	v.t.Helper()
 	i := slices.IndexFunc(v.f.State().PRs, func(p githubtest.PRState) bool { return p.Number == pr })
@@ -98,35 +97,59 @@ func (v *verdictRig) storyMerged(pr int, tip string) string {
 	if got := gitIn(v.t, v.o.url, "diff", "--name-only", tip, squash); got != "quote.txt" {
 		v.t.Errorf("the squash commit changes %q; want quote.txt alone", got)
 	}
-	if pickStage(v.f, 1) != "stage:pr-open" {
-		v.t.Errorf("the task is at %s; want pr-open", pickStage(v.f, 1))
-	}
 	return squash
 }
 
-// storyMergeSettles runs the pass after task 1's PR step, which merges its
-// PR, pr, into story #2's branch (prMerge), and the one after, which checks
-// the branch's new tip, the squash commit, one more run of the commands,
-// so the next unchanged pass is quiet.
-func (v *verdictRig) storyMergeSettles(pr int) {
+// storyMergeCarried runs the pass after the App's merge of PR pr, task 1's,
+// as squash, and fails unless it carried the tip's check over to squash,
+// the story branch's new tip, as success, with the commands run no more,
+// deleted the task's branch, and closed the task as completed, from
+// pr-open, keyed event=g<pr> (SPEC §7.5's Carrying the check over). Then
+// it runs the two passes that read the close and judge it, after which
+// the task is at completed.
+func (v *verdictRig) storyMergeCarried(pr int, squash string) {
 	v.t.Helper()
 	ran := v.checksRan()
-	v.passes(2)
-	i := slices.IndexFunc(v.f.State().PRs, func(p githubtest.PRState) bool { return p.Number == pr })
-	if i < 0 || !v.f.State().PRs[i].Merged || v.checksRan() != ran+1 {
-		v.t.Fatalf("the passes after the PR step left the PRs %+v, and ran the commands %d times; want #%d merged, and once",
-			v.f.State().PRs, v.checksRan()-ran, pr)
+	v.pass()
+	if got := v.f.State().CheckRuns; !slices.Contains(got, tipCheck(squash, storyVerifyBranch, "success")) || v.checksRan() != ran {
+		v.t.Errorf("the pass after the merge left the checks %+v, and ran the commands %d times; want the carried success on %s, and never",
+			got, v.checksRan()-ran, squash)
 	}
+	if got := v.originTip(prBranch); got != "" {
+		v.t.Errorf("the task's branch is at %q; want it deleted", got)
+	}
+	mergedClosed(v.t, v.f, pr, "pr-open", "The App merged PR #"+strconv.Itoa(pr)+" into the story branch as `"+squash+"`, so this task is complete.\n\n")
+	v.passes(2)
+	if got := pickStage(v.f, 1); got != "stage:completed" {
+		v.t.Errorf("the task is at %s; want stage:completed", got)
+	}
+}
+
+// storyMergeSettles runs the pass after task 1's PR step, which merges its
+// PR, pr, into story #2's branch (prMerge), then the pass that carries the
+// tip's check over to the squash commit and closes the task, with no
+// command run, and the two that read the close (storyMergeCarried), so the
+// next unchanged pass is quiet.
+func (v *verdictRig) storyMergeSettles(pr int) {
+	v.t.Helper()
+	v.pass()
+	i := slices.IndexFunc(v.f.State().PRs, func(p githubtest.PRState) bool { return p.Number == pr })
+	if i < 0 || !v.f.State().PRs[i].Merged || pickStage(v.f, 1) != "stage:pr-open" {
+		v.t.Fatalf("the pass after the PR step left the PRs %+v, the task at %s; want #%d merged, and the task at pr-open till the next pass",
+			v.f.State().PRs, pickStage(v.f, 1), pr)
+	}
+	v.storyMergeCarried(pr, v.originTip(storyVerifyBranch))
 }
 
 // A task in a story at pr-open, whose PR step's pass is read on the next
 // pass, is merged there: the PR is read again, one conditional request,
 // and squash-merged at the verified head, with its title and number as the
 // squash commit's title and its body as its message, onto the tip the head
-// was verified against, the PR's one write. The task stays at pr-open, as
-// nothing closes it yet. The pass after checks the branch's new tip, the
-// squash commit, and the passes after that make no request but 304s, and
-// never merge again.
+// was verified against, the PR's one write. The task stays at pr-open on
+// that pass. The pass after carries the tip's check over to the squash
+// commit, with no command run, and closes the task (storyMergeCarried),
+// and once the close is read, the passes after make no request but 304s,
+// and never merge again.
 func TestPRMergeMerges(t *testing.T) {
 	t.Parallel()
 	f, v, tip, head, pr := storyMergeReady(t)
@@ -154,12 +177,10 @@ func TestPRMergeMerges(t *testing.T) {
 		t.Errorf("the PR's reads in the merge's pass = %+v; want one", reads)
 	}
 	squash := v.storyMerged(pr, tip)
-	ran := v.checksRan()
-	v.pass()
-	if got := f.State().CheckRuns; !slices.Contains(got, tipCheck(squash, storyVerifyBranch, "success")) || v.checksRan() != ran+1 {
-		t.Errorf("the pass after the merge left the checks %+v, and ran the commands %d times; want the new tip's success among them, and once",
-			got, v.checksRan()-ran)
+	if pickStage(f, 1) != "stage:pr-open" {
+		t.Errorf("the merge's pass left the task at %s; want pr-open, as the next pass reads the merge", pickStage(f, 1))
 	}
+	v.storyMergeCarried(pr, squash)
 	from = len(f.Requests())
 	v.quietPass("after the merge")
 	v.quietPass("again")
@@ -443,9 +464,10 @@ func TestPRMergeRefused(t *testing.T) {
 
 // A crash after the merge, whose answer is lost, leaves the PR merged:
 // the pass fails, and a fresh daemon finds the PR merged by the poll, so
-// it never merges it again (SPEC §5.2). The task stays at pr-open, as
-// nothing closes it yet, and its passes are quiet once the new tip is
-// checked.
+// it never merges it again (SPEC §5.2). It holds no tip's judging after
+// the restart, so it carries no check over to the squash commit: it
+// closes the task, and step 4 checks the new tip as any push (SPEC §7.5's
+// Carrying the check over). Its passes are quiet once that's read.
 func TestPRMergeCrash(t *testing.T) {
 	t.Parallel()
 	f, v, tip, _, pr := storyMergeReady(t)
@@ -459,8 +481,15 @@ func TestPRMergeCrash(t *testing.T) {
 		t.Fatalf("the failed write was %+v; want the merge", w)
 	}
 	v = v.restart()
+	ran := v.checksRan()
 	v.passes(3)
-	v.storyMerged(pr, tip)
+	squash := v.storyMerged(pr, tip)
+	if got := f.State().CheckRuns; !slices.Contains(got, tipCheck(squash, storyVerifyBranch, "success")) || v.checksRan() != ran+1 {
+		t.Errorf("after the restart, the checks are %+v, and the commands ran %d times; want the new tip's success, checked once", got, v.checksRan()-ran)
+	}
+	if pickStage(f, 1) != "stage:completed" || !f.State().Issues[0].Closed {
+		t.Errorf("the task is at %s, closed %t; want completed, and closed", pickStage(f, 1), f.State().Issues[0].Closed)
+	}
 	v.quietPass("after the restart")
 }
 
@@ -607,11 +636,12 @@ func TestPRMergeReviewWaitsForTip(t *testing.T) {
 
 // The App's merge, a crash at each of its writes, then a restart: the
 // replay ends with the PR merged once, its squash commit on the story
-// branch, and that new tip checked (SPEC §5.2). Each pass is a fresh
-// daemon on the fake's own bare clone, so its first iteration reads the
-// tip's check, its second merges, and its third checks the new tip. The
-// origin is shared, so each setup puts the task's branch and the story
-// branch back.
+// branch, that new tip checked, and the task closed (SPEC §5.2). Each pass
+// is a fresh daemon on the fake's own bare clone, so its first iteration
+// reads the tip's check, its second merges, its third carries the check
+// over to the new tip and closes the task, or after a crash, checks the
+// new tip as any push, and the two after read the close. The origin is
+// shared, so each setup puts the task's branch and the story branch back.
 func TestPRMergeReplay(t *testing.T) {
 	t.Parallel()
 	_, base := newStoryVerifyRig(t)
@@ -658,7 +688,7 @@ func TestPRMergeReplay(t *testing.T) {
 		v := &verdictRig{rig: g, o: base.o, cfg: base.cfg, ran: base.ran}
 		v.wire()
 		v.storyFetch(head)
-		for range 3 {
+		for range 5 {
 			if err := v.d.Iterate(context.Background()); err != nil {
 				return err
 			}
@@ -667,8 +697,8 @@ func TestPRMergeReplay(t *testing.T) {
 	})
 	for f := range roots {
 		prs := f.State().PRs
-		if len(prs) != 1 || !prs[0].Merged || prs[0].MergedBy != app || pickStage(f, 1) != "stage:pr-open" {
-			t.Fatalf("after the replay, the PRs = %+v, the task at %s; want one, merged by %s, and pr-open", prs, pickStage(f, 1), app)
+		if len(prs) != 1 || !prs[0].Merged || prs[0].MergedBy != app || !f.State().Issues[0].Closed {
+			t.Fatalf("after the replay, the PRs = %+v, the task closed %t; want one, merged by %s, and the task closed", prs, f.State().Issues[0].Closed, app)
 		}
 	}
 }

@@ -225,7 +225,8 @@ type Daemon struct {
 	tips map[string]tipJudged
 	// tipsMerged is, by story branch, the tip the App last merged a task's
 	// PR onto, which is the branch's tip no more, though the bare clone
-	// names it till the next sync (tipMergedOnto).
+	// names it till the next sync, which forgets it (reload,
+	// tipMergedOnto).
 	tipsMerged map[string]string
 	// storyWarned is the key of the last warning logged for each story, or
 	// task in one, by issue number, so a wait that lasts is warned of once
@@ -664,6 +665,10 @@ func (d *Daemon) reload(ctx context.Context) {
 		logr.Errorf("syncing the clone of %s/%s failed, so the last good config and trust stay: %v", a.Owner, a.Repo, err)
 		return
 	}
+	// The sync brings each story branch's tip past the App's merges onto
+	// it, so no tip the App merged onto is held back any more
+	// (tipMergedOnto).
+	d.tipsMerged = nil
 	if cfg, err := config.Load(ctx, d.Clone); err != nil {
 		logr.Errorf("loading the config of %s/%s from main failed, so the last good one stays: %v", a.Owner, a.Repo, err)
 	} else {

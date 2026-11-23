@@ -111,8 +111,11 @@ func (d *Daemon) tipSuccess(branch, tip string) bool {
 // sync brings the new one (SPEC §7.5). So for the rest of the pass that
 // merged, and any pass whose sync fails, nothing names tip as the story's
 // tip: not another task's merge, the pick, a run's start, nor the checks
-// at verifying (tipSuccess). Once the bare clone names the new tip, it no
-// longer matches. The tip's judgment stays (Daemon.tips), so step 4 checks
+// at verifying (tipSuccess). The next good sync forgets it (reload), as
+// the bare clone names the new tip then, so on the pass after the merge
+// the tip's success is what the check carried over to the merge commit is
+// judged by (tipCarry), and a branch pushed back to tip by force isn't held
+// for good. The tip's judgment stays (Daemon.tips), so step 4 checks
 // nothing again for it, and makes no request for it.
 func (d *Daemon) tipMergedOnto(branch, tip string) bool {
 	return tip != "" && d.tipsMerged[branch] == tip

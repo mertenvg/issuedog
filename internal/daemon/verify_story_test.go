@@ -134,9 +134,10 @@ func storyAgainst(tip string) string {
 // the task's change and not the story's. Its pass moves nothing: the pass
 // after, the PR step's, opens its PR into the story branch and moves it to
 // pr-open (pr_story_test.go), with no command run, and once that's read,
-// which merges the PR, and the story branch's new tip is checked
-// (storyMergeSettles), the passes after make no request but 304s, run no
-// command and start no run.
+// which merges the PR, and the next pass carries the tip's check over to
+// the merge and closes the task, with no command run (storyMergeSettles),
+// the passes after make no request but 304s, run no command and start no
+// run.
 func TestVerifyStoryPass(t *testing.T) {
 	t.Parallel()
 	f, v := newStoryVerifyRig(t)
@@ -174,8 +175,8 @@ func TestVerifyStoryPass(t *testing.T) {
 	v.storyMergeSettles(f.State().PRs[0].Number)
 	v.quietPass("the pass after a story task's PR step")
 	v.quietPass("again")
-	if pickStage(f, 1) != "stage:pr-open" || v.runs() != 1 || v.checksRan() != 3 {
-		t.Errorf("the task is at %s, after %d runs and the commands run %d times; want pr-open, one, and 3, the last on the merge's new tip",
+	if pickStage(f, 1) != "stage:completed" || v.runs() != 1 || v.checksRan() != 2 {
+		t.Errorf("the task is at %s, after %d runs and the commands run %d times; want completed, one, and twice, as the merge's new tip has the check carried over",
 			pickStage(f, 1), v.runs(), v.checksRan())
 	}
 }
@@ -404,9 +405,9 @@ func TestVerifyStoryPersonHead(t *testing.T) {
 // the verifier. After the verifier's pass, a fresh daemon runs the checks
 // once more, and the pass after is the PR step's, which opens the task's
 // PR into its story branch and moves it to pr-open, with no command and no
-// run, and once that's read, which merges the PR, and the story branch's
-// new tip is checked (storyMergeSettles), the passes after make no request
-// but 304s.
+// run, and once that's read, which merges the PR, and the next pass
+// carries the tip's check over to the merge and closes the task
+// (storyMergeSettles), the passes after make no request but 304s.
 func TestVerifyStoryRestart(t *testing.T) {
 	t.Parallel()
 	f, v := newStoryVerifyRig(t)
