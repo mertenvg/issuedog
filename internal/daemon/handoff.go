@@ -87,7 +87,7 @@ func (r *Runs) start(ctx context.Context, st Stage, is state.Issue, n int, story
 	if !hasHead {
 		return runStart{Commits: workspace.Commits{Start: base}, StoryTip: story.StoryTip, Branch: branch}, nil
 	}
-	c, err := r.startFrom(ctx, n, head, baseline, base, branch, mainRound(is))
+	c, err := r.startFrom(ctx, n, head, baseline, base, branch, targetRound(is))
 	if err != nil {
 		return runStart{}, fmt.Errorf("name the task's head %s: %w", head, err)
 	}
@@ -122,10 +122,11 @@ func (r *Runs) startAfterChecks(ctx context.Context, is state.Issue, n int) (run
 // startFrom names the commits of a run on task n, whose head is head, with
 // baseline, a main commit, as its rule 2 baseline, and target, branch's
 // commit, as its target (SPEC §3.4, §10.1), and with merge, in a round
-// that main's moving began at pr-open (mainRound). For a task with no
-// parent, baseline and target are both main's commit, and branch is main;
-// for a task in a story, target is its story branch's tip, and baseline
-// the story's. It reads only the bare repo, so it costs no request.
+// that its target's moving began at pr-open, main's or its story branch's
+// tip's (targetRound). For a task with no parent, baseline and target are
+// both main's commit, and branch is main; for a task in a story, target is
+// its story branch's tip, and baseline the story's. It reads only the bare
+// repo, so it costs no request.
 //   - A head that fails rule 2 is never named: the run starts from target,
 //     as a first attempt does, and the log says why, as Dropped does for
 //     the preamble: rule 2's finding. A head with no merge base with
@@ -136,8 +137,10 @@ func (r *Runs) startAfterChecks(ctx context.Context, is state.Issue, n int) (run
 //     merge-tree read rule 7 judges by (repo.MergeTree), starts the run
 //     with target named as its target, to merge first.
 //   - So does one that merges cleanly, with merge, while target isn't in
-//     its history: its merge with main failed the checks (SPEC §7.2,
-//     §10.4), and the fix needs main's changes in the checkout.
+//     its history: its merge with main, or with its story branch's tip,
+//     failed the checks (SPEC §7.2, §10.4), and the fix needs the target's
+//     changes in the checkout. The run's target is the tip as the pass's
+//     sync left it, which may be newer than the one the move names.
 //   - Otherwise the run starts from the head, with no target.
 //
 // The log and Dropped name target with its branch. Any other failed read
@@ -176,7 +179,7 @@ func (r *Runs) startFrom(ctx context.Context, n int, head, baseline, target, bra
 			return runStart{}, fmt.Errorf("read %s against the head: %w", branch, err)
 		}
 		if !merged {
-			logr.Infof("#%d: main moving sent the task back, and its head %s lacks %s's %s, so the run starts from the head with %s named as its target, to merge first",
+			logr.Infof("#%d: its target moving sent the task back, and its head %s lacks %s's %s, so the run starts from the head with %s named as its target, to merge first",
 				n, head, branch, target, branch)
 			return runStart{Commits: workspace.Commits{Start: head, Target: target}}, nil
 		}

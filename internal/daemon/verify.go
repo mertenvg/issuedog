@@ -309,7 +309,9 @@ func targetBasesDetail(baseline, target string, err error) string {
 // no parent, both are main's commit as the pass's sync left it, and Branch
 // is "" (mainTarget). For a task in a story, SHA is the tip of its story's
 // branch, Branch, as the pass's sync left it, and Baseline is the story's,
-// the merge base of that tip and main (storyTarget).
+// the merge base of that tip and main (storyTarget). A task at pr-open's
+// head is checked on its merge with one the same way once it moves
+// (mergeTarget).
 type VerifyTarget struct {
 	Branch, SHA, Baseline string
 }

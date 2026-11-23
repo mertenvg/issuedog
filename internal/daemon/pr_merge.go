@@ -52,8 +52,9 @@ func prMoveTip(is state.Issue) string {
 //     task's prefix, merges nothing;
 //   - its story branch's tip has the App's issuedog/tip naming the branch
 //     as success (prStoryTip), and is that tip=, or a tip the head's merge
-//     with has passed the checks on since (prMergeOnto). Otherwise it waits
-//     at pr-open, with no request, logged once a cause (prMergeOnce).
+//     with has passed the checks on since, as step 4 judged it
+//     (prMergeOnto). Otherwise it waits at pr-open, with no request, logged
+//     once a cause (prMergeOnce).
 //
 // A head a person pushed (personPROpen) is merged only while the App's
 // newest issuedog/verify on it isn't a failure (prPersonFailed). Then the
@@ -77,7 +78,8 @@ func prMoveTip(is state.Issue) string {
 // merged (Daemon.prs), so it's never merged again, nor judged again
 // (prPass), and the tip it went onto is kept too (tipMerged), so nothing
 // else names that tip as the story's tip for the rest of the pass, as a
-// sibling task's merge would, onto a tip it wasn't verified against. Any
+// sibling task's merge would, onto a tip neither its head nor its merge
+// was checked against. Any
 // other failure is an error, and the next pass tries again.
 func (d *Daemon) prMerge(ctx context.Context, s *github.Snapshot, dirt Dirt, is state.Issue, p listedPR) (*Move, error) {
 	a, n := d.Step.Applier, s.Number
@@ -111,7 +113,7 @@ func (d *Daemon) prMerge(ctx context.Context, s *github.Snapshot, dirt Dirt, is 
 		return nil, nil
 	}
 	if tip != onto && !d.prMergeOnto(n, head, tip) {
-		d.prMergeOnce(n, "tip:"+tip, logr.Infof, "%s/%s#%d: its PR #%d waits: its story branch %s is at %s, not at %s, the tip its head %s was verified against, and its merge with the new tip isn't checked",
+		d.prMergeOnce(n, "tip:"+tip, logr.Infof, "%s/%s#%d: its PR #%d waits: its story branch %s is at %s, not at %s, the tip its head %s was verified against, and its merge with the new tip hasn't passed the checks",
 			a.Owner, a.Repo, n, p.Number, branch, tip, onto, head)
 		return nil, nil
 	}
@@ -238,12 +240,15 @@ func (d *Daemon) prStoryTip(ctx context.Context, s *github.Snapshot) (branch, ti
 // merged onto tip, its story branch's tip, a tip other than the one the
 // head was verified against, as a sibling's merge leaves (SPEC §7.5's The
 // merge's guards): only once SPEC §10.1's checks have passed on the head's
-// merge with tip, as step 4 judges it, or after a restart, as the head's
-// newest App issuedog/verify naming tip=<tip> as success says. Not built
-// yet (#797): no merge with a moved tip is checked, so the task waits at
-// pr-open, with no request.
+// merge with tip, as step 4 judged it (Runs.mainMoved), or after a
+// restart, as the head's newest App issuedog/verify naming tip=<tip> as
+// success says, which step 4 reads once, at no request here: both are
+// kept in Daemon.mergeJudged, by head and tip. Until then the task waits
+// at pr-open, with no request. A person's head kept there on its failure,
+// as mainMoved keeps it, is never merged either way: it has no tip= on
+// its move (prMoveTip), or prMerge reads that failure (prPersonFailed).
 func (d *Daemon) prMergeOnto(n int, head, tip string) bool {
-	return false
+	return d.mergeJudged[n].holds(head, tip)
 }
 
 // prPersonFailed reports whether the App's newest issuedog/verify on head,

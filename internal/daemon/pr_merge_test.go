@@ -374,31 +374,39 @@ func TestPRMergeReview(t *testing.T) {
 }
 
 // A story branch that moved since the head was verified against it, as
-// by a push, isn't merged onto (SPEC §7.5's The merge's guards): the pass
-// whose sync brings the new tip, unchecked yet, merges nothing, and checks
-// it, and once it's success the task waits at pr-open, with no request,
-// as no check on the head's merge with the new tip is built.
+// by a push, isn't merged onto till the head's merge with it passes (SPEC
+// §7.5's The merge's guards): the pass whose sync brings the new tip,
+// unchecked yet, merges nothing, and checks it, with no request for the
+// task's PR or its head, as the task waits for that check. Once it's
+// success, the next pass checks the head's merge with the new tip, once,
+// and posts issuedog/verify as success on the head, naming the tip (SPEC
+// §10.4). The pass after merges the PR onto that tip, and the one after
+// carries the tip's check over to the squash commit, with no command run,
+// and closes the task. Once that's read, the passes are quiet.
 func TestPRMergeTipMoved(t *testing.T) {
 	t.Parallel()
-	f, v, _, _, pr := storyMergeReady(t)
+	f, v, _, head, pr := storyMergeReady(t)
 	moved := v.tipPush(storyVerifyBranch, map[string]string{"more.txt": "more of the story\n"})
-	ran, writes := v.checksRan(), len(f.Writes())
+	from, ran, writes := len(f.Requests()), v.checksRan(), len(f.Writes())
 	v.pass()
 	if got := f.State().CheckRuns; !slices.Contains(got, tipCheck(moved, storyVerifyBranch, "success")) || v.checksRan() != ran+1 {
 		t.Fatalf("the pass on the moved tip left the checks %+v, and ran the commands %d times; want its success, once", got, v.checksRan()-ran)
 	}
-	v.pass()
-	from := len(f.Requests())
-	v.quietPass("waiting on the moved tip")
-	v.quietPass("again")
-	if reads, writes := prRequests(f, from); reads != 0 || writes != 0 {
-		t.Errorf("the waiting passes read /pulls %d times, and wrote it %d times; want neither", reads, writes)
+	if reads, writes := prRequests(f, from); reads != 0 || writes != 0 || prMainReads(f, from, head) != 0 {
+		t.Errorf("the pass waiting on the moved tip's check read /pulls %d times, wrote it %d times, and read the head's checks %d times; want none",
+			reads, writes, prMainReads(f, from, head))
 	}
 	if got := storyMerges(f, writes, pr); len(got) != 0 || f.State().PRs[0].State != "open" || pickStage(f, 1) != "stage:pr-open" ||
 		v.originTip(storyVerifyBranch) != moved {
 		t.Errorf("the merges = %+v, the PR %s, the task at %s, the story branch at %s; want none, open, pr-open, and %s",
 			got, f.State().PRs[0].State, pickStage(f, 1), v.originTip(storyVerifyBranch), moved)
 	}
+	v.storyTipPassed(1, pr, head, moved)
+	squash := v.storyTipMergedOnto(pr, head, moved)
+	v.storyTipCarried(1, pr, squash, moved, head)
+	v.passes(2)
+	v.quietPass("after the merge")
+	v.quietPass("again")
 }
 
 // GitHub's refusal of the merge, a 409 or a 405, closes nothing and writes
