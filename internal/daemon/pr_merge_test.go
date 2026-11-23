@@ -381,10 +381,12 @@ func TestPRMergeTipMoved(t *testing.T) {
 }
 
 // GitHub's refusal of the merge, a 409 or a 405, closes nothing and writes
-// nothing else, and the task stays at pr-open. It's warned of once a head,
-// not every pass, and the next pass tries again, its read of the PR a
-// conditional one GitHub answers 304, so once GitHub takes it, the PR
-// merges. It reads logr, so it isn't parallel.
+// nothing else, and the task stays at pr-open. The passes after make no
+// request for it, till the PR changes, as by the owner's approving review,
+// which moves nothing: then the merge is tried again, its read of the PR a
+// conditional one. A second refusal of the head isn't warned of again, and
+// once GitHub takes it, the PR merges. It reads logr, so it isn't
+// parallel.
 func TestPRMergeRefused(t *testing.T) {
 	for _, status := range []int{http.StatusConflict, http.StatusMethodNotAllowed} {
 		t.Run(strconv.Itoa(status), func(t *testing.T) {
@@ -392,9 +394,13 @@ func TestPRMergeRefused(t *testing.T) {
 			match := func(r githubtest.Request) bool { return r.Method == http.MethodPut && r.Path == storyMergePath(pr) }
 			from, writes := len(f.Requests()), len(f.Writes())
 			stop := logtest.Capture(t, logr.W)
-			for range 2 {
+			for i := range 2 {
+				if i > 0 {
+					f.ReviewPR(pr, wholeRunOwner, github.ReviewApproved, "", nil)
+				}
 				f.AnswerOnce(match, status)
 				v.pass()
+				v.quietPass("after a refusal")
 			}
 			logs := stop()
 			want := "o/r#1: GitHub refused to merge its PR #" + strconv.Itoa(pr) + " at " + head + " into " + storyVerifyBranch
@@ -416,13 +422,14 @@ func TestPRMergeRefused(t *testing.T) {
 			if len(tries) != 2 || tries[0].Status != status || tries[1].Status != status {
 				t.Errorf("the merges tried = %+v; want two, each answered %d", tries, status)
 			}
-			if len(reads) != 2 || !reads[1].Conditional || reads[1].Status != http.StatusNotModified {
-				t.Errorf("the PR's reads = %+v; want two, the second a conditional one answered 304", reads)
+			if len(reads) != 2 || !reads[1].Conditional {
+				t.Errorf("the PR's reads = %+v; want two, the second a conditional one", reads)
 			}
 			if f.State().PRs[0].State != "open" || pickStage(f, 1) != "stage:pr-open" || v.originTip(storyVerifyBranch) != tip {
 				t.Fatalf("after the refusals, the PR is %s, the task at %s, the story branch at %s; want open, pr-open, and %s",
 					f.State().PRs[0].State, pickStage(f, 1), v.originTip(storyVerifyBranch), tip)
 			}
+			f.ReviewPR(pr, wholeRunOwner, github.ReviewApproved, "", nil)
 			v.pass()
 			if got := storyMerges(f, writes, pr); len(got) != 1 {
 				t.Errorf("the merges = %+v; want one", got)

@@ -97,10 +97,34 @@ type tipJudged struct {
 // naming branch as success, as the daemon judged or read it (Daemon.tips,
 // Runs.tipCheck). It answers from memory alone, at no request: a tip not
 // judged yet, as a new one, or after a restart before step 4 reads its
-// check, isn't success, and nor is a failure.
+// check, isn't success, and nor is a failure. Nor is a tip the App merged
+// a task's PR onto (tipMergedOnto): the branch is past it, though the bare
+// clone holds it till the next sync.
 func (d *Daemon) tipSuccess(branch, tip string) bool {
 	j, ok := d.tips[branch]
-	return ok && tip != "" && j.Tip == tip && j.Conclusion == checkSuccess
+	return ok && tip != "" && j.Tip == tip && j.Conclusion == checkSuccess && !d.tipMergedOnto(branch, tip)
+}
+
+// tipMergedOnto reports whether the App merged a task's PR onto tip, as
+// branch's tip (Daemon.tipsMerged, prMerge), so the branch's tip is that
+// merge's squash commit, not tip, though the bare clone names tip till a
+// sync brings the new one (SPEC §7.5). So for the rest of the pass that
+// merged, and any pass whose sync fails, nothing names tip as the story's
+// tip: not another task's merge, the pick, a run's start, nor the checks
+// at verifying (tipSuccess). Once the bare clone names the new tip, it no
+// longer matches. The tip's judgment stays (Daemon.tips), so step 4 checks
+// nothing again for it, and makes no request for it.
+func (d *Daemon) tipMergedOnto(branch, tip string) bool {
+	return tip != "" && d.tipsMerged[branch] == tip
+}
+
+// tipMerged keeps tip as the tip of branch the App merged a task's PR
+// onto (tipMergedOnto).
+func (d *Daemon) tipMerged(branch, tip string) {
+	if d.tipsMerged == nil {
+		d.tipsMerged = map[string]string{}
+	}
+	d.tipsMerged[branch] = tip
 }
 
 // tipJudge keeps tip as branch's tip judged with conclusion (Daemon.tips).

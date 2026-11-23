@@ -209,6 +209,10 @@ type Daemon struct {
 	// person pushed, by task, the head the App's newest issuedog/verify was
 	// read as failure on, so it's read once a head (prPersonFailed).
 	prMergeFailed map[int]string
+	// prMergeRefused is GitHub's last refusal of each task's PR's merge
+	// into its story branch, by task, so the merge waits, with no request,
+	// till its head, its PR or its story branch's tip changes (prMerge).
+	prMergeRefused map[int]prRefusal
 	// workerLeased is whether a run's lease held the worker when Work last
 	// ended (Runs.Work), for step 2's moves that take it (workerFree).
 	workerLeased bool
@@ -218,6 +222,10 @@ type Daemon struct {
 	// unchanged tip is checked once and costs no request (Runs.tipCheck,
 	// tipSuccess).
 	tips map[string]tipJudged
+	// tipsMerged is, by story branch, the tip the App last merged a task's
+	// PR onto, which is the branch's tip no more, though the bare clone
+	// names it till the next sync (tipMergedOnto).
+	tipsMerged map[string]string
 	// storyWarned is the key of the last warning logged for each story, or
 	// task in one, by issue number, so a wait that lasts is warned of once
 	// (storyWarnOnce).

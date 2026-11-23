@@ -398,8 +398,9 @@ func (r *Runs) pickOpenBlocker(ctx context.Context, n int) (int, bool, error) {
 // request. Two branches with its prefix get no cut and no pick, and that's
 // warned of once (pickStoryOnce). A tip whose App issuedog/tip naming the
 // branch isn't success, as step 4 judged or read it (tipSuccess), as a
-// new one before its check, after a restart before step 4 reads it, or a
-// failure, has rd wait, logged once a tip, still at no request. So a
+// new one before its check, after a restart before step 4 reads it, a
+// failure, or one step 2 merged a task's PR onto (tipMergedOnto), has rd
+// wait, logged once a tip, still at no request. So a
 // task waiting for its tip makes no request.
 //
 // Otherwise rd's own blockers are read (pickOwnBlocked), then its story's,
@@ -424,6 +425,9 @@ func (r *Runs) pickStory(ctx context.Context, rd Ready, story *github.Snapshot) 
 		why := "has no " + github.TipCheck + " as success yet"
 		if j, ok := d.tips[branch]; ok && j.Tip == tip {
 			why = "has " + github.TipCheck + " as " + j.Conclusion
+		}
+		if d.tipMergedOnto(branch, tip) {
+			why = "had a task's PR merged onto it, so it's the branch's tip no more"
 		}
 		r.pickStoryOnce(sn, "tip:"+branch+"@"+tip+":"+why, logr.Infof, "%s/%s#%d: no task in it is picked, as its branch %s's tip %s %s",
 			a.Owner, a.Repo, sn, branch, tip, why)

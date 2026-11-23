@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/mertenvg/logr/v2"
 
@@ -67,10 +68,16 @@ func prMoveTip(is state.Issue) string {
 // for a squash, as the commit's title, and its body as its message
 // (Client.MergePullRequest). GitHub's refusal, a 409 for a head or a base
 // that moved, or a 405 for a PR it won't merge, writes nothing and closes
-// nothing, and is logged once a head: the next pass tries again, with the
-// guards above. A merged PR is kept as merged (Daemon.prs), so it's never
-// merged again, nor judged again (prPass). Any other failure is an error,
-// and the next pass tries again.
+// nothing, and is logged once a head. It's kept (Daemon.prMergeRefused),
+// and the merge waits, with no request, till the head, the PR's updated_at
+// as the poll lists it, or the story branch's tip changes: a 409's head or
+// base that moved shows so, and a 405 that lasts, as for a rule GitHub
+// holds the merge by, costs no request a pass. A merged PR is kept as
+// merged (Daemon.prs), so it's never merged again, nor judged again
+// (prPass), and the tip it went onto is kept too (tipMerged), so nothing
+// else names that tip as the story's tip for the rest of the pass, as a
+// sibling task's merge would, onto a tip it wasn't verified against. Any
+// other failure is an error, and the next pass tries again.
 func (d *Daemon) prMerge(ctx context.Context, s *github.Snapshot, dirt Dirt, is state.Issue, p listedPR) (*Move, error) {
 	a, n := d.Step.Applier, s.Number
 	if s.Parent == 0 || !p.Open || p.Merged {
@@ -105,6 +112,11 @@ func (d *Daemon) prMerge(ctx context.Context, s *github.Snapshot, dirt Dirt, is 
 	if tip != onto && !d.prMergeOnto(n, head, tip) {
 		d.prMergeOnce(n, "tip:"+tip, logr.Infof, "%s/%s#%d: its PR #%d waits: its story branch %s is at %s, not at %s, the tip its head %s was verified against, and its merge with the new tip isn't checked",
 			a.Owner, a.Repo, n, p.Number, branch, tip, onto, head)
+		return nil, nil
+	}
+	if r, ok := d.prMergeRefused[n]; ok && r.Head == head && r.Tip == tip && r.UpdatedAt.Equal(p.UpdatedAt) {
+		logr.Debugf("%s/%s#%d: GitHub refused to merge its PR #%d at %s onto %s, and neither the head, the PR nor the story branch's tip changed since, so it isn't tried again yet",
+			a.Owner, a.Repo, n, p.Number, head, tip)
 		return nil, nil
 	}
 	if personPROpen(is) {
@@ -144,8 +156,12 @@ func (d *Daemon) prMerge(ctx context.Context, s *github.Snapshot, dirt Dirt, is 
 	commit, err := a.Client.MergePullRequest(ctx, a.Owner, a.Repo, p.Number, head, fmt.Sprintf("%s (#%d)", pr.Title, p.Number), pr.Body)
 	switch {
 	case errors.Is(err, github.ErrHeadMoved), errors.Is(err, github.ErrNotMergeable):
-		d.prMergeOnce(n, "refused:"+head, logr.Warnf, "%s/%s#%d: GitHub refused to merge its PR #%d at %s into %s, so nothing merged, and the next pass tries again: %v",
+		d.prMergeOnce(n, "refused:"+head, logr.Warnf, "%s/%s#%d: GitHub refused to merge its PR #%d at %s into %s, so nothing merged, and it's tried again once the head, the PR or the story branch's tip changes: %v",
 			a.Owner, a.Repo, n, p.Number, head, branch, err)
+		if d.prMergeRefused == nil {
+			d.prMergeRefused = map[int]prRefusal{}
+		}
+		d.prMergeRefused[n] = prRefusal{Head: head, Tip: tip, UpdatedAt: pr.UpdatedAt}
 		return nil, nil
 	case err != nil:
 		return nil, fmt.Errorf("merge its PR at %s: %w", head, err)
@@ -153,8 +169,18 @@ func (d *Daemon) prMerge(ctx context.Context, s *github.Snapshot, dirt Dirt, is 
 	p.Open, p.Merged = false, true
 	d.prs[p.Number] = p
 	delete(d.prMergeLogged, n)
+	delete(d.prMergeRefused, n)
+	d.tipMerged(branch, tip)
 	logr.Infof("%s/%s#%d: merged its PR #%d at %s into %s, onto %s, as %s", a.Owner, a.Repo, n, p.Number, head, branch, tip, commit)
 	return nil, nil
+}
+
+// prRefusal is GitHub's refusal of a task's PR's merge (prMerge): the head
+// it was asked at, the story branch's tip then, and the PR's updated_at,
+// as read just before.
+type prRefusal struct {
+	Head, Tip string
+	UpdatedAt time.Time
 }
 
 // prStoryTip is task s's story branch and its tip, as the pass's sync
@@ -162,8 +188,10 @@ func (d *Daemon) prMerge(ctx context.Context, s *github.Snapshot, dirt Dirt, is 
 // §7.5): s's story (storyOf), its one branch (storyBranch), and that tip's
 // App issuedog/tip naming the branch as success (tipSuccess). A parent
 // that's no story s is in, one whose plan data doesn't read back, two
-// branches with its prefix, no branch, and a tip not checked as success
-// yet, after a restart too until step 4 reads its check, each give why.
+// branches with its prefix, no branch, a tip not checked as success yet,
+// after a restart too until step 4 reads its check, and a tip the App
+// merged a task's PR onto (tipMergedOnto), as a sibling's in the same
+// pass, each give why.
 // It reads only the snapshots step 1 left, the bare repo and what step 4
 // judged, so it costs no request: the parent's dirty content is kept from
 // step 1 (Applier.Dirty), and read only for an epic's plan.
@@ -197,6 +225,8 @@ func (d *Daemon) prStoryTip(ctx context.Context, s *github.Snapshot) (branch, ti
 		return "", "", "", fmt.Errorf("name its story branch's tip: %w", err)
 	case tip == "":
 		return branch, "", fmt.Sprintf("its story #%d has no branch", story.Number), nil
+	case d.tipMergedOnto(branch, tip):
+		return branch, tip, fmt.Sprintf("its story branch %s's tip %s had a task's PR merged onto it, so it's the branch's tip no more, and the new tip isn't checked yet", branch, tip), nil
 	case !d.tipSuccess(branch, tip):
 		return branch, tip, fmt.Sprintf("its story branch %s's tip %s has no %s naming it as success", branch, tip, github.TipCheck), nil
 	}
