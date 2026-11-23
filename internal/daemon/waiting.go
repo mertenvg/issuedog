@@ -453,7 +453,7 @@ func waitFind(in waitInput) ([]waitItem, error) {
 	case is.Stage == state.PROpen && in.PR != nil && !in.PR.Merged && is.Moved(prClosedKey(*in.PR)):
 		// Its close was handed off already, so it moves the task no more.
 		pr := in.PR.Number
-		st := stall{Why: stalledClosed, PR: pr}
+		st := stall{Why: stalledClosed, PR: pr, Story: s.Parent != 0}
 		add(waitStalled, st.key(), state.BodyID, waitStalledLines(st))
 		it := &items[len(items)-1]
 		it.Link, it.ClosedPR = prLink(in.Owner, in.Repo, pr), pr
@@ -871,9 +871,12 @@ type stall struct {
 	// PR is someone else's open PR from the task's branch, or 0 when the
 	// listing the PR step read didn't show it, and Base that PR's base,
 	// the task's PR's, main or its story branch (stalledPR), or PR is the
-	// task's own PR, listed closed (stalledClosed).
-	PR   int
-	Base string
+	// task's own PR, listed closed (stalledClosed), and Story is set when
+	// that task is in a story, so its PR is into its story branch, which
+	// the App merges.
+	PR    int
+	Base  string
+	Story bool
 }
 
 // key is st's item's key after stalled-<n>-: the pass's run, or for a
@@ -958,6 +961,7 @@ func stalledHead(is state.Issue) string {
 //   - stalledClosed: at pr-open, its PR is closed, and its close was
 //     handed off already, as after a stage:pr-open set back by hand, so
 //     the close moves it no more: reopen the PR to wait on its review, or
+//     with st.Story, for the App's merge into its story branch, or
 //     set stage:ready for a new round, or close the issue. /done finishes
 //     only a hand-off waiting at needs-human, and the task has none here.
 func waitStalledLines(st stall) []waitLine {
@@ -986,10 +990,14 @@ func waitStalledLines(st stall) []waitLine {
 			{Text: fmt.Sprintf("Reset the branch to a commit in `%s`'s history, and the head is pushed and its PR opened; or %s, though its next head waits here again while the branch is at those commits.", st.Head, readyFree)},
 		}
 	case stalledClosed:
+		reopenWaits := "to wait on its review"
+		if st.Story {
+			reopenWaits = "for the App to merge it into the story branch once it's checked"
+		}
 		return []waitLine{
 			{Text: fmt.Sprintf("This task is at `%s`, but its PR #%d is closed, and its close was handed off already, so the close moves it no more.",
 				state.PROpen, st.PR)},
-			{Text: fmt.Sprintf("Reopen PR #%d to wait on its review, or %s, or close this issue.", st.PR, ready)},
+			{Text: fmt.Sprintf("Reopen PR #%d %s, or %s, or close this issue.", st.PR, reopenWaits, ready)},
 		}
 	}
 	act := fmt.Sprintf("Set `stage:%s` back to wait on its PR, or %s.", st.To, ready)

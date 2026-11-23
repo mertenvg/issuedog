@@ -1,8 +1,10 @@
 package daemon
 
 import (
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A task in a story's move to pr-open names its story branch, which an
@@ -60,5 +62,29 @@ func TestRenderPRClosedHandoffStory(t *testing.T) {
 				t.Errorf("the hand-off =\n%s\nwant it to hold\n%s\nand never the owner's review and merge", got, tt.step)
 			}
 		})
+	}
+}
+
+// A task in a story at pr-open whose PR into its story branch is listed
+// closed, with that close handed off already, is stalled as any task's
+// is, but its item says a reopened PR is the App's to merge into the
+// story branch, not one that waits on the owner's review (SPEC §7.5,
+// §9.4).
+func TestWaitFindStalledClosedStory(t *testing.T) {
+	t.Parallel()
+	closed := listedPR{Number: 7, Title: "feat: x", ClosedAt: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)}
+	handoff := "<!-- issuedog:transition from=pr-open to=needs-human event=" + prClosedKey(closed).ID + " -->"
+	hand := "<!-- issuedog:transition from=needs-human to=pr-open event=l900 -->"
+	s := prItemSnap("pr-open", prItemMoved("pr-open", " pr=7"), handoff, hand)
+	s.Parent = 2
+	in := waitIn(s, Dirt{})
+	in.PR = &closed
+	it := waitFindOne(t, in)
+	want := []string{
+		"This task is at `pr-open`, but its PR #7 is closed, and its close was handed off already, so the close moves it no more.",
+		"Reopen PR #7 for the App to merge it into the story branch once it's checked, or set `stage:ready` for a new round, or close this issue.",
+	}
+	if it.Kind != waitStalled || it.Key != "stalled-1-pr7" || it.ClosedPR != 7 || !slices.Equal(waitTexts(it.Lines), want) {
+		t.Errorf("the item = %+v; want a stalled task keyed stalled-1-pr7, carrying PR 7, its lines %q", it, want)
 	}
 }

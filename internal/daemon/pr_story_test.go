@@ -480,6 +480,26 @@ func TestPRStoryCloseAndReopen(t *testing.T) {
 	}
 }
 
+// A task's PR into its story branch closed by the owner then reopened by
+// someone untrusted at pr-open hands the task off, as for a PR to main,
+// but its first step says that, closed and reopened by the owner, the PR
+// waits for the App's merge, not the owner's.
+func TestPRStoryUntrustedReopen(t *testing.T) {
+	t.Parallel()
+	f, v, _, _, _, _ := storyPRReady(t)
+	v.passes(3)
+	pr := f.State().PRs[0].Number
+	f.ClosePR(pr, wholeRunOwner)
+	f.ReopenPR(pr, "mallory")
+	v.pass()
+	handoffs := personComments(t, f, "<!-- issuedog:transition from=pr-open to=needs-human ")
+	step := "1. To keep the PR, close it and reopen it yourself: the task goes back to `pr-open`, where the App merges it into the story branch once it's checked.\n"
+	if len(handoffs) != 1 || pickStage(f, 1) != "stage:needs-human" || !strings.Contains(handoffs[0].Body, step) ||
+		strings.Contains(handoffs[0].Body, "your review and merge") {
+		t.Errorf("the task at %s, its hand-offs %+v; want needs-human, by one holding\n%s\nand never the owner's review and merge", pickStage(f, 1), handoffs, step)
+	}
+}
+
 // A fresh daemon between the PR's open and the move: it reads the tip's
 // check once and runs the head's checks again, then its PR step finds the
 // task's PR among those into the story branch, opens no second one, and
