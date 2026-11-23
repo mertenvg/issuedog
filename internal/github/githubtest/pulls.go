@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	gogithub "github.com/google/go-github/v92/github"
 )
@@ -31,15 +32,21 @@ import (
 // one head and base, and a reopen once the branch's tip no longer has the
 // pull request's head in its history, as after a push by force while it
 // was closed (SPEC §16). A merged one is never reopened.
+// GET /pulls/{n} serves one, with merged, merged_by and merge_commit_sha,
+// and PUT /pulls/{n}/merge squash-merges one as the App, writing the squash
+// commit onto its base branch in the git remote (pullSquash), as MergePR
+// does for a merge from the web page into a base other than main.
 
 // pullRequest is what an issue the fake opened as a pull request has
 // beyond an issue's: its head and base branches, the SHA its head showed
-// when last read, whether it merged and who merged it, and its reviews,
+// when last read, whether it merged, who merged it and the squash commit
+// its merge wrote, "" for a merge into main (MergePR), and its reviews,
 // oldest first (reviews.go).
 type pullRequest struct {
 	head, base, headSHA string
 	merged              bool
 	mergedBy            string
+	mergeCommit         string
 	reviews             []*review
 }
 
@@ -58,6 +65,8 @@ func (f *Fake) handlePulls() {
 	f.handle("GET /pulls", f.listPulls)
 	f.handle("POST /pulls", f.createPull)
 	f.handle("PATCH /pulls/{n}", f.editPull)
+	f.handle("GET /pulls/{n}", f.getPull)
+	f.handle("PUT /pulls/{n}/merge", f.mergePull)
 }
 
 // SetGitRemote makes dir, a bare git repo, the one whose refs/heads/*
@@ -75,6 +84,12 @@ func (f *Fake) SetGitRemote(dir string) {
 // no inherited GIT_* variable, as internal/repo runs it, and returns its
 // trimmed stdout. The error wraps git's *exec.ExitError, with its stderr.
 func (f *Fake) remoteGit(ctx context.Context, args ...string) (string, error) {
+	return f.remoteGitEnv(ctx, nil, args...)
+}
+
+// remoteGitEnv runs git in the git remote as remoteGit does, with env, as
+// "KEY=value", set as well, such as a commit's author.
+func (f *Fake) remoteGitEnv(ctx context.Context, env []string, args ...string) (string, error) {
 	if f.pulls.remote == "" {
 		return "", errors.New("githubtest: no git remote to read branches from: call SetGitRemote")
 	}
@@ -85,6 +100,7 @@ func (f *Fake) remoteGit(ctx context.Context, args ...string) (string, error) {
 		}
 	}
 	cmd.Env = append(cmd.Env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
+	cmd.Env = append(cmd.Env, env...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
@@ -192,6 +208,9 @@ func (f *Fake) pullReopen(ctx context.Context, is *issue) (string, int, any) {
 
 // pullServe is is as /pulls serves it. The list leaves out merged and
 // merged_by, as GitHub's does, so a reader tells a merge by merged_at.
+// merge_commit_sha is served once a merge wrote a squash commit, in the
+// list too, as GitHub's has it. The fake has no test merge, which GitHub
+// gives an open pull request as its merge_commit_sha.
 func (f *Fake) pullServe(is *issue, listed bool) gogithub.PullRequest {
 	owner, name, _ := strings.Cut(f.repo, "/")
 	repo := &gogithub.Repository{Name: &name, FullName: &f.repo, Owner: user(owner)}
@@ -204,6 +223,9 @@ func (f *Fake) pullServe(is *issue, listed bool) gogithub.PullRequest {
 		IssueURL: new(fmt.Sprintf("%s/repos/%s/issues/%d", f.srv.URL, f.repo, is.GetNumber())),
 		Head:     branch(is.pr.head, &is.pr.headSHA),
 		Base:     branch(is.pr.base, nil),
+	}
+	if is.pr.mergeCommit != "" {
+		p.MergeCommitSHA = &is.pr.mergeCommit
 	}
 	if !listed {
 		p.Merged = new(is.pr.merged)
@@ -392,14 +414,153 @@ func (f *Fake) fakePull(number int) *issue {
 	return is
 }
 
+// getPull serves one pull request the fake opened, with merged, merged_by
+// and merge_commit_sha, as GitHub's GET /pulls/{n} does, and a 404 for an
+// issue that isn't one. An open one's head is read again from the git
+// remote first (pullFollow), so a push changes the answer, and its ETag.
+func (f *Fake) getPull(c *call) (int, any) {
+	is := c.issue
+	if is.pr == nil {
+		return http.StatusNotFound, message("Not Found")
+	}
+	if err := f.pullFollow(c.r.Context(), is); err != nil {
+		return http.StatusInternalServerError, message(err.Error())
+	}
+	return http.StatusOK, f.pullServe(is, false)
+}
+
+// mergePull merges a pull request as the App, as GitHub's PUT
+// /pulls/{n}/merge does, and answers 200 with the squash commit's SHA. The
+// repo allows only squash merging (SPEC §15), so a merge_method other than
+// squash, an absent one included, as GitHub takes that for a merge commit,
+// is refused with a 405 before anything else. The rest is pullSquash's,
+// with sha, if given, the head the merge must be at, commit_title the
+// squash commit's title, or GitHub's default, the pull request's title and
+// number, and commit_message its message, an empty one included, or the
+// pull request's body. Then it's merged as MergePR marks it, by the App.
+func (f *Fake) mergePull(c *call) (int, any) {
+	is := c.issue
+	if is.pr == nil {
+		return http.StatusNotFound, message("Not Found")
+	}
+	var req struct {
+		SHA           string  `json:"sha"`
+		MergeMethod   string  `json:"merge_method"`
+		CommitTitle   *string `json:"commit_title"`
+		CommitMessage *string `json:"commit_message"`
+	}
+	if status, msg := c.decode(&req); msg != nil {
+		return status, msg
+	}
+	if req.MergeMethod != "squash" {
+		return http.StatusMethodNotAllowed, message(fmt.Sprintf("githubtest: merge_method %q isn't allowed on this repository, which allows only squash", req.MergeMethod))
+	}
+	title, body := fmt.Sprintf("%s (#%d)", is.GetTitle(), is.GetNumber()), is.GetBody()
+	if req.CommitTitle != nil {
+		title = *req.CommitTitle
+	}
+	if req.CommitMessage != nil {
+		body = *req.CommitMessage
+	}
+	commit, status, msg := f.pullSquash(c.r.Context(), is, f.slug+"[bot]", req.SHA, title, body)
+	if msg != nil {
+		return status, msg
+	}
+	f.pullMerged(is, f.slug+"[bot]", commit)
+	return http.StatusOK, gogithub.PullRequestMergeResult{SHA: &commit, Merged: new(true), Message: new("Pull Request successfully merged")}
+}
+
+// pullSquash writes open pull request is's squash commit onto its base
+// branch in the git remote, as login, and returns its SHA, or the status
+// and message GitHub refuses the merge with, having changed nothing: a 405
+// for one closed or merged, or whose base branch is gone or whose head
+// conflicts with it, and a 409 when sha, if given, isn't its head. Its head
+// is read again first, as GitHub follows its branch (pullHead), and kept
+// as its head. The squash commit has the merge of the base's tip and the
+// head as its tree, built with git merge-tree, the base's tip as its only
+// parent, title and body as its message, an empty body leaving the
+// title alone, login as its author and GitHub as its committer. It's dated
+// Start, so a replay's squash of the same tree onto the same tip has the
+// clean run's SHA. The base moves to it only from the tip read, so nothing
+// else moves it between. A git remote that can't be read, none set
+// included, is a 500 naming why. f is locked.
+func (f *Fake) pullSquash(ctx context.Context, is *issue, login, sha, title, body string) (string, int, any) {
+	notMergeable := func(why string) (string, int, any) {
+		return "", http.StatusMethodNotAllowed, map[string]string{"message": "Pull Request is not mergeable", "githubtest": why}
+	}
+	if is.GetState() != "open" {
+		why := "is closed"
+		if is.pr.merged {
+			why = "merged already"
+		}
+		return notMergeable(fmt.Sprintf("#%d %s", is.GetNumber(), why))
+	}
+	head, err := f.pullHead(ctx, is)
+	if err != nil {
+		return "", http.StatusInternalServerError, message(err.Error())
+	}
+	if sha != "" && sha != head {
+		return "", http.StatusConflict, message("Head branch was modified. Review and try the merge again.")
+	}
+	base, err := f.pullTip(ctx, is.pr.base)
+	switch {
+	case err != nil:
+		return "", http.StatusInternalServerError, message(err.Error())
+	case base == "":
+		return notMergeable(fmt.Sprintf("the base branch %s is gone", is.pr.base))
+	}
+	out, err := f.remoteGit(ctx, "merge-tree", "--write-tree", "--no-messages", base, head)
+	switch {
+	case remoteNo(err):
+		return notMergeable(fmt.Sprintf("%s conflicts with %s", is.pr.head, is.pr.base))
+	case err != nil:
+		return "", http.StatusInternalServerError, message(err.Error())
+	}
+	tree, _, _ := strings.Cut(out, "\n")
+	args := []string{"commit-tree", tree, "-p", base, "-m", title}
+	if body != "" {
+		args = append(args, "-m", body)
+	}
+	date := Start.Format(time.RFC3339)
+	commit, err := f.remoteGitEnv(ctx, []string{"GIT_AUTHOR_NAME=" + login, "GIT_AUTHOR_EMAIL=" + login + "@users.noreply.github.com",
+		"GIT_AUTHOR_DATE=" + date, "GIT_COMMITTER_NAME=GitHub", "GIT_COMMITTER_EMAIL=noreply@github.com", "GIT_COMMITTER_DATE=" + date}, args...)
+	if err != nil {
+		return "", http.StatusInternalServerError, message(err.Error())
+	}
+	if _, err := f.remoteGit(ctx, "update-ref", "refs/heads/"+is.pr.base, commit, base); err != nil {
+		return "", http.StatusInternalServerError, message(err.Error())
+	}
+	is.pr.headSHA = head
+	return commit, 0, nil
+}
+
+// pullMerged marks pull request is merged by login, with commit as its
+// merge commit, "" for none: merged and closed, its merged_at set, with a
+// merged event and a closed event, each naming login, as GitHub's do, and
+// returns the closed event's ID. f is locked.
+func (f *Fake) pullMerged(is *issue, login, commit string) int64 {
+	now := f.tick()
+	is.pr.merged, is.pr.mergedBy, is.pr.mergeCommit, is.PullRequestLinks.MergedAt = true, login, commit, now
+	f.lastEvent++
+	id := firstEvent + f.lastEvent
+	is.labelEvents = append(is.labelEvents, &gogithub.Timeline{ID: &id, Event: new("merged"), Actor: user(login),
+		CreatedAt: &gogithub.Timestamp{Time: now.Add(f.eventLag)}})
+	return f.setState(is, "closed", "", login)
+}
+
 // MergePR merges open pull request number as login, as a merge from the
 // web page does: with its head read first, it's merged and closed, its
 // merged_at set, with a merged event and a closed event, each naming login,
-// as GitHub's do. A merge into main, the fake's default branch, then
-// closes the issue its body's first line names, as "Closes #N" does, as
-// CloseByPullRequest closes it. It returns the closed event's ID, or 0 if
-// the pull request wasn't open and nothing changed. A pull request the
-// fake didn't open, or whose head can't be read, fails the test.
+// as GitHub's do (pullMerged). A merge into main, the fake's default
+// branch, writes no commit, and then closes the issue its body's first
+// line names, as "Closes #N" does, as CloseByPullRequest closes it. A
+// merge into any other base is a squash, as the repo allows only those
+// (SPEC §15): its commit, titled with the pull request's title and number
+// and with its body as the message, is written onto the base in the git
+// remote, as pullSquash writes it, and is its merge_commit_sha. It returns
+// the closed event's ID, or 0 if the pull request wasn't open and nothing
+// changed. A pull request the fake didn't open, whose head can't be read,
+// or whose squash GitHub would refuse, fails the test.
 func (f *Fake) MergePR(number int, login string) int64 {
 	f.t.Helper()
 	f.mu.Lock()
@@ -408,20 +569,19 @@ func (f *Fake) MergePR(number int, login string) int64 {
 	if is.GetState() != "open" {
 		return 0
 	}
+	if is.pr.base != "main" {
+		commit, status, msg := f.pullSquash(context.Background(), is, login, "", fmt.Sprintf("%s (#%d)", is.GetTitle(), number), is.GetBody())
+		if msg != nil {
+			f.fakeFail("githubtest: merge #%d into %s: %d %v", number, is.pr.base, status, msg)
+		}
+		return f.pullMerged(is, login, commit)
+	}
 	sha, err := f.pullHead(context.Background(), is)
 	if err != nil {
 		f.fakeFail("githubtest: merge #%d: %v", number, err)
 	}
-	now := f.tick()
-	is.pr.headSHA, is.pr.merged, is.pr.mergedBy, is.PullRequestLinks.MergedAt = sha, true, login, now
-	f.lastEvent++
-	id := firstEvent + f.lastEvent
-	is.labelEvents = append(is.labelEvents, &gogithub.Timeline{ID: &id, Event: new("merged"), Actor: user(login),
-		CreatedAt: &gogithub.Timestamp{Time: now.Add(f.eventLag)}})
-	closed := f.setState(is, "closed", "", login)
-	if is.pr.base != "main" {
-		return closed
-	}
+	is.pr.headSHA = sha
+	closed := f.pullMerged(is, login, "")
 	line, _, _ := strings.Cut(is.GetBody(), "\n")
 	if m := pullClosing.FindStringSubmatch(line); m != nil {
 		n, err := strconv.Atoi(m[1])

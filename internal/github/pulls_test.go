@@ -324,3 +324,235 @@ func TestPullRequestReplay(t *testing.T) {
 		}, pullsReplayPass(t))
 	})
 }
+
+// pullsStory is a fake of o/r whose git remote has main, the story branch
+// issuedog/5-story, and the task branch issuedog/7-task one commit past
+// the story branch, with the App's open pull request from the task branch
+// into the story branch, its opening forgotten (ForgetWrites). It returns
+// the fake, a function that runs git in its remote, and the pull request.
+func pullsStory(t testing.TB) (*githubtest.Fake, func(args ...string) string, github.PullRequest) {
+	t.Helper()
+	f, git := pullsFake(t, "issuedog/5-story")
+	git("update-ref", "refs/heads/issuedog/7-task", git("commit-tree", git("mktree"), "-p", git("rev-parse", "refs/heads/issuedog/5-story"), "-m", "task"))
+	pr, err := f.Client(t).CreatePullRequest(context.Background(), "o", "r",
+		github.NewPullRequest{Title: "feat: the task", Head: "issuedog/7-task", Base: "issuedog/5-story", Body: "Task #7, in story #5."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.ForgetWrites()
+	return f, git, pr
+}
+
+// PullRequest reads one pull request: open, its head SHA, base, title,
+// body and author, unmerged with no merger or merge commit. A repeat with
+// nothing changed is a conditional request answered 304, and reads the
+// same. A push moves its head. Once merged into its story branch, it
+// reads merged, with the merger and the squash commit, the story branch's
+// new tip; the list gives the merge commit but no merger. A number that's
+// no pull request is an error naming it.
+func TestPullRequestRead(t *testing.T) {
+	t.Parallel()
+	f, git, opened := pullsStory(t)
+	c, ctx := f.Client(t), context.Background()
+	pr, err := c.PullRequest(ctx, "o", "r", opened.Number)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := github.PullRequest{Number: opened.Number, Head: "issuedog/7-task", HeadSHA: git("rev-parse", "refs/heads/issuedog/7-task"),
+		Base: "issuedog/5-story", State: "open", Title: "feat: the task", Body: "Task #7, in story #5.", Author: "issuedog[bot]", UpdatedAt: opened.UpdatedAt}
+	if !reflect.DeepEqual(pr, want) {
+		t.Errorf("read %+v; want %+v", pr, want)
+	}
+	from, notModified := len(f.Requests()), f.NotModified()
+	again, err := c.PullRequest(ctx, "o", "r", opened.Number)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqs := f.Requests()[from:]
+	if !reflect.DeepEqual(again, want) || f.NotModified() != notModified+1 || len(reqs) != 1 || !reqs[0].Conditional ||
+		reqs[0].Path != fmt.Sprintf("/pulls/%d", opened.Number) {
+		t.Errorf("a repeat: %+v, requests %+v, %d 304s; want the same, from one conditional GET answered 304", again, reqs, f.NotModified()-notModified)
+	}
+	pushed := git("commit-tree", git("mktree"), "-p", want.HeadSHA, "-m", "pushed")
+	git("update-ref", "refs/heads/issuedog/7-task", pushed)
+	if pr, err = c.PullRequest(ctx, "o", "r", opened.Number); err != nil || pr.HeadSHA != pushed || f.NotModified() != notModified+1 {
+		t.Errorf("read after a push: %+v, %v; want head %s, not a 304", pr, err, pushed)
+	}
+	f.MergePR(opened.Number, "owner")
+	tip := git("rev-parse", "refs/heads/issuedog/5-story")
+	if pr, err = c.PullRequest(ctx, "o", "r", opened.Number); err != nil || !pr.Merged || pr.State != "closed" || pr.MergedBy != "owner" ||
+		pr.MergeCommitSHA != tip || pr.HeadSHA != pushed {
+		t.Errorf("read after the merge: %+v, %v; want closed, merged by owner at %s, with merge commit %s", pr, err, pushed, tip)
+	}
+	listed, err := c.PullRequestsByHead(ctx, "o", "r", "issuedog/7-task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || !listed[0].Merged || listed[0].MergedBy != "" || listed[0].MergeCommitSHA != tip {
+		t.Errorf("listed %+v; want it merged, with merge commit %s and no merger, which the list leaves out", listed, tip)
+	}
+	issue := f.AddIssue("owner", "An issue", "")
+	var er *gogithub.ErrorResponse
+	if _, err := c.PullRequest(ctx, "o", "r", issue); !errors.As(err, &er) || er.Response.StatusCode != http.StatusNotFound ||
+		!strings.Contains(err.Error(), fmt.Sprintf("o/r#%d", issue)) {
+		t.Errorf("read an issue as a pull request: %v; want GitHub's 404, naming it", err)
+	}
+}
+
+// MergePullRequest squash-merges the pull request at the head named, in
+// one PUT with merge_method squash, the sha, the title as commit_title
+// and the body as commit_message, and returns the squash commit's SHA,
+// the story branch's new tip, whose only parent is the tip it had at the
+// merge, though the story branch moved since the head branched. The pull
+// request then reads merged by the App, with that commit. An empty body is
+// sent as an empty commit_message, not left out, so GitHub's default
+// message isn't used, and the commit's message is its title alone.
+func TestMergePullRequest(t *testing.T) {
+	t.Parallel()
+	f, git, opened := pullsStory(t)
+	c, ctx := f.Client(t), context.Background()
+	moved := git("commit-tree", git("mktree"), "-p", git("rev-parse", "refs/heads/issuedog/5-story"), "-m", "a sibling's merge")
+	git("update-ref", "refs/heads/issuedog/5-story", moved)
+	title := fmt.Sprintf("feat: the task (#%d)", opened.Number)
+	sha, err := c.MergePullRequest(ctx, "o", "r", opened.Number, opened.HeadSHA, title, opened.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tip := git("rev-parse", "refs/heads/issuedog/5-story"); sha != tip || sha == moved {
+		t.Errorf("merged as %s; want the story branch's new tip %s", sha, tip)
+	}
+	if got, want := git("log", "-1", "--format=%P|%B", sha), moved+"|"+title+"\n\nTask #7, in story #5."; got != want {
+		t.Errorf("the squash commit %q; want %q", got, want)
+	}
+	w := f.Writes()
+	want := fmt.Sprintf(`{"commit_message":"Task #7, in story #5.","commit_title":%q,"merge_method":"squash","sha":%q}`, title, opened.HeadSHA)
+	if len(w) != 1 || w[0].Method != http.MethodPut || w[0].Path != fmt.Sprintf("/pulls/%d/merge", opened.Number) || strings.TrimSpace(w[0].Body) != want {
+		t.Errorf("writes %+v; want one PUT /pulls/%d/merge %s", w, opened.Number, want)
+	}
+	pr, err := c.PullRequest(ctx, "o", "r", opened.Number)
+	if err != nil || !pr.Merged || pr.MergedBy != "issuedog[bot]" || pr.MergeCommitSHA != sha {
+		t.Errorf("read after the merge: %+v, %v; want merged by the App, with merge commit %s", pr, err, sha)
+	}
+
+	next := git("commit-tree", git("mktree"), "-p", sha, "-m", "the next task")
+	git("update-ref", "refs/heads/issuedog/8-task", next)
+	empty, err := c.CreatePullRequest(ctx, "o", "r", github.NewPullRequest{Title: "feat: the next task", Head: "issuedog/8-task", Base: "issuedog/5-story"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha, err = c.MergePullRequest(ctx, "o", "r", empty.Number, next, "feat: the next task", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := f.Writes(); !strings.Contains(w[len(w)-1].Body, `"commit_message":""`) {
+		t.Errorf("an empty body's merge sent %s; want an empty commit_message", w[len(w)-1].Body)
+	}
+	if got := git("log", "-1", "--format=%B", sha); got != "feat: the next task" {
+		t.Errorf("an empty body's squash commit message %q; want its title alone", got)
+	}
+}
+
+// GitHub's 409, for a head that moved past the sha named, wraps
+// ErrHeadMoved, and its 405, for a closed or merged pull request, wraps
+// ErrNotMergeable, each beside GitHub's error and not the other, and any
+// other failure wraps neither. None merges anything or moves the story
+// branch. An empty sha is refused before any request.
+func TestMergePullRequestRefused(t *testing.T) {
+	t.Parallel()
+	f, git, opened := pullsStory(t)
+	c, ctx := f.Client(t), context.Background()
+	story := git("rev-parse", "refs/heads/issuedog/5-story")
+	from := len(f.Requests())
+	if _, err := c.MergePullRequest(ctx, "o", "r", opened.Number, "", "T", "B"); err == nil || errors.Is(err, github.ErrHeadMoved) ||
+		errors.Is(err, github.ErrNotMergeable) || len(f.Requests()) != from {
+		t.Errorf("no sha: %v, %d requests; want an error of its own, before any request", err, len(f.Requests())-from)
+	}
+	pushed := git("commit-tree", git("mktree"), "-p", opened.HeadSHA, "-m", "pushed")
+	git("update-ref", "refs/heads/issuedog/7-task", pushed)
+	refused := func(name, sha string, status int, want, not error) {
+		t.Helper()
+		_, err := c.MergePullRequest(ctx, "o", "r", opened.Number, sha, "T", "B")
+		var er *gogithub.ErrorResponse
+		if !errors.Is(err, want) || errors.Is(err, not) || !errors.As(err, &er) || er.Response.StatusCode != status {
+			t.Errorf("%s: %v; want GitHub's %d wrapped with %v, not %v", name, err, status, want, not)
+		}
+		if got := git("rev-parse", "refs/heads/issuedog/5-story"); got != story {
+			t.Errorf("%s: the story branch moved to %s; want it left at %s", name, got, story)
+		}
+	}
+	refused("head moved", opened.HeadSHA, http.StatusConflict, github.ErrHeadMoved, github.ErrNotMergeable)
+	f.ClosePR(opened.Number, "owner")
+	refused("closed", opened.HeadSHA, http.StatusMethodNotAllowed, github.ErrNotMergeable, github.ErrHeadMoved)
+	f.ReopenPR(opened.Number, "owner")
+	f.FailWrite(len(f.Writes()) + 1)
+	if _, err := c.MergePullRequest(ctx, "o", "r", opened.Number, pushed, "T", "B"); err == nil || errors.Is(err, github.ErrHeadMoved) ||
+		errors.Is(err, github.ErrNotMergeable) {
+		t.Errorf("a 500: %v; want an error that's neither", err)
+	}
+	if pr, err := c.PullRequest(ctx, "o", "r", opened.Number); err != nil || pr.Merged {
+		t.Fatalf("read after the refusals: %+v, %v; want it unmerged", pr, err)
+	}
+	if _, err := c.MergePullRequest(ctx, "o", "r", opened.Number, pushed, "T", "B"); err != nil {
+		t.Fatal(err)
+	}
+	story = git("rev-parse", "refs/heads/issuedog/5-story")
+	refused("merged", pushed, http.StatusMethodNotAllowed, github.ErrNotMergeable, github.ErrHeadMoved)
+}
+
+// mergeReplayPass reads the task's pull request again and squash-merges
+// it at head unless it merged already, as the App merges (SPEC §6.4,
+// §7.5), then deletes the task's branch if del is set.
+func mergeReplayPass(t *testing.T, number int, head string, del bool) func(*githubtest.Fake) error {
+	return func(f *githubtest.Fake) error {
+		c, ctx := f.Client(t), context.Background()
+		pr, err := c.PullRequest(ctx, "o", "r", number)
+		if err != nil {
+			return fmt.Errorf("read: %w", err)
+		}
+		if !pr.Merged {
+			if _, err := c.MergePullRequest(ctx, "o", "r", number, head, pr.Title+fmt.Sprintf(" (#%d)", number), pr.Body); err != nil {
+				return fmt.Errorf("merge: %w", err)
+			}
+		}
+		if !del {
+			return nil
+		}
+		if err := c.DeleteBranch(ctx, "o", "r", pr.Head); err != nil {
+			return fmt.Errorf("delete: %w", err)
+		}
+		return nil
+	}
+}
+
+// The App's merge, and the delete of the task's branch after it, are safe
+// to replay after a crash at any write: one squash commit on the story
+// branch, the pull request merged by the App, and the task's branch gone.
+func TestMergePullRequestReplay(t *testing.T) {
+	t.Parallel()
+	_, git, opened := pullsStory(t)
+	story := git("rev-parse", "refs/heads/issuedog/5-story")
+	for _, tt := range []struct {
+		name     string
+		del      bool
+		branches int // the issuedog/ branches left: the story's, and the task's unless deleted
+	}{{"merge", false, 2}, {"merge then delete", true, 1}} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			setup := func(tb testing.TB) *githubtest.Fake {
+				f, _, _ := pullsStory(tb)
+				return f
+			}
+			clean := setup(t)
+			if err := mergeReplayPass(t, opened.Number, opened.HeadSHA, tt.del)(clean); err != nil {
+				t.Fatal(err)
+			}
+			s := clean.State()
+			if len(s.PRs) != 1 || s.PRs[0].MergedBy != "issuedog[bot]" || len(s.Branches) != tt.branches ||
+				s.Branches[0].Name != "issuedog/5-story" || s.Branches[0].SHA == story {
+				t.Fatalf("clean state: PRs %+v, branches %+v; want merged by the App, the story branch moved from %s, %d branches left",
+					s.PRs, s.Branches, story, tt.branches)
+			}
+			githubtest.Replay(t, setup, mergeReplayPass(t, opened.Number, opened.HeadSHA, tt.del))
+		})
+	}
+}
