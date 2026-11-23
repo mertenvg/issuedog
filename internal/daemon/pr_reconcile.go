@@ -20,9 +20,11 @@ import (
 // This file is step 2 for a task's PR, to main or into its story branch
 // (SPEC §6.4, §7.2, §8.1): a PR closed without merging, or reopened by
 // someone untrusted after a close, hands its task at pr-open to the owner at needs-human, and a
-// trusted user's reopen sends it back to pr-open. A merge is no close
-// here: its "Closes #N" closes the task, which the close judge accepts
-// (closingAccepted). A task at pr-open whose branch moved to a head the
+// trusted user's reopen sends it back to pr-open. A merge into main is no
+// close here: its "Closes #N" closes the task, which the close judge
+// accepts (closingAccepted). A merge into a story branch closes nothing on
+// GitHub, so the App closes the task itself, or hands it off
+// (pr_merged.go). A task at pr-open whose branch moved to a head the
 // daemon didn't push goes back to verifying (pr_head.go), and one a
 // trusted user's "comment" or "request changes" review sends back goes to
 // in-progress (pr_review.go).
@@ -47,15 +49,16 @@ import (
 //     it, at no request (prNewHead), and a move waiting for the worker is
 //     kept in memory (Daemon.prWaiting).
 
-// prPass judges the PR of each task held at pr-open or at needs-human
-// (Daemon.prDirt), step 2 (SPEC §8.1), after step 1's visits and before
-// the digest and assignment: a task whose step 1 failed this pass, or that
-// a command touched, waits for its next pass, keeping its PR's read
-// (Daemon.prRead), and so does a held one, which isn't judged. At pr-open,
-// the PR the task names (taskPR), one the App opened that isn't merged,
-// is judged by prJudgeOpenHead, and its branch too; at needs-human, the PR
-// of a hand-off for its close or untrusted reopen is judged by
-// prJudgeHandoff. A move it makes gets its task's items found again, so
+// prPass judges the PR of each task held at pr-open or at needs-human, or
+// in a story at in-progress or verifying (Daemon.prDirt), step 2 (SPEC
+// §8.1), after step 1's visits and before the digest and assignment: a
+// task whose step 1 failed this pass, or that a command touched, waits for
+// its next pass, keeping its PR's read (Daemon.prRead), and so does a held
+// one, which isn't judged. The PR the task names (taskPR), one the App
+// opened, is judged, when the poll lists it merged, by prMerged, at any of
+// those stages; otherwise, at pr-open, by prJudgeOpenHead, and its branch
+// too, and at needs-human, the PR of a hand-off for its close or untrusted
+// reopen, by prJudgeHandoff. A move it makes gets its task's items found again, so
 // the digest and assignment show it this pass, and its task is read again
 // next pass and skips Work. So does a task at pr-open stalled on its
 // closed PR (waitFind) whose PR the poll lists open again, as after a
@@ -91,7 +94,33 @@ func (d *Daemon) prPass(ctx context.Context) (map[int]bool, error) {
 			continue
 		}
 		p, ok := d.prs[taskPR(is)]
-		if !ok || p.Merged {
+		if !ok {
+			continue
+		}
+		if p.Merged || (is.Stage != state.PROpen && is.Stage != state.NeedsHuman) {
+			// A task leaves pr-open on its PR's merge, and one in a story
+			// at in-progress or verifying is kept for that alone
+			// (prDirtSet), so its move out of pr-open waits no more.
+			delete(d.prWaiting, n)
+		}
+		if p.Merged {
+			m, err := d.prMerged(ctx, s, is, p)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("judge PR %s/%s#%d of #%d, merged: %w", a.Owner, a.Repo, p.Number, n, err))
+				continue
+			}
+			if m == nil {
+				continue
+			}
+			if err := a.Transition(ctx, s, dirt.Has, *m); err != nil {
+				d.reread(n, false)
+				errs = append(errs, fmt.Errorf("judge PR %s/%s#%d of #%d, merged: %w", a.Owner, a.Repo, p.Number, n, err))
+				continue
+			}
+			logr.Infof("%s/%s#%d: its PR #%d's merge moved it to %s on %s", a.Owner, a.Repo, n, p.Number, m.To, m.Trigger)
+			d.digestCacheSet(s, d.inputs[n], dirt, nil, false, false)
+			d.reread(n, false)
+			moved[n] = true
 			continue
 		}
 		if is.Stage == state.PROpen && p.Open && slices.ContainsFunc(d.digestCache[n], func(it waitItem) bool { return it.ClosedPR == p.Number }) {
@@ -427,11 +456,12 @@ func prWindow(s *github.Snapshot, appSlug string, dirty func(int64) bool) time.T
 
 // prClosedMove reports whether m is the hand-off for a task's PR closed
 // without merging, or reopened by someone untrusted after a close
-// (prJudgeOpen): pr-open → needs-human, keyed event=. Its key tells which
-// (prClosedByReopen).
+// (prJudgeOpen): pr-open → needs-human, keyed event=, but for the hand-off
+// of its merge by someone untrusted (mergedHandoffMove). Its key tells
+// which (prClosedByReopen).
 func prClosedMove(m github.Marker) bool {
 	return m.Kind == "transition" && state.Stage(m.Fields["from"]) == state.PROpen &&
-		state.Stage(m.Fields["to"]) == state.NeedsHuman && m.Fields["event"] != ""
+		state.Stage(m.Fields["to"]) == state.NeedsHuman && m.Fields["event"] != "" && !mergedHandoffMove(m)
 }
 
 // prClosedByReopen reports whether m, a hand-off prClosedMove reports, is
@@ -517,17 +547,26 @@ func prBackWaits(story bool) string {
 }
 
 // prDirtSet keeps s's dirty content dirt, after its last good step 1,
-// while s is at pr-open or needs-human, for prPass, which moves it on that
-// snapshot, and forgets it otherwise. Iterate calls it beside
-// digestCacheSet.
+// while s is at pr-open or needs-human, or at in-progress or verifying
+// with a parent in this repo, as a task in a story has, and a PR (taskPR),
+// whose merge into its story branch prPass judges there too (prMerged),
+// for prPass, which moves it on that snapshot, and forgets it otherwise.
+// Iterate calls it beside digestCacheSet.
 func (d *Daemon) prDirtSet(s *github.Snapshot, dirt Dirt) {
-	switch state.Derive(s, d.Step.AppSlug, dirt.Has).Stage {
+	is := state.Derive(s, d.Step.AppSlug, dirt.Has)
+	keep := false
+	switch is.Stage {
 	case state.PROpen, state.NeedsHuman:
-		if d.prDirt == nil {
-			d.prDirt = map[int]Dirt{}
-		}
-		d.prDirt[s.Number] = dirt
-	default:
-		delete(d.prDirt, s.Number)
+		keep = true
+	case state.InProgress, state.Verifying:
+		keep = s.Parent != 0 && s.ParentRepo == "" && taskPR(is) != 0
 	}
+	if !keep {
+		delete(d.prDirt, s.Number)
+		return
+	}
+	if d.prDirt == nil {
+		d.prDirt = map[int]Dirt{}
+	}
+	d.prDirt[s.Number] = dirt
 }

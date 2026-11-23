@@ -132,15 +132,15 @@ func droppedPRNewest(f *githubtest.Fake, n int) string {
 // plan, revision 2's plan comment.
 func droppedPRHoldText(plan int64) string {
 	return fmt.Sprintf("On hold, not closed, since #1's plan, rev 2, drops T2, while its PR #6 is open ([the plan](https://github.com/o/r/issues/1#issuecomment-%d)).\n\n"+
-		"Once the PR merges, its `Closes` closes this issue, and once it's closed without merging, I close this issue as not planned. "+
-		"Or close it yourself. `/resume` doesn't end this hold.\n\n", plan)
+		"Once the PR merges into the story branch, I close this issue: as completed for the App's or a trusted user's merge, and as not planned for anyone else's, "+
+		"or once it's closed without merging. Or close it yourself. `/resume` doesn't end this hold.\n\n", plan)
 }
 
 // droppedPRItem is the digest's lines of T2's item, which link plan.
 func droppedPRItem(plan int64) string {
 	return fmt.Sprintf("- On hold, not closed, since #1's plan, rev 2, drops T2, while its PR #6 is open ([the plan](https://github.com/o/r/issues/1#issuecomment-%d)).\n"+
 		"- **PR #6**: %s\n"+
-		"- Merge the PR, and its `Closes` closes this task; close the PR, and I close the task as not planned; or close the task yourself. `/resume` doesn't end this hold.\n"+
+		"- Merge the PR into the story branch, and I close this task as completed; close the PR, and I close the task as not planned; or close the task yourself. `/resume` doesn't end this hold.\n"+
 		"- Answer here: https://github.com/o/r/pull/6", plan, droppedPRTitle)
 }
 

@@ -770,7 +770,9 @@ func waitGoalDone(body string) (goal, done string) {
 // the verify cap's. With either field not found, as for a format that has
 // changed, a line says to see the hand-off instead. Or it's the task's PR, closed without merging, or
 // reopened after a close by someone who isn't trusted (prClosedMove,
-// prClosedByReopen). The last line says how to end it, as the hand-off
+// prClosedByReopen), or merged into its story branch by someone who isn't
+// trusted (mergedHandoffMove), whose last line says closing the issue
+// accepts the merge. The last line says how to end it, as the hand-off
 // does: for a head that changes nothing, that /done or a 👍 is for a
 // change, and closing the issue for none (nothingHandoffFinish), so a 👍
 // out of habit isn't taken for a yes; for the PR's, that reopening it, or
@@ -805,6 +807,9 @@ func waitHandoffLines(s *github.Snapshot, id int64) []waitLine {
 		}
 	case slices.ContainsFunc(markers, verifierCapMove):
 		why = "the verifier's runs on this head failed, and the hand-off says why."
+	case slices.ContainsFunc(markers, mergedHandoffMove):
+		why = "the task's PR was merged into its story branch by someone who isn't trusted."
+		finish = "Close the issue to accept the merge, or reply `/done` on the issue or react 👍 to the hand-off for a new round."
 	case slices.ContainsFunc(markers, func(m github.Marker) bool { return prClosedMove(m) && prClosedByReopen(m) }):
 		why = "the task's PR was reopened after a close by someone who isn't trusted."
 		finish = "Close and reopen the PR yourself to send the task back to `pr-open`, or reply `/done` on the issue or react 👍 to the hand-off for a new round, or close the issue."
@@ -1018,9 +1023,10 @@ func waitStalledLines(st stall) []waitLine {
 // §9.4): the first paragraph of its hold's comment, which names the
 // revision and the PR and links the plan (droppedHoldText), copied from
 // the App's clean comment, or with none, that a revision dropped it; then
-// the PR and its title, raw (waitLine.PR); then that merging or closing
-// the PR closes it, or the owner can, and that /resume doesn't end the
-// hold.
+// the PR and its title, raw (waitLine.PR); then that the owner's merge of
+// the PR into the story branch closes it as completed, as a dropped task
+// with a PR is in a story (SPEC §7.5), and closing the PR as not planned,
+// or the owner can close it, and that /resume doesn't end the hold.
 func waitDroppedLines(s *github.Snapshot, is state.Issue, p listedPR) []waitLine {
 	first := waitLine{Text: "A plan's revision dropped this task while its PR is open, so it's on hold. See the issue for the revision."}
 	for i := len(is.Markers) - 1; i >= 0; i-- {
@@ -1037,7 +1043,7 @@ func waitDroppedLines(s *github.Snapshot, is state.Issue, p listedPR) []waitLine
 	return []waitLine{
 		first,
 		{Text: p.Title, PR: p.Number},
-		{Text: "Merge the PR, and its `Closes` closes this task; close the PR, and I close the task as not planned; or close the task yourself. `/resume` doesn't end this hold."},
+		{Text: "Merge the PR into the story branch, and I close this task as completed; close the PR, and I close the task as not planned; or close the task yourself. `/resume` doesn't end this hold."},
 	}
 }
 
