@@ -1,9 +1,11 @@
 package githubtest
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -19,6 +21,17 @@ type State struct {
 	// CheckRuns are the check runs on the git remote's commits
 	// (checkruns.go), by SHA, sorted, and each SHA's in the order posted.
 	CheckRuns []CheckRunState
+	// Branches are the git remote's branches under issuedog/, the App's
+	// own, by name, sorted, each with its tip, so a merge's squash commit
+	// and a branch's delete are compared. It's nil with no git remote
+	// (SetGitRemote).
+	Branches []BranchState
+}
+
+// BranchState is one branch of the git remote in a State: its name and
+// the SHA of its tip.
+type BranchState struct {
+	Name, SHA string
 }
 
 // CheckRunState is one check run in a State: the commit it's on, its name
@@ -31,12 +44,13 @@ type CheckRunState struct {
 }
 
 // PRState is one pull request in a State: its head and base branches, the
-// SHA its head showed when last read, its title, body and state, and
-// whether it merged.
+// SHA its head showed when last read, its title, body and state, whether
+// it merged, and who merged it, "" until it did.
 type PRState struct {
 	Number                                  int
 	Head, Base, HeadSHA, Title, Body, State string
 	Merged                                  bool
+	MergedBy                                string
 }
 
 // IssueState is one issue in a State.
@@ -103,12 +117,33 @@ func (f *Fake) State() State {
 		s.Issues = append(s.Issues, st)
 		if pr := is.pr; pr != nil {
 			s.PRs = append(s.PRs, PRState{Number: is.GetNumber(), Head: pr.head, Base: pr.base, HeadSHA: pr.headSHA,
-				Title: is.GetTitle(), Body: is.GetBody(), State: is.GetState(), Merged: pr.merged})
+				Title: is.GetTitle(), Body: is.GetBody(), State: is.GetState(), Merged: pr.merged, MergedBy: pr.mergedBy})
 		}
 	}
 	s.RepoLabels = f.repoLabelState()
 	s.CheckRuns = f.checkRunState()
+	s.Branches = f.branchState()
 	return s
+}
+
+// branchState is the git remote's branches under issuedog/ for a State, by
+// name, with their tips, or nil when there's no git remote. A remote that
+// can't be read fails the test. f is locked.
+func (f *Fake) branchState() []BranchState {
+	f.t.Helper()
+	if f.pulls.remote == "" {
+		return nil
+	}
+	out, err := f.remoteGit(context.Background(), "for-each-ref", "--format=%(objectname) %(refname)", "refs/heads/issuedog/")
+	if err != nil {
+		f.fakeFail("githubtest: the git remote's branches: %v", err)
+	}
+	var branches []BranchState
+	for line := range strings.Lines(out) {
+		sha, ref, _ := strings.Cut(strings.TrimSpace(line), " ")
+		branches = append(branches, BranchState{Name: strings.TrimPrefix(ref, "refs/heads/"), SHA: sha})
+	}
+	return branches
 }
 
 // Replay checks that pass is safe to run again after a crash at any write
@@ -131,11 +166,12 @@ func (f *Fake) State() State {
 //     another order, and so are assignees and blocked-by links; comments
 //     are compared in order, with their bodies, and sub-issues in the
 //     order they were linked, and pull requests by number, with their
-//     heads, bases, titles, bodies and states, and check runs by SHA, in
-//     the order posted, with their names, conclusions, Apps and
-//     external_ids. A run may
+//     heads, bases, titles, bodies, states and mergers, and check runs by
+//     SHA, in the order posted, with their names, conclusions, Apps and
+//     external_ids, and the git remote's issuedog/ branches by name, with
+//     their tips. A run may
 //     not leave an extra comment, reaction, label, assignee, sub-issue,
-//     blocked-by link, pull request or check run, or miss one.
+//     blocked-by link, pull request, check run or branch, or miss one.
 //
 // pass must build its own client and in-memory state from the fake it gets,
 // as the daemon does on restart, and must decide its writes only from what
