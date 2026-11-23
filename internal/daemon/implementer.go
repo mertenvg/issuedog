@@ -162,8 +162,10 @@ func (im *Implementer) Context(ctx context.Context, in Input) (map[string][]byte
 //     in-progress (reviewMove), that move's comment, which quotes the
 //     reviews, under a heading naming them (reviewsLabel), or main's
 //     moving's (mainMove), which gives what failed on the merge with main,
-//     under mainLabel. It stands for every run of the round, as that's
-//     what the round answers.
+//     under mainLabel, or its story branch's tip's moving's (tipMove),
+//     which gives what failed on the merge with that tip, under tipLabel.
+//     It stands for every run of the round, as that's what the round
+//     answers.
 //
 // A comment posted since isn't input at in-progress, as step 1 gives none
 // there (state.Issue.Inputs): conversation.md has it, as for any trusted
@@ -192,6 +194,8 @@ func implementerFindings(s *github.Snapshot, is state.Issue) []string {
 		label = reviewsLabel(start)
 	case mainMove(start):
 		label = mainLabel
+	case tipMove(start):
+		label = tipLabel
 	default:
 		sentBack = 0
 	}
@@ -212,6 +216,11 @@ func implementerFindings(s *github.Snapshot, is state.Issue) []string {
 // mainLabel is the heading of input.md's section for the move that sent a
 // task back from pr-open on its merge with main (mainMove).
 const mainLabel = "the merge with `main`"
+
+// tipLabel is the heading of input.md's section for the move that sent a
+// task in a story back from pr-open on its merge with its story branch's
+// tip (tipMove).
+const tipLabel = "the merge with the story branch's tip"
 
 // reviewsLabel is the heading of input.md's reviews, those m, a review's
 // move (reviewMove), quotes: "the review by `<login>`" when it names one

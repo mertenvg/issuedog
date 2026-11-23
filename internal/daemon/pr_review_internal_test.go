@@ -14,7 +14,8 @@ import (
 
 // The window of a task's PR's reviews is its PR's window (prWindow), or,
 // when the task's latest move into pr-open ends a round that a review, a
-// new head or main moving sent it on from pr-open, since that move, so a
+// new head, or main or a story branch's tip moving sent it on from
+// pr-open, since that move, so a
 // review posted while the task was away on that round counts once it's
 // back (SPEC §7.2). The verify loop's own moves and a hold in the round
 // keep it; a move that starts a round of its own, such as the pick's
@@ -29,6 +30,7 @@ func TestPRReviewWindow(t *testing.T) {
 		reviewBack = "<!-- issuedog:transition from=pr-open to=in-progress event=r5 seen=101 -->"
 		newHead    = "<!-- issuedog:transition from=pr-open to=verifying event=nabc head=abc seen=101 -->"
 		mainBack   = "<!-- issuedog:transition from=pr-open to=in-progress event=m1 -->"
+		tipBack    = "<!-- issuedog:transition from=pr-open to=in-progress event=b1 -->"
 		byHand     = "<!-- issuedog:transition from=pr-open to=in-progress by=owner event=77 -->"
 		committed  = "<!-- issuedog:transition from=in-progress to=verifying attempt=1 run=r1 head=def -->"
 		findings   = "<!-- issuedog:transition from=verifying to=in-progress attempt=1 event=v103 head=abc -->"
@@ -52,6 +54,7 @@ func TestPRReviewWindow(t *testing.T) {
 		{"a review's round", []string{toPROpen, reviewBack, committed, toPROpen2}, 1},
 		{"a new head's round, through findings", []string{toPROpen, newHead, findings, committed, toPROpen2}, 1},
 		{"main moving's round", []string{toPROpen, mainBack, committed, toPROpen2}, 1},
+		{"a story branch's tip moving's round", []string{toPROpen, tipBack, committed, toPROpen2}, 1},
 		{"a round through a hold", []string{toPROpen, reviewBack, hold, resume, committed, toPROpen2}, 1},
 		{"a round started over", []string{toPROpen, reviewBack, capped, done, pick, committed, toPROpen2}, 6},
 		{"a send-back by hand", []string{toPROpen, byHand, committed, toPROpen2}, 3},

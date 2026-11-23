@@ -1,6 +1,7 @@
 package daemon_test
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -38,22 +39,34 @@ func storyMergeSiblingTask(t *testing.T, f *githubtest.Fake, stage string) int {
 }
 
 // storyMergeSibling files task 5 in story #2 at pr-open, as its PR step
-// would leave it: its head, a commit of its own on tip, on its branch in
-// v's origin, its PR from that branch into the story branch open, the
-// App's, and its move to pr-open naming the head, the PR and tip. It
-// returns the head and the PR's number.
+// would leave it: its head, a commit of its own on tip, stale.txt, on its
+// branch in v's origin, its PR from that branch into the story branch
+// open, the App's, and its move to pr-open naming the head, the PR and
+// tip. It returns the head and the PR's number.
 func storyMergeSibling(t *testing.T, f *githubtest.Fake, v *verdictRig, tip string) (string, int) {
+	t.Helper()
+	return storyTipSibling(t, f, v, tip, map[string]string{"stale.txt": "stale\n"})
+}
+
+// storyTipSibling is storyMergeSibling with the sibling's head committing
+// files on tip, each path to its content, and that head made task 5's in
+// v's clone too, as its run's handoff left it (SPEC §3.2), so a run of its
+// starts from it.
+func storyTipSibling(t *testing.T, f *githubtest.Fake, v *verdictRig, tip string, files map[string]string) (string, int) {
 	t.Helper()
 	n := storyMergeSiblingTask(t, f, "pr-open")
 	w := v.o.work
 	gitIn(t, w, "checkout", "--quiet", "-B", "sibling", tip)
-	if err := os.WriteFile(filepath.Join(w, "stale.txt"), []byte("stale\n"), 0o644); err != nil {
-		t.Fatal(err)
+	for _, path := range slices.Sorted(maps.Keys(files)) {
+		if err := os.WriteFile(filepath.Join(w, path), []byte(files[path]), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitIn(t, w, "add", path)
 	}
-	gitIn(t, w, "add", "stale.txt")
 	gitIn(t, w, "commit", "--quiet", "-m", "the sibling's run")
 	head := gitIn(t, w, "rev-parse", "HEAD")
 	gitIn(t, w, "push", "--quiet", v.o.url, "sibling:refs/heads/"+storySiblingBranch)
+	gitIn(t, v.d.Clone.Dir(), "fetch", "--quiet", "--no-tags", w, "+refs/heads/sibling:"+repo.TasksRef+strconv.Itoa(n))
 	gitIn(t, w, "checkout", "--quiet", "main")
 	pr := f.OpenPRAs(app, storySiblingBranch, storyVerifyBranch, "feat: Refuse a stale quote", "Task #5, in story #2\n\nThe change.")
 	f.AddComment(n, app, "The implementer committed.\n\n<!-- issuedog:transition from=in-progress to=verifying attempt=1 run=r5 head="+head+" -->")
@@ -64,35 +77,47 @@ func storyMergeSibling(t *testing.T, f *githubtest.Fake, v *verdictRig, tip stri
 // Two tasks of one story at pr-open, both verified against the same tip:
 // the pass that merges the first, the lower-numbered, merges only it, as
 // the second would go onto the first's squash commit, a tip it wasn't
-// verified against. The pass after carries the tip's check over to the
-// squash commit, with no command run, and closes the first task, as its
-// merge is onto the tip it was verified against (SPEC §7.5's Carrying the
-// check over), and the second then waits at pr-open, with no request for
-// its PR, as no check on its merge with the new tip is built.
+// verified against, and runs no command on the second's merge with it,
+// as that tip isn't the story's tip till the next sync. The pass after
+// carries the tip's check over to the squash commit and closes the first
+// task, as its merge is onto the tip it was verified against (SPEC §7.5's
+// Carrying the check over), and then, in step 4, checks the second's head
+// on its merge with that new tip, once, posting issuedog/verify as success
+// on the head, naming the tip (SPEC §10.4). The pass after merges the
+// second's PR onto it, and the one after carries no check over to that
+// merge's squash commit: it closes the second task, and step 4 checks the
+// squash commit afresh, running the commands once.
+// Once the closes are read, the passes are quiet, and the sibling's PR is
+// read no more.
 func TestPRMergeSiblings(t *testing.T) {
 	t.Parallel()
 	f, v, tip, _, pr := storyMergeReady(t)
-	_, sibling := storyMergeSibling(t, f, v, tip)
-	writes := len(f.Writes())
+	head, sibling := storyMergeSibling(t, f, v, tip)
+	writes, ran := len(f.Writes()), v.checksRan()
 	v.pass()
-	if first, second := storyMerges(f, writes, pr), storyMerges(f, writes, sibling); len(first) != 1 || len(second) != 0 {
-		t.Fatalf("the pass merged %+v and %+v; want the first PR, #%d, alone", first, second, pr)
+	if first, second := storyMerges(f, writes, pr), storyMerges(f, writes, sibling); len(first) != 1 || len(second) != 0 || v.checksRan() != ran {
+		t.Fatalf("the pass merged %+v and %+v, and ran the commands %d times; want the first PR, #%d, alone, and never", first, second, v.checksRan()-ran, pr)
 	}
 	squash := v.storyMerged(pr, tip)
+	v.storyTipPassed(5, sibling, head, squash)
+	if got := f.State().CheckRuns; !slices.Contains(got, tipCheck(squash, storyVerifyBranch, "success")) {
+		t.Errorf("the pass after the merge left the checks %+v; want the carried success on %s", got, squash)
+	}
+	mergedClosed(t, f, pr, "pr-open", "The App merged PR #"+strconv.Itoa(pr)+" into the story branch as `"+squash+"`, so this task is complete.\n\n")
+	next := v.storyTipMergedOnto(sibling, head, squash)
+	v.storyTipMergedChecked(5, sibling, next, "success")
+	v.passes(2)
 	from := len(f.Requests())
-	v.storyMergeCarried(pr, squash)
-	v.quietPass("the sibling waiting on the new tip")
+	v.quietPass("after both merges")
 	v.quietPass("again")
 	for _, r := range f.Requests()[from:] {
 		if strings.HasPrefix(r.Path, "/pulls/"+strconv.Itoa(sibling)) {
-			t.Errorf("a pass after the merge sent %+v; want nothing for the sibling's PR", r)
+			t.Errorf("a pass after the merges sent %+v; want nothing for the sibling's PR", r)
 		}
 	}
-	i := slices.IndexFunc(f.State().PRs, func(p githubtest.PRState) bool { return p.Number == sibling })
-	if got := storyMerges(f, 0, sibling); len(got) != 0 || i < 0 || f.State().PRs[i].State != "open" || pickStage(f, 5) != "stage:pr-open" ||
-		v.originTip(storyVerifyBranch) != squash {
-		t.Errorf("the sibling's merges = %+v, its PRs %+v, the sibling at %s, the story branch at %s; want none, #%d open, pr-open, and %s",
-			got, f.State().PRs, pickStage(f, 5), v.originTip(storyVerifyBranch), sibling, squash)
+	if got := storyMerges(f, 0, sibling); len(got) != 1 || pickStage(f, 5) != "stage:completed" || v.originTip(storyVerifyBranch) != next {
+		t.Errorf("the sibling's merges = %+v, the sibling at %s, the story branch at %s; want one, completed, and %s",
+			got, pickStage(f, 5), v.originTip(storyVerifyBranch), next)
 	}
 }
 

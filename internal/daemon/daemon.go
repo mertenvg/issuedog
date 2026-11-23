@@ -190,13 +190,13 @@ type Daemon struct {
 	// its branch, or someone else's tip on it, or after a restart the
 	// item read back for it, till the PR step judges it (pr_open.go).
 	prStalls map[int]prStall
-	// prWaiting is the move out of pr-open step 2, or step 4 for main's
-	// moving (Runs.mainMoved), found for each task, by task, that waits for
-	// the worker: one into verifying or in-progress, made once the worker
-	// is free, and dropped when the task moves or its PR changes
-	// (prWaitingFor), or for a new head, when the branch moves on from it
-	// (prWaitingTip), or for main's moving, when main moves again
-	// (prWaitingMain).
+	// prWaiting is the move out of pr-open step 2, or step 4 for its
+	// target's moving, main's or its story branch's tip's (Runs.mainMoved),
+	// found for each task, by task, that waits for the worker: one into
+	// verifying or in-progress, made once the worker is free, and dropped
+	// when the task moves or its PR changes (prWaitingFor), or for a new
+	// head, when the branch moves on from it (prWaitingTip), or for its
+	// target's moving, when the target moves again (prWaitingMain).
 	prWaiting map[int]Move
 	// prHeadWarned is the key of the last warning step 2 logged for each
 	// task's branch, by task, so a wait that lasts is warned of once
@@ -214,6 +214,13 @@ type Daemon struct {
 	// into its story branch, by task, so the merge waits, with no request,
 	// till its head, its PR or its story branch's tip changes (prMerge).
 	prMergeRefused map[int]prRefusal
+	// mergeJudged holds the pass of the checks on the merge with its
+	// target of each task at pr-open, main's commit or its story branch's
+	// tip, by task, keyed by its head and the target's commit, so they
+	// don't run again until either changes (Runs.mainMoved), and step 2
+	// merges a task's PR onto a story branch's tip that moved since its
+	// verify only once its merge with that tip passed (prMergeOnto).
+	mergeJudged map[int]checksPassed
 	// workerLeased is whether a run's lease held the worker when Work last
 	// ended (Runs.Work), for step 2's moves that take it (workerFree).
 	workerLeased bool

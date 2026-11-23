@@ -100,13 +100,14 @@ func prReviewsHandled(is state.Issue) int64 {
 
 // prSendBack reports whether m is a move out of pr-open that sends a task
 // on a round, back to in-progress or verifying, on its PR: a review's,
-// keyed event=r<ID>, a new head's, event=n<SHA>, or main's moving,
-// event=m<SHA> (SPEC §5). A move by a stage label, keyed by its timeline
-// event, a number, isn't one.
+// keyed event=r<ID>, a new head's, event=n<SHA>, main's moving,
+// event=m<SHA>, or its story branch's tip's moving, event=b<SHA> (SPEC
+// §5). A move by a stage label, keyed by its timeline event, a number,
+// isn't one.
 func prSendBack(m github.Marker) bool {
 	to, ev := state.Stage(m.Fields["to"]), m.Fields["event"]
 	return m.Kind == "transition" && state.Stage(m.Fields["from"]) == state.PROpen && (to == state.InProgress || to == state.Verifying) &&
-		len(ev) > 1 && strings.ContainsRune("rnm", rune(ev[0]))
+		len(ev) > 1 && strings.ContainsRune("rnmb", rune(ev[0]))
 }
 
 // prReviewWindow is when the window of the reviews of task s's PR begins,

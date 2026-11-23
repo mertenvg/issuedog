@@ -325,10 +325,6 @@ type Runs struct {
 	// don't run again until either changes (verifyTask), and a verifier
 	// run reads what they gave (checksPassed).
 	passed map[int]checksPassed
-	// mergeJudged holds the pass of the checks on the merge with main of
-	// each task at pr-open, by issue number, keyed by its head and main's
-	// commit, so they don't run again until either changes (mainMoved).
-	mergeJudged map[int]checksPassed
 
 	// startWaited is the key of the last log of why a task's run doesn't
 	// start, by issue number, as it waits for its story branch's tip
@@ -380,9 +376,10 @@ func (p checksPassed) holds(head, target string) bool {
 // priority then number, whose head hasn't passed them, or a verifier run
 // on one whose head has, with no pass of the verifier's yet, or the PR step
 // on one with a pass that has a write to make (verifyTask). If none ran
-// either, it runs the checks on the merge with main of the first task at
-// pr-open, by priority then number, whose head isn't judged against main
-// as it is now (mainMoved). None of those touches the issue resume applied
+// either, it runs the checks on the merge with its target, main or its
+// story branch's tip, of the first task at pr-open, by priority then
+// number, whose head isn't judged against that target as it is now
+// (mainMoved). None of those touches the issue resume applied
 // a result to, whose snapshot is from before it. If it ran none either, it
 // picks the next ready task,
 // moves it to in-progress and starts its run (pickTask), unless a task
@@ -483,7 +480,8 @@ func (r *Runs) Work(ctx context.Context, ready []Ready) (err error) {
 	case ran:
 		return nil
 	}
-	// Nor while the checks on a task's merge with main run (mainMoved).
+	// Nor while the checks on a task's merge with its target run
+	// (mainMoved).
 	ran, err = r.mainMoved(ctx, ready, skip)
 	switch {
 	case err != nil:

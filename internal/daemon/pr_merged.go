@@ -220,8 +220,10 @@ func (d *Daemon) prMergedWrites(ctx context.Context, s *github.Snapshot, is stat
 // issuedog/tip as success, naming the branch, its summary linking the
 // verifier's pass on the head (tipPost, renderTipCarry). Any other merge
 // commit gets none, and step 4 checks it as a push the App didn't make
-// (Runs.tipCheck): one whose parent is another commit, one merged at
-// another head, and, after a restart, one whose parent's success isn't
+// (Runs.tipCheck): one whose parent is another commit, as the App's merge
+// onto a tip that moved since the verify, once the head's merge with it
+// passed (prMergeOnto), one merged at another head, and, after a restart,
+// one whose parent's success isn't
 // judged yet, as Daemon.tips starts empty. So does a merge commit the bare
 // clone lacks, as for a merge made after the pass's sync. The parent is
 // read from the bare clone, at no request, and the post is checked first.

@@ -268,8 +268,9 @@ func (d *Daemon) prWaitingFor(n int, is state.Issue, p listedPR) (Move, bool) {
 // branch's tip as head= when it isn't the PR's verified head, and none
 // otherwise (prReviewHead). Two branches with the task's prefix drop a new
 // head's move, as prNewHead makes none then, and leave a review's as it
-// was found. A move on main's moving, which step 4 found (Runs.mainMoved),
-// stands only while main is at the commit its key names (prWaitingMain).
+// was found. A move on its target's moving, main's or its story branch's
+// tip's, which step 4 found (Runs.mainMoved), stands only while that
+// target is at the commit its key names (prWaitingMain).
 // A review's move of a task in a story whose story branch's tip has no
 // success still waits (prReviewTipWait): it's kept, made to fit the
 // branch, and this gives false, so the PR's close is judged, at no
@@ -287,10 +288,10 @@ func (d *Daemon) prWaitingTip(ctx context.Context, s *github.Snapshot, is state.
 			a.Owner, a.Repo, n, m.To, m.Trigger, tip)
 		delete(d.prWaiting, n)
 		return Move{}, false, nil
-	case mainKeyed(m.Key):
+	case mainKeyed(m.Key), tipKeyed(m.Key):
 		stands, err := d.prWaitingMain(ctx, s, m)
 		if err != nil {
-			return Move{}, false, fmt.Errorf("its waiting move on main: %w", err)
+			return Move{}, false, fmt.Errorf("its waiting move on its target: %w", err)
 		}
 		return m, stands, nil
 	case m.Trigger == state.TriggerReviewChanges && ok:
