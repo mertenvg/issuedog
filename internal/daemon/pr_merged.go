@@ -4,13 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/mertenvg/logr/v2"
 
 	"github.com/mertenvg/issuedog/internal/github"
-	"github.com/mertenvg/issuedog/internal/repo"
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
@@ -220,23 +218,26 @@ func (d *Daemon) prMergedWrites(ctx context.Context, s *github.Snapshot, is stat
 // was verified against, the move's tip= (prMoveTip), and that tip is
 // success as the daemon judged it (tipSuccess), the merge commit gets
 // issuedog/tip as success, naming the branch, its summary linking the
-// verifier's pass on the head (tipPost, renderTipCarry). So does one
-// whose parent is a tip that moved since the verify, once the head's
-// merge with that tip passed the checks (prMergeOnto), and that tip is
-// success, while the merge commit's tree is that checked merge's
-// (mergeTreeIs). Any other merge commit gets none, and step 4 checks it
-// as a push the App didn't make (Runs.tipCheck): one whose parent is
-// another commit, one merged at another head, and, after a restart, one
-// whose parent's success isn't judged yet, as Daemon.tips starts empty.
-// So does a merge commit the bare clone lacks, as for a merge made after
-// the pass's sync. The parent and the trees are read from the bare clone,
-// at no request, and the post is checked first.
+// verifier's pass on the head (tipPost, renderTipCarry). Any other merge
+// commit gets none, and step 4 checks it as a push the App didn't make
+// (Runs.tipCheck): one whose parent is another commit, as the App's merge
+// onto a tip that moved since the verify, once the head's merge with it
+// passed (prMergeOnto), one merged at another head, and, after a restart,
+// one whose parent's success isn't
+// judged yet, as Daemon.tips starts empty. So does a merge commit the bare
+// clone lacks, as for a merge made after the pass's sync. The parent is
+// read from the bare clone, at no request, and the post is checked first.
 func (d *Daemon) tipCarry(ctx context.Context, s *github.Snapshot, is state.Issue, pr github.PullRequest) error {
 	a, n := d.Step.Applier, s.Number
 	branch, commit, tip, head := pr.Base, pr.MergeCommitSHA, prMoveTip(is), prHeadOf(is)
-	if tip == "" || commit == "" || pr.HeadSHA != head {
+	switch {
+	case tip == "" || commit == "" || pr.HeadSHA != head:
 		logr.Infof("%s/%s#%d: its PR #%d merged %s as %q, not the head %s verified against a tip of %s, so no check is carried over to the merge commit",
 			a.Owner, a.Repo, n, pr.Number, pr.HeadSHA, commit, head, branch)
+		return nil
+	case !d.tipSuccess(branch, tip):
+		logr.Infof("%s/%s#%d: %s's tip %s, which its head %s was verified against, isn't judged success, as after a restart, so no check is carried over to the merge commit %s, which is checked as any push",
+			a.Owner, a.Repo, n, branch, tip, head, commit)
 		return nil
 	}
 	has, err := d.Clone.HasCommit(ctx, commit)
@@ -252,75 +253,31 @@ func (d *Daemon) tipCarry(ctx context.Context, s *github.Snapshot, is state.Issu
 	if err != nil {
 		return fmt.Errorf("read the merge commit %s's parent: %w", commit, err)
 	}
-	moved := parent != tip
-	switch {
-	case moved && !d.prMergeOnto(n, head, parent):
-		logr.Infof("%s/%s#%d: its PR #%d's merge commit %s is on %s, not on the tip %s its head was verified against, nor on a tip its merge with passed the checks on, so no check is carried over to it",
+	if parent != tip {
+		logr.Infof("%s/%s#%d: its PR #%d's merge commit %s is on %s, not on the tip %s its head was verified against, so no check is carried over to it",
 			a.Owner, a.Repo, n, pr.Number, commit, parent, tip)
 		return nil
-	case !d.tipSuccess(branch, parent):
-		logr.Infof("%s/%s#%d: %s's tip %s, which its PR #%d's merge commit %s is on, isn't judged success, as after a restart, so no check is carried over to the merge commit, which is checked as any push",
-			a.Owner, a.Repo, n, branch, parent, pr.Number, commit)
-		return nil
-	}
-	if moved {
-		same, err := d.mergeTreeIs(ctx, n, commit)
-		if err != nil {
-			return fmt.Errorf("compare the merge commit %s with the checked merge: %w", commit, err)
-		}
-		if !same {
-			logr.Infof("%s/%s#%d: its PR #%d's merge commit %s, on %s, hasn't the tree of the head's merge with it that the checks passed on, so no check is carried over to it",
-				a.Owner, a.Repo, n, pr.Number, commit, parent)
-			return nil
-		}
 	}
 	link := ""
 	if c, ok := markerCommentOf(s, is, passOn(is, head)); ok {
 		link = waitLink(a.Owner, a.Repo, n, c.ID)
 	}
-	if err := d.tipPost(ctx, s.Parent, branch, commit, checkSuccess, renderTipCarry(s.Parent, n, pr.Number, branch, commit, parent, head, link, moved)); err != nil {
-		return fmt.Errorf("carry %s's check over to %s: %w", parent, commit, err)
+	if err := d.tipPost(ctx, s.Parent, branch, commit, checkSuccess, renderTipCarry(s.Parent, n, pr.Number, branch, commit, tip, head, link)); err != nil {
+		return fmt.Errorf("carry %s's check over to %s: %w", tip, commit, err)
 	}
 	return nil
 }
 
-// mergeTreeIs reports whether commit, the App's squash merge of task n's
-// PR onto a tip that moved since its verify, has the tree of the head's
-// merge with that tip that step 4 built and checked, the bare repo's
-// refs/issuedog/merges/<n> (repo.MergesRef, Runs.mainJudge), so a check
-// carried over is for the tree the checks passed on, whatever GitHub's
-// merge made. With no such merge result, it hasn't. It reads only the bare
-// repo, so it costs no request.
-func (d *Daemon) mergeTreeIs(ctx context.Context, n int, commit string) (bool, error) {
-	merge, ok, err := d.Clone.ReadRef(ctx, repo.MergesRef+strconv.Itoa(n))
-	if err != nil {
-		return false, fmt.Errorf("read the task's merge result: %w", err)
-	}
-	if !ok {
-		return false, nil
-	}
-	changes, err := d.Clone.Changes(ctx, merge, commit, false)
-	if err != nil {
-		return false, fmt.Errorf("compare the task's merge result %s with it: %w", merge, err)
-	}
-	return len(changes) == 0, nil
-}
-
 // renderTipCarry is the summary of the issuedog/tip check the App carries
 // over to commit, its squash merge of task n's PR, pr, onto tip, the tip of
-// branch, story's branch, that the task's head was verified against, or
-// with moved, a tip that moved since, which the head's merge with passed
-// the checks on (SPEC §7.5, §10.4), escaped (SPEC §5.1), and cut to
-// checkSummaryMax. It names the commit, the branch, in a code span
-// (checkCode), the story, the task, the head and the tip, and links link,
-// the verifier's pass on the head, unless it's "".
-func renderTipCarry(story, n, pr int, branch, commit, tip, head, link string, moved bool) string {
+// branch, story's branch, that the task's head was verified against (SPEC
+// §7.5, §10.4), escaped (SPEC §5.1), and cut to checkSummaryMax. It names
+// the commit, the branch, in a code span (checkCode), the story, the task,
+// the head and the tip, and links link, the verifier's pass on the head,
+// unless it's "".
+func renderTipCarry(story, n, pr int, branch, commit, tip, head, link string) string {
 	text := fmt.Sprintf("issuedog carried this check over to `%s`, the tip of %s for story #%d: it's the App's squash merge of PR #%d, task #%d's head `%s`, onto `%s`, "+
 		"the tip the head was verified against, whose check passed, so its tree is the verified head's.", commit, checkCode(branch), story, pr, n, head, tip)
-	if moved {
-		text = fmt.Sprintf("issuedog carried this check over to `%s`, the tip of %s for story #%d: it's the App's squash merge of PR #%d, task #%d's head `%s`, onto `%s`, "+
-			"a tip the head's merge with passed the checks on, whose check passed, so its tree is that checked merge's.", commit, checkCode(branch), story, pr, n, head, tip)
-	}
 	if link != "" {
 		text += fmt.Sprintf(" The verifier passed the head in [its comment](%s).", link)
 	}

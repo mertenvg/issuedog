@@ -84,8 +84,9 @@ func storyTipSibling(t *testing.T, f *githubtest.Fake, v *verdictRig, tip string
 // Carrying the check over), and then, in step 4, checks the second's head
 // on its merge with that new tip, once, posting issuedog/verify as success
 // on the head, naming the tip (SPEC §10.4). The pass after merges the
-// second's PR onto it, and the one after carries the check over to that
-// merge's squash commit, with no command run, and closes the second task.
+// second's PR onto it, and the one after carries no check over to that
+// merge's squash commit: it closes the second task, and step 4 checks the
+// squash commit afresh, running the commands once.
 // Once the closes are read, the passes are quiet, and the sibling's PR is
 // read no more.
 func TestPRMergeSiblings(t *testing.T) {
@@ -104,7 +105,7 @@ func TestPRMergeSiblings(t *testing.T) {
 	}
 	mergedClosed(t, f, pr, "pr-open", "The App merged PR #"+strconv.Itoa(pr)+" into the story branch as `"+squash+"`, so this task is complete.\n\n")
 	next := v.storyTipMergedOnto(sibling, head, squash)
-	v.storyTipCarried(5, sibling, next, squash, head)
+	v.storyTipMergedChecked(5, sibling, next, "success")
 	v.passes(2)
 	from := len(f.Requests())
 	v.quietPass("after both merges")

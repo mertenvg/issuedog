@@ -95,25 +95,24 @@ func (v *verdictRig) storyTipMergedOnto(pr int, head, tip string) string {
 	return squash
 }
 
-// storyTipCarried runs the pass after the App's merge of task n's PR, pr,
-// at head, onto onto, a tip that moved since its verify, as squash, and
-// fails unless it carried the tip's check over to squash as success, its
-// summary naming the merge onto the tip the head's merge passed on, with
-// the commands run no more, and closed the task, keyed event=g<pr> (SPEC
-// §7.5's Carrying the check over).
-func (v *verdictRig) storyTipCarried(n, pr int, squash, onto, head string) {
+// storyTipMergedChecked runs the pass after the App's merge of task n's
+// PR, pr, onto a tip that moved since its verify, as squash, and fails
+// unless it carried no check over to squash, closed the task, keyed
+// event=g<pr>, and then, in step 4, checked squash afresh as any push,
+// running the commands once and posting its own issuedog/tip, with
+// conclusion, on it (SPEC §7.5's Carrying the check over).
+func (v *verdictRig) storyTipMergedChecked(n, pr int, squash, conclusion string) {
 	v.t.Helper()
 	ran := v.checksRan()
 	v.pass()
-	if got := v.f.State().CheckRuns; !slices.Contains(got, tipCheck(squash, storyVerifyBranch, "success")) || v.checksRan() != ran {
-		v.t.Errorf("the pass after the merge left the checks %+v, and ran the commands %d times; want the carried success on %s, and never",
-			got, v.checksRan()-ran, squash)
+	if got := v.f.State().CheckRuns; !slices.Contains(got, tipCheck(squash, storyVerifyBranch, conclusion)) || v.checksRan() != ran+1 {
+		v.t.Errorf("the pass after the merge left the checks %+v, and ran the commands %d times; want step 4's %s on %s, after one",
+			got, v.checksRan()-ran, conclusion, squash)
 	}
-	summary := "issuedog carried this check over to `" + squash + "`, the tip of `" + storyVerifyBranch + "` for story #2: it's the App's squash merge of PR #" +
-		strconv.Itoa(pr) + ", task #" + strconv.Itoa(n) + "'s head `" + head + "`, onto `" + onto + "`, a tip the head's merge with passed the checks on, " +
-		"whose check passed, so its tree is that checked merge's."
-	if last := tipLast(v.t, v.f); last.HeadSHA != squash || !strings.HasPrefix(last.Output.Summary, summary) {
-		v.t.Errorf("the carried check = %+v; want it on %s, with a summary starting\n%s", last, squash, summary)
+	for _, c := range prMoveChecks(v.t, v.f) {
+		if c.HeadSHA == squash && strings.Contains(c.Output.Summary, "carried") {
+			v.t.Errorf("the merge commit has the check %+v; want none carried over", c)
+		}
 	}
 	is := v.f.State().Issues[n-1]
 	closed := slices.ContainsFunc(is.Comments, func(c githubtest.CommentState) bool {
@@ -355,7 +354,7 @@ func TestPRStoryTipUnchanged(t *testing.T) {
 // the tip the merge was built on, and nothing merges onto it, as it's the
 // story's tip no more. The next pass checks the newer tip, and the one
 // after the head's merge with it, posting a check naming it. Then the PR
-// merges onto the newer tip, and its check is carried over.
+// merges onto the newer tip, and its squash commit is checked afresh.
 func TestPRStoryTipMovesDuringTheChecks(t *testing.T) {
 	t.Parallel()
 	f, v, _, head, pr := storyMergeReady(t)
@@ -377,7 +376,7 @@ func TestPRStoryTipMovesDuringTheChecks(t *testing.T) {
 	}
 	v.storyTipPassed(1, pr, head, newer)
 	squash := v.storyTipMergedOnto(pr, head, newer)
-	v.storyTipCarried(1, pr, squash, newer, head)
+	v.storyTipMergedChecked(1, pr, squash, "success")
 }
 
 // A person's head in a story that failed verify is back at pr-open with
@@ -422,8 +421,9 @@ func TestPRStoryTipPersonFailed(t *testing.T) {
 // A fresh daemon after the pass that checked the head's merge with the
 // moved tip reads the head's checks once, finds the success naming the
 // tip, and runs nothing; its step 2 holds no judging of the tip on that
-// first pass, so the next pass merges the PR onto the tip, and the one
-// after carries the tip's check over, from what the restart read.
+// first pass, so the next pass merges the PR onto the tip, from what the
+// restart read, and the one after closes the task and checks the squash
+// commit afresh.
 func TestPRStoryTipRestart(t *testing.T) {
 	t.Parallel()
 	f, v, _, head, pr := storyMergeReady(t)
@@ -439,7 +439,7 @@ func TestPRStoryTipRestart(t *testing.T) {
 			got, v.checksRan()-ran, f.State().CheckRuns, storyMerges(f, writes, pr), checks)
 	}
 	squash := v.storyTipMergedOnto(pr, head, moved)
-	v.storyTipCarried(1, pr, squash, moved, head)
+	v.storyTipMergedChecked(1, pr, squash, "success")
 }
 
 // A crash just after the conflict's check, and just after the move's
@@ -532,33 +532,11 @@ func TestPRStoryTipWaitsForTheWorker(t *testing.T) {
 	storyTipMoved(t, f, 1, "stage:in-progress", storyTipMovedText(head, newer, false), newer, seen)
 }
 
-// The App's merge onto the moved tip whose squash commit hasn't the tree
-// of the head's merge with that tip that the checks passed on, as when
-// GitHub's merge differs from git's, here shown by that merge result
-// replaced in the bare repo: no check is carried over, and step 4 checks
-// the squash commit as any push. The task still closes.
-func TestPRStoryTipCarryOtherTree(t *testing.T) {
-	t.Parallel()
-	f, v, _, head, pr := storyMergeReady(t)
-	moved := v.tipPush(storyVerifyBranch, map[string]string{"more.txt": "more of the story\n"})
-	v.pass()
-	v.storyTipPassed(1, pr, head, moved)
-	squash := v.storyTipMergedOnto(pr, head, moved)
-	gitIn(t, v.d.Clone.Dir(), "update-ref", repo.MergesRef+"1", head)
-	ran := v.checksRan()
-	v.pass()
-	mergedClosed(t, f, pr, "pr-open", "The App merged PR #"+strconv.Itoa(pr)+" into the story branch as `"+squash+"`, so this task is complete.\n\n")
-	check := tipLast(t, f)
-	if check.HeadSHA != squash || strings.Contains(check.Output.Summary, "carried") || v.checksRan() != ran+1 {
-		t.Errorf("the merged tip's check = %+v, after %d runs of the commands; want step 4's own on %s, after one", check, v.checksRan()-ran, squash)
-	}
-}
-
 // A merge onto the moved tip whose checks failed, as the App's made by
-// hand after the task went back, carries no check over, though the tip is
-// success and the merge result in the bare repo has the squash commit's
-// tree: only a merge whose checks passed does (prMergeOnto). The task
-// closes, and step 4 checks the squash commit as any push, which fails it.
+// hand after the task went back, carries no check over, as no merge onto a
+// moved tip does (SPEC §7.5's Carrying the check over): the task closes,
+// from in-progress, keyed event=g<pr>, and step 4 checks the squash commit
+// afresh, running the commands once, which fails it.
 func TestPRStoryTipCarryFailedMerge(t *testing.T) {
 	t.Parallel()
 	f, v, _, head, pr := storyTipReady(t, `, "test ! -f stale.txt -o ! -f quote.txt"`)
@@ -568,15 +546,22 @@ func TestPRStoryTipCarryFailedMerge(t *testing.T) {
 		t.Fatalf("the check runs = %+v, the task at %s; want a failure naming %s, and in-progress", got, pickStage(f, 1), moved)
 	}
 	squash := v.mergedMerge(pr, app)
-	if got := gitIn(t, v.d.Clone.Dir(), "rev-parse", repo.MergesRef+"1^{tree}"); got != gitIn(t, v.o.url, "rev-parse", squash+"^{tree}") {
-		t.Fatalf("the merge result's tree is %s; want the squash commit's", got)
-	}
 	ran := v.checksRan()
 	v.pass()
 	if got := f.State().CheckRuns; !slices.Contains(got, tipCheck(squash, storyVerifyBranch, "failure")) || slices.Contains(got, tipCheck(squash, storyVerifyBranch, "success")) ||
-		v.checksRan() != ran+1 || !f.State().Issues[0].Closed {
-		t.Errorf("the pass after the merge left the checks %+v, ran the commands %d times, with the task closed %t; want step 4's failure on %s alone, once, and closed",
-			got, v.checksRan()-ran, f.State().Issues[0].Closed, squash)
+		v.checksRan() != ran+1 {
+		t.Errorf("the pass after the merge left the checks %+v, and ran the commands %d times; want step 4's failure on %s alone, after one",
+			got, v.checksRan()-ran, squash)
+	}
+	for _, c := range prMoveChecks(t, f) {
+		if c.HeadSHA == squash && strings.Contains(c.Output.Summary, "carried") {
+			t.Errorf("the merge commit has the check %+v; want none carried over", c)
+		}
+	}
+	_, fields := mergedMove(t, f, pr)
+	if want := map[string]string{"from": "in-progress", "to": "closed", "reason": "completed", "event": "g" + strconv.Itoa(pr)}; !maps.Equal(fields, want) ||
+		!f.State().Issues[0].Closed {
+		t.Errorf("the merge's move has %v, the task closed %t; want %v, and closed", fields, f.State().Issues[0].Closed, want)
 	}
 }
 

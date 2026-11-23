@@ -381,8 +381,9 @@ func TestPRMergeReview(t *testing.T) {
 // success, the next pass checks the head's merge with the new tip, once,
 // and posts issuedog/verify as success on the head, naming the tip (SPEC
 // §10.4). The pass after merges the PR onto that tip, and the one after
-// carries the tip's check over to the squash commit, with no command run,
-// and closes the task. Once that's read, the passes are quiet.
+// carries no check over to the squash commit: it closes the task, and step
+// 4 checks the squash commit afresh, running the commands once. Once that's
+// read, the passes are quiet.
 func TestPRMergeTipMoved(t *testing.T) {
 	t.Parallel()
 	f, v, _, head, pr := storyMergeReady(t)
@@ -403,7 +404,7 @@ func TestPRMergeTipMoved(t *testing.T) {
 	}
 	v.storyTipPassed(1, pr, head, moved)
 	squash := v.storyTipMergedOnto(pr, head, moved)
-	v.storyTipCarried(1, pr, squash, moved, head)
+	v.storyTipMergedChecked(1, pr, squash, "success")
 	v.passes(2)
 	v.quietPass("after the merge")
 	v.quietPass("again")
