@@ -271,11 +271,11 @@ func (v *verdictRig) storyTipJudgedAgain(tip string) {
 }
 
 // A head that changes nothing on the story branch, as the branch's tip
-// itself, gets S6's hand-off in place of a PR, naming the branch: the task
-// moves verifying → needs-human on nothing-to-merge, keyed run=rv, with
-// head= and seen=, with nothing pushed, no PR and no check, and the
-// digest's hand-off item says the head changes nothing on its story
-// branch.
+// itself, gets the nothing-to-merge hand-off in place of a PR, naming the
+// branch: the task moves verifying → needs-human on nothing-to-merge,
+// keyed run=rv, with head= and seen=, with nothing pushed, no PR and no
+// check, and the digest's hand-off item says the head changes nothing on
+// its story branch.
 func TestPRStoryNothingToMerge(t *testing.T) {
 	t.Parallel()
 	f, v := newStoryVerifyRig(t)
@@ -449,6 +449,34 @@ func TestPRStoryPersonHeadFails(t *testing.T) {
 			}
 			personNever(t, f)
 		})
+	}
+}
+
+// A task's PR into its story branch closed at pr-open hands the task off,
+// as a PR to main's close does (SPEC §7.2), but its first step says the
+// reopened PR waits for the App's merge, not the owner's. A trusted reopen
+// then brings the task back to pr-open, its comment saying the App merges
+// the PR into the story branch once it's checked.
+func TestPRStoryCloseAndReopen(t *testing.T) {
+	t.Parallel()
+	f, v, _, _, _, _ := storyPRReady(t)
+	v.passes(3)
+	pr := f.State().PRs[0].Number
+	f.ClosePR(pr, wholeRunOwner)
+	v.pass()
+	handoffs := personComments(t, f, "<!-- issuedog:transition from=pr-open to=needs-human ")
+	step := "1. To keep the PR, reopen it: the task goes back to `pr-open`, where the App merges it into the story branch once it's checked.\n"
+	if len(handoffs) != 1 || pickStage(f, 1) != "stage:needs-human" || !strings.Contains(handoffs[0].Body, step) ||
+		strings.Contains(handoffs[0].Body, "your review and merge") {
+		t.Fatalf("the task at %s, its hand-offs %+v; want needs-human, by one holding\n%s\nand never the owner's review and merge", pickStage(f, 1), handoffs, step)
+	}
+	f.ReopenPR(pr, wholeRunOwner)
+	v.passes(2)
+	moves := personComments(t, f, "<!-- issuedog:transition from=needs-human to=pr-open ")
+	text := "`" + wholeRunOwner + "` reopened PR #" + strconv.Itoa(pr) + ", so this task is back at `pr-open`. " +
+		"The App merges it into the story branch once it's checked, then closes this task.\n\n"
+	if len(moves) != 1 || pickStage(f, 1) != "stage:pr-open" || !strings.HasPrefix(moves[0].Body, text) {
+		t.Errorf("the task at %s, its moves back %+v; want pr-open, by one starting\n%s", pickStage(f, 1), moves, text)
 	}
 }
 

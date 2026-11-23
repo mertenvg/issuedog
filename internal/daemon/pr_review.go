@@ -18,9 +18,9 @@ import (
 )
 
 // This file is step 2's reviews (SPEC §7.2, §8.1): a trusted user's
-// "comment" or "request changes" review on a task's PR to main, at
-// pr-open, sends the task back to in-progress, its next run reading the
-// review. An approving review never does, with comments or without (#234's
+// "comment" or "request changes" review on a task's PR, to main or into
+// its story branch, at pr-open, sends the task back to in-progress, its
+// next run reading the review. An approving review never does, with comments or without (#234's
 // Q1.5), nor a dismissed one, nor an untrusted user's: they write nothing
 // and reach no agent, as a task takes no untrusted input (SPEC §6.2). A
 // review is seen at no request of its own: the timeline read step 2 makes

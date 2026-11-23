@@ -17,9 +17,9 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// This file is step 2 for a task's PR to main (SPEC §6.4, §7.2, §8.1): a
-// PR closed without merging, or reopened by someone untrusted after a
-// close, hands its task at pr-open to the owner at needs-human, and a
+// This file is step 2 for a task's PR, to main or into its story branch
+// (SPEC §6.4, §7.2, §8.1): a PR closed without merging, or reopened by
+// someone untrusted after a close, hands its task at pr-open to the owner at needs-human, and a
 // trusted user's reopen sends it back to pr-open. A merge is no close
 // here: its "Closes #N" closes the task, which the close judge accepts
 // (closingAccepted). A task at pr-open whose branch moved to a head the
@@ -208,7 +208,7 @@ func (d *Daemon) prJudgeOpen(ctx context.Context, s *github.Snapshot, dirt Dirt,
 			return nil, nil
 		}
 		return &Move{To: state.NeedsHuman, Trigger: state.TriggerPRClosed, Key: key,
-			Text: renderPRClosedHandoff(n, p.Number, link, false, "", d.Step.Notify)}, nil
+			Text: renderPRClosedHandoff(n, p.Number, link, false, "", s.Parent != 0, d.Step.Notify)}, nil
 	}
 	if !d.prRead[p.Number] && d.prJudged[n] == is.TransitionComment {
 		return nil, nil
@@ -234,7 +234,7 @@ func (d *Daemon) prJudgeOpen(ctx context.Context, s *github.Snapshot, dirt Dirt,
 		if !ok && !strings.EqualFold(by.Login, a.AppSlug+"[bot]") {
 			delete(d.prRead, p.Number)
 			return &Move{To: state.NeedsHuman, Trigger: state.TriggerPRClosed, Key: state.Key{Field: "event", ID: strconv.FormatInt(e.GetID(), 10)},
-				Text: renderPRClosedHandoff(n, p.Number, link, true, by.Login, d.Step.Notify)}, nil
+				Text: renderPRClosedHandoff(n, p.Number, link, true, by.Login, s.Parent != 0, d.Step.Notify)}, nil
 		}
 	}
 	m, err := d.prReviewMove(ctx, s, is, p, reviews)
@@ -303,7 +303,7 @@ func (d *Daemon) prJudgeHandoff(ctx context.Context, s *github.Snapshot, dirt Di
 		return nil, nil
 	}
 	return &Move{To: state.PROpen, Trigger: state.TriggerPRReopened, Key: state.Key{Field: "event", ID: strconv.FormatInt(e.GetID(), 10)},
-		Fields: map[string]string{"pr": strconv.Itoa(p.Number)}, Text: renderPRReopened(p.Number, by.Login)}, nil
+		Fields: map[string]string{"pr": strconv.Itoa(p.Number)}, Text: renderPRReopened(p.Number, by.Login, s.Parent != 0)}, nil
 }
 
 // prHandoffIn reports whether comment id, a task's latest hand-off, holds
@@ -443,13 +443,14 @@ func prClosedByReopen(m github.Marker) bool {
 
 // prClosedFields are the fields of the hand-off for a task's PR closed
 // without merging (SPEC §9.3), in the daemon's own words, as no run gave
-// any, with the PR as its link.
-func prClosedFields(link string) implementerHandoffFields {
+// any, with the PR as its link. Its first step says what the PR waits for
+// once the task is back at pr-open (prBackWaits).
+func prClosedFields(link string, story bool) implementerHandoffFields {
 	return implementerHandoffFields{
 		Goal:      "Decide what becomes of this task, whose PR was closed without merging.",
 		WhyBlocks: "its PR is reopened, or the task is started over or closed",
 		Steps: []string{
-			"To keep the PR, reopen it: the task goes back to `pr-open`, waiting for your review and merge.",
+			"To keep the PR, reopen it: the task goes back to `pr-open`, " + prBackWaits(story) + ".",
 			"To start over, say what to change in a comment, then reply `/done`: a new round from the task's head, whose pass reopens this PR.",
 			"If the task isn't needed, close this issue.",
 		},
@@ -466,10 +467,12 @@ func prClosedFields(link string) implementerHandoffFields {
 // prClosedFields, opening with what happened to the PR, and ending with
 // the three ways on: reopen the PR, or for an untrusted reopen close and
 // reopen it, which sends the task back to pr-open; /done or a 👍 for a
-// new round; or close the issue. The reopener's login isn't the App's
-// text: it's in code, defused.
-func renderPRClosedHandoff(n, pr int, link string, reopened bool, by string, notify []string) string {
-	f := prClosedFields(link)
+// new round; or close the issue. With story, for a task in a story, its
+// PR is into its story branch, so back at pr-open it waits for the App's
+// merge, not the owner's (prBackWaits). The reopener's login isn't the
+// App's text: it's in code, defused.
+func renderPRClosedHandoff(n, pr int, link string, reopened bool, by string, story bool, notify []string) string {
+	f := prClosedFields(link, story)
 	intro := fmt.Sprintf("PR #%d for this task was closed without merging, so the task waits on you.", pr)
 	keep := "Reopening the PR sends the task back to `pr-open`."
 	if reopened {
@@ -480,7 +483,7 @@ func renderPRClosedHandoff(n, pr int, link string, reopened bool, by string, not
 		intro = fmt.Sprintf("PR #%d for this task was reopened after a close by %s, and only a trusted user's reopen keeps it, so the task waits on you.", pr, who)
 		f.Goal = "Decide what becomes of this task, whose PR someone who isn't trusted reopened."
 		f.WhyBlocks = "its PR is closed and reopened by you, or the task is started over or closed"
-		f.Steps[0] = "To keep the PR, close it and reopen it yourself: the task goes back to `pr-open`, waiting for your review and merge."
+		f.Steps[0] = "To keep the PR, close it and reopen it yourself: the task goes back to `pr-open`, " + prBackWaits(story) + "."
 		f.DoneWhen = "The PR is closed and reopened by you, a new round is asked for, or the issue is closed."
 		keep = "Closing and reopening the PR yourself sends the task back to `pr-open`."
 	}
@@ -491,9 +494,26 @@ func renderPRClosedHandoff(n, pr int, link string, reopened bool, by string, not
 // renderPRReopened is the comment of a task's move back to pr-open on a
 // trusted user's reopen of its PR, pr, by by (SPEC §7.2): it names the
 // reopener, in code, defused, and says the task waits for the owner's
-// review and merge again. Transition escapes it.
-func renderPRReopened(pr int, by string) string {
-	return fmt.Sprintf("`%s` reopened PR #%d, so this task is back at `pr-open`. It waits for your review and merge, and merging it closes this task.", defuse(by), pr)
+// review and merge again, or with story, for a task in a story, that the
+// App merges the PR into the story branch once it's checked (SPEC §7.5).
+// Transition escapes it.
+func renderPRReopened(pr int, by string, story bool) string {
+	waits := "It waits for your review and merge, and merging it closes this task."
+	if story {
+		waits = "The App merges it into the story branch once it's checked, then closes this task."
+	}
+	return fmt.Sprintf("`%s` reopened PR #%d, so this task is back at `pr-open`. %s", defuse(by), pr, waits)
+}
+
+// prBackWaits is what a task's PR waits for once the task is back at
+// pr-open: the owner's review and merge for a PR to main, or with story,
+// for a task in a story, the App's merge into its story branch once it's
+// checked, as the owner reviews only the story's PR (SPEC §7.5).
+func prBackWaits(story bool) string {
+	if story {
+		return "where the App merges it into the story branch once it's checked"
+	}
+	return "waiting for your review and merge"
 }
 
 // prDirtSet keeps s's dirty content dirt, after its last good step 1,
