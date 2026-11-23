@@ -94,7 +94,7 @@ func TestRenderNothingHandoff(t *testing.T) {
 		"**Estimated time:** A few minutes.\n\n" +
 		"If something needs to change, reply `/done` on this issue or react 👍 to this comment, and the task goes back to `ready`. If not, close this issue.\n\n" +
 		"cc @owner"
-	if got := renderNothingHandoff(head, 4, []string{"owner"}); got != want {
+	if got := renderNothingHandoff(head, prBase, 4, []string{"owner"}); got != want {
 		t.Errorf("the hand-off =\n%s\nwant\n%s", got, want)
 	}
 }
@@ -106,7 +106,7 @@ func TestRenderNothingHandoff(t *testing.T) {
 // change, a close for none (SPEC §9.4).
 func TestWaitFindNothingHandoff(t *testing.T) {
 	t.Parallel()
-	body := renderNothingHandoff(strings.Repeat("ab", 20), 1, nil) +
+	body := renderNothingHandoff(strings.Repeat("ab", 20), prBase, 1, nil) +
 		"\n\n<!-- issuedog:transition from=verifying to=needs-human run=rv head=" + strings.Repeat("ab", 20) + " seen=101 -->"
 	it := waitFindOne(t, waitIn(handbackSnap(false, handbackToProgress, body), Dirt{}))
 	want := []string{"A hand-off waits for you: the verifier passed a head that changes nothing on `main`, so it gets no PR.",

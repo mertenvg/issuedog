@@ -328,7 +328,10 @@ type waitInput struct {
 //     (latestHandoff), whatever blocks it. It links the hand-off comment,
 //     which says what to do (waitHandoffLines);
 //   - at pr-open, a pull request (SPEC §9.4), when its PR, in.PR, is
-//     listed open. It names the PR and its title, and links the PR
+//     listed open, for a task with no parent: a task in a story's PR is
+//     into its story branch, which the App merges, so it has none, and
+//     nothing else either while its PR is open. It names the PR and its
+//     title, and links the PR
 //     (waitPRLines), and assignment assigns the PR, not the issue
 //     (waitItem.AssignPR). A PR that merges or closes changes nothing on
 //     the issue, so the digest and assignment judge the item again on each
@@ -345,7 +348,8 @@ type waitInput struct {
 //     pass moves it no more, and it holds the worker, so nothing else is
 //     picked till the owner acts (waitStalledLines). It links the issue.
 //     Otherwise, the PR step's wait, in.Stall, when it has one: someone
-//     else's open PR from its branch to main, which it links when it knows
+//     else's open PR from its branch to its base, main or its story
+//     branch, which it links when it knows
 //     its number, or someone else's tip on its branch (stalledPR,
 //     stalledTip). It holds the worker too. After a restart, the item read
 //     back from the digest's body stands for it till the PR step judges
@@ -435,6 +439,12 @@ func waitFind(in waitInput) ([]waitItem, error) {
 	case handoffWaits:
 		add(waitHandoff, strconv.FormatInt(handoff, 10), handoff, waitHandoffLines(s, handoff))
 	case is.Stage == state.PROpen && in.PR != nil && in.PR.Open:
+		// A task in a story's PR is into its story branch, the App's to
+		// merge, so it waits on nobody: no item, and its PR is never
+		// assigned (SPEC §7.5, §9.6).
+		if s.Parent != 0 {
+			break
+		}
 		// A task has one PR at a time: its key is pr-<n>-<PR number>.
 		pr := in.PR.Number
 		add(waitPR, strconv.Itoa(pr), state.BodyID, waitPRLines(*in.PR))
@@ -751,8 +761,9 @@ func waitGoalDone(body string) (goal, done string) {
 // hand-off the fields are read from its last Goal line on. Or it's the
 // verifier's runs on the task's head failing (verifierCapMove), whose
 // hand-off always says why. Or it's the verifier passing a head that
-// changes nothing on main, so it gets no PR (nothingHandoffMove), which
-// verifyCapMove leaves out, though both are keyed run=. Or it's a head
+// changes nothing on main, or for a task in a story, on its story branch,
+// so it gets no PR (nothingHandoffMove), which verifyCapMove leaves out,
+// though both are keyed run=. Or it's a head
 // someone else pushed failing rule 2 (personRule2Move), which verifyCapMove
 // leaves out, though both are keyed event=v: its hand-off names the paths
 // before its fields, so they're read from its last Goal line on, as for
@@ -776,7 +787,11 @@ func waitHandoffLines(s *github.Snapshot, id int64) []waitLine {
 	case slices.ContainsFunc(markers, capHandoffMove):
 		why = "the task's `loop.max_attempts` attempts in its round failed."
 	case slices.ContainsFunc(markers, nothingHandoffMove):
-		why = "the verifier passed a head that changes nothing on `main`, so it gets no PR."
+		on := "`main`"
+		if s.Parent != 0 {
+			on = "its story branch"
+		}
+		why = "the verifier passed a head that changes nothing on " + on + ", so it gets no PR."
 		finish = "If something needs to change, reply `/done` on the issue or react 👍 to the hand-off, and the task goes back to `ready`. If not, close the issue."
 	case slices.ContainsFunc(markers, personRule2Move):
 		why = "a head someone else pushed to the task's branch changes a protected path, so it fails rule 2, and the hand-off names the paths."
@@ -854,9 +869,11 @@ type stall struct {
 	// Tip its branch's tip, someone else's commits (stalledTip).
 	Head, Tip string
 	// PR is someone else's open PR from the task's branch, or 0 when the
-	// listing the PR step read didn't show it (stalledPR), or the task's
-	// own PR, listed closed (stalledClosed).
-	PR int
+	// listing the PR step read didn't show it, and Base that PR's base,
+	// the task's PR's, main or its story branch (stalledPR), or PR is the
+	// task's own PR, listed closed (stalledClosed).
+	PR   int
+	Base string
 }
 
 // key is st's item's key after stalled-<n>-: the pass's run, or for a
@@ -928,9 +945,12 @@ func stalledHead(is state.Issue) string {
 //     to change, or set stage:ready for a new round. A pushed head isn't
 //     one of them: it moves nothing at verifying, as step 2 judges a
 //     task's branch only at pr-open (SPEC §7.2).
-//   - stalledPR: someone else's open PR from its branch to main stands, so
-//     GitHub won't open the task's: close that PR, and the PR step opens
-//     the task's once a poll lists it closed, or set stage:ready.
+//   - stalledPR: someone else's open PR from its branch to st.Base, main
+//     or its story branch, stands, so GitHub won't open the task's: close
+//     that PR, and the PR step opens the task's once a poll lists it
+//     closed, or set stage:ready. A story branch's name, which an admin
+//     may have chosen, is a code span with its markers escaped
+//     (checkCode).
 //   - stalledTip: its branch is at someone else's commits, not in its
 //     head's history, so nothing is pushed over them: reset the branch to
 //     a commit in the head's history, and the PR step pushes the head, or
@@ -950,9 +970,13 @@ func waitStalledLines(st stall) []waitLine {
 		if st.PR > 0 {
 			pr, closeIt = fmt.Sprintf("someone else's open PR #%d", st.PR), fmt.Sprintf("Close PR #%d", st.PR)
 		}
+		base := st.Base
+		if base == "" {
+			base = prBase
+		}
 		return []waitLine{
-			{Text: fmt.Sprintf("This task's head passed, but %s from its branch to `%s` stands, so GitHub won't open the task's, and it waits at `%s`. %s",
-				pr, prBase, state.Verifying, holds)},
+			{Text: fmt.Sprintf("This task's head passed, but %s from its branch to %s stands, so GitHub won't open the task's, and it waits at `%s`. %s",
+				pr, checkCode(base), state.Verifying, holds)},
 			{Text: fmt.Sprintf("%s, and the task's opens once a poll lists it closed; or %s, though its next head waits here again while that PR is open.", closeIt, readyFree)},
 		}
 	case stalledTip:
