@@ -284,6 +284,52 @@ func TestOriginRepostHumanCheck(t *testing.T) {
 		Check: state.Check{Kind: state.CheckFile, Value: "docs/a b.md", Contains: "<!--%"}}, state.ClassHumanTask)
 }
 
+// An issue filed for a failure on a story branch, whose body the owner
+// edited, gets its origin marker reposted once, worded for a failure, with
+// every field as the App wrote it (SPEC §5, Story branch failures; §6.4).
+// So a human task stays one, with its tip check, and a conflict bug stays
+// a bug, with its main commit. Replay passes.
+func TestOriginRepostStoryFailure(t *testing.T) {
+	t.Parallel()
+	const (
+		tip      = "4b1d0e2c9a8f7e6d5c4b3a291807f6e5d4c3b2a1"
+		main     = "5d55321d1accd2292e6164a847f21631e4016740"
+		human    = "<!-- issuedog:origin human=1 story=#625 tip=" + tip + " -->"
+		conflict = "<!-- issuedog:origin main=" + main + " story=#625 tip=" + tip + " -->"
+	)
+	for _, tt := range []struct {
+		name, typ, stage, marker string
+		want                     state.Origin
+		class                    state.Class
+	}{
+		{"a human task", "task", "needs-human", human,
+			state.Origin{Story: 625, Tip: tip, Human: true, Check: state.Check{Kind: state.CheckTip, Value: tip}}, state.ClassHumanTask},
+		{"a conflict bug", "bug", "ready", conflict, state.Origin{Story: 625, Tip: tip, Main: main}, state.ClassBug},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			setup := originTask(tt.stage, tt.marker, func(_ testing.TB, f *githubtest.Fake) {
+				f.SetType(1, tt.typ)
+				f.EditBody(1, "owner", "Put better.")
+			})
+			githubtest.Replay(t, setup, discPass(t, 1))
+			f := run(t, setup, discPass(t, 1))
+			repost := "This issue's description was edited, so I've copied its `origin` marker here to keep tracking it as its story branch's failure.\n\n" + tt.marker
+			if added := originAdded(f, 1, 1); !slices.Equal(added, []string{repost}) {
+				t.Errorf("new comments %q; want only the repost of %s", added, tt.marker)
+			}
+			originClass(t, f, 1, "after the repost", tt.want, tt.class)
+			writes := len(f.Writes())
+			if err := discPass(t, 1)(f); err != nil {
+				t.Fatal(err)
+			}
+			if w := f.Writes(); len(w) != writes {
+				t.Errorf("a pass after the repost wrote %+v; want nothing", w[writes:])
+			}
+		})
+	}
+}
+
 // The marker comes from the newest version of the body the App wrote that
 // has one: the App's rewrite, or, once that version is deleted from the
 // history, the original post. Replay passes.

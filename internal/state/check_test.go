@@ -2,6 +2,7 @@ package state
 
 import (
 	"maps"
+	"strings"
 	"testing"
 
 	"github.com/mertenvg/issuedog/internal/github"
@@ -29,6 +30,40 @@ func TestCheckFields(t *testing.T) {
 	} {
 		if got := CheckFields(tt.c); !maps.Equal(got, tt.want) {
 			t.Errorf("%s: CheckFields = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+// A story branch failure's human task has a tip check, read from its
+// origin's story and tip, not from check= (SPEC §5, Story branch
+// failures): its Value is the tip, and its story is Origin.Story. Its
+// check, value and contains fields count for nothing, whole or not. A
+// failure's bug has no check, whatever fields it has, and check=tip on a
+// plan's human task is no tip check, but one that couldn't be read, as
+// the App never writes it there.
+func TestCheckTip(t *testing.T) {
+	t.Parallel()
+	const tip = "4b1d0e2c9a8f7e6d5c4b3a291807f6e5d4c3b2a1"
+	for _, tt := range []struct {
+		name   string
+		fields string
+		want   Check
+	}{
+		{"a human task", "human=1 story=#625 tip=" + tip, Check{Kind: CheckTip, Value: tip}},
+		{"a human task with a whole check", "check=label human=1 story=#625 tip=" + tip + " value=x", Check{Kind: CheckTip, Value: tip}},
+		{"a human task with check=tip", "check=tip human=1 story=#625 tip=" + tip + " value=" + strings.Repeat("0", 40), Check{Kind: CheckTip, Value: tip}},
+		{"a human task with fields that aren't a whole check", "contains=x human=1 story=#625 tip=" + tip, Check{Kind: CheckTip, Value: tip}},
+		{"a bug", "story=#625 tip=" + tip, Check{}},
+		{"a bug with a whole check", "check=label story=#625 tip=" + tip + " value=x", Check{}},
+		{"a conflict bug", "main=" + strings.Repeat("5", 40) + " story=#625 tip=" + tip, Check{}},
+		{"a plan's human task with check=tip", "plan=#250 rev=1 item=T3 human=1 check=tip value=" + tip, Check{Kind: CheckUnreadable}},
+	} {
+		is := Derive(snap("<!-- issuedog:origin "+tt.fields+" -->", nil), slug, clean)
+		if is.Origin.Check != tt.want {
+			t.Errorf("%s: Origin.Check = %+v, want %+v", tt.name, is.Origin.Check, tt.want)
+		}
+		if tt.want.Kind == CheckTip && is.Origin.Story != 625 {
+			t.Errorf("%s: Origin.Story = %d, want 625, the tip check's story", tt.name, is.Origin.Story)
 		}
 	}
 }

@@ -486,7 +486,10 @@ func childrenRun(plan github.Comment, rev int, changed []childSpec, appSlug stri
 // and dirty content included. A follow-up filed under a story, whose
 // listed body gives a follow-up's origin, isn't read: it's no plan item's
 // child (childMatch), and a story may have one from each verify of its
-// tasks. That leaves one of two kinds of sub-issue:
+// tasks. Nor is a bug or human task filed under a story for a failure on
+// its branch, whose listed body gives a failure's origin, for the same
+// reason (SPEC §5, Story branch failures). That leaves one of two kinds of
+// sub-issue:
 //   - one the App filed, whose origin the App reposted in a comment once
 //     the body lost it (originRepost, SPEC §6.4, #291). Until that repost
 //     exists, as when the parent's visit comes before the child's step 1
