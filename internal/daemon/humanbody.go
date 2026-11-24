@@ -120,6 +120,10 @@ func humanDoneWhen(text string, c state.Check) (string, error) {
 		s = fmt.Sprintf("An active ruleset on `main` requires the check %s.", v)
 	case state.CheckInstallation:
 		s = fmt.Sprintf("The App is installed on %s, and not suspended.", v)
+	case state.CheckTip:
+		// The human task filed for a story branch that fails rule 2 (SPEC
+		// §9.3, A story branch's failure): its story is its parent.
+		s = fmt.Sprintf("The story branch's tip is no longer %s.", v)
 	default:
 		return "", fmt.Errorf("a check of the unknown kind %q", c.Kind)
 	}
