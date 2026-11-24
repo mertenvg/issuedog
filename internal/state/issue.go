@@ -66,25 +66,29 @@ type Issue struct {
 	// HeldStack is what holds the issue while Stage is Held, else the zero
 	// HeldStack.
 	HeldStack HeldStack
-	// Origin is the plan item, or the verify's follow-up candidate, the
-	// App filed the issue from, from the origin marker in its body or else
-	// in the newest clean App comment that has one, or the zero Origin with
-	// none (originOf).
+	// Origin is the plan item, the verify's follow-up candidate, or the
+	// failure on a story branch, the App filed the issue from, from the
+	// origin marker in its body or else in the newest clean App comment
+	// that has one, or the zero Origin with none (originOf).
 	Origin Origin
 }
 
 // Origin is an issue's origin marker (SPEC §16, "Created issues"): the
-// plan item the App filed it from, as origin plan=#N rev=R item=ID, or for
-// a follow-up, the verify that found it, as origin verify=#N run=ID
-// item=F<k> (SPEC §5, §10.2). It's the one place the marker is read, and
-// what every later reader builds on (SPEC §5):
+// plan item the App filed it from, as origin plan=#N rev=R item=ID, for a
+// follow-up, the verify that found it, as origin verify=#N run=ID
+// item=F<k> (SPEC §5, §10.2), or for a failure on a story branch, the
+// story and its failing tip, as origin story=#N tip=<SHA> (SPEC §5, Story
+// branch failures; §7.5). It's the one place the marker is read, and what
+// every later reader builds on (SPEC §5):
 //   - the digest's plan order (SPEC §9.4), which lists the stories one plan
 //     filed together, in the plan's item order (waitRank);
 //   - matching created children to their plan items (SPEC §5.2), and
 //     Item.Human, from a human task's human=1 (SPEC §9.3, Human);
 //   - the class: Item.FromPlan is true exactly when it names a plan
 //     (#290), and Item.FollowUp exactly when it names a verify, which
-//     makes the issue a task the daemon filed, as a plan's is (SPEC §7.2).
+//     makes the issue a task the daemon filed, as a plan's is (SPEC §7.2),
+//     and Item.FromFailure exactly when it names a story and a tip, which
+//     makes it a bug or a human task the daemon filed (SPEC §7.2, §7.5).
 //
 // Derive reads it where SPEC §5 has it, "in the body … or reposted in a
 // comment once that body is dirty" (#290):
@@ -105,12 +109,14 @@ type Issue struct {
 // and the body's marker wins while it's read. Of several clean App
 // comments with a whole marker, the newest counts.
 //
-// Plan is above 0 for a plan's item, and Verify for a follow-up: the zero
-// Origin is none, so callers check Any, or Plan for a plan's item alone. A
-// follow-up's Plan is 0, so the plan order and the matching of a plan's
-// children leave it alone. Fields the marker has besides plan, rev, item,
-// human and a human task's check fields, or a follow-up's verify, run and
-// item, aren't kept here, and don't stop it from being read.
+// Plan is above 0 for a plan's item, Verify for a follow-up, and Story for
+// a story branch's failure: the zero Origin is none, so callers check Any,
+// or Plan for a plan's item alone. A follow-up's Plan is 0, and so is a
+// failure's, so the plan order and the matching of a plan's children leave
+// them alone. Fields the marker has besides plan, rev, item, human and a
+// human task's check fields, a follow-up's verify, run and item, or a
+// failure's story, tip, main and human, aren't kept here, and don't stop
+// it from being read.
 type Origin struct {
 	// Plan is the number of the issue whose plan the item is from, from
 	// plan=#N.
@@ -132,23 +138,39 @@ type Origin struct {
 	Comment int64
 	// Human is true for a human task (SPEC §9.3), from human=1, which the
 	// App writes on a human task's marker when it creates it from a plan
-	// (SPEC §5.2). Any other value of human, or none, is
-	// false.
+	// (SPEC §5.2), or files it for a story branch that fails rule 2 (SPEC
+	// §7.5). Any other value of human, or none, is false.
 	Human bool
 	// Check is a human task's "Done when" check, from the marker's check,
 	// value and contains (CheckFields, SPEC §5), or the zero Check
 	// for a plain-text one, and the CheckUnreadable Check for fields that
-	// don't record a whole check (checkOf). It's read with the rest of the
-	// marker, so wherever Origin is read from, it is too.
+	// don't record a whole check (checkOf). A story branch failure's human
+	// task has the tip check, of Tip, whatever check fields it has. It's
+	// read with the rest of the marker, so wherever Origin is read from, it
+	// is too.
 	Check Check
+	// Story is the story whose branch failed, from story=#N, above 0, on an
+	// issue the App filed for a failure on a story branch (SPEC §5, Story
+	// branch failures). It's 0 for a plan's item and a follow-up.
+	Story int
+	// Tip is the story branch's failing tip, a full SHA, from tip=. It's
+	// empty unless Story is above 0.
+	Tip string
+	// Main is the main commit that didn't merge into Tip, a full SHA, from
+	// main=, on a conflict bug (SPEC §7.5, A conflict). It's empty on any
+	// other failure's issue, and unless Story is above 0.
+	Main string
 }
 
 // originOf returns the Origin that marker m, read in comment id (or
 // BodyID), records, or false if it isn't a whole one: an origin marker
 // with plan=#N and rev=R, each above 0, and a non-empty item, or else a
-// follow-up's whole one (FollowUpOf). A plan's human and check fields are
-// read too, and its other fields ignored. A follow-up is never a human
-// task, so its human and check fields are ignored, as are its others.
+// follow-up's whole one (FollowUpOf), or else a story branch failure's
+// (FailureOf). A plan's human and check fields are read too, and its other
+// fields ignored. A follow-up is never a human task, so its human and
+// check fields are ignored, as are its others. A failure's human field is
+// read, and its check is the one checkOf gives a failure's: the tip check
+// on its human task, whatever its check fields say.
 func originOf(m github.Marker, id int64) (Origin, bool) {
 	num, hash := strings.CutPrefix(m.Fields["plan"], "#")
 	plan, perr := strconv.Atoi(num)
@@ -158,14 +180,22 @@ func originOf(m github.Marker, id int64) (Origin, bool) {
 		if verify, run, item, ok := FollowUpOf(m); ok {
 			return Origin{Verify: verify, Run: run, Item: item, Comment: id}, true
 		}
+		if story, tip, main, ok := FailureOf(m); ok {
+			o := Origin{Story: story, Tip: tip, Main: main, Comment: id, Human: m.Fields["human"] == "1"}
+			o.Check = checkOf(o, m.Fields)
+			return o, true
+		}
 		return Origin{}, false
 	}
-	return Origin{Plan: plan, Rev: rev, Item: item, Comment: id, Human: m.Fields["human"] == "1", Check: checkOf(m.Fields)}, true
+	o := Origin{Plan: plan, Rev: rev, Item: item, Comment: id, Human: m.Fields["human"] == "1"}
+	o.Check = checkOf(o, m.Fields)
+	return o, true
 }
 
 // Any reports whether o is an origin at all: a plan's item's, with Plan
-// above 0, or a follow-up's, with Verify above 0.
-func (o Origin) Any() bool { return o.Plan != 0 || o.Verify != 0 }
+// above 0, a follow-up's, with Verify above 0, or a story branch
+// failure's, with Story above 0.
+func (o Origin) Any() bool { return o.Plan != 0 || o.Verify != 0 || o.Story != 0 }
 
 // followUpItemRE is a follow-up candidate's place in its passing verdict.
 var followUpItemRE = regexp.MustCompile(`^F[1-9][0-9]*$`)
@@ -188,9 +218,36 @@ func FollowUpOf(m github.Marker) (verify int, run, item string, ok bool) {
 	return n, run, item, true
 }
 
+// fullSHARE is a full commit SHA, SHA-1 or SHA-256, in lower case, as git
+// writes one.
+var fullSHARE = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
+
+// FailureOf returns what m, the origin marker of an issue the App filed
+// for a failure on a story branch, names (SPEC §5, Story branch failures;
+// §7.5): the story, from story=#N, above 0, its branch's failing tip, from
+// tip=, a full SHA, and for a conflict bug, the main commit that didn't
+// merge into that tip, from main=, a full SHA too, or "" with no main=.
+// It's false for anything else, a plan's or a follow-up's origin among
+// them, and for a main= that isn't a full SHA, which the App never writes.
+// Its other fields, human=1 among them, don't stop it from being read.
+// Like FollowUpOf, it doesn't check who wrote m: the caller reads it
+// through github.TrustedMarkers, or knows it's the App's. Derive reads it
+// where it reads a plan's (originOf), into Origin's Story, Tip and Main,
+// and the issue is then a failure's (Item.FromFailure).
+func FailureOf(m github.Marker) (story int, tip, main string, ok bool) {
+	num, hash := strings.CutPrefix(m.Fields["story"], "#")
+	n, err := strconv.Atoi(num)
+	tip = m.Fields["tip"]
+	main, hasMain := m.Fields["main"]
+	if m.Kind != "origin" || !hash || err != nil || n <= 0 || !fullSHARE.MatchString(tip) || hasMain && !fullSHARE.MatchString(main) {
+		return 0, "", "", false
+	}
+	return n, tip, main, true
+}
+
 // OriginMarker returns the origin marker Derive would read from text as a
-// clean body of the App's: the first whole one (originOf), a plan's or a
-// follow-up's, with every
+// clean body of the App's: the first whole one (originOf), a plan's, a
+// follow-up's or a story branch failure's, with every
 // field it has, its values as written, so still percent-encoded. It's
 // false if text has none. It doesn't check who wrote text: the caller
 // knows it's the App's, as a version of the body the App wrote is (SPEC
@@ -369,7 +426,8 @@ func createdChildren(field string) ([]int, bool) {
 // body or escape the text they keep (SPEC §5.1), so after one, every
 // marker in the body is the App's. Origin comes from the body's markers
 // while they're read, and else from the newest clean App comment's, and
-// Item.FromPlan and Item.FollowUp follow it (see Origin).
+// Item.FromPlan, Item.FollowUp and Item.FromFailure follow it (see
+// Origin).
 func Derive(s *github.Snapshot, appSlug string, dirty func(id int64) bool) Issue {
 	is := Issue{Stage: Intake, Keys: map[Key]bool{}, Errors: map[ErrorKey]int64{}, Acks: map[ErrorKey]bool{},
 		Item: Item{Type: s.Type, HasParent: s.Parent != 0}}
@@ -404,10 +462,11 @@ func Derive(s *github.Snapshot, appSlug string, dirty func(id int64) bool) Issue
 	for _, c := range s.Comments {
 		read(c.ID, c.Author, c.Body)
 	}
-	// FromPlan and FollowUp follow Origin, so they always agree (#290): a
-	// marker that isn't a whole one gives none of them.
+	// FromPlan, FollowUp and FromFailure follow Origin, so they always
+	// agree (#290): a marker that isn't a whole one gives none of them.
 	is.Item.FromPlan = is.Origin.Plan != 0
 	is.Item.FollowUp = is.Origin.Verify > 0
+	is.Item.FromFailure = is.Origin.Story > 0
 	// A human task is known by its origin marker alone, read wherever
 	// Origin is read (#275, #290).
 	is.Item.Human = is.Origin.Human

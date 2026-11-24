@@ -10,10 +10,13 @@ import (
 )
 
 // originRepostText is the App's line above an origin marker it reposts,
-// and followUpRepostText a follow-up's, which has no plan.
+// followUpRepostText a follow-up's, which has no plan, and
+// failureRepostText the marker of an issue filed for a failure on a story
+// branch, which has none either (SPEC §5, Story branch failures).
 const (
 	originRepostText   = "This issue's description was edited, so I've copied its `origin` marker here to keep tracking it in its plan."
 	followUpRepostText = "This issue's description was edited, so I've copied its `origin` marker here to keep tracking it as a follow-up."
+	failureRepostText  = "This issue's description was edited, so I've copied its `origin` marker here to keep tracking it as its story branch's failure."
 )
 
 // originRepost posts again, in an App comment, the origin marker an
@@ -51,8 +54,10 @@ func (a *Applier) originRepost(ctx context.Context, s *github.Snapshot, d Dirt) 
 	}
 	logr.Infof("%s/%s#%d: its description lost its origin marker, so posting it again in a comment", a.Owner, a.Repo, s.Number)
 	text := originRepostText
-	if _, _, _, ok := state.FollowUpOf(m); ok {
+	if o, ok := state.OriginOf(m); ok && o.Verify > 0 {
 		text = followUpRepostText
+	} else if ok && o.Story > 0 {
+		text = failureRepostText
 	}
 	if err := a.comment(ctx, s, join(text, marker)); err != nil {
 		return wrap(err)
