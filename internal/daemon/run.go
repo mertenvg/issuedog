@@ -125,6 +125,11 @@ type Input struct {
 	// from, set with RunID: main, or for a task in a story, its story
 	// branch (SPEC §3.4, §12).
 	Branch string
+	// Conflict is the main commit a conflict bug names, set with RunID,
+	// which its first attempt and a dropped head's run start from, with
+	// its story branch's tip as Target, or "" for any other run (SPEC §3.4,
+	// §7.5, A conflict, §12).
+	Conflict string
 	// Head is the commit a verifier run judges, Against is what it passed
 	// the checks against, main's commit, or for a task in a story its
 	// story branch's tip, with the story's baseline (VerifyTarget), and
@@ -214,7 +219,9 @@ type Lease struct {
 	FallbackModels []string `json:"fallback_models,omitempty"`
 	// Start is the commit the run's clone starts from, and Target any
 	// commit it's to merge, both named when the run started (SPEC §3.4):
-	// for triage, the interviewer and the planner, Start is main's.
+	// for triage, the interviewer and the planner, Start is main's. A
+	// conflict bug's first attempt starts from the main commit it names,
+	// with its story branch's tip as Target (SPEC §7.5, A conflict).
 	Start  string `json:"start,omitempty"`
 	Target string `json:"target,omitempty"`
 	// StoryTip is the story branch's tip an implementer run on a task in a
@@ -758,7 +765,7 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		r.Daemon.reread(n, false)
 		return false, wrap(r.reportLabels(ctx, rd.S, fresh, is.Stage, st, badLabels))
 	}
-	in.RunID, in.Attempt, in.Target, in.Dropped, in.Branch = r.newID(), attempt, commits.Target, commits.Dropped, commits.Branch
+	in.RunID, in.Attempt, in.Target, in.Dropped, in.Branch, in.Conflict = r.newID(), attempt, commits.Target, commits.Dropped, commits.Branch, commits.Conflict
 	in.ContextDir = r.Workspace.Context(in.RunID)
 	if _, after := st.(AfterChecks); after {
 		// start refused a head with no pass, so passed holds this one's.

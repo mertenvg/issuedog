@@ -363,7 +363,7 @@ func (r *Runs) mainJudge(ctx context.Context, rd Ready, is state.Issue, head str
 		}
 		return nil
 	}
-	findings, results, err := r.verifyChecks(ctx, rd.S, merge, t.Baseline, t.SHA)
+	findings, results, err := r.verifyChecks(ctx, rd.S, merge, t)
 	if err != nil {
 		return fmt.Errorf("check the merge %s: %w", merge, err)
 	}

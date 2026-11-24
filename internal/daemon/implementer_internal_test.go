@@ -25,7 +25,7 @@ func TestImplementerPreamble(t *testing.T) {
 	c.Verify.ProtectedPaths = []string{"secrets/**", "deploy/<prod>", "ops/<!--`x"}
 	c.Loop.MaxQuestionsPerRound = 4
 	rounds := []interviewerRound{{Number: 1, Questions: 2}, {Number: 2, Questions: 1}}
-	got := implementerPreamble(c, rounds, "main", "", "")
+	got := implementerPreamble(c, rounds, "main", "", "", "")
 	for _, want := range []string{
 		"- A PR title's `type` is one of: `feat`, `fix`, `perf` (`pr.title_types`), exactly as written. " +
 			"The title, `<type>: <sentence>`, is one line of at most 256 characters.",
@@ -43,11 +43,11 @@ func TestImplementerPreamble(t *testing.T) {
 			t.Errorf("the preamble =\n%s\nwant it to say\n%s", got, want)
 		}
 	}
-	if none := implementerPreamble(c, nil, "main", "", ""); !strings.Contains(none, "No questions have been asked on this issue yet, so a question round now is round 1.") {
+	if none := implementerPreamble(c, nil, "main", "", "", ""); !strings.Contains(none, "No questions have been asked on this issue yet, so a question round now is round 1.") {
 		t.Errorf("the preamble with no rounds =\n%s\nwant round 1 next", none)
 	}
 	c.Verify.TestGlobs = nil
-	if all := implementerPreamble(c, nil, "main", "", ""); !strings.Contains(all, "counting only files outside `verify.test_globs`, which is empty, so every file counts.") {
+	if all := implementerPreamble(c, nil, "main", "", "", ""); !strings.Contains(all, "counting only files outside `verify.test_globs`, which is empty, so every file counts.") {
 		t.Errorf("the preamble with no test globs =\n%s\nwant every file to count", all)
 	}
 }
@@ -60,7 +60,7 @@ func TestImplementerPreambleTarget(t *testing.T) {
 	t.Parallel()
 	c := config.Defaults()
 	target := strings.Repeat("ab", 20)
-	got := implementerPreamble(c, nil, "main", target, "")
+	got := implementerPreamble(c, nil, "main", target, "", "")
 	for _, want := range []string{
 		"- You run in a detached checkout of the commit issuedog named for this task, with its history and one branch, `target` (below), but no remote, " +
 			"so git commands name HEAD. Commit your work there.",
@@ -71,7 +71,7 @@ func TestImplementerPreambleTarget(t *testing.T) {
 			t.Errorf("the preamble with a target =\n%s\nwant it to say\n%s", got, want)
 		}
 	}
-	none := implementerPreamble(c, nil, "main", "", "")
+	none := implementerPreamble(c, nil, "main", "", "", "")
 	if strings.Contains(none, "`target`") || !strings.Contains(none, "with its history but no branches and no remote, so git commands name HEAD.") {
 		t.Errorf("the preamble with no target =\n%s\nwant no target named, and no branches", none)
 	}
@@ -86,7 +86,7 @@ func TestImplementerPreambleDropped(t *testing.T) {
 	t.Parallel()
 	c := config.Defaults()
 	finding := "The task's diff touches protected paths (SPEC 6.3 and verify.protected_paths):\n- .github/<!-- issuedog:x -->\n- ```"
-	got := implementerPreamble(c, nil, "main", "", finding)
+	got := implementerPreamble(c, nil, "main", "", finding, "")
 	want := "issuedog checks your output and posts it.\n" +
 		"- The head your earlier runs left on this task fails verify's rule 2, as the finding below says, so issuedog dropped it: " +
 		"your checkout starts from `main`, as a first run's does, and holds none of their work. Do the task again from here. " +
@@ -99,7 +99,7 @@ func TestImplementerPreambleDropped(t *testing.T) {
 	if strings.Contains(got, "<!--") {
 		t.Errorf("the preamble with a dropped head =\n%s\nwant the finding's marker escaped", got)
 	}
-	if none := implementerPreamble(c, nil, "main", "", ""); strings.Contains(none, "dropped") || strings.Contains(none, "rule 2") {
+	if none := implementerPreamble(c, nil, "main", "", "", ""); strings.Contains(none, "dropped") || strings.Contains(none, "rule 2") {
 		t.Errorf("the preamble with no dropped head =\n%s\nwant nothing of a dropped head", none)
 	}
 }
@@ -112,7 +112,7 @@ func TestImplementerPreambleStoryBranch(t *testing.T) {
 	t.Parallel()
 	c := config.Defaults()
 	target := strings.Repeat("cd", 20)
-	got := implementerPreamble(c, nil, "issuedog/1-a`b<!--", target, "a finding")
+	got := implementerPreamble(c, nil, "issuedog/1-a`b<!--", target, "a finding", "")
 	for _, want := range []string{
 		"- Your checkout's `target` branch is ``issuedog/1-a`b&lt;!--`` at `" + target + "`, which your starting commit",
 		"so issuedog dropped it: your checkout starts from ``issuedog/1-a`b&lt;!--``, as a first run's does,",
@@ -121,9 +121,40 @@ func TestImplementerPreambleStoryBranch(t *testing.T) {
 			t.Errorf("the preamble on a story branch =\n%s\nwant it to say\n%s", got, want)
 		}
 	}
-	if none := implementerPreamble(c, nil, "", target, "a finding"); !strings.Contains(none, "branch is `main` at `"+target+"`") ||
+	if none := implementerPreamble(c, nil, "", target, "a finding", ""); !strings.Contains(none, "branch is `main` at `"+target+"`") ||
 		!strings.Contains(none, "your checkout starts from `main`, as a first run's does") {
 		t.Errorf("the preamble with no branch named =\n%s\nwant main named", none)
+	}
+}
+
+// For a conflict bug, the target's line names the main commit the bug
+// names as the start, and its story branch's tip, escaped, as the commit
+// to merge into it, resolving the conflicts, and says verify fails a head
+// that lacks either and judges only the resolution; the dropped head's
+// line says the checkout starts from that main commit, with the target to
+// merge (SPEC §3.4, §7.5's A conflict, §12). Without a target, as on a
+// retry from a head that holds the tip, there's no line of either.
+func TestImplementerPreambleConflict(t *testing.T) {
+	t.Parallel()
+	c := config.Defaults()
+	tip, main := strings.Repeat("ef", 20), strings.Repeat("12", 20)
+	got := implementerPreamble(c, nil, "issuedog/1-a`b<!--", tip, "a finding", main)
+	for _, want := range []string{
+		"- This task is a conflict bug: `main` at `" + main + "` doesn't merge cleanly into the story branch ``issuedog/1-a`b&lt;!--``. " +
+			"Your checkout starts from that `main` commit, or from your earlier runs' work on it, and its `target` branch is ``issuedog/1-a`b&lt;!--`` at `" + tip + "`, " +
+			"the story branch's tip. Merge `target` first, resolve every conflict, and commit the merge, so your head holds both commits: " +
+			"verify fails a head that lacks either. verify judges only your resolution: your head's diff from the merge of the two with its conflict markers left in.",
+		"so issuedog dropped it: your checkout starts from `main` at `" + main + "`, with `target` to merge, as a first run's does,",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the conflict bug's preamble =\n%s\nwant it to say\n%s", got, want)
+		}
+	}
+	if strings.Contains(got, "which your starting commit doesn't merge with cleanly") {
+		t.Errorf("the conflict bug's preamble =\n%s\nwant no plain target line", got)
+	}
+	if none := implementerPreamble(c, nil, "issuedog/1-a`b<!--", "", "", main); strings.Contains(none, "conflict bug") || strings.Contains(none, "`target`") {
+		t.Errorf("the conflict bug's preamble with no target =\n%s\nwant no target named", none)
 	}
 }
 

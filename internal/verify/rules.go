@@ -38,6 +38,10 @@ type Facts struct {
 	Head string
 	// Target is the commit the head must merge cleanly with (rule 7).
 	Target string
+	// MustHold are the commits the head's history must hold (rule 7), or
+	// none: for a conflict bug, the main commit it names and its story
+	// branch's tip, which its head merges (SPEC §7.5, A conflict).
+	MustHold []string
 	// Scope is the task's scope, without its "scope:" prefix; empty for
 	// none.
 	Scope  string
@@ -230,24 +234,43 @@ func Rule6(ctx context.Context, f Facts) (*Finding, error) {
 
 // Rule7 fails a head that shares no history with Target, or doesn't merge
 // with it cleanly, judged in the bare repo with no worktree
-// (repo.MergeTree). The finding names each conflicting path.
+// (repo.MergeTree), or whose history lacks any of MustHold. The finding
+// names each commit the head lacks, then each conflicting path.
 func Rule7(ctx context.Context, f Facts) (*Finding, error) {
+	var lacks []string
+	for _, c := range f.MustHold {
+		has, err := f.Repo.IsAncestor(ctx, c, f.Head)
+		if err != nil {
+			return nil, fmt.Errorf("rule 7: %w", err)
+		}
+		if !has {
+			lacks = append(lacks, c)
+		}
+	}
+	var parts []string
+	if len(lacks) > 0 {
+		parts = append(parts, fmt.Sprintf("The head %s lacks these commits in its history, which it must merge:\n%s", f.Head, lines(lacks)))
+	}
 	bases, err := f.Repo.MergeBase(ctx, f.Target, f.Head)
 	if err != nil {
 		return nil, fmt.Errorf("rule 7: %w", err)
 	}
 	if len(bases) == 0 {
-		return &Finding{Rule: 7, Name: "merge with the target", Detail: fmt.Sprintf("The head %s shares no history with its target %s.", f.Head, f.Target)}, nil
+		parts = append(parts, fmt.Sprintf("The head %s shares no history with its target %s.", f.Head, f.Target))
+		return &Finding{Rule: 7, Name: "merge with the target", Detail: strings.Join(parts, "\n\n")}, nil
 	}
 	conflicts, err := f.Repo.MergeTree(ctx, f.Target, f.Head)
 	if err != nil {
 		return nil, fmt.Errorf("rule 7: %w", err)
 	}
-	if len(conflicts) == 0 {
+	if len(conflicts) > 0 {
+		parts = append(parts, fmt.Sprintf("The head %s doesn't merge cleanly with its target %s. "+
+			"These files conflict:\n%s", f.Head, f.Target, list(conflicts)))
+	}
+	if len(parts) == 0 {
 		return nil, nil
 	}
-	return &Finding{Rule: 7, Name: "merge with the target", Detail: fmt.Sprintf("The head %s doesn't merge cleanly with its target %s. "+
-		"These files conflict:\n%s", f.Head, f.Target, list(conflicts))}, nil
+	return &Finding{Rule: 7, Name: "merge with the target", Detail: strings.Join(parts, "\n\n")}, nil
 }
 
 // ErrMergeBases is BaseOf's error when the head and its target don't have
