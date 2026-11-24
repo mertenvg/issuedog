@@ -332,6 +332,13 @@ func TestHumanCheckTip(t *testing.T) {
 		{"three branches", map[string]string{"issuedog/9-c": now, "issuedog/9-b": now, "issuedog/9-a": now}, false,
 			"Story #9 has more than one branch with the prefix `issuedog/9-`, `issuedog/9-a`, `issuedog/9-b` and `issuedog/9-c`, " +
 				"so I can't tell which one's tip to check against the failing tip `" + tip + "`."},
+		// A branch's name isn't the App's text: a backtick and a marker in
+		// it read as they are, in a code span, escaped.
+		{"a backtick in the name", map[string]string{"issuedog/9-a`b": tip}, false,
+			"The story branch ``issuedog/9-a`b`` is still at the failing tip `" + tip + "`."},
+		{"names with a backtick and a marker", map[string]string{"issuedog/9-a`b": now, "issuedog/9-<!--x-->": tip}, false,
+			"Story #9 has more than one branch with the prefix `issuedog/9-`, `issuedog/9-&lt;!--x-->` and ``issuedog/9-a`b``, " +
+				"so I can't tell which one's tip to check against the failing tip `" + tip + "`."},
 	} {
 		var prefixes []string
 		a := &Applier{Owner: "o", Repo: "r", StoryBranches: func(_ context.Context, prefix string) (map[string]string, error) {

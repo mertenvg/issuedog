@@ -37,8 +37,8 @@ func checkFromPlan(d planDoneWhen) (state.Check, error) {
 }
 
 // humanCheck runs the check on a human task's origin o, its check c,
-// o.Check (SPEC §9.3, "The checks"), and reports whether it passes, and found, the App's sentence saying what it
-// saw, for the reply to a failure. Every value in found is inline code,
+// o.Check (SPEC §9.3, "The checks"), and reports whether it passes, and
+// found, the App's sentence saying what it saw, for the reply to a failure. Every value in found is inline code,
 // escaped (checkCode). It never quotes a file's contents. A plain-text "Done
 // when", the zero Check, has nothing to run, and passes. A check whose
 // origin marker fields couldn't be read, state.CheckUnreadable, reads

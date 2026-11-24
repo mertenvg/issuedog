@@ -42,8 +42,9 @@ type doneChecked struct {
 //     rule 2 has the tip check, of Issue.Origin.Story's branch, so a
 //     /done before its tip moves on is rejected with a reply naming the
 //     branch and the failing tip (humanCheckTip). A failed check is a
-//     Rejection whose reason quotes what it found, so Step 👎s the comment and replies once, and the issue
-//     stays open; a later /done checks again. A check that couldn't be
+//     Rejection whose reason quotes what it found, so Step 👎s the
+//     comment and replies once, and the issue stays open; a later /done
+//     checks again. A check that couldn't be
 //     read fails every time, so its Rejection is Final, and says to close
 //     the issue by hand instead (unreadableAdvice). A read that fails is an
 //     error, not a failed check: the pass fails with no reply, and the next

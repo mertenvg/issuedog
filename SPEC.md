@@ -1001,7 +1001,7 @@ Its checks are 11.3's.
 | `/approve` | Issue | Approves the current spec or plan revision |
 | Any comment that is not a command | Issue in `spec-review` or `plan-review` | Sends the spec or plan back, with the comment as the notes (7.4) |
 | `/revise <text>` | Issue | Sends the spec or plan back with the owner's notes |
-| 👍 on the issue | Human task, from the planner, or for a story branch's failure (9.3, not built yet), at `needs-human` | Same as `/done` on it: runs its **Done when** check, once for each 👍 (9.3) |
+| 👍 on the issue | Human task, from the planner, or for a story branch's failure (9.3), at `needs-human` | Same as `/done` on it: runs its **Done when** check, once for each 👍 (9.3) |
 | 👍 on the latest hand-off comment | Blocked task at `needs-human` | Same as `/done` (9.3). A 👍 on an earlier hand-off comment, or on the issue itself, does nothing |
 | 👍 on the issue, or on its addendum comment on its story | Follow-up at `intake` | Approves it, moving it to `ready` (10.2). A 👍 on an addendum someone edited counts for nothing (5.1) |
 | 👍 on a state-error comment | Any issue | Acknowledges the error (5.3). The stage doesn't change |
