@@ -345,8 +345,10 @@ func TestStoryRunTipMovedFails(t *testing.T) {
 		!strings.Contains(logs, ".github/workflows/x.yml") {
 		t.Errorf("the pass logged\n%s\nwant %q, naming the protected path", logs, want)
 	}
-	if w := f.Writes()[writes:]; len(w) != 1 || w[0].Path != "/check-runs" {
-		t.Errorf("the pass wrote %+v; want only the new tip's check", w)
+	// The tip fails rule 2, so its human task is filed under the story
+	// before its check (SPEC §7.5): the issue, its link, its first move.
+	if got, want := writesOf(f)[writes:], []string{"POST /issues", "POST /issues/1/sub_issues", "POST /issues/4/comments", "POST /check-runs"}; !slices.Equal(got, want) {
+		t.Errorf("the pass wrote %q; want only the human task's filing and the new tip's check, %q", got, want)
 	}
 	if got := tipLast(t, f); got.HeadSHA != bad || got.Conclusion != "failure" {
 		t.Errorf("the last check is %+v; want failure on the new tip %s", got, bad)
@@ -367,6 +369,7 @@ func TestStoryRunTipMovedFails(t *testing.T) {
 	if got := tipReads(f, from, bad); got != 1 || v.runs() != 1 {
 		t.Errorf("the restart's first pass read the tip's checks %d times, with %d runs; want once, and still one", got, v.runs())
 	}
+	v.pass() // reads what the restart's first pass wrote for the human task, as the digest's
 	v.quietPass("after the restart")
 
 	fixed := v.tipPush(tipBranch, map[string]string{".github/workflows/x.yml": ""})

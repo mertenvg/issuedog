@@ -315,6 +315,7 @@ func TestPRStoryTipWaitsForItsCheck(t *testing.T) {
 	if got := f.State().CheckRuns; !slices.Contains(got, tipCheck(broken, storyVerifyBranch, "failure")) {
 		t.Fatalf("the pass on the broken tip left the checks %+v; want its failure", got)
 	}
+	v.tipSettle() // the failing tip filed a bug under the story first (SPEC §7.5)
 	v.prMoveQuiet("waiting on the tip's check", true)
 	v.prMoveQuiet("again", true)
 	for _, c := range f.State().CheckRuns {
