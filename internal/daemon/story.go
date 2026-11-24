@@ -223,6 +223,31 @@ func (d *Daemon) storyFailure(story *github.Snapshot, branch, tip string) (bug i
 	return 0, ok && tip != "" && j.Tip == tip && j.Conclusion == checkFailure
 }
 
+// failureAside reports whether holder, an open issue the daemon holds at
+// in-progress or verifying, by its stage label, which holds the one worker
+// (SPEC §8.1's One task at a time), steps aside for taker, which would
+// take it: taker is an open failure's bug of its story, an open story the
+// daemon holds (failureBugHeld), and holder is another task below that
+// story in this repo that isn't a failure's bug of it. While that bug is
+// open, a failure on the story's branch is open (storyFailure), so
+// holder's stage work waits: no run of its starts (storyStartTip), and
+// its checks at verifying don't run (storyTarget). So the bug, which is
+// the failure's fix, takes the worker instead of the story stalling. Once
+// the bug is at in-progress or verifying, it holds the worker as any task
+// does, as no task steps aside for another failure's bug's holder, and
+// holder's work goes on only once the failure is closed. A lease is never
+// stepped aside for: pickHeld and workerFree judge it apart. It reads only
+// the snapshots held, at no request.
+func (d *Daemon) failureAside(holder, taker *github.Snapshot) bool {
+	if holder == nil || taker == nil || taker.Closed || holder.Number == taker.Number {
+		return false
+	}
+	sn := taker.Parent
+	story := d.snaps[sn]
+	return sn != 0 && story != nil && !story.Closed && holder.Parent == sn && holder.ParentRepo == "" &&
+		d.failureBugHeld(taker, sn) && !d.failureBugHeld(holder, sn)
+}
+
 // failureWait is why task s, in its story, its parent among the snapshots
 // the daemon holds, whose branch is branch at tip, waits on an open
 // failure on that branch (storyFailure), or "" when none is open, or s is

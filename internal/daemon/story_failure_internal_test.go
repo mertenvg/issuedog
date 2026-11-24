@@ -224,3 +224,79 @@ func TestFailureMovedPast(t *testing.T) {
 		}
 	}
 }
+
+// A task of a story holding the worker steps aside for an open failure's
+// bug of that story, and for nothing else: not for a closed bug, a task,
+// another story's bug, nor the bug itself, and a failure's bug holding it,
+// or a task in another story, or in a story that's closed or not held,
+// doesn't step aside (SPEC §8.1's One task at a time).
+func TestFailureAside(t *testing.T) {
+	t.Parallel()
+	sibling := &github.Snapshot{Number: 2, Type: "task", Parent: 1, Labels: []string{"stage:in-progress"}}
+	for _, tt := range []struct {
+		name          string
+		holder, taker *github.Snapshot
+		story         *github.Snapshot // story 1, or nil for none held
+		want          bool
+	}{
+		{"a sibling, for the bug", sibling, storyFailureBug(5, nil), &github.Snapshot{Number: 1, Type: "story"}, true},
+		{"a sibling, for a conflict bug", sibling, storyFailureBug(5, func(s *github.Snapshot) {
+			s.Body = "Merge it.\n\n<!-- issuedog:origin main=" + failureTestMain + " story=#1 tip=" + failureTestTip + " -->"
+		}), &github.Snapshot{Number: 1, Type: "story"}, true},
+		{"a sibling, for a closed bug", sibling, storyFailureBug(5, func(s *github.Snapshot) { s.Closed = true }), &github.Snapshot{Number: 1, Type: "story"}, false},
+		{"a sibling, for a task", sibling, &github.Snapshot{Number: 5, Type: "task", Parent: 1}, &github.Snapshot{Number: 1, Type: "story"}, false},
+		{"a sibling, for another story's bug", sibling, storyFailureBug(5, func(s *github.Snapshot) {
+			s.Parent, s.Body = 3, "Rule 1 failed.\n\n<!-- issuedog:origin story=#3 tip="+failureTestTip+" -->"
+		}), &github.Snapshot{Number: 1, Type: "story"}, false},
+		{"another failure's bug, for the bug", storyFailureBug(4, nil), storyFailureBug(5, nil), &github.Snapshot{Number: 1, Type: "story"}, false},
+		{"a task in another story", &github.Snapshot{Number: 2, Type: "task", Parent: 3}, storyFailureBug(5, nil), &github.Snapshot{Number: 1, Type: "story"}, false},
+		{"a task with a parent in another repo", &github.Snapshot{Number: 2, Type: "task", Parent: 1, ParentRepo: "o/other"}, storyFailureBug(5, nil),
+			&github.Snapshot{Number: 1, Type: "story"}, false},
+		{"a sibling, in a closed story", sibling, storyFailureBug(5, nil), &github.Snapshot{Number: 1, Type: "story", Closed: true}, false},
+		{"a sibling, in a story not held", sibling, storyFailureBug(5, nil), nil, false},
+		{"the bug, for itself", storyFailureBug(5, nil), storyFailureBug(5, nil), &github.Snapshot{Number: 1, Type: "story"}, false},
+	} {
+		d := storyFailureDaemon("", "")
+		delete(d.snaps, 1)
+		if tt.story != nil {
+			d.snaps[1] = tt.story
+		}
+		if got := d.failureAside(tt.holder, tt.taker); got != tt.want {
+			t.Errorf("%s: failureAside = %t; want %t", tt.name, got, tt.want)
+		}
+	}
+}
+
+// The worker is free for an open failure's bug of a story while only a
+// task of that story holds it, at in-progress or verifying, and for no
+// other task, nor while a lease holds it, or step 1 didn't finish (SPEC
+// §8.1's One task at a time). The pick takes only that bug past the
+// holder (pickAside), and any task with no holder.
+func TestWorkerFreeForFailureBug(t *testing.T) {
+	t.Parallel()
+	for _, stage := range []string{"stage:in-progress", "stage:verifying"} {
+		sibling := &github.Snapshot{Number: 2, Type: "task", Parent: 1, Labels: []string{stage}}
+		bug := storyFailureBug(5, func(s *github.Snapshot) { s.Labels = []string{"stage:pr-open"} })
+		other := &github.Snapshot{Number: 6, Type: "task", Parent: 1, Labels: []string{"stage:pr-open"}}
+		d := storyFailureDaemon("", "", sibling, bug, other)
+		if free, why := d.workerFree(5); !free || why != "" {
+			t.Errorf("%s: workerFree for the bug = %t, %q; want free", stage, free, why)
+		}
+		if free, why := d.workerFree(6); free || why != "#2, at "+stage+", holds it" {
+			t.Errorf("%s: workerFree for another task = %t, %q; want #2 holding it", stage, free, why)
+		}
+		d.workerLeased = true
+		if free, why := d.workerFree(5); free || why != "a run's lease holds it" {
+			t.Errorf("%s: workerFree for the bug with a lease = %t, %q; want the lease holding it", stage, free, why)
+		}
+		d.workerLeased, d.step1Gaps = false, map[int]step1Gap{7: {why: "its read failed"}}
+		if free, _ := d.workerFree(5); free {
+			t.Errorf("%s: workerFree for the bug with a gap in step 1 = true; want false", stage)
+		}
+		r := &Runs{Daemon: d}
+		if !r.pickAside([]*github.Snapshot{sibling}, bug) || r.pickAside([]*github.Snapshot{sibling}, other) || !r.pickAside(nil, other) {
+			t.Errorf("%s: pickAside past #2 = %t for the bug, %t for another task, and %t for it with no holder; want true, false, true",
+				stage, r.pickAside([]*github.Snapshot{sibling}, bug), r.pickAside([]*github.Snapshot{sibling}, other), r.pickAside(nil, other))
+		}
+	}
+}

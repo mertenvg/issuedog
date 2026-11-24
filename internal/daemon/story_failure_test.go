@@ -191,11 +191,12 @@ func storyFailureComments(f *githubtest.Fake, n int, text string) []string {
 // While a failure's bug of the story is open, here handed off at
 // needs-human, its story's other task, #2, waits, even on a tip whose
 // check is success (SPEC §3.4's A story's waits, §8.1): at ready it isn't
-// picked, and at in-progress, as on a retry after findings, its run
-// doesn't start, each uncounted, logged once, with no request but 304s on
-// the passes that wait, no blocked_by read and no run. A fresh daemon
-// reads the tip's check once, and #2 still waits. Once the owner closes
-// the bug, #2 is picked, or its run starts, from the tip.
+// picked, at in-progress, as on a retry after findings, its run doesn't
+// start, and at verifying, its checks don't run, each uncounted, logged
+// once, with no request but 304s on the passes that wait, no blocked_by
+// read, no command and no run. A fresh daemon reads the tip's check once,
+// and #2 still waits. Once the owner closes the bug, #2 is picked, or its
+// run starts, from the tip, or at verifying, its checks run.
 func TestStoryFailureSiblingWaits(t *testing.T) {
 	// Not parallel: it reads the process-wide logr output (logtest.Capture).
 	for _, tt := range []struct {
@@ -205,17 +206,27 @@ func TestStoryFailureSiblingWaits(t *testing.T) {
 		{"ready", "o/r#1: no task in it but a failure's bug is picked, as a failure on its story branch " + tipBranch + " is open, as its bug #3 is, which goes first"},
 		{"in-progress", "#2: no implementer run: its story branch " + tipBranch + "'s tip %s is held, as a failure on its story branch " + tipBranch +
 			" is open, as its bug #3 is, which goes first"},
+		{"verifying", "o/r#2 waits at verifying, as a failure on its story branch " + tipBranch + " is open, as its bug #3 is, which goes first"},
 	} {
 		t.Run(tt.stage, func(t *testing.T) {
 			f := newFake(t)
 			v := newVerdictRig(t, f, 3)
 			tipStory(t, f)
-			if tt.stage == "ready" {
-				pickStoryTask(f, "Refuse an expired quote")
-			} else {
-				storyRunTask(t, f)
-			}
 			cut := v.tipCut(tipBranch)
+			switch tt.stage {
+			case "ready":
+				pickStoryTask(f, "Refuse an expired quote")
+			case "in-progress":
+				storyRunTask(t, f)
+			default:
+				if n := f.AddIssue("owner", "Refuse an expired quote", "Booking an expired quote returns 410.", "type:task", "priority:p1", "scope:booking"); n != 2 {
+					t.Fatalf("the task is #%d, want #2", n)
+				}
+				f.SetParent(2, 1)
+				f.AddLabel(2, app, "stage:verifying")
+				head := v.storyRunHead(cut, map[string]string{"quote.txt": "expired\n"})
+				f.AddComment(2, app, "The implementer committed.\n\n<!-- issuedog:transition from=in-progress to=verifying attempt=1 run=r1 head="+head+" -->")
+			}
 			if bug := storyFailureBugAt(f, 1, strings.Repeat("e", 40), "needs-human",
 				"<!-- issuedog:transition from=ready to=in-progress event=s1 -->",
 				"<!-- issuedog:transition from=in-progress to=needs-human run=run1 -->"); bug != 3 {
@@ -251,7 +262,15 @@ func TestStoryFailureSiblingWaits(t *testing.T) {
 			v.quietPass("after the restart")
 
 			f.CloseBy(3, "owner")
+			ran := v.checksRan()
 			v.pass()
+			if tt.stage == "verifying" {
+				if v.checksRan() != ran+1 || v.runs() != 0 || pickStage(f, 2) != "stage:verifying" {
+					t.Errorf("the pass after the bug's close ran the commands %d times, claude %d times, and left #2 at %s; want its checks once, no run, and verifying",
+						v.checksRan()-ran, v.runs(), pickStage(f, 2))
+				}
+				return
+			}
 			if v.runs() != 1 || pickStage(f, 2) != "stage:verifying" {
 				t.Fatalf("the pass after the bug's close ran claude %d times, and left #2 at %s; want once, and verifying", v.runs(), pickStage(f, 2))
 			}
@@ -582,4 +601,137 @@ func TestStoryFailureMergeReplay(t *testing.T) {
 			t.Errorf("after the replay, the checks = %+v; want success on the squash commit", got)
 		}
 	}
+}
+
+// A failure's bug doesn't take a tip with no one merge base with main, as
+// an orphan pushed to the story branch, as it has no baseline, so it fails
+// rule 2 (SPEC §10.1): it files its human task, and the bug, at ready,
+// isn't picked, pass after pass.
+func TestStoryFailureNoBaseline(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	v := newVerdictRigWith(t, f, 3, "", storyFailureBreaks)
+	tipStory(t, f)
+	cut := v.tipCut(tipBranch)
+	v.tipJudged(cut, 1, []githubtest.CheckRunState{tipCheck(cut, tipBranch, "success")})
+	first := v.tipPush(tipBranch, map[string]string{"breaks.txt": "a person's change\n"})
+	v.tipJudged(first, 1, tipFailureChecks(cut, first))
+	bug := storyFailureNewest(t, f, 1, first)
+	w := v.o.work
+	gitIn(t, w, "checkout", "--quiet", "--orphan", "orphan")
+	gitIn(t, w, "commit", "--quiet", "-m", "an orphan")
+	orphan := gitIn(t, w, "rev-parse", "HEAD")
+	gitIn(t, w, "push", "--quiet", v.o.url, "+orphan:refs/heads/"+tipBranch)
+	gitIn(t, w, "checkout", "--quiet", "-f", "main")
+	v.out(1, ivResult(t, implementerOutput(t, "commits")))
+	v.pass()
+	if got := f.State().CheckRuns; !slices.Contains(got, tipCheck(orphan, tipBranch, "failure")) {
+		t.Fatalf("the orphan's pass left the checks %+v; want its failure", got)
+	}
+	v.passes(3)
+	if v.runs() != 0 || pickStage(f, bug) != "stage:ready" {
+		t.Errorf("on the orphan, claude ran %d times, and the bug is at %s; want no run, and ready", v.runs(), pickStage(f, bug))
+	}
+}
+
+// A failure that opens while the story's other task, #2, holds the worker,
+// at in-progress or at verifying, doesn't stall the story (SPEC §8.1's One
+// task at a time): #2's work waits on the failure, so it steps aside for
+// the failure's bug, which is picked from the failing tip, runs, passes
+// its checks and its verifier, and is merged, across a restart after its
+// first run. The squash commit is checked afresh as success, and only
+// once the bug is closed does #2 run again, from there: no run of #2's
+// comes while the bug is open, and none of the bug's after #2's. Once
+// #2's run asks a question, the passes are quiet.
+func TestStoryFailureSiblingHolds(t *testing.T) {
+	t.Parallel()
+	for _, stage := range []string{"in-progress", "verifying"} {
+		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
+			storyFailureSiblingHolds(t, stage)
+		})
+	}
+}
+
+// storyFailureSiblingHolds is TestStoryFailureSiblingHolds with #2 at
+// stage when the failure opens.
+func storyFailureSiblingHolds(t *testing.T, stage string) {
+	f := newFake(t)
+	v := newVerdictRigWith(t, f, 3, "", `, "test ! -f breaks.txt || ls run.*.txt"`)
+	tipStory(t, f)
+	cut := v.tipCut(tipBranch)
+	if stage == "in-progress" {
+		storyRunTask(t, f)
+		v.out(3, ivResult(t, implementerOutput(t, "question")))
+	} else {
+		if n := f.AddIssue("owner", "Refuse an expired quote", "Booking an expired quote returns 410.", "type:task", "priority:p1", "scope:booking"); n != 2 {
+			t.Fatalf("the task is #%d, want #2", n)
+		}
+		f.SetParent(2, 1)
+		f.AddLabel(2, app, "stage:verifying")
+		head := v.storyRunHead(cut, map[string]string{"quote.txt": "expired\n"})
+		f.AddComment(2, app, "The implementer committed.\n\n<!-- issuedog:transition from=in-progress to=verifying attempt=1 run=r1 head="+head+" -->")
+		v.out(3, ivResult(t, verifierOutput(t, "question")))
+	}
+	broken := v.tipPush(tipBranch, map[string]string{"breaks.txt": "a person's change\n"})
+	v.out(1, ivResult(t, implementerOutput(t, "commits")))
+	pass := verifierOutput(t, "pass")
+	pass["follow_ups"] = []any{}
+	v.out(2, ivResult(t, pass))
+
+	bug, restarted := 0, false
+	var order []int
+	for range 20 {
+		if v.runs() >= 3 {
+			break
+		}
+		before := v.runs()
+		v.pass()
+		for n, is := range f.State().Issues {
+			if bug == 0 && slices.Contains(is.Labels, "type:bug") {
+				bug = n + 1
+			}
+		}
+		for k := before + 1; k <= v.runs(); k++ {
+			l := v.leaseOf(strconv.Itoa(k))
+			order = append(order, l.Issue)
+			if l.Issue == 2 && (bug == 0 || !f.State().Issues[bug-1].Closed) {
+				t.Errorf("#2's run %d came while the failure's bug #%d is open", k, bug)
+			}
+		}
+		if !restarted && v.runs() == 1 {
+			v, restarted = v.restart(), true
+		}
+	}
+	if bug == 0 || !slices.Equal(order, []int{bug, bug, 2}) {
+		t.Fatalf("the runs were on %v, the bug #%d; want the bug's implementer and verifier, then #2's", order, bug)
+	}
+	is := f.State().Issues[bug-1]
+	if !is.Closed || !strings.HasSuffix(is.Body, "<!-- issuedog:origin story=#1 tip="+broken+" -->") {
+		t.Errorf("the bug is closed %t, with the body\n%s\nwant the closed bug for %s", is.Closed, is.Body, broken)
+	}
+	prs := f.State().PRs
+	if len(prs) != 1 || !prs[0].Merged || prs[0].MergedBy != app || prs[0].Base != tipBranch {
+		t.Fatalf("the PRs = %+v; want the bug's, merged into %s by the App", prs, tipBranch)
+	}
+	squash := v.originTip(tipBranch)
+	if got := gitIn(t, v.o.url, "rev-list", "--parents", "-n", "1", squash); got != squash+" "+broken {
+		t.Errorf("the story branch's tip and its parents are %q; want the squash commit on %s", got, broken)
+	}
+	if !slices.Contains(f.State().CheckRuns, tipCheck(squash, tipBranch, "success")) {
+		t.Errorf("the checks are %+v; want success on the squash commit %s", f.State().CheckRuns, squash)
+	}
+	for _, c := range prMoveChecks(t, f) {
+		if c.HeadSHA == squash && strings.Contains(c.Output.Summary, "carried this check over") {
+			t.Errorf("the squash commit's check = %+v; want it checked afresh, not carried over", c)
+		}
+	}
+	if l := v.leaseOf("3"); stage == "in-progress" && l.StoryTip != squash {
+		t.Errorf("#2's run's lease = %+v; want it named the squash commit %s as its story tip", l, squash)
+	}
+	if pickStage(f, 2) != "stage:clarifying" {
+		t.Fatalf("#2 is at %s; want clarifying, on its run's question", pickStage(f, 2))
+	}
+	v.passes(2)
+	v.quietPass("#2 at clarifying")
 }

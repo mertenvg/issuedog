@@ -356,6 +356,10 @@ func (t VerifyTarget) String() string {
 //     else fails there (storyTipTaken), or the tip has no one merge base
 //     with main, so the story has no baseline: it waits, and that's
 //     warned of once (storyWarnOnce), until that changes.
+//   - a failure on its story branch is open, and it isn't that failure's
+//     bug (failureWait): it waits, so its checks and its verifier run
+//     don't run while it steps aside for the bug (failureAside), logged
+//     once, at info.
 //   - the App just merged a task's PR onto that tip (tipMergedOnto), so
 //     the branch is past it till the next sync: it waits, logged at info.
 //
@@ -417,6 +421,10 @@ func (r *Runs) storyTarget(ctx context.Context, s *github.Snapshot, main string)
 	case !taken:
 		d.storyWarnOnce(n, "tip:"+branch+"@"+tip, "%s/%s#%d waits at %s, as its story branch %s's tip %s has no %s naming it as success",
 			a.Owner, a.Repo, n, state.Verifying, branch, tip, github.TipCheck)
+		return VerifyTarget{}, false, nil
+	}
+	if why := d.failureWait(s, branch, tip); why != "" {
+		logOnce(&d.storyWarned, n, "failure:"+why, logr.Infof, "%s/%s#%d waits at %s, as %s", a.Owner, a.Repo, n, state.Verifying, why)
 		return VerifyTarget{}, false, nil
 	}
 	base, err := verify.BaseOf(ctx, verify.Facts{Repo: d.Clone, Head: tip, Target: main})

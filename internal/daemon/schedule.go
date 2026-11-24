@@ -29,7 +29,9 @@ const pickSearchEvery = 10 * time.Minute
 // in-progress, the implementer. It reports whether it picked one.
 //
 // Nothing is picked while a task holds the one worker (pickHeld), or with
-// no Stage at in-progress. The candidates are the open ready issues with a
+// no Stage at in-progress, but for a failure's bug that each task holding
+// it steps aside for, as their own work waits on that failure (pickAside).
+// The candidates are the open ready issues with a
 // stage:ready label and no parent, or in a story (pickCandidate), in
 // pickLess's order. A task with any other parent isn't one, uncounted.
 // Only once there is a candidate does the pick ask the issue search for
@@ -50,15 +52,16 @@ func (r *Runs) pickTask(ctx context.Context, ready []Ready) (bool, error) {
 	if r.pickGaps() {
 		return false, nil
 	}
-	switch held, err := r.pickHeld(ctx, ready); {
+	leased, holders, err := r.pickHeld(ctx, ready)
+	switch {
 	case err != nil:
 		return false, fmt.Errorf("the worker: %w", err)
-	case held:
+	case leased:
 		return false, nil
 	}
 	var candidates []pickCand
 	for _, rd := range ready {
-		if rd.S.Closed || stageOf(rd.S) != state.Ready {
+		if rd.S.Closed || stageOf(rd.S) != state.Ready || !r.pickAside(holders, rd.S) {
 			continue
 		}
 		story, ok, err := r.pickCandidate(ctx, st, rd.S)
@@ -177,20 +180,22 @@ func (r *Runs) pickGaps() bool {
 	return true
 }
 
-// pickHeld reports whether a task holds the one worker (SPEC §8.1): a
-// lease holds a run, or an open issue Work got or the daemon holds a
-// snapshot of is at in-progress or verifying, by its stage labels, which
-// step 1 keeps in line with its latest marker (SPEC §5.1), so it costs no
-// request. A task at clarifying, needs-human, pr-open or held waits on
-// the owner, and releases it.
-func (r *Runs) pickHeld(ctx context.Context, ready []Ready) (bool, error) {
+// pickHeld reports whether a lease holds the one worker (SPEC §8.1), as
+// it holds a run, and returns the tasks that hold it otherwise: each open
+// issue Work got or the daemon holds a snapshot of at in-progress or
+// verifying, by its stage labels, which step 1 keeps in line with its
+// latest marker (SPEC §5.1), so it costs no request. A task at
+// clarifying, needs-human, pr-open or held waits on the owner, and
+// releases it. Nothing steps aside for a lease; a task may, for a
+// failure's bug of its story (pickAside).
+func (r *Runs) pickHeld(ctx context.Context, ready []Ready) (bool, []*github.Snapshot, error) {
 	l, ok, err := r.readLease(ctx)
 	if err != nil {
-		return false, fmt.Errorf("the worker's lease: %w", err)
+		return false, nil, fmt.Errorf("the worker's lease: %w", err)
 	}
 	if ok && !l.Failed {
 		logr.Debugf("no task is picked: run %s on #%d holds the worker", l.RunID, l.Issue)
-		return true, nil
+		return true, nil, nil
 	}
 	snaps := make([]*github.Snapshot, 0, len(ready)+len(r.Daemon.snaps))
 	for _, rd := range ready {
@@ -199,16 +204,30 @@ func (r *Runs) pickHeld(ctx context.Context, ready []Ready) (bool, error) {
 	for _, s := range r.Daemon.snaps {
 		snaps = append(snaps, s)
 	}
+	var holders []*github.Snapshot
 	for _, s := range snaps {
-		if s.Closed {
-			continue
-		}
-		if i := slices.IndexFunc(s.Labels, pickHolds); i >= 0 {
-			logr.Debugf("no task is picked: #%d, at %s, holds the worker", s.Number, s.Labels[i])
-			return true, nil
+		if !s.Closed && slices.ContainsFunc(s.Labels, pickHolds) {
+			holders = append(holders, s)
 		}
 	}
-	return false, nil
+	return false, holders, nil
+}
+
+// pickAside reports whether s, a ready issue, may be picked while each of
+// holders holds the one worker (pickHeld): with none, any may; else only
+// a failure's bug of a story that every holder steps aside for, as each
+// is another task in that story, whose own work waits on that failure
+// (Daemon.failureAside, SPEC §8.1's One task at a time). A holder that
+// doesn't is logged at debug. It costs no request.
+func (r *Runs) pickAside(holders []*github.Snapshot, s *github.Snapshot) bool {
+	for _, h := range holders {
+		if !r.Daemon.failureAside(h, s) {
+			i := slices.IndexFunc(h.Labels, pickHolds)
+			logr.Debugf("#%d isn't picked: #%d, at %s, holds the worker", s.Number, h.Number, h.Labels[i])
+			return false
+		}
+	}
+	return true
 }
 
 // pickHolds reports whether label is the stage label of a task that holds
