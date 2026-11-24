@@ -583,6 +583,9 @@ func TestPRStoryTipCarryFailedMerge(t *testing.T) {
 func TestPRStoryTipBaseline(t *testing.T) {
 	t.Parallel()
 	f, v, _, head, pr := storyMergeReady(t)
+	// main isn't merged into the story branch, so the story's baseline
+	// stays older than main, as while that merge waits (SPEC §7.5).
+	v.d.StoryMain = false
 	gitIn(t, v.o.url, "update-ref", "refs/heads/issuedog/1-a-copy", head) // so the PR waits, unmerged, on the old tip
 	v.pass()
 	main := v.prMainCommit("secrets/key.txt", "a key\n")

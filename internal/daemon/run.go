@@ -917,13 +917,20 @@ func (r *Runs) run(ctx context.Context, st Stage, in Input, set state.Settings, 
 
 // commitIdentity is the git identity of a Committer's runs, in their
 // environment (SPEC §3.3): the App's bot, <slug>[bot], with its noreply
-// address, as author and committer, so every commit a run makes names the
-// App, whatever the clone's config says. slug is the one GET /app gave at
-// startup.
+// address, as author and committer (appIdentity), so every commit a run
+// makes names the App, whatever the clone's config says. slug is the one
+// GET /app gave at startup.
 func commitIdentity(slug string) []string {
-	name := slug + "[bot]"
-	email := name + "@users.noreply.github.com"
+	name, email := appIdentity(slug)
 	return []string{"GIT_AUTHOR_NAME=" + name, "GIT_AUTHOR_EMAIL=" + email, "GIT_COMMITTER_NAME=" + name, "GIT_COMMITTER_EMAIL=" + email}
+}
+
+// appIdentity is the App's git identity, as a run's commits and a story's
+// merge of main name it (SPEC §3.2, §3.3): the App's bot, <slug>[bot], and
+// its noreply address. slug is the one GET /app gave at startup.
+func appIdentity(slug string) (name, email string) {
+	name = slug + "[bot]"
+	return name, name + "@users.noreply.github.com"
 }
 
 // outcome reads from a run's output whether it failed, and its text: it

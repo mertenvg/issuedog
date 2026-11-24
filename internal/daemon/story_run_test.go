@@ -155,6 +155,10 @@ func TestStoryRunStart(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f, v := newStoryRunRig(t)
+			// main isn't merged into the story branch, so when main moves,
+			// the story's baseline stays older than it, as while that merge
+			// waits (SPEC §7.5).
+			v.d.StoryMain = false
 			main := v.mainSHA()
 			v.tipCut(tipBranch)
 			tip := v.tipPush(tipBranch, map[string]string{"f.txt": "the story's\n"})

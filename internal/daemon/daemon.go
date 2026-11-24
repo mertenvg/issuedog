@@ -48,6 +48,11 @@ type Daemon struct {
 	// users while something on it waits on the owner, and nobody otherwise
 	// (assign.go). Set or not, what waits is listed for every issue.
 	Assign bool
+	// StoryMain, if set, merges main into the open story branches in step
+	// 2, and files a conflict bug for a merge that conflicts
+	// (story_main.go). Unset, a story branch's baseline stays where its
+	// pushes leave it, as while such a merge waits.
+	StoryMain bool
 
 	// transferUnlistedAt is when every open issue was last listed, or the
 	// listing last failed, for the held ones no longer there, by GitHub's
@@ -239,6 +244,15 @@ type Daemon struct {
 	// task in one, by issue number, so a wait that lasts is warned of once
 	// (storyWarnOnce).
 	storyWarned map[int]string
+	// storyMainLogged is the key of the last log of why main isn't merged
+	// into each story's branch, by story, so a wait that lasts, as on a
+	// stale lease, is logged once (storyMainOnce).
+	storyMainLogged map[int]string
+	// storyMainFiled is, by story, the story branch's tip and main's commit,
+	// as "<tip>@<main>", whose merge conflicted and was filed, or refused,
+	// so the pair isn't merged and filed again while the daemon runs
+	// (story_main.go).
+	storyMainFiled map[int]string
 
 	// branchSets is what the daemon remembers, while it runs, of each held
 	// issue's set of branches with its prefix, by issue: the set it saw
@@ -348,7 +362,8 @@ func (d *Daemon) Run(ctx context.Context) {
 // with its items found again too. Then it
 // closes each epic planned into stories whose children have all closed
 // (epicClosePass, #251), judges each open issue's branches state error
-// (branchesPass), keeps each task's PR's priority label
+// (branchesPass), merges main into an open story branch whose tip passed
+// its checks (storyMainPass), keeps each task's PR's priority label
 // (prLabelPass), the digest (digestPass), and then the assignees
 // (assignPass), whose failures stop nothing. Then it hands Work the issues ready for it, and
 // last makes the unassigns assignPass put off until after it
@@ -615,6 +630,14 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	// whose work started, are a branches state error (branches.go).
 	if err := d.branchesPass(ctx); err != nil {
 		errs = append(errs, err)
+	}
+	// main merged into one open story branch whose tip passed its checks,
+	// after the PR pass, so a task ready to merge goes first
+	// (story_main.go).
+	if d.StoryMain {
+		if err := d.storyMainPass(ctx); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if err := d.prLabelPass(ctx); err != nil { // each task's PR carries its priority (prs.go)
 		errs = append(errs, err)

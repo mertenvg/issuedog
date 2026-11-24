@@ -14,8 +14,9 @@ import (
 // New is the daemon as it runs, on the Applier a, the bare clone clone,
 // the config cfg and the trust tr, all from startup: a reads main from
 // clone, for a human task's file check, and reads the story branches in
-// it, for a story branch failure's tip check (humanCheck), the digest and
-// assignment are on, and step 1 is NewStep's, asking the daemon's config
+// it, for a story branch failure's tip check (humanCheck), the digest,
+// assignment and the merge of main into story branches are on, and step 1
+// is NewStep's, asking the daemon's config
 // of the moment for models.allowed. Its Work is unset: that is stage work,
 // with the Stages RegisterStages gives. main's startDaemon and the
 // whole-run tests both build the daemon with it, so the two can't drift
@@ -23,7 +24,7 @@ import (
 func New(a *Applier, clone *repo.Repo, cfg *config.Config, tr github.Trust) *Daemon {
 	a.ReadMain = clone.ReadFile
 	a.StoryBranches = clone.Branches
-	d := &Daemon{Clone: clone, Config: cfg, Digest: true, Assign: true}
+	d := &Daemon{Clone: clone, Config: cfg, Digest: true, Assign: true, StoryMain: true}
 	d.Step = NewStep(a, tr, d.CurrentModels)
 	return d
 }
