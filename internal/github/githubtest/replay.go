@@ -45,7 +45,9 @@ type CheckRunState struct {
 
 // PRState is one pull request in a State: its head and base branches, the
 // SHA its head showed when last read, its title, body and state, whether
-// it merged, and who merged it, "" until it did.
+// it merged, and who merged it, "" until it did: the merger through the
+// API or the web page, or the pusher of a fast-forward that brought its
+// head into its base (pullFastForward).
 type PRState struct {
 	Number                                  int
 	Head, Base, HeadSHA, Title, Body, State string
@@ -166,7 +168,8 @@ func (f *Fake) branchState() []BranchState {
 //     another order, and so are assignees and blocked-by links; comments
 //     are compared in order, with their bodies, and sub-issues in the
 //     order they were linked, and pull requests by number, with their
-//     heads, bases, titles, bodies, states and mergers, and check runs by
+//     heads, bases, titles, bodies, states and mergers, a fast-forward's
+//     pusher included, and check runs by
 //     SHA, in the order posted, with their names, conclusions, Apps and
 //     external_ids, and the git remote's issuedog/ branches by name, with
 //     their tips. A run may

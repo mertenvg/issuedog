@@ -36,23 +36,32 @@ import (
 // and PUT /pulls/{n}/merge squash-merges one as the App, writing the squash
 // commit onto its base branch in the git remote (pullSquash), as MergePR
 // does for a merge from the web page into a base other than main.
+// As on GitHub, a push that brings an open pull request's head into its
+// base branch's history, as a fast-forward of the base to the head does,
+// marks it merged by the pusher, the App unless SetPusher names another.
+// The fake finds it when the pull request is next listed or read
+// (pullFastForward). A branch deleted closes the open pull requests into
+// it and from it (refs.go).
 
 // pullRequest is what an issue the fake opened as a pull request has
 // beyond an issue's: its head and base branches, the SHA its head showed
 // when last read, whether it merged, who merged it and the squash commit
 // its merge wrote, "" for a merge into main (MergePR), and its reviews,
-// oldest first (reviews.go).
+// oldest first (reviews.go). openedIn is its head when it was opened if
+// that was in its base's history then, and "" if not (pullFastForward).
 type pullRequest struct {
 	head, base, headSHA string
 	merged              bool
 	mergedBy            string
 	mergeCommit         string
 	reviews             []*review
+	openedIn            string
 }
 
-// pullState is the fake's git remote (SetGitRemote).
+// pullState is the fake's git remote (SetGitRemote), and the login of
+// whoever pushes to it, "" for the App (SetPusher).
 type pullState struct {
-	remote string
+	remote, pusher string
 }
 
 // pullClosing matches a body's first line that closes an issue as a merge
@@ -78,6 +87,16 @@ func (f *Fake) SetGitRemote(dir string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.pulls.remote = dir
+}
+
+// SetPusher names login as whoever pushes to the git remote from now on,
+// so a pull request a push merges (pullFastForward) reads merged by login.
+// Until it's called, or once it's called with "", the pusher is the App,
+// <slug>[bot], as for the daemon's own push.
+func (f *Fake) SetPusher(login string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pulls.pusher = login
 }
 
 // remoteGit runs git in the git remote, with no system or global config and
@@ -146,9 +165,10 @@ func (f *Fake) pullHead(ctx context.Context, is *issue) (string, error) {
 
 // pullFollow reads open pull request is's head again from the git remote,
 // as GitHub follows its branch, and moves its updated_at when the head
-// moved, as a push does on GitHub. A pull request the fake didn't open, or
-// a closed one, is left as it is. A branch gone is an error, as for
-// pullHead. f is locked.
+// moved, as a push does on GitHub. Then it marks it merged if a push
+// brought that head into its base (pullFastForward). A pull request the
+// fake didn't open, or a closed one, is left as it is. A branch gone is an
+// error, as for pullHead. f is locked.
 func (f *Fake) pullFollow(ctx context.Context, is *issue) error {
 	if is.pr == nil || is.GetState() != "open" {
 		return nil
@@ -160,7 +180,66 @@ func (f *Fake) pullFollow(ctx context.Context, is *issue) error {
 	if sha != is.pr.headSHA {
 		is.pr.headSHA, is.UpdatedAt = sha, f.tick()
 	}
+	if err := f.pullFastForward(ctx, is); err != nil {
+		return fmt.Errorf("githubtest: follow pull request #%d: %w", is.GetNumber(), err)
+	}
 	return nil
+}
+
+// pullFastForward marks open pull request is merged when its head, as last
+// read, is in the history of its base branch's tip in the git remote, as
+// GitHub marks a pull request merged once a push brings its head into its
+// base, as a fast-forward of the base to the head does (SPEC §16): merged
+// by the pusher (SetPusher), the App by default, with the head as its
+// merge_commit_sha, and a merged and a closed event naming the pusher, as
+// MergePR writes them (pullMerged). GitHub marks it at the push; the fake
+// sees no push, so it looks whenever the pull request is listed or read
+// (pullFollow). A base that only moved on, without the head, a head that
+// has the base's tip in its history but isn't in the base's, as after a
+// merge of the base into the head, and a base branch gone each leave it
+// open. So does a head that was in its base's history already when the
+// pull request was opened, while it's still its head: GitHub refuses to
+// open one with no commits between its base and its head, which the fake
+// opens, so no push merged it. A pull request the fake didn't open, or a
+// closed one, is left as it is. A git remote that can't be read is an
+// error. f is locked.
+func (f *Fake) pullFastForward(ctx context.Context, is *issue) error {
+	if is.pr == nil || is.GetState() != "open" || is.pr.headSHA == is.pr.openedIn {
+		return nil
+	}
+	in, err := f.pullInBase(ctx, is.pr.headSHA, is.pr.base)
+	if err != nil {
+		return fmt.Errorf("githubtest: whether a push merged pull request #%d: %w", is.GetNumber(), err)
+	}
+	if !in {
+		return nil
+	}
+	pusher := f.pulls.pusher
+	if pusher == "" {
+		pusher = f.slug + "[bot]"
+	}
+	f.pullMerged(is, pusher, is.pr.headSHA)
+	return nil
+}
+
+// pullInBase reports whether commit sha is in the history of base's tip in
+// the git remote, its tip included. A base branch gone is false. A remote
+// that can't be read is an error. f is locked.
+func (f *Fake) pullInBase(ctx context.Context, sha, base string) (bool, error) {
+	tip, err := f.pullTip(ctx, base)
+	if err != nil {
+		return false, fmt.Errorf("githubtest: whether %s is in %s: %w", sha, base, err)
+	}
+	if tip == "" {
+		return false, nil
+	}
+	switch _, err := f.remoteGit(ctx, "merge-base", "--is-ancestor", sha, tip); {
+	case remoteNo(err):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("githubtest: whether %s is in %s: %w", sha, base, err)
+	}
+	return true, nil
 }
 
 // pullOpenWith is the open pull request other than skip with head and
@@ -177,8 +256,9 @@ func (f *Fake) pullOpenWith(head, base string, skip *issue) *issue {
 // pullReopen is the SHA closed pull request is's head shows once it's
 // reopened, its branch's tip, with 0 and nil, or the status and message
 // GitHub refuses the reopen with: a 422 for a merged one, one whose branch
-// is gone or no longer has its head in its history, and one whose head and
-// base another open pull request has. A tip that can't be read is a 500.
+// is gone or no longer has its head in its history, one whose base branch
+// is gone, and one whose head and base another open pull request has. A
+// tip that can't be read is a 500.
 // f is locked.
 func (f *Fake) pullReopen(ctx context.Context, is *issue) (string, int, any) {
 	refuse := func(why string) (string, int, any) {
@@ -202,6 +282,12 @@ func (f *Fake) pullReopen(ctx context.Context, is *issue) (string, int, any) {
 		return refuse(fmt.Sprintf("The %s branch was force-pushed or recreated.", is.pr.head))
 	case err != nil:
 		return "", http.StatusInternalServerError, message(err.Error())
+	}
+	switch base, err := f.pullTip(ctx, is.pr.base); {
+	case err != nil:
+		return "", http.StatusInternalServerError, message(err.Error())
+	case base == "":
+		return refuse(fmt.Sprintf("The %s branch was deleted.", is.pr.base))
 	}
 	return tip, 0, nil
 }
@@ -242,7 +328,8 @@ func (f *Fake) pullServe(is *issue, listed bool) gogithub.PullRequest {
 // head= is "<owner>:<branch>", as GitHub takes it, and a head= with no
 // owner is refused with a 422 here, so a caller that leaves it out is
 // caught. Each open one's head is read again from the git remote first
-// (pullFollow).
+// (pullFollow), before its state is filtered on, so one a push merged is
+// listed closed.
 func (f *Fake) listPulls(c *call) (int, any) {
 	q := c.r.URL.Query()
 	state := q.Get("state")
@@ -263,12 +350,15 @@ func (f *Fake) listPulls(c *call) (int, any) {
 	owner, _, _ := strings.Cut(f.repo, "/")
 	out := []gogithub.PullRequest{}
 	for _, is := range slices.Backward(f.issues) {
-		if is.pr == nil || state != "all" && is.GetState() != state || q.Has("base") && is.pr.base != q.Get("base") ||
+		if is.pr == nil || q.Has("base") && is.pr.base != q.Get("base") ||
 			head != "" && (!strings.EqualFold(headOwner, owner) || is.pr.head != head) {
 			continue
 		}
 		if err := f.pullFollow(c.r.Context(), is); err != nil {
 			return http.StatusInternalServerError, message(err.Error())
+		}
+		if state != "all" && is.GetState() != state {
+			continue
 		}
 		out = append(out, f.pullServe(is, true))
 	}
@@ -300,7 +390,10 @@ func (f *Fake) createPull(c *call) (int, any) {
 // remote hasn't got, and a head and base an open pull request has already,
 // the last two with GitHub's errors list: an invalid head's, and one whose
 // message says one already exists. A tip that can't be read is a 500. It's a new issue, numbered as
-// one, with its head read from the git remote. f is locked.
+// one, with its head read from the git remote. A head in its base's
+// history already, which GitHub refuses, is opened, and noted, so no push
+// is taken to have merged it while it's the head (pullFastForward). f is
+// locked.
 func (f *Fake) pullCreate(ctx context.Context, author, title, head, base, body string) (*issue, int, any) {
 	owner, _, _ := strings.Cut(f.repo, "/")
 	if o, branch, ok := strings.Cut(head, ":"); ok {
@@ -325,9 +418,16 @@ func (f *Fake) pullCreate(ctx context.Context, author, title, head, base, body s
 		return nil, http.StatusUnprocessableEntity, map[string]any{"message": fmt.Sprintf("Validation Failed: head %q is no branch of the repo", head),
 			"errors": []map[string]string{{"resource": "PullRequest", "field": "head", "code": "invalid"}}}
 	}
+	in, err := f.pullInBase(ctx, sha, base)
+	if err != nil {
+		return nil, http.StatusInternalServerError, message(err.Error())
+	}
 	is := f.fileIssue(author, title, body, nil)
 	f.pullLinks(is)
 	is.pr = &pullRequest{head: head, base: base, headSHA: sha}
+	if in {
+		is.pr.openedIn = sha
+	}
 	return is, 0, nil
 }
 
