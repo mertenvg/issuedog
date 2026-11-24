@@ -65,10 +65,13 @@ const (
 // only when its approved plan is of tasks (storyIssue); one whose plan
 // data doesn't read back is warned of once too, and gets no check.
 //
-// Otherwise the App's issuedog/tip checks on the tip are read, one
-// request: the newest naming the branch (tipChecked), as after a restart,
-// or for a tip the App's merge carried a check to, judges the tip, and
-// nothing runs. A tip pushed by a person is checked as any other is. Then
+// Otherwise, before the tip is judged, each open conflict bug of the
+// story it makes moot is closed, its open PR first (conflictMoot), at no
+// request for a story with none; a tip that holds the main commit of a
+// conflict bug of the story that's skip waits for the next pass. Then the App's issuedog/tip checks on the tip
+// are read, one request: the newest naming the branch (tipChecked), as
+// after a restart, or for a tip the App's merge carried a check to, judges
+// the tip, and nothing runs. A tip pushed by a person is checked as any other is. Then
 // the tip is checked (tipJudge), and its check posted.
 func (r *Runs) tipCheck(ctx context.Context, ready []Ready, skip int) (bool, error) {
 	if r.Commands == nil {
@@ -109,6 +112,13 @@ func (r *Runs) tipCheck(ctx context.Context, ready []Ready, skip int) (bool, err
 		}
 		if !story {
 			logr.Debugf("%s/%s#%d isn't a story or an epic planned into tasks, so its branch %s's tip isn't checked", a.Owner, a.Repo, n, branch)
+			continue
+		}
+		judge, err := r.conflictMoot(ctx, s, tip, skip)
+		if err != nil {
+			return false, fmt.Errorf("the tip of #%d's branch %s: %w", n, branch, err)
+		}
+		if !judge {
 			continue
 		}
 		runs, err := a.Client.CheckRuns(ctx, a.Owner, a.Repo, tip, github.TipCheck)
