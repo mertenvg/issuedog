@@ -144,7 +144,7 @@ func (im *Implementer) Context(ctx context.Context, in Input) (map[string][]byte
 		"input.md": []byte(ivFile("Input for this run", implementerInputIntro,
 			input, "none: first run")),
 		"prompt.md": []byte(implementerTask(s.Number, in.ContextDir)),
-		"system.md": []byte(implementerPreamble(d.Config, all, in.Branch, in.Target, in.Dropped) + "\n\n" + string(prompt)),
+		"system.md": []byte(implementerPreamble(d.Config, all, in.Branch, in.Target, in.Dropped, in.Conflict) + "\n\n" + string(prompt)),
 	}
 	return files, nil
 }
@@ -292,8 +292,14 @@ func implementerTask(number int, dir string) string {
 // starts from branch, and dropped, why: rule 2's finding on it, fenced and
 // escaped (SPEC §5.1), as it names paths from the repo. branch is main, or
 // for a task in a story, its story branch, which the bare clone names, so
-// it's in a code span and escaped (checkCode); "" is main. Then the
-// output contract, and every value the prompt
+// it's in a code span and escaped (checkCode); "" is main. For a conflict
+// bug, conflict is the main commit it names, and "" for any other task:
+// its target line names that commit as the start, branch's tip, target,
+// as the commit to merge into it, resolving the conflicts, and that
+// verify fails a head lacking either and judges only the resolution, and
+// a dropped head's line says the checkout starts from that commit, with
+// target to merge (SPEC §3.4, §7.5, A conflict). Then the output
+// contract, and every value the prompt
 // defers to it, with c's values:
 //   - the PR title types (pr.title_types), and the title's bounds, as
 //     checkCommits enforces them (implementerMaxTitle);
@@ -305,7 +311,7 @@ func implementerTask(number int, dir string) string {
 //     (nextRound), and loop.max_questions_per_round;
 //   - that commits needs commits past the run's start, and the comment's
 //     length (maxText less textRoom), as checkCommits counts it.
-func implementerPreamble(c *config.Config, all []interviewerRound, branch, target, dropped string) string {
+func implementerPreamble(c *config.Config, all []interviewerRound, branch, target, dropped, conflict string) string {
 	types := make([]string, len(c.PR.TitleTypes))
 	for i, t := range c.PR.TitleTypes {
 		types[i] = "`" + github.Escape(t) + "`"
@@ -333,13 +339,23 @@ func implementerPreamble(c *config.Config, all []interviewerRound, branch, targe
 	clone := []string{"- You run in a detached checkout of the commit issuedog named for this task, " + has + ", so git commands name HEAD. " +
 		"Commit your work there. Never push: issuedog takes your commits from the clone. You can't write to GitHub: issuedog checks your output and posts it."}
 	name := checkCode(cmp.Or(branch, "main"))
-	if target != "" {
+	switch {
+	case target != "" && conflict != "":
+		clone = append(clone, "- This task is a conflict bug: `main` at `"+conflict+"` doesn't merge cleanly into the story branch "+name+". "+
+			"Your checkout starts from that `main` commit, or from your earlier runs' work on it, and its `target` branch is "+name+" at `"+target+"`, the story branch's tip. "+
+			"Merge `target` first, resolve every conflict, and commit the merge, so your head holds both commits: verify fails a head that lacks either. "+
+			"verify judges only your resolution: your head's diff from the merge of the two with its conflict markers left in.")
+	case target != "":
 		clone = append(clone, "- Your checkout's `target` branch is "+name+" at `"+target+"`, which your starting commit doesn't merge with cleanly, "+
 			"or fails verify once merged with, as input.md says. Merge `target` first, resolve any conflicts, and commit the merge.")
 	}
 	if dropped != "" {
+		from := name + ","
+		if conflict != "" {
+			from = "`main` at `" + conflict + "`, with `target` to merge,"
+		}
 		clone = append(clone, "- The head your earlier runs left on this task fails verify's rule 2, as the finding below says, so issuedog dropped it: "+
-			"your checkout starts from "+name+", as a first run's does, and holds none of their work. Do the task again from here. "+
+			"your checkout starts from "+from+" as a first run's does, and holds none of their work. Do the task again from here. "+
 			"Rule 2's finding on the dropped head:\n\n"+ivFenced(dropped))
 	}
 	return strings.Join([]string{

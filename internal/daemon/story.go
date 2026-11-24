@@ -201,6 +201,21 @@ func (d *Daemon) failureBugHeld(s *github.Snapshot, story int) bool {
 	return s.Parent == story && s.ParentRepo == "" && failureBugOf(state.Derive(s, slug, failureEdited(s, slug)), story)
 }
 
+// conflictMain is the main commit s, a snapshot the daemon holds, names
+// when it's a conflict bug of its story (SPEC §5, Story branch failures;
+// §7.5, A conflict): a failure's bug of its parent (failureBugHeld), its
+// origin read the same way, with main=. Any other issue's is "". Its run
+// starts from that commit, and its checks take it as rule 2's baseline
+// (SPEC §3.4, §10.1). It reads the snapshot, at no request.
+func (d *Daemon) conflictMain(s *github.Snapshot) string {
+	slug := d.Step.AppSlug
+	is := state.Derive(s, slug, failureEdited(s, slug))
+	if s.Parent == 0 || s.ParentRepo != "" || !failureBugOf(is, s.Parent) {
+		return ""
+	}
+	return is.Origin.Main
+}
+
 // storyFailure reports whether a failure on story's branch, branch, whose
 // tip is tip, is open, and names its bug, or 0 for none (SPEC §7.5, A
 // failure on the story branch): it's open while a failure's bug of story

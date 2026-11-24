@@ -41,7 +41,9 @@ func verifyKey(c int64) state.Key {
 // (storyOf) is checked against its story branch's tip, as the pass's sync
 // left it, rule 7's target, with the story's baseline, the merge base of
 // that tip and main, as rule 2's, only while that tip's issuedog/tip
-// naming the branch is success (storyTarget, SPEC §7.5, §10.1). Until
+// naming the branch is success (storyTarget, SPEC §7.5, §10.1). A
+// conflict bug's baseline is the main commit it names instead, and its
+// rules 3 to 6 diff from its conflicted merge (storyTarget). Until
 // then it waits, uncounted, logged once. A task whose parent is no story,
 // as an epic planned into stories, gets neither, uncounted. A pass writes
 // nothing, and returns: it's kept in passed, by head and its target's
@@ -159,7 +161,7 @@ func (r *Runs) verifyTask(ctx context.Context, ready []Ready, skip int) (bool, e
 			}
 			continue
 		}
-		findings, results, err := r.verifyChecks(ctx, s, head, t.Baseline, t.SHA)
+		findings, results, err := r.verifyChecks(ctx, s, head, t)
 		if err != nil {
 			return true, fmt.Errorf("verify #%d: %w", n, err)
 		}
@@ -230,22 +232,28 @@ func verifyAttempt(is state.Issue) int {
 }
 
 // verifyChecks runs SPEC §10.1's checks on head, in the bare repo, with
-// baseline as rule 2's baseline and target as rule 7's target, for the
-// task s, whose scope rule 4 reads (scopeOf): for a task with no parent,
-// both are main's commit, and for a task in a story, the story's baseline
-// and its branch's tip (VerifyTarget). Rules 2 to 6 read the task's own
-// diff from head's merge base with target. It returns each rule's
-// finding, and rule 1's commands' results. No head, or one the bare repo
-// lacks, is the one finding, with no rule, and no rule runs. Rule 2 runs
-// first, and its failure stops the checks, so no command runs on a diff
-// that touches a protected path. A head with no merge base with target, or
-// more than one, fails rule 2 too (verify.ErrMergeBases), as the task's own
-// diff then has no start. Otherwise every command runs, in a fresh
+// t.Baseline as rule 2's baseline and t.SHA, target, as rule 7's target,
+// for the task s, whose scope rule 4 reads (scopeOf): for a task with no
+// parent, both are main's commit, and for a task in a story, the story's
+// baseline and its branch's tip (VerifyTarget). Rules 2 to 6 read the
+// task's own diff from head's merge base with target. For a conflict bug,
+// with t.Base, rule 2's own diff starts at its baseline, the main commit
+// it names, rules 3 to 6 read the diff from t.Base, its conflicted merge,
+// and rule 7 also fails a head whose history lacks that commit or the tip
+// (SPEC §7.5, A conflict). It returns each rule's finding, and rule 1's
+// commands' results. No head, or one the bare repo lacks, is the one
+// finding, with no rule, and no rule runs. Rule 2 runs first, and its
+// failure stops the checks, so no command runs on a diff that touches a
+// protected path. A head with no merge base with target, or more than
+// one, fails rule 2 too (verify.ErrMergeBases), as the task's own diff
+// then has no start, but a conflict bug's, whose diffs start at commits
+// of their own. Otherwise every command runs, in a fresh
 // checkout of head named by a new ID, never the lease's run's, which the
 // commands remove when they're done, and rules 3 to 7 all run, so the
 // implementer sees every finding at once (SPEC §10.1). A failure to read
 // the bare repo, or to run the commands, is an error, not a finding.
-func (r *Runs) verifyChecks(ctx context.Context, s *github.Snapshot, head, baseline, target string) ([]verify.Finding, []verify.CommandResult, error) {
+func (r *Runs) verifyChecks(ctx context.Context, s *github.Snapshot, head string, t VerifyTarget) ([]verify.Finding, []verify.CommandResult, error) {
+	baseline, target := t.Baseline, t.SHA
 	if head == "" {
 		return []verify.Finding{{Name: "the head", Detail: "The task has no head: its move to verifying names none, and there's no " + taskRef(s.Number) + "."}}, nil, nil
 	}
@@ -259,14 +267,23 @@ func (r *Runs) verifyChecks(ctx context.Context, s *github.Snapshot, head, basel
 	}
 	cfg := r.Daemon.Config.Verify
 	f := verify.Facts{Repo: r.Daemon.Clone, Baseline: baseline, Head: head, Target: target, Scope: scopeOf(s), Config: cfg}
-	base, err := verify.BaseOf(ctx, f)
-	switch {
-	case errors.Is(err, verify.ErrMergeBases):
-		return []verify.Finding{{Rule: 2, Name: "protected paths", Detail: targetBasesDetail(baseline, target, err)}}, nil, nil
-	case err != nil:
-		return nil, nil, fmt.Errorf("read the head's base: %w", err)
+	base := t.Base
+	if t.Base == "" {
+		var err error
+		base, err = verify.BaseOf(ctx, f)
+		switch {
+		case errors.Is(err, verify.ErrMergeBases):
+			return []verify.Finding{{Rule: 2, Name: "protected paths", Detail: targetBasesDetail(baseline, target, err)}}, nil, nil
+		case err != nil:
+			return nil, nil, fmt.Errorf("read the head's base: %w", err)
+		}
+		f.Base = base
+	} else {
+		// A conflict bug's own diff, for rule 2, starts at the main commit
+		// it names, the merge base of its head and main, and the head
+		// must hold that commit and the tip (SPEC §7.5, A conflict).
+		f.Base, f.MustHold = baseline, []string{baseline, target}
 	}
-	f.Base = base
 	protected, err := verify.Rule2(ctx, f)
 	if err != nil {
 		return nil, nil, fmt.Errorf("check rule 2: %w", err)
@@ -278,6 +295,9 @@ func (r *Runs) verifyChecks(ctx context.Context, s *github.Snapshot, head, basel
 	if err != nil {
 		return nil, nil, fmt.Errorf("rule 1: %w", err)
 	}
+	// Rules 3 to 6 read the task's own diff from base: a conflict bug's
+	// conflicted merge, so they judge only its resolution.
+	f.Base = base
 	var findings []verify.Finding
 	for _, rule := range []func(context.Context, verify.Facts) (*verify.Finding, error){verify.Rule3, verify.Rule4, verify.Rule5, verify.Rule6, verify.Rule7} {
 		finding, err := rule(ctx, f)
@@ -311,9 +331,14 @@ func targetBasesDetail(baseline, target string, err error) string {
 // branch, Branch, as the pass's sync left it, and Baseline is the story's,
 // the merge base of that tip and main (storyTarget). A task at pr-open's
 // head is checked on its merge with one the same way once it moves
-// (mergeTarget).
+// (mergeTarget). For a conflict bug, Baseline is the main commit it names,
+// and Base is the conflicted merge of that commit and the tip, markers
+// included (repo.ConflictMerge), which rules 3 to 6 and the verifier's
+// diff.patch start at, and the head's history must hold both commits
+// (SPEC §7.5, A conflict, §10.1, §10.2). Base is "" for any other task,
+// whose diff starts at its merge base with SHA (verify.BaseOf).
 type VerifyTarget struct {
-	Branch, SHA, Baseline string
+	Branch, SHA, Baseline, Base string
 }
 
 // mainTarget is main's commit main as the target and baseline of a task
@@ -364,7 +389,11 @@ func (t VerifyTarget) String() string {
 //     the branch is past it till the next sync: it waits, logged at info.
 //
 // Otherwise it's the story branch, its tip and the story's baseline, the
-// merge base of that tip and main. The parent's dirty content is read only
+// merge base of that tip and main. For a conflict bug (conflictMain), the
+// baseline is the main commit it names instead, and Base the conflicted
+// merge of that commit and the tip, built in the bare repo
+// (repo.ConflictMerge), at no request (SPEC §7.5, A conflict, §10.1). A
+// failure to build it is an error. The parent's dirty content is read only
 // for an epic's plan, as storyOf reads it, and a failure to read it is an
 // error. The rest reads only the snapshots the daemon holds, its judged
 // tips and the bare repo, so a task that waits costs no request.
@@ -426,6 +455,13 @@ func (r *Runs) storyTarget(ctx context.Context, s *github.Snapshot, main string)
 	if why := d.failureWait(s, branch, tip); why != "" {
 		logOnce(&d.storyWarned, n, "failure:"+why, logr.Infof, "%s/%s#%d waits at %s, as %s", a.Owner, a.Repo, n, state.Verifying, why)
 		return VerifyTarget{}, false, nil
+	}
+	if conflict := d.conflictMain(s); conflict != "" {
+		merged, err := d.Clone.ConflictMerge(ctx, n, conflict, tip)
+		if err != nil {
+			return VerifyTarget{}, false, fmt.Errorf("build its conflicted merge of main's %s and the tip %s: %w", conflict, tip, err)
+		}
+		return VerifyTarget{Branch: branch, SHA: tip, Baseline: conflict, Base: merged}, true, nil
 	}
 	base, err := verify.BaseOf(ctx, verify.Facts{Repo: d.Clone, Head: tip, Target: main})
 	switch {
