@@ -25,9 +25,12 @@ import (
 const tipFailureFirst = 3
 
 // tipFailureCut files story 1 on v's fake, cuts its branch and runs the
-// pass that checks the cut as success, and returns the cut.
+// pass that checks the cut as success, and returns the cut. v picks
+// nothing (pickOff), so a bug filed at ready stays there: its pick is
+// story_failure_test.go's.
 func (v *verdictRig) tipFailureCut() string {
 	v.t.Helper()
+	v.pickOff()
 	tipStory(v.t, v.f)
 	cut := v.tipCut(tipBranch)
 	v.tipJudged(cut, 1, []githubtest.CheckRunState{tipCheck(cut, tipBranch, "success")})
@@ -555,7 +558,7 @@ func TestTipFailureReplay(t *testing.T) {
 				return f
 			}
 			pass := func(f *githubtest.Fake) error {
-				v := &verdictRig{rig: newRig(t, f, base.o, roots[f]), o: base.o, cfg: base.cfg, ran: base.ran}
+				v := &verdictRig{rig: newRig(t, f, base.o, roots[f]), o: base.o, cfg: base.cfg, ran: base.ran, noPick: true}
 				v.wire()
 				v.d.Digest, v.d.Assign = false, false
 				return v.d.Iterate(context.Background())

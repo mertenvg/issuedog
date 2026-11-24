@@ -222,7 +222,9 @@ func (d *Daemon) prMergedWrites(ctx context.Context, s *github.Snapshot, is stat
 // commit gets none, and step 4 checks it as a push the App didn't make
 // (Runs.tipCheck): one whose parent is another commit, as the App's merge
 // onto a tip that moved since the verify, once the head's merge with it
-// passed (prMergeOnto), one merged at another head, and, after a restart,
+// passed (prMergeOnto), one merged at another head, a failure's bug's
+// (failureBugOf), as it may have gone onto a tip that fails other rules
+// than rule 2 (SPEC §7.5's A checked base), and, after a restart,
 // one whose parent's success isn't
 // judged yet, as Daemon.tips starts empty. So does a merge commit the bare
 // clone lacks, as for a merge made after the pass's sync. The parent is
@@ -234,6 +236,10 @@ func (d *Daemon) tipCarry(ctx context.Context, s *github.Snapshot, is state.Issu
 	case tip == "" || commit == "" || pr.HeadSHA != head:
 		logr.Infof("%s/%s#%d: its PR #%d merged %s as %q, not the head %s verified against a tip of %s, so no check is carried over to the merge commit",
 			a.Owner, a.Repo, n, pr.Number, pr.HeadSHA, commit, head, branch)
+		return nil
+	case failureBugOf(is, s.Parent):
+		logr.Infof("%s/%s#%d: it's a failure's bug of story #%d, so no check is carried over to its PR #%d's merge commit %s, which is checked afresh",
+			a.Owner, a.Repo, n, s.Parent, pr.Number, commit)
 		return nil
 	case !d.tipSuccess(branch, tip):
 		if j, ok := d.tips[branch]; ok && j.Tip != tip {

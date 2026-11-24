@@ -394,12 +394,10 @@ func (r *Runs) pickOpenBlocker(ctx context.Context, n int) (int, bool, error) {
 // Its story's branch is the one with its prefix in the bare clone, as the
 // pass's sync left it, and its tip that branch's (storyBranch), at no
 // request. Two branches with its prefix get no cut and no pick, and that's
-// warned of once (pickStoryOnce). A tip whose App issuedog/tip naming the
-// branch isn't success, as step 4 judged or read it (tipSuccess), as a
-// new one before its check, after a restart before step 4 reads it, a
-// failure, or one step 2 merged a task's PR onto (tipMergedOnto), has rd
-// wait, logged once a tip, still at no request. So a
-// task waiting for its tip makes no request.
+// warned of once (pickStoryOnce). A tip rd doesn't take, or a failure open
+// on the branch that rd isn't the bug of, has rd wait, logged once, still
+// at no request (pickStoryTip). So a task waiting for its tip, or on an
+// open failure, makes no request.
 //
 // Otherwise rd's own blockers are read (pickOwnBlocked), then its story's,
 // one conditional request each, through blocked_by (pickOpenBlocker), so
@@ -428,17 +426,13 @@ func (r *Runs) pickStory(ctx context.Context, rd Ready, story *github.Snapshot) 
 		r.pickStoryOnce(sn, "branches:"+d.branchErrs[sn].Key, logr.Warnf, "%s/%s#%d: no task in it is picked, and no branch is cut for it, as its branch is gone once work in it started, so its %s state error stands",
 			a.Owner, a.Repo, sn, branchesErrKind)
 		return false, true, nil
-	case tip != "" && !d.tipSuccess(branch, tip):
-		why := "has no " + github.TipCheck + " as success yet"
-		if j, ok := d.tips[branch]; ok && j.Tip == tip {
-			why = "has " + github.TipCheck + " as " + j.Conclusion
+	case tip != "":
+		switch wait, err := r.pickStoryTip(ctx, rd.S, story, branch, tip); {
+		case err != nil:
+			return false, false, fmt.Errorf("its story branch's tip: %w", err)
+		case wait:
+			return false, true, nil
 		}
-		if d.tipMergedOnto(branch, tip) {
-			why = "had a task's PR merged onto it, so it's the branch's tip no more"
-		}
-		r.pickStoryOnce(sn, "tip:"+branch+"@"+tip+":"+why, logr.Infof, "%s/%s#%d: no task in it is picked, as its branch %s's tip %s %s",
-			a.Owner, a.Repo, sn, branch, tip, why)
-		return false, true, nil
 	}
 	if r.pickBlocked[sn] {
 		logr.Debugf("%s/%s#%d isn't picked: its story #%d has an open blocker, as last read", a.Owner, a.Repo, n, sn)
@@ -474,6 +468,46 @@ func (r *Runs) pickStory(ctx context.Context, rd Ready, story *github.Snapshot) 
 		return true, false, nil
 	}
 	return false, false, nil
+}
+
+// pickStoryTip reports whether s, a ready task in story, whose branch is
+// branch at tip, waits on that branch, and logs why once (SPEC §3.4's A
+// story's waits, §7.5, §8.1), from memory and the bare repo, at no
+// request:
+//   - a failure's bug of story waits while tip isn't one it takes, a tip
+//     step 4 judged that passes rule 2 (storyTipTaken), even with its own
+//     failure open, logged by its own number, as the story's siblings may
+//     log their own wait meanwhile;
+//   - any other task waits while tip's App issuedog/tip naming the branch
+//     isn't success, as step 4 judged or read it (tipSuccess), as a new
+//     one before its check, after a restart before step 4 reads it, a
+//     failure, or one step 2 merged a task's PR onto (tipMergedOnto), and
+//     while a failure on the branch is open (failureWait), so the
+//     failure's bug goes first, each logged by the story's number, once a
+//     cause.
+func (r *Runs) pickStoryTip(ctx context.Context, s, story *github.Snapshot, branch, tip string) (bool, error) {
+	d, n, sn := r.Daemon, s.Number, story.Number
+	a := d.Step.Applier
+	taken, bug, err := d.storyTipTaken(ctx, s, story, branch, tip)
+	switch {
+	case err != nil:
+		return false, fmt.Errorf("judge its tip: %w", err)
+	case !taken && bug:
+		r.pickStoryOnce(n, "failure-tip:"+branch+"@"+tip, logr.Infof, "%s/%s#%d isn't picked, as its story #%d's branch %s's tip %s %s",
+			a.Owner, a.Repo, n, sn, branch, tip, failureTipWhy)
+		return true, nil
+	case !taken:
+		why := d.tipWhy(branch, tip)
+		r.pickStoryOnce(sn, "tip:"+branch+"@"+tip+":"+why, logr.Infof, "%s/%s#%d: no task in it is picked, as its branch %s's tip %s %s",
+			a.Owner, a.Repo, sn, branch, tip, why)
+		return true, nil
+	}
+	if why := d.failureWait(s, branch, tip); why != "" {
+		r.pickStoryOnce(sn, "failure:"+why, logr.Infof, "%s/%s#%d: no task in it but a failure's bug is picked, as %s",
+			a.Owner, a.Repo, sn, why)
+		return true, nil
+	}
+	return false, nil
 }
 
 // pickCut cuts story's branch for task n, the pick's candidate in it

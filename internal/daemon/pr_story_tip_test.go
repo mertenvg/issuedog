@@ -306,10 +306,12 @@ func TestPRStoryTipFailingCommand(t *testing.T) {
 // A new tip whose check is failure isn't the story's tip to check a merge
 // with: the task waits at pr-open, uncounted, and the passes that wait
 // make no request for the task, its PR or its head, run no command and
-// merge nothing (SPEC §7.5).
+// merge nothing (SPEC §7.5). The rig picks nothing (pickOff), so the bug
+// the failing tip files stays at ready.
 func TestPRStoryTipWaitsForItsCheck(t *testing.T) {
 	t.Parallel()
 	f, v, _, head, pr := storyMergeReady(t)
+	v.pickOff()
 	broken := v.tipPush(storyVerifyBranch, map[string]string{"broken.txt": "the story broke it\n"})
 	v.pass()
 	if got := f.State().CheckRuns; !slices.Contains(got, tipCheck(broken, storyVerifyBranch, "failure")) {

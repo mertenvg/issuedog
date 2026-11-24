@@ -242,25 +242,30 @@ func (d *Daemon) prReviewMove(ctx context.Context, s *github.Snapshot, is state.
 }
 
 // prReviewTipWait reports whether m, a review's move of task s to
-// in-progress (prReviewMove), waits at pr-open, kept in memory with no
-// write (prWaitOn), because s is in a story whose story branch's tip has
-// no App issuedog/tip naming the branch as success, or has no such tip to
-// name (prStoryTip): its run couldn't start from there (storyStart, SPEC
-// §3.4), so the task would hold the worker at in-progress for nothing. It
-// waits as a move does for the worker (prWait): step 2 makes it on the
-// first pass the tip has its success (prWaitingTip), unless the task or
-// its PR changed since (prWaitingFor). Any other move, and a review's of a
-// task with no parent, never waits here. It costs no request.
+// in-progress (prReviewMove), or one on its story branch's tip's moving
+// (Runs.mainSendBack), which shares its trigger, waits at pr-open, kept in
+// memory with no write (prWaitOn), because s is in a story whose story
+// branch's tip has no App issuedog/tip naming the branch as success, or
+// has no such tip to name (prStoryTip), or has a failure open on it that
+// s isn't the bug of (failureWait): its run couldn't start from there
+// (storyStart, SPEC §3.4), so the task would hold the worker at
+// in-progress for nothing. It waits as a move does for the worker
+// (prWait): step 2 makes it on the first pass the tip has its success, and
+// the failure is closed (prWaitingTip), unless the task or its PR changed
+// since (prWaitingFor). Any other move, and one of a task with no parent,
+// never waits here. It costs no request.
 func (d *Daemon) prReviewTipWait(ctx context.Context, s *github.Snapshot, m Move) (bool, error) {
 	if s.Parent == 0 || m.Trigger != state.TriggerReviewChanges {
 		return false, nil
 	}
-	_, _, why, err := d.prStoryTip(ctx, s)
+	branch, tip, why, err := d.prStoryTip(ctx, s)
 	switch {
 	case err != nil:
 		return false, fmt.Errorf("read its story branch's tip: %w", err)
 	case why == "":
-		return false, nil
+		if why = d.failureWait(s, branch, tip); why == "" {
+			return false, nil
+		}
 	}
 	d.prWaitOn(s.Number, m, "at "+string(state.PROpen)+", as "+why+", so its run couldn't start")
 	return true, nil

@@ -272,7 +272,8 @@ func (d *Daemon) prWaitingFor(n int, is state.Issue, p listedPR) (Move, bool) {
 // tip's, which step 4 found (Runs.mainMoved), stands only while that
 // target is at the commit its key names (prWaitingMain).
 // A review's move of a task in a story whose story branch's tip has no
-// success still waits (prReviewTipWait): it's kept, made to fit the
+// success, or has a failure open that the task isn't the bug of, still
+// waits (prReviewTipWait): it's kept, made to fit the
 // branch, and this gives false, so the PR's close is judged, at no
 // request, and nothing else is, as a move that waits stands (prNewHead,
 // prMerge).

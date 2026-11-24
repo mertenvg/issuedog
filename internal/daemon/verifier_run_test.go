@@ -65,6 +65,9 @@ type verdictRig struct {
 	o   *origin
 	cfg *config.Config
 	ran string
+	// noPick leaves the rig no Stage at in-progress, so nothing is picked
+	// (pickOff).
+	noPick bool
 }
 
 // verifierRunPrinted is what the rig's second command prints.
@@ -114,6 +117,21 @@ func (v *verdictRig) wire() {
 	}
 	v.wireAsMain(v.cfg)
 	v.r.Commands = &verify.Commands{Workspace: v.r.Workspace, Proxy: "http://127.0.0.1:3128", Timeout: func() time.Duration { return time.Minute }}
+	if v.noPick {
+		delete(v.r.Stages, state.InProgress)
+	}
+}
+
+// pickOff has v pick no task, and start no run at in-progress, as it has
+// no Stage there, and returns v. A restart keeps it. It's for a test of
+// what a story branch's failing tip files and holds, whose bug at ready
+// the pick would otherwise take (SPEC §7.5), as story_failure_test.go
+// tests.
+func (v *verdictRig) pickOff() *verdictRig {
+	v.t.Helper()
+	v.noPick = true
+	delete(v.r.Stages, state.InProgress)
+	return v
 }
 
 // restart is a new daemon on v's state, workspace and bare repo, as a
@@ -125,7 +143,7 @@ func (v *verdictRig) restart() *verdictRig {
 	g.d.Clone, g.r.Workspace.Bare = v.d.Clone, v.d.Clone.Dir()
 	ids := 0
 	g.r.NewID = func() string { ids++; return "restart" + strconv.Itoa(ids) }
-	next := &verdictRig{rig: g, o: v.o, cfg: v.cfg, ran: v.ran}
+	next := &verdictRig{rig: g, o: v.o, cfg: v.cfg, ran: v.ran, noPick: v.noPick}
 	next.wire()
 	return next
 }
