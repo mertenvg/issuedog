@@ -134,6 +134,11 @@ func TestPRReconcileClosed(t *testing.T) {
 			from, reqs := len(f.Writes()), len(f.Requests())
 			iterate(t, d)
 			prReconcileHandedOff(t, f, key, prReconcileClosedIntro, prReconcileClosedWhy)
+			// A PR to main, back at pr-open, waits for the owner's review
+			// and merge, not the App's merge into a story branch.
+			if step := "1. To keep the PR, reopen it: the task goes back to `pr-open`, waiting for your review and merge.\n"; !strings.Contains(prReconcileNewest(t, f).Body, step) {
+				t.Errorf("the hand-off =\n%s\nwant it to hold\n%s", prReconcileNewest(t, f).Body, step)
+			}
 			if got := prTimelineReads(f, reqs); got != 0 {
 				t.Errorf("the pass read the PR's timeline %d times; want none: a closed PR's state says enough", got)
 			}

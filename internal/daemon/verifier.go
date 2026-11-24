@@ -79,11 +79,13 @@ func (*Verifier) Pending(in Input) bool {
 //     and round, oldest first. Every other App comment is left out, so the
 //     implementer's summary, verify's findings and an earlier verdict reach
 //     no verifier run (SPEC §3).
-//   - diff.patch: the whole patch from the merge base of in.Head and
-//     in.Main, as the checks read it (verify.BaseOf), to in.Head, as git
-//     gives it (repo.Patch). It's neither fenced nor escaped, as it must
-//     stay a patch, and the preamble says it's data.
-//   - checks.md: in.Checks (verifierChecks).
+//   - diff.patch: the whole patch from the merge base of in.Head and its
+//     target, in.Against's, main's commit or for a task in a story its
+//     story branch's tip, as the checks read it (verify.BaseOf), to
+//     in.Head, as git gives it (repo.Patch). It's neither fenced nor
+//     escaped, as it must stay a patch, and the preamble says it's data.
+//   - checks.md: in.Checks, naming the story branch and tip they ran
+//     against for a task in a story (verifierChecks).
 //   - followups.md: the follow-ups already filed (verifierFollowUps), then
 //     the candidates of earlier passes (verifierCandidates) not filed yet,
 //     so a later head repeats neither, and lists each once
@@ -134,7 +136,7 @@ func (v *Verifier) Context(ctx context.Context, in Input) (map[string][]byte, er
 	if err := plannerTrustedTitleNote(ctx, a.AppSlug, tc, s, false, &text); err != nil {
 		return nil, wrap(err)
 	}
-	base, err := verify.BaseOf(ctx, verify.Facts{Repo: d.Clone, Head: in.Head, Target: in.Main, Baseline: in.Main})
+	base, err := verify.BaseOf(ctx, verify.Facts{Repo: d.Clone, Head: in.Head, Target: in.Against.SHA, Baseline: in.Against.Baseline})
 	if err != nil {
 		return nil, wrap(err)
 	}
@@ -152,7 +154,7 @@ func (v *Verifier) Context(ctx context.Context, in Input) (map[string][]byte, er
 			"- Priority: p"+strconv.Itoa(priority(s)), "- Scope: "+implementerScope(s))),
 		"conversation.md": []byte(ivFile("Conversation on #"+strconv.Itoa(s.Number), verifierConversationIntro, text.Conversation, "None yet.")),
 		"diff.patch":      patch,
-		"checks.md":       []byte(verifierChecks(in.Checks)),
+		"checks.md":       []byte(verifierChecks(in.Checks, in.Against)),
 		"followups.md":    []byte(verifierFollowUpList(s.Number, filed, waiting)),
 		"prompt.md":       []byte(verifierTask(s.Number, in.ContextDir)),
 		"system.md":       []byte(verifierPreamble(d.Config, all, in.Head) + "\n\n" + string(prompt)),
@@ -191,9 +193,10 @@ const (
 // ran, with the start of its command (commandChars), that it passed, and
 // the end of its output as verify.CommandResult keeps it, each fenced so
 // nothing in it can close the fence (ivFenced), then that rules 2 to 7
-// passed (SPEC §10.1). The verifier runs only on a head that passed them
-// all, so a result here always passed.
-func verifierChecks(results []verify.CommandResult) string {
+// passed (SPEC §10.1), and for a task in a story, against t, its story
+// branch and tip, with the story's baseline. The verifier runs only on a
+// head that passed them all, so a result here always passed.
+func verifierChecks(results []verify.CommandResult, t VerifyTarget) string {
 	var sections []string
 	for i, c := range results {
 		s := fmt.Sprintf("## Command %d of %d\n\n%s\n\nIt passed.", i+1, len(results), ivFenced(firstChars(c.Command, commandChars)))
@@ -207,7 +210,12 @@ func verifierChecks(results []verify.CommandResult) string {
 	if len(results) == 0 {
 		sections = append(sections, "`verify.commands` is empty, so no command ran.")
 	}
-	return ivFile("The checks", verifierChecksIntro, append(sections, "Rules 2 to 7 passed."), "")
+	rules := "Rules 2 to 7 passed."
+	if t.Branch != "" {
+		rules = fmt.Sprintf("Rules 2 to 7 passed, against %s, the tip this task's head merges into: rule 7's target is that tip, "+
+			"and rule 2's baseline is the story's, `main` at `%s`. diff.patch starts at the head's merge base with that tip.", t.label(), t.Baseline)
+	}
+	return ivFile("The checks", verifierChecksIntro, append(sections, rules), "")
 }
 
 // followUp is one follow-up already filed, as a listing gives it, with the

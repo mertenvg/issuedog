@@ -407,9 +407,10 @@ func TestVerifyQuietAfterFindings(t *testing.T) {
 	}
 }
 
-// A task at verifying with a parent gets no checks, uncounted, as it gets
-// no run, and nor does a human task, which gets no PR: no command runs,
-// and nothing is written on it.
+// A task at verifying with a parent, a story with no branch yet, gets no
+// checks, uncounted, as its story has no tip to judge it against, and nor
+// does a human task, which gets no PR: no command runs, and nothing is
+// written on it.
 func TestVerifySkips(t *testing.T) {
 	t.Parallel()
 	for _, name := range []string{"a task with a parent", "a human task"} {

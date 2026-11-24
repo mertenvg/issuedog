@@ -59,7 +59,10 @@ func newHeadKey(tip string) state.Key {
 // (state.HeldStackFields), its comment naming the old head and the new one
 // (renderNewHead). A tip such a move named once already moves the task no
 // more (SPEC §5.2). Two branches with the task's prefix move nothing, as
-// the daemon can't tell which is the task's (prTip).
+// the daemon can't tell which is the task's (prTip), and nor does a branch
+// while a move of the task's waits (Daemon.prWaiting), as a review's that
+// waits for its story branch's tip (prReviewTipWait), which carries the
+// branch's tip (prWaitingTip).
 func (d *Daemon) prNewHead(ctx context.Context, s *github.Snapshot, is state.Issue) (*Move, error) {
 	a, n := d.Step.Applier, s.Number
 	branch, tip, ok, err := d.prTip(ctx, s)
@@ -67,6 +70,10 @@ func (d *Daemon) prNewHead(ctx context.Context, s *github.Snapshot, is state.Iss
 		return nil, fmt.Errorf("read the task's branch: %w", err)
 	}
 	if !ok {
+		return nil, nil
+	}
+	if m, waits := d.prWaiting[n]; waits {
+		logr.Debugf("%s/%s#%d: its move to %s on %s waits, and carries its branch's tip, so no new head is judged", a.Owner, a.Repo, n, m.To, m.Trigger)
 		return nil, nil
 	}
 	old := prHeadOf(is)
@@ -261,8 +268,14 @@ func (d *Daemon) prWaitingFor(n int, is state.Issue, p listedPR) (Move, bool) {
 // branch's tip as head= when it isn't the PR's verified head, and none
 // otherwise (prReviewHead). Two branches with the task's prefix drop a new
 // head's move, as prNewHead makes none then, and leave a review's as it
-// was found. A move on main's moving, which step 4 found (Runs.mainMoved),
-// stands only while main is at the commit its key names (prWaitingMain).
+// was found. A move on its target's moving, main's or its story branch's
+// tip's, which step 4 found (Runs.mainMoved), stands only while that
+// target is at the commit its key names (prWaitingMain).
+// A review's move of a task in a story whose story branch's tip has no
+// success still waits (prReviewTipWait): it's kept, made to fit the
+// branch, and this gives false, so the PR's close is judged, at no
+// request, and nothing else is, as a move that waits stands (prNewHead,
+// prMerge).
 func (d *Daemon) prWaitingTip(ctx context.Context, s *github.Snapshot, is state.Issue, m Move) (Move, bool, error) {
 	a, n := d.Step.Applier, s.Number
 	_, tip, ok, err := d.prTip(ctx, s)
@@ -275,14 +288,21 @@ func (d *Daemon) prWaitingTip(ctx context.Context, s *github.Snapshot, is state.
 			a.Owner, a.Repo, n, m.To, m.Trigger, tip)
 		delete(d.prWaiting, n)
 		return Move{}, false, nil
-	case mainKeyed(m.Key):
+	case mainKeyed(m.Key), tipKeyed(m.Key):
 		stands, err := d.prWaitingMain(ctx, s, m)
 		if err != nil {
-			return Move{}, false, fmt.Errorf("its waiting move on main: %w", err)
+			return Move{}, false, fmt.Errorf("its waiting move on its target: %w", err)
 		}
 		return m, stands, nil
 	case m.Trigger == state.TriggerReviewChanges && ok:
 		m.Fields = prReviewHead(maps.Clone(m.Fields), prHeadOf(is), tip)
+	}
+	waits, err := d.prReviewTipWait(ctx, s, m)
+	switch {
+	case err != nil:
+		return Move{}, false, fmt.Errorf("its waiting move's story branch: %w", err)
+	case waits:
+		return Move{}, false, nil
 	}
 	return m, true, nil
 }
@@ -292,6 +312,15 @@ func (d *Daemon) prWaitingTip(ctx context.Context, s *github.Snapshot, is state.
 // (Daemon.prWaiting), logging why it waits: at info the pass it's found,
 // and at debug each pass after.
 func (d *Daemon) prWait(n int, m Move, why string) {
+	d.prWaitOn(n, m, "for the worker, as "+why)
+}
+
+// prWaitOn keeps m, a move found for task n out of pr-open, in
+// Daemon.prWaiting, as prWait does, logging that it waits on, what it
+// waits for: at info the pass it's found, and at debug each pass after. A
+// review's move of a task in a story waits this way for its story
+// branch's tip too (prReviewTipWait).
+func (d *Daemon) prWaitOn(n int, m Move, on string) {
 	a := d.Step.Applier
 	log := logr.Infof
 	if _, ok := d.prWaiting[n]; ok {
@@ -301,7 +330,7 @@ func (d *Daemon) prWait(n int, m Move, why string) {
 		d.prWaiting = map[int]Move{}
 	}
 	d.prWaiting[n] = m
-	log("%s/%s#%d: its move to %s on %s waits for the worker, as %s", a.Owner, a.Repo, n, m.To, m.Trigger, why)
+	log("%s/%s#%d: its move to %s on %s waits %s", a.Owner, a.Repo, n, m.To, m.Trigger, on)
 }
 
 // prHeadWarnOnce logs a warning for task n, unless the last one logged for

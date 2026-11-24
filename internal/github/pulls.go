@@ -15,12 +15,16 @@ import (
 // head branch and the SHA GitHub shows for it, its base branch, its state
 // ("open" or "closed", a merged one included), its title, body and author's
 // login, its labels' names, whether it merged, and when it closed and was
-// last updated.
+// last updated. MergedBy is the login of whoever merged it, and
+// MergeCommitSHA the commit its merge wrote, as a squash's; both are read
+// only once it merged, and only from one pull request's read
+// (Client.PullRequest), since the list leaves out merged_by.
 type PullRequest struct {
 	Number                                          int
 	Head, HeadSHA, Base, State, Title, Body, Author string
 	Labels                                          []string
 	Merged                                          bool
+	MergedBy, MergeCommitSHA                        string
 	ClosedAt, UpdatedAt                             time.Time
 }
 
@@ -42,6 +46,17 @@ var ErrReopenRefused = errors.New("GitHub refused to reopen the pull request")
 // task's branch to main. A caller can tell it from any other failure.
 var ErrPullRequestExists = errors.New("an open pull request with that head and base exists already")
 
+// ErrHeadMoved is wrapped by MergePullRequest's error when GitHub refuses
+// the merge with a 409, as the pull request's head is no longer the sha the
+// merge named (SPEC §7.5's The merge's guards). Nothing merged.
+var ErrHeadMoved = errors.New("the pull request's head moved past the one named")
+
+// ErrNotMergeable is wrapped by MergePullRequest's error when GitHub
+// refuses the merge with a 405, as for a closed or merged pull request, a
+// conflict with its base, or a merge method the repo doesn't allow.
+// Nothing merged.
+var ErrNotMergeable = errors.New("GitHub won't merge the pull request")
+
 // pullRequestExists reports whether err, with resp, is GitHub's 422 to an
 // open pull request with the same head and base: "Validation Failed", with
 // an entry in its errors list whose message says a pull request already
@@ -62,17 +77,66 @@ func pullRequestExists(resp *gogithub.Response, err error) bool {
 
 // pullRequestOf is the PullRequest GitHub's p describes. The list of pull
 // requests gives no merged field, only merged_at, so either one says it
-// merged.
+// merged. GitHub gives an open pull request a merge_commit_sha too, its
+// test merge's, which is no commit of the repo's branches, so it's kept
+// only once the pull request merged.
 func pullRequestOf(p *gogithub.PullRequest) PullRequest {
 	var labels []string
 	for _, l := range p.Labels {
 		labels = append(labels, l.GetName())
 	}
-	return PullRequest{Labels: labels,
+	pr := PullRequest{Labels: labels,
 		Number: p.GetNumber(), Head: p.GetHead().GetRef(), HeadSHA: p.GetHead().GetSHA(), Base: p.GetBase().GetRef(),
 		State: p.GetState(), Title: p.GetTitle(), Body: p.GetBody(), Author: p.GetUser().GetLogin(),
 		Merged: p.GetMerged() || p.MergedAt != nil, ClosedAt: p.GetClosedAt().Time, UpdatedAt: p.GetUpdatedAt().Time,
 	}
+	if pr.Merged {
+		pr.MergedBy, pr.MergeCommitSHA = p.GetMergedBy().GetLogin(), p.GetMergeCommitSHA()
+	}
+	return pr
+}
+
+// PullRequest reads pull request number of owner/repo, with GET
+// /repos/{owner}/{repo}/pulls/{number}: its state, head and head SHA, its
+// base, whether it merged, and, once it did, who merged it and its merge
+// commit. A repeat of an unchanged read is a 304, which costs no rate
+// limit, so a read just before a merge costs nothing when the pull
+// request didn't change (SPEC §6.4).
+func (c *Client) PullRequest(ctx context.Context, owner, repo string, number int) (PullRequest, error) {
+	p, _, err := c.PullRequests.Get(ctx, owner, repo, number)
+	if err != nil {
+		return PullRequest{}, fmt.Errorf("read pull request %s/%s#%d: %w", owner, repo, number, err)
+	}
+	return pullRequestOf(p), nil
+}
+
+// MergePullRequest squash-merges pull request number of owner/repo, as the
+// App, only while its head is sha, with title as the squash commit's title
+// and body as its message, an empty body an empty message rather than
+// GitHub's default, and returns the squash commit's SHA, as GitHub's
+// answer names it (SPEC §7.5's The merge's guards). It refuses an empty
+// sha before any request, as a merge at no named head guards nothing.
+// GitHub's 409, for a head that moved past sha, wraps ErrHeadMoved, and its
+// 405, for a pull request it won't merge, ErrNotMergeable, each beside
+// GitHub's *gogithub.ErrorResponse. It isn't idempotent: a merged pull
+// request is refused, so a caller that may replay reads PullRequest first.
+func (c *Client) MergePullRequest(ctx context.Context, owner, repo string, number int, sha, title, body string) (string, error) {
+	if sha == "" {
+		return "", fmt.Errorf("merge pull request %s/%s#%d: no head SHA to merge at", owner, repo, number)
+	}
+	opts := &gogithub.PullRequestOptions{CommitTitle: title, SHA: sha, MergeMethod: "squash", DontDefaultIfBlank: true}
+	res, resp, err := c.PullRequests.Merge(ctx, owner, repo, number, body, opts)
+	switch {
+	case err != nil && resp != nil && resp.StatusCode == http.StatusConflict:
+		return "", fmt.Errorf("merge pull request %s/%s#%d at %s: %w: %w", owner, repo, number, sha, ErrHeadMoved, err)
+	case err != nil && resp != nil && resp.StatusCode == http.StatusMethodNotAllowed:
+		return "", fmt.Errorf("merge pull request %s/%s#%d at %s: %w: %w", owner, repo, number, sha, ErrNotMergeable, err)
+	case err != nil:
+		return "", fmt.Errorf("merge pull request %s/%s#%d at %s: %w", owner, repo, number, sha, err)
+	case res.GetSHA() == "":
+		return "", fmt.Errorf("merge pull request %s/%s#%d at %s: GitHub's answer names no merge commit", owner, repo, number, sha)
+	}
+	return res.GetSHA(), nil
 }
 
 // PullRequestsByHead lists the pull requests whose head is branch in

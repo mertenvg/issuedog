@@ -18,9 +18,9 @@ import (
 )
 
 // This file is step 2's reviews (SPEC §7.2, §8.1): a trusted user's
-// "comment" or "request changes" review on a task's PR to main, at
-// pr-open, sends the task back to in-progress, its next run reading the
-// review. An approving review never does, with comments or without (#234's
+// "comment" or "request changes" review on a task's PR, to main or into
+// its story branch, at pr-open, sends the task back to in-progress, its
+// next run reading the review. An approving review never does, with comments or without (#234's
 // Q1.5), nor a dismissed one, nor an untrusted user's: they write nothing
 // and reach no agent, as a task takes no untrusted input (SPEC §6.2). A
 // review is seen at no request of its own: the timeline read step 2 makes
@@ -100,13 +100,14 @@ func prReviewsHandled(is state.Issue) int64 {
 
 // prSendBack reports whether m is a move out of pr-open that sends a task
 // on a round, back to in-progress or verifying, on its PR: a review's,
-// keyed event=r<ID>, a new head's, event=n<SHA>, or main's moving,
-// event=m<SHA> (SPEC §5). A move by a stage label, keyed by its timeline
-// event, a number, isn't one.
+// keyed event=r<ID>, a new head's, event=n<SHA>, main's moving,
+// event=m<SHA>, or its story branch's tip's moving, event=b<SHA> (SPEC
+// §5). A move by a stage label, keyed by its timeline event, a number,
+// isn't one.
 func prSendBack(m github.Marker) bool {
 	to, ev := state.Stage(m.Fields["to"]), m.Fields["event"]
 	return m.Kind == "transition" && state.Stage(m.Fields["from"]) == state.PROpen && (to == state.InProgress || to == state.Verifying) &&
-		len(ev) > 1 && strings.ContainsRune("rnm", rune(ev[0]))
+		len(ev) > 1 && strings.ContainsRune("rnmb", rune(ev[0]))
 }
 
 // prReviewWindow is when the window of the reviews of task s's PR begins,
@@ -171,8 +172,10 @@ func prReviewCounts(r prReview) bool {
 // task's branch's tip, when it isn't the PR's verified head
 // (prReviewHead), so a new head in the same pass goes with the review,
 // and reviewer=, the author, when it counts one review. Its comment
-// quotes each counted review, oldest first (renderReviews). A failed
-// question or read is an error.
+// quotes each counted review, oldest first (renderReviews). For a task in
+// a story whose story branch's tip has no success, the move waits at
+// pr-open instead, kept in memory (prReviewTipWait), and it returns nil. A
+// failed question or read is an error.
 func (d *Daemon) prReviewMove(ctx context.Context, s *github.Snapshot, is state.Issue, p listedPR, reviews []prReview) (*Move, error) {
 	a, n := d.Step.Applier, s.Number
 	handled := prReviewsHandled(is)
@@ -226,8 +229,41 @@ func (d *Daemon) prReviewMove(ctx context.Context, s *github.Snapshot, is state.
 	}
 	newest := counted[len(counted)-1].ID
 	logr.Infof("%s/%s#%d: %d review(s) of its PR #%d, the newest %d, send it back to %s", a.Owner, a.Repo, n, len(counted), p.Number, newest, state.InProgress)
-	return &Move{To: state.InProgress, Trigger: state.TriggerReviewChanges, Key: prReviewKey(newest), Fields: fields,
-		Text: renderReviews(prLink(a.Owner, a.Repo, p.Number), p.Number, quotes)}, nil
+	m := Move{To: state.InProgress, Trigger: state.TriggerReviewChanges, Key: prReviewKey(newest), Fields: fields,
+		Text: renderReviews(prLink(a.Owner, a.Repo, p.Number), p.Number, quotes)}
+	waits, err := d.prReviewTipWait(ctx, s, m)
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("its story branch: %w", err)
+	case waits:
+		return nil, nil
+	}
+	return &m, nil
+}
+
+// prReviewTipWait reports whether m, a review's move of task s to
+// in-progress (prReviewMove), waits at pr-open, kept in memory with no
+// write (prWaitOn), because s is in a story whose story branch's tip has
+// no App issuedog/tip naming the branch as success, or has no such tip to
+// name (prStoryTip): its run couldn't start from there (storyStart, SPEC
+// §3.4), so the task would hold the worker at in-progress for nothing. It
+// waits as a move does for the worker (prWait): step 2 makes it on the
+// first pass the tip has its success (prWaitingTip), unless the task or
+// its PR changed since (prWaitingFor). Any other move, and a review's of a
+// task with no parent, never waits here. It costs no request.
+func (d *Daemon) prReviewTipWait(ctx context.Context, s *github.Snapshot, m Move) (bool, error) {
+	if s.Parent == 0 || m.Trigger != state.TriggerReviewChanges {
+		return false, nil
+	}
+	_, _, why, err := d.prStoryTip(ctx, s)
+	switch {
+	case err != nil:
+		return false, fmt.Errorf("read its story branch's tip: %w", err)
+	case why == "":
+		return false, nil
+	}
+	d.prWaitOn(s.Number, m, "at "+string(state.PROpen)+", as "+why+", so its run couldn't start")
+	return true, nil
 }
 
 // prReviewHead is fields, a review's move's, with head= tip, the task's

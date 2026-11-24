@@ -173,6 +173,7 @@ type Daemon struct {
 	// (prReopenTrusted).
 	prTrusted map[int64]bool
 	// prDirt is the dirty content of each task at pr-open or needs-human,
+	// or in a story at in-progress or verifying with a PR, for its merge,
 	// by task, after its last good step 1, which step 2 moves it with
 	// (prDirtSet).
 	prDirt map[int]Dirt
@@ -189,21 +190,55 @@ type Daemon struct {
 	// its branch, or someone else's tip on it, or after a restart the
 	// item read back for it, till the PR step judges it (pr_open.go).
 	prStalls map[int]prStall
-	// prWaiting is the move out of pr-open step 2, or step 4 for main's
-	// moving (Runs.mainMoved), found for each task, by task, that waits for
-	// the worker: one into verifying or in-progress, made once the worker
-	// is free, and dropped when the task moves or its PR changes
-	// (prWaitingFor), or for a new head, when the branch moves on from it
-	// (prWaitingTip), or for main's moving, when main moves again
-	// (prWaitingMain).
+	// prWaiting is the move out of pr-open step 2, or step 4 for its
+	// target's moving, main's or its story branch's tip's (Runs.mainMoved),
+	// found for each task, by task, that waits for the worker: one into
+	// verifying or in-progress, made once the worker is free, and dropped
+	// when the task moves or its PR changes (prWaitingFor), or for a new
+	// head, when the branch moves on from it (prWaitingTip), or for its
+	// target's moving, when the target moves again (prWaitingMain).
 	prWaiting map[int]Move
 	// prHeadWarned is the key of the last warning step 2 logged for each
 	// task's branch, by task, so a wait that lasts is warned of once
 	// (prHeadWarnOnce).
 	prHeadWarned map[int]string
+	// prMergeLogged is the key of the last log of why each task's PR into
+	// its story branch isn't merged, by task, so a wait that lasts, or a
+	// refusal of one head, is logged once (prMergeOnce).
+	prMergeLogged map[int]string
+	// prMergeFailed is, for each task at pr-open whose verified head a
+	// person pushed, by task, the head the App's newest issuedog/verify was
+	// read as failure on, so it's read once a head (prPersonFailed).
+	prMergeFailed map[int]string
+	// prMergeRefused is GitHub's last refusal of each task's PR's merge
+	// into its story branch, by task, so the merge waits, with no request,
+	// till its head, its PR or its story branch's tip changes (prMerge).
+	prMergeRefused map[int]prRefusal
+	// mergeJudged holds the pass of the checks on the merge with its
+	// target of each task at pr-open, main's commit or its story branch's
+	// tip, by task, keyed by its head and the target's commit, so they
+	// don't run again until either changes (Runs.mainMoved), and step 2
+	// merges a task's PR onto a story branch's tip that moved since its
+	// verify only once its merge with that tip passed (prMergeOnto).
+	mergeJudged map[int]checksPassed
 	// workerLeased is whether a run's lease held the worker when Work last
 	// ended (Runs.Work), for step 2's moves that take it (workerFree).
 	workerLeased bool
+
+	// tips is each story branch's tip as step 4 last judged it, or read its
+	// App issuedog/tip naming the branch after a restart, by branch, so an
+	// unchanged tip is checked once and costs no request (Runs.tipCheck,
+	// tipSuccess).
+	tips map[string]tipJudged
+	// tipsMerged is, by story branch, the tip the App last merged a task's
+	// PR onto, which is the branch's tip no more, though the bare clone
+	// names it till the next sync, which forgets it (reload,
+	// tipMergedOnto).
+	tipsMerged map[string]string
+	// storyWarned is the key of the last warning logged for each story, or
+	// task in one, by issue number, so a wait that lasts is warned of once
+	// (storyWarnOnce).
+	storyWarned map[int]string
 }
 
 // CurrentTrust is a github.Trust that asks st.Trust on each call. Iterate's
@@ -637,6 +672,10 @@ func (d *Daemon) reload(ctx context.Context) {
 		logr.Errorf("syncing the clone of %s/%s failed, so the last good config and trust stay: %v", a.Owner, a.Repo, err)
 		return
 	}
+	// The sync brings each story branch's tip past the App's merges onto
+	// it, so no tip the App merged onto is held back any more
+	// (tipMergedOnto).
+	d.tipsMerged = nil
 	if cfg, err := config.Load(ctx, d.Clone); err != nil {
 		logr.Errorf("loading the config of %s/%s from main failed, so the last good one stays: %v", a.Owner, a.Repo, err)
 	} else {

@@ -1103,10 +1103,13 @@ func (d *Daemon) digestCacheAddendum(s *github.Snapshot) int64 {
 //
 // With a trigger open, it also reports whether an owner hold on s stays
 // once they're resolved (resolveHoldsLeft), as resolveLeave would judge
-// it: one a marker records, or a /hold on s no marker records, or on an
-// ancestor that the record of a discussion's end names, but not one a
-// /resume ended while the issue stayed held (resolveLeft), on s or an
-// ancestor. That reads nothing more: an ancestor's /hold that no record
+// it, but for a hold for a PR, as a revision dropped s (droppedHold):
+// resolveLeave counts that one among the holds left, as it keeps s held,
+// but it's no owner hold, no /resume ends it, and it has an item of its
+// own. So it's one a marker records, or a /hold on s no marker records,
+// or on an ancestor that the record of a discussion's end names, but not
+// one a /resume ended while the issue stayed held (resolveLeft), on s or
+// an ancestor. That reads nothing more: an ancestor's /hold that no record
 // names yet is read only once s is about to leave held (resolveAbove), so
 // until then the item doesn't name it.
 func (st *Step) holdItemFind(ctx context.Context, s *github.Snapshot, dirt Dirt) ([]discTrigger, bool, error) {
@@ -1125,7 +1128,10 @@ func (st *Step) holdItemFind(ctx context.Context, s *github.Snapshot, dirt Dirt)
 	if err != nil {
 		return nil, false, fmt.Errorf("the digest's hold item: %w", err)
 	}
-	return found, resolveOwnerHeld(holds), nil
+	// Not a hold for a PR, as a revision dropped the issue, which isn't an
+	// owner hold, no /resume ends, and has an item of its own (SPEC §6.4,
+	// §9.4). holds is resolveLeft's own copy.
+	return found, resolveOwnerHeld(slices.DeleteFunc(holds, droppedHold)), nil
 }
 
 // digestCacheRanked returns every issue's cached items that stand

@@ -17,12 +17,14 @@ import (
 	"github.com/mertenvg/issuedog/internal/state"
 )
 
-// This file is step 2 for a task's PR to main (SPEC §6.4, §7.2, §8.1): a
-// PR closed without merging, or reopened by someone untrusted after a
-// close, hands its task at pr-open to the owner at needs-human, and a
-// trusted user's reopen sends it back to pr-open. A merge is no close
-// here: its "Closes #N" closes the task, which the close judge accepts
-// (closingAccepted). A task at pr-open whose branch moved to a head the
+// This file is step 2 for a task's PR, to main or into its story branch
+// (SPEC §6.4, §7.2, §8.1): a PR closed without merging, or reopened by
+// someone untrusted after a close, hands its task at pr-open to the owner at needs-human, and a
+// trusted user's reopen sends it back to pr-open. A merge into main is no
+// close here: its "Closes #N" closes the task, which the close judge
+// accepts (closingAccepted). A merge into a story branch closes nothing on
+// GitHub, so the App closes the task itself, or hands it off
+// (pr_merged.go). A task at pr-open whose branch moved to a head the
 // daemon didn't push goes back to verifying (pr_head.go), and one a
 // trusted user's "comment" or "request changes" review sends back goes to
 // in-progress (pr_review.go).
@@ -47,15 +49,16 @@ import (
 //     it, at no request (prNewHead), and a move waiting for the worker is
 //     kept in memory (Daemon.prWaiting).
 
-// prPass judges the PR of each task held at pr-open or at needs-human
-// (Daemon.prDirt), step 2 (SPEC §8.1), after step 1's visits and before
-// the digest and assignment: a task whose step 1 failed this pass, or that
-// a command touched, waits for its next pass, keeping its PR's read
-// (Daemon.prRead), and so does a held one, which isn't judged. At pr-open,
-// the PR the task names (taskPR), one the App opened that isn't merged,
-// is judged by prJudgeOpenHead, and its branch too; at needs-human, the PR
-// of a hand-off for its close or untrusted reopen is judged by
-// prJudgeHandoff. A move it makes gets its task's items found again, so
+// prPass judges the PR of each task held at pr-open or at needs-human, or
+// in a story at in-progress or verifying (Daemon.prDirt), step 2 (SPEC
+// §8.1), after step 1's visits and before the digest and assignment: a
+// task whose step 1 failed this pass, or that a command touched, waits for
+// its next pass, keeping its PR's read (Daemon.prRead), and so does a held
+// one, which isn't judged. The PR the task names (taskPR), one the App
+// opened, is judged, when the poll lists it merged, by prMerged, at any of
+// those stages; otherwise, at pr-open, by prJudgeOpenHead, and its branch
+// too, and at needs-human, the PR of a hand-off for its close or untrusted
+// reopen, by prJudgeHandoff. A move it makes gets its task's items found again, so
 // the digest and assignment show it this pass, and its task is read again
 // next pass and skips Work. So does a task at pr-open stalled on its
 // closed PR (waitFind) whose PR the poll lists open again, as after a
@@ -91,7 +94,33 @@ func (d *Daemon) prPass(ctx context.Context) (map[int]bool, error) {
 			continue
 		}
 		p, ok := d.prs[taskPR(is)]
-		if !ok || p.Merged {
+		if !ok {
+			continue
+		}
+		if p.Merged || (is.Stage != state.PROpen && is.Stage != state.NeedsHuman) {
+			// A task leaves pr-open on its PR's merge, and one in a story
+			// at in-progress or verifying is kept for that alone
+			// (prDirtSet), so its move out of pr-open waits no more.
+			delete(d.prWaiting, n)
+		}
+		if p.Merged {
+			m, err := d.prMerged(ctx, s, is, p)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("judge PR %s/%s#%d of #%d, merged: %w", a.Owner, a.Repo, p.Number, n, err))
+				continue
+			}
+			if m == nil {
+				continue
+			}
+			if err := a.Transition(ctx, s, dirt.Has, *m); err != nil {
+				d.reread(n, false)
+				errs = append(errs, fmt.Errorf("judge PR %s/%s#%d of #%d, merged: %w", a.Owner, a.Repo, p.Number, n, err))
+				continue
+			}
+			logr.Infof("%s/%s#%d: its PR #%d's merge moved it to %s on %s", a.Owner, a.Repo, n, p.Number, m.To, m.Trigger)
+			d.digestCacheSet(s, d.inputs[n], dirt, nil, false, false)
+			d.reread(n, false)
+			moved[n] = true
 			continue
 		}
 		if is.Stage == state.PROpen && p.Open && slices.ContainsFunc(d.digestCache[n], func(it waitItem) bool { return it.ClosedPR == p.Number }) {
@@ -150,9 +179,12 @@ func (d *Daemon) prPass(ctx context.Context) (map[int]bool, error) {
 // so a review that sends the task back wins over a new head in the same
 // pass, and carries it (prReviewMove). When that moves nothing, and judged
 // the PR, as its read isn't to be made again next pass, an open PR's
-// branch is judged for a new head (prNewHead), from the bare clone alone.
-// A PR the poll lists closed, its close handed off already, gets no such
-// look: its close is the PR's (SPEC §6.4).
+// branch is judged for a new head (prNewHead), from the bare clone alone,
+// and when that moves nothing either, a task in a story's PR is merged
+// into its story branch (prMerge), whose read just before the merge may
+// judge the PR again and return that move instead. A PR the poll lists
+// closed, its close handed off already, gets no such look: its close is
+// the PR's (SPEC §6.4).
 func (d *Daemon) prJudgeOpenHead(ctx context.Context, s *github.Snapshot, dirt Dirt, is state.Issue, p listedPR) (*Move, error) {
 	if m, ok := d.prWaitingFor(s.Number, is, p); ok {
 		m, ok, err := d.prWaitingTip(ctx, s, is, m)
@@ -172,6 +204,12 @@ func (d *Daemon) prJudgeOpenHead(ctx context.Context, s *github.Snapshot, dirt D
 	}
 	if m, err = d.prNewHead(ctx, s, is); err != nil {
 		return nil, fmt.Errorf("its branch at %s: %w", is.Stage, err)
+	}
+	if m != nil {
+		return m, nil
+	}
+	if m, err = d.prMerge(ctx, s, dirt, is, p); err != nil {
+		return nil, fmt.Errorf("its merge into its story branch: %w", err)
 	}
 	return m, nil
 }
@@ -208,7 +246,7 @@ func (d *Daemon) prJudgeOpen(ctx context.Context, s *github.Snapshot, dirt Dirt,
 			return nil, nil
 		}
 		return &Move{To: state.NeedsHuman, Trigger: state.TriggerPRClosed, Key: key,
-			Text: renderPRClosedHandoff(n, p.Number, link, false, "", d.Step.Notify)}, nil
+			Text: renderPRClosedHandoff(n, p.Number, link, false, "", s.Parent != 0, d.Step.Notify)}, nil
 	}
 	if !d.prRead[p.Number] && d.prJudged[n] == is.TransitionComment {
 		return nil, nil
@@ -234,7 +272,7 @@ func (d *Daemon) prJudgeOpen(ctx context.Context, s *github.Snapshot, dirt Dirt,
 		if !ok && !strings.EqualFold(by.Login, a.AppSlug+"[bot]") {
 			delete(d.prRead, p.Number)
 			return &Move{To: state.NeedsHuman, Trigger: state.TriggerPRClosed, Key: state.Key{Field: "event", ID: strconv.FormatInt(e.GetID(), 10)},
-				Text: renderPRClosedHandoff(n, p.Number, link, true, by.Login, d.Step.Notify)}, nil
+				Text: renderPRClosedHandoff(n, p.Number, link, true, by.Login, s.Parent != 0, d.Step.Notify)}, nil
 		}
 	}
 	m, err := d.prReviewMove(ctx, s, is, p, reviews)
@@ -303,7 +341,7 @@ func (d *Daemon) prJudgeHandoff(ctx context.Context, s *github.Snapshot, dirt Di
 		return nil, nil
 	}
 	return &Move{To: state.PROpen, Trigger: state.TriggerPRReopened, Key: state.Key{Field: "event", ID: strconv.FormatInt(e.GetID(), 10)},
-		Fields: map[string]string{"pr": strconv.Itoa(p.Number)}, Text: renderPRReopened(p.Number, by.Login)}, nil
+		Fields: map[string]string{"pr": strconv.Itoa(p.Number)}, Text: renderPRReopened(p.Number, by.Login, s.Parent != 0)}, nil
 }
 
 // prHandoffIn reports whether comment id, a task's latest hand-off, holds
@@ -427,11 +465,12 @@ func prWindow(s *github.Snapshot, appSlug string, dirty func(int64) bool) time.T
 
 // prClosedMove reports whether m is the hand-off for a task's PR closed
 // without merging, or reopened by someone untrusted after a close
-// (prJudgeOpen): pr-open → needs-human, keyed event=. Its key tells which
-// (prClosedByReopen).
+// (prJudgeOpen): pr-open → needs-human, keyed event=, but for the hand-off
+// of its merge by someone untrusted (mergedHandoffMove). Its key tells
+// which (prClosedByReopen).
 func prClosedMove(m github.Marker) bool {
 	return m.Kind == "transition" && state.Stage(m.Fields["from"]) == state.PROpen &&
-		state.Stage(m.Fields["to"]) == state.NeedsHuman && m.Fields["event"] != ""
+		state.Stage(m.Fields["to"]) == state.NeedsHuman && m.Fields["event"] != "" && !mergedHandoffMove(m)
 }
 
 // prClosedByReopen reports whether m, a hand-off prClosedMove reports, is
@@ -443,13 +482,14 @@ func prClosedByReopen(m github.Marker) bool {
 
 // prClosedFields are the fields of the hand-off for a task's PR closed
 // without merging (SPEC §9.3), in the daemon's own words, as no run gave
-// any, with the PR as its link.
-func prClosedFields(link string) implementerHandoffFields {
+// any, with the PR as its link. Its first step says what the PR waits for
+// once the task is back at pr-open (prBackWaits).
+func prClosedFields(link string, story bool) implementerHandoffFields {
 	return implementerHandoffFields{
 		Goal:      "Decide what becomes of this task, whose PR was closed without merging.",
 		WhyBlocks: "its PR is reopened, or the task is started over or closed",
 		Steps: []string{
-			"To keep the PR, reopen it: the task goes back to `pr-open`, waiting for your review and merge.",
+			"To keep the PR, reopen it: the task goes back to `pr-open`, " + prBackWaits(story) + ".",
 			"To start over, say what to change in a comment, then reply `/done`: a new round from the task's head, whose pass reopens this PR.",
 			"If the task isn't needed, close this issue.",
 		},
@@ -466,10 +506,12 @@ func prClosedFields(link string) implementerHandoffFields {
 // prClosedFields, opening with what happened to the PR, and ending with
 // the three ways on: reopen the PR, or for an untrusted reopen close and
 // reopen it, which sends the task back to pr-open; /done or a 👍 for a
-// new round; or close the issue. The reopener's login isn't the App's
-// text: it's in code, defused.
-func renderPRClosedHandoff(n, pr int, link string, reopened bool, by string, notify []string) string {
-	f := prClosedFields(link)
+// new round; or close the issue. With story, for a task in a story, its
+// PR is into its story branch, so back at pr-open it waits for the App's
+// merge, not the owner's (prBackWaits). The reopener's login isn't the
+// App's text: it's in code, defused.
+func renderPRClosedHandoff(n, pr int, link string, reopened bool, by string, story bool, notify []string) string {
+	f := prClosedFields(link, story)
 	intro := fmt.Sprintf("PR #%d for this task was closed without merging, so the task waits on you.", pr)
 	keep := "Reopening the PR sends the task back to `pr-open`."
 	if reopened {
@@ -480,7 +522,7 @@ func renderPRClosedHandoff(n, pr int, link string, reopened bool, by string, not
 		intro = fmt.Sprintf("PR #%d for this task was reopened after a close by %s, and only a trusted user's reopen keeps it, so the task waits on you.", pr, who)
 		f.Goal = "Decide what becomes of this task, whose PR someone who isn't trusted reopened."
 		f.WhyBlocks = "its PR is closed and reopened by you, or the task is started over or closed"
-		f.Steps[0] = "To keep the PR, close it and reopen it yourself: the task goes back to `pr-open`, waiting for your review and merge."
+		f.Steps[0] = "To keep the PR, close it and reopen it yourself: the task goes back to `pr-open`, " + prBackWaits(story) + "."
 		f.DoneWhen = "The PR is closed and reopened by you, a new round is asked for, or the issue is closed."
 		keep = "Closing and reopening the PR yourself sends the task back to `pr-open`."
 	}
@@ -491,23 +533,49 @@ func renderPRClosedHandoff(n, pr int, link string, reopened bool, by string, not
 // renderPRReopened is the comment of a task's move back to pr-open on a
 // trusted user's reopen of its PR, pr, by by (SPEC §7.2): it names the
 // reopener, in code, defused, and says the task waits for the owner's
-// review and merge again. Transition escapes it.
-func renderPRReopened(pr int, by string) string {
-	return fmt.Sprintf("`%s` reopened PR #%d, so this task is back at `pr-open`. It waits for your review and merge, and merging it closes this task.", defuse(by), pr)
+// review and merge again, or with story, for a task in a story, that the
+// App merges the PR into the story branch once it's checked (SPEC §7.5).
+// Transition escapes it.
+func renderPRReopened(pr int, by string, story bool) string {
+	waits := "It waits for your review and merge, and merging it closes this task."
+	if story {
+		waits = "The App merges it into the story branch once it's checked, then closes this task."
+	}
+	return fmt.Sprintf("`%s` reopened PR #%d, so this task is back at `pr-open`. %s", defuse(by), pr, waits)
+}
+
+// prBackWaits is what a task's PR waits for once the task is back at
+// pr-open: the owner's review and merge for a PR to main, or with story,
+// for a task in a story, the App's merge into its story branch once it's
+// checked, as the owner reviews only the story's PR (SPEC §7.5).
+func prBackWaits(story bool) string {
+	if story {
+		return "where the App merges it into the story branch once it's checked"
+	}
+	return "waiting for your review and merge"
 }
 
 // prDirtSet keeps s's dirty content dirt, after its last good step 1,
-// while s is at pr-open or needs-human, for prPass, which moves it on that
-// snapshot, and forgets it otherwise. Iterate calls it beside
-// digestCacheSet.
+// while s is at pr-open or needs-human, or at in-progress or verifying
+// with a parent in this repo, as a task in a story has, and a PR (taskPR),
+// whose merge into its story branch prPass judges there too (prMerged),
+// for prPass, which moves it on that snapshot, and forgets it otherwise.
+// Iterate calls it beside digestCacheSet.
 func (d *Daemon) prDirtSet(s *github.Snapshot, dirt Dirt) {
-	switch state.Derive(s, d.Step.AppSlug, dirt.Has).Stage {
+	is := state.Derive(s, d.Step.AppSlug, dirt.Has)
+	keep := false
+	switch is.Stage {
 	case state.PROpen, state.NeedsHuman:
-		if d.prDirt == nil {
-			d.prDirt = map[int]Dirt{}
-		}
-		d.prDirt[s.Number] = dirt
-	default:
-		delete(d.prDirt, s.Number)
+		keep = true
+	case state.InProgress, state.Verifying:
+		keep = s.Parent != 0 && s.ParentRepo == "" && taskPR(is) != 0
 	}
+	if !keep {
+		delete(d.prDirt, s.Number)
+		return
+	}
+	if d.prDirt == nil {
+		d.prDirt = map[int]Dirt{}
+	}
+	d.prDirt[s.Number] = dirt
 }

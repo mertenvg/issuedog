@@ -72,11 +72,12 @@ type Committer interface {
 }
 
 // AfterChecks is a Stage whose runs only follow SPEC §10.1's checks, such
-// as the verifier's: only verifyTask starts one, once the head and main's
-// commit have a pass of them, and step 3 never does (work). Its run's clone
-// holds the head the checks judged, which start refuses without that pass,
-// and its HOME is fresh and empty (run). It isn't a Committer, so nothing
-// fetches a commit it makes: its clone goes with whatever it holds.
+// as the verifier's: only verifyTask starts one, once the head and its
+// target's commit have a pass of them, and step 3 never does (work). Its
+// run's clone holds the head the checks judged, which start refuses
+// without that pass, and its HOME is fresh and empty (run). It isn't a
+// Committer, so nothing fetches a commit it makes: its clone goes with
+// whatever it holds.
 type AfterChecks interface {
 	// RunsAfterChecks marks the Stage as one.
 	RunsAfterChecks()
@@ -120,12 +121,20 @@ type Input struct {
 	// 2's finding on it, set with RunID, or "" when it was, or there's
 	// none (SPEC §3.4, §12).
 	Dropped string
-	// Head is the commit a verifier run judges and Main is main's commit
-	// it passed the checks against, and Checks is what verify.commands
-	// gave on them, each set with RunID, or empty for any other Stage's
-	// run (SPEC §10.1, §10.2).
-	Head, Main string
-	Checks     []verify.CommandResult
+	// Branch is the branch Target is on, and a dropped head's run starts
+	// from, set with RunID: main, or for a task in a story, its story
+	// branch (SPEC §3.4, §12).
+	Branch string
+	// Head is the commit a verifier run judges, Against is what it passed
+	// the checks against, main's commit, or for a task in a story its
+	// story branch's tip, with the story's baseline (VerifyTarget), and
+	// Checks is what verify.commands gave on them, each set with RunID, or
+	// empty for any other Stage's run (SPEC §10.1, §10.2). Against isn't
+	// Target, the commit a run's clone holds to merge first, which a
+	// verifier run's never names.
+	Head    string
+	Against VerifyTarget
+	Checks  []verify.CommandResult
 }
 
 // Result is a valid run result, for a Stage to apply.
@@ -208,6 +217,12 @@ type Lease struct {
 	// for triage, the interviewer and the planner, Start is main's.
 	Start  string `json:"start,omitempty"`
 	Target string `json:"target,omitempty"`
+	// StoryTip is the story branch's tip an implementer run on a task in a
+	// story named when it started, as its start, its target, or the tip its
+	// head was judged against, and "" for any other run (SPEC §3.4, §7.5).
+	// The apply drops the result when the branch's tip has moved from it to
+	// one that fails rule 2 (storyTipMoved).
+	StoryTip string `json:"story_tip,omitempty"`
 	// ApplyFailures counts the failed applies of the run's result.
 	ApplyFailures int `json:"apply_failures,omitempty"`
 	// PublicFailure is why the run failed, as failed records it, at most
@@ -296,18 +311,25 @@ type Runs struct {
 
 	// pickBlocked are the ready tasks the pick passes over as blocked: the
 	// issue search's last answer, as of pickSearched, by GitHub's clock,
-	// and those the pick found an open blocker of since (schedule.go).
+	// and those the pick found an open blocker of since, and the stories
+	// it found one of, whose tasks it passes over too (schedule.go).
 	pickBlocked  map[int]bool
 	pickSearched time.Time
+	// pickLogged is the key of the last log of why no task in a story is
+	// picked, by the story's number, so a wait that lasts is logged once
+	// (pickStoryOnce).
+	pickLogged map[int]string
 
 	// passed holds the pass of the checks of each task at verifying, by
-	// issue number, so they don't run again (verifyTask), and a verifier
+	// issue number, keyed by its head and its target's commit, so they
+	// don't run again until either changes (verifyTask), and a verifier
 	// run reads what they gave (checksPassed).
 	passed map[int]checksPassed
-	// mergeJudged holds the pass of the checks on the merge with main of
-	// each task at pr-open, by issue number, keyed by its head and main's
-	// commit, so they don't run again until either changes (mainMoved).
-	mergeJudged map[int]checksPassed
+
+	// startWaited is the key of the last log of why a task's run doesn't
+	// start, by issue number, as it waits for its story branch's tip
+	// (startWaitOnce).
+	startWaited map[int]string
 
 	// prWarned is the key of the last warning the PR step logged for each
 	// task, by issue number, so a wait that lasts is warned of once
@@ -321,15 +343,21 @@ type Runs struct {
 	prExists map[int]int
 }
 
-// checksPassed is a pass of SPEC §10.1's checks: the head and main's commit
-// that passed them, and what verify.commands gave.
+// checksPassed is a pass of SPEC §10.1's checks: the head, and the target
+// it passed them against, main's commit, or for a task in a story its
+// story branch's tip, with the baseline its rule 2 ran with
+// (VerifyTarget), and what verify.commands gave.
 type checksPassed struct {
-	Head, Main string
-	Results    []verify.CommandResult
+	Head    string
+	Target  VerifyTarget
+	Results []verify.CommandResult
 }
 
-// holds reports whether p is a pass of head against main.
-func (p checksPassed) holds(head, main string) bool { return p.Head == head && p.Main == main }
+// holds reports whether p is a pass of head against target, its target's
+// commit.
+func (p checksPassed) holds(head, target string) bool {
+	return p.Head == head && p.Target.SHA == target
+}
 
 // Work is Daemon.Work. On its first pass it first removes what a crash
 // left (sweep). Then it finishes a lease a run left, after a
@@ -341,13 +369,17 @@ func (p checksPassed) holds(head, main string) bool { return p.Head == head && p
 // it runs a Committer, such as the implementer, on the first issue, by
 // priority then number, whose stage has one with work pending: task work
 // comes after the other stages and triage (SPEC §8.1, step 4). If none ran
-// either, it runs SPEC §10.1's checks on the first task at verifying, by
+// either, it runs SPEC §10.1's checks on the tip of the first open story's
+// branch, by priority then number, that has no App issuedog/tip naming the
+// branch, one tip a pass (tipCheck). If none ran either, it runs SPEC
+// §10.1's checks on the first task at verifying, by
 // priority then number, whose head hasn't passed them, or a verifier run
 // on one whose head has, with no pass of the verifier's yet, or the PR step
 // on one with a pass that has a write to make (verifyTask). If none ran
-// either, it runs the checks on the merge with main of the first task at
-// pr-open, by priority then number, whose head isn't judged against main
-// as it is now (mainMoved). None of those touches the issue resume applied
+// either, it runs the checks on the merge with its target, main or its
+// story branch's tip, of the first task at pr-open, by priority then
+// number, whose head isn't judged against that target as it is now
+// (mainMoved). None of those touches the issue resume applied
 // a result to, whose snapshot is from before it. If it ran none either, it
 // picks the next ready task,
 // moves it to in-progress and starts its run (pickTask), unless a task
@@ -430,8 +462,17 @@ func (r *Runs) Work(ctx context.Context, ready []Ready) (err error) {
 	case ran:
 		return nil
 	}
-	// No run is in progress here, and none starts until the checks are
-	// done, so their commands never overlap a claude run (verifyTask).
+	// No run is in progress here, and none starts until the checks on a
+	// story branch's tip are done, so their commands never overlap a
+	// claude run (tipCheck).
+	ran, err = r.tipCheck(ctx, ready, skip)
+	switch {
+	case err != nil:
+		return fmt.Errorf("the checks on a story branch's tip: %w", err)
+	case ran:
+		return nil
+	}
+	// Nor while the checks at verifying run (verifyTask).
 	ran, err = r.verifyTask(ctx, ready, skip)
 	switch {
 	case err != nil:
@@ -439,7 +480,8 @@ func (r *Runs) Work(ctx context.Context, ready []Ready) (err error) {
 	case ran:
 		return nil
 	}
-	// Nor while the checks on a task's merge with main run (mainMoved).
+	// Nor while the checks on a task's merge with its target run
+	// (mainMoved).
 	ran, err = r.mainMoved(ctx, ready, skip)
 	switch {
 	case err != nil:
@@ -548,12 +590,17 @@ func (r *Runs) CheckRegistered() error {
 //
 // The run's clone holds main's commit in the bare repo, as the pass's sync
 // left it, and its history (SPEC §3.2, §3.4), or for a Committer, the
-// task's head, if it has one, or for an AfterChecks Stage, the head the
-// checks passed (start). That commit is named before the
+// task's head, if it has one, or else its base, or for an AfterChecks
+// Stage, the head the checks passed (start). That commit is named before the
 // issue is read again, from the bare repo alone, and the lease records it
 // as the run's start (SPEC §8.2). A failure to name it starts no run, uses
-// no attempt and makes no request. A Committer starts no run on an issue
-// with a parent, uncounted (inStory).
+// no attempt and makes no request. For a task in a story, the base is its
+// story branch's tip, named only while its issuedog/tip is success
+// (storyStart): until then, a Committer starts no run on it, uncounted,
+// and that's logged once. It's judged before the issue is read again, so
+// the wait costs no request, and again on the issue read again, which
+// starts no run either when the task's story is no longer ready, or its
+// tip isn't the one named; the lease records the tip it named.
 func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 	return r.runStage(ctx, rd, st, false)
 }
@@ -632,8 +679,9 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		logr.Debugf("%s/%s#%d: no %s run: its type doesn't fit its stage, as reported", a.Owner, a.Repo, n, st.Agent())
 		return false, nil
 	}
-	if inStory(st, rd.S) {
-		return false, nil
+	story, ready, err := r.storyStart(ctx, st, rd.S)
+	if err != nil || !ready {
+		return false, wrap(err)
 	}
 	attempt := used + 1
 	set, badLabels := state.RunSettings(state.Agent(st.Agent()), rd.S.Labels, r.Daemon.Config, attempt)
@@ -654,7 +702,7 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 	// run, so they need none, and their state error doesn't wait on one.
 	var commits runStart
 	if badLabels == nil {
-		if commits, err = r.start(ctx, st, is, n); err != nil {
+		if commits, err = r.start(ctx, st, is, n, story); err != nil {
 			return false, wrap(fmt.Errorf("name the run's start: %w", err))
 		}
 	}
@@ -669,9 +717,16 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		return false, nil
 	case err != nil:
 		return false, wrap(err)
-	case fresh.Closed || !isUnlabeled && stageOf(fresh) != is.Stage || inStory(st, fresh):
+	case fresh.Closed || !isUnlabeled && stageOf(fresh) != is.Stage:
 		r.Daemon.reread(n, false)
 		return false, nil
+	}
+	// The issue read again may name another parent, or none, so its story
+	// is judged again on it: a run starts only on the tip named above.
+	again, ready, err := r.storyStart(ctx, st, fresh)
+	if err != nil || !ready || again.StoryTip != story.StoryTip {
+		r.Daemon.reread(n, false)
+		return false, wrap(err)
 	}
 	if isUnlabeled {
 		// A stage label or a transition since step 1 makes it pipeline work.
@@ -695,15 +750,15 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		r.Daemon.reread(n, false)
 		return false, wrap(r.reportLabels(ctx, rd.S, fresh, is.Stage, st, badLabels))
 	}
-	in.RunID, in.Attempt, in.Target, in.Dropped = r.newID(), attempt, commits.Target, commits.Dropped
+	in.RunID, in.Attempt, in.Target, in.Dropped, in.Branch = r.newID(), attempt, commits.Target, commits.Dropped, commits.Branch
 	in.ContextDir = r.Workspace.Context(in.RunID)
 	if _, after := st.(AfterChecks); after {
 		// start refused a head with no pass, so passed holds this one's.
-		in.Head, in.Main, in.Checks = commits.Start, commits.Main, r.passed[n].Results
+		in.Head, in.Against, in.Checks = commits.Start, commits.Against, r.passed[n].Results
 	}
 	l := Lease{Issue: n, Stage: is.Stage, RunID: in.RunID, Clone: r.Workspace.Dir(in.RunID),
 		Started: r.now(), Polled: r.Daemon.polled, Edits: map[int64]time.Time{}, BodyEdit: rd.S.BodyEdit.At, AttemptKey: errKey, Attempt: in.Attempt,
-		Model: set.Model, Effort: set.Effort, FallbackModels: set.FallbackModels, Start: commits.Start, Target: commits.Target}
+		Model: set.Model, Effort: set.Effort, FallbackModels: set.FallbackModels, Start: commits.Start, Target: commits.Target, StoryTip: commits.StoryTip}
 	for _, c := range rd.S.Comments {
 		l.Seen = max(l.Seen, c.ID)
 	}
@@ -989,6 +1044,9 @@ func (e *step1Wait) Unwrap() error { return e.err }
 //     the stage runs again with, in its read or in read, if set: step 1's
 //     snapshot of the issue in this pass, after the run, which may list
 //     an answer step 1 👍'd that the apply's own read doesn't list yet.
+//   - when the run named its story branch's tip, l.StoryTip, and the
+//     branch's tip has moved to one that fails rule 2 (storyTipMoved): the
+//     task waits where it is until a tip passes (SPEC §3.4, §8.2).
 //
 // Then, for a Committer, the run's commits are handed to the bare repo
 // (handoff): a failed fetch is a failure to apply like any other. Then a
@@ -1081,6 +1139,13 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 		if id != 0 {
 			return drop("comment %d is new trusted input since the run started, so the stage runs again with it", id)
 		}
+		why, err := r.storyTipMoved(ctx, l, s)
+		if err != nil {
+			return fmt.Errorf("apply run %s: %w", l.RunID, err)
+		}
+		if why != "" {
+			return drop("%s", why)
+		}
 	}
 	head, err := r.handoff(ctx, l, st, moved)
 	if err != nil {
@@ -1113,6 +1178,64 @@ func (r *Runs) apply(ctx context.Context, l Lease, st Stage, raw []byte, out jso
 	delete(r.attempts, countKey(l.Issue, l.AttemptKey))
 	delete(r.failures, countKey(l.Issue, l.AttemptKey))
 	return r.finish(ctx, l)
+}
+
+// storyTipMoved returns why l's result is dropped for its story branch's
+// tip, or "" when it isn't (SPEC §3.4, §8.2). Only a run that named a story
+// tip, l.StoryTip, is judged, against the branch of s's story, s's parent,
+// found by its prefix in the bare clone as the last sync left it
+// (storyBranch). A tip still at the named one keeps the result. A tip that
+// moved, as a sync after a restart or a failed apply shows, keeps it too
+// when it passes rule 2 against its own baseline, the merge base of it and
+// main's commit (verify.BaseOf), and drops it when it fails: then it's no
+// tip the daemon would name (storyStart). So does a tip with no merge base
+// with main, or more than one, as it has no baseline, a branch gone, and
+// two branches with the story's prefix, as no tip is the story's. A task
+// with no parent left keeps the result. It reads only the bare repo, so it
+// costs no request.
+func (r *Runs) storyTipMoved(ctx context.Context, l Lease, s *github.Snapshot) (string, error) {
+	if l.StoryTip == "" || s.Parent == 0 {
+		return "", nil
+	}
+	d := r.Daemon
+	story := d.snaps[s.Parent]
+	if story == nil {
+		story = &github.Snapshot{Number: s.Parent}
+	}
+	branch, tip, err := d.storyBranch(ctx, story)
+	switch {
+	case errors.Is(err, errTwoBranches):
+		return fmt.Sprintf("the story branch's tip moved from %s, and it can't tell which is the branch: %v", l.StoryTip, err), nil
+	case err != nil:
+		return "", fmt.Errorf("read the story branch's tip: %w", err)
+	case tip == l.StoryTip:
+		return "", nil
+	case tip == "":
+		return fmt.Sprintf("the story branch %s the run named %s on is gone", branch, l.StoryTip), nil
+	}
+	main, err := d.Clone.Resolve(ctx, "main")
+	if err != nil {
+		return "", fmt.Errorf("read main: %w", err)
+	}
+	f := verify.Facts{Repo: d.Clone, Head: tip, Target: main, Config: d.Config.Verify}
+	base, err := verify.BaseOf(ctx, f)
+	if errors.Is(err, verify.ErrMergeBases) {
+		return fmt.Sprintf("the story branch's tip moved to %s, which fails rule 2, as it has no baseline: %v", tip, err), nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read the story's baseline at %s: %w", tip, err)
+	}
+	f.Baseline, f.Base = base, base
+	finding, err := verify.Rule2(ctx, f)
+	if err != nil {
+		return "", fmt.Errorf("check the story branch's tip %s: %w", tip, err)
+	}
+	if finding != nil {
+		return fmt.Sprintf("the story branch's tip moved to %s, which fails rule 2:\n%s", tip, finding.Detail), nil
+	}
+	logr.Infof("#%d: its story branch %s's tip moved from %s to %s during run %s, which passes rule 2, so the result is kept",
+		l.Issue, branch, l.StoryTip, tip, l.RunID)
+	return "", nil
 }
 
 // runApplied reports whether is shows the result of run runID written: its

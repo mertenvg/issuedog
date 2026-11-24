@@ -16,26 +16,35 @@ import (
 	"github.com/mertenvg/issuedog/internal/verify"
 )
 
-// This file opens or updates a passed task's PR to main (SPEC §7.5, §8.1
-// step 4, §10.2, §11.5): the head pushed to the task's branch, then the PR,
-// found by that branch, then its priority label, then the issuedog/verify
-// check on the verified head (SPEC §10.4), and last the task's move to
-// pr-open, each checked first. A head that changes nothing on main gets
-// none of those, and is handed off at needs-human instead.
+// This file opens or updates a passed task's PR (SPEC §7.5, §8.1 step 4,
+// §10.2, §11.5), to main for a task with no parent, or for a task in a
+// story into its story branch: the head pushed to the task's branch, then
+// the PR, found by that branch and its base, then its priority label, then
+// the issuedog/verify check on the verified head (SPEC §10.4), and last the
+// task's move to pr-open, each checked first. A head that changes nothing
+// on its base gets none of those, and is handed off at needs-human
+// instead.
 
 // prBase is the branch a task with no parent's PR targets (SPEC §7.5).
 const prBase = "main"
 
 // prWant is what the PR step wants for a task: the run of the pass it
 // stands on, which keys the task's move out of verifying, and that pass's
-// comment; whether the head changes nothing on main, so it wants only the
-// hand-off (prNothingMove), and none of the rest; its branch, and the
-// branch's tip as the last sync left it, or "" for no branch; whether the
-// head is to be pushed there; and the PR's title and body (SPEC §11.5),
-// and the task's priority label, which the PR carries.
+// comment; the PR's base, prBase for a task with no parent, or for a task
+// in a story its story branch, with Story, the story's number, and
+// StoryTip, the branch's tip its head was verified against
+// (checksPassed.Target), which its move to pr-open names, both empty for a
+// task with no parent; whether the head changes nothing on the base, so it
+// wants only the hand-off (prNothingMove), and none of the rest; its
+// branch, and the branch's tip as the last sync left it, or "" for no
+// branch; whether the head is to be pushed there; and the PR's title and
+// body (SPEC §11.5), and the task's priority label, which the PR carries.
 type prWant struct {
 	Run         string
 	Pass        int64
+	Base        string
+	Story       int
+	StoryTip    string
 	Nothing     bool
 	Branch, Tip string
 	Push        bool
@@ -44,10 +53,12 @@ type prWant struct {
 }
 
 // openPR is the PR step for rd's task, whose state is is, once its head
-// passed the checks against main's commit main (Runs.passed) and has a
-// clean pass of the verifier's (verdictOn): verifyTask calls it in step 4
-// (SPEC §8.1), so after a restart, or once main moves, the checks run again
-// first. It isn't a stage run: no lease, no claude, no attempt. It reports
+// passed the checks against t (Runs.passed), main's commit, or for a task
+// in a story its story branch's tip, and has a clean pass of the
+// verifier's (verdictOn): verifyTask calls it in step 4 (SPEC §8.1), so
+// after a restart, or once t moves, the checks run again first. Its PR's
+// base is main, or the story branch (prWant.Base). It isn't a stage run:
+// no lease, no claude, no attempt. It reports
 // whether it read the issue again, to write, so the pass's stage work
 // ends, as the checks' findings move does.
 //
@@ -74,17 +85,20 @@ type prWant struct {
 // (prWrite); then the priority label on it, unless it has it; then the
 // issuedog/verify check on the head, unless the App's newest there is a
 // success (prCheck); and last the move to pr-open (prMove), which releases
-// the worker (SPEC §8.1). The App never merges the PR. Someone else's open
-// PR from the task's branch to main, which GitHub's 422 to the open says,
-// makes the task wait, with no PR write, till a poll lists a PR changed
-// (prExistsWait). The digest lists that wait, and someone else's tip's,
-// as a stalled task till it ends (Daemon.prStallSet, SPEC §9.4). A head
-// that changes nothing on main gets none of those writes, but the move to
-// needs-human with its hand-off (prNothingMove).
-func (r *Runs) openPR(ctx context.Context, rd Ready, is state.Issue, head, main string) (bool, error) {
+// the worker (SPEC §8.1), and for a task in a story names the tip its head
+// was verified against. The App never merges a PR to main. One into a
+// story branch is the App's to merge (SPEC §7.5), which this step doesn't
+// do. Someone else's open PR from the task's branch to the same base,
+// which GitHub's 422 to the open says, makes the task wait, with no PR
+// write, till a poll lists a PR changed (prExistsWait). The digest lists
+// that wait, and someone else's tip's, as a stalled task till it ends
+// (Daemon.prStallSet, SPEC §9.4). A head that changes nothing on its base
+// gets none of those writes, but the move to needs-human with its
+// hand-off (prNothingMove).
+func (r *Runs) openPR(ctx context.Context, rd Ready, is state.Issue, head string, t VerifyTarget) (bool, error) {
 	a, n := r.Daemon.Step.Applier, rd.S.Number
 	wrap := func(err error) error { return fmt.Errorf("open or update the PR: %w", err) }
-	want, ok, err := r.prWant(ctx, rd.S, is, head, main, logr.Debugf)
+	want, ok, err := r.prWant(ctx, rd.S, is, head, t, logr.Debugf)
 	if err != nil || !ok {
 		if err != nil {
 			return false, wrap(err)
@@ -93,13 +107,13 @@ func (r *Runs) openPR(ctx context.Context, rd Ready, is state.Issue, head, main 
 	}
 	if polls, ok := r.prExists[n]; ok && !want.Nothing && polls == r.Daemon.prPolls {
 		logr.Debugf("%s/%s#%d: someone else's open PR from %s to %s stood when its PR was last opened, and no poll has listed a PR changed since, so it waits at %s",
-			a.Owner, a.Repo, n, want.Branch, prBase, state.Verifying)
+			a.Owner, a.Repo, n, want.Branch, want.Base, state.Verifying)
 		return false, nil
 	}
 	var pr *github.PullRequest
 	theirs := 0 // someone else's open PR from the task's branch, if listed
 	if !want.Nothing {
-		if pr, theirs, err = r.Daemon.prFind(ctx, want.Branch); err != nil {
+		if pr, theirs, err = r.Daemon.prFind(ctx, want.Branch, want.Base); err != nil {
 			return false, wrap(err)
 		}
 	}
@@ -137,7 +151,7 @@ func (r *Runs) openPR(ctx context.Context, rd Ready, is state.Issue, head, main 
 		logr.Infof("%s/%s#%d moved to %s since its pass, so it gets no PR", a.Owner, a.Repo, n, now.Stage)
 		return true, nil
 	}
-	if want, ok, err = r.prWant(ctx, s, now, head, main, logr.Warnf); err != nil || !ok {
+	if want, ok, err = r.prWant(ctx, s, now, head, t, logr.Warnf); err != nil || !ok {
 		if err != nil {
 			return true, wrap(err)
 		}
@@ -150,7 +164,7 @@ func (r *Runs) openPR(ctx context.Context, rd Ready, is state.Issue, head, main 
 		seen = max(seen, c.ID)
 	}
 	if want.Nothing {
-		if err := r.prNothingMove(ctx, s, d, want.Run, head, seen); err != nil {
+		if err := r.prNothingMove(ctx, s, d, want, head, seen); err != nil {
 			return true, wrap(err)
 		}
 		return true, nil
@@ -181,20 +195,25 @@ func (r *Runs) openPR(ctx context.Context, rd Ready, is state.Issue, head, main 
 			return true, wrap(fmt.Errorf("add %s to PR #%d: %w", want.Label, pr.Number, err))
 		}
 	}
-	logr.Infof("%s/%s#%d: its PR #%d from %s to %s is open at its head %s", a.Owner, a.Repo, n, pr.Number, want.Branch, prBase, head)
+	logr.Infof("%s/%s#%d: its PR #%d from %s to %s is open at its head %s", a.Owner, a.Repo, n, pr.Number, want.Branch, want.Base, head)
 	link := waitLink(a.Owner, a.Repo, n, want.Pass)
-	if err := r.Daemon.prCheck(ctx, n, head, main, checkSuccess, renderPRCheck(n, head, main, r.passed[n].Results, link), link); err != nil {
+	// The check names the newest main commit the commands ran with
+	// (checkedMain): t's baseline, main's commit, or the story's, which is
+	// in the head's history as it's in its story branch's tip's.
+	if err := r.Daemon.prCheck(ctx, n, head, t.Baseline, checkSuccess, renderPRCheck(n, head, t, r.passed[n].Results, link), link); err != nil {
 		return true, wrap(err)
 	}
-	if err := r.prMove(ctx, s, d, want.Run, head, pr.Number, seen); err != nil {
+	if err := r.prMove(ctx, s, d, want, head, pr.Number, seen); err != nil {
 		return true, wrap(err)
 	}
 	return true, nil
 }
 
 // prWant reads what the PR step wants for task s, whose state is is, at
-// head, which passed the checks against main's commit main, from s and the
-// bare repo alone, so at no request. It reports false, with no error, when
+// head, which passed the checks against t, main's commit, or for a task in
+// a story its story branch's tip, from s and the bare repo alone, so at no
+// request. Its base is t's branch, or with none, prBase, and its story is
+// s's parent. It reports false, with no error, when
 // the task waits, each logged:
 //   - is has no clean pass of the verifier's on head in a comment, as after
 //     a read again that finds the pass comment edited;
@@ -208,21 +227,25 @@ func (r *Runs) openPR(ctx context.Context, rd Ready, is state.Issue, head, main 
 //   - the branch's tip isn't one the head may go over (prPushOK), which
 //     the digest lists as a stalled task till it ends (prStallSet).
 //
-// A head whose own diff, from its merge base with main, is empty wants
-// only its hand-off (prWant.Nothing), with no push and no PR, so no branch
-// is named for it.
+// A head whose own diff, from its merge base with t, is empty wants only
+// its hand-off (prWant.Nothing), with no push and no PR, so no branch is
+// named for it.
 //
 // The second and the last two waits are warnings, logged once
 // (prWarnOnce). Text of the PR's that doesn't read back is logged with
 // warnf (prText): a warning before a write, and else at debug, so it isn't
 // warned of on every pass.
-func (r *Runs) prWant(ctx context.Context, s *github.Snapshot, is state.Issue, head, main string, warnf func(string, ...any) string) (prWant, bool, error) {
+func (r *Runs) prWant(ctx context.Context, s *github.Snapshot, is state.Issue, head string, t VerifyTarget, warnf func(string, ...any) string) (prWant, bool, error) {
 	a, n, clone := r.Daemon.Step.Applier, s.Number, r.Daemon.Clone
 	run, pass, ok := r.prPassReady(s, is, head)
 	if !ok {
 		return prWant{}, false, nil
 	}
-	base, err := verify.BaseOf(ctx, verify.Facts{Repo: clone, Head: head, Target: main})
+	want := prWant{Run: run, Pass: pass.ID, Base: prBase}
+	if t.Branch != "" {
+		want.Base, want.Story, want.StoryTip = t.Branch, s.Parent, t.SHA
+	}
+	base, err := verify.BaseOf(ctx, verify.Facts{Repo: clone, Head: head, Target: t.SHA})
 	if err != nil {
 		return prWant{}, false, fmt.Errorf("read the head's base: %w", err)
 	}
@@ -231,8 +254,9 @@ func (r *Runs) prWant(ctx context.Context, s *github.Snapshot, is state.Issue, h
 		return prWant{}, false, fmt.Errorf("read the head's own diff: %w", err)
 	}
 	if len(changes) == 0 {
-		logr.Debugf("%s/%s#%d: its head %s changes nothing on %s since %s, so it gets no push and no PR, but a hand-off", a.Owner, a.Repo, n, head, prBase, base)
-		return prWant{Run: run, Pass: pass.ID, Nothing: true}, true, nil
+		logr.Debugf("%s/%s#%d: its head %s changes nothing on %s since %s, so it gets no push and no PR, but a hand-off", a.Owner, a.Repo, n, head, want.Base, base)
+		want.Nothing = true
+		return want, true, nil
 	}
 	branches, err := clone.Branches(ctx, taskBranchPrefix(n))
 	if err != nil {
@@ -263,9 +287,10 @@ func (r *Runs) prWant(ctx context.Context, s *github.Snapshot, is state.Issue, h
 	// digest lists it no more.
 	delete(r.prWarned, n)
 	r.Daemon.prStallEnd(s, is, stalledTip)
-	title, body := r.prText(s, is, pass, head, main, warnf)
-	return prWant{Run: run, Pass: pass.ID, Branch: branch, Tip: tip, Push: push, Title: title, Body: body,
-		Label: fmt.Sprintf("priority:p%d", priority(s))}, true, nil
+	want.Branch, want.Tip, want.Push = branch, tip, push
+	want.Title, want.Body = r.prText(s, is, pass, head, t, warnf)
+	want.Label = fmt.Sprintf("priority:p%d", priority(s))
+	return want, true, nil
 }
 
 // prPassReady is the pass the move out of verifying of task s, whose state
@@ -336,18 +361,19 @@ func (r *Runs) prWarnOnce(n int, key, format string, args ...any) {
 }
 
 // prExistsWait has task s, whose state is is, wait at verifying when
-// GitHub won't open its PR from want's branch to main, err, as someone
-// else's open PR there stands: that PR is never the task's (prFind, SPEC
-// §7.5), and GitHub keeps one open PR for a head and base. It makes no PR
+// GitHub won't open its PR from want's branch to want's base, main or its
+// story branch, err, as someone else's open PR there stands: that PR is
+// never the task's (prFind, SPEC §7.5), and GitHub keeps one open PR for a
+// head and base. It makes no PR
 // write, as the head is pushed already, and tries again only once a poll
 // lists a pull request changed (Daemon.prPolls), as when that PR closes,
 // so it costs no request till then. It's warned of once, while the wait
 // lasts, and logged at debug on each try after. The digest lists it as a
 // stalled task, naming theirs, that PR as the PR step's listing showed it,
-// or 0 when it didn't, till it ends (Daemon.prStallSet).
+// or 0 when it didn't, and the base, till it ends (Daemon.prStallSet).
 func (r *Runs) prExistsWait(s *github.Snapshot, is state.Issue, want prWant, theirs int, err error) {
 	a, n, branch := r.Daemon.Step.Applier, s.Number, want.Branch
-	r.Daemon.prStallSet(s, is, stall{Why: stalledPR, Run: want.Run, PR: theirs})
+	r.Daemon.prStallSet(s, is, stall{Why: stalledPR, Run: want.Run, PR: theirs, Base: want.Base})
 	log := logr.Warnf
 	if _, ok := r.prExists[n]; ok {
 		log = logr.Debugf
@@ -357,7 +383,7 @@ func (r *Runs) prExistsWait(s *github.Snapshot, is state.Issue, want prWant, the
 	}
 	r.prExists[n] = r.Daemon.prPolls
 	log("%s/%s#%d: someone else's open PR from %s to %s stands, so GitHub won't open the task's: no PR is written, and the task waits at %s till a poll lists a PR changed: %v",
-		a.Owner, a.Repo, n, branch, prBase, state.Verifying, err)
+		a.Owner, a.Repo, n, branch, want.Base, state.Verifying, err)
 }
 
 // prStall is a wait of the PR step's on a task at verifying that the
@@ -494,14 +520,19 @@ func (r *Runs) prPush(ctx context.Context, n int, head string, want prWant) erro
 // prText is the PR's title and body (SPEC §11.5) for task s, whose state
 // is is, from the pr-text marker on its latest move to verifying
 // (prSummary), the verify-notes marker on pass, its pass comment on head,
-// and what the checks of head against main gave (Runs.passed). Text that
+// and what the checks of head against t, main's commit or its story
+// branch's tip, gave (Runs.passed). For a task in a story, the body names
+// the task and its story, s's parent, and t's branch and tip. Text that
 // doesn't read back is left out, and logged with warnf: the move's gives
 // the fallback title and body, and the pass's no notes, so the PR still
 // opens.
-func (r *Runs) prText(s *github.Snapshot, is state.Issue, pass github.Comment, head, main string, warnf func(string, ...any) string) (string, string) {
+func (r *Runs) prText(s *github.Snapshot, is state.Issue, pass github.Comment, head string, t VerifyTarget, warnf func(string, ...any) string) (string, string) {
 	a, n := r.Daemon.Step.Applier, s.Number
 	src := r.Daemon.prSummary(s, is, warnf)
-	src.Head, src.Main, src.Results, src.VerifierLink = head, main, r.passed[n].Results, waitLink(a.Owner, a.Repo, n, pass.ID)
+	src.Head, src.Main, src.Results, src.VerifierLink = head, t.SHA, r.passed[n].Results, waitLink(a.Owner, a.Repo, n, pass.ID)
+	if t.Branch != "" {
+		src.Story, src.Base = s.Parent, t.Branch
+	}
 	notes, _, err := readVerifyNotes(pass, a.AppSlug)
 	if err != nil {
 		warnf("%s/%s#%d: its PR's verifier notes don't read back, so it has none: %v", a.Owner, a.Repo, n, err)
@@ -546,13 +577,14 @@ func (d *Daemon) prSummary(s *github.Snapshot, is state.Issue, warnf func(string
 }
 
 // prFind is the task's PR (SPEC §7.5): of the PRs whose head is branch,
-// the ones the App opened, to prBase, not merged, the open one first, or
-// else the newest closed one, or nil with none, as a merged one is never
-// reused. It also returns the number of someone else's open PR from branch
-// to prBase, of which GitHub keeps one at most, or 0 with none, which is
-// never the task's, for the digest (prExistsWait). It's one request, a 304 when the listing is
-// unchanged.
-func (d *Daemon) prFind(ctx context.Context, branch string) (*github.PullRequest, int, error) {
+// the ones the App opened, to base, prBase for a task with no parent, or
+// for a task in a story its story branch, not merged, the open one first,
+// or else the newest closed one, or nil with none, as a merged one is
+// never reused. It also returns the number of someone else's open PR from
+// branch to base, of which GitHub keeps one at most, or 0 with none, which
+// is never the task's, for the digest (prExistsWait). A PR to any other
+// base is neither. It's one request, a 304 when the listing is unchanged.
+func (d *Daemon) prFind(ctx context.Context, branch, base string) (*github.PullRequest, int, error) {
 	a := d.Step.Applier
 	prs, err := a.Client.PullRequestsByHead(ctx, a.Owner, a.Repo, branch)
 	if err != nil {
@@ -563,7 +595,7 @@ func (d *Daemon) prFind(ctx context.Context, branch string) (*github.PullRequest
 	for i := range prs {
 		p := &prs[i]
 		switch {
-		case p.Base != prBase || p.Merged:
+		case p.Base != base || p.Merged:
 		case p.Author != a.AppSlug+"[bot]":
 			if p.State == "open" {
 				theirs = p.Number
@@ -584,18 +616,18 @@ func (d *Daemon) prFind(ctx context.Context, branch string) (*github.PullRequest
 
 // prWrite makes pr, task n's PR as prFind found it, match want, and returns
 // it as GitHub answers: with none, it opens one from want's branch to
-// prBase; a closed one is reopened, in a request that sets the state alone,
+// want's base; a closed one is reopened, in a request that sets the state alone,
 // so a 422 to it is a refused reopen (github.ErrReopenRefused), and then a
 // new one is opened (SPEC §7.5's A closed PR); then a title or a body that
 // differs from want's is updated, only those.
 func (r *Runs) prWrite(ctx context.Context, n int, want prWant, pr *github.PullRequest) (*github.PullRequest, error) {
 	a := r.Daemon.Step.Applier
 	create := func() (*github.PullRequest, error) {
-		p, err := a.Client.CreatePullRequest(ctx, a.Owner, a.Repo, github.NewPullRequest{Title: want.Title, Head: want.Branch, Base: prBase, Body: want.Body})
+		p, err := a.Client.CreatePullRequest(ctx, a.Owner, a.Repo, github.NewPullRequest{Title: want.Title, Head: want.Branch, Base: want.Base, Body: want.Body})
 		if err != nil {
 			return nil, fmt.Errorf("open the PR: %w", err)
 		}
-		logr.Infof("%s/%s#%d: its PR #%d from %s to %s is opened", a.Owner, a.Repo, n, p.Number, want.Branch, prBase)
+		logr.Infof("%s/%s#%d: its PR #%d from %s to %s is opened", a.Owner, a.Repo, n, p.Number, want.Branch, want.Base)
 		return &p, nil
 	}
 	if pr == nil {
@@ -715,55 +747,80 @@ func prChecked(runs []github.CheckRun, app int64, conclusion string) bool {
 }
 
 // renderPRCheck is the summary of task n's issuedog/verify check on head
-// (SPEC §10.4), escaped: that issuedog verified head for #n, against main's
-// commit main, and the verifier passed it, linking its comment, link, then
-// the checks' results as the PR's Results has them (prResults).
-func renderPRCheck(n int, head, main string, results []verify.CommandResult, link string) string {
-	return github.Escape(fmt.Sprintf("issuedog verified `%s` for #%d: the checks against `main` at `%s` passed, and so did the verifier, in [its comment](%s).\n\n%s",
-		head, n, main, link, prResults(results)))
+// (SPEC §10.4), escaped: that issuedog verified head for #n, against t,
+// main's commit or its story branch's tip (VerifyTarget.label), and the
+// verifier passed it, linking its comment, link, then the checks' results
+// as the PR's Results has them (prResults).
+func renderPRCheck(n int, head string, t VerifyTarget, results []verify.CommandResult, link string) string {
+	return github.Escape(fmt.Sprintf("issuedog verified `%s` for #%d: the checks against %s passed, and so did the verifier, in [its comment](%s).\n\n%s",
+		head, n, t.label(), link, prResults(results)))
 }
 
 // prMove moves task s verifying → pr-open on verified (SPEC §7.2), keyed
-// by run, its pass's run, with head=, the head the pass verified, which may
-// not be the PR's head (SPEC §10.4), pr=, the task's PR, which names it for
-// every pass after, at no request (SPEC §8.1), and seen=, step 1's newest
-// comment, if any. Its comment is renderPROpen's, with no cc line: the
-// digest's item announces the PR. A move written already only has its
-// labels finished (Transition). It releases the worker (SPEC §8.1).
-func (r *Runs) prMove(ctx context.Context, s *github.Snapshot, d Dirt, run, head string, pr int, seen int64) error {
+// by want's run, its pass's run, with head=, the head the pass verified,
+// which may not be the PR's head (SPEC §10.4), pr=, the task's PR, which
+// names it for every pass after, at no request (SPEC §8.1), for a task in
+// a story tip=, its story branch's tip the head was verified against
+// (prWant.StoryTip), and seen=, step 1's newest comment, if any. Its
+// comment is renderPROpen's, with no cc line: the digest's item announces
+// a PR to main, and a PR into a story branch waits on the App, not the
+// owner. A move written already only has its labels finished
+// (Transition). It releases the worker (SPEC §8.1).
+func (r *Runs) prMove(ctx context.Context, s *github.Snapshot, d Dirt, want prWant, head string, pr int, seen int64) error {
 	a := r.Daemon.Step.Applier
-	m := Move{To: state.PROpen, Trigger: state.TriggerVerified, Key: state.Key{Field: "run", ID: run},
-		Fields: map[string]string{"head": head, "pr": strconv.Itoa(pr)}, Text: renderPROpen(pr, head)}
+	m := Move{To: state.PROpen, Trigger: state.TriggerVerified, Key: state.Key{Field: "run", ID: want.Run},
+		Fields: map[string]string{"head": head, "pr": strconv.Itoa(pr)}, Text: renderPROpen(pr, head, want.Base, want.StoryTip)}
+	if want.StoryTip != "" {
+		m.Fields[fieldStoryTip] = want.StoryTip
+	}
 	if seen > 0 {
 		m.Fields[state.FieldSeen] = strconv.FormatInt(seen, 10)
 	}
 	if err := a.Transition(ctx, s, d.Has, m); err != nil {
 		return fmt.Errorf("move the task to %s: %w", state.PROpen, err)
 	}
-	logr.Infof("%s/%s#%d: its PR #%d and its head %s's check stand, so it's at %s, waiting for the owner's review and merge",
-		a.Owner, a.Repo, s.Number, pr, head, state.PROpen)
+	waits := "waiting for the owner's review and merge"
+	if want.StoryTip != "" {
+		waits = "waiting for the App's merge into " + want.Base
+	}
+	logr.Infof("%s/%s#%d: its PR #%d and its head %s's check stand, so it's at %s, %s",
+		a.Owner, a.Repo, s.Number, pr, head, state.PROpen, waits)
 	return nil
 }
 
+// fieldStoryTip is the field of a task in a story's move to pr-open on a
+// verified head that names its story branch's tip the head was verified
+// against (SPEC §5): tip=<SHA>.
+const fieldStoryTip = "tip"
+
 // renderPROpen is the comment of a task's move to pr-open (SPEC §7.2): it
-// names the PR and the head verified, and says it waits for the owner's
-// review and merge, which closes the task. It's the App's text alone.
-func renderPROpen(pr int, head string) string {
-	return fmt.Sprintf("PR #%d to `main` is open for this task, verified at `%s`. It waits for your review and merge, and merging it closes this task.", pr, head)
+// names the PR and the head verified. For a PR to main, with no tip, it
+// says it waits for the owner's review and merge, which closes the task.
+// For a task in a story, it names base, its story branch, and tip, the
+// branch's tip the head was verified against, and says the App merges the
+// PR once it's checked, then closes the task (SPEC §7.5). It's the App's
+// text, but for the branch's name, which an admin may have chosen, so it's
+// a code span with its markers escaped (checkCode), and commit SHAs.
+func renderPROpen(pr int, head, base, tip string) string {
+	if tip == "" {
+		return fmt.Sprintf("PR #%d to `main` is open for this task, verified at `%s`. It waits for your review and merge, and merging it closes this task.", pr, head)
+	}
+	return fmt.Sprintf("PR #%d into the story branch %s is open for this task, verified at `%s` against the branch's tip `%s`. The App merges it once it's checked, then closes this task.",
+		pr, checkCode(base), head, tip)
 }
 
 // prNothingMove hands task s off when the head its pass verified changes
-// nothing on main (SPEC §7.2, §9.3, §10.2): verifying → needs-human on
-// nothing-to-merge, keyed by run, its pass's run, with head=, that head,
-// and seen=, step 1's newest comment, if any. Its comment is
-// renderNothingHandoff's, ending in the cc line. A move written already
-// only has its labels finished (Transition). It releases the worker
-// (SPEC §8.1), and /done or a trusted 👍 on the hand-off sends the task
-// back to ready, a new round (handback.go).
-func (r *Runs) prNothingMove(ctx context.Context, s *github.Snapshot, d Dirt, run, head string, seen int64) error {
+// nothing on want's base, main or its story branch (SPEC §7.2, §9.3,
+// §10.2): verifying → needs-human on nothing-to-merge, keyed by want's
+// run, its pass's run, with head=, that head, and seen=, step 1's newest
+// comment, if any. Its comment is renderNothingHandoff's, ending in the cc
+// line. A move written already only has its labels finished (Transition).
+// It releases the worker (SPEC §8.1), and /done or a trusted 👍 on the
+// hand-off sends the task back to ready, a new round (handback.go).
+func (r *Runs) prNothingMove(ctx context.Context, s *github.Snapshot, d Dirt, want prWant, head string, seen int64) error {
 	a := r.Daemon.Step.Applier
-	m := Move{To: state.NeedsHuman, Trigger: state.TriggerNothingToMerge, Key: state.Key{Field: "run", ID: run},
-		Fields: map[string]string{"head": head}, Text: renderNothingHandoff(head, s.Number, r.Daemon.Config.Notify)}
+	m := Move{To: state.NeedsHuman, Trigger: state.TriggerNothingToMerge, Key: state.Key{Field: "run", ID: want.Run},
+		Fields: map[string]string{"head": head}, Text: renderNothingHandoff(head, want.Base, s.Number, r.Daemon.Config.Notify)}
 	if seen > 0 {
 		m.Fields[state.FieldSeen] = strconv.FormatInt(seen, 10)
 	}
@@ -771,23 +828,26 @@ func (r *Runs) prNothingMove(ctx context.Context, s *github.Snapshot, d Dirt, ru
 		return fmt.Errorf("hand off a head that changes nothing: %w", err)
 	}
 	logr.Infof("%s/%s#%d: its head %s changes nothing on %s, so it gets no PR, and it's handed off to the owner at %s",
-		a.Owner, a.Repo, s.Number, head, prBase, state.NeedsHuman)
+		a.Owner, a.Repo, s.Number, head, want.Base, state.NeedsHuman)
 	return nil
 }
 
 // nothingHandoffFields are the fields of the hand-off for a head that
-// changes nothing on main (SPEC §9.3), in the daemon's own words, as no
-// run gave any. It has no links: the pass it follows is above it.
-var nothingHandoffFields = implementerHandoffFields{
-	Goal:      "Decide whether this task needs a change on `main`, as its verified head makes none.",
-	WhyBlocks: "it's decided whether it needs a change on `main`",
-	Steps: []string{
-		"Read the task's acceptance criteria, and the verifier's pass above.",
-		"If nothing needs to change, close this issue.",
-		"If something does, say what in a comment, then reply `/done` for a new round.",
-	},
-	DoneWhen:      "The issue is closed, or a new round is asked for.",
-	EstimatedTime: "A few minutes.",
+// changes nothing on base, main or a story branch (SPEC §9.3), in the
+// daemon's own words, as no run gave any, with base a code span
+// (checkCode). It has no links: the pass it follows is above it.
+func nothingHandoffFields(base string) implementerHandoffFields {
+	return implementerHandoffFields{
+		Goal:      fmt.Sprintf("Decide whether this task needs a change on %s, as its verified head makes none.", checkCode(base)),
+		WhyBlocks: fmt.Sprintf("it's decided whether it needs a change on %s", checkCode(base)),
+		Steps: []string{
+			"Read the task's acceptance criteria, and the verifier's pass above.",
+			"If nothing needs to change, close this issue.",
+			"If something does, say what in a comment, then reply `/done` for a new round.",
+		},
+		DoneWhen:      "The issue is closed, or a new round is asked for.",
+		EstimatedTime: "A few minutes.",
+	}
 }
 
 // nothingHandoffFinish ends the hand-off for a head that changes nothing
@@ -797,14 +857,16 @@ var nothingHandoffFields = implementerHandoffFields{
 const nothingHandoffFinish = "If something needs to change, reply `/done` on this issue or react 👍 to this comment, and the task goes back to `ready`. If not, close this issue."
 
 // renderNothingHandoff is the hand-off comment on task n when the head the
-// verifier passed, head, changes nothing on main (SPEC §9.3, §10.2),
-// escaped: renderHandoffEnding with nothingHandoffFields, opening with
-// the head, and that its own diff from its merge base with main is empty,
-// so it gets no PR, and ending with nothingHandoffFinish. Only a commit
-// SHA is in it, so it quotes nothing of a run's.
-func renderNothingHandoff(head string, n int, notify []string) string {
-	intro := fmt.Sprintf("The verifier passed `%s`, but it changes nothing on `main`: its own diff from its merge base with `main` is empty, so it gets no PR.", head)
-	return renderHandoffEnding(intro, nothingHandoffFields, nothingHandoffFinish, n, notify)
+// verifier passed, head, changes nothing on base, main or its story branch
+// (SPEC §9.3, §10.2), escaped: renderHandoffEnding with
+// nothingHandoffFields, opening with the head, and that its own diff from
+// its merge base with base is empty, so it gets no PR, and ending with
+// nothingHandoffFinish. Only a commit SHA and the base's name, a code span
+// (checkCode), are in it, so it quotes nothing of a run's.
+func renderNothingHandoff(head, base string, n int, notify []string) string {
+	intro := fmt.Sprintf("The verifier passed `%s`, but it changes nothing on %s: its own diff from its merge base with %s is empty, so it gets no PR.",
+		head, checkCode(base), checkCode(base))
+	return renderHandoffEnding(intro, nothingHandoffFields(base), nothingHandoffFinish, n, notify)
 }
 
 // nothingHandoffMove reports whether m is the hand-off for a head that

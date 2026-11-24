@@ -326,3 +326,112 @@ func TestVerifyCheckExternalIDReplay(t *testing.T) {
 	}
 	githubtest.Replay(t, setup, verifyCheckMainPass(t, sha, main))
 }
+
+// CheckRuns and PostCheck take the check's name. PostCheck posts a
+// completed TipCheck, issuedog/tip, with its external_id naming the
+// branch, and CheckRuns for TipCheck lists the App's of that name alone,
+// newest first, with check_name=issuedog/tip, leaving out the App's
+// issuedog/verify and another App's issuedog/tip on the same commit.
+// VerifyChecks leaves the TipCheck out.
+func TestCheckRunsNamed(t *testing.T) {
+	t.Parallel()
+	f, git := pullsFake(t, "issuedog/5-story")
+	tip := git("rev-parse", "refs/heads/issuedog/5-story")
+	f.SetCheckRun(tip, github.TipCheck, "failure", githubtest.AppID)
+	f.SetCheckRun(tip, github.TipCheck, "success", 2)
+	f.SetCheckRun(tip, github.VerifyCheck, "success", githubtest.AppID)
+	c, ctx := f.Client(t), context.Background()
+	posted, err := c.PostCheck(ctx, "o", "r", github.TipCheck, github.NewCheckRun{HeadSHA: tip, Conclusion: "success", Title: "Checked",
+		Summary: "The story branch's tip passed.", ExternalID: "branch=issuedog/5-story"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := github.CheckRun{ID: posted.ID, HeadSHA: tip, Name: "issuedog/tip", Status: "completed", Conclusion: "success", AppID: githubtest.AppID,
+		ExternalID: "branch=issuedog/5-story"}
+	if github.TipCheck != "issuedog/tip" || posted != want {
+		t.Errorf("posted %+v; want %+v", posted, want)
+	}
+	var body struct {
+		Name       string `json:"name"`
+		ExternalID string `json:"external_id"`
+	}
+	if w := f.Writes(); len(w) != 1 || json.Unmarshal([]byte(w[0].Body), &body) != nil || body.Name != "issuedog/tip" || body.ExternalID != "branch=issuedog/5-story" {
+		t.Errorf("writes %+v; want one post named issuedog/tip, with the branch as its external_id", w)
+	}
+	from := len(f.Requests())
+	runs, err := c.CheckRuns(ctx, "o", "r", tip, github.TipCheck)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queries := checkRunsQueries(f, from, tip); len(queries) != 1 || !strings.Contains(queries[0], "check_name=issuedog%2Ftip") || !strings.Contains(queries[0], "app_id=1") ||
+		!strings.Contains(queries[0], "filter=all") {
+		t.Errorf("queries %q; want one, with check_name=issuedog/tip, app_id=1, filter=all", queries)
+	}
+	var got []string
+	for _, r := range runs {
+		got = append(got, r.Name+" "+r.Conclusion+" "+r.ExternalID)
+	}
+	if want := []string{"issuedog/tip success branch=issuedog/5-story", "issuedog/tip failure "}; !reflect.DeepEqual(got, want) {
+		t.Errorf("listed %q; want %q, newest first", got, want)
+	}
+	verify, err := c.VerifyChecks(ctx, "o", "r", tip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(verify) != 1 || verify[0].Name != github.VerifyCheck {
+		t.Errorf("VerifyChecks %+v; want the App's issuedog/verify alone", verify)
+	}
+	if _, err := c.PostCheck(ctx, "o", "r", github.TipCheck, github.NewCheckRun{HeadSHA: strings.Repeat("0", 40), Conclusion: "success", Title: "T", Summary: "S"}); err == nil ||
+		!strings.Contains(err.Error(), "issuedog/tip success on "+strings.Repeat("0", 40)) {
+		t.Errorf("post on a commit the repo hasn't got: %v; want an error naming the check and the SHA", err)
+	}
+}
+
+// tipCheckPass posts the App's TipCheck success on sha, naming branch,
+// unless one of the App's there names it already, as a story branch's tip
+// is checked once (SPEC §7.5).
+func tipCheckPass(t *testing.T, sha, branch string) func(*githubtest.Fake) error {
+	return func(f *githubtest.Fake) error {
+		c, ctx := f.Client(t), context.Background()
+		runs, err := c.CheckRuns(ctx, "o", "r", sha, github.TipCheck)
+		if err != nil {
+			return fmt.Errorf("list: %w", err)
+		}
+		for _, r := range runs {
+			if r.ExternalID == "branch="+branch {
+				return nil
+			}
+		}
+		if _, err := c.PostCheck(ctx, "o", "r", github.TipCheck, github.NewCheckRun{HeadSHA: sha, Conclusion: "success", Title: "Checked",
+			Summary: "The story branch's tip passed.", ExternalID: "branch=" + branch}); err != nil {
+			return fmt.Errorf("post: %w", err)
+		}
+		return nil
+	}
+}
+
+// Posting a TipCheck is safe to replay after a crash at any write: one
+// check naming the branch, and the App's issuedog/verify on the same
+// commit doesn't stand in for it.
+func TestTipCheckReplay(t *testing.T) {
+	t.Parallel()
+	_, git := pullsRemote(t, "issuedog/5-story")
+	tip := git("rev-parse", "refs/heads/issuedog/5-story")
+	setup := func(tb testing.TB) *githubtest.Fake {
+		f, _ := pullsFake(tb, "issuedog/5-story")
+		f.SetCheckRun(tip, github.VerifyCheck, "success", githubtest.AppID)
+		return f
+	}
+	clean := setup(t)
+	if err := tipCheckPass(t, tip, "issuedog/5-story")(clean); err != nil {
+		t.Fatal(err)
+	}
+	want := []githubtest.CheckRunState{
+		{SHA: tip, Name: github.VerifyCheck, Conclusion: "success", AppID: githubtest.AppID},
+		{SHA: tip, Name: github.TipCheck, Conclusion: "success", AppID: githubtest.AppID, ExternalID: "branch=issuedog/5-story"},
+	}
+	if got := clean.State().CheckRuns; !reflect.DeepEqual(got, want) {
+		t.Fatalf("State().CheckRuns %+v; want %+v", got, want)
+	}
+	githubtest.Replay(t, setup, tipCheckPass(t, tip, "issuedog/5-story"))
+}

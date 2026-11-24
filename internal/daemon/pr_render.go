@@ -156,12 +156,16 @@ func oneDataMarker(c github.Comment, appSlug, kind, version string) (github.Mark
 // with none, as one made by hand, and SummaryLink, that move's comment; the
 // verifier's notes, from its pass comment's verify-notes marker
 // (readVerifyNotes), and VerifierLink, that comment; the head the pass
-// verified, and main's SHA its checks ran against; and the checks' results
-// on them, each of verify.commands. Failed is set for a head someone else
-// pushed that fails verify (personBack): Head is that head, and nothing
-// but the summary is read.
+// verified, and Main, the SHA its checks ran against, main's, or for a
+// task in a story, its story branch's tip, with Base, that branch, and
+// Story, the story's number, which are empty for a task with no parent;
+// and the checks' results on them, each of verify.commands. Failed is set
+// for a head someone else pushed that fails verify (personBack): Head is
+// that head, and nothing but the summary and Story is read.
 type prSource struct {
 	Task         int
+	Story        int
+	Base         string
 	Title        *implementerTitle
 	Summary      *implementerSummary
 	SummaryLink  string
@@ -202,10 +206,13 @@ const (
 )
 
 // renderPRBody is the PR's body, in the SPEC §11.5 format: "Closes #N",
-// then What changed, Why and Tests from the implementer's summary, Results,
-// a table of each of verify.commands and its result, then a row saying
-// rules 2 to 7 passed, then the verifier's notes, and last a line naming the
-// head verified and main's SHA, and linking the verifier's comment. A move
+// or for a task in a story, "Task #N, in story #S", with no closing
+// keyword, as the PR merges into the story branch (SPEC §7.5), then What
+// changed, Why and Tests from the implementer's summary, Results, a table
+// of each of verify.commands and its result, then a row saying rules 2 to
+// 7 passed, then the verifier's notes, and last a line naming the head
+// verified and main's SHA, or for a task in a story its story branch and
+// tip, and linking the verifier's comment. A move
 // with no pr-text has a line saying the summary isn't on the issue in place
 // of What changed, Why and Tests. A head that fails verify (prSource.Failed)
 // has a line naming it in place of Results, saying its check has the
@@ -214,7 +221,9 @@ const (
 // Each agent field is made safe as a comment's is (block, inline), then its
 // issue references are defused (defuseRefs), so on a squash merge, whose
 // commit takes the title and the body (SPEC §15), only "Closes #N" closes
-// anything, and the whole body's markers are escaped (SPEC §5.1). A command
+// anything, and the whole body's markers are escaped (SPEC §5.1). A story
+// branch's name, which an admin may have chosen, is a code span with its
+// markers escaped (VerifyTarget.label). A command
 // is the repo's config, but it's text the App didn't write, so it's
 // defused and escaped too. A body over maxText, GitHub's limit, has the
 // notes left out, or if that's not enough, the summary, or else both, each
@@ -232,6 +241,9 @@ func renderPRBody(src prSource) string {
 // and the notes when cutNotes, each for a line saying so.
 func prBody(src prSource, cutSummary, cutNotes bool) string {
 	parts := []string{fmt.Sprintf("Closes #%d", src.Task)}
+	if src.Story != 0 {
+		parts[0] = fmt.Sprintf("Task #%d, in story #%d", src.Task, src.Story)
+	}
 	switch {
 	case src.Title == nil || src.Summary == nil:
 		parts = append(parts, "## What changed\n\n"+fmt.Sprintf(prNoSummary, src.Task))
@@ -261,7 +273,7 @@ func prBody(src prSource, cutSummary, cutNotes bool) string {
 		notes = fmt.Sprintf(prCutNotes, src.VerifierLink)
 	}
 	parts = append(parts, "## Verifier notes\n\n"+notes,
-		fmt.Sprintf("Verified at `%s`, against `main` at `%s`: %s", src.Head, src.Main, src.VerifierLink))
+		fmt.Sprintf("Verified at `%s`, against %s: %s", src.Head, VerifyTarget{Branch: src.Base, SHA: src.Main}.label(), src.VerifierLink))
 	return github.Escape(strings.Join(parts, "\n\n"))
 }
 

@@ -328,7 +328,10 @@ type waitInput struct {
 //     (latestHandoff), whatever blocks it. It links the hand-off comment,
 //     which says what to do (waitHandoffLines);
 //   - at pr-open, a pull request (SPEC §9.4), when its PR, in.PR, is
-//     listed open. It names the PR and its title, and links the PR
+//     listed open, for a task with no parent: a task in a story's PR is
+//     into its story branch, which the App merges, so it has none, and
+//     nothing else either while its PR is open. It names the PR and its
+//     title, and links the PR
 //     (waitPRLines), and assignment assigns the PR, not the issue
 //     (waitItem.AssignPR). A PR that merges or closes changes nothing on
 //     the issue, so the digest and assignment judge the item again on each
@@ -345,7 +348,8 @@ type waitInput struct {
 //     pass moves it no more, and it holds the worker, so nothing else is
 //     picked till the owner acts (waitStalledLines). It links the issue.
 //     Otherwise, the PR step's wait, in.Stall, when it has one: someone
-//     else's open PR from its branch to main, which it links when it knows
+//     else's open PR from its branch to its base, main or its story
+//     branch, which it links when it knows
 //     its number, or someone else's tip on its branch (stalledPR,
 //     stalledTip). It holds the worker too. After a restart, the item read
 //     back from the digest's body stands for it till the PR step judges
@@ -435,6 +439,12 @@ func waitFind(in waitInput) ([]waitItem, error) {
 	case handoffWaits:
 		add(waitHandoff, strconv.FormatInt(handoff, 10), handoff, waitHandoffLines(s, handoff))
 	case is.Stage == state.PROpen && in.PR != nil && in.PR.Open:
+		// A task in a story's PR is into its story branch, the App's to
+		// merge, so it waits on nobody: no item, and its PR is never
+		// assigned (SPEC §7.5, §9.6).
+		if s.Parent != 0 {
+			break
+		}
 		// A task has one PR at a time: its key is pr-<n>-<PR number>.
 		pr := in.PR.Number
 		add(waitPR, strconv.Itoa(pr), state.BodyID, waitPRLines(*in.PR))
@@ -443,7 +453,7 @@ func waitFind(in waitInput) ([]waitItem, error) {
 	case is.Stage == state.PROpen && in.PR != nil && !in.PR.Merged && is.Moved(prClosedKey(*in.PR)):
 		// Its close was handed off already, so it moves the task no more.
 		pr := in.PR.Number
-		st := stall{Why: stalledClosed, PR: pr}
+		st := stall{Why: stalledClosed, PR: pr, Story: s.Parent != 0}
 		add(waitStalled, st.key(), state.BodyID, waitStalledLines(st))
 		it := &items[len(items)-1]
 		it.Link, it.ClosedPR = prLink(in.Owner, in.Repo, pr), pr
@@ -751,15 +761,18 @@ func waitGoalDone(body string) (goal, done string) {
 // hand-off the fields are read from its last Goal line on. Or it's the
 // verifier's runs on the task's head failing (verifierCapMove), whose
 // hand-off always says why. Or it's the verifier passing a head that
-// changes nothing on main, so it gets no PR (nothingHandoffMove), which
-// verifyCapMove leaves out, though both are keyed run=. Or it's a head
+// changes nothing on main, or for a task in a story, on its story branch,
+// so it gets no PR (nothingHandoffMove), which verifyCapMove leaves out,
+// though both are keyed run=. Or it's a head
 // someone else pushed failing rule 2 (personRule2Move), which verifyCapMove
 // leaves out, though both are keyed event=v: its hand-off names the paths
 // before its fields, so they're read from its last Goal line on, as for
 // the verify cap's. With either field not found, as for a format that has
 // changed, a line says to see the hand-off instead. Or it's the task's PR, closed without merging, or
 // reopened after a close by someone who isn't trusted (prClosedMove,
-// prClosedByReopen). The last line says how to end it, as the hand-off
+// prClosedByReopen), or merged into its story branch by someone who isn't
+// trusted (mergedHandoffMove), whose last line says closing the issue
+// accepts the merge. The last line says how to end it, as the hand-off
 // does: for a head that changes nothing, that /done or a 👍 is for a
 // change, and closing the issue for none (nothingHandoffFinish), so a 👍
 // out of habit isn't taken for a yes; for the PR's, that reopening it, or
@@ -776,7 +789,11 @@ func waitHandoffLines(s *github.Snapshot, id int64) []waitLine {
 	case slices.ContainsFunc(markers, capHandoffMove):
 		why = "the task's `loop.max_attempts` attempts in its round failed."
 	case slices.ContainsFunc(markers, nothingHandoffMove):
-		why = "the verifier passed a head that changes nothing on `main`, so it gets no PR."
+		on := "`main`"
+		if s.Parent != 0 {
+			on = "its story branch"
+		}
+		why = "the verifier passed a head that changes nothing on " + on + ", so it gets no PR."
 		finish = "If something needs to change, reply `/done` on the issue or react 👍 to the hand-off, and the task goes back to `ready`. If not, close the issue."
 	case slices.ContainsFunc(markers, personRule2Move):
 		why = "a head someone else pushed to the task's branch changes a protected path, so it fails rule 2, and the hand-off names the paths."
@@ -790,6 +807,9 @@ func waitHandoffLines(s *github.Snapshot, id int64) []waitLine {
 		}
 	case slices.ContainsFunc(markers, verifierCapMove):
 		why = "the verifier's runs on this head failed, and the hand-off says why."
+	case slices.ContainsFunc(markers, mergedHandoffMove):
+		why = "the task's PR was merged into its story branch by someone who isn't trusted."
+		finish = "Close the issue to accept the merge, or reply `/done` on the issue or react 👍 to the hand-off for a new round."
 	case slices.ContainsFunc(markers, func(m github.Marker) bool { return prClosedMove(m) && prClosedByReopen(m) }):
 		why = "the task's PR was reopened after a close by someone who isn't trusted."
 		finish = "Close and reopen the PR yourself to send the task back to `pr-open`, or reply `/done` on the issue or react 👍 to the hand-off for a new round, or close the issue."
@@ -854,9 +874,14 @@ type stall struct {
 	// Tip its branch's tip, someone else's commits (stalledTip).
 	Head, Tip string
 	// PR is someone else's open PR from the task's branch, or 0 when the
-	// listing the PR step read didn't show it (stalledPR), or the task's
-	// own PR, listed closed (stalledClosed).
-	PR int
+	// listing the PR step read didn't show it, and Base that PR's base,
+	// the task's PR's, main or its story branch (stalledPR), or PR is the
+	// task's own PR, listed closed (stalledClosed), and Story is set when
+	// that task is in a story, so its PR is into its story branch, which
+	// the App merges.
+	PR    int
+	Base  string
+	Story bool
 }
 
 // key is st's item's key after stalled-<n>-: the pass's run, or for a
@@ -928,9 +953,12 @@ func stalledHead(is state.Issue) string {
 //     to change, or set stage:ready for a new round. A pushed head isn't
 //     one of them: it moves nothing at verifying, as step 2 judges a
 //     task's branch only at pr-open (SPEC §7.2).
-//   - stalledPR: someone else's open PR from its branch to main stands, so
-//     GitHub won't open the task's: close that PR, and the PR step opens
-//     the task's once a poll lists it closed, or set stage:ready.
+//   - stalledPR: someone else's open PR from its branch to st.Base, main
+//     or its story branch, stands, so GitHub won't open the task's: close
+//     that PR, and the PR step opens the task's once a poll lists it
+//     closed, or set stage:ready. A story branch's name, which an admin
+//     may have chosen, is a code span with its markers escaped
+//     (checkCode).
 //   - stalledTip: its branch is at someone else's commits, not in its
 //     head's history, so nothing is pushed over them: reset the branch to
 //     a commit in the head's history, and the PR step pushes the head, or
@@ -938,6 +966,7 @@ func stalledHead(is state.Issue) string {
 //   - stalledClosed: at pr-open, its PR is closed, and its close was
 //     handed off already, as after a stage:pr-open set back by hand, so
 //     the close moves it no more: reopen the PR to wait on its review, or
+//     with st.Story, for the App's merge into its story branch, or
 //     set stage:ready for a new round, or close the issue. /done finishes
 //     only a hand-off waiting at needs-human, and the task has none here.
 func waitStalledLines(st stall) []waitLine {
@@ -950,9 +979,13 @@ func waitStalledLines(st stall) []waitLine {
 		if st.PR > 0 {
 			pr, closeIt = fmt.Sprintf("someone else's open PR #%d", st.PR), fmt.Sprintf("Close PR #%d", st.PR)
 		}
+		base := st.Base
+		if base == "" {
+			base = prBase
+		}
 		return []waitLine{
-			{Text: fmt.Sprintf("This task's head passed, but %s from its branch to `%s` stands, so GitHub won't open the task's, and it waits at `%s`. %s",
-				pr, prBase, state.Verifying, holds)},
+			{Text: fmt.Sprintf("This task's head passed, but %s from its branch to %s stands, so GitHub won't open the task's, and it waits at `%s`. %s",
+				pr, checkCode(base), state.Verifying, holds)},
 			{Text: fmt.Sprintf("%s, and the task's opens once a poll lists it closed; or %s, though its next head waits here again while that PR is open.", closeIt, readyFree)},
 		}
 	case stalledTip:
@@ -962,10 +995,14 @@ func waitStalledLines(st stall) []waitLine {
 			{Text: fmt.Sprintf("Reset the branch to a commit in `%s`'s history, and the head is pushed and its PR opened; or %s, though its next head waits here again while the branch is at those commits.", st.Head, readyFree)},
 		}
 	case stalledClosed:
+		reopenWaits := "to wait on its review"
+		if st.Story {
+			reopenWaits = "for the App to merge it into the story branch once it's checked"
+		}
 		return []waitLine{
 			{Text: fmt.Sprintf("This task is at `%s`, but its PR #%d is closed, and its close was handed off already, so the close moves it no more.",
 				state.PROpen, st.PR)},
-			{Text: fmt.Sprintf("Reopen PR #%d to wait on its review, or %s, or close this issue.", st.PR, ready)},
+			{Text: fmt.Sprintf("Reopen PR #%d %s, or %s, or close this issue.", st.PR, reopenWaits, ready)},
 		}
 	}
 	act := fmt.Sprintf("Set `stage:%s` back to wait on its PR, or %s.", st.To, ready)
@@ -986,9 +1023,10 @@ func waitStalledLines(st stall) []waitLine {
 // §9.4): the first paragraph of its hold's comment, which names the
 // revision and the PR and links the plan (droppedHoldText), copied from
 // the App's clean comment, or with none, that a revision dropped it; then
-// the PR and its title, raw (waitLine.PR); then that merging or closing
-// the PR closes it, or the owner can, and that /resume doesn't end the
-// hold.
+// the PR and its title, raw (waitLine.PR); then that the owner's merge of
+// the PR into the story branch closes it as completed, as a dropped task
+// with a PR is in a story (SPEC §7.5), and closing the PR as not planned,
+// or the owner can close it, and that /resume doesn't end the hold.
 func waitDroppedLines(s *github.Snapshot, is state.Issue, p listedPR) []waitLine {
 	first := waitLine{Text: "A plan's revision dropped this task while its PR is open, so it's on hold. See the issue for the revision."}
 	for i := len(is.Markers) - 1; i >= 0; i-- {
@@ -1005,7 +1043,7 @@ func waitDroppedLines(s *github.Snapshot, is state.Issue, p listedPR) []waitLine
 	return []waitLine{
 		first,
 		{Text: p.Title, PR: p.Number},
-		{Text: "Merge the PR, and its `Closes` closes this task; close the PR, and I close the task as not planned; or close the task yourself. `/resume` doesn't end this hold."},
+		{Text: "Merge the PR into the story branch, and I close this task as completed; close the PR, and I close the task as not planned; or close the task yourself. `/resume` doesn't end this hold."},
 	}
 }
 
@@ -1215,7 +1253,10 @@ func holdItemOf(in waitInput, is state.Issue) (string, []waitLine) {
 	}
 	// An owner hold that stays: in.OwnerHeld, from what only a request can
 	// tell, or one a marker records that no /resume ended (resolveLeft).
-	if in.OwnerHeld || resolveOwnerHeld(resolveLeft(is.HeldStack.Holds, period, 0)) {
+	// Not a hold for a PR, as a revision dropped the issue, which isn't an
+	// owner hold, no /resume ends, and has an item of its own (waitDropped,
+	// SPEC §6.4, §9.4).
+	if in.OwnerHeld || resolveOwnerHeld(slices.DeleteFunc(resolveLeft(is.HeldStack.Holds, period, 0), droppedHold)) {
 		lines = append(lines, waitLine{Text: "It's on an owner hold too, so it stays held after these until `/resume` ends that."})
 	}
 	return id, append(lines, waitLine{Text: "Post `/resume` here to accept every open trigger at once."})

@@ -22,9 +22,9 @@ import (
 
 // A task in a story files its follow-ups under the story, with an addendum
 // on the story for each (SPEC §10.2), and a trusted 👍 on the clean
-// addendum approves the follow-up. No task in a story reaches the verifier
-// until #624, so the fake holds the task's clean pass comment, as
-// Verifier.Apply posts it, and each pass is the task's visit
+// addendum approves the follow-up. The fake holds the task's clean pass
+// comment, as Verifier.Apply posts it, so no verifier run is needed, and
+// each pass is the task's visit
 // (FollowUpsVisit), as Iterate's runs it, or a fresh daemon's Iterate.
 
 // storyTask is filingTask with task #1 under story #2, which the owner
@@ -605,8 +605,9 @@ func TestFollowUpStoryTrack(t *testing.T) {
 // counted whatever its answer: the poll, the visit's read of the
 // follow-up's timeline, as any visited issue's, and two reads for a 👍,
 // its reactions and its addendum's. Then owner's 👍 on the addendum
-// approves it, and at ready it waits, unpicked, as any task with a parent
-// does until #624: no run starts, and it stays at ready.
+// approves it, and at ready it waits, unpicked, as the branch the pick
+// cuts for its story gets no tip check, with no checks wired here: no run
+// starts, and it stays at ready.
 func TestFollowUpStoryWaitsRun(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)

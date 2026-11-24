@@ -12,9 +12,10 @@ import (
 )
 
 // MergesRef is the prefix of each task's merge result in the bare repo,
-// refs/issuedog/merges/<n>: its head's merge with main, which MergeCommit
-// builds for the checks when main moves (SPEC §3.2, §10.4). Sync leaves it
-// alone, and nothing pushes it.
+// refs/issuedog/merges/<n>: its head's merge with main, or for a task in a
+// story its story branch's tip, which MergeCommit builds for the checks
+// when that target moves (SPEC §3.2, §7.5, §10.4). Sync leaves it alone,
+// and nothing pushes it.
 const MergesRef = "refs/issuedog/merges/"
 
 // mergeName and mergeEmail are the author and committer of every merge
@@ -23,7 +24,8 @@ const MergesRef = "refs/issuedog/merges/"
 const mergeName, mergeEmail = "issuedog", "issuedog@localhost"
 
 // MergeCommit builds task n's merge result: head, a full SHA, merged into
-// target, main's full SHA, as a merge commit in the bare repo, with target
+// target, main's full SHA or a story branch's tip's, as a merge commit in
+// the bare repo, with target
 // and head as its parents, in that order. It returns the merge commit's
 // SHA, which it writes to MergesRef+n, or, for a merge that doesn't apply
 // cleanly, each conflicting path once and no SHA.

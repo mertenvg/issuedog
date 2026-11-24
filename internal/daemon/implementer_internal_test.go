@@ -25,7 +25,7 @@ func TestImplementerPreamble(t *testing.T) {
 	c.Verify.ProtectedPaths = []string{"secrets/**", "deploy/<prod>", "ops/<!--`x"}
 	c.Loop.MaxQuestionsPerRound = 4
 	rounds := []interviewerRound{{Number: 1, Questions: 2}, {Number: 2, Questions: 1}}
-	got := implementerPreamble(c, rounds, "", "")
+	got := implementerPreamble(c, rounds, "main", "", "")
 	for _, want := range []string{
 		"- A PR title's `type` is one of: `feat`, `fix`, `perf` (`pr.title_types`), exactly as written. " +
 			"The title, `<type>: <sentence>`, is one line of at most 256 characters.",
@@ -43,11 +43,11 @@ func TestImplementerPreamble(t *testing.T) {
 			t.Errorf("the preamble =\n%s\nwant it to say\n%s", got, want)
 		}
 	}
-	if none := implementerPreamble(c, nil, "", ""); !strings.Contains(none, "No questions have been asked on this issue yet, so a question round now is round 1.") {
+	if none := implementerPreamble(c, nil, "main", "", ""); !strings.Contains(none, "No questions have been asked on this issue yet, so a question round now is round 1.") {
 		t.Errorf("the preamble with no rounds =\n%s\nwant round 1 next", none)
 	}
 	c.Verify.TestGlobs = nil
-	if all := implementerPreamble(c, nil, "", ""); !strings.Contains(all, "counting only files outside `verify.test_globs`, which is empty, so every file counts.") {
+	if all := implementerPreamble(c, nil, "main", "", ""); !strings.Contains(all, "counting only files outside `verify.test_globs`, which is empty, so every file counts.") {
 		t.Errorf("the preamble with no test globs =\n%s\nwant every file to count", all)
 	}
 }
@@ -60,7 +60,7 @@ func TestImplementerPreambleTarget(t *testing.T) {
 	t.Parallel()
 	c := config.Defaults()
 	target := strings.Repeat("ab", 20)
-	got := implementerPreamble(c, nil, target, "")
+	got := implementerPreamble(c, nil, "main", target, "")
 	for _, want := range []string{
 		"- You run in a detached checkout of the commit issuedog named for this task, with its history and one branch, `target` (below), but no remote, " +
 			"so git commands name HEAD. Commit your work there.",
@@ -71,7 +71,7 @@ func TestImplementerPreambleTarget(t *testing.T) {
 			t.Errorf("the preamble with a target =\n%s\nwant it to say\n%s", got, want)
 		}
 	}
-	none := implementerPreamble(c, nil, "", "")
+	none := implementerPreamble(c, nil, "main", "", "")
 	if strings.Contains(none, "`target`") || !strings.Contains(none, "with its history but no branches and no remote, so git commands name HEAD.") {
 		t.Errorf("the preamble with no target =\n%s\nwant no target named, and no branches", none)
 	}
@@ -86,7 +86,7 @@ func TestImplementerPreambleDropped(t *testing.T) {
 	t.Parallel()
 	c := config.Defaults()
 	finding := "The task's diff touches protected paths (SPEC 6.3 and verify.protected_paths):\n- .github/<!-- issuedog:x -->\n- ```"
-	got := implementerPreamble(c, nil, "", finding)
+	got := implementerPreamble(c, nil, "main", "", finding)
 	want := "issuedog checks your output and posts it.\n" +
 		"- The head your earlier runs left on this task fails verify's rule 2, as the finding below says, so issuedog dropped it: " +
 		"your checkout starts from `main`, as a first run's does, and holds none of their work. Do the task again from here. " +
@@ -99,8 +99,31 @@ func TestImplementerPreambleDropped(t *testing.T) {
 	if strings.Contains(got, "<!--") {
 		t.Errorf("the preamble with a dropped head =\n%s\nwant the finding's marker escaped", got)
 	}
-	if none := implementerPreamble(c, nil, "", ""); strings.Contains(none, "dropped") || strings.Contains(none, "rule 2") {
+	if none := implementerPreamble(c, nil, "main", "", ""); strings.Contains(none, "dropped") || strings.Contains(none, "rule 2") {
 		t.Errorf("the preamble with no dropped head =\n%s\nwant nothing of a dropped head", none)
+	}
+}
+
+// For a task in a story, the target's line, and the dropped head's, name
+// its story branch in place of main, in a code span and escaped, as the
+// bare clone names it, so a branch a person pushed can't close the span
+// or open a comment (SPEC §5.1, §12). No branch named is main.
+func TestImplementerPreambleStoryBranch(t *testing.T) {
+	t.Parallel()
+	c := config.Defaults()
+	target := strings.Repeat("cd", 20)
+	got := implementerPreamble(c, nil, "issuedog/1-a`b<!--", target, "a finding")
+	for _, want := range []string{
+		"- Your checkout's `target` branch is ``issuedog/1-a`b&lt;!--`` at `" + target + "`, which your starting commit",
+		"so issuedog dropped it: your checkout starts from ``issuedog/1-a`b&lt;!--``, as a first run's does,",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the preamble on a story branch =\n%s\nwant it to say\n%s", got, want)
+		}
+	}
+	if none := implementerPreamble(c, nil, "", target, "a finding"); !strings.Contains(none, "branch is `main` at `"+target+"`") ||
+		!strings.Contains(none, "your checkout starts from `main`, as a first run's does") {
+		t.Errorf("the preamble with no branch named =\n%s\nwant main named", none)
 	}
 }
 
