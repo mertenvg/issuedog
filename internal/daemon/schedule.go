@@ -304,6 +304,12 @@ func (r *Runs) pickOne(ctx context.Context, rd Ready, st Stage, story *github.Sn
 	case badLabels != nil:
 		return false, wrap(badLabels)
 	}
+	if e := r.Daemon.branchErrs[n]; e.Key != "" {
+		// Its runs wait while the error stands (branchesWait), so a pick
+		// would only take the worker.
+		logr.Debugf("%s/%s#%d isn't picked: its %s state error stands, keyed %s", a.Owner, a.Repo, n, branchesErrKind, e.Key)
+		return false, nil
+	}
 	if story != nil {
 		cut, wait, err := r.pickStory(ctx, rd, story)
 		switch {
@@ -401,7 +407,12 @@ func (r *Runs) pickOpenBlocker(ctx context.Context, n int) (int, bool, error) {
 // found blocked joins the search's answer by its number, and isn't read
 // again until the next search, as a task isn't: till then its tasks wait
 // with no request. With neither blocked, a story with no branch gets its
-// branch cut (pickCut), and with a tip that's success, rd is picked.
+// branch cut (pickCut), and with a tip that's success, rd is picked. But
+// before the cut, the story's branches are judged (branchesJudge), with
+// its sub-issues read once (storyWorked): once a task or bug in it has
+// been in-progress, its branch is gone, not new, so it gets its branches
+// state error instead of a cut, and rd waits. While that error stands,
+// rd waits with no request, and that's warned of once (SPEC §7.5).
 func (r *Runs) pickStory(ctx context.Context, rd Ready, story *github.Snapshot) (cut, wait bool, err error) {
 	d, n, sn := r.Daemon, rd.S.Number, story.Number
 	a := d.Step.Applier
@@ -413,6 +424,10 @@ func (r *Runs) pickStory(ctx context.Context, rd Ready, story *github.Snapshot) 
 		return false, true, nil
 	case err != nil:
 		return false, false, fmt.Errorf("its story's branch: %w", err)
+	case tip == "" && d.branchErrs[sn].Key != "":
+		r.pickStoryOnce(sn, "branches:"+d.branchErrs[sn].Key, logr.Warnf, "%s/%s#%d: no task in it is picked, and no branch is cut for it, as its branch is gone once work in it started, so its %s state error stands",
+			a.Owner, a.Repo, sn, branchesErrKind)
+		return false, true, nil
 	case tip != "" && !d.tipSuccess(branch, tip):
 		why := "has no " + github.TipCheck + " as success yet"
 		if j, ok := d.tips[branch]; ok && j.Tip == tip {
@@ -443,6 +458,16 @@ func (r *Runs) pickStory(ctx context.Context, rd Ready, story *github.Snapshot) 
 		logr.Infof("%s/%s#%d isn't picked: #%d blocks its story #%d", a.Owner, a.Repo, n, b, sn)
 		return false, true, nil
 	case tip == "":
+		// Before a cut, the story's sub-issues are read once, as the
+		// daemon holds no closed task that worked in it (storyWorked).
+		if err := d.branchesJudge(ctx, story, nil, true); err != nil {
+			return false, false, fmt.Errorf("its story's branches: %w", err)
+		}
+		if e := d.branchErrs[sn]; e.Key != "" {
+			r.pickStoryOnce(sn, "branches:"+e.Key, logr.Warnf, "%s/%s#%d: no task in it is picked, and no branch is cut for it, as its branch is gone once work in it started, so its %s state error stands",
+				a.Owner, a.Repo, sn, branchesErrKind)
+			return false, true, nil
+		}
 		if err := r.pickCut(ctx, n, story); err != nil {
 			return false, false, fmt.Errorf("cut its story's branch: %w", err)
 		}

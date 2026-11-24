@@ -331,7 +331,10 @@ func TestPRStoryTipWaitsForItsCheck(t *testing.T) {
 // verified against makes no request for its head's checks and runs no
 // command: that tip is its move's tip=, so its merge isn't judged (SPEC
 // §8.1's Polling cost). A second branch with the task's prefix keeps it
-// from merging, so it stays at pr-open.
+// from merging, so it stays at pr-open. That's a branches state error on
+// the task (SPEC §5.3), so step 1 visits it on every pass, for a 👍 on
+// the error, with conditional reads alone, a 304 each: the passes read
+// nothing of its PR or its head.
 func TestPRStoryTipUnchanged(t *testing.T) {
 	t.Parallel()
 	f, v, _, head, pr := storyMergeReady(t)
@@ -343,9 +346,12 @@ func TestPRStoryTipUnchanged(t *testing.T) {
 	if got := prMainReads(f, from, head); got != 0 || v.checksRan() != ran {
 		t.Errorf("after the restart, the head's checks were read %d times, and the commands ran %d times; want neither", got, v.checksRan()-ran)
 	}
-	v.prMoveQuiet("the tip unchanged", true)
+	v.prMoveQuiet("the tip unchanged", false)
 	if got := storyMerges(f, 0, pr); len(got) != 0 || pickStage(f, 1) != "stage:pr-open" {
 		t.Errorf("the merges = %+v, the task at %s; want none, and pr-open", got, pickStage(f, 1))
+	}
+	if got := errorMarkers(f, 1); len(got) != 1 || !strings.Contains(got[0], "kind=branches") {
+		t.Errorf("the task's state errors are %q; want its branches error once", got)
 	}
 }
 

@@ -52,11 +52,17 @@ type openErr struct {
 //     longer the one to judge (Applier.closerErrEnded).
 //   - digesthistory: at once, as step 1 visits only an issue the digest's
 //     title rule has judged (digestHistoryHold).
+//   - branches: when its key isn't the one branchesNow, if set, gives for
+//     s, as when the set of s's branches with its prefix changed, or no
+//     error stands for them. Until step 2 or the pick has judged s's
+//     branches since the daemon started, as on a restart's first step 1,
+//     it stays open (Daemon.branchesNow).
 //   - any other kind: only an ack ends it.
 //
 // inputs gives step 1's Inputs for s. It's called at most once, and only
 // for a run's transition error or an attempts error, which key on them.
-func openErrors(s *github.Snapshot, is state.Issue, inputs func() ([]github.Comment, error), closerEnded func(key string) bool) ([]openErr, error) {
+func openErrors(s *github.Snapshot, is state.Issue, inputs func() ([]github.Comment, error), closerEnded func(key string) bool,
+	branchesNow func(n int) (string, bool)) ([]openErr, error) {
 	if s.Closed {
 		return nil, nil
 	}
@@ -98,6 +104,9 @@ func openErrors(s *github.Snapshot, is state.Issue, inputs func() ([]github.Comm
 			ended = closerEnded != nil && closerEnded(k.Key)
 		case k.Kind == digestHistoryErrKind:
 			ended = true
+		case k.Kind == branchesErrKind && branchesNow != nil:
+			now, judged := branchesNow(s.Number)
+			ended = judged && k.Key != now
 		}
 		if !ended {
 			open = append(open, openErr{ErrorKey: k, Comment: id})
@@ -184,7 +193,7 @@ func ErrorByReaction(trust github.Trust) func(ctx context.Context, a *Applier, s
 			}
 			return t, nil
 		}
-		open, err := openErrors(s, is, func() ([]github.Comment, error) { return openErrInputs(ctx, trust, s, is, d) }, a.closerErrEnded(s, d.Has, trust))
+		open, err := openErrors(s, is, func() ([]github.Comment, error) { return openErrInputs(ctx, trust, s, is, d) }, a.closerErrEnded(s, d.Has, trust), a.branchesNow)
 		if err != nil {
 			return wrap(err)
 		}
@@ -231,7 +240,8 @@ func ErrorByReaction(trust github.Trust) func(ctx context.Context, a *Applier, s
 // with dirty content d, has an open state error (openErrors), so Iterate
 // visits it on every pass. Iterate finds d once, for the digest's items too.
 func (st *Step) openErrAny(s *github.Snapshot, inputs []github.Comment, d Dirt) (bool, error) {
-	open, err := openErrors(s, state.Derive(s, st.AppSlug, d.Has), func() ([]github.Comment, error) { return inputs, nil }, st.closerErrEnded(s, d.Has, st.trustOnceTrust()))
+	open, err := openErrors(s, state.Derive(s, st.AppSlug, d.Has), func() ([]github.Comment, error) { return inputs, nil }, st.closerErrEnded(s, d.Has, st.trustOnceTrust()),
+		st.branchesNow)
 	if err != nil {
 		return false, fmt.Errorf("open state errors of %s/%s#%d: %w", st.Owner, st.Repo, s.Number, err)
 	}
