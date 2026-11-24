@@ -59,6 +59,12 @@ type Applier struct {
 	// it (holdOrderWaits).
 	madeAboveDigest func(number int) bool
 
+	// branchesNow, if set, returns the key of the branches state error
+	// that stands on issue number, or "" for none, and whether its
+	// branches were judged since the daemon started (Daemon.branchesNow),
+	// for openErrors. Unset, every issue's are unjudged.
+	branchesNow func(number int) (string, bool)
+
 	histories     histories                // see Dirty
 	originNone    map[int]string           // the body, by issue, in which originRepost found no origin to repost
 	childForged   map[int]string           // the listed body, by issue, whose forged origin childEditedOrigins warned of

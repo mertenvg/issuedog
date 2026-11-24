@@ -239,6 +239,17 @@ type Daemon struct {
 	// task in one, by issue number, so a wait that lasts is warned of once
 	// (storyWarnOnce).
 	storyWarned map[int]string
+
+	// branchSets is what the daemon remembers, while it runs, of each held
+	// issue's set of branches with its prefix, by issue: the set it saw
+	// last, and when it saw it change, for its branches error's key
+	// (branches.go).
+	branchSets map[int]branchesSeen
+	// branchErrs is the branches state error that stands on each held
+	// issue, or none, as step 2 or the pick last judged it, by issue, so
+	// step 1 ends one whose key changed (branchesNow), and runs and the
+	// pick wait while one stands (branches.go).
+	branchErrs map[int]branchesStand
 }
 
 // CurrentTrust is a github.Trust that asks st.Trust on each call. Iterate's
@@ -336,7 +347,8 @@ func (d *Daemon) Run(ctx context.Context) {
 // each issue a revision held for a PR whose hold has ended (droppedPass),
 // with its items found again too. Then it
 // closes each epic planned into stories whose children have all closed
-// (epicClosePass, #251), keeps each task's PR's priority label
+// (epicClosePass, #251), judges each open issue's branches state error
+// (branchesPass), keeps each task's PR's priority label
 // (prLabelPass), the digest (digestPass), and then the assignees
 // (assignPass), whose failures stop nothing. Then it hands Work the issues ready for it, and
 // last makes the unassigns assignPass put off until after it
@@ -358,6 +370,9 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		d.openErrs = map[int]bool{}
 	}
 	d.step1Gaps = map[int]step1Gap{}
+	// Step 1 ends a branches state error by what step 2 or the pick last
+	// judged of the issue's branches (openErrors).
+	d.Step.branchesNow = d.branchesNow
 	d.reload(ctx)
 	d.closerErrBegin() // a pass, for the closer questions' counts (closererr.go)
 	if d.Step.Trust == nil {
@@ -594,6 +609,11 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 	}
 	maps.Copy(again, droppedClosed)
 	if err := d.epicClosePass(ctx); err != nil { // an epic whose stories have all closed (epicclose.go)
+		errs = append(errs, err)
+	}
+	// Two or more branches with an issue's prefix, or none for a story
+	// whose work started, are a branches state error (branches.go).
+	if err := d.branchesPass(ctx); err != nil {
 		errs = append(errs, err)
 	}
 	if err := d.prLabelPass(ctx); err != nil { // each task's PR carries its priority (prs.go)

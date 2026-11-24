@@ -48,6 +48,9 @@ func droppedPROrigin(t testing.TB) *origin {
 	gitIn(t, o.work, "commit", "--quiet", "-m", "refuse an expired quote")
 	gitIn(t, o.work, "push", "--quiet", o.url, "task:refs/heads/"+droppedPRBranch)
 	gitIn(t, o.work, "checkout", "--quiet", "main")
+	// Story 1's branch, as its tasks have been in-progress: with none, it
+	// would get a branches state error (SPEC §7.5).
+	gitIn(t, o.url, "update-ref", "refs/heads/issuedog/1-quotes", "main")
 	return o
 }
 

@@ -521,13 +521,18 @@ func TestPRMergeRestart(t *testing.T) {
 
 // A second branch with the task's prefix, as an admin's, leaves the daemon
 // unable to tell which is the task's, so the PR isn't merged (SPEC §7.5's
-// Two branches with one prefix), and the passes after are quiet.
+// Two branches with one prefix), and the task gets one branches state
+// error (SPEC §5.3). Once the passes after have read that back, listed it
+// and assigned it, they're quiet.
 func TestPRMergeTwoBranches(t *testing.T) {
 	t.Parallel()
 	f, v, _, head, pr := storyMergeReady(t)
 	gitIn(t, v.o.url, "update-ref", "refs/heads/issuedog/1-a-copy", head)
-	v.pass()
+	v.passes(3)
 	v.quietPass("two branches with the task's prefix")
+	if got := branchesErrs(f, 1); len(got) != 1 {
+		t.Errorf("the task's branches errors are %q; want one", got)
+	}
 	if got := storyMerges(f, 0, pr); len(got) != 0 || f.State().PRs[0].State != "open" || pickStage(f, 1) != "stage:pr-open" {
 		t.Errorf("the merges = %+v, the PR %s, the task at %s; want none, open, and pr-open", got, f.State().PRs[0].State, pickStage(f, 1))
 	}
