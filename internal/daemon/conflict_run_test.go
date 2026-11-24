@@ -69,8 +69,10 @@ func (v *verdictRig) conflictRunScript(k int, script string) {
 }
 
 // conflictRunReady files story 1 on v, cuts its branch, pushes a commit
-// of the story's to it, which changes f.txt and adds story.txt, and checks
-// that tip as success. Then it moves main: each of mainFiles committed in
+// of the story's to it, which changes f.txt and adds story.txt and
+// story.go, a source file with no test, which the tip's checks don't
+// judge, as rule 5 is one task's (SPEC §7.5), and checks that tip as
+// success. Then it moves main: each of mainFiles committed in
 // turn, each path with its content, then main's own change to f.txt,
 // which conflicts. The pass after files the conflict bug for that pair,
 // #3, at ready, which its origin names. It returns the tip and main's
@@ -80,7 +82,7 @@ func (v *verdictRig) conflictRunReady(mainFiles map[string]string) (string, stri
 	tipStory(v.t, v.f)
 	v.passes(2)
 	v.tipCut(tipBranch)
-	tip := v.tipPush(tipBranch, map[string]string{"f.txt": "the story\n", "story.txt": "the story's change\n"})
+	tip := v.tipPush(tipBranch, map[string]string{"f.txt": "the story\n", "story.txt": "the story's change\n", "story.go": "package story\n"})
 	v.tipJudged(tip, 1, []githubtest.CheckRunState{tipCheck(tip, tipBranch, "success")})
 	for _, path := range slices.Sorted(maps.Keys(mainFiles)) {
 		v.o.commit(path, mainFiles[path])
@@ -114,6 +116,17 @@ func conflictRunFindings(t *testing.T, f *githubtest.Fake) string {
 	return moves[len(moves)-1]
 }
 
+// conflictRunNoFindings fails the test, naming step, when the conflict
+// bug has any move verifying → in-progress on findings, or isn't at
+// verifying.
+func conflictRunNoFindings(t *testing.T, f *githubtest.Fake, step string) {
+	t.Helper()
+	if moves := storyFailureComments(f, conflictRunBug, "<!-- issuedog:transition from=verifying to=in-progress "); len(moves) != 0 ||
+		pickStage(f, conflictRunBug) != "stage:verifying" {
+		t.Errorf("%s left the bug at %s, with the findings moves %q; want verifying, with none", step, pickStage(f, conflictRunBug), moves)
+	}
+}
+
 // A conflict bug's first attempt starts from the main commit it names,
 // with its story branch's tip named as its target, and the lease records
 // both, with the tip as its story tip, though that main commit changed a
@@ -124,12 +137,19 @@ func conflictRunFindings(t *testing.T, f *githubtest.Fake) string {
 // fail it on rule 7 alone, naming the tip, as rule 2's baseline is that
 // main commit, which the head matches. Its retry starts from that head,
 // which passes rule 2 against the main commit, so isn't dropped, with the
-// tip named as its target again, as its head lacks it.
+// tip named as its target again, as its head lacks it. Main moves past
+// that commit before the run, changing another protected path, and the
+// bug's start and both baselines stay the commit it names, not main's
+// newest.
 func TestConflictRunSkippedMerge(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)
 	v := newVerdictRig(t, f, 3).conflictRunWire()
 	tip, main := v.conflictRunReady(map[string]string{"secrets/key.txt": "main's key\n"})
+	v.o.commit("secrets/newer.txt", "a newer main's key\n")
+	if newer := v.mainSHA(); newer == main {
+		t.Fatalf("main is still at %s; want it moved past the bug's main commit", main)
+	}
 	v.out(1, ivResult(t, implementerOutput(t, "commits")))
 	v.conflictRunScript(1, "printf 'the story\\n' > f.txt && git add f.txt && git commit --quiet -m 'copy the story by hand'\n")
 	v.pass()
@@ -177,8 +197,10 @@ func TestConflictRunSkippedMerge(t *testing.T) {
 // main commit added a test file holding a skip marker: rules 3 to 6 diff
 // from the conflicted merge of the two, kept under
 // refs/issuedog/conflicts/<n> with both as its parents, so they judge only
-// the resolution (SPEC §7.5's A conflict, §10.1). A restart then runs the
-// checks again, as it empties their passes. The verifier's diff.patch is
+// the resolution (SPEC §7.5's A conflict, §10.1): neither the story's
+// story.go, a source file with no test, fails rule 5, nor main's test file
+// rule 3, so no findings are posted. A restart then runs the checks again,
+// as it empties their passes, and posts none either. The verifier's diff.patch is
 // that diff: the resolution of f.txt and the run's own file, and nothing
 // of the story's or main's changes. Its checks.md names the tip, the main
 // commit as rule 2's baseline, and the conflicted merge it starts at
@@ -207,6 +229,7 @@ func TestConflictRunResolved(t *testing.T) {
 		t.Fatalf("the checks' pass ran the commands %d times, claude %d times, and left the bug at %s; want once, never, and verifying",
 			v.checksRan()-ran, v.runs()-1, pickStage(f, conflictRunBug))
 	}
+	conflictRunNoFindings(t, f, "the checks' pass")
 	conflicted := gitIn(t, v.d.Clone.Dir(), "rev-parse", repo.ConflictsRef+strconv.Itoa(conflictRunBug))
 	if got := gitIn(t, v.d.Clone.Dir(), "rev-list", "--parents", "-n", "1", conflicted); got != conflicted+" "+main+" "+tip {
 		t.Errorf("the conflicted merge and its parents are %q; want main's %s and the tip %s as its parents", got, main, tip)
@@ -222,6 +245,7 @@ func TestConflictRunResolved(t *testing.T) {
 	if v.checksRan() != ran+1 || v.runs() != 1 {
 		t.Fatalf("the restart's pass ran the commands %d times, and claude %d times; want once, and never", v.checksRan()-ran, v.runs()-1)
 	}
+	conflictRunNoFindings(t, f, "the restart's pass")
 	v.pass()
 	if v.runs() != 2 {
 		t.Fatalf("claude ran %d times after the checks passed again; want twice, the verifier's run", v.runs())
@@ -232,7 +256,7 @@ func TestConflictRunResolved(t *testing.T) {
 			t.Errorf("the verifier's diff.patch =\n%s\nwant it to hold %q", patch, want)
 		}
 	}
-	for _, not := range []string{"a_test.go", "story.txt", "+the story\n", "+main's"} {
+	for _, not := range []string{"a_test.go", "story.txt", "story.go", "+the story\n", "+main's"} {
 		if strings.Contains(patch, not) {
 			t.Errorf("the verifier's diff.patch =\n%s\nwant nothing of %q, which the conflicted merge holds", patch, not)
 		}
