@@ -169,7 +169,14 @@ func personPROpen(is state.Issue) bool {
 // success (prStoryTip): a parent that's no story s is in, two branches
 // with its prefix, no branch, a tip not checked as success yet, as a new
 // one, or one the App merged a task's PR onto, and a tip with no one
-// merge base with main, so the story has no baseline, each give why.
+// merge base with main, so the story has no baseline, each give why. For a
+// failure's bug, the tip is one step 4 judged that passes rule 2, whatever
+// else fails there (prStoryTip). A conflict bug's baseline is the main
+// commit it names (conflictMain), as at verifying (storyTarget), and the
+// story's isn't read. Its Base, the conflicted merge its own diff starts
+// at, is left "", as no checks run on its merge with a moved tip: step 4
+// sends it back instead (mainMoved), so building that merge in the bare
+// repo on every pass would serve nothing.
 func (d *Daemon) mergeTarget(ctx context.Context, s *github.Snapshot) (VerifyTarget, string, error) {
 	main, err := d.Clone.Resolve(ctx, "main")
 	if err != nil {
@@ -184,6 +191,9 @@ func (d *Daemon) mergeTarget(ctx context.Context, s *github.Snapshot) (VerifyTar
 		return VerifyTarget{}, "", fmt.Errorf("its story branch: %w", err)
 	case why != "":
 		return VerifyTarget{}, why, nil
+	}
+	if conflict := d.conflictMain(s); conflict != "" {
+		return VerifyTarget{Branch: branch, SHA: tip, Baseline: conflict}, "", nil
 	}
 	base, err := verify.BaseOf(ctx, verify.Facts{Repo: d.Clone, Head: tip, Target: main})
 	switch {
@@ -249,6 +259,15 @@ func (d *Daemon) mergeTarget(ctx context.Context, s *github.Snapshot) (VerifyTar
 // here: the result names the target the merge was built on, and the next
 // pass, whose sync brings the newer one, judges the head again, once a
 // story branch's newer tip has its success.
+//
+// A conflict bug (conflictMain) gets no checks on its merge with a tip
+// that moved since its verify, and no read of its checks: its story
+// branch can only be fast-forwarded to its head (prMerge), which a tip
+// the head lacks rules out, so it's sent back on that tip instead, with
+// no merge built and nothing run (conflictMoved), once the tip passes
+// rule 2, as a failure's bug takes it (prStoryTip). One whose verified
+// head holds the tip, as after its own fast-forward, before GitHub marks
+// its PR merged, is skipped.
 func (r *Runs) mainMoved(ctx context.Context, ready []Ready, skip int) (bool, error) {
 	if r.Commands == nil {
 		return false, nil
@@ -312,6 +331,16 @@ func (r *Runs) mainMoved(ctx context.Context, ready []Ready, skip int) (bool, er
 		if !has {
 			r.prWarnOnce(n, "main-head:"+head, "%s/%s#%d: its PR's verified head %q isn't in the bare repo, so its merge with %s isn't checked",
 				a.Owner, a.Repo, n, head, t)
+			continue
+		}
+		if t.Branch != "" && d.conflictMain(s) != "" {
+			sent, err := r.conflictMoved(ctx, rd, is, head, t)
+			if err != nil {
+				return false, fmt.Errorf("the conflict bug #%d on %s: %w", n, t, err)
+			}
+			if sent {
+				return true, nil
+			}
 			continue
 		}
 		runs, err := a.Client.VerifyChecks(ctx, a.Owner, a.Repo, head)
@@ -385,6 +414,63 @@ func (r *Runs) mainJudge(ctx context.Context, rd Ready, is state.Issue, head str
 		return fmt.Errorf("on findings: %w", err)
 	}
 	return nil
+}
+
+// conflictMoved sends rd's task, a conflict bug at pr-open whose state is
+// is, back to in-progress, once its story branch's tip, t, moved since its
+// verified head, head, was verified, and reports whether it did, its move
+// waiting for the worker included (SPEC §7.2, §7.5, A conflict): its PR
+// merges only by a fast-forward of the branch to head (prMerge), which a
+// tip head lacks can't take, so no checks run on their merge, and the bug
+// goes back pr-open → in-progress through mainSendBack, keyed event=b<SHA>
+// by t (tipKey), its comment saying so (renderConflictMoved). Its next run
+// names t as its target, to merge, as its head lacks it (SPEC §3.4).
+// mainMoved reached it only once t passed rule 2, as a failure's bug takes
+// a tip (prStoryTip), and the bug wasn't sent back on t already, nor waits
+// on a move. It sends nothing back when:
+//   - the bug's move into pr-open names no tip= (prMoveTip), as for a head
+//     a person pushed that failed verify, whose failure stands until its
+//     next push or the owner's review moves it on (SPEC §7.2), and which
+//     nothing fast-forwards;
+//   - or head holds t in its history, as when the App's fast-forward made
+//     head the tip, and GitHub hasn't marked the PR merged yet: the next
+//     poll's listing closes the bug (prMerged).
+//
+// Both are read in the bare repo, at no request.
+func (r *Runs) conflictMoved(ctx context.Context, rd Ready, is state.Issue, head string, t VerifyTarget) (bool, error) {
+	a, d, n := r.Daemon.Step.Applier, r.Daemon, rd.S.Number
+	if prMoveTip(is) == "" {
+		logr.Debugf("%s/%s#%d: its PR's head %s has no story branch tip it was verified against, so it isn't sent back on %s",
+			a.Owner, a.Repo, n, head, t)
+		return false, nil
+	}
+	in, err := d.Clone.IsAncestor(ctx, t.SHA, head)
+	switch {
+	case err != nil:
+		return false, fmt.Errorf("read the tip against the head: %w", err)
+	case in:
+		logr.Debugf("%s/%s#%d: its PR's head %s holds %s, as its fast-forward left it, so it waits for the PR to read merged",
+			a.Owner, a.Repo, n, head, t)
+		return false, nil
+	}
+	logr.Infof("%s/%s#%d: %s moved since its PR's head %s was verified, so the branch can't be fast-forwarded to it, and the bug goes back with no checks run",
+		a.Owner, a.Repo, n, t, head)
+	if err := r.mainSendBack(ctx, rd, is, t, renderConflictMoved(head, t)); err != nil {
+		return false, fmt.Errorf("send it back: %w", err)
+	}
+	return true, nil
+}
+
+// renderConflictMoved is the comment of a conflict bug's move pr-open →
+// in-progress once its story branch's tip, t, moved since its head, head,
+// was verified (SPEC §7.2, §7.5, A conflict): it names the branch, the tip
+// and the head, says the branch can't be fast-forwarded to the head, so no
+// checks ran on their merge, and that the next run merges the tip.
+// Transition escapes it.
+func renderConflictMoved(head string, t VerifyTarget) string {
+	return fmt.Sprintf("%s since this conflict bug's PR was verified at `%s`, which lacks it, so the story branch can't be fast-forwarded to that head, "+
+		"and no checks ran on their merge. So the bug is back at `in-progress`, for the implementer to merge %s too, resolving any conflicts.",
+		targetMoved(t), head, targetName(t))
 }
 
 // mergeJudge keeps task n's head as judged against its target t on its

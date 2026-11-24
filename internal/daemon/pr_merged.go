@@ -71,6 +71,14 @@ type prMerge struct {
 // sent it back from pr-open. Anyone else's merge closes nothing: the move
 // hands the task to the owner at needs-human, on untrusted-merge, naming
 // the merger.
+//
+// The App's merge is its squash (prMerge), or for a conflict bug, its
+// fast-forward of the story branch to the bug's verified head
+// (prFastForward), which GitHub marks as the PR's merge, by the App, its
+// merged_by, with the head as its merge commit (SPEC §7.5, A conflict;
+// §16). So the bug closes as completed the same way, with its branch
+// deleted, and no check carried over, as it's a failure's bug (tipCarry):
+// step 4 checks the head afresh as the branch's new tip.
 func (d *Daemon) prMerged(ctx context.Context, s *github.Snapshot, is state.Issue, p listedPR) (*Move, error) {
 	a, n := d.Step.Applier, s.Number
 	key := mergedKey(p.Number)
@@ -224,7 +232,9 @@ func (d *Daemon) prMergedWrites(ctx context.Context, s *github.Snapshot, is stat
 // onto a tip that moved since the verify, once the head's merge with it
 // passed (prMergeOnto), one merged at another head, a failure's bug's
 // (failureBugOf), as it may have gone onto a tip that fails other rules
-// than rule 2 (SPEC §7.5's A checked base), and, after a restart,
+// than rule 2 (SPEC §7.5's A checked base), a conflict bug's fast-forward
+// included, whose merge commit is the bug's head, a merge of a main
+// commit and the tip, not the squash this carries for, and, after a restart,
 // one whose parent's success isn't
 // judged yet, as Daemon.tips starts empty. So does a merge commit the bare
 // clone lacks, as for a merge made after the pass's sync. The parent is

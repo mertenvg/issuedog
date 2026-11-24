@@ -336,7 +336,9 @@ func targetBasesDetail(baseline, target string, err error) string {
 // included (repo.ConflictMerge), which rules 3 to 6 and the verifier's
 // diff.patch start at, and the head's history must hold both commits
 // (SPEC §7.5, A conflict, §10.1, §10.2). Base is "" for any other task,
-// whose diff starts at its merge base with SHA (verify.BaseOf).
+// whose diff starts at its merge base with SHA (verify.BaseOf), and for a
+// conflict bug's moved tip at pr-open, as no checks run on that merge
+// (mergeTarget).
 type VerifyTarget struct {
 	Branch, SHA, Baseline, Base string
 }
