@@ -31,8 +31,17 @@ import (
 // branch there, goes back to main, and returns the merge.
 func conflictMootMerge(t *testing.T, s *conflictFFSeed, main string) string {
 	t.Helper()
-	w := s.base.o.work
-	gitIn(t, w, "checkout", "--quiet", "-B", "by-hand", s.tip)
+	return s.base.conflictMootByHand(s.tip, main)
+}
+
+// conflictMootByHand merges main, a main commit, into tip, a story tip,
+// in v's origin's work tree by hand, as conflictMootMerge does, and
+// returns the merge, which the origin keeps outside refs/heads.
+func (v *verdictRig) conflictMootByHand(tip, main string) string {
+	t := v.t
+	t.Helper()
+	w := v.o.work
+	gitIn(t, w, "checkout", "--quiet", "-B", "by-hand", tip)
 	gitIn(t, w, "merge", "--quiet", "--no-edit", "-s", "ours", main)
 	if err := os.WriteFile(filepath.Join(w, "f.txt"), []byte("merged by hand\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -40,7 +49,7 @@ func conflictMootMerge(t *testing.T, s *conflictFFSeed, main string) string {
 	gitIn(t, w, "add", "f.txt")
 	gitIn(t, w, "commit", "--quiet", "--amend", "--no-edit")
 	merge := gitIn(t, w, "rev-parse", "HEAD")
-	gitIn(t, w, "push", "--quiet", s.base.o.url, merge+":refs/seed/"+merge)
+	gitIn(t, w, "push", "--quiet", v.o.url, merge+":refs/seed/"+merge)
 	gitIn(t, w, "checkout", "--quiet", "main")
 	return merge
 }
@@ -79,23 +88,31 @@ func conflictMootBugClose(f *githubtest.Fake, n int) int {
 	})
 }
 
-// conflictMootClosed fails unless bug #2 on f is closed as not planned,
-// by one App move from from on its conflict-moot, keyed event=t<tip>, with
-// conflictMootText for tip and main, and its PR closed, unmerged, by one
-// write of the App's, before the bug's close.
-func conflictMootClosed(t *testing.T, f *githubtest.Fake, from, tip, main string) {
+// conflictMootBugClosed fails unless conflict bug n on f is closed as not
+// planned, by one App move from from on its conflict-moot, keyed
+// event=t<tip>, with conflictMootText for tip and main.
+func conflictMootBugClosed(t *testing.T, f *githubtest.Fake, n int, from, tip, main string) {
 	t.Helper()
-	closes := storyFailureComments(f, 2, "<!-- issuedog:transition from="+from+" to=closed ")
+	closes := storyFailureComments(f, n, "<!-- issuedog:transition from="+from+" to=closed ")
 	if len(closes) != 1 || closes[0] != conflictMootText(tip, main)+conflictMootMarker(from, tip) {
 		t.Fatalf("the bug's closes = %q; want one,\n%s", closes, conflictMootText(tip, main)+conflictMootMarker(from, tip))
 	}
-	is, _, err := f.Client(t).Issues.Get(context.Background(), "o", "r", 2)
+	is, _, err := f.Client(t).Issues.Get(context.Background(), "o", "r", n)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if is.GetState() != "closed" || is.GetStateReason() != "not_planned" {
 		t.Errorf("the bug is %s, as %s; want closed, as not_planned", is.GetState(), is.GetStateReason())
 	}
+}
+
+// conflictMootClosed fails unless bug #2 on f is closed as not planned,
+// by one App move from from on its conflict-moot, keyed event=t<tip>, with
+// conflictMootText for tip and main (conflictMootBugClosed), and its PR
+// closed, unmerged, by one write of the App's, before the bug's close.
+func conflictMootClosed(t *testing.T, f *githubtest.Fake, from, tip, main string) {
+	t.Helper()
+	conflictMootBugClosed(t, f, 2, from, tip, main)
 	pr := f.State().PRs[0]
 	prCloses := conflictMootPRCloses(f, 0, pr.Number)
 	if pr.State != "closed" || pr.Merged || len(prCloses) != 1 {
@@ -235,6 +252,17 @@ func conflictMootInProgressFake(t testing.TB, s *conflictFFSeed, at string, pr b
 			f.AddComment(2, app, "The story branch moved.\n\n<!-- issuedog:transition from=pr-open to=in-progress event=b"+s.tip+" -->")
 		})
 	}
+	return conflictMootNoPRFake(t, s, at, "in-progress")
+}
+
+// conflictMootNoPRFake is a fake on s's origin, with the story branch at
+// at and the bug's branch at s's head, and bug #2, the conflict bug for
+// s's tip and main commit, below story 1, at stage, ready or in-progress,
+// with no PR and no move into pr-open: its first move, then, at
+// in-progress, the pick's. s's tip has its issuedog/tip as success. Its
+// writes so far are forgotten.
+func conflictMootNoPRFake(t testing.TB, s *conflictFFSeed, at, stage string) *githubtest.Fake {
+	t.Helper()
 	gitIn(t, s.base.o.url, "update-ref", "refs/heads/"+s.branch, s.head)
 	gitIn(t, s.base.o.url, "update-ref", "refs/heads/"+tipBranch, at)
 	f := newFake(t)
@@ -247,9 +275,11 @@ func conflictMootInProgressFake(t testing.TB, s *conflictFFSeed, at string, pr b
 		t.Fatalf("the bug is #%d; want #2", bug)
 	}
 	f.SetParent(2, 1)
-	f.AddLabel(2, app, "stage:in-progress")
+	f.AddLabel(2, app, "stage:"+stage)
 	f.AddComment(2, app, "Filed.\n\n<!-- issuedog:transition from=intake to=ready event=t"+s.tip+" -->")
-	f.AddComment(2, app, "Picked.\n\n<!-- issuedog:transition from=ready to=in-progress event=s1 -->")
+	if stage == "in-progress" {
+		f.AddComment(2, app, "Picked.\n\n<!-- issuedog:transition from=ready to=in-progress event=s1 -->")
+	}
 	if _, err := f.Client(t).PostCheck(context.Background(), "o", "r", github.TipCheck, github.NewCheckRun{HeadSHA: s.tip, Conclusion: "success",
 		Title: "t", Summary: "s", ExternalID: "branch=" + tipBranch}); err != nil {
 		t.Fatal(err)
@@ -394,4 +424,100 @@ func TestConflictMootHeadMissing(t *testing.T) {
 	f.ForgetWrites()
 	v := s.rig(t, f, t.TempDir(), nil)
 	conflictMootJudged(t, v, "in-progress", merge, s.main)
+}
+
+// A conflict bug with no head, at ready, or at in-progress before its
+// first run, with no PR, made moot by a person's merge of its main commit,
+// is closed from that stage, as not planned, with no PR to close (SPEC
+// §7.5's A conflict merged by hand): having no head, it has none the tip
+// could hold.
+func TestConflictMootNoHead(t *testing.T) {
+	t.Parallel()
+	for _, stage := range []string{"ready", "in-progress"} {
+		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
+			s := newConflictFFSeed(t)
+			merge := conflictMootMerge(t, s, s.main)
+			f := conflictMootNoPRFake(t, s, merge, stage)
+			v := s.rig(t, f, t.TempDir(), nil)
+			ran := v.checksRan()
+			v.pass()
+			conflictMootBugClosed(t, f, 2, stage, merge, s.main)
+			if prs := f.State().PRs; len(prs) != 0 {
+				t.Errorf("the PRs = %+v; want none", prs)
+			}
+			if got := f.State().CheckRuns; !slices.Contains(got, tipCheck(merge, tipBranch, "success")) || v.checksRan() != ran+1 {
+				t.Errorf("the moot close's pass left the checks %+v, and ran the commands %d times; want success on %s, once", got, v.checksRan()-ran, merge)
+			}
+			v.passes(2)
+			v.quietPass("after the moot close")
+		})
+	}
+}
+
+// A tip that carries the App's issuedog/tip naming the branch already, as
+// after a restart, is new to the daemon all the same, so the conflict bug
+// it makes moot is closed, its PR first, before the check is read (SPEC
+// §7.5's A conflict merged by hand), and the check stands: nothing runs,
+// and no check is posted.
+func TestConflictMootChecked(t *testing.T) {
+	t.Parallel()
+	s := newConflictFFSeed(t)
+	merge := conflictMootMerge(t, s, s.main)
+	f := s.fake(t, merge, s.head, func(f *githubtest.Fake, _ int) {
+		if _, err := f.Client(t).PostCheck(context.Background(), "o", "r", github.TipCheck, github.NewCheckRun{HeadSHA: merge, Conclusion: "success",
+			Title: "t", Summary: "s", ExternalID: "branch=" + tipBranch}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	v := s.rig(t, f, t.TempDir(), nil)
+	ran, writes := v.checksRan(), len(f.Writes())
+	v.pass()
+	conflictMootClosed(t, f, "pr-open", merge, s.main)
+	posts := 0
+	for _, w := range f.Writes()[writes:] {
+		if w.Method == http.MethodPost && w.Path == "/check-runs" {
+			posts++
+		}
+	}
+	if v.checksRan() != ran || posts != 0 {
+		t.Errorf("the moot close's pass ran the commands %d times, and posted %d checks; want none of either", v.checksRan()-ran, posts)
+	}
+	v.passes(2)
+	v.quietPass("after the moot close")
+}
+
+// A conflict bug whose run's result is applied late, by the pass that
+// finds its story branch's tip moved to a person's merge of its main
+// commit, holds that tip for one pass (SPEC §7.5's A conflict merged by
+// hand, §8.1): the bug's snapshot is from before the result, so the tip
+// isn't judged, and the bug, now at verifying, isn't closed then. The
+// pass after closes it from verifying, as moot, though its run's head is
+// in its head ref, as the tip lacks that head, and then checks the tip.
+func TestConflictMootResultWaits(t *testing.T) {
+	t.Parallel()
+	f := newFake(t)
+	v := newVerdictRig(t, f, 3).conflictRunWire()
+	tip, main := v.conflictRunReady(nil)
+	v.out(1, ivResult(t, implementerOutput(t, "commits")))
+	v.conflictRunMerge(1, map[string]string{"f.txt": "both\n"})
+	f.FailWrite(len(f.Writes()) + 4) // the pick writes three: the apply's first write is refused
+	if err := v.d.Iterate(t.Context()); err == nil || !strings.Contains(err.Error(), "on #3 failed, 1 of 3 times") {
+		t.Fatalf("Iterate = %v; want the run's apply failed once", err)
+	}
+	merge := v.conflictMootByHand(tip, main)
+	gitIn(t, v.o.url, "update-ref", "refs/heads/"+tipBranch, merge)
+	onMerge := func() bool {
+		return slices.ContainsFunc(f.State().CheckRuns, func(r githubtest.CheckRunState) bool { return r.SHA == merge })
+	}
+	v.pass()
+	if closes := storyFailureComments(f, conflictRunBug, " to=closed "); len(closes) != 0 || pickStage(f, conflictRunBug) != "stage:verifying" || onMerge() {
+		t.Fatalf("the late apply's pass left the bug at %s, with the closes %q, and the checks %+v; want it at verifying, with none, and no check on %s",
+			pickStage(f, conflictRunBug), closes, f.State().CheckRuns, merge)
+	}
+	v.pass()
+	conflictMootBugClosed(t, f, conflictRunBug, "verifying", merge, main)
+	if !slices.Contains(f.State().CheckRuns, tipCheck(merge, tipBranch, "success")) || v.runs() != 1 {
+		t.Errorf("the pass after left the checks %+v, and claude ran %d times; want success on %s, and once", f.State().CheckRuns, v.runs(), merge)
+	}
 }

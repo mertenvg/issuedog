@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/mertenvg/issuedog/internal/github"
@@ -30,8 +31,15 @@ func TestConflictMootNoneOpen(t *testing.T) {
 	t.Parallel()
 	closed := conflictMootBug(3)
 	closed.Closed = true
+	// Another story's conflict bug, below that story, with an origin
+	// naming it, so it's a conflict bug of its own story (conflictMain),
+	// and only the story's filter leaves it out.
 	other := conflictMootBug(4)
 	other.Parent = 9
+	other.Body = strings.Replace(other.Body, "story=#1", "story=#9", 1)
+	if (&Daemon{Step: &Step{Applier: &Applier{AppSlug: "issuedog"}}}).conflictMain(other) != failureTestMain {
+		t.Fatalf("story #9's conflict bug names no main commit; want %s", failureTestMain)
+	}
 	d := storyFailureDaemon("", "", storyFailureBug(2, nil), closed, other)
 	judge, err := (&Runs{Daemon: d}).conflictMoot(t.Context(), d.snaps[1], conflictMootTip, 0)
 	if err != nil || !judge {
