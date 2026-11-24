@@ -751,6 +751,18 @@ func TestStartDaemonUsesCurrentModels(t *testing.T) {
 	if got, err := d.Step.ReadMain(ctx, ".issuedog/config.yaml"); err != nil || string(got) != files[".issuedog/config.yaml"] {
 		t.Errorf("ReadMain(.issuedog/config.yaml) = %q, %v; want main's config, %q", got, err, files[".issuedog/config.yaml"])
 	}
+	// It reads the story branches from the daemon's clone too, for a story
+	// branch failure's tip check (daemon.New).
+	if d.Step.StoryBranches == nil {
+		t.Fatal("startDaemon's Applier has no StoryBranches; want the clone's")
+	}
+	want, err := d.Clone.Branches(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := d.Step.StoryBranches(ctx, ""); err != nil || !maps.Equal(got, want) || got["main"] == "" {
+		t.Errorf("StoryBranches(\"\") = %v, %v; want the clone's branches, main among them, %v", got, err, want)
+	}
 
 	dir := t.TempDir()
 	work := filepath.Join(dir, "work")

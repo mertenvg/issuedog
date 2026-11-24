@@ -51,6 +51,11 @@ type Applier struct {
 	// A missing file is an error matching repo.ErrNotFound, and a
 	// directory one matching repo.ErrNotFile.
 	ReadMain func(ctx context.Context, path string) ([]byte, error)
+	// StoryBranches reads the daemon's bare clone's branches whose names
+	// start with prefix, each name to its tip, as repo.Repo.Branches does,
+	// at no request, for the tip check on a story branch failure's human
+	// task (humanCheckTip).
+	StoryBranches func(ctx context.Context, prefix string) (map[string]string, error)
 
 	// madeAboveDigest, if set, reports whether issue number is a digest,
 	// which the walks up (madeAbove, resolveAbove) and down (family) take
