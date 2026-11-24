@@ -15,6 +15,7 @@ import (
 	"time"
 
 	gogithub "github.com/google/go-github/v92/github"
+	"github.com/mertenvg/issuedog/internal/github"
 )
 
 // pullRemote is a bare git repo in a temporary directory, for SetGitRemote,
@@ -919,5 +920,170 @@ func TestPullsGetOne(t *testing.T) {
 	issue := f.AddIssue("owner", "An issue", "")
 	if status, msg := pullDo(t, f, "GET", fmt.Sprintf("repos/o/r/pulls/%d", issue), nil, nil); status != http.StatusNotFound {
 		t.Errorf("read an issue as a pull request: %d %q; want 404", status, msg)
+	}
+}
+
+// A push that moves the base to the head, a fast-forward, merges the pull
+// request, as GitHub marks it (SPEC §16), found when it's next listed or
+// read, by GET /pulls/{n}, by the list of pull requests and by the issue
+// list alike. It then reads, through Client.PullRequest as the daemon reads
+// a merge, closed and merged into its base by the pusher, the App unless
+// SetPusher names another, with the head as its merge commit and its head
+// SHA, and its timeline has a merged and a closed event, each naming the
+// pusher. State has the pusher as the merger. The open list leaves it out,
+// and the closed list has it.
+func TestPullsFastForward(t *testing.T) {
+	t.Parallel()
+	readers := map[string]func(t *testing.T, f *Fake, c *github.Client, n int){
+		"get": func(t *testing.T, f *Fake, c *github.Client, n int) {
+			if _, err := c.PullRequest(t.Context(), "o", "r", n); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"list pulls": func(t *testing.T, f *Fake, c *github.Client, n int) {
+			prs, err := c.PullRequestsByHead(t.Context(), "o", "r", "issuedog/7-task")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(prs) != 1 || prs[0].Number != n || !prs[0].Merged || prs[0].State != "closed" {
+				t.Errorf("listed %+v; want #%d merged and closed", prs, n)
+			}
+		},
+		"list closed pulls": func(t *testing.T, f *Fake, c *github.Client, n int) {
+			var prs []*gogithub.PullRequest
+			if status, msg := pullDo(t, f, "GET", "repos/o/r/pulls?state=closed", nil, &prs); status != http.StatusOK {
+				t.Fatalf("list closed: %d %s", status, msg)
+			}
+			if len(prs) != 1 || prs[0].GetNumber() != n || prs[0].MergedAt == nil {
+				t.Errorf("closed pull requests %+v; want #%d, merged", prs, n)
+			}
+		},
+		"list issues": func(t *testing.T, f *Fake, c *github.Client, n int) {
+			all, err := c.IssuesSince(t.Context(), "o", "r", time.Time{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(all) != 1 || all[0].GetNumber() != n || all[0].GetState() != "closed" || all[0].GetPullRequestLinks().GetMergedAt().IsZero() {
+				t.Errorf("listed %+v; want #%d closed, with merged_at", all, n)
+			}
+		},
+	}
+	for name, read := range readers {
+		for _, pusher := range []string{"", "owner"} {
+			t.Run(fmt.Sprintf("%s by %q", name, pusher), func(t *testing.T) {
+				t.Parallel()
+				f, r, n, head := pullSquashStory(t)
+				want := "issuedog[bot]"
+				if pusher != "" {
+					f.SetPusher(pusher)
+					want = pusher
+				}
+				r.git("update-ref", "refs/heads/issuedog/5-story", head)
+				c := f.Client(t)
+				read(t, f, c, n)
+				pr, err := c.PullRequest(t.Context(), "o", "r", n)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !pr.Merged || pr.State != "closed" || pr.MergedBy != want || pr.MergeCommitSHA != head || pr.HeadSHA != head || pr.Base != "issuedog/5-story" {
+					t.Errorf("read %+v; want closed, merged into issuedog/5-story by %s, at %s, with %s as its merge commit", pr, want, head, head)
+				}
+				if got, wantEvents := pullMergeEvents(t, f, n), []string{"merged " + want, "closed " + want}; !reflect.DeepEqual(got, wantEvents) {
+					t.Errorf("the timeline %q; want %q", got, wantEvents)
+				}
+				if got := f.State().PRs; len(got) != 1 || !got[0].Merged || got[0].MergedBy != want || got[0].State != "closed" || got[0].HeadSHA != head {
+					t.Errorf("State().PRs %+v; want #%d merged by %s at %s", got, n, want, head)
+				}
+				if got := pullList(t, f, "state=open"); len(got) != 0 {
+					t.Errorf("open pull requests %q; want none", got)
+				}
+				if got, wantClosed := pullList(t, f, "state=closed"), []string{fmt.Sprintf("#%d issuedog/7-task->issuedog/5-story closed", n)}; !reflect.DeepEqual(got, wantClosed) {
+					t.Errorf("closed pull requests %q; want %q", got, wantClosed)
+				}
+			})
+		}
+	}
+}
+
+// A push that moves the base on without the head, as a sibling's merge,
+// leaves the pull request open and unmerged, and so does a head that
+// merged the base's new tip in, which has the base in its history but
+// isn't in the base's. Neither writes an event.
+func TestPullsBaseOnlyMoved(t *testing.T) {
+	t.Parallel()
+	f, r, n, head := pullSquashStory(t)
+	c := f.Client(t)
+	moved := r.write("issuedog/5-story", map[string]string{"sibling.txt": "a sibling's merge"})
+	pr, err := c.PullRequest(t.Context(), "o", "r", n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pr.Merged || pr.State != "open" || pr.MergedBy != "" || pr.MergeCommitSHA != "" || pr.HeadSHA != head {
+		t.Errorf("read after the base moved: %+v; want open and unmerged at %s", pr, head)
+	}
+	merge := r.git("commit-tree", r.git("rev-parse", head+"^{tree}"), "-p", head, "-p", moved, "-m", "merge the story in")
+	r.git("update-ref", "refs/heads/issuedog/7-task", merge)
+	if got, want := pullList(t, f, "state=open"), []string{fmt.Sprintf("#%d issuedog/7-task->issuedog/5-story open", n)}; !reflect.DeepEqual(got, want) {
+		t.Errorf("open pull requests after the head merged the base in %q; want %q", got, want)
+	}
+	if pr, err = c.PullRequest(t.Context(), "o", "r", n); err != nil || pr.Merged || pr.State != "open" || pr.HeadSHA != merge {
+		t.Errorf("read after the head merged the base in: %+v, %v; want open and unmerged at %s", pr, err, merge)
+	}
+	if got := pullMergeEvents(t, f, n); len(got) != 0 {
+		t.Errorf("the timeline %q; want no event", got)
+	}
+}
+
+// A head that's a merge commit, of a newer main commit and the base's tip,
+// as a conflict bug's is, merges once the base is fast-forwarded to it,
+// with that merge commit as its merge_commit_sha. Before the push it's
+// open, though it has the base's tip in its history.
+func TestPullsFastForwardMergeHead(t *testing.T) {
+	t.Parallel()
+	f, r := pullFake(t, "issuedog/5-story")
+	newer := r.commit("main")
+	story := r.write("issuedog/5-story", map[string]string{"story.txt": "the story"})
+	merge := r.git("commit-tree", r.git("rev-parse", story+"^{tree}"), "-p", newer, "-p", story, "-m", "Merge main into the story")
+	r.git("update-ref", "refs/heads/issuedog/9-conflict", merge)
+	n := pullOpen(t, f, "fix: the conflict", "issuedog/9-conflict", "issuedog/5-story", "Bug #9, in story #5.")
+	c := f.Client(t)
+	pr, err := c.PullRequest(t.Context(), "o", "r", n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pr.Merged || pr.State != "open" {
+		t.Errorf("read before the push: %+v; want open and unmerged", pr)
+	}
+	r.git("update-ref", "refs/heads/issuedog/5-story", merge, story)
+	if pr, err = c.PullRequest(t.Context(), "o", "r", n); err != nil || !pr.Merged || pr.State != "closed" || pr.MergedBy != "issuedog[bot]" ||
+		pr.MergeCommitSHA != merge || pr.HeadSHA != merge {
+		t.Errorf("read after the fast-forward: %+v, %v; want merged by the App, with %s as its head and merge commit", pr, err, merge)
+	}
+}
+
+// A pull request opened with its head in its base's history already,
+// which GitHub refuses as having no commits between them and the fake
+// opens, isn't merged by any push while that's its head, even as the base
+// moves on. Once its head moves on and the base is fast-forwarded to it,
+// it merges.
+func TestPullsOpenedInBase(t *testing.T) {
+	t.Parallel()
+	f, r := pullFake(t)
+	r.git("update-ref", "refs/heads/a", r.tip("main"))
+	n := pullOpen(t, f, "A", "a", "main", "")
+	c := f.Client(t)
+	for _, step := range []string{"opened", "main moved on"} {
+		if step == "main moved on" {
+			r.commit("main")
+		}
+		if pr, err := c.PullRequest(t.Context(), "o", "r", n); err != nil || pr.Merged || pr.State != "open" {
+			t.Errorf("%s: read %+v, %v; want open and unmerged", step, pr, err)
+		}
+	}
+	r.git("update-ref", "refs/heads/a", r.tip("main"))
+	head := r.commit("a")
+	r.git("update-ref", "refs/heads/main", head)
+	if pr, err := c.PullRequest(t.Context(), "o", "r", n); err != nil || !pr.Merged || pr.MergeCommitSHA != head {
+		t.Errorf("read after a new head was fast-forwarded onto main: %+v, %v; want merged at %s", pr, err, head)
 	}
 }
