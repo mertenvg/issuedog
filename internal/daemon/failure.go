@@ -209,6 +209,9 @@ func (d *Daemon) failureFile(ctx context.Context, f failureSpec) (int, error) {
 	}
 	d.reread(found.Number, false)
 	created := fmt.Sprintf("Filed for story #%d, whose branch %s fails its checks at `%s`.", n, checkCode(f.Branch), f.Tip)
+	if f.Main != "" {
+		created = fmt.Sprintf("Filed for story #%d, whose branch %s at `%s` doesn't merge `main` at `%s` cleanly.", n, checkCode(f.Branch), f.Tip, f.Main)
+	}
 	if err := d.Step.firstMove(ctx, n, found.Number, f.what(), f.stage(), failureKey(f.Tip), created, child); err != nil {
 		return 0, wrap(err)
 	}

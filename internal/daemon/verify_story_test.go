@@ -242,6 +242,9 @@ func TestVerifyStoryProtected(t *testing.T) {
 	t.Run("main's change since the cut", func(t *testing.T) {
 		t.Parallel()
 		f, v := newStoryVerifyRig(t)
+		// main isn't merged into the story branch, so the story's baseline
+		// stays older than main, as while that merge waits (SPEC §7.5).
+		v.d.StoryMain = false
 		_, tip := v.storyCut()
 		v.prMainCommit("secrets/key.txt", "main's own key\n")
 		head := v.storyHead(tip, map[string]string{"quote.txt": "expired\n"})
