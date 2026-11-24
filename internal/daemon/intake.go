@@ -32,10 +32,15 @@ const approvedLabel = "approved"
 // Otherwise the issue stays: an untrusted author's issue waits for approved,
 // and one with no stage label and no approved is left to triage. So does a
 // follow-up, whatever its labels: only a trusted 👍 on it, its approval
-// (FollowUpByReaction), or an override moves it on (SPEC §6.2). The move's
-// comment says why the issue is in and, as SPEC §6.2 says, tells a story
-// with a parent that it waits at clarifying, since the interviewer doesn't
-// run on it.
+// (FollowUpByReaction), or an override moves it on (SPEC §6.2). So does an
+// issue the App filed for a failure on a story branch, left at intake by a
+// crash between its filing and its first move: only that first move,
+// which the filing writes when step 4 checks the failing tip again
+// (Daemon.failureFile), or an override moves it on, as approved would
+// send a bug to clarifying, where the interviewer doesn't run on it. The
+// move's comment says why the issue is in and, as SPEC §6.2 says, tells a
+// story with a parent that it waits at clarifying, since the interviewer
+// doesn't run on it.
 //
 // CheckLabels has run on s, so its labels are the ones that stand. The
 // events are read from a fresh timeline, and the move waits for the next
@@ -56,7 +61,7 @@ func (st *Step) IntakeVisit(ctx context.Context, s *github.Snapshot) error {
 		return wrap(err)
 	}
 	is := state.Derive(s, st.AppSlug, d.Has)
-	if is.Stage != state.Intake || is.Item.FollowUp {
+	if is.Stage != state.Intake || is.Item.FollowUp || is.Item.FromFailure {
 		return nil
 	}
 	stages := stageLabels(s.Labels)
