@@ -236,6 +236,11 @@ func (d *Daemon) tipCarry(ctx context.Context, s *github.Snapshot, is state.Issu
 			a.Owner, a.Repo, n, pr.Number, pr.HeadSHA, commit, head, branch)
 		return nil
 	case !d.tipSuccess(branch, tip):
+		if j, ok := d.tips[branch]; ok && j.Tip != tip {
+			logr.Infof("%s/%s#%d: its PR #%d went onto %s's tip %s, which moved since its head %s was verified against %s, so no check is carried over to the merge commit %s, which is checked as any push",
+				a.Owner, a.Repo, n, pr.Number, branch, j.Tip, head, tip, commit)
+			return nil
+		}
 		logr.Infof("%s/%s#%d: %s's tip %s, which its head %s was verified against, isn't judged success, as after a restart, so no check is carried over to the merge commit %s, which is checked as any push",
 			a.Owner, a.Repo, n, branch, tip, head, commit)
 		return nil

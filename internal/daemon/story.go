@@ -144,13 +144,23 @@ func (d *Daemon) tipJudge(branch, tip, conclusion string) {
 // branch's tip (storyTarget), is warned of once, not every pass, and a new
 // cause is warned of again. The repeats are logged at debug.
 func (d *Daemon) storyWarnOnce(n int, key, format string, args ...any) {
-	if d.storyWarned[n] == key {
+	logOnce(&d.storyWarned, n, key, logr.Warnf, format, args...)
+}
+
+// logOnce logs, with log, the line for n that format and args make,
+// unless *last records key as n's last such log's, so a wait that lasts
+// is logged once, not every pass, and a new cause is logged again: then
+// it records key, making *last if it's nil. The repeats are logged at
+// debug. startWaitOnce, storyWarnOnce, pickStoryOnce and prMergeOnce each
+// keep their own *last.
+func logOnce(last *map[int]string, n int, key string, log func(string, ...any) string, format string, args ...any) {
+	if (*last)[n] == key {
 		logr.Debugf(format, args...)
 		return
 	}
-	if d.storyWarned == nil {
-		d.storyWarned = map[int]string{}
+	if *last == nil {
+		*last = map[int]string{}
 	}
-	d.storyWarned[n] = key
-	logr.Warnf(format, args...)
+	(*last)[n] = key
+	log(format, args...)
 }

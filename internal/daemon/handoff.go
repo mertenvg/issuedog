@@ -275,15 +275,7 @@ func (r *Runs) storyStart(ctx context.Context, st Stage, s *github.Snapshot) (ru
 // story branch's tip's check, is logged once, not every pass, and a new
 // cause, or a new tip, is logged again. The repeats are logged at debug.
 func (r *Runs) startWaitOnce(n int, key, format string, args ...any) {
-	if r.startWaited[n] == key {
-		logr.Debugf(format, args...)
-		return
-	}
-	if r.startWaited == nil {
-		r.startWaited = map[int]string{}
-	}
-	r.startWaited[n] = key
-	logr.Infof(format, args...)
+	logOnce(&r.startWaited, n, key, logr.Infof, format, args...)
 }
 
 // bundlePath is where the handoff writes run id's bundle: next to its

@@ -270,11 +270,13 @@ func (v *Verifier) personChanges(ctx context.Context, r Result, is state.Issue, 
 		base = ""
 	}
 	res := v.Daemon.personFailed(r.S, is, f.Head, base, verdictText(f.Head, f.Attempt, f.Limit, out))
-	// The verifier ran on a head whose checks passed against main, or its
-	// story branch's tip, as the pass's sync left it (startAfterChecks):
-	// this pass's main, unless it moved during the run, whose newest commit
-	// in the head's history is the story's baseline for a head on its
-	// story branch (checkedMain).
+	// The verifier ran on a head whose checks passed against its target as
+	// the pass's sync left it (startAfterChecks): main's commit, or for a
+	// task in a story its story branch's tip, with the story's baseline.
+	// The check names the newest main commit in the head's history
+	// (checkedMain), read from this pass's main: the run's, unless main
+	// moved during it, or for a head on its story branch, the story's
+	// baseline.
 	main, err := v.Daemon.Clone.Resolve(ctx, "main")
 	if err != nil {
 		return fmt.Errorf("move a person's head back on the verifier's findings: read main: %w", err)

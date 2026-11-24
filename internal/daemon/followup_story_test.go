@@ -22,9 +22,9 @@ import (
 
 // A task in a story files its follow-ups under the story, with an addendum
 // on the story for each (SPEC §10.2), and a trusted 👍 on the clean
-// addendum approves the follow-up. No task in a story reaches the verifier
-// until #624, so the fake holds the task's clean pass comment, as
-// Verifier.Apply posts it, and each pass is the task's visit
+// addendum approves the follow-up. The fake holds the task's clean pass
+// comment, as Verifier.Apply posts it, so no verifier run is needed, and
+// each pass is the task's visit
 // (FollowUpsVisit), as Iterate's runs it, or a fresh daemon's Iterate.
 
 // storyTask is filingTask with task #1 under story #2, which the owner

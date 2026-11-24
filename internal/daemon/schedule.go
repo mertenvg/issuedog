@@ -155,15 +155,7 @@ func (r *Runs) pickCandidate(ctx context.Context, st Stage, s *github.Snapshot) 
 // (storyWarnOnce), so neither's log on a wait that lasts makes the other's
 // repeat.
 func (r *Runs) pickStoryOnce(n int, key string, logf func(string, ...any) string, format string, args ...any) {
-	if r.pickLogged[n] == key {
-		logr.Debugf(format, args...)
-		return
-	}
-	if r.pickLogged == nil {
-		r.pickLogged = map[int]string{}
-	}
-	r.pickLogged[n] = key
-	logf(format, args...)
+	logOnce(&r.pickLogged, n, key, logf, format, args...)
 }
 
 // pickGaps reports whether step 1 didn't finish on some issue this pass

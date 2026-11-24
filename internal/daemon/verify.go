@@ -354,6 +354,8 @@ func (t VerifyTarget) String() string {
 //     as the daemon judged or read it (tipSuccess), or the tip has no one
 //     merge base with main, so the story has no baseline: it waits, and
 //     that's warned of once (storyWarnOnce), until that changes.
+//   - the App just merged a task's PR onto that tip (tipMergedOnto), so
+//     the branch is past it till the next sync: it waits, logged at info.
 //
 // Otherwise it's the story branch, its tip and the story's baseline, the
 // merge base of that tip and main. The parent's dirty content is read only
@@ -397,6 +399,10 @@ func (r *Runs) storyTarget(ctx context.Context, s *github.Snapshot, main string)
 	case tip == "":
 		d.storyWarnOnce(n, "no-branch:"+branch, "%s/%s#%d waits at %s, as its story #%d has no branch yet",
 			a.Owner, a.Repo, n, state.Verifying, story.Number)
+		return VerifyTarget{}, false, nil
+	case d.tipMergedOnto(branch, tip):
+		logr.Infof("%s/%s#%d waits at %s, as the App just merged a task's PR onto its story branch %s's tip %s, so the branch is past it till the next sync",
+			a.Owner, a.Repo, n, state.Verifying, branch, tip)
 		return VerifyTarget{}, false, nil
 	case !d.tipSuccess(branch, tip):
 		d.storyWarnOnce(n, "tip:"+branch+"@"+tip, "%s/%s#%d waits at %s, as its story branch %s's tip %s has no %s naming it as success",

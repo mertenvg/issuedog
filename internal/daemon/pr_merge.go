@@ -282,13 +282,5 @@ func (d *Daemon) prPersonFailed(ctx context.Context, n int, head string) (bool, 
 // refusal of one head, is logged once, not every pass, and a new cause is
 // logged again. The repeats are logged at debug.
 func (d *Daemon) prMergeOnce(n int, key string, log func(string, ...any) string, format string, args ...any) {
-	if d.prMergeLogged[n] == key {
-		logr.Debugf(format, args...)
-		return
-	}
-	if d.prMergeLogged == nil {
-		d.prMergeLogged = map[int]string{}
-	}
-	d.prMergeLogged[n] = key
-	log(format, args...)
+	logOnce(&d.prMergeLogged, n, key, log, format, args...)
 }
