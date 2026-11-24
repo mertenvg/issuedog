@@ -38,8 +38,11 @@ type doneChecked struct {
 //     check (humanCheck) on its origin marker's Issue.Origin.Check: the
 //     zero Check of a plain-text "Done when" passes with nothing read, and
 //     check fields that couldn't be read (state.CheckUnreadable) fail with
-//     nothing read. A failed check is a Rejection whose reason quotes what
-//     it found, so Step 👎s the comment and replies once, and the issue
+//     nothing read. The human task filed for a story branch that fails
+//     rule 2 has the tip check, of Issue.Origin.Story's branch, so a
+//     /done before its tip moves on is rejected with a reply naming the
+//     branch and the failing tip (humanCheckTip). A failed check is a
+//     Rejection whose reason quotes what it found, so Step 👎s the comment and replies once, and the issue
 //     stays open; a later /done checks again. A check that couldn't be
 //     read fails every time, so its Rejection is Final, and says to close
 //     the issue by hand instead (unreadableAdvice). A read that fails is an
@@ -75,7 +78,7 @@ func DoneCommand() Handler {
 				return Rejection{Reason: "this issue has no hand-off of mine waiting, so `/done` has nothing to finish. " +
 					"To send a task on from here, set its stage by hand", Final: true}
 			}
-			pass, found, err := a.humanCheckOn(ctx, c.S.Number, is.Origin.Check, "/done")
+			pass, found, err := a.humanCheckOn(ctx, c.S.Number, is.Origin, "/done")
 			if err != nil {
 				return fmt.Errorf("done: %w", err)
 			}
@@ -121,7 +124,7 @@ func (a *Applier) doneFound(ctx context.Context, c Cmd) (string, error) {
 	if a.doneChecked.id == c.Comment.ID {
 		return a.doneChecked.found, nil
 	}
-	pass, found, err := a.humanCheckOn(ctx, c.S.Number, state.Derive(c.S, a.AppSlug, c.Dirt.Has).Origin.Check, "/done")
+	pass, found, err := a.humanCheckOn(ctx, c.S.Number, state.Derive(c.S, a.AppSlug, c.Dirt.Has).Origin, "/done")
 	if err != nil {
 		return "", fmt.Errorf("re-run the check: %w", err)
 	}
@@ -194,7 +197,7 @@ func DoneByReaction(trust github.Trust) func(ctx context.Context, a *Applier, s 
 			return nil
 		}
 		key := state.ReactionKey(thumb.ID)
-		pass, found, err := a.humanCheckOn(ctx, s.Number, is.Origin.Check, "a 👍")
+		pass, found, err := a.humanCheckOn(ctx, s.Number, is.Origin, "a 👍")
 		if err != nil {
 			return wrap(err)
 		}
@@ -236,17 +239,17 @@ func DoneByReaction(trust github.Trust) func(ctx context.Context, a *Applier, s 
 // in a dirty comment (SPEC §5.1), so the edit would lose the marker.
 const unreadableAdvice = "Close this issue by hand once the task is done."
 
-// humanCheckOn is humanCheck for issue n's check c, run by trigger, a
+// humanCheckOn is humanCheck for issue n's origin o, run by trigger, a
 // /done or a 👍. A check whose origin marker fields couldn't be read
 // (state.CheckUnreadable) logs a warning each time it's run, as only a bug
 // or a change to the marker's format makes one (SPEC §9.3, "Unreadable").
 // Reading the marker on a pass that runs no check logs nothing.
-func (a *Applier) humanCheckOn(ctx context.Context, n int, c state.Check, trigger string) (bool, string, error) {
-	if c.Kind == state.CheckUnreadable {
+func (a *Applier) humanCheckOn(ctx context.Context, n int, o state.Origin, trigger string) (bool, string, error) {
+	if o.Check.Kind == state.CheckUnreadable {
 		logr.Warnf("%s/%s#%d: %s ran the human task's check, but its origin marker's check fields couldn't be read, "+
 			"so it fails: only a bug or a change to the marker's format does that", a.Owner, a.Repo, n, trigger)
 	}
-	pass, found, err := a.humanCheck(ctx, c)
+	pass, found, err := a.humanCheck(ctx, o)
 	if err != nil {
 		return false, "", fmt.Errorf("the check on %s: %w", trigger, err)
 	}

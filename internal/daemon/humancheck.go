@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -35,8 +36,8 @@ func checkFromPlan(d planDoneWhen) (state.Check, error) {
 	return state.Check{Kind: c.Kind, Value: value, Contains: c.Contains}, nil
 }
 
-// humanCheck runs a human task's check c (SPEC §9.3, "The checks"), and
-// reports whether it passes, and found, the App's sentence saying what it
+// humanCheck runs the check on a human task's origin o, its check c,
+// o.Check (SPEC §9.3, "The checks"), and reports whether it passes, and found, the App's sentence saying what it
 // saw, for the reply to a failure. Every value in found is inline code,
 // escaped (checkCode). It never quotes a file's contents. A plain-text "Done
 // when", the zero Check, has nothing to run, and passes. A check whose
@@ -55,11 +56,15 @@ func checkFromPlan(d planDoneWhen) (state.Check, error) {
 //     the name (RequiredChecks). A failure lists the contexts the rules do
 //     require, or says none do;
 //   - installation: the App has an installation on an account whose login
-//     is the owner, ignoring case, that isn't suspended (Installations).
+//     is the owner, ignoring case, that isn't suspended (Installations);
+//   - tip, on the human task filed for a story branch that fails rule 2:
+//     the branch of o.Story isn't at the failing tip, c's value, any more,
+//     in the daemon's bare clone (humanCheckTip).
 //
 // A GitHub or git read that fails is err, wrapped, and never a failed
 // check: the caller tries again on a later pass.
-func (a *Applier) humanCheck(ctx context.Context, c state.Check) (pass bool, found string, err error) {
+func (a *Applier) humanCheck(ctx context.Context, o state.Origin) (pass bool, found string, err error) {
+	c := o.Check
 	switch c.Kind {
 	case "":
 		return true, `The "Done when" has no check for me to run.`, nil
@@ -82,6 +87,8 @@ func (a *Applier) humanCheck(ctx context.Context, c state.Check) (pass bool, fou
 		return a.humanCheckRuleset(ctx, c.Value)
 	case state.CheckInstallation:
 		return a.humanCheckInstallation(ctx, c.Value)
+	case state.CheckTip:
+		return a.humanCheckTip(ctx, o.Story, c.Value)
 	}
 	return false, "", fmt.Errorf("run the check: unknown kind %q", c.Kind)
 }
@@ -177,6 +184,49 @@ func (a *Applier) humanCheckInstallation(ctx context.Context, owner string) (boo
 		return false, fmt.Sprintf("The App's installation on %s is suspended.", v), nil
 	}
 	return false, fmt.Sprintf("The App isn't installed on %s.", v), nil
+}
+
+// humanCheckTip is humanCheck's tip check, on the human task filed for
+// story's branch, which failed rule 2 at tip (SPEC §9.3, A story branch's
+// failure). It reads the story's branch by its prefix, issuedog/<story>-,
+// whatever its slug, as storyBranch does, among the bare clone's branches
+// as the pass's sync left them, at no request (StoryBranches). It passes
+// once that one branch's tip isn't tip. While it still is, it fails, naming
+// the branch and the tip. No branch, or more than one with the prefix,
+// fails too, saying so, as the daemon can't tell the story's tip then
+// (SPEC §7.5).
+func (a *Applier) humanCheckTip(ctx context.Context, story int, tip string) (bool, string, error) {
+	if story <= 0 {
+		return false, "", fmt.Errorf("run the tip check: no story to read the branch of, for the tip %s", tip)
+	}
+	if a.StoryBranches == nil {
+		return false, "", errors.New("run the tip check: no clone to read the story's branch from")
+	}
+	prefix := taskBranchPrefix(story)
+	branches, err := a.StoryBranches(ctx, prefix)
+	if err != nil {
+		return false, "", fmt.Errorf("run the tip check: %w", err)
+	}
+	failing := checkCode(tip)
+	names := slices.Sorted(maps.Keys(branches))
+	switch len(names) {
+	case 0:
+		return false, fmt.Sprintf("Story #%d has no branch with the prefix %s, so it has no tip to check against the failing tip %s.",
+			story, checkCode(prefix), failing), nil
+	case 1:
+	default:
+		codes := make([]string, len(names))
+		for i, name := range names {
+			codes[i] = checkCode(name)
+		}
+		return false, fmt.Sprintf("Story #%d has more than one branch with the prefix %s, %s, so I can't tell which one's tip "+
+			"to check against the failing tip %s.", story, checkCode(prefix), list(codes), failing), nil
+	}
+	name, now := checkCode(names[0]), branches[names[0]]
+	if now == tip {
+		return false, fmt.Sprintf("The story branch %s is still at the failing tip %s.", name, failing), nil
+	}
+	return true, fmt.Sprintf("The story branch %s is at %s, no longer at the failing tip %s.", name, checkCode(now), failing), nil
 }
 
 // checkCode is s as an inline code span, for a value in humanCheck's
