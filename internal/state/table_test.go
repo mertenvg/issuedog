@@ -23,6 +23,7 @@ func TestLookupFindsEveryRow(t *testing.T) {
 		{Intake, Ready, ClassTask, TriggerCreated},
 		{Intake, Ready, ClassTask, TriggerFollowUpApproved},
 		{Intake, NeedsHuman, ClassHumanTask, TriggerCreated},
+		{Intake, Ready, ClassBug, TriggerCreated},
 		{Clarifying, Clarifying, ClassBug, TriggerMoreQuestions},
 		{Clarifying, SpecReview, ClassOwnerStory, TriggerSpecWritten},
 		{Clarifying, Ready, ClassNewOwnerTask, TriggerTaskWritten},
@@ -75,6 +76,7 @@ func TestLookupFindsEveryRow(t *testing.T) {
 		{Held, InProgress, ClassTask, TriggerResume},
 		{Held, Clarifying, ClassEpic, TriggerResumeAfterDiscussion},
 		{Held, Closed, ClassHumanTask, TriggerClosed},
+		{PROpen, Closed, ClassBug, TriggerConflictMoot},
 		{Closed, Held, ClassTask, TriggerReopened},
 	}
 	if len(cases) != len(table) {
@@ -175,11 +177,13 @@ func TestLookupPlanQuestions(t *testing.T) {
 // TestLookupCreated: a created child's first move (SPEC §7.2) is
 // intake → planning for a story with a parent, intake → ready for a task
 // from a plan, and intake → needs-human for a human task, each only for
-// its class. An owner's story or task, an epic, a bug and an untyped issue
-// get none of them, nor does a class get another's first stage.
+// its class, and a bug filed for a failure on a story branch, which is a
+// ClassBug from intake, enters by intake → ready (SPEC §7.5). An owner's
+// story or task, an epic, a bug before ready and an untyped issue get none
+// of them, nor does a class get another's first stage.
 func TestLookupCreated(t *testing.T) {
 	t.Parallel()
-	first := map[Class]Stage{ClassStory: Planning, ClassTask: Ready, ClassHumanTask: NeedsHuman}
+	first := map[Class]Stage{ClassStory: Planning, ClassTask: Ready, ClassHumanTask: NeedsHuman, ClassBug: Ready}
 	classes := []Class{ClassEpic, ClassStory, ClassOwnerStory, ClassTask, ClassOwnerTask, ClassHumanTask,
 		ClassBug, ClassUntyped, ClassNewBug, ClassNewOwnerTask}
 	if len(classes) != len(classNames) {
@@ -235,6 +239,29 @@ func TestLookupFollowUpApproved(t *testing.T) {
 	}
 }
 
+// TestLookupConflictMoot: the App's close of a moot conflict bug (SPEC
+// §7.2, §7.5) moves a bug from any open stage, held included, to closed,
+// and nowhere else. No other class gets it, a bug before ready among them,
+// as a failure's bug is a ClassBug from intake, and nothing moves from
+// closed on it.
+func TestLookupConflictMoot(t *testing.T) {
+	t.Parallel()
+	for c := Class(1); c&All != 0; c <<= 1 {
+		for _, from := range append(slices.Clone(openStages), Closed) {
+			for _, to := range append(slices.Clone(openStages), Closed) {
+				r, err := Lookup(from, to, c, TriggerConflictMoot)
+				want := c == ClassBug && from != Closed && to == Closed
+				switch {
+				case want && (err != nil || r.From() != AnyOpen || r.Classes() != ClassBug || r.Trigger() != TriggerConflictMoot):
+					t.Errorf("%s: Lookup(%s, %s) = %+v, %v; want the moot close for a bug alone", c, from, to, r, err)
+				case !want && !errors.Is(err, ErrNoTransition):
+					t.Errorf("%s: Lookup(%s, %s) = %v, want ErrNoTransition", c, from, to, err)
+				}
+			}
+		}
+	}
+}
+
 func TestLookupNeedsOneClass(t *testing.T) {
 	for _, c := range []Class{0, AnyTask, 1 << 12} {
 		_, err := Lookup(Intake, Clarifying, c, TriggerTrusted)
@@ -261,6 +288,7 @@ func TestTableMatchesSpec(t *testing.T) {
 		"epic planned into stories":         ClassEpic,
 		"task":                              AnyTask | ClassHumanTask,
 		"task, bug":                         AnyTask | ClassHumanTask | NewBugOrOwnerTask,
+		"bug":                               ClassBug | ClassNewBug,
 	}
 	stage := func(s string) Stage {
 		switch s {
@@ -429,8 +457,8 @@ func TestFitsAnyOpenRowsAreCovered(t *testing.T) {
 			}
 		}
 	}
-	if n != 7 {
-		t.Errorf("%d rows from any open, want 7", n)
+	if n != 8 {
+		t.Errorf("%d rows from any open, want 8", n)
 	}
 }
 
@@ -510,8 +538,8 @@ func TestFitsUnchangedByCreatedRows(t *testing.T) {
 	saved := table
 	t.Cleanup(func() { table = saved })
 	table = slices.DeleteFunc(slices.Clone(saved), func(r Row) bool { return r.Trigger() == TriggerCreated })
-	if len(table) != len(saved)-3 {
-		t.Fatalf("%d created rows, want 3", len(saved)-len(table))
+	if len(table) != len(saved)-4 {
+		t.Fatalf("%d created rows, want 4", len(saved)-len(table))
 	}
 	for name, it := range fitsItems {
 		for _, s := range stages {

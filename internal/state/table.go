@@ -19,13 +19,13 @@ const (
 )
 
 // Trigger names what caused a transition. Each §7.2 row has its own, but
-// for TriggerCreated, whose three rows differ by class, and
+// for TriggerCreated, whose four rows differ by class, and
 // TriggerAttemptCap, TriggerMerged and TriggerUntrustedMerge, whose rows
 // differ by the stage they move from.
 type Trigger string
 
 // The §7.2 triggers, one per row and in table order, TriggerCreated once
-// for its three rows, TriggerAttemptCap once for its two: a task's move to
+// for its four rows, TriggerAttemptCap once for its two: a task's move to
 // needs-human with a hand-off once its runs reach the cap (SPEC §8.3), from
 // in-progress for the implementer's failed runs, and from verifying for the
 // verify loop's findings, TriggerMerged once for its two, a task's close
@@ -39,7 +39,10 @@ const (
 	// stage (SPEC §7.2): planning for a story with a parent, ready for
 	// a task from a plan, needs-human for a human task. The daemon writes
 	// it in an App comment on the child, keyed by the parent's move to
-	// planned (SPEC §5).
+	// planned (SPEC §5). It's also the first move of an issue the daemon
+	// files for a failure on a story branch (SPEC §7.5): needs-human for
+	// the human task a rule 2 failure files, and ready for a bug, keyed
+	// event=t<SHA> by the failing tip.
 	TriggerCreated                Trigger = "created"
 	TriggerFollowUpApproved       Trigger = "follow-up-approved"
 	TriggerMoreQuestions          Trigger = "more-questions"
@@ -89,7 +92,12 @@ const (
 	TriggerResume                 Trigger = "resume"
 	TriggerResumeAfterDiscussion  Trigger = "resume-after-discussion"
 	TriggerClosed                 Trigger = "closed"
-	TriggerReopened               Trigger = "reopened"
+	// TriggerConflictMoot is the App's close, as not planned, of an open
+	// conflict bug whose main commit the story branch's tip holds other
+	// than through the bug's own head, so the bug is moot (SPEC §7.5, A
+	// conflict merged by hand), keyed event=t<SHA> by that tip.
+	TriggerConflictMoot Trigger = "conflict-moot"
+	TriggerReopened     Trigger = "reopened"
 )
 
 // Row is one row of the §7.2 transition table. Its fields are unexported, so
@@ -128,6 +136,7 @@ var table = []Row{
 	{Intake, Ready, ClassTask, TriggerCreated},
 	{Intake, Ready, ClassTask, TriggerFollowUpApproved},
 	{Intake, NeedsHuman, ClassHumanTask, TriggerCreated},
+	{Intake, Ready, ClassBug, TriggerCreated},
 	{Clarifying, Clarifying, All, TriggerMoreQuestions},
 	{Clarifying, SpecReview, epicOrOwnerStory, TriggerSpecWritten},
 	{Clarifying, Ready, NewBugOrOwnerTask, TriggerTaskWritten},
@@ -180,6 +189,7 @@ var table = []Row{
 	{Held, PreviousAt, All, TriggerResume},
 	{Held, Clarifying, All, TriggerResumeAfterDiscussion},
 	{AnyOpen, Closed, All, TriggerClosed},
+	{AnyOpen, Closed, ClassBug, TriggerConflictMoot},
 	{Closed, Held, All, TriggerReopened},
 }
 
