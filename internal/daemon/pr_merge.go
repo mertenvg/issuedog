@@ -51,7 +51,8 @@ func prMoveTip(is state.Issue) string {
 //     to judge (prNewHead), and a branch that's gone, or one of two with the
 //     task's prefix, merges nothing;
 //   - its story branch's tip has the App's issuedog/tip naming the branch
-//     as success (prStoryTip), and is that tip=, or a tip the head's merge
+//     as success, or for a failure's bug, passes rule 2 (prStoryTip), and
+//     is that tip=, or a tip the head's merge
 //     with has passed the checks on since, as step 4 judged it
 //     (prMergeOnto). Otherwise it waits at pr-open, with no request, logged
 //     once a cause (prMergeOnce).
@@ -189,12 +190,16 @@ type prRefusal struct {
 // prStoryTip is task s's story branch and its tip, as the pass's sync
 // left them, with why a move onto it waits, or "" when it needn't (SPEC
 // §7.5): s's story (storyOf), its one branch (storyBranch), and that tip's
-// App issuedog/tip naming the branch as success (tipSuccess). A parent
-// that's no story s is in, one whose plan data doesn't read back, two
-// branches with its prefix, no branch, a tip not checked as success yet,
-// after a restart too until step 4 reads its check, and a tip the App
-// merged a task's PR onto (tipMergedOnto), as a sibling's in the same
-// pass, each give why.
+// App issuedog/tip naming the branch as success (tipSuccess), or for a
+// failure's bug of the story, a tip step 4 judged that passes rule 2,
+// whatever else fails there (storyTipTaken), so its merge and the checks
+// on its merge with a moved tip take that tip (SPEC §7.5's A checked
+// base). A parent that's no story s is in, one whose plan data doesn't
+// read back, two branches with its prefix, no branch, a tip not checked
+// as success yet, after a restart too until step 4 reads its check, or
+// for a failure's bug, one that isn't judged or fails rule 2, and a tip
+// the App merged a task's PR onto (tipMergedOnto), as a sibling's in the
+// same pass, each give why.
 // It reads only the snapshots step 1 left, the bare repo and what step 4
 // judged, so it costs no request: the parent's dirty content is kept from
 // step 1 (Applier.Dirty), and read only for an epic's plan.
@@ -230,7 +235,13 @@ func (d *Daemon) prStoryTip(ctx context.Context, s *github.Snapshot) (branch, ti
 		return branch, "", fmt.Sprintf("its story #%d has no branch", story.Number), nil
 	case d.tipMergedOnto(branch, tip):
 		return branch, tip, fmt.Sprintf("its story branch %s's tip %s had a task's PR merged onto it, so it's the branch's tip no more, and the new tip isn't checked yet", branch, tip), nil
-	case !d.tipSuccess(branch, tip):
+	}
+	switch taken, bug, err := d.storyTipTaken(ctx, s, story, branch, tip); {
+	case err != nil:
+		return "", "", "", fmt.Errorf("judge its story branch's tip: %w", err)
+	case !taken && bug:
+		return branch, tip, fmt.Sprintf("its story branch %s's tip %s %s", branch, tip, failureTipWhy), nil
+	case !taken:
 		return branch, tip, fmt.Sprintf("its story branch %s's tip %s has no %s naming it as success", branch, tip, github.TipCheck), nil
 	}
 	return branch, tip, "", nil

@@ -473,7 +473,10 @@ func (r *Runs) prMainCheck(ctx context.Context, n int, head string, t VerifyTarg
 // The move takes the worker, so while another task holds it (workerFree),
 // it waits, kept in memory (Daemon.prWaiting), with no write, and step 2
 // makes it on the first pass the worker is free, while the target is still
-// at t (prWaitingMain). Otherwise, before the move, it reads the issue
+// at t (prWaitingMain). A task in a story's move waits the same way while
+// a failure on its story branch is open and the task isn't its bug
+// (prReviewTipWait), so step 2 makes it once the failure closes (SPEC
+// §3.4's A story's waits). Otherwise, before the move, it reads the issue
 // again, and runs CheckLabels and the look for discussion triggers on it,
 // as verifyFindings does (SPEC §8.2): a task closed, gone, held, or moved
 // since the checks started gets no move.
@@ -489,6 +492,12 @@ func (r *Runs) mainSendBack(ctx context.Context, rd Ready, is state.Issue, t Ver
 	}
 	if seen > 0 {
 		m.Fields[state.FieldSeen] = strconv.FormatInt(seen, 10)
+	}
+	switch waits, err := d.prReviewTipWait(ctx, rd.S, m); {
+	case err != nil:
+		return wrap(err)
+	case waits:
+		return nil
 	}
 	if free, why := d.workerFree(n); !free {
 		d.prWait(n, m, why)
@@ -538,8 +547,12 @@ func (r *Runs) mainSendBack(ctx context.Context, rd Ready, is state.Issue, t Ver
 // request (mergeTarget), is at the commit its key names (moveKey).
 // Otherwise it's dropped, and step 4 judges the head again on the newer
 // target (Runs.mainMoved), as for a story branch's newer tip, once its
-// check is success. A push to the task's branch is a change the poll
-// lists, so prWaitingFor drops the move for it already.
+// check is success. One that stands, of a task in a story, isn't made
+// while a failure on the story branch is open and the task isn't its bug
+// (prReviewTipWait): it's kept, with no write, and this gives false, so
+// it's made on the first pass the failure is closed. A push to the task's
+// branch is a change the poll lists, so prWaitingFor drops the move for it
+// already.
 func (d *Daemon) prWaitingMain(ctx context.Context, s *github.Snapshot, m Move) (bool, error) {
 	a, n := d.Step.Applier, s.Number
 	t, why, err := d.mergeTarget(ctx, s)
@@ -554,7 +567,13 @@ func (d *Daemon) prWaitingMain(ctx context.Context, s *github.Snapshot, m Move) 
 		logr.Debugf("%s/%s#%d: its move to %s on %s, which waited for the worker, is dropped, as its target is %s now, so it's judged again",
 			a.Owner, a.Repo, n, m.To, m.Key.ID[1:], t)
 	default:
-		return true, nil
+		// It stands, and is made once no failure on its story branch holds
+		// it (prReviewTipWait), which keeps it meanwhile.
+		waits, err := d.prReviewTipWait(ctx, s, m)
+		if err != nil {
+			return false, fmt.Errorf("its waiting move's story branch: %w", err)
+		}
+		return !waits, nil
 	}
 	delete(d.prWaiting, n)
 	return false, nil

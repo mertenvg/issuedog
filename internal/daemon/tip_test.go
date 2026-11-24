@@ -192,9 +192,12 @@ func TestTipCheckPersonPush(t *testing.T) {
 // tipFailed runs a pass of v on tip, story 1's branch's tip, which must
 // post issuedog/tip as failure there, naming the branch, titled for a
 // failure, with a summary starting as one does and holding each of
-// sections, the commands having run commands times.
+// sections, the commands having run commands times. v picks nothing from
+// then on (pickOff), so a bug the failure files at ready stays there: its
+// pick is story_failure_test.go's.
 func (v *verdictRig) tipFailed(cut, tip string, commands int, sections ...string) {
 	v.t.Helper()
+	v.pickOff()
 	want := []githubtest.CheckRunState{tipCheck(cut, tipBranch, "success"), tipCheck(tip, tipBranch, "failure")}
 	slices.SortStableFunc(want, func(a, b githubtest.CheckRunState) int { return strings.Compare(a.SHA, b.SHA) })
 	v.tipJudged(tip, commands, want)

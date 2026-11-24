@@ -607,15 +607,23 @@ func TestPRMergePersonCheckFailed(t *testing.T) {
 // while its story branch's tip has no success, as its run couldn't start
 // there (SPEC §3.4, §7.2), with no write, and no request on the passes that
 // wait. A push to the task's branch meanwhile is no new head's move: the
-// waiting review's move carries it. Once a new tip passes its check, the
-// next pass makes the move, with head= the pushed head.
+// waiting review's move carries it. Once a new tip passes its check, and
+// the bug the broken tip filed is closed, as the owner closes it with the
+// fix, so no failure on the branch is open (story_failure_test.go), the
+// next pass makes the move, with head= the pushed head. The rig picks
+// nothing (pickOff), so that bug stays at ready till then.
 func TestPRMergeReviewWaitsForTip(t *testing.T) {
 	t.Parallel()
 	f, v, _, head, pr := storyMergeReady(t)
+	v.pickOff()
 	broken := v.tipPush(storyVerifyBranch, map[string]string{"broken.txt": "the story broke it\n"})
 	v.pass()
 	if got := f.State().CheckRuns; !slices.Contains(got, tipCheck(broken, storyVerifyBranch, "failure")) {
 		t.Fatalf("the pass on the broken tip left the checks %+v; want its failure", got)
+	}
+	bug := len(f.State().Issues)
+	if is := f.State().Issues[bug-1]; !slices.Contains(is.Labels, "type:bug") || is.Parent != 2 {
+		t.Fatalf("#%d = %+v; want the bug the broken tip filed under the story", bug, is)
 	}
 	f.ReviewPR(pr, wholeRunOwner, github.ReviewChangesRequested, "Rename it.", nil)
 	writes := len(f.Writes())
@@ -631,6 +639,7 @@ func TestPRMergeReviewWaitsForTip(t *testing.T) {
 		t.Fatalf("the push's pass left the task at %s, with moves to verifying %+v; want pr-open, and none", pickStage(f, 1), moves)
 	}
 	fixed := v.tipPush(storyVerifyBranch, map[string]string{"broken.txt": ""})
+	f.CloseBy(bug, "owner")
 	v.pass()
 	if got := f.State().CheckRuns; !slices.Contains(got, tipCheck(fixed, storyVerifyBranch, "success")) || pickStage(f, 1) != "stage:pr-open" {
 		t.Fatalf("the pass on the fixed tip left the checks %+v, the task at %s; want its success, and pr-open", got, pickStage(f, 1))

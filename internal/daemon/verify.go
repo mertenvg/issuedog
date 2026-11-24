@@ -351,9 +351,15 @@ func (t VerifyTarget) String() string {
 //   - its parent's plan data doesn't read back (storyOf's error), or its
 //     story has two branches with its prefix (errTwoBranches), or none, or
 //     that branch's tip has no issuedog/tip naming the branch as success,
-//     as the daemon judged or read it (tipSuccess), or the tip has no one
-//     merge base with main, so the story has no baseline: it waits, and
-//     that's warned of once (storyWarnOnce), until that changes.
+//     as the daemon judged or read it (tipSuccess), or for a failure's bug
+//     of the story, isn't a tip step 4 judged that passes rule 2, whatever
+//     else fails there (storyTipTaken), or the tip has no one merge base
+//     with main, so the story has no baseline: it waits, and that's
+//     warned of once (storyWarnOnce), until that changes.
+//   - a failure on its story branch is open, and it isn't that failure's
+//     bug (failureWait): it waits, so its checks and its verifier run
+//     don't run while it steps aside for the bug (failureAside), logged
+//     once, at info.
 //   - the App just merged a task's PR onto that tip (tipMergedOnto), so
 //     the branch is past it till the next sync: it waits, logged at info.
 //
@@ -404,9 +410,21 @@ func (r *Runs) storyTarget(ctx context.Context, s *github.Snapshot, main string)
 		logr.Infof("%s/%s#%d waits at %s, as the App just merged a task's PR onto its story branch %s's tip %s, so the branch is past it till the next sync",
 			a.Owner, a.Repo, n, state.Verifying, branch, tip)
 		return VerifyTarget{}, false, nil
-	case !d.tipSuccess(branch, tip):
+	}
+	switch taken, bug, err := d.storyTipTaken(ctx, s, story, branch, tip); {
+	case err != nil:
+		return VerifyTarget{}, false, fmt.Errorf("judge its story branch's tip: %w", err)
+	case !taken && bug:
+		d.storyWarnOnce(n, "tip:"+branch+"@"+tip, "%s/%s#%d waits at %s, as its story branch %s's tip %s %s",
+			a.Owner, a.Repo, n, state.Verifying, branch, tip, failureTipWhy)
+		return VerifyTarget{}, false, nil
+	case !taken:
 		d.storyWarnOnce(n, "tip:"+branch+"@"+tip, "%s/%s#%d waits at %s, as its story branch %s's tip %s has no %s naming it as success",
 			a.Owner, a.Repo, n, state.Verifying, branch, tip, github.TipCheck)
+		return VerifyTarget{}, false, nil
+	}
+	if why := d.failureWait(s, branch, tip); why != "" {
+		logOnce(&d.storyWarned, n, "failure:"+why, logr.Infof, "%s/%s#%d waits at %s, as %s", a.Owner, a.Repo, n, state.Verifying, why)
 		return VerifyTarget{}, false, nil
 	}
 	base, err := verify.BaseOf(ctx, verify.Facts{Repo: d.Clone, Head: tip, Target: main})
