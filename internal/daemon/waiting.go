@@ -260,6 +260,10 @@ type waitInput struct {
 	// daemon runs, or step 1 no longer asks it (Applier.closerErrEnded).
 	// Unset, none ends so.
 	CloserErrEnded func(key string) bool
+	// BranchesNow, if set, returns the key of the branches state error that
+	// stands on an issue, and whether its branches were judged
+	// (Daemon.branchesNow). Unset, none is judged, so none ends so.
+	BranchesNow func(n int) (string, bool)
 	// Holds are the open discussion triggers on S after its visit, if S is
 	// held, and nil otherwise (Step.holdItemFind).
 	Holds []discTrigger
@@ -378,7 +382,7 @@ func waitFind(in waitInput) ([]waitItem, error) {
 	add := func(kind waitKind, key string, comment int64, lines []waitLine) {
 		items = append(items, waitItemOf(in.Owner, in.Repo, s, kind, key, comment, lines))
 	}
-	open, err := openErrors(s, is, func() ([]github.Comment, error) { return in.Inputs, nil }, in.CloserErrEnded)
+	open, err := openErrors(s, is, func() ([]github.Comment, error) { return in.Inputs, nil }, in.CloserErrEnded, in.BranchesNow)
 	if err != nil {
 		return nil, fmt.Errorf("what waits on %s/%s#%d: %w", in.Owner, in.Repo, s.Number, err)
 	}

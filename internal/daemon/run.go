@@ -600,7 +600,10 @@ func (r *Runs) CheckRegistered() error {
 // and that's logged once. It's judged before the issue is read again, so
 // the wait costs no request, and again on the issue read again, which
 // starts no run either when the task's story is no longer ready, or its
-// tip isn't the one named; the lease records the tip it named.
+// tip isn't the one named; the lease records the tip it named. An issue
+// with two or more branches with its prefix, or a branches state error
+// standing on it or on its story, starts no run either, uncounted, and
+// that's logged once (branchesWait).
 func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 	return r.runStage(ctx, rd, st, false)
 }
@@ -678,6 +681,11 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		// the new key's error (typeCheck).
 		logr.Debugf("%s/%s#%d: no %s run: its type doesn't fit its stage, as reported", a.Owner, a.Repo, n, st.Agent())
 		return false, nil
+	}
+	// Two or more branches with its prefix, or a branches state error on
+	// it or its story, start none of its runs, uncounted (SPEC §5.3, §7.5).
+	if wait, err := r.branchesWait(ctx, st, rd.S); err != nil || wait {
+		return false, wrap(err)
 	}
 	story, ready, err := r.storyStart(ctx, st, rd.S)
 	if err != nil || !ready {

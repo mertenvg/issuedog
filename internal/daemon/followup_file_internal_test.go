@@ -28,7 +28,7 @@ func TestFollowUpsErrorOpen(t *testing.T) {
 			"<!-- issuedog:transition from=verifying to=held at=verifying reason=owner cmd=7 -->"), nil},
 		{"an ack ends it", openErrSnap("", toVerifying, stuck, openErrMarker(followUpsErrKind, "2-1", "r8")), nil},
 	} {
-		open, err := openErrors(tc.s, state.Derive(tc.s, openErrSlug, none), func() ([]github.Comment, error) { return nil, nil }, nil)
+		open, err := openErrors(tc.s, state.Derive(tc.s, openErrSlug, none), func() ([]github.Comment, error) { return nil, nil }, nil, nil)
 		if err != nil {
 			t.Errorf("%s: %v", tc.name, err)
 			continue

@@ -95,6 +95,9 @@ func TestChildrenDroppedRunResult(t *testing.T) {
 			r := changedStoryWith(t, f, false, nil, changedPlanData(t, droppedRunRevision(t)))
 			o, root := newOrigin(t), t.TempDir()
 			o.commit(config.Path, "types: labels\nmodels: {allowed: [opus]}\n") // the model revision 1 gave T2
+			// The story's branch, as T2's child has been in-progress: with
+			// none, its runs would wait on a branches state error (SPEC §7.5).
+			gitIn(t, o.url, "update-ref", "refs/heads/issuedog/1-quotes", "main")
 			newDroppedRig := func(st *droppedRunStage) *rig {
 				g := newRig(t, f, o, root)
 				g.claude(okOut, 0)

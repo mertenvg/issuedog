@@ -1048,7 +1048,7 @@ func (d *Daemon) digestCacheSet(s *github.Snapshot, inputs []github.Comment, dir
 	} else if w, ok := d.prStallKept(s.Number, is); ok {
 		stalled = &w
 	}
-	items, err := waitFind(waitInput{Owner: st.Owner, Repo: st.Repo, AppSlug: st.AppSlug, S: s, Dirt: dirt, Inputs: inputs, CloserErrEnded: st.closerErrEnded(s, dirt.Has, st.trustOnceTrust()), Holds: holds,
+	items, err := waitFind(waitInput{Owner: st.Owner, Repo: st.Repo, AppSlug: st.AppSlug, S: s, Dirt: dirt, Inputs: inputs, CloserErrEnded: st.closerErrEnded(s, dirt.Has, st.trustOnceTrust()), BranchesNow: st.branchesNow, Holds: holds,
 		OwnerHeld: ownerHeld, Blocked: blocked, Addendum: d.digestCacheAddendum(s), PR: d.prOfDigest(is), Stall: stalled})
 	if err != nil {
 		logr.Errorf("%s/%s#%d keeps the items it had on the digest: %v", st.Owner, st.Repo, s.Number, err)
