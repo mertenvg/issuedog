@@ -31,15 +31,15 @@ const pickSearchEvery = 10 * time.Minute
 // Nothing is picked while a task holds the one worker (pickHeld), or with
 // no Stage at in-progress, but for a failure's bug that each task holding
 // it steps aside for, as their own work waits on that failure (pickAside).
-// The candidates are the open ready issues with a
-// stage:ready label and no parent, or in a story (pickCandidate), in
-// pickLess's order. A task with any other parent isn't one, uncounted.
-// Only once there is a candidate does the pick ask the issue search for
-// the blocked ready tasks (pickSearch), and each candidate it finds
-// blocked is passed over with no request. The first of the others that
-// pickOne picks is the one: a candidate pickOne passes over leaves the
-// next its turn. A candidate whose story's branch pickOne cuts ends the
-// pick too, with nothing picked that pass (pickStory).
+// The candidates are the open ready issues with a stage:ready label and no
+// parent, or in a story (pickCandidate), in pickLess's order. A task with
+// any other parent isn't one, uncounted. Only once there is a candidate
+// does the pick ask the issue search for the blocked ready tasks
+// (pickSearch), and each candidate it finds blocked is passed over with no
+// request. The first of the others that pickOne picks is the one: a
+// candidate pickOne passes over leaves the next its turn. A candidate whose
+// story's branch pickOne cuts ends the pick too, with nothing picked that
+// pass (pickStory).
 //
 // Nor is anything picked on a pass whose step 1 didn't finish on every
 // issue (pickGaps): an issue whose read failed or found it gone is out of

@@ -38,12 +38,12 @@ func checkFromPlan(d planDoneWhen) (state.Check, error) {
 
 // humanCheck runs the check on a human task's origin o, its check c,
 // o.Check (SPEC §9.3, "The checks"), and reports whether it passes, and
-// found, the App's sentence saying what it saw, for the reply to a failure. Every value in found is inline code,
-// escaped (checkCode). It never quotes a file's contents. A plain-text "Done
-// when", the zero Check, has nothing to run, and passes. A check whose
-// origin marker fields couldn't be read, state.CheckUnreadable, reads
-// nothing and fails, saying so, so the task never closes without its
-// check; found quotes none of the fields.
+// found, the App's sentence saying what it saw, for the reply to a failure.
+// Every value in found is inline code, escaped (checkCode). It never quotes
+// a file's contents. A plain-text "Done when", the zero Check, has nothing
+// to run, and passes. A check whose origin marker fields couldn't be read,
+// state.CheckUnreadable, reads nothing and fails, saying so, so the task
+// never closes without its check; found quotes none of the fields.
 //
 //   - label: the repo has the label, matched ignoring case (LabelExists);
 //   - issue-type: the repo's owner has an enabled issue type of that name,

@@ -247,11 +247,10 @@ func FailureOf(m github.Marker) (story int, tip, main string, ok bool) {
 
 // OriginMarker returns the origin marker Derive would read from text as a
 // clean body of the App's: the first whole one (originOf), a plan's, a
-// follow-up's or a story branch failure's, with every
-// field it has, its values as written, so still percent-encoded. It's
-// false if text has none. It doesn't check who wrote text: the caller
-// knows it's the App's, as a version of the body the App wrote is (SPEC
-// §6.4, #291).
+// follow-up's or a story branch failure's, with every field it has, its
+// values as written, so still percent-encoded. It's false if text has none.
+// It doesn't check who wrote text: the caller knows it's the App's, as a
+// version of the body the App wrote is (SPEC §6.4, #291).
 func OriginMarker(text string) (github.Marker, bool) {
 	for _, m := range github.ParseMarkers(text) {
 		if _, ok := originOf(m, BodyID); ok {

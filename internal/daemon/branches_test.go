@@ -36,8 +36,8 @@ func branchesErrs(f *githubtest.Fake, n int) []string {
 	return keys
 }
 
-// branchesErrIDs are the IDs of the comments on issue n, as v's client reads
-// them, that carry a branches error, in order, ack replies left out.
+// branchesErrIDs are the IDs of the comments on issue n, as v's client
+// reads them, that carry a branches error, in order, ack replies left out.
 func (v *verdictRig) branchesErrIDs(n int) []int64 {
 	v.t.Helper()
 	var ids []int64

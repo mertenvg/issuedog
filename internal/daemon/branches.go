@@ -345,15 +345,15 @@ func branchesText(n int, names []string, story bool) string {
 }
 
 // storyWorked reports whether a task or bug in story, a story or an epic
-// planned into tasks, has been in-progress (SPEC §7.5), so its branch,
-// once gone, isn't cut again: its own branches error for no branch is
-// posted only then, and work that started never stops having started; or
-// an open child the daemon holds has a transition into or out of
-// in-progress among its markers; or, with read, a child among the story's sub-issues, read
+// planned into tasks, has been in-progress (SPEC §7.5), so its branch, once
+// gone, isn't cut again: its own branches error for no branch is posted
+// only then, and work that started never stops having started; or an open
+// child the daemon holds has a transition into or out of in-progress among
+// its markers; or, with read, a child among the story's sub-issues, read
 // once, one request, is closed with stage:completed and isn't a human task
 // (storyWorkedClosed), as the daemon holds no closed issue. Without read,
-// it reads only the snapshots, and their dirty content only for a marker
-// it would find, so it costs no request.
+// it reads only the snapshots, and their dirty content only for a marker it
+// would find, so it costs no request.
 func (d *Daemon) storyWorked(ctx context.Context, story *github.Snapshot, read bool) (bool, error) {
 	sn := story.Number
 	worked, err := d.storyWorkedBy(ctx, story, func(is state.Issue) bool {

@@ -28,8 +28,8 @@ import (
 var conflictRunClaude = strings.Replace(verifierRunClaude, `echo "$n" > "run.$n.txt"`,
 	`{ [ ! -f "$FAKE/merge.$n" ] || . "$FAKE/merge.$n" || exit 7; } && echo "$n" > "run.$n.txt"`, 1)
 
-// conflictRunBug is the conflict bug's number: story 1 and the digest, #2, are
-// the issues before it.
+// conflictRunBug is the conflict bug's number: story 1 and the digest, #2,
+// are the issues before it.
 const conflictRunBug = 3
 
 // conflictRunWire has v's fake claude be conflictRunClaude, which a
@@ -200,11 +200,11 @@ func TestConflictRunSkippedMerge(t *testing.T) {
 // the resolution (SPEC §7.5's A conflict, §10.1): neither the story's
 // story.go, a source file with no test, fails rule 5, nor main's test file
 // rule 3, so no findings are posted. A restart then runs the checks again,
-// as it empties their passes, and posts none either. The verifier's diff.patch is
-// that diff: the resolution of f.txt and the run's own file, and nothing
-// of the story's or main's changes. Its checks.md names the tip, the main
-// commit as rule 2's baseline, and the conflicted merge it starts at
-// (SPEC §10.2).
+// as it empties their passes, and posts none either. The verifier's
+// diff.patch is that diff: the resolution of f.txt and the run's own file,
+// and nothing of the story's or main's changes. Its checks.md names the
+// tip, the main commit as rule 2's baseline, and the conflicted merge it
+// starts at (SPEC §10.2).
 func TestConflictRunResolved(t *testing.T) {
 	t.Parallel()
 	f := newFake(t)

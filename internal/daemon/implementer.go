@@ -298,9 +298,8 @@ func implementerTask(number int, dir string) string {
 // as the commit to merge into it, resolving the conflicts, and that
 // verify fails a head lacking either and judges only the resolution, and
 // a dropped head's line says the checkout starts from that commit, with
-// target to merge (SPEC §3.4, §7.5, A conflict). Then the output
-// contract, and every value the prompt
-// defers to it, with c's values:
+// target to merge (SPEC §3.4, §7.5, A conflict). Then the output contract,
+// and every value the prompt defers to it, with c's values:
 //   - the PR title types (pr.title_types), and the title's bounds, as
 //     checkCommits enforces them (implementerMaxTitle);
 //   - the diff limit, verify.max_diff_lines, counting only files outside

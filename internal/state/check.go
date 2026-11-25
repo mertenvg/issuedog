@@ -41,9 +41,8 @@ const CheckTip = "tip"
 // the label, the issue type, the file's path, the required check's name,
 // the owner, or a tip check's failing tip (CheckTip). Contains is a file
 // check's optional text, and "" for every other kind. The zero Check is a
-// plain-text "Done when", which the daemon
-// doesn't run, and a Check of kind CheckUnreadable one whose fields
-// couldn't be read, which always fails.
+// plain-text "Done when", which the daemon doesn't run, and a Check of kind
+// CheckUnreadable one whose fields couldn't be read, which always fails.
 //
 // It holds values that were valid when the plan was, so it adds no
 // validation of its own: the daemon converts the plan's check after plan

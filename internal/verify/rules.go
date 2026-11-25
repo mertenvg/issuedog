@@ -278,11 +278,11 @@ func Rule6(ctx context.Context, f Facts) (*Finding, error) {
 // Rule7 fails a head that shares no history with Target, or doesn't merge
 // with it cleanly, judged in the bare repo with no worktree
 // (repo.MergeTree), or whose history lacks any of MustHold, or, for a
-// conflict bug, that still holds a conflict marker line (markerLine) in
-// any of the conflict's files (Conflicts) whose blob in the conflicted
-// merge, Base, held one (SPEC §7.5, A conflict). The finding names each
-// commit the head lacks, then each conflicting path, then each file with
-// markers left.
+// conflict bug, that still holds a conflict marker line
+// (conflictMarkerLine) in any of the conflict's files (Conflicts) whose
+// blob in the conflicted merge, Base, held one (SPEC §7.5, A conflict).
+// The finding names each commit the head lacks, then each conflicting
+// path, then each file with markers left.
 func Rule7(ctx context.Context, f Facts) (*Finding, error) {
 	var lacks []string
 	for _, c := range f.MustHold {
@@ -330,9 +330,9 @@ func Rule7(ctx context.Context, f Facts) (*Finding, error) {
 
 // markersLeft returns, in f.Conflicts' order, each of the conflict's files
 // whose blob in the conflicted merge, f.Base, holds a conflict marker line
-// (markerLine), as merge-tree wrote it, and whose blob at f.Head still
-// holds one. A file the head deleted holds none. With no Conflicts, as for
-// any task but a conflict bug, it's none, and reads nothing.
+// (conflictMarkerLine), as merge-tree wrote it, and whose blob at f.Head
+// still holds one. A file the head deleted holds none. With no Conflicts,
+// as for any task but a conflict bug, it's none, and reads nothing.
 func markersLeft(ctx context.Context, f Facts) ([]string, error) {
 	if len(f.Conflicts) == 0 {
 		return nil, nil
@@ -343,7 +343,7 @@ func markersLeft(ctx context.Context, f Facts) ([]string, error) {
 	}
 	var marked []string
 	for _, p := range f.Conflicts {
-		if hasMarker(merged[p]) {
+		if hasConflictMarker(merged[p]) {
 			marked = append(marked, p)
 		}
 	}
@@ -356,28 +356,28 @@ func markersLeft(ctx context.Context, f Facts) ([]string, error) {
 	}
 	var left []string
 	for _, p := range marked {
-		if hasMarker(head[p]) {
+		if hasConflictMarker(head[p]) {
 			left = append(left, p)
 		}
 	}
 	return left, nil
 }
 
-// hasMarker reports whether content has a conflict marker line
-// (markerLine).
-func hasMarker(content []byte) bool {
+// hasConflictMarker reports whether content has a conflict marker line
+// (conflictMarkerLine).
+func hasConflictMarker(content []byte) bool {
 	for line := range strings.Lines(string(content)) {
-		if markerLine(line) {
+		if conflictMarkerLine(line) {
 			return true
 		}
 	}
 	return false
 }
 
-// markerLine reports whether line, with or without its line ending, is a
-// conflict marker as git writes one: starting "<<<<<<< " or ">>>>>>> ",
-// or "=======" as the whole line.
-func markerLine(line string) bool {
+// conflictMarkerLine reports whether line, with or without its line
+// ending, is a conflict marker as git writes one: starting "<<<<<<< " or
+// ">>>>>>> ", or "=======" as the whole line.
+func conflictMarkerLine(line string) bool {
 	line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
 	return strings.HasPrefix(line, "<<<<<<< ") || line == "=======" || strings.HasPrefix(line, ">>>>>>> ")
 }

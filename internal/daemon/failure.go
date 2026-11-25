@@ -33,12 +33,13 @@ var errFailureRefused = errors.New("GitHub refused to file it")
 // §5, failure): failure tip=<SHA>.
 const failureKind = "failure"
 
-// failureSpec is one failure on a story branch to file (Daemon.failureFile):
-// Story, the story whose branch, Branch, failed at Tip; Human for the human
-// task rule 2's failure files, else a bug; Main, for a conflict bug, the
-// main commit that didn't merge into Tip, which its origin names, and
-// Files, the files that conflicted, which its Body names; and the issue's
-// Title and Body, without its origin marker, escaped (failure_render.go).
+// failureSpec is one failure on a story branch to file
+// (Daemon.failureFile): Story, the story whose branch, Branch, failed at
+// Tip; Human for the human task rule 2's failure files, else a bug; Main,
+// for a conflict bug, the main commit that didn't merge into Tip, which its
+// origin names, and Files, the files that conflicted, which its Body names;
+// and the issue's Title and Body, without its origin marker, escaped
+// (failure_render.go).
 type failureSpec struct {
 	Story       *github.Snapshot
 	Branch      string

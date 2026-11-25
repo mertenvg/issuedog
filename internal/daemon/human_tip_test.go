@@ -102,9 +102,10 @@ func humanTipRejected(found string, id int64) string {
 // A /done while the story branch is still at the failing tip gets the App's
 // 👎 and one reply naming the branch and the tip, and the issue stays open
 // at needs-human. A restarted daemon writes nothing for it, nor for the
-// branch moving on, which no /done asks about yet. A /done after the new tip
-// closes the issue as completed, saying what the check found, and the next
-// pass sets stage:completed. Replay passes for the rejection and the close.
+// branch moving on, which no /done asks about yet. A /done after the new
+// tip closes the issue as completed, saying what the check found, and the
+// next pass sets stage:completed. Replay passes for the rejection and the
+// close.
 func TestHumanTipDone(t *testing.T) {
 	t.Parallel()
 	o := newOrigin(t)

@@ -226,9 +226,9 @@ func ClassOf(it Item) (Class, error) {
 		}
 		return ClassOwnerTask, nil
 	case "bug":
-		// A bug the daemon filed for a failure on a story branch enters
-		// at ready, so it's a bug from intake and never gets the
-		// interviewer (SPEC §7.2, §7.5).
+		// A bug the daemon filed for a failure on a story branch enters at
+		// ready, so it's a bug from intake and never gets the interviewer
+		// (SPEC §7.2, §7.5).
 		if !it.ReachedReady && !it.FromFailure {
 			return ClassNewBug, nil
 		}

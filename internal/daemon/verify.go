@@ -251,11 +251,11 @@ func verifyAttempt(is state.Issue) int {
 // protected path. A head with no merge base with target, or more than
 // one, fails rule 2 too (verify.ErrMergeBases), as the task's own diff
 // then has no start, but a conflict bug's, whose diffs start at commits
-// of their own. Otherwise every command runs, in a fresh
-// checkout of head named by a new ID, never the lease's run's, which the
-// commands remove when they're done, and rules 3 to 7 all run, so the
-// implementer sees every finding at once (SPEC §10.1). A failure to read
-// the bare repo, or to run the commands, is an error, not a finding.
+// of their own. Otherwise every command runs, in a fresh checkout of head
+// named by a new ID, never the lease's run's, which the commands remove
+// when they're done, and rules 3 to 7 all run, so the implementer sees
+// every finding at once (SPEC §10.1). A failure to read the bare repo, or
+// to run the commands, is an error, not a finding.
 func (r *Runs) verifyChecks(ctx context.Context, s *github.Snapshot, head string, t VerifyTarget) ([]verify.Finding, []verify.CommandResult, error) {
 	baseline, target := t.Baseline, t.SHA
 	if head == "" {
@@ -403,11 +403,11 @@ func (t VerifyTarget) String() string {
 // baseline is the main commit it names instead, and Base the conflicted
 // merge of that commit and the tip, built in the bare repo
 // (repo.ConflictMerge), with Conflicts its conflicting paths, at no
-// request (SPEC §7.5, A conflict, §10.1). A
-// failure to build it is an error. The parent's dirty content is read only
-// for an epic's plan, as storyOf reads it, and a failure to read it is an
-// error. The rest reads only the snapshots the daemon holds, its judged
-// tips and the bare repo, so a task that waits costs no request.
+// request (SPEC §7.5, A conflict, §10.1). A failure to build it is an
+// error. The parent's dirty content is read only for an epic's plan, as
+// storyOf reads it, and a failure to read it is an error. The rest reads
+// only the snapshots the daemon holds, its judged tips and the bare repo,
+// so a task that waits costs no request.
 func (r *Runs) storyTarget(ctx context.Context, s *github.Snapshot, main string) (VerifyTarget, bool, error) {
 	d, n := r.Daemon, s.Number
 	a := d.Step.Applier

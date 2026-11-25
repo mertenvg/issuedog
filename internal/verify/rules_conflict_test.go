@@ -239,10 +239,10 @@ func TestConflictRule7NoHistory(t *testing.T) {
 		"The head "+head+" leaves conflict markers", "- notes.md")
 }
 
-// markerLine matches git's conflict marker lines alone: "<<<<<<< " or
-// ">>>>>>> " at a line's start, or "=======" as the whole line, with or
+// conflictMarkerLine matches git's conflict marker lines alone: "<<<<<<< "
+// or ">>>>>>> " at a line's start, or "=======" as the whole line, with or
 // without its line ending.
-func TestMarkerLine(t *testing.T) {
+func TestConflictMarkerLine(t *testing.T) {
 	t.Parallel()
 	for line, want := range map[string]bool{
 		"<<<<<<< HEAD\n":   true,
@@ -260,8 +260,8 @@ func TestMarkerLine(t *testing.T) {
 		">>>>>>>>\n":       false,
 		"plain\n":          false,
 	} {
-		if got := markerLine(line); got != want {
-			t.Errorf("markerLine(%q) = %v, want %v", line, got, want)
+		if got := conflictMarkerLine(line); got != want {
+			t.Errorf("conflictMarkerLine(%q) = %v, want %v", line, got, want)
 		}
 	}
 }

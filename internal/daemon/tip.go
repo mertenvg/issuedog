@@ -65,14 +65,15 @@ const (
 // only when its approved plan is of tasks (storyIssue); one whose plan
 // data doesn't read back is warned of once too, and gets no check.
 //
-// Otherwise, before the tip is judged, each open conflict bug of the
-// story it makes moot is closed, its open PR first (conflictMoot), at no
-// request for a story with none; a tip that holds the main commit of a
-// conflict bug of the story that's skip waits for the next pass. Then the App's issuedog/tip checks on the tip
-// are read, one request: the newest naming the branch (tipChecked), as
-// after a restart, or for a tip the App's merge carried a check to, judges
-// the tip, and nothing runs. A tip pushed by a person is checked as any other is. Then
-// the tip is checked (tipJudge), and its check posted.
+// Otherwise, before the tip is judged, each open conflict bug of the story
+// it makes moot is closed, its open PR first (conflictMoot), at no request
+// for a story with none; a tip that holds the main commit of skip, a
+// conflict bug of the story, waits for the next pass. Then the App's
+// issuedog/tip checks on the tip are read, one request: the newest naming
+// the branch (tipChecked), as after a restart, or for a tip the App's merge
+// carried a check to, judges the tip, and nothing runs. A tip pushed by a
+// person is checked as any other is. Then the tip is checked (tipJudge),
+// and its check posted.
 func (r *Runs) tipCheck(ctx context.Context, ready []Ready, skip int) (bool, error) {
 	if r.Commands == nil {
 		return false, nil

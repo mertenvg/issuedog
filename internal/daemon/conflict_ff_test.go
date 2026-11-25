@@ -271,9 +271,8 @@ func (c *conflictFF) siblingOpen(n int) int {
 // guards, A conflict). The pass after carries the tip's check over to the
 // squash commit and closes the sibling, then sends the bug back pr-open →
 // in-progress, keyed event=b<SHA> by it, with no checks run on its merge
-// with it, and its
-// next run starts from its head, with that tip named as its target, to
-// merge, and the move's comment in its input.md.
+// with it, and its next run starts from its head, with that tip named as
+// its target, to merge, and the move's comment in its input.md.
 func TestConflictFFSiblingFirst(t *testing.T) {
 	t.Parallel()
 	c := conflictFFReady(t, true)
@@ -311,13 +310,13 @@ func TestConflictFFSiblingFirst(t *testing.T) {
 // next pass's sync shows the person's tip, which step 4 checks: it passes
 // rule 2, but fails rule 7, as it lacks main, which conflicts with it, so
 // that's commented on the bug, and the pass after sends the bug back on
-// it, as a failure's bug takes such a tip, with no checks
-// run on its merge with it, keyed event=b<SHA> by it, while its merge
-// waits, logged once. Its next run starts from its head with that tip
-// named as its target. A sibling task of the story at pr-open, numbered
-// after the bug and verified against the same tip, isn't merged in the
-// stale push's pass, as nothing names that tip as the story's tip for the
-// rest of it. It reads logr, so it isn't parallel.
+// it, as a failure's bug takes such a tip, with no checks run on its merge
+// with it, keyed event=b<SHA> by it, while its merge waits, logged once.
+// Its next run starts from its head with that tip named as its target. A
+// sibling task of the story at pr-open, numbered after the bug and verified
+// against the same tip, isn't merged in the stale push's pass, as nothing
+// names that tip as the story's tip for the rest of it. It reads logr, so
+// it isn't parallel.
 func TestConflictFFPersonPush(t *testing.T) {
 	c := conflictFFReady(t, false)
 	f, v := c.f, c.v

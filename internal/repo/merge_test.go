@@ -97,10 +97,11 @@ func cleanMergeRemote(t *testing.T) *mergeRemote {
 // commit whose parents are main and the head, in that order, whose tree
 // holds both sides' changes, by issuedog, dated as main's tip was
 // committed, with a fixed message that names main and the head as
-// commits, at the task's ref under MergesRef. Built again, in the same bare repo and in another, it's the same SHA,
-// and a build again moves no objects in. The bare repo has every object
-// the commit reaches, and no quarantine or attrless dir is left. A sync
-// after it leaves the ref and the commit alone.
+// commits, at the task's ref under MergesRef. Built again, in the same bare
+// repo and in another, it's the same SHA, and a build again moves no
+// objects in. The bare repo has every object the commit reaches, and no
+// quarantine or attrless dir is left. A sync after it leaves the ref and
+// the commit alone.
 func TestMergeCommit(t *testing.T) {
 	t.Parallel()
 	m := cleanMergeRemote(t)

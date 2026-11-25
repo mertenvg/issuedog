@@ -169,12 +169,11 @@ func (f *Fake) branchState() []BranchState {
 //     are compared in order, with their bodies, and sub-issues in the
 //     order they were linked, and pull requests by number, with their
 //     heads, bases, titles, bodies, states and mergers, a fast-forward's
-//     pusher included, and check runs by
-//     SHA, in the order posted, with their names, conclusions, Apps and
-//     external_ids, and the git remote's issuedog/ branches by name, with
-//     their tips. A run may
-//     not leave an extra comment, reaction, label, assignee, sub-issue,
-//     blocked-by link, pull request, check run or branch, or miss one.
+//     pusher included, and check runs by SHA, in the order posted, with
+//     their names, conclusions, Apps and external_ids, and the git remote's
+//     issuedog/ branches by name, with their tips. A run may not leave an
+//     extra comment, reaction, label, assignee, sub-issue, blocked-by link,
+//     pull request, check run or branch, or miss one.
 //
 // pass must build its own client and in-memory state from the fake it gets,
 // as the daemon does on restart, and must decide its writes only from what

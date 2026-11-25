@@ -54,10 +54,9 @@ func prMoveTip(is state.Issue) string {
 //     task's prefix, merges nothing;
 //   - its story branch's tip has the App's issuedog/tip naming the branch
 //     as success, or for a failure's bug, passes rule 2 (prStoryTip), and
-//     is that tip=, or a tip the head's merge
-//     with has passed the checks on since, as step 4 judged it
-//     (prMergeOnto). Otherwise it waits at pr-open, with no request, logged
-//     once a cause (prMergeOnce).
+//     is that tip=, or a tip the head's merge with has passed the checks on
+//     since, as step 4 judged it (prMergeOnto). Otherwise it waits at
+//     pr-open, with no request, logged once a cause (prMergeOnce).
 //
 // A head a person pushed (personPROpen) is merged only while the App's
 // newest issuedog/verify on it isn't a failure (prPersonFailed). Then the

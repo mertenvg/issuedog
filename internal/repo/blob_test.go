@@ -17,8 +17,8 @@ import (
 // starts as pathspec magic does, :x.txt, gives that file, not x.txt, and
 // a*.txt, which names no file, gives none. A path it lacks, a dir, a
 // submodule, a path at an older commit only, and a file under a dir asked
-// for but not named are left out. A commit that isn't a full SHA is refused, and no paths read
-// nothing.
+// for but not named are left out. A commit that isn't a full SHA is
+// refused, and no paths read nothing.
 func TestBlobs(t *testing.T) {
 	t.Parallel()
 	d := newDiffRig(t)

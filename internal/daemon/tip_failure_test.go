@@ -52,11 +52,11 @@ func tipFailureMove(stage, tip string) string {
 	return "<!-- issuedog:transition from=intake to=" + stage + " event=t" + tip + " -->"
 }
 
-// tipFailureFiled checks that issue n on v's fake is the one filed for story
-// 1's branch's failing tip tip: the App's, open, a sub-issue of the story
-// alone, with labels, its body ending in its origin and holding each of
-// texts, and one comment, its first move to stage, which names the story,
-// the branch and the tip. It returns the issue's body.
+// tipFailureFiled checks that issue n on v's fake is the one filed for
+// story 1's branch's failing tip tip: the App's, open, a sub-issue of the
+// story alone, with labels, its body ending in its origin and holding each
+// of texts, and one comment, its first move to stage, which names the
+// story, the branch and the tip. It returns the issue's body.
 func (v *verdictRig) tipFailureFiled(n int, tip, stage string, human bool, labels []string, texts ...string) string {
 	v.t.Helper()
 	st := v.f.State()

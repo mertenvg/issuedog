@@ -16,11 +16,10 @@ import (
 // clone, for a human task's file check, and reads the story branches in
 // it, for a story branch failure's tip check (humanCheck), the digest,
 // assignment and the merge of main into story branches are on, and step 1
-// is NewStep's, asking the daemon's config
-// of the moment for models.allowed. Its Work is unset: that is stage work,
-// with the Stages RegisterStages gives. main's startDaemon and the
-// whole-run tests both build the daemon with it, so the two can't drift
-// apart (#330).
+// is NewStep's, asking the daemon's config of the moment for
+// models.allowed. Its Work is unset: that is stage work, with the Stages
+// RegisterStages gives. main's startDaemon and the whole-run tests both
+// build the daemon with it, so the two can't drift apart (#330).
 func New(a *Applier, clone *repo.Repo, cfg *config.Config, tr github.Trust) *Daemon {
 	a.ReadMain = clone.ReadFile
 	a.StoryBranches = clone.Branches

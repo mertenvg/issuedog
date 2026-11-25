@@ -40,10 +40,10 @@ func FlagCommands() map[string]Handler {
 // flagTrackCheck rejects a /track on a follow-up, saying how to approve
 // it, as only its approval moves it on (SPEC §6.2), on an issue filed for
 // a failure on a story branch, which only its first move puts in the
-// pipeline (failureTrackReason), and when the table has
-// no move to clarifying for the issue, as for a type the pipeline doesn't
-// know. Once Apply's marker exists, the stage is clarifying, so Step
-// finishes the command before it asks Check.
+// pipeline (failureTrackReason), and when the table has no move to
+// clarifying for the issue, as for a type the pipeline doesn't know. Once
+// Apply's marker exists, the stage is clarifying, so Step finishes the
+// command before it asks Check.
 func flagTrackCheck(_ context.Context, a *Applier, c Cmd) error {
 	is := state.Derive(c.S, a.AppSlug, c.Dirt.Has)
 	if is.Item.FollowUp {
