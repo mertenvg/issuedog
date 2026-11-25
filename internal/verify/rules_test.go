@@ -21,15 +21,7 @@ import (
 // identity, and returns its trimmed stdout.
 func rulesGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "GIT_") {
-			cmd.Env = append(cmd.Env, kv)
-		}
-	}
-	cmd.Env = append(cmd.Env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null",
-		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+	cmd := rulesCmd(dir, args...)
 	out, err := cmd.Output()
 	if err != nil {
 		var stderr []byte
@@ -40,6 +32,21 @@ func rulesGit(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %v: %v: %s", args, err, stderr)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// rulesCmd is git with args in dir, with no system or global config and a
+// fixed identity, for rulesGit, or a caller that judges its exit itself.
+func rulesCmd(dir string, args ...string) *exec.Cmd {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "GIT_") {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
+	cmd.Env = append(cmd.Env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+	return cmd
 }
 
 // rulesRepo is a work tree whose every commit is pushed to a bare repo,

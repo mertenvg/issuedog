@@ -42,6 +42,12 @@ type Facts struct {
 	// none: for a conflict bug, the main commit it names and its story
 	// branch's tip, which its head merges (SPEC §7.5, A conflict).
 	MustHold []string
+	// Conflicts are the conflict's files, for a conflict bug: each path
+	// that conflicts in its conflicted merge, Base (repo.ConflictMerge),
+	// whose resolution rules 3, 5 and 7 judge apart (SPEC §7.5, A
+	// conflict). Empty for any other task, whose rules they leave as
+	// they are.
+	Conflicts []string
 	// Scope is the task's scope, without its "scope:" prefix; empty for
 	// none.
 	Scope  string
@@ -90,16 +96,23 @@ func Rule2(ctx context.Context, f Facts) (*Finding, error) {
 
 // Rule3 fails a head whose diff from Base deletes a file matching
 // verify.test_globs, or renames one out of them, or adds a line holding a
-// verify.skip_markers marker (markerAt) to a file matching them.
+// verify.skip_markers marker (markerAt) to a file matching them. For a
+// conflict bug, deleting one of the conflict's files (Conflicts) that its
+// main commit, Baseline, lacks isn't a deleted test: the resolution takes
+// main's deletion of it (SPEC §7.5, A conflict).
 func Rule3(ctx context.Context, f Facts) (*Finding, error) {
 	changes, err := f.Repo.Changes(ctx, f.Base, f.Head, true)
+	if err != nil {
+		return nil, fmt.Errorf("rule 3: %w", err)
+	}
+	mainDeleted, err := conflictsMainDeleted(ctx, f, changes)
 	if err != nil {
 		return nil, fmt.Errorf("rule 3: %w", err)
 	}
 	var deleted, tests []string
 	for _, c := range changes {
 		switch {
-		case c.Status == 'D' && matchAny(f.Config.TestGlobs, c.Path):
+		case c.Status == 'D' && matchAny(f.Config.TestGlobs, c.Path) && !slices.Contains(mainDeleted, c.Path):
 			deleted = append(deleted, show(c.Path))
 		case c.Status == 'R' && matchAny(f.Config.TestGlobs, c.From) && !matchAny(f.Config.TestGlobs, c.Path):
 			deleted = append(deleted, show(c.From)+" (renamed to "+show(c.Path)+")")
@@ -134,6 +147,34 @@ func Rule3(ctx context.Context, f Facts) (*Finding, error) {
 	return &Finding{Rule: 3, Name: "test deletions and skip markers", Detail: strings.Join(parts, "\n\n")}, nil
 }
 
+// conflictsMainDeleted returns each test file, matching verify.test_globs,
+// that changes deletes, that's one of the conflict's files (f.Conflicts),
+// and that f.Baseline, a conflict bug's main commit, has no file at. With
+// no Conflicts, as for any task but a conflict bug, it's none, and reads
+// nothing.
+func conflictsMainDeleted(ctx context.Context, f Facts, changes []repo.Change) ([]string, error) {
+	var candidates []string
+	for _, c := range changes {
+		if c.Status == 'D' && matchAny(f.Config.TestGlobs, c.Path) && slices.Contains(f.Conflicts, c.Path) {
+			candidates = append(candidates, c.Path)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	atMain, err := f.Repo.Blobs(ctx, f.Baseline, candidates)
+	if err != nil {
+		return nil, fmt.Errorf("the conflict's test files at main's %s: %w", f.Baseline, err)
+	}
+	var deleted []string
+	for _, p := range candidates {
+		if _, ok := atMain[p]; !ok {
+			deleted = append(deleted, p)
+		}
+	}
+	return deleted, nil
+}
+
 // Rule4 fails a head whose diff from Base changes a file matching
 // verify.config_paths, either side of a rename, unless the task's scope is
 // verify.tooling_scope. With no tooling scope set, no task may.
@@ -160,7 +201,9 @@ func Rule4(ctx context.Context, f Facts) (*Finding, error) {
 // Rule5 fails a head whose diff from Base adds, modifies or renames a file
 // matching verify.source_globs and no test glob, but adds, modifies or
 // renames no file matching verify.test_globs. A diff of other files, such
-// as docs, passes.
+// as docs, passes. For a conflict bug, a source file among the conflict's
+// files (Conflicts) needs no test, as its change resolves the merge (SPEC
+// §7.5, A conflict). Any other source file it touches still does.
 func Rule5(ctx context.Context, f Facts) (*Finding, error) {
 	changes, err := f.Repo.Changes(ctx, f.Base, f.Head, true)
 	if err != nil {
@@ -174,7 +217,7 @@ func Rule5(ctx context.Context, f Facts) (*Finding, error) {
 		if matchAny(f.Config.TestGlobs, c.Path) {
 			return nil, nil
 		}
-		if matchAny(f.Config.SourceGlobs, c.Path) {
+		if matchAny(f.Config.SourceGlobs, c.Path) && !slices.Contains(f.Conflicts, c.Path) {
 			source = append(source, c.Path)
 		}
 	}
@@ -234,8 +277,12 @@ func Rule6(ctx context.Context, f Facts) (*Finding, error) {
 
 // Rule7 fails a head that shares no history with Target, or doesn't merge
 // with it cleanly, judged in the bare repo with no worktree
-// (repo.MergeTree), or whose history lacks any of MustHold. The finding
-// names each commit the head lacks, then each conflicting path.
+// (repo.MergeTree), or whose history lacks any of MustHold, or, for a
+// conflict bug, that still holds a conflict marker line (markerLine) in
+// any of the conflict's files (Conflicts) whose blob in the conflicted
+// merge, Base, held one (SPEC §7.5, A conflict). The finding names each
+// commit the head lacks, then each conflicting path, then each file with
+// markers left.
 func Rule7(ctx context.Context, f Facts) (*Finding, error) {
 	var lacks []string
 	for _, c := range f.MustHold {
@@ -257,20 +304,82 @@ func Rule7(ctx context.Context, f Facts) (*Finding, error) {
 	}
 	if len(bases) == 0 {
 		parts = append(parts, fmt.Sprintf("The head %s shares no history with its target %s.", f.Head, f.Target))
-		return &Finding{Rule: 7, Name: "merge with the target", Detail: strings.Join(parts, "\n\n")}, nil
+	} else {
+		conflicts, err := f.Repo.MergeTree(ctx, f.Target, f.Head)
+		if err != nil {
+			return nil, fmt.Errorf("rule 7: %w", err)
+		}
+		if len(conflicts) > 0 {
+			parts = append(parts, fmt.Sprintf("The head %s doesn't merge cleanly with its target %s. "+
+				"These files conflict:\n%s", f.Head, f.Target, list(conflicts)))
+		}
 	}
-	conflicts, err := f.Repo.MergeTree(ctx, f.Target, f.Head)
+	left, err := markersLeft(ctx, f)
 	if err != nil {
 		return nil, fmt.Errorf("rule 7: %w", err)
 	}
-	if len(conflicts) > 0 {
-		parts = append(parts, fmt.Sprintf("The head %s doesn't merge cleanly with its target %s. "+
-			"These files conflict:\n%s", f.Head, f.Target, list(conflicts)))
+	if len(left) > 0 {
+		parts = append(parts, fmt.Sprintf("The head %s leaves conflict markers (lines starting %q, %q or %q) "+
+			"in files that conflicted in the merge it resolves:\n%s", f.Head, "<<<<<<< ", "=======", ">>>>>>> ", list(left)))
 	}
 	if len(parts) == 0 {
 		return nil, nil
 	}
 	return &Finding{Rule: 7, Name: "merge with the target", Detail: strings.Join(parts, "\n\n")}, nil
+}
+
+// markersLeft returns, in f.Conflicts' order, each of the conflict's files
+// whose blob in the conflicted merge, f.Base, holds a conflict marker line
+// (markerLine), as merge-tree wrote it, and whose blob at f.Head still
+// holds one. A file the head deleted holds none. With no Conflicts, as for
+// any task but a conflict bug, it's none, and reads nothing.
+func markersLeft(ctx context.Context, f Facts) ([]string, error) {
+	if len(f.Conflicts) == 0 {
+		return nil, nil
+	}
+	merged, err := f.Repo.Blobs(ctx, f.Base, f.Conflicts)
+	if err != nil {
+		return nil, fmt.Errorf("the conflict's files in the conflicted merge: %w", err)
+	}
+	var marked []string
+	for _, p := range f.Conflicts {
+		if hasMarker(merged[p]) {
+			marked = append(marked, p)
+		}
+	}
+	if len(marked) == 0 {
+		return nil, nil
+	}
+	head, err := f.Repo.Blobs(ctx, f.Head, marked)
+	if err != nil {
+		return nil, fmt.Errorf("the conflict's files at the head: %w", err)
+	}
+	var left []string
+	for _, p := range marked {
+		if hasMarker(head[p]) {
+			left = append(left, p)
+		}
+	}
+	return left, nil
+}
+
+// hasMarker reports whether content has a conflict marker line
+// (markerLine).
+func hasMarker(content []byte) bool {
+	for line := range strings.Lines(string(content)) {
+		if markerLine(line) {
+			return true
+		}
+	}
+	return false
+}
+
+// markerLine reports whether line, with or without its line ending, is a
+// conflict marker as git writes one: starting "<<<<<<< " or ">>>>>>> ",
+// or "=======" as the whole line.
+func markerLine(line string) bool {
+	line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
+	return strings.HasPrefix(line, "<<<<<<< ") || line == "=======" || strings.HasPrefix(line, ">>>>>>> ")
 }
 
 // ErrMergeBases is BaseOf's error when the head and its target don't have
