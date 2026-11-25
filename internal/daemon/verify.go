@@ -240,7 +240,11 @@ func verifyAttempt(is state.Issue) int {
 // with t.Base, rule 2's own diff starts at its baseline, the main commit
 // it names, rules 3 to 6 read the diff from t.Base, its conflicted merge,
 // and rule 7 also fails a head whose history lacks that commit or the tip
-// (SPEC §7.5, A conflict). It returns each rule's finding, and rule 1's
+// (SPEC §7.5, A conflict). Rules 3, 5 and 7 judge the resolution of the
+// conflict's files, t.Conflicts, apart: rule 5 needs no test for a source
+// file among them, rule 3 takes main's deletion of a test file among
+// them, and rule 7 fails one that still holds conflict markers
+// (verify.Facts.Conflicts). It returns each rule's finding, and rule 1's
 // commands' results. No head, or one the bare repo lacks, is the one
 // finding, with no rule, and no rule runs. Rule 2 runs first, and its
 // failure stops the checks, so no command runs on a diff that touches a
@@ -281,8 +285,9 @@ func (r *Runs) verifyChecks(ctx context.Context, s *github.Snapshot, head string
 	} else {
 		// A conflict bug's own diff, for rule 2, starts at the main commit
 		// it names, the merge base of its head and main, and the head
-		// must hold that commit and the tip (SPEC §7.5, A conflict).
-		f.Base, f.MustHold = baseline, []string{baseline, target}
+		// must hold that commit and the tip (SPEC §7.5, A conflict). Rules
+		// 3, 5 and 7 judge the resolution of the conflict's files apart.
+		f.Base, f.MustHold, f.Conflicts = baseline, []string{baseline, target}, t.Conflicts
 	}
 	protected, err := verify.Rule2(ctx, f)
 	if err != nil {
@@ -335,12 +340,15 @@ func targetBasesDetail(baseline, target string, err error) string {
 // and Base is the conflicted merge of that commit and the tip, markers
 // included (repo.ConflictMerge), which rules 3 to 6 and the verifier's
 // diff.patch start at, and the head's history must hold both commits
-// (SPEC §7.5, A conflict, §10.1, §10.2). Base is "" for any other task,
-// whose diff starts at its merge base with SHA (verify.BaseOf), and for a
-// conflict bug's moved tip at pr-open, as no checks run on that merge
-// (mergeTarget).
+// (SPEC §7.5, A conflict, §10.1, §10.2). Conflicts are the paths that
+// conflict in that merge, the conflict's files, whose resolution rules 3,
+// 5 and 7 judge apart (verify.Facts.Conflicts). Base is "" for any other
+// task, whose diff starts at its merge base with SHA (verify.BaseOf), and
+// for a conflict bug's moved tip at pr-open, as no checks run on that
+// merge (mergeTarget), and Conflicts is empty for each of them.
 type VerifyTarget struct {
 	Branch, SHA, Baseline, Base string
+	Conflicts                   []string
 }
 
 // mainTarget is main's commit main as the target and baseline of a task
@@ -394,7 +402,8 @@ func (t VerifyTarget) String() string {
 // merge base of that tip and main. For a conflict bug (conflictMain), the
 // baseline is the main commit it names instead, and Base the conflicted
 // merge of that commit and the tip, built in the bare repo
-// (repo.ConflictMerge), at no request (SPEC §7.5, A conflict, §10.1). A
+// (repo.ConflictMerge), with Conflicts its conflicting paths, at no
+// request (SPEC §7.5, A conflict, §10.1). A
 // failure to build it is an error. The parent's dirty content is read only
 // for an epic's plan, as storyOf reads it, and a failure to read it is an
 // error. The rest reads only the snapshots the daemon holds, its judged
@@ -459,11 +468,11 @@ func (r *Runs) storyTarget(ctx context.Context, s *github.Snapshot, main string)
 		return VerifyTarget{}, false, nil
 	}
 	if conflict := d.conflictMain(s); conflict != "" {
-		merged, err := d.Clone.ConflictMerge(ctx, n, conflict, tip)
+		merged, files, err := d.Clone.ConflictMerge(ctx, n, conflict, tip)
 		if err != nil {
 			return VerifyTarget{}, false, fmt.Errorf("build its conflicted merge of main's %s and the tip %s: %w", conflict, tip, err)
 		}
-		return VerifyTarget{Branch: branch, SHA: tip, Baseline: conflict, Base: merged}, true, nil
+		return VerifyTarget{Branch: branch, SHA: tip, Baseline: conflict, Base: merged, Conflicts: files}, true, nil
 	}
 	base, err := verify.BaseOf(ctx, verify.Facts{Repo: d.Clone, Head: tip, Target: main})
 	switch {

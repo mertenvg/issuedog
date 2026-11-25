@@ -173,8 +173,10 @@ func (r *Repo) MainMerge(ctx context.Context, story int, branch, tip, main, name
 // the bare repo with a and b as its parents, in that order, for the bug's
 // checks to diff from (SPEC §10.1). For a conflict bug, a is the main
 // commit it names and b its story branch's tip. It returns the commit's
-// SHA, which it writes to ConflictsRef+n. A merge with no conflicts is kept
-// the same way.
+// SHA, which it writes to ConflictsRef+n, and each conflicting path once,
+// the conflict's files, whose resolution rules 3, 5 and 7 judge apart
+// (SPEC §10.1). A merge with no conflicts is kept the same way, with no
+// paths.
 //
 // The merge and its commit are built as MergeCommit's are: in an attrless
 // repo, so no attribute, such as merge=union, changes how a file merges,
@@ -186,19 +188,19 @@ func (r *Repo) MainMerge(ctx context.Context, story int, branch, tip, main, name
 //
 // An a or b that isn't a full SHA, or that names no commit the bare repo
 // has, is refused, and so is an n that isn't an issue's number.
-func (r *Repo) ConflictMerge(ctx context.Context, n int, a, b string) (sha string, err error) {
+func (r *Repo) ConflictMerge(ctx context.Context, n int, a, b string) (sha string, conflicts []string, err error) {
 	if n <= 0 {
-		return "", fmt.Errorf("conflicted merge: invalid issue number %d", n)
+		return "", nil, fmt.Errorf("conflicted merge: invalid issue number %d", n)
 	}
 	if err := checkSHAs(a, b); err != nil {
-		return "", fmt.Errorf("conflicted merge of issue %d: %w", n, err)
+		return "", nil, fmt.Errorf("conflicted merge of issue %d: %w", n, err)
 	}
 	if err := r.hasCommits(ctx, a, b); err != nil {
-		return "", fmt.Errorf("conflicted merge of issue %d: %w", n, err)
+		return "", nil, fmt.Errorf("conflicted merge of issue %d: %w", n, err)
 	}
 	dir, at, err := r.attrless(ctx, a)
 	if err != nil {
-		return "", fmt.Errorf("conflicted merge of issue %d: %w", n, err)
+		return "", nil, fmt.Errorf("conflicted merge of issue %d: %w", n, err)
 	}
 	defer func() {
 		if rerr := os.RemoveAll(dir); rerr != nil {
@@ -207,19 +209,19 @@ func (r *Repo) ConflictMerge(ctx context.Context, n int, a, b string) (sha strin
 	}()
 	// The tree is kept whether or not the merge conflicts: a conflicting
 	// file's blob holds its markers, as merge-tree wrote it.
-	tree, _, err := mergeTree(ctx, at, a, b)
+	tree, conflicts, err := mergeTree(ctx, at, a, b)
 	if err != nil {
-		return "", fmt.Errorf("conflicted merge of issue %d: %w", n, err)
+		return "", nil, fmt.Errorf("conflicted merge of issue %d: %w", n, err)
 	}
 	spec := mergeSpec{Name: mergeName, Email: mergeEmail, Message: "issuedog: conflicted merge of " + b + " into " + a}
 	sha, err = r.commitMerge(ctx, at, tree, a, b, a, spec)
 	if err != nil {
-		return "", fmt.Errorf("conflicted merge of issue %d: %w", n, err)
+		return "", nil, fmt.Errorf("conflicted merge of issue %d: %w", n, err)
 	}
 	if err := r.UpdateRef(ctx, ConflictsRef+strconv.Itoa(n), sha); err != nil {
-		return "", fmt.Errorf("conflicted merge of issue %d: %w", n, err)
+		return "", nil, fmt.Errorf("conflicted merge of issue %d: %w", n, err)
 	}
-	return sha, nil
+	return sha, conflicts, nil
 }
 
 // hasCommits refuses a SHA that names no commit the bare repo has.

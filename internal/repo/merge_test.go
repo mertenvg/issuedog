@@ -276,9 +276,9 @@ func TestMergeCommitRunsNoHooks(t *testing.T) {
 	if got := run(t, r.dir, "rev-parse", StoryMergesRef+"5"); got != sha {
 		t.Errorf("%s5 = %s, want %s", StoryMergesRef, got, sha)
 	}
-	sha, err = r.ConflictMerge(context.Background(), conflictBug, m.target, m.head)
-	if err != nil || sha == "" {
-		t.Fatalf("ConflictMerge = %q, %v; want a merge commit", sha, err)
+	sha, conflicts, err = r.ConflictMerge(context.Background(), conflictBug, m.target, m.head)
+	if err != nil || len(conflicts) != 0 || sha == "" {
+		t.Fatalf("ConflictMerge = %q, %q, %v; want a merge commit", sha, conflicts, err)
 	}
 	if got := run(t, r.dir, "rev-parse", ConflictsRef+"9"); got != sha {
 		t.Errorf("%s9 = %s, want %s", ConflictsRef, got, sha)
@@ -664,9 +664,10 @@ func TestMainMergeRefuses(t *testing.T) {
 // file in the tip's .gitattributes and in the bare repo's info/attributes,
 // with attr.tree naming the tip for a git that has it, changes none of it,
 // though a plain merge-tree with that setup merges the file cleanly. The
-// bare repo has every object it reaches, the markers' blob included.
-// Built again, it's the same SHA and moves no objects in, and a sync
-// leaves the ref alone.
+// bare repo has every object it reaches, the markers' blob included. It
+// names the conflicting file, a.txt, alone, as the conflict's files.
+// Built again, it's the same SHA and the same file, and moves no objects
+// in, and a sync leaves the ref alone.
 func TestConflictMerge(t *testing.T) {
 	t.Parallel()
 	attrs := "*.txt merge=union\n"
@@ -686,9 +687,12 @@ func TestConflictMerge(t *testing.T) {
 		t.Fatalf("plain merge-tree: %v: %s\nwant merge=union to merge a.txt cleanly, or the setup proves nothing", err, out)
 	}
 
-	sha, err := r.ConflictMerge(ctx, conflictBug, m.target, m.head)
+	sha, conflicts, err := r.ConflictMerge(ctx, conflictBug, m.target, m.head)
 	if err != nil || !shaPattern.MatchString(sha) {
-		t.Fatalf("ConflictMerge = %q, %v; want a merge commit", sha, err)
+		t.Fatalf("ConflictMerge = %q, %q, %v; want a merge commit", sha, conflicts, err)
+	}
+	if !slices.Equal(conflicts, []string{"a.txt"}) {
+		t.Errorf("ConflictMerge's conflicts = %q, want a.txt alone", conflicts)
 	}
 	ref := ConflictsRef + "9"
 	if got, ok, err := r.ReadRef(ctx, ref); err != nil || !ok || got != sha {
@@ -716,9 +720,9 @@ func TestConflictMerge(t *testing.T) {
 	checkMergeStored(t, r, sha)
 
 	before := objectFiles(t, r)
-	again, err := r.ConflictMerge(ctx, conflictBug, m.target, m.head)
-	if err != nil || again != sha {
-		t.Errorf("ConflictMerge again = %q, %v; want the same %s", again, err, sha)
+	again, conflicts, err := r.ConflictMerge(ctx, conflictBug, m.target, m.head)
+	if err != nil || again != sha || !slices.Equal(conflicts, []string{"a.txt"}) {
+		t.Errorf("ConflictMerge again = %q, %q, %v; want the same %s, and a.txt", again, conflicts, err, sha)
 	}
 	if after := objectFiles(t, r); !slices.Equal(after, before) {
 		t.Errorf("building the same merge again changed the objects dir: %q, then %q", before, after)
@@ -734,15 +738,16 @@ func TestConflictMerge(t *testing.T) {
 }
 
 // TestConflictMergeClean keeps a merge with no conflicts the same way: a
-// commit of the merged tree, with both as its parents, at the bug's ref.
+// commit of the merged tree, with both as its parents, at the bug's ref,
+// naming no conflicting file.
 func TestConflictMergeClean(t *testing.T) {
 	t.Parallel()
 	m := cleanMergeRemote(t)
 	r := m.clone()
 
-	sha, err := r.ConflictMerge(context.Background(), conflictBug, m.target, m.head)
-	if err != nil || !shaPattern.MatchString(sha) {
-		t.Fatalf("ConflictMerge = %q, %v; want a merge commit", sha, err)
+	sha, conflicts, err := r.ConflictMerge(context.Background(), conflictBug, m.target, m.head)
+	if err != nil || !shaPattern.MatchString(sha) || len(conflicts) != 0 {
+		t.Fatalf("ConflictMerge = %q, %q, %v; want a merge commit, and no conflicts", sha, conflicts, err)
 	}
 	if got := run(t, r.dir, "rev-list", "--parents", "--no-walk", sha); got != sha+" "+m.target+" "+m.head {
 		t.Errorf("the merge's parents: %q, want main %s then the tip %s", got, m.target, m.head)
@@ -786,9 +791,9 @@ func TestConflictMergeRefuses(t *testing.T) {
 	refsBefore, before := refs(t, r), objectFiles(t, r)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sha, err := r.ConflictMerge(ctx, tt.n, tt.a, tt.b)
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Errorf("ConflictMerge = %q, %v; want an error containing %q", sha, err, tt.want)
+			sha, conflicts, err := r.ConflictMerge(ctx, tt.n, tt.a, tt.b)
+			if err == nil || !strings.Contains(err.Error(), tt.want) || sha != "" || conflicts != nil {
+				t.Errorf("ConflictMerge = %q, %q, %v; want an error containing %q, and nothing else", sha, conflicts, err, tt.want)
 			}
 			if got := refs(t, r); got != refsBefore {
 				t.Errorf("refs after a refusal =\n%s\nwant\n%s", got, refsBefore)
