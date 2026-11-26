@@ -42,7 +42,8 @@ var Start = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 // check runs on that repo's commits (checkruns.go), and deletes of its
 // branches (refs.go). Its API writes, comment edits, created issues and
 // pins included, are made by the App, "<slug>[bot]" of type Bot. A GET whose
-// answer hasn't changed gets a 304. Every write (any method but GET, and a
+// answer hasn't changed gets a 304, which, unlike any other answer, costs
+// no rate limit (RateRemaining). Every write (any method but GET, and a
 // GraphQL mutation) is logged, and FailWrite can fail one.
 //
 // To add an endpoint, write a handler and register it in New with handle, or
@@ -65,6 +66,7 @@ type Fake struct {
 	failAt      int
 	failAfter   bool // FailWriteAfter rather than FailWrite
 	notModified int
+	rateUsed    map[string]int   // the answers that cost each rate resource a request (rateLimits)
 	gqlErrors   []string         // for the next GraphQL answer
 	pinFailure  string           // see FailPin
 	pinStatus   int              // see FailPinStatus
@@ -183,7 +185,7 @@ type handler func(c *call) (int, any)
 // New starts a fake of repo ("owner/name") for the App with this slug.
 func New(t testing.TB, repo, slug string) *Fake {
 	t.Helper()
-	f := &Fake{repo: repo, slug: slug, t: t, mux: http.NewServeMux(), now: Start, lastID: 1000, historyCap: 100}
+	f := &Fake{repo: repo, slug: slug, t: t, mux: http.NewServeMux(), now: Start, lastID: 1000, historyCap: 100, rateUsed: map[string]int{}}
 	f.mux.HandleFunc("POST /app/installations/{id}/access_tokens", mintToken)
 	f.handle("GET /issues/{n}", f.getIssue)
 	f.handle("GET /issues/{n}/parent", f.getParent)
@@ -459,6 +461,42 @@ func (f *Fake) NotModified() int {
 	return f.notModified
 }
 
+// rateLimits are the fake's primary rate limits, by resource, as GitHub's
+// for an App installation start.
+var rateLimits = map[string]int{"core": 5000, "search": 30, "graphql": 5000}
+
+// rateResource is the rate resource GitHub counts r under: search for the
+// search API, graphql for GraphQL, and core for the rest of the REST API.
+func rateResource(r *http.Request) string {
+	switch {
+	case strings.HasPrefix(r.URL.Path, "/search/"):
+		return "search"
+	case r.URL.Path == "/graphql":
+		return "graphql"
+	}
+	return "core"
+}
+
+// RateRemaining is what resource ("core", "search" or "graphql") has left
+// of its limit: the limit less each answer under it that wasn't a 304,
+// down to 0. The fake refuses nothing for it.
+func (f *Fake) RateRemaining(resource string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return max(rateLimits[resource]-f.rateUsed[resource], 0)
+}
+
+// rate sets the rate-limit headers on an answer under resource, as GitHub
+// sends them: the limit, what is left of it and used, and the resource. It
+// sends no reset, which the fake has none of. f is locked.
+func (f *Fake) rate(w http.ResponseWriter, resource string) {
+	limit, used := rateLimits[resource], f.rateUsed[resource]
+	w.Header().Set("X-RateLimit-Limit", strconv.Itoa(limit))
+	w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(max(limit-used, 0)))
+	w.Header().Set("X-RateLimit-Used", strconv.Itoa(used))
+	w.Header().Set("X-RateLimit-Resource", resource)
+}
+
 // handle registers h for "METHOD /path below the repo". Only GETs are reads.
 func (f *Fake) handle(pattern string, h handler) {
 	method, path, _ := strings.Cut(pattern, " ")
@@ -473,11 +511,16 @@ func (f *Fake) handle(pattern string, h handler) {
 // serves the new home). A read gets an ETag over
 // its body and Link header, and a 304 if that matches If-None-Match. A 204
 // has no body, as h's value is left out. Every answer is dated by the fake
-// clock, as GitHub dates its own.
+// clock, as GitHub dates its own, and carries its rate resource's
+// rate-limit headers: an answer costs its resource a request, but a 304,
+// which costs none.
 func (f *Fake) serve(w http.ResponseWriter, r *http.Request, write bool, h handler) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	w.Header().Set("Date", f.now.UTC().Format(http.TimeFormat))
+	resource := rateResource(r)
+	f.rateUsed[resource]++
+	f.rate(w, resource)
 	if write {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -526,6 +569,8 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request, write bool, h handl
 		w.Header().Set("ETag", etag)
 		if r.Header.Get("If-None-Match") == etag {
 			f.notModified++
+			f.rateUsed[resource]-- // a 304 costs no request
+			f.rate(w, resource)
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
