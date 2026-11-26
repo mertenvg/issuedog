@@ -71,6 +71,9 @@ type Adoption struct {
 //     comment, which a repost doesn't copy;
 //   - its stage is in-progress, verifying or pr-open, as a run by hand
 //     leaves no head, PR or check the daemon could carry on from;
+//   - its stage is held, as a hold's repost would bound input at itself,
+//     where the hold kept the bound from before it (HeldStack.Seen), so a
+//     /resume would skip the input between the two: it's resumed first;
 //   - its stage isn't the one its latest transition sets once the posts
 //     are made, so the label rules would report a disagreement (SPEC §5.1):
 //     the last post's latest, or with none in the posts, the latest in a
@@ -181,6 +184,8 @@ func adoptRefused(labels []string, last github.Marker, appMoves []int64) string 
 			why = append(why, label+": a plan's hash covers its whole comment, which a repost doesn't copy")
 		case InProgress, Verifying, PROpen:
 			why = append(why, label+": a run by hand left no head, PR or check the daemon could carry on from")
+		case Held:
+			why = append(why, label+": a hold's repost would bound input at itself, not where the hold did, so /resume it first")
 		}
 		if to := Stage(last.Fields["to"]); last.Kind != "" && to != stages[0] {
 			why = append(why, fmt.Sprintf("%s isn't %s, the stage its latest transition sets once reposted, so the label rules would report a disagreement", label, to))

@@ -72,9 +72,9 @@ func run(args, environ []string, stdin io.Reader, stdout io.Writer) int {
 	if *showVersion {
 		return printOut(stdout, "issuedog "+version+"\n")
 	}
-	// Key commands don't need a Claude credential, so they run before its check.
+	// Commands don't need a Claude credential, so they run before its check.
 	if fs.NArg() > 0 {
-		return command(fs.Args(), stdin, stdout)
+		return command(fs.Args(), environ, stdin, stdout)
 	}
 	cred, err := agent.Credential(environ)
 	if err != nil {
@@ -166,35 +166,47 @@ func readSettings(environ []string) (settings, error) {
 	return set, nil
 }
 
-// startDaemon runs the startup steps after the key check: the client, the
-// App's slug, a token, the clone, config and trust from main, and the
-// labels. It returns the daemon, as daemon.New builds it, which the
-// whole-run tests in internal/daemon build too, ready to run, keeping the
-// digest: its loop creates the digest, not this startup (SPEC §3.5).
-func startDaemon(ctx context.Context, set settings, key []byte) (*daemon.Daemon, error) {
+// connect runs the startup steps the daemon and adopt share, after the
+// key check: the client, the App's slug, a token, the bare clone, synced,
+// and trust from main (SPEC §3.5). It returns the client, the slug, the
+// clone and the trust.
+func connect(ctx context.Context, set settings, key []byte) (*github.Client, string, *repo.Repo, *trust.Set, error) {
 	client, err := github.New(github.Config{AppID: set.appID, InstallationID: set.installationID, Key: key, BaseURL: apiURL})
 	if err != nil {
-		return nil, fmt.Errorf("creating the GitHub client: %w", err)
+		return nil, "", nil, nil, fmt.Errorf("creating the GitHub client: %w", err)
 	}
 	slug, err := client.AppSlug(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("reading the App's slug: %w", err)
+		return nil, "", nil, nil, fmt.Errorf("reading the App's slug: %w", err)
 	}
 	token, err := client.Token(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("minting a token: %w", err)
+		return nil, "", nil, nil, fmt.Errorf("minting a token: %w", err)
 	}
 	clone := repo.New(gitRemote(set.owner, set.name), filepath.Join(workDir, set.name+".git"))
 	if err := clone.Sync(ctx, token); err != nil {
-		return nil, fmt.Errorf("syncing the clone: %w", err)
+		return nil, "", nil, nil, fmt.Errorf("syncing the clone: %w", err)
+	}
+	tr, err := trust.Load(ctx, clone, client.Client, set.owner, set.name)
+	if err != nil {
+		return nil, "", nil, nil, fmt.Errorf("loading trust from main: %w", err)
+	}
+	return client, slug, clone, tr, nil
+}
+
+// startDaemon runs the startup steps after the key check: connect's, then
+// config from main, and the labels. It returns the daemon, as daemon.New
+// builds it, which the whole-run tests in internal/daemon build too, ready
+// to run, keeping the digest: its loop creates the digest, not this
+// startup (SPEC §3.5).
+func startDaemon(ctx context.Context, set settings, key []byte) (*daemon.Daemon, error) {
+	client, slug, clone, tr, err := connect(ctx, set, key)
+	if err != nil {
+		return nil, fmt.Errorf("connecting: %w", err)
 	}
 	cfg, err := config.Load(ctx, clone)
 	if err != nil {
 		return nil, fmt.Errorf("loading the config from main: %w", err)
-	}
-	tr, err := trust.Load(ctx, clone, client.Client, set.owner, set.name)
-	if err != nil {
-		return nil, fmt.Errorf("loading trust from main: %w", err)
 	}
 	created, err := github.EnsureLabels(ctx, client, set.owner, set.name, daemon.LabelOptions(cfg))
 	if err != nil {
@@ -300,13 +312,18 @@ func printOut(stdout io.Writer, text string) int {
 const usage = `usage:
   issuedog [-version]
   issuedog key import [-path file] < app-key.pem
-  issuedog key check [-path file]     the file defaults to ` + appkey.DefaultPath
+  issuedog key check [-path file]     the file defaults to ` + appkey.DefaultPath + `
+  issuedog adopt -login <login> [-n]`
 
-// command runs "key import" (store the App key from stdin) or "key check".
-// The unlisted "egress" serves the firewall and proxy, the unlisted
-// "as-agent" runs one command as agent, and the unlisted "handoff" hands a
-// clone's commits to a bare repo, all for sandbox/test.sh.
-func command(args []string, stdin io.Reader, stdout io.Writer) int {
+// command runs "key import" (store the App key from stdin), "key check" or
+// "adopt", with the daemon's settings from environ. The unlisted "egress"
+// serves the firewall and proxy, the unlisted "as-agent" runs one command
+// as agent, and the unlisted "handoff" hands a clone's commits to a bare
+// repo, all for sandbox/test.sh.
+func command(args, environ []string, stdin io.Reader, stdout io.Writer) int {
+	if len(args) > 0 && args[0] == "adopt" {
+		return runAdopt(args[1:], environ, stdout)
+	}
 	if len(args) == 1 && args[0] == "egress" {
 		return serveEgress()
 	}
@@ -347,6 +364,64 @@ func command(args []string, stdin io.Reader, stdout io.Writer) int {
 		return 1
 	}
 	logr.Infof("the App key at %s is usable", *path)
+	return 0
+}
+
+// runAdopt runs "adopt": it reposts as the App, once, the markers the
+// trusted user -login wrote on each open pipeline issue while the pipeline
+// ran by hand, so a daemon started after it reads them (SPEC §15, going
+// live), and with -n, lists what it would post and posts nothing. It reads
+// the daemon's settings and the App key, then runs connect's steps, but
+// needs no Claude credential, never runs the loop and never posts a check
+// run. The exit code is 0 once it's done, 1 on a failed step, or a login or
+// an issue it refuses (daemon.Applier.Adopt), and 2 on bad usage. -h prints
+// the usage on stdout.
+func runAdopt(args, environ []string, stdout io.Writer) int {
+	fs := flag.NewFlagSet("issuedog adopt", flag.ContinueOnError)
+	fs.SetOutput(io.Discard) // usage goes through logr
+	login := fs.String("login", "", "the trusted user whose markers to repost")
+	dryRun := fs.Bool("n", false, "list what it would post, and post nothing")
+	err := fs.Parse(args)
+	if errors.Is(err, flag.ErrHelp) {
+		return printOut(stdout, usage+"\n")
+	}
+	if err == nil && fs.NArg() > 0 {
+		err = fmt.Errorf("unexpected arguments %q", fs.Args())
+	}
+	if err == nil && *login == "" {
+		err = errors.New("-login is required")
+	}
+	if err != nil {
+		logr.Errorf("issuedog adopt: %v\n%s", err, usage)
+		return 2
+	}
+	set, err := readSettings(environ)
+	if err != nil {
+		logr.Errorf("reading the settings: %v", err)
+		return 1
+	}
+	key, err := appkey.Load(appKeyPath)
+	if err != nil {
+		logr.Errorf("loading the App key: %v", err)
+		return 1
+	}
+	// A signal gets the default handling, as a crash: a rerun posts the
+	// rest once, in order.
+	ctx := context.Background()
+	client, slug, _, tr, err := connect(ctx, set, key)
+	if err != nil {
+		logr.Errorf("connecting: %v", err)
+		return 1
+	}
+	a := &daemon.Applier{Client: client, Owner: set.owner, Repo: set.name, AppSlug: slug}
+	report, err := a.Adopt(ctx, tr, *login, *dryRun)
+	if err != nil {
+		logr.Errorf("adopting: %v", err)
+		return 1
+	}
+	if len(report.Refused) > 0 {
+		return 1
+	}
 	return 0
 }
 
