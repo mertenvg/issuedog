@@ -81,11 +81,14 @@ func (*Verifier) Pending(in Input) bool {
 //     no verifier run (SPEC §3).
 //   - diff.patch: the whole patch from the merge base of in.Head and its
 //     target, in.Against's, main's commit or for a task in a story its
-//     story branch's tip, as the checks read it (verify.BaseOf), to
-//     in.Head, as git gives it (repo.Patch). It's neither fenced nor
-//     escaped, as it must stay a patch, and the preamble says it's data.
+//     story branch's tip, as the checks read it (verify.BaseOf), or for a
+//     conflict bug from its conflicted merge, in.Against.Base, as its
+//     rules 3 to 6 read it (SPEC §10.2), to in.Head, as git gives it
+//     (repo.Patch). It's neither fenced nor escaped, as it must stay a
+//     patch, and the preamble says it's data.
 //   - checks.md: in.Checks, naming the story branch and tip they ran
-//     against for a task in a story (verifierChecks).
+//     against for a task in a story, and for a conflict bug the main
+//     commit and the conflicted merge too (verifierChecks).
 //   - followups.md: the follow-ups already filed (verifierFollowUps), then
 //     the candidates of earlier passes (verifierCandidates) not filed yet,
 //     so a later head repeats neither, and lists each once
@@ -136,9 +139,11 @@ func (v *Verifier) Context(ctx context.Context, in Input) (map[string][]byte, er
 	if err := plannerTrustedTitleNote(ctx, a.AppSlug, tc, s, false, &text); err != nil {
 		return nil, wrap(err)
 	}
-	base, err := verify.BaseOf(ctx, verify.Facts{Repo: d.Clone, Head: in.Head, Target: in.Against.SHA, Baseline: in.Against.Baseline})
-	if err != nil {
-		return nil, wrap(err)
+	base := in.Against.Base
+	if base == "" {
+		if base, err = verify.BaseOf(ctx, verify.Facts{Repo: d.Clone, Head: in.Head, Target: in.Against.SHA, Baseline: in.Against.Baseline}); err != nil {
+			return nil, wrap(fmt.Errorf("read the head's base: %w", err))
+		}
 	}
 	patch, err := d.Clone.Patch(ctx, base, in.Head)
 	if err != nil {
@@ -194,8 +199,10 @@ const (
 // the end of its output as verify.CommandResult keeps it, each fenced so
 // nothing in it can close the fence (ivFenced), then that rules 2 to 7
 // passed (SPEC §10.1), and for a task in a story, against t, its story
-// branch and tip, with the story's baseline. The verifier runs only on a
-// head that passed them all, so a result here always passed.
+// branch and tip, with the story's baseline, or for a conflict bug, with
+// the main commit it names as the baseline, and its conflicted merge,
+// t.Base, as where diff.patch starts (SPEC §10.2). The verifier runs only
+// on a head that passed them all, so a result here always passed.
 func verifierChecks(results []verify.CommandResult, t VerifyTarget) string {
 	var sections []string
 	for i, c := range results {
@@ -211,7 +218,12 @@ func verifierChecks(results []verify.CommandResult, t VerifyTarget) string {
 		sections = append(sections, "`verify.commands` is empty, so no command ran.")
 	}
 	rules := "Rules 2 to 7 passed."
-	if t.Branch != "" {
+	switch {
+	case t.Base != "":
+		rules = fmt.Sprintf("Rules 2 to 7 passed, against %s, the tip this conflict bug merges into `main` at `%s`: rule 7's target is that tip, "+
+			"and the head holds both commits in its history, and rule 2's baseline is `main` at `%s`. "+
+			"diff.patch starts at `%s`, the merge of the two with its conflict markers left in, so it shows only the resolution.", t.label(), t.Baseline, t.Baseline, t.Base)
+	case t.Branch != "":
 		rules = fmt.Sprintf("Rules 2 to 7 passed, against %s, the tip this task's head merges into: rule 7's target is that tip, "+
 			"and rule 2's baseline is the story's, `main` at `%s`. diff.patch starts at the head's merge base with that tip.", t.label(), t.Baseline)
 	}

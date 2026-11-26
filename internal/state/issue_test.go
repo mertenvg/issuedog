@@ -2,6 +2,7 @@ package state
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -775,5 +776,160 @@ func TestDeriveFollowUpOrigin(t *testing.T) {
 	}
 	if plan := (Origin{Plan: 9, Rev: 1, Item: "T1"}); !plan.Any() {
 		t.Errorf("Any of %+v = false, want true", plan)
+	}
+}
+
+// failureTip and failureMain are full SHAs, a story branch's failing tip
+// and the main commit that didn't merge into it.
+const (
+	failureTip  = "4b1d0e2c9a8f7e6d5c4b3a291807f6e5d4c3b2a1"
+	failureMain = "5d55321d1accd2292e6164a847f21631e4016740"
+)
+
+// FailureOf reads the origin marker of an issue filed for a failure on a
+// story branch (SPEC §5, Story branch failures): the story, the failing
+// tip, a full SHA, SHA-1 or SHA-256, and a conflict bug's main commit, a
+// full SHA too, with human=1 or other fields beside them. A plan's or a
+// follow-up's origin, another kind of marker, and a story or a tip that's
+// missing or bad give nothing, as does a main= that isn't a full SHA.
+func TestFailureOf(t *testing.T) {
+	t.Parallel()
+	marker := func(kind string, kv ...string) github.Marker {
+		m := github.Marker{Kind: kind, Fields: map[string]string{}}
+		for i := 0; i+1 < len(kv); i += 2 {
+			m.Fields[kv[i]] = kv[i+1]
+		}
+		return m
+	}
+	sha256 := failureTip + "0123456789abcdef0123456789abcdef01234567"[:24]
+	for _, tt := range []struct {
+		name      string
+		m         github.Marker
+		story     int
+		tip, main string
+	}{
+		{"a bug's", marker("origin", "story", "#625", "tip", failureTip), 625, failureTip, ""},
+		{"a human task's", marker("origin", "story", "#625", "tip", failureTip, "human", "1"), 625, failureTip, ""},
+		{"a conflict bug's", marker("origin", "story", "#625", "tip", failureTip, "main", failureMain), 625, failureTip, failureMain},
+		{"other fields", marker("origin", "story", "#625", "tip", failureTip, "x", "y", "item", "T1"), 625, failureTip, ""},
+		{"a SHA-256 tip and main", marker("origin", "story", "#625", "tip", sha256, "main", sha256), 625, sha256, sha256},
+	} {
+		story, tip, main, ok := FailureOf(tt.m)
+		if !ok || story != tt.story || tip != tt.tip || main != tt.main {
+			t.Errorf("%s: FailureOf = %d, %q, %q, %t; want %d, %q, %q", tt.name, story, tip, main, ok, tt.story, tt.tip, tt.main)
+		}
+	}
+	for name, m := range map[string]github.Marker{
+		"a plan's":           marker("origin", "plan", "#625", "rev", "1", "item", "T1"),
+		"a follow-up's":      marker("origin", "verify", "#625", "run", "r", "item", "F1"),
+		"another kind":       marker("revision", "story", "#625", "tip", failureTip),
+		"no story":           marker("origin", "tip", failureTip),
+		"no #":               marker("origin", "story", "625", "tip", failureTip),
+		"no number":          marker("origin", "story", "#x", "tip", failureTip),
+		"story 0":            marker("origin", "story", "#0", "tip", failureTip),
+		"a story below zero": marker("origin", "story", "#-1", "tip", failureTip),
+		"no tip":             marker("origin", "story", "#625"),
+		"an empty tip":       marker("origin", "story", "#625", "tip", ""),
+		"a short tip":        marker("origin", "story", "#625", "tip", failureTip[:7]),
+		"a tip one short":    marker("origin", "story", "#625", "tip", failureTip[:39]),
+		"a tip one over":     marker("origin", "story", "#625", "tip", failureTip+"a"),
+		"a tip in capitals":  marker("origin", "story", "#625", "tip", strings.ToUpper(failureTip)),
+		"a tip that's a ref": marker("origin", "story", "#625", "tip", "main"),
+		"a short main":       marker("origin", "story", "#625", "tip", failureTip, "main", failureMain[:7]),
+		"an empty main":      marker("origin", "story", "#625", "tip", failureTip, "main", ""),
+	} {
+		if story, tip, main, ok := FailureOf(m); ok || story != 0 || tip != "" || main != "" {
+			t.Errorf("%s: FailureOf = %d, %q, %q, %t; want nothing", name, story, tip, main, ok)
+		}
+	}
+}
+
+// Derive reads a story branch failure's origin, story=#N tip=<SHA>, where
+// it reads a plan's (SPEC §5): from the App's clean body, or else from the
+// newest clean App comment with a whole one, as the App's repost of a lost
+// marker after someone made the body dirty (SPEC §6.4). Each field is
+// read: Story and Tip, Main on a conflict bug, and Human on a human task,
+// whose check is the tip check, of its tip, whatever check fields it has.
+// A bug's check fields give no check. FromFailure follows the origin, with
+// FromPlan and FollowUp false, and Any counts it. A marker in a person's
+// issue or comment, in a dirty body or App comment, in a body someone else
+// edited last, an escaped one, or one that isn't whole, as a partial one
+// or one with a short SHA, gives none.
+func TestDeriveFailureOrigin(t *testing.T) {
+	t.Parallel()
+	bug := "<!-- issuedog:origin story=#625 tip=" + failureTip + " -->"
+	human := "<!-- issuedog:origin human=1 story=#625 tip=" + failureTip + " -->"
+	conflict := "<!-- issuedog:origin main=" + failureMain + " story=#625 tip=" + failureTip + " -->"
+	tipCheck := Check{Kind: CheckTip, Value: failureTip}
+	body := Origin{Story: 625, Tip: failureTip, Comment: BodyID}
+	in := func(o Origin, id int64) Origin { o.Comment = id; return o }
+	app := []github.Author{appBot}
+	editedBy := func(by github.Author, bodyText string, authors []github.Author, comments ...string) *github.Snapshot {
+		s := snap(bodyText, authors, comments...)
+		s.BodyEdit = github.Edit{By: by, At: time.Unix(5, 0)}
+		return s
+	}
+	byPerson := func(authors []github.Author, comments ...string) *github.Snapshot {
+		s := snap("A bug, filed by a person.\n\n"+bug, authors, comments...)
+		s.Author = owner
+		return s
+	}
+	for _, tt := range []struct {
+		name  string
+		s     *github.Snapshot
+		dirty func(int64) bool
+		want  Origin
+	}{
+		{"a bug's in the App's clean body", snap("Rule 3 failed.\n\n"+bug, nil), clean, body},
+		{"a human task's", snap("Revert it.\n\n"+human, nil), clean, Origin{Story: 625, Tip: failureTip, Comment: BodyID, Human: true, Check: tipCheck}},
+		{"a conflict bug's", snap("Merge it.\n\n"+conflict, nil), clean, Origin{Story: 625, Tip: failureTip, Main: failureMain, Comment: BodyID}},
+		{"a human task's check fields", snap("<!-- issuedog:origin check=label human=1 story=#625 tip="+failureTip+" value=x -->", nil), clean,
+			Origin{Story: 625, Tip: failureTip, Comment: BodyID, Human: true, Check: tipCheck}},
+		{"a human task's unreadable check fields", snap("<!-- issuedog:origin check=nope human=1 story=#625 tip="+failureTip+" -->", nil), clean,
+			Origin{Story: 625, Tip: failureTip, Comment: BodyID, Human: true, Check: tipCheck}},
+		{"a bug's check fields", snap("<!-- issuedog:origin check=label story=#625 tip="+failureTip+" value=x -->", nil), clean, body},
+		{"human=0", snap("<!-- issuedog:origin human=0 story=#625 tip="+failureTip+" -->", nil), clean, body},
+		{"a body the App edited last", editedBy(appBot, "Rule 3 failed.\n\n"+bug, nil), clean, body},
+		{"a repost after a dirty body", snap("Rule 3 failed.\n\n"+bug, app, "Reposted.\n\n"+human), dirtyIDs(BodyID),
+			Origin{Story: 625, Tip: failureTip, Comment: 1, Human: true, Check: tipCheck}},
+		{"a repost after someone else's edit", editedBy(owner, "Rule 3 failed, edited.", app, "Reposted.\n\n"+bug), clean, in(body, 1)},
+		{"a body and a comment that are both read", snap("Rule 3 failed.\n\n"+bug, app, conflict), clean, body},
+		{"a plan's in the body and a failure's in a comment", snap("<!-- issuedog:origin plan=#621 rev=1 item=T1 -->", app, bug), clean,
+			Origin{Plan: 621, Rev: 1, Item: "T1", Comment: BodyID}},
+		{"a body someone else edited last", editedBy(owner, "Rule 3 failed.\n\n"+bug, nil), clean, Origin{}},
+		{"a dirty body", snap("Rule 3 failed.\n\n"+bug, nil), dirtyIDs(BodyID), Origin{}},
+		{"a dirty App comment", editedBy(owner, "Rule 3 failed, edited.", app, bug), dirtyIDs(1), Origin{}},
+		{"a person's issue", byPerson(nil), clean, Origin{}},
+		{"a person's issue with the marker in their comment", byPerson([]github.Author{owner}, bug), clean, Origin{}},
+		{"an untrusted user's comment", editedBy(owner, "Rule 3 failed, edited.", []github.Author{mallory}, bug), clean, Origin{}},
+		{"an escaped marker", snap(github.Escape(bug), nil), clean, Origin{}},
+		{"a marker with no tip", snap("<!-- issuedog:origin human=1 story=#625 -->", nil), clean, Origin{}},
+		{"a marker with no story", snap("<!-- issuedog:origin human=1 tip="+failureTip+" -->", nil), clean, Origin{}},
+		{"a short tip", snap("<!-- issuedog:origin story=#625 tip="+failureTip[:12]+" -->", nil), clean, Origin{}},
+		{"a short main", snap("<!-- issuedog:origin main="+failureMain[:12]+" story=#625 tip="+failureTip+" -->", nil), clean, Origin{}},
+	} {
+		is := Derive(tt.s, slug, tt.dirty)
+		if is.Origin != tt.want {
+			t.Errorf("%s: origin = %+v, want %+v", tt.name, is.Origin, tt.want)
+		}
+		if is.Item.FromFailure != (tt.want.Story != 0) || is.Item.FromPlan != (tt.want.Plan != 0) || is.Item.FollowUp || is.Item.Human != tt.want.Human {
+			t.Errorf("%s: FromFailure %t, FromPlan %t, FollowUp %t, Human %t; want %t, %t, false, %t", tt.name,
+				is.Item.FromFailure, is.Item.FromPlan, is.Item.FollowUp, is.Item.Human, tt.want.Story != 0, tt.want.Plan != 0, tt.want.Human)
+		}
+		if is.Origin.Any() != (tt.want != Origin{}) {
+			t.Errorf("%s: Any = %t, want %t", tt.name, is.Origin.Any(), tt.want != Origin{})
+		}
+	}
+	// OriginMarker and OriginOf read it as Derive does, for a repost of a
+	// lost marker (SPEC §6.4), every field kept as written.
+	m, ok := OriginMarker("Merge it.\n\n" + conflict)
+	if o, whole := OriginOf(m); !ok || !whole || o != (Origin{Story: 625, Tip: failureTip, Main: failureMain, Comment: BodyID}) {
+		t.Errorf("OriginMarker, OriginOf = %+v, %t, %+v, %t; want the conflict bug's marker", m, ok, o, whole)
+	}
+	if f, err := github.FormatMarker(m); err != nil || f != conflict {
+		t.Errorf("the marker formats as %s, %v; want %s", f, err, conflict)
+	}
+	if failure := (Origin{Story: 625, Tip: failureTip}); !failure.Any() {
+		t.Errorf("Any of %+v = false, want true", failure)
 	}
 }

@@ -38,10 +38,12 @@ func FlagCommands() map[string]Handler {
 }
 
 // flagTrackCheck rejects a /track on a follow-up, saying how to approve
-// it, as only its approval moves it on (SPEC §6.2), and when the table has
-// no move to clarifying for the issue, as for a type the pipeline doesn't
-// know. Once Apply's marker exists, the stage is clarifying, so Step
-// finishes the command before it asks Check.
+// it, as only its approval moves it on (SPEC §6.2), on an issue filed for
+// a failure on a story branch, which only its first move puts in the
+// pipeline (failureTrackReason), and when the table has no move to
+// clarifying for the issue, as for a type the pipeline doesn't know. Once
+// Apply's marker exists, the stage is clarifying, so Step finishes the
+// command before it asks Check.
 func flagTrackCheck(_ context.Context, a *Applier, c Cmd) error {
 	is := state.Derive(c.S, a.AppSlug, c.Dirt.Has)
 	if is.Item.FollowUp {
@@ -49,6 +51,9 @@ func flagTrackCheck(_ context.Context, a *Applier, c Cmd) error {
 			return Rejection{Reason: followUpStoryTrackReason, Final: true}
 		}
 		return Rejection{Reason: followUpTrackReason, Final: true}
+	}
+	if is.Item.FromFailure {
+		return Rejection{Reason: failureTrackReason, Final: true}
 	}
 	why, err := noRow(is, flagAdmit(c.S, state.CmdKey(c.Comment.ID), ""))
 	switch {
@@ -63,6 +68,12 @@ func flagTrackCheck(_ context.Context, a *Applier, c Cmd) error {
 // followUpTrackReason is why /track doesn't admit a follow-up, and how to
 // approve or drop it instead (SPEC §6.2, §10.2).
 const followUpTrackReason = "this is a follow-up, which `/track` doesn't admit. React 👍 to it to approve it, or close it to drop it"
+
+// failureTrackReason is why /track doesn't admit an issue the App filed
+// for a failure on a story branch, at intake only when a crash came
+// between its filing and its first move (SPEC §6.2, §7.5).
+const failureTrackReason = "this issue was filed for a failure on its story's branch, which `/track` doesn't admit: " +
+	"its own first move, written when that failing tip is checked again, puts it in the pipeline"
 
 // followUpStoryTrackReason is followUpTrackReason for a follow-up in a
 // story, whose addendum on the story a 👍 approves it on too (SPEC §10.2).

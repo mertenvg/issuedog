@@ -105,7 +105,7 @@ func TestOpenErrorsTaskRound(t *testing.T) {
 			Body: fmt.Sprintf("Stopped.\n\n<!-- issuedog:error kind=attempts key=%s -->", key)})
 	}
 	is := state.Derive(s, "issuedog", func(int64) bool { return false })
-	open, err := openErrors(s, is, func() ([]github.Comment, error) { return nil, nil }, nil)
+	open, err := openErrors(s, is, func() ([]github.Comment, error) { return nil, nil }, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

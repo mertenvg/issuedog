@@ -163,7 +163,7 @@ func TestHumanCheck(t *testing.T) {
 		if tt.setup != nil {
 			tt.setup(f)
 		}
-		pass, found, err := humanCheckApplier(t, f, nil).humanCheck(ctx, tt.c)
+		pass, found, err := humanCheckApplier(t, f, nil).humanCheck(ctx, state.Origin{Check: tt.c})
 		if err != nil || pass != tt.pass || found != tt.found {
 			t.Errorf("%s: humanCheck = %t, %q, %v; want %t, %q", tt.name, pass, found, err, tt.pass, tt.found)
 		}
@@ -244,7 +244,7 @@ func TestHumanCheckFile(t *testing.T) {
 			"The file `.github/CODEOWNERS` is on `main`, but doesn't contain `@o/other`."},
 		{"contains on a missing file", file("docs/missing.md", "x"), false, "There's no file `docs/missing.md` on `main`."},
 	} {
-		pass, found, err := humanCheckApplier(t, githubtest.New(t, "o/r", "issuedog"), clone).humanCheck(ctx, tt.c)
+		pass, found, err := humanCheckApplier(t, githubtest.New(t, "o/r", "issuedog"), clone).humanCheck(ctx, state.Origin{Check: tt.c})
 		if err != nil || pass != tt.pass || found != tt.found {
 			t.Errorf("%s: humanCheck = %t, %q, %v; want %t, %q", tt.name, pass, found, err, tt.pass, tt.found)
 		}
@@ -272,7 +272,7 @@ func TestHumanCheckReadErrors(t *testing.T) {
 		for _, status := range []int{http.StatusForbidden, http.StatusInternalServerError} {
 			f := githubtest.New(t, "o/r", "issuedog")
 			f.AnswerOnce(func(r githubtest.Request) bool { return r.Path == tt.path }, status)
-			pass, found, err := humanCheckApplier(t, f, nil).humanCheck(ctx, tt.c)
+			pass, found, err := humanCheckApplier(t, f, nil).humanCheck(ctx, state.Origin{Check: tt.c})
 			var er *gogithub.ErrorResponse
 			if !errors.As(err, &er) || er.Response.StatusCode != status || !strings.Contains(err.Error(), "run the "+tt.c.Kind+" check") {
 				t.Errorf("%s answered %d: err = %v; want a wrapped %d", tt.path, status, err, status)
@@ -290,7 +290,7 @@ func TestHumanCheckReadErrors(t *testing.T) {
 		"a git error":              {Owner: "o", Repo: "r", ReadMain: func(context.Context, string) ([]byte, error) { return nil, gitErr }},
 		"no clone":                 {Owner: "o", Repo: "r"},
 	} {
-		pass, found, err := a.humanCheck(ctx, file)
+		pass, found, err := a.humanCheck(ctx, state.Origin{Check: file})
 		if err == nil || errors.Is(err, repo.ErrNotFound) || !strings.Contains(err.Error(), "run the file check") || pass || found != "" {
 			t.Errorf("%s: humanCheck = %t, %q, %v; want a file check error that isn't ErrNotFound", name, pass, found, err)
 		}
@@ -298,8 +298,82 @@ func TestHumanCheckReadErrors(t *testing.T) {
 			t.Errorf("%s: %v doesn't wrap %v", name, err, gitErr)
 		}
 	}
-	if pass, found, err := (&Applier{}).humanCheck(ctx, state.Check{Kind: "app-installed", Value: "o"}); err == nil || pass || found != "" {
+	if pass, found, err := (&Applier{}).humanCheck(ctx, state.Origin{Check: state.Check{Kind: "app-installed", Value: "o"}}); err == nil || pass || found != "" {
 		t.Errorf("an unknown kind: humanCheck = %t, %q, %v; want an error", pass, found, err)
+	}
+}
+
+// The tip check on a story branch failure's human task reads the story's
+// branches by its prefix, issuedog/<story>-, and passes once its one
+// branch's tip isn't the failing tip, the check's value. The same tip
+// fails, and so do no branch and more than one, each saying so, every
+// value as inline code. A read that fails, no clone to read and no story
+// are errors, wrapped, and never a failed check.
+func TestHumanCheckTip(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	tip, now := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	origin := state.Origin{Story: 9, Tip: tip, Human: true, Check: state.Check{Kind: state.CheckTip, Value: tip}}
+	for _, tt := range []struct {
+		name     string
+		branches map[string]string
+		pass     bool
+		found    string
+	}{
+		{"a new tip", map[string]string{"issuedog/9-story": now}, true,
+			"The story branch `issuedog/9-story` is at `" + now + "`, no longer at the failing tip `" + tip + "`."},
+		{"the failing tip", map[string]string{"issuedog/9-story": tip}, false,
+			"The story branch `issuedog/9-story` is still at the failing tip `" + tip + "`."},
+		{"no branch", map[string]string{}, false,
+			"Story #9 has no branch with the prefix `issuedog/9-`, so it has no tip to check against the failing tip `" + tip + "`."},
+		{"two branches", map[string]string{"issuedog/9-story": now, "issuedog/9-a": tip}, false,
+			"Story #9 has more than one branch with the prefix `issuedog/9-`, `issuedog/9-a` and `issuedog/9-story`, " +
+				"so I can't tell which one's tip to check against the failing tip `" + tip + "`."},
+		{"three branches", map[string]string{"issuedog/9-c": now, "issuedog/9-b": now, "issuedog/9-a": now}, false,
+			"Story #9 has more than one branch with the prefix `issuedog/9-`, `issuedog/9-a`, `issuedog/9-b` and `issuedog/9-c`, " +
+				"so I can't tell which one's tip to check against the failing tip `" + tip + "`."},
+		// A branch's name isn't the App's text: a backtick and a marker in
+		// it read as they are, in a code span, escaped.
+		{"a backtick in the name", map[string]string{"issuedog/9-a`b": tip}, false,
+			"The story branch ``issuedog/9-a`b`` is still at the failing tip `" + tip + "`."},
+		{"names with a backtick and a marker", map[string]string{"issuedog/9-a`b": now, "issuedog/9-<!--x-->": tip}, false,
+			"Story #9 has more than one branch with the prefix `issuedog/9-`, `issuedog/9-&lt;!--x-->` and ``issuedog/9-a`b``, " +
+				"so I can't tell which one's tip to check against the failing tip `" + tip + "`."},
+	} {
+		var prefixes []string
+		a := &Applier{Owner: "o", Repo: "r", StoryBranches: func(_ context.Context, prefix string) (map[string]string, error) {
+			prefixes = append(prefixes, prefix)
+			return tt.branches, nil
+		}}
+		pass, found, err := a.humanCheck(ctx, origin)
+		if err != nil || pass != tt.pass || found != tt.found {
+			t.Errorf("%s: humanCheck = %t, %q, %v; want %t, %q", tt.name, pass, found, err, tt.pass, tt.found)
+		}
+		if want := []string{"issuedog/9-"}; !slices.Equal(prefixes, want) {
+			t.Errorf("%s: read the branches with the prefixes %q; want %q", tt.name, prefixes, want)
+		}
+	}
+
+	gitErr := errors.New("git for-each-ref: exit status 128")
+	for name, tt := range map[string]struct {
+		a     *Applier
+		o     state.Origin
+		wraps error
+	}{
+		"a git error": {&Applier{StoryBranches: func(context.Context, string) (map[string]string, error) { return nil, gitErr }}, origin, gitErr},
+		"no clone":    {&Applier{}, origin, nil},
+		"no story": {&Applier{StoryBranches: func(context.Context, string) (map[string]string, error) {
+			t.Error("no story: read the branches; want no read")
+			return nil, nil
+		}}, state.Origin{Check: origin.Check}, nil},
+	} {
+		pass, found, err := tt.a.humanCheck(ctx, tt.o)
+		if err == nil || !strings.Contains(err.Error(), "run the tip check") || pass || found != "" {
+			t.Errorf("%s: humanCheck = %t, %q, %v; want a tip check error", name, pass, found, err)
+		}
+		if tt.wraps != nil && !errors.Is(err, tt.wraps) {
+			t.Errorf("%s: %v doesn't wrap %v", name, err, tt.wraps)
+		}
 	}
 }
 

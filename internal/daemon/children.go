@@ -486,7 +486,10 @@ func childrenRun(plan github.Comment, rev int, changed []childSpec, appSlug stri
 // and dirty content included. A follow-up filed under a story, whose
 // listed body gives a follow-up's origin, isn't read: it's no plan item's
 // child (childMatch), and a story may have one from each verify of its
-// tasks. That leaves one of two kinds of sub-issue:
+// tasks. Nor is a bug or human task filed under a story for a failure on
+// its branch, whose listed body gives a failure's origin, for the same
+// reason (SPEC §5, Story branch failures). That leaves one of two kinds of
+// sub-issue:
 //   - one the App filed, whose origin the App reposted in a comment once
 //     the body lost it (originRepost, SPEC §6.4, #291). Until that repost
 //     exists, as when the parent's visit comes before the child's step 1
@@ -913,6 +916,20 @@ func (st *Step) childrenRecord(ctx context.Context, s *github.Snapshot, rev int,
 // origin, which /resume then takes it to, as for a held child that a
 // revision changes (childChanged, SPEC §7.2).
 func (st *Step) childFirstMove(ctx context.Context, parent, rev int, key state.Key, c childSpec, n int, child *github.Snapshot) error {
+	return st.firstMove(ctx, parent, n, "the child of item "+c.Item+" of its plan", c.Stage, key,
+		fmt.Sprintf("Created from #%d's plan, rev %d, as %s.", parent, rev, c.Item), child)
+}
+
+// firstMove is childFirstMove for issue n, which the App filed under
+// parent as what, such as "the child of item T1 of its plan": its first
+// move, intake → stage on TriggerCreated, keyed by key, whose comment opens
+// with created, then says where it starts. child is as childFirstMove
+// takes it, and so is everything else: a move on it already, a found
+// issue's fresh read and label rules, a closed one, and a held one, whose
+// at and origin are stage. A plan's children take it (childFirstMove), and
+// so does an issue filed for a failure on a story branch
+// (Daemon.failureFile, SPEC §7.5).
+func (st *Step) firstMove(ctx context.Context, parent, n int, what string, stage state.Stage, key state.Key, created string, child *github.Snapshot) error {
 	dirty := func(int64) bool { return false }
 	if child == nil {
 		s, err := st.Client.Snapshot(ctx, st.Owner, st.Repo, n)
@@ -920,7 +937,7 @@ func (st *Step) childFirstMove(ctx context.Context, parent, rev int, key state.K
 			return fmt.Errorf("read #%d: %w", n, err)
 		}
 		if s.Closed {
-			logr.Infof("%s/%s#%d: #%d, the child of item %s of its plan, is closed, so it gets no first move", st.Owner, st.Repo, parent, n, c.Item)
+			logr.Infof("%s/%s#%d: #%d, %s, is closed, so it gets no first move", st.Owner, st.Repo, parent, n, what)
 			return nil
 		}
 		d, err := st.Dirty(ctx, s, st.trustOnceTrust())
@@ -942,21 +959,21 @@ func (st *Step) childFirstMove(ctx context.Context, parent, rev int, key state.K
 	if childMoved(child, st.AppSlug, dirty) {
 		return nil
 	}
-	stage, _ := c.Stage.Label()
-	text := fmt.Sprintf("Created from #%d's plan, rev %d, as %s.", parent, rev, c.Item)
+	label, _ := stage.Label()
+	text := created
 	var m Move
 	if is := state.Derive(child, st.AppSlug, dirty); is.Stage == state.Held {
-		fields := map[string]string{"at": string(c.Stage), "origin": string(c.Stage)}
+		fields := map[string]string{"at": string(stage), "origin": string(stage)}
 		// SPEC §7.2 has no row of its own for it, so it takes /hold's,
 		// any open → held, as a changed held child's does (childChanged).
 		m = Move{To: state.Held, Trigger: state.TriggerHold, Key: key, Fields: state.HeldStackFields(fields, is.HeldStack.Seen),
-			Text: text + fmt.Sprintf(" It stays on hold, and `/resume` takes it to `%s`.", stage)}
+			Text: text + fmt.Sprintf(" It stays on hold, and `/resume` takes it to `%s`.", label)}
 	} else {
-		text += fmt.Sprintf(" It starts at `%s`", stage)
-		if c.Stage == state.Planning {
+		text += fmt.Sprintf(" It starts at `%s`", label)
+		if stage == state.Planning {
 			text += ", where the planner writes its task plan"
 		}
-		m = Move{To: c.Stage, Trigger: state.TriggerCreated, Key: key, Text: text + "."}
+		m = Move{To: stage, Trigger: state.TriggerCreated, Key: key, Text: text + "."}
 	}
 	if err := st.Transition(ctx, child, dirty, m); err != nil {
 		return fmt.Errorf("first move of #%d: %w", n, err)

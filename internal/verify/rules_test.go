@@ -21,15 +21,7 @@ import (
 // identity, and returns its trimmed stdout.
 func rulesGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "GIT_") {
-			cmd.Env = append(cmd.Env, kv)
-		}
-	}
-	cmd.Env = append(cmd.Env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null",
-		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+	cmd := rulesCmd(dir, args...)
 	out, err := cmd.Output()
 	if err != nil {
 		var stderr []byte
@@ -40,6 +32,21 @@ func rulesGit(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %v: %v: %s", args, err, stderr)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// rulesCmd is git with args in dir, with no system or global config and a
+// fixed identity, for rulesGit, or a caller that judges its exit itself.
+func rulesCmd(dir string, args ...string) *exec.Cmd {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "GIT_") {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
+	cmd.Env = append(cmd.Env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+	return cmd
 }
 
 // rulesRepo is a work tree whose every commit is pushed to a bare repo,
@@ -404,6 +411,53 @@ func TestRule7IgnoresAttributes(t *testing.T) {
 
 	got := check(t, Rule7, Facts{Repo: rr.bare, Baseline: base, Base: base, Head: head, Target: target, Config: rulesConfig()})
 	wantFinding(t, got, 7, "doesn't merge cleanly", "- docs/guide.md")
+}
+
+// Rule 7 with MustHold, as a conflict bug's checks set it to the main
+// commit it names and its story tip (SPEC §7.5, A conflict), passes a head
+// whose history holds each, as their merge does, and fails one that lacks
+// any, naming each commit it lacks, though it merges cleanly with its
+// target. A head that lacks one and conflicts too names both.
+func TestRule7MustHold(t *testing.T) {
+	t.Parallel()
+	rr := newRulesRepo(t)
+	base := rr.commit(rulesBase)
+	tip := rr.commit(map[string]string{"docs/guide.md": "the story's guide\n"})
+	rr.checkout(base)
+	main := rr.commit(map[string]string{"README.md": "main's\n"})
+	rulesGit(t, rr.work, "merge", "--quiet", "--no-edit", tip)
+	merged := rulesGit(t, rr.work, "rev-parse", "HEAD")
+	rulesGit(t, rr.work, "push", "--quiet", rr.bare.Dir(), "HEAD:refs/heads/merged")
+	rr.checkout(main)
+	skipped := rr.commit(map[string]string{"main.go": "package main\n\n// skipped the merge\n"})
+	rr.checkout(main)
+	conflicts := rr.commit(map[string]string{"docs/guide.md": "main's guide\n"})
+	f := Facts{Repo: rr.bare, Baseline: main, Base: main, Target: tip, MustHold: []string{main, tip}, Config: rulesConfig()}
+
+	f.Head = merged
+	if got := check(t, Rule7, f); got != nil {
+		t.Errorf("Rule7 of the merge of the tip into main's commit = %+v, want nil", got)
+	}
+
+	f.Head = skipped
+	got := check(t, Rule7, f)
+	wantFinding(t, got, 7, "The head "+skipped+" lacks these commits in its history, which it must merge:\n- "+tip)
+	if got != nil && (strings.Contains(got.Detail, main) || strings.Contains(got.Detail, "conflict")) {
+		t.Errorf("detail =\n%s\nwant only the tip it lacks, as it holds main's commit and merges cleanly", got.Detail)
+	}
+
+	f.Head = tip
+	wantFinding(t, check(t, Rule7, f), 7, "The head "+tip+" lacks these commits in its history, which it must merge:\n- "+main)
+
+	f.Head = conflicts
+	wantFinding(t, check(t, Rule7, f), 7, "lacks these commits in its history, which it must merge:\n- "+tip+"\n\nThe head "+conflicts+
+		" doesn't merge cleanly with its target "+tip, "- docs/guide.md")
+
+	f.MustHold = nil
+	f.Head = skipped
+	if got := check(t, Rule7, f); got != nil {
+		t.Errorf("Rule7 with no MustHold of a head that merges cleanly = %+v, want nil", got)
+	}
 }
 
 // No test file in this repo holds a marker of its own verify.skip_markers

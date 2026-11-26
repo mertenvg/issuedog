@@ -298,9 +298,12 @@ func TestPickStoryOwnBlocker(t *testing.T) {
 // A failing tip, here main's commit, whose commands fail as main holds
 // breaks.txt, has the task wait, uncounted, with no request and no
 // blocked_by read, and that's logged once, not every pass, though the
-// passes run step 4's tip checks too (SPEC §8.1). Once a person's push
-// gives the branch a tip that passes, it's checked, and the task picked
-// from it. It reads logr, so it isn't parallel.
+// passes run step 4's tip checks too (SPEC §8.1). The failure files a bug
+// under the story, #4, as the digest is #3, which the owner closes, so the
+// tip's check alone holds the task here: an open bug's pick is
+// story_failure_test.go's. Once a person's push gives the branch a tip
+// that passes, it's checked, and the task picked from it. It reads logr,
+// so it isn't parallel.
 func TestPickStoryFailingTip(t *testing.T) {
 	f := newFake(t)
 	v := newVerdictRigWith(t, f, 3, "", `, "test ! -f breaks.txt"`)
@@ -310,10 +313,14 @@ func TestPickStoryFailingTip(t *testing.T) {
 	v.out(1, ivResult(t, implementerOutput(t, "commits")))
 	cut := v.pickStoryCut(tipBranch, 2)
 	v.pickStoryChecked(tipBranch, cut, "failure", 2)
+	if bug := f.State().Issues[3]; !slices.Contains(bug.Labels, "type:bug") || bug.Parent != 1 {
+		t.Fatalf("#4 = %+v; want the bug the failing tip filed under the story", bug)
+	}
+	f.CloseBy(4, "owner")
 
 	stop := logtest.Capture(t, logr.I)
 	from := len(f.Requests())
-	v.pass()
+	v.passes(2) // the close, then the digest's change it brings, read back
 	v.quietPass("the tip failing")
 	v.quietPass("again")
 	logs := stop()

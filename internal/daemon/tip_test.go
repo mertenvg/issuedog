@@ -192,9 +192,12 @@ func TestTipCheckPersonPush(t *testing.T) {
 // tipFailed runs a pass of v on tip, story 1's branch's tip, which must
 // post issuedog/tip as failure there, naming the branch, titled for a
 // failure, with a summary starting as one does and holding each of
-// sections, the commands having run commands times.
+// sections, the commands having run commands times. v picks nothing from
+// then on (pickOff), so a bug the failure files at ready stays there: its
+// pick is story_failure_test.go's.
 func (v *verdictRig) tipFailed(cut, tip string, commands int, sections ...string) {
 	v.t.Helper()
+	v.pickOff()
 	want := []githubtest.CheckRunState{tipCheck(cut, tipBranch, "success"), tipCheck(tip, tipBranch, "failure")}
 	slices.SortStableFunc(want, func(a, b githubtest.CheckRunState) int { return strings.Compare(a.SHA, b.SHA) })
 	v.tipJudged(tip, commands, want)
@@ -208,7 +211,17 @@ func (v *verdictRig) tipFailed(cut, tip string, commands int, sections ...string
 			v.t.Errorf("the check's summary =\n%s\nwant it to hold\n%s", last.Output.Summary, s)
 		}
 	}
+	v.tipSettle()
 	v.tipQuiet("after the failure")
+}
+
+// tipSettle runs the two passes after a failing tip's check, which filed
+// its failure under the story (SPEC §7.5): the first reads what the filing
+// wrote, and lists and assigns a human task, and the second reads those
+// writes, so the next unchanged pass is quiet.
+func (v *verdictRig) tipSettle() {
+	v.t.Helper()
+	v.passes(2)
 }
 
 // A tip whose command fails: the commands run once, every one, and
@@ -291,6 +304,7 @@ func TestTipCheckNoBaseline(t *testing.T) {
 		!strings.Contains(last.Output.Summary, "so the story has no baseline") {
 		t.Errorf("the check's summary =\n%s\nwant it to start\n%s\nand give rule 2's finding", last.Output.Summary, intro)
 	}
+	v.tipSettle()
 	v.tipQuiet("after the failure")
 }
 

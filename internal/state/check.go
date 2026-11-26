@@ -28,13 +28,21 @@ var checkKinds = []string{CheckLabel, CheckIssueType, CheckFile, CheckRuleset, C
 // §9.3, "The checks"), so the task never closes without its check.
 const CheckUnreadable = "unreadable"
 
+// CheckTip is the Kind of the check on the human task the daemon files for
+// a story branch that fails rule 2 (SPEC §5, Story branch failures; §9.3,
+// A story branch's failure): its Value is the failing tip, and its story
+// is the origin's (Origin.Story). It's read from the origin marker's story
+// and tip, never from check=, so it isn't one of checkKinds: check=tip on
+// a plan's marker is a check that couldn't be read.
+const CheckTip = "tip"
+
 // Check is a human task's "Done when" check (SPEC §9.3), as its origin
 // marker records it (SPEC §5): a kind, and its one value, which is
-// the label, the issue type, the file's path, the required check's name or
-// the owner. Contains is a file check's optional text, and "" for every
-// other kind. The zero Check is a plain-text "Done when", which the daemon
-// doesn't run, and a Check of kind CheckUnreadable one whose fields
-// couldn't be read, which always fails.
+// the label, the issue type, the file's path, the required check's name,
+// the owner, or a tip check's failing tip (CheckTip). Contains is a file
+// check's optional text, and "" for every other kind. The zero Check is a
+// plain-text "Done when", which the daemon doesn't run, and a Check of kind
+// CheckUnreadable one whose fields couldn't be read, which always fails.
 //
 // It holds values that were valid when the plan was, so it adds no
 // validation of its own: the daemon converts the plan's check after plan
@@ -57,13 +65,23 @@ func CheckFields(c Check) map[string]string {
 	return f
 }
 
-// checkOf is the Check that an origin marker's fields record
+// checkOf is the Check of o, read from its origin marker's fields. For a
+// story branch failure's origin, o.Story above 0, it's the CheckTip Check
+// of o.Tip on a human task, and the zero Check on a bug, whatever check,
+// value and contains fields the marker has (SPEC §5, Story branch
+// failures). For a plan's, it's the check the fields record
 // (CheckFields): the zero Check if they have none of check, value and
 // contains, as a plain-text "Done when"'s marker has none, or else the
 // whole check they record (wholeCheck). Fields that don't record a whole
 // one, even a value or contains with no check, are the CheckUnreadable
 // Check, which fails, never the zero Check, which passes.
-func checkOf(fields map[string]string) Check {
+func checkOf(o Origin, fields map[string]string) Check {
+	if o.Story > 0 {
+		if o.Human {
+			return Check{Kind: CheckTip, Value: o.Tip}
+		}
+		return Check{}
+	}
 	_, check := fields["check"]
 	_, value := fields["value"]
 	_, contains := fields["contains"]

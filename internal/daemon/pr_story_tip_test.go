@@ -306,15 +306,18 @@ func TestPRStoryTipFailingCommand(t *testing.T) {
 // A new tip whose check is failure isn't the story's tip to check a merge
 // with: the task waits at pr-open, uncounted, and the passes that wait
 // make no request for the task, its PR or its head, run no command and
-// merge nothing (SPEC §7.5).
+// merge nothing (SPEC §7.5). The rig picks nothing (pickOff), so the bug
+// the failing tip files stays at ready.
 func TestPRStoryTipWaitsForItsCheck(t *testing.T) {
 	t.Parallel()
 	f, v, _, head, pr := storyMergeReady(t)
+	v.pickOff()
 	broken := v.tipPush(storyVerifyBranch, map[string]string{"broken.txt": "the story broke it\n"})
 	v.pass()
 	if got := f.State().CheckRuns; !slices.Contains(got, tipCheck(broken, storyVerifyBranch, "failure")) {
 		t.Fatalf("the pass on the broken tip left the checks %+v; want its failure", got)
 	}
+	v.tipSettle() // the failing tip filed a bug under the story first (SPEC §7.5)
 	v.prMoveQuiet("waiting on the tip's check", true)
 	v.prMoveQuiet("again", true)
 	for _, c := range f.State().CheckRuns {
@@ -331,7 +334,10 @@ func TestPRStoryTipWaitsForItsCheck(t *testing.T) {
 // verified against makes no request for its head's checks and runs no
 // command: that tip is its move's tip=, so its merge isn't judged (SPEC
 // §8.1's Polling cost). A second branch with the task's prefix keeps it
-// from merging, so it stays at pr-open.
+// from merging, so it stays at pr-open. That's a branches state error on
+// the task (SPEC §5.3), so step 1 visits it on every pass, for a 👍 on
+// the error, with conditional reads alone, a 304 each: the passes read
+// nothing of its PR or its head.
 func TestPRStoryTipUnchanged(t *testing.T) {
 	t.Parallel()
 	f, v, _, head, pr := storyMergeReady(t)
@@ -343,9 +349,12 @@ func TestPRStoryTipUnchanged(t *testing.T) {
 	if got := prMainReads(f, from, head); got != 0 || v.checksRan() != ran {
 		t.Errorf("after the restart, the head's checks were read %d times, and the commands ran %d times; want neither", got, v.checksRan()-ran)
 	}
-	v.prMoveQuiet("the tip unchanged", true)
+	v.prMoveQuiet("the tip unchanged", false)
 	if got := storyMerges(f, 0, pr); len(got) != 0 || pickStage(f, 1) != "stage:pr-open" {
 		t.Errorf("the merges = %+v, the task at %s; want none, and pr-open", got, pickStage(f, 1))
+	}
+	if got := errorMarkers(f, 1); len(got) != 1 || !strings.Contains(got[0], "kind=branches") {
+		t.Errorf("the task's state errors are %q; want its branches error once", got)
 	}
 }
 
@@ -574,6 +583,9 @@ func TestPRStoryTipCarryFailedMerge(t *testing.T) {
 func TestPRStoryTipBaseline(t *testing.T) {
 	t.Parallel()
 	f, v, _, head, pr := storyMergeReady(t)
+	// main isn't merged into the story branch, so the story's baseline
+	// stays older than main, as while that merge waits (SPEC §7.5).
+	v.d.StoryMain = false
 	gitIn(t, v.o.url, "update-ref", "refs/heads/issuedog/1-a-copy", head) // so the PR waits, unmerged, on the old tip
 	v.pass()
 	main := v.prMainCommit("secrets/key.txt", "a key\n")

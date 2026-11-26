@@ -101,7 +101,7 @@ func TestOriginRepostCheckRuns(t *testing.T) {
 	if want := (state.Check{Kind: state.CheckFile, Value: "docs/a b.md", Contains: "<!--%"}); o.Check != want || !o.Human || o.Comment == state.BodyID {
 		t.Fatalf("origin = %+v; want a human task's, from the repost, with check %+v", o, want)
 	}
-	if pass, found, err := a.humanCheck(ctx, o.Check); err != nil || !pass {
+	if pass, found, err := a.humanCheck(ctx, o); err != nil || !pass {
 		t.Errorf("humanCheck = %t, %q, %v; want it to pass", pass, found, err)
 	}
 }

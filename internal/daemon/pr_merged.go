@@ -71,6 +71,14 @@ type prMerge struct {
 // sent it back from pr-open. Anyone else's merge closes nothing: the move
 // hands the task to the owner at needs-human, on untrusted-merge, naming
 // the merger.
+//
+// The App's merge is its squash (prMerge), or for a conflict bug, its
+// fast-forward of the story branch to the bug's verified head
+// (prFastForward), which GitHub marks as the PR's merge, by the App, its
+// merged_by, with the head as its merge commit (SPEC §7.5, A conflict;
+// §16). So the bug closes as completed the same way, with its branch
+// deleted, and no check carried over, as it's a failure's bug (tipCarry):
+// step 4 checks the head afresh as the branch's new tip.
 func (d *Daemon) prMerged(ctx context.Context, s *github.Snapshot, is state.Issue, p listedPR) (*Move, error) {
 	a, n := d.Step.Applier, s.Number
 	key := mergedKey(p.Number)
@@ -222,11 +230,15 @@ func (d *Daemon) prMergedWrites(ctx context.Context, s *github.Snapshot, is stat
 // commit gets none, and step 4 checks it as a push the App didn't make
 // (Runs.tipCheck): one whose parent is another commit, as the App's merge
 // onto a tip that moved since the verify, once the head's merge with it
-// passed (prMergeOnto), one merged at another head, and, after a restart,
-// one whose parent's success isn't
-// judged yet, as Daemon.tips starts empty. So does a merge commit the bare
-// clone lacks, as for a merge made after the pass's sync. The parent is
-// read from the bare clone, at no request, and the post is checked first.
+// passed (prMergeOnto), one merged at another head, a failure's bug's
+// (failureBugOf), as it may have gone onto a tip that fails other rules
+// than rule 2 (SPEC §7.5's A checked base), a conflict bug's fast-forward
+// included, whose merge commit is the bug's head, a merge of a main commit
+// and the tip, not the squash this carries for, and, after a restart, one
+// whose parent's success isn't judged yet, as Daemon.tips starts empty. So
+// does a merge commit the bare clone lacks, as for a merge made after the
+// pass's sync. The parent is read from the bare clone, at no request, and
+// the post is checked first.
 func (d *Daemon) tipCarry(ctx context.Context, s *github.Snapshot, is state.Issue, pr github.PullRequest) error {
 	a, n := d.Step.Applier, s.Number
 	branch, commit, tip, head := pr.Base, pr.MergeCommitSHA, prMoveTip(is), prHeadOf(is)
@@ -234,6 +246,10 @@ func (d *Daemon) tipCarry(ctx context.Context, s *github.Snapshot, is state.Issu
 	case tip == "" || commit == "" || pr.HeadSHA != head:
 		logr.Infof("%s/%s#%d: its PR #%d merged %s as %q, not the head %s verified against a tip of %s, so no check is carried over to the merge commit",
 			a.Owner, a.Repo, n, pr.Number, pr.HeadSHA, commit, head, branch)
+		return nil
+	case failureBugOf(is, s.Parent):
+		logr.Infof("%s/%s#%d: it's a failure's bug of story #%d, so no check is carried over to its PR #%d's merge commit %s, which is checked afresh",
+			a.Owner, a.Repo, n, s.Parent, pr.Number, commit)
 		return nil
 	case !d.tipSuccess(branch, tip):
 		if j, ok := d.tips[branch]; ok && j.Tip != tip {

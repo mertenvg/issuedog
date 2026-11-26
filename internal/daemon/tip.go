@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/mertenvg/logr/v2"
@@ -63,11 +65,15 @@ const (
 // only when its approved plan is of tasks (storyIssue); one whose plan
 // data doesn't read back is warned of once too, and gets no check.
 //
-// Otherwise the App's issuedog/tip checks on the tip are read, one
-// request: the newest naming the branch (tipChecked), as after a restart,
-// or for a tip the App's merge carried a check to, judges the tip, and
-// nothing runs. A tip pushed by a person is checked as any other is. Then
-// the tip is checked (tipJudge), and its check posted.
+// Otherwise, before the tip is judged, each open conflict bug of the story
+// it makes moot is closed, its open PR first (conflictMoot), at no request
+// for a story with none; a tip that holds the main commit of skip, a
+// conflict bug of the story, waits for the next pass. Then the App's
+// issuedog/tip checks on the tip are read, one request: the newest naming
+// the branch (tipChecked), as after a restart, or for a tip the App's merge
+// carried a check to, judges the tip, and nothing runs. A tip pushed by a
+// person is checked as any other is. Then the tip is checked (tipJudge),
+// and its check posted.
 func (r *Runs) tipCheck(ctx context.Context, ready []Ready, skip int) (bool, error) {
 	if r.Commands == nil {
 		return false, nil
@@ -109,6 +115,13 @@ func (r *Runs) tipCheck(ctx context.Context, ready []Ready, skip int) (bool, err
 			logr.Debugf("%s/%s#%d isn't a story or an epic planned into tasks, so its branch %s's tip isn't checked", a.Owner, a.Repo, n, branch)
 			continue
 		}
+		judge, err := r.conflictMoot(ctx, s, tip, skip)
+		if err != nil {
+			return false, fmt.Errorf("the tip of #%d's branch %s: %w", n, branch, err)
+		}
+		if !judge {
+			continue
+		}
 		runs, err := a.Client.CheckRuns(ctx, a.Owner, a.Repo, tip, github.TipCheck)
 		if err != nil {
 			return false, fmt.Errorf("the tip of #%d's branch %s: read its checks: %w", n, branch, err)
@@ -142,7 +155,10 @@ func (r *Runs) tipCheck(ctx context.Context, ready []Ready, skip int) (bool, err
 // commands run in a fresh checkout of tip, named by a new ID, every one
 // even after one fails, then rule 3 and rule 7, with main as its target. A
 // failure to read the bare repo, or to run the commands, is an error, and
-// posts nothing.
+// posts nothing. A tip that fails files its failure first (tipFile), so
+// the check, posted last, stands as the record that it's filed (SPEC
+// §7.5): a failure to file is an error too, and posts nothing, so the next
+// pass checks the tip again, and finds what was filed.
 func (r *Runs) tipJudge(ctx context.Context, story *github.Snapshot, branch, tip, main string) error {
 	a, n := r.Daemon.Step.Applier, story.Number
 	cfg := r.Daemon.Config.Verify
@@ -169,6 +185,9 @@ func (r *Runs) tipJudge(ctx context.Context, story *github.Snapshot, branch, tip
 		conclusion = checkFailure
 		logr.Infof("%s/%s#%d: its branch %s's tip %s fails its checks against main's %s, in %d rules and %d commands",
 			a.Owner, a.Repo, n, branch, tip, main, len(findings), commandsFailed(results))
+		if err := r.tipFile(ctx, story, branch, tip, base, findings, results); err != nil {
+			return fmt.Errorf("file its failure: %w", err)
+		}
 	} else {
 		logr.Infof("%s/%s#%d: its branch %s's tip %s passes its checks against main's %s", a.Owner, a.Repo, n, branch, tip, main)
 	}
@@ -204,6 +223,51 @@ func (r *Runs) tipRules(ctx context.Context, f verify.Facts) ([]verify.Finding, 
 		}
 	}
 	return findings, results, nil
+}
+
+// tipFile files the failure of tip, story's branch's tip, which fails its
+// checks against the story's baseline, base, with findings and the
+// commands' results (SPEC §7.5, A failure on the story branch), before
+// tipJudge posts its check:
+//
+//   - a tip that fails rule 2, as one with no baseline does, files one
+//     human task (renderFailureHuman), whatever else it fails;
+//   - any other files one bug (renderFailureBug), naming each failed check
+//     and its output, unless a failure's bug of the story is open
+//     (failureOpenBug): then that bug gets one comment instead, naming the
+//     tip and its failed checks (renderFailureComment, failureComment).
+//
+// Both file through failureFile, which finds what's filed first. A write
+// GitHub refuses with a 422 (errFailureRefused) is warned of once
+// (storyWarnOnce), and isn't an error, so the check is posted anyway and
+// the tip isn't checked again. Any other failure is returned.
+func (r *Runs) tipFile(ctx context.Context, story *github.Snapshot, branch, tip, base string, findings []verify.Finding,
+	results []verify.CommandResult) error {
+	d := r.Daemon
+	a, n := d.Step.Applier, story.Number
+	pri := "p" + strconv.Itoa(priority(story))
+	var err error
+	if k := slices.IndexFunc(findings, func(f verify.Finding) bool { return f.Rule == 2 }); k >= 0 {
+		body, rerr := renderFailureHuman(a.Owner, a.Repo, n, pri, branch, tip, findings[k], a.Notify)
+		if rerr != nil {
+			return fmt.Errorf("write the human task's body: %w", rerr)
+		}
+		_, err = d.failureFile(ctx, failureSpec{Story: story, Branch: branch, Tip: tip, Human: true, Title: failureHumanTitle(n, tip), Body: body})
+	} else if bug, ok := d.failureOpenBug(n, tip); ok {
+		err = d.failureComment(ctx, bug, tip, renderFailureComment(branch, tip, base, findings, results))
+	} else {
+		_, err = d.failureFile(ctx, failureSpec{Story: story, Branch: branch, Tip: tip, Title: failureBugTitle(n, tip),
+			Body: renderFailureBug(n, pri, branch, tip, base, findings, results)})
+	}
+	if errors.Is(err, errFailureRefused) {
+		d.storyWarnOnce(n, "failure:"+tip, "%s/%s#%d: its branch %s's failing tip %s isn't filed, so only its check is posted: %v",
+			a.Owner, a.Repo, n, branch, tip, err)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("the failing tip %s: %w", tip, err)
+	}
+	return nil
 }
 
 // tipMergeBasesDetail is rule 2's finding on a story branch's tip that

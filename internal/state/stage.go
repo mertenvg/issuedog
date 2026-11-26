@@ -123,15 +123,20 @@ const (
 	ClassTask
 	// ClassOwnerTask is a task filed by the owner.
 	ClassOwnerTask
-	// ClassHumanTask is a task the planner marked human (SPEC §9.3).
+	// ClassHumanTask is a task the planner marked human (SPEC §9.3), or
+	// the one the daemon filed for a story branch that fails rule 2 (SPEC
+	// §7.5).
 	ClassHumanTask
-	// ClassBug is a bug, from the owner or a story verifier.
+	// ClassBug is a bug, from the owner or a story verifier, or one the
+	// daemon filed for a failure on a story branch (SPEC §7.5).
 	ClassBug
 	// ClassUntyped is an issue with no type yet. It follows only the rows
 	// for all, so it can't leave clarifying (SPEC §4).
 	ClassUntyped
-	// ClassNewBug is a bug that hasn't reached ready yet. Only from ready on
-	// does a bug follow the rows for task (SPEC §7.2).
+	// ClassNewBug is a bug that hasn't reached ready yet, other than one
+	// the daemon filed for a failure on a story branch, which is a ClassBug
+	// from intake. Only from ready on does a bug follow the rows for task
+	// (SPEC §7.2).
 	ClassNewBug
 	// ClassNewOwnerTask is a task filed by the owner that hasn't reached
 	// ready yet.
@@ -168,8 +173,14 @@ type Item struct {
 	// verify that found it (SPEC §5, §10.2): Derive sets it exactly when
 	// Issue.Origin has a Verify, read where a plan's is.
 	FollowUp bool
-	// Human is true for a plan item the planner marked human (SPEC §11.3).
-	// Derive sets it from the origin marker's human=1 (Origin.Human).
+	// FromFailure is true when the issue has the App's origin marker naming
+	// a story and its branch's failing tip (SPEC §5, Story branch
+	// failures): Derive sets it exactly when Issue.Origin has a Story, read
+	// where a plan's is.
+	FromFailure bool
+	// Human is true for a plan item the planner marked human (SPEC §11.3),
+	// or a story branch failure's human task (SPEC §7.5). Derive sets it
+	// from the origin marker's human=1 (Origin.Human).
 	Human bool
 	// ReachedReady is true once the issue has been at ready: any counted
 	// marker names ready or a later task stage (in-progress, verifying,
@@ -198,6 +209,14 @@ func ClassOf(it Item) (Class, error) {
 			// A task the daemon filed from a verify, as a plan's task is,
 			// and never a human task (SPEC §7.2, §10.2).
 			return ClassTask, nil
+		case it.FromFailure && it.Human:
+			// The human task the daemon filed for a story branch that
+			// fails rule 2 (SPEC §7.5, Rule 2).
+			return ClassHumanTask, nil
+		case it.FromFailure:
+			// Only human=1 makes a failure's task a human task: without
+			// it, it's a task the daemon filed, as a plan's is.
+			return ClassTask, nil
 		case it.FromPlan && it.Human:
 			return ClassHumanTask, nil
 		case it.FromPlan:
@@ -207,7 +226,10 @@ func ClassOf(it Item) (Class, error) {
 		}
 		return ClassOwnerTask, nil
 	case "bug":
-		if !it.ReachedReady {
+		// A bug the daemon filed for a failure on a story branch enters at
+		// ready, so it's a bug from intake and never gets the interviewer
+		// (SPEC §7.2, §7.5).
+		if !it.ReachedReady && !it.FromFailure {
 			return ClassNewBug, nil
 		}
 		return ClassBug, nil

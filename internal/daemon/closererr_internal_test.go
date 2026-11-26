@@ -44,7 +44,7 @@ func TestCloserErrOpenErrors(t *testing.T) {
 		{"acknowledged", closerErrSnap(true), nil, false},
 		{"closed", func() *github.Snapshot { s := closerErrSnap(false); s.Closed = true; return s }(), nil, false},
 	} {
-		open, err := openErrors(tc.s, state.Derive(tc.s, openErrSlug, none), inputs, tc.answered)
+		open, err := openErrors(tc.s, state.Derive(tc.s, openErrSlug, none), inputs, tc.answered, nil)
 		if err != nil {
 			t.Errorf("%s: %v", tc.name, err)
 			continue

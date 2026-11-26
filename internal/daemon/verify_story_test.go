@@ -242,6 +242,9 @@ func TestVerifyStoryProtected(t *testing.T) {
 	t.Run("main's change since the cut", func(t *testing.T) {
 		t.Parallel()
 		f, v := newStoryVerifyRig(t)
+		// main isn't merged into the story branch, so the story's baseline
+		// stays older than main, as while that merge waits (SPEC §7.5).
+		v.d.StoryMain = false
 		_, tip := v.storyCut()
 		v.prMainCommit("secrets/key.txt", "main's own key\n")
 		head := v.storyHead(tip, map[string]string{"quote.txt": "expired\n"})
@@ -316,7 +319,9 @@ func TestVerifyStoryTipMoves(t *testing.T) {
 // no issuedog/tip naming the branch as success: a held story's tip, which
 // is never checked, and a tip whose check is a failure. No command runs on
 // the task, nothing is written on it, and its passes make no request but
-// 304s.
+// 304s. The rig picks nothing (pickOff), so the bug the failing tip files
+// stays at ready, though the task steps aside for it: that pick is
+// story_failure_test.go's.
 func TestVerifyStoryTipUnchecked(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -330,6 +335,7 @@ func TestVerifyStoryTipUnchecked(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			f, v := newStoryVerifyRig(t)
+			v.pickOff()
 			v.tipCut(storyVerifyBranch)
 			tip := v.tipPush(storyVerifyBranch, tt.files)
 			head := v.storyHead(tip, map[string]string{"quote.txt": "expired\n"})

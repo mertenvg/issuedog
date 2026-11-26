@@ -30,13 +30,16 @@ func taskRef(n int) string { return repo.TasksRef + strconv.Itoa(n) }
 // tip, which the run names as its base (storyStart), and "" for any other
 // run. Branch is the branch a Committer's run's base is on, main or the
 // story branch, which the preamble names with a target or a dropped head
-// (SPEC §3.4, §7.5, §12).
+// (SPEC §3.4, §7.5, §12). For a conflict bug's run, Conflict is the main
+// commit the bug names (conflictMain), which it starts from, with
+// StoryTip named as its target to merge, and "" for any other run.
 type runStart struct {
 	workspace.Commits
 	Dropped  string
 	Against  VerifyTarget
 	StoryTip string
 	Branch   string
+	Conflict string
 }
 
 // start names the commits of st's run on issue n, whose state is is (SPEC
@@ -45,10 +48,17 @@ type runStart struct {
 // §10.1 (startFrom), or with none yet, from its base: for a task with no
 // parent, main's commit as the pass's sync left it, and for a task in a
 // story, its story branch's tip, story.StoryTip, as the pass's sync left
-// it, which storyStart names only while its issuedog/tip is success. A
-// task in a story's head is judged with the story's baseline, the merge
-// base of that tip and main's commit (verify.BaseOf), and the tip as its
-// target. When the task's latest move names a head its head follows, as a
+// it, which storyStart names only while its issuedog/tip is success, or
+// for a failure's bug, once it passes rule 2. A task in a story's head is
+// judged with the story's baseline, the merge base of that tip and main's
+// commit (verify.BaseOf), and the tip as its target, which a failure's
+// bug's run names to merge whenever its head lacks it, once the branch has
+// moved past the tip the bug was filed for (failureMovedPast). A conflict
+// bug's run, with story.Conflict, the main commit it names, starts on a
+// first attempt from that commit, with the tip named as its target, to
+// merge, and its head is judged with that commit as its baseline, and
+// the tip named whenever the head lacks it (SPEC §3.4, §7.5, A conflict).
+// When the task's latest move names a head its head follows, as a
 // review's with the branch's tip does, the task's head moves there first,
 // if it's behind (taskHeadFollow). An AfterChecks Stage's run starts from
 // the head the checks judge (startAfterChecks). Any other Stage's run
@@ -76,7 +86,10 @@ func (r *Runs) start(ctx context.Context, st Stage, is state.Issue, n int, story
 		return runStart{}, fmt.Errorf("read main: %w", err)
 	}
 	base, baseline, branch := main, main, "main"
-	if story.StoryTip != "" {
+	switch {
+	case story.StoryTip != "" && story.Conflict != "":
+		base, baseline, branch = story.StoryTip, story.Conflict, story.Branch
+	case story.StoryTip != "":
 		base, branch = story.StoryTip, story.Branch
 		if hasHead {
 			if baseline, err = verify.BaseOf(ctx, verify.Facts{Repo: r.Daemon.Clone, Head: base, Target: main}); err != nil {
@@ -85,14 +98,27 @@ func (r *Runs) start(ctx context.Context, st Stage, is state.Issue, n int, story
 		}
 	}
 	if !hasHead {
-		return runStart{Commits: workspace.Commits{Start: base}, StoryTip: story.StoryTip, Branch: branch}, nil
+		return runStart{Commits: firstCommits(base, story.Conflict), StoryTip: story.StoryTip, Branch: branch, Conflict: story.Conflict}, nil
 	}
-	c, err := r.startFrom(ctx, n, head, baseline, base, branch, targetRound(is))
+	merge := story.Conflict != "" || targetRound(is) || failureMovedPast(is, story.StoryTip)
+	c, err := r.startFrom(ctx, n, head, baseline, base, branch, merge, story.Conflict)
 	if err != nil {
 		return runStart{}, fmt.Errorf("name the task's head %s: %w", head, err)
 	}
-	c.StoryTip, c.Branch = story.StoryTip, branch
+	c.StoryTip, c.Branch, c.Conflict = story.StoryTip, branch, story.Conflict
 	return c, nil
+}
+
+// firstCommits are the commits a first attempt names, and a run whose
+// task's head was dropped: its base, main's commit or its story branch's
+// tip, alone, or for a conflict bug, conflict, the main commit it names,
+// with base, its story branch's tip, as the target to merge into it (SPEC
+// §3.4, §7.5, A conflict).
+func firstCommits(base, conflict string) workspace.Commits {
+	if conflict != "" {
+		return workspace.Commits{Start: conflict, Target: base}
+	}
+	return workspace.Commits{Start: base}
 }
 
 // startAfterChecks names the commits of a run on task n, whose state is
@@ -123,46 +149,63 @@ func (r *Runs) startAfterChecks(ctx context.Context, is state.Issue, n int) (run
 // baseline, a main commit, as its rule 2 baseline, and target, branch's
 // commit, as its target (SPEC §3.4, §10.1), and with merge, in a round
 // that its target's moving began at pr-open, main's or its story branch's
-// tip's (targetRound). For a task with no parent, baseline and target are
-// both main's commit, and branch is main; for a task in a story, target is
-// its story branch's tip, and baseline the story's. It reads only the bare
-// repo, so it costs no request.
-//   - A head that fails rule 2 is never named: the run starts from target,
-//     as a first attempt does, and the log says why, as Dropped does for
-//     the preamble: rule 2's finding. A head with no merge base with
-//     target, or more than one, fails rule 2 too (verify.ErrMergeBases,
-//     branchMergeBasesDetail). The task's head isn't moved here: the new run's
-//     head replaces it once its result applies (moveTaskHead).
+// tip's (targetRound), or for a failure's bug whose story branch moved
+// past the tip it was filed for (failureMovedPast). For a task with no
+// parent, baseline and target are both main's commit, and branch is main;
+// for a task in a story, target is its story branch's tip, and baseline
+// the story's. For a conflict bug, conflict is the main commit it names,
+// which is baseline, rule 2's own diff starting there too, as it's the
+// merge base of its head and main, and merge is true, so the tip is named
+// whenever the head lacks it (SPEC §7.5, A conflict, §10.1); for any other
+// task, conflict is "". It reads only the bare repo, so it costs no
+// request.
+//   - A head that fails rule 2 is never named: the run starts as a first
+//     attempt does (firstCommits), from target, or for a conflict bug,
+//     from its main commit with target named, and the log says why, as
+//     Dropped does for the preamble: rule 2's finding. A head with no
+//     merge base with target, or more than one, fails rule 2 too
+//     (verify.ErrMergeBases, branchMergeBasesDetail), but a conflict
+//     bug's, whose own diff starts at its main commit. The task's head
+//     isn't moved here: the new run's head replaces it once its result
+//     applies (moveTaskHead).
 //   - A head that passes but doesn't merge cleanly with target, by the
 //     merge-tree read rule 7 judges by (repo.MergeTree), starts the run
 //     with target named as its target, to merge first.
 //   - So does one that merges cleanly, with merge, while target isn't in
 //     its history: its merge with main, or with its story branch's tip,
-//     failed the checks (SPEC §7.2, §10.4), and the fix needs the target's
-//     changes in the checkout. The run's target is the tip as the pass's
-//     sync left it, which may be newer than the one the move names.
+//     failed the checks (SPEC §7.2, §10.4), or a failure's bug's fix needs
+//     the newer tip's (SPEC §7.5), and the fix needs the target's
+//     changes in the checkout, or a conflict bug's head must hold the tip
+//     its merge resolves. The run's target is the tip as the pass's sync
+//     left it, which may be newer than the one the move names.
 //   - Otherwise the run starts from the head, with no target.
 //
 // The log and Dropped name target with its branch. Any other failed read
 // is an error, so no run starts.
-func (r *Runs) startFrom(ctx context.Context, n int, head, baseline, target, branch string, merge bool) (runStart, error) {
-	f := verify.Facts{Repo: r.Daemon.Clone, Baseline: baseline, Head: head, Target: target, Config: r.Daemon.Config.Verify}
-	base, err := verify.BaseOf(ctx, f)
-	if errors.Is(err, verify.ErrMergeBases) {
-		logr.Infof("#%d: the task's head %s fails rule 2, so the run starts from %s's %s, as a first attempt does: %v", n, head, branch, target, err)
-		return runStart{Commits: workspace.Commits{Start: target}, Dropped: branchMergeBasesDetail(branch, target, err)}, nil
+func (r *Runs) startFrom(ctx context.Context, n int, head, baseline, target, branch string, merge bool, conflict string) (runStart, error) {
+	f := verify.Facts{Repo: r.Daemon.Clone, Baseline: baseline, Base: conflict, Head: head, Target: target, Config: r.Daemon.Config.Verify}
+	first := firstCommits(target, conflict)
+	from := branch + "'s " + target
+	if conflict != "" {
+		from = fmt.Sprintf("main's %s, with %s's %s named as its target", conflict, branch, target)
+	} else {
+		base, err := verify.BaseOf(ctx, f)
+		if errors.Is(err, verify.ErrMergeBases) {
+			logr.Infof("#%d: the task's head %s fails rule 2, so the run starts from %s, as a first attempt does: %v", n, head, from, err)
+			return runStart{Commits: first, Dropped: branchMergeBasesDetail(branch, target, err)}, nil
+		}
+		if err != nil {
+			return runStart{}, fmt.Errorf("read the head's base: %w", err)
+		}
+		f.Base = base
 	}
-	if err != nil {
-		return runStart{}, fmt.Errorf("read the head's base: %w", err)
-	}
-	f.Base = base
 	finding, err := verify.Rule2(ctx, f)
 	if err != nil {
 		return runStart{}, fmt.Errorf("check rule 2: %w", err)
 	}
 	if finding != nil {
-		logr.Infof("#%d: the task's head %s fails rule 2, so the run starts from %s's %s, as a first attempt does.\n%s", n, head, branch, target, finding.Detail)
-		return runStart{Commits: workspace.Commits{Start: target}, Dropped: finding.Detail}, nil
+		logr.Infof("#%d: the task's head %s fails rule 2, so the run starts from %s, as a first attempt does.\n%s", n, head, from, finding.Detail)
+		return runStart{Commits: first, Dropped: finding.Detail}, nil
 	}
 	conflicts, err := r.Daemon.Clone.MergeTree(ctx, target, head)
 	if err != nil {
@@ -178,9 +221,13 @@ func (r *Runs) startFrom(ctx context.Context, n int, head, baseline, target, bra
 		if err != nil {
 			return runStart{}, fmt.Errorf("read %s against the head: %w", branch, err)
 		}
+		why := "its target moving sent the task back"
+		if conflict != "" {
+			why = "it's a conflict bug, which merges its story branch's tip into main's " + conflict
+		}
 		if !merged {
-			logr.Infof("#%d: its target moving sent the task back, and its head %s lacks %s's %s, so the run starts from the head with %s named as its target, to merge first",
-				n, head, branch, target, branch)
+			logr.Infof("#%d: %s, and its head %s lacks %s's %s, so the run starts from the head with %s named as its target, to merge first",
+				n, why, head, branch, target, branch)
 			return runStart{Commits: workspace.Commits{Start: head, Target: target}}, nil
 		}
 	}
@@ -210,7 +257,12 @@ func branchMergeBasesDetail(branch, target string, err error) string {
 // tasks, in this repo (storyOf), and its branch the one with its prefix
 // in the bare clone (storyBranch). It's named only while the App's
 // issuedog/tip naming the branch is success on that tip, as step 4 judged
-// it (tipSuccess).
+// it (tipSuccess), and no failure on the branch is open; for a failure's
+// bug of the story, only while step 4 judged the tip and it passes rule 2,
+// whatever else fails there (storyStartTip). For a conflict bug of the
+// story, Conflict is the main commit it names (conflictMain), which start
+// starts its first attempt from, with the tip as its target (SPEC §7.5, A
+// conflict).
 //
 // Otherwise the run isn't ready: no run starts, uncounted, and the log
 // says why once a cause, keyed by the tip (startWaitOnce). That's a parent
@@ -219,7 +271,8 @@ func branchMergeBasesDetail(branch, target string, err error) string {
 // prefix, no branch yet, and a tip that isn't checked yet, after a
 // restart too, until step 4 reads its check, or whose check is failure,
 // or that step 2 merged a task's PR onto, which isn't the tip any more
-// (tipMergedOnto).
+// (tipMergedOnto), or a failure open on the branch, for any task but its
+// bug.
 // It reads only the snapshots step 1 left, the bare repo and what step 4
 // judged, so it costs no request: the parent's dirty content is kept from
 // step 1 (Applier.Dirty).
@@ -255,19 +308,39 @@ func (r *Runs) storyStart(ctx context.Context, st Stage, s *github.Snapshot) (ru
 	case tip == "":
 		r.startWaitOnce(n, "cut:"+branch, "#%d: no %s run: its story #%d has no branch yet", n, st.Agent(), story.Number)
 		return runStart{}, false, nil
-	case !d.tipSuccess(branch, tip):
-		why := "has no " + github.TipCheck + " as success yet"
-		if j, ok := d.tips[branch]; ok && j.Tip == tip {
-			why = "has " + github.TipCheck + " as " + j.Conclusion
-		}
-		if d.tipMergedOnto(branch, tip) {
-			why = "had a task's PR merged onto it, so it's the branch's tip no more"
-		}
-		r.startWaitOnce(n, "tip:"+branch+"@"+tip+":"+why, "#%d: no %s run: its story branch %s's tip %s %s, so it isn't named as the run's base",
-			n, st.Agent(), branch, tip, why)
+	}
+	switch why, err := r.storyStartTip(ctx, s, story, branch, tip); {
+	case err != nil:
+		return runStart{}, false, fmt.Errorf("#%d's story branch's tip: %w", n, err)
+	case why != "":
+		r.startWaitOnce(n, "tip:"+branch+"@"+tip+":"+why, "#%d: no %s run: its story branch %s's tip %s %s", n, st.Agent(), branch, tip, why)
 		return runStart{}, false, nil
 	}
-	return runStart{StoryTip: tip, Branch: branch}, true, nil
+	return runStart{StoryTip: tip, Branch: branch, Conflict: d.conflictMain(s)}, true, nil
+}
+
+// storyStartTip is why task s, in story, whose branch is branch at tip,
+// starts no run from tip, or "" when it may (SPEC §3.4's A story's waits,
+// §7.5), from memory and the bare repo, at no request: a tip s doesn't
+// take (storyTipTaken), a tip step 4 judged that passes rule 2 for a
+// failure's bug of story, and one whose check is success for any other
+// task, isn't named as the run's base; and while a failure on the branch
+// is open, only its bug starts a run (failureWait).
+func (r *Runs) storyStartTip(ctx context.Context, s, story *github.Snapshot, branch, tip string) (string, error) {
+	d := r.Daemon
+	taken, bug, err := d.storyTipTaken(ctx, s, story, branch, tip)
+	switch {
+	case err != nil:
+		return "", fmt.Errorf("judge its tip: %w", err)
+	case !taken && bug:
+		return failureTipWhy + ", so it isn't named as the run's base", nil
+	case !taken:
+		return d.tipWhy(branch, tip) + ", so it isn't named as the run's base", nil
+	}
+	if why := d.failureWait(s, branch, tip); why != "" {
+		return "is held, as " + why, nil
+	}
+	return "", nil
 }
 
 // startWaitOnce logs, at info, why task n's run doesn't start, unless the

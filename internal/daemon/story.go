@@ -2,12 +2,17 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
+	"slices"
+	"strings"
 
 	"github.com/mertenvg/logr/v2"
 
 	"github.com/mertenvg/issuedog/internal/github"
 	"github.com/mertenvg/issuedog/internal/state"
+	"github.com/mertenvg/issuedog/internal/verify"
 )
 
 // This file tells a task in a story, its story's branch, and whether that
@@ -163,4 +168,187 @@ func logOnce(last *map[int]string, n int, key string, log func(string, ...any) s
 	}
 	(*last)[n] = key
 	log(format, args...)
+}
+
+// tipWhy is why tip, branch's tip, has no success, for the log, when
+// tipSuccess says it hasn't: it isn't judged yet, it's judged with another
+// conclusion, or the App merged a task's PR onto it (tipMergedOnto).
+func (d *Daemon) tipWhy(branch, tip string) string {
+	why := "has no " + github.TipCheck + " as success yet"
+	if j, ok := d.tips[branch]; ok && j.Tip == tip {
+		why = "has " + github.TipCheck + " as " + j.Conclusion
+	}
+	if d.tipMergedOnto(branch, tip) {
+		why = "had a task's PR merged onto it, so it's the branch's tip no more"
+	}
+	return why
+}
+
+// failureBugOf reports whether is, an issue's state, is a failure's bug of
+// story (SPEC §5, Story branch failures; §7.5): a bug whose App origin
+// names a failure on story's branch, a conflict bug's included. The human
+// task filed for rule 2 is no bug, and a person's issue with the same
+// marker has no origin (state.Derive).
+func failureBugOf(is state.Issue, story int) bool {
+	return story > 0 && is.Origin.Story == story && strings.EqualFold(is.Item.Type, "bug")
+}
+
+// failureBugHeld reports whether s, a snapshot the daemon holds, is a
+// failure's bug of story (failureBugOf), below it in this repo, its origin
+// read as failureOpenBug reads it (failureHeldOrigin), at no request.
+func (d *Daemon) failureBugHeld(s *github.Snapshot, story int) bool {
+	slug := d.Step.AppSlug
+	return s.Parent == story && s.ParentRepo == "" && failureBugOf(state.Derive(s, slug, failureEdited(s, slug)), story)
+}
+
+// conflictMain is the main commit s, a snapshot the daemon holds, names
+// when it's a conflict bug of its story (SPEC §5, Story branch failures;
+// §7.5, A conflict): a failure's bug of its parent (failureBugHeld), its
+// origin read the same way, with main=. Any other issue's is "". Its run
+// starts from that commit, and its checks take it as rule 2's baseline
+// (SPEC §3.4, §10.1). It reads the snapshot, at no request.
+func (d *Daemon) conflictMain(s *github.Snapshot) string {
+	slug := d.Step.AppSlug
+	is := state.Derive(s, slug, failureEdited(s, slug))
+	if s.Parent == 0 || s.ParentRepo != "" || !failureBugOf(is, s.Parent) {
+		return ""
+	}
+	return is.Origin.Main
+}
+
+// storyFailure reports whether a failure on story's branch, branch, whose
+// tip is tip, is open, and names its bug, or 0 for none (SPEC §7.5, A
+// failure on the story branch): it's open while a failure's bug of story
+// is open among the snapshots the daemon holds (failureBugHeld), the
+// lowest number named, or while step 4 judged tip failure (Daemon.tips).
+// A bug written to this pass still counts till it's read again, unlike
+// for failureOpenBug: the App's close marks its snapshot closed at once
+// (Applier.closeFinish), so only one still open is waited on, and a close
+// on its PR's merge leaves the branch a new tip, which the story's tasks
+// wait for the check of anyway. An open human task doesn't count: the tip
+// it was filed for fails, so they wait for a later tip that passes,
+// whatever happens to it. It reads only memory, at no request.
+func (d *Daemon) storyFailure(story *github.Snapshot, branch, tip string) (bug int, open bool) {
+	for _, n := range slices.Sorted(maps.Keys(d.snaps)) {
+		if s := d.snaps[n]; s != nil && !s.Closed && d.failureBugHeld(s, story.Number) {
+			return n, true
+		}
+	}
+	j, ok := d.tips[branch]
+	return 0, ok && tip != "" && j.Tip == tip && j.Conclusion == checkFailure
+}
+
+// failureAside reports whether holder, an open issue the daemon holds at
+// in-progress or verifying, by its stage label, which holds the one worker
+// (SPEC §8.1's One task at a time), steps aside for taker, which would
+// take it: taker is an open failure's bug of its story, an open story the
+// daemon holds (failureBugHeld), and holder is another task below that
+// story in this repo that isn't a failure's bug of it. While that bug is
+// open, a failure on the story's branch is open (storyFailure), so
+// holder's stage work waits: no run of its starts (storyStartTip), and
+// its checks at verifying don't run (storyTarget). So the bug, which is
+// the failure's fix, takes the worker instead of the story stalling. Once
+// the bug is at in-progress or verifying, it holds the worker as any task
+// does, as no task steps aside for another failure's bug's holder, and
+// holder's work goes on only once the failure is closed. A lease is never
+// stepped aside for: pickHeld and workerFree judge it apart. It reads only
+// the snapshots held, at no request.
+func (d *Daemon) failureAside(holder, taker *github.Snapshot) bool {
+	if holder == nil || taker == nil || taker.Closed || holder.Number == taker.Number {
+		return false
+	}
+	sn := taker.Parent
+	story := d.snaps[sn]
+	return sn != 0 && story != nil && !story.Closed && holder.Parent == sn && holder.ParentRepo == "" &&
+		d.failureBugHeld(taker, sn) && !d.failureBugHeld(holder, sn)
+}
+
+// failureWait is why task s, in its story, its parent among the snapshots
+// the daemon holds, whose branch is branch at tip, waits on an open
+// failure on that branch (storyFailure), or "" when none is open, or s is
+// a failure's bug of its story (failureBugHeld), which is excused (SPEC
+// §3.4's A story's waits): no other task in the story is picked, starts a
+// run or moves into in-progress meanwhile. It costs no request.
+func (d *Daemon) failureWait(s *github.Snapshot, branch, tip string) string {
+	story := d.snaps[s.Parent]
+	if s.Parent == 0 || story == nil || d.failureBugHeld(s, s.Parent) {
+		return ""
+	}
+	bug, open := d.storyFailure(story, branch, tip)
+	switch {
+	case !open:
+		return ""
+	case bug == 0:
+		return fmt.Sprintf("its story branch %s's tip %s has %s as failure, so a failure on the branch is open", branch, tip, github.TipCheck)
+	}
+	return fmt.Sprintf("a failure on its story branch %s is open, as its bug #%d is, which goes first", branch, bug)
+}
+
+// failureTip reports whether tip, branch's tip, is one a failure's bug of
+// its story takes (SPEC §3.4's A story's waits, §7.5's A checked base):
+// one step 4 judged (Daemon.tips), whatever its conclusion, that the App
+// merged no task's PR onto (tipMergedOnto), and that passes rule 2 against
+// the story's baseline, the one merge base of tip and main's commit main.
+// A tip judged success passed rule 2 among its checks. Any other is
+// checked in the bare repo, at no request, and one with no one merge base
+// with main fails, as it has no baseline. So it's the tip the bug was
+// filed for, or once the branch moves past it, the newest tip that passes
+// rule 2, even if other rules fail there, as the bug is their fix.
+func (d *Daemon) failureTip(ctx context.Context, branch, tip, main string) (bool, error) {
+	j, ok := d.tips[branch]
+	switch {
+	case !ok || tip == "" || j.Tip != tip || d.tipMergedOnto(branch, tip):
+		return false, nil
+	case j.Conclusion == checkSuccess:
+		return true, nil
+	}
+	f := verify.Facts{Repo: d.Clone, Head: tip, Target: main, Config: d.Config.Verify}
+	base, err := verify.BaseOf(ctx, f)
+	switch {
+	case errors.Is(err, verify.ErrMergeBases):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("read the story's baseline at %s: %w", tip, err)
+	}
+	f.Baseline, f.Base = base, base
+	finding, err := verify.Rule2(ctx, f)
+	if err != nil {
+		return false, fmt.Errorf("check rule 2 on %s: %w", tip, err)
+	}
+	return finding == nil, nil
+}
+
+// storyTipTaken reports whether task s, in story, whose branch is branch
+// at tip, takes tip as its story branch's tip, and whether s is a
+// failure's bug of story (SPEC §3.4, §7.5): a failure's bug takes a tip
+// failureTip passes, with main's commit as the pass's sync left it, and
+// any other task one whose check is success (tipSuccess). It reads memory
+// and the bare repo, at no request.
+func (d *Daemon) storyTipTaken(ctx context.Context, s, story *github.Snapshot, branch, tip string) (taken, bug bool, err error) {
+	if !d.failureBugHeld(s, story.Number) {
+		return d.tipSuccess(branch, tip), false, nil
+	}
+	main, err := d.Clone.Resolve(ctx, "main")
+	if err != nil {
+		return false, true, fmt.Errorf("read main: %w", err)
+	}
+	taken, err = d.failureTip(ctx, branch, tip, main)
+	if err != nil {
+		return false, true, fmt.Errorf("judge the tip its failure's bug takes: %w", err)
+	}
+	return taken, true, nil
+}
+
+// failureTipWhy is why a failure's bug waits on its story branch's tip,
+// for the log, when failureTip doesn't pass it.
+const failureTipWhy = "isn't one step 4 judged that passes rule 2, which a failure's bug takes"
+
+// failureMovedPast reports whether is, a failure's bug's state, names tip,
+// its story branch's tip, as its run's target to merge (SPEC §3.4, §7.5,
+// When the branch moves under a failure's bug): tip isn't the failing tip
+// its origin names, as the branch moved past it, so the bug's fix needs
+// the newer tip's changes in its checkout. Any other issue names no
+// target for that.
+func failureMovedPast(is state.Issue, tip string) bool {
+	return tip != "" && failureBugOf(is, is.Origin.Story) && is.Origin.Tip != tip
 }

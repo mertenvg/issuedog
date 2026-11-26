@@ -72,8 +72,8 @@ func TestPickHeldByLease(t *testing.T) {
 				}
 			}
 			ready := []Ready{{S: &github.Snapshot{Number: 1, Labels: []string{"stage:ready"}}}}
-			if held, err := r.pickHeld(context.Background(), ready); err != nil || held != tt.held {
-				t.Errorf("pickHeld = %v, %v; want %v", held, err, tt.held)
+			if held, holders, err := r.pickHeld(context.Background(), ready); err != nil || held != tt.held || len(holders) != 0 {
+				t.Errorf("pickHeld = %v, %+v, %v; want %v, and no task holding it", held, holders, err, tt.held)
 			}
 		})
 	}

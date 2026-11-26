@@ -125,6 +125,11 @@ type Input struct {
 	// from, set with RunID: main, or for a task in a story, its story
 	// branch (SPEC §3.4, §12).
 	Branch string
+	// Conflict is the main commit a conflict bug names, set with RunID,
+	// which its first attempt and a dropped head's run start from, with
+	// its story branch's tip as Target, or "" for any other run (SPEC §3.4,
+	// §7.5, A conflict, §12).
+	Conflict string
 	// Head is the commit a verifier run judges, Against is what it passed
 	// the checks against, main's commit, or for a task in a story its
 	// story branch's tip, with the story's baseline (VerifyTarget), and
@@ -214,7 +219,9 @@ type Lease struct {
 	FallbackModels []string `json:"fallback_models,omitempty"`
 	// Start is the commit the run's clone starts from, and Target any
 	// commit it's to merge, both named when the run started (SPEC §3.4):
-	// for triage, the interviewer and the planner, Start is main's.
+	// for triage, the interviewer and the planner, Start is main's. A
+	// conflict bug's first attempt starts from the main commit it names,
+	// with its story branch's tip as Target (SPEC §7.5, A conflict).
 	Start  string `json:"start,omitempty"`
 	Target string `json:"target,omitempty"`
 	// StoryTip is the story branch's tip an implementer run on a task in a
@@ -600,7 +607,10 @@ func (r *Runs) CheckRegistered() error {
 // and that's logged once. It's judged before the issue is read again, so
 // the wait costs no request, and again on the issue read again, which
 // starts no run either when the task's story is no longer ready, or its
-// tip isn't the one named; the lease records the tip it named.
+// tip isn't the one named; the lease records the tip it named. An issue
+// with two or more branches with its prefix, or a branches state error
+// standing on it or on its story, starts no run either, uncounted, and
+// that's logged once (branchesWait).
 func (r *Runs) RunStage(ctx context.Context, rd Ready, st Stage) (bool, error) {
 	return r.runStage(ctx, rd, st, false)
 }
@@ -679,6 +689,11 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		logr.Debugf("%s/%s#%d: no %s run: its type doesn't fit its stage, as reported", a.Owner, a.Repo, n, st.Agent())
 		return false, nil
 	}
+	// Two or more branches with its prefix, or a branches state error on
+	// it or its story, start none of its runs, uncounted (SPEC §5.3, §7.5).
+	if wait, err := r.branchesWait(ctx, st, rd.S); err != nil || wait {
+		return false, wrap(err)
+	}
 	story, ready, err := r.storyStart(ctx, st, rd.S)
 	if err != nil || !ready {
 		return false, wrap(err)
@@ -750,7 +765,7 @@ func (r *Runs) runStage(ctx context.Context, rd Ready, st Stage, isUnlabeled boo
 		r.Daemon.reread(n, false)
 		return false, wrap(r.reportLabels(ctx, rd.S, fresh, is.Stage, st, badLabels))
 	}
-	in.RunID, in.Attempt, in.Target, in.Dropped, in.Branch = r.newID(), attempt, commits.Target, commits.Dropped, commits.Branch
+	in.RunID, in.Attempt, in.Target, in.Dropped, in.Branch, in.Conflict = r.newID(), attempt, commits.Target, commits.Dropped, commits.Branch, commits.Conflict
 	in.ContextDir = r.Workspace.Context(in.RunID)
 	if _, after := st.(AfterChecks); after {
 		// start refused a head with no pass, so passed holds this one's.
@@ -909,13 +924,20 @@ func (r *Runs) run(ctx context.Context, st Stage, in Input, set state.Settings, 
 
 // commitIdentity is the git identity of a Committer's runs, in their
 // environment (SPEC §3.3): the App's bot, <slug>[bot], with its noreply
-// address, as author and committer, so every commit a run makes names the
-// App, whatever the clone's config says. slug is the one GET /app gave at
-// startup.
+// address, as author and committer (appIdentity), so every commit a run
+// makes names the App, whatever the clone's config says. slug is the one
+// GET /app gave at startup.
 func commitIdentity(slug string) []string {
-	name := slug + "[bot]"
-	email := name + "@users.noreply.github.com"
+	name, email := appIdentity(slug)
 	return []string{"GIT_AUTHOR_NAME=" + name, "GIT_AUTHOR_EMAIL=" + email, "GIT_COMMITTER_NAME=" + name, "GIT_COMMITTER_EMAIL=" + email}
+}
+
+// appIdentity is the App's git identity, as a run's commits and a story's
+// merge of main name it (SPEC §3.2, §3.3): the App's bot, <slug>[bot], and
+// its noreply address. slug is the one GET /app gave at startup.
+func appIdentity(slug string) (name, email string) {
+	name = slug + "[bot]"
+	return name, name + "@users.noreply.github.com"
 }
 
 // outcome reads from a run's output whether it failed, and its text: it

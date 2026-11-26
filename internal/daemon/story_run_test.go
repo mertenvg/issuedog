@@ -155,6 +155,10 @@ func TestStoryRunStart(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f, v := newStoryRunRig(t)
+			// main isn't merged into the story branch, so when main moves,
+			// the story's baseline stays older than it, as while that merge
+			// waits (SPEC §7.5).
+			v.d.StoryMain = false
 			main := v.mainSHA()
 			v.tipCut(tipBranch)
 			tip := v.tipPush(tipBranch, map[string]string{"f.txt": "the story's\n"})
@@ -242,21 +246,27 @@ func TestStoryRunStart(t *testing.T) {
 
 // While its story branch's tip has no issuedog/tip as success, a task in
 // the story gets no run, uncounted: no lease, no state error, and it stays
-// at in-progress (SPEC §3.4's A story's waits). With no branch yet, a tip
-// not checked yet, and a tip whose check is failure, as one that changes a
-// protected path, the log says why once, at info, not on every pass, and
-// a pass after makes no request but 304s. Once a person's push fixes the
-// tip, and its check is success, the next pass's run starts from it, as
-// attempt 1.
+// at in-progress (SPEC §3.4's A story's waits). With no branch, as the
+// task has been in-progress, the story gets its branches state error,
+// keyed none, once (SPEC §5.3, §7.5), and the task's wait on it is logged
+// once. With a tip not checked yet, and a tip whose check is failure, as
+// one that changes a protected path, the log says why once, at info, not
+// on every pass, and a pass after makes no request but 304s. Once a
+// person's push fixes the tip, and its check is success, the next pass's
+// run starts from it, as attempt 1.
 func TestStoryRunTipWaits(t *testing.T) {
 	// Not parallel: it reads the process-wide logr output (logtest.Capture).
 	f, v := newStoryRunRig(t)
 	stop := logtest.Capture(t, logr.I)
 	v.passes(2)
 	logs := stop()
-	if want := "#2: no implementer run: its story #1 has no branch yet"; strings.Count(logs, want) != 1 {
+	if want := "#2: no implementer run: its story #1's branches state error stands, keyed none"; strings.Count(logs, want) != 1 {
 		t.Errorf("two passes with no branch logged\n%s\nwant %q once", logs, want)
 	}
+	if got, want := errorMarkers(f, 1), []string{"<!-- issuedog:error kind=branches key=none -->"}; !slices.Equal(got, want) {
+		t.Errorf("the story's state errors are %q; want %q", got, want)
+	}
+	v.pass() // the digest and the assignment the error brings, read back
 	v.quietPass("no branch")
 
 	v.tipCut(tipBranch)
@@ -345,8 +355,10 @@ func TestStoryRunTipMovedFails(t *testing.T) {
 		!strings.Contains(logs, ".github/workflows/x.yml") {
 		t.Errorf("the pass logged\n%s\nwant %q, naming the protected path", logs, want)
 	}
-	if w := f.Writes()[writes:]; len(w) != 1 || w[0].Path != "/check-runs" {
-		t.Errorf("the pass wrote %+v; want only the new tip's check", w)
+	// The tip fails rule 2, so its human task is filed under the story
+	// before its check (SPEC §7.5): the issue, its link, its first move.
+	if got, want := writesOf(f)[writes:], []string{"POST /issues", "POST /issues/1/sub_issues", "POST /issues/4/comments", "POST /check-runs"}; !slices.Equal(got, want) {
+		t.Errorf("the pass wrote %q; want only the human task's filing and the new tip's check, %q", got, want)
 	}
 	if got := tipLast(t, f); got.HeadSHA != bad || got.Conclusion != "failure" {
 		t.Errorf("the last check is %+v; want failure on the new tip %s", got, bad)
@@ -367,6 +379,7 @@ func TestStoryRunTipMovedFails(t *testing.T) {
 	if got := tipReads(f, from, bad); got != 1 || v.runs() != 1 {
 		t.Errorf("the restart's first pass read the tip's checks %d times, with %d runs; want once, and still one", got, v.runs())
 	}
+	v.pass() // reads what the restart's first pass wrote for the human task, as the digest's
 	v.quietPass("after the restart")
 
 	fixed := v.tipPush(tipBranch, map[string]string{".github/workflows/x.yml": ""})

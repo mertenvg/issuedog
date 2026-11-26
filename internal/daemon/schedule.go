@@ -29,15 +29,17 @@ const pickSearchEvery = 10 * time.Minute
 // in-progress, the implementer. It reports whether it picked one.
 //
 // Nothing is picked while a task holds the one worker (pickHeld), or with
-// no Stage at in-progress. The candidates are the open ready issues with a
-// stage:ready label and no parent, or in a story (pickCandidate), in
-// pickLess's order. A task with any other parent isn't one, uncounted.
-// Only once there is a candidate does the pick ask the issue search for
-// the blocked ready tasks (pickSearch), and each candidate it finds
-// blocked is passed over with no request. The first of the others that
-// pickOne picks is the one: a candidate pickOne passes over leaves the
-// next its turn. A candidate whose story's branch pickOne cuts ends the
-// pick too, with nothing picked that pass (pickStory).
+// no Stage at in-progress, but for a failure's bug that each task holding
+// it steps aside for, as their own work waits on that failure (pickAside).
+// The candidates are the open ready issues with a stage:ready label and no
+// parent, or in a story (pickCandidate), in pickLess's order. A task with
+// any other parent isn't one, uncounted. Only once there is a candidate
+// does the pick ask the issue search for the blocked ready tasks
+// (pickSearch), and each candidate it finds blocked is passed over with no
+// request. The first of the others that pickOne picks is the one: a
+// candidate pickOne passes over leaves the next its turn. A candidate whose
+// story's branch pickOne cuts ends the pick too, with nothing picked that
+// pass (pickStory).
 //
 // Nor is anything picked on a pass whose step 1 didn't finish on every
 // issue (pickGaps): an issue whose read failed or found it gone is out of
@@ -50,15 +52,16 @@ func (r *Runs) pickTask(ctx context.Context, ready []Ready) (bool, error) {
 	if r.pickGaps() {
 		return false, nil
 	}
-	switch held, err := r.pickHeld(ctx, ready); {
+	leased, holders, err := r.pickHeld(ctx, ready)
+	switch {
 	case err != nil:
 		return false, fmt.Errorf("the worker: %w", err)
-	case held:
+	case leased:
 		return false, nil
 	}
 	var candidates []pickCand
 	for _, rd := range ready {
-		if rd.S.Closed || stageOf(rd.S) != state.Ready {
+		if rd.S.Closed || stageOf(rd.S) != state.Ready || !r.pickAside(holders, rd.S) {
 			continue
 		}
 		story, ok, err := r.pickCandidate(ctx, st, rd.S)
@@ -177,20 +180,22 @@ func (r *Runs) pickGaps() bool {
 	return true
 }
 
-// pickHeld reports whether a task holds the one worker (SPEC §8.1): a
-// lease holds a run, or an open issue Work got or the daemon holds a
-// snapshot of is at in-progress or verifying, by its stage labels, which
-// step 1 keeps in line with its latest marker (SPEC §5.1), so it costs no
-// request. A task at clarifying, needs-human, pr-open or held waits on
-// the owner, and releases it.
-func (r *Runs) pickHeld(ctx context.Context, ready []Ready) (bool, error) {
+// pickHeld reports whether a lease holds the one worker (SPEC §8.1), as
+// it holds a run, and returns the tasks that hold it otherwise: each open
+// issue Work got or the daemon holds a snapshot of at in-progress or
+// verifying, by its stage labels, which step 1 keeps in line with its
+// latest marker (SPEC §5.1), so it costs no request. A task at
+// clarifying, needs-human, pr-open or held waits on the owner, and
+// releases it. Nothing steps aside for a lease; a task may, for a
+// failure's bug of its story (pickAside).
+func (r *Runs) pickHeld(ctx context.Context, ready []Ready) (bool, []*github.Snapshot, error) {
 	l, ok, err := r.readLease(ctx)
 	if err != nil {
-		return false, fmt.Errorf("the worker's lease: %w", err)
+		return false, nil, fmt.Errorf("the worker's lease: %w", err)
 	}
 	if ok && !l.Failed {
 		logr.Debugf("no task is picked: run %s on #%d holds the worker", l.RunID, l.Issue)
-		return true, nil
+		return true, nil, nil
 	}
 	snaps := make([]*github.Snapshot, 0, len(ready)+len(r.Daemon.snaps))
 	for _, rd := range ready {
@@ -199,16 +204,30 @@ func (r *Runs) pickHeld(ctx context.Context, ready []Ready) (bool, error) {
 	for _, s := range r.Daemon.snaps {
 		snaps = append(snaps, s)
 	}
+	var holders []*github.Snapshot
 	for _, s := range snaps {
-		if s.Closed {
-			continue
-		}
-		if i := slices.IndexFunc(s.Labels, pickHolds); i >= 0 {
-			logr.Debugf("no task is picked: #%d, at %s, holds the worker", s.Number, s.Labels[i])
-			return true, nil
+		if !s.Closed && slices.ContainsFunc(s.Labels, pickHolds) {
+			holders = append(holders, s)
 		}
 	}
-	return false, nil
+	return false, holders, nil
+}
+
+// pickAside reports whether s, a ready issue, may be picked while each of
+// holders holds the one worker (pickHeld): with none, any may; else only
+// a failure's bug of a story that every holder steps aside for, as each
+// is another task in that story, whose own work waits on that failure
+// (Daemon.failureAside, SPEC §8.1's One task at a time). A holder that
+// doesn't is logged at debug. It costs no request.
+func (r *Runs) pickAside(holders []*github.Snapshot, s *github.Snapshot) bool {
+	for _, h := range holders {
+		if !r.Daemon.failureAside(h, s) {
+			i := slices.IndexFunc(h.Labels, pickHolds)
+			logr.Debugf("#%d isn't picked: #%d, at %s, holds the worker", s.Number, h.Number, h.Labels[i])
+			return false
+		}
+	}
+	return true
 }
 
 // pickHolds reports whether label is the stage label of a task that holds
@@ -304,6 +323,12 @@ func (r *Runs) pickOne(ctx context.Context, rd Ready, st Stage, story *github.Sn
 	case badLabels != nil:
 		return false, wrap(badLabels)
 	}
+	if e := r.Daemon.branchErrs[n]; e.Key != "" {
+		// Its runs wait while the error stands (branchesWait), so a pick
+		// would only take the worker.
+		logr.Debugf("%s/%s#%d isn't picked: its %s state error stands, keyed %s", a.Owner, a.Repo, n, branchesErrKind, e.Key)
+		return false, nil
+	}
 	if story != nil {
 		cut, wait, err := r.pickStory(ctx, rd, story)
 		switch {
@@ -388,12 +413,10 @@ func (r *Runs) pickOpenBlocker(ctx context.Context, n int) (int, bool, error) {
 // Its story's branch is the one with its prefix in the bare clone, as the
 // pass's sync left it, and its tip that branch's (storyBranch), at no
 // request. Two branches with its prefix get no cut and no pick, and that's
-// warned of once (pickStoryOnce). A tip whose App issuedog/tip naming the
-// branch isn't success, as step 4 judged or read it (tipSuccess), as a
-// new one before its check, after a restart before step 4 reads it, a
-// failure, or one step 2 merged a task's PR onto (tipMergedOnto), has rd
-// wait, logged once a tip, still at no request. So a
-// task waiting for its tip makes no request.
+// warned of once (pickStoryOnce). A tip rd doesn't take, or a failure open
+// on the branch that rd isn't the bug of, has rd wait, logged once, still
+// at no request (pickStoryTip). So a task waiting for its tip, or on an
+// open failure, makes no request.
 //
 // Otherwise rd's own blockers are read (pickOwnBlocked), then its story's,
 // one conditional request each, through blocked_by (pickOpenBlocker), so
@@ -401,7 +424,12 @@ func (r *Runs) pickOpenBlocker(ctx context.Context, n int) (int, bool, error) {
 // found blocked joins the search's answer by its number, and isn't read
 // again until the next search, as a task isn't: till then its tasks wait
 // with no request. With neither blocked, a story with no branch gets its
-// branch cut (pickCut), and with a tip that's success, rd is picked.
+// branch cut (pickCut), and with a tip that's success, rd is picked. But
+// before the cut, the story's branches are judged (branchesJudge), with
+// its sub-issues read once (storyWorked): once a task or bug in it has
+// been in-progress, its branch is gone, not new, so it gets its branches
+// state error instead of a cut, and rd waits. While that error stands,
+// rd waits with no request, and that's warned of once (SPEC §7.5).
 func (r *Runs) pickStory(ctx context.Context, rd Ready, story *github.Snapshot) (cut, wait bool, err error) {
 	d, n, sn := r.Daemon, rd.S.Number, story.Number
 	a := d.Step.Applier
@@ -413,17 +441,17 @@ func (r *Runs) pickStory(ctx context.Context, rd Ready, story *github.Snapshot) 
 		return false, true, nil
 	case err != nil:
 		return false, false, fmt.Errorf("its story's branch: %w", err)
-	case tip != "" && !d.tipSuccess(branch, tip):
-		why := "has no " + github.TipCheck + " as success yet"
-		if j, ok := d.tips[branch]; ok && j.Tip == tip {
-			why = "has " + github.TipCheck + " as " + j.Conclusion
-		}
-		if d.tipMergedOnto(branch, tip) {
-			why = "had a task's PR merged onto it, so it's the branch's tip no more"
-		}
-		r.pickStoryOnce(sn, "tip:"+branch+"@"+tip+":"+why, logr.Infof, "%s/%s#%d: no task in it is picked, as its branch %s's tip %s %s",
-			a.Owner, a.Repo, sn, branch, tip, why)
+	case tip == "" && d.branchErrs[sn].Key != "":
+		r.pickStoryOnce(sn, "branches:"+d.branchErrs[sn].Key, logr.Warnf, "%s/%s#%d: no task in it is picked, and no branch is cut for it, as its branch is gone once work in it started, so its %s state error stands",
+			a.Owner, a.Repo, sn, branchesErrKind)
 		return false, true, nil
+	case tip != "":
+		switch wait, err := r.pickStoryTip(ctx, rd.S, story, branch, tip); {
+		case err != nil:
+			return false, false, fmt.Errorf("its story branch's tip: %w", err)
+		case wait:
+			return false, true, nil
+		}
 	}
 	if r.pickBlocked[sn] {
 		logr.Debugf("%s/%s#%d isn't picked: its story #%d has an open blocker, as last read", a.Owner, a.Repo, n, sn)
@@ -443,12 +471,62 @@ func (r *Runs) pickStory(ctx context.Context, rd Ready, story *github.Snapshot) 
 		logr.Infof("%s/%s#%d isn't picked: #%d blocks its story #%d", a.Owner, a.Repo, n, b, sn)
 		return false, true, nil
 	case tip == "":
+		// Before a cut, the story's sub-issues are read once, as the
+		// daemon holds no closed task that worked in it (storyWorked).
+		if err := d.branchesJudge(ctx, story, nil, true); err != nil {
+			return false, false, fmt.Errorf("its story's branches: %w", err)
+		}
+		if e := d.branchErrs[sn]; e.Key != "" {
+			r.pickStoryOnce(sn, "branches:"+e.Key, logr.Warnf, "%s/%s#%d: no task in it is picked, and no branch is cut for it, as its branch is gone once work in it started, so its %s state error stands",
+				a.Owner, a.Repo, sn, branchesErrKind)
+			return false, true, nil
+		}
 		if err := r.pickCut(ctx, n, story); err != nil {
 			return false, false, fmt.Errorf("cut its story's branch: %w", err)
 		}
 		return true, false, nil
 	}
 	return false, false, nil
+}
+
+// pickStoryTip reports whether s, a ready task in story, whose branch is
+// branch at tip, waits on that branch, and logs why once (SPEC §3.4's A
+// story's waits, §7.5, §8.1), from memory and the bare repo, at no
+// request:
+//   - a failure's bug of story waits while tip isn't one it takes, a tip
+//     step 4 judged that passes rule 2 (storyTipTaken), even with its own
+//     failure open, logged by its own number, as the story's siblings may
+//     log their own wait meanwhile;
+//   - any other task waits while tip's App issuedog/tip naming the branch
+//     isn't success, as step 4 judged or read it (tipSuccess), as a new
+//     one before its check, after a restart before step 4 reads it, a
+//     failure, or one step 2 merged a task's PR onto (tipMergedOnto), and
+//     while a failure on the branch is open (failureWait), so the
+//     failure's bug goes first, each logged by the story's number, once a
+//     cause.
+func (r *Runs) pickStoryTip(ctx context.Context, s, story *github.Snapshot, branch, tip string) (bool, error) {
+	d, n, sn := r.Daemon, s.Number, story.Number
+	a := d.Step.Applier
+	taken, bug, err := d.storyTipTaken(ctx, s, story, branch, tip)
+	switch {
+	case err != nil:
+		return false, fmt.Errorf("judge its tip: %w", err)
+	case !taken && bug:
+		r.pickStoryOnce(n, "failure-tip:"+branch+"@"+tip, logr.Infof, "%s/%s#%d isn't picked, as its story #%d's branch %s's tip %s %s",
+			a.Owner, a.Repo, n, sn, branch, tip, failureTipWhy)
+		return true, nil
+	case !taken:
+		why := d.tipWhy(branch, tip)
+		r.pickStoryOnce(sn, "tip:"+branch+"@"+tip+":"+why, logr.Infof, "%s/%s#%d: no task in it is picked, as its branch %s's tip %s %s",
+			a.Owner, a.Repo, sn, branch, tip, why)
+		return true, nil
+	}
+	if why := d.failureWait(s, branch, tip); why != "" {
+		r.pickStoryOnce(sn, "failure:"+why, logr.Infof, "%s/%s#%d: no task in it but a failure's bug is picked, as %s",
+			a.Owner, a.Repo, sn, why)
+		return true, nil
+	}
+	return false, nil
 }
 
 // pickCut cuts story's branch for task n, the pick's candidate in it
