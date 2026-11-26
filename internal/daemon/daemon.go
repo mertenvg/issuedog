@@ -320,12 +320,17 @@ type Ready struct {
 }
 
 // Run iterates until ctx is done, sleeping loop.idle_sleep after each
-// iteration, and logs each iteration's errors.
+// iteration, and logs each iteration's errors. After each iteration it
+// logs, on one line, what the pass cost against the rate limit: its
+// requests, its 304s, and each resource's remaining of its limit (SPEC
+// §8.1, Polling cost). The first pass's line counts the requests made
+// before it, at startup, too.
 func (d *Daemon) Run(ctx context.Context) {
 	for {
 		if err := d.Iterate(ctx); err != nil && ctx.Err() == nil {
 			logr.Errorf("loop iteration on %s/%s: %v", d.Step.Owner, d.Step.Repo, err)
 		}
+		logr.Infof("pass on %s/%s cost %s", d.Step.Owner, d.Step.Repo, d.Step.Client.Meter.Take())
 		t := time.NewTimer(d.Config.Loop.IdleSleep)
 		select {
 		case <-ctx.Done():
