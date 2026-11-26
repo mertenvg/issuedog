@@ -187,10 +187,21 @@ func adoptCases() []adoptCase {
 		}}
 	labelsOnly := &github.Snapshot{Number: 12, Author: owner, Type: "task", Parent: 11, Body: "A task.",
 		Labels: []string{"stage:ready"}, Comments: []github.Comment{adoptComment(100, owner, "Working on it.")}}
+	labelsOrigin := &github.Snapshot{Number: 29, Author: owner, Type: "task", Parent: 11, Labels: []string{"stage:ready"},
+		Body: "A task, filed by hand from its story's plan.\n<!-- issuedog:origin plan=#11 rev=1 item=T1 -->"}
+	humanTask := &github.Snapshot{Number: 31, Author: owner, Type: "task", Parent: 11, Labels: []string{"stage:needs-human"},
+		Body: "Add the ruleset.\n<!-- issuedog:origin plan=#11 rev=1 item=T7 check=ruleset value=issuedog%2Fverify human=1 -->"}
 	held := &github.Snapshot{Number: 13, Author: owner, Type: "task", Labels: []string{"stage:held"},
 		Comments: []github.Comment{
 			adoptComment(100, owner, adoptMove("from=intake to=ready cmd=90")),
 			adoptComment(200, owner, adoptMove("from=ready to=held at=ready reason=owner cmd=150")),
+		}}
+	resumed := &github.Snapshot{Number: 32, Author: owner, Type: "task", Labels: []string{"stage:ready"},
+		Comments: []github.Comment{
+			adoptComment(100, owner, adoptMove("from=intake to=ready cmd=90")),
+			adoptComment(200, owner, adoptMove("from=ready to=held at=ready reason=owner cmd=150")),
+			adoptComment(250, mallory, "A comment while it's held."),
+			adoptComment(300, owner, adoptMove("from=held to=ready cmd=290")),
 		}}
 	answer := &github.Snapshot{Number: 14, Author: owner, Labels: []string{"stage:spec-review"},
 		Comments: []github.Comment{
@@ -291,9 +302,20 @@ func adoptCases() []adoptCase {
 			"100: " + adoptMove("from=intake to=planned event=p600 seen=100"),
 		}},
 		{name: "a task with only labels", s: labelsOnly, dirty: clean},
-		{name: "a held issue", s: held, dirty: clean, posts: []string{
+		{name: "a task with only labels and its body's origin", s: labelsOrigin, dirty: clean, posts: []string{
+			"0: <!-- issuedog:origin plan=#11 rev=1 item=T1 -->",
+		}},
+		{name: "a human task with a percent-encoded check", s: humanTask, dirty: clean, posts: []string{
+			"0: <!-- issuedog:origin plan=#11 rev=1 item=T7 check=ruleset human=1 value=issuedog%2Fverify -->",
+		}},
+		{name: "refused while held", s: held, dirty: clean, posts: []string{
 			"100: " + adoptMove("from=intake to=ready cmd=90 seen=100"),
 			"200: " + adoptMove("from=ready to=held at=ready reason=owner cmd=150 seen=200"),
+		}, refused: []string{"stage:held: a hold's repost would bound input at itself, not where the hold did, so /resume it first"}},
+		{name: "a hold resumed", s: resumed, dirty: clean, posts: []string{
+			"100: " + adoptMove("from=intake to=ready cmd=90 seen=100"),
+			"200: " + adoptMove("from=ready to=held at=ready reason=owner cmd=150 seen=200"),
+			"300: " + adoptMove("from=held to=ready cmd=290 seen=300"),
 		}},
 		{name: "an answer after a transition", s: answer, dirty: clean, posts: []string{
 			"100: " + adoptMove("from=clarifying to=spec-review rev=1 body=aaaa1111 run=s1 seen=100") + " <!-- issuedog:revision rev=1 body=aaaa1111 -->",
@@ -461,6 +483,19 @@ func TestAdoptStoryOrigin(t *testing.T) {
 	}
 	if is.Origin.Plan != 5 || is.Origin.Item != "S1" || class != ClassStory {
 		t.Errorf("origin = %+v, class %v, want plan #5 item S1 and a story", is.Origin, class)
+	}
+}
+
+// TestAdoptHumanTaskCheck checks that a human task's body origin, reposted,
+// keeps human=1 and its check, whose value is percent-encoded as written:
+// it reads back once, not encoded a second time.
+func TestAdoptHumanTaskCheck(t *testing.T) {
+	t.Parallel()
+	s := &github.Snapshot{Number: 31, Author: owner, Type: "task", Parent: 11, Labels: []string{"stage:needs-human"},
+		Body: "Add the ruleset.\n<!-- issuedog:origin plan=#11 rev=1 item=T7 check=ruleset value=issuedog%2Fverify human=1 -->"}
+	is := Derive(withReposts(t, s, Adopt(s, adoptLogin, slug, clean), adoptLogin), slug, clean)
+	if want := (Check{Kind: CheckRuleset, Value: "issuedog/verify"}); !is.Origin.Human || is.Origin.Check != want || is.Origin.Item != "T7" {
+		t.Errorf("origin = %+v, want human task T7 with the check %+v", is.Origin, want)
 	}
 }
 
