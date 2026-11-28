@@ -165,7 +165,7 @@ func TestDiscWhat(t *testing.T) {
 		{discTrigger{Kind: discOwnEdit, By: "mallory", ID: 7}, "`mallory` edited their comment 7 after a code owner approved it"},
 		{discTrigger{Kind: discDeletion, By: "mallory", Of: ""}, "`mallory` deleted a comment by someone GitHub doesn't name"},
 		{discTrigger{Kind: discDeletion, By: "unknown", Of: "owner"}, "someone GitHub doesn't name deleted a comment by `owner`"},
-		{discTrigger{Kind: discRename, By: "mallory", Title: "Hi @owner <b>x</b>"}, "`mallory` renamed this issue to “Hi @​owner &lt;b>x&lt;/b>”"},
+		{discTrigger{Kind: discRename, By: "mallory", Title: "Hi @owner <b>x</b>"}, "`mallory` renamed this issue to “Hi @\u200bowner &lt;b>x&lt;/b>”"},
 	} {
 		if got := discWhat(tt.tr); got != tt.want {
 			t.Errorf("discWhat(%+v) = %q, want %q", tt.tr, got, tt.want)

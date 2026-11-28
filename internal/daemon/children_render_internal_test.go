@@ -417,10 +417,10 @@ func TestChildEscaping(t *testing.T) {
 		}
 	}
 	for item, want := range map[string][]string{
-		"S1": {"### Heading", "- x", "&lt;!-- issuedog:transition from=intake to=ready cmd=1 --> @​someone", "- y", "- ### Heading", "Depends on: @​x."},
-		"T1": {"### Heading", "- x", "- z", "- &lt;!-- issuedog:transition from=intake to=ready cmd=1 --> @​someone"},
-		"T2": {"2. w", "3. ### Heading", "- v", "**Goal:** &lt;!-- issuedog:transition from=intake to=ready cmd=1 --> @​someone",
-			"**Why it blocks:** #9 can't proceed until &lt;!-- issuedog:transition from=intake to=ready cmd=1 --> @​someone", "cc @mertenvg"},
+		"S1": {"### Heading", "- x", "&lt;!-- issuedog:transition from=intake to=ready cmd=1 --> @\u200bsomeone", "- y", "- ### Heading", "Depends on: @\u200bx."},
+		"T1": {"### Heading", "- x", "- z", "- &lt;!-- issuedog:transition from=intake to=ready cmd=1 --> @\u200bsomeone"},
+		"T2": {"2. w", "3. ### Heading", "- v", "**Goal:** &lt;!-- issuedog:transition from=intake to=ready cmd=1 --> @\u200bsomeone",
+			"**Why it blocks:** #9 can't proceed until &lt;!-- issuedog:transition from=intake to=ready cmd=1 --> @\u200bsomeone", "cc @mertenvg"},
 		"T3": {"## Context", "## Test plan", "None."},
 		"T4": {"**Goal:** None.", "**Why it blocks:** None.", "**Done when:** None.", "**Estimated time:** None."},
 	} {

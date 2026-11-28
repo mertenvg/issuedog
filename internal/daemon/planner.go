@@ -74,7 +74,7 @@ func (p *Planner) Pending(in Input) bool {
 	if in.Issue.Stage != state.Planning || !plannerClass(in.Issue.Item) {
 		return false
 	}
-	if _, err := planPriorOf(in.S, p.Daemon.Step.Applier.AppSlug, in.Issue, in.Dirt.Has); err != nil {
+	if _, err := planPriorOf(in.S, p.Daemon.Step.AppSlug, in.Issue, in.Dirt.Has); err != nil {
 		p.logSkip(in.S.Number, err)
 		return false
 	}

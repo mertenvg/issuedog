@@ -422,7 +422,7 @@ func TestDoneByReactionPasses(t *testing.T) {
 			thumbBy("owner", 1002)(t, f)
 			thumbBy(errAckHostile, 1003)(t, f)
 			thumbBy("mallory", 1004)(t, f)
-		}, thumbClosed("eve&lt;!--@​owner", `The "Done when" has no check for me to run.`, 1003), 0},
+		}, thumbClosed("eve&lt;!--@\u200bowner", `The "Done when" has no check for me to run.`, 1003), 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -508,7 +508,7 @@ func TestDoneByReactionFailsEscaped(t *testing.T) {
 	f := humanTask(doneLabelCheck, thumbBy(errAckHostile, 1002))(t)
 	iterate(t, thumbDaemon(t, f, newOrigin(t)))
 	doneState(t, f, []string{"stage:needs-human"}, false, []string{
-		thumbRejected("eve&lt;!--@​owner", "This repo has no label `needs-design`.", 1002)})
+		thumbRejected("eve&lt;!--@\u200bowner", "This repo has no label `needs-design`.", 1002)})
 }
 
 // unreadableFound is what the check finds on an origin marker whose check

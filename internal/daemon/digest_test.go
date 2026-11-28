@@ -187,7 +187,7 @@ func TestDigestPinFailure(t *testing.T) {
 	d.Work = func(context.Context, []daemon.Ready) error { worked++; return nil }
 	iterate(t, d)
 	logr.Wait()
-	note := "I couldn't pin this issue: `Repository already has 3 pinned issues &lt;!-- issuedog:x --> @​eve 'x'`. Pin it by hand.\n\n"
+	note := "I couldn't pin this issue: `Repository already has 3 pinned issues &lt;!-- issuedog:x --> @\u200beve 'x'`. Pin it by hand.\n\n"
 	if is := f.State().Issues[0]; is.Pinned || is.Body != note+digestList || worked != 1 {
 		t.Fatalf("issue %+v, Work ran %d times; want unpinned, with the note, and Work run", is, worked)
 	}

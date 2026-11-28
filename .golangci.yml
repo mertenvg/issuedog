@@ -1,3 +1,4 @@
 # Default linters only; extend when a rule earns its place.
+version: "2"
 linters:
-  enable-all: false
+  default: standard

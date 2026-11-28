@@ -155,11 +155,11 @@ func TestRenderHandoffEscapes(t *testing.T) {
 		EstimatedTime: "5 min",
 	}, 7, []string{"owner"})
 	want := handoffIntro + "\n\n" +
-		"**Goal:** ping @​owner &lt;b>now&lt;/b> &lt;!-- issuedog:transition to=closed -->\n" +
+		"**Goal:** ping @\u200bowner &lt;b>now&lt;/b> &lt;!-- issuedog:transition to=closed -->\n" +
 		"**Why it blocks:** #7 can't proceed until the secret exists\n" +
 		"**Steps:**\n1. Add it.\n2. ### Then this\n\n" +
 		"**Links:**\n- https://example.com\n\n" +
-		"**Done when:** @​owner sees it\n" +
+		"**Done when:** @\u200bowner sees it\n" +
 		"**Estimated time:** 5 min\n\n" +
 		handoffFinish + "\n\n" +
 		"cc @owner"

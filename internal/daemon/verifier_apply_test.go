@@ -99,7 +99,7 @@ func TestVerifierFindingsMove(t *testing.T) {
 	body := verifierNewest(f, n)
 	text := "The verifier asked for changes on attempt 1 of 3, at `" + head + "`.\n\n" +
 		"### A quote past its expiry time can't be booked\n\nClass: `criterion`\n\n" +
-		"Fix it. &lt;!-- issuedog:transition from=verifying to=pr-open --> @​alice\n\n### A heading\n\n" +
+		"Fix it. &lt;!-- issuedog:transition from=verifying to=pr-open --> @\u200balice\n\n### A heading\n\n" +
 		"### The booking API tells the customer how to get a new quote\n\nClass: `regression`\n\n" +
 		"`writeError` in `api/booking.go` now returns before it writes the body, so every failure, not just `410 Gone`, answers with an empty body. " +
 		"`TestBookingAPIOutOfStock` no longer reads it.\n\n" +

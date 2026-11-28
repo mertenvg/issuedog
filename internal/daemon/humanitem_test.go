@@ -370,7 +370,7 @@ func TestHumanItemFromChildren(t *testing.T) {
 	t3 := "- A human task waits for you.\n" +
 		"- Goal: Name the owner as the code owner of everything.\n" +
 		// The digest defuses a copied mention, in code or not.
-		"- Done when: The file `.github/CODEOWNERS` on `main` contains `* @​owner`.\n" +
+		"- Done when: The file `.github/CODEOWNERS` on `main` contains `* @\u200bowner`.\n" +
 		"- When it's done, reply `/done` or react 👍 to the issue.\n" +
 		"- Answer here: https://github.com/o/r/issues/4\n"
 	t2 := "- A human task waits for you.\n" +

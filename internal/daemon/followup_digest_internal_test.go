@@ -53,7 +53,7 @@ func TestWaitFindFollowUp(t *testing.T) {
 		t.Errorf("in a story, the item is keyed %s linking %s, comment %d, with lines %q; want followup-1 linking the addendum, 1001, with %q",
 			story.Key, story.Link, story.Comment, waitTexts(story.Lines), want)
 	}
-	if !(waitApproval.rank() < waitFollowUp.rank() && waitFollowUp.rank() < waitQuestion.rank()) || waitFollowUp.String() != "followup" ||
+	if waitApproval.rank() >= waitFollowUp.rank() || waitFollowUp.rank() >= waitQuestion.rank() || waitFollowUp.String() != "followup" ||
 		digestRenderKindName(waitFollowUp) != "Follow-up" {
 		t.Errorf("a follow-up ranks %d, between %d and %d, named %s and %q; want it between an approval and a question, followup and Follow-up",
 			waitFollowUp.rank(), waitApproval.rank(), waitQuestion.rank(), waitFollowUp, digestRenderKindName(waitFollowUp))

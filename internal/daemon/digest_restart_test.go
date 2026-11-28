@@ -497,7 +497,7 @@ func TestDigestRestartTouchedFailedRereadNotGone(t *testing.T) {
 	l.quiet("#4 gone")
 }
 
-// A visit that ends closing an issue again (closingErrClosedAgain) after
+// A visit that ends closing an issue again (errClosingClosedAgain) after
 // its command wrote to another holds that one back too, as a visit that
 // fails does. Owner's close of #4 stands, at completed, and mallory
 // reopens it while no daemon runs. Then the epic's /hold, and #3's own,

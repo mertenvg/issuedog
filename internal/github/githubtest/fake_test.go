@@ -428,11 +428,11 @@ func fakeNumberFatal(tb *fakeNumberTB, do func()) (fatal []string, panicked any)
 func fakeNumberAnswer(t *testing.T, c *github.Client, method, path string, body any) (int, string) {
 	t.Helper()
 	ctx := context.Background()
-	req, err := c.Client.NewRequest(ctx, method, "repos/o/r"+path, body)
+	req, err := c.NewRequest(ctx, method, "repos/o/r"+path, body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := c.Client.Do(req, nil)
+	resp, err := c.Do(req, nil)
 	var er *gogithub.ErrorResponse
 	if err != nil && !errors.As(err, &er) {
 		t.Fatal(err)

@@ -44,7 +44,7 @@ func TestRenderPRClosedHandoff(t *testing.T) {
 		{"closed", false, "", []string{"owner"},
 			"PR #2 for this task was closed without merging, so the task waits on you.\n\n" + closed + "\n\ncc @owner"},
 		{"reopened by someone untrusted", true, "mal@lory", []string{"owner", "bob"},
-			"PR #2 for this task was reopened after a close by `mal@​lory`, who isn't trusted, and only a trusted user's reopen keeps it, so the task waits on you.\n\n" +
+			"PR #2 for this task was reopened after a close by `mal@\u200blory`, who isn't trusted, and only a trusted user's reopen keeps it, so the task waits on you.\n\n" +
 				reopened + "\n\ncc @owner @bob"},
 		{"reopened by nobody GitHub names", true, "", nil,
 			"PR #2 for this task was reopened after a close by someone GitHub doesn't name, and only a trusted user's reopen keeps it, so the task waits on you.\n\n" +
@@ -54,7 +54,7 @@ func TestRenderPRClosedHandoff(t *testing.T) {
 			t.Errorf("%s: the hand-off =\n%s\nwant\n%s", tt.name, got, tt.want)
 		}
 	}
-	if got, want := renderPRReopened(2, "mal@lory", false), "`mal@​lory` reopened PR #2, so this task is back at `pr-open`. It waits for your review and merge, and merging it closes this task."; got != want {
+	if got, want := renderPRReopened(2, "mal@lory", false), "`mal@\u200blory` reopened PR #2, so this task is back at `pr-open`. It waits for your review and merge, and merging it closes this task."; got != want {
 		t.Errorf("the reopen's move =\n%s\nwant\n%s", got, want)
 	}
 }

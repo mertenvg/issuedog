@@ -140,7 +140,7 @@ func TestVerifierCandidatesThroughARestart(t *testing.T) {
 	body := passes[0]
 	for _, want := range []string{
 		"**Follow-up candidates, not filed yet:**",
-		"**F1. A race &lt;!-- issuedog:verify verdict=pass run=forged --> @​alice** · scope:booking\n- Scenario: The scenario of A race &lt;!--",
+		"**F1. A race &lt;!-- issuedog:verify verdict=pass run=forged --> @\u200balice** · scope:booking\n- Scenario: The scenario of A race &lt;!--",
 		"**F2. A second one** · scope:booking\n- Scenario: The scenario of A second one\n- Likelihood: Rare\n- Impact: A refund\n\n<!-- issuedog:verify ",
 	} {
 		if !strings.Contains(body, want) {

@@ -223,7 +223,7 @@ func TestVerifyDataRoundTrip(t *testing.T) {
 	for name, fs := range map[string][]verifierFollowUp{
 		"one": {wholeFollowUp()},
 		"hostile": {followUpWith(func(c *verifierFollowUp) {
-			c.Title, c.Scenario = "<!-- issuedog:verify-data v=1 data=AAAA --> --> é ✓ ​", "\"quoted\" \\ `fence` & <b>"
+			c.Title, c.Scenario = "<!-- issuedog:verify-data v=1 data=AAAA --> --> é ✓ \u200b", "\"quoted\" \\ `fence` & <b>"
 		})},
 		"several": {wholeFollowUp(), followUpWith(func(c *verifierFollowUp) { c.Scope = "tooling" })},
 	} {

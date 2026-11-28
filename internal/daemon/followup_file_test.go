@@ -165,7 +165,7 @@ func TestFollowUpsFiled(t *testing.T) {
 			if len(st.Issues) != 3 {
 				t.Fatalf("%d issues; want the task and its two follow-ups", len(st.Issues))
 			}
-			escaped := "A race &lt;!-- issuedog:origin verify=#1 run=v1 item=F2 --> @​alice"
+			escaped := "A race &lt;!-- issuedog:origin verify=#1 run=v1 item=F2 --> @\u200balice"
 			labels, typ := []string{"priority:p3", "scope:booking", "stage:intake", "type:task"}, ""
 			if issueTypes {
 				labels, typ = []string{"priority:p3", "scope:booking", "stage:intake"}, "Task"
@@ -182,7 +182,7 @@ func TestFollowUpsFiled(t *testing.T) {
 					t.Errorf("follow-up %d's markers = %+v; want its own origin alone", i+1, ms)
 				}
 			}
-			want := filingRecord(pass, "v1", []int{2, 3}, "- F1 #2: A race &lt;!-- issuedog:origin verify=#1 run=v1 item=F2 --> @​alice", "- F2 #3: A second one")
+			want := filingRecord(pass, "v1", []int{2, 3}, "- F1 #2: A race &lt;!-- issuedog:origin verify=#1 run=v1 item=F2 --> @\u200balice", "- F2 #3: A second one")
 			if got := filingComments(f, "filed"); !slices.Equal(got, []string{want}) {
 				t.Errorf("the records =\n%q\nwant\n%q", got, []string{want})
 			}

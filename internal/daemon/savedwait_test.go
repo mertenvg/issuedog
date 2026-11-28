@@ -374,7 +374,7 @@ func TestSavedWaitUnreachedByHeldBackParentReplay(t *testing.T) {
 // TestSavedWaitUnreachedByClosedAgainParentReplay is
 // TestSavedWaitUnreachedByFailedParentReplay with A's visit stopped on J1
 // by mallory's reopen of J1, completed, which A's /hold judges first, so
-// it closes J1 again (closingErrClosedAgain): A's visit waits for its next
+// it closes J1 again (errClosingClosedAgain): A's visit waits for its next
 // pass, with A's /hold unfinished, though that's no error. The saved
 // result on J2 waits with its lease, counted, and the next pass applies
 // A's /hold, which leaves the closed J1 alone and drops the result. Both
