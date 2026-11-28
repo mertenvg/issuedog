@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -24,26 +25,38 @@ import (
 
 const allowedHost = "api.anthropic.com"
 
-// echoServer accepts connections and echoes back whatever it reads.
+// echoServer accepts connections and echoes back whatever it reads. Its
+// cleanup closes the listener and waits for every connection to end, so a
+// failed Close is reported while the test is still running.
 func echoServer(t *testing.T) string {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { l.Close() })
-	go func() {
+	var wg sync.WaitGroup
+	t.Cleanup(func() {
+		if err := l.Close(); err != nil {
+			t.Errorf("close the echo listener: %v", err)
+		}
+		wg.Wait()
+	})
+	wg.Go(func() {
 		for {
 			c, err := l.Accept()
 			if err != nil {
 				return
 			}
-			go func() {
-				defer c.Close()
+			wg.Go(func() {
+				defer func() {
+					if err := c.Close(); err != nil {
+						t.Errorf("close the echo connection: %v", err)
+					}
+				}()
 				_, _ = io.Copy(c, c)
-			}()
+			})
 		}
-	}()
+	})
 	return l.Addr().String()
 }
 
@@ -84,7 +97,11 @@ func connect(t *testing.T, proxy, authority string) (*http.Response, net.Conn, *
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { c.Close() })
+	t.Cleanup(func() {
+		if err := c.Close(); err != nil {
+			t.Errorf("close the proxy connection: %v", err)
+		}
+	})
 	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
 	if _, err := io.WriteString(c, "CONNECT "+authority+" HTTP/1.1\r\nHost: "+authority+"\r\n\r\n"); err != nil {
 		t.Fatal(err)
@@ -154,7 +171,9 @@ func TestPlainRequestsDenied(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", url, err)
 		}
-		resp.Body.Close()
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("%s: close the body: %v", url, err)
+		}
 		if resp.StatusCode != http.StatusForbidden {
 			t.Errorf("%s: status %d, want 403", url, resp.StatusCode)
 		}
@@ -186,7 +205,11 @@ func TestListenLoopbackOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer l.Close()
+	defer func() {
+		if err := l.Close(); err != nil {
+			t.Errorf("close the listener: %v", err)
+		}
+	}()
 	addr := l.Addr().(*net.TCPAddr)
 	if !addr.IP.Equal(net.IPv4(127, 0, 0, 1)) {
 		t.Errorf("listening on %s, want 127.0.0.1", addr.IP)
@@ -210,7 +233,11 @@ func TestConnectForwardsBytesSentWithRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() {
+		if err := c.Close(); err != nil {
+			t.Errorf("close the proxy connection: %v", err)
+		}
+	}()
 	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
 	authority := allowedHost + ":443"
 	req := "CONNECT " + authority + " HTTP/1.1\r\nHost: " + authority + "\r\n\r\nping\n"

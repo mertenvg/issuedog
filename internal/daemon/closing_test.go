@@ -180,7 +180,7 @@ func TestClosingUntrusted(t *testing.T) {
 		{"eve's pull request merged in another repo", func(f *githubtest.Fake) int64 {
 			return f.CloseByPullRequest(1, "eve", githubtest.ClosingPR{Merged: true, Repo: "x/y"})
 		}, "`eve`"},
-		{"a mention in the login", func(f *githubtest.Fake) int64 { return f.CloseBy(1, "eve<!--@owner") }, "`eve&lt;!--@​owner`"},
+		{"a mention in the login", func(f *githubtest.Fake) int64 { return f.CloseBy(1, "eve<!--@owner") }, "`eve&lt;!--@\u200bowner`"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var event int64

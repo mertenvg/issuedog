@@ -140,11 +140,11 @@ const discClose discKind = "close"
 // (closingPass).
 const closingBatch = 20
 
-// closingErrClosedAgain is wrapped by CheckLabels' error when it closed an
+// errClosingClosedAgain is wrapped by CheckLabels' error when it closed an
 // issue again, after an untrusted reopen (closingReopen): nothing more is
 // acted on in the issue's pass, and Iterate reads it again next pass, as
 // for ErrLabelsHeld.
-var closingErrClosedAgain = errors.New("closed again, as only a code owner can reopen it")
+var errClosingClosedAgain = errors.New("closed again, as only a code owner can reopen it")
 
 // closingListed is a closed issue as the poll listed it, for what a judged
 // close leaves (closingSeen): its closed_at and its stage labels, in lower
@@ -683,7 +683,7 @@ func (a *Applier) closingRevertComment(ctx context.Context, s *github.Snapshot, 
 //   - Anyone else's is reverted: a revert comment keyed by its event,
 //     posted once, then a close with the state_reason of the close it
 //     undid, or the closed stage's, and the error wraps
-//     closingErrClosedAgain. The label stays.
+//     errClosingClosedAgain. The label stays.
 //
 // It handles nothing when an override stands, as the owner's stage label
 // wins, nor when no reopen is left to judge: then the closed stage was set
@@ -820,7 +820,7 @@ func closingHeldBefore(s *github.Snapshot, appSlug string, dirty func(int64) boo
 // closerErrRetries passes, so one transient failure doesn't change the
 // reason (#233). Then it's logged, and label's reason used, so a lasting
 // failure doesn't keep s open (#204).
-// Its error wraps closingErrClosedAgain once it's closed.
+// Its error wraps errClosingClosedAgain once it's closed.
 func (a *Applier) closingCloseAgain(ctx context.Context, s *github.Snapshot, dirty func(int64) bool, reopen github.Closing, r int, label string) error {
 	reason := "completed"
 	if stage, _ := state.ParseClosingLabel(label); stage == state.Discarded {
@@ -863,5 +863,5 @@ func (a *Applier) closingCloseAgain(ctx context.Context, s *github.Snapshot, dir
 	}
 	a.closingAgain[s.Number] = closingListed{closed: is.GetClosedAt().Time, stages: strings.Join(closingStages(s.Labels), ",")}
 	logr.Infof("%s/%s#%d: closed it again, as %s, since %s reopened it and isn't trusted", a.Owner, a.Repo, s.Number, reason, reopen.By.Login)
-	return fmt.Errorf("%s/%s#%d: %w", a.Owner, a.Repo, s.Number, closingErrClosedAgain)
+	return fmt.Errorf("%s/%s#%d: %w", a.Owner, a.Repo, s.Number, errClosingClosedAgain)
 }

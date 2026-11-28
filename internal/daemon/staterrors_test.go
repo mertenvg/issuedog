@@ -96,7 +96,7 @@ func TestErrAckByReaction(t *testing.T) {
 		}, []string{errAckReply("owner", "disagreement", "9", 1003)}},
 		{"a login is escaped and defused", func(t testing.TB, f *githubtest.Fake) {
 			flagWant(t, f.AddReaction(1002, errAckHostile, "+1"), 1003)
-		}, []string{errAckReply("eve&lt;!--@​owner", "disagreement", "9", 1003)}},
+		}, []string{errAckReply("eve&lt;!--@\u200bowner", "disagreement", "9", 1003)}},
 		{"the earliest trusted 👍 wins", func(t testing.TB, f *githubtest.Fake) {
 			f.AddReaction(1002, app, "+1")
 			f.AddReaction(1002, "helper[bot]", "+1")

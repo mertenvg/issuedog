@@ -332,11 +332,11 @@ func TestRevertIssueType(t *testing.T) {
 			[]string{comment("I removed the issue type ``x` @\u200bowner `y``: only trusted users can change the issue type, and mallory isn't one.", "9"),
 				`PATCH /issues/7 {"type":null}`}},
 		{"a mention in the restored type's name is defused", IssueTypeRevert{Key: "9", By: "mallory", From: "Epic", To: "x` @owner `y"},
-			[]string{comment("I restored the issue type ``x` @​owner `y``: only trusted users can change the issue type, and mallory isn't one.", "9"),
+			[]string{comment("I restored the issue type ``x` @\u200bowner `y``: only trusted users can change the issue type, and mallory isn't one.", "9"),
 				`PATCH /issues/7 {"type":"x` + "` @owner `" + `y"}`}},
 		{"a mention in the restored type's name is defused after an unexplained type", IssueTypeRevert{Key: "issue-type:epic@0", From: "Epic",
 			To: "x&#64;owner"},
-			[]string{comment("I restored the issue type `x@​owner`: no change by a trusted user or the App explains `Epic`, "+
+			[]string{comment("I restored the issue type `x@\u200bowner`: no change by a trusted user or the App explains `Epic`, "+
 				"and only trusted users can change the issue type.", "issue-type:epic@0"),
 				`PATCH /issues/7 {"type":"x&#64;owner"}`}},
 		{"a mention in an unexplained type's name is defused", IssueTypeRevert{Key: "issue-type:x@0", From: "x` @owner `y", To: "Task"},

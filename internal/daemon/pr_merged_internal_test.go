@@ -15,7 +15,7 @@ import (
 func TestRenderMergedMerger(t *testing.T) {
 	t.Parallel()
 	handoff := renderUntrustedMergeHandoff(1, 5, "https://github.com/o/r/pull/5", "eve@x<!--", []string{"owner"})
-	intro := "PR #5 for this task was merged into the story branch by `eve@​x&lt;!--`, who isn't trusted, and only the App's or a trusted user's merge closes the task, so it waits on you.\n\n"
+	intro := "PR #5 for this task was merged into the story branch by `eve@\u200bx&lt;!--`, who isn't trusted, and only the App's or a trusted user's merge closes the task, so it waits on you.\n\n"
 	if !strings.HasPrefix(handoff, intro) || strings.Contains(handoff, "<!--") || !strings.HasSuffix(handoff, "cc @owner") {
 		t.Errorf("the hand-off =\n%s\nwant it to start\n%s\nhold no marker opener, and end in the cc line", handoff, intro)
 	}
@@ -23,7 +23,7 @@ func TestRenderMergedMerger(t *testing.T) {
 	if !strings.HasPrefix(nobody, "PR #5 for this task was merged into the story branch by someone GitHub doesn't name, ") {
 		t.Errorf("the hand-off for nobody named =\n%s\nwant it to say GitHub names nobody", nobody)
 	}
-	if got, want := renderMergedClose(5, "abc", "eve@x"), "`eve@​x` merged PR #5 into the story branch as `abc`, so this task is complete."; got != want {
+	if got, want := renderMergedClose(5, "abc", "eve@x"), "`eve@\u200bx` merged PR #5 into the story branch as `abc`, so this task is complete."; got != want {
 		t.Errorf("renderMergedClose = %q; want %q", got, want)
 	}
 	if got, want := renderMergedClose(5, "abc", ""), "The App merged PR #5 into the story branch as `abc`, so this task is complete."; got != want {

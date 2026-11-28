@@ -22,11 +22,11 @@ import (
 // comments after it, a bot's 👍, the "None" line, and the read errors that
 // stop the context build.
 
-// afterHoldErr is the error afterHoldTrust fails with.
-var afterHoldErr = errors.New("afterHold: trust read failed")
+// errAfterHold is the error afterHoldTrust fails with.
+var errAfterHold = errors.New("afterHold: trust read failed")
 
 // afterHoldTrust trusts the logins it maps to true in trusted, and fails
-// with afterHoldErr for the logins in fail.
+// with errAfterHold for the logins in fail.
 type afterHoldTrust struct {
 	trusted map[string]bool
 	fail    map[string]bool
@@ -34,7 +34,7 @@ type afterHoldTrust struct {
 
 func (tr afterHoldTrust) Trusted(_ context.Context, login string) (bool, error) {
 	if tr.fail[login] {
-		return false, afterHoldErr
+		return false, errAfterHold
 	}
 	return tr.trusted[login], nil
 }
@@ -140,8 +140,8 @@ func TestAfterHoldInputAuthorTrustError(t *testing.T) {
 	f.AddComment(n, "owner", "A reply.")
 	tr := afterHoldTrust{trusted: map[string]bool{"owner": true}, fail: map[string]bool{"carol": true}}
 	in, err := afterHoldInput(t, f, n, from, tr, nil)
-	if !errors.Is(err, afterHoldErr) {
-		t.Fatalf("err = %v, want one wrapping %v", err, afterHoldErr)
+	if !errors.Is(err, errAfterHold) {
+		t.Fatalf("err = %v, want one wrapping %v", err, errAfterHold)
 	}
 	if !strings.Contains(err.Error(), "the discussion's comment "+strconv.FormatInt(failed, 10)+":") {
 		t.Errorf("err = %v, want it to name comment %d", err, failed)
@@ -195,8 +195,8 @@ func TestAfterHoldInputReactorTrustError(t *testing.T) {
 	f.AddReaction(thumbed, "owner", "+1")
 	tr := afterHoldTrust{trusted: map[string]bool{"owner": true}, fail: map[string]bool{"carol": true}}
 	in, err := afterHoldInput(t, f, n, from, tr, nil)
-	if !errors.Is(err, afterHoldErr) {
-		t.Fatalf("input %+v, err = %v, want one wrapping %v", in, err, afterHoldErr)
+	if !errors.Is(err, errAfterHold) {
+		t.Fatalf("input %+v, err = %v, want one wrapping %v", in, err, errAfterHold)
 	}
 	if !strings.Contains(err.Error(), "the 👍s on the discussion's comment "+strconv.FormatInt(thumbed, 10)+":") {
 		t.Errorf("err = %v, want it to name the 👍s on comment %d", err, thumbed)

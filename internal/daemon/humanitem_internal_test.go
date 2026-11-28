@@ -289,7 +289,7 @@ func TestWaitHumanDigestGolden(t *testing.T) {
 	// escaped and defused at the line's start, so no HTML, mention or
 	// marker gets through. A link or an image in planner text shows as it
 	// does in the human task's own body (humanBody).
-	if strings.Contains(body, "<b>") || !strings.Contains(body, "- Goal: Rotate @​eve's key &lt;b>now&lt;/b> &lt;!-- issuedog:") {
+	if strings.Contains(body, "<b>") || !strings.Contains(body, "- Goal: Rotate @\u200beve's key &lt;b>now&lt;/b> &lt;!-- issuedog:") {
 		t.Errorf("the body doesn't hold the goal made safe:\n%s", body)
 	}
 	human := items[1]

@@ -46,7 +46,7 @@ func plannerTrustedFiles(t *testing.T, d *daemon.Daemon, n int, stage interface 
 }) map[string]string {
 	t.Helper()
 	in := ivInput(t, d, n)
-	if err := d.Step.Applier.CheckLabels(context.Background(), in.S, d.Step.Trust, in.Dirt.Has); err != nil {
+	if err := d.Step.CheckLabels(context.Background(), in.S, d.Step.Trust, in.Dirt.Has); err != nil {
 		t.Fatalf("CheckLabels: %v", err)
 	}
 	files, err := stage.Context(context.Background(), in)
@@ -597,7 +597,7 @@ func TestPlannerTrustedSubReadFails(t *testing.T) {
 			d := ivDaemon(t, f, newOrigin(t))
 			d.Step.Trust = flakyTrust{}
 			in := ivInput(t, d, n)
-			if err := d.Step.Applier.CheckLabels(context.Background(), in.S, d.Step.Trust, in.Dirt.Has); err != nil {
+			if err := d.Step.CheckLabels(context.Background(), in.S, d.Step.Trust, in.Dirt.Has); err != nil {
 				t.Fatalf("CheckLabels: %v", err)
 			}
 			if tt.fail != nil {

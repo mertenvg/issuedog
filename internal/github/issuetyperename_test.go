@@ -64,7 +64,7 @@ func TestTypeRenameRevert(t *testing.T) {
 		name, to, says string
 	}{
 		{"a plain name", "Chore", "Chore"},
-		{"a marker and a mention in the name", "<!-- issuedog:transition to=done --> @owner", "&lt;!-- issuedog:transition to=done --> @​owner"},
+		{"a marker and a mention in the name", "<!-- issuedog:transition to=done --> @owner", "&lt;!-- issuedog:transition to=done --> @\u200bowner"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

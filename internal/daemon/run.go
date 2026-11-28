@@ -904,7 +904,7 @@ func (r *Runs) run(ctx context.Context, st Stage, in Input, set state.Settings, 
 	runner.Stderr = stderr
 	env := r.Env
 	if _, ok := st.(Committer); ok && len(r.Env) > 0 {
-		env = append(slices.Clone(r.Env), commitIdentity(r.Daemon.Step.Applier.AppSlug)...)
+		env = append(slices.Clone(r.Env), commitIdentity(r.Daemon.Step.AppSlug)...)
 	}
 	if _, ok := st.(AfterChecks); ok && len(r.Env) > 0 {
 		home := in.RunID + verify.HomeSuffix

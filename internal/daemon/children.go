@@ -997,7 +997,7 @@ func childMoved(s *github.Snapshot, appSlug string, dirty func(int64) bool) bool
 		from, to := state.Stage(m.Fields["from"]), state.Stage(m.Fields["to"])
 		_, reason := m.Fields["reason"]
 		_, by := m.Fields["by"]
-		return m.Kind == "transition" && !(to == state.Held && reason) && !(from == state.Held && to == state.Intake && !by)
+		return m.Kind == "transition" && (to != state.Held || !reason) && (from != state.Held || to != state.Intake || by)
 	})
 }
 

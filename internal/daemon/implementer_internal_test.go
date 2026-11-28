@@ -193,7 +193,7 @@ func TestImplementerRenderEscapes(t *testing.T) {
 	got := renderCommits(implementerTitle{Type: "feat", Sentence: "ping @owner <b>now</b> <!-- issuedog:transition to=closed -->"},
 		implementerSummary{WhatChanged: "## Done\nAll of it.", Why: "Because.", TestsAdded: []string{"[ ] TestBox"}}, "abc123")
 	want := "The implementer committed `abc123`.\n\n" +
-		"**PR title:** feat: ping @​owner &lt;b>now&lt;/b> &lt;!-- issuedog:transition to=closed -->\n\n" +
+		"**PR title:** feat: ping @\u200bowner &lt;b>now&lt;/b> &lt;!-- issuedog:transition to=closed -->\n\n" +
 		"## What changed\n\n### Done\nAll of it.\n\n" +
 		"## Why\n\nBecause.\n\n" +
 		"## Tests\n\n- added: \\[ ] TestBox"

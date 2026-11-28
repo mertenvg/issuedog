@@ -417,7 +417,7 @@ func markerAt(line, marker string) bool {
 		}
 		at := from + i
 		before, _ := utf8.DecodeLastRuneInString(line[:at])
-		if !word || at == 0 || !(unicode.IsLetter(before) || unicode.IsDigit(before) || before == '_') {
+		if !word || at == 0 || (!unicode.IsLetter(before) && !unicode.IsDigit(before) && before != '_') {
 			return true
 		}
 		from = at + size

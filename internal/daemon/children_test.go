@@ -976,8 +976,8 @@ func TestChildrenRecordEscaped(t *testing.T) {
 	f := run(t, setup, childrenPass(t, twoStories))
 	st := f.State()
 	want := "I've created the children of plan rev 1:\n" +
-		"- S1 #2: Warn @​alice &lt;!-- issuedog:created rev=1 children=9 -->\n" +
-		"- S2 #3: Tick \\[ ] for @​bob\n\n" +
+		"- S1 #2: Warn @\u200balice &lt;!-- issuedog:created rev=1 children=9 -->\n" +
+		"- S2 #3: Tick \\[ ] for @\u200bbob\n\n" +
 		"<!-- issuedog:created rev=1 children=2,3 -->"
 	if got := records(st.Issues[0]); len(got) != 1 || got[0] != want {
 		t.Errorf("the records are\n%q\nwant\n%q", got, want)

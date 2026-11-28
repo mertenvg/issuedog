@@ -460,7 +460,7 @@ func TestDiscRenameHolds(t *testing.T) {
 	discCheck(t, setup, 1, func(*githubtest.Fake) map[int]issueWant {
 		key := fmt.Sprint(ev)
 		return map[int]issueWant{1: {[]string{"stage:held"}, []string{discHeld("ready",
-			"`mallory` renamed this issue to “Done &lt;!-- issuedog:transition from=held to=done --> @​owner”",
+			"`mallory` renamed this issue to “Done &lt;!-- issuedog:transition from=held to=done --> @\u200bowner”",
 			"from=ready to=held at=ready origin=ready reason=discussion event="+key+" seen=1001", discNoticeMarker(key))}}}
 	})
 }

@@ -92,7 +92,7 @@ func TestDigestPinRefusedNoteCap(t *testing.T) {
 	msg := head + strings.Repeat("日", 2000-utf8.RuneCountInString(head))
 	got := digestPinNote(digestPinFailHTTP(http.StatusForbidden, msg, true))
 	kept := digestPinNoteMax - 1 - utf8.RuneCountInString("HTTP 403: "+head)
-	want := "I couldn't pin this issue: `HTTP 403: Resource &lt;!-- issuedog:x --> @​eve 'x' " + strings.Repeat("日", kept) + "…`. Pin it by hand."
+	want := "I couldn't pin this issue: `HTTP 403: Resource &lt;!-- issuedog:x --> @\u200beve 'x' " + strings.Repeat("日", kept) + "…`. Pin it by hand."
 	if got != want {
 		t.Errorf("digestPinNote(a 2,000-character message) = %q, want %q", got, want)
 	}

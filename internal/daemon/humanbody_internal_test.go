@@ -131,7 +131,7 @@ func TestHumanWhyBlocks(t *testing.T) {
 		{"three", "production has a lifetime.", []int{14, 12, 13}, "#12, #13 and #14 can't proceed until production has a lifetime."},
 		{"a capital first word", "The service has a lifetime.", []int{12}, "#12 can't proceed until the service has a lifetime."},
 		{"a name first", "GitHub has the App.", []int{12}, "#12 can't proceed until GitHub has the App."},
-		{"a mention and a marker", "<!-- x --> @someone acts", []int{12}, "#12 can't proceed until &lt;!-- x --> @​someone acts"},
+		{"a mention and a marker", "<!-- x --> @someone acts", []int{12}, "#12 can't proceed until &lt;!-- x --> @\u200bsomeone acts"},
 		{"a heading", "# Heading", []int{12}, "#12 can't proceed until # Heading"},
 		{"two lines", "production\nhas one", []int{12}, "#12 can't proceed until production has one"},
 		{"empty", " ", []int{12}, "None."},
@@ -159,7 +159,7 @@ func TestHumanDoneWhen(t *testing.T) {
 		want       string
 	}{
 		{"plain text", "Production has a `QUOTE_TTL`.", state.Check{}, "Production has a `QUOTE_TTL`."},
-		{"plain text, escaped", "<!-- x --> @someone", state.Check{}, "&lt;!-- x --> @​someone"},
+		{"plain text, escaped", "<!-- x --> @someone", state.Check{}, "&lt;!-- x --> @\u200bsomeone"},
 		{"plain text, empty", "", state.Check{}, "None."},
 		{"label", "ignored", state.Check{Kind: state.CheckLabel, Value: "scope:sandbox"},
 			"The label `scope:sandbox` exists in this repo. " + humanDoneTail},

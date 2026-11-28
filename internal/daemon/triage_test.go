@@ -704,7 +704,7 @@ func TestTriageFlagCleansAgentText(t *testing.T) {
 	if m := github.ParseMarkers(got[0]); !reflect.DeepEqual(m, want) {
 		t.Errorf("the flag's markers = %+v, want only %+v", m, want)
 	}
-	for _, s := range []string{"@​eve", "&lt;!-- issuedog:transition", `**1. \[ \] Do it &lt;b>now&lt;/b>**`} {
+	for _, s := range []string{"@\u200beve", "&lt;!-- issuedog:transition", `**1. \[ \] Do it &lt;b>now&lt;/b>**`} {
 		if !strings.Contains(got[0], s) {
 			t.Errorf("flag %q lacks %q", got[0], s)
 		}
@@ -839,7 +839,7 @@ func TestTriageLeftCleansAgentText(t *testing.T) {
 		t.Fatalf("comments %q; want one left comment", got)
 	}
 	want := []github.Marker{{Kind: "triage", Fields: map[string]string{"verdict": "leave", "run": "run1"}}}
-	if m := github.ParseMarkers(got[0]); !reflect.DeepEqual(m, want) || !strings.Contains(got[0], "@​eve") {
+	if m := github.ParseMarkers(got[0]); !reflect.DeepEqual(m, want) || !strings.Contains(got[0], "@\u200beve") {
 		t.Errorf("the left comment %q has markers %+v; want only %+v, and the mention defused", got[0], m, want)
 	}
 }
@@ -954,7 +954,7 @@ func TestTriageAdmitCleansAgentText(t *testing.T) {
 		t.Fatalf("comments %q; want one move", got)
 	}
 	want := []github.Marker{{Kind: "transition", Fields: map[string]string{"from": "intake", "to": "clarifying", "run": "run1"}}}
-	if m := github.ParseMarkers(got[0]); !reflect.DeepEqual(m, want) || !strings.Contains(got[0], "@​eve") || !strings.Contains(got[0], `\[ ] now`) {
+	if m := github.ParseMarkers(got[0]); !reflect.DeepEqual(m, want) || !strings.Contains(got[0], "@\u200beve") || !strings.Contains(got[0], `\[ ] now`) {
 		t.Errorf("the move %q has markers %+v; want only %+v, the mention defused and the box escaped", got[0], m, want)
 	}
 }

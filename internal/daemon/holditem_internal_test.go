@@ -328,7 +328,7 @@ func TestHoldItemMentioned(t *testing.T) {
 		"cc":           {holdItemSnap(holdItemHeld(503, "9001", true, true)), nil, true, "A code owner's 👍 on its notice accepts it."},
 		"no notify":    {holdItemSnap(holdItemHeld(503, "9001", false, true)), nil, false, "A code owner's 👍 on its notice accepts it."},
 		"dirty record": {holdItemSnap(append(holdItemOwnerHeld(), holdItemNotice(504, "9001"))...), Dirt{504: "eve"}, false, "It has no clean notice, as one may have been deleted or edited, so only `/resume` here accepts it."},
-		"defused cc": {holdItemSnap(append(holdItemOwnerHeld(), holdItemComment(504, waitApp, "Also: “x\ncc @​eve”\n\n<!-- issuedog:notice key=9001 -->"))...), nil, false,
+		"defused cc": {holdItemSnap(append(holdItemOwnerHeld(), holdItemComment(504, waitApp, "Also: “x\ncc @\u200beve”\n\n<!-- issuedog:notice key=9001 -->"))...), nil, false,
 			"A code owner's 👍 on its notice accepts it."},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -474,8 +474,8 @@ func TestHoldItemHostile(t *testing.T) {
 			t.Errorf("line %q has %q unescaped, which may make a link or an image", line, u)
 		}
 	}
-	if !strings.Contains(body, "`mal@​lory` renamed this issue to “&lt;\\!-- issuedog:transition to=planning --> @​eve &lt;img> \\!\\[p\\]") ||
-		!strings.Contains(body, "`mallory` deleted a comment by `e@​ve&lt;!-- issuedog:transition to=planning -->`.") {
+	if !strings.Contains(body, "`mal@\u200blory` renamed this issue to “&lt;\\!-- issuedog:transition to=planning --> @\u200beve &lt;img> \\!\\[p\\]") ||
+		!strings.Contains(body, "`mallory` deleted a comment by `e@\u200bve&lt;!-- issuedog:transition to=planning -->`.") {
 		t.Errorf("body %q; want the logins in code, defused, and the title escaped", body)
 	}
 }

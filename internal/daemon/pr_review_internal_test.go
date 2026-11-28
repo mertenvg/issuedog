@@ -185,18 +185,18 @@ func TestRenderReviews(t *testing.T) {
 	want := "2 reviews of PR #2 send this task back to `in-progress`, for the implementer to answer them, oldest first. " +
 		"The PR waits until the task's next head is verified.\n\n" +
 		"### `owner` asked for changes\n\nIn [review 5](" + reviewLink("5") + "):\n\n" +
-		"````text\nFixes #​3, as @eve said.\n\n```\nnot closed\n````\n\n" +
+		"````text\nFixes #\u200b3, as @eve said.\n\n```\nnot closed\n````\n\n" +
 		"On `a.go`, line 2:\n\n```text\nHere.\n```\n\n" +
 		"On ``b `x`.go``:\n\n```text\n" + strings.Repeat("x", 999) + "y…\n```\n\n" +
 		"This is its first 1,000 characters: [the review](" + reviewLink("5") + ") has the whole.\n\n" +
-		"### `o@​wner` commented\n\n[Review 7](" + reviewLink("7") + ") has no text of its own, only its line comments.\n\n" +
-		"On `c.go`, line 9:\n\n```text\nAnd see owner/repo#​12.\n```"
+		"### `o@\u200bwner` commented\n\n[Review 7](" + reviewLink("7") + ") has no text of its own, only its line comments.\n\n" +
+		"On `c.go`, line 9:\n\n```text\nAnd see owner/repo#\u200b12.\n```"
 	if got := renderReviews(prReconcileLink, 2, quotes); got != want {
 		t.Errorf("the reviews' comment =\n%s\nwant\n%s", got, want)
 	}
 	one := renderReviews(prReconcileLink, 2, quotes[1:])
 	if want := "A review of PR #2 sends this task back to `in-progress`, for the implementer to answer it. " +
-		"The PR waits until the task's next head is verified.\n\n### `o@​wner` commented"; !strings.HasPrefix(one, want) {
+		"The PR waits until the task's next head is verified.\n\n### `o@\u200bwner` commented"; !strings.HasPrefix(one, want) {
 		t.Errorf("one review's comment =\n%s\nwant it to start\n%s", one, want)
 	}
 }

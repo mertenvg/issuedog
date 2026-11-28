@@ -473,7 +473,7 @@ func TestDigestMovedRedirect(t *testing.T) {
 		"announce": func() error { return d.digestAnnounce(context.Background(), 1, "<!-- issuedog:digest-new items=a -->") },
 		"state":    func() error { return digestGone(d.digestSetState(context.Background(), 1, "open")) },
 	} {
-		if err := write(); !errors.Is(err, digestErrGone) || !errors.Is(err, github.ErrTransferred) {
+		if err := write(); !errors.Is(err, errDigestGone) || !errors.Is(err, github.ErrTransferred) {
 			t.Errorf("%s = %v; want the digest gone, transferred", name, err)
 		}
 	}
@@ -538,7 +538,7 @@ func TestDigestTrust404NotGone(t *testing.T) {
 	st := &Step{Applier: &Applier{Client: f.Client(t), Owner: "o", Repo: "r", AppSlug: "issuedog"}, Trust: digestTrust404{}}
 	d := &Daemon{Step: st, Clone: repo.New(filepath.Join(t.TempDir(), "none"), filepath.Join(t.TempDir(), "r.git")), Config: config.Defaults(), Digest: true}
 	err := d.Iterate(context.Background())
-	if err == nil || errors.Is(err, digestErrGone) || !strings.Contains(err.Error(), "trust owner") {
+	if err == nil || errors.Is(err, errDigestGone) || !strings.Contains(err.Error(), "trust owner") {
 		t.Fatalf("Iterate = %v; want the trust lookup's error, not the digest gone", err)
 	}
 	if !d.digest.has(1) || d.issuesSince.IsZero() {
@@ -564,7 +564,7 @@ func TestDigestGone(t *testing.T) {
 		{errors.New("boom"), false},
 	} {
 		got := digestGone(tc.err)
-		if errors.Is(got, digestErrGone) != tc.want || !errors.Is(got, tc.err) {
+		if errors.Is(got, errDigestGone) != tc.want || !errors.Is(got, tc.err) {
 			t.Errorf("digestGone(%v) = %v; want gone %t, wrapping it", tc.err, got, tc.want)
 		}
 	}

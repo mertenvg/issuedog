@@ -98,7 +98,7 @@ func TestFollowUpsStoryFiled(t *testing.T) {
 	if len(st.Issues) != 4 {
 		t.Fatalf("%d issues; want the task, the story and the task's two follow-ups", len(st.Issues))
 	}
-	escaped := "A race &lt;!-- issuedog:addendum child=9 --> @​alice"
+	escaped := "A race &lt;!-- issuedog:addendum child=9 --> @\u200balice"
 	labels := []string{"priority:p3", "scope:booking", "stage:intake", "type:task"}
 	for i, want := range []githubtest.IssueState{
 		{Number: 3, Title: hostile, Body: filingBody(pass, "v1", "F1", "The scenario of "+escaped, "owner"), Author: app, Labels: labels, Parent: 2},

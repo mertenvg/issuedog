@@ -378,7 +378,7 @@ func (d *Daemon) Run(ctx context.Context) {
 // issue's visit may write to, one whose /hold or /resume waits for an
 // ancestor's, or one whose read found it gone the first time. An issue
 // whose labels CheckLabels holds back (ErrLabelsHeld), or that it closed
-// again (closingErrClosedAgain), is no error: like a touched issue, it
+// again (errClosingClosedAgain), is no error: like a touched issue, it
 // gets nothing more this pass, and is read again on the next. Nor does
 // Work apply a saved result this pass on one its visit may write to.
 func (d *Daemon) Iterate(ctx context.Context) error {
@@ -579,7 +579,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		if err != nil { // its commands may be half done (digestRestartRead)
 			touches.fail()
 		}
-		if errors.Is(err, ErrLabelsHeld) || errors.Is(err, closingErrClosedAgain) {
+		if errors.Is(err, ErrLabelsHeld) || errors.Is(err, errClosingClosedAgain) {
 			// Like a touched issue: nothing more this pass, and read again.
 			logr.Infof("%s/%s#%d waits for its next pass: %v", d.Step.Owner, d.Step.Repo, n, err)
 			touched[n] = true

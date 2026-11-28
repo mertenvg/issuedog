@@ -79,7 +79,7 @@ func ivHoldRig(g *rig) {
 	g.interviewer()
 	st := g.d.Step
 	st.Trust = discTrust{}
-	st.Applier.Notify = []string{"owner"}
+	st.Notify = []string{"owner"}
 	st.Commands["approve"], st.Commands["revise"] = daemon.ApproveCommand(), daemon.ReviseCommand()
 	resolved, approve := daemon.ResolveByReaction(st.CurrentTrust()), daemon.ApproveByReaction(st.CurrentTrust())
 	st.Reactions = func(ctx context.Context, a *daemon.Applier, s *github.Snapshot, d daemon.Dirt) error {
@@ -870,7 +870,7 @@ var ivPlanOut = map[string]any{"outcome": "plan", "message": ivPlanNotes}
 
 // ivPlanText is the start of the plan move's comment, up to its marker.
 const ivPlanText = "The discussion during the hold changes this issue's plan, but not its spec, so it goes to `planning`.\n\n" +
-	"Move T1 after T2, as @​owner agreed: the cache needs the expiry job first.\n\n" +
+	"Move T1 after T2, as @\u200bowner agreed: the cache needs the expiry job first.\n\n" +
 	"The planner reads these notes and the discussion, and posts a new plan for your 👍.\n\ncc @owner\n\n<!-- issuedog:transition "
 
 // ivPlanHeldPlanned files issue 1, an epic held for discussion from
@@ -1076,7 +1076,7 @@ func TestIvHoldPlanPlanner(t *testing.T) {
 			in := g.file("ctx.2/input.md")
 			notes := []string{
 				fmt.Sprintf("## Comment %d by issuedog[bot]: the interviewer's move to planning after a discussion hold", move),
-				"Move T1 after T2, as @​owner agreed",
+				"Move T1 after T2, as @\u200bowner agreed",
 				fmt.Sprintf("## Comment %d by mallory, during the discussion hold, approved by owner's 👍, so it's owner input\n\n```text\n%s\n```", m, planHoldMallory),
 				fmt.Sprintf("## Comment %d by owner, during the discussion hold, a trusted comment that counters the untrusted comments before it, "+
 					"so it's owner input\n\n```text\n%s\n```", counter, ivPlanCounter),
