@@ -313,7 +313,7 @@ func TestDigestRunWhole(t *testing.T) {
 	if len(news) == 0 {
 		t.Fatalf("no announcement on the digest; want one")
 	}
-	escaped := `#6: Help &lt;\!-- issuedog:transition to=planning --> @` + "​" + `mertenvg \[x\](https://evil.example)`
+	escaped := `#6: Help &lt;\!-- issuedog:transition to=planning --> @` + "\u200b" + `mertenvg \[x\](https://evil.example)`
 	if !strings.Contains(body, "### 3. "+escaped+"\n") || !strings.Contains(news[0], "on "+escaped+". Answer here:") {
 		t.Errorf("body %q, announcement %q; want eve's title escaped in both", body, news[0])
 	}

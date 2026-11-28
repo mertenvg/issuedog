@@ -54,7 +54,7 @@ func TestClosingWhat(t *testing.T) {
 		want string
 	}{
 		{discTrigger{Kind: discClose, By: "mallory"}, "`mallory` closed this issue, which I reopened"},
-		{discTrigger{Kind: discClose, By: "m@owner"}, "`m@​owner` closed this issue, which I reopened"},
+		{discTrigger{Kind: discClose, By: "m@owner"}, "`m@\u200bowner` closed this issue, which I reopened"},
 		{discTrigger{Kind: discClose, By: ""}, "someone GitHub doesn't name closed this issue, which I reopened"},
 		{discTrigger{Kind: discClose, FromRecord: true}, "a close of this issue, recorded earlier"},
 	} {

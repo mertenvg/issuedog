@@ -576,7 +576,7 @@ func planFilePath(text string) string {
 		dir, file := w[:i], w[i+1:]
 		if planPathExtRE.MatchString(file) && !planPathModuleRE.MatchString(file) &&
 			planPathLetterRE.MatchString(dir) && !planPathVersionRE.MatchString(dir) &&
-			!(planPathNamesRE.MatchString(w) && slices.Contains(planFrameworks, file)) {
+			(!planPathNamesRE.MatchString(w) || !slices.Contains(planFrameworks, file)) {
 			return w
 		}
 	}

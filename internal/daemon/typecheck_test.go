@@ -125,7 +125,7 @@ func TestTypeErrCheck(t *testing.T) {
 			fileAt(f, "ready", "body")
 			flagWant(t, f.AddLabel(1, "owner", "type:<!--x@owner"), 9002)
 			return f
-		}, []string{typeErrWant("&lt;!--x@​owner", "ready", 9002, true)}, []string{"stage:ready", "type:<!--x@owner"}},
+		}, []string{typeErrWant("&lt;!--x@\u200bowner", "ready", 9002, true)}, []string{"stage:ready", "type:<!--x@owner"}},
 		{"a transition marker in the body counts", func(t testing.TB) *githubtest.Fake {
 			f := newFake(t)
 			f.AddIssue(app, "Epic", "<!-- issuedog:transition from=planning to=ready run=r1 -->", "type:epic")

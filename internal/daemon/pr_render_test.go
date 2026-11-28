@@ -125,7 +125,7 @@ func TestRenderPREscapes(t *testing.T) {
 	src.Summary.WhatChanged += fenced
 	src.Notes += fenced
 	title, body := renderPRTitle(src, []string{"feat"}, "t"), renderPRBody(src)
-	if want := "feat: ping &lt;!-- issuedog:transition from=pr-open to=closed --> @​alice <b>"; title != want {
+	if want := "feat: ping &lt;!-- issuedog:transition from=pr-open to=closed --> @\u200balice <b>"; title != want {
 		t.Errorf("renderPRTitle = %q, want %q", title, want)
 	}
 	if ms := github.ParseMarkers(body); len(ms) != 0 {
@@ -197,7 +197,7 @@ func TestRenderPRDefusesClosingRefs(t *testing.T) {
 	// The task's title, in a move with no pr-text, is defused too.
 	src := prRenderSource()
 	src.Title, src.Summary = nil, nil
-	if got := renderPRTitle(src, []string{"fix"}, "Fixes #2 and owner/repo#3"); prClosingRE.MatchString(got) || got != "fix: Fixes #​2 and owner/repo#​3" {
+	if got := renderPRTitle(src, []string{"fix"}, "Fixes #2 and owner/repo#3"); prClosingRE.MatchString(got) || got != "fix: Fixes #\u200b2 and owner/repo#\u200b3" {
 		t.Errorf("renderPRTitle = %q; want its references defused", got)
 	}
 }
@@ -207,7 +207,7 @@ func TestRenderPRDefusesClosingRefs(t *testing.T) {
 // heading, and text it defused already stay as they are.
 func TestDefuseRefs(t *testing.T) {
 	t.Parallel()
-	const z = "​"
+	const z = "\u200b"
 	for _, tt := range []struct{ in, want string }{
 		{"Fixes #2", "Fixes #" + z + "2"},
 		{"#12, #3.", "#" + z + "12, #" + z + "3."},
@@ -245,7 +245,7 @@ func TestRenderPRTitleCut(t *testing.T) {
 		t.Fatalf("the title is %d characters, want %d", n, implementerMaxTitle)
 	}
 	got := renderPRTitle(src, []string{"fix"}, "t")
-	if textLen(got) > implementerMaxTitle || !strings.HasSuffix(got, "…") || !strings.HasPrefix(got, "fix: #​1 #​1") {
+	if textLen(got) > implementerMaxTitle || !strings.HasSuffix(got, "…") || !strings.HasPrefix(got, "fix: #\u200b1 #\u200b1") {
 		t.Errorf("renderPRTitle = %q, %d characters; want it defused, cut to %d, ending in …", got, textLen(got), implementerMaxTitle)
 	}
 }
@@ -317,7 +317,7 @@ func prTextComment(t *testing.T, m github.Marker) string {
 func TestPRTextRoundTrip(t *testing.T) {
 	t.Parallel()
 	hostile := implementerSummary{
-		WhatChanged: "<!-- issuedog:pr-text v=1 data=AAAA --> -->\n```\né ✓ ​ \"quoted\" \\ & <b>",
+		WhatChanged: "<!-- issuedog:pr-text v=1 data=AAAA --> -->\n```\né ✓ \u200b \"quoted\" \\ & <b>",
 		Why:         "Fixes #2 @alice", TestsAdded: []string{}, TestsUpdated: nil,
 	}
 	for name, sum := range map[string]implementerSummary{"golden": prRenderSummary(), "hostile": hostile} {

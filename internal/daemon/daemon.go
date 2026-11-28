@@ -320,12 +320,17 @@ type Ready struct {
 }
 
 // Run iterates until ctx is done, sleeping loop.idle_sleep after each
-// iteration, and logs each iteration's errors.
+// iteration, and logs each iteration's errors. After each iteration it
+// logs, on one line, what the pass cost against the rate limit: its
+// requests, its 304s, and each resource's remaining of its limit (SPEC
+// §8.1, Polling cost). The first pass's line counts the requests made
+// before it, at startup, too.
 func (d *Daemon) Run(ctx context.Context) {
 	for {
 		if err := d.Iterate(ctx); err != nil && ctx.Err() == nil {
 			logr.Errorf("loop iteration on %s/%s: %v", d.Step.Owner, d.Step.Repo, err)
 		}
+		logr.Infof("pass on %s/%s cost %s", d.Step.Owner, d.Step.Repo, d.Step.Client.Meter.Take())
 		t := time.NewTimer(d.Config.Loop.IdleSleep)
 		select {
 		case <-ctx.Done():
@@ -373,7 +378,7 @@ func (d *Daemon) Run(ctx context.Context) {
 // issue's visit may write to, one whose /hold or /resume waits for an
 // ancestor's, or one whose read found it gone the first time. An issue
 // whose labels CheckLabels holds back (ErrLabelsHeld), or that it closed
-// again (closingErrClosedAgain), is no error: like a touched issue, it
+// again (errClosingClosedAgain), is no error: like a touched issue, it
 // gets nothing more this pass, and is read again on the next. Nor does
 // Work apply a saved result this pass on one its visit may write to.
 func (d *Daemon) Iterate(ctx context.Context) error {
@@ -574,7 +579,7 @@ func (d *Daemon) Iterate(ctx context.Context) error {
 		if err != nil { // its commands may be half done (digestRestartRead)
 			touches.fail()
 		}
-		if errors.Is(err, ErrLabelsHeld) || errors.Is(err, closingErrClosedAgain) {
+		if errors.Is(err, ErrLabelsHeld) || errors.Is(err, errClosingClosedAgain) {
 			// Like a touched issue: nothing more this pass, and read again.
 			logr.Infof("%s/%s#%d waits for its next pass: %v", d.Step.Owner, d.Step.Repo, n, err)
 			touched[n] = true

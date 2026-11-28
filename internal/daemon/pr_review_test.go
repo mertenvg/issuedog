@@ -109,7 +109,7 @@ func TestPRReviewSendsTheTaskBack(t *testing.T) {
 				[]githubtest.ReviewLine{{Path: "quote.go", Line: 3, Body: "Not here."}, {Path: "quote_test.go", Body: "Test it too."}})
 			from := len(f.Requests())
 			iterate(t, d)
-			prReviewMoved(t, f, 1, prReviewText(2, id, digestRunOwner, tt.said, "Rename it, as @eve asked in #​5.",
+			prReviewMoved(t, f, 1, prReviewText(2, id, digestRunOwner, tt.said, "Rename it, as @eve asked in #\u200b5.",
 				"On `quote.go`, line 3:\n\n```text\nNot here.\n```", "On `quote_test.go`:\n\n```text\nTest it too.\n```"),
 				map[string]string{"from": "pr-open", "to": "in-progress", "event": "r" + strconv.FormatInt(id, 10), "seen": seen, "reviewer": digestRunOwner})
 			if got, want := prReviewGets(f, from), map[string]int{"/issues/2/timeline": 1, prReviewComments(id): 1}; !maps.Equal(got, want) {

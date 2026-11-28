@@ -32,6 +32,12 @@ type Config struct {
 // before the cached token expires. Its GETs are conditional (see etagCache).
 type Client struct {
 	*gogithub.Client
+	// Meter counts GitHub's answers to the installation's requests, 304s
+	// apart, by resource, with each resource's newest rate limit. The
+	// daemon logs what it counted after each pass (SPEC §8.1, Polling
+	// cost). The App's own requests, such as GET /app, aren't counted,
+	// nor is the minting of a token.
+	Meter        *Meter
 	installation *ghinstallation.Transport
 	app          *gogithub.Client // as the App itself, for GET /app
 	clock        *githubClock
@@ -86,7 +92,15 @@ func New(cfg Config) (*Client, error) {
 	// token follows none.
 	guarded := &http.Client{CheckRedirect: sameHost}
 	// The ETag cache wraps the auth transport, so each installation has its own.
-	clock := &githubClock{next: newETagCache(closeMintErrors{itr})}
+	// The meter sits between them, below the cache: it sees each request the
+	// cache made conditional, and GitHub's own answer to it, a 304 still a
+	// 304 before the cache turns it into the 200 it held, so a 304 is
+	// counted apart from an answer that costs a request. Above the cache it
+	// would see only 200s. It sits above the auth transport, so a token
+	// mint, made below it, isn't counted as one of the installation's
+	// requests.
+	meter := &Meter{}
+	clock := &githubClock{next: newETagCache(meterTransport{next: closeMintErrors{itr}, m: meter})}
 	opts := []gogithub.ClientOptionsFunc{gogithub.WithHTTPClient(guarded), gogithub.WithTransport(clock)}
 	appOpts := []gogithub.ClientOptionsFunc{gogithub.WithHTTPClient(guarded), gogithub.WithTransport(atr)}
 	if cfg.BaseURL != "" {
@@ -104,7 +118,7 @@ func New(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("github app client: %w", err)
 	}
-	return &Client{Client: client, installation: itr, app: app, clock: clock, appID: cfg.AppID}, nil
+	return &Client{Client: client, Meter: meter, installation: itr, app: app, clock: clock, appID: cfg.AppID}, nil
 }
 
 // ErrCrossHostRedirect is wrapped by the error for a redirect to another

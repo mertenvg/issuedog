@@ -67,6 +67,7 @@ func TestRunPlainOutput(t *testing.T) {
 		{[]string{"--version"}, "issuedog dev\n"},
 		{[]string{"-h"}, usage + "\n"},
 		{[]string{"key", "import", "-h"}, usage + "\n"},
+		{[]string{"adopt", "-h"}, usage + "\n"},
 	} {
 		var logs, stdout bytes.Buffer
 		stop := logtest.CaptureTo(t, &logs, logr.All)
@@ -964,7 +965,7 @@ func TestRunStartupFailures(t *testing.T) {
 			}))
 			t.Cleanup(down.Close)
 			apiURL = down.URL
-		}, code: 1, want: "starting the daemon: reading the App's slug: github app: GET ", cause: "/app: 503 down on purpose"},
+		}, code: 1, want: "starting the daemon: connecting: reading the App's slug: github app: GET ", cause: "/app: 503 down on purpose"},
 		"token": {setup: func(t *testing.T, f *githubtest.Fake) {
 			target, err := url.Parse(f.URL())
 			if err != nil {
@@ -979,10 +980,10 @@ func TestRunStartupFailures(t *testing.T) {
 			}))
 			t.Cleanup(front.Close)
 			apiURL = front.URL
-		}, code: 1, want: "starting the daemon: minting a token: github installation token: "},
+		}, code: 1, want: "starting the daemon: connecting: minting a token: github installation token: "},
 		"clone": {setup: func(t *testing.T, _ *githubtest.Fake) {
 			gitRemote = func(string, string) string { return filepath.Join(t.TempDir(), "none.git") }
-		}, code: 1, want: "starting the daemon: syncing the clone: fetch "},
+		}, code: 1, want: "starting the daemon: connecting: syncing the clone: fetch "},
 		"config": {files: func(*testing.T) map[string]string { return map[string]string{} }, code: 1,
 			want: "starting the daemon: loading the config from main: load config: read main:.issuedog/config.yaml: not found"},
 		"labels": {failWrite: 1, code: 1, want: "starting the daemon: creating the labels: create label stage:intake"},
@@ -1168,7 +1169,7 @@ func TestEgressCommandStopsOnSignal(t *testing.T) {
 		return egress.Listen(0)
 	}
 	done := make(chan int, 1)
-	go func() { done <- command([]string{"egress"}, nil, io.Discard) }()
+	go func() { done <- command([]string{"egress"}, nil, nil, io.Discard) }()
 	<-listening
 	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
 		t.Fatal(err)
@@ -1224,7 +1225,7 @@ func TestRunLogsLoadedAppKey(t *testing.T) {
 		t.Errorf("exit code = %d, want 1", code)
 	}
 	line := strings.Index(logs, "loaded the App key from "+path)
-	client := strings.Index(logs, "starting the daemon: creating the GitHub client: ")
+	client := strings.Index(logs, "starting the daemon: connecting: creating the GitHub client: ")
 	if line < 0 || client < 0 || line > client {
 		t.Errorf("logs = %q, want the key line naming %s, then the client's error", logs, path)
 	}
@@ -1704,6 +1705,85 @@ func TestRunKeyCommands(t *testing.T) {
 		if !strings.Contains(logs.String(), want) {
 			t.Errorf("logs = %q, want %q", logs.String(), want)
 		}
+	}
+}
+
+// adoptEnv is the daemon's settings with no Claude credential, which adopt
+// doesn't need.
+var adoptEnv = slices.DeleteFunc(slices.Clone(daemonEnv), func(kv string) bool { return strings.HasPrefix(kv, "ANTHROPIC_API_KEY=") })
+
+// adopt reads the settings and the App key, syncs the clone and loads
+// trust from main, with no Claude credential, then reposts the login's
+// markers, or with -n lists them. It exits 0 once done, 1 on a failed step,
+// a login it refuses or an issue it refuses, and 2 on bad usage. It creates
+// no labels, runs no loop and posts no check run: its only writes are its
+// comments.
+func TestRunAdopt(t *testing.T) {
+	// Not parallel: it reads the process-wide logr output.
+	planned := func(t *testing.T, f *githubtest.Fake) {
+		n := f.AddIssue("mertenvg", "Planned", "An epic.")
+		f.AddLabel(n, "mertenvg", "stage:planned")
+		f.AddComment(n, "mertenvg", "<!-- issuedog:transition from=plan-review to=planned rev=1 cmd=r1 -->")
+	}
+	for name, tt := range map[string]struct {
+		args    []string
+		environ []string // adoptEnv if nil
+		setup   func(t *testing.T, f *githubtest.Fake)
+		code    int
+		want    string
+		writes  []string // "METHOD /path"
+	}{
+		"no login":        {args: []string{"adopt"}, code: 2, want: "issuedog adopt: -login is required\nusage:"},
+		"empty login":     {args: []string{"adopt", "-login", ""}, code: 2, want: "issuedog adopt: -login is required\nusage:"},
+		"extra arguments": {args: []string{"adopt", "-login", "mertenvg", "more"}, code: 2, want: `issuedog adopt: unexpected arguments ["more"]`},
+		"unknown flag":    {args: []string{"adopt", "-nope"}, code: 2, want: "issuedog adopt: flag provided but not defined: -nope"},
+		"bad settings": {args: []string{"adopt", "-login", "mertenvg"}, environ: []string{"ISSUEDOG_REPO=mertenvg"}, code: 1,
+			want: `reading the settings: ISSUEDOG_REPO is "mertenvg", not owner/name`},
+		"missing key": {args: []string{"adopt", "-login", "mertenvg"}, setup: func(t *testing.T, _ *githubtest.Fake) {
+			fakeAppKey(t, 0)
+		}, code: 1, want: "loading the App key: "},
+		"clone": {args: []string{"adopt", "-login", "mertenvg"}, setup: func(t *testing.T, _ *githubtest.Fake) {
+			gitRemote = func(string, string) string { return filepath.Join(t.TempDir(), "none.git") }
+		}, code: 1, want: "connecting: syncing the clone: fetch "},
+		"untrusted": {args: []string{"adopt", "-login", "mallory"}, setup: planned, code: 1,
+			want: "adopting: adopt mallory's markers: mallory isn't a trusted user (SPEC §6.1)"},
+		"the App": {args: []string{"adopt", "-login", "issuedog-dev[bot]"}, setup: planned, code: 1,
+			want: "adopting: adopt issuedog-dev[bot]'s markers: a bot's, the App's included, are never adopted"},
+		"refused": {args: []string{"adopt", "-login", "mertenvg"}, setup: func(t *testing.T, f *githubtest.Fake) {
+			planned(t, f)
+			n := f.AddIssue("mertenvg", "Planning", "A plan.")
+			f.AddLabel(n, "mertenvg", "stage:plan-review")
+			f.AddComment(n, "mertenvg", "<!-- issuedog:transition from=planning to=plan-review run=p1 -->")
+		}, code: 1, want: "mertenvg/issuedog#2: adopt refuses it until it's fixed: stage:plan-review: "},
+		"posts": {args: []string{"adopt", "-login", "mertenvg"}, setup: planned, code: 0,
+			want: "adopt posted 1 comments, and found 0 sources reposted already", writes: []string{"POST /issues/1/comments"}},
+		"lists": {args: []string{"adopt", "-n", "-login", "mertenvg"}, setup: planned, code: 0,
+			want: "mertenvg/issuedog#1: adopt would post the transition markers of mertenvg's comment "},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := fakeGitHub(t, thisRepo(t))
+			if tt.setup != nil {
+				tt.setup(t, f)
+			}
+			environ := tt.environ
+			if environ == nil {
+				environ = adoptEnv
+			}
+			code, logs := runLogged(t, tt.args, environ)
+			if code != tt.code || !strings.Contains(logs, tt.want) {
+				t.Errorf("exit code %d, logs %q; want %d and %q", code, logs, tt.code, tt.want)
+			}
+			var writes []string
+			for _, w := range f.Writes() {
+				writes = append(writes, w.Method+" "+w.Path)
+			}
+			if !slices.Equal(writes, tt.writes) {
+				t.Errorf("writes = %q, want %q", writes, tt.writes)
+			}
+			if runs := f.State().CheckRuns; len(runs) != 0 {
+				t.Errorf("check runs = %+v, want none", runs)
+			}
+		})
 	}
 }
 

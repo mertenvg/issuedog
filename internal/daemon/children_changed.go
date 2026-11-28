@@ -234,13 +234,13 @@ func (st *Step) childChanged(ctx context.Context, parent *github.Snapshot, rev i
 // d its dirty content (discCheckLabels), and reports whether s is closed
 // after them: as when they finish the App's close of it, cut short after
 // its comment (SPEC §5.1), or close it again after an untrusted reopen
-// (SPEC §6.4). The error of the latter, closingErrClosedAgain, says only
+// (SPEC §6.4). The error of the latter, errClosingClosedAgain, says only
 // that nothing more is acted on for s this pass, which a closed child
 // gets anyway, so it's no error here: the parent's visit goes on without
 // s, which it reported to Touched first, so s is read again next pass.
 func (st *Step) childCheck(ctx context.Context, s *github.Snapshot, d Dirt) (closed bool, err error) {
 	err = st.discCheckLabels(ctx, s, st.Trust, d)
-	if errors.Is(err, closingErrClosedAgain) && s.Closed {
+	if errors.Is(err, errClosingClosedAgain) && s.Closed {
 		logr.Debugf("%s/%s#%d: closed again in a revision's pass, so the revision skips it: %v", st.Owner, st.Repo, s.Number, err)
 		return true, nil
 	}

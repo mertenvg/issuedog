@@ -986,7 +986,7 @@ func (a *Applier) moveFamily(ctx context.Context, c Cmd, trust github.Trust, r *
 	// Every open descendant is Touched before the first write, not as the
 	// loop reaches it: a write that fails, or a descendant whose labels are
 	// held back (ErrLabelsHeld) or that is closed again
-	// (closingErrClosedAgain), leaves c half done for those after it too,
+	// (errClosingClosedAgain), leaves c half done for those after it too,
 	// so a saved result on one of them waits as well (SPEC §8.2).
 	if a.Touched != nil {
 		for _, n := range family {

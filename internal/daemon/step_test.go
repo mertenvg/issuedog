@@ -455,7 +455,7 @@ func resumeChild(keep bool) daemon.Handler {
 	return daemon.Handler{
 		Check: func(ctx context.Context, a *daemon.Applier, c daemon.Cmd) error {
 			is, err := child(ctx, a)
-			if err == nil && is.Stage != state.Held && !(keep && is.Keys[state.CmdKey(c.Comment.ID)]) {
+			if err == nil && is.Stage != state.Held && (!keep || !is.Keys[state.CmdKey(c.Comment.ID)]) {
 				return daemon.Rejection{Reason: "nothing is held"}
 			}
 			return err

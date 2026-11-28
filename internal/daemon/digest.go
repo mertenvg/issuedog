@@ -45,9 +45,9 @@ const (
 	digestPinPending = digestPinPrefix + " yet. If this line stays, pin it by hand."
 )
 
-// digestErrGone marks the error of a request about the digest that found
+// errDigestGone marks the error of a request about the digest that found
 // it gone, deleted (404 or 410) or transferred (gone): digestPass drops it.
-var digestErrGone = errors.New("the digest is gone, deleted or transferred")
+var errDigestGone = errors.New("the digest is gone, deleted or transferred")
 
 // digestState is what the daemon knows of the digest, from the poll and
 // its own writes.
@@ -502,7 +502,7 @@ func (d *Daemon) digestPass(ctx context.Context) error {
 		}
 	}
 	err := d.digestKeep(ctx, n, items)
-	if errors.Is(err, digestErrGone) {
+	if errors.Is(err, errDigestGone) {
 		d.digestDrop(n, err)
 	}
 	return err
@@ -554,10 +554,10 @@ func (d *Daemon) digestDrop(n int, err error) {
 }
 
 // digestGone returns err, from a request about the digest, marked with
-// digestErrGone too if it says the digest is gone (gone).
+// errDigestGone too if it says the digest is gone (gone).
 func digestGone(err error) error {
 	if gone(err) {
-		return fmt.Errorf("%w: %w", digestErrGone, err)
+		return fmt.Errorf("%w: %w", errDigestGone, err)
 	}
 	return err
 }
@@ -610,7 +610,7 @@ func (d *Daemon) digestRewrite(ctx context.Context, n int, items []waitItem) err
 		logr.Errorf("the new items on %s/%s#%d, the digest, can't be announced, so only its body is written: %v", a.Owner, a.Repo, n, err)
 	}
 	if news != "" {
-		if err := d.digestAnnounce(ctx, n, news); errors.Is(err, digestErrGone) {
+		if err := d.digestAnnounce(ctx, n, news); errors.Is(err, errDigestGone) {
 			return err
 		} else if err != nil {
 			errs = append(errs, err)
@@ -847,7 +847,7 @@ func (g *digestState) noteOf(n int) string {
 // next start tries again too, as the note is still there.
 //
 // A check or pin that finds the digest gone, deleted or transferred
-// (digestPinGone), is the pass's error, marked gone (digestErrGone), so the
+// (digestPinGone), is the pass's error, marked gone (errDigestGone), so the
 // digest is dropped (digestPass) and nothing more is written to it.
 // PinIssue pins nothing whose read GitHub answered from another repo, so a
 // digest transferred mid-pass is never pinned in its new repo (#413).
@@ -869,7 +869,7 @@ func (d *Daemon) digestPin(ctx context.Context, n int, items []waitItem) error {
 	pinned, err := a.Client.IsPinned(ctx, a.Owner, a.Repo, n)
 	switch {
 	case digestPinGone(err):
-		return fmt.Errorf("%w: check the pin of the digest: %w", digestErrGone, err)
+		return fmt.Errorf("%w: check the pin of the digest: %w", errDigestGone, err)
 	case err != nil:
 		d.digestPinFailed(n, err, "checking whether it's pinned failed")
 		return nil
@@ -879,7 +879,7 @@ func (d *Daemon) digestPin(ctx context.Context, n int, items []waitItem) error {
 		err := a.Client.PinIssue(ctx, a.Owner, a.Repo, n)
 		switch {
 		case digestPinGone(err):
-			return fmt.Errorf("%w: pin the digest: %w", digestErrGone, err)
+			return fmt.Errorf("%w: pin the digest: %w", errDigestGone, err)
 		case errors.Is(err, github.ErrGraphQL) || errors.Is(err, github.ErrNotPinned):
 			logr.Errorf("pinning %s/%s#%d, the digest, failed, so its body says so, and the next start tries again: %v", a.Owner, a.Repo, n, err)
 			note = digestPinNote(err)

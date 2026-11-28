@@ -35,7 +35,7 @@ func TestRenderPROpenStoryBranch(t *testing.T) {
 // story's PR (SPEC §7.5).
 func TestRenderPRReopenedStory(t *testing.T) {
 	t.Parallel()
-	want := "`mal@​lory` reopened PR #2, so this task is back at `pr-open`. The App merges it into the story branch once it's checked, then closes this task."
+	want := "`mal@\u200blory` reopened PR #2, so this task is back at `pr-open`. The App merges it into the story branch once it's checked, then closes this task."
 	if got := renderPRReopened(2, "mal@lory", true); got != want {
 		t.Errorf("renderPRReopened =\n%s\nwant\n%s", got, want)
 	}

@@ -299,7 +299,7 @@ func prResults(results []verify.CommandResult) string {
 
 // zeroWidthSpace is what defuse and defuseRefs put in agent text to break a
 // mention or a reference, which nobody sees.
-const zeroWidthSpace = "​"
+const zeroWidthSpace = "\u200b"
 
 // refURLRE is the path of an issue's or a pull request's URL, up to its
 // number's first digit, as in https://github.com/owner/repo/issues/12.
@@ -338,7 +338,7 @@ func refDigits(s string) bool {
 	for i < len(s) && isDigit(s[i]) {
 		i++
 	}
-	return i == len(s) || !('a' <= s[i]|0x20 && s[i]|0x20 <= 'z')
+	return i == len(s) || s[i]|0x20 < 'a' || 'z' < s[i]|0x20
 }
 
 // isDigit reports whether c is an ASCII digit.

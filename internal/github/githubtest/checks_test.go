@@ -180,11 +180,11 @@ func TestFakeTypeRefused(t *testing.T) {
 	if is, _, err := c.Issues.Create(ctx, "o", "r", gogithub.CreateIssueRequest{Title: "Plain"}); err != nil || is.Type != nil {
 		t.Errorf("create with no type on a personal account = %q, %v; want an issue with none", is.GetType().GetName(), err)
 	}
-	req, err := c.Client.NewRequest(ctx, http.MethodPatch, fmt.Sprintf("repos/o/r/issues/%d", n), map[string]any{"type": nil})
+	req, err := c.NewRequest(ctx, http.MethodPatch, fmt.Sprintf("repos/o/r/issues/%d", n), map[string]any{"type": nil})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Client.Do(req, nil); err != nil {
+	if _, err := c.Do(req, nil); err != nil {
 		t.Errorf("remove the type on a personal account: %v; want no refusal", err)
 	}
 	if got := f.State().Issues[n-1].Type; got != "" {
@@ -213,12 +213,12 @@ func TestFakeTypeCanonical(t *testing.T) {
 	if got := f.State().Issues[n-1].Type; got != "Task" {
 		t.Errorf("state's type %q; want Task", got)
 	}
-	req, err := c.Client.NewRequest(ctx, http.MethodGet, fmt.Sprintf("repos/o/r/issues/%d/timeline", n), nil)
+	req, err := c.NewRequest(ctx, http.MethodGet, fmt.Sprintf("repos/o/r/issues/%d/timeline", n), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var events []issueTypeRevertEvent
-	if _, err := c.Client.Do(req, &events); err != nil {
+	if _, err := c.Do(req, &events); err != nil {
 		t.Fatal(err)
 	}
 	var got []string
@@ -244,7 +244,7 @@ func TestFakeTypeCanonical(t *testing.T) {
 func fakeRulesServed(t *testing.T, f *Fake, branch string) []string {
 	t.Helper()
 	ctx, c := context.Background(), f.Client(t)
-	req, err := c.Client.NewRequest(ctx, http.MethodGet, "repos/o/r/rules/branches/"+url.PathEscape(branch)+"?per_page=100", nil)
+	req, err := c.NewRequest(ctx, http.MethodGet, "repos/o/r/rules/branches/"+url.PathEscape(branch)+"?per_page=100", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +255,7 @@ func fakeRulesServed(t *testing.T, f *Fake, branch string) []string {
 		ID         int64          `json:"ruleset_id"`
 		Parameters map[string]any `json:"parameters"`
 	}
-	if _, err := c.Client.Do(req, &rules); err != nil {
+	if _, err := c.Do(req, &rules); err != nil {
 		t.Fatalf("rules on %s: %v", branch, err)
 	}
 	var out []string
