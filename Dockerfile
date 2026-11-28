@@ -2,6 +2,11 @@
 
 FROM golang:1.27.2-trixie AS build
 WORKDIR /src
+# golangci-lint is built with this stage's Go, which the runtime image
+# carries too, so the linter and the toolchain it checks with agree.
+ARG GOLANGCI_LINT_VERSION=v2.15.0
+RUN CGO_ENABLED=0 GOBIN=/out go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}" \
+ && /out/golangci-lint --version | grep -F "version ${GOLANGCI_LINT_VERSION#v} built with $(go env GOVERSION)"
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
@@ -35,6 +40,14 @@ RUN groupadd --system --gid 10001 issuedog \
  && install -d -o issuedog -g issuedog -m 0755 /run/issuedog
 
 COPY --from=claude /out/claude /usr/local/bin/claude
+
+# The toolchain this repo's verify.commands need (`go vet ./...`,
+# `golangci-lint run` and `go test ./...`), which run as agent with only
+# /usr/local/bin, /usr/bin and /bin on PATH (agent.CommandEnv). One copy of
+# the build stage's Go, with no module cache, and golangci-lint built with it.
+COPY --from=build /usr/local/go /usr/local/go
+COPY --from=build /out/golangci-lint /usr/local/bin/golangci-lint
+RUN ln -s /usr/local/go/bin/go /usr/local/go/bin/gofmt /usr/local/bin/
 
 # The daemon gets the only capabilities in the image: switching to agent for
 # stage runs, and applying the agent firewall (#25). Only root and the

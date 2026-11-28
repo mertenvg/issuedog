@@ -233,6 +233,67 @@ check "git is installed" git --version
 check "iptables is installed" iptables --version
 check "openssl is installed" openssl version
 
+# Go toolchain (SPEC §3). This repo's verify.commands are `go vet ./...`,
+# `golangci-lint run` and `go test ./...`, which run as agent with only a
+# HOME and the fixed PATH of agent.CommandEnv. So these run the same way,
+# with nothing else from this script's environment, in a fresh HOME that
+# holds Go's caches. With GOPROXY=off, a step that needed the network fails.
+gohome=$(mktemp -d /tmp/sandbox-test-go-home.XXXXXX)
+mod=$(mktemp -d /tmp/sandbox-test-go-mod.XXXXXX)
+chown agent:agent "$gohome" "$mod"
+go_version=go1.27.2
+golangci_lint_version=2.15.0
+
+# go_as_agent <command...> runs the command as agent in the module, with
+# agent.CommandEnv's fixed PATH, the fresh HOME and GOCACHE, and no proxy.
+go_as_agent() {
+	setpriv --reuid=agent --regid=agent --init-groups -- env -i HOME="$gohome" \
+		PATH=/usr/local/bin:/usr/bin:/bin GOCACHE="$gohome/go-build" GOPROXY=off \
+		sh -c 'cd "$1" && shift && exec "$@"' sh "$mod" "$@"
+}
+
+# go_write <file> writes stdin, as agent, to file in the module.
+go_write() {
+	go_as_agent sh -c 'cat >"$1"' sh "$1"
+}
+
+check "agent runs the build stage's Go" go_as_agent sh -c 'go version | grep -qF " $1 "' sh "$go_version"
+check "agent runs golangci-lint built with that Go" go_as_agent sh -c \
+	'golangci-lint --version | grep -qF "has version $1 built with $2 "' sh "$golangci_lint_version" "$go_version"
+
+# A module agent writes, with one package and its test, and no dependencies.
+# Each write is checked, so a module that isn't there fails by name, not
+# through the checks after it.
+write_go_module() {
+	printf 'module sandboxtest\n\ngo %s\n' "${go_version#go}" | go_write go.mod || return 1
+	go_write sum.go <<'EOF' || return 1
+// Package sandboxtest is a module for make sandbox-test to check.
+package sandboxtest
+
+// Sum returns the sum of a and b.
+func Sum(a, b int) int {
+	return a + b
+}
+EOF
+	go_write sum_test.go <<'EOF'
+package sandboxtest
+
+import "testing"
+
+func TestSum(t *testing.T) {
+	if got := Sum(1, 2); got != 3 {
+		t.Errorf("Sum(1, 2) = %d, want 3", got)
+	}
+}
+EOF
+}
+check "agent writes a Go module" write_go_module
+expect "agent runs gofmt, which finds the module formatted" "" go_as_agent gofmt -l .
+check "go vet passes on the module" go_as_agent go vet ./...
+check "go test passes on the module" go_as_agent go test ./...
+check "golangci-lint run passes on the module" go_as_agent golangci-lint run
+rm -rf "$gohome" "$mod"
+
 # Egress (SPEC §3.1). The daemon needs GitHub during startup, before it
 # applies the firewall, so here issuedog applies its firewall and serves its
 # proxy with the unlisted `issuedog egress`, which runs until the container
